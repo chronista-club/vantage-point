@@ -488,7 +488,6 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
             }
 
             let start = Instant::now();
-            let mut first_hello: Option<Instant> = None;
             let mut input = RotoInput::default();
             let mut event_count = 0usize;
             let mut activated = false;
@@ -502,12 +501,10 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                 }
                 // handshake/keepalive の SysEx は自動応答（接続を維持）
                 if roto_autorespond(&bytes, &mut conn_out)? {
-                    if first_hello.is_none() {
-                        first_hello = Some(Instant::now());
-                    }
                     continue;
                 }
-                // 接続成立通知（mixer update 0C 01）で projection を送って knob を起こす
+                // 定型応答対象外の最初の SysEx（実機では firmware version 0A 0E が先着）で
+                // projection を送って knob を起こす（learn しないと入力 CC が来ない）
                 if !activated && bytes.first() == Some(&0xF0) {
                     activated = true;
                     for msg in &projection {
@@ -530,6 +527,13 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                         "      (focus hint: knob {} 触れ → track {} 選択)",
                         knob, knob
                     );
+                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x0A]) {
+                    // 左キー: transport mode 切替（executeGeneralCommand case 10）
+                    println!("      (nav: transport mode へ切替)");
+                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x02]) {
+                    // 左キー: track control 選択（executeMixerCommand case 2）
+                    let val = bytes.get(7).copied().unwrap_or(0);
+                    println!("      (nav: track control = {})", val);
                 } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x01]) {
                     // mixer update（keepalive 的な state 再送）はノイズなので無視
                 } else {
