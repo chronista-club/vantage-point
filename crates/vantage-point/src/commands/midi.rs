@@ -215,6 +215,8 @@ fn roto_sysex_label(bytes: &[u8]) -> Option<String> {
     }
     let (ty, cmd) = (bytes[5], bytes[6]);
     let arg = bytes.get(7).copied().unwrap_or(0);
+    // 注意: 0A 02 (hello) / 0A 0C (query) は watch では roto_autorespond が
+    // 先行キャッチして届かない。テーブルは仕様書としての完全性のため両者も載せる
     let label = match (ty, cmd) {
         (0x0A, 0x02) => "general: hello/keepalive".into(),
         (0x0A, 0x06) => "general: track offset".into(),
