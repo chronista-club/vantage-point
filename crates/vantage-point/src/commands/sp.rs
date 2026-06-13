@@ -144,7 +144,7 @@ fn sp_start(
     };
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async { crate::process::run(port, false, debug_mode, cap_config).await })
+    rt.block_on(async { crate::process::run(port, debug_mode, cap_config).await })
 }
 
 /// SP サーバーを停止
