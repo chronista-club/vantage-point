@@ -238,13 +238,17 @@ knob touch のたびに ROTO は CC とは別に **`F0 00 22 03 02 0A 09 00 0i F
 
 ROTO の物理キーは役割で 2 層に分かれる:
 - **物理 primitive**（生 CC で来る）: knob 回し / touch / **右 8 button**（CC 20-27 = `Button 0-7`）
-- **semantic command**（意味付き SysEx で来る）: **左 8 キー = モード/ナビ**。機材が「何が起きたか」を送る:
-  - `02 0A 0A` = transport mode 切替（`executeGeneralCommand` case 10 `toTransportMode`）
-  - `02 0C 02 <v>` = track control 選択（`executeMixerCommand` case 2 `setTrackControl`）
-  - 左 8 キー中 2 種のみ MIX TRACKS mode で有効（残りは他 mode の文脈キー）
+  → lane 演奏（パラメータ操作）向け。`ControlEvent` として受ける
+- **semantic command**（意味付き SysEx で来る）: **左 8 キー = モードセレクト/ナビ**。
+  機材が「どのモードに入った/抜けた」を送る（同じキー 2 度押し = トグルで入/出）:
+  - `02 0C 02 <v>` = MIX モード（track control 選択、`executeMixerCommand` case 2）
+  - `02 0A 0A` = TRANSPORT モード切替（`executeGeneralCommand` case 10、トグル）
+  - `02 0B 01` = PLUGIN モードへ（`executePluginCommand` case 1）
+  - その他 nav は `roto_sysex_label`（`commands/midi.rs`）が全 dispatch case をラベル解読
 
-→ VP の routing は「primitive はそのまま lane 演奏に、semantic はモード/ナビ操作に」と
-2 層で受ける。`ControlEvent`（primitive）と nav SysEx（semantic）の扱いは別系統にする。
+→ VP の routing は 2 系統: **primitive → lane 演奏** / **semantic → モード・ビュー切替**。
+`ControlEvent`（primitive）と nav SysEx（semantic）は別ハンドラで受ける。
+観察ツール `vp midi roto watch` は両方をラベル付きで表示する。
 
 > mode 依存注意: 上記は MIX TRACKS mode の実測。PLUGIN mode は learn した parameter の
 > bind により別経路の可能性あり（未検証）。

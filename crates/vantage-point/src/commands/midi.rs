@@ -206,6 +206,48 @@ fn roto_autorespond(bytes: &[u8], conn_out: &mut midir::MidiOutputConnection) ->
     Ok(false)
 }
 
+/// ROTO 受信 SysEx を人間可読ラベルに解読する（decompile の `handleRotoUpdate`
+/// dispatch 準拠）。`F0 00 22 03 02 <type> <cmd> ...` の (type, cmd) を操作名に対応づける。
+/// SysEx でなければ `None`。左キーの nav/mode 操作はここで識別する。
+fn roto_sysex_label(bytes: &[u8]) -> Option<String> {
+    if !bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02]) || bytes.len() < 7 {
+        return None;
+    }
+    let (ty, cmd) = (bytes[5], bytes[6]);
+    let arg = bytes.get(7).copied().unwrap_or(0);
+    // 注意: 0A 02 (hello) / 0A 0C (query) は watch では roto_autorespond が
+    // 先行キャッチして届かない。テーブルは仕様書としての完全性のため両者も載せる
+    let label = match (ty, cmd) {
+        (0x0A, 0x02) => "general: hello/keepalive".into(),
+        (0x0A, 0x06) => "general: track offset".into(),
+        (0x0A, 0x09) => format!(
+            "general: selectTrack (knob {} 触れ → track 選択)",
+            bytes.get(8).copied().unwrap_or(0)
+        ),
+        (0x0A, 0x0A) => "general: transport mode へ切替".into(),
+        (0x0A, 0x0C) => "general: query (→ 0D 応答)".into(),
+        (0x0A, 0x0E) => "general: firmware version 通知".into(),
+        (0x0A, 0x14) => "general: plugin param page (prev)".into(),
+        (0x0A, 0x15) => "general: plugin param page (next)".into(),
+        (0x0B, 0x01) => "plugin: plugin mode へ".into(),
+        (0x0B, 0x04) => "plugin: bank navigate".into(),
+        (0x0B, 0x07) => "plugin: select plugin".into(),
+        (0x0B, 0x09) => "plugin: learn mode toggle".into(),
+        (0x0B, 0x0B) => "plugin: activate parameter".into(),
+        (0x0B, 0x0C) => "plugin: activate plugin".into(),
+        (0x0B, 0x0D) => "plugin: lock device".into(),
+        (0x0B, 0x10) => "plugin: select remote page".into(),
+        (0x0B, 0x11) => "plugin: confirm learned".into(),
+        (0x0B, 0x12) => "plugin: toggle remote page".into(),
+        (0x0C, 0x01) => "mixer: update (keepalive)".into(),
+        (0x0C, 0x02) => format!("mixer: track control = {}", arg),
+        (0x0C, 0x05) => format!("mixer: master control = {}", arg),
+        (0x0C, 0x06) => "mixer: focus track toggle".into(),
+        _ => format!("? type={:02X} cmd={:02X}", ty, cmd),
+    };
+    Some(label)
+}
+
 /// ROTO-CONTROL サブコマンドを実行
 fn execute_roto(cmd: RotoCommands) -> Result<()> {
     use crate::device_profile::{DeviceProfile, ParamSpec, Rgb, roto::RotoProfile};
@@ -520,24 +562,14 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                 if let Some(event) = input.parse(&bytes) {
                     event_count += 1;
                     println!("[{:>3}] {:?}", event_count, event);
-                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x09]) {
-                    // knob touch に伴う track 選択 hint（device 発の focus 意図、doc 20 §7）
-                    let knob = bytes.get(8).copied().unwrap_or(0);
-                    println!(
-                        "      (focus hint: knob {} 触れ → track {} 選択)",
-                        knob, knob
-                    );
-                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x0A]) {
-                    // 左キー: transport mode 切替（executeGeneralCommand case 10）
-                    println!("      (nav: transport mode へ切替)");
-                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x02]) {
-                    // 左キー: track control 選択（executeMixerCommand case 2）
-                    let val = bytes.get(7).copied().unwrap_or(0);
-                    println!("      (nav: track control = {})", val);
-                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x01]) {
-                    // mixer update（keepalive 的な state 再送）はノイズなので無視
+                } else if let Some(label) = roto_sysex_label(&bytes) {
+                    // 受信 SysEx をラベル解読（左キー nav/mode はここで識別）。
+                    // mixer update (0C 01) は keepalive ノイズなので抑制
+                    if !bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x01]) {
+                        println!("      (sysex: {})", label);
+                    }
                 } else {
-                    // それ以外の未対応受信は生 hex で表示（実機の実 byte 確認用）
+                    // SysEx 以外の未対応受信は生 hex で表示（実機の実 byte 確認用）
                     let hex: Vec<String> = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                     println!("      raw: {}", hex.join(" "));
                 }
