@@ -45,7 +45,7 @@ if (isWatch) {
   // watch mode: context + watch (保存毎に rebuild、 ~0.5s)。 process は常駐。
   const ctxs = await Promise.all(targets.map((t) => context({ ...common, ...t })))
   await Promise.all(ctxs.map((c) => c.watch()))
-  console.log('[esbuild] watching web-bundle… 編集 → ~0.5s rebuild → WebView reload で反映')
+  console.log('[esbuild] watching webview… 編集 → ~0.5s rebuild → WebView reload で反映')
 } else {
   // one-shot build (entry ごとに outfile 指定で 2 回呼ぶ)。
   for (const t of targets) await build({ ...common, ...t })

@@ -52,7 +52,7 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 |---------|------|
 | CLI / Process | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
-| Frontend | SolidJS + xterm.js + creo-ui (vp-app web-bundle) |
+| Frontend | SolidJS + xterm.js + creo-ui (vp-app webview) |
 | Agent | Claude CLI + MCP |
 | MIDI | midir |
 

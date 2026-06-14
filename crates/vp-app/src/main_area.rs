@@ -438,7 +438,7 @@ body{overflow:hidden;}
 </script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
-     Build: cd crates/vp-app/web-bundle && bun install && bun run build。 -->
+     Build: cd crates/vp-app/webview && bun install && bun run build。 -->
 <script>
 "#,
     include_str!("../assets/editor-host.bundle.js"),

@@ -92,7 +92,7 @@ fn initial_developer_mode(settings: &Settings) -> bool {
 pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 
 /// 柱 2: SolidJS + creoui で構築した sidebar の JS bundle。
-/// `crates/vp-app/web-bundle/` で `bun run build` → `assets/sidebar.bundle.js` 生成。
+/// `crates/vp-app/webview/` で `bun run build` → `assets/sidebar.bundle.js` 生成。
 /// `SIDEBAR_HTML` 内の `<script src="vp-asset://app/sidebar.bundle.js">` で load される。
 const SIDEBAR_BUNDLE: &[u8] = include_bytes!("../assets/sidebar.bundle.js");
 

@@ -362,7 +362,7 @@ pub async fn canvas_layout_save_handler(
 // PP Canvas Stack Model (lane scope) — pp-content-persist
 // =========================================================================
 // `/api/pp/state` は **lane ごとに独立した PP state** を SurrealDB pane_contents に save/load する。
-// canvas-handler.ts (web-bundle) が 500ms debounce で save、 起動時 / lane 切替時に load を叩く。
+// canvas-handler.ts (webview) が 500ms debounce で save、 起動時 / lane 切替時に load を叩く。
 // content / title は legacy field、 主役は stack (= items + cursor) と ui_state。
 
 /// POST /api/pp/state - PP state を SurrealDB pane_contents に upsert。
@@ -651,7 +651,7 @@ pub async fn canvas_capture_handler(
 }
 
 // 旧 GET /wasm/{filename} (vp-mdast-wasm 配信 endpoint) は 2026-05-25 削除。
-// frontend (vp-app web-bundle) は `marked` (npm) + `@chronista-club/creoui-editor-host`
+// frontend (vp-app webview) は `marked` (npm) + `@chronista-club/creoui-editor-host`
 // に markdown rendering を移行済で、 vp_mdast_wasm 関連 asset は dead 化していた。
 // vp-mdast / vp-mdast-wasm crate + web/wasm/ asset (482KB) と共に撤去。
 

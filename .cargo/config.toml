@@ -8,7 +8,7 @@
 # `crates/vp-app/.cargo/config.toml` は workspace root から `cargo test` した時
 # (CI もこれ) に発見されない。 そのため workspace root の本 file に置き、
 # `TS_RS_EXPORT_DIR` を vp-app crate 直下に固定する。 これで vp-app の各型の
-# `export_to` を `web-bundle/src/generated/...` と crate-root 相対で書ける。
+# `export_to` を `webview/src/generated/...` と crate-root 相対で書ける。
 #
 # NOTE: 現状 ts-rs export を行うのは vp-app crate のみ。 将来別 crate が ts-rs
 # export を追加する場合、 本設定だと出力先が vp-app 配下に固定されてしまうため、

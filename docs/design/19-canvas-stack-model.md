@@ -277,11 +277,11 @@ session 限りで clean = vp-app 再起動で history リセット。 理由:
 |-------|------|---------|
 | Rust mcp__show | `crates/vantage-point/src/mcp.rs` | `ShowParams.append` field 削除、 doctring 更新 |
 | Rust caller | `crates/vp-app/src/app.rs:2060, 2085` | `"append": false` hardcode 削除 |
-| vp-app WebView | `crates/vp-app/web-bundle/canvas-handler.ts` | `dispatchShow` を `CanvasState` 操作 + items push + cursor 更新に rewire |
-| vp-app new component | `crates/vp-app/web-bundle/HistoryStrip.tsx` (新規) | bottom strip 描画 (icon + title + ✕ + cursor 強調 + tooltip) |
-| vp-app PP render | `crates/vp-app/web-bundle/pp.ts` | main pane render を `items[cursor]` 連動に rewire |
+| vp-app WebView | `crates/vp-app/webview/canvas-handler.ts` | `dispatchShow` を `CanvasState` 操作 + items push + cursor 更新に rewire |
+| vp-app new component | `crates/vp-app/webview/HistoryStrip.tsx` (新規) | bottom strip 描画 (icon + title + ✕ + cursor 強調 + tooltip) |
+| vp-app PP render | `crates/vp-app/webview/pp.ts` | main pane render を `items[cursor]` 連動に rewire |
 | vp-app DOM | `crates/vp-app/src/main_area.rs` | strip 用 HTML / CSS 追加 (= bottom row 物理化、 grid layout) |
-| Tests | `crates/vp-app/web-bundle/canvas-handler.test.ts` 等 | CanvasState push / cursor 移動 / ✕ fallback の unit tests |
+| Tests | `crates/vp-app/webview/canvas-handler.test.ts` 等 | CanvasState push / cursor 移動 / ✕ fallback の unit tests |
 
 ### 7.1 PR 分割案
 
@@ -341,6 +341,6 @@ N=10 で全件 viewport 収まる sizing 想定だが、 dogfood で「もっと
 - mcp__show 入口: `crates/vantage-point/src/mcp.rs:1391-1429`
 - ShowParams: `crates/vantage-point/src/mcp.rs:23-47`
 - SP HTTP handler: `crates/vantage-point/src/process/routes/health.rs:322-330`
-- WebView 注入口: `crates/vp-app/web-bundle/canvas-handler.ts:40-60`
-- 現 PP render: `crates/vp-app/web-bundle/pp.ts`
+- WebView 注入口: `crates/vp-app/webview/canvas-handler.ts:40-60`
+- 現 PP render: `crates/vp-app/webview/pp.ts`
 - main pane DOM: `crates/vp-app/src/main_area.rs:201-220` (`.pp-content`)

@@ -202,7 +202,7 @@ user 概念 (前 turn で提示):
 | `Cmd+N` | New Window (muda menu) | **既存 keep** — `n` は directive 予約 (§C.3) と棲み分け: menu accelerator は `Cmd+N` 単発、 directive は `Cmd hold n` (= 結果として同 keydown event だが、 dispatch 順は menu accelerator が先) |
 | `Cmd+W` / `Cmd+Q` | Close Window / Quit (predefined) | **既存 keep** (system) |
 | `Cmd+C/V/X/Z/A` 等 | Edit menu predefined | **既存 keep** (system) |
-| `Ctrl+Shift+1..4` | Scene 切替 (`web-bundle/keybindings.ts`) | **既存 keep** (layout) |
+| `Ctrl+Shift+1..4` | Scene 切替 (`webview/keybindings.ts`) | **既存 keep** (layout) |
 | `Ctrl+Shift+] / [` | Scene cyclic | **既存 keep** (layout) |
 | **`Ctrl+Shift+C`** (`main_area.rs:1303-1319`) | active lane の selection copy (global fallback listener) | **既存 keep** — v0.4 で明示化 (= undocumented gap 解消)。 lane individual handler が捕り逃した場合の system-level clipboard copy fallback、 規約 system カテゴリに属する |
 | `Ctrl+Insert` / `Shift+Insert` (xterm.js) | terminal context での copy / paste | **既存 keep** (system) — terminal は xterm.js native handler で上書き、 詳細は §D.6 |
@@ -234,7 +234,7 @@ shortcut として **採用しない** 動作を明示する。 これらは「�
 `Cmd hold + key` は keydown event 上で `metaKey: true` + 文字キー 1 つの 1 event。 chord 2 段 state machine は不要、 単純な keydown listener で directive lookup + exec:
 
 ```ts
-// web-bundle/src/shortcuts/directive.ts (要旨)
+// webview/src/shortcuts/directive.ts (要旨)
 import { DIRECTIVE_TABLE } from './directive-table'
 
 export function installDirectiveHandler(ctx: DirectiveContext): () => void {
@@ -259,7 +259,7 @@ export function installDirectiveHandler(ctx: DirectiveContext): () => void {
 
 ### D.2 SSOT としての directive table
 
-`web-bundle/src/shortcuts/directive-table.ts` (= **single key map**):
+`webview/src/shortcuts/directive-table.ts` (= **single key map**):
 
 ```ts
 export interface DirectiveEntry {

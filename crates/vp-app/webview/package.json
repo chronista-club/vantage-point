@@ -1,5 +1,5 @@
 {
-  "name": "vp-app-web-bundle",
+  "name": "vp-app-webview",
   "version": "0.0.1",
   "description": "vp-app WebView 用 JS bundle (SolidJS + @chronista-club/creoui-editor-host)",
   "private": true,

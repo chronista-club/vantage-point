@@ -14,7 +14,7 @@
  * - Theme switching: 8 theme (mint-dark/light, sora-*, contrast-*, oldschool-*)
  *
  * Build:
- *   cd crates/vp-app/web-bundle && bun install && bun run build
+ *   cd crates/vp-app/webview && bun install && bun run build
  *
  * 出力: ../assets/editor-host.bundle.js (vp-app の Rust 側で include_str!)
  */

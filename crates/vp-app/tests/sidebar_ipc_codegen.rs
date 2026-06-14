@@ -4,13 +4,13 @@
 //! 生成し、 committed location に書き出す:
 //!
 //!   - `src/generated/sidebar_ipc.rs`            — Rust `IpcEnvelope`
-//!   - `web-bundle/src/generated/SidebarIpc.ts`  — TS discriminated union
+//!   - `webview/src/generated/SidebarIpc.ts`  — TS discriminated union
 //!
 //! ts-rs の binding export と同じ慣習で、 `cargo test -p vp-app` を回せば生成物は
 //! 必ず最新化される。 生成 Rust が壊れていれば vp-app lib の build が先に失敗するため、
 //! 「生成物がコンパイル可能」 はこの test crate がビルドされる時点で保証される。
 //!
-//! PR-1 scope: 生成物を既存の手書き定義 (`web-bundle/src/sidebar/ipc.ts` の
+//! PR-1 scope: 生成物を既存の手書き定義 (`webview/src/sidebar/ipc.ts` の
 //! `SidebarIpcMsg` / `app.rs` の `handle_sidebar_ipc`) と並存させるのみ。
 //! caller 移行は PR-2 (Rust) / PR-3 (TS)。
 
@@ -94,10 +94,7 @@ fn regenerates_sidebar_ipc_bindings() {
         "TypeScript emitter の出力が非決定的"
     );
     let ts_file = format!("{TS_HEADER}{ts_emitted}");
-    write_if_changed(
-        &root.join("web-bundle/src/generated/SidebarIpc.ts"),
-        &ts_file,
-    );
+    write_if_changed(&root.join("webview/src/generated/SidebarIpc.ts"), &ts_file);
 
     assert!(ts_file.contains("export type IpcEnvelope ="));
     assert!(ts_file.contains("({ t: \"project:clone:pickFolder\" } & ProjectClonePickFolder)"));
