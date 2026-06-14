@@ -138,6 +138,23 @@ const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[
     ),
 ];
 
+/// WebView 統合 (step 3a) 後の唯一の webview が `vp-asset://` で配信する asset。
+/// `MAIN_AREA_HTML` (sidebar bundle + editor-host bundle を inline 済) を `app/index.html` で配信。
+///
+/// ## なぜ with_html ではなく custom protocol か (統合 origin fix)
+/// `with_html` で load した document は **about:blank = 不透明 (opaque) オリジン**になり、
+/// `localStorage` 等 origin 依存 API が `SecurityError` を throw する。統合で sidebar bundle を
+/// 同 document に inline した結果、`Shell()` が render 時に踏む `localStorage.getItem`
+/// (タブ状態の永続) で sidebar bundle が boot 中に落ち、`<Shell/>` が mount されず sidebar が
+/// 空になっていた。custom protocol で load すれば document origin = `vp-asset://app` の
+/// 実オリジンになり、統合前 (sidebar が `vp-asset://app/sidebar.html` を load していた頃) と
+/// 同じく localStorage が使える。
+const MAIN_VIEW_ASSETS: &[(&str, &[u8], &str)] = &[(
+    "app/index.html",
+    MAIN_AREA_HTML.as_bytes(),
+    "text/html; charset=utf-8",
+)];
+
 /// Sidebar + Main area の bounds をウィンドウサイズから計算 (VP-100 Phase 2)
 ///
 /// WebView 統合 (step 3a): sidebar + main を統合した 1 WebView を window 全面に張る。
@@ -1463,7 +1480,13 @@ pub fn run() -> anyhow::Result<()> {
     // DevTools は compile 時 always 有効。menu の「Open Developer Tools」から
     // `webview.open_devtools()` を呼ぶかで runtime 制御 (本番ビルドでも切替可)。
     let webview = WebViewBuilder::new()
-        .with_html(MAIN_AREA_HTML)
+        // 統合 origin fix: with_html (about:blank = 不透明オリジン) だと localStorage が
+        // SecurityError を throw し sidebar bundle が boot 中に落ちる。custom protocol で
+        // 実オリジン (vp-asset://app) を与え、MAIN_AREA_HTML を app/index.html として配信する。
+        .with_custom_protocol("vp-asset".to_string(), move |id, request| {
+            crate::web_assets::serve(id, request, MAIN_VIEW_ASSETS)
+        })
+        .with_url("vp-asset://app/index.html")
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: WryLogicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT).into(),
