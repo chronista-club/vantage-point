@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="frontend (web-bundle) を esbuild watch で常時 rebuild — VP_WEBVIEW_DEV 起動の app と組で HMR loop (cargo 不要)"
+#MISE description="frontend (webview) を esbuild watch で常時 rebuild — VP_WEBVIEW_DEV 起動の app と組で HMR loop (cargo 不要)"
 #
-# vp-app は web-bundle を include_bytes! で binary に焼き込むため、 通常は frontend 変更に
+# vp-app は webview を include_bytes! で binary に焼き込むため、 通常は frontend 変更に
 # cargo build が要る。 dev loop (cargo 不要):
 #   1. (初回のみ) dev-read 対応 binary を install:  ge app:build
 #   2. assets dir を env に固定:                      export VP_WEBVIEW_DEV=<assets dir>
@@ -20,5 +20,5 @@ warn "    export VP_WEBVIEW_DEV='#{assets}'"
 warn "    ge app:start                       # dev-read app 起動 (rebuild 無し)"
 warn "    # 反映するとき: ge app:stop && ge app:start"
 warn ""
-Dir.chdir(File.join(VP.root, "crates", "vp-app", "web-bundle"))
+Dir.chdir(File.join(VP.root, "crates", "vp-app", "webview"))
 VP.exec("bun", "run", "dev")

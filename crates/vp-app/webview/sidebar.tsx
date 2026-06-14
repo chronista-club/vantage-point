@@ -6,7 +6,7 @@
  * default では旧 sidebar のまま。 `VP_SIDEBAR_V2=1` で本 bundle に切り替わる。
  *
  * Build:
- *   cd crates/vp-app/web-bundle && bun run build
+ *   cd crates/vp-app/webview && bun run build
  * 出力: ../assets/sidebar.bundle.js (vp-app の Rust 側で include_bytes!)
  */
 import { render } from 'solid-js/web'

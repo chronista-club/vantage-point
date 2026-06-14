@@ -193,7 +193,7 @@ struct ProcessesResponse {
 /// UI 表示 (sidebar の Lane 行) に必要な field のみ。
 /// Serialize は SidebarState 経由で webview / disk persistence に流れるため必要。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct LaneInfo {
     pub address: LaneAddressWire,
     /// "conductor" | "performer"
@@ -221,7 +221,7 @@ pub struct LaneInfo {
 /// Phase 5-D: vantage-point 側 `lane::commands::PerformerStatus` の wire shape。
 /// sidebar Performer row に branch / dirty / ahead / behind / merge 状態を表示。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct PerformerStatusWire {
     #[serde(default)]
     pub branch: Option<String>,

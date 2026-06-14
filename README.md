@@ -190,7 +190,7 @@ vantage-point/
 │   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
 │   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸
-│   │   └── web-bundle/  # SolidJS フロントエンド（vp-app に同梱）
+│   │   └── webview/  # SolidJS フロントエンド（vp-app に同梱）
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
 │   └── vp-mdast{,-wasm}/ # Markdown AST parser (+ wasm binding)
 └── docs/                # 仕様・設計・ガイド
@@ -202,7 +202,7 @@ vantage-point/
 |---------|------|
 | CLI / Process | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
-| Frontend | SolidJS + xterm.js + creo-ui (vp-app web-bundle) |
+| Frontend | SolidJS + xterm.js + creo-ui (vp-app webview) |
 | MCP | rmcp (stdio) |
 | MIDI | midir |
 
