@@ -20,9 +20,8 @@ pub struct MenuIds {
     /// View → "Developer Mode" (CheckMenuItem)
     pub developer_mode: MenuId,
     /// View → "Open Developer Tools" (MenuItem、developer_mode == true の時のみ enabled)
+    /// WebView 統合 (step 3a) 後は単一 WebView の devtools を開く (旧 Open Sidebar DevTools は廃止)。
     pub open_devtools: MenuId,
-    /// View → "Open Sidebar DevTools" (sidebar WebView 用、 developer_mode == true で enabled)
-    pub open_sidebar_devtools: MenuId,
 }
 
 /// メニューバー + 動的に状態更新する item の handle
@@ -30,7 +29,6 @@ pub struct MenuHandles {
     pub menu: Menu,
     pub developer_mode_item: CheckMenuItem,
     pub open_devtools_item: MenuItem,
-    pub open_sidebar_devtools_item: MenuItem,
     pub ids: MenuIds,
 }
 
@@ -109,9 +107,6 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         initial_dev_mode, // 初期 enabled は dev_mode に従う
         None,
     );
-    // 「Open Sidebar DevTools」 — sidebar WebView (vp-asset://app/sidebar.html) 用。
-    // main_view と sidebar が別 WKWebView なので、 inspect も別 panel が必要。
-    let open_sidebar_devtools_item = MenuItem::new("Open Sidebar DevTools", initial_dev_mode, None);
     let view_menu = Submenu::new("View", true);
     view_menu
         .append(&developer_mode_item)
@@ -122,9 +117,6 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     view_menu
         .append(&open_devtools_item)
         .expect("append Open Developer Tools");
-    view_menu
-        .append(&open_sidebar_devtools_item)
-        .expect("append Open Sidebar DevTools");
 
     menu.append(&app_menu).expect("append App menu");
     menu.append(&file_menu).expect("append File menu");
@@ -136,14 +128,12 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         open_file: open_file_item.id().clone(),
         developer_mode: developer_mode_item.id().clone(),
         open_devtools: open_devtools_item.id().clone(),
-        open_sidebar_devtools: open_sidebar_devtools_item.id().clone(),
     };
 
     MenuHandles {
         menu,
         developer_mode_item,
         open_devtools_item,
-        open_sidebar_devtools_item,
         ids,
     }
 }
