@@ -16,24 +16,43 @@ import { installSidebarKeybindings } from './src/sidebar/keybindings'
 
 console.info('[vp-sidebar] booting (v1.0 柱2 PR-1 scaffold)')
 
-// IPC bridge は component mount より前に登録する。
-// Rust は webview build 直後から window.renderSidebarState を呼びうるため。
-installIpcBridge()
-// Sidebar 専用ショートカット (Cmd+F → File Explorer overlay) を登録。
-installSidebarKeybindings()
+// boot 失敗時の致命例外を Rust ログ (app.kdl.log) に吐く防御診断。
+// `{t:"debug"}` は is_main_ipc_tag が main 扱いで routing → terminal::handle_ipc_message が
+// `[xterm debug] {msg}` として tracing に流す。document が opaque origin だと console.error が
+// 拾いにくく、かつ render 中 throw は無音で sidebar が空になる (WebView 統合 step 3a 回帰の教訓)
+// ため、boot を try/catch で囲み例外を IPC でホストに残す。
+function bootLog(msg: string): void {
+  try {
+    window.ipc?.postMessage(JSON.stringify({ t: 'debug', msg: `[sidebar-boot] ${msg}` }))
+  } catch (_) {
+    /* ipc 未注入なら諦める */
+  }
+  console.info(`[sidebar-boot] ${msg}`)
+}
 
-// native WebView の context menu (Reload / Inspect / AutoFill) を抑制する。
-// sidebar の右クリックは独自 ContextMenu に一本化する (VP-204 PR-1)。
-document.addEventListener('contextmenu', (e) => e.preventDefault())
+try {
+  // IPC bridge は component mount より前に登録する。
+  // Rust は webview build 直後から window.renderSidebarState を呼びうるため。
+  installIpcBridge()
+  // Sidebar 専用ショートカット (Cmd+F → File Explorer overlay) を登録。
+  installSidebarKeybindings()
 
-// shell layout CSS を注入 (creoui token は SIDEBAR_HTML_V2 が inline 済)。
-const style = document.createElement('style')
-style.textContent = SHELL_CSS
-document.head.appendChild(style)
+  // native WebView の context menu (Reload / Inspect / AutoFill) を抑制する。
+  // sidebar の右クリックは独自 ContextMenu に一本化する (VP-204 PR-1)。
+  document.addEventListener('contextmenu', (e) => e.preventDefault())
 
-const root = document.getElementById('sidebar-root')
-if (root) {
-  render(() => <Shell />, root)
-} else {
-  console.error('[vp-sidebar] #sidebar-root が見つかりません — Shell mount をスキップ')
+  // shell layout CSS を注入 (creoui token は SIDEBAR_HTML_V2 が inline 済)。
+  const style = document.createElement('style')
+  style.textContent = SHELL_CSS
+  document.head.appendChild(style)
+
+  const root = document.getElementById('sidebar-root')
+  if (root) {
+    render(() => <Shell />, root)
+  } else {
+    bootLog('#sidebar-root が見つかりません — Shell mount をスキップ')
+  }
+} catch (e) {
+  bootLog(`BOOT FAILED: ${(e as Error).name}: ${(e as Error).message}\n${(e as Error).stack ?? ''}`)
+  throw e
 }
