@@ -1,12 +1,13 @@
 /**
- * Frame Engine の Scene 切替 keybinding + VP shortcut directive bridge (main view 側)。
+ * Frame Engine の Scene 切替 keybinding (main view 側)。
  *
- * 2 つの責務:
- * 1. **Scene hotkey** — VP-140 / PR-ε-1: Ctrl+Shift+1..4 / Ctrl+Shift+] / [ で Frame Engine の
- *    Scene 切替 (`attachKeybindings`)
- * 2. **VP shortcut directive bridge** — 規約 v0.3: `Cmd hold + <key>` を捕捉して
- *    `directive:fire` IPC で Rust に投げる (`installMainViewDirectiveBridge`)。 main view からは
- *    sidebar の `window.vpFilePicker` に直接 access できないため Rust 経由で sidebar に inject。
+ * **Scene hotkey** — VP-140 / PR-ε-1: Ctrl+Shift+1..4 / Ctrl+Shift+] / [ で Frame Engine の
+ * Scene 切替 (`attachKeybindings`)。
+ *
+ * WebView 統合 (step 3a) 後: 旧 `installMainViewDirectiveBridge` (`Cmd hold + key` を `directive:fire`
+ * IPC で Rust に往復させた main-view 専用 bridge) は撤去。統合 DOM では sidebar の in-process directive
+ * dispatcher (`src/sidebar/actions/registry.ts`) が同一 window の keydown を直接捕捉して全 directive を
+ * 処理するため、Rust 往復は不要 (残すと二重発火)。
  *
  * 修飾子の選択 (Scene hotkey、 案 B、 cross-platform 一貫):
  * - macOS は **Cmd+Shift+3/4** を screenshot に予約しており、 system level で先 hook される
@@ -20,7 +21,6 @@
  */
 
 import type { FrameEngine, SceneId } from './frame-engine';
-import { installDirectiveHandler } from './src/shortcuts/chord';
 
 /**
  * Ctrl+Shift+N → Scene id mapping。
@@ -77,34 +77,3 @@ export function attachKeybindings(
   };
 }
 
-interface WryIpc {
-  postMessage(msg: string): void;
-}
-
-declare global {
-  interface Window {
-    ipc?: WryIpc;
-  }
-}
-
-/**
- * Main view 側 directive dispatcher (= VP 規約 v0.3 directive、 main view 側 bridge)。
- *
- * `Cmd hold + <key>` keydown を捕捉して、 IPC (`directive:fire`) で Rust に投げる。
- * Rust 側 (`app.rs` の `AppEvent::DirectiveFire` arm) が key ごとに dispatch して
- * `sidebar.evaluate_script` で sidebar API (`window.vpFilePicker.open` 等) を inject する。
- *
- * 戻り値: uninstall 関数。
- */
-export function installMainViewDirectiveBridge(): () => void {
-  return installDirectiveHandler({
-    exec: (key) => {
-      const ipc = window.ipc;
-      if (!ipc) {
-        console.warn('[directive bridge] window.ipc 未注入 — 破棄:', key);
-        return;
-      }
-      ipc.postMessage(JSON.stringify({ t: 'directive:fire', key }));
-    },
-  });
-}

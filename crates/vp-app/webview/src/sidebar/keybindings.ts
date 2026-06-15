@@ -2,11 +2,11 @@
  * Sidebar WebView の directive installer（= VP 規約 v0.3+ directive dispatcher、 sidebar 側）。
  *
  * GPUI 借用 #2 の decouple 後: **処理本体は `actions/handlers.ts`、 dispatch の SSOT は
- * `actions/registry.ts`** に移設済。 本 file は **thin installer** — keydown 捕捉を registry の
- * `Action.run` に繋ぎ、 main view bridge（`window.vpSidebar.fireDirective`）を公開するだけ。
+ * `actions/registry.ts`** に移設済。 本 file は **thin installer** — keydown (chord) 捕捉を
+ * registry の `Action.run` に繋ぐだけ。
  *
- * sidebar 内発火（chord）も main view bridge 発火（app.rs `DirectiveFire`）も、 同じ
- * `dispatchDirective` → `actionByKey(key).run()` を通って挙動を一元化する。
+ * WebView 統合 (step 3a) 後: 統合 DOM では sidebar が同一 window の keydown を直接捕捉するため、
+ * 旧 main view bridge（`window.vpSidebar.fireDirective` / app.rs `DirectiveFire` 往復）は撤去した。
  */
 import { installDirectiveHandler } from "../shortcuts/chord";
 import { actionByKey } from "./actions/registry";
@@ -25,20 +25,8 @@ export {
 	laneSelectHintVisible,
 };
 
-declare global {
-	interface Window {
-		/**
-		 * main view bridge 経由で sidebar 内 directive を発火する公開 API。
-		 * `app.rs` の `AppEvent::DirectiveFire` arm が `sidebar.evaluate_script` で呼ぶ。
-		 */
-		vpSidebar?: {
-			fireDirective(key: string): void;
-		};
-	}
-}
-
 /**
- * key → registry の `Action.run`。 keyboard（chord）と main view bridge 共通の dispatch entry。
+ * key → registry の `Action.run`。 keyboard（chord）からの dispatch entry。
  * 旧 if-chain は actions/handlers.ts へ decouple 済（registry が key→処理 の SSOT）。
  */
 export function dispatchDirective(key: string): void {
@@ -52,10 +40,4 @@ export function dispatchDirective(key: string): void {
 
 export function installSidebarKeybindings(): void {
 	installDirectiveHandler({ exec: dispatchDirective });
-	// main view bridge から呼ばれる経路: app.rs `AppEvent::DirectiveFire` arm が
-	// `sidebar.evaluate_script("window.vpSidebar.fireDirective('<key>')")` を発火。
-	// sidebar 内発火と同じ `dispatchDirective` を通すことで挙動を一元化する。
-	window.vpSidebar = {
-		fireDirective: dispatchDirective,
-	};
 }

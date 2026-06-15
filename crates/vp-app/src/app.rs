@@ -48,8 +48,8 @@ use crate::settings::Settings;
 use crate::terminal::{self, AppEvent};
 
 /// Sidebar の固定幅 (LogicalPixel)。
-/// WebView 統合 (step 3a) 後は HTML 側 CSS (#sidebar-root width:280px) が司るため Rust 側は未使用。
-/// SIDEBAR_HTML/ASSETS は test で参照。 const 群の撤去は PR-2 (web_assets.rs 削除と合わせて)。
+/// WebView 統合 (step 3a) 後は HTML 側 CSS (#sidebar-root width:280px) が司るため Rust 側は未使用
+/// (MIN_WINDOW_WIDTH 算出の参照値として comment でのみ言及)。
 #[allow(dead_code)]
 const SIDEBAR_WIDTH: f64 = 280.0;
 
@@ -94,50 +94,6 @@ fn initial_developer_mode(settings: &Settings) -> bool {
 /// vp-app の 3 ペインすべてに inline して共通 token で描画する。
 pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 
-/// 柱 2: SolidJS + creoui で構築した sidebar の JS bundle。
-/// `crates/vp-app/webview/` で `bun run build` → `assets/sidebar.bundle.js` 生成。
-/// `SIDEBAR_HTML` 内の `<script src="vp-asset://app/sidebar.bundle.js">` で load される。
-/// WebView 統合 (step 3a) 後は main_area.rs が同 bundle を inline。const 撤去は PR-2。
-#[allow(dead_code)]
-const SIDEBAR_BUNDLE: &[u8] = include_bytes!("../assets/sidebar.bundle.js");
-
-/// sidebar (SolidJS) を mount する最小 HTML shell。
-/// 描画ロジックは持たず `sidebar.bundle.js` に全て委ねる。creoui token
-/// (`var(--color-*)`) 解決のため `creo-tokens.css` のみ inline する。
-/// WebView 統合 (step 3a) 後は未使用 (test のみ参照)。const 撤去は PR-2。
-#[allow(dead_code)]
-const SIDEBAR_HTML: &str = concat!(
-    r#"<!doctype html>
-<html lang="ja" data-theme="contrast-dark">
-<head><meta charset="utf-8"><style>"#,
-    include_str!("../assets/creo-tokens.css"),
-    r#"</style><style>"#,
-    include_str!("../assets/vp-tokens.css"),
-    r#"</style><style>body{font-family:var(--vp-font-sans),var(--typography-family-sans);}</style></head>
-<body>
-<div id="sidebar-root"></div>
-<script src="vp-asset://app/sidebar.bundle.js"></script>
-</body>
-</html>"#,
-);
-
-/// sidebar webview の custom protocol closure に渡す asset 群。
-/// `app/sidebar.html` (shell HTML) と `app/sidebar.bundle.js` (SolidJS bundle)。
-/// WebView 統合 (step 3a) 後は custom protocol 撤去で未使用 (test のみ参照)。撤去は PR-2 (web_assets.rs と)。
-#[allow(dead_code)]
-const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[
-    (
-        "app/sidebar.html",
-        SIDEBAR_HTML.as_bytes(),
-        "text/html; charset=utf-8",
-    ),
-    (
-        "app/sidebar.bundle.js",
-        SIDEBAR_BUNDLE,
-        "application/javascript; charset=utf-8",
-    ),
-];
-
 /// WebView 統合 (step 3a) 後の唯一の webview が `vp-asset://` で配信する asset。
 /// `MAIN_AREA_HTML` (sidebar bundle + editor-host bundle を inline 済) を `app/index.html` で配信。
 ///
@@ -181,7 +137,6 @@ fn is_main_ipc_tag(body: &str) -> bool {
             "in" | "resize"
                 | "ready"
                 | "lanes:ensure-all"
-                | "directive:fire"
                 | "copy"
                 | "paste:request"
                 | "debug"
@@ -1207,77 +1162,6 @@ fn lookup_lane_cwd(
         .map(|l| std::path::PathBuf::from(&l.cwd))
 }
 
-/// `w` directive (= 規約 v0.4 §C.2 "TheWorld status to PP") 用の markdown formatter。
-/// TheWorld client `list_projects()` で取得した process 一覧を Canvas (PP) で見やすい
-/// table に整形する。 docs/design/18-shortcut-convention.md `w` directive 参照。
-/// `?` directive (= 規約 v0.6 §C.2 "meta cheatsheet") 用の markdown 静的生成。
-/// 全 directive 一覧 + 不採用 / 予約 / Avoid list を Canvas (PP) に table で表示する。
-///
-/// SSOT は `docs/design/18-shortcut-convention.md`。 内容変更時はこの helper と doc を
-/// **同期して update** する (= 規約 doc が dirty にならないよう、 重要な追加は doc 先)。
-fn build_directive_cheatsheet() -> String {
-    let mut md = String::from("# 🎹 VP Directive Cheatsheet\n\n");
-    md.push_str("規約 v0.6 — directive 集合 + `Cmd hold + <key>` (single-key chord)\n\n");
-    md.push_str("## 確定 directive\n\n");
-    md.push_str("| key | binding | semantic | 動作 |\n|---|---|---|---|\n");
-    md.push_str("| `f` | ⌘ hold f | focus-transferring | File Explorer overlay open |\n");
-    md.push_str("| `p` | ⌘ hold p | panel-local | picker visible → selected file を Canvas へ |\n");
-    md.push_str("| `e` | ⌘ hold e | focus-transferring | Echoes (cc 入力欄) に focus |\n");
-    md.push_str("| `g` | ⌘ hold g | focus-transferring | Gold Experience output に focus |\n");
-    md.push_str("| `h` | ⌘ hold h | focus-transferring | Hermit Purple に focus |\n");
-    md.push_str("| `w` | ⌘ hold w | focus-preserving | TheWorld status を PP に markdown 表示 |\n");
-    md.push_str(
-        "| `r` | ⌘ hold r | focus-preserving (polymorphic) | lane / process restart の context dispatch |\n",
-    );
-    md.push_str(
-        "| `n` | ⌘ hold n | focus-transferring | active project の AddPerformer form を keyboard で open |\n",
-    );
-    md.push_str(
-        "| `s` | ⌘ hold s | focus-transferring | Lane / project switcher picker overlay |\n",
-    );
-    md.push_str(
-        "| `d` | ⌘ hold d | focus-preserving (polymorphic) | 2-click confirm delete (lane/project) |\n",
-    );
-    md.push_str(
-        "| `l` | ⌘ hold l | focus-transferring (mode) | lane number switcher mode: 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で切替 |\n",
-    );
-    md.push_str(
-        "| `i` | ⌘ hold i | focus-preserving (meta) | この cheatsheet を Canvas に表示 (info) |\n\n",
-    );
-    md.push_str("## 不採用 directive (規約 v0.4 invariant 宣言)\n\n");
-    md.push_str("- `c` (clear): 1 押し misfire リスクが高い、 UI button 経由のみ\n\n");
-    md.push_str("## 予約 directive (実装は別 PR)\n\n");
-    md.push_str("- `t` (rename) / `m` (mailbox) / `a` (activate) / `o` (open)\n\n");
-    md.push_str("## Avoid list (= 衝突回避)\n\n");
-    md.push_str("- `Cmd+Shift+3/4/5` (macOS screenshot)、 `Cmd+Space` (Spotlight)、 `Cmd+Tab` (app switcher)\n");
-    md.push_str("- `Ctrl + letter` 単独 (readline / tmux)、 `Opt + letter` (terminal で特殊文字 e.g. π)\n\n");
-    md.push_str("詳細: `docs/design/18-shortcut-convention.md`\n");
-    md
-}
-
-fn format_theworld_status(processes: &[crate::client::ProjectInfo]) -> String {
-    let mut md = String::from("# 🌍 TheWorld Status\n\n");
-    md.push_str("**Daemon**: running (port 32000)\n\n");
-    md.push_str(&format!("## Processes ({} total)\n\n", processes.len()));
-    if processes.is_empty() {
-        md.push_str("_(no processes registered)_\n");
-        return md;
-    }
-    md.push_str("| name | state | port | path |\n|---|---|---|---|\n");
-    for p in processes {
-        md.push_str(&format!(
-            "| {} | {} | {} | `{}` |\n",
-            p.name,
-            p.state.as_str(),
-            p.port
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            p.path,
-        ));
-    }
-    md
-}
-
 // R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
 //   旧 `lane_address_key(&LaneAddressWire) -> String` 関数は `lane.rs::LaneAddressWire::key()`
 //   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
@@ -1328,7 +1212,6 @@ pub fn run() -> anyhow::Result<()> {
     }
     let dev_mode_item = menu_handles.developer_mode_item;
     let open_devtools_item = menu_handles.open_devtools_item;
-    let open_sidebar_devtools_item = menu_handles.open_sidebar_devtools_item;
     let menu_ids = menu_handles.ids;
     let _tray = match crate::tray::build_tray() {
         Ok(t) => Some(t),
@@ -2356,153 +2239,6 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("sidebar vpFiles.handleListResult 失敗: {}", e);
                 }
             }
-            // VP 規約 v0.3 directive (main view 側 bridge)。 main view で `Cmd hold + key` 発火
-            // → `directive:fire` IPC が Rust に届く → ここで key ごとに sidebar API を inject。
-            // `f` = File Explorer overlay を open (active lane が無ければ skip)、
-            // `p` = picker visible 中の selected file を Canvas に投擲。
-            // 詳細は docs/design/18-shortcut-convention.md Layer D 参照。
-            Event::UserEvent(AppEvent::DirectiveFire { key }) => match key.as_str() {
-                "f" => match sidebar_state.active_lane_address.as_deref() {
-                    Some(addr) => {
-                        let addr_json =
-                            serde_json::to_string(addr).unwrap_or_else(|_| "\"\"".into());
-                        let script = format!(
-                            "window.vpFilePicker && window.vpFilePicker.open({})",
-                            addr_json
-                        );
-                        if let Err(e) = webview.evaluate_script(&script) {
-                            tracing::warn!("directive f: sidebar inject 失敗: {}", e);
-                        } else {
-                            tracing::info!("directive f: picker open for {}", addr);
-                        }
-                    }
-                    None => {
-                        tracing::warn!("directive f: active lane なし、 skip");
-                    }
-                },
-                "p" => {
-                    if let Err(e) = webview.evaluate_script(
-                        "window.vpFilePicker && window.vpFilePicker.sendSelectedToPP && window.vpFilePicker.sendSelectedToPP()"
-                    ) {
-                        tracing::warn!("directive p: sidebar inject 失敗: {}", e);
-                    } else {
-                        tracing::info!("directive p: send selected to PP");
-                    }
-                }
-                // PR #444: `e` / `g` / `h`: Stand focus 系 (focus-transferring)。 main view 内の
-                // frame engine に `<paneId>-focus` Scene 切替を発火させる。 Scene id は entry.tsx の
-                // `generateAllFocusScenes(FOCUSABLE_PANE_IDS)` で `echoes-focus` / `ge-focus` /
-                // `hp-focus` 等が生成されている前提。
-                "e" => {
-                    if let Err(err) = webview.evaluate_script(
-                        "window.vpFrame && window.vpFrame.applyScene('echoes-focus')",
-                    ) {
-                        tracing::warn!("directive e: main_view inject 失敗: {}", err);
-                    } else {
-                        tracing::info!("directive e: focus to Echoes");
-                    }
-                }
-                "g" => {
-                    if let Err(err) = webview.evaluate_script(
-                        "window.vpFrame && window.vpFrame.applyScene('ge-focus')",
-                    ) {
-                        tracing::warn!("directive g: main_view inject 失敗: {}", err);
-                    } else {
-                        tracing::info!("directive g: focus to Gold Experience");
-                    }
-                }
-                "h" => {
-                    if let Err(err) = webview.evaluate_script(
-                        "window.vpFrame && window.vpFrame.applyScene('hp-focus')",
-                    ) {
-                        tracing::warn!("directive h: main_view inject 失敗: {}", err);
-                    } else {
-                        tracing::info!("directive h: focus to Hermit Purple");
-                    }
-                }
-                // `w` (TheWorld status): focus-preserving。 TheWorld client から projects 一覧を
-                // blocking fetch → markdown を整形 → AppEvent::DirectiveInject で main thread に
-                // 戻して main_view の PP body に inject。 focus は元の panel に残る。
-                "w" => {
-                    let proxy = async_action_proxy.clone();
-                    rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(32000);
-                        let body = match client.list_projects().await {
-                            Ok(processes) => format_theworld_status(&processes),
-                            Err(e) => format!(
-                                "# 🌍 TheWorld Status\n\n**Error**: failed to fetch — {e}"
-                            ),
-                        };
-                        let content = serde_json::json!({ "markdown": body });
-                        let _ = proxy.send_event(AppEvent::DirectiveInject { content });
-                    });
-                }
-                // PR 445: `r` / `n` / `d` は sidebar 側 dispatcher が context (active_lane / active_stand)
-                // を判定して sendIpc / 内部関数呼び出しを行う。 Rust 側は trigger を sidebar に渡すだけ。
-                // sidebar 内発火と同じ `dispatchDirective` を経由する (= window.vpSidebar.fireDirective)。
-                "r" | "n" | "d" => {
-                    let script = format!(
-                        "window.vpSidebar && window.vpSidebar.fireDirective && window.vpSidebar.fireDirective('{}')",
-                        key
-                    );
-                    if let Err(e) = webview.evaluate_script(&script) {
-                        tracing::warn!("directive {}: sidebar inject 失敗: {}", key, e);
-                    } else {
-                        tracing::info!("directive {}: forwarded to sidebar dispatcher", key);
-                    }
-                }
-                // PR 445: `s` (Lane / project switcher picker) は LanePicker.tsx の overlay を open。
-                "s" => {
-                    if let Err(e) = webview.evaluate_script(
-                        "window.vpLanePicker && window.vpLanePicker.open && window.vpLanePicker.open()",
-                    ) {
-                        tracing::warn!("directive s: sidebar inject 失敗: {}", e);
-                    } else {
-                        tracing::info!("directive s: lane picker opened");
-                    }
-                }
-                // PR 447 → PR 454: `i` (info / cheatsheet) は markdown を build →
-                // AppEvent::DirectiveInject で main_view の PP body に inject。
-                // focus-preserving (= 元の panel focus は keep)。
-                //
-                // v0.6 では `?` (= `Cmd+Shift+/`) に bind していたが、 macOS の AppKit が
-                // `Cmd+?` を OS-level で「Help menu search」 用に予約しており keydown が
-                // webview に届かない issue を dogfood で確認。 `i` に rebind した (v0.7)。
-                "i" => {
-                    let content =
-                        serde_json::json!({ "markdown": build_directive_cheatsheet() });
-                    let _ = async_action_proxy
-                        .send_event(AppEvent::DirectiveInject { content });
-                    tracing::info!("directive i: cheatsheet inject to PP");
-                }
-                other => {
-                    tracing::debug!("directive: 未実装 key = {}", other);
-                }
-            },
-            // VP shortcut directive 由来の Canvas inject。 `w` directive (TheWorld status) 等の
-            // blocking I/O 結果を main_view の PP body に投げ込む。 FilesOpenResult と同じ
-            // `vpCanvas.handleMessage({type:'show',content:...})` shape で送る。
-            Event::UserEvent(AppEvent::DirectiveInject { content }) => {
-                // doc 19 PP Canvas Stack Model: append field は omit (= stack push に
-                // 統一)。 pane_id は dead field だが backward compat で keep。
-                let msg = serde_json::json!({
-                    "type": "show",
-                    "pane_id": "main",
-                    "content": content,
-                });
-                let msg_str =
-                    serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());
-                let script = format!(
-                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
-                    msg_str
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!(
-                        "main_view vpCanvas.handleMessage (directive inject) 失敗: {}",
-                        e
-                    );
-                }
-            }
             // Sidebar File Explorer: file 読み込み結果を Canvas (PP) に inject。
             // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
             // 再現するため、 `ProcessMessage::Show` 相当の JSON を main_view にそのまま渡す。
@@ -3081,7 +2817,6 @@ pub fn run() -> anyhow::Result<()> {
                     dev_mode = !dev_mode;
                     dev_mode_item.set_checked(dev_mode);
                     open_devtools_item.set_enabled(dev_mode);
-                    open_sidebar_devtools_item.set_enabled(dev_mode);
                     settings.developer_mode = Some(dev_mode);
                     if let Err(e) = settings.save() {
                         tracing::warn!("Settings 保存失敗: {}", e);
@@ -3102,18 +2837,9 @@ pub fn run() -> anyhow::Result<()> {
                 } else if id == menu_ids.open_devtools {
                     if dev_mode {
                         webview.open_devtools();
-                        tracing::info!("DevTools open (main_view)");
+                        tracing::info!("DevTools open");
                     } else {
                         tracing::warn!("Open DevTools clicked but dev_mode=false (gated)");
-                    }
-                } else if id == menu_ids.open_sidebar_devtools {
-                    if dev_mode {
-                        webview.open_devtools();
-                        tracing::info!("DevTools open (sidebar)");
-                    } else {
-                        tracing::warn!(
-                            "Open Sidebar DevTools clicked but dev_mode=false (gated)"
-                        );
                     }
                 } else {
                     tracing::debug!("MenuClicked: 未処理の id = {:?}", id);
@@ -3226,37 +2952,31 @@ mod port_merge_tests {
 }
 
 #[cfg(test)]
-mod sidebar_asset_tests {
-    //! sidebar の shell HTML + JS bundle が vp-asset:// で配信できることの検証。
+mod main_view_asset_tests {
+    //! 統合 WebView (step 3a) の単一 HTML が vp-asset:// で配信でき、sidebar を inline mount すること。
     //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
     use super::*;
 
-    /// `SIDEBAR_ASSETS` で sidebar.html / sidebar.bundle.js が
-    /// `web_assets::lookup_asset` 経由で取れる。
+    /// `MAIN_VIEW_ASSETS` で統合 HTML が `vp-asset://app/index.html` から取れる。
     #[test]
-    fn sidebar_assets_servable_via_vp_asset() {
-        let html = crate::web_assets::lookup_asset("vp-asset://app/sidebar.html", SIDEBAR_ASSETS);
-        assert!(html.is_some(), "sidebar.html not lookupable");
+    fn main_view_html_servable_via_vp_asset() {
+        let html = crate::web_assets::lookup_asset("vp-asset://app/index.html", MAIN_VIEW_ASSETS);
+        assert!(html.is_some(), "index.html not lookupable");
         let (bytes, ct) = html.unwrap();
         assert_eq!(ct, "text/html; charset=utf-8");
-        assert_eq!(bytes, SIDEBAR_HTML.as_bytes());
-
-        let js =
-            crate::web_assets::lookup_asset("vp-asset://app/sidebar.bundle.js", SIDEBAR_ASSETS);
-        assert!(js.is_some(), "sidebar.bundle.js not lookupable");
-        assert_eq!(js.unwrap().1, "application/javascript; charset=utf-8");
+        assert_eq!(bytes, MAIN_AREA_HTML.as_bytes());
     }
 
-    /// shell HTML が SolidJS bundle を mount する骨格を持つ。
+    /// 統合 HTML が sidebar mount point を持ち、sidebar bundle を inline している。
     #[test]
-    fn sidebar_html_mounts_bundle() {
+    fn main_area_html_inlines_sidebar() {
         assert!(
-            SIDEBAR_HTML.contains(r#"<div id="sidebar-root">"#),
-            "shell に #sidebar-root mount point がない"
+            MAIN_AREA_HTML.contains(r#"id="sidebar-root""#),
+            "統合 HTML に #sidebar-root mount point がない"
         );
         assert!(
-            SIDEBAR_HTML.contains("vp-asset://app/sidebar.bundle.js"),
-            "shell が sidebar.bundle.js を load していない"
+            MAIN_AREA_HTML.contains("[vp-sidebar] booting"),
+            "統合 HTML が sidebar bundle を inline していない (boot marker 不在)"
         );
     }
 }

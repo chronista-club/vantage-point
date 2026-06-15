@@ -1,14 +1,15 @@
 //! vp-app webview の `vp-asset://` custom protocol で静的 asset を配信する汎用モジュール。
 //!
-//! 各 webview が自分の HTML / JS bundle を `serve()` の `extra` slice に積んで配信する
-//! (例: `app.rs` の `SIDEBAR_ASSETS` = sidebar.html + sidebar.bundle.js)。
+//! webview が自分の HTML を `serve()` の `extra` slice に積んで配信する
+//! (現行は `app.rs` の `MAIN_VIEW_ASSETS` = 統合 HTML `app/index.html` の 1 entry のみ。
+//! JS bundle は `MAIN_AREA_HTML` 内に inline 済なので個別配信しない)。
 //!
 //! ## 履歴 (2026-05-30 縮小)
 //!
 //! 旧称は「font 集約モジュール」。 PlemolJP Console NF (`VPMono` / `VPMono35`、 32 variant、 ~248MB) を
 //! `include_bytes!` で bundle + JS の `FontFace` loader (`NERD_FONT_LOADER_JS`) で動的登録していた。
-//! しかし SolidJS sidebar 化 (VP-208、 旧 `SIDEBAR_HTML` 撤去) で loader の consumer が消滅し、
-//! bundle font は **未登録の orphan** に (現行 `SIDEBAR_HTML` / `MAIN_AREA_HTML` は `creo-tokens.css` /
+//! しかし SolidJS sidebar 化 (VP-208) で loader の consumer が消滅し、
+//! bundle font は **未登録の orphan** に (現行 `MAIN_AREA_HTML` は `creo-tokens.css` /
 //! `vp-tokens.css` を inline するだけで `@font-face` / `FontFace` を持たない)。 font の SSOT は
 //! その 2 つの token file の **system-reference family** (Nerd Font chain + Mizolet/みぞれ) に移行済み。
 //! よって bundle font 一式 + nerd-font loader (`nerd-font.css` / `nerd-font-loader.js`) を撤去し、
@@ -36,12 +37,11 @@ pub fn lookup_asset(
 ///
 /// 例:
 /// ```ignore
-/// const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[
-///     ("app/sidebar.html", SIDEBAR_HTML.as_bytes(), "text/html; charset=utf-8"),
-///     ("app/sidebar.bundle.js", SIDEBAR_BUNDLE, "application/javascript; charset=utf-8"),
+/// const MAIN_VIEW_ASSETS: &[(&str, &[u8], &str)] = &[
+///     ("app/index.html", MAIN_AREA_HTML.as_bytes(), "text/html; charset=utf-8"),
 /// ];
 /// builder.with_custom_protocol("vp-asset".to_string(), |id, req| {
-///     web_assets::serve(id, req, SIDEBAR_ASSETS)
+///     web_assets::serve(id, req, MAIN_VIEW_ASSETS)
 /// })
 /// ```
 pub fn serve(
@@ -55,6 +55,12 @@ pub fn serve(
     // 焼き込み (include_bytes!) を bypass するので、 `bun run dev` (esbuild watch) で
     // bundle を更新 → WebView reload するだけで反映され、 cargo build が不要になる。
     // miss / read 失敗時は下の baked asset に fallback (= prod と同じ挙動)。
+    //
+    // ⚠️ 制約 (WebView 統合 step 3a 以降): 現行 `MAIN_AREA_HTML` は editor-host / sidebar の両 bundle を
+    // include_str! で **inline** しているため、browser は `*.bundle.js` URL を request せず、この
+    // disk-read path は発火しない。よって inline bundle の HMR は効かず、webview TS 変更は
+    // `bun run build` + cargo 再ビルドが要る。bundle を外部 `<script src>` 化するか index.html を
+    // runtime 構築する形に戻せば復活できる (将来検討)。
     if let Ok(dir) = std::env::var("VP_WEBVIEW_DEV")
         && let Some(path) = uri.split("://").nth(1)
         && path.ends_with(".bundle.js")

@@ -3,16 +3,19 @@
 // SolidJS の JSX は通常の jsx-automatic では不十分なため、esbuild-plugin-solid を
 // 使って Babel SolidJS plugin 経由で compile する。
 //
-// 2 entry / 2 output (v1.0 柱 2 PR-1 で sidebar bundle を追加):
-//   entry.tsx   → ../assets/editor-host.bundle.js  (main WebView)
-//   sidebar.tsx → ../assets/sidebar.bundle.js      (sidebar WebView)
+// 2 entry / 2 output:
+//   entry.tsx   → ../assets/editor-host.bundle.js
+//   sidebar.tsx → ../assets/sidebar.bundle.js
+//
+// WebView 統合 (step 3a) 以降は 2 WebView ではなく **単一 WebView**。両 bundle とも
+// `main_area.rs` の `MAIN_AREA_HTML` に include_str! で **inline** されて 1 document で動く。
 //
 // mode:
 //   (default)  prod build: minify + 2 bundle を 1 回ずつ build して exit。
 //   --dev      no-minify + inline sourcemap で 1 回 build。
-//   --watch    no-minify + inline sourcemap + esbuild context.watch() で常駐。
-//              保存毎に ~0.5s rebuild。 `VP_WEBVIEW_DEV=<assets dir>` の vp-app と
-//              組で frontend HMR ループ (cargo build 不要)。
+//   --watch    no-minify + inline sourcemap + esbuild context.watch() で常駐。保存毎に ~0.5s rebuild。
+//              ⚠️ 注: bundle が inline 化されたため `VP_WEBVIEW_DEV` の *.bundle.js disk-read HMR は
+//              現状 効かない (web_assets.rs 参照)。webview TS 変更は build + cargo 再ビルドが要る。
 
 import { build, context } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'
