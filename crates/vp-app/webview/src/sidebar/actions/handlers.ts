@@ -310,12 +310,3 @@ export function runSwitcher(): void {
 export function runLaneSelectMode(): void {
 	enterLaneSelectMode();
 }
-
-/**
- * `e` / `g` / `h` / `w` / `i` — main view 側 directive（Scene 切替 / PP 表示）。
- * sidebar からは未処理（main view の directive handler → IPC → Rust 経由で処理）。
- * ⌘K palette からこれらを発火する main-view bridge は #2 follow-up。
- */
-export function runMainViewDirective(key: string): void {
-	console.debug("[directive] sidebar 側で未処理（main view directive）:", key);
-}
