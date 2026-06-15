@@ -205,7 +205,7 @@ user 概念 (前 turn で提示):
 | `Cmd+N` | New Window (muda menu) | **既存 keep** — `n` は directive 予約 (§C.3) と棲み分け: menu accelerator は `Cmd+N` 単発、 directive は `Cmd hold n` (= 結果として同 keydown event だが、 dispatch 順は menu accelerator が先) |
 | `Cmd+W` / `Cmd+Q` | Close Window / Quit (predefined) | **既存 keep** (system) |
 | `Cmd+C/V/X/Z/A` 等 | Edit menu predefined | **既存 keep** (system) |
-| `Ctrl+Shift+1..4` | Scene 切替 (`webview/keybindings.ts`) | **既存 keep** (layout) — v0.8 以降は **Stand focus の SSOT** (旧 `e/g/h` directive を吸収。 Scene = lead-focus / side-review / pp-overlay / pp-focus) |
+| `Ctrl+Shift+1..4` | Scene 切替 (`webview/keybindings.ts` の `attachKeybindings`) | **既存 keep** (layout) — v0.8 以降は **Stand focus の SSOT** (旧 `e/g/h` directive を吸収。 Scene = lead-focus / side-review / pp-overlay / pp-focus)。 ⚠️ directive installer の `webview/src/sidebar/keybindings.ts` (= `installSidebarKeybindings`) とは**別ファイル**。 Scene hotkey は前者 (main-view top-level)、 ⌘ hold directive の sidebar 配線は後者。 判定軸も別: Scene は `event.code` (物理キー位置、 Shift で `1→!` 化を回避)、 directive は `event.key.toLowerCase()` |
 | `Ctrl+Shift+] / [` | Scene cyclic | **既存 keep** (layout) |
 | **`Ctrl+Shift+C`** (`main_area.rs:1303-1319`) | active lane の selection copy (global fallback listener) | **既存 keep** — v0.4 で明示化 (= undocumented gap 解消)。 lane individual handler が捕り逃した場合の system-level clipboard copy fallback、 規約 system カテゴリに属する |
 | `Ctrl+Insert` / `Shift+Insert` (xterm.js) | terminal context での copy / paste | **既存 keep** (system) — terminal は xterm.js native handler で上書き、 詳細は §D.6 |
