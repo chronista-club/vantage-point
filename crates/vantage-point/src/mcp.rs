@@ -406,6 +406,8 @@ pub(crate) struct CanvasPane {
     pub content_type: String,
     pub content: String,
     pub title: Option<String>,
+    /// Show の append フラグ。 true = 同一 pane_id の既存内容に追記 (canvas_state と同義)。
+    pub append: bool,
 }
 
 /// "canvas" channel の retained Show payload (ProcessMessage::Show JSON) を CanvasPane に
@@ -413,6 +415,7 @@ pub(crate) struct CanvasPane {
 ///
 /// Show 以外 (clear / toggle 等) や形不正は None。 Content は外部タグ enum なので
 /// `content` object の唯一の key が content_type (markdown/html/log/url)、 値が本文。
+/// `image_base64` variant は値が object のため `content` は空文字になる (PP Canvas は現状未使用)。
 pub(crate) fn parse_show_payload(v: &serde_json::Value) -> Option<CanvasPane> {
     if v.get("type")?.as_str()? != "show" {
         return None;
@@ -425,11 +428,14 @@ pub(crate) fn parse_show_payload(v: &serde_json::Value) -> Option<CanvasPane> {
         .get("title")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string());
+    // append 不在は false 扱い (= 上書き、 show tool の既定)。
+    let append = v.get("append").and_then(|a| a.as_bool()).unwrap_or(false);
     Some(CanvasPane {
         pane_id,
         content_type: content_type.clone(),
         content,
         title,
+        append,
     })
 }
 
@@ -467,6 +473,23 @@ mod canvas_read_tests {
             parse_show_payload(&serde_json::json!({"type":"clear","pane_id":"main"})).is_none()
         );
         assert!(parse_show_payload(&serde_json::json!({"foo": 1})).is_none());
+    }
+
+    #[test]
+    fn parse_reads_append_flag() {
+        let base = serde_json::json!({
+            "type": "show", "pane_id": "main", "content": {"markdown": "a"}, "append": false
+        });
+        let app = serde_json::json!({
+            "type": "show", "pane_id": "main", "content": {"markdown": "b"}, "append": true
+        });
+        assert!(!parse_show_payload(&base).unwrap().append);
+        assert!(parse_show_payload(&app).unwrap().append);
+        // append 不在は false 扱い
+        let no_field = serde_json::json!({
+            "type": "show", "pane_id": "x", "content": {"markdown": "c"}
+        });
+        assert!(!parse_show_payload(&no_field).unwrap().append);
     }
 }
 
@@ -2562,6 +2585,8 @@ impl VantageMcp {
             let ids: Vec<&str> = panes.iter().map(|p| p.pane_id.as_str()).collect();
             let hint = if params.pane_id.is_some() {
                 format!("pane_id が見つかりません。 現在の pane: {:?}", ids)
+            } else if panes.is_empty() {
+                "Canvas に表示中の pane はありません (retained snapshot が空)。".to_string()
             } else {
                 format!(
                     "pane が複数あります。 pane_id を指定してください: {:?}",
@@ -2607,7 +2632,8 @@ impl VantageMcp {
             .await
             .map_err(|e| McpError::internal_error(format!("open canvas channel: {}", e), None))?;
 
-        // pane_id ごとに最新を保持 (同一 pane_id の複数 Show は後勝ち)。
+        // pane_id ごとに最新を保持。 append:false は上書き、 append:true は既存内容に追記
+        // (canvas_state と同義)。 追記先が無ければ新規 (= 単独追記でも内容が残る)。
         let mut panes: std::collections::HashMap<String, CanvasPane> =
             std::collections::HashMap::new();
         loop {
@@ -2619,7 +2645,12 @@ impl VantageMcp {
                     if let Ok(v) = msg.payload_as_value()
                         && let Some(p) = parse_show_payload(&v)
                     {
-                        panes.insert(p.pane_id.clone(), p);
+                        match panes.get_mut(&p.pane_id) {
+                            Some(existing) if p.append => existing.content.push_str(&p.content),
+                            _ => {
+                                panes.insert(p.pane_id.clone(), p);
+                            }
+                        }
                     }
                 }
                 Ok(Err(_)) => break, // channel closed
