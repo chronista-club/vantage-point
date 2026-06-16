@@ -34,19 +34,16 @@ pub fn is_inside_tmux() -> bool {
 /// tmux セッション名のサフィックス
 const TMUX_SUFFIX: &str = "-vp";
 
-/// プロジェクト名から tmux セッション名を生成
-///
-/// tmux セッション名にドットは使えないのでハイフンに置換する。
-/// 形式: `{project}-vp`（プロジェクト名が先、タブ補完しやすい）
-pub fn session_name(project_name: &str) -> String {
-    let sanitized = project_name.replace('.', "-");
-    format!("{}{}", sanitized, TMUX_SUFFIX)
-}
-
-/// プロジェクト名 + オプショナル ID から tmux セッション名を生成
+/// プロジェクト名 + オプショナル ID から tmux セッション名を生成（旧 `vp hd` 経路専用）
 ///
 /// ID ありの場合: `{project}-{id}-vp`（例: `vantage-point-kaizen-vp`）
-/// ID なしの場合: `{project}-vp`（通常の session_name と同じ）
+/// ID なしの場合: `{project}-vp`
+///
+/// **注**: この `-vp` suffix スキームは旧 TUI 経路（`vp hd start|stop|attach|list`、
+/// `commands/hd.rs`）専用に残置している。 lane（conductor/performer）は別スキーム
+/// `vp-{project}-{lane}-{stand}`（`LaneAddress::tmux_session_name`）を使う。 両者は別 surface。
+/// `vp hd` 自体の retire は別 PR で検討（fix-tmux-session-naming で SP / discovery / restart 側の
+/// legacy `session_name()` 消費は撤去済）。
 pub fn session_name_with_id(project_name: &str, id: Option<&str>) -> String {
     let sanitized = project_name.replace('.', "-");
     match id {
@@ -208,17 +205,6 @@ fn exec_command(program: &str, _args: &[&str]) -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_session_name() {
-        assert_eq!(session_name("my-project"), "my-project-vp");
-        assert_eq!(session_name("vantage-point"), "vantage-point-vp");
-    }
-
-    #[test]
-    fn test_session_name_sanitizes_dots() {
-        assert_eq!(session_name("com.example.app"), "com-example-app-vp");
-    }
 
     #[test]
     fn test_session_name_with_id() {
