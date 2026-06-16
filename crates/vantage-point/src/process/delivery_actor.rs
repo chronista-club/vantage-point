@@ -3,17 +3,21 @@
 //! 未 ack の command category message を受信者の tmux session に nudge (チャネル C) する。
 //! TheWorld 上で store と同居 (in-process query、 決定 D1-c)。
 //!
-//! ## policy (degraded mode、 user 確定 2026-06-11)
+//! ## policy (R3-a 精密化 + R3-c channel D)
 //!
-//! Phase A の activity 供給 (idle/busy/waiting) 前は lane registry の粗い状態で代用する:
-//! - lane が Running → 即 nudge (busy でも send-keys は次の prompt 境界で処理される)
-//! - lane 不在 / Dead → pending 保持 (台帳は進めない。 Phase A 後にチャネル D で配信)
-//! - 再掲示: 前回 nudge から RENUDGE_AFTER 経過 && 未 ack → 再 nudge (MAX_NUDGES まで)
+//! CC activity poll (`agents --json`) を供給に、 受信者 lane の状態で配信経路を分ける:
+//! - lane Running + CC idle/waiting (or poll 不能の degraded) → 即 nudge (チャネル C)
+//! - lane Running + CC busy → 待つ (idle 遷移を次 pulse で拾う、 台帳は進めない)
+//! - **lane Running + CC session 不在 (Some(None)) → headless bg dispatch (チャネル D、 R3-c)**
+//!   前回 dispatch から BG_REDISPATCH_AFTER 経過 && 未 ack → 再 dispatch (MAX_BG_DISPATCHES まで)
+//! - lane 不在 / Dead → pending 保持 (チャネル D の対象外 = cwd/session_id の足場が無い)
+//! - 再掲示 (nudge): 前回 nudge から RENUDGE_AFTER 経過 && 未 ack → 再 nudge (MAX_NUDGES まで)
 //!
-//! ## nudge 台帳は in-memory
+//! ## 台帳は in-memory (nudge / bg dispatch を別管理)
 //!
-//! (message_id, agent) → (回数, 最終時刻)。 TheWorld 再起動でリセットされ最大
-//! MAX_NUDGES 回が再付与されるが、 ack されれば止まるため許容 (table 化は必要になってから)。
+//! どちらも (message_id, agent) → (回数, 最終時刻)。 ack 済 (pending から消えた) entry は
+//! 共通 GC で落とす。 TheWorld 再起動でリセットされ上限回が再付与されるが、 ack されれば
+//! 止まるため許容 (table 化は必要になってから)。
 //!
 //! ## チャネル C の送出は tmux 直 (directmsg と同方式)
 //!
@@ -478,6 +482,10 @@ async fn send_keys_to_session(session: &str, text: &str) -> anyhow::Result<()> {
 ///
 /// 配信を block しないよう、 子プロセスは別 tokio task が await して reap する
 /// (zombie 防止 + 終了 status を結果ログとして観測 = 簡易な結果収集)。
+///
+/// 注意 (TheWorld shutdown): in-flight の claude 子プロセスは runtime abort で孤立し得るが、
+/// その場合 wire_ack が届かず pending が残るため、 次回起動の pulse で再 dispatch される
+/// (idempotent に収束)。 重複処理は wire_ack の冪等性で吸収される。
 fn spawn_bg_dispatch(
     cwd: String,
     project: String,
