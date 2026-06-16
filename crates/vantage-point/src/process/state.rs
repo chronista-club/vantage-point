@@ -206,17 +206,28 @@ impl AppState {
     /// send-keys / capture(単一) / close は global な pane/session target で動くので、
     /// 束縛 session が何であっても正しく届く（gate を通すためだけに 1 つ存在すれば良い）。
     pub async fn ensure_tmux(&self) -> Option<TmuxHandle> {
-        let mut guard = self.tmux.lock().await;
-        if let Some(ref handle) = *guard {
-            return Some(handle.clone());
+        // 既存ハンドルがあれば即返す（lock は最小区間で解放してから次に進む）。
+        {
+            let guard = self.tmux.lock().await;
+            if let Some(ref handle) = *guard {
+                return Some(handle.clone());
+            }
         }
 
         if !crate::tmux::is_tmux_available() {
             return None;
         }
 
-        // primary session を lane_pool から解決 (= VP 管理 session が 1 つでもあれば actor 起動)
+        // primary session を lane_pool から解決 (= VP 管理 session が 1 つでもあれば actor 起動)。
+        // tmux Mutex を保持したまま lane_pool RwLock を取らない（lock 取得順を直交させ、
+        // 将来の逆順取得によるデッドロック余地を残さない）。
         let session = self.primary_tmux_session().await?;
+
+        let mut guard = self.tmux.lock().await;
+        // double-check: lock を一度手放した間に別 task が初期化済みかもしれない。
+        if let Some(ref handle) = *guard {
+            return Some(handle.clone());
+        }
         if crate::tmux::session_exists(&session)
             && let Some(handle) = super::tmux_actor::spawn_for_session(&session)
         {
@@ -233,15 +244,26 @@ impl AppState {
     /// conductor lane の実 session（`LaneInfo.tmux[].session`、 spawn 時 populate）を優先し、
     /// 無ければ任意の tmux entry を持つ lane の session に fallback する。
     /// 該当 lane が無ければ None（= tmux 不使用扱い、 World mode 含む）。
+    ///
+    /// Running な lane のみ対象にする（`resolve_lane_session` と一貫）。 Dead lane は
+    /// `LaneInfo.tmux` を clear しない経路があり（`kill_by_pid` 等）、 filter が無いと Dead
+    /// conductor の session 名が Running performer より優先される意図しない順序が生じうる。
     pub async fn primary_tmux_session(&self) -> Option<String> {
+        use super::lanes_state::{LaneKind, LaneState};
         let pool = self.lane_pool.read().await;
         let lanes = pool.list();
-        // conductor 優先 → 無ければ最初に tmux entry を持つ lane
+        // Running な conductor 優先 → 無ければ Running な任意 lane の tmux entry
         lanes
             .iter()
-            .find(|l| l.kind == super::lanes_state::LaneKind::Conductor)
+            .find(|l| l.kind == LaneKind::Conductor && l.state == LaneState::Running)
             .and_then(|l| l.tmux.first())
-            .or_else(|| lanes.iter().find_map(|l| l.tmux.first()))
+            .or_else(|| {
+                lanes.iter().find_map(|l| {
+                    (l.state == LaneState::Running)
+                        .then(|| l.tmux.first())
+                        .flatten()
+                })
+            })
             .map(|t| t.session.clone())
     }
 
@@ -592,6 +614,28 @@ mod tmux_session_resolve_tests {
         assert_eq!(
             state.primary_tmux_session().await,
             Some("vp-vp-conductor-echoes".to_string())
+        );
+    }
+
+    /// Dead conductor（tmux entry は stale で残置）より Running performer を優先する（Issue #1）
+    #[tokio::test]
+    async fn primary_tmux_session_skips_dead_conductor() {
+        let state = build_test_app_state(None).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            // Dead conductor だが tmux entry は clear されず残っている状況を再現
+            let mut dead_conductor = running_lane(LaneAddress::conductor("vp"), "echoes");
+            dead_conductor.state = LaneState::Dead;
+            pool.insert(dead_conductor);
+            pool.insert(running_lane(
+                LaneAddress::performer("vp", "perf-a"),
+                "echoes",
+            ));
+        }
+        // Dead conductor を飛ばして Running performer の session が返る
+        assert_eq!(
+            state.primary_tmux_session().await,
+            Some("vp-vp-perf-a-echoes".to_string())
         );
     }
 
