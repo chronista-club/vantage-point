@@ -51,6 +51,12 @@ pub enum DaemonCommands {
         #[arg(long)]
         watch: bool,
     },
+    /// chronista-hub registry に居る world 一覧を取得（federation discovery）
+    ///
+    /// `CHRONISTA_HUB_ADDR` を設定した状態で `vp daemon start` していると、World が起動時に
+    /// 自身を hub に register する。本コマンドは TheWorld 経由で hub の `worlds.Discover` を叩き、
+    /// 同 hub に register した他 world を列挙する。env 未設定なら federation 無効。
+    Discover,
 }
 
 /// `vp daemon` (= `vp world`) を実行
@@ -63,6 +69,7 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
         DaemonCommands::Stop => stop(),
         DaemonCommands::Status => status(),
         DaemonCommands::Processes { watch } => processes(watch),
+        DaemonCommands::Discover => discover(),
     }
 }
 
@@ -186,6 +193,39 @@ fn processes(watch: bool) -> Result<()> {
             }
         }
         Ok(())
+    })
+}
+
+/// `vp daemon discover` — chronista-hub registry の world 一覧を TheWorld 経由で取得する。
+///
+/// SSOT: CLI は hub に直接接続せず、World daemon の `hub/discover` RPC を叩く。
+fn discover() -> Result<()> {
+    use crate::daemon::client::WorldControlClient;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let client = WorldControlClient::connect(crate::cli::WORLD_PORT, 3)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
+            })?;
+
+        let worlds = client.hub_discover().await?;
+        if worlds.is_empty() {
+            println!("🌐 hub registry に world なし (hub 未到達 or 登録ゼロ)");
+        } else {
+            println!("🌐 hub registry の world ({} 件):", worlds.len());
+            for w in &worlds {
+                let handle = w.get("handle").and_then(|v| v.as_str()).unwrap_or("?");
+                let name = w.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let at = w
+                    .get("registered_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                println!("  • {} ({}) registered_at={}", handle, name, at);
+            }
+        }
+        Ok::<(), anyhow::Error>(())
     })
 }
 
