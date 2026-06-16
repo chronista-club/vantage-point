@@ -241,6 +241,22 @@ async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "reordered", "count": paths.len()}))
         }
+        // chronista-hub federation: hub registry に居る world 一覧を取得する。
+        // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
+        // (= 直接 hub に接続しない)。`CHRONISTA_HUB_ADDR` 未設定なら federation 無効を返す。
+        "hub/discover" => {
+            let Some(addr) = crate::daemon::hub_client::hub_addr() else {
+                return Err(format!(
+                    "{} 未設定 — hub federation 無効",
+                    crate::daemon::hub_client::HUB_ADDR_ENV
+                ));
+            };
+            let client = crate::daemon::hub_client::HubClient::connect(&addr, 3)
+                .await
+                .map_err(|e| e.to_string())?;
+            let worlds = client.discover().await.map_err(|e| e.to_string())?;
+            serde_json::to_value(&worlds).map_err(|e| e.to_string())
+        }
         other => Err(format!("不明なメソッド: world-control.{}", other)),
     }
 }

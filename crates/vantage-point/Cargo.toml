@@ -205,3 +205,5 @@ windows = { version = "0.62", features = [
 tempfile = "3.27.0"
 # VP-13 sub-scope E: Medium 層 route test 用 (= Axum oneshot pattern、 ServiceExt::oneshot)
 tower = { workspace = true, features = ["util"] }
+# hub_client_e2e: 本番 vp バイナリと同じ rustls CryptoProvider をテストプロセスで install するため
+rustls = { version = "0.23", features = ["aws-lc-rs"] }

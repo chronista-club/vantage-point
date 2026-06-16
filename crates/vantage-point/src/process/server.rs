@@ -981,6 +981,43 @@ pub async fn run_world(
         port
     );
 
+    // chronista-hub federation (opt-in): env `CHRONISTA_HUB_ADDR` が設定されていれば、
+    // この world を hub registry に register して他 world から discover 可能にする。
+    // 未設定なら machine-local 動作（= skip）。SSOT 原則により register は TheWorld のみが行う
+    // (個別 SP / performer は hub と直接話さない)。hub 接続/登録失敗は warn ログに落として
+    // machine-local 動作を継続する (degradation)。
+    if let Some(hub_addr) = crate::daemon::hub_client::hub_addr() {
+        // handle = この machine の identity（OS hostname → "vp-world" fallback）。
+        let handle = crate::daemon::hub_client::resolve_handle(None);
+        let name = format!("VP World ({handle})");
+        tokio::spawn(async move {
+            match crate::daemon::hub_client::HubClient::connect(&hub_addr, 5).await {
+                Ok(client) => match client.register(&handle, &name).await {
+                    Ok(entry) => tracing::info!(
+                        "chronista-hub register 成功: handle={} name={} addr={} registered_at={}",
+                        entry.handle,
+                        name,
+                        hub_addr,
+                        entry.registered_at
+                    ),
+                    Err(e) => {
+                        tracing::warn!("chronista-hub register 失敗 (machine-local で継続): {}", e)
+                    }
+                },
+                Err(e) => tracing::warn!(
+                    "chronista-hub 接続失敗 (machine-local で継続): {} (addr={})",
+                    e,
+                    hub_addr
+                ),
+            }
+        });
+    } else {
+        tracing::debug!(
+            "chronista-hub federation 無効 ({} 未設定) — machine-local 動作",
+            crate::daemon::hub_client::HUB_ADDR_ENV
+        );
+    }
+
     // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
     let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(
         world_cap.clone(),
