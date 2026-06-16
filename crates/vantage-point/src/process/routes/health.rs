@@ -840,10 +840,23 @@ pub struct TmuxResolvePaneParams {
 }
 
 /// GET /api/tmux/resolve-pane - label/pane_id からペイン ID を解決
+///
+/// `q` が lane address（`<project>/conductor` / `<project>/performer/<name>`）の場合は、
+/// その lane の実 tmux session 名を解決して返す（`pane_id` field に session 名が入る）。
+/// `tmux send-keys -t <session>` は session の active pane に届くため、 nudge は単一
+/// TmuxActor の束縛 session や agent_metadata を介さずに任意 lane へ届く。
+/// lane address でない場合は従来の pane_id（`%`始まり）/ agent_metadata label 解決に fallback。
 pub async fn tmux_resolve_pane_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<TmuxResolvePaneParams>,
 ) -> impl IntoResponse {
+    // lane address なら実 session に解決（nudge の正典経路）
+    if let Some(session) = state.resolve_lane_session(&params.q).await {
+        return Json(
+            serde_json::json!({"status": "ok", "pane_id": session, "meta": serde_json::Value::Null}),
+        );
+    }
+
     let handle = match state.ensure_tmux().await {
         Some(h) => h,
         None => {

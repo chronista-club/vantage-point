@@ -208,12 +208,9 @@ pub fn spawn_registry_keepalive(
         project_name
     };
 
-    // tmux セッション名を付与（tmux 環境下なら `{project}-vp` 形式）
-    let tmux_session = if crate::tmux::is_tmux_available() {
-        Some(crate::tmux::session_name(&project_name))
-    } else {
-        None
-    };
+    // tmux_session は conductor lane の実 session（lane scheme `vp-{project}-conductor-{stand}`）を
+    // agent_card build 時に lane_pool から反映する（spawn 内、 下記）。 SP は固定の自前 session を
+    // 持たないため、 旧 `{project}-vp` 固定値は廃止（fix-tmux-session-naming）。
 
     // Phase 1d: agent_card は tokio::spawn 内で build (lane_pool の最新を読むため async 必要)。
     // outer の sync context で build する project_name は move、 lane_pool は Arc clone で渡す。
@@ -238,6 +235,12 @@ pub fn spawn_registry_keepalive(
         // 旧 sync 構築から async 構築に変更、 reconnect 時は同 JSON を再使用 (Phase 1 MVP)。
         // Phase 2 の Step E で reconnect 時に lane_pool 再 read + diff push を検討。
         let lanes = lane_pool_for_async.read().await.list();
+        // conductor lane の実 tmux session を agent_card に反映（無ければ None）。
+        let tmux_session = lanes
+            .iter()
+            .find(|l| l.kind == crate::process::lanes_state::LaneKind::Conductor)
+            .and_then(|l| l.tmux.first())
+            .map(|t| t.session.clone());
         let agent_card = serde_json::json!({
             "project_name": project_name_for_async,
             "port": port,

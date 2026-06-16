@@ -83,22 +83,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
 
-    // tmux セッションは vp hd コマンドで独立管理（server.rs では触らない）
-    // TmuxActor は SP がペイン操作（tmux_split 等）に使うため、既存セッションがあれば起動
-    let project_name = crate::resolve::project_name_from_path(
-        &project_dir,
-        &crate::config::Config::load().unwrap_or_default(),
-    )
-    .to_string();
-    let tmux_session = crate::tmux::session_name(&project_name);
-
-    let tmux_handle =
-        if crate::tmux::is_tmux_available() && crate::tmux::session_exists(&tmux_session) {
-            super::tmux_actor::spawn_for_session(&tmux_session)
-        } else {
-            None
-        };
-    let tmux_session_name = tmux_session.clone();
+    // tmux session は lane（conductor/performer）が各々 `vp-{project}-{lane}-{stand}` で持つ。
+    // SP は固定の自前 session を持たず、 ペイン操作（tmux_split 等）時に `ensure_tmux()` が
+    // lane_pool から primary session（conductor lane）を遅延解決して TmuxActor を起動する。
+    // 起動時点では conductor lane の session がまだ無い可能性があるため eager spawn はしない。
+    let tmux_handle: Option<super::tmux_actor::TmuxHandle> = None;
 
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）
     let topic_router = Arc::new(TopicRouter::new());
@@ -193,7 +182,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
         tmux: Arc::new(tokio::sync::Mutex::new(tmux_handle)),
-        tmux_session_name,
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
@@ -808,7 +796,6 @@ pub async fn run_world(
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "WORLD_DISABLED".to_string(),
         tmux: Arc::new(tokio::sync::Mutex::new(None)),
-        tmux_session_name: String::new(),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
