@@ -2058,19 +2058,45 @@ pub fn run() -> anyhow::Result<()> {
                     .file_name()
                     .and_then(|s| s.to_str());
                 if active_project.is_some() && active_project == msg_project {
-                    match serde_json::to_string(&message) {
-                        Ok(json) => {
+                    // B1: switch_lane は PP content ではなく active Lane 切替コマンド。
+                    // token → lane address (`<project>/conductor` or `<project>/performer/<name>`)
+                    // に解決し、sidebar click 相当の `setActivePane` を発火する（= frameEngine
+                    // scene + setActiveLaneName + requestPersistedState を既存 wrapper が連鎖実行）。
+                    if message.get("type").and_then(|t| t.as_str()) == Some("switch_lane") {
+                        if let (Some(project), Some(token)) = (
+                            active_project,
+                            message.get("lane").and_then(|l| l.as_str()),
+                        ) {
+                            let address = if token.is_empty() || token == "conductor" {
+                                format!("{}/conductor", project)
+                            } else {
+                                format!("{}/performer/{}", project, token)
+                            };
+                            // JSON 文字列は有効な JS 文字列リテラル（escape 済）
+                            let addr_lit = serde_json::to_string(&address).unwrap_or_default();
                             let script = format!(
-                                "window.vpCanvas && window.vpCanvas.handleMessage({})",
-                                json
+                                "window.setActivePane && window.setActivePane({{ kind: 'terminal', pane_id: {} }})",
+                                addr_lit
                             );
                             if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
+                                tracing::warn!("switch_lane setActivePane 失敗: {}", e);
                             }
-                            // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
                         }
-                        Err(e) => {
-                            tracing::warn!("CanvasMessage serialize 失敗: {}", e);
+                    } else {
+                        match serde_json::to_string(&message) {
+                            Ok(json) => {
+                                let script = format!(
+                                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                                    json
+                                );
+                                if let Err(e) = webview.evaluate_script(&script) {
+                                    tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
+                                }
+                                // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
+                            }
+                            Err(e) => {
+                                tracing::warn!("CanvasMessage serialize 失敗: {}", e);
+                            }
                         }
                     }
                 }

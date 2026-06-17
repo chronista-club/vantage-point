@@ -259,13 +259,13 @@ enum LaneCommands {
         #[arg(long, short)]
         force: bool,
     },
-    /// Canvas の表示 lane を切り替える (= mcp__switch_lane の CLI pair、 TheWorld 経由)
+    /// 現 project の vp-app の active Lane を切り替える (= mcp__switch_lane の CLI pair、Unison-native)
     ///
-    /// `lane` は project 名 (lane bar に表示される識別子、 例: 'vantage-point', 'creo-memories')。
-    /// TheWorld :32000 が稼働している必要あり。 Canvas WebView がいない / 全 disconnect の場合は
-    /// `clients: 0` だが exit 0 (= server 側で no-op、 status ok)。
+    /// `name` は lane token: 'conductor' (lead) or performer 名 (例: 'feat-api')。現 project の
+    /// local SP に `SwitchLane` を投げ、canvas channel 経由で vp-app がその lane を active 化する。
+    /// 該当 project の SP が稼働している必要あり。unknown lane は vp-app 受信側で no-op。
     Switch {
-        /// 切り替え先 lane 名 (= project 名)
+        /// active 化する lane token ('conductor' or performer 名)
         name: String,
     },
     /// この lane の最後の CC session id を表示 (R3-b、 echoes spawn の --resume 用)
@@ -726,45 +726,45 @@ fn list_performers_detail() -> Result<()> {
     Ok(())
 }
 
-/// Canvas lane 切り替え CLI 実装 (= mcp__switch_lane と等価)。
+/// active Lane 切り替え CLI 実装 (= mcp__switch_lane の CLI pair、B1: Unison-native)。
 ///
-/// TheWorld の `/api/canvas/switch_lane` を POST、 接続中の Canvas WS 全 client に
-/// `{"type":"switch_lane","lane":...}` をブロードキャストする (mcp.rs:1042 と同じ path)。
+/// 旧: TheWorld(:32000) `/api/canvas/switch_lane` に global broadcast（project 切替）。
+/// per-lane PP 後は **現 project の local SP** に `SwitchLane` ProcessMessage を投げ、
+/// hub → topic `process/paisley-park/command/switch-lane` → canvas channel 経由で vp-app が
+/// 受信し、その lane を active 化する（lane-within-project の per-project 切替）。
 fn switch_lane_via_world(name: &str) -> Result<()> {
-    // 軽量 validate (= validate_performer_name と同 character class、 但し空チェックのみ強制)。
-    // lane 名は project name (conductor lane) or performer name (= `<project>/performer/<name>`) を想定、
-    // server 側で実在 lane と照合される (= unknown lane は WS 受信側で no-op)。
+    // lane token = "conductor" (lead) or performer 名。server / vp-app 側で実在 lane と照合
+    // （unknown lane は vp-app 受信側で no-op）。
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        anyhow::bail!("lane name is required (空文字不可)");
+        anyhow::bail!("lane token is required (空文字不可)");
     }
 
-    let url = format!(
-        "http://[::1]:{}/api/canvas/switch_lane",
-        vantage_point::cli::WORLD_PORT
-    );
-    let body = serde_json::json!({ "lane": trimmed });
+    // cwd の project の running SP を解決（performer lane でも repo root の SP に着地）。
+    let (project_name, port) = resolve_parent_project()?;
+
+    // /api/show は任意の ProcessMessage を hub.broadcast する汎用入口（show_handler）。
+    let url = format!("http://[::1]:{}/api/show", port);
+    let body = serde_json::json!({ "type": "switch_lane", "lane": trimmed });
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| anyhow::anyhow!("reqwest client build failed: {}", e))?;
 
-    let resp = client.post(&url).json(&body).send().map_err(|e| {
-        anyhow::anyhow!(
-            "TheWorld :{} に到達できません: {}",
-            vantage_point::cli::WORLD_PORT,
-            e
-        )
-    })?;
+    let resp =
+        client.post(&url).json(&body).send().map_err(|e| {
+            anyhow::anyhow!("SP {} (:{}) に到達できません: {}", project_name, port, e)
+        })?;
     let status = resp.status();
     let text = resp.text().unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("TheWorld API error: {} {}", status, text);
+        anyhow::bail!("SP API error: {} {}", status, text);
     }
-    // server は {"status":"ok","lane":"...","clients":N} を返す。 そのまま echo して
-    // caller (script / human) が clients 数を確認できるよう stdout に。
-    println!("{}", text);
+    println!(
+        "switched active lane to '{}' (project={})",
+        trimmed, project_name
+    );
     Ok(())
 }
 
