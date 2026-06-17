@@ -70,6 +70,21 @@ pub enum RotoCommands {
         #[arg(long, default_value = "5")]
         secs: u64,
     },
+    /// B2: ROTO の ← / → で vp-app の active Lane を prev/next 切替（Unison-native）
+    ///
+    /// transport ◄ (CC36)=prev / ► (CC37)=next（or 右 button 0/1）。現 project の local SP に
+    /// QUIC 接続し、「lanes」channel で lane list を購読、`switch_lane` QUIC method で発火する。
+    Control {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "Roto")]
+        port: String,
+        /// 接続先 SP ポート（省略時は cwd の project から自動解決）
+        #[arg(long)]
+        sp_port: Option<u16>,
+        /// 継続秒数
+        #[arg(long, default_value = "600")]
+        secs: u64,
+    },
 }
 
 /// LPD8 サブコマンド
@@ -623,7 +638,303 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
             println!("受信 {} 件", count);
             Ok(())
         }
+        RotoCommands::Control {
+            port,
+            sp_port,
+            secs,
+        } => execute_roto_control(port, sp_port, secs),
     }
+}
+
+/// ROTO MIDI を開き、入力 byte 列を **tokio mpsc** で渡す（async control loop 用、B2）。
+/// `roto_open` の std mpsc 版に対し、midir の sync callback から `UnboundedSender::send`
+/// （非 async・別スレッド可）で async ループへ bridge する。
+#[allow(clippy::type_complexity)]
+fn roto_open_async(
+    port: &str,
+) -> Result<(
+    midir::MidiInputConnection<()>,
+    tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    midir::MidiOutputConnection,
+    String,
+)> {
+    let mut midi_in = midir::MidiInput::new("vp-midi-roto-control")?;
+    midi_in.ignore(midir::Ignore::None);
+    let in_ports = midi_in.ports();
+    let in_port = in_ports
+        .iter()
+        .find(|p| {
+            midi_in
+                .port_name(p)
+                .map(|name| name.contains(port))
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| anyhow::anyhow!("No MIDI input port matching '{}'", port))?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let conn_in = midi_in
+        .connect(
+            in_port,
+            "vp-roto-control",
+            move |_timestamp, bytes, _| {
+                let _ = tx.send(bytes.to_vec());
+            },
+            (),
+        )
+        .map_err(|e| anyhow::anyhow!("MIDI input connect failed: {}", e))?;
+    let (conn_out, port_name) = crate::midi::open_output(Some(port))?;
+    Ok((conn_in, rx, conn_out, port_name))
+}
+
+/// cwd の project の running SP ポートを解決（B2 control の接続先）。
+fn resolve_local_sp() -> Result<u16> {
+    let repo_root = crate::lane::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
+    let repo_str = repo_root
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("repo path contains invalid UTF-8"))?;
+    let proc = crate::discovery::find_by_project_blocking(repo_str)
+        .ok_or_else(|| anyhow::anyhow!("SP not running for {}（vp sp start 済?）", repo_str))?;
+    Ok(proc.port)
+}
+
+/// local SP に Unison QUIC 接続（mcp.rs の connect_quic と同等、private 再実装）。
+/// ⚠️ mcp.rs::connect_quic と trust_anchors を揃えること（PR-3 で SkipVerification →
+/// InternalMeshKeypair に差し替え予定。mcp.rs を変えたらここも同期）。
+async fn connect_quic_local(port: u16) -> Result<unison::ProtocolClient> {
+    let addr = format!("[::1]:{}", port);
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| anyhow::anyhow!("Unison client build: {}", e))?;
+    let client = unison::ProtocolClient::new(transport);
+    client
+        .connect(&addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("Unison connect {}: {}", addr, e))?;
+    Ok(client)
+}
+
+/// 「lanes」channel の LanesSnapshot payload から順序付き lane token を抽出。
+/// token = kind=="conductor" → "conductor" / performer → address.name。
+fn parse_lane_tokens(v: &serde_json::Value) -> Vec<String> {
+    v.get("lanes")
+        .and_then(|l| l.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|lane| {
+                    let kind = lane.get("kind").and_then(|k| k.as_str())?;
+                    if kind == "conductor" {
+                        Some("conductor".to_string())
+                    } else {
+                        lane.get("address")
+                            .and_then(|a| a.get("name"))
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// lane cursor を動かす方向。
+#[derive(Clone, Copy)]
+enum LaneNav {
+    Prev,
+    Next,
+}
+
+impl LaneNav {
+    /// cursor index への加算量。
+    fn delta(self) -> i32 {
+        match self {
+            LaneNav::Prev => -1,
+            LaneNav::Next => 1,
+        }
+    }
+    /// ログ表示用グリフ。
+    fn glyph(self) -> &'static str {
+        match self {
+            LaneNav::Prev => "◄",
+            LaneNav::Next => "►",
+        }
+    }
+}
+
+/// ROTO button index → lane nav の binding 表（dogfood + decompile で確定、データとして集約）。
+/// 物理キーとモード要件:
+/// - **Button 16/17 = transport ◄ ►**（CC 36/37、`RotoCcButton` = 素の CC。ROTO の TRANSPORT
+///   が enable のとき送出）→ 本命の prev/next。
+/// - **Button 0/1 = 右 8 button の 0/1**（CC 20/21、MIX TRACKS mode で送出）→ robust な代替。
+///
+/// 左 ctrl 列の ← → は mode/nav の semantic SysEx で別キー（ここには来ない）。
+const ROTO_LANE_NAV: &[(u8, LaneNav)] = &[
+    (16, LaneNav::Prev), // ◄ transport (CC36)
+    (17, LaneNav::Next), // ► transport (CC37)
+    (0, LaneNav::Prev),  // 右 button 0 (CC20)
+    (1, LaneNav::Next),  // 右 button 1 (CC21)
+];
+
+/// button index を lane nav 方向に解決（binding 表 lookup）。
+fn roto_lane_nav(index: u8) -> Option<LaneNav> {
+    ROTO_LANE_NAV
+        .iter()
+        .find(|(i, _)| *i == index)
+        .map(|(_, nav)| *nav)
+}
+
+/// B2: ROTO ← / → → 現 project の active Lane を prev/next 切替（Unison-native）。
+///
+/// 設計（mem_1Cc93）: async control loop。`block_on` は最外 1 回のみ。midir(sync) →
+/// tokio mpsc bridge。`select!` で MIDI 入力 / 「lanes」snapshot 購読を同時に await し、
+/// transport ◄/► (CC36/37) or 右 button 0/1 で B1 の `switch_lane` QUIC arm を叩く。
+fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result<()> {
+    use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
+    use crate::device_profile::{DeviceProfile, ParamSpec, Rgb, roto::RotoProfile};
+    use std::time::Duration;
+
+    let sp = match sp_port {
+        Some(p) => p,
+        None => resolve_local_sp()?,
+    };
+
+    let (_conn_in, mut midi_rx, mut conn_out, port_name) = roto_open_async(&port)?;
+
+    // handshake（MIDI out、sync）— demo/anim/watch と同じ DAW_START シーケンス
+    let mut profile = RotoProfile::default();
+    for msg in profile.handshake() {
+        conn_out.send(&msg)?;
+    }
+    println!(
+        "DAW_START 送信（{}）→ 接続確立中...（SP :{}、← prev / → next で lane 切替）",
+        port_name, sp
+    );
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        use unison::network::MessageType;
+
+        let client = connect_quic_local(sp).await?;
+        let process_ch = client
+            .open_channel("process")
+            .await
+            .map_err(|e| anyhow::anyhow!("open process channel: {}", e))?;
+        let lanes_ch = client
+            .open_channel("lanes")
+            .await
+            .map_err(|e| anyhow::anyhow!("open lanes channel: {}", e))?;
+
+        let mut input = RotoInput::default();
+        let mut latest: Vec<String> = Vec::new();
+        // daemon が cursor を保持（vp-app の active を逆照会しない）。初期は conductor。
+        let mut current = "conductor".to_string();
+        let mut activated = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+
+        loop {
+            tokio::select! {
+                // biased: MIDI を最優先に poll する。「lanes」channel は snapshot を高頻度で
+                // flood するため、公平 poll だと MIDI arm が starve し、keepalive 応答が遅延 →
+                // ROTO が切断 → button 不達になる（実機 dogfood で観測）。MIDI（keepalive +
+                // arrow）を常に先に捌くことで接続を維持しつつ入力を取りこぼさない。
+                biased;
+                // MIDI 入力（midir callback → tokio mpsc）
+                midi = midi_rx.recv() => {
+                    let Some(bytes) = midi else { break; }; // sender drop = 終了
+                    // realtime 1 byte system message は無視
+                    if bytes.len() == 1 && bytes[0] >= 0xF8 {
+                        continue;
+                    }
+                    // keepalive SysEx は自動応答（接続維持）
+                    if roto_autorespond(&bytes, &mut conn_out)? {
+                        continue;
+                    }
+                    // 最初の SysEx で projection を送って knob/button を起こす（learn しないと入力が来ない）
+                    if !activated && bytes.first() == Some(&0xF0) {
+                        activated = true;
+                        let mut projection = Vec::new();
+                        for i in 0..8u8 {
+                            // extend で全 track 分を積む（`=` 上書きだと track 7 のみ残る既存 bug）
+                            projection.extend(profile.project_track(
+                                i,
+                                &format!("Lane {}", i + 1),
+                                Rgb::new(0, 200, 255),
+                                false,
+                            ));
+                        }
+                        for i in 0..8u8 {
+                            let spec = ParamSpec::continuous(format!("Param {}", i + 1), 0.5);
+                            projection.extend(profile.learn_parameter(i, &spec));
+                        }
+                        for m in &projection {
+                            conn_out.send(m)?;
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        println!("接続成立 — transport ◄ =prev / ► =next（CC36/37）or 右 button 0/1（MIX TRACKS）で active Lane 切替");
+                        continue;
+                    }
+                    // channel message を ControlEvent に → binding 表（ROTO_LANE_NAV）で nav 解決
+                    let Some(event) = input.parse(&bytes) else { continue; };
+                    let ControlEvent::Button {
+                        index,
+                        pressed: true,
+                    } = event
+                    else {
+                        continue;
+                    };
+                    let Some(nav) = roto_lane_nav(index) else {
+                        continue;
+                    };
+                    if latest.is_empty() {
+                        eprintln!("lane list 未取得（snapshot 待ち）");
+                        continue;
+                    }
+                    // cursor を token で追跡（list 増減に強い）
+                    let n = latest.len() as i32;
+                    let cur_idx = latest.iter().position(|t| t == &current).unwrap_or(0) as i32;
+                    let new_idx = (((cur_idx + nav.delta()) % n) + n) % n;
+                    current = latest[new_idx as usize].clone();
+
+                    // B1 の switch_lane QUIC arm を叩く（HTTP 不使用）
+                    let payload = serde_json::json!({ "type": "switch_lane", "lane": current });
+                    match process_ch
+                        .request::<serde_json::Value, serde_json::Value>("switch_lane", &payload)
+                        .await
+                    {
+                        Ok(_) => println!("{} active lane → '{}'", nav.glyph(), current),
+                        Err(e) => eprintln!("switch_lane 失敗: {}", e),
+                    }
+                }
+                // 「lanes」snapshot を購読しっぱなし → lane 増減を live 反映（MIDI の後に poll）
+                lane_msg = lanes_ch.recv() => {
+                    match lane_msg {
+                        Ok(msg)
+                            if msg.msg_type == MessageType::Event && msg.method == "snapshot" =>
+                        {
+                            if let Ok(v) = msg.payload_as_value() {
+                                let tokens = parse_lane_tokens(&v);
+                                if tokens != latest {
+                                    latest = tokens;
+                                }
+                            }
+                        }
+                        Ok(_) => {} // 他 event は無視
+                        // SP 停止等で channel 切断 → switch 失敗 spam を避けて終了
+                        Err(e) => {
+                            eprintln!("lanes channel 切断（SP 停止?）: {} — 終了", e);
+                            break;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    println!("roto control 終了（{} 秒経過）", secs);
+                    break;
+                }
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
 }
 
 /// X-Touch サブコマンドを実行
