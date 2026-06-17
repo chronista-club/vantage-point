@@ -1,0 +1,181 @@
+//! 物理 controller からの入力イベントを device 非依存に解釈する（E2 input flow）。
+//!
+//! [`crate::device_profile`]（出力 = VP → 機材の state projection）の対。
+//! こちらは機材 → VP の方向で、raw MIDI byte を論理 [`ControlEvent`] に変換する。
+//! 「双方向 = 2 つの片方向 flow の合成」（doc 20 §9）の input 側。
+//!
+//! 責務分離（data / calculations / actions）:
+//! - data: [`ControlEvent`]（機材操作の論理表現）
+//! - calculations: [`DeviceInput::parse`]（byte → event。純粋、I/O なし）
+//! - actions: 呼び出し側が ControlEvent を VP の lane command に routing（別 flow）
+
+/// 機材から来た物理操作を device 非依存に論理イベント化したもの。
+///
+/// index はその機材内での 0 始まりの要素番号（knob 0–7 等）。値は正規化（0.0–1.0）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ControlEvent {
+    /// knob / encoder を回した（正規化値）
+    Knob { index: u8, value: f32 },
+    /// knob の touch センサー（触れた / 離した）
+    KnobTouch { index: u8, pressed: bool },
+    /// button の押下 / 解放
+    Button { index: u8, pressed: bool },
+    /// motor fader を動かした（正規化値）
+    Fader { index: u8, value: f32 },
+    /// pad を叩いた（velocity 1–127、0 は離した扱いで pressed=false 相当）
+    Pad { index: u8, velocity: u8 },
+}
+
+/// 機材 1 機種ぶんの「MIDI byte 列 → 論理イベント」変換。
+///
+/// hi-res CC（ROTO の knob は hi/lo の 2 メッセージで 1 値）のように、複数 byte 列で
+/// 1 イベントが確定する機材があるため `&mut self`（途中状態を保持する）。
+/// 1 メッセージでイベントが確定しない（hi byte だけ等）場合は `None` を返す。
+pub trait DeviceInput {
+    /// 受信した 1 MIDI メッセージを解釈する。確定イベントが無ければ `None`。
+    fn parse(&mut self, msg: &[u8]) -> Option<ControlEvent>;
+}
+
+pub mod roto {
+    //! ROTO-CONTROL の入力 parser（`MidiProcessor.handleMidiIn` 準拠）。
+    //!
+    //! 全入力は ch16 の CC（status `0xBF`）で来る（decompile で確定）:
+    //! - knob 値: CC `12+i`(hi) + CC `44+i`(lo) の 14bit（`setCcKnobMatcher`）
+    //! - knob touch: CC `52+i`（`setCcMatcher(touchButton, 52+index)`）
+    //! - button: CC `20+i`（本体 8）/ `28+i`（transport 8）（`RotoButton` midiId）
+    //!
+    //! 値は hi → lo の順で届く前提で、lo 受信時に 14bit を合成して確定させる。
+
+    use super::{ControlEvent, DeviceInput};
+
+    const KNOB_HI_BASE: u8 = 12;
+    const KNOB_LO_BASE: u8 = 44;
+    const KNOB_TOUCH_BASE: u8 = 52;
+    const BUTTON_BASE: u8 = 20;
+    /// button（本体 8 + transport 8）の CC 連続範囲は 20–35
+    const BUTTON_COUNT: u8 = 16;
+    /// CC value が押下とみなす閾値（127=押下 / 0=解放）
+    const PRESS_THRESHOLD: u8 = 64;
+
+    /// ROTO 入力 parser。knob の hi byte を lo 受信まで保持する。
+    #[derive(Default)]
+    pub struct RotoInput {
+        /// 各 knob（0–7）の最新 hi byte（lo 受信時に 14bit へ合成）
+        knob_hi: [u8; 8],
+    }
+
+    impl DeviceInput for RotoInput {
+        fn parse(&mut self, msg: &[u8]) -> Option<ControlEvent> {
+            // ROTO 入力は ch16 CC（0xBF）のみ。SysEx / 他 channel は無視
+            if msg.len() < 3 || msg[0] != 0xBF {
+                return None;
+            }
+            let cc = msg[1];
+            let val = msg[2] & 0x7F;
+
+            if (KNOB_HI_BASE..KNOB_HI_BASE + 8).contains(&cc) {
+                // hi byte は保持のみ（lo で確定）
+                self.knob_hi[(cc - KNOB_HI_BASE) as usize] = val;
+                None
+            } else if (KNOB_LO_BASE..KNOB_LO_BASE + 8).contains(&cc) {
+                let index = cc - KNOB_LO_BASE;
+                let value14 = ((self.knob_hi[index as usize] as u16) << 7) | val as u16;
+                Some(ControlEvent::Knob {
+                    index,
+                    value: value14 as f32 / 16383.0,
+                })
+            } else if (KNOB_TOUCH_BASE..KNOB_TOUCH_BASE + 8).contains(&cc) {
+                Some(ControlEvent::KnobTouch {
+                    index: cc - KNOB_TOUCH_BASE,
+                    pressed: val >= PRESS_THRESHOLD,
+                })
+            } else if (BUTTON_BASE..BUTTON_BASE + BUTTON_COUNT).contains(&cc) {
+                Some(ControlEvent::Button {
+                    index: cc - BUTTON_BASE,
+                    pressed: val >= PRESS_THRESHOLD,
+                })
+            } else {
+                None
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn knob_hi_then_lo_combines_to_14bit() {
+            let mut input = RotoInput::default();
+            // knob 2: hi=0x7F, lo=0x7F → 16383 = 1.0
+            assert_eq!(input.parse(&[0xBF, 14, 0x7F]), None); // hi だけは未確定
+            let ev = input.parse(&[0xBF, 46, 0x7F]).unwrap(); // lo で確定
+            match ev {
+                ControlEvent::Knob { index, value } => {
+                    assert_eq!(index, 2);
+                    assert!((value - 1.0).abs() < 1e-6);
+                }
+                _ => panic!("expected Knob"),
+            }
+        }
+
+        #[test]
+        fn knob_zero_value() {
+            let mut input = RotoInput::default();
+            input.parse(&[0xBF, 12, 0x00]); // knob 0 hi = 0
+            assert_eq!(
+                input.parse(&[0xBF, 44, 0x00]),
+                Some(ControlEvent::Knob {
+                    index: 0,
+                    value: 0.0
+                })
+            );
+        }
+
+        #[test]
+        fn knob_touch_press_and_release() {
+            let mut input = RotoInput::default();
+            assert_eq!(
+                input.parse(&[0xBF, 52, 127]),
+                Some(ControlEvent::KnobTouch {
+                    index: 0,
+                    pressed: true
+                })
+            );
+            assert_eq!(
+                input.parse(&[0xBF, 59, 0]),
+                Some(ControlEvent::KnobTouch {
+                    index: 7,
+                    pressed: false
+                })
+            );
+        }
+
+        #[test]
+        fn button_and_transport() {
+            let mut input = RotoInput::default();
+            assert_eq!(
+                input.parse(&[0xBF, 20, 127]),
+                Some(ControlEvent::Button {
+                    index: 0,
+                    pressed: true
+                })
+            ); // 本体 button 0
+            assert_eq!(
+                input.parse(&[0xBF, 35, 127]),
+                Some(ControlEvent::Button {
+                    index: 15,
+                    pressed: true
+                })
+            ); // transport button 末尾
+        }
+
+        #[test]
+        fn sysex_and_other_channels_ignored() {
+            let mut input = RotoInput::default();
+            assert_eq!(input.parse(&[0xF0, 0x00, 0x22, 0xF7]), None); // SysEx
+            assert_eq!(input.parse(&[0x90, 60, 100]), None); // note on ch1
+            assert_eq!(input.parse(&[0xBF, 99, 0]), None); // 範囲外 CC
+        }
+    }
+}

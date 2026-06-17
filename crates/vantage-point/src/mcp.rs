@@ -389,6 +389,110 @@ pub struct CaptureCanvasParams {
     pub pane_id: Option<String>,
 }
 
+/// Parameters for the read_pane tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReadPaneParams {
+    /// pane_id to read (省略時: pane が 1 つだけならそれを返す)
+    #[schemars(
+        description = "The pane_id to read. If omitted and exactly one pane is on the Canvas, that pane is returned."
+    )]
+    pub pane_id: Option<String>,
+}
+
+/// Canvas の 1 pane の最新内容 (= retained Show、 list_canvas / read_pane の共通中間表現)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CanvasPane {
+    pub pane_id: String,
+    pub content_type: String,
+    pub content: String,
+    pub title: Option<String>,
+    /// Show の append フラグ。 true = 同一 pane_id の既存内容に追記 (canvas_state と同義)。
+    pub append: bool,
+}
+
+/// "canvas" channel の retained Show payload (ProcessMessage::Show JSON) を CanvasPane に
+/// parse する (純関数)。
+///
+/// Show 以外 (clear / toggle 等) や形不正は None。 Content は外部タグ enum なので
+/// `content` object の唯一の key が content_type (markdown/html/log/url)、 値が本文。
+/// `image_base64` variant は値が object のため `content` は空文字になる (PP Canvas は現状未使用)。
+pub(crate) fn parse_show_payload(v: &serde_json::Value) -> Option<CanvasPane> {
+    if v.get("type")?.as_str()? != "show" {
+        return None;
+    }
+    let pane_id = v.get("pane_id")?.as_str()?.to_string();
+    let content_obj = v.get("content")?.as_object()?;
+    let (content_type, content_val) = content_obj.iter().next()?;
+    let content = content_val.as_str().unwrap_or("").to_string();
+    let title = v
+        .get("title")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+    // append 不在は false 扱い (= 上書き、 show tool の既定)。
+    let append = v.get("append").and_then(|a| a.as_bool()).unwrap_or(false);
+    Some(CanvasPane {
+        pane_id,
+        content_type: content_type.clone(),
+        content,
+        title,
+        append,
+    })
+}
+
+#[cfg(test)]
+mod canvas_read_tests {
+    use super::*;
+
+    #[test]
+    fn parse_show_extracts_pane() {
+        let v = serde_json::json!({
+            "type": "show", "pane_id": "main",
+            "content": {"markdown": "# Hello"}, "append": false, "title": "My Pane"
+        });
+        let p = parse_show_payload(&v).expect("show parse");
+        assert_eq!(p.pane_id, "main");
+        assert_eq!(p.content_type, "markdown");
+        assert_eq!(p.content, "# Hello");
+        assert_eq!(p.title.as_deref(), Some("My Pane"));
+    }
+
+    #[test]
+    fn parse_show_html_without_title() {
+        let v = serde_json::json!({
+            "type": "show", "pane_id": "side",
+            "content": {"html": "<b>x</b>"}, "append": false
+        });
+        let p = parse_show_payload(&v).expect("show parse");
+        assert_eq!(p.content_type, "html");
+        assert_eq!(p.title, None);
+    }
+
+    #[test]
+    fn parse_rejects_non_show_and_malformed() {
+        assert!(
+            parse_show_payload(&serde_json::json!({"type":"clear","pane_id":"main"})).is_none()
+        );
+        assert!(parse_show_payload(&serde_json::json!({"foo": 1})).is_none());
+    }
+
+    #[test]
+    fn parse_reads_append_flag() {
+        let base = serde_json::json!({
+            "type": "show", "pane_id": "main", "content": {"markdown": "a"}, "append": false
+        });
+        let app = serde_json::json!({
+            "type": "show", "pane_id": "main", "content": {"markdown": "b"}, "append": true
+        });
+        assert!(!parse_show_payload(&base).unwrap().append);
+        assert!(parse_show_payload(&app).unwrap().append);
+        // append 不在は false 扱い
+        let no_field = serde_json::json!({
+            "type": "show", "pane_id": "x", "content": {"markdown": "c"}
+        });
+        assert!(!parse_show_payload(&no_field).unwrap().append);
+    }
+}
+
 /// capture_terminal ツールのパラメータ
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CaptureTerminalParams {
@@ -2429,6 +2533,133 @@ impl VantageMcp {
                 saved_path, width, height, size_bytes
             ),
         )]))
+    }
+
+    /// Paisley Park Canvas の pane 一覧 (= 表示中の各 pane の最新内容) を返す。
+    #[tool(
+        description = "List the panes currently on the Paisley Park Canvas (PP). Returns each pane_id with its latest content's title, content_type, and a short preview. Use read_pane to fetch a pane's full source content (e.g. to save it to memory). Reads the retained snapshot over the Unison canvas channel."
+    )]
+    async fn list_canvas(&self) -> Result<CallToolResult, McpError> {
+        let panes = self.fetch_canvas_panes().await?;
+        if panes.is_empty() {
+            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                "Canvas に表示中の pane はありません (retained snapshot が空)。".to_string(),
+            )]));
+        }
+        let mut lines = vec![format!("Canvas panes ({}):", panes.len())];
+        for p in &panes {
+            let preview: String = p
+                .content
+                .chars()
+                .take(80)
+                .collect::<String>()
+                .replace('\n', " ");
+            lines.push(format!(
+                "- pane_id={} [{}] title={} | {}",
+                p.pane_id,
+                p.content_type,
+                p.title.as_deref().unwrap_or("(none)"),
+                preview
+            ));
+        }
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            lines.join("\n"),
+        )]))
+    }
+
+    /// Canvas pane の全文を返す (= remember 等に渡せるソース内容)。
+    #[tool(
+        description = "Read the full source content of a Paisley Park Canvas pane by pane_id (markdown/html/log/url text), so it can be saved to creo-memories (mcp__creo-memories__remember) or otherwise processed. If pane_id is omitted and exactly one pane exists, that pane is returned. Reads over the Unison canvas channel."
+    )]
+    async fn read_pane(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ReadPaneParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let panes = self.fetch_canvas_panes().await?;
+        let target = match &params.pane_id {
+            Some(id) => panes.iter().find(|p| &p.pane_id == id),
+            None if panes.len() == 1 => panes.first(),
+            None => None,
+        };
+        let Some(p) = target else {
+            let ids: Vec<&str> = panes.iter().map(|p| p.pane_id.as_str()).collect();
+            let hint = if params.pane_id.is_some() {
+                format!("pane_id が見つかりません。 現在の pane: {:?}", ids)
+            } else if panes.is_empty() {
+                "Canvas に表示中の pane はありません (retained snapshot が空)。".to_string()
+            } else {
+                format!(
+                    "pane が複数あります。 pane_id を指定してください: {:?}",
+                    ids
+                )
+            };
+            return Err(McpError::invalid_params(hint, None));
+        };
+        let header = format!(
+            "pane_id: {}\ncontent_type: {}\ntitle: {}\n---\n",
+            p.pane_id,
+            p.content_type,
+            p.title.as_deref().unwrap_or("(none)")
+        );
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("{}{}", header, p.content),
+        )]))
+    }
+
+    /// "canvas" Unison channel に one-shot 接続し、 retained snapshot (pane_id ごとの最新 Show)
+    /// を drain して返す (Unison-native read、 app.rs::run_canvas_session のパターン再利用)。
+    ///
+    /// QUIC listener は SP の HTTP と同 port (UDP)。 retained は接続直後に届くため、
+    /// live update を待たないよう短い timeout で drain する。
+    async fn fetch_canvas_panes(&self) -> Result<Vec<CanvasPane>, McpError> {
+        use unison::ProtocolClient;
+        use unison::network::MessageType;
+        use unison::network::TrustAnchors;
+        use unison::network::quic::QuicClient;
+
+        let port = *self.process_port.lock().await;
+        let addr = format!("[::1]:{}", port);
+        let transport = QuicClient::builder()
+            .trust_anchors(TrustAnchors::SkipVerification)
+            .build()
+            .map_err(|e| McpError::internal_error(format!("QUIC client build: {}", e), None))?;
+        let client = ProtocolClient::new(transport);
+        client.connect(&addr).await.map_err(|e| {
+            McpError::internal_error(format!("canvas connect {}: {}", addr, e), None)
+        })?;
+        let channel = client
+            .open_channel("canvas")
+            .await
+            .map_err(|e| McpError::internal_error(format!("open canvas channel: {}", e), None))?;
+
+        // pane_id ごとに最新を保持。 append:false は上書き、 append:true は既存内容に追記
+        // (canvas_state と同義)。 追記先が無ければ新規 (= 単独追記でも内容が残る)。
+        let mut panes: std::collections::HashMap<String, CanvasPane> =
+            std::collections::HashMap::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(500), channel.recv()).await {
+                Ok(Ok(msg)) => {
+                    if msg.msg_type != MessageType::Event || msg.method != "pane" {
+                        continue;
+                    }
+                    if let Ok(v) = msg.payload_as_value()
+                        && let Some(p) = parse_show_payload(&v)
+                    {
+                        match panes.get_mut(&p.pane_id) {
+                            Some(existing) if p.append => existing.content.push_str(&p.content),
+                            _ => {
+                                panes.insert(p.pane_id.clone(), p);
+                            }
+                        }
+                    }
+                }
+                Ok(Err(_)) => break, // channel closed
+                Err(_) => break,     // timeout = snapshot drained
+            }
+        }
+        let mut out: Vec<CanvasPane> = panes.into_values().collect();
+        out.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
+        Ok(out)
     }
 
     /// VantagePoint.app のターミナルウィンドウを PNG スクリーンショットとしてキャプチャ

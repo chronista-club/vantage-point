@@ -10,7 +10,6 @@ import {
 	runDelete,
 	runFileExplorer,
 	runLaneSelectMode,
-	runMainViewDirective,
 	runNewPerformer,
 	runRestart,
 	runSendToPP,
@@ -25,20 +24,16 @@ import type { Action } from "./types";
 const DIRECTIVE_TITLES: Record<string, string> = {
 	f: "File Explorer を開く",
 	p: "選択を Canvas に送る",
-	e: "Echoes にフォーカス",
-	g: "Gold Experience にフォーカス",
-	h: "Hermit Purple にフォーカス",
-	w: "TheWorld の状態を表示",
 	r: "Restart（lane / process）",
 	n: "New Performer を開く",
 	s: "Lane / Project 切替",
 	d: "Delete（2-click 確認）",
 	l: "Lane を番号で切替",
-	i: "ショートカット一覧",
 };
 
 /**
- * directive key → 処理本体（handlers.ts）。 未登録 key（e/g/h/w/i）は main-view directive 扱い。
+ * directive key → 処理本体（handlers.ts）。
+ * DIRECTIVE_TABLE の全 key がここに実体を持つ（v0.8 curation で main-view fallback を撤去）。
  */
 const DIRECTIVE_RUN: Record<string, () => void> = {
 	f: runFileExplorer,
@@ -61,7 +56,9 @@ export const ACTIONS: Action[] = Object.entries(DIRECTIVE_TABLE).map(
 		title: DIRECTIVE_TITLES[key] ?? entry.description,
 		description: entry.description,
 		semantic: entry.semantic,
-		run: DIRECTIVE_RUN[key] ?? (() => runMainViewDirective(key)),
+		run:
+			DIRECTIVE_RUN[key] ??
+			(() => console.warn(`[directive] no handler registered for ${key}`)),
 	}),
 );
 

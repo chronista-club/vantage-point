@@ -100,7 +100,11 @@ pub const MAIN_AREA_HTML: &str = concat!(
     r#"
 html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);}
 body{overflow:hidden;}
-#host{position:relative;width:100%;height:100%;}
+/* WebView 統合 (step 3a): sidebar + main を 1 DOM に CSS flex で同居。
+   app-shell が [sidebar-root | host] を横並び、editor-root は別 (floating overlay)。 */
+#app-shell{display:flex;width:100%;height:100%;}
+#sidebar-root{width:280px;flex:none;height:100%;overflow:hidden;}
+#host{position:relative;flex:1;height:100%;min-width:0;}
 /* VP-140 (PR-ε-1): 3D Frame Layout Engine 化。 旧 `.pane{display:none} + .pane.active{display:block}`
    による visibility gating を廃止、 left/top/width/height/opacity を JS (Frame Engine renderer.ts) で
    制御する形に inversion。 Pane は分割で生まれるのではなく、 frame 全体に対する transform を持つ
@@ -279,6 +283,9 @@ body{overflow:hidden;}
 </style>
 </head>
 <body>
+<div id="app-shell">
+<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) の mount 先。inline script で mount。 -->
+<div id="sidebar-root"></div>
 <div id="host">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
        - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「paisley_park」 等の kind classification)
@@ -393,6 +400,7 @@ body{overflow:hidden;}
     </main>
   </div>
 </div>
+</div><!-- /#app-shell (WebView 統合 step 3a) -->
 <!-- VP-101 Phase A2: creo-ui-editor-host (SolidJS) の mount 先。
      Ctrl+Shift+E で activate される floating overlay (font / theme / token を runtime 編集)。 -->
 <div id="editor-root"></div>
@@ -438,10 +446,17 @@ body{overflow:hidden;}
 </script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
-     Build: cd crates/vp-app/web-bundle && bun install && bun run build。 -->
+     Build: cd crates/vp-app/webview && bun install && bun run build。 -->
 <script>
 "#,
     include_str!("../assets/editor-host.bundle.js"),
+    r#"
+</script>
+<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) を inline。#sidebar-root に mount。
+     with_html は baseURL=None (null origin) で vp-asset:// custom protocol が使えないため inline 一択。 -->
+<script>
+"#,
+    include_str!("../assets/sidebar.bundle.js"),
     r#"
 </script>
 <script>

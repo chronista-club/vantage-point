@@ -4,10 +4,10 @@
 // この KDL を唯一の真実として club-kdl-codegen で生成する:
 //
 //   - Rust enum  → crates/vp-app/src/generated/sidebar_ipc.rs  (`IpcEnvelope`)
-//   - TS union   → crates/vp-app/web-bundle/src/generated/SidebarIpc.ts
+//   - TS union   → crates/vp-app/webview/src/generated/SidebarIpc.ts
 //
 // 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` で走る
-// (tests/sidebar_ipc_codegen.rs)。 手書き側 (web-bundle/src/sidebar/ipc.ts の
+// (tests/sidebar_ipc_codegen.rs)。 手書き側 (webview/src/sidebar/ipc.ts の
 // `SidebarIpcMsg` / app.rs の `handle_sidebar_ipc`) の移行は PR-2 / PR-3。
 //
 // 全 request は client → server。 serde tag フィールド名 = "t"。

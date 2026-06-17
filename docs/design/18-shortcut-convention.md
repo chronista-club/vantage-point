@@ -1,6 +1,15 @@
 # VP ショートカット規約 (Shortcut Convention)
 
-> **status: draft v0.6** — 2026-05-27 update。 v0.5 (= lane 操作 directive `r/n/s/d` を §C.2 昇格) を base に、 meta directive `?` (cheatsheet) を実装して §C.2 確定昇格。 chord.ts に shift 例外 (= shift + symbol は通す、 shift + letter は reject) を追加して `Cmd hold ?` (= Cmd+Shift+/) を実現。
+> **status: draft v0.8** — 2026-06-15 curation。 WebView 統合 (#536/#537) で main-view directive bridge を撤去した際、 `e/g/h/w/i` が no-op 化したのを機に directive 群を棚卸し。 **盲目的に復活させず、 必要最小限の動詞に絞る**方針 (VP流 = 焦らず使用感ベース) を確定。
+>
+> 主な変更 (v0.7 → v0.8):
+> 1. §C.2 から `e` / `g` / `h` (Stand focus) を**撤去** — Scene hotkey `Ctrl+Shift+1..4` (§C.4) と役割重複のため Scene 側に一本化
+> 2. §C.2 から `w` (TheWorld status) を**撤去** — 将来の Unison WebView 直結 UI に status を委ねる
+> 3. §C.2 から `?` / `i` (meta cheatsheet) を**撤去** — directive を最小動詞に絞る方針で不要、 cheatsheet の SSOT は本 doc
+> 4. 撤去した letter (`e/g/h/w/i`) は §C.1 「未使用 letter」 プールに戻す
+> 5. 実装: main-view directive bridge (Rust 往復) は #536/#537 で撤去済、 in-process `runMainViewDirective` fallback も撤去 (= 残る directive は全て sidebar 側に実体を持つ)
+>
+> 確定 directive (v0.8): `f` / `p` / `r` / `n` / `s` / `d` / `l` の **7 動詞**。
 >
 > 主な変更 (v0.3 → v0.4):
 > 1. §C.2 (確定 directive) に `e` / `g` / `h` / `w` を昇格 (v0.3 予約 → v0.4 確定)
@@ -138,10 +147,8 @@ user 概念 (前 turn で提示):
 | letter | Stand | 主挙動 | 補足 |
 |--------|-------|--------|------|
 | `p` | **P**aisley Park | "send current to PP" or "focus to PP" | Canvas 表示先 |
-| `e` | **E**choes | "send to Echoes" or "focus to Echoes 入力欄" | Claude CLI |
-| `g` | **G**old Experience | "send to GE" or "focus to GE output" | Code Runner |
-| `h` | **H**ermit Purple | "send to HP" or "focus to HP" | MIDI / tmux |
-| `w` | The**W**orld | "show TheWorld status" | Process Manager |
+
+> **v0.8 で撤去**: `e` (Echoes) / `g` (Gold Experience) / `h` (Hermit Purple) の **Stand focus** は Scene hotkey `Ctrl+Shift+1..4` (§C.4) と役割が重複していたため、 Scene 側に一本化して directive からは撤去した。 `w` (TheWorld status) も撤去 (将来 Unison WebView 直結 UI で status を別表現)。 これらの letter は「未使用 letter」 プールに戻る。 `p` は Canvas (PP) への投擲動詞として唯一の Stand 系 directive。
 
 #### Action / category 系 directive (= panel / mode trigger)
 
@@ -157,7 +164,6 @@ user 概念 (前 turn で提示):
 | `m` | **m**ailbox | mailbox 経由 messaging picker |
 | `a` | **a**ctivate | stopped project の SP 起動 |
 | `o` | **o**pen | generic open (URL / lane / etc 別 picker) |
-| `?` | meta | 全 directive を Canvas に markdown table で render (cheatsheet) |
 
 #### 不採用 letter (= shortcut では操作しない、 v0.4 で明示確定)
 
@@ -167,7 +173,7 @@ user 概念 (前 turn で提示):
 
 #### 未使用 letter (= 将来予約候補、 まだ意味割当なし)
 
-`b` `i` `j` `k` `q` `u` `v` `x` `y` `z` (10 letters)。 新 directive 追加時はこの中から選ぶか、 既存 letter の polymorphism 拡張を検討。
+`b` `e` `g` `h` `i` `j` `k` `q` `u` `v` `w` `x` `y` `z` (14 letters)。 `e/g/h/w/i` は v0.8 curation で directive から外して本プールに復帰 (Stand focus は Scene hotkey に移譲、 cheatsheet は本 doc が SSOT)。 新 directive 追加時はこの中から選ぶか、 既存 letter の polymorphism 拡張を検討。
 
 ### C.2 確定 directive (v0.4 時点で実装済 / 実装予定)
 
@@ -175,16 +181,13 @@ user 概念 (前 turn で提示):
 |---------|-----------|----------|-------------------------|---------|
 | `Cmd hold f` | `f` (file) | focus-transferring | **どこから打っても** sidebar の File Explorer overlay を open + sidebar focus へ移動 | PR #441 merged |
 | `Cmd hold p` | `p` (PP) | panel-local | **File Explorer picker visible 中なら**: 選択中 file を PP (Canvas) に送る + picker は pin 状態に関係なく **連続選択を許す** (= dismiss しない) | PR #441 merged |
-| `Cmd hold e` | `e` (Echoes) | focus-transferring | active lane の Echoes 入力欄 (= cc) に focus + 必要なら Scene を `conductor-focus` に切替 | v0.4 予定 (= PR 443) |
-| `Cmd hold g` | `g` (Gold Experience) | focus-transferring | active lane の GE output に focus + Scene を `ge-focus` (or 同等) に切替 | v0.4 予定 |
-| `Cmd hold h` | `h` (Hermit Purple) | focus-transferring | active lane の HP に focus + Scene を `hp-focus` に切替 | v0.4 予定 |
-| `Cmd hold w` | `w` (TheWorld) | focus-preserving | TheWorld status (= process list / health) を PP (Canvas) に show。 focus は元の panel に残る | PR #444 |
 | `Cmd hold r` | `r` (restart) | context polymorphic | active_lane → `lane:restart` IPC、 active_stand → `process:restart` IPC、 どちらもなければ no-op (詳細 §D.7) | PR 445 |
 | `Cmd hold n` | `n` (new performer) | focus-transferring | active project (= active_lane / active_stand の project) の AddPerformer form を keyboard で open (= sidebar 内 ProjectAccordion の form を expand) | PR 445 |
 | `Cmd hold s` | `s` (switch) | focus-transferring | Lane / project switcher picker overlay を open (LanePicker.tsx、 fuzzy 検索 + flat list)。 lane 選択で `lane:select`、 project 選択で `process:toggle` (= accordion expand) | PR 445 |
 | `Cmd hold d` | `d` (delete) | context polymorphic | 2-click confirm 内蔵: 1 回目で pending state + sidebar 下端 hint bar 表示、 1 秒以内 2 回目で execute (active_lane の Performer → `lane:delete`、 active_stand → `process:delete`)、 timeout で abort | PR 445 |
 | `Cmd hold l` | `l` (lane number switcher mode) | focus-transferring (mode) | **mode-based directive**: ⌘ hold l で mode 突入 (= sidebar 下端に hint bar)、 **5 秒以内に modifier なし 1-9 単発キー** で `collectVisibleLanes()` (= expanded project の中の lane を上から flat list) の N 番目を `lane:select`。 Esc / 他キー / timeout で abort。 input フォーカス時は数字入力を妨げない (= mode abort) | PR 447 |
-| `Cmd hold ?` | `?` (meta cheatsheet) | focus-preserving | 全 directive 一覧 + 不採用 / 予約 / Avoid list を **markdown table** で Canvas (PP) に表示。 **規約上で唯一 shift 入りの directive** (= `Cmd+Shift+/` → keydown event の `e.key === '?'`)、 chord.ts の shift 例外 (= shift + symbol は通す) で実現 | PR 447 |
+
+> **v0.8 で撤去**: `e` / `g` / `h` (Stand focus、 旧 PR #444) は Scene hotkey `Ctrl+Shift+1..4` (§C.4) と重複のため撤去。 `w` (TheWorld status、 旧 PR #444) は将来の Unison WebView 直結 UI に委ねるため撤去。 `?`→`i` (meta cheatsheet、 旧 PR 447/454) は directive を最小動詞に絞る方針で撤去 (cheatsheet の SSOT は本 doc)。 いずれも #536/#537 で main-view bridge が撤去され no-op 化していたものを、 復活させず正式に削除した。
 
 ### C.3 予約 directive (v0.4 文法に基づく、 実装は別 PR)
 
@@ -202,7 +205,7 @@ user 概念 (前 turn で提示):
 | `Cmd+N` | New Window (muda menu) | **既存 keep** — `n` は directive 予約 (§C.3) と棲み分け: menu accelerator は `Cmd+N` 単発、 directive は `Cmd hold n` (= 結果として同 keydown event だが、 dispatch 順は menu accelerator が先) |
 | `Cmd+W` / `Cmd+Q` | Close Window / Quit (predefined) | **既存 keep** (system) |
 | `Cmd+C/V/X/Z/A` 等 | Edit menu predefined | **既存 keep** (system) |
-| `Ctrl+Shift+1..4` | Scene 切替 (`web-bundle/keybindings.ts`) | **既存 keep** (layout) |
+| `Ctrl+Shift+1..4` | Scene 切替 (`webview/keybindings.ts` の `attachKeybindings`) | **既存 keep** (layout) — v0.8 以降は **Stand focus の SSOT** (旧 `e/g/h` directive を吸収。 Scene = lead-focus / side-review / pp-overlay / pp-focus)。 ⚠️ directive installer の `webview/src/sidebar/keybindings.ts` (= `installSidebarKeybindings`) とは**別ファイル**。 Scene hotkey は前者 (main-view top-level)、 ⌘ hold directive の sidebar 配線は後者。 判定軸も別: Scene は `event.code` (物理キー位置、 Shift で `1→!` 化を回避)、 directive は `event.key.toLowerCase()` |
 | `Ctrl+Shift+] / [` | Scene cyclic | **既存 keep** (layout) |
 | **`Ctrl+Shift+C`** (`main_area.rs:1303-1319`) | active lane の selection copy (global fallback listener) | **既存 keep** — v0.4 で明示化 (= undocumented gap 解消)。 lane individual handler が捕り逃した場合の system-level clipboard copy fallback、 規約 system カテゴリに属する |
 | `Ctrl+Insert` / `Shift+Insert` (xterm.js) | terminal context での copy / paste | **既存 keep** (system) — terminal は xterm.js native handler で上書き、 詳細は §D.6 |
@@ -234,7 +237,7 @@ shortcut として **採用しない** 動作を明示する。 これらは「�
 `Cmd hold + key` は keydown event 上で `metaKey: true` + 文字キー 1 つの 1 event。 chord 2 段 state machine は不要、 単純な keydown listener で directive lookup + exec:
 
 ```ts
-// web-bundle/src/shortcuts/directive.ts (要旨)
+// webview/src/shortcuts/directive.ts (要旨)
 import { DIRECTIVE_TABLE } from './directive-table'
 
 export function installDirectiveHandler(ctx: DirectiveContext): () => void {
@@ -259,7 +262,7 @@ export function installDirectiveHandler(ctx: DirectiveContext): () => void {
 
 ### D.2 SSOT としての directive table
 
-`web-bundle/src/shortcuts/directive-table.ts` (= **single key map**):
+`webview/src/shortcuts/directive-table.ts` (= **single key map**):
 
 ```ts
 export interface DirectiveEntry {
@@ -313,7 +316,7 @@ File Explorer overlay 内で user が `Cmd hold p` を打った場合の挙動:
 **terminal (xterm.js) 領域**:
 - terminal pane の keydown は xterm.js の `CustomKeyEventHandler` で **上書きされ得る** (= `main_area.rs:1025-1045` 参照)
 - 主な override: `Ctrl+Insert` / `Shift+Insert` (clipboard)、 terminal selection 中の `Ctrl+C` (= copy semantics の context-aware fallback)
-- これらは規約 system カテゴリで keep。 directive listener は capture phase で取るため、 directive 用 letter (`f` / `p` / `e` / ...) は xterm.js より先に preventDefault される
+- これらは規約 system カテゴリで keep。 directive listener は capture phase で取るため、 directive 用 letter (`f` / `p` / `r` / ...) は xterm.js より先に preventDefault される
 
 ### D.7 context polymorphism dispatch table
 
@@ -351,7 +354,7 @@ dispatch 判定は **main view の Scene state** (`frameEngine.getCurrentSceneId
 
 1. **menu に出す** (single-key shortcut の SSOT): menu accelerator がある shortcut は muda menu に必ず item として登場
 2. **menu item の subtitle に directive 表記**: 例 「Open File... (⌘ hold f)」
-3. **Cheatsheet 画面 (将来 `meta` directive `?`)**: 全 directive を Canvas に markdown table で render
+3. **Cheatsheet は本 doc が SSOT** (v0.8): 旧 in-app cheatsheet directive (`?`→`i`) は撤去。 全 directive 一覧は §C.2 を参照。 in-app discoverability は ⌘K Command Palette (= `registry.ts` ACTIONS) が担う
 4. **LaneRow の `📁` icon button**: directive `f` の affordance (mouse 派 user 救済)
 
 ---
@@ -369,6 +372,7 @@ dispatch 判定は **main view の Scene state** (`frameEngine.getCurrentSceneId
 
 | date | version | section | change | PR |
 |------|---------|---------|--------|----|
+| 2026-06-15 | v0.8 draft | §C.1 / §C.2 / §C.4 / Layer F | **directive curation** (no-op 撤去)。 #536/#537 の WebView 統合で main-view directive bridge (Rust 往復) が撤去され `e/g/h/w/i` が no-op 化したのを機に棚卸し。 復活させず正式削除: `e/g/h` (Stand focus) は Scene hotkey `Ctrl+Shift+1..4` に一本化、 `w` (TheWorld status) は将来 Unison WebView 直結 UI に委譲、 `?`→`i` (cheatsheet) は最小動詞方針で撤去 (SSOT は本 doc + ⌘K palette)。 in-process `runMainViewDirective` fallback も撤去。 確定 directive は `f/p/r/n/s/d/l` の 7 動詞。 | (本 PR) |
 | 2026-05-27 | v0.7 draft | §C.2 / Layer D | meta directive を **`?` → `i` に rebind**。 v0.6 で `Cmd+Shift+/` (= `?`) に bind したが macOS の AppKit が `Cmd+?` を OS-level で「Help menu search」 に予約しており keydown が webview に届かず directive 発火しない issue を dogfood で発見。 `Cmd hold i` (info / cheatsheet) で機能復活。 chord.ts shift 例外は keep (= 将来 shift+symbol 系の余地)。 | PR 454 |
 | 2026-05-27 | v0.6 draft | §C.2 / §C.3 / Layer D | (1) `?` (meta cheatsheet) を §C.2 確定昇格、 chord.ts に shift 例外 (= shift + symbol は通す、 letter のみ reject)。 (2) `l` の意味を「lane panel 予約」 から **「lane number switcher mode」** に再定義 → §C.2 確定昇格: ⌘ hold l で mode 突入、 modifier なし 1-9 で expanded project 内 lane を上から N 番目で切替 (mode-based directive、 5 秒 timeout)。 (3) cheatsheet markdown を Rust 静的生成、 `AppEvent::DirectiveInject` で PP に inject | PR 447 |
 | 2026-05-27 | v0.5 draft | §C.2 / §C.3 | `r` / `n` / `s` / `d` を確定 directive に昇格 (PR 445 で実装、 sidebar 側 polymorphic dispatch + LanePicker.tsx 新規 + 2-click confirm hint bar)。 §C.3 から 4 entry を移動、 残り予約は `t/m/a/l/o/?` | PR 445 |

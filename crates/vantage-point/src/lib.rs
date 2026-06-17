@@ -15,10 +15,13 @@ pub mod config;
 pub mod creo;
 pub mod daemon;
 pub mod db;
+#[cfg(feature = "midi")]
+pub mod device_input;
+#[cfg(feature = "midi")]
+pub mod device_profile;
 pub mod discovery;
 pub mod file_watcher;
 pub mod flow;
-pub mod lan_discovery;
 // lane lib 本体 (vp-cli の bin `vp lane` も `vantage_point::lane` を経由する)
 pub mod lane;
 pub mod mcp;
@@ -31,6 +34,8 @@ pub mod process;
 pub mod projects_file;
 pub mod protocol;
 pub mod resolve;
+#[cfg(feature = "midi")]
+pub mod roto_palette;
 pub mod screenshot;
 pub mod spawn_env;
 pub mod stands;

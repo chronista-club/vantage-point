@@ -277,13 +277,23 @@ async fn handle_tmux_resolve_pane(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let query = payload["query"]
+        .as_str()
+        .ok_or_else(|| "query が必要です".to_string())?;
+
+    // lane address（`<project>/conductor` / `<project>/performer/<name>`）なら実 session に解決。
+    // `tmux send-keys -t <session>` で active pane に届くため、 単一 TmuxActor の束縛 session や
+    // agent_metadata を介さずに任意 lane へ nudge できる（fix-tmux-session-naming 根治経路）。
+    if let Some(session) = state.resolve_lane_session(query).await {
+        return Ok(
+            serde_json::json!({"status": "ok", "pane_id": session, "meta": serde_json::Value::Null}),
+        );
+    }
+
     let handle = state
         .ensure_tmux()
         .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let query = payload["query"]
-        .as_str()
-        .ok_or_else(|| "query が必要です".to_string())?;
     match handle.resolve_pane_id(query).await {
         Some(pane_id) => {
             let meta = handle.get_agent_meta(&pane_id).await;

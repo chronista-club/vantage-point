@@ -14,7 +14,7 @@
  * - Theme switching: 8 theme (mint-dark/light, sora-*, contrast-*, oldschool-*)
  *
  * Build:
- *   cd crates/vp-app/web-bundle && bun install && bun run build
+ *   cd crates/vp-app/webview && bun install && bun run build
  *
  * 出力: ../assets/editor-host.bundle.js (vp-app の Rust 側で include_str!)
  */
@@ -50,10 +50,7 @@ import {
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
-import {
-	attachKeybindings,
-	installMainViewDirectiveBridge,
-} from "./keybindings";
+import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
 import {
 	handleMessage as handleCanvasMessage,
@@ -105,10 +102,10 @@ generateAllFocusScenes(FOCUSABLE_PANE_IDS).forEach((s) =>
 // DOM 反映 + keybindings hook
 attachRenderer(frameEngine, document);
 attachKeybindings(frameEngine, window);
-// VP 規約 v0.3 directive bridge: main view で `Cmd hold + key` を捕捉して
-// `directive:fire` IPC 経由で Rust → sidebar に inject する。 main view focus 中
-// (terminal / Canvas / cc 入力欄等) でも picker を開けるようにする (= Pane focus 時の Cmd hold f)。
-installMainViewDirectiveBridge();
+// WebView 統合 (step 3a): 旧 installMainViewDirectiveBridge は削除。
+// sidebar + main が 1 DOM になったため、 directive は sidebar bundle の in-process
+// handler (src/sidebar/keybindings.ts の installDirectiveHandler) が同一 window で
+// 直接捕捉する。 IPC 往復 bridge を残すと 1 回の Cmd hold + key で二重発火する。
 
 // ===== legacy setActivePane bridge + per-Lane Scene state =====
 // 既存 main_area.rs JS が定義する window.setActivePane を wrap して、

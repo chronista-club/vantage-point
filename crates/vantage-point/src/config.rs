@@ -73,7 +73,7 @@ fn config_file_path() -> PathBuf {
 /// Vantage Process configuration
 ///
 /// config.kdl は document スタイルの KDL。 各 scalar 設定は document 直下の
-/// 単一引数 node (`default-port 33000` 等)、 section は子 node (`network { ... }`)。
+/// 単一引数 node (`default-port 33000` 等)、 section は子 node (`startup { ... }`)。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, KdlDeserialize)]
 #[kdl(document)]
 pub struct Config {
@@ -130,35 +130,6 @@ pub struct Config {
     #[serde(default)]
     #[kdl(child, default)]
     pub startup: StartupConfig,
-
-    /// VP-154 PR-3.5: LAN networking config (= mDNS / hub federation の挙動を tweak)
-    #[serde(default)]
-    #[kdl(child, default)]
-    pub network: NetworkConfig,
-}
-
-/// VP-154 PR-3.5: LAN networking config — mDNS advertise の identity 安定化が主目的。
-///
-/// macOS LocalHostName が boot 時に collision 検出で auto-increment (`mito-mac` →
-/// `mito-mac-3`) しても、 VP の LAN 識別子 (= `world-mito-mac` 等の mDNS instance_name)
-/// を **config で固定** することで、 LAN 上の他 device から見た VP identity が不変になる。
-///
-/// SRV record の target hostname (= 接続解決のための A record 参照) は OS 現在値を使い続けるので、
-/// 接続自体は OS rename にも追従する。 これで `instance_name 安定 + 接続動的` の両立。
-#[derive(Debug, Clone, Serialize, Deserialize, Default, KdlDeserialize)]
-#[kdl(name = "network")]
-pub struct NetworkConfig {
-    /// mDNS advertise の instance_name に使う hostname を強制指定 (例: `"mito-mac"`)。
-    ///
-    /// `Some(name)` なら `world-{name}` / `sp-{project}-{name}` で advertise、
-    /// `None` (default) なら旧挙動 (= `scutil --get LocalHostName` から取得)。
-    ///
-    /// 用途: macOS LocalHostName auto-increment (= boot 時 collision 検出由来) で
-    /// LAN identity が揺れる問題を回避。 同 instance_name の再 advertise は mDNS protocol の
-    /// TTL refresh として処理されるので、 cache 上の entry は merge されて累積しない。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[kdl(child, name = "advertise-hostname", unwrap_arg)]
-    pub advertise_hostname: Option<String>,
 }
 
 /// SP startup behavior config (I-b、 2026-04-30)。
@@ -527,9 +498,6 @@ default-project-dir "/home/user/projects/main"
 default-port 33001
 claude-cli-path "/opt/claude/bin/claude"
 default-stand "echoes"
-network {
-    advertise-hostname "mito-mac"
-}
 startup {
     max-concurrent-lane-spawn 3
 }
@@ -545,10 +513,6 @@ startup {
             Some("/opt/claude/bin/claude")
         );
         assert_eq!(config.default_stand.as_deref(), Some("echoes"));
-        assert_eq!(
-            config.network.advertise_hostname.as_deref(),
-            Some("mito-mac")
-        );
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
         // projects は config.kdl に出さない (#[kdl(skip)]、 SSOT は projects.kdl)
         assert!(config.projects.is_empty());
@@ -588,24 +552,19 @@ startup {
         assert_eq!(data_dir(), vp_data_dir());
     }
 
-    /// VP-189: 実運用で最も多い形 — network section だけの最小 config.kdl
+    /// VP-189: 実運用で最も多い形 — 単一 section だけの最小 config.kdl
     #[test]
     fn test_minimal_config_kdl_parses() {
         let kdl = r#"
-network {
-    advertise-hostname "mito-mac"
+startup {
+    max-concurrent-lane-spawn 3
 }
 "#;
         let config: Config = club_kdl::from_str(kdl).expect("minimal config.kdl parse");
-        assert_eq!(
-            config.network.advertise_hostname.as_deref(),
-            Some("mito-mac")
-        );
+        assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
         assert!(config.default_project_dir.is_none());
         // default-port node 不在 → KDL field default は 0 (load の post-process で 33000)
         assert_eq!(config.default_port, 0);
-        // startup node 不在 → StartupConfig::default() で max=1
-        assert_eq!(config.startup.max_concurrent_lane_spawn, 1);
     }
 
     /// VP-189: section を 1 つも持たない空 config.kdl でも parse できる
@@ -613,7 +572,6 @@ network {
     fn test_comment_only_config_kdl_parses() {
         let config: Config = club_kdl::from_str("// 空 config\n").expect("comment-only parse");
         assert!(config.default_project_dir.is_none());
-        assert!(config.network.advertise_hostname.is_none());
         assert!(config.projects.is_empty());
     }
 

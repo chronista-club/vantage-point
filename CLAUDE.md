@@ -52,7 +52,7 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 |---------|------|
 | CLI / Process | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
-| Frontend | SolidJS + xterm.js + creo-ui (vp-app web-bundle) |
+| Frontend | SolidJS + xterm.js + creo-ui (vp-app webview) |
 | Agent | Claude CLI + MCP |
 | MIDI | midir |
 
@@ -120,23 +120,24 @@ vp hd start|stop|attach|list  # tmux + Claude CLI セッション管理（旧 TU
 vp tmux                # tmux ペイン操作（capture/split/send/dashboard）
 
 # その他
-vp lan                 # LAN address book（mDNS discovery）
 vp port                # deterministic port layout の計算・表示
 vp db init|path|status # embedded SurrealDB 管理
 vp auth me|login|logout  # Creo ID 認証
 vp pane / vp file      # ペイン操作 / ファイル監視
 vp midi monitor|ports  # MIDI（feature = "midi" ビルドのみ）
-vp midi lpd8 write|switch|ports
+vp midi lpd8 write|switch|ports|demo  # demo = mk2 フル RGB pad 投影
+vp midi xtouch demo|wave  # X-Touch (MCU) 実機 smoke / フェーダー wave
+vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ / handshake 観察
 ```
 
-> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散、WebUI は `http://localhost:33000` を直接開く）。
+> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
 
 ## 開発コマンド
 
 ```bash
 cargo build --release -p vantage-point   # ビルド
 cargo test --workspace                    # テスト
-cargo install --path crates/vp-cli        # インストール（codesign 自動付与）
+cargo install --path crates/vp-cli --locked  # インストール（codesign 自動付与。--locked 必須 — install は Cargo.lock を無視して最新依存を解決するため、未検証の新リリース（例: time 0.3.48 × ratatui-widgets の E0119）を踏む）
 cargo fmt --all -- --check                # フォーマットチェック
 cargo clippy --workspace --all-targets    # Lint
 ```
@@ -295,7 +296,7 @@ MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯�
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (11485 symbols, 25090 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point** (11700 symbols, 25508 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

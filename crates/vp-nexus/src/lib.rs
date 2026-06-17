@@ -54,7 +54,7 @@ pub struct VersionResponse {
 
 /// `/v1/capabilities` response body — federation hub の機能 advertise の枠 (= skeleton)。
 /// 後続 task で `capabilities` / `protocols` に具体機能を埋めていく
-/// (= wire-forward / sync-settings / mdns-announce 等が追加される予定)。
+/// (= wire-forward / sync-settings 等が追加される予定)。
 #[derive(Debug, Serialize)]
 pub struct CapabilitiesResponse {
     pub service: &'static str,

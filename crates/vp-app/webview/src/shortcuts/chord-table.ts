@@ -26,7 +26,7 @@ export interface DirectiveEntry {
 }
 
 /**
- * 確定 directive registry (v0.5)。 新しい directive 追加時はここに 1 行足す + 規約 doc Layer C も更新。
+ * 確定 directive registry (v0.8)。 新しい directive 追加時はここに 1 行足す + 規約 doc Layer C も更新。
  *
  * key は **小文字 1 文字**。 user が打つ `Cmd hold + <letter>` keydown event の `e.key.toLowerCase()` で照合する。
  */
@@ -40,23 +40,6 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
     description:
       'send current/selected to PP (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
     semantic: 'panel-local',
-  },
-  // v0.4 (PR #444) で実装 — Stand focus 系
-  e: {
-    description: 'focus to Echoes (= active lane の cc 入力欄、 Scene を echoes-focus に切替)',
-    semantic: 'focus-transferring',
-  },
-  g: {
-    description: 'focus to Gold Experience output (Scene を ge-focus に切替)',
-    semantic: 'focus-transferring',
-  },
-  h: {
-    description: 'focus to Hermit Purple (Scene を hp-focus に切替)',
-    semantic: 'focus-transferring',
-  },
-  w: {
-    description: 'TheWorld status (= daemon health + process list) を PP に markdown で表示',
-    semantic: 'focus-preserving',
   },
   // v0.5 (PR 445) で実装 — lane 操作系
   r: {
@@ -83,14 +66,8 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
       'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で lane:select',
     semantic: 'focus-transferring',
   },
-  // v0.7 (PR 454) で実装 — meta directive (= info / cheatsheet)
-  //
-  // 当初 v0.6 (PR 447) で `?` (= `Cmd+Shift+/`) に bind したが、 macOS の NSApplication
-  // が `Cmd+?` を OS-level で「Help menu search」 用に予約しており、 keydown が webview に
-  // 届かず directive が発火しない issue を dogfood で発見。 `i` (info) に rebind した。
-  i: {
-    description:
-      'info / cheatsheet — 全 directive 一覧を Canvas (PP) に markdown table で表示 (focus-preserving)',
-    semantic: 'focus-preserving',
-  },
+  // v0.8 (curation) で撤去:
+  //   e/g/h (Stand focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
+  //   w (TheWorld status)  — 将来の Unison WebView 直結 UI に status を委ねるため撤去。
+  //   i (cheatsheet)       — directive を最小動詞に絞る方針で不要。SSOT は docs/design/18。
 }

@@ -498,6 +498,15 @@ impl WorldControlClient {
             .await?;
         Ok(())
     }
+
+    /// chronista-hub registry の world 一覧を取得する（TheWorld 経由で `worlds.Discover` を proxy）。
+    ///
+    /// SSOT 原則: CLI は hub に直接接続せず、TheWorld の `hub/discover` RPC を叩く。
+    /// `CHRONISTA_HUB_ADDR` 未設定時は World 側が federation 無効エラーを返す。
+    pub async fn hub_discover(&self) -> Result<Vec<serde_json::Value>> {
+        let resp = self.call("hub/discover", serde_json::json!({})).await?;
+        serde_json::from_value(resp).context("hub/discover レスポンスのパースに失敗")
+    }
 }
 
 #[cfg(test)]

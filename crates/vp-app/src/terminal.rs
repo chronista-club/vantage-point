@@ -123,19 +123,6 @@ pub enum AppEvent {
     /// (`{markdown}` | `{log}` | `{html}` のいずれか)。 main_view に
     /// `window.vpCanvas.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
     FilesOpenResult { content: serde_json::Value },
-    /// VP shortcut directive (= 規約 v0.3, docs/design/18-shortcut-convention.md)。
-    /// main view 側で `Cmd hold + key` directive が捕捉された結果を Rust に届ける。
-    /// 例: `Cmd hold f` (file mode) は main view の directive listener が `Cmd+F` keydown を
-    /// 捕捉して `directive:fire { key: "f" }` IPC を投げる → `DirectiveFire` event 発火。
-    /// caller は key で dispatch (v1.0 では `"f"` → `window.vpFilePicker.open(addr)` を inject、
-    /// `"p"` → 既存 picker visible なら send-selected を inject)。 sidebar 側 directive は
-    /// Rust 経由せず direct に sidebar 内で完結する (= main view 専用 bridge)。
-    DirectiveFire { key: String },
-    /// VP shortcut directive 由来の Canvas (PP) inject。 blocking I/O (例: `w` directive で
-    /// TheWorld status fetch) を経て markdown / log / html 等を生成した結果を main_view に注入する。
-    /// 規約 v0.4 §C.2 で `w` directive を実装する際の push back path。 caller は
-    /// `window.vpCanvas.handleMessage({type:'show',content,...})` を evaluate_script で呼ぶ。
-    DirectiveInject { content: serde_json::Value },
     /// wiremsg Stage 2: SP の "canvas" Unison channel から受信した Canvas (Paisley Park)
     /// ProcessMessage 1 件。`message` は ProcessMessage の生 JSON (`{"type":"show",...}` 等)。
     /// handler は active project の分のみ main_view WebView に転送する。
@@ -188,23 +175,6 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             // 起動 race で silent drop された ensureLane を再発行させるための signal。
             tracing::info!("[ipc] lanes:ensure-all (JS DOMContentLoaded catch-up)");
             let _ = proxy.send_event(AppEvent::LanesEnsureAll);
-        }
-        Some("directive:fire") => {
-            // VP shortcut directive (= 規約 v0.3)。 main view の directive listener が
-            // `Cmd hold + key` keydown を捕捉して投げてくる。 Rust 側は `DirectiveFire`
-            // event に変換し、 event loop で key ごとに dispatch (= sidebar の
-            // window.vpFilePicker.open / window.vpFilePickerSendSelected 等を evaluate_script)。
-            let key = parsed
-                .get("key")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if !key.is_empty() {
-                tracing::info!("[ipc] directive:fire {}", key);
-                let _ = proxy.send_event(AppEvent::DirectiveFire { key });
-            } else {
-                tracing::warn!("[ipc] directive:fire malformed: {}", msg);
-            }
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き

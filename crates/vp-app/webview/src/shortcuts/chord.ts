@@ -44,8 +44,8 @@ export function installDirectiveHandler(ctx: DirectiveContext): () => void {
     // Shift 修飾の扱い:
     // - shift + alphanumeric letter (例: ⌘+Shift+F) は **layout / visual 系** の領域 (Ctrl+Shift+digit
     //   と類比) なので directive としては reject (= 別 handler に通す)
-    // - shift + symbol (例: ⌘+Shift+/ で `?`) は directive 候補として通す (= 規約 v0.6 `?` cheatsheet)。
-    //   `?` は本質的に Shift+/ でしか入力できないため、 唯一の許可 path
+    // - shift + symbol (例: ⌘+Shift+/) は directive 候補として通す。 現状 symbol-key directive は
+    //   無い (v0.8 で `?`/`i` cheatsheet は撤去) が、 将来 shift+symbol 系を足す余地として path は keep。
     if (e.shiftKey && /^[a-z0-9]$/.test(key)) return
 
     if (DIRECTIVE_TABLE[key]) {
