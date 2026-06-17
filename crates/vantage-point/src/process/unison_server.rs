@@ -901,11 +901,18 @@ pub async fn start_unison_server(
 
 /// agent address を canonical (qualified) 形に正規化する (wiremsg N1、 refactor R1 PR-B)
 ///
-/// conductor の自己申告 from/agent は bare `"agent"` で届く (mcp.rs `SelfLane::from_address`)。
-/// store 上の識別子を qualified (`agent@<project>`) 一本に統一することで、 cross-process
-/// 返信 (`agent@<project>` 宛で forward される) が conductor の bare query と完全一致
-/// マッチせず**永遠に届かない**バグ (B2、 レビュー mem_1CbuxQuNRwHBiZgBVUWVfN) を根治する。
+/// bare `"agent"` を qualified (`agent@<project>`) に正規化する。
+///
+/// 現行 MCP (`SelfLane::from_address`) は conductor も canonical `agent@<project>` を
+/// 自前で送るため、本関数は実質 **冪等な素通し + 後方互換 (旧 client / bare 送信者) 用の
+/// 防御層**。bare を残す理由: 旧 bare 送信が来ても store 識別子を qualified 一本に揃え、
+/// cross-process 返信 (`agent@<project>` 宛 forward) が bare query と完全一致せず届かない
+/// バグ (B2、 レビュー mem_1CbuxQuNRwHBiZgBVUWVfN) を防ぐため。
 /// bare 以外 (qualified / canvas@... / gold_experience@... 等) はそのまま返す。
+///
+/// ⚠️ 正規化先 `self_project` は「繋いだ SP の project」なので、bare のままだと誤 SP 接続で
+/// identity が化ける (= 旧 conductor バグの根)。だから identity の SSOT は MCP 側 canonical
+/// 送出に移した。本関数は qualified を受けたら何もしない (= SP 非依存) のが正常運用。
 fn normalize_agent_addr(addr: &str, self_project: &str) -> String {
     if addr == "agent" {
         format!("agent@{}", self_project)

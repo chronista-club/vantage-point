@@ -174,6 +174,38 @@ pub fn project_name_from_path(project_dir: &str, config: &Config) -> String {
         .to_string()
 }
 
+/// 正規化済み path から登録 project 名を **SP 非依存 (config のみ)** に解決する純関数
+/// (wire identity SSOT)。完全一致 → longest-prefix サブディレクトリ一致 → `None`。
+///
+/// `resolve_from_cwd` の config 経路だけを抜き出した純 config lookup。discovery / TheWorld を
+/// 引かないので、自 project の SP が落ちていても conductor の canonical address
+/// (`agent@<project>`) を確定できる。I/O なし (cwd は呼び出し側で正規化して渡す) で単体 test 可能。
+///
+/// 戻り値は登録 project の `name` (= [`project_name_from_path`] が登録 path に返すのと同じ値、
+/// SSOT は `config.projects[].name`)。未登録 path は `None` → 呼び出し側で fail-closed する
+/// (誤 identity で wire を送らない)。`project_name_from_path` と違い **basename fallback しない**
+/// — basename 衝突による silent-wrong-identity を避けるため。
+pub(crate) fn match_project_name_for_path(
+    normalized_path: &str,
+    config: &Config,
+) -> Option<String> {
+    // 1. 完全一致
+    if let Some(idx) = config.find_project_index(normalized_path) {
+        return Some(config.projects[idx].name.clone());
+    }
+
+    // 2. longest-prefix サブディレクトリ一致 (最も具体的な path を優先)
+    config
+        .projects
+        .iter()
+        .filter(|p| {
+            let normalized = Config::normalize_path(std::path::Path::new(&p.path));
+            normalized_path.starts_with(&format!("{}/", normalized))
+        })
+        .max_by_key(|p| Config::normalize_path(std::path::Path::new(&p.path)).len())
+        .map(|p| p.name.clone())
+}
+
 /// FNV-1a 64-bit hash。
 ///
 /// VP-182: `project_slug` の非 ASCII fallback で使う。 標準 `DefaultHasher` は
@@ -308,5 +340,80 @@ mod tests {
         assert_ne!(s1, s2);
         // 同 path は安定
         assert_eq!(project_slug("/tmp/日本語", &cfg), s1);
+    }
+
+    // --- match_project_name_for_path (wiremsg identity SSOT) ---
+
+    fn cfg_with(projects: &[(&str, &str)]) -> Config {
+        use crate::config::ProjectConfig;
+        Config {
+            projects: projects
+                .iter()
+                .map(|(name, path)| ProjectConfig {
+                    name: name.to_string(),
+                    path: path.to_string(),
+                    port: None,
+                    enabled: true,
+                    slot: None,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn match_project_exact_root() {
+        // 存在しない絶対 path は normalize_path が lexical fallback するので test 安定。
+        let cfg = cfg_with(&[("club-unison", "/Users/x/repos/club-unison")]);
+        assert_eq!(
+            match_project_name_for_path("/Users/x/repos/club-unison", &cfg).as_deref(),
+            Some("club-unison")
+        );
+    }
+
+    #[test]
+    fn match_project_longest_prefix_subdir() {
+        // conductor は subdir から動く → longest-prefix で親 project を引く
+        let cfg = cfg_with(&[("club-unison", "/Users/x/repos/club-unison")]);
+        assert_eq!(
+            match_project_name_for_path("/Users/x/repos/club-unison/clients/typescript", &cfg)
+                .as_deref(),
+            Some("club-unison")
+        );
+    }
+
+    #[test]
+    fn match_project_picks_most_specific() {
+        // nested 登録: より深い (具体的) path を優先
+        let cfg = cfg_with(&[
+            ("outer", "/Users/x/repos/outer"),
+            ("inner", "/Users/x/repos/outer/inner"),
+        ]);
+        assert_eq!(
+            match_project_name_for_path("/Users/x/repos/outer/inner/sub", &cfg).as_deref(),
+            Some("inner")
+        );
+    }
+
+    #[test]
+    fn match_project_unregistered_is_none() {
+        // 未登録 cwd → None (= conductor fail-closed)。sibling 名前共有 (basename 衝突) でも誤マッチしない
+        let cfg = cfg_with(&[("vp", "/Users/x/repos/vp")]);
+        assert_eq!(
+            match_project_name_for_path("/Users/x/repos/other", &cfg),
+            None
+        );
+        // basename だけ一致する別 root は prefix マッチしない (basename fallback しない証明)
+        assert_eq!(match_project_name_for_path("/tmp/elsewhere/vp", &cfg), None);
+    }
+
+    #[test]
+    fn match_project_uses_config_name_not_basename() {
+        // name != basename (vp projects rename 済) でも config 名を返す
+        let cfg = cfg_with(&[("renamed-name", "/Users/x/repos/orig-dir")]);
+        assert_eq!(
+            match_project_name_for_path("/Users/x/repos/orig-dir", &cfg).as_deref(),
+            Some("renamed-name")
+        );
     }
 }
