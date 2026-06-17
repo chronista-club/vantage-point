@@ -33,14 +33,18 @@ console.info("[vp-bundle] booting (VP-140 diagnostic)");
 // agent が DevTools を開かずに console を Read/watch_file で観測するための経路。
 // Rust 側 handle_ipc_message の `console` arm が tracing で書く。 console 自体は
 // 壊さない (orig を必ず呼ぶ + 転送失敗は握り潰す)。
+//
+// ⚠️ install は無条件、 ipc は **call 時に lookup**: この IIFE は module-eval (早期) で
+// 走り、 その時点で wry の window.ipc が未注入のことがある。 install 時に capture すると
+// 永久に無効化されるため、 各 console 呼び出し時に毎回引く (注入後の console.* も拾える)。
 (() => {
-	const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
-	if (!ipc) return;
 	const levels = ["log", "info", "warn", "error", "debug"] as const;
 	for (const level of levels) {
 		const orig = console[level].bind(console);
 		console[level] = (...args: unknown[]) => {
 			orig(...args);
+			const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+			if (!ipc) return;
 			try {
 				// 引数ごとに guard — circular ref で 1 個 throw しても他の引数は残す
 				const text = args
