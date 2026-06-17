@@ -164,8 +164,13 @@ impl TopicRouter {
 
             // === Star Platinum（Process 管理）===
             ProcessMessage::Ping => "process/star-platinum/event/ping".to_string(),
+            // switch_lane は一時コマンド（active Lane 切替）であり state ではない。
+            // category=event にして **非 retained** にする（command にすると retained store に
+            // 残り、canvas channel 再接続のたび「最後の switch」が replay され、ユーザーが別 lane
+            // を選んでいても強制ジャンプする副作用が出る）。canvas channel は paisley-park/# を
+            // 購読するので event でも live 配信は届く。
             ProcessMessage::SwitchLane { .. } => {
-                "process/paisley-park/command/switch-lane".to_string()
+                "process/paisley-park/event/switch-lane".to_string()
             }
             // wiremsg: Lane 一覧 snapshot。category=state → retained。
             ProcessMessage::LanesSnapshot { .. } => "process/star-platinum/state/lanes".to_string(),
@@ -317,6 +322,17 @@ mod tests {
     fn test_message_to_topic_ping() {
         let topic = TopicRouter::message_to_topic(&ProcessMessage::Ping);
         assert_eq!(topic, "process/star-platinum/event/ping");
+    }
+
+    #[test]
+    fn test_switch_lane_is_event_not_retained() {
+        // switch_lane は一時コマンド → event category → 非 retained（再接続 replay されない）
+        let msg = ProcessMessage::SwitchLane {
+            lane: "feat-api".to_string(),
+        };
+        let topic = TopicRouter::message_to_topic(&msg);
+        assert_eq!(topic, "process/paisley-park/event/switch-lane");
+        assert!(!TopicPath::parse(&topic).is_retained());
     }
 
     #[test]

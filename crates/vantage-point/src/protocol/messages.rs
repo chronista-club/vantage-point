@@ -183,7 +183,8 @@ pub enum ProcessMessage {
     },
     /// Canvas Lane 切り替え指示
     SwitchLane {
-        /// 切り替え先の Lane 名（プロジェクト名）
+        /// active 化する lane token: "conductor"（lead）or performer 名（例: "feat-api"）。
+        /// 現 project 内の lane-within-project 切替（B1 で project 切替意味論から変更）。
         lane: String,
     },
     /// wiremsg: SP の Lane 一覧 snapshot（retained state topic）。
