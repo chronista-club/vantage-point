@@ -397,7 +397,9 @@ impl AppState {
                     // key = "pane/{pane_id}" → pane_id を抽出
                     let pane_id = disc.key.strip_prefix("pane/").unwrap_or(&disc.key);
                     if let Ok(pane_state) = disc.extract::<PaneState>() {
-                        let topic = format!("process/paisley-park/command/show/{}", pane_id);
+                        // DISC は conductor（lead）scope の snapshot。新 lane-scoped topic 形に合わせる。
+                        let topic =
+                            format!("process/paisley-park/command/show/conductor/{}", pane_id);
                         store.set(
                             &topic,
                             ProcessMessage::Show {
@@ -405,6 +407,7 @@ impl AppState {
                                 content: pane_state.content,
                                 append: false,
                                 title: pane_state.title,
+                                lane: None,
                             },
                         );
                         count += 1;

@@ -174,14 +174,20 @@ interface SetActivePaneInfo {
 let activeLaneAddress: string | null = null;
 
 /**
- * LaneAddress::Display 形 (`<project>/lead` / `<project>/wing/<name>`) を、
- * canvas-handler が IPC で使う flat lane_name (`null` = lead, `string` = wing) に翻訳する。
- * pp-content-persist で lead/wing 別の SurrealDB record を引くための key 整形。
+ * LaneAddress::Display 形を canvas-handler が使う flat lane_name に翻訳する。
+ * `null` = conductor（lead）、`string` = performer 名。
+ *
+ * D2 統一: 語彙は conductor/performer。rename 途上のため legacy `lead`/`wing` も受理する:
+ * - `<project>/conductor` / `<project>/lead` → `null`（conductor/lead）
+ * - `<project>/performer/<name>` / `<project>/wing/<name>` → `<name>`（performer）
+ *
+ * この値は (a) pp-content-persist の SurrealDB record key、(b) per-lane PP の
+ * canvas filter token（`null`→`conductor` に正規化して producer の lane と突合）に使う。
  */
 function laneNameFromAddress(addr: string | null): string | null {
 	if (!addr) return null;
-	if (addr.endsWith("/lead")) return null;
-	const m = addr.match(/\/wing\/(.+)$/);
+	if (addr.endsWith("/conductor") || addr.endsWith("/lead")) return null;
+	const m = addr.match(/\/(?:performer|wing)\/(.+)$/);
 	if (m) return m[1] ?? null;
 	return null;
 }

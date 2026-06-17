@@ -71,23 +71,44 @@ pub enum ProcessMessage {
         /// ペインのタイトル（タブ表示用）
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// このメッセージが属する Lane（per-lane PP scope、conductor/performer 語彙）。
+        /// `None` = conductor（lead）。topic の lane segment になり、retained を lane 別に分離する。
+        /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を conductor 扱い）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
     },
     /// Clear a pane
-    Clear { pane_id: String },
+    Clear {
+        pane_id: String,
+        /// 属する Lane（`None` = conductor）。[`ProcessMessage::Show`] の lane と同義。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
+    },
     /// Split a pane
     Split {
         pane_id: String,
         direction: SplitDirection,
         new_pane_id: String,
+        /// 属する Lane（`None` = conductor）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
     },
     /// Close a pane
-    Close { pane_id: String },
+    Close {
+        pane_id: String,
+        /// 属する Lane（`None` = conductor）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
+    },
     /// Toggle side panel visibility
     TogglePane {
         pane_id: String,
         /// Optional explicit state: true = show, false = hide, None = toggle
         #[serde(default)]
         visible: Option<bool>,
+        /// 属する Lane（`None` = conductor）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
     },
     /// Ping for keepalive
     Ping,
@@ -458,6 +479,7 @@ mod tests {
             content: Content::Markdown("# Hello".to_string()),
             append: false,
             title: Some("設計書".to_string()),
+            lane: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"show""#));
@@ -472,6 +494,7 @@ mod tests {
             content: Content::Markdown("# Hello".to_string()),
             append: false,
             title: None,
+            lane: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("title"));
@@ -483,6 +506,7 @@ mod tests {
             pane_id: "main".to_string(),
             direction: SplitDirection::Horizontal,
             new_pane_id: "pane-1".to_string(),
+            lane: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"split""#));
@@ -494,6 +518,7 @@ mod tests {
     fn test_close_message_serialization() {
         let msg = ProcessMessage::Close {
             pane_id: "pane-1".to_string(),
+            lane: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"close""#));

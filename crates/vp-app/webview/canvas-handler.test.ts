@@ -22,6 +22,7 @@ import {
   deleteItem,
   getCanvasState,
   handleMessage,
+  setActiveLaneName,
   setCursor,
   subscribeCanvasState,
   type CanvasItem,
@@ -103,6 +104,44 @@ describe('dispatchShow (handleMessage type=show)', () => {
       content: { markdown: 'hello' },
       append: true,
     } as Parameters<typeof handleMessage>[0])
+    expect(getCanvasState().items).toHaveLength(1)
+  })
+})
+
+// ============================================================================
+// per-lane PP filter (handleMessage の lane scope)
+// ============================================================================
+
+describe('per-lane PP filter', () => {
+  it('active=conductor: lane 無し show は通る（conductor 同士）', () => {
+    setActiveLaneName(null) // null = conductor/lead
+    handleMessage(makeShowMsg('a'))
+    expect(getCanvasState().items).toHaveLength(1)
+  })
+
+  it('active=conductor: 別 performer lane の show は drop される', () => {
+    setActiveLaneName(null)
+    handleMessage({ ...makeShowMsg('x'), lane: 'feat-api' })
+    expect(getCanvasState().items).toHaveLength(0)
+  })
+
+  it('active=performer: 一致する lane の show だけ通る', () => {
+    setActiveLaneName('feat-api')
+    handleMessage({ ...makeShowMsg('mine'), lane: 'feat-api' })
+    handleMessage({ ...makeShowMsg('other'), lane: 'sub' })
+    handleMessage(makeShowMsg('conductor-msg')) // lane 無し = conductor → drop
+    const { items } = getCanvasState()
+    expect(items).toHaveLength(1)
+    expect(items[0].title).toBe('mine')
+  })
+
+  it('active=performer: 別 lane の clear は無視される', () => {
+    setActiveLaneName('feat-api')
+    handleMessage({ ...makeShowMsg('keep'), lane: 'feat-api' })
+    handleMessage({ type: 'clear', pane_id: 'main', lane: 'sub' } as Parameters<
+      typeof handleMessage
+    >[0])
+    // 別 lane の clear なので items は消えない
     expect(getCanvasState().items).toHaveLength(1)
   })
 })

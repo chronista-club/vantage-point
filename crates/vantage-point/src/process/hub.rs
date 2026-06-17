@@ -159,6 +159,7 @@ mod tests {
             content: Content::Markdown("# Hello".to_string()),
             append: false,
             title: None,
+            lane: None,
         };
         hub.broadcast(msg);
 

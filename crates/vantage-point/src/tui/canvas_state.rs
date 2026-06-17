@@ -52,6 +52,7 @@ impl CanvasState {
                 content,
                 append,
                 title,
+                ..
             } => {
                 if *append {
                     if let Some((existing_title, existing_content)) = self.panes.get_mut(pane_id) {
@@ -73,7 +74,7 @@ impl CanvasState {
                     self.update_image(pane_id, data);
                 }
             }
-            ProcessMessage::Clear { pane_id } => {
+            ProcessMessage::Clear { pane_id, .. } => {
                 self.panes.remove(pane_id);
                 self.images.remove(pane_id);
             }

@@ -2049,6 +2049,9 @@ impl VantageMcp {
             content,
             append: false,
             title: params.title,
+            // per-lane PP: この MCP が属する Lane（cwd 由来、conductor/performer 語彙）を stamp。
+            // topic の lane segment になり、retained を lane 別に分離する。
+            lane: Some(SelfLane::detect().lane_name),
         };
 
         self.process_call("show", &msg).await?;
@@ -2076,6 +2079,7 @@ impl VantageMcp {
 
         let msg = ProcessMessage::Clear {
             pane_id: pane_id.clone(),
+            lane: Some(SelfLane::detect().lane_name),
         };
         self.process_call("clear", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
@@ -2100,6 +2104,7 @@ impl VantageMcp {
         let msg = ProcessMessage::TogglePane {
             pane_id: params.pane_id.clone(),
             visible: params.visible,
+            lane: Some(SelfLane::detect().lane_name),
         };
         self.process_call("toggle_pane", &msg).await?;
 
@@ -2116,6 +2121,7 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let msg = ProcessMessage::Close {
             pane_id: params.pane_id.clone(),
+            lane: Some(SelfLane::detect().lane_name),
         };
         self.process_call("close_pane", &msg).await?;
 

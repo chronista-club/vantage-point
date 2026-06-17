@@ -41,11 +41,15 @@ interface ShowMessage {
   /** doc 19: spec から omit。 caller が送ってきても無視 (silent ignore)。 */
   append?: boolean
   title?: string
+  /** per-lane PP: 属する Lane（conductor/performer 語彙）。欠落 = conductor（lead）。 */
+  lane?: string
 }
 
 interface ClearMessage {
   type: 'clear'
   pane_id: string
+  /** per-lane PP: 属する Lane。欠落 = conductor。 */
+  lane?: string
 }
 
 type AnyMessage = ShowMessage | ClearMessage | { type: string; [key: string]: unknown }
@@ -308,6 +312,7 @@ export function _resetForTest(): void {
   canvasState.items = []
   canvasState.cursor = null
   stateListeners.clear()
+  activeLaneName = null
 }
 
 // ============================================================================
@@ -357,6 +362,16 @@ function dispatchShow(msg: ShowMessage): void {
  * Rust 側 `spawn_canvas_subscription` が active project の canvas message ごとに呼ぶ。
  */
 export function handleMessage(msg: AnyMessage): void {
+  // per-lane PP filter: active lane 以外の Canvas message は drop（lane 混ざり防止）。
+  // 比較は conductor/performer 語彙。activeLaneName は null=lead を保持するので conductor に正規化、
+  // msg.lane 欠落も conductor（lead）扱い。pp:state:loaded は永続化注入なので filter 対象外。
+  if (msg.type === 'show' || msg.type === 'clear') {
+    const msgLane = (msg as { lane?: string }).lane ?? 'conductor'
+    const activeToken = activeLaneName ?? 'conductor'
+    if (msgLane !== activeToken) {
+      return
+    }
+  }
   if (msg.type === 'show') {
     dispatchShow(msg as ShowMessage)
   } else if (msg.type === 'clear') {
