@@ -144,6 +144,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "slot:rect"
                 | "pp:state:save"
                 | "pp:state:load"
+                | "console"
         )
     )
 }
@@ -1362,6 +1363,20 @@ pub fn run() -> anyhow::Result<()> {
     let ipc_proxy = event_loop.create_proxy();
     // DevTools は compile 時 always 有効。menu の「Open Developer Tools」から
     // `webview.open_devtools()` を呼ぶかで runtime 制御 (本番ビルドでも切替可)。
+    // echo probe trigger (Unison 北極星 step 2/3): VP_UNISON_ECHO_CERT が set なら
+    // webview load 前に cert を global へ注入する。 entry.tsx が load 時に検出して
+    // window.vpUnisonEcho を auto-run し、 結果は console bridge 経由で app.kdl.log に出る
+    // (= agent が DevTools なしで round-trip を観測する経路)。 未 set なら空 script で no-op。
+    let echo_init = std::env::var("VP_UNISON_ECHO_CERT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|cert| {
+            format!(
+                "window.__VP_ECHO_CERT__ = {};",
+                serde_json::to_string(&cert).unwrap_or_else(|_| "\"\"".into())
+            )
+        })
+        .unwrap_or_default();
     let webview = WebViewBuilder::new()
         // 統合 origin fix: with_html (about:blank = 不透明オリジン) だと localStorage が
         // SecurityError を throw し sidebar bundle が boot 中に落ちる。custom protocol で
@@ -1369,6 +1384,7 @@ pub fn run() -> anyhow::Result<()> {
         .with_custom_protocol("vp-asset".to_string(), move |id, request| {
             crate::web_assets::serve(id, request, MAIN_VIEW_ASSETS)
         })
+        .with_initialization_script(&echo_init)
         .with_url("vp-asset://app/index.html")
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),

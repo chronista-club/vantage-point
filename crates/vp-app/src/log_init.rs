@@ -104,6 +104,16 @@ pub fn init_tracing() -> LogInitResult {
     {
         env_filter = env_filter.add_directive("vp_app=info".parse().expect("static directive"));
     }
+    // console bridge (target="webview") は EnvFilter に明示 directive が無いと
+    // 「未明示 target は OFF」 仕様で全 drop される (verify recipe で実証: default 起動だと
+    // webview 行が一切出ず、 RUST_LOG=webview=info の override が要った)。 user が webview を
+    // 明示してなければ info を補い、 webview console.* が default で app.kdl.log に流れるようにする。
+    if !user_rust_log
+        .split(',')
+        .any(|d| d.trim().starts_with("webview"))
+    {
+        env_filter = env_filter.add_directive("webview=info".parse().expect("static directive"));
+    }
 
     let _ = tracing_subscriber::registry()
         .with(env_filter)
