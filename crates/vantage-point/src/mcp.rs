@@ -2049,6 +2049,9 @@ impl VantageMcp {
             content,
             append: false,
             title: params.title,
+            // per-lane PP: この MCP が属する Lane（cwd 由来、conductor/performer 語彙）を stamp。
+            // topic の lane segment になり、retained を lane 別に分離する。
+            lane: Some(SelfLane::detect().lane_name),
         };
 
         self.process_call("show", &msg).await?;
@@ -2076,6 +2079,7 @@ impl VantageMcp {
 
         let msg = ProcessMessage::Clear {
             pane_id: pane_id.clone(),
+            lane: Some(SelfLane::detect().lane_name),
         };
         self.process_call("clear", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
@@ -2100,6 +2104,7 @@ impl VantageMcp {
         let msg = ProcessMessage::TogglePane {
             pane_id: params.pane_id.clone(),
             visible: params.visible,
+            lane: Some(SelfLane::detect().lane_name),
         };
         self.process_call("toggle_pane", &msg).await?;
 
@@ -2116,6 +2121,7 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let msg = ProcessMessage::Close {
             pane_id: params.pane_id.clone(),
+            lane: Some(SelfLane::detect().lane_name),
         };
         self.process_call("close_pane", &msg).await?;
 
@@ -2673,6 +2679,11 @@ impl VantageMcp {
             .await
             .map_err(|e| McpError::internal_error(format!("open canvas channel: {}", e), None))?;
 
+        // per-lane PP: list_canvas / read_pane は呼び出し元 (cwd 由来) の lane の pane だけ返す。
+        // canvas channel は全 lane の retained を流すため、self lane で filter しないと
+        // 別 lane の同名 pane_id が混ざる (lane 欠落 = conductor)。
+        let self_lane = SelfLane::detect().lane_name;
+
         // pane_id ごとに最新を保持。 append:false は上書き、 append:true は既存内容に追記
         // (canvas_state と同義)。 追記先が無ければ新規 (= 単独追記でも内容が残る)。
         let mut panes: std::collections::HashMap<String, CanvasPane> =
@@ -2683,13 +2694,21 @@ impl VantageMcp {
                     if msg.msg_type != MessageType::Event || msg.method != "pane" {
                         continue;
                     }
-                    if let Ok(v) = msg.payload_as_value()
-                        && let Some(p) = parse_show_payload(&v)
-                    {
-                        match panes.get_mut(&p.pane_id) {
-                            Some(existing) if p.append => existing.content.push_str(&p.content),
-                            _ => {
-                                panes.insert(p.pane_id.clone(), p);
+                    if let Ok(v) = msg.payload_as_value() {
+                        // 別 lane の pane は除外
+                        let msg_lane = v
+                            .get("lane")
+                            .and_then(|l| l.as_str())
+                            .unwrap_or("conductor");
+                        if msg_lane != self_lane {
+                            continue;
+                        }
+                        if let Some(p) = parse_show_payload(&v) {
+                            match panes.get_mut(&p.pane_id) {
+                                Some(existing) if p.append => existing.content.push_str(&p.content),
+                                _ => {
+                                    panes.insert(p.pane_id.clone(), p);
+                                }
                             }
                         }
                     }

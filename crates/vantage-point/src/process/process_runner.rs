@@ -253,6 +253,8 @@ pub async fn process_run_eval(
         content: crate::protocol::Content::Html(display),
         append: false,
         title: Some(params.command.clone()),
+        // process runner 出力は conductor（lead）Canvas 向け
+        lane: None,
     });
 
     Ok(RunResult {
@@ -451,6 +453,7 @@ async fn stream_output(
                     content: crate::protocol::Content::Log("[process stopped]\n".to_string()),
                     append: true,
                     title: None,
+                    lane: None,
                 });
                 return;
             }
@@ -493,6 +496,7 @@ async fn stream_output(
                             content,
                             append: true,
                             title: None,
+                            lane: None,
                         });
                     }
                     None => {
@@ -510,6 +514,7 @@ async fn stream_output(
                             ),
                             append: true,
                             title: None,
+                            lane: None,
                         });
                         return;
                     }

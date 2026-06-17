@@ -66,6 +66,12 @@ impl TopicRouter {
         }
     }
 
+    /// lane segment の正規化: `None` = conductor（lead）。
+    /// per-lane PP topic の lane 部に使う（conductor/performer 語彙）。
+    fn lane_seg(lane: &Option<String>) -> &str {
+        lane.as_deref().unwrap_or("conductor")
+    }
+
     /// ProcessMessage → Topic 文字列のマッピング
     ///
     /// 命名規則: `{scope}/{capability}/{category}/{detail}`
@@ -75,20 +81,44 @@ impl TopicRouter {
     fn message_to_topic(msg: &ProcessMessage) -> String {
         match msg {
             // === Paisley Park（Canvas 表示能力）===
-            ProcessMessage::Show { pane_id, .. } => {
-                format!("process/paisley-park/command/show/{}", pane_id)
+            // lane segment を verb の後に挿入: `.../command/{verb}/{lane}/{pane_id}`。
+            // category(seg2)=command は不変なので is_retained は維持され、retained store は
+            // lane 別に分離される（conductor/main と performer-foo/main が別 topic）。
+            // lane=None は conductor（lead）に正規化。
+            ProcessMessage::Show { pane_id, lane, .. } => {
+                format!(
+                    "process/paisley-park/command/show/{}/{}",
+                    Self::lane_seg(lane),
+                    pane_id
+                )
             }
-            ProcessMessage::Clear { pane_id, .. } => {
-                format!("process/paisley-park/command/clear/{}", pane_id)
+            ProcessMessage::Clear { pane_id, lane, .. } => {
+                format!(
+                    "process/paisley-park/command/clear/{}/{}",
+                    Self::lane_seg(lane),
+                    pane_id
+                )
             }
-            ProcessMessage::Split { pane_id, .. } => {
-                format!("process/paisley-park/command/split/{}", pane_id)
+            ProcessMessage::Split { pane_id, lane, .. } => {
+                format!(
+                    "process/paisley-park/command/split/{}/{}",
+                    Self::lane_seg(lane),
+                    pane_id
+                )
             }
-            ProcessMessage::Close { pane_id, .. } => {
-                format!("process/paisley-park/command/close/{}", pane_id)
+            ProcessMessage::Close { pane_id, lane, .. } => {
+                format!(
+                    "process/paisley-park/command/close/{}/{}",
+                    Self::lane_seg(lane),
+                    pane_id
+                )
             }
-            ProcessMessage::TogglePane { pane_id, .. } => {
-                format!("process/paisley-park/command/toggle/{}", pane_id)
+            ProcessMessage::TogglePane { pane_id, lane, .. } => {
+                format!(
+                    "process/paisley-park/command/toggle/{}/{}",
+                    Self::lane_seg(lane),
+                    pane_id
+                )
             }
             ProcessMessage::ScreenshotRequest { .. } => {
                 "process/paisley-park/command/screenshot".to_string()
@@ -201,6 +231,18 @@ mod tests {
             content: Content::Markdown(text.to_string()),
             append: false,
             title: None,
+            lane: None,
+        }
+    }
+
+    /// lane を指定した Show（per-lane topic 分離テスト用）
+    fn make_show_lane(pane_id: &str, text: &str, lane: &str) -> ProcessMessage {
+        ProcessMessage::Show {
+            pane_id: pane_id.to_string(),
+            content: Content::Markdown(text.to_string()),
+            append: false,
+            title: None,
+            lane: Some(lane.to_string()),
         }
     }
 
@@ -210,18 +252,39 @@ mod tests {
 
     #[test]
     fn test_message_to_topic_show() {
+        // lane=None は conductor に正規化され lane segment に入る
         let msg = make_show("main", "# Hello");
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/command/show/main");
+        assert_eq!(topic, "process/paisley-park/command/show/conductor/main");
+    }
+
+    #[test]
+    fn test_message_to_topic_show_performer_lane() {
+        // performer lane は lane segment にその名が入り、conductor と別 topic になる
+        let msg = make_show_lane("main", "# Hi", "feat-api");
+        let topic = TopicRouter::message_to_topic(&msg);
+        assert_eq!(topic, "process/paisley-park/command/show/feat-api/main");
+    }
+
+    #[test]
+    fn test_per_lane_topic_separation() {
+        // 同 pane_id でも lane が違えば別 topic（retained 後勝ち上書きが起きない）
+        let conductor = TopicRouter::message_to_topic(&make_show("main", "a"));
+        let performer = TopicRouter::message_to_topic(&make_show_lane("main", "b", "feat-api"));
+        assert_ne!(conductor, performer);
+        // category(seg2)=command は不変 → 両方 retained 対象
+        assert!(TopicPath::parse(&conductor).is_retained());
+        assert!(TopicPath::parse(&performer).is_retained());
     }
 
     #[test]
     fn test_message_to_topic_clear() {
         let msg = ProcessMessage::Clear {
             pane_id: "side".to_string(),
+            lane: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/command/clear/side");
+        assert_eq!(topic, "process/paisley-park/command/clear/conductor/side");
     }
 
     #[test]
@@ -304,7 +367,7 @@ mod tests {
         router.route(show).await;
 
         let retained = router.retained.read().await;
-        let msg = retained.get("process/paisley-park/command/show/main");
+        let msg = retained.get("process/paisley-park/command/show/conductor/main");
         assert!(msg.is_some());
     }
 

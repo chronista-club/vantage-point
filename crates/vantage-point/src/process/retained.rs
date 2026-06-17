@@ -103,6 +103,7 @@ mod tests {
             content: Content::Markdown(text.to_string()),
             append: false,
             title: None,
+            lane: None,
         }
     }
 
