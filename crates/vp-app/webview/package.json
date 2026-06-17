@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@chronista-club/creoui-editor-host": "file:../../../../creoui/packages/editor-host",
+    "@chronista-club/unison-client": "file:../../../../club-unison/clients/typescript",
     "creoui-icons-web": "file:../../../../creoui/packages/icons-web",
     "iconify-icon": "^3.0.2",
     "marked": "^18.0.3",
