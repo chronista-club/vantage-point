@@ -42,12 +42,20 @@ console.info("[vp-bundle] booting (VP-140 diagnostic)");
 		console[level] = (...args: unknown[]) => {
 			orig(...args);
 			try {
+				// 引数ごとに guard — circular ref で 1 個 throw しても他の引数は残す
 				const text = args
-					.map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+					.map((a) => {
+						if (typeof a === "string") return a;
+						try {
+							return JSON.stringify(a);
+						} catch {
+							return "[unserializable]";
+						}
+					})
 					.join(" ");
 				ipc.postMessage(JSON.stringify({ t: "console", level, text }));
 			} catch {
-				/* 転送失敗 (circular ref 等) は無視 — console は既に出力済 */
+				/* 転送失敗は無視 — console は既に出力済 */
 			}
 		};
 	}
