@@ -2679,6 +2679,11 @@ impl VantageMcp {
             .await
             .map_err(|e| McpError::internal_error(format!("open canvas channel: {}", e), None))?;
 
+        // per-lane PP: list_canvas / read_pane は呼び出し元 (cwd 由来) の lane の pane だけ返す。
+        // canvas channel は全 lane の retained を流すため、self lane で filter しないと
+        // 別 lane の同名 pane_id が混ざる (lane 欠落 = conductor)。
+        let self_lane = SelfLane::detect().lane_name;
+
         // pane_id ごとに最新を保持。 append:false は上書き、 append:true は既存内容に追記
         // (canvas_state と同義)。 追記先が無ければ新規 (= 単独追記でも内容が残る)。
         let mut panes: std::collections::HashMap<String, CanvasPane> =
@@ -2689,13 +2694,21 @@ impl VantageMcp {
                     if msg.msg_type != MessageType::Event || msg.method != "pane" {
                         continue;
                     }
-                    if let Ok(v) = msg.payload_as_value()
-                        && let Some(p) = parse_show_payload(&v)
-                    {
-                        match panes.get_mut(&p.pane_id) {
-                            Some(existing) if p.append => existing.content.push_str(&p.content),
-                            _ => {
-                                panes.insert(p.pane_id.clone(), p);
+                    if let Ok(v) = msg.payload_as_value() {
+                        // 別 lane の pane は除外
+                        let msg_lane = v
+                            .get("lane")
+                            .and_then(|l| l.as_str())
+                            .unwrap_or("conductor");
+                        if msg_lane != self_lane {
+                            continue;
+                        }
+                        if let Some(p) = parse_show_payload(&v) {
+                            match panes.get_mut(&p.pane_id) {
+                                Some(existing) if p.append => existing.content.push_str(&p.content),
+                                _ => {
+                                    panes.insert(p.pane_id.clone(), p);
+                                }
                             }
                         }
                     }
