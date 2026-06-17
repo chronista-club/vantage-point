@@ -698,6 +698,8 @@ fn resolve_local_sp() -> Result<u16> {
 }
 
 /// local SP に Unison QUIC 接続（mcp.rs の connect_quic と同等、private 再実装）。
+/// ⚠️ mcp.rs::connect_quic と trust_anchors を揃えること（PR-3 で SkipVerification →
+/// InternalMeshKeypair に差し替え予定。mcp.rs を変えたらここも同期）。
 async fn connect_quic_local(port: u16) -> Result<unison::ProtocolClient> {
     let addr = format!("[::1]:{}", port);
     let transport = unison::network::quic::QuicClient::builder()
@@ -852,12 +854,13 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
                         activated = true;
                         let mut projection = Vec::new();
                         for i in 0..8u8 {
-                            projection = profile.project_track(
+                            // extend で全 track 分を積む（`=` 上書きだと track 7 のみ残る既存 bug）
+                            projection.extend(profile.project_track(
                                 i,
                                 &format!("Lane {}", i + 1),
                                 Rgb::new(0, 200, 255),
                                 false,
-                            );
+                            ));
                         }
                         for i in 0..8u8 {
                             let spec = ParamSpec::continuous(format!("Param {}", i + 1), 0.5);
@@ -904,14 +907,22 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
                 }
                 // 「lanes」snapshot を購読しっぱなし → lane 増減を live 反映（MIDI の後に poll）
                 lane_msg = lanes_ch.recv() => {
-                    if let Ok(msg) = lane_msg
-                        && msg.msg_type == MessageType::Event
-                        && msg.method == "snapshot"
-                        && let Ok(v) = msg.payload_as_value()
-                    {
-                        let tokens = parse_lane_tokens(&v);
-                        if tokens != latest {
-                            latest = tokens;
+                    match lane_msg {
+                        Ok(msg)
+                            if msg.msg_type == MessageType::Event && msg.method == "snapshot" =>
+                        {
+                            if let Ok(v) = msg.payload_as_value() {
+                                let tokens = parse_lane_tokens(&v);
+                                if tokens != latest {
+                                    latest = tokens;
+                                }
+                            }
+                        }
+                        Ok(_) => {} // 他 event は無視
+                        // SP 停止等で channel 切断 → switch 失敗 spam を避けて終了
+                        Err(e) => {
+                            eprintln!("lanes channel 切断（SP 停止?）: {} — 終了", e);
+                            break;
                         }
                     }
                 }
