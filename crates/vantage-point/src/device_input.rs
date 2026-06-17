@@ -42,7 +42,12 @@ pub mod roto {
     //! 全入力は ch16 の CC（status `0xBF`）で来る（decompile で確定）:
     //! - knob 値: CC `12+i`(hi) + CC `44+i`(lo) の 14bit（`setCcKnobMatcher`）
     //! - knob touch: CC `52+i`（`setCcMatcher(touchButton, 52+index)`）
-    //! - button: CC `20+i`（本体 8）/ `28+i`（transport 8）（`RotoButton` midiId）
+    //! - button: CC `20+i`（本体 8 = 20-27）/ `28+i`（transport 8 = 28-35）/ `36,37`
+    //!   （left/right transport = `RotoCcButton`、transport セクションの ◄ ► = 素の CC button）
+    //!
+    //! 注意: **左 ctrl 列の ← / → は別物**で、mode/nav の semantic SysEx（`0C 01` mixer nav 等）
+    //! を送る（CC ではない）。prev/next に使える素の CC は transport ◄ ► = CC 36/37。
+    //! addressing は decompile (RotoHwElements) + creo mem_1CbwsgkwHx7YbEzb7JWTJd で確定。
     //!
     //! 値は hi → lo の順で届く前提で、lo 受信時に 14bit を合成して確定させる。
 
@@ -52,8 +57,9 @@ pub mod roto {
     const KNOB_LO_BASE: u8 = 44;
     const KNOB_TOUCH_BASE: u8 = 52;
     const BUTTON_BASE: u8 = 20;
-    /// button（本体 8 + transport 8）の CC 連続範囲は 20–35
-    const BUTTON_COUNT: u8 = 16;
+    /// button の CC 連続範囲は 20–37: 本体 8 (20-27) + transport 8 (28-35) +
+    /// left/right transport ◄ ► (36,37)。後者は Button index 16 (◄=CC36) / 17 (►=CC37)。
+    const BUTTON_COUNT: u8 = 18;
     /// CC value が押下とみなす閾値（127=押下 / 0=解放）
     const PRESS_THRESHOLD: u8 = 64;
 
@@ -168,6 +174,21 @@ pub mod roto {
                     pressed: true
                 })
             ); // transport button 末尾
+            // left/right transport ◄ ► = CC 36/37 → Button 16/17（RotoCcButton、素の CC）
+            assert_eq!(
+                input.parse(&[0xBF, 36, 127]),
+                Some(ControlEvent::Button {
+                    index: 16,
+                    pressed: true
+                })
+            ); // ◄ left transport
+            assert_eq!(
+                input.parse(&[0xBF, 37, 0]),
+                Some(ControlEvent::Button {
+                    index: 17,
+                    pressed: false
+                })
+            ); // ► right transport
         }
 
         #[test]
