@@ -413,11 +413,13 @@ pub async fn pp_state_save_handler(
         .get("title")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    // lane は string | null。 null/不在/空文字いずれも conductor (= None)。
+    // lane は string | null。 null/不在/空文字/"conductor" いずれも conductor (= None) に正規化。
+    // front は activeLaneName(null=conductor) を送るが、明示 "conductor" 文字列が来ても
+    // load 側 (lane IS NULL) と key 一致するよう None に潰す（R3: 防御的正規化）。
     let lane = body
         .get("lane")
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && *s != "conductor")
         .map(|s| s.to_string());
     let stack = body.get("stack").filter(|v| !v.is_null()).cloned();
     let ui_state = body.get("ui_state").filter(|v| !v.is_null()).cloned();
@@ -473,7 +475,8 @@ pub async fn pp_state_load_handler(
         );
     };
     let pane_id = params.pane_id.unwrap_or_else(|| "paisley-park".to_string());
-    let lane = params.lane.filter(|s| !s.is_empty());
+    // save 側と対称に "conductor"/空文字を None(=lane IS NULL) に正規化（R3）。
+    let lane = params.lane.filter(|s| !s.is_empty() && s != "conductor");
     let project_path = state.project_dir.clone();
     match vpdb
         .load_pp_state(&project_path, lane.as_deref(), &pane_id)

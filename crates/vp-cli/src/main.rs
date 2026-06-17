@@ -730,8 +730,8 @@ fn list_performers_detail() -> Result<()> {
 ///
 /// 旧: TheWorld(:32000) `/api/canvas/switch_lane` に global broadcast（project 切替）。
 /// per-lane PP 後は **現 project の local SP** に `SwitchLane` ProcessMessage を投げ、
-/// hub → topic `process/paisley-park/command/switch-lane` → canvas channel 経由で vp-app が
-/// 受信し、その lane を active 化する（lane-within-project の per-project 切替）。
+/// hub → topic `process/paisley-park/event/switch-lane`（非 retained）→ canvas channel 経由で
+/// vp-app が受信し、その lane を active 化する（lane-within-project の per-project 切替）。
 fn switch_lane_via_world(name: &str) -> Result<()> {
     // lane token = "conductor" (lead) or performer 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
