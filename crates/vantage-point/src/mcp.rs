@@ -197,9 +197,9 @@ pub struct UnwatchFileParams {
 /// Parameters for the switch_lane tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SwitchLaneParams {
-    /// Lane name (project name) to switch to
+    /// Lane token to activate within the current project
     #[schemars(
-        description = "Lane name (project name) to switch the Canvas to. e.g. 'vantage-point', 'creo-memories'"
+        description = "Lane token to activate in the current project's vp-app: 'conductor' (lead) or a performer name (e.g. 'feat-api')."
     )]
     pub lane: String,
 }
@@ -1252,39 +1252,24 @@ impl VantageMcp {
         self.quic_call(method, payload).await
     }
 
-    /// Canvas の表示 Lane を切り替える
+    /// vp-app の active Lane を切り替える（B1: Unison-native、per-project）。
     #[tool(
-        description = "Switch the active lane (project) in the PP Canvas window. The lane name is the project name shown in the lane bar."
+        description = "Switch the active lane shown in the vp-app PP Canvas of the CURRENT project. `lane` is a lane token: 'conductor' (lead) or a performer name. Routes over Unison (local SP → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
     )]
     async fn switch_lane(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SwitchLaneParams>,
     ) -> Result<CallToolResult, McpError> {
-        // TheWorld の HTTP API 経由で Canvas に switch_lane を送信
-        let world_port = crate::cli::WORLD_PORT;
-        let url = format!("http://[::1]:{}/api/canvas/switch_lane", world_port);
-        let body = serde_json::json!({ "lane": params.lane });
-
-        let client = reqwest::Client::new();
-        match client.post(&url).json(&body).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                    format!("Switched Canvas lane to '{}'", params.lane),
-                )]))
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                Err(McpError::internal_error(
-                    format!("TheWorld API error: {} {}", status, text),
-                    None,
-                ))
-            }
-            Err(e) => Err(McpError::internal_error(
-                format!("Failed to reach TheWorld: {}", e),
-                None,
-            )),
-        }
+        // QUIC で local SP に SwitchLane を送る → hub → canvas channel → vp-app。
+        // 旧: TheWorld(:32000) HTTP に global broadcast（project 切替意味論）。per-lane PP 後は
+        // local SP への per-project 経路に統一（lane-within-project の active 切替）。
+        let msg = ProcessMessage::SwitchLane {
+            lane: params.lane.clone(),
+        };
+        self.process_call("switch_lane", &msg).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Switched active lane to '{}'", params.lane),
+        )]))
     }
 
     /// R5: 現 project の SP に Performer Lane を新規作成 (lane clone + PtySlot spawn)。

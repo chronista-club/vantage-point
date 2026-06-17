@@ -534,9 +534,11 @@ pub async fn start_unison_server(
                         );
 
                         let result = match method.as_str() {
-                            "show" | "clear" | "toggle_pane" | "split_pane" | "close_pane" => {
-                                handle_process_message(&state, payload)
-                            }
+                            // switch_lane も generic broadcast 経路に乗せる（B1: 遠隔 active Lane 制御）。
+                            // hub → topic `process/paisley-park/command/switch-lane` → canvas channel
+                            // → vp-app が受信して active Lane を切り替える。
+                            "show" | "clear" | "toggle_pane" | "split_pane" | "close_pane"
+                            | "switch_lane" => handle_process_message(&state, payload),
                             "watch_file" => handle_watch_file(&state, payload).await,
                             "unwatch_file" => handle_unwatch_file(&state, payload).await,
                             "tmux_split" => handle_tmux_split(&state, payload).await,
