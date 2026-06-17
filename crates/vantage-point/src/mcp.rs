@@ -594,52 +594,85 @@ pub struct SelfLane {
     pub lane_name: String,
     /// performer context のとき `Some(parent project 名)`、conductor context のとき `None`
     pub performer_parent: Option<String>,
+    /// conductor context のとき、cwd から config-only で解決した自 project 名
+    /// (`Some` = `agent@<project>` の canonical identity / `None` = 未登録 cwd で解決不能
+    /// = wire op を fail-closed)。performer のときは `performer_parent` が identity を持つので
+    /// 未使用 (`None`)。wiremsg identity を「繋いだ SP」依存から「自分」へ移す SSOT
+    /// (旧: conductor は bare `"agent"` を送り SP 正規化に依存していた)。
+    pub conductor_project: Option<String>,
 }
 
 impl SelfLane {
-    /// cwd から SelfLane を判定。 失敗時（cwd 取れない / config 読めない 等）は conductor 扱い。
+    /// cwd から SelfLane を判定。
     ///
     /// 1. cwd ancestors を walk して `.vp/lanes/<name>` pattern を探す
     ///    (= [`detect_project_local_performer`] の純粋関数で test 可能)
-    /// 2. 見つかれば repo_root を config.projects[].path と完全一致で resolve → parent 確定
-    /// 3. どちらか失敗 → conductor fallback
+    /// 2. 見つかり repo_root が config 登録済なら performer (parent = config 名)
+    /// 3. それ以外は conductor。自 project 名を `registered_project_name_for_cwd`
+    ///    (config-only / SP 非依存) で解決。登録 project なら `Some(name)` = canonical
+    ///    identity、未登録 cwd なら `None` = wire op fail-closed (誤 identity を送らない)。
+    /// 4. cwd / config 取得失敗 → conductor_project=None (fail-closed)
     pub fn detect() -> Self {
-        let conductor = || SelfLane {
+        // identity 解決不能な conductor (cwd/config 取得失敗) → None で fail-closed
+        let conductor_unresolved = || SelfLane {
             lane_name: "conductor".to_string(),
             performer_parent: None,
+            conductor_project: None,
         };
         let Ok(cwd) = std::env::current_dir() else {
-            return conductor();
-        };
-        let Some((performer_name, repo_root)) = detect_project_local_performer(&cwd) else {
-            return conductor();
+            return conductor_unresolved();
         };
         let Ok(config) = crate::config::Config::load() else {
-            return conductor();
+            return conductor_unresolved();
         };
-        let parent = config
-            .projects
-            .iter()
-            .find(|p| std::path::Path::new(&p.path) == repo_root.as_path());
-        match parent {
-            Some(p) => SelfLane {
+        // performer 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
+        if let Some((performer_name, repo_root)) = detect_project_local_performer(&cwd)
+            && let Some(p) = config
+                .projects
+                .iter()
+                .find(|p| std::path::Path::new(&p.path) == repo_root.as_path())
+        {
+            return SelfLane {
                 lane_name: performer_name,
                 performer_parent: Some(p.name.clone()),
-            },
-            None => conductor(), // performer dir 検出済だが config に repo 未登録 → 安全 fallback
+                conductor_project: None, // identity は performer_parent が持つ
+            };
+        }
+        // conductor: 自 project 名を config-only で解決 (未登録 cwd は None = fail-closed)。
+        // cwd は上で取得済みのものを正規化して渡す (二重取得を避ける)。
+        SelfLane {
+            lane_name: "conductor".to_string(),
+            performer_parent: None,
+            conductor_project: crate::resolve::match_project_name_for_path(
+                &crate::config::Config::normalize_path(&cwd),
+                &config,
+            ),
         }
     }
 
-    /// `wire_send` / `wire_recv` の `from` フィールド値: conductor は `"agent"`（bare）、
-    /// performer は `"agent@<parent>/<name>"`。
+    /// `wire_send` / `wire_recv` / `wire_ack` / `wire_inbox` / `flow_handoff` の `from`/`agent`
+    /// 値 = この MCP プロセスの canonical wire address。
     ///
-    /// bare は SP 入口（`unison_server.rs::normalize_agent_addr`、wiremsg N1）で
-    /// `agent@<project>` に正規化される。MCP プロセスは conductor 時に project 名を
-    /// 持たないため、canonical 化は project 名を知る SP 側の責務とする。
-    pub fn from_address(&self) -> String {
+    /// - performer → `"agent@<parent>/<name>"` (parent は config 名、常に解決可)
+    /// - conductor → `"agent@<project>"` (起動時 `detect()` が cwd→config で解決した自 project)
+    /// - conductor で project 未解決 (未登録 cwd) → `Err` = **fail-closed**
+    ///
+    /// identity を「繋いだ SP の正規化」依存から「自分 (MCP)」へ移した SSOT。
+    /// 旧実装は conductor が bare `"agent"` を送り、接続先 SP の project で正規化していたため、
+    /// 誤 SP 接続 (`resolve_process_port` の 33000 fallback 等) で identity が化け、ack が宛先と
+    /// mismatch して command 再 nudge が止まらないバグの根だった。中央 store が SSOT なので
+    /// canonical を送れば接続先 SP は無関係になる (`normalize_agent_addr` は `agent@x` を
+    /// 冪等で素通しするので後方互換も保たれる)。
+    pub fn from_address(&self) -> Result<String, McpError> {
         match &self.performer_parent {
-            Some(parent) => format!("agent@{}/{}", parent, self.lane_name),
-            None => "agent".to_string(),
+            Some(parent) => Ok(format!("agent@{}/{}", parent, self.lane_name)),
+            None => match &self.conductor_project {
+                Some(project) => Ok(format!("agent@{}", project)),
+                None => Err(McpError::invalid_params(
+                    "wire identity を解決できません: 現在の作業ディレクトリがどの登録 project 配下にもありません。`vp projects add <path>` で登録してから wire を使ってください (誤 identity 送信を防ぐ fail-closed)。".to_string(),
+                    None,
+                )),
+            },
         }
     }
 }
@@ -1474,16 +1507,20 @@ impl VantageMcp {
             .ok_or_else(|| {
                 McpError::internal_error("/api/health に project_dir なし".to_string(), None)
             })?;
-        let project = std::path::Path::new(project_dir)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                McpError::internal_error(
-                    format!("project_dir basename 取得失敗: {}", project_dir),
-                    None,
-                )
-            })?
-            .to_string();
+        // project 名は config 登録名を SSOT とする (basename ではない)。
+        // `vp projects rename` で name != basename になっても、wire store の識別子
+        // (agent@<config名>) と list_lanes が返す mailbox address を一致させる。旧 basename
+        // 由来だと rename 時に永続 mismatch し、その address 宛 command が誰の ack とも一致せず
+        // 再 nudge する第2のバグ経路だった (wiremsg identity SSOT 一本化)。
+        let project = match crate::config::Config::load() {
+            Ok(config) => crate::resolve::project_name_from_path(project_dir, &config),
+            // config 読めない異常系のみ basename fallback (従来挙動)
+            Err(_) => std::path::Path::new(project_dir)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        };
 
         let resp = self
             .client
@@ -1701,7 +1738,7 @@ impl VantageMcp {
             "task_spec": params.task_spec,
             "mode": mode,
         });
-        let from = self.self_lane.from_address();
+        let from = self.self_lane.from_address()?;
         let send_payload = serde_json::json!({
             "from": from,
             "to": [performer_address.clone()],
@@ -1837,16 +1874,20 @@ impl VantageMcp {
             .ok_or_else(|| {
                 McpError::internal_error("/api/health に project_dir なし".to_string(), None)
             })?;
-        let project = std::path::Path::new(project_dir)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                McpError::internal_error(
-                    format!("project_dir basename 取得失敗: {}", project_dir),
-                    None,
-                )
-            })?
-            .to_string();
+        // project 名は config 登録名を SSOT とする (basename ではない)。
+        // `vp projects rename` で name != basename になっても、wire store の識別子
+        // (agent@<config名>) と list_lanes が返す mailbox address を一致させる。旧 basename
+        // 由来だと rename 時に永続 mismatch し、その address 宛 command が誰の ack とも一致せず
+        // 再 nudge する第2のバグ経路だった (wiremsg identity SSOT 一本化)。
+        let project = match crate::config::Config::load() {
+            Ok(config) => crate::resolve::project_name_from_path(project_dir, &config),
+            // config 読めない異常系のみ basename fallback (従来挙動)
+            Err(_) => std::path::Path::new(project_dir)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        };
 
         // 全 lane (conductor + performers) を /api/lanes から取得 (= performer_status 込み)
         let lanes_resp: serde_json::Value = self
@@ -3057,7 +3098,7 @@ if bestId > 0 { print(bestId) }
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireSendParams>,
     ) -> Result<CallToolResult, McpError> {
         // from は self_lane から導出 (conductor は "agent"、 performer は "agent@<parent>/<name>")
-        let from = self.self_lane.from_address();
+        let from = self.self_lane.from_address()?;
         let payload = serde_json::json!({
             "from": from,
             "to": params.to,
@@ -3080,7 +3121,7 @@ if bestId > 0 { print(bestId) }
     ) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
         // agent は wire_send の from と同じ self_lane 由来 address
-        let agent = self.self_lane.from_address();
+        let agent = self.self_lane.from_address()?;
         let payload = serde_json::json!({
             "agent": agent,
             "timeout": timeout,
@@ -3125,7 +3166,7 @@ if bestId > 0 { print(bestId) }
         rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<WireInboxParams>,
     ) -> Result<CallToolResult, McpError> {
         // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
-        let agent = self.self_lane.from_address();
+        let agent = self.self_lane.from_address()?;
         let payload = serde_json::json!({ "agent": agent });
         let resp = self.quic_call("wire_unread_count", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
@@ -3142,7 +3183,7 @@ if bestId > 0 { print(bestId) }
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireAckParams>,
     ) -> Result<CallToolResult, McpError> {
         // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
-        let agent = self.self_lane.from_address();
+        let agent = self.self_lane.from_address()?;
         let payload = serde_json::json!({
             "message_id": params.message_id,
             "agent": agent,
@@ -3467,18 +3508,35 @@ mod tests {
 
     #[test]
     fn test_self_lane_from_address() {
-        // VP-166 PR-4: conductor は bare "agent"、performer は "agent@<parent>/<name>"
+        // wiremsg identity SSOT: conductor は解決済 project で "agent@<project>"、
+        // performer は "agent@<parent>/<name>"。project 未解決の conductor は fail-closed (Err)。
         let conductor = SelfLane {
             lane_name: "conductor".to_string(),
             performer_parent: None,
+            conductor_project: Some("vantage-point".to_string()),
         };
-        assert_eq!(conductor.from_address(), "agent");
+        assert_eq!(conductor.from_address().unwrap(), "agent@vantage-point");
 
         let performer = SelfLane {
             lane_name: "chore".to_string(),
             performer_parent: Some("vantage-point".to_string()),
+            conductor_project: None,
         };
-        assert_eq!(performer.from_address(), "agent@vantage-point/chore");
+        assert_eq!(
+            performer.from_address().unwrap(),
+            "agent@vantage-point/chore"
+        );
+
+        // 未登録 cwd の conductor (project 未解決) → fail-closed
+        let unresolved = SelfLane {
+            lane_name: "conductor".to_string(),
+            performer_parent: None,
+            conductor_project: None,
+        };
+        assert!(
+            unresolved.from_address().is_err(),
+            "project 未解決 conductor は fail-closed"
+        );
     }
 
     // --- detect_project_local_performer (project-local lane refactor PR 2) ---
@@ -3576,6 +3634,7 @@ mod tests {
         let performer = SelfLane {
             lane_name: "chore".to_string(),
             performer_parent: Some("vantage-point".to_string()),
+            conductor_project: None,
         };
         assert_eq!(
             performer_parent_path(&performer, &cfg).as_deref(),
@@ -3586,6 +3645,7 @@ mod tests {
         let conductor = SelfLane {
             lane_name: "conductor".to_string(),
             performer_parent: None,
+            conductor_project: None,
         };
         assert_eq!(performer_parent_path(&conductor, &cfg), None);
 
@@ -3593,6 +3653,7 @@ mod tests {
         let unknown = SelfLane {
             lane_name: "x".to_string(),
             performer_parent: Some("not-in-config".to_string()),
+            conductor_project: None,
         };
         assert_eq!(performer_parent_path(&unknown, &cfg), None);
     }
