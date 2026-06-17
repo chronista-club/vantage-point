@@ -116,6 +116,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 content: content_enum,
                 append,
                 title,
+                // CLI 実行 cwd の Lane を stamp（performer lane dir からならその PP に届く）
+                lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             client.post("/api/show", &msg)?;
 
@@ -137,6 +139,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
 
             let msg = ProcessMessage::Clear {
                 pane_id: pane_id.clone(),
+                lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             client.post("/api/show", &msg)?;
             println!("Pane '{}' cleared", pane_id);
@@ -164,6 +167,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 pane_id: source_pane_id.clone(),
                 direction: dir,
                 new_pane_id: new_pane_id.clone(),
+                lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             client.post("/api/split-pane", &msg)?;
             println!(
@@ -180,6 +184,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             let client = ProcessClient::connect(target.as_deref(), port, config)?;
             let msg = ProcessMessage::Close {
                 pane_id: pane_id.clone(),
+                lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             client.post("/api/close-pane", &msg)?;
             println!("Pane '{}' closed", pane_id);
@@ -195,6 +200,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             let msg = ProcessMessage::TogglePane {
                 pane_id: pane_id.clone(),
                 visible,
+                lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             client.post("/api/toggle-pane", &msg)?;
 

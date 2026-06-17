@@ -275,6 +275,22 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 .to_string();
             let _ = proxy.send_event(AppEvent::PpStateLoadRequest { lane, pane_id });
         }
+        // console bridge: webview の console.* を vp-app log (app.kdl.log) に転送する。
+        // agent が DevTools を開かず log Read で webview console を観測する経路。
+        Some("console") => {
+            let level = parsed
+                .get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("log");
+            let text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            match level {
+                "error" => tracing::error!(target: "webview", "{}", text),
+                "warn" => tracing::warn!(target: "webview", "{}", text),
+                // console.debug は DEBUG に落とす (RUST_LOG=info 運用で log を汚さない)
+                "debug" => tracing::debug!(target: "webview", "{}", text),
+                _ => tracing::info!(target: "webview", "{}", text),
+            }
+        }
         other => {
             tracing::debug!("terminal IPC: unknown type {:?}", other);
         }

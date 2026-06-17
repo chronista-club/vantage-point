@@ -340,7 +340,12 @@ impl AppState {
     /// Whitesnake が DISC として永続化（FileBackend）。
     /// 旧: SurrealDB + JSON ファイルの二重管理 → Whitesnake に統一。
     pub async fn persist_pane_contents(&self) {
-        let pattern = TopicPattern::parse("process/paisley-park/command/show/#");
+        // per-lane PP: lane-scoped topic 化後、`show/#` は全 lane を拾うが DISC key は
+        // `pane/{pane_id}` で lane 非依存なため、複数 lane の同名 pane が衝突上書きする。
+        // Whitesnake DISC は conductor（lead）scope の snapshot に限定する（restore も
+        // conductor 固定で対称）。performer lane の per-lane 永続化は front の SurrealDB
+        // pane_contents（health.rs `/api/pp/state`、lane-scoped）が担う。
+        let pattern = TopicPattern::parse("process/paisley-park/command/show/conductor/#");
         let retained = self.topic_router.retained();
         let store = retained.read().await;
         let matching = store.get_matching(&pattern);
@@ -397,7 +402,9 @@ impl AppState {
                     // key = "pane/{pane_id}" → pane_id を抽出
                     let pane_id = disc.key.strip_prefix("pane/").unwrap_or(&disc.key);
                     if let Ok(pane_state) = disc.extract::<PaneState>() {
-                        let topic = format!("process/paisley-park/command/show/{}", pane_id);
+                        // DISC は conductor（lead）scope の snapshot。新 lane-scoped topic 形に合わせる。
+                        let topic =
+                            format!("process/paisley-park/command/show/conductor/{}", pane_id);
                         store.set(
                             &topic,
                             ProcessMessage::Show {
@@ -405,6 +412,7 @@ impl AppState {
                                 content: pane_state.content,
                                 append: false,
                                 title: pane_state.title,
+                                lane: None,
                             },
                         );
                         count += 1;

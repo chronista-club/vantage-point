@@ -29,6 +29,42 @@ console.info("[vp-bundle] booting (VP-140 diagnostic)");
 	importsResolved: false,
 	vpFrameSet: false,
 };
+// console bridge: webview の console.* を vp-app log (app.kdl.log) に転送する。
+// agent が DevTools を開かずに console を Read/watch_file で観測するための経路。
+// Rust 側 handle_ipc_message の `console` arm が tracing で書く。 console 自体は
+// 壊さない (orig を必ず呼ぶ + 転送失敗は握り潰す)。
+//
+// ⚠️ install は無条件、 ipc は **call 時に lookup**: この IIFE は module-eval (早期) で
+// 走り、 その時点で wry の window.ipc が未注入のことがある。 install 時に capture すると
+// 永久に無効化されるため、 各 console 呼び出し時に毎回引く (注入後の console.* も拾える)。
+(() => {
+	const levels = ["log", "info", "warn", "error", "debug"] as const;
+	for (const level of levels) {
+		const orig = console[level].bind(console);
+		console[level] = (...args: unknown[]) => {
+			orig(...args);
+			const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+			if (!ipc) return;
+			try {
+				// 引数ごとに guard — circular ref で 1 個 throw しても他の引数は残す
+				const text = args
+					.map((a) => {
+						if (typeof a === "string") return a;
+						try {
+							return JSON.stringify(a);
+						} catch {
+							return "[unserializable]";
+						}
+					})
+					.join(" ");
+				ipc.postMessage(JSON.stringify({ t: "console", level, text }));
+			} catch {
+				/* 転送失敗は無視 — console は既に出力済 */
+			}
+		};
+	}
+})();
+
 window.addEventListener("error", (e) => {
 	console.error(
 		"[vp-bundle] window.error",
@@ -138,14 +174,20 @@ interface SetActivePaneInfo {
 let activeLaneAddress: string | null = null;
 
 /**
- * LaneAddress::Display 形 (`<project>/lead` / `<project>/wing/<name>`) を、
- * canvas-handler が IPC で使う flat lane_name (`null` = lead, `string` = wing) に翻訳する。
- * pp-content-persist で lead/wing 別の SurrealDB record を引くための key 整形。
+ * LaneAddress::Display 形を canvas-handler が使う flat lane_name に翻訳する。
+ * `null` = conductor（lead）、`string` = performer 名。
+ *
+ * D2 統一: 語彙は conductor/performer。rename 途上のため legacy `lead`/`wing` も受理する:
+ * - `<project>/conductor` / `<project>/lead` → `null`（conductor/lead）
+ * - `<project>/performer/<name>` / `<project>/wing/<name>` → `<name>`（performer）
+ *
+ * この値は (a) pp-content-persist の SurrealDB record key、(b) per-lane PP の
+ * canvas filter token（`null`→`conductor` に正規化して producer の lane と突合）に使う。
  */
 function laneNameFromAddress(addr: string | null): string | null {
 	if (!addr) return null;
-	if (addr.endsWith("/lead")) return null;
-	const m = addr.match(/\/wing\/(.+)$/);
+	if (addr.endsWith("/conductor") || addr.endsWith("/lead")) return null;
+	const m = addr.match(/\/(?:performer|wing)\/(.+)$/);
 	if (m) return m[1] ?? null;
 	return null;
 }
@@ -310,6 +352,28 @@ if (document.readyState === "loading") {
 } else {
 	applyDefaultScene();
 }
+// Unison WebTransport echo probe (GUI redesign 北極星 step 2/3、 protocol close)。
+// DevTools console から手動 trigger: `await window.vpUnisonEcho('<CERT_HASH>')`。
+// echo server: `cargo run -p club-unison --example webtransport_echo_server -- '[::1]:4433'`。
+// 動的 import で SDK を遅延ロードし、 通常 boot path の bundle 初期化を汚さない。
+(window as unknown as { vpUnisonEcho: (certHash: string, url?: string) => Promise<unknown> })
+	.vpUnisonEcho = async (certHash: string, url?: string) => {
+	const { runUnisonEchoProbe } = await import("./unison-echo-probe");
+	return runUnisonEchoProbe(certHash, url);
+};
+// auto-run: vp-app が VP_UNISON_ECHO_CERT 付きで起動すると init script が
+// window.__VP_ECHO_CERT__ を注入する。 検出したら probe を自動実行し、 結果を
+// console (= bridge 経由で app.kdl.log) に出す。 agent が log を読んで観測する。
+{
+	const echoCert = (window as unknown as { __VP_ECHO_CERT__?: string }).__VP_ECHO_CERT__;
+	if (echoCert) {
+		(window as unknown as { vpUnisonEcho: (c: string) => Promise<unknown> })
+			.vpUnisonEcho(echoCert)
+			.then((r) => console.log("[echo-probe-result]", JSON.stringify(r)))
+			.catch((e) => console.error("[echo-probe-result] error", String(e)));
+	}
+}
+
 // DevTools 検査用 (window.vpFrame.applyScene('side-review') 等で手動 trigger 可能)
 (window as unknown as { vpFrame: FrameEngine }).vpFrame = frameEngine;
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
