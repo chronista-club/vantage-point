@@ -22,6 +22,8 @@ pub mod device_input;
 #[cfg(feature = "midi")]
 pub mod device_profile;
 pub mod discovery;
+#[cfg(feature = "midi")]
+pub mod justice;
 pub mod file_watcher;
 pub mod flow;
 // lane lib 本体 (vp-cli の bin `vp lane` も `vantage_point::lane` を経由する)

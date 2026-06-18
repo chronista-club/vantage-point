@@ -39,6 +39,8 @@ use std::sync::Arc;
 use super::lane_stand::LaneStandRegistry;
 use super::lanes_state::LaneAddress;
 use super::project_stands_state::PaisleyParkStand;
+#[cfg(feature = "midi")]
+use crate::justice::JusticeStand;
 
 /// Lane 階層 Stand container (Lane あたり 1 instance)。
 ///
@@ -73,6 +75,9 @@ impl LaneCapabilities {
         let mut registry = LaneStandRegistry::new();
         // PR-δ-2 (VP-136): PP を最初の住人として LaneStandRegistry に登録
         registry.insert(Arc::new(PaisleyParkStand::new()));
+        // E3-1: Justice 🌫️ を Lane に自動 host（midi feature 有効時）
+        #[cfg(feature = "midi")]
+        registry.insert(Arc::new(JusticeStand::new()));
         Self {
             address,
             stand: stand.into(),
@@ -225,12 +230,13 @@ mod tests {
 
     #[test]
     fn lane_capabilities_registry_count_after_new() {
-        // PR-δ-2 (VP-136): new() 直後の registry には PP 1 つだけ host されている
         let lc = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
+        // PP + Justice（midi feature 有効時）
+        let expected = if cfg!(feature = "midi") { 2 } else { 1 };
         assert_eq!(
             lc.registry.count(),
-            1,
-            "new() 直後は PaisleyParkStand のみで count = 1"
+            expected,
+            "new() 直後は PP + Justice(midi時) で count = {expected}"
         );
     }
 
@@ -302,19 +308,15 @@ mod tests {
     #[test]
     fn lane_capabilities_hosts_pp_and_mock_b_simultaneously() {
         let mut lc = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
-        assert_eq!(
-            lc.registry.count(),
-            1,
-            "new() 直後は PP のみ (cardinality 1)"
-        );
+        let base_count = lc.registry.count();
 
-        // 2 つ目の Stand を insert
+        // MockStandB を insert
         lc.registry.insert(Arc::new(MockStandB::new()));
 
         assert_eq!(
             lc.registry.count(),
-            2,
-            "MockStandB insert 後は PP + MockStandB の 2 Stand 共存"
+            base_count + 1,
+            "MockStandB insert 後は base + 1 Stand 共存"
         );
         assert!(
             lc.registry
@@ -410,8 +412,9 @@ mod tests {
     #[test]
     fn lane_capabilities_remove_mock_b_keeps_pp() {
         let mut lc = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
+        let base_count = lc.registry.count();
         lc.registry.insert(Arc::new(MockStandB::new()));
-        assert_eq!(lc.registry.count(), 2, "insert 後は 2 Stand");
+        assert_eq!(lc.registry.count(), base_count + 1, "insert 後は base + 1");
 
         let removed = lc.registry.remove("mock_b");
         assert!(
@@ -421,8 +424,8 @@ mod tests {
 
         assert_eq!(
             lc.registry.count(),
-            1,
-            "remove 後は cardinality 1 (PP のみ)"
+            base_count,
+            "remove 後は base count に戻る"
         );
         assert!(
             lc.registry

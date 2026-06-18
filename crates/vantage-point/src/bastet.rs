@@ -276,10 +276,10 @@ impl Bastet {
                     event_bus.emit(event).await;
 
                     // input port + parser がある device は input listener を spawn
-                    if *has_in {
-                        if let Some(handle) = spawn_input_listener(name, Arc::clone(&event_bus)) {
-                            input_listeners.insert(name.clone(), handle);
-                        }
+                    if *has_in
+                        && let Some(handle) = spawn_input_listener(name, Arc::clone(&event_bus))
+                    {
+                        input_listeners.insert(name.clone(), handle);
                     }
                 }
 
