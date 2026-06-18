@@ -729,7 +729,7 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
 ///
 /// Phase 5-A 拡張: Lane と Stand が **mutually exclusive** な active 軸として扱われる。
 /// 優先順位:
-///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "hermit_purple"
+///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "bastet"
 ///   2. `active_lane_address` Some → kind = "terminal"、 pane_id = Lane address
 ///   3. 両方 None → kind=None で empty placeholder
 ///

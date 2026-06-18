@@ -1,4 +1,4 @@
-//! Project scope の Stand pool — GE/HP の registry (PP は PR-β-2 で Lane 移管済)
+//! Project scope の Stand pool — GE の registry (PP は Lane 移管済、 HP→Bastet 🧲 は World 移管で本 pool から除去)
 //!
 //! 関連 memory:
 //! - 「多 scope architecture + protocol/msg 連携」rule (2026-04-27 確定) は
@@ -16,8 +16,10 @@
 //!
 //! Project scope に残る Stand:
 //! - GE 🌿 Gold Experience — Code Runner (1 / project、 PR-γ で Lane 移管予定)
-//! - HP 🍇 Hermit Purple   — External Control (target = World、 PR-α 完了で SP 側 capability から取り外し済、
-//!   ただし HermitPurpleState skeleton は本 pool に残存)
+//!
+//! 旧 HP 🍇 Hermit Purple (External Control) は PR-α で World 移管 + epic v3.1 で
+//! Bastet 🧲 (World device registry) / Justice 🌫️ (Lane device I/O) に再編。
+//! 死蔵していた HermitPurpleState skeleton は E2-0 で削除済。
 //!
 //! Lane 移管完了済:
 //! - PP 🧭 Paisley Park — `LaneCapabilities.registry` で host (PR-δ-2)、
@@ -104,27 +106,17 @@ pub struct GoldExperienceState {
     pub last_eval: Option<String>,
 }
 
-/// HP (Hermit Purple) — External Control state (1 / project)
-///
-/// 既存の MIDI / MCP / tmux module はここの state を読み書きする想定 (gradual migration)。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HermitPurpleState {
-    /// MIDI 接続状態 (簡素化、A4-2b では skeleton)
-    pub midi_connected: bool,
-    pub mcp_connected: bool,
-    pub tmux_connected: bool,
-}
-
-/// Project scope の Stand pool (GE/HP を集約、 PR-β-2 で PP は Lane 移管済)
+/// Project scope の Stand pool (GE を集約、 PP は Lane 移管済、 HP→Bastet は World 移管)
 ///
 /// PR-β-2 (VP-120): `paisley_park` field を **削除**、 PP は `LaneCapabilities.registry`
 /// (PR-δ-2 / VP-136 で `LaneStandRegistry` 経由 host に進化、 wrapper struct =
-/// `PaisleyParkStand`) で Lane あたり独立 instance に物理移管。 残る GE / HP は
-/// Project あたり 1 instance、 PR-γ で GE も Lane 移管予定。
+/// `PaisleyParkStand`) で Lane あたり独立 instance に物理移管。 epic v3.1 E2-0 で旧
+/// `hermit_purple` field (HermitPurpleState skeleton) も削除 (External Control は
+/// World/Bastet 🧲 + Lane/Justice 🌫️ へ再編)。 残る GE は Project あたり 1 instance、
+/// PR-γ で Lane 移管予定 (完了後に本 pool 自体が削除可能になる)。
 #[derive(Debug, Default)]
 pub struct ProjectStandsPool {
     pub gold_experience: GoldExperienceState,
-    pub hermit_purple: HermitPurpleState,
 }
 
 impl ProjectStandsPool {
@@ -139,9 +131,9 @@ mod tests {
 
     #[test]
     fn project_stands_pool_default_empty() {
-        // PR-β-2 (VP-120): paisley_park は LaneCapabilities に物理移管、 本 pool では確認不要
+        // PR-β-2 (VP-120): paisley_park は LaneCapabilities に物理移管、 本 pool では確認不要。
+        // epic v3.1 E2-0: hermit_purple skeleton 削除済 (External Control は World/Bastet + Lane/Justice へ)
         let pool = ProjectStandsPool::new();
         assert!(pool.gold_experience.last_eval.is_none());
-        assert!(!pool.hermit_purple.midi_connected);
     }
 }
