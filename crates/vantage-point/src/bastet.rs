@@ -7,21 +7,22 @@
 //! 責務 (doc 23 §5.3):
 //! - **registry**: 接続中 device を `HashMap<port_displayName, ConnectedDevice>` で hold
 //! - **hot-plug discovery**: midir enumeration polling (2〜3s) で接続/切断検出
-//! - **input parse**: device byte → `DeviceInput::parse` → `ControlEvent` 化 (E2-3)
-//! - **routing policy**: `ControlEvent` を active Lane の Justice へ dispatch (E2-3)
-//! - **active Lane track**: SP の「lanes」QUIC channel を購読し cache 更新 (E2-3)
+//! - **input parse**: device byte → `DeviceInput::parse` → `ControlEvent` 化
+//! - **routing policy**: `ControlEvent` を active Lane の Justice へ dispatch (E3)
+//! - **active Lane track**: SP の「lanes」QUIC channel を購読し cache 更新 (E3)
 
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
 use crate::capability::stand_service::{LayerScope, Service};
+use crate::device_input::DeviceInput;
 use crate::process::lanes_state::LaneAddress;
 
 /// hot-plug polling 間隔（doc 23 Q-4: 2〜3s、体感重視）
@@ -72,6 +73,19 @@ fn compute_diff(
     DiscoveryDiff { added, removed }
 }
 
+/// port name から対応する DeviceInput parser を生成する factory。
+/// 未対応の機材は None（parser なし = input 監視対象外）。
+fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
+    use crate::device_input::roto::RotoInput;
+
+    if port_name.contains("Roto") {
+        Some(Box::new(RotoInput::default()))
+    } else {
+        // X-Touch, LPD8 等の入力 parser は Converge で追加
+        None
+    }
+}
+
 // ─── actions（I/O）────────────────────────────────────────
 
 /// midir で input + output の全 port を enumeration し、displayName → (has_input, has_output) の map を返す。
@@ -96,6 +110,61 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     }
 
     result
+}
+
+/// 指定 port の MIDI input を listen し、DeviceInput::parse で ControlEvent 化して EventBus に emit する。
+/// parser が未対応 or 接続失敗の場合は None。
+fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<JoinHandle<()>> {
+    let mut parser = create_device_input(port_name)?;
+
+    let midi_in = midir::MidiInput::new("vp-bastet-input").ok()?;
+    let ports = midi_in.ports();
+    let port_idx = ports.iter().position(|p| {
+        midi_in
+            .port_name(p)
+            .map(|n| n == port_name)
+            .unwrap_or(false)
+    })?;
+    let port = &ports[port_idx];
+
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
+    let port_name_owned = port_name.to_string();
+
+    // midir callback は別スレッドで走る → blocking_send で async 側へ bridge
+    let connection = midi_in
+        .connect(
+            port,
+            "vp-bastet-input",
+            move |_timestamp, message, _| {
+                let _ = tx.blocking_send(message.to_vec());
+            },
+            (),
+        )
+        .ok()?;
+
+    let handle = tokio::spawn(async move {
+        // connection を move して keep alive（drop = 切断）
+        let _conn = connection;
+        let port = port_name_owned;
+
+        tracing::info!("🧲 input listener started: {}", port);
+
+        while let Some(msg) = rx.recv().await {
+            if let Some(event) = parser.parse(&msg) {
+                tracing::debug!("🧲 control event from {}: {:?}", port, event);
+                let cap_event = CapabilityEvent::new("bastet.control_event", "bastet")
+                    .with_payload(&serde_json::json!({
+                        "port_name": port,
+                        "event": event,
+                    }));
+                event_bus.emit(cap_event).await;
+            }
+        }
+
+        tracing::info!("🧲 input listener stopped: {}", port);
+    });
+
+    Some(handle)
 }
 
 // ─── Bastet struct ─────────────────────────────────────────
@@ -156,7 +225,7 @@ impl Bastet {
             .is_some_and(|t| !t.is_finished())
     }
 
-    /// hot-plug discovery を開始（2s 周期で port enumeration → diff → devices 更新）
+    /// hot-plug discovery を開始（2s 周期で port enumeration → diff → devices 更新 + input listener 管理）
     pub async fn start_discovery(&mut self) {
         if self.is_discovering() {
             return;
@@ -172,6 +241,9 @@ impl Bastet {
                 "Bastet 🧲 discovery started (interval: {}s)",
                 DISCOVERY_INTERVAL.as_secs()
             );
+
+            // device ごとの input listener task を追跡（discovery task ローカル）
+            let mut input_listeners: HashMap<String, JoinHandle<()>> = HashMap::new();
 
             loop {
                 let current = enumerate_ports();
@@ -202,6 +274,13 @@ impl Bastet {
                             "has_output": has_out,
                         }));
                     event_bus.emit(event).await;
+
+                    // input port + parser がある device は input listener を spawn
+                    if *has_in {
+                        if let Some(handle) = spawn_input_listener(name, Arc::clone(&event_bus)) {
+                            input_listeners.insert(name.clone(), handle);
+                        }
+                    }
                 }
 
                 for name in &diff.removed {
@@ -210,6 +289,11 @@ impl Bastet {
                     let event = CapabilityEvent::new("bastet.device_disconnected", "bastet")
                         .with_payload(&serde_json::json!({ "port_name": name }));
                     event_bus.emit(event).await;
+
+                    // input listener も停止
+                    if let Some(handle) = input_listeners.remove(name) {
+                        handle.abort();
+                    }
                 }
 
                 // RwLock を release してから sleep
@@ -217,6 +301,10 @@ impl Bastet {
 
                 tokio::select! {
                     _ = cancel_rx.recv() => {
+                        // cleanup: 全 input listener を abort
+                        for (_, handle) in input_listeners.drain() {
+                            handle.abort();
+                        }
                         tracing::info!("Bastet 🧲 discovery stopped");
                         break;
                     }
@@ -369,6 +457,21 @@ mod tests {
         assert_eq!(diff.added[0].0, "New Device");
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.removed[0], "Old Device");
+    }
+
+    // ─── create_device_input factory ──────────────────
+
+    #[test]
+    fn factory_creates_roto_parser() {
+        assert!(create_device_input("MIDI9 Roto Control").is_some());
+        assert!(create_device_input("Roto").is_some());
+    }
+
+    #[test]
+    fn factory_returns_none_for_unknown() {
+        assert!(create_device_input("X-Touch Compact").is_none());
+        assert!(create_device_input("LPD8 mk2").is_none());
+        assert!(create_device_input("Unknown Device").is_none());
     }
 
     // ─── discovery lifecycle ───────────────────────────
