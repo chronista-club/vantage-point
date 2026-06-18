@@ -36,17 +36,10 @@ pub struct ProjectionBatch {
 /// Justice 🌫️ の Lane-local state。
 ///
 /// bound された DeviceProfile 群を保持し、projection 要求時に byte batch を生成する。
+#[derive(Default)]
 pub struct JusticeState {
     /// この Lane に bind された device profile 群（projection 対象）
     profiles: Vec<Box<dyn DeviceProfile + Send + Sync>>,
-}
-
-impl Default for JusticeState {
-    fn default() -> Self {
-        Self {
-            profiles: Vec::new(),
-        }
-    }
 }
 
 // ─── JusticeStand ──────────────────────────────────────────
@@ -221,7 +214,11 @@ mod tests {
         ) -> Vec<Vec<u8>> {
             self.track_calls += 1;
             // index + name 頭文字を mock payload に
-            vec![vec![0xB0, index, name.as_bytes().first().copied().unwrap_or(0)]]
+            vec![vec![
+                0xB0,
+                index,
+                name.as_bytes().first().copied().unwrap_or(0),
+            ]]
         }
 
         fn learn_parameter(&mut self, index: u8, spec: &ParamSpec) -> Vec<Vec<u8>> {
@@ -258,9 +255,7 @@ mod tests {
             .await;
         assert_eq!(stand.profile_count().await, 1);
 
-        stand
-            .bind_profile(Box::new(MockProfile::new("Roto")))
-            .await;
+        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
         assert_eq!(stand.profile_count().await, 2);
     }
 
@@ -270,9 +265,7 @@ mod tests {
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
-        stand
-            .bind_profile(Box::new(MockProfile::new("Roto")))
-            .await;
+        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
         assert_eq!(stand.profile_count().await, 2);
 
         stand.unbind_all().await;
@@ -287,9 +280,7 @@ mod tests {
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
-        stand
-            .bind_profile(Box::new(MockProfile::new("Roto")))
-            .await;
+        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
         let batches = stand.handshake_all().await;
         assert_eq!(batches.len(), 2);
@@ -330,9 +321,7 @@ mod tests {
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
-        stand
-            .bind_profile(Box::new(MockProfile::new("Roto")))
-            .await;
+        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
         let batches = stand
             .project_track(3, "bass", Rgb::new(0, 0, 255), true)
@@ -345,9 +334,7 @@ mod tests {
     #[tokio::test]
     async fn project_parameter_generates_batches() {
         let stand = JusticeStand::new();
-        stand
-            .bind_profile(Box::new(MockProfile::new("Roto")))
-            .await;
+        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
         let spec = ParamSpec::continuous("volume", 0.5);
         let batches = stand.project_parameter(0, &spec).await;
@@ -374,12 +361,8 @@ mod tests {
             .await;
 
         // 2 回 project → shadow state（track_calls）が累積するか
-        stand
-            .project_track(0, "a", Rgb::new(0, 0, 0), false)
-            .await;
-        stand
-            .project_track(1, "b", Rgb::new(0, 0, 0), false)
-            .await;
+        stand.project_track(0, "a", Rgb::new(0, 0, 0), false).await;
+        stand.project_track(1, "b", Rgb::new(0, 0, 0), false).await;
 
         let state = stand.state().read().await;
         // MockProfile は track_calls を内部で increment — shadow state の動作確認
