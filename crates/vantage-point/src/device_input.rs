@@ -12,7 +12,8 @@
 /// 機材から来た物理操作を device 非依存に論理イベント化したもの。
 ///
 /// index はその機材内での 0 始まりの要素番号（knob 0–7 等）。値は正規化（0.0–1.0）。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlEvent {
     /// knob / encoder を回した（正規化値）
     Knob { index: u8, value: f32 },
