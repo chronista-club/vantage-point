@@ -360,9 +360,6 @@ mod tests {
             project_count, 2,
             "Project scope の Service は 2 個 (= notify + lane-spawn)"
         );
-        assert_eq!(
-            world_count, 1,
-            "World scope の Service は 1 個 (= bastet)"
-        );
+        assert_eq!(world_count, 1, "World scope の Service は 1 個 (= bastet)");
     }
 }
