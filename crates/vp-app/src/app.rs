@@ -760,6 +760,60 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     }
 }
 
+/// Active Lane を切替える — 全副作用を 1 箇所に集約（Simplicity 原則）。
+///
+/// sidebar click / switch_lane (QUIC) / auto-select の 3 入口すべてがこの関数を呼ぶ。
+/// 副作用:
+///   1. `sidebar_state.active_lane_address` + `active_stand` (排他 clear)
+///   2. `session_state` 永続化
+///   3. notification / awaiting_input reset
+///   4. sidebar UI push (`renderSidebarState`)
+///   5. main area push (`setActivePane` → `showLane`)
+///   6. dead lane respawn
+#[allow(clippy::too_many_arguments)]
+fn activate_lane(
+    address: &str,
+    sidebar_state: &mut SidebarState,
+    session_state: &mut crate::session_state::SessionState,
+    webview: &wry::WebView,
+    lane_respawn_triggered: &mut std::collections::HashSet<String>,
+    rt_handle: &tokio::runtime::Handle,
+    respawn_proxy: &EventLoopProxy<AppEvent>,
+) {
+    let view_changed = sidebar_state.active_lane_address.as_deref() != Some(address);
+
+    // 1. State
+    sidebar_state.active_lane_address = Some(address.to_string());
+    if sidebar_state.active_stand.is_some() {
+        sidebar_state.active_stand = None;
+    }
+
+    // 2. Session persistence
+    session_state.active_lane_address = Some(address.to_string());
+    session_state.save();
+
+    // 3. Notification reset (同 lane click 連打でも badge を消す)
+    sidebar_state.unread_notifications.remove(address);
+    sidebar_state.awaiting_input.remove(address);
+
+    // 4-5. UI push
+    push_sidebar_state(webview, sidebar_state);
+    if view_changed {
+        push_active_view(webview, sidebar_state);
+    }
+
+    // 6. Dead lane respawn
+    if view_changed {
+        maybe_respawn_dead_lane(
+            address,
+            sidebar_state,
+            lane_respawn_triggered,
+            rt_handle,
+            respawn_proxy,
+        );
+    }
+}
+
 /// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら SP に restart_lane を
 /// 発火して蘇らせる。 lane (conductor / performer) の Echoes プロセスが死ぬと SP の lifecycle monitor は
 /// Dead を検知するだけで auto-respawn しない (server.rs の設計判断) ため、 user が lane を
@@ -851,8 +905,12 @@ fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
 struct SidebarIpcOutcome {
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     changed: bool,
-    /// active Lane が変わったか (true なら push_active_view を呼ぶ)
+    /// active Lane/Stand が変わったか (true なら push_active_view を呼ぶ)。
+    /// Lane 選択の場合は `activate_lane` を使うこと（こちらは Stand 選択・Lane 削除用）。
     active_changed: bool,
+    /// Lane activation 要求 — caller が `activate_lane()` を呼ぶ。
+    /// `active_changed` とは排他（こちらが Some なら active_changed は不要）。
+    activate_lane: Option<String>,
     /// SP auto-spawn が必要な project (= 「Current」 になった dead な project)。
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
     /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
@@ -1017,12 +1075,10 @@ fn handle_sidebar_ipc(
             out.active_changed = true;
         }
         IpcEnvelope::LaneSelect(m) => {
-            // Architecture v4: Lane row click → `address` (Display 形 "<project>/conductor") を受信
             if m.address.is_empty() {
                 tracing::warn!("lane:select with empty address: {}", msg);
                 return out;
             }
-            // 念のため: 該当 project の lanes_by_project に address が存在することを確認
             let lanes_exist = state
                 .lanes_by_project
                 .get(m.path.as_str())
@@ -1036,35 +1092,8 @@ fn handle_sidebar_ipc(
                 );
                 return out;
             }
-            if state.active_lane_address.as_deref() != Some(m.address.as_str()) {
-                state.active_lane_address = Some(m.address.clone());
-                tracing::info!("lane:select {} address={}", m.path, m.address);
-                out.changed = true;
-                out.active_changed = true;
-                // session 永続化: vp-app 再起動時に直前 active Lane を復元
-                session.active_lane_address = Some(m.address.clone());
-                session.save();
-            }
-            // Phase 5-D Sprint C P2.1: Lane 切替時に対象 Lane の unread notification を 0 reset。
-            //  user が Lane 開いた = 通知に応答した、 とみなして badge を消す。
-            //  active 切替が無くても reset は走る (= 同 Lane を click 連打しても badge 消えるべき)。
-            if state
-                .unread_notifications
-                .remove(m.address.as_str())
-                .is_some()
-            {
-                out.changed = true;
-            }
-            // awaiting_input も同タイミングで reset (= user が Lane を開いたら入力待ち通知を消す)。
-            if state.awaiting_input.remove(m.address.as_str()).is_some() {
-                out.changed = true;
-            }
-            // Phase 5-A: Lane と Stand は排他なので active_stand を clear
-            if state.active_stand.is_some() {
-                state.active_stand = None;
-                out.changed = true;
-                out.active_changed = true;
-            }
+            tracing::info!("lane:select {} address={}", m.path, m.address);
+            out.activate_lane = Some(m.address.clone());
         }
         IpcEnvelope::ProcessReorder(m) => {
             // Currents セクションを drag-and-drop で並び替えた時の通知。
@@ -1965,22 +1994,18 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 if let Some(addr) = first_addr {
                     tracing::info!("auto-select first lane: {}", addr);
-                    sidebar_state.active_lane_address = Some(addr.clone());
-                    push_active_view(&webview, &sidebar_state);
-                    // Phase 2.5: per-Lane instance を main area に表示。
-                    // ensureLane は上のループで呼んだので、 ここでは show のみ。
-                    lane_js::show_lane(&webview, Some(&addr));
-                    // オンデマンド respawn: session 復元/auto-select した lane が Dead なら蘇らせる。
-                    // (起動時に直前 active lane が死んでいた場合に Echoes を自動復活させる)
-                    maybe_respawn_dead_lane(
+                    activate_lane(
                         &addr,
-                        &sidebar_state,
+                        &mut sidebar_state,
+                        &mut session_state,
+                        &webview,
                         &mut lane_respawn_triggered,
                         &rt_handle,
                         &respawn_proxy,
                     );
+                } else {
+                    push_sidebar_state(&webview, &sidebar_state);
                 }
-                push_sidebar_state(&webview, &sidebar_state);
             }
             // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
             // 起動 race で silent drop された ensureLane を再発行する (WebView HTML load 完了
@@ -2072,15 +2097,15 @@ pub fn run() -> anyhow::Result<()> {
                             } else {
                                 format!("{}/performer/{}", project, token)
                             };
-                            // JSON 文字列は有効な JS 文字列リテラル（escape 済）
-                            let addr_lit = serde_json::to_string(&address).unwrap_or_default();
-                            let script = format!(
-                                "window.setActivePane && window.setActivePane({{ kind: 'terminal', pane_id: {} }})",
-                                addr_lit
+                            activate_lane(
+                                &address,
+                                &mut sidebar_state,
+                                &mut session_state,
+                                &webview,
+                                &mut lane_respawn_triggered,
+                                &rt_handle,
+                                &respawn_proxy,
                             );
-                            if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!("switch_lane setActivePane 失敗: {}", e);
-                            }
                         }
                     } else {
                         match serde_json::to_string(&message) {
@@ -2365,27 +2390,23 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state, &mut session_state);
-                if outcome.changed {
-                    push_sidebar_state(&webview, &sidebar_state);
-                }
-                if outcome.active_changed {
-                    push_active_view(&webview, &sidebar_state);
-                    // Phase 2.5: lane:select は per-Lane instance の display 切替だけ。
-                    // WebSocket は browser native で SP に直接繋がってる (ensure 済)。
-                    lane_js::show_lane(
+                // Lane activation — activate_lane() が全副作用を処理
+                if let Some(addr) = outcome.activate_lane {
+                    activate_lane(
+                        &addr,
+                        &mut sidebar_state,
+                        &mut session_state,
                         &webview,
-                        sidebar_state.active_lane_address.as_deref(),
+                        &mut lane_respawn_triggered,
+                        &rt_handle,
+                        &respawn_proxy,
                     );
-                    // オンデマンド respawn: 選択した lane が Dead (pid:null) なら SP に restart_lane を
-                    // 発火して蘇らせる。 復活後 LanesLoaded で pid あり → ensure_lane → Echoes 表示。
-                    if let Some(addr) = sidebar_state.active_lane_address.clone() {
-                        maybe_respawn_dead_lane(
-                            &addr,
-                            &sidebar_state,
-                            &mut lane_respawn_triggered,
-                            &rt_handle,
-                            &respawn_proxy,
-                        );
+                } else {
+                    if outcome.changed {
+                        push_sidebar_state(&webview, &sidebar_state);
+                    }
+                    if outcome.active_changed {
+                        push_active_view(&webview, &sidebar_state);
                     }
                 }
                 // Architecture v4: dead な project が expand されたら SP を auto-spawn。

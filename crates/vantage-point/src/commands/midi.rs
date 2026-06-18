@@ -737,50 +737,57 @@ fn parse_lane_tokens(v: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// lane cursor を動かす方向。
+/// lane 選択アクション。
 #[derive(Clone, Copy)]
 enum LaneNav {
     Prev,
     Next,
+    /// track ボタンによる直接選択（0-7 = LCD slot index）。
+    Direct(usize),
 }
 
 impl LaneNav {
-    /// cursor index への加算量。
-    fn delta(self) -> i32 {
-        match self {
-            LaneNav::Prev => -1,
-            LaneNav::Next => 1,
-        }
-    }
     /// ログ表示用グリフ。
     fn glyph(self) -> &'static str {
         match self {
             LaneNav::Prev => "◄",
             LaneNav::Next => "►",
+            LaneNav::Direct(_) => "●",
+        }
+    }
+
+    /// latest lane list から選択先 index を解決。
+    fn resolve(self, latest: &[String], current: &str) -> usize {
+        let n = latest.len();
+        if n == 0 {
+            return 0;
+        }
+        match self {
+            LaneNav::Prev => {
+                let cur = latest.iter().position(|t| t == current).unwrap_or(0);
+                (cur + n - 1) % n
+            }
+            LaneNav::Next => {
+                let cur = latest.iter().position(|t| t == current).unwrap_or(0);
+                (cur + 1) % n
+            }
+            LaneNav::Direct(i) => i.min(n - 1),
         }
     }
 }
 
-/// ROTO button index → lane nav の binding 表（dogfood + decompile で確定、データとして集約）。
-/// 物理キーとモード要件:
-/// - **Button 16/17 = transport ◄ ►**（CC 36/37、`RotoCcButton` = 素の CC。ROTO の TRANSPORT
-///   が enable のとき送出）→ 本命の prev/next。
-/// - **Button 0/1 = 右 8 button の 0/1**（CC 20/21、MIX TRACKS mode で送出）→ robust な代替。
+/// ROTO button index → LaneNav の解決。
 ///
-/// 左 ctrl 列の ← → は mode/nav の semantic SysEx で別キー（ここには来ない）。
-const ROTO_LANE_NAV: &[(u8, LaneNav)] = &[
-    (16, LaneNav::Prev), // ◄ transport (CC36)
-    (17, LaneNav::Next), // ► transport (CC37)
-    (0, LaneNav::Prev),  // 右 button 0 (CC20)
-    (1, LaneNav::Next),  // 右 button 1 (CC21)
-];
-
-/// button index を lane nav 方向に解決（binding 表 lookup）。
+/// MIX モードの track button 0-7 (CC20-27) = LCD 直下の物理ボタン → Direct select。
+/// transport ◄/► (CC36/37) は MIX モードでは SysEx mode switch になるため到達しないが、
+/// MIDI モードでは CC として来るので Prev/Next として残す。
 fn roto_lane_nav(index: u8) -> Option<LaneNav> {
-    ROTO_LANE_NAV
-        .iter()
-        .find(|(i, _)| *i == index)
-        .map(|(_, nav)| *nav)
+    match index {
+        0..=7 => Some(LaneNav::Direct(index as usize)),
+        16 => Some(LaneNav::Prev),
+        17 => Some(LaneNav::Next),
+        _ => None,
+    }
 }
 
 /// B2: ROTO ← / → → 現 project の active Lane を prev/next 切替（Unison-native）。
@@ -790,7 +797,7 @@ fn roto_lane_nav(index: u8) -> Option<LaneNav> {
 /// transport ◄/► (CC36/37) or 右 button 0/1 で B1 の `switch_lane` QUIC arm を叩く。
 fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result<()> {
     use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
-    use crate::device_profile::{DeviceProfile, ParamSpec, Rgb, roto::RotoProfile};
+    use crate::device_profile::{DeviceProfile, Rgb, roto::RotoProfile};
     use std::time::Duration;
 
     let sp = match sp_port {
@@ -829,7 +836,13 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
         // daemon が cursor を保持（vp-app の active を逆照会しない）。初期は conductor。
         let mut current = "conductor".to_string();
         let mut activated = false;
+        // LCD に lane 名を projection 済みか（snapshot 到着後に初回 projection）
+        let mut lcd_projected = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+
+        // active lane の色（シアン）/ 非 active（暗い青灰）
+        let color_active = Rgb::new(0, 200, 255);
+        let color_inactive = Rgb::new(60, 80, 120);
 
         loop {
             tokio::select! {
@@ -849,28 +862,21 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
                     if roto_autorespond(&bytes, &mut conn_out)? {
                         continue;
                     }
-                    // 最初の SysEx で projection を送って knob/button を起こす（learn しないと入力が来ない）
+                    // 最初の SysEx で activated フラグを立てる（knob は snapshot 到着後に起こす）
                     if !activated && bytes.first() == Some(&0xF0) {
                         activated = true;
-                        let mut projection = Vec::new();
-                        for i in 0..8u8 {
-                            // extend で全 track 分を積む（`=` 上書きだと track 7 のみ残る既存 bug）
-                            projection.extend(profile.project_track(
-                                i,
-                                &format!("Lane {}", i + 1),
-                                Rgb::new(0, 200, 255),
-                                false,
-                            ));
+                        println!("接続成立 — Lane snapshot 待ち...");
+                        // snapshot がまだ来ていれば即 projection（初回 = full: knob activation 含む）
+                        if !latest.is_empty() && !lcd_projected {
+                            let msgs = roto_project_lanes_full(&mut profile, &latest, &current, color_active, color_inactive);
+                            for m in &msgs {
+                                conn_out.send(m)?;
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            lcd_projected = true;
+                            println!("LCD 更新: {} lanes (active='{}')", latest.len(), current);
                         }
-                        for i in 0..8u8 {
-                            let spec = ParamSpec::continuous(format!("Param {}", i + 1), 0.5);
-                            projection.extend(profile.learn_parameter(i, &spec));
-                        }
-                        for m in &projection {
-                            conn_out.send(m)?;
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        println!("接続成立 — transport ◄ =prev / ► =next（CC36/37）or 右 button 0/1（MIX TRACKS）で active Lane 切替");
+                        println!("track button で lane 直接選択（transport ◄► は TRANSPORT enable 時のみ）");
                         continue;
                     }
                     // channel message を ControlEvent に → binding 表（ROTO_LANE_NAV）で nav 解決
@@ -889,20 +895,26 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
                         eprintln!("lane list 未取得（snapshot 待ち）");
                         continue;
                     }
-                    // cursor を token で追跡（list 増減に強い）
-                    let n = latest.len() as i32;
-                    let cur_idx = latest.iter().position(|t| t == &current).unwrap_or(0) as i32;
-                    let new_idx = (((cur_idx + nav.delta()) % n) + n) % n;
-                    current = latest[new_idx as usize].clone();
+                    let new_idx = nav.resolve(&latest, &current);
+                    current = latest[new_idx].clone();
+                    println!("{} active lane → '{}'", nav.glyph(), current);
 
-                    // B1 の switch_lane QUIC arm を叩く（HTTP 不使用）
+                    // LCD を即座に再 projection（cursor 移動 = ハイライト色変更）
+                    if lcd_projected {
+                        let msgs = roto_project_lanes(&mut profile, &latest, &current, color_active, color_inactive);
+                        for m in &msgs {
+                            conn_out.send(m)?;
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+
+                    // vp-app への通知は best-effort（未接続でも OK）
                     let payload = serde_json::json!({ "type": "switch_lane", "lane": current });
-                    match process_ch
+                    if let Err(e) = process_ch
                         .request::<serde_json::Value, serde_json::Value>("switch_lane", &payload)
                         .await
                     {
-                        Ok(_) => println!("{} active lane → '{}'", nav.glyph(), current),
-                        Err(e) => eprintln!("switch_lane 失敗: {}", e),
+                        eprintln!("switch_lane 通知失敗（LCD は更新済み）: {}", e);
                     }
                 }
                 // 「lanes」snapshot を購読しっぱなし → lane 増減を live 反映（MIDI の後に poll）
@@ -915,6 +927,16 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
                                 let tokens = parse_lane_tokens(&v);
                                 if tokens != latest {
                                     latest = tokens;
+                                    // LCD を最新 lane list で再 projection（lane 増減 = full で knob も更新）
+                                    if activated {
+                                        let msgs = roto_project_lanes_full(&mut profile, &latest, &current, color_active, color_inactive);
+                                        for m in &msgs {
+                                            conn_out.send(m)?;
+                                            std::thread::sleep(Duration::from_millis(1));
+                                        }
+                                        lcd_projected = true;
+                                        println!("LCD 更新: {} lanes (active='{}')", latest.len(), current);
+                                    }
                                 }
                             }
                         }
@@ -935,6 +957,63 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
         Ok::<(), anyhow::Error>(())
     })?;
     Ok(())
+}
+
+/// Lane list を ROTO LCD に projection する。active lane は別色でハイライト。
+/// 8 slot に lane を割当て（不足分は空欄）。
+///
+/// 最適化: `project_track` は 1 call ごとに全 track の枠付きバッチを返すため、
+/// shadow 更新は全 slot で行うが **送信は最後の 1 バッチのみ**（完全な state を含む）。
+/// `learn_parameter` は初回のみ必要（knob activation 用）。
+fn roto_project_lanes(
+    profile: &mut crate::device_profile::roto::RotoProfile,
+    lanes: &[String],
+    active: &str,
+    color_active: crate::device_profile::Rgb,
+    color_inactive: crate::device_profile::Rgb,
+) -> Vec<Vec<u8>> {
+    use crate::device_profile::DeviceProfile;
+
+    // 全 slot の shadow を更新し、最後の batch だけ保持する
+    let mut last_batch = Vec::new();
+    for i in 0..8u8 {
+        let (name, color) = if let Some(lane) = lanes.get(i as usize) {
+            let c = if lane == active {
+                color_active
+            } else {
+                color_inactive
+            };
+            (lane.as_str(), c)
+        } else {
+            ("", crate::device_profile::Rgb::new(0, 0, 0))
+        };
+        last_batch = profile.project_track(i, name, color, false);
+    }
+    last_batch
+}
+
+/// 初回接続時の完全 projection（track 表示 + knob activation）。
+/// `learn_parameter` は knob を active にするために初回のみ必要。
+fn roto_project_lanes_full(
+    profile: &mut crate::device_profile::roto::RotoProfile,
+    lanes: &[String],
+    active: &str,
+    color_active: crate::device_profile::Rgb,
+    color_inactive: crate::device_profile::Rgb,
+) -> Vec<Vec<u8>> {
+    use crate::device_profile::{DeviceProfile, ParamSpec};
+
+    let mut msgs = roto_project_lanes(profile, lanes, active, color_active, color_inactive);
+    // learn_parameter で knob を active にする（入力が来るようになる）
+    for i in 0..8u8 {
+        let label = lanes
+            .get(i as usize)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let spec = ParamSpec::continuous(label, 0.5);
+        msgs.extend(profile.learn_parameter(i, &spec));
+    }
+    msgs
 }
 
 /// X-Touch サブコマンドを実行

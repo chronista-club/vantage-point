@@ -217,22 +217,38 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
-        // 🧲 Bastet（MIDI device registry）— PR-α-2 で World 階層に移管。 World mode のみ host、
-        // SP mode の health endpoint からは「未集約」 として報告 (α-3 で cross-process query 経由に rewire)。
+        // 🧲 Bastet（MIDI device registry）— World mode のみ host。
+        // SP mode からは「disabled」として報告（α-3 で cross-process query 経由に rewire 予定）。
         #[cfg(feature = "midi")]
-        let midi_status = state
-            .world_capabilities
-            .as_ref()
-            .and_then(|wc| wc.midi.as_ref())
-            .map(|_| "active")
-            .unwrap_or("disabled");
+        let (bastet_status, bastet_detail) = {
+            if let Some(wc) = state.world_capabilities.as_ref() {
+                if let Some(ref bastet) = wc.bastet {
+                    let b = bastet.read().await;
+                    let count = b.device_count().await;
+                    let discovering = b.is_discovering();
+                    (
+                        if count > 0 { "active" } else { "idle" },
+                        Some(serde_json::json!({
+                            "devices": count,
+                            "discovering": discovering,
+                        })),
+                    )
+                } else if wc.midi.is_some() {
+                    ("active", None)
+                } else {
+                    ("disabled", None)
+                }
+            } else {
+                ("disabled", None)
+            }
+        };
         #[cfg(not(feature = "midi"))]
-        let midi_status = "disabled";
+        let (bastet_status, bastet_detail) = ("disabled", None);
         map.insert(
             "bastet".to_string(),
             StandStatus {
-                status: midi_status,
-                detail: None,
+                status: bastet_status,
+                detail: bastet_detail,
             },
         );
 
@@ -250,7 +266,31 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
 
         Some(map)
     } else {
-        None
+        // World mode — Bastet のみ報告（World 階層に host される唯一の observable Stand）
+        #[cfg(feature = "midi")]
+        {
+            let mut map = std::collections::HashMap::new();
+            if let Some(wc) = state.world_capabilities.as_ref() {
+                if let Some(ref bastet) = wc.bastet {
+                    let b = bastet.read().await;
+                    let count = b.device_count().await;
+                    let discovering = b.is_discovering();
+                    map.insert(
+                        "bastet".to_string(),
+                        StandStatus {
+                            status: if count > 0 { "active" } else { "idle" },
+                            detail: Some(serde_json::json!({
+                                "devices": count,
+                                "discovering": discovering,
+                            })),
+                        },
+                    );
+                }
+            }
+            if map.is_empty() { None } else { Some(map) }
+        }
+        #[cfg(not(feature = "midi"))]
+        { None }
     };
 
     Json(HealthResponse {
