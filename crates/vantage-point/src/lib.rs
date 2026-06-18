@@ -8,6 +8,8 @@
 
 pub mod agent;
 pub mod agui;
+#[cfg(feature = "midi")]
+pub mod bastet;
 pub mod capability;
 pub mod cli;
 pub mod commands;
