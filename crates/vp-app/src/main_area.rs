@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// Rust から main area JS に渡す active pane の payload
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivePaneInfo<'a> {
-    /// Pane kind ("terminal" | "preview" | "paisley_park" | "gold_experience" | "hermit_purple" | "empty" | null)
+    /// Pane kind ("terminal" | "preview" | "paisley_park" | "gold_experience" | "bastet" | "empty" | null)
     /// null = 何も active でない (空状態を表示)。
     /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で PP body が Smart Canvas surface 物理化)
     pub kind: Option<&'a str>,
@@ -377,12 +377,12 @@ body{overflow:hidden;}
       </main>
     </div>
   </div>
-  <div class="pane stand" id="pane-hermit-purple" data-kind="hermit_purple" data-frame-id="hp">
+  <div class="pane stand" id="pane-bastet" data-kind="bastet" data-frame-id="bs">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🍇</span>
-        <span class="pane-name">Hermit Purple</span>
-        <span class="pane-breadcrumb">External Control</span>
+        <span class="pane-icon">🧲</span>
+        <span class="pane-name">Bastet</span>
+        <span class="pane-breadcrumb">Device Registry</span>
       </div>
     </div>
     <div class="pane-body center">
@@ -1238,7 +1238,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
 
   // ========= Architecture v4: Lane / Stand 切替 API =========
   // Rust → JS で active Lane / Stand を切替。kind が null の場合は empty 状態を表示。
-  // payload: {kind: "terminal"|"preview"|"paisley_park"|"gold_experience"|"hermit_purple"|null, pane_id, preview_url}
+  // payload: {kind: "terminal"|"preview"|"paisley_park"|"gold_experience"|"bastet"|null, pane_id, preview_url}
   // Phase 5-A: Project-scope Stand (PP/GE/HP) を click 可能 pane として追加。
   // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
   const KIND_TO_PANE = {
@@ -1246,7 +1246,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     preview: 'pane-preview',
     paisley_park: 'pane-paisley-park',
     gold_experience: 'pane-gold-experience',
-    hermit_purple: 'pane-hermit-purple',
+    bastet: 'pane-bastet',
     empty: 'pane-empty',
   };
   // 現在 active な pane の info (slot:rect 送出時の pane_id 補完用)

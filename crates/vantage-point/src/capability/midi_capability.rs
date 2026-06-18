@@ -541,14 +541,14 @@ impl Capability for MidiCapability {
 
 /// `MidiCapability` を VP-159 `Service` (= singleton infra actor) として登録する impl。
 ///
-/// Hermit Purple 🍇 は LSCM doc 12 §9 で World 階層 target、 PR-α-2 で
-/// `WorldCapabilities.midi` に host 移管済 + PR-α-3 で mailbox address `hermit_purple@world`
-/// register 済。 本 impl で Service trait の minimal marker (actor_name / layer_scope / as_any)
-/// に登録、 PR-4 supervisor 統一 (= `ActorRegistry` / `SupervisorFactory` 集約) の foundation
-/// を提供する。
+/// Bastet 🧲 は LSCM doc 12 §9 で World 階層 target、 PR-α-2 で
+/// `WorldCapabilities.midi` に host 移管済 + PR-α-3 で mailbox address `bastet@world`
+/// register 済（epic v3.1 E2-0 で旧 `hermit_purple@world` から rename）。 本 impl で Service trait
+/// の minimal marker (actor_name / layer_scope / as_any) に登録、 PR-4 supervisor 統一
+/// (= `ActorRegistry` / `SupervisorFactory` 集約) の foundation を提供する。
 impl Service for MidiCapability {
     fn actor_name(&self) -> &str {
-        "hermit_purple"
+        "bastet"
     }
 
     fn layer_scope(&self) -> LayerScope {

@@ -9,7 +9,7 @@
 //! - **TheWorld 👑** (`ProcessManagerCapability`): VP world process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
 //! - **Whitesnake 🐍** (`Whitesnake`): file-backed persistence wrapper
-//! - **Hermit Purple 🍇** (`MidiCapability`、 Option): external IF (MIDI/MCP/tmux)。
+//! - **Bastet 🧲** (`MidiCapability`、 Option): external IF (MIDI/MCP/tmux)。
 //!   PR-α-2 で `ProcessCapabilities` から移管完了。 `with_midi` 経由で `Some(...)` host、
 //!   `new` のみだと None。
 //!
@@ -50,7 +50,7 @@ pub struct WorldCapabilities {
     /// Whitesnake 🐍 — 汎用永続化レイヤー (file-backed per port)
     pub whitesnake: Whitesnake,
 
-    /// Hermit Purple 🍇 — external IF (MIDI/MCP/tmux)。
+    /// Bastet 🧲 — external IF (MIDI/MCP/tmux)。
     /// PR-α-2 (VP-112) で `ProcessCapabilities.midi` から移管完了。
     /// `WorldCapabilities::with_midi` 経由で構築すると `Some(...)` で host、
     /// `WorldCapabilities::new` だけだと None placeholder。
@@ -82,7 +82,7 @@ impl WorldCapabilities {
 
     /// MidiCapability を host した状態で構築 (PR-α-2、 feature = "midi")。
     ///
-    /// LSCM doc 12 §9 の Hermit Purple 🍇 = World 階層 target を実現。 旧 `ProcessCapabilities.midi`
+    /// LSCM doc 12 §9 の Bastet 🧲 = World 階層 target を実現。 旧 `ProcessCapabilities.midi`
     /// (Project 階層) の経路を World daemon (`run_world`) に移管。
     ///
     /// 内部で `MidiCapability::with_config` → `initialize` → `start_monitoring` を実行し、

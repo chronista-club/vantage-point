@@ -110,13 +110,30 @@ pub const THE_HAND: StandAlias = StandAlias {
     emoji: "✋",
 };
 
-/// 外部コントロール能力 — MIDI / MCP / tmux
-pub const HERMIT_PURPLE: StandAlias = StandAlias {
-    id: "external",
-    functional_name: "External Control",
-    stand_name: "Hermit Purple",
-    short: "HP",
-    emoji: "🍇",
+/// デバイス集約能力 — World scope の物理 device registry / hot-plug / routing（Bastet 🧲）
+///
+/// epic v3.1 (E2) で旧 Hermit Purple 🍇 の World 座（`hermit_purple@world`）を継承し、
+/// 「磁力で device を集約する」 registry に発展。per-lane の双方向 I/O は [`JUSTICE`] が担う。
+/// 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`。
+pub const BASTET: StandAlias = StandAlias {
+    id: "bastet",
+    functional_name: "Device Registry",
+    stand_name: "Bastet",
+    short: "BS",
+    emoji: "🧲",
+};
+
+/// デバイス I/O 能力 — Lane scope の双方向 device endpoint（Justice 🌫️）
+///
+/// epic v3.1 (E3) 新設。「霧で機器に侵入する」per-lane の双方向 I/O endpoint。
+/// lane state → 機材 LED/LCD projection（output）と 機材 → active Lane command（input）を担う。
+/// `LaneStandHost`（`stand_kind="justice"`）として Lane に host される。
+pub const JUSTICE: StandAlias = StandAlias {
+    id: "justice",
+    functional_name: "Device I/O",
+    stand_name: "Justice",
+    short: "JS",
+    emoji: "🌫️",
 };
 
 // ─── インフラ（Capability の下、永続化レイヤー）─────
@@ -138,6 +155,7 @@ pub const ALL: &[&StandAlias] = &[
     &PAISLEY_PARK,
     &ECHOES,
     &THE_HAND,
-    &HERMIT_PURPLE,
+    &BASTET,
+    &JUSTICE,
     &WHITESNAKE,
 ];
