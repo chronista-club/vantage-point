@@ -2082,46 +2082,46 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_project = std::path::Path::new(&process_path)
                     .file_name()
                     .and_then(|s| s.to_str());
-                if active_project.is_some() && active_project == msg_project {
-                    // B1: switch_lane は PP content ではなく active Lane 切替コマンド。
-                    // token → lane address (`<project>/conductor` or `<project>/performer/<name>`)
-                    // に解決し、sidebar click 相当の `setActivePane` を発火する（= frameEngine
-                    // scene + setActiveLaneName + requestPersistedState を既存 wrapper が連鎖実行）。
-                    if message.get("type").and_then(|t| t.as_str()) == Some("switch_lane") {
-                        if let (Some(project), Some(token)) = (
-                            active_project,
-                            message.get("lane").and_then(|l| l.as_str()),
-                        ) {
-                            let address = if token.is_empty() || token == "conductor" {
-                                format!("{}/conductor", project)
-                            } else {
-                                format!("{}/performer/{}", project, token)
-                            };
-                            activate_lane(
-                                &address,
-                                &mut sidebar_state,
-                                &mut session_state,
-                                &webview,
-                                &mut lane_respawn_triggered,
-                                &rt_handle,
-                                &respawn_proxy,
+                // B1 + cross-project: switch_lane は PP content ではなく active Lane 切替コマンド。
+                // active を「変える」コマンドなので、active project guard の **外**で処理する
+                // （別 project の SP から来た switch_lane こそ通す）。送信元 SP の project
+                // (= msg_project) の lane を activate し、sidebar / main area を追随させる。
+                if message.get("type").and_then(|t| t.as_str()) == Some("switch_lane") {
+                    if let (Some(project), Some(token)) = (
+                        msg_project,
+                        message.get("lane").and_then(|l| l.as_str()),
+                    ) {
+                        // token → lane address (`<project>/conductor` or `<project>/performer/<name>`)
+                        let address = if token.is_empty() || token == "conductor" {
+                            format!("{}/conductor", project)
+                        } else {
+                            format!("{}/performer/{}", project, token)
+                        };
+                        activate_lane(
+                            &address,
+                            &mut sidebar_state,
+                            &mut session_state,
+                            &webview,
+                            &mut lane_respawn_triggered,
+                            &rt_handle,
+                            &respawn_proxy,
+                        );
+                    }
+                } else if active_project.is_some() && active_project == msg_project {
+                    // PP content (非 switch_lane) は active project の分のみ main area に転送する。
+                    match serde_json::to_string(&message) {
+                        Ok(json) => {
+                            let script = format!(
+                                "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                                json
                             );
+                            if let Err(e) = webview.evaluate_script(&script) {
+                                tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
+                            }
+                            // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
                         }
-                    } else {
-                        match serde_json::to_string(&message) {
-                            Ok(json) => {
-                                let script = format!(
-                                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
-                                    json
-                                );
-                                if let Err(e) = webview.evaluate_script(&script) {
-                                    tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
-                                }
-                                // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
-                            }
-                            Err(e) => {
-                                tracing::warn!("CanvasMessage serialize 失敗: {}", e);
-                            }
+                        Err(e) => {
+                            tracing::warn!("CanvasMessage serialize 失敗: {}", e);
                         }
                     }
                 }

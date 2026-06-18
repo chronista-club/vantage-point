@@ -78,9 +78,9 @@ pub enum RotoCommands {
         /// MIDIポート名のパターン（部分一致）
         #[arg(long, default_value = "Roto")]
         port: String,
-        /// 接続先 SP ポート（省略時は cwd の project から自動解決）
-        #[arg(long)]
-        sp_port: Option<u16>,
+        /// 接続先 TheWorld ポート（cross-project lane view の集約元）
+        #[arg(long, default_value = "32000")]
+        world_port: u16,
         /// 継続秒数
         #[arg(long, default_value = "600")]
         secs: u64,
@@ -640,9 +640,9 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
         }
         RotoCommands::Control {
             port,
-            sp_port,
+            world_port,
             secs,
-        } => execute_roto_control(port, sp_port, secs),
+        } => execute_roto_control(port, world_port, secs),
     }
 }
 
@@ -685,18 +685,6 @@ fn roto_open_async(
     Ok((conn_in, rx, conn_out, port_name))
 }
 
-/// cwd の project の running SP ポートを解決（B2 control の接続先）。
-fn resolve_local_sp() -> Result<u16> {
-    let repo_root = crate::lane::config::find_repo_root()
-        .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
-    let repo_str = repo_root
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("repo path contains invalid UTF-8"))?;
-    let proc = crate::discovery::find_by_project_blocking(repo_str)
-        .ok_or_else(|| anyhow::anyhow!("SP not running for {}（vp sp start 済?）", repo_str))?;
-    Ok(proc.port)
-}
-
 /// local SP に Unison QUIC 接続（mcp.rs の connect_quic と同等、private 再実装）。
 /// ⚠️ mcp.rs::connect_quic と trust_anchors を揃えること（PR-3 で SkipVerification →
 /// InternalMeshKeypair に差し替え予定。mcp.rs を変えたらここも同期）。
@@ -714,35 +702,84 @@ async fn connect_quic_local(port: u16) -> Result<unison::ProtocolClient> {
     Ok(client)
 }
 
-/// 「lanes」channel の LanesSnapshot payload から順序付き lane token を抽出。
-/// token = kind=="conductor" → "conductor" / performer → address.name。
-fn parse_lane_tokens(v: &serde_json::Value) -> Vec<String> {
-    v.get("lanes")
-        .and_then(|l| l.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|lane| {
-                    let kind = lane.get("kind").and_then(|k| k.as_str())?;
-                    if kind == "conductor" {
-                        Some("conductor".to_string())
-                    } else {
-                        lane.get("address")
-                            .and_then(|a| a.get("name"))
-                            .and_then(|n| n.as_str())
-                            .map(|s| s.to_string())
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+/// cross-project view の 1 lane。TheWorld `list_all_lanes` の flat 化結果。
+#[derive(Clone, PartialEq)]
+struct RotoLane {
+    /// switch_lane 送信先 SP port
+    port: u16,
+    /// switch_lane payload の lane token（"conductor" or performer 名）
+    token: String,
+    /// LCD 表示用の compact ラベル（≤13 文字、project + lane）
+    label: String,
+    /// 選択追跡の一意キー `"{port}:{token}"`
+    key: String,
+}
+
+/// LCD 13 文字制約に収まる compact ラベルを作る。
+/// project を distinguish したいので project 優先（8 文字）+ ":" + lane（4 文字）。
+fn compact_lane_label(project: &str, token: &str) -> String {
+    let proj: String = project.chars().take(8).collect();
+    let lane: String = token.chars().take(4).collect();
+    format!("{}:{}", proj, lane)
+}
+
+/// TheWorld `list_all_lanes` 応答（`{projects: [{project_name, port, lanes:[LaneInfo]}]}`）を
+/// flat な `Vec<RotoLane>` に変換。
+///
+/// **順序は server が決める** — server は project_order (= sidebar 順) で projects を、
+/// 各 project 内は lane_registry 順 (= conductor 先頭 + performer 作成順) で lanes を送る。
+/// client は再ソートせず、その順序をそのまま保つ（物理 controller の位置 = sidebar の位置）。
+fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
+    let Some(projects) = v.get("projects").and_then(|p| p.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for p in projects {
+        let Some(project) = p.get("project_name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let Some(port) = p.get("port").and_then(|n| n.as_u64()) else {
+            continue;
+        };
+        let port = port as u16;
+        let Some(lanes) = p.get("lanes").and_then(|l| l.as_array()) else {
+            continue;
+        };
+        for lane in lanes {
+            let Some(kind) = lane.get("kind").and_then(|k| k.as_str()) else {
+                continue;
+            };
+            let token = if kind == "conductor" {
+                "conductor".to_string()
+            } else {
+                match lane
+                    .get("address")
+                    .and_then(|a| a.get("name"))
+                    .and_then(|n| n.as_str())
+                {
+                    Some(name) => name.to_string(),
+                    None => continue,
+                }
+            };
+            out.push(RotoLane {
+                port,
+                label: compact_lane_label(project, &token),
+                key: format!("{}:{}", port, token),
+                token,
+            });
+        }
+    }
+    out
 }
 
 /// lane 選択アクション。
 #[derive(Clone, Copy)]
 enum LaneNav {
-    Prev,
-    Next,
-    /// track ボタンによる直接選択（0-7 = LCD slot index）。
+    /// ◄ ページを前へ（8 lane 単位）
+    PagePrev,
+    /// ► ページを次へ（8 lane 単位）
+    PageNext,
+    /// track ボタンによる直接選択（0-7 = 現ページ内の slot index）。
     Direct(usize),
 }
 
@@ -750,60 +787,42 @@ impl LaneNav {
     /// ログ表示用グリフ。
     fn glyph(self) -> &'static str {
         match self {
-            LaneNav::Prev => "◄",
-            LaneNav::Next => "►",
+            LaneNav::PagePrev => "◄",
+            LaneNav::PageNext => "►",
             LaneNav::Direct(_) => "●",
-        }
-    }
-
-    /// latest lane list から選択先 index を解決。
-    fn resolve(self, latest: &[String], current: &str) -> usize {
-        let n = latest.len();
-        if n == 0 {
-            return 0;
-        }
-        match self {
-            LaneNav::Prev => {
-                let cur = latest.iter().position(|t| t == current).unwrap_or(0);
-                (cur + n - 1) % n
-            }
-            LaneNav::Next => {
-                let cur = latest.iter().position(|t| t == current).unwrap_or(0);
-                (cur + 1) % n
-            }
-            LaneNav::Direct(i) => i.min(n - 1),
         }
     }
 }
 
 /// ROTO button index → LaneNav の解決。
 ///
-/// MIX モードの track button 0-7 (CC20-27) = LCD 直下の物理ボタン → Direct select。
-/// transport ◄/► (CC36/37) は MIX モードでは SysEx mode switch になるため到達しないが、
-/// MIDI モードでは CC として来るので Prev/Next として残す。
+/// MIX モードの track button 0-7 (CC20-27) = LCD 直下の物理ボタン → 現ページ内 Direct select。
+/// transport ◄/► (CC36/37) = ページ送り（8 lane を超えるリストの切替）。
 fn roto_lane_nav(index: u8) -> Option<LaneNav> {
     match index {
         0..=7 => Some(LaneNav::Direct(index as usize)),
-        16 => Some(LaneNav::Prev),
-        17 => Some(LaneNav::Next),
+        16 => Some(LaneNav::PagePrev),
+        17 => Some(LaneNav::PageNext),
         _ => None,
     }
 }
 
-/// B2: ROTO ← / → → 現 project の active Lane を prev/next 切替（Unison-native）。
+/// cross-project ROTO control: TheWorld (32000) から全 project の Lane を集約し、
+/// 8 slot LCD + paging で選択する（Unison-native）。
 ///
-/// 設計（mem_1Cc93）: async control loop。`block_on` は最外 1 回のみ。midir(sync) →
-/// tokio mpsc bridge。`select!` で MIDI 入力 / 「lanes」snapshot 購読を同時に await し、
-/// transport ◄/► (CC36/37) or 右 button 0/1 で B1 の `switch_lane` QUIC arm を叩く。
-fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result<()> {
+/// 設計: async control loop。`block_on` は最外 1 回のみ。midir(sync) → tokio mpsc bridge。
+/// `select!` で MIDI 入力 / `list_all_lanes` poll を同時に await。
+/// - track button 0-7 = 現ページ内の lane を選択 → 対象 SP に `switch_lane` を直接送る
+/// - transport ◄/► (CC36/37) = ページ送り（8 lane を超えるリストの切替、view のみ）
+///
+/// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。ROTO は対象
+/// lane の SP port へ QUIC で直接届ける（per-port channel を lazy cache）。TheWorld に
+/// relay を足さない最小設計。
+fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> {
     use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
     use crate::device_profile::{DeviceProfile, Rgb, roto::RotoProfile};
+    use std::collections::HashMap;
     use std::time::Duration;
-
-    let sp = match sp_port {
-        Some(p) => p,
-        None => resolve_local_sp()?,
-    };
 
     let (_conn_in, mut midi_rx, mut conn_out, port_name) = roto_open_async(&port)?;
 
@@ -813,32 +832,45 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
         conn_out.send(&msg)?;
     }
     println!(
-        "DAW_START 送信（{}）→ 接続確立中...（SP :{}、← prev / → next で lane 切替）",
-        port_name, sp
+        "DAW_START 送信（{}）→ TheWorld :{} に接続中（track button で選択 / ◄► でページ送り）",
+        port_name, world_port
     );
+
+    // 現ページの 8 slot を `(label, is_active)` に展開する（projection 入力）。
+    // selected と一致する lane を active 表示。
+    fn page_slots(lanes: &[RotoLane], page: usize, selected: Option<&str>) -> Vec<(String, bool)> {
+        let start = page * 8;
+        lanes
+            .iter()
+            .skip(start)
+            .take(8)
+            .map(|l| (l.label.clone(), Some(l.key.as_str()) == selected))
+            .collect()
+    }
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        use unison::network::MessageType;
+        let world = connect_quic_local(world_port).await?;
+        let world_ch = world
+            .open_channel("world-process")
+            .await
+            .map_err(|e| anyhow::anyhow!("open world-process channel: {}", e))?;
 
-        let client = connect_quic_local(sp).await?;
-        let process_ch = client
-            .open_channel("process")
-            .await
-            .map_err(|e| anyhow::anyhow!("open process channel: {}", e))?;
-        let lanes_ch = client
-            .open_channel("lanes")
-            .await
-            .map_err(|e| anyhow::anyhow!("open lanes channel: {}", e))?;
+        // switch_lane 送信用の per-SP channel cache（port → (client, process channel)）。
+        // client も保持しないと接続が drop されるため tuple で抱える。
+        let mut sp_clients: HashMap<u16, (unison::ProtocolClient, unison::network::UnisonChannel)> =
+            HashMap::new();
 
         let mut input = RotoInput::default();
-        let mut latest: Vec<String> = Vec::new();
-        // daemon が cursor を保持（vp-app の active を逆照会しない）。初期は conductor。
-        let mut current = "conductor".to_string();
+        let mut lanes: Vec<RotoLane> = Vec::new();
+        let mut page = 0usize; // 表示ページ（1 ページ = 8 lane）
+        let mut selected: Option<String> = None; // 選択中 lane key "{port}:{token}"
         let mut activated = false;
-        // LCD に lane 名を projection 済みか（snapshot 到着後に初回 projection）
         let mut lcd_projected = false;
+
         let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+        // 2 秒間隔で TheWorld の全 lane を poll（最初の tick は即時 = 初期取得）
+        let mut poll = tokio::time::interval(Duration::from_secs(2));
 
         // active lane の色（シアン）/ 非 active（暗い青灰）
         let color_active = Rgb::new(0, 200, 255);
@@ -846,10 +878,7 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
 
         loop {
             tokio::select! {
-                // biased: MIDI を最優先に poll する。「lanes」channel は snapshot を高頻度で
-                // flood するため、公平 poll だと MIDI arm が starve し、keepalive 応答が遅延 →
-                // ROTO が切断 → button 不達になる（実機 dogfood で観測）。MIDI（keepalive +
-                // arrow）を常に先に捌くことで接続を維持しつつ入力を取りこぼさない。
+                // biased: MIDI を最優先に poll（keepalive 応答遅延 → ROTO 切断を防ぐ）。
                 biased;
                 // MIDI 入力（midir callback → tokio mpsc）
                 midi = midi_rx.recv() => {
@@ -862,88 +891,120 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
                     if roto_autorespond(&bytes, &mut conn_out)? {
                         continue;
                     }
-                    // 最初の SysEx で activated フラグを立てる（knob は snapshot 到着後に起こす）
+                    // 最初の SysEx で activated フラグを立てる（lanes 到着済なら即 projection）
                     if !activated && bytes.first() == Some(&0xF0) {
                         activated = true;
-                        println!("接続成立 — Lane snapshot 待ち...");
-                        // snapshot がまだ来ていれば即 projection（初回 = full: knob activation 含む）
-                        if !latest.is_empty() && !lcd_projected {
-                            let msgs = roto_project_lanes_full(&mut profile, &latest, &current, color_active, color_inactive);
+                        if !lanes.is_empty() && !lcd_projected {
+                            let slots = page_slots(&lanes, page, selected.as_deref());
+                            let msgs = roto_project_slots_full(&mut profile, &slots, color_active, color_inactive);
                             for m in &msgs {
                                 conn_out.send(m)?;
                                 std::thread::sleep(Duration::from_millis(1));
                             }
                             lcd_projected = true;
-                            println!("LCD 更新: {} lanes (active='{}')", latest.len(), current);
                         }
-                        println!("track button で lane 直接選択（transport ◄► は TRANSPORT enable 時のみ）");
+                        println!("接続成立 — {} lanes（track button で選択 / ◄► でページ送り）", lanes.len());
                         continue;
                     }
-                    // channel message を ControlEvent に → binding 表（ROTO_LANE_NAV）で nav 解決
+                    // channel message を ControlEvent に → binding 表で nav 解決
                     let Some(event) = input.parse(&bytes) else { continue; };
-                    let ControlEvent::Button {
-                        index,
-                        pressed: true,
-                    } = event
-                    else {
+                    let ControlEvent::Button { index, pressed: true } = event else {
                         continue;
                     };
                     let Some(nav) = roto_lane_nav(index) else {
                         continue;
                     };
-                    if latest.is_empty() {
-                        eprintln!("lane list 未取得（snapshot 待ち）");
+                    if lanes.is_empty() {
+                        eprintln!("lane list 未取得（TheWorld :{} に SP 未登録?）", world_port);
                         continue;
                     }
-                    let new_idx = nav.resolve(&latest, &current);
-                    current = latest[new_idx].clone();
-                    println!("{} active lane → '{}'", nav.glyph(), current);
-
-                    // LCD を即座に再 projection（cursor 移動 = ハイライト色変更）
-                    if lcd_projected {
-                        let msgs = roto_project_lanes(&mut profile, &latest, &current, color_active, color_inactive);
-                        for m in &msgs {
-                            conn_out.send(m)?;
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                    }
-
-                    // vp-app への通知は best-effort（未接続でも OK）
-                    let payload = serde_json::json!({ "type": "switch_lane", "lane": current });
-                    if let Err(e) = process_ch
-                        .request::<serde_json::Value, serde_json::Value>("switch_lane", &payload)
-                        .await
-                    {
-                        eprintln!("switch_lane 通知失敗（LCD は更新済み）: {}", e);
-                    }
-                }
-                // 「lanes」snapshot を購読しっぱなし → lane 増減を live 反映（MIDI の後に poll）
-                lane_msg = lanes_ch.recv() => {
-                    match lane_msg {
-                        Ok(msg)
-                            if msg.msg_type == MessageType::Event && msg.method == "snapshot" =>
-                        {
-                            if let Ok(v) = msg.payload_as_value() {
-                                let tokens = parse_lane_tokens(&v);
-                                if tokens != latest {
-                                    latest = tokens;
-                                    // LCD を最新 lane list で再 projection（lane 増減 = full で knob も更新）
-                                    if activated {
-                                        let msgs = roto_project_lanes_full(&mut profile, &latest, &current, color_active, color_inactive);
-                                        for m in &msgs {
-                                            conn_out.send(m)?;
-                                            std::thread::sleep(Duration::from_millis(1));
-                                        }
-                                        lcd_projected = true;
-                                        println!("LCD 更新: {} lanes (active='{}')", latest.len(), current);
-                                    }
+                    let pages = lanes.len().div_ceil(8);
+                    match nav {
+                        // ページ送り（view のみ、switch_lane は送らない）
+                        LaneNav::PagePrev | LaneNav::PageNext => {
+                            page = match nav {
+                                LaneNav::PagePrev => (page + pages - 1) % pages,
+                                _ => (page + 1) % pages,
+                            };
+                            println!("{} page {}/{}", nav.glyph(), page + 1, pages);
+                            if lcd_projected {
+                                let slots = page_slots(&lanes, page, selected.as_deref());
+                                let msgs = roto_project_slots(&mut profile, &slots, color_active, color_inactive);
+                                for m in &msgs {
+                                    conn_out.send(m)?;
+                                    std::thread::sleep(Duration::from_millis(1));
                                 }
                             }
                         }
-                        Ok(_) => {} // 他 event は無視
-                        // SP 停止等で channel 切断 → switch 失敗 spam を避けて終了
+                        // 現ページ内の lane を選択 → 対象 SP へ switch_lane
+                        LaneNav::Direct(slot) => {
+                            let Some(lane) = lanes.get(page * 8 + slot).cloned() else {
+                                continue; // 空 slot
+                            };
+                            selected = Some(lane.key.clone());
+                            println!("● select '{}' (port {})", lane.label, lane.port);
+
+                            // LCD ハイライト更新
+                            if lcd_projected {
+                                let slots = page_slots(&lanes, page, selected.as_deref());
+                                let msgs = roto_project_slots(&mut profile, &slots, color_active, color_inactive);
+                                for m in &msgs {
+                                    conn_out.send(m)?;
+                                    std::thread::sleep(Duration::from_millis(1));
+                                }
+                            }
+
+                            // 対象 SP に switch_lane を送る（per-port channel を lazy 接続）
+                            if let std::collections::hash_map::Entry::Vacant(slot) = sp_clients.entry(lane.port) {
+                                match connect_quic_local(lane.port).await {
+                                    Ok(c) => match c.open_channel("process").await {
+                                        Ok(ch) => { slot.insert((c, ch)); }
+                                        Err(e) => eprintln!("process channel open 失敗 (port {}): {}", lane.port, e),
+                                    },
+                                    Err(e) => eprintln!("SP :{} 接続失敗: {}", lane.port, e),
+                                }
+                            }
+                            let payload = serde_json::json!({ "type": "switch_lane", "lane": lane.token });
+                            let res = match sp_clients.get(&lane.port) {
+                                Some((_c, ch)) => Some(
+                                    ch.request::<serde_json::Value, serde_json::Value>("switch_lane", &payload).await,
+                                ),
+                                None => None,
+                            };
+                            if let Some(Err(e)) = res {
+                                eprintln!("switch_lane 失敗 (port {}): {} — cache drop", lane.port, e);
+                                sp_clients.remove(&lane.port); // 次回再接続
+                            }
+                        }
+                    }
+                }
+                // TheWorld の全 lane を poll → lanes 再構築（project / lane 増減を live 反映）
+                _ = poll.tick() => {
+                    let resp = world_ch
+                        .request::<serde_json::Value, serde_json::Value>("list_all_lanes", &serde_json::json!({}))
+                        .await;
+                    match resp {
+                        Ok(v) => {
+                            let next = parse_world_lanes(&v);
+                            if next != lanes {
+                                lanes = next;
+                                // page を範囲内に clamp
+                                let pages = lanes.len().div_ceil(8).max(1);
+                                page = page.min(pages - 1);
+                                if activated {
+                                    let slots = page_slots(&lanes, page, selected.as_deref());
+                                    let msgs = roto_project_slots_full(&mut profile, &slots, color_active, color_inactive);
+                                    for m in &msgs {
+                                        conn_out.send(m)?;
+                                        std::thread::sleep(Duration::from_millis(1));
+                                    }
+                                    lcd_projected = true;
+                                    println!("LCD 更新: {} lanes ({} pages)", lanes.len(), pages);
+                                }
+                            }
+                        }
                         Err(e) => {
-                            eprintln!("lanes channel 切断（SP 停止?）: {} — 終了", e);
+                            eprintln!("list_all_lanes 失敗（TheWorld 停止?）: {} — 終了", e);
                             break;
                         }
                     }
@@ -959,16 +1020,15 @@ fn execute_roto_control(port: String, sp_port: Option<u16>, secs: u64) -> Result
     Ok(())
 }
 
-/// Lane list を ROTO LCD に projection する。active lane は別色でハイライト。
-/// 8 slot に lane を割当て（不足分は空欄）。
+/// 8 slot を ROTO LCD に projection する。`slots[i] = (label, is_active)`。
+/// active slot は別色でハイライト。不足分（< 8）は空欄。
 ///
 /// 最適化: `project_track` は 1 call ごとに全 track の枠付きバッチを返すため、
 /// shadow 更新は全 slot で行うが **送信は最後の 1 バッチのみ**（完全な state を含む）。
 /// `learn_parameter` は初回のみ必要（knob activation 用）。
-fn roto_project_lanes(
+fn roto_project_slots(
     profile: &mut crate::device_profile::roto::RotoProfile,
-    lanes: &[String],
-    active: &str,
+    slots: &[(String, bool)],
     color_active: crate::device_profile::Rgb,
     color_inactive: crate::device_profile::Rgb,
 ) -> Vec<Vec<u8>> {
@@ -977,13 +1037,9 @@ fn roto_project_lanes(
     // 全 slot の shadow を更新し、最後の batch だけ保持する
     let mut last_batch = Vec::new();
     for i in 0..8u8 {
-        let (name, color) = if let Some(lane) = lanes.get(i as usize) {
-            let c = if lane == active {
-                color_active
-            } else {
-                color_inactive
-            };
-            (lane.as_str(), c)
+        let (name, color) = if let Some((label, active)) = slots.get(i as usize) {
+            let c = if *active { color_active } else { color_inactive };
+            (label.as_str(), c)
         } else {
             ("", crate::device_profile::Rgb::new(0, 0, 0))
         };
@@ -994,22 +1050,18 @@ fn roto_project_lanes(
 
 /// 初回接続時の完全 projection（track 表示 + knob activation）。
 /// `learn_parameter` は knob を active にするために初回のみ必要。
-fn roto_project_lanes_full(
+fn roto_project_slots_full(
     profile: &mut crate::device_profile::roto::RotoProfile,
-    lanes: &[String],
-    active: &str,
+    slots: &[(String, bool)],
     color_active: crate::device_profile::Rgb,
     color_inactive: crate::device_profile::Rgb,
 ) -> Vec<Vec<u8>> {
     use crate::device_profile::{DeviceProfile, ParamSpec};
 
-    let mut msgs = roto_project_lanes(profile, lanes, active, color_active, color_inactive);
+    let mut msgs = roto_project_slots(profile, slots, color_active, color_inactive);
     // learn_parameter で knob を active にする（入力が来るようになる）
     for i in 0..8u8 {
-        let label = lanes
-            .get(i as usize)
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let label = slots.get(i as usize).map(|(l, _)| l.as_str()).unwrap_or("");
         let spec = ParamSpec::continuous(label, 0.5);
         msgs.extend(profile.learn_parameter(i, &spec));
     }
@@ -1198,5 +1250,69 @@ fn execute_lpd8(cmd: Lpd8Commands) -> Result<()> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// LCD ラベルは project 優先 + lane で 13 文字以内に収まる。
+    #[test]
+    fn compact_label_fits_lcd() {
+        // 長い project 名 → 8 文字に truncate、token → 4 文字
+        let label = compact_lane_label("vantage-point", "conductor");
+        assert_eq!(label, "vantage-:cond");
+        assert!(label.chars().count() <= 13);
+        // 短い名前はそのまま
+        assert_eq!(compact_lane_label("vp", "alpha"), "vp:alph");
+    }
+
+    /// list_all_lanes 応答 → flat な RotoLane 列。順序は **server 順をそのまま保つ**
+    /// （client は再ソートしない = sidebar / project_order と一致させる契約）。
+    #[test]
+    fn parse_world_lanes_preserves_server_order() {
+        let v = serde_json::json!({
+            "projects": [
+                // server が project_order で並べた前提。client は触らず保つ。
+                {
+                    "project_name": "zeta-proj",
+                    "port": 33001,
+                    "lanes": [
+                        { "kind": "conductor" },
+                        { "kind": "performer", "address": { "name": "beta" } },
+                        { "kind": "performer", "address": { "name": "alpha" } },
+                    ]
+                },
+                {
+                    "project_name": "aaa-proj",
+                    "port": 33000,
+                    "lanes": [ { "kind": "conductor" } ]
+                },
+            ]
+        });
+        let lanes = parse_world_lanes(&v);
+        // server 順そのまま: zeta(cond, beta, alpha) → aaa(cond)
+        let keys: Vec<&str> = lanes.iter().map(|l| l.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "33001:conductor",
+                "33001:beta",
+                "33001:alpha",
+                "33000:conductor",
+            ]
+        );
+        // port が switch_lane 送信先として保持される
+        assert_eq!(lanes[0].port, 33001);
+        assert_eq!(lanes[3].port, 33000);
+        assert_eq!(lanes[1].token, "beta");
+    }
+
+    /// projects 不在 / 空でも panic せず空 Vec。
+    #[test]
+    fn parse_world_lanes_empty() {
+        assert!(parse_world_lanes(&serde_json::json!({})).is_empty());
+        assert!(parse_world_lanes(&serde_json::json!({ "projects": [] })).is_empty());
     }
 }

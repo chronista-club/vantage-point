@@ -270,22 +270,21 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         #[cfg(feature = "midi")]
         {
             let mut map = std::collections::HashMap::new();
-            if let Some(wc) = state.world_capabilities.as_ref() {
-                if let Some(ref bastet) = wc.bastet {
-                    let b = bastet.read().await;
-                    let count = b.device_count().await;
-                    let discovering = b.is_discovering();
-                    map.insert(
-                        "bastet".to_string(),
-                        StandStatus {
-                            status: if count > 0 { "active" } else { "idle" },
-                            detail: Some(serde_json::json!({
-                                "devices": count,
-                                "discovering": discovering,
-                            })),
-                        },
-                    );
-                }
+            if let Some(bastet) = state.world_capabilities.as_ref().and_then(|wc| wc.bastet.as_ref())
+            {
+                let b = bastet.read().await;
+                let count = b.device_count().await;
+                let discovering = b.is_discovering();
+                map.insert(
+                    "bastet".to_string(),
+                    StandStatus {
+                        status: if count > 0 { "active" } else { "idle" },
+                        detail: Some(serde_json::json!({
+                            "devices": count,
+                            "discovering": discovering,
+                        })),
+                    },
+                );
             }
             if map.is_empty() { None } else { Some(map) }
         }
