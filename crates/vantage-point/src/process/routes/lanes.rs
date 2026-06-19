@@ -342,7 +342,8 @@ pub async fn create_handler(
         }
     };
 
-    // I1: performer の安定 id を address (project, name) で load_or_create
+    // I1: performer の安定 id を address (project, name) で load_or_create。
+    // 注: 同期 file IO だが cc_session lazy read と同様 数 ms、 spawn_blocking 隔離は省略 (pre-MVP)。
     let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &req.name);
     let info = LaneInfo {
         id: lane_id,

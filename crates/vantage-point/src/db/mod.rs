@@ -242,6 +242,18 @@ impl VpDb {
             .collect())
     }
 
+    /// active lane を削除する (project remove 時の presence 回収、 §4.6 含有=所有=寿命)。
+    pub async fn delete_active_lane(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM active_lane WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("active_lane 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("active_lane 削除エラー: {}", e))?;
+        Ok(())
+    }
+
     /// 全プロセスを削除（TheWorld 再起動時のクリーンアップ用）
     pub async fn clear_all_processes(&self) -> Result<()> {
         self.db
@@ -875,6 +887,15 @@ mod tests {
         let rows = db.list_active_lanes().await.unwrap();
         assert_eq!(rows.len(), 2, "同 project は置換、 件数は増えない");
         assert!(rows.contains(&("/repos/vp".to_string(), "vp/performer/bar".to_string())));
+
+        // §4.6 含有=所有=寿命: project remove 時の presence 回収 (delete_active_lane)。
+        db.delete_active_lane("/repos/vp").await.unwrap();
+        let rows = db.list_active_lanes().await.unwrap();
+        assert_eq!(rows.len(), 1, "削除した project の active_lane は消える");
+        assert_eq!(rows[0].0, "/repos/nexus", "他 project は残る");
+        // 不在 project の削除は no-op (冪等)
+        db.delete_active_lane("/repos/absent").await.unwrap();
+        assert_eq!(db.list_active_lanes().await.unwrap().len(), 1);
     }
 
     // VP-188: Projects CRUD テストは撤去 (= projects は projects.kdl に移行、

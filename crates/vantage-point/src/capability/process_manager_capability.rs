@@ -564,6 +564,18 @@ impl ProcessManagerCapability {
         // 順序リストからも削除
         self.project_order.write().await.retain(|k| k != &key);
 
+        // Model Q / §4.6 含有=所有=寿命: project(namespace) を倒したら、 その presence
+        // (active_lane) も畳む。 in-memory map と db/world から回収する (DB は best-effort)。
+        self.active_lanes.write().await.remove(&key);
+        if let Some(db) = &self.vpdb
+            && let Err(e) = db.delete_active_lane(&key).await
+        {
+            tracing::warn!(
+                "active_lane の db/world 削除に失敗 (in-memory は削除済): {}",
+                e
+            );
+        }
+
         // VP-188: projects.kdl に永続化
         self.persist_projects().await?;
 

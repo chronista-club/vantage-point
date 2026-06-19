@@ -1803,6 +1803,10 @@ pub fn run() -> anyhow::Result<()> {
                     .map(|p| (p.path.clone(), p.port))
                     .collect();
                 // Model Q: daemon canonical の active lane (presence、 boot 復元用)。
+                // 注: app の active_lane_address は単一 global (pane.rs) なので、 daemon の
+                // per-project active のうち **order 先頭の 1 つ**を採用する (意図的な単純化、
+                // doc 24 §12-H)。 project ごとに最後の active を復元する per-project 化は
+                // Phase 3 (app 側を per-project active に拡張、 daemon は既に per-project 保持)。
                 let daemon_active_lane: Option<String> =
                     projects.iter().find_map(|p| p.active_lane.clone());
                 sidebar_state.processes = projects

@@ -349,7 +349,9 @@ async fn handle_cmd(
 
     // pool に insert。 spawn 中の race (= permit 待ち後だが spawn_blocking 完了前に手動 create)
     // を再 check し、 lost race なら spawn 済 slot を drop して zombie reap。
-    // I1: performer の安定 id を address (project, name) で load_or_create
+    // I1: performer の安定 id を address (project, name) で load_or_create。
+    // 注: load_or_create は同期 file IO だが、 cc_session の lazy read と同じく数 ms で、
+    // spawn_blocking 隔離は省略 (pre-MVP の単純化。 重い処理は上の spawn_with_fallback で隔離済)。
     let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &name);
     let info = LaneInfo {
         id: lane_id,
