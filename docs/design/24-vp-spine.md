@@ -5,7 +5,7 @@
 > **改訂履歴**:
 > - **v1**（2026-06-19 午前）: 三層（World / SP-session-tier / Views）/ state は 2 箇所。
 > - **v2**（2026-06-19 午後 ← 本版）: **三段ライフサイクル**（daemon 不死 / app(SP) 常駐 / window ephemeral）。
->   presence = app-SP の live authority ＋ daemon の durable backing（2 storage / 1 writer）。
+>   presence = **daemon-canonical command**（Model Q、§4.2; メンタルモデル「app まとめる / 対峙」とは別レイヤー）。
 >   namespace = backing-kind / role = relational / 連邦の芽（I1–I5）。v1 の「SP=薄い session tier」「state 2 箇所」は本版が更新。
 > **系譜**: 「VP Lane Registry 統合 Backbone 設計」(2026-04-23) / 「Lane Lifecycle Architecture」(2026-05-06, VP-129)。
 > **関連 doc**: [12](12-stand-architecture.md)（Stand）/ [17](17-port-stability-and-msgbox-isolation.md)（port）/ [19](19-canvas-stack-model.md)（PP Canvas）/ [23](23-bastet-justice-stand-wiring.md)（Bastet/Justice）
@@ -102,7 +102,7 @@ v1 は World / SP-session-tier / Views の「三層」だった。**SP の物理
 ┌ daemon: TheWorld 👑 ──────────────┐ ⟷双方向⟷ ┌ app: Star Platinum ⭐ (SP) ┐
 │ 環境/OS/外部 を用意（地盤）         │  message  │ lane を live にまとめる      │
 │ + durable truth (Lane木/descriptor) │          │ agent 駆動 / I/O / 描画      │
-│ + presence の durable backing      │          │                            │
+│ + presence canonical (order/active)      │          │                            │
 │ 不死・headless                     │          │ 常駐（0 window でも生存）    │
 └────────────────────────────────────┘          └────────────────────────────┘
          ▲ attach（local server / 連邦時は QUIC）
@@ -111,51 +111,52 @@ v1 は World / SP-session-tier / Views の「三層」だった。**SP の物理
 
 | tier | 寿命 | 持つもの | 死んだ時 |
 |------|------|----------|----------|
-| **daemon (TheWorld)** | 不死 | truth(Lane木/descriptor) / 環境 / presence backing | 基本死なない。再起動 = re-animate |
-| **app (SP)** | 常駐〜quit（0 window でも生存） | **live presence**(active/order/focus) / まとめ / agent 駆動 | snapshot を daemon に残し復元可 |
+| **daemon (TheWorld)** | 不死 | truth(Lane木/descriptor) / 環境 / **presence canonical**(order/active) | 基本死なない。再起動 = re-animate |
+| **app (SP)** | 常駐〜quit（0 window でも生存） | **live engagement runtime**（agent 駆動 / I/O relay / render / command 発行）。authoritative presence は持たない | daemon が presence を保持＝喪失ゼロ |
 | **window** | ephemeral | 何も持たない（純 View） | 無痛 |
 
 > **daemon と app(SP) は対峙する 2 者**。融合（World 内に SP を畳む）でも、別 daemon（薄い独立 SP 常駐）でもない。
 > **app プロセスに宿る SP** が、不死の daemon と双方向で向き合う。これが VP の成立条件。
 
-### 4.2 presence の住所 — 2 storage / 1 writer
+### 4.2 presence の住所 — メンタルモデル ⟂ 実装（Model Q）
 
-- **presence の live authority = app-SP**（active lane / lane の live なまとめ）。app が走る間はここが真実。in-process だから速く、「**app が lane をまとめる**」が文字通りになる。
-- **daemon = presence の durable backing**（不透明 snapshot として保管）。app quit / daemon 再起動 / reboot を越えるため。daemon は中身を **解釈しない**（純客観を維持）。
-- window / ROTO / TUI は **app-SP に attach** する client。
+**メンタルモデルと内部実装は別レイヤー**でよい（doc §5 が JoJo を「思考の道具」と定義する通り、VP は元来 model ≠ impl を受け入れている）。
 
-**presence は一枚岩ではない — 要素ごとに intent（surface 間で一致してほしいか）で tier が決まる**（§12-C の解）:
+- **メンタルモデル（人が考え・語る層）**: daemon ⟷ app(SP) が **対峙**し、**app が lane をまとめる**。order を並べ替え active を切り替えるのは app での *行為*。
+- **内部実装（Model Q、最もシンプル）**: presence（order / active lane）は **daemon-canonical**。app は「reorder」「switch active」等の **command を発行して render する** だけで、**authoritative な presence を持たない**。Phase 1 で order を daemon canonical にした command パターンを、presence 全体へ拡張しただけ。
 
-| presence 要素 | tier | 共有の意図 |
+「app が lane をまとめる」は **model 層では真**（まとめ *行為* は app で起きる）。authoritative bytes が daemon に在ることは model からは見えない → **Q 実装は P モデルを裏切らず、最小の機構で実現する**。
+
+**presence は要素ごとに intent（surface 間で一致してほしいか）で在処が決まる**（§12-C の解）:
+
+| presence 要素 | 真実の在処（実装） | 共有の意図 |
 |---|---|---|
-| order / arrangement | World | 全 surface 一致＋durable（発端バグの本体） |
-| active lane | SP | **当面は単一**（全 surface の default 基準。follow/pin は将来 option） |
-| surface target / focus / scroll / zoom | surface | 割れてよい（ephemeral or per-surface pref） |
+| order / arrangement | **daemon**（command パターン、Phase 1 で実証済） | 全 surface 一致＋durable（発端バグの本体） |
+| active lane | **daemon**（command パターン、当面は単一） | 全 surface の default 基準。follow/pin は将来 option |
+| surface target / focus / scroll / zoom | **surface**（local） | 割れてよい（ephemeral or per-surface pref） |
 
-判定の鍵: 「surface 間で一致してほしいか？」yes-always→World / yes-while-engaged→SP / no（割れるのが機能）→surface。発端バグは『一致すべき order を surface ローカルに置いた』誤配置で、focus を surface に置くのは正配置——同じバグにならない。**presence は未知数が大きい領域なので、当面は active lane 単一の最小実装に留める**（surface target / follow/pin は dogfood の声を聞いてから足す。surface tier があるので後付けは extension）。
+判定の鍵: 「surface 間で一致してほしいか？」yes→**daemon の単一 authority（command）** / no（割れるのが機能）→surface。発端バグは『一致すべき order を surface ローカルに置いた』誤配置で、focus を surface に置くのは正配置——同じバグにならない。
 
-**「2 箇所に戻った」のでは？** 違う。旧 `lane_registry` バグは「**2 つの独立 authority が並行 write**」して乖離した。本版は「**live authority は常に 1 つ**（走行中=app-SP、quit 中=daemon snapshot）、daemon backing は write-through follower」。
-editor の buffer(真実) と autosave file(backing) の関係——**2 storage / 1 writer は乖離しない**。
+**単一 authority が race を蒸発させる**: presence の真実は **daemon ただ一つ**（app は command client、写しを持たない）。だから旧 `lane_registry` バグ（2 独立 authority の並行 write）も、§12-A の sync / lease / snapshot も **構造的に発生しない**——app に「失う物・sync する物・lease する物」が無い。残る実装課題は **daemon の transactional 永続**（§12-B と共有）と **daemon 再起動中の command 再接続** だけ。
 
-| イベント | window | app-SP | daemon |
+| イベント | window | app(SP) | daemon |
 |---|---|---|---|
-| window 1 枚閉じ | 消 | 生存・presence 無傷 | 無関係 |
-| 全 window 閉じ | 全消 | **生存(0-window)・無傷** | 無関係 |
-| app quit | — | 消・直前 snapshot を daemon へ | snapshot 保持 |
-| app 再起動 | 新 window | daemon から復元→authority | snapshot 手渡し |
-| daemon 再起動(app 走行中) | — | presence を新 daemon へ再 push | disk から truth re-animate |
+| window 1 枚 / 全閉じ | 消 | 生存（0-window、engagement runtime） | 無関係（presence 保持） |
+| app quit | — | 消（authoritative state 不所持＝喪失ゼロ） | presence/truth を保持 |
+| app 再起動 | 新 window | daemon の presence を render（command client 再接続） | 真実を手渡し |
+| daemon 再起動(app 走行中) | — | command を buffer/retry → reconnect で復帰 | disk から truth+presence re-animate |
 | reboot | — | — | boot→復元、agent は触れるまで cold |
 
-→「永続が所有する」が **各段で効く**: window 喪失=無痛 / app quit=復元可 / daemon 再起動=re-animate。
+→「永続が所有する」が **daemon 一点で効く**: presence の真実は不死 daemon にあり、app/window/ROTO は projection。
 
 ### 4.3 SP = app プロセス（ROTO 問題の解決）
 
 v1 は「GUI 内蔵だと ROTO CLI（別プロセス）が通せない」ので SP を別 session tier に置こうとした。
 だがその懸念は **SP が *window の中* に閉じる前提**だった。**SP = app プロセス（window から独立・0 window でも生存・local server を持つ）** なら：
 
-- **ROTO は app-SP に attach できる**。**「app が 0 window でも生存する」ことが、ROTO を SP の peer にする enabler**。
-- window も ROTO も同一 app-SP の presence を共有 → **order が割れようがない**（発端バグが構造的に書けない）。
-- v1 の「薄い session tier」の正体は、別 daemon でも World 内 object でもなく **app プロセスそのもの**だった。
+- **presence は daemon-canonical**（§4.2 Model Q）なので、ROTO は **daemon の presence を読み・command を送る**。window も ROTO も **同一 daemon の単一 presence を共有** → order が割れようがない（発端バグが構造的に書けない）。
+- これは §12-G も緩和する: presence が不死 daemon にあるので **ROTO は app quit でも生きる**（ambient 身体性が自然に出る）。
+- app-SP は engagement runtime（agent 駆動 / I/O relay / render）として 0 window でも生存。v1 の「薄い session tier」の正体は、別 daemon でも World 内 object でもなく **app プロセスそのもの**だった。
 
 ### 4.4 daemon = 常時 substrate ＋ per-lane opt-in engine（= 「SP optional」の正体）
 
@@ -163,9 +164,9 @@ v1 は「GUI 内蔵だと ROTO CLI（別プロセス）が通せない」ので 
 
 | app quit 中、daemon は… | 振る舞い | 強制するもの |
 |---|---|---|
-| **常に** wire 受信＋store（local＋連邦）/ peer-World link 維持 / truth＋presence backing 永続 / ground 保管 | post office ＋ vault | home-World authority(I2) と連邦 |
+| **常に** wire 受信＋store（local＋連邦）/ peer-World link 維持 / **truth＋presence canonical 永続** / ground 保管 | post office ＋ vault ＋ presence authority | home-World authority(I2) と連邦 |
 | **lane ごと** cold(default)=dormant→`--resume` / hot(opt-in)=detached tmux 継続 | 選択的 engine | cold/hot 二層（§3.3） |
-| **やらない** active/order/focus/ROTO 駆動 | engagement は app-SP の仕事 | ROTO は app-SP に attach |
+| **やらない** render / agent I/O relay / surface-local focus | engagement runtime は app-SP（quit 中は不在） | ROTO は daemon の presence を共有（app quit でも可） |
 
 → **daemon は常時 substrate（post office＋vault＋連邦＋ground 保管）、その上に per-lane の opt-in engine（hot）**。
 これが **「SP optional」の正体**: World は SP 無しで回り、SP(app) が engagement を上に足す。
@@ -174,7 +175,7 @@ v1 は「GUI 内蔵だと ROTO CLI（別プロセス）が通せない」ので 
 
 - **SP = per-presence（1 user = 1 SP）**、SP の物理位置 = **app プロセス**（window 独立）。
 - **window は stateless**（per-window state は消滅）。複数 window は同一 app-SP の projection。
-- **presence（order/active/focus）= app-SP live authority ＋ daemon durable backing**。
+- **presence = daemon-canonical（command パターン、Model Q）**: order/active は daemon が単一 authority、app は command 発行＋render、focus は surface-local。メンタルモデル（対峙 / app まとめる）とは別レイヤー（§4.2）。
 - **daemon は headless で回る**（app を閉じても truth/presence/hot lane は生存）。
 - **将来 N presence が 1 World、さらに N World が peering**（§7）へ素直に伸びる。
 
@@ -285,9 +286,9 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
 | かつての痛み | なぜ消えるか |
 |---|---|
 | ROTO ≠ sidebar の順序ズレ | window も ROTO も同一 app-SP の presence を共有（Phase 1 で頭出し済） |
-| 2 window で order 割れ | window は stateless、presence は app-SP に一本 |
+| 2 window で order 割れ | window は stateless、presence は daemon に単一 authority |
 | cross-project 集約の逆流 | flat な Lane 空間を daemon が一元保持 |
-| `lane_registry` の cache 乖離 | 2 storage / 1 writer（live authority は常に 1 つ） |
+| `lane_registry` の cache 乖離 | presence は daemon-canonical 単一 authority（app は command client、写しを持たない） |
 | orphan / teardown 漏れ | 含有=所有=寿命 ＋ ground は daemon が唯一 provision/reclaim ＋ agent=projection(`--resume`) |
 | git 縛りで探索の自由度が狭い | namespace = backing-kind（id ⟂ location、kind は進化可） |
 
@@ -305,7 +306,7 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
 - **Phase 2 — state を World へ移送 ＋ 連邦の芽 ＋ 三段ライフサイクル**
   - LanePool authority を SP → daemon へ反転（SP は live engagement だけ残す）。
   - **SP optional 化**: daemon を常時 substrate に（§4.4）。三段ライフサイクル（§4）を実装。
-  - presence = app-SP live authority ＋ daemon durable backing（§4.2）。
+  - presence = daemon-canonical command パターン（Model Q、§4.2）。app は command 発行＋render（authoritative presence を持たない）。
   - **I1（位置独立 id）＋ I2（home-World authority）を descriptor/規律に planting**（§7.4）。
   - namespace = backing-kind の **scaffold**（§5、まず git ＋ scratch から）。ground は daemon が provision/reclaim（teardown 一本化）。
   - cwd は spawn 時明示（tmux `-c` / worktree で大半済み）。
@@ -338,16 +339,16 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
 
 | # | 弱点 | severity | stance |
 |---|------|----------|--------|
-| **A** | **「2 storage / 1 writer」は定常状態だけ綺麗、遷移が race**。app crash で最終 snapshot を失う（無損失 ⇔ 軽さのトレードオフ）/ daemon 再起動中は truth owner 不在で app が read-only に degrade / app 二重起動を構造的に防げず presence split-brain | 🔴 | **design-for**: sync cadence・crash 復旧（WAL 的）・single-writer lease を Phase 2 で明示設計 |
+| **A** | ~~「2 storage / 1 writer」の遷移 race~~ → **解決（2026-06-19）**。presence を **daemon-canonical command（Model Q、§4.2）** に寄せ、app が authoritative state を持たない構造にした → snapshot 喪失 / split-brain / sync cadence が **構造的に発生しない**（失う物・lease する物・sync する物が無い） | ✅ | **解決＋実装最小**: lease/sync/snapshot は不要。残るは **daemon の transactional 永続（§12-B と共有）＋ daemon 再起動中の command 再接続** のみ |
 | **B** | **daemon が god-object ＝ SPOF**。SP の fault 隔離（1 project 落ちても他は生存）を simplicity と引き換えに捨てた。**VP-on-VP dogfood では daemon crash が開発環境ごと落とす**。書き込み途中 crash で単一 store 破損 risk | 🔴 | **accept ＋ 緩和必須**: transactional persistence ＋ crash recovery。隔離を捨てた事実を明記して持つ |
 | **C** | ~~presence の過剰統一~~ → **解決（2026-06-19）**。presence は一枚岩でなく intent で三段に正配置: order→World / active lane→SP / focus・surface target→surface（§4.2）。発端バグは order の誤配置で、focus を surface に置くのは正配置＝同じバグにならない | ✅ | **解決＋最小実装**: 三段への正配置。presence は未知数が大きいので **当面 active lane は SP 単一の最小実装**。surface target / follow/pin（身体性 vision 用）は dogfood 後の将来 option（surface tier があるので後付けは extension） |
 | **D** | **backing-kind「open registry」の "open" が複雑さの本体**。各 kind が provision/reclaim/teardown/再起動復元/連邦 projection を別々に要し、統一 interface が leaky になりうる。**backing 進化（scratch→git）は cwd/PTY/tmux/agent の mid-flight migration**＝クリーンに動くことが稀 | 🟠 | **accept（segment）**: Phase 2 は git＋scratch の 2 kind に絞る。in-place 昇格は約束しない（scratch を捨てて git lane を新規、で代替しうる） |
 | **E** | **I1/I2 を植えるが 1 World では検証できない**。local では規律が空回り。Phase 3 で多 World 制約（id 衝突・remote ref 形式・projection 整合）が出た時、植えた id 体系が間違っていた可能性。「今安い」は *正しいものを植えれば* の話 | 🟠 | **縮小 accept**: I2（規律）は植える。**I1 は「id 欄を持つ」に留め、id の体系（format/採番/衝突解決）は Phase 3 まで決め打ちしない** |
 | **F** | **「agent = projection」は Claude CLI `--resume` への外部依存**。in-flight turn を失う / CLI version 間で session 形式が変わりうる / Claude のローカル storage 次第。四本柱の一つが VP の所有しない挙動に load-bearing | 🟡 | **accept（不可避）＋ 監視**: cc_session_id を VP 側でも保持（既存）で最低限の自衛。根の依存は消えない事実として持つ |
-| **G** | **ROTO は app quit で死ぬ**（app-SP に attach を選んだ帰結）。「lane を楽器にする / 物理 fleet first-class」の身体性 vision は headless でも卓が生きている ambient を望むかも。clean さのために ambient を売った | 🟡 | **認識して保留**: 将来「薄い ROTO-bridge を daemon peer に（status＋wake のみ）、フル制御は app」の二段が要るかも。売ったものを記録 |
+| **G** | ~~ROTO は app quit で死ぬ~~ → **緩和（2026-06-19）**。presence が daemon-canonical（Model Q）になり、ROTO は **daemon の presence を共有** → app quit でも presence の読取/操作が生きる（ambient 身体性が自然に出る） | ✅ | **緩和**: 残るは「app quit 中の agent I/O relay（render 経路）」だけ app 依存。status/presence は daemon 直で常時可 |
 
 **メタ的弱点**: 設計が数十分で揃った体験は、*検証されたから揃った* のか *揃えたいから揃えた* のか区別がつきにくい。C はその典型。**「美しい」と感じた瞬間こそ最も疑うべき**。dogfood で最初に裏切るのは、おそらく C か A。
 
-> 骨格は強い（A/B/F は単一ユーザー前提で許容範囲、緩和策も明確）。**C は三段への正配置で解決**（§4.2、当面は最小実装）。残る最重要は **A（遷移 race）= Phase 2 実装で必ず正面から設計すべき**。
+> 骨格は強い。**A・C・G は解決**（A: presence を daemon-canonical command に寄せ race 蒸発 / C: 三段への正配置 / G: ROTO は daemon presence 共有で app-quit でも生存、§4.2）。**残る最重要は B（daemon の堅牢化）**——A/G を daemon に寄せた分、daemon の transactional 永続＋crash recovery が一層 load-bearing（複雑さを一点に集約した代償）。
 > **本リデザインの一貫した stance: 未知数の大きい領域（presence・backing-kind 進化・連邦・relational role）は、構造の天井は高く保ちつつ実装は最小に留める**——simple を内包する rich な構造を選び、rich な実装は dogfood の声を聞いてから足す。
 > この §12 は「決定の確信」ではなく「持っておくべき緊張」の記録であり、dogfood の観察で更新される。
