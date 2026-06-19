@@ -955,6 +955,9 @@ struct SidebarIpcOutcome {
     /// caller (event loop) で lane cwd を解決して `file_explorer::open_file` を
     /// blocking thread で実行 → `AppEvent::FilesOpenResult` で push back。
     files_open_request: Option<(String, String, String)>,
+    /// Model Q: active lane を daemon canonical に永続する要求 `(project_path, lane_address)`。
+    /// caller が `client.set_active_lane` を fire-and-forget で呼ぶ (optimistic local は適用済)。
+    set_active_lane_request: Option<(String, String)>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1098,6 +1101,8 @@ fn handle_sidebar_ipc(
             }
             tracing::info!("lane:select {} address={}", m.path, m.address);
             out.activate_lane = Some(m.address.clone());
+            // Model Q: active lane を daemon canonical に永続 (optimistic local は activate_lane で適用)。
+            out.set_active_lane_request = Some((m.path.clone(), m.address.clone()));
         }
         IpcEnvelope::ProcessReorder(m) => {
             // Currents セクションを drag-and-drop で並び替えた時の通知。
@@ -1797,6 +1802,9 @@ pub fn run() -> anyhow::Result<()> {
                     .iter()
                     .map(|p| (p.path.clone(), p.port))
                     .collect();
+                // Model Q: daemon canonical の active lane (presence、 boot 復元用)。
+                let daemon_active_lane: Option<String> =
+                    projects.iter().find_map(|p| p.active_lane.clone());
                 sidebar_state.processes = projects
                     .into_iter()
                     .map(|p| {
@@ -1828,6 +1836,13 @@ pub fn run() -> anyhow::Result<()> {
                 // JS resolveProjectOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
                 sidebar_state.currents_order =
                     Some(project_ports.iter().map(|(path, _)| path.clone()).collect());
+                // Model Q: 初回 load で active lane を daemon canonical から復元 (session.json でなく daemon が源)。
+                if is_initial_load
+                    && let Some(addr) = daemon_active_lane
+                {
+                    sidebar_state.active_lane_address = Some(addr.clone());
+                    session_state.active_lane_address = Some(addr);
+                }
                 // wiremsg: 各 project の SP の Unison channel を購読する (per-SP 1 本ずつ)。
                 // - Stage 1: "lanes" channel → sidebar Lane ツリー
                 // - Stage 2: "canvas" channel → main area の Paisley Park body
@@ -2568,6 +2583,15 @@ pub fn run() -> anyhow::Result<()> {
                             Err(e) => {
                                 tracing::warn!("reorder_projects failed: {}", e);
                             }
+                        }
+                    });
+                }
+                // Model Q: active lane を daemon canonical に永続 (fire-and-forget、 optimistic 適用済)。
+                if let Some((project_path, address)) = outcome.set_active_lane_request {
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        if let Err(e) = client.set_active_lane(project_path, address).await {
+                            tracing::warn!("set_active_lane failed: {}", e);
                         }
                     });
                 }
