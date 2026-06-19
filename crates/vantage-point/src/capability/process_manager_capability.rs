@@ -594,11 +594,53 @@ impl ProcessManagerCapability {
         // doc 24 §10 Phase 2 / §4.6 含有=所有=寿命: lane descriptor も同様に畳む。
         // lane は daemon-canonical durable truth (SP disconnect では残すが、 project remove は
         // namespace ごと倒す = descriptor も回収する)。 in-memory lane_registry と db から削除。
-        self.lane_registry.write().await.remove(&key);
+        // remove は外した Vec<LaneInfo> を返すので、 下の ground reclaim にそのまま使う。
+        let removed_lanes = self
+            .lane_registry
+            .write()
+            .await
+            .remove(&key)
+            .unwrap_or_default();
         if let Some(db) = &self.vpdb
             && let Err(e) = db.delete_lanes_for_project(&key).await
         {
             tracing::warn!("lane の db/world 削除に失敗 (in-memory は削除済): {}", e);
+        }
+
+        // doc 24 §5.3 / B-destroy: ground を provision/reclaim する唯一の主体は daemon。
+        // namespace (project) を倒したら performer の worktree (ground) も daemon が reclaim する。
+        // A では descriptor だけ畳んで worktree が disk に orphan で残る中間状態だった — その穴を閉じる。
+        // conductor は cwd = repo root (= user の repo そのもの) なので **絶対に消さない**、 performer のみ。
+        let performer_names: Vec<String> = removed_lanes
+            .iter()
+            .filter(|l| l.kind == crate::process::lanes_state::LaneKind::Performer)
+            .filter_map(|l| l.name.clone())
+            .collect();
+        if !performer_names.is_empty() {
+            // repo_root は key (= normalize_path_key の出力) から再構築する。 add_project 時と
+            // 同じ normalize を経るので通常は実 repo root と一致する。 万一ズレ / explicit cwd
+            // (`<repo>/.vp/lanes/<name>` 外) の時は find_performer_dir が None → 下の warn で
+            // skip され orphan が残るだけ (= 誤削除は起きない、 best-effort、 team-b review #1)。
+            let repo_root = PathBuf::from(&key);
+            // git worktree remove は blocking subprocess なので spawn_blocking で executor を塞がない。
+            let _ = tokio::task::spawn_blocking(move || {
+                for name in performer_names {
+                    // best-effort (§4.6 ゆるやか統治): 既に手動 rm 済 / explicit cwd 外などは warn で流す。
+                    match crate::lane::commands::remove_performer_in(&repo_root, &name) {
+                        Ok(()) => tracing::info!(
+                            "performer worktree reclaim: name={} repo={}",
+                            name,
+                            repo_root.display()
+                        ),
+                        Err(e) => tracing::warn!(
+                            "performer worktree reclaim 失敗 (best-effort、 skip): name={} err={}",
+                            name,
+                            e
+                        ),
+                    }
+                }
+            })
+            .await;
         }
 
         // VP-188: projects.kdl に永続化
@@ -2628,6 +2670,82 @@ mod tests {
         let result = cap.remove_project("/nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_reclaims_performer_ground_not_conductor() {
+        // doc 24 §5.3 / B-destroy: project remove で performer worktree(ground) は daemon が
+        // reclaim、 conductor(=repo root = user の repo) は絶対に消さない、 を検証する。
+        // git なしの plain dir で実行 (remove_performer_workspace は .git 無しなら fs 削除に落ちる)。
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+
+        let cap = make_test_cap();
+        // 一意な temp project root (再実行に備え事前掃除)。
+        // pid を含めて並行 `cargo test` 実行間での temp 衝突を避ける (team-b review、 低リスク)。
+        let tmp =
+            std::env::temp_dir().join(format!("vp-test-bdestroy-reclaim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let project_path = tmp.to_string_lossy().to_string();
+        cap.add_project("bdestroy", &project_path).await.unwrap();
+
+        // performer の ground を物理作成 (<repo>/.vp/lanes/foo、 plain dir = fs 削除経路)。
+        let performer_dir = tmp.join(".vp").join("lanes").join("foo");
+        std::fs::create_dir_all(&performer_dir).unwrap();
+        assert!(performer_dir.exists());
+
+        // lane_registry に conductor + performer descriptor を投入 (daemon-canonical truth)。
+        let key = normalize_path_key(&PathBuf::from(&project_path));
+        let mk = |addr: LaneAddress, kind: LaneKind, name: Option<&str>, cwd: &str| LaneInfo {
+            id: Default::default(),
+            address: addr,
+            kind,
+            name: name.map(|s| s.to_string()),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-06-20T00:00:00Z".to_string(),
+            pid: None,
+            cwd: cwd.to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            tmux: Vec::new(),
+        };
+        let conductor = mk(
+            LaneAddress::conductor("bdestroy"),
+            LaneKind::Conductor,
+            None,
+            &project_path,
+        );
+        let performer = mk(
+            LaneAddress::performer("bdestroy", "foo"),
+            LaneKind::Performer,
+            Some("foo"),
+            &performer_dir.to_string_lossy(),
+        );
+        cap.lane_registry_ref()
+            .write()
+            .await
+            .insert(key.clone(), vec![conductor, performer]);
+
+        // 実行: project を倒す。
+        cap.remove_project(&project_path).await.unwrap();
+
+        // 検証: performer ground は reclaim、 conductor=repo root は無傷。
+        assert!(
+            !performer_dir.exists(),
+            "performer ground (worktree) は daemon が reclaim する"
+        );
+        assert!(
+            tmp.exists(),
+            "conductor = repo root は絶対に消さない (user の repo)"
+        );
+        // descriptor も lane_registry から畳まれている。
+        assert!(
+            cap.lane_registry_ref().read().await.get(&key).is_none(),
+            "project remove で lane descriptor も回収される"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // --- PR-D: slot / sync の daemon 委譲受け皿 ---
