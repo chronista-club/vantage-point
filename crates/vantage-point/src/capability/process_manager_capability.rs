@@ -58,6 +58,10 @@ pub struct ProjectInfo {
     /// VP-188: SSOT は projects.kdl。 capability は load/persist で round-trip するのみ。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u16>,
+    /// active lane (presence、 Model Q): この project の選択中 lane address。
+    /// daemon-canonical。 `list_projects` で active_lanes map から enrich (構築時は None)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_lane: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -158,6 +162,9 @@ pub struct ProcessManagerCapability {
     vp_binary_path: Option<PathBuf>,
     /// SurrealDB クライアント（Some なら DB に二重書き込み）
     vpdb: Option<crate::db::SharedVpDb>,
+    /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
+    /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
+    active_lanes: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl ProcessManagerCapability {
@@ -173,6 +180,7 @@ impl ProcessManagerCapability {
             config: None,
             vp_binary_path: None,
             vpdb: None,
+            active_lanes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -258,11 +266,26 @@ impl ProcessManagerCapability {
                     port: None, // port は動的割当 (port_layout が slot から計算)
                     enabled: e.is_enabled(),
                     slot: e.slot,
+                    active_lane: None, // list_projects で enrich
                 },
             );
         }
         drop(projects);
         drop(order);
+
+        // Model Q: active lane (presence) を db/world から load する (vpdb=Some のみ)。
+        if let Some(db) = &self.vpdb {
+            match db.list_active_lanes().await {
+                Ok(rows) => {
+                    let mut al = self.active_lanes.write().await;
+                    al.clear();
+                    for (path, addr) in rows {
+                        al.insert(path, addr);
+                    }
+                }
+                Err(e) => tracing::warn!("active_lane の load 失敗 (空で継続): {}", e),
+            }
+        }
 
         self.config = Some(config);
         Ok(())
@@ -371,9 +394,16 @@ impl ProcessManagerCapability {
     pub async fn list_projects(&self) -> Vec<ProjectInfo> {
         let projects = self.projects.read().await;
         let order = self.project_order.read().await;
+        // Model Q: active lane (presence) を enrich (daemon-canonical)。
+        let active = self.active_lanes.read().await;
         order
             .iter()
-            .filter_map(|key| projects.get(key).cloned())
+            .filter_map(|key| {
+                projects.get(key).cloned().map(|mut p| {
+                    p.active_lane = active.get(key).cloned();
+                    p
+                })
+            })
             .collect()
     }
 
@@ -434,6 +464,7 @@ impl ProcessManagerCapability {
                         port: project.port,
                         enabled: project.enabled,
                         slot: project.slot,
+                        active_lane: None,
                     });
                 if !order.contains(&key) {
                     order.push(key);
@@ -485,6 +516,7 @@ impl ProcessManagerCapability {
             port: None,
             enabled: true,
             slot: None, // 新規 project は slot 未割当 (= SP 初回起動時に resolve が割当)
+            active_lane: None,
         };
 
         {
@@ -602,6 +634,32 @@ impl ProcessManagerCapability {
         // VP-188: projects.kdl に永続化
         self.persist_projects().await?;
 
+        Ok(())
+    }
+
+    /// active lane (presence、 Model Q) を設定する。
+    ///
+    /// project ごとの選択中 lane を daemon-canonical に持つ。 in-memory map を更新し、
+    /// vpdb=Some (= World) なら db/world の active_lane table に upsert する。
+    /// §4.6: presence は tail-loss 許容なので DB 永続は best-effort (失敗は warn のみ)。
+    pub async fn set_active_lane(
+        &self,
+        project_path: &str,
+        lane_address: &str,
+    ) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(project_path));
+        self.active_lanes
+            .write()
+            .await
+            .insert(key.clone(), lane_address.to_string());
+        if let Some(db) = &self.vpdb
+            && let Err(e) = db.upsert_active_lane(&key, lane_address).await
+        {
+            tracing::warn!(
+                "active_lane の db/world 永続に失敗 (in-memory は更新済): {}",
+                e
+            );
+        }
         Ok(())
     }
 
@@ -2428,6 +2486,7 @@ mod tests {
             port: Some(33005),
             enabled: true,
             slot: None,
+            active_lane: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("33005"));
@@ -2440,6 +2499,7 @@ mod tests {
             port: None,
             enabled: true,
             slot: None,
+            active_lane: None,
         };
         let json_no_port = serde_json::to_string(&info_no_port).unwrap();
         assert!(!json_no_port.contains("port"));

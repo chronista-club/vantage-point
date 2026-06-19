@@ -142,6 +142,10 @@ pub struct ProjectInfo {
     /// `state` キーで serialize する (sidebar JS が `p.state` を読む)。
     #[serde(default, alias = "process_status")]
     pub state: ProcessStatus,
+    /// Model Q: daemon canonical の active lane (presence)。`/api/world/projects` の
+    /// per-project active_lane。 boot 時の復元に使う (session.json でなく daemon が源)。
+    #[serde(default)]
+    pub active_lane: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -405,6 +409,22 @@ impl TheWorldClient {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("reorder_projects HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
+
+    /// active lane (presence、 Model Q) を daemon に設定する (POST /api/world/lanes/active)。
+    ///
+    /// daemon が project ごとの active lane を canonical に保持し db/world に永続する。
+    /// optimistic local 反映後に fire-and-forget で呼ぶ (reorder と同じ「操作→daemon 永続」)。
+    pub async fn set_active_lane(&self, path: String, address: String) -> Result<()> {
+        let url = format!("{}/api/world/lanes/active", self.base_url);
+        let body = serde_json::json!({ "path": path, "address": address });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("set_active_lane HTTP {}: {}", status, text);
         }
         Ok(())
     }

@@ -325,6 +325,38 @@ pub async fn world_reorder_projects(
     }
 }
 
+/// active lane (presence、 Model Q) 設定リクエスト
+#[derive(serde::Deserialize)]
+pub struct SetActiveLaneRequest {
+    pub path: String,
+    pub address: String,
+}
+
+/// POST /api/world/lanes/active - project の active lane を設定 (daemon-canonical、 db/world に永続)
+pub async fn world_set_active_lane(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetActiveLaneRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world = world.read().await;
+    match world.set_active_lane(&req.path, &req.address).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "active_lane set"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 /// slot 設定リクエスト (PR-D: CLI の slot 永続化を daemon 経由に)
 #[derive(serde::Deserialize)]
 pub struct SetSlotRequest {

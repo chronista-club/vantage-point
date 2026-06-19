@@ -307,6 +307,8 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
 
 **I1・I2 が「今安い・後高い」**。これを植えれば連邦は **rewrite ではなく extension** になる。
 
+> **I5 の到達点 = control-plane の Unison(QUIC) 一本化**（2026-06-20 補足）。現状の transport は混在: app↔daemon = HTTP `/api/world/*`（projects CRUD / reorder / set_active_lane …）、SP↔daemon = QUIC registry。I5 の transport 抽象を噛ませ、**HTTP control-plane を層ごと一括で QUIC へ sweep** する（piecemeal にせず control-plane 全体を一度に＝presence/order 等を個別 Unison 化しない）。これは初日の「**World ⟷ SP の双方向 messaging で成り立つ**」backbone を transport 層で実現するもの。Phase 3。
+
 ---
 
 ## 8. メタファー整合（JoJo）— 詩は正しい設計を指す
@@ -350,8 +352,8 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
   - **git-uniform を維持**（非 git backing-kind は Phase 3 へ deferred、§5 の判断 2026-06-20）。ground は daemon が provision/reclaim（worktree / checkout、teardown 一本化）。当面の scratch は loose な git repo を project 登録で（例: nexus、別機構ゼロ）。
   - cwd は spawn 時明示（tmux `-c` / worktree で大半済み）。
 
-- **Phase 3 — port/reconciliation 撤去 ＋ namespace 非 git の本格化 ＋ 連邦**
-  Push/Pull/`lane_registry` を退役。**backing-kind を open registry に（非 git: scratch / theme / meta / device / remote-projection を「二つ目のルールセット」としてまとめて導入）**。role=relational の orchestration。I3/I5 で連邦 wire を開通。
+- **Phase 3 — port/reconciliation 撤去 ＋ control-plane の Unison 一本化 ＋ namespace 非 git ＋ 連邦**
+  Push/Pull/`lane_registry` を退役。**control-plane を Unison(QUIC) に一本化**（app↔daemon の HTTP `/api/world/*`＝reorder / set_active_lane 等を I5 の transport 抽象経由で層ごと一括 sweep、現状 HTTP+QUIC 混在 → 単一 transport、§7.4）。**backing-kind を open registry に（非 git: scratch / theme / meta / device / remote-projection を「二つ目のルールセット」としてまとめて導入）**。role=relational の orchestration。I3/I5 で連邦 wire を開通。
 
 > 移行コストは「後で自分たちが払えばよい」もの。先に **構造の正しさ** を確定させ、それに向かって少しずつ寄せる。
 

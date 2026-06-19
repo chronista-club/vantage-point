@@ -198,6 +198,50 @@ impl VpDb {
         Ok(records)
     }
 
+    // =========================================================================
+    // Active lane (presence、 Model Q): project ごとの選択中 lane を daemon-canonical に
+    // =========================================================================
+
+    /// active lane を upsert (project_path → lane_address)。
+    pub async fn upsert_active_lane(&self, project_path: &str, lane_address: &str) -> Result<()> {
+        self.db
+            .query(
+                "INSERT INTO active_lane {
+                    project_path: $project_path,
+                    lane_address: $lane_address,
+                    updated_at: time::now()
+                } ON DUPLICATE KEY UPDATE
+                    lane_address = $input.lane_address,
+                    updated_at = time::now()",
+            )
+            .bind(("project_path", project_path.to_string()))
+            .bind(("lane_address", lane_address.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("active_lane upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("active_lane upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 全 active lane を (project_path, lane_address) で返す (boot 時の load 用)。
+    pub async fn list_active_lanes(&self) -> Result<Vec<(String, String)>> {
+        // list_processes と同じく serde_json::Value で受ける (surrealdb の SurrealValue 制約回避)。
+        let mut result = self
+            .db
+            .query("SELECT project_path, lane_address FROM active_lane")
+            .await
+            .map_err(|e| anyhow::anyhow!("active_lane 取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| {
+                let path = v.get("project_path")?.as_str()?.to_string();
+                let addr = v.get("lane_address")?.as_str()?.to_string();
+                Some((path, addr))
+            })
+            .collect())
+    }
+
     /// 全プロセスを削除（TheWorld 再起動時のクリーンアップ用）
     pub async fn clear_all_processes(&self) -> Result<()> {
         self.db
@@ -586,6 +630,15 @@ DEFINE FIELD IF NOT EXISTS slot ON projects TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS ord ON projects TYPE int DEFAULT 0;
 DEFINE INDEX IF NOT EXISTS idx_projects_path ON projects COLUMNS path UNIQUE;
 
+-- active lane (presence、 Model Q): project ごとの選択中 lane。 daemon-canonical。
+-- presence なので projects とは別テーブル (projects.kdl export に混ぜず、 click ごとの
+-- 高頻度 upsert を 1 行に閉じる)。 §4.6 durability tier: presence は tail-loss 許容。
+DEFINE TABLE IF NOT EXISTS active_lane SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON active_lane TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_address ON active_lane TYPE string;
+DEFINE FIELD IF NOT EXISTS updated_at ON active_lane TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_active_lane_path ON active_lane COLUMNS project_path UNIQUE;
+
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
 -- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
@@ -784,6 +837,44 @@ mod tests {
     async fn test_define_schema_mem() {
         let db = make_test_db().await;
         assert!(db.health().await, "ヘルスチェック失敗");
+    }
+
+    #[tokio::test]
+    async fn test_active_lane_upsert_and_list() {
+        // Model Q: active lane (presence) の daemon-canonical round-trip。
+        let db = make_test_db().await;
+
+        // 初期は空
+        assert!(db.list_active_lanes().await.unwrap().is_empty());
+
+        // project ごとに upsert
+        db.upsert_active_lane("/repos/vp", "vp/conductor")
+            .await
+            .unwrap();
+        db.upsert_active_lane("/repos/nexus", "nexus/performer/foo")
+            .await
+            .unwrap();
+
+        let mut rows = db.list_active_lanes().await.unwrap();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "/repos/nexus".to_string(),
+                    "nexus/performer/foo".to_string()
+                ),
+                ("/repos/vp".to_string(), "vp/conductor".to_string()),
+            ]
+        );
+
+        // 同 project の upsert は置換 (UNIQUE index、 per-project に 1 つ)
+        db.upsert_active_lane("/repos/vp", "vp/performer/bar")
+            .await
+            .unwrap();
+        let rows = db.list_active_lanes().await.unwrap();
+        assert_eq!(rows.len(), 2, "同 project は置換、 件数は増えない");
+        assert!(rows.contains(&("/repos/vp".to_string(), "vp/performer/bar".to_string())));
     }
 
     // VP-188: Projects CRUD テストは撤去 (= projects は projects.kdl に移行、
