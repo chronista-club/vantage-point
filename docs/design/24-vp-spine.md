@@ -239,6 +239,8 @@ external 操作は **idempotent**（再実行安全）にして crash 後 retry 
 | **meta**（cross-cutting） | workspace dir（MARU×VP 等の跨ぎ作業） | no |
 | **device** / **dataset** / **remote-projection** … | 種別ごと（device-backed lane = 「lane を楽器にする」の根） | — |
 
+> **現時点の判断（2026-06-20、git-uniform を保つ）**: **非 git backing-kind（scratch / theme / meta / device …）は Phase 3 へ deferred**。非 git は「worktree でない ground・repo-less addressing・registry の非 git entry」という **二つ目のルールセット** を丸ごと持ち込み、難易度が現状の tradeoff に見合わない（dogfood で「別ルールが入る」摩擦を確認）。**Phase 2 は git-uniform**。当面の scratch 空間は **loose に使う git repo を project 登録**して達成（dogfood では `~/repos/nexus` が既にこの役割、sidebar 常駐）——別機構ゼロで worktree がそのまま効く。非 git は device/dataset/remote が揃い「別ルールセットを持つ価値」が立った時にまとめて入れる（= 作る前に "作らない" を選べた、§12-D）。
+
 **連邦と収束する**: peer World が publish した namespace は、ローカルでは **backing-kind = `remote-projection`** として現れる。
 「remote な Lane」は特別扱いではなく **ただの一 backing-kind**。namespace・連邦・I1 が同じ機構に landing する（§7）。
 
@@ -345,11 +347,11 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
   - **SP optional 化**: daemon を常時 substrate に（§4.4）。三段ライフサイクル（§4）を実装。
   - presence = daemon-canonical command パターン（Model Q、§4.2）。app は command 発行＋render（authoritative presence を持たない）。
   - **I1（位置独立 id）＋ I2（home-World authority）を descriptor/規律に planting**（§7.4）。
-  - namespace = backing-kind の **scaffold**（§5、まず git ＋ scratch から）。ground は daemon が provision/reclaim（teardown 一本化）。
+  - **git-uniform を維持**（非 git backing-kind は Phase 3 へ deferred、§5 の判断 2026-06-20）。ground は daemon が provision/reclaim（worktree / checkout、teardown 一本化）。当面の scratch は loose な git repo を project 登録で（例: nexus、別機構ゼロ）。
   - cwd は spawn 時明示（tmux `-c` / worktree で大半済み）。
 
 - **Phase 3 — port/reconciliation 撤去 ＋ namespace 非 git の本格化 ＋ 連邦**
-  Push/Pull/`lane_registry` を退役。backing-kind を open registry に。role=relational の orchestration。I3/I5 で連邦 wire を開通。
+  Push/Pull/`lane_registry` を退役。**backing-kind を open registry に（非 git: scratch / theme / meta / device / remote-projection を「二つ目のルールセット」としてまとめて導入）**。role=relational の orchestration。I3/I5 で連邦 wire を開通。
 
 > 移行コストは「後で自分たちが払えばよい」もの。先に **構造の正しさ** を確定させ、それに向かって少しずつ寄せる。
 
@@ -379,7 +381,7 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
 | **A** | ~~「2 storage / 1 writer」の遷移 race~~ → **解決（2026-06-19）**。presence を **daemon-canonical command（Model Q、§4.2）** に寄せ、app が authoritative state を持たない構造にした → snapshot 喪失 / split-brain / sync cadence が **構造的に発生しない**（失う物・lease する物・sync する物が無い） | ✅ | **解決＋実装最小**: lease/sync/snapshot は不要。残るは **daemon の transactional 永続（§12-B と共有）＋ daemon 再起動中の command 再接続** のみ |
 | **B** | **daemon が god-object ＝ SPOF**。SP の fault 隔離を simplicity と引き換えに捨てた。Model Q で A/G も daemon に寄せた分、一層 load-bearing。**VP-on-VP dogfood では daemon crash が開発環境ごと落とす** | 🟠 | **設計確定（§4.6、reconciliation-first / 庭師モデル）**: durable desired-state ＋ heal-to-truth ＋ intent-first lifecycle（軽量 WAL）＋ atomic write。SPOF は受容、緩和＝「倒れても綺麗に re-animate」。実装は Phase 2-3 |
 | **C** | ~~presence の過剰統一~~ → **解決（2026-06-19）**。presence は一枚岩でなく intent で三段に正配置: order→World / active lane→SP / focus・surface target→surface（§4.2）。発端バグは order の誤配置で、focus を surface に置くのは正配置＝同じバグにならない | ✅ | **解決＋最小実装**: 三段への正配置。presence は未知数が大きいので **当面 active lane は SP 単一の最小実装**。surface target / follow/pin（身体性 vision 用）は dogfood 後の将来 option（surface tier があるので後付けは extension） |
-| **D** | **backing-kind「open registry」の "open" が複雑さの本体**。各 kind が provision/reclaim/teardown/再起動復元/連邦 projection を別々に要し、統一 interface が leaky になりうる。**backing 進化（scratch→git）は cwd/PTY/tmux/agent の mid-flight migration**＝クリーンに動くことが稀 | 🟠 | **accept（segment）**: Phase 2 は git＋scratch の 2 kind に絞る。in-place 昇格は約束しない（scratch を捨てて git lane を新規、で代替しうる） |
+| **D** | **backing-kind「open registry」の "open" が複雑さの本体**。各 kind が provision/reclaim/teardown/再起動復元/連邦 projection を別々に要し、統一 interface が leaky になりうる。**backing 進化（scratch→git）は cwd/PTY/tmux/agent の mid-flight migration**＝クリーンに動くことが稀 | 🟠 | **判断（2026-06-20）: 非 git を作らない**。Phase 2 は **git-uniform**（二つ目のルールセットを持ち込まない）。scratch は loose git repo を project 登録で代替（nexus、sidebar 常駐）。非 git backing-kind は device/dataset/remote が揃う Phase 3 へ deferred。**この警告が実装直前に効いて「作る前に作らない」を選べた**実例 |
 | **E** | **I1/I2 を植えるが 1 World では検証できない**。local では規律が空回り。Phase 3 で多 World 制約（id 衝突・remote ref 形式・projection 整合）が出た時、植えた id 体系が間違っていた可能性。「今安い」は *正しいものを植えれば* の話 | 🟠 | **縮小 accept**: I2（規律）は植える。**I1 は「id 欄を持つ」に留め、id の体系（format/採番/衝突解決）は Phase 3 まで決め打ちしない** |
 | **F** | **「agent = projection」は Claude CLI `--resume` への外部依存**。in-flight turn を失う / CLI version 間で session 形式が変わりうる / Claude のローカル storage 次第。四本柱の一つが VP の所有しない挙動に load-bearing | 🟡 | **accept（不可避）＋ 監視**: cc_session_id を VP 側でも保持（既存）で最低限の自衛。根の依存は消えない事実として持つ |
 | **G** | ~~ROTO は app quit で死ぬ~~ → **緩和（2026-06-19）**。presence が daemon-canonical（Model Q）になり、ROTO は **daemon の presence を共有** → app quit でも presence の読取/操作が生きる（ambient 身体性が自然に出る） | ✅ | **緩和**: 残るは「app quit 中の agent I/O relay（render 経路）」だけ app 依存。status/presence は daemon 直で常時可 |
