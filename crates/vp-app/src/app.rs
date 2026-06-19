@@ -939,6 +939,10 @@ struct SidebarIpcOutcome {
     /// caller が SP を stop してから `/api/world/projects/remove` を呼ぶ。
     /// `project_name` は stop 用、 `project_path` は remove 用 (registry key)。
     delete_project_request: Option<(String, String)>,
+    /// Phase 1 (doc 24): project 並び替えを daemon に永続化する要求 (path の順序列)。
+    /// caller が `client.reorder_projects` を呼び、成功後に re-fetch → `ProjectsLoaded` で
+    /// canonical 順を反映する。これで sidebar の D&D が daemon `project_order` に一本化される。
+    reorder_request: Option<Vec<String>>,
     /// Phase 5-D fix: SP auto-spawn dedup HashSet から path を release する要求。
     /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
     /// dedup deadlock を抜けられるようにする。 caller は `sp_spawn_triggered.remove(path)` を呼ぶ。
@@ -1098,14 +1102,16 @@ fn handle_sidebar_ipc(
         IpcEnvelope::ProcessReorder(m) => {
             // Currents セクションを drag-and-drop で並び替えた時の通知。
             // payload: `{"t":"process:reorder","order":["/path/a","/path/b",...]}`。
-            // session_state に保存し、 次回起動時 + 現在の sidebar push に反映。
             tracing::info!("process:reorder: {} entries", m.order.len());
+            // optimistic 反映: session 保存 + SidebarState（次回 push で JS 側 sort に使う）。
+            // changed フラグは立てない (DOM 順は user 操作で既に変わっている、re-push で flash を避ける)。
             session.currents_order = Some(m.order.clone());
             session.save();
-            // SidebarState にも反映 (次回 push で JS 側 sort に使う)
-            state.currents_order = Some(m.order);
-            // changed フラグは立てない (DOM 順は user 操作で既に変わっている、
-            // re-push で flash するのを避ける)。 次回 push 時に新 order が乗る。
+            state.currents_order = Some(m.order.clone());
+            // Phase 1 (doc 24): daemon の project_order にも永続化する。
+            // caller が client.reorder_projects → re-fetch → ProjectsLoaded で canonical を反映し、
+            // sidebar / ROTO / CLI vp projects を 1 つの順序源に揃える。
+            out.reorder_request = Some(m.order);
         }
         IpcEnvelope::ProcessRestart(m) => {
             // Phase 5-C: project name (from p.path → leaf name) を抽出して async restart に投げる。
@@ -1817,6 +1823,11 @@ pub fn run() -> anyhow::Result<()> {
                         pane_state
                     })
                     .collect();
+                // Phase 1 (doc 24): currents_order を daemon の project_order (= fetch 順) の
+                // mirror にする。これで currents_order は独立 SSOT ではなく canonical の派生となり、
+                // JS resolveProjectOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
+                sidebar_state.currents_order =
+                    Some(project_ports.iter().map(|(path, _)| path.clone()).collect());
                 // wiremsg: 各 project の SP の Unison channel を購読する (per-SP 1 本ずつ)。
                 // - Stage 1: "lanes" channel → sidebar Lane ツリー
                 // - Stage 2: "canvas" channel → main area の Paisley Park body
@@ -2534,6 +2545,28 @@ pub fn run() -> anyhow::Result<()> {
                                     project_path,
                                     e
                                 );
+                            }
+                        }
+                    });
+                }
+                // Phase 1 (doc 24): project 並び替えを daemon の project_order に永続化する。
+                // restart/stop と同じ「操作 → re-fetch → ProjectsLoaded」パターン。成功後の
+                // ProjectsLoaded で currents_order が canonical 順に reconcile される。
+                if let Some(order) = outcome.reorder_request {
+                    let proxy = async_action_proxy.clone();
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        match client.reorder_projects(order).await {
+                            Ok(()) => {
+                                tracing::info!("reorder_projects OK");
+                                // 完了 → projects 再 fetch → canonical 順で sidebar reconcile。
+                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                    let _ =
+                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("reorder_projects failed: {}", e);
                             }
                         }
                     });

@@ -392,6 +392,23 @@ impl TheWorldClient {
         Ok(())
     }
 
+    /// プロジェクトの並び順を daemon に永続化する (POST /api/world/projects/reorder)。
+    ///
+    /// daemon が `project_order` を更新し projects.kdl に永続化する (CLI `vp projects reorder`
+    /// と同じ capability 経路)。これにより sidebar の D&D 並び替えが canonical 化され、
+    /// `/api/world/projects` / ROTO / CLI が同じ順序を共有する。
+    pub async fn reorder_projects(&self, paths: Vec<String>) -> Result<()> {
+        let url = format!("{}/api/world/projects/reorder", self.base_url);
+        let body = serde_json::json!({ "paths": paths });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("reorder_projects HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
+
     /// Phase 3-A: SP に Performer Lane を create (`POST /api/lanes`)。
     /// `branch` 指定時は SP が `vp lane new <name> <branch>` で performer dir を作成して spawn する。
     /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する
