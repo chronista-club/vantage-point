@@ -285,6 +285,21 @@ impl ProcessManagerCapability {
                 }
                 Err(e) => tracing::warn!("active_lane の load 失敗 (空で継続): {}", e),
             }
+
+            // doc 24 §10 Phase 2: lane descriptor を db/world から boot load する (daemon
+            // 再起動を re-animate、 §3.3)。 旧来 lane_registry は SP push を待って初めて
+            // 埋まる cache だったが、 daemon-canonical 化で boot 時点から truth を持つ。
+            // SP が後で reconnect すれば register snapshot が最新で上書きする (= reconcile)。
+            match db.list_lanes().await {
+                Ok(rows) => {
+                    let mut lr = self.lane_registry.write().await;
+                    lr.clear();
+                    for (path, info) in rows {
+                        lr.entry(path).or_default().push(info);
+                    }
+                }
+                Err(e) => tracing::warn!("lane の boot load 失敗 (空で継続): {}", e),
+            }
         }
 
         self.config = Some(config);
@@ -574,6 +589,16 @@ impl ProcessManagerCapability {
                 "active_lane の db/world 削除に失敗 (in-memory は削除済): {}",
                 e
             );
+        }
+
+        // doc 24 §10 Phase 2 / §4.6 含有=所有=寿命: lane descriptor も同様に畳む。
+        // lane は daemon-canonical durable truth (SP disconnect では残すが、 project remove は
+        // namespace ごと倒す = descriptor も回収する)。 in-memory lane_registry と db から削除。
+        self.lane_registry.write().await.remove(&key);
+        if let Some(db) = &self.vpdb
+            && let Err(e) = db.delete_lanes_for_project(&key).await
+        {
+            tracing::warn!("lane の db/world 削除に失敗 (in-memory は削除済): {}", e);
         }
 
         // VP-188: projects.kdl に永続化

@@ -973,13 +973,16 @@ pub async fn run_world(
     let projects_ref = world_cap.read().await.projects_ref();
     // Phase 1b: lane_registry も共有 (SP register の lanes payload を cache する)
     let lane_registry_ref = world_cap.read().await.lane_registry_ref();
-    let daemon_state = std::sync::Arc::new(
-        crate::daemon::server::DaemonState::new()
-            .with_running_processes(running_processes_ref, projects_ref, lane_registry_ref)
-            // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
-            // Unison "world-control" channel から projects mutation を受けられるようにする。
-            .with_world_cap(world_cap.clone()),
-    );
+    let mut daemon_state_builder = crate::daemon::server::DaemonState::new()
+        .with_running_processes(running_processes_ref, projects_ref, lane_registry_ref)
+        // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
+        // Unison "world-control" channel から projects mutation を受けられるようにする。
+        .with_world_cap(world_cap.clone());
+    // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
+    if let Some(ref db) = vpdb {
+        daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
+    }
+    let daemon_state = std::sync::Arc::new(daemon_state_builder);
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,
