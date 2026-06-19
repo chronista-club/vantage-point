@@ -8,6 +8,8 @@
 
 pub mod agent;
 pub mod agui;
+#[cfg(feature = "midi")]
+pub mod bastet;
 pub mod capability;
 pub mod cli;
 pub mod commands;
@@ -22,6 +24,8 @@ pub mod device_profile;
 pub mod discovery;
 pub mod file_watcher;
 pub mod flow;
+#[cfg(feature = "midi")]
+pub mod justice;
 // lane lib 本体 (vp-cli の bin `vp lane` も `vantage_point::lane` を経由する)
 pub mod lane;
 pub mod mcp;

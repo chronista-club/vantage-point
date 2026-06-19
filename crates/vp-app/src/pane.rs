@@ -120,7 +120,7 @@ pub struct SidebarState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
     /// Phase 5-A: 現在 active な Project-scope Stand kind
-    /// (`"paisley_park"` / `"gold_experience"` / `"hermit_purple"`)。
+    /// (`"paisley_park"` / `"gold_experience"` / `"bastet"`)。
     /// `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
     /// `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
     /// `stand:select` IPC で更新される。
@@ -192,7 +192,7 @@ pub struct MessageState {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct ActiveStand {
     pub project_path: String,
-    /// `"paisley_park"` | `"gold_experience"` | `"hermit_purple"`
+    /// `"paisley_park"` | `"gold_experience"` | `"bastet"`
     pub kind: String,
 }
 

@@ -36,7 +36,7 @@ lanes_by_project: { [key in string]?: Array<LaneInfo> },
 active_lane_address?: string | null, 
 /**
  * Phase 5-A: 現在 active な Project-scope Stand kind
- * (`"paisley_park"` / `"gold_experience"` / `"hermit_purple"`)。
+ * (`"paisley_park"` / `"gold_experience"` / `"bastet"`)。
  * `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
  * `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
  * `stand:select` IPC で更新される。

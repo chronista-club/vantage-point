@@ -7,9 +7,10 @@
 //!
 //! - **Project 階層 Stand**: 本 module の `ProcessCapabilities` が host (Protocol / Agent / 等)
 //! - **World 階層 Stand**: `crate::daemon::world_capabilities::WorldCapabilities` が host
-//!   - Hermit Purple 🍇 (`MidiCapability`) は **PR-α-2 で本 module から World に移管完了**
+//!   - Bastet 🧲 (`MidiCapability`) は **PR-α-2 で本 module から World に移管完了**
+//!     （epic v3.1 E2-0 で旧 Hermit Purple 🍇 から rename）
 //!   - 旧 `ProcessCapabilities.midi` field / `CapabilityConfig.midi_config` field は削除済
-//!   - mailbox address `midi@{project}` (旧) → `hp@world` (新、 PR-α-3 で全 caller migration)
+//!   - mailbox address `midi@{project}` (旧) → `bastet@world` (新、 旧称 `hp@world`)
 
 use crate::capability::core::Capability;
 use crate::capability::{

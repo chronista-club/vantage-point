@@ -9,9 +9,8 @@
 //! - **TheWorld 👑** (`ProcessManagerCapability`): VP world process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
 //! - **Whitesnake 🐍** (`Whitesnake`): file-backed persistence wrapper
-//! - **Hermit Purple 🍇** (`MidiCapability`、 Option): external IF (MIDI/MCP/tmux)。
-//!   PR-α-2 で `ProcessCapabilities` から移管完了。 `with_midi` 経由で `Some(...)` host、
-//!   `new` のみだと None。
+//! - **Bastet 🧲** (`Bastet` + 旧 `MidiCapability`): multi-device registry + hot-plug discovery。
+//!   Converge で `Bastet` を並立追加。`with_midi` 経由で discovery 自動開始。
 //!
 //! ## 実装状態 (PR-α 完了後)
 //!
@@ -34,6 +33,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "midi")]
+use crate::bastet::Bastet;
+#[cfg(feature = "midi")]
 use crate::capability::MidiCapability;
 use crate::capability::{ProcessManagerCapability, UpdateCapability, Whitesnake};
 
@@ -50,12 +51,14 @@ pub struct WorldCapabilities {
     /// Whitesnake 🐍 — 汎用永続化レイヤー (file-backed per port)
     pub whitesnake: Whitesnake,
 
-    /// Hermit Purple 🍇 — external IF (MIDI/MCP/tmux)。
-    /// PR-α-2 (VP-112) で `ProcessCapabilities.midi` から移管完了。
-    /// `WorldCapabilities::with_midi` 経由で構築すると `Some(...)` で host、
-    /// `WorldCapabilities::new` だけだと None placeholder。
+    /// 旧 MidiCapability（single-device monitor、Bastet 移行完了まで並立）。
     #[cfg(feature = "midi")]
     pub midi: Option<Arc<RwLock<MidiCapability>>>,
+
+    /// Bastet 🧲 — multi-device registry + hot-plug discovery (Converge)。
+    /// `with_midi` で構築すると discovery 自動開始。
+    #[cfg(feature = "midi")]
+    pub bastet: Option<Arc<RwLock<Bastet>>>,
 }
 
 impl WorldCapabilities {
@@ -77,12 +80,14 @@ impl WorldCapabilities {
             whitesnake,
             #[cfg(feature = "midi")]
             midi: None,
+            #[cfg(feature = "midi")]
+            bastet: None,
         }
     }
 
     /// MidiCapability を host した状態で構築 (PR-α-2、 feature = "midi")。
     ///
-    /// LSCM doc 12 §9 の Hermit Purple 🍇 = World 階層 target を実現。 旧 `ProcessCapabilities.midi`
+    /// LSCM doc 12 §9 の Bastet 🧲 = World 階層 target を実現。 旧 `ProcessCapabilities.midi`
     /// (Project 階層) の経路を World daemon (`run_world`) に移管。
     ///
     /// 内部で `MidiCapability::with_config` → `initialize` → `start_monitoring` を実行し、
@@ -117,6 +122,14 @@ impl WorldCapabilities {
         }
 
         wc.midi = Some(Arc::new(RwLock::new(midi_cap)));
+
+        // Bastet 🧲 — multi-device registry + hot-plug discovery (Converge)
+        let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());
+        let mut bastet = Bastet::new(event_bus);
+        bastet.start_discovery().await;
+        tracing::info!("Bastet 🧲 discovery started (WorldCapabilities)");
+        wc.bastet = Some(Arc::new(RwLock::new(bastet)));
+
         Ok(wc)
     }
 }

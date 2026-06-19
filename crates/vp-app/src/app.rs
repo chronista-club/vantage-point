@@ -729,7 +729,7 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
 ///
 /// Phase 5-A 拡張: Lane と Stand が **mutually exclusive** な active 軸として扱われる。
 /// 優先順位:
-///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "hermit_purple"
+///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "bastet"
 ///   2. `active_lane_address` Some → kind = "terminal"、 pane_id = Lane address
 ///   3. 両方 None → kind=None で empty placeholder
 ///
@@ -757,6 +757,60 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     let script = main_area::build_set_active_pane_script(&info);
     if let Err(e) = main_view.evaluate_script(&script) {
         tracing::warn!("main setActivePane 失敗: {}", e);
+    }
+}
+
+/// Active Lane を切替える — 全副作用を 1 箇所に集約（Simplicity 原則）。
+///
+/// sidebar click / switch_lane (QUIC) / auto-select の 3 入口すべてがこの関数を呼ぶ。
+/// 副作用:
+///   1. `sidebar_state.active_lane_address` + `active_stand` (排他 clear)
+///   2. `session_state` 永続化
+///   3. notification / awaiting_input reset
+///   4. sidebar UI push (`renderSidebarState`)
+///   5. main area push (`setActivePane` → `showLane`)
+///   6. dead lane respawn
+#[allow(clippy::too_many_arguments)]
+fn activate_lane(
+    address: &str,
+    sidebar_state: &mut SidebarState,
+    session_state: &mut crate::session_state::SessionState,
+    webview: &wry::WebView,
+    lane_respawn_triggered: &mut std::collections::HashSet<String>,
+    rt_handle: &tokio::runtime::Handle,
+    respawn_proxy: &EventLoopProxy<AppEvent>,
+) {
+    let view_changed = sidebar_state.active_lane_address.as_deref() != Some(address);
+
+    // 1. State
+    sidebar_state.active_lane_address = Some(address.to_string());
+    if sidebar_state.active_stand.is_some() {
+        sidebar_state.active_stand = None;
+    }
+
+    // 2. Session persistence
+    session_state.active_lane_address = Some(address.to_string());
+    session_state.save();
+
+    // 3. Notification reset (同 lane click 連打でも badge を消す)
+    sidebar_state.unread_notifications.remove(address);
+    sidebar_state.awaiting_input.remove(address);
+
+    // 4-5. UI push
+    push_sidebar_state(webview, sidebar_state);
+    if view_changed {
+        push_active_view(webview, sidebar_state);
+    }
+
+    // 6. Dead lane respawn
+    if view_changed {
+        maybe_respawn_dead_lane(
+            address,
+            sidebar_state,
+            lane_respawn_triggered,
+            rt_handle,
+            respawn_proxy,
+        );
     }
 }
 
@@ -851,8 +905,12 @@ fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
 struct SidebarIpcOutcome {
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     changed: bool,
-    /// active Lane が変わったか (true なら push_active_view を呼ぶ)
+    /// active Lane/Stand が変わったか (true なら push_active_view を呼ぶ)。
+    /// Lane 選択の場合は `activate_lane` を使うこと（こちらは Stand 選択・Lane 削除用）。
     active_changed: bool,
+    /// Lane activation 要求 — caller が `activate_lane()` を呼ぶ。
+    /// `active_changed` とは排他（こちらが Some なら active_changed は不要）。
+    activate_lane: Option<String>,
     /// SP auto-spawn が必要な project (= 「Current」 になった dead な project)。
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
     /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
@@ -881,6 +939,10 @@ struct SidebarIpcOutcome {
     /// caller が SP を stop してから `/api/world/projects/remove` を呼ぶ。
     /// `project_name` は stop 用、 `project_path` は remove 用 (registry key)。
     delete_project_request: Option<(String, String)>,
+    /// Phase 1 (doc 24): project 並び替えを daemon に永続化する要求 (path の順序列)。
+    /// caller が `client.reorder_projects` を呼び、成功後に re-fetch → `ProjectsLoaded` で
+    /// canonical 順を反映する。これで sidebar の D&D が daemon `project_order` に一本化される。
+    reorder_request: Option<Vec<String>>,
     /// Phase 5-D fix: SP auto-spawn dedup HashSet から path を release する要求。
     /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
     /// dedup deadlock を抜けられるようにする。 caller は `sp_spawn_triggered.remove(path)` を呼ぶ。
@@ -1017,12 +1079,10 @@ fn handle_sidebar_ipc(
             out.active_changed = true;
         }
         IpcEnvelope::LaneSelect(m) => {
-            // Architecture v4: Lane row click → `address` (Display 形 "<project>/conductor") を受信
             if m.address.is_empty() {
                 tracing::warn!("lane:select with empty address: {}", msg);
                 return out;
             }
-            // 念のため: 該当 project の lanes_by_project に address が存在することを確認
             let lanes_exist = state
                 .lanes_by_project
                 .get(m.path.as_str())
@@ -1036,47 +1096,22 @@ fn handle_sidebar_ipc(
                 );
                 return out;
             }
-            if state.active_lane_address.as_deref() != Some(m.address.as_str()) {
-                state.active_lane_address = Some(m.address.clone());
-                tracing::info!("lane:select {} address={}", m.path, m.address);
-                out.changed = true;
-                out.active_changed = true;
-                // session 永続化: vp-app 再起動時に直前 active Lane を復元
-                session.active_lane_address = Some(m.address.clone());
-                session.save();
-            }
-            // Phase 5-D Sprint C P2.1: Lane 切替時に対象 Lane の unread notification を 0 reset。
-            //  user が Lane 開いた = 通知に応答した、 とみなして badge を消す。
-            //  active 切替が無くても reset は走る (= 同 Lane を click 連打しても badge 消えるべき)。
-            if state
-                .unread_notifications
-                .remove(m.address.as_str())
-                .is_some()
-            {
-                out.changed = true;
-            }
-            // awaiting_input も同タイミングで reset (= user が Lane を開いたら入力待ち通知を消す)。
-            if state.awaiting_input.remove(m.address.as_str()).is_some() {
-                out.changed = true;
-            }
-            // Phase 5-A: Lane と Stand は排他なので active_stand を clear
-            if state.active_stand.is_some() {
-                state.active_stand = None;
-                out.changed = true;
-                out.active_changed = true;
-            }
+            tracing::info!("lane:select {} address={}", m.path, m.address);
+            out.activate_lane = Some(m.address.clone());
         }
         IpcEnvelope::ProcessReorder(m) => {
             // Currents セクションを drag-and-drop で並び替えた時の通知。
             // payload: `{"t":"process:reorder","order":["/path/a","/path/b",...]}`。
-            // session_state に保存し、 次回起動時 + 現在の sidebar push に反映。
             tracing::info!("process:reorder: {} entries", m.order.len());
+            // optimistic 反映: session 保存 + SidebarState（次回 push で JS 側 sort に使う）。
+            // changed フラグは立てない (DOM 順は user 操作で既に変わっている、re-push で flash を避ける)。
             session.currents_order = Some(m.order.clone());
             session.save();
-            // SidebarState にも反映 (次回 push で JS 側 sort に使う)
-            state.currents_order = Some(m.order);
-            // changed フラグは立てない (DOM 順は user 操作で既に変わっている、
-            // re-push で flash するのを避ける)。 次回 push 時に新 order が乗る。
+            state.currents_order = Some(m.order.clone());
+            // Phase 1 (doc 24): daemon の project_order にも永続化する。
+            // caller が client.reorder_projects → re-fetch → ProjectsLoaded で canonical を反映し、
+            // sidebar / ROTO / CLI vp projects を 1 つの順序源に揃える。
+            out.reorder_request = Some(m.order);
         }
         IpcEnvelope::ProcessRestart(m) => {
             // Phase 5-C: project name (from p.path → leaf name) を抽出して async restart に投げる。
@@ -1788,6 +1823,11 @@ pub fn run() -> anyhow::Result<()> {
                         pane_state
                     })
                     .collect();
+                // Phase 1 (doc 24): currents_order を daemon の project_order (= fetch 順) の
+                // mirror にする。これで currents_order は独立 SSOT ではなく canonical の派生となり、
+                // JS resolveProjectOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
+                sidebar_state.currents_order =
+                    Some(project_ports.iter().map(|(path, _)| path.clone()).collect());
                 // wiremsg: 各 project の SP の Unison channel を購読する (per-SP 1 本ずつ)。
                 // - Stage 1: "lanes" channel → sidebar Lane ツリー
                 // - Stage 2: "canvas" channel → main area の Paisley Park body
@@ -1965,22 +2005,18 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 if let Some(addr) = first_addr {
                     tracing::info!("auto-select first lane: {}", addr);
-                    sidebar_state.active_lane_address = Some(addr.clone());
-                    push_active_view(&webview, &sidebar_state);
-                    // Phase 2.5: per-Lane instance を main area に表示。
-                    // ensureLane は上のループで呼んだので、 ここでは show のみ。
-                    lane_js::show_lane(&webview, Some(&addr));
-                    // オンデマンド respawn: session 復元/auto-select した lane が Dead なら蘇らせる。
-                    // (起動時に直前 active lane が死んでいた場合に Echoes を自動復活させる)
-                    maybe_respawn_dead_lane(
+                    activate_lane(
                         &addr,
-                        &sidebar_state,
+                        &mut sidebar_state,
+                        &mut session_state,
+                        &webview,
                         &mut lane_respawn_triggered,
                         &rt_handle,
                         &respawn_proxy,
                     );
+                } else {
+                    push_sidebar_state(&webview, &sidebar_state);
                 }
-                push_sidebar_state(&webview, &sidebar_state);
             }
             // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
             // 起動 race で silent drop された ensureLane を再発行する (WebView HTML load 完了
@@ -2057,46 +2093,46 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_project = std::path::Path::new(&process_path)
                     .file_name()
                     .and_then(|s| s.to_str());
-                if active_project.is_some() && active_project == msg_project {
-                    // B1: switch_lane は PP content ではなく active Lane 切替コマンド。
-                    // token → lane address (`<project>/conductor` or `<project>/performer/<name>`)
-                    // に解決し、sidebar click 相当の `setActivePane` を発火する（= frameEngine
-                    // scene + setActiveLaneName + requestPersistedState を既存 wrapper が連鎖実行）。
-                    if message.get("type").and_then(|t| t.as_str()) == Some("switch_lane") {
-                        if let (Some(project), Some(token)) = (
-                            active_project,
-                            message.get("lane").and_then(|l| l.as_str()),
-                        ) {
-                            let address = if token.is_empty() || token == "conductor" {
-                                format!("{}/conductor", project)
-                            } else {
-                                format!("{}/performer/{}", project, token)
-                            };
-                            // JSON 文字列は有効な JS 文字列リテラル（escape 済）
-                            let addr_lit = serde_json::to_string(&address).unwrap_or_default();
+                // B1 + cross-project: switch_lane は PP content ではなく active Lane 切替コマンド。
+                // active を「変える」コマンドなので、active project guard の **外**で処理する
+                // （別 project の SP から来た switch_lane こそ通す）。送信元 SP の project
+                // (= msg_project) の lane を activate し、sidebar / main area を追随させる。
+                if message.get("type").and_then(|t| t.as_str()) == Some("switch_lane") {
+                    if let (Some(project), Some(token)) = (
+                        msg_project,
+                        message.get("lane").and_then(|l| l.as_str()),
+                    ) {
+                        // token → lane address (`<project>/conductor` or `<project>/performer/<name>`)
+                        let address = if token.is_empty() || token == "conductor" {
+                            format!("{}/conductor", project)
+                        } else {
+                            format!("{}/performer/{}", project, token)
+                        };
+                        activate_lane(
+                            &address,
+                            &mut sidebar_state,
+                            &mut session_state,
+                            &webview,
+                            &mut lane_respawn_triggered,
+                            &rt_handle,
+                            &respawn_proxy,
+                        );
+                    }
+                } else if active_project.is_some() && active_project == msg_project {
+                    // PP content (非 switch_lane) は active project の分のみ main area に転送する。
+                    match serde_json::to_string(&message) {
+                        Ok(json) => {
                             let script = format!(
-                                "window.setActivePane && window.setActivePane({{ kind: 'terminal', pane_id: {} }})",
-                                addr_lit
+                                "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                                json
                             );
                             if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!("switch_lane setActivePane 失敗: {}", e);
+                                tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
                             }
+                            // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
                         }
-                    } else {
-                        match serde_json::to_string(&message) {
-                            Ok(json) => {
-                                let script = format!(
-                                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
-                                    json
-                                );
-                                if let Err(e) = webview.evaluate_script(&script) {
-                                    tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
-                                }
-                                // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
-                            }
-                            Err(e) => {
-                                tracing::warn!("CanvasMessage serialize 失敗: {}", e);
-                            }
+                        Err(e) => {
+                            tracing::warn!("CanvasMessage serialize 失敗: {}", e);
                         }
                     }
                 }
@@ -2365,27 +2401,23 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state, &mut session_state);
-                if outcome.changed {
-                    push_sidebar_state(&webview, &sidebar_state);
-                }
-                if outcome.active_changed {
-                    push_active_view(&webview, &sidebar_state);
-                    // Phase 2.5: lane:select は per-Lane instance の display 切替だけ。
-                    // WebSocket は browser native で SP に直接繋がってる (ensure 済)。
-                    lane_js::show_lane(
+                // Lane activation — activate_lane() が全副作用を処理
+                if let Some(addr) = outcome.activate_lane {
+                    activate_lane(
+                        &addr,
+                        &mut sidebar_state,
+                        &mut session_state,
                         &webview,
-                        sidebar_state.active_lane_address.as_deref(),
+                        &mut lane_respawn_triggered,
+                        &rt_handle,
+                        &respawn_proxy,
                     );
-                    // オンデマンド respawn: 選択した lane が Dead (pid:null) なら SP に restart_lane を
-                    // 発火して蘇らせる。 復活後 LanesLoaded で pid あり → ensure_lane → Echoes 表示。
-                    if let Some(addr) = sidebar_state.active_lane_address.clone() {
-                        maybe_respawn_dead_lane(
-                            &addr,
-                            &sidebar_state,
-                            &mut lane_respawn_triggered,
-                            &rt_handle,
-                            &respawn_proxy,
-                        );
+                } else {
+                    if outcome.changed {
+                        push_sidebar_state(&webview, &sidebar_state);
+                    }
+                    if outcome.active_changed {
+                        push_active_view(&webview, &sidebar_state);
                     }
                 }
                 // Architecture v4: dead な project が expand されたら SP を auto-spawn。
@@ -2513,6 +2545,28 @@ pub fn run() -> anyhow::Result<()> {
                                     project_path,
                                     e
                                 );
+                            }
+                        }
+                    });
+                }
+                // Phase 1 (doc 24): project 並び替えを daemon の project_order に永続化する。
+                // restart/stop と同じ「操作 → re-fetch → ProjectsLoaded」パターン。成功後の
+                // ProjectsLoaded で currents_order が canonical 順に reconcile される。
+                if let Some(order) = outcome.reorder_request {
+                    let proxy = async_action_proxy.clone();
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        match client.reorder_projects(order).await {
+                            Ok(()) => {
+                                tracing::info!("reorder_projects OK");
+                                // 完了 → projects 再 fetch → canonical 順で sidebar reconcile。
+                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                    let _ =
+                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("reorder_projects failed: {}", e);
                             }
                         }
                     });

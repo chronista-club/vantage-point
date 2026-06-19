@@ -902,11 +902,17 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     if let Some(ref running_processes) = state.running_processes {
         let running_processes_snapshot = running_processes.clone();
         let process_lifecycle_tx_for_channel = state.process_lifecycle_tx.clone();
+        // cross-project lane view (ROTO `list_all_lanes`) のため lane_registry も capture。
+        let lane_registry_for_channel = state.lane_registry.clone();
+        // sidebar と同じ project 順 (project_order) を引くため world_cap も capture。
+        let world_cap_for_channel = state.world_cap.clone();
         server
             .register_channel("world-process", {
                 move |_ctx, stream| {
                     let running_processes = running_processes_snapshot.clone();
                     let process_lifecycle_tx = process_lifecycle_tx_for_channel.clone();
+                    let lane_registry = lane_registry_for_channel.clone();
+                    let world_cap = world_cap_for_channel.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         loop {
@@ -944,6 +950,71 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             request_id,
                                             "list",
                                             &serde_json::json!({"processes": snapshot}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "list_all_lanes" => {
+                                    // cross-project lane view: running_processes (port/name の SSOT)
+                                    // と lane_registry を join し、project ごとに lanes を束ねて返す。
+                                    // ROTO の cross-project 8-slot LCD が唯一の consumer (現状)。
+                                    //
+                                    // 並び順は sidebar と一致させる (= project_order)。物理 controller は
+                                    // 位置 = 意味なので、track button N の位置が sidebar の N 番目と
+                                    // 対応する必要がある。project_name で order を引く (path 正規化不要)。
+                                    let order: Vec<String> = match world_cap {
+                                        Some(ref w) => w
+                                            .read()
+                                            .await
+                                            .list_projects()
+                                            .await
+                                            .into_iter()
+                                            .map(|p| p.name)
+                                            .collect(),
+                                        None => Vec::new(),
+                                    };
+                                    // ロック順序統一: running_processes → lane_registry (register と同順)。
+                                    let mut entries: Vec<(usize, serde_json::Value)> = Vec::new();
+                                    {
+                                        let procs = running_processes.read().await;
+                                        let lanes_map = match lane_registry {
+                                            Some(ref lr) => Some(lr.read().await),
+                                            None => None,
+                                        };
+                                        for (key, p) in procs.iter() {
+                                            let lanes = lanes_map
+                                                .as_ref()
+                                                .and_then(|m| m.get(key))
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            // project_order 内の位置。未登録は末尾 (usize::MAX)。
+                                            let idx = order
+                                                .iter()
+                                                .position(|n| n == &p.project_name)
+                                                .unwrap_or(usize::MAX);
+                                            entries.push((
+                                                idx,
+                                                serde_json::json!({
+                                                    "project_name": p.project_name,
+                                                    "project_path": p.project_path.to_string_lossy(),
+                                                    "port": p.port,
+                                                    "lanes": lanes,
+                                                }),
+                                            ));
+                                        }
+                                    }
+                                    // project_order 順に整列 (= sidebar 順)。同 idx は安定ソートで維持。
+                                    entries.sort_by_key(|(idx, _)| *idx);
+                                    let projects: Vec<serde_json::Value> =
+                                        entries.into_iter().map(|(_, v)| v).collect();
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "list_all_lanes",
+                                            &serde_json::json!({"projects": projects}),
                                         )
                                         .await
                                         .is_err()

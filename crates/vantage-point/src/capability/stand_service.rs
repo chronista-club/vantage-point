@@ -16,7 +16,7 @@
 //! |--------|-------|--------|
 //! | PR-1 | `Stand` / `Service` trait + `LayerScope` enum 受け皿 + `LaneStand` → `LaneStandHost` rename | 本 PR |
 //! | PR-2 | Stand migrate (`agent` + `protocol`、 observer/consumer pattern 形式化) | 未着手 |
-//! | PR-3 | Service migrate (`notify` + `lane-spawn` + `sp-bootstrap` + `hermit_purple`) | 未着手 |
+//! | PR-3 | Service migrate (`notify` + `lane-spawn` + `sp-bootstrap` + `bastet`) | 未着手 |
 //! | PR-4 | supervisor 統一 (`ActorRegistry` / `SupervisorFactory` 集約) | 未着手 |
 //! | PR-5 | cleanup + guideline docs/spec + paisley_park / gold_experience は将来 PR-γ | 未着手 |
 //!
@@ -49,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 /// actor の lifecycle / address 範囲を表現する layer enum (LSCM 公理: World / Project / Lane)。
 ///
 /// VP の 3 層 architecture (`docs/design/12-stand-architecture.md` LSCM):
-/// - **World**: machine-wide singleton (TheWorld daemon scope、 例: `hermit_purple@world`)
+/// - **World**: machine-wide singleton (TheWorld daemon scope、 例: `bastet@world`)
 /// - **Project**: SP 起動単位 (= 1 Process per project、 例: `agent` / `protocol` / `notify`)
 /// - **Lane**: Project 内 Lane 単位 (= 1 Lane per Stand instance、 例: `paisley_park`)
 ///
@@ -128,18 +128,18 @@ pub trait Stand: Any + Send + Sync + 'static {
 /// - `notify` (= DistributedNotification bridge、 Project scope)
 /// - `lane-spawn` (= Lane spawn lifecycle infra、 Project scope)
 /// - `sp-bootstrap` (= SP startup bootstrap、 Project scope)
-/// - `hermit_purple@world` (= MIDI / external control、 World scope)
+/// - `bastet@world` (= MIDI / external control、 World scope)
 ///
 /// `Stand` 同様 `Any` super-trait で downcast 支援、 lifecycle method は PR-3 で各 Service の
 /// 現実に合わせて追加する。
 pub trait Service: Any + Send + Sync + 'static {
-    /// service 名 (例: `"notify"` / `"hermit_purple"`)。 mailbox address の actor 部分と一致する。
+    /// service 名 (例: `"notify"` / `"bastet"`)。 mailbox address の actor 部分と一致する。
     ///
     /// `Stand::actor_name()` と同じ命名規約 (= 既存 `Capability::name()` 衝突回避、 PR-2 で
     /// rename された後)。
     fn actor_name(&self) -> &str;
 
-    /// service の lifecycle / address scope。 多くは `Project`、 `hermit_purple` のみ `World`。
+    /// service の lifecycle / address scope。 多くは `Project`、 `bastet` のみ `World`。
     fn layer_scope(&self) -> LayerScope;
 
     /// `&dyn Any` への型強制 (downcast 用)。
@@ -152,7 +152,7 @@ pub trait Service: Any + Send + Sync + 'static {
 /// - `NotificationActor` (= `notify` mailbox の Notification msg 処理)
 /// - `LaneSpawnActor` (= `lane-spawn` mailbox の `LaneCmd::SpawnLane` 処理)
 ///
-/// 一方、 `MidiCapability` (= Hermit Purple 🍇) のような「**instance hold + 内部 `monitor_task`
+/// 一方、 `MidiCapability` (= Bastet 🧲) のような「**instance hold + 内部 `monitor_task`
 /// field**」 pattern の Service は本 trait を impl **しない** (= consume pattern に fit しない、
 /// `WorldCapabilities.midi` で instance を保持する必要があるため)。 MIDI の正しい abstraction
 /// は dynamic routing vision 確定後に再設計 (= design-spark `mem_1CavFi5D1aMSpEkas89SvQ` 参照)。
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn service_supports_downcast_via_any() {
         let boxed: Box<dyn Service> = Box::new(FixtureService {
-            name: "hermit_purple",
+            name: "bastet",
             scope: LayerScope::World,
         });
         let downcast = boxed.as_any().downcast_ref::<FixtureService>();
@@ -298,7 +298,7 @@ mod tests {
                 scope: LayerScope::Project,
             }),
             Box::new(FixtureStand {
-                name: "hermit_purple",
+                name: "bastet",
                 scope: LayerScope::World,
             }),
         ];
@@ -306,7 +306,7 @@ mod tests {
 
         // name が distinct で取り出せる
         let names: Vec<&str> = stands.iter().map(|s| s.actor_name()).collect();
-        assert_eq!(names, vec!["agent", "protocol", "hermit_purple"]);
+        assert_eq!(names, vec!["agent", "protocol", "bastet"]);
 
         // layer_scope で filter できる (= PR-4 supervisor が scope 別に dispatch する pattern)
         let project_count = stands
@@ -337,7 +337,7 @@ mod tests {
                 scope: LayerScope::Project,
             }),
             Box::new(FixtureService {
-                name: "hermit_purple",
+                name: "bastet",
                 scope: LayerScope::World,
             }),
         ];
@@ -345,7 +345,7 @@ mod tests {
 
         // actor_name が distinct で取り出せる (= sp-bootstrap は actor じゃないので含めない)
         let names: Vec<&str> = services.iter().map(|s| s.actor_name()).collect();
-        assert_eq!(names, vec!["notify", "lane-spawn", "hermit_purple"]);
+        assert_eq!(names, vec!["notify", "lane-spawn", "bastet"]);
 
         // layer_scope で filter できる (= PR-4 supervisor が scope 別に dispatch する pattern)
         let project_count = services
@@ -360,9 +360,6 @@ mod tests {
             project_count, 2,
             "Project scope の Service は 2 個 (= notify + lane-spawn)"
         );
-        assert_eq!(
-            world_count, 1,
-            "World scope の Service は 1 個 (= hermit_purple)"
-        );
+        assert_eq!(world_count, 1, "World scope の Service は 1 個 (= bastet)");
     }
 }

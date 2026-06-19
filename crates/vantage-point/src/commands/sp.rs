@@ -210,7 +210,7 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
                         "echoes" => "💬 Echoes",
                         "paisley_park" => "🧭 Paisley Park (PP)",
                         "gold_experience" => "🌿 Gold Experience (GE)",
-                        "hermit_purple" => "🍇 Hermit Purple (HP)",
+                        "bastet" => "🧲 Bastet (BS)",
                         _ => name.as_str(),
                     };
                     let status_icon = match status {

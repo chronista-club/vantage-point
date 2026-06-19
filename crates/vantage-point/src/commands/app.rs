@@ -32,26 +32,16 @@ pub fn execute(cmd: AppCommands) -> Result<()> {
 /// (`setsid` 相当) で child を新しい process group に分離 ── parent shell が
 /// SIGHUP / exit しても child は生存し続ける (D12: daemon lifecycle 独立性)。
 fn start() -> Result<()> {
-    // cwd を起点に開く。 projects.kdl を sync (起点 dir 登録 + ghost 除去) し、
-    // GUI 起動前にサイドバーへ最低 1 件出す (空サイドバーだと project を開く手段が
-    // 無く詰むため)。
-    if let Ok(cwd) = std::env::current_dir() {
-        // PR-D: 起点登録 + ghost 除去を daemon (db/world 真実源) 経由で。 daemon 不在は kdl フォールバック。
-        let cwd_str = cwd.to_string_lossy().to_string();
-        let outcome = match crate::world_client::notify_world_sync(Some(&cwd_str)) {
-            Some(o) => Ok(o),
-            None => crate::projects_file::ProjectsFile::sync(Some(&cwd)),
-        };
-        match outcome {
-            Ok(outcome) => {
-                if let Some(name) = &outcome.added {
-                    println!("📁 project を登録しました: {name}");
-                }
-                for name in &outcome.removed {
-                    println!("🧹 ghost project を除去: {name}");
-                }
-            }
-            Err(e) => eprintln!("⚠️  projects の sync に失敗 (起動は続行): {e}"),
+    // ghost project の除去のみ実行（cwd の自動登録はしない）。
+    // 以前は cwd を project として自動登録していたが、~/等の意図しないディレクトリが
+    // 登録されてしまう問題があったため、sync は登録なし(None)で呼ぶ。
+    let outcome = match crate::world_client::notify_world_sync(None) {
+        Some(o) => Ok(o),
+        None => crate::projects_file::ProjectsFile::sync(None),
+    };
+    if let Ok(outcome) = outcome {
+        for name in &outcome.removed {
+            println!("🧹 ghost project を除去: {name}");
         }
     }
 
