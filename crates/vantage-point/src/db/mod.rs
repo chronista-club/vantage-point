@@ -254,6 +254,114 @@ impl VpDb {
         Ok(())
     }
 
+    // =========================================================================
+    // Lane descriptor (doc 24 §10 Phase 2: LanePool authority 反転 SP→daemon)。
+    // SP push の cache だった lane_registry を daemon-canonical な durable truth に。
+    // SP disconnect では drop せず、 daemon 再起動は db から re-animate する (§3.3 / §4.1)。
+    // =========================================================================
+
+    /// 1 lane descriptor を upsert する (SP の Diff::Add / Diff::Update 反映)。
+    ///
+    /// (project_path, address) 複合 key で一意。 ON DUPLICATE の composite 挙動に依存せず、
+    /// DELETE→CREATE を 1 query (= 中間状態を他読みに晒さない) で行う。 info は LaneInfo を
+    /// 丸ごと JSON object 化して持つ (descriptor truth)。
+    pub async fn upsert_lane(
+        &self,
+        project_path: &str,
+        lane: &crate::process::lanes_state::LaneInfo,
+    ) -> Result<()> {
+        let address = lane.address.to_string();
+        let descriptor = serde_json::to_value(lane)
+            .map_err(|e| anyhow::anyhow!("lane descriptor serialize 失敗: {}", e))?;
+        self.db
+            .query(
+                "DELETE lane WHERE project_path = $p AND address = $a;
+                 CREATE lane CONTENT {
+                    project_path: $p,
+                    address: $a,
+                    descriptor: $descriptor,
+                    updated_at: time::now()
+                 }",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("a", address))
+            .bind(("descriptor", descriptor))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 1 lane descriptor を削除する (SP の Diff::Remove 反映 / 単一 lane の destroy)。
+    pub async fn delete_lane(&self, project_path: &str, address: &str) -> Result<()> {
+        self.db
+            .query("DELETE lane WHERE project_path = $p AND address = $a")
+            .bind(("p", project_path.to_string()))
+            .bind(("a", address.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane 削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 1 project の lane descriptor を全削除する (project remove 時の回収、 §4.6 含有=所有=寿命)。
+    pub async fn delete_lanes_for_project(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE lane WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("project lane 全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("project lane 全削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 1 project の lane descriptor を snapshot で全置換する (SP register snapshot 反映)。
+    ///
+    /// snapshot は「その時点の SP の全 lane」なので、 既存を消してから入れ直す project 単位
+    /// replace 型 (active_lane の高頻度 1 行 upsert と違い、 lane は集合なので全置換が自然)。
+    pub async fn replace_lanes_for_project(
+        &self,
+        project_path: &str,
+        lanes: &[crate::process::lanes_state::LaneInfo],
+    ) -> Result<()> {
+        self.delete_lanes_for_project(project_path).await?;
+        for lane in lanes {
+            self.upsert_lane(project_path, lane).await?;
+        }
+        Ok(())
+    }
+
+    /// 全 lane descriptor を (project_path, LaneInfo) で返す (boot 時の load 用)。
+    ///
+    /// list_processes と同じく serde_json::Value で受け、 info object を LaneInfo に
+    /// deserialize する。 壊れた行は warn して skip (boot を止めない、 §4.6 ゆるやか統治)。
+    pub async fn list_lanes(&self) -> Result<Vec<(String, crate::process::lanes_state::LaneInfo)>> {
+        let mut result = self
+            .db
+            .query("SELECT project_path, descriptor FROM lane")
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for v in rows {
+            let Some(path) = v.get("project_path").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let Some(desc_val) = v.get("descriptor") else {
+                continue;
+            };
+            match serde_json::from_value::<crate::process::lanes_state::LaneInfo>(desc_val.clone())
+            {
+                Ok(info) => out.push((path.to_string(), info)),
+                Err(e) => tracing::warn!("lane descriptor deserialize 失敗 (skip): {}", e),
+            }
+        }
+        Ok(out)
+    }
+
     /// 全プロセスを削除（TheWorld 再起動時のクリーンアップ用）
     pub async fn clear_all_processes(&self) -> Result<()> {
         self.db
@@ -651,6 +759,22 @@ DEFINE FIELD IF NOT EXISTS lane_address ON active_lane TYPE string;
 DEFINE FIELD IF NOT EXISTS updated_at ON active_lane TYPE datetime;
 DEFINE INDEX IF NOT EXISTS idx_active_lane_path ON active_lane COLUMNS project_path UNIQUE;
 
+-- lane descriptor (doc 24 §10 Phase 2: LanePool authority を SP→daemon に反転)。
+-- 旧来 lane_registry は「SP push の in-memory cache、 SP disconnect で全 drop」だったが、
+-- これを daemon-canonical な **durable truth** にする。 SP が落ちても descriptor は残り
+-- (§4.1 app quit = 喪失ゼロ)、 daemon 再起動は db から re-animate する (§3.3)。
+--   descriptor = LaneInfo を丸ごと持つ FLEXIBLE object (descriptor truth、 pane_contents.stack 前例)。
+--     (列名 `info` は SurrealQL 予約語 `INFO` と衝突するため `descriptor` を使う)
+--   key       = (project_path, address) 複合 UNIQUE (1 project 内で lane address は一意)。
+-- §4.6 durability tier: descriptor は堅く durable / live 値 (pid/state) は projection なので
+-- boot-load 値が stale でも SP reconnect の snapshot が上書きする (= 正直な tier 分け)。
+DEFINE TABLE IF NOT EXISTS lane SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON lane TYPE string;
+DEFINE FIELD IF NOT EXISTS address ON lane TYPE string;
+DEFINE FIELD IF NOT EXISTS descriptor ON lane TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS updated_at ON lane TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_lane_addr ON lane COLUMNS project_path, address UNIQUE;
+
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
 -- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
@@ -896,6 +1020,116 @@ mod tests {
         // 不在 project の削除は no-op (冪等)
         db.delete_active_lane("/repos/absent").await.unwrap();
         assert_eq!(db.list_active_lanes().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_lane_upsert_list_and_delete() {
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        // doc 24 §10 Phase 2: lane descriptor の daemon-canonical durable round-trip。
+        let db = make_test_db().await;
+
+        // 初期は空
+        assert!(db.list_lanes().await.unwrap().is_empty());
+
+        // テスト用 LaneInfo builder (live 値 pid は埋めるが、 検証は descriptor 中心)。
+        let mk = |project: &str, kind: LaneKind, name: Option<&str>| {
+            let address = match kind {
+                LaneKind::Conductor => LaneAddress::conductor(project),
+                LaneKind::Performer => LaneAddress::performer(project, name.unwrap()),
+            };
+            LaneInfo {
+                id: Default::default(),
+                address,
+                kind,
+                name: name.map(|s| s.to_string()),
+                state: LaneState::Running,
+                stand: "echoes".to_string(),
+                created_at: "2026-06-20T00:00:00Z".to_string(),
+                pid: Some(1234),
+                cwd: "/tmp".to_string(),
+                performer_status: None,
+                cc_session_id: None,
+                tmux: Vec::new(),
+            }
+        };
+
+        // 2 project に lane を入れる
+        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Conductor, None))
+            .await
+            .unwrap();
+        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Performer, Some("foo")))
+            .await
+            .unwrap();
+        db.upsert_lane("/repos/nexus", &mk("nexus", LaneKind::Conductor, None))
+            .await
+            .unwrap();
+
+        let rows = db.list_lanes().await.unwrap();
+        assert_eq!(rows.len(), 3, "3 lane descriptor が round-trip する");
+
+        // descriptor が round-trip する (address / stand)
+        let vp_conductor = rows
+            .iter()
+            .find(|(p, l)| p == "/repos/vp" && l.kind == LaneKind::Conductor)
+            .expect("vp conductor が読める");
+        assert_eq!(vp_conductor.1.address.to_string(), "vp/conductor");
+        assert_eq!(vp_conductor.1.stand, "echoes");
+
+        // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
+        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Conductor, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.list_lanes().await.unwrap().len(),
+            3,
+            "同 address の upsert は置換"
+        );
+
+        // 単一 lane の削除 (Diff::Remove)
+        db.delete_lane("/repos/vp", "vp/performer/foo")
+            .await
+            .unwrap();
+        let rows = db.list_lanes().await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            !rows
+                .iter()
+                .any(|(_, l)| l.address.to_string() == "vp/performer/foo"),
+            "削除した lane は消える"
+        );
+
+        // snapshot 全置換 (register snapshot): /repos/vp を performer 2 つに置換
+        db.replace_lanes_for_project(
+            "/repos/vp",
+            &[
+                mk("vp", LaneKind::Performer, Some("a")),
+                mk("vp", LaneKind::Performer, Some("b")),
+            ],
+        )
+        .await
+        .unwrap();
+        let vp_lanes: Vec<_> = db
+            .list_lanes()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|(p, _)| p == "/repos/vp")
+            .collect();
+        assert_eq!(
+            vp_lanes.len(),
+            2,
+            "snapshot で /repos/vp は 2 lane に全置換"
+        );
+        assert!(
+            vp_lanes.iter().all(|(_, l)| l.kind == LaneKind::Performer),
+            "snapshot 後は conductor が消え performer のみ"
+        );
+
+        // §4.6 含有=所有=寿命: project remove 時の回収 (delete_lanes_for_project)。
+        db.delete_lanes_for_project("/repos/vp").await.unwrap();
+        let rows = db.list_lanes().await.unwrap();
+        assert_eq!(rows.len(), 1, "削除した project の lane は消える");
+        assert_eq!(rows[0].0, "/repos/nexus", "他 project は残る");
     }
 
     // VP-188: Projects CRUD テストは撤去 (= projects は projects.kdl に移行、
