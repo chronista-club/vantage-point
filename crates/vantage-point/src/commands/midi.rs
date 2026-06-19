@@ -1038,7 +1038,11 @@ fn roto_project_slots(
     let mut last_batch = Vec::new();
     for i in 0..8u8 {
         let (name, color) = if let Some((label, active)) = slots.get(i as usize) {
-            let c = if *active { color_active } else { color_inactive };
+            let c = if *active {
+                color_active
+            } else {
+                color_inactive
+            };
             (label.as_str(), c)
         } else {
             ("", crate::device_profile::Rgb::new(0, 0, 0))

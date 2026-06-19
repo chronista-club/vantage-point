@@ -270,7 +270,10 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         #[cfg(feature = "midi")]
         {
             let mut map = std::collections::HashMap::new();
-            if let Some(bastet) = state.world_capabilities.as_ref().and_then(|wc| wc.bastet.as_ref())
+            if let Some(bastet) = state
+                .world_capabilities
+                .as_ref()
+                .and_then(|wc| wc.bastet.as_ref())
             {
                 let b = bastet.read().await;
                 let count = b.device_count().await;
@@ -289,7 +292,9 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             if map.is_empty() { None } else { Some(map) }
         }
         #[cfg(not(feature = "midi"))]
-        { None }
+        {
+            None
+        }
     };
 
     Json(HealthResponse {
