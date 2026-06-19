@@ -34,6 +34,51 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Lane の位置独立な安定 id (I1、 doc 24 §7 / §10 Phase 2)。
+///
+/// path / port / PID に依存しない不変 handle。Lane の cwd が動こうと project が
+/// rename されようと、 この id は変わらない (= 発端バグの path=identity を断つ種)。
+///
+/// **strangler 注意**: 現状この id は **pool key には使わない** (operative key は
+/// [`LaneAddress`])。「id を持つが id で引かない」中間状態 — 後続 increment で徐々に
+/// id へ寄せる土台。生成・永続は [`crate::lane::lane_id`]。
+///
+/// **format は意図的に opaque** (doc §12-E: format / 採番 / 衝突解決は連邦時 = Phase 3
+/// まで決め打ちしない)。現状 UUID v7 (時刻順 sortable) で生成するが、 呼び手は中身に
+/// 依存しないこと。serde は `transparent` で素の文字列として乗る (人にも読める wire)。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LaneId(String);
+
+impl LaneId {
+    /// 新規 id を生成する (現状 UUID v7、 format は opaque)。
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::now_v7().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// 空 id (legacy wire payload を `#[serde(default)]` で受けた時の値) 判定。
+    /// `skip_serializing_if` と組で「空なら wire から省略」= 古 client と完全互換。
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<String> for LaneId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl fmt::Display for LaneId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Lane の種別 (memory rule: HD/TH を起動する Lane だけ)
 ///
 /// **互換注意 (conductor/performer rename 2026-06-07)**: serde は新名 `"conductor"`/
@@ -300,6 +345,12 @@ impl TmuxLaneAddress {
 /// Lane の info (REST response 用 + 内部 registry の値)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneInfo {
+    /// I1 (doc 24 §7): 位置独立な安定 id。生成・永続は [`crate::lane::lane_id`]。
+    /// **まだ pool key には使わない** (operative key は `address`)。strangler の種。
+    /// 旧 wire payload (id 欄なし) は `#[serde(default)]` で空 [`LaneId`] になり、
+    /// `skip_serializing_if` で再び省略される (= 古 client と完全互換)。
+    #[serde(default, skip_serializing_if = "LaneId::is_empty")]
+    pub id: LaneId,
     pub address: LaneAddress,
     pub kind: LaneKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -425,6 +476,8 @@ impl LanePool {
         };
 
         let info = LaneInfo {
+            // I1: conductor の安定 id を address (project, "conductor") で load_or_create
+            id: crate::lane::lane_id::load_or_create(&project_id, "conductor"),
             address: addr.clone(),
             kind: LaneKind::Conductor,
             name: None,
@@ -913,6 +966,7 @@ mod tests {
     fn lane_info_tmux_field_empty_vec_serde_omitted() {
         // tmux が空 Vec なら skip_serializing_if で wire 形式から省略 → 古 client と互換
         let info = LaneInfo {
+            id: Default::default(),
             address: LaneAddress::conductor("vp"),
             kind: LaneKind::Conductor,
             name: None,
@@ -938,6 +992,7 @@ mod tests {
         // Phase 1a multi-stand 設計: 1 Lane が 複数 Stand 並立 (HD + TH) で
         // 複数 tmux session を持つケースを serde round-trip で検証
         let original = LaneInfo {
+            id: Default::default(),
             address: LaneAddress::conductor("vp"),
             kind: LaneKind::Conductor,
             name: None,
@@ -978,6 +1033,7 @@ mod tests {
     fn lane_diff_add_serde_round_trip() {
         // Diff::Add { payload: LaneInfo } の wire 形式 + decode
         let info = LaneInfo {
+            id: Default::default(),
             address: LaneAddress::performer("vp", "sub"),
             kind: LaneKind::Performer,
             name: Some("sub".to_string()),
@@ -1033,6 +1089,7 @@ mod tests {
         // {"scope": "lane", "kind": "add", "payload": {...}} のように
         // outer scope tag + inner Diff tag が同 level に flatten される。
         let info = LaneInfo {
+            id: Default::default(),
             address: LaneAddress::conductor("vp"),
             kind: LaneKind::Conductor,
             name: None,

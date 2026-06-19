@@ -342,7 +342,10 @@ pub async fn create_handler(
         }
     };
 
+    // I1: performer の安定 id を address (project, name) で load_or_create
+    let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &req.name);
     let info = LaneInfo {
+        id: lane_id,
         address: addr.clone(),
         kind: LaneKind::Performer,
         name: Some(req.name.clone()),
