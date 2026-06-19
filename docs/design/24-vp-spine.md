@@ -6,7 +6,7 @@
 > - **v1**（2026-06-19 午前）: 三層（World / SP-session-tier / Views）/ state は 2 箇所。
 > - **v2**（2026-06-19 午後 ← 本版）: **三段ライフサイクル**（daemon 不死 / app(SP) 常駐 / window ephemeral）。
 >   presence = **daemon-canonical command**（Model Q、§4.2; メンタルモデル「app まとめる / 対峙」とは別レイヤー）。
->   namespace = backing-kind / role = relational / 連邦の芽（I1–I5）。v1 の「SP=薄い session tier」「state 2 箇所」は本版が更新。
+>   namespace = backing-kind / role = relational / 連邦の芽（I1–I5）/ daemon 堅牢化 = reconciliation-first（庭師モデル、§4.6）。v1 の「SP=薄い session tier」「state 2 箇所」は本版が更新。
 > **系譜**: 「VP Lane Registry 統合 Backbone 設計」(2026-04-23) / 「Lane Lifecycle Architecture」(2026-05-06, VP-129)。
 > **関連 doc**: [12](12-stand-architecture.md)（Stand）/ [17](17-port-stability-and-msgbox-isolation.md)（port）/ [19](19-canvas-stack-model.md)（PP Canvas）/ [23](23-bastet-justice-stand-wiring.md)（Bastet/Justice）
 
@@ -179,6 +179,43 @@ v1 は「GUI 内蔵だと ROTO CLI（別プロセス）が通せない」ので 
 - **daemon は headless で回る**（app を閉じても truth/presence/hot lane は生存）。
 - **将来 N presence が 1 World、さらに N World が peering**（§7）へ素直に伸びる。
 
+### 4.6 daemon 堅牢化 — reconciliation-first（庭師モデル）
+
+Model Q で複雑さを daemon に集約した（§12-B）。その堅牢性は **「完全な状態維持」ではなく「ゆるやかな収束」** で担保する。daemon は state を厳密に enforce する transaction monitor ではなく、truth へ向けて世話をして収束させる **庭師**。
+
+**なぜ reconciliation-first が唯一の道か**: external resource（worktree / tmux / agent process）は **DB transaction の外**（`git worktree add` も `tmux new-session` も `claude --resume` も OS 操作）。「store と外界を同一 txn で atomic に」は原理的に不可能 → crash-safety は **desired-state(store) と actual-state(OS) を reconcile して heal** するしかない。VP は既にこの grain を持つ（health_monitor / FSEvents lane_watcher）。§12-B はそれを **durable な desired-state の上で boot 保証付きに鍛える**。
+
+**統治原理（ゆるやか・柔軟）**: 完全保存を追わず、catastrophic loss だけ防ぐ。heal は寛容（adopt / keep / retry-then-degrade）。「ゆるやか」は妥協ではなく **ACID 不可な現実に正直**であること——単一ユーザー dev tool の VP にはそれが美徳（厳密保存を *演じる* と、不可能と戦って複雑さだけ膨らむ＝§12-A で機構を足そうとした罠）。
+
+**lifecycle state machine（durable）＝ 軽量 WAL**: `provisioning` / `ready` / `destroying` / `dead` を store に durable 記録。中間状態が「何が in-flight か」を語る = 別 WAL ファイル不要。**intent-first bracket** で external を挟む:
+
+```
+create:  txn{descriptor + provisioning} → external{ground provision}    → txn{ready}
+destroy: txn{destroying}                → external{ground+tmux reclaim} → txn{remove}
+```
+
+external 操作は **idempotent**（再実行安全）にして crash 後 retry 可能に。intent を先に durable 記録するから、倒れても reconcile が「作りかけ / 壊しかけ」を判別して完了 or rollback できる（external-first だと orphan を heuristic で当てるしかない）。
+
+**boot reconcile — desired × actual の heal**（boot で必ず 1 周 ＋ continuous）:
+
+| store state | actual ground | heal |
+|---|---|---|
+| `provisioning` | 在る | ready に完了 |
+| `provisioning` | 無い | retry 1 回 → 失敗で `dead` |
+| `ready` | 在る | ok（agent は触れるまで cold） |
+| `ready` | 外部で消えた | `dead`（user の rm を尊重、勝手に作り直さない） |
+| `destroying` | 在る | reclaim 完了 → descriptor 削除 |
+| `destroying` | 無い | descriptor 削除（reclaim 済） |
+| descriptor 無し | orphan dir 在る | **adopt**（descriptor 復元、VP の FSEvents grain） |
+| `dead` | 任意 | 保持（inspection / `--resume` 可、ground は当面残す） |
+
+**txn / 衛生 / durability tier**:
+- transaction は **store 内 multi-write のみ**（`replace_all_projects` の DELETE→import を atomic に等）。external を跨ぐ部分は txn 不可 → reconcile が担う（役割分担）。
+- Whitesnake は **temp+rename+fsync** で atomic write（現状の直書きは truncation リスク）。
+- durability tier: **truth(descriptor) / wire = 堅く durable** ／ **presence(order/active) = tail-loss 許容**（crash で直前 reorder を失うのは可）／ **live process(agent/PTY) = projection で再構成**（cold=`--resume` / hot=detached tmux 再 discover）。
+
+> §12-B（daemon = god-object / SPOF）の代償は受容。緩和は本節の crash-recovery——「倒れても綺麗に re-animate する庭」。これは「永続が所有する」の crash 版。
+
 ---
 
 ## 5. namespace = backing-kind ＋ 実行 ground
@@ -340,15 +377,15 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
 | # | 弱点 | severity | stance |
 |---|------|----------|--------|
 | **A** | ~~「2 storage / 1 writer」の遷移 race~~ → **解決（2026-06-19）**。presence を **daemon-canonical command（Model Q、§4.2）** に寄せ、app が authoritative state を持たない構造にした → snapshot 喪失 / split-brain / sync cadence が **構造的に発生しない**（失う物・lease する物・sync する物が無い） | ✅ | **解決＋実装最小**: lease/sync/snapshot は不要。残るは **daemon の transactional 永続（§12-B と共有）＋ daemon 再起動中の command 再接続** のみ |
-| **B** | **daemon が god-object ＝ SPOF**。SP の fault 隔離（1 project 落ちても他は生存）を simplicity と引き換えに捨てた。**VP-on-VP dogfood では daemon crash が開発環境ごと落とす**。書き込み途中 crash で単一 store 破損 risk | 🔴 | **accept ＋ 緩和必須**: transactional persistence ＋ crash recovery。隔離を捨てた事実を明記して持つ |
+| **B** | **daemon が god-object ＝ SPOF**。SP の fault 隔離を simplicity と引き換えに捨てた。Model Q で A/G も daemon に寄せた分、一層 load-bearing。**VP-on-VP dogfood では daemon crash が開発環境ごと落とす** | 🟠 | **設計確定（§4.6、reconciliation-first / 庭師モデル）**: durable desired-state ＋ heal-to-truth ＋ intent-first lifecycle（軽量 WAL）＋ atomic write。SPOF は受容、緩和＝「倒れても綺麗に re-animate」。実装は Phase 2-3 |
 | **C** | ~~presence の過剰統一~~ → **解決（2026-06-19）**。presence は一枚岩でなく intent で三段に正配置: order→World / active lane→SP / focus・surface target→surface（§4.2）。発端バグは order の誤配置で、focus を surface に置くのは正配置＝同じバグにならない | ✅ | **解決＋最小実装**: 三段への正配置。presence は未知数が大きいので **当面 active lane は SP 単一の最小実装**。surface target / follow/pin（身体性 vision 用）は dogfood 後の将来 option（surface tier があるので後付けは extension） |
 | **D** | **backing-kind「open registry」の "open" が複雑さの本体**。各 kind が provision/reclaim/teardown/再起動復元/連邦 projection を別々に要し、統一 interface が leaky になりうる。**backing 進化（scratch→git）は cwd/PTY/tmux/agent の mid-flight migration**＝クリーンに動くことが稀 | 🟠 | **accept（segment）**: Phase 2 は git＋scratch の 2 kind に絞る。in-place 昇格は約束しない（scratch を捨てて git lane を新規、で代替しうる） |
 | **E** | **I1/I2 を植えるが 1 World では検証できない**。local では規律が空回り。Phase 3 で多 World 制約（id 衝突・remote ref 形式・projection 整合）が出た時、植えた id 体系が間違っていた可能性。「今安い」は *正しいものを植えれば* の話 | 🟠 | **縮小 accept**: I2（規律）は植える。**I1 は「id 欄を持つ」に留め、id の体系（format/採番/衝突解決）は Phase 3 まで決め打ちしない** |
 | **F** | **「agent = projection」は Claude CLI `--resume` への外部依存**。in-flight turn を失う / CLI version 間で session 形式が変わりうる / Claude のローカル storage 次第。四本柱の一つが VP の所有しない挙動に load-bearing | 🟡 | **accept（不可避）＋ 監視**: cc_session_id を VP 側でも保持（既存）で最低限の自衛。根の依存は消えない事実として持つ |
 | **G** | ~~ROTO は app quit で死ぬ~~ → **緩和（2026-06-19）**。presence が daemon-canonical（Model Q）になり、ROTO は **daemon の presence を共有** → app quit でも presence の読取/操作が生きる（ambient 身体性が自然に出る） | ✅ | **緩和**: 残るは「app quit 中の agent I/O relay（render 経路）」だけ app 依存。status/presence は daemon 直で常時可 |
 
-**メタ的弱点**: 設計が数十分で揃った体験は、*検証されたから揃った* のか *揃えたいから揃えた* のか区別がつきにくい。C はその典型。**「美しい」と感じた瞬間こそ最も疑うべき**。dogfood で最初に裏切るのは、おそらく C か A。
+**メタ的弱点**: 設計が速く揃った体験は、*検証されたから揃った* のか *揃えたいから揃えた* のか区別がつきにくい。**「美しい」と感じた瞬間こそ最も疑うべき**。A/C/G は解決し B は設計確定したが、dogfood で最初に裏切るのは、おそらく **B の実装**（庭師モデルの収束が実機で本当に綺麗か）か **D**（backing-kind の heterogeneity）。
 
-> 骨格は強い。**A・C・G は解決**（A: presence を daemon-canonical command に寄せ race 蒸発 / C: 三段への正配置 / G: ROTO は daemon presence 共有で app-quit でも生存、§4.2）。**残る最重要は B（daemon の堅牢化）**——A/G を daemon に寄せた分、daemon の transactional 永続＋crash recovery が一層 load-bearing（複雑さを一点に集約した代償）。
+> 骨格は強い。**A・C・G 解決、B 設計確定**（A: presence daemon-canonical で race 蒸発 / C: 三段正配置 / G: ROTO は daemon presence 共有 / B: reconciliation-first 庭師モデル §4.6）。残るは **実装**（Phase 2-3）と、dogfood で B の収束品質・D/E/F の緊張を観察すること。
 > **本リデザインの一貫した stance: 未知数の大きい領域（presence・backing-kind 進化・連邦・relational role）は、構造の天井は高く保ちつつ実装は最小に留める**——simple を内包する rich な構造を選び、rich な実装は dogfood の声を聞いてから足す。
 > この §12 は「決定の確信」ではなく「持っておくべき緊張」の記録であり、dogfood の観察で更新される。
