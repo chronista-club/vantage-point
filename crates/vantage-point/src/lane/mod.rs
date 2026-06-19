@@ -19,3 +19,5 @@
 pub mod cc_session;
 pub mod commands;
 pub mod config;
+/// lane 単位の 位置独立 安定 id 永続化 (I1、 doc 24 §7、 address→id を disk に load_or_create)
+pub mod lane_id;

@@ -537,6 +537,7 @@ mod tmux_session_resolve_tests {
     fn running_lane(addr: LaneAddress, stand: &str) -> LaneInfo {
         let session = addr.tmux_session_name(stand);
         LaneInfo {
+            id: Default::default(),
             address: addr.clone(),
             kind: addr.kind,
             name: addr.name.clone(),
