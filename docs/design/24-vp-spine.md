@@ -387,6 +387,7 @@ inbox に届き、home World が受信時 `--resume` で起こす（remote の c
 | **E** | **I1/I2 を植えるが 1 World では検証できない**。local では規律が空回り。Phase 3 で多 World 制約（id 衝突・remote ref 形式・projection 整合）が出た時、植えた id 体系が間違っていた可能性。「今安い」は *正しいものを植えれば* の話 | 🟠 | **縮小 accept**: I2（規律）は植える。**I1 は「id 欄を持つ」に留め、id の体系（format/採番/衝突解決）は Phase 3 まで決め打ちしない** |
 | **F** | **「agent = projection」は Claude CLI `--resume` への外部依存**。in-flight turn を失う / CLI version 間で session 形式が変わりうる / Claude のローカル storage 次第。四本柱の一つが VP の所有しない挙動に load-bearing | 🟡 | **accept（不可避）＋ 監視**: cc_session_id を VP 側でも保持（既存）で最低限の自衛。根の依存は消えない事実として持つ |
 | **G** | ~~ROTO は app quit で死ぬ~~ → **緩和（2026-06-19）**。presence が daemon-canonical（Model Q）になり、ROTO は **daemon の presence を共有** → app quit でも presence の読取/操作が生きる（ambient 身体性が自然に出る） | ✅ | **緩和**: 残るは「app quit 中の agent I/O relay（render 経路）」だけ app 依存。status/presence は daemon 直で常時可 |
+| **H** | **app の active_lane は単一 global、daemon は per-project**（active lane 実装 #565 の非対称）。boot 復元は order 先頭の active を採用するため、multi-project で「project ごとに最後の active」を復元しない | 🟡 | **意図的単純化（2026-06-20、team-b review #1）**: app は単一 active（pane.rs）。daemon は既に per-project 保持なので、app を per-project active に拡張すれば extension で解消（Phase 3） |
 
 **メタ的弱点**: 設計が速く揃った体験は、*検証されたから揃った* のか *揃えたいから揃えた* のか区別がつきにくい。**「美しい」と感じた瞬間こそ最も疑うべき**。A/C/G は解決し B は設計確定したが、dogfood で最初に裏切るのは、おそらく **B の実装**（庭師モデルの収束が実機で本当に綺麗か）か **D**（backing-kind の heterogeneity）。
 
