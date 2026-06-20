@@ -201,13 +201,17 @@ external 操作は **idempotent**（再実行安全）にして crash 後 retry 
 | store state | actual ground | heal |
 |---|---|---|
 | `provisioning` | 在る | ready に完了 |
-| `provisioning` | 無い | retry 1 回 → 失敗で `dead` |
+| `provisioning` | 無い | `dead`（retry×1 は当面入れない — 下記注） |
 | `ready` | 在る | ok（agent は触れるまで cold） |
 | `ready` | 外部で消えた | `dead`（user の rm を尊重、勝手に作り直さない） |
 | `destroying` | 在る | reclaim 完了 → descriptor 削除 |
 | `destroying` | 無い | descriptor 削除（reclaim 済） |
 | descriptor 無し | orphan dir 在る | **adopt**（descriptor 復元、VP の FSEvents grain） |
 | `dead` | 任意 | 保持（inspection / `--resume` 可、ground は当面残す） |
+
+> **`provisioning + 無 → dead`（retry×1 を当面入れない、2026-06-20 決定）**: 表は元々「retry 1 回 → 失敗で dead」だったが、create-side reconcile の retry は見送り、`dead` 直行を正とする（#570 の実装どおり）。理由 — ① provision（`lane::commands::worktree_add_with_retry`）が **lock 競合（唯一の transient 失敗）を内側で 4 回 backoff retry** 済 → reconcile の追加 retry は冗長。② `(provisioning, 無)` に至る残余は branch 衝突 / crash 由来の stale worktree admin entry で **非冪等**（再 provision は git の `already exists` guard に直撃して結局 dead に着地）。retry を正しく効かせるには provision の idempotency 強化（`worktree add` 前の `git worktree prune`）が前提で、これは別スライス。③ dead は非破壊（descriptor 保持・`--resume` 可）＝庭師モデルの「ゆるやか・寛容」に整合。
+>
+> **club-nostos co-evolution（2026-06-20 着地）**: `Outcome/drive_bounded` の第一歩は、新ロジックを足す retry×1 ではなく **既存の `worktree_add_with_retry`（4 回 retry loop）を nostos 語彙へ着替える**形で着地した（成功→`Done` / branch 衝突・その他→`Failed` / lock→`Reborn`、振る舞い不変＝投機でない）。VP は一旦 hand-roll で shape を検証後、**`club-nostos` 0.1.0（crates.io、lib 名 `nostos`、unison と同じ package rename）を dep 化**。sync 表面はこれで proven。async 拡張（destroy-side reclaim の `Bracket`/`drive`）は **upstream club-nostos の 0.2.0** で足して bump する想定（開発は club-nostos repo、release は crates.io）。`derive_default_branch` の `lane::commands` 移動は、retry が要求した branch 復元の動機が消えたため保留（consumer 不在で投機にしない）。
 
 **txn / 衛生 / durability tier**:
 - transaction は **store 内 multi-write のみ**（`replace_all_projects` の DELETE→import を atomic に等）。external を跨ぐ部分は txn 不可 → reconcile が担う（役割分担）。

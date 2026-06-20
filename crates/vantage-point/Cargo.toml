@@ -44,6 +44,9 @@ clap = { workspace = true }
 club-kdl = { workspace = true }
 glob = { workspace = true }
 
+# lifecycle / Outcome / drive primitives (doc 24 §4.6、 worktree add retry が最初の consumer)
+nostos = { workspace = true }
+
 # Error handling
 anyhow = { workspace = true }
 thiserror = { workspace = true }

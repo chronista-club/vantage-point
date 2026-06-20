@@ -51,6 +51,12 @@ tokio-stream = "0.1"
 # minor bump (= backward-compatible)、 workspace 全 member (vp-app/vantage-point) も 1.1.0 に上がる。
 unison = { package = "club-unison", version = "1.1.0" }
 
+# Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
+# `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:
+# まず lane::commands の worktree add retry が sync `Outcome` / `drive_bounded` の最初の consumer
+# (2026-06-20)。 async 拡張 (destroy-side reclaim) は upstream 0.2.0 で足して bump する想定。
+nostos = { package = "club-nostos", version = "0.1" }
+
 # KDL parsing (club-kdl、 旧 unison-kdl。 v0.5.0 で rename + crates.io 移行)
 club-kdl = "0.11"
 
