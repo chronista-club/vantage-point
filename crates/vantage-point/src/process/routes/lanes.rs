@@ -702,7 +702,10 @@ pub async fn restart_handler(
 /// - `sanitized-name` は `sanitize_for_branch` で git ref 制約に合わせる。
 ///
 /// 例: user="Mako", name="sub" → `mako/sub`
-fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
+///
+/// branch 未指定時の create で使う。 doc 24 §10 B-create で daemon 側 create
+/// (`routes/world.rs` の `world_create_lane`) からも sibling 呼びするため `pub(crate)`。
+pub(crate) fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
     let prefix = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)

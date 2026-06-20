@@ -916,8 +916,9 @@ struct SidebarIpcOutcome {
     /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
     sp_spawn_request: Option<(String, String)>,
     /// Phase 3-A: Performer Lane 作成要求 `(project_path, name, branch, stand)`。
-    /// caller が project の SP port を解決して `client.create_performer_lane` を呼ぶ。
-    /// `stand` は doc 11 PR-C で追加 (None なら SP-side default)。
+    /// doc 24 §10 B-create: caller が daemon (:32000) の `create_performer_lane`
+    /// (`POST /api/world/lanes`) を呼ぶ (SP port 解決は不要)。
+    /// `stand` は doc 11 PR-C で追加 (None なら daemon-side default)。
     add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
     /// doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
     /// caller が SP port を解決して `client.list_stands` を呼ぶ → `AppEvent::StandsResult` で push back。
@@ -1040,10 +1041,10 @@ fn handle_sidebar_ipc(
             }
         }
         IpcEnvelope::LaneAddPerformer(m) => {
-            // Phase 3-A: sidebar から Performer Lane 作成要求。 caller (event loop) で
-            // 該当 project の SP port を解決して client.create_performer_lane を呼ぶ。
+            // Phase 3-A: sidebar から Performer Lane 作成要求。 doc 24 §10 B-create:
+            // caller (event loop) が daemon (:32000) の create_performer_lane を呼ぶ。
             // doc 11 PR-C: branch / stand は optional。 空文字は None に畳んで
-            // SP-side default にフォールバックさせる。
+            // daemon-side default にフォールバックさせる。
             let branch = m.branch.filter(|s| !s.is_empty());
             let stand = m.stand.filter(|s| !s.is_empty());
             if !m.path.is_empty() && !m.name.is_empty() {
@@ -2683,71 +2684,63 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // Phase 3-A: Performer Lane 作成要求 (sidebar の + Add Performer から)
-                // doc 11 PR-C: stand 指定 を tuple 4 番目に追加 (None なら SP-side default)
+                // doc 24 §10 Phase 2 B-create: create は daemon-canonical (§5.3 ground は daemon が
+                // provision + descriptor 所有)。 SP port 解決は不要 — daemon (:32000) に投げる。
+                // PtySlot は worktree dir 作成を検知した lane_watcher が SP に依頼して spawn する
+                // (= set_active_lane / reorder と同じ daemon-command パターン)。
+                // doc 11 PR-C: stand 指定 を tuple 4 番目に保持 (None なら daemon-side default)。
                 if let Some((project_path, name, branch, stand)) = outcome.add_performer_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        let proxy = async_action_proxy.clone();
-                        let name_clone = name.clone();
-                        let branch_clone = branch.clone();
-                        let stand_clone = stand.clone();
-                        let path_clone = project_path.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client
-                                .create_performer_lane(
-                                    &name_clone,
-                                    branch_clone.as_deref(),
-                                    stand_clone.as_deref(),
-                                )
-                                .await
-                            {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        "Performer Lane created: project={} name={} branch={:?}",
-                                        path_clone,
-                                        name_clone,
-                                        branch_clone
-                                    );
-                                    // wiremsg Stage 1: 新 Lane は SP の "lanes"
-                                    // topic snapshot で購読側に push される。
-                                    // R5: 成功通知を sidebar に push back (form を閉じる)
-                                    let _ = proxy.send_event(AppEvent::PerformerCreateResult {
-                                        project_path: path_clone,
-                                        name: name_clone,
-                                        error: None,
-                                    });
-                                }
-                                Err(e) => {
-                                    // R5: 失敗通知を sidebar に push back (form 下に
-                                    // inline error 表示)。 server からは
-                                    // "create_performer_lane HTTP <code>: <body>" 形式で
-                                    // 返ってくるので、 そのまま流す (UI 側で trim)。
-                                    let msg = format!("{}", e);
-                                    tracing::warn!(
-                                        "create_performer_lane failed: project={} name={}: {}",
-                                        path_clone,
-                                        name_clone,
-                                        msg
-                                    );
-                                    let _ = proxy.send_event(AppEvent::PerformerCreateResult {
-                                        project_path: path_clone,
-                                        name: name_clone,
-                                        error: Some(msg),
-                                    });
-                                }
+                    let proxy = async_action_proxy.clone();
+                    let name_clone = name.clone();
+                    let branch_clone = branch.clone();
+                    let stand_clone = stand.clone();
+                    let path_clone = project_path.clone();
+                    rt_handle.spawn(async move {
+                        let client = TheWorldClient::new(32000);
+                        match client
+                            .create_performer_lane(
+                                &path_clone,
+                                &name_clone,
+                                branch_clone.as_deref(),
+                                stand_clone.as_deref(),
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                tracing::info!(
+                                    "Performer Lane created (daemon): project={} name={} branch={:?}",
+                                    path_clone,
+                                    name_clone,
+                                    branch_clone
+                                );
+                                // 新 Lane descriptor は daemon-canonical。 PtySlot spawn 後に
+                                // SP の "lanes" topic snapshot で購読側に push される。
+                                // R5: 成功通知を sidebar に push back (form を閉じる)
+                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                    project_path: path_clone,
+                                    name: name_clone,
+                                    error: None,
+                                });
                             }
-                        });
-                    } else {
-                        tracing::warn!(
-                            "lane:add_performer: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                            Err(e) => {
+                                // R5: 失敗通知を sidebar に push back (form 下に inline error 表示)。
+                                // daemon からは "create_performer_lane HTTP <code>: <body>" 形式で
+                                // 返ってくるので、 そのまま流す (UI 側で trim)。
+                                let msg = format!("{}", e);
+                                tracing::warn!(
+                                    "create_performer_lane failed: project={} name={}: {}",
+                                    path_clone,
+                                    name_clone,
+                                    msg
+                                );
+                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                    project_path: path_clone,
+                                    name: name_clone,
+                                    error: Some(msg),
+                                });
+                            }
+                        }
+                    });
                 }
 
                 // doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)
