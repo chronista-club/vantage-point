@@ -20,15 +20,11 @@ use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{ActorRegistry, ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
-use crate::process::topic::TopicPattern;
 use crate::protocol::{Content, DebugMode, ProcessMessage};
 
-/// ペインの最新コンテンツ（Canvas 再接続時の状態復元用）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PaneState {
-    pub content: Content,
-    pub title: Option<String>,
-}
+/// PP の overall canvas layout を pane_contents に畳む際の reserved pane_id。
+/// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
+pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 
 /// Pending user prompt request entry (REQ-PROMPT-001 to REQ-PROMPT-005)
 #[derive(Debug, Clone, Serialize)]
@@ -164,8 +160,6 @@ pub(crate) struct AppState {
     /// R2-b: wire delivery loop の即時 wake (command 着信時に notify)。
     /// World mode でのみ DeliveryActor が待ち受ける。 SP では未使用 (proxy が TheWorld に送るだけ)。
     pub delivery_notify: Arc<tokio::sync::Notify>,
-    /// Whitesnake 🐍 — 汎用永続化レイヤー
-    pub whitesnake: crate::capability::Whitesnake,
     /// Lane Pool (Conductor/Performer registry) — Lane scope の Stand container
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (SP-as-Project-Master 9 component #4)
     pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
@@ -181,7 +175,7 @@ pub(crate) struct AppState {
     /// World 階層 Stand container (LSCM、 PR-α series / VP-109)。
     ///
     /// World mode (`run_world`) でのみ Some、 SP mode (`run`) では None。
-    /// PR-α 完了後も既存 World 階層 field (world / update / whitesnake)
+    /// PR-α 完了後も既存 World 階層 field (world / update)
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
     /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub world_capabilities: Option<Arc<crate::daemon::world_capabilities::WorldCapabilities>>,
@@ -332,126 +326,121 @@ impl AppState {
     }
 
     // =========================================================================
-    // ペイン状態永続化（Whitesnake 🐍 経由）
+    // ペイン状態永続化（pane_contents / SurrealDB 経由、 旧 Whitesnake 退役）
     // =========================================================================
 
-    /// RetainedStore から Paisley Park のペイン状態を Whitesnake に保存
+    /// pane_contents (SurrealDB) から PP pane 状態を RetainedStore に boot 復元する。
     ///
-    /// Whitesnake が DISC として永続化（FileBackend）。
-    /// 旧: SurrealDB + JSON ファイルの二重管理 → Whitesnake に統一。
-    pub async fn persist_pane_contents(&self) {
-        // per-lane PP: lane-scoped topic 化後、`show/#` は全 lane を拾うが DISC key は
-        // `pane/{pane_id}` で lane 非依存なため、複数 lane の同名 pane が衝突上書きする。
-        // Whitesnake DISC は conductor（lead）scope の snapshot に限定する（restore も
-        // conductor 固定で対称）。performer lane の per-lane 永続化は front の SurrealDB
-        // pane_contents（health.rs `/api/pp/state`、lane-scoped）が担う。
-        let pattern = TopicPattern::parse("process/paisley-park/command/show/conductor/#");
-        let retained = self.topic_router.retained();
-        let store = retained.read().await;
-        let matching = store.get_matching(&pattern);
-
-        if matching.is_empty() {
+    /// 旧 Whitesnake DISC 退役 → canonical な pane_contents を直接読む。 webview 自身は
+    /// `/api/pp/state` GET で state を読むが、 retained `show` topic を購読する経路 (MCP show 等)
+    /// のため boot で RetainedStore も埋める (旧挙動保存)。 旧 Whitesnake restore と同じく
+    /// **conductor scope のみ**復元する (performer は webview が lane 切替時に /api/pp/state で読む)。
+    /// reserved な canvas-layout row は pane ではないので除外。
+    pub async fn restore_pane_contents(&self) {
+        let Some(vpdb) = self.vpdb.as_ref() else {
+            return;
+        };
+        let rows = match vpdb.list_pane_contents(&self.project_dir).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("pane_contents 読み出し失敗: {}", e);
+                return;
+            }
+        };
+        if rows.is_empty() {
             return;
         }
-
-        // RetainedStore の ProcessMessage::Show → PaneState に変換して DISC に焼く
+        let retained = self.topic_router.retained();
+        let mut store = retained.write().await;
         let mut count = 0;
-        for (_topic, msg) in &matching {
-            if let ProcessMessage::Show {
-                pane_id,
-                content,
-                title,
-                ..
-            } = msg
-            {
-                let pane_state = PaneState {
-                    content: content.clone(),
-                    title: title.clone(),
-                };
-                let key = format!("pane/{}", pane_id);
-                if let Err(e) = self
-                    .whitesnake
-                    .extract("paisley-park", &key, &pane_state)
-                    .await
-                {
-                    tracing::warn!("Whitesnake DISC 保存失敗 ({}): {}", pane_id, e);
-                } else {
-                    count += 1;
-                }
+        for row in &rows {
+            let pane_id = row.get("pane_id").and_then(|v| v.as_str()).unwrap_or("");
+            // lane_name '' sentinel = conductor。 conductor のみ復元 (旧挙動)。
+            let lane_name = row.get("lane_name").and_then(|v| v.as_str()).unwrap_or("");
+            if pane_id.is_empty() || pane_id == CANVAS_LAYOUT_PANE_ID || !lane_name.is_empty() {
+                continue;
             }
+            // pane_contents は content_type(str)+content(str) で持つ → Content enum に組み直す。
+            // image_base64 は data/mime を content 1 列に畳めず PP Canvas でも現状未使用
+            // (mcp.rs: image_base64 は content 空文字保存) なので markdown fallback で可
+            // (旧 Whitesnake も実経路では同等の dead path)。
+            let content_str = row
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let content = match row.get("content_type").and_then(|v| v.as_str()) {
+                Some("html") => Content::Html(content_str),
+                Some("log") => Content::Log(content_str),
+                Some("url") => Content::Url(content_str),
+                _ => Content::Markdown(content_str),
+            };
+            let title = row
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let topic = format!("process/paisley-park/command/show/conductor/{}", pane_id);
+            store.set(
+                &topic,
+                ProcessMessage::Show {
+                    pane_id: pane_id.to_string(),
+                    content,
+                    append: false,
+                    title,
+                    lane: None,
+                },
+            );
+            count += 1;
         }
-
         if count > 0 {
-            tracing::info!("{} ペイン状態を DISC に保存 (port={})", count, self.port);
+            tracing::info!(
+                "ペイン状態を pane_contents から復元: {} ペイン (port={})",
+                count,
+                self.port
+            );
         }
     }
 
-    /// Whitesnake から DISC を読み出し、RetainedStore に復元する
-    pub async fn restore_pane_contents(&self) {
-        // Whitesnake から paisley-park/pane/* を復元
-        match self
-            .whitesnake
-            .list_by_prefix("paisley-park", "pane/")
-            .await
-        {
-            Ok(discs) if !discs.is_empty() => {
-                let retained = self.topic_router.retained();
-                let mut store = retained.write().await;
-                let mut count = 0;
-                for disc in &discs {
-                    // key = "pane/{pane_id}" → pane_id を抽出
-                    let pane_id = disc.key.strip_prefix("pane/").unwrap_or(&disc.key);
-                    if let Ok(pane_state) = disc.extract::<PaneState>() {
-                        // DISC は conductor（lead）scope の snapshot。新 lane-scoped topic 形に合わせる。
-                        let topic =
-                            format!("process/paisley-park/command/show/conductor/{}", pane_id);
-                        store.set(
-                            &topic,
-                            ProcessMessage::Show {
-                                pane_id: pane_id.to_string(),
-                                content: pane_state.content,
-                                append: false,
-                                title: pane_state.title,
-                                lane: None,
-                            },
-                        );
-                        count += 1;
-                    }
-                }
-                if count > 0 {
-                    tracing::info!(
-                        "ペイン状態を Whitesnake DISC から復元: {} ペイン (port={})",
-                        count,
-                        self.port
-                    );
-                }
-            }
-            Ok(_) => {
-                // DISC が空 — 旧形式からのマイグレーション不要（初回起動）
-            }
-            Err(e) => {
-                tracing::warn!("Whitesnake DISC 読み出し失敗: {}", e);
-            }
-        }
-    }
-
-    /// Canvas レイアウト状態を Whitesnake に保存
+    /// Canvas レイアウト状態を pane_contents の reserved row に保存する。
+    ///
+    /// 旧 Whitesnake 退役 → SurrealDB 一本化。 layout は lane 非依存の単一 row
+    /// (lane=conductor, pane_id=[`CANVAS_LAYOUT_PANE_ID`]、 pane 一覧には現れない reserved key)。
     pub async fn save_canvas_layout(&self, layout: &serde_json::Value) {
-        if let Err(e) = self
-            .whitesnake
-            .extract("paisley-park", "layout", layout)
+        let Some(vpdb) = self.vpdb.as_ref() else {
+            return;
+        };
+        let content = serde_json::to_string(layout).unwrap_or_else(|_| "{}".to_string());
+        if let Err(e) = vpdb
+            .upsert_pp_state(
+                &self.project_dir,
+                None,
+                CANVAS_LAYOUT_PANE_ID,
+                "canvas-layout",
+                &content,
+                None,
+                None,
+                None,
+            )
             .await
         {
-            tracing::warn!("Canvas レイアウト DISC 保存に失敗: {}", e);
+            tracing::warn!("canvas layout 保存に失敗: {}", e);
         }
     }
 
-    /// Canvas レイアウト状態を Whitesnake から復元
+    /// Canvas レイアウト状態を pane_contents の reserved row から復元する。
     pub async fn load_canvas_layout(&self) -> Option<serde_json::Value> {
-        match self.whitesnake.insert("paisley-park", "layout").await {
-            Ok(value) => value,
+        let vpdb = self.vpdb.as_ref()?;
+        match vpdb
+            .load_pp_state(&self.project_dir, None, CANVAS_LAYOUT_PANE_ID)
+            .await
+        {
+            Ok(Some(row)) => row
+                .get("content")
+                .and_then(|c| c.as_str())
+                .and_then(|s| serde_json::from_str(s).ok()),
+            Ok(None) => None,
             Err(e) => {
-                tracing::warn!("Canvas レイアウト DISC 読み出しに失敗: {}", e);
+                tracing::warn!("canvas layout 読み出しに失敗: {}", e);
                 None
             }
         }
@@ -465,7 +454,7 @@ impl AppState {
 ///
 /// 用途: `crates/vantage-point/src/process/routes/` の各 handler を Axum oneshot で
 /// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store / lane_capabilities)
-/// は None、 `whitesnake` は `Whitesnake::in_memory()` で軽量化。
+/// は None で軽量化。
 ///
 /// Note: `pub(crate)` のため `crates/vantage-point/src/` 内 inline `#[cfg(test)]` mod
 /// からのみ使用可。 integration test (`crates/vantage-point/tests/`) は別 crate なので
@@ -478,13 +467,12 @@ pub(crate) async fn build_test_app_state(
     use super::lane_capabilities::LaneCapabilitiesPool;
     use super::lanes_state::LanePool;
     use super::project_stands_state::ProjectStandsPool;
-    use crate::capability::{Whitesnake, WireNotifier};
+    use crate::capability::WireNotifier;
     use crate::protocol::DebugMode;
 
     let capabilities = Arc::new(
         ProcessCapabilities::new(CapabilityConfig {
             project_dir: String::new(),
-            whitesnake: None,
         })
         .await,
     );
@@ -517,7 +505,6 @@ pub(crate) async fn build_test_app_state(
         wiremsg_store: None,
         wire_notifier: WireNotifier::new(),
         delivery_notify: Arc::new(tokio::sync::Notify::new()),
-        whitesnake: Whitesnake::in_memory(),
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         project_stands: Arc::new(RwLock::new(ProjectStandsPool::new())),

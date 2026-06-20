@@ -29,17 +29,11 @@ use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
 /// Run the Process server
-pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityConfig) -> Result<()> {
+pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
-    // VP-165 (doc 17 決定B): Whitesnake を project slug 別ディレクトリで早期初期化
-    // （Msgbox persistence で使用）。旧 port-keyed (`discs/{port}/`) は port が
-    // project リスト変更で reshuffle する不安定 ID だったため `discs/p_{slug}/` に。
-    let whitesnake = crate::capability::Whitesnake::file_backed_for_project(
-        &crate::resolve::project_slug(&project_dir, &config_for_init),
-    );
-    cap_config.whitesnake = Some(whitesnake.clone());
+    // Whitesnake 退役: 永続は SurrealDB 一本化 (PP pane state は pane_contents)。
 
     // project_name は project_dir から解決（AppState / lane pool 等で使用）
     let project_name_for_remote =
@@ -196,9 +190,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
         // delivery loop wake)。 SP では未使用だが AppState 共有 field のため空で満たす
         wire_notifier: crate::capability::WireNotifier::new(),
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
-        // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
-        whitesnake: whitesnake.clone(),
         // Phase A4-2b: Lane scope の Stand pool — Conductor Lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Project/Lane/Pane)、HD/TH は Lane scope。
         // Performer Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
@@ -621,7 +612,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
     // Clone for shutdown
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
-    let state_for_shutdown = state.clone();
 
     // Serve with graceful shutdown
     axum::serve(listener, app)
@@ -634,8 +624,8 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
     // （spawn_registry_keepalive の shutdown handler が unregister を送信済み）
 
-    // ペイン状態をディスクに保存（次回起動時に復元、RetainedStore から取得）
-    state_for_shutdown.persist_pane_contents().await;
+    // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
+    // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
 
     // メニューバーアプリに停止を通知
     crate::notify::post_process_changed(port, "stopped");
@@ -730,17 +720,13 @@ pub async fn run_world(
     let topic_router = Arc::new(TopicRouter::new());
 
     // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
-    // WorldCapabilities container の両方に share させる。 二重生成すると
-    // whitesnake DB connection が並走する。
+    // WorldCapabilities container の両方に share させる (二重生成は避ける)。
     //
     // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
     // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。
     //
     // PR-α-4 (VP-114): `vp daemon start --midi <arg>` で構築された MidiConfig を受け取り、
     // None なら `MidiConfig::default()` (= PR-α-2/3 後の既存挙動と同じ port auto-pick) で fallback。
-    // VP-165 (doc 17 決定B): World daemon の Whitesnake は固定キー `discs/world/`
-    // （旧 `file_backed_for_port(32000)` は world_port も override 可能なので port-keyed をやめた）。
-    let world_whitesnake = crate::capability::Whitesnake::file_backed_for_world();
     let world_capabilities = {
         #[cfg(feature = "midi")]
         {
@@ -749,7 +735,6 @@ pub async fn run_world(
                 crate::daemon::world_capabilities::WorldCapabilities::with_midi(
                     world_cap.clone(),
                     update_cap.clone(),
-                    world_whitesnake.clone(),
                     resolved_midi_config,
                 )
                 .await?,
@@ -760,7 +745,6 @@ pub async fn run_world(
             Arc::new(crate::daemon::world_capabilities::WorldCapabilities::new(
                 world_cap.clone(),
                 update_cap.clone(),
-                world_whitesnake.clone(),
             ))
         }
     };
@@ -788,7 +772,6 @@ pub async fn run_world(
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
-                whitesnake: None, // World モードは永続 msgbox 不要
             })
             .await,
         ),
@@ -816,8 +799,6 @@ pub async fn run_world(
         wire_notifier: crate::capability::WireNotifier::new(),
         // R2-b: wire delivery loop の即時 wake (world_wire_send_handler が command 着信で notify)
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // TheWorld もポート別ディレクトリで分離
-        whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
         // 多 scope architecture: World は App scope の component、Lane/ProjectStand は Project scope
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),

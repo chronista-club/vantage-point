@@ -25,7 +25,6 @@ pub mod process_manager_capability;
 pub mod protocol_capability;
 pub mod stand_service;
 pub mod update_capability;
-pub mod whitesnake;
 pub mod wiremsg_store;
 
 pub use actor_registry::{ActorKind, ActorRegistry, ActorRegistryEntry};
@@ -44,7 +43,6 @@ pub use process_manager_capability::{
 pub use protocol_capability::ProtocolCapability;
 pub use stand_service::{LayerScope, Service, Stand};
 pub use update_capability::UpdateCapability;
-pub use whitesnake::Whitesnake;
 // Phase A ①: wiremsg threaded inbox store (設計 mem_1CbD9H1KGQykBaFG8XXVsn)。
 // R2-a: store は TheWorld に中央化 (cross-process forward = wire_remote は撤去、
 // 設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-b)。
