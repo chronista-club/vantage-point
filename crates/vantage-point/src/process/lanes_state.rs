@@ -164,6 +164,48 @@ pub enum LaneState {
     Dead,
 }
 
+/// Lane の **durable lifecycle** (doc 24 §4.6 — daemon 堅牢化の軽量 WAL)。
+///
+/// process liveness ([`LaneState`]) とは **別軸**: ground (worktree) の生成/破棄の lifecycle を
+/// daemon-internal に追跡する (PtySlot の生死ではない)。 daemon-canonical で、 descriptor とは
+/// 別 table (`lane_lifecycle`) に永続する (SP push が descriptor を round-trip して clobber する
+/// のを避けるため)。
+///
+/// **intent-first bracket**: create は `Provisioning` を先に書く → worktree provision → `Ready`。
+/// crash で `Provisioning` が残れば boot reconcile が ground 存在で heal (`Ready` or `Dead`)。
+/// destroy-side (`Destroying`) は後続 increment。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneLifecycle {
+    /// ground を provision 中 (intent 記録済、 external op in-flight)。
+    Provisioning,
+    /// ground 準備完了 (= 通常状態)。
+    #[default]
+    Ready,
+    /// 失敗 / 外部削除で回収待ち (保持: inspection / `--resume` 可、 ground は当面残す)。
+    Dead,
+}
+
+impl LaneLifecycle {
+    /// db 永続用の文字列表現。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LaneLifecycle::Provisioning => "provisioning",
+            LaneLifecycle::Ready => "ready",
+            LaneLifecycle::Dead => "dead",
+        }
+    }
+
+    /// db 文字列からの復元 (未知/`ready` は `Ready` に倒す = 安全側)。
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "provisioning" => LaneLifecycle::Provisioning,
+            "dead" => LaneLifecycle::Dead,
+            _ => LaneLifecycle::Ready,
+        }
+    }
+}
+
 /// Lane の address — Pool key
 ///
 /// 表示形 (`Display` 実装):

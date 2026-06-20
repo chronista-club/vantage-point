@@ -302,8 +302,98 @@ impl ProcessManagerCapability {
             }
         }
 
+        // doc 24 §4.6 boot reconcile heal (庭師モデル): desired(store の lifecycle) × actual
+        // (disk の ground) を突き合わせて収束させる。 daemon boot で 1 周 (vpdb=Some のみ内部判定)。
+        self.reconcile_lanes().await;
+
         self.config = Some(config);
         Ok(())
+    }
+
+    /// doc 24 §4.6 boot reconcile heal — desired (store の lifecycle) × actual (disk の ground) を
+    /// 突き合わせて収束させる (庭師モデル)。 daemon boot で 1 周走る。
+    ///
+    /// heal table (create-side、 retry は後続スライス):
+    /// - `provisioning` + ground 在り → `ready` (provision 完了とみなす)
+    /// - `provisioning` + ground 無し → `dead`  (crash 中断。 retry-1x は club-nostos Outcome の次スライス)
+    /// - `ready` + ground 在り       → ok (no-op)
+    /// - `ready` + ground 外部削除   → `dead`  (user の rm を尊重、 勝手に作り直さない)
+    /// - `dead`                      → 保持 (inspection / `--resume`)
+    ///
+    /// destroy-side (`destroying`) と orphan→adopt は後続 increment。
+    async fn reconcile_lanes(&self) {
+        use crate::process::lanes_state::LaneLifecycle;
+        let Some(db) = &self.vpdb else { return };
+        let lifecycles = match db.list_lane_lifecycles().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("reconcile: lane_lifecycle load 失敗 (skip): {}", e);
+                return;
+            }
+        };
+        if lifecycles.is_empty() {
+            return;
+        }
+
+        // descriptor の cwd を引く (boot load 済 lane_registry): (project_path, address) → cwd。
+        // team-b #3: lifecycle はあるのに lane_registry が空 = boot lane load 失敗の可能性。
+        // この不整合のまま進むと全 lane が cwd_map miss → ground_exists=false → dead に誤判定
+        // するため、 skip する (heal は次 boot に委ねる = 庭師の「ゆるやか」収束)。
+        let cwd_map: std::collections::HashMap<(String, String), String> = {
+            let lr = self.lane_registry.read().await;
+            if lr.is_empty() {
+                tracing::warn!(
+                    "reconcile: lane_lifecycle はあるが lane_registry 空 → skip (lane boot load 失敗の可能性)"
+                );
+                return;
+            }
+            lr.iter()
+                .flat_map(|(p, lanes)| {
+                    lanes
+                        .iter()
+                        .map(move |l| ((p.clone(), l.address.to_string()), l.cwd.clone()))
+                })
+                .collect()
+        };
+
+        for (project_path, address, lifecycle_str) in lifecycles {
+            let lifecycle = LaneLifecycle::parse(&lifecycle_str);
+            if lifecycle == LaneLifecycle::Dead {
+                continue; // dead は保持
+            }
+            let ground_exists = cwd_map
+                .get(&(project_path.clone(), address.clone()))
+                .map(|c| std::path::Path::new(c).exists())
+                .unwrap_or(false);
+
+            let healed = match (lifecycle, ground_exists) {
+                (LaneLifecycle::Provisioning, true) => Some(LaneLifecycle::Ready),
+                (LaneLifecycle::Provisioning, false) => Some(LaneLifecycle::Dead),
+                (LaneLifecycle::Ready, false) => Some(LaneLifecycle::Dead),
+                (LaneLifecycle::Ready, true) | (LaneLifecycle::Dead, _) => None,
+            };
+
+            if let Some(new_lc) = healed {
+                match db
+                    .upsert_lane_lifecycle(&project_path, &address, new_lc.as_str())
+                    .await
+                {
+                    Ok(()) => tracing::info!(
+                        "reconcile heal: {} {} {} → {}",
+                        project_path,
+                        address,
+                        lifecycle.as_str(),
+                        new_lc.as_str()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "reconcile heal の永続失敗 ({} {}): {}",
+                        project_path,
+                        address,
+                        e
+                    ),
+                }
+            }
+        }
     }
 
     /// 現在の projects HashMap を真実源に永続化する。
@@ -601,10 +691,14 @@ impl ProcessManagerCapability {
             .await
             .remove(&key)
             .unwrap_or_default();
-        if let Some(db) = &self.vpdb
-            && let Err(e) = db.delete_lanes_for_project(&key).await
-        {
-            tracing::warn!("lane の db/world 削除に失敗 (in-memory は削除済): {}", e);
+        if let Some(db) = &self.vpdb {
+            if let Err(e) = db.delete_lanes_for_project(&key).await {
+                tracing::warn!("lane の db/world 削除に失敗 (in-memory は削除済): {}", e);
+            }
+            // §4.6: lane lifecycle (別 table) も同様に回収する。
+            if let Err(e) = db.delete_lane_lifecycles_for_project(&key).await {
+                tracing::warn!("lane_lifecycle の db/world 削除に失敗: {}", e);
+            }
         }
 
         // doc 24 §5.3 / B-destroy: ground を provision/reclaim する唯一の主体は daemon。
@@ -671,7 +765,9 @@ impl ProcessManagerCapability {
         branch: &str,
         stand: &str,
     ) -> CapabilityResult<crate::process::lanes_state::LaneInfo> {
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{
+            LaneAddress, LaneInfo, LaneKind, LaneLifecycle, LaneState,
+        };
 
         let name = name.trim();
         if name.is_empty() {
@@ -702,33 +798,18 @@ impl ProcessManagerCapability {
             )));
         }
 
-        // §5.3: ground provision は daemon が行う (worktree add)。 blocking git は spawn_blocking。
-        let performer_dir = {
-            let repo_root = repo_root.clone();
-            let name = name.to_string();
-            let branch = branch.to_string();
-            tokio::task::spawn_blocking(move || {
-                crate::lane::commands::new_performer_in(
-                    &repo_root,
-                    &name,
-                    &branch,
-                    false,
-                    crate::lane::commands::Isolation::Worktree,
-                )
-            })
-            .await
-            .map_err(|e| CapabilityError::Other(format!("worktree provision task join: {}", e)))?
-            .map_err(|e| CapabilityError::Other(format!("worktree provision 失敗: {}", e)))?
-        };
-
-        // descriptor を daemon-canonical truth として構築 + 永続。 pid/tmux は SP spawn 後の
-        // push で enrich される (state=Spawning = ground ready / PtySlot pending)。
+        // doc 24 §4.6 intent-first bracket (enter): descriptor + lifecycle=Provisioning を **先に**
+        // 永続する。 cwd は worktree の deterministic path (<repo>/.vp/lanes/<name>) なので
+        // provision 前に確定できる。 これにより daemon が provision 途中で crash しても
+        // 「provisioning が残る」= boot reconcile が ground 存在で heal できる。
+        let performer_dir = repo_root.join(".vp").join("lanes").join(name);
+        let addr_str = addr.to_string();
         let info = LaneInfo {
             id: crate::lane::lane_id::load_or_create(&project_id, name),
             address: addr.clone(),
             kind: LaneKind::Performer,
             name: Some(name.to_string()),
-            state: LaneState::Spawning,
+            state: LaneState::Spawning, // process liveness: PtySlot pending (= lifecycle と別軸)
             stand: stand.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
@@ -743,21 +824,79 @@ impl ProcessManagerCapability {
             .entry(key.clone())
             .or_default()
             .push(info.clone());
-        if let Some(db) = &self.vpdb
-            && let Err(e) = db.upsert_lane(&key, &info).await
-        {
-            tracing::warn!(
-                "lane descriptor の db 永続に失敗 (in-memory は反映済): {}",
-                e
-            );
+        if let Some(db) = &self.vpdb {
+            if let Err(e) = db.upsert_lane(&key, &info).await {
+                tracing::warn!(
+                    "lane descriptor の db 永続に失敗 (in-memory は反映済): {}",
+                    e
+                );
+            }
+            if let Err(e) = db
+                .upsert_lane_lifecycle(&key, &addr_str, LaneLifecycle::Provisioning.as_str())
+                .await
+            {
+                tracing::warn!("lane_lifecycle=provisioning の db 永続に失敗: {}", e);
+            }
         }
 
-        tracing::info!(
-            "lane created (daemon): addr={} cwd={} (PtySlot は watcher→SP で spawn)",
-            addr,
-            info.cwd
-        );
-        Ok(info)
+        // §5.3 (active): ground provision は daemon が行う (worktree add)。 blocking git は spawn_blocking。
+        // team-b #1: JoinError (task panic) を `?` で早期 return せず、 provision Err と同じ
+        // rollback 経路に畳む (= intent-first の crash-recovery 保証を破らない)。
+        let provision: Result<std::path::PathBuf, String> = {
+            let repo_root = repo_root.clone();
+            let name_owned = name.to_string();
+            let branch = branch.to_string();
+            match tokio::task::spawn_blocking(move || {
+                crate::lane::commands::new_performer_in(
+                    &repo_root,
+                    &name_owned,
+                    &branch,
+                    false,
+                    crate::lane::commands::Isolation::Worktree,
+                )
+            })
+            .await
+            {
+                Ok(inner) => inner,
+                Err(join_err) => Err(format!("provision task join: {}", join_err)),
+            }
+        };
+
+        // §4.6 (exit): provision の結果で lifecycle を確定する。
+        match provision {
+            Ok(_dir) => {
+                if let Some(db) = &self.vpdb
+                    && let Err(e) = db
+                        .upsert_lane_lifecycle(&key, &addr_str, LaneLifecycle::Ready.as_str())
+                        .await
+                {
+                    tracing::warn!("lane_lifecycle=ready の db 永続に失敗: {}", e);
+                }
+                tracing::info!(
+                    "lane created (daemon): addr={} cwd={} lifecycle=ready (PtySlot は watcher→SP)",
+                    addr,
+                    info.cwd
+                );
+                Ok(info)
+            }
+            Err(e) => {
+                // 通常の provision 失敗は rollback (retry 可能に): descriptor + lifecycle を回収。
+                // crash 中断時だけ provisioning が db に残り boot reconcile が heal する
+                // (= intent-first の効きどころ。 doc 24 §4.6)。
+                if let Some(v) = self.lane_registry.write().await.get_mut(&key) {
+                    v.retain(|l| l.address != addr);
+                }
+                if let Some(db) = &self.vpdb {
+                    let _ = db.delete_lane(&key, &addr_str).await;
+                    let _ = db.delete_lane_lifecycle(&key, &addr_str).await;
+                }
+                tracing::warn!("lane provision 失敗 → rollback: addr={} err={}", addr, e);
+                Err(CapabilityError::Other(format!(
+                    "worktree provision 失敗: {}",
+                    e
+                )))
+            }
+        }
     }
 
     /// プロジェクト名を変更（+ projects.kdl に永続化、 VP-188）
@@ -2930,6 +3069,75 @@ mod tests {
         assert!(
             dup.unwrap_err().to_string().contains("already exists"),
             "重複 create は already exists で弾く"
+        );
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_lanes_heals_lifecycle_by_ground() {
+        // doc 24 §4.6 boot reconcile heal: provisioning+ground在→ready / ready+ground無→dead。
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+
+        let mut cap = make_test_cap();
+        let db = std::sync::Arc::new({
+            let d = crate::db::VpDb::connect_mem().await.unwrap();
+            d.define_schema().await.unwrap();
+            d
+        });
+        cap.set_vpdb(db.clone());
+
+        // 2 つの ground: 1 つは存在、 1 つは存在しない。
+        let parent = std::env::temp_dir().join(format!("vp-test-reconcile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let alive_dir = parent.join("proj/.vp/lanes/alive");
+        std::fs::create_dir_all(&alive_dir).unwrap();
+        let gone_dir = parent.join("proj/.vp/lanes/gone"); // 作らない (= ground 無し)
+
+        let key = "/test/proj";
+        let mk = |name: &str, cwd: &std::path::Path| LaneInfo {
+            id: Default::default(),
+            address: LaneAddress::performer("proj", name),
+            kind: LaneKind::Performer,
+            name: Some(name.to_string()),
+            state: LaneState::Spawning,
+            stand: "echoes".to_string(),
+            created_at: "2026-06-20T00:00:00Z".to_string(),
+            pid: None,
+            cwd: cwd.to_string_lossy().into_owned(),
+            performer_status: None,
+            cc_session_id: None,
+            tmux: Vec::new(),
+        };
+        cap.lane_registry_ref().write().await.insert(
+            key.to_string(),
+            vec![mk("alive", &alive_dir), mk("gone", &gone_dir)],
+        );
+        // alive=provisioning (ground 在り→ready 期待)、 gone=ready (ground 無→dead 期待)。
+        db.upsert_lane_lifecycle(key, "proj/performer/alive", "provisioning")
+            .await
+            .unwrap();
+        db.upsert_lane_lifecycle(key, "proj/performer/gone", "ready")
+            .await
+            .unwrap();
+
+        cap.reconcile_lanes().await;
+
+        let rows = db.list_lane_lifecycles().await.unwrap();
+        let get = |a: &str| {
+            rows.iter()
+                .find(|(_, addr, _)| addr == a)
+                .map(|(_, _, lc)| lc.clone())
+        };
+        assert_eq!(
+            get("proj/performer/alive").as_deref(),
+            Some("ready"),
+            "provisioning + ground 在り → ready (provision 完了)"
+        );
+        assert_eq!(
+            get("proj/performer/gone").as_deref(),
+            Some("dead"),
+            "ready + ground 外部削除 → dead (user の rm 尊重)"
         );
 
         let _ = std::fs::remove_dir_all(&parent);

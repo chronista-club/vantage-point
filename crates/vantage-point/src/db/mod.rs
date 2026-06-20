@@ -362,6 +362,87 @@ impl VpDb {
         Ok(out)
     }
 
+    // =========================================================================
+    // Lane lifecycle (doc 24 §4.6: durable lifecycle state machine、 軽量 WAL)。
+    // descriptor (lane table) とは別 table — SP push に clobber されない daemon-internal。
+    // =========================================================================
+
+    /// lane の lifecycle を upsert する (provisioning / ready / dead)。
+    ///
+    /// team-b #2: active_lane が `INSERT ON DUPLICATE KEY UPDATE` (単一 key) なのに対し、 lane 系は
+    /// **複合 key (project_path, address)** で ON DUPLICATE の発火が不確実なため DELETE+CREATE を使う
+    /// (upsert_lane / lane table と同方針)。 2 statement は単一 `query()` = 1 transaction で
+    /// atomic に走る (DELETE 後 CREATE 前に row が消える窓は無い)。
+    pub async fn upsert_lane_lifecycle(
+        &self,
+        project_path: &str,
+        address: &str,
+        lifecycle: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "DELETE lane_lifecycle WHERE project_path = $p AND address = $a;
+                 CREATE lane_lifecycle CONTENT {
+                    project_path: $p,
+                    address: $a,
+                    lifecycle: $lc,
+                    updated_at: time::now()
+                 }",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("a", address.to_string()))
+            .bind(("lc", lifecycle.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane_lifecycle upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane_lifecycle upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 全 lane lifecycle を (project_path, address, lifecycle) で返す (boot reconcile 用)。
+    pub async fn list_lane_lifecycles(&self) -> Result<Vec<(String, String, String)>> {
+        let mut result = self
+            .db
+            .query("SELECT project_path, address, lifecycle FROM lane_lifecycle")
+            .await
+            .map_err(|e| anyhow::anyhow!("lane_lifecycle 取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| {
+                let p = v.get("project_path")?.as_str()?.to_string();
+                let a = v.get("address")?.as_str()?.to_string();
+                let lc = v.get("lifecycle")?.as_str()?.to_string();
+                Some((p, a, lc))
+            })
+            .collect())
+    }
+
+    /// 1 lane の lifecycle を削除 (lane destroy / lifecycle 回収)。
+    pub async fn delete_lane_lifecycle(&self, project_path: &str, address: &str) -> Result<()> {
+        self.db
+            .query("DELETE lane_lifecycle WHERE project_path = $p AND address = $a")
+            .bind(("p", project_path.to_string()))
+            .bind(("a", address.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane_lifecycle 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane_lifecycle 削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 1 project の lane lifecycle を全削除 (project remove 時の回収、 §4.6 含有=所有=寿命)。
+    pub async fn delete_lane_lifecycles_for_project(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE lane_lifecycle WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("project lane_lifecycle 全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("project lane_lifecycle 全削除エラー: {}", e))?;
+        Ok(())
+    }
+
     /// 全プロセスを削除（TheWorld 再起動時のクリーンアップ用）
     pub async fn clear_all_processes(&self) -> Result<()> {
         self.db
@@ -775,6 +856,21 @@ DEFINE FIELD IF NOT EXISTS descriptor ON lane TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS updated_at ON lane TYPE datetime;
 DEFINE INDEX IF NOT EXISTS idx_lane_addr ON lane COLUMNS project_path, address UNIQUE;
 
+-- lane lifecycle (doc 24 §4.6: daemon 堅牢化の durable lifecycle state machine = 軽量 WAL)。
+-- provisioning / ready / dead を **descriptor (lane table) とは別テーブル** に持つ。 分離理由:
+-- descriptor は SP が push で round-trip するため、 SP snapshot (lifecycle 未知=default) が
+-- daemon の `provisioning` intent を clobber してしまう。 lifecycle は daemon-internal な
+-- crash-recovery state なので、 active_lane (presence) と同じく独立 table にする。
+-- process liveness (LaneInfo.state) とも別軸 (= ground の lifecycle、 PtySlot の生死ではない)。
+-- intent-first bracket: create は descriptor+provisioning を先に書く → worktree provision →
+-- ready。 crash で provisioning が残れば boot reconcile が ground 存在で heal する。
+DEFINE TABLE IF NOT EXISTS lane_lifecycle SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON lane_lifecycle TYPE string;
+DEFINE FIELD IF NOT EXISTS address ON lane_lifecycle TYPE string;
+DEFINE FIELD IF NOT EXISTS lifecycle ON lane_lifecycle TYPE string;
+DEFINE FIELD IF NOT EXISTS updated_at ON lane_lifecycle TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS project_path, address UNIQUE;
+
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
 -- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
@@ -1129,6 +1225,50 @@ mod tests {
         db.delete_lanes_for_project("/repos/vp").await.unwrap();
         let rows = db.list_lanes().await.unwrap();
         assert_eq!(rows.len(), 1, "削除した project の lane は消える");
+        assert_eq!(rows[0].0, "/repos/nexus", "他 project は残る");
+    }
+
+    #[tokio::test]
+    async fn test_lane_lifecycle_upsert_list_delete() {
+        // doc 24 §4.6: lane lifecycle (別 table) の round-trip。
+        let db = make_test_db().await;
+        assert!(db.list_lane_lifecycles().await.unwrap().is_empty());
+
+        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/foo", "provisioning")
+            .await
+            .unwrap();
+        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/bar", "ready")
+            .await
+            .unwrap();
+        db.upsert_lane_lifecycle("/repos/nexus", "nexus/performer/x", "ready")
+            .await
+            .unwrap();
+        assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 3);
+
+        // 同 (project, address) の upsert は置換 (複合 UNIQUE)。
+        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/foo", "ready")
+            .await
+            .unwrap();
+        let rows = db.list_lane_lifecycles().await.unwrap();
+        assert_eq!(rows.len(), 3, "同 address は置換、 件数は増えない");
+        assert!(
+            rows.iter()
+                .any(|(p, a, lc)| p == "/repos/vp" && a == "vp/performer/foo" && lc == "ready"),
+            "provisioning → ready に置換される"
+        );
+
+        // 単一削除。
+        db.delete_lane_lifecycle("/repos/vp", "vp/performer/foo")
+            .await
+            .unwrap();
+        assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 2);
+
+        // project 単位削除 (§4.6 含有=所有=寿命)。
+        db.delete_lane_lifecycles_for_project("/repos/vp")
+            .await
+            .unwrap();
+        let rows = db.list_lane_lifecycles().await.unwrap();
+        assert_eq!(rows.len(), 1, "削除した project の lifecycle は消える");
         assert_eq!(rows[0].0, "/repos/nexus", "他 project は残る");
     }
 
