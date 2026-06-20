@@ -357,6 +357,74 @@ pub async fn world_set_active_lane(
     }
 }
 
+/// performer lane 作成リクエスト (doc 24 §10 Phase 2 B-create)
+#[derive(serde::Deserialize)]
+pub struct CreateLaneRequest {
+    /// project の path (= normalize_path_key の起点、 repo_root)。
+    pub path: String,
+    /// performer 名。
+    pub name: String,
+    /// branch (省略時は `<user>/<name>` を derive)。
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// stand (省略時は config の default_stand → echoes)。
+    #[serde(default)]
+    pub stand: Option<String>,
+}
+
+/// POST /api/world/lanes - daemon が performer lane を create する (§5.3 ground provision +
+/// descriptor を daemon-canonical truth として所有)。 PtySlot spawn は lane_watcher 経由で SP が行う。
+pub async fn world_create_lane(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateLaneRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    // branch / stand の default 導出 (= calc) は route の責務。 SP create_handler と parity:
+    // branch 未指定 → `<user>/<name>` derive、 stand 未指定 → config の default_stand → echoes。
+    let repo_root = std::path::PathBuf::from(&req.path);
+    let branch = req
+        .branch
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| super::lanes::derive_default_branch(&repo_root, &req.name));
+    let stand = req.stand.clone().unwrap_or_else(|| {
+        crate::config::Config::load()
+            .map(|c| c.default_stand_or_echoes().to_string())
+            .unwrap_or_else(|_| "echoes".to_string())
+    });
+
+    let world = world.read().await;
+    match world
+        .create_lane(&req.path, &req.name, &branch, &stand)
+        .await
+    {
+        Ok(info) => (
+            axum::http::StatusCode::CREATED,
+            Json(
+                serde_json::to_value(&info)
+                    .unwrap_or_else(|_| serde_json::json!({"status": "created"})),
+            ),
+        ),
+        Err(e) => {
+            // create_handler と parity: 重複は CONFLICT (vp-app が form 下に inline 表示)。
+            let msg = e.to_string();
+            let status = if msg.contains("already exists") || msg.contains("既に存在") {
+                axum::http::StatusCode::CONFLICT
+            } else {
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": msg})))
+        }
+    }
+}
+
 /// slot 設定リクエスト (PR-D: CLI の slot 永続化を daemon 経由に)
 #[derive(serde::Deserialize)]
 pub struct SetSlotRequest {

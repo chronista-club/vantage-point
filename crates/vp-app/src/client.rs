@@ -429,20 +429,20 @@ impl TheWorldClient {
         Ok(())
     }
 
-    /// Phase 3-A: SP に Performer Lane を create (`POST /api/lanes`)。
-    /// `branch` 指定時は SP が `vp lane new <name> <branch>` で performer dir を作成して spawn する。
-    /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する
-    /// (doc 11 PR-C、 None なら SP-side default = config.default_stand_or_echoes())。
-    /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
+    /// doc 24 §10 Phase 2 B-create: performer lane を **daemon** (`POST /api/world/lanes`) で
+    /// create する。 `base_url` は daemon (TheWorld、 例 `http://127.0.0.1:32000`) を指定。
+    /// 旧来は SP の `/api/lanes` 直叩きだったが、 ground provision + descriptor 所有を daemon に
+    /// 寄せた (§5.3)。 PtySlot spawn は daemon が worktree を作る → lane_watcher → SP に委譲。
     pub async fn create_performer_lane(
         &self,
+        project_path: &str,
         name: &str,
         branch: Option<&str>,
         stand: Option<&str>,
     ) -> Result<()> {
-        let url = format!("{}/api/lanes", self.base_url);
+        let url = format!("{}/api/world/lanes", self.base_url);
         let mut body = serde_json::json!({
-            "kind": "performer",
+            "path": project_path,
             "name": name,
         });
         if let Some(b) = branch {

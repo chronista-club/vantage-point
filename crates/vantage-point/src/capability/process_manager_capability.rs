@@ -649,6 +649,117 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
+    /// doc 24 §10 Phase 2 B-create / §5.3: daemon が performer lane を create する。
+    ///
+    /// 「ground を provision する唯一の主体は daemon」(§5.3) の create 半分。 daemon が
+    /// worktree を provision し、 descriptor を daemon-canonical truth (db + in-memory) として
+    /// 所有する。 live PtySlot の spawn は SP の仕事で、 worktree dir 作成を検知した
+    /// lane_watcher が SP に `POST /api/lanes` (cwd 明示) を発火して spawn させる
+    /// (= 既存 convergence loop を再利用、 daemon→SP の新経路は作らない)。
+    ///
+    /// (b) スコープ: §4.6 の durable lifecycle state machine (provisioning/ready/dead +
+    /// boot reconcile) は入れない。 それを exercise する in-flight 状態が無い間は投機実装に
+    /// なるため ([[pre-mvp-development-stance]]: 中間状態を作らない)。 crash mid-provision の
+    /// orphan worktree は現状の SP create と同じ risk profile で、 B-destroy (#568) +
+    /// 将来の boot reconcile が回収する。
+    /// `branch` / `stand` は呼び手 (route) が resolve 済の concrete 値を渡す
+    /// (default 導出 = data/calc は route の責務、 capability は provision = action に専念)。
+    pub async fn create_lane(
+        &self,
+        project_path: &str,
+        name: &str,
+        branch: &str,
+        stand: &str,
+    ) -> CapabilityResult<crate::process::lanes_state::LaneInfo> {
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CapabilityError::Other(
+                "performer name is required".to_string(),
+            ));
+        }
+        let repo_root = PathBuf::from(project_path);
+        let project_id = repo_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let addr = LaneAddress::performer(&project_id, name);
+        let key = normalize_path_key(&repo_root);
+
+        // dup check (daemon-canonical lane_registry)。
+        let exists = {
+            let lr = self.lane_registry.read().await;
+            lr.get(&key)
+                .map(|lanes| lanes.iter().any(|l| l.address == addr))
+                .unwrap_or(false)
+        };
+        if exists {
+            return Err(CapabilityError::Other(format!(
+                "Lane {} already exists",
+                addr
+            )));
+        }
+
+        // §5.3: ground provision は daemon が行う (worktree add)。 blocking git は spawn_blocking。
+        let performer_dir = {
+            let repo_root = repo_root.clone();
+            let name = name.to_string();
+            let branch = branch.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::lane::commands::new_performer_in(
+                    &repo_root,
+                    &name,
+                    &branch,
+                    false,
+                    crate::lane::commands::Isolation::Worktree,
+                )
+            })
+            .await
+            .map_err(|e| CapabilityError::Other(format!("worktree provision task join: {}", e)))?
+            .map_err(|e| CapabilityError::Other(format!("worktree provision 失敗: {}", e)))?
+        };
+
+        // descriptor を daemon-canonical truth として構築 + 永続。 pid/tmux は SP spawn 後の
+        // push で enrich される (state=Spawning = ground ready / PtySlot pending)。
+        let info = LaneInfo {
+            id: crate::lane::lane_id::load_or_create(&project_id, name),
+            address: addr.clone(),
+            kind: LaneKind::Performer,
+            name: Some(name.to_string()),
+            state: LaneState::Spawning,
+            stand: stand.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: performer_dir.to_string_lossy().into_owned(),
+            performer_status: None,
+            cc_session_id: None,
+            tmux: Vec::new(),
+        };
+        self.lane_registry
+            .write()
+            .await
+            .entry(key.clone())
+            .or_default()
+            .push(info.clone());
+        if let Some(db) = &self.vpdb
+            && let Err(e) = db.upsert_lane(&key, &info).await
+        {
+            tracing::warn!(
+                "lane descriptor の db 永続に失敗 (in-memory は反映済): {}",
+                e
+            );
+        }
+
+        tracing::info!(
+            "lane created (daemon): addr={} cwd={} (PtySlot は watcher→SP で spawn)",
+            addr,
+            info.cwd
+        );
+        Ok(info)
+    }
+
     /// プロジェクト名を変更（+ projects.kdl に永続化、 VP-188）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
         if new_name.trim().is_empty() {
@@ -2746,6 +2857,82 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_create_lane_provisions_worktree_and_owns_descriptor() {
+        // doc 24 §10 Phase 2 B-create: daemon が performer lane を create し、 worktree(ground)
+        // を provision して descriptor を daemon-canonical truth として所有する end-to-end 検証。
+        use crate::process::lanes_state::LaneKind;
+
+        let cap = make_test_cap();
+        // address の project 部分は path basename から取る (create_handler と一貫) ため、
+        // repo dir の basename を "bcreate" に固定する (parent に pid を入れて衝突回避)。
+        let parent = std::env::temp_dir().join(format!("vp-test-bcreate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let tmp = parent.join("bcreate");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // worktree add は initial commit を要するので minimal git repo を用意。
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&tmp)
+                .status()
+                .expect("git command 失敗")
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(tmp.join("README.md"), "# test\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "initial"]);
+
+        let project_path = tmp.to_string_lossy().to_string();
+        cap.add_project("bcreate", &project_path).await.unwrap();
+
+        // daemon create (branch / stand は resolve 済の concrete 値を渡す)。
+        let info = cap
+            .create_lane(&project_path, "foo", "test/foo", "echoes")
+            .await
+            .expect("daemon create_lane 成功");
+
+        // descriptor が daemon-canonical truth として返る。
+        assert_eq!(info.kind, LaneKind::Performer);
+        assert_eq!(info.name.as_deref(), Some("foo"));
+        assert_eq!(info.address.to_string(), "bcreate/performer/foo");
+        assert_eq!(info.stand, "echoes");
+
+        // §5.3: daemon が worktree(ground) を provision する。
+        let performer_dir = tmp.join(".vp").join("lanes").join("foo");
+        assert!(
+            performer_dir.exists(),
+            "daemon が worktree を provision する"
+        );
+
+        // descriptor が lane_registry (daemon-canonical) に所有される。
+        let key = normalize_path_key(&PathBuf::from(&project_path));
+        {
+            let registry = cap.lane_registry_ref();
+            let lr = registry.read().await;
+            let lanes = lr.get(&key).expect("project の lanes が登録される");
+            assert!(
+                lanes.iter().any(|l| l.address == info.address),
+                "descriptor が daemon-canonical に所有される"
+            );
+        }
+
+        // dup: 同名 create は registry-based dup check で弾く (already exists)。
+        let dup = cap
+            .create_lane(&project_path, "foo", "test/foo", "echoes")
+            .await;
+        assert!(dup.is_err());
+        assert!(
+            dup.unwrap_err().to_string().contains("already exists"),
+            "重複 create は already exists で弾く"
+        );
+
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     // --- PR-D: slot / sync の daemon 委譲受け皿 ---

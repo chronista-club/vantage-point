@@ -482,7 +482,10 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
         )
         .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
-        .route("/api/world/lanes", get(world::world_list_lanes))
+        .route(
+            "/api/world/lanes",
+            get(world::world_list_lanes).post(world::world_create_lane),
+        )
         .route(
             "/api/world/lanes/active",
             post(world::world_set_active_lane),
@@ -886,7 +889,10 @@ pub async fn run_world(
         )
         .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
-        .route("/api/world/lanes", get(world::world_list_lanes))
+        .route(
+            "/api/world/lanes",
+            get(world::world_list_lanes).post(world::world_create_lane),
+        )
         .route(
             "/api/world/lanes/active",
             post(world::world_set_active_lane),
