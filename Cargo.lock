@@ -1620,9 +1620,9 @@ dependencies = [
 
 [[package]]
 name = "club-nostos"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e87df464b880f5cd39b018538e29b7366d5fb5119e51f7ae36d854cb8522f852"
+checksum = "98e9948072f0a1c520733cf6447e6ad2da2a5460033679bdea57f1cacbc70e9c"
 
 [[package]]
 name = "club-unison"
