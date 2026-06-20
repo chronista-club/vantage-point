@@ -136,16 +136,8 @@ pub const JUSTICE: StandAlias = StandAlias {
     emoji: "🌫️",
 };
 
-// ─── インフラ（Capability の下、永続化レイヤー）─────
-
-/// 永続化能力 — SurrealDB を通じてメッセージ・状態を DISC として保存・復元
-pub const WHITESNAKE: StandAlias = StandAlias {
-    id: "persistence",
-    functional_name: "Persistence",
-    stand_name: "Whitesnake",
-    short: "WS",
-    emoji: "🐍",
-};
+// 旧 Whitesnake 🐍 (永続化レイヤー) は退役 — 永続は SurrealDB (vpdb) に一本化。
+// PP pane state は pane_contents table が担う (file-backed DISC 層は撤去)。
 
 /// 全 Stand の一覧（イテレーション用）
 pub const ALL: &[&StandAlias] = &[
@@ -157,5 +149,4 @@ pub const ALL: &[&StandAlias] = &[
     &THE_HAND,
     &BASTET,
     &JUSTICE,
-    &WHITESNAKE,
 ];

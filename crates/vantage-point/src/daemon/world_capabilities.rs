@@ -36,7 +36,7 @@ use tokio::sync::RwLock;
 use crate::bastet::Bastet;
 #[cfg(feature = "midi")]
 use crate::capability::MidiCapability;
-use crate::capability::{ProcessManagerCapability, UpdateCapability, Whitesnake};
+use crate::capability::{ProcessManagerCapability, UpdateCapability};
 
 /// World 階層 Stand container。
 ///
@@ -47,9 +47,6 @@ pub struct WorldCapabilities {
 
     /// Self-update Capability (LSCM Open Question Q-12 catalog 拡張候補)
     pub update: Arc<RwLock<UpdateCapability>>,
-
-    /// Whitesnake 🐍 — 汎用永続化レイヤー (file-backed per port)
-    pub whitesnake: Whitesnake,
 
     /// 旧 MidiCapability（single-device monitor、Bastet 移行完了まで並立）。
     #[cfg(feature = "midi")]
@@ -72,12 +69,10 @@ impl WorldCapabilities {
     pub fn new(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
-        whitesnake: Whitesnake,
     ) -> Self {
         Self {
             process_manager,
             update,
-            whitesnake,
             #[cfg(feature = "midi")]
             midi: None,
             #[cfg(feature = "midi")]
@@ -97,12 +92,11 @@ impl WorldCapabilities {
     pub async fn with_midi(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
-        whitesnake: Whitesnake,
         midi_config: crate::midi::MidiConfig,
     ) -> anyhow::Result<Self> {
         use crate::capability::core::{Capability, CapabilityContext};
 
-        let mut wc = Self::new(process_manager, update, whitesnake);
+        let mut wc = Self::new(process_manager, update);
 
         // MidiCapability を host (PR-α-2)
         let mut midi_cap = MidiCapability::with_config(midi_config);
@@ -142,13 +136,11 @@ mod tests {
     async fn world_capabilities_new_smoke() {
         let pmc = Arc::new(RwLock::new(ProcessManagerCapability::new()));
         let upd = Arc::new(RwLock::new(UpdateCapability::new()));
-        let ws = Whitesnake::in_memory();
 
-        let wc = WorldCapabilities::new(pmc, upd, ws);
+        let wc = WorldCapabilities::new(pmc, upd);
         // smoke test: construct succeeds without panic、 各 field が存在
         let _ = wc.process_manager.read().await;
         let _ = wc.update.read().await;
-        let _ = &wc.whitesnake;
 
         #[cfg(feature = "midi")]
         assert!(

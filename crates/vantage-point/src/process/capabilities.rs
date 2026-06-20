@@ -13,16 +13,14 @@
 //!   - mailbox address `midi@{project}` (旧) → `bastet@world` (新、 旧称 `hp@world`)
 
 use crate::capability::core::Capability;
-use crate::capability::{
-    AgentCapability, CapabilityContext, EventBus, ProtocolCapability, Whitesnake,
-};
+use crate::capability::{AgentCapability, CapabilityContext, EventBus, ProtocolCapability};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Process Capability Manager
 ///
 /// Process (= LSCM Project Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
-/// Project 階層 Stand のみ host。 World 階層 Stand (HP / Whitesnake / Update / TheWorld) は
+/// Project 階層 Stand のみ host。 World 階層 Stand (HP / Update / TheWorld) は
 /// `crate::daemon::world_capabilities::WorldCapabilities` 側に移管 (PR-α-2 完了)。
 ///
 /// VP-179 (Phase 5): `msgbox_router` field 撤去。 wiremsg R5-3 で旧 msgbox store も
@@ -38,23 +36,16 @@ pub struct ProcessCapabilities {
 
 /// Capability 初期化設定
 ///
-/// VP-179 (Phase 5): `whitesnake` field は MsgboxRouter 廃止に伴い配線経路としては
-/// 未使用 (= AppState 側で直接 wire される)。 互換性のため signature は維持。
 /// wiremsg R5-3: 旧 `remote_routing` field (msgbox forward) は撤去済。
+/// Whitesnake 退役 (永続は SurrealDB 一本化): 旧 `whitesnake` field も撤去。
 pub struct CapabilityConfig {
     /// プロジェクトディレクトリ
     pub project_dir: String,
-    /// 永続化バックエンド (= AppState.whitesnake に wire される、 Capability 初期化には未使用)
-    pub whitesnake: Option<Whitesnake>,
 }
 
 impl ProcessCapabilities {
     /// 新しい ProcessCapabilities を作成・初期化
     pub async fn new(config: CapabilityConfig) -> Self {
-        // VP-179 (Phase 5): MsgboxRouter 構築を撤去。 config.whitesnake は
-        // AppState 側で直接 wire される。
-        let _ = &config.whitesnake;
-
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
 
@@ -217,7 +208,6 @@ mod tests {
     async fn test_process_capabilities_new() {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
-            whitesnake: None,
         };
 
         let _caps = ProcessCapabilities::new(config).await;
@@ -227,7 +217,6 @@ mod tests {
     async fn test_process_capabilities_initialize() {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
-            whitesnake: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
