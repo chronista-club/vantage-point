@@ -673,7 +673,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         LaneCommands::Cleanup { force } => {
             ws::cleanup_performers(force).map_err(|e| anyhow::anyhow!(e))
         }
-        LaneCommands::Switch { name } => switch_lane_via_world(&name),
+        LaneCommands::Switch { name } => switch_lane_via_quic(&name),
         LaneCommands::LastSession { project, lane } => {
             // R3-b: echoes task (spawn 時) から env 経由で呼ばれる主経路。
             // 未記録 / env 不足は「出力なし exit 0」 — caller の `[ -n "$RESUME_ID" ]`
@@ -728,11 +728,14 @@ fn list_performers_detail() -> Result<()> {
 
 /// active Lane 切り替え CLI 実装 (= mcp__switch_lane の CLI pair、B1: Unison-native)。
 ///
-/// 旧: TheWorld(:32000) `/api/canvas/switch_lane` に global broadcast（project 切替）。
-/// per-lane PP 後は **現 project の local SP** に `SwitchLane` ProcessMessage を投げ、
-/// hub → topic `process/paisley-park/event/switch-lane`（非 retained）→ canvas channel 経由で
-/// vp-app が受信し、その lane を active 化する（lane-within-project の per-project 切替）。
-fn switch_lane_via_world(name: &str) -> Result<()> {
+/// **現 project の local SP** の Unison(QUIC) "process" チャネルに `SwitchLane` ProcessMessage を
+/// 投げ、hub.broadcast → topic `process/paisley-park/event/switch-lane`（非 retained）→
+/// canvas channel 経由で vp-app が受信し、その lane を active 化する
+/// （lane-within-project の per-project 切替）。
+///
+/// PR1a で最後の HTTP 1 hop（`POST /api/show`）を QUIC に置換し、CLI/MCP の transport を統一。
+/// MCP 側は既に `process_call("switch_lane", …)`（QUIC）で同経路（mcp.rs）。
+fn switch_lane_via_quic(name: &str) -> Result<()> {
     // lane token = "conductor" (lead) or performer 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
     let trimmed = name.trim();
@@ -743,26 +746,22 @@ fn switch_lane_via_world(name: &str) -> Result<()> {
     // cwd の project の running SP を解決（performer lane でも repo root の SP に着地）。
     let (project_name, port) = resolve_parent_project()?;
 
-    // /api/show は任意の ProcessMessage を hub.broadcast する汎用入口（show_handler）。
-    let url = format!("http://[::1]:{}/api/show", port);
-    let body = serde_json::json!({ "type": "switch_lane", "lane": trimmed });
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| anyhow::anyhow!("reqwest client build failed: {}", e))?;
-
-    let resp =
-        client.post(&url).json(&body).send().map_err(|e| {
-            anyhow::anyhow!("SP {} (:{}) に到達できません: {}", project_name, port, e)
+    // SP の Unison(QUIC) "process" チャネルに SwitchLane を送る（B1: Unison-native 完成）。
+    let msg = vantage_point::protocol::ProcessMessage::SwitchLane {
+        lane: trimmed.to_string(),
+    };
+    vantage_point::commands::process_client::send_process_message(port, "switch_lane", &msg)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "SP {} (:{}) への switch_lane 送信失敗: {}",
+                project_name,
+                port,
+                e
+            )
         })?;
-    let status = resp.status();
-    let text = resp.text().unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("SP API error: {} {}", status, text);
-    }
+
     println!(
-        "switched active lane to '{}' (project={})",
+        "switched active lane to '{}' (project={}, via Unison)",
         trimmed, project_name
     );
     Ok(())
