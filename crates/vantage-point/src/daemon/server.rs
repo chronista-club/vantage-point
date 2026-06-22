@@ -1158,7 +1158,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     async move {
                         let channel = UnisonChannel::new(stream);
                         let mut registered_name: Option<String> = None;
-                        let mut registered_port: Option<u16> = None;
                         let mut _registered_project_dir: Option<String> = None;
 
                         loop {
@@ -1208,7 +1207,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     );
 
                                     registered_name = Some(path_key.clone());
-                                    registered_port = Some(port);
                                     _registered_project_dir = Some(project_dir.clone());
 
                                     // ロック順序統一: projects → running_processes
@@ -1593,14 +1591,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         project_path: name.clone(),
                                     },
                                 );
-
-                                // メニューバーアプリに通知
-                                if let Some(port) = registered_port {
-                                    crate::notify::post_process_changed(
-                                        port,
-                                        "stopped",
-                                    );
-                                }
                             }
                         }
 

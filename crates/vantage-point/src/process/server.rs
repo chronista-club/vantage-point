@@ -595,9 +595,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
-    // メニューバーアプリに起動完了を通知
-    crate::notify::post_process_changed(port, "started");
-
     // Clone for shutdown
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
@@ -615,9 +612,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
 
     // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
-
-    // メニューバーアプリに停止を通知
-    crate::notify::post_process_changed(port, "stopped");
 
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
@@ -1099,10 +1093,6 @@ pub async fn run_world(
                                         project_name,
                                         port_val
                                     );
-
-                                    if port_val > 0 {
-                                        crate::notify::post_process_changed(port_val, event);
-                                    }
                                 }
                                 Some(Err(e)) => {
                                     error_count += 1;
