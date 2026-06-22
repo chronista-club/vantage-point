@@ -1519,6 +1519,13 @@ pub fn run() -> anyhow::Result<()> {
     let icon_launch_at = std::time::Instant::now();
     let mut icon_settled = false;
 
+    // Model B (focus = 操舵ポインタ): この vp-app instance が OS の key window かを追跡する。
+    // multi-window は別プロセス (VP_APP_INSTANCE = primary 0 / secondary N) なので、ROTO の
+    // switch_lane broadcast は全 instance の "canvas" 購読に届く。両 window が一斉に切り替わるのを
+    // 防ぐため、**focused instance だけ**が switch_lane を適用する (B-local self-filter)。
+    // with_focused(true) で起動するので初期値は true。
+    let mut is_focused = true;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -1654,6 +1661,17 @@ pub fn run() -> anyhow::Result<()> {
                     });
                     session_state.save();
                 }
+            }
+            // Model B (focus = 操舵ポインタ): focus 状態を追跡する。OS の key window は全プロセス間で
+            // 1 つだけなので、ちょうど 1 つの instance が is_focused=true になる。これにより ROTO の
+            // switch_lane broadcast を「今見ている window」だけが適用し、focus を切り替えるだけで
+            // 操舵対象 window が移る (seamless)。
+            Event::WindowEvent {
+                event: WindowEvent::Focused(focused),
+                ..
+            } => {
+                is_focused = focused;
+                tracing::debug!("window focus changed: is_focused={}", focused);
             }
             // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
             // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
@@ -2128,15 +2146,25 @@ pub fn run() -> anyhow::Result<()> {
                         } else {
                             format!("{}/performer/{}", project, token)
                         };
-                        activate_lane(
-                            &address,
-                            &mut sidebar_state,
-                            &mut session_state,
-                            &webview,
-                            &mut lane_respawn_triggered,
-                            &rt_handle,
-                            &respawn_proxy,
-                        );
+                        // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
+                        // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
+                        // 無視し、自分の lane に park されたまま (= 2 window が別々の lane を同時に見られる)。
+                        if is_focused {
+                            activate_lane(
+                                &address,
+                                &mut sidebar_state,
+                                &mut session_state,
+                                &webview,
+                                &mut lane_respawn_triggered,
+                                &rt_handle,
+                                &respawn_proxy,
+                            );
+                        } else {
+                            tracing::debug!(
+                                "switch_lane skip (not focused): address={}",
+                                address
+                            );
+                        }
                     }
                 } else if active_project.is_some() && active_project == msg_project {
                     // PP content (非 switch_lane) は active project の分のみ main area に転送する。
