@@ -137,22 +137,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         }
     };
 
-    // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= notify /
-    // lane-spawn) を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
+    // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= lane-spawn)
+    // を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
     // MidiCapability metadata register は dynamic routing vision 確定後 (cf. design-spark
     // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
-    let mut actor_registry = crate::capability::ActorRegistry::new();
-
-    // Notification ブリッジ: wire `notify@<project>` → DistributedNotification
-    // wiremsg R2-a (store 中央化): SP は wire store を持たない。 actor は TheWorld への
-    // HTTP long-poll (world_wire) で recv する。 producer は `wire_send(to=["notify@<project>"])`。
-    actor_registry.spawn_service(
-        super::notification_actor::NotificationActor::new(
-            project_name_for_remote.clone(),
-            project_dir.clone(),
-        ),
-        shutdown_token.clone(),
-    );
+    let actor_registry = crate::capability::ActorRegistry::new();
 
     let state = Arc::new(AppState {
         hub,
@@ -166,7 +155,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         capabilities,
         // R3: wire cross-process delivery の宛先分類用 — 解決済 project 名
         project_name: project_name_for_remote.clone(),
-        // VP-159 PR-4b: notify を spawn_service 済の ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
+        // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
         update: None,
