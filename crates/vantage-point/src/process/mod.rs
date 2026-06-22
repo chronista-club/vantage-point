@@ -26,8 +26,6 @@ pub(crate) mod lane_spawn_actor;
 pub(crate) mod lane_stand;
 /// Lane state types (LaneAddress / LanePool 等) — Lane scope の data model
 pub(crate) mod lanes_state;
-/// Notification bridge actor — `notify` mailbox から DistributedNotification 配信 (VP-159 PR-3、 VP-24 inline 実装 を struct 化)
-pub(crate) mod notification_actor;
 pub mod process_runner;
 /// Project scope の Stand pool (PP / GE / HP)
 pub(crate) mod project_stands_state;
