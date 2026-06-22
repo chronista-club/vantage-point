@@ -19,9 +19,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 
+use tokio_util::sync::CancellationToken;
+
+use nostos::{AsyncDriver, Outcome};
+
+use crate::capability::ProcessManagerCapability;
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
 use crate::capability::stand_service::{LayerScope, Service};
+use crate::commands::roto_control::{
+    InProcessLaneSource, QuicSwitchSink, RotoDescriptor, RotoHealDriver, RotoSessionBracket,
+    RotoView,
+};
 use crate::device_input::DeviceInput;
 use crate::process::lanes_state::LaneAddress;
 
@@ -184,6 +193,10 @@ pub struct Bastet {
     discovery_task: Option<JoinHandle<()>>,
     /// discovery cancel signal
     cancel_tx: Option<mpsc::Sender<()>>,
+    /// ROTO 持続セッション task（nostos self-heal driver、World lifecycle に enclose）
+    roto_task: Option<JoinHandle<()>>,
+    /// ROTO セッションの shutdown 子 token
+    roto_cancel: Option<CancellationToken>,
 }
 
 impl Bastet {
@@ -195,6 +208,8 @@ impl Bastet {
             event_bus,
             discovery_task: None,
             cancel_tx: None,
+            roto_task: None,
+            roto_cancel: None,
         }
     }
 
@@ -275,8 +290,12 @@ impl Bastet {
                         }));
                     event_bus.emit(event).await;
 
-                    // input port + parser がある device は input listener を spawn
+                    // input port + parser がある device は input listener を spawn。
+                    // ただし ROTO は Bastet の持続 control loop（start_roto_control）が
+                    // input + keepalive + output を所有するため、discovery の input-only
+                    // listener からは除外する（同一 port への二重接続を回避）。
                     if *has_in
+                        && !name.contains("Roto")
                         && let Some(handle) = spawn_input_listener(name, Arc::clone(&event_bus))
                     {
                         input_listeners.insert(name.clone(), handle);
@@ -322,6 +341,78 @@ impl Bastet {
             let _ = tx.send(()).await;
         }
         if let Some(task) = self.discovery_task.take() {
+            task.abort();
+        }
+    }
+
+    /// ROTO 持続セッションを開始する。
+    ///
+    /// 前景 `vp midi roto control` が一発でやっていた〔open(in+out) + DAW_START handshake +
+    /// keepalive(autorespond) + LCD projection + track button → switch_lane〕を、daemon 常駐 +
+    /// 自動再接続（抜き差し heal）の持続サービスに昇格させる。nostos `AsyncBracket`/`AsyncDriver`
+    /// で「接続 1 サイクル = enter→control loop→exit」を表し、disconnect は `Reborn` で再接続する。
+    ///
+    /// lane data は `ProcessManagerCapability` の Arc を in-process 直読み（QUIC self-loop なし、
+    /// `build_world_lanes` 共有で CLI と並び一致）。switch_lane は SP 越境なので QUIC。
+    /// `shutdown` の子 token で World/daemon の shutdown chain に enclose する。
+    ///
+    /// ⚠️ CoreMIDI 物理 port は単一 owner。daemon 常駐中は CLI `vp midi roto control` が
+    /// 同 port を取得できない（想定挙動）。
+    pub async fn start_roto_control(
+        &mut self,
+        world_cap: Arc<RwLock<ProcessManagerCapability>>,
+        shutdown: CancellationToken,
+    ) {
+        // 二重起動防止（既に走っていれば no-op）
+        if self.roto_task.as_ref().is_some_and(|t| !t.is_finished()) {
+            return;
+        }
+        let child = shutdown.child_token();
+        self.roto_cancel = Some(child.clone());
+
+        // ProcessManagerCapability から lane data の Arc を取り出す（in-process 直読み）。
+        let (running_processes, lane_registry) = {
+            let pmc = world_cap.read().await;
+            (pmc.running_processes_ref(), pmc.lane_registry_ref())
+        };
+        let lane_source = InProcessLaneSource {
+            running_processes,
+            lane_registry: Some(lane_registry),
+            world_cap: Some(world_cap),
+        };
+        let bracket = RotoSessionBracket::new(lane_source, QuicSwitchSink::new(), child.clone());
+        let mut driver = RotoHealDriver {
+            shutdown: child,
+            backoff: Duration::from_millis(800),
+        };
+
+        let task = tokio::spawn(async move {
+            let initial = RotoDescriptor {
+                port_pattern: "Roto".to_string(),
+                view: RotoView::default(),
+            };
+            tracing::info!("🧲 Bastet ROTO 持続セッション開始 (self-heal)");
+            match driver.run(&bracket, initial).await {
+                Outcome::Done(()) => {
+                    tracing::info!("🧲 Bastet ROTO セッション終了 (graceful)")
+                }
+                Outcome::Reborn(_) => {
+                    tracing::info!("🧲 Bastet ROTO セッション離脱 (shutdown)")
+                }
+                Outcome::Failed(msg) => {
+                    tracing::warn!("🧲 Bastet ROTO セッション fatal: {}", msg)
+                }
+            }
+        });
+        self.roto_task = Some(task);
+    }
+
+    /// ROTO 持続セッションを停止する（shutdown chain から呼ぶ）。
+    pub async fn stop_roto_control(&mut self) {
+        if let Some(cancel) = self.roto_cancel.take() {
+            cancel.cancel();
+        }
+        if let Some(task) = self.roto_task.take() {
             task.abort();
         }
     }

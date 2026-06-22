@@ -749,6 +749,22 @@ pub async fn run_world(
         }
     };
 
+    // Bastet 🧲 — ROTO 持続セッションを World lifecycle に enclose して起動する。
+    // 前景 `vp midi roto control` のフル接続（open + handshake + keepalive + LCD/routing）を
+    // daemon 常駐 + 自動再接続に昇格。lane data は world_cap(ProcessManagerCapability) を
+    // in-process 直読み、switch_lane は SP 越境なので QUIC。shutdown_token の子 token で
+    // graceful 停止する。bastet_for_shutdown は cleanup chain 用に Arc を clone しておく。
+    #[cfg(feature = "midi")]
+    let bastet_for_shutdown = world_capabilities.bastet.clone();
+    #[cfg(feature = "midi")]
+    if let Some(bastet) = world_capabilities.bastet.as_ref() {
+        bastet
+            .write()
+            .await
+            .start_roto_control(world_cap.clone(), shutdown_token.clone())
+            .await;
+    }
+
     // Phase A ① / R1: World モードでも wiremsg store を build (= 将来 World 階層 actor 用)。
     // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
     let wiremsg_store = match vpdb.as_ref() {
@@ -1161,6 +1177,11 @@ pub async fn run_world(
 
     // Shutdown capabilities
     tracing::info!("Shutting down World...");
+    // Bastet ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
+    #[cfg(feature = "midi")]
+    if let Some(bastet) = bastet_for_shutdown.as_ref() {
+        bastet.write().await.stop_roto_control().await;
+    }
     if let Err(e) = world_for_shutdown.write().await.shutdown().await {
         tracing::warn!("Error during world shutdown: {}", e);
     }
