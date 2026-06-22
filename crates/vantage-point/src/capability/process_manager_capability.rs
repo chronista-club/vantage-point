@@ -2119,7 +2119,6 @@ impl ProcessManagerCapability {
                             new_proc.port
                         );
                         missing_count.remove(path_key);
-                        crate::notify::post_process_changed(new_proc.port, "restarted");
                     }
                     Err(e) => {
                         tracing::error!(

@@ -31,7 +31,6 @@ pub mod lane;
 pub mod mcp;
 #[cfg(feature = "midi")]
 pub mod midi;
-pub mod notify;
 pub mod platform;
 pub mod port_layout;
 pub mod process;
