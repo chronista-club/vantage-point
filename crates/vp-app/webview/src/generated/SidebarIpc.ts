@@ -59,6 +59,7 @@ export interface LaneDelete {
 export interface LaneRestart {
   path: string;
   address: string;
+  fresh?: boolean;
 }
 
 /** Request "lane:add_performer" */

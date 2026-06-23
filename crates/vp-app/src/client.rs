@@ -495,13 +495,23 @@ impl TheWorldClient {
 
     /// Lane の Conductor Stand restart (PtySlot kill + 同 stand で respawn)。
     /// vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に再 attach。
-    pub async fn restart_lane(&self, address: &str) -> Result<()> {
+    ///
+    /// `fresh=true` は resume/continue を回避して素の `claude` を起動する
+    /// (sidebar "New Conductor Session")。 false は従来の restart (会話を継ぐ)。
+    pub async fn restart_lane(&self, address: &str, fresh: bool) -> Result<()> {
         let encoded = address
             .replace('%', "%25")
             .replace('&', "%26")
             .replace('=', "%3D")
             .replace(' ', "%20");
-        let url = format!("{}/api/lanes/restart?address={}", self.base_url, encoded);
+        let url = if fresh {
+            format!(
+                "{}/api/lanes/restart?address={}&fresh=true",
+                self.base_url, encoded
+            )
+        } else {
+            format!("{}/api/lanes/restart?address={}", self.base_url, encoded)
+        };
         let resp = self.client.post(&url).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();

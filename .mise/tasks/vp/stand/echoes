@@ -7,6 +7,7 @@
 #   VP_SESSION = tmux session 名
 #   VP_PROJECT = project 名
 #   VP_LANE    = lane label
+#   VP_FRESH   = "1" で resume/continue を回避し fresh な claude を起動 (optional、 "New Conductor Session")
 # VP-specific metadata:
 #VP icon="💬"
 #VP tier=2
@@ -66,7 +67,14 @@ WIRE_HOOKS='{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":
 # 拾える)。 user が対話する conductor は session 永続化 (= VP コアコンセプト) を優先して
 # `--continue` chain を維持 (dashboard が出ても人間は操作できる)。
 # 関連 memory: mem_1CbXZyCiqrdgteGhRFDaHW (CC 2.1 Background Agents daemon × VP)
-if [ "${VP_LANE:-}" = "conductor" ]; then
+if [ "${VP_FRESH:-}" = "1" ]; then
+    # sidebar "New Conductor Session" (lane:restart fresh=true): resume/continue を回避して
+    # 必ず fresh な claude を起動する。 一度 /exit → 素の `claude` を打ち直す手間を menu 1 click に
+    # 畳む。 新 session の id は global SessionStart hook (vp wire hook-check) が cc_session file に
+    # 記録するので、 以後の通常 restart はこの fresh session を --resume で継ぐ (= 非破壊、 旧会話も
+    # claude 履歴に残り /resume で復元可能)。
+    CLAUDE_CMD="claude --settings '$WIRE_HOOKS'"
+elif [ "${VP_LANE:-}" = "conductor" ]; then
     # wiremsg R3-b: 前回 session を指名 resume する (CC 2.1 の Agent View dashboard 罠の
     # 構造的回避 — `--continue` は「cwd の最新」を拾うため bg session 在りで dashboard 化する。
     # 設計 mem_1CbXZyCiqrdgteGhRFDaHW)。 id は SessionStart hook (vp wire hook-check、 global

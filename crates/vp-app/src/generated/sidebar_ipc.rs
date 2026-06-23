@@ -50,6 +50,8 @@ pub struct LaneDelete {
 pub struct LaneRestart {
     pub path: String,
     pub address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fresh: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
