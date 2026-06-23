@@ -293,12 +293,17 @@ main    ───●──────────────────●─
 
 MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯は creo-memories に記録（`category: "cross-project"` + `from: "vp"`）。
 
+## GitNexus index 更新コマンド（正）
+
+> ⚠️ index 更新は **`bunx gitnexus analyze`** を使う（この repo / mako 環境の JS runtime は bun。 node・npm・npx は使わない）。
+> 下の `<!-- gitnexus:start -->` ブロックは `gitnexus analyze` が**毎回再生成**するため `node .gitnexus/run.cjs analyze` 表記に戻るが、 それは tool 自動生成なので無視してよい。 **正はこの行（`bunx gitnexus analyze`）**。 関連: memory `js-runtime-bun`。
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **vantage-point** (11808 symbols, 25803 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> Index stale? Run **`bunx gitnexus analyze`** from the project root（この repo の JS runtime は bun、 node 不使用）。 fallback として `node .gitnexus/run.cjs analyze`（runner 自動選択）も可。 ⚠️ `npm`/`npx` は #1939 で crash しうるので使わない。
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
 ## Always Do
 
