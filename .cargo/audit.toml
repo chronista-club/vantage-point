@@ -1,0 +1,42 @@
+# cargo-audit 設定 — 依存の既知 advisory 許容リスト (SSOT)
+#
+# cargo-audit は CWD の `.cargo/audit.toml` を自動読込する (repo-root の `audit.toml` は
+# 読まない)。CI の `cargo audit` はこのファイルだけを参照する — 旧 ci.yml の --ignore flag
+# 羅列 (27件、うち 12 は既に tree から消えた dead entry) を廃止して一本化した。
+#
+# 方針: 定期的に `cargo update` し、解消できた advisory は本リストから削除する。
+# ここに残すのは「修正版が無い (vuln)」か「unmaintained だが transitive で VP からは
+# 直接制御できない (upstream / 自作 lib 側の対応待ち)」もののみ。
+# 全エントリは更新時点 (2026-06-23、cargo update 後) で実際に依存ツリーに存在する
+# advisory と 1:1 対応する (cargo audit を flag 無しで回して確認済)。
+
+[advisories]
+ignore = [
+    # === 脆弱性 (修正版なし) ===
+    # rsa Marvin Attack (timing sidechannel)。quinn/rustls 経由のローカル QUIC 通信のみで
+    # 影響軽微、かつ patch 未提供のため許容。修正版が出たら削除する。
+    "RUSTSEC-2023-0071",
+
+    # === GTK3 / glib (tao の Linux GUI 依存、macOS では未コンパイル) ===
+    # tao (window lib) が Linux で gtk3-rs に依存。gtk-rs の GTK3 binding はメンテ終了。
+    # VP は macOS 主軸で該当コードは動かない。tao が gtk4 へ移行すれば解消する。
+    "RUSTSEC-2024-0411", # gdkwayland-sys
+    "RUSTSEC-2024-0412", # gdk
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # gdkx11-sys
+    "RUSTSEC-2024-0415", # gtk
+    "RUSTSEC-2024-0416", # atk-sys
+    "RUSTSEC-2024-0417", # gdkx11
+    "RUSTSEC-2024-0418", # gdk-sys
+    "RUSTSEC-2024-0419", # gtk3-macros
+    "RUSTSEC-2024-0420", # gtk-sys
+    "RUSTSEC-2024-0429", # glib VariantStrIter unsoundness
+
+    # === unmaintained な transitive 依存 (VP から直接制御不可) ===
+    "RUSTSEC-2023-0089", # atomic-polyfill (transitive、portable-atomic へ未移行)
+    "RUSTSEC-2024-0320", # yaml-rust ← syntect ← tui-markdown
+    "RUSTSEC-2024-0370", # proc-macro-error (transitive proc-macro dep)
+    "RUSTSEC-2024-0436", # paste ← image/rav1e ← arboard / ratatui-image
+    "RUSTSEC-2025-0134", # rustls-pemfile ← club-unison (自作 lib、将来 root-fix 可)
+    "RUSTSEC-2025-0141", # bincode (transitive、1.x→2.x 未移行)
+]

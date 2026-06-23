@@ -142,6 +142,10 @@ pub struct ProjectInfo {
     /// `state` キーで serialize する (sidebar JS が `p.state` を読む)。
     #[serde(default, alias = "process_status")]
     pub state: ProcessStatus,
+    /// Model Q: daemon canonical の active lane (presence)。`/api/world/projects` の
+    /// per-project active_lane。 boot 時の復元に使う (session.json でなく daemon が源)。
+    #[serde(default)]
+    pub active_lane: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -409,20 +413,36 @@ impl TheWorldClient {
         Ok(())
     }
 
-    /// Phase 3-A: SP に Performer Lane を create (`POST /api/lanes`)。
-    /// `branch` 指定時は SP が `vp lane new <name> <branch>` で performer dir を作成して spawn する。
-    /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する
-    /// (doc 11 PR-C、 None なら SP-side default = config.default_stand_or_echoes())。
-    /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
+    /// active lane (presence、 Model Q) を daemon に設定する (POST /api/world/lanes/active)。
+    ///
+    /// daemon が project ごとの active lane を canonical に保持し db/world に永続する。
+    /// optimistic local 反映後に fire-and-forget で呼ぶ (reorder と同じ「操作→daemon 永続」)。
+    pub async fn set_active_lane(&self, path: String, address: String) -> Result<()> {
+        let url = format!("{}/api/world/lanes/active", self.base_url);
+        let body = serde_json::json!({ "path": path, "address": address });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("set_active_lane HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
+
+    /// doc 24 §10 Phase 2 B-create: performer lane を **daemon** (`POST /api/world/lanes`) で
+    /// create する。 `base_url` は daemon (TheWorld、 例 `http://127.0.0.1:32000`) を指定。
+    /// 旧来は SP の `/api/lanes` 直叩きだったが、 ground provision + descriptor 所有を daemon に
+    /// 寄せた (§5.3)。 PtySlot spawn は daemon が worktree を作る → lane_watcher → SP に委譲。
     pub async fn create_performer_lane(
         &self,
+        project_path: &str,
         name: &str,
         branch: Option<&str>,
         stand: Option<&str>,
     ) -> Result<()> {
-        let url = format!("{}/api/lanes", self.base_url);
+        let url = format!("{}/api/world/lanes", self.base_url);
         let mut body = serde_json::json!({
-            "kind": "performer",
+            "path": project_path,
             "name": name,
         });
         if let Some(b) = branch {
@@ -475,13 +495,23 @@ impl TheWorldClient {
 
     /// Lane の Conductor Stand restart (PtySlot kill + 同 stand で respawn)。
     /// vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に再 attach。
-    pub async fn restart_lane(&self, address: &str) -> Result<()> {
+    ///
+    /// `fresh=true` は resume/continue を回避して素の `claude` を起動する
+    /// (sidebar "New Conductor Session")。 false は従来の restart (会話を継ぐ)。
+    pub async fn restart_lane(&self, address: &str, fresh: bool) -> Result<()> {
         let encoded = address
             .replace('%', "%25")
             .replace('&', "%26")
             .replace('=', "%3D")
             .replace(' ', "%20");
-        let url = format!("{}/api/lanes/restart?address={}", self.base_url, encoded);
+        let url = if fresh {
+            format!(
+                "{}/api/lanes/restart?address={}&fresh=true",
+                self.base_url, encoded
+            )
+        } else {
+            format!("{}/api/lanes/restart?address={}", self.base_url, encoded)
+        };
         let resp = self.client.post(&url).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();

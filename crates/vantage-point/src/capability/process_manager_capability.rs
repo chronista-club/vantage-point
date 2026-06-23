@@ -58,6 +58,10 @@ pub struct ProjectInfo {
     /// VP-188: SSOT は projects.kdl。 capability は load/persist で round-trip するのみ。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u16>,
+    /// active lane (presence、 Model Q): この project の選択中 lane address。
+    /// daemon-canonical。 `list_projects` で active_lanes map から enrich (構築時は None)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_lane: Option<String>,
 }
 
 fn default_enabled() -> bool {
@@ -158,6 +162,9 @@ pub struct ProcessManagerCapability {
     vp_binary_path: Option<PathBuf>,
     /// SurrealDB クライアント（Some なら DB に二重書き込み）
     vpdb: Option<crate::db::SharedVpDb>,
+    /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
+    /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
+    active_lanes: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl ProcessManagerCapability {
@@ -173,6 +180,7 @@ impl ProcessManagerCapability {
             config: None,
             vp_binary_path: None,
             vpdb: None,
+            active_lanes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -258,14 +266,134 @@ impl ProcessManagerCapability {
                     port: None, // port は動的割当 (port_layout が slot から計算)
                     enabled: e.is_enabled(),
                     slot: e.slot,
+                    active_lane: None, // list_projects で enrich
                 },
             );
         }
         drop(projects);
         drop(order);
 
+        // Model Q: active lane (presence) を db/world から load する (vpdb=Some のみ)。
+        if let Some(db) = &self.vpdb {
+            match db.list_active_lanes().await {
+                Ok(rows) => {
+                    let mut al = self.active_lanes.write().await;
+                    al.clear();
+                    for (path, addr) in rows {
+                        al.insert(path, addr);
+                    }
+                }
+                Err(e) => tracing::warn!("active_lane の load 失敗 (空で継続): {}", e),
+            }
+
+            // doc 24 §10 Phase 2: lane descriptor を db/world から boot load する (daemon
+            // 再起動を re-animate、 §3.3)。 旧来 lane_registry は SP push を待って初めて
+            // 埋まる cache だったが、 daemon-canonical 化で boot 時点から truth を持つ。
+            // SP が後で reconnect すれば register snapshot が最新で上書きする (= reconcile)。
+            match db.list_lanes().await {
+                Ok(rows) => {
+                    let mut lr = self.lane_registry.write().await;
+                    lr.clear();
+                    for (path, info) in rows {
+                        lr.entry(path).or_default().push(info);
+                    }
+                }
+                Err(e) => tracing::warn!("lane の boot load 失敗 (空で継続): {}", e),
+            }
+        }
+
+        // doc 24 §4.6 boot reconcile heal (庭師モデル): desired(store の lifecycle) × actual
+        // (disk の ground) を突き合わせて収束させる。 daemon boot で 1 周 (vpdb=Some のみ内部判定)。
+        self.reconcile_lanes().await;
+
         self.config = Some(config);
         Ok(())
+    }
+
+    /// doc 24 §4.6 boot reconcile heal — desired (store の lifecycle) × actual (disk の ground) を
+    /// 突き合わせて収束させる (庭師モデル)。 daemon boot で 1 周走る。
+    ///
+    /// heal table (create-side、 retry は後続スライス):
+    /// - `provisioning` + ground 在り → `ready` (provision 完了とみなす)
+    /// - `provisioning` + ground 無し → `dead`  (crash 中断。 retry-1x は club-nostos Outcome の次スライス)
+    /// - `ready` + ground 在り       → ok (no-op)
+    /// - `ready` + ground 外部削除   → `dead`  (user の rm を尊重、 勝手に作り直さない)
+    /// - `dead`                      → 保持 (inspection / `--resume`)
+    ///
+    /// destroy-side (`destroying`) と orphan→adopt は後続 increment。
+    async fn reconcile_lanes(&self) {
+        use crate::process::lanes_state::LaneLifecycle;
+        let Some(db) = &self.vpdb else { return };
+        let lifecycles = match db.list_lane_lifecycles().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("reconcile: lane_lifecycle load 失敗 (skip): {}", e);
+                return;
+            }
+        };
+        if lifecycles.is_empty() {
+            return;
+        }
+
+        // descriptor の cwd を引く (boot load 済 lane_registry): (project_path, address) → cwd。
+        // team-b #3: lifecycle はあるのに lane_registry が空 = boot lane load 失敗の可能性。
+        // この不整合のまま進むと全 lane が cwd_map miss → ground_exists=false → dead に誤判定
+        // するため、 skip する (heal は次 boot に委ねる = 庭師の「ゆるやか」収束)。
+        let cwd_map: std::collections::HashMap<(String, String), String> = {
+            let lr = self.lane_registry.read().await;
+            if lr.is_empty() {
+                tracing::warn!(
+                    "reconcile: lane_lifecycle はあるが lane_registry 空 → skip (lane boot load 失敗の可能性)"
+                );
+                return;
+            }
+            lr.iter()
+                .flat_map(|(p, lanes)| {
+                    lanes
+                        .iter()
+                        .map(move |l| ((p.clone(), l.address.to_string()), l.cwd.clone()))
+                })
+                .collect()
+        };
+
+        for (project_path, address, lifecycle_str) in lifecycles {
+            let lifecycle = LaneLifecycle::parse(&lifecycle_str);
+            if lifecycle == LaneLifecycle::Dead {
+                continue; // dead は保持
+            }
+            let ground_exists = cwd_map
+                .get(&(project_path.clone(), address.clone()))
+                .map(|c| std::path::Path::new(c).exists())
+                .unwrap_or(false);
+
+            let healed = match (lifecycle, ground_exists) {
+                (LaneLifecycle::Provisioning, true) => Some(LaneLifecycle::Ready),
+                (LaneLifecycle::Provisioning, false) => Some(LaneLifecycle::Dead),
+                (LaneLifecycle::Ready, false) => Some(LaneLifecycle::Dead),
+                (LaneLifecycle::Ready, true) | (LaneLifecycle::Dead, _) => None,
+            };
+
+            if let Some(new_lc) = healed {
+                match db
+                    .upsert_lane_lifecycle(&project_path, &address, new_lc.as_str())
+                    .await
+                {
+                    Ok(()) => tracing::info!(
+                        "reconcile heal: {} {} {} → {}",
+                        project_path,
+                        address,
+                        lifecycle.as_str(),
+                        new_lc.as_str()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "reconcile heal の永続失敗 ({} {}): {}",
+                        project_path,
+                        address,
+                        e
+                    ),
+                }
+            }
+        }
     }
 
     /// 現在の projects HashMap を真実源に永続化する。
@@ -371,9 +499,16 @@ impl ProcessManagerCapability {
     pub async fn list_projects(&self) -> Vec<ProjectInfo> {
         let projects = self.projects.read().await;
         let order = self.project_order.read().await;
+        // Model Q: active lane (presence) を enrich (daemon-canonical)。
+        let active = self.active_lanes.read().await;
         order
             .iter()
-            .filter_map(|key| projects.get(key).cloned())
+            .filter_map(|key| {
+                projects.get(key).cloned().map(|mut p| {
+                    p.active_lane = active.get(key).cloned();
+                    p
+                })
+            })
             .collect()
     }
 
@@ -434,6 +569,7 @@ impl ProcessManagerCapability {
                         port: project.port,
                         enabled: project.enabled,
                         slot: project.slot,
+                        active_lane: None,
                     });
                 if !order.contains(&key) {
                     order.push(key);
@@ -485,6 +621,7 @@ impl ProcessManagerCapability {
             port: None,
             enabled: true,
             slot: None, // 新規 project は slot 未割当 (= SP 初回起動時に resolve が割当)
+            active_lane: None,
         };
 
         {
@@ -532,10 +669,234 @@ impl ProcessManagerCapability {
         // 順序リストからも削除
         self.project_order.write().await.retain(|k| k != &key);
 
+        // Model Q / §4.6 含有=所有=寿命: project(namespace) を倒したら、 その presence
+        // (active_lane) も畳む。 in-memory map と db/world から回収する (DB は best-effort)。
+        self.active_lanes.write().await.remove(&key);
+        if let Some(db) = &self.vpdb
+            && let Err(e) = db.delete_active_lane(&key).await
+        {
+            tracing::warn!(
+                "active_lane の db/world 削除に失敗 (in-memory は削除済): {}",
+                e
+            );
+        }
+
+        // doc 24 §10 Phase 2 / §4.6 含有=所有=寿命: lane descriptor も同様に畳む。
+        // lane は daemon-canonical durable truth (SP disconnect では残すが、 project remove は
+        // namespace ごと倒す = descriptor も回収する)。 in-memory lane_registry と db から削除。
+        // remove は外した Vec<LaneInfo> を返すので、 下の ground reclaim にそのまま使う。
+        let removed_lanes = self
+            .lane_registry
+            .write()
+            .await
+            .remove(&key)
+            .unwrap_or_default();
+        if let Some(db) = &self.vpdb {
+            if let Err(e) = db.delete_lanes_for_project(&key).await {
+                tracing::warn!("lane の db/world 削除に失敗 (in-memory は削除済): {}", e);
+            }
+            // §4.6: lane lifecycle (別 table) も同様に回収する。
+            if let Err(e) = db.delete_lane_lifecycles_for_project(&key).await {
+                tracing::warn!("lane_lifecycle の db/world 削除に失敗: {}", e);
+            }
+        }
+
+        // doc 24 §5.3 / B-destroy: ground を provision/reclaim する唯一の主体は daemon。
+        // namespace (project) を倒したら performer の worktree (ground) も daemon が reclaim する。
+        // A では descriptor だけ畳んで worktree が disk に orphan で残る中間状態だった — その穴を閉じる。
+        // conductor は cwd = repo root (= user の repo そのもの) なので **絶対に消さない**、 performer のみ。
+        let performer_names: Vec<String> = removed_lanes
+            .iter()
+            .filter(|l| l.kind == crate::process::lanes_state::LaneKind::Performer)
+            .filter_map(|l| l.name.clone())
+            .collect();
+        if !performer_names.is_empty() {
+            // repo_root は key (= normalize_path_key の出力) から再構築する。 add_project 時と
+            // 同じ normalize を経るので通常は実 repo root と一致する。 万一ズレ / explicit cwd
+            // (`<repo>/.vp/lanes/<name>` 外) の時は find_performer_dir が None → 下の warn で
+            // skip され orphan が残るだけ (= 誤削除は起きない、 best-effort、 team-b review #1)。
+            let repo_root = PathBuf::from(&key);
+            // git worktree remove は blocking subprocess なので spawn_blocking で executor を塞がない。
+            let _ = tokio::task::spawn_blocking(move || {
+                for name in performer_names {
+                    // best-effort (§4.6 ゆるやか統治): 既に手動 rm 済 / explicit cwd 外などは warn で流す。
+                    match crate::lane::commands::remove_performer_in(&repo_root, &name) {
+                        Ok(()) => tracing::info!(
+                            "performer worktree reclaim: name={} repo={}",
+                            name,
+                            repo_root.display()
+                        ),
+                        Err(e) => tracing::warn!(
+                            "performer worktree reclaim 失敗 (best-effort、 skip): name={} err={}",
+                            name,
+                            e
+                        ),
+                    }
+                }
+            })
+            .await;
+        }
+
         // VP-188: projects.kdl に永続化
         self.persist_projects().await?;
 
         Ok(())
+    }
+
+    /// doc 24 §10 Phase 2 B-create / §5.3: daemon が performer lane を create する。
+    ///
+    /// 「ground を provision する唯一の主体は daemon」(§5.3) の create 半分。 daemon が
+    /// worktree を provision し、 descriptor を daemon-canonical truth (db + in-memory) として
+    /// 所有する。 live PtySlot の spawn は SP の仕事で、 worktree dir 作成を検知した
+    /// lane_watcher が SP に `POST /api/lanes` (cwd 明示) を発火して spawn させる
+    /// (= 既存 convergence loop を再利用、 daemon→SP の新経路は作らない)。
+    ///
+    /// (b) スコープ: §4.6 の durable lifecycle state machine (provisioning/ready/dead +
+    /// boot reconcile) は入れない。 それを exercise する in-flight 状態が無い間は投機実装に
+    /// なるため ([[pre-mvp-development-stance]]: 中間状態を作らない)。 crash mid-provision の
+    /// orphan worktree は現状の SP create と同じ risk profile で、 B-destroy (#568) +
+    /// 将来の boot reconcile が回収する。
+    /// `branch` / `stand` は呼び手 (route) が resolve 済の concrete 値を渡す
+    /// (default 導出 = data/calc は route の責務、 capability は provision = action に専念)。
+    pub async fn create_lane(
+        &self,
+        project_path: &str,
+        name: &str,
+        branch: &str,
+        stand: &str,
+    ) -> CapabilityResult<crate::process::lanes_state::LaneInfo> {
+        use crate::process::lanes_state::{
+            LaneAddress, LaneInfo, LaneKind, LaneLifecycle, LaneState,
+        };
+
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CapabilityError::Other(
+                "performer name is required".to_string(),
+            ));
+        }
+        let repo_root = PathBuf::from(project_path);
+        let project_id = repo_root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let addr = LaneAddress::performer(&project_id, name);
+        let key = normalize_path_key(&repo_root);
+
+        // dup check (daemon-canonical lane_registry)。
+        let exists = {
+            let lr = self.lane_registry.read().await;
+            lr.get(&key)
+                .map(|lanes| lanes.iter().any(|l| l.address == addr))
+                .unwrap_or(false)
+        };
+        if exists {
+            return Err(CapabilityError::Other(format!(
+                "Lane {} already exists",
+                addr
+            )));
+        }
+
+        // doc 24 §4.6 intent-first bracket (enter): descriptor + lifecycle=Provisioning を **先に**
+        // 永続する。 cwd は worktree の deterministic path (<repo>/.vp/lanes/<name>) なので
+        // provision 前に確定できる。 これにより daemon が provision 途中で crash しても
+        // 「provisioning が残る」= boot reconcile が ground 存在で heal できる。
+        let performer_dir = repo_root.join(".vp").join("lanes").join(name);
+        let addr_str = addr.to_string();
+        let info = LaneInfo {
+            id: crate::lane::lane_id::load_or_create(&project_id, name),
+            address: addr.clone(),
+            kind: LaneKind::Performer,
+            name: Some(name.to_string()),
+            state: LaneState::Spawning, // process liveness: PtySlot pending (= lifecycle と別軸)
+            stand: stand.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: performer_dir.to_string_lossy().into_owned(),
+            performer_status: None,
+            cc_session_id: None,
+            tmux: Vec::new(),
+        };
+        self.lane_registry
+            .write()
+            .await
+            .entry(key.clone())
+            .or_default()
+            .push(info.clone());
+        if let Some(db) = &self.vpdb {
+            if let Err(e) = db.upsert_lane(&key, &info).await {
+                tracing::warn!(
+                    "lane descriptor の db 永続に失敗 (in-memory は反映済): {}",
+                    e
+                );
+            }
+            if let Err(e) = db
+                .upsert_lane_lifecycle(&key, &addr_str, LaneLifecycle::Provisioning.as_str())
+                .await
+            {
+                tracing::warn!("lane_lifecycle=provisioning の db 永続に失敗: {}", e);
+            }
+        }
+
+        // §5.3 (active): ground provision は daemon が行う (worktree add)。 blocking git は spawn_blocking。
+        // team-b #1: JoinError (task panic) を `?` で早期 return せず、 provision Err と同じ
+        // rollback 経路に畳む (= intent-first の crash-recovery 保証を破らない)。
+        let provision: Result<std::path::PathBuf, String> = {
+            let repo_root = repo_root.clone();
+            let name_owned = name.to_string();
+            let branch = branch.to_string();
+            match tokio::task::spawn_blocking(move || {
+                crate::lane::commands::new_performer_in(
+                    &repo_root,
+                    &name_owned,
+                    &branch,
+                    false,
+                    crate::lane::commands::Isolation::Worktree,
+                )
+            })
+            .await
+            {
+                Ok(inner) => inner,
+                Err(join_err) => Err(format!("provision task join: {}", join_err)),
+            }
+        };
+
+        // §4.6 (exit): provision の結果で lifecycle を確定する。
+        match provision {
+            Ok(_dir) => {
+                if let Some(db) = &self.vpdb
+                    && let Err(e) = db
+                        .upsert_lane_lifecycle(&key, &addr_str, LaneLifecycle::Ready.as_str())
+                        .await
+                {
+                    tracing::warn!("lane_lifecycle=ready の db 永続に失敗: {}", e);
+                }
+                tracing::info!(
+                    "lane created (daemon): addr={} cwd={} lifecycle=ready (PtySlot は watcher→SP)",
+                    addr,
+                    info.cwd
+                );
+                Ok(info)
+            }
+            Err(e) => {
+                // 通常の provision 失敗は rollback (retry 可能に): descriptor + lifecycle を回収。
+                // crash 中断時だけ provisioning が db に残り boot reconcile が heal する
+                // (= intent-first の効きどころ。 doc 24 §4.6)。
+                if let Some(v) = self.lane_registry.write().await.get_mut(&key) {
+                    v.retain(|l| l.address != addr);
+                }
+                if let Some(db) = &self.vpdb {
+                    let _ = db.delete_lane(&key, &addr_str).await;
+                    let _ = db.delete_lane_lifecycle(&key, &addr_str).await;
+                }
+                tracing::warn!("lane provision 失敗 → rollback: addr={} err={}", addr, e);
+                Err(CapabilityError::Other(format!(
+                    "worktree provision 失敗: {}",
+                    e
+                )))
+            }
+        }
     }
 
     /// プロジェクト名を変更（+ projects.kdl に永続化、 VP-188）
@@ -602,6 +963,32 @@ impl ProcessManagerCapability {
         // VP-188: projects.kdl に永続化
         self.persist_projects().await?;
 
+        Ok(())
+    }
+
+    /// active lane (presence、 Model Q) を設定する。
+    ///
+    /// project ごとの選択中 lane を daemon-canonical に持つ。 in-memory map を更新し、
+    /// vpdb=Some (= World) なら db/world の active_lane table に upsert する。
+    /// §4.6: presence は tail-loss 許容なので DB 永続は best-effort (失敗は warn のみ)。
+    pub async fn set_active_lane(
+        &self,
+        project_path: &str,
+        lane_address: &str,
+    ) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(project_path));
+        self.active_lanes
+            .write()
+            .await
+            .insert(key.clone(), lane_address.to_string());
+        if let Some(db) = &self.vpdb
+            && let Err(e) = db.upsert_active_lane(&key, lane_address).await
+        {
+            tracing::warn!(
+                "active_lane の db/world 永続に失敗 (in-memory は更新済): {}",
+                e
+            );
+        }
         Ok(())
     }
 
@@ -1732,7 +2119,6 @@ impl ProcessManagerCapability {
                             new_proc.port
                         );
                         missing_count.remove(path_key);
-                        crate::notify::post_process_changed(new_proc.port, "restarted");
                     }
                     Err(e) => {
                         tracing::error!(
@@ -2428,6 +2814,7 @@ mod tests {
             port: Some(33005),
             enabled: true,
             slot: None,
+            active_lane: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("33005"));
@@ -2440,6 +2827,7 @@ mod tests {
             port: None,
             enabled: true,
             slot: None,
+            active_lane: None,
         };
         let json_no_port = serde_json::to_string(&info_no_port).unwrap();
         assert!(!json_no_port.contains("port"));
@@ -2531,6 +2919,227 @@ mod tests {
         let result = cap.remove_project("/nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_reclaims_performer_ground_not_conductor() {
+        // doc 24 §5.3 / B-destroy: project remove で performer worktree(ground) は daemon が
+        // reclaim、 conductor(=repo root = user の repo) は絶対に消さない、 を検証する。
+        // git なしの plain dir で実行 (remove_performer_workspace は .git 無しなら fs 削除に落ちる)。
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+
+        let cap = make_test_cap();
+        // 一意な temp project root (再実行に備え事前掃除)。
+        // pid を含めて並行 `cargo test` 実行間での temp 衝突を避ける (team-b review、 低リスク)。
+        let tmp =
+            std::env::temp_dir().join(format!("vp-test-bdestroy-reclaim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let project_path = tmp.to_string_lossy().to_string();
+        cap.add_project("bdestroy", &project_path).await.unwrap();
+
+        // performer の ground を物理作成 (<repo>/.vp/lanes/foo、 plain dir = fs 削除経路)。
+        let performer_dir = tmp.join(".vp").join("lanes").join("foo");
+        std::fs::create_dir_all(&performer_dir).unwrap();
+        assert!(performer_dir.exists());
+
+        // lane_registry に conductor + performer descriptor を投入 (daemon-canonical truth)。
+        let key = normalize_path_key(&PathBuf::from(&project_path));
+        let mk = |addr: LaneAddress, kind: LaneKind, name: Option<&str>, cwd: &str| LaneInfo {
+            id: Default::default(),
+            address: addr,
+            kind,
+            name: name.map(|s| s.to_string()),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-06-20T00:00:00Z".to_string(),
+            pid: None,
+            cwd: cwd.to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            tmux: Vec::new(),
+        };
+        let conductor = mk(
+            LaneAddress::conductor("bdestroy"),
+            LaneKind::Conductor,
+            None,
+            &project_path,
+        );
+        let performer = mk(
+            LaneAddress::performer("bdestroy", "foo"),
+            LaneKind::Performer,
+            Some("foo"),
+            &performer_dir.to_string_lossy(),
+        );
+        cap.lane_registry_ref()
+            .write()
+            .await
+            .insert(key.clone(), vec![conductor, performer]);
+
+        // 実行: project を倒す。
+        cap.remove_project(&project_path).await.unwrap();
+
+        // 検証: performer ground は reclaim、 conductor=repo root は無傷。
+        assert!(
+            !performer_dir.exists(),
+            "performer ground (worktree) は daemon が reclaim する"
+        );
+        assert!(
+            tmp.exists(),
+            "conductor = repo root は絶対に消さない (user の repo)"
+        );
+        // descriptor も lane_registry から畳まれている。
+        assert!(
+            cap.lane_registry_ref().read().await.get(&key).is_none(),
+            "project remove で lane descriptor も回収される"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_create_lane_provisions_worktree_and_owns_descriptor() {
+        // doc 24 §10 Phase 2 B-create: daemon が performer lane を create し、 worktree(ground)
+        // を provision して descriptor を daemon-canonical truth として所有する end-to-end 検証。
+        use crate::process::lanes_state::LaneKind;
+
+        let cap = make_test_cap();
+        // address の project 部分は path basename から取る (create_handler と一貫) ため、
+        // repo dir の basename を "bcreate" に固定する (parent に pid を入れて衝突回避)。
+        let parent = std::env::temp_dir().join(format!("vp-test-bcreate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let tmp = parent.join("bcreate");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // worktree add は initial commit を要するので minimal git repo を用意。
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&tmp)
+                .status()
+                .expect("git command 失敗")
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(tmp.join("README.md"), "# test\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "initial"]);
+
+        let project_path = tmp.to_string_lossy().to_string();
+        cap.add_project("bcreate", &project_path).await.unwrap();
+
+        // daemon create (branch / stand は resolve 済の concrete 値を渡す)。
+        let info = cap
+            .create_lane(&project_path, "foo", "test/foo", "echoes")
+            .await
+            .expect("daemon create_lane 成功");
+
+        // descriptor が daemon-canonical truth として返る。
+        assert_eq!(info.kind, LaneKind::Performer);
+        assert_eq!(info.name.as_deref(), Some("foo"));
+        assert_eq!(info.address.to_string(), "bcreate/performer/foo");
+        assert_eq!(info.stand, "echoes");
+
+        // §5.3: daemon が worktree(ground) を provision する。
+        let performer_dir = tmp.join(".vp").join("lanes").join("foo");
+        assert!(
+            performer_dir.exists(),
+            "daemon が worktree を provision する"
+        );
+
+        // descriptor が lane_registry (daemon-canonical) に所有される。
+        let key = normalize_path_key(&PathBuf::from(&project_path));
+        {
+            let registry = cap.lane_registry_ref();
+            let lr = registry.read().await;
+            let lanes = lr.get(&key).expect("project の lanes が登録される");
+            assert!(
+                lanes.iter().any(|l| l.address == info.address),
+                "descriptor が daemon-canonical に所有される"
+            );
+        }
+
+        // dup: 同名 create は registry-based dup check で弾く (already exists)。
+        let dup = cap
+            .create_lane(&project_path, "foo", "test/foo", "echoes")
+            .await;
+        assert!(dup.is_err());
+        assert!(
+            dup.unwrap_err().to_string().contains("already exists"),
+            "重複 create は already exists で弾く"
+        );
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_lanes_heals_lifecycle_by_ground() {
+        // doc 24 §4.6 boot reconcile heal: provisioning+ground在→ready / ready+ground無→dead。
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+
+        let mut cap = make_test_cap();
+        let db = std::sync::Arc::new({
+            let d = crate::db::VpDb::connect_mem().await.unwrap();
+            d.define_schema().await.unwrap();
+            d
+        });
+        cap.set_vpdb(db.clone());
+
+        // 2 つの ground: 1 つは存在、 1 つは存在しない。
+        let parent = std::env::temp_dir().join(format!("vp-test-reconcile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let alive_dir = parent.join("proj/.vp/lanes/alive");
+        std::fs::create_dir_all(&alive_dir).unwrap();
+        let gone_dir = parent.join("proj/.vp/lanes/gone"); // 作らない (= ground 無し)
+
+        let key = "/test/proj";
+        let mk = |name: &str, cwd: &std::path::Path| LaneInfo {
+            id: Default::default(),
+            address: LaneAddress::performer("proj", name),
+            kind: LaneKind::Performer,
+            name: Some(name.to_string()),
+            state: LaneState::Spawning,
+            stand: "echoes".to_string(),
+            created_at: "2026-06-20T00:00:00Z".to_string(),
+            pid: None,
+            cwd: cwd.to_string_lossy().into_owned(),
+            performer_status: None,
+            cc_session_id: None,
+            tmux: Vec::new(),
+        };
+        cap.lane_registry_ref().write().await.insert(
+            key.to_string(),
+            vec![mk("alive", &alive_dir), mk("gone", &gone_dir)],
+        );
+        // alive=provisioning (ground 在り→ready 期待)、 gone=ready (ground 無→dead 期待)。
+        db.upsert_lane_lifecycle(key, "proj/performer/alive", "provisioning")
+            .await
+            .unwrap();
+        db.upsert_lane_lifecycle(key, "proj/performer/gone", "ready")
+            .await
+            .unwrap();
+
+        cap.reconcile_lanes().await;
+
+        let rows = db.list_lane_lifecycles().await.unwrap();
+        let get = |a: &str| {
+            rows.iter()
+                .find(|(_, addr, _)| addr == a)
+                .map(|(_, _, lc)| lc.clone())
+        };
+        assert_eq!(
+            get("proj/performer/alive").as_deref(),
+            Some("ready"),
+            "provisioning + ground 在り → ready (provision 完了)"
+        );
+        assert_eq!(
+            get("proj/performer/gone").as_deref(),
+            Some("dead"),
+            "ready + ground 外部削除 → dead (user の rm 尊重)"
+        );
+
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     // --- PR-D: slot / sync の daemon 委譲受け皿 ---

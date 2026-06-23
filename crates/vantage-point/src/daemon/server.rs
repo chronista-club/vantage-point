@@ -68,6 +68,12 @@ pub struct DaemonState {
     /// control plane 一元化 (creo `mem_1CbmWjCGNi9z49s3r21TwQ`): projects は World 権威なので
     /// CLI は SP を経由せず World daemon に直接 Unison RPC する (= projects.kdl 共有メモリの置換)。
     pub world_cap: Option<Arc<RwLock<crate::capability::ProcessManagerCapability>>>,
+    /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (daemon-canonical 化)。
+    ///
+    /// registry channel handler が SP push (register snapshot / lanes diff) を受けた時、
+    /// in-memory `lane_registry` への反映と並行して db に永続する。 これにより SP disconnect /
+    /// daemon 再起動を越えて descriptor が生き残る (§3.3 re-animate / §4.1 喪失ゼロ)。
+    pub vpdb: Option<crate::db::SharedVpDb>,
 }
 
 impl Default for DaemonState {
@@ -83,6 +89,7 @@ impl Default for DaemonState {
             lane_registry: None,
             process_lifecycle_tx,
             world_cap: None,
+            vpdb: None,
         }
     }
 }
@@ -116,6 +123,15 @@ impl DaemonState {
         world_cap: Arc<RwLock<crate::capability::ProcessManagerCapability>>,
     ) -> Self {
         self.world_cap = Some(world_cap);
+        self
+    }
+
+    /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (db/world) を共有する。
+    ///
+    /// registry channel handler がこの db に SP push を永続して daemon-canonical 化する。
+    /// capability の boot load (`load_config`) と同一の db を指す (= 書いた truth を起動時に読む)。
+    pub fn with_vpdb(mut self, vpdb: crate::db::SharedVpDb) -> Self {
+        self.vpdb = Some(vpdb);
         self
     }
 }
@@ -727,6 +743,71 @@ async fn send_channel_response(
     }
 }
 
+/// `list_all_lanes` の cross-project join を純粋化した共有関数。
+///
+/// `running_processes`（port/name の SSOT）と `lane_registry` を project ごとに join し、
+/// `world_cap` の project_order で安定ソートした projects 配列（`Vec<serde_json::Value>`）を返す。
+/// "world-process" channel の `list_all_lanes` handler と、Bastet 常駐 ROTO loop の
+/// `InProcessLaneSource`（in-process 直読み）が **同一ロジックを共有**することで、
+/// CLI（QUIC 経由）と daemon（直読み）で lane 並びが完全一致する（doc 23 の重複回避）。
+///
+/// ロック順序: running_processes → lane_registry（register と同順、deadlock 回避）。
+#[allow(clippy::type_complexity)]
+pub(crate) async fn build_world_lanes(
+    running_processes: &Arc<RwLock<HashMap<String, RunningProcess>>>,
+    lane_registry: &Option<
+        Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
+    >,
+    world_cap: &Option<Arc<RwLock<crate::capability::ProcessManagerCapability>>>,
+) -> Vec<serde_json::Value> {
+    // 並び順は sidebar と一致させる（= project_order）。物理 controller は位置 = 意味なので、
+    // track button N の位置が sidebar の N 番目と対応する必要がある。
+    let order: Vec<String> = match world_cap {
+        Some(w) => w
+            .read()
+            .await
+            .list_projects()
+            .await
+            .into_iter()
+            .map(|p| p.name)
+            .collect(),
+        None => Vec::new(),
+    };
+    // ロック順序統一: running_processes → lane_registry（register と同順）。
+    let mut entries: Vec<(usize, serde_json::Value)> = Vec::new();
+    {
+        let procs = running_processes.read().await;
+        let lanes_map = match lane_registry {
+            Some(lr) => Some(lr.read().await),
+            None => None,
+        };
+        for (key, p) in procs.iter() {
+            let lanes = lanes_map
+                .as_ref()
+                .and_then(|m| m.get(key))
+                .cloned()
+                .unwrap_or_default();
+            // project_order 内の位置。未登録は末尾（usize::MAX）。
+            let idx = order
+                .iter()
+                .position(|n| n == &p.project_name)
+                .unwrap_or(usize::MAX);
+            entries.push((
+                idx,
+                serde_json::json!({
+                    "project_name": p.project_name,
+                    "project_path": p.project_path.to_string_lossy(),
+                    "port": p.port,
+                    "lanes": lanes,
+                }),
+            ));
+        }
+    }
+    // project_order 順に整列（= sidebar 順）。同 idx は安定ソートで維持。
+    entries.sort_by_key(|(idx, _)| *idx);
+    entries.into_iter().map(|(_, v)| v).collect()
+}
+
 /// Daemon の Unison QUIC サーバーを起動する
 ///
 /// session / terminal / system の各チャネルハンドラーを登録し、
@@ -960,56 +1041,12 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 "list_all_lanes" => {
                                     // cross-project lane view: running_processes (port/name の SSOT)
                                     // と lane_registry を join し、project ごとに lanes を束ねて返す。
-                                    // ROTO の cross-project 8-slot LCD が唯一の consumer (現状)。
-                                    //
-                                    // 並び順は sidebar と一致させる (= project_order)。物理 controller は
-                                    // 位置 = 意味なので、track button N の位置が sidebar の N 番目と
-                                    // 対応する必要がある。project_name で order を引く (path 正規化不要)。
-                                    let order: Vec<String> = match world_cap {
-                                        Some(ref w) => w
-                                            .read()
-                                            .await
-                                            .list_projects()
-                                            .await
-                                            .into_iter()
-                                            .map(|p| p.name)
-                                            .collect(),
-                                        None => Vec::new(),
-                                    };
-                                    // ロック順序統一: running_processes → lane_registry (register と同順)。
-                                    let mut entries: Vec<(usize, serde_json::Value)> = Vec::new();
-                                    {
-                                        let procs = running_processes.read().await;
-                                        let lanes_map = match lane_registry {
-                                            Some(ref lr) => Some(lr.read().await),
-                                            None => None,
-                                        };
-                                        for (key, p) in procs.iter() {
-                                            let lanes = lanes_map
-                                                .as_ref()
-                                                .and_then(|m| m.get(key))
-                                                .cloned()
-                                                .unwrap_or_default();
-                                            // project_order 内の位置。未登録は末尾 (usize::MAX)。
-                                            let idx = order
-                                                .iter()
-                                                .position(|n| n == &p.project_name)
-                                                .unwrap_or(usize::MAX);
-                                            entries.push((
-                                                idx,
-                                                serde_json::json!({
-                                                    "project_name": p.project_name,
-                                                    "project_path": p.project_path.to_string_lossy(),
-                                                    "port": p.port,
-                                                    "lanes": lanes,
-                                                }),
-                                            ));
-                                        }
-                                    }
-                                    // project_order 順に整列 (= sidebar 順)。同 idx は安定ソートで維持。
-                                    entries.sort_by_key(|(idx, _)| *idx);
-                                    let projects: Vec<serde_json::Value> =
-                                        entries.into_iter().map(|(_, v)| v).collect();
+                                    // ROTO の cross-project 8-slot LCD が consumer。join 本体は
+                                    // build_world_lanes に抽出し、Bastet 常駐 ROTO loop の
+                                    // InProcessLaneSource と共有する (lane 並び一致)。
+                                    let projects =
+                                        build_world_lanes(&running_processes, &lane_registry, &world_cap)
+                                            .await;
                                     if channel
                                         .send_response(
                                             request_id,
@@ -1106,6 +1143,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         let projects = state.projects.clone();
         // Phase 1b: lane_registry も capture (register payload の lanes を cache する)
         let lane_registry = state.lane_registry.clone();
+        // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (daemon-canonical 化)。
+        let vpdb = state.vpdb.clone();
         // VP-154 PR-2: lifecycle event を broadcast する Sender (= "world-process" subscriber へ)
         let process_lifecycle_tx = state.process_lifecycle_tx.clone();
         server
@@ -1114,11 +1153,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     let running_processes = running_processes.clone();
                     let projects = projects.clone();
                     let lane_registry = lane_registry.clone();
+                    let vpdb = vpdb.clone();
                     let process_lifecycle_tx = process_lifecycle_tx.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         let mut registered_name: Option<String> = None;
-                        let mut registered_port: Option<u16> = None;
                         let mut _registered_project_dir: Option<String> = None;
 
                         loop {
@@ -1168,7 +1207,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     );
 
                                     registered_name = Some(path_key.clone());
-                                    registered_port = Some(port);
                                     _registered_project_dir = Some(project_dir.clone());
 
                                     // ロック順序統一: projects → running_processes
@@ -1187,20 +1225,47 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .await
                                         .insert(path_key.clone(), process);
 
-                                    // Phase 1b: lanes payload を lane_registry に push
-                                    // payload["lanes"] が不在 or 不正なら空 Vec で記録 (古 SP との互換)
+                                    // lanes payload を lane_registry + db に snapshot 反映。
+                                    //
+                                    // doc 24 §10 Phase 2 (team-b review #1): lanes フィールド
+                                    // **不在 (null)** は「lanes を知らない古 SP」を意味するので
+                                    // **何もしない** (db の boot-loaded descriptor を保持 = §4.1
+                                    // 喪失ゼロ)。 旧 cache 時代は不在を空 Vec 扱いで wipe していたが、
+                                    // durable truth 化した今 wipe すると永続 descriptor を破壊する。
+                                    // 明示的な空配列 `[]` は「lane を持たない」意思表示なので replace する。
                                     if let Some(ref lr) = lane_registry {
-                                        let lanes: Vec<
-                                            crate::process::lanes_state::LaneInfo,
-                                        > = serde_json::from_value(payload["lanes"].clone())
-                                            .unwrap_or_default();
-                                        let lane_count = lanes.len();
-                                        lr.write().await.insert(path_key.clone(), lanes);
-                                        tracing::debug!(
-                                            "Registry: SP '{}' lanes 登録 ({} entries)",
-                                            project_name,
-                                            lane_count
-                                        );
+                                        let lanes_value = &payload["lanes"];
+                                        if lanes_value.is_null() {
+                                            tracing::debug!(
+                                                "Registry: SP '{}' lanes フィールドなし (古 SP 互換、 db descriptor を保持)",
+                                                project_name
+                                            );
+                                        } else {
+                                            let lanes: Vec<
+                                                crate::process::lanes_state::LaneInfo,
+                                            > = serde_json::from_value(lanes_value.clone())
+                                                .unwrap_or_default();
+                                            let lane_count = lanes.len();
+                                            lr.write().await.insert(path_key.clone(), lanes.clone());
+                                            // doc 24 §10 Phase 2: snapshot を db に durable 永続
+                                            // (project 単位 replace = SP reconnect 時の reconcile)。
+                                            // lock は上の insert で解放済 (db await 中は保持しない)。
+                                            if let Some(ref db) = vpdb
+                                                && let Err(e) = db
+                                                    .replace_lanes_for_project(&path_key, &lanes)
+                                                    .await
+                                            {
+                                                tracing::warn!(
+                                                    "lane snapshot の db 永続に失敗 (in-memory は反映済): {}",
+                                                    e
+                                                );
+                                            }
+                                            tracing::debug!(
+                                                "Registry: SP '{}' lanes 登録 ({} entries)",
+                                                project_name,
+                                                lane_count
+                                            );
+                                        }
                                     }
 
                                     tracing::info!(
@@ -1235,7 +1300,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 }
                                 "unregister" => {
                                     if let Some(ref path_key) = registered_name {
-                                        // ロック順序統一: projects → running_processes → lane_registry
+                                        // ロック順序統一: projects → running_processes
                                         // スコープブロックで projects ロックを先に解放
                                         if let Some(ref projects) = projects {
                                             let mut projs = projects.write().await;
@@ -1247,10 +1312,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         {
                                             running_processes.write().await.remove(path_key);
                                         }
-                                        // Phase 1b: lane_registry からも remove
-                                        if let Some(ref lr) = lane_registry {
-                                            lr.write().await.remove(path_key);
-                                        }
+                                        // doc 24 §10 Phase 2 (authority 反転): graceful unregister
+                                        // (SP shutdown) でも lane_registry を **drop しない**。
+                                        // descriptor は durable truth で、 app quit = 喪失ゼロ (§4.1)。
+                                        // descriptor の回収は project remove (= namespace ごと倒す)
+                                        // のみが行う (capability::remove_project)。
 
                                         tracing::info!(
                                             "Registry: SP 登録解除 (key={})",
@@ -1326,15 +1392,27 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             crate::process::lanes_state::LaneInfo,
                                         >(payload["payload"].clone())
                                     {
-                                        let mut registry = lr.write().await;
-                                        let entry = registry.entry(path_key.clone()).or_default();
-                                        // address 重複なら replace、 無ければ push (race 防御)
-                                        if let Some(idx) =
-                                            entry.iter().position(|l| l.address == lane.address)
                                         {
-                                            entry[idx] = lane;
-                                        } else {
-                                            entry.push(lane);
+                                            let mut registry = lr.write().await;
+                                            let entry =
+                                                registry.entry(path_key.clone()).or_default();
+                                            // address 重複なら replace、 無ければ push (race 防御)
+                                            if let Some(idx) =
+                                                entry.iter().position(|l| l.address == lane.address)
+                                            {
+                                                entry[idx] = lane.clone();
+                                            } else {
+                                                entry.push(lane.clone());
+                                            }
+                                        } // ← lane_registry lock 解放 (db await 前)
+                                        // doc 24 §10 Phase 2: descriptor を db に durable 永続。
+                                        if let Some(ref db) = vpdb
+                                            && let Err(e) = db.upsert_lane(path_key, &lane).await
+                                        {
+                                            tracing::warn!(
+                                                "lanes/add の db 永続に失敗 (in-memory は反映済): {}",
+                                                e
+                                            );
                                         }
                                         tracing::debug!(
                                             "Registry: lanes/add 反映 (key={})",
@@ -1362,9 +1440,22 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             crate::process::lanes_state::LaneAddress,
                                         >(payload["id"].clone())
                                     {
-                                        let mut registry = lr.write().await;
-                                        if let Some(entry) = registry.get_mut(path_key) {
-                                            entry.retain(|l| l.address != addr);
+                                        {
+                                            let mut registry = lr.write().await;
+                                            if let Some(entry) = registry.get_mut(path_key) {
+                                                entry.retain(|l| l.address != addr);
+                                            }
+                                        } // ← lane_registry lock 解放 (db await 前)
+                                        // doc 24 §10 Phase 2: descriptor を db からも回収。
+                                        if let Some(ref db) = vpdb
+                                            && let Err(e) = db
+                                                .delete_lane(path_key, &addr.to_string())
+                                                .await
+                                        {
+                                            tracing::warn!(
+                                                "lanes/remove の db 永続に失敗 (in-memory は反映済): {}",
+                                                e
+                                            );
                                         }
                                         tracing::debug!(
                                             "Registry: lanes/remove 反映 (key={}, addr={})",
@@ -1393,12 +1484,40 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             crate::process::lanes_state::LaneInfo,
                                         >(payload["payload"].clone())
                                     {
-                                        let mut registry = lr.write().await;
-                                        if let Some(entry) = registry.get_mut(path_key)
-                                            && let Some(idx) =
-                                                entry.iter().position(|l| l.address == lane.address)
+                                        // 既存 entry がある時だけ replace (defensive)。 db 永続も
+                                        // in-memory に合わせ applied 時のみ (= 両者の真実を一致させる)。
+                                        let mut applied = false;
                                         {
-                                            entry[idx] = lane;
+                                            let mut registry = lr.write().await;
+                                            if let Some(entry) = registry.get_mut(path_key)
+                                                && let Some(idx) = entry
+                                                    .iter()
+                                                    .position(|l| l.address == lane.address)
+                                            {
+                                                entry[idx] = lane.clone();
+                                                applied = true;
+                                            }
+                                        } // ← lane_registry lock 解放 (db await 前)
+                                        // team-b review #2: applied=false は「register 前の
+                                        // update」等の SP protocol 違反 or in-memory/db divergence を
+                                        // 示す異常状態。 正常経路では起きないので warn で可視化する
+                                        // (無音で握り潰すと divergence を追えない)。
+                                        if !applied {
+                                            tracing::warn!(
+                                                "lanes/update: in-memory に対象 lane なし (SP protocol 違反? key={}, addr={})",
+                                                path_key,
+                                                lane.address
+                                            );
+                                        }
+                                        // doc 24 §10 Phase 2: descriptor を db に durable 永続。
+                                        if applied
+                                            && let Some(ref db) = vpdb
+                                            && let Err(e) = db.upsert_lane(path_key, &lane).await
+                                        {
+                                            tracing::warn!(
+                                                "lanes/update の db 永続に失敗 (in-memory は反映済): {}",
+                                                e
+                                            );
                                         }
                                         tracing::debug!(
                                             "Registry: lanes/update 反映 (key={})",
@@ -1449,10 +1568,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 procs.remove(&name).is_some()
                             };
 
-                            // Phase 1b: lane_registry からも remove (disconnect = 全 Lane drop)
-                            if let Some(ref lr) = lane_registry {
-                                lr.write().await.remove(&name);
-                            }
+                            // doc 24 §10 Phase 2 (authority 反転の核心): SP 切断では lane_registry を
+                            // **drop しない**。 descriptor は daemon-canonical な durable truth に
+                            // なったので、 SP quit/crash を越えて生き残る (§4.1 app quit = 喪失ゼロ)。
+                            // 失われるのは live engagement (SP の PtySlot/PTY) だけで、 descriptor は
+                            // 残り、 SP reconnect で register snapshot が最新を上書きする (reconcile)。
+                            // 旧挙動「disconnect = 全 Lane drop」(Phase 1b の cache 前提) はここで撤回。
+                            // NOTE: live 値 (pid/state) の cold 化 (= §4.6 boot reconcile heal) は
+                            // 後続 increment。 現状は last-known descriptor をそのまま保持する。
 
                             if removed {
                                 tracing::info!(
@@ -1468,14 +1591,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         project_path: name.clone(),
                                     },
                                 );
-
-                                // メニューバーアプリに通知
-                                if let Some(port) = registered_port {
-                                    crate::notify::post_process_changed(
-                                        port,
-                                        "stopped",
-                                    );
-                                }
                             }
                         }
 

@@ -81,7 +81,7 @@ export function LaneRow(props: {
 		const items: ContextMenuItem[] = [];
 		if (active) {
 			items.push({
-				label: `Restart ${performer ? "Performer" : "Conductor"} Stand`,
+				label: `Restart ${performer ? "Performer" : "Conductor"} Session`,
 				icon: "ph:arrow-clockwise",
 				onSelect: () =>
 					sendIpc({
@@ -90,6 +90,22 @@ export function LaneRow(props: {
 						address: addr(),
 					}),
 			});
+			// conductor のみ "New Conductor Session" (fresh=true): resume/continue を回避して
+			// 素の claude を起動 = /exit → 再 claude の手間を 1 click に畳む。 performer の
+			// restart は echoes 側が既に fresh 起動なので、 この項目は conductor 限定。
+			if (!performer) {
+				items.push({
+					label: "New Conductor Session",
+					icon: "ph:plus",
+					onSelect: () =>
+						sendIpc({
+							t: "lane:restart",
+							path: props.projectPath,
+							address: addr(),
+							fresh: true,
+						}),
+				});
+			}
 		}
 		if (performer) {
 			// delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認。

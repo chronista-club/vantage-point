@@ -29,17 +29,11 @@ use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
 /// Run the Process server
-pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityConfig) -> Result<()> {
+pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
-    // VP-165 (doc 17 決定B): Whitesnake を project slug 別ディレクトリで早期初期化
-    // （Msgbox persistence で使用）。旧 port-keyed (`discs/{port}/`) は port が
-    // project リスト変更で reshuffle する不安定 ID だったため `discs/p_{slug}/` に。
-    let whitesnake = crate::capability::Whitesnake::file_backed_for_project(
-        &crate::resolve::project_slug(&project_dir, &config_for_init),
-    );
-    cap_config.whitesnake = Some(whitesnake.clone());
+    // Whitesnake 退役: 永続は SurrealDB 一本化 (PP pane state は pane_contents)。
 
     // project_name は project_dir から解決（AppState / lane pool 等で使用）
     let project_name_for_remote =
@@ -143,22 +137,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
         }
     };
 
-    // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= notify /
-    // lane-spawn) を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
+    // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= lane-spawn)
+    // を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
     // MidiCapability metadata register は dynamic routing vision 確定後 (cf. design-spark
     // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
-    let mut actor_registry = crate::capability::ActorRegistry::new();
-
-    // Notification ブリッジ: wire `notify@<project>` → DistributedNotification
-    // wiremsg R2-a (store 中央化): SP は wire store を持たない。 actor は TheWorld への
-    // HTTP long-poll (world_wire) で recv する。 producer は `wire_send(to=["notify@<project>"])`。
-    actor_registry.spawn_service(
-        super::notification_actor::NotificationActor::new(
-            project_name_for_remote.clone(),
-            project_dir.clone(),
-        ),
-        shutdown_token.clone(),
-    );
+    let actor_registry = crate::capability::ActorRegistry::new();
 
     let state = Arc::new(AppState {
         hub,
@@ -172,7 +155,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
         capabilities,
         // R3: wire cross-process delivery の宛先分類用 — 解決済 project 名
         project_name: project_name_for_remote.clone(),
-        // VP-159 PR-4b: notify を spawn_service 済の ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
+        // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
         update: None,
@@ -196,9 +179,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
         // delivery loop wake)。 SP では未使用だが AppState 共有 field のため空で満たす
         wire_notifier: crate::capability::WireNotifier::new(),
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
-        // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
-        whitesnake: whitesnake.clone(),
         // Phase A4-2b: Lane scope の Stand pool — Conductor Lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Project/Lane/Pane)、HD/TH は Lane scope。
         // Performer Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
@@ -482,7 +462,14 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
         )
         .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
-        .route("/api/world/lanes", get(world::world_list_lanes))
+        .route(
+            "/api/world/lanes",
+            get(world::world_list_lanes).post(world::world_create_lane),
+        )
+        .route(
+            "/api/world/lanes/active",
+            post(world::world_set_active_lane),
+        )
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),
@@ -608,13 +595,9 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
-    // メニューバーアプリに起動完了を通知
-    crate::notify::post_process_changed(port, "started");
-
     // Clone for shutdown
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
-    let state_for_shutdown = state.clone();
 
     // Serve with graceful shutdown
     axum::serve(listener, app)
@@ -627,11 +610,8 @@ pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityCon
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
     // （spawn_registry_keepalive の shutdown handler が unregister を送信済み）
 
-    // ペイン状態をディスクに保存（次回起動時に復元、RetainedStore から取得）
-    state_for_shutdown.persist_pane_contents().await;
-
-    // メニューバーアプリに停止を通知
-    crate::notify::post_process_changed(port, "stopped");
+    // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
+    // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
 
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
@@ -723,17 +703,13 @@ pub async fn run_world(
     let topic_router = Arc::new(TopicRouter::new());
 
     // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
-    // WorldCapabilities container の両方に share させる。 二重生成すると
-    // whitesnake DB connection が並走する。
+    // WorldCapabilities container の両方に share させる (二重生成は避ける)。
     //
     // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
     // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。
     //
     // PR-α-4 (VP-114): `vp daemon start --midi <arg>` で構築された MidiConfig を受け取り、
     // None なら `MidiConfig::default()` (= PR-α-2/3 後の既存挙動と同じ port auto-pick) で fallback。
-    // VP-165 (doc 17 決定B): World daemon の Whitesnake は固定キー `discs/world/`
-    // （旧 `file_backed_for_port(32000)` は world_port も override 可能なので port-keyed をやめた）。
-    let world_whitesnake = crate::capability::Whitesnake::file_backed_for_world();
     let world_capabilities = {
         #[cfg(feature = "midi")]
         {
@@ -742,7 +718,6 @@ pub async fn run_world(
                 crate::daemon::world_capabilities::WorldCapabilities::with_midi(
                     world_cap.clone(),
                     update_cap.clone(),
-                    world_whitesnake.clone(),
                     resolved_midi_config,
                 )
                 .await?,
@@ -753,10 +728,25 @@ pub async fn run_world(
             Arc::new(crate::daemon::world_capabilities::WorldCapabilities::new(
                 world_cap.clone(),
                 update_cap.clone(),
-                world_whitesnake.clone(),
             ))
         }
     };
+
+    // Bastet 🧲 — ROTO 持続セッションを World lifecycle に enclose して起動する。
+    // 前景 `vp midi roto control` のフル接続（open + handshake + keepalive + LCD/routing）を
+    // daemon 常駐 + 自動再接続に昇格。lane data は world_cap(ProcessManagerCapability) を
+    // in-process 直読み、switch_lane は SP 越境なので QUIC。shutdown_token の子 token で
+    // graceful 停止する。bastet_for_shutdown は cleanup chain 用に Arc を clone しておく。
+    #[cfg(feature = "midi")]
+    let bastet_for_shutdown = world_capabilities.bastet.clone();
+    #[cfg(feature = "midi")]
+    if let Some(bastet) = world_capabilities.bastet.as_ref() {
+        bastet
+            .write()
+            .await
+            .start_roto_control(world_cap.clone(), shutdown_token.clone())
+            .await;
+    }
 
     // Phase A ① / R1: World モードでも wiremsg store を build (= 将来 World 階層 actor 用)。
     // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
@@ -781,7 +771,6 @@ pub async fn run_world(
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
-                whitesnake: None, // World モードは永続 msgbox 不要
             })
             .await,
         ),
@@ -809,8 +798,6 @@ pub async fn run_world(
         wire_notifier: crate::capability::WireNotifier::new(),
         // R2-b: wire delivery loop の即時 wake (world_wire_send_handler が command 着信で notify)
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // TheWorld もポート別ディレクトリで分離
-        whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
         // 多 scope architecture: World は App scope の component、Lane/ProjectStand は Project scope
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
@@ -882,7 +869,14 @@ pub async fn run_world(
         )
         .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
-        .route("/api/world/lanes", get(world::world_list_lanes))
+        .route(
+            "/api/world/lanes",
+            get(world::world_list_lanes).post(world::world_create_lane),
+        )
+        .route(
+            "/api/world/lanes/active",
+            post(world::world_set_active_lane),
+        )
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),
@@ -965,13 +959,16 @@ pub async fn run_world(
     let projects_ref = world_cap.read().await.projects_ref();
     // Phase 1b: lane_registry も共有 (SP register の lanes payload を cache する)
     let lane_registry_ref = world_cap.read().await.lane_registry_ref();
-    let daemon_state = std::sync::Arc::new(
-        crate::daemon::server::DaemonState::new()
-            .with_running_processes(running_processes_ref, projects_ref, lane_registry_ref)
-            // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
-            // Unison "world-control" channel から projects mutation を受けられるようにする。
-            .with_world_cap(world_cap.clone()),
-    );
+    let mut daemon_state_builder = crate::daemon::server::DaemonState::new()
+        .with_running_processes(running_processes_ref, projects_ref, lane_registry_ref)
+        // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
+        // Unison "world-control" channel から projects mutation を受けられるようにする。
+        .with_world_cap(world_cap.clone());
+    // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
+    if let Some(ref db) = vpdb {
+        daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
+    }
+    let daemon_state = std::sync::Arc::new(daemon_state_builder);
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,
@@ -1096,10 +1093,6 @@ pub async fn run_world(
                                         project_name,
                                         port_val
                                     );
-
-                                    if port_val > 0 {
-                                        crate::notify::post_process_changed(port_val, event);
-                                    }
                                 }
                                 Some(Err(e)) => {
                                     error_count += 1;
@@ -1163,6 +1156,11 @@ pub async fn run_world(
 
     // Shutdown capabilities
     tracing::info!("Shutting down World...");
+    // Bastet ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
+    #[cfg(feature = "midi")]
+    if let Some(bastet) = bastet_for_shutdown.as_ref() {
+        bastet.write().await.stop_roto_control().await;
+    }
     if let Err(e) = world_for_shutdown.write().await.shutdown().await {
         tracing::warn!("Error during world shutdown: {}", e);
     }

@@ -390,15 +390,15 @@ pub async fn canvas_layout_get_handler(State(state): State<Arc<AppState>>) -> im
 
 /// POST /api/canvas/layout - Canvas レイアウト状態を保存
 ///
-/// フロントエンドから Lane/Tab/Pane の構造を JSON で受け取り、ディスクに保存。
-/// ペイン内容もこのタイミングで永続化する。
+/// フロントエンドから Lane/Tab/Pane の構造を JSON で受け取り、pane_contents (SurrealDB) に保存。
+///
+/// pane 内容自体は webview が `/api/pp/state` で逐次保存するので、 ここは layout のみ。
+/// (旧 Whitesnake `persist_pane_contents` の conductor snapshot は冗長だったため退役)
 pub async fn canvas_layout_save_handler(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     state.save_canvas_layout(&layout).await;
-    // ペイン内容も同時に保存（RetainedStore から取得）
-    state.persist_pane_contents().await;
     Json(serde_json::json!({"status": "saved"}))
 }
 

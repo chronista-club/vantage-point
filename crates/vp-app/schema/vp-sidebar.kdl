@@ -54,9 +54,12 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
         }
         // Lane Conductor Stand restart 要求
+        // fresh=true は resume/continue を回避し fresh な claude を起動する
+        // (sidebar "New Conductor Session")。 省略時は従来通り --resume で会話を継ぐ。
         request "lane:restart" {
             field "path" type="string"
             field "address" type="string"
+            field "fresh" type="bool" optional=#true
         }
         // Performer Lane 作成要求 (branch / stand は optional)
         request "lane:add_performer" {

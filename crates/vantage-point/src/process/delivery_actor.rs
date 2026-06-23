@@ -574,6 +574,7 @@ mod tests {
     fn test_lane(state: LaneState, mode: TmuxMode) -> LaneInfo {
         use crate::process::lanes_state::{LaneAddress, LaneKind, TmuxLaneAddress};
         LaneInfo {
+            id: Default::default(),
             address: LaneAddress::conductor("vp"),
             kind: LaneKind::Conductor,
             name: None,

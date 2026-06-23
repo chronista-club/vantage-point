@@ -342,7 +342,11 @@ pub async fn create_handler(
         }
     };
 
+    // I1: performer の安定 id を address (project, name) で load_or_create。
+    // 注: 同期 file IO だが cc_session lazy read と同様 数 ms、 spawn_blocking 隔離は省略 (pre-MVP)。
+    let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &req.name);
     let info = LaneInfo {
+        id: lane_id,
         address: addr.clone(),
         kind: LaneKind::Performer,
         name: Some(req.name.clone()),
@@ -599,6 +603,11 @@ pub async fn delete_handler(
 pub struct RestartLaneQuery {
     /// Display 形 ("<project>/conductor" / "<project>/performer/<name>")
     pub address: String,
+    /// true なら fresh な claude を起動 (resume/continue を回避、 sidebar "New Conductor
+    /// Session")。 省略時は従来 restart (conductor は会話を継ぐ)。
+    /// performer は echoes が元々 fresh 起動なので fresh=true は no-op 相当 (UI も conductor 限定)。
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 /// VP-131: restart の透過 retry 設定。 tmux kill + spawn の race / transient failure を
@@ -632,7 +641,7 @@ pub async fn restart_handler(
     for attempt in 0..RESTART_MAX_ATTEMPTS {
         let result = {
             let mut pool = state.lane_pool.write().await;
-            pool.restart_lane(&addr)
+            pool.restart_lane(&addr, q.fresh)
         };
 
         match result {
@@ -698,7 +707,10 @@ pub async fn restart_handler(
 /// - `sanitized-name` は `sanitize_for_branch` で git ref 制約に合わせる。
 ///
 /// 例: user="Mako", name="sub" → `mako/sub`
-fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
+///
+/// branch 未指定時の create で使う。 doc 24 §10 B-create で daemon 側 create
+/// (`routes/world.rs` の `world_create_lane`) からも sibling 呼びするため `pub(crate)`。
+pub(crate) fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
     let prefix = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)

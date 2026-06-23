@@ -867,7 +867,8 @@ fn maybe_respawn_dead_lane(
     );
     rt_handle.spawn(async move {
         let client = crate::client::TheWorldClient::new(port);
-        match client.restart_lane(&addr_owned).await {
+        // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
+        match client.restart_lane(&addr_owned, false).await {
             Ok(()) => {
                 // 成功時は LanesLoaded で Running 検出時に triggered から解除される。
                 tracing::info!("auto-respawn restart_lane ok: {}", addr_owned);
@@ -916,8 +917,9 @@ struct SidebarIpcOutcome {
     /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
     sp_spawn_request: Option<(String, String)>,
     /// Phase 3-A: Performer Lane 作成要求 `(project_path, name, branch, stand)`。
-    /// caller が project の SP port を解決して `client.create_performer_lane` を呼ぶ。
-    /// `stand` は doc 11 PR-C で追加 (None なら SP-side default)。
+    /// doc 24 §10 B-create: caller が daemon (:32000) の `create_performer_lane`
+    /// (`POST /api/world/lanes`) を呼ぶ (SP port 解決は不要)。
+    /// `stand` は doc 11 PR-C で追加 (None なら daemon-side default)。
     add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
     /// doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
     /// caller が SP port を解決して `client.list_stands` を呼ぶ → `AppEvent::StandsResult` で push back。
@@ -925,9 +927,10 @@ struct SidebarIpcOutcome {
     /// Phase 4-A: Performer Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
-    /// Lane Conductor Stand restart 要求 `(project_path, address)`。
+    /// Lane Conductor Stand restart 要求 `(project_path, address, fresh)`。
     /// caller が SP port を解決して `client.restart_lane` を呼ぶ。
-    restart_lane_request: Option<(String, String)>,
+    /// fresh=true は "New Conductor Session" (resume/continue 回避の fresh 起動)。
+    restart_lane_request: Option<(String, String, bool)>,
     /// Phase 5-C: Process restart 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
     restart_process_request: Option<String>,
@@ -955,6 +958,9 @@ struct SidebarIpcOutcome {
     /// caller (event loop) で lane cwd を解決して `file_explorer::open_file` を
     /// blocking thread で実行 → `AppEvent::FilesOpenResult` で push back。
     files_open_request: Option<(String, String, String)>,
+    /// Model Q: active lane を daemon canonical に永続する要求 `(project_path, lane_address)`。
+    /// caller が `client.set_active_lane` を fire-and-forget で呼ぶ (optimistic local は適用済)。
+    set_active_lane_request: Option<(String, String)>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1033,14 +1039,14 @@ fn handle_sidebar_ipc(
             // 解決して `client.restart_lane` を呼ぶ。 active Lane を restart した場合は
             // WS が onclose → reconnect で新 PtySlot に attach し直す (PR #218)。
             if !m.path.is_empty() && !m.address.is_empty() {
-                out.restart_lane_request = Some((m.path, m.address));
+                out.restart_lane_request = Some((m.path, m.address, m.fresh.unwrap_or(false)));
             }
         }
         IpcEnvelope::LaneAddPerformer(m) => {
-            // Phase 3-A: sidebar から Performer Lane 作成要求。 caller (event loop) で
-            // 該当 project の SP port を解決して client.create_performer_lane を呼ぶ。
+            // Phase 3-A: sidebar から Performer Lane 作成要求。 doc 24 §10 B-create:
+            // caller (event loop) が daemon (:32000) の create_performer_lane を呼ぶ。
             // doc 11 PR-C: branch / stand は optional。 空文字は None に畳んで
-            // SP-side default にフォールバックさせる。
+            // daemon-side default にフォールバックさせる。
             let branch = m.branch.filter(|s| !s.is_empty());
             let stand = m.stand.filter(|s| !s.is_empty());
             if !m.path.is_empty() && !m.name.is_empty() {
@@ -1098,6 +1104,8 @@ fn handle_sidebar_ipc(
             }
             tracing::info!("lane:select {} address={}", m.path, m.address);
             out.activate_lane = Some(m.address.clone());
+            // Model Q: active lane を daemon canonical に永続 (optimistic local は activate_lane で適用)。
+            out.set_active_lane_request = Some((m.path.clone(), m.address.clone()));
         }
         IpcEnvelope::ProcessReorder(m) => {
             // Currents セクションを drag-and-drop で並び替えた時の通知。
@@ -1513,6 +1521,13 @@ pub fn run() -> anyhow::Result<()> {
     let icon_launch_at = std::time::Instant::now();
     let mut icon_settled = false;
 
+    // Model B (focus = 操舵ポインタ): この vp-app instance が OS の key window かを追跡する。
+    // multi-window は別プロセス (VP_APP_INSTANCE = primary 0 / secondary N) なので、ROTO の
+    // switch_lane broadcast は全 instance の "canvas" 購読に届く。両 window が一斉に切り替わるのを
+    // 防ぐため、**focused instance だけ**が switch_lane を適用する (B-local self-filter)。
+    // with_focused(true) で起動するので初期値は true。
+    let mut is_focused = true;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -1648,6 +1663,17 @@ pub fn run() -> anyhow::Result<()> {
                     });
                     session_state.save();
                 }
+            }
+            // Model B (focus = 操舵ポインタ): focus 状態を追跡する。OS の key window は全プロセス間で
+            // 1 つだけなので、ちょうど 1 つの instance が is_focused=true になる。これにより ROTO の
+            // switch_lane broadcast を「今見ている window」だけが適用し、focus を切り替えるだけで
+            // 操舵対象 window が移る (seamless)。
+            Event::WindowEvent {
+                event: WindowEvent::Focused(focused),
+                ..
+            } => {
+                is_focused = focused;
+                tracing::debug!("window focus changed: is_focused={}", focused);
             }
             // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
             // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
@@ -1797,6 +1823,13 @@ pub fn run() -> anyhow::Result<()> {
                     .iter()
                     .map(|p| (p.path.clone(), p.port))
                     .collect();
+                // Model Q: daemon canonical の active lane (presence、 boot 復元用)。
+                // 注: app の active_lane_address は単一 global (pane.rs) なので、 daemon の
+                // per-project active のうち **order 先頭の 1 つ**を採用する (意図的な単純化、
+                // doc 24 §12-H)。 project ごとに最後の active を復元する per-project 化は
+                // Phase 3 (app 側を per-project active に拡張、 daemon は既に per-project 保持)。
+                let daemon_active_lane: Option<String> =
+                    projects.iter().find_map(|p| p.active_lane.clone());
                 sidebar_state.processes = projects
                     .into_iter()
                     .map(|p| {
@@ -1828,6 +1861,13 @@ pub fn run() -> anyhow::Result<()> {
                 // JS resolveProjectOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
                 sidebar_state.currents_order =
                     Some(project_ports.iter().map(|(path, _)| path.clone()).collect());
+                // Model Q: 初回 load で active lane を daemon canonical から復元 (session.json でなく daemon が源)。
+                if is_initial_load
+                    && let Some(addr) = daemon_active_lane
+                {
+                    sidebar_state.active_lane_address = Some(addr.clone());
+                    session_state.active_lane_address = Some(addr);
+                }
                 // wiremsg: 各 project の SP の Unison channel を購読する (per-SP 1 本ずつ)。
                 // - Stage 1: "lanes" channel → sidebar Lane ツリー
                 // - Stage 2: "canvas" channel → main area の Paisley Park body
@@ -2108,15 +2148,25 @@ pub fn run() -> anyhow::Result<()> {
                         } else {
                             format!("{}/performer/{}", project, token)
                         };
-                        activate_lane(
-                            &address,
-                            &mut sidebar_state,
-                            &mut session_state,
-                            &webview,
-                            &mut lane_respawn_triggered,
-                            &rt_handle,
-                            &respawn_proxy,
-                        );
+                        // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
+                        // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
+                        // 無視し、自分の lane に park されたまま (= 2 window が別々の lane を同時に見られる)。
+                        if is_focused {
+                            activate_lane(
+                                &address,
+                                &mut sidebar_state,
+                                &mut session_state,
+                                &webview,
+                                &mut lane_respawn_triggered,
+                                &rt_handle,
+                                &respawn_proxy,
+                            );
+                        } else {
+                            tracing::debug!(
+                                "switch_lane skip (not focused): address={}",
+                                address
+                            );
+                        }
                     }
                 } else if active_project.is_some() && active_project == msg_project {
                     // PP content (非 switch_lane) は active project の分のみ main area に転送する。
@@ -2571,6 +2621,15 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 }
+                // Model Q: active lane を daemon canonical に永続 (fire-and-forget、 optimistic 適用済)。
+                if let Some((project_path, address)) = outcome.set_active_lane_request {
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        if let Err(e) = client.set_active_lane(project_path, address).await {
+                            tracing::warn!("set_active_lane failed: {}", e);
+                        }
+                    });
+                }
                 // Phase 4-A: Performer Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
                     let sp_port = sidebar_state
@@ -2615,7 +2674,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // Lane Conductor Stand restart 要求 (sidebar の restart icon → confirm dialog から)
-                if let Some((project_path, address)) = outcome.restart_lane_request {
+                if let Some((project_path, address, fresh)) = outcome.restart_lane_request {
                     let sp_port = sidebar_state
                         .processes
                         .iter()
@@ -2626,7 +2685,7 @@ pub fn run() -> anyhow::Result<()> {
                         let addr_clone = address.clone();
                         rt_handle.spawn(async move {
                             let client = TheWorldClient::new(port);
-                            match client.restart_lane(&addr_clone).await {
+                            match client.restart_lane(&addr_clone, fresh).await {
                                 Ok(()) => {
                                     tracing::info!(
                                         "Lane restarted: project={} address={}",
@@ -2655,71 +2714,63 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // Phase 3-A: Performer Lane 作成要求 (sidebar の + Add Performer から)
-                // doc 11 PR-C: stand 指定 を tuple 4 番目に追加 (None なら SP-side default)
+                // doc 24 §10 Phase 2 B-create: create は daemon-canonical (§5.3 ground は daemon が
+                // provision + descriptor 所有)。 SP port 解決は不要 — daemon (:32000) に投げる。
+                // PtySlot は worktree dir 作成を検知した lane_watcher が SP に依頼して spawn する
+                // (= set_active_lane / reorder と同じ daemon-command パターン)。
+                // doc 11 PR-C: stand 指定 を tuple 4 番目に保持 (None なら daemon-side default)。
                 if let Some((project_path, name, branch, stand)) = outcome.add_performer_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        let proxy = async_action_proxy.clone();
-                        let name_clone = name.clone();
-                        let branch_clone = branch.clone();
-                        let stand_clone = stand.clone();
-                        let path_clone = project_path.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client
-                                .create_performer_lane(
-                                    &name_clone,
-                                    branch_clone.as_deref(),
-                                    stand_clone.as_deref(),
-                                )
-                                .await
-                            {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        "Performer Lane created: project={} name={} branch={:?}",
-                                        path_clone,
-                                        name_clone,
-                                        branch_clone
-                                    );
-                                    // wiremsg Stage 1: 新 Lane は SP の "lanes"
-                                    // topic snapshot で購読側に push される。
-                                    // R5: 成功通知を sidebar に push back (form を閉じる)
-                                    let _ = proxy.send_event(AppEvent::PerformerCreateResult {
-                                        project_path: path_clone,
-                                        name: name_clone,
-                                        error: None,
-                                    });
-                                }
-                                Err(e) => {
-                                    // R5: 失敗通知を sidebar に push back (form 下に
-                                    // inline error 表示)。 server からは
-                                    // "create_performer_lane HTTP <code>: <body>" 形式で
-                                    // 返ってくるので、 そのまま流す (UI 側で trim)。
-                                    let msg = format!("{}", e);
-                                    tracing::warn!(
-                                        "create_performer_lane failed: project={} name={}: {}",
-                                        path_clone,
-                                        name_clone,
-                                        msg
-                                    );
-                                    let _ = proxy.send_event(AppEvent::PerformerCreateResult {
-                                        project_path: path_clone,
-                                        name: name_clone,
-                                        error: Some(msg),
-                                    });
-                                }
+                    let proxy = async_action_proxy.clone();
+                    let name_clone = name.clone();
+                    let branch_clone = branch.clone();
+                    let stand_clone = stand.clone();
+                    let path_clone = project_path.clone();
+                    rt_handle.spawn(async move {
+                        let client = TheWorldClient::new(32000);
+                        match client
+                            .create_performer_lane(
+                                &path_clone,
+                                &name_clone,
+                                branch_clone.as_deref(),
+                                stand_clone.as_deref(),
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                tracing::info!(
+                                    "Performer Lane created (daemon): project={} name={} branch={:?}",
+                                    path_clone,
+                                    name_clone,
+                                    branch_clone
+                                );
+                                // 新 Lane descriptor は daemon-canonical。 PtySlot spawn 後に
+                                // SP の "lanes" topic snapshot で購読側に push される。
+                                // R5: 成功通知を sidebar に push back (form を閉じる)
+                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                    project_path: path_clone,
+                                    name: name_clone,
+                                    error: None,
+                                });
                             }
-                        });
-                    } else {
-                        tracing::warn!(
-                            "lane:add_performer: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                            Err(e) => {
+                                // R5: 失敗通知を sidebar に push back (form 下に inline error 表示)。
+                                // daemon からは "create_performer_lane HTTP <code>: <body>" 形式で
+                                // 返ってくるので、 そのまま流す (UI 側で trim)。
+                                let msg = format!("{}", e);
+                                tracing::warn!(
+                                    "create_performer_lane failed: project={} name={}: {}",
+                                    path_clone,
+                                    name_clone,
+                                    msg
+                                );
+                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                    project_path: path_clone,
+                                    name: name_clone,
+                                    error: Some(msg),
+                                });
+                            }
+                        }
+                    });
                 }
 
                 // doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)

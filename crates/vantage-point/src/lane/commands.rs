@@ -348,49 +348,68 @@ fn resolve_start_point(repo_root: &Path, base: &str) -> String {
 /// F 検証で判明した制約を反映:
 /// - **F2**: 同一 repo への並列 worktree add は ref/index lock で落ちうる → backoff retry。
 /// - **F3**: branch 既存 / 他 worktree 使用中は retry 無意味 → 即 actionable error。
+///
+/// 各試行の結果を club-nostos（crate `nostos`）の三相 `Outcome` に写す（振る舞いは従来と同一）。
+/// 成功 → `Done`、F3（branch 衝突）と その他の git / spawn 失敗 → `Failed`（terminal）、
+/// F2（lock）→ backoff 後 `Reborn`。`drive_bounded(0, 4, …)` が `for attempt in 0..4` に対応し、
+/// lock で 4 回使い切ると残余 `Reborn` を「lock で 4 回失敗」へ写す。
 fn worktree_add_with_retry(
     repo_root: &Path,
     performer_dir: &Path,
     branch: &str,
     start_point: &str,
 ) -> Result<(), String> {
+    use nostos::{Outcome, drive_bounded};
+
     let performer_str = performer_dir
         .to_str()
         .ok_or("パフォーマーディレクトリのパスが有効な UTF-8 ではありません")?;
+    // lock で使い切った時の最終メッセージ用に直近 stderr を保持（FnMut が捕捉）。
     let mut last_err = String::new();
-    for attempt in 0u64..4 {
-        let out = Command::new("git")
+
+    let outcome = drive_bounded(0u64, 4, |attempt| {
+        let out = match Command::new("git")
             .args(["worktree", "add", "-b", branch, performer_str, start_point])
             .current_dir(repo_root)
             .output()
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(out) => out,
+            // git を起動すらできない = terminal。
+            Err(e) => return Outcome::Failed(e.to_string()),
+        };
         if out.status.success() {
-            return Ok(());
+            return Outcome::Done(());
         }
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         // F3: branch 衝突 (既存 or 他 worktree 使用中) → retry 無駄、 actionable error。
         if stderr.contains("already exists") || stderr.contains("already used by worktree") {
-            return Err(format!(
+            return Outcome::Failed(format!(
                 "branch '{branch}' は既に存在 / 別の lane が使用中です。別の branch / performer 名を指定してください。\n  git: {}",
                 stderr.trim()
             ));
         }
-        // F2: lock 競合 → backoff retry。
+        // F2: lock 競合 → backoff して再生 (retry)。
         let is_lock = stderr.contains("lock")
             || stderr.contains("Unable to create")
             || stderr.contains("another git process");
         if is_lock {
             last_err = stderr;
             std::thread::sleep(std::time::Duration::from_millis(120 * (attempt + 1)));
-            continue;
+            return Outcome::Reborn(attempt + 1);
         }
-        // その他 → 即 error。
-        return Err(format!("git worktree add 失敗: {}", stderr.trim()));
+        // その他 → 即 terminal。
+        Outcome::Failed(format!("git worktree add 失敗: {}", stderr.trim()))
+    });
+
+    match outcome {
+        Outcome::Done(()) => Ok(()),
+        Outcome::Failed(e) => Err(e),
+        // 残余 Reborn = lock で 4 回使い切った。
+        Outcome::Reborn(_) => Err(format!(
+            "git worktree add が lock 競合で 4 回失敗しました: {}",
+            last_err.trim()
+        )),
     }
-    Err(format!(
-        "git worktree add が lock 競合で 4 回失敗しました: {}",
-        last_err.trim()
-    ))
 }
 
 /// performer workspace を削除 (clone / worktree 両対応)。
