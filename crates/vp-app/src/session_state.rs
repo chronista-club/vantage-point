@@ -316,6 +316,31 @@ impl SessionState {
         out.sort_unstable();
         out
     }
+
+    /// Cmd+N で spawn する次の空き secondary instance index (≥1)。
+    ///
+    /// `open_secondary_indices()` (= open==true の使用中 index、 file system を読む action)
+    /// を occupied 集合とみなし、 純粋計算 `next_free_index_from` で未使用の最小 N (≥1) を導く。
+    /// open==false / file 不在の index は「空き」 として再利用される (= file が無限に溜まらない)。
+    ///
+    /// Cmd+N が `VP_APP_INSTANCE` を採番せず全 secondary が instance 1 (= `session.1.json`)
+    /// を共有していた bug の修正に使う。 caller は採番直後に open=true で予約 save して、
+    /// 連打時に次の Cmd+N が同 index を選ばないようにする。
+    pub fn next_free_secondary_index() -> usize {
+        let occupied: std::collections::HashSet<usize> =
+            Self::open_secondary_indices().into_iter().collect();
+        Self::next_free_index_from(&occupied)
+    }
+
+    /// occupied (= 使用中 index) 集合から次の空き index (≥1) を計算する純粋関数。
+    /// calculation を file system action (`open_secondary_indices`) から切り離してテスト可能化。
+    fn next_free_index_from(occupied: &std::collections::HashSet<usize>) -> usize {
+        let mut idx = 1usize;
+        while occupied.contains(&idx) {
+            idx += 1;
+        }
+        idx
+    }
 }
 
 #[cfg(test)]
@@ -441,5 +466,26 @@ mod tests {
             monitor: None,
         });
         assert!(s.window_geometry().is_none());
+    }
+
+    #[test]
+    fn next_free_index_from_picks_smallest_gap() {
+        use std::collections::HashSet;
+        // 空 (= secondary 無し) → 最初の secondary は 1
+        assert_eq!(SessionState::next_free_index_from(&HashSet::new()), 1);
+        // {1} 使用中 → 2
+        assert_eq!(SessionState::next_free_index_from(&HashSet::from([1])), 2);
+        // {1,2} 使用中 → 3
+        assert_eq!(
+            SessionState::next_free_index_from(&HashSet::from([1, 2])),
+            3
+        );
+        // {2} のみ使用中 (= 1 が closed/不在) → 1 を再利用
+        assert_eq!(SessionState::next_free_index_from(&HashSet::from([2])), 1);
+        // {1,3} 使用中 → 中間の gap 2 を埋める
+        assert_eq!(
+            SessionState::next_free_index_from(&HashSet::from([1, 3])),
+            2
+        );
     }
 }
