@@ -760,6 +760,19 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     }
 }
 
+/// Lane address (Display 形 `"<project>/conductor"` 等) から所属 project path を逆引きする。
+///
+/// `lanes_by_project` (= project_path → LaneInfo list) を走査し、 `address.key()` が一致する
+/// lane を持つ project の path を返す。 `lane:select` 経路 (= JS から path を受け取る) の鏡像で、
+/// focus 経路は address しか持たないためここで path を解決する。 一致なしは None。
+fn resolve_project_path_for_lane(state: &SidebarState, address: &str) -> Option<String> {
+    state
+        .lanes_by_project
+        .iter()
+        .find(|(_path, lanes)| lanes.iter().any(|l| l.address.key() == address))
+        .map(|(path, _)| path.clone())
+}
+
 /// Active Lane を切替える — 全副作用を 1 箇所に集約（Simplicity 原則）。
 ///
 /// sidebar click / switch_lane (QUIC) / auto-select の 3 入口すべてがこの関数を呼ぶ。
@@ -1527,6 +1540,9 @@ pub fn run() -> anyhow::Result<()> {
     // 防ぐため、**focused instance だけ**が switch_lane を適用する (B-local self-filter)。
     // with_focused(true) で起動するので初期値は true。
     let mut is_focused = true;
+    // Model B #2: 直近 daemon に報告した active_lane。 focus が高速に flip しても
+    // 同じ lane への重複報告 (= reqwest::Client 新規構築 + 無駄 POST) を抑止する。
+    let mut last_focus_reported_lane: Option<String> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -1674,6 +1690,25 @@ pub fn run() -> anyhow::Result<()> {
             } => {
                 is_focused = focused;
                 tracing::debug!("window focus changed: is_focused={}", focused);
+                // Model B #2: focus を得た瞬間、 この window の display lane を daemon canonical の
+                // active_lane に報告する。 daemon active_lane が focused window に追従 → ROTO LCD
+                // follows focus (#4) が「active_lane を映すだけ」 で自動成立する。 focus-loss (false)
+                // は無視 ── 次に focus を得た window が上書きするため (lane 未選択 window も skip)。
+                if focused
+                    && let Some(address) = sidebar_state.active_lane_address.clone()
+                    && last_focus_reported_lane.as_deref() != Some(address.as_str())
+                    && let Some(path) = resolve_project_path_for_lane(&sidebar_state, &address)
+                {
+                    // 重複報告抑止: 報告する lane を記録してから spawn。 同 lane への
+                    // 連続 focus event は上の guard で弾かれ、 Client 構築は lane 切替時のみ。
+                    last_focus_reported_lane = Some(address.clone());
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        if let Err(e) = client.set_active_lane(path, address).await {
+                            tracing::warn!("focus→set_active_lane failed: {}", e);
+                        }
+                    });
+                }
             }
             // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
             // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
@@ -2902,19 +2937,31 @@ pub fn run() -> anyhow::Result<()> {
                     // 同 EventLoop に重ねるのではなく fork-style で別 process 化することで、
                     // state 干渉ゼロ + crash isolation + multi-instance 並行開発が可能に。
                     // TheWorld daemon (port 32000) は process 横断 shared なので projects 一覧は同期。
+                    //
+                    // instance index を明示採番する (= 旧 bug 修正)。 採番しないと子は
+                    // `VP_APP_SECONDARY=1` の backward-compat map で全員 instance 1 に落ち、
+                    // `session.1.json` を共有して per-window state (active_lane / geometry) を
+                    // 互いに clobber していた。 採番直後に open=true で予約 save しておくと、
+                    // 連打 (= 複数 Cmd+N) でも次の採番が同 index を避ける (= race 防止)。
+                    let new_idx = SessionState::next_free_secondary_index();
+                    let mut reserved = SessionState::load(new_idx);
+                    reserved.set_open(true);
+                    reserved.save();
                     match std::env::current_exe() {
                         Ok(exe) => {
                             match std::process::Command::new(&exe)
                                 // 子 process は auto-select を skip ── 元 vp-app と active_lane
                                 // が衝突して両方の terminal WS が壊れるのを防ぐ。
                                 // 起動後 user が手動で lane 選択するまで main_area は empty。
+                                .env("VP_APP_INSTANCE", new_idx.to_string())
                                 .env("VP_APP_SECONDARY", "1")
                                 .spawn()
                             {
                                 Ok(child) => {
                                     tracing::info!(
-                                        "Cmd+N: spawned new vp-app process (pid={})",
-                                        child.id()
+                                        "Cmd+N: spawned new vp-app process (pid={}, instance_index={})",
+                                        child.id(),
+                                        new_idx
                                     );
                                 }
                                 Err(e) => {
@@ -2923,11 +2970,18 @@ pub fn run() -> anyhow::Result<()> {
                                         exe.display(),
                                         e
                                     );
+                                    // spawn 失敗 → 予約した open=true を解放 (= 次回 primary 起動の
+                                    // auto-spawn が存在しない secondary を起こすのを防ぐ)。
+                                    reserved.set_open(false);
+                                    reserved.save();
                                 }
                             }
                         }
                         Err(e) => {
                             tracing::warn!("Cmd+N: current_exe() failed: {}", e);
+                            // 同上: spawn に至らなかったので予約を解放。
+                            reserved.set_open(false);
+                            reserved.save();
                         }
                     }
                 } else if id == menu_ids.open_file {
