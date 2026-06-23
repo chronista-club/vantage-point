@@ -45,11 +45,18 @@ LOGIN_SHELL="${SHELL:-/bin/zsh}"
 
 # wiremsg R2-c (チャネル B、 決定 D2): wire 未読通知 hook を VP が spawn 時に注入する。
 # dotfile 非依存で箱から動く (#512/#515 と同じ「VP が自前担保」哲学)。 hook 実体は
-# `vp wire hook-check` (vp CLI 同梱、 配布物不要)。 会話境界 (SessionStart /
-# UserPromptSubmit) で未読 wire を additionalContext 通知し、 daemon 不在・エラー時は
-# silent 成功 (fail-open、 会話を邪魔しない)。 JSON に single quote が無いため
-# '$WIRE_HOOKS' 埋め込みで安全に quote できる (tmux 内 shell の word splitting 防止)。
-WIRE_HOOKS='{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}'
+# `vp wire hook-check` (vp CLI 同梱、 配布物不要)。 UserPromptSubmit で未読 wire を
+# additionalContext 通知し、 daemon 不在・エラー時は silent 成功 (fail-open、 会話を邪魔しない)。
+# JSON に single quote が無いため '$WIRE_HOOKS' 埋め込みで安全に quote できる
+# (tmux 内 shell の word splitting 防止)。
+#
+# NOTE: SessionStart (session_id 記録、 R3-b) は inline ではなく global settings
+# (~/.claude/settings.json) の hook に移管した。 inline だと echoes が spawn した session
+# しか記録できず、 user が /exit → 素のターミナルで fresh `claude` を起動した session の id を
+# 取りこぼす (= 旧 id に固定され続ける)。 global に置けば手動起動も SessionStart で拾える。
+# 二重発火 (inline + global) を避けるため SessionStart は inline から外してある。
+# 依存: この feature は global hook が入っているマシンでのみ動く (new-machine-setup 参照)。
+WIRE_HOOKS='{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}'
 
 # CC 2.1 Background Agents insulate (Phase B):
 # `claude --continue` は CC 2.1.156+ で background session が存在すると単一 REPL でなく
@@ -62,8 +69,8 @@ WIRE_HOOKS='{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp 
 if [ "${VP_LANE:-}" = "conductor" ]; then
     # wiremsg R3-b: 前回 session を指名 resume する (CC 2.1 の Agent View dashboard 罠の
     # 構造的回避 — `--continue` は「cwd の最新」を拾うため bg session 在りで dashboard 化する。
-    # 設計 mem_1CbXZyCiqrdgteGhRFDaHW)。 id は SessionStart hook (vp wire hook-check) が
-    # 記録した lane 単位の保存値 (`vp lane last-session` が VP_PROJECT/VP_LANE から読む)。
+    # 設計 mem_1CbXZyCiqrdgteGhRFDaHW)。 id は SessionStart hook (vp wire hook-check、 global
+    # settings) が記録した lane 単位の保存値 (`vp lane last-session` が VP_PROJECT/VP_LANE から読む)。
     # 未記録 (初回 / 移行直後) は従来の --continue chain を維持 — 一度 session が立てば
     # hook が記録し、 以後この分岐は --resume 側に乗る。 resume 失敗 (session 消失) は
     # fresh claude に fallback。 id は英数+ハイフンのみ (last-session 側で検証済) のため
