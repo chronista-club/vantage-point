@@ -603,6 +603,11 @@ pub async fn delete_handler(
 pub struct RestartLaneQuery {
     /// Display 形 ("<project>/conductor" / "<project>/performer/<name>")
     pub address: String,
+    /// true なら fresh な claude を起動 (resume/continue を回避、 sidebar "New Conductor
+    /// Session")。 省略時は従来 restart (conductor は会話を継ぐ)。
+    /// performer は echoes が元々 fresh 起動なので fresh=true は no-op 相当 (UI も conductor 限定)。
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 /// VP-131: restart の透過 retry 設定。 tmux kill + spawn の race / transient failure を
@@ -636,7 +641,7 @@ pub async fn restart_handler(
     for attempt in 0..RESTART_MAX_ATTEMPTS {
         let result = {
             let mut pool = state.lane_pool.write().await;
-            pool.restart_lane(&addr)
+            pool.restart_lane(&addr, q.fresh)
         };
 
         match result {

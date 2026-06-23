@@ -668,7 +668,10 @@ impl LanePool {
     /// release 後に新しい broadcast channel + scrollback を subscribe する。
     ///
     /// spawn 失敗時は LaneInfo.state を Dead にして error を返す (caller の責任で UI 通知)。
-    pub fn restart_lane(&mut self, addr: &LaneAddress) -> anyhow::Result<()> {
+    /// `fresh=true` は echoes task に `VP_FRESH=1` を渡し、 resume/continue を回避して
+    /// 素の `claude` を起動させる (sidebar "New Conductor Session")。 false は従来の restart
+    /// (conductor は `--resume`/`--continue` で会話を継ぐ)。
+    pub fn restart_lane(&mut self, addr: &LaneAddress, fresh: bool) -> anyhow::Result<()> {
         let info = self
             .lanes
             .get(addr)
@@ -706,11 +709,16 @@ impl LanePool {
 
         // step 2: 同 stand で respawn (Phase 5-D: spawn_with_fallback で early-exit retry)
         // doc 11 PR-B: stand は String 化 (旧 enum 廃止)
-        let cmd = crate::process::stand_spawner::build_stand_command(
+        let mut cmd = crate::process::stand_spawner::build_stand_command(
             &stand,
             addr,
             std::path::Path::new(&cwd),
         );
+        // New Session: build_stand_command の signature は不変のまま、 戻り値の env に
+        // VP_FRESH を後付けする (HIGH risk な共通 builder に触れず変更を局所化)。
+        if fresh {
+            cmd.env.push(("VP_FRESH".to_string(), "1".to_string()));
+        }
         match crate::process::stand_spawner::spawn_with_fallback(&cmd, 120, 48) {
             Ok((slot, term_rx)) => {
                 let pid = slot.pid();

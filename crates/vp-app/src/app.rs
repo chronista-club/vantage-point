@@ -867,7 +867,8 @@ fn maybe_respawn_dead_lane(
     );
     rt_handle.spawn(async move {
         let client = crate::client::TheWorldClient::new(port);
-        match client.restart_lane(&addr_owned).await {
+        // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
+        match client.restart_lane(&addr_owned, false).await {
             Ok(()) => {
                 // 成功時は LanesLoaded で Running 検出時に triggered から解除される。
                 tracing::info!("auto-respawn restart_lane ok: {}", addr_owned);
@@ -926,9 +927,10 @@ struct SidebarIpcOutcome {
     /// Phase 4-A: Performer Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
-    /// Lane Conductor Stand restart 要求 `(project_path, address)`。
+    /// Lane Conductor Stand restart 要求 `(project_path, address, fresh)`。
     /// caller が SP port を解決して `client.restart_lane` を呼ぶ。
-    restart_lane_request: Option<(String, String)>,
+    /// fresh=true は "New Conductor Session" (resume/continue 回避の fresh 起動)。
+    restart_lane_request: Option<(String, String, bool)>,
     /// Phase 5-C: Process restart 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
     restart_process_request: Option<String>,
@@ -1037,7 +1039,7 @@ fn handle_sidebar_ipc(
             // 解決して `client.restart_lane` を呼ぶ。 active Lane を restart した場合は
             // WS が onclose → reconnect で新 PtySlot に attach し直す (PR #218)。
             if !m.path.is_empty() && !m.address.is_empty() {
-                out.restart_lane_request = Some((m.path, m.address));
+                out.restart_lane_request = Some((m.path, m.address, m.fresh.unwrap_or(false)));
             }
         }
         IpcEnvelope::LaneAddPerformer(m) => {
@@ -2672,7 +2674,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // Lane Conductor Stand restart 要求 (sidebar の restart icon → confirm dialog から)
-                if let Some((project_path, address)) = outcome.restart_lane_request {
+                if let Some((project_path, address, fresh)) = outcome.restart_lane_request {
                     let sp_port = sidebar_state
                         .processes
                         .iter()
@@ -2683,7 +2685,7 @@ pub fn run() -> anyhow::Result<()> {
                         let addr_clone = address.clone();
                         rt_handle.spawn(async move {
                             let client = TheWorldClient::new(port);
-                            match client.restart_lane(&addr_clone).await {
+                            match client.restart_lane(&addr_clone, fresh).await {
                                 Ok(()) => {
                                     tracing::info!(
                                         "Lane restarted: project={} address={}",
