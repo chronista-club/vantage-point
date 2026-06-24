@@ -522,6 +522,97 @@ async fn run_canvas_session(
     }
 }
 
+/// Bastet 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
+/// `AppEvent::DeviceEvent` を emit する。 daemon に 1 本のみ (canvas/lanes は per-SP だが
+/// device は World scope = singleton)。 `canvas_subscription_loop` と同型 (QUIC + 指数バックオフ)。
+fn spawn_device_subscription(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    world_port: u16,
+) {
+    rt_handle.spawn(device_subscription_loop(proxy, world_port));
+}
+
+/// "world-device" channel への接続 → 購読 → 再接続を司る long-lived ループ。
+async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, world_port: u16) {
+    let addr = format!("[::1]:{}", world_port);
+    const MAX_FAILURES: u32 = 10;
+    let mut failures: u32 = 0;
+
+    loop {
+        match run_device_session(&proxy, &addr).await {
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => {
+                failures = 0;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            Err(e) => {
+                failures += 1;
+                if failures >= MAX_FAILURES {
+                    // daemon が world-device channel を出さない (= feature midi 無効 / Bastet 不在)
+                    // 場合もここに来る = graceful degrade (device 機能なしで app は動く)。
+                    tracing::warn!(
+                        "world-device subscription giving up (daemon unreachable or no midi): {}",
+                        e
+                    );
+                    return;
+                }
+                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+/// 1 回の "world-device" channel 接続セッション: connect → `open_channel("world-device")` →
+/// recv ループ。 world-device は接続即購読 (canvas 方式)。 各 device event は daemon が
+/// `send_event("event", <DeviceEvent JSON>)` で push する。
+async fn run_device_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    addr: &str,
+) -> Result<SubscriptionOutcome, String> {
+    use unison::ProtocolClient;
+    use unison::network::MessageType;
+    use unison::network::TrustAnchors;
+    use unison::network::quic::QuicClient;
+
+    let transport = QuicClient::builder()
+        .trust_anchors(TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("QUIC client build: {}", e))?;
+    let client = ProtocolClient::new(transport);
+    client
+        .connect(addr)
+        .await
+        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    let channel = client
+        .open_channel("world-device")
+        .await
+        .map_err(|e| format!("open world-device channel: {}", e))?;
+    tracing::info!("world-device subscription connected: addr={}", addr);
+
+    loop {
+        let msg = match channel.recv().await {
+            Ok(m) => m,
+            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+        };
+        if msg.msg_type != MessageType::Event || msg.method != "event" {
+            continue;
+        }
+        let payload = match msg.payload_as_value() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("world-device payload parse failed: {}", e);
+                continue;
+            }
+        };
+        if proxy.send_event(AppEvent::DeviceEvent { payload }).is_err() {
+            // event loop が閉じた = app 終了。
+            return Ok(SubscriptionOutcome::AppClosing);
+        }
+    }
+}
+
 /// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
 /// xterm.js + WebSocket は **JS-side で per-Lane に管理** され、 Rust は thin trigger を出すだけ。
 mod lane_js {
@@ -1280,6 +1371,14 @@ pub fn run() -> anyhow::Result<()> {
 
     // muda の MenuEvent を main loop に橋渡しする pump を起動
     spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
+
+    // Bastet 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
+    // canvas/lanes は per-SP だが device は World scope (= daemon singleton) なので起動時 1 回。
+    spawn_device_subscription(
+        &rt_handle,
+        event_loop.create_proxy(),
+        crate::client::DEFAULT_WORLD_PORT,
+    );
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session_state より前に確定する。
@@ -2153,6 +2252,11 @@ pub fn run() -> anyhow::Result<()> {
                     process_path
                 );
                 lanes_sub_active.remove(&process_path);
+            }
+            Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
+                // Phase 1 (MVP): bridge 疎通の確認として log。 Phase 2 で Bastet pane /
+                // sidebar stand status に device 一覧を反映する。
+                tracing::info!("🧲 device event: {}", payload);
             }
             Event::UserEvent(AppEvent::CanvasMessage {
                 process_path,
