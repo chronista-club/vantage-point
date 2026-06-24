@@ -651,6 +651,16 @@ mod lane_js {
             tracing::warn!("removeLane script failed (addr={}): {}", address, e);
         }
     }
+
+    /// `window.vpBastet.renderDevices(devices)` を呼ぶ — Bastet pane に device 一覧を render。
+    /// Phase 2: world-device bridge の出口 (= AppEvent::DeviceEvent handler から呼ぶ)。
+    pub fn render_bastet_devices(main_view: &WebView, devices: &[crate::pane::DeviceSnapshot]) {
+        let json = serde_json::to_string(devices).unwrap_or_else(|_| "[]".into());
+        let script = format!("window.vpBastet && window.vpBastet.renderDevices({json})");
+        if let Err(e) = main_view.evaluate_script(&script) {
+            tracing::warn!("renderBastetDevices script failed: {}", e);
+        }
+    }
 }
 
 /// 「Current project が dead 状態」 のとき TheWorld に SP spawn を要求する fire-and-forget task。
@@ -1167,7 +1177,9 @@ fn handle_sidebar_ipc(
         IpcEnvelope::StandSelect(m) => {
             // Phase 5-A: Project-scope Stand row click → main area に対応 pane を表示
             // (Lane と mutually exclusive、 active_lane_address は preemptively clear)
-            if m.path.is_empty() || m.kind.is_empty() {
+            // Bastet 🧲 は World-scope Stand (device = daemon 共通) なので path="" で来る。
+            // World-scope stand は path 空を許可、 それ以外 (Project-scope) は path 必須。
+            if m.kind.is_empty() || (m.path.is_empty() && m.kind != "bastet") {
                 tracing::warn!("stand:select with empty path/kind: {}", msg);
                 return out;
             }
@@ -2254,9 +2266,13 @@ pub fn run() -> anyhow::Result<()> {
                 lanes_sub_active.remove(&process_path);
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
-                // Phase 1 (MVP): bridge 疎通の確認として log。 Phase 2 で Bastet pane /
-                // sidebar stand status に device 一覧を反映する。
-                tracing::info!("🧲 device event: {}", payload);
+                tracing::debug!("🧲 device event: {}", payload);
+                // Phase 2: device 一覧を registry 更新 → sidebar (Devices badge) + main area
+                // (Bastet pane の device list) の両方に push。
+                if crate::pane::apply_device_event(&mut sidebar_state.bastet_devices, &payload) {
+                    push_sidebar_state(&webview, &sidebar_state);
+                    lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
+                }
             }
             Event::UserEvent(AppEvent::CanvasMessage {
                 process_path,

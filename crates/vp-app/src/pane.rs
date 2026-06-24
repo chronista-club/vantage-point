@@ -163,6 +163,10 @@ pub struct SidebarState {
     /// icon visibility のみ用途。 actual peek 値は後続 PR で backend API 経由で populate。
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub lane_inboxes: std::collections::HashMap<String, MessageState>,
+    /// Bastet 🧲 接続中 device 一覧 (`bastet.device_connected` / `disconnected` で更新)。
+    /// JS 側は Bastet pane に device list を render する。 disk persist 不要 (起動時 0)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bastet_devices: Vec<DeviceSnapshot>,
 }
 
 /// per-Lane mailbox inbox の summary state (VP-147 PR-P2-3)
@@ -194,6 +198,55 @@ pub struct ActiveStand {
     pub project_path: String,
     /// `"paisley_park"` | `"gold_experience"` | `"bastet"`
     pub kind: String,
+}
+
+/// Bastet 🧲 接続中 device の snapshot (sidebar webview に渡す)。
+/// `bastet.device_connected` / `disconnected` event で `apply_device_event` が更新する。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct DeviceSnapshot {
+    /// CoreMIDI port の displayName (registry の一意キー)
+    pub port_name: String,
+    pub has_input: bool,
+    pub has_output: bool,
+}
+
+/// device event payload (wire `DeviceEvent` の生 JSON、 tag="kind") を device 一覧に適用する
+/// 純粋計算。 変更があれば true (= caller が push_sidebar_state する)。
+///
+/// - `device_connected`: 同名 port を置換して追加 (重複させず has_input/output を最新化)
+/// - `device_disconnected`: 同名 port を削除 (対象 port 不在は変更なしで false)
+/// - それ以外 (`control_event` 等) / port_name 欠落: 無視 (false)
+pub fn apply_device_event(devices: &mut Vec<DeviceSnapshot>, payload: &serde_json::Value) -> bool {
+    match payload.get("kind").and_then(|v| v.as_str()) {
+        Some("device_connected") => {
+            let Some(port_name) = payload.get("port_name").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            devices.retain(|d| d.port_name != port_name);
+            devices.push(DeviceSnapshot {
+                port_name: port_name.to_string(),
+                has_input: payload
+                    .get("has_input")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                has_output: payload
+                    .get("has_output")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            });
+            true
+        }
+        Some("device_disconnected") => {
+            let Some(port_name) = payload.get("port_name").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            let before = devices.len();
+            devices.retain(|d| d.port_name != port_name);
+            devices.len() != before
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -255,5 +308,52 @@ mod tests {
             "SidebarState.ts が生成されていない: {}",
             generated.display()
         );
+    }
+
+    #[test]
+    fn apply_device_event_connect_disconnect() {
+        use serde_json::json;
+        let mut devs: Vec<DeviceSnapshot> = Vec::new();
+        // connect → 追加
+        assert!(apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_connected","port_name":"ROTO","has_input":true,"has_output":true})
+        ));
+        assert_eq!(devs.len(), 1);
+        assert_eq!(devs[0].port_name, "ROTO");
+        // 同名 connect → 重複させず置換 (has_output が更新される)
+        assert!(apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_connected","port_name":"ROTO","has_input":true,"has_output":false})
+        ));
+        assert_eq!(devs.len(), 1);
+        assert!(!devs[0].has_output);
+        // 別 device → 追加
+        assert!(apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_connected","port_name":"LPD8","has_input":true,"has_output":false})
+        ));
+        assert_eq!(devs.len(), 2);
+        // disconnect → 削除
+        assert!(apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_disconnected","port_name":"ROTO"})
+        ));
+        assert_eq!(devs.len(), 1);
+        assert_eq!(devs[0].port_name, "LPD8");
+        // 不在 disconnect → 変更なし (false)
+        assert!(!apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_disconnected","port_name":"NOPE"})
+        ));
+        // control_event / port_name 欠落 → 無視 (false)
+        assert!(!apply_device_event(
+            &mut devs,
+            &json!({"kind":"control_event","port_name":"LPD8","event":{}})
+        ));
+        assert!(!apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_connected"})
+        ));
     }
 }

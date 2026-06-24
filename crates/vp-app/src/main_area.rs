@@ -385,11 +385,10 @@ body{overflow:hidden;}
         <span class="pane-breadcrumb">Device Registry</span>
       </div>
     </div>
-    <div class="pane-body center">
-      <main>
-        <p>MIDI / MCP / tmux</p>
-        <p class="sub">Phase 6+ で <span class="brand">MIDI lpd8 / MCP server / tmux session</span> 接続パネルを実装予定</p>
-      </main>
+    <div class="pane-body">
+      <div class="bastet-devices" id="bastet-devices">
+        <p class="bastet-empty">No devices connected</p>
+      </div>
     </div>
   </div>
   <!-- VP-140: 旧 active class を削除 (Frame Engine の empty Scene が opacity 制御するため)。 -->
