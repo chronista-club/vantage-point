@@ -244,6 +244,68 @@ pub enum ProcessLifecycleEvent {
     },
 }
 
+/// Bastet 🧲 — device 接続/切断/操作イベント (= "world-device" Unison channel の data plane)
+///
+/// EventBus の `bastet.*` event を Unison wire に変換した公開型。 `ProcessLifecycleEvent` と
+/// 同じ `serde(tag = "kind")` 規約で serialize する。 daemon の world-device bridge が
+/// `from_capability_event` で変換し、 vp-app が QUIC subscribe して受ける。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeviceEvent {
+    /// 物理 MIDI device が接続された (hot-plug discovery 検出)
+    DeviceConnected {
+        /// CoreMIDI port の displayName (registry HashMap key と同値)
+        port_name: String,
+        has_input: bool,
+        has_output: bool,
+    },
+    /// 物理 MIDI device が切断された
+    DeviceDisconnected {
+        /// 切断された device の port name
+        port_name: String,
+    },
+    /// device からの操作入力 (Knob/Button/Fader/Pad、 0.0–1.0 正規化済)
+    ControlEvent {
+        /// 送信元 device の port name
+        port_name: String,
+        /// `ControlEvent` の serde 値 (variant tag + fields)
+        event: serde_json::Value,
+    },
+}
+
+impl DeviceEvent {
+    /// `CapabilityEvent` の event_type + payload から `DeviceEvent` を構築する。
+    ///
+    /// bridge task が EventBus から受け取った `bastet.*` event を wire 型へ変換する。
+    /// 対象外の event_type / payload 不足 (= 必須 field 欠落) は `None` (= bridge が skip)。
+    pub fn from_capability_event(event_type: &str, payload: &serde_json::Value) -> Option<Self> {
+        match event_type {
+            "bastet.device_connected" => Some(DeviceEvent::DeviceConnected {
+                port_name: payload.get("port_name")?.as_str()?.to_string(),
+                has_input: payload
+                    .get("has_input")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                has_output: payload
+                    .get("has_output")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            }),
+            "bastet.device_disconnected" => Some(DeviceEvent::DeviceDisconnected {
+                port_name: payload.get("port_name")?.as_str()?.to_string(),
+            }),
+            "bastet.control_event" => Some(DeviceEvent::ControlEvent {
+                port_name: payload.get("port_name")?.as_str()?.to_string(),
+                event: payload
+                    .get("event")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// VP-154 PR-2: Process snapshot 1 entry (= "world-process" list method の応答 payload)
 ///
 /// 既存 `RunningProcess` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json
@@ -473,5 +535,56 @@ mod tests {
         };
         let json = serde_json::to_string(&snap).unwrap();
         assert!(!json.contains("tmux_session"), "got: {}", json);
+    }
+
+    #[test]
+    fn device_event_from_capability_event_variants() {
+        use serde_json::json;
+        // device_connected: 全 field を拾う
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.device_connected",
+                &json!({"port_name": "ROTO-CONTROL", "has_input": true, "has_output": true}),
+            ),
+            Some(DeviceEvent::DeviceConnected {
+                port_name: "ROTO-CONTROL".into(),
+                has_input: true,
+                has_output: true,
+            })
+        );
+        // device_disconnected: port_name のみ
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.device_disconnected",
+                &json!({"port_name": "ROTO-CONTROL"}),
+            ),
+            Some(DeviceEvent::DeviceDisconnected {
+                port_name: "ROTO-CONTROL".into(),
+            })
+        );
+        // control_event: event を生 JSON で運ぶ
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.control_event",
+                &json!({"port_name": "ROTO-CONTROL", "event": {"Knob": {"index": 0, "value": 0.5}}}),
+            ),
+            Some(DeviceEvent::ControlEvent {
+                port_name: "ROTO-CONTROL".into(),
+                event: json!({"Knob": {"index": 0, "value": 0.5}}),
+            })
+        );
+        // 未知 event_type → None
+        assert_eq!(
+            DeviceEvent::from_capability_event("other.event", &json!({})),
+            None
+        );
+        // 必須 port_name 欠落 → None
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.device_connected",
+                &json!({"has_input": true}),
+            ),
+            None
+        );
     }
 }
