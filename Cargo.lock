@@ -9310,7 +9310,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "tray-icon",
  "tui-markdown",
  "tui-scrollview",
  "unicode-normalization",
