@@ -320,6 +320,21 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-world-stat .v{color:var(--color-text-primary);font-weight:500;
   font-variant-numeric:tabular-nums;}
 
+/* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
+.vp-devices{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);}
+.vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
+  padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:12px;
+  color:var(--color-text-secondary);}
+.vp-stand-row:hover{background:var(--color-surface-bg-emphasis);}
+.vp-stand-row.active{background:var(--color-brand-primary-subtle);
+  color:var(--color-brand-primary);}
+.vp-stand-icon{display:flex;align-items:center;flex:0 0 auto;}
+.vp-stand-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;}
+.vp-stand-badge{flex:0 0 auto;font-size:10px;padding:1px 6px;border-radius:8px;
+  background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);
+  font-variant-numeric:tabular-nums;}
+
 /* Lane 行 右クリック context menu (VP-204 PR-1、 singleton popup) */
 .vp-ctx-backdrop{position:fixed;inset:0;z-index:9998;}
 .vp-ctx-menu{position:fixed;z-index:9999;min-width:180px;

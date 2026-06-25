@@ -43,7 +43,9 @@ console.info("[vp-bundle] booting (VP-140 diagnostic)");
 		const orig = console[level].bind(console);
 		console[level] = (...args: unknown[]) => {
 			orig(...args);
-			const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+			const ipc = (
+				window as unknown as { ipc?: { postMessage(m: string): void } }
+			).ipc;
 			if (!ipc) return;
 			try {
 				// 引数ごとに guard — circular ref で 1 個 throw しても他の引数は残す
@@ -88,6 +90,7 @@ import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
+import { renderDevices as renderBastetDevices } from "./bastet";
 import {
 	handleMessage as handleCanvasMessage,
 	setActiveLaneName,
@@ -356,8 +359,11 @@ if (document.readyState === "loading") {
 // DevTools console から手動 trigger: `await window.vpUnisonEcho('<CERT_HASH>')`。
 // echo server: `cargo run -p club-unison --example webtransport_echo_server -- '[::1]:4433'`。
 // 動的 import で SDK を遅延ロードし、 通常 boot path の bundle 初期化を汚さない。
-(window as unknown as { vpUnisonEcho: (certHash: string, url?: string) => Promise<unknown> })
-	.vpUnisonEcho = async (certHash: string, url?: string) => {
+(
+	window as unknown as {
+		vpUnisonEcho: (certHash: string, url?: string) => Promise<unknown>;
+	}
+).vpUnisonEcho = async (certHash: string, url?: string) => {
 	const { runUnisonEchoProbe } = await import("./unison-echo-probe");
 	return runUnisonEchoProbe(certHash, url);
 };
@@ -365,7 +371,8 @@ if (document.readyState === "loading") {
 // window.__VP_ECHO_CERT__ を注入する。 検出したら probe を自動実行し、 結果を
 // console (= bridge 経由で app.kdl.log) に出す。 agent が log を読んで観測する。
 {
-	const echoCert = (window as unknown as { __VP_ECHO_CERT__?: string }).__VP_ECHO_CERT__;
+	const echoCert = (window as unknown as { __VP_ECHO_CERT__?: string })
+		.__VP_ECHO_CERT__;
 	if (echoCert) {
 		(window as unknown as { vpUnisonEcho: (c: string) => Promise<unknown> })
 			.vpUnisonEcho(echoCert)
@@ -396,6 +403,19 @@ console.info("[vp-bundle] vpFrame attached to window — bundle init complete");
 	renderPP,
 	clearPP,
 	appendPP,
+};
+
+// ===== Bastet 🧲 device 一覧 render API =====
+// window.vpBastet.renderDevices(devices) で Bastet pane (pane-bastet) に接続中 device を render。
+// Rust が device event 時に main_view.evaluate_script で呼ぶ (= world-device bridge の出口)。
+(
+	window as unknown as {
+		vpBastet: {
+			renderDevices: typeof renderBastetDevices;
+		};
+	}
+).vpBastet = {
+	renderDevices: renderBastetDevices,
 };
 
 // ===== Pane action button delegation =====

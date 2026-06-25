@@ -133,6 +133,10 @@ pub enum AppEvent {
     /// wiremsg Stage 2: "canvas" 購読が再接続上限に達して終了したことを通知する。
     /// main loop は `canvas_sub_active` から process_path を除去する。
     CanvasSubscriptionEnded { process_path: String },
+    /// Bastet 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
+    /// daemon "world-device" Unison channel から受信した `DeviceEvent` の生 JSON。
+    /// Phase 1 handler は tracing で log。 Phase 2 で Bastet pane / sidebar に反映予定。
+    DeviceEvent { payload: serde_json::Value },
     /// pp-content-persist: WebView (canvas-handler.ts) からの PP state save IPC。
     /// active project の SP `POST /api/pp/state` に reqwest で forward する。
     /// body は IPC payload の生 JSON (= lane / pane_id / stack / ui_state 等を含む)。

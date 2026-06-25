@@ -968,6 +968,13 @@ pub async fn run_world(
     if let Some(ref db) = vpdb {
         daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
     }
+    // Bastet 🧲 EventBus を共有 — world-device channel が device event を vp-app に bridge する。
+    // world_capabilities は L810 で move 済みなので、 move 前に clone した bastet_for_shutdown を使う。
+    #[cfg(feature = "midi")]
+    if let Some(bastet) = bastet_for_shutdown.as_ref() {
+        let event_bus = bastet.read().await.event_bus().clone();
+        daemon_state_builder = daemon_state_builder.with_bastet_event_bus(event_bus);
+    }
     let daemon_state = std::sync::Arc::new(daemon_state_builder);
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,

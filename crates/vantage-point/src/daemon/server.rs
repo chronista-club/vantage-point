@@ -74,6 +74,12 @@ pub struct DaemonState {
     /// in-memory `lane_registry` への反映と並行して db に永続する。 これにより SP disconnect /
     /// daemon 再起動を越えて descriptor が生き残る (§3.3 re-animate / §4.1 喪失ゼロ)。
     pub vpdb: Option<crate::db::SharedVpDb>,
+    /// Bastet 🧲 EventBus の参照 — "world-device" Unison channel の data plane。
+    ///
+    /// `WorldCapabilities.bastet` が Some (= feature = "midi" + Bastet 稼働) のときのみ注入される。
+    /// world-device channel handler がこれを subscribe して `bastet.*` event (device 接続/切断/
+    /// 操作入力) を `DeviceEvent` に変換し、 vp-app に push する。
+    pub bastet_event_bus: Option<Arc<crate::capability::eventbus::EventBus>>,
 }
 
 impl Default for DaemonState {
@@ -90,6 +96,7 @@ impl Default for DaemonState {
             process_lifecycle_tx,
             world_cap: None,
             vpdb: None,
+            bastet_event_bus: None,
         }
     }
 }
@@ -132,6 +139,18 @@ impl DaemonState {
     /// capability の boot load (`load_config`) と同一の db を指す (= 書いた truth を起動時に読む)。
     pub fn with_vpdb(mut self, vpdb: crate::db::SharedVpDb) -> Self {
         self.vpdb = Some(vpdb);
+        self
+    }
+
+    /// Bastet 🧲 EventBus を共有する (feature = "midi")。
+    ///
+    /// `run_world` が `WorldCapabilities.bastet` の `event_bus()` を渡し、 world-device channel
+    /// handler がこれを subscribe して device event を vp-app に push する。
+    pub fn with_bastet_event_bus(
+        mut self,
+        event_bus: Arc<crate::capability::eventbus::EventBus>,
+    ) -> Self {
+        self.bastet_event_bus = Some(event_bus);
         self
     }
 }
@@ -1126,6 +1145,58 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         )
                                         .await;
                                 }
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // World-Device Channel（Bastet 🧲 device event → vp-app への bridge）
+    // =========================================================================
+    // EventBus の `bastet.*` event (device 接続/切断/操作入力) を Unison wire の `DeviceEvent` に
+    // 変換して push する単機能 channel。 world-process と違い method 分岐は無く、 接続 = 購読
+    // (canvas channel 方式)。 `bastet_event_bus` が Some (= feature midi + Bastet 稼働) のときのみ登録。
+    if let Some(ref bastet_event_bus) = state.bastet_event_bus {
+        let bastet_event_bus = bastet_event_bus.clone();
+        server
+            .register_channel("world-device", {
+                move |_ctx, stream| {
+                    let event_bus = bastet_event_bus.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        // 接続即購読: bastet.* を FilteredSubscription で受け、 DeviceEvent に変換して push。
+                        // subscriber id は接続ごとにユニーク化する (= 複数 vp-app instance が同時購読
+                        // しても EventBus の subscriptions メタデータが last-write-wins で衝突しない。
+                        // broadcast 配信自体は receiver 独立で元々壊れないが、 subscriber_count を正確に保つ)。
+                        let sub_id = format!("world-device-bridge-{}", uuid::Uuid::new_v4());
+                        let sub = event_bus.subscribe(&sub_id, "bastet.*").await;
+                        let mut filtered =
+                            crate::capability::eventbus::FilteredSubscription::new(sub);
+                        // TODO(Phase 2): FilteredSubscription は lag を silent skip する (eventbus.rs:39)。
+                        // ControlEvent 高頻度時に lag 警告が出ないため、 必要なら Lagged 警告付きの
+                        // 購読に差し替えるか buffer_size を調整する (world-process は lag を warn 可視化)。
+                        while let Some(cap_event) = filtered.recv().await {
+                            let Some(device_event) =
+                                crate::daemon::protocol::DeviceEvent::from_capability_event(
+                                    &cap_event.event_type,
+                                    &cap_event.payload,
+                                )
+                            else {
+                                continue;
+                            };
+                            let payload = match serde_json::to_value(&device_event) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!("DeviceEvent serialize 失敗: {}", e);
+                                    continue;
+                                }
+                            };
+                            if channel.send_event("event", &payload).await.is_err() {
+                                break; // client 切断
                             }
                         }
                         Ok(())
