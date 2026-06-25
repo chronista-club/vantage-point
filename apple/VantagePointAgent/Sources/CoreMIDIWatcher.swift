@@ -36,6 +36,15 @@ final class CoreMIDIWatcher: @unchecked Sendable {
         self.continuation = cont
     }
 
+    deinit {
+        // 再接続 (AgentModel.connect → startDeviceReporting で旧 watcher を破棄) のたびに
+        // CoreMIDI client ハンドルを OS レベルでリークさせないよう、対称的に dispose する。
+        if client != 0 {
+            MIDIClientDispose(client)
+        }
+        continuation.finish()
+    }
+
     /// CoreMIDI client を作って監視を開始し、 初期 device 一覧を即 emit する。
     /// main run loop を持つ thread（= agent の main）から呼ぶこと。
     func start() {
