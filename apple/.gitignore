@@ -1,0 +1,9 @@
+# XcodeGen の生成物 (project.yml が SSOT)。
+*.xcodeproj/
+Generated/
+
+# Xcode / SwiftPM build 中間物。
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
