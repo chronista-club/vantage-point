@@ -43,6 +43,15 @@ struct AgentMenuView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // M2: CoreMIDI hot-plug を daemon に報告中の device。
+            Text("devices: \(model.reportedDevices.count)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !model.reportedDevices.isEmpty {
+                Text(model.reportedDevices.sorted().joined(separator: ", "))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
         case .failed(let reason):
             Label("接続失敗", systemImage: "exclamationmark.triangle")

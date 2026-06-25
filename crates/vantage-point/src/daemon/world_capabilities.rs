@@ -117,11 +117,15 @@ impl WorldCapabilities {
 
         wc.midi = Some(Arc::new(RwLock::new(midi_cap)));
 
-        // Bastet 🧲 — multi-device registry + hot-plug discovery (Converge)
+        // Bastet 🧲 — multi-device registry（M2 / doc 25 Model D 以降）
+        //
+        // hot-plug 検知の authority は macOS menu bar agent（Swift `CoreMIDIWatcher`）へ移譲した。
+        // daemon は midir polling を回さず、agent が `device` channel で送る `ReportDevice` を
+        // `Bastet::report_device_*` で registry に反映する（二重 source を残さない）。
+        // ROTO 持続制御は discovery とは独立（`start_roto_control`、process/server.rs）なので影響なし。
         let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());
-        let mut bastet = Bastet::new(event_bus);
-        bastet.start_discovery().await;
-        tracing::info!("Bastet 🧲 discovery started (WorldCapabilities)");
+        let bastet = Bastet::new(event_bus);
+        tracing::info!("Bastet 🧲 registry ready (hot-plug は Swift agent が報告 / polling 停止)");
         wc.bastet = Some(Arc::new(RwLock::new(bastet)));
 
         Ok(wc)
