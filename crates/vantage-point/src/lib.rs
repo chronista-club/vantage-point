@@ -47,7 +47,5 @@ pub mod terminal;
 pub mod terminal_window;
 pub mod tmux;
 pub mod trace_log;
-#[cfg(feature = "gui")]
-pub mod tray;
 pub mod tui;
 pub mod world_client;
