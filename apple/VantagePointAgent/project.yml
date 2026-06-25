@@ -1,0 +1,50 @@
+# VantagePointAgent — VP macOS menu bar agent (XcodeGen project 定義)。
+#
+# doc 25 §4 / doc 26: Apple Platform Architecture の Model D。
+# World = Mac daemon (Rust + club-unison server)、 各 surface は Unison/QUIC で繋がる
+# native client。 この agent は「OS と握手する手」= Cocoa main run loop を保持して
+# CoreMIDI hot-plug を native 検出 → Unison wire で daemon に報告する (FFI 無し)。
+#
+# project.yml が SSOT。 .xcodeproj / Generated/ は `xcodegen generate` の生成物 (git ignore)。
+name: VantagePointAgent
+
+options:
+  bundleIdPrefix: club.chronista.vp
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+packages:
+  # club-unison の Swift client SDK。 monorepo の root ではなく clients/swift 配下に
+  # Package.swift があるため remote URL 依存は不可 → sibling repo の local path 依存。
+  # (creoui と同じ sibling 前提。 将来 clients/swift 独立 repo 化 or submodule も選択肢)
+  UnisonClient:
+    path: ../../../club-unison/clients/swift
+
+targets:
+  VantagePointAgent:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - path: Sources
+    dependencies:
+      - package: UnisonClient
+        product: UnisonClient
+    # Info.plist は properties から生成する (project.yml に集約)。 生成先は git ignore。
+    info:
+      path: Generated/Info.plist
+      properties:
+        LSUIElement: true                 # dock icon 無し = menu bar のみの agent
+        CFBundleDisplayName: Vantage Point Agent
+        CFBundleName: VantagePointAgent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: club.chronista.vp.agent
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: "NO"     # info.path を使うので Xcode 自動生成は切る
+        CODE_SIGN_STYLE: Automatic
+    # XcodeGen に shared scheme を生成させる (`xcodebuild -scheme VantagePointAgent` 用)。
+    scheme: {}
