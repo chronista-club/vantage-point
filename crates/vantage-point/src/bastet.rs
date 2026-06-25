@@ -416,6 +416,57 @@ impl Bastet {
             task.abort();
         }
     }
+
+    // ─── agent device report 受け口（M2: doc 26 §2 `device` channel）──────
+    //
+    // Model D（doc 25）: hot-plug 検知の authority を daemon の midir polling から
+    // macOS menu bar agent（Swift `CoreMIDIWatcher`、AppKit run loop で CoreMIDI 通知が
+    // 自然に効く）へ移した。agent が `device` stream channel で `ReportDevice` を送り、
+    // 下記メソッドが registry + EventBus に反映する（discovery loop の added/removed 分岐と
+    // 同一効果）。EventBus の `bastet.device_*` は既存 world-device bridge が拾って vp-app に push。
+
+    /// agent からの device 接続報告を registry に反映し、新規なら EventBus に emit する。
+    ///
+    /// 冪等: agent が reconnect 時に現在の全 device を再報告しても、既知 device は
+    /// HashMap 上書きのみで重複 event を出さない（`is_new` gate）。
+    pub async fn report_device_connected(&self, port_name: &str, has_input: bool, has_output: bool) {
+        let is_new = {
+            let mut devs = self.devices.write().await;
+            let is_new = !devs.contains_key(port_name);
+            devs.insert(
+                port_name.to_string(),
+                ConnectedDevice {
+                    port_name: port_name.to_string(),
+                    has_input,
+                    has_output,
+                    connected_at: Instant::now(),
+                },
+            );
+            is_new
+        };
+        if is_new {
+            tracing::info!("🧲 device connected (agent report): {}", port_name);
+            let event = CapabilityEvent::new("bastet.device_connected", "bastet").with_payload(
+                &serde_json::json!({
+                    "port_name": port_name,
+                    "has_input": has_input,
+                    "has_output": has_output,
+                }),
+            );
+            self.event_bus.emit(event).await;
+        }
+    }
+
+    /// agent からの device 切断報告を registry に反映し、存在した場合のみ EventBus に emit する。
+    pub async fn report_device_disconnected(&self, port_name: &str) {
+        let existed = self.devices.write().await.remove(port_name).is_some();
+        if existed {
+            tracing::info!("🧲 device disconnected (agent report): {}", port_name);
+            let event = CapabilityEvent::new("bastet.device_disconnected", "bastet")
+                .with_payload(&serde_json::json!({ "port_name": port_name }));
+            self.event_bus.emit(event).await;
+        }
+    }
 }
 
 // ─── Service impl ──────────────────────────────────────────
@@ -461,6 +512,41 @@ mod tests {
         let bastet = Bastet::new(bus);
         let lane = bastet.active_lane().read().await;
         assert!(lane.is_none());
+    }
+
+    // ─── agent device report（M2）──────────────────────
+
+    #[tokio::test]
+    async fn report_device_connected_updates_registry_idempotently() {
+        let bus = Arc::new(EventBus::new());
+        let bastet = Bastet::new(bus);
+
+        bastet.report_device_connected("X-Touch Compact", true, true).await;
+        assert_eq!(bastet.device_count().await, 1);
+
+        // 同一 device の再報告（agent reconnect 時の initial 再送）は重複しない
+        bastet.report_device_connected("X-Touch Compact", true, true).await;
+        assert_eq!(bastet.device_count().await, 1);
+
+        // 別 device を足すと増える
+        bastet.report_device_connected("LPD8 mk2", true, false).await;
+        assert_eq!(bastet.device_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn report_device_disconnected_removes_from_registry() {
+        let bus = Arc::new(EventBus::new());
+        let bastet = Bastet::new(bus);
+
+        bastet.report_device_connected("ROTO", true, true).await;
+        assert_eq!(bastet.device_count().await, 1);
+
+        bastet.report_device_disconnected("ROTO").await;
+        assert_eq!(bastet.device_count().await, 0);
+
+        // 未知 device の切断報告は no-op（panic しない）
+        bastet.report_device_disconnected("Unknown").await;
+        assert_eq!(bastet.device_count().await, 0);
     }
 
     #[test]

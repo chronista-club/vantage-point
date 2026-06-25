@@ -4,7 +4,7 @@ import UnisonClient
 /// menu bar agent の UI 状態を集約する observable model。
 ///
 /// UI に触れるので `@MainActor`。 daemon との実際の I/O は `DaemonClient` (actor) が持ち、
-/// ここはその結果 (`Status`) を `@Published` で SwiftUI に流すだけ (data/action 分離)。
+/// ここはその結果 (`Status` / 報告中 device) を `@Published` で SwiftUI に流すだけ (data/action 分離)。
 @MainActor
 final class AgentModel: ObservableObject {
     /// daemon 接続のライフサイクル状態。
@@ -20,15 +20,21 @@ final class AgentModel: ObservableObject {
         var symbolName: String {
             switch self {
             case .connecting: return "circle.dotted"
-            case .connected:  return "circle.fill"
-            case .failed:     return "exclamationmark.triangle"
+            case .connected: return "circle.fill"
+            case .failed: return "exclamationmark.triangle"
             }
         }
     }
 
     @Published private(set) var status: Status = .connecting
+    /// M2: agent が daemon に報告中の device displayName 一覧 (menu 表示用)。
+    @Published private(set) var reportedDevices: Set<String> = []
 
     private let client = DaemonClient()
+    /// CoreMIDI 監視 (接続成功後に起動)。 client + notify block を生かすため保持する。
+    private var watcher: CoreMIDIWatcher?
+    /// hot-plug 変化を daemon に流し続けるループ。
+    private var devicePump: Task<Void, Never>?
 
     init() {
         // 起動と同時に接続を開始する。 main run loop は SwiftUI が保持するので、
@@ -43,11 +49,40 @@ final class AgentModel: ObservableObject {
             let identity = try await client.connectAndIdentify()
             status = .connected(identity)
             // M1 疎通の機械検証用。 LSUIElement app でも terminal 直起動なら stdout に出る。
-            print("[VPAgent] connected: World \(identity.name) v\(identity.version) "
-                + "ns=\(identity.namespace) channels=\(identity.channels)")
+            print(
+                "[VPAgent] connected: World \(identity.name) v\(identity.version) "
+                    + "ns=\(identity.namespace) channels=\(identity.channels)")
+            // M2: CoreMIDI hot-plug 監視 → daemon 報告を開始。
+            startDeviceReporting()
         } catch {
             status = .failed(String(describing: error))
             print("[VPAgent] connect failed: \(error)")
+        }
+    }
+
+    /// CoreMIDI hot-plug を監視し、 変化を daemon に報告するループを開始する。
+    ///
+    /// `CoreMIDIWatcher.start()` がまず現在の全 device を `connected` として流し (initial)、
+    /// 以降は着脱の差分を流す。 AgentModel は `@MainActor` なのでこの Task も main で走り、
+    /// `reportedDevices` の更新は安全 (CoreMIDI notify block も main run loop で配送される)。
+    private func startDeviceReporting() {
+        devicePump?.cancel()
+        reportedDevices = []
+
+        let watcher = CoreMIDIWatcher()
+        self.watcher = watcher
+        watcher.start()
+
+        devicePump = Task { [weak self] in
+            for await change in watcher.changes {
+                guard let self else { break }
+                await self.client.reportDevice(change)
+                if change.isConnected {
+                    self.reportedDevices.insert(change.portName)
+                } else {
+                    self.reportedDevices.remove(change.portName)
+                }
+            }
         }
     }
 }

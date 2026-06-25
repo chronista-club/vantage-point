@@ -80,6 +80,13 @@ pub struct DaemonState {
     /// world-device channel handler がこれを subscribe して `bastet.*` event (device 接続/切断/
     /// 操作入力) を `DeviceEvent` に変換し、 vp-app に push する。
     pub bastet_event_bus: Option<Arc<crate::capability::eventbus::EventBus>>,
+    /// Bastet 🧲 registry 本体の参照 — "device" Unison channel (agent → daemon) の data plane。
+    ///
+    /// M2 / doc 26 §2: macOS menu bar agent (Swift `CoreMIDIWatcher`) が hot-plug を `ReportDevice`
+    /// で報告する。`device` channel handler がこの handle 越しに `report_device_*` を呼び、registry
+    /// 更新 + `bastet.*` emit を行う (emit は world-device bridge 経由で vp-app に届く)。
+    #[cfg(feature = "midi")]
+    pub bastet: Option<Arc<RwLock<crate::bastet::Bastet>>>,
 }
 
 impl Default for DaemonState {
@@ -97,6 +104,8 @@ impl Default for DaemonState {
             world_cap: None,
             vpdb: None,
             bastet_event_bus: None,
+            #[cfg(feature = "midi")]
+            bastet: None,
         }
     }
 }
@@ -151,6 +160,16 @@ impl DaemonState {
         event_bus: Arc<crate::capability::eventbus::EventBus>,
     ) -> Self {
         self.bastet_event_bus = Some(event_bus);
+        self
+    }
+
+    /// Bastet 🧲 registry 本体を共有する (feature = "midi")。
+    ///
+    /// `device` channel handler が agent の `ReportDevice` を受けて registry を更新するために使う。
+    /// `with_bastet_event_bus` と同じ `WorldCapabilities.bastet` を指す (event_bus は registry 内蔵)。
+    #[cfg(feature = "midi")]
+    pub fn with_bastet(mut self, bastet: Arc<RwLock<crate::bastet::Bastet>>) -> Self {
+        self.bastet = Some(bastet);
         self
     }
 }
@@ -743,6 +762,37 @@ fn handle_system_shutdown(id: u64) -> ChannelMessage {
 ///
 /// ChannelMessage::Response は send_response() で、
 /// ChannelMessage::Error は send_response() でエラーペイロードとして送信する。
+/// device.report_device: agent (Swift menu bar) からの CoreMIDI hot-plug 報告を Bastet registry に反映する。
+///
+/// doc 26 §2 `ReportDevice` request。`state` = "connected" | "disconnected" で分岐し、
+/// `Bastet::report_device_*` が registry 更新 + `bastet.*` emit を行う (emit は既存 world-device
+/// bridge 経由で vp-app に届く)。
+#[cfg(feature = "midi")]
+async fn handle_device_report(
+    bastet: &Arc<RwLock<crate::bastet::Bastet>>,
+    id: u64,
+    payload: serde_json::Value,
+) -> ChannelMessage {
+    let req: super::protocol::ReportDeviceRequest = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
+    };
+
+    let b = bastet.read().await;
+    match req.state.as_str() {
+        "connected" => {
+            b.report_device_connected(&req.port_name, req.has_input, req.has_output)
+                .await;
+        }
+        "disconnected" => {
+            b.report_device_disconnected(&req.port_name).await;
+        }
+        other => return ChannelMessage::err(id, format!("不明な device state: {}", other)),
+    }
+
+    ChannelMessage::ok(id, serde_json::json!({ "ok": true }))
+}
+
 async fn send_channel_response(
     channel: &UnisonChannel,
     method: &str,
@@ -1197,6 +1247,59 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             };
                             if channel.send_event("event", &payload).await.is_err() {
                                 break; // client 切断
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // Device Channel（agent → daemon: CoreMIDI hot-plug 報告、doc 26 §2 channel_id=2）
+    // =========================================================================
+    // session/terminal と同じ request-dispatch 型 channel。macOS menu bar agent (Swift
+    // `CoreMIDIWatcher`) が `ReportDevice` を送り、Bastet registry を更新する。
+    // Model D (doc 25): hot-plug authority = agent。daemon は polling を回さない。
+    #[cfg(feature = "midi")]
+    if let Some(ref bastet) = state.bastet {
+        let bastet = bastet.clone();
+        server
+            .register_channel("device", {
+                move |_ctx, stream| {
+                    let bastet = bastet.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(msg) => msg,
+                                Err(_) => break,
+                            };
+
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let method = msg.method.clone();
+                            let request_id = msg.id;
+
+                            let response = match method.as_str() {
+                                "report_device" => {
+                                    handle_device_report(&bastet, request_id, payload).await
+                                }
+                                _ => ChannelMessage::err(
+                                    request_id,
+                                    format!("不明なメソッド: device.{}", method),
+                                ),
+                            };
+
+                            if send_channel_response(&channel, &method, response)
+                                .await
+                                .is_err()
+                            {
+                                break;
                             }
                         }
                         Ok(())

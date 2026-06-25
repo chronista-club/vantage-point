@@ -306,6 +306,26 @@ impl DeviceEvent {
     }
 }
 
+/// M2 / doc 26 §2: `device` channel の `ReportDevice` request payload。
+///
+/// macOS menu bar agent (Swift `CoreMIDIWatcher`) が CoreMIDI hot-plug を daemon に報告する。
+/// daemon の `handle_device_report` が `state` で接続/切断を分岐し Bastet registry に反映する。
+/// wire は既定 JSON codec のため、 Swift 側は CodingKeys で snake_case にマップする。
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportDeviceRequest {
+    /// CoreMIDI port の displayName (registry HashMap key と同値)
+    pub port_name: String,
+    /// "connected" | "disconnected"
+    pub state: String,
+    /// input port (device → VP) が存在するか
+    #[serde(default)]
+    pub has_input: bool,
+    /// output port (VP → device) が存在するか
+    #[serde(default)]
+    pub has_output: bool,
+}
+
 /// VP-154 PR-2: Process snapshot 1 entry (= "world-process" list method の応答 payload)
 ///
 /// 既存 `RunningProcess` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json
@@ -470,6 +490,26 @@ mod tests {
         let deserialized: KillPaneRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.session_id, "my-session");
         assert_eq!(deserialized.pane_id, 42);
+    }
+
+    // M2 / doc 26 §2: Swift agent が送る snake_case JSON が ReportDeviceRequest に decode できる。
+    #[cfg(feature = "midi")]
+    #[test]
+    fn test_report_device_request_deserialize_from_wire() {
+        // 接続報告（agent が CodingKeys で snake_case 化して送る形）
+        let wire = r#"{"port_name":"X-Touch Compact","state":"connected","has_input":true,"has_output":true}"#;
+        let req: ReportDeviceRequest = serde_json::from_str(wire).unwrap();
+        assert_eq!(req.port_name, "X-Touch Compact");
+        assert_eq!(req.state, "connected");
+        assert!(req.has_input);
+        assert!(req.has_output);
+
+        // 切断報告は has_input/has_output 省略 → default false
+        let wire = r#"{"port_name":"ROTO","state":"disconnected"}"#;
+        let req: ReportDeviceRequest = serde_json::from_str(wire).unwrap();
+        assert_eq!(req.state, "disconnected");
+        assert!(!req.has_input);
+        assert!(!req.has_output);
     }
 
     #[test]

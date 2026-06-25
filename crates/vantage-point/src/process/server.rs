@@ -974,6 +974,8 @@ pub async fn run_world(
     if let Some(bastet) = bastet_for_shutdown.as_ref() {
         let event_bus = bastet.read().await.event_bus().clone();
         daemon_state_builder = daemon_state_builder.with_bastet_event_bus(event_bus);
+        // M2 / doc 26 §2: device channel (agent → daemon) が registry を更新するため registry 本体も共有。
+        daemon_state_builder = daemon_state_builder.with_bastet(bastet.clone());
     }
     let daemon_state = std::sync::Arc::new(daemon_state_builder);
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
