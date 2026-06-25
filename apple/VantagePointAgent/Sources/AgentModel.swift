@@ -29,6 +29,8 @@ final class AgentModel: ObservableObject {
     @Published private(set) var status: Status = .connecting
     /// M2: agent が daemon に報告中の device displayName 一覧 (menu 表示用)。
     @Published private(set) var reportedDevices: Set<String> = []
+    /// M2b: 稼働中の SP 一覧 (旧 daemon tray の instance 一覧を menu bar agent に一本化)。
+    @Published private(set) var instances: [VpInstance] = []
 
     private let client = DaemonClient()
     /// CoreMIDI 監視 (接続成功後に起動)。 client + notify block を生かすため保持する。
@@ -84,5 +86,18 @@ final class AgentModel: ObservableObject {
                 }
             }
         }
+    }
+
+    // ─── M2b: 稼働中 SP の一覧・操作 ─────────────────────
+
+    /// 稼働中 SP を再 scan して `instances` を更新する (menu を開いたとき / Refresh から呼ぶ)。
+    func refreshInstances() async {
+        instances = await InstanceControl.scan()
+    }
+
+    /// 指定 SP を graceful shutdown し、 一覧を更新する。
+    func stopInstance(port: Int) async {
+        await InstanceControl.stop(port: port)
+        await refreshInstances()
     }
 }
