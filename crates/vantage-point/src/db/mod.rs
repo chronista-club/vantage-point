@@ -83,12 +83,114 @@ impl VpDb {
         std::fs::create_dir_all(data_dir)
             .map_err(|e| anyhow::anyhow!("DB data dir 作成失敗 ({}): {}", data_dir.display(), e))?;
         let endpoint = format!("surrealkv://{}", data_dir.display());
-        let db = surrealdb::engine::any::connect(&endpoint)
-            .await
-            .map_err(|e| anyhow::anyhow!("SurrealDB embedded 接続失敗 ({}): {}", endpoint, e))?;
-        db.use_ns(NS).use_db(DB_NAME).await?;
-        tracing::info!("SurrealDB 接続成功 (embedded: {})", endpoint);
-        Ok(Self { db })
+
+        // surrealkv は OS レベル排他ロック (try_lock_exclusive) を持つ。 unclean shutdown
+        // 直後や起動レース時に、 直前の holder が release し切る前だと connect が一時的に
+        // 「Database at .../LOCK is already locked by another process」で失敗しうる。
+        // ここで諦めて caller が「DB なしで継続」してしまうと wire store 等が無効のまま
+        // 走り続ける (= 静かな degrade、 wire_send が "store not initialized" で恒久失敗)。
+        // → lock 衝突に限り backoff retry。 さらに、 unclean shutdown / crash で取り残された
+        //   stale LOCK (= live holder 不在) は `clear_stale_lock` で削除して即 retry し、
+        //   手動 rm / reboot なしで self-heal する (一時的な race は backoff retry で待つ)。
+        const MAX_ATTEMPTS: u32 = 8;
+        let mut last_err = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match surrealdb::engine::any::connect(&endpoint).await {
+                Ok(db) => {
+                    db.use_ns(NS).use_db(DB_NAME).await?;
+                    if attempt > 1 {
+                        tracing::info!(
+                            "SurrealDB 接続成功 (embedded: {}, lock 取得まで {} 回試行)",
+                            endpoint,
+                            attempt
+                        );
+                    } else {
+                        tracing::info!("SurrealDB 接続成功 (embedded: {})", endpoint);
+                    }
+                    return Ok(Self { db });
+                }
+                Err(e) => {
+                    let is_lock = {
+                        let m = e.to_string();
+                        m.contains("locked") || m.contains("LOCK")
+                    };
+                    if !is_lock {
+                        // lock 以外の失敗は retry しても無駄なので即座に返す
+                        return Err(anyhow::anyhow!(
+                            "SurrealDB embedded 接続失敗 ({}): {}",
+                            endpoint,
+                            e
+                        ));
+                    }
+                    last_err = Some(e);
+                    if attempt < MAX_ATTEMPTS {
+                        // unclean shutdown で取り残された stale LOCK (= live holder 不在) なら
+                        // 削除して即 retry。 これで手動 rm / reboot なしで self-heal する。
+                        if Self::clear_stale_lock(data_dir) {
+                            tracing::warn!(
+                                "stale LOCK を削除 (live holder 不在) → 即 retry: {}",
+                                endpoint
+                            );
+                            continue;
+                        }
+                        let wait = std::time::Duration::from_millis(250 * attempt as u64);
+                        tracing::warn!(
+                            "SurrealDB lock 衝突 ({}/{} 回目)、 {:?} 後に retry: {}",
+                            attempt,
+                            MAX_ATTEMPTS,
+                            wait,
+                            endpoint
+                        );
+                        tokio::time::sleep(wait).await;
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "SurrealDB embedded 接続失敗 ({}): lock 衝突が {} 回 retry 後も解消せず: {}",
+            endpoint,
+            MAX_ATTEMPTS,
+            last_err.map(|e| e.to_string()).unwrap_or_default()
+        ))
+    }
+
+    /// LOCK ファイルに live holder が居ない (= 自分で非ブロッキング flock を取得できる) なら
+    /// stale とみなして削除し、 true を返す。 unclean shutdown / crash 後に surrealkv が
+    /// 取り残す LOCK を self-heal するための判定。 holder 生存時は触らず false（= 正常な排他）。
+    #[cfg(unix)]
+    fn clear_stale_lock(data_dir: &Path) -> bool {
+        use std::os::unix::io::AsRawFd;
+        let lock_path = data_dir.join("LOCK");
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        else {
+            return false; // LOCK が無い / open 不可 → 触らない
+        };
+        let fd = file.as_raw_fd();
+        // SAFETY: fd は直上で open した有効な fd。 非ブロッキング排他 flock を試す。
+        //   取得成功 = 他プロセスが握っていない = stale。
+        let acquired = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if !acquired {
+            return false; // live holder が居る → 削除しない
+        }
+        // flock を**保持したまま** remove_file して TOCTOU を排除する。
+        //   先に LOCK_UN すると「UN → 他プロセスが open+flock 取得 → 我々が remove」の隙が生じ、
+        //   他プロセスが削除済み inode の flock を握ったまま接続続行 → 我々の retry が新 inode の
+        //   LOCK を作って接続成功 → 二重 holder → DB 破損、という race になる。
+        //   保持中に unlink すれば、消す対象＝自分が握る inode なので他者侵入の窓が無い。
+        //   明示的 LOCK_UN は不要（drop(file) の fd close で flock は自動解放される）。
+        let removed = std::fs::remove_file(&lock_path).is_ok();
+        drop(file); // ここで fd close → flock 自動解放
+        removed
+    }
+
+    /// `clear_stale_lock` の非 unix 版 (no-op)。 flock が無い環境では stale 判定をせず、
+    /// backoff retry のみで対処する。
+    #[cfg(not(unix))]
+    fn clear_stale_lock(_data_dir: &Path) -> bool {
+        false
     }
 
     /// kv-mem (in-memory) で接続（テスト用、 integration test からも利用可）
@@ -1906,5 +2008,62 @@ mod tests {
             .live_processes()
             .await
             .expect("live_processes ストリームの開始が失敗してはいけない");
+    }
+
+    // =========================================================================
+    // stale LOCK self-heal（clear_stale_lock）テスト
+    // =========================================================================
+
+    /// 誰も握っていない stale LOCK は削除され true。 LOCK 不在なら false（対象なし）。
+    #[cfg(unix)]
+    #[test]
+    fn clear_stale_lock_removes_unheld_and_skips_missing() {
+        let tmp = std::env::temp_dir().join(format!("vp-stale-lock-a-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lock = tmp.join("LOCK");
+
+        std::fs::write(&lock, b"stale").unwrap();
+        assert!(
+            super::VpDb::clear_stale_lock(&tmp),
+            "unheld LOCK は stale 判定で削除されるべき"
+        );
+        assert!(!lock.exists(), "stale LOCK ファイルが削除されているべき");
+
+        assert!(
+            !super::VpDb::clear_stale_lock(&tmp),
+            "LOCK 不在時は false（何もしない）"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// live holder が flock を握っている LOCK は削除されない（= 正常な排他を壊さない）。
+    #[cfg(unix)]
+    #[test]
+    fn clear_stale_lock_keeps_held_lock() {
+        use std::os::unix::io::AsRawFd;
+        let tmp = std::env::temp_dir().join(format!("vp-stale-lock-b-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lock = tmp.join("LOCK");
+
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock)
+            .unwrap();
+        // 別 open file description で排他 flock を握る（live holder を模擬）
+        let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(r, 0, "テスト前提: flock 取得成功");
+
+        assert!(
+            !super::VpDb::clear_stale_lock(&tmp),
+            "live holder の LOCK は削除しない"
+        );
+        assert!(lock.exists(), "held LOCK ファイルは残るべき");
+
+        unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+        drop(f);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
