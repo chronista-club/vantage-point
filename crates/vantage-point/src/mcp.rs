@@ -712,8 +712,11 @@ pub struct VantageMcp {
     process_url: Arc<Mutex<String>>,
     /// Process の HTTP ポート番号（QUIC = port + QUIC_PORT_OFFSET）
     process_port: Arc<Mutex<u16>>,
-    /// Unison "process" チャネル（lazy 接続、canvas 操作も含む）
+    /// Unison "process-proxy" チャネル（lazy 接続、canvas 操作も含む）
     process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
+    /// L0 SP-portless: この MCP が操作対象とする project の path（World "process-proxy" の
+    /// handshake に渡す stable な project 識別子）。 port と違い reshuffle で揺れない。
+    project_path: Arc<String>,
     /// この MCP プロセスが属する Lane（cwd 由来、VP-166 PR-4）
     self_lane: SelfLane,
     tool_router: ToolRouter<Self>,
@@ -726,6 +729,7 @@ impl Clone for VantageMcp {
             process_url: self.process_url.clone(),
             process_port: self.process_port.clone(),
             process_channel: self.process_channel.clone(),
+            project_path: self.project_path.clone(),
             self_lane: self.self_lane.clone(),
             tool_router: Self::tool_router(),
         }
@@ -734,12 +738,13 @@ impl Clone for VantageMcp {
 
 #[tool_router]
 impl VantageMcp {
-    pub fn new(process_port: u16) -> Self {
+    pub fn new(process_port: u16, project_path: String) -> Self {
         Self {
             client: reqwest::Client::new(),
             process_url: Arc::new(Mutex::new(format!("http://[::1]:{}", process_port))),
             process_port: Arc::new(Mutex::new(process_port)),
             process_channel: Arc::new(Mutex::new(None)),
+            project_path: Arc::new(project_path),
             self_lane: SelfLane::detect(),
             tool_router: Self::tool_router(),
         }
@@ -891,7 +896,7 @@ impl VantageMcp {
     async fn get_quic_channel(
         &self,
         channel_slot: &Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
-        channel_name: &str,
+        _channel_name: &str,
     ) -> Result<Arc<unison::network::channel::UnisonChannel>, McpError> {
         let mut guard = channel_slot.lock().await;
 
@@ -900,33 +905,37 @@ impl VantageMcp {
             return Ok(Arc::clone(ch));
         }
 
-        // 新規接続。 startup 時に解決した process_port は、 discovery 一時障害や SP
-        // 未起動のタイミングだと 33000 fallback を掴んでいることがある。 connect に
-        // 失敗したら discovery で port を引き直し、 1 回だけリトライする (stale port
-        // self-heal — HTTP 経路の try_reconnect と対称)。
-        let port = *self.process_port.lock().await;
-        let client = match connect_quic(&quic_addr(port)).await {
-            Ok(client) => client,
-            Err(first_err) => match self.rediscover_process_port().await {
-                Some(fresh_port) => connect_quic(&quic_addr(fresh_port)).await?,
-                None => return Err(first_err),
-            },
-        };
-        // unison 内部の request timeout は default 30s。 `quic_call_with_timeout` の outer
-        // timeout (wire_recv で server_timeout + buffer = 最大 35s) より長く取らないと
-        // unison 側が先に発火してしまうので、 余裕を持って 60s に引き上げる (VP-163)。
+        // L0 SP-portless: SP 直結 (process_port) ではなく World :32000 の "process-proxy"
+        // channel に繋ぐ。 World が project_path から SP の "control" channel を逆引きして
+        // process method を forward する (reverse-routing)。 World は常駐 daemon で port は
+        // 固定なので、 旧来の stale-port self-heal (rediscover_process_port) は不要。
+        let client = connect_quic(&quic_addr(crate::cli::WORLD_PORT)).await?;
+        // unison 内部の request timeout は default 30s。 outer timeout (wire_recv 等で
+        // server_timeout + buffer = 最大 35s) より長く取らないと unison 側が先に発火するので
+        // 60s に引き上げる (VP-163)。
         let channel = Arc::new(
             client
-                .open_channel(channel_name)
+                .open_channel("process-proxy")
                 .await
                 .map_err(|e| {
                     McpError::internal_error(
-                        format!("Unison {} channel error: {}", channel_name, e),
+                        format!("Unison process-proxy channel error: {}", e),
                         None,
                     )
                 })?
                 .with_request_timeout(std::time::Duration::from_secs(60)),
         );
+
+        // handshake: project_path を渡す (World が path_key に正規化して control channel を逆引き)。
+        channel
+            .request::<serde_json::Value, serde_json::Value>(
+                "subscribe",
+                &serde_json::json!({ "project_path": self.project_path.as_str() }),
+            )
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("process-proxy handshake error: {}", e), None)
+            })?;
 
         *guard = Some(Arc::clone(&channel));
         Ok(channel)
@@ -3434,6 +3443,36 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     33000
 }
 
+/// L0 SP-portless: World "process-proxy" の addressing 用に、 この MCP が属する project の
+/// path（正規化済 path_key と同形）を解決する。 `resolve_process_port` と同じ discovery 経路
+/// (performer→parent / conductor→cwd) で running SP の `project_dir` を引く。 SP 未起動などで
+/// 引けない場合は cwd の正規化 path に fallback（World 側で normalize_path_key 再正規化される）。
+async fn resolve_project_path() -> String {
+    let self_lane = SelfLane::detect();
+    let info = match &self_lane.performer_parent {
+        Some(_) => {
+            if let Some(parent_path) = crate::config::Config::load()
+                .ok()
+                .as_ref()
+                .and_then(|c| performer_parent_path(&self_lane, c))
+            {
+                crate::discovery::find_by_project(&parent_path).await
+            } else {
+                None
+            }
+        }
+        None => crate::discovery::find_for_cwd().await,
+    };
+    if let Some(info) = info {
+        return info.project_dir;
+    }
+    // fallback: cwd の正規化 path（running SP が無くても project を addressing できる）。
+    std::env::current_dir()
+        .ok()
+        .map(|p| crate::config::Config::normalize_path(&p))
+        .unwrap_or_default()
+}
+
 /// Process port から QUIC 接続先アドレスを組み立てる ([::1] = IPv6 loopback)。
 fn quic_addr(process_port: u16) -> String {
     format!(
@@ -3466,15 +3505,17 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 
-    // Resolve the actual port to use
+    // Resolve the actual port to use（HTTP フォールバック用に保持）
     let resolved_port = resolve_process_port(process_port).await;
+    // L0 SP-portless: QUIC 経路は World "process-proxy" を project_path で addressing する。
+    let project_path = resolve_project_path().await;
 
     // wiremsg R5-4: 旧 msgbox の registry サブシステム (Performer self-register) は撤去済。
     // wire の cross-process delivery は TheWorld の project registry を使う別経路。
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication
-    let service = VantageMcp::new(resolved_port)
+    let service = VantageMcp::new(resolved_port, project_path)
         .serve(stdio())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {}", e))?;
