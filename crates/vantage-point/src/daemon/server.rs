@@ -1456,33 +1456,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     async move {
                         let channel = UnisonChannel::new(stream);
 
-                        // --- handshake: 最初の Request("subscribe", {project_path}) を待つ ---
-                        // project_path は World の path_key に正規化して lane_registry と突き合わせる
-                        // (vp-app は生の project dir を送り、 正規化は World 側で行う = SSOT 一元化)。
-                        let path_key = loop {
-                            let msg = match channel.recv().await {
-                                Ok(m) => m,
-                                Err(_) => return Ok(()), // 接続断
-                            };
-                            if msg.msg_type != MessageType::Request || msg.method != "subscribe" {
-                                continue;
-                            }
-                            let payload = msg.payload_as_value().unwrap_or_default();
-                            let project_path = payload
-                                .get("project_path")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let path_key = crate::capability::normalize_path_key(
-                                std::path::Path::new(project_path),
-                            );
-                            let _ = channel
-                                .send_response(
-                                    msg.id,
-                                    "subscribe",
-                                    &serde_json::json!({"status": "ok"}),
-                                )
-                                .await;
-                            break path_key;
+                        // handshake: 全 project 単位 channel 共通の subscribe ({project_path}→path_key)。
+                        // canvas / control / process-proxy と同一 helper に統一 (bespoke 重複を排除、
+                        // doc 27 §3.4.4「1 protocol」方向)。
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(()); // 接続断
                         };
 
                         // lane_change の購読を初期 snapshot の **前** に張る (subscribe→snapshot 順なので
