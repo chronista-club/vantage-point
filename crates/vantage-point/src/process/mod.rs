@@ -11,6 +11,8 @@
 pub mod capabilities;
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
 pub(crate) mod cc_activity;
+/// Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom (doc 28 §4)
+pub(crate) mod delegation;
 /// wire delivery loop — 未 ack command の tmux nudge + 再掲示 (R2-b、 TheWorld 常駐)
 pub(crate) mod delivery_actor;
 pub(crate) mod hub;

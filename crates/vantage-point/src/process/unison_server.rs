@@ -883,6 +883,9 @@ pub(crate) async fn dispatch_process_method(
         // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
         "wire_latest_msg" => handle_wire_latest_msg(state, payload).await,
         "wire_ack" => handle_wire_ack(state, payload).await,
+        // Agent 委譲 (doc 28 §4、 v1 ローカル atom): delegate=B を wake / complete=A を wake。
+        "delegate" => super::delegation::handle_delegate(state, payload).await,
+        "complete" => super::delegation::handle_complete(state, payload).await,
         _ => Err(format!("不明なメソッド: process.{}", method)),
     }
 }
@@ -1767,5 +1770,134 @@ mod tests {
             res.get("stands").map(|s| s.is_array()).unwrap_or(false),
             "stands_list は {{stands:[...]}} 形で返る: {res}"
         );
+    }
+
+    // =========================================================================
+    // Agent 委譲 (doc 28 §4、 v1 ローカル atom) の SP dispatch e2e。
+    // build_test_app_state は lane_pool が空 = wake は graceful に no-lane (woke=false)。
+    // ここでは state machine の遷移と record 更新・id 採番・未知 id の Err を固定する
+    // (実機 send-keys 往復は examples/deleg_probe.rs が別途検証)。
+    // =========================================================================
+
+    /// delegate → record(Pending→Active)・`{id}` 返る、 lane 不在は graceful (woke=false)。
+    #[tokio::test]
+    async fn delegate_records_active_and_is_graceful_without_lane() {
+        use super::dispatch_process_method;
+        use crate::process::delegation::DelegationState;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(
+            &state,
+            "delegate",
+            serde_json::json!({
+                "doer": "agent@vp/feat-api",
+                "task": "DB schema を書く",
+                "requester": "agent@vp",
+            }),
+        )
+        .await
+        .expect("delegate dispatch");
+
+        let id = res["id"].as_str().expect("id 返る").to_string();
+        assert!(id.starts_with("dlg-"), "id は dlg- prefix: {id}");
+        assert_eq!(res["state"], "active");
+        assert_eq!(
+            res["woke"], false,
+            "lane 不在なので wake は graceful に false"
+        );
+
+        // record が Active で store され、 requester/doer/task を論理 address のまま保持。
+        let map = state.delegations.read().await;
+        let d = map.get(&id).expect("record が store される");
+        assert_eq!(d.state, DelegationState::Active);
+        assert_eq!(d.requester, "agent@vp");
+        assert_eq!(d.doer, "agent@vp/feat-api");
+        assert!(d.outcome.is_none(), "未完了なので outcome は None");
+    }
+
+    /// complete(Done) → record が Done に更新・outcome 保持、 未知 id は Err。
+    #[tokio::test]
+    async fn complete_updates_record_to_done_and_rejects_unknown_id() {
+        use super::dispatch_process_method;
+        use crate::process::delegation::{DelegationState, Outcome};
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // まず delegate して id を得る。
+        let del = dispatch_process_method(
+            &state,
+            "delegate",
+            serde_json::json!({
+                "doer": "agent@vp/feat-api",
+                "task": "DB schema を書く",
+                "requester": "agent@vp",
+            }),
+        )
+        .await
+        .expect("delegate");
+        let id = del["id"].as_str().unwrap().to_string();
+
+        // complete(Done) → Done に遷移、 requester wake は graceful (woke=false)。
+        let done = dispatch_process_method(
+            &state,
+            "complete",
+            serde_json::json!({
+                "id": id,
+                "outcome": { "kind": "done", "result": "schema 完成" },
+            }),
+        )
+        .await
+        .expect("complete dispatch");
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["woke"], false);
+
+        let map = state.delegations.read().await;
+        let d = map.get(&id).expect("record 残存");
+        assert_eq!(d.state, DelegationState::Done);
+        assert!(
+            matches!(&d.outcome, Some(Outcome::Done { result }) if result == "schema 完成"),
+            "outcome が Done{{result}} で保持される: {:?}",
+            d.outcome
+        );
+        drop(map);
+
+        // 未知 id は Err（dispatch loop が error frame に詰める前段で String Err）。
+        let unknown = dispatch_process_method(
+            &state,
+            "complete",
+            serde_json::json!({
+                "id": "dlg-nonexistent",
+                "outcome": { "kind": "failed", "reason": "x" },
+            }),
+        )
+        .await;
+        assert!(unknown.is_err(), "未知 id は Err: {unknown:?}");
+    }
+
+    /// complete に必須 field 欠落 / 不正 outcome は Err（wire shape を固定）。
+    #[tokio::test]
+    async fn delegate_and_complete_validate_required_fields() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // delegate: doer 欠落 → Err。
+        let bad = dispatch_process_method(
+            &state,
+            "delegate",
+            serde_json::json!({ "task": "x", "requester": "agent@vp" }),
+        )
+        .await;
+        assert!(bad.is_err(), "doer 欠落は Err");
+
+        // complete: outcome の kind が未知 → from_value で Err。
+        let bad2 = dispatch_process_method(
+            &state,
+            "complete",
+            serde_json::json!({ "id": "dlg-x", "outcome": { "kind": "weird" } }),
+        )
+        .await;
+        assert!(bad2.is_err(), "不正 outcome は Err");
     }
 }

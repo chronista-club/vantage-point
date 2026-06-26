@@ -206,6 +206,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             super::lane_capabilities::LaneCapabilitiesPool::new(),
         ))),
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        delegations: Arc::new(RwLock::new(std::collections::HashMap::new())),
     });
 
     // Phase review fix #2: LanePool::with_conductor は内部で PtySlot::spawn (openpty + spawn_command)
@@ -781,6 +782,8 @@ pub async fn run_world(
         lane_capabilities: None,
         // S2: World mode は SP の per-lane pump を持たない (terminal pump は SP scope)。
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        // 委譲 store も SP scope (delegate/complete は SP dispatch)。World は空で構築。
+        delegations: Arc::new(RwLock::new(std::collections::HashMap::new())),
     });
 
     // R2-b: wire delivery loop (未 ack command の tmux nudge + 再掲示) を spawn。

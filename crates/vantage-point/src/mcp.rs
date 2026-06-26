@@ -154,6 +154,44 @@ pub struct WireAckParams {
     pub message_id: String,
 }
 
+/// Parameters for delegate tool (doc 28 §4: durable cross-agent future / v1 ローカル atom)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DelegateParams {
+    /// 委譲先 doer の agent address
+    #[schemars(
+        description = "The doer lane to delegate to, as an agent address (e.g. 'agent@vantage-point/feat-api' for a performer, or 'agent@vantage-point' for the conductor). The doer is woken (tmux) with the task and instructed to report back via complete()."
+    )]
+    pub doer: String,
+
+    /// 委譲タスクの内容
+    #[schemars(
+        description = "The task to delegate, written as a SELF-CONTAINED instruction: the doer is woken with this text and may have no other context (state what to do, expected result, and any minimal context needed)."
+    )]
+    pub task: String,
+}
+
+/// Parameters for complete tool (doc 28 §4)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CompleteParams {
+    /// 完了する委譲 id（delegate が返した future handle）
+    #[schemars(
+        description = "The delegation id returned by delegate() (e.g. 'dlg-...'), passed to you in the delegation wake message. This is the future handle you are resolving."
+    )]
+    pub id: String,
+
+    /// Outcome 種別: done / failed
+    #[schemars(
+        description = "Outcome kind: 'done' if the task succeeded, 'failed' if it could not be completed."
+    )]
+    pub outcome: String,
+
+    /// 結果（done）または理由（failed）
+    #[schemars(
+        description = "For outcome='done': a summary of the result to hand back to the requester (who resumes their paused work with this). For outcome='failed': the reason it could not be completed."
+    )]
+    pub result: String,
+}
+
 /// Parameters for the watch_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WatchFileParams {
@@ -3156,6 +3194,63 @@ if bestId > 0 { print(bestId) }
         let resp = self.quic_call("wire_ack", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
+    }
+
+    // ========================================================================
+    // Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom。
+    // doc 28 §4 / design memo mem_1CcSQ6sxFPtm2mZw873VRp。
+    //
+    // delegate = A が B に委譲して PARK（ターンを終える）/ complete = B が完了報告して A を wake。
+    // park/resume は「ターン境界の park + event 駆動の session 再 invoke」で future の
+    // await/resolve を実装する（agent の block はスレッド block でなくターンの park）。
+    // ========================================================================
+
+    /// Delegate a task to another agent lane and park this turn (durable cross-agent future)
+    #[tool(
+        description = "Delegate a task to another agent lane, then PARK your turn (do NOT spin-wait). Returns a delegation id. The doer is woken (tmux send-keys) with the task and asked to report via complete(); when they do, YOU are woken with the outcome so you can resume. This is the async-future primitive for 'A asks B to do D, B finishes, A continues' WITHOUT a human relaying messages. After calling delegate, finish your turn — you will be re-invoked with the result. Use this when you hit a sub-task that another lane should own and you are blocked on its result. (doc 28 §4)"
+    )]
+    async fn delegate(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DelegateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // requester = この caller lane の wire address（wire_send の from と同経路で導出）。
+        let requester = self.self_lane.from_address()?;
+        let payload = serde_json::json!({
+            "doer": params.doer,
+            "task": params.task,
+            "requester": requester,
+        });
+        let resp = self.quic_call("delegate", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "delegated".to_string()),
+        )]))
+    }
+
+    /// Report the outcome of a delegated task (resolves the requester's awaited future)
+    #[tool(
+        description = "Report the outcome of a task that was delegated TO you (using the delegation id from the wake message). Set outcome='done' with a `result` summary on success, or outcome='failed' with a `result` describing the reason. This RESOLVES the requester's awaited future: they are woken (tmux send-keys) with your outcome and resume the work that was blocked on you. (doc 28 §4)"
+    )]
+    async fn complete(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CompleteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // outcome string → typed Outcome の wire shape（SP 側 `serde(tag="kind")` に写す）。
+        let kind = params.outcome.trim().to_lowercase();
+        let outcome = match kind.as_str() {
+            "done" => serde_json::json!({ "kind": "done", "result": params.result }),
+            "failed" => serde_json::json!({ "kind": "failed", "reason": params.result }),
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("outcome は 'done' or 'failed' のみ (got: {other})"),
+                    None,
+                ));
+            }
+        };
+        let payload = serde_json::json!({ "id": params.id, "outcome": outcome });
+        let resp = self.quic_call("complete", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "completed".to_string()),
         )]))
     }
 
