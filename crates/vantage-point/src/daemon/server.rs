@@ -1686,10 +1686,12 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // 本 handler 自体は channel を保持して接続維持を監視するだけ (request を撃つのは process-proxy)。
     {
         let control_channels = state.control_channels.clone();
+        let canvas_routers = state.canvas_routers.clone();
         server
             .register_channel("control", {
                 move |_ctx, stream| {
                     let control_channels = control_channels.clone();
+                    let canvas_routers = canvas_routers.clone();
                     async move {
                         let channel = Arc::new(UnisonChannel::new(stream));
                         let Some(path_key) = recv_subscribe_handshake(&channel).await else {
@@ -1700,6 +1702,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             .await
                             .insert(path_key.clone(), channel.clone());
                         tracing::info!("Control: SP 登録 (key={})", path_key);
+
+                        // S2 polish: SP (再)接続 catch-up。 SP 起動前に surface が terminal topic を
+                        // subscribe して demand_start を撃った場合、 control channel 不在で reverse-route
+                        // が捨てられている。 SP 登録直後に当該 project の active demand を撃ち直し、
+                        // 取りこぼした pump start を補填する (= SP restart で terminal が暗転しない)。
+                        if let Some(router) = canvas_routers.read().await.get(&path_key) {
+                            router.refire_active_demands();
+                        }
 
                         // 切断検知まで待つ。 World は本 channel に request を撃つだけで SP は
                         // event/request を送らないため、 recv() は切断時のみ Err で返る

@@ -592,8 +592,16 @@ async fn handle_terminal_resize(
     if lane.is_empty() {
         return Err("terminal_resize: lane 未指定".to_string());
     }
-    let cols = payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
-    let rows = payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+    // bounds check: 0 / 極大値で PTY に不正 dims を渡さない (u64→u16 silent wrap も防ぐ)。
+    // 旧 daemon "terminal" channel の resize 経路と同じ範囲 (1..=1000)。
+    let cols = payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(80);
+    let rows = payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(24);
+    if cols == 0 || rows == 0 || cols > 1000 || rows > 1000 {
+        return Err(format!(
+            "terminal_resize: 不正な dims (cols={cols} rows={rows})"
+        ));
+    }
+    let (cols, rows) = (cols as u16, rows as u16);
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("terminal_resize: lane パース失敗: {}", lane));
     };

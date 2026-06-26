@@ -329,6 +329,39 @@ impl TopicRouter {
         }
     }
 
+    /// 現在 active (subscriber count > 0) な全 demand topic に対し、 demand hook を
+    /// `active=true` で **再発火** する (count は変えない)。
+    ///
+    /// 用途 (S2 polish): SP control channel が World に (再)接続した瞬間の catch-up。
+    /// surface が先に subscribe して demand_start を撃った時点で SP control channel が
+    /// 不在だと reverse-route が捨てられる (start が SP に届かない)。 SP 接続後に本 method を
+    /// 呼ぶと、 既に立っている demand を撃ち直して pump を起こせる。 cb (terminal_demand_start)
+    /// は SP 側で idempotent (既存 pump を差し替え) なので二重呼びでも 1 本に収束する。
+    pub fn refire_active_demands(&self) {
+        let active: Vec<String> = {
+            let counts = self.demand_counts.lock().unwrap();
+            counts
+                .iter()
+                .filter(|(_, c)| **c > 0)
+                .map(|(t, _)| t.clone())
+                .collect()
+        };
+        for topic in active {
+            let to_call: Vec<DemandCallback> = {
+                let demands = self.demands.lock().unwrap();
+                let path = TopicPath::parse(&topic);
+                demands
+                    .iter()
+                    .filter(|h| path.matches(&h.pattern))
+                    .map(|h| h.cb.clone())
+                    .collect()
+            };
+            for cb in to_call {
+                cb(topic.clone(), true);
+            }
+        }
+    }
+
     /// Retained store への直接アクセス
     pub fn retained(&self) -> Arc<RwLock<RetainedStore>> {
         self.retained.clone()
@@ -794,6 +827,35 @@ mod tests {
         let (id, _rx) = router.subscribe("process/paisley-park/#").await;
         router.unsubscribe(id).await;
         // panic せず通れば OK (demand_counts は触られない)。
+    }
+
+    #[tokio::test]
+    async fn test_refire_active_demands_recalls_active_starts() {
+        // S2 polish: SP 再接続時 catch-up。 active (count>0) な demand だけ start を撃ち直す。
+        use std::sync::atomic::AtomicUsize;
+        let router = TopicRouter::new();
+        let starts = Arc::new(AtomicUsize::new(0));
+        {
+            let s = starts.clone();
+            router.register_demand("process/terminal/data/+/out", move |_t, active| {
+                if active {
+                    s.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        let (id, _rx) = router
+            .subscribe("process/terminal/data/vp~conductor/out")
+            .await;
+        assert_eq!(starts.load(Ordering::Relaxed), 1, "初回 0→1 start");
+
+        // SP 再接続相当: active な demand を撃ち直す → 再発火 (count は不変)。
+        router.refire_active_demands();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "catch-up で再発火");
+
+        // subscriber が居なくなれば active 無し → refire は no-op。
+        router.unsubscribe(id).await;
+        router.refire_active_demands();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "active 無しなら no-op");
     }
 
     // =========================================================================
