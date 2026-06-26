@@ -428,6 +428,265 @@ async fn connect_and_register(
     })
 }
 
+/// L0 SP-portless (canvas slice): SP → World の canvas push keepalive。
+///
+/// SP 起動時に spawn し、 World の "canvas-ingest" channel に paisley-park topic の ProcessMessage
+/// を push する。 World は受けた message を project の TopicRouter に route し、 vp-app 向け "canvas"
+/// channel に再配信する (= SP "canvas" channel 直結の World 集約版)。 registry keepalive と同型の
+/// backoff 再接続を持ち、 接続のたび `topic_router.subscribe` し直すことで retained を再 seed する
+/// (World 再起動を越えた canvas state の再構築)。
+pub fn spawn_canvas_keepalive(
+    project_dir: &str,
+    topic_router: std::sync::Arc<crate::process::topic_router::TopicRouter>,
+    shutdown: CancellationToken,
+) {
+    let project_dir = project_dir.to_string();
+
+    const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
+    let mut backoff = INITIAL_BACKOFF;
+
+    tokio::spawn(async move {
+        loop {
+            if shutdown.is_cancelled() {
+                return;
+            }
+            match connect_canvas_ingest(&project_dir).await {
+                Ok(conn) => {
+                    tracing::info!("Canvas push: World 接続成立 (project={})", project_dir);
+                    backoff = INITIAL_BACKOFF;
+
+                    // 接続ごとに topic_router を購読 (retained 初期配信 + live delta)。
+                    // 再接続時は前 subscription を unsubscribe してから貼り直す。
+                    let (sub_id, mut rx) = topic_router.subscribe("process/paisley-park/#").await;
+                    let mut conn_events = conn._client.subscribe_connection_events();
+
+                    loop {
+                        tokio::select! {
+                            recvd = rx.recv() => {
+                                match recvd {
+                                    Some((_topic, msg)) => {
+                                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                                        if conn.channel
+                                            .send_event("pane", &json)
+                                            .await
+                                            .is_err()
+                                        {
+                                            tracing::warn!(
+                                                "Canvas push: send 失敗 → 再接続 (project={})",
+                                                project_dir
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    None => break, // topic_router subscription 終了 (通常起きない)
+                                }
+                            }
+                            conn_ev = conn_events.recv() => {
+                                use unison::network::ClientConnectionEvent;
+                                if let Ok(ClientConnectionEvent::Disconnected { reason }) = conn_ev {
+                                    tracing::warn!(
+                                        "Canvas push: QUIC 切断検知 ({}) → 即再接続",
+                                        reason
+                                    );
+                                    break;
+                                }
+                            }
+                            _ = shutdown.cancelled() => {
+                                topic_router.unsubscribe(sub_id).await;
+                                return;
+                            }
+                        }
+                    }
+
+                    // 再接続前に subscription を畳む (次接続で貼り直す)。
+                    topic_router.unsubscribe(sub_id).await;
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "Canvas push: World 接続失敗 ({}), {}秒後にリトライ (exp backoff)",
+                        e,
+                        backoff.as_secs()
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = shutdown.cancelled() => return,
+                    }
+                    backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
+                }
+            }
+        }
+    });
+}
+
+/// World の "canvas-ingest" channel に接続し、 subscribe handshake を済ませる。
+async fn connect_canvas_ingest(project_dir: &str) -> Result<RegistryConnection, String> {
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("QUIC client 作成失敗: {}", e))?;
+    let client = unison::ProtocolClient::new(transport);
+
+    let addr = format!("[::1]:{}", WORLD_PORT);
+    client
+        .connect(&addr)
+        .await
+        .map_err(|e| format!("TheWorld 接続失敗: {}", e))?;
+
+    let channel = client
+        .open_channel("canvas-ingest")
+        .await
+        .map_err(|e| format!("canvas-ingest チャネルオープン失敗: {}", e))?;
+
+    // handshake: project_path を渡す (World 側で path_key に正規化される)。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": project_dir }),
+        )
+        .await
+        .map_err(|e| format!("canvas-ingest subscribe handshake 失敗: {}", e))?;
+
+    Ok(RegistryConnection {
+        _client: client,
+        channel,
+    })
+}
+
+/// L0 SP-portless (control slice): SP → World の reverse-routing keepalive。
+///
+/// SP 起動時に spawn し、 World の "control" channel を開いて handshake する。 World は本接続を
+/// `control_channels[path_key]` に保持し、 "process-proxy" channel 経由で来た外部 client (MCP/CLI)
+/// の request を**この接続を逆用して SP に forward** する。 SP 側は本 keepalive の recv ループで
+/// その reverse request を受け、 `dispatch_process_method` (= SP "process" channel と同一 dispatch)
+/// で処理して応答する。 これにより MCP/CLI は SP listen port ではなく World :32000 に繋いで
+/// process 操作 (show/clear/tmux/process/wire) を実行できる (SP portless 化の本丸)。
+///
+/// registry / canvas keepalive と同型の backoff 再接続を持つ。 reverse request の dispatch は
+/// 現状この recv ループ内で逐次実行する (= 1 つの slow op が後続を待たせる。 並行化は follow-up)。
+pub(crate) fn spawn_control_keepalive(
+    project_dir: &str,
+    state: std::sync::Arc<crate::process::state::AppState>,
+    shutdown: CancellationToken,
+) {
+    let project_dir = project_dir.to_string();
+
+    const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
+    let mut backoff = INITIAL_BACKOFF;
+
+    tokio::spawn(async move {
+        loop {
+            if shutdown.is_cancelled() {
+                return;
+            }
+            match connect_control(&project_dir).await {
+                Ok(conn) => {
+                    tracing::info!("Control: World 接続成立 (project={})", project_dir);
+                    backoff = INITIAL_BACKOFF;
+                    let mut conn_events = conn._client.subscribe_connection_events();
+
+                    loop {
+                        tokio::select! {
+                            recvd = conn.channel.recv() => {
+                                match recvd {
+                                    Ok(msg) => {
+                                        // World からの reverse request のみ処理 (それ以外は無視)。
+                                        if msg.msg_type != unison::network::MessageType::Request {
+                                            continue;
+                                        }
+                                        let id = msg.id;
+                                        let method = msg.method.clone();
+                                        let payload = msg.payload_as_value().unwrap_or_default();
+                                        // SP "process" channel と同一 dispatch で処理する。
+                                        let result = crate::process::unison_server::dispatch_process_method(
+                                            &state, &method, payload,
+                                        )
+                                        .await;
+                                        let response = match &result {
+                                            Ok(v) => v.clone(),
+                                            Err(e) => serde_json::json!({ "error": e }),
+                                        };
+                                        if conn.channel
+                                            .send_response(id, &method, &response)
+                                            .await
+                                            .is_err()
+                                        {
+                                            tracing::warn!(
+                                                "Control: send_response 失敗 → 再接続 (project={})",
+                                                project_dir
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break, // 切断 → 再接続
+                                }
+                            }
+                            conn_ev = conn_events.recv() => {
+                                use unison::network::ClientConnectionEvent;
+                                if let Ok(ClientConnectionEvent::Disconnected { reason }) = conn_ev {
+                                    tracing::warn!(
+                                        "Control: QUIC 切断検知 ({}) → 即再接続",
+                                        reason
+                                    );
+                                    break;
+                                }
+                            }
+                            _ = shutdown.cancelled() => return,
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "Control: World 接続失敗 ({}), {}秒後にリトライ (exp backoff)",
+                        e,
+                        backoff.as_secs()
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = shutdown.cancelled() => return,
+                    }
+                    backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
+                }
+            }
+        }
+    });
+}
+
+/// World の "control" channel に接続し、 subscribe handshake を済ませる。
+async fn connect_control(project_dir: &str) -> Result<RegistryConnection, String> {
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("QUIC client 作成失敗: {}", e))?;
+    let client = unison::ProtocolClient::new(transport);
+
+    let addr = format!("[::1]:{}", WORLD_PORT);
+    client
+        .connect(&addr)
+        .await
+        .map_err(|e| format!("TheWorld 接続失敗: {}", e))?;
+
+    let channel = client
+        .open_channel("control")
+        .await
+        .map_err(|e| format!("control チャネルオープン失敗: {}", e))?;
+
+    // handshake: project_path を渡す (World 側で path_key に正規化されて control_channels に登録)。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": project_dir }),
+        )
+        .await
+        .map_err(|e| format!("control subscribe handshake 失敗: {}", e))?;
+
+    Ok(RegistryConnection {
+        _client: client,
+        channel,
+    })
+}
+
 // ─── 同期ラッパー（CLI コマンドから使用）───────────────────
 //
 // resolve.rs / start.rs 等の同期関数から呼ぶための同期版。

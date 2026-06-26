@@ -475,6 +475,55 @@ async fn handle_terminal_control(
 // サーバー起動
 // =============================================================================
 
+/// SP "process" channel の method dispatch（reverse-routing と共有する単一の入口）。
+///
+/// SP の "process" Unison channel handler と、 World reverse-routing 経由 (SP control
+/// keepalive) の **両方**がこの関数を呼ぶことで、 「MCP が SP 直結」「MCP → World → SP
+/// reverse」どちらの経路でも同一の dispatch ロジック・同一の AppState 操作になる
+/// (L0 SP-portless: SP listen port を World 単一 endpoint に寄せても挙動不変)。
+pub(crate) async fn dispatch_process_method(
+    state: &Arc<AppState>,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match method {
+        // switch_lane も generic broadcast 経路に乗せる（B1: 遠隔 active Lane 制御）。
+        // hub → topic `process/paisley-park/event/switch-lane`（一時コマンド=非
+        // retained）→ canvas channel → vp-app が受信して active Lane を切り替える。
+        "show" | "clear" | "toggle_pane" | "split_pane" | "close_pane" | "switch_lane" => {
+            handle_process_message(state, payload)
+        }
+        "watch_file" => handle_watch_file(state, payload).await,
+        "unwatch_file" => handle_unwatch_file(state, payload).await,
+        "tmux_split" => handle_tmux_split(state, payload).await,
+        "tmux_list" => handle_tmux_list(state).await,
+        "tmux_close" => handle_tmux_close(state, payload).await,
+        "tmux_capture" => handle_tmux_capture(state, payload).await,
+        "tmux_capture_all" => handle_tmux_capture_all(state).await,
+        // エージェントメタデータ
+        "tmux_set_agent_meta" => handle_tmux_set_agent_meta(state, payload).await,
+        "tmux_update_agent_status" => handle_tmux_update_agent_status(state, payload).await,
+        "tmux_clear_agent_meta" => handle_tmux_clear_agent_meta(state, payload).await,
+        "tmux_send_keys" => handle_tmux_send_keys(state, payload).await,
+        "tmux_resolve_pane" => handle_tmux_resolve_pane(state, payload).await,
+        // ProcessRunner
+        "process_run" => handle_process_run(state, payload).await,
+        "process_stop" => handle_process_stop(state, payload).await,
+        "process_inject" => handle_process_inject(state, payload).await,
+        "process_list" => handle_process_list(state).await,
+        // wiremsg threaded inbox (Phase A ①、 R2 で wire_thread 追加)
+        "wire_send" => handle_wire_send(state, payload).await,
+        "wire_recv" => handle_wire_recv(state, payload).await,
+        "wire_thread" => handle_wire_thread(state, payload).await,
+        // flow_progress 用 read-only 未読 count (cursor 不触り)
+        "wire_unread_count" => handle_wire_unread_count(state, payload).await,
+        // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
+        "wire_latest_msg" => handle_wire_latest_msg(state, payload).await,
+        "wire_ack" => handle_wire_ack(state, payload).await,
+        _ => Err(format!("不明なメソッド: process.{}", method)),
+    }
+}
+
 /// Unison QUIC サーバーを起動する
 ///
 /// Axum HTTP サーバーと並行して動作し、MCP クライアントからの
@@ -533,47 +582,9 @@ pub async fn start_unison_server(
                             .with_data(payload.clone()),
                         );
 
-                        let result = match method.as_str() {
-                            // switch_lane も generic broadcast 経路に乗せる（B1: 遠隔 active Lane 制御）。
-                            // hub → topic `process/paisley-park/event/switch-lane`（一時コマンド=非
-                            // retained）→ canvas channel → vp-app が受信して active Lane を切り替える。
-                            "show" | "clear" | "toggle_pane" | "split_pane" | "close_pane"
-                            | "switch_lane" => handle_process_message(&state, payload),
-                            "watch_file" => handle_watch_file(&state, payload).await,
-                            "unwatch_file" => handle_unwatch_file(&state, payload).await,
-                            "tmux_split" => handle_tmux_split(&state, payload).await,
-                            "tmux_list" => handle_tmux_list(&state).await,
-                            "tmux_close" => handle_tmux_close(&state, payload).await,
-                            "tmux_capture" => handle_tmux_capture(&state, payload).await,
-                            "tmux_capture_all" => handle_tmux_capture_all(&state).await,
-                            // エージェントメタデータ
-                            "tmux_set_agent_meta" => {
-                                handle_tmux_set_agent_meta(&state, payload).await
-                            }
-                            "tmux_update_agent_status" => {
-                                handle_tmux_update_agent_status(&state, payload).await
-                            }
-                            "tmux_clear_agent_meta" => {
-                                handle_tmux_clear_agent_meta(&state, payload).await
-                            }
-                            "tmux_send_keys" => handle_tmux_send_keys(&state, payload).await,
-                            "tmux_resolve_pane" => handle_tmux_resolve_pane(&state, payload).await,
-                            // ProcessRunner
-                            "process_run" => handle_process_run(&state, payload).await,
-                            "process_stop" => handle_process_stop(&state, payload).await,
-                            "process_inject" => handle_process_inject(&state, payload).await,
-                            "process_list" => handle_process_list(&state).await,
-                            // wiremsg threaded inbox (Phase A ①、 R2 で wire_thread 追加)
-                            "wire_send" => handle_wire_send(&state, payload).await,
-                            "wire_recv" => handle_wire_recv(&state, payload).await,
-                            "wire_thread" => handle_wire_thread(&state, payload).await,
-                            // flow_progress 用 read-only 未読 count (cursor 不触り)
-                            "wire_unread_count" => handle_wire_unread_count(&state, payload).await,
-                            // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
-                            "wire_latest_msg" => handle_wire_latest_msg(&state, payload).await,
-                            "wire_ack" => handle_wire_ack(&state, payload).await,
-                            _ => Err(format!("不明なメソッド: process.{}", method)),
-                        };
+                        // L0 SP-portless (control slice): method dispatch は
+                        // dispatch_process_method に抽出済 (World reverse-routing と共有)。
+                        let result = dispatch_process_method(&state, &method, payload).await;
 
                         let response = match &result {
                             Ok(payload) => {

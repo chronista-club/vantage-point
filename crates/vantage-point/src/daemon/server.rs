@@ -61,6 +61,43 @@ pub struct DaemonState {
     /// `send_event` で push する経路。 capacity 64 = SP 同時 register が短時間に集中しても
     /// drop しない buffer (= 既存 system_event_tx と同サイズ)。
     pub process_lifecycle_tx: tokio::sync::broadcast::Sender<ProcessLifecycleEvent>,
+    /// L0 SP-portless (lanes slice): lane_registry が変化した project の path_key を載せる
+    /// broadcast bus。 registry channel handler が lane_registry を mutate した直後
+    /// (register / lanes/add / lanes/remove / lanes/update) に `send(path_key)` し、
+    /// per-project "lanes" channel の subscriber がこれを購読して当該 project の現 snapshot を
+    /// vp-app に再 push する経路 (= SP "lanes" channel 直結の World 集約版)。
+    ///
+    /// `process_lifecycle_tx` (process Add/Remove) と相補: あちらは SP の up/down、 こちらは
+    /// SP 内 lane (Performer 等) の add/remove/update を realtime 配信する。 capacity 64 は
+    /// 同上 (短時間に lane diff が集中しても drop しない buffer)。
+    pub lane_change_tx: tokio::sync::broadcast::Sender<String>,
+    /// L0 SP-portless (canvas slice): project ごとの Canvas (Paisley Park) TopicRouter。
+    ///
+    /// 各 SP が "canvas-ingest" channel で paisley-park の ProcessMessage を push し、 World は
+    /// それを project の TopicRouter に `route()` する。 vp-app 向け "canvas" channel はこの
+    /// TopicRouter を `subscribe("process/paisley-park/#")` して retained 初期配信 + live delta を
+    /// 配る。 SP の "canvas" channel (`process/unison_server.rs`) と **同じ TopicRouter 型を再利用**
+    /// することで、 retained/delta/atomicity を World 側で再実装せず委譲する (lanes の lane_registry
+    /// に相当する canvas 版の per-project store)。 project_path (path_key) → TopicRouter。
+    /// 初出 project は ingest / subscribe のどちらか早い方が get-or-create する。
+    ///
+    /// ライフサイクル: lane_registry と同じく **SP 切断では drop しない** (= retained canvas を
+    /// SP restart 越しに保持 = 「前回の続き」)。 entry の回収は project remove (namespace ごと撤去)
+    /// のタイミングが正で、 現状は未実装の follow-up (control_channels が SP 切断で remove するのと
+    /// 非対称なのは意図的: control_channels は live 接続 handle、 canvas_routers は durable state)。
+    /// daemon は long-lived なので project 数が大きく増える運用に入る前に project-remove cleanup を
+    /// 入れる (現 dogfooding 規模では bounded growth 実害なし)。
+    #[allow(clippy::type_complexity)]
+    pub canvas_routers:
+        Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
+    /// L0 SP-portless (control slice): project ごとの SP "control" channel handle。
+    ///
+    /// 各 SP が起動時に "control" channel で World に outbound 接続し (`spawn_control_keepalive`)、
+    /// World はその `UnisonChannel` を path_key で保持する。 "process-proxy" channel 経由で来た
+    /// 外部 client (MCP/CLI) の process 操作を、 この handle を**逆用** (`request()`) して当該 SP に
+    /// forward する (= World→SP reverse-routing)。 UnisonChannel は双方向対称なので、 SP が QUIC
+    /// client でありながら本接続上で RPC server として振る舞える。 SP 切断で除去 (= reverse 不能)。
+    pub control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
     /// projects 操作の権威 (= CLI → World 直接 Unison "world-control" channel の data plane)。
     ///
     /// HTTP `routes/world.rs` と同一の `ProcessManagerCapability` 実体を Arc 共有し、
@@ -92,6 +129,7 @@ pub struct DaemonState {
 impl Default for DaemonState {
     fn default() -> Self {
         let (process_lifecycle_tx, _) = tokio::sync::broadcast::channel(64);
+        let (lane_change_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
             registry: Arc::new(RwLock::new(SessionRegistry::default())),
             pty_slots: Arc::new(Mutex::new(HashMap::new())),
@@ -101,6 +139,9 @@ impl Default for DaemonState {
             projects: None,
             lane_registry: None,
             process_lifecycle_tx,
+            lane_change_tx,
+            canvas_routers: Arc::new(RwLock::new(HashMap::new())),
+            control_channels: Arc::new(RwLock::new(HashMap::new())),
             world_cap: None,
             vpdb: None,
             bastet_event_bus: None,
@@ -877,6 +918,77 @@ pub(crate) async fn build_world_lanes(
     entries.into_iter().map(|(_, v)| v).collect()
 }
 
+/// L0 SP-portless (lanes slice): per-project "lanes" channel に現 lane snapshot を 1 回 push する。
+///
+/// `lane_registry[path_key]` の現値を `ProcessMessage::LanesSnapshot` に包み、 SP "lanes" channel と
+/// **同一の event 形** (`method="snapshot"`、 payload = `{"type":"lanes_snapshot","lanes":[...]}`) で
+/// 送る。 これにより vp-app の consumer (`run_lanes_session`) は接続先が SP→World に変わっても無改造。
+/// 登録が無い project は空 Vec を送る (SP 未登録/lane 無しを「空」として正しく表現)。
+#[allow(clippy::type_complexity)]
+async fn send_lanes_snapshot(
+    channel: &UnisonChannel,
+    lane_registry: &Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
+    path_key: &str,
+) -> Result<(), NetworkError> {
+    let lanes = lane_registry
+        .read()
+        .await
+        .get(path_key)
+        .cloned()
+        .unwrap_or_default();
+    let snapshot = crate::protocol::ProcessMessage::LanesSnapshot { lanes };
+    let json = serde_json::to_value(&snapshot).unwrap_or_default();
+    channel.send_event("snapshot", &json).await
+}
+
+/// L0 SP-portless (canvas slice): project の Canvas TopicRouter を get-or-create する。
+///
+/// "canvas-ingest" (SP push) と "canvas" (vp-app subscribe) のどちらが先でも、 同じ project の
+/// TopicRouter を共有する (= SP push が router に route し、 vp-app subscribe が同 router を購読)。
+#[allow(clippy::type_complexity)]
+async fn canvas_router_for(
+    canvas_routers: &Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
+    path_key: &str,
+) -> Arc<crate::process::topic_router::TopicRouter> {
+    // fast path: 既存 router を read lock で取得
+    if let Some(router) = canvas_routers.read().await.get(path_key) {
+        return router.clone();
+    }
+    // slow path: write lock で get-or-create (race で 2 つ作られないよう entry で確定)
+    canvas_routers
+        .write()
+        .await
+        .entry(path_key.to_string())
+        .or_insert_with(|| Arc::new(crate::process::topic_router::TopicRouter::new()))
+        .clone()
+}
+
+/// L0 SP-portless: project 単位 channel 共通の subscribe handshake を待つ。
+///
+/// client (SP canvas-ingest / SP control / vp-app lanes・canvas / MCP process-proxy) は接続後に
+/// `request("subscribe", {project_path})` を送る。 project_path を path_key に正規化して返す。
+/// canvas / lanes / control / process-proxy の 4 系統が同一 handshake protocol を共有する
+/// (= 将来 channel 固有 field を足すなら、 その channel は本 helper から分離すること)。
+/// 接続断 / 不正 payload で `None`。
+async fn recv_subscribe_handshake(channel: &UnisonChannel) -> Option<String> {
+    loop {
+        let msg = channel.recv().await.ok()?;
+        if msg.msg_type != MessageType::Request || msg.method != "subscribe" {
+            continue;
+        }
+        let payload = msg.payload_as_value().unwrap_or_default();
+        let project_path = payload
+            .get("project_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let path_key = crate::capability::normalize_path_key(std::path::Path::new(project_path));
+        let _ = channel
+            .send_response(msg.id, "subscribe", &serde_json::json!({"status": "ok"}))
+            .await;
+        return Some(path_key);
+    }
+}
+
 /// Daemon の Unison QUIC サーバーを起動する
 ///
 /// session / terminal / system の各チャネルハンドラーを登録し、
@@ -1205,6 +1317,306 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
+    // "lanes" Channel（L0 SP-portless lanes slice — vp-app per-project lane 購読の World 集約版）
+    // =========================================================================
+    // 旧経路では vp-app が各 SP (:33000+) の "lanes" channel に直結して project ごとの lane
+    // snapshot を購読していた。 SP-portless 化により、 vp-app は World :32000 の本 channel 1 本に
+    // 集約する。
+    //
+    // 経路: SP register/lanes-diff (QUIC Push) → registry channel → lane_registry + lane_change_tx
+    //       → 本 channel の subscriber → vp-app。
+    //
+    // プロトコル:
+    //   1. client: open_channel("lanes") → request("subscribe", {"project_path": "<dir>"})
+    //   2. server: ack 応答後、 lane_change_tx を購読 → 当該 project の現 snapshot を初期配信
+    //      (`send_event("snapshot", LanesSnapshot)`)、 以降 lane_change のたび再 push。
+    //
+    // event 形は SP "lanes" channel と一致させ、 vp-app consumer を無改造に保つ (send_lanes_snapshot)。
+    if let Some(ref lane_registry) = state.lane_registry {
+        let lane_registry = lane_registry.clone();
+        let lane_change_tx = state.lane_change_tx.clone();
+        server
+            .register_channel("lanes", {
+                move |_ctx, stream| {
+                    let lane_registry = lane_registry.clone();
+                    let lane_change_tx = lane_change_tx.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+
+                        // --- handshake: 最初の Request("subscribe", {project_path}) を待つ ---
+                        // project_path は World の path_key に正規化して lane_registry と突き合わせる
+                        // (vp-app は生の project dir を送り、 正規化は World 側で行う = SSOT 一元化)。
+                        let path_key = loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => return Ok(()), // 接続断
+                            };
+                            if msg.msg_type != MessageType::Request || msg.method != "subscribe" {
+                                continue;
+                            }
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let project_path = payload
+                                .get("project_path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let path_key = crate::capability::normalize_path_key(
+                                std::path::Path::new(project_path),
+                            );
+                            let _ = channel
+                                .send_response(
+                                    msg.id,
+                                    "subscribe",
+                                    &serde_json::json!({"status": "ok"}),
+                                )
+                                .await;
+                            break path_key;
+                        };
+
+                        // lane_change の購読を初期 snapshot の **前** に張る (subscribe→snapshot 順なので
+                        // この間の diff を取りこぼさない。 snapshot は全置換なので diff と重複しても冪等)。
+                        let mut rx = lane_change_tx.subscribe();
+
+                        // 初期 snapshot 配信
+                        if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                            .await
+                            .is_err()
+                        {
+                            return Ok(()); // client 切断
+                        }
+
+                        // 変更 push loop: 当該 project の lane_change のたび現 snapshot を再配信
+                        loop {
+                            match rx.recv().await {
+                                Ok(changed_key) => {
+                                    if changed_key != path_key {
+                                        continue; // 別 project の変更は無視
+                                    }
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break; // client 切断
+                                    }
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    // lag 後は最新 snapshot を送って resync (全置換なので diff 欠落を吸収)。
+                                    tracing::warn!(
+                                        "lanes channel subscribe lagged: {} events dropped (resync)",
+                                        n
+                                    );
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "canvas-ingest" Channel（L0 SP-portless canvas slice — SP → World の canvas push 受け口）
+    // =========================================================================
+    // 各 SP の canvas pusher (`discovery::spawn_canvas_keepalive`) が paisley-park topic の
+    // ProcessMessage を push する。 World は project ごとの TopicRouter に `route()` して
+    // retained 保持 + 購読者 (= "canvas" channel 経由の vp-app) へ配信する。
+    //
+    // プロトコル: SP が open_channel("canvas-ingest") → request("subscribe", {project_path}) →
+    //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。
+    {
+        let canvas_routers = state.canvas_routers.clone();
+        server
+            .register_channel("canvas-ingest", {
+                move |_ctx, stream| {
+                    let canvas_routers = canvas_routers.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(());
+                        };
+                        let router = canvas_router_for(&canvas_routers, &path_key).await;
+
+                        // SP から push される paisley-park ProcessMessage を router に route。
+                        // event は method="pane"、 payload = ProcessMessage JSON (SP の canvas
+                        // channel と同形)。
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => break, // SP 切断 (canvas pusher が backoff 再接続する)
+                            };
+                            if msg.msg_type != MessageType::Event || msg.method != "pane" {
+                                continue;
+                            }
+                            let value = match msg.payload_as_value() {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            match serde_json::from_value::<crate::protocol::ProcessMessage>(value) {
+                                Ok(pm) => router.route(pm).await,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "canvas-ingest: ProcessMessage decode 失敗 (key={}): {}",
+                                        path_key,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "canvas" Channel（L0 SP-portless canvas slice — vp-app per-project canvas 購読の World 集約版）
+    // =========================================================================
+    // vp-app は SP 直結ではなく World :32000 の本 channel に集約する。 project の TopicRouter を
+    // `subscribe("process/paisley-park/#")` し、 retained 初期配信 (最新 Show 等) + live delta を
+    // SP "canvas" channel と同形 (`send_event("pane", <ProcessMessage JSON>)`) で配る。
+    // → vp-app の consumer (`run_canvas_session`) は接続先が変わっても無改造。
+    {
+        let canvas_routers = state.canvas_routers.clone();
+        server
+            .register_channel("canvas", {
+                move |_ctx, stream| {
+                    let canvas_routers = canvas_routers.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(());
+                        };
+                        let router = canvas_router_for(&canvas_routers, &path_key).await;
+
+                        // SP の canvas channel と同じ subscribe: retained 初期配信 + live。
+                        let (sub_id, mut rx) = router.subscribe("process/paisley-park/#").await;
+                        while let Some((_topic, msg)) = rx.recv().await {
+                            let json = serde_json::to_value(&msg).unwrap_or_default();
+                            if channel.send_event("pane", &json).await.is_err() {
+                                break; // vp-app 切断
+                            }
+                        }
+                        router.unsubscribe(sub_id).await;
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "control" Channel（L0 SP-portless control slice — SP の reverse-routing 受け口を登録）
+    // =========================================================================
+    // 各 SP が "control" channel で World に outbound 接続する (`spawn_control_keepalive`)。
+    // World は handshake {project_path} 後にその UnisonChannel を control_channels[path_key] に
+    // 保持し、 "process-proxy" channel から逆用 (request) して SP に process 操作を forward する。
+    // 本 handler 自体は channel を保持して接続維持を監視するだけ (request を撃つのは process-proxy)。
+    {
+        let control_channels = state.control_channels.clone();
+        server
+            .register_channel("control", {
+                move |_ctx, stream| {
+                    let control_channels = control_channels.clone();
+                    async move {
+                        let channel = Arc::new(UnisonChannel::new(stream));
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(());
+                        };
+                        control_channels
+                            .write()
+                            .await
+                            .insert(path_key.clone(), channel.clone());
+                        tracing::info!("Control: SP 登録 (key={})", path_key);
+
+                        // 切断検知まで待つ。 World は本 channel に request を撃つだけで SP は
+                        // event/request を送らないため、 recv() は切断時のみ Err で返る
+                        // (= reverse request の Response は pending 経由で解決され、 ここには来ない)。
+                        loop {
+                            if channel.recv().await.is_err() {
+                                break;
+                            }
+                        }
+                        control_channels.write().await.remove(&path_key);
+                        tracing::info!("Control: SP 除去 (key={})", path_key);
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "process-proxy" Channel（L0 SP-portless control slice — 外部 client → World → SP reverse）
+    // =========================================================================
+    // MCP/CLI は SP listen port ではなく本 channel に繋ぎ、 handshake {project_path} 後に
+    // process method (show/clear/tmux/process/wire 等) を request する。 World は当該 SP の
+    // control channel を逆用して forward し、 応答を client に relay する。 SP "process" channel と
+    // 同一 method・同一 dispatch (SP 側 `dispatch_process_method`) なので、 client から見た挙動は
+    // SP 直結と不変 (= SP portless 化しても透過)。
+    {
+        let control_channels = state.control_channels.clone();
+        server
+            .register_channel("process-proxy", {
+                move |_ctx, stream| {
+                    let control_channels = control_channels.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(());
+                        };
+
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => break, // client 切断
+                            };
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+                            let id = msg.id;
+                            let method = msg.method.clone();
+                            let payload = msg.payload_as_value().unwrap_or_default();
+
+                            // 当該 SP の control channel を逆用して forward (= World→SP reverse)。
+                            let sp_ch = control_channels.read().await.get(&path_key).cloned();
+                            let response = match sp_ch {
+                                Some(sp_ch) => {
+                                    match sp_ch
+                                        .request::<serde_json::Value, serde_json::Value>(
+                                            &method, &payload,
+                                        )
+                                        .await
+                                    {
+                                        Ok(v) => v,
+                                        Err(e) => serde_json::json!({
+                                            "error": format!("SP forward 失敗 (key={}): {}", path_key, e)
+                                        }),
+                                    }
+                                }
+                                None => serde_json::json!({
+                                    "error": format!("SP 未接続 (key={})", path_key)
+                                }),
+                            };
+                            if channel.send_response(id, &method, &response).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
     // World-Device Channel（Bastet 🧲 device event → vp-app への bridge）
     // =========================================================================
     // EventBus の `bastet.*` event (device 接続/切断/操作入力) を Unison wire の `DeviceEvent` に
@@ -1247,10 +1659,12 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             let snapshot: Vec<crate::daemon::protocol::DeviceEvent> = {
                                 let devs = devices_arc.read().await;
                                 devs.values()
-                                    .map(|d| crate::daemon::protocol::DeviceEvent::DeviceConnected {
-                                        port_name: d.port_name.clone(),
-                                        has_input: d.has_input,
-                                        has_output: d.has_output,
+                                    .map(|d| {
+                                        crate::daemon::protocol::DeviceEvent::DeviceConnected {
+                                            port_name: d.port_name.clone(),
+                                            has_input: d.has_input,
+                                            has_output: d.has_output,
+                                        }
                                     })
                                     .collect()
                             };
@@ -1358,6 +1772,9 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         let vpdb = state.vpdb.clone();
         // VP-154 PR-2: lifecycle event を broadcast する Sender (= "world-process" subscriber へ)
         let process_lifecycle_tx = state.process_lifecycle_tx.clone();
+        // L0 SP-portless (lanes slice): lane_registry mutate 後に project path_key を流す Sender
+        // (= per-project "lanes" channel subscriber へ realtime 再 push を促す)。
+        let lane_change_tx = state.lane_change_tx.clone();
         server
             .register_channel("registry", {
                 move |_ctx, stream| {
@@ -1366,6 +1783,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     let lane_registry = lane_registry.clone();
                     let vpdb = vpdb.clone();
                     let process_lifecycle_tx = process_lifecycle_tx.clone();
+                    let lane_change_tx = lane_change_tx.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         let mut registered_name: Option<String> = None;
@@ -1496,6 +1914,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         port,
                                         pid,
                                     });
+
+                                    // L0 lanes slice: register は lanes snapshot を載せる (= SP 起動
+                                    // 直後の初期 lane 集合)。 per-project "lanes" channel の subscriber に
+                                    // 再 push を促す (lanes 不在の register でも空→空で無害)。
+                                    let _ = lane_change_tx.send(path_key.clone());
 
                                     if channel
                                         .send_response(
@@ -1629,6 +2052,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             "Registry: lanes/add 反映 (key={})",
                                             path_key
                                         );
+                                        // L0 lanes slice: 当該 project の lane snapshot を再 push。
+                                        let _ = lane_change_tx.send(path_key.clone());
                                     }
                                     if channel
                                         .send_response(
@@ -1673,6 +2098,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             path_key,
                                             addr
                                         );
+                                        // L0 lanes slice: 当該 project の lane snapshot を再 push。
+                                        let _ = lane_change_tx.send(path_key.clone());
                                     }
                                     if channel
                                         .send_response(
@@ -1734,6 +2161,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             "Registry: lanes/update 反映 (key={})",
                                             path_key
                                         );
+                                        // L0 lanes slice: 実際に replace された時のみ snapshot を再 push
+                                        // (applied=false は no-op なので無駄打ちを避ける)。
+                                        if applied {
+                                            let _ = lane_change_tx.send(path_key.clone());
+                                        }
                                     }
                                     if channel
                                         .send_response(

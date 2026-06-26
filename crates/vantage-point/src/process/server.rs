@@ -531,6 +531,24 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         shutdown_token.clone(),
     );
 
+    // L0 SP-portless (canvas slice): paisley-park topic を World に push する keepalive。
+    // World が project の TopicRouter に集約し、 vp-app は World "canvas" channel を購読する
+    // (SP "canvas" channel 直結を剥がす)。 registry keepalive と独立した outbound 接続。
+    crate::discovery::spawn_canvas_keepalive(
+        &state.project_dir,
+        state.topic_router.clone(),
+        shutdown_token.clone(),
+    );
+
+    // L0 SP-portless (control slice): World の reverse-routing 用 "control" 接続。
+    // World が外部 client (MCP/CLI) の process 操作を本接続を逆用して SP に forward する。
+    // SP は recv ループで dispatch_process_method を呼んで処理 (SP "process" channel と同一)。
+    crate::discovery::spawn_control_keepalive(
+        &state.project_dir,
+        state.clone(),
+        shutdown_token.clone(),
+    );
+
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
     // `process/star-platinum/state/lanes`（category=state → RetainedStore で保持）へ流す。
