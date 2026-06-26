@@ -1,4 +1,5 @@
-//! Lane REST API — GET / POST / DELETE / restart 実装済 (VP-124 Phase 1 完了時点)
+//! Lane REST API — GET / POST (list / create)。 delete / restart は SP 直結 HTTP を撤去し
+//! World process-proxy ask (`lane_delete` / `lane_restart`、 F6②③) に移管、 core 関数のみ残置。
 //!
 //! 関連 memory:
 //! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (SP-as-Project-Master: 9 component minimum)
@@ -10,9 +11,9 @@
 //!   disk-only Lane は lane watcher / SP bootstrap で auto-spawn 経由 active 化)
 //! - `POST /api/lanes` — Performer Lane create (Phase 3-A: lane clone + PtySlot spawn、
 //!   F.8 B Convergent で spawn 失敗時の disk dir rollback ポリシー追加)
-//! - `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy + cleanup
-//!   (VP-124 Phase 1 で `delete_lane_orchestrated` に core 抽出、 全 trigger 共有)
-//! - `POST /api/lanes/restart?address=<addr>` — Conductor Stand restart (Phase A5)
+//! - delete / restart — SP HTTP route は撤去 (F6②③、 doc 27 §3.4.5)。 core の
+//!   `delete_lane_orchestrated` / `restart_lane_orchestrated` を World process-proxy ask
+//!   (`lane_delete` / `lane_restart`) から呼ぶ (surface→SP 直結 HTTP を一掃)。
 //!
 //! ## 未実装 (後 phase)
 //!
@@ -23,18 +24,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{
-    Json,
-    extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::super::lanes_state::{
-    Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent,
-};
+use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent};
 use super::super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
@@ -546,50 +540,35 @@ pub async fn delete_lane_orchestrated(
     })
 }
 
-/// `POST /api/lanes/restart?address=<addr>` request の query
-#[derive(Debug, Deserialize)]
-pub struct RestartLaneQuery {
-    /// Display 形 ("<project>/conductor" / "<project>/performer/<name>")
-    pub address: String,
-    /// true なら fresh な claude を起動 (resume/continue を回避、 sidebar "New Conductor
-    /// Session")。 省略時は従来 restart (conductor は会話を継ぐ)。
-    /// performer は echoes が元々 fresh 起動なので fresh=true は no-op 相当 (UI も conductor 限定)。
-    #[serde(default)]
-    pub fresh: bool,
-}
-
 /// VP-131: restart の透過 retry 設定。 tmux kill + spawn の race / transient failure を
 /// 吸収するため exponential backoff で 3 attempts まで自動 retry。 user click 1 回で
 /// 「auto retry」 が走り、 dogfood UX で「Restart したら確実に Echoes 復活する」 を担保。
 const RESTART_MAX_ATTEMPTS: u32 = 3;
 const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 attempt 1→2: 500ms
 
-/// `POST /api/lanes/restart?address=<addr>` — Lane の Conductor Stand restart
+/// VP-131 / F6③ (doc 27 §3.4.5/§6): Lane restart の透過 retry orchestration を関数化
+/// (`delete_lane_orchestrated` と対称)。 旧 `restart_handler` (HTTP) の retry loop を移植し、
+/// process-proxy ask `lane_restart` が呼ぶ core logic に。 SP route + handler は撤去。
 ///
 /// 動作:
-/// 1. address parse (LanePool::parse_address で逆変換)
-/// 2. LanePool::restart_lane で 既存 PtySlot kill + tmux kill (VP-131) → 同 stand で respawn
-/// 3. spawn 失敗時は exponential backoff で **最大 3 attempts まで透過 retry** (VP-131)
-/// 4. vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に attach し直す
-/// 5. 200 OK with new pid + attempts / 500 on 全 attempts 失敗 (LaneInfo は state=Dead に遷移)
-pub async fn restart_handler(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<RestartLaneQuery>,
-) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
-    let Some(addr) = LanePool::parse_address(&q.address) else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("invalid lane address: {}", q.address)})),
-        ));
-    };
-
+/// 1. LanePool::restart_lane で 既存 PtySlot kill + tmux kill (VP-131) → 同 stand で respawn
+/// 2. spawn 失敗時は exponential backoff で **最大 3 attempts まで透過 retry** (VP-131)
+/// 3. vp-app は canvas channel demand 経由で透過的に新 PtySlot に再 attach
+///
+/// 戻り値: `{restarted, pid, attempts}` JSON / 全 attempts 失敗で `Err(err_msg)` (LaneInfo は
+/// state=Dead に遷移済み)。
+pub async fn restart_lane_orchestrated(
+    state: &Arc<AppState>,
+    addr: LaneAddress,
+    fresh: bool,
+) -> Result<serde_json::Value, String> {
     // VP-131: 透過 retry with exponential backoff。 各 attempt 間で write lock を release して
     // 他 handler を blocking しない設計、 tokio::time::sleep で async wait。
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 0..RESTART_MAX_ATTEMPTS {
         let result = {
             let mut pool = state.lane_pool.write().await;
-            pool.restart_lane(&addr, q.fresh)
+            pool.restart_lane(&addr, fresh)
         };
 
         match result {
@@ -607,14 +586,11 @@ pub async fn restart_handler(
                     pid,
                     attempt + 1
                 );
-                return Ok((
-                    StatusCode::OK,
-                    Json(json!({
-                        "restarted": addr.to_string(),
-                        "pid": pid,
-                        "attempts": attempt + 1,
-                    })),
-                ));
+                return Ok(serde_json::json!({
+                    "restarted": addr.to_string(),
+                    "pid": pid,
+                    "attempts": attempt + 1,
+                }));
             }
             Err(e) => {
                 tracing::warn!(
@@ -634,16 +610,9 @@ pub async fn restart_handler(
     }
 
     // 全 attempts 失敗 → LaneInfo.state は restart_lane 内で既に Dead 化済み
-    let err_msg = last_err
+    Err(last_err
         .map(|e| e.to_string())
-        .unwrap_or_else(|| "unknown restart failure".to_string());
-    Err((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({
-            "error": err_msg,
-            "attempts": RESTART_MAX_ATTEMPTS,
-        })),
-    ))
+        .unwrap_or_else(|| "unknown restart failure".to_string()))
 }
 
 /// Performer name から default branch を auto-derive する。

@@ -364,8 +364,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             "/api/lanes",
             get(lanes::list_handler).post(lanes::create_handler),
         )
-        // Lane の Conductor Stand restart (PtySlot kill + 同 stand で respawn)
-        .route("/api/lanes/restart", post(lanes::restart_handler))
+        // F6③ (doc 27 §3.4.5/§6): Lane restart は World process-proxy ask (`lane_restart`) に移管し撤去。
         // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Performer dropdown 用)
         .route("/api/stands", get(stands::list_handler))
         .route("/api/show", post(health::show_handler))

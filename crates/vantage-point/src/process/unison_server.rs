@@ -725,6 +725,27 @@ async fn handle_lane_delete(
     }
 }
 
+/// F6③ (doc 27 §3.4.5/§6): Lane restart。 旧 SP HTTP `POST /api/lanes/restart` を process-proxy
+/// ask に移管。 core の `restart_lane_orchestrated` (VP-131 透過 retry loop) を呼ぶ薄い adapter。
+async fn handle_lane_restart(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let address = payload
+        .get("address")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("lane_restart: address 必須")?;
+    // fresh default=false (旧 RestartLaneQuery の #[serde(default)] と一致)。
+    let fresh = payload
+        .get("fresh")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let addr = crate::process::lanes_state::LanePool::parse_address(address)
+        .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
+    super::routes::lanes::restart_lane_orchestrated(state, addr, fresh).await
+}
+
 pub(crate) async fn dispatch_process_method(
     state: &Arc<AppState>,
     method: &str,
@@ -750,6 +771,8 @@ pub(crate) async fn dispatch_process_method(
         "pp_state_load" => handle_pp_state_load(state, payload).await,
         // F6②: Lane delete (旧 SP HTTP DELETE /api/lanes を process-proxy ask に移管)
         "lane_delete" => handle_lane_delete(state, payload).await,
+        // F6③: Lane restart (旧 SP HTTP POST /api/lanes/restart を process-proxy ask に移管)
+        "lane_restart" => handle_lane_restart(state, payload).await,
         "tmux_split" => handle_tmux_split(state, payload).await,
         "tmux_list" => handle_tmux_list(state).await,
         "tmux_close" => handle_tmux_close(state, payload).await,
@@ -1623,5 +1646,22 @@ mod tests {
             err.contains("Conductor"),
             "Conductor delete は ConductorCannotBeDeleted: {err}"
         );
+    }
+
+    /// F6③: lane_restart dispatch — 存在しない lane の restart は透過 retry (3 attempts) 後 Err。
+    /// dispatch 配線 + restart_lane_orchestrated 到達を確認 (respawn 成功 path は実機検証で担保)。
+    #[tokio::test]
+    async fn lane_restart_unknown_lane_errs() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(
+            &state,
+            "lane_restart",
+            serde_json::json!({ "address": "vp/performer/ghost" }),
+        )
+        .await;
+        assert!(res.is_err(), "存在しない lane の restart は Err");
     }
 }

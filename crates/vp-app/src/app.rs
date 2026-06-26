@@ -1216,33 +1216,29 @@ fn maybe_respawn_dead_lane(
     if !triggered.insert(addr.to_string()) {
         return;
     }
-    let Some(port) = state
-        .processes
-        .iter()
-        .find(|p| p.path == project_path)
-        .and_then(|p| p.port)
-    else {
-        tracing::warn!("auto-respawn: SP port unknown for {} (skip)", project_path);
-        triggered.remove(addr); // port 未解決 — trigger 解除して次回再試行可能に
-        return;
-    };
+    // F6③: 旧 TheWorldClient.restart_lane (SP 直結 reqwest) を World process-proxy ask
+    // (lane_restart) に移管。 SP port 解決は不要 (World :32000 固定 + project_path handshake)、
+    // 旧「port 未解決 skip」分岐も消滅。 失敗時の trigger 解除は LaneRespawnFailed 経路に一本化。
     let addr_owned = addr.to_string();
     let proxy = proxy.clone();
-    tracing::info!(
-        "auto-respawn dead lane (on-demand): addr={} port={}",
-        addr_owned,
-        port
-    );
+    tracing::info!("auto-respawn dead lane (on-demand): addr={}", addr_owned);
     rt_handle.spawn(async move {
-        let client = crate::client::TheWorldClient::new(port);
         // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
-        match client.restart_lane(&addr_owned, false).await {
-            Ok(()) => {
+        let payload = serde_json::json!({ "address": &addr_owned, "fresh": false });
+        match world_process_request(
+            crate::client::DEFAULT_WORLD_PORT,
+            &project_path,
+            "lane_restart",
+            payload,
+        )
+        .await
+        {
+            Ok(_) => {
                 // 成功時は LanesLoaded で Running 検出時に triggered から解除される。
-                tracing::info!("auto-respawn restart_lane ok: {}", addr_owned);
+                tracing::info!("auto-respawn lane_restart ok: {}", addr_owned);
             }
             Err(e) => {
-                tracing::warn!("auto-respawn restart_lane failed: {}: {}", addr_owned, e);
+                tracing::warn!("auto-respawn lane_restart failed: {}: {}", addr_owned, e);
                 // 失敗を event loop に通知して triggered を解除する (永続 suppression 回避)。
                 // これが無いと SP クラッシュ等で全 retry 失敗した lane は vp-app 再起動まで
                 // auto-respawn 対象外になってしまう (Moody Blues Issue #1)。
@@ -3036,43 +3032,37 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // Lane Conductor Stand restart 要求 (sidebar の restart icon → confirm dialog から)
                 if let Some((project_path, address, fresh)) = outcome.restart_lane_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        let path_clone = project_path.clone();
-                        let addr_clone = address.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client.restart_lane(&addr_clone, fresh).await {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        "Lane restarted: project={} address={}",
-                                        path_clone,
-                                        addr_clone
-                                    );
-                                    // wiremsg Stage 1: 新 pid / state は SP の
-                                    // "lanes" topic snapshot で購読側に push される。
-                                    // WS は PR #218 の auto-reconnect で透過的に新 PtySlot に attach し直す。
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "restart_lane failed: project={} address={}: {}",
-                                        path_clone,
-                                        addr_clone,
-                                        e
-                                    );
-                                }
+                    // F6③: 旧 TheWorldClient.restart_lane (SP 直結 reqwest) を World process-proxy
+                    // ask (lane_restart) に移管。 SP port 解決は不要、 project_path を handshake で渡す。
+                    rt_handle.spawn(async move {
+                        let payload = serde_json::json!({ "address": &address, "fresh": fresh });
+                        match world_process_request(
+                            crate::client::DEFAULT_WORLD_PORT,
+                            &project_path,
+                            "lane_restart",
+                            payload,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                // 新 pid / state は SP の "lanes" topic snapshot で購読側に push され、
+                                // 端末は canvas channel demand 経由で新 PtySlot に再 attach し直す。
+                                tracing::info!(
+                                    "Lane restarted: project={} address={}",
+                                    project_path,
+                                    address
+                                );
                             }
-                        });
-                    } else {
-                        tracing::warn!(
-                            "lane:restart: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "lane_restart failed: project={} address={}: {}",
+                                    project_path,
+                                    address,
+                                    e
+                                );
+                            }
+                        }
+                    });
                 }
                 // Phase 3-A: Performer Lane 作成要求 (sidebar の + Add Performer から)
                 // doc 24 §10 Phase 2 B-create: create は daemon-canonical (§5.3 ground は daemon が
