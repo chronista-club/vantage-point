@@ -197,6 +197,13 @@ pub(crate) struct AppState {
     /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
     /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
     pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// Agent 委譲 (delegation) の in-memory store — `id` → `Delegation` (doc 28 §4 / v1 spike)。
+    ///
+    /// `delegate` で record(Pending→Active) を入れ、`complete` で Done/Failed に更新する。
+    /// `terminal_pumps` と同じく per-SP の揮発 state（durable 化 = wire-store backing は
+    /// follow-up）。federation 不変条件: requester/doer は論理 wire address で持つ
+    /// (cf. `process/delegation.rs`)。
+    pub delegations: Arc<RwLock<HashMap<String, super::delegation::Delegation>>>,
 }
 
 impl AppState {
@@ -286,6 +293,30 @@ impl AppState {
             return None;
         }
         info.tmux.first().map(|t| t.session.clone())
+    }
+
+    /// 論理 lane address（`agent@<project>[/<name>]` or bare `<project>/<lane>`）を実 tmux
+    /// session に解決し、literal text + Enter を送る（= wake）。
+    ///
+    /// 委譲（`process/delegation.rs`）の `delegate` / `complete` が doer / requester を起こす
+    /// 共通 helper。resolution は [`Self::resolve_lane_session`] を介す
+    /// （federation 不変条件: `address → local lane session` の翻訳層だけが swappable。後で
+    /// `world-handle:` 接頭の remote 分岐を足すだけで federation 化できる）。
+    ///
+    /// 解決できない（lane 不在 / 非 Running / tmux 不在）場合は `false` を返し graceful に握る
+    /// （no-lane test や実機外で panic しない / wake 取りこぼしは reconcile・pull-hook が後で拾う）。
+    pub async fn nudge_lane(&self, addr: &str, text: &str) -> bool {
+        let query = super::delegation::lane_query_for(addr);
+        let Some(session) = self.resolve_lane_session(&query).await else {
+            return false;
+        };
+        match super::delivery_actor::send_keys_to_session(&session, text).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("nudge_lane: send-keys 失敗 (addr={addr}, session={session}): {e}");
+                false
+            }
+        }
     }
 
     /// Send debug info to connected clients
@@ -519,6 +550,7 @@ pub(crate) async fn build_test_app_state(
         world_capabilities: None,
         lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
+        delegations: Arc::new(RwLock::new(HashMap::new())),
     })
 }
 

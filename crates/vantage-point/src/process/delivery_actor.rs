@@ -451,7 +451,10 @@ async fn pulse(
 }
 
 /// tmux session に literal text + Enter を送る (directmsg と同方式、 blocking を隔離)
-async fn send_keys_to_session(session: &str, text: &str) -> anyhow::Result<()> {
+///
+/// 委譲 (`process/delegation.rs`) の wake も同経路を再利用するため `pub(crate)`
+/// (`AppState::nudge_lane` から呼ばれる)。
+pub(crate) async fn send_keys_to_session(session: &str, text: &str) -> anyhow::Result<()> {
     let session = session.to_string();
     let text = text.to_string();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
