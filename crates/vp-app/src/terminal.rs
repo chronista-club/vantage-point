@@ -105,11 +105,6 @@ pub enum AppEvent {
     /// signal として機能。 unread_count / has_persistent / last_msg_ts の actual 値は
     /// 後続 PR で backend peek API + Whitesnake query を実装して populate。
     ResolveLaneInboxes,
-    /// wiremsg Stage 1 consumer: SP の "lanes" Unison channel 購読が再接続上限に達して
-    /// 終了したことを通知する。 main loop は `lanes_sub_active` から process_path を除去し、
-    /// 次の `ProjectsLoaded` で SP がまだ生きていれば購読が再 spawn される。
-    /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
-    LanesSubscriptionEnded { process_path: String },
     /// Sidebar File Explorer: `files:list` の blocking walk 結果を sidebar webview に
     /// push back する。 `window.vpFiles.handleListResult({address,entries,truncated})` で
     /// receive される。
@@ -130,9 +125,6 @@ pub enum AppEvent {
         process_path: String,
         message: serde_json::Value,
     },
-    /// wiremsg Stage 2: "canvas" 購読が再接続上限に達して終了したことを通知する。
-    /// main loop は `canvas_sub_active` から process_path を除去する。
-    CanvasSubscriptionEnded { process_path: String },
     /// Bastet 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
     /// daemon "world-device" Unison channel から受信した `DeviceEvent` の生 JSON。
     /// Phase 1 handler は tracing で log。 Phase 2 で Bastet pane / sidebar に反映予定。

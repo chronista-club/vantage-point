@@ -255,11 +255,130 @@ enum SubscriptionOutcome {
     AppClosing,
 }
 
+/// F1b (doc 27 §3.4.4): vp-app → World :32000 の全 persistent session (lanes / canvas /
+/// terminal / device) を **1 QUIC connection に集約**するための共有ハンドル。
+///
+/// `current` watch は現 epoch の `ProtocolClient` (= 1 connection) を全 session に配る
+/// (None = 未接続 / 再接続中)。 session は `wait_client()` で接続を待ち、 得た client で
+/// `open_channel` して自分の stream を張る (= 1 conn × N streams)。 reconnect は manager task が
+/// 一手に所有し、 epoch ごとに fresh client を connect → publish する (F1a SP uplink と同パターン)。
+///
+/// 旧構成は session ごと (lanes / canvas は project ごと、 terminal は lane ごと) に別 QUIC
+/// connection を張り、 QUIC の多重化を使えていなかった (§3.4.4 負債)。 これを 1 connection に畳む。
+#[derive(Clone)]
+struct SharedWorldConn {
+    current: tokio::sync::watch::Receiver<Option<std::sync::Arc<unison::ProtocolClient>>>,
+}
+
+impl SharedWorldConn {
+    /// 共有 connection が確立する (current = Some) まで待ち、 その client を返す。
+    /// watch sender が drop された (= app 終了) 場合は None。
+    async fn wait_client(&mut self) -> Option<std::sync::Arc<unison::ProtocolClient>> {
+        loop {
+            if let Some(client) = self.current.borrow().clone() {
+                return Some(client);
+            }
+            // None の間は変化を待つ。 sender drop で Err = app 終了。
+            if self.current.changed().await.is_err() {
+                return None;
+            }
+        }
+    }
+}
+
+/// 共有 World connection を connect / reconnect し続ける manager を spawn し、 ハンドルを返す。
+///
+/// epoch ごとに fresh `ProtocolClient` を build → connect → `current` に publish → 切断検知で
+/// None に戻して exp backoff reconnect。 全 session が `wait_client` で追従する。 reconnect 機構を
+/// ここに一元化することで、 各 session は channel logic だけを持てば良くなる (関心分離)。
+fn spawn_world_conn_manager(
+    rt_handle: &tokio::runtime::Handle,
+    world_port: u16,
+) -> SharedWorldConn {
+    let (current_tx, current_rx) =
+        tokio::sync::watch::channel::<Option<std::sync::Arc<unison::ProtocolClient>>>(None);
+
+    rt_handle.spawn(async move {
+        use unison::ProtocolClient;
+        use unison::network::ClientConnectionEvent;
+        use unison::network::TrustAnchors;
+        use unison::network::quic::QuicClient;
+
+        let addr = format!("[::1]:{}", world_port);
+        const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+        const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(16);
+        let mut backoff = INITIAL_BACKOFF;
+        let mut generation: u64 = 0;
+
+        loop {
+            // epoch ごとに fresh client (F1a SP uplink と同じ「再接続 = 新 client」パターン)。
+            let transport = match QuicClient::builder()
+                .trust_anchors(TrustAnchors::SkipVerification)
+                .build()
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("world conn: QUIC client build 失敗: {} (リトライ)", e);
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
+                    continue;
+                }
+            };
+            let client = std::sync::Arc::new(ProtocolClient::new(transport));
+
+            match client.connect(&addr).await {
+                Ok(()) => {
+                    backoff = INITIAL_BACKOFF;
+                    generation += 1;
+                    tracing::info!(
+                        "world conn: 共有 connection 確立 (gen={}, addr={})",
+                        generation,
+                        addr
+                    );
+                    let mut conn_events = client.subscribe_connection_events();
+                    // session に新 client を配る。 receiver 全滅 (= app 終了) なら manager も終了。
+                    if current_tx.send(Some(client.clone())).is_err() {
+                        return;
+                    }
+                    // 切断を待つ。
+                    loop {
+                        match conn_events.recv().await {
+                            Ok(ClientConnectionEvent::Disconnected { reason }) => {
+                                tracing::warn!("world conn: 切断検知 ({}) → 再接続", reason);
+                                break;
+                            }
+                            Ok(_) => continue,
+                            Err(_) => break, // event channel closed = client 異常、 再接続へ
+                        }
+                    }
+                    // 再接続前に None を配る (session は wait_client で次 client を待つ)。
+                    if current_tx.send(None).is_err() {
+                        return;
+                    }
+                    drop(client); // connection close → 次 loop で fresh client
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "world conn: 接続失敗 ({}), {}ms 後 retry",
+                        e,
+                        backoff.as_millis()
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
+                }
+            }
+        }
+    });
+
+    SharedWorldConn {
+        current: current_rx,
+    }
+}
+
 /// wiremsg Stage 1 consumer: SP の "lanes" Unison channel を購読し、retained Lane
 /// snapshot を受信して `AppEvent::LanesLoaded` を emit する。旧 `spawn_lanes_fetch`
-/// (one-shot HTTP poll) を置換する long-lived 購読。接続が切れたら指数バックオフで
-/// 再接続し、10 連続失敗で諦めて `AppEvent::LanesSubscriptionEnded` を emit する。
-/// SP が同じ project を再 spawn すれば次の `ProjectsLoaded` で購読も再 spawn される。
+/// (one-shot HTTP poll) を置換する long-lived 購読。F1b: 共有 connection 上の stream で、
+/// reconnect は `SharedWorldConn` の manager が所有するので give-up せず追従する。
 /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
 ///
 /// L0 SP-portless (lanes slice): 接続先は SP 直結ではなく **World :32000 の集約 "lanes" channel**。
@@ -270,55 +389,40 @@ fn spawn_lanes_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    world_port: u16,
+    conn: SharedWorldConn,
 ) {
-    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, world_port));
+    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, conn));
 }
 
-/// "lanes" channel への接続 → 購読 → 再接続を司る long-lived ループ。
+/// "lanes" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
+///
+/// reconnect は `SharedWorldConn` の manager が一手に所有するので、 本ループは
+/// `wait_client` で接続を待ち、 得た client で session を回すだけ。 SP unreachable でも諦めず
+/// 共有 connection に追従する (旧 10 連続失敗 give-up + `LanesSubscriptionEnded` は廃止)。
 async fn lanes_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    world_port: u16,
+    mut conn: SharedWorldConn,
 ) {
-    // L0 SP-portless: World :32000 の集約 "lanes" channel に繋ぐ (QUIC、 loopback)。
-    let addr = format!("[::1]:{}", world_port);
-    const MAX_FAILURES: u32 = 10;
-    let mut failures: u32 = 0;
-
     loop {
-        match run_lanes_session(&proxy, &process_path, &addr).await {
+        // 共有 connection が確立するまで待つ (None の間はここでブロック = busy loop 無し)。
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_lanes_session(&proxy, &process_path, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
-            Ok(SubscriptionOutcome::Disconnected) => {
-                // セッション確立後の切断 (SP restart 等)。失敗カウンタをリセットし、
-                // 短い固定 delay を挟んで即再接続する (確立直後の即切断による busy loop を防ぐ)。
-                failures = 0;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
+            // 切断は共有 manager が面倒を見るので、 次の client を待つだけ (per-session error 扱い無し)。
+            Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
-                failures += 1;
-                tracing::warn!(
-                    "lanes subscription failed ({}/{}): project={}: {}",
-                    failures,
-                    MAX_FAILURES,
-                    process_path,
-                    e
-                );
+                // open_channel / handshake 失敗。 surface に通知しつつ give-up せず次の接続機会を待つ。
+                tracing::warn!("lanes subscription error: project={}: {}", process_path, e);
                 let _ = proxy.send_event(AppEvent::LanesError {
                     process_path: process_path.clone(),
                     message: e,
                 });
-                if failures >= MAX_FAILURES {
-                    tracing::warn!(
-                        "lanes subscription giving up: project={} (SP unreachable)",
-                        process_path
-                    );
-                    let _ = proxy.send_event(AppEvent::LanesSubscriptionEnded { process_path });
-                    return;
-                }
-                // 指数バックオフ 500ms〜16s (TUI→Process reconnect と同じカーブ)。
-                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                // connected だが open_channel が連続失敗するケースの busy loop を避ける小休止。
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
@@ -332,22 +436,11 @@ async fn lanes_subscription_loop(
 async fn run_lanes_session(
     proxy: &EventLoopProxy<AppEvent>,
     process_path: &str,
-    addr: &str,
+    client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
-    use unison::ProtocolClient;
     use unison::network::MessageType;
-    use unison::network::TrustAnchors;
-    use unison::network::quic::QuicClient;
 
-    let transport = QuicClient::builder()
-        .trust_anchors(TrustAnchors::SkipVerification)
-        .build()
-        .map_err(|e| format!("QUIC client build: {}", e))?;
-    let client = ProtocolClient::new(transport);
-    client
-        .connect(addr)
-        .await
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    // F1b: 共有 connection 上に "lanes" stream を開く (旧: session ごと別 connect)。
     let channel = client
         .open_channel("lanes")
         .await
@@ -363,9 +456,8 @@ async fn run_lanes_session(
         .await
         .map_err(|e| format!("lanes subscribe handshake: {}", e))?;
     tracing::info!(
-        "lanes subscription connected (via World): project={} addr={}",
-        process_path,
-        addr
+        "lanes subscription connected (via World): project={}",
+        process_path
     );
 
     loop {
@@ -425,48 +517,31 @@ fn spawn_canvas_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    world_port: u16,
+    conn: SharedWorldConn,
 ) {
-    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, world_port));
+    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, conn));
 }
 
-/// "canvas" channel への接続 → 購読 → 再接続を司る long-lived ループ。
+/// "canvas" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
+///
+/// reconnect は `SharedWorldConn` の manager が所有。 本ループは `wait_client` で接続を待ち
+/// session を回すだけで、 give-up + `CanvasSubscriptionEnded` は廃止 (共有 conn に追従)。
 async fn canvas_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    world_port: u16,
+    mut conn: SharedWorldConn,
 ) {
-    // L0 SP-portless: World :32000 の集約 "canvas" channel に繋ぐ (QUIC、 loopback)。
-    let addr = format!("[::1]:{}", world_port);
-    const MAX_FAILURES: u32 = 10;
-    let mut failures: u32 = 0;
-
     loop {
-        match run_canvas_session(&proxy, &process_path, &addr).await {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_canvas_session(&proxy, &process_path, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
-            Ok(SubscriptionOutcome::Disconnected) => {
-                failures = 0;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
+            Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
-                failures += 1;
-                tracing::warn!(
-                    "canvas subscription failed ({}/{}): project={}: {}",
-                    failures,
-                    MAX_FAILURES,
-                    process_path,
-                    e
-                );
-                if failures >= MAX_FAILURES {
-                    tracing::warn!(
-                        "canvas subscription giving up: project={} (SP unreachable)",
-                        process_path
-                    );
-                    let _ = proxy.send_event(AppEvent::CanvasSubscriptionEnded { process_path });
-                    return;
-                }
-                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                tracing::warn!("canvas subscription error: project={}: {}", process_path, e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
@@ -480,22 +555,11 @@ async fn canvas_subscription_loop(
 async fn run_canvas_session(
     proxy: &EventLoopProxy<AppEvent>,
     process_path: &str,
-    addr: &str,
+    client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
-    use unison::ProtocolClient;
     use unison::network::MessageType;
-    use unison::network::TrustAnchors;
-    use unison::network::quic::QuicClient;
 
-    let transport = QuicClient::builder()
-        .trust_anchors(TrustAnchors::SkipVerification)
-        .build()
-        .map_err(|e| format!("QUIC client build: {}", e))?;
-    let client = ProtocolClient::new(transport);
-    client
-        .connect(addr)
-        .await
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    // F1b: 共有 connection 上に "canvas" stream を開く (旧: session ごと別 connect)。
     let channel = client
         .open_channel("canvas")
         .await
@@ -511,9 +575,8 @@ async fn run_canvas_session(
         .await
         .map_err(|e| format!("canvas subscribe handshake: {}", e))?;
     tracing::info!(
-        "canvas subscription connected (via World): project={} addr={}",
-        process_path,
-        addr
+        "canvas subscription connected (via World): project={}",
+        process_path
     );
 
     loop {
@@ -572,14 +635,14 @@ struct LaneTerminal {
 fn spawn_terminal_session(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
-    world_port: u16,
+    conn: SharedWorldConn,
     process_path: String,
     lane_key: String,
 ) -> LaneTerminal {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     rt_handle.spawn(terminal_session_loop(
         proxy,
-        world_port,
+        conn,
         process_path,
         lane_key,
         cmd_rx,
@@ -587,41 +650,29 @@ fn spawn_terminal_session(
     LaneTerminal { cmd_tx }
 }
 
-/// "canvas" channel (terminal pattern) への接続 → 購読 → 再接続を司る long-lived ループ。
-/// `cmd_rx` は再接続を跨いで保持する (= 切断中に積まれた write/resize は次接続で送れる)。
+/// "canvas" channel (terminal pattern) の購読 → 再購読を司る long-lived ループ
+/// (F1b: 共有 connection 上の per-lane stream)。 `cmd_rx` は再接続を跨いで保持する
+/// (= 切断中に積まれた write/resize は次接続で送れる)。 reconnect は共有 manager が所有するので
+/// `wait_client` で接続を待ち、 give-up はしない (lane 消滅 = cmd_tx drop で AppClosing 終了)。
 async fn terminal_session_loop(
     proxy: EventLoopProxy<AppEvent>,
-    world_port: u16,
+    mut conn: SharedWorldConn,
     process_path: String,
     lane_key: String,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<TermCmd>,
 ) {
-    let addr = format!("[::1]:{}", world_port);
-    const MAX_FAILURES: u32 = 10;
-    let mut failures: u32 = 0;
     loop {
-        match run_terminal_session(&proxy, &process_path, &lane_key, &addr, &mut cmd_rx).await {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_terminal_session(&proxy, &process_path, &lane_key, &client, &mut cmd_rx).await {
             // AppClosing = event loop 終了 or lane removed (cmd_tx drop) → session 終了。
             Ok(SubscriptionOutcome::AppClosing) => return,
-            Ok(SubscriptionOutcome::Disconnected) => {
-                failures = 0;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
+            Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
-                failures += 1;
-                tracing::warn!(
-                    "terminal session failed ({}/{}): lane={}: {}",
-                    failures,
-                    MAX_FAILURES,
-                    lane_key,
-                    e
-                );
-                if failures >= MAX_FAILURES {
-                    tracing::warn!("terminal session giving up: lane={}", lane_key);
-                    return;
-                }
-                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                tracing::warn!("terminal session error: lane={}: {}", lane_key, e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
@@ -638,23 +689,12 @@ async fn run_terminal_session(
     proxy: &EventLoopProxy<AppEvent>,
     process_path: &str,
     lane_key: &str,
-    addr: &str,
+    client: &unison::ProtocolClient,
     cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TermCmd>,
 ) -> Result<SubscriptionOutcome, String> {
-    use unison::ProtocolClient;
     use unison::network::MessageType;
-    use unison::network::TrustAnchors;
-    use unison::network::quic::QuicClient;
 
-    let transport = QuicClient::builder()
-        .trust_anchors(TrustAnchors::SkipVerification)
-        .build()
-        .map_err(|e| format!("QUIC client build: {}", e))?;
-    let client = ProtocolClient::new(transport);
-    client
-        .connect(addr)
-        .await
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    // F1b: 共有 connection 上に per-lane terminal 用 "canvas" stream を開く (旧: lane ごと別 connect)。
     let channel = client
         .open_channel("canvas")
         .await
@@ -774,35 +814,43 @@ async fn world_process_request(
 
 /// Bastet 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
 /// `AppEvent::DeviceEvent` を emit する。 daemon に 1 本のみ (canvas/lanes は per-SP だが
-/// device は World scope = singleton)。 `canvas_subscription_loop` と同型 (QUIC + 指数バックオフ)。
+/// device は World scope = singleton)。 F1b で共有 connection 上の stream に集約。
 fn spawn_device_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
-    world_port: u16,
+    conn: SharedWorldConn,
 ) {
-    rt_handle.spawn(device_subscription_loop(proxy, world_port));
+    rt_handle.spawn(device_subscription_loop(proxy, conn));
 }
 
-/// "world-device" channel への接続 → 購読 → 再接続を司る long-lived ループ。
-async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, world_port: u16) {
-    let addr = format!("[::1]:{}", world_port);
+/// "world-device" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
+///
+/// device channel は **optional** (daemon が feature midi 無効 / Bastet 不在なら未登録)。 connection
+/// 自体は共有 manager が維持するので、 「接続済なのに open_channel が連続失敗」= channel 未提供と
+/// 判断して graceful give-up する (= device 機能なしで app は動く)。 connection-down (Disconnected)
+/// は失敗カウントに含めない (channel は在った)。
+async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: SharedWorldConn) {
     const MAX_FAILURES: u32 = 10;
     let mut failures: u32 = 0;
 
     loop {
-        match run_device_session(&proxy, &addr).await {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_device_session(&proxy, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {
+                // channel は在った (= 接続できた)。 失敗カウントを reset し次 client を待つ。
                 failures = 0;
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
             Err(e) => {
                 failures += 1;
                 if failures >= MAX_FAILURES {
-                    // daemon が world-device channel を出さない (= feature midi 無効 / Bastet 不在)
-                    // 場合もここに来る = graceful degrade (device 機能なしで app は動く)。
+                    // 接続済なのに open_channel が連続失敗 = daemon が world-device を出さない
+                    // (feature midi 無効 / Bastet 不在) → graceful degrade。
                     tracing::warn!(
-                        "world-device subscription giving up (daemon unreachable or no midi): {}",
+                        "world-device subscription giving up (no midi / Bastet absent): {}",
                         e
                     );
                     return;
@@ -819,27 +867,16 @@ async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, world_port: u
 /// `send_event("event", <DeviceEvent JSON>)` で push する。
 async fn run_device_session(
     proxy: &EventLoopProxy<AppEvent>,
-    addr: &str,
+    client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
-    use unison::ProtocolClient;
     use unison::network::MessageType;
-    use unison::network::TrustAnchors;
-    use unison::network::quic::QuicClient;
 
-    let transport = QuicClient::builder()
-        .trust_anchors(TrustAnchors::SkipVerification)
-        .build()
-        .map_err(|e| format!("QUIC client build: {}", e))?;
-    let client = ProtocolClient::new(transport);
-    client
-        .connect(addr)
-        .await
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    // F1b: 共有 connection 上に "world-device" stream を開く (旧: 専用 connect)。
     let channel = client
         .open_channel("world-device")
         .await
         .map_err(|e| format!("open world-device channel: {}", e))?;
-    tracing::info!("world-device subscription connected: addr={}", addr);
+    tracing::info!("world-device subscription connected");
 
     loop {
         let msg = match channel.recv().await {
@@ -1634,13 +1671,15 @@ pub fn run() -> anyhow::Result<()> {
     // muda の MenuEvent を main loop に橋渡しする pump を起動
     spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
 
+    // F1b (doc 27 §3.4.4): vp-app → World :32000 の全 persistent session を 1 QUIC connection に
+    // 集約する共有ハンドル。 manager task が connect/reconnect を一手に所有し、 各 session
+    // (device/lanes/canvas/terminal) は `wait_client` で得た共有 client に open_channel する。
+    // event loop closure が move capture するので、 closure 内の spawn は `world_conn.clone()` を渡す。
+    let world_conn = spawn_world_conn_manager(&rt_handle, crate::client::DEFAULT_WORLD_PORT);
+
     // Bastet 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
     // canvas/lanes は per-SP だが device は World scope (= daemon singleton) なので起動時 1 回。
-    spawn_device_subscription(
-        &rt_handle,
-        event_loop.create_proxy(),
-        crate::client::DEFAULT_WORLD_PORT,
-    );
+    spawn_device_subscription(&rt_handle, event_loop.create_proxy(), world_conn.clone());
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session_state より前に確定する。
@@ -1861,8 +1900,8 @@ pub fn run() -> anyhow::Result<()> {
     // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
     let respawn_proxy = event_loop.create_proxy();
     // wiremsg Stage 1: per-SP の "lanes" Unison 購読を 1 本だけ張るための guard。
-    // path をキーにする。購読が再接続上限で諦めると `LanesSubscriptionEnded` で除去され、
-    // 次の `ProjectsLoaded` で SP がまだ生きていれば再 spawn される。
+    // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
+    // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
     // wiremsg Stage 2: per-SP の "canvas" Unison 購読 guard (lanes_sub_active と同型)。
     let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2284,7 +2323,7 @@ pub fn run() -> anyhow::Result<()> {
                             &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            crate::client::DEFAULT_WORLD_PORT,
+                            world_conn.clone(),
                         );
                     }
                     if canvas_sub_active.insert(path.clone()) {
@@ -2292,7 +2331,7 @@ pub fn run() -> anyhow::Result<()> {
                             &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            crate::client::DEFAULT_WORLD_PORT,
+                            world_conn.clone(),
                         );
                     }
                 }
@@ -2406,7 +2445,7 @@ pub fn run() -> anyhow::Result<()> {
                                 spawn_terminal_session(
                                     &rt_handle,
                                     async_action_proxy.clone(),
-                                    crate::client::DEFAULT_WORLD_PORT,
+                                    world_conn.clone(),
                                     path_key.clone(),
                                     addr_str.clone(),
                                 )
@@ -2469,15 +2508,6 @@ pub fn run() -> anyhow::Result<()> {
                 if lane_respawn_triggered.remove(&address) {
                     tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
                 }
-            }
-            Event::UserEvent(AppEvent::LanesSubscriptionEnded { process_path }) => {
-                // wiremsg Stage 1: "lanes" 購読が再接続上限に達して終了した。
-                // guard から外し、SP が再び現れたら次の `ProjectsLoaded` で購読を再 spawn する。
-                tracing::info!(
-                    "AppEvent::LanesSubscriptionEnded: project={} (購読 guard 解除)",
-                    process_path
-                );
-                lanes_sub_active.remove(&process_path);
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 tracing::debug!("🧲 device event: {}", payload);
@@ -2555,14 +2585,6 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     }
                 }
-            }
-            Event::UserEvent(AppEvent::CanvasSubscriptionEnded { process_path }) => {
-                // wiremsg Stage 2: "canvas" 購読が再接続上限で終了。guard から外す。
-                tracing::info!(
-                    "AppEvent::CanvasSubscriptionEnded: project={} (購読 guard 解除)",
-                    process_path
-                );
-                canvas_sub_active.remove(&process_path);
             }
             // terminal S4 (doc 27 §4.1): per-lane terminal session 由来の PTY 出力を当該 lane の
             // xterm に inject する。 data は base64 (JS 側で decode → term.write)。
