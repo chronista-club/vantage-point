@@ -41,6 +41,7 @@ pub(crate) mod stand_spawner;
 // stand_spec module は doc 11 PR-B で削除 (LaneStandSpec trait / TheHand / LlmStand 全廃、
 // `mise run vp:stand:{name}` 1 経路に集約)。
 pub(crate) mod state;
+pub(crate) mod terminal_pump;
 pub(crate) mod tmux_actor;
 pub mod topic;
 pub(crate) mod topic_router;

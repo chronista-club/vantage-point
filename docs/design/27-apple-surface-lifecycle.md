@@ -116,6 +116,46 @@ terminal は単一 topic 空間の**唯一の raw WebSocket holdout**。vp-app �
 > SP Lane PtySlot（`/ws/terminal` = WebSocket）は別物。**vp-app が見せる terminal は後者**で、daemon を
 > 経由せず Unison でもない。portless 化の対象はこの SP Lane PtySlot 経路。
 
+### 4.1 実装設計 — terminal を「topic 空間の住人」にする（bespoke 機構を増やさない）
+
+> perf spike 完了・🟢 GREEN（`mem_1CcRhY8odVzGygQo8gmehi`）: wry 境界 615 MB/s / xterm 90 MB/s / WS 2GB/s、
+> いずれも PTY 需要を桁違いに超で WS→Unison に regression なし。実装は「最短で動かす」より
+> **強く美しい構造**（user directive 2026-06-26）を優先する。
+
+**統一視点**: lanes（push snapshot）/ canvas（push retained）/ control（reverse request）/ terminal は
+**同じ topic 空間の pub/sub の異なる断面**で、違うのは 3 プロパティ（payload / 方向 / production）だけ。
+terminal を 4 つ目の bespoke 機構として足すと構造は**発散**する。terminal を特別扱いせず topic にすれば
+**収束**する（北極星）。terminal は 3 つの「難しい角」を全部踏む唯一のケース（raw bytes / 双方向 /
+on-demand）なので、正しく作る = topic 空間に汎用能力を与える = substrate が成熟する。
+
+**topic 名前空間**（既存 `process/{capability}/{category}/{detail}` + Paisley Park の lane segment 方式を踏襲）:
+```
+process/terminal/{lane}/data/out      ← PTY 出力 (per-lane, ephemeral)
+process/terminal/{lane}/data/in       ← keystroke
+process/terminal/{lane}/state/resize  ← {cols, rows}
+```
+SP = topic authority（PtySlot 所有）/ World = broker（per-project `TopicRouter` = `canvas_routers` と同型）/
+vp-app・WebView・将来 agent = 対称な subscriber/publisher。
+
+**substrate に足す能力（terminal が forcing function、接地済み 2026-06-26）**:
+1. **payload = `ProcessMessage` 流用**（新 raw-frame primitive を作らない）。`TopicRouter` は既に
+   `ProcessMessage` 型 pub/sub で `TerminalOutput{data:base64}` topic を持つ。これを **per-lane 化**
+   （`lane` field 追加 → lane segment topic）して既存 router にそのまま乗せる = canvas/lanes と同一機構。
+   base64 は spike で perf 実証済。真の opaque raw-frame topic は将来の substrate 純度向上として分離。
+2. **demand-driven production（本命の新 primitive）**。`TopicRouter` の subscribe/unsubscribe に demand
+   hook を足し、subscriber `0→1`（start）/`1→0`（stop）を authority(SP) に通知。SP は per-lane PtySlot→topic
+   pump を demand で gate。= 「**subscriber が居る間だけ producer が回る**」汎用 lazy topic。on-demand が
+   ここから自然に出る（bespoke start/stop 信号を作らない）。
+3. **bidirectional**（input/resize）。subscriber→authority publish を World が route。control の
+   reverse-route はこの特殊例として将来吸収（今は収束先として残す）。
+
+**段階**（各 step 単体 test 可、美しさを壊さず積む）:
+- **S1**: `TerminalOutput` per-lane 化 + SP per-lane pump → World `TopicRouter` → throwaway probe で SP→World→受信実証（まず always-on）。
+- **S2**: demand hook（subscriber 0→1/1→0 を SP に通知）→ pump を lazy 化。
+- **S3**: input/resize を topic publish（vp-app→World→SP `write_to_lane`/`resize_lane`）。
+- **S4**: WebView = unison-client TS（postMessage transport 自作注入）で 3 topic を subscribe/publish、xterm 配線（coalescing 16-64KiB）、`/ws/terminal` 撤去。
+- **S5**（収束・任意）: control reverse-route を topic-publish 経路に寄せ bespoke 機構を 1 減らす。
+
 ## 5. agent = first-class World surface（制約）
 
 human surface（vp-app / Vision Pro）と同格に、**agent（Claude）も World の独立 surface**として扱う

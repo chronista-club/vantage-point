@@ -162,6 +162,11 @@ pub enum ProcessMessage {
     TerminalReady,
     /// ターミナルPTYセッション終了通知（子プロセス EOF）
     TerminalExited,
+    /// Lane PTY 出力（base64、 per-lane）。 doc 27 §4.1 S1: SP Lane PtySlot の出力を
+    /// `process/terminal/{lane}/data/out` topic に乗せ、 World 経由で WebView に届ける
+    /// (raw WebSocket `/ws/terminal` 退役の置換)。 session 系 `TerminalOutput` とは別系統
+    /// (こちらは LanePool スコープ、 lane address を持つ)。
+    LaneTerminalOutput { lane: String, data: String },
     /// トレースログエントリ（debug.log ファイルからの配信）
     TraceLog {
         ts: String,

@@ -72,6 +72,13 @@ impl TopicRouter {
         lane.as_deref().unwrap_or("conductor")
     }
 
+    /// lane address（`vp/performer/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
+    /// 変換する（`/` → `~`）。 doc 27 §4.1 の per-lane terminal topic 用。 message には full
+    /// address を載せ、 topic key だけ encode する（subscriber も同じ変換で subscribe する）。
+    fn terminal_lane_key(lane: &str) -> String {
+        lane.replace('/', "~")
+    }
+
     /// ProcessMessage → Topic 文字列のマッピング
     ///
     /// 命名規則: `{scope}/{capability}/{category}/{detail}`
@@ -156,6 +163,11 @@ impl TopicRouter {
             ProcessMessage::TerminalOutput { .. } => "process/terminal/data/output".to_string(),
             ProcessMessage::TerminalReady => "process/terminal/state/ready".to_string(),
             ProcessMessage::TerminalExited => "process/terminal/state/exited".to_string(),
+            // doc 27 §4.1: Lane PTY 出力は per-lane topic。 category(seg2)=data → 非 retained
+            // (ephemeral stream)。 lane address ('/' 含む) は seg3 で 1 token 化する。
+            ProcessMessage::LaneTerminalOutput { lane, .. } => {
+                format!("process/terminal/data/{}/out", Self::terminal_lane_key(lane))
+            }
 
             // === Debug（デバッグ情報）===
             ProcessMessage::DebugInfo { .. } => "process/debug/log".to_string(),
@@ -316,6 +328,33 @@ mod tests {
     fn test_message_to_topic_terminal_ready() {
         let topic = TopicRouter::message_to_topic(&ProcessMessage::TerminalReady);
         assert_eq!(topic, "process/terminal/state/ready");
+    }
+
+    #[test]
+    fn test_message_to_topic_lane_terminal_output() {
+        // doc 27 §4.1: per-lane terminal 出力。 lane address の '/' は seg3 で '~' に encode、
+        // category(seg2)=data なので 非 retained（ephemeral stream）。
+        let msg = ProcessMessage::LaneTerminalOutput {
+            lane: "vp/performer/foo".to_string(),
+            data: "aGVsbG8=".to_string(),
+        };
+        let topic = TopicRouter::message_to_topic(&msg);
+        assert_eq!(topic, "process/terminal/data/vp~performer~foo/out");
+        assert!(!TopicPath::parse(&topic).is_retained());
+    }
+
+    #[test]
+    fn test_lane_terminal_topics_are_per_lane() {
+        // 別 lane は別 topic（subscriber 数 = lane 別 demand の前提、 S2 で効く）。
+        let a = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
+            lane: "vp/conductor".to_string(),
+            data: String::new(),
+        });
+        let b = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
+            lane: "vp/performer/foo".to_string(),
+            data: String::new(),
+        });
+        assert_ne!(a, b);
     }
 
     #[test]
