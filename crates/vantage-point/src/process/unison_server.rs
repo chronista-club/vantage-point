@@ -353,6 +353,75 @@ async fn handle_process_list(state: &AppState) -> Result<serde_json::Value, Stri
     Ok(serde_json::json!({"status": "ok", "processes": processes}))
 }
 
+// L0 portless Group B-3: 旧 SP HTTP `/api/ruby/*` を process-proxy ask に移管。 HTTP handler と同じ
+// `process_runner::ruby_*` core を呼ぶ薄い adapter (payload からフィールド抽出)。 ruby_list は
+// `process_registry.list()` = `handle_process_list` と同一なので dispatch 側で再利用する。
+
+/// ruby_eval: 短命 Ruby 実行
+async fn handle_ruby_eval(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let code = payload.get("code").and_then(|v| v.as_str());
+    let file = payload.get("file").and_then(|v| v.as_str());
+    let pane_id = payload
+        .get("pane_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
+    let r = crate::process::process_runner::ruby_eval(
+        code,
+        file,
+        pane_id,
+        &state.project_dir,
+        &state.hub,
+    )
+    .await?;
+    Ok(serde_json::json!({
+        "status": "ok",
+        "stdout": r.stdout,
+        "stderr": r.stderr,
+        "exit_code": r.exit_code,
+        "elapsed_ms": r.elapsed_ms,
+    }))
+}
+
+/// ruby_run: 長命 Ruby daemon 起動
+async fn handle_ruby_run(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let code = payload.get("code").and_then(|v| v.as_str());
+    let file = payload.get("file").and_then(|v| v.as_str());
+    let name = payload.get("name").and_then(|v| v.as_str());
+    let pane_id = payload
+        .get("pane_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
+    let process_id = crate::process::process_runner::ruby_run(
+        &state.process_registry,
+        code,
+        file,
+        name,
+        pane_id,
+        &state.project_dir,
+        &state.hub,
+    )
+    .await?;
+    Ok(serde_json::json!({"status": "ok", "process_id": process_id}))
+}
+
+/// ruby_stop: Ruby daemon 停止
+async fn handle_ruby_stop(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let process_id = payload["process_id"]
+        .as_str()
+        .ok_or_else(|| "process_id が必要です".to_string())?;
+    crate::process::process_runner::ruby_stop(&state.process_registry, process_id).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
 // =============================================================================
 // Terminal チャネル制御メッセージハンドラー
 // =============================================================================
@@ -799,6 +868,12 @@ pub(crate) async fn dispatch_process_method(
         "process_stop" => handle_process_stop(state, payload).await,
         "process_inject" => handle_process_inject(state, payload).await,
         "process_list" => handle_process_list(state).await,
+        // L0 portless Group B-3: Ruby VM (旧 SP HTTP /api/ruby/* を process-proxy ask に移管)。
+        // ruby_list は process_registry.list() = process_list と同一なので handle_process_list 再利用。
+        "ruby_eval" => handle_ruby_eval(state, payload).await,
+        "ruby_run" => handle_ruby_run(state, payload).await,
+        "ruby_stop" => handle_ruby_stop(state, payload).await,
+        "ruby_list" => handle_process_list(state).await,
         // wiremsg threaded inbox (Phase A ①、 R2 で wire_thread 追加)
         "wire_send" => handle_wire_send(state, payload).await,
         "wire_recv" => handle_wire_recv(state, payload).await,

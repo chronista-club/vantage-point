@@ -2798,7 +2798,11 @@ if bestId > 0 { print(bestId) }
             "pane_id": pane_id,
         });
 
-        let resp = self.http_post("/api/ruby/eval", &body).await?;
+        // L0 portless: 旧 SP HTTP `/api/ruby/eval` を World process-proxy ask に移管。 ruby script は
+        // 実行に時間がかかり得るので 30s timeout (default 5s では短い)。
+        let resp = self
+            .quic_call_with_timeout("ruby_eval", body, std::time::Duration::from_secs(30))
+            .await?;
 
         let stdout = resp.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
         let stderr = resp.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
@@ -2840,7 +2844,8 @@ if bestId > 0 { print(bestId) }
             "pane_id": pane_id,
         });
 
-        let resp = self.http_post("/api/ruby/run", &body).await?;
+        // L0 portless: 旧 SP HTTP `/api/ruby/run` を World process-proxy ask に移管 (daemon spawn は即返る)。
+        let resp = self.quic_call("ruby_run", body).await?;
 
         let process_id = resp
             .get("process_id")
@@ -2867,7 +2872,8 @@ if bestId > 0 { print(bestId) }
             "process_id": params.process_id,
         });
 
-        self.http_post("/api/ruby/stop", &body).await?;
+        // L0 portless: 旧 SP HTTP `/api/ruby/stop` を World process-proxy ask に移管。
+        self.quic_call("ruby_stop", body).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Ruby process '{}' stop signal sent", params.process_id),
@@ -2879,20 +2885,8 @@ if bestId > 0 { print(bestId) }
         description = "List all running Ruby daemon processes with their IDs, names, pane IDs, and status."
     )]
     async fn list_ruby(&self) -> Result<CallToolResult, McpError> {
-        let url = format!("{}/api/ruby/list", self.process_url.lock().await);
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(format!("Ruby list 通信失敗: {}. Is vp running?", e), None)
-            })?;
-
-        let json: serde_json::Value = resp.json().await.map_err(|e| {
-            McpError::internal_error(format!("Ruby list レスポンスパース失敗: {}", e), None)
-        })?;
+        // L0 portless: 旧 SP HTTP `GET /api/ruby/list` を World process-proxy ask に移管。
+        let json = self.quic_call("ruby_list", serde_json::json!({})).await?;
 
         let processes = json.get("processes").and_then(|v| v.as_array());
         let result = match processes {

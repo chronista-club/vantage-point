@@ -394,12 +394,9 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             "/api/tmux/resolve-pane",
             get(health::tmux_resolve_pane_handler),
         )
-        .route("/api/ruby/eval", post(health::ruby_eval_handler))
-        .route("/api/ruby/run", post(health::ruby_run_handler))
-        .route("/api/ruby/stop", post(health::ruby_stop_handler))
-        .route("/api/ruby/list", get(health::ruby_list_handler))
-        // L0 portless: `/api/process/*` (ProcessRunner 汎用 HTTP) は consumer 消滅で dead のため
-        // 撤去 (生きてる process 操作は QUIC `process` channel / `/api/ruby/*` 経由)。
+        // L0 portless Group B-3: `/api/ruby/*` は唯一の consumer だった MCP を process-proxy ask
+        // (`ruby_eval`/`ruby_run`/`ruby_stop`/`ruby_list` dispatch) に移管し撤去。
+        // `/api/process/*` (ProcessRunner 汎用 HTTP) は Group A で dead 撤去済。
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
         // User prompt API routes (REQ-PROMPT-001)
