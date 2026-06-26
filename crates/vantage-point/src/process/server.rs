@@ -385,13 +385,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         .route("/api/wire/ack", post(health::wire_ack_handler))
         // F6 (doc 27 §3.4): PP Canvas state は SP HTTP `/api/pp/state` を撤去し、 World
         // process-proxy ask (`pp_state_save`/`pp_state_load`) に移管 (surface→SP 直結 HTTP 撤去)。
-        // tmux ペイン操作（Native App の Cmd+D / Cmd+Shift+D から呼ばれる）
-        .route("/api/tmux/split", post(health::tmux_split_handler))
-        .route("/api/tmux/close", post(health::tmux_close_handler))
-        .route("/api/tmux/capture", post(health::tmux_capture_handler))
-        .route("/api/tmux/list", get(health::tmux_list_handler))
+        // L0 portless Group B: tmux split/close/capture/list/agent-meta HTTP は CLI を
+        // process-proxy ask (`tmux_*` dispatch) に移管 + dashboard/status/deploy を CLI 撤去で
+        // consumer 消滅 → 撤去。 send-keys / resolve-pane は flow.rs(try_nudge) が raw URL で叩く
+        // ため残置 (flow.rs の portless 化で撤去予定)。
         .route("/api/tmux/send-keys", post(health::tmux_send_keys_handler))
-        .route("/api/tmux/agent-meta", get(health::tmux_agent_meta_handler))
         .route(
             "/api/tmux/resolve-pane",
             get(health::tmux_resolve_pane_handler),

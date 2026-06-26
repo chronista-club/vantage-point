@@ -497,105 +497,10 @@ pub fn resolve_content_command(
     }
 }
 
-/// POST /api/tmux/split - tmux ペインを分割
-pub async fn tmux_split_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxSplitParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    let command = resolve_content_command(params.content_type.as_deref(), params.command);
-    match handle.split(params.horizontal, command).await {
-        Ok(pane) => Json(serde_json::json!({"status": "ok", "pane": pane})),
-        Err(e) => Json(serde_json::json!({"error": e})),
-    }
-}
-
-/// tmux close パラメータ
-#[derive(Deserialize)]
-pub struct TmuxCloseParams {
-    pub pane_id: String,
-}
-
-/// POST /api/tmux/close - tmux ペインを閉じる
-pub async fn tmux_close_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxCloseParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    match handle.close(&params.pane_id).await {
-        Ok(()) => Json(serde_json::json!({"status": "ok"})),
-        Err(e) => Json(serde_json::json!({"error": e})),
-    }
-}
-
-// ===== tmux 追加ハンドラー（CLI 用） =====
-
-/// tmux capture パラメータ
-#[derive(Deserialize)]
-pub struct TmuxCaptureParams {
-    pub pane_id: Option<String>,
-}
-
-/// POST /api/tmux/capture - ペイン内容をキャプチャ
-///
-/// pane_id 指定で単一ペイン、省略で全ペインをキャプチャ。
-pub async fn tmux_capture_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxCaptureParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    match params.pane_id {
-        Some(pane_id) => match handle.capture(&pane_id).await {
-            Ok(content) => {
-                Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "content": content}))
-            }
-            Err(e) => Json(serde_json::json!({"error": e})),
-        },
-        None => {
-            let captures = handle.capture_all().await;
-            Json(serde_json::json!({"status": "ok", "captures": captures}))
-        }
-    }
-}
-
-/// GET /api/tmux/list - ペイン一覧
-pub async fn tmux_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    let panes = handle.list().await;
-    let all_meta = handle.list_all_agent_meta().await;
-    // 各ペインにエージェントメタデータを付与（一括取得済み）
-    let panes_with_meta: Vec<serde_json::Value> = panes
-        .iter()
-        .map(|pane| {
-            let mut pane_json = serde_json::to_value(pane).unwrap_or_default();
-            if let Some(meta) = all_meta.get(&pane.id) {
-                pane_json["agent"] = serde_json::to_value(meta).unwrap_or_default();
-            }
-            pane_json
-        })
-        .collect();
-    Json(serde_json::json!({"status": "ok", "panes": panes_with_meta}))
-}
+// L0 portless Group B: tmux split / close / capture / list HTTP handler は CLI を process-proxy
+// ask (`tmux_split`/`tmux_close`/`tmux_capture`/`tmux_list` dispatch) に移管 + dashboard/status/
+// deploy CLI 撤去で consumer 消滅のため撤去。 send-keys / resolve-pane は flow.rs が残すため keep。
+// `resolve_content_command` は QUIC `handle_tmux_split` と共有のため keep (上記)。
 
 /// tmux send-keys パラメータ
 #[derive(Deserialize)]
@@ -672,26 +577,7 @@ pub async fn tmux_resolve_pane_handler(
     }
 }
 
-/// tmux agent-meta パラメータ
-#[derive(Deserialize)]
-pub struct TmuxAgentMetaParams {
-    pub pane_id: String,
-}
-
-/// GET /api/tmux/agent-meta - エージェントメタデータ取得
-pub async fn tmux_agent_meta_handler(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<TmuxAgentMetaParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    let meta = handle.get_agent_meta(&params.pane_id).await;
-    Json(serde_json::json!({"status": "ok", "meta": meta}))
-}
+// L0 portless Group B: `/api/tmux/agent-meta` (GET) は consumer ゼロで dead のため撤去。
 
 // ===== Ruby VM ハンドラー =====
 
