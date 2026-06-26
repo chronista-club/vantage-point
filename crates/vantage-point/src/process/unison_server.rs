@@ -883,9 +883,11 @@ pub(crate) async fn dispatch_process_method(
         // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
         "wire_latest_msg" => handle_wire_latest_msg(state, payload).await,
         "wire_ack" => handle_wire_ack(state, payload).await,
-        // Agent 委譲 (doc 28 §4、 v1 ローカル atom): delegate=B を wake / complete=A を wake。
+        // Agent 委譲 (doc 28 §4): delegate=B を wake / complete=A を wake /
+        // respond=NeedsInput(Reborn) に A が回答して B を再 wake (Active へ loop)。
         "delegate" => super::delegation::handle_delegate(state, payload).await,
         "complete" => super::delegation::handle_complete(state, payload).await,
+        "respond" => super::delegation::handle_respond(state, payload).await,
         _ => Err(format!("不明なメソッド: process.{}", method)),
     }
 }
@@ -1899,5 +1901,84 @@ mod tests {
         )
         .await;
         assert!(bad2.is_err(), "不正 outcome は Err");
+    }
+
+    /// complete(NeedsInput) → AwaitingResponse、 respond → Active へ loop（doc 28 §4 動詞 3）。
+    #[tokio::test]
+    async fn complete_needs_input_then_respond_loops_back_to_active() {
+        use super::dispatch_process_method;
+        use crate::process::delegation::DelegationState;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let del = dispatch_process_method(
+            &state,
+            "delegate",
+            serde_json::json!({
+                "doer": "agent@vp/feat-api",
+                "task": "DB schema を書く",
+                "requester": "agent@vp",
+            }),
+        )
+        .await
+        .expect("delegate");
+        let id = del["id"].as_str().unwrap().to_string();
+
+        // complete(NeedsInput) → AwaitingResponse、 requester を wake（graceful false）。
+        let ni = dispatch_process_method(
+            &state,
+            "complete",
+            serde_json::json!({
+                "id": id,
+                "outcome": { "kind": "needsinput", "question": "Postgres? SQLite?" },
+            }),
+        )
+        .await
+        .expect("complete needsinput");
+        assert_eq!(ni["state"], "awaiting_response");
+        {
+            let map = state.delegations.read().await;
+            assert_eq!(
+                map.get(&id).unwrap().state,
+                DelegationState::AwaitingResponse
+            );
+        }
+
+        // respond → Active へ戻り、 doer を再 wake（graceful false）、 outcome は消費される。
+        let resp = dispatch_process_method(
+            &state,
+            "respond",
+            serde_json::json!({ "id": id, "answer": "Postgres で" }),
+        )
+        .await
+        .expect("respond");
+        assert_eq!(resp["state"], "active");
+        {
+            let map = state.delegations.read().await;
+            let d = map.get(&id).unwrap();
+            assert_eq!(d.state, DelegationState::Active);
+            assert!(
+                d.outcome.is_none(),
+                "respond で NeedsInput outcome は消費される"
+            );
+        }
+
+        // 未知 id への respond は Err。answer 欠落も Err。
+        assert!(
+            dispatch_process_method(
+                &state,
+                "respond",
+                serde_json::json!({ "id": "dlg-none", "answer": "x" }),
+            )
+            .await
+            .is_err(),
+            "未知 id respond は Err"
+        );
+        assert!(
+            dispatch_process_method(&state, "respond", serde_json::json!({ "id": id }))
+                .await
+                .is_err(),
+            "answer 欠落は Err"
+        );
     }
 }

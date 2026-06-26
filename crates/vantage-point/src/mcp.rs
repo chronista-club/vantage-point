@@ -179,17 +179,33 @@ pub struct CompleteParams {
     )]
     pub id: String,
 
-    /// Outcome 種別: done / failed
+    /// Outcome 種別: done / failed / needs_input
     #[schemars(
-        description = "Outcome kind: 'done' if the task succeeded, 'failed' if it could not be completed."
+        description = "Outcome kind: 'done' if the task succeeded, 'failed' if it could not be completed, or 'needs_input' if you need an answer from the requester before you can proceed (the requester is woken with your question and replies via respond(), which re-wakes you)."
     )]
     pub outcome: String,
 
-    /// 結果（done）または理由（failed）
+    /// 結果（done）/ 理由（failed）/ 質問（needs_input）
     #[schemars(
-        description = "For outcome='done': a summary of the result to hand back to the requester (who resumes their paused work with this). For outcome='failed': the reason it could not be completed."
+        description = "For outcome='done': a summary of the result to hand back to the requester (who resumes their paused work with this). For outcome='failed': the reason it could not be completed. For outcome='needs_input': the question you need the requester to answer."
     )]
     pub result: String,
+}
+
+/// Parameters for respond tool (doc 28 §4 / 動詞 3: NeedsInput=Reborn への回答)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RespondParams {
+    /// 回答する委譲 id（doer が needs_input を返したもの）
+    #[schemars(
+        description = "The delegation id (e.g. 'dlg-...') the doer asked a question about via complete(outcome='needs_input'). You received this question in a wake message."
+    )]
+    pub id: String,
+
+    /// doer の質問への回答
+    #[schemars(
+        description = "Your answer to the doer's question. The doer is re-woken with this answer and resumes the delegated task."
+    )]
+    pub answer: String,
 }
 
 /// Parameters for the watch_file tool
@@ -3201,7 +3217,8 @@ if bestId > 0 { print(bestId) }
     // Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom。
     // doc 28 §4 / design memo mem_1CcSQ6sxFPtm2mZw873VRp。
     //
-    // delegate = A が B に委譲して PARK（ターンを終える）/ complete = B が完了報告して A を wake。
+    // delegate = A が B に委譲して PARK（ターンを終える）/ complete = B が完了報告して A を wake /
+    // respond = NeedsInput(Reborn) に A が回答して B を再 wake（Active へ loop）。
     // park/resume は「ターン境界の park + event 駆動の session 再 invoke」で future の
     // await/resolve を実装する（agent の block はスレッド block でなくターンの park）。
     // ========================================================================
@@ -3227,9 +3244,9 @@ if bestId > 0 { print(bestId) }
         )]))
     }
 
-    /// Report the outcome of a delegated task (resolves the requester's awaited future)
+    /// Report the outcome of a delegated task (resolves or pauses the requester's awaited future)
     #[tool(
-        description = "Report the outcome of a task that was delegated TO you (using the delegation id from the wake message). Set outcome='done' with a `result` summary on success, or outcome='failed' with a `result` describing the reason. This RESOLVES the requester's awaited future: they are woken (tmux send-keys) with your outcome and resume the work that was blocked on you. (doc 28 §4)"
+        description = "Report the outcome of a task that was delegated TO you (using the delegation id from the wake message). outcome='done' (with a `result` summary) or 'failed' (with a `result` reason) RESOLVES the requester's awaited future — they are woken (tmux send-keys) and resume. outcome='needs_input' (with a `result` question) instead PAUSES it: the requester is woken with your question and answers via respond(), which re-wakes you to continue. (doc 28 §4)"
     )]
     async fn complete(
         &self,
@@ -3240,9 +3257,13 @@ if bestId > 0 { print(bestId) }
         let outcome = match kind.as_str() {
             "done" => serde_json::json!({ "kind": "done", "result": params.result }),
             "failed" => serde_json::json!({ "kind": "failed", "reason": params.result }),
+            // needs_input / needsinput どちらの綴りも NeedsInput(=Reborn) に写す。
+            "needs_input" | "needsinput" => {
+                serde_json::json!({ "kind": "needsinput", "question": params.result })
+            }
             other => {
                 return Err(McpError::invalid_params(
-                    format!("outcome は 'done' or 'failed' のみ (got: {other})"),
+                    format!("outcome は 'done' / 'failed' / 'needs_input' のみ (got: {other})"),
                     None,
                 ));
             }
@@ -3251,6 +3272,21 @@ if bestId > 0 { print(bestId) }
         let resp = self.quic_call("complete", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "completed".to_string()),
+        )]))
+    }
+
+    /// Answer a doer's NeedsInput question (re-wakes the doer, loops the future back to Active)
+    #[tool(
+        description = "Answer a question that a doer raised via complete(outcome='needs_input') on a task you delegated. You received the question in a wake message with its delegation id. This re-wakes the doer (tmux send-keys) with your answer and resumes their work; the future loops back to awaiting their next outcome. After calling respond, finish your turn — you will be woken again when they complete. (doc 28 §4)"
+    )]
+    async fn respond(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<RespondParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let payload = serde_json::json!({ "id": params.id, "answer": params.answer });
+        let resp = self.quic_call("respond", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "responded".to_string()),
         )]))
     }
 

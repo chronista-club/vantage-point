@@ -5,13 +5,16 @@
 //! 人間の介入なしで自走させる。**v1 はローカルのみ**（same World / same SP / 2 lane）、federation
 //! （hub / World 間）は別 Phase。ただし location-transparent に作る（不変条件 ↓）。
 //!
-//! ## state machine（nostos Bracket(enter/Active/exit) の spike 版縮約）
+//! ## state machine（nostos Bracket(enter/Active/exit) + 三相 Outcome）
 //! ```text
 //! delegate(doer, task) ─enter→ [Pending] ─wake doer→ [Active]
-//!     [Active] ─doer complete(Done{result})  → [Done]   ─wake requester→ requester 再開
-//!     [Active] ─doer complete(Failed{reason}) → [Failed] ─wake requester→ requester 判断
+//!     [Active] ─doer complete(Done{result})    → [Done]   ─wake requester→ requester 再開
+//!     [Active] ─doer complete(Failed{reason})   → [Failed] ─wake requester→ requester 判断
+//!     [Active] ─doer complete(NeedsInput{q})    → [AwaitingResponse] ─wake requester→ A が質問を見る
+//!     [AwaitingResponse] ─requester respond(ans) → [Active] ─wake doer→ B が回答付きで再開（loop）
 //! ```
-//! nostos 三相 Done/Reborn/Failed のうち Reborn(=NeedsInput) と `respond` は follow-up（OUT）。
+//! nostos 三相 Done / Reborn / Failed を完全実装（Reborn = NeedsInput、`respond` で Active へ loop）。
+//! pull-hook・reconcile・timeout・wire-store backing・federation は doc 28 §7 staging の follow-up。
 //!
 //! ## federation 不変条件（v1 で焼き込む）
 //! - record の `requester` / `doer` は**論理 wire address**（`agent@<project>` /
@@ -53,16 +56,21 @@ pub(crate) enum DelegationState {
     Pending,
     /// doer を wake 済、完了待ち（= requester が await 中）。
     Active,
+    /// doer が NeedsInput で問い返した状態（= doer が await 中、requester の `respond` 待ち）。
+    /// `respond` で Active へ戻る（nostos Reborn のループ点）。
+    AwaitingResponse,
     /// doer が Done で完了。
     Done,
     /// doer が Failed で完了。
     Failed,
 }
 
-/// 委譲の確定結果（nostos 三相のうち Done / Failed。Reborn=NeedsInput は follow-up）。
+/// 委譲の Outcome（nostos 三相 Done / Reborn / Failed）。
 ///
-/// serde は `{"kind":"done","result":"..."}` / `{"kind":"failed","reason":"..."}` に写す
-/// （MCP `complete` tool が組み立てて SP に渡す wire shape）。
+/// serde は `{"kind":"done","result":"..."}` / `{"kind":"failed","reason":"..."}` /
+/// `{"kind":"needsinput","question":"..."}` に写す（MCP `complete` tool が組み立てる wire shape）。
+/// NeedsInput は終端でなく、requester の `respond` で Active に戻る会話の 1 手（Failed も「死」でなく
+/// 交渉、NeedsInput は「進んだがもう 1 周」= Reborn）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum Outcome {
@@ -70,6 +78,9 @@ pub(crate) enum Outcome {
     Done { result: String },
     /// タスク失敗。`reason` = 失敗理由（requester が判断する材料）。
     Failed { reason: String },
+    /// 進めるのに requester の入力が要る（nostos Reborn）。`question` = doer が requester に聞きたいこと。
+    /// 非終端: requester が `respond(answer)` で回答すると doer が再 wake され Active に戻る。
+    NeedsInput { question: String },
 }
 
 /// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_session`] が解する
@@ -111,7 +122,8 @@ fn doer_wake_prompt(id: &str, requester: &str, task: &str) -> String {
     format!(
         "[委譲 {id}] {requester} からタスクを委譲されました: {task} — 完了したら \
          mcp__vantage-point__complete(id=\"{id}\", outcome=\"done\", result=\"<結果の要約>\") で \
-         報告してください (失敗時は outcome=\"failed\", result=\"<失敗理由>\")。"
+         報告してください (失敗時は outcome=\"failed\", result=\"<失敗理由>\"、進めるのに確認が要る \
+         ときは outcome=\"needs_input\", result=\"<質問>\" で requester に聞けます)。"
     )
 }
 
@@ -126,7 +138,22 @@ fn requester_wake_prompt(id: &str, doer: &str, task: &str, outcome: &Outcome) ->
             "[委譲 {id} → Failed] {doer} に委譲したタスク「{task}」が失敗しました。理由: {reason}。\
              再委譲・自分で実施・スコープ変更などを判断してください。"
         ),
+        Outcome::NeedsInput { question } => format!(
+            "[委譲 {id} ← 質問] {doer} がタスク「{task}」を進めるのに確認したいことがあります: {question} \
+             — mcp__vantage-point__respond(id=\"{id}\", answer=\"<回答>\") で回答すると doer が再開します。"
+        ),
     }
+}
+
+/// doer を再び起こす wake prompt（requester の `respond` の answer 同梱）。
+///
+/// NeedsInput で問い返した doer に、requester の回答を注入して Active に戻す（loop の continuation）。
+fn respond_wake_prompt(id: &str, task: &str, answer: &str) -> String {
+    format!(
+        "[委譲 {id} → 回答] あなたが聞いた件への回答: {answer} — タスク「{task}」の続きを進め、\
+         完了したら mcp__vantage-point__complete(id=\"{id}\", outcome=\"done\", result=\"<結果>\") で \
+         報告してください。"
+    )
 }
 
 /// `delegate(doer, task, requester) → {id}`（doc 28 §4 / 動詞 1）。
@@ -227,6 +254,8 @@ pub(crate) async fn handle_complete(
         let new_state = match &outcome {
             Outcome::Done { .. } => DelegationState::Done,
             Outcome::Failed { .. } => DelegationState::Failed,
+            // NeedsInput は非終端: doer が await に入り、requester の respond を待つ。
+            Outcome::NeedsInput { .. } => DelegationState::AwaitingResponse,
         };
         d.state = new_state;
         d.outcome = Some(outcome.clone());
@@ -238,13 +267,14 @@ pub(crate) async fn handle_complete(
         )
     };
 
-    // requester を wake（Outcome を同梱した resumable continuation）。
+    // requester を wake（Outcome を同梱した resumable continuation。NeedsInput は質問を届ける）。
     let prompt = requester_wake_prompt(&id, &doer, &task, &outcome);
     let woke = state.nudge_lane(&requester, &prompt).await;
 
     let state_str = match new_state {
         DelegationState::Done => "done",
         DelegationState::Failed => "failed",
+        DelegationState::AwaitingResponse => "awaiting_response",
         // delegate→Active 経由でしか complete に来ないので Pending/Active は不到達。
         _ => "active",
     };
@@ -256,6 +286,54 @@ pub(crate) async fn handle_complete(
     );
 
     Ok(serde_json::json!({ "id": id, "state": state_str, "woke": woke }))
+}
+
+/// `respond(id, answer)`（doc 28 §4 / 動詞 3）。
+///
+/// NeedsInput(=Reborn) で問い返した doer に requester の回答を注入 → doer を再 wake、Active に戻す。
+/// 未知 id は Err。状態が AwaitingResponse でないときも回答自体は届けて Active に戻す（lenient: 例えば
+/// push 取りこぼし後の手動 respond でも前進させる。厳密な遷移ガードは reconcile/state 機 follow-up）。
+/// doer の wake 失敗は graceful（`woke` で返す）。
+pub(crate) async fn handle_respond(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("respond: 'id' required")?
+        .to_string();
+    let answer = payload
+        .get("answer")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("respond: 'answer' required")?
+        .to_string();
+
+    // record を Active に戻す（未知 id は Err）。doer の再 wake に task が要る。
+    let (doer, task) = {
+        let mut map = state.delegations.write().await;
+        let d = map
+            .get_mut(&id)
+            .ok_or_else(|| format!("respond: unknown delegation id: {id}"))?;
+        d.state = DelegationState::Active;
+        // NeedsInput の outcome は回答で消費される（次の complete まで未確定）。
+        d.outcome = None;
+        (d.doer.clone(), d.task.clone())
+    };
+
+    // doer を再 wake（answer 同梱の continuation）。
+    let prompt = respond_wake_prompt(&id, &task, &answer);
+    let woke = state.nudge_lane(&doer, &prompt).await;
+
+    state.send_debug(
+        "agent",
+        &format!("respond {id}: → wake {doer} (woke={woke})"),
+        None,
+    );
+
+    Ok(serde_json::json!({ "id": id, "state": "active", "woke": woke }))
 }
 
 #[cfg(test)]
@@ -296,6 +374,18 @@ mod tests {
             serde_json::from_value(serde_json::json!({"kind": "failed", "reason": "boom"}))
                 .unwrap();
         assert!(matches!(failed, Outcome::Failed { reason } if reason == "boom"));
+
+        // NeedsInput(=Reborn): `{"kind":"needsinput","question":"..."}`
+        let ni = Outcome::NeedsInput {
+            question: "どの DB?".to_string(),
+        };
+        let v = serde_json::to_value(&ni).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"kind": "needsinput", "question": "どの DB?"})
+        );
+        let back: Outcome = serde_json::from_value(v).unwrap();
+        assert!(matches!(back, Outcome::NeedsInput { question } if question == "どの DB?"));
     }
 
     #[test]
