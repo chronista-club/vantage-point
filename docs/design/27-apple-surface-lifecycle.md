@@ -172,6 +172,9 @@ route し Response を correlation で返す。Unison の pending-map 機構で�
 - **terminal（§4, S1-S4）= "text" QoS クラスの first citizen**。topic 空間 / demand / coalesce は
   position・音声・asset にそのまま一般化する原型を作った。
 - **wire-address（`agent@X` 等）と topic は同じ場 namespace**。messaging と transport の統合は将来候補。
+  **agent 協働（委譲 = ask / broadcast = tell）は `(topic × ask)` / `(topic × tell)` として doc 28 に具体化**
+  （dogfood #1: A→B 委譲 + 完了で block 解除 → 再開。場の番地 = 仕事 / 議題、`(direct × ask)` は infra RPC に
+  残す。location-transparent federation で cross-machine / cross-World へ）。
 - **S5 の再定義**: 「control を pub/sub(tell) に潰す」ではなく **「(topic × ask) を足し、command を ask 規律
   クラスとして場 namespace に載せる」**。reverse-route RPC は「`process/*` の authority(SP) への ask」になる
   （意味不変・指し方が topic に統一）。前提 = **「1 場 = 1 authority」不変条件**（ask routing が決定的になる）。
@@ -288,6 +291,8 @@ L0 にこれを焼き込む（retrofit 不可）:
 2. **SP HTTP API residual の畳み方**（§3.3）── World channel 吸収 vs process-proxy 寄せの線引き。
 3. **transport / discovery / auth**（doc 25 §7）── :32000 を「認証付きで LAN/remote 公開」。Bonjour +
    QUIC+TLS（Network.framework native）+ Creo ID pairing。cross-device cloud-agent（§5 の到達性）の前提。
+   → **doc 28 §5.3（location-transparent federation）が chronista-hub を制御面（registry / rendezvous /
+   offline buffer）・World-to-World QUIC をデータ面とする実体設計**。
 4. **agent action space codegen**（§5-2）── KDL→MCP tool 定義の codegen 設計。
 5. **北極星の再シーケンス**（todo `mem_1CcRLwyxngfp2t76bBCiu1`）── 北極星 `mem_1Cb7iV6ZBczuqiBbiYQpvm` に
    SP-portless を明示 Phase 化 + cross-device(Apple) driver を追記。
