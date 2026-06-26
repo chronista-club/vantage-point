@@ -1074,6 +1074,34 @@ async fn recv_subscribe_handshake_with_pattern(
     }
 }
 
+/// L0 SP-portless: 外部 client の process method を当該 SP の control channel を逆用して forward する。
+///
+/// "process-proxy" channel (MCP/CLI) と bidirectional "canvas" channel の upstream request
+/// (S3 terminal_write/terminal_resize) が共有する。 SP 未接続 / forward 失敗は error JSON で
+/// 返し、 caller が `send_response` でそのまま client に relay する。
+async fn forward_to_sp_control(
+    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    path_key: &str,
+    method: &str,
+    payload: &serde_json::Value,
+) -> serde_json::Value {
+    let sp_ch = control_channels.read().await.get(path_key).cloned();
+    match sp_ch {
+        Some(sp_ch) => match sp_ch
+            .request::<serde_json::Value, serde_json::Value>(method, payload)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => serde_json::json!({
+                "error": format!("SP forward 失敗 (key={}): {}", path_key, e)
+            }),
+        },
+        None => serde_json::json!({
+            "error": format!("SP 未接続 (key={})", path_key)
+        }),
+    }
+}
+
 /// Daemon の Unison QUIC サーバーを起動する
 ///
 /// session / terminal / system の各チャネルハンドラーを登録し、
@@ -1580,7 +1608,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     let canvas_routers = canvas_routers.clone();
                     let control_channels = control_channels.clone();
                     async move {
-                        let channel = UnisonChannel::new(stream);
+                        // S3: canvas channel は full-duplex。 1 本の Unison channel で
+                        // 下り (topic event push) と上り (terminal_write/resize request) を兼ねる
+                        // (surface 視点で channel を増やさない)。 channel.recv() と send_event を
+                        // 同一 task の select! で混ぜると cancel-safety が怪しいので、 下り push を
+                        // 別 task に分け、 main task は上り request 専従にする (control handler +
+                        // process-proxy が実証済の並行 send/recv パターン)。
+                        let channel = Arc::new(UnisonChannel::new(stream));
                         // S2: handshake で購読 pattern を受領 (省略時 paisley-park default で
                         // 既存 vp-app を無改造に保つ)。 terminal surface は
                         // `process/terminal/data/{lane}/out` を指定して demand を立てる。
@@ -1596,12 +1630,45 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let pattern =
                             pattern.unwrap_or_else(|| "process/paisley-park/#".to_string());
                         let (sub_id, mut rx) = router.subscribe(&pattern).await;
-                        while let Some((_topic, msg)) = rx.recv().await {
-                            let json = serde_json::to_value(&msg).unwrap_or_default();
-                            if channel.send_event("pane", &json).await.is_err() {
-                                break; // vp-app 切断
+
+                        // 下り push task: topic event → surface (`pane` event)。
+                        let push_channel = channel.clone();
+                        let pusher = tokio::spawn(async move {
+                            while let Some((_topic, msg)) = rx.recv().await {
+                                let json = serde_json::to_value(&msg).unwrap_or_default();
+                                if push_channel.send_event("pane", &json).await.is_err() {
+                                    break; // surface 切断
+                                }
+                            }
+                        });
+
+                        // 上り: surface → World → SP control へ forward (S3 terminal_write/resize)。
+                        // 既存 vp-app canvas は request を送らないので、 ここは切断まで block するだけ
+                        // (= 従来の downstream-only と同じ lifecycle)。
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => break, // surface 切断
+                            };
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+                            let id = msg.id;
+                            let method = msg.method.clone();
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let response = forward_to_sp_control(
+                                &control_channels,
+                                &path_key,
+                                &method,
+                                &payload,
+                            )
+                            .await;
+                            if channel.send_response(id, &method, &response).await.is_err() {
+                                break;
                             }
                         }
+
+                        pusher.abort();
                         router.unsubscribe(sub_id).await;
                         Ok(())
                     }
@@ -1684,25 +1751,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             let payload = msg.payload_as_value().unwrap_or_default();
 
                             // 当該 SP の control channel を逆用して forward (= World→SP reverse)。
-                            let sp_ch = control_channels.read().await.get(&path_key).cloned();
-                            let response = match sp_ch {
-                                Some(sp_ch) => {
-                                    match sp_ch
-                                        .request::<serde_json::Value, serde_json::Value>(
-                                            &method, &payload,
-                                        )
-                                        .await
-                                    {
-                                        Ok(v) => v,
-                                        Err(e) => serde_json::json!({
-                                            "error": format!("SP forward 失敗 (key={}): {}", path_key, e)
-                                        }),
-                                    }
-                                }
-                                None => serde_json::json!({
-                                    "error": format!("SP 未接続 (key={})", path_key)
-                                }),
-                            };
+                            let response = forward_to_sp_control(
+                                &control_channels,
+                                &path_key,
+                                &method,
+                                &payload,
+                            )
+                            .await;
                             if channel.send_response(id, &method, &response).await.is_err() {
                                 break;
                             }

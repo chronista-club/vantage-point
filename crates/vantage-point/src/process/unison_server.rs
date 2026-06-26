@@ -553,6 +553,59 @@ async fn handle_terminal_demand_stop(
     }
 }
 
+/// S3 (doc 27 §4.1, 経路 B): terminal 入力。
+///
+/// surface (vp-app) → World canvas channel (upstream request) → SP control → 本 dispatch。
+/// `data` は base64 (出力 pump の encoding と対称、 任意バイトを JSON で運ぶため)。 decode して
+/// 当該 Lane の PtySlot に書き込む。
+async fn handle_terminal_write(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("terminal_write: lane 未指定".to_string());
+    }
+    let data_b64 = payload.get("data").and_then(|v| v.as_str()).unwrap_or("");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_b64)
+        .map_err(|e| format!("terminal_write: base64 decode 失敗: {}", e))?;
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("terminal_write: lane パース失敗: {}", lane));
+    };
+    state
+        .lane_pool
+        .read()
+        .await
+        .write_to_lane(&addr, &bytes)
+        .map_err(|e| format!("terminal_write 失敗: {}", e))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// S3: terminal resize。 PtySlot (+ TermAttach grid) を cols×rows に同期する。
+async fn handle_terminal_resize(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("terminal_resize: lane 未指定".to_string());
+    }
+    let cols = payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+    let rows = payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("terminal_resize: lane パース失敗: {}", lane));
+    };
+    state
+        .lane_pool
+        .read()
+        .await
+        .resize_lane(&addr, cols, rows)
+        .map_err(|e| format!("terminal_resize 失敗: {}", e))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "cols": cols, "rows": rows}))
+}
+
 pub(crate) async fn dispatch_process_method(
     state: &Arc<AppState>,
     method: &str,
@@ -570,6 +623,9 @@ pub(crate) async fn dispatch_process_method(
         // S2: demand-driven terminal pump (World demand hook → control reverse-route)
         "terminal_demand_start" => handle_terminal_demand_start(state, payload).await,
         "terminal_demand_stop" => handle_terminal_demand_stop(state, payload).await,
+        // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
+        "terminal_write" => handle_terminal_write(state, payload).await,
+        "terminal_resize" => handle_terminal_resize(state, payload).await,
         "tmux_split" => handle_tmux_split(state, payload).await,
         "tmux_list" => handle_tmux_list(state).await,
         "tmux_close" => handle_tmux_close(state, payload).await,
@@ -1254,5 +1310,101 @@ mod tests {
         .expect("demand_start");
         assert_eq!(res["status"], "no_lane");
         assert!(state.terminal_pumps.read().await.is_empty());
+    }
+
+    /// S3: terminal_write の base64 入力が実 PTY に届き (echo 出力で確認)、 terminal_resize が
+    /// status ok を返す。 surface→World→SP control の終端 = SP dispatch の責務範囲を検証する。
+    #[tokio::test]
+    async fn terminal_write_reaches_pty_and_resize_ok() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::LaneAddress;
+        use crate::process::state::build_test_app_state;
+        use base64::Engine;
+        use std::time::Duration;
+
+        let state = build_test_app_state(None).await;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let addr = LaneAddress::conductor("vp");
+        let lane = addr.to_string();
+
+        {
+            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            state
+                .lane_pool
+                .write()
+                .await
+                .insert_pty_slot(addr.clone(), slot, rx);
+        }
+
+        // PTY 出力を write 前に購読 (echo を取りこぼさない)。
+        let mut out = state
+            .lane_pool
+            .read()
+            .await
+            .subscribe_output(&addr)
+            .expect("subscribe_output");
+
+        // シェル初期化待ち。
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // terminal_write: base64 の "echo VP_S3_OK\n" を PtySlot に届ける。
+        let data = base64::engine::general_purpose::STANDARD.encode(b"echo VP_S3_OK\n");
+        let res = dispatch_process_method(
+            &state,
+            "terminal_write",
+            serde_json::json!({ "lane": lane, "data": data }),
+        )
+        .await
+        .expect("terminal_write");
+        assert_eq!(res["status"], "ok");
+
+        // 出力に "VP_S3_OK" が現れる (= 入力が実 PTY に届いた)。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut found = false;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(1), out.recv()).await {
+                Ok(Ok(bytes)) => {
+                    if String::from_utf8_lossy(&bytes).contains("VP_S3_OK") {
+                        found = true;
+                        break;
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+        assert!(found, "terminal_write の入力が PTY 出力に反映されない");
+
+        // terminal_resize: status ok + cols/rows echo。
+        let res = dispatch_process_method(
+            &state,
+            "terminal_resize",
+            serde_json::json!({ "lane": lane, "cols": 120, "rows": 40 }),
+        )
+        .await
+        .expect("terminal_resize");
+        assert_eq!(res["status"], "ok");
+        assert_eq!(res["cols"], 120);
+        assert_eq!(res["rows"], 40);
+    }
+
+    /// PtySlot を持たない Lane への terminal_write は Err (lane 不在を上位に伝える)。
+    #[tokio::test]
+    async fn terminal_write_unknown_lane_errs() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+        use base64::Engine;
+
+        let state = build_test_app_state(None).await;
+        let data = base64::engine::general_purpose::STANDARD.encode(b"x");
+        let res = dispatch_process_method(
+            &state,
+            "terminal_write",
+            serde_json::json!({ "lane": "vp/conductor", "data": data }),
+        )
+        .await;
+        assert!(res.is_err(), "PtySlot 無 lane への write は Err");
     }
 }
