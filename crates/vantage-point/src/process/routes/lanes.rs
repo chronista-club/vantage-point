@@ -392,21 +392,6 @@ pub async fn create_handler(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
-/// `DELETE /api/lanes?address=<addr>` request の query
-#[derive(Debug, Deserialize)]
-pub struct DeleteLaneQuery {
-    /// Display 形 ("<project>/conductor" / "<project>/performer/<name>")
-    pub address: String,
-    /// Phase 4-B: lane workspace の dir も rm するか (default true)。
-    /// false の場合 PtySlot だけ kill して dir 残置 (= debug / forensic 用途)。
-    #[serde(default = "default_cleanup")]
-    pub cleanup: bool,
-}
-
-fn default_cleanup() -> bool {
-    true
-}
-
 /// VP-124 Phase 1: Lane delete orchestration の戻り値。
 ///
 /// 全 trigger (HTTP DELETE / MCP `delete_performer` / `vp lane rm` CLI) が共有する成功 payload。
@@ -559,43 +544,6 @@ pub async fn delete_lane_orchestrated(
         tmux_killed,
         cleanup_status,
     })
-}
-
-/// `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy (Phase 4-A) + lane workspace cleanup (Phase 4-B)
-///
-/// VP-124 Phase 1 で `delete_lane_orchestrated` に core logic を抽出済み。 本 handler は
-/// HTTP request parse + error → status code mapping の薄い adapter として残る。
-///
-/// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
-pub async fn delete_handler(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<DeleteLaneQuery>,
-) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
-    let Some(addr) = LanePool::parse_address(&q.address) else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("invalid lane address: {}", q.address)})),
-        ));
-    };
-
-    match delete_lane_orchestrated(&state, addr, q.cleanup).await {
-        Ok(info) => Ok((
-            StatusCode::OK,
-            Json(json!({
-                "deleted": info.address,
-                "pid": info.pid,
-                "tmux_killed": info.tmux_killed,
-                "cleanup": info.cleanup_status,
-            })),
-        )),
-        Err(e @ DeleteLaneError::ConductorCannotBeDeleted) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        )),
-        Err(e @ DeleteLaneError::LaneNotFound(_)) => {
-            Err((StatusCode::NOT_FOUND, Json(json!({"error": e.to_string()}))))
-        }
-    }
 }
 
 /// `POST /api/lanes/restart?address=<addr>` request の query

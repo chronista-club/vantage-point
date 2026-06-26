@@ -695,6 +695,36 @@ async fn handle_pp_state_load(
     }
 }
 
+/// F6② (doc 27 §3.4.5/§6): Lane delete。 旧 SP HTTP `DELETE /api/lanes` を process-proxy ask に
+/// 移管（surface→SP 直結 HTTP を撤去、 World 経由の ask に統一）。 logic は旧 `delete_handler`
+/// から移設し、 core の `delete_lane_orchestrated` を再利用（HTTP route + handler は削除）。
+async fn handle_lane_delete(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let address = payload
+        .get("address")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("lane_delete: address 必須")?;
+    // cleanup default = true (旧 DeleteLaneQuery default_cleanup と一致、 dir も rm する)。
+    let cleanup = payload
+        .get("cleanup")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let addr = crate::process::lanes_state::LanePool::parse_address(address)
+        .ok_or_else(|| format!("lane_delete: invalid lane address: {}", address))?;
+    match super::routes::lanes::delete_lane_orchestrated(state, addr, cleanup).await {
+        Ok(info) => Ok(serde_json::json!({
+            "deleted": info.address,
+            "pid": info.pid,
+            "tmux_killed": info.tmux_killed,
+            "cleanup": info.cleanup_status,
+        })),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 pub(crate) async fn dispatch_process_method(
     state: &Arc<AppState>,
     method: &str,
@@ -718,6 +748,8 @@ pub(crate) async fn dispatch_process_method(
         // F6: PP Canvas state (旧 SP HTTP /api/pp/state を process-proxy ask に移管)
         "pp_state_save" => handle_pp_state_save(state, payload).await,
         "pp_state_load" => handle_pp_state_load(state, payload).await,
+        // F6②: Lane delete (旧 SP HTTP DELETE /api/lanes を process-proxy ask に移管)
+        "lane_delete" => handle_lane_delete(state, payload).await,
         "tmux_split" => handle_tmux_split(state, payload).await,
         "tmux_list" => handle_tmux_list(state).await,
         "tmux_close" => handle_tmux_close(state, payload).await,
@@ -1498,5 +1530,98 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への write は Err");
+    }
+
+    /// F6②: lane_delete dispatch e2e — performer lane を pool に作り、 lane_delete で除去できる。
+    /// 二度目の delete は LaneNotFound で Err (= idempotent re-call の契約)。 Err message が
+    /// "Lane not found" を含むことも固定する (MCP/CLI の idempotent 判定がこの文字列に依存)。
+    #[tokio::test]
+    async fn lane_delete_removes_performer_and_idempotent() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let addr = LaneAddress::performer("vp", "chore");
+        let address = addr.to_string();
+
+        {
+            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            let mut pool = state.lane_pool.write().await;
+            // delete は lanes map (LaneInfo) を remove するので LaneInfo + PtySlot 両方を登録する。
+            pool.insert(LaneInfo {
+                id: Default::default(),
+                address: addr.clone(),
+                kind: LaneKind::Performer,
+                name: Some("chore".to_string()),
+                state: LaneState::Running,
+                stand: "echoes".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: cwd.clone(),
+                performer_status: None,
+                tmux: Vec::new(),
+                cc_session_id: None,
+            });
+            pool.insert_pty_slot(addr.clone(), slot, rx);
+        }
+
+        // cleanup=false: test lane に実 workspace dir はないので Phase 2b (fs rm) をスキップ。
+        let res = dispatch_process_method(
+            &state,
+            "lane_delete",
+            serde_json::json!({ "address": address, "cleanup": false }),
+        )
+        .await
+        .expect("lane_delete");
+        assert_eq!(res["deleted"], address);
+
+        // pool から PtySlot が消えている (subscribe_output が None)。
+        assert!(
+            state
+                .lane_pool
+                .read()
+                .await
+                .subscribe_output(&addr)
+                .is_none(),
+            "lane_delete 後も PtySlot が pool に残っている"
+        );
+
+        // 二度目の delete は LaneNotFound で Err (idempotent re-call の契約)。
+        let err = dispatch_process_method(
+            &state,
+            "lane_delete",
+            serde_json::json!({ "address": address, "cleanup": false }),
+        )
+        .await
+        .expect_err("既に消えた lane の delete は Err (LaneNotFound)");
+        assert!(
+            err.contains("Lane not found"),
+            "Err message に LaneNotFound が含まれる (MCP/CLI の idempotent 判定が依存): {err}"
+        );
+    }
+
+    /// F6②: Conductor lane は lane_delete で拒否される (architecture rule: project lifetime 紐付き)。
+    #[tokio::test]
+    async fn lane_delete_rejects_conductor() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // delete_lane_orchestrated は LanePool の有無に関係なく kind=Conductor を最初に弾く。
+        let err = dispatch_process_method(
+            &state,
+            "lane_delete",
+            serde_json::json!({ "address": "vp/conductor" }),
+        )
+        .await
+        .expect_err("Conductor の delete は Err");
+        assert!(
+            err.contains("Conductor"),
+            "Conductor delete は ConductorCannotBeDeleted: {err}"
+        );
     }
 }

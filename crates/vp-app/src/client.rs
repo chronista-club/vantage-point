@@ -474,25 +474,6 @@ impl TheWorldClient {
         Ok(body.stands)
     }
 
-    /// Phase 4-A: SP の Performer Lane を削除 (`DELETE /api/lanes?address=<addr>`)。
-    /// `address` は Display 形 (`<project>/performer/<name>`)。 Conductor は server 側で 400 で拒否される。
-    pub async fn delete_lane(&self, address: &str) -> Result<()> {
-        // address は `/` を含むので URL encode する (performer/<name> 部分が path 化されないように)
-        let encoded = address
-            .replace('%', "%25")
-            .replace('&', "%26")
-            .replace('=', "%3D")
-            .replace(' ', "%20");
-        let url = format!("{}/api/lanes?address={}", self.base_url, encoded);
-        let resp = self.client.delete(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("delete_lane HTTP {}: {}", status, text);
-        }
-        Ok(())
-    }
-
     /// Lane の Conductor Stand restart (PtySlot kill + 同 stand で respawn)。
     /// vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に再 attach。
     ///

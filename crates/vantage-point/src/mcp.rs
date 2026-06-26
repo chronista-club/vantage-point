@@ -1367,101 +1367,67 @@ impl VantageMcp {
             ));
         }
 
-        // SP の project name を /api/health から取得 (project_dir basename = project name)。
-        // address 構築のため必要、 add_performer と異なり POST body に name 1 つだけ渡せば SP 側で
-        // project 補完される pattern が使えない (DELETE は full address を query で受ける design)。
-        let process_url = self.process_url.lock().await.clone();
-        let health = self
-            .client
-            .get(format!("{}/api/health", process_url))
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(format!("/api/health parse 失敗: {}", e), None)
-            })?;
-        let project_dir = health
-            .get("project_dir")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::internal_error("/api/health に project_dir なし".to_string(), None)
-            })?;
-        let project_name = std::path::Path::new(project_dir)
+        // F6②: 旧 SP 直結 (/api/health + DELETE /api/lanes reqwest) を World process-proxy ask
+        // (lane_delete) に移管。 project_name は self.project_path の basename から取得する
+        // (SP health round-trip 不要、 port reshuffle で揺れない stable identifier)。 add_performer と
+        // 異なり full address を渡す design (DELETE は SP 側で project 補完しない)。
+        let project_name = std::path::Path::new(self.project_path.as_str())
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| {
                 McpError::internal_error(
-                    format!("project_dir の basename 取得失敗: {}", project_dir),
+                    format!("project_path basename 取得失敗: {}", self.project_path),
                     None,
                 )
             })?;
-
         let address = format!("{}/performer/{}", project_name, params.name);
         let cleanup = params.cleanup.unwrap_or(true);
 
-        // reqwest 0.12 の RequestBuilder.query は &[(impl Serialize, impl Serialize)] を取るが、
-        // `&str` の tuple slice の type 推論が出ないので manual percent-encoding で URL 構築。
-        // address 内の `/` は `%2F` にする以外は ASCII safe (project name / performer name は git
-        // branch 互換 slug のため英数 + dash + underscore のみ)。
-        let address_enc = address.replace('/', "%2F");
-        let url = format!(
-            "{}/api/lanes?address={}&cleanup={}",
-            process_url, address_enc, cleanup
-        );
-        let resp = self
-            .client
-            .delete(&url)
-            .timeout(Duration::from_secs(30))
-            .send()
+        // World process-proxy 経由で SP の lane_delete を ask (tmux kill 等 orchestration を含むため
+        // outer timeout 30s)。 server Err は quic_call_with_timeout が McpError に変換して返す。
+        let payload = serde_json::json!({ "address": address, "cleanup": cleanup });
+        match self
+            .quic_call_with_timeout("lane_delete", payload, Duration::from_secs(30))
             .await
-            .map_err(|e| {
-                McpError::internal_error(format!("DELETE /api/lanes 失敗: {}", e), None)
-            })?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        // 冪等性: 既に無い Performer の delete (SP は LaneNotFound → 404) は no-op 成功扱い。
-        // 真の異常 (500 等) と区別し、 AI agent が「もう消えてる」と判別できるようにする。
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                format!(
-                    "Performer Lane already gone (no-op, idempotent): {}",
-                    address
-                ),
-            )]));
+        {
+            Ok(resp) => {
+                // 成功 body は DeletedLaneInfo JSON。 human 向けに要点だけ要約。
+                let pid = resp
+                    .get("pid")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "(no pid)".to_string());
+                let tmux_killed = resp
+                    .get("tmux_killed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let cleanup_status = resp
+                    .get("cleanup")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(skipped)");
+                Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                    format!(
+                        "Performer Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
+                        address, pid, tmux_killed, cleanup_status
+                    ),
+                )]))
+            }
+            Err(e) => {
+                // 冪等性: 既に無い Performer の delete は SP が DeleteLaneError::LaneNotFound
+                // ("Lane not found: ...") を返す → no-op 成功扱い。 真の異常と区別し、 AI agent が
+                // 「もう消えてる」 と判別できるようにする (旧 HTTP 404 idempotent path の置換)。
+                if e.to_string().contains("Lane not found") {
+                    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                        format!(
+                            "Performer Lane already gone (no-op, idempotent): {}",
+                            address
+                        ),
+                    )]))
+                } else {
+                    Err(e)
+                }
+            }
         }
-        if !status.is_success() {
-            return Err(McpError::internal_error(
-                format!("SP DELETE /api/lanes {}: {}", status, text),
-                None,
-            ));
-        }
-
-        // 成功 body は DeletedLaneInfo JSON。 human 向けに要点だけ要約。
-        let parsed: serde_json::Value =
-            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-        let pid = parsed
-            .get("pid")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "(no pid)".to_string());
-        let tmux_killed = parsed
-            .get("tmux_killed")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let cleanup_status = parsed
-            .get("cleanup")
-            .and_then(|v| v.as_str())
-            .unwrap_or("(skipped)");
-
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!(
-                "Performer Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
-                address, pid, tmux_killed, cleanup_status
-            ),
-        )]))
     }
 
     /// List Lanes in the current project with comprehensive routing info (VP-124 Phase 1).

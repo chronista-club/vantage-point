@@ -201,6 +201,72 @@ pub fn send_process_message(
     })
 }
 
+/// F6 (doc 27 §3.4.5/§6): World :32000 の "process-proxy" channel 経由で SP process method を
+/// ask する同期 helper。 旧来の SP 直結 (`send_process_message` の port 直結) を World 経由の
+/// reverse-route に移す CLI 用入口。 World が project_path から path_key を正規化して当該 SP の
+/// "control" channel を逆引きし、 dispatch_process_method へ forward する (SP 直結 HTTP/QUIC を撤去)。
+/// 戻り値は SP の応答 JSON (unison error frame `{"error":..}` は Err に変換)。
+pub fn world_process_request_blocking(
+    world_port: u16,
+    project_path: &str,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value> {
+    // QUIC(rustls) は CryptoProvider の install が前提（install 済みなら no-op）
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let addr = format!("[::1]:{}", world_port);
+    let project_path = project_path.to_string();
+    let method = method.to_string();
+
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| anyhow::anyhow!("tokio runtime build failed: {}", e))?;
+    rt.block_on(async move {
+        // connect → handshake → ask 全体を 35s で bound (delete は tmux kill 等の orchestration を
+        // 含むため `send_process_message` の 10s では不足。 旧 MCP/CLI reqwest の 30s + handshake 往復)。
+        let work = async {
+            let transport = unison::network::quic::QuicClient::builder()
+                .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+                .build()
+                .map_err(|e| anyhow::anyhow!("QUIC client build failed: {}", e))?;
+            let client = unison::ProtocolClient::new(transport);
+            client
+                .connect(&addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("QUIC connect {} 失敗: {}", addr, e))?;
+            let channel = client
+                .open_channel("process-proxy")
+                .await
+                .map_err(|e| anyhow::anyhow!("open process-proxy channel 失敗: {}", e))?;
+            // handshake: project_path を渡す (World が path_key に正規化して control channel を逆引き)。
+            channel
+                .request::<serde_json::Value, serde_json::Value>(
+                    "subscribe",
+                    &serde_json::json!({ "project_path": project_path }),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("process-proxy handshake 失敗: {}", e))?;
+            let resp: serde_json::Value = channel
+                .request::<serde_json::Value, serde_json::Value>(&method, &payload)
+                .await
+                .map_err(|e| anyhow::anyhow!("process-proxy {} 失敗: {}", method, e))?;
+            // unison は専用 error frame を持たず、 server Err を成功フレームに {"error":..} で
+            // 詰めて返す（send_process_message / mcp.rs quic_call と同じ扱い）。 Err に変換する。
+            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                bail!("World process-proxy error ({}): {}", method, err);
+            }
+            Ok::<serde_json::Value, anyhow::Error>(resp)
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(35), work).await {
+            Ok(result) => result,
+            Err(_) => bail!(
+                "World ({}) process-proxy.{} が 35s 以内に応答しませんでした",
+                addr,
+                method
+            ),
+        }
+    })
+}
+
 /// target 引数からポートを解決
 fn resolve_port_from_target(target: Option<&str>, config: &Config) -> Result<u16> {
     match resolve::resolve_target(target, config)? {

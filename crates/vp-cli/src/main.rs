@@ -769,70 +769,60 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
 
 /// VP-124 Phase 1: SP-aware Performer Lane delete を試みる helper。
 ///
-/// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
-/// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm + SystemEvent broadcast を
-/// SP 側で atomically 実行)。 SP 不在 / API failure なら false 返して filesystem-only fallback
-/// (= 現挙動の `ws::remove_performer`) に委譲。
+/// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら World process-proxy ask
+/// (`lane_delete`) 経由で `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm +
+/// SystemEvent broadcast を SP 側で atomically 実行)。 SP 不在 / failure なら false 返して
+/// filesystem-only fallback (= 現挙動の `ws::remove_performer`) に委譲。
 ///
-/// best-effort: 中間 failure (SP unreachable, network error 等) は warn print して false。
-/// SP 200 OK のみ true、 SP 4xx / 5xx は failure 扱い。
+/// F6② (doc 27 §3.4.5/§6): 旧 SP 直結 (`DELETE /api/lanes` reqwest) を撤去し World :32000 の
+/// process-proxy に一本化 (SP port 解決不要、 L1 portless 前進)。 best-effort: 全 failure
+/// (SP 不在 / lane not found / network) は warn print して false → fs-only に委譲。
 fn try_sp_delete_performer(performer_name: &str) -> bool {
-    let (project_name, port) = match resolve_parent_project() {
-        Ok(v) => v,
+    // repo_root = project_path (World handshake の stable identifier)。 SP port は process-proxy で不要。
+    let repo_root = match lane::config::find_repo_root() {
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("  SP delete skipped (parent project resolve failed: {e})");
+            eprintln!("  SP delete skipped (repo root resolve failed: {e})");
             return false;
         }
     };
+    let (Some(project_name), Some(project_path)) = (
+        repo_root.file_name().and_then(|n| n.to_str()),
+        repo_root.to_str(),
+    ) else {
+        eprintln!("  SP delete skipped (repo path に invalid UTF-8)");
+        return false;
+    };
 
-    // address 構築: `<project>/performer/<name>`、 URL encoding は `/` のみ (slug は ASCII safe)。
+    // address 構築: `<project>/performer/<name>` (SP 側 parse_address が逆変換)。
     let address = format!("{project_name}/performer/{performer_name}");
-    let address_enc = address.replace('/', "%2F");
-    let url = format!("http://[::1]:{port}/api/lanes?address={address_enc}&cleanup=true");
+    let payload = serde_json::json!({ "address": address, "cleanup": true });
 
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("  SP delete skipped (http client build failed: {e})");
-            return false;
-        }
-    };
-
-    match client.delete(&url).send() {
-        Ok(resp) if resp.status().is_success() => {
-            // body は DeletedLaneInfo JSON、 user 向けに要点だけ要約
-            let summary = resp
-                .json::<serde_json::Value>()
-                .ok()
-                .map(|v| {
-                    let pid = v.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
-                    let tmux_killed = v
-                        .get("tmux_killed")
-                        .and_then(|t| t.as_bool())
-                        .unwrap_or(false);
-                    let cleanup = v
-                        .get("cleanup")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("(skipped)")
-                        .to_string();
-                    format!("pid={pid} tmux_killed={tmux_killed} cleanup={cleanup}")
-                })
-                .unwrap_or_else(|| "(no body)".to_string());
-            eprintln!("削除: {address} (SP orchestrated: {summary})");
+    match vantage_point::commands::process_client::world_process_request_blocking(
+        cli::WORLD_PORT,
+        project_path,
+        "lane_delete",
+        payload,
+    ) {
+        Ok(resp) => {
+            // 成功 body は DeletedLaneInfo JSON、 user 向けに要点だけ要約。
+            let pid = resp.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
+            let tmux_killed = resp
+                .get("tmux_killed")
+                .and_then(|t| t.as_bool())
+                .unwrap_or(false);
+            let cleanup = resp
+                .get("cleanup")
+                .and_then(|c| c.as_str())
+                .unwrap_or("(skipped)");
+            eprintln!(
+                "削除: {address} (SP orchestrated: pid={pid} tmux_killed={tmux_killed} cleanup={cleanup})"
+            );
             true
         }
-        Ok(resp) => {
-            eprintln!(
-                "  SP delete failed (status={}), falling back to fs-only",
-                resp.status()
-            );
-            false
-        }
         Err(e) => {
-            eprintln!("  SP unreachable ({e}), falling back to fs-only");
+            // SP 不在 / lane not found / network 等は全て fs-only fallback (旧 non-2xx 挙動踏襲)。
+            eprintln!("  SP delete failed ({e}), falling back to fs-only");
             false
         }
     }

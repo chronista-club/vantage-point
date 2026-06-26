@@ -3001,46 +3001,38 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // Phase 4-A: Performer Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        // JS-side からも先 removeLane を呼ぶ (= xterm + WS 即時 dispose、
-                        // server side は polling で sidebar から消える前にこちらが先)
-                        lane_js::remove_lane(&webview, &address);
-                        let path_clone = project_path.clone();
-                        let addr_clone = address.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client.delete_lane(&addr_clone).await {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        "Lane deleted: project={} address={}",
-                                        path_clone,
-                                        addr_clone
-                                    );
-                                    // wiremsg Stage 1: 明示的な再 fetch は不要。
-                                    // SP が LanePool 変化を "lanes" topic に publish し、
-                                    // 購読側が snapshot を受信して sidebar を更新する。
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "delete_lane failed: project={} address={}: {}",
-                                        path_clone,
-                                        addr_clone,
-                                        e
-                                    );
-                                }
+                    // F6②: 旧 TheWorldClient.delete_lane (SP 直結 reqwest) を World process-proxy
+                    // ask (lane_delete) に移管。 SP port 解決は不要になり project_path を handshake で渡す。
+                    // JS-side からも先 removeLane を呼ぶ (= xterm 即時 dispose、 server 反映は
+                    // SP の "lanes" topic snapshot 経由で sidebar に届く)。
+                    lane_js::remove_lane(&webview, &address);
+                    rt_handle.spawn(async move {
+                        let payload = serde_json::json!({ "address": &address });
+                        match world_process_request(
+                            crate::client::DEFAULT_WORLD_PORT,
+                            &project_path,
+                            "lane_delete",
+                            payload,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "Lane deleted: project={} address={}",
+                                    project_path,
+                                    address
+                                );
                             }
-                        });
-                    } else {
-                        tracing::warn!(
-                            "lane:delete: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "lane_delete failed: project={} address={}: {}",
+                                    project_path,
+                                    address,
+                                    e
+                                );
+                            }
+                        }
+                    });
                 }
                 // Lane Conductor Stand restart 要求 (sidebar の restart icon → confirm dialog から)
                 if let Some((project_path, address, fresh)) = outcome.restart_lane_request {

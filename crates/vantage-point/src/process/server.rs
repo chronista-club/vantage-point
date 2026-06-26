@@ -358,11 +358,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
         // Phase A4-2b: Lane (Conductor/Performer) lifecycle の REST endpoint
         // GET: list、 POST: Performer create (A6 minimum)
+        // F6② (doc 27 §3.4.5/§6): DELETE は World process-proxy ask (`lane_delete`) に移管し撤去。
+        // GET(list) / POST(create) は別 audit 対象として残置。
         .route(
             "/api/lanes",
-            get(lanes::list_handler)
-                .post(lanes::create_handler)
-                .delete(lanes::delete_handler),
+            get(lanes::list_handler).post(lanes::create_handler),
         )
         // Lane の Conductor Stand restart (PtySlot kill + 同 stand で respawn)
         .route("/api/lanes/restart", post(lanes::restart_handler))
