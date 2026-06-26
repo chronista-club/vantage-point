@@ -365,7 +365,9 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         )
         // F6③ (doc 27 §3.4.5/§6): Lane restart は World process-proxy ask (`lane_restart`) に移管し撤去。
         // F6④ (doc 27 §3.4.5/§6): Stand 一覧 (GET /api/stands) も process-proxy ask (`stands_list`) に移管し撤去。
-        .route("/api/show", post(health::show_handler))
+        // L0 portless Group B: pane (show/clear/split/close/toggle) + file (watch/unwatch) HTTP は
+        // CLI を process-proxy ask (`show`/`split_pane`/`close_pane`/`toggle_pane`/`watch_file`/
+        // `unwatch_file`) に移管し撤去 (dispatch 腕は既存)。
         // wiremsg R5-2: wire accumulation 経路の HTTP 入口 (旧 /api/msgbox/* を置換)
         // R2-a: 実体は TheWorld 中央 store への proxy (remote-deliver は中央化で撤去)
         .route("/api/wire/send", post(health::wire_send_handler))
@@ -381,11 +383,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // R2-a: CLI parity (vp wire thread / ack) の HTTP 入口
         .route("/api/wire/thread", post(health::wire_thread_handler))
         .route("/api/wire/ack", post(health::wire_ack_handler))
-        .route("/api/toggle-pane", post(health::toggle_pane_handler))
-        .route("/api/split-pane", post(health::split_pane_handler))
-        .route("/api/close-pane", post(health::close_pane_handler))
-        .route("/api/watch-file", post(health::watch_file_handler))
-        .route("/api/unwatch-file", post(health::unwatch_file_handler))
         // F6 (doc 27 §3.4): PP Canvas state は SP HTTP `/api/pp/state` を撤去し、 World
         // process-proxy ask (`pp_state_save`/`pp_state_load`) に移管 (surface→SP 直結 HTTP 撤去)。
         // tmux ペイン操作（Native App の Cmd+D / Cmd+Shift+D から呼ばれる）

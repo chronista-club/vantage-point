@@ -283,3 +283,16 @@ fn resolve_port_from_target(target: Option<&str>, config: &Config) -> Result<u16
         }
     }
 }
+
+/// L0 portless: target → project_path（World process-proxy handshake の安定 identifier）。
+///
+/// `resolve_port_from_target` の path 版。 SP port を使わず、 全 ResolvedTarget variant から
+/// project path を取り出す（Running=project_dir / Configured=path / Cwd=path）。 SP が未起動でも
+/// path は決まるので、 旧 HTTP 経路の「起動してないと使えない」制約が消える。
+pub fn resolve_project_path_from_target(target: Option<&str>, config: &Config) -> Result<String> {
+    Ok(match resolve::resolve_target(target, config)? {
+        ResolvedTarget::Running { project_dir, .. } => project_dir,
+        ResolvedTarget::Configured { path, .. } => path,
+        ResolvedTarget::Cwd { path } => path,
+    })
+}

@@ -10,7 +10,6 @@ use serde::Deserialize;
 use axum::{Json, extract::State, response::IntoResponse};
 
 use super::super::state::AppState;
-use crate::protocol::ProcessMessage;
 
 /// Stand（Capability）のステータス
 #[derive(serde::Serialize)]
@@ -272,43 +271,9 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
     })
 }
 
-/// POST /api/show - Show content in browser
-pub async fn show_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    // TopicRouter が Hub ブリッジ経由で自動的に retained に保存するため、
-    // 明示的なキャッシュは不要。Hub に broadcast するだけ。
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// POST /api/toggle-pane - Toggle side panel visibility
-pub async fn toggle_pane_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// POST /api/split-pane - Split a pane
-pub async fn split_pane_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// POST /api/close-pane - Close a pane
-pub async fn close_pane_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
+// L0 portless Group B: pane HTTP handler (show/toggle/split/close) は CLI を process-proxy ask
+// (`show`/`toggle_pane`/`split_pane`/`close_pane` → `handle_process_message`) に移管し撤去。
+// いずれも `state.hub.broadcast(ProcessMessage)` するだけで、 QUIC dispatch が同じ broadcast を行う。
 
 /// POST /api/canvas/switch_lane - Canvas Lane 切り替え
 ///
@@ -366,43 +331,9 @@ pub async fn canvas_layout_save_handler(
     Json(serde_json::json!({"status": "saved"}))
 }
 
-/// POST /api/watch-file - ファイル監視を開始
-pub async fn watch_file_handler(
-    State(state): State<Arc<AppState>>,
-    Json(config): Json<crate::file_watcher::WatchConfig>,
-) -> impl IntoResponse {
-    let pane_id = config.pane_id.clone();
-    match state
-        .file_watchers
-        .lock()
-        .await
-        .start_watch(config, state.hub.clone())
-    {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "pane_id": pane_id})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"status": "error", "error": e})),
-        ),
-    }
-}
-
-/// UnwatchFile リクエストのペイロード
-#[derive(Debug, serde::Deserialize)]
-pub struct UnwatchFileBody {
-    pub pane_id: String,
-}
-
-/// POST /api/unwatch-file - ファイル監視を停止
-pub async fn unwatch_file_handler(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<UnwatchFileBody>,
-) -> impl IntoResponse {
-    state.file_watchers.lock().await.stop_watch(&body.pane_id);
-    Json(serde_json::json!({"status": "ok", "pane_id": body.pane_id}))
-}
+// L0 portless Group B: file watch/unwatch HTTP handler は CLI を process-proxy ask
+// (`watch_file`/`unwatch_file` → `handle_watch_file`/`handle_unwatch_file`) に移管し撤去。
+// core (`state.file_watchers`) は QUIC dispatch が同じく呼ぶので維持。
 
 /// Canvas キャプチャリクエストのパラメータ
 #[derive(Debug, serde::Deserialize)]

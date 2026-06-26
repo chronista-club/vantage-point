@@ -5,7 +5,9 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::commands::process_client::ProcessClient;
+use crate::commands::process_client::{
+    resolve_project_path_from_target, world_process_request_blocking,
+};
 use crate::config::Config;
 use crate::file_watcher::{WatchConfig, WatchFormat, WatchStyle};
 
@@ -30,9 +32,6 @@ pub enum FileCommands {
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
-        /// 接続先ポート番号
-        #[arg(long)]
-        port: Option<u16>,
     },
     /// ファイル監視を停止
     Unwatch {
@@ -41,9 +40,6 @@ pub enum FileCommands {
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
-        /// 接続先ポート番号
-        #[arg(long)]
-        port: Option<u16>,
     },
 }
 
@@ -57,9 +53,8 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
             filter,
             title,
             target,
-            port,
         } => {
-            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
 
             let watch_format = match format.as_deref() {
                 Some("plain") => WatchFormat::Plain,
@@ -76,19 +71,22 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
                 style: WatchStyle::Terminal,
             };
 
-            client.post("/api/watch-file", &watch_config)?;
+            world_process_request_blocking(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "watch_file",
+                serde_json::to_value(&watch_config)?,
+            )?;
             println!("Watching '{}' → pane '{}'", path, pane_id);
             Ok(())
         }
-        FileCommands::Unwatch {
-            pane_id,
-            target,
-            port,
-        } => {
-            let client = ProcessClient::connect(target.as_deref(), port, config)?;
-            client.post(
-                "/api/unwatch-file",
-                &serde_json::json!({"pane_id": pane_id}),
+        FileCommands::Unwatch { pane_id, target } => {
+            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
+            world_process_request_blocking(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "unwatch_file",
+                serde_json::json!({ "pane_id": pane_id }),
             )?;
             println!("Stopped watching pane '{}'", pane_id);
             Ok(())
