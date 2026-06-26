@@ -336,26 +336,59 @@ fn spawn_world_conn_manager(
                         addr
                     );
                     let mut conn_events = client.subscribe_connection_events();
+                    // F1b heartbeat: vp-app は passive subscriber (recv 待ち) のみで能動送信が無いため、
+                    // connection 死を QUIC idle timeout (60s) でしか検知できない。 15s ごとに
+                    // world-control へ ping して liveness を能動確認する (client→server 一方向、 server は
+                    // 応答のみ = 両端 heartbeat にしない)。 open 失敗時は None で conn_events (60s) に degrade。
+                    let heartbeat = client.open_channel("world-control").await.ok();
                     // session に新 client を配る。 receiver 全滅 (= app 終了) なら manager も終了。
                     if current_tx.send(Some(client.clone())).is_err() {
                         return;
                     }
-                    // 切断を待つ。
+                    let mut hb_tick = tokio::time::interval(std::time::Duration::from_secs(15));
+                    hb_tick.tick().await; // 最初の tick (即時) をスキップ
+                    // 切断を待つ (conn_events か heartbeat 失敗のどちらか早い方で再接続へ抜ける)。
                     loop {
-                        match conn_events.recv().await {
-                            Ok(ClientConnectionEvent::Disconnected { reason }) => {
-                                tracing::warn!("world conn: 切断検知 ({}) → 再接続", reason);
-                                break;
+                        tokio::select! {
+                            conn_ev = conn_events.recv() => {
+                                match conn_ev {
+                                    Ok(ClientConnectionEvent::Disconnected { reason }) => {
+                                        tracing::warn!("world conn: 切断検知 ({}) → 再接続", reason);
+                                        break;
+                                    }
+                                    Ok(_) => {}
+                                    Err(_) => break, // event channel closed = client 異常、 再接続へ
+                                }
                             }
-                            Ok(_) => continue,
-                            Err(_) => break, // event channel closed = client 異常、 再接続へ
+                            _ = hb_tick.tick() => {
+                                if let Some(hb) = &heartbeat {
+                                    // 5s 以内に pong が返らなければ connection 死と判断 (idle timeout 60s を待たない)。
+                                    let pong = tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        hb.request::<serde_json::Value, serde_json::Value>("ping", &serde_json::json!({})),
+                                    )
+                                    .await;
+                                    if !matches!(pong, Ok(Ok(_))) {
+                                        tracing::warn!("world conn: heartbeat 応答なし → 再接続");
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                     // 再接続前に None を配る (session は wait_client で次 client を待つ)。
                     if current_tx.send(None).is_err() {
                         return;
                     }
-                    drop(client); // connection close → 次 loop で fresh client
+                    drop(heartbeat);
+                    // 旧 connection を明示 close する。 session は同じ `Arc<ProtocolClient>` を握って
+                    // recv() でブロックしているため、 manager 側の drop だけでは refcount>0 で
+                    // connection が閉じず、 session の recv() は old connection の idle timeout (60s)
+                    // まで Err にならない (= heartbeat で manager を 15s 再接続させても session が 60s
+                    // migrate しない)。 disconnect() で即 stream reset → session の recv() が即 Err →
+                    // wait_client で次 client へ移る。
+                    let _ = client.disconnect().await;
+                    drop(client); // 次 loop で fresh client
                 }
                 Err(e) => {
                     tracing::debug!(

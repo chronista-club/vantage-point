@@ -352,6 +352,11 @@ async fn handle_world_control(
             let worlds = client.discover().await.map_err(|e| e.to_string())?;
             serde_json::to_value(&worlds).map_err(|e| e.to_string())
         }
+        // F1b heartbeat: surface (vp-app) の共有 connection liveness probe。 client→server の
+        // 一方向で、 server は応答するだけ (世界状態に触れない no-op)。 vp-app の
+        // `spawn_world_conn_manager` が 15s ごとに送り、 応答が来なければ connection 死と判断して
+        // 再接続する (passive subscriber だけだと dead 検知が QUIC idle timeout 60s 任せになる対策)。
+        "ping" => Ok(serde_json::json!({ "pong": true })),
         other => Err(format!("不明なメソッド: world-control.{}", other)),
     }
 }
