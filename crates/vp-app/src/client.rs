@@ -243,9 +243,10 @@ pub struct PerformerStatusWire {
     pub is_merged: bool,
 }
 
-/// doc 11 PR-C: `GET /api/stands` の 1 entry。
+/// doc 11 PR-C: World process-proxy ask `stands_list` 応答 (`{stands:[...]}`) の 1 entry。
 ///
-/// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。
+/// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。 F6④ で SP 直結
+/// HTTP は撤去したが、 本 struct は ask 応答の deserialize + JS push back の serialize 用に残置。
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct StandInfo {
     /// `vp:stand:{name}` の name 部分 (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で hd → echoes rename)
@@ -253,12 +254,6 @@ pub struct StandInfo {
     /// task ファイル先頭の `#MISE description="..."` の値
     #[serde(default)]
     pub description: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StandsResponse {
-    #[serde(default)]
-    stands: Vec<StandInfo>,
 }
 
 impl TheWorldClient {
@@ -458,20 +453,6 @@ impl TheWorldClient {
             anyhow::bail!("create_performer_lane HTTP {}: {}", status, text);
         }
         Ok(())
-    }
-
-    /// doc 11 PR-C: SP の `GET /api/stands` で利用可能な Stand 一覧を取得。
-    /// sidebar の `+ Add Performer` で stand dropdown を populate するための data source。
-    pub async fn list_stands(&self) -> Result<Vec<StandInfo>> {
-        let url = format!("{}/api/stands", self.base_url);
-        let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("list_stands HTTP {}: {}", status, text);
-        }
-        let body: StandsResponse = resp.json().await?;
-        Ok(body.stands)
     }
 }
 

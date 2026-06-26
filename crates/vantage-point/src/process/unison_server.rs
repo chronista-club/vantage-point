@@ -746,6 +746,14 @@ async fn handle_lane_restart(
     super::routes::lanes::restart_lane_orchestrated(state, addr, fresh).await
 }
 
+/// F6④ (doc 27 §3.4.5/§6): Stand 一覧。 旧 SP HTTP `GET /api/stands` を process-proxy ask に移管。
+/// install root の mise task scan は process-global (TTL cache、 per-project state 不要) なので
+/// state/payload 不問。 wire wrapping (`{stands:[...]}`) は旧 HTTP handler と互換で本 dispatch 側が担う。
+async fn handle_stands_list() -> Result<serde_json::Value, String> {
+    let stands = super::routes::stands::list_stands_cached().await;
+    Ok(serde_json::json!({ "stands": stands }))
+}
+
 pub(crate) async fn dispatch_process_method(
     state: &Arc<AppState>,
     method: &str,
@@ -773,6 +781,8 @@ pub(crate) async fn dispatch_process_method(
         "lane_delete" => handle_lane_delete(state, payload).await,
         // F6③: Lane restart (旧 SP HTTP POST /api/lanes/restart を process-proxy ask に移管)
         "lane_restart" => handle_lane_restart(state, payload).await,
+        // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
+        "stands_list" => handle_stands_list().await,
         "tmux_split" => handle_tmux_split(state, payload).await,
         "tmux_list" => handle_tmux_list(state).await,
         "tmux_close" => handle_tmux_close(state, payload).await,
@@ -1663,5 +1673,24 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "存在しない lane の restart は Err");
+    }
+
+    /// F6④: stands_list dispatch — process-proxy ask が `{stands:[...]}` 形で返る。
+    /// list_stands_cached は mise 不在 (CI) でも空 Vec に graceful degrade するので、 配線 +
+    /// wire shape (stands array 常在) を CI でも固定できる (実 stand 内容は stands.rs の
+    /// mise-gated test が担保)。
+    #[tokio::test]
+    async fn stands_list_returns_stands_array() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(&state, "stands_list", serde_json::json!({}))
+            .await
+            .expect("stands_list dispatch");
+        assert!(
+            res.get("stands").map(|s| s.is_array()).unwrap_or(false),
+            "stands_list は {{stands:[...]}} 形で返る: {res}"
+        );
     }
 }

@@ -1285,8 +1285,8 @@ struct SidebarIpcOutcome {
     /// (`POST /api/world/lanes`) を呼ぶ (SP port 解決は不要)。
     /// `stand` は doc 11 PR-C で追加 (None なら daemon-side default)。
     add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
-    /// doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
-    /// caller が SP port を解決して `client.list_stands` を呼ぶ → `AppEvent::StandsResult` で push back。
+    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
+    /// caller が World process-proxy ask (`stands_list`) を呼ぶ → `AppEvent::StandsResult` で push back。
     list_stands_request: Option<String>,
     /// Phase 4-A: Performer Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
@@ -1419,7 +1419,7 @@ fn handle_sidebar_ipc(
         }
         IpcEnvelope::StandsFetch(m) => {
             // doc 11 PR-C: sidebar の + Add Performer form 開閉時に利用可能 Stand 一覧を取得。
-            // caller (event loop) で SP port 解決 → client.list_stands → window.handleStandsResult で push back。
+            // caller (event loop) で World process-proxy ask (`stands_list`) → window.handleStandsResult で push back。
             if !m.path.is_empty() {
                 out.list_stands_request = Some(m.path);
             }
@@ -3124,51 +3124,53 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
 
-                // doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)
+                // doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)。
+                // 旧 SP 直結 (client.list_stands) を撤去し World process-proxy ask (`stands_list`) に移管。
+                // SP port 解決が消滅し、 surface は World :32000 だけを知れば済む (L1 portless 前進)。
                 if let Some(project_path) = outcome.list_stands_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        let proxy = async_action_proxy.clone();
-                        let path_clone = project_path.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client.list_stands().await {
-                                Ok(stands) => {
-                                    tracing::debug!(
-                                        "stands listed: project={} count={}",
-                                        path_clone,
-                                        stands.len()
-                                    );
-                                    let _ = proxy.send_event(AppEvent::StandsResult {
-                                        project_path: path_clone,
-                                        stands,
-                                        error: None,
-                                    });
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "list_stands failed: project={}: {}",
-                                        path_clone,
-                                        e
-                                    );
-                                    let _ = proxy.send_event(AppEvent::StandsResult {
-                                        project_path: path_clone,
-                                        stands: Vec::new(),
-                                        error: Some(e.to_string()),
-                                    });
-                                }
+                    let proxy = async_action_proxy.clone();
+                    rt_handle.spawn(async move {
+                        let (stands, error) = match world_process_request(
+                            crate::client::DEFAULT_WORLD_PORT,
+                            &project_path,
+                            "stands_list",
+                            serde_json::json!({}),
+                        )
+                        .await
+                        {
+                            // SP は {stands:[...]} を返す。 stands 配列だけ Vec<StandInfo> に deserialize。
+                            Ok(v) => {
+                                let stands = v
+                                    .get("stands")
+                                    .and_then(|s| {
+                                        serde_json::from_value::<Vec<crate::client::StandInfo>>(
+                                            s.clone(),
+                                        )
+                                        .ok()
+                                    })
+                                    .unwrap_or_default();
+                                tracing::debug!(
+                                    "stands listed: project={} count={}",
+                                    project_path,
+                                    stands.len()
+                                );
+                                (stands, None)
                             }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "stands_list failed: project={}: {}",
+                                    project_path,
+                                    e
+                                );
+                                (Vec::new(), Some(e))
+                            }
+                        };
+                        let _ = proxy.send_event(AppEvent::StandsResult {
+                            project_path,
+                            stands,
+                            error,
                         });
-                    } else {
-                        tracing::warn!(
-                            "stands:fetch: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                    });
                 }
 
                 // Sidebar File Explorer: lane workdir 配下を walk して entries を返す要求。

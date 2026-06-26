@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, project_feed, prompt, stands, update, wire, world};
+use super::routes::{health, lanes, project_feed, prompt, update, wire, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -365,8 +365,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             get(lanes::list_handler).post(lanes::create_handler),
         )
         // F6③ (doc 27 §3.4.5/§6): Lane restart は World process-proxy ask (`lane_restart`) に移管し撤去。
-        // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Performer dropdown 用)
-        .route("/api/stands", get(stands::list_handler))
+        // F6④ (doc 27 §3.4.5/§6): Stand 一覧 (GET /api/stands) も process-proxy ask (`stands_list`) に移管し撤去。
         .route("/api/show", post(health::show_handler))
         // wiremsg R5-2: wire accumulation 経路の HTTP 入口 (旧 /api/msgbox/* を置換)
         // R2-a: 実体は TheWorld 中央 store への proxy (remote-deliver は中央化で撤去)

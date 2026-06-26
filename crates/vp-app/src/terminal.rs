@@ -75,9 +75,9 @@ pub enum AppEvent {
         name: String,
         error: Option<String>,
     },
-    /// doc 11 PR-C: 利用可能 Stand 一覧を sidebar に push back する。
-    /// `+ Add Performer` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で SP の
-    /// `GET /api/stands` を叩いた結果がここに乗る。 JS は `window.handleStandsResult`
+    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧を sidebar に push back する。
+    /// `+ Add Performer` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で World
+    /// process-proxy ask (`stands_list`) を叩いた結果がここに乗る。 JS は `window.handleStandsResult`
     /// で受領し、 dropdown を populate する。 `error` Some なら fetch 失敗、 dropdown は
     /// disabled + error message 表示。
     StandsResult {
