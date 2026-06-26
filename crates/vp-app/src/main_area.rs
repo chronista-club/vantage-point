@@ -590,6 +590,11 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     //   原因特定不能になったため、 systematic isolation で再 derive する experimental approach。
     const tokens = readTerminalTokens();
     const term = new Terminal({
+      // terminal S4: 明示 80×24 init (狭幅復元bug対策)。 hidden 状態で fit すると container 幅≈0
+      //  → cols≈数個 に潰れ、 sendResize で PTY まで極狭化する。 init を 80×24 に固定し、 fit は
+      //  「container が可視 (clientWidth>0)」 のときだけ走らせて、 不可視時は 80×24 を保つ。
+      cols: 80,
+      rows: 24,
       fontFamily: tokens.fontFamily,
       fontSize: tokens.fontSize,
       lineHeight: tokens.lineHeight,    // V4+ visual axis (default 1.27、 Live Token で 1.0-1.5 調整可)
@@ -744,8 +749,9 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     //  保存して提案する挙動を観察する。 dogfood で「過去 command の suggestion が出るか / UI の overlay が
     //  邪魔にならないか / cross-lane suggestion 混在しないか」 を実測。 問題あれば off に戻す。
     try { term.textarea && term.textarea.setAttribute('autocomplete', 'on'); } catch (_) {}
-    // hidden 状態で fit すると 0 cols になるので、 showLane の active 化後にも fit を呼ぶ
-    try { fitAddon.fit(); } catch (_) {}
+    // 可視 (container clientWidth>0) のときだけ fit。 hidden で fit すると 0 cols 化するので、
+    //  不可視時は 80×24 init を保ち、 実 fit は showLane (active 化後) に委ねる。
+    if (container.clientWidth > 0) { try { fitAddon.fit(); } catch (_) {} }
 
     // ===== OSC notification capture (Slice 1: capture-only、 UI は後続 PR) =====
     // 3 codes 全部 cover ─ cc は terminal 検知して emit する code を切り替える可能性あり、
@@ -1018,7 +1024,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
 
     // ResizeObserver (per-container): active な間だけ fit + resize 通知
     const ro = new ResizeObserver(() => {
-      if (!container.classList.contains('active')) return;
+      if (!container.classList.contains('active') || container.clientWidth === 0) return;
       try { fitAddon.fit(); sendResize(); } catch (_) {}
     });
     ro.observe(container);
@@ -1061,14 +1067,19 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     }
     const active = laneInstances.get(address);
     if (active) {
-      // active 化直後の hidden→visible 遷移で fit / resize / focus
-      setTimeout(() => {
+      // active 化直後の hidden→visible 遷移で fit / resize / focus。
+      //  setTimeout(0) は display 切替の layout flush 前に走ることがあり、 fit が 0 幅で潰れる
+      //  (= 狭幅復元bug の intermittent 原因)。 rAF 2 段で layout 確定後に fit し、 container 幅が
+      //  まだ 0 なら fit を見送る (80×24 を保持、 次の ResizeObserver/resize で復帰)。
+      requestAnimationFrame(() => requestAnimationFrame(() => {
         try {
-          active.fitAddon.fit();
-          active.sendResize();
+          if (active.container.clientWidth > 0) {
+            active.fitAddon.fit();
+            active.sendResize();
+          }
           active.term.focus();
         } catch (_) {}
-      }, 0);
+      }));
     }
   };
 
@@ -1121,7 +1132,8 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
         if (letterSpacingChanged) info.term.options.letterSpacing = current.letterSpacing;
         if (fontFamilyChanged) info.term.options.fontFamily = current.fontFamily;
         if (cursorStyleChanged) info.term.options.cursorStyle = current.cursorStyle;
-        if (needsFit) {
+        // 可視 lane のみ fit (hidden lane を fit すると 0 幅で潰れ PTY を狭める)。
+        if (needsFit && info.container.clientWidth > 0) {
           info.fitAddon.fit();
           info.sendResize();
         }
@@ -1151,9 +1163,9 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   };
 
   window.addEventListener('resize', () => {
-    // active な Lane だけ fit + resize 通知
+    // active かつ可視 (clientWidth>0) な Lane だけ fit + resize 通知
     for (const [, info] of laneInstances) {
-      if (info.container.classList.contains('active')) {
+      if (info.container.classList.contains('active') && info.container.clientWidth > 0) {
         try {
           info.fitAddon.fit();
           info.sendResize();
