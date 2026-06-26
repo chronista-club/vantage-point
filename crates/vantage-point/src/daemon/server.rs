@@ -1212,10 +1212,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // (canvas channel 方式)。 `bastet_event_bus` が Some (= feature midi + Bastet 稼働) のときのみ登録。
     if let Some(ref bastet_event_bus) = state.bastet_event_bus {
         let bastet_event_bus = bastet_event_bus.clone();
+        // M2 follow-up: subscribe 時の registry snapshot 送信用に registry 本体も capture (midi のみ)。
+        #[cfg(feature = "midi")]
+        let bastet = state.bastet.clone();
         server
             .register_channel("world-device", {
                 move |_ctx, stream| {
                     let event_bus = bastet_event_bus.clone();
+                    #[cfg(feature = "midi")]
+                    let bastet = bastet.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         // 接続即購読: bastet.* を FilteredSubscription で受け、 DeviceEvent に変換して push。
@@ -1226,6 +1231,38 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let sub = event_bus.subscribe(&sub_id, "bastet.*").await;
                         let mut filtered =
                             crate::capability::eventbus::FilteredSubscription::new(sub);
+
+                        // M2 follow-up: subscribe の「後」に現 registry を device_connected として snapshot
+                        // 送信する。 これで vp-app は (再)接続直後に device 一覧を即得る (従来は次の hot-plug
+                        // まで空)。 順序が subscribe→snapshot なので delta の取りこぼしは無く、 snapshot と
+                        // delta が重複し得るが、 vp-app の apply_device_event は port_name で retain-then-push
+                        // = 冪等なので吸収される。 registry lock は collect で解放してから送る (send を跨いで
+                        // 保持しない)。
+                        #[cfg(feature = "midi")]
+                        if let Some(bastet) = bastet.as_ref() {
+                            let devices_arc = {
+                                let b = bastet.read().await;
+                                std::sync::Arc::clone(b.devices())
+                            };
+                            let snapshot: Vec<crate::daemon::protocol::DeviceEvent> = {
+                                let devs = devices_arc.read().await;
+                                devs.values()
+                                    .map(|d| crate::daemon::protocol::DeviceEvent::DeviceConnected {
+                                        port_name: d.port_name.clone(),
+                                        has_input: d.has_input,
+                                        has_output: d.has_output,
+                                    })
+                                    .collect()
+                            };
+                            for device_event in snapshot {
+                                let Ok(payload) = serde_json::to_value(&device_event) else {
+                                    continue;
+                                };
+                                if channel.send_event("event", &payload).await.is_err() {
+                                    return Ok(()); // client 切断
+                                }
+                            }
+                        }
                         // TODO(Phase 2): FilteredSubscription は lag を silent skip する (eventbus.rs:39)。
                         // ControlEvent 高頻度時に lag 警告が出ないため、 必要なら Lagged 警告付きの
                         // 購読に差し替えるか buffer_size を調整する (world-process は lag を warn 可視化)。
