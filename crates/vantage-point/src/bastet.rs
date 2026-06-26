@@ -429,7 +429,12 @@ impl Bastet {
     ///
     /// 冪等: agent が reconnect 時に現在の全 device を再報告しても、既知 device は
     /// HashMap 上書きのみで重複 event を出さない（`is_new` gate）。
-    pub async fn report_device_connected(&self, port_name: &str, has_input: bool, has_output: bool) {
+    pub async fn report_device_connected(
+        &self,
+        port_name: &str,
+        has_input: bool,
+        has_output: bool,
+    ) {
         let is_new = {
             let mut devs = self.devices.write().await;
             let is_new = !devs.contains_key(port_name);
@@ -521,15 +526,21 @@ mod tests {
         let bus = Arc::new(EventBus::new());
         let bastet = Bastet::new(bus);
 
-        bastet.report_device_connected("X-Touch Compact", true, true).await;
+        bastet
+            .report_device_connected("X-Touch Compact", true, true)
+            .await;
         assert_eq!(bastet.device_count().await, 1);
 
         // 同一 device の再報告（agent reconnect 時の initial 再送）は重複しない
-        bastet.report_device_connected("X-Touch Compact", true, true).await;
+        bastet
+            .report_device_connected("X-Touch Compact", true, true)
+            .await;
         assert_eq!(bastet.device_count().await, 1);
 
         // 別 device を足すと増える
-        bastet.report_device_connected("LPD8 mk2", true, false).await;
+        bastet
+            .report_device_connected("LPD8 mk2", true, false)
+            .await;
         assert_eq!(bastet.device_count().await, 2);
     }
 

@@ -268,23 +268,28 @@ enum SubscriptionOutcome {
 /// 再接続し、10 連続失敗で諦めて `AppEvent::LanesSubscriptionEnded` を emit する。
 /// SP が同じ project を再 spawn すれば次の `ProjectsLoaded` で購読も再 spawn される。
 /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+///
+/// L0 SP-portless (lanes slice): 接続先は SP 直結ではなく **World :32000 の集約 "lanes" channel**。
+/// World は registry channel 経由で各 SP の lane snapshot/diff を受けて lane_registry に集約済で、
+/// 本購読は project_path で scope して当該 project の snapshot を受ける (繋ぎ先が変わっただけで
+/// consumer ロジックは不変)。
 fn spawn_lanes_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    world_port: u16,
 ) {
-    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, sp_port));
+    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, world_port));
 }
 
 /// "lanes" channel への接続 → 購読 → 再接続を司る long-lived ループ。
 async fn lanes_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    world_port: u16,
 ) {
-    // QUIC ポート = HTTP ポート (QUIC_PORT_OFFSET = 0、TCP/UDP は同一ポートで共存)。
-    let addr = format!("[::1]:{}", sp_port);
+    // L0 SP-portless: World :32000 の集約 "lanes" channel に繋ぐ (QUIC、 loopback)。
+    let addr = format!("[::1]:{}", world_port);
     const MAX_FAILURES: u32 = 10;
     let mut failures: u32 = 0;
 
@@ -354,8 +359,18 @@ async fn run_lanes_session(
         .open_channel("lanes")
         .await
         .map_err(|e| format!("open lanes channel: {}", e))?;
+    // L0 SP-portless: World "lanes" channel は project 単位なので、 接続後に subscribe
+    // handshake で project_path を渡す (World 側で path_key に正規化されて lane_registry と突合)。
+    // ack 後に当該 project の snapshot が `send_event("snapshot", ...)` で初期配信される。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path }),
+        )
+        .await
+        .map_err(|e| format!("lanes subscribe handshake: {}", e))?;
     tracing::info!(
-        "lanes subscription connected: project={} addr={}",
+        "lanes subscription connected (via World): project={} addr={}",
         process_path,
         addr
     );
@@ -409,22 +424,27 @@ async fn run_lanes_session(
 /// wiremsg Stage 2 consumer: SP の "canvas" Unison channel を購読し、Canvas (Paisley Park)
 /// ProcessMessage を受信して `AppEvent::CanvasMessage` を emit する。`spawn_lanes_subscription`
 /// と同型（QUIC 購読 + 指数バックオフ再接続）。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+///
+/// L0 SP-portless (canvas slice): 接続先は SP 直結ではなく **World :32000 の集約 "canvas" channel**。
+/// 各 SP が paisley-park topic を World に push し、 World が project の TopicRouter に集約済なので、
+/// 本購読は project_path で scope して当該 project の canvas (retained + live) を受ける。
 fn spawn_canvas_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    world_port: u16,
 ) {
-    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, sp_port));
+    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, world_port));
 }
 
 /// "canvas" channel への接続 → 購読 → 再接続を司る long-lived ループ。
 async fn canvas_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    world_port: u16,
 ) {
-    let addr = format!("[::1]:{}", sp_port);
+    // L0 SP-portless: World :32000 の集約 "canvas" channel に繋ぐ (QUIC、 loopback)。
+    let addr = format!("[::1]:{}", world_port);
     const MAX_FAILURES: u32 = 10;
     let mut failures: u32 = 0;
 
@@ -487,8 +507,18 @@ async fn run_canvas_session(
         .open_channel("canvas")
         .await
         .map_err(|e| format!("open canvas channel: {}", e))?;
+    // L0 SP-portless: World "canvas" channel は project 単位なので、 接続後に subscribe handshake で
+    // project_path を渡す (World 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 project の
+    // retained canvas (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path }),
+        )
+        .await
+        .map_err(|e| format!("canvas subscribe handshake: {}", e))?;
     tracing::info!(
-        "canvas subscription connected: project={} addr={}",
+        "canvas subscription connected (via World): project={} addr={}",
         process_path,
         addr
     );
@@ -2019,14 +2049,18 @@ pub fn run() -> anyhow::Result<()> {
                 // - Stage 2: "canvas" channel → main area の Paisley Park body
                 // retained topic なので接続直後に現スナップショットが届き、以降変化のたび
                 // push される。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
-                for (path, port) in &project_ports {
-                    let Some(sp_port) = port else { continue };
+                for (path, _port) in &project_ports {
+                    // L0 SP-portless: lanes / canvas とも World :32000 の集約 channel から購読する
+                    // (SP 直結を剥がす)。 どちらも World 側で per-project に集約済
+                    // (lanes=lane_registry / canvas=TopicRouter) なので SP port 不問 = SP が down
+                    // (port=None) でも「前回の続き」を表示でき、 port None→Some race で購読が始まらない
+                    // 旧 gating の穴も解消する。 SP 復帰時は register / canvas push で各 channel が更新。
                     if lanes_sub_active.insert(path.clone()) {
                         spawn_lanes_subscription(
                             &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            *sp_port,
+                            crate::client::DEFAULT_WORLD_PORT,
                         );
                     }
                     if canvas_sub_active.insert(path.clone()) {
@@ -2034,7 +2068,7 @@ pub fn run() -> anyhow::Result<()> {
                             &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            *sp_port,
+                            crate::client::DEFAULT_WORLD_PORT,
                         );
                     }
                 }
