@@ -308,7 +308,7 @@ impl fmt::Display for LaneAddress {
 /// - `P` = payload 型 (add/update 時の full state、 例: `LaneInfo`)
 ///
 /// SP の caller で event 発生 → AppState の broadcast channel に publish →
-/// `spawn_registry_keepalive` の subscriber が QUIC registry channel で TheWorld に push、
+/// `spawn_world_uplink` の subscriber が QUIC registry channel で TheWorld に push、
 /// 各 cache を realtime sync する primitive。
 ///
 /// wire format: internally tagged JSON
@@ -340,7 +340,7 @@ pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
 ///
 /// caller (lane_spawn_actor / routes/* / lifecycle monitor / restart_lane 等) が
 /// `state.system_event_tx.send(SystemEvent::*)` で publish、
-/// `spawn_registry_keepalive` subscriber が QUIC registry channel 経由で TheWorld に流す。
+/// `spawn_world_uplink` subscriber が QUIC registry channel 経由で TheWorld に流す。
 ///
 /// scope ごとに variant 分け、 内部に該当 Diff を内包。 将来 Pane / Stand 等は
 /// variant 追加で扱える central event bus pattern (Erlang event manager 風)。

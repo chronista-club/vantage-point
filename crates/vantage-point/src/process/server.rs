@@ -191,7 +191,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         ))),
         // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
         // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
-        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + spawn_registry_keepalive subscribe
+        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + spawn_world_uplink subscribe
         // で SP → TheWorld push 経路。 将来 Pane / Stand 等の event も同 bus に variant 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
@@ -507,36 +507,12 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         });
     }
 
-    // TheWorld に QUIC Registry 登録（永続接続 + heartbeat）
-    // 切断時に TheWorld が即時除去するため、HTTP 登録は不要
-    let pid = std::process::id();
-    crate::discovery::spawn_registry_keepalive(
-        port,
-        &state.project_dir,
-        pid,
-        &terminal_token,
-        state.lane_pool.clone(),
-        state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
-        shutdown_token.clone(),
-    );
-
-    // L0 SP-portless (canvas slice): paisley-park topic を World に push する keepalive。
-    // World が project の TopicRouter に集約し、 vp-app は World "canvas" channel を購読する
-    // (SP "canvas" channel 直結を剥がす)。 registry keepalive と独立した outbound 接続。
-    crate::discovery::spawn_canvas_keepalive(
-        &state.project_dir,
-        state.topic_router.clone(),
-        shutdown_token.clone(),
-    );
-
-    // L0 SP-portless (control slice): World の reverse-routing 用 "control" 接続。
-    // World が外部 client (MCP/CLI) の process 操作を本接続を逆用して SP に forward する。
-    // SP は recv ループで dispatch_process_method を呼んで処理 (SP "process" channel と同一)。
-    crate::discovery::spawn_control_keepalive(
-        &state.project_dir,
-        state.clone(),
-        shutdown_token.clone(),
-    );
+    // F1a (doc 27 §3.4.4): SP → TheWorld の outbound を 1 connection に集約した uplink。
+    // registry (自己登録 + heartbeat + lane diff push) / canvas-ingest (paisley-park /
+    // terminal topic push) / control (World reverse-routing 受け) の 3 channel を 1 共有
+    // QUIC connection 上の別 stream として張る (旧: 3 別 connection)。 依存は全て AppState
+    // から引くため引数は (state, shutdown) のみ。 切断時に TheWorld が即時除去 (HTTP 登録不要)。
+    crate::discovery::spawn_world_uplink(state.clone(), shutdown_token.clone());
 
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
@@ -615,7 +591,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         .await?;
 
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
-    // （spawn_registry_keepalive の shutdown handler が unregister を送信済み）
+    // （spawn_world_uplink の shutdown handler が unregister を送信済み）
 
     // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。

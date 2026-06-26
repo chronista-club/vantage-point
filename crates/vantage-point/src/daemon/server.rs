@@ -92,7 +92,7 @@ pub struct DaemonState {
         Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
     /// L0 SP-portless (control slice): project ごとの SP "control" channel handle。
     ///
-    /// 各 SP が起動時に "control" channel で World に outbound 接続し (`spawn_control_keepalive`)、
+    /// 各 SP が起動時に "control" channel で World に outbound 接続し (`spawn_world_uplink`)、
     /// World はその `UnisonChannel` を path_key で保持する。 "process-proxy" channel 経由で来た
     /// 外部 client (MCP/CLI) の process 操作を、 この handle を**逆用** (`request()`) して当該 SP に
     /// forward する (= World→SP reverse-routing)。 UnisonChannel は双方向対称なので、 SP が QUIC
@@ -1515,7 +1515,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "canvas-ingest" Channel（L0 SP-portless canvas slice — SP → World の canvas push 受け口）
     // =========================================================================
-    // 各 SP の canvas pusher (`discovery::spawn_canvas_keepalive`) が paisley-park topic の
+    // 各 SP の canvas pusher (`discovery::spawn_world_uplink`) が paisley-park topic の
     // ProcessMessage を push する。 World は project ごとの TopicRouter に `route()` して
     // retained 保持 + 購読者 (= "canvas" channel 経由の vp-app) へ配信する。
     //
@@ -1658,7 +1658,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "control" Channel（L0 SP-portless control slice — SP の reverse-routing 受け口を登録）
     // =========================================================================
-    // 各 SP が "control" channel で World に outbound 接続する (`spawn_control_keepalive`)。
+    // 各 SP が "control" channel で World に outbound 接続する (`spawn_world_uplink`)。
     // World は handshake {project_path} 後にその UnisonChannel を control_channels[path_key] に
     // 保持し、 "process-proxy" channel から逆用 (request) して SP に process 操作を forward する。
     // 本 handler 自体は channel を保持して接続維持を監視するだけ (request を撃つのは process-proxy)。
