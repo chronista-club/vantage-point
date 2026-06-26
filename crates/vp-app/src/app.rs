@@ -167,27 +167,19 @@ fn spawn_menu_event_pump(rt_handle: &tokio::runtime::Handle, proxy: EventLoopPro
     });
 }
 
-/// `/api/world/projects` (= registered, port は config の静的値のみ) と
-/// `/api/world/processes` (= running, runtime port + pid 持つ) を **併行 fetch + join** して
-/// `ProjectInfo` の list に `RunningProcess` から取り出した runtime port を merge する。
+/// F6 (doc 27 §3.4): active_lane_address から対応する project_path を引く。
 ///
-/// port merge の pure calculation 部分を抽出した関数。 `fetch_projects_with_ports` の
-/// テスト可能なコアロジック。 name 一致で `RunningProcess.port` を inject し、
-/// `running` に無い project は port を変更しない (= config の static port か None のまま)。
-/// pp-content-persist: active な lane を host する SP の port を解決する。
-///
-/// active_lane_address (`<project>/conductor` or `<project>/performer/<name>`) から、
-/// 対応する project_path の SP port (= ProjectPaneState.port) を引く。
-/// 解決失敗 (= lane 未選択 / SP 未起動 / port None) なら `None`。
-///
-/// caller: `PpStateSaveRequest` / `PpStateLoadRequest` の reqwest forward。
-pub(crate) fn resolve_active_project_port(state: &crate::pane::SidebarState) -> Option<u16> {
+/// active_lane_address (`<project>/conductor` or `<project>/performer/<name>`) から、 対応する
+/// project_path を引く。 World process-proxy は SP port 不問・project_path を path_key に正規化して
+/// routing するので、 ask 系 (pp:state) は port でなく path で引く。 解決失敗 (lane 未選択 / SP 未起動)
+/// なら `None`。 caller: `PpStateSaveRequest` / `PpStateLoadRequest` の process-proxy ask。
+pub(crate) fn resolve_active_project_path(state: &crate::pane::SidebarState) -> Option<String> {
     let active = state.active_lane_address.as_deref()?;
     for proc in &state.processes {
         if let Some(lanes) = state.lanes_by_project.get(&proc.path)
             && lanes.iter().any(|l| l.address.key() == active)
         {
-            return proc.port;
+            return Some(proc.path.clone());
         }
     }
     None
@@ -733,6 +725,51 @@ async fn run_terminal_session(
             }
         }
     }
+}
+
+/// F6 (doc 27 §3.4): vp-app → World process-proxy → SP の one-shot ask。
+///
+/// 旧 SP HTTP 直結 (`reqwest http://127.0.0.1:{sp_port}/api/...`) の置換。 surface は World :32000
+/// だけに繋ぐ (§6)。 低頻度 ask 専用 (pp:state debounce save / lane ops) なので 1 回ごとに
+/// connect → `open_channel("process-proxy")` → handshake({project_path}) → request(method) → drop。
+/// (connection 共有は F1 で畳む。) method は SP `dispatch_process_method` に届き、 戻り値が返る。
+async fn world_process_request(
+    world_port: u16,
+    process_path: &str,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use unison::ProtocolClient;
+    use unison::network::TrustAnchors;
+    use unison::network::quic::QuicClient;
+
+    let addr = format!("[::1]:{}", world_port);
+    let transport = QuicClient::builder()
+        .trust_anchors(TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("QUIC client build: {}", e))?;
+    let client = ProtocolClient::new(transport);
+    client
+        .connect(&addr)
+        .await
+        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    let channel = client
+        .open_channel("process-proxy")
+        .await
+        .map_err(|e| format!("open process-proxy: {}", e))?;
+    // handshake: project_path → World が path_key 正規化 → 当該 SP control へ routing。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path }),
+        )
+        .await
+        .map_err(|e| format!("process-proxy handshake: {}", e))?;
+    // ask: method を World が SP dispatch_process_method へ forward し応答を relay。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(method, &payload)
+        .await
+        .map_err(|e| format!("process-proxy {}: {}", method, e))
 }
 
 /// Bastet 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
@@ -2556,79 +2593,51 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
-                // pp-content-persist: WebView の save IPC を active project の SP に reqwest forward。
-                // active project / port が引けない (= lane 未選択 / SP 未起動) 場合は silent skip
-                // (= user が空状態の canvas を debounce save しようとしただけ、warn する程の事故ではない)。
-                let port = match resolve_active_project_port(&sidebar_state) {
-                    Some(p) => p,
-                    None => {
-                        tracing::debug!(
-                            "pp:state:save skip — active project / port 解決失敗 (lane 未選択 or SP 未起動)"
-                        );
-                        return;
-                    }
+                // F6: WebView の save IPC を World process-proxy ask (pp_state_save) で SP に forward。
+                // 旧 SP HTTP 直結を撤去。 active project 解決失敗は silent skip (空 canvas の debounce save)。
+                let Some(path) = resolve_active_project_path(&sidebar_state) else {
+                    tracing::debug!("pp:state:save skip — active project 解決失敗 (lane 未選択 or SP 未起動)");
+                    return;
                 };
                 rt_handle.spawn(async move {
-                    let url = format!("http://127.0.0.1:{}/api/pp/state", port);
-                    match reqwest::Client::new().post(&url).json(&body).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            tracing::debug!("pp:state:save → SP OK ({})", port);
-                        }
-                        Ok(resp) => {
-                            tracing::warn!(
-                                "pp:state:save SP {} non-2xx: {}",
-                                port,
-                                resp.status()
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!("pp:state:save SP {} reqwest 失敗: {}", port, e);
-                        }
+                    match world_process_request(
+                        crate::client::DEFAULT_WORLD_PORT,
+                        &path,
+                        "pp_state_save",
+                        body,
+                    )
+                    .await
+                    {
+                        Ok(_) => tracing::debug!("pp:state:save → World OK"),
+                        Err(e) => tracing::warn!("pp:state:save 失敗: {}", e),
                     }
                 });
             }
             Event::UserEvent(AppEvent::PpStateLoadRequest { lane, pane_id }) => {
-                // pp-content-persist: WebView の load IPC を SP に reqwest GET → 結果を
-                // AppEvent::PpStateLoaded で event loop に戻し、 次の arm で WebView に script push。
-                let port = match resolve_active_project_port(&sidebar_state) {
-                    Some(p) => p,
-                    None => {
-                        tracing::debug!(
-                            "pp:state:load skip — active project / port 解決失敗"
-                        );
-                        return;
-                    }
+                // F6: WebView の load IPC を World process-proxy ask (pp_state_load) で SP に forward。
+                // 結果 record を AppEvent::PpStateLoaded で event loop に戻し、 次の arm で WebView に push。
+                let Some(path) = resolve_active_project_path(&sidebar_state) else {
+                    tracing::debug!("pp:state:load skip — active project 解決失敗");
+                    return;
                 };
                 let load_proxy = async_action_proxy.clone();
                 rt_handle.spawn(async move {
-                    let mut url = format!(
-                        "http://127.0.0.1:{}/api/pp/state?pane_id={}",
-                        port,
-                        urlencoding::encode(&pane_id)
-                    );
-                    if let Some(name) = lane.as_deref() {
-                        url.push_str(&format!("&lane={}", urlencoding::encode(name)));
+                    let mut payload = serde_json::json!({ "pane_id": pane_id });
+                    if let Some(name) = lane {
+                        payload["lane"] = serde_json::Value::String(name);
                     }
-                    let record = match reqwest::Client::new().get(&url).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            match resp.json::<serde_json::Value>().await {
-                                Ok(v) => v.get("record").filter(|r| !r.is_null()).cloned(),
-                                Err(e) => {
-                                    tracing::warn!("pp:state:load JSON parse 失敗: {}", e);
-                                    None
-                                }
-                            }
-                        }
-                        Ok(resp) => {
-                            tracing::warn!(
-                                "pp:state:load SP {} non-2xx: {}",
-                                port,
-                                resp.status()
-                            );
-                            None
-                        }
+                    let record = match world_process_request(
+                        crate::client::DEFAULT_WORLD_PORT,
+                        &path,
+                        "pp_state_load",
+                        payload,
+                    )
+                    .await
+                    {
+                        // SP は {status:ok, record} | {status:empty} を返す。 record だけ抜く。
+                        Ok(v) => v.get("record").filter(|r| !r.is_null()).cloned(),
                         Err(e) => {
-                            tracing::warn!("pp:state:load SP {} reqwest 失敗: {}", port, e);
+                            tracing::warn!("pp:state:load 失敗: {}", e);
                             None
                         }
                     };

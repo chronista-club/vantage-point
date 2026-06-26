@@ -614,6 +614,87 @@ async fn handle_terminal_resize(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "cols": cols, "rows": rows}))
 }
 
+/// F6 (doc 27 §3.4.5/§6): PP Canvas state save。 旧 SP HTTP `POST /api/pp/state` を
+/// process-proxy ask に移管（surface→SP 直結 HTTP を撤去、 World 経由の ask に統一）。
+/// logic は旧 `pp_state_save_handler` から移設（HTTP route は削除）。
+async fn handle_pp_state_save(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("pp_state_save: vpdb 未初期化".to_string());
+    };
+    let pane_id = payload
+        .get("pane_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("pp_state_save: pane_id 必須")?
+        .to_string();
+    let content_type = payload
+        .get("content_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("markdown")
+        .to_string();
+    let content = payload
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let title = payload
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    // lane: null/空/"conductor" は None(=lane IS NULL) に正規化（load 側と key 一致）。
+    let lane = payload
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty() && *s != "conductor")
+        .map(|s| s.to_string());
+    let stack = payload.get("stack").filter(|v| !v.is_null()).cloned();
+    let ui_state = payload.get("ui_state").filter(|v| !v.is_null()).cloned();
+    vpdb.upsert_pp_state(
+        &state.project_dir,
+        lane.as_deref(),
+        &pane_id,
+        &content_type,
+        &content,
+        title.as_deref(),
+        stack.as_ref(),
+        ui_state.as_ref(),
+    )
+    .await
+    .map_err(|e| format!("pp_state upsert 失敗: {}", e))?;
+    Ok(serde_json::json!({"status": "saved"}))
+}
+
+/// F6: PP Canvas state load。 旧 SP HTTP `GET /api/pp/state` を process-proxy ask に移管。
+async fn handle_pp_state_load(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("pp_state_load: vpdb 未初期化".to_string());
+    };
+    let pane_id = payload
+        .get("pane_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("paisley-park")
+        .to_string();
+    let lane = payload
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty() && *s != "conductor")
+        .map(|s| s.to_string());
+    match vpdb
+        .load_pp_state(&state.project_dir, lane.as_deref(), &pane_id)
+        .await
+    {
+        Ok(Some(rec)) => Ok(serde_json::json!({"status": "ok", "record": rec})),
+        Ok(None) => Ok(serde_json::json!({"status": "empty"})),
+        Err(e) => Err(format!("pp_state load 失敗: {}", e)),
+    }
+}
+
 pub(crate) async fn dispatch_process_method(
     state: &Arc<AppState>,
     method: &str,
@@ -634,6 +715,9 @@ pub(crate) async fn dispatch_process_method(
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
         "terminal_resize" => handle_terminal_resize(state, payload).await,
+        // F6: PP Canvas state (旧 SP HTTP /api/pp/state を process-proxy ask に移管)
+        "pp_state_save" => handle_pp_state_save(state, payload).await,
+        "pp_state_load" => handle_pp_state_load(state, payload).await,
         "tmux_split" => handle_tmux_split(state, payload).await,
         "tmux_list" => handle_tmux_list(state).await,
         "tmux_close" => handle_tmux_close(state, payload).await,
