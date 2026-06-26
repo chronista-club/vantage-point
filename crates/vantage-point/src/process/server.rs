@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, project_feed, prompt, update, wire, world};
+use super::routes::{health, lanes, prompt, update, wire, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -353,9 +353,8 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // wiremsg Stage 3: `/ws` endpoint は撤去済。Canvas が Stage 2 で "canvas" topic 購読に
         // 移行した結果 `/ws` の接続 client が消滅 (= dead)。chat/permission の双方向経路も
         // Echoes が tmux+claude に移行して以降 unused。
-        // Canvas Project Feed 集約 WebSocket（全 Process のメッセージを Project Feed でラップして中継）
-        // 注: URL `/ws/lanes` は外部互換のため維持。内部命名は `project_feed` (mem_1CaSsN7xj69aVQtLPQFJxQ 命名整理)
-        .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
+        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅 (vp-app は World "lanes"
+        // channel を購読) で dead のため撤去 (module ごと削除)。
         // Phase A4-2b: Lane (Conductor/Performer) lifecycle の REST endpoint
         // GET: list、 POST: Performer create (A6 minimum)
         // F6② (doc 27 §3.4.5/§6): DELETE は World process-proxy ask (`lane_delete`) に移管し撤去。
@@ -382,7 +381,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // R2-a: CLI parity (vp wire thread / ack) の HTTP 入口
         .route("/api/wire/thread", post(health::wire_thread_handler))
         .route("/api/wire/ack", post(health::wire_ack_handler))
-        .route("/api/diagnose", get(health::diagnose_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
         .route("/api/close-pane", post(health::close_pane_handler))
@@ -405,12 +403,8 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         .route("/api/ruby/run", post(health::ruby_run_handler))
         .route("/api/ruby/stop", post(health::ruby_stop_handler))
         .route("/api/ruby/list", get(health::ruby_list_handler))
-        // ProcessRunner 汎用 API
-        .route("/api/process/run", post(health::process_run_handler))
-        .route("/api/process/eval", post(health::process_run_eval_handler))
-        .route("/api/process/stop", post(health::process_stop_handler))
-        .route("/api/process/inject", post(health::process_inject_handler))
-        .route("/api/process/list", get(health::process_list_handler))
+        // L0 portless: `/api/process/*` (ProcessRunner 汎用 HTTP) は consumer 消滅で dead のため
+        // 撤去 (生きてる process 操作は QUIC `process` channel / `/api/ruby/*` 経由)。
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
         // User prompt API routes (REQ-PROMPT-001)
@@ -814,8 +808,7 @@ pub async fn run_world(
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
-        // Canvas Lane 集約 WebSocket
-        .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
+        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
         // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
         .route("/api/canvas/capture", post(health::canvas_capture_handler))
         .route(

@@ -126,44 +126,8 @@ pub async fn wire_ack_handler(
     }
 }
 
-/// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
-/// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
-///
-/// state.capabilities の field を直接 iterate する方式 (Stand 数が少なく静的なため
-/// registry 抽象は持たない — refactor R1-1 で skeleton だった CapabilityRegistry を削除)。
-/// Mailbox address list と Stand state を 1 view にまとめて観測可能に。
-pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    use crate::capability::core::Capability;
-    let mut reports = Vec::new();
-
-    // Protocol Capability (WebSocket / stdio 配信)
-    {
-        let protocol = state.capabilities.protocol.read().await;
-        reports.push(protocol.diagnose());
-    }
-    // Agent Capability (Heaven's Door 📖、Claude CLI 統合)
-    {
-        let agent = state.capabilities.agent.read().await;
-        reports.push(agent.diagnose());
-    }
-    // MIDI Capability (Bastet 🧲、feature 有効時、 PR-α-2 で World 階層に移管)
-    // World mode の AppState のみ world_capabilities が Some、 SP mode では None なので skip。
-    // SP 側からの diagnose は PR-α-3 で cross-process forward (`bastet@world` mailbox query) に rewire 予定。
-    #[cfg(feature = "midi")]
-    if let Some(ref world_caps) = state.world_capabilities
-        && let Some(ref midi) = world_caps.midi
-    {
-        let midi = midi.read().await;
-        reports.push(midi.diagnose());
-    }
-
-    // wiremsg R6: 旧 msgbox は R5 で全廃。 diagnose の `"msgbox"` は常に空 stub だったため
-    // キーごと撤去した。 将来 wire 層の diagnose が要れば wiremsg_store 経由で新規に足す。
-    Json(serde_json::json!({
-        "count": reports.len(),
-        "reports": reports,
-    }))
-}
+// L0 portless: `/api/diagnose` (Stand 自己診断 HTTP) は consumer 消滅で撤去。 必要なら将来
+// World channel / mailbox query (`bastet@world` 等) 経由で再設計する。
 
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let token = if state.terminal_token == "WORLD_DISABLED" {
@@ -912,103 +876,9 @@ pub async fn ruby_list_handler(State(state): State<Arc<AppState>>) -> impl IntoR
     }))
 }
 
-// =========================================================================
-// ProcessRunner 汎用 API ハンドラー
-// =========================================================================
-
-/// POST /api/process/run — 任意コマンドを起動
-pub async fn process_run_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<crate::process::process_runner::RunParams>,
-) -> impl IntoResponse {
-    let result = crate::process::process_runner::process_run(
-        &state.process_registry,
-        &params,
-        &state.project_dir,
-        &state.hub,
-    )
-    .await;
-
-    match result {
-        Ok(process_id) => Json(serde_json::json!({
-            "status": "ok",
-            "process_id": process_id,
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// POST /api/process/run-eval — 短命実行
-pub async fn process_run_eval_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<crate::process::process_runner::RunEvalParams>,
-) -> impl IntoResponse {
-    let result =
-        crate::process::process_runner::process_run_eval(&params, &state.project_dir, &state.hub)
-            .await;
-
-    match result {
-        Ok(r) => Json(serde_json::json!({
-            "status": "ok",
-            "stdout": r.stdout,
-            "stderr": r.stderr,
-            "exit_code": r.exit_code,
-            "elapsed_ms": r.elapsed_ms,
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// POST /api/process/stop — プロセス停止
-pub async fn process_stop_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<RubyStopParams>,
-) -> impl IntoResponse {
-    match crate::process::process_runner::process_stop(&state.process_registry, &params.process_id)
-        .await
-    {
-        Ok(()) => Json(serde_json::json!({
-            "status": "ok",
-            "message": format!("プロセス {} に停止シグナルを送信しました", params.process_id),
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// POST /api/process/inject — コード注入
-pub async fn process_inject_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<crate::process::process_runner::InjectParams>,
-) -> impl IntoResponse {
-    match crate::process::process_runner::process_inject(&state.process_registry, &params).await {
-        Ok(()) => Json(serde_json::json!({
-            "status": "ok",
-            "message": format!("プロセス {} にコードを注入しました", params.process_id),
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// GET /api/process/list — プロセス一覧
-pub async fn process_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let processes = state.process_registry.lock().await.list();
-    Json(serde_json::json!({
-        "status": "ok",
-        "processes": processes,
-    }))
-}
+// L0 portless: `/api/process/*` (ProcessRunner 汎用 HTTP) handler 群は consumer 消滅で撤去。
+// 生きてる process 操作は QUIC `process` channel (`unison_server::handle_process_*`) が
+// 同じ `process_runner` core を呼ぶので、 HTTP 入口だけ落とせば core は維持される。
 
 #[cfg(test)]
 mod tests {
