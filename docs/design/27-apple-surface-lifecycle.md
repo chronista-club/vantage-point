@@ -97,6 +97,87 @@ remote（Vision Pro / 他デバイス / cloud agent）から見て「到達可�
 - ⏳ **SP HTTP API residual**（`/api/lanes,stands,tmux,ruby,show` + `/ws/lanes`）→ World channel へ吸収 or CLI を process-proxy に寄せる
 - ⏳ **SP listen port 全撤去** + presence via World（Reconciliation Pull port scan 廃止）── terminal 片付け後（L1）
 
+## 3.4 Transport 哲学 — なぜ QUIC / 場 × 動詞 × 規律 / 1 conn・N streams・1 protocol
+
+> 起源と概念の合意形成（user × Claude dialogue 2026-06-26、ultrathink）。北極星「単一 topic 空間」と
+> SP-portless（§3）の **なぜ** を固定する。code から導けない設計 rationale で、放置すると再導出される
+> （user が QUIC 採用理由を二度「思い出した」）ので明文化して錨にする。
+
+### 3.4.1 なぜ QUIC — 原点は live streaming の QoS 隔離
+
+QUIC 採用の原点は「**ライブ配信で position / 音声 / 3D・大アセットを、それぞれ別 stream で混ぜずに流す**」
+要求（HTTP/TCP では不可能）。HOL-blocking 回避は *手段* で、本質は **QoS の違うデータを 1 本の順序付き
+byte パイプに同居させない**こと。
+
+| データ | 配送規律（QoS） | 同居できない理由 |
+|---|---|---|
+| **position** | 最新勝ち・lossy・coalesce・超低遅延 | 古い座標は無価値。bulk の後ろで待たせたら死ぬ |
+| **音声** | 順序・低遅延・frame 単位 drop 可 | asset に HOL されると音が割れる |
+| **3D / 大アセット** | 確実・順序・bulk・遅延寛容 | でかい。共有 stream に乗せたら全部 HOL する |
+
+stream = 1 本の順序付き byte パイプなので、「古い position を捨てる」と「asset を確実に届ける」を同時に
+満たせない＝ **QoS を分けるには物理的に stream を分けるしかない**。QUIC は「1 connection に独立 stream を
+多重化（stream 間 HOL 無し）」を native で持つ唯一の現実解。**VP の transport は terminal IDE ではなく、
+QoS 差別化された live streaming substrate を見て選ばれた**（physical control fleet「lane を楽器にする」の
+position データ = `position/*` 場）。
+
+### 3.4.2 偽の二分法 — pub/sub vs RPC は 2 直交軸を畳んだもの
+
+「pub/sub か RPC か」は 1 軸に見えて、**直交する 2 軸**を畳んでいるだけ:
+
+- **軸A アドレッシング**: topic（一対多）⇔ direct（一対一）
+- **軸B インタラクション**: tell（告げる・fire&forget・*送ること*が目的）⇔ ask（問う・応答待ち・*結果*が目的）
+
+`pub/sub = (topic × tell)` / `RPC = (direct × ask)` は 4 セルのうち 2 つにすぎない。残りも有用:
+- **(topic × ask)** = 場の authority に問う＝ **topic-routed RPC** ← S5 が要る cell
+- **(direct × tell)** = 特定 peer への通知
+
+→ 「単一 topic 空間」が意味すべきは **アドレッシング軸を topic に統一する**ことで、**インタラクション軸を
+tell に潰すことではない**。tell/ask を正直な動詞のまま topic で routing すれば request/reply を失わず単一
+空間が成立する。**Unison channel は `Event`(=tell) と `Request`/`Response`(=ask) を 1 stream で native に
+運ぶ → 本質的に正しい substrate**。欠けている cell は **topic-addressed ask**（Request を場の authority へ
+route し Response を correlation で返す。Unison の pending-map 機構で実装可、correlation hack 不要）。
+
+### 3.4.3 場（place）モデル — 3 軸
+
+**場 = 名前のついた番地（topic も wire-address も同じ namespace）。各場は ちょうど 1 authority（主・真実の
+源・ask に答える）と 0+ observer（tell を受ける）を持つ。**
+
+- **3 軸**: **場（どこ）× 動詞（tell / observe / ask）× 規律（QoS）**。場の prefix が規律を示し、stream が
+  それを物理実現し、動詞は直交。
+- authority 例: `process/*` = SP / `agent@X` = その session / `bastet@world` = device hub。
+- **demand-driven production（S2 実装済）はこのモデルから自然に落ちる**: authority は observer 数を知るので、
+  observer が居る間だけ tell を produce する。ask は point-to-point なので demand 不要。
+- **command と event は同じ場の双対**（event-sourcing）: 場を ask して intent を入れ、その帰結が同じ場の
+  tell として流れ出す。**agent は ask で為し observe で知る — 同じ番地で**（§5 agent-native の具体形）。
+
+### 3.4.4 Topology 規律 — 1 connection / N streams-by-QoS / 1 protocol
+
+| 軸 | 現状（負債） | 目標 |
+|---|---|---|
+| **connection** | session ごとに別 QUIC connection（`run_canvas_session`/`run_terminal_session` が毎回 connect）＝ **N conn × 各 1 stream**。QUIC の多重化を**使えていない** | **1 connection**（World へ共有） |
+| **stream(channel)** | 用途ごと bespoke（§3.2 の channel 群）| **隔離単位で N 本、protocol は同一** |
+| **protocol** | bespoke 多数（別 handshake・別 message 形）| **1 種**（場 subscribe + tell/observe/ask） |
+
+- **stream = 意味の単位ではなく *隔離の単位***。独立した flow/順序/backpressure（= QoS）が要る時だけ開き、
+  要らなければ相乗りさせる。「channel いくつ?」は **semantic 判断ではなく QoS/隔離から決まる perf つまみ**
+  ← 概念が正しい徴（dilemma が消える）。
+- 粒度: 高頻度・低遅延・大量の場（terminal 出力 per-lane / position / 音声 / asset）→ 専用 stream。
+  低頻度 observe（presence / lanes list / device）→ 共有可。demand と連動し observe 中の場だけ stream を張る。
+- **「1 channel に全部寄せる」は不可**: QUIC を選んだ理由（QoS 隔離）を捨て、stream 内 HOL を復活させ、mux を
+  手実装で再発明する。美しく見えて弱い・冗長。
+
+### 3.4.5 含意
+
+- **terminal（§4, S1-S4）= "text" QoS クラスの first citizen**。topic 空間 / demand / coalesce は
+  position・音声・asset にそのまま一般化する原型を作った。
+- **wire-address（`agent@X` 等）と topic は同じ場 namespace**。messaging と transport の統合は将来候補。
+- **S5 の再定義**: 「control を pub/sub(tell) に潰す」ではなく **「(topic × ask) を足し、command を ask 規律
+  クラスとして場 namespace に載せる」**。reverse-route RPC は「`process/*` の authority(SP) への ask」になる
+  （意味不変・指し方が topic に統一）。前提 = **「1 場 = 1 authority」不変条件**（ask routing が決定的になる）。
+- **実装順序**: ① L1 portless（単一 endpoint）→ ② **connection 共有**（N conn → 1 conn × N streams、概念
+  不変の perf 勝ち筋・QUIC multiplex の回収）→ ③ **protocol 統一**（= S5、topic-addressed ask）。
+
 ## 4. terminal = Unison stream channel（最後の holdout）
 
 terminal は単一 topic 空間の**唯一の raw WebSocket holdout**。vp-app の Lane terminal が
@@ -154,7 +235,9 @@ vp-app・WebView・将来 agent = 対称な subscriber/publisher。
 - **S2**: demand hook（subscriber 0→1/1→0 を SP に通知）→ pump を lazy 化。
 - **S3**: input/resize を topic publish（vp-app→World→SP `write_to_lane`/`resize_lane`）。
 - **S4**: WebView = unison-client TS（postMessage transport 自作注入）で 3 topic を subscribe/publish、xterm 配線（coalescing 16-64KiB）、`/ws/terminal` 撤去。
-- **S5**（収束・任意）: control reverse-route を topic-publish 経路に寄せ bespoke 機構を 1 減らす。
+- **S5**（収束・任意）: control reverse-route を **topic-addressed ask**（§3.4.2 の (topic × ask) cell）に
+  寄せ、command を場 namespace の ask 規律クラスとして載せる（bespoke 機構を 1 減らす）。「pub/sub に潰す」
+  ではない＝ ask は ask のまま指し方が topic になるだけ。前提 = 「1 場 = 1 authority」不変条件（§3.4.3）。
 
 ## 5. agent = first-class World surface（制約）
 
@@ -208,3 +291,9 @@ L0 にこれを焼き込む（retrofit 不可）:
 4. **agent action space codegen**（§5-2）── KDL→MCP tool 定義の codegen 設計。
 5. **北極星の再シーケンス**（todo `mem_1CcRLwyxngfp2t76bBCiu1`）── 北極星 `mem_1Cb7iV6ZBczuqiBbiYQpvm` に
    SP-portless を明示 Phase 化 + cross-device(Apple) driver を追記。
+6. **connection 共有**（§3.4.4）── N connection × 1 stream → **1 connection × N streams**。QUIC multiplex の
+   回収（概念不変の perf 勝ち筋）。L1 portless の後・S5 protocol 統一の前に置く中間ステップ。
+7. **「1 場 = 1 authority」不変条件の確立**（§3.4.3/3.4.5）── topic-addressed ask（S5）の routing 決定性の
+   前提。場 prefix → authority 解決の table/claim をどう持つか。
+8. **QoS クラスの場 prefix 設計**（§3.4.1/3.4.4）── `position/*` `audio/*` `asset/*` 等を live streaming
+   実装時に切る際の規律（配送 discipline）と stream 割当の SSOT。terminal=text クラスが先行例。
