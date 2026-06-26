@@ -5,27 +5,15 @@
 //! 既存の `process/pty.rs` の PtySession を基に、Daemon用に再設計。
 //! base64エンコードはしない（IPC層の責務）。
 //!
-//! ## Phase 2.x-c: scrollback ring buffer
-//!
-//! 過去 256 KB の output を保持し、 新規 subscriber に initial replay する。
-//! Lane 切替や vp-app 再起動で同じ Lane に戻ってきた時、 broadcast::channel(256)
-//! の buffer は即過去になっていて scroll back が見られない問題の解消。
-//!
-//! Atomicity: reader_task が `ring.push + broadcast.send` を **同一 lock 内** で行う。
-//! 新 subscriber は `ring.lock + subscribe + clone snapshot` を atomic に行うことで、
-//! 重複なし・取りこぼしなしで initial bytes と継続 stream の境界を作れる。
+//! terminal S4 (doc 27 §4.1): PTY 出力は broadcast → per-lane terminal pump →
+//! World "canvas" topic 空間に流れる。 旧 `/ws/terminal` attach 時の scrollback replay
+//! (ring buffer) は consumer (ws_terminal) ごと撤去した (live stream のみ)。
 
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::broadcast;
-
-/// scrollback ring buffer の最大保持 bytes (= 256 KB)。
-/// xterm.js 側 scrollback:5000 行 と粒度合わせ。 大半の terminal 利用シーンで十分、
-/// `claude` の長い summary でも overflow しない。
-const SCROLLBACK_CAP: usize = 256 * 1024;
 
 /// PTYプロセスを管理するスロット
 ///
@@ -44,10 +32,6 @@ pub struct PtySlot {
     shell_cmd: String,
     /// 出力配信チャネル（送信側）
     output_tx: broadcast::Sender<Vec<u8>>,
-    /// Phase 2.x-c: scrollback ring buffer (新規 subscriber への initial replay 用)。
-    /// reader_task が push + broadcast.send を同一 lock 内で行うことで、
-    /// `subscribe_with_scrollback` が atomic な「snapshot + subscribe」 を実現できる。
-    scrollback: Arc<Mutex<Vec<u8>>>,
     /// reader task のハンドル
     _reader_handle: tokio::task::JoinHandle<()>,
 }
@@ -120,12 +104,8 @@ impl PtySlot {
         // これにより PTY からの最初のバイト（シェルプロンプト等）を取りこぼさない。
         let (output_tx, initial_rx) = broadcast::channel(256);
 
-        // Phase 2.x-c: scrollback ring buffer (256 KB)
-        let scrollback: Arc<Mutex<Vec<u8>>> =
-            Arc::new(Mutex::new(Vec::with_capacity(SCROLLBACK_CAP)));
-
-        // reader task 開始 (scrollback も共有)
-        let reader_handle = start_reader_task(reader, output_tx.clone(), scrollback.clone());
+        // reader task 開始
+        let reader_handle = start_reader_task(reader, output_tx.clone());
 
         Ok((
             Self {
@@ -135,7 +115,6 @@ impl PtySlot {
                 pid,
                 shell_cmd: shell_cmd.to_string(),
                 output_tx,
-                scrollback,
                 _reader_handle: reader_handle,
             },
             initial_rx,
@@ -163,25 +142,6 @@ impl PtySlot {
     /// 出力ストリームを購読（broadcast receiver）
     pub fn subscribe_output(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
-    }
-
-    /// Phase 2.x-c: scrollback 付きで購読する。
-    ///
-    /// `(rx, initial_bytes)` を atomic に取得 ── ring の lock を持っている間に
-    /// `subscribe()` を呼ぶことで、 reader_task が次の push + send をするまでに
-    /// 我々が新 subscriber として登録される。 結果:
-    /// - `initial_bytes`: lock 取得時点までの ring 内容 (= 過去 256 KB の output)
-    /// - `rx`: lock 取得後の broadcast.send を全て受信
-    /// - 重複なし、 取りこぼしなし
-    ///
-    /// 用途: vp-app が `/ws/terminal?lane=...` で attach してきた時、
-    /// initial_bytes を WS Binary で先送して履歴を再生する。
-    pub fn subscribe_with_scrollback(&self) -> (broadcast::Receiver<Vec<u8>>, Vec<u8>) {
-        let ring = self.scrollback.lock().expect("scrollback mutex poisoned");
-        let initial = ring.clone();
-        let rx = self.output_tx.subscribe();
-        drop(ring);
-        (rx, initial)
     }
 
     /// プロセスID
@@ -219,16 +179,11 @@ impl Drop for PtySlot {
 
 /// PTY出力読み取りタスクを起動
 ///
-/// PTY の master fd からバイト列を読み取り、
-/// 1) **scrollback ring に append** (cap 超過分は drain で削除)
-/// 2) **broadcast channel に send** (両者を同一 lock 内で行うことで
-///    `subscribe_with_scrollback` の atomicity を保証)
-///
+/// PTY の master fd からバイト列を読み取り、 broadcast channel に send する。
 /// base64 エンコードはしない (IPC 層の責務)。
 fn start_reader_task(
     mut reader: Box<dyn Read + Send>,
     tx: broadcast::Sender<Vec<u8>>,
-    scrollback: Arc<Mutex<Vec<u8>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
@@ -241,23 +196,8 @@ fn start_reader_task(
                 }
                 Ok(n) => {
                     let chunk = buf[..n].to_vec();
-                    // Phase 2.x-c: ring + broadcast を同一 lock 内で送出 (atomicity 保証)
-                    {
-                        let mut ring = match scrollback.lock() {
-                            Ok(g) => g,
-                            Err(e) => {
-                                tracing::warn!("scrollback mutex poisoned: {}", e);
-                                break;
-                            }
-                        };
-                        ring.extend_from_slice(&chunk);
-                        if ring.len() > SCROLLBACK_CAP {
-                            let drop_n = ring.len() - SCROLLBACK_CAP;
-                            ring.drain(..drop_n);
-                        }
-                        // 受信者がいなくても送信を試行（正常動作）
-                        let _ = tx.send(chunk);
-                    } // unlock
+                    // 受信者がいなくても送信を試行（正常動作）
+                    let _ = tx.send(chunk);
                 }
                 Err(e) => {
                     tracing::warn!("PtySlot reader error: {}", e);

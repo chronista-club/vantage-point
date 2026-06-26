@@ -17,9 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{
-    health, lanes, project_feed, prompt, stands, update, wire, world, ws_terminal,
-};
+use super::routes::{health, lanes, project_feed, prompt, stands, update, wire, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -358,10 +356,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // Canvas Project Feed 集約 WebSocket（全 Process のメッセージを Project Feed でラップして中継）
         // 注: URL `/ws/lanes` は外部互換のため維持。内部命名は `project_feed` (mem_1CaSsN7xj69aVQtLPQFJxQ 命名整理)
         .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
-        // Phase 2 (Architecture v4): vp-app から Lane の PtySlot に attach する WS endpoint。
-        // `?lane=<address>` で既存 LanePool の PtySlot に subscribe + write 経路を貼る。
-        // 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Lane = Session Process)
-        .route("/ws/terminal", get(ws_terminal::ws_terminal_handler))
         // Phase A4-2b: Lane (Conductor/Performer) lifecycle の REST endpoint
         // GET: list、 POST: Performer create (A6 minimum)
         .route(
@@ -953,8 +947,6 @@ pub async fn run_world(
             "/api/update/mac/rollback",
             post(update::update_mac_rollback),
         )
-        // VP-93 Step 2a: vp-app からの terminal WebSocket bridge
-        .route("/ws/terminal", get(ws_terminal::ws_terminal_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

@@ -152,6 +152,16 @@ pub enum AppEvent {
     /// `record` は SP response の record (= pane_contents の 1 行 JSON) か null (= empty)。
     /// app.rs event loop が `window.vpCanvas.handleMessage({type:'pp:state:loaded',...})` で push。
     PpStateLoaded { record: Option<serde_json::Value> },
+    /// terminal S4 (doc 27 §4.1): per-lane terminal session が World canvas channel から受信した
+    /// PTY 出力 1 chunk。 `data` は base64 (LaneTerminalOutput.data)。 event loop が
+    /// `window.vpTerminal.handleOutput(lane, data)` で当該 lane の xterm に inject する。
+    TerminalOutput { lane: String, data: String },
+    /// terminal S4: WebView (xterm onData) からの入力。 `data` は base64。 event loop が
+    /// 当該 lane の terminal session に渡し、 canvas channel 上り request `terminal_write` で SP へ。
+    TerminalWrite { lane: String, data: String },
+    /// terminal S4: WebView からの resize。 event loop が当該 lane の terminal session に渡し、
+    /// canvas channel 上り request `terminal_resize` で SP へ。
+    TerminalResize { lane: String, cols: u16, rows: u16 },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -170,9 +180,32 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
     };
 
     match parsed.get("t").and_then(|v| v.as_str()) {
-        Some("in") | Some("resize") | Some("ready") => {
-            // Phase 2.x-d: Lane WS が直接 SP に送信するので Rust 経路は使わない。
-            // 旧 single-term の互換のため受け取りは続けるが silent no-op。
+        Some("ready") => {
+            // per-Lane instance ごとに発火するが Rust 側で flush するものは無い (no-op)。
+        }
+        // terminal S4 (doc 27 §4.1): xterm onData / resize → per-lane terminal session →
+        // canvas channel 上り request で SP へ。 lane 必須、 data は base64 (write のみ)。
+        Some("term:write") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let data = parsed.get("data").and_then(|v| v.as_str());
+            if let (Some(lane), Some(data)) = (lane, data) {
+                let _ = proxy.send_event(AppEvent::TerminalWrite {
+                    lane: lane.to_string(),
+                    data: data.to_string(),
+                });
+            }
+        }
+        Some("term:resize") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let cols = parsed.get("cols").and_then(|v| v.as_u64());
+            let rows = parsed.get("rows").and_then(|v| v.as_u64());
+            if let (Some(lane), Some(cols), Some(rows)) = (lane, cols, rows) {
+                let _ = proxy.send_event(AppEvent::TerminalResize {
+                    lane: lane.to_string(),
+                    cols: cols as u16,
+                    rows: rows as u16,
+                });
+            }
         }
         Some("lanes:ensure-all") => {
             // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。

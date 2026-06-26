@@ -297,7 +297,7 @@ body{overflow:hidden;}
        → HIDDEN_TRANSFORM 適用 → pane が見えなくなる回帰を防ぐため (VP-141 fix)。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
   <!-- Phase 2.5 (per-Lane instance): pane-terminal 内に lane-host を置き、
-       Lane ごとに xterm.js + WebSocket instance を mount。 active な 1 つだけ display:block。 -->
+       Lane ごとに xterm.js instance を mount。 active な 1 つだけ display:block。 -->
   <!-- VP-140 fail-safe: pane-terminal は Frame Engine が apply される前から visible にしておく。
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
@@ -552,8 +552,9 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   }
 
   // ========= Phase 2.5: per-Lane instance registry =========
-  // Lane address → {term, fitAddon, ws, container, ro, webglAddon}
-  // Architecture v4: Lane = Session Process なので 1 Lane に 1 xterm.js + 1 WebSocket。
+  // Lane address → {term, fitAddon, writeOutput, sendResize, container, ro, webglAddon, webglCleanup}
+  // Architecture v4: Lane = Session Process なので 1 Lane に 1 xterm.js。 transport は terminal S4 で
+  //  World "canvas" channel + Rust per-lane terminal session に移行 (socket は JS が持たない)。
   // memory cost > switch reliability の trade-off で per-instance を選択 (user 決定)。
   const laneInstances = new Map();
 
@@ -567,7 +568,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   //  対象外: preview iframe (cross-context、 iframe 内に独立 listener が必要)。
   document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
 
-  function createLaneInstance(address, port) {
+  function createLaneInstance(address) {
     const host = document.getElementById('lane-host');
     if (!host) {
       console.error('createLaneInstance: lane-host not found');
@@ -890,132 +891,53 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       console.warn('[xterm:' + address + '] onTitleChange listener registration failed:', e);
     }
 
-    // ===== WebSocket: SP に直接接続 (Phase 2.5: Rust 側 mpsc 中継を撤去) =====
-    // URL: ws://127.0.0.1:<sp_port>/ws/terminal?lane=<address>&cols=&rows=
-    //
-    // Auto-reconnect (2026-04-28 PR #218): SP 再起動 / 一時的 network 断で WS が close した時、
-    // 指数バックオフ (500ms → 16s) で最大 10 回 retry。 user が removeLane() を呼ぶまでは
-    // disposed=false を保ち、 onclose を fail signal として扱う。 Phase 5-D で TUI→Process
-    // 経路に同 pattern (mem_1CYqH6rR7U6RBTxjyDHnfH) を実装済、 vp-app per-Lane WS にも横展開。
-    const RETRY_BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 16000, 16000, 16000, 16000, 16000];
-    const MAX_RETRIES = RETRY_BACKOFF_MS.length;
-    const conn = { ws: null, disposed: false, retryCount: 0, retryTimer: null };
-    // Input keystroke buffer (FIFO、 max 1000 chunk)。 reconnect 中の数百 ms ~ 数秒の窓で
-    //  user が typing した keystroke を保持して、 onopen で flush する。
-    //  「ASCII fast typing 後ろのキーストロークが消失」 (dogfood 観測) への対策 ─ 旧 code は
-    //  readyState !== OPEN で silent drop していたが、 reconnect 中に typing した分が消える。
-    //  上限 1000 chunk: 1 chunk ≈ 1-数 byte なので最大 ~10KB、 stuck 時の memory 暴走を防ぐ。
-    const inputBuffer = [];
-    const INPUT_BUFFER_MAX = 1000;
+    // ===== Transport: World "canvas" channel 経由 (terminal S4、 doc 27 §4.1) =====
+    // 旧 `/ws/terminal` browser-native WebSocket 直結を撤去し、 Rust 側 per-lane terminal session
+    // (app.rs `spawn_terminal_session`) に橋渡しする IPC 経路に直切替:
+    //   - 出力: Rust が World canvas channel から PTY bytes を受け、 `window.vpTerminal.handleOutput
+    //           (address, base64)` で inject (下記 coalescer で 1 frame 分まとめて term.write)。
+    //   - 入力: `term.onData` → IPC `{t:'term:write', lane, data:base64}` → Rust session → SP。
+    //   - resize: `sendResize` → IPC `{t:'term:resize', lane, cols, rows}` → Rust session → SP。
+    // 再接続は Rust session が担うので JS 側 retry/backoff/scrollback-replay は不要 (= 撤去)。
+
+    // 出力 coalescer: 1 frame 内に届いた複数 chunk を結合して 1 回 term.write する
+    //  (大量出力時の write 呼び出しオーバヘッド削減)。 64KiB 超で即 flush、 それ未満は rAF で束ねる。
+    const COALESCE_MAX_BYTES = 65536;
+    const outState = { queue: [], bytes: 0, scheduled: false };
+    function flushOutput() {
+      outState.scheduled = false;
+      if (outState.queue.length === 0) return;
+      const merged = new Uint8Array(outState.bytes);
+      let off = 0;
+      for (const chunk of outState.queue) { merged.set(chunk, off); off += chunk.length; }
+      outState.queue.length = 0;
+      outState.bytes = 0;
+      try { term.write(merged); } catch (_) {}
+    }
+    function writeOutput(bytes) {
+      outState.queue.push(bytes);
+      outState.bytes += bytes.length;
+      if (outState.bytes >= COALESCE_MAX_BYTES) {
+        flushOutput();
+      } else if (!outState.scheduled) {
+        outState.scheduled = true;
+        requestAnimationFrame(flushOutput);
+      }
+    }
 
     function sendResize() {
-      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
       try {
-        conn.ws.send(JSON.stringify({type:'resize', cols: term.cols, rows: term.rows}));
+        window.ipc.postMessage(JSON.stringify({ t: 'term:resize', lane: address, cols: term.cols, rows: term.rows }));
       } catch (_) {}
     }
 
-    function connectWs() {
-      if (conn.disposed) return;
-      const initCols = term.cols || 80;
-      const initRows = term.rows || 24;
-      const wsUrl = 'ws://127.0.0.1:' + port + '/ws/terminal?lane='
-        + encodeURIComponent(address)
-        + '&cols=' + initCols + '&rows=' + initRows;
-      const ws = new WebSocket(wsUrl);
-      ws.binaryType = 'arraybuffer';
-      conn.ws = ws;
-
-      ws.onopen = () => {
-        dbg('[lane:' + address + '] ws open');
-        if (conn.retryCount > 0) {
-          // reconnect: server は always full scrollback を replay する設計 (PR #218 で
-          //  WS auto-reconnect 導入後、 reconnect ごとに重複 scrollback が来る)。
-          //  既存 rendered state に scrollback を上書きすると、 同 ANSI sequence
-          //  (cursor positioning / erase / scroll 等) が二度処理されて render state が drift、
-          //  結果として ghost characters (mem_1CaVpvsBKR3ckieRXo1nwr) が出る。
-          //  対策: term.reset() で xterm.js を clean canvas に戻し、 直後の scrollback replay で
-          //  ground truth state を再構築する。 失う物は xterm.js own scrollback (history) のみ、
-          //  server 側 scrollback (256KB) は保持されるので次回 full attach で復活。
-          term.reset();
-          term.write('\x1b[32m[lane:' + address + '] reconnected\x1b[0m\r\n');
-        }
-        conn.retryCount = 0;
-        // active (可視) な lane のみ fit + resize 通知。 hidden lane (display:none)
-        //  で fit すると container clientWidth=0 → 極小 dims になり、 sendResize で
-        //  tmux session を 9×3 に潰す (tmux window-size latest)。 sidebar は全 project
-        //  分の lane を ensureLane → WS 接続するので、 ガード無しだと表示してない
-        //  project の Stand まで縮む。 headless lane は resize を送らず spawn 時 size
-        //  (tmux new-session -x120 -y48) を保つ。 ResizeObserver / showLane と同じ active ガード。
-        if (container.classList.contains('active')) {
-          try { fitAddon.fit(); } catch (_) {}
-          sendResize();
-        }
-      };
-      // 別 listener で input buffer flush ─ ws.onopen (property-based) と並走できる
-      // (addEventListener は property assignment を override しない)。 PR #224 等で
-      // onopen 本体が変更されてもこちらは独立、 conflict 回避。
-      ws.addEventListener('open', () => {
-        if (inputBuffer.length === 0) return;
-        const flushed = inputBuffer.length;
-        while (inputBuffer.length > 0 && conn.ws && conn.ws.readyState === WebSocket.OPEN) {
-          const d = inputBuffer.shift();
-          try {
-            conn.ws.send(new TextEncoder().encode(d));
-          } catch (_) {
-            // 送信失敗 = WS が closing/closed 状態。 残りは drop (次 reconnect で再現難しい)
-            inputBuffer.length = 0;
-            break;
-          }
-        }
-        dbg('[lane:' + address + '] input buffer flushed (' + flushed + ' chunks)');
-      });
-      ws.onmessage = (ev) => {
-        if (ev.data instanceof ArrayBuffer) {
-          term.write(new Uint8Array(ev.data));
-        } else if (typeof ev.data === 'string') {
-          // server からの error 等 (Text frame)
-          term.write('\r\n\x1b[33m[lane:' + address + '] ' + ev.data + '\x1b[0m\r\n');
-        }
-      };
-      ws.onclose = (ev) => {
-        dbg('[lane:' + address + '] ws close code=' + ev.code);
-        if (conn.disposed) return;
-        if (conn.retryCount >= MAX_RETRIES) {
-          term.write('\r\n\x1b[31m[lane:' + address + '] reconnect failed after '
-            + MAX_RETRIES + ' attempts, give up\x1b[0m\r\n');
-          return;
-        }
-        const wait = RETRY_BACKOFF_MS[conn.retryCount];
-        conn.retryCount++;
-        term.write('\r\n\x1b[33m[lane:' + address + '] disconnected (code=' + ev.code
-          + '), reconnecting in ' + wait + 'ms (' + conn.retryCount + '/' + MAX_RETRIES
-          + ')...\x1b[0m\r\n');
-        conn.retryTimer = setTimeout(connectWs, wait);
-      };
-      ws.onerror = () => {
-        // onerror 直後に onclose が必ず fire する (W3C spec) ので retry はそこで処理。
-        // ここでは log のみ ─ 「WebSocket error」 の冗長 noise を避ける。
-        dbg('[lane:' + address + '] ws error (will close)');
-      };
-    }
-
-    connectWs(); // initial connect
-
-    // input → WS (Rust 中継せず直接送信)。
-    //  reconnect 中 (readyState !== OPEN) は inputBuffer に積んで onopen で flush する ─
-    //  silent drop を避ける (dogfood で 「fast typing 後ろが消失」 と観測されてた問題)。
+    // input → IPC (Rust session → SP)。 d は xterm の UTF-16 string、 UTF-8 bytes に直して base64 化。
     term.onData((d) => {
-      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
-        inputBuffer.push(d);
-        if (inputBuffer.length > INPUT_BUFFER_MAX) {
-          inputBuffer.shift();
-          dbg('[lane:' + address + '] input buffer overflow, oldest dropped');
-        }
-        return;
-      }
       try {
-        conn.ws.send(new TextEncoder().encode(d));
+        const bytes = new TextEncoder().encode(d);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        window.ipc.postMessage(JSON.stringify({ t: 'term:write', lane: address, data: btoa(bin) }));
       } catch (e) {
         dbg('[lane:' + address + '] input send error: ' + e);
       }
@@ -1101,12 +1023,29 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     });
     ro.observe(container);
 
-    return { term, fitAddon, conn, container, ro, webglAddon, webglCleanup };
+    // writeOutput / sendResize は global vpTerminal.handleOutput / showLane / resize 観測者から呼ぶ。
+    return { term, fitAddon, writeOutput, sendResize, container, ro, webglAddon, webglCleanup };
   }
 
-  window.ensureLane = function(address, port) {
+  // terminal S4: Rust の per-lane terminal session が World canvas channel から受けた PTY 出力を
+  //  `window.vpTerminal.handleOutput(address, base64)` で注入してくる (canvas-handler.ts と同じ wry-IPC edge)。
+  window.vpTerminal = {
+    handleOutput(address, b64) {
+      const info = laneInstances.get(address);
+      if (!info) return;
+      let bytes;
+      try {
+        const bin = atob(b64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } catch (_) { return; }
+      info.writeOutput(bytes);
+    },
+  };
+
+  window.ensureLane = function(address) {
     if (laneInstances.has(address)) return;
-    const inst = createLaneInstance(address, port);
+    const inst = createLaneInstance(address);
     if (inst) {
       laneInstances.set(address, inst);
       dbg('[lane:' + address + '] ensured');
@@ -1122,13 +1061,11 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     }
     const active = laneInstances.get(address);
     if (active) {
-      // active 化直後の hidden→visible 遷移で fit / focus
+      // active 化直後の hidden→visible 遷移で fit / resize / focus
       setTimeout(() => {
         try {
           active.fitAddon.fit();
-          if (active.conn.ws && active.conn.ws.readyState === WebSocket.OPEN) {
-            active.conn.ws.send(JSON.stringify({type:'resize', cols: active.term.cols, rows: active.term.rows}));
-          }
+          active.sendResize();
           active.term.focus();
         } catch (_) {}
       }, 0);
@@ -1139,13 +1076,8 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     const info = laneInstances.get(address);
     if (!info) return;
     try {
-      // 意図的 dispose ─ retry loop を止めて、 onclose の reconnect スケジュールを抑止
-      info.conn.disposed = true;
-      if (info.conn.retryTimer) {
-        clearTimeout(info.conn.retryTimer);
-        info.conn.retryTimer = null;
-      }
-      if (info.conn.ws) info.conn.ws.close();
+      // terminal S4: socket は持たない (Rust session が transport)。 xterm + observer の dispose のみ。
+      //  session の停止は Rust 側 LanesLoaded reconcile が lane 消滅検知で行う (= map remove)。
       info.ro.disconnect();
       if (info.webglCleanup) { try { info.webglCleanup(); } catch (_) {} }
       if (info.webglAddon) { try { info.webglAddon.dispose(); } catch (_) {} }
@@ -1191,16 +1123,14 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
         if (cursorStyleChanged) info.term.options.cursorStyle = current.cursorStyle;
         if (needsFit) {
           info.fitAddon.fit();
-          if (info.conn && info.conn.ws && info.conn.ws.readyState === WebSocket.OPEN) {
-            info.conn.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
-          }
+          info.sendResize();
         }
       } catch (_) { /* noop on individual lane failure */ }
     }
   });
   tokenObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
 
-  // Lane WebSocket が直接 term.write するため、Rust 経路の terminal 出力は存在しない。
+  // terminal S4: PTY 出力は Rust の per-lane terminal session → window.vpTerminal.handleOutput 経由。
 
   // Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
   // `terminal.rs::handle_ipc_message` の `paste:request` → `AppEvent::PasteText` → `app.rs` event loop
@@ -1226,9 +1156,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       if (info.container.classList.contains('active')) {
         try {
           info.fitAddon.fit();
-          if (info.conn.ws && info.conn.ws.readyState === WebSocket.OPEN) {
-            info.conn.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
-          }
+          info.sendResize();
         } catch (_) {}
         break;
       }
