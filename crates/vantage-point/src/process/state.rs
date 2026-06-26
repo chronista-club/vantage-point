@@ -189,6 +189,14 @@ pub(crate) struct AppState {
     /// 既存 `lane_pool` / `project_stands` とは並立 (gradual migration、 PR-γ で GE も移管予定)。
     /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 / VP-120 / VP-135 / VP-136
     pub lane_capabilities: Option<Arc<RwLock<super::lane_capabilities::LaneCapabilitiesPool>>>,
+    /// S2 (doc 27 §4.1): demand-driven terminal pump の lane → JoinHandle map。
+    ///
+    /// World の demand hook が control reverse-route で `terminal_demand_start {lane}` を撃つと、
+    /// SP は当該 Lane の PtySlot output を購読する pump を spawn して本 map に保持する
+    /// (`process/terminal/data/{lane}/out` topic に route)。 `terminal_demand_stop {lane}` で
+    /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
+    /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
+    pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 impl AppState {
@@ -510,6 +518,7 @@ pub(crate) async fn build_test_app_state(
         project_stands: Arc::new(RwLock::new(ProjectStandsPool::new())),
         world_capabilities: None,
         lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
+        terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
     })
 }
 

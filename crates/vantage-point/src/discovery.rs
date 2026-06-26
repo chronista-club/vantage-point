@@ -459,6 +459,13 @@ pub fn spawn_canvas_keepalive(
                     // 接続ごとに topic_router を購読 (retained 初期配信 + live delta)。
                     // 再接続時は前 subscription を unsubscribe してから貼り直す。
                     let (sub_id, mut rx) = topic_router.subscribe("process/paisley-park/#").await;
+                    // S2 (doc 27 §4.1): terminal data も同 ingest 経路で push する
+                    // (lane PTY 出力 → World canvas router → surface)。 pump 自体は World の
+                    // demand hook が start/stop するので、 demand 不在なら本 subscription には
+                    // 何も流れない (= 無駄 push ゼロ)。 LanesSnapshot 等の dead data 混入を避ける
+                    // ため `process/#` 全広げはせず terminal/data に限定する。
+                    let (term_sub_id, mut rx_term) =
+                        topic_router.subscribe("process/terminal/data/#").await;
                     let mut conn_events = conn._client.subscribe_connection_events();
 
                     loop {
@@ -482,6 +489,25 @@ pub fn spawn_canvas_keepalive(
                                     None => break, // topic_router subscription 終了 (通常起きない)
                                 }
                             }
+                            recvd_term = rx_term.recv() => {
+                                match recvd_term {
+                                    Some((_topic, msg)) => {
+                                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                                        if conn.channel
+                                            .send_event("pane", &json)
+                                            .await
+                                            .is_err()
+                                        {
+                                            tracing::warn!(
+                                                "Canvas push: terminal send 失敗 → 再接続 (project={})",
+                                                project_dir
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    None => break,
+                                }
+                            }
                             conn_ev = conn_events.recv() => {
                                 use unison::network::ClientConnectionEvent;
                                 if let Ok(ClientConnectionEvent::Disconnected { reason }) = conn_ev {
@@ -494,6 +520,7 @@ pub fn spawn_canvas_keepalive(
                             }
                             _ = shutdown.cancelled() => {
                                 topic_router.unsubscribe(sub_id).await;
+                                topic_router.unsubscribe(term_sub_id).await;
                                 return;
                             }
                         }
@@ -501,6 +528,7 @@ pub fn spawn_canvas_keepalive(
 
                     // 再接続前に subscription を畳む (次接続で貼り直す)。
                     topic_router.unsubscribe(sub_id).await;
+                    topic_router.unsubscribe(term_sub_id).await;
                 }
                 Err(e) => {
                     tracing::debug!(

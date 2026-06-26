@@ -481,6 +481,78 @@ async fn handle_terminal_control(
 /// keepalive) の **両方**がこの関数を呼ぶことで、 「MCP が SP 直結」「MCP → World → SP
 /// reverse」どちらの経路でも同一の dispatch ロジック・同一の AppState 操作になる
 /// (L0 SP-portless: SP listen port を World 単一 endpoint に寄せても挙動不変)。
+/// S2 (doc 27 §4.1): terminal demand start ハンドラー。
+///
+/// World の TopicRouter demand hook が `process/terminal/data/{lane}/out` の購読者を
+/// 検知し、 control reverse-route で本 method を撃つ。 SP は当該 Lane の PtySlot output
+/// broadcast を購読する pump を spawn し、 per-lane terminal topic に route し始める
+/// (= 購読者が居る間だけ pump を回す demand-driven production)。
+async fn handle_terminal_demand_start(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if lane.is_empty() {
+        return Err("terminal_demand_start: lane 未指定".to_string());
+    }
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(&lane) else {
+        return Err(format!("terminal_demand_start: lane パース失敗: {}", lane));
+    };
+
+    // 当該 Lane の PtySlot output broadcast を購読 (Lane 不在 / PtySlot 無 = None)。
+    let rx = state.lane_pool.read().await.subscribe_output(&addr);
+    let Some(rx) = rx else {
+        // pump は張れないが demand 自体は受理 (Lane 起動後の再 demand 余地を残す)。
+        tracing::debug!("terminal_demand_start: Lane に PtySlot 無 (lane={})", lane);
+        return Ok(serde_json::json!({"status": "no_lane", "lane": lane}));
+    };
+
+    let handle = crate::process::terminal_pump::spawn_lane_terminal_pump(
+        lane.clone(),
+        rx,
+        state.topic_router.clone(),
+    );
+    // 既存 pump があれば差し替え (二重 demand_start でも 1 本に収束)。
+    if let Some(old) = state
+        .terminal_pumps
+        .write()
+        .await
+        .insert(lane.clone(), handle)
+    {
+        old.abort();
+    }
+    tracing::info!("terminal pump start (lane={})", lane);
+    Ok(serde_json::json!({"status": "started", "lane": lane}))
+}
+
+/// S2: terminal demand stop ハンドラー。 最後の購読者が消えたら pump を abort する。
+async fn handle_terminal_demand_stop(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if lane.is_empty() {
+        return Err("terminal_demand_stop: lane 未指定".to_string());
+    }
+    let removed = state.terminal_pumps.write().await.remove(&lane);
+    match removed {
+        Some(handle) => {
+            handle.abort();
+            tracing::info!("terminal pump stop (lane={})", lane);
+            Ok(serde_json::json!({"status": "stopped", "lane": lane}))
+        }
+        None => Ok(serde_json::json!({"status": "not_running", "lane": lane})),
+    }
+}
+
 pub(crate) async fn dispatch_process_method(
     state: &Arc<AppState>,
     method: &str,
@@ -495,6 +567,9 @@ pub(crate) async fn dispatch_process_method(
         }
         "watch_file" => handle_watch_file(state, payload).await,
         "unwatch_file" => handle_unwatch_file(state, payload).await,
+        // S2: demand-driven terminal pump (World demand hook → control reverse-route)
+        "terminal_demand_start" => handle_terminal_demand_start(state, payload).await,
+        "terminal_demand_stop" => handle_terminal_demand_stop(state, payload).await,
         "tmux_split" => handle_tmux_split(state, payload).await,
         "tmux_list" => handle_tmux_list(state).await,
         "tmux_close" => handle_tmux_close(state, payload).await,
@@ -1088,5 +1163,96 @@ mod tests {
         assert_eq!(normalize_agent_addr("agent@other", "vp"), "agent@other");
         assert_eq!(normalize_agent_addr("agent@vp/sub", "vp"), "agent@vp/sub");
         assert_eq!(normalize_agent_addr("canvas@vp", "vp"), "canvas@vp");
+    }
+
+    // =========================================================================
+    // S2 (doc 27 §4.1): demand-driven terminal pump の SP 側 e2e
+    // =========================================================================
+
+    /// 実 PtySlot を lane_pool に仕込み、 demand_start → pump 起動 → PTY 出力が
+    /// per-lane terminal topic に届く → demand_stop → pump 除去、 を 1 本で検証する
+    /// (World 側 demand hook の reverse-route 先 = SP dispatch の責務範囲)。
+    #[tokio::test]
+    async fn terminal_demand_start_routes_pty_output_then_stop() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::LaneAddress;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use std::time::Duration;
+
+        let state = build_test_app_state(None).await;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let addr = LaneAddress::conductor("vp");
+        let lane = addr.to_string(); // "vp/conductor"
+
+        // 実 PtySlot を attach (subscribe_output が Some を返す前提を作る)。
+        {
+            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            state
+                .lane_pool
+                .write()
+                .await
+                .insert_pty_slot(addr.clone(), slot, rx);
+        }
+
+        // surface 相当: SP topic_router に per-lane terminal topic を購読。
+        let topic = format!("process/terminal/data/{}/out", lane.replace('/', "~"));
+        let (_sub_id, mut srx) = state.topic_router.subscribe(&topic).await;
+
+        // demand_start → pump 起動。
+        let started = dispatch_process_method(
+            &state,
+            "terminal_demand_start",
+            serde_json::json!({ "lane": lane }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(started["status"], "started");
+        assert!(
+            state.terminal_pumps.read().await.contains_key(&lane),
+            "pump が登録される"
+        );
+
+        // shell プロンプト等の PTY 出力が terminal topic に流れてくる。
+        let (rtopic, msg) = tokio::time::timeout(Duration::from_secs(5), srx.recv())
+            .await
+            .expect("PTY 出力が terminal topic に届かない (timeout)")
+            .expect("topic channel closed");
+        assert_eq!(rtopic, topic);
+        assert!(matches!(msg, ProcessMessage::LaneTerminalOutput { .. }));
+
+        // demand_stop → pump abort + map 除去。
+        let stopped = dispatch_process_method(
+            &state,
+            "terminal_demand_stop",
+            serde_json::json!({ "lane": lane }),
+        )
+        .await
+        .expect("demand_stop");
+        assert_eq!(stopped["status"], "stopped");
+        assert!(
+            !state.terminal_pumps.read().await.contains_key(&lane),
+            "pump が除去される"
+        );
+    }
+
+    /// PtySlot を持たない Lane への demand_start は graceful に no_lane を返し pump を張らない。
+    #[tokio::test]
+    async fn terminal_demand_start_without_lane_is_graceful() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(
+            &state,
+            "terminal_demand_start",
+            serde_json::json!({ "lane": "vp/conductor" }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(res["status"], "no_lane");
+        assert!(state.terminal_pumps.read().await.is_empty());
     }
 }

@@ -945,22 +945,89 @@ async fn send_lanes_snapshot(
 ///
 /// "canvas-ingest" (SP push) と "canvas" (vp-app subscribe) のどちらが先でも、 同じ project の
 /// TopicRouter を共有する (= SP push が router に route し、 vp-app subscribe が同 router を購読)。
+///
+/// S2 (doc 27 §4.1): router 新規作成時に terminal demand hook を登録する。 surface が
+/// `process/terminal/data/{lane}/out` を購読した瞬間 (0→1) / 最後に離れた瞬間 (1→0) に、
+/// 当該 SP の control channel を逆用して `terminal_demand_start/stop {lane}` を撃つ
+/// (= 購読者が居る間だけ SP pump を回す demand-driven production)。
 #[allow(clippy::type_complexity)]
 async fn canvas_router_for(
     canvas_routers: &Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
+    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
     path_key: &str,
 ) -> Arc<crate::process::topic_router::TopicRouter> {
     // fast path: 既存 router を read lock で取得
     if let Some(router) = canvas_routers.read().await.get(path_key) {
         return router.clone();
     }
-    // slow path: write lock で get-or-create (race で 2 つ作られないよう entry で確定)
-    canvas_routers
-        .write()
-        .await
-        .entry(path_key.to_string())
-        .or_insert_with(|| Arc::new(crate::process::topic_router::TopicRouter::new()))
-        .clone()
+    // slow path: write lock で get-or-create。 race recheck で 2 重作成を防ぐ
+    // (entry().or_insert_with() は async な demand 登録を挟めないため手動 double-check)。
+    let mut routers = canvas_routers.write().await;
+    if let Some(router) = routers.get(path_key) {
+        return router.clone();
+    }
+    let router = Arc::new(crate::process::topic_router::TopicRouter::new());
+    register_terminal_demand(&router, control_channels.clone(), path_key.to_string());
+    routers.insert(path_key.to_string(), router.clone());
+    router
+}
+
+/// S2 (doc 27 §4.1 Cap2): project canvas router に terminal demand hook を登録する。
+///
+/// `process/terminal/data/+/out` の購読者増減を監視し、 0↔1 遷移で当該 SP に
+/// `terminal_demand_start/stop {lane}` を control reverse-route で撃つ。 cb は sync で呼ばれる
+/// ため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
+fn register_terminal_demand(
+    router: &Arc<crate::process::topic_router::TopicRouter>,
+    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    path_key: String,
+) {
+    router.register_demand("process/terminal/data/+/out", move |topic, active| {
+        // topic = `process/terminal/data/{lanekey}/out` → lane address を復元
+        // (topic key は LaneAddress の '/' を '~' に encode したもの。 逆変換する)。
+        let Some(lane_key) = topic.split('/').nth(3) else {
+            return;
+        };
+        let lane = lane_key.replace('~', "/");
+        let method = if active {
+            "terminal_demand_start"
+        } else {
+            "terminal_demand_stop"
+        };
+        let control_channels = control_channels.clone();
+        let path_key = path_key.clone();
+        tokio::spawn(async move {
+            let sp_ch = control_channels.read().await.get(&path_key).cloned();
+            match sp_ch {
+                Some(ch) => {
+                    if let Err(e) = ch
+                        .request::<serde_json::Value, serde_json::Value>(
+                            method,
+                            &serde_json::json!({ "lane": lane }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "terminal demand reverse-route 失敗 ({} lane={}): {}",
+                            method,
+                            lane,
+                            e
+                        );
+                    }
+                }
+                None => {
+                    // SP control channel 未接続 (SP 起動前に surface が subscribe した等)。
+                    // SP 接続後の再 demand 機構は follow-up (S2 polish)。
+                    tracing::debug!(
+                        "terminal demand: SP control channel 不在 (key={}, lane={}, {})",
+                        path_key,
+                        lane,
+                        method
+                    );
+                }
+            }
+        });
+    });
 }
 
 /// L0 SP-portless: project 単位 channel 共通の subscribe handshake を待つ。
@@ -971,6 +1038,20 @@ async fn canvas_router_for(
 /// (= 将来 channel 固有 field を足すなら、 その channel は本 helper から分離すること)。
 /// 接続断 / 不正 payload で `None`。
 async fn recv_subscribe_handshake(channel: &UnisonChannel) -> Option<String> {
+    recv_subscribe_handshake_with_pattern(channel)
+        .await
+        .map(|(path_key, _pattern)| path_key)
+}
+
+/// `recv_subscribe_handshake` の pattern 付き版 (S2 / doc 27 §4.1 step 1)。
+///
+/// subscribe payload に任意の `pattern` field を許す。 canvas channel は購読対象 topic を
+/// この pattern で指定する (例: terminal surface は `process/terminal/data/{lane}/out`)。
+/// 既存 vp-app は `pattern` を送らないので `None` を返し、 caller 側で paisley-park default に
+/// フォールバックする (= 既存 canvas 購読は無改造で動く)。
+async fn recv_subscribe_handshake_with_pattern(
+    channel: &UnisonChannel,
+) -> Option<(String, Option<String>)> {
     loop {
         let msg = channel.recv().await.ok()?;
         if msg.msg_type != MessageType::Request || msg.method != "subscribe" {
@@ -981,11 +1062,15 @@ async fn recv_subscribe_handshake(channel: &UnisonChannel) -> Option<String> {
             .get("project_path")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let pattern = payload
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let path_key = crate::capability::normalize_path_key(std::path::Path::new(project_path));
         let _ = channel
             .send_response(msg.id, "subscribe", &serde_json::json!({"status": "ok"}))
             .await;
-        return Some(path_key);
+        return Some((path_key, pattern));
     }
 }
 
@@ -1432,16 +1517,19 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。
     {
         let canvas_routers = state.canvas_routers.clone();
+        let control_channels = state.control_channels.clone();
         server
             .register_channel("canvas-ingest", {
                 move |_ctx, stream| {
                     let canvas_routers = canvas_routers.clone();
+                    let control_channels = control_channels.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         let Some(path_key) = recv_subscribe_handshake(&channel).await else {
                             return Ok(());
                         };
-                        let router = canvas_router_for(&canvas_routers, &path_key).await;
+                        let router =
+                            canvas_router_for(&canvas_routers, &control_channels, &path_key).await;
 
                         // SP から push される paisley-park ProcessMessage を router に route。
                         // event は method="pane"、 payload = ProcessMessage JSON (SP の canvas
@@ -1485,19 +1573,29 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // → vp-app の consumer (`run_canvas_session`) は接続先が変わっても無改造。
     {
         let canvas_routers = state.canvas_routers.clone();
+        let control_channels = state.control_channels.clone();
         server
             .register_channel("canvas", {
                 move |_ctx, stream| {
                     let canvas_routers = canvas_routers.clone();
+                    let control_channels = control_channels.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
-                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                        // S2: handshake で購読 pattern を受領 (省略時 paisley-park default で
+                        // 既存 vp-app を無改造に保つ)。 terminal surface は
+                        // `process/terminal/data/{lane}/out` を指定して demand を立てる。
+                        let Some((path_key, pattern)) =
+                            recv_subscribe_handshake_with_pattern(&channel).await
+                        else {
                             return Ok(());
                         };
-                        let router = canvas_router_for(&canvas_routers, &path_key).await;
+                        let router =
+                            canvas_router_for(&canvas_routers, &control_channels, &path_key).await;
 
-                        // SP の canvas channel と同じ subscribe: retained 初期配信 + live。
-                        let (sub_id, mut rx) = router.subscribe("process/paisley-park/#").await;
+                        // pattern 指定があればそれを、 無ければ paisley-park default を購読。
+                        let pattern =
+                            pattern.unwrap_or_else(|| "process/paisley-park/#".to_string());
+                        let (sub_id, mut rx) = router.subscribe(&pattern).await;
                         while let Some((_topic, msg)) = rx.recv().await {
                             let json = serde_json::to_value(&msg).unwrap_or_default();
                             if channel.send_event("pane", &json).await.is_err() {
