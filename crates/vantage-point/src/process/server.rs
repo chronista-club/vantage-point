@@ -379,59 +379,12 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // 残る SP route は health/shutdown のみ (MCP restart が pair で使う、 L0 finale で portless 化)。
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
-        // World API routes
-        .route(
-            "/api/world/projects",
-            get(world::world_list_projects).post(world::world_add_project),
-        )
-        .route(
-            "/api/world/projects/reorder",
-            post(world::world_reorder_projects),
-        )
-        .route(
-            "/api/world/projects/update",
-            post(world::world_update_project),
-        )
-        .route(
-            "/api/world/projects/remove",
-            post(world::world_remove_project),
-        )
-        .route(
-            "/api/world/projects/reload",
-            post(world::world_reload_projects),
-        )
-        .route("/api/world/projects/set_slot", post(world::world_set_slot))
-        .route(
-            "/api/world/projects/unassign_slot",
-            post(world::world_unassign_slot),
-        )
-        .route("/api/world/projects/sync", post(world::world_sync_projects))
-        .route("/api/world/processes", get(world::world_list_processes))
-        .route(
-            "/api/world/lanes",
-            get(world::world_list_lanes).post(world::world_create_lane),
-        )
-        .route(
-            "/api/world/lanes/active",
-            post(world::world_set_active_lane),
-        )
-        .route(
-            "/api/world/processes/{project_name}/start",
-            post(world::world_start_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/stop",
-            post(world::world_stop_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/restart",
-            post(world::world_restart_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/pointview",
-            post(world::world_open_pointview),
-        )
-        .route("/api/world/refresh", post(world::world_refresh))
+        // L0 portless Group C-2: SP router の `/api/world/*` block は dead copy のため撤去。
+        // run()(SP) の AppState は `world: None` で、 world handler は全て `let Some(world) =
+        // &state.world else {..}` で早期 return する非機能 vestige (run/run_world が route 構築を
+        // 共有していた名残)。 実 consumer (vp-app=DEFAULT_WORLD_PORT / world_client=WORLD_PORT) は
+        // 全て World :32000 を叩くので SP の copy は consumer ゼロ。 handler 本体は run_world
+        // (world: Some) が使うため routes/world.rs に残置 (SP の route 登録のみ外す)。
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
