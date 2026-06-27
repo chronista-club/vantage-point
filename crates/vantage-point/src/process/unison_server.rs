@@ -876,6 +876,18 @@ pub(crate) async fn dispatch_process_method(
         "lane_restart" => handle_lane_restart(state, payload).await,
         // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
         "stands_list" => handle_stands_list().await,
+        // L0 finale: terminal_token を QUIC で返す (旧 SP HTTP /api/health の token fetch を置換)。
+        // 旧 TUI `vp hd attach` の terminal bridge auth 用。 token は localhost auth 用で HTTP 時代と
+        // 同様に未認証で取得可 (SP QUIC server は同 port = QUIC_PORT_OFFSET 0 に残る)。
+        "terminal_token" => Ok(serde_json::json!({ "token": state.terminal_token.clone() })),
+        // L0 finale: SP graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、
+        // World stop_process / restart_process 用)。 shutdown_token.cancel() で graceful 停止
+        // (DB close 等)。 SP が即 QUIC server を畳むため応答が返らない事もあるが best-effort。
+        "shutdown" => {
+            tracing::info!("Shutdown requested via QUIC dispatch");
+            state.shutdown_token.cancel();
+            Ok(serde_json::json!({"status": "shutting_down"}))
+        }
         "tmux_split" => handle_tmux_split(state, payload).await,
         "tmux_list" => handle_tmux_list(state).await,
         "tmux_close" => handle_tmux_close(state, payload).await,

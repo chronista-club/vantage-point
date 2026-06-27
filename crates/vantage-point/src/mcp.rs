@@ -1255,42 +1255,28 @@ impl VantageMcp {
         for _ in 0..max_attempts {
             tokio::time::sleep(poll_interval).await;
 
-            // 稼働中 Process を検索（TheWorld API → HTTP スキャンフォールバック）
+            // L0 finale: 稼働中 SP を World registry から検索 (find_for_cwd = query_world)。
+            // SP の readiness = registry 登録済 (= Some) で確定。 旧 SP `/api/health` probe は
+            // HTTP listener 撤去で不可、 QUIC 自己登録自体が起動完了の signal。
             let process_info = match crate::discovery::find_for_cwd().await {
                 Some(info) => info,
                 None => continue,
             };
 
+            // 起動完了 — process_url / process_port を更新、QUIC チャネルもリセット
             let new_base = format!("http://[::1]:{}", process_info.port);
-            let health_url = format!("{}/api/health", new_base);
+            *self.process_url.lock().await = new_base.clone();
+            *self.process_port.lock().await = process_info.port;
+            *self.process_channel.lock().await = None;
 
-            // health check
-            match self
-                .client
-                .get(&health_url)
-                .timeout(Duration::from_secs(2))
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    // 起動完了 — process_url / process_port を更新、QUIC チャネルもリセット
-                    let mut current = self.process_url.lock().await;
-                    *current = new_base.clone();
-                    *self.process_port.lock().await = process_info.port;
-                    *self.process_channel.lock().await = None;
-
-                    write_trace(&TraceEntry::new(
-                        "mcp",
-                        &tid,
-                        "auto_start",
-                        "INFO",
-                        format!("Process 自動起動成功: port={}", process_info.port),
-                    ));
-
-                    return Some(format!("{}{}", new_base, endpoint));
-                }
-                _ => continue,
-            }
+            write_trace(&TraceEntry::new(
+                "mcp",
+                &tid,
+                "auto_start",
+                "INFO",
+                format!("Process 自動起動成功: port={}", process_info.port),
+            ));
+            return Some(format!("{}{}", new_base, endpoint));
         }
 
         write_trace(&TraceEntry::new(
@@ -2886,121 +2872,54 @@ if bestId > 0 { print(bestId) }
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<RestartParams>,
     ) -> Result<CallToolResult, McpError> {
-        let url = self.process_url.lock().await;
-        let base_url = url.clone();
-        drop(url);
+        let _ = params;
+        // L0 finale (Push-only): 旧 SP HTTP の手動 shutdown+respawn dance (`/api/health` poll +
+        // `/api/shutdown` + `vp start` 子 spawn) を撤去し、 World :32000 の restart API に委譲する。
+        // World の `restart_process` が stop + `start_process`（registry-based launch verify）を
+        // atomically 実行。 旧 respawn の `vp start` は撤去済の存在しないコマンドで既に壊れていた
+        // (CLAUDE.md) ため、 本移行は fix も兼ねる。
+        let config = crate::config::Config::load().ok();
+        let project_name = match &config {
+            Some(c) => crate::resolve::project_name_from_path(self.project_path.as_str(), c),
+            None => std::path::Path::new(self.project_path.as_str())
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        };
 
-        // URL からポートを抽出（失敗時は VP_PROCESS_PORT → 33000 の順でフォールバック）
-        let port: u16 = base_url
-            .split(':')
-            .next_back()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| {
-                std::env::var("VP_PROCESS_PORT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(33000)
-            });
-
-        // 1. Get current Process info (project_dir)
-        let health_url = format!("{}/api/health", base_url);
-        let health_resp = self.client.get(&health_url).send().await.map_err(|e| {
-            McpError::internal_error(format!("Failed to get Process health: {}", e), None)
-        })?;
-
-        let health: serde_json::Value = health_resp.json().await.map_err(|e| {
-            McpError::internal_error(format!("Failed to parse health response: {}", e), None)
-        })?;
-
-        let project_dir = health
-            .get("project_dir")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".")
-            .to_string();
-
-        // 2. Send shutdown request
-        let shutdown_url = format!("{}/api/shutdown", base_url);
-        let _ = self.client.post(&shutdown_url).send().await;
-
-        // 3. Wait for Process to stop (poll health endpoint)
-        let stop_timeout = Duration::from_secs(10);
-        let poll_interval = Duration::from_millis(200);
-        let start = std::time::Instant::now();
-
-        loop {
-            if start.elapsed() > stop_timeout {
-                return Err(McpError::internal_error(
-                    "Timeout waiting for Process to stop".to_string(),
-                    None,
-                ));
-            }
-
-            match self.client.get(&health_url).send().await {
-                Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                    // Still running, wait
-                    tokio::time::sleep(poll_interval).await;
-                }
-                _ => {
-                    // Process is down
-                    break;
-                }
-            }
+        let url = format!(
+            "http://[::1]:{}/api/world/processes/{}/restart",
+            crate::cli::WORLD_PORT,
+            project_name
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(45))
+            .send()
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("World restart に到達できません: {}", e), None)
+            })?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(McpError::internal_error(
+                format!("World restart {}: {}", status, body),
+                None,
+            ));
         }
 
-        // 4. Start new Process process
-        let open_viewer = params.open_viewer.unwrap_or(false);
-        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
-        let mut cmd = std::process::Command::new(&vp_bin);
-        cmd.arg("start")
-            .arg("-C")
-            .arg(&project_dir)
-            .arg("-p")
-            .arg(port.to_string());
+        // QUIC チャネルをリセットして再接続を強制（新 SP に張り直す）
+        *self.process_channel.lock().await = None;
 
-        if !open_viewer {
-            cmd.arg("--headless");
-        }
-
-        // Spawn detached process
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        cmd.spawn().map_err(|e| {
-            McpError::internal_error(format!("Failed to spawn new Process: {}", e), None)
-        })?;
-
-        // 5. Wait for new Process to be ready
-        let start_timeout = Duration::from_secs(15);
-        let start = std::time::Instant::now();
-
-        loop {
-            if start.elapsed() > start_timeout {
-                return Err(McpError::internal_error(
-                    "Timeout waiting for Process to start".to_string(),
-                    None,
-                ));
-            }
-
-            tokio::time::sleep(poll_interval).await;
-
-            match self.client.get(&health_url).send().await {
-                Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                    // Process is up — QUIC チャネルをリセットして再接続を強制
-                    *self.process_channel.lock().await = None;
-
-                    return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                        format!(
-                            "Process restarted successfully on port {}. Project: {}",
-                            port, project_dir
-                        ),
-                    )]));
-                }
-                _ => {
-                    // Not ready yet, continue polling
-                }
-            }
-        }
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!(
+                "Process '{}' を World restart で再起動: {}",
+                project_name, body
+            ),
+        )]))
     }
 
     // =========================================================================
