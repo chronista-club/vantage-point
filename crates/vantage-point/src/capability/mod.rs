@@ -16,6 +16,7 @@
 pub mod actor_registry;
 pub mod agent_capability;
 pub mod core;
+pub mod delegation_store;
 pub mod eventbus;
 pub mod evolution;
 #[cfg(feature = "midi")]
@@ -47,3 +48,5 @@ pub use update_capability::UpdateCapability;
 // R2-a: store は TheWorld に中央化 (cross-process forward = wire_remote は撤去、
 // 設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-b)。
 pub use wiremsg_store::{ParticipantStatus, WireMessage, WireNotifier, WiremsgStore};
+// 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。 委譲型は crate 内部なので pub(crate)。
+pub(crate) use delegation_store::DelegationStore;

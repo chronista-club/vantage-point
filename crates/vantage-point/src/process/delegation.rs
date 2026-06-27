@@ -14,7 +14,8 @@
 //!     [AwaitingResponse] ─requester respond(ans) → [Active] ─wake doer→ B が回答付きで再開（loop）
 //! ```
 //! nostos 三相 Done / Reborn / Failed を完全実装（Reborn = NeedsInput、`respond` で Active へ loop）。
-//! pull-hook・reconcile・timeout・wire-store backing・federation は doc 28 §7 staging の follow-up。
+//! record は **TheWorld 中央 store（SurrealDB）** に永続化（wire-store backing 済、doc 28 §6 / 下記）。
+//! pull-hook・reconcile・timeout・federation は doc 28 §7 staging の follow-up。
 //!
 //! ## federation 不変条件（v1 で焼き込む）
 //! - record の `requester` / `doer` は**論理 wire address**（`agent@<project>` /
@@ -27,10 +28,11 @@ use serde::{Deserialize, Serialize};
 
 use super::state::AppState;
 
-/// 委譲 1 件の record（in-memory SP store のエントリ）。
+/// 委譲 1 件の record（TheWorld 中央 store = `delegations` table のエントリ）。
 ///
-/// `requester` / `doer` は論理 wire address（federation 不変条件）。spike では wire-store backing
-/// を持たず `AppState.delegations` の in-memory map に置く（durable 化は follow-up）。
+/// `requester` / `doer` は論理 wire address（federation 不変条件）。SP は `world_wire::call` で
+/// World に proxy し、record は SurrealDB に永続化される（durable、SP 再起動を跨いで生存。
+/// 永続/遷移ロジックは `capability::delegation_store::DelegationStore` が SSOT）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Delegation {
     /// 委譲 id（`dlg-<uuid>`）。complete / respond が参照する future handle。
@@ -49,8 +51,11 @@ pub(crate) struct Delegation {
 }
 
 /// 委譲の lifecycle 状態（nostos Bracket の spike 版縮約）。
+///
+/// serde は snake_case（`pending` / `active` / `awaiting_response` / `done` / `failed`）。
+/// World 中央 store（`delegations` table）の `state` field 文字列と一致させる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum DelegationState {
     /// record 作成済、doer 未 wake。
     Pending,
@@ -158,9 +163,9 @@ fn respond_wake_prompt(id: &str, task: &str, answer: &str) -> String {
 
 /// `delegate(doer, task, requester) → {id}`（doc 28 §4 / 動詞 1）。
 ///
-/// id 採番 → record(Pending) を store → doer を wake → Active に遷移して `{id}` を返す。
-/// wake 失敗（doer lane 不在 / tmux 不在）は graceful に握る（record は durable、取りこぼしは
-/// reconcile / pull-hook が後で拾う = follow-up）。`woke` で wake 成否を返す。
+/// id 採番 → World 中央 store に persist（durable）→ doer を SP-local wake → delivered 記録。
+/// store は wire と同じく TheWorld 中央（`world_wire::call`）。wake は SP-local（`nudge_lane`、
+/// doer が別 SP / 不在なら `woke=false` で graceful、取りこぼしは reconcile が後で拾う = follow-up B）。
 pub(crate) async fn handle_delegate(
     state: &AppState,
     payload: serde_json::Value,
@@ -186,33 +191,17 @@ pub(crate) async fn handle_delegate(
 
     let id = format!("dlg-{}", uuid::Uuid::new_v4());
 
-    // record(Pending) を store。requester / doer は論理 wire address のまま保持。
-    {
-        let mut map = state.delegations.write().await;
-        map.insert(
-            id.clone(),
-            Delegation {
-                id: id.clone(),
-                requester: requester.clone(),
-                doer: doer.clone(),
-                task: task.clone(),
-                state: DelegationState::Pending,
-                outcome: None,
-            },
-        );
-    }
+    // World 中央 store に persist（durable、reconcile の駆動源）。
+    super::world_wire::call(
+        "/api/delegation/create",
+        serde_json::json!({ "id": id, "requester": requester, "doer": doer, "task": task }),
+    )
+    .await?;
 
-    // doer を wake（resumable continuation を送る）。
+    // doer を SP-local で wake（resumable continuation を送る）。
     let prompt = doer_wake_prompt(&id, &requester, &task);
     let woke = state.nudge_lane(&doer, &prompt).await;
-
-    // wake 成否に関わらず Active に遷移（durable record の await を登録した状態）。
-    {
-        let mut map = state.delegations.write().await;
-        if let Some(d) = map.get_mut(&id) {
-            d.state = DelegationState::Active;
-        }
-    }
+    mark_delivered(&id, woke).await;
 
     state.send_debug(
         "agent",
@@ -225,8 +214,8 @@ pub(crate) async fn handle_delegate(
 
 /// `complete(id, outcome)`（doc 28 §4 / 動詞 2）。
 ///
-/// record を Done / Failed に更新 → requester を wake（Outcome 同梱）。未知 id は Err。
-/// requester の wake 失敗は graceful（`woke` で返す）。
+/// World store で transition（Done/Failed/AwaitingResponse）→ 更新後 record を受け取り requester を
+/// SP-local wake（Outcome 同梱）。未知 id は World handler が error を返し、`world_wire::call` 経由で Err。
 pub(crate) async fn handle_complete(
     state: &AppState,
     payload: serde_json::Value,
@@ -245,39 +234,22 @@ pub(crate) async fn handle_complete(
             serde_json::from_value(v).map_err(|e| format!("complete: invalid outcome ({e})"))
         })?;
 
-    // record を更新（未知 id は Err）。wake prompt に requester / doer / task が要る。
-    let (requester, doer, task, new_state) = {
-        let mut map = state.delegations.write().await;
-        let d = map
-            .get_mut(&id)
-            .ok_or_else(|| format!("complete: unknown delegation id: {id}"))?;
-        let new_state = match &outcome {
-            Outcome::Done { .. } => DelegationState::Done,
-            Outcome::Failed { .. } => DelegationState::Failed,
-            // NeedsInput は非終端: doer が await に入り、requester の respond を待つ。
-            Outcome::NeedsInput { .. } => DelegationState::AwaitingResponse,
-        };
-        d.state = new_state;
-        d.outcome = Some(outcome.clone());
-        (
-            d.requester.clone(),
-            d.doer.clone(),
-            d.task.clone(),
-            new_state,
-        )
-    };
+    // World store で transition。返り = 更新後 record（{id, requester, doer, task, state, outcome}）。
+    // 未知 id は World handler が `{error}` を返す → world_wire::call が Err にする。
+    let rec = super::world_wire::call(
+        "/api/delegation/complete",
+        serde_json::json!({ "id": id, "outcome": outcome }),
+    )
+    .await?;
+    let requester = rec["requester"].as_str().unwrap_or_default().to_string();
+    let doer = rec["doer"].as_str().unwrap_or_default().to_string();
+    let task = rec["task"].as_str().unwrap_or_default().to_string();
+    let state_str = rec["state"].as_str().unwrap_or("done").to_string();
 
-    // requester を wake（Outcome を同梱した resumable continuation。NeedsInput は質問を届ける）。
+    // requester を SP-local wake（NeedsInput は質問を、Done/Failed は outcome を届ける）。
     let prompt = requester_wake_prompt(&id, &doer, &task, &outcome);
     let woke = state.nudge_lane(&requester, &prompt).await;
-
-    let state_str = match new_state {
-        DelegationState::Done => "done",
-        DelegationState::Failed => "failed",
-        DelegationState::AwaitingResponse => "awaiting_response",
-        // delegate→Active 経由でしか complete に来ないので Pending/Active は不到達。
-        _ => "active",
-    };
+    mark_delivered(&id, woke).await;
 
     state.send_debug(
         "agent",
@@ -290,10 +262,9 @@ pub(crate) async fn handle_complete(
 
 /// `respond(id, answer)`（doc 28 §4 / 動詞 3）。
 ///
-/// NeedsInput(=Reborn) で問い返した doer に requester の回答を注入 → doer を再 wake、Active に戻す。
-/// 未知 id は Err。状態が AwaitingResponse でないときも回答自体は届けて Active に戻す（lenient: 例えば
-/// push 取りこぼし後の手動 respond でも前進させる。厳密な遷移ガードは reconcile/state 機 follow-up）。
-/// doer の wake 失敗は graceful（`woke` で返す）。
+/// World store で Active に戻す（NeedsInput の outcome を消費）→ 更新後 record を受け取り doer を
+/// answer 同梱で再 wake。未知 id は World handler が error を返す。状態 AwaitingResponse でなくても
+/// 前進させる lenient 設計は World store 側（`apply_respond`）が担保（厳密ガードは reconcile follow-up）。
 pub(crate) async fn handle_respond(
     state: &AppState,
     payload: serde_json::Value,
@@ -311,21 +282,16 @@ pub(crate) async fn handle_respond(
         .ok_or("respond: 'answer' required")?
         .to_string();
 
-    // record を Active に戻す（未知 id は Err）。doer の再 wake に task が要る。
-    let (doer, task) = {
-        let mut map = state.delegations.write().await;
-        let d = map
-            .get_mut(&id)
-            .ok_or_else(|| format!("respond: unknown delegation id: {id}"))?;
-        d.state = DelegationState::Active;
-        // NeedsInput の outcome は回答で消費される（次の complete まで未確定）。
-        d.outcome = None;
-        (d.doer.clone(), d.task.clone())
-    };
+    // World store で Active に戻す。返り = 更新後 record（doer / task が doer 再 wake に要る）。
+    let rec =
+        super::world_wire::call("/api/delegation/respond", serde_json::json!({ "id": id })).await?;
+    let doer = rec["doer"].as_str().unwrap_or_default().to_string();
+    let task = rec["task"].as_str().unwrap_or_default().to_string();
 
     // doer を再 wake（answer 同梱の continuation）。
     let prompt = respond_wake_prompt(&id, &task, &answer);
     let woke = state.nudge_lane(&doer, &prompt).await;
+    mark_delivered(&id, woke).await;
 
     state.send_debug(
         "agent",
@@ -334,6 +300,17 @@ pub(crate) async fn handle_respond(
     );
 
     Ok(serde_json::json!({ "id": id, "state": "active", "woke": woke }))
+}
+
+/// wake の woke 結果を World store に記録する（best-effort、失敗は無視）。
+///
+/// delivered=false の record を follow-up B（reconcile）が再 nudge、C（pull-hook）が poll する。
+async fn mark_delivered(id: &str, delivered: bool) {
+    let _ = super::world_wire::call(
+        "/api/delegation/mark_delivered",
+        serde_json::json!({ "id": id, "delivered": delivered }),
+    )
+    .await;
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! ルートハンドラーモジュール
 
+pub mod delegation;
 pub mod health;
 pub mod lanes;
 pub mod prompt;

@@ -197,13 +197,13 @@ pub(crate) struct AppState {
     /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
     /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
     pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    /// Agent 委譲 (delegation) の in-memory store — `id` → `Delegation` (doc 28 §4 / v1 spike)。
+    /// Agent 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。
     ///
-    /// `delegate` で record(Pending→Active) を入れ、`complete` で Done/Failed に更新する。
-    /// `terminal_pumps` と同じく per-SP の揮発 state（durable 化 = wire-store backing は
-    /// follow-up）。federation 不変条件: requester/doer は論理 wire address で持つ
-    /// (cf. `process/delegation.rs`)。
-    pub delegations: Arc<RwLock<HashMap<String, super::delegation::Delegation>>>,
+    /// **World mode (`run_world`) でのみ Some**、SP mode (`run`) では None。delegation record は
+    /// wire と同じく TheWorld の SurrealDB に中央化 (durable、SP 再起動を跨いで生存、World
+    /// reconcile loop の駆動源)。SP の `handle_delegate` 等は `world_wire::call("/api/delegation/*")`
+    /// でここに proxy する (wake = SP-local nudge は保持、cf. `process/delegation.rs`)。
+    pub delegation_store: Option<crate::capability::DelegationStore>,
 }
 
 impl AppState {
@@ -550,7 +550,9 @@ pub(crate) async fn build_test_app_state(
         world_capabilities: None,
         lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
-        delegations: Arc::new(RwLock::new(HashMap::new())),
+        // test fixture は SP 相当 (World store 無し)。delegation の store test は
+        // capability::delegation_store の単体 test が担う。
+        delegation_store: None,
     })
 }
 

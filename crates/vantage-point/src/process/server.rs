@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, prompt, update, wire, world};
+use super::routes::{delegation, health, lanes, prompt, update, wire, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -206,7 +206,8 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             super::lane_capabilities::LaneCapabilitiesPool::new(),
         ))),
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        delegations: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        // SP mode は delegation store を持たない (World 中央 store に proxy する)。
+        delegation_store: None,
     });
 
     // Phase review fix #2: LanePool::with_conductor は内部で PtySlot::spawn (openpty + spawn_command)
@@ -727,6 +728,11 @@ pub async fn run_world(
         None => None,
     };
 
+    // 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。wire と同じく TheWorld の DB に持つ。
+    let delegation_store = vpdb
+        .as_ref()
+        .map(|db| crate::capability::DelegationStore::new(std::sync::Arc::new(db.inner().clone())));
+
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
@@ -782,8 +788,8 @@ pub async fn run_world(
         lane_capabilities: None,
         // S2: World mode は SP の per-lane pump を持たない (terminal pump は SP scope)。
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        // 委譲 store も SP scope (delegate/complete は SP dispatch)。World は空で構築。
-        delegations: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        // 委譲 (delegation) の World 中央 store (doc 28 §6)。World mode のみ Some。
+        delegation_store,
     });
 
     // R2-b: wire delivery loop (未 ack command の tmux nudge + 再掲示) を spawn。
@@ -881,6 +887,23 @@ pub async fn run_world(
             post(wire::world_wire_latest_msg_handler),
         )
         .route("/api/wire/ack", post(wire::world_wire_ack_handler))
+        // 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。SP が world_wire::call で叩く。
+        .route(
+            "/api/delegation/create",
+            post(delegation::world_delegation_create_handler),
+        )
+        .route(
+            "/api/delegation/complete",
+            post(delegation::world_delegation_complete_handler),
+        )
+        .route(
+            "/api/delegation/respond",
+            post(delegation::world_delegation_respond_handler),
+        )
+        .route(
+            "/api/delegation/mark_delivered",
+            post(delegation::world_delegation_mark_delivered_handler),
+        )
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
