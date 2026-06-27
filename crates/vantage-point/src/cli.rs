@@ -7,7 +7,11 @@ use clap::ValueEnum;
 
 use crate::protocol::DebugMode;
 
-/// Health response from Process
+/// World daemon (:32000) の `/api/health` レスポンス parser。
+///
+/// L0 finale: SP は HTTP listener を撤去したが、 **World daemon は HTTP を保持**するため (daemon/process.rs
+/// が World 自身の health を読む)、 この struct は残す。 旧 SP /api/health 用の用途 (check_status /
+/// scan_instances) は撤去済。
 #[derive(serde::Deserialize)]
 pub struct HealthResponse {
     pub status: String,
@@ -17,99 +21,36 @@ pub struct HealthResponse {
     pub project_dir: Option<String>,
 }
 
-/// Check if Process is running on the specified port
-pub async fn check_status(port: u16) -> Result<()> {
-    let url = format!("http://[::1]:{}/api/health", port);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
-
-    match client.get(&url).send().await {
-        Ok(response) => {
-            if response.status().is_success() {
-                match response.json::<HealthResponse>().await {
-                    Ok(health) => {
-                        println!("✓ vp is running on port {}", port);
-                        println!("  Version: {}", health.version);
-                        println!("  PID: {}", health.pid);
-                        if let Some(ref dir) = health.project_dir {
-                            println!("  Project: {}", dir);
-                        }
-                        println!("  Status: {}", health.status);
-                    }
-                    Err(_) => {
-                        // Old version returning plain text
-                        println!("✓ vp is running on port {}", port);
-                    }
-                }
-            } else {
-                println!("✗ vp returned error: {}", response.status());
-            }
-        }
-        Err(e) => {
-            if e.is_connect() {
-                println!("✗ vp is not running on port {}", port);
-            } else if e.is_timeout() {
-                println!("✗ vp is not responding (timeout)");
-            } else {
-                println!("✗ Failed to connect: {}", e);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Stop the Process running on the specified port
+/// 指定 port の SP を停止する (registry PID + QUIC graceful shutdown + force_kill)。
+///
+/// L0 finale: 旧 SP HTTP (`/api/health` で PID 取得 + `/api/shutdown`) を撤去。 PID は World registry
+/// (`discovery::list`) から引き、 graceful は `discovery::send_sp_shutdown` (QUIC) で送る。 timeout で
+/// force_kill にフォールバック。 `restart-all` / `stop_by_target` が共有。
 pub async fn stop_process(port: u16) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
-
-    // First, get the PID via health endpoint
-    let health_url = format!("http://[::1]:{}/api/health", port);
-    let pid = match client.get(&health_url).send().await {
-        Ok(response) if response.status().is_success() => {
-            match response.json::<HealthResponse>().await {
-                Ok(health) => Some(health.pid),
-                Err(_) => None,
-            }
-        }
-        Ok(_) => None,
-        Err(e) => {
-            if e.is_connect() {
-                println!("✗ vp is not running on port {}", port);
-                return Ok(());
-            }
-            None
-        }
-    };
-
+    let pid = crate::discovery::list()
+        .await
+        .into_iter()
+        .find(|p| p.port == port)
+        .map(|p| p.pid);
     let Some(pid) = pid else {
-        println!("✗ Could not get Process PID");
+        println!("✗ port {} に稼働 SP が registry に居ません", port);
         return Ok(());
     };
 
     println!("Stopping vp (PID: {})...", pid);
 
-    // Request graceful shutdown via API
-    let shutdown_url = format!("http://[::1]:{}/api/shutdown", port);
-    let _ = client.post(&shutdown_url).send().await;
+    // graceful shutdown を QUIC `shutdown` dispatch で送る (best-effort)
+    let _ = crate::discovery::send_sp_shutdown(port).await;
 
-    // Wait up to 10 seconds for graceful shutdown
+    // graceful 完了を待ち、 timeout で force_kill にフォールバック
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(10);
-
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // Check if process is still running
         if !is_process_running(pid) {
             println!("✓ vp stopped gracefully");
             return Ok(());
         }
-
         if start.elapsed() > timeout {
             println!("⚠ Graceful shutdown timed out, forcing kill...");
             force_kill(pid);
@@ -158,54 +99,19 @@ pub const PORT_RANGE_END: u16 = 33024;
 /// TheWorld（Daemon 統合）のデフォルトポート
 pub const WORLD_PORT: u16 = 32000;
 
-/// Running instance info
-#[derive(Clone)]
-pub struct Instance {
-    pub port: u16,
-    pub pid: u32,
-    pub version: String,
-    pub project_dir: Option<String>,
-}
-
-/// Scan for running vp instances
-pub async fn scan_instances() -> Vec<Instance> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(500))
-        .build()
-        .unwrap();
-
-    let mut instances = Vec::new();
-
-    for port in PORT_RANGE_START..=PORT_RANGE_END {
-        let url = format!("http://[::1]:{}/api/health", port);
-        if let Ok(response) = client.get(&url).send().await
-            && response.status().is_success()
-            && let Ok(health) = response.json::<HealthResponse>().await
-        {
-            instances.push(Instance {
-                port,
-                pid: health.pid,
-                version: health.version,
-                project_dir: health.project_dir,
-            });
-        }
-    }
-
-    instances
-}
-
-/// 稼働中インスタンスをプロジェクト名ベースで一覧表示
+/// 稼働中インスタンスをプロジェクト名ベースで一覧表示する。
+///
+/// L0 finale: SP は HTTP listener を持たないため真実源は World registry (`discovery::list` =
+/// World :32000 が QUIC 自己登録から維持する稼働 SP 一覧)。 旧 TCP port-scan (`scan_instances`) は撤去。
 pub fn list_instances(config: &crate::config::Config) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let instances = scan_instances().await;
-
+        let instances = crate::discovery::list().await;
         if instances.is_empty() {
             println!("No running vp instances found.");
             return Ok(());
         }
 
-        // cwd を取得して一致チェック
         let cwd = std::env::current_dir()
             .ok()
             .and_then(|p| std::fs::canonicalize(&p).ok())
@@ -213,31 +119,19 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
 
         println!();
         println!("  {:<18} {:<7} {:<7} STATUS", "PROJECT", "PORT", "PID");
-        println!(
-            "  {:<18} {:<7} {:<7} \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-            "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-            "\u{2500}\u{2500}\u{2500}\u{2500}",
-            "\u{2500}\u{2500}\u{2500}"
-        );
+        println!("  {:<18} {:<7} {:<7} ──────", "───────", "────", "───");
 
         for inst in &instances {
-            let name = crate::resolve::project_name_from_path(
-                inst.project_dir.as_deref().unwrap_or("-"),
-                config,
-            );
-
-            // cwd 一致チェック（プロジェクトディレクトリまたはそのサブディレクトリ）
-            let is_cwd = if let (Some(cwd_str), Some(proj_dir)) = (&cwd, &inst.project_dir) {
-                let canonical_proj = std::fs::canonicalize(proj_dir)
+            let name = crate::resolve::project_name_from_path(&inst.project_dir, config);
+            let is_cwd = if let Some(cwd_str) = &cwd {
+                let canonical_proj = std::fs::canonicalize(&inst.project_dir)
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| proj_dir.clone());
+                    .unwrap_or_else(|_| inst.project_dir.clone());
                 cwd_str == &canonical_proj || cwd_str.starts_with(&format!("{}/", canonical_proj))
             } else {
                 false
             };
-
-            let marker = if is_cwd { "  \u{2190} cwd" } else { "" };
-
+            let marker = if is_cwd { "  ← cwd" } else { "" };
             println!(
                 "  {:<18} {:<7} {:<7} running{}",
                 name, inst.port, inst.pid, marker
@@ -245,7 +139,6 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
         }
         println!();
         println!("Use: vp open <project-name>");
-
         Ok(())
     })
 }

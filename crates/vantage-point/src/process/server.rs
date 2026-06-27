@@ -348,51 +348,15 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         }
     }
 
-    let app = Router::new()
-        // 旧 `.route("/wasm/{filename}", ...)` (vp-mdast-wasm 配信) は 2026-05-25 削除
-        // (= frontend は marked + creoui-editor-host に移行済、 dead endpoint)。
-        // wiremsg Stage 3: `/ws` endpoint は撤去済。Canvas が Stage 2 で "canvas" topic 購読に
-        // 移行した結果 `/ws` の接続 client が消滅 (= dead)。chat/permission の双方向経路も
-        // Echoes が tmux+claude に移行して以降 unused。
-        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅 (vp-app は World "lanes"
-        // channel を購読) で dead のため撤去 (module ごと削除)。
-        // lanes portless (doc 27 §3.4.5): Lane lifecycle の REST endpoint は全廃。
-        // DELETE/restart は F6②③ で、 GET(list)/POST(create) は本 PR で World process-proxy ask
-        // (`lanes_list` / `lane_create`) に移管。 core (create_performer_orchestrated /
-        // build_lanes_snapshot) は routes/lanes.rs に残置し dispatch_process_method が呼ぶ。
-        // F6③ (doc 27 §3.4.5/§6): Lane restart は World process-proxy ask (`lane_restart`) に移管し撤去。
-        // F6④ (doc 27 §3.4.5/§6): Stand 一覧 (GET /api/stands) も process-proxy ask (`stands_list`) に移管し撤去。
-        // L0 portless Group B: pane (show/clear/split/close/toggle) + file (watch/unwatch) HTTP は
-        // CLI を process-proxy ask (`show`/`split_pane`/`close_pane`/`toggle_pane`/`watch_file`/
-        // `unwatch_file`) に移管し撤去 (dispatch 腕は既存)。
-        // L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy は撤去。 CLI/flow は World
-        // "wire" channel に QUIC 直結、 MCP は SP "process" channel の `wire_*` dispatch (= handle_wire_*
-        // が normalize して `world_wire::call` で World に relay) を使う (doc 27 §62)。
-        // F6 (doc 27 §3.4): PP Canvas state は SP HTTP `/api/pp/state` を撤去し、 World
-        // process-proxy ask (`pp_state_save`/`pp_state_load`) に移管 (surface→SP 直結 HTTP 撤去)。
-        // L0 portless Group C: SP HTTP surface 一掃。
-        // - tmux send-keys/resolve-pane: 最後の consumer だった flow.rs(try_nudge) が lanes portless で
-        //   dispatch (`tmux_send_keys`/`tmux_resolve_pane`) に移行 → 撤去。 Group B で split/close/
-        //   capture/list 等は移管済、 `/api/ruby/*` (B-3) / `/api/process/*` (A) も移管/dead 撤去済。
-        // - prompt API (REQ-PROMPT-001、 `/api/prompt*`): Echoes→tmux 移行で permission 双方向経路が
-        //   unused 化 (consumer 全消滅) → subsystem ごと撤去 (pending_prompts state 含む)。
-        // 残る SP route は health/shutdown のみ (MCP restart が pair で使う、 L0 finale で portless 化)。
-        .route("/api/health", get(health::health_handler))
-        .route("/api/shutdown", post(health::shutdown_handler))
-        // L0 portless Group C-2: SP router の `/api/world/*` block は dead copy のため撤去。
-        // run()(SP) の AppState は `world: None` で、 world handler は全て `let Some(world) =
-        // &state.world else {..}` で早期 return する非機能 vestige (run/run_world が route 構築を
-        // 共有していた名残)。 実 consumer (vp-app=DEFAULT_WORLD_PORT / world_client=WORLD_PORT) は
-        // 全て World :32000 を叩くので SP の copy は consumer ゼロ。 handler 本体は run_world
-        // (world: Some) が使うため routes/world.rs に残置 (SP の route 登録のみ外す)。
-        .layer(CorsLayer::permissive())
-        .with_state(state.clone());
-
-    // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ Win の IPV6_V6ONLY=true default を明示的に false に。
-    //  旧コメント: "0.0.0.0 で IPv4 wildcard 統一" は IPv6 client (`http://[::1]:port`) を弾いてた。
-    //  SP register 等が `[::1]:32000` を使ってたため永続失敗していた問題を解消。
-    let listener = bind_dual_stack(port).await?;
-    tracing::info!("Starting vp on http://[::]:{} (dual-stack)", port);
+    // L0 finale (doc 27 §3.4.5): SP HTTP listener 全廃 = SP listen port 撤去（L0 完了）。
+    // 旧 SP HTTP route は全て World process-proxy dispatch / SP QUIC dispatch に移管/dead 撤去済:
+    // - reconciliation (旧 /api/health port-scan) → Push-only registry (QUIC register/disconnect)
+    // - MCP restart → World :32000 restart API / stop_process → QUIC `shutdown` dispatch
+    // - terminal_token (旧 /api/health) → QUIC `terminal_token` dispatch (vp hd attach 用)
+    // - lanes/wire/tmux/ruby/pane/prompt/world 等は B-4/lanes/Group C で移管/dead 撤去済
+    // よって SP は axum HTTP listener を持たず、 QUIC server (`start_unison_server`、 同 port =
+    // QUIC_PORT_OFFSET 0) 1 本で全 process 操作を serve する。 health/shutdown handler は
+    // run_world (World :32000) が引き続き使うため routes/health.rs に残置。
 
     // Unison QUIC サーバーを並行起動（readiness signal 付き）
     let quic_port = port + unison_server::QUIC_PORT_OFFSET;
@@ -491,13 +455,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
 
-    // Serve with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_token_clone.cancelled().await;
-            tracing::info!("Graceful shutdown initiated");
-        })
-        .await?;
+    // L0 finale: SP HTTP listener 撤去後、 run() は shutdown_token で block する (QUIC server は
+    // spawned task として process 生存中 serve し続ける、 旧 axum::serve graceful shutdown を置換)。
+    // `shutdown` QUIC dispatch / SIGTERM 経由で shutdown_token が cancel されると下の cleanup へ進む。
+    shutdown_token_clone.cancelled().await;
+    tracing::info!("Graceful shutdown initiated (QUIC-only SP)");
 
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
     // （spawn_world_uplink の shutdown handler が unregister を送信済み）

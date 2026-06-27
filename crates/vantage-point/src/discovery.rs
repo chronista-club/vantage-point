@@ -151,18 +151,68 @@ async fn query_world() -> Option<Vec<ProcessInfo>> {
     )
 }
 
-/// 特定ポートの Process から terminal_token を取得
+/// 特定ポートの Process から terminal_token を取得する。
+///
+/// L0 finale: 旧 HTTP `/api/health` を撤去し、 SP の QUIC server（同 port = QUIC_PORT_OFFSET 0）の
+/// "process" channel に `terminal_token` を ask する。 token は旧 TUI `vp hd attach` の terminal
+/// bridge auth 用で、 localhost only・HTTP 時代と同様に未認証で取得する。
 pub async fn fetch_terminal_token(port: u16) -> Option<String> {
-    let client = build_client(1000);
-    let url = format!("http://[::1]:{}/api/health", port);
+    // QUIC(rustls) は CryptoProvider の install が前提（install 済みなら no-op）
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let addr = format!("[::1]:{}", port);
+    let work = async {
+        let transport = unison::network::quic::QuicClient::builder()
+            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+            .build()
+            .ok()?;
+        let client = unison::ProtocolClient::new(transport);
+        client.connect(&addr).await.ok()?;
+        let channel = client.open_channel("process").await.ok()?;
+        let resp: serde_json::Value = channel
+            .request::<serde_json::Value, serde_json::Value>(
+                "terminal_token",
+                &serde_json::json!({}),
+            )
+            .await
+            .ok()?;
+        resp.get("token")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), work)
+        .await
+        .ok()
+        .flatten()
+}
 
-    let resp = client.get(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let health = resp.json::<HealthResponse>().await.ok()?;
-    health.terminal_token
+/// 指定 port の SP に graceful shutdown を QUIC `shutdown` dispatch で送る (best-effort、 応答で bool)。
+///
+/// L0 finale: 旧 SP HTTP `POST /api/shutdown` の置換。 World の `stop_process` / CLI `stop_process` /
+/// `restart-all` が共有する単一経路。 SP QUIC server は同 port (QUIC_PORT_OFFSET 0) に居る。 SP は
+/// `shutdown_token.cancel()` で graceful 停止 (DB close 等)。 即 QUIC server を畳むため応答が返らない
+/// 事もあるが、 呼び出し側は best-effort 前提で PID poll + force_kill にフォールバックする。
+pub async fn send_sp_shutdown(port: u16) -> bool {
+    // QUIC(rustls) は CryptoProvider の install が前提（install 済みなら no-op）
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let addr = format!("[::1]:{}", port);
+    let work = async {
+        let transport = unison::network::quic::QuicClient::builder()
+            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+            .build()
+            .ok()?;
+        let client = unison::ProtocolClient::new(transport);
+        client.connect(&addr).await.ok()?;
+        let channel = client.open_channel("process").await.ok()?;
+        channel
+            .request::<serde_json::Value, serde_json::Value>("shutdown", &serde_json::json!({}))
+            .await
+            .ok()
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), work)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 /// Terminal トークンを生成（UUID v4）
