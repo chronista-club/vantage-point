@@ -1009,6 +1009,24 @@ DEFINE FIELD IF NOT EXISTS message_id ON wire_acks TYPE string;
 DEFINE FIELD IF NOT EXISTS agent ON wire_acks TYPE string;
 DEFINE FIELD IF NOT EXISTS acked_at ON wire_acks TYPE number;
 DEFINE INDEX IF NOT EXISTS wire_acks_uniq ON wire_acks FIELDS message_id, agent UNIQUE;
+
+-- agent 委譲 (delegation、 doc 28 §4 / §6): durable cross-agent future の World 中央 store。
+-- wire と同じく TheWorld の SurrealDB に持つ (= SP 再起動を跨いで生存、 World reconcile の駆動源)。
+-- requester / doer は論理 wire address。 state ∈ {pending, active, awaiting_response, done, failed}。
+-- outcome = {kind, result|reason|question} (= Outcome の serde 形)。 created_at/updated_at は ms
+-- (B reconcile の timeout 判定用)。 delivered = 直近 wake が target に届いたか (B/C の取りこぼし検出用)。
+DEFINE TABLE IF NOT EXISTS delegations SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS id ON delegations TYPE string;
+DEFINE FIELD IF NOT EXISTS requester ON delegations TYPE string;
+DEFINE FIELD IF NOT EXISTS doer ON delegations TYPE string;
+DEFINE FIELD IF NOT EXISTS task ON delegations TYPE string;
+DEFINE FIELD IF NOT EXISTS state ON delegations TYPE string;
+DEFINE FIELD IF NOT EXISTS outcome ON delegations TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS created_at ON delegations TYPE number;
+DEFINE FIELD IF NOT EXISTS updated_at ON delegations TYPE number;
+DEFINE FIELD IF NOT EXISTS delivered ON delegations TYPE bool DEFAULT false;
+DEFINE INDEX IF NOT EXISTS delegations_id_idx ON delegations FIELDS id UNIQUE;
+DEFINE INDEX IF NOT EXISTS delegations_state_idx ON delegations FIELDS state;
 "#;
 
 // =============================================================================
