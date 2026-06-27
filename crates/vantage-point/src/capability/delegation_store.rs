@@ -261,6 +261,21 @@ impl DelegationStore {
         rows.iter().map(Self::row_to_delegation).collect()
     }
 
+    /// 観測 (Canvas Pane 可視化、doc 28 §7/§2): 全 delegation を created_at 昇順で引く。
+    /// list_undelivered / poll_for_agent と違い delivered / state で絞らない = 委譲の全 thread を
+    /// そのまま観測 surface に出す read-only。書き込み経路・wake には一切関与しない。
+    pub(crate) async fn list_all(&self) -> Result<Vec<Delegation>> {
+        let mut res = self
+            .db
+            .query("SELECT * FROM delegations ORDER BY created_at ASC;")
+            .await
+            .map_err(|e| anyhow::anyhow!("delegation list_all failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("delegation list_all take failed: {e}"))?;
+        rows.iter().map(Self::row_to_delegation).collect()
+    }
+
     /// `delegations` row JSON を [`Delegation`] に hydrate。
     fn row_to_delegation(row: &serde_json::Value) -> Result<Delegation> {
         let id = extract_record_local_id(&row["id"], "delegations");
@@ -400,6 +415,42 @@ mod tests {
 
         // 未知 id の fail_timeout は None。
         assert!(store.fail_timeout("dlg-none").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_all_returns_every_record_regardless_of_state() {
+        let store = make_store().await;
+        // 3 件作成し、状態を散らす（active / done / delivered 済）。
+        store.create("dlg-1", "a@vp", "a@vp/w", "t1").await.unwrap();
+        store.create("dlg-2", "a@vp", "a@vp/w", "t2").await.unwrap();
+        store.create("dlg-3", "a@vp", "a@vp/w", "t3").await.unwrap();
+        store
+            .apply_complete(
+                "dlg-2",
+                &Outcome::Done {
+                    result: "ok".into(),
+                },
+            )
+            .await
+            .unwrap();
+        store.mark_delivered("dlg-1", true).await.unwrap();
+
+        // list_all は delivered / state で絞らず全件返す（poll/undelivered との違い）。
+        let all = store.list_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            3,
+            "状態に関わらず全 record を観測 surface に出す"
+        );
+        let ids: Vec<&str> = all.iter().map(|d| d.id.as_str()).collect();
+        assert!(["dlg-1", "dlg-2", "dlg-3"].iter().all(|i| ids.contains(i)));
+        // done に遷移した record も含まれ、状態が反映されている。
+        let done = all.iter().find(|d| d.id == "dlg-2").unwrap();
+        assert_eq!(done.state, DelegationState::Done);
+
+        // 空 store では空配列。
+        let empty = make_store().await;
+        assert!(empty.list_all().await.unwrap().is_empty());
     }
 
     #[tokio::test]

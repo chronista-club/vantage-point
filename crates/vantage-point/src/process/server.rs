@@ -916,6 +916,11 @@ pub async fn run_world(
             "/api/delegation/mark_delivered",
             post(delegation::world_delegation_mark_delivered_handler),
         )
+        // 観測 (Canvas Pane 可視化、doc 28 §7/§2): 全委譲を返す read-only エンドポイント。
+        .route(
+            "/api/delegation/list",
+            post(delegation::world_delegation_list_handler),
+        )
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
