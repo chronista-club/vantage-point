@@ -163,9 +163,10 @@ async fn handoff(
     let performer_address = format!("agent@{}/{}", project_name, performer_name);
     let lane_address = format!("{}/performer/{}", project_name, performer_name);
 
-    // Step 2: wire_send (POST /api/wire/send)。 失敗時は performer rollback。
-    // `from` は conductor 相当 (= CLI から起動 = conductor context として送信)。
-    let send_url = format!("{}/api/wire/send", base);
+    // Step 2: wire_send (World "wire" channel 直結、 L0 portless B-4)。 失敗時は performer rollback。
+    // `from` は conductor 相当 (= CLI から起動 = conductor context として送信、 qualified address)。
+    // `world_wire::call` が transport 失敗 / server error frame の両方を Err にするので、 旧 HTTP の
+    // 3 分岐 (send / parse / server error) は 1 つに畳まれる (atomic + rollback の意味論は不変)。
     let from = format!("agent@{}", project_name);
     let send_payload = serde_json::json!({
         "from": from,
@@ -177,37 +178,13 @@ async fn handoff(
         },
         "reply_to": serde_json::Value::Null,
     });
-    let send_resp = match client
-        .post(&send_url)
-        .json(&send_payload)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-    {
-        Ok(r) => r,
+    let send_json = match crate::process::world_wire::call("/api/wire/send", send_payload).await {
+        Ok(j) => j,
         Err(e) => {
             rollback_performer(&client, &base, &project_name, &performer_name).await;
             anyhow::bail!("wire_send 失敗 (performer rollback 済): {}", e);
         }
     };
-    let send_json: serde_json::Value = match send_resp.json().await {
-        Ok(j) => j,
-        Err(e) => {
-            rollback_performer(&client, &base, &project_name, &performer_name).await;
-            anyhow::bail!(
-                "wire_send response parse 失敗 (performer rollback 済): {}",
-                e
-            );
-        }
-    };
-    if send_json.get("status").and_then(|v| v.as_str()) == Some("error") {
-        let err = send_json
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        rollback_performer(&client, &base, &project_name, &performer_name).await;
-        anyhow::bail!("wire_send server error (performer rollback 済): {}", err);
-    }
     let wire_msg_id = send_json
         .get("id")
         .and_then(|v| v.as_str())
@@ -363,18 +340,14 @@ async fn progress(format: &str) -> Result<()> {
             format!("agent@{}/{}", project, label)
         };
 
-        // unread count (cursor 不触り)
-        let unread_payload = serde_json::json!({ "agent": agent_addr });
-        let unread_total = match client
-            .post(format!("{}/api/wire/unread-count", base))
-            .json(&unread_payload)
-            .send()
-            .await
+        // unread count (cursor 不触り、 World "wire" channel 直結。 best-effort: 失敗は 0)
+        let unread_total = match crate::process::world_wire::call(
+            "/api/wire/unread-count",
+            serde_json::json!({ "agent": agent_addr }),
+        )
+        .await
         {
-            Ok(r) => match r.json::<serde_json::Value>().await {
-                Ok(j) => j.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
-                Err(_) => 0,
-            },
+            Ok(j) => j.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
             Err(_) => 0,
         };
 
@@ -396,19 +369,16 @@ async fn progress(format: &str) -> Result<()> {
 
         // 5-state FSM derive (= conductor 説示 control surrender model)。
         // wire_latest_msg + performer_status から flow_state / control_surrender / state_reason を推論。
-        let latest_payload = serde_json::json!({ "agent": agent_addr });
-        let latest_resp = client
-            .post(format!("{}/api/wire/latest-msg", base))
-            .json(&latest_payload)
-            .send()
-            .await;
-        let latest_view = match latest_resp {
-            Ok(r) => match r.json::<serde_json::Value>().await {
-                Ok(j) => j
-                    .get("message")
-                    .and_then(crate::flow::LatestMsgView::from_json),
-                Err(_) => None,
-            },
+        // World "wire" channel 直結 (best-effort: 失敗は None → FSM は performer_status のみで derive)。
+        let latest_view = match crate::process::world_wire::call(
+            "/api/wire/latest-msg",
+            serde_json::json!({ "agent": agent_addr }),
+        )
+        .await
+        {
+            Ok(j) => j
+                .get("message")
+                .and_then(crate::flow::LatestMsgView::from_json),
             Err(_) => None,
         };
         let performer_status_view = crate::flow::PerformerStatusView::from_json(&performer_status);

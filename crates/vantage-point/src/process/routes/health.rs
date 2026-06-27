@@ -38,92 +38,10 @@ pub struct HealthResponse {
     pub stands: Option<std::collections::HashMap<String, StandStatus>>,
 }
 
-/// POST /api/wire/send - wire accumulation への送信 HTTP 入口
-///
-/// `vp wire` CLI / `wire_*` MCP tool と同じ wire accumulation 経路の HTTP 版。
-/// QUIC dispatch の `wire_send` と同一の [`handle_wire_send`] を呼ぶ薄い wrapper。
-/// payload: `{from, to: [String], body: JSON, reply_to?: String}`。
-pub async fn wire_send_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_send(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/recv - wire accumulation からの long-poll 受信 HTTP 入口
-///
-/// `vp wire watch` CLI / `wire_recv` MCP tool と同じ wire accumulation 経路の HTTP 版。
-/// QUIC dispatch の `wire_recv` と同一の [`handle_wire_recv`] を呼ぶ薄い wrapper。
-/// payload: `{agent: String, timeout?: u64}` → `{messages: [WireMessage...], count}`。
-pub async fn wire_recv_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_recv(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/unread-count - per-agent 未読 wire count を取得 (read-only、 cursor 不触り)
-///
-/// `flow_progress` の集約 view に必要。 `wire_recv` を timeout=0 で叩く代替は cursor を
-/// 進めてしまうため、 cursor 不触りの専用 endpoint。
-/// payload: `{agent: String}` → `{status: "ok", total: u64, by_thread: {root_id: count}}`。
-pub async fn wire_unread_count_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_unread_count(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/latest-msg - agent 関与の最新 wire message を取得 (read-only、 cursor 不触り)
-///
-/// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。
-/// `flow_progress` の 5-state FSM derive で performer の現状態を判定するために使う。
-/// payload: `{agent: String}` → `{status: "ok", message: WireMessage|null}`。
-pub async fn wire_latest_msg_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_latest_msg(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/thread - thread 系譜取得 HTTP 入口 (read-only、 cursor 不触り)
-///
-/// `vp wire thread` CLI / `wire_thread` MCP tool と同じ経路の HTTP 版 (R2-a で CLI parity)。
-/// payload: `{message_id: String}` → `{status: "ok", messages: [..], count}`。
-pub async fn wire_thread_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_thread(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/ack - per-message ack HTTP 入口 (R2-a、 決定 D3)
-///
-/// payload: `{message_id: String, agent: String}` → `{status: "ok", acked: bool}`。
-pub async fn wire_ack_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_ack(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
+// L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
+// latest-msg/thread/ack) は撤去。 MCP は SP "process" channel の `wire_*` dispatch
+// (= `handle_wire_send` 等が normalize して `world_wire::call` で World "wire" channel に relay) を
+// 使い、 CLI/flow は World "wire" channel に QUIC 直結する (doc 27 §62)。
 
 // L0 portless: `/api/diagnose` (Stand 自己診断 HTTP) は consumer 消滅で撤去。 必要なら将来
 // World channel / mailbox query (`bastet@world` 等) 経由で再設計する。
