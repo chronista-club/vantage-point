@@ -124,6 +124,23 @@ pub struct DaemonState {
     /// 更新 + `bastet.*` emit を行う (emit は world-device bridge 経由で vp-app に届く)。
     #[cfg(feature = "midi")]
     pub bastet: Option<Arc<RwLock<crate::bastet::Bastet>>>,
+    /// L0 portless B-4 (wire-unison): World 中央 wire store の参照 — "wire" Unison channel の data plane。
+    ///
+    /// 旧 `world_wire::call` の HTTP relay 先 (`POST /api/wire/*`) を unison channel に移行 (doc 27 §62
+    /// 「全通信 unison」)。run_world が **World process AppState と同一 Arc** を `with_wire` で plumb する
+    /// (同一プロセス)。`wire` channel handler がこれを使って wire の send/recv/thread/unread/latest/ack を
+    /// 中央 store に直結する。SP mode の DaemonState では None (= wire は World 専有)。
+    pub wiremsg_store: Option<crate::capability::WiremsgStore>,
+    /// wire long-poll (`wire_recv`) の起床通知器 — `wiremsg_store` と対で plumb される (同 AppState 由来)。
+    pub wire_notifier: Option<crate::capability::WireNotifier>,
+    /// command 着信時に delivery loop を即 wake する Notify — `wire/send` で category=command を検出して叩く。
+    pub delivery_notify: Option<Arc<tokio::sync::Notify>>,
+    /// 委譲 (delegation) の World 中央 store — "wire" channel の `delegation/*` method の data plane (doc 28 §6)。
+    ///
+    /// `world_wire::call("/api/delegation/*")` は wire と同じ transport を共有するため、unison 移行も同 channel に
+    /// 相乗りする (path 分岐で dispatch)。run_world が AppState と同一 Arc を plumb する。
+    /// (`DelegationStore` は pub(crate) なので本 field も crate 可視に揃える)
+    pub(crate) delegation_store: Option<crate::capability::DelegationStore>,
 }
 
 impl Default for DaemonState {
@@ -147,6 +164,10 @@ impl Default for DaemonState {
             bastet_event_bus: None,
             #[cfg(feature = "midi")]
             bastet: None,
+            wiremsg_store: None,
+            wire_notifier: None,
+            delivery_notify: None,
+            delegation_store: None,
         }
     }
 }
@@ -211,6 +232,26 @@ impl DaemonState {
     #[cfg(feature = "midi")]
     pub fn with_bastet(mut self, bastet: Arc<RwLock<crate::bastet::Bastet>>) -> Self {
         self.bastet = Some(bastet);
+        self
+    }
+
+    /// L0 portless B-4 (wire-unison): World 中央 wire/delegation store を共有する。
+    ///
+    /// run_world が World process `AppState` 構築後に **同一 Arc** を渡す (同一プロセスなので clone で共有)。
+    /// "wire" channel handler がこれらを使って `world_wire::call` の旧 HTTP relay 先を unison で serve する。
+    /// `wiremsg_store` / `delegation_store` は DB 接続失敗時 None (= 当該 method は error を返す)。
+    /// (`DelegationStore` が pub(crate) のため本 method も crate 可視。 caller は同一 crate の run_world)
+    pub(crate) fn with_wire(
+        mut self,
+        wiremsg_store: Option<crate::capability::WiremsgStore>,
+        wire_notifier: crate::capability::WireNotifier,
+        delivery_notify: Arc<tokio::sync::Notify>,
+        delegation_store: Option<crate::capability::DelegationStore>,
+    ) -> Self {
+        self.wiremsg_store = wiremsg_store;
+        self.wire_notifier = Some(wire_notifier);
+        self.delivery_notify = Some(delivery_notify);
+        self.delegation_store = delegation_store;
         self
     }
 }
@@ -1104,6 +1145,41 @@ async fn forward_to_sp_control(
         None => serde_json::json!({
             "error": format!("SP 未接続 (key={})", path_key)
         }),
+    }
+}
+
+/// L0 portless B-4 (wire-unison): "wire" channel の method dispatch。
+///
+/// `world_wire::call` が path `"/api/<rest>"` を method=`"<rest>"` (= `"wire/send"` /
+/// `"delegation/create"` 等) にして本 channel に投げてくる。prefix で wire / delegation を切り分け、
+/// `routes::{wire,delegation}::dispatch_*` に委譲する。store は `with_wire` で plumb された
+/// World process AppState 由来の Arc。未初期化 (SP mode / DB 接続失敗) は Err を返し、channel
+/// handler が `{"error": ...}` フレームに詰める (旧 HTTP handler の error JSON と等価)。
+async fn handle_wire_channel(
+    state: &DaemonState,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if let Some(sub) = method.strip_prefix("wire/") {
+        let store = state.wiremsg_store.as_ref().ok_or_else(|| {
+            "wire store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
+        })?;
+        let notifier = state
+            .wire_notifier
+            .as_ref()
+            .ok_or_else(|| "wire notifier not initialized".to_string())?;
+        let delivery = state
+            .delivery_notify
+            .as_ref()
+            .ok_or_else(|| "wire delivery_notify not initialized".to_string())?;
+        crate::process::routes::wire::dispatch_wire(store, notifier, delivery, sub, payload).await
+    } else if let Some(sub) = method.strip_prefix("delegation/") {
+        let store = state.delegation_store.as_ref().ok_or_else(|| {
+            "delegation store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
+        })?;
+        crate::process::routes::delegation::dispatch_delegation(store, sub, payload).await
+    } else {
+        Err(format!("不明な wire channel method: {method}"))
     }
 }
 
@@ -2435,6 +2511,53 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             })
             .await;
     }
+
+    // =========================================================================
+    // Wire Channel (L0 portless B-4: 旧 world_wire::call の HTTP relay 先を unison 化)
+    //
+    // `world_wire::call` (SP→World の wire/delegation transport) を HTTP `POST /api/wire/*`
+    // `/api/delegation/*` から本 channel に移行 (doc 27 §62「全通信 unison」)。method は
+    // "wire/<m>" / "delegation/<m>" の prefix 分岐で各 store dispatch に振る (`handle_wire_channel`)。
+    // store は World process AppState と共有 (`with_wire` で plumb)。SP mode (store=None) では
+    // 各 method が error を返す (= 旧 HTTP handler の「store not initialized」と等価)。
+    // =========================================================================
+    server
+        .register_channel("wire", {
+            let state = state.clone();
+            move |_ctx, stream| {
+                let state = state.clone();
+                async move {
+                    let channel = UnisonChannel::new(stream);
+                    loop {
+                        let msg = match channel.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // 切断
+                        };
+                        if msg.msg_type != MessageType::Request {
+                            continue;
+                        }
+                        let payload = msg.payload_as_value().unwrap_or_default();
+                        let method = msg.method.clone();
+                        let request_id = msg.id;
+                        // 成功時 result JSON、 失敗時は success frame に {"error": ...} を詰める
+                        // (Unison は専用 error frame を持たない、 VP-163 慣習)。
+                        let response = match handle_wire_channel(&state, &method, payload).await {
+                            Ok(v) => v,
+                            Err(e) => serde_json::json!({ "error": e }),
+                        };
+                        if channel
+                            .send_response(request_id, &method, &response)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        })
+        .await;
 
     // サーバー起動
     // VP-185: listen は内部で QuicServer::new() (= cert なし固定) を使うため、

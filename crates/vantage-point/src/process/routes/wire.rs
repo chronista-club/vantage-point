@@ -17,11 +17,6 @@
 //! TheWorld が唯一の writer になったことで、 [`WiremsgStore`] の AtomicU64 採番が
 //! そのまま「マシン大域で厳密単調」を満たす (設計決定 C1 の帰結、 追加コード不要)。
 
-use std::sync::Arc;
-
-use axum::{Json, extract::State};
-
-use super::super::state::AppState;
 use crate::capability::{WireNotifier, WiremsgStore};
 
 /// bare `"agent"` を reject する (TheWorld は project 文脈が無く正規化できない)
@@ -314,106 +309,47 @@ pub(crate) async fn wire_ack_store(
 }
 
 // =============================================================================
-// axum wrapper (run_world Router 登録用)
+// Unison "wire" channel dispatch (L0 portless B-4: 旧 axum wrapper を置換)
 // =============================================================================
 
-/// store/notifier を取り出す共通前処理。 TheWorld の DB 接続失敗時は error JSON を返す。
-macro_rules! world_store {
-    ($state:expr) => {
-        match $state.wiremsg_store.as_ref() {
-            Some(s) => s,
-            None => {
-                return Json(serde_json::json!({
-                    "status": "error",
-                    "error": "wire store not initialized (TheWorld DB 接続失敗)"
-                }));
-            }
-        }
-    };
-}
-
-/// POST /api/wire/send (TheWorld 中央 store 直結)
-pub async fn world_wire_send_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let store = world_store!(state);
-    // R2-b: command 着信なら delivery loop を即 wake。 判定は保存前の素の payload で行う —
-    // body が文字列化 JSON の場合 (coerce 救済経路) はここで拾えないが、 その場合も
-    // delivery loop の 30s tick が拾うため fail-open。
-    let is_command = payload
-        .get("body")
-        .and_then(|b| b.get("category"))
-        .and_then(|c| c.as_str())
-        == Some("command");
-    match wire_send_store(store, &state.wire_notifier, payload).await {
-        Ok(v) => {
+/// "wire" Unison channel の method dispatch (daemon `handle_wire_channel` から呼ぶ)。
+///
+/// 旧 `world_wire_*_handler` (axum POST /api/wire/*) を unison channel に移行したもの (doc 27 §62)。
+/// `method` は `world_wire::call` が path `"/api/wire/<m>"` から prefix を剥いだ sub-part
+/// (= `"send"` / `"recv"` / `"thread"` / `"unread-count"` / `"latest-msg"` / `"ack"`)。
+///
+/// store / notifier / delivery_notify は daemon が World process AppState と共有する Arc。
+/// エラーは Err(String) で返り、channel handler が `{"error": ...}` フレームに詰める
+/// (unison 慣習 — 専用 error frame なし)。
+pub(crate) async fn dispatch_wire(
+    store: &WiremsgStore,
+    notifier: &WireNotifier,
+    delivery_notify: &tokio::sync::Notify,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match method {
+        "send" => {
+            // R2-b: command 着信なら delivery loop を即 wake。 判定は保存前の素の payload で行う —
+            // body が文字列化 JSON の場合 (coerce 救済経路) はここで拾えないが、 その場合も
+            // delivery loop の 30s tick が拾うため fail-open (旧 world_wire_send_handler から移植)。
+            let is_command = payload
+                .get("body")
+                .and_then(|b| b.get("category"))
+                .and_then(|c| c.as_str())
+                == Some("command");
+            let v = wire_send_store(store, notifier, payload).await?;
             if is_command {
-                state.delivery_notify.notify_one();
+                delivery_notify.notify_one();
             }
-            Json(v)
+            Ok(v)
         }
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/recv (TheWorld 中央 store 直結、 long-poll)
-pub async fn world_wire_recv_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let store = world_store!(state);
-    match wire_recv_store(store, &state.wire_notifier, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/thread (TheWorld 中央 store 直結、 read-only)
-pub async fn world_wire_thread_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let store = world_store!(state);
-    match wire_thread_store(store, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/unread-count (TheWorld 中央 store 直結、 read-only)
-pub async fn world_wire_unread_count_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let store = world_store!(state);
-    match wire_unread_count_store(store, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/latest-msg (TheWorld 中央 store 直結、 read-only)
-pub async fn world_wire_latest_msg_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let store = world_store!(state);
-    match wire_latest_msg_store(store, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/ack (TheWorld 中央 store 直結、 R2-a 新設)
-pub async fn world_wire_ack_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let store = world_store!(state);
-    match wire_ack_store(store, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
+        "recv" => wire_recv_store(store, notifier, payload).await,
+        "thread" => wire_thread_store(store, payload).await,
+        "unread-count" => wire_unread_count_store(store, payload).await,
+        "latest-msg" => wire_latest_msg_store(store, payload).await,
+        "ack" => wire_ack_store(store, payload).await,
+        _ => Err(format!("不明な wire method: {method}")),
     }
 }
 

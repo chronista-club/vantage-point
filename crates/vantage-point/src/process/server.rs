@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{delegation, health, lanes, prompt, update, wire, world};
+use super::routes::{health, lanes, prompt, update, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -370,21 +370,9 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // L0 portless Group B: pane (show/clear/split/close/toggle) + file (watch/unwatch) HTTP は
         // CLI を process-proxy ask (`show`/`split_pane`/`close_pane`/`toggle_pane`/`watch_file`/
         // `unwatch_file`) に移管し撤去 (dispatch 腕は既存)。
-        // wiremsg R5-2: wire accumulation 経路の HTTP 入口 (旧 /api/msgbox/* を置換)
-        // R2-a: 実体は TheWorld 中央 store への proxy (remote-deliver は中央化で撤去)
-        .route("/api/wire/send", post(health::wire_send_handler))
-        .route("/api/wire/recv", post(health::wire_recv_handler))
-        .route(
-            "/api/wire/unread-count",
-            post(health::wire_unread_count_handler),
-        )
-        .route(
-            "/api/wire/latest-msg",
-            post(health::wire_latest_msg_handler),
-        )
-        // R2-a: CLI parity (vp wire thread / ack) の HTTP 入口
-        .route("/api/wire/thread", post(health::wire_thread_handler))
-        .route("/api/wire/ack", post(health::wire_ack_handler))
+        // L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy は撤去。 CLI/flow は World
+        // "wire" channel に QUIC 直結、 MCP は SP "process" channel の `wire_*` dispatch (= handle_wire_*
+        // が normalize して `world_wire::call` で World に relay) を使う (doc 27 §62)。
         // F6 (doc 27 §3.4): PP Canvas state は SP HTTP `/api/pp/state` を撤去し、 World
         // process-proxy ask (`pp_state_save`/`pp_state_load`) に移管 (surface→SP 直結 HTTP 撤去)。
         // L0 portless Group B: tmux split/close/capture/list/agent-meta HTTP は CLI を
@@ -881,46 +869,11 @@ pub async fn run_world(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
-        // wiremsg R2-a: 中央 wire store (設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-c)。
-        // TheWorld が唯一の writer。 SP の /api/wire/* はここへの proxy。
-        .route("/api/wire/send", post(wire::world_wire_send_handler))
-        .route("/api/wire/recv", post(wire::world_wire_recv_handler))
-        .route("/api/wire/thread", post(wire::world_wire_thread_handler))
-        .route(
-            "/api/wire/unread-count",
-            post(wire::world_wire_unread_count_handler),
-        )
-        .route(
-            "/api/wire/latest-msg",
-            post(wire::world_wire_latest_msg_handler),
-        )
-        .route("/api/wire/ack", post(wire::world_wire_ack_handler))
-        // 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。SP が world_wire::call で叩く。
-        .route(
-            "/api/delegation/create",
-            post(delegation::world_delegation_create_handler),
-        )
-        .route(
-            "/api/delegation/complete",
-            post(delegation::world_delegation_complete_handler),
-        )
-        .route(
-            "/api/delegation/respond",
-            post(delegation::world_delegation_respond_handler),
-        )
-        .route(
-            "/api/delegation/poll",
-            post(delegation::world_delegation_poll_handler),
-        )
-        .route(
-            "/api/delegation/mark_delivered",
-            post(delegation::world_delegation_mark_delivered_handler),
-        )
-        // 観測 (Canvas Pane 可視化、doc 28 §7/§2): 全委譲を返す read-only エンドポイント。
-        .route(
-            "/api/delegation/list",
-            post(delegation::world_delegation_list_handler),
-        )
+        // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
+        // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
+        // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
+        // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
+        // 同 channel 経由。
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
@@ -946,7 +899,9 @@ pub async fn run_world(
             post(update::update_mac_rollback),
         )
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
+        // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
+        .with_state(state.clone());
 
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
     //  SP からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
@@ -979,6 +934,15 @@ pub async fn run_world(
     if let Some(ref db) = vpdb {
         daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
     }
+    // L0 portless B-4 (wire-unison): World 中央 wire/delegation store を daemon QUIC server と共有する。
+    // `state` (World process AppState) が保持する **同一 Arc** を渡す (同一プロセス) — "wire" channel が
+    // これを使って旧 `/api/wire/*` `/api/delegation/*` HTTP を unison channel で serve する (doc 27 §62)。
+    daemon_state_builder = daemon_state_builder.with_wire(
+        state.wiremsg_store.clone(),
+        state.wire_notifier.clone(),
+        state.delivery_notify.clone(),
+        state.delegation_store.clone(),
+    );
     // Bastet 🧲 EventBus を共有 — world-device channel が device event を vp-app に bridge する。
     // world_capabilities は L810 で move 済みなので、 move 前に clone した bastet_for_shutdown を使う。
     #[cfg(feature = "midi")]

@@ -33,7 +33,9 @@ pub mod process_runner;
 pub(crate) mod project_stands_state;
 pub mod pty;
 pub(crate) mod retained;
-mod routes;
+// L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
+// `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
+pub(crate) mod routes;
 mod server;
 mod session;
 /// Stand metadata reader — `.mise/tasks/vp/stand/{name}` 冒頭の `#VP key=value` を parse (VP-108)

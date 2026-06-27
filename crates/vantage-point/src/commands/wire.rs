@@ -2,21 +2,22 @@
 //!
 //! ## 概要
 //!
-//! SP の `/api/wire/recv` を long-poll loop で叩き、 受信した wire message を 1 行 JSON で
-//! stdout に出力する。 Claude Code Monitor tool の subscription source として活用される
-//! (Monitor は stdout-emitting 何でも push channel になる、 universal subscription primitive)。
+//! TheWorld 中央 wire store の `wire_recv` を long-poll loop で叩き、 受信した wire message を
+//! 1 行 JSON で stdout に出力する。 Claude Code Monitor tool の subscription source として活用
+//! される (Monitor は stdout-emitting 何でも push channel になる、 universal subscription primitive)。
 //!
-//! 旧 `vp mailbox` の wire 版置換。 msgbox (msgs table) ではなく wire accumulation
-//! (per-agent cursor recv) に rewire されている。
+//! ## L0 portless B-4 (wire-unison): transport は World "wire" unison channel に直結
+//!
+//! 旧 SP HTTP proxy (`--url` で SP base を指定 → SP `/api/wire/*` → World relay) は撤去。
+//! CLI は `crate::process::world_wire::call` で **World daemon (QUIC, port 32000) の "wire" channel**
+//! に直結する (doc 27 §62「全通信 unison channel」)。 World 直結のため address は qualified 前提
+//! (bare `"agent"` は中央 store が reject、 正規化は MCP 経路の SP のみが行う)。
 //!
 //! ## 使い方
 //!
 //! ```bash
 //! # wire address を指定して watch
 //! vp wire watch --agent agent@vantage-point
-//!
-//! # SP base URL を明示
-//! vp wire watch --url http://127.0.0.1:33002 --agent agent@vantage-point
 //!
 //! # message 送信 (ad-hoc test 用)
 //! vp wire send --to agent@vantage-point --body "hello"
@@ -33,19 +34,16 @@
 //!
 //! と仕掛ければ、 message 到着のたびに agent chat に notification として届く。
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
 use std::time::Duration;
 
 #[derive(Subcommand, Debug)]
 pub enum WireCommands {
-    /// SP の wire accumulation を long-poll で watch、 受信 message を 1 行 JSON で stdout に出す
+    /// World wire channel を long-poll で watch、 受信 message を 1 行 JSON で stdout に出す
     ///
     /// Claude Code Monitor の subscription source として使う想定。 SIGTERM / Ctrl-C で graceful exit。
     Watch {
-        /// SP の base URL (例: http://127.0.0.1:33002)。 default は Project 0 の SP (33000)。
-        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
-        url: String,
         /// 受信先 wire address (例: `agent@vantage-point`)。 必須。
         #[arg(short, long)]
         agent: String,
@@ -53,16 +51,13 @@ pub enum WireCommands {
         #[arg(short, long, default_value_t = 25)]
         timeout: u64,
     },
-    /// SP の wire accumulation を 1-shot で受信 (= mcp__wire_recv の CLI pair)。
+    /// World wire channel から 1-shot で受信 (= mcp__wire_recv の CLI pair)。
     ///
     /// `watch` と異なり loop しない: long-poll を 1 回だけ実行し、 受信した message 一式を
     /// 1 行 JSON ({"messages":[...], "count":N}) で stdout に出して即 exit。
     /// 既読 cursor が進む点は MCP wire_recv と同じ (= 同 message が再配信されない)。
     /// script / one-off check 用。 continuous な subscription は `watch` を使う。
     Recv {
-        /// SP の base URL (例: http://127.0.0.1:33002)。 default は Project 0 の SP (33000)。
-        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
-        url: String,
         /// 受信先 wire address (例: `agent@vantage-point`)。 必須。
         #[arg(short, long)]
         agent: String,
@@ -70,12 +65,9 @@ pub enum WireCommands {
         #[arg(short, long, default_value_t = 5)]
         timeout: u64,
     },
-    /// SP の wire accumulation に message を送信 (ad-hoc test 用)
+    /// World wire channel に message を送信 (ad-hoc test 用)
     Send {
-        /// SP の base URL
-        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
-        url: String,
-        /// 宛先 wire address (例: `agent@vantage-point`)
+        /// 宛先 wire address (例: `agent@vantage-point`)。 World 直結のため qualified 前提。
         #[arg(short, long)]
         to: String,
         /// 送信 body (string)
@@ -97,9 +89,6 @@ pub enum WireCommands {
     /// `recv` と異なり cursor を進めない: 「読まずに在庫だけ確認」する。
     /// `{status, total, by_thread: {root_id: count}}` を pretty JSON で stdout に出す。
     Inbox {
-        /// SP の base URL (例: http://127.0.0.1:33002)。 default は Project 0 の SP (33000)。
-        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
-        url: String,
         /// 確認する wire address (例: `agent@vantage-point`)。 必須。
         #[arg(short, long)]
         agent: String,
@@ -109,9 +98,6 @@ pub enum WireCommands {
     /// 指定 message から prev を root まで辿った系譜 (root-first・chronological) を返す。
     /// 途中参加 thread の backlog 確認用。
     Thread {
-        /// SP の base URL。 default は Project 0 の SP (33000)。
-        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
-        url: String,
         /// 系譜を辿る起点 message id (recv / inbox で得た id)
         #[arg(short, long)]
         message_id: String,
@@ -121,9 +107,6 @@ pub enum WireCommands {
     /// cursor とは独立の ack 台帳に記録する。 command の処理を終えたら ack すること
     /// (未 ack の command は delivery loop (R2-b) の再掲示対象になる)。
     Ack {
-        /// SP の base URL。 default は Project 0 の SP (33000)。
-        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
-        url: String,
         /// ack する message id
         #[arg(short, long)]
         message_id: String,
@@ -139,18 +122,11 @@ pub enum WireCommands {
     /// 観測（Canvas Pane 可視化、doc 28 §7/§2）: TheWorld 中央 store の全委譲を「会話 thread」
     /// markdown にして stdout に出す read-only コマンド。`mcp__vantage-point__show` に流して
     /// Canvas Pane に表示する静的観測 surface（介入でなく観測でフロー全体を追う）。
-    DelegThread {
-        /// TheWorld の base URL（省略時は deterministic な world port を自動導出）。
-        #[arg(short, long)]
-        url: Option<String>,
-    },
+    DelegThread,
     /// shell-level supervisor: vp wire watch を loop で再起動。 inner watch が exit しても
     /// auto-restart で監視を継続する (lifecycle resilience)。 Monitor の前段に置いて、
     /// SessionStart hook 等から自動 arm する想定。
     WatchSupervised {
-        /// SP の base URL (default: Project 0 の SP)
-        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
-        url: String,
         /// 受信先 wire address (例: `agent@vantage-point`)。 必須。
         #[arg(short, long)]
         agent: String,
@@ -166,60 +142,41 @@ pub enum WireCommands {
 /// Entry point — main.rs から呼び出される。
 pub async fn run(cmd: WireCommands) -> Result<()> {
     match cmd {
-        WireCommands::Watch {
-            url,
-            agent,
-            timeout,
-        } => watch(&url, &agent, timeout).await,
-        WireCommands::Recv {
-            url,
-            agent,
-            timeout,
-        } => recv(&url, &agent, timeout).await,
+        WireCommands::Watch { agent, timeout } => watch(&agent, timeout).await,
+        WireCommands::Recv { agent, timeout } => recv(&agent, timeout).await,
         WireCommands::Send {
-            url,
             to,
             body,
             from,
             reply_to,
             category,
-        } => {
-            send(
-                &url,
-                &to,
-                &body,
-                &from,
-                reply_to.as_deref(),
-                category.as_deref(),
-            )
-            .await
-        }
-        WireCommands::Inbox { url, agent } => inbox(&url, &agent).await,
-        WireCommands::Thread { url, message_id } => thread(&url, &message_id).await,
-        WireCommands::Ack {
-            url,
-            message_id,
-            agent,
-        } => ack(&url, &message_id, &agent).await,
+        } => send(&to, &body, &from, reply_to.as_deref(), category.as_deref()).await,
+        WireCommands::Inbox { agent } => inbox(&agent).await,
+        WireCommands::Thread { message_id } => thread(&message_id).await,
+        WireCommands::Ack { message_id, agent } => ack(&message_id, &agent).await,
         WireCommands::HookCheck => hook_check().await,
-        WireCommands::DelegThread { url } => deleg_thread(url.as_deref()).await,
+        WireCommands::DelegThread => deleg_thread().await,
         WireCommands::WatchSupervised {
-            url,
             agent,
             timeout,
             restart_delay,
-        } => watch_supervised(&url, &agent, timeout, restart_delay).await,
+        } => watch_supervised(&agent, timeout, restart_delay).await,
     }
+}
+
+/// World "wire" channel への QUIC 呼び出し (= `world_wire::call` の CLI 薄 wrapper)。
+///
+/// 旧 SP HTTP proxy (`--url`) を撤去し、 wire/delegation を World daemon 直結に統一 (doc 27 §62)。
+/// `world_wire::call` の Err(String) を anyhow に写す (error frame は call が既に Err 化済)。
+async fn call_world(path: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
+    crate::process::world_wire::call(path, payload)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Supervisor: watch loop の auto-restart wrapper。
 /// inner watch が exit するたびに log + sleep + 再 spawn。 Ctrl-C で wrapper ごと停止。
-async fn watch_supervised(
-    url: &str,
-    agent: &str,
-    timeout_secs: u64,
-    restart_delay_secs: u64,
-) -> Result<()> {
+async fn watch_supervised(agent: &str, timeout_secs: u64, restart_delay_secs: u64) -> Result<()> {
     let mut iteration = 0u64;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
@@ -227,11 +184,11 @@ async fn watch_supervised(
     loop {
         iteration += 1;
         eprintln!(
-            "[vp wire watch-supervised] iteration={} starting watch (url={}, agent={}, timeout={}s)",
-            iteration, url, agent, timeout_secs
+            "[vp wire watch-supervised] iteration={} starting watch (agent={}, timeout={}s)",
+            iteration, agent, timeout_secs
         );
 
-        let watch_fut = watch(url, agent, timeout_secs);
+        let watch_fut = watch(agent, timeout_secs);
         tokio::pin!(watch_fut);
 
         tokio::select! {
@@ -270,16 +227,10 @@ async fn watch_supervised(
     }
 }
 
-async fn watch(url: &str, agent: &str, timeout_secs: u64) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs + 5)) // server timeout + buffer
-        .build()
-        .context("reqwest client")?;
-    let endpoint = format!("{}/api/wire/recv", url.trim_end_matches('/'));
-
+async fn watch(agent: &str, timeout_secs: u64) -> Result<()> {
     eprintln!(
-        "[vp wire watch] subscribed to {} (agent={}, timeout={}s)",
-        endpoint, agent, timeout_secs
+        "[vp wire watch] subscribed to World wire channel (agent={}, timeout={}s)",
+        agent, timeout_secs
     );
 
     let ctrl_c = tokio::signal::ctrl_c();
@@ -293,7 +244,7 @@ async fn watch(url: &str, agent: &str, timeout_secs: u64) -> Result<()> {
                 eprintln!("[vp wire watch] ctrl-c received, exiting");
                 return Ok(());
             }
-            result = poll_recv(&client, &endpoint, agent, timeout_secs) => {
+            result = poll_recv(agent, timeout_secs) => {
                 match result {
                     Ok(messages) => {
                         // 受信 message を 1 行 JSON ずつ stdout に出す (Monitor downstream 用に line-buffered)。
@@ -337,17 +288,11 @@ async fn watch(url: &str, agent: &str, timeout_secs: u64) -> Result<()> {
 ///
 /// 既読 cursor は server 側で `watch` と共通 (= 同 agent address の wire を `watch` も `recv` も
 /// 同じ cursor で読む)。
-async fn recv(url: &str, agent: &str, timeout_secs: u64) -> Result<()> {
-    // server 側 timeout 上限 (= /api/wire/recv handler: 30s 上限) は client 側でも clamp。
+async fn recv(agent: &str, timeout_secs: u64) -> Result<()> {
+    // server 側 timeout 上限 (= wire_recv: 30s 上限) は client 側でも clamp。
     // mcp__wire_recv と同じ semantic で揃える。
     let clamped_timeout = timeout_secs.min(30);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(clamped_timeout + 5)) // server timeout + buffer
-        .build()
-        .context("reqwest client")?;
-    let endpoint = format!("{}/api/wire/recv", url.trim_end_matches('/'));
-
-    let messages = poll_recv(&client, &endpoint, agent, clamped_timeout).await?;
+    let messages = poll_recv(agent, clamped_timeout).await?;
     let count = messages.len();
     let payload = serde_json::json!({
         "messages": messages,
@@ -361,35 +306,15 @@ async fn recv(url: &str, agent: &str, timeout_secs: u64) -> Result<()> {
 }
 
 /// 1 回の long-poll。 受信した wire message の配列を返す (timeout 時は空 vec)。
-async fn poll_recv(
-    client: &reqwest::Client,
-    endpoint: &str,
-    agent: &str,
-    timeout_secs: u64,
-) -> Result<Vec<serde_json::Value>> {
-    let body = serde_json::json!({
-        "agent": agent,
-        "timeout": timeout_secs,
-    });
-
-    let resp = client
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    // error response (handler が {"status":"error", "error":...} を返した場合) を bail。
-    if resp.get("status").and_then(|v| v.as_str()) == Some("error") {
-        let err = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        anyhow::bail!("recv server error: {}", err);
-    }
-
-    // {messages:[...], count} → messages 配列を返す。 timeout 時は空。
+///
+/// `world_wire::call` が server Err (`{"error":..}` frame) を既に Err に変換するので、 ここでは
+/// `messages` 配列の取り出しだけ行う。
+async fn poll_recv(agent: &str, timeout_secs: u64) -> Result<Vec<serde_json::Value>> {
+    let resp = call_world(
+        "/api/wire/recv",
+        serde_json::json!({ "agent": agent, "timeout": timeout_secs }),
+    )
+    .await?;
     let messages = resp
         .get("messages")
         .and_then(|v| v.as_array())
@@ -398,44 +323,26 @@ async fn poll_recv(
     Ok(messages)
 }
 
-/// read-only POST 系 endpoint (inbox / thread / ack) の共通実行部。
-/// 応答を pretty JSON で stdout に出し、 `{"status":"error"}` は bail する。
-async fn post_and_print(url: &str, path: &str, payload: serde_json::Value) -> Result<()> {
-    let endpoint = format!("{}{}", url.trim_end_matches('/'), path);
-    let resp = reqwest::Client::new()
-        .post(&endpoint)
-        .json(&payload)
-        .send()
-        .await
-        .with_context(|| format!("POST {}", endpoint))?
-        .json::<serde_json::Value>()
-        .await
-        .context("response JSON parse")?;
-    if resp.get("status").and_then(|v| v.as_str()) == Some("error") {
-        let err = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error");
-        anyhow::bail!("server error: {}", err);
-    }
+/// read-only 系 (inbox / thread / ack) の共通実行部。
+/// 応答を pretty JSON で stdout に出す (error frame は `call_world` が Err にする)。
+async fn post_and_print(path: &str, payload: serde_json::Value) -> Result<()> {
+    let resp = call_world(path, payload).await?;
     println!("{}", serde_json::to_string_pretty(&resp)?);
     Ok(())
 }
 
-/// POST /api/wire/unread-count — 未読在庫を表示 (cursor 不触り)
-async fn inbox(url: &str, agent: &str) -> Result<()> {
+/// wire_unread_count — 未読在庫を表示 (cursor 不触り)
+async fn inbox(agent: &str) -> Result<()> {
     post_and_print(
-        url,
         "/api/wire/unread-count",
         serde_json::json!({ "agent": agent }),
     )
     .await
 }
 
-/// POST /api/wire/thread — 系譜 (root-first) を表示 (cursor 不触り)
-async fn thread(url: &str, message_id: &str) -> Result<()> {
+/// wire_thread — 系譜 (root-first) を表示 (cursor 不触り)
+async fn thread(message_id: &str) -> Result<()> {
     post_and_print(
-        url,
         "/api/wire/thread",
         serde_json::json!({ "message_id": message_id }),
     )
@@ -632,8 +539,9 @@ fn delegation_thread_markdown(delegations: &[serde_json::Value]) -> String {
 /// hook 実体 (R2-c、 チャネル B): 設計 mem_1CbvcJj4ppU3QKH9d7xMpT。
 ///
 /// 全エラー path で Ok(()) を返し何も出力しない (fail-open) — hook の失敗で
-/// 会話を邪魔しないことが最優先。 TheWorld 直叩き (qualified address を自前導出
-/// するので SP proxy 不要 = 自 SP が落ちていても未読通知は出る)。
+/// 会話を邪魔しないことが最優先。 TheWorld "wire" channel 直叩き (qualified address を自前導出
+/// するので SP proxy 不要 = 自 SP が落ちていても未読通知は出る)。 hook は会話を block しない
+/// よう各 call を 2s で bound する (`world_wire::call` の 40s outer とは別の短い実効上限)。
 async fn hook_check() -> Result<()> {
     // TTY からの手動実行ガード (moody 指摘): read_to_string が EOF 待ちで永久 block
     // するため、 hook 専用である旨を案内して即 return する (exit 0)。
@@ -677,48 +585,36 @@ async fn hook_check() -> Result<()> {
         return Ok(()); // VP 外で起動された claude — 何もしない
     };
 
-    // hook は会話を block しないよう短い timeout。 daemon 不在等は silent 成功。
-    let world_port = crate::config::Config::load()
-        .map(|c| c.port_layout().world_port)
-        .unwrap_or(crate::cli::WORLD_PORT);
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    else {
-        return Ok(());
-    };
-    let resp = client
-        .post(format!(
-            "http://127.0.0.1:{world_port}/api/wire/unread-count"
-        ))
-        .json(&serde_json::json!({ "agent": agent }))
-        .send()
-        .await;
-    let total = match resp {
-        Ok(r) => r
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|v| v.get("total").and_then(|t| t.as_u64()))
-            .unwrap_or(0),
-        Err(_) => return Ok(()), // daemon 不在 — silent 成功 (fail-open)
+    // 未読 wire count を 2s で bound して取得。 daemon 不在/wedge/transport 失敗は silent 成功。
+    let total = match tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::process::world_wire::call(
+            "/api/wire/unread-count",
+            serde_json::json!({ "agent": agent }),
+        ),
+    )
+    .await
+    {
+        Ok(Ok(v)) => v.get("total").and_then(|t| t.as_u64()).unwrap_or(0),
+        _ => return Ok(()), // timeout / transport 失敗 — fail-open
     };
 
     // pull-hook（C、doc 28 §3-2）: World の undelivered 委譲を poll してターン頭に surface。
     // 失敗は fail-open（委譲 pull が無くても wire 通知は出す）。
-    let deleg_summary = match client
-        .post(format!("http://127.0.0.1:{world_port}/api/delegation/poll"))
-        .json(&serde_json::json!({ "agent": agent }))
-        .send()
-        .await
+    let deleg_summary = match tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::process::world_wire::call(
+            "/api/delegation/poll",
+            serde_json::json!({ "agent": agent }),
+        ),
+    )
+    .await
     {
-        Ok(r) => r
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|v| v.get("delegations").and_then(|d| d.as_array().cloned()))
+        Ok(Ok(v)) => v
+            .get("delegations")
+            .and_then(|d| d.as_array().cloned())
             .and_then(|ds| delegation_summary(&agent, &ds)),
-        Err(_) => None,
+        _ => None,
     };
 
     if let Some(out) = build_hook_output(&event_name, total, deleg_summary) {
@@ -730,31 +626,10 @@ async fn hook_check() -> Result<()> {
 /// 観測（Canvas Pane 可視化、doc 28 §7/§2）: TheWorld 中央 store の全委譲を取得し、
 /// 「会話 thread」markdown を stdout に出す。`mcp__vantage-point__show` に流して Canvas Pane へ。
 /// hook と違い fail-open ではなく、取得失敗は Err にして利用者に分かるようにする（対話 CLI）。
-async fn deleg_thread(url: Option<&str>) -> Result<()> {
-    // base URL: 明示指定 > deterministic な world port 導出（hook_check と同 pattern）。
-    let base = match url {
-        Some(u) => u.to_string(),
-        None => {
-            let world_port = crate::config::Config::load()
-                .map(|c| c.port_layout().world_port)
-                .unwrap_or(crate::cli::WORLD_PORT);
-            format!("http://127.0.0.1:{world_port}")
-        }
-    };
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
-    let body: serde_json::Value = client
-        .post(format!("{base}/api/delegation/list"))
-        .send()
+async fn deleg_thread() -> Result<()> {
+    let body = call_world("/api/delegation/list", serde_json::json!({}))
         .await
-        .map_err(|e| anyhow::anyhow!("delegation list 取得失敗 ({base}): {e}"))?
-        .json()
-        .await
-        .map_err(|e| anyhow::anyhow!("delegation list の JSON parse 失敗: {e}"))?;
-    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
-        anyhow::bail!("delegation list: {err}");
-    }
+        .map_err(|e| anyhow::anyhow!("delegation list 取得失敗: {e}"))?;
     let ds = body
         .get("delegations")
         .and_then(|d| d.as_array())
@@ -764,10 +639,9 @@ async fn deleg_thread(url: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// POST /api/wire/ack — message を ack する (R2-a、 ack 台帳に記録)
-async fn ack(url: &str, message_id: &str, agent: &str) -> Result<()> {
+/// wire_ack — message を ack する (R2-a、 ack 台帳に記録)
+async fn ack(message_id: &str, agent: &str) -> Result<()> {
     post_and_print(
-        url,
         "/api/wire/ack",
         serde_json::json!({ "message_id": message_id, "agent": agent }),
     )
@@ -775,16 +649,12 @@ async fn ack(url: &str, message_id: &str, agent: &str) -> Result<()> {
 }
 
 async fn send(
-    url: &str,
     to: &str,
     body: &str,
     from: &str,
     reply_to: Option<&str>,
     category: Option<&str>,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
-    let endpoint = format!("{}/api/wire/send", url.trim_end_matches('/'));
-
     // wire_send payload: to は配列、 body は任意 JSON。
     // CLI は ad-hoc test 用なので body string を `{"text": ...}` object に wrap して送る。
     // R2-b: --category は delivery policy selector (command = ack されるまで再掲示対象)。
@@ -801,19 +671,8 @@ async fn send(
         payload["reply_to"] = serde_json::Value::String(prev_id.to_string());
     }
 
-    let resp = client
-        .post(&endpoint)
-        .json(&payload)
-        .send()
-        .await
-        .with_context(|| format!("send POST {}", endpoint))?;
-
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("send failed: HTTP {} — {}", status, text);
-    }
-    println!("{}", text);
+    let resp = call_world("/api/wire/send", payload).await?;
+    println!("{}", serde_json::to_string(&resp).unwrap_or_default());
     Ok(())
 }
 
@@ -844,7 +703,7 @@ mod tests {
             TestCli::try_parse_from(["vp-wire-test", "recv", "--agent", "agent@vantage-point"])
                 .expect("parse should succeed");
         match cli.cmd {
-            WireCommands::Recv { timeout, agent, .. } => {
+            WireCommands::Recv { timeout, agent } => {
                 assert_eq!(timeout, 5, "default timeout should be 5s");
                 assert_eq!(agent, "agent@vantage-point");
             }
@@ -869,17 +728,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn recv_default_url_points_to_project0_sp() {
-        // Project 0 の SP (33000) が default、 watch / send と同 default に揃える。
-        let cli = TestCli::try_parse_from(["vp-wire-test", "recv", "--agent", "x"])
-            .expect("parse should succeed");
-        match cli.cmd {
-            WireCommands::Recv { url, .. } => assert_eq!(url, "http://127.0.0.1:33000"),
-            other => panic!("expected Recv variant, got {:?}", other),
-        }
-    }
-
     /// timeout 上限 (server 30s) を超える値を渡しても clap parse は通り (= 機能要件)、
     /// 実行時に clamp される (recv() impl 内 `.min(30)`)。 ここでは parse の通過だけ確認。
     #[test]
@@ -893,16 +741,13 @@ mod tests {
         }
     }
 
-    /// R2-a CLI parity: inbox は agent 必須、 url default は SP (proxy 経由)
+    /// R2-a CLI parity: inbox は agent 必須 (World 直結、 url 引数は撤去済)
     #[test]
-    fn inbox_parses_agent_with_default_url() {
+    fn inbox_parses_agent() {
         let cli = TestCli::try_parse_from(["vp-wire-test", "inbox", "-a", "agent@vp"])
             .expect("parse should succeed");
         match cli.cmd {
-            WireCommands::Inbox { url, agent } => {
-                assert_eq!(agent, "agent@vp");
-                assert_eq!(url, "http://127.0.0.1:33000");
-            }
+            WireCommands::Inbox { agent } => assert_eq!(agent, "agent@vp"),
             other => panic!("expected Inbox variant, got {:?}", other),
         }
         assert!(
