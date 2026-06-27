@@ -11,6 +11,12 @@
 //!   - `Register {handle, name}` → `{handle, registered_at}`
 //!   - `Discover {}` → `{worlds: [{handle, name, registered_at}]}`
 //!
+//! ## federation L2 追従（ADR-020 D2、wld_id namespace）
+//! - VP は `Register` に `wld_id`（home-World の位置独立 routing key `wld_xxx`）を **additive**
+//!   で載せる。hub S2（registry endpoint field）未実装の現状 hub はこの field を無視するが、
+//!   protocol は additive なので非破壊。S2 landed 後に hub が `wld_id → endpoint` を index し、
+//!   `Discover` が wld_id を carry するようになる（[`WorldEntry::wld_id`] が受け皿）。
+//!
 //! ## 注意（ADR-018 spike の地雷）
 //! - VP は既に Unison native（daemon QUIC server / WorldControlClient）。rustls の
 //!   CryptoProvider は VP 既存経路で install 済みのため、ここでの再 install は不要。
@@ -28,6 +34,11 @@ pub const HUB_ADDR_ENV: &str = "CHRONISTA_HUB_ADDR";
 /// hub registry に登録された 1 world の entry（`worlds.Discover` の戻り要素）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorldEntry {
+    /// home-World の位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 (registry endpoint
+    /// field) 未実装の現状は空文字で返り得るため `#[serde(default)]`。S2 landed 後は
+    /// Discover が `wld_id → endpoint` を carry する（前方互換のためここで先に受け皿を持つ）。
+    #[serde(default)]
+    pub wld_id: String,
     pub handle: String,
     #[serde(default)]
     pub name: String,
@@ -111,10 +122,17 @@ impl HubClient {
     }
 
     /// この world を hub registry に register する（`worlds.Register`）。
-    pub async fn register(&self, handle: &str, name: &str) -> Result<WorldEntry> {
+    ///
+    /// `wld_id` = home-World の位置独立 routing key（ADR-020 D2）。hub は S2 (registry endpoint
+    /// field) 未実装の現状この field を無視するが、 additive なので非破壊で先に送っておく
+    /// （両側が揃った時点で hub が `wld_id → endpoint` を index する）。
+    pub async fn register(&self, wld_id: &str, handle: &str, name: &str) -> Result<WorldEntry> {
         let resp: serde_json::Value = self
             .ch
-            .request("Register", &json!({ "handle": handle, "name": name }))
+            .request(
+                "Register",
+                &json!({ "wld_id": wld_id, "handle": handle, "name": name }),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("worlds.Register 失敗: {}", e))?;
         serde_json::from_value(resp).context("Register レスポンスのパースに失敗")

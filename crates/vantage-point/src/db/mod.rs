@@ -126,6 +126,52 @@ impl VpDb {
         &self.db
     }
 
+    // =========================================================================
+    // World identity (federation L2、 ADR-020 D2): home-World の位置独立 安定 id `wld_xxx`。
+    // db/world の singleton row (固定 record id world_identity:self)。daemon が初回起動で
+    // 1 度だけ発行し永続、 以降の再起動は復元する。[`crate::lane::lane_id::load_or_create`] の
+    // db 版 — lane は (project,lane) ごと file 永続、 World は daemon に 1 つなので db singleton。
+    // =========================================================================
+
+    /// home-World の wld_id を取得する (無ければ生成して永続)。
+    ///
+    /// - 既存 singleton row があり非空なら **それを復元** (= 再起動を越えて安定)。
+    /// - 無い / 空なら **新規生成して永続** し、 その id を返す。
+    ///
+    /// World daemon は single-writer (db comment 参照) かつ boot で 1 度だけ呼ぶため race は無い。
+    /// 書き込みは DELETE+CREATE を単一 query (= 1 transaction、 [`Self::upsert_lane`] と同方針) で
+    /// atomic に行う (空 row が残っていた場合も確実に上書き)。
+    pub async fn load_or_create_world_id(&self) -> Result<crate::world::WorldId> {
+        // 既存 singleton row の wld_id を読む (存在しなければ空配列)。
+        let mut result = self
+            .db
+            .query("SELECT VALUE wld_id FROM world_identity:self")
+            .await
+            .map_err(|e| anyhow::anyhow!("world_id 取得失敗: {}", e))?;
+        let existing: Vec<String> = result.take(0)?;
+        if let Some(id) = existing.into_iter().find(|s| !s.trim().is_empty()) {
+            return Ok(crate::world::WorldId::from(id));
+        }
+
+        // 無ければ新規発行して永続する。
+        let id = crate::world::WorldId::generate();
+        self.db
+            .query(
+                "DELETE world_identity:self;
+                 CREATE world_identity:self CONTENT {
+                    wld_id: $wld_id,
+                    created_at: time::now()
+                 }",
+            )
+            .bind(("wld_id", id.as_str().to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("world_id 永続失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("world_id 永続エラー: {}", e))?;
+        tracing::info!("home-World identity 発行: wld_id={}", id);
+        Ok(id)
+    }
+
     // VP-188: Projects CRUD は撤去。 registered projects の SSOT は embedded DB から
     // `~/.config/vp/projects.kdl` に移行 (= VP-182 の「DB dir 変更で projects 消失」
     // regression を構造的に解消、 council 2026-05-16)。 projects 永続化は
@@ -817,6 +863,14 @@ DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS tmux_session ON processes TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path UNIQUE;
 
+-- home-World identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
+-- daemon が初回起動で 1 度だけ発行し db/world に永続する singleton (固定 record id
+-- world_identity:self、 index 不要)。machine/hostname/endpoint から独立で、 hub の routing
+-- key になる。db/world は World 専用 (VP-182) なので SP に触られない daemon-canonical な truth。
+DEFINE TABLE IF NOT EXISTS world_identity SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS wld_id ON world_identity TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON world_identity TYPE datetime DEFAULT time::now();
+
 -- registered projects (PoC: VP-188 を revert し DB 真実源へ戻す)。
 -- 当時 council (2026-05-16) が file に逃した理由は VP-182 (surrealkv の OS 排他
 -- ロックで DB dir を分離 → DB dir 変更で projects 消失)。 本 PoC の仮説:
@@ -1087,6 +1141,23 @@ mod tests {
     async fn test_define_schema_mem() {
         let db = make_test_db().await;
         assert!(db.health().await, "ヘルスチェック失敗");
+    }
+
+    #[tokio::test]
+    async fn test_world_id_load_or_create_is_stable() {
+        // federation L2: wld_id singleton の発行 → 復元 round-trip。
+        let db = make_test_db().await;
+
+        // 初回は生成して永続 (EntId 形式 wld_1.. )。
+        let first = db.load_or_create_world_id().await.unwrap();
+        assert!(
+            first.as_str().starts_with("wld_1"),
+            "EntId 形式 wld_1.. のはず: {first}"
+        );
+
+        // 2 回目以降は同じ id を復元する (= singleton、 再起動越え安定の核)。
+        let second = db.load_or_create_world_id().await.unwrap();
+        assert_eq!(first, second, "wld_id は singleton で安定して復元される");
     }
 
     #[tokio::test]

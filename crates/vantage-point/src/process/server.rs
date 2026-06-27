@@ -549,6 +549,25 @@ pub async fn run_world(
         }
     }
 
+    // federation L2 (ADR-020 D2): home-World の位置独立 routing key `wld_id` を db/world から
+    // load_or_create する。daemon が初回起動で 1 度発行し、 以降の再起動は復元する (machine /
+    // hostname / endpoint から独立な不変番地)。db 不在 (degraded) なら None — その場合は
+    // federation の routing key を名乗れないが machine-local 動作は継続する (= hub down 時と同 degrade)。
+    let world_id: Option<crate::world::WorldId> = if let Some(ref db) = vpdb {
+        match db.load_or_create_world_id().await {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!(
+                    "wld_id 発行/復元に失敗 (federation routing なしで継続): {}",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let world_cap = Arc::new(RwLock::new(world_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
     let hub = Hub::new();
@@ -865,11 +884,18 @@ pub async fn run_world(
         // handle = この machine の identity（OS hostname → "vp-world" fallback）。
         let handle = crate::daemon::hub_client::resolve_handle(None);
         let name = format!("VP World ({handle})");
+        // wld_id = federation の位置独立 routing key (ADR-020 D2)。db 不在で None なら空文字を
+        // 送る (= 現状 hub は S2 未実装で無視するため非破壊、 handle ベース discover は維持)。
+        let wld_id = world_id
+            .as_ref()
+            .map(|w| w.as_str().to_string())
+            .unwrap_or_default();
         tokio::spawn(async move {
             match crate::daemon::hub_client::HubClient::connect(&hub_addr, 5).await {
-                Ok(client) => match client.register(&handle, &name).await {
+                Ok(client) => match client.register(&wld_id, &handle, &name).await {
                     Ok(entry) => tracing::info!(
-                        "chronista-hub register 成功: handle={} name={} addr={} registered_at={}",
+                        "chronista-hub register 成功: wld_id={} handle={} name={} addr={} registered_at={}",
+                        wld_id,
                         entry.handle,
                         name,
                         hub_addr,
