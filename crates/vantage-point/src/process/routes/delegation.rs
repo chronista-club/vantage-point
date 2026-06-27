@@ -116,6 +116,26 @@ pub async fn world_delegation_respond_handler(
     }
 }
 
+/// POST /api/delegation/poll — pull-hook（C）: agent 関与の undelivered 委譲を返す。
+///
+/// `vp wire hook-check` がターン頭に叩く。`{delegations: [record...]}` を返す（空配列もあり）。
+pub async fn world_delegation_poll_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let store = delegation_store!(state);
+    let Some(agent) = payload.get("agent").and_then(|v| v.as_str()) else {
+        return Json(serde_json::json!({ "error": "delegation poll: 'agent' required" }));
+    };
+    match store.poll_for_agent(agent).await {
+        Ok(ds) => {
+            let arr: Vec<serde_json::Value> = ds.iter().map(record_json).collect();
+            Json(serde_json::json!({ "delegations": arr }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": format!("delegation poll: {e}") })),
+    }
+}
+
 /// POST /api/delegation/mark_delivered — wake の woke 結果を記録（best-effort）。
 pub async fn world_delegation_mark_delivered_handler(
     State(state): State<Arc<AppState>>,

@@ -909,6 +909,10 @@ pub async fn run_world(
             post(delegation::world_delegation_respond_handler),
         )
         .route(
+            "/api/delegation/poll",
+            post(delegation::world_delegation_poll_handler),
+        )
+        .route(
             "/api/delegation/mark_delivered",
             post(delegation::world_delegation_mark_delivered_handler),
         )
