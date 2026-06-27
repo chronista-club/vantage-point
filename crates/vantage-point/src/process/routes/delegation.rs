@@ -136,6 +136,24 @@ pub async fn world_delegation_poll_handler(
     }
 }
 
+/// POST /api/delegation/list — 観測（Canvas Pane 可視化、doc 28 §7/§2）: 全委譲を返す。
+///
+/// `vp wire deleg-thread` が Canvas 表示用に叩く read-only エンドポイント。`poll` と違い
+/// agent / delivered / state で絞らず全 record を created_at 昇順で返す（`{delegations: [...]}`）。
+/// 書き込み経路・wake には一切関与しない（観測専用）。
+pub async fn world_delegation_list_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let store = delegation_store!(state);
+    match store.list_all().await {
+        Ok(ds) => {
+            let arr: Vec<serde_json::Value> = ds.iter().map(record_json).collect();
+            Json(serde_json::json!({ "delegations": arr }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": format!("delegation list: {e}") })),
+    }
+}
+
 /// POST /api/delegation/mark_delivered — wake の woke 結果を記録（best-effort）。
 pub async fn world_delegation_mark_delivered_handler(
     State(state): State<Arc<AppState>>,

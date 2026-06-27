@@ -136,6 +136,14 @@ pub enum WireCommands {
     /// (決定 D2)。 あらゆる失敗は silent 成功 (fail-open、 会話を邪魔しない)。
     /// 注意: CC hook 専用 — stdin を pipe で繋いで使う (TTY 直接実行は即 return する)。
     HookCheck,
+    /// 観測（Canvas Pane 可視化、doc 28 §7/§2）: TheWorld 中央 store の全委譲を「会話 thread」
+    /// markdown にして stdout に出す read-only コマンド。`mcp__vantage-point__show` に流して
+    /// Canvas Pane に表示する静的観測 surface（介入でなく観測でフロー全体を追う）。
+    DelegThread {
+        /// TheWorld の base URL（省略時は deterministic な world port を自動導出）。
+        #[arg(short, long)]
+        url: Option<String>,
+    },
     /// shell-level supervisor: vp wire watch を loop で再起動。 inner watch が exit しても
     /// auto-restart で監視を継続する (lifecycle resilience)。 Monitor の前段に置いて、
     /// SessionStart hook 等から自動 arm する想定。
@@ -194,6 +202,7 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             agent,
         } => ack(&url, &message_id, &agent).await,
         WireCommands::HookCheck => hook_check().await,
+        WireCommands::DelegThread { url } => deleg_thread(url.as_deref()).await,
         WireCommands::WatchSupervised {
             url,
             agent,
@@ -541,6 +550,85 @@ fn delegation_summary(agent: &str, delegations: &[serde_json::Value]) -> Option<
     ))
 }
 
+/// 委譲 state を観測 thread 用の絵文字バッジに写す（active=進行中 / done / failed / 質問待ち）。
+fn delegation_state_emoji(state: &str) -> &'static str {
+    match state {
+        "active" => "⏳",
+        "done" => "✅",
+        "failed" => "❌",
+        "awaiting_response" => "❓",
+        _ => "•",
+    }
+}
+
+/// 観測（Canvas Pane 可視化、doc 28 §7/§2）: 全委譲を「会話 thread」markdown に整形する。
+///
+/// requester↔doer の pair（順不同）ごとに束ね、各委譲を task（依頼）→ outcome（doer の応答）の
+/// exchange として表示する。介入でなく観測でフロー全体を追う read-only surface。
+/// pure fn（data→markdown）= unit test 可能、`delegation_summary` と違い role 視点では絞らない。
+fn delegation_thread_markdown(delegations: &[serde_json::Value]) -> String {
+    if delegations.is_empty() {
+        return "# 🔀 委譲 thread\n\n_まだ委譲はありません。_\n".to_string();
+    }
+    // pair（requester↔doer、順不同）ごとに束ねる。a→b と b→a を 1 会話に畳む。
+    // 挿入順（= created_at 昇順、route が ORDER BY 済）を保つため Vec で持つ。
+    let mut groups: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
+    for d in delegations {
+        let requester = d.get("requester").and_then(|v| v.as_str()).unwrap_or("");
+        let doer = d.get("doer").and_then(|v| v.as_str()).unwrap_or("");
+        let mut pair = [requester, doer];
+        pair.sort_unstable();
+        let key = format!("{} ⇄ {}", pair[0], pair[1]);
+        match groups.iter_mut().find(|(k, _)| k == &key) {
+            Some((_, v)) => v.push(d),
+            None => groups.push((key, vec![d])),
+        }
+    }
+
+    let mut out = format!("# 🔀 委譲 thread（{} 件）\n", delegations.len());
+    for (pair, items) in &groups {
+        out.push_str(&format!("\n## {pair}\n"));
+        for d in items {
+            let id = d.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let state = d.get("state").and_then(|v| v.as_str()).unwrap_or("");
+            let requester = d.get("requester").and_then(|v| v.as_str()).unwrap_or("");
+            let doer = d.get("doer").and_then(|v| v.as_str()).unwrap_or("");
+            let task = d.get("task").and_then(|v| v.as_str()).unwrap_or("");
+            out.push_str(&format!(
+                "\n- **{id}** {} `{state}`\n",
+                delegation_state_emoji(state)
+            ));
+            out.push_str(&format!("  - 🗣️ {requester} → {doer}: {task}\n"));
+            // outcome（doer の応答）を state に応じて表示。active はまだ応答なし。
+            match state {
+                "done" => {
+                    let r = d
+                        .pointer("/outcome/result")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    out.push_str(&format!("  - ✅ {doer} → {requester}: {r}\n"));
+                }
+                "failed" => {
+                    let r = d
+                        .pointer("/outcome/reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    out.push_str(&format!("  - ❌ {doer} → {requester}: {r}\n"));
+                }
+                "awaiting_response" => {
+                    let q = d
+                        .pointer("/outcome/question")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    out.push_str(&format!("  - ❓ {doer} → {requester}: {q}\n"));
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// hook 実体 (R2-c、 チャネル B): 設計 mem_1CbvcJj4ppU3QKH9d7xMpT。
 ///
 /// 全エラー path で Ok(()) を返し何も出力しない (fail-open) — hook の失敗で
@@ -636,6 +724,43 @@ async fn hook_check() -> Result<()> {
     if let Some(out) = build_hook_output(&event_name, total, deleg_summary) {
         println!("{out}");
     }
+    Ok(())
+}
+
+/// 観測（Canvas Pane 可視化、doc 28 §7/§2）: TheWorld 中央 store の全委譲を取得し、
+/// 「会話 thread」markdown を stdout に出す。`mcp__vantage-point__show` に流して Canvas Pane へ。
+/// hook と違い fail-open ではなく、取得失敗は Err にして利用者に分かるようにする（対話 CLI）。
+async fn deleg_thread(url: Option<&str>) -> Result<()> {
+    // base URL: 明示指定 > deterministic な world port 導出（hook_check と同 pattern）。
+    let base = match url {
+        Some(u) => u.to_string(),
+        None => {
+            let world_port = crate::config::Config::load()
+                .map(|c| c.port_layout().world_port)
+                .unwrap_or(crate::cli::WORLD_PORT);
+            format!("http://127.0.0.1:{world_port}")
+        }
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let body: serde_json::Value = client
+        .post(format!("{base}/api/delegation/list"))
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("delegation list 取得失敗 ({base}): {e}"))?
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("delegation list の JSON parse 失敗: {e}"))?;
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("delegation list: {err}");
+    }
+    let ds = body
+        .get("delegations")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+    println!("{}", delegation_thread_markdown(&ds));
     Ok(())
 }
 
@@ -928,5 +1053,41 @@ mod tests {
 
         // 関与しない agent → None。
         assert!(delegation_summary("agent@nobody", &ds).is_none());
+    }
+
+    /// 観測 thread: pair ごとに束ね、task→outcome の exchange を全件（state 無関係）描く。
+    #[test]
+    fn delegation_thread_markdown_groups_by_pair_and_shows_exchange() {
+        let ds = vec![
+            // a⇄w1: done（result 表示）。
+            serde_json::json!({
+                "id": "dlg-1", "state": "done", "requester": "a@vp",
+                "doer": "a@vp/w1", "task": "DB schema", "outcome": {"kind": "done", "result": "完了"}
+            }),
+            // a⇄w1: awaiting_response（question 表示）— 同 pair に畳まれる。
+            serde_json::json!({
+                "id": "dlg-2", "state": "awaiting_response", "requester": "a@vp",
+                "doer": "a@vp/w1", "task": "API 実装", "outcome": {"kind": "needsinput", "question": "認証は?"}
+            }),
+            // a⇄w2: active（doer 応答なし）— 別 pair。requester/doer 逆順でも同会話化を確認。
+            serde_json::json!({
+                "id": "dlg-3", "state": "active", "requester": "a@vp/w2",
+                "doer": "a@vp", "task": "lint 修正", "outcome": null
+            }),
+        ];
+        let md = delegation_thread_markdown(&ds);
+        assert!(md.contains("委譲 thread（3 件）"), "件数ヘッダ: {md}");
+        // pair grouping（順不同 key で a@vp と a@vp/w1 が 1 つの ⇄ 見出しに）。
+        assert!(md.contains("## a@vp ⇄ a@vp/w1"));
+        assert!(md.contains("## a@vp ⇄ a@vp/w2"), "逆順 pair も正規化: {md}");
+        // exchange: task（依頼）と outcome（応答）の両方。
+        assert!(md.contains("🗣️ a@vp → a@vp/w1: DB schema"));
+        assert!(md.contains("✅ a@vp/w1 → a@vp: 完了"));
+        assert!(md.contains("❓ a@vp/w1 → a@vp: 認証は?"));
+        // active は task のみ（doer 応答行は出ない）。
+        assert!(md.contains("🗣️ a@vp/w2 → a@vp: lint 修正"));
+
+        // 空 → プレースホルダ。
+        assert!(delegation_thread_markdown(&[]).contains("まだ委譲はありません"));
     }
 }
