@@ -690,38 +690,34 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
     }
 }
 
-/// `vp lane ls --detail` 実装: 親 SP の `/api/lanes` を query して pretty JSON で出力。
+/// `vp lane ls --detail` 実装: World process-proxy ask `lanes_list` を query して pretty JSON で出力。
 ///
-/// SP 不在 (= TheWorld に未登録 / cwd が repo 外) なら error。 `--detail` を要求した時点で
-/// SP 稼働を前提とする (= fs-only fallback はせず、 明示的に user に SP 未起動を伝える)。
+/// lanes portless (doc 27 §3.4.5): 旧 SP `/api/lanes` 直叩きを撤去し World :32000 の process-proxy に
+/// 一本化 (`try_sp_delete_performer` と同型、 SP port 解決不要)。 SP 不在 (= TheWorld に未登録 /
+/// cwd が repo 外 / SP 未起動) なら World が control channel 逆引き失敗で error を返す。 `--detail` を
+/// 要求した時点で SP 稼働を前提とする (= fs-only fallback はせず、 明示的に user に SP 未起動を伝える)。
 ///
-/// MCP `list_lanes` の mailbox_addresses 計算 / project_addresses synthesis までは
-/// 実装せず、 SP `/api/lanes` の生 JSON を pretty print する (= SP が持つ live state を
-/// 直に出す、 mailbox は SKILL.md doc で計算式を案内する方針)。
+/// MCP `list_lanes` の mailbox_addresses 計算 / project_addresses synthesis までは実装せず、
+/// dispatch `lanes_list` の生 JSON (`{lanes:[...]}`) を pretty print する (mailbox は SKILL.md doc 案内)。
 fn list_performers_detail() -> Result<()> {
-    let (_project_name, port) = resolve_parent_project()
-        .map_err(|e| anyhow::anyhow!("SP 解決失敗 (--detail は SP 稼働が前提): {}", e))?;
-    let url = format!("http://[::1]:{}/api/lanes", port);
+    // repo_root = project_path (World handshake の stable identifier)。 SP port は process-proxy で不要。
+    let repo_root = lane::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("repo root 解決失敗 (--detail は project 内が前提): {}", e))?;
+    let project_path = repo_root
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("repo path に invalid UTF-8"))?;
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| anyhow::anyhow!("reqwest client build failed: {}", e))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|e| anyhow::anyhow!("SP :{} に到達できません: {}", port, e))?;
-    let status = resp.status();
-    let text = resp.text().unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("SP /api/lanes error: {} {}", status, text);
-    }
-    // SP の raw JSON を pretty print。 mailbox_addresses 計算は省略 (上記 doc 参照)。
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    let resp = vantage_point::commands::process_client::world_process_request_blocking(
+        cli::WORLD_PORT,
+        project_path,
+        "lanes_list",
+        serde_json::json!({}),
+    )
+    .map_err(|e| anyhow::anyhow!("lanes_list 失敗 (--detail は SP 稼働が前提): {}", e))?;
+
     println!(
         "{}",
-        serde_json::to_string_pretty(&parsed).unwrap_or_default()
+        serde_json::to_string_pretty(&resp).unwrap_or_default()
     );
     Ok(())
 }
