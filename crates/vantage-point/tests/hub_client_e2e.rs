@@ -30,13 +30,14 @@ async fn register_then_discover_roundtrip() {
     // run_world と同じ handle 解決ロジック（ここでは固定 handle でテスト独立性を担保）。
     let handle = "vp-e2e-world";
     let name = "VP e2e World";
-    // federation L2: 固定の wld_id を載せる（hub S2 未実装なら無視されるが register は非破壊）。
+    // federation L2: 固定の wld_id + endpoint 候補を載せる（hub S2 未実装なら無視、register は非破壊）。
     let wld_id = "wld_e2e-test";
+    let endpoints = vec!["[2001:db8::1]:32000".to_string()];
 
     let client = HubClient::connect(&addr, 5).await.expect("hub 接続に失敗");
 
     let entry = client
-        .register(wld_id, handle, name)
+        .register(wld_id, &endpoints, handle, name)
         .await
         .expect("register 失敗");
     assert_eq!(entry.handle, handle, "register が返す handle が一致しない");

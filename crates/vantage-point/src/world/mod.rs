@@ -6,6 +6,7 @@
 //! もの — machine = 「今の居場所」、 wld_id = 「不変の番地」、 handle = 「人間可読の表示名」の
 //! 三層分離 (ADR-020 D2)。
 
+pub mod endpoint;
 pub mod world_id;
 
 pub use world_id::WorldId;
