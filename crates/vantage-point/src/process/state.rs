@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -25,54 +24,6 @@ use crate::protocol::{Content, DebugMode, ProcessMessage};
 /// PP の overall canvas layout を pane_contents に畳む際の reserved pane_id。
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
-
-/// Pending user prompt request entry (REQ-PROMPT-001 to REQ-PROMPT-005)
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct PendingPrompt {
-    /// The prompt request data
-    pub request: PendingPromptRequest,
-    /// Response once user has responded (None = still waiting)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<UserPromptResponseData>,
-}
-
-/// User prompt request data stored in pending prompts
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PendingPromptRequest {
-    pub request_id: String,
-    pub prompt_type: String,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<PromptOption>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_value: Option<String>,
-    pub timeout_seconds: u32,
-    pub created_at: u64,
-}
-
-/// Prompt option for select/multi_select
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PromptOption {
-    pub id: String,
-    pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-/// User prompt response data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct UserPromptResponseData {
-    /// Response outcome: approved, rejected, cancelled, timeout
-    pub outcome: String,
-    /// Text response (for input type or optional comment)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    /// Selected option IDs (for select/multi_select)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_options: Option<Vec<String>>,
-}
 
 /// スクリーンショットキャプチャの応答データ
 pub(crate) struct ScreenshotData {
@@ -100,8 +51,6 @@ pub(crate) struct AppState {
     /// 判定するのに使う。 `agent@<project>` の `<project>` が本 field と異なれば remote SP。
     /// World mode では空文字列 (= cross-process forward は SP mode 専用)。
     pub project_name: String,
-    /// Pending user prompts: request_id -> response (REQ-PROMPT-001)
-    pub pending_prompts: Arc<RwLock<HashMap<String, PendingPrompt>>>,
     /// Capability system (Agent, MIDI, Protocol)
     pub capabilities: Arc<ProcessCapabilities>,
     /// VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。
@@ -524,7 +473,6 @@ pub(crate) async fn build_test_app_state(
         shutdown_token: CancellationToken::new(),
         project_dir: String::new(),
         project_name: String::new(),
-        pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
         world,

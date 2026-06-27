@@ -183,26 +183,28 @@ wmsg を送るときは `body.kind` に上記のいずれかを入れる (= FSM 
 
 ## 4. composition 図 (= 内部経路)
 
+L0 portless 完了後、 全 step は **World process-proxy dispatch** または **World "wire" channel** 経由（旧 SP HTTP 直叩きは撤去済）:
+
 ```
 flow_handoff:
-  POST /api/lanes  ─────────────────→ add_performer (= new_performer_in)
-  POST /api/wire/send ──────────────→ WiremsgStore::send_root
-  GET  /api/tmux/resolve-pane + POST /api/tmux/send-keys → nudge (best-effort)
-   ↑ wire_send 失敗 → DELETE /api/lanes (rollback)
+  lane_create  ─────────────────────→ create_performer_orchestrated (= new_performer_in)
+  wire/send (World "wire" channel) ──→ WiremsgStore::send_root
+  tmux_resolve_pane + tmux_send_keys → nudge (best-effort)
+   ↑ wire_send 失敗 → lane_delete (rollback)
 
 flow_progress:
-  GET  /api/health                              → project name
-  GET  /api/lanes                               → 全 lane (performer_status 込み)
-  POST /api/wire/unread-count   (per lane × N)  → 未読 count (cursor 不触り)
-  POST /api/wire/latest-msg     (per performer × M)  → 最新 wmsg (FSM derive 入力)
+  project name (project_path から導出)          → 旧 GET /api/health は撤去
+  lanes_list                                    → 全 lane (performer_status 込み)
+  wire/unread-count   (per lane × N)            → 未読 count (cursor 不触り)
+  wire/latest-msg     (per performer × M)       → 最新 wmsg (FSM derive 入力)
 ```
 
-`flow_*` は既存 primitive (`add_performer` / `wire_send` / `tmux_send_keys` / `list_lanes`) の上に乗る薄い composition tool。 既存 primitive は撤去せず後方互換、 単発で叩く path は引き続き有効。
+`flow_*` は既存 primitive (`add_performer` / `wire_send` / `tmux_send_keys` / `list_lanes`) の上に乗る薄い composition tool。 これら primitive は L0 portless で全て World process-proxy dispatch / World "wire" channel に移行済（旧 SP HTTP 直叩きは撤去）、 単発で叩く path も dispatch 経由で引き続き有効。
 
-新規 supporting endpoint (= cursor 不触り、 read-only):
+supporting method (= cursor 不触り、 read-only、 World "wire" channel):
 
-- `POST /api/wire/unread-count` — `{agent}` → `{total, by_thread}`
-- `POST /api/wire/latest-msg` — `{agent}` → `{message}` (= 最新 1 件 or null)
+- `wire/unread-count` — `{agent}` → `{total, by_thread}`
+- `wire/latest-msg` — `{agent}` → `{message}` (= 最新 1 件 or null)
 
 ---
 
