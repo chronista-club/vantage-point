@@ -449,23 +449,96 @@ fn wire_address_from_env(project: Option<&str>, lane: Option<&str>) -> Option<St
 }
 
 /// 未読件数から hookSpecificOutput JSON を作る (純関数、 R2-c)。 未読 0 は None (出力なし)。
-fn build_hook_output(event_name: &str, total: u64) -> Option<String> {
-    if total == 0 {
+fn build_hook_output(
+    event_name: &str,
+    total: u64,
+    deleg_summary: Option<String>,
+) -> Option<String> {
+    // wire 未読 + 委譲 pull の両断面を 1 つの additionalContext に合流する。
+    let mut parts: Vec<String> = Vec::new();
+    if total > 0 {
+        parts.push(format!(
+            "📬 wire: {total} 件未読。 mcp__vantage-point__wire_recv で受信してください \
+             (command category は処理後に mcp__vantage-point__wire_ack)。"
+        ));
+    }
+    if let Some(s) = deleg_summary {
+        parts.push(s);
+    }
+    if parts.is_empty() {
         return None;
     }
-    let context = format!(
-        "📬 wire: {total} 件未読。 mcp__vantage-point__wire_recv で受信してください \
-         (command category は処理後に mcp__vantage-point__wire_ack)。"
-    );
     Some(
         serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": event_name,
-                "additionalContext": context,
+                "additionalContext": parts.join("\n"),
             }
         })
         .to_string(),
     )
+}
+
+/// pull-hook（C、doc 28 §3-2 の at-next-turn tier）: poll で得た undelivered 委譲のうち、
+/// この agent が今すぐ動ける（role × state）ものを 1 つの packet に要約する。
+///
+/// - requester 視点: `done`/`failed`（Outcome 受領→再開/判断）/ `awaiting_response`（質問→respond）。
+/// - doer 視点: `active`（task→complete）。
+///
+/// push（reconcile の send-keys）取りこぼしをターン頭で拾う最終保険。read-only（配達 mark はしない）。
+fn delegation_summary(agent: &str, delegations: &[serde_json::Value]) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for d in delegations {
+        let id = d.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let state = d.get("state").and_then(|v| v.as_str()).unwrap_or("");
+        let requester = d.get("requester").and_then(|v| v.as_str()).unwrap_or("");
+        let doer = d.get("doer").and_then(|v| v.as_str()).unwrap_or("");
+        let task = d.get("task").and_then(|v| v.as_str()).unwrap_or("");
+        if requester == agent {
+            match state {
+                "done" => {
+                    let r = d
+                        .pointer("/outcome/result")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    lines.push(format!(
+                        "委譲 {id} → Done: {r}。中断していた作業を再開してください。"
+                    ));
+                }
+                "failed" => {
+                    let r = d
+                        .pointer("/outcome/reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    lines.push(format!(
+                        "委譲 {id} → Failed: {r}。再委譲/自分で実施を判断してください。"
+                    ));
+                }
+                "awaiting_response" => {
+                    let q = d
+                        .pointer("/outcome/question")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    lines.push(format!(
+                        "委譲 {id} ← 質問: {q}。mcp__vantage-point__respond(id=\"{id}\", answer=...) で回答してください。"
+                    ));
+                }
+                _ => {}
+            }
+        } else if doer == agent && state == "active" {
+            lines.push(format!(
+                "委譲 {id}: {task}。mcp__vantage-point__complete(id=\"{id}\", ...) で報告してください。"
+            ));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "📋 未配達の委譲 {} 件:\n{}",
+        lines.len(),
+        lines.join("\n")
+    ))
 }
 
 /// hook 実体 (R2-c、 チャネル B): 設計 mem_1CbvcJj4ppU3QKH9d7xMpT。
@@ -543,7 +616,24 @@ async fn hook_check() -> Result<()> {
         Err(_) => return Ok(()), // daemon 不在 — silent 成功 (fail-open)
     };
 
-    if let Some(out) = build_hook_output(&event_name, total) {
+    // pull-hook（C、doc 28 §3-2）: World の undelivered 委譲を poll してターン頭に surface。
+    // 失敗は fail-open（委譲 pull が無くても wire 通知は出す）。
+    let deleg_summary = match client
+        .post(format!("http://127.0.0.1:{world_port}/api/delegation/poll"))
+        .json(&serde_json::json!({ "agent": agent }))
+        .send()
+        .await
+    {
+        Ok(r) => r
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("delegations").and_then(|d| d.as_array().cloned()))
+            .and_then(|ds| delegation_summary(&agent, &ds)),
+        Err(_) => None,
+    };
+
+    if let Some(out) = build_hook_output(&event_name, total, deleg_summary) {
         println!("{out}");
     }
     Ok(())
@@ -770,8 +860,9 @@ mod tests {
     /// R2-c: 未読ありのときだけ hookSpecificOutput JSON を作る
     #[test]
     fn hook_output_only_when_unread() {
-        assert_eq!(build_hook_output("SessionStart", 0), None);
-        let out = build_hook_output("UserPromptSubmit", 3).expect("3 件未読なら出力");
+        // wire 0 件 + 委譲 0 件 → None。
+        assert_eq!(build_hook_output("SessionStart", 0, None), None);
+        let out = build_hook_output("UserPromptSubmit", 3, None).expect("3 件未読なら出力");
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         let ctx = v["hookSpecificOutput"]["additionalContext"]
@@ -779,5 +870,63 @@ mod tests {
             .expect("additionalContext");
         assert!(ctx.contains("3 件"), "件数を含む: {ctx}");
         assert!(ctx.contains("wire_recv"), "受信導線を含む: {ctx}");
+    }
+
+    /// C: wire 0 件でも委譲 pull があれば hook 出力する（合流）。
+    #[test]
+    fn hook_output_includes_delegation_pull() {
+        let summary = Some("📋 未配達の委譲 1 件:\n委譲 dlg-x → Done: R。".to_string());
+        let out = build_hook_output("UserPromptSubmit", 0, summary).expect("委譲 pull で出力");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let ctx = v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(
+            ctx.contains("委譲 dlg-x → Done"),
+            "委譲 summary を含む: {ctx}"
+        );
+    }
+
+    /// C: delegation_summary は role × state で actionable なものだけ要約する。
+    #[test]
+    fn delegation_summary_by_role_and_state() {
+        let agent = "agent@vp";
+        let ds = vec![
+            // requester 視点 done → 再開導線。
+            serde_json::json!({
+                "id": "dlg-1", "state": "done", "requester": "agent@vp",
+                "doer": "agent@vp/w", "task": "T", "outcome": {"kind": "done", "result": "R"}
+            }),
+            // requester 視点 awaiting_response → respond 導線。
+            serde_json::json!({
+                "id": "dlg-2", "state": "awaiting_response", "requester": "agent@vp",
+                "doer": "agent@vp/w", "task": "T", "outcome": {"kind": "needsinput", "question": "Q?"}
+            }),
+            // この agent が doer の active → complete 導線。
+            serde_json::json!({
+                "id": "dlg-3", "state": "active", "requester": "agent@other",
+                "doer": "agent@vp", "task": "Tdoer", "outcome": null
+            }),
+            // requester 視点 active（doer の wake 待ち）→ requester には surface しない。
+            serde_json::json!({
+                "id": "dlg-4", "state": "active", "requester": "agent@vp",
+                "doer": "agent@vp/w", "task": "T", "outcome": null
+            }),
+        ];
+        let summary = delegation_summary(agent, &ds).expect("actionable あり");
+        assert!(summary.contains("dlg-1 → Done"));
+        assert!(summary.contains("dlg-2 ← 質問"));
+        assert!(summary.contains("dlg-3"));
+        assert!(
+            summary.contains("3 件"),
+            "actionable は 3 件 (dlg-4 は除外): {summary}"
+        );
+        assert!(
+            !summary.contains("dlg-4"),
+            "requester+active は surface しない"
+        );
+
+        // 関与しない agent → None。
+        assert!(delegation_summary("agent@nobody", &ds).is_none());
     }
 }

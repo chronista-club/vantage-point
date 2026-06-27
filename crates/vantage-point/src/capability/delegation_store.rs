@@ -241,6 +241,26 @@ impl DelegationStore {
         self.get(id).await
     }
 
+    /// pull-hook（C）: agent が関与（requester or doer）し、まだ配達されていない（delivered=false）
+    /// 委譲を引く。ターン頭で「解決済だが push 取りこぼした委譲」を agent に surface する基準。
+    /// requester 視点（done/failed/awaiting_response の Outcome）か doer 視点（active の task）かは
+    /// caller（hook formatter）が role × state で判定する。
+    pub(crate) async fn poll_for_agent(&self, agent: &str) -> Result<Vec<Delegation>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT * FROM delegations \
+                 WHERE delivered = false AND (requester = $agent OR doer = $agent);",
+            )
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("delegation poll_for_agent failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("delegation poll_for_agent take failed: {e}"))?;
+        rows.iter().map(Self::row_to_delegation).collect()
+    }
+
     /// `delegations` row JSON を [`Delegation`] に hydrate。
     fn row_to_delegation(row: &serde_json::Value) -> Result<Delegation> {
         let id = extract_record_local_id(&row["id"], "delegations");
@@ -380,5 +400,39 @@ mod tests {
 
         // 未知 id の fail_timeout は None。
         assert!(store.fail_timeout("dlg-none").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn poll_for_agent_returns_involved_undelivered() {
+        let store = make_store().await;
+        // requester=agent@vp / doer=agent@vp/w の委譲。
+        store
+            .create("dlg-1", "agent@vp", "agent@vp/w", "t")
+            .await
+            .unwrap();
+        // 無関係 agent の委譲。
+        store
+            .create("dlg-2", "agent@other", "agent@x/w", "t")
+            .await
+            .unwrap();
+
+        // requester として poll → dlg-1 が返る。
+        let mine = store.poll_for_agent("agent@vp").await.unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].id, "dlg-1");
+        // doer として poll → dlg-1 が返る。
+        let as_doer = store.poll_for_agent("agent@vp/w").await.unwrap();
+        assert_eq!(as_doer.len(), 1);
+        // 配達済になると poll から外れる。
+        store.mark_delivered("dlg-1", true).await.unwrap();
+        assert!(store.poll_for_agent("agent@vp").await.unwrap().is_empty());
+        // 無関係 agent は空。
+        assert!(
+            store
+                .poll_for_agent("agent@nobody")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
