@@ -40,7 +40,8 @@ fn extract_record_local_id(id_value: &serde_json::Value, table: &str) -> String 
         .to_string()
 }
 
-/// 委譲の World 中央 store。
+/// 委譲の World 中央 store（`Arc<Surreal>` 1 本なので Clone は cheap = reconcile loop に渡せる）。
+#[derive(Clone)]
 pub(crate) struct DelegationStore {
     db: Arc<Surreal<Any>>,
 }
@@ -181,6 +182,65 @@ impl DelegationStore {
         Ok(())
     }
 
+    /// reconcile: 直近 wake が未配達（`delivered = false`）の record を全て引く。
+    /// World reconcile loop が再 nudge する候補（push 取りこぼし / timeout 直後の Failed 等）。
+    pub(crate) async fn list_undelivered(&self) -> Result<Vec<Delegation>> {
+        let mut res = self
+            .db
+            .query("SELECT * FROM delegations WHERE delivered = false;")
+            .await
+            .map_err(|e| anyhow::anyhow!("delegation list_undelivered failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("delegation list_undelivered take failed: {e}"))?;
+        rows.iter().map(Self::row_to_delegation).collect()
+    }
+
+    /// reconcile: `updated_at` が `cutoff_ms` より古い未終了（active / awaiting_response）record を引く。
+    /// = doer 沈黙 / requester stall の timeout 候補（→ `fail_timeout` で Failed{timeout} に落とす）。
+    pub(crate) async fn list_stale_open(&self, cutoff_ms: i64) -> Result<Vec<Delegation>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT * FROM delegations \
+                 WHERE (state = 'active' OR state = 'awaiting_response') AND updated_at < $cutoff;",
+            )
+            .bind(("cutoff", cutoff_ms))
+            .await
+            .map_err(|e| anyhow::anyhow!("delegation list_stale_open failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("delegation list_stale_open take failed: {e}"))?;
+        rows.iter().map(Self::row_to_delegation).collect()
+    }
+
+    /// reconcile: doer 沈黙 / 死を `Failed{timeout}` に落とす（delivered=false で requester wake 待ち）。
+    /// 戻り値 = 更新後 record（未知 id は None）。
+    pub(crate) async fn fail_timeout(&self, id: &str) -> Result<Option<Delegation>> {
+        if self.get(id).await?.is_none() {
+            return Ok(None);
+        }
+        // state ガード付き UPDATE: list_stale_open 判定〜ここまでの間に doer が complete して
+        // done/failed に遷移していたら no-op（正常完了を timeout で上書きしない = 冪等）。
+        self.db
+            .query(
+                r#"
+                UPDATE type::record('delegations', $id) SET
+                    state = 'failed',
+                    outcome = { kind: 'failed', reason: 'timeout' },
+                    updated_at = $now, delivered = false
+                WHERE state = 'active' OR state = 'awaiting_response';
+                "#,
+            )
+            .bind(("id", id.to_string()))
+            .bind(("now", now_ms()))
+            .await
+            .map_err(|e| anyhow::anyhow!("delegation fail_timeout failed: {e}"))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("delegation fail_timeout check failed: {e}"))?;
+        self.get(id).await
+    }
+
     /// `delegations` row JSON を [`Delegation`] に hydrate。
     fn row_to_delegation(row: &serde_json::Value) -> Result<Delegation> {
         let id = extract_record_local_id(&row["id"], "delegations");
@@ -278,5 +338,47 @@ mod tests {
             .await
             .unwrap();
         assert!(res.is_none(), "未知 id は None（UPDATE no-op）");
+    }
+
+    #[tokio::test]
+    async fn reconcile_queries_and_fail_timeout() {
+        let store = make_store().await;
+        // 2 件作成（どちらも active = delivered false）。
+        store
+            .create("dlg-a", "agent@vp", "agent@vp/w", "ta")
+            .await
+            .unwrap();
+        store
+            .create("dlg-b", "agent@vp", "agent@vp/w", "tb")
+            .await
+            .unwrap();
+
+        // create 直後は delivered=false → list_undelivered に両方。
+        let undeliv = store.list_undelivered().await.unwrap();
+        assert_eq!(undeliv.len(), 2);
+        // mark_delivered で 1 件配達済 → list_undelivered は 1 件に。
+        store.mark_delivered("dlg-a", true).await.unwrap();
+        let undeliv = store.list_undelivered().await.unwrap();
+        assert_eq!(undeliv.len(), 1);
+        assert_eq!(undeliv[0].id, "dlg-b");
+
+        // 未来 cutoff で list_stale_open → active な 2 件が stale 候補。
+        let now = chrono::Utc::now().timestamp_millis();
+        let stale = store.list_stale_open(now + 10_000).await.unwrap();
+        assert_eq!(stale.len(), 2, "active な未終了が stale 候補");
+
+        // fail_timeout → Failed{timeout}、 delivered=false に戻る。
+        let failed = store.fail_timeout("dlg-a").await.unwrap().unwrap();
+        assert_eq!(failed.state, DelegationState::Failed);
+        assert!(matches!(failed.outcome, Some(Outcome::Failed { reason }) if reason == "timeout"));
+        // timeout 後は再 wake 待ち（delivered=false）→ undelivered に再登場。
+        let undeliv = store.list_undelivered().await.unwrap();
+        assert!(undeliv.iter().any(|d| d.id == "dlg-a"));
+        // 終端化した dlg-a は stale_open（active/awaiting_response）からは外れる。
+        let stale = store.list_stale_open(now + 10_000).await.unwrap();
+        assert!(stale.iter().all(|d| d.id != "dlg-a"));
+
+        // 未知 id の fail_timeout は None。
+        assert!(store.fail_timeout("dlg-none").await.unwrap().is_none());
     }
 }

@@ -806,6 +806,14 @@ pub async fn run_world(
         );
     }
 
+    // 委譲 reconcile loop (doc 28 §7、 Push+Pull の Pull パス) を spawn。
+    // delivered=false の再 nudge + stale な未終了の timeout → Failed{timeout}。
+    // World-side wake (lane_registry + send-keys) なので delivery loop と同じ lane_registry を使う。
+    if let Some(store) = state.delegation_store.clone() {
+        let lane_registry = world_cap.read().await.lane_registry_ref();
+        super::delegation::spawn_reconcile_loop(store, lane_registry, shutdown_token.clone());
+    }
+
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))

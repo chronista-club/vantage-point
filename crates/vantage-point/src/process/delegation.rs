@@ -123,7 +123,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
 /// context を失っていても「何が起きた / 何が期待 / 続きの在処（= complete の撃ち方）」が
 /// 自己完結する 1 行 packet。改行は入れない（send-keys が Enter を別送するため、本文中の
 /// 改行はプロンプト途中送信を招く）。
-fn doer_wake_prompt(id: &str, requester: &str, task: &str) -> String {
+pub(crate) fn doer_wake_prompt(id: &str, requester: &str, task: &str) -> String {
     format!(
         "[委譲 {id}] {requester} からタスクを委譲されました: {task} — 完了したら \
          mcp__vantage-point__complete(id=\"{id}\", outcome=\"done\", result=\"<結果の要約>\") で \
@@ -133,7 +133,7 @@ fn doer_wake_prompt(id: &str, requester: &str, task: &str) -> String {
 }
 
 /// requester を起こす wake prompt（Outcome 同梱の resumable continuation）。
-fn requester_wake_prompt(id: &str, doer: &str, task: &str, outcome: &Outcome) -> String {
+pub(crate) fn requester_wake_prompt(id: &str, doer: &str, task: &str, outcome: &Outcome) -> String {
     match outcome {
         Outcome::Done { result } => format!(
             "[委譲 {id} → Done] {doer} に委譲したタスク「{task}」が完了しました。結果: {result}。\
@@ -304,13 +304,142 @@ pub(crate) async fn handle_respond(
 
 /// wake の woke 結果を World store に記録する（best-effort、失敗は無視）。
 ///
-/// delivered=false の record を follow-up B（reconcile）が再 nudge、C（pull-hook）が poll する。
+/// delivered=false の record を reconcile（B）が再 nudge、pull-hook（C）が poll する。
 async fn mark_delivered(id: &str, delivered: bool) {
     let _ = super::world_wire::call(
         "/api/delegation/mark_delivered",
         serde_json::json!({ "id": id, "delivered": delivered }),
     )
     .await;
+}
+
+// =============================================================================
+// reconcile + timeout（doc 28 §7 — Push + Pull 調停の Pull パス、World 常駐 loop）
+//
+// process 管理の reconcile と同じ DNA: push（SP-local wake）の取りこぼし / doer 沈黙を、
+// World 常駐 loop が durable な World 中央 store を走査して self-heal する。
+// - **timeout**: stale な active/awaiting_response を `Failed{timeout}` に落とす（永久 block 回避）。
+// - **re-nudge**: `delivered=false` の record を World-side で直接 wake（lane_registry + send-keys、
+//   delivery_actor と同経路）。timeout 化した分も同 pass で requester に届く。
+// =============================================================================
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
+
+use super::lanes_state::LaneInfo;
+
+/// reconcile pulse の間隔（wire delivery loop の TICK と同じ 30s）。
+const RECONCILE_TICK: Duration = Duration::from_secs(30);
+/// doer 沈黙 / requester stall を timeout とみなす閾値（updated_at からの経過、ms）。
+const TIMEOUT_MS: i64 = 30 * 60 * 1000;
+
+/// reconcile が record から「誰を / どの prompt で起こすか」を再構成する。
+///
+/// - `active` / `pending` → **doer** に task prompt（注: respond 直後の active は answer が
+///   transient で失われるため task を再送する。doer は task を読み直して継続 = spike では許容、
+///   厳密な answer 再送は follow-up）。
+/// - `done` / `failed` / `awaiting_response` → **requester** に Outcome 反映の prompt。
+fn wake_for(d: &Delegation) -> (String, String) {
+    match d.state {
+        DelegationState::Active | DelegationState::Pending => (
+            d.doer.clone(),
+            doer_wake_prompt(&d.id, &d.requester, &d.task),
+        ),
+        DelegationState::Done | DelegationState::Failed | DelegationState::AwaitingResponse => {
+            let outcome = d.outcome.clone().unwrap_or(Outcome::Failed {
+                reason: "(unknown)".to_string(),
+            });
+            (
+                d.requester.clone(),
+                requester_wake_prompt(&d.id, &d.doer, &d.task, &outcome),
+            )
+        }
+    }
+}
+
+/// reconcile loop を spawn（run_world で呼ぶ）。shutdown でループ終了。
+pub(crate) fn spawn_reconcile_loop(
+    store: crate::capability::DelegationStore,
+    lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
+    shutdown: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tracing::info!(
+            "delegation reconcile loop 起動 (tick={:?}, timeout={}ms)",
+            RECONCILE_TICK,
+            TIMEOUT_MS
+        );
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = tokio::time::sleep(RECONCILE_TICK) => {}
+            }
+            if let Err(e) = reconcile_pulse(&store, &lane_registry, TIMEOUT_MS).await {
+                tracing::warn!("delegation reconcile pulse 失敗 (次 tick で再試行): {e}");
+            }
+        }
+        tracing::info!("delegation reconcile loop: shutdown");
+    })
+}
+
+/// 1 回の reconcile pulse: timeout 化 → undelivered を World-side で再 wake。
+async fn reconcile_pulse(
+    store: &crate::capability::DelegationStore,
+    lane_registry: &Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
+    timeout_ms: i64,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // 1. timeout: stale な未終了 record を Failed{timeout} に落とす（→ delivered=false で再 wake 待ち）。
+    //    fail_timeout は state ガード付き（race で done に遷移済なら no-op）なので、実際に Failed に
+    //    なったときだけログる。
+    for d in store.list_stale_open(now - timeout_ms).await? {
+        if let Some(updated) = store.fail_timeout(&d.id).await?
+            && updated.state == DelegationState::Failed
+        {
+            tracing::info!("delegation reconcile: timeout → Failed (id={})", d.id);
+        }
+    }
+
+    // 2. re-nudge: delivered=false の record を World-side で直接 wake（timeout 化分も含む）。
+    let undelivered = store.list_undelivered().await?;
+    if undelivered.is_empty() {
+        return Ok(());
+    }
+    let lanes: Vec<LaneInfo> = lane_registry
+        .read()
+        .await
+        .values()
+        .flatten()
+        .cloned()
+        .collect();
+    for d in undelivered {
+        let (target, text) = wake_for(&d);
+        // wire address → lane display → tmux session（delivery_actor と同経路）。
+        let Some(display) = super::delivery_actor::wire_agent_to_lane_display(&target) else {
+            continue;
+        };
+        let Some((session, _, _)) = super::delivery_actor::pick_nudge_target(&lanes, &display)
+        else {
+            continue; // lane 不在 / 非 Running = まだ起こせない（次 tick で再試行、pending 保持）
+        };
+        if super::delivery_actor::send_keys_to_session(&session, &text)
+            .await
+            .is_ok()
+        {
+            store.mark_delivered(&d.id, true).await?;
+            tracing::info!(
+                "delegation reconcile: re-nudge delivered (id={}, target={})",
+                d.id,
+                target
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -372,5 +501,44 @@ mod tests {
         assert!(p.contains("dlg-1"));
         assert!(p.contains("DB schema を書く"));
         assert!(p.contains("mcp__vantage-point__complete"));
+    }
+
+    /// reconcile の `wake_for`: state ごとに正しい target / prompt を再構成する。
+    #[test]
+    fn wake_for_targets_by_state() {
+        let base = Delegation {
+            id: "dlg-1".into(),
+            requester: "agent@vp".into(),
+            doer: "agent@vp/w1".into(),
+            task: "T".into(),
+            state: DelegationState::Active,
+            outcome: None,
+        };
+        // active → doer に task prompt。
+        let (target, text) = wake_for(&base);
+        assert_eq!(target, "agent@vp/w1");
+        assert!(text.contains("委譲されました"));
+
+        // done → requester に Done prompt。
+        let done = Delegation {
+            state: DelegationState::Done,
+            outcome: Some(Outcome::Done { result: "R".into() }),
+            ..base.clone()
+        };
+        let (target, text) = wake_for(&done);
+        assert_eq!(target, "agent@vp");
+        assert!(text.contains("→ Done"));
+
+        // awaiting_response → requester に質問 prompt。
+        let ni = Delegation {
+            state: DelegationState::AwaitingResponse,
+            outcome: Some(Outcome::NeedsInput {
+                question: "Q?".into(),
+            }),
+            ..base.clone()
+        };
+        let (target, text) = wake_for(&ni);
+        assert_eq!(target, "agent@vp");
+        assert!(text.contains("← 質問"));
     }
 }

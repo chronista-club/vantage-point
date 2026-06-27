@@ -91,7 +91,7 @@ fn decide_nudge(
 /// - `agent@<project>` → `<project>/conductor`
 /// - `agent@<project>/<name>` → `<project>/performer/<name>`
 /// - それ以外 (notify@ / lane-spawn@ / vp-cli 等) → None (nudge 対象外)
-fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
+pub(crate) fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
     let rest = addr.strip_prefix("agent@")?;
     if rest.is_empty() {
         return None;
@@ -111,7 +111,7 @@ fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
 /// 該当なし = offline 扱い (pending 保持)。 cwd は R3-a の CC activity 照合
 /// (`agents --json` の cwd と突き合わせ) に使う。 cc_session_id は R3-c の
 /// `claude -p --resume <id>` headless 再開に使う (None なら fresh headless)。
-fn pick_nudge_target(
+pub(crate) fn pick_nudge_target(
     lanes: &[LaneInfo],
     lane_display: &str,
 ) -> Option<(String, String, Option<String>)> {
