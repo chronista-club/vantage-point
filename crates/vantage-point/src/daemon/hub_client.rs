@@ -11,11 +11,12 @@
 //!   - `Register {handle, name}` → `{handle, registered_at}`
 //!   - `Discover {}` → `{worlds: [{handle, name, registered_at}]}`
 //!
-//! ## federation L2 追従（ADR-020 D2、wld_id namespace）
-//! - VP は `Register` に `wld_id`（home-World の位置独立 routing key `wld_xxx`）を **additive**
-//!   で載せる。hub S2（registry endpoint field）未実装の現状 hub はこの field を無視するが、
-//!   protocol は additive なので非破壊。S2 landed 後に hub が `wld_id → endpoint` を index し、
-//!   `Discover` が wld_id を carry するようになる（[`WorldEntry::wld_id`] が受け皿）。
+//! ## federation L2 追従（ADR-020 D2/D3、wld_id namespace + endpoint）
+//! - VP は `Register` に `wld_id`（位置独立 routing key `wld_xxx`）と `endpoints`（direct 到達
+//!   候補 `["[GUA]:port"]`、IPv6 GUA 優先・tailnet 非依存・relay floor）を **additive** で載せる。
+//! - hub S2（registry endpoint field）未実装の現状 hub はこの 2 field を無視するが、 protocol は
+//!   additive なので非破壊。S2 landed 後に hub が `wld_id → endpoint(s)` を index し、 `Discover`
+//!   が両者を carry する（[`WorldEntry::wld_id`] / [`WorldEntry::endpoints`] が受け皿）。
 //!
 //! ## 注意（ADR-018 spike の地雷）
 //! - VP は既に Unison native（daemon QUIC server / WorldControlClient）。rustls の
@@ -39,6 +40,11 @@ pub struct WorldEntry {
     /// Discover が `wld_id → endpoint` を carry する（前方互換のためここで先に受け皿を持つ）。
     #[serde(default)]
     pub wld_id: String,
+    /// この world の direct 到達 endpoint 候補 (`["[GUA]:port", ..]`、ADR-020 D3-a)。dialer が
+    /// 順に QUIC direct を試し、全滅で hub relay に落ちる。hub S2 未実装の現状は空配列で返り得る
+    /// ため `#[serde(default)]`（Discover が endpoints を返すのは S2 landed 後）。
+    #[serde(default)]
+    pub endpoints: Vec<String>,
     pub handle: String,
     #[serde(default)]
     pub name: String,
@@ -123,15 +129,24 @@ impl HubClient {
 
     /// この world を hub registry に register する（`worlds.Register`）。
     ///
-    /// `wld_id` = home-World の位置独立 routing key（ADR-020 D2）。hub は S2 (registry endpoint
-    /// field) 未実装の現状この field を無視するが、 additive なので非破壊で先に送っておく
-    /// （両側が揃った時点で hub が `wld_id → endpoint` を index する）。
-    pub async fn register(&self, wld_id: &str, handle: &str, name: &str) -> Result<WorldEntry> {
+    /// - `wld_id` = home-World の位置独立 routing key（ADR-020 D2）。
+    /// - `endpoints` = direct 到達 endpoint 候補（`["[GUA]:port", ..]`、D3-a。空配列 = direct
+    ///   候補なしで relay floor に委ねる）。
+    ///
+    /// hub は S2 (registry endpoint field) 未実装の現状この 2 field を無視するが、 additive
+    /// なので非破壊で先に送っておく（両側が揃った時点で hub が `wld_id → endpoint` を index する）。
+    pub async fn register(
+        &self,
+        wld_id: &str,
+        endpoints: &[String],
+        handle: &str,
+        name: &str,
+    ) -> Result<WorldEntry> {
         let resp: serde_json::Value = self
             .ch
             .request(
                 "Register",
-                &json!({ "wld_id": wld_id, "handle": handle, "name": name }),
+                &json!({ "wld_id": wld_id, "endpoints": endpoints, "handle": handle, "name": name }),
             )
             .await
             .map_err(|e| anyhow::anyhow!("worlds.Register 失敗: {}", e))?;

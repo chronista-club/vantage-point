@@ -890,12 +890,16 @@ pub async fn run_world(
             .as_ref()
             .map(|w| w.as_str().to_string())
             .unwrap_or_default();
+        // endpoints = direct 到達候補 (ADR-020 D3-a、IPv6 GUA 優先・tailnet 非依存)。IPv6 経路が
+        // 無ければ空配列 (= direct 候補なし、 dialer は relay floor に落ちる)。
+        let endpoints = crate::world::endpoint::local_advertised_endpoints(port);
         tokio::spawn(async move {
             match crate::daemon::hub_client::HubClient::connect(&hub_addr, 5).await {
-                Ok(client) => match client.register(&wld_id, &handle, &name).await {
+                Ok(client) => match client.register(&wld_id, &endpoints, &handle, &name).await {
                     Ok(entry) => tracing::info!(
-                        "chronista-hub register 成功: wld_id={} handle={} name={} addr={} registered_at={}",
+                        "chronista-hub register 成功: wld_id={} endpoints={:?} handle={} name={} addr={} registered_at={}",
                         wld_id,
+                        endpoints,
                         entry.handle,
                         name,
                         hub_addr,
