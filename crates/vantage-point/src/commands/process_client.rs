@@ -81,22 +81,48 @@ pub fn send_process_message(
 }
 
 /// F6 (doc 27 §3.4.5/§6): World :32000 の "process-proxy" channel 経由で SP process method を
-/// ask する同期 helper。 旧来の SP 直結 (`send_process_message` の port 直結) を World 経由の
+/// ask する helper。 旧来の SP 直結 (`send_process_message` の port 直結) を World 経由の
 /// reverse-route に移す CLI 用入口。 World が project_path から path_key を正規化して当該 SP の
 /// "control" channel を逆引きし、 dispatch_process_method へ forward する (SP 直結 HTTP/QUIC を撤去)。
 /// 戻り値は SP の応答 JSON (unison error frame `{"error":..}` は Err に変換)。
+///
+/// 既定 outer timeout = 35s (delete は tmux kill 等を含むが ≤35s)。 lane clone のような長い
+/// operation は [`world_process_request_with_timeout`] で個別に伸ばす。
 pub async fn world_process_request(
     world_port: u16,
     project_path: &str,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value> {
+    world_process_request_with_timeout(
+        world_port,
+        project_path,
+        method,
+        payload,
+        std::time::Duration::from_secs(35),
+    )
+    .await
+}
+
+/// [`world_process_request`] の outer timeout を呼び出し側が指定する版。
+///
+/// `lane_create` は SP 側で git worktree clone (`new_performer_in`、 spawn_blocking) を含み
+/// 数 10 sec かかり得るため、 MCP `quic_call_with_timeout("lane_create", .., 60s)` と揃えて 60s を
+/// 渡す。 CLI 35s / MCP 60s の非対称だと、 大規模 repo で CLI だけ先に timeout → rollback 発火 →
+/// SP が clone 完走 → orphan lane、 という race が起きる (moody-blues review #1)。 timeout を
+/// 揃えることで CLI を MCP と同じ挙動にする (残余 race は MCP と同じ既知許容範囲)。
+pub async fn world_process_request_with_timeout(
+    world_port: u16,
+    project_path: &str,
+    method: &str,
+    payload: serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value> {
     // QUIC(rustls) は CryptoProvider の install が前提（install 済みなら no-op）
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let addr = format!("[::1]:{}", world_port);
 
-    // connect → handshake → ask 全体を 35s で bound (delete は tmux kill 等の orchestration を
-    // 含むため `send_process_message` の 10s では不足。 旧 MCP/CLI reqwest の 30s + handshake 往復)。
+    // connect → handshake → ask 全体を timeout で bound (caller 指定、 既定 35s)。
     let work = async {
         let transport = unison::network::quic::QuicClient::builder()
             .trust_anchors(unison::network::TrustAnchors::SkipVerification)
@@ -130,12 +156,13 @@ pub async fn world_process_request(
         }
         Ok::<serde_json::Value, anyhow::Error>(resp)
     };
-    match tokio::time::timeout(std::time::Duration::from_secs(35), work).await {
+    match tokio::time::timeout(timeout, work).await {
         Ok(result) => result,
         Err(_) => bail!(
-            "World ({}) process-proxy.{} が 35s 以内に応答しませんでした",
+            "World ({}) process-proxy.{} が {:?} 以内に応答しませんでした",
             addr,
-            method
+            method,
+            timeout
         ),
     }
 }

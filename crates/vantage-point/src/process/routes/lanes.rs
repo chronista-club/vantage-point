@@ -1,32 +1,34 @@
-//! Lane REST API — GET / POST (list / create)。 delete / restart は SP 直結 HTTP を撤去し
-//! World process-proxy ask (`lane_delete` / `lane_restart`、 F6②③) に移管、 core 関数のみ残置。
+//! Lane lifecycle の core 関数群 (lanes portless、 doc 27 §3.4.5)。
+//!
+//! SP 直結 HTTP route (`GET`/`POST`/`DELETE /api/lanes` `POST /api/lanes/restart`) は全廃。
+//! create / list / delete / restart は全て World process-proxy ask の dispatch method
+//! (`lane_create` / `lanes_list` / `lane_delete` / `lane_restart`) に移管し、 本 module は
+//! その core 関数 (axum 非依存) のみを保持する。 全 surface (CLI flow / MCP / lane watcher) は
+//! 同 dispatch method を共有する (semantics SSOT)。
 //!
 //! 関連 memory:
 //! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (SP-as-Project-Master: 9 component minimum)
 //! - VP-124 Phase 1 (Lane Lifecycle delete orchestration、 `delete_lane_orchestrated`)
 //!
-//! ## 実装済
+//! ## core 関数 (dispatch_process_method が呼ぶ)
 //!
-//! - `GET /api/lanes` — `LanePool` の list (F.8 B Convergent で disk-scan merge 撤去、
-//!   disk-only Lane は lane watcher / SP bootstrap で auto-spawn 経由 active 化)
-//! - `POST /api/lanes` — Performer Lane create (Phase 3-A: lane clone + PtySlot spawn、
-//!   F.8 B Convergent で spawn 失敗時の disk dir rollback ポリシー追加)
-//! - delete / restart — SP HTTP route は撤去 (F6②③、 doc 27 §3.4.5)。 core の
-//!   `delete_lane_orchestrated` / `restart_lane_orchestrated` を World process-proxy ask
-//!   (`lane_delete` / `lane_restart`) から呼ぶ (surface→SP 直結 HTTP を一掃)。
+//! - [`build_lanes_snapshot`] — `lanes_list` + QUIC `LanesSnapshot` publish 経路で共有する list
+//!   (`LanePool` 由来のみ、 F.8 B Convergent で disk-scan merge 撤去。 disk-only Lane は lane
+//!   watcher / SP bootstrap の auto-spawn 経由で active 化)
+//! - [`create_performer_orchestrated`] — `lane_create` core (Phase 3-A: lane clone + PtySlot spawn、
+//!   F.8 B Convergent で spawn 失敗時の disk dir rollback ポリシー)
+//! - [`delete_lane_orchestrated`] / [`restart_lane_orchestrated`] — `lane_delete` / `lane_restart` core
+//!   (F6②③、 PtySlot kill + tmux kill + SystemEvent broadcast)
 //!
 //! ## 未実装 (後 phase)
 //!
-//! - GET /api/lanes/{addr} (1 件取得、 addr URL encoding path 確定後)
-//! - PUT /api/lanes/{addr}/stand (Stand 切替)
+//! - 1 件取得 (addr 指定) / Stand 切替 dispatch (addr encoding path 確定後)
 //! - WS /ws/terminal の lane param 強化 (A4-2d)
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent};
 use super::super::state::AppState;
@@ -37,16 +39,10 @@ use super::super::state::AppState;
 // VP は user 1 人 + lane performer のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
 
-/// REST response: `GET /api/lanes` の JSON shape
-#[derive(Debug, Serialize)]
-pub struct LanesResponse {
-    pub lanes: Vec<LaneInfo>,
-}
-
 /// SP の全 Lane snapshot を build する (LanePool 由来のみ、 disk-only は乗せない)。
 ///
-/// HTTP `GET /api/lanes` と QUIC `lanes_snapshot` 両 publish 経路で **同一 logic**
-/// を共有するための helper。
+/// World process-proxy ask `lanes_list` と QUIC `lanes_snapshot` 両 publish 経路で **同一 logic**
+/// を共有するための helper（旧 HTTP `GET /api/lanes` も同 logic だったが lanes portless で撤去）。
 ///
 /// ## F.8 B Convergent (2026-05-26): disk-only Lane の表示廃止
 ///
@@ -96,16 +92,10 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     lanes
 }
 
-/// `GET /api/lanes` — Lane list を返す
+/// Performer Lane create の request body (Phase 3-A: Performer Lane create + lane clone)。
 ///
-/// 実 logic は [`build_lanes_snapshot`] に集約 (QUIC lanes_snapshot publish 経路と共有)。
-/// CURRENTS Project (= SP 起動中) のみが /api/lanes に応答するので、 disk scan 対象が自動 enforce される。
-pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let lanes = build_lanes_snapshot(&state).await;
-    Json(LanesResponse { lanes })
-}
-
-/// `POST /api/lanes` request body (Phase 3-A: Performer Lane create + lane clone)
+/// lanes portless: 旧 `POST /api/lanes` body。 World process-proxy ask `lane_create` の payload
+/// として `dispatch_process_method` が serde で deserialize する。
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
     /// "performer" を受付。 Conductor は project ごと固定。
@@ -124,36 +114,36 @@ pub struct CreateLaneReq {
     pub branch: Option<String>,
 }
 
-/// `POST /api/lanes` — Performer Lane create (Phase 3-A: lane clone + PtySlot spawn)
+/// Performer Lane create core orchestration (Phase 3-A: lane clone + PtySlot spawn)。
+///
+/// lanes portless (doc 27 §3.4.5): 旧 `POST /api/lanes` の core を抽出し、 全 trigger
+/// (MCP `add_performer`/`flow_handoff` / CLI `vp flow handoff` / lane watcher) が World
+/// process-proxy ask `lane_create` 経由で共有する core logic に。 `delete_lane_orchestrated` /
+/// `restart_lane_orchestrated` と対称 (SP HTTP route + axum handler は撤去)。
 ///
 /// 流れ:
 /// 1. 入力 validation (kind == "performer"、 name 非空)
 /// 2. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
 ///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で performer dir 作成
-///    - 両方 None → state.project_dir (= Conductor と同じ dir) を share (legacy fallback)
+///    - 両方 None → `<git-user>/<sanitized-name>` を auto-derive して lane clone
 /// 3. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
 /// 4. LanePool に insert (state=Running、 pid 付き)
 ///
+/// 戻り値: 成功 `LaneInfo` / 失敗 `String`（旧 HTTP の CONFLICT="already exists" 等 error message
+/// を保持。 unison error frame `{"error":..}` 経由で caller に Err 化される）。
+///
 /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process + lane clone 連動)
-pub async fn create_handler(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<CreateLaneReq>,
-) -> Result<(StatusCode, Json<LaneInfo>), (StatusCode, Json<serde_json::Value>)> {
+pub(crate) async fn create_performer_orchestrated(
+    state: &Arc<AppState>,
+    req: CreateLaneReq,
+) -> Result<LaneInfo, String> {
     // 入力 validation。 "performer" のみ受付 (Conductor は project ごと固定で create 不可)。
     if req.kind != "performer" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "kind must be 'performer' (Conductor is fixed per project)"
-            })),
-        ));
+        return Err("kind must be 'performer' (Conductor is fixed per project)".to_string());
     }
     if req.name.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "name is required" })),
-        ));
+        return Err("name is required".to_string());
     }
 
     // project_id: AppState の project_dir から basename
@@ -180,12 +170,7 @@ pub async fn create_handler(
     {
         let pool = state.lane_pool.read().await;
         if pool.get(&addr).is_some() {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": format!("Lane {} already exists", addr)
-                })),
-            ));
+            return Err(format!("Lane {} already exists", addr));
         }
     }
 
@@ -224,29 +209,12 @@ pub async fn create_handler(
             )
         })
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("lane task join: {}", e)})),
-            )
-        })?;
-        let path_buf = result.map_err(|e| {
-            // lane::commands::new_performer_in は performer dir 既存 + force=false の時に
-            // 「パフォーマー '<name>' は既に存在します」を返す。 UI で input 下に表示するため
-            // CONFLICT を返し、 error message をそのまま流す。
-            let msg = e.to_string();
-            let status = if msg.contains("既に存在") || msg.contains("already exists") {
-                StatusCode::CONFLICT
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (
-                status,
-                Json(json!({
-                    "error": format!("lane clone failed (branch={}): {}", branch_for_log, msg)
-                })),
-            )
-        })?;
+        .map_err(|e| format!("lane task join: {}", e))?;
+        // lane::commands::new_performer_in は performer dir 既存 + force=false の時に
+        // 「パフォーマー '<name>' は既に存在します」を返す。 error message をそのまま流し、
+        // caller (MCP add_performer 等) が "既に存在"/"already exists" を substring 判定可能にする。
+        let path_buf =
+            result.map_err(|e| format!("lane clone failed (branch={}): {}", branch_for_log, e))?;
         tracing::info!(
             "Performer Lane clone: name={} branch={} dir={}",
             req.name,
@@ -271,12 +239,7 @@ pub async fn create_handler(
         crate::process::stand_spawner::spawn_with_fallback(&cmd, 120, 48)
     })
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("PtySlot spawn task join: {}", e)})),
-        )
-    })?;
+    .map_err(|e| format!("PtySlot spawn task join: {}", e))?;
     let (lane_state, pid) = match spawn_result {
         Ok((slot, term_rx)) => {
             let pid = slot.pid();
@@ -319,11 +282,9 @@ pub async fn create_handler(
                         tracing::warn!("rollback: rm task join 失敗 cwd={}: {}", cwd, join_err)
                     }
                 }
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": format!("Performer Lane spawn failed (rollback executed): {}", e)
-                    })),
+                return Err(format!(
+                    "Performer Lane spawn failed (rollback executed): {}",
+                    e
                 ));
             }
             tracing::warn!(
@@ -383,7 +344,7 @@ pub async fn create_handler(
         );
     }
 
-    Ok((StatusCode::CREATED, Json(info)))
+    Ok(info)
 }
 
 /// VP-124 Phase 1: Lane delete orchestration の戻り値。
@@ -708,40 +669,24 @@ mod tests {
 }
 
 #[cfg(test)]
-mod route_smoke_tests {
-    //! VP-13 sub-scope E: lanes.rs route の Axum oneshot smoke test。
+mod core_tests {
+    //! VP-13 sub-scope E: lanes.rs core 関数 smoke test。
     //!
-    //! 既存 `mod tests` (= helpers / sanitize_for_branch test 等) とは別 mod で配線、
-    //! Medium 層 route test を Section 区切りで分離。
+    //! lanes portless (doc 27 §3.4.5): 旧 Axum oneshot route test は HTTP route 撤去に伴い
+    //! `create_performer_orchestrated` / `build_lanes_snapshot` の直 call test に転換。
+    //! 既存 `mod tests` (= helpers / sanitize_for_branch test 等) とは別 mod で配線。
 
     use super::*;
-    use axum::Router;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use axum::routing::{get, post};
-    use tower::ServiceExt;
 
-    #[tokio::test]
-    async fn list_handler_returns_200_with_lanes_field() {
-        let state = crate::process::state::build_test_app_state(None).await;
-        let app = Router::new()
-            .route("/api/lanes", get(list_handler))
-            .with_state(state);
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/lanes")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(body.get("lanes").map(|v| v.is_array()).unwrap_or(false));
+    /// テスト用の最小 `CreateLaneReq` builder（validation だけ叩く時に使う）。
+    fn req(kind: &str, name: &str) -> CreateLaneReq {
+        CreateLaneReq {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            stand: None,
+            cwd: None,
+            branch: None,
+        }
     }
 
     /// F.8 B Convergent: disk-scan merge 撤去後の `build_lanes_snapshot` は
@@ -758,62 +703,32 @@ mod route_smoke_tests {
         );
     }
 
-    /// Worker → Performer rename 完結: `kind="worker"` POST は 400 BAD_REQUEST を返す。
+    /// Worker → Performer rename 完結: `kind="worker"` は早期 Err を返す。
     /// 旧版は `req.kind != "performer" && req.kind != "worker"` で "worker" を許容していた。
     #[tokio::test]
-    async fn create_handler_rejects_worker_kind() {
+    async fn create_rejects_worker_kind() {
         let state = crate::process::state::build_test_app_state(None).await;
-        let app = Router::new()
-            .route("/api/lanes", post(create_handler))
-            .with_state(state);
-        let body = serde_json::json!({
-            "kind": "worker",
-            "name": "test-performer"
-        });
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/lanes")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                    .unwrap(),
-            )
+        let err = create_performer_orchestrated(&state, req("worker", "test-performer"))
             .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "kind='worker' は 400 を返す (legacy alias 一掃済)"
+            .expect_err("kind='worker' は Err (legacy alias 一掃済)");
+        assert!(
+            err.contains("kind must be 'performer'"),
+            "error message に kind 制約を含む: {}",
+            err
         );
     }
 
-    /// create_handler: name が空文字列の場合は 400 BAD_REQUEST を返す。
+    /// `create_performer_orchestrated`: name が空白のみの場合は早期 Err を返す。
     #[tokio::test]
-    async fn create_handler_rejects_empty_name() {
+    async fn create_rejects_empty_name() {
         let state = crate::process::state::build_test_app_state(None).await;
-        let app = Router::new()
-            .route("/api/lanes", post(create_handler))
-            .with_state(state);
-        let body = serde_json::json!({
-            "kind": "performer",
-            "name": "   "
-        });
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/lanes")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                    .unwrap(),
-            )
+        let err = create_performer_orchestrated(&state, req("performer", "   "))
             .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "name が空白のみの場合は 400"
+            .expect_err("name 空白のみは Err");
+        assert!(
+            err.contains("name is required"),
+            "error message に name 必須を含む: {}",
+            err
         );
     }
 }

@@ -1363,27 +1363,14 @@ impl VantageMcp {
         if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
             body["stand"] = serde_json::Value::String(s.clone());
         }
-        let url = format!("{}/api/lanes", self.process_url.lock().await);
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .timeout(Duration::from_secs(60)) // lane clone は 数 sec ~ 数 10 sec かかる
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            // server からのエラー文を素直に伝える (CONFLICT = 名前重複等)
-            return Err(McpError::internal_error(
-                format!("SP /api/lanes {}: {}", status, text),
-                None,
-            ));
-        }
+        // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
+        // `lane_create` に移管。 lane clone は 数 sec ~ 数 10 sec かかるので outer timeout 60s。
+        // server Err (CONFLICT="already exists"/"既に存在" 等) は quic_call_with_timeout が
+        // McpError に変換して返す (= 旧 HTTP の非 2xx → McpError 経路と等価)。
+        let parsed = self
+            .quic_call_with_timeout("lane_create", body, Duration::from_secs(60))
+            .await?;
         // 成功 body は LaneInfo JSON。 address だけ抽出して短い human 向け text を返す。
-        let parsed: serde_json::Value =
-            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
         let addr = parsed
             .get("address")
             .and_then(|v| v.as_str())
@@ -1490,62 +1477,31 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for conductor or `agent@vantage-point/chore` for performer 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `bastet@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
+        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for conductor or `agent@vantage-point/chore` for performer 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `bastet@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ListLanesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let process_url = self.process_url.lock().await.clone();
-
-        // project name は /api/health から (= delete_performer と同型 pattern)。
-        // 旧実装 (`lanes_in.first().get("project")`) は SP 起動直後 lanes 空の race
-        // window で `"unknown"` fallback → `gold_experience@unknown` 等の偽 address を
-        // 返す bug があり、 PR-β-4 review feedback (`feedback_jsonschema_field_scope`)
-        // 同様 contract 強度のため authoritative source `/api/health.project_dir` に統一。
-        let health = self
-            .client
-            .get(format!("{}/api/health", process_url))
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(format!("/api/health parse 失敗: {}", e), None)
-            })?;
-        let project_dir = health
-            .get("project_dir")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::internal_error("/api/health に project_dir なし".to_string(), None)
-            })?;
-        // project 名は config 登録名を SSOT とする (basename ではない)。
-        // `vp projects rename` で name != basename になっても、wire store の識別子
-        // (agent@<config名>) と list_lanes が返す mailbox address を一致させる。旧 basename
-        // 由来だと rename 時に永続 mismatch し、その address 宛 command が誰の ack とも一致せず
-        // 再 nudge する第2のバグ経路だった (wiremsg identity SSOT 一本化)。
+        // lanes portless (doc 27 §3.4.5): project 名は self.project_path から導出 (旧 /api/health
+        // round-trip 撤去)。 config 登録名を SSOT とする (basename ではない)。 `vp projects rename`
+        // で name != basename になっても、wire store の識別子 (agent@<config名>) と list_lanes が
+        // 返す mailbox address を一致させる。旧 basename 由来だと rename 時に永続 mismatch し、その
+        // address 宛 command が誰の ack とも一致せず再 nudge する第2のバグ経路だった (identity SSOT)。
         let project = match crate::config::Config::load() {
-            Ok(config) => crate::resolve::project_name_from_path(project_dir, &config),
+            Ok(config) => {
+                crate::resolve::project_name_from_path(self.project_path.as_str(), &config)
+            }
             // config 読めない異常系のみ basename fallback (従来挙動)
-            Err(_) => std::path::Path::new(project_dir)
+            Err(_) => std::path::Path::new(self.project_path.as_str())
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string(),
         };
 
-        let resp = self
-            .client
-            .get(format!("{}/api/lanes", process_url))
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| McpError::internal_error(format!("/api/lanes parse 失敗: {}", e), None))?;
+        // 全 lane を World process-proxy ask `lanes_list` で取得 (旧 GET /api/lanes)。
+        let resp = self.quic_call("lanes_list", serde_json::json!({})).await?;
 
         let lanes_in = resp
             .get("lanes")
@@ -1670,8 +1626,10 @@ impl VantageMcp {
         }
         let nudge = params.nudge.unwrap_or(true);
 
-        // ── Step 1: Performer 作成 (= add_performer と同型 path、 HTTP POST /api/lanes) ──
-        let process_url = self.process_url.lock().await.clone();
+        // ── Step 1: Performer 作成 (= add_performer と同型 path、 World process-proxy ask `lane_create`) ──
+        // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を撤去。 lane clone は
+        // 数 sec ~ 数 10 sec かかるので outer timeout 60s。 server Err は quic_call_with_timeout が
+        // McpError に変換 (= 旧 HTTP 非 2xx → McpError と等価)。
         let mut create_body = serde_json::json!({
             "kind": "performer",
             "name": params.name,
@@ -1682,25 +1640,9 @@ impl VantageMcp {
         if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["stand"] = serde_json::Value::String(s.clone());
         }
-        let create_url = format!("{}/api/lanes", process_url);
-        let resp = self
-            .client
-            .post(&create_url)
-            .json(&create_body)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(McpError::internal_error(
-                format!("SP /api/lanes {}: {}", status, text),
-                None,
-            ));
-        }
-        let lane_info: serde_json::Value =
-            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        let lane_info = self
+            .quic_call_with_timeout("lane_create", create_body, Duration::from_secs(60))
+            .await?;
 
         // address は string 形式 (例: "vantage-point/performer/feat-api") を期待。
         // 旧 add_performer と同型の fallback 経路で project / name から合成も可能。
@@ -1730,10 +1672,10 @@ impl VantageMcp {
             None => {
                 // performer 作成は成功したが address.project が読めない → rollback
                 let _ = self
-                    .flow_rollback_performer(&process_url, "<unknown>", &performer_name)
+                    .flow_rollback_performer("<unknown>", &performer_name)
                     .await;
                 return Err(McpError::internal_error(
-                    "SP response from /api/lanes に address.project がありません".to_string(),
+                    "lane_create response に address.project がありません".to_string(),
                     None,
                 ));
             }
@@ -1764,7 +1706,7 @@ impl VantageMcp {
             Err(e) => {
                 // rollback: performer を削除して dirty state を残さない
                 let _ = self
-                    .flow_rollback_performer(&process_url, &project_name, &performer_name)
+                    .flow_rollback_performer(&project_name, &performer_name)
                     .await;
                 return Err(McpError::internal_error(
                     format!(
@@ -1828,35 +1770,24 @@ impl VantageMcp {
     /// flow_handoff の rollback path: performer 削除 (best-effort、 失敗は log only)
     ///
     /// wire_send 失敗時など、 performer 作成は成功したが orchestration の続きが失敗した時に呼ぶ。
-    /// `<project>/performer/<name>` を address 化して DELETE /api/lanes に送る。
+    /// lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を World process-proxy ask
+    /// `lane_delete` に移管。 不在 performer は "Lane not found" を Err で返すので idempotent
+    /// no-op として吸収する (= 旧 HTTP 404 NOT_FOUND を許容していた挙動と等価)。
     async fn flow_rollback_performer(
         &self,
-        process_url: &str,
         project_name: &str,
         performer_name: &str,
     ) -> Result<(), String> {
         let address = format!("{}/performer/{}", project_name, performer_name);
-        let address_enc = address.replace('/', "%2F");
-        let url = format!(
-            "{}/api/lanes?address={}&cleanup=true",
-            process_url, address_enc
-        );
-        let resp = self
-            .client
-            .delete(&url)
-            .timeout(Duration::from_secs(30))
-            .send()
+        let payload = serde_json::json!({ "address": address, "cleanup": true });
+        match self
+            .quic_call_with_timeout("lane_delete", payload, Duration::from_secs(30))
             .await
-            .map_err(|e| format!("DELETE /api/lanes 失敗: {}", e))?;
-        let status = resp.status();
-        if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
-            return Err(format!(
-                "rollback DELETE /api/lanes {}: {}",
-                status,
-                resp.text().await.unwrap_or_default()
-            ));
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains("Lane not found") => Ok(()),
+            Err(e) => Err(format!("rollback lane_delete 失敗: {}", e)),
         }
-        Ok(())
     }
 
     /// flow_progress: parallel work 集約 view (read-only)
@@ -1867,53 +1798,26 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<FlowProgressParams>,
     ) -> Result<CallToolResult, McpError> {
-        let process_url = self.process_url.lock().await.clone();
-
-        // project name は /api/health から (delete_performer / list_lanes と同型 pattern)。
-        let health: serde_json::Value = self
-            .client
-            .get(format!("{}/api/health", process_url))
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
-            .json()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(format!("/api/health parse 失敗: {}", e), None)
-            })?;
-        let project_dir = health
-            .get("project_dir")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                McpError::internal_error("/api/health に project_dir なし".to_string(), None)
-            })?;
-        // project 名は config 登録名を SSOT とする (basename ではない)。
-        // `vp projects rename` で name != basename になっても、wire store の識別子
-        // (agent@<config名>) と list_lanes が返す mailbox address を一致させる。旧 basename
-        // 由来だと rename 時に永続 mismatch し、その address 宛 command が誰の ack とも一致せず
-        // 再 nudge する第2のバグ経路だった (wiremsg identity SSOT 一本化)。
+        // lanes portless (doc 27 §3.4.5): project 名は self.project_path から導出 (旧 /api/health
+        // round-trip 撤去)。 config 登録名を SSOT とする (basename ではない)。 `vp projects rename`
+        // で name != basename になっても、wire store の識別子 (agent@<config名>) と mailbox address を
+        // 一致させる。旧 basename 由来だと rename 時に永続 mismatch し、 ack が一致せず再 nudge する
+        // 第2のバグ経路だった (wiremsg identity SSOT 一本化)。 list_lanes と同型。
         let project = match crate::config::Config::load() {
-            Ok(config) => crate::resolve::project_name_from_path(project_dir, &config),
+            Ok(config) => {
+                crate::resolve::project_name_from_path(self.project_path.as_str(), &config)
+            }
             // config 読めない異常系のみ basename fallback (従来挙動)
-            Err(_) => std::path::Path::new(project_dir)
+            Err(_) => std::path::Path::new(self.project_path.as_str())
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string(),
         };
 
-        // 全 lane (conductor + performers) を /api/lanes から取得 (= performer_status 込み)
-        let lanes_resp: serde_json::Value = self
-            .client
-            .get(format!("{}/api/lanes", process_url))
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
-            .json()
-            .await
-            .map_err(|e| McpError::internal_error(format!("/api/lanes parse 失敗: {}", e), None))?;
+        // 全 lane (conductor + performers) を World process-proxy ask `lanes_list` で取得
+        // (= performer_status 込み、 旧 GET /api/lanes)。
+        let lanes_resp = self.quic_call("lanes_list", serde_json::json!({})).await?;
         let lanes_in = lanes_resp
             .get("lanes")
             .and_then(|v| v.as_array())

@@ -815,6 +815,27 @@ async fn handle_lane_restart(
     super::routes::lanes::restart_lane_orchestrated(state, addr, fresh).await
 }
 
+/// lanes portless (doc 27 §3.4.5): Lane create。 旧 SP HTTP `POST /api/lanes` を process-proxy ask に
+/// 移管。 core の `create_performer_orchestrated` (lane clone + PtySlot spawn) を呼ぶ薄い adapter。
+/// payload は `CreateLaneReq` 互換 JSON (kind/name/stand?/cwd?/branch?)。 成功は LaneInfo JSON、
+/// 失敗は core が返す String error (旧 HTTP の CONFLICT="already exists" 等を保持)。
+async fn handle_lane_create(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let req: super::routes::lanes::CreateLaneReq = serde_json::from_value(payload)
+        .map_err(|e| format!("lane_create: invalid payload: {}", e))?;
+    let info = super::routes::lanes::create_performer_orchestrated(state, req).await?;
+    serde_json::to_value(&info).map_err(|e| format!("lane_create: LaneInfo serialize 失敗: {}", e))
+}
+
+/// lanes portless (doc 27 §3.4.5): Lane list。 旧 SP HTTP `GET /api/lanes` を process-proxy ask に
+/// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
+async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
+    let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    Ok(serde_json::json!({ "lanes": lanes }))
+}
+
 /// F6④ (doc 27 §3.4.5/§6): Stand 一覧。 旧 SP HTTP `GET /api/stands` を process-proxy ask に移管。
 /// install root の mise task scan は process-global (TTL cache、 per-project state 不要) なので
 /// state/payload 不問。 wire wrapping (`{stands:[...]}`) は旧 HTTP handler と互換で本 dispatch 側が担う。
@@ -846,6 +867,9 @@ pub(crate) async fn dispatch_process_method(
         // F6: PP Canvas state (旧 SP HTTP /api/pp/state を process-proxy ask に移管)
         "pp_state_save" => handle_pp_state_save(state, payload).await,
         "pp_state_load" => handle_pp_state_load(state, payload).await,
+        // lanes portless: Lane create/list (旧 SP HTTP POST/GET /api/lanes を process-proxy ask に移管)
+        "lane_create" => handle_lane_create(state, payload).await,
+        "lanes_list" => handle_lanes_list(state).await,
         // F6②: Lane delete (旧 SP HTTP DELETE /api/lanes を process-proxy ask に移管)
         "lane_delete" => handle_lane_delete(state, payload).await,
         // F6③: Lane restart (旧 SP HTTP POST /api/lanes/restart を process-proxy ask に移管)
@@ -1771,6 +1795,43 @@ mod tests {
         assert!(
             res.get("stands").map(|s| s.is_array()).unwrap_or(false),
             "stands_list は {{stands:[...]}} 形で返る: {res}"
+        );
+    }
+
+    /// lanes portless: `lanes_list` dispatch arm が `{lanes:[...]}` 形で返る (build_lanes_snapshot 経由)。
+    #[tokio::test]
+    async fn lanes_list_returns_lanes_array() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(&state, "lanes_list", serde_json::json!({}))
+            .await
+            .expect("lanes_list dispatch");
+        assert!(
+            res.get("lanes").map(|s| s.is_array()).unwrap_or(false),
+            "lanes_list は {{lanes:[...]}} 形で返る: {res}"
+        );
+    }
+
+    /// lanes portless: `lane_create` dispatch arm が validation error (kind != performer) を
+    /// unison error frame (= Err) として返す (core の create_performer_orchestrated に到達している証)。
+    #[tokio::test]
+    async fn lane_create_rejects_non_performer() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let err = dispatch_process_method(
+            &state,
+            "lane_create",
+            serde_json::json!({ "kind": "worker", "name": "x" }),
+        )
+        .await
+        .expect_err("kind='worker' は Err");
+        assert!(
+            err.contains("kind must be 'performer'"),
+            "error は kind 制約を含む: {err}"
         );
     }
 

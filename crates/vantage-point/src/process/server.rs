@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, prompt, update, world};
+use super::routes::{health, prompt, update, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -357,14 +357,10 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // Echoes が tmux+claude に移行して以降 unused。
         // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅 (vp-app は World "lanes"
         // channel を購読) で dead のため撤去 (module ごと削除)。
-        // Phase A4-2b: Lane (Conductor/Performer) lifecycle の REST endpoint
-        // GET: list、 POST: Performer create (A6 minimum)
-        // F6② (doc 27 §3.4.5/§6): DELETE は World process-proxy ask (`lane_delete`) に移管し撤去。
-        // GET(list) / POST(create) は別 audit 対象として残置。
-        .route(
-            "/api/lanes",
-            get(lanes::list_handler).post(lanes::create_handler),
-        )
+        // lanes portless (doc 27 §3.4.5): Lane lifecycle の REST endpoint は全廃。
+        // DELETE/restart は F6②③ で、 GET(list)/POST(create) は本 PR で World process-proxy ask
+        // (`lanes_list` / `lane_create`) に移管。 core (create_performer_orchestrated /
+        // build_lanes_snapshot) は routes/lanes.rs に残置し dispatch_process_method が呼ぶ。
         // F6③ (doc 27 §3.4.5/§6): Lane restart は World process-proxy ask (`lane_restart`) に移管し撤去。
         // F6④ (doc 27 §3.4.5/§6): Stand 一覧 (GET /api/stands) も process-proxy ask (`stands_list`) に移管し撤去。
         // L0 portless Group B: pane (show/clear/split/close/toggle) + file (watch/unwatch) HTTP は

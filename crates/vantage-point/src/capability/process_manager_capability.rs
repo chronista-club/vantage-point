@@ -2191,14 +2191,12 @@ impl ProcessManagerCapability {
             }
         }
         tracing::info!(
-            "lane watcher 起動 (初期 {} project arm 済、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
+            "lane watcher 起動 (初期 {} project arm 済、 mode=NonRecursive、 trigger=Create/Remove → lane_create/lane_delete)",
             watched.len()
         );
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .expect("reqwest Client 構築失敗");
+        // lanes portless: 旧 reqwest client (SP HTTP 直結) は撤去。 event handler は World
+        // process-proxy ask (`lane_create` / `lane_delete`) に loopback する。
 
         // 5s tick で projects.kdl 経由の register/unregister を hot-reload。
         let mut hot_reload = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -2240,14 +2238,14 @@ impl ProcessManagerCapability {
                     let Some(event) = event_opt else { break }; // channel closed
                     match event.kind {
                         EventKind::Remove(_) => {
-                            Self::handle_lane_remove_event(&world, &client, &path_map, &event).await;
+                            Self::handle_lane_remove_event(&world, &path_map, &event).await;
                         }
                         EventKind::Create(_) => {
                             // F.8 B Convergent: SP 起動後に CLI / 外部で `.vp/lanes/<name>`
-                            // dir が増えた時、 SP に POST /api/lanes (cwd 明示) で spawn を依頼。
-                            // 「disk dir があるが LanePool に居ない」 中間状態 (= disk-only Lane)
-                            // を恒久化させない、 lifecycle 自動 convergence。
-                            Self::handle_lane_create_event(&world, &client, &path_map, &event).await;
+                            // dir が増えた時、 World process-proxy ask `lane_create` (cwd 明示) で
+                            // spawn を依頼。 「disk dir があるが LanePool に居ない」 中間状態
+                            // (= disk-only Lane) を恒久化させない、 lifecycle 自動 convergence。
+                            Self::handle_lane_create_event(&world, &path_map, &event).await;
                         }
                         _ => {} // Modify / Access 等は無視
                     }
@@ -2313,11 +2311,10 @@ impl ProcessManagerCapability {
         map
     }
 
-    /// VP-129: Remove event 1 件を処理。 path → project 解決 → SP DELETE call。
+    /// VP-129: Remove event 1 件を処理。 path → project 解決 → World process-proxy ask `lane_delete`。
     /// `run_lane_watcher` の inner、 各 path を独立処理。
     async fn handle_lane_remove_event(
         world: &Arc<RwLock<Self>>,
-        client: &reqwest::Client,
         path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
         event: &notify::Event,
     ) {
@@ -2345,36 +2342,39 @@ impl ProcessManagerCapability {
                 continue;
             };
 
-            // SP DELETE /api/lanes (cleanup=false、 dir は既に gone)。 self-loop case
-            // (= SP 経由で削除されて dir が消えた → watcher が Remove 検知 → 本 DELETE 発火)
-            // は SP 側で 404 (Lane not found) 返却、 log debug 落ち。
+            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を World process-proxy ask
+            // `lane_delete` に移管 (World 内 loopback、 surface 群と uniform な transport)。 cleanup=false
+            // で dir は既に gone。 self-loop case (= SP 経由削除で dir 消滅 → watcher が Remove 検知 →
+            // 本 lane_delete 発火) は server が "Lane not found" を Err で返すので no-op 扱い。
             let address = format!("{}/performer/{}", project_name, performer_name);
-            let address_enc = address.replace('/', "%2F");
-            let url = format!(
-                "http://[::1]:{}/api/lanes?address={}&cleanup=false",
-                port, address_enc
-            );
+            let payload = serde_json::json!({ "address": address, "cleanup": false });
             tracing::info!(
-                "lane watcher: dir removed → SP DELETE 発火 (project={}, performer={}, port={})",
+                "lane watcher: dir removed → lane_delete 発火 (project={}, performer={}, sp_port={})",
                 project_name,
                 performer_name,
                 port
             );
-            match client.delete(&url).send().await {
-                Ok(r) if r.status().is_success() => {
-                    tracing::info!("lane watcher: SP DELETE 成功 ({})", address);
+            match crate::commands::process_client::world_process_request(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "lane_delete",
+                payload,
+            )
+            .await
+            {
+                Ok(_) => {
+                    tracing::info!("lane watcher: lane_delete 成功 ({})", address);
                 }
-                Ok(r) => {
+                Err(e) if e.to_string().contains("Lane not found") => {
                     tracing::debug!(
-                        "lane watcher: SP DELETE non-success (likely self-loop or already deleted): status={}, address={}",
-                        r.status(),
+                        "lane watcher: lane_delete no-op (self-loop or already deleted): {}",
                         address
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "lane watcher: SP DELETE 失敗 (port={}, address={}): {}",
-                        port,
+                        "lane watcher: lane_delete 失敗 (project={}, address={}): {}",
+                        project_name,
                         address,
                         e
                     );
@@ -2396,7 +2396,6 @@ impl ProcessManagerCapability {
     /// - SP 起動時 bootstrap で既に同 performer が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
     async fn handle_lane_create_event(
         world: &Arc<RwLock<Self>>,
-        client: &reqwest::Client,
         path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
         event: &notify::Event,
     ) {
@@ -2427,48 +2426,47 @@ impl ProcessManagerCapability {
                 continue;
             };
 
-            // SP POST /api/lanes (cwd 明示で既存 dir を再利用、 new_performer_in skip 経路)。
-            // body 構築は serde_json::json! で minimal、 wire 互換は CreateLaneReq (routes/lanes.rs) と一致。
-            let url = format!("http://[::1]:{}/api/lanes", port);
-            let body = serde_json::json!({
+            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
+            // `lane_create` に移管 (World 内 loopback、 surface 群と uniform な transport)。 payload は
+            // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_performer_in skip)。
+            let payload = serde_json::json!({
                 "kind": "performer",
                 "name": performer_name,
                 "cwd": path.to_string_lossy(),
             });
             tracing::info!(
-                "lane watcher: dir created → SP POST 発火 (project={}, performer={}, port={})",
+                "lane watcher: dir created → lane_create 発火 (project={}, performer={}, sp_port={})",
                 project_name,
                 performer_name,
                 port
             );
-            match client.post(&url).json(&body).send().await {
-                Ok(r) if r.status().is_success() => {
+            match crate::commands::process_client::world_process_request(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "lane_create",
+                payload,
+            )
+            .await
+            {
+                Ok(_) => {
                     tracing::info!(
-                        "lane watcher: SP POST 成功 (project={}, performer={})",
+                        "lane watcher: lane_create 成功 (project={}, performer={})",
                         project_name,
                         performer_name
                     );
                 }
-                Ok(r) if r.status() == reqwest::StatusCode::CONFLICT => {
-                    // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 silent OK。
+                // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 server は "already exists" を
+                // Err で返すので silent OK (= 旧 HTTP CONFLICT 経路と等価)。
+                Err(e) if e.to_string().contains("already exists") => {
                     tracing::debug!(
-                        "lane watcher: SP POST CONFLICT (= 既に Lane あり、 silent OK) project={} performer={}",
-                        project_name,
-                        performer_name
-                    );
-                }
-                Ok(r) => {
-                    tracing::warn!(
-                        "lane watcher: SP POST non-success status={} project={} performer={}",
-                        r.status(),
+                        "lane watcher: lane_create 競合 (= 既に Lane あり、 silent OK) project={} performer={}",
                         project_name,
                         performer_name
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "lane watcher: SP POST 失敗 (port={}, project={}, performer={}): {}",
-                        port,
+                        "lane watcher: lane_create 失敗 (project={}, performer={}): {}",
                         project_name,
                         performer_name,
                         e
