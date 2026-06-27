@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, prompt, update, world};
+use super::routes::{health, update, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -149,7 +149,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
         project_dir: project_dir.clone(),
-        pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         // R3: wire cross-process delivery の宛先分類用 — 解決済 project 名
         project_name: project_name_for_remote.clone(),
@@ -371,30 +370,15 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // が normalize して `world_wire::call` で World に relay) を使う (doc 27 §62)。
         // F6 (doc 27 §3.4): PP Canvas state は SP HTTP `/api/pp/state` を撤去し、 World
         // process-proxy ask (`pp_state_save`/`pp_state_load`) に移管 (surface→SP 直結 HTTP 撤去)。
-        // L0 portless Group B: tmux split/close/capture/list/agent-meta HTTP は CLI を
-        // process-proxy ask (`tmux_*` dispatch) に移管 + dashboard/status/deploy を CLI 撤去で
-        // consumer 消滅 → 撤去。 send-keys / resolve-pane は flow.rs(try_nudge) が raw URL で叩く
-        // ため残置 (flow.rs の portless 化で撤去予定)。
-        .route("/api/tmux/send-keys", post(health::tmux_send_keys_handler))
-        .route(
-            "/api/tmux/resolve-pane",
-            get(health::tmux_resolve_pane_handler),
-        )
-        // L0 portless Group B-3: `/api/ruby/*` は唯一の consumer だった MCP を process-proxy ask
-        // (`ruby_eval`/`ruby_run`/`ruby_stop`/`ruby_list` dispatch) に移管し撤去。
-        // `/api/process/*` (ProcessRunner 汎用 HTTP) は Group A で dead 撤去済。
+        // L0 portless Group C: SP HTTP surface 一掃。
+        // - tmux send-keys/resolve-pane: 最後の consumer だった flow.rs(try_nudge) が lanes portless で
+        //   dispatch (`tmux_send_keys`/`tmux_resolve_pane`) に移行 → 撤去。 Group B で split/close/
+        //   capture/list 等は移管済、 `/api/ruby/*` (B-3) / `/api/process/*` (A) も移管/dead 撤去済。
+        // - prompt API (REQ-PROMPT-001、 `/api/prompt*`): Echoes→tmux 移行で permission 双方向経路が
+        //   unused 化 (consumer 全消滅) → subsystem ごと撤去 (pending_prompts state 含む)。
+        // 残る SP route は health/shutdown のみ (MCP restart が pair で使う、 L0 finale で portless 化)。
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
-        // User prompt API routes (REQ-PROMPT-001)
-        .route("/api/prompt", post(prompt::prompt_request_handler))
-        .route(
-            "/api/prompt/{request_id}",
-            get(prompt::prompt_poll_handler).post(prompt::prompt_respond_handler),
-        )
-        .route(
-            "/api/prompts/pending",
-            get(prompt::prompts_list_pending_handler),
-        )
         // World API routes
         .route(
             "/api/world/projects",
@@ -727,7 +711,6 @@ pub async fn run_world(
         project_dir: String::new(),
         // R3: World mode は cross-process forward の対象外 (= 自 project を持たない)
         project_name: String::new(),
-        pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),

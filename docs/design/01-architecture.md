@@ -243,9 +243,9 @@ AI 状態検出: PTY 出力アクティビティを監視（800ms 無出力 → 
 - `POST /api/process/run` / `eval` / `stop` / `inject` — ProcessRunner
 - `GET /api/ruby/list`, `GET /api/process/list` — 一覧
 
-**Permission / Prompt**:
+**Permission**:
 - `POST /api/permission` — Claude CLI 権限リクエスト
-- `POST /api/prompt` — ユーザープロンプトリクエスト
+- (`POST /api/prompt` user prompt API は L0 portless Group C で撤去 — Echoes→tmux 移行で consumer 消滅)
 
 **TheWorld API (REQ6)**:
 - `GET /api/world/processes` — プロセス一覧

@@ -415,87 +415,10 @@ pub fn resolve_content_command(
     }
 }
 
-// L0 portless Group B: tmux split / close / capture / list HTTP handler は CLI を process-proxy
-// ask (`tmux_split`/`tmux_close`/`tmux_capture`/`tmux_list` dispatch) に移管 + dashboard/status/
-// deploy CLI 撤去で consumer 消滅のため撤去。 send-keys / resolve-pane は flow.rs が残すため keep。
-// `resolve_content_command` は QUIC `handle_tmux_split` と共有のため keep (上記)。
-
-/// tmux send-keys パラメータ
-#[derive(Deserialize)]
-pub struct TmuxSendKeysParams {
-    pub pane_id: String,
-    pub text: String,
-    /// true なら末尾に Enter を付与
-    #[serde(default)]
-    pub enter: bool,
-}
-
-/// POST /api/tmux/send-keys - ペインにキー入力送信
-pub async fn tmux_send_keys_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxSendKeysParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    // テキスト送信
-    match handle.send_keys(&params.pane_id, &params.text).await {
-        Ok(()) => {}
-        Err(e) => return Json(serde_json::json!({"error": e})),
-    }
-    // enter=true なら Enter キーを別途送信（tmux send-keys は引数単位で解釈する）
-    if params.enter
-        && let Err(e) = handle.send_keys(&params.pane_id, "Enter").await
-    {
-        return Json(serde_json::json!({"error": e}));
-    }
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// tmux resolve-pane パラメータ
-#[derive(Deserialize)]
-pub struct TmuxResolvePaneParams {
-    /// label または pane_id（%始まり）
-    pub q: String,
-}
-
-/// GET /api/tmux/resolve-pane - label/pane_id からペイン ID を解決
-///
-/// `q` が lane address（`<project>/conductor` / `<project>/performer/<name>`）の場合は、
-/// その lane の実 tmux session 名を解決して返す（`pane_id` field に session 名が入る）。
-/// `tmux send-keys -t <session>` は session の active pane に届くため、 nudge は単一
-/// TmuxActor の束縛 session や agent_metadata を介さずに任意 lane へ届く。
-/// lane address でない場合は従来の pane_id（`%`始まり）/ agent_metadata label 解決に fallback。
-pub async fn tmux_resolve_pane_handler(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<TmuxResolvePaneParams>,
-) -> impl IntoResponse {
-    // lane address なら実 session に解決（nudge の正典経路）
-    if let Some(session) = state.resolve_lane_session(&params.q).await {
-        return Json(
-            serde_json::json!({"status": "ok", "pane_id": session, "meta": serde_json::Value::Null}),
-        );
-    }
-
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    match handle.resolve_pane_id(&params.q).await {
-        Some(pane_id) => {
-            let meta = handle.get_agent_meta(&pane_id).await;
-            Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "meta": meta}))
-        }
-        None => Json(serde_json::json!({"error": format!("ペインが見つかりません: {}", params.q)})),
-    }
-}
-
-// L0 portless Group B: `/api/tmux/agent-meta` (GET) は consumer ゼロで dead のため撤去。
+// L0 portless Group B/C: tmux split/close/capture/list/send-keys/resolve-pane の HTTP handler は
+// 全て CLI/flow を process-proxy ask (`tmux_*` dispatch) に移管し撤去 (send-keys/resolve-pane は
+// lanes portless で flow.rs(try_nudge) が dispatch 化したのが最後)。 `resolve_content_command` は
+// QUIC `handle_tmux_split` と共有のため keep。 `/api/tmux/agent-meta` は consumer ゼロで dead 撤去済。
 
 // L0 portless Group B-3: Ruby VM HTTP handler (eval/run/stop/list) は唯一の consumer だった MCP を
 // process-proxy ask (`unison_server::handle_ruby_*`、 同じ `process_runner::ruby_*` core) に移管し撤去。
