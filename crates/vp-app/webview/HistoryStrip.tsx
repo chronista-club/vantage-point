@@ -149,9 +149,12 @@ export const HISTORY_STRIP_CSS = `
 .pp-history-cell.active .pp-history-close{color:var(--color-brand-primary);}
 
 /* pane-body を flex column 化して main + strip を縦並びにする。
-   pp-content は flex:1 で残り全部 (= main pane の高さ確保)、
-   pp-history-strip は flex:0 0 auto で content 高さ分だけ。 */
-#pane-paisley-park .pane-body{display:flex;flex-direction:column;height:100%;}
-#pane-paisley-park .pane-body .pp-content{flex:1;overflow-y:auto;}
+   .pane-body は position:absolute (top:28px/bottom:0) で既に definite height を持つので
+   height:100% は付けない — top:28px オフセット + height:100% = コンテナを 28px はみ出し、
+   最下行の history-strip が window 下端で clip される (= タブ上端だけ見える原因)。
+   pp-content は flex:1 + min-height:0 で内部スクロール (flex item の default min-height:auto
+   だと長い content が縮まず strip を押し出すため、min-height:0 で縮小を許可する)。 */
+#pane-paisley-park .pane-body{display:flex;flex-direction:column;}
+#pane-paisley-park .pane-body .pp-content{flex:1;overflow-y:auto;min-height:0;}
 #pane-paisley-park .pane-body .pp-history-strip{flex:0 0 auto;}
 `
