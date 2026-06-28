@@ -727,9 +727,12 @@ fn find_performer_dir(repo_root: &Path, name: &str) -> Option<PathBuf> {
 /// Capture uncommitted changes (staged + unstaged + untracked) as a combined diff.
 /// Returns None if there are no changes.
 fn capture_dirty_diff(repo_root: &Path) -> Result<Option<String>, String> {
-    // Staged + unstaged tracked changes
+    // Staged + unstaged tracked changes.
+    // `--no-ext-diff`: user の global `diff.external`（例: sem-cli dogfood の sem-diff-wrapper）を
+    // 無視して git native の unified diff を得る。この出力は後段 `apply_patch`（`git apply`）に
+    // 食わせるため、 external diff driver の semantic 出力だと適用不能になる（correctness 要件）。
     let tracked = Command::new("git")
-        .args(["diff", "HEAD"])
+        .args(["diff", "--no-ext-diff", "HEAD"])
         .current_dir(repo_root)
         .output()
         .map_err(|e| e.to_string())?;
@@ -756,8 +759,16 @@ fn capture_dirty_diff(repo_root: &Path) -> Result<Option<String>, String> {
                 continue;
             }
             // Use git diff --no-index to generate a proper patch (handles binary, no-newline, etc.)
+            // `--no-ext-diff` で global `diff.external`（sem 等）を無視（上の tracked と同理由）。
             let file_diff = Command::new("git")
-                .args(["diff", "--no-index", "--", "/dev/null", file])
+                .args([
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-index",
+                    "--",
+                    "/dev/null",
+                    file,
+                ])
                 .current_dir(repo_root)
                 .output()
                 .ok();
