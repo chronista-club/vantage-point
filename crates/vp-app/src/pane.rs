@@ -98,6 +98,11 @@ pub struct ActivitySnapshot {
     /// `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
     #[serde(default)]
     pub hub: String,
+    /// L1 lifecycle: SP presence map（project path → `"connected"`|`"connecting"`|`"disconnected"`
+    /// |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
+    /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
+    #[serde(default)]
+    pub presence: std::collections::HashMap<String, String>,
 }
 
 /// Sidebar 全体の state (sidebar webview に渡す)

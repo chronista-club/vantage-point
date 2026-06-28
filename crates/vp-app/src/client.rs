@@ -170,6 +170,23 @@ pub struct WorldHealthInfo {
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`、旧 daemon は空文字）。
     #[serde(default)]
     pub hub: String,
+    /// L1 lifecycle: World 配下 SP の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
+    /// 旧 daemon は field 不在 → 空。`path` で project 行に join する。
+    #[serde(default)]
+    pub processes: Vec<SpPresence>,
+}
+
+/// SP の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。
+///
+/// server 側 `ProcessHealthInfo` の {path, presence} のみ deserialize（dot 描画に必要な分）。
+/// 残り field（project/port/pid/tmux_session）は serde が無視する。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SpPresence {
+    #[serde(default)]
+    pub path: String,
+    /// `"unregistered"` | `"connecting"` | `"connected"` | `"disconnected"`。
+    #[serde(default)]
+    pub presence: String,
 }
 
 /// Runtime process 情報 — `/api/world/processes` レスポンス要素 (= SP の lifecycle snapshot)。
