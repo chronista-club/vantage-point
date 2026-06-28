@@ -1161,6 +1161,35 @@ async fn handle_wire_channel(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     if let Some(sub) = method.strip_prefix("wire/") {
+        // flow ③: federation 送信。宛先 world が remote なら relay 経由で送る（ローカル store は使わない）。
+        // payload = `{world: <宛先 world handle>, from, to, body, reply_to?}`。SSOT 原則で hub と話すのは
+        // TheWorld のみなので、CLI ではなくここ（daemon）が federate_wire_send を呼ぶ。
+        if sub == "federate" {
+            let world = payload
+                .get("world")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "wire/federate: 'world' (宛先 world handle) required".to_string())?
+                .to_string();
+            let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
+                "wire/federate: CHRONISTA_HUB_ADDR 未設定（federation 無効）".to_string()
+            })?;
+            let from_label = crate::daemon::hub_client::resolve_handle(None);
+            // envelope = payload から `world`（transport 用 routing key）を除いた wire 本体。
+            let mut envelope = payload;
+            if let Some(obj) = envelope.as_object_mut() {
+                obj.remove("world");
+            }
+            crate::daemon::hub_client::federate_wire_send(
+                &hub_addr,
+                &world,
+                &from_label,
+                &envelope,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "status": "ok", "federated": world }));
+        }
         let store = state.wiremsg_store.as_ref().ok_or_else(|| {
             "wire store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
         })?;

@@ -68,6 +68,7 @@ pub enum WireCommands {
     /// World wire channel に message を送信 (ad-hoc test 用)
     Send {
         /// 宛先 wire address (例: `agent@vantage-point`)。 World 直結のため qualified 前提。
+        /// `--world` 指定時は **宛先 world 内部の logical address**（例: `agent@nostos/main`）。
         #[arg(short, long)]
         to: String,
         /// 送信 body (string)
@@ -83,6 +84,11 @@ pub enum WireCommands {
         /// command は受信者が ack するまで delivery loop の再掲示対象 (R2-b)
         #[arg(long)]
         category: Option<String>,
+        /// 宛先 **remote world** の handle（federation 送信、flow ③）。指定すると TheWorld が
+        /// hub relay 経由で遠方 world へ送る。`--to` はその world 内部の logical address になる。
+        /// 未指定ならローカル中央 store に送る（従来動作）。
+        #[arg(long)]
+        world: Option<String>,
     },
     /// 未読の在庫確認 (= mcp__wire_inbox の CLI pair、 read-only で cursor 不触り)
     ///
@@ -150,7 +156,18 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             from,
             reply_to,
             category,
-        } => send(&to, &body, &from, reply_to.as_deref(), category.as_deref()).await,
+            world,
+        } => {
+            send(
+                &to,
+                &body,
+                &from,
+                reply_to.as_deref(),
+                category.as_deref(),
+                world.as_deref(),
+            )
+            .await
+        }
         WireCommands::Inbox { agent } => inbox(&agent).await,
         WireCommands::Thread { message_id } => thread(&message_id).await,
         WireCommands::Ack { message_id, agent } => ack(&message_id, &agent).await,
@@ -654,6 +671,7 @@ async fn send(
     from: &str,
     reply_to: Option<&str>,
     category: Option<&str>,
+    world: Option<&str>,
 ) -> Result<()> {
     // wire_send payload: to は配列、 body は任意 JSON。
     // CLI は ad-hoc test 用なので body string を `{"text": ...}` object に wrap して送る。
@@ -671,7 +689,16 @@ async fn send(
         payload["reply_to"] = serde_json::Value::String(prev_id.to_string());
     }
 
-    let resp = call_world("/api/wire/send", payload).await?;
+    // --world 指定時は federation 送信（flow ③）: TheWorld が hub relay 経由で遠方 world へ送る。
+    // `to` はその world 内部の logical address（agent@project/lane）。未指定はローカル中央 store。
+    let path = if let Some(remote) = world {
+        payload["world"] = serde_json::Value::String(remote.to_string());
+        "/api/wire/federate"
+    } else {
+        "/api/wire/send"
+    };
+
+    let resp = call_world(path, payload).await?;
     println!("{}", serde_json::to_string(&resp).unwrap_or_default());
     Ok(())
 }
