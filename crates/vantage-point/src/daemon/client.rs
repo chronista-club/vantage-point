@@ -35,6 +35,9 @@ pub struct DaemonClient {
     /// VP-154 PR-2: world-process チャネル（Process snapshot / lifecycle stream）
     /// open 失敗時は None (= TheWorld が古い binary で channel 不在のとき silent fallback)。
     world_process_ch: Option<UnisonChannel>,
+    /// L2 (doc 27 §5-3): events チャネル（event log の emit / query）。
+    /// best-effort open、古い daemon で不在なら None（呼び出し時 error）。
+    events_ch: Option<UnisonChannel>,
     /// 接続先アドレス（表示・デバッグ用に保持）
     addr: String,
 }
@@ -84,11 +87,21 @@ impl DaemonClient {
                         }
                     };
 
+                    // L2: events も best-effort open（古い daemon は None で fallback）。
+                    let events_ch = match client.open_channel("events").await {
+                        Ok(ch) => Some(ch),
+                        Err(e) => {
+                            tracing::debug!("events チャネル不在 (古い daemon バイナリ?): {}", e);
+                            None
+                        }
+                    };
+
                     return Ok(Self {
                         session_ch,
                         terminal_ch,
                         system_ch,
                         world_process_ch,
+                        events_ch,
                         addr,
                     });
                 }
@@ -344,6 +357,44 @@ impl DaemonClient {
         let processes: Vec<ProcessSnapshot> = serde_json::from_value(resp["processes"].clone())
             .context("world-process.list レスポンスの processes パースに失敗")?;
         Ok(processes)
+    }
+
+    /// L2 (doc 27 §5-3): event log に 1 件 emit し、払い出された seq を返す。
+    pub async fn events_emit(
+        &self,
+        kind: &str,
+        source: Option<&str>,
+        data: serde_json::Value,
+    ) -> Result<u64> {
+        let ch = self.events_ch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("events チャネル不在 (= daemon バイナリが古い、 event log 未対応)")
+        })?;
+        let payload = serde_json::json!({ "kind": kind, "source": source, "data": data });
+        let resp = ch
+            .request::<serde_json::Value, serde_json::Value>("emit", &payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("events.emit 失敗: {}", e))?;
+        resp["seq"]
+            .as_u64()
+            .context("events.emit レスポンスに seq なし")
+    }
+
+    /// L2 (doc 27 §5-3): event log を `since` cursor 以降で query する（古い順、最大 limit 件、0=全件）。
+    pub async fn events_query(
+        &self,
+        since: u64,
+        limit: usize,
+    ) -> Result<Vec<super::event_log::LoggedEvent>> {
+        let ch = self.events_ch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("events チャネル不在 (= daemon バイナリが古い、 event log 未対応)")
+        })?;
+        let payload = serde_json::json!({ "since": since, "limit": limit });
+        let resp = ch
+            .request::<serde_json::Value, serde_json::Value>("query", &payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("events.query 失敗: {}", e))?;
+        serde_json::from_value(resp["events"].clone())
+            .context("events.query レスポンスの events パースに失敗")
     }
 
     /// world-process.subscribe — 現在の subscriber stream を確立し、 lifecycle event を
