@@ -143,6 +143,9 @@ fn install() -> Result<()> {
     let plist = process::install_launch_agent(&exe, crate::cli::WORLD_PORT)?;
     println!("👑 LaunchAgent を install しました: {}", plist.display());
     println!("   login 時に自動起動 + crash 時に自動再起動します（vp daemon uninstall で解除）。");
+    // KeepAlive=true 常駐中は SIGTERM を送っても launchd が即再起動するので、
+    // `vp daemon stop` は一時停止にしかならない（恒久停止は uninstall）。
+    println!("   注: 常駐中の `vp daemon stop` は一時的な再起動のみ。恒久停止は uninstall。");
     Ok(())
 }
 
