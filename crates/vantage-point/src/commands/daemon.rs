@@ -57,6 +57,13 @@ pub enum DaemonCommands {
     /// 自身を hub に register する。本コマンドは TheWorld 経由で hub の `worlds.Discover` を叩き、
     /// 同 hub に register した他 world を列挙する。env 未設定なら federation 無効。
     Discover,
+    /// L1 lifecycle: TheWorld を LaunchAgent として常駐化（macOS、login always-on + crash 自動再起動）
+    ///
+    /// `~/Library/LaunchAgents/club.chronista.vantage-point.daemon.plist` を配置し launchctl で
+    /// 起動する。`RunAtLoad`（login 時自動起動）+ `KeepAlive`（crash 時自動再起動）。idempotent。
+    Install,
+    /// L1 lifecycle: LaunchAgent 常駐を解除（plist 削除 + launchctl unload、idempotent）
+    Uninstall,
 }
 
 /// `vp daemon` (= `vp world`) を実行
@@ -70,6 +77,8 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
         DaemonCommands::Status => status(),
         DaemonCommands::Processes { watch } => processes(watch),
         DaemonCommands::Discover => discover(),
+        DaemonCommands::Install => install(),
+        DaemonCommands::Uninstall => uninstall(),
     }
 }
 
@@ -124,6 +133,37 @@ fn stop() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `vp daemon install` — TheWorld を LaunchAgent 常駐化（macOS）。
+#[cfg(target_os = "macos")]
+fn install() -> Result<()> {
+    // plist の ProgramArguments に焼く binary = 今 install を呼んでいる vp 自身。
+    let exe = std::env::current_exe()?;
+    let plist = process::install_launch_agent(&exe, crate::cli::WORLD_PORT)?;
+    println!("👑 LaunchAgent を install しました: {}", plist.display());
+    println!("   login 時に自動起動 + crash 時に自動再起動します（vp daemon uninstall で解除）。");
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install() -> Result<()> {
+    anyhow::bail!(
+        "LaunchAgent 常駐化は macOS のみ対応です（Linux は systemd user unit、Windows は別途）"
+    )
+}
+
+/// `vp daemon uninstall` — LaunchAgent 常駐を解除（macOS）。
+#[cfg(target_os = "macos")]
+fn uninstall() -> Result<()> {
+    process::uninstall_launch_agent()?;
+    println!("👑 LaunchAgent を uninstall しました（plist 削除 + launchctl unload）。");
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn uninstall() -> Result<()> {
+    anyhow::bail!("LaunchAgent 常駐化は macOS のみ対応です")
 }
 
 /// VP-154 PR-2.5: `vp daemon processes [--watch]` 実装。
