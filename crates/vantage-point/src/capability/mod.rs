@@ -39,7 +39,8 @@ pub use midi_capability::MidiCapability;
 // wiremsg R5-4: 旧 msgbox の registry サブシステム (`msgbox_registry` / `msgbox_remote`) を
 // 完全撤去。 msg messaging は wiremsg (`wiremsg_store`) に一本化済。
 pub use process_manager_capability::{
-    ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess, normalize_path_key,
+    ProcessHealthInfo, ProcessManagerCapability, ProcessPresenceState, ProcessStatus, ProjectInfo,
+    RunningProcess, normalize_path_key,
 };
 pub use protocol_capability::ProtocolCapability;
 pub use stand_service::{LayerScope, Service, Stand};

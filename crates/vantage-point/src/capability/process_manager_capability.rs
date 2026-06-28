@@ -100,6 +100,65 @@ pub struct RunningProcess {
     pub tmux_session: Option<String>,
 }
 
+/// SP（Project Process）の presence 状態（World daemon-canonical、vp-app sidebar の ●◐○ 表示用）。
+///
+/// federation の [`HubFederationState`](crate::daemon::hub_client::HubFederationState) と同型の
+/// prior art を SP presence に流用したもの。World の registry channel handler が SP の
+/// register / unregister / QUIC 切断を観測して遷移させ、`run_health_monitor` の respawn 着手が
+/// `Connecting` を立てる。`/api/health` の `processes[].presence` で vp-app に expose される。
+///
+/// 設計（federation は単一接続のスカラーを `AtomicU8` で持つが、presence は SP ごとの
+/// キー付きコレクション）: 書き込みは常に map を手にした registry handler / health_monitor が行い、
+/// map ロック外で個別ハンドルを長期保持する holder はいない。よって per-entry `Arc<AtomicU8>` は
+/// 不要で、`RwLock<HashMap<String, ProcessPresenceState>>`（Copy enum 値）で単純化する（doc 27 §3.2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessPresenceState {
+    /// 未登録（projects には在るが SP がまだ register していない / graceful unregister 済）。
+    Unregistered,
+    /// 再起動 in-flight（health_monitor が crash を検知 → `start_process` 着手、register 待ち）。
+    Connecting,
+    /// SP が register 済み + QUIC registry 接続が生存。
+    Connected,
+    /// QUIC 切断を検知（crash / network、health_monitor の respawn 待ち）。
+    Disconnected,
+}
+
+impl ProcessPresenceState {
+    /// `/api/health` の `processes[].presence` 値（vp-app が ●◐○ 描画に使う）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unregistered => "unregistered",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Disconnected => "disconnected",
+        }
+    }
+}
+
+/// vp-app sidebar 向けの SP presence 1 件（`/api/health` の `processes[]` 要素）。
+///
+/// `projects`（desired = 全登録 project）を軸に、`running_processes`（live port/pid/tmux）と
+/// `process_presence`（接続状態）を join した結果。Connected でない（= live 不在）SP は
+/// port/pid/tmux が `None` になるが、project として sidebar には残り続ける（Model Q）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessHealthInfo {
+    /// プロジェクト名（表示用ラベル）。
+    pub project: String,
+    /// 正規化パスキー（一意識別）。
+    pub path: String,
+    /// presence 状態（`"unregistered"` | `"connecting"` | `"connected"` | `"disconnected"`）。
+    pub presence: &'static str,
+    /// live port（Connected 時のみ Some、`running_processes` 由来）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// live pid（同上）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// tmux セッション名（同上）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux_session: Option<String>,
+}
+
 /// 正規化パスキーを生成（HashMap のキーに使用）
 ///
 /// ディレクトリパスを正規化した String を返す。
@@ -166,6 +225,11 @@ pub struct ProcessManagerCapability {
     /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
     /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
     active_lanes: Arc<RwLock<HashMap<String, String>>>,
+    /// L1 lifecycle (Phase C): SP の接続 presence (キー: 正規化パス)。daemon-canonical (doc 27 §3.2)。
+    /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected、
+    /// `run_health_monitor` の respawn 着手が Connecting を立てる。`/api/health` の `processes[]` で expose。
+    /// DaemonState と Arc 共有 (`process_presence_ref`) し、registry handler 側からも書ける。
+    process_presence: Arc<RwLock<HashMap<String, ProcessPresenceState>>>,
 }
 
 impl ProcessManagerCapability {
@@ -182,6 +246,7 @@ impl ProcessManagerCapability {
             vp_binary_path: None,
             vpdb: None,
             active_lanes: Arc::new(RwLock::new(HashMap::new())),
+            process_presence: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -206,6 +271,56 @@ impl ProcessManagerCapability {
         &self,
     ) -> Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>> {
         self.lane_registry.clone()
+    }
+
+    /// L1 lifecycle: process_presence の共有参照を取得（DaemonState と共有するため）。
+    ///
+    /// registry channel handler が同一 Arc を握り、SP の register/unregister/切断を観測して
+    /// presence を遷移させる（capability 経由でなく DaemonState 側から直接書ける）。
+    pub fn process_presence_ref(&self) -> Arc<RwLock<HashMap<String, ProcessPresenceState>>> {
+        self.process_presence.clone()
+    }
+
+    /// L1 lifecycle: 1 project の presence を更新する（health_monitor の respawn 着手等）。
+    pub async fn set_presence(&self, path_key: &str, state: ProcessPresenceState) {
+        self.process_presence
+            .write()
+            .await
+            .insert(path_key.to_string(), state);
+    }
+
+    /// L1 lifecycle: vp-app sidebar 用の SP presence 一覧を作る（World daemon-canonical）。
+    ///
+    /// `projects`（desired = 全登録 project）を軸に `running_processes`（live port/pid/tmux）と
+    /// `process_presence`（接続状態）を join する。SP が crash/disconnect しても projects には
+    /// 残るので sidebar から消えず ○ disconnected として見える（Model Q）。HashMap 反復順は
+    /// 非決定的なので project 名で sort して返す（sidebar の表示 jitter を防ぐ）。
+    ///
+    /// ロック順序: projects → running_processes → process_presence（register handler と同順、deadlock 回避）。
+    pub async fn presence_snapshot(&self) -> Vec<ProcessHealthInfo> {
+        let projects = self.projects.read().await;
+        let running = self.running_processes.read().await;
+        let presence = self.process_presence.read().await;
+        let mut out: Vec<ProcessHealthInfo> = projects
+            .iter()
+            .map(|(path_key, info)| {
+                let state = presence
+                    .get(path_key)
+                    .copied()
+                    .unwrap_or(ProcessPresenceState::Unregistered);
+                let live = running.get(path_key);
+                ProcessHealthInfo {
+                    project: info.name.clone(),
+                    path: path_key.clone(),
+                    presence: state.as_str(),
+                    port: live.map(|p| p.port),
+                    pid: live.map(|p| p.pid),
+                    tmux_session: live.and_then(|p| p.tmux_session.clone()),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.project.cmp(&b.project));
+        out
     }
 
     /// 設定を読み込み
@@ -681,6 +796,9 @@ impl ProcessManagerCapability {
                 e
             );
         }
+        // L1 lifecycle: connection presence も namespace と共に回収 (active_lanes と対称、
+        // DB 永続を持たない in-memory only field なので map remove のみ)。
+        self.process_presence.write().await.remove(&key);
 
         // doc 24 §10 Phase 2 / §4.6 含有=所有=寿命: lane descriptor も同様に畳む。
         // lane は daemon-canonical durable truth (SP disconnect では残すが、 project remove は
@@ -1936,6 +2054,11 @@ impl ProcessManagerCapability {
                     let w = world.read().await;
                     w.clone()
                 };
+                // L1 lifecycle: respawn 着手 = presence を Connecting に。SP が register し直すと
+                // registry handler が Connected に上書きする (= vp-app sidebar が ◐→● 遷移を見れる)。
+                world_cap
+                    .set_presence(path_key, ProcessPresenceState::Connecting)
+                    .await;
                 match world_cap.start_process(project_name).await {
                     Ok(new_proc) => {
                         tracing::info!(
@@ -1951,6 +2074,12 @@ impl ProcessManagerCapability {
                             project_name,
                             e
                         );
+                        // L1 lifecycle: 起動不可 (path 削除 / binary 不在 等) は Connecting に
+                        // 固定せず Disconnected に戻す。固定すると sidebar が永久に ◐ を表示して
+                        // 「実は死んでいる」状態を ○ で示せない (毎 tick respawn 試行は継続する)。
+                        world_cap
+                            .set_presence(path_key, ProcessPresenceState::Disconnected)
+                            .await;
                     }
                 }
             }
@@ -2661,6 +2790,136 @@ mod tests {
     /// テスト用ヘルパー: 空の ProcessManagerCapability を作成
     fn make_test_cap() -> ProcessManagerCapability {
         ProcessManagerCapability::new()
+    }
+
+    /// テスト用ヘルパー: projects に 1 件登録する。
+    fn test_project(name: &str, port: Option<u16>) -> ProjectInfo {
+        ProjectInfo {
+            name: name.to_string(),
+            path: format!("/tmp/{name}").into(),
+            process_status: ProcessStatus::Stopped,
+            port,
+            enabled: true,
+            slot: None,
+            active_lane: None,
+        }
+    }
+
+    #[test]
+    fn test_process_presence_state_as_str() {
+        // /api/health の processes[].presence にそのまま載る文字列のロック (vp-app 描画契約)。
+        assert_eq!(ProcessPresenceState::Unregistered.as_str(), "unregistered");
+        assert_eq!(ProcessPresenceState::Connecting.as_str(), "connecting");
+        assert_eq!(ProcessPresenceState::Connected.as_str(), "connected");
+        assert_eq!(ProcessPresenceState::Disconnected.as_str(), "disconnected");
+    }
+
+    #[tokio::test]
+    async fn test_presence_snapshot_joins_projects_running_and_presence() {
+        let cap = make_test_cap();
+
+        // projects (desired) に 2 件。proj-b を先に入れて sort も検証する。
+        {
+            let projects = cap.projects_ref();
+            let mut projs = projects.write().await;
+            projs.insert("/tmp/proj-b".to_string(), test_project("proj-b", None));
+            projs.insert(
+                "/tmp/proj-a".to_string(),
+                test_project("proj-a", Some(33000)),
+            );
+        }
+
+        // proj-a だけ live (running_processes に entry) + Connected。
+        {
+            let running = cap.running_processes_ref();
+            running.write().await.insert(
+                "/tmp/proj-a".to_string(),
+                RunningProcess {
+                    project_name: "proj-a".to_string(),
+                    port: 33000,
+                    pid: 4242,
+                    project_path: "/tmp/proj-a".into(),
+                    tmux_session: Some("proj-a-vp".to_string()),
+                },
+            );
+        }
+        cap.set_presence("/tmp/proj-a", ProcessPresenceState::Connected)
+            .await;
+        // proj-b は切断済 (live 不在だが project は残る = Model Q)。
+        cap.set_presence("/tmp/proj-b", ProcessPresenceState::Disconnected)
+            .await;
+
+        let snap = cap.presence_snapshot().await;
+
+        // project 名で sort されている (HashMap 反復の非決定性を吸収)。
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].project, "proj-a");
+        assert_eq!(snap[1].project, "proj-b");
+
+        // proj-a: Connected + live port/pid/tmux。
+        assert_eq!(snap[0].presence, "connected");
+        assert_eq!(snap[0].port, Some(33000));
+        assert_eq!(snap[0].pid, Some(4242));
+        assert_eq!(snap[0].tmux_session.as_deref(), Some("proj-a-vp"));
+
+        // proj-b: Disconnected + live 値は None (project としては sidebar に残る)。
+        assert_eq!(snap[1].presence, "disconnected");
+        assert_eq!(snap[1].port, None);
+        assert_eq!(snap[1].pid, None);
+        assert_eq!(snap[1].tmux_session, None);
+    }
+
+    #[tokio::test]
+    async fn test_presence_snapshot_defaults_unregistered_without_entry() {
+        // projects には在るが presence entry が無い (SP 未起動) → Unregistered default。
+        let cap = make_test_cap();
+        cap.projects_ref()
+            .write()
+            .await
+            .insert("/tmp/proj-x".to_string(), test_project("proj-x", None));
+        let snap = cap.presence_snapshot().await;
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].presence, "unregistered");
+        assert_eq!(snap[0].port, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_presence_overwrites_connecting_to_disconnected() {
+        // respawn 失敗時の rollback (Connecting → Disconnected) が効くこと。
+        // これが効かないと sidebar が永久 ◐ 固定で「実は死んでいる」を ○ で示せない。
+        let cap = make_test_cap();
+        cap.projects_ref()
+            .write()
+            .await
+            .insert("/tmp/proj-r".to_string(), test_project("proj-r", None));
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Connecting)
+            .await;
+        assert_eq!(cap.presence_snapshot().await[0].presence, "connecting");
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Disconnected)
+            .await;
+        assert_eq!(cap.presence_snapshot().await[0].presence, "disconnected");
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_clears_presence() {
+        // namespace (project) を倒したら presence entry も回収する (active_lanes と対称、orphan 防止)。
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+        cap.add_project("presence-cleanup", &path).await.unwrap();
+        let key = normalize_path_key(std::path::Path::new(&path));
+        cap.set_presence(&key, ProcessPresenceState::Connected)
+            .await;
+        {
+            let presence = cap.process_presence_ref();
+            assert!(presence.read().await.contains_key(&key));
+        }
+        cap.remove_project(&path).await.unwrap();
+        let presence = cap.process_presence_ref();
+        assert!(
+            !presence.read().await.contains_key(&key),
+            "remove_project は presence entry を回収すべき"
+        );
     }
 
     #[tokio::test]

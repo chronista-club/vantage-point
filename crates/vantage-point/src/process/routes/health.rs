@@ -40,6 +40,10 @@ pub struct HealthResponse {
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`）。
     /// World mode のみ意味を持つ（SP mode は常に `"disabled"`）。vp-app が world status 横に表示。
     pub hub: &'static str,
+    /// L1 lifecycle (Phase C): World 配下の SP presence 一覧（vp-app sidebar の ●◐○ 表示用）。
+    /// daemon-canonical（doc 27 §3.2 / Model Q）。World mode のみ Some、SP mode では None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes: Option<Vec<crate::capability::ProcessHealthInfo>>,
 }
 
 // L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
@@ -182,6 +186,13 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         }
     };
 
+    // L1 lifecycle: World mode は配下 SP の presence 一覧を expose（vp-app sidebar の ●◐○ 用）。
+    // SP mode (`state.world` 不在) は None — presence は daemon-canonical で World のみが持つ。
+    let processes = match state.world.as_ref() {
+        Some(world) => Some(world.read().await.presence_snapshot().await),
+        None => None,
+    };
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -191,6 +202,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         started_at: state.started_at.clone(),
         stands,
         hub: state.hub_status.get().as_str(),
+        processes,
     })
 }
 

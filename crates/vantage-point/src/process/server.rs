@@ -845,8 +845,15 @@ pub async fn run_world(
     let projects_ref = world_cap.read().await.projects_ref();
     // Phase 1b: lane_registry も共有 (SP register の lanes payload を cache する)
     let lane_registry_ref = world_cap.read().await.lane_registry_ref();
+    // L1 lifecycle: process_presence も共有 (registry handler が presence を遷移させる)
+    let process_presence_ref = world_cap.read().await.process_presence_ref();
     let mut daemon_state_builder = crate::daemon::server::DaemonState::new()
-        .with_running_processes(running_processes_ref, projects_ref, lane_registry_ref)
+        .with_running_processes(
+            running_processes_ref,
+            projects_ref,
+            lane_registry_ref,
+            process_presence_ref,
+        )
         // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
         // Unison "world-control" channel から projects mutation を受けられるようにする。
         .with_world_cap(world_cap.clone());

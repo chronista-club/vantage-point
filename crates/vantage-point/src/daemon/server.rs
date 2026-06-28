@@ -20,7 +20,7 @@ use super::protocol::{
 };
 use super::pty_slot::PtySlot;
 use super::registry::{PaneKind, SessionRegistry};
-use crate::capability::RunningProcess;
+use crate::capability::{ProcessPresenceState, RunningProcess};
 
 /// ペイン識別子: (session_id, pane_id)
 type PaneKey = (String, u32);
@@ -54,6 +54,10 @@ pub struct DaemonState {
     #[allow(clippy::type_complexity)]
     pub lane_registry:
         Option<Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>>,
+    /// L1 lifecycle (Phase C): SP の接続 presence（ProcessManagerCapability と Arc 共有）。
+    /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected
+    /// を書き、`/api/health` の `processes[]` が同一 Arc を読んで vp-app に expose する（doc 27 §3.2）。
+    pub process_presence: Option<Arc<RwLock<HashMap<String, ProcessPresenceState>>>>,
     /// VP-154 PR-2: Process lifecycle event broadcast bus (= "world-process" channel の data plane)
     ///
     /// registry channel handler が SP register/unregister を受信したタイミングで `send` し、
@@ -155,6 +159,7 @@ impl Default for DaemonState {
             running_processes: None,
             projects: None,
             lane_registry: None,
+            process_presence: None,
             process_lifecycle_tx,
             lane_change_tx,
             canvas_routers: Arc::new(RwLock::new(HashMap::new())),
@@ -185,10 +190,12 @@ impl DaemonState {
         running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
         projects: Arc<RwLock<HashMap<String, crate::capability::ProjectInfo>>>,
         lane_registry: Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
+        process_presence: Arc<RwLock<HashMap<String, ProcessPresenceState>>>,
     ) -> Self {
         self.running_processes = Some(running_processes);
         self.projects = Some(projects);
         self.lane_registry = Some(lane_registry);
+        self.process_presence = Some(process_presence);
         self
     }
 
@@ -2038,6 +2045,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         let projects = state.projects.clone();
         // Phase 1b: lane_registry も capture (register payload の lanes を cache する)
         let lane_registry = state.lane_registry.clone();
+        // L1 lifecycle: SP presence (register→Connected / unregister→Unregistered / 切断→Disconnected)
+        let process_presence = state.process_presence.clone();
         // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (daemon-canonical 化)。
         let vpdb = state.vpdb.clone();
         // VP-154 PR-2: lifecycle event を broadcast する Sender (= "world-process" subscriber へ)
@@ -2051,6 +2060,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     let running_processes = running_processes.clone();
                     let projects = projects.clone();
                     let lane_registry = lane_registry.clone();
+                    let process_presence = process_presence.clone();
                     let vpdb = vpdb.clone();
                     let process_lifecycle_tx = process_lifecycle_tx.clone();
                     let lane_change_tx = lane_change_tx.clone();
@@ -2123,6 +2133,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .write()
                                         .await
                                         .insert(path_key.clone(), process);
+
+                                    // L1 lifecycle: SP register = presence Connected。
+                                    if let Some(ref pp) = process_presence {
+                                        pp.write().await.insert(
+                                            path_key.clone(),
+                                            ProcessPresenceState::Connected,
+                                        );
+                                    }
 
                                     // lanes payload を lane_registry + db に snapshot 反映。
                                     //
@@ -2215,6 +2233,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         } // ← projects ロック解放
                                         {
                                             running_processes.write().await.remove(path_key);
+                                        }
+                                        // L1 lifecycle: graceful unregister = presence Unregistered
+                                        // (project は残るので sidebar には ○ として残り続ける)。
+                                        if let Some(ref pp) = process_presence {
+                                            pp.write().await.insert(
+                                                path_key.clone(),
+                                                ProcessPresenceState::Unregistered,
+                                            );
                                         }
                                         // doc 24 §10 Phase 2 (authority 反転): graceful unregister
                                         // (SP shutdown) でも lane_registry を **drop しない**。
@@ -2495,6 +2521,18 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     "Registry: SP 切断 → 自動除去 (key={})",
                                     name
                                 );
+
+                                // L1 lifecycle: QUIC 切断検知 = presence Disconnected。
+                                // `removed == true` は「graceful unregister していない」(entry が
+                                // 残ったまま切断) の signal なので、 graceful 経路 (= 上で
+                                // Unregistered 済) を上書きしない。health_monitor が 2 連続 miss で
+                                // respawn 着手すると Connecting に遷移する。
+                                if let Some(ref pp) = process_presence {
+                                    pp.write().await.insert(
+                                        name.clone(),
+                                        ProcessPresenceState::Disconnected,
+                                    );
+                                }
 
                                 // VP-154 PR-2: 切断由来の lifecycle remove event。 明示
                                 // unregister と異なり、 ここは QUIC 切断検出 (= D10 Push パスの
