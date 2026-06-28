@@ -796,6 +796,9 @@ impl ProcessManagerCapability {
                 e
             );
         }
+        // L1 lifecycle: connection presence も namespace と共に回収 (active_lanes と対称、
+        // DB 永続を持たない in-memory only field なので map remove のみ)。
+        self.process_presence.write().await.remove(&key);
 
         // doc 24 §10 Phase 2 / §4.6 含有=所有=寿命: lane descriptor も同様に畳む。
         // lane は daemon-canonical durable truth (SP disconnect では残すが、 project remove は
@@ -2071,6 +2074,12 @@ impl ProcessManagerCapability {
                             project_name,
                             e
                         );
+                        // L1 lifecycle: 起動不可 (path 削除 / binary 不在 等) は Connecting に
+                        // 固定せず Disconnected に戻す。固定すると sidebar が永久に ◐ を表示して
+                        // 「実は死んでいる」状態を ○ で示せない (毎 tick respawn 試行は継続する)。
+                        world_cap
+                            .set_presence(path_key, ProcessPresenceState::Disconnected)
+                            .await;
                     }
                 }
             }
@@ -2872,6 +2881,45 @@ mod tests {
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].presence, "unregistered");
         assert_eq!(snap[0].port, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_presence_overwrites_connecting_to_disconnected() {
+        // respawn 失敗時の rollback (Connecting → Disconnected) が効くこと。
+        // これが効かないと sidebar が永久 ◐ 固定で「実は死んでいる」を ○ で示せない。
+        let cap = make_test_cap();
+        cap.projects_ref()
+            .write()
+            .await
+            .insert("/tmp/proj-r".to_string(), test_project("proj-r", None));
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Connecting)
+            .await;
+        assert_eq!(cap.presence_snapshot().await[0].presence, "connecting");
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Disconnected)
+            .await;
+        assert_eq!(cap.presence_snapshot().await[0].presence, "disconnected");
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_clears_presence() {
+        // namespace (project) を倒したら presence entry も回収する (active_lanes と対称、orphan 防止)。
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+        cap.add_project("presence-cleanup", &path).await.unwrap();
+        let key = normalize_path_key(std::path::Path::new(&path));
+        cap.set_presence(&key, ProcessPresenceState::Connected)
+            .await;
+        {
+            let presence = cap.process_presence_ref();
+            assert!(presence.read().await.contains_key(&key));
+        }
+        cap.remove_project(&path).await.unwrap();
+        let presence = cap.process_presence_ref();
+        assert!(
+            !presence.read().await.contains_key(&key),
+            "remove_project は presence entry を回収すべき"
+        );
     }
 
     #[tokio::test]
