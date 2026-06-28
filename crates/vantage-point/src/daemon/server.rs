@@ -145,6 +145,9 @@ pub struct DaemonState {
     /// 相乗りする (path 分岐で dispatch)。run_world が AppState と同一 Arc を plumb する。
     /// (`DelegationStore` は pub(crate) なので本 field も crate 可視に揃える)
     pub(crate) delegation_store: Option<crate::capability::DelegationStore>,
+    /// L2 (doc 27 §5-3): event log（agent の episodic memory）。always-on daemon が in-memory ring で
+    /// 保持し、"events" channel の emit/query と auto-feed task（process lifecycle → event）が共有する。
+    pub event_log: super::event_log::EventLog,
 }
 
 impl Default for DaemonState {
@@ -173,6 +176,7 @@ impl Default for DaemonState {
             wire_notifier: None,
             delivery_notify: None,
             delegation_store: None,
+            event_log: super::event_log::EventLog::new(),
         }
     }
 }
@@ -1247,6 +1251,46 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     let addr = format!("[::]:{}", port);
     let server =
         ProtocolServer::with_identity("vp-daemon", env!("CARGO_PKG_VERSION"), "vantage-point");
+
+    // L2 (doc 27 §5-3): event log auto-feed — process lifecycle を baseline event として log に流す。
+    // SP register → "process.up" / unregister・切断 → "process.down"。これで `vp events` が
+    // emit なしでも「SP が上がった/落ちた」を最初から持つ（build/test 等の追加 source は follow-up）。
+    {
+        let event_log = state.event_log.clone();
+        let mut rx = state.process_lifecycle_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ProcessLifecycleEvent::Add {
+                        project_path,
+                        project_name,
+                        port,
+                        pid,
+                    }) => {
+                        event_log
+                            .emit(
+                                "process.up",
+                                Some(project_name),
+                                serde_json::json!({ "path": project_path, "port": port, "pid": pid }),
+                            )
+                            .await;
+                    }
+                    Ok(ProcessLifecycleEvent::Remove { project_path }) => {
+                        event_log
+                            .emit(
+                                "process.down",
+                                None,
+                                serde_json::json!({ "path": project_path }),
+                            )
+                            .await;
+                    }
+                    // lagged: broadcast buffer 溢れ。次の event から再開（log は best-effort）。
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // =========================================================================
     // Session Channel
@@ -2545,6 +2589,94 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             }
                         }
 
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // L2 (doc 27 §5-3): events channel — event log の emit / query。
+    // agent の episodic memory（CLI `vp events` / 将来 agent peer / vp-app が consume）。always-on
+    // daemon が in-memory ring を保持し、emit は誰でも push、query は `since` cursor 以降を古い順に返す。
+    {
+        let event_log = state.event_log.clone();
+        server
+            .register_channel("events", {
+                move |_ctx, stream| {
+                    let event_log = event_log.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(msg) => msg,
+                                Err(_) => break, // 切断
+                            };
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let request_id = msg.id;
+                            match msg.method.as_str() {
+                                "emit" => {
+                                    let kind = payload["kind"].as_str().unwrap_or("").to_string();
+                                    let source = payload["source"].as_str().map(|s| s.to_string());
+                                    let data = payload
+                                        .get("data")
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null);
+                                    if kind.is_empty() {
+                                        let _ = channel
+                                            .send_response(
+                                                request_id,
+                                                "emit",
+                                                &serde_json::json!({"error": "kind は必須"}),
+                                            )
+                                            .await;
+                                        continue;
+                                    }
+                                    let seq = event_log.emit(kind, source, data).await;
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "emit",
+                                            &serde_json::json!({ "seq": seq }),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "query" => {
+                                    let since = payload["since"].as_u64().unwrap_or(0);
+                                    let limit = payload["limit"].as_u64().unwrap_or(0) as usize;
+                                    let events = event_log.query(since, limit).await;
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "query",
+                                            &serde_json::json!({ "events": events }),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                other => {
+                                    let _ = channel
+                                        .send_response(
+                                            request_id,
+                                            other,
+                                            &serde_json::json!({
+                                                "error": format!("不明なメソッド: events.{}", other)
+                                            }),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
                         Ok(())
                     }
                 }

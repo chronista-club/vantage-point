@@ -4,6 +4,7 @@
 //! Daemon生存中はプロセスが存続し、Console（vp hd attach）は何度でも接続/切断可能。
 
 pub mod client;
+pub mod event_log;
 pub mod hub_client;
 pub mod process;
 pub mod protocol;

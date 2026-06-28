@@ -95,6 +95,12 @@ enum Commands {
     #[command(subcommand)]
     Wire(commands::wire::WireCommands),
 
+    /// event log — agent の episodic memory（doc 27 §5-3）。
+    ///
+    /// `vp events [--since N]` で log 表示、`vp events emit --kind K` で push。
+    /// build/test/lane lifecycle 等を agent の行動間に配り blind を解消する。
+    Events(commands::events::EventsArgs),
+
     /// dev-flow primitives — Conductor × Performer × Memory orchestration の core 操作
     ///
     /// `vp flow handoff <name> --task-spec <file or ->` で performer 作成 + wire_send + nudge を atomic に。
@@ -374,6 +380,10 @@ fn main() -> Result<()> {
         Commands::Wire(cmd) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::wire::run(cmd))
+        }
+        Commands::Events(args) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::events::run(args))
         }
         Commands::Flow(cmd) => {
             let rt = tokio::runtime::Runtime::new()?;
