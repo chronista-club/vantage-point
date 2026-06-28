@@ -1142,6 +1142,12 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
         }
         // hub federation 接続状態（World 横の Hub インジケータ用）。
         snap.hub = h.hub;
+        // L1 lifecycle: SP presence map（project 行の ●◐○ dot 用、path → presence）。
+        snap.presence = h
+            .processes
+            .into_iter()
+            .map(|p| (p.path, p.presence))
+            .collect();
     }
     if let Ok(projects) = client.list_projects().await {
         snap.project_count = projects.len();

@@ -310,6 +310,16 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--color-status-success,#3fb950);}
 .vp-world-dot.offline{background:var(--color-status-error,#d4444c);}
+/* L1 lifecycle: project 行の SP presence dot（●◐○）。daemon-canonical の接続状態を可視化。
+   default は unregistered 相当（dim）、 各 state class で色付け。 connecting は pulse。 */
+.vp-proj-presence-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
+  background:var(--color-text-tertiary,#6e7681);opacity:.5;}
+.vp-proj-presence-dot.connected{background:var(--color-status-success,#3fb950);opacity:1;}
+.vp-proj-presence-dot.connecting{background:var(--color-status-warning,#d49b3f);opacity:1;
+  animation:vp-presence-pulse 1.1s ease-in-out infinite;}
+.vp-proj-presence-dot.disconnected{background:var(--color-status-error,#d4444c);opacity:1;}
+.vp-proj-presence-dot.unregistered{background:var(--color-text-tertiary,#6e7681);opacity:.5;}
+@keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
 .vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums;}
 .vp-world-detail{padding:var(--spacing-xs,4px) var(--spacing-sm,8px);

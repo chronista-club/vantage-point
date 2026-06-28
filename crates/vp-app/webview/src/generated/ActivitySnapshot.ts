@@ -31,4 +31,10 @@ running_process_count: number,
  * chronista-hub federation 接続状態（`/api/health` の `hub`、World 横に表示）。
  * `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
  */
-hub: string, };
+hub: string, 
+/**
+ * L1 lifecycle: SP presence map（project path → `"connected"`|`"connecting"`|`"disconnected"`
+ * |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
+ * で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
+ */
+presence: { [key in string]?: string }, };
