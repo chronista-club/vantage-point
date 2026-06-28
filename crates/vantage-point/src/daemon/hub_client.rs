@@ -27,10 +27,14 @@
 //! - VP は既に Unison native（daemon QUIC server / WorldControlClient）。rustls の
 //!   CryptoProvider は VP 既存経路（aws_lc_rs）で install 済みのため、ここでの再 install は不要。
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
-use serde_json::json;
+use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 use unison::ProtocolClient;
 use unison::network::channel::UnisonChannel;
+use unison::network::{ClientConnectionEvent, ClientConnectionEventReceiver, NetworkError};
 
 /// hub Unison surface の addr を読む env var。未設定/空なら hub federation は opt-out。
 pub const HUB_ADDR_ENV: &str = "CHRONISTA_HUB_ADDR";
@@ -111,10 +115,18 @@ fn hub_trust_anchors(addr: &str) -> unison::network::TrustAnchors {
 
 /// hub の `worlds` channel に接続済みの client。
 ///
-/// WorldControlClient（`daemon/client.rs`）と同じく `ProtocolClient` で QUIC 接続を張り、
-/// channel だけを保持する（`open_channel` の戻り channel が接続を内部保持するため、
-/// `client` 本体は drop してよい）。
+/// `ProtocolClient` で QUIC 接続を張り、`worlds` channel（register/discover 用）を保持する。
+///
+/// ## なぜ `client` 本体も保持するのか（relay 対応で変更、ADR-020 §S4）
+/// register/discover だけなら `open_channel` の戻り channel が接続を内部保持するため `client` は
+/// drop してよかった。だが **relay の dialer / target inbound は `client` 本体を必要とする**:
+/// - dialer: [`HubClient::dial_relay`] が `client.open_channel("relay")` を呼ぶ。
+/// - target inbound: [`HubClient::connect_with_inbound`] が **connect 前**に
+///   `client.register_server_channel("relay", ..)` で handler を仕込み、hub が push する
+///   server-initiated stream を受ける。この accept loop は connection（= `client`）生存中だけ
+///   稼働するので、`client` を drop すると relay 受信が止まる。→ struct で保持し続ける。
 pub struct HubClient {
+    client: ProtocolClient,
     ch: UnisonChannel,
 }
 
@@ -123,40 +135,106 @@ impl HubClient {
     ///
     /// `retries` 回まで接続を試み、全失敗なら最後のエラーを返す。caller（register 経路）は
     /// このエラーを warn ログに落として machine-local 動作を継続する（degradation）。
+    ///
+    /// relay の dialer（[`HubClient::dial_relay`]）はこの経路で接続した client でも使える。
+    /// relay の **target inbound**（受信）が必要なら [`HubClient::connect_with_inbound`] を使う
+    /// （server-initiated stream の handler を connect 前に登録する必要があるため）。
     pub async fn connect(addr: &str, retries: u32) -> Result<Self> {
-        // 公開 hub は実 CA cert（Let's Encrypt）で稼働 → System trust で検証。loopback dev hub
-        // (self-signed) は SkipVerification。addr の host 部で振り分ける（[`hub_trust_anchors`]）。
-        let transport = unison::network::quic::QuicClient::builder()
-            .trust_anchors(hub_trust_anchors(addr))
-            .build()
-            .context("hub QUIC クライアントの作成に失敗")?;
-        let client = ProtocolClient::new(transport);
+        let client = build_hub_client(addr)?;
+        let ch = connect_and_open_worlds(&client, addr, retries).await?;
+        Ok(Self { client, ch })
+    }
 
-        let attempts = retries.max(1);
-        let mut last_err: Option<String> = None;
-        for attempt in 0..attempts {
-            match client.connect(addr).await {
-                Ok(_) => {
-                    let ch = client
-                        .open_channel("worlds")
-                        .await
-                        .map_err(|e| anyhow::anyhow!("worlds チャネル open 失敗: {}", e))?;
-                    return Ok(Self { ch });
-                }
-                Err(e) => {
-                    last_err = Some(e.to_string());
-                    if attempt + 1 < attempts {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    /// relay target inbound（受信）対応で接続する（ADR-020 §S4 = universal floor）。
+    ///
+    /// **connect 前**に `relay` server-channel handler を登録してから接続する。direct 全滅で
+    /// 別 world が hub 経由 relay を張ってきたとき、hub は `open_server_stream("relay")` で
+    /// この world へ server-initiated reliable stream を push する。handler はその raw stream を
+    /// 直読し、先頭 frame = `open{from}`（送信元 wld_id）・以降 = forward された data frame として
+    /// drain し、データフレーム毎に `on_msg` を呼ぶ。
+    ///
+    /// 返った [`HubClient`] を **保持し続ける限り**受信し続ける（drop = connection 断 = 受信停止）。
+    pub async fn connect_with_inbound<F, Fut>(addr: &str, retries: u32, on_msg: F) -> Result<Self>
+    where
+        F: Fn(RelayInbound) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let client = build_hub_client(addr)?;
+
+        // relay handler を connect 前に登録（server-initiated stream の受け皿）。
+        let on_msg = std::sync::Arc::new(on_msg);
+        client
+            .register_server_channel("relay", move |stream| {
+                let on_msg = on_msg.clone();
+                async move {
+                    // 先頭 frame = open{from}（送信元 wld_id）。欠落/早期切断なら受信終了。
+                    let from = match stream.recv_frame().await {
+                        Ok(m) => m
+                            .payload_as_value()
+                            .ok()
+                            .and_then(|v| v.get("from").and_then(Value::as_str).map(str::to_string))
+                            .unwrap_or_default(),
+                        Err(_) => return Ok::<(), NetworkError>(()),
+                    };
+                    // 以降 = forward された data frame。stream 終端（source close）まで drain。
+                    while let Ok(msg) = stream.recv_frame().await {
+                        let payload = msg.payload_as_value().unwrap_or(Value::Null);
+                        on_msg(RelayInbound {
+                            from: from.clone(),
+                            payload,
+                        })
+                        .await;
                     }
+                    Ok(())
                 }
+            })
+            .await;
+
+        let ch = connect_and_open_worlds(&client, addr, retries).await?;
+        Ok(Self { client, ch })
+    }
+
+    /// relay dialer（source）— hub 経由で `to_wld_id` への片方向 stream を確立する（ADR-020 §S4）。
+    ///
+    /// `registry.lookup(wld_id).endpoints` への QUIC direct が全滅したときの **fallback floor**。
+    /// `relay` channel を開いて宛先宣言 `{to, from}` を送り、hub の status を待つ:
+    /// - `established` → [`RelayDial`] を返す（以降 [`RelayDial::send`] で data を片方向送信）。
+    /// - `offline` → target 不在。Err（送り手 home-World の reconcile 対象 = D3-c）。
+    /// - `error` / その他 → Err。
+    pub async fn dial_relay(&self, to_wld_id: &str, from_wld_id: &str) -> Result<RelayDial> {
+        let ch = self
+            .client
+            .open_channel("relay")
+            .await
+            .map_err(|e| anyhow::anyhow!("relay チャネル open 失敗: {}", e))?;
+        // 宛先宣言 {to, from}。hub は payload だけ読む（method 名は無視するため任意ラベル）。
+        ch.send_event("open", &json!({ "to": to_wld_id, "from": from_wld_id }))
+            .await
+            .map_err(|e| anyhow::anyhow!("relay open 宣言の送信に失敗: {}", e))?;
+        // hub の status frame（Event {status, detail}）を待つ。
+        let status = ch
+            .recv()
+            .await
+            .map_err(|e| anyhow::anyhow!("relay status 受信に失敗: {}", e))?;
+        let v = status
+            .payload_as_value()
+            .map_err(|e| anyhow::anyhow!("relay status の parse に失敗: {}", e))?;
+        let detail = v.get("detail").and_then(Value::as_str).unwrap_or_default();
+        match v.get("status").and_then(Value::as_str) {
+            Some("established") => Ok(RelayDial {
+                ch,
+                to: to_wld_id.to_string(),
+            }),
+            Some("offline") => {
+                anyhow::bail!("relay target offline（reconcile 対象 D3-c）: {}", to_wld_id)
             }
+            other => anyhow::bail!(
+                "relay 確立失敗: status={:?} detail={} to={}",
+                other,
+                detail,
+                to_wld_id
+            ),
         }
-        anyhow::bail!(
-            "hub 接続失敗 ({} 回リトライ後): {} - {}",
-            attempts,
-            addr,
-            last_err.unwrap_or_default()
-        )
     }
 
     /// この world を hub registry に register する（`worlds.Register`）。
@@ -194,6 +272,198 @@ impl HubClient {
             .map_err(|e| anyhow::anyhow!("worlds.Discover 失敗: {}", e))?;
         let worlds = resp.get("worlds").cloned().unwrap_or_else(|| json!([]));
         serde_json::from_value(worlds).context("Discover レスポンスのパースに失敗")
+    }
+
+    /// connection lifecycle event（Connected / Disconnected）を subscribe する。
+    ///
+    /// 常駐セッション（[`run_hub_federation`]）が `Disconnected` を待って再接続するために使う。
+    /// club-unison は自動 reconnect しない（caller 責務）ので、この event が再接続のトリガ。
+    pub fn subscribe_connection_events(&self) -> ClientConnectionEventReceiver {
+        self.client.subscribe_connection_events()
+    }
+
+    /// hub への QUIC 接続が生きているか。`Disconnected` event を取りこぼした場合の health poll
+    /// backstop（[`run_hub_federation`] が定期確認する）。
+    pub async fn is_connected(&self) -> bool {
+        self.client.is_connected().await
+    }
+}
+
+/// hub 接続用の QUIC `ProtocolClient` を組む（trust anchors は addr で振り分け）。
+///
+/// 公開 hub は実 CA cert（Let's Encrypt）で稼働 → System trust で検証。loopback dev hub
+/// (self-signed) は SkipVerification。addr の host 部で振り分ける（[`hub_trust_anchors`]）。
+fn build_hub_client(addr: &str) -> Result<ProtocolClient> {
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(hub_trust_anchors(addr))
+        .build()
+        .context("hub QUIC クライアントの作成に失敗")?;
+    Ok(ProtocolClient::new(transport))
+}
+
+/// `client` で hub に接続し（`retries` 回リトライ）`worlds` channel を open する。
+///
+/// register/discover/relay-dialer 共通の接続確立。relay target inbound 用の handler 登録は
+/// **connect より前**に済ませておく必要があるため、この関数の呼び出し前に行う（[`HubClient::
+/// connect_with_inbound`] 参照）。
+async fn connect_and_open_worlds(
+    client: &ProtocolClient,
+    addr: &str,
+    retries: u32,
+) -> Result<UnisonChannel> {
+    let attempts = retries.max(1);
+    let mut last_err: Option<String> = None;
+    for attempt in 0..attempts {
+        match client.connect(addr).await {
+            Ok(_) => {
+                return client
+                    .open_channel("worlds")
+                    .await
+                    .map_err(|e| anyhow::anyhow!("worlds チャネル open 失敗: {}", e));
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+                if attempt + 1 < attempts {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+            }
+        }
+    }
+    anyhow::bail!(
+        "hub 接続失敗 ({} 回リトライ後): {} - {}",
+        attempts,
+        addr,
+        last_err.unwrap_or_default()
+    )
+}
+
+/// relay で受信した 1 データフレーム（target inbound 側、[`HubClient::connect_with_inbound`]）。
+///
+/// hub は payload を opaque に dumb forward する（中身を覗かない = D5）ので、`payload` の意味は
+/// 送り手 world と受け手 world のアプリ層が決める。`from` = 送信元 wld_id。
+#[derive(Debug, Clone)]
+pub struct RelayInbound {
+    /// 送信元 home-World の wld_id（hub の `open{from}` 宣言由来）。
+    pub from: String,
+    /// forward された data frame の payload（opaque JSON、欠落時は `Value::Null`）。
+    pub payload: Value,
+}
+
+/// 確立済みの relay 片方向 stream（source 側、[`HubClient::dial_relay`] の戻り）。
+///
+/// hub が source→target を dumb forward する。`send` で data frame を片方向に送る。B→A の
+/// 応答は B 側が別 relay を張ることで創発する（D5「片方向 tell の交換」）。
+pub struct RelayDial {
+    ch: UnisonChannel,
+    to: String,
+}
+
+impl RelayDial {
+    /// data frame を target へ片方向送信する（hub が opaque に forward）。
+    pub async fn send(&self, payload: &Value) -> Result<()> {
+        self.ch
+            .send_event("data", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("relay data 送信に失敗 (to={}): {}", self.to, e))
+    }
+
+    /// 宛先 wld_id。
+    pub fn target(&self) -> &str {
+        &self.to
+    }
+}
+
+/// hub federation の常駐セッション（ADR-020 §S4 = universal floor の target inbound）。
+///
+/// ## なぜ常駐か（使い捨て register からの昇格）
+/// 旧実装は起動時に `connect → register → drop` する**使い捨て**だった（存在告知のみ）。だが
+/// relay の **target inbound**（別 world が hub 経由で送ってくる relay の受信）は、server-initiated
+/// stream を受ける accept loop が **connection 生存中だけ**動くため、接続を張りっぱなしにする
+/// 必要がある。この関数はその常駐ループ:
+/// 1. [`HubClient::connect_with_inbound`] で relay 受信 handler を仕込んで接続
+/// 2. [`HubClient::register`] で hub registry に存在告知（hub が `wld_id → ctx` を index する）
+/// 3. `Disconnected` を検知したら backoff して再接続（hub 再起動 / 回線瞬断からの自律復帰）
+///
+/// 受信した relay は現状 **ログのみ**（到達実証）。VP の messaging（`vp wire`）への routing は
+/// 次アーク。`shutdown` cancel でループを抜ける。hub 未設定時はこの関数自体を呼ばない（caller 側
+/// で opt-in 判定）。
+pub async fn run_hub_federation(
+    addr: String,
+    wld_id: String,
+    endpoints: Vec<String>,
+    handle: String,
+    name: String,
+    shutdown: CancellationToken,
+) {
+    // 再接続 backoff（hub 再起動を待つ間 busy loop にしない）。
+    const RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
+    // Disconnected event を取りこぼした場合の health poll 間隔（backstop）。
+    const HEALTH_POLL: Duration = Duration::from_secs(30);
+
+    while !shutdown.is_cancelled() {
+        match HubClient::connect_with_inbound(&addr, 5, |inbound: RelayInbound| async move {
+            // 行き先（VP wire 等）は次アーク。今は「本番 world が relay を受信できる」到達実証として
+            // ログのみ。hub は payload を opaque forward するので中身の解釈はしない。
+            tracing::info!(
+                from = %inbound.from,
+                payload = %inbound.payload,
+                "chronista-hub federation relay 受信（inbound、現状ログのみ）"
+            );
+        })
+        .await
+        {
+            Ok(client) => {
+                match client.register(&wld_id, &endpoints, &handle, &name).await {
+                    Ok(entry) => tracing::info!(
+                        "chronista-hub 常駐 register 成功: wld_id={} endpoints={:?} handle={} registered_at={}",
+                        wld_id,
+                        endpoints,
+                        entry.handle,
+                        entry.registered_at
+                    ),
+                    Err(e) => tracing::warn!(
+                        "chronista-hub register 失敗（接続は維持、再接続で再試行）: {}",
+                        e
+                    ),
+                }
+                // 切断 or shutdown まで待機（この間 relay 受信 handler は background で稼働）。
+                // Disconnected event を主トリガに、取りこぼし対策で is_connected の health poll を併用。
+                let mut events = client.subscribe_connection_events();
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => return,
+                        ev = events.recv_skip_lagged() => match ev {
+                            Ok(ClientConnectionEvent::Connected { .. }) => continue,
+                            Ok(ClientConnectionEvent::Disconnected { reason }) => {
+                                tracing::warn!("chronista-hub connection 切断（再接続する）: {reason}");
+                                break;
+                            }
+                            // sender drop = connection 消滅 → 再接続へ。
+                            Err(_) => break,
+                        },
+                        _ = tokio::time::sleep(HEALTH_POLL) => {
+                            if !client.is_connected().await {
+                                tracing::warn!("chronista-hub connection dead（health poll 検知、再接続する）");
+                                break;
+                            }
+                        }
+                    }
+                }
+                // client drop → connection close。
+            }
+            Err(e) => tracing::warn!(
+                "chronista-hub 接続失敗（{}秒後に再試行、machine-local で継続）: {} (addr={})",
+                RECONNECT_BACKOFF.as_secs(),
+                e,
+                addr
+            ),
+        }
+
+        // backoff（shutdown で即中断可能）。
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = tokio::time::sleep(RECONNECT_BACKOFF) => {}
+        }
     }
 }
 

@@ -875,11 +875,11 @@ pub async fn run_world(
         port
     );
 
-    // chronista-hub federation (opt-in): env `CHRONISTA_HUB_ADDR` が設定されていれば、
-    // この world を hub registry に register して他 world から discover 可能にする。
-    // 未設定なら machine-local 動作（= skip）。SSOT 原則により register は TheWorld のみが行う
-    // (個別 SP / performer は hub と直接話さない)。hub 接続/登録失敗は warn ログに落として
-    // machine-local 動作を継続する (degradation)。
+    // chronista-hub federation (opt-in): env `CHRONISTA_HUB_ADDR` が設定されていれば、この world を
+    // hub registry に register（他 world から discover 可能に）し、**relay の target inbound を常駐で
+    // 受ける**（ADR-020 §S4）。旧実装は起動時に register して即 drop する使い捨てだったが、relay 受信
+    // には接続維持が必要なため常駐セッション（[`run_hub_federation`]）へ昇格した（接続が切れたら自律
+    // 再接続）。未設定なら machine-local 動作（= skip）。SSOT 原則により hub と話すのは TheWorld のみ。
     if let Some(hub_addr) = crate::daemon::hub_client::hub_addr() {
         // handle = この machine の identity（OS hostname → "vp-world" fallback）。
         let handle = crate::daemon::hub_client::resolve_handle(None);
@@ -893,29 +893,15 @@ pub async fn run_world(
         // endpoints = direct 到達候補 (ADR-020 D3-a、IPv6 GUA 優先・tailnet 非依存)。IPv6 経路が
         // 無ければ空配列 (= direct 候補なし、 dialer は relay floor に落ちる)。
         let endpoints = crate::world::endpoint::local_advertised_endpoints(port);
-        tokio::spawn(async move {
-            match crate::daemon::hub_client::HubClient::connect(&hub_addr, 5).await {
-                Ok(client) => match client.register(&wld_id, &endpoints, &handle, &name).await {
-                    Ok(entry) => tracing::info!(
-                        "chronista-hub register 成功: wld_id={} endpoints={:?} handle={} name={} addr={} registered_at={}",
-                        wld_id,
-                        endpoints,
-                        entry.handle,
-                        name,
-                        hub_addr,
-                        entry.registered_at
-                    ),
-                    Err(e) => {
-                        tracing::warn!("chronista-hub register 失敗 (machine-local で継続): {}", e)
-                    }
-                },
-                Err(e) => tracing::warn!(
-                    "chronista-hub 接続失敗 (machine-local で継続): {} (addr={})",
-                    e,
-                    hub_addr
-                ),
-            }
-        });
+        // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
+        tokio::spawn(crate::daemon::hub_client::run_hub_federation(
+            hub_addr,
+            wld_id,
+            endpoints,
+            handle,
+            name,
+            shutdown_token.clone(),
+        ));
     } else {
         tracing::debug!(
             "chronista-hub federation 無効 ({} 未設定) — machine-local 動作",
