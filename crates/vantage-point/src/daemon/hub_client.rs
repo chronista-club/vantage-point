@@ -445,17 +445,64 @@ impl RelayDial {
     }
 }
 
+/// 既存接続 `client` で `target_wld` へ relay を張り envelope を 1 本送る（dial + send の共通単位）。
+async fn relay_send_on(
+    client: &HubClient,
+    target_wld: &str,
+    from_label: &str,
+    envelope: &Value,
+) -> Result<()> {
+    let dial = client
+        .dial_relay(target_wld, from_label)
+        .await
+        .with_context(|| format!("relay 確立に失敗（to={target_wld}）"))?;
+    dial.send(envelope)
+        .await
+        .context("relay envelope 送信に失敗")?;
+    Ok(())
+}
+
+/// `discover` で `handle` → `wld_id` を引く（不在 / wld_id 空はエラー）。曖昧性回避のため
+/// federation 宛先は handle 明示で受け、ここで routing key（wld_id）に解決する。
+async fn discover_wld_by_handle(client: &HubClient, handle: &str) -> Result<String> {
+    let worlds = client.discover().await.context("discover に失敗")?;
+    let target = worlds.iter().find(|w| w.handle == handle).ok_or_else(|| {
+        anyhow::anyhow!(
+            "world '{}' が hub registry に居ない（discover {} 件）",
+            handle,
+            worlds.len()
+        )
+    })?;
+    if target.wld_id.is_empty() {
+        anyhow::bail!(
+            "world '{}' の wld_id が空（hub が wld_id を index していない）",
+            handle
+        );
+    }
+    Ok(target.wld_id.clone())
+}
+
+/// 指定 wld_id へ短命接続で relay envelope を送る（handle 解決なし）。宛先 wld_id が既知のケース
+/// （discovery の `lanes-reply` 返信等）で使う low-level send。
+pub async fn relay_send_to_wld(
+    hub_addr: &str,
+    target_wld: &str,
+    from_label: &str,
+    envelope: &Value,
+) -> Result<()> {
+    let client = HubClient::connect(hub_addr, 3)
+        .await
+        .context("relay-send: hub 接続に失敗")?;
+    relay_send_on(&client, target_wld, from_label, envelope).await
+}
+
 /// 遠方 world の lane へ wire envelope を relay 経由で送る（flow ③ = federation 送信、daemon-side）。
 ///
 /// SSOT 原則（hub と話すのは TheWorld のみ）に従い、CLI ではなく **TheWorld の wire channel handler**
 /// （`handle_wire_channel` の `wire/federate` method）から呼ぶ。MVP は短命接続:
-/// 1. hub に connect
-/// 2. `discover` で `target_world_handle` → `wld_id` を解決（曖昧性回避のため宛先 world は handle 明示）
-/// 3. `dial_relay(wld_id, from_label)` で relay floor を張る
-/// 4. `envelope`（`{from, to, body}`）を送る → 受信 world が `dispatch_wire("send")` でローカル配送
-///
-/// `from_label` は relay の `open{from}` に載るが、受信側は envelope の `from` を使うため cosmetic。
-/// 永続接続（`run_hub_federation` の HubClient）の再利用は後の最適化（今は send ごとに connect）。
+/// connect → `discover` で `target_world_handle` → `wld_id` 解決 → `dial_relay` → send。受信 world が
+/// `dispatch_wire("send")` でローカル配送する。`from_label` は relay の `open{from}` に載るが受信側は
+/// envelope の `from` を使うため cosmetic。永続接続の再利用は後の最適化。
 pub async fn federate_wire_send(
     hub_addr: &str,
     target_world_handle: &str,
@@ -465,34 +512,80 @@ pub async fn federate_wire_send(
     let client = HubClient::connect(hub_addr, 3)
         .await
         .context("federate-send: hub 接続に失敗")?;
-    let worlds = client
-        .discover()
+    let target_wld = discover_wld_by_handle(&client, target_world_handle)
         .await
-        .context("federate-send: discover に失敗")?;
-    let target = worlds
-        .iter()
-        .find(|w| w.handle == target_world_handle)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "federate-send: world '{}' が hub registry に居ない（discover {} 件）",
-                target_world_handle,
-                worlds.len()
-            )
-        })?;
-    if target.wld_id.is_empty() {
-        anyhow::bail!(
-            "federate-send: world '{}' の wld_id が空（hub が wld_id を index していない）",
-            target_world_handle
-        );
-    }
-    let dial = client
-        .dial_relay(&target.wld_id, from_label)
+        .context("federate-send")?;
+    relay_send_on(&client, &target_wld, from_label, envelope)
         .await
-        .with_context(|| format!("federate-send: relay 確立に失敗（to={}）", target.wld_id))?;
-    dial.send(envelope)
+        .context("federate-send")
+}
+
+/// 遠方 world の lane 一覧を問い合わせる（flow discovery = step 2、daemon-side）。
+///
+/// 片方向 relay の上に request-response を作る（「双方向は片方向 relay × 2 で創発」）:
+/// 1. discovery 用の**一時 wld_id**（`wld_disco-<nonce>`）で別接続を temp-register（永続接続の
+///    registration を clobber しないため）。同接続の inbound handler に応答受け皿を仕込む。
+/// 2. `lanes-query`（`{request_id, reply_to: 一時 wld_id}`）を target に relay。
+/// 3. target が lane を集めて `lanes-reply` を一時 wld_id へ relay で返す。
+/// 4. 同接続の handler が `request_id` 一致で受けて oneshot を解決 → lane 配列を返す。
+///
+/// 宛先を知らないときの「在庫確認」。返りは lane subset（address/kind/name/state）の配列。
+pub async fn federate_discover_lanes(
+    hub_addr: &str,
+    target_world_handle: &str,
+) -> Result<Vec<Value>> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let temp_wld = format!("wld_disco-{}", uuid::Uuid::new_v4().simple());
+
+    // 応答受け皿: 同接続の inbound handler が request_id 一致の lanes-reply で take + resolve。
+    let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
+    let slot = Arc::new(std::sync::Mutex::new(Some(tx)));
+    let want = request_id.clone();
+    let on_reply = move |inbound: RelayInbound| {
+        let slot = slot.clone();
+        let want = want.clone();
+        async move {
+            let p = &inbound.payload;
+            let is_reply = p.get("kind").and_then(Value::as_str) == Some("lanes-reply")
+                && p.get("request_id").and_then(Value::as_str) == Some(want.as_str());
+            if !is_reply {
+                return;
+            }
+            // request_id 一致の lanes-reply を 1 回だけ take して oneshot を解決。
+            if let Some(tx) = slot.lock().ok().and_then(|mut g| g.take()) {
+                let _ = tx.send(p.get("lanes").cloned().unwrap_or(Value::Null));
+            }
+        }
+    };
+
+    let client = HubClient::connect_with_inbound(hub_addr, 3, on_reply)
         .await
-        .context("federate-send: envelope 送信に失敗")?;
-    Ok(())
+        .context("discover-lanes: hub 接続に失敗")?;
+    client
+        .register(&temp_wld, &[], "vp-disco", "VP discovery (transient)")
+        .await
+        .context("discover-lanes: 一時 register に失敗")?;
+
+    let target_wld = discover_wld_by_handle(&client, target_world_handle)
+        .await
+        .context("discover-lanes")?;
+    let query = json!({
+        "kind": "lanes-query",
+        "request_id": request_id,
+        "reply_to": temp_wld,
+    });
+    relay_send_on(&client, &target_wld, &temp_wld, &query)
+        .await
+        .context("discover-lanes: query 送信に失敗")?;
+
+    // 応答待ち（timeout）。connection は関数 scope 終了で drop → 一時 register は hub から除去（D1）。
+    let lanes = tokio::time::timeout(Duration::from_secs(10), rx)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("discover-lanes: 応答 timeout（target が lanes-reply を返さない）")
+        })?
+        .map_err(|_| anyhow::anyhow!("discover-lanes: 応答 channel が閉じた"))?;
+    Ok(lanes.as_array().cloned().unwrap_or_default())
 }
 
 /// hub federation の常駐セッション（ADR-020 §S4 = universal floor の target inbound）。
@@ -727,6 +820,74 @@ mod tests {
 
         println!(
             "✅ federate_wire_send e2e OK: vp-wire-source → relay → {target_wld}(vp-wire-target) の agent@nostos/main inbox に配送"
+        );
+    }
+
+    /// flow step 2 e2e: 遠方 world の lane 一覧を `federate_discover_lanes` で問い合わせ、relay 上の
+    /// request-response（lanes-query → lanes-reply）で lane 配列を受け取ることを実証する（hub 前提）。
+    /// target 側の lanes-query handler は run_world の on_relay と同形（ここでは固定 lane を返す）。
+    ///
+    /// 手動実行:
+    /// ```bash
+    /// CHRONISTA_HUB_ADDR='[::1]:7879' cargo test -p vantage-point --lib \
+    ///   daemon::hub_client::tests::discover_lanes_roundtrip -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "実 chronista-hub の起動が前提（CHRONISTA_HUB_ADDR）"]
+    async fn discover_lanes_roundtrip() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let addr = hub_addr().expect("CHRONISTA_HUB_ADDR を設定して hub を起動して実行すること");
+
+        // target world: lanes-query を受けたら固定 lane 2 件を lanes-reply で返す（run_world の
+        // on_relay と同形の routing。実機では lane_registry を flatten する）。
+        let target_wld = "wld_disco-target";
+        let addr_for_target = addr.clone();
+        let on_query = move |inbound: RelayInbound| {
+            let hub_addr = addr_for_target.clone();
+            async move {
+                if inbound.payload.get("kind").and_then(Value::as_str) != Some("lanes-query") {
+                    return;
+                }
+                let Some(reply_to) = inbound.payload.get("reply_to").and_then(Value::as_str) else {
+                    return;
+                };
+                let request_id = inbound
+                    .payload
+                    .get("request_id")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let reply = json!({
+                    "kind": "lanes-reply",
+                    "request_id": request_id,
+                    "lanes": [
+                        { "address": "agent@nostos", "kind": "conductor", "state": "running" },
+                        { "address": "agent@nostos/wing-a", "kind": "performer", "state": "running" },
+                    ],
+                });
+                let from = resolve_handle(None);
+                let _ = relay_send_to_wld(&hub_addr, reply_to, &from, &reply).await;
+            }
+        };
+        let target = HubClient::connect_with_inbound(&addr, 5, on_query)
+            .await
+            .expect("target: connect_with_inbound");
+        target
+            .register(target_wld, &[], "vp-disco-target", "VP discovery target")
+            .await
+            .expect("target: register");
+
+        // source: federate_discover_lanes（一時 wld_id で temp-register → query → 同接続で reply 受信）。
+        let lanes = federate_discover_lanes(&addr, "vp-disco-target")
+            .await
+            .expect("federate_discover_lanes");
+
+        assert_eq!(lanes.len(), 2, "lane 2 件返るはず: {lanes:?}");
+        assert_eq!(lanes[0]["address"], "agent@nostos");
+        assert_eq!(lanes[1]["address"], "agent@nostos/wing-a");
+
+        println!(
+            "✅ discover-lanes e2e OK: vp-disco-target の lane {} 件を取得",
+            lanes.len()
         );
     }
 }

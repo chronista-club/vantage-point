@@ -90,6 +90,15 @@ pub enum WireCommands {
         #[arg(long)]
         world: Option<String>,
     },
+    /// 遠方 world の lane 一覧を問い合わせる (federation discovery、 在庫確認、 flow step 2)
+    ///
+    /// 宛先を知らないとき、 relay 上の request-response で相手 world の lane を列挙する。
+    /// 例: `vp wire discover --world taro-box`
+    Discover {
+        /// 問い合わせる remote world の handle
+        #[arg(long)]
+        world: String,
+    },
     /// 未読の在庫確認 (= mcp__wire_inbox の CLI pair、 read-only で cursor 不触り)
     ///
     /// `recv` と異なり cursor を進めない: 「読まずに在庫だけ確認」する。
@@ -168,6 +177,7 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             )
             .await
         }
+        WireCommands::Discover { world } => discover_lanes(&world).await,
         WireCommands::Inbox { agent } => inbox(&agent).await,
         WireCommands::Thread { message_id } => thread(&message_id).await,
         WireCommands::Ack { message_id, agent } => ack(&message_id, &agent).await,
@@ -700,6 +710,21 @@ async fn send(
 
     let resp = call_world(path, payload).await?;
     println!("{}", serde_json::to_string(&resp).unwrap_or_default());
+    Ok(())
+}
+
+/// 遠方 world の lane 一覧を問い合わせる（federation discovery）。TheWorld 経由で relay 上の
+/// request-response を回し、相手 world の lane を列挙する。
+async fn discover_lanes(world: &str) -> Result<()> {
+    let resp = call_world(
+        "/api/wire/discover-lanes",
+        serde_json::json!({ "world": world }),
+    )
+    .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&resp).unwrap_or_default()
+    );
     Ok(())
 }
 
