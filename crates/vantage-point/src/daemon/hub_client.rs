@@ -445,6 +445,56 @@ impl RelayDial {
     }
 }
 
+/// 遠方 world の lane へ wire envelope を relay 経由で送る（flow ③ = federation 送信、daemon-side）。
+///
+/// SSOT 原則（hub と話すのは TheWorld のみ）に従い、CLI ではなく **TheWorld の wire channel handler**
+/// （`handle_wire_channel` の `wire/federate` method）から呼ぶ。MVP は短命接続:
+/// 1. hub に connect
+/// 2. `discover` で `target_world_handle` → `wld_id` を解決（曖昧性回避のため宛先 world は handle 明示）
+/// 3. `dial_relay(wld_id, from_label)` で relay floor を張る
+/// 4. `envelope`（`{from, to, body}`）を送る → 受信 world が `dispatch_wire("send")` でローカル配送
+///
+/// `from_label` は relay の `open{from}` に載るが、受信側は envelope の `from` を使うため cosmetic。
+/// 永続接続（`run_hub_federation` の HubClient）の再利用は後の最適化（今は send ごとに connect）。
+pub async fn federate_wire_send(
+    hub_addr: &str,
+    target_world_handle: &str,
+    from_label: &str,
+    envelope: &Value,
+) -> Result<()> {
+    let client = HubClient::connect(hub_addr, 3)
+        .await
+        .context("federate-send: hub 接続に失敗")?;
+    let worlds = client
+        .discover()
+        .await
+        .context("federate-send: discover に失敗")?;
+    let target = worlds
+        .iter()
+        .find(|w| w.handle == target_world_handle)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "federate-send: world '{}' が hub registry に居ない（discover {} 件）",
+                target_world_handle,
+                worlds.len()
+            )
+        })?;
+    if target.wld_id.is_empty() {
+        anyhow::bail!(
+            "federate-send: world '{}' の wld_id が空（hub が wld_id を index していない）",
+            target_world_handle
+        );
+    }
+    let dial = client
+        .dial_relay(&target.wld_id, from_label)
+        .await
+        .with_context(|| format!("federate-send: relay 確立に失敗（to={}）", target.wld_id))?;
+    dial.send(envelope)
+        .await
+        .context("federate-send: envelope 送信に失敗")?;
+    Ok(())
+}
+
 /// hub federation の常駐セッション（ADR-020 §S4 = universal floor の target inbound）。
 ///
 /// ## なぜ常駐か（使い捨て register からの昇格）
@@ -456,13 +506,18 @@ impl RelayDial {
 /// 2. [`HubClient::register`] で hub registry に存在告知（hub が `wld_id → ctx` を index する）
 /// 3. `Disconnected` を検知したら backoff して再接続（hub 再起動 / 回線瞬断からの自律復帰）
 ///
-/// 受信した relay は現状 **ログのみ**（到達実証）。VP の messaging（`vp wire`）への routing は
-/// 次アーク。`shutdown` cancel でループを抜ける。hub 未設定時はこの関数自体を呼ばない（caller 側
-/// で opt-in 判定）。
+/// 受信した relay frame は `on_relay`（caller 注入）に渡す。transport の lifecycle（接続 / 再接続 /
+/// register）と **配送ポリシー**（relay → VP wire への routing 等）を分離するため、配送先は
+/// run_world 側で AppState（wire store）を capture したクロージャとして渡す。`on_relay` は再接続
+/// ごとに再登録するため `Clone` を要求する。`shutdown` cancel でループを抜ける。hub 未設定時は
+/// この関数自体を呼ばない（caller 側で opt-in 判定）。
 ///
 /// 接続状態は `status`（[`HubFederationStatus`]）に遷移ごとに反映し、`/api/health` 経由で vp-app
 /// が world status 横の `Hub ● connected` インジケータとして表示する。
-pub async fn run_hub_federation(
+// federation session の固有パラメータ（identity 3 つ + status/shutdown/handler）。いずれも独立に
+// 必要で struct 化しても可読性が上がらないため allow（caller は run_world の 1 箇所のみ）。
+#[allow(clippy::too_many_arguments)]
+pub async fn run_hub_federation<F, Fut>(
     addr: String,
     wld_id: String,
     endpoints: Vec<String>,
@@ -470,7 +525,11 @@ pub async fn run_hub_federation(
     name: String,
     status: HubFederationStatus,
     shutdown: CancellationToken,
-) {
+    on_relay: F,
+) where
+    F: Fn(RelayInbound) -> Fut + Clone + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     // 再接続 backoff（hub 再起動を待つ間 busy loop にしない）。
     const RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
     // Disconnected event を取りこぼした場合の health poll 間隔（backstop）。
@@ -478,17 +537,8 @@ pub async fn run_hub_federation(
 
     while !shutdown.is_cancelled() {
         status.set(HubFederationState::Connecting);
-        match HubClient::connect_with_inbound(&addr, 5, |inbound: RelayInbound| async move {
-            // 行き先（VP wire 等）は次アーク。今は「本番 world が relay を受信できる」到達実証として
-            // ログのみ。hub は payload を opaque forward するので中身の解釈はしない。
-            tracing::info!(
-                from = %inbound.from,
-                payload = %inbound.payload,
-                "chronista-hub federation relay 受信（inbound、現状ログのみ）"
-            );
-        })
-        .await
-        {
+        // 再接続ごとに handler を再登録するため clone（connect_with_inbound は on_msg を move する）。
+        match HubClient::connect_with_inbound(&addr, 5, on_relay.clone()).await {
             Ok(client) => {
                 match client.register(&wld_id, &endpoints, &handle, &name).await {
                     Ok(entry) => {
@@ -585,5 +635,98 @@ mod tests {
         assert_eq!(e.handle, "world-a");
         assert_eq!(e.name, "");
         assert_eq!(e.registered_at, "");
+    }
+
+    /// flow ③+⑤ e2e: 別 world が relay で送ってきた wire envelope が、受信 world のローカル中央
+    /// wire store に inject され、宛先 lane が `wire_recv` で拾えることを実証する（hub 起動前提）。
+    /// `dispatch_wire` が pub(crate) なので integration test ではなく内部 test に置く。
+    ///
+    /// 手動実行:
+    /// ```bash
+    /// CHRONISTA_HUB_ADDR='[::1]:7879' cargo test -p vantage-point --lib \
+    ///   daemon::hub_client::tests::relay_to_wire_delivery -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "実 chronista-hub の起動が前提（CHRONISTA_HUB_ADDR）"]
+    async fn relay_to_wire_delivery() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let addr = hub_addr().expect("CHRONISTA_HUB_ADDR を設定して hub を起動して実行すること");
+
+        // 受信 world のローカル中央 wire store（run_world の AppState 相当を mem db で再現）。
+        let db = crate::db::VpDb::connect_mem().await.expect("connect_mem");
+        db.define_schema().await.expect("define_schema");
+        let store = crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
+            .await
+            .expect("WiremsgStore::new");
+        let notifier = crate::capability::WireNotifier::new();
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        // 受信 world: relay inbound → dispatch_wire("send") でローカル store に inject（run_world と同形）。
+        let target_wld = "wld_wire-target";
+        let on_relay = {
+            let store = store.clone();
+            let notifier = notifier.clone();
+            let notify = notify.clone();
+            move |inbound: RelayInbound| {
+                let store = store.clone();
+                let notifier = notifier.clone();
+                let notify = notify.clone();
+                async move {
+                    let _ = crate::process::routes::wire::dispatch_wire(
+                        &store,
+                        &notifier,
+                        &notify,
+                        "send",
+                        inbound.payload,
+                    )
+                    .await;
+                }
+            }
+        };
+        let receiver = HubClient::connect_with_inbound(&addr, 5, on_relay)
+            .await
+            .expect("receiver: connect_with_inbound");
+        receiver
+            .register(target_wld, &[], "vp-wire-target", "VP wire target")
+            .await
+            .expect("receiver: register");
+
+        // 送信 world: relay を張って wire envelope（{from, to, body}）を送る。to は受信 world 内部の
+        // logical address（agent@nostos/main）。送信側は相手の port/PID を知らない。
+        // production の federate_wire_send を直接叩く（connect → discover で handle→wld_id →
+        // dial_relay → send）。宛先 world は handle "vp-wire-target" で明示（曖昧性回避）。
+        let envelope = json!({
+            "from": "agent@vp-wire-source/proj/main",
+            "to": ["agent@nostos/main"],
+            "body": { "kind": "event", "text": "遠方 world からの wire" }
+        });
+        federate_wire_send(&addr, "vp-wire-target", "vp-wire-source", &envelope)
+            .await
+            .expect("federate_wire_send");
+
+        // 受信 world の store に届くまで poll（relay → handler → dispatch_wire は非同期）。
+        let mut delivered = None;
+        for _ in 0..50 {
+            let recvd = crate::process::routes::wire::dispatch_wire(
+                &store,
+                &notifier,
+                &notify,
+                "recv",
+                json!({ "agent": "agent@nostos/main", "timeout": 0 }),
+            )
+            .await
+            .expect("wire recv");
+            if recvd.get("count").and_then(|c| c.as_i64()).unwrap_or(0) > 0 {
+                delivered = Some(recvd);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let recvd = delivered.expect("relay→wire 配送されなかった（タイムアウト）");
+        assert_eq!(recvd["count"], 1, "1 件配送されるはず: {recvd}");
+
+        println!(
+            "✅ federate_wire_send e2e OK: vp-wire-source → relay → {target_wld}(vp-wire-target) の agent@nostos/main inbox に配送"
+        );
     }
 }

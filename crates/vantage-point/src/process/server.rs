@@ -900,6 +900,47 @@ pub async fn run_world(
         // endpoints = direct 到達候補 (ADR-020 D3-a、IPv6 GUA 優先・tailnet 非依存)。IPv6 経路が
         // 無ければ空配列 (= direct 候補なし、 dialer は relay floor に落ちる)。
         let endpoints = crate::world::endpoint::local_advertised_endpoints(port);
+
+        // relay → VP wire 配送ポリシー（flow ③+⑤）。別 world が relay で送ってきた wire envelope
+        // (`{from, to, body}`) を **ローカル中央 wire store に inject** する（= 遠方からの relay を
+        // 「ローカル送信」に畳む）。宛先 lane は `wire_recv` で普通に拾う。store/notifier/notify は
+        // AppState の Arc を capture（再接続ごとに handler 再登録するため closure は Clone）。
+        let wire_store = state.wiremsg_store.clone();
+        let wire_notifier = state.wire_notifier.clone();
+        let wire_notify = state.delivery_notify.clone();
+        let on_relay = move |inbound: crate::daemon::hub_client::RelayInbound| {
+            let store = wire_store.clone();
+            let notifier = wire_notifier.clone();
+            let notify = wire_notify.clone();
+            async move {
+                let Some(store) = store else {
+                    tracing::warn!(
+                        from = %inbound.from,
+                        "federation relay 受信したが wire store 不在（db なし）— drop"
+                    );
+                    return;
+                };
+                match crate::process::routes::wire::dispatch_wire(
+                    &store,
+                    &notifier,
+                    &notify,
+                    "send",
+                    inbound.payload,
+                )
+                .await
+                {
+                    Ok(_) => tracing::info!(
+                        from = %inbound.from,
+                        "federation relay → VP wire 配送成功"
+                    ),
+                    Err(e) => tracing::warn!(
+                        from = %inbound.from,
+                        "federation relay → VP wire 配送失敗: {}", e
+                    ),
+                }
+            }
+        };
+
         // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
         // hub_status は AppState と共有（run_hub_federation が更新、/api/health が読む）。
         tokio::spawn(crate::daemon::hub_client::run_hub_federation(
@@ -910,6 +951,7 @@ pub async fn run_world(
             name,
             hub_status,
             shutdown_token.clone(),
+            on_relay,
         ));
     } else {
         tracing::debug!(
