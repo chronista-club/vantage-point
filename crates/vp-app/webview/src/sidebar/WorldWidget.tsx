@@ -32,6 +32,26 @@ export function WorldWidget() {
 			? `TheWorld v${a().world_version ?? "?"} — P${a().project_count} R${a().running_process_count}`
 			: "TheWorld offline";
 
+	// chronista-hub federation 接続状態（World 行の下に常時表示）。`/api/health` の `hub`:
+	// "connected" / "connecting" / "disconnected" / "disabled"、未取得 or 旧 daemon は空文字。
+	// connected のみ緑 dot、それ以外は .offline（赤）。disabled / 空 / world offline では非表示
+	// （federation を使っていない world にノイズを出さない）。
+	const hub = () => a().hub ?? "";
+	const hubConnected = () => hub() === "connected";
+	const hubLabel = () => {
+		switch (hub()) {
+			case "connected":
+				return "Hub — connected";
+			case "connecting":
+				return "Hub — connecting…";
+			case "disconnected":
+				return "Hub — disconnected";
+			default:
+				return `Hub — ${hub()}`;
+		}
+	};
+	const showHub = () => online() && hub() !== "" && hub() !== "disabled";
+
 	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
 	const [now, setNow] = createSignal(Date.now());
 	const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -72,6 +92,18 @@ export function WorldWidget() {
 					</div>
 				</div>
 			</details>
+			<Show when={showHub()}>
+				<div
+					class="vp-world-summary"
+					title={`chronista-hub federation: ${hub()}`}
+				>
+					<span
+						class="vp-world-dot"
+						classList={{ offline: !hubConnected() }}
+					/>
+					<span class="vp-world-line">{hubLabel()}</span>
+				</div>
+			</Show>
 			<div class="vp-devices">
 				<div
 					class="vp-stand-row"

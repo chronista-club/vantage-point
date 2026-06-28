@@ -166,6 +166,10 @@ pub struct WorldHealthInfo {
     pub version: String,
     #[serde(default)]
     pub started_at: String,
+    /// chronista-hub federation 接続状態
+    /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`、旧 daemon は空文字）。
+    #[serde(default)]
+    pub hub: String,
 }
 
 /// Runtime process 情報 — `/api/world/processes` レスポンス要素 (= SP の lifecycle snapshot)。

@@ -26,4 +26,9 @@ project_count: number,
 /**
  * 稼働中 process 数 (`/api/world/processes`)
  */
-running_process_count: number, };
+running_process_count: number, 
+/**
+ * chronista-hub federation 接続状態（`/api/health` の `hub`、World 横に表示）。
+ * `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
+ */
+hub: string, };

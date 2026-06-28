@@ -1140,6 +1140,8 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
         if !h.started_at.is_empty() {
             snap.world_started_at = Some(h.started_at);
         }
+        // hub federation 接続状態（World 横の Hub インジケータ用）。
+        snap.hub = h.hub;
     }
     if let Ok(projects) = client.list_projects().await {
         snap.project_count = projects.len();

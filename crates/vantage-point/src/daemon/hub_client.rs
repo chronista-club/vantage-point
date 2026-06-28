@@ -27,6 +27,8 @@
 //! - VP は既に Unison native（daemon QUIC server / WorldControlClient）。rustls の
 //!   CryptoProvider は VP 既存経路（aws_lc_rs）で install 済みのため、ここでの再 install は不要。
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -35,6 +37,76 @@ use tokio_util::sync::CancellationToken;
 use unison::ProtocolClient;
 use unison::network::channel::UnisonChannel;
 use unison::network::{ClientConnectionEvent, ClientConnectionEventReceiver, NetworkError};
+
+/// hub federation の接続状態（vp-app の world status 表示用）。
+///
+/// [`run_hub_federation`] が遷移ごとに更新し、`/api/health` handler が読んで vp-app に返す。
+/// 表示は「world online の近くに `Hub ● connected`」のシンプルなインジケータ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HubFederationState {
+    /// `CHRONISTA_HUB_ADDR` 未設定（machine-local 動作、federation off）。
+    Disabled,
+    /// 接続試行中 or 再接続 backoff 待ち（まだ register 未確立）。
+    Connecting,
+    /// hub に接続・register 済み（relay target inbound 受信可能）。
+    Connected,
+    /// 切断検知（再接続ループが回っている）。
+    Disconnected,
+}
+
+impl HubFederationState {
+    /// `/api/health` の `hub` フィールド値（vp-app が描画に使う）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Disconnected => "disconnected",
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Connecting,
+            2 => Self::Connected,
+            3 => Self::Disconnected,
+            _ => Self::Disabled,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Disabled => 0,
+            Self::Connecting => 1,
+            Self::Connected => 2,
+            Self::Disconnected => 3,
+        }
+    }
+}
+
+/// [`HubFederationState`] の共有ハンドル。`run_hub_federation`（writer）と `/api/health`
+/// handler（reader）が共有する。状態は単一の enum 値なので `AtomicU8` で lock-free に持つ。
+#[derive(Clone, Default)]
+pub struct HubFederationStatus(Arc<AtomicU8>);
+
+impl HubFederationStatus {
+    /// 初期状態 = `Disabled`（hub 未設定相当）。
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(
+            HubFederationState::Disabled.to_u8(),
+        )))
+    }
+
+    /// 状態を更新する（writer = `run_hub_federation`）。
+    pub fn set(&self, state: HubFederationState) {
+        self.0.store(state.to_u8(), Ordering::Relaxed);
+    }
+
+    /// 現在の状態を読む（reader = `/api/health` handler）。
+    pub fn get(&self) -> HubFederationState {
+        HubFederationState::from_u8(self.0.load(Ordering::Relaxed))
+    }
+}
 
 /// hub Unison surface の addr を読む env var。未設定/空なら hub federation は opt-out。
 pub const HUB_ADDR_ENV: &str = "CHRONISTA_HUB_ADDR";
@@ -387,12 +459,16 @@ impl RelayDial {
 /// 受信した relay は現状 **ログのみ**（到達実証）。VP の messaging（`vp wire`）への routing は
 /// 次アーク。`shutdown` cancel でループを抜ける。hub 未設定時はこの関数自体を呼ばない（caller 側
 /// で opt-in 判定）。
+///
+/// 接続状態は `status`（[`HubFederationStatus`]）に遷移ごとに反映し、`/api/health` 経由で vp-app
+/// が world status 横の `Hub ● connected` インジケータとして表示する。
 pub async fn run_hub_federation(
     addr: String,
     wld_id: String,
     endpoints: Vec<String>,
     handle: String,
     name: String,
+    status: HubFederationStatus,
     shutdown: CancellationToken,
 ) {
     // 再接続 backoff（hub 再起動を待つ間 busy loop にしない）。
@@ -401,6 +477,7 @@ pub async fn run_hub_federation(
     const HEALTH_POLL: Duration = Duration::from_secs(30);
 
     while !shutdown.is_cancelled() {
+        status.set(HubFederationState::Connecting);
         match HubClient::connect_with_inbound(&addr, 5, |inbound: RelayInbound| async move {
             // 行き先（VP wire 等）は次アーク。今は「本番 world が relay を受信できる」到達実証として
             // ログのみ。hub は payload を opaque forward するので中身の解釈はしない。
@@ -414,13 +491,16 @@ pub async fn run_hub_federation(
         {
             Ok(client) => {
                 match client.register(&wld_id, &endpoints, &handle, &name).await {
-                    Ok(entry) => tracing::info!(
-                        "chronista-hub 常駐 register 成功: wld_id={} endpoints={:?} handle={} registered_at={}",
-                        wld_id,
-                        endpoints,
-                        entry.handle,
-                        entry.registered_at
-                    ),
+                    Ok(entry) => {
+                        status.set(HubFederationState::Connected);
+                        tracing::info!(
+                            "chronista-hub 常駐 register 成功: wld_id={} endpoints={:?} handle={} registered_at={}",
+                            wld_id,
+                            endpoints,
+                            entry.handle,
+                            entry.registered_at
+                        );
+                    }
                     Err(e) => tracing::warn!(
                         "chronista-hub register 失敗（接続は維持、再接続で再試行）: {}",
                         e
@@ -449,6 +529,8 @@ pub async fn run_hub_federation(
                         }
                     }
                 }
+                // 切断検知 → Disconnected を反映（次 iteration 冒頭で Connecting に戻る）。
+                status.set(HubFederationState::Disconnected);
                 // client drop → connection close。
             }
             Err(e) => tracing::warn!(

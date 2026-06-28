@@ -24,6 +24,7 @@ export function emptyState(): SidebarState {
       world_online: false,
       project_count: 0,
       running_process_count: 0,
+      hub: '',
     },
     lanes_by_project: {},
     unread_notifications: {},
