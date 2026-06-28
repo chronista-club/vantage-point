@@ -18,11 +18,14 @@
 //!   additive なので非破壊。S2 landed 後に hub が `wld_id → endpoint(s)` を index し、 `Discover`
 //!   が両者を carry する（[`WorldEntry::wld_id`] / [`WorldEntry::endpoints`] が受け皿）。
 //!
-//! ## 注意（ADR-018 spike の地雷）
+//! ## cert 検証（trust anchors、2026-06-28〜）
+//! - 公開 hub `hub.chronista.club:12879` は **実 CA cert（Let's Encrypt、ISRG Root chain）** で
+//!   稼働 → VP は cert 配布も pin も不要、`TrustAnchors::System`（webpki-roots Mozilla bundle）で
+//!   公的検証する。cert は90日ごと無人 rotate されるが System trust なので VP は無変更。
+//!   ⚠️ System trust は SNI↔SAN を照合するので **必ず hostname で dial**（生 IP 不可）。
+//! - loopback dev hub（self-signed）は `SkipVerification`。振り分けは [`hub_trust_anchors`]。
 //! - VP は既に Unison native（daemon QUIC server / WorldControlClient）。rustls の
-//!   CryptoProvider は VP 既存経路で install 済みのため、ここでの再 install は不要。
-//! - `TrustAnchors::SkipVerification` は **INSECURE**（server 証明書未検証、dev/test 専用）。
-//!   本番運用で hub を信頼境界越しに置くなら TrustAnchors を明示する必要がある（follow-up）。
+//!   CryptoProvider は VP 既存経路（aws_lc_rs）で install 済みのため、ここでの再 install は不要。
 
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -78,6 +81,34 @@ pub fn resolve_handle(override_handle: Option<&str>) -> String {
         .unwrap_or_else(|| "vp-world".to_string())
 }
 
+/// hub addr の host 部が loopback（localhost / 127.0.0.1 / `[::1]`）か判定する。
+///
+/// `host:port` から host を取り出し、 IP なら `is_loopback()`、 文字列なら `localhost` を loopback
+/// とみなす。hub addr は常に port 付きなので素朴な rsplit で十分（hostname に `:` は無い）。
+fn is_loopback_hub(addr: &str) -> bool {
+    let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// hub 接続に使う trust anchors を addr から選ぶ。
+///
+/// - **公開 hub**（hostname、 非 loopback）= 実 CA cert（Let's Encrypt、 ISRG Root chain）で
+///   稼働 → `TrustAnchors::System`（webpki-roots Mozilla bundle、 ISRG 含む）で公的検証。
+///   ⚠️ System trust は SNI↔SAN を照合するので **必ず hostname で dial**（生 IP は不可）。
+/// - **loopback dev hub**（self-signed）= `SkipVerification`（dev/test の loopback 限定）。
+fn hub_trust_anchors(addr: &str) -> unison::network::TrustAnchors {
+    if is_loopback_hub(addr) {
+        unison::network::TrustAnchors::SkipVerification
+    } else {
+        unison::network::TrustAnchors::System
+    }
+}
+
 /// hub の `worlds` channel に接続済みの client。
 ///
 /// WorldControlClient（`daemon/client.rs`）と同じく `ProtocolClient` で QUIC 接続を張り、
@@ -93,9 +124,10 @@ impl HubClient {
     /// `retries` 回まで接続を試み、全失敗なら最後のエラーを返す。caller（register 経路）は
     /// このエラーを warn ログに落として machine-local 動作を継続する（degradation）。
     pub async fn connect(addr: &str, retries: u32) -> Result<Self> {
-        // INSECURE dev path: hub の dev cert を検証しない（WorldControlClient と同じ方針）。
+        // 公開 hub は実 CA cert（Let's Encrypt）で稼働 → System trust で検証。loopback dev hub
+        // (self-signed) は SkipVerification。addr の host 部で振り分ける（[`hub_trust_anchors`]）。
         let transport = unison::network::quic::QuicClient::builder()
-            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+            .trust_anchors(hub_trust_anchors(addr))
             .build()
             .context("hub QUIC クライアントの作成に失敗")?;
         let client = ProtocolClient::new(transport);
@@ -173,6 +205,17 @@ mod tests {
     fn hub_addr_env_name() {
         // env var 名は hub エコシステム命名と揃える（hub 側は CHRONISTA_HUB_UNISON_ADDR）。
         assert_eq!(HUB_ADDR_ENV, "CHRONISTA_HUB_ADDR");
+    }
+
+    #[test]
+    fn loopback_hub_detection() {
+        // loopback dev hub = SkipVerification、 公開 hostname = System trust の振り分け根拠。
+        assert!(is_loopback_hub("127.0.0.1:7879"));
+        assert!(is_loopback_hub("[::1]:7879"));
+        assert!(is_loopback_hub("localhost:7879"));
+        // 公開 hub は hostname dial（System trust）。生 IP も loopback でないが SAN 照合のため非推奨。
+        assert!(!is_loopback_hub("hub.chronista.club:12879"));
+        assert!(!is_loopback_hub("163.43.117.17:12879"));
     }
 
     #[test]
