@@ -1190,6 +1190,25 @@ async fn handle_wire_channel(
             .map_err(|e| e.to_string())?;
             return Ok(serde_json::json!({ "status": "ok", "federated": world }));
         }
+        // discovery（flow step 2）: 遠方 world の lane 一覧を問い合わせる（relay 上の request-response）。
+        // payload = `{world: <宛先 world handle>}`。「在庫確認」: 宛先を知らないときに lane を列挙する。
+        if sub == "discover-lanes" {
+            let world = payload
+                .get("world")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    "wire/discover-lanes: 'world' (宛先 world handle) required".to_string()
+                })?
+                .to_string();
+            let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
+                "wire/discover-lanes: CHRONISTA_HUB_ADDR 未設定（federation 無効）".to_string()
+            })?;
+            let lanes = crate::daemon::hub_client::federate_discover_lanes(&hub_addr, &world)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "status": "ok", "world": world, "lanes": lanes }));
+        }
         let store = state.wiremsg_store.as_ref().ok_or_else(|| {
             "wire store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
         })?;

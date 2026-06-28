@@ -908,11 +908,76 @@ pub async fn run_world(
         let wire_store = state.wiremsg_store.clone();
         let wire_notifier = state.wire_notifier.clone();
         let wire_notify = state.delivery_notify.clone();
+        // discovery（flow step 2）: lanes-query に応答するため lane_registry と hub_addr も capture。
+        let fed_lane_registry = world_cap.read().await.lane_registry_ref();
+        let fed_hub_addr = hub_addr.clone();
         let on_relay = move |inbound: crate::daemon::hub_client::RelayInbound| {
             let store = wire_store.clone();
             let notifier = wire_notifier.clone();
             let notify = wire_notify.clone();
+            let lane_registry = fed_lane_registry.clone();
+            let hub_addr = fed_hub_addr.clone();
             async move {
+                // envelope の kind で分岐: wire（既定 = メッセージ配送）/ lanes-query（discovery 要求）。
+                let kind = inbound
+                    .payload
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("wire");
+                if kind == "lanes-query" {
+                    // discovery: 自分の lane を集めて reply_to（送信元の一時 wld_id）へ lanes-reply を
+                    // relay で返す（片方向 relay × 2 で request-response を創発）。
+                    let Some(reply_to) = inbound.payload.get("reply_to").and_then(|v| v.as_str())
+                    else {
+                        tracing::warn!("lanes-query に reply_to が無い — drop");
+                        return;
+                    };
+                    let request_id = inbound
+                        .payload
+                        .get("request_id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    // lane_registry（project_path → Vec<LaneInfo>）を flatten。discovery は未認証の
+                    // 相手にも返り得る（federation auth は当面 permissive）ため、**allow-list で
+                    // {address, kind, name, state} だけ**に絞る。LaneInfo の cwd（FS パス）/
+                    // performer_status（git 状態）/ pid 等の sensitive field は漏らさない（露出最小化）。
+                    // 本丸の「誰が discover できるか」の gate は S3 auth（Creo ID）で別途。
+                    let lanes: Vec<serde_json::Value> = {
+                        let reg = lane_registry.read().await;
+                        reg.values()
+                            .flatten()
+                            .filter_map(|l| serde_json::to_value(l).ok())
+                            .map(|v| {
+                                serde_json::json!({
+                                    "address": v.get("address"),
+                                    "kind": v.get("kind"),
+                                    "name": v.get("name"),
+                                    "state": v.get("state"),
+                                })
+                            })
+                            .collect()
+                    };
+                    let n = lanes.len();
+                    let reply = serde_json::json!({
+                        "kind": "lanes-reply",
+                        "request_id": request_id,
+                        "lanes": lanes,
+                    });
+                    let from_label = crate::daemon::hub_client::resolve_handle(None);
+                    match crate::daemon::hub_client::relay_send_to_wld(
+                        &hub_addr,
+                        reply_to,
+                        &from_label,
+                        &reply,
+                    )
+                    .await
+                    {
+                        Ok(_) => tracing::info!("lanes-query に応答: {n} lanes → {reply_to}"),
+                        Err(e) => tracing::warn!("lanes-reply 返信に失敗（to={reply_to}）: {e}"),
+                    }
+                    return;
+                }
+                // wire メッセージ → ローカル中央 store へ inject（flow ⑤）。
                 let Some(store) = store else {
                     tracing::warn!(
                         from = %inbound.from,
