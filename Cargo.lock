@@ -1387,9 +1387,9 @@ checksum = "cb6b41dc066e3a08b96b5b2201b6fc4f033170fabf7cb389c4904345132275ec"
 
 [[package]]
 name = "club-unison"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bf0de618b1110189463d588d4ee70f91cafcc6bfe59b7aabe543bf33b4ad372"
+checksum = "86cae03c3fa6f58329f692da6ffe0b6d10a1e9d659897c1dbd9c7f0e264722bf"
 dependencies = [
  "anyhow",
  "async-stream",

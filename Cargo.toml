@@ -54,7 +54,10 @@ tokio-stream = "0.1"
 # 同じ ALPN を喋る必要があり、 ALPN は 1.3.0 から。 server API (QuicServer/with_identity) は非破壊。
 # 1.4.0: connection-level auth primitive (mechanism/policy 分離、 verifier/principal)。 federation
 # (ADR-020 S1 cert / S3 discovery auth) の前提。 auth は opt-in (connect_with_credential)、 既存 API 非破壊。
-unison = { package = "club-unison", version = "1.4.0" }
+# 1.5.0 (federation S4 relay で bump): server-initiated stream primitive
+# (`register_server_channel` / `open_server_stream`)。 hub の relay floor (source→target を
+# 片方向 forward) が依存。 VP の dialer + target inbound (③) がこれを使う。 既存 API 非破壊 (additive)。
+unison = { package = "club-unison", version = "1.5.0" }
 
 # Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
 # `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:
