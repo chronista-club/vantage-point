@@ -109,12 +109,14 @@ async fn run_hub_federation_resident_relay_target() {
 
     // 本番 daemon（process/server.rs）と同じ常駐セッションを起動。
     let shutdown = CancellationToken::new();
+    let status = hub_client::HubFederationStatus::new();
     let driver = tokio::spawn(hub_client::run_hub_federation(
         addr.clone(),
         target_wld.to_string(),
         vec![],
         target_handle.to_string(),
         "VP resident target".to_string(),
+        status.clone(),
         shutdown.clone(),
     ));
 
@@ -141,6 +143,13 @@ async fn run_hub_federation_resident_relay_target() {
     assert!(
         seen,
         "常駐 target が registry に現れなかった（run_hub_federation の register 未完）"
+    );
+
+    // register 成功 → status は Connected（/api/health で vp-app に出る値）。
+    assert_eq!(
+        status.get(),
+        hub_client::HubFederationState::Connected,
+        "run_hub_federation の status が Connected に遷移していない"
     );
 
     // 常駐 target は relay registry にも居るはず → established を返せば relay target として live。

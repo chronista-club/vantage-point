@@ -64,6 +64,11 @@ pub(crate) struct AppState {
     pub world: Option<Arc<RwLock<ProcessManagerCapability>>>,
     /// Update capability for version checking (optional, only for world mode)
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
+    /// chronista-hub federation の接続状態（World mode のみ更新、`/api/health` で vp-app に返す）。
+    ///
+    /// World mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
+    /// 遷移ごとに更新する。SP / test mode では `Disabled` のまま（federation は TheWorld のみ）。
+    pub hub_status: crate::daemon::hub_client::HubFederationStatus,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
@@ -477,6 +482,7 @@ pub(crate) async fn build_test_app_state(
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
         world,
         update: None,
+        hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port: 0,

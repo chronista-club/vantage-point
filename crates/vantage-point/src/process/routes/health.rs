@@ -36,6 +36,10 @@ pub struct HealthResponse {
     /// 配下の Stand（Capability）ステータス
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stands: Option<std::collections::HashMap<String, StandStatus>>,
+    /// chronista-hub federation の接続状態
+    /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`）。
+    /// World mode のみ意味を持つ（SP mode は常に `"disabled"`）。vp-app が world status 横に表示。
+    pub hub: &'static str,
 }
 
 // L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
@@ -186,6 +190,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         terminal_token: token,
         started_at: state.started_at.clone(),
         stands,
+        hub: state.hub_status.get().as_str(),
     })
 }
 
@@ -468,6 +473,13 @@ mod tests {
         assert!(
             body.get("stands").is_some(),
             "stands field 必須 (= Stand status map)"
+        );
+        // hub federation 状態（test AppState は HubFederationStatus::new() = Disabled）。
+        // field 名変更 / as_str() パス破壊の regression net。
+        assert_eq!(
+            body.get("hub").and_then(|v| v.as_str()),
+            Some("disabled"),
+            "hub field 必須 (SP/test mode は Disabled = \"disabled\")"
         );
     }
 }
