@@ -91,6 +91,19 @@ impl PtySlot {
             );
         }
 
+        // TERM 補正: vp-app を GUI / launchd 経由で起動 (= 再起動後の LaunchAgent 自動起動) すると、
+        // daemon プロセスは端末非接続で TERM を持たない。 echoes stand の `tmux new-session -A`
+        // (attach 付き) は terminfo 引きに TERM を要求するため、 TERM 不在だと
+        // "open terminal failed: terminal does not support clear" で即 exit → stand spawn が
+        // 800ms 以内に死に lane が即 Dead 化 → Echoes コンソールが出ない。 PATH 補正 (#498) と
+        // 同じ launchd-env-stripping の双子で、 plist EnvironmentVariables も PATH だけ焼いて
+        // TERM を取りこぼしていた。 この PTY の出力は vp-app の xterm.js が描画する (echoes script
+        // も `terminal-overrides ',xterm-256color:Tc'` を前提) ので、 TERM=xterm-256color を
+        // 既定とする。 caller が env で明示注入した場合はそれを尊重する。
+        if !env.iter().any(|(k, _)| k == "TERM") {
+            cmd.env("TERM", "xterm-256color");
+        }
+
         // 子プロセスを起動（ゾンビ防止のためハンドルを保持する）
         let child = pair.slave.spawn_command(cmd)?;
         let pid = child.process_id().unwrap_or(0);
@@ -293,6 +306,46 @@ mod tests {
         }
 
         assert!(found, "PTY 出力に HELLO_PTY_SLOT が含まれなかった");
+    }
+
+    /// 回帰 (console-blackout root cause): PTY child は親プロセスの TERM 有無に依らず
+    /// TERM=xterm-256color を受け取る。 launchd 自動起動の daemon は端末非接続で TERM を
+    /// 継承しないため、 TERM 不在だと echoes の `tmux new-session -A` が "open terminal
+    /// failed" で即死 → lane spawn 全滅 → console が出ない。 PtySlot が TERM 既定を注入する
+    /// ことで daemon の TERM 有無に依らず stand が描画可能になることを pin する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_pty_spawn_injects_term_default() {
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        // 子の $TERM を marker 付きで 1 発出力して即終了する非対話 shell。 env 未指定 (&[]) なので
+        // PtySlot が TERM 既定を注入するはず。 親の TERM 値に依らず子側の値だけを検証できる。
+        let args = vec![
+            "-c".to_string(),
+            "printf 'VPTERM[%s]\\n' \"$TERM\"; sleep 0.2".to_string(),
+        ];
+        let (_slot, mut rx) =
+            PtySlot::spawn(&cwd, "/bin/sh", &args, &[], 80, 24).expect("PTY spawn に失敗");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut buf = String::new();
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+                Ok(Ok(data)) => {
+                    buf.push_str(&String::from_utf8_lossy(&data));
+                    if buf.contains("VPTERM[") && buf.contains(']') {
+                        break;
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+
+        assert!(
+            buf.contains("VPTERM[xterm-256color]"),
+            "PTY child の TERM が xterm-256color でない: 受信={:?}",
+            buf
+        );
     }
 
     #[tokio::test]
