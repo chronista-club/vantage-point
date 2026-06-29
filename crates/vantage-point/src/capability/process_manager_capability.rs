@@ -1469,14 +1469,23 @@ impl ProcessManagerCapability {
             }
         }
 
-        // L0 finale: SP graceful shutdown を QUIC `shutdown` dispatch で (旧 POST /api/shutdown を置換)。
-        // best-effort: 失敗/無応答でも registry からは remove する (SP は shutdown_token cancel で
-        // graceful 停止、 即 QUIC server を畳むため応答が返らない事もある)。 cli/restart-all と共有 helper。
-        if !crate::discovery::send_sp_shutdown(running.port).await {
+        // SP-portless: graceful shutdown を World process-proxy "shutdown" 経由で (World 内 loopback、
+        // reverse-routing → SP control channel → dispatch_process_method "shutdown")。 best-effort:
+        // 失敗/無応答でも registry からは remove する (SP は shutdown_token cancel で graceful 停止、
+        // 即 control channel を畳むため応答が返らない事もある)。 cli/restart-all と uniform な transport。
+        if let Err(e) = crate::commands::process_client::world_process_request(
+            crate::cli::WORLD_PORT,
+            &running.project_path.to_string_lossy(),
+            "shutdown",
+            serde_json::json!({}),
+        )
+        .await
+        {
             tracing::warn!(
-                "QUIC shutdown 無応答/失敗 '{}' (port={}) — best-effort、 registry からは remove",
+                "process-proxy shutdown 無応答/失敗 '{}' (port={}): {} — best-effort、 registry からは remove",
                 project_name,
-                running.port
+                running.port,
+                e
             );
         }
 

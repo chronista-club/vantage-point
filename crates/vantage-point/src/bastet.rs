@@ -353,7 +353,9 @@ impl Bastet {
     /// で「接続 1 サイクル = enter→control loop→exit」を表し、disconnect は `Reborn` で再接続する。
     ///
     /// lane data は `ProcessManagerCapability` の Arc を in-process 直読み（QUIC self-loop なし、
-    /// `build_world_lanes` 共有で CLI と並び一致）。switch_lane は SP 越境なので QUIC。
+    /// `build_world_lanes` 共有で CLI と並び一致）。switch_lane は L0 portless で SP が listen
+    /// しなくなったため World :32000 の process-proxy ask 経由で forward する（daemon = World への
+    /// self-loop QUIC だが、ボタン押下時のみの低頻度なので lane poll と違い cache 不要）。
     /// `shutdown` の子 token で World/daemon の shutdown chain に enclose する。
     ///
     /// ⚠️ CoreMIDI 物理 port は単一 owner。daemon 常駐中は CLI `vp midi roto control` が

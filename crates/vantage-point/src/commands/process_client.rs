@@ -5,8 +5,6 @@
 //! - `world_process_request` / `_blocking`: World process-proxy ask の core (async / sync 版)。
 //! - `resolve_project_path_from_target` / `resolve_pane_via_world`: target → project_path /
 //!   tmux pane 解決。
-//! - `send_process_message`: Unison(QUIC) "process" チャネルへの ProcessMessage 送信
-//!   （MCP の `process_call`/`quic_call` 相当、sync CLI 用。PR1a で switch_lane が移行）。
 
 use anyhow::{Result, bail};
 
@@ -18,71 +16,9 @@ use crate::resolve::{self, ResolvedTarget};
 // `world_process_request_blocking` / `resolve_pane_via_world` / `resolve_project_path_from_target`
 // を使う (SP port 解決も不要)。
 
-/// CLI 用: local SP の Unison(QUIC) "process" チャネルに ProcessMessage を 1 つ送る同期 helper。
-///
-/// MCP の `process_call`(mcp.rs) の CLI 同期版。sync CLI から呼べるよう内部で tokio runtime を
-/// 建てて block_on する。`method` は `unison_server.rs:536-541` の dispatch arm 名
-/// （"switch_lane" / "show" / "clear" 等）、`msg` はそのまま JSON 化されて payload になる。
-/// caller は method と `ProcessMessage` variant が dispatch arm と一致することを保証する。
-///
-/// PR1a で switch_lane を HTTP `/api/show` から Unison に移行する入口。
-/// PR1b (ROTO routing) 等、CLI から QUIC で ProcessMessage を投げる経路で再利用する。
-pub fn send_process_message(
-    port: u16,
-    method: &str,
-    msg: &crate::protocol::ProcessMessage,
-) -> Result<()> {
-    // QUIC(rustls) は CryptoProvider の install が前提（install 済みなら no-op）
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    let payload = serde_json::to_value(msg)?;
-    // QUIC_PORT_OFFSET = 0 のため SP の HTTP port と同一 UDP port で QUIC が listen する。
-    let addr = format!("[::1]:{}", port);
-
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| anyhow::anyhow!("tokio runtime build failed: {}", e))?;
-    rt.block_on(async move {
-        // connect+open+request 全体を 10s で bound（旧 HTTP の reqwest timeout 10s と等価)。
-        // unison default request timeout は 30s、 connect の QUIC handshake は無 bound なので、
-        // SP が wedge した場合に CLI が無言で長時間刺さるのを防ぐ。
-        let work = async {
-            let transport = unison::network::quic::QuicClient::builder()
-                .trust_anchors(unison::network::TrustAnchors::SkipVerification)
-                .build()
-                .map_err(|e| anyhow::anyhow!("QUIC client build failed: {}", e))?;
-            let client = unison::ProtocolClient::new(transport);
-            client
-                .connect(&addr)
-                .await
-                .map_err(|e| anyhow::anyhow!("QUIC connect {} 失敗: {}", addr, e))?;
-            let channel = client
-                .open_channel("process")
-                .await
-                .map_err(|e| anyhow::anyhow!("open process channel 失敗: {}", e))?;
-            let resp: serde_json::Value = channel
-                .request::<serde_json::Value, serde_json::Value>(method, &payload)
-                .await
-                .map_err(|e| anyhow::anyhow!("QUIC process.{} 失敗: {}", method, e))?;
-            // unison は専用 error frame を持たず、 server Err は成功フレームに {"error":..} を
-            // 詰めて返す（mcp.rs quic_call_with_timeout と同じ扱い）。素通しせず Err に変換する。
-            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                bail!("SP error (process.{}): {}", method, err);
-            }
-            Ok::<(), anyhow::Error>(())
-        };
-        match tokio::time::timeout(std::time::Duration::from_secs(10), work).await {
-            Ok(result) => result,
-            Err(_) => bail!(
-                "SP ({}) QUIC process.{} が 10s 以内に応答しませんでした",
-                addr,
-                method
-            ),
-        }
-    })
-}
-
 /// F6 (doc 27 §3.4.5/§6): World :32000 の "process-proxy" channel 経由で SP process method を
-/// ask する helper。 旧来の SP 直結 (`send_process_message` の port 直結) を World 経由の
-/// reverse-route に移す CLI 用入口。 World が project_path から path_key を正規化して当該 SP の
+/// ask する helper。 L0 portless 後の CLI → SP 操作の唯一の入口 (旧来の SP 直結 port QUIC は撤去)。
+/// World が project_path から path_key を正規化して当該 SP の
 /// "control" channel を逆引きし、 dispatch_process_method へ forward する (SP 直結 HTTP/QUIC を撤去)。
 /// 戻り値は SP の応答 JSON (unison error frame `{"error":..}` は Err に変換)。
 ///
@@ -150,7 +86,7 @@ pub async fn world_process_request_with_timeout(
             .await
             .map_err(|e| anyhow::anyhow!("process-proxy {} 失敗: {}", method, e))?;
         // unison は専用 error frame を持たず、 server Err を成功フレームに {"error":..} で
-        // 詰めて返す（send_process_message / mcp.rs quic_call と同じ扱い）。 Err に変換する。
+        // 詰めて返す（mcp.rs quic_call と同じ扱い）。 Err に変換する。
         if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
             bail!("World process-proxy error ({}): {}", method, err);
         }
