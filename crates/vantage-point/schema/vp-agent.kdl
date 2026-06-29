@@ -1,0 +1,89 @@
+// Agent (Claude / MCP) action space — SSOT。
+// rebuild Epic L2 第二手（doc 27 §5-1 "MCP = World topic への thin generated bridge" /
+// §5-2 "KDL = agent action space の SSOT"）。
+//
+// この KDL を唯一の真実として VP-local codegen が rmcp tool を生成する:
+//   - crates/vantage-point/src/generated/agent_tools.rs
+//       = params struct (#[derive(Serialize, Deserialize, JsonSchema)])
+//       + #[tool_router(router = agent_tool_router)] impl VantageMcp { #[tool] ... }
+//
+// 生成は `cargo test -p vantage-point --test agent_tools_codegen` で走る
+// (tests/agent_tools_codegen.rs)。 description は手書き mcp.rs と逐語一致させ、
+// agent から見える tool surface を移行前後で不変に保つ（transparent migration）。
+//
+// 語彙:
+//   tools "<ns>" version="x" { group ... }
+//   group "<name>" forward="quic-process" { tool ... }
+//       forward = この group の全 tool の転送機構。
+//       "quic-process" = self.quic_call(method, payload) で SP "process" channel へ。
+//   tool "<name>" method="<sp-method>" fallback="<text>" body="custom" {
+//       description "<agent 向け doc>"
+//       inject "<key>" source="self_lane"   // payload に注入する非-param 値
+//       field "<key>" type="..." optional=#true description="..."
+//   }
+//       method   省略時は tool 名 = SP method 名。
+//       fallback resp の pretty-print 失敗時に返す文字列（既定 "null"）。
+//       body="custom" → wrapper だけ生成し本体は手書き self.<name>_impl(params) に委譲
+//                       （宣言に落ちない imperative ロジック専用: outcome 変換 / timeout call）。
+
+tools "agent" version="1.0.0" {
+    // group "wire": inter-agent messaging（wiremsg）+ delegation（durable cross-agent future）。
+    // 全 tool が self.quic_call(method, payload) で SP "process" channel に転送し、
+    // pretty-printed JSON を返す薄い bridge。from/agent/requester は MCP param ではなく
+    // self_lane（caller の wire address）から inject する。
+    group "wire" forward="quic-process" {
+        tool "wire_send" method="wire_send" fallback="wire message sent" {
+            description "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication. Set body.category to one of {command, event, state, data, log} to control delivery policy: 'command' messages are re-nudged to the recipient until they wire_ack; omitted category defaults to 'event' (no nudge)."
+            inject "from" source="self_lane"
+            field "to" type="array<string>" description="Destination agent addresses (e.g. ['agent@vantage-point', 'agent@vantage-point/chore']). At least one recipient is expected for a new thread."
+            field "body" type="json-object" description="Message body as a JSON object."
+            field "reply_to" type="string" optional=#true description="If set, this message is a reply within the existing thread of the given message ID (a wire message id returned by a previous wire_send / wire_recv). If omitted, a new thread is started."
+        }
+
+        // body="custom": timeout clamp + quic_call_with_timeout（server が最大 timeout 秒
+        // ブロックするため outer timeout に +5s 余裕が要る）が宣言に落ちないため手書きに委譲。
+        tool "wire_recv" body="custom" fallback="null" {
+            description "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`. A thread is identified by its root message id (follow `prev` to the message whose `prev` is null). Reading advances this agent's read cursor so messages are not re-delivered. This is the PRIMARY channel for inter-agent communication."
+            field "timeout" type="u64" optional=#true description="Timeout in seconds to wait for unread messages (default: 5, max: 30). Returns immediately if unread messages exist."
+        }
+
+        tool "wire_thread" method="wire_thread" fallback="null" {
+            description "Return the ancestor-chain (lineage from the thread root down to the given message) of a wire message. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`, and the array is ordered root-first (chronological). This is READ-ONLY: it does NOT advance the wire_recv read cursor, so it is safe to call repeatedly. Use it to fetch backlog / context when you join a thread partway through (e.g. after receiving a reply via wire_recv and needing the messages that led up to it). It returns only the lineage of the given message, not the full branch tree; since each message carries its `prev`, the result collapses cleanly into a linear (or tree) view."
+            field "message_id" type="string" description="The wire message id (returned by a previous wire_send / wire_recv) to trace ancestors from."
+        }
+
+        // method != tool 名: SP 側 method は wire_unread_count。
+        tool "wire_inbox" method="wire_unread_count" fallback="null" {
+            description "Check this agent's unread wire message inventory WITHOUT reading them: returns `total` (unread count) and `by_thread` (root message id → unread count). This is READ-ONLY: unlike wire_recv it does NOT advance the read cursor, so it is safe to call repeatedly to decide whether a wire_recv is worth doing. Use this at natural boundaries (task start/end) to avoid leaving replies unread."
+            inject "agent" source="self_lane"
+        }
+
+        tool "wire_ack" method="wire_ack" fallback="null" {
+            description "Acknowledge (ack) a wire message AFTER you have actually handled it. The ack ledger is independent of the wire_recv read cursor: receiving a command via wire_recv does NOT count as handling it — an unacked command stays eligible for re-notification by the delivery loop. Returns `acked: true` for a new ack, `false` if this agent already acked the message (idempotent). Use the `id` field of a message returned by wire_recv."
+            inject "agent" source="self_lane"
+            field "message_id" type="string" description="The wire message id (returned by wire_recv) to acknowledge. Ack the message after you have actually handled it."
+        }
+
+        tool "delegate" method="delegate" fallback="delegated" {
+            description "Delegate a task to another agent lane, then PARK your turn (do NOT spin-wait). Returns a delegation id. The doer is woken (tmux send-keys) with the task and asked to report via complete(); when they do, YOU are woken with the outcome so you can resume. This is the async-future primitive for 'A asks B to do D, B finishes, A continues' WITHOUT a human relaying messages. After calling delegate, finish your turn — you will be re-invoked with the result. Use this when you hit a sub-task that another lane should own and you are blocked on its result. (doc 28 §4)"
+            inject "requester" source="self_lane"
+            field "doer" type="string" description="The doer lane to delegate to, as an agent address (e.g. 'agent@vantage-point/feat-api' for a performer, or 'agent@vantage-point' for the conductor). The doer is woken (tmux) with the task and instructed to report back via complete()."
+            field "task" type="string" description="The task to delegate, written as a SELF-CONTAINED instruction: the doer is woken with this text and may have no other context (state what to do, expected result, and any minimal context needed)."
+        }
+
+        // body="custom": outcome string → typed {kind, result|reason|question} 変換 +
+        // validation が宣言に落ちないため手書きに委譲。
+        tool "complete" body="custom" fallback="completed" {
+            description "Report the outcome of a task that was delegated TO you (using the delegation id from the wake message). outcome='done' (with a `result` summary) or 'failed' (with a `result` reason) RESOLVES the requester's awaited future — they are woken (tmux send-keys) and resume. outcome='needs_input' (with a `result` question) instead PAUSES it: the requester is woken with your question and answers via respond(), which re-wakes you to continue. (doc 28 §4)"
+            field "id" type="string" description="The delegation id returned by delegate() (e.g. 'dlg-...'), passed to you in the delegation wake message. This is the future handle you are resolving."
+            field "outcome" type="string" description="Outcome kind: 'done' if the task succeeded, 'failed' if it could not be completed, or 'needs_input' if you need an answer from the requester before you can proceed (the requester is woken with your question and replies via respond(), which re-wakes you)."
+            field "result" type="string" description="For outcome='done': a summary of the result to hand back to the requester (who resumes their paused work with this). For outcome='failed': the reason it could not be completed. For outcome='needs_input': the question you need the requester to answer."
+        }
+
+        tool "respond" method="respond" fallback="responded" {
+            description "Answer a question that a doer raised via complete(outcome='needs_input') on a task you delegated. You received the question in a wake message with its delegation id. This re-wakes the doer (tmux send-keys) with your answer and resumes their work; the future loops back to awaiting their next outcome. After calling respond, finish your turn — you will be woken again when they complete. (doc 28 §4)"
+            field "id" type="string" description="The delegation id (e.g. 'dlg-...') the doer asked a question about via complete(outcome='needs_input'). You received this question in a wake message."
+            field "answer" type="string" description="Your answer to the doer's question. The doer is re-woken with this answer and resumes the delegated task."
+        }
+    }
+}

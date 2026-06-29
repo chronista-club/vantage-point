@@ -20,6 +20,15 @@ use tokio::sync::Mutex;
 
 use crate::protocol::ProcessMessage;
 
+// rebuild Epic L2 第二手（doc 27 §5-1/§5-2）: wire/delegation family の MCP tool は
+// schema/vp-agent.kdl を SSOT に生成（cargo test -p vantage-point --test agent_tools_codegen）。
+// 生成された #[tool_router(router = agent_tool_router)] impl VantageMcp を constructor で
+// 手書き router と `Self::tool_router() + Self::agent_tool_router()` で合流する。
+// complete / wire_recv の imperative 本体だけは下の *_impl に手書きで残し、生成 wrapper が委譲する。
+#[path = "generated/agent_tools.rs"]
+mod agent_tools_generated;
+use agent_tools_generated::{CompleteParams, WireRecvParams};
+
 /// Parameters for the show tool
 ///
 /// ## doc 19 PP Canvas Stack Model (2026-05-27)
@@ -89,123 +98,6 @@ pub struct ClosePaneParams {
     /// Pane ID to close
     #[schemars(description = "ID of the pane to close")]
     pub pane_id: String,
-}
-
-/// Parameters for wire_send tool (Phase A ①: threaded wiremsg inbox)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WireSendParams {
-    /// 宛先 agent address 群
-    #[schemars(
-        description = "Destination agent addresses (e.g. ['agent@vantage-point', 'agent@vantage-point/chore']). At least one recipient is expected for a new thread."
-    )]
-    pub to: Vec<String>,
-
-    /// メッセージ本文（JSON object）
-    //
-    // `serde_json::Value` のまま JsonSchema を導出すると type 無しの schema になり、
-    // MCP client が body を string と解釈して JSON 文字列で送ってしまう (= SurrealDB
-    // の `wire_messages.body TYPE object` で reject される)。 `with` で object 型の
-    // schema を明示し、 client に object を送らせる。 Rust 型は Value のまま保持し、
-    // string で来た場合は handle_wire_send の coerce_wire_body が救済する。
-    #[schemars(
-        description = "Message body as a JSON object.",
-        with = "std::collections::HashMap<String, serde_json::Value>"
-    )]
-    pub body: serde_json::Value,
-
-    /// 返信先メッセージID（指定すると既存 thread への reply になる）
-    #[schemars(
-        description = "If set, this message is a reply within the existing thread of the given message ID (a wire message id returned by a previous wire_send / wire_recv). If omitted, a new thread is started."
-    )]
-    pub reply_to: Option<String>,
-}
-
-/// Parameters for wire_recv tool (Phase A ①: threaded wiremsg inbox)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WireRecvParams {
-    /// 受信タイムアウト（秒）
-    #[schemars(
-        description = "Timeout in seconds to wait for unread messages (default: 5, max: 30). Returns immediately if unread messages exist."
-    )]
-    pub timeout: Option<u64>,
-}
-
-/// Parameters for wire_inbox tool (refactor R1 PR-B: 在庫確認、 cursor 非破壊)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WireInboxParams {}
-
-/// Parameters for wire_thread tool (R2: ancestor-chain 取得)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WireThreadParams {
-    /// 系譜を辿る起点となる wire message id
-    #[schemars(
-        description = "The wire message id (returned by a previous wire_send / wire_recv) to trace ancestors from."
-    )]
-    pub message_id: String,
-}
-
-/// Parameters for wire_ack tool (R2-a: per-message ack 台帳、 決定 D3)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WireAckParams {
-    /// ack する wire message id
-    #[schemars(
-        description = "The wire message id (returned by wire_recv) to acknowledge. Ack the message after you have actually handled it."
-    )]
-    pub message_id: String,
-}
-
-/// Parameters for delegate tool (doc 28 §4: durable cross-agent future / v1 ローカル atom)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DelegateParams {
-    /// 委譲先 doer の agent address
-    #[schemars(
-        description = "The doer lane to delegate to, as an agent address (e.g. 'agent@vantage-point/feat-api' for a performer, or 'agent@vantage-point' for the conductor). The doer is woken (tmux) with the task and instructed to report back via complete()."
-    )]
-    pub doer: String,
-
-    /// 委譲タスクの内容
-    #[schemars(
-        description = "The task to delegate, written as a SELF-CONTAINED instruction: the doer is woken with this text and may have no other context (state what to do, expected result, and any minimal context needed)."
-    )]
-    pub task: String,
-}
-
-/// Parameters for complete tool (doc 28 §4)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct CompleteParams {
-    /// 完了する委譲 id（delegate が返した future handle）
-    #[schemars(
-        description = "The delegation id returned by delegate() (e.g. 'dlg-...'), passed to you in the delegation wake message. This is the future handle you are resolving."
-    )]
-    pub id: String,
-
-    /// Outcome 種別: done / failed / needs_input
-    #[schemars(
-        description = "Outcome kind: 'done' if the task succeeded, 'failed' if it could not be completed, or 'needs_input' if you need an answer from the requester before you can proceed (the requester is woken with your question and replies via respond(), which re-wakes you)."
-    )]
-    pub outcome: String,
-
-    /// 結果（done）/ 理由（failed）/ 質問（needs_input）
-    #[schemars(
-        description = "For outcome='done': a summary of the result to hand back to the requester (who resumes their paused work with this). For outcome='failed': the reason it could not be completed. For outcome='needs_input': the question you need the requester to answer."
-    )]
-    pub result: String,
-}
-
-/// Parameters for respond tool (doc 28 §4 / 動詞 3: NeedsInput=Reborn への回答)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct RespondParams {
-    /// 回答する委譲 id（doer が needs_input を返したもの）
-    #[schemars(
-        description = "The delegation id (e.g. 'dlg-...') the doer asked a question about via complete(outcome='needs_input'). You received this question in a wake message."
-    )]
-    pub id: String,
-
-    /// doer の質問への回答
-    #[schemars(
-        description = "Your answer to the doer's question. The doer is re-woken with this answer and resumes the delegated task."
-    )]
-    pub answer: String,
 }
 
 /// Parameters for the watch_file tool
@@ -785,7 +677,7 @@ impl Clone for VantageMcp {
             process_channel: self.process_channel.clone(),
             project_path: self.project_path.clone(),
             self_lane: self.self_lane.clone(),
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::agent_tool_router(),
         }
     }
 }
@@ -800,7 +692,7 @@ impl VantageMcp {
             process_channel: Arc::new(Mutex::new(None)),
             project_path: Arc::new(project_path),
             self_lane: SelfLane::detect(),
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::agent_tool_router(),
         }
     }
 
@@ -2922,45 +2814,17 @@ if bestId > 0 { print(bestId) }
         )]))
     }
 
-    // =========================================================================
-    // wiremsg — threaded inbox (Phase A ①、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
+    // ========================================================================
+    // wiremsg / delegation の imperative helper（生成 tool wrapper から委譲）。
     //
-    // agent 間メッセージングの正規 channel (threading 対応 inbox)。
-    // 旧 msgbox (`msg_*`) は wiremsg 再設計 R5-1 で MCP tool / QUIC handler を撤去済み。
-    // wire_send は新規 thread の root を作るか、 reply_to 指定で既存 thread に返信する。
-    // wire_recv は呼び出し agent の参加 thread の未読 message を long-poll で取得する。
-    // =========================================================================
+    // tool 定義本体は schema/vp-agent.kdl → generated/agent_tools.rs に移行済
+    // （rebuild Epic L2 第二手、doc 27 §5）。ここに残すのは「宣言に落ちない」2 本だけ:
+    //   - wire_recv: server が最大 timeout 秒ブロックするため outer timeout に +5s 余裕が要る（VP-163）。
+    //   - complete : outcome string → typed {kind, ...} の wire shape 変換 + validation。
+    // ========================================================================
 
-    /// Send a wiremsg (new thread, or a reply when reply_to is set)
-    #[tool(
-        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication. Set body.category to one of {command, event, state, data, log} to control delivery policy: 'command' messages are re-nudged to the recipient until they wire_ack; omitted category defaults to 'event' (no nudge)."
-    )]
-    async fn wire_send(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireSendParams>,
-    ) -> Result<CallToolResult, McpError> {
-        // from は self_lane から導出 (conductor は "agent"、 performer は "agent@<parent>/<name>")
-        let from = self.self_lane.from_address()?;
-        let payload = serde_json::json!({
-            "from": from,
-            "to": params.to,
-            "body": params.body,
-            "reply_to": params.reply_to,
-        });
-        let resp = self.quic_call("wire_send", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "wire message sent".to_string()),
-        )]))
-    }
-
-    /// Receive unread wiremsg messages from this agent's threads
-    #[tool(
-        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`. A thread is identified by its root message id (follow `prev` to the message whose `prev` is null). Reading advances this agent's read cursor so messages are not re-delivered. This is the PRIMARY channel for inter-agent communication."
-    )]
-    async fn wire_recv(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireRecvParams>,
-    ) -> Result<CallToolResult, McpError> {
+    /// wire_recv の本体（生成 tool wrapper `wire_recv` から委譲）。
+    async fn wire_recv_impl(&self, params: WireRecvParams) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
         // agent は wire_send の from と同じ self_lane 由来 address
         let agent = self.self_lane.from_address()?;
@@ -2982,99 +2846,8 @@ if bestId > 0 { print(bestId) }
         )]))
     }
 
-    /// Trace the ancestor-chain (lineage) of a wire message
-    #[tool(
-        description = "Return the ancestor-chain (lineage from the thread root down to the given message) of a wire message. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`, and the array is ordered root-first (chronological). This is READ-ONLY: it does NOT advance the wire_recv read cursor, so it is safe to call repeatedly. Use it to fetch backlog / context when you join a thread partway through (e.g. after receiving a reply via wire_recv and needing the messages that led up to it). It returns only the lineage of the given message, not the full branch tree; since each message carries its `prev`, the result collapses cleanly into a linear (or tree) view."
-    )]
-    async fn wire_thread(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireThreadParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let payload = serde_json::json!({
-            "message_id": params.message_id,
-        });
-        let resp = self.quic_call("wire_thread", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
-    }
-
-    /// Check unread wire message counts WITHOUT consuming them (cursor-safe peek)
-    #[tool(
-        description = "Check this agent's unread wire message inventory WITHOUT reading them: returns `total` (unread count) and `by_thread` (root message id → unread count). This is READ-ONLY: unlike wire_recv it does NOT advance the read cursor, so it is safe to call repeatedly to decide whether a wire_recv is worth doing. Use this at natural boundaries (task start/end) to avoid leaving replies unread."
-    )]
-    async fn wire_inbox(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<WireInboxParams>,
-    ) -> Result<CallToolResult, McpError> {
-        // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
-        let agent = self.self_lane.from_address()?;
-        let payload = serde_json::json!({ "agent": agent });
-        let resp = self.quic_call("wire_unread_count", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
-    }
-
-    /// Acknowledge a wire message (per-message ack ledger, independent of the read cursor)
-    #[tool(
-        description = "Acknowledge (ack) a wire message AFTER you have actually handled it. The ack ledger is independent of the wire_recv read cursor: receiving a command via wire_recv does NOT count as handling it — an unacked command stays eligible for re-notification by the delivery loop. Returns `acked: true` for a new ack, `false` if this agent already acked the message (idempotent). Use the `id` field of a message returned by wire_recv."
-    )]
-    async fn wire_ack(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireAckParams>,
-    ) -> Result<CallToolResult, McpError> {
-        // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
-        let agent = self.self_lane.from_address()?;
-        let payload = serde_json::json!({
-            "message_id": params.message_id,
-            "agent": agent,
-        });
-        let resp = self.quic_call("wire_ack", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
-    }
-
-    // ========================================================================
-    // Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom。
-    // doc 28 §4 / design memo mem_1CcSQ6sxFPtm2mZw873VRp。
-    //
-    // delegate = A が B に委譲して PARK（ターンを終える）/ complete = B が完了報告して A を wake /
-    // respond = NeedsInput(Reborn) に A が回答して B を再 wake（Active へ loop）。
-    // park/resume は「ターン境界の park + event 駆動の session 再 invoke」で future の
-    // await/resolve を実装する（agent の block はスレッド block でなくターンの park）。
-    // ========================================================================
-
-    /// Delegate a task to another agent lane and park this turn (durable cross-agent future)
-    #[tool(
-        description = "Delegate a task to another agent lane, then PARK your turn (do NOT spin-wait). Returns a delegation id. The doer is woken (tmux send-keys) with the task and asked to report via complete(); when they do, YOU are woken with the outcome so you can resume. This is the async-future primitive for 'A asks B to do D, B finishes, A continues' WITHOUT a human relaying messages. After calling delegate, finish your turn — you will be re-invoked with the result. Use this when you hit a sub-task that another lane should own and you are blocked on its result. (doc 28 §4)"
-    )]
-    async fn delegate(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DelegateParams>,
-    ) -> Result<CallToolResult, McpError> {
-        // requester = この caller lane の wire address（wire_send の from と同経路で導出）。
-        let requester = self.self_lane.from_address()?;
-        let payload = serde_json::json!({
-            "doer": params.doer,
-            "task": params.task,
-            "requester": requester,
-        });
-        let resp = self.quic_call("delegate", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "delegated".to_string()),
-        )]))
-    }
-
-    /// Report the outcome of a delegated task (resolves or pauses the requester's awaited future)
-    #[tool(
-        description = "Report the outcome of a task that was delegated TO you (using the delegation id from the wake message). outcome='done' (with a `result` summary) or 'failed' (with a `result` reason) RESOLVES the requester's awaited future — they are woken (tmux send-keys) and resume. outcome='needs_input' (with a `result` question) instead PAUSES it: the requester is woken with your question and answers via respond(), which re-wakes you to continue. (doc 28 §4)"
-    )]
-    async fn complete(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CompleteParams>,
-    ) -> Result<CallToolResult, McpError> {
+    /// complete の本体（生成 tool wrapper `complete` から委譲、doc 28 §4）。
+    async fn complete_impl(&self, params: CompleteParams) -> Result<CallToolResult, McpError> {
         // outcome string → typed Outcome の wire shape（SP 側 `serde(tag="kind")` に写す）。
         let kind = params.outcome.trim().to_lowercase();
         let outcome = match kind.as_str() {
@@ -3095,21 +2868,6 @@ if bestId > 0 { print(bestId) }
         let resp = self.quic_call("complete", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "completed".to_string()),
-        )]))
-    }
-
-    /// Answer a doer's NeedsInput question (re-wakes the doer, loops the future back to Active)
-    #[tool(
-        description = "Answer a question that a doer raised via complete(outcome='needs_input') on a task you delegated. You received the question in a wake message with its delegation id. This re-wakes the doer (tmux send-keys) with your answer and resumes their work; the future loops back to awaiting their next outcome. After calling respond, finish your turn — you will be woken again when they complete. (doc 28 §4)"
-    )]
-    async fn respond(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<RespondParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let payload = serde_json::json!({ "id": params.id, "answer": params.answer });
-        let resp = self.quic_call("respond", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "responded".to_string()),
         )]))
     }
 
@@ -3266,7 +3024,11 @@ pub struct PortLayoutParams {
     pub slot: u16,
 }
 
-#[tool_handler]
+// router は combined router を持つ `self.tool_router` field を指す（new() で
+// `Self::tool_router() + Self::agent_tool_router()` を一度だけ構築）。
+// 既定の `#[tool_handler]` は `Self::tool_router()`（手書きのみ）を呼ぶため、
+// 生成 tool が list_tools/call_tool に乗らない（rebuild Epic L2 第二手の live バグ）。
+#[tool_handler(router = self.tool_router)]
 impl rmcp::ServerHandler for VantageMcp {
     fn get_info(&self) -> ServerInfo {
         // rmcp 1.6 で ServerInfo は #[non_exhaustive] になり struct expression (= `ServerInfo { ... ..Default::default() }`)
@@ -3456,6 +3218,35 @@ fn rpc_response_error(resp: &serde_json::Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rebuild Epic L2 第二手: 生成 router（agent_tool_router）が手書き router と合流し、
+    /// wire/delegation 8 tool が登録され、かつ手書き tool も消えていないことを検証する。
+    /// 生成コードの forward 本体は手書きと byte-equivalent なので、runtime のリスクは
+    /// 「rmcp router 合成での tool 登録」に集約される — それをここで直接 assert する。
+    #[test]
+    fn agent_tool_router_merges_wire_family() {
+        let router = VantageMcp::tool_router() + VantageMcp::agent_tool_router();
+        // 生成された wire/delegation 8 tool が登録されていること。
+        for name in [
+            "wire_send",
+            "wire_recv",
+            "wire_thread",
+            "wire_inbox",
+            "wire_ack",
+            "delegate",
+            "complete",
+            "respond",
+        ] {
+            assert!(
+                router.has_route(name),
+                "生成 tool {name} が登録されていない"
+            );
+        }
+        // 手書き router の代表 tool が合成で失われていないこと。
+        for name in ["show", "switch_lane", "tmux_capture", "port_show"] {
+            assert!(router.has_route(name), "手書き tool {name} が失われた");
+        }
+    }
 
     #[test]
     fn test_self_lane_from_address() {
