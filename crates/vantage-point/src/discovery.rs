@@ -151,40 +151,6 @@ async fn query_world() -> Option<Vec<ProcessInfo>> {
     )
 }
 
-/// 特定ポートの Process から terminal_token を取得する。
-///
-/// L0 finale: 旧 HTTP `/api/health` を撤去し、 SP の QUIC server（同 port = QUIC_PORT_OFFSET 0）の
-/// "process" channel に `terminal_token` を ask する。 token は旧 TUI `vp hd attach` の terminal
-/// bridge auth 用で、 localhost only・HTTP 時代と同様に未認証で取得する。
-pub async fn fetch_terminal_token(port: u16) -> Option<String> {
-    // QUIC(rustls) は CryptoProvider の install が前提（install 済みなら no-op）
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    let addr = format!("[::1]:{}", port);
-    let work = async {
-        let transport = unison::network::quic::QuicClient::builder()
-            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
-            .build()
-            .ok()?;
-        let client = unison::ProtocolClient::new(transport);
-        client.connect(&addr).await.ok()?;
-        let channel = client.open_channel("process").await.ok()?;
-        let resp: serde_json::Value = channel
-            .request::<serde_json::Value, serde_json::Value>(
-                "terminal_token",
-                &serde_json::json!({}),
-            )
-            .await
-            .ok()?;
-        resp.get("token")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(3), work)
-        .await
-        .ok()
-        .flatten()
-}
-
 /// 指定 port の SP に graceful shutdown を QUIC `shutdown` dispatch で送る (best-effort、 応答で bool)。
 ///
 /// L0 finale: 旧 SP HTTP `POST /api/shutdown` の置換。 World の `stop_process` / CLI `stop_process` /
@@ -667,11 +633,6 @@ pub fn find_by_project_blocking(project_dir: &str) -> Option<ProcessInfo> {
 /// 同期版: 現在のワーキングディレクトリから Process を検索
 pub fn find_for_cwd_blocking() -> Option<ProcessInfo> {
     make_runtime().block_on(find_for_cwd())
-}
-
-/// 同期版: terminal_token を取得
-pub fn fetch_terminal_token_blocking(port: u16) -> Option<String> {
-    make_runtime().block_on(fetch_terminal_token(port))
 }
 
 /// 短命のランタイムを作成（同期ラッパー用）

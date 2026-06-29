@@ -354,7 +354,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     // 旧 SP HTTP route は全て World process-proxy dispatch / SP QUIC dispatch に移管/dead 撤去済:
     // - reconciliation (旧 /api/health port-scan) → Push-only registry (QUIC register/disconnect)
     // - MCP restart → World :32000 restart API / stop_process → QUIC `shutdown` dispatch
-    // - terminal_token (旧 /api/health) → QUIC `terminal_token` dispatch (vp hd attach 用)
     // - lanes/wire/tmux/ruby/pane/prompt/world 等は B-4/lanes/Group C で移管/dead 撤去済
     // よって SP は axum HTTP listener を持たず、 QUIC server (`start_unison_server`、 同 port =
     // QUIC_PORT_OFFSET 0) 1 本で全 process 操作を serve する。 health/shutdown handler は

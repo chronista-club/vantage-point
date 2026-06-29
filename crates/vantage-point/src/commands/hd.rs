@@ -34,15 +34,6 @@ pub enum HdCommands {
     },
     /// HD インスタンス一覧
     List,
-    /// HD インスタンスに TUI 接続（旧 vp tui）
-    Attach {
-        /// 接続するインスタンス名（省略時はデフォルトセッション）
-        #[arg(long)]
-        id: Option<String>,
-        /// tmux セッション名を直接指定（--id より優先）
-        #[arg(long, short = 's')]
-        session: Option<String>,
-    },
 }
 
 /// vp hd コマンドを実行
@@ -72,15 +63,6 @@ pub fn execute(cmd: HdCommands, config: &Config) -> Result<()> {
             hd_restart(&project_name, id.as_deref(), &cwd.to_string_lossy(), config)
         }
         HdCommands::List => hd_list(&project_name, &other_prefixes),
-        HdCommands::Attach { id, session } => {
-            // --session 直接指定 > --id ベース解決 > cwd 自動検出
-            let session_name = if let Some(s) = session {
-                s
-            } else {
-                tmux::session_name_with_id(&project_name, id.as_deref())
-            };
-            hd_attach(&session_name, config)
-        }
     }
 }
 
@@ -123,11 +105,9 @@ fn hd_start(
     println!();
     if let Some(id) = id {
         println!("📖 HD インスタンス '{}' が準備できました", id);
-        println!("   vp hd attach --id {}  — TUI 接続", id);
         println!("   vp hd stop --id {}    — 停止", id);
     } else {
         println!("📖 HD インスタンスが準備できました");
-        println!("   vp hd attach  — TUI 接続");
         println!("   vp hd stop    — 停止");
     }
 
@@ -217,19 +197,6 @@ fn hd_restart(
 
     // 再作成
     hd_start(project_name, id, project_dir, config)
-}
-
-/// HD インスタンスに TUI 接続
-fn hd_attach(session_name: &str, _config: &Config) -> Result<()> {
-    if !tmux::session_exists(session_name) {
-        anyhow::bail!(
-            "HD インスタンス (セッション: {}) が見つかりません。先に `vp hd start` してください。",
-            session_name
-        );
-    }
-
-    // TUI コンソールを起動
-    crate::commands::tui::run_tui_console_blocking(session_name)
 }
 
 /// セッションがこのプロジェクトに属するか判定

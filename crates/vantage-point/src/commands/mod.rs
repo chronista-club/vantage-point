@@ -25,6 +25,5 @@ pub mod roto_control;
 pub mod sp;
 pub mod sync;
 pub mod tmux;
-pub mod tui;
 pub mod update;
 pub mod wire;
