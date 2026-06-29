@@ -2050,6 +2050,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false) // flock を握るだけ。既存内容は無関係なので truncate しない（clippy::suspicious_open_options）
             .open(&lock)
             .unwrap();
         // 別 open file description で排他 flock を握る（live holder を模擬）
