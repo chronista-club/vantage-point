@@ -21,7 +21,6 @@ use super::routes::{health, update, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
-use super::unison_server;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
@@ -350,28 +349,20 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         }
     }
 
-    // L0 finale (doc 27 §3.4.5): SP HTTP listener 全廃 = SP listen port 撤去（L0 完了）。
-    // 旧 SP HTTP route は全て World process-proxy dispatch / SP QUIC dispatch に移管/dead 撤去済:
+    // L0 finale (doc 27 §3.4.5): SP HTTP listener + QUIC listen 全廃 = SP 完全 portless (outbound-only)。
+    // 旧 SP HTTP route / SP QUIC listen channel は全て World process-proxy reverse-routing に移管済:
     // - reconciliation (旧 /api/health port-scan) → Push-only registry (QUIC register/disconnect)
-    // - MCP restart → World :32000 restart API / stop_process → QUIC `shutdown` dispatch
-    // - lanes/wire/tmux/ruby/pane/prompt/world 等は B-4/lanes/Group C で移管/dead 撤去済
-    // よって SP は axum HTTP listener を持たず、 QUIC server (`start_unison_server`、 同 port =
-    // QUIC_PORT_OFFSET 0) 1 本で全 process 操作を serve する。 health/shutdown handler は
-    // run_world (World :32000) が引き続き使うため routes/health.rs に残置。
+    // - MCP / lanes / tmux / ruby / canvas / wire 等 process 操作 → World process-proxy ask
+    //   (World → SP control channel → run_control_driver → dispatch_process_method)
+    // - stop_process の graceful shutdown も World process-proxy "shutdown" 経由
+    // よって SP は listen を一切持たず、 registry / canvas-ingest / control の outbound stream のみ
+    // (spawn_world_uplink)。 health/shutdown handler は run_world (World :32000) が使うため
+    // routes/health.rs に残置。
 
-    // Unison QUIC サーバーを並行起動（readiness signal 付き）
-    let quic_port = port + unison_server::QUIC_PORT_OFFSET;
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    {
-        let state_for_quic = state.clone();
-        tokio::spawn(async move {
-            unison_server::start_unison_server(state_for_quic, port, ready_tx).await;
-        });
-    }
-
-    // QUIC サーバーのバインド完了を待つ
-    let _ = ready_rx.await;
-    tracing::info!("QUIC server ready on port {}", quic_port);
+    // SP-portless (doc 27 §3.4.5 / rebuild Epic L0 finale): SP は QUIC listen を持たない。
+    // 全 process 操作は World :32000 → SP control channel の reverse-routing
+    // (spawn_world_uplink の control stream → run_control_driver → dispatch_process_method) で
+    // serve する。listen server (start_unison_server) は撤去済 = SP は outbound-only。
 
     // デバッグモード時のみトレースログ監視を起動
     if debug_mode != DebugMode::None {
@@ -456,11 +447,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
 
-    // L0 finale: SP HTTP listener 撤去後、 run() は shutdown_token で block する (QUIC server は
-    // spawned task として process 生存中 serve し続ける、 旧 axum::serve graceful shutdown を置換)。
-    // `shutdown` QUIC dispatch / SIGTERM 経由で shutdown_token が cancel されると下の cleanup へ進む。
+    // SP-portless: SP は listen を持たず、 run() は shutdown_token で block する。 process 操作は
+    // spawn_world_uplink の control stream (reverse-routing) で process 生存中 serve され続ける。
+    // World process-proxy `shutdown` / SIGTERM 経由で shutdown_token が cancel されると cleanup へ進む。
     shutdown_token_clone.cancelled().await;
-    tracing::info!("Graceful shutdown initiated (QUIC-only SP)");
+    tracing::info!("Graceful shutdown initiated (outbound-only SP)");
 
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
     // （spawn_world_uplink の shutdown handler が unregister を送信済み）

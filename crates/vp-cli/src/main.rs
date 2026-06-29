@@ -731,15 +731,15 @@ fn list_performers_detail() -> Result<()> {
     Ok(())
 }
 
-/// active Lane 切り替え CLI 実装 (= mcp__switch_lane の CLI pair、B1: Unison-native)。
+/// active Lane 切り替え CLI 実装 (= mcp__switch_lane の CLI pair)。
 ///
-/// **現 project の local SP** の Unison(QUIC) "process" チャネルに `SwitchLane` ProcessMessage を
-/// 投げ、hub.broadcast → topic `process/paisley-park/event/switch-lane`（非 retained）→
-/// canvas channel 経由で vp-app が受信し、その lane を active 化する
-/// （lane-within-project の per-project 切替）。
-///
-/// PR1a で最後の HTTP 1 hop（`POST /api/show`）を QUIC に置換し、CLI/MCP の transport を統一。
-/// MCP 側は既に `process_call("switch_lane", …)`（QUIC）で同経路（mcp.rs）。
+/// L0 portless: 現 project の SP に `SwitchLane` ProcessMessage を World :32000 の process-proxy
+/// ask で forward する（SP は listen しないので旧来の SP 直結 QUIC は撤去）。World が project_path
+/// を path_key に正規化して当該 SP の control channel を逆引きし、`dispatch_process_method`
+/// （"switch_lane" → `handle_process_message`）へ forward → hub.broadcast → topic
+/// `process/paisley-park/event/switch-lane`（非 retained）→ canvas channel 経由で vp-app が受信し、
+/// その lane を active 化する（lane-within-project の per-project 切替）。
+/// MCP 側も `process_call("switch_lane", …)`（mcp.rs、process-proxy 経由）で同 dispatch に着地。
 fn switch_lane_via_quic(name: &str) -> Result<()> {
     // lane token = "conductor" (lead) or performer 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
@@ -748,25 +748,39 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
         anyhow::bail!("lane token is required (空文字不可)");
     }
 
-    // cwd の project の running SP を解決（performer lane でも repo root の SP に着地）。
-    let (project_name, port) = resolve_parent_project()?;
+    // repo_root = project_path (World process-proxy handshake の stable identifier)。
+    // L0 portless: SP port 解決は不要（World が path_key 逆引きで forward する）。
+    let repo_root = lane::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
+    let (Some(project_name), Some(project_path)) = (
+        repo_root.file_name().and_then(|n| n.to_str()),
+        repo_root.to_str(),
+    ) else {
+        anyhow::bail!("repo path contains invalid UTF-8");
+    };
 
-    // SP の Unison(QUIC) "process" チャネルに SwitchLane を送る（B1: Unison-native 完成）。
+    // SwitchLane を World process-proxy ask で SP へ forward（payload = ProcessMessage JSON、
+    // `{"type":"switch_lane","lane":...}`）。SP 側 dispatch_process_method が受けて broadcast。
     let msg = vantage_point::protocol::ProcessMessage::SwitchLane {
         lane: trimmed.to_string(),
     };
-    vantage_point::commands::process_client::send_process_message(port, "switch_lane", &msg)
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "SP {} (:{}) への switch_lane 送信失敗: {}",
-                project_name,
-                port,
-                e
-            )
-        })?;
+    let payload = serde_json::to_value(&msg)?;
+    vantage_point::commands::process_client::world_process_request_blocking(
+        cli::WORLD_PORT,
+        project_path,
+        "switch_lane",
+        payload,
+    )
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "SP {} への switch_lane 送信失敗 (World process-proxy): {}",
+            project_name,
+            e
+        )
+    })?;
 
     println!(
-        "switched active lane to '{}' (project={}, via Unison)",
+        "switched active lane to '{}' (project={}, via World process-proxy)",
         trimmed, project_name
     );
     Ok(())
@@ -831,21 +845,4 @@ fn try_sp_delete_performer(performer_name: &str) -> bool {
             false
         }
     }
-}
-
-/// 現在の repo root から parent project 名と SP port を導出
-fn resolve_parent_project() -> Result<(String, u16)> {
-    let repo_root = lane::config::find_repo_root()
-        .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
-    let project_name = repo_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| anyhow::anyhow!("project name not found"))?
-        .to_string();
-    let repo_root_str = repo_root
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("repo path contains invalid UTF-8"))?;
-    let process = vantage_point::discovery::find_by_project_blocking(repo_root_str)
-        .ok_or_else(|| anyhow::anyhow!("parent SP not running (TheWorld has no record)"))?;
-    Ok((project_name, process.port))
 }

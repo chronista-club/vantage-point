@@ -21,26 +21,34 @@ pub struct HealthResponse {
     pub project_dir: Option<String>,
 }
 
-/// 指定 port の SP を停止する (registry PID + QUIC graceful shutdown + force_kill)。
+/// 指定 port の SP を停止する (registry PID + World process-proxy graceful shutdown + force_kill)。
 ///
-/// L0 finale: 旧 SP HTTP (`/api/health` で PID 取得 + `/api/shutdown`) を撤去。 PID は World registry
-/// (`discovery::list`) から引き、 graceful は `discovery::send_sp_shutdown` (QUIC) で送る。 timeout で
-/// force_kill にフォールバック。 `restart-all` / `stop_by_target` が共有。
+/// SP-portless: PID は World registry (`discovery::list`) から引き、 graceful は World :32000
+/// process-proxy "shutdown" (`world_process_request`、 reverse-routing で SP control channel に届く)
+/// で送る。 timeout で force_kill にフォールバック。 `restart-all` / `stop_by_target` が共有。
 pub async fn stop_process(port: u16) -> Result<()> {
-    let pid = crate::discovery::list()
+    let info = crate::discovery::list()
         .await
         .into_iter()
-        .find(|p| p.port == port)
-        .map(|p| p.pid);
-    let Some(pid) = pid else {
+        .find(|p| p.port == port);
+    let Some(info) = info else {
         println!("✗ port {} に稼働 SP が registry に居ません", port);
         return Ok(());
     };
+    let pid = info.pid;
 
     println!("Stopping vp (PID: {})...", pid);
 
-    // graceful shutdown を QUIC `shutdown` dispatch で送る (best-effort)
-    let _ = crate::discovery::send_sp_shutdown(port).await;
+    // SP-portless: graceful shutdown を World :32000 process-proxy "shutdown" 経由で送る
+    // (best-effort)。SP は QUIC listen を持たないため、World が reverse-routing (control
+    // channel) で SP に "shutdown" を届ける。無応答でも下の force_kill fallback で確実に停止する。
+    let _ = crate::commands::process_client::world_process_request(
+        WORLD_PORT,
+        &info.project_dir,
+        "shutdown",
+        serde_json::json!({}),
+    )
+    .await;
 
     // graceful 完了を待ち、 timeout で force_kill にフォールバック
     let start = std::time::Instant::now();

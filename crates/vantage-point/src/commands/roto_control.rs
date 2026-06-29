@@ -6,8 +6,9 @@
 //!
 //! ## 構造
 //! - `LaneSource` / `SwitchSink`: loop が外界に触れる 2 点を trait で注入
-//!   - CLI: `QuicLaneSource`(world-process QUIC) + `QuicSwitchSink`(per-SP QUIC)
-//!   - daemon: `InProcessLaneSource`(build_world_lanes 直読み) + `QuicSwitchSink`(SP 越境は QUIC)
+//!   - CLI: `QuicLaneSource`(world-process QUIC) + `QuicSwitchSink`(World process-proxy 経由)
+//!   - daemon: `InProcessLaneSource`(build_world_lanes 直読み) + `QuicSwitchSink`(World process-proxy)
+//!     ※ L0 portless: SP は listen しないので switch は CLI/daemon とも World :32000 経由で forward
 //! - `roto_control_loop`: keepalive(autorespond) + LCD projection + nav→switch を回す共有 body
 //! - `RotoSessionBracket`(nostos `AsyncBracket`) + `RotoHealDriver`(`AsyncDriver`):
 //!   enter=open+handshake / exit=control loop / disconnect→Reborn(自動再接続) を表現
@@ -90,10 +91,11 @@ pub(crate) trait LaneSource {
     async fn poll(&mut self) -> Result<Vec<RotoLane>>;
 }
 
-/// 選択 lane を対象 SP に switch_lane する。SP 越境なので CLI/daemon とも QUIC が正道。
+/// 選択 lane を対象 SP に switch_lane する。L0 portless: SP は listen しないので CLI/daemon とも
+/// World :32000 の process-proxy ask 経由で forward する（project_path で SP を逆引き）。
 #[allow(async_fn_in_trait)]
 pub(crate) trait SwitchSink {
-    async fn switch(&mut self, port: u16, token: &str) -> Result<()>;
+    async fn switch(&mut self, project_path: &str, token: &str) -> Result<()>;
 }
 
 // ─── actions: 共有 control loop ────────────────────────────
@@ -214,8 +216,8 @@ pub(crate) async fn roto_control_loop(
                             }
                         }
                         // 対象 SP に switch_lane（失敗は warn のみ、loop は継続）
-                        if let Err(e) = switch.switch(lane.port, &lane.token).await {
-                            tracing::warn!("switch_lane 失敗 (port {}): {}", lane.port, e);
+                        if let Err(e) = switch.switch(&lane.project_path, &lane.token).await {
+                            tracing::warn!("switch_lane 失敗 (project {}): {}", lane.project_path, e);
                         }
                     }
                 }
@@ -304,45 +306,34 @@ impl LaneSource for InProcessLaneSource {
     }
 }
 
-/// CLI/daemon 共有の switch_lane sink: 対象 SP port へ per-port QUIC channel を lazy 接続し
-/// `switch_lane` を request。Err 時は cache を drop して次回再接続。
+/// CLI/daemon 共有の switch_lane sink: L0 portless で SP が listen しなくなったため、対象 SP の
+/// project_path を使い World :32000 の process-proxy ask 経由で `switch_lane` を forward する。
 ///
-/// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。これは self-loop
-/// ではなく SP 越境の正当な cross-process call なので daemon でも QUIC が正道。
+/// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。daemon = World 本体
+/// なので世界への self-loop QUIC になるが、switch はボタン押下時のみの低頻度なので loopback の
+/// connect+forward（数 ms）で keepalive を落とさない（lane poll の 2 秒周期とは違い cache 不要）。
 #[derive(Default)]
-pub(crate) struct QuicSwitchSink {
-    cache: HashMap<u16, (unison::ProtocolClient, unison::network::UnisonChannel)>,
-}
+pub(crate) struct QuicSwitchSink;
 
 impl QuicSwitchSink {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 
 impl SwitchSink for QuicSwitchSink {
-    async fn switch(&mut self, port: u16, token: &str) -> Result<()> {
-        // per-port channel を lazy 接続
-        if let std::collections::hash_map::Entry::Vacant(slot) = self.cache.entry(port) {
-            let client = super::midi::connect_quic_local(port).await?;
-            let ch = client
-                .open_channel("process")
-                .await
-                .map_err(|e| anyhow::anyhow!("process channel open (port {}): {}", port, e))?;
-            slot.insert((client, ch));
-        }
+    async fn switch(&mut self, project_path: &str, token: &str) -> Result<()> {
+        // payload = ProcessMessage::SwitchLane の JSON 表現（`{"type":"switch_lane","lane":...}`）。
+        // World が project_path を path_key 逆引きして当該 SP の dispatch_process_method へ forward。
         let payload = serde_json::json!({ "type": "switch_lane", "lane": token });
-        let res = match self.cache.get(&port) {
-            Some((_c, ch)) => {
-                ch.request::<serde_json::Value, serde_json::Value>("switch_lane", &payload)
-                    .await
-            }
-            None => return Ok(()),
-        };
-        if let Err(e) = res {
-            self.cache.remove(&port); // 次回再接続
-            return Err(anyhow::anyhow!("switch_lane (port {}): {}", port, e));
-        }
+        super::process_client::world_process_request(
+            crate::cli::WORLD_PORT,
+            project_path,
+            "switch_lane",
+            payload,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("switch_lane (project {}): {}", project_path, e))?;
         Ok(())
     }
 }
