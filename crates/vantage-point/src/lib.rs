@@ -43,10 +43,7 @@ pub mod screenshot;
 pub mod spawn_env;
 pub mod stands;
 pub mod terminal;
-#[cfg(feature = "gui")]
-pub mod terminal_window;
 pub mod tmux;
 pub mod trace_log;
-pub mod tui;
 pub mod world;
 pub mod world_client;

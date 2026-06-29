@@ -4,7 +4,6 @@
 //!   vp            # 稼働中インスタンス一覧（vp ps）
 //!   vp sp start   # SP サーバーを起動
 //!   vp hd start   # HD (Claude CLI) を起動
-//!   vp hd attach  # HD に TUI 接続
 //!   vp mcp        # MCPサーバーとして起動（stdio）
 //!   vp daemon     # TheWorld デーモン管理 (alias: vp world)
 //!
