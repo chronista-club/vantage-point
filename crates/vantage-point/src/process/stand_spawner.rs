@@ -79,7 +79,7 @@ pub fn spawn_with_fallback(
     rows: u16,
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
     let cwd = cmd.cwd.as_str();
-    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
+    let (mut slot, mut rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
 
     // primary が早期 exit するか peek
     std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
@@ -100,10 +100,21 @@ pub fn spawn_with_fallback(
     }
 
     let Some(fb_args) = cmd.fallback_args.as_ref() else {
+        // 死因究明ログ (要所): 早期 exit した子プロセス (mise/tmux/claude) が PTY に書いた
+        // stderr/stdout を broadcast channel から drain して bail message に載せる。これが
+        // 無いと「800ms 以内に死んだ」事実しか残らず、死因 (例: tmux の
+        // "open terminal failed: terminal does not support clear" = TERM 不在) が握り潰されて
+        // diagnosis が長引く (本 fix の console blackout 調査がまさにこの穴を踏んだ)。
+        let tail = drain_pty_tail(&mut rx);
         anyhow::bail!(
-            "Stand spawn early-exit (no fallback): program={} args={:?}",
+            "Stand spawn early-exit (no fallback): program={} args={:?}{}",
             cmd.program,
-            cmd.args
+            cmd.args,
+            if tail.is_empty() {
+                String::new()
+            } else {
+                format!(" 子プロセス出力(末尾)=<<{}>>", tail)
+            }
         );
     };
 
@@ -180,6 +191,20 @@ pub fn spawn_or_adopt(
         }
     }
     spawn_with_fallback(cmd, cols, rows)
+}
+
+/// 早期 exit した stand の死因究明用に、 PTY broadcast channel に buffer された直近出力を
+/// drain して文字列化する (最大 ~4KB)。 `spawn_with_fallback` の early-exit 分岐専用。
+/// non-blocking (`try_recv`) なので bufferに溜まった分だけを拾い、 子の生死には影響しない。
+fn drain_pty_tail(rx: &mut broadcast::Receiver<Vec<u8>>) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        buf.extend_from_slice(&chunk);
+        if buf.len() > 4096 {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf).trim().to_string()
 }
 
 /// LaneAddress の lane label を導出 (Conductor → "conductor"、 Performer(name) → name、 Performer(None) → "unnamed")
