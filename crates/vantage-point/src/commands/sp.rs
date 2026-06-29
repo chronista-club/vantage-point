@@ -147,25 +147,19 @@ fn sp_start(
 }
 
 /// SP サーバーを停止
+///
+/// SP-portless: SP は HTTP listener を撤去したため、停止は proven pattern
+/// `cli::stop_process` に委譲する。これは PID を World registry から引き、graceful を
+/// World :32000 process-proxy "shutdown"（reverse-routing で SP control channel に到達）
+/// で送り、timeout で `force_kill` にフォールバックする。
+/// 旧 `/api/shutdown` POST も `kill_process_on_port`(lsof) も portless SP には届かず
+/// 停止不能だった（SP は port を listen しない）。
 fn sp_stop(project_dir: &str, _config: &Config) -> Result<()> {
     let normalized = Config::normalize_path(std::path::Path::new(project_dir));
 
     if let Some(running) = crate::discovery::find_by_project_blocking(&normalized) {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new());
-        let url = format!("http://[::1]:{}/api/shutdown", running.port);
-        match client.post(&url).send() {
-            Ok(resp) if resp.status().is_success() => {
-                println!("✅ SP サーバーを停止しました (port={})", running.port);
-            }
-            _ => {
-                eprintln!("⚠️  shutdown API が応答しません。プロセスを終了します。");
-                let _ = kill_process_on_port(running.port);
-                println!("✅ SP サーバーを停止しました (port={})", running.port);
-            }
-        }
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(crate::cli::stop_process(running.port))?;
     } else {
         println!("ℹ️  SP サーバーは稼働していません");
     }
@@ -173,7 +167,12 @@ fn sp_stop(project_dir: &str, _config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// SP サーバーの状態 + Stand 一覧を表示
+/// SP サーバーの状態 + HD セッション一覧を表示
+///
+/// SP-portless: 稼働判定は World registry（`discovery`、単一の真実源）ベース。
+/// 旧 SP `/api/health` 直 GET による起動時刻 / Stand 一覧表示は、HTTP listener 撤去で
+/// 届かず silent fail していたため撤去した（World process-proxy 経由の stands 取得は
+/// 将来の enhancement）。
 fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
     let normalized = Config::normalize_path(std::path::Path::new(project_dir));
     let project_name = crate::resolve::project_name_from_path(&normalized, config);
@@ -182,45 +181,11 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
     println!();
 
     if let Some(running) = crate::discovery::find_by_project_blocking(&normalized) {
-        println!("   サーバー: ✅ running (port={})", running.port);
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new());
-        let url = format!("http://[::1]:{}/api/health", running.port);
-
-        if let Ok(resp) = client.get(&url).send()
-            && let Ok(json) = resp.json::<serde_json::Value>()
-        {
-            if let Some(started) = json.get("started_at").and_then(|s| s.as_str()) {
-                println!("   起動時刻: {}", started);
-            }
-
-            if let Some(stands) = json.get("stands").and_then(|s| s.as_object()) {
-                println!();
-                println!("   Stand 一覧:");
-                for (name, info) in stands {
-                    let status = info
-                        .get("status")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("unknown");
-                    let icon = match name.as_str() {
-                        "echoes" => "💬 Echoes",
-                        "paisley_park" => "🧭 Paisley Park (PP)",
-                        "gold_experience" => "🌿 Gold Experience (GE)",
-                        "bastet" => "🧲 Bastet (BS)",
-                        _ => name.as_str(),
-                    };
-                    let status_icon = match status {
-                        "active" => "✅",
-                        "disabled" => "⏸️",
-                        _ => "❓",
-                    };
-                    println!("     {} {} {}", status_icon, icon, status);
-                }
-            }
-        }
+        // port は portless 下では listen socket ではなく registry 上の論理 identity
+        println!(
+            "   サーバー: ✅ running (port={}, pid={})",
+            running.port, running.pid
+        );
     } else {
         println!("   サーバー: ❌ not running");
     }
@@ -286,24 +251,6 @@ fn resolve_port(project_dir: &str, config: &Config) -> u16 {
     } else {
         crate::resolve::find_available_port().unwrap_or(33005)
     }
-}
-
-/// ポートを使用しているプロセスを終了
-fn kill_process_on_port(port: u16) -> Result<()> {
-    let output = std::process::Command::new("lsof")
-        .args(["-ti", &format!(":{}", port)])
-        .output()?;
-
-    if output.status.success() {
-        let pids = String::from_utf8_lossy(&output.stdout);
-        for pid in pids.lines() {
-            if let Ok(pid) = pid.trim().parse::<u32>() {
-                crate::platform::process_terminate(pid);
-            }
-        }
-    }
-
-    Ok(())
 }
 
 // =============================================================================
