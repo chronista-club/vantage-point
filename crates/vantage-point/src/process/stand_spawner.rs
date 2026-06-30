@@ -129,6 +129,59 @@ pub fn spawn_with_fallback(
     Ok((slot, rx))
 }
 
+/// 既存 tmux session があれば adopt（attach）、 無ければ従来の fresh spawn。
+///
+/// ## なぜ必要か（rebuild Epic 残骸 / reconcile gap、 2026-06-30）
+/// L0 portless 化で port ベースの SP 重複検出（`find_running_sp_at_path` 等）が
+/// 無効化された結果、 gentle daemon 再起動時に registry が空のまま `autostart` が
+/// 全 project を重複 spawn しうる。 各重複 SP は起動最初期（`with_conductor`）に
+/// conductor lane を fresh spawn するが、 tmux session は前世代から温存されている →
+/// `mise run vp:stand:*`（`tmux new-session -A`）が `EARLY_EXIT_CHECK_MS` 窓の中で
+/// 競合し死ぬ → `state=Dead` を daemon に register で上書きし、 実際は生きている
+/// session が vp-app から Dead に見える（console blank）。
+///
+/// ## 修正
+/// tmux session = ground truth。 在れば lane は生きている → fresh spawn せず
+/// `tmux attach-session` する PtySlot を terminal source として立てて adopt する。
+/// `mise` / `new-session` / `-e` の create 経路を通さないので重ね作成競合も
+/// 800ms early-exit 誤判定も起きない（= 何個 SP が重複しても lane は 1 本・生存）。
+///
+/// 意図的な fresh restart（`restart_lane`、 tmux session を先に kill 済）は本関数を
+/// 通さず `spawn_with_fallback` を直接使うので影響しない。
+pub fn spawn_or_adopt(
+    cmd: &StandCommand,
+    session: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
+    if crate::tmux::session_exists(session) {
+        let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
+        let attach_args = [
+            "attach-session".to_string(),
+            "-t".to_string(),
+            session.to_string(),
+        ];
+        match PtySlot::spawn(cmd.cwd.as_str(), tmux, &attach_args, &cmd.env, cols, rows) {
+            Ok((slot, rx)) => {
+                tracing::info!(
+                    "Lane adopt: 既存 tmux session に attach (fresh spawn skip): session={}",
+                    session
+                );
+                return Ok((slot, rx));
+            }
+            Err(e) => {
+                // session 消失 race 等で attach 不能 → fresh spawn に fallback。
+                tracing::warn!(
+                    "Lane adopt の attach 失敗、 fresh spawn に fallback: session={} err={}",
+                    session,
+                    e
+                );
+            }
+        }
+    }
+    spawn_with_fallback(cmd, cols, rows)
+}
+
 /// LaneAddress の lane label を導出 (Conductor → "conductor"、 Performer(name) → name、 Performer(None) → "unnamed")
 pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
     match (&addr.kind, addr.name.as_deref()) {

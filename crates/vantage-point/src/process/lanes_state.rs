@@ -487,7 +487,12 @@ impl LanePool {
 
         // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
         // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
-        let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(&cmd, 120, 48) {
+        // reconcile gap fix (2026-06-30): 既存 tmux session があれば fresh spawn せず adopt。
+        // gentle daemon 再起動 / 重複 SP spawn でも conductor lane を Dead 化させない。
+        let session = addr.tmux_session_name(stand_name);
+        let (state, pid) = match crate::process::stand_spawner::spawn_or_adopt(
+            &cmd, &session, 120, 48,
+        ) {
             Ok((slot, term_rx)) => {
                 let pid = slot.pid();
                 tracing::info!(
