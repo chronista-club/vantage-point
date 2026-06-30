@@ -145,7 +145,8 @@ fn stop() -> Result<()> {
 /// vp-app binary を探す:
 /// 1. `VP_APP_BIN` env (mise task / dogfood で `target/release/vp-app` を直接渡す path)
 /// 2. PATH 上の `vp-app` (cargo install で入った場合)
-/// 3. 自分 (vp) の隣 (`~/.cargo/bin/vp` や `target/release/vp` の同 dir)
+/// 3. 自分 (vp) の隣 (`~/.cargo/bin/vp` や `target/release/vp`、
+///    Homebrew cask 配布なら `VantagePoint.app/Contents/MacOS/vp` の同 dir)
 ///
 /// Windows では `.exe` 拡張子のついた binary を併せて探す。
 fn find_vp_app_binary() -> Option<PathBuf> {
@@ -162,12 +163,19 @@ fn find_vp_app_binary() -> Option<PathBuf> {
         if let Some(p) = find_in_path(&name) {
             return Some(p);
         }
-        if let Ok(self_exe) = std::env::current_exe()
-            && let Some(dir) = self_exe.parent()
-        {
-            let candidate = dir.join(&name);
-            if candidate.is_file() {
-                return Some(candidate);
+        // 自分 (vp) の隣を探す。Homebrew cask 配布では vp が
+        // `/opt/homebrew/bin/vp` → `VantagePoint.app/Contents/MacOS/vp` の symlink
+        // として実行され、macOS の `current_exe()` は symlink を解決せず link path を
+        // そのまま返す。そのまま parent を見ると `/opt/homebrew/bin/` (vp-app 不在) を
+        // 指してしまうため、canonicalize で実体 (bundle 内) に解決してから隣を見る。
+        // canonicalize 失敗時は raw path の隣に fallback。
+        if let Ok(self_exe) = std::env::current_exe() {
+            let resolved = self_exe.canonicalize().unwrap_or(self_exe);
+            if let Some(dir) = resolved.parent() {
+                let candidate = dir.join(&name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
