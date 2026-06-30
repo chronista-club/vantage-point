@@ -10,7 +10,6 @@ use serde::Deserialize;
 use axum::{Json, extract::State, response::IntoResponse};
 
 use super::super::state::AppState;
-use crate::protocol::ProcessMessage;
 
 /// Stand（Capability）のステータス
 #[derive(serde::Serialize)]
@@ -37,133 +36,23 @@ pub struct HealthResponse {
     /// 配下の Stand（Capability）ステータス
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stands: Option<std::collections::HashMap<String, StandStatus>>,
+    /// chronista-hub federation の接続状態
+    /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`）。
+    /// World mode のみ意味を持つ（SP mode は常に `"disabled"`）。vp-app が world status 横に表示。
+    pub hub: &'static str,
+    /// L1 lifecycle (Phase C): World 配下の SP presence 一覧（vp-app sidebar の ●◐○ 表示用）。
+    /// daemon-canonical（doc 27 §3.2 / Model Q）。World mode のみ Some、SP mode では None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes: Option<Vec<crate::capability::ProcessHealthInfo>>,
 }
 
-/// POST /api/wire/send - wire accumulation への送信 HTTP 入口
-///
-/// `vp wire` CLI / `wire_*` MCP tool と同じ wire accumulation 経路の HTTP 版。
-/// QUIC dispatch の `wire_send` と同一の [`handle_wire_send`] を呼ぶ薄い wrapper。
-/// payload: `{from, to: [String], body: JSON, reply_to?: String}`。
-pub async fn wire_send_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_send(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
+// L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
+// latest-msg/thread/ack) は撤去。 MCP は SP "process" channel の `wire_*` dispatch
+// (= `handle_wire_send` 等が normalize して `world_wire::call` で World "wire" channel に relay) を
+// 使い、 CLI/flow は World "wire" channel に QUIC 直結する (doc 27 §62)。
 
-/// POST /api/wire/recv - wire accumulation からの long-poll 受信 HTTP 入口
-///
-/// `vp wire watch` CLI / `wire_recv` MCP tool と同じ wire accumulation 経路の HTTP 版。
-/// QUIC dispatch の `wire_recv` と同一の [`handle_wire_recv`] を呼ぶ薄い wrapper。
-/// payload: `{agent: String, timeout?: u64}` → `{messages: [WireMessage...], count}`。
-pub async fn wire_recv_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_recv(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/unread-count - per-agent 未読 wire count を取得 (read-only、 cursor 不触り)
-///
-/// `flow_progress` の集約 view に必要。 `wire_recv` を timeout=0 で叩く代替は cursor を
-/// 進めてしまうため、 cursor 不触りの専用 endpoint。
-/// payload: `{agent: String}` → `{status: "ok", total: u64, by_thread: {root_id: count}}`。
-pub async fn wire_unread_count_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_unread_count(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/latest-msg - agent 関与の最新 wire message を取得 (read-only、 cursor 不触り)
-///
-/// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。
-/// `flow_progress` の 5-state FSM derive で performer の現状態を判定するために使う。
-/// payload: `{agent: String}` → `{status: "ok", message: WireMessage|null}`。
-pub async fn wire_latest_msg_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_latest_msg(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/thread - thread 系譜取得 HTTP 入口 (read-only、 cursor 不触り)
-///
-/// `vp wire thread` CLI / `wire_thread` MCP tool と同じ経路の HTTP 版 (R2-a で CLI parity)。
-/// payload: `{message_id: String}` → `{status: "ok", messages: [..], count}`。
-pub async fn wire_thread_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_thread(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// POST /api/wire/ack - per-message ack HTTP 入口 (R2-a、 決定 D3)
-///
-/// payload: `{message_id: String, agent: String}` → `{status: "ok", acked: bool}`。
-pub async fn wire_ack_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    match crate::process::unison_server::handle_wire_ack(&state, payload).await {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
-    }
-}
-
-/// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
-/// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
-///
-/// state.capabilities の field を直接 iterate する方式 (Stand 数が少なく静的なため
-/// registry 抽象は持たない — refactor R1-1 で skeleton だった CapabilityRegistry を削除)。
-/// Mailbox address list と Stand state を 1 view にまとめて観測可能に。
-pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    use crate::capability::core::Capability;
-    let mut reports = Vec::new();
-
-    // Protocol Capability (WebSocket / stdio 配信)
-    {
-        let protocol = state.capabilities.protocol.read().await;
-        reports.push(protocol.diagnose());
-    }
-    // Agent Capability (Heaven's Door 📖、Claude CLI 統合)
-    {
-        let agent = state.capabilities.agent.read().await;
-        reports.push(agent.diagnose());
-    }
-    // MIDI Capability (Bastet 🧲、feature 有効時、 PR-α-2 で World 階層に移管)
-    // World mode の AppState のみ world_capabilities が Some、 SP mode では None なので skip。
-    // SP 側からの diagnose は PR-α-3 で cross-process forward (`bastet@world` mailbox query) に rewire 予定。
-    #[cfg(feature = "midi")]
-    if let Some(ref world_caps) = state.world_capabilities
-        && let Some(ref midi) = world_caps.midi
-    {
-        let midi = midi.read().await;
-        reports.push(midi.diagnose());
-    }
-
-    // wiremsg R6: 旧 msgbox は R5 で全廃。 diagnose の `"msgbox"` は常に空 stub だったため
-    // キーごと撤去した。 将来 wire 層の diagnose が要れば wiremsg_store 経由で新規に足す。
-    Json(serde_json::json!({
-        "count": reports.len(),
-        "reports": reports,
-    }))
-}
+// L0 portless: `/api/diagnose` (Stand 自己診断 HTTP) は consumer 消滅で撤去。 必要なら将来
+// World channel / mailbox query (`bastet@world` 等) 経由で再設計する。
 
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let token = if state.terminal_token == "WORLD_DISABLED" {
@@ -297,6 +186,13 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         }
     };
 
+    // L1 lifecycle: World mode は配下 SP の presence 一覧を expose（vp-app sidebar の ●◐○ 用）。
+    // SP mode (`state.world` 不在) は None — presence は daemon-canonical で World のみが持つ。
+    let processes = match state.world.as_ref() {
+        Some(world) => Some(world.read().await.presence_snapshot().await),
+        None => None,
+    };
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -305,46 +201,14 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         terminal_token: token,
         started_at: state.started_at.clone(),
         stands,
+        hub: state.hub_status.get().as_str(),
+        processes,
     })
 }
 
-/// POST /api/show - Show content in browser
-pub async fn show_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    // TopicRouter が Hub ブリッジ経由で自動的に retained に保存するため、
-    // 明示的なキャッシュは不要。Hub に broadcast するだけ。
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// POST /api/toggle-pane - Toggle side panel visibility
-pub async fn toggle_pane_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// POST /api/split-pane - Split a pane
-pub async fn split_pane_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// POST /api/close-pane - Close a pane
-pub async fn close_pane_handler(
-    State(state): State<Arc<AppState>>,
-    Json(msg): Json<ProcessMessage>,
-) -> impl IntoResponse {
-    state.hub.broadcast(msg);
-    Json(serde_json::json!({"status": "ok"}))
-}
+// L0 portless Group B: pane HTTP handler (show/toggle/split/close) は CLI を process-proxy ask
+// (`show`/`toggle_pane`/`split_pane`/`close_pane` → `handle_process_message`) に移管し撤去。
+// いずれも `state.hub.broadcast(ProcessMessage)` するだけで、 QUIC dispatch が同じ broadcast を行う。
 
 /// POST /api/canvas/switch_lane - Canvas Lane 切り替え
 ///
@@ -402,185 +266,9 @@ pub async fn canvas_layout_save_handler(
     Json(serde_json::json!({"status": "saved"}))
 }
 
-// =========================================================================
-// PP Canvas Stack Model (lane scope) — pp-content-persist
-// =========================================================================
-// `/api/pp/state` は **lane ごとに独立した PP state** を SurrealDB pane_contents に save/load する。
-// canvas-handler.ts (webview) が 500ms debounce で save、 起動時 / lane 切替時に load を叩く。
-// content / title は legacy field、 主役は stack (= items + cursor) と ui_state。
-
-/// POST /api/pp/state - PP state を SurrealDB pane_contents に upsert。
-///
-/// body schema:
-/// ```json
-/// {
-///   "lane": "performer-foo" | null,
-///   "pane_id": "paisley-park",
-///   "content_type": "markdown",
-///   "content": "...",
-///   "title": "..." | null,
-///   "stack": { "items": [...], "cursor": "...", "capacity": 10 } | null,
-///   "ui_state": { "visible": true, ... } | null
-/// }
-/// ```
-pub async fn pp_state_save_handler(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    let Some(vpdb) = state.vpdb.as_ref() else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"status": "error", "message": "vpdb 未初期化"})),
-        );
-    };
-    // 必須 field — content_type / content / pane_id。 stack/ui_state/title/lane は省略可。
-    let pane_id = match body.get("pane_id").and_then(|v| v.as_str()) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"status": "error", "message": "pane_id 必須"})),
-            );
-        }
-    };
-    let content_type = body
-        .get("content_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("markdown")
-        .to_string();
-    let content = body
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let title = body
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    // lane は string | null。 null/不在/空文字/"conductor" いずれも conductor (= None) に正規化。
-    // front は activeLaneName(null=conductor) を送るが、明示 "conductor" 文字列が来ても
-    // load 側 (lane IS NULL) と key 一致するよう None に潰す（R3: 防御的正規化）。
-    let lane = body
-        .get("lane")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty() && *s != "conductor")
-        .map(|s| s.to_string());
-    let stack = body.get("stack").filter(|v| !v.is_null()).cloned();
-    let ui_state = body.get("ui_state").filter(|v| !v.is_null()).cloned();
-    let project_path = state.project_dir.clone();
-    let result = vpdb
-        .upsert_pp_state(
-            &project_path,
-            lane.as_deref(),
-            &pane_id,
-            &content_type,
-            &content,
-            title.as_deref(),
-            stack.as_ref(),
-            ui_state.as_ref(),
-        )
-        .await;
-    match result {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "saved"})),
-        ),
-        Err(e) => {
-            tracing::warn!("pp_state upsert 失敗: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"status": "error", "message": e.to_string()})),
-            )
-        }
-    }
-}
-
-/// `/api/pp/state` GET の query parameters
-#[derive(Debug, Deserialize)]
-pub struct PpStateLoadParams {
-    /// lane name (省略 / 空文字なら conductor)
-    pub lane: Option<String>,
-    /// pane_id (デフォルト "paisley-park")
-    pub pane_id: Option<String>,
-}
-
-/// GET /api/pp/state?lane=&pane_id= - PP state を pane_contents から 1 件取得。
-///
-/// 不在なら `{ "status": "empty" }` を返す。 caller (canvas-handler.ts) は
-/// 不在を「未保存」 として扱い、 空 state で起動する。
-pub async fn pp_state_load_handler(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<PpStateLoadParams>,
-) -> impl IntoResponse {
-    let Some(vpdb) = state.vpdb.as_ref() else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"status": "error", "message": "vpdb 未初期化"})),
-        );
-    };
-    let pane_id = params.pane_id.unwrap_or_else(|| "paisley-park".to_string());
-    // save 側と対称に "conductor"/空文字を None(=lane IS NULL) に正規化（R3）。
-    let lane = params.lane.filter(|s| !s.is_empty() && s != "conductor");
-    let project_path = state.project_dir.clone();
-    match vpdb
-        .load_pp_state(&project_path, lane.as_deref(), &pane_id)
-        .await
-    {
-        Ok(Some(rec)) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "record": rec})),
-        ),
-        Ok(None) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "empty"})),
-        ),
-        Err(e) => {
-            tracing::warn!("pp_state load 失敗: {}", e);
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"status": "error", "message": e.to_string()})),
-            )
-        }
-    }
-}
-
-/// POST /api/watch-file - ファイル監視を開始
-pub async fn watch_file_handler(
-    State(state): State<Arc<AppState>>,
-    Json(config): Json<crate::file_watcher::WatchConfig>,
-) -> impl IntoResponse {
-    let pane_id = config.pane_id.clone();
-    match state
-        .file_watchers
-        .lock()
-        .await
-        .start_watch(config, state.hub.clone())
-    {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "pane_id": pane_id})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"status": "error", "error": e})),
-        ),
-    }
-}
-
-/// UnwatchFile リクエストのペイロード
-#[derive(Debug, serde::Deserialize)]
-pub struct UnwatchFileBody {
-    pub pane_id: String,
-}
-
-/// POST /api/unwatch-file - ファイル監視を停止
-pub async fn unwatch_file_handler(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<UnwatchFileBody>,
-) -> impl IntoResponse {
-    state.file_watchers.lock().await.stop_watch(&body.pane_id);
-    Json(serde_json::json!({"status": "ok", "pane_id": body.pane_id}))
-}
+// L0 portless Group B: file watch/unwatch HTTP handler は CLI を process-proxy ask
+// (`watch_file`/`unwatch_file` → `handle_watch_file`/`handle_unwatch_file`) に移管し撤去。
+// core (`state.file_watchers`) は QUIC dispatch が同じく呼ぶので維持。
 
 /// Canvas キャプチャリクエストのパラメータ
 #[derive(Debug, serde::Deserialize)]
@@ -744,413 +432,16 @@ pub fn resolve_content_command(
     }
 }
 
-/// POST /api/tmux/split - tmux ペインを分割
-pub async fn tmux_split_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxSplitParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    let command = resolve_content_command(params.content_type.as_deref(), params.command);
-    match handle.split(params.horizontal, command).await {
-        Ok(pane) => Json(serde_json::json!({"status": "ok", "pane": pane})),
-        Err(e) => Json(serde_json::json!({"error": e})),
-    }
-}
+// L0 portless Group B/C: tmux split/close/capture/list/send-keys/resolve-pane の HTTP handler は
+// 全て CLI/flow を process-proxy ask (`tmux_*` dispatch) に移管し撤去 (send-keys/resolve-pane は
+// lanes portless で flow.rs(try_nudge) が dispatch 化したのが最後)。 `resolve_content_command` は
+// QUIC `handle_tmux_split` と共有のため keep。 `/api/tmux/agent-meta` は consumer ゼロで dead 撤去済。
 
-/// tmux close パラメータ
-#[derive(Deserialize)]
-pub struct TmuxCloseParams {
-    pub pane_id: String,
-}
-
-/// POST /api/tmux/close - tmux ペインを閉じる
-pub async fn tmux_close_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxCloseParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    match handle.close(&params.pane_id).await {
-        Ok(()) => Json(serde_json::json!({"status": "ok"})),
-        Err(e) => Json(serde_json::json!({"error": e})),
-    }
-}
-
-// ===== tmux 追加ハンドラー（CLI 用） =====
-
-/// tmux capture パラメータ
-#[derive(Deserialize)]
-pub struct TmuxCaptureParams {
-    pub pane_id: Option<String>,
-}
-
-/// POST /api/tmux/capture - ペイン内容をキャプチャ
-///
-/// pane_id 指定で単一ペイン、省略で全ペインをキャプチャ。
-pub async fn tmux_capture_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxCaptureParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    match params.pane_id {
-        Some(pane_id) => match handle.capture(&pane_id).await {
-            Ok(content) => {
-                Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "content": content}))
-            }
-            Err(e) => Json(serde_json::json!({"error": e})),
-        },
-        None => {
-            let captures = handle.capture_all().await;
-            Json(serde_json::json!({"status": "ok", "captures": captures}))
-        }
-    }
-}
-
-/// GET /api/tmux/list - ペイン一覧
-pub async fn tmux_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    let panes = handle.list().await;
-    let all_meta = handle.list_all_agent_meta().await;
-    // 各ペインにエージェントメタデータを付与（一括取得済み）
-    let panes_with_meta: Vec<serde_json::Value> = panes
-        .iter()
-        .map(|pane| {
-            let mut pane_json = serde_json::to_value(pane).unwrap_or_default();
-            if let Some(meta) = all_meta.get(&pane.id) {
-                pane_json["agent"] = serde_json::to_value(meta).unwrap_or_default();
-            }
-            pane_json
-        })
-        .collect();
-    Json(serde_json::json!({"status": "ok", "panes": panes_with_meta}))
-}
-
-/// tmux send-keys パラメータ
-#[derive(Deserialize)]
-pub struct TmuxSendKeysParams {
-    pub pane_id: String,
-    pub text: String,
-    /// true なら末尾に Enter を付与
-    #[serde(default)]
-    pub enter: bool,
-}
-
-/// POST /api/tmux/send-keys - ペインにキー入力送信
-pub async fn tmux_send_keys_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<TmuxSendKeysParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    // テキスト送信
-    match handle.send_keys(&params.pane_id, &params.text).await {
-        Ok(()) => {}
-        Err(e) => return Json(serde_json::json!({"error": e})),
-    }
-    // enter=true なら Enter キーを別途送信（tmux send-keys は引数単位で解釈する）
-    if params.enter
-        && let Err(e) = handle.send_keys(&params.pane_id, "Enter").await
-    {
-        return Json(serde_json::json!({"error": e}));
-    }
-    Json(serde_json::json!({"status": "ok"}))
-}
-
-/// tmux resolve-pane パラメータ
-#[derive(Deserialize)]
-pub struct TmuxResolvePaneParams {
-    /// label または pane_id（%始まり）
-    pub q: String,
-}
-
-/// GET /api/tmux/resolve-pane - label/pane_id からペイン ID を解決
-///
-/// `q` が lane address（`<project>/conductor` / `<project>/performer/<name>`）の場合は、
-/// その lane の実 tmux session 名を解決して返す（`pane_id` field に session 名が入る）。
-/// `tmux send-keys -t <session>` は session の active pane に届くため、 nudge は単一
-/// TmuxActor の束縛 session や agent_metadata を介さずに任意 lane へ届く。
-/// lane address でない場合は従来の pane_id（`%`始まり）/ agent_metadata label 解決に fallback。
-pub async fn tmux_resolve_pane_handler(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<TmuxResolvePaneParams>,
-) -> impl IntoResponse {
-    // lane address なら実 session に解決（nudge の正典経路）
-    if let Some(session) = state.resolve_lane_session(&params.q).await {
-        return Json(
-            serde_json::json!({"status": "ok", "pane_id": session, "meta": serde_json::Value::Null}),
-        );
-    }
-
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    match handle.resolve_pane_id(&params.q).await {
-        Some(pane_id) => {
-            let meta = handle.get_agent_meta(&pane_id).await;
-            Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "meta": meta}))
-        }
-        None => Json(serde_json::json!({"error": format!("ペインが見つかりません: {}", params.q)})),
-    }
-}
-
-/// tmux agent-meta パラメータ
-#[derive(Deserialize)]
-pub struct TmuxAgentMetaParams {
-    pub pane_id: String,
-}
-
-/// GET /api/tmux/agent-meta - エージェントメタデータ取得
-pub async fn tmux_agent_meta_handler(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<TmuxAgentMetaParams>,
-) -> impl IntoResponse {
-    let handle = match state.ensure_tmux().await {
-        Some(h) => h,
-        None => {
-            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
-        }
-    };
-    let meta = handle.get_agent_meta(&params.pane_id).await;
-    Json(serde_json::json!({"status": "ok", "meta": meta}))
-}
-
-// ===== Ruby VM ハンドラー =====
-
-/// Ruby eval パラメータ
-#[derive(Deserialize)]
-pub struct RubyEvalParams {
-    pub code: Option<String>,
-    pub file: Option<String>,
-    pub pane_id: Option<String>,
-}
-
-/// POST /api/ruby/eval - Ruby コードを即座に実行
-pub async fn ruby_eval_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<RubyEvalParams>,
-) -> impl IntoResponse {
-    let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
-
-    let result = crate::process::process_runner::ruby_eval(
-        params.code.as_deref(),
-        params.file.as_deref(),
-        &pane_id,
-        &state.project_dir,
-        &state.hub,
-    )
-    .await;
-
-    match result {
-        Ok(r) => Json(serde_json::json!({
-            "status": "ok",
-            "stdout": r.stdout,
-            "stderr": r.stderr,
-            "exit_code": r.exit_code,
-            "elapsed_ms": r.elapsed_ms,
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// Ruby run パラメータ
-#[derive(Deserialize)]
-pub struct RubyRunParams {
-    pub code: Option<String>,
-    pub file: Option<String>,
-    pub name: Option<String>,
-    pub pane_id: Option<String>,
-}
-
-/// POST /api/ruby/run - Ruby デーモンプロセスを起動
-pub async fn ruby_run_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<RubyRunParams>,
-) -> impl IntoResponse {
-    let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
-
-    let result = crate::process::process_runner::ruby_run(
-        &state.process_registry,
-        params.code.as_deref(),
-        params.file.as_deref(),
-        params.name.as_deref(),
-        &pane_id,
-        &state.project_dir,
-        &state.hub,
-    )
-    .await;
-
-    match result {
-        Ok(process_id) => Json(serde_json::json!({
-            "status": "ok",
-            "process_id": process_id,
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// Ruby stop パラメータ
-#[derive(Deserialize)]
-pub struct RubyStopParams {
-    pub process_id: String,
-}
-
-/// POST /api/ruby/stop - Ruby プロセスを停止
-pub async fn ruby_stop_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<RubyStopParams>,
-) -> impl IntoResponse {
-    match crate::process::process_runner::ruby_stop(&state.process_registry, &params.process_id)
-        .await
-    {
-        Ok(()) => Json(serde_json::json!({
-            "status": "ok",
-            "message": format!("プロセス {} に停止シグナルを送信しました", params.process_id),
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// GET /api/ruby/list - 実行中の Ruby プロセス一覧
-pub async fn ruby_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let processes = state.process_registry.lock().await.list();
-    Json(serde_json::json!({
-        "status": "ok",
-        "processes": processes,
-    }))
-}
-
-// =========================================================================
-// ProcessRunner 汎用 API ハンドラー
-// =========================================================================
-
-/// POST /api/process/run — 任意コマンドを起動
-pub async fn process_run_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<crate::process::process_runner::RunParams>,
-) -> impl IntoResponse {
-    let result = crate::process::process_runner::process_run(
-        &state.process_registry,
-        &params,
-        &state.project_dir,
-        &state.hub,
-    )
-    .await;
-
-    match result {
-        Ok(process_id) => Json(serde_json::json!({
-            "status": "ok",
-            "process_id": process_id,
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// POST /api/process/run-eval — 短命実行
-pub async fn process_run_eval_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<crate::process::process_runner::RunEvalParams>,
-) -> impl IntoResponse {
-    let result =
-        crate::process::process_runner::process_run_eval(&params, &state.project_dir, &state.hub)
-            .await;
-
-    match result {
-        Ok(r) => Json(serde_json::json!({
-            "status": "ok",
-            "stdout": r.stdout,
-            "stderr": r.stderr,
-            "exit_code": r.exit_code,
-            "elapsed_ms": r.elapsed_ms,
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// POST /api/process/stop — プロセス停止
-pub async fn process_stop_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<RubyStopParams>,
-) -> impl IntoResponse {
-    match crate::process::process_runner::process_stop(&state.process_registry, &params.process_id)
-        .await
-    {
-        Ok(()) => Json(serde_json::json!({
-            "status": "ok",
-            "message": format!("プロセス {} に停止シグナルを送信しました", params.process_id),
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// POST /api/process/inject — コード注入
-pub async fn process_inject_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<crate::process::process_runner::InjectParams>,
-) -> impl IntoResponse {
-    match crate::process::process_runner::process_inject(&state.process_registry, &params).await {
-        Ok(()) => Json(serde_json::json!({
-            "status": "ok",
-            "message": format!("プロセス {} にコードを注入しました", params.process_id),
-        })),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e,
-        })),
-    }
-}
-
-/// GET /api/process/list — プロセス一覧
-pub async fn process_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let processes = state.process_registry.lock().await.list();
-    Json(serde_json::json!({
-        "status": "ok",
-        "processes": processes,
-    }))
-}
+// L0 portless Group B-3: Ruby VM HTTP handler (eval/run/stop/list) は唯一の consumer だった MCP を
+// process-proxy ask (`unison_server::handle_ruby_*`、 同じ `process_runner::ruby_*` core) に移管し撤去。
+// L0 portless: `/api/process/*` (ProcessRunner 汎用 HTTP) handler 群は consumer 消滅で撤去。
+// 生きてる process 操作は QUIC `process` channel (`unison_server::handle_process_*`) が
+// 同じ `process_runner` core を呼ぶので、 HTTP 入口だけ落とせば core は維持される。
 
 #[cfg(test)]
 mod tests {
@@ -1194,6 +485,13 @@ mod tests {
         assert!(
             body.get("stands").is_some(),
             "stands field 必須 (= Stand status map)"
+        );
+        // hub federation 状態（test AppState は HubFederationStatus::new() = Disabled）。
+        // field 名変更 / as_str() パス破壊の regression net。
+        assert_eq!(
+            body.get("hub").and_then(|v| v.as_str()),
+            Some("disabled"),
+            "hub field 必須 (SP/test mode は Disabled = \"disabled\")"
         );
     }
 }

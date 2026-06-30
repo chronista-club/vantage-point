@@ -88,6 +88,10 @@ function hintFor(proc: ProjectPaneState, laneCount: number): string | null {
 export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 	const lanes = () => sidebar.lanes_by_project[props.proc.path] ?? [];
 	const hint = () => hintFor(props.proc, lanes().length);
+	// L1 lifecycle: SP の presence（daemon-canonical、`/api/health` の processes[] 由来）。
+	// entry 不在（旧 daemon / 未取得）は "unregistered" 扱いで ○（dim）。
+	const presence = () =>
+		sidebar.activity.presence?.[props.proc.path] ?? "unregistered";
 	// active project = 現在 active な Lane を含む project。 Add Performer の「+」はこの時だけ出す。
 	const isActiveProject = () => {
 		const a = sidebar.active_lane_address;
@@ -251,6 +255,16 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 			onDragEnd={clearDrag}
 		>
 			<summary class="vp-proj-summary" onContextMenu={onSummaryContextMenu}>
+				<span
+					class="vp-proj-presence-dot"
+					classList={{
+						connected: presence() === "connected",
+						connecting: presence() === "connecting",
+						disconnected: presence() === "disconnected",
+						unregistered: presence() === "unregistered",
+					}}
+					title={`SP presence: ${presence()}`}
+				/>
 				<CreoIcon
 					name={props.proc.expanded ? "ph:folder-open" : "ph:folder"}
 					size={14}

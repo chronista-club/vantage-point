@@ -5,27 +5,15 @@
 //! 既存の `process/pty.rs` の PtySession を基に、Daemon用に再設計。
 //! base64エンコードはしない（IPC層の責務）。
 //!
-//! ## Phase 2.x-c: scrollback ring buffer
-//!
-//! 過去 256 KB の output を保持し、 新規 subscriber に initial replay する。
-//! Lane 切替や vp-app 再起動で同じ Lane に戻ってきた時、 broadcast::channel(256)
-//! の buffer は即過去になっていて scroll back が見られない問題の解消。
-//!
-//! Atomicity: reader_task が `ring.push + broadcast.send` を **同一 lock 内** で行う。
-//! 新 subscriber は `ring.lock + subscribe + clone snapshot` を atomic に行うことで、
-//! 重複なし・取りこぼしなしで initial bytes と継続 stream の境界を作れる。
+//! terminal S4 (doc 27 §4.1): PTY 出力は broadcast → per-lane terminal pump →
+//! World "canvas" topic 空間に流れる。 旧 `/ws/terminal` attach 時の scrollback replay
+//! (ring buffer) は consumer (ws_terminal) ごと撤去した (live stream のみ)。
 
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::broadcast;
-
-/// scrollback ring buffer の最大保持 bytes (= 256 KB)。
-/// xterm.js 側 scrollback:5000 行 と粒度合わせ。 大半の terminal 利用シーンで十分、
-/// `claude` の長い summary でも overflow しない。
-const SCROLLBACK_CAP: usize = 256 * 1024;
 
 /// PTYプロセスを管理するスロット
 ///
@@ -44,10 +32,6 @@ pub struct PtySlot {
     shell_cmd: String,
     /// 出力配信チャネル（送信側）
     output_tx: broadcast::Sender<Vec<u8>>,
-    /// Phase 2.x-c: scrollback ring buffer (新規 subscriber への initial replay 用)。
-    /// reader_task が push + broadcast.send を同一 lock 内で行うことで、
-    /// `subscribe_with_scrollback` が atomic な「snapshot + subscribe」 を実現できる。
-    scrollback: Arc<Mutex<Vec<u8>>>,
     /// reader task のハンドル
     _reader_handle: tokio::task::JoinHandle<()>,
 }
@@ -107,6 +91,19 @@ impl PtySlot {
             );
         }
 
+        // TERM 補正: vp-app を GUI / launchd 経由で起動 (= 再起動後の LaunchAgent 自動起動) すると、
+        // daemon プロセスは端末非接続で TERM を持たない。 echoes stand の `tmux new-session -A`
+        // (attach 付き) は terminfo 引きに TERM を要求するため、 TERM 不在だと
+        // "open terminal failed: terminal does not support clear" で即 exit → stand spawn が
+        // 800ms 以内に死に lane が即 Dead 化 → Echoes コンソールが出ない。 PATH 補正 (#498) と
+        // 同じ launchd-env-stripping の双子で、 plist EnvironmentVariables も PATH だけ焼いて
+        // TERM を取りこぼしていた。 この PTY の出力は vp-app の xterm.js が描画する (echoes script
+        // も `terminal-overrides ',xterm-256color:Tc'` を前提) ので、 TERM=xterm-256color を
+        // 既定とする。 caller が env で明示注入した場合はそれを尊重する。
+        if !env.iter().any(|(k, _)| k == "TERM") {
+            cmd.env("TERM", "xterm-256color");
+        }
+
         // 子プロセスを起動（ゾンビ防止のためハンドルを保持する）
         let child = pair.slave.spawn_command(cmd)?;
         let pid = child.process_id().unwrap_or(0);
@@ -120,12 +117,8 @@ impl PtySlot {
         // これにより PTY からの最初のバイト（シェルプロンプト等）を取りこぼさない。
         let (output_tx, initial_rx) = broadcast::channel(256);
 
-        // Phase 2.x-c: scrollback ring buffer (256 KB)
-        let scrollback: Arc<Mutex<Vec<u8>>> =
-            Arc::new(Mutex::new(Vec::with_capacity(SCROLLBACK_CAP)));
-
-        // reader task 開始 (scrollback も共有)
-        let reader_handle = start_reader_task(reader, output_tx.clone(), scrollback.clone());
+        // reader task 開始
+        let reader_handle = start_reader_task(reader, output_tx.clone());
 
         Ok((
             Self {
@@ -135,7 +128,6 @@ impl PtySlot {
                 pid,
                 shell_cmd: shell_cmd.to_string(),
                 output_tx,
-                scrollback,
                 _reader_handle: reader_handle,
             },
             initial_rx,
@@ -163,25 +155,6 @@ impl PtySlot {
     /// 出力ストリームを購読（broadcast receiver）
     pub fn subscribe_output(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
-    }
-
-    /// Phase 2.x-c: scrollback 付きで購読する。
-    ///
-    /// `(rx, initial_bytes)` を atomic に取得 ── ring の lock を持っている間に
-    /// `subscribe()` を呼ぶことで、 reader_task が次の push + send をするまでに
-    /// 我々が新 subscriber として登録される。 結果:
-    /// - `initial_bytes`: lock 取得時点までの ring 内容 (= 過去 256 KB の output)
-    /// - `rx`: lock 取得後の broadcast.send を全て受信
-    /// - 重複なし、 取りこぼしなし
-    ///
-    /// 用途: vp-app が `/ws/terminal?lane=...` で attach してきた時、
-    /// initial_bytes を WS Binary で先送して履歴を再生する。
-    pub fn subscribe_with_scrollback(&self) -> (broadcast::Receiver<Vec<u8>>, Vec<u8>) {
-        let ring = self.scrollback.lock().expect("scrollback mutex poisoned");
-        let initial = ring.clone();
-        let rx = self.output_tx.subscribe();
-        drop(ring);
-        (rx, initial)
     }
 
     /// プロセスID
@@ -219,16 +192,11 @@ impl Drop for PtySlot {
 
 /// PTY出力読み取りタスクを起動
 ///
-/// PTY の master fd からバイト列を読み取り、
-/// 1) **scrollback ring に append** (cap 超過分は drain で削除)
-/// 2) **broadcast channel に send** (両者を同一 lock 内で行うことで
-///    `subscribe_with_scrollback` の atomicity を保証)
-///
+/// PTY の master fd からバイト列を読み取り、 broadcast channel に send する。
 /// base64 エンコードはしない (IPC 層の責務)。
 fn start_reader_task(
     mut reader: Box<dyn Read + Send>,
     tx: broadcast::Sender<Vec<u8>>,
-    scrollback: Arc<Mutex<Vec<u8>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
@@ -241,23 +209,8 @@ fn start_reader_task(
                 }
                 Ok(n) => {
                     let chunk = buf[..n].to_vec();
-                    // Phase 2.x-c: ring + broadcast を同一 lock 内で送出 (atomicity 保証)
-                    {
-                        let mut ring = match scrollback.lock() {
-                            Ok(g) => g,
-                            Err(e) => {
-                                tracing::warn!("scrollback mutex poisoned: {}", e);
-                                break;
-                            }
-                        };
-                        ring.extend_from_slice(&chunk);
-                        if ring.len() > SCROLLBACK_CAP {
-                            let drop_n = ring.len() - SCROLLBACK_CAP;
-                            ring.drain(..drop_n);
-                        }
-                        // 受信者がいなくても送信を試行（正常動作）
-                        let _ = tx.send(chunk);
-                    } // unlock
+                    // 受信者がいなくても送信を試行（正常動作）
+                    let _ = tx.send(chunk);
                 }
                 Err(e) => {
                     tracing::warn!("PtySlot reader error: {}", e);
@@ -353,6 +306,46 @@ mod tests {
         }
 
         assert!(found, "PTY 出力に HELLO_PTY_SLOT が含まれなかった");
+    }
+
+    /// 回帰 (console-blackout root cause): PTY child は親プロセスの TERM 有無に依らず
+    /// TERM=xterm-256color を受け取る。 launchd 自動起動の daemon は端末非接続で TERM を
+    /// 継承しないため、 TERM 不在だと echoes の `tmux new-session -A` が "open terminal
+    /// failed" で即死 → lane spawn 全滅 → console が出ない。 PtySlot が TERM 既定を注入する
+    /// ことで daemon の TERM 有無に依らず stand が描画可能になることを pin する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_pty_spawn_injects_term_default() {
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        // 子の $TERM を marker 付きで 1 発出力して即終了する非対話 shell。 env 未指定 (&[]) なので
+        // PtySlot が TERM 既定を注入するはず。 親の TERM 値に依らず子側の値だけを検証できる。
+        let args = vec![
+            "-c".to_string(),
+            "printf 'VPTERM[%s]\\n' \"$TERM\"; sleep 0.2".to_string(),
+        ];
+        let (_slot, mut rx) =
+            PtySlot::spawn(&cwd, "/bin/sh", &args, &[], 80, 24).expect("PTY spawn に失敗");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut buf = String::new();
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+                Ok(Ok(data)) => {
+                    buf.push_str(&String::from_utf8_lossy(&data));
+                    if buf.contains("VPTERM[") && buf.contains(']') {
+                        break;
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+
+        assert!(
+            buf.contains("VPTERM[xterm-256color]"),
+            "PTY child の TERM が xterm-256color でない: 受信={:?}",
+            buf
+        );
     }
 
     #[tokio::test]

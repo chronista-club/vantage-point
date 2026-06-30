@@ -5,7 +5,9 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::commands::process_client::ProcessClient;
+use crate::commands::process_client::{
+    resolve_project_path_from_target, world_process_request_blocking,
+};
 use crate::config::Config;
 use crate::protocol::{Content, ProcessMessage, SplitDirection};
 
@@ -31,9 +33,6 @@ pub enum PaneCommands {
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
-        /// 接続先ポート番号
-        #[arg(long)]
-        port: Option<u16>,
     },
     /// ペインをクリア
     Clear {
@@ -43,9 +42,6 @@ pub enum PaneCommands {
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
-        /// 接続先ポート番号
-        #[arg(long)]
-        port: Option<u16>,
     },
     /// ペインを分割
     Split {
@@ -58,9 +54,6 @@ pub enum PaneCommands {
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
-        /// 接続先ポート番号
-        #[arg(long)]
-        port: Option<u16>,
     },
     /// ペインを閉じる
     Close {
@@ -69,9 +62,6 @@ pub enum PaneCommands {
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
-        /// 接続先ポート番号
-        #[arg(long)]
-        port: Option<u16>,
     },
     /// パネルの表示/非表示を切り替え
     Toggle {
@@ -83,9 +73,6 @@ pub enum PaneCommands {
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
-        /// 接続先ポート番号
-        #[arg(long)]
-        port: Option<u16>,
     },
 }
 
@@ -99,9 +86,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             append,
             title,
             target,
-            port,
         } => {
-            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             let pane_id = pane_id.unwrap_or_else(|| "main".to_string());
 
             let content_enum = match format.as_str() {
@@ -119,24 +105,30 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 // CLI 実行 cwd の Lane を stamp（performer lane dir からならその PP に届く）
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            client.post("/api/show", &msg)?;
+            world_process_request_blocking(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "show",
+                serde_json::to_value(&msg)?,
+            )?;
 
             println!("Content displayed in pane '{}'", pane_id);
             Ok(())
         }
-        PaneCommands::Clear {
-            pane_id,
-            target,
-            port,
-        } => {
-            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+        PaneCommands::Clear { pane_id, target } => {
+            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             let pane_id = pane_id.unwrap_or_else(|| "main".to_string());
 
             let msg = ProcessMessage::Clear {
                 pane_id: pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            client.post("/api/show", &msg)?;
+            world_process_request_blocking(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "show",
+                serde_json::to_value(&msg)?,
+            )?;
             println!("Pane '{}' cleared", pane_id);
             Ok(())
         }
@@ -144,9 +136,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             direction,
             source,
             target,
-            port,
         } => {
-            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             let source_pane_id = source.unwrap_or_else(|| "main".to_string());
 
             let dir = match direction.to_lowercase().as_str() {
@@ -164,24 +155,30 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 new_pane_id: new_pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            client.post("/api/split-pane", &msg)?;
+            world_process_request_blocking(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "split_pane",
+                serde_json::to_value(&msg)?,
+            )?;
             println!(
                 "Pane '{}' split. New pane ID: '{}'",
                 source_pane_id, new_pane_id
             );
             Ok(())
         }
-        PaneCommands::Close {
-            pane_id,
-            target,
-            port,
-        } => {
-            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+        PaneCommands::Close { pane_id, target } => {
+            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             let msg = ProcessMessage::Close {
                 pane_id: pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            client.post("/api/close-pane", &msg)?;
+            world_process_request_blocking(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "close_pane",
+                serde_json::to_value(&msg)?,
+            )?;
             println!("Pane '{}' closed", pane_id);
             Ok(())
         }
@@ -189,15 +186,19 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             pane_id,
             visible,
             target,
-            port,
         } => {
-            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             let msg = ProcessMessage::TogglePane {
                 pane_id: pane_id.clone(),
                 visible,
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            client.post("/api/toggle-pane", &msg)?;
+            world_process_request_blocking(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "toggle_pane",
+                serde_json::to_value(&msg)?,
+            )?;
 
             let state = match visible {
                 Some(true) => "shown",

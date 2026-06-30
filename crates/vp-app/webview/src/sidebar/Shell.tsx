@@ -310,6 +310,16 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--color-status-success,#3fb950);}
 .vp-world-dot.offline{background:var(--color-status-error,#d4444c);}
+/* L1 lifecycle: project 行の SP presence dot（●◐○）。daemon-canonical の接続状態を可視化。
+   default は unregistered 相当（dim）、 各 state class で色付け。 connecting は pulse。 */
+.vp-proj-presence-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
+  background:var(--color-text-tertiary,#6e7681);opacity:.5;}
+.vp-proj-presence-dot.connected{background:var(--color-status-success,#3fb950);opacity:1;}
+.vp-proj-presence-dot.connecting{background:var(--color-status-warning,#d49b3f);opacity:1;
+  animation:vp-presence-pulse 1.1s ease-in-out infinite;}
+.vp-proj-presence-dot.disconnected{background:var(--color-status-error,#d4444c);opacity:1;}
+.vp-proj-presence-dot.unregistered{background:var(--color-text-tertiary,#6e7681);opacity:.5;}
+@keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
 .vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums;}
 .vp-world-detail{padding:var(--spacing-xs,4px) var(--spacing-sm,8px);
@@ -318,6 +328,21 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
   padding:1px 0;}
 .vp-world-stat .k{color:var(--color-text-tertiary);}
 .vp-world-stat .v{color:var(--color-text-primary);font-weight:500;
+  font-variant-numeric:tabular-nums;}
+
+/* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
+.vp-devices{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);}
+.vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
+  padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:12px;
+  color:var(--color-text-secondary);}
+.vp-stand-row:hover{background:var(--color-surface-bg-emphasis);}
+.vp-stand-row.active{background:var(--color-brand-primary-subtle);
+  color:var(--color-brand-primary);}
+.vp-stand-icon{display:flex;align-items:center;flex:0 0 auto;}
+.vp-stand-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;}
+.vp-stand-badge{flex:0 0 auto;font-size:10px;padding:1px 6px;border-radius:8px;
+  background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);
   font-variant-numeric:tabular-nums;}
 
 /* Lane 行 右クリック context menu (VP-204 PR-1、 singleton popup) */

@@ -151,157 +151,115 @@ async fn query_world() -> Option<Vec<ProcessInfo>> {
     )
 }
 
-/// 特定ポートの Process から terminal_token を取得
-pub async fn fetch_terminal_token(port: u16) -> Option<String> {
-    let client = build_client(1000);
-    let url = format!("http://[::1]:{}/api/health", port);
-
-    let resp = client.get(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let health = resp.json::<HealthResponse>().await.ok()?;
-    health.terminal_token
-}
-
 /// Terminal トークンを生成（UUID v4）
 pub fn generate_terminal_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-// ─── QUIC Registry 登録（TheWorld 永続接続）───────────────
+// ─── World uplink（SP → TheWorld :32000、1 connection × N streams）───────────────
+//
+// F1a (doc 27 §3.4.4): registry / canvas-ingest / control の SP outbound 接続を、
+// 旧構成の「各々別 QUIC connection + 別 reconnect supervisor」(= N conn × 各 1 stream、
+// QUIC multiplex を使えていない負債) から **1 共有 connection に集約**する。
+//
+// 構成: 1 共有 `ProtocolClient` を connect → 3 channel を open (= 3 stream) → channel ごとの
+// 並行性を保つため canvas/control は独立 driver task に分離 (registry は低頻度なので supervisor
+// 同居)。connection drop は `subscribe_connection_events` で 1 本の supervisor が検知し、epoch
+// token で driver を一括 teardown → 再接続 → 全 channel 再 open。
+//
+// driver を別 task に保つ理由: 1 select ループに畳むと canvas の terminal 出力 push (高頻度) の
+// `send_event().await` が control の reverse-request (keystroke = terminal_write) を待たせ
+// keystroke latency が悪化する。connection は 1 本だが stream ごとの独立性は維持する。
 
-/// TheWorld に QUIC "registry" チャネルで接続し、自己登録 + heartbeat を維持する
+/// SP → TheWorld の uplink を 1 connection に集約して維持する。
 ///
-/// 切断時は自動的に再接続を試みる。shutdown_token がキャンセルされるまでループ。
-/// TheWorld 側の registry チャネルハンドラが切断を検知 → running_processes から即時除去。
+/// 切断時は exp backoff で自動再接続。`shutdown` cancel まで loop。TheWorld 側の registry
+/// channel handler が切断を検知 → running_processes から即時除去。
 ///
-/// Phase 1d: agent_card に `lanes` field を含める。 SP startup 時点の `LanePool::list()` を
-/// JSON 化して push (initial snapshot)。 Lane lifecycle 変更 (Performer create/destroy) の diff
-/// push は Phase 2 の Step E で実装、 現在は initial snapshot のみで Conductor を反映。
-pub fn spawn_registry_keepalive(
-    port: u16,
-    project_dir: &str,
-    pid: u32,
-    terminal_token: &str,
-    lane_pool: std::sync::Arc<tokio::sync::RwLock<crate::process::lanes_state::LanePool>>,
-    system_event_tx: tokio::sync::broadcast::Sender<crate::process::lanes_state::SystemEvent>,
+/// 旧 `spawn_registry_keepalive` / `spawn_canvas_keepalive` / `spawn_control_keepalive` を
+/// 統合 (F1a)。依存は全て `AppState` から引く (project_dir / port / terminal_token /
+/// topic_router / lane_pool / system_event_tx)。
+pub(crate) fn spawn_world_uplink(
+    state: std::sync::Arc<crate::process::state::AppState>,
     shutdown: CancellationToken,
 ) {
-    let project_name = std::path::Path::new(project_dir)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    // config からプロジェクト名を解決（ディレクトリ名がデフォルト）
-    let project_name = if let Ok(config) = Config::load() {
-        let normalized = Config::normalize_path(std::path::Path::new(project_dir));
-        config
-            .projects
-            .iter()
-            .find(|p| Config::normalize_path(std::path::Path::new(&p.path)) == normalized)
-            .map(|p| p.name.clone())
-            .unwrap_or(project_name)
-    } else {
-        project_name
-    };
-
-    // tmux_session は conductor lane の実 session（lane scheme `vp-{project}-conductor-{stand}`）を
-    // agent_card build 時に lane_pool から反映する（spawn 内、 下記）。 SP は固定の自前 session を
-    // 持たないため、 旧 `{project}-vp` 固定値は廃止（fix-tmux-session-naming）。
-
-    // Phase 1d: agent_card は tokio::spawn 内で build (lane_pool の最新を読むため async 必要)。
-    // outer の sync context で build する project_name は move、 lane_pool は Arc clone で渡す。
-    let project_name_for_async = project_name.clone();
-    let project_dir_owned = project_dir.to_string();
-    let terminal_token_owned = terminal_token.to_string();
-    let lane_pool_for_async = lane_pool.clone();
-
-    // 前提: 旧 agent_card の build を tokio::spawn 内に移すため、 ここでは build しない。
-    // (旧コードでは sync で build した JSON Value を closure に move していた)
+    let project_dir = state.project_dir.clone();
+    let project_name = resolve_project_name(&project_dir);
+    let port = state.port;
+    let pid = std::process::id();
 
     // Phase 5-D: exponential backoff for reconnect resilience。
     //  TheWorld 復活時に **全 SP が同時に殺到して thundering herd** になるのを避ける。
-    //  1s → 2s → 4s → 8s → 16s → 32s → 60s (cap) の順、 接続成功で 1s に reset。
-    //  Stand-side initiated reconnect (Mako 設計方針 2026-04-28)。
+    //  1s → 2s → 4s → 8s → 16s → 32s → 60s (cap)、 接続成功で 1s に reset。
     const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut backoff = INITIAL_BACKOFF;
 
+    // SystemEvent 購読は epoch を跨いで保持する (再接続中に落ちた diff は、再接続時の
+    // register が full lane snapshot を送るので resync される)。
+    let mut event_rx = state.system_event_tx.subscribe();
+
     tokio::spawn(async move {
-        // Phase 1d: agent_card を spawn 内で build (lane_pool の最新 snapshot を反映)。
-        // 旧 sync 構築から async 構築に変更、 reconnect 時は同 JSON を再使用 (Phase 1 MVP)。
-        // Phase 2 の Step E で reconnect 時に lane_pool 再 read + diff push を検討。
-        let lanes = lane_pool_for_async.read().await.list();
-        // conductor lane の実 tmux session を agent_card に反映（無ければ None）。
-        let tmux_session = lanes
-            .iter()
-            .find(|l| l.kind == crate::process::lanes_state::LaneKind::Conductor)
-            .and_then(|l| l.tmux.first())
-            .map(|t| t.session.clone());
-        let agent_card = serde_json::json!({
-            "project_name": project_name_for_async,
-            "port": port,
-            "project_dir": project_dir_owned,
-            "pid": pid,
-            "terminal_token": terminal_token_owned,
-            "tmux_session": tmux_session,
-            "lanes": lanes,
-        });
-
-        // Phase 2 (Step E): SystemEvent broadcast subscriber (central system bus)。
-        // SP の caller (lane_spawn_actor / routes/* 等) が `system_event_tx.send(SystemEvent::*)`
-        // で publish、 本 keepalive task が QUIC registry channel で TheWorld に push する経路。
-        // reconnect で QUIC 入替時も event_rx は同じ Sender に接続されたまま (lag は警告のみ)。
-        let mut event_rx = system_event_tx.subscribe();
-
         loop {
-            // VP-187 round 1 review: shutdown と QUIC 切断 event が同時に発火した場合、
-            // 内側 select! が conn_ev arm を選ぶと外側 loop を 1 周回して余分な
-            // connect_and_register を試みる。 外側 loop 先頭で shutdown を確認して
-            // 余分な再接続試行 (= log ノイズ) を防ぐ。
             if shutdown.is_cancelled() {
                 return;
             }
-            // TheWorld に QUIC 接続
-            match connect_and_register(&agent_card).await {
-                Ok(conn) => {
+
+            // agent_card は接続ごとに build (lane_pool の最新 snapshot を反映)。
+            let agent_card = build_agent_card(&state, &project_name, port, pid).await;
+
+            match connect_world_uplink(&project_dir, &agent_card).await {
+                Ok(uplink) => {
                     tracing::info!(
-                        "Registry: QUIC 登録成功 (project={}, port={})",
-                        project_name_for_async,
+                        "World uplink: 1 conn × 3 channel 確立 (project={}, port={})",
+                        project_name,
                         port
                     );
-                    // 成功で backoff reset (次の disconnect 時に 1s からやり直し)
                     backoff = INITIAL_BACKOFF;
 
-                    // Heartbeat ループ（15秒間隔）
-                    // conn（ProtocolClient + UnisonChannel）はこのスコープで保持
+                    let WorldUplink {
+                        client,
+                        registry,
+                        canvas_ingest,
+                        control,
+                    } = uplink;
+
+                    // epoch: この接続の driver task を一括 teardown するための token。
+                    // driver は自分の channel error 時に epoch.cancel() して supervisor に
+                    // 再接続を促す (= supervisor は epoch.cancelled() を監視するだけで良い)。
+                    let epoch = CancellationToken::new();
+                    let h_canvas = tokio::spawn(run_canvas_driver(
+                        canvas_ingest,
+                        state.topic_router.clone(),
+                        project_dir.clone(),
+                        epoch.clone(),
+                    ));
+                    let h_control = tokio::spawn(run_control_driver(
+                        control,
+                        state.clone(),
+                        project_dir.clone(),
+                        epoch.clone(),
+                    ));
+
+                    // registry (heartbeat 15s + lane diff push、 低頻度 outbound) は supervisor に
+                    // 同居。 conn drop 検知 / driver 終了監視 (epoch) / shutdown も同 loop で扱う。
+                    let mut conn_events = client.subscribe_connection_events();
                     let mut interval = tokio::time::interval(Duration::from_secs(15));
                     interval.tick().await; // 最初の tick をスキップ
 
-                    // VP-187: connection event hook。 QUIC connection drop を即座に検知し、
-                    // 15 秒周期の heartbeat 失敗を待たずに再接続へ抜ける。 heartbeat は
-                    // keepalive (= SP → TheWorld registry の生存通知) として維持。
-                    let mut conn_events = conn._client.subscribe_connection_events();
-
-                    loop {
+                    let should_reconnect = loop {
                         tokio::select! {
                             _ = interval.tick() => {
-                                if conn.channel
+                                if registry
                                     .request::<serde_json::Value, serde_json::Value>("heartbeat", &serde_json::json!({}))
                                     .await
                                     .is_err()
                                 {
-                                    tracing::warn!(
-                                        "Registry: heartbeat 失敗 → 再接続"
-                                    );
-                                    break; // 外側ループで再接続
+                                    tracing::warn!("World uplink: registry heartbeat 失敗 → 再接続");
+                                    break true;
                                 }
                             }
                             event_result = event_rx.recv() => {
-                                // Phase 2 (Step E): SystemEvent を QUIC channel で TheWorld に push
                                 use crate::process::lanes_state::{Diff, SystemEvent};
                                 match event_result {
                                     Ok(SystemEvent::Lane(diff)) => {
@@ -310,60 +268,69 @@ pub fn spawn_registry_keepalive(
                                             Diff::Remove { .. } => "lanes/remove",
                                             Diff::Update { .. } => "lanes/update",
                                         };
-                                        if conn
-                                            .channel
+                                        if registry
                                             .request::<serde_json::Value, serde_json::Value>(method, &serde_json::to_value(&diff).unwrap_or_default())
                                             .await
                                             .is_err()
                                         {
                                             tracing::warn!(
-                                                "Registry: SystemEvent push 失敗 ({}) → 再接続 (snapshot で resync)",
+                                                "World uplink: SystemEvent push 失敗 ({}) → 再接続 (snapshot resync)",
                                                 method
                                             );
-                                            break;
+                                            break true;
                                         }
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                         tracing::warn!(
-                                            "Registry: SystemEvent lagged {} events、 reconnect で snapshot 再 sync",
+                                            "World uplink: SystemEvent lagged {} events、 reconnect で snapshot 再 sync",
                                             n
                                         );
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                        tracing::info!("Registry: SystemEvent channel closed、 keepalive 終了");
-                                        return;
+                                        tracing::info!("World uplink: SystemEvent channel closed、 uplink 終了");
+                                        break false;
                                     }
                                 }
                             }
                             conn_ev = conn_events.recv() => {
-                                // VP-187: QUIC connection lifecycle event。 Disconnected を
-                                // 受けたら即座に内側 loop を抜けて外側 loop で再接続する。
-                                // Connected (= 接続済) / Lagged / Closed は無視 — Closed は
-                                // client drop 時のみで、 その場合 heartbeat も失敗するため
-                                // 外側 loop の再接続に自然合流する。
                                 use unison::network::ClientConnectionEvent;
                                 if let Ok(ClientConnectionEvent::Disconnected { reason }) = conn_ev {
-                                    tracing::warn!(
-                                        "Registry: QUIC 切断検知 ({}) → 即再接続",
-                                        reason
-                                    );
-                                    break;
+                                    tracing::warn!("World uplink: QUIC 切断検知 ({}) → 即再接続", reason);
+                                    break true;
                                 }
                             }
+                            _ = epoch.cancelled() => {
+                                // canvas / control driver が channel error で epoch を畳んだ。
+                                tracing::warn!("World uplink: driver 終了検知 → 再接続");
+                                break true;
+                            }
                             _ = shutdown.cancelled() => {
-                                // グレースフル unregister
-                                let _ = conn.channel
+                                // グレースフル unregister (registry channel はまだ生きている)。
+                                let _ = registry
                                     .request::<serde_json::Value, serde_json::Value>("unregister", &serde_json::json!({}))
                                     .await;
-                                tracing::info!("Registry: QUIC 登録解除 (shutdown)");
-                                return;
+                                tracing::info!("World uplink: registry 登録解除 (shutdown)");
+                                break false;
                             }
                         }
+                    };
+
+                    // driver を畳んで完全終了を待ってから client drop (connection close)。
+                    // epoch.cancelled() で抜けた場合も idempotent。 driver は cleanup (canvas の
+                    // topic unsubscribe 等) を済ませて return するので await で待てる
+                    // (JoinHandle を select で消費していないため二度 poll の panic は起きない)。
+                    epoch.cancel();
+                    let _ = h_canvas.await;
+                    let _ = h_control.await;
+                    drop(client);
+
+                    if !should_reconnect {
+                        return;
                     }
                 }
                 Err(e) => {
                     tracing::debug!(
-                        "Registry: TheWorld 接続失敗 ({}), {}秒後にリトライ (exp backoff)",
+                        "World uplink: 接続失敗 ({}), {}秒後にリトライ (exp backoff)",
                         e,
                         backoff.as_secs()
                     );
@@ -371,7 +338,6 @@ pub fn spawn_registry_keepalive(
                         _ = tokio::time::sleep(backoff) => {}
                         _ = shutdown.cancelled() => return,
                     }
-                    // Exponential: 次回は倍、 ただし MAX_BACKOFF cap
                     backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
                 }
             }
@@ -379,22 +345,79 @@ pub fn spawn_registry_keepalive(
     });
 }
 
-/// QUIC 接続の所有権を保持する構造体
-///
-/// `ProtocolClient` が drop されると QUIC 接続も切れるため、
-/// チャネルと一緒に保持する必要がある。
-struct RegistryConnection {
-    /// QUIC 接続の所有権（drop されないように保持）
-    _client: unison::ProtocolClient,
-    /// registry チャネル（heartbeat / unregister に使用）
-    channel: unison::UnisonChannel,
+/// project_dir からプロジェクト名を解決 (config 優先、 ディレクトリ名 fallback)。
+fn resolve_project_name(project_dir: &str) -> String {
+    let dir_name = std::path::Path::new(project_dir)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // config からプロジェクト名を解決（ディレクトリ名がデフォルト）
+    if let Ok(config) = Config::load() {
+        let normalized = Config::normalize_path(std::path::Path::new(project_dir));
+        config
+            .projects
+            .iter()
+            .find(|p| Config::normalize_path(std::path::Path::new(&p.path)) == normalized)
+            .map(|p| p.name.clone())
+            .unwrap_or(dir_name)
+    } else {
+        dir_name
+    }
 }
 
-/// TheWorld の "registry" チャネルに接続し、register リクエストを送信する
-async fn connect_and_register(
+/// registry register / heartbeat 用の agent_card を最新 lane snapshot で build する。
+///
+/// Phase 1d: `lanes` field に SP 起動時点の `LanePool::list()` を含める (initial snapshot)。
+/// tmux_session は conductor lane の実 session を反映 (無ければ None、 SP は固定の自前 session を
+/// 持たないため旧 `{project}-vp` 固定値は廃止)。
+async fn build_agent_card(
+    state: &crate::process::state::AppState,
+    project_name: &str,
+    port: u16,
+    pid: u32,
+) -> serde_json::Value {
+    let lanes = state.lane_pool.read().await.list();
+    let tmux_session = lanes
+        .iter()
+        .find(|l| l.kind == crate::process::lanes_state::LaneKind::Conductor)
+        .and_then(|l| l.tmux.first())
+        .map(|t| t.session.clone());
+    serde_json::json!({
+        "project_name": project_name,
+        "port": port,
+        "project_dir": state.project_dir,
+        "pid": pid,
+        "terminal_token": state.terminal_token,
+        "tmux_session": tmux_session,
+        "lanes": lanes,
+    })
+}
+
+/// 1 共有 connection 上の SP outbound 3 channel を束ねる。
+///
+/// `_client` (= ProtocolClient) が drop されると QUIC connection も切れるため、 channel と
+/// 一緒に保持する。 registry / canvas_ingest / control は同一 connection 上の別 stream。
+struct WorldUplink {
+    /// QUIC connection の所有権 (drop で connection close)。
+    client: unison::ProtocolClient,
+    /// registry channel (heartbeat / lane diff push / unregister)。
+    registry: unison::UnisonChannel,
+    /// canvas-ingest channel (paisley-park / terminal topic を World に push)。
+    canvas_ingest: unison::UnisonChannel,
+    /// control channel (World の reverse-routing request を受ける)。
+    control: unison::UnisonChannel,
+}
+
+/// TheWorld に 1 connection で接続し、 registry / canvas-ingest / control の 3 channel を
+/// open + handshake する (= 1 conn × 3 streams)。 どれか 1 つでも失敗したら接続全体を
+/// やり直す (all-or-nothing per epoch)。
+async fn connect_world_uplink(
+    project_dir: &str,
     agent_card: &serde_json::Value,
-) -> Result<RegistryConnection, String> {
-    // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
+) -> Result<WorldUplink, String> {
+    // VP-184: Builder API (dev default を明示、 PR-3 で mesh keypair に差し替え)。
     let transport = unison::network::quic::QuicClient::builder()
         .trust_anchors(unison::network::TrustAnchors::SkipVerification)
         .build()
@@ -407,25 +430,157 @@ async fn connect_and_register(
         .await
         .map_err(|e| format!("TheWorld 接続失敗: {}", e))?;
 
-    let channel = client
+    // registry: 自己登録 (register request)。 拒否されたら接続を捨てて retry。
+    let registry = client
         .open_channel("registry")
         .await
         .map_err(|e| format!("registry チャネルオープン失敗: {}", e))?;
-
-    // register リクエスト送信
-    let resp = channel
+    let resp = registry
         .request::<serde_json::Value, serde_json::Value>("register", agent_card)
         .await
         .map_err(|e| format!("register リクエスト失敗: {}", e))?;
-
     if resp.get("error").is_some() {
         return Err(format!("register 拒否: {}", resp));
     }
 
-    Ok(RegistryConnection {
-        _client: client,
-        channel,
+    // canvas-ingest: paisley-park / terminal topic を push する outbound channel。
+    // handshake で project_path を渡す (World 側で path_key に正規化される)。
+    let canvas_ingest = client
+        .open_channel("canvas-ingest")
+        .await
+        .map_err(|e| format!("canvas-ingest チャネルオープン失敗: {}", e))?;
+    canvas_ingest
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": project_dir }),
+        )
+        .await
+        .map_err(|e| format!("canvas-ingest subscribe handshake 失敗: {}", e))?;
+
+    // control: World の reverse-routing request を受ける inbound-driven channel。
+    // World は本接続を `control_channels[path_key]` に保持し、 process-proxy 経由の外部
+    // request を逆用 forward する (SP portless 化の本丸)。
+    let control = client
+        .open_channel("control")
+        .await
+        .map_err(|e| format!("control チャネルオープン失敗: {}", e))?;
+    control
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": project_dir }),
+        )
+        .await
+        .map_err(|e| format!("control subscribe handshake 失敗: {}", e))?;
+
+    Ok(WorldUplink {
+        client,
+        registry,
+        canvas_ingest,
+        control,
     })
+}
+
+/// canvas-ingest driver: project の TopicRouter を購読し、 paisley-park / terminal topic の
+/// ProcessMessage を canvas-ingest channel に push する。
+///
+/// 接続ごとに subscribe し直すことで retained を再 seed する (World 再起動を越えた canvas
+/// state の再構築)。 channel error 時 / epoch cancel 時に subscription を畳んで return し、
+/// channel error の場合は epoch を畳んで supervisor に再接続を促す。
+async fn run_canvas_driver(
+    channel: unison::UnisonChannel,
+    topic_router: std::sync::Arc<crate::process::topic_router::TopicRouter>,
+    project_dir: String,
+    epoch: CancellationToken,
+) {
+    let (sub_id, mut rx) = topic_router.subscribe("process/paisley-park/#").await;
+    // S2 (doc 27 §4.1): terminal data も同 ingest 経路で push (lane PTY 出力 → World canvas
+    // router → surface)。 pump 不在なら本 subscription には何も流れない (= 無駄 push ゼロ)。
+    // LanesSnapshot 等の dead data 混入を避けるため `process/#` 全広げはしない。
+    let (term_sub_id, mut rx_term) = topic_router.subscribe("process/terminal/data/#").await;
+
+    loop {
+        tokio::select! {
+            recvd = rx.recv() => {
+                match recvd {
+                    Some((_topic, msg)) => {
+                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                        if channel.send_event("pane", &json).await.is_err() {
+                            tracing::warn!("World uplink/canvas: send 失敗 → 再接続 (project={})", project_dir);
+                            break;
+                        }
+                    }
+                    None => break, // topic_router subscription 終了 (通常起きない)
+                }
+            }
+            recvd_term = rx_term.recv() => {
+                match recvd_term {
+                    Some((_topic, msg)) => {
+                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                        if channel.send_event("pane", &json).await.is_err() {
+                            tracing::warn!("World uplink/canvas: terminal send 失敗 → 再接続 (project={})", project_dir);
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = epoch.cancelled() => break,
+        }
+    }
+
+    // 再接続前に subscription を畳む (次 epoch で貼り直す)。
+    topic_router.unsubscribe(sub_id).await;
+    topic_router.unsubscribe(term_sub_id).await;
+    // 自分の channel が死んだケースでも reconnect を誘発する (epoch.cancelled() で抜けた
+    // 場合は既に cancelled なので no-op)。
+    epoch.cancel();
+}
+
+/// control driver: World の reverse-routing request を recv し、 SP "process" channel と同一の
+/// `dispatch_process_method` で処理して応答する。
+///
+/// reverse request の dispatch は現状この recv ループ内で逐次実行する (= 1 つの slow op が
+/// 後続を待たせる。 並行化は follow-up)。 channel error 時 / epoch cancel 時に return し、
+/// channel error の場合は epoch を畳んで supervisor に再接続を促す。
+async fn run_control_driver(
+    channel: unison::UnisonChannel,
+    state: std::sync::Arc<crate::process::state::AppState>,
+    project_dir: String,
+    epoch: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            recvd = channel.recv() => {
+                match recvd {
+                    Ok(msg) => {
+                        // World からの reverse request のみ処理 (それ以外は無視)。
+                        if msg.msg_type != unison::network::MessageType::Request {
+                            continue;
+                        }
+                        let id = msg.id;
+                        let method = msg.method.clone();
+                        let payload = msg.payload_as_value().unwrap_or_default();
+                        // SP "process" channel と同一 dispatch で処理する。
+                        let result = crate::process::unison_server::dispatch_process_method(
+                            &state, &method, payload,
+                        )
+                        .await;
+                        let response = match &result {
+                            Ok(v) => v.clone(),
+                            Err(e) => serde_json::json!({ "error": e }),
+                        };
+                        if channel.send_response(id, &method, &response).await.is_err() {
+                            tracing::warn!("World uplink/control: send_response 失敗 → 再接続 (project={})", project_dir);
+                            break;
+                        }
+                    }
+                    Err(_) => break, // 切断 → 再接続
+                }
+            }
+            _ = epoch.cancelled() => break,
+        }
+    }
+    epoch.cancel();
 }
 
 // ─── 同期ラッパー（CLI コマンドから使用）───────────────────
@@ -448,11 +603,6 @@ pub fn find_by_project_blocking(project_dir: &str) -> Option<ProcessInfo> {
 /// 同期版: 現在のワーキングディレクトリから Process を検索
 pub fn find_for_cwd_blocking() -> Option<ProcessInfo> {
     make_runtime().block_on(find_for_cwd())
-}
-
-/// 同期版: terminal_token を取得
-pub fn fetch_terminal_token_blocking(port: u16) -> Option<String> {
-    make_runtime().block_on(fetch_terminal_token(port))
 }
 
 /// 短命のランタイムを作成（同期ラッパー用）

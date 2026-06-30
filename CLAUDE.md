@@ -63,11 +63,11 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 ```
 vp-app (GUI: wry+tao)   vp (CLI)
         └────────┬───────┘
-                 │ HTTP + QUIC
+                 │ HTTP + QUIC（listener は TheWorld のみ）
         TheWorld 👑 :32000          ← Process Manager (常駐 daemon)
-                 │ spawn + reconcile (Push/Pull 二重パス)
+                 │ spawn ↓ ／ SP→World QUIC registry 自己登録 ↑（reconcile = Push 一本）
      ┌───────────┼───────────┐
-   SP :33000   SP :33001   ...      ← Star Platinum ⭐ (project ごと)
+   SP[33000]   SP[33001]  ...      ← Star Platinum ⭐ (project ごと、portless = outbound-only)
      └ Stands: Echoes 💬 / Paisley Park 🧭 / Gold Experience 🌿 / Hermit Purple 🍇
 ```
 
@@ -92,7 +92,7 @@ vantage-point/
 
 ```bash
 # Core
-vp ps                  # 稼働中インスタンス一覧（33000-33010 スキャン）
+vp ps                  # 稼働中インスタンス一覧（TheWorld registry に問い合わせ）
 vp config              # 設定と登録プロジェクト表示
 vp projects            # 登録 project 管理（add/remove/rename/enable/disable/reorder/list）
 vp sync                # projects.kdl を現実と同期（ghost project 除去）
@@ -102,8 +102,14 @@ vp restart-all         # 全 Process + TheWorld を一括再起動
 
 # TheWorld（Daemon）/ SP
 vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
+vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
 vp sp start [-d simple|detail]  # SP サーバー起動（デバッグモードはここ）
 vp sp stop|status
+# ⚠️ daemon 再起動の 2 つの stop（lane の中から検証/dogfood する時に超重要）:
+#   - `vp daemon stop` = gentle（daemon のみ停止。SP / Lane tmux は温存 → 自分の lane が生き残る）。
+#   - `mr daemon` / `daemon:stop` = cascade nuke（daemon + SP + Lane tmux session 全停止）→ lane 内で回すと自分を殺す。
+#   lane の中から実機確認する時は必ず gentle 側。cascade は full reset 専用。tmux server は daemon/SP と独立なので
+#   gentle 再起動なら claude セッションは生存し続ける（dogfood の肝）。
 
 # App（GUI）
 vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
@@ -155,19 +161,18 @@ cargo clippy --workspace --all-targets    # Lint
   - 設定ファイルは **KDL**（`vp_config_dir()/config.kdl`、人が編集する read-only global 設定）。登録プロジェクトの SSOT は `projects.kdl`（VP-188、config.kdl には出さない）。
   - 起動時に旧パス（Application Support / Library/Logs / `dirs::config_dir()/vantage/` 等）から新 XDG zone へ冪等にデータ移行（`migrate_legacy_paths()`、旧データは残す）。
 - ポート割り当て:
-  - TheWorld: 32000 (HTTP + QUIC)
-  - Project: 33000〜33010 (HTTP + WS)
-  - Unison per Process: 33100〜33110 (QUIC, +100)
-- `vp ps` で 33000-33010 をスキャン
+  - TheWorld: 32000 (HTTP + QUIC) — **唯一の listener**
+  - Project (SP): 33000〜（`PORT_RANGE` 33000-33024 の deterministic slot）— **portless**。SP は listen せず、この番号は registry 上の論理 identity（停止/特定に使う）
+  - SP → World の QUIC は **outbound のみ**（registry / canvas-ingest / control の自己登録接続）。SP 自身は per-process な QUIC listener を持たない
+- `vp ps` は TheWorld registry（:32000）に問い合わせて一覧化（ポートスキャンは廃止）
 
 ### プロセス管理（Reconciliation）
 
-TheWorld が **Push + Pull の二重パス** でプロセスを管理。どちらが落ちても自律復帰する。
+TheWorld が **QUIC registry（Push）** でプロセスを管理する。SP-portless 化に伴い旧 Pull（ポートスキャン）は撤去され、registry が**単一の真実源**になった（portless SP は listen しないためポートスキャンでは発見できない）。
 
 | パス | 仕組み | 用途 |
 |------|--------|------|
-| **Push (QUIC Registry)** | SP が TheWorld に QUIC 永続接続で自己登録。切断 = 即時除去 | リアルタイム検出 |
-| **Pull (ポートスキャン)** | TheWorld が 33000-33010 を 30秒間隔でスキャン | QUIC 障害時の自律復帰 |
+| **Push (QUIC Registry)** | SP が TheWorld に QUIC 永続接続で自己登録（outbound）。heartbeat 15s + 再接続時の snapshot replace で reconcile。切断 = 即時除去 | リアルタイム検出 + 自律復帰 |
 
 - `running_processes` / `projects` の HashMap キーは正規化パス（`normalize_path_key()`）。`project_name` は表示用ラベル
 - `/api/health` レスポンスに `stands` フィールドを含む（各 Stand の状態をリアルタイムで返す）
@@ -301,7 +306,7 @@ MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯�
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (11808 symbols, 25803 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point** (11951 symbols, 26243 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

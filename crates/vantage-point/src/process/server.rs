@@ -17,13 +17,10 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{
-    health, lanes, project_feed, prompt, stands, update, wire, world, ws_terminal,
-};
+use super::routes::{health, update, world};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
-use super::unison_server;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
@@ -151,7 +148,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
         project_dir: project_dir.clone(),
-        pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         // R3: wire cross-process delivery の宛先分類用 — 解決済 project 名
         project_name: project_name_for_remote.clone(),
@@ -159,6 +155,8 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
         update: None,
+        // SP mode は hub federation を持たない（TheWorld のみ）→ Disabled のまま。
+        hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port,
@@ -193,7 +191,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         ))),
         // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
         // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
-        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + spawn_registry_keepalive subscribe
+        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + spawn_world_uplink subscribe
         // で SP → TheWorld push 経路。 将来 Pane / Stand 等の event も同 bus に variant 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
@@ -207,6 +205,9 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         lane_capabilities: Some(Arc::new(RwLock::new(
             super::lane_capabilities::LaneCapabilitiesPool::new(),
         ))),
+        terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        // SP mode は delegation store を持たない (World 中央 store に proxy する)。
+        delegation_store: None,
     });
 
     // Phase review fix #2: LanePool::with_conductor は内部で PtySlot::spawn (openpty + spawn_command)
@@ -348,167 +349,20 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         }
     }
 
-    let app = Router::new()
-        // 旧 `.route("/wasm/{filename}", ...)` (vp-mdast-wasm 配信) は 2026-05-25 削除
-        // (= frontend は marked + creoui-editor-host に移行済、 dead endpoint)。
-        // wiremsg Stage 3: `/ws` endpoint は撤去済。Canvas が Stage 2 で "canvas" topic 購読に
-        // 移行した結果 `/ws` の接続 client が消滅 (= dead)。chat/permission の双方向経路も
-        // Echoes が tmux+claude に移行して以降 unused。
-        // Canvas Project Feed 集約 WebSocket（全 Process のメッセージを Project Feed でラップして中継）
-        // 注: URL `/ws/lanes` は外部互換のため維持。内部命名は `project_feed` (mem_1CaSsN7xj69aVQtLPQFJxQ 命名整理)
-        .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
-        // Phase 2 (Architecture v4): vp-app から Lane の PtySlot に attach する WS endpoint。
-        // `?lane=<address>` で既存 LanePool の PtySlot に subscribe + write 経路を貼る。
-        // 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Lane = Session Process)
-        .route("/ws/terminal", get(ws_terminal::ws_terminal_handler))
-        // Phase A4-2b: Lane (Conductor/Performer) lifecycle の REST endpoint
-        // GET: list、 POST: Performer create (A6 minimum)
-        .route(
-            "/api/lanes",
-            get(lanes::list_handler)
-                .post(lanes::create_handler)
-                .delete(lanes::delete_handler),
-        )
-        // Lane の Conductor Stand restart (PtySlot kill + 同 stand で respawn)
-        .route("/api/lanes/restart", post(lanes::restart_handler))
-        // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Performer dropdown 用)
-        .route("/api/stands", get(stands::list_handler))
-        .route("/api/show", post(health::show_handler))
-        // wiremsg R5-2: wire accumulation 経路の HTTP 入口 (旧 /api/msgbox/* を置換)
-        // R2-a: 実体は TheWorld 中央 store への proxy (remote-deliver は中央化で撤去)
-        .route("/api/wire/send", post(health::wire_send_handler))
-        .route("/api/wire/recv", post(health::wire_recv_handler))
-        .route(
-            "/api/wire/unread-count",
-            post(health::wire_unread_count_handler),
-        )
-        .route(
-            "/api/wire/latest-msg",
-            post(health::wire_latest_msg_handler),
-        )
-        // R2-a: CLI parity (vp wire thread / ack) の HTTP 入口
-        .route("/api/wire/thread", post(health::wire_thread_handler))
-        .route("/api/wire/ack", post(health::wire_ack_handler))
-        .route("/api/diagnose", get(health::diagnose_handler))
-        .route("/api/toggle-pane", post(health::toggle_pane_handler))
-        .route("/api/split-pane", post(health::split_pane_handler))
-        .route("/api/close-pane", post(health::close_pane_handler))
-        .route("/api/watch-file", post(health::watch_file_handler))
-        .route("/api/unwatch-file", post(health::unwatch_file_handler))
-        // pp-content-persist: PP Canvas Stack の lane scope な永続化 (SurrealDB pane_contents)。
-        // canvas-handler.ts が 500ms debounce で save、 起動 / lane 切替時に load を fetch。
-        .route(
-            "/api/pp/state",
-            get(health::pp_state_load_handler).post(health::pp_state_save_handler),
-        )
-        // tmux ペイン操作（Native App の Cmd+D / Cmd+Shift+D から呼ばれる）
-        .route("/api/tmux/split", post(health::tmux_split_handler))
-        .route("/api/tmux/close", post(health::tmux_close_handler))
-        .route("/api/tmux/capture", post(health::tmux_capture_handler))
-        .route("/api/tmux/list", get(health::tmux_list_handler))
-        .route("/api/tmux/send-keys", post(health::tmux_send_keys_handler))
-        .route("/api/tmux/agent-meta", get(health::tmux_agent_meta_handler))
-        .route(
-            "/api/tmux/resolve-pane",
-            get(health::tmux_resolve_pane_handler),
-        )
-        .route("/api/ruby/eval", post(health::ruby_eval_handler))
-        .route("/api/ruby/run", post(health::ruby_run_handler))
-        .route("/api/ruby/stop", post(health::ruby_stop_handler))
-        .route("/api/ruby/list", get(health::ruby_list_handler))
-        // ProcessRunner 汎用 API
-        .route("/api/process/run", post(health::process_run_handler))
-        .route("/api/process/eval", post(health::process_run_eval_handler))
-        .route("/api/process/stop", post(health::process_stop_handler))
-        .route("/api/process/inject", post(health::process_inject_handler))
-        .route("/api/process/list", get(health::process_list_handler))
-        .route("/api/health", get(health::health_handler))
-        .route("/api/shutdown", post(health::shutdown_handler))
-        // User prompt API routes (REQ-PROMPT-001)
-        .route("/api/prompt", post(prompt::prompt_request_handler))
-        .route(
-            "/api/prompt/{request_id}",
-            get(prompt::prompt_poll_handler).post(prompt::prompt_respond_handler),
-        )
-        .route(
-            "/api/prompts/pending",
-            get(prompt::prompts_list_pending_handler),
-        )
-        // World API routes
-        .route(
-            "/api/world/projects",
-            get(world::world_list_projects).post(world::world_add_project),
-        )
-        .route(
-            "/api/world/projects/reorder",
-            post(world::world_reorder_projects),
-        )
-        .route(
-            "/api/world/projects/update",
-            post(world::world_update_project),
-        )
-        .route(
-            "/api/world/projects/remove",
-            post(world::world_remove_project),
-        )
-        .route(
-            "/api/world/projects/reload",
-            post(world::world_reload_projects),
-        )
-        .route("/api/world/projects/set_slot", post(world::world_set_slot))
-        .route(
-            "/api/world/projects/unassign_slot",
-            post(world::world_unassign_slot),
-        )
-        .route("/api/world/projects/sync", post(world::world_sync_projects))
-        .route("/api/world/processes", get(world::world_list_processes))
-        .route(
-            "/api/world/lanes",
-            get(world::world_list_lanes).post(world::world_create_lane),
-        )
-        .route(
-            "/api/world/lanes/active",
-            post(world::world_set_active_lane),
-        )
-        .route(
-            "/api/world/processes/{project_name}/start",
-            post(world::world_start_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/stop",
-            post(world::world_stop_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/restart",
-            post(world::world_restart_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/pointview",
-            post(world::world_open_pointview),
-        )
-        .route("/api/world/refresh", post(world::world_refresh))
-        .layer(CorsLayer::permissive())
-        .with_state(state.clone());
+    // L0 finale (doc 27 §3.4.5): SP HTTP listener + QUIC listen 全廃 = SP 完全 portless (outbound-only)。
+    // 旧 SP HTTP route / SP QUIC listen channel は全て World process-proxy reverse-routing に移管済:
+    // - reconciliation (旧 /api/health port-scan) → Push-only registry (QUIC register/disconnect)
+    // - MCP / lanes / tmux / ruby / canvas / wire 等 process 操作 → World process-proxy ask
+    //   (World → SP control channel → run_control_driver → dispatch_process_method)
+    // - stop_process の graceful shutdown も World process-proxy "shutdown" 経由
+    // よって SP は listen を一切持たず、 registry / canvas-ingest / control の outbound stream のみ
+    // (spawn_world_uplink)。 health/shutdown handler は run_world (World :32000) が使うため
+    // routes/health.rs に残置。
 
-    // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ Win の IPV6_V6ONLY=true default を明示的に false に。
-    //  旧コメント: "0.0.0.0 で IPv4 wildcard 統一" は IPv6 client (`http://[::1]:port`) を弾いてた。
-    //  SP register 等が `[::1]:32000` を使ってたため永続失敗していた問題を解消。
-    let listener = bind_dual_stack(port).await?;
-    tracing::info!("Starting vp on http://[::]:{} (dual-stack)", port);
-
-    // Unison QUIC サーバーを並行起動（readiness signal 付き）
-    let quic_port = port + unison_server::QUIC_PORT_OFFSET;
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    {
-        let state_for_quic = state.clone();
-        tokio::spawn(async move {
-            unison_server::start_unison_server(state_for_quic, port, ready_tx).await;
-        });
-    }
-
-    // QUIC サーバーのバインド完了を待つ
-    let _ = ready_rx.await;
-    tracing::info!("QUIC server ready on port {}", quic_port);
+    // SP-portless (doc 27 §3.4.5 / rebuild Epic L0 finale): SP は QUIC listen を持たない。
+    // 全 process 操作は World :32000 → SP control channel の reverse-routing
+    // (spawn_world_uplink の control stream → run_control_driver → dispatch_process_method) で
+    // serve する。listen server (start_unison_server) は撤去済 = SP は outbound-only。
 
     // デバッグモード時のみトレースログ監視を起動
     if debug_mode != DebugMode::None {
@@ -518,18 +372,12 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         });
     }
 
-    // TheWorld に QUIC Registry 登録（永続接続 + heartbeat）
-    // 切断時に TheWorld が即時除去するため、HTTP 登録は不要
-    let pid = std::process::id();
-    crate::discovery::spawn_registry_keepalive(
-        port,
-        &state.project_dir,
-        pid,
-        &terminal_token,
-        state.lane_pool.clone(),
-        state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
-        shutdown_token.clone(),
-    );
+    // F1a (doc 27 §3.4.4): SP → TheWorld の outbound を 1 connection に集約した uplink。
+    // registry (自己登録 + heartbeat + lane diff push) / canvas-ingest (paisley-park /
+    // terminal topic push) / control (World reverse-routing 受け) の 3 channel を 1 共有
+    // QUIC connection 上の別 stream として張る (旧: 3 別 connection)。 依存は全て AppState
+    // から引くため引数は (state, shutdown) のみ。 切断時に TheWorld が即時除去 (HTTP 登録不要)。
+    crate::discovery::spawn_world_uplink(state.clone(), shutdown_token.clone());
 
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
@@ -599,16 +447,14 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
 
-    // Serve with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_token_clone.cancelled().await;
-            tracing::info!("Graceful shutdown initiated");
-        })
-        .await?;
+    // SP-portless: SP は listen を持たず、 run() は shutdown_token で block する。 process 操作は
+    // spawn_world_uplink の control stream (reverse-routing) で process 生存中 serve され続ける。
+    // World process-proxy `shutdown` / SIGTERM 経由で shutdown_token が cancel されると cleanup へ進む。
+    shutdown_token_clone.cancelled().await;
+    tracing::info!("Graceful shutdown initiated (outbound-only SP)");
 
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
-    // （spawn_registry_keepalive の shutdown handler が unregister を送信済み）
+    // （spawn_world_uplink の shutdown handler が unregister を送信済み）
 
     // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
@@ -695,6 +541,25 @@ pub async fn run_world(
         }
     }
 
+    // federation L2 (ADR-020 D2): home-World の位置独立 routing key `wld_id` を db/world から
+    // load_or_create する。daemon が初回起動で 1 度発行し、 以降の再起動は復元する (machine /
+    // hostname / endpoint から独立な不変番地)。db 不在 (degraded) なら None — その場合は
+    // federation の routing key を名乗れないが machine-local 動作は継続する (= hub down 時と同 degrade)。
+    let world_id: Option<crate::world::WorldId> = if let Some(ref db) = vpdb {
+        match db.load_or_create_world_id().await {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!(
+                    "wld_id 発行/復元に失敗 (federation routing なしで継続): {}",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let world_cap = Arc::new(RwLock::new(world_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
     let hub = Hub::new();
@@ -757,6 +622,15 @@ pub async fn run_world(
         None => None,
     };
 
+    // 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。wire と同じく TheWorld の DB に持つ。
+    let delegation_store = vpdb
+        .as_ref()
+        .map(|db| crate::capability::DelegationStore::new(std::sync::Arc::new(db.inner().clone())));
+
+    // chronista-hub federation の接続状態。run_hub_federation（writer）と AppState（= /api/health
+    // reader）で同一 instance を共有する（World mode のみ更新、初期 Disabled）。
+    let hub_status = crate::daemon::hub_client::HubFederationStatus::new();
+
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
@@ -764,10 +638,10 @@ pub async fn run_world(
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
+        hub_status: hub_status.clone(),
         project_dir: String::new(),
         // R3: World mode は cross-process forward の対象外 (= 自 project を持たない)
         project_name: String::new(),
-        pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
@@ -810,6 +684,10 @@ pub async fn run_world(
         world_capabilities: Some(world_capabilities),
         // PR-β-1 (VP-119): World mode では LaneCapabilities を持たない (Lane scope は SP per project)
         lane_capabilities: None,
+        // S2: World mode は SP の per-lane pump を持たない (terminal pump は SP scope)。
+        terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        // 委譲 (delegation) の World 中央 store (doc 28 §6)。World mode のみ Some。
+        delegation_store,
     });
 
     // R2-b: wire delivery loop (未 ack command の tmux nudge + 再掲示) を spawn。
@@ -826,11 +704,18 @@ pub async fn run_world(
         );
     }
 
+    // 委譲 reconcile loop (doc 28 §7、 Push+Pull の Pull パス) を spawn。
+    // delivered=false の再 nudge + stale な未終了の timeout → Failed{timeout}。
+    // World-side wake (lane_registry + send-keys) なので delivery loop と同じ lane_registry を使う。
+    if let Some(store) = state.delegation_store.clone() {
+        let lane_registry = world_cap.read().await.lane_registry_ref();
+        super::delegation::spawn_reconcile_loop(store, lane_registry, shutdown_token.clone());
+    }
+
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
-        // Canvas Lane 集約 WebSocket
-        .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
+        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
         // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
         .route("/api/canvas/capture", post(health::canvas_capture_handler))
         .route(
@@ -894,20 +779,11 @@ pub async fn run_world(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
-        // wiremsg R2-a: 中央 wire store (設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-c)。
-        // TheWorld が唯一の writer。 SP の /api/wire/* はここへの proxy。
-        .route("/api/wire/send", post(wire::world_wire_send_handler))
-        .route("/api/wire/recv", post(wire::world_wire_recv_handler))
-        .route("/api/wire/thread", post(wire::world_wire_thread_handler))
-        .route(
-            "/api/wire/unread-count",
-            post(wire::world_wire_unread_count_handler),
-        )
-        .route(
-            "/api/wire/latest-msg",
-            post(wire::world_wire_latest_msg_handler),
-        )
-        .route("/api/wire/ack", post(wire::world_wire_ack_handler))
+        // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
+        // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
+        // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
+        // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
+        // 同 channel 経由。
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
@@ -932,10 +808,10 @@ pub async fn run_world(
             "/api/update/mac/rollback",
             post(update::update_mac_rollback),
         )
-        // VP-93 Step 2a: vp-app からの terminal WebSocket bridge
-        .route("/ws/terminal", get(ws_terminal::ws_terminal_handler))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
+        // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
+        .with_state(state.clone());
 
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
     //  SP からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
@@ -959,14 +835,39 @@ pub async fn run_world(
     let projects_ref = world_cap.read().await.projects_ref();
     // Phase 1b: lane_registry も共有 (SP register の lanes payload を cache する)
     let lane_registry_ref = world_cap.read().await.lane_registry_ref();
+    // L1 lifecycle: process_presence も共有 (registry handler が presence を遷移させる)
+    let process_presence_ref = world_cap.read().await.process_presence_ref();
     let mut daemon_state_builder = crate::daemon::server::DaemonState::new()
-        .with_running_processes(running_processes_ref, projects_ref, lane_registry_ref)
+        .with_running_processes(
+            running_processes_ref,
+            projects_ref,
+            lane_registry_ref,
+            process_presence_ref,
+        )
         // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
         // Unison "world-control" channel から projects mutation を受けられるようにする。
         .with_world_cap(world_cap.clone());
     // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
     if let Some(ref db) = vpdb {
         daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
+    }
+    // L0 portless B-4 (wire-unison): World 中央 wire/delegation store を daemon QUIC server と共有する。
+    // `state` (World process AppState) が保持する **同一 Arc** を渡す (同一プロセス) — "wire" channel が
+    // これを使って旧 `/api/wire/*` `/api/delegation/*` HTTP を unison channel で serve する (doc 27 §62)。
+    daemon_state_builder = daemon_state_builder.with_wire(
+        state.wiremsg_store.clone(),
+        state.wire_notifier.clone(),
+        state.delivery_notify.clone(),
+        state.delegation_store.clone(),
+    );
+    // Bastet 🧲 EventBus を共有 — world-device channel が device event を vp-app に bridge する。
+    // world_capabilities は L810 で move 済みなので、 move 前に clone した bastet_for_shutdown を使う。
+    #[cfg(feature = "midi")]
+    if let Some(bastet) = bastet_for_shutdown.as_ref() {
+        let event_bus = bastet.read().await.event_bus().clone();
+        daemon_state_builder = daemon_state_builder.with_bastet_event_bus(event_bus);
+        // M2 / doc 26 §2: device channel (agent → daemon) が registry を更新するため registry 本体も共有。
+        daemon_state_builder = daemon_state_builder.with_bastet(bastet.clone());
     }
     let daemon_state = std::sync::Arc::new(daemon_state_builder);
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
@@ -978,36 +879,142 @@ pub async fn run_world(
         port
     );
 
-    // chronista-hub federation (opt-in): env `CHRONISTA_HUB_ADDR` が設定されていれば、
-    // この world を hub registry に register して他 world から discover 可能にする。
-    // 未設定なら machine-local 動作（= skip）。SSOT 原則により register は TheWorld のみが行う
-    // (個別 SP / performer は hub と直接話さない)。hub 接続/登録失敗は warn ログに落として
-    // machine-local 動作を継続する (degradation)。
+    // chronista-hub federation (opt-in): env `CHRONISTA_HUB_ADDR` が設定されていれば、この world を
+    // hub registry に register（他 world から discover 可能に）し、**relay の target inbound を常駐で
+    // 受ける**（ADR-020 §S4）。旧実装は起動時に register して即 drop する使い捨てだったが、relay 受信
+    // には接続維持が必要なため常駐セッション（[`run_hub_federation`]）へ昇格した（接続が切れたら自律
+    // 再接続）。未設定なら machine-local 動作（= skip）。SSOT 原則により hub と話すのは TheWorld のみ。
     if let Some(hub_addr) = crate::daemon::hub_client::hub_addr() {
         // handle = この machine の identity（OS hostname → "vp-world" fallback）。
         let handle = crate::daemon::hub_client::resolve_handle(None);
         let name = format!("VP World ({handle})");
-        tokio::spawn(async move {
-            match crate::daemon::hub_client::HubClient::connect(&hub_addr, 5).await {
-                Ok(client) => match client.register(&handle, &name).await {
-                    Ok(entry) => tracing::info!(
-                        "chronista-hub register 成功: handle={} name={} addr={} registered_at={}",
-                        entry.handle,
-                        name,
-                        hub_addr,
-                        entry.registered_at
-                    ),
-                    Err(e) => {
-                        tracing::warn!("chronista-hub register 失敗 (machine-local で継続): {}", e)
+        // wld_id = federation の位置独立 routing key (ADR-020 D2)。db 不在で None なら空文字を
+        // 送る (= 現状 hub は S2 未実装で無視するため非破壊、 handle ベース discover は維持)。
+        let wld_id = world_id
+            .as_ref()
+            .map(|w| w.as_str().to_string())
+            .unwrap_or_default();
+        // endpoints = direct 到達候補 (ADR-020 D3-a、IPv6 GUA 優先・tailnet 非依存)。IPv6 経路が
+        // 無ければ空配列 (= direct 候補なし、 dialer は relay floor に落ちる)。
+        let endpoints = crate::world::endpoint::local_advertised_endpoints(port);
+
+        // relay → VP wire 配送ポリシー（flow ③+⑤）。別 world が relay で送ってきた wire envelope
+        // (`{from, to, body}`) を **ローカル中央 wire store に inject** する（= 遠方からの relay を
+        // 「ローカル送信」に畳む）。宛先 lane は `wire_recv` で普通に拾う。store/notifier/notify は
+        // AppState の Arc を capture（再接続ごとに handler 再登録するため closure は Clone）。
+        let wire_store = state.wiremsg_store.clone();
+        let wire_notifier = state.wire_notifier.clone();
+        let wire_notify = state.delivery_notify.clone();
+        // discovery（flow step 2）: lanes-query に応答するため lane_registry と hub_addr も capture。
+        let fed_lane_registry = world_cap.read().await.lane_registry_ref();
+        let fed_hub_addr = hub_addr.clone();
+        let on_relay = move |inbound: crate::daemon::hub_client::RelayInbound| {
+            let store = wire_store.clone();
+            let notifier = wire_notifier.clone();
+            let notify = wire_notify.clone();
+            let lane_registry = fed_lane_registry.clone();
+            let hub_addr = fed_hub_addr.clone();
+            async move {
+                // envelope の kind で分岐: wire（既定 = メッセージ配送）/ lanes-query（discovery 要求）。
+                let kind = inbound
+                    .payload
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("wire");
+                if kind == "lanes-query" {
+                    // discovery: 自分の lane を集めて reply_to（送信元の一時 wld_id）へ lanes-reply を
+                    // relay で返す（片方向 relay × 2 で request-response を創発）。
+                    let Some(reply_to) = inbound.payload.get("reply_to").and_then(|v| v.as_str())
+                    else {
+                        tracing::warn!("lanes-query に reply_to が無い — drop");
+                        return;
+                    };
+                    let request_id = inbound
+                        .payload
+                        .get("request_id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    // lane_registry（project_path → Vec<LaneInfo>）を flatten。discovery は未認証の
+                    // 相手にも返り得る（federation auth は当面 permissive）ため、**allow-list で
+                    // {address, kind, name, state} だけ**に絞る。LaneInfo の cwd（FS パス）/
+                    // performer_status（git 状態）/ pid 等の sensitive field は漏らさない（露出最小化）。
+                    // 本丸の「誰が discover できるか」の gate は S3 auth（Creo ID）で別途。
+                    let lanes: Vec<serde_json::Value> = {
+                        let reg = lane_registry.read().await;
+                        reg.values()
+                            .flatten()
+                            .filter_map(|l| serde_json::to_value(l).ok())
+                            .map(|v| {
+                                serde_json::json!({
+                                    "address": v.get("address"),
+                                    "kind": v.get("kind"),
+                                    "name": v.get("name"),
+                                    "state": v.get("state"),
+                                })
+                            })
+                            .collect()
+                    };
+                    let n = lanes.len();
+                    let reply = serde_json::json!({
+                        "kind": "lanes-reply",
+                        "request_id": request_id,
+                        "lanes": lanes,
+                    });
+                    let from_label = crate::daemon::hub_client::resolve_handle(None);
+                    match crate::daemon::hub_client::relay_send_to_wld(
+                        &hub_addr,
+                        reply_to,
+                        &from_label,
+                        &reply,
+                    )
+                    .await
+                    {
+                        Ok(_) => tracing::info!("lanes-query に応答: {n} lanes → {reply_to}"),
+                        Err(e) => tracing::warn!("lanes-reply 返信に失敗（to={reply_to}）: {e}"),
                     }
-                },
-                Err(e) => tracing::warn!(
-                    "chronista-hub 接続失敗 (machine-local で継続): {} (addr={})",
-                    e,
-                    hub_addr
-                ),
+                    return;
+                }
+                // wire メッセージ → ローカル中央 store へ inject（flow ⑤）。
+                let Some(store) = store else {
+                    tracing::warn!(
+                        from = %inbound.from,
+                        "federation relay 受信したが wire store 不在（db なし）— drop"
+                    );
+                    return;
+                };
+                match crate::process::routes::wire::dispatch_wire(
+                    &store,
+                    &notifier,
+                    &notify,
+                    "send",
+                    inbound.payload,
+                )
+                .await
+                {
+                    Ok(_) => tracing::info!(
+                        from = %inbound.from,
+                        "federation relay → VP wire 配送成功"
+                    ),
+                    Err(e) => tracing::warn!(
+                        from = %inbound.from,
+                        "federation relay → VP wire 配送失敗: {}", e
+                    ),
+                }
             }
-        });
+        };
+
+        // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
+        // hub_status は AppState と共有（run_hub_federation が更新、/api/health が読む）。
+        tokio::spawn(crate::daemon::hub_client::run_hub_federation(
+            hub_addr,
+            wld_id,
+            endpoints,
+            handle,
+            name,
+            hub_status,
+            shutdown_token.clone(),
+            on_relay,
+        ));
     } else {
         tracing::debug!(
             "chronista-hub federation 無効 ({} 未設定) — machine-local 動作",

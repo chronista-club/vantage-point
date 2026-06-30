@@ -6,7 +6,6 @@
 # stable drift で突然 clippy lint が増える事故を防ぐ。 stable が上がったら本行 + ci.yml の
 # dtolnay/rust-toolchain@1.96 + Cargo.toml rust-version を一緒に bump する。
 rust = "1.96"
-node = "22"
 bun = "latest"
 # Ruby: Gold Experience (埋め込み Ruby VM) + file-based mise task の script runtime (2026-05-30 追加、 4 系 stable)
 ruby = "4.0.5"
@@ -91,6 +90,25 @@ mise run daemon:start
 # (2026-05-07)。 完全 fresh start は `mise run daemon && mise run app` で 2 command。
 
 # (旧 sys:* は daemon: に吸収済 — daemon:reset:sp = SP sniper kill。 上の daemon:* section 参照。)
+
+# =============================================================================
+# dev ─ kitty test rig (bottom-up rebuild の使い捨て test target、 doc 27)
+# =============================================================================
+#
+# 「version 揃え一発起動」: Rust 側 (vp daemon/CLI) と Swift 側 (VantagePointAgent) を
+# どちらも current source から build し直して version skew を消し、 World + agent を起動する。
+# claude on kitty = decoupled cockpit から VP を使い捨て test target として叩く入口 (doc 27 §1)。
+#   - mr daemon : vp binary build → World cascade stop → World start (Rust 側 version 揃え、 既存 orchestrator 再利用)
+#   - mr agent  : Swift agent を xcodegen+xcodebuild → 再起動 (.mise/tasks/agent)
+# 旧 `mr dev` (frontend esbuild watch) は `mr dev:web` にリネーム (.mise/tasks/dev/web)。
+
+[tasks."dev"]
+description = "kitty test rig — vp(World) + Swift agent を current source から build して一発起動 (version 揃え、 doc 27)"
+run = """
+set -euo pipefail
+mise run daemon       # Rust 側: vp binary build → World 再起動 (version 揃え)
+mise run agent        # Swift 側: VantagePointAgent build → 再起動
+"""
 
 # =============================================================================
 # logs ─ daemon + vp-app の log を 4 file 同時 tail

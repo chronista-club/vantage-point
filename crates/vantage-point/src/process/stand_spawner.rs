@@ -79,7 +79,7 @@ pub fn spawn_with_fallback(
     rows: u16,
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
     let cwd = cmd.cwd.as_str();
-    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
+    let (mut slot, mut rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
 
     // primary が早期 exit するか peek
     std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
@@ -100,10 +100,21 @@ pub fn spawn_with_fallback(
     }
 
     let Some(fb_args) = cmd.fallback_args.as_ref() else {
+        // 死因究明ログ (要所): 早期 exit した子プロセス (mise/tmux/claude) が PTY に書いた
+        // stderr/stdout を broadcast channel から drain して bail message に載せる。これが
+        // 無いと「800ms 以内に死んだ」事実しか残らず、死因 (例: tmux の
+        // "open terminal failed: terminal does not support clear" = TERM 不在) が握り潰されて
+        // diagnosis が長引く (本 fix の console blackout 調査がまさにこの穴を踏んだ)。
+        let tail = drain_pty_tail(&mut rx);
         anyhow::bail!(
-            "Stand spawn early-exit (no fallback): program={} args={:?}",
+            "Stand spawn early-exit (no fallback): program={} args={:?}{}",
             cmd.program,
-            cmd.args
+            cmd.args,
+            if tail.is_empty() {
+                String::new()
+            } else {
+                format!(" 子プロセス出力(末尾)=<<{}>>", tail)
+            }
         );
     };
 
@@ -127,6 +138,73 @@ pub fn spawn_with_fallback(
         );
     }
     Ok((slot, rx))
+}
+
+/// 既存 tmux session があれば adopt（attach）、 無ければ従来の fresh spawn。
+///
+/// ## なぜ必要か（rebuild Epic 残骸 / reconcile gap、 2026-06-30）
+/// L0 portless 化で port ベースの SP 重複検出（`find_running_sp_at_path` 等）が
+/// 無効化された結果、 gentle daemon 再起動時に registry が空のまま `autostart` が
+/// 全 project を重複 spawn しうる。 各重複 SP は起動最初期（`with_conductor`）に
+/// conductor lane を fresh spawn するが、 tmux session は前世代から温存されている →
+/// `mise run vp:stand:*`（`tmux new-session -A`）が `EARLY_EXIT_CHECK_MS` 窓の中で
+/// 競合し死ぬ → `state=Dead` を daemon に register で上書きし、 実際は生きている
+/// session が vp-app から Dead に見える（console blank）。
+///
+/// ## 修正
+/// tmux session = ground truth。 在れば lane は生きている → fresh spawn せず
+/// `tmux attach-session` する PtySlot を terminal source として立てて adopt する。
+/// `mise` / `new-session` / `-e` の create 経路を通さないので重ね作成競合も
+/// 800ms early-exit 誤判定も起きない（= 何個 SP が重複しても lane は 1 本・生存）。
+///
+/// 意図的な fresh restart（`restart_lane`、 tmux session を先に kill 済）は本関数を
+/// 通さず `spawn_with_fallback` を直接使うので影響しない。
+pub fn spawn_or_adopt(
+    cmd: &StandCommand,
+    session: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
+    if crate::tmux::session_exists(session) {
+        let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
+        let attach_args = [
+            "attach-session".to_string(),
+            "-t".to_string(),
+            session.to_string(),
+        ];
+        match PtySlot::spawn(cmd.cwd.as_str(), tmux, &attach_args, &cmd.env, cols, rows) {
+            Ok((slot, rx)) => {
+                tracing::info!(
+                    "Lane adopt: 既存 tmux session に attach (fresh spawn skip): session={}",
+                    session
+                );
+                return Ok((slot, rx));
+            }
+            Err(e) => {
+                // session 消失 race 等で attach 不能 → fresh spawn に fallback。
+                tracing::warn!(
+                    "Lane adopt の attach 失敗、 fresh spawn に fallback: session={} err={}",
+                    session,
+                    e
+                );
+            }
+        }
+    }
+    spawn_with_fallback(cmd, cols, rows)
+}
+
+/// 早期 exit した stand の死因究明用に、 PTY broadcast channel に buffer された直近出力を
+/// drain して文字列化する (最大 ~4KB)。 `spawn_with_fallback` の early-exit 分岐専用。
+/// non-blocking (`try_recv`) なので bufferに溜まった分だけを拾い、 子の生死には影響しない。
+fn drain_pty_tail(rx: &mut broadcast::Receiver<Vec<u8>>) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        buf.extend_from_slice(&chunk);
+        if buf.len() > 4096 {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf).trim().to_string()
 }
 
 /// LaneAddress の lane label を導出 (Conductor → "conductor"、 Performer(name) → name、 Performer(None) → "unnamed")

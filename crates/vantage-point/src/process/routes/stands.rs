@@ -1,10 +1,15 @@
-//! Stand discovery API — `GET /api/stands` (doc 11 §4.1 PR-C)
+//! Stand discovery — process-proxy ask `stands_list` (doc 11 §4.1 PR-C, F6④ で HTTP 撤去)
 //!
 //! ## 役割
 //!
 //! VP install root の `.mise/tasks/vp/stand/{name}` に居る task ファイル群を
 //! `mise tasks ls --json` 経由で discovery し、 stand 名と description を返す。
 //! sidebar の `+ Add Performer` で stand dropdown 表示するための data source。
+//!
+//! F6④ (doc 27 §3.4.5/§6): 旧 SP HTTP `GET /api/stands` は surface→SP 直結 = Transport 哲学違反
+//! かつ L1 portless の阻害だったため撤去。 entry point は World process-proxy ask `stands_list`
+//! (`unison_server::handle_stands_list` → `list_stands_cached`)。 wire wrapping (`{stands:[...]}`)
+//! は dispatch 側に寄せ、 本 module は cache + scan の core に純化。
 //!
 //! ## キャッシュ
 //!
@@ -33,7 +38,6 @@
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 
 /// Sidebar 側に返す stand 1 entry の schema。
@@ -45,12 +49,6 @@ pub struct StandInfo {
     pub description: String,
 }
 
-/// `GET /api/stands` の response shape。
-#[derive(Debug, Serialize)]
-struct StandsResponse {
-    stands: Vec<StandInfo>,
-}
-
 /// process 全体で共有する cache (TTL 30 秒)。
 struct StandCache {
     cached_at: Instant,
@@ -60,21 +58,16 @@ struct StandCache {
 static CACHE: LazyLock<Mutex<Option<StandCache>>> = LazyLock::new(|| Mutex::new(None));
 const CACHE_TTL: Duration = Duration::from_secs(30);
 
-/// `GET /api/stands` handler — TTL cache 経由で stand 一覧を返す。
-pub async fn list_handler() -> impl IntoResponse {
+/// F6④ (doc 27 §3.4.5/§6): Stand 一覧を TTL cache 経由で返す core。 旧 `list_handler` (HTTP) の
+/// cache logic を抽出し process-proxy ask `stands_list` から呼ぶ (SP route + handler は撤去)。
+pub async fn list_stands_cached() -> Vec<StandInfo> {
     // fast path: cache 確認
     {
         let cache = CACHE.lock().expect("StandCache mutex poisoned");
         if let Some(c) = cache.as_ref()
             && c.cached_at.elapsed() < CACHE_TTL
         {
-            return (
-                StatusCode::OK,
-                Json(StandsResponse {
-                    stands: c.stands.clone(),
-                }),
-            )
-                .into_response();
+            return c.stands.clone();
         }
     }
 
@@ -83,7 +76,7 @@ pub async fn list_handler() -> impl IntoResponse {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
-                "GET /api/stands: list_available_stands 失敗 (空リスト返却): {}",
+                "stands_list: list_available_stands 失敗 (空リスト返却): {}",
                 e
             );
             Vec::new()
@@ -99,7 +92,7 @@ pub async fn list_handler() -> impl IntoResponse {
         });
     }
 
-    (StatusCode::OK, Json(StandsResponse { stands })).into_response()
+    stands
 }
 
 /// `mise tasks ls --json` を VP install root cwd で叩いて、 `vp:stand:` prefix の

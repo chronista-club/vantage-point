@@ -14,7 +14,7 @@ path = "src/lib.rs"
 # Daemon-only build (Linux の GTK/ALSA 無し環境で通す) は
 # `--no-default-features` で gui + midi を外す。
 default = ["gui", "midi"]
-gui = ["dep:tao", "dep:muda", "dep:tray-icon"]
+gui = ["dep:tao", "dep:muda"]
 midi = ["dep:midir", "dep:sha1"]
 
 [dependencies]
@@ -74,7 +74,6 @@ unison = { workspace = true }
 # GUI stack (feature = "gui" 有効時のみ有効化)
 tao = { version = "0.35", optional = true }
 muda = { version = "0.19", optional = true }
-tray-icon = { version = "0.24", optional = true }
 
 # Open URLs in system browser (= 既存、 別 module の URL open に利用中)
 open = "5"

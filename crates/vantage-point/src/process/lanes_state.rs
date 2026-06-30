@@ -308,7 +308,7 @@ impl fmt::Display for LaneAddress {
 /// - `P` = payload 型 (add/update 時の full state、 例: `LaneInfo`)
 ///
 /// SP の caller で event 発生 → AppState の broadcast channel に publish →
-/// `spawn_registry_keepalive` の subscriber が QUIC registry channel で TheWorld に push、
+/// `spawn_world_uplink` の subscriber が QUIC registry channel で TheWorld に push、
 /// 各 cache を realtime sync する primitive。
 ///
 /// wire format: internally tagged JSON
@@ -340,7 +340,7 @@ pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
 ///
 /// caller (lane_spawn_actor / routes/* / lifecycle monitor / restart_lane 等) が
 /// `state.system_event_tx.send(SystemEvent::*)` で publish、
-/// `spawn_registry_keepalive` subscriber が QUIC registry channel 経由で TheWorld に流す。
+/// `spawn_world_uplink` subscriber が QUIC registry channel 経由で TheWorld に流す。
 ///
 /// scope ごとに variant 分け、 内部に該当 Diff を内包。 将来 Pane / Stand 等は
 /// variant 追加で扱える central event bus pattern (Erlang event manager 風)。
@@ -487,7 +487,12 @@ impl LanePool {
 
         // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
         // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
-        let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(&cmd, 120, 48) {
+        // reconcile gap fix (2026-06-30): 既存 tmux session があれば fresh spawn せず adopt。
+        // gentle daemon 再起動 / 重複 SP spawn でも conductor lane を Dead 化させない。
+        let session = addr.tmux_session_name(stand_name);
+        let (state, pid) = match crate::process::stand_spawner::spawn_or_adopt(
+            &cmd, &session, 120, 48,
+        ) {
             Ok((slot, term_rx)) => {
                 let pid = slot.pid();
                 tracing::info!(
@@ -782,17 +787,6 @@ impl LanePool {
         let slot_mutex = self.pty_slots.get(addr)?;
         let slot = slot_mutex.lock().ok()?;
         Some(slot.subscribe_output())
-    }
-
-    /// Phase 2.x-c: scrollback 付きで attach する。
-    /// 戻り値: `(rx, initial_bytes)` ── initial_bytes を WS Binary で先送してから rx で継続。
-    pub fn subscribe_with_scrollback(
-        &self,
-        addr: &LaneAddress,
-    ) -> Option<(tokio::sync::broadcast::Receiver<Vec<u8>>, Vec<u8>)> {
-        let slot_mutex = self.pty_slots.get(addr)?;
-        let slot = slot_mutex.lock().ok()?;
-        Some(slot.subscribe_with_scrollback())
     }
 
     /// 既存 Lane の PtySlot に input を書き込む (WS から user 入力を受けた時に使う)。

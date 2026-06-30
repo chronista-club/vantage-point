@@ -1,46 +1,23 @@
 //! Daemon の Unison QUIC サーバー
 //!
-//! session / terminal / system の3チャネルを提供。
-//! Console (vp hd attach) からの接続を受け付け、PTY I/O を中継する。
+//! World daemon の live channel（world-process / events / wire / registry / device 等）を提供。
+//! SP の自己登録を受け付け、process lifecycle / wire / event log を中継する。
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use unison::network::quic::QuicServer;
 use unison::network::{
     CertSource, MessageType, NetworkError, ProtocolServer, channel::UnisonChannel,
 };
 
-use super::protocol::{
-    AttachRequest, ChannelMessage, CreatePaneRequest, CreateSessionRequest, DetachRequest,
-    KillPaneRequest, ProcessLifecycleEvent, ProcessSnapshot, ReadOutputRequest, ResizeRequest,
-    WriteRequest,
-};
-use super::pty_slot::PtySlot;
-use super::registry::{PaneKind, SessionRegistry};
-use crate::capability::RunningProcess;
-
-/// ペイン識別子: (session_id, pane_id)
-type PaneKey = (String, u32);
-
-/// PTY 出力の broadcast receiver マップ
-type OutputReceiverMap = HashMap<PaneKey, tokio::sync::broadcast::Receiver<Vec<u8>>>;
+use super::protocol::{ChannelMessage, ProcessLifecycleEvent, ProcessSnapshot};
+use crate::capability::{ProcessPresenceState, RunningProcess};
 
 /// Daemon の共有状態
-///
-/// `pty_slots` は `Mutex` を使用する（`PtySlot` が `Sync` を実装しないため）。
-/// `registry` は純粋なデータ構造なので `RwLock` で読み取り並行性を確保。
 pub struct DaemonState {
-    /// セッション・ペインのレジストリ
-    pub registry: Arc<RwLock<SessionRegistry>>,
-    /// PTYスロット: (session_id, pane_id) → PtySlot
-    /// PtySlot は Send だが Sync ではないため Mutex を使用
-    pub pty_slots: Arc<Mutex<HashMap<PaneKey, PtySlot>>>,
-    /// PTY出力の broadcast receiver: ペインごとに保持
-    /// terminal.read_output で消費される
-    pub output_receivers: Arc<Mutex<OutputReceiverMap>>,
     /// Daemon 起動時刻（uptime計算用）
     pub started_at: Instant,
     /// 稼働中 Process 一覧（Registry チャネル経由で SP が自己登録）
@@ -54,6 +31,10 @@ pub struct DaemonState {
     #[allow(clippy::type_complexity)]
     pub lane_registry:
         Option<Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>>,
+    /// L1 lifecycle (Phase C): SP の接続 presence（ProcessManagerCapability と Arc 共有）。
+    /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected
+    /// を書き、`/api/health` の `processes[]` が同一 Arc を読んで vp-app に expose する（doc 27 §3.2）。
+    pub process_presence: Option<Arc<RwLock<HashMap<String, ProcessPresenceState>>>>,
     /// VP-154 PR-2: Process lifecycle event broadcast bus (= "world-process" channel の data plane)
     ///
     /// registry channel handler が SP register/unregister を受信したタイミングで `send` し、
@@ -61,6 +42,43 @@ pub struct DaemonState {
     /// `send_event` で push する経路。 capacity 64 = SP 同時 register が短時間に集中しても
     /// drop しない buffer (= 既存 system_event_tx と同サイズ)。
     pub process_lifecycle_tx: tokio::sync::broadcast::Sender<ProcessLifecycleEvent>,
+    /// L0 SP-portless (lanes slice): lane_registry が変化した project の path_key を載せる
+    /// broadcast bus。 registry channel handler が lane_registry を mutate した直後
+    /// (register / lanes/add / lanes/remove / lanes/update) に `send(path_key)` し、
+    /// per-project "lanes" channel の subscriber がこれを購読して当該 project の現 snapshot を
+    /// vp-app に再 push する経路 (= SP "lanes" channel 直結の World 集約版)。
+    ///
+    /// `process_lifecycle_tx` (process Add/Remove) と相補: あちらは SP の up/down、 こちらは
+    /// SP 内 lane (Performer 等) の add/remove/update を realtime 配信する。 capacity 64 は
+    /// 同上 (短時間に lane diff が集中しても drop しない buffer)。
+    pub lane_change_tx: tokio::sync::broadcast::Sender<String>,
+    /// L0 SP-portless (canvas slice): project ごとの Canvas (Paisley Park) TopicRouter。
+    ///
+    /// 各 SP が "canvas-ingest" channel で paisley-park の ProcessMessage を push し、 World は
+    /// それを project の TopicRouter に `route()` する。 vp-app 向け "canvas" channel はこの
+    /// TopicRouter を `subscribe("process/paisley-park/#")` して retained 初期配信 + live delta を
+    /// 配る。 SP の "canvas" channel (`process/unison_server.rs`) と **同じ TopicRouter 型を再利用**
+    /// することで、 retained/delta/atomicity を World 側で再実装せず委譲する (lanes の lane_registry
+    /// に相当する canvas 版の per-project store)。 project_path (path_key) → TopicRouter。
+    /// 初出 project は ingest / subscribe のどちらか早い方が get-or-create する。
+    ///
+    /// ライフサイクル: lane_registry と同じく **SP 切断では drop しない** (= retained canvas を
+    /// SP restart 越しに保持 = 「前回の続き」)。 entry の回収は project remove (namespace ごと撤去)
+    /// のタイミングが正で、 現状は未実装の follow-up (control_channels が SP 切断で remove するのと
+    /// 非対称なのは意図的: control_channels は live 接続 handle、 canvas_routers は durable state)。
+    /// daemon は long-lived なので project 数が大きく増える運用に入る前に project-remove cleanup を
+    /// 入れる (現 dogfooding 規模では bounded growth 実害なし)。
+    #[allow(clippy::type_complexity)]
+    pub canvas_routers:
+        Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
+    /// L0 SP-portless (control slice): project ごとの SP "control" channel handle。
+    ///
+    /// 各 SP が起動時に "control" channel で World に outbound 接続し (`spawn_world_uplink`)、
+    /// World はその `UnisonChannel` を path_key で保持する。 "process-proxy" channel 経由で来た
+    /// 外部 client (MCP/CLI) の process 操作を、 この handle を**逆用** (`request()`) して当該 SP に
+    /// forward する (= World→SP reverse-routing)。 UnisonChannel は双方向対称なので、 SP が QUIC
+    /// client でありながら本接続上で RPC server として振る舞える。 SP 切断で除去 (= reverse 不能)。
+    pub control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
     /// projects 操作の権威 (= CLI → World 直接 Unison "world-control" channel の data plane)。
     ///
     /// HTTP `routes/world.rs` と同一の `ProcessManagerCapability` 実体を Arc 共有し、
@@ -74,22 +92,65 @@ pub struct DaemonState {
     /// in-memory `lane_registry` への反映と並行して db に永続する。 これにより SP disconnect /
     /// daemon 再起動を越えて descriptor が生き残る (§3.3 re-animate / §4.1 喪失ゼロ)。
     pub vpdb: Option<crate::db::SharedVpDb>,
+    /// Bastet 🧲 EventBus の参照 — "world-device" Unison channel の data plane。
+    ///
+    /// `WorldCapabilities.bastet` が Some (= feature = "midi" + Bastet 稼働) のときのみ注入される。
+    /// world-device channel handler がこれを subscribe して `bastet.*` event (device 接続/切断/
+    /// 操作入力) を `DeviceEvent` に変換し、 vp-app に push する。
+    pub bastet_event_bus: Option<Arc<crate::capability::eventbus::EventBus>>,
+    /// Bastet 🧲 registry 本体の参照 — "device" Unison channel (agent → daemon) の data plane。
+    ///
+    /// M2 / doc 26 §2: macOS menu bar agent (Swift `CoreMIDIWatcher`) が hot-plug を `ReportDevice`
+    /// で報告する。`device` channel handler がこの handle 越しに `report_device_*` を呼び、registry
+    /// 更新 + `bastet.*` emit を行う (emit は world-device bridge 経由で vp-app に届く)。
+    #[cfg(feature = "midi")]
+    pub bastet: Option<Arc<RwLock<crate::bastet::Bastet>>>,
+    /// L0 portless B-4 (wire-unison): World 中央 wire store の参照 — "wire" Unison channel の data plane。
+    ///
+    /// 旧 `world_wire::call` の HTTP relay 先 (`POST /api/wire/*`) を unison channel に移行 (doc 27 §62
+    /// 「全通信 unison」)。run_world が **World process AppState と同一 Arc** を `with_wire` で plumb する
+    /// (同一プロセス)。`wire` channel handler がこれを使って wire の send/recv/thread/unread/latest/ack を
+    /// 中央 store に直結する。SP mode の DaemonState では None (= wire は World 専有)。
+    pub wiremsg_store: Option<crate::capability::WiremsgStore>,
+    /// wire long-poll (`wire_recv`) の起床通知器 — `wiremsg_store` と対で plumb される (同 AppState 由来)。
+    pub wire_notifier: Option<crate::capability::WireNotifier>,
+    /// command 着信時に delivery loop を即 wake する Notify — `wire/send` で category=command を検出して叩く。
+    pub delivery_notify: Option<Arc<tokio::sync::Notify>>,
+    /// 委譲 (delegation) の World 中央 store — "wire" channel の `delegation/*` method の data plane (doc 28 §6)。
+    ///
+    /// `world_wire::call("/api/delegation/*")` は wire と同じ transport を共有するため、unison 移行も同 channel に
+    /// 相乗りする (path 分岐で dispatch)。run_world が AppState と同一 Arc を plumb する。
+    /// (`DelegationStore` は pub(crate) なので本 field も crate 可視に揃える)
+    pub(crate) delegation_store: Option<crate::capability::DelegationStore>,
+    /// L2 (doc 27 §5-3): event log（agent の episodic memory）。always-on daemon が in-memory ring で
+    /// 保持し、"events" channel の emit/query と auto-feed task（process lifecycle → event）が共有する。
+    pub event_log: super::event_log::EventLog,
 }
 
 impl Default for DaemonState {
     fn default() -> Self {
         let (process_lifecycle_tx, _) = tokio::sync::broadcast::channel(64);
+        let (lane_change_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
-            registry: Arc::new(RwLock::new(SessionRegistry::default())),
-            pty_slots: Arc::new(Mutex::new(HashMap::new())),
-            output_receivers: Arc::new(Mutex::new(HashMap::new())),
             started_at: Instant::now(),
             running_processes: None,
             projects: None,
             lane_registry: None,
+            process_presence: None,
             process_lifecycle_tx,
+            lane_change_tx,
+            canvas_routers: Arc::new(RwLock::new(HashMap::new())),
+            control_channels: Arc::new(RwLock::new(HashMap::new())),
             world_cap: None,
             vpdb: None,
+            bastet_event_bus: None,
+            #[cfg(feature = "midi")]
+            bastet: None,
+            wiremsg_store: None,
+            wire_notifier: None,
+            delivery_notify: None,
+            delegation_store: None,
+            event_log: super::event_log::EventLog::new(),
         }
     }
 }
@@ -107,10 +168,12 @@ impl DaemonState {
         running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
         projects: Arc<RwLock<HashMap<String, crate::capability::ProjectInfo>>>,
         lane_registry: Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
+        process_presence: Arc<RwLock<HashMap<String, ProcessPresenceState>>>,
     ) -> Self {
         self.running_processes = Some(running_processes);
         self.projects = Some(projects);
         self.lane_registry = Some(lane_registry);
+        self.process_presence = Some(process_presence);
         self
     }
 
@@ -134,36 +197,48 @@ impl DaemonState {
         self.vpdb = Some(vpdb);
         self
     }
-}
 
-/// 許可されたシェルコマンドのホワイトリスト
-const ALLOWED_SHELLS: &[&str] = &[
-    "/bin/bash",
-    "/bin/zsh",
-    "/bin/sh",
-    "/usr/bin/bash",
-    "/usr/bin/zsh",
-    "/usr/local/bin/bash",
-    "/usr/local/bin/zsh",
-    "/usr/local/bin/fish",
-    "/opt/homebrew/bin/bash",
-    "/opt/homebrew/bin/zsh",
-    "/opt/homebrew/bin/fish",
-    "bash",
-    "zsh",
-    "sh",
-    "fish",
-];
-
-/// シェルコマンドのバリデーション（コマンドインジェクション防止）
-fn validate_shell_cmd(shell_cmd: &str) -> Result<(), NetworkError> {
-    if !ALLOWED_SHELLS.contains(&shell_cmd) {
-        return Err(NetworkError::Protocol(format!(
-            "許可されていないシェルコマンド: {}",
-            shell_cmd
-        )));
+    /// Bastet 🧲 EventBus を共有する (feature = "midi")。
+    ///
+    /// `run_world` が `WorldCapabilities.bastet` の `event_bus()` を渡し、 world-device channel
+    /// handler がこれを subscribe して device event を vp-app に push する。
+    pub fn with_bastet_event_bus(
+        mut self,
+        event_bus: Arc<crate::capability::eventbus::EventBus>,
+    ) -> Self {
+        self.bastet_event_bus = Some(event_bus);
+        self
     }
-    Ok(())
+
+    /// Bastet 🧲 registry 本体を共有する (feature = "midi")。
+    ///
+    /// `device` channel handler が agent の `ReportDevice` を受けて registry を更新するために使う。
+    /// `with_bastet_event_bus` と同じ `WorldCapabilities.bastet` を指す (event_bus は registry 内蔵)。
+    #[cfg(feature = "midi")]
+    pub fn with_bastet(mut self, bastet: Arc<RwLock<crate::bastet::Bastet>>) -> Self {
+        self.bastet = Some(bastet);
+        self
+    }
+
+    /// L0 portless B-4 (wire-unison): World 中央 wire/delegation store を共有する。
+    ///
+    /// run_world が World process `AppState` 構築後に **同一 Arc** を渡す (同一プロセスなので clone で共有)。
+    /// "wire" channel handler がこれらを使って `world_wire::call` の旧 HTTP relay 先を unison で serve する。
+    /// `wiremsg_store` / `delegation_store` は DB 接続失敗時 None (= 当該 method は error を返す)。
+    /// (`DelegationStore` が pub(crate) のため本 method も crate 可視。 caller は同一 crate の run_world)
+    pub(crate) fn with_wire(
+        mut self,
+        wiremsg_store: Option<crate::capability::WiremsgStore>,
+        wire_notifier: crate::capability::WireNotifier,
+        delivery_notify: Arc<tokio::sync::Notify>,
+        delegation_store: Option<crate::capability::DelegationStore>,
+    ) -> Self {
+        self.wiremsg_store = wiremsg_store;
+        self.wire_notifier = Some(wire_notifier);
+        self.delivery_notify = Some(delivery_notify);
+        self.delegation_store = delegation_store;
+        self
+    }
 }
 
 // =========================================================================
@@ -273,447 +348,13 @@ async fn handle_world_control(
             let worlds = client.discover().await.map_err(|e| e.to_string())?;
             serde_json::to_value(&worlds).map_err(|e| e.to_string())
         }
+        // F1b heartbeat: surface (vp-app) の共有 connection liveness probe。 client→server の
+        // 一方向で、 server は応答するだけ (世界状態に触れない no-op)。 vp-app の
+        // `spawn_world_conn_manager` が 15s ごとに送り、 応答が来なければ connection 死と判断して
+        // 再接続する (passive subscriber だけだと dead 検知が QUIC idle timeout 60s 任せになる対策)。
+        "ping" => Ok(serde_json::json!({ "pong": true })),
         other => Err(format!("不明なメソッド: world-control.{}", other)),
     }
-}
-
-// =========================================================================
-// Session Channel ハンドラー
-// =========================================================================
-
-/// session.create: セッション作成
-async fn handle_session_create(
-    state: &DaemonState,
-    id: u64,
-    payload: serde_json::Value,
-) -> ChannelMessage {
-    let req: CreateSessionRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    let mut registry = state.registry.write().await;
-
-    // 既存セッションがあればエラー
-    if registry.get_session(&req.session_id).is_some() {
-        return ChannelMessage::err(
-            id,
-            format!("セッション '{}' は既に存在します", req.session_id),
-        );
-    }
-
-    let info = registry.create_session(&req.session_id);
-    ChannelMessage::ok(
-        id,
-        serde_json::json!({
-            "status": "ok",
-            "session_id": info.id,
-            "created_at": info.created_at,
-        }),
-    )
-}
-
-/// session.list: セッション一覧
-async fn handle_session_list(state: &DaemonState, id: u64) -> ChannelMessage {
-    let registry = state.registry.read().await;
-    let sessions: Vec<_> = registry
-        .list_sessions()
-        .into_iter()
-        .map(|s| {
-            serde_json::json!({
-                "id": s.id,
-                "pane_count": s.panes.len(),
-                "created_at": s.created_at,
-            })
-        })
-        .collect();
-
-    ChannelMessage::ok(
-        id,
-        serde_json::json!({
-            "status": "ok",
-            "sessions": sessions,
-        }),
-    )
-}
-
-/// session.attach: セッションにアタッチ
-async fn handle_session_attach(
-    state: &DaemonState,
-    id: u64,
-    payload: serde_json::Value,
-) -> ChannelMessage {
-    let req: AttachRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    let registry = state.registry.read().await;
-    let session = match registry.get_session(&req.session_id) {
-        Some(s) => s,
-        None => {
-            return ChannelMessage::err(
-                id,
-                format!("セッション '{}' が見つかりません", req.session_id),
-            );
-        }
-    };
-
-    // セッション情報を返す（PTY output streaming は後続タスクで追加）
-    let panes: Vec<_> = session
-        .panes
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id,
-                "cols": p.cols,
-                "rows": p.rows,
-                "active": p.active,
-            })
-        })
-        .collect();
-
-    ChannelMessage::ok(
-        id,
-        serde_json::json!({
-            "status": "ok",
-            "session_id": session.id,
-            "panes": panes,
-        }),
-    )
-}
-
-/// session.detach: セッションからデタッチ
-async fn handle_session_detach(id: u64, payload: serde_json::Value) -> ChannelMessage {
-    let _req: DetachRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    // デタッチは接続側の状態変更のみ（Daemon 側では特に処理なし）
-    ChannelMessage::ok(id, serde_json::json!({"status": "ok"}))
-}
-
-// =========================================================================
-// Terminal Channel ハンドラー
-// =========================================================================
-
-/// terminal.create_pane: ペイン作成
-async fn handle_terminal_create_pane(
-    state: &DaemonState,
-    id: u64,
-    payload: serde_json::Value,
-) -> ChannelMessage {
-    let req: CreatePaneRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    // 作業ディレクトリはホームディレクトリをデフォルトに
-    let cwd = dirs::home_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "/tmp".to_string());
-
-    // シェルコマンドのバリデーション（コマンドインジェクション防止）
-    if let Err(e) = validate_shell_cmd(&req.shell_cmd) {
-        return ChannelMessage::err(id, format!("{}", e));
-    }
-
-    // PTYスロット起動（初期 receiver を取得し、シェルプロンプト等の初期出力をロストしない）
-    // shell args は req に含まれない (古い protocol)、空 args で起動。将来 protocol 拡張時に変更。
-    let (slot, output_rx) = match PtySlot::spawn(&cwd, &req.shell_cmd, &[], &[], req.cols, req.rows)
-    {
-        Ok(s) => s,
-        Err(e) => return ChannelMessage::err(id, format!("PTY起動失敗: {}", e)),
-    };
-
-    let pid = slot.pid();
-
-    // レジストリにペイン追加
-    let mut registry = state.registry.write().await;
-    let pane_id = match registry.add_pane(
-        &req.session_id,
-        PaneKind::Pty {
-            pid,
-            shell_cmd: req.shell_cmd.clone(),
-        },
-        req.cols,
-        req.rows,
-    ) {
-        Some(id) => id,
-        None => {
-            return ChannelMessage::err(
-                id,
-                format!("セッション '{}' が見つかりません", req.session_id),
-            );
-        }
-    };
-
-    // PTYスロットを保存（output_rx は spawn 時点から全出力を受信済み）
-    let mut slots = state.pty_slots.lock().await;
-    slots.insert((req.session_id.clone(), pane_id), slot);
-    drop(slots);
-
-    // Output receiver を保存
-    let mut receivers = state.output_receivers.lock().await;
-    receivers.insert((req.session_id.clone(), pane_id), output_rx);
-
-    tracing::info!(
-        "ペイン作成: session={}, pane_id={}, pid={}, shell={}",
-        req.session_id,
-        pane_id,
-        pid,
-        req.shell_cmd
-    );
-
-    ChannelMessage::ok(
-        id,
-        serde_json::json!({
-            "status": "ok",
-            "pane_id": pane_id,
-            "pid": pid,
-        }),
-    )
-}
-
-/// terminal.write: PTY入力書き込み
-async fn handle_terminal_write(
-    state: &DaemonState,
-    id: u64,
-    payload: serde_json::Value,
-) -> ChannelMessage {
-    let req: WriteRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    // base64 デコード
-    use base64::Engine;
-    let engine = base64::engine::general_purpose::STANDARD;
-    let data = match engine.decode(&req.data) {
-        Ok(d) => d,
-        Err(e) => return ChannelMessage::err(id, format!("base64 デコード失敗: {}", e)),
-    };
-
-    let mut slots = state.pty_slots.lock().await;
-    let key = (req.session_id.clone(), req.pane_id);
-    let slot = match slots.get_mut(&key) {
-        Some(s) => s,
-        None => {
-            return ChannelMessage::err(
-                id,
-                format!(
-                    "ペインが見つかりません: session={}, pane_id={}",
-                    req.session_id, req.pane_id
-                ),
-            );
-        }
-    };
-
-    if let Err(e) = slot.write(&data) {
-        return ChannelMessage::err(id, format!("PTY書き込み失敗: {}", e));
-    }
-
-    ChannelMessage::ok(id, serde_json::json!({"status": "ok"}))
-}
-
-/// terminal.resize: ペインリサイズ
-async fn handle_terminal_resize(
-    state: &DaemonState,
-    id: u64,
-    payload: serde_json::Value,
-) -> ChannelMessage {
-    let req: ResizeRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    let slots = state.pty_slots.lock().await;
-    let key = (req.session_id.clone(), req.pane_id);
-    let slot = match slots.get(&key) {
-        Some(s) => s,
-        None => {
-            return ChannelMessage::err(
-                id,
-                format!(
-                    "ペインが見つかりません: session={}, pane_id={}",
-                    req.session_id, req.pane_id
-                ),
-            );
-        }
-    };
-
-    if let Err(e) = slot.resize(req.cols, req.rows) {
-        return ChannelMessage::err(id, format!("リサイズ失敗: {}", e));
-    }
-
-    tracing::debug!(
-        "ペインリサイズ: session={}, pane_id={}, {}x{}",
-        req.session_id,
-        req.pane_id,
-        req.cols,
-        req.rows
-    );
-
-    ChannelMessage::ok(id, serde_json::json!({"status": "ok"}))
-}
-
-/// terminal.read_output: PTY出力読み取り
-async fn handle_terminal_read_output(
-    state: &DaemonState,
-    id: u64,
-    payload: serde_json::Value,
-) -> ChannelMessage {
-    let req: ReadOutputRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    let key = (req.session_id.clone(), req.pane_id);
-
-    // 1. receiver をマップから取り出す（ロックを短時間で解放）
-    let mut receivers = state.output_receivers.lock().await;
-    let rx = receivers.remove(&key);
-    drop(receivers); // ロックを即座に解放
-
-    let Some(mut rx) = rx else {
-        return ChannelMessage::err(
-            id,
-            format!(
-                "出力 receiver が見つかりません: session={}, pane_id={}",
-                req.session_id, req.pane_id
-            ),
-        );
-    };
-
-    // 2. ロックを保持せずにタイムアウト付きで出力を読み取り
-    let timeout = std::time::Duration::from_millis(req.timeout_ms);
-    let mut all_data: Vec<u8> = Vec::new();
-
-    match tokio::time::timeout(timeout, rx.recv()).await {
-        Ok(Ok(data)) => {
-            all_data.extend_from_slice(&data);
-            // バッファに溜まっている追加データも取得（非ブロッキング）
-            while let Ok(more) = rx.try_recv() {
-                all_data.extend_from_slice(&more);
-            }
-        }
-        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
-            tracing::warn!("出力 receiver lagged: {} メッセージスキップ", n);
-            // lagged の後、次のメッセージは読める
-            if let Ok(data) = rx.try_recv() {
-                all_data.extend_from_slice(&data);
-            }
-        }
-        Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-            // チャネルがクローズされた（PTYプロセス終了）
-        }
-        Err(_) => {
-            // タイムアウト（出力なし）
-        }
-    }
-
-    // 3. receiver をマップに戻す（ロックを短時間で取得）
-    let mut receivers = state.output_receivers.lock().await;
-    receivers.insert(key, rx);
-
-    use base64::Engine;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&all_data);
-
-    ChannelMessage::ok(
-        id,
-        serde_json::json!({
-            "data": encoded,
-            "bytes_read": all_data.len(),
-        }),
-    )
-}
-
-/// terminal.kill_pane: ペイン終了
-async fn handle_terminal_kill_pane(
-    state: &DaemonState,
-    id: u64,
-    payload: serde_json::Value,
-) -> ChannelMessage {
-    let req: KillPaneRequest = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
-    };
-
-    let key = (req.session_id.clone(), req.pane_id);
-
-    // PTYスロットを削除（drop でプロセスも終了）
-    let mut slots = state.pty_slots.lock().await;
-    let removed_slot = slots.remove(&key).is_some();
-    drop(slots);
-
-    // Output receiver も削除
-    let mut receivers = state.output_receivers.lock().await;
-    receivers.remove(&key);
-    drop(receivers);
-
-    // レジストリからペイン削除
-    let mut registry = state.registry.write().await;
-    let removed_pane = registry.remove_pane(&req.session_id, req.pane_id);
-
-    if !removed_slot && !removed_pane {
-        return ChannelMessage::err(
-            id,
-            format!(
-                "ペインが見つかりません: session={}, pane_id={}",
-                req.session_id, req.pane_id
-            ),
-        );
-    }
-
-    tracing::info!(
-        "ペイン終了: session={}, pane_id={}",
-        req.session_id,
-        req.pane_id
-    );
-
-    ChannelMessage::ok(id, serde_json::json!({"status": "ok"}))
-}
-
-// =========================================================================
-// System Channel ハンドラー
-// =========================================================================
-
-/// system.health: ヘルスチェック
-async fn handle_system_health(state: &DaemonState, id: u64) -> ChannelMessage {
-    let registry = state.registry.read().await;
-    let sessions_count = registry.list_sessions().len();
-    let uptime_secs = state.started_at.elapsed().as_secs();
-
-    ChannelMessage::ok(
-        id,
-        serde_json::json!({
-            "status": "ok",
-            "sessions_count": sessions_count,
-            "uptime_secs": uptime_secs,
-        }),
-    )
-}
-
-/// system.shutdown: シャットダウン
-fn handle_system_shutdown(id: u64) -> ChannelMessage {
-    tracing::info!("system.shutdown リクエスト受信");
-
-    // シャットダウンはプロセス終了で実現
-    // Daemon の tokio::select! がシグナルをキャッチしてクリーンアップする
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let pid = std::process::id();
-        if !crate::platform::process_terminate(pid) {
-            tracing::warn!("system.shutdown: terminate 送信が失敗しました");
-            std::process::exit(1);
-        }
-    });
-
-    ChannelMessage::ok(
-        id,
-        serde_json::json!({"status": "ok", "message": "shutting down"}),
-    )
 }
 
 // =========================================================================
@@ -724,6 +365,37 @@ fn handle_system_shutdown(id: u64) -> ChannelMessage {
 ///
 /// ChannelMessage::Response は send_response() で、
 /// ChannelMessage::Error は send_response() でエラーペイロードとして送信する。
+/// device.report_device: agent (Swift menu bar) からの CoreMIDI hot-plug 報告を Bastet registry に反映する。
+///
+/// doc 26 §2 `ReportDevice` request。`state` = "connected" | "disconnected" で分岐し、
+/// `Bastet::report_device_*` が registry 更新 + `bastet.*` emit を行う (emit は既存 world-device
+/// bridge 経由で vp-app に届く)。
+#[cfg(feature = "midi")]
+async fn handle_device_report(
+    bastet: &Arc<RwLock<crate::bastet::Bastet>>,
+    id: u64,
+    payload: serde_json::Value,
+) -> ChannelMessage {
+    let req: super::protocol::ReportDeviceRequest = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
+    };
+
+    let b = bastet.read().await;
+    match req.state.as_str() {
+        "connected" => {
+            b.report_device_connected(&req.port_name, req.has_input, req.has_output)
+                .await;
+        }
+        "disconnected" => {
+            b.report_device_disconnected(&req.port_name).await;
+        }
+        other => return ChannelMessage::err(id, format!("不明な device state: {}", other)),
+    }
+
+    ChannelMessage::ok(id, serde_json::json!({ "ok": true }))
+}
+
 async fn send_channel_response(
     channel: &UnisonChannel,
     method: &str,
@@ -808,9 +480,276 @@ pub(crate) async fn build_world_lanes(
     entries.into_iter().map(|(_, v)| v).collect()
 }
 
+/// L0 SP-portless (lanes slice): per-project "lanes" channel に現 lane snapshot を 1 回 push する。
+///
+/// `lane_registry[path_key]` の現値を `ProcessMessage::LanesSnapshot` に包み、 SP "lanes" channel と
+/// **同一の event 形** (`method="snapshot"`、 payload = `{"type":"lanes_snapshot","lanes":[...]}`) で
+/// 送る。 これにより vp-app の consumer (`run_lanes_session`) は接続先が SP→World に変わっても無改造。
+/// 登録が無い project は空 Vec を送る (SP 未登録/lane 無しを「空」として正しく表現)。
+#[allow(clippy::type_complexity)]
+async fn send_lanes_snapshot(
+    channel: &UnisonChannel,
+    lane_registry: &Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
+    path_key: &str,
+) -> Result<(), NetworkError> {
+    let lanes = lane_registry
+        .read()
+        .await
+        .get(path_key)
+        .cloned()
+        .unwrap_or_default();
+    let snapshot = crate::protocol::ProcessMessage::LanesSnapshot { lanes };
+    let json = serde_json::to_value(&snapshot).unwrap_or_default();
+    channel.send_event("snapshot", &json).await
+}
+
+/// L0 SP-portless (canvas slice): project の Canvas TopicRouter を get-or-create する。
+///
+/// "canvas-ingest" (SP push) と "canvas" (vp-app subscribe) のどちらが先でも、 同じ project の
+/// TopicRouter を共有する (= SP push が router に route し、 vp-app subscribe が同 router を購読)。
+///
+/// S2 (doc 27 §4.1): router 新規作成時に terminal demand hook を登録する。 surface が
+/// `process/terminal/data/{lane}/out` を購読した瞬間 (0→1) / 最後に離れた瞬間 (1→0) に、
+/// 当該 SP の control channel を逆用して `terminal_demand_start/stop {lane}` を撃つ
+/// (= 購読者が居る間だけ SP pump を回す demand-driven production)。
+#[allow(clippy::type_complexity)]
+async fn canvas_router_for(
+    canvas_routers: &Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
+    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    path_key: &str,
+) -> Arc<crate::process::topic_router::TopicRouter> {
+    // fast path: 既存 router を read lock で取得
+    if let Some(router) = canvas_routers.read().await.get(path_key) {
+        return router.clone();
+    }
+    // slow path: write lock で get-or-create。 race recheck で 2 重作成を防ぐ
+    // (entry().or_insert_with() は async な demand 登録を挟めないため手動 double-check)。
+    let mut routers = canvas_routers.write().await;
+    if let Some(router) = routers.get(path_key) {
+        return router.clone();
+    }
+    let router = Arc::new(crate::process::topic_router::TopicRouter::new());
+    register_terminal_demand(&router, control_channels.clone(), path_key.to_string());
+    routers.insert(path_key.to_string(), router.clone());
+    router
+}
+
+/// S2 (doc 27 §4.1 Cap2): project canvas router に terminal demand hook を登録する。
+///
+/// `process/terminal/data/+/out` の購読者増減を監視し、 0↔1 遷移で当該 SP に
+/// `terminal_demand_start/stop {lane}` を control reverse-route で撃つ。 cb は sync で呼ばれる
+/// ため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
+fn register_terminal_demand(
+    router: &Arc<crate::process::topic_router::TopicRouter>,
+    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    path_key: String,
+) {
+    router.register_demand("process/terminal/data/+/out", move |topic, active| {
+        // topic = `process/terminal/data/{lanekey}/out` → lane address を復元
+        // (topic key は LaneAddress の '/' を '~' に encode したもの。 逆変換する)。
+        let Some(lane_key) = topic.split('/').nth(3) else {
+            return;
+        };
+        let lane = lane_key.replace('~', "/");
+        let method = if active {
+            "terminal_demand_start"
+        } else {
+            "terminal_demand_stop"
+        };
+        let control_channels = control_channels.clone();
+        let path_key = path_key.clone();
+        tokio::spawn(async move {
+            let sp_ch = control_channels.read().await.get(&path_key).cloned();
+            match sp_ch {
+                Some(ch) => {
+                    if let Err(e) = ch
+                        .request::<serde_json::Value, serde_json::Value>(
+                            method,
+                            &serde_json::json!({ "lane": lane }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "terminal demand reverse-route 失敗 ({} lane={}): {}",
+                            method,
+                            lane,
+                            e
+                        );
+                    }
+                }
+                None => {
+                    // SP control channel 未接続 (SP 起動前に surface が subscribe した等)。
+                    // SP 接続後の再 demand 機構は follow-up (S2 polish)。
+                    tracing::debug!(
+                        "terminal demand: SP control channel 不在 (key={}, lane={}, {})",
+                        path_key,
+                        lane,
+                        method
+                    );
+                }
+            }
+        });
+    });
+}
+
+/// L0 SP-portless: project 単位 channel 共通の subscribe handshake を待つ。
+///
+/// client (SP canvas-ingest / SP control / vp-app lanes・canvas / MCP process-proxy) は接続後に
+/// `request("subscribe", {project_path})` を送る。 project_path を path_key に正規化して返す。
+/// canvas / lanes / control / process-proxy の 4 系統が同一 handshake protocol を共有する
+/// (= 将来 channel 固有 field を足すなら、 その channel は本 helper から分離すること)。
+/// 接続断 / 不正 payload で `None`。
+async fn recv_subscribe_handshake(channel: &UnisonChannel) -> Option<String> {
+    recv_subscribe_handshake_with_pattern(channel)
+        .await
+        .map(|(path_key, _pattern)| path_key)
+}
+
+/// `recv_subscribe_handshake` の pattern 付き版 (S2 / doc 27 §4.1 step 1)。
+///
+/// subscribe payload に任意の `pattern` field を許す。 canvas channel は購読対象 topic を
+/// この pattern で指定する (例: terminal surface は `process/terminal/data/{lane}/out`)。
+/// 既存 vp-app は `pattern` を送らないので `None` を返し、 caller 側で paisley-park default に
+/// フォールバックする (= 既存 canvas 購読は無改造で動く)。
+async fn recv_subscribe_handshake_with_pattern(
+    channel: &UnisonChannel,
+) -> Option<(String, Option<String>)> {
+    loop {
+        let msg = channel.recv().await.ok()?;
+        if msg.msg_type != MessageType::Request || msg.method != "subscribe" {
+            continue;
+        }
+        let payload = msg.payload_as_value().unwrap_or_default();
+        let project_path = payload
+            .get("project_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let pattern = payload
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let path_key = crate::capability::normalize_path_key(std::path::Path::new(project_path));
+        let _ = channel
+            .send_response(msg.id, "subscribe", &serde_json::json!({"status": "ok"}))
+            .await;
+        return Some((path_key, pattern));
+    }
+}
+
+/// L0 SP-portless: 外部 client の process method を当該 SP の control channel を逆用して forward する。
+///
+/// "process-proxy" channel (MCP/CLI) と bidirectional "canvas" channel の upstream request
+/// (S3 terminal_write/terminal_resize) が共有する。 SP 未接続 / forward 失敗は error JSON で
+/// 返し、 caller が `send_response` でそのまま client に relay する。
+async fn forward_to_sp_control(
+    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    path_key: &str,
+    method: &str,
+    payload: &serde_json::Value,
+) -> serde_json::Value {
+    let sp_ch = control_channels.read().await.get(path_key).cloned();
+    match sp_ch {
+        Some(sp_ch) => match sp_ch
+            .request::<serde_json::Value, serde_json::Value>(method, payload)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => serde_json::json!({
+                "error": format!("SP forward 失敗 (key={}): {}", path_key, e)
+            }),
+        },
+        None => serde_json::json!({
+            "error": format!("SP 未接続 (key={})", path_key)
+        }),
+    }
+}
+
+/// L0 portless B-4 (wire-unison): "wire" channel の method dispatch。
+///
+/// `world_wire::call` が path `"/api/<rest>"` を method=`"<rest>"` (= `"wire/send"` /
+/// `"delegation/create"` 等) にして本 channel に投げてくる。prefix で wire / delegation を切り分け、
+/// `routes::{wire,delegation}::dispatch_*` に委譲する。store は `with_wire` で plumb された
+/// World process AppState 由来の Arc。未初期化 (SP mode / DB 接続失敗) は Err を返し、channel
+/// handler が `{"error": ...}` フレームに詰める (旧 HTTP handler の error JSON と等価)。
+async fn handle_wire_channel(
+    state: &DaemonState,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if let Some(sub) = method.strip_prefix("wire/") {
+        // flow ③: federation 送信。宛先 world が remote なら relay 経由で送る（ローカル store は使わない）。
+        // payload = `{world: <宛先 world handle>, from, to, body, reply_to?}`。SSOT 原則で hub と話すのは
+        // TheWorld のみなので、CLI ではなくここ（daemon）が federate_wire_send を呼ぶ。
+        if sub == "federate" {
+            let world = payload
+                .get("world")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "wire/federate: 'world' (宛先 world handle) required".to_string())?
+                .to_string();
+            let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
+                "wire/federate: CHRONISTA_HUB_ADDR 未設定（federation 無効）".to_string()
+            })?;
+            let from_label = crate::daemon::hub_client::resolve_handle(None);
+            // envelope = payload から `world`（transport 用 routing key）を除いた wire 本体。
+            let mut envelope = payload;
+            if let Some(obj) = envelope.as_object_mut() {
+                obj.remove("world");
+            }
+            crate::daemon::hub_client::federate_wire_send(
+                &hub_addr,
+                &world,
+                &from_label,
+                &envelope,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "status": "ok", "federated": world }));
+        }
+        // discovery（flow step 2）: 遠方 world の lane 一覧を問い合わせる（relay 上の request-response）。
+        // payload = `{world: <宛先 world handle>}`。「在庫確認」: 宛先を知らないときに lane を列挙する。
+        if sub == "discover-lanes" {
+            let world = payload
+                .get("world")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    "wire/discover-lanes: 'world' (宛先 world handle) required".to_string()
+                })?
+                .to_string();
+            let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
+                "wire/discover-lanes: CHRONISTA_HUB_ADDR 未設定（federation 無効）".to_string()
+            })?;
+            let lanes = crate::daemon::hub_client::federate_discover_lanes(&hub_addr, &world)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(serde_json::json!({ "status": "ok", "world": world, "lanes": lanes }));
+        }
+        let store = state.wiremsg_store.as_ref().ok_or_else(|| {
+            "wire store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
+        })?;
+        let notifier = state
+            .wire_notifier
+            .as_ref()
+            .ok_or_else(|| "wire notifier not initialized".to_string())?;
+        let delivery = state
+            .delivery_notify
+            .as_ref()
+            .ok_or_else(|| "wire delivery_notify not initialized".to_string())?;
+        crate::process::routes::wire::dispatch_wire(store, notifier, delivery, sub, payload).await
+    } else if let Some(sub) = method.strip_prefix("delegation/") {
+        let store = state.delegation_store.as_ref().ok_or_else(|| {
+            "delegation store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
+        })?;
+        crate::process::routes::delegation::dispatch_delegation(store, sub, payload).await
+    } else {
+        Err(format!("不明な wire channel method: {method}"))
+    }
+}
+
 /// Daemon の Unison QUIC サーバーを起動する
 ///
-/// session / terminal / system の各チャネルハンドラーを登録し、
+/// world-process / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
@@ -818,153 +757,45 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     let server =
         ProtocolServer::with_identity("vp-daemon", env!("CARGO_PKG_VERSION"), "vantage-point");
 
-    // =========================================================================
-    // Session Channel
-    // =========================================================================
-    server
-        .register_channel("session", {
-            let state = state.clone();
-            move |_ctx, stream| {
-                let state = state.clone();
-                async move {
-                    let channel = UnisonChannel::new(stream);
-                    loop {
-                        let msg = match channel.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break,
-                        };
-
-                        if msg.msg_type != MessageType::Request {
-                            continue;
-                        }
-
-                        let payload = msg.payload_as_value().unwrap_or_default();
-                        let method = msg.method.clone();
-                        let request_id = msg.id;
-
-                        let response = match method.as_str() {
-                            "create" => handle_session_create(&state, request_id, payload).await,
-                            "list" => handle_session_list(&state, request_id).await,
-                            "attach" => handle_session_attach(&state, request_id, payload).await,
-                            "detach" => handle_session_detach(request_id, payload).await,
-                            _ => ChannelMessage::err(
-                                request_id,
-                                format!("不明なメソッド: session.{}", method),
-                            ),
-                        };
-
-                        if send_channel_response(&channel, &method, response)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+    // L2 (doc 27 §5-3): event log auto-feed — process lifecycle を baseline event として log に流す。
+    // SP register → "process.up" / unregister・切断 → "process.down"。これで `vp events` が
+    // emit なしでも「SP が上がった/落ちた」を最初から持つ（build/test 等の追加 source は follow-up）。
+    {
+        let event_log = state.event_log.clone();
+        let mut rx = state.process_lifecycle_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ProcessLifecycleEvent::Add {
+                        project_path,
+                        project_name,
+                        port,
+                        pid,
+                    }) => {
+                        event_log
+                            .emit(
+                                "process.up",
+                                Some(project_name),
+                                serde_json::json!({ "path": project_path, "port": port, "pid": pid }),
+                            )
+                            .await;
                     }
-                    Ok(())
+                    Ok(ProcessLifecycleEvent::Remove { project_path }) => {
+                        event_log
+                            .emit(
+                                "process.down",
+                                None,
+                                serde_json::json!({ "path": project_path }),
+                            )
+                            .await;
+                    }
+                    // lagged: broadcast buffer 溢れ。次の event から再開（log は best-effort）。
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-        })
-        .await;
-
-    // =========================================================================
-    // Terminal Channel
-    // =========================================================================
-    server
-        .register_channel("terminal", {
-            let state = state.clone();
-            move |_ctx, stream| {
-                let state = state.clone();
-                async move {
-                    let channel = UnisonChannel::new(stream);
-                    loop {
-                        let msg = match channel.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break,
-                        };
-
-                        if msg.msg_type != MessageType::Request {
-                            continue;
-                        }
-
-                        let payload = msg.payload_as_value().unwrap_or_default();
-                        let method = msg.method.clone();
-                        let request_id = msg.id;
-
-                        let response = match method.as_str() {
-                            "create_pane" => {
-                                handle_terminal_create_pane(&state, request_id, payload).await
-                            }
-                            "write" => handle_terminal_write(&state, request_id, payload).await,
-                            "resize" => handle_terminal_resize(&state, request_id, payload).await,
-                            "read_output" => {
-                                handle_terminal_read_output(&state, request_id, payload).await
-                            }
-                            "kill_pane" => {
-                                handle_terminal_kill_pane(&state, request_id, payload).await
-                            }
-                            _ => ChannelMessage::err(
-                                request_id,
-                                format!("不明なメソッド: terminal.{}", method),
-                            ),
-                        };
-
-                        if send_channel_response(&channel, &method, response)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Ok(())
-                }
-            }
-        })
-        .await;
-
-    // =========================================================================
-    // System Channel
-    // =========================================================================
-    server
-        .register_channel("system", {
-            let state = state.clone();
-            move |_ctx, stream| {
-                let state = state.clone();
-                async move {
-                    let channel = UnisonChannel::new(stream);
-                    loop {
-                        let msg = match channel.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break,
-                        };
-
-                        if msg.msg_type != MessageType::Request {
-                            continue;
-                        }
-
-                        let method = msg.method.clone();
-                        let request_id = msg.id;
-
-                        let response = match method.as_str() {
-                            "health" => handle_system_health(&state, request_id).await,
-                            "shutdown" => handle_system_shutdown(request_id),
-                            _ => ChannelMessage::err(
-                                request_id,
-                                format!("不明なメソッド: system.{}", method),
-                            ),
-                        };
-
-                        if send_channel_response(&channel, &method, response)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Ok(())
-                }
-            }
-        })
-        .await;
+        });
+    }
 
     // =========================================================================
     // world-process Channel (VP-154 PR-2)
@@ -1136,6 +967,478 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
+    // "lanes" Channel（L0 SP-portless lanes slice — vp-app per-project lane 購読の World 集約版）
+    // =========================================================================
+    // 旧経路では vp-app が各 SP (:33000+) の "lanes" channel に直結して project ごとの lane
+    // snapshot を購読していた。 SP-portless 化により、 vp-app は World :32000 の本 channel 1 本に
+    // 集約する。
+    //
+    // 経路: SP register/lanes-diff (QUIC Push) → registry channel → lane_registry + lane_change_tx
+    //       → 本 channel の subscriber → vp-app。
+    //
+    // プロトコル:
+    //   1. client: open_channel("lanes") → request("subscribe", {"project_path": "<dir>"})
+    //   2. server: ack 応答後、 lane_change_tx を購読 → 当該 project の現 snapshot を初期配信
+    //      (`send_event("snapshot", LanesSnapshot)`)、 以降 lane_change のたび再 push。
+    //
+    // event 形は SP "lanes" channel と一致させ、 vp-app consumer を無改造に保つ (send_lanes_snapshot)。
+    if let Some(ref lane_registry) = state.lane_registry {
+        let lane_registry = lane_registry.clone();
+        let lane_change_tx = state.lane_change_tx.clone();
+        server
+            .register_channel("lanes", {
+                move |_ctx, stream| {
+                    let lane_registry = lane_registry.clone();
+                    let lane_change_tx = lane_change_tx.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+
+                        // handshake: 全 project 単位 channel 共通の subscribe ({project_path}→path_key)。
+                        // canvas / control / process-proxy と同一 helper に統一 (bespoke 重複を排除、
+                        // doc 27 §3.4.4「1 protocol」方向)。
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(()); // 接続断
+                        };
+
+                        // lane_change の購読を初期 snapshot の **前** に張る (subscribe→snapshot 順なので
+                        // この間の diff を取りこぼさない。 snapshot は全置換なので diff と重複しても冪等)。
+                        let mut rx = lane_change_tx.subscribe();
+
+                        // 初期 snapshot 配信
+                        if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                            .await
+                            .is_err()
+                        {
+                            return Ok(()); // client 切断
+                        }
+
+                        // 変更 push loop: 当該 project の lane_change のたび現 snapshot を再配信
+                        loop {
+                            match rx.recv().await {
+                                Ok(changed_key) => {
+                                    if changed_key != path_key {
+                                        continue; // 別 project の変更は無視
+                                    }
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break; // client 切断
+                                    }
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    // lag 後は最新 snapshot を送って resync (全置換なので diff 欠落を吸収)。
+                                    tracing::warn!(
+                                        "lanes channel subscribe lagged: {} events dropped (resync)",
+                                        n
+                                    );
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "canvas-ingest" Channel（L0 SP-portless canvas slice — SP → World の canvas push 受け口）
+    // =========================================================================
+    // 各 SP の canvas pusher (`discovery::spawn_world_uplink`) が paisley-park topic の
+    // ProcessMessage を push する。 World は project ごとの TopicRouter に `route()` して
+    // retained 保持 + 購読者 (= "canvas" channel 経由の vp-app) へ配信する。
+    //
+    // プロトコル: SP が open_channel("canvas-ingest") → request("subscribe", {project_path}) →
+    //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。
+    {
+        let canvas_routers = state.canvas_routers.clone();
+        let control_channels = state.control_channels.clone();
+        server
+            .register_channel("canvas-ingest", {
+                move |_ctx, stream| {
+                    let canvas_routers = canvas_routers.clone();
+                    let control_channels = control_channels.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(());
+                        };
+                        let router =
+                            canvas_router_for(&canvas_routers, &control_channels, &path_key).await;
+
+                        // SP から push される paisley-park ProcessMessage を router に route。
+                        // event は method="pane"、 payload = ProcessMessage JSON (SP の canvas
+                        // channel と同形)。
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => break, // SP 切断 (canvas pusher が backoff 再接続する)
+                            };
+                            if msg.msg_type != MessageType::Event || msg.method != "pane" {
+                                continue;
+                            }
+                            let value = match msg.payload_as_value() {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            match serde_json::from_value::<crate::protocol::ProcessMessage>(value) {
+                                Ok(pm) => router.route(pm).await,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "canvas-ingest: ProcessMessage decode 失敗 (key={}): {}",
+                                        path_key,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "canvas" Channel（L0 SP-portless canvas slice — vp-app per-project canvas 購読の World 集約版）
+    // =========================================================================
+    // vp-app は SP 直結ではなく World :32000 の本 channel に集約する。 project の TopicRouter を
+    // `subscribe("process/paisley-park/#")` し、 retained 初期配信 (最新 Show 等) + live delta を
+    // SP "canvas" channel と同形 (`send_event("pane", <ProcessMessage JSON>)`) で配る。
+    // → vp-app の consumer (`run_canvas_session`) は接続先が変わっても無改造。
+    {
+        let canvas_routers = state.canvas_routers.clone();
+        let control_channels = state.control_channels.clone();
+        server
+            .register_channel("canvas", {
+                move |_ctx, stream| {
+                    let canvas_routers = canvas_routers.clone();
+                    let control_channels = control_channels.clone();
+                    async move {
+                        // S3: canvas channel は full-duplex。 1 本の Unison channel で
+                        // 下り (topic event push) と上り (terminal_write/resize request) を兼ねる
+                        // (surface 視点で channel を増やさない)。 channel.recv() と send_event を
+                        // 同一 task の select! で混ぜると cancel-safety が怪しいので、 下り push を
+                        // 別 task に分け、 main task は上り request 専従にする (control handler +
+                        // process-proxy が実証済の並行 send/recv パターン)。
+                        let channel = Arc::new(UnisonChannel::new(stream));
+                        // S2: handshake で購読 pattern を受領 (省略時 paisley-park default で
+                        // 既存 vp-app を無改造に保つ)。 terminal surface は
+                        // `process/terminal/data/{lane}/out` を指定して demand を立てる。
+                        let Some((path_key, pattern)) =
+                            recv_subscribe_handshake_with_pattern(&channel).await
+                        else {
+                            return Ok(());
+                        };
+                        let router =
+                            canvas_router_for(&canvas_routers, &control_channels, &path_key).await;
+
+                        // pattern 指定があればそれを、 無ければ paisley-park default を購読。
+                        let pattern =
+                            pattern.unwrap_or_else(|| "process/paisley-park/#".to_string());
+                        let (sub_id, mut rx) = router.subscribe(&pattern).await;
+
+                        // 下り push task: topic event → surface (`pane` event)。
+                        let push_channel = channel.clone();
+                        let pusher = tokio::spawn(async move {
+                            while let Some((_topic, msg)) = rx.recv().await {
+                                let json = serde_json::to_value(&msg).unwrap_or_default();
+                                if push_channel.send_event("pane", &json).await.is_err() {
+                                    break; // surface 切断
+                                }
+                            }
+                        });
+
+                        // 上り: surface → World → SP control へ forward (S3 terminal_write/resize)。
+                        // 既存 vp-app canvas は request を送らないので、 ここは切断まで block するだけ
+                        // (= 従来の downstream-only と同じ lifecycle)。
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => break, // surface 切断
+                            };
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+                            let id = msg.id;
+                            let method = msg.method.clone();
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let response = forward_to_sp_control(
+                                &control_channels,
+                                &path_key,
+                                &method,
+                                &payload,
+                            )
+                            .await;
+                            if channel.send_response(id, &method, &response).await.is_err() {
+                                break;
+                            }
+                        }
+
+                        pusher.abort();
+                        router.unsubscribe(sub_id).await;
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "control" Channel（L0 SP-portless control slice — SP の reverse-routing 受け口を登録）
+    // =========================================================================
+    // 各 SP が "control" channel で World に outbound 接続する (`spawn_world_uplink`)。
+    // World は handshake {project_path} 後にその UnisonChannel を control_channels[path_key] に
+    // 保持し、 "process-proxy" channel から逆用 (request) して SP に process 操作を forward する。
+    // 本 handler 自体は channel を保持して接続維持を監視するだけ (request を撃つのは process-proxy)。
+    {
+        let control_channels = state.control_channels.clone();
+        let canvas_routers = state.canvas_routers.clone();
+        server
+            .register_channel("control", {
+                move |_ctx, stream| {
+                    let control_channels = control_channels.clone();
+                    let canvas_routers = canvas_routers.clone();
+                    async move {
+                        let channel = Arc::new(UnisonChannel::new(stream));
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(());
+                        };
+                        control_channels
+                            .write()
+                            .await
+                            .insert(path_key.clone(), channel.clone());
+                        tracing::info!("Control: SP 登録 (key={})", path_key);
+
+                        // S2 polish: SP (再)接続 catch-up。 SP 起動前に surface が terminal topic を
+                        // subscribe して demand_start を撃った場合、 control channel 不在で reverse-route
+                        // が捨てられている。 SP 登録直後に当該 project の active demand を撃ち直し、
+                        // 取りこぼした pump start を補填する (= SP restart で terminal が暗転しない)。
+                        if let Some(router) = canvas_routers.read().await.get(&path_key) {
+                            router.refire_active_demands();
+                        }
+
+                        // 切断検知まで待つ。 World は本 channel に request を撃つだけで SP は
+                        // event/request を送らないため、 recv() は切断時のみ Err で返る
+                        // (= reverse request の Response は pending 経由で解決され、 ここには来ない)。
+                        loop {
+                            if channel.recv().await.is_err() {
+                                break;
+                            }
+                        }
+                        control_channels.write().await.remove(&path_key);
+                        tracing::info!("Control: SP 除去 (key={})", path_key);
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // "process-proxy" Channel（L0 SP-portless control slice — 外部 client → World → SP reverse）
+    // =========================================================================
+    // MCP/CLI は SP listen port ではなく本 channel に繋ぎ、 handshake {project_path} 後に
+    // process method (show/clear/tmux/process/wire 等) を request する。 World は当該 SP の
+    // control channel を逆用して forward し、 応答を client に relay する。 SP "process" channel と
+    // 同一 method・同一 dispatch (SP 側 `dispatch_process_method`) なので、 client から見た挙動は
+    // SP 直結と不変 (= SP portless 化しても透過)。
+    {
+        let control_channels = state.control_channels.clone();
+        server
+            .register_channel("process-proxy", {
+                move |_ctx, stream| {
+                    let control_channels = control_channels.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
+                            return Ok(());
+                        };
+
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => break, // client 切断
+                            };
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+                            let id = msg.id;
+                            let method = msg.method.clone();
+                            let payload = msg.payload_as_value().unwrap_or_default();
+
+                            // 当該 SP の control channel を逆用して forward (= World→SP reverse)。
+                            let response = forward_to_sp_control(
+                                &control_channels,
+                                &path_key,
+                                &method,
+                                &payload,
+                            )
+                            .await;
+                            if channel.send_response(id, &method, &response).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // World-Device Channel（Bastet 🧲 device event → vp-app への bridge）
+    // =========================================================================
+    // EventBus の `bastet.*` event (device 接続/切断/操作入力) を Unison wire の `DeviceEvent` に
+    // 変換して push する単機能 channel。 world-process と違い method 分岐は無く、 接続 = 購読
+    // (canvas channel 方式)。 `bastet_event_bus` が Some (= feature midi + Bastet 稼働) のときのみ登録。
+    if let Some(ref bastet_event_bus) = state.bastet_event_bus {
+        let bastet_event_bus = bastet_event_bus.clone();
+        // M2 follow-up: subscribe 時の registry snapshot 送信用に registry 本体も capture (midi のみ)。
+        #[cfg(feature = "midi")]
+        let bastet = state.bastet.clone();
+        server
+            .register_channel("world-device", {
+                move |_ctx, stream| {
+                    let event_bus = bastet_event_bus.clone();
+                    #[cfg(feature = "midi")]
+                    let bastet = bastet.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        // 接続即購読: bastet.* を FilteredSubscription で受け、 DeviceEvent に変換して push。
+                        // subscriber id は接続ごとにユニーク化する (= 複数 vp-app instance が同時購読
+                        // しても EventBus の subscriptions メタデータが last-write-wins で衝突しない。
+                        // broadcast 配信自体は receiver 独立で元々壊れないが、 subscriber_count を正確に保つ)。
+                        let sub_id = format!("world-device-bridge-{}", uuid::Uuid::new_v4());
+                        let sub = event_bus.subscribe(&sub_id, "bastet.*").await;
+                        let mut filtered =
+                            crate::capability::eventbus::FilteredSubscription::new(sub);
+
+                        // M2 follow-up: subscribe の「後」に現 registry を device_connected として snapshot
+                        // 送信する。 これで vp-app は (再)接続直後に device 一覧を即得る (従来は次の hot-plug
+                        // まで空)。 順序が subscribe→snapshot なので delta の取りこぼしは無く、 snapshot と
+                        // delta が重複し得るが、 vp-app の apply_device_event は port_name で retain-then-push
+                        // = 冪等なので吸収される。 registry lock は collect で解放してから送る (send を跨いで
+                        // 保持しない)。
+                        #[cfg(feature = "midi")]
+                        if let Some(bastet) = bastet.as_ref() {
+                            let devices_arc = {
+                                let b = bastet.read().await;
+                                std::sync::Arc::clone(b.devices())
+                            };
+                            let snapshot: Vec<crate::daemon::protocol::DeviceEvent> = {
+                                let devs = devices_arc.read().await;
+                                devs.values()
+                                    .map(|d| {
+                                        crate::daemon::protocol::DeviceEvent::DeviceConnected {
+                                            port_name: d.port_name.clone(),
+                                            has_input: d.has_input,
+                                            has_output: d.has_output,
+                                        }
+                                    })
+                                    .collect()
+                            };
+                            for device_event in snapshot {
+                                let Ok(payload) = serde_json::to_value(&device_event) else {
+                                    continue;
+                                };
+                                if channel.send_event("event", &payload).await.is_err() {
+                                    return Ok(()); // client 切断
+                                }
+                            }
+                        }
+                        // TODO(Phase 2): FilteredSubscription は lag を silent skip する (eventbus.rs:39)。
+                        // ControlEvent 高頻度時に lag 警告が出ないため、 必要なら Lagged 警告付きの
+                        // 購読に差し替えるか buffer_size を調整する (world-process は lag を warn 可視化)。
+                        while let Some(cap_event) = filtered.recv().await {
+                            let Some(device_event) =
+                                crate::daemon::protocol::DeviceEvent::from_capability_event(
+                                    &cap_event.event_type,
+                                    &cap_event.payload,
+                                )
+                            else {
+                                continue;
+                            };
+                            let payload = match serde_json::to_value(&device_event) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!("DeviceEvent serialize 失敗: {}", e);
+                                    continue;
+                                }
+                            };
+                            if channel.send_event("event", &payload).await.is_err() {
+                                break; // client 切断
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
+    // Device Channel（agent → daemon: CoreMIDI hot-plug 報告、doc 26 §2 channel_id=2）
+    // =========================================================================
+    // request-dispatch 型 channel。macOS menu bar agent (Swift
+    // `CoreMIDIWatcher`) が `ReportDevice` を送り、Bastet registry を更新する。
+    // Model D (doc 25): hot-plug authority = agent。daemon は polling を回さない。
+    #[cfg(feature = "midi")]
+    if let Some(ref bastet) = state.bastet {
+        let bastet = bastet.clone();
+        server
+            .register_channel("device", {
+                move |_ctx, stream| {
+                    let bastet = bastet.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(msg) => msg,
+                                Err(_) => break,
+                            };
+
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let method = msg.method.clone();
+                            let request_id = msg.id;
+
+                            let response = match method.as_str() {
+                                "report_device" => {
+                                    handle_device_report(&bastet, request_id, payload).await
+                                }
+                                _ => ChannelMessage::err(
+                                    request_id,
+                                    format!("不明なメソッド: device.{}", method),
+                                ),
+                            };
+
+                            if send_channel_response(&channel, &method, response)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
     // Registry Channel（SP 自己登録 — QUIC 永続接続による即時登録・即時死亡検出）
     // =========================================================================
     if let Some(ref running_processes) = state.running_processes {
@@ -1143,18 +1446,25 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         let projects = state.projects.clone();
         // Phase 1b: lane_registry も capture (register payload の lanes を cache する)
         let lane_registry = state.lane_registry.clone();
+        // L1 lifecycle: SP presence (register→Connected / unregister→Unregistered / 切断→Disconnected)
+        let process_presence = state.process_presence.clone();
         // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (daemon-canonical 化)。
         let vpdb = state.vpdb.clone();
         // VP-154 PR-2: lifecycle event を broadcast する Sender (= "world-process" subscriber へ)
         let process_lifecycle_tx = state.process_lifecycle_tx.clone();
+        // L0 SP-portless (lanes slice): lane_registry mutate 後に project path_key を流す Sender
+        // (= per-project "lanes" channel subscriber へ realtime 再 push を促す)。
+        let lane_change_tx = state.lane_change_tx.clone();
         server
             .register_channel("registry", {
                 move |_ctx, stream| {
                     let running_processes = running_processes.clone();
                     let projects = projects.clone();
                     let lane_registry = lane_registry.clone();
+                    let process_presence = process_presence.clone();
                     let vpdb = vpdb.clone();
                     let process_lifecycle_tx = process_lifecycle_tx.clone();
+                    let lane_change_tx = lane_change_tx.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         let mut registered_name: Option<String> = None;
@@ -1225,6 +1535,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .await
                                         .insert(path_key.clone(), process);
 
+                                    // L1 lifecycle: SP register = presence Connected。
+                                    if let Some(ref pp) = process_presence {
+                                        pp.write().await.insert(
+                                            path_key.clone(),
+                                            ProcessPresenceState::Connected,
+                                        );
+                                    }
+
                                     // lanes payload を lane_registry + db に snapshot 反映。
                                     //
                                     // doc 24 §10 Phase 2 (team-b review #1): lanes フィールド
@@ -1286,6 +1604,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         pid,
                                     });
 
+                                    // L0 lanes slice: register は lanes snapshot を載せる (= SP 起動
+                                    // 直後の初期 lane 集合)。 per-project "lanes" channel の subscriber に
+                                    // 再 push を促す (lanes 不在の register でも空→空で無害)。
+                                    let _ = lane_change_tx.send(path_key.clone());
+
                                     if channel
                                         .send_response(
                                             request_id,
@@ -1311,6 +1634,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         } // ← projects ロック解放
                                         {
                                             running_processes.write().await.remove(path_key);
+                                        }
+                                        // L1 lifecycle: graceful unregister = presence Unregistered
+                                        // (project は残るので sidebar には ○ として残り続ける)。
+                                        if let Some(ref pp) = process_presence {
+                                            pp.write().await.insert(
+                                                path_key.clone(),
+                                                ProcessPresenceState::Unregistered,
+                                            );
                                         }
                                         // doc 24 §10 Phase 2 (authority 反転): graceful unregister
                                         // (SP shutdown) でも lane_registry を **drop しない**。
@@ -1418,6 +1749,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             "Registry: lanes/add 反映 (key={})",
                                             path_key
                                         );
+                                        // L0 lanes slice: 当該 project の lane snapshot を再 push。
+                                        let _ = lane_change_tx.send(path_key.clone());
                                     }
                                     if channel
                                         .send_response(
@@ -1462,6 +1795,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             path_key,
                                             addr
                                         );
+                                        // L0 lanes slice: 当該 project の lane snapshot を再 push。
+                                        let _ = lane_change_tx.send(path_key.clone());
                                     }
                                     if channel
                                         .send_response(
@@ -1523,6 +1858,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             "Registry: lanes/update 反映 (key={})",
                                             path_key
                                         );
+                                        // L0 lanes slice: 実際に replace された時のみ snapshot を再 push
+                                        // (applied=false は no-op なので無駄打ちを避ける)。
+                                        if applied {
+                                            let _ = lane_change_tx.send(path_key.clone());
+                                        }
                                     }
                                     if channel
                                         .send_response(
@@ -1583,6 +1923,18 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     name
                                 );
 
+                                // L1 lifecycle: QUIC 切断検知 = presence Disconnected。
+                                // `removed == true` は「graceful unregister していない」(entry が
+                                // 残ったまま切断) の signal なので、 graceful 経路 (= 上で
+                                // Unregistered 済) を上書きしない。health_monitor が 2 連続 miss で
+                                // respawn 着手すると Connecting に遷移する。
+                                if let Some(ref pp) = process_presence {
+                                    pp.write().await.insert(
+                                        name.clone(),
+                                        ProcessPresenceState::Disconnected,
+                                    );
+                                }
+
                                 // VP-154 PR-2: 切断由来の lifecycle remove event。 明示
                                 // unregister と異なり、 ここは QUIC 切断検出 (= D10 Push パスの
                                 // 即時死亡検出) を世界に伝える経路。
@@ -1594,6 +1946,94 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             }
                         }
 
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // L2 (doc 27 §5-3): events channel — event log の emit / query。
+    // agent の episodic memory（CLI `vp events` / 将来 agent peer / vp-app が consume）。always-on
+    // daemon が in-memory ring を保持し、emit は誰でも push、query は `since` cursor 以降を古い順に返す。
+    {
+        let event_log = state.event_log.clone();
+        server
+            .register_channel("events", {
+                move |_ctx, stream| {
+                    let event_log = event_log.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(msg) => msg,
+                                Err(_) => break, // 切断
+                            };
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let request_id = msg.id;
+                            match msg.method.as_str() {
+                                "emit" => {
+                                    let kind = payload["kind"].as_str().unwrap_or("").to_string();
+                                    let source = payload["source"].as_str().map(|s| s.to_string());
+                                    let data = payload
+                                        .get("data")
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null);
+                                    if kind.is_empty() {
+                                        let _ = channel
+                                            .send_response(
+                                                request_id,
+                                                "emit",
+                                                &serde_json::json!({"error": "kind は必須"}),
+                                            )
+                                            .await;
+                                        continue;
+                                    }
+                                    let seq = event_log.emit(kind, source, data).await;
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "emit",
+                                            &serde_json::json!({ "seq": seq }),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "query" => {
+                                    let since = payload["since"].as_u64().unwrap_or(0);
+                                    let limit = payload["limit"].as_u64().unwrap_or(0) as usize;
+                                    let events = event_log.query(since, limit).await;
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "query",
+                                            &serde_json::json!({ "events": events }),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                other => {
+                                    let _ = channel
+                                        .send_response(
+                                            request_id,
+                                            other,
+                                            &serde_json::json!({
+                                                "error": format!("不明なメソッド: events.{}", other)
+                                            }),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
                         Ok(())
                     }
                 }
@@ -1646,6 +2086,53 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             })
             .await;
     }
+
+    // =========================================================================
+    // Wire Channel (L0 portless B-4: 旧 world_wire::call の HTTP relay 先を unison 化)
+    //
+    // `world_wire::call` (SP→World の wire/delegation transport) を HTTP `POST /api/wire/*`
+    // `/api/delegation/*` から本 channel に移行 (doc 27 §62「全通信 unison」)。method は
+    // "wire/<m>" / "delegation/<m>" の prefix 分岐で各 store dispatch に振る (`handle_wire_channel`)。
+    // store は World process AppState と共有 (`with_wire` で plumb)。SP mode (store=None) では
+    // 各 method が error を返す (= 旧 HTTP handler の「store not initialized」と等価)。
+    // =========================================================================
+    server
+        .register_channel("wire", {
+            let state = state.clone();
+            move |_ctx, stream| {
+                let state = state.clone();
+                async move {
+                    let channel = UnisonChannel::new(stream);
+                    loop {
+                        let msg = match channel.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // 切断
+                        };
+                        if msg.msg_type != MessageType::Request {
+                            continue;
+                        }
+                        let payload = msg.payload_as_value().unwrap_or_default();
+                        let method = msg.method.clone();
+                        let request_id = msg.id;
+                        // 成功時 result JSON、 失敗時は success frame に {"error": ...} を詰める
+                        // (Unison は専用 error frame を持たない、 VP-163 慣習)。
+                        let response = match handle_wire_channel(&state, &method, payload).await {
+                            Ok(v) => v,
+                            Err(e) => serde_json::json!({ "error": e }),
+                        };
+                        if channel
+                            .send_response(request_id, &method, &response)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        })
+        .await;
 
     // サーバー起動
     // VP-185: listen は内部で QuicServer::new() (= cert なし固定) を使うため、
@@ -1800,166 +2287,6 @@ mod tests {
         assert!(
             result.is_err(),
             "subscriber 不在では SendError が想定通り返る"
-        );
-    }
-
-    #[test]
-    fn test_validate_shell_cmd_allowed() {
-        // 許可されたシェル（絶対パス）
-        assert!(validate_shell_cmd("/bin/bash").is_ok());
-        assert!(validate_shell_cmd("/bin/zsh").is_ok());
-        assert!(validate_shell_cmd("/bin/sh").is_ok());
-        assert!(validate_shell_cmd("/usr/bin/bash").is_ok());
-        assert!(validate_shell_cmd("/usr/local/bin/fish").is_ok());
-        assert!(validate_shell_cmd("/opt/homebrew/bin/zsh").is_ok());
-    }
-
-    #[test]
-    fn test_validate_shell_cmd_allowed_bare() {
-        // 許可されたシェル（コマンド名のみ）
-        assert!(validate_shell_cmd("bash").is_ok());
-        assert!(validate_shell_cmd("zsh").is_ok());
-        assert!(validate_shell_cmd("sh").is_ok());
-        assert!(validate_shell_cmd("fish").is_ok());
-    }
-
-    #[test]
-    fn test_validate_shell_cmd_rejected() {
-        // 拒否されるべきコマンド
-        assert!(validate_shell_cmd("python").is_err());
-        assert!(validate_shell_cmd("node").is_err());
-        assert!(validate_shell_cmd("/usr/bin/python3").is_err());
-        assert!(validate_shell_cmd("rm -rf /").is_err());
-        assert!(validate_shell_cmd("bash -c 'malicious'").is_err());
-        assert!(validate_shell_cmd("").is_err());
-        assert!(validate_shell_cmd("/bin/bash; rm -rf /").is_err());
-        assert!(validate_shell_cmd("zsh\nmalicious").is_err());
-    }
-
-    // =========================================================================
-    // read_output の take-restore パターンのテスト
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_read_output_take_restore_pattern() {
-        // take-restore パターンの基本動作:
-        // receiver を取り出し、データを受信し、元に戻す
-        let state = DaemonState::new();
-        let (tx, rx) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
-        let key = ("test-session".to_string(), 0u32);
-
-        state.output_receivers.lock().await.insert(key.clone(), rx);
-
-        // 1. receiver を取り出す
-        let mut receivers = state.output_receivers.lock().await;
-        let rx = receivers.remove(&key);
-        drop(receivers); // ロック即解放
-
-        let mut rx = rx.expect("receiver が存在するはず");
-
-        // 2. ロック非保持の状態でデータ送受信
-        tx.send(b"hello".to_vec()).unwrap();
-        let data = rx.recv().await.unwrap();
-        assert_eq!(data, b"hello");
-
-        // 3. receiver を戻す
-        state.output_receivers.lock().await.insert(key.clone(), rx);
-
-        // 4. 戻った receiver がマップに存在することを確認
-        assert!(
-            state.output_receivers.lock().await.contains_key(&key),
-            "receiver が復元されていない"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_read_output_concurrent_different_panes() {
-        // 異なるペインへの同時 read_output がデッドロックしないことを検証
-        // 旧実装（Mutex保持のまま await）ではタスク2がタスク1のタイムアウト完了まで
-        // ブロックされていた。新実装では両方が独立に進行する。
-        let state = Arc::new(DaemonState::new());
-
-        let (tx1, rx1) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
-        let (tx2, rx2) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
-        let key1 = ("session".to_string(), 0u32);
-        let key2 = ("session".to_string(), 1u32);
-
-        {
-            let mut receivers = state.output_receivers.lock().await;
-            receivers.insert(key1.clone(), rx1);
-            receivers.insert(key2.clone(), rx2);
-        }
-
-        // ペイン1: 50ms後にデータ受信（100msタイムアウト）
-        let state1 = state.clone();
-        let key1c = key1.clone();
-        let task1 = tokio::spawn(async move {
-            let mut receivers = state1.output_receivers.lock().await;
-            let rx = receivers.remove(&key1c);
-            drop(receivers);
-
-            let mut rx = rx.unwrap();
-            let result =
-                tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await;
-
-            let mut receivers = state1.output_receivers.lock().await;
-            receivers.insert(key1c, rx);
-            result.is_ok()
-        });
-
-        // ペイン2: 即座にデータ受信（ペイン1にブロックされないことを検証）
-        let state2 = state.clone();
-        let key2c = key2.clone();
-        let task2 = tokio::spawn(async move {
-            // 少し遅延してからtakeを試みる（task1がtakeした後）
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-            let mut receivers = state2.output_receivers.lock().await;
-            let rx = receivers.remove(&key2c);
-            drop(receivers);
-
-            let mut rx = rx.unwrap();
-            let result =
-                tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await;
-
-            let mut receivers = state2.output_receivers.lock().await;
-            receivers.insert(key2c, rx);
-            result.is_ok()
-        });
-
-        // 両ペインにデータ送信
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        tx1.send(b"pane1".to_vec()).unwrap();
-        tx2.send(b"pane2".to_vec()).unwrap();
-
-        let (r1, r2) = tokio::join!(task1, task2);
-        assert!(r1.unwrap(), "ペイン1がデータを受信できなかった");
-        assert!(
-            r2.unwrap(),
-            "ペイン2がデータを受信できなかった（デッドロックの可能性）"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_read_output_same_pane_second_reader_sees_missing() {
-        // 同一ペインへの同時アクセス:
-        // 1つ目の reader が receiver を take 中、2つ目は receiver が見つからない
-        let state = Arc::new(DaemonState::new());
-        let (_tx, rx) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
-        let key = ("session".to_string(), 0u32);
-
-        state.output_receivers.lock().await.insert(key.clone(), rx);
-
-        // 1つ目: receiver を取り出す
-        let mut receivers = state.output_receivers.lock().await;
-        let _rx = receivers.remove(&key);
-        drop(receivers);
-
-        // 2つ目: 同じキーで取得を試みる → None（取り出し済み）
-        let receivers = state.output_receivers.lock().await;
-        assert!(
-            !receivers.contains_key(&key),
-            "take中のペインに receiver が残っている"
         );
     }
 }

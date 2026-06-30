@@ -100,6 +100,65 @@ pub struct RunningProcess {
     pub tmux_session: Option<String>,
 }
 
+/// SP（Project Process）の presence 状態（World daemon-canonical、vp-app sidebar の ●◐○ 表示用）。
+///
+/// federation の [`HubFederationState`](crate::daemon::hub_client::HubFederationState) と同型の
+/// prior art を SP presence に流用したもの。World の registry channel handler が SP の
+/// register / unregister / QUIC 切断を観測して遷移させ、`run_health_monitor` の respawn 着手が
+/// `Connecting` を立てる。`/api/health` の `processes[].presence` で vp-app に expose される。
+///
+/// 設計（federation は単一接続のスカラーを `AtomicU8` で持つが、presence は SP ごとの
+/// キー付きコレクション）: 書き込みは常に map を手にした registry handler / health_monitor が行い、
+/// map ロック外で個別ハンドルを長期保持する holder はいない。よって per-entry `Arc<AtomicU8>` は
+/// 不要で、`RwLock<HashMap<String, ProcessPresenceState>>`（Copy enum 値）で単純化する（doc 27 §3.2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessPresenceState {
+    /// 未登録（projects には在るが SP がまだ register していない / graceful unregister 済）。
+    Unregistered,
+    /// 再起動 in-flight（health_monitor が crash を検知 → `start_process` 着手、register 待ち）。
+    Connecting,
+    /// SP が register 済み + QUIC registry 接続が生存。
+    Connected,
+    /// QUIC 切断を検知（crash / network、health_monitor の respawn 待ち）。
+    Disconnected,
+}
+
+impl ProcessPresenceState {
+    /// `/api/health` の `processes[].presence` 値（vp-app が ●◐○ 描画に使う）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unregistered => "unregistered",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Disconnected => "disconnected",
+        }
+    }
+}
+
+/// vp-app sidebar 向けの SP presence 1 件（`/api/health` の `processes[]` 要素）。
+///
+/// `projects`（desired = 全登録 project）を軸に、`running_processes`（live port/pid/tmux）と
+/// `process_presence`（接続状態）を join した結果。Connected でない（= live 不在）SP は
+/// port/pid/tmux が `None` になるが、project として sidebar には残り続ける（Model Q）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessHealthInfo {
+    /// プロジェクト名（表示用ラベル）。
+    pub project: String,
+    /// 正規化パスキー（一意識別）。
+    pub path: String,
+    /// presence 状態（`"unregistered"` | `"connecting"` | `"connected"` | `"disconnected"`）。
+    pub presence: &'static str,
+    /// live port（Connected 時のみ Some、`running_processes` 由来）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// live pid（同上）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// tmux セッション名（同上）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux_session: Option<String>,
+}
+
 /// 正規化パスキーを生成（HashMap のキーに使用）
 ///
 /// ディレクトリパスを正規化した String を返す。
@@ -125,14 +184,15 @@ fn config_projects_to_entries(config: &Config) -> Vec<crate::projects_file::Proj
         .collect()
 }
 
-/// VP-165 PR-5b: `start_process` 内 `wait_for_health` の判定結果
+/// VP-165 PR-5b / L0 finale: `start_process` 内 `wait_for_health` の判定結果。
+/// L0 finale で判定源を `/api/health` HTTP → QUIC registry (`running_processes`) に変更。
 #[derive(Debug)]
 enum HealthCheckResult {
-    /// `/api/health` の `project_dir` が期待値と一致 → 自分の SP が立った
+    /// QUIC registry に `expected_key` が当該 `port` で登録された → 自分の SP が立った
     Ours,
-    /// `/api/health` は応答したが `project_dir` が別 project → 外部衝突 (auto-reassign trigger)
+    /// registry に別 project が同 `port` で登録済 (reverse-lookup) → 外部衝突 (auto-reassign trigger)
     WrongProject(String),
-    /// timeout だが port は listening = 非 VP プロセス占有 (auto-reassign trigger)
+    /// timeout かつ port が TCP listening = 非 VP プロセス占有 (auto-reassign trigger)
     Occupied,
     /// timeout かつ port も応答せず = SP crashed or never started
     Timeout,
@@ -165,6 +225,11 @@ pub struct ProcessManagerCapability {
     /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
     /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
     active_lanes: Arc<RwLock<HashMap<String, String>>>,
+    /// L1 lifecycle (Phase C): SP の接続 presence (キー: 正規化パス)。daemon-canonical (doc 27 §3.2)。
+    /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected、
+    /// `run_health_monitor` の respawn 着手が Connecting を立てる。`/api/health` の `processes[]` で expose。
+    /// DaemonState と Arc 共有 (`process_presence_ref`) し、registry handler 側からも書ける。
+    process_presence: Arc<RwLock<HashMap<String, ProcessPresenceState>>>,
 }
 
 impl ProcessManagerCapability {
@@ -181,6 +246,7 @@ impl ProcessManagerCapability {
             vp_binary_path: None,
             vpdb: None,
             active_lanes: Arc::new(RwLock::new(HashMap::new())),
+            process_presence: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -205,6 +271,56 @@ impl ProcessManagerCapability {
         &self,
     ) -> Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>> {
         self.lane_registry.clone()
+    }
+
+    /// L1 lifecycle: process_presence の共有参照を取得（DaemonState と共有するため）。
+    ///
+    /// registry channel handler が同一 Arc を握り、SP の register/unregister/切断を観測して
+    /// presence を遷移させる（capability 経由でなく DaemonState 側から直接書ける）。
+    pub fn process_presence_ref(&self) -> Arc<RwLock<HashMap<String, ProcessPresenceState>>> {
+        self.process_presence.clone()
+    }
+
+    /// L1 lifecycle: 1 project の presence を更新する（health_monitor の respawn 着手等）。
+    pub async fn set_presence(&self, path_key: &str, state: ProcessPresenceState) {
+        self.process_presence
+            .write()
+            .await
+            .insert(path_key.to_string(), state);
+    }
+
+    /// L1 lifecycle: vp-app sidebar 用の SP presence 一覧を作る（World daemon-canonical）。
+    ///
+    /// `projects`（desired = 全登録 project）を軸に `running_processes`（live port/pid/tmux）と
+    /// `process_presence`（接続状態）を join する。SP が crash/disconnect しても projects には
+    /// 残るので sidebar から消えず ○ disconnected として見える（Model Q）。HashMap 反復順は
+    /// 非決定的なので project 名で sort して返す（sidebar の表示 jitter を防ぐ）。
+    ///
+    /// ロック順序: projects → running_processes → process_presence（register handler と同順、deadlock 回避）。
+    pub async fn presence_snapshot(&self) -> Vec<ProcessHealthInfo> {
+        let projects = self.projects.read().await;
+        let running = self.running_processes.read().await;
+        let presence = self.process_presence.read().await;
+        let mut out: Vec<ProcessHealthInfo> = projects
+            .iter()
+            .map(|(path_key, info)| {
+                let state = presence
+                    .get(path_key)
+                    .copied()
+                    .unwrap_or(ProcessPresenceState::Unregistered);
+                let live = running.get(path_key);
+                ProcessHealthInfo {
+                    project: info.name.clone(),
+                    path: path_key.clone(),
+                    presence: state.as_str(),
+                    port: live.map(|p| p.port),
+                    pid: live.map(|p| p.pid),
+                    tmux_session: live.and_then(|p| p.tmux_session.clone()),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.project.cmp(&b.project));
+        out
     }
 
     /// 設定を読み込み
@@ -680,6 +796,9 @@ impl ProcessManagerCapability {
                 e
             );
         }
+        // L1 lifecycle: connection presence も namespace と共に回収 (active_lanes と対称、
+        // DB 永続を持たない in-memory only field なので map remove のみ)。
+        self.process_presence.write().await.remove(&key);
 
         // doc 24 §10 Phase 2 / §4.6 含有=所有=寿命: lane descriptor も同様に畳む。
         // lane は daemon-canonical durable truth (SP disconnect では残すが、 project remove は
@@ -1085,71 +1204,26 @@ impl ProcessManagerCapability {
         Ok(outcome)
     }
 
-    /// Processを起動
-    /// VP-133 MVP: 指定 path に対して live SP が存在するか port range scan で確認。
+    /// L0 finale (Push-only): 指定 path の live SP を `running_processes` registry から引く。
     ///
-    /// `running_processes` registry を bypass し、 `PORT_RANGE_START..=END` を直接 GET
-    /// `/api/health` で query、 response の `project_dir` を `normalize_path_key` で正規化して
-    /// `project_path` と match する SP を返す。
+    /// `start_process` の重複 spawn 防止 dedup check。 旧版 (VP-133) は `/api/health` の port range
+    /// scan で「registry が誤って空でも ports が ground-truth」を狙ったが、 Push-only では:
+    /// - registry は QUIC register/disconnect で維持される canonical な真実源
+    /// - 一時的 blip (registry 空) は SP uplink reconnect (heartbeat 15s + backoff) で復帰
+    /// - respawn は `run_health_monitor` の **2 連続 miss = 60s debounce** が待つ → 15s reconnect が
+    ///   先に効くので「registry 空だが SP 生存」での重複 spawn (VP-133) は構造的に起きない
     ///
-    /// **用途**: `start_process` で false positive 切断検知後の auto-spawn 重複を防ぐ
-    /// dedup check。 registry が誤って空になっても、 ports は実 SP の listen 状態を反映する
-    /// ので、 port scan が source of truth として機能する。
-    ///
-    /// **同 logic は `refresh_process_status` Phase 2 (line ~1045) でも使われているが、
-    /// あちらは ghost detection / 自動 register の higher-level loop**。 本 helper は
-    /// 「ある path に SP が live か」 の単純 query に絞り、 caller が分岐判断する形。
+    /// よって port scan dedup は不要になり、 registry 直引きで足りる。
     async fn find_running_sp_at_path(
         &self,
         project_path: &std::path::Path,
     ) -> Option<RunningProcess> {
         let target_key = normalize_path_key(project_path);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(500))
-            .build()
-            .ok()?;
-
-        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
-            let url = format!("http://[::1]:{}/api/health", port);
-            let Ok(resp) = client.get(&url).send().await else {
-                continue;
-            };
-            if !resp.status().is_success() {
-                continue;
-            }
-            let Ok(json) = resp.json::<serde_json::Value>().await else {
-                continue;
-            };
-
-            let project_dir = json
-                .get("project_dir")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if project_dir.is_empty() {
-                continue;
-            }
-
-            let key = normalize_path_key(std::path::Path::new(project_dir));
-            if key != target_key {
-                continue;
-            }
-
-            // path match — 既存 SP を return
-            let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let project_name = std::path::Path::new(project_dir)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            return Some(RunningProcess {
-                project_name,
-                port,
-                pid,
-                project_path: project_path.to_path_buf(),
-                tmux_session: None,
-            });
-        }
-        None
+        self.running_processes
+            .read()
+            .await
+            .get(&target_key)
+            .cloned()
     }
 
     pub async fn start_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
@@ -1226,7 +1300,7 @@ impl ProcessManagerCapability {
         // VP-165 PR-5b: TheWorld が port allocation の authority。
         // - `sp_port_for_project` で slot ベースの port を解決 (新規割当なら config 永続)
         // - `vp sp start -p <port>` で port を明示渡し
-        // - `wait_for_health(port, &path)` で `/api/health` の project_dir 一致を確認
+        // - `wait_for_health(port, &path)` で QUIC registry 登録を確認 (Push-only、 L0 finale)
         // - 外部衝突 (別 project SP / 非 VP process) なら 1 回きり auto-reassign + retry
         //
         // 旧 (PR-5 まで): `vp sp start -C <path>` (-p 無し) → 子の resolve_port が slot 解決 →
@@ -1395,18 +1469,20 @@ impl ProcessManagerCapability {
             }
         }
 
-        // POST /api/shutdown を送信
-        let client = reqwest::Client::new();
-        let url = format!("http://[::1]:{}/api/shutdown", running.port);
-
-        if let Err(e) = client
-            .post(&url)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await
+        // SP-portless: graceful shutdown を World process-proxy "shutdown" 経由で (World 内 loopback、
+        // reverse-routing → SP control channel → dispatch_process_method "shutdown")。 best-effort:
+        // 失敗/無応答でも registry からは remove する (SP は shutdown_token cancel で graceful 停止、
+        // 即 control channel を畳むため応答が返らない事もある)。 cli/restart-all と uniform な transport。
+        if let Err(e) = crate::commands::process_client::world_process_request(
+            crate::cli::WORLD_PORT,
+            &running.project_path.to_string_lossy(),
+            "shutdown",
+            serde_json::json!({}),
+        )
+        .await
         {
             tracing::warn!(
-                "shutdown リクエスト失敗 '{}' (port={}): {}",
+                "process-proxy shutdown 無応答/失敗 '{}' (port={}): {} — best-effort、 registry からは remove",
                 project_name,
                 running.port,
                 e
@@ -1588,42 +1664,17 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// ポートスキャンでProcessを見つける
+    /// L0 finale (Push-only): spawn した SP の **QUIC 自己登録**を待って launch を確認する。
     ///
-    /// `/api/health` の `project_dir` を `normalize_path_key` で正規化して比較し、
-    /// symlink / trailing slash 等の path variation を吸収する。 VP-134 で
-    /// `find_running_sp_at_path` (VP-133) と symmetry 復元。
-    async fn find_process_port(&self, project_path: &std::path::Path) -> Option<u16> {
-        let target_key = normalize_path_key(project_path);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(500))
-            .build()
-            .ok()?;
-
-        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
-            let url = format!("http://[::1]:{}/api/health", port);
-            if let Ok(resp) = client.get(&url).send().await
-                && resp.status().is_success()
-                && let Ok(json) = resp.json::<serde_json::Value>().await
-                && let Some(dir) = json.get("project_dir").and_then(|v| v.as_str())
-                && normalize_path_key(std::path::Path::new(dir)) == target_key
-            {
-                return Some(port);
-            }
-        }
-
-        None
-    }
-
-    /// VP-165 PR-5b: 既知 port の `/api/health` を poll し、`project_dir` 一致を確認する。
+    /// 旧版は `/api/health` を poll して `project_dir` 一致を見ていたが、 SP は起動時に World へ
+    /// QUIC で自己登録する (`discovery::spawn_world_uplink` → registry channel `register`)。 World は
+    /// それを `running_processes`（path_key → RunningProcess）に同期 insert する (daemon/server.rs)。
+    /// よって HTTP probe 不要で、 共有 `running_processes` registry を poll すれば足りる:
+    /// - expected_path が `port` で登録 → `Ours`
+    /// - 別 project が同 `port` を占有 (registry reverse-lookup) → `WrongProject` (auto-reassign trigger)
+    /// - timeout かつ port 占有 (TcpStream) → `Occupied`（非 VP / 未登録 process）/ 応答無し → `Timeout`
     ///
-    /// 旧 `wait_for_process_port` は range scan (33000-33024 を全部 GET して path 一致を探す)
-    /// だったが、PR-5b で `start_process` が `-p <port>` で port を明示渡しするようになり、
-    /// 既知 port の health を直 poll すれば足りる。さらに「health が別 project の dir を返す」
-    /// = 別 project の SP が同 port にいる（外部衝突）ケースも区別できるようになり、
-    /// auto-reassign の trigger になる。
-    ///
-    /// - `initial_delay` ~800ms: SP が axum listen + `/api/health` 準備完了するまでの最低時間
+    /// - `initial_delay` ~800ms: SP が boot + QUIC uplink 接続するまでの最低時間
     /// - `poll_interval` ~500ms: retry 間隔
     /// - `total_timeout` ~10s: 諦めるまでの total
     async fn wait_for_health(
@@ -1636,39 +1687,37 @@ impl ProcessManagerCapability {
     ) -> HealthCheckResult {
         let start = std::time::Instant::now();
         tokio::time::sleep(initial_delay).await;
-
-        let url = format!("http://[::1]:{}/api/health", port);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        let expected_normalized = Config::normalize_path(expected_path);
+        let expected_key = normalize_path_key(expected_path);
 
         loop {
-            if let Ok(resp) = client.get(&url).send().await
-                && resp.status().is_success()
-                && let Ok(json) = resp.json::<serde_json::Value>().await
-                && let Some(actual_dir) = json.get("project_dir").and_then(|v| v.as_str())
             {
-                let actual_normalized = Config::normalize_path(std::path::Path::new(actual_dir));
-                if actual_normalized == expected_normalized {
+                let procs = self.running_processes.read().await;
+                // 自分が当該 port で登録されたか
+                if let Some(p) = procs.get(&expected_key)
+                    && p.port == port
+                {
                     tracing::info!(
-                        "SP startup health verified in {}ms (port={}, project_path={})",
+                        "SP startup registered in {}ms (port={}, project_path={})",
                         start.elapsed().as_millis(),
                         port,
                         expected_path.display()
                     );
                     return HealthCheckResult::Ours;
                 }
-                // 別 project の SP が同 port にいる = 外部衝突 (auto-reassign trigger)
-                tracing::warn!(
-                    "Health 不一致: port={} expected={} actual={} ({}ms 経過)",
-                    port,
-                    expected_normalized,
-                    actual_normalized,
-                    start.elapsed().as_millis()
-                );
-                return HealthCheckResult::WrongProject(actual_normalized);
+                // 別 project が同 port を占有 (registry reverse-lookup)
+                if let Some((other_key, _)) = procs
+                    .iter()
+                    .find(|(k, v)| v.port == port && *k != &expected_key)
+                {
+                    tracing::warn!(
+                        "Registry 衝突: port={} expected={} actual={} ({}ms 経過)",
+                        port,
+                        expected_key,
+                        other_key,
+                        start.elapsed().as_millis()
+                    );
+                    return HealthCheckResult::WrongProject(other_key.clone());
+                }
             }
             if start.elapsed() >= total_timeout {
                 // timeout: 何かが port を握ってるか (Occupied) / 誰も応答しないか (Timeout)
@@ -1678,7 +1727,7 @@ impl ProcessManagerCapability {
                 )
                 .is_ok();
                 tracing::warn!(
-                    "SP startup health timeout after {}ms (port={}, occupied={})",
+                    "SP startup registration timeout after {}ms (port={}, occupied={})",
                     start.elapsed().as_millis(),
                     port,
                     occupied
@@ -1826,113 +1875,16 @@ impl ProcessManagerCapability {
             }
         }
 
-        // ── Phase 2: ポートスキャン Reconciliation（未登録 SP の自動追加 + ゴースト除去）──
+        // ── Phase 2: 撤去 (L0 finale, Push-only) ──
         //
-        // 1プロジェクト1プロセスが原則。同名プロジェクトが複数ポートで見つかったら
-        // 既に登録済みの方を優先し、ゴースト（古い方）は shutdown を送って停止する。
-        // ループ中に発見した SP も tracked に追加して、同パスの2つ目をゴースト判定する。
-        let mut tracked: HashMap<String, RunningProcess> = {
-            let procs = self.running_processes.read().await;
-            procs.clone()
-        };
-        let mut tracked_ports: std::collections::HashSet<u16> =
-            tracked.values().map(|p| p.port).collect();
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(500))
-            .build()
-            .expect("reqwest Client 構築失敗");
-
-        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
-            if tracked_ports.contains(&port) {
-                continue; // 既に登録済みポート
-            }
-
-            let url = format!("http://[::1]:{}/api/health", port);
-            if let Ok(resp) = client.get(&url).send().await
-                && resp.status().is_success()
-                && let Ok(json) = resp.json::<serde_json::Value>().await
-            {
-                let project_dir = json
-                    .get("project_dir")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-
-                if project_dir.is_empty() {
-                    continue;
-                }
-
-                let key = normalize_path_key(std::path::Path::new(&project_dir));
-
-                // プロジェクト名を解決（config の名前を優先）
-                let project_name = {
-                    let projects = self.projects.read().await;
-                    projects.get(&key).map(|p| p.name.clone())
-                }
-                .unwrap_or_else(|| {
-                    std::path::Path::new(&project_dir)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown")
-                        .to_string()
-                });
-
-                // 同パスのプロジェクトが既に登録済みかチェック
-                if let Some(existing) = tracked.get(&key) {
-                    // 既に登録済み → このポートはゴースト。shutdown を送って停止
-                    tracing::info!(
-                        "Reconcile: ゴースト検出 '{}' (port={}, pid={}) — 既に port={} で稼働中 → shutdown",
-                        project_name,
-                        port,
-                        pid,
-                        existing.port
-                    );
-                    let shutdown_url = format!("http://[::1]:{}/api/shutdown", port);
-                    let _ = client.post(&shutdown_url).send().await;
-                    continue;
-                }
-
-                let process = RunningProcess {
-                    project_name: project_name.clone(),
-                    port,
-                    pid,
-                    project_path: project_dir.into(),
-                    tmux_session: None,
-                };
-
-                tracing::info!(
-                    "Reconcile: 未登録 SP 発見 → '{}' 追加 (port={}, pid={})",
-                    project_name,
-                    port,
-                    pid
-                );
-
-                // ロック順序統一: projects → running_processes
-                {
-                    let mut projects = self.projects.write().await;
-                    if let Some(p) = projects.get_mut(&key) {
-                        p.process_status = ProcessStatus::Running;
-                    }
-                }
-                {
-                    let mut procs = self.running_processes.write().await;
-                    procs.insert(key.clone(), process.clone());
-                }
-                // DB にも書き込み（正規化パス）
-                if let Some(ref db) = self.vpdb
-                    && let Err(e) = db
-                        .upsert_process(&key, &project_name, port, pid, "running", None)
-                        .await
-                {
-                    tracing::warn!("DB process 登録失敗 (Reconcile): {}", e);
-                }
-                // tracked を更新して後続ポートのゴースト検出に使う
-                tracked.insert(key, process);
-                tracked_ports.insert(port);
-            }
-        }
+        // 旧 Phase 2 は `PORT_RANGE` を `/api/health` で port-scan し、 未登録 SP の auto-register と
+        // ゴースト(同パス複数 port)の `/api/shutdown` kill を行う Pull 経路だった。 Push-only では
+        // QUIC registry が canonical:
+        // - 未登録 SP の発見 → SP の QUIC 自己登録 (registry channel `register`) が即 insert
+        // - 切断検出 → registry channel の disconnect が即 remove
+        // - ゴースト(重複 spawn) → 1 project = 1 SP を `start_process` の registry dedup +
+        //   `run_health_monitor` の 2 連続 miss=60s debounce (> SP reconnect 15s) で構造的に防ぐ
+        // よって HTTP port-scan reconciliation は冗長 → 撤去 (Phase 1 PID liveness + Phase 3 sync は残す)。
 
         // ── Phase 3: プロジェクト状態を最終同期 ──
         // running_processes と projects は同じパスキーなので直接比較可能
@@ -2111,6 +2063,11 @@ impl ProcessManagerCapability {
                     let w = world.read().await;
                     w.clone()
                 };
+                // L1 lifecycle: respawn 着手 = presence を Connecting に。SP が register し直すと
+                // registry handler が Connected に上書きする (= vp-app sidebar が ◐→● 遷移を見れる)。
+                world_cap
+                    .set_presence(path_key, ProcessPresenceState::Connecting)
+                    .await;
                 match world_cap.start_process(project_name).await {
                     Ok(new_proc) => {
                         tracing::info!(
@@ -2126,6 +2083,12 @@ impl ProcessManagerCapability {
                             project_name,
                             e
                         );
+                        // L1 lifecycle: 起動不可 (path 削除 / binary 不在 等) は Connecting に
+                        // 固定せず Disconnected に戻す。固定すると sidebar が永久に ◐ を表示して
+                        // 「実は死んでいる」状態を ○ で示せない (毎 tick respawn 試行は継続する)。
+                        world_cap
+                            .set_presence(path_key, ProcessPresenceState::Disconnected)
+                            .await;
                     }
                 }
             }
@@ -2191,14 +2154,12 @@ impl ProcessManagerCapability {
             }
         }
         tracing::info!(
-            "lane watcher 起動 (初期 {} project arm 済、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
+            "lane watcher 起動 (初期 {} project arm 済、 mode=NonRecursive、 trigger=Create/Remove → lane_create/lane_delete)",
             watched.len()
         );
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .expect("reqwest Client 構築失敗");
+        // lanes portless: 旧 reqwest client (SP HTTP 直結) は撤去。 event handler は World
+        // process-proxy ask (`lane_create` / `lane_delete`) に loopback する。
 
         // 5s tick で projects.kdl 経由の register/unregister を hot-reload。
         let mut hot_reload = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -2240,14 +2201,14 @@ impl ProcessManagerCapability {
                     let Some(event) = event_opt else { break }; // channel closed
                     match event.kind {
                         EventKind::Remove(_) => {
-                            Self::handle_lane_remove_event(&world, &client, &path_map, &event).await;
+                            Self::handle_lane_remove_event(&world, &path_map, &event).await;
                         }
                         EventKind::Create(_) => {
                             // F.8 B Convergent: SP 起動後に CLI / 外部で `.vp/lanes/<name>`
-                            // dir が増えた時、 SP に POST /api/lanes (cwd 明示) で spawn を依頼。
-                            // 「disk dir があるが LanePool に居ない」 中間状態 (= disk-only Lane)
-                            // を恒久化させない、 lifecycle 自動 convergence。
-                            Self::handle_lane_create_event(&world, &client, &path_map, &event).await;
+                            // dir が増えた時、 World process-proxy ask `lane_create` (cwd 明示) で
+                            // spawn を依頼。 「disk dir があるが LanePool に居ない」 中間状態
+                            // (= disk-only Lane) を恒久化させない、 lifecycle 自動 convergence。
+                            Self::handle_lane_create_event(&world, &path_map, &event).await;
                         }
                         _ => {} // Modify / Access 等は無視
                     }
@@ -2313,11 +2274,10 @@ impl ProcessManagerCapability {
         map
     }
 
-    /// VP-129: Remove event 1 件を処理。 path → project 解決 → SP DELETE call。
+    /// VP-129: Remove event 1 件を処理。 path → project 解決 → World process-proxy ask `lane_delete`。
     /// `run_lane_watcher` の inner、 各 path を独立処理。
     async fn handle_lane_remove_event(
         world: &Arc<RwLock<Self>>,
-        client: &reqwest::Client,
         path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
         event: &notify::Event,
     ) {
@@ -2345,36 +2305,39 @@ impl ProcessManagerCapability {
                 continue;
             };
 
-            // SP DELETE /api/lanes (cleanup=false、 dir は既に gone)。 self-loop case
-            // (= SP 経由で削除されて dir が消えた → watcher が Remove 検知 → 本 DELETE 発火)
-            // は SP 側で 404 (Lane not found) 返却、 log debug 落ち。
+            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を World process-proxy ask
+            // `lane_delete` に移管 (World 内 loopback、 surface 群と uniform な transport)。 cleanup=false
+            // で dir は既に gone。 self-loop case (= SP 経由削除で dir 消滅 → watcher が Remove 検知 →
+            // 本 lane_delete 発火) は server が "Lane not found" を Err で返すので no-op 扱い。
             let address = format!("{}/performer/{}", project_name, performer_name);
-            let address_enc = address.replace('/', "%2F");
-            let url = format!(
-                "http://[::1]:{}/api/lanes?address={}&cleanup=false",
-                port, address_enc
-            );
+            let payload = serde_json::json!({ "address": address, "cleanup": false });
             tracing::info!(
-                "lane watcher: dir removed → SP DELETE 発火 (project={}, performer={}, port={})",
+                "lane watcher: dir removed → lane_delete 発火 (project={}, performer={}, sp_port={})",
                 project_name,
                 performer_name,
                 port
             );
-            match client.delete(&url).send().await {
-                Ok(r) if r.status().is_success() => {
-                    tracing::info!("lane watcher: SP DELETE 成功 ({})", address);
+            match crate::commands::process_client::world_process_request(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "lane_delete",
+                payload,
+            )
+            .await
+            {
+                Ok(_) => {
+                    tracing::info!("lane watcher: lane_delete 成功 ({})", address);
                 }
-                Ok(r) => {
+                Err(e) if e.to_string().contains("Lane not found") => {
                     tracing::debug!(
-                        "lane watcher: SP DELETE non-success (likely self-loop or already deleted): status={}, address={}",
-                        r.status(),
+                        "lane watcher: lane_delete no-op (self-loop or already deleted): {}",
                         address
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "lane watcher: SP DELETE 失敗 (port={}, address={}): {}",
-                        port,
+                        "lane watcher: lane_delete 失敗 (project={}, address={}): {}",
+                        project_name,
                         address,
                         e
                     );
@@ -2396,7 +2359,6 @@ impl ProcessManagerCapability {
     /// - SP 起動時 bootstrap で既に同 performer が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
     async fn handle_lane_create_event(
         world: &Arc<RwLock<Self>>,
-        client: &reqwest::Client,
         path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
         event: &notify::Event,
     ) {
@@ -2427,48 +2389,47 @@ impl ProcessManagerCapability {
                 continue;
             };
 
-            // SP POST /api/lanes (cwd 明示で既存 dir を再利用、 new_performer_in skip 経路)。
-            // body 構築は serde_json::json! で minimal、 wire 互換は CreateLaneReq (routes/lanes.rs) と一致。
-            let url = format!("http://[::1]:{}/api/lanes", port);
-            let body = serde_json::json!({
+            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
+            // `lane_create` に移管 (World 内 loopback、 surface 群と uniform な transport)。 payload は
+            // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_performer_in skip)。
+            let payload = serde_json::json!({
                 "kind": "performer",
                 "name": performer_name,
                 "cwd": path.to_string_lossy(),
             });
             tracing::info!(
-                "lane watcher: dir created → SP POST 発火 (project={}, performer={}, port={})",
+                "lane watcher: dir created → lane_create 発火 (project={}, performer={}, sp_port={})",
                 project_name,
                 performer_name,
                 port
             );
-            match client.post(&url).json(&body).send().await {
-                Ok(r) if r.status().is_success() => {
+            match crate::commands::process_client::world_process_request(
+                crate::cli::WORLD_PORT,
+                &project_path,
+                "lane_create",
+                payload,
+            )
+            .await
+            {
+                Ok(_) => {
                     tracing::info!(
-                        "lane watcher: SP POST 成功 (project={}, performer={})",
+                        "lane watcher: lane_create 成功 (project={}, performer={})",
                         project_name,
                         performer_name
                     );
                 }
-                Ok(r) if r.status() == reqwest::StatusCode::CONFLICT => {
-                    // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 silent OK。
+                // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 server は "already exists" を
+                // Err で返すので silent OK (= 旧 HTTP CONFLICT 経路と等価)。
+                Err(e) if e.to_string().contains("already exists") => {
                     tracing::debug!(
-                        "lane watcher: SP POST CONFLICT (= 既に Lane あり、 silent OK) project={} performer={}",
-                        project_name,
-                        performer_name
-                    );
-                }
-                Ok(r) => {
-                    tracing::warn!(
-                        "lane watcher: SP POST non-success status={} project={} performer={}",
-                        r.status(),
+                        "lane watcher: lane_create 競合 (= 既に Lane あり、 silent OK) project={} performer={}",
                         project_name,
                         performer_name
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "lane watcher: SP POST 失敗 (port={}, project={}, performer={}): {}",
-                        port,
+                        "lane watcher: lane_create 失敗 (project={}, performer={}): {}",
                         project_name,
                         performer_name,
                         e
@@ -2838,6 +2799,136 @@ mod tests {
     /// テスト用ヘルパー: 空の ProcessManagerCapability を作成
     fn make_test_cap() -> ProcessManagerCapability {
         ProcessManagerCapability::new()
+    }
+
+    /// テスト用ヘルパー: projects に 1 件登録する。
+    fn test_project(name: &str, port: Option<u16>) -> ProjectInfo {
+        ProjectInfo {
+            name: name.to_string(),
+            path: format!("/tmp/{name}").into(),
+            process_status: ProcessStatus::Stopped,
+            port,
+            enabled: true,
+            slot: None,
+            active_lane: None,
+        }
+    }
+
+    #[test]
+    fn test_process_presence_state_as_str() {
+        // /api/health の processes[].presence にそのまま載る文字列のロック (vp-app 描画契約)。
+        assert_eq!(ProcessPresenceState::Unregistered.as_str(), "unregistered");
+        assert_eq!(ProcessPresenceState::Connecting.as_str(), "connecting");
+        assert_eq!(ProcessPresenceState::Connected.as_str(), "connected");
+        assert_eq!(ProcessPresenceState::Disconnected.as_str(), "disconnected");
+    }
+
+    #[tokio::test]
+    async fn test_presence_snapshot_joins_projects_running_and_presence() {
+        let cap = make_test_cap();
+
+        // projects (desired) に 2 件。proj-b を先に入れて sort も検証する。
+        {
+            let projects = cap.projects_ref();
+            let mut projs = projects.write().await;
+            projs.insert("/tmp/proj-b".to_string(), test_project("proj-b", None));
+            projs.insert(
+                "/tmp/proj-a".to_string(),
+                test_project("proj-a", Some(33000)),
+            );
+        }
+
+        // proj-a だけ live (running_processes に entry) + Connected。
+        {
+            let running = cap.running_processes_ref();
+            running.write().await.insert(
+                "/tmp/proj-a".to_string(),
+                RunningProcess {
+                    project_name: "proj-a".to_string(),
+                    port: 33000,
+                    pid: 4242,
+                    project_path: "/tmp/proj-a".into(),
+                    tmux_session: Some("proj-a-vp".to_string()),
+                },
+            );
+        }
+        cap.set_presence("/tmp/proj-a", ProcessPresenceState::Connected)
+            .await;
+        // proj-b は切断済 (live 不在だが project は残る = Model Q)。
+        cap.set_presence("/tmp/proj-b", ProcessPresenceState::Disconnected)
+            .await;
+
+        let snap = cap.presence_snapshot().await;
+
+        // project 名で sort されている (HashMap 反復の非決定性を吸収)。
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].project, "proj-a");
+        assert_eq!(snap[1].project, "proj-b");
+
+        // proj-a: Connected + live port/pid/tmux。
+        assert_eq!(snap[0].presence, "connected");
+        assert_eq!(snap[0].port, Some(33000));
+        assert_eq!(snap[0].pid, Some(4242));
+        assert_eq!(snap[0].tmux_session.as_deref(), Some("proj-a-vp"));
+
+        // proj-b: Disconnected + live 値は None (project としては sidebar に残る)。
+        assert_eq!(snap[1].presence, "disconnected");
+        assert_eq!(snap[1].port, None);
+        assert_eq!(snap[1].pid, None);
+        assert_eq!(snap[1].tmux_session, None);
+    }
+
+    #[tokio::test]
+    async fn test_presence_snapshot_defaults_unregistered_without_entry() {
+        // projects には在るが presence entry が無い (SP 未起動) → Unregistered default。
+        let cap = make_test_cap();
+        cap.projects_ref()
+            .write()
+            .await
+            .insert("/tmp/proj-x".to_string(), test_project("proj-x", None));
+        let snap = cap.presence_snapshot().await;
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].presence, "unregistered");
+        assert_eq!(snap[0].port, None);
+    }
+
+    #[tokio::test]
+    async fn test_set_presence_overwrites_connecting_to_disconnected() {
+        // respawn 失敗時の rollback (Connecting → Disconnected) が効くこと。
+        // これが効かないと sidebar が永久 ◐ 固定で「実は死んでいる」を ○ で示せない。
+        let cap = make_test_cap();
+        cap.projects_ref()
+            .write()
+            .await
+            .insert("/tmp/proj-r".to_string(), test_project("proj-r", None));
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Connecting)
+            .await;
+        assert_eq!(cap.presence_snapshot().await[0].presence, "connecting");
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Disconnected)
+            .await;
+        assert_eq!(cap.presence_snapshot().await[0].presence, "disconnected");
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_clears_presence() {
+        // namespace (project) を倒したら presence entry も回収する (active_lanes と対称、orphan 防止)。
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+        cap.add_project("presence-cleanup", &path).await.unwrap();
+        let key = normalize_path_key(std::path::Path::new(&path));
+        cap.set_presence(&key, ProcessPresenceState::Connected)
+            .await;
+        {
+            let presence = cap.process_presence_ref();
+            assert!(presence.read().await.contains_key(&key));
+        }
+        cap.remove_project(&path).await.unwrap();
+        let presence = cap.process_presence_ref();
+        assert!(
+            !presence.read().await.contains_key(&key),
+            "remove_project は presence entry を回収すべき"
+        );
     }
 
     #[tokio::test]

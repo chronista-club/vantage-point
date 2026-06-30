@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="VP macOS Swift agent (apple/VantagePointAgent) を xcodegen+xcodebuild で build → 再起動 (kitty rig の Swift 側)"
+#
+# doc 25/26 / doc 27 §2: World = Mac daemon、 この agent は OS と握手する Swift native client
+# (CoreMIDI hot-plug / menu bar)。 pure Apple-native = Rust リンク無し・FFI 無し。
+# 旧 `mr mac` (Rust-tao app + vp-bridge FFI) は退役済。 ここは xcodebuild 一本。
+#
+# build chain: xcodegen generate (project.yml が SSOT、 .xcodeproj は gitignore 生成物)
+#   → xcodebuild -scheme VantagePointAgent → pkill 旧 → open 新 (.app は LSUIElement = menu bar)。
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+# ── calculations (純粋 path 計算) ─────────────────────────────
+agent_dir   = File.join(VP.root, "apple", "VantagePointAgent")
+# project.yml の UnisonClient 依存 (= ../../../club-unison/clients/swift) を repo root 基準で解決。
+unison_swift = File.expand_path(File.join(VP.root, "..", "club-unison", "clients", "swift"))
+derived     = File.join(agent_dir, "DerivedData")
+app_product = File.join(derived, "Build", "Products", "Debug", "VantagePointAgent.app")
+
+# ── actions (副作用) ─────────────────────────────────────────
+# club-unison sibling は SPM local path 依存なので不在だと `no such module 'UnisonClient'`。
+File.directory?(unison_swift) ||
+  VP.die("UnisonClient SDK 不在: #{unison_swift} — club-unison を sibling に clone (creoui と同じ sibling 前提)")
+
+VP.log "#{VP.icon(:build)} xcodegen generate (project.yml → .xcodeproj)…"
+VP.sh "cd #{agent_dir.inspect} && xcodegen generate"
+
+VP.log "#{VP.icon(:build)} xcodebuild VantagePointAgent (Debug)…"
+VP.sh "xcodebuild " \
+      "-project #{File.join(agent_dir, 'VantagePointAgent.xcodeproj').inspect} " \
+      "-scheme VantagePointAgent -configuration Debug " \
+      "-derivedDataPath #{derived.inspect} build"
+
+File.directory?(app_product) || VP.die("build 成功したが .app 不在: #{app_product}")
+
+VP.log "#{VP.icon(:bomb)} 旧 agent を停止 (LSUIElement = menu bar)…"
+VP.sh "pkill -x VantagePointAgent 2>/dev/null; sleep 0.3; true"
+
+VP.log "#{VP.icon(:rocket)} 起動: #{app_product}"
+VP.sh "open #{app_product.inspect}"
+VP.log "#{VP.icon(:ok)} VantagePointAgent 再起動済 — menu bar を確認"

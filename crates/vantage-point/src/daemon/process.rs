@@ -4,7 +4,7 @@
 //! シグナルハンドリングによるグレースフル停止を提供する。
 
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Daemon の作業ディレクトリ（PIDファイル等を格納）
 pub fn daemon_dir() -> PathBuf {
@@ -205,6 +205,158 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// L1 lifecycle (Phase C ⑤): macOS LaunchAgent 常駐化（login always-on + crash 自動再起動）
+// ============================================================================
+//
+// `vp daemon start` は foreground blocking、`ensure_daemon_running` は bg auto-spawn のみで、
+// login 永続も crash 自動復帰も無い。LaunchAgent（10+ 年 stable な launchd 機構、SMAppService
+// = macOS 13+ は L3）で TheWorld を always-on にする。plist を `~/Library/LaunchAgents/` に
+// 置くだけで次回 login から `RunAtLoad` が起こし、`KeepAlive=true` が crash を自動再起動する。
+
+/// LaunchAgent の Label（plist の Label key + launchctl の service 名）。
+pub const LAUNCH_AGENT_LABEL: &str = "club.chronista.vantage-point.daemon";
+
+/// XML 特殊文字を escape する（plist の動的文字列＝path / PATH env に `&` 等が混じっても壊さない）。
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// LaunchAgent plist の中身を生成する（純関数: data → calculation、env/fs に触れない）。
+///
+/// - `ProgramArguments` = `[<vp_binary>, world, --port, <port>]`（`ensure_daemon_running` と同形）
+/// - `RunAtLoad=true`（login always-on）/ `KeepAlive=true`（crash 自動再起動）
+/// - `EnvironmentVariables.PATH` = `path_env`（GUI/launchd の痩せた PATH では mise/claude が
+///   解決不能なので augmented を渡す。SSOT は [`crate::spawn_env::augmented_spawn_path`]）
+/// - `StandardOut/ErrPath` = `log_dir` 配下（daemon は `vp world` 経路で自前 file log を持たないため、
+///   crash-restart loop の調査用に launchd へ stdout/stderr を捕捉させる）
+pub fn generate_launch_agent_plist(
+    vp_binary: &Path,
+    port: u16,
+    path_env: &str,
+    log_dir: &Path,
+) -> String {
+    let exec = xml_escape(&vp_binary.to_string_lossy());
+    let path_env = xml_escape(path_env);
+    let out = xml_escape(&log_dir.join("daemon.launchd.out.log").to_string_lossy());
+    let err = xml_escape(&log_dir.join("daemon.launchd.err.log").to_string_lossy());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LAUNCH_AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exec}</string>
+        <string>world</string>
+        <string>--port</string>
+        <string>{port}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{path_env}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>{out}</string>
+    <key>StandardErrorPath</key>
+    <string>{err}</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+/// LaunchAgent plist のパス（`~/Library/LaunchAgents/<label>.plist`）。
+#[cfg(target_os = "macos")]
+pub fn launch_agent_plist_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| {
+        h.join("Library/LaunchAgents")
+            .join(format!("{LAUNCH_AGENT_LABEL}.plist"))
+    })
+}
+
+/// LaunchAgent を install する（idempotent）。plist を書き出し、launchctl で即時 load する。
+///
+/// plist を `~/Library/LaunchAgents/` に置くだけで**次回 login から** `RunAtLoad` が起こすが、
+/// 今すぐ有効化するため bootout(既存)→bootstrap で reload する。bootstrap が非ゼロ（既 load 等）でも
+/// plist は配置済なので install は成功扱い（次回 login で確実に拾う＝degradation 設計）。
+#[cfg(target_os = "macos")]
+pub fn install_launch_agent(vp_binary: &Path, port: u16) -> Result<PathBuf> {
+    use anyhow::Context;
+
+    let plist_path =
+        launch_agent_plist_path().context("home dir 解決失敗（LaunchAgent path 不明）")?;
+    if let Some(parent) = plist_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("LaunchAgents dir 作成失敗: {}", parent.display()))?;
+    }
+
+    // StandardOut/ErrPath の親（log dir）を先に作る（launchd は dir を作らない）。
+    let log_dir = crate::config::vp_log_dir();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        tracing::warn!("log dir 作成失敗（launchd log は出ないかも）: {}", e);
+    }
+
+    let path_env = crate::spawn_env::augmented_spawn_path();
+    let content = generate_launch_agent_plist(vp_binary, port, &path_env, &log_dir);
+    std::fs::write(&plist_path, content)
+        .with_context(|| format!("plist 書き出し失敗: {}", plist_path.display()))?;
+
+    // launchctl で即時 reload（modern API: bootout→bootstrap、gui/<uid> domain）。
+    let uid = unsafe { libc::getuid() };
+    let domain = format!("gui/{uid}");
+    let service_target = format!("{domain}/{LAUNCH_AGENT_LABEL}");
+    // 既存 load を bootout（未 load なら error → 無視）してから bootstrap で立て直す。
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &service_target])
+        .output();
+    let out = std::process::Command::new("launchctl")
+        .args(["bootstrap", &domain, &plist_path.to_string_lossy()])
+        .output()
+        .context("launchctl bootstrap 実行失敗")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        tracing::warn!(
+            "launchctl bootstrap 非ゼロ（plist は配置済、次回 login で RunAtLoad が拾う）: {}",
+            stderr.trim()
+        );
+    }
+    Ok(plist_path)
+}
+
+/// LaunchAgent を uninstall する（idempotent）。launchctl で unload し plist を削除する。
+#[cfg(target_os = "macos")]
+pub fn uninstall_launch_agent() -> Result<()> {
+    use anyhow::Context;
+
+    let uid = unsafe { libc::getuid() };
+    let service_target = format!("gui/{uid}/{LAUNCH_AGENT_LABEL}");
+    // 未 load でも error は無視（idempotent）。
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &service_target])
+        .output();
+    if let Some(plist_path) = launch_agent_plist_path()
+        && plist_path.exists()
+    {
+        std::fs::remove_file(&plist_path)
+            .with_context(|| format!("plist 削除失敗: {}", plist_path.display()))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +377,39 @@ mod tests {
         assert!(path.to_string_lossy().contains("daemon.pid"));
         // daemon_dir() 配下であることを確認
         assert_eq!(path.parent().unwrap(), daemon_dir());
+    }
+
+    #[test]
+    fn test_generate_launch_agent_plist_shape() {
+        let plist = generate_launch_agent_plist(
+            Path::new("/usr/local/bin/vp"),
+            32000,
+            "/opt/homebrew/bin:/usr/bin",
+            Path::new("/tmp/vp-log"),
+        );
+        // Label / 常駐 key / ProgramArguments / port / PATH / log path を含む。
+        assert!(plist.contains("<string>club.chronista.vantage-point.daemon</string>"));
+        assert!(plist.contains("<string>/usr/local/bin/vp</string>"));
+        assert!(plist.contains("<string>world</string>"));
+        assert!(plist.contains("<string>32000</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key>"));
+        assert!(plist.contains("<key>KeepAlive</key>"));
+        assert!(plist.contains("/opt/homebrew/bin:/usr/bin"));
+        assert!(plist.contains("daemon.launchd.out.log"));
+    }
+
+    #[test]
+    fn test_launch_agent_plist_xml_escapes() {
+        // path / PATH に XML 特殊文字が混じっても plist を壊さない（生の & を残さない）。
+        let plist = generate_launch_agent_plist(
+            Path::new("/Users/a&b/vp"),
+            32000,
+            "/x<y>/bin",
+            Path::new("/tmp/l"),
+        );
+        assert!(plist.contains("/Users/a&amp;b/vp"));
+        assert!(plist.contains("/x&lt;y&gt;/bin"));
+        assert!(!plist.contains("a&b/vp"), "生の & が残ってはいけない");
     }
 
     #[test]

@@ -5,14 +5,32 @@
 //! Retained 対象（state/command）のメッセージは最新値を保持し、
 //! 新規 subscribe 時に初期配信する。
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::{RwLock, mpsc};
 
 use crate::process::retained::RetainedStore;
 use crate::process::topic::{TopicPath, TopicPattern};
 use crate::protocol::ProcessMessage;
+
+/// demand-driven production (S2 / doc 27 §4.1 Cap2) の hook。
+///
+/// ある concrete topic に subscriber が現れた/消えた瞬間 (0↔1 遷移) に `cb` が呼ばれ、
+/// producer を lazy に start/stop させる。 これにより 「購読者が居る間だけ pump を回す」
+/// = 無駄 stream を消す production が可能になる (terminal pump の本命用途)。
+struct DemandHook {
+    /// 監視対象パターン (例: `process/terminal/data/+/out`)。
+    /// subscriber の **concrete** な topic がこれにマッチしたとき demand 計上する。
+    pattern: TopicPattern,
+    /// `(topic, active)` で呼ばれる。 active=true: 0→1 (start)、 false: 1→0 (stop)。
+    /// sync で呼ばれるので cb 側は重い処理を `tokio::spawn` に逃がすこと
+    /// (subscribe/unsubscribe の hot path を塞がない)。
+    cb: DemandCallback,
+}
+
+type DemandCallback = Arc<dyn Fn(String, bool) + Send + Sync>;
 
 /// Topic ベースのメッセージルーター
 pub struct TopicRouter {
@@ -22,6 +40,10 @@ pub struct TopicRouter {
     subscribers: Arc<RwLock<Vec<TopicSubscription>>>,
     /// subscriber ID の採番カウンター
     next_id: AtomicU64,
+    /// demand hook 一覧 (S2)。 `register_demand` で登録。 std Mutex (await を跨がない)。
+    demands: Mutex<Vec<DemandHook>>,
+    /// demand 対象 topic ごとの subscriber 数。 0↔1 遷移で hook.cb を呼ぶ判定に使う。
+    demand_counts: Mutex<HashMap<String, usize>>,
 }
 
 /// 個別の subscriber エントリ
@@ -30,6 +52,8 @@ struct TopicSubscription {
     id: u64,
     /// マッチング対象のパターン
     pattern: TopicPattern,
+    /// subscribe 時の生パターン文字列 (demand 計上のキー。 unsubscribe 時に逆引きする)。
+    pattern_str: String,
     /// メッセージ配信チャネル
     tx: mpsc::Sender<(String, ProcessMessage)>,
 }
@@ -41,6 +65,8 @@ impl TopicRouter {
             retained: Arc::new(RwLock::new(RetainedStore::new())),
             subscribers: Arc::new(RwLock::new(Vec::new())),
             next_id: AtomicU64::new(0),
+            demands: Mutex::new(Vec::new()),
+            demand_counts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -70,6 +96,13 @@ impl TopicRouter {
     /// per-lane PP topic の lane 部に使う（conductor/performer 語彙）。
     fn lane_seg(lane: &Option<String>) -> &str {
         lane.as_deref().unwrap_or("conductor")
+    }
+
+    /// lane address（`vp/performer/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
+    /// 変換する（`/` → `~`）。 doc 27 §4.1 の per-lane terminal topic 用。 message には full
+    /// address を載せ、 topic key だけ encode する（subscriber も同じ変換で subscribe する）。
+    fn terminal_lane_key(lane: &str) -> String {
+        lane.replace('/', "~")
     }
 
     /// ProcessMessage → Topic 文字列のマッピング
@@ -156,6 +189,14 @@ impl TopicRouter {
             ProcessMessage::TerminalOutput { .. } => "process/terminal/data/output".to_string(),
             ProcessMessage::TerminalReady => "process/terminal/state/ready".to_string(),
             ProcessMessage::TerminalExited => "process/terminal/state/exited".to_string(),
+            // doc 27 §4.1: Lane PTY 出力は per-lane topic。 category(seg2)=data → 非 retained
+            // (ephemeral stream)。 lane address ('/' 含む) は seg3 で 1 token 化する。
+            ProcessMessage::LaneTerminalOutput { lane, .. } => {
+                format!(
+                    "process/terminal/data/{}/out",
+                    Self::terminal_lane_key(lane)
+                )
+            }
 
             // === Debug（デバッグ情報）===
             ProcessMessage::DebugInfo { .. } => "process/debug/log".to_string(),
@@ -185,6 +226,7 @@ impl TopicRouter {
         &self,
         pattern: &str,
     ) -> (u64, mpsc::Receiver<(String, ProcessMessage)>) {
+        let pattern_str = pattern.to_string();
         let pattern = TopicPattern::parse(pattern);
         let (tx, rx) = mpsc::channel(256);
 
@@ -200,16 +242,124 @@ impl TopicRouter {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         {
             let mut subs = self.subscribers.write().await;
-            subs.push(TopicSubscription { id, pattern, tx });
+            subs.push(TopicSubscription {
+                id,
+                pattern,
+                pattern_str: pattern_str.clone(),
+                tx,
+            });
         }
+
+        // demand 計上: subscriber lock を解放してから評価する (cb は spawn して即返る)。
+        self.fire_demand(&pattern_str, true);
 
         (id, rx)
     }
 
     /// subscriber を削除
     pub async fn unsubscribe(&self, id: u64) {
-        let mut subs = self.subscribers.write().await;
-        subs.retain(|s| s.id != id);
+        // 削除した subscription の pattern_str を取り出し、 demand を巻き戻す。
+        let removed = {
+            let mut subs = self.subscribers.write().await;
+            subs.iter()
+                .position(|s| s.id == id)
+                .map(|pos| subs.remove(pos).pattern_str)
+        };
+        if let Some(pattern_str) = removed {
+            self.fire_demand(&pattern_str, false);
+        }
+    }
+
+    /// demand hook を登録する (S2 / doc 27 §4.1 Cap2)。
+    ///
+    /// `pattern` にマッチする **concrete** topic に subscriber が現れた瞬間 (0→1) に
+    /// `cb(topic, true)`、 最後の subscriber が消えた瞬間 (1→0) に `cb(topic, false)` が呼ばれる。
+    /// producer (例: terminal pump) を lazy に start/stop させる用途。
+    /// `cb` は sync で呼ばれるため、 重い処理 (reverse-route 等) は内部で `tokio::spawn` すること。
+    pub fn register_demand<F>(&self, pattern: &str, cb: F)
+    where
+        F: Fn(String, bool) + Send + Sync + 'static,
+    {
+        self.demands.lock().unwrap().push(DemandHook {
+            pattern: TopicPattern::parse(pattern),
+            cb: Arc::new(cb),
+        });
+    }
+
+    /// subscriber の増減を demand hook に反映する。
+    ///
+    /// 同一 topic の subscriber 数を辿り、 0→1 / 1→0 の遷移時だけ該当 hook の cb を呼ぶ。
+    /// hook 未登録 (= 通常の canvas/lanes 経路) なら即 return = ゼロコスト。
+    /// lock は cb 呼び出し前に手放す (cb が router を再帰 lock しても deadlock しない)。
+    fn fire_demand(&self, topic: &str, added: bool) {
+        let to_call: Vec<DemandCallback> = {
+            let demands = self.demands.lock().unwrap();
+            if demands.is_empty() {
+                return;
+            }
+            let path = TopicPath::parse(topic);
+            let matched: Vec<DemandCallback> = demands
+                .iter()
+                .filter(|h| path.matches(&h.pattern))
+                .map(|h| h.cb.clone())
+                .collect();
+            if matched.is_empty() {
+                return;
+            }
+
+            let mut counts = self.demand_counts.lock().unwrap();
+            let entry = counts.entry(topic.to_string()).or_insert(0);
+            let transition = if added {
+                *entry += 1;
+                *entry == 1 // 0→1
+            } else {
+                if *entry > 0 {
+                    *entry -= 1;
+                }
+                *entry == 0 // 1→0
+            };
+            if *entry == 0 {
+                counts.remove(topic);
+            }
+            if transition { matched } else { Vec::new() }
+        };
+
+        for cb in to_call {
+            cb(topic.to_string(), added);
+        }
+    }
+
+    /// 現在 active (subscriber count > 0) な全 demand topic に対し、 demand hook を
+    /// `active=true` で **再発火** する (count は変えない)。
+    ///
+    /// 用途 (S2 polish): SP control channel が World に (再)接続した瞬間の catch-up。
+    /// surface が先に subscribe して demand_start を撃った時点で SP control channel が
+    /// 不在だと reverse-route が捨てられる (start が SP に届かない)。 SP 接続後に本 method を
+    /// 呼ぶと、 既に立っている demand を撃ち直して pump を起こせる。 cb (terminal_demand_start)
+    /// は SP 側で idempotent (既存 pump を差し替え) なので二重呼びでも 1 本に収束する。
+    pub fn refire_active_demands(&self) {
+        let active: Vec<String> = {
+            let counts = self.demand_counts.lock().unwrap();
+            counts
+                .iter()
+                .filter(|(_, c)| **c > 0)
+                .map(|(t, _)| t.clone())
+                .collect()
+        };
+        for topic in active {
+            let to_call: Vec<DemandCallback> = {
+                let demands = self.demands.lock().unwrap();
+                let path = TopicPath::parse(&topic);
+                demands
+                    .iter()
+                    .filter(|h| path.matches(&h.pattern))
+                    .map(|h| h.cb.clone())
+                    .collect()
+            };
+            for cb in to_call {
+                cb(topic.clone(), true);
+            }
+        }
     }
 
     /// Retained store への直接アクセス
@@ -316,6 +466,33 @@ mod tests {
     fn test_message_to_topic_terminal_ready() {
         let topic = TopicRouter::message_to_topic(&ProcessMessage::TerminalReady);
         assert_eq!(topic, "process/terminal/state/ready");
+    }
+
+    #[test]
+    fn test_message_to_topic_lane_terminal_output() {
+        // doc 27 §4.1: per-lane terminal 出力。 lane address の '/' は seg3 で '~' に encode、
+        // category(seg2)=data なので 非 retained（ephemeral stream）。
+        let msg = ProcessMessage::LaneTerminalOutput {
+            lane: "vp/performer/foo".to_string(),
+            data: "aGVsbG8=".to_string(),
+        };
+        let topic = TopicRouter::message_to_topic(&msg);
+        assert_eq!(topic, "process/terminal/data/vp~performer~foo/out");
+        assert!(!TopicPath::parse(&topic).is_retained());
+    }
+
+    #[test]
+    fn test_lane_terminal_topics_are_per_lane() {
+        // 別 lane は別 topic（subscriber 数 = lane 別 demand の前提、 S2 で効く）。
+        let a = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
+            lane: "vp/conductor".to_string(),
+            data: String::new(),
+        });
+        let b = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
+            lane: "vp/performer/foo".to_string(),
+            data: String::new(),
+        });
+        assert_ne!(a, b);
     }
 
     #[test]
@@ -557,6 +734,128 @@ mod tests {
 
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());
+    }
+
+    // =========================================================================
+    // demand-driven production (S2 / doc 27 §4.1 Cap2)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_demand_fires_on_first_and_last_subscriber() {
+        use std::sync::atomic::AtomicUsize;
+        let router = TopicRouter::new();
+        let starts = Arc::new(AtomicUsize::new(0));
+        let stops = Arc::new(AtomicUsize::new(0));
+        {
+            let s = starts.clone();
+            let t = stops.clone();
+            router.register_demand("process/terminal/data/+/out", move |_topic, active| {
+                if active {
+                    s.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    t.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+
+        // 同一 lane topic に 2 subscriber: start は 0→1 の 1 回だけ。
+        let (id1, _rx1) = router
+            .subscribe("process/terminal/data/vp~conductor/out")
+            .await;
+        let (id2, _rx2) = router
+            .subscribe("process/terminal/data/vp~conductor/out")
+            .await;
+        assert_eq!(starts.load(Ordering::Relaxed), 1, "start は 0→1 の 1 回");
+        assert_eq!(stops.load(Ordering::Relaxed), 0);
+
+        // 1 つ抜けてもまだ残るので stop しない。
+        router.unsubscribe(id1).await;
+        assert_eq!(stops.load(Ordering::Relaxed), 0, "残 1 なので stop しない");
+
+        // 最後の 1 つが抜けて 1→0 で stop。
+        router.unsubscribe(id2).await;
+        assert_eq!(stops.load(Ordering::Relaxed), 1, "stop は 1→0 の 1 回");
+    }
+
+    #[tokio::test]
+    async fn test_demand_per_lane_independent() {
+        use std::sync::Mutex as StdMutex;
+        let router = TopicRouter::new();
+        let started: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+        {
+            let log = started.clone();
+            router.register_demand("process/terminal/data/+/out", move |topic, active| {
+                if active {
+                    log.lock().unwrap().push(topic);
+                }
+            });
+        }
+
+        let (_a, _ra) = router
+            .subscribe("process/terminal/data/vp~conductor/out")
+            .await;
+        let (_b, _rb) = router
+            .subscribe("process/terminal/data/vp~performer~foo/out")
+            .await;
+
+        let log = started.lock().unwrap();
+        assert_eq!(log.len(), 2, "lane ごとに独立して start");
+        assert!(log.contains(&"process/terminal/data/vp~conductor/out".to_string()));
+        assert!(log.contains(&"process/terminal/data/vp~performer~foo/out".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_demand_ignores_non_matching_pattern() {
+        use std::sync::atomic::AtomicUsize;
+        let router = TopicRouter::new();
+        let fired = Arc::new(AtomicUsize::new(0));
+        {
+            let f = fired.clone();
+            router.register_demand("process/terminal/data/+/out", move |_t, _a| {
+                f.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+        // paisley-park の subscribe は terminal demand を発火しない。
+        let (_id, _rx) = router.subscribe("process/paisley-park/#").await;
+        assert_eq!(fired.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_without_demand_hook_is_noop() {
+        // hook 未登録なら fire_demand は即 return = 既存 canvas/lanes 経路はゼロ影響。
+        let router = TopicRouter::new();
+        let (id, _rx) = router.subscribe("process/paisley-park/#").await;
+        router.unsubscribe(id).await;
+        // panic せず通れば OK (demand_counts は触られない)。
+    }
+
+    #[tokio::test]
+    async fn test_refire_active_demands_recalls_active_starts() {
+        // S2 polish: SP 再接続時 catch-up。 active (count>0) な demand だけ start を撃ち直す。
+        use std::sync::atomic::AtomicUsize;
+        let router = TopicRouter::new();
+        let starts = Arc::new(AtomicUsize::new(0));
+        {
+            let s = starts.clone();
+            router.register_demand("process/terminal/data/+/out", move |_t, active| {
+                if active {
+                    s.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        let (id, _rx) = router
+            .subscribe("process/terminal/data/vp~conductor/out")
+            .await;
+        assert_eq!(starts.load(Ordering::Relaxed), 1, "初回 0→1 start");
+
+        // SP 再接続相当: active な demand を撃ち直す → 再発火 (count は不変)。
+        router.refire_active_demands();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "catch-up で再発火");
+
+        // subscriber が居なくなれば active 無し → refire は no-op。
+        router.unsubscribe(id).await;
+        router.refire_active_demands();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "active 無しなら no-op");
     }
 
     // =========================================================================

@@ -20,6 +20,7 @@ const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
 	paisley_park: { default: "ph:compass", active: "ph:compass-fill" },
 	gold_experience: { default: "ph:plant", active: "ph:plant-fill" },
 	hermit_purple: { default: "ph:plug", active: "ph:plug-fill" },
+	bastet: { default: "ph:magnet", active: "ph:magnet-fill" },
 };
 
 /** Stand kind から icon 名を解決。 active 時は fill weight。 未知 stand は `null`。 */
@@ -45,6 +46,8 @@ export function standDisplayName(stand: string): string {
 			return "Gold Experience";
 		case "hermit_purple":
 			return "Hermit Purple";
+		case "bastet":
+			return "Bastet";
 		default:
 			return stand;
 	}

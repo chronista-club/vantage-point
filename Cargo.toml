@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.27.0"
+version = "0.28.0"
 edition = "2024"
 rust-version = "1.96" # = .mise.toml [tools].rust (基本 stable 追随、 minor pin)
 authors = ["Chronista Club"]
@@ -49,7 +49,15 @@ tokio-stream = "0.1"
 # v1.1.0 (Phase A3a で bump): DynamicProtocol (= runtime schema discovery) +
 # ProtocolServer::enable_discovery が 1.1.0 で追加。 nexus settings sync で使う。
 # minor bump (= backward-compatible)、 workspace 全 member (vp-app/vantage-point) も 1.1.0 に上がる。
-unison = { package = "club-unison", version = "1.1.0" }
+# v1.3.0 (Swift menu bar agent で bump): raw QUIC に ALPN "unison" 追加 (#74, RFC 9001 準拠) +
+# Swift client SDK live interop。 Apple の NWProtocolQUIC と QUIC handshake で握るには daemon も
+# 同じ ALPN を喋る必要があり、 ALPN は 1.3.0 から。 server API (QuicServer/with_identity) は非破壊。
+# 1.4.0: connection-level auth primitive (mechanism/policy 分離、 verifier/principal)。 federation
+# (ADR-020 S1 cert / S3 discovery auth) の前提。 auth は opt-in (connect_with_credential)、 既存 API 非破壊。
+# 1.5.0 (federation S4 relay で bump): server-initiated stream primitive
+# (`register_server_channel` / `open_server_stream`)。 hub の relay floor (source→target を
+# 片方向 forward) が依存。 VP の dialer + target inbound (③) がこれを使う。 既存 API 非破壊 (additive)。
+unison = { package = "club-unison", version = "1.5.0" }
 
 # Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
 # `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:

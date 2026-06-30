@@ -308,7 +308,10 @@ async fn handle_cmd(
         // PTY 初期 winsize 120x48: xterm.js が fitAddon で実サイズに resize する
         // までの初期値 + headless Stand の作業サイズ。 classic 80x24 は VP の広い
         // terminal には狭く、 claude TUI の reflow ジャンプも大きいため 120x48。
-        super::stand_spawner::spawn_with_fallback(&cmd_built, 120, 48)
+        // reconcile gap fix (2026-06-30、 横展開): performer も既存 tmux session を
+        // adopt して重複 SP spawn での Dead 化を防ぐ（conductor と同じ ground-truth 経路）。
+        let session = addr_for_blocking.tmux_session_name(&stand_for_blocking);
+        super::stand_spawner::spawn_or_adopt(&cmd_built, &session, 120, 48)
     })
     .await;
 

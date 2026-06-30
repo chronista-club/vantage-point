@@ -712,13 +712,14 @@ pub(crate) async fn connect_quic_local(port: u16) -> Result<unison::ProtocolClie
 /// cross-project view の 1 lane。TheWorld `list_all_lanes` の flat 化結果。
 #[derive(Clone, PartialEq)]
 pub(crate) struct RotoLane {
-    /// switch_lane 送信先 SP port
-    pub(crate) port: u16,
+    /// switch_lane 送信先 project path（World process-proxy handshake の stable identifier）。
+    /// L0 portless: SP port 直結は撤去、World が path_key に正規化して当該 SP へ forward する。
+    pub(crate) project_path: String,
     /// switch_lane payload の lane token（"conductor" or performer 名）
     pub(crate) token: String,
     /// LCD 表示用の compact ラベル（≤13 文字、project + lane）
     pub(crate) label: String,
-    /// 選択追跡の一意キー `"{port}:{token}"`
+    /// 選択追跡の一意キー `"{project_path}:{token}"`（SP 再起動で port が変わっても安定）
     pub(crate) key: String,
 }
 
@@ -745,10 +746,11 @@ pub(crate) fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
         let Some(project) = p.get("project_name").and_then(|n| n.as_str()) else {
             continue;
         };
-        let Some(port) = p.get("port").and_then(|n| n.as_u64()) else {
+        // L0 portless: switch_lane は project_path で World process-proxy handshake する
+        // （build_world_lanes が project_path を emit、SP port には依存しない）。
+        let Some(project_path) = p.get("project_path").and_then(|n| n.as_str()) else {
             continue;
         };
-        let port = port as u16;
         let Some(lanes) = p.get("lanes").and_then(|l| l.as_array()) else {
             continue;
         };
@@ -769,9 +771,9 @@ pub(crate) fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
                 }
             };
             out.push(RotoLane {
-                port,
                 label: compact_lane_label(project, &token),
-                key: format!("{}:{}", port, token),
+                key: format!("{}:{}", project_path, token),
+                project_path: project_path.to_string(),
                 token,
             });
         }
@@ -1162,6 +1164,7 @@ mod tests {
                 // server が project_order で並べた前提。client は触らず保つ。
                 {
                     "project_name": "zeta-proj",
+                    "project_path": "/repos/zeta-proj",
                     "port": 33001,
                     "lanes": [
                         { "kind": "conductor" },
@@ -1171,26 +1174,28 @@ mod tests {
                 },
                 {
                     "project_name": "aaa-proj",
+                    "project_path": "/repos/aaa-proj",
                     "port": 33000,
                     "lanes": [ { "kind": "conductor" } ]
                 },
             ]
         });
         let lanes = parse_world_lanes(&v);
-        // server 順そのまま: zeta(cond, beta, alpha) → aaa(cond)
+        // server 順そのまま: zeta(cond, beta, alpha) → aaa(cond)。
+        // L0 portless: key は project_path:token（SP port 非依存）。
         let keys: Vec<&str> = lanes.iter().map(|l| l.key.as_str()).collect();
         assert_eq!(
             keys,
             vec![
-                "33001:conductor",
-                "33001:beta",
-                "33001:alpha",
-                "33000:conductor",
+                "/repos/zeta-proj:conductor",
+                "/repos/zeta-proj:beta",
+                "/repos/zeta-proj:alpha",
+                "/repos/aaa-proj:conductor",
             ]
         );
-        // port が switch_lane 送信先として保持される
-        assert_eq!(lanes[0].port, 33001);
-        assert_eq!(lanes[3].port, 33000);
+        // project_path が switch_lane の World process-proxy handshake 先として保持される
+        assert_eq!(lanes[0].project_path, "/repos/zeta-proj");
+        assert_eq!(lanes[3].project_path, "/repos/aaa-proj");
         assert_eq!(lanes[1].token, "beta");
     }
 

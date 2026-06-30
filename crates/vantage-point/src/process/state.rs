@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -25,54 +24,6 @@ use crate::protocol::{Content, DebugMode, ProcessMessage};
 /// PP の overall canvas layout を pane_contents に畳む際の reserved pane_id。
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
-
-/// Pending user prompt request entry (REQ-PROMPT-001 to REQ-PROMPT-005)
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct PendingPrompt {
-    /// The prompt request data
-    pub request: PendingPromptRequest,
-    /// Response once user has responded (None = still waiting)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<UserPromptResponseData>,
-}
-
-/// User prompt request data stored in pending prompts
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PendingPromptRequest {
-    pub request_id: String,
-    pub prompt_type: String,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<PromptOption>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_value: Option<String>,
-    pub timeout_seconds: u32,
-    pub created_at: u64,
-}
-
-/// Prompt option for select/multi_select
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PromptOption {
-    pub id: String,
-    pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-/// User prompt response data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct UserPromptResponseData {
-    /// Response outcome: approved, rejected, cancelled, timeout
-    pub outcome: String,
-    /// Text response (for input type or optional comment)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    /// Selected option IDs (for select/multi_select)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_options: Option<Vec<String>>,
-}
 
 /// スクリーンショットキャプチャの応答データ
 pub(crate) struct ScreenshotData {
@@ -100,8 +51,6 @@ pub(crate) struct AppState {
     /// 判定するのに使う。 `agent@<project>` の `<project>` が本 field と異なれば remote SP。
     /// World mode では空文字列 (= cross-process forward は SP mode 専用)。
     pub project_name: String,
-    /// Pending user prompts: request_id -> response (REQ-PROMPT-001)
-    pub pending_prompts: Arc<RwLock<HashMap<String, PendingPrompt>>>,
     /// Capability system (Agent, MIDI, Protocol)
     pub capabilities: Arc<ProcessCapabilities>,
     /// VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。
@@ -115,6 +64,11 @@ pub(crate) struct AppState {
     pub world: Option<Arc<RwLock<ProcessManagerCapability>>>,
     /// Update capability for version checking (optional, only for world mode)
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
+    /// chronista-hub federation の接続状態（World mode のみ更新、`/api/health` で vp-app に返す）。
+    ///
+    /// World mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
+    /// 遷移ごとに更新する。SP / test mode では `Disabled` のまま（federation は TheWorld のみ）。
+    pub hub_status: crate::daemon::hub_client::HubFederationStatus,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
@@ -166,7 +120,7 @@ pub(crate) struct AppState {
     /// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。
     /// caller (lane_spawn_actor / routes/lanes / restart_lane / lifecycle monitor) が
     /// `state.system_event_tx.send(SystemEvent::Lane(LaneDiff::*))` 等で publish、
-    /// `spawn_registry_keepalive` subscriber が QUIC registry channel で TheWorld に push する経路。
+    /// `spawn_world_uplink` subscriber が QUIC registry channel で TheWorld に push する経路。
     /// 将来 Pane / Stand / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
     pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
     /// Project scope の Stand pool (PP / GE / HP) — Phase A4-2b minimum、skeleton
@@ -189,6 +143,21 @@ pub(crate) struct AppState {
     /// 既存 `lane_pool` / `project_stands` とは並立 (gradual migration、 PR-γ で GE も移管予定)。
     /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 / VP-120 / VP-135 / VP-136
     pub lane_capabilities: Option<Arc<RwLock<super::lane_capabilities::LaneCapabilitiesPool>>>,
+    /// S2 (doc 27 §4.1): demand-driven terminal pump の lane → JoinHandle map。
+    ///
+    /// World の demand hook が control reverse-route で `terminal_demand_start {lane}` を撃つと、
+    /// SP は当該 Lane の PtySlot output を購読する pump を spawn して本 map に保持する
+    /// (`process/terminal/data/{lane}/out` topic に route)。 `terminal_demand_stop {lane}` で
+    /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
+    /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
+    pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// Agent 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。
+    ///
+    /// **World mode (`run_world`) でのみ Some**、SP mode (`run`) では None。delegation record は
+    /// wire と同じく TheWorld の SurrealDB に中央化 (durable、SP 再起動を跨いで生存、World
+    /// reconcile loop の駆動源)。SP の `handle_delegate` 等は `world_wire::call("/api/delegation/*")`
+    /// でここに proxy する (wake = SP-local nudge は保持、cf. `process/delegation.rs`)。
+    pub delegation_store: Option<crate::capability::DelegationStore>,
 }
 
 impl AppState {
@@ -278,6 +247,30 @@ impl AppState {
             return None;
         }
         info.tmux.first().map(|t| t.session.clone())
+    }
+
+    /// 論理 lane address（`agent@<project>[/<name>]` or bare `<project>/<lane>`）を実 tmux
+    /// session に解決し、literal text + Enter を送る（= wake）。
+    ///
+    /// 委譲（`process/delegation.rs`）の `delegate` / `complete` が doer / requester を起こす
+    /// 共通 helper。resolution は [`Self::resolve_lane_session`] を介す
+    /// （federation 不変条件: `address → local lane session` の翻訳層だけが swappable。後で
+    /// `world-handle:` 接頭の remote 分岐を足すだけで federation 化できる）。
+    ///
+    /// 解決できない（lane 不在 / 非 Running / tmux 不在）場合は `false` を返し graceful に握る
+    /// （no-lane test や実機外で panic しない / wake 取りこぼしは reconcile・pull-hook が後で拾う）。
+    pub async fn nudge_lane(&self, addr: &str, text: &str) -> bool {
+        let query = super::delegation::lane_query_for(addr);
+        let Some(session) = self.resolve_lane_session(&query).await else {
+            return false;
+        };
+        match super::delivery_actor::send_keys_to_session(&session, text).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("nudge_lane: send-keys 失敗 (addr={addr}, session={session}): {e}");
+                false
+            }
+        }
     }
 
     /// Send debug info to connected clients
@@ -485,11 +478,11 @@ pub(crate) async fn build_test_app_state(
         shutdown_token: CancellationToken::new(),
         project_dir: String::new(),
         project_name: String::new(),
-        pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
         world,
         update: None,
+        hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port: 0,
@@ -510,6 +503,10 @@ pub(crate) async fn build_test_app_state(
         project_stands: Arc::new(RwLock::new(ProjectStandsPool::new())),
         world_capabilities: None,
         lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
+        terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
+        // test fixture は SP 相当 (World store 無し)。delegation の store test は
+        // capability::delegation_store の単体 test が担う。
+        delegation_store: None,
     })
 }
 

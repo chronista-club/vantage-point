@@ -14,6 +14,17 @@
 
 set -euo pipefail
 
+# UTF-8 ロケール保証 (CJK 化け `_` の根治):
+#   tmux は client (= この exec tmux プロセス) の LC_CTYPE/LANG/LC_ALL で UTF-8 mode を判定する。
+#   launchd 起動の daemon は LANG を持たず、 daemon → SP → mise → tmux と C ロケールが伝播するため
+#   tmux client が utf8=0 になり、 内部 grid (UTF-8) は正しいのに **outer client へ描画する時** CJK /
+#   fullwidth を `_` に潰して xterm.js へ送る (fullwidth=2 列=`_`×2)。 既存 LANG は尊重し、 未設定時のみ
+#   UTF-8 を補う (= utf8=1 化)。 inner shell/claude は -l で .zshrc の locale をさらに上書きできる。
+: "${LANG:=en_US.UTF-8}"
+export LANG
+: "${LC_CTYPE:=$LANG}"
+export LC_CTYPE
+
 # tmux server config (xterm.js 描画相性、 PR #243)
 tmux start-server 2>/dev/null || true
 tmux set-option -g focus-events on 2>/dev/null || true

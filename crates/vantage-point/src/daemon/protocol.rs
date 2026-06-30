@@ -1,7 +1,7 @@
 //! Daemon IPC プロトコルのメッセージ型定義
 //!
-//! Session / Terminal / System の3チャネルに対応する
-//! リクエスト・レスポンス型を定義する。
+//! World daemon の live channel（world-process / events / device 等）の
+//! リクエスト・レスポンス・イベント型を定義する。
 
 use serde::{Deserialize, Serialize};
 
@@ -61,153 +61,6 @@ impl ChannelMessage {
 }
 
 // =============================================================================
-// Session Channel
-// =============================================================================
-
-/// セッション作成リクエスト
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateSessionRequest {
-    /// セッションID（プロジェクト名など）
-    pub session_id: String,
-}
-
-/// セッション作成レスポンス
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateSessionResponse {
-    /// 作成されたセッションの情報（JSON文字列として受け渡し）
-    pub session_id: String,
-    pub created_at: u64,
-}
-
-/// セッション一覧レスポンス
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListSessionsResponse {
-    /// セッション情報のリスト
-    pub sessions: Vec<SessionSummary>,
-}
-
-/// セッション概要（一覧表示用）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionSummary {
-    pub id: String,
-    pub pane_count: usize,
-    pub created_at: u64,
-}
-
-/// セッションアタッチリクエスト
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachRequest {
-    /// アタッチ先のセッションID
-    pub session_id: String,
-}
-
-/// セッションデタッチリクエスト
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetachRequest {
-    /// デタッチするセッションID
-    pub session_id: String,
-}
-
-// =============================================================================
-// Terminal Channel
-// =============================================================================
-
-/// ペイン作成リクエスト
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatePaneRequest {
-    /// 対象セッションID
-    pub session_id: String,
-    /// 起動するシェルコマンド
-    #[serde(default = "default_shell")]
-    pub shell_cmd: String,
-    /// ターミナル幅（カラム数）
-    #[serde(default = "default_cols")]
-    pub cols: u16,
-    /// ターミナル高さ（行数）
-    #[serde(default = "default_rows")]
-    pub rows: u16,
-}
-
-/// ペイン作成レスポンス
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatePaneResponse {
-    /// 作成されたペインID
-    pub pane_id: u32,
-}
-
-/// PTY入力書き込みリクエスト
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WriteRequest {
-    /// 対象セッションID
-    pub session_id: String,
-    /// 対象ペインID
-    pub pane_id: u32,
-    /// 入力データ（base64エンコード済み）
-    pub data: String,
-}
-
-/// ペインリサイズリクエスト
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResizeRequest {
-    /// 対象セッションID
-    pub session_id: String,
-    /// 対象ペインID
-    pub pane_id: u32,
-    /// 新しい幅（カラム数）
-    pub cols: u16,
-    /// 新しい高さ（行数）
-    pub rows: u16,
-}
-
-/// ペイン終了リクエスト
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KillPaneRequest {
-    /// 対象セッションID
-    pub session_id: String,
-    /// 対象ペインID
-    pub pane_id: u32,
-}
-
-/// PTY出力読み取りリクエスト
-///
-/// 指定ペインの PTY 出力を読み取る（ポーリング型）。
-/// タイムアウト内に出力があればデータを返し、なければ空を返す。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadOutputRequest {
-    /// 対象セッションID
-    pub session_id: String,
-    /// 対象ペインID
-    pub pane_id: u32,
-    /// 待機タイムアウト（ミリ秒）
-    #[serde(default = "default_read_timeout_ms")]
-    pub timeout_ms: u64,
-}
-
-/// PTY出力読み取りレスポンス
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadOutputResponse {
-    /// 出力データ（base64エンコード済み、空の場合はタイムアウト）
-    pub data: String,
-    /// 読み取ったバイト数
-    pub bytes_read: usize,
-}
-
-// =============================================================================
-// System Channel
-// =============================================================================
-
-/// ヘルスチェックレスポンス
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthResponse {
-    /// ステータス文字列（"ok" など）
-    pub status: String,
-    /// 管理中のセッション数
-    pub sessions_count: usize,
-    /// Daemon起動からの経過秒数
-    pub uptime_secs: u64,
-}
-
-// =============================================================================
 // world-process Channel (VP-154 PR-2)
 // =============================================================================
 
@@ -244,6 +97,88 @@ pub enum ProcessLifecycleEvent {
     },
 }
 
+/// Bastet 🧲 — device 接続/切断/操作イベント (= "world-device" Unison channel の data plane)
+///
+/// EventBus の `bastet.*` event を Unison wire に変換した公開型。 `ProcessLifecycleEvent` と
+/// 同じ `serde(tag = "kind")` 規約で serialize する。 daemon の world-device bridge が
+/// `from_capability_event` で変換し、 vp-app が QUIC subscribe して受ける。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeviceEvent {
+    /// 物理 MIDI device が接続された (hot-plug discovery 検出)
+    DeviceConnected {
+        /// CoreMIDI port の displayName (registry HashMap key と同値)
+        port_name: String,
+        has_input: bool,
+        has_output: bool,
+    },
+    /// 物理 MIDI device が切断された
+    DeviceDisconnected {
+        /// 切断された device の port name
+        port_name: String,
+    },
+    /// device からの操作入力 (Knob/Button/Fader/Pad、 0.0–1.0 正規化済)
+    ControlEvent {
+        /// 送信元 device の port name
+        port_name: String,
+        /// `ControlEvent` の serde 値 (variant tag + fields)
+        event: serde_json::Value,
+    },
+}
+
+impl DeviceEvent {
+    /// `CapabilityEvent` の event_type + payload から `DeviceEvent` を構築する。
+    ///
+    /// bridge task が EventBus から受け取った `bastet.*` event を wire 型へ変換する。
+    /// 対象外の event_type / payload 不足 (= 必須 field 欠落) は `None` (= bridge が skip)。
+    pub fn from_capability_event(event_type: &str, payload: &serde_json::Value) -> Option<Self> {
+        match event_type {
+            "bastet.device_connected" => Some(DeviceEvent::DeviceConnected {
+                port_name: payload.get("port_name")?.as_str()?.to_string(),
+                has_input: payload
+                    .get("has_input")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                has_output: payload
+                    .get("has_output")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            }),
+            "bastet.device_disconnected" => Some(DeviceEvent::DeviceDisconnected {
+                port_name: payload.get("port_name")?.as_str()?.to_string(),
+            }),
+            "bastet.control_event" => Some(DeviceEvent::ControlEvent {
+                port_name: payload.get("port_name")?.as_str()?.to_string(),
+                event: payload
+                    .get("event")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// M2 / doc 26 §2: `device` channel の `ReportDevice` request payload。
+///
+/// macOS menu bar agent (Swift `CoreMIDIWatcher`) が CoreMIDI hot-plug を daemon に報告する。
+/// daemon の `handle_device_report` が `state` で接続/切断を分岐し Bastet registry に反映する。
+/// wire は既定 JSON codec のため、 Swift 側は CodingKeys で snake_case にマップする。
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportDeviceRequest {
+    /// CoreMIDI port の displayName (registry HashMap key と同値)
+    pub port_name: String,
+    /// "connected" | "disconnected"
+    pub state: String,
+    /// input port (device → VP) が存在するか
+    #[serde(default)]
+    pub has_input: bool,
+    /// output port (VP → device) が存在するか
+    #[serde(default)]
+    pub has_output: bool,
+}
+
 /// VP-154 PR-2: Process snapshot 1 entry (= "world-process" list method の応答 payload)
 ///
 /// 既存 `RunningProcess` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json
@@ -259,155 +194,28 @@ pub struct ProcessSnapshot {
     pub tmux_session: Option<String>,
 }
 
-// =============================================================================
-// デフォルト値関数
-// =============================================================================
-
-/// デフォルトの出力読み取りタイムアウト（ミリ秒）
-pub fn default_read_timeout_ms() -> u64 {
-    50
-}
-
-/// デフォルトのシェルコマンドを返す（$SHELL環境変数 or /bin/zsh）
-pub fn default_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
-}
-
-/// デフォルトのカラム数
-pub fn default_cols() -> u16 {
-    80
-}
-
-/// デフォルトの行数
-pub fn default_rows() -> u16 {
-    24
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // M2 / doc 26 §2: Swift agent が送る snake_case JSON が ReportDeviceRequest に decode できる。
+    #[cfg(feature = "midi")]
     #[test]
-    fn test_default_shell() {
-        let shell = default_shell();
-        // $SHELL が設定されていれば空でないことを確認
-        // 設定されていなければ /bin/zsh がデフォルト
-        assert!(!shell.is_empty());
-    }
+    fn test_report_device_request_deserialize_from_wire() {
+        // 接続報告（agent が CodingKeys で snake_case 化して送る形）
+        let wire = r#"{"port_name":"X-Touch Compact","state":"connected","has_input":true,"has_output":true}"#;
+        let req: ReportDeviceRequest = serde_json::from_str(wire).unwrap();
+        assert_eq!(req.port_name, "X-Touch Compact");
+        assert_eq!(req.state, "connected");
+        assert!(req.has_input);
+        assert!(req.has_output);
 
-    #[test]
-    fn test_default_dimensions() {
-        assert_eq!(default_cols(), 80);
-        assert_eq!(default_rows(), 24);
-    }
-
-    #[test]
-    fn test_create_session_request_serialize() {
-        let req = CreateSessionRequest {
-            session_id: "vantage-point".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("vantage-point"));
-
-        let deserialized: CreateSessionRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.session_id, "vantage-point");
-    }
-
-    #[test]
-    fn test_create_pane_request_defaults() {
-        // デフォルト値付きでデシリアライズ
-        let json = r#"{"session_id": "test"}"#;
-        let req: CreatePaneRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.session_id, "test");
-        assert_eq!(req.cols, 80);
-        assert_eq!(req.rows, 24);
-        assert!(!req.shell_cmd.is_empty());
-    }
-
-    #[test]
-    fn test_create_pane_request_custom_values() {
-        let json = r#"{"session_id": "test", "shell_cmd": "/bin/bash", "cols": 120, "rows": 40}"#;
-        let req: CreatePaneRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.shell_cmd, "/bin/bash");
-        assert_eq!(req.cols, 120);
-        assert_eq!(req.rows, 40);
-    }
-
-    #[test]
-    fn test_write_request_serialize() {
-        let req = WriteRequest {
-            session_id: "test-session".to_string(),
-            pane_id: 0,
-            data: "bHMgLWxhCg==".to_string(), // "ls -la\n" in base64
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let deserialized: WriteRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.session_id, "test-session");
-        assert_eq!(deserialized.pane_id, 0);
-        assert_eq!(deserialized.data, "bHMgLWxhCg==");
-    }
-
-    #[test]
-    fn test_resize_request_serialize() {
-        let req = ResizeRequest {
-            session_id: "test".to_string(),
-            pane_id: 1,
-            cols: 160,
-            rows: 48,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let deserialized: ResizeRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.cols, 160);
-        assert_eq!(deserialized.rows, 48);
-    }
-
-    #[test]
-    fn test_health_response_serialize() {
-        let resp = HealthResponse {
-            status: "ok".to_string(),
-            sessions_count: 3,
-            uptime_secs: 3600,
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        let deserialized: HealthResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.status, "ok");
-        assert_eq!(deserialized.sessions_count, 3);
-        assert_eq!(deserialized.uptime_secs, 3600);
-    }
-
-    #[test]
-    fn test_list_sessions_response_serialize() {
-        let resp = ListSessionsResponse {
-            sessions: vec![
-                SessionSummary {
-                    id: "project-a".to_string(),
-                    pane_count: 2,
-                    created_at: 1708500000,
-                },
-                SessionSummary {
-                    id: "project-b".to_string(),
-                    pane_count: 1,
-                    created_at: 1708500100,
-                },
-            ],
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        let deserialized: ListSessionsResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.sessions.len(), 2);
-        assert_eq!(deserialized.sessions[0].id, "project-a");
-        assert_eq!(deserialized.sessions[1].pane_count, 1);
-    }
-
-    #[test]
-    fn test_kill_pane_request_serialize() {
-        let req = KillPaneRequest {
-            session_id: "my-session".to_string(),
-            pane_id: 42,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let deserialized: KillPaneRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.session_id, "my-session");
-        assert_eq!(deserialized.pane_id, 42);
+        // 切断報告は has_input/has_output 省略 → default false
+        let wire = r#"{"port_name":"ROTO","state":"disconnected"}"#;
+        let req: ReportDeviceRequest = serde_json::from_str(wire).unwrap();
+        assert_eq!(req.state, "disconnected");
+        assert!(!req.has_input);
+        assert!(!req.has_output);
     }
 
     #[test]
@@ -473,5 +281,56 @@ mod tests {
         };
         let json = serde_json::to_string(&snap).unwrap();
         assert!(!json.contains("tmux_session"), "got: {}", json);
+    }
+
+    #[test]
+    fn device_event_from_capability_event_variants() {
+        use serde_json::json;
+        // device_connected: 全 field を拾う
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.device_connected",
+                &json!({"port_name": "ROTO-CONTROL", "has_input": true, "has_output": true}),
+            ),
+            Some(DeviceEvent::DeviceConnected {
+                port_name: "ROTO-CONTROL".into(),
+                has_input: true,
+                has_output: true,
+            })
+        );
+        // device_disconnected: port_name のみ
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.device_disconnected",
+                &json!({"port_name": "ROTO-CONTROL"}),
+            ),
+            Some(DeviceEvent::DeviceDisconnected {
+                port_name: "ROTO-CONTROL".into(),
+            })
+        );
+        // control_event: event を生 JSON で運ぶ
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.control_event",
+                &json!({"port_name": "ROTO-CONTROL", "event": {"Knob": {"index": 0, "value": 0.5}}}),
+            ),
+            Some(DeviceEvent::ControlEvent {
+                port_name: "ROTO-CONTROL".into(),
+                event: json!({"Knob": {"index": 0, "value": 0.5}}),
+            })
+        );
+        // 未知 event_type → None
+        assert_eq!(
+            DeviceEvent::from_capability_event("other.event", &json!({})),
+            None
+        );
+        // 必須 port_name 欠落 → None
+        assert_eq!(
+            DeviceEvent::from_capability_event(
+                "bastet.device_connected",
+                &json!({"has_input": true}),
+            ),
+            None
+        );
     }
 }

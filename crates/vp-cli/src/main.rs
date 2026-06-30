@@ -4,7 +4,6 @@
 //!   vp            # 稼働中インスタンス一覧（vp ps）
 //!   vp sp start   # SP サーバーを起動
 //!   vp hd start   # HD (Claude CLI) を起動
-//!   vp hd attach  # HD に TUI 接続
 //!   vp mcp        # MCPサーバーとして起動（stdio）
 //!   vp daemon     # TheWorld デーモン管理 (alias: vp world)
 //!
@@ -94,6 +93,12 @@ enum Commands {
     /// Claude Code Monitor の subscription source として使う想定 (wiremsg R5-2)。
     #[command(subcommand)]
     Wire(commands::wire::WireCommands),
+
+    /// event log — agent の episodic memory（doc 27 §5-3）。
+    ///
+    /// `vp events [--since N]` で log 表示、`vp events emit --kind K` で push。
+    /// build/test/lane lifecycle 等を agent の行動間に配り blind を解消する。
+    Events(commands::events::EventsArgs),
 
     /// dev-flow primitives — Conductor × Performer × Memory orchestration の core 操作
     ///
@@ -374,6 +379,10 @@ fn main() -> Result<()> {
         Commands::Wire(cmd) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::wire::run(cmd))
+        }
+        Commands::Events(args) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::events::run(args))
         }
         Commands::Flow(cmd) => {
             let rt = tokio::runtime::Runtime::new()?;
@@ -690,51 +699,47 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
     }
 }
 
-/// `vp lane ls --detail` 実装: 親 SP の `/api/lanes` を query して pretty JSON で出力。
+/// `vp lane ls --detail` 実装: World process-proxy ask `lanes_list` を query して pretty JSON で出力。
 ///
-/// SP 不在 (= TheWorld に未登録 / cwd が repo 外) なら error。 `--detail` を要求した時点で
-/// SP 稼働を前提とする (= fs-only fallback はせず、 明示的に user に SP 未起動を伝える)。
+/// lanes portless (doc 27 §3.4.5): 旧 SP `/api/lanes` 直叩きを撤去し World :32000 の process-proxy に
+/// 一本化 (`try_sp_delete_performer` と同型、 SP port 解決不要)。 SP 不在 (= TheWorld に未登録 /
+/// cwd が repo 外 / SP 未起動) なら World が control channel 逆引き失敗で error を返す。 `--detail` を
+/// 要求した時点で SP 稼働を前提とする (= fs-only fallback はせず、 明示的に user に SP 未起動を伝える)。
 ///
-/// MCP `list_lanes` の mailbox_addresses 計算 / project_addresses synthesis までは
-/// 実装せず、 SP `/api/lanes` の生 JSON を pretty print する (= SP が持つ live state を
-/// 直に出す、 mailbox は SKILL.md doc で計算式を案内する方針)。
+/// MCP `list_lanes` の mailbox_addresses 計算 / project_addresses synthesis までは実装せず、
+/// dispatch `lanes_list` の生 JSON (`{lanes:[...]}`) を pretty print する (mailbox は SKILL.md doc 案内)。
 fn list_performers_detail() -> Result<()> {
-    let (_project_name, port) = resolve_parent_project()
-        .map_err(|e| anyhow::anyhow!("SP 解決失敗 (--detail は SP 稼働が前提): {}", e))?;
-    let url = format!("http://[::1]:{}/api/lanes", port);
+    // repo_root = project_path (World handshake の stable identifier)。 SP port は process-proxy で不要。
+    let repo_root = lane::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("repo root 解決失敗 (--detail は project 内が前提): {}", e))?;
+    let project_path = repo_root
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("repo path に invalid UTF-8"))?;
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| anyhow::anyhow!("reqwest client build failed: {}", e))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|e| anyhow::anyhow!("SP :{} に到達できません: {}", port, e))?;
-    let status = resp.status();
-    let text = resp.text().unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("SP /api/lanes error: {} {}", status, text);
-    }
-    // SP の raw JSON を pretty print。 mailbox_addresses 計算は省略 (上記 doc 参照)。
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    let resp = vantage_point::commands::process_client::world_process_request_blocking(
+        cli::WORLD_PORT,
+        project_path,
+        "lanes_list",
+        serde_json::json!({}),
+    )
+    .map_err(|e| anyhow::anyhow!("lanes_list 失敗 (--detail は SP 稼働が前提): {}", e))?;
+
     println!(
         "{}",
-        serde_json::to_string_pretty(&parsed).unwrap_or_default()
+        serde_json::to_string_pretty(&resp).unwrap_or_default()
     );
     Ok(())
 }
 
-/// active Lane 切り替え CLI 実装 (= mcp__switch_lane の CLI pair、B1: Unison-native)。
+/// active Lane 切り替え CLI 実装 (= mcp__switch_lane の CLI pair)。
 ///
-/// **現 project の local SP** の Unison(QUIC) "process" チャネルに `SwitchLane` ProcessMessage を
-/// 投げ、hub.broadcast → topic `process/paisley-park/event/switch-lane`（非 retained）→
-/// canvas channel 経由で vp-app が受信し、その lane を active 化する
-/// （lane-within-project の per-project 切替）。
-///
-/// PR1a で最後の HTTP 1 hop（`POST /api/show`）を QUIC に置換し、CLI/MCP の transport を統一。
-/// MCP 側は既に `process_call("switch_lane", …)`（QUIC）で同経路（mcp.rs）。
+/// L0 portless: 現 project の SP に `SwitchLane` ProcessMessage を World :32000 の process-proxy
+/// ask で forward する（SP は listen しないので旧来の SP 直結 QUIC は撤去）。World が project_path
+/// を path_key に正規化して当該 SP の control channel を逆引きし、`dispatch_process_method`
+/// （"switch_lane" → `handle_process_message`）へ forward → hub.broadcast → topic
+/// `process/paisley-park/event/switch-lane`（非 retained）→ canvas channel 経由で vp-app が受信し、
+/// その lane を active 化する（lane-within-project の per-project 切替）。
+/// MCP 側も `process_call("switch_lane", …)`（mcp.rs、process-proxy 経由）で同 dispatch に着地。
 fn switch_lane_via_quic(name: &str) -> Result<()> {
     // lane token = "conductor" (lead) or performer 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
@@ -743,25 +748,39 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
         anyhow::bail!("lane token is required (空文字不可)");
     }
 
-    // cwd の project の running SP を解決（performer lane でも repo root の SP に着地）。
-    let (project_name, port) = resolve_parent_project()?;
+    // repo_root = project_path (World process-proxy handshake の stable identifier)。
+    // L0 portless: SP port 解決は不要（World が path_key 逆引きで forward する）。
+    let repo_root = lane::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
+    let (Some(project_name), Some(project_path)) = (
+        repo_root.file_name().and_then(|n| n.to_str()),
+        repo_root.to_str(),
+    ) else {
+        anyhow::bail!("repo path contains invalid UTF-8");
+    };
 
-    // SP の Unison(QUIC) "process" チャネルに SwitchLane を送る（B1: Unison-native 完成）。
+    // SwitchLane を World process-proxy ask で SP へ forward（payload = ProcessMessage JSON、
+    // `{"type":"switch_lane","lane":...}`）。SP 側 dispatch_process_method が受けて broadcast。
     let msg = vantage_point::protocol::ProcessMessage::SwitchLane {
         lane: trimmed.to_string(),
     };
-    vantage_point::commands::process_client::send_process_message(port, "switch_lane", &msg)
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "SP {} (:{}) への switch_lane 送信失敗: {}",
-                project_name,
-                port,
-                e
-            )
-        })?;
+    let payload = serde_json::to_value(&msg)?;
+    vantage_point::commands::process_client::world_process_request_blocking(
+        cli::WORLD_PORT,
+        project_path,
+        "switch_lane",
+        payload,
+    )
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "SP {} への switch_lane 送信失敗 (World process-proxy): {}",
+            project_name,
+            e
+        )
+    })?;
 
     println!(
-        "switched active lane to '{}' (project={}, via Unison)",
+        "switched active lane to '{}' (project={}, via World process-proxy)",
         trimmed, project_name
     );
     Ok(())
@@ -769,88 +788,61 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
 
 /// VP-124 Phase 1: SP-aware Performer Lane delete を試みる helper。
 ///
-/// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
-/// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm + SystemEvent broadcast を
-/// SP 側で atomically 実行)。 SP 不在 / API failure なら false 返して filesystem-only fallback
-/// (= 現挙動の `ws::remove_performer`) に委譲。
+/// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら World process-proxy ask
+/// (`lane_delete`) 経由で `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm +
+/// SystemEvent broadcast を SP 側で atomically 実行)。 SP 不在 / failure なら false 返して
+/// filesystem-only fallback (= 現挙動の `ws::remove_performer`) に委譲。
 ///
-/// best-effort: 中間 failure (SP unreachable, network error 等) は warn print して false。
-/// SP 200 OK のみ true、 SP 4xx / 5xx は failure 扱い。
+/// F6② (doc 27 §3.4.5/§6): 旧 SP 直結 (`DELETE /api/lanes` reqwest) を撤去し World :32000 の
+/// process-proxy に一本化 (SP port 解決不要、 L1 portless 前進)。 best-effort: 全 failure
+/// (SP 不在 / lane not found / network) は warn print して false → fs-only に委譲。
 fn try_sp_delete_performer(performer_name: &str) -> bool {
-    let (project_name, port) = match resolve_parent_project() {
-        Ok(v) => v,
+    // repo_root = project_path (World handshake の stable identifier)。 SP port は process-proxy で不要。
+    let repo_root = match lane::config::find_repo_root() {
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("  SP delete skipped (parent project resolve failed: {e})");
+            eprintln!("  SP delete skipped (repo root resolve failed: {e})");
             return false;
         }
     };
+    let (Some(project_name), Some(project_path)) = (
+        repo_root.file_name().and_then(|n| n.to_str()),
+        repo_root.to_str(),
+    ) else {
+        eprintln!("  SP delete skipped (repo path に invalid UTF-8)");
+        return false;
+    };
 
-    // address 構築: `<project>/performer/<name>`、 URL encoding は `/` のみ (slug は ASCII safe)。
+    // address 構築: `<project>/performer/<name>` (SP 側 parse_address が逆変換)。
     let address = format!("{project_name}/performer/{performer_name}");
-    let address_enc = address.replace('/', "%2F");
-    let url = format!("http://[::1]:{port}/api/lanes?address={address_enc}&cleanup=true");
+    let payload = serde_json::json!({ "address": address, "cleanup": true });
 
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("  SP delete skipped (http client build failed: {e})");
-            return false;
-        }
-    };
-
-    match client.delete(&url).send() {
-        Ok(resp) if resp.status().is_success() => {
-            // body は DeletedLaneInfo JSON、 user 向けに要点だけ要約
-            let summary = resp
-                .json::<serde_json::Value>()
-                .ok()
-                .map(|v| {
-                    let pid = v.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
-                    let tmux_killed = v
-                        .get("tmux_killed")
-                        .and_then(|t| t.as_bool())
-                        .unwrap_or(false);
-                    let cleanup = v
-                        .get("cleanup")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("(skipped)")
-                        .to_string();
-                    format!("pid={pid} tmux_killed={tmux_killed} cleanup={cleanup}")
-                })
-                .unwrap_or_else(|| "(no body)".to_string());
-            eprintln!("削除: {address} (SP orchestrated: {summary})");
+    match vantage_point::commands::process_client::world_process_request_blocking(
+        cli::WORLD_PORT,
+        project_path,
+        "lane_delete",
+        payload,
+    ) {
+        Ok(resp) => {
+            // 成功 body は DeletedLaneInfo JSON、 user 向けに要点だけ要約。
+            let pid = resp.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
+            let tmux_killed = resp
+                .get("tmux_killed")
+                .and_then(|t| t.as_bool())
+                .unwrap_or(false);
+            let cleanup = resp
+                .get("cleanup")
+                .and_then(|c| c.as_str())
+                .unwrap_or("(skipped)");
+            eprintln!(
+                "削除: {address} (SP orchestrated: pid={pid} tmux_killed={tmux_killed} cleanup={cleanup})"
+            );
             true
         }
-        Ok(resp) => {
-            eprintln!(
-                "  SP delete failed (status={}), falling back to fs-only",
-                resp.status()
-            );
-            false
-        }
         Err(e) => {
-            eprintln!("  SP unreachable ({e}), falling back to fs-only");
+            // SP 不在 / lane not found / network 等は全て fs-only fallback (旧 non-2xx 挙動踏襲)。
+            eprintln!("  SP delete failed ({e}), falling back to fs-only");
             false
         }
     }
-}
-
-/// 現在の repo root から parent project 名と SP port を導出
-fn resolve_parent_project() -> Result<(String, u16)> {
-    let repo_root = lane::config::find_repo_root()
-        .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
-    let project_name = repo_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| anyhow::anyhow!("project name not found"))?
-        .to_string();
-    let repo_root_str = repo_root
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("repo path contains invalid UTF-8"))?;
-    let process = vantage_point::discovery::find_by_project_blocking(repo_root_str)
-        .ok_or_else(|| anyhow::anyhow!("parent SP not running (TheWorld has no record)"))?;
-    Ok((project_name, process.port))
 }

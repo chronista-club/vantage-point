@@ -166,6 +166,27 @@ pub struct WorldHealthInfo {
     pub version: String,
     #[serde(default)]
     pub started_at: String,
+    /// chronista-hub federation 接続状態
+    /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`、旧 daemon は空文字）。
+    #[serde(default)]
+    pub hub: String,
+    /// L1 lifecycle: World 配下 SP の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
+    /// 旧 daemon は field 不在 → 空。`path` で project 行に join する。
+    #[serde(default)]
+    pub processes: Vec<SpPresence>,
+}
+
+/// SP の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。
+///
+/// server 側 `ProcessHealthInfo` の {path, presence} のみ deserialize（dot 描画に必要な分）。
+/// 残り field（project/port/pid/tmux_session）は serde が無視する。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SpPresence {
+    #[serde(default)]
+    pub path: String,
+    /// `"unregistered"` | `"connecting"` | `"connected"` | `"disconnected"`。
+    #[serde(default)]
+    pub presence: String,
 }
 
 /// Runtime process 情報 — `/api/world/processes` レスポンス要素 (= SP の lifecycle snapshot)。
@@ -243,9 +264,10 @@ pub struct PerformerStatusWire {
     pub is_merged: bool,
 }
 
-/// doc 11 PR-C: `GET /api/stands` の 1 entry。
+/// doc 11 PR-C: World process-proxy ask `stands_list` 応答 (`{stands:[...]}`) の 1 entry。
 ///
-/// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。
+/// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。 F6④ で SP 直結
+/// HTTP は撤去したが、 本 struct は ask 応答の deserialize + JS push back の serialize 用に残置。
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct StandInfo {
     /// `vp:stand:{name}` の name 部分 (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で hd → echoes rename)
@@ -253,12 +275,6 @@ pub struct StandInfo {
     /// task ファイル先頭の `#MISE description="..."` の値
     #[serde(default)]
     pub description: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StandsResponse {
-    #[serde(default)]
-    stands: Vec<StandInfo>,
 }
 
 impl TheWorldClient {
@@ -456,67 +472,6 @@ impl TheWorldClient {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!("create_performer_lane HTTP {}: {}", status, text);
-        }
-        Ok(())
-    }
-
-    /// doc 11 PR-C: SP の `GET /api/stands` で利用可能な Stand 一覧を取得。
-    /// sidebar の `+ Add Performer` で stand dropdown を populate するための data source。
-    pub async fn list_stands(&self) -> Result<Vec<StandInfo>> {
-        let url = format!("{}/api/stands", self.base_url);
-        let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("list_stands HTTP {}: {}", status, text);
-        }
-        let body: StandsResponse = resp.json().await?;
-        Ok(body.stands)
-    }
-
-    /// Phase 4-A: SP の Performer Lane を削除 (`DELETE /api/lanes?address=<addr>`)。
-    /// `address` は Display 形 (`<project>/performer/<name>`)。 Conductor は server 側で 400 で拒否される。
-    pub async fn delete_lane(&self, address: &str) -> Result<()> {
-        // address は `/` を含むので URL encode する (performer/<name> 部分が path 化されないように)
-        let encoded = address
-            .replace('%', "%25")
-            .replace('&', "%26")
-            .replace('=', "%3D")
-            .replace(' ', "%20");
-        let url = format!("{}/api/lanes?address={}", self.base_url, encoded);
-        let resp = self.client.delete(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("delete_lane HTTP {}: {}", status, text);
-        }
-        Ok(())
-    }
-
-    /// Lane の Conductor Stand restart (PtySlot kill + 同 stand で respawn)。
-    /// vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に再 attach。
-    ///
-    /// `fresh=true` は resume/continue を回避して素の `claude` を起動する
-    /// (sidebar "New Conductor Session")。 false は従来の restart (会話を継ぐ)。
-    pub async fn restart_lane(&self, address: &str, fresh: bool) -> Result<()> {
-        let encoded = address
-            .replace('%', "%25")
-            .replace('&', "%26")
-            .replace('=', "%3D")
-            .replace(' ', "%20");
-        let url = if fresh {
-            format!(
-                "{}/api/lanes/restart?address={}&fresh=true",
-                self.base_url, encoded
-            )
-        } else {
-            format!("{}/api/lanes/restart?address={}", self.base_url, encoded)
-        };
-        let resp = self.client.post(&url).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("restart_lane HTTP {}: {}", status, text);
         }
         Ok(())
     }

@@ -91,7 +91,7 @@ fn decide_nudge(
 /// - `agent@<project>` → `<project>/conductor`
 /// - `agent@<project>/<name>` → `<project>/performer/<name>`
 /// - それ以外 (notify@ / lane-spawn@ / vp-cli 等) → None (nudge 対象外)
-fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
+pub(crate) fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
     let rest = addr.strip_prefix("agent@")?;
     if rest.is_empty() {
         return None;
@@ -111,7 +111,7 @@ fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
 /// 該当なし = offline 扱い (pending 保持)。 cwd は R3-a の CC activity 照合
 /// (`agents --json` の cwd と突き合わせ) に使う。 cc_session_id は R3-c の
 /// `claude -p --resume <id>` headless 再開に使う (None なら fresh headless)。
-fn pick_nudge_target(
+pub(crate) fn pick_nudge_target(
     lanes: &[LaneInfo],
     lane_display: &str,
 ) -> Option<(String, String, Option<String>)> {
@@ -451,7 +451,10 @@ async fn pulse(
 }
 
 /// tmux session に literal text + Enter を送る (directmsg と同方式、 blocking を隔離)
-async fn send_keys_to_session(session: &str, text: &str) -> anyhow::Result<()> {
+///
+/// 委譲 (`process/delegation.rs`) の wake も同経路を再利用するため `pub(crate)`
+/// (`AppState::nudge_lane` から呼ばれる)。
+pub(crate) async fn send_keys_to_session(session: &str, text: &str) -> anyhow::Result<()> {
     let session = session.to_string();
     let text = text.to_string();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {

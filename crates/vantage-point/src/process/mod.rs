@@ -11,6 +11,8 @@
 pub mod capabilities;
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
 pub(crate) mod cc_activity;
+/// Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom (doc 28 §4)
+pub(crate) mod delegation;
 /// wire delivery loop — 未 ack command の tmux nudge + 再掲示 (R2-b、 TheWorld 常駐)
 pub(crate) mod delivery_actor;
 pub(crate) mod hub;
@@ -31,7 +33,9 @@ pub mod process_runner;
 pub(crate) mod project_stands_state;
 pub mod pty;
 pub(crate) mod retained;
-mod routes;
+// L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
+// `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
+pub(crate) mod routes;
 mod server;
 mod session;
 /// Stand metadata reader — `.mise/tasks/vp/stand/{name}` 冒頭の `#VP key=value` を parse (VP-108)
@@ -41,6 +45,7 @@ pub(crate) mod stand_spawner;
 // stand_spec module は doc 11 PR-B で削除 (LaneStandSpec trait / TheHand / LlmStand 全廃、
 // `mise run vp:stand:{name}` 1 経路に集約)。
 pub(crate) mod state;
+pub(crate) mod terminal_pump;
 pub(crate) mod tmux_actor;
 pub mod topic;
 pub(crate) mod topic_router;

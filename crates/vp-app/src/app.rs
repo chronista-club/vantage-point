@@ -134,8 +134,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
     matches!(
         v.get("t").and_then(|t| t.as_str()),
         Some(
-            "in" | "resize"
-                | "ready"
+            "ready"
+                | "term:write"
+                | "term:resize"
                 | "lanes:ensure-all"
                 | "copy"
                 | "paste:request"
@@ -166,27 +167,19 @@ fn spawn_menu_event_pump(rt_handle: &tokio::runtime::Handle, proxy: EventLoopPro
     });
 }
 
-/// `/api/world/projects` (= registered, port は config の静的値のみ) と
-/// `/api/world/processes` (= running, runtime port + pid 持つ) を **併行 fetch + join** して
-/// `ProjectInfo` の list に `RunningProcess` から取り出した runtime port を merge する。
+/// F6 (doc 27 §3.4): active_lane_address から対応する project_path を引く。
 ///
-/// port merge の pure calculation 部分を抽出した関数。 `fetch_projects_with_ports` の
-/// テスト可能なコアロジック。 name 一致で `RunningProcess.port` を inject し、
-/// `running` に無い project は port を変更しない (= config の static port か None のまま)。
-/// pp-content-persist: active な lane を host する SP の port を解決する。
-///
-/// active_lane_address (`<project>/conductor` or `<project>/performer/<name>`) から、
-/// 対応する project_path の SP port (= ProjectPaneState.port) を引く。
-/// 解決失敗 (= lane 未選択 / SP 未起動 / port None) なら `None`。
-///
-/// caller: `PpStateSaveRequest` / `PpStateLoadRequest` の reqwest forward。
-pub(crate) fn resolve_active_project_port(state: &crate::pane::SidebarState) -> Option<u16> {
+/// active_lane_address (`<project>/conductor` or `<project>/performer/<name>`) から、 対応する
+/// project_path を引く。 World process-proxy は SP port 不問・project_path を path_key に正規化して
+/// routing するので、 ask 系 (pp:state) は port でなく path で引く。 解決失敗 (lane 未選択 / SP 未起動)
+/// なら `None`。 caller: `PpStateSaveRequest` / `PpStateLoadRequest` の process-proxy ask。
+pub(crate) fn resolve_active_project_path(state: &crate::pane::SidebarState) -> Option<String> {
     let active = state.active_lane_address.as_deref()?;
     for proc in &state.processes {
         if let Some(lanes) = state.lanes_by_project.get(&proc.path)
             && lanes.iter().any(|l| l.address.key() == active)
         {
-            return proc.port;
+            return Some(proc.path.clone());
         }
     }
     None
@@ -262,65 +255,207 @@ enum SubscriptionOutcome {
     AppClosing,
 }
 
+/// F1b (doc 27 §3.4.4): vp-app → World :32000 の全 persistent session (lanes / canvas /
+/// terminal / device) を **1 QUIC connection に集約**するための共有ハンドル。
+///
+/// `current` watch は現 epoch の `ProtocolClient` (= 1 connection) を全 session に配る
+/// (None = 未接続 / 再接続中)。 session は `wait_client()` で接続を待ち、 得た client で
+/// `open_channel` して自分の stream を張る (= 1 conn × N streams)。 reconnect は manager task が
+/// 一手に所有し、 epoch ごとに fresh client を connect → publish する (F1a SP uplink と同パターン)。
+///
+/// 旧構成は session ごと (lanes / canvas は project ごと、 terminal は lane ごと) に別 QUIC
+/// connection を張り、 QUIC の多重化を使えていなかった (§3.4.4 負債)。 これを 1 connection に畳む。
+#[derive(Clone)]
+struct SharedWorldConn {
+    current: tokio::sync::watch::Receiver<Option<std::sync::Arc<unison::ProtocolClient>>>,
+}
+
+impl SharedWorldConn {
+    /// 共有 connection が確立する (current = Some) まで待ち、 その client を返す。
+    /// watch sender が drop された (= app 終了) 場合は None。
+    async fn wait_client(&mut self) -> Option<std::sync::Arc<unison::ProtocolClient>> {
+        loop {
+            if let Some(client) = self.current.borrow().clone() {
+                return Some(client);
+            }
+            // None の間は変化を待つ。 sender drop で Err = app 終了。
+            if self.current.changed().await.is_err() {
+                return None;
+            }
+        }
+    }
+}
+
+/// 共有 World connection を connect / reconnect し続ける manager を spawn し、 ハンドルを返す。
+///
+/// epoch ごとに fresh `ProtocolClient` を build → connect → `current` に publish → 切断検知で
+/// None に戻して exp backoff reconnect。 全 session が `wait_client` で追従する。 reconnect 機構を
+/// ここに一元化することで、 各 session は channel logic だけを持てば良くなる (関心分離)。
+fn spawn_world_conn_manager(
+    rt_handle: &tokio::runtime::Handle,
+    world_port: u16,
+) -> SharedWorldConn {
+    let (current_tx, current_rx) =
+        tokio::sync::watch::channel::<Option<std::sync::Arc<unison::ProtocolClient>>>(None);
+
+    rt_handle.spawn(async move {
+        use unison::ProtocolClient;
+        use unison::network::ClientConnectionEvent;
+        use unison::network::TrustAnchors;
+        use unison::network::quic::QuicClient;
+
+        let addr = format!("[::1]:{}", world_port);
+        const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+        const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(16);
+        let mut backoff = INITIAL_BACKOFF;
+        let mut generation: u64 = 0;
+
+        loop {
+            // epoch ごとに fresh client (F1a SP uplink と同じ「再接続 = 新 client」パターン)。
+            let transport = match QuicClient::builder()
+                .trust_anchors(TrustAnchors::SkipVerification)
+                .build()
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("world conn: QUIC client build 失敗: {} (リトライ)", e);
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
+                    continue;
+                }
+            };
+            let client = std::sync::Arc::new(ProtocolClient::new(transport));
+
+            match client.connect(&addr).await {
+                Ok(()) => {
+                    backoff = INITIAL_BACKOFF;
+                    generation += 1;
+                    tracing::info!(
+                        "world conn: 共有 connection 確立 (gen={}, addr={})",
+                        generation,
+                        addr
+                    );
+                    let mut conn_events = client.subscribe_connection_events();
+                    // F1b heartbeat: vp-app は passive subscriber (recv 待ち) のみで能動送信が無いため、
+                    // connection 死を QUIC idle timeout (60s) でしか検知できない。 15s ごとに
+                    // world-control へ ping して liveness を能動確認する (client→server 一方向、 server は
+                    // 応答のみ = 両端 heartbeat にしない)。 open 失敗時は None で conn_events (60s) に degrade。
+                    let heartbeat = client.open_channel("world-control").await.ok();
+                    // session に新 client を配る。 receiver 全滅 (= app 終了) なら manager も終了。
+                    if current_tx.send(Some(client.clone())).is_err() {
+                        return;
+                    }
+                    let mut hb_tick = tokio::time::interval(std::time::Duration::from_secs(15));
+                    hb_tick.tick().await; // 最初の tick (即時) をスキップ
+                    // 切断を待つ (conn_events か heartbeat 失敗のどちらか早い方で再接続へ抜ける)。
+                    loop {
+                        tokio::select! {
+                            conn_ev = conn_events.recv() => {
+                                match conn_ev {
+                                    Ok(ClientConnectionEvent::Disconnected { reason }) => {
+                                        tracing::warn!("world conn: 切断検知 ({}) → 再接続", reason);
+                                        break;
+                                    }
+                                    Ok(_) => {}
+                                    Err(_) => break, // event channel closed = client 異常、 再接続へ
+                                }
+                            }
+                            _ = hb_tick.tick() => {
+                                if let Some(hb) = &heartbeat {
+                                    // 5s 以内に pong が返らなければ connection 死と判断 (idle timeout 60s を待たない)。
+                                    let pong = tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        hb.request::<serde_json::Value, serde_json::Value>("ping", &serde_json::json!({})),
+                                    )
+                                    .await;
+                                    if !matches!(pong, Ok(Ok(_))) {
+                                        tracing::warn!("world conn: heartbeat 応答なし → 再接続");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 再接続前に None を配る (session は wait_client で次 client を待つ)。
+                    if current_tx.send(None).is_err() {
+                        return;
+                    }
+                    drop(heartbeat);
+                    // 旧 connection を明示 close する。 session は同じ `Arc<ProtocolClient>` を握って
+                    // recv() でブロックしているため、 manager 側の drop だけでは refcount>0 で
+                    // connection が閉じず、 session の recv() は old connection の idle timeout (60s)
+                    // まで Err にならない (= heartbeat で manager を 15s 再接続させても session が 60s
+                    // migrate しない)。 disconnect() で即 stream reset → session の recv() が即 Err →
+                    // wait_client で次 client へ移る。
+                    let _ = client.disconnect().await;
+                    drop(client); // 次 loop で fresh client
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "world conn: 接続失敗 ({}), {}ms 後 retry",
+                        e,
+                        backoff.as_millis()
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
+                }
+            }
+        }
+    });
+
+    SharedWorldConn {
+        current: current_rx,
+    }
+}
+
 /// wiremsg Stage 1 consumer: SP の "lanes" Unison channel を購読し、retained Lane
 /// snapshot を受信して `AppEvent::LanesLoaded` を emit する。旧 `spawn_lanes_fetch`
-/// (one-shot HTTP poll) を置換する long-lived 購読。接続が切れたら指数バックオフで
-/// 再接続し、10 連続失敗で諦めて `AppEvent::LanesSubscriptionEnded` を emit する。
-/// SP が同じ project を再 spawn すれば次の `ProjectsLoaded` で購読も再 spawn される。
+/// (one-shot HTTP poll) を置換する long-lived 購読。F1b: 共有 connection 上の stream で、
+/// reconnect は `SharedWorldConn` の manager が所有するので give-up せず追従する。
 /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+///
+/// L0 SP-portless (lanes slice): 接続先は SP 直結ではなく **World :32000 の集約 "lanes" channel**。
+/// World は registry channel 経由で各 SP の lane snapshot/diff を受けて lane_registry に集約済で、
+/// 本購読は project_path で scope して当該 project の snapshot を受ける (繋ぎ先が変わっただけで
+/// consumer ロジックは不変)。
 fn spawn_lanes_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    conn: SharedWorldConn,
 ) {
-    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, sp_port));
+    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, conn));
 }
 
-/// "lanes" channel への接続 → 購読 → 再接続を司る long-lived ループ。
+/// "lanes" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
+///
+/// reconnect は `SharedWorldConn` の manager が一手に所有するので、 本ループは
+/// `wait_client` で接続を待ち、 得た client で session を回すだけ。 SP unreachable でも諦めず
+/// 共有 connection に追従する (旧 10 連続失敗 give-up + `LanesSubscriptionEnded` は廃止)。
 async fn lanes_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    mut conn: SharedWorldConn,
 ) {
-    // QUIC ポート = HTTP ポート (QUIC_PORT_OFFSET = 0、TCP/UDP は同一ポートで共存)。
-    let addr = format!("[::1]:{}", sp_port);
-    const MAX_FAILURES: u32 = 10;
-    let mut failures: u32 = 0;
-
     loop {
-        match run_lanes_session(&proxy, &process_path, &addr).await {
+        // 共有 connection が確立するまで待つ (None の間はここでブロック = busy loop 無し)。
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_lanes_session(&proxy, &process_path, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
-            Ok(SubscriptionOutcome::Disconnected) => {
-                // セッション確立後の切断 (SP restart 等)。失敗カウンタをリセットし、
-                // 短い固定 delay を挟んで即再接続する (確立直後の即切断による busy loop を防ぐ)。
-                failures = 0;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
+            // 切断は共有 manager が面倒を見るので、 次の client を待つだけ (per-session error 扱い無し)。
+            Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
-                failures += 1;
-                tracing::warn!(
-                    "lanes subscription failed ({}/{}): project={}: {}",
-                    failures,
-                    MAX_FAILURES,
-                    process_path,
-                    e
-                );
+                // open_channel / handshake 失敗。 surface に通知しつつ give-up せず次の接続機会を待つ。
+                tracing::warn!("lanes subscription error: project={}: {}", process_path, e);
                 let _ = proxy.send_event(AppEvent::LanesError {
                     process_path: process_path.clone(),
                     message: e,
                 });
-                if failures >= MAX_FAILURES {
-                    tracing::warn!(
-                        "lanes subscription giving up: project={} (SP unreachable)",
-                        process_path
-                    );
-                    let _ = proxy.send_event(AppEvent::LanesSubscriptionEnded { process_path });
-                    return;
-                }
-                // 指数バックオフ 500ms〜16s (TUI→Process reconnect と同じカーブ)。
-                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                // connected だが open_channel が連続失敗するケースの busy loop を避ける小休止。
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
@@ -334,30 +469,28 @@ async fn lanes_subscription_loop(
 async fn run_lanes_session(
     proxy: &EventLoopProxy<AppEvent>,
     process_path: &str,
-    addr: &str,
+    client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
-    use unison::ProtocolClient;
     use unison::network::MessageType;
-    use unison::network::TrustAnchors;
-    use unison::network::quic::QuicClient;
 
-    let transport = QuicClient::builder()
-        .trust_anchors(TrustAnchors::SkipVerification)
-        .build()
-        .map_err(|e| format!("QUIC client build: {}", e))?;
-    let client = ProtocolClient::new(transport);
-    client
-        .connect(addr)
-        .await
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    // F1b: 共有 connection 上に "lanes" stream を開く (旧: session ごと別 connect)。
     let channel = client
         .open_channel("lanes")
         .await
         .map_err(|e| format!("open lanes channel: {}", e))?;
+    // L0 SP-portless: World "lanes" channel は project 単位なので、 接続後に subscribe
+    // handshake で project_path を渡す (World 側で path_key に正規化されて lane_registry と突合)。
+    // ack 後に当該 project の snapshot が `send_event("snapshot", ...)` で初期配信される。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path }),
+        )
+        .await
+        .map_err(|e| format!("lanes subscribe handshake: {}", e))?;
     tracing::info!(
-        "lanes subscription connected: project={} addr={}",
-        process_path,
-        addr
+        "lanes subscription connected (via World): project={}",
+        process_path
     );
 
     loop {
@@ -409,51 +542,39 @@ async fn run_lanes_session(
 /// wiremsg Stage 2 consumer: SP の "canvas" Unison channel を購読し、Canvas (Paisley Park)
 /// ProcessMessage を受信して `AppEvent::CanvasMessage` を emit する。`spawn_lanes_subscription`
 /// と同型（QUIC 購読 + 指数バックオフ再接続）。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+///
+/// L0 SP-portless (canvas slice): 接続先は SP 直結ではなく **World :32000 の集約 "canvas" channel**。
+/// 各 SP が paisley-park topic を World に push し、 World が project の TopicRouter に集約済なので、
+/// 本購読は project_path で scope して当該 project の canvas (retained + live) を受ける。
 fn spawn_canvas_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    conn: SharedWorldConn,
 ) {
-    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, sp_port));
+    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, conn));
 }
 
-/// "canvas" channel への接続 → 購読 → 再接続を司る long-lived ループ。
+/// "canvas" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
+///
+/// reconnect は `SharedWorldConn` の manager が所有。 本ループは `wait_client` で接続を待ち
+/// session を回すだけで、 give-up + `CanvasSubscriptionEnded` は廃止 (共有 conn に追従)。
 async fn canvas_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
     process_path: String,
-    sp_port: u16,
+    mut conn: SharedWorldConn,
 ) {
-    let addr = format!("[::1]:{}", sp_port);
-    const MAX_FAILURES: u32 = 10;
-    let mut failures: u32 = 0;
-
     loop {
-        match run_canvas_session(&proxy, &process_path, &addr).await {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_canvas_session(&proxy, &process_path, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
-            Ok(SubscriptionOutcome::Disconnected) => {
-                failures = 0;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
+            Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
-                failures += 1;
-                tracing::warn!(
-                    "canvas subscription failed ({}/{}): project={}: {}",
-                    failures,
-                    MAX_FAILURES,
-                    process_path,
-                    e
-                );
-                if failures >= MAX_FAILURES {
-                    tracing::warn!(
-                        "canvas subscription giving up: project={} (SP unreachable)",
-                        process_path
-                    );
-                    let _ = proxy.send_event(AppEvent::CanvasSubscriptionEnded { process_path });
-                    return;
-                }
-                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                tracing::warn!("canvas subscription error: project={}: {}", process_path, e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
@@ -467,30 +588,28 @@ async fn canvas_subscription_loop(
 async fn run_canvas_session(
     proxy: &EventLoopProxy<AppEvent>,
     process_path: &str,
-    addr: &str,
+    client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
-    use unison::ProtocolClient;
     use unison::network::MessageType;
-    use unison::network::TrustAnchors;
-    use unison::network::quic::QuicClient;
 
-    let transport = QuicClient::builder()
-        .trust_anchors(TrustAnchors::SkipVerification)
-        .build()
-        .map_err(|e| format!("QUIC client build: {}", e))?;
-    let client = ProtocolClient::new(transport);
-    client
-        .connect(addr)
-        .await
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    // F1b: 共有 connection 上に "canvas" stream を開く (旧: session ごと別 connect)。
     let channel = client
         .open_channel("canvas")
         .await
         .map_err(|e| format!("open canvas channel: {}", e))?;
+    // L0 SP-portless: World "canvas" channel は project 単位なので、 接続後に subscribe handshake で
+    // project_path を渡す (World 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 project の
+    // retained canvas (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path }),
+        )
+        .await
+        .map_err(|e| format!("canvas subscribe handshake: {}", e))?;
     tracing::info!(
-        "canvas subscription connected: project={} addr={}",
-        process_path,
-        addr
+        "canvas subscription connected (via World): project={}",
+        process_path
     );
 
     loop {
@@ -522,6 +641,298 @@ async fn run_canvas_session(
     }
 }
 
+/// terminal S4 (doc 27 §4.1): per-lane terminal session への command (WebView → SP)。
+#[derive(Debug)]
+enum TermCmd {
+    /// keystroke (base64)。 canvas channel 上り request `terminal_write` で SP に送る。
+    Write(String),
+    /// resize (cols, rows)。 `terminal_resize` で送る。
+    Resize(u16, u16),
+}
+
+/// terminal S4: 1 lane の terminal session handle (event loop が保持)。
+///
+/// map から remove すると `cmd_tx` が drop され、 session loop の `cmd_rx.recv()` が None を返して
+/// 停止 → canvas channel drop → World 側 demand stop → SP pump stop
+/// (= 購読者が消えたら pump を畳む、 S2 demand-driven production の出口)。
+struct LaneTerminal {
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<TermCmd>,
+}
+
+/// terminal S4: lane の terminal を World "canvas" channel に乗せる per-lane session を spawn。
+///
+/// `lane_key` = `<project>/conductor` 等 (`LaneAddressWire::key()`)。 World :32000 の "canvas"
+/// channel に `pattern: process/terminal/data/{lane_key}/out` で subscribe → World demand 発火 →
+/// SP pump start。 受信した PTY 出力は `AppEvent::TerminalOutput` で event loop に流し、 cmd_rx
+/// 経由の write/resize は同 channel の上り request で SP に forward する (S3 bidirectional)。
+fn spawn_terminal_session(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    conn: SharedWorldConn,
+    process_path: String,
+    lane_key: String,
+) -> LaneTerminal {
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    rt_handle.spawn(terminal_session_loop(
+        proxy,
+        conn,
+        process_path,
+        lane_key,
+        cmd_rx,
+    ));
+    LaneTerminal { cmd_tx }
+}
+
+/// "canvas" channel (terminal pattern) の購読 → 再購読を司る long-lived ループ
+/// (F1b: 共有 connection 上の per-lane stream)。 `cmd_rx` は再接続を跨いで保持する
+/// (= 切断中に積まれた write/resize は次接続で送れる)。 reconnect は共有 manager が所有するので
+/// `wait_client` で接続を待ち、 give-up はしない (lane 消滅 = cmd_tx drop で AppClosing 終了)。
+async fn terminal_session_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    mut conn: SharedWorldConn,
+    process_path: String,
+    lane_key: String,
+    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<TermCmd>,
+) {
+    loop {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_terminal_session(&proxy, &process_path, &lane_key, &client, &mut cmd_rx).await {
+            // AppClosing = event loop 終了 or lane removed (cmd_tx drop) → session 終了。
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => {}
+            Err(e) => {
+                tracing::warn!("terminal session error: lane={}: {}", lane_key, e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+}
+
+/// 1 回の terminal session: connect → `open_channel("canvas")` → subscribe(terminal pattern) →
+/// recv (出力) / cmd (入力・resize) の select ループ。
+///
+/// 出力 `channel.recv()` と 上り `channel.request()` を同一 select! で扱う。 unison の `request` の
+/// response は pending map で解決され `recv()` には来ず、 また `recv()` は内部 buffer 由来で
+/// cancel-safe (= concurrent recv+request は control/process-proxy で実証済) なので、 cmd 分岐で
+/// recv future を drop しても出力欠落しない。
+async fn run_terminal_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    process_path: &str,
+    lane_key: &str,
+    client: &unison::ProtocolClient,
+    cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TermCmd>,
+) -> Result<SubscriptionOutcome, String> {
+    use unison::network::MessageType;
+
+    // F1b: 共有 connection 上に per-lane terminal 用 "canvas" stream を開く (旧: lane ごと別 connect)。
+    let channel = client
+        .open_channel("canvas")
+        .await
+        .map_err(|e| format!("open canvas channel: {}", e))?;
+    // 当該 lane の terminal topic を pattern 指定で subscribe (= demand を立てて SP pump を起こす)。
+    let topic = format!("process/terminal/data/{}/out", lane_key.replace('/', "~"));
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path, "pattern": topic }),
+        )
+        .await
+        .map_err(|e| format!("terminal subscribe handshake: {}", e))?;
+    tracing::info!(
+        "terminal session connected: lane={} topic={}",
+        lane_key,
+        topic
+    );
+
+    loop {
+        tokio::select! {
+            recvd = channel.recv() => {
+                let msg = match recvd {
+                    Ok(m) => m,
+                    Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+                };
+                if msg.msg_type != MessageType::Event || msg.method != "pane" {
+                    continue;
+                }
+                let payload = match msg.payload_as_value() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                // LaneTerminalOutput { lane, data(base64) }。 lane は subscription で確定済なので
+                // data だけ抜いて lane_key 付きで JS に渡す。
+                if let Some(data) = payload.get("data").and_then(|v| v.as_str())
+                    && proxy
+                        .send_event(AppEvent::TerminalOutput {
+                            lane: lane_key.to_string(),
+                            data: data.to_string(),
+                        })
+                        .is_err()
+                {
+                    return Ok(SubscriptionOutcome::AppClosing);
+                }
+            }
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(TermCmd::Write(data)) => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "terminal_write",
+                                &serde_json::json!({ "lane": lane_key, "data": data }),
+                            )
+                            .await;
+                    }
+                    Some(TermCmd::Resize(cols, rows)) => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "terminal_resize",
+                                &serde_json::json!({ "lane": lane_key, "cols": cols, "rows": rows }),
+                            )
+                            .await;
+                    }
+                    // cmd_tx drop = lane removed → session 終了 (channel drop で demand stop)。
+                    None => return Ok(SubscriptionOutcome::AppClosing),
+                }
+            }
+        }
+    }
+}
+
+/// F6 (doc 27 §3.4): vp-app → World process-proxy → SP の one-shot ask。
+///
+/// 旧 SP HTTP 直結 (`reqwest http://127.0.0.1:{sp_port}/api/...`) の置換。 surface は World :32000
+/// だけに繋ぐ (§6)。 低頻度 ask 専用 (pp:state debounce save / lane ops) なので 1 回ごとに
+/// connect → `open_channel("process-proxy")` → handshake({project_path}) → request(method) → drop。
+/// (connection 共有は F1 で畳む。) method は SP `dispatch_process_method` に届き、 戻り値が返る。
+async fn world_process_request(
+    world_port: u16,
+    process_path: &str,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use unison::ProtocolClient;
+    use unison::network::TrustAnchors;
+    use unison::network::quic::QuicClient;
+
+    let addr = format!("[::1]:{}", world_port);
+    let transport = QuicClient::builder()
+        .trust_anchors(TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("QUIC client build: {}", e))?;
+    let client = ProtocolClient::new(transport);
+    client
+        .connect(&addr)
+        .await
+        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    let channel = client
+        .open_channel("process-proxy")
+        .await
+        .map_err(|e| format!("open process-proxy: {}", e))?;
+    // handshake: project_path → World が path_key 正規化 → 当該 SP control へ routing。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path }),
+        )
+        .await
+        .map_err(|e| format!("process-proxy handshake: {}", e))?;
+    // ask: method を World が SP dispatch_process_method へ forward し応答を relay。
+    channel
+        .request::<serde_json::Value, serde_json::Value>(method, &payload)
+        .await
+        .map_err(|e| format!("process-proxy {}: {}", method, e))
+}
+
+/// Bastet 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
+/// `AppEvent::DeviceEvent` を emit する。 daemon に 1 本のみ (canvas/lanes は per-SP だが
+/// device は World scope = singleton)。 F1b で共有 connection 上の stream に集約。
+fn spawn_device_subscription(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    conn: SharedWorldConn,
+) {
+    rt_handle.spawn(device_subscription_loop(proxy, conn));
+}
+
+/// "world-device" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
+///
+/// device channel は **optional** (daemon が feature midi 無効 / Bastet 不在なら未登録)。 connection
+/// 自体は共有 manager が維持するので、 「接続済なのに open_channel が連続失敗」= channel 未提供と
+/// 判断して graceful give-up する (= device 機能なしで app は動く)。 connection-down (Disconnected)
+/// は失敗カウントに含めない (channel は在った)。
+async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: SharedWorldConn) {
+    const MAX_FAILURES: u32 = 10;
+    let mut failures: u32 = 0;
+
+    loop {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_device_session(&proxy, &client).await {
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => {
+                // channel は在った (= 接続できた)。 失敗カウントを reset し次 client を待つ。
+                failures = 0;
+            }
+            Err(e) => {
+                failures += 1;
+                if failures >= MAX_FAILURES {
+                    // 接続済なのに open_channel が連続失敗 = daemon が world-device を出さない
+                    // (feature midi 無効 / Bastet 不在) → graceful degrade。
+                    tracing::warn!(
+                        "world-device subscription giving up (no midi / Bastet absent): {}",
+                        e
+                    );
+                    return;
+                }
+                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+/// 1 回の "world-device" channel 接続セッション: connect → `open_channel("world-device")` →
+/// recv ループ。 world-device は接続即購読 (canvas 方式)。 各 device event は daemon が
+/// `send_event("event", <DeviceEvent JSON>)` で push する。
+async fn run_device_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    client: &unison::ProtocolClient,
+) -> Result<SubscriptionOutcome, String> {
+    use unison::network::MessageType;
+
+    // F1b: 共有 connection 上に "world-device" stream を開く (旧: 専用 connect)。
+    let channel = client
+        .open_channel("world-device")
+        .await
+        .map_err(|e| format!("open world-device channel: {}", e))?;
+    tracing::info!("world-device subscription connected");
+
+    loop {
+        let msg = match channel.recv().await {
+            Ok(m) => m,
+            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+        };
+        if msg.msg_type != MessageType::Event || msg.method != "event" {
+            continue;
+        }
+        let payload = match msg.payload_as_value() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("world-device payload parse failed: {}", e);
+                continue;
+            }
+        };
+        if proxy.send_event(AppEvent::DeviceEvent { payload }).is_err() {
+            // event loop が閉じた = app 終了。
+            return Ok(SubscriptionOutcome::AppClosing);
+        }
+    }
+}
+
 /// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
 /// xterm.js + WebSocket は **JS-side で per-Lane に管理** され、 Rust は thin trigger を出すだけ。
 mod lane_js {
@@ -534,9 +945,13 @@ mod lane_js {
         serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
     }
 
-    /// `window.ensureLane(address, port)` を呼ぶ — 既存ならば no-op (idempotent)。
-    pub fn ensure_lane(main_view: &WebView, address: &str, port: u16) {
-        let script = format!("window.ensureLane({}, {})", js_str(address), port);
+    /// `window.ensureLane(address)` を呼ぶ — 既存ならば no-op (idempotent)。
+    ///
+    /// terminal S4: SP port は不要になった (xterm の transport は World "canvas" channel +
+    /// per-lane terminal session、 旧 `/ws/terminal?port=` 直結を撤去)。 JS は xterm instance を
+    /// 作るだけで socket は持たない。 出力/入力は Rust の terminal session が IPC で橋渡しする。
+    pub fn ensure_lane(main_view: &WebView, address: &str) {
+        let script = format!("window.ensureLane({})", js_str(address));
         if let Err(e) = main_view.evaluate_script(&script) {
             tracing::warn!("ensureLane script failed (addr={}): {}", address, e);
         }
@@ -558,6 +973,16 @@ mod lane_js {
         let script = format!("window.removeLane({})", js_str(address));
         if let Err(e) = main_view.evaluate_script(&script) {
             tracing::warn!("removeLane script failed (addr={}): {}", address, e);
+        }
+    }
+
+    /// `window.vpBastet.renderDevices(devices)` を呼ぶ — Bastet pane に device 一覧を render。
+    /// Phase 2: world-device bridge の出口 (= AppEvent::DeviceEvent handler から呼ぶ)。
+    pub fn render_bastet_devices(main_view: &WebView, devices: &[crate::pane::DeviceSnapshot]) {
+        let json = serde_json::to_string(devices).unwrap_or_else(|_| "[]".into());
+        let script = format!("window.vpBastet && window.vpBastet.renderDevices({json})");
+        if let Err(e) = main_view.evaluate_script(&script) {
+            tracing::warn!("renderBastetDevices script failed: {}", e);
         }
     }
 }
@@ -715,6 +1140,14 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
         if !h.started_at.is_empty() {
             snap.world_started_at = Some(h.started_at);
         }
+        // hub federation 接続状態（World 横の Hub インジケータ用）。
+        snap.hub = h.hub;
+        // L1 lifecycle: SP presence map（project 行の ●◐○ dot 用、path → presence）。
+        snap.presence = h
+            .processes
+            .into_iter()
+            .map(|p| (p.path, p.presence))
+            .collect();
     }
     if let Ok(projects) = client.list_projects().await {
         snap.project_count = projects.len();
@@ -758,6 +1191,19 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     if let Err(e) = main_view.evaluate_script(&script) {
         tracing::warn!("main setActivePane 失敗: {}", e);
     }
+}
+
+/// Lane address (Display 形 `"<project>/conductor"` 等) から所属 project path を逆引きする。
+///
+/// `lanes_by_project` (= project_path → LaneInfo list) を走査し、 `address.key()` が一致する
+/// lane を持つ project の path を返す。 `lane:select` 経路 (= JS から path を受け取る) の鏡像で、
+/// focus 経路は address しか持たないためここで path を解決する。 一致なしは None。
+fn resolve_project_path_for_lane(state: &SidebarState, address: &str) -> Option<String> {
+    state
+        .lanes_by_project
+        .iter()
+        .find(|(_path, lanes)| lanes.iter().any(|l| l.address.key() == address))
+        .map(|(path, _)| path.clone())
 }
 
 /// Active Lane を切替える — 全副作用を 1 箇所に集約（Simplicity 原則）。
@@ -848,33 +1294,29 @@ fn maybe_respawn_dead_lane(
     if !triggered.insert(addr.to_string()) {
         return;
     }
-    let Some(port) = state
-        .processes
-        .iter()
-        .find(|p| p.path == project_path)
-        .and_then(|p| p.port)
-    else {
-        tracing::warn!("auto-respawn: SP port unknown for {} (skip)", project_path);
-        triggered.remove(addr); // port 未解決 — trigger 解除して次回再試行可能に
-        return;
-    };
+    // F6③: 旧 TheWorldClient.restart_lane (SP 直結 reqwest) を World process-proxy ask
+    // (lane_restart) に移管。 SP port 解決は不要 (World :32000 固定 + project_path handshake)、
+    // 旧「port 未解決 skip」分岐も消滅。 失敗時の trigger 解除は LaneRespawnFailed 経路に一本化。
     let addr_owned = addr.to_string();
     let proxy = proxy.clone();
-    tracing::info!(
-        "auto-respawn dead lane (on-demand): addr={} port={}",
-        addr_owned,
-        port
-    );
+    tracing::info!("auto-respawn dead lane (on-demand): addr={}", addr_owned);
     rt_handle.spawn(async move {
-        let client = crate::client::TheWorldClient::new(port);
         // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
-        match client.restart_lane(&addr_owned, false).await {
-            Ok(()) => {
+        let payload = serde_json::json!({ "address": &addr_owned, "fresh": false });
+        match world_process_request(
+            crate::client::DEFAULT_WORLD_PORT,
+            &project_path,
+            "lane_restart",
+            payload,
+        )
+        .await
+        {
+            Ok(_) => {
                 // 成功時は LanesLoaded で Running 検出時に triggered から解除される。
-                tracing::info!("auto-respawn restart_lane ok: {}", addr_owned);
+                tracing::info!("auto-respawn lane_restart ok: {}", addr_owned);
             }
             Err(e) => {
-                tracing::warn!("auto-respawn restart_lane failed: {}: {}", addr_owned, e);
+                tracing::warn!("auto-respawn lane_restart failed: {}: {}", addr_owned, e);
                 // 失敗を event loop に通知して triggered を解除する (永続 suppression 回避)。
                 // これが無いと SP クラッシュ等で全 retry 失敗した lane は vp-app 再起動まで
                 // auto-respawn 対象外になってしまう (Moody Blues Issue #1)。
@@ -921,8 +1363,8 @@ struct SidebarIpcOutcome {
     /// (`POST /api/world/lanes`) を呼ぶ (SP port 解決は不要)。
     /// `stand` は doc 11 PR-C で追加 (None なら daemon-side default)。
     add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
-    /// doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
-    /// caller が SP port を解決して `client.list_stands` を呼ぶ → `AppEvent::StandsResult` で push back。
+    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
+    /// caller が World process-proxy ask (`stands_list`) を呼ぶ → `AppEvent::StandsResult` で push back。
     list_stands_request: Option<String>,
     /// Phase 4-A: Performer Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
@@ -1055,7 +1497,7 @@ fn handle_sidebar_ipc(
         }
         IpcEnvelope::StandsFetch(m) => {
             // doc 11 PR-C: sidebar の + Add Performer form 開閉時に利用可能 Stand 一覧を取得。
-            // caller (event loop) で SP port 解決 → client.list_stands → window.handleStandsResult で push back。
+            // caller (event loop) で World process-proxy ask (`stands_list`) → window.handleStandsResult で push back。
             if !m.path.is_empty() {
                 out.list_stands_request = Some(m.path);
             }
@@ -1063,7 +1505,9 @@ fn handle_sidebar_ipc(
         IpcEnvelope::StandSelect(m) => {
             // Phase 5-A: Project-scope Stand row click → main area に対応 pane を表示
             // (Lane と mutually exclusive、 active_lane_address は preemptively clear)
-            if m.path.is_empty() || m.kind.is_empty() {
+            // Bastet 🧲 は World-scope Stand (device = daemon 共通) なので path="" で来る。
+            // World-scope stand は path 空を許可、 それ以外 (Project-scope) は path 必須。
+            if m.kind.is_empty() || (m.path.is_empty() && m.kind != "bastet") {
                 tracing::warn!("stand:select with empty path/kind: {}", msg);
                 return out;
             }
@@ -1267,6 +1711,16 @@ pub fn run() -> anyhow::Result<()> {
 
     // muda の MenuEvent を main loop に橋渡しする pump を起動
     spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
+
+    // F1b (doc 27 §3.4.4): vp-app → World :32000 の全 persistent session を 1 QUIC connection に
+    // 集約する共有ハンドル。 manager task が connect/reconnect を一手に所有し、 各 session
+    // (device/lanes/canvas/terminal) は `wait_client` で得た共有 client に open_channel する。
+    // event loop closure が move capture するので、 closure 内の spawn は `world_conn.clone()` を渡す。
+    let world_conn = spawn_world_conn_manager(&rt_handle, crate::client::DEFAULT_WORLD_PORT);
+
+    // Bastet 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
+    // canvas/lanes は per-SP だが device は World scope (= daemon singleton) なので起動時 1 回。
+    spawn_device_subscription(&rt_handle, event_loop.create_proxy(), world_conn.clone());
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session_state より前に確定する。
@@ -1487,11 +1941,15 @@ pub fn run() -> anyhow::Result<()> {
     // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
     let respawn_proxy = event_loop.create_proxy();
     // wiremsg Stage 1: per-SP の "lanes" Unison 購読を 1 本だけ張るための guard。
-    // path をキーにする。購読が再接続上限で諦めると `LanesSubscriptionEnded` で除去され、
-    // 次の `ProjectsLoaded` で SP がまだ生きていれば再 spawn される。
+    // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
+    // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
     // wiremsg Stage 2: per-SP の "canvas" Unison 購読 guard (lanes_sub_active と同型)。
     let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // terminal S4: per-lane terminal session registry (lane key → LaneTerminal)。
+    // LanesLoaded で live lane に対し start、 消えた lane / app 終了で stop (= map から remove)。
+    let mut terminal_sessions: std::collections::HashMap<String, LaneTerminal> =
+        std::collections::HashMap::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
@@ -1527,6 +1985,9 @@ pub fn run() -> anyhow::Result<()> {
     // 防ぐため、**focused instance だけ**が switch_lane を適用する (B-local self-filter)。
     // with_focused(true) で起動するので初期値は true。
     let mut is_focused = true;
+    // Model B #2: 直近 daemon に報告した active_lane。 focus が高速に flip しても
+    // 同じ lane への重複報告 (= reqwest::Client 新規構築 + 無駄 POST) を抑止する。
+    let mut last_focus_reported_lane: Option<String> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -1674,6 +2135,25 @@ pub fn run() -> anyhow::Result<()> {
             } => {
                 is_focused = focused;
                 tracing::debug!("window focus changed: is_focused={}", focused);
+                // Model B #2: focus を得た瞬間、 この window の display lane を daemon canonical の
+                // active_lane に報告する。 daemon active_lane が focused window に追従 → ROTO LCD
+                // follows focus (#4) が「active_lane を映すだけ」 で自動成立する。 focus-loss (false)
+                // は無視 ── 次に focus を得た window が上書きするため (lane 未選択 window も skip)。
+                if focused
+                    && let Some(address) = sidebar_state.active_lane_address.clone()
+                    && last_focus_reported_lane.as_deref() != Some(address.as_str())
+                    && let Some(path) = resolve_project_path_for_lane(&sidebar_state, &address)
+                {
+                    // 重複報告抑止: 報告する lane を記録してから spawn。 同 lane への
+                    // 連続 focus event は上の guard で弾かれ、 Client 構築は lane 切替時のみ。
+                    last_focus_reported_lane = Some(address.clone());
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        if let Err(e) = client.set_active_lane(path, address).await {
+                            tracing::warn!("focus→set_active_lane failed: {}", e);
+                        }
+                    });
+                }
             }
             // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
             // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
@@ -1873,14 +2353,18 @@ pub fn run() -> anyhow::Result<()> {
                 // - Stage 2: "canvas" channel → main area の Paisley Park body
                 // retained topic なので接続直後に現スナップショットが届き、以降変化のたび
                 // push される。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
-                for (path, port) in &project_ports {
-                    let Some(sp_port) = port else { continue };
+                for (path, _port) in &project_ports {
+                    // L0 SP-portless: lanes / canvas とも World :32000 の集約 channel から購読する
+                    // (SP 直結を剥がす)。 どちらも World 側で per-project に集約済
+                    // (lanes=lane_registry / canvas=TopicRouter) なので SP port 不問 = SP が down
+                    // (port=None) でも「前回の続き」を表示でき、 port None→Some race で購読が始まらない
+                    // 旧 gating の穴も解消する。 SP 復帰時は register / canvas push で各 channel が更新。
                     if lanes_sub_active.insert(path.clone()) {
                         spawn_lanes_subscription(
                             &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            *sp_port,
+                            world_conn.clone(),
                         );
                     }
                     if canvas_sub_active.insert(path.clone()) {
@@ -1888,49 +2372,14 @@ pub fn run() -> anyhow::Result<()> {
                             &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            *sp_port,
+                            world_conn.clone(),
                         );
                     }
                 }
-                // Retroactive ensureLane: port が None→Some に遷移した project (= 新規 SP up、
-                // race で port 着が遅れた lane 等) について、 既に LanesLoaded 経由で
-                // lanes_by_project に積まれている lane があれば改めて ensureLane を発行する。
-                // これが無いと「port 解決前に LanesLoaded だけ先に届いた」 race で
-                // lane terminal が永続的に出ない状態になる (= restart 後の conductor 消失系 bug
-                // の防御層)。 idempotent (laneInstances.has なら no-op)。
-                for (path, port) in &project_ports {
-                    let Some(sp_port) = port else { continue };
-                    let prev_port = prev.get(path).and_then(|s| s.port);
-                    if prev_port.is_some() && prev_port == Some(*sp_port) {
-                        continue; // 既に port 確定済 → 既存 ensureLane で足りる
-                    }
-                    let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(path) else {
-                        continue; // まだ lane snapshot が届いていない
-                    };
-                    let mut ensured = 0usize;
-                    for lane in lanes_for_proj {
-                        // F.8 B Convergent: pid:null = Dead Lane は WS 確立対象外
-                        if lane.pid.is_none() {
-                            continue;
-                        }
-                        lane_js::ensure_lane(&webview, &lane.address.key(), *sp_port);
-                        ensured += 1;
-                    }
-                    if ensured > 0 {
-                        tracing::info!(
-                            "retroactive ensureLane: project={} port={} ({} lane)",
-                            path,
-                            sp_port,
-                            ensured
-                        );
-                        // active Lane が同 project にあれば改めて show して empty placeholder を解除
-                        if let Some(addr) = sidebar_state.active_lane_address.as_deref()
-                            && lanes_for_proj.iter().any(|l| l.address.key() == addr)
-                        {
-                            lane_js::show_lane(&webview, Some(addr));
-                        }
-                    }
-                }
+                // terminal S4: ensureLane / terminal session は SP port に依存しなくなった
+                // (xterm transport は World "canvas" channel)。 port None→Some race のための
+                // retroactive ensureLane block は撤去 — lane の出現/消滅は LanesLoaded reconcile
+                // が SSOT として扱う (= ensureLane + terminal session start/stop)。
                 // Phase 2.x-b: dead-respawn fix — SP が "running" になった時点で
                 // sp_spawn_triggered から path を外す。 これで次に dead に落ちた時、
                 // user が re-expand すれば再度 spawn が trigger される。
@@ -2009,39 +2458,40 @@ pub fn run() -> anyhow::Result<()> {
                 for addr in &removed_addrs {
                     tracing::info!("Lane removed (LanesLoaded diff): {}", addr);
                     lane_js::remove_lane(&webview, addr);
+                    // terminal S4: 消えた lane の terminal session を停止 (= map から remove で
+                    // cmd_tx drop → canvas channel close → World demand stop → SP pump stop)。
+                    terminal_sessions.remove(addr);
                     // VP-147 PR-P2-3 Moody Blues fix #1: lane delete 検出時に lane_inboxes
                     // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
                     sidebar_state.lane_inboxes.remove(addr);
                 }
                 sidebar_state.lanes_by_project.insert(process_path, lanes);
-                // Phase 2.5: per-Lane instance — このプロジェクトの SP port を引いて
-                // 各 Lane に ensureLane を発行 (idempotent)。
-                let sp_port_for_project = sidebar_state
-                    .processes
-                    .iter()
-                    .find(|p| p.path == path_key)
-                    .and_then(|p| p.port);
-                if let Some(port) = sp_port_for_project {
-                    if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
-                        for lane in lanes_for_proj {
-                            // F.8 B Convergent: pid:null = Dead Lane (spawn 失敗、 PtySlot 不在)。
-                            //  ensureLane で WS 接続するとサーバ側が「lane not found」 を返し、
-                            //  xterm.js が 1006 切断 → 500ms reconnect → 無限ループ に入る。
-                            //  Activate 済 Lane (pid あり) のみ WS 確立対象とする。
-                            if lane.pid.is_none() {
-                                continue;
-                            }
-                            // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
-                            lane_respawn_triggered.remove(&lane.address.key());
-                            let addr_str = lane.address.key();
-                            lane_js::ensure_lane(&webview, &addr_str, port);
+                // terminal S4: per-lane instance — SP port には依存しない (xterm transport は
+                // World "canvas" channel)。 live lane (pid あり) ごとに ensureLane (JS xterm 作成) +
+                // terminal session start (World 購読 → demand → SP pump)。 どちらも idempotent。
+                if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
+                    for lane in lanes_for_proj {
+                        // F.8 B Convergent: pid:null = Dead Lane (spawn 失敗、 PtySlot 不在) は対象外。
+                        if lane.pid.is_none() {
+                            continue;
                         }
+                        // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
+                        let addr_str = lane.address.key();
+                        lane_respawn_triggered.remove(&addr_str);
+                        lane_js::ensure_lane(&webview, &addr_str);
+                        // terminal session 未起動なら start (idempotent)。
+                        terminal_sessions
+                            .entry(addr_str.clone())
+                            .or_insert_with(|| {
+                                spawn_terminal_session(
+                                    &rt_handle,
+                                    async_action_proxy.clone(),
+                                    world_conn.clone(),
+                                    path_key.clone(),
+                                    addr_str.clone(),
+                                )
+                            });
                     }
-                } else {
-                    tracing::warn!(
-                        "LanesLoaded: SP port unknown for project_path={} (skip ensureLane)",
-                        path_key
-                    );
                 }
                 if let Some(addr) = first_addr {
                     tracing::info!("auto-select first lane: {}", addr);
@@ -2062,25 +2512,15 @@ pub fn run() -> anyhow::Result<()> {
             // 起動 race で silent drop された ensureLane を再発行する (WebView HTML load 完了
             // 後なので、 evaluate_script は確実に実行される)。 idempotent (ensureLane 内で既存なら no-op)。
             Event::UserEvent(AppEvent::LanesEnsureAll) => {
-                for (project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| &p.path == project_path)
-                        .and_then(|p| p.port);
-                    let Some(port) = sp_port else {
-                        tracing::warn!(
-                            "LanesEnsureAll: SP port unknown for {} (skip)",
-                            project_path
-                        );
-                        continue;
-                    };
+                // terminal S4: JS xterm instance の catch-up 再発行のみ (SP port 不要)。
+                // terminal session 自体は LanesLoaded reconcile が管理するのでここでは触らない。
+                for (_project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
                     for lane in lanes {
-                        // F.8 B Convergent: pid:null = Dead Lane は WS 確立対象外
+                        // F.8 B Convergent: pid:null = Dead Lane は対象外
                         if lane.pid.is_none() {
                             continue;
                         }
-                        lane_js::ensure_lane(&webview, &lane.address.key(), port);
+                        lane_js::ensure_lane(&webview, &lane.address.key());
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
@@ -2110,14 +2550,14 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
                 }
             }
-            Event::UserEvent(AppEvent::LanesSubscriptionEnded { process_path }) => {
-                // wiremsg Stage 1: "lanes" 購読が再接続上限に達して終了した。
-                // guard から外し、SP が再び現れたら次の `ProjectsLoaded` で購読を再 spawn する。
-                tracing::info!(
-                    "AppEvent::LanesSubscriptionEnded: project={} (購読 guard 解除)",
-                    process_path
-                );
-                lanes_sub_active.remove(&process_path);
+            Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
+                tracing::debug!("🧲 device event: {}", payload);
+                // Phase 2: device 一覧を registry 更新 → sidebar (Devices badge) + main area
+                // (Bastet pane の device list) の両方に push。
+                if crate::pane::apply_device_event(&mut sidebar_state.bastet_devices, &payload) {
+                    push_sidebar_state(&webview, &sidebar_state);
+                    lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
+                }
             }
             Event::UserEvent(AppEvent::CanvasMessage {
                 process_path,
@@ -2187,88 +2627,76 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
             }
-            Event::UserEvent(AppEvent::CanvasSubscriptionEnded { process_path }) => {
-                // wiremsg Stage 2: "canvas" 購読が再接続上限で終了。guard から外す。
-                tracing::info!(
-                    "AppEvent::CanvasSubscriptionEnded: project={} (購読 guard 解除)",
-                    process_path
+            // terminal S4 (doc 27 §4.1): per-lane terminal session 由来の PTY 出力を当該 lane の
+            // xterm に inject する。 data は base64 (JS 側で decode → term.write)。
+            Event::UserEvent(AppEvent::TerminalOutput { lane, data }) => {
+                let script = format!(
+                    "window.vpTerminal && window.vpTerminal.handleOutput({}, {})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(&data).unwrap_or_else(|_| "\"\"".into()),
                 );
-                canvas_sub_active.remove(&process_path);
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("vpTerminal.handleOutput 失敗 (lane={}): {}", lane, e);
+                }
+            }
+            // terminal S4: xterm onData → 当該 lane の terminal session に渡す (上り request)。
+            Event::UserEvent(AppEvent::TerminalWrite { lane, data }) => {
+                if let Some(session) = terminal_sessions.get(&lane) {
+                    let _ = session.cmd_tx.send(TermCmd::Write(data));
+                }
+            }
+            // terminal S4: xterm resize → 当該 lane の terminal session に渡す (上り request)。
+            Event::UserEvent(AppEvent::TerminalResize { lane, cols, rows }) => {
+                if let Some(session) = terminal_sessions.get(&lane) {
+                    let _ = session.cmd_tx.send(TermCmd::Resize(cols, rows));
+                }
             }
             Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
-                // pp-content-persist: WebView の save IPC を active project の SP に reqwest forward。
-                // active project / port が引けない (= lane 未選択 / SP 未起動) 場合は silent skip
-                // (= user が空状態の canvas を debounce save しようとしただけ、warn する程の事故ではない)。
-                let port = match resolve_active_project_port(&sidebar_state) {
-                    Some(p) => p,
-                    None => {
-                        tracing::debug!(
-                            "pp:state:save skip — active project / port 解決失敗 (lane 未選択 or SP 未起動)"
-                        );
-                        return;
-                    }
+                // F6: WebView の save IPC を World process-proxy ask (pp_state_save) で SP に forward。
+                // 旧 SP HTTP 直結を撤去。 active project 解決失敗は silent skip (空 canvas の debounce save)。
+                let Some(path) = resolve_active_project_path(&sidebar_state) else {
+                    tracing::debug!("pp:state:save skip — active project 解決失敗 (lane 未選択 or SP 未起動)");
+                    return;
                 };
                 rt_handle.spawn(async move {
-                    let url = format!("http://127.0.0.1:{}/api/pp/state", port);
-                    match reqwest::Client::new().post(&url).json(&body).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            tracing::debug!("pp:state:save → SP OK ({})", port);
-                        }
-                        Ok(resp) => {
-                            tracing::warn!(
-                                "pp:state:save SP {} non-2xx: {}",
-                                port,
-                                resp.status()
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!("pp:state:save SP {} reqwest 失敗: {}", port, e);
-                        }
+                    match world_process_request(
+                        crate::client::DEFAULT_WORLD_PORT,
+                        &path,
+                        "pp_state_save",
+                        body,
+                    )
+                    .await
+                    {
+                        Ok(_) => tracing::debug!("pp:state:save → World OK"),
+                        Err(e) => tracing::warn!("pp:state:save 失敗: {}", e),
                     }
                 });
             }
             Event::UserEvent(AppEvent::PpStateLoadRequest { lane, pane_id }) => {
-                // pp-content-persist: WebView の load IPC を SP に reqwest GET → 結果を
-                // AppEvent::PpStateLoaded で event loop に戻し、 次の arm で WebView に script push。
-                let port = match resolve_active_project_port(&sidebar_state) {
-                    Some(p) => p,
-                    None => {
-                        tracing::debug!(
-                            "pp:state:load skip — active project / port 解決失敗"
-                        );
-                        return;
-                    }
+                // F6: WebView の load IPC を World process-proxy ask (pp_state_load) で SP に forward。
+                // 結果 record を AppEvent::PpStateLoaded で event loop に戻し、 次の arm で WebView に push。
+                let Some(path) = resolve_active_project_path(&sidebar_state) else {
+                    tracing::debug!("pp:state:load skip — active project 解決失敗");
+                    return;
                 };
                 let load_proxy = async_action_proxy.clone();
                 rt_handle.spawn(async move {
-                    let mut url = format!(
-                        "http://127.0.0.1:{}/api/pp/state?pane_id={}",
-                        port,
-                        urlencoding::encode(&pane_id)
-                    );
-                    if let Some(name) = lane.as_deref() {
-                        url.push_str(&format!("&lane={}", urlencoding::encode(name)));
+                    let mut payload = serde_json::json!({ "pane_id": pane_id });
+                    if let Some(name) = lane {
+                        payload["lane"] = serde_json::Value::String(name);
                     }
-                    let record = match reqwest::Client::new().get(&url).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            match resp.json::<serde_json::Value>().await {
-                                Ok(v) => v.get("record").filter(|r| !r.is_null()).cloned(),
-                                Err(e) => {
-                                    tracing::warn!("pp:state:load JSON parse 失敗: {}", e);
-                                    None
-                                }
-                            }
-                        }
-                        Ok(resp) => {
-                            tracing::warn!(
-                                "pp:state:load SP {} non-2xx: {}",
-                                port,
-                                resp.status()
-                            );
-                            None
-                        }
+                    let record = match world_process_request(
+                        crate::client::DEFAULT_WORLD_PORT,
+                        &path,
+                        "pp_state_load",
+                        payload,
+                    )
+                    .await
+                    {
+                        // SP は {status:ok, record} | {status:empty} を返す。 record だけ抜く。
+                        Ok(v) => v.get("record").filter(|r| !r.is_null()).cloned(),
                         Err(e) => {
-                            tracing::warn!("pp:state:load SP {} reqwest 失敗: {}", port, e);
+                            tracing::warn!("pp:state:load 失敗: {}", e);
                             None
                         }
                     };
@@ -2632,86 +3060,72 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // Phase 4-A: Performer Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        // JS-side からも先 removeLane を呼ぶ (= xterm + WS 即時 dispose、
-                        // server side は polling で sidebar から消える前にこちらが先)
-                        lane_js::remove_lane(&webview, &address);
-                        let path_clone = project_path.clone();
-                        let addr_clone = address.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client.delete_lane(&addr_clone).await {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        "Lane deleted: project={} address={}",
-                                        path_clone,
-                                        addr_clone
-                                    );
-                                    // wiremsg Stage 1: 明示的な再 fetch は不要。
-                                    // SP が LanePool 変化を "lanes" topic に publish し、
-                                    // 購読側が snapshot を受信して sidebar を更新する。
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "delete_lane failed: project={} address={}: {}",
-                                        path_clone,
-                                        addr_clone,
-                                        e
-                                    );
-                                }
+                    // F6②: 旧 TheWorldClient.delete_lane (SP 直結 reqwest) を World process-proxy
+                    // ask (lane_delete) に移管。 SP port 解決は不要になり project_path を handshake で渡す。
+                    // JS-side からも先 removeLane を呼ぶ (= xterm 即時 dispose、 server 反映は
+                    // SP の "lanes" topic snapshot 経由で sidebar に届く)。
+                    lane_js::remove_lane(&webview, &address);
+                    rt_handle.spawn(async move {
+                        let payload = serde_json::json!({ "address": &address });
+                        match world_process_request(
+                            crate::client::DEFAULT_WORLD_PORT,
+                            &project_path,
+                            "lane_delete",
+                            payload,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "Lane deleted: project={} address={}",
+                                    project_path,
+                                    address
+                                );
                             }
-                        });
-                    } else {
-                        tracing::warn!(
-                            "lane:delete: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "lane_delete failed: project={} address={}: {}",
+                                    project_path,
+                                    address,
+                                    e
+                                );
+                            }
+                        }
+                    });
                 }
                 // Lane Conductor Stand restart 要求 (sidebar の restart icon → confirm dialog から)
                 if let Some((project_path, address, fresh)) = outcome.restart_lane_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        let path_clone = project_path.clone();
-                        let addr_clone = address.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client.restart_lane(&addr_clone, fresh).await {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        "Lane restarted: project={} address={}",
-                                        path_clone,
-                                        addr_clone
-                                    );
-                                    // wiremsg Stage 1: 新 pid / state は SP の
-                                    // "lanes" topic snapshot で購読側に push される。
-                                    // WS は PR #218 の auto-reconnect で透過的に新 PtySlot に attach し直す。
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "restart_lane failed: project={} address={}: {}",
-                                        path_clone,
-                                        addr_clone,
-                                        e
-                                    );
-                                }
+                    // F6③: 旧 TheWorldClient.restart_lane (SP 直結 reqwest) を World process-proxy
+                    // ask (lane_restart) に移管。 SP port 解決は不要、 project_path を handshake で渡す。
+                    rt_handle.spawn(async move {
+                        let payload = serde_json::json!({ "address": &address, "fresh": fresh });
+                        match world_process_request(
+                            crate::client::DEFAULT_WORLD_PORT,
+                            &project_path,
+                            "lane_restart",
+                            payload,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                // 新 pid / state は SP の "lanes" topic snapshot で購読側に push され、
+                                // 端末は canvas channel demand 経由で新 PtySlot に再 attach し直す。
+                                tracing::info!(
+                                    "Lane restarted: project={} address={}",
+                                    project_path,
+                                    address
+                                );
                             }
-                        });
-                    } else {
-                        tracing::warn!(
-                            "lane:restart: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "lane_restart failed: project={} address={}: {}",
+                                    project_path,
+                                    address,
+                                    e
+                                );
+                            }
+                        }
+                    });
                 }
                 // Phase 3-A: Performer Lane 作成要求 (sidebar の + Add Performer から)
                 // doc 24 §10 Phase 2 B-create: create は daemon-canonical (§5.3 ground は daemon が
@@ -2773,51 +3187,53 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
 
-                // doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)
+                // doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)。
+                // 旧 SP 直結 (client.list_stands) を撤去し World process-proxy ask (`stands_list`) に移管。
+                // SP port 解決が消滅し、 surface は World :32000 だけを知れば済む (L1 portless 前進)。
                 if let Some(project_path) = outcome.list_stands_request {
-                    let sp_port = sidebar_state
-                        .processes
-                        .iter()
-                        .find(|p| p.path == project_path)
-                        .and_then(|p| p.port);
-                    if let Some(port) = sp_port {
-                        let proxy = async_action_proxy.clone();
-                        let path_clone = project_path.clone();
-                        rt_handle.spawn(async move {
-                            let client = TheWorldClient::new(port);
-                            match client.list_stands().await {
-                                Ok(stands) => {
-                                    tracing::debug!(
-                                        "stands listed: project={} count={}",
-                                        path_clone,
-                                        stands.len()
-                                    );
-                                    let _ = proxy.send_event(AppEvent::StandsResult {
-                                        project_path: path_clone,
-                                        stands,
-                                        error: None,
-                                    });
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "list_stands failed: project={}: {}",
-                                        path_clone,
-                                        e
-                                    );
-                                    let _ = proxy.send_event(AppEvent::StandsResult {
-                                        project_path: path_clone,
-                                        stands: Vec::new(),
-                                        error: Some(e.to_string()),
-                                    });
-                                }
+                    let proxy = async_action_proxy.clone();
+                    rt_handle.spawn(async move {
+                        let (stands, error) = match world_process_request(
+                            crate::client::DEFAULT_WORLD_PORT,
+                            &project_path,
+                            "stands_list",
+                            serde_json::json!({}),
+                        )
+                        .await
+                        {
+                            // SP は {stands:[...]} を返す。 stands 配列だけ Vec<StandInfo> に deserialize。
+                            Ok(v) => {
+                                let stands = v
+                                    .get("stands")
+                                    .and_then(|s| {
+                                        serde_json::from_value::<Vec<crate::client::StandInfo>>(
+                                            s.clone(),
+                                        )
+                                        .ok()
+                                    })
+                                    .unwrap_or_default();
+                                tracing::debug!(
+                                    "stands listed: project={} count={}",
+                                    project_path,
+                                    stands.len()
+                                );
+                                (stands, None)
                             }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "stands_list failed: project={}: {}",
+                                    project_path,
+                                    e
+                                );
+                                (Vec::new(), Some(e))
+                            }
+                        };
+                        let _ = proxy.send_event(AppEvent::StandsResult {
+                            project_path,
+                            stands,
+                            error,
                         });
-                    } else {
-                        tracing::warn!(
-                            "stands:fetch: SP port unknown for path={} (skip)",
-                            project_path
-                        );
-                    }
+                    });
                 }
 
                 // Sidebar File Explorer: lane workdir 配下を walk して entries を返す要求。
@@ -2902,19 +3318,31 @@ pub fn run() -> anyhow::Result<()> {
                     // 同 EventLoop に重ねるのではなく fork-style で別 process 化することで、
                     // state 干渉ゼロ + crash isolation + multi-instance 並行開発が可能に。
                     // TheWorld daemon (port 32000) は process 横断 shared なので projects 一覧は同期。
+                    //
+                    // instance index を明示採番する (= 旧 bug 修正)。 採番しないと子は
+                    // `VP_APP_SECONDARY=1` の backward-compat map で全員 instance 1 に落ち、
+                    // `session.1.json` を共有して per-window state (active_lane / geometry) を
+                    // 互いに clobber していた。 採番直後に open=true で予約 save しておくと、
+                    // 連打 (= 複数 Cmd+N) でも次の採番が同 index を避ける (= race 防止)。
+                    let new_idx = SessionState::next_free_secondary_index();
+                    let mut reserved = SessionState::load(new_idx);
+                    reserved.set_open(true);
+                    reserved.save();
                     match std::env::current_exe() {
                         Ok(exe) => {
                             match std::process::Command::new(&exe)
                                 // 子 process は auto-select を skip ── 元 vp-app と active_lane
                                 // が衝突して両方の terminal WS が壊れるのを防ぐ。
                                 // 起動後 user が手動で lane 選択するまで main_area は empty。
+                                .env("VP_APP_INSTANCE", new_idx.to_string())
                                 .env("VP_APP_SECONDARY", "1")
                                 .spawn()
                             {
                                 Ok(child) => {
                                     tracing::info!(
-                                        "Cmd+N: spawned new vp-app process (pid={})",
-                                        child.id()
+                                        "Cmd+N: spawned new vp-app process (pid={}, instance_index={})",
+                                        child.id(),
+                                        new_idx
                                     );
                                 }
                                 Err(e) => {
@@ -2923,11 +3351,18 @@ pub fn run() -> anyhow::Result<()> {
                                         exe.display(),
                                         e
                                     );
+                                    // spawn 失敗 → 予約した open=true を解放 (= 次回 primary 起動の
+                                    // auto-spawn が存在しない secondary を起こすのを防ぐ)。
+                                    reserved.set_open(false);
+                                    reserved.save();
                                 }
                             }
                         }
                         Err(e) => {
                             tracing::warn!("Cmd+N: current_exe() failed: {}", e);
+                            // 同上: spawn に至らなかったので予約を解放。
+                            reserved.set_open(false);
+                            reserved.save();
                         }
                     }
                 } else if id == menu_ids.open_file {
