@@ -232,16 +232,21 @@ fn xml_escape(s: &str) -> String {
 /// - `RunAtLoad=true`（login always-on）/ `KeepAlive=true`（crash 自動再起動）
 /// - `EnvironmentVariables.PATH` = `path_env`（GUI/launchd の痩せた PATH では mise/claude が
 ///   解決不能なので augmented を渡す。SSOT は [`crate::spawn_env::augmented_spawn_path`]）
+/// - `EnvironmentVariables.LANG` / `LC_CTYPE` = `lang`（launchd は LANG を剥がして C ロケールに
+///   するため、配下の tmux client が utf8=0 → 日本語など CJK が `_` 化する。UTF-8 ロケールを
+///   焼いて断つ。SSOT は [`crate::spawn_env::utf8_locale`]。PATH/TERM と同根の launchd env stripping）
 /// - `StandardOut/ErrPath` = `log_dir` 配下（daemon は `vp world` 経路で自前 file log を持たないため、
 ///   crash-restart loop の調査用に launchd へ stdout/stderr を捕捉させる）
 pub fn generate_launch_agent_plist(
     vp_binary: &Path,
     port: u16,
     path_env: &str,
+    lang: &str,
     log_dir: &Path,
 ) -> String {
     let exec = xml_escape(&vp_binary.to_string_lossy());
     let path_env = xml_escape(path_env);
+    let lang = xml_escape(lang);
     let out = xml_escape(&log_dir.join("daemon.launchd.out.log").to_string_lossy());
     let err = xml_escape(&log_dir.join("daemon.launchd.err.log").to_string_lossy());
     format!(
@@ -262,6 +267,10 @@ pub fn generate_launch_agent_plist(
     <dict>
         <key>PATH</key>
         <string>{path_env}</string>
+        <key>LANG</key>
+        <string>{lang}</string>
+        <key>LC_CTYPE</key>
+        <string>{lang}</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -311,7 +320,8 @@ pub fn install_launch_agent(vp_binary: &Path, port: u16) -> Result<PathBuf> {
     }
 
     let path_env = crate::spawn_env::augmented_spawn_path();
-    let content = generate_launch_agent_plist(vp_binary, port, &path_env, &log_dir);
+    let lang = crate::spawn_env::utf8_locale();
+    let content = generate_launch_agent_plist(vp_binary, port, &path_env, &lang, &log_dir);
     std::fs::write(&plist_path, content)
         .with_context(|| format!("plist 書き出し失敗: {}", plist_path.display()))?;
 
@@ -385,9 +395,10 @@ mod tests {
             Path::new("/usr/local/bin/vp"),
             32000,
             "/opt/homebrew/bin:/usr/bin",
+            "ja_JP.UTF-8",
             Path::new("/tmp/vp-log"),
         );
-        // Label / 常駐 key / ProgramArguments / port / PATH / log path を含む。
+        // Label / 常駐 key / ProgramArguments / port / PATH / LANG / log path を含む。
         assert!(plist.contains("<string>club.chronista.vantage-point.daemon</string>"));
         assert!(plist.contains("<string>/usr/local/bin/vp</string>"));
         assert!(plist.contains("<string>world</string>"));
@@ -395,6 +406,10 @@ mod tests {
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("/opt/homebrew/bin:/usr/bin"));
+        // CJK blackout 対策: LANG / LC_CTYPE が UTF-8 ロケールで焼かれている。
+        assert!(plist.contains("<key>LANG</key>"));
+        assert!(plist.contains("<key>LC_CTYPE</key>"));
+        assert!(plist.contains("<string>ja_JP.UTF-8</string>"));
         assert!(plist.contains("daemon.launchd.out.log"));
     }
 
@@ -405,6 +420,7 @@ mod tests {
             Path::new("/Users/a&b/vp"),
             32000,
             "/x<y>/bin",
+            "en_US.UTF-8",
             Path::new("/tmp/l"),
         );
         assert!(plist.contains("/Users/a&amp;b/vp"));
