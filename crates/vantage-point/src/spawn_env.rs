@@ -64,6 +64,39 @@ pub fn augmented_spawn_path() -> String {
     augment_path(&base, home.as_deref())
 }
 
+/// 子プロセス（特に launchd 起動 daemon → SP → tmux）に渡す UTF-8 ロケールを返す。
+///
+/// ## なぜ必要か
+///
+/// launchd 自動起動の daemon は LANG が剥がれて C ロケールになり、 配下の tmux client が
+/// `utf8=0` になる。 すると日本語など CJK が `_` に潰れる（CJK blackout）。 これは PATH
+/// 痩せ (#498) / TERM 不在 (#630) と同根の「launchd env stripping」の三つ子の最後の一本で、
+/// `vp daemon install` の plist EnvironmentVariables に LANG/LC_CTYPE を焼くことで断つ。
+///
+/// ## 方針
+///
+/// インストール時の `$LANG` が UTF-8 codeset ならユーザ設定を尊重する（例: `ja_JP.UTF-8`）。
+/// 未設定 / 非 UTF-8 なら `en_US.UTF-8` に fallback する（codeset が `.UTF-8` でありさえ
+/// すれば tmux は utf8=1 になる — 言語部は CJK 表示の可否に影響しない）。
+pub fn utf8_locale() -> String {
+    resolve_utf8_locale(std::env::var("LANG").ok().as_deref())
+}
+
+/// 純関数: LANG 候補から UTF-8 ロケールを解決する（env / fs に触れない、 test 容易）。
+pub fn resolve_utf8_locale(lang: Option<&str>) -> String {
+    const FALLBACK: &str = "en_US.UTF-8";
+    match lang {
+        Some(l) if is_utf8_locale(l) => l.to_string(),
+        _ => FALLBACK.to_string(),
+    }
+}
+
+/// codeset が UTF-8 か（`.UTF-8` / `.utf8`、 大文字小文字無視）。
+fn is_utf8_locale(lang: &str) -> bool {
+    let lower = lang.to_ascii_lowercase();
+    lower.ends_with(".utf-8") || lower.ends_with(".utf8")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +143,22 @@ mod tests {
         // 全 prefix が既に base にあるなら base をそのまま返す (= 健全な開発 shell)。
         let base = "/Users/x/.local/bin:/Users/x/.local/share/mise/shims:/Users/x/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin";
         assert_eq!(augment_path(base, Some("/Users/x")), base);
+    }
+
+    #[test]
+    fn resolve_utf8_locale_respects_utf8_lang() {
+        // UTF-8 codeset の LANG はそのまま尊重する (ja_JP 派の設定を壊さない)。
+        assert_eq!(resolve_utf8_locale(Some("ja_JP.UTF-8")), "ja_JP.UTF-8");
+        assert_eq!(resolve_utf8_locale(Some("en_US.UTF-8")), "en_US.UTF-8");
+        assert_eq!(resolve_utf8_locale(Some("en_GB.utf8")), "en_GB.utf8");
+    }
+
+    #[test]
+    fn resolve_utf8_locale_falls_back_for_non_utf8() {
+        // 未設定 / C / POSIX / 非 UTF-8 codeset は en_US.UTF-8 に倒す (tmux utf8=1 を保証)。
+        assert_eq!(resolve_utf8_locale(None), "en_US.UTF-8");
+        assert_eq!(resolve_utf8_locale(Some("C")), "en_US.UTF-8");
+        assert_eq!(resolve_utf8_locale(Some("POSIX")), "en_US.UTF-8");
+        assert_eq!(resolve_utf8_locale(Some("ja_JP.eucJP")), "en_US.UTF-8");
     }
 }
