@@ -7,14 +7,15 @@
 //! ## 役割
 //!
 //! Lane (Session kind の Process) を起動する時、 内部の Stand を spawn するための command を
-//! 構築する。 doc 11 (Stand init_script system) PR-B 以降は **mise task に統一** ─
-//! `mise run vp:stand:{name}` を 1 経路で叩き、 task の中で tmux setup / shell exec / LLM
-//! auto-launch を担当する file-based init_script 設計。
+//! 構築する。 init_script は `.mise/tasks/vp/stand/{name}` の file-based script (tmux setup /
+//! shell exec / LLM auto-launch を担当)。 VP は script の path を知っているので **`mise` を介さず
+//! 直接 exec** する (依存削減 + mise trust footgun 回避、 `build_stand_command` 参照)。 install root
+//! 解決失敗時のみ従来の `mise run vp:stand:{name}` に degrade する。
 //!
-//! - `hd`    → `vp:stand:hd`    (Layer 2: tmux + claude auto-launch、 旧 HeavensDoor)
-//! - `shell` → `vp:stand:shell` (Layer 0: bare login shell、 旧 TheHand)
-//! - `tmux`  → `vp:stand:tmux`  (Layer 1: tmux session attach、 LLM なし)
-//! - 任意の `vp:stand:*` task ─ project local override / 将来 stand 追加に対応
+//! - `echoes` → `.mise/tasks/vp/stand/echoes` (Layer 2: tmux + claude auto-launch、 旧 hd/HeavensDoor)
+//! - `shell`  → `.mise/tasks/vp/stand/shell`  (Layer 0: bare login shell、 旧 TheHand)
+//! - `tmux`   → `.mise/tasks/vp/stand/tmux`   (Layer 1: tmux session attach、 LLM なし)
+//! - 任意の `{name}` script ─ 将来 stand 追加に対応 (mise 非経由なので project-local override は無し)
 //!
 //! ## VP_* 環境変数
 //!
@@ -239,26 +240,49 @@ pub fn build_stand_command(
     let session = addr.tmux_session_name(stand_name);
     let project_cwd = project_dir.to_string_lossy().to_string();
 
-    // PR-D: spawn cwd は install root、 task は env VP_CWD で project を受け取る。
-    // 解決失敗時は project_dir fallback (= 旧 PR-B 挙動)、 警告 log は install_root 内で emit 済。
-    let spawn_cwd = match super::install_root::locate_install_root() {
-        Some(root) => root.to_string_lossy().to_string(),
-        None => project_cwd.clone(),
-    };
+    let env = vec![
+        ("VP_CWD".into(), project_cwd.clone()),
+        ("VP_SESSION".into(), session),
+        ("VP_PROJECT".into(), addr.project.clone()),
+        ("VP_LANE".into(), lane_label(addr).into()),
+    ];
 
-    StandCommand {
-        program: "mise".into(),
-        args: vec!["run".into(), format!("vp:stand:{}", stand_name)],
-        // mise task は早期 exit せず PTY を take over するので fallback / initial_input は None。
-        fallback_args: None,
-        initial_input: None,
-        env: vec![
-            ("VP_CWD".into(), project_cwd),
-            ("VP_SESSION".into(), session),
-            ("VP_PROJECT".into(), addr.project.clone()),
-            ("VP_LANE".into(), lane_label(addr).into()),
-        ],
-        cwd: spawn_cwd,
+    // stand は `mise` を介さず script を直接 exec する (依存削減 + mise trust footgun 回避)。
+    //  mise が spawn 経路で提供していたのは実質「task 名 → script file の解決」だけで、 VP は
+    //  script の path (`install root/.mise/tasks/vp/stand/{name}`) を知っているので task runner は
+    //  不要。 tool (tmux/claude/vp) の PATH は PtySlot の augment_path が既に補う (`~/.local/bin` /
+    //  `/opt/homebrew/bin` / `~/.cargo/bin`) ため mise 無しで解決できる。 script は shebang
+    //  (`#!/usr/bin/env bash`) を持つ実行可能ファイルなので、 program に path を渡せばそのまま走る。
+    //  なお install root 解決 (`has_stand_tasks`) が保証するのは `stand/` **dir** の存在までで、
+    //  特定 `{stand_name}` script の実在は検査しない。 既知 3 stand (echoes/shell/tmux) は実在するが、
+    //  未知 stand 名は nonexistent path → `PtySlot::spawn` が ENOENT を同期 Err で返す (旧 mise の
+    //  task-not-found と同じ失敗クラス = 無回帰、 むしろ 800ms early-exit 窓を待たず即失敗する分 clean)。
+    match super::install_root::locate_install_root() {
+        Some(root) => StandCommand {
+            program: root
+                .join(".mise/tasks/vp/stand")
+                .join(stand_name)
+                .to_string_lossy()
+                .to_string(),
+            args: vec![],
+            // stand script は早期 exit せず PTY を take over するので fallback / initial_input は None。
+            fallback_args: None,
+            initial_input: None,
+            env,
+            // cwd は install root。 script は VP_CWD で project を受け取り自身で cd する。
+            cwd: root.to_string_lossy().to_string(),
+        },
+        // install root 解決失敗 (degraded): script path が引けないので、 従来の mise task runner
+        //  経由に fallback する (mise が cwd=project からの task discovery を担う)。 警告 log は
+        //  locate_install_root 内で emit 済。
+        None => StandCommand {
+            program: "mise".into(),
+            args: vec!["run".into(), format!("vp:stand:{}", stand_name)],
+            fallback_args: None,
+            initial_input: None,
+            env,
+            cwd: project_cwd,
+        },
     }
 }
 
@@ -266,20 +290,30 @@ pub fn build_stand_command(
 mod tests {
     use super::*;
 
-    /// build_stand_command が `mise run vp:stand:echoes` の form を返すこと。
-    /// PR-pre2 (VP-118) で hd → echoes rename。
+    /// build_stand_command が mise を介さず stand script を直接 program にすること。
+    /// (install root は cargo test 環境では workspace root に解決される)
     #[test]
-    fn build_stand_command_returns_mise_invocation() {
+    fn build_stand_command_execs_stand_script_directly() {
         let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
-        assert_eq!(cmd.program, "mise");
-        assert_eq!(
-            cmd.args,
-            vec!["run".to_string(), "vp:stand:echoes".to_string()]
+        assert!(
+            cmd.program.ends_with(".mise/tasks/vp/stand/echoes"),
+            "program は stand script path のはず (mise 非経由)、 got: {}",
+            cmd.program
+        );
+        assert!(
+            std::path::Path::new(&cmd.program).exists(),
+            "echoes script が実在するはず: {}",
+            cmd.program
+        );
+        assert!(
+            cmd.args.is_empty(),
+            "script 直接 exec なので args は空のはず、 got: {:?}",
+            cmd.args
         );
         assert!(cmd.fallback_args.is_none());
         assert!(cmd.initial_input.is_none());
-        // PR-D (Z 系統): spawn cwd は VP install root (cargo test 環境では workspace root)
+        // spawn cwd は VP install root
         assert!(
             std::path::Path::new(&cmd.cwd)
                 .join(".mise/tasks/vp/stand/echoes")
@@ -308,14 +342,15 @@ mod tests {
         assert_eq!(env.get("VP_LANE").map(String::as_str), Some("sub"));
     }
 
-    /// stand_name は task 名にそのまま埋め込まれる (新規 stand の追加耐性)。
+    /// stand_name は script path にそのまま埋め込まれる (新規 stand の追加耐性)。
     #[test]
     fn build_stand_command_passes_arbitrary_stand_name() {
         let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("opus-xhigh", &addr, Path::new("/tmp"));
-        assert_eq!(
-            cmd.args,
-            vec!["run".to_string(), "vp:stand:opus-xhigh".to_string()]
+        assert!(
+            cmd.program.ends_with(".mise/tasks/vp/stand/opus-xhigh"),
+            "未知 stand でも program path に stand_name が入るはず、 got: {}",
+            cmd.program
         );
         // tmux_session_name にも stand_name そのまま入る
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
