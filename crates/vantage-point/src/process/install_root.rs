@@ -21,8 +21,11 @@
 //! ## 解決優先順位
 //!
 //! 1. env `VP_INSTALL_ROOT` (test / override / 配布パッケージング script 用)
-//! 2. `current_exe()` から walk-up: `.mise/tasks/vp/stand/` を持つ祖先 dir
+//! 2. `current_exe()` を canonicalize (symlink 解決) してから walk-up: `.mise/tasks/vp/stand/`
+//!    を持つ祖先 dir
 //!    - dev: target/release/vp → ... → repo root に到達
+//!    - Homebrew / dmg: launch path が symlink (`/opt/homebrew/bin/vp` → `<app>/Contents/MacOS/vp`)
+//!      でも canonicalize で実体に解決 → 下記 .app bundle 特殊 case を踏める
 //! 3. Mac .app bundle: binary が `Contents/MacOS/` 配下なら `Contents/Resources/` を試す
 //! 4. CARGO_MANIFEST_DIR (cargo test / dev 環境のみ、 prod では unset)
 //! 5. None (caller が graceful degrade)
@@ -65,9 +68,9 @@ fn locate_install_root_uncached() -> Option<PathBuf> {
         }
     }
 
-    // 2. current_exe() walk-up
+    // 2. current_exe() walk-up (symlink は canonicalize で実体に解決してから)
     if let Ok(exe) = std::env::current_exe()
-        && let Some(found) = walk_up_for_stand_tasks(&exe)
+        && let Some(found) = resolve_from_exe(&exe)
     {
         tracing::debug!(
             "VP install root: current_exe walk-up で解決 path={}",
@@ -94,6 +97,26 @@ fn locate_install_root_uncached() -> Option<PathBuf> {
         "VP install root: 解決失敗 ─ env VP_INSTALL_ROOT / current_exe walk-up / CARGO_MANIFEST_DIR 全 fallback で .mise/tasks/vp/stand/ が見つからない。 lane spawn は project_dir を mise cwd に使う旧挙動に degrade"
     );
     None
+}
+
+/// `current_exe()` path から install root を解決する。
+///
+/// Homebrew / dmg 配布では launch path が symlink のことがある
+/// (例: `/opt/homebrew/bin/vp` → `<app>/Contents/MacOS/vp`)。 この場合 raw な
+/// `current_exe()` は symlink 側 (`/opt/homebrew/bin/vp`) を返しうるため、 walk-up が
+/// `.app` bundle の `Contents/MacOS` を一度も踏まず、 sibling の
+/// `Contents/Resources/.mise/tasks/vp/stand/` に到達できない (= Echoes 等の lane spawn が
+/// project_dir degrade → 非 VP project で "no task" 全滅)。 canonicalize で実体 path に
+/// 解決してから walk-up する (canonicalize 失敗時は raw path で fallback)。
+///
+/// canonicalize は `std::fs` ではなく `dunce` を使う: Windows の `std::fs::canonicalize` は
+/// symlink の有無に関係なく `\\?\` verbatim prefix を付与し、 その値が install root →
+/// spawn cwd (`portable-pty` の `CommandBuilder::cwd` → `SetCurrentDirectory`) に伝播すると
+/// 同 prefix 非対応で壊れる。 `dunce::canonicalize` は普通に表現できる path では prefix を
+/// 外すため Mac / Windows 双方で安全 (Mac/Linux では `std::fs::canonicalize` と同一挙動)。
+fn resolve_from_exe(exe: &Path) -> Option<PathBuf> {
+    let real = dunce::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    walk_up_for_stand_tasks(&real)
 }
 
 /// `start` から root (`/`) 方向に親を辿り、 `.mise/tasks/vp/stand/` を持つ最初の dir を返す。
@@ -196,5 +219,40 @@ mod tests {
         assert!(found.join(".mise/tasks/vp/stand/echoes").is_file());
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Homebrew / dmg 相当: symlink 経由の exe path でも `resolve_from_exe` が canonicalize で
+    /// `.app` bundle の `Contents/Resources/.mise/tasks/vp/stand/` に到達する (回帰防止)。
+    ///
+    /// 旧挙動 = raw な current_exe が `<prefix>/bin/vp` (symlink) を返すと walk-up は
+    /// `Contents/MacOS` を踏まず Resources に到達できず None → project_dir degrade で
+    /// 非 VP project の Echoes lane が "no task vp:stand:echoes found" 全滅していた。
+    #[cfg(unix)]
+    #[test]
+    fn resolve_from_exe_follows_symlink_into_app_bundle() {
+        let base = std::env::temp_dir().join(format!("vp-bundle-symlink-{}", std::process::id()));
+        let macos = base.join("VantagePoint.app/Contents/MacOS");
+        let stand = base.join("VantagePoint.app/Contents/Resources/.mise/tasks/vp/stand");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::create_dir_all(&stand).unwrap();
+        std::fs::write(stand.join("echoes"), "#!/usr/bin/env bash\n").unwrap();
+        let real_exe = macos.join("vp");
+        std::fs::write(&real_exe, "binary").unwrap();
+        // <base>/bin/vp → 実体 (= Homebrew `/opt/homebrew/bin/vp` symlink 相当)
+        let bindir = base.join("bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let link = bindir.join("vp");
+        std::os::unix::fs::symlink(&real_exe, &link).unwrap();
+
+        // symlink path から解決 → canonicalize 経由で Resources に到達するはず
+        let found = resolve_from_exe(&link).expect("symlink canonicalize → Resources 解決");
+        assert!(
+            found.ends_with("Contents/Resources"),
+            "resolve_from_exe は Resources を返すはず、 got: {}",
+            found.display()
+        );
+        assert!(found.join(".mise/tasks/vp/stand/echoes").is_file());
+
+        std::fs::remove_dir_all(&base).ok();
     }
 }
