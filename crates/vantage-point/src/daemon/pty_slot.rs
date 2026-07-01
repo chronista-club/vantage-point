@@ -104,6 +104,21 @@ impl PtySlot {
             cmd.env("TERM", "xterm-256color");
         }
 
+        // LANG/LC_CTYPE 補正: PATH (#498) / TERM の双子で、 launchd / GUI 起動の daemon は
+        // C ロケール伝播で LANG 不在になり、 echoes stand の tmux client が utf8=0 で起動 →
+        // console の CJK (日本語) が `_` 化する (三つ子の三本目)。 plist EnvironmentVariables や
+        // echoes mise task の LANG guard は「①旧 plist が upgrade で再生成されない ②session 永続で
+        // 2 回目以降は adopt 経路が LANG guard を通らない」で漏れるが、 全 spawn 経路 (mise task /
+        // adopt) が必ずこの PtySlot を通るため、 末端で注入すれば daemon / plist の LANG 状態に
+        // 非依存で確定的に UTF-8 を保証できる。 caller が env で明示した LANG / LC_CTYPE は尊重する。
+        let locale = crate::spawn_env::utf8_locale();
+        if !env.iter().any(|(k, _)| k == "LANG") {
+            cmd.env("LANG", &locale);
+        }
+        if !env.iter().any(|(k, _)| k == "LC_CTYPE") {
+            cmd.env("LC_CTYPE", &locale);
+        }
+
         // 子プロセスを起動（ゾンビ防止のためハンドルを保持する）
         let child = pair.slave.spawn_command(cmd)?;
         let pid = child.process_id().unwrap_or(0);

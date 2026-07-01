@@ -63,11 +63,12 @@ export function LaneRow(props: {
 	// cc `/rename` の custom-title (2 行目)。 未設定 lane は dimmed "—"。
 	const sessionTitle = () => sidebar.session_titles?.[addr()];
 
-	// row click → main area を当該 Lane に切り替え。 Inactive Lane (pid:null) は SP に
-	// PtySlot が無く、 select すると WS 1006 切断 → reconnect loop に入るためガード
-	// (旧 SIDEBAR_HTML と同じ挙動)。
+	// row click → main area を当該 Lane に切り替え。 Dead Lane (pid:null) も select を通す:
+	// activate_lane 側の maybe_respawn_dead_lane が on-demand で respawn し、 PtySlot 生成後に
+	// main area が追随する。 旧 early-return は「pid:null を select すると WS 1006 → reconnect
+	// loop」を防ぐガードだったが、 その後 demand-driven pump (PtySlot 無なら graceful no_lane) と
+	// on-demand respawn が入り、 ガードが respawn 経路そのものを握り潰す本末転倒になっていたため撤廃 (BUG#2)。
 	const onSelect = () => {
-		if (isInactive()) return;
 		sendIpc({ t: "lane:select", path: props.projectPath, address: addr() });
 	};
 
@@ -106,6 +107,19 @@ export function LaneRow(props: {
 						}),
 				});
 			}
+		} else {
+			// Dead Lane (pid:null): 明示 respawn。 左 click の on-demand respawn と同じ lane:restart を
+			// menu からも撃てるようにする (会話を継ぐ = fresh 無し)。
+			items.push({
+				label: `Respawn ${performer ? "Performer" : "Conductor"} Session`,
+				icon: "ph:arrow-clockwise",
+				onSelect: () =>
+					sendIpc({
+						t: "lane:restart",
+						path: props.projectPath,
+						address: addr(),
+					}),
+			});
 		}
 		if (performer) {
 			// delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認。
