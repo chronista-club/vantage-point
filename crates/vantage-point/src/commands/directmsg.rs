@@ -14,7 +14,6 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use std::process::Command;
 
 use crate::process::lanes_state::LaneAddress;
 
@@ -41,7 +40,7 @@ fn parse_lane(s: &str) -> Result<LaneAddress> {
 ///
 /// lane ごとに 1 stand = 1 session が原則。複数該当時は先頭を使い警告する。
 fn resolve_session(prefix: &str) -> Result<String> {
-    let out = Command::new("tmux")
+    let out = crate::tmux::tmux_command()
         .args(["list-sessions", "-F", "#{session_name}"])
         .output()
         .context("tmux list-sessions の実行に失敗（tmux 未インストール / server 未起動）")?;
@@ -79,7 +78,7 @@ pub fn run(lane: &str, text: &str, enter: bool) -> Result<()> {
     let session = resolve_session(&addr.tmux_session_prefix())?;
 
     // `-l` (literal): text を key 名として解釈させず、そのまま流し込む。
-    let status = Command::new("tmux")
+    let status = crate::tmux::tmux_command()
         .args(["send-keys", "-t", &session, "-l", text])
         .status()
         .context("tmux send-keys の実行に失敗")?;
@@ -89,7 +88,7 @@ pub fn run(lane: &str, text: &str, enter: bool) -> Result<()> {
 
     // Enter は別 send-keys で送る（`-l` と混ぜると Enter も literal 文字列扱いになる）。
     if enter {
-        let status = Command::new("tmux")
+        let status = crate::tmux::tmux_command()
             .args(["send-keys", "-t", &session, "Enter"])
             .status()
             .context("tmux send-keys Enter の実行に失敗")?;

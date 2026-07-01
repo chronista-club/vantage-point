@@ -10,7 +10,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::cli::WORLD_PORT;
+use crate::cli::world_port;
 use crate::daemon::client::WorldControlClient;
 
 #[derive(Subcommand, Debug)]
@@ -41,12 +41,12 @@ pub enum ProjectsCommands {
 /// `vp projects` のエントリポイント。 async (Unison client は async) なので
 /// caller (main.rs) は per-command Runtime で `block_on` する。
 pub async fn execute(cmd: ProjectsCommands) -> Result<()> {
-    let client = WorldControlClient::connect(WORLD_PORT, 3)
+    let client = WorldControlClient::connect(world_port(), 3)
         .await
         .map_err(|e| {
             anyhow::anyhow!(
                 "World daemon (port {}) に接続できません。 `vp daemon` で起動してください: {}",
-                WORLD_PORT,
+                world_port(),
                 e
             )
         })?;

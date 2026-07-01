@@ -1474,7 +1474,7 @@ impl ProcessManagerCapability {
         // 失敗/無応答でも registry からは remove する (SP は shutdown_token cancel で graceful 停止、
         // 即 control channel を畳むため応答が返らない事もある)。 cli/restart-all と uniform な transport。
         if let Err(e) = crate::commands::process_client::world_process_request(
-            crate::cli::WORLD_PORT,
+            crate::cli::world_port(),
             &running.project_path.to_string_lossy(),
             "shutdown",
             serde_json::json!({}),
@@ -2318,7 +2318,7 @@ impl ProcessManagerCapability {
                 port
             );
             match crate::commands::process_client::world_process_request(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "lane_delete",
                 payload,
@@ -2404,7 +2404,7 @@ impl ProcessManagerCapability {
                 port
             );
             match crate::commands::process_client::world_process_request(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "lane_create",
                 payload,

@@ -23,7 +23,7 @@ pub enum DaemonCommands {
     /// TheWorld を起動（foreground blocking、 backgrounding は呼出側で `&` / nohup）
     Start {
         /// 待ち受けポート番号
-        #[arg(short, long, default_value_t = crate::cli::WORLD_PORT)]
+        #[arg(short, long, default_value_t = crate::cli::world_port())]
         port: u16,
 
         /// MIDI ポート指定 — usize ならポート index、 文字列ならポート名 pattern (部分一致)。
@@ -140,7 +140,7 @@ fn stop() -> Result<()> {
 fn install() -> Result<()> {
     // plist の ProgramArguments に焼く binary = 今 install を呼んでいる vp 自身。
     let exe = std::env::current_exe()?;
-    let plist = process::install_launch_agent(&exe, crate::cli::WORLD_PORT)?;
+    let plist = process::install_launch_agent(&exe, crate::cli::world_port())?;
     println!("👑 LaunchAgent を install しました: {}", plist.display());
     println!("   login 時に自動起動 + crash 時に自動再起動します（vp daemon uninstall で解除）。");
     // KeepAlive=true 常駐中は SIGTERM を送っても launchd が即再起動するので、
@@ -179,7 +179,7 @@ fn processes(watch: bool) -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let client = DaemonClient::connect(crate::cli::WORLD_PORT, 3)
+        let client = DaemonClient::connect(crate::cli::world_port(), 3)
             .await
             .map_err(|e| {
                 anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
@@ -247,7 +247,7 @@ fn discover() -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let client = WorldControlClient::connect(crate::cli::WORLD_PORT, 3)
+        let client = WorldControlClient::connect(crate::cli::world_port(), 3)
             .await
             .map_err(|e| {
                 anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
@@ -279,19 +279,19 @@ fn status() -> Result<()> {
             // ヘルスチェックで詳細情報を取得
             if let Ok(resp) = reqwest::blocking::get(format!(
                 "http://[::1]:{}/api/health",
-                crate::cli::WORLD_PORT
+                crate::cli::world_port()
             )) && let Ok(json) = resp.json::<serde_json::Value>()
             {
                 println!(
                     "  Version: {}",
                     json.get("version").and_then(|v| v.as_str()).unwrap_or("?")
                 );
-                println!("  Port: {}", crate::cli::WORLD_PORT);
+                println!("  Port: {}", crate::cli::world_port());
             }
             // Process 一覧
             if let Ok(resp) = reqwest::blocking::get(format!(
                 "http://[::1]:{}/api/world/processes",
-                crate::cli::WORLD_PORT
+                crate::cli::world_port()
             )) && let Ok(json) = resp.json::<serde_json::Value>()
                 && let Some(processes) = json.as_array()
             {

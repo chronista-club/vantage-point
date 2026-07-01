@@ -458,15 +458,14 @@ pub(crate) async fn send_keys_to_session(session: &str, text: &str) -> anyhow::R
     let session = session.to_string();
     let text = text.to_string();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
-        let status = std::process::Command::new(tmux)
+        let status = crate::tmux::tmux_command()
             .args(["send-keys", "-t", &session, "-l", &text])
             .status()?;
         if !status.success() {
             anyhow::bail!("tmux send-keys 失敗 (session={session})");
         }
         // Enter は別 send-keys で送る (`-l` と混ぜると Enter も literal 文字列扱いになる)
-        let status = std::process::Command::new(tmux)
+        let status = crate::tmux::tmux_command()
             .args(["send-keys", "-t", &session, "Enter"])
             .status()?;
         if !status.success() {

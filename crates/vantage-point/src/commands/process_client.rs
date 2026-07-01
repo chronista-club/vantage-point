@@ -144,7 +144,7 @@ pub fn resolve_project_path_from_target(target: Option<&str>, config: &Config) -
 /// （旧挙動を保持）。 label / lane address は resolve 必須。
 pub fn resolve_pane_via_world(project_path: &str, query: &str) -> Result<(String, String)> {
     let resp = world_process_request_blocking(
-        crate::cli::WORLD_PORT,
+        crate::cli::world_port(),
         project_path,
         "tmux_resolve_pane",
         serde_json::json!({ "query": query }),

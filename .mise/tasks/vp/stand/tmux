@@ -20,24 +20,30 @@ export LANG
 : "${LC_CTYPE:=$LANG}"
 export LC_CTYPE
 
+# VP_PROFILE 分離: dev binary (VP_PROFILE=dev) と brew cask の tmux server を別 socket に隔離する。
+#   未設定 (brew) = 素の "vp" / dev = "vp-dev"。 Rust 側 tmux_socket() (= app_dir_name()) と一致。
+#   別 socket = 別 server なので session 名・adopt は profile 間で衝突しない (2026-07-01 混線の根治)。
+SOCK="vp${VP_PROFILE:+-$VP_PROFILE}"
+
 # tmux server config (xterm.js 描画相性、 PR #243 で確立した内容を踏襲)
-tmux start-server 2>/dev/null || true
-tmux set-option -g focus-events on 2>/dev/null || true
-tmux set-option -g escape-time 0 2>/dev/null || true
-tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
+tmux -L "$SOCK" start-server 2>/dev/null || true
+tmux -L "$SOCK" set-option -g focus-events on 2>/dev/null || true
+tmux -L "$SOCK" set-option -g escape-time 0 2>/dev/null || true
+tmux -L "$SOCK" set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
 # cc 通知 (OSC 99 / kitty desktop notification) を outer (vp-app xterm.js) へ透過する。
 # tmux は既定で OSC 99 を握り潰すため、 これが無いと Lane sidebar の awaiting_input dot が
 # 出ない。 VP が自前 set することで user の ~/.tmux.conf に依存せず箱から通知が出る
 # (公式: https://code.claude.com/docs/en/terminal-config#configure-tmux)。
-tmux set-option -g allow-passthrough on 2>/dev/null || true
+tmux -L "$SOCK" set-option -g allow-passthrough on 2>/dev/null || true
 # tmux 下で Shift+Enter を newline 識別 (cc multiline)。
-tmux set-option -s extended-keys on 2>/dev/null || true
-tmux set-option -as terminal-features 'xterm*:extkeys' 2>/dev/null || true
+tmux -L "$SOCK" set-option -s extended-keys on 2>/dev/null || true
+tmux -L "$SOCK" set-option -as terminal-features 'xterm*:extkeys' 2>/dev/null || true
 
 # tmux session 起動 / attach (`-A`)。 cwd は明示 (PR #244 の継承罠回避)。
 # -e VP_*: per-session 環境を明示注入し、 共有 tmux server の global 環境 (= 最初に
 # server を起動した lane の VP_*) を継承する cross-project identity leak を防ぐ
 # (echoes task と同じ理由)。
-exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
+exec tmux -L "$SOCK" new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
     -e "VP_CWD=$VP_CWD" -e "VP_PROJECT=$VP_PROJECT" \
-    -e "VP_SESSION=$VP_SESSION" -e "VP_LANE=$VP_LANE"
+    -e "VP_SESSION=$VP_SESSION" -e "VP_LANE=$VP_LANE" \
+    -e "VP_PROFILE=${VP_PROFILE:-}"

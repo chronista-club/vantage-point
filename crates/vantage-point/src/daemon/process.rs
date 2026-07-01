@@ -7,8 +7,13 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// Daemon の作業ディレクトリ（PIDファイル等を格納）
+///
+/// VP_PROFILE 分離: profile ごとに隔離する（brew=`vp` / dev=`vp-dev`、 [`vp_paths::app_dir_name`]）。
+/// これが無いと dev binary の `daemon status/stop` が固定 temp path 経由で brew（本番）の
+/// pidfile を読み、 誤って本番 daemon を掴む/停止する（2026-07-01 混在事故と同クラスの leak）。
+/// XDG state ではなく temp_dir 配下なのは「reboot で消える pidfile」慣習を維持するため。
 pub fn daemon_dir() -> PathBuf {
-    std::env::temp_dir().join("vantage-point")
+    std::env::temp_dir().join(vp_paths::app_dir_name())
 }
 
 /// PIDファイルのパス
@@ -52,7 +57,7 @@ fn check_pid_file() -> Option<u32> {
 
 /// TheWorld ポートに接続して PID を取得（PIDファイル不在時のフォールバック）
 fn check_world_port() -> Option<u32> {
-    let url = format!("http://[::1]:{}/api/health", crate::cli::WORLD_PORT);
+    let url = format!("http://[::1]:{}/api/health", crate::cli::world_port());
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
@@ -380,8 +385,10 @@ mod tests {
     #[test]
     fn test_daemon_dir_path() {
         let dir = daemon_dir();
-        // /tmp/vantage-point/ 配下であることを確認
-        assert!(dir.to_string_lossy().contains("vantage-point"));
+        // VP_PROFILE 未設定 (通常 test 環境) では temp_dir 配下の "vp" (= app_dir_name)。
+        // profile 分離で dev は "vp-dev" になる (同一プロセス内で branch 検証不可、コード inspection)。
+        assert!(dir.starts_with(std::env::temp_dir()));
+        assert_eq!(dir.file_name().unwrap(), "vp");
     }
 
     #[test]

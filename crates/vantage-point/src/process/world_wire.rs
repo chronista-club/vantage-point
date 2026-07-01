@@ -31,7 +31,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 pub(crate) fn world_port() -> u16 {
     crate::config::Config::load()
         .map(|c| c.port_layout().world_port)
-        .unwrap_or(crate::cli::WORLD_PORT)
+        .unwrap_or(crate::cli::world_port())
 }
 
 /// TheWorld の wire/delegation API を呼ぶ。 `path` は `/api/wire/send` / `/api/delegation/create` 等。

@@ -9,7 +9,7 @@
 //! されるだけ。 daemon 不在は best-effort で false/None (= `vp projects` の Unison 経路とは別、
 //! sync/async どちらの caller からも安全に呼べる)。
 
-use crate::cli::WORLD_PORT;
+use crate::cli::world_port;
 use crate::projects_file::SyncOutcome;
 
 /// blocking HTTP を専用 OS thread で実行し、 join して結果を返す。
@@ -33,7 +33,7 @@ fn client() -> Option<reqwest::blocking::Client> {
 }
 
 fn url(path: &str) -> String {
-    format!("http://[::1]:{}{}", WORLD_PORT, path)
+    format!("http://[::1]:{}{}", world_port(), path)
 }
 
 /// project の slot を daemon (db/world) に永続化通知する。

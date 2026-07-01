@@ -21,6 +21,60 @@
 //! (running.json / vantage.db / config.toml / lanes/ / scripts/ 等) は同じ pass で delete。
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// VP の実行 profile (`VP_PROFILE` env var)。
+///
+/// - 未設定 / 空文字 = `None` = **brew (一般ユーザ)** — 従来の `vp` namespace。
+/// - `Some("dev")` = **開発者** — dev binary (`~/.cargo/bin`) を brew cask と混在させても
+///   state を完全分離するための namespace suffix。
+///
+/// dev binary と brew cask は single-instance 前提で state (dir / world port / tmux socket) を
+/// 共有するため、 両方走ると sp_LOCK 衝突・port 衝突・tmux adopt 混線を起こす (2026-07-01 実機事故)。
+/// この profile が dir / port / socket の 3 レバー全ての分岐点。
+///
+/// env は継承で伝播する (dev shell → vp-app → daemon → SP → tmux)。 brew は LaunchAgent 起動で
+/// env を持たないため自然に `None` = brew namespace になる。 値は起動時に 1 回だけ読む。
+pub fn vp_profile() -> Option<&'static str> {
+    static PROFILE: OnceLock<Option<String>> = OnceLock::new();
+    PROFILE
+        .get_or_init(|| match std::env::var("VP_PROFILE") {
+            Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+            _ => None,
+        })
+        .as_deref()
+}
+
+/// config/data/state の dir 名 + tmux socket 名。 brew=`vp` / dev=`vp-dev`。
+///
+/// [`vp_profile`] が `Some(p)` なら `vp-{p}`、 `None` なら `vp`。 dir と tmux socket の
+/// 両方がこれを参照して 1 元化する (= profile ごとに `~/.local/share/vp-dev/` 等へ芋づる分離)。
+pub fn app_dir_name() -> &'static str {
+    static NAME: OnceLock<String> = OnceLock::new();
+    NAME.get_or_init(|| match vp_profile() {
+        Some(p) => format!("vp-{p}"),
+        None => "vp".to_string(),
+    })
+}
+
+/// world port の base 値 (brew の TheWorld port)。
+pub const WORLD_PORT_BASE: u16 = 32000;
+
+/// profile に応じた TheWorld の world port。 brew=32000 / dev=32100。
+///
+/// SP は portless (33000 番台は bind しない論理 identity) なので、 実 listener は world 単一。
+/// この 1 本を profile でずらせば daemon bind / app connect / SP→world connect が芋づるで追随し、
+/// dev daemon (32100) と brew daemon (32000) が衝突せず並列常駐できる。
+///
+/// 未設定 = 32000 (brew、 従来値で不変)。 `Some(_)` = base + 100。
+/// 注: offset は現状「profile 有無」の 2 値 (dev=+100)。 複数 dev profile を同時常駐させる
+/// 要件は無いため、 `dev` 以外の任意 profile も同じ +100 に落ちる (dir 名は分離されるが port は共有)。
+pub fn default_world_port() -> u16 {
+    match vp_profile() {
+        Some(_) => WORLD_PORT_BASE + 100,
+        None => WORLD_PORT_BASE,
+    }
+}
 
 /// VP の config zone (XDG `$XDG_CONFIG_HOME/vp/`、 default `~/.config/vp/`)。
 ///
@@ -61,19 +115,21 @@ pub fn vp_sessions_dir() -> PathBuf {
 /// XDG base directory 解決ヘルパー。
 ///
 /// `$env_name` 環境変数が absolute path なら採用、 そうでなければ
-/// `$HOME/{home_relative}` を使う。 いずれも末尾に `vp` を join する。
+/// `$HOME/{home_relative}` を使う。 いずれも末尾に profile dir 名
+/// ([`app_dir_name`] = `vp` or `vp-{profile}`) を join する。
 /// `$HOME` 未取得時は `.` fallback (= test/sandbox 用)。
 fn xdg_base(env_name: &str, home_relative: &str) -> PathBuf {
+    let name = app_dir_name();
     if let Some(v) = std::env::var_os(env_name) {
         let p = PathBuf::from(v);
         if p.is_absolute() {
-            return p.join("vp");
+            return p.join(name);
         }
     }
     dirs::home_dir()
         .map(|h| h.join(home_relative))
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("vp")
+        .join(name)
 }
 
 /// 旧 path から XDG 新 path への冪等な migration + 廃止物 cleanup。
@@ -96,6 +152,12 @@ fn xdg_base(env_name: &str, home_relative: &str) -> PathBuf {
 /// main 初期化の早い段階で 1 回呼ぶこと。daemon (vp-cli) 側と vp-app の双方が起動時に
 /// 呼ぶが、 冪等設計なので二重実行で一方が先に旧 path を空にしても問題ない。
 pub fn migrate_legacy_paths() {
+    // dev profile は独立 namespace (`vp-dev`)。 旧 default (`vp`) データを dev へ移行しない
+    // (dev は空から始めて brew と完全分離するのが分離の趣旨。 default profile の時だけ移行する)。
+    if vp_profile().is_some() {
+        return;
+    }
+
     let new_config = vp_config_dir();
     let new_data = vp_data_dir();
     let new_state = vp_state_dir();
@@ -409,6 +471,22 @@ mod tests {
     #[test]
     fn test_vp_config_dir_ends_with_vp() {
         assert!(vp_config_dir().ends_with("vp"));
+    }
+
+    // 注: 以下の profile テストは VP_PROFILE 未設定 (= CI / 通常 test 環境) の default 挙動を
+    // 検証する。 `vp_profile()` 等は OnceLock で 1 回だけ env を読むため、 同一プロセス内で
+    // dev branch を別途 assert することはできない (dev 分岐はコード inspection + 実機検証で担保)。
+    #[test]
+    fn test_app_dir_name_default_is_vp() {
+        // VP_PROFILE 未設定なら dir 名は素の "vp"
+        assert_eq!(app_dir_name(), "vp");
+    }
+
+    #[test]
+    fn test_default_world_port_default_is_base() {
+        // VP_PROFILE 未設定なら world port は base (32000)
+        assert_eq!(default_world_port(), WORLD_PORT_BASE);
+        assert_eq!(default_world_port(), 32000);
     }
 
     #[test]

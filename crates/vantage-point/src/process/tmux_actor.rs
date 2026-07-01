@@ -527,7 +527,7 @@ impl TmuxActor {
             args.push(cmd);
         }
 
-        let output = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        let output = crate::tmux::tmux_command()
             .args(&args)
             .output()
             .map_err(|e| format!("tmux split-window 失敗: {}", e))?;
@@ -545,7 +545,7 @@ impl TmuxActor {
     /// ペインを閉じる（ブロッキング — spawn_blocking 内で呼ぶ）
     fn do_close(pane_id: &str) -> Result<(), String> {
         Self::validate_tmux_command(pane_id)?;
-        let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        let status = crate::tmux::tmux_command()
             .args(["kill-pane", "-t", pane_id])
             .status()
             .map_err(|e| format!("tmux kill-pane 失敗: {}", e))?;
@@ -559,7 +559,7 @@ impl TmuxActor {
     /// ペインの内容をキャプチャ（ブロッキング — spawn_blocking 内で呼ぶ）
     fn do_capture(pane_id: &str) -> Result<String, String> {
         Self::validate_tmux_command(pane_id)?;
-        let output = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        let output = crate::tmux::tmux_command()
             .args(["capture-pane", "-t", pane_id, "-p"])
             .output()
             .map_err(|e| format!("tmux capture-pane 失敗: {}", e))?;
@@ -576,7 +576,7 @@ impl TmuxActor {
 
     /// tmux list-panes でペイン一覧を取得（ブロッキング — spawn_blocking 内で呼ぶ）
     fn query_panes(session_name: &str) -> Vec<TmuxPane> {
-        let output = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        let output = crate::tmux::tmux_command()
             .args([
                 "list-panes",
                 "-t",
@@ -602,10 +602,9 @@ impl TmuxActor {
     fn do_send_keys(pane_id: &str, keys: &str) -> Result<(), String> {
         // pane_id のインジェクション防止（keys は意図的に無検証）
         Self::validate_tmux_command(pane_id)?;
-        let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
 
         // テキスト送信
-        let status = std::process::Command::new(tmux)
+        let status = crate::tmux::tmux_command()
             .args(["send-keys", "-t", pane_id, keys])
             .status()
             .map_err(|e| format!("tmux send-keys 失敗: {}", e))?;
@@ -617,7 +616,7 @@ impl TmuxActor {
         // テキストに改行が含まれていれば Enter を送信
         if keys.contains('\n') {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            let _ = std::process::Command::new(tmux)
+            let _ = crate::tmux::tmux_command()
                 .args(["send-keys", "-t", pane_id, "Enter"])
                 .status();
         }
