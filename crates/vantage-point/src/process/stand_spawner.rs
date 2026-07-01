@@ -253,6 +253,10 @@ pub fn build_stand_command(
     //  不要。 tool (tmux/claude/vp) の PATH は PtySlot の augment_path が既に補う (`~/.local/bin` /
     //  `/opt/homebrew/bin` / `~/.cargo/bin`) ため mise 無しで解決できる。 script は shebang
     //  (`#!/usr/bin/env bash`) を持つ実行可能ファイルなので、 program に path を渡せばそのまま走る。
+    //  なお install root 解決 (`has_stand_tasks`) が保証するのは `stand/` **dir** の存在までで、
+    //  特定 `{stand_name}` script の実在は検査しない。 既知 3 stand (echoes/shell/tmux) は実在するが、
+    //  未知 stand 名は nonexistent path → `PtySlot::spawn` が ENOENT を同期 Err で返す (旧 mise の
+    //  task-not-found と同じ失敗クラス = 無回帰、 むしろ 800ms early-exit 窓を待たず即失敗する分 clean)。
     match super::install_root::locate_install_root() {
         Some(root) => StandCommand {
             program: root

@@ -114,10 +114,12 @@ fi
 # が「最初の lane」の VP_PROJECT / VP_SESSION / VP_CWD を継承し、 別 project の identity
 # で claude が動いてしまう。 -e で session 固有 env を global に優先させ、 各 lane の
 # claude が自分の正しい identity (wire addressing / statusline 等が依存) を見るようにする。
-# Act 2(tmux) → Act 3(claude)。 tmux を **exec しない** のが要点。 exec だと「tmux は起動できたが
-# 実行時に失敗 (open terminal failed / TERM 不在 / session command が死ぬ) = 現実で最多の失敗」で
-# process が既に tmux に置換されており、 tmux が非ゼロ終了しても下の fallback に到達できず lane が
-# silent Dead 化したまま (「なぜ落ちたか」が Echoes に出ない)。 非 exec にして終了コードで判定する。
+# Act 2(tmux) → Act 3(claude)。 tmux を **exec しない** のが要点。 exec だと「tmux client の attach
+# が実行時に失敗 (TERM 不在 → open terminal failed / socket・session race 等)」した時に process が
+# 既に tmux に置換されており、 tmux が非ゼロ終了しても下の fallback に到達できず lane が silent
+# Dead 化したまま (「なぜ落ちたか」が Echoes に出ない)。 非 exec にして終了コードで判定する。
+# (注: inner pane の CLAUDE_CMD が死んでも tmux client 自体は exit 0 なので、 ここで捕捉できるのは
+#  tmux client の attach 失敗のみ。 claude の起動失敗は下の「直起動 claude」fallback 側で顕在化する。)
 # fallback を通すため以降は errexit を解除する。
 set +e
 tmux new-session -A -x 120 -y 48 -c "$VP_CWD" -s "$VP_SESSION" \
@@ -127,9 +129,9 @@ tmux new-session -A -x 120 -y 48 -c "$VP_CWD" -s "$VP_SESSION" \
 tmux_rc=$?
 # tmux 正常終了 (detach / exit 0) = lane を通常どおり終える (従来挙動、 fallback しない)。
 # 非ゼロ = Act 2 起動失敗のみ fallback: 素 claude 直起動 (doc 11 PR-D: install root cwd から
-# project へ cd)、 それも戻ったら最終的に Act 1 login shell を PTY に残す。 失敗理由 (mise/tmux/
-# claude の error 出力) を Act 1 コンソールに生かしたまま user が回復操作 (mise trust / 手打ち
-# tmux→claude) を打てるようにする ─ Echoes は Act 1 から出力を受け取り続ける。
+# project へ cd)、 それも戻ったら最終的に Act 1 login shell を PTY に残す。 失敗理由 (tmux attach /
+# 直起動 claude の error 出力) を Act 1 コンソールに生かしたまま user が回復操作 (手打ち
+# tmux→claude 等) を打てるようにする ─ Echoes は Act 1 から出力を受け取り続ける。
 if [ "$tmux_rc" -ne 0 ]; then
     cd "$VP_CWD" && eval "$CLAUDE_CMD"
     exec "$LOGIN_SHELL" -l
