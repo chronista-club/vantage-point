@@ -1304,7 +1304,7 @@ fn maybe_respawn_dead_lane(
         // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
         let payload = serde_json::json!({ "address": &addr_owned, "fresh": false });
         match world_process_request(
-            crate::client::DEFAULT_WORLD_PORT,
+            crate::client::default_world_port(),
             &project_path,
             "lane_restart",
             payload,
@@ -1716,7 +1716,7 @@ pub fn run() -> anyhow::Result<()> {
     // 集約する共有ハンドル。 manager task が connect/reconnect を一手に所有し、 各 session
     // (device/lanes/canvas/terminal) は `wait_client` で得た共有 client に open_channel する。
     // event loop closure が move capture するので、 closure 内の spawn は `world_conn.clone()` を渡す。
-    let world_conn = spawn_world_conn_manager(&rt_handle, crate::client::DEFAULT_WORLD_PORT);
+    let world_conn = spawn_world_conn_manager(&rt_handle, crate::client::default_world_port());
 
     // Bastet 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
     // canvas/lanes は per-SP だが device は World scope (= daemon singleton) なので起動時 1 回。
@@ -1834,8 +1834,8 @@ pub fn run() -> anyhow::Result<()> {
     // ただし TheWorld の auto-launch だけは継続 (sidebar の Activity widget や
     // /api/world/projects 取得に必要)。
     let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
-    let world_url =
-        std::env::var("VP_WORLD_URL").unwrap_or_else(|_| "http://127.0.0.1:32000".into());
+    let world_url = std::env::var("VP_WORLD_URL")
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::client::default_world_port()));
     if let Err(e) = crate::daemon_launcher::ensure_daemon_ready(&world_url) {
         tracing::warn!(
             "TheWorld auto-launch 失敗 (continue with offline state): {}",
@@ -2148,7 +2148,7 @@ pub fn run() -> anyhow::Result<()> {
                     // 連続 focus event は上の guard で弾かれ、 Client 構築は lane 切替時のみ。
                     last_focus_reported_lane = Some(address.clone());
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(32000);
+                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
                         if let Err(e) = client.set_active_lane(path, address).await {
                             tracing::warn!("focus→set_active_lane failed: {}", e);
                         }
@@ -2660,7 +2660,7 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 rt_handle.spawn(async move {
                     match world_process_request(
-                        crate::client::DEFAULT_WORLD_PORT,
+                        crate::client::default_world_port(),
                         &path,
                         "pp_state_save",
                         body,
@@ -2686,7 +2686,7 @@ pub fn run() -> anyhow::Result<()> {
                         payload["lane"] = serde_json::Value::String(name);
                     }
                     let record = match world_process_request(
-                        crate::client::DEFAULT_WORLD_PORT,
+                        crate::client::default_world_port(),
                         &path,
                         "pp_state_load",
                         payload,
@@ -2930,8 +2930,8 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(project_name) = outcome.restart_process_request {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
-                        // TheWorld port は固定 32000 (vantage_point::cli::WORLD_PORT と同期)
-                        let client = crate::client::TheWorldClient::new(32000);
+                        // TheWorld port は profile 依存 (brew=32000 / dev=32100、 client::default_world_port() と同期)
+                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
                         match client.restart_process(&project_name).await {
                             Ok(()) => {
                                 tracing::info!("restart_process OK: {}", project_name);
@@ -2959,7 +2959,7 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(project_name) = outcome.stop_process_request {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(32000);
+                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
                         match client.stop_process(&project_name).await {
                             Ok(()) => {
                                 tracing::info!("stop_process OK: {}", project_name);
@@ -2988,7 +2988,7 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some((project_name, project_path)) = outcome.delete_project_request {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(32000);
+                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
                         // stop は best-effort: SP が未起動 (= 一時停止中) なら
                         // 「No running Process」 エラーが返るが、 続行して remove する。
                         match client.stop_process(&project_name).await {
@@ -3033,7 +3033,7 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(order) = outcome.reorder_request {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(32000);
+                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
                         match client.reorder_projects(order).await {
                             Ok(()) => {
                                 tracing::info!("reorder_projects OK");
@@ -3052,7 +3052,7 @@ pub fn run() -> anyhow::Result<()> {
                 // Model Q: active lane を daemon canonical に永続 (fire-and-forget、 optimistic 適用済)。
                 if let Some((project_path, address)) = outcome.set_active_lane_request {
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(32000);
+                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
                         if let Err(e) = client.set_active_lane(project_path, address).await {
                             tracing::warn!("set_active_lane failed: {}", e);
                         }
@@ -3068,7 +3068,7 @@ pub fn run() -> anyhow::Result<()> {
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address });
                         match world_process_request(
-                            crate::client::DEFAULT_WORLD_PORT,
+                            crate::client::default_world_port(),
                             &project_path,
                             "lane_delete",
                             payload,
@@ -3100,7 +3100,7 @@ pub fn run() -> anyhow::Result<()> {
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address, "fresh": fresh });
                         match world_process_request(
-                            crate::client::DEFAULT_WORLD_PORT,
+                            crate::client::default_world_port(),
                             &project_path,
                             "lane_restart",
                             payload,
@@ -3140,7 +3140,7 @@ pub fn run() -> anyhow::Result<()> {
                     let stand_clone = stand.clone();
                     let path_clone = project_path.clone();
                     rt_handle.spawn(async move {
-                        let client = TheWorldClient::new(32000);
+                        let client = TheWorldClient::new(crate::client::default_world_port());
                         match client
                             .create_performer_lane(
                                 &path_clone,
@@ -3194,7 +3194,7 @@ pub fn run() -> anyhow::Result<()> {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
                         let (stands, error) = match world_process_request(
-                            crate::client::DEFAULT_WORLD_PORT,
+                            crate::client::default_world_port(),
                             &project_path,
                             "stands_list",
                             serde_json::json!({}),

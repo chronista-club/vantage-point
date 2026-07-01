@@ -138,7 +138,7 @@ async fn handoff(
     // lane_create は SP 側で git clone を含み数 10 sec かかり得るので outer timeout 60s
     // (MCP add_performer/flow_handoff の quic_call_with_timeout と揃える、 orphan lane race 回避)。
     let lane_info = world_process_request_with_timeout(
-        crate::cli::WORLD_PORT,
+        crate::cli::world_port(),
         &project_path,
         "lane_create",
         create_body,
@@ -228,7 +228,7 @@ async fn handoff(
 async fn try_nudge(project_path: &str, lane_address: &str) -> String {
     // 1. lane address (project/performer/name) を tmux pane id に resolve
     let resolve_json = match world_process_request(
-        crate::cli::WORLD_PORT,
+        crate::cli::world_port(),
         project_path,
         "tmux_resolve_pane",
         serde_json::json!({ "query": lane_address }),
@@ -246,7 +246,7 @@ async fn try_nudge(project_path: &str, lane_address: &str) -> String {
     // 2. send-keys で nudge text を送信 (dispatch tmux_send_keys は `keys` field)
     let nudge_text = "conductor から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n";
     match world_process_request(
-        crate::cli::WORLD_PORT,
+        crate::cli::world_port(),
         project_path,
         "tmux_send_keys",
         serde_json::json!({ "pane_id": pane_id, "keys": nudge_text }),
@@ -265,7 +265,7 @@ async fn try_nudge(project_path: &str, lane_address: &str) -> String {
 async fn rollback_performer(project_path: &str, project_name: &str, performer_name: &str) {
     let address = format!("{}/performer/{}", project_name, performer_name);
     match world_process_request(
-        crate::cli::WORLD_PORT,
+        crate::cli::world_port(),
         project_path,
         "lane_delete",
         serde_json::json!({ "address": address, "cleanup": true }),
@@ -301,7 +301,7 @@ async fn progress(format: &str) -> Result<()> {
 
     // lanes (performer_status 込み) を取得 (World process-proxy ask `lanes_list`)
     let lanes_resp = world_process_request(
-        crate::cli::WORLD_PORT,
+        crate::cli::world_port(),
         &project_path,
         "lanes_list",
         serde_json::json!({}),

@@ -327,7 +327,7 @@ impl SwitchSink for QuicSwitchSink {
         // World が project_path を path_key 逆引きして当該 SP の dispatch_process_method へ forward。
         let payload = serde_json::json!({ "type": "switch_lane", "lane": token });
         super::process_client::world_process_request(
-            crate::cli::WORLD_PORT,
+            crate::cli::world_port(),
             project_path,
             "switch_lane",
             payload,

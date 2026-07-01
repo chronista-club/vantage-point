@@ -208,7 +208,7 @@ fn notify_daemon_reload() {}
 fn notify_daemon_reload() {
     let url = format!(
         "http://[::1]:{}/api/world/projects/reload",
-        crate::cli::WORLD_PORT
+        crate::cli::world_port()
     );
     if let Ok(client) = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(2))

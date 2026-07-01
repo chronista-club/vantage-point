@@ -168,7 +168,12 @@ pub fn spawn_or_adopt(
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
     if crate::tmux::session_exists(session) {
         let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
+        // adopt も fresh spawn (bash script) と同じ profile socket (`-L`) を使う。
+        // 別 socket = 別 server なので、 これが無いと dev daemon が brew socket 上の
+        // 同名 session を掴む (2026-07-01 adopt 混線) / または存在しない扱いになる。
         let attach_args = [
+            "-L".to_string(),
+            crate::tmux::tmux_socket().to_string(),
             "attach-session".to_string(),
             "-t".to_string(),
             session.to_string(),
@@ -240,12 +245,19 @@ pub fn build_stand_command(
     let session = addr.tmux_session_name(stand_name);
     let project_cwd = project_dir.to_string_lossy().to_string();
 
-    let env = vec![
+    let mut env = vec![
         ("VP_CWD".into(), project_cwd.clone()),
         ("VP_SESSION".into(), session),
         ("VP_PROJECT".into(), addr.project.clone()),
         ("VP_LANE".into(), lane_label(addr).into()),
     ];
+    // VP_PROFILE 分離: dev profile を stand script へ明示伝播し、 tmux socket 名 (`-L`) を
+    // Rust (adopt path = `tmux_socket()`) と bash (fresh spawn = `vp${VP_PROFILE:+-$VP_PROFILE}`)
+    // で一致させる。 未設定 (brew) は push しない (script は SOCK を素の `vp` に default)。
+    // portable_pty の env 継承に頼らず確定させる (PATH/TERM/LANG 三つ子と同じ末端注入方針)。
+    if let Some(profile) = vp_paths::vp_profile() {
+        env.push(("VP_PROFILE".into(), profile.to_string()));
+    }
 
     // stand は `mise` を介さず script を直接 exec する (依存削減 + mise trust footgun 回避)。
     //  mise が spawn 経路で提供していたのは実質「task 名 → script file の解決」だけで、 VP は

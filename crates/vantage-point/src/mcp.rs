@@ -420,7 +420,7 @@ impl VantageMcp {
         // channel に繋ぐ。 World が project_path から SP の "control" channel を逆引きして
         // process method を forward する (reverse-routing)。 World は常駐 daemon で port は
         // 固定なので、 旧来の stale-port self-heal (rediscover_process_port) は不要。
-        let client = connect_quic(&quic_addr(crate::cli::WORLD_PORT)).await?;
+        let client = connect_quic(&quic_addr(crate::cli::world_port())).await?;
         // unison 内部の request timeout は default 30s。 outer timeout (wire_recv 等で
         // server_timeout + buffer = 最大 35s) より長く取らないと unison 側が先に発火するので
         // 60s に引き上げる (VP-163)。
@@ -890,7 +890,7 @@ impl VantageMcp {
 
         let url = format!(
             "http://[::1]:{}/api/world/processes/{}/restart",
-            crate::cli::WORLD_PORT,
+            crate::cli::world_port(),
             project_name
         );
         let resp = self

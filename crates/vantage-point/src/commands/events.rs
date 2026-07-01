@@ -46,7 +46,7 @@ pub enum EventsAction {
 
 /// `vp events` を実行する。
 pub async fn run(args: EventsArgs) -> Result<()> {
-    let client = DaemonClient::connect(crate::cli::WORLD_PORT, 3)
+    let client = DaemonClient::connect(crate::cli::world_port(), 3)
         .await
         .map_err(|e| {
             anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)

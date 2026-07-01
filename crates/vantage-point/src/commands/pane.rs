@@ -106,7 +106,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "show",
                 serde_json::to_value(&msg)?,
@@ -124,7 +124,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "show",
                 serde_json::to_value(&msg)?,
@@ -156,7 +156,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "split_pane",
                 serde_json::to_value(&msg)?,
@@ -174,7 +174,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "close_pane",
                 serde_json::to_value(&msg)?,
@@ -194,7 +194,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
             world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "toggle_pane",
                 serde_json::to_value(&msg)?,

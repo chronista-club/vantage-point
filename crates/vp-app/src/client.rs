@@ -23,15 +23,21 @@ use crate::lane::LaneAddressWire;
 #[cfg(test)]
 use ts_rs::TS;
 
-/// TheWorld の既定ポート
-pub const DEFAULT_WORLD_PORT: u16 = 32000;
+/// TheWorld の既定ポート。
+///
+/// VP_PROFILE 分離 (dev/brew 混在根治): brew=32000 / dev=32100。 定義は
+/// `vp_paths::default_world_port()` (全 crate 共有の SSOT)。 dev binary と brew cask が
+/// 別 world port で並列常駐できるよう、 app→world connect もこの port を honor する。
+pub fn default_world_port() -> u16 {
+    vp_paths::default_world_port()
+}
 
 /// デフォルト URL 解決
 ///
-/// `VP_WORLD_URL` env var → `http://127.0.0.1:32000`
+/// `VP_WORLD_URL` env var → `http://127.0.0.1:{default_world_port()}`
 fn default_base_url() -> String {
     std::env::var("VP_WORLD_URL")
-        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", DEFAULT_WORLD_PORT))
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", default_world_port()))
 }
 
 /// TheWorld daemon HTTP クライアント
