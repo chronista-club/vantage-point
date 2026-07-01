@@ -108,8 +108,14 @@ fn locate_install_root_uncached() -> Option<PathBuf> {
 /// `Contents/Resources/.mise/tasks/vp/stand/` に到達できない (= Echoes 等の lane spawn が
 /// project_dir degrade → 非 VP project で "no task" 全滅)。 canonicalize で実体 path に
 /// 解決してから walk-up する (canonicalize 失敗時は raw path で fallback)。
+///
+/// canonicalize は `std::fs` ではなく `dunce` を使う: Windows の `std::fs::canonicalize` は
+/// symlink の有無に関係なく `\\?\` verbatim prefix を付与し、 その値が install root →
+/// spawn cwd (`portable-pty` の `CommandBuilder::cwd` → `SetCurrentDirectory`) に伝播すると
+/// 同 prefix 非対応で壊れる。 `dunce::canonicalize` は普通に表現できる path では prefix を
+/// 外すため Mac / Windows 双方で安全 (Mac/Linux では `std::fs::canonicalize` と同一挙動)。
 fn resolve_from_exe(exe: &Path) -> Option<PathBuf> {
-    let real = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let real = dunce::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
     walk_up_for_stand_tasks(&real)
 }
 

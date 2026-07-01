@@ -92,6 +92,9 @@ webbrowser = "1"
 # Configuration
 toml = "1.1"
 dirs = "6"
+# canonicalize の Windows `\\?\` verbatim prefix 回避 (install root 解決 → spawn cwd に伝播するため)。
+# Mac/Linux では std::fs::canonicalize と同一挙動。
+dunce = "1"
 
 # Log file writer + ローテーション (Win GUI subsystem では stderr が NUL 化されるので、
 # `VP_DAEMON_LOG_FILE` env が指定された時に file に直接書く)。
