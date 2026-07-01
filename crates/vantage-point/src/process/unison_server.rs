@@ -449,34 +449,52 @@ async fn handle_terminal_demand_start(
     if lane.is_empty() {
         return Err("terminal_demand_start: lane 未指定".to_string());
     }
-    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(&lane) else {
+    if crate::process::lanes_state::LanePool::parse_address(&lane).is_none() {
         return Err(format!("terminal_demand_start: lane パース失敗: {}", lane));
-    };
+    }
 
-    // 当該 Lane の PtySlot output broadcast を購読 (Lane 不在 / PtySlot 無 = None)。
+    // 当該 Lane の現行 PtySlot に pump を張る。 Lane 不在 / PtySlot 無 = pump 張れず
+    // (demand 自体は受理 = Lane 起動後の再 demand 余地を残す)。
+    if respawn_terminal_pump(state, &lane).await {
+        Ok(serde_json::json!({"status": "started", "lane": lane}))
+    } else {
+        Ok(serde_json::json!({"status": "no_lane", "lane": lane}))
+    }
+}
+
+/// 指定 Lane の **現時点の** PtySlot output に terminal pump を張り直す (idempotent)。
+///
+/// `subscribe_output` で今の PtySlot broadcast を取得して pump を spawn、 既存 pump handle が
+/// あれば `abort()` して差し替える (二重 demand_start / restart 後の付け替えでも 1 本に収束)。
+/// Lane に PtySlot が無ければ `false` (pump は張れない)。
+///
+/// demand hook (購読 0→1) の start 経路と、 restart_lane 後の pump 付け替え (BUG#1: restart で
+/// slot を差し替えても World 側 subscriber は張りっぱなしで demand が再発火しない) が、
+/// この単一経路を共有する。 `lane` は LaneAddress の Display 形。
+pub(crate) async fn respawn_terminal_pump(state: &AppState, lane: &str) -> bool {
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return false;
+    };
     let rx = state.lane_pool.read().await.subscribe_output(&addr);
     let Some(rx) = rx else {
-        // pump は張れないが demand 自体は受理 (Lane 起動後の再 demand 余地を残す)。
-        tracing::debug!("terminal_demand_start: Lane に PtySlot 無 (lane={})", lane);
-        return Ok(serde_json::json!({"status": "no_lane", "lane": lane}));
+        tracing::debug!("respawn_terminal_pump: Lane に PtySlot 無 (lane={})", lane);
+        return false;
     };
-
     let handle = crate::process::terminal_pump::spawn_lane_terminal_pump(
-        lane.clone(),
+        lane.to_string(),
         rx,
         state.topic_router.clone(),
     );
-    // 既存 pump があれば差し替え (二重 demand_start でも 1 本に収束)。
     if let Some(old) = state
         .terminal_pumps
         .write()
         .await
-        .insert(lane.clone(), handle)
+        .insert(lane.to_string(), handle)
     {
         old.abort();
     }
     tracing::info!("terminal pump start (lane={})", lane);
-    Ok(serde_json::json!({"status": "started", "lane": lane}))
+    true
 }
 
 /// S2: terminal demand stop ハンドラー。 最後の購読者が消えたら pump を abort する。

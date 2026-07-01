@@ -541,6 +541,23 @@ pub async fn restart_lane_orchestrated(
                     .get(&addr)
                     .and_then(|i| i.pid)
                     .unwrap_or(0);
+                // BUG#1: restart で PtySlot を差し替えたが、 World 側 subscriber は張りっぱなし
+                // (count 1 のまま) で demand hook が再発火せず、 新 slot に pump が付かない
+                // (= 入力は terminal_write で現 slot に届くが出力が沈黙 = 凍る console)。
+                // 旧 pump handle が terminal_pumps に残っている = 購読者が居た証跡なので、
+                // 新 slot に pump を張り直す (respawn_terminal_pump が旧 dead handle を abort して差替)。
+                let lane_key = addr.to_string();
+                let had_pump = state.terminal_pumps.read().await.contains_key(&lane_key);
+                if had_pump {
+                    let reattached =
+                        crate::process::unison_server::respawn_terminal_pump(state, &lane_key)
+                            .await;
+                    tracing::info!(
+                        "restart_lane: terminal pump re-attach (lane={} ok={})",
+                        lane_key,
+                        reattached
+                    );
+                }
                 tracing::info!(
                     "Lane restart OK: addr={} new_pid={} attempts={}",
                     addr,

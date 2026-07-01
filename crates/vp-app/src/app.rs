@@ -1226,8 +1226,6 @@ fn activate_lane(
     rt_handle: &tokio::runtime::Handle,
     respawn_proxy: &EventLoopProxy<AppEvent>,
 ) {
-    let view_changed = sidebar_state.active_lane_address.as_deref() != Some(address);
-
     // 1. State
     sidebar_state.active_lane_address = Some(address.to_string());
     if sidebar_state.active_stand.is_some() {
@@ -1242,22 +1240,24 @@ fn activate_lane(
     sidebar_state.unread_notifications.remove(address);
     sidebar_state.awaiting_input.remove(address);
 
-    // 4-5. UI push
+    // 4-6. UI push + dead lane respawn
+    // BUG#3: 旧実装は push_active_view / respawn を `view_changed` (active_lane_address が
+    // 変わった時だけ) に gate していたが、 address 一致だが main area 未表示 / pump 未成立
+    // (restart 直後の楽観反映 × canonical desync) の状態で同一 lane を再 click すると no-op に
+    // なり「切り替えられない」。 setActivePane → showLane は冪等 (setWantedLane 撤去済で WS 付替
+    // churn 無し)、 respawn は triggered set で dedup 済なので、 view_changed に依らず毎回実行して
+    // desync を確定的に解消する。 activate_lane の 3 caller (初回 auto-select は
+    // active_lane_address.is_none() gate で 1 回 / switch_lane / sidebar click) はいずれも
+    // genuine activation で高頻度発火しないため、 毎回 push しても focus 奪取 flood は起きない。
     push_sidebar_state(webview, sidebar_state);
-    if view_changed {
-        push_active_view(webview, sidebar_state);
-    }
-
-    // 6. Dead lane respawn
-    if view_changed {
-        maybe_respawn_dead_lane(
-            address,
-            sidebar_state,
-            lane_respawn_triggered,
-            rt_handle,
-            respawn_proxy,
-        );
-    }
+    push_active_view(webview, sidebar_state);
+    maybe_respawn_dead_lane(
+        address,
+        sidebar_state,
+        lane_respawn_triggered,
+        rt_handle,
+        respawn_proxy,
+    );
 }
 
 /// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら SP に restart_lane を
