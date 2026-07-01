@@ -76,6 +76,28 @@ pub fn default_world_port() -> u16 {
     }
 }
 
+/// terminal 入力の二重化 (`a` → `aa`) 診断用トレース。
+///
+/// `VP_TERM_TRACE=1` の時だけ、 keystroke 入力の各 hop を byte preview 付きで `info` log する
+/// (未設定時は完全無音 = 常用・nightly を汚さない)。 間欠再現時に log を `termtrace` で grep し、
+/// 「どの hop で 1 keystroke が 2 回になるか」を特定する用途。
+///
+/// hop 命名規約: `A:app-dispatch`(vp-app 上り dispatch) → `B:sp-recv`(SP handle_terminal_write 受信)。
+/// A=2 なら vp-app 内二重 / A=1・B=2 なら vp-app→World→SP 区間の二重 / 両方 1 なら SP 書込より下
+/// (tmux adopt / PTY 層)。 env は継承で全 process (vp-app / daemon / SP) に伝播する。
+pub fn term_trace(hop: &str, lane: &str, data: &[u8]) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !ON.get_or_init(|| std::env::var("VP_TERM_TRACE").is_ok()) {
+        return;
+    }
+    let preview: String = data.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    tracing::info!(
+        target: "termtrace",
+        "[termtrace] hop={hop} lane={lane} len={} bytes={preview}",
+        data.len()
+    );
+}
+
 /// VP の config zone (XDG `$XDG_CONFIG_HOME/vp/`、 default `~/.config/vp/`)。
 ///
 /// 人が編集する設定 (config.kdl / projects.kdl / addresses.toml) の置き場。

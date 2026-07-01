@@ -539,6 +539,7 @@ async fn handle_terminal_write(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
         .map_err(|e| format!("terminal_write: base64 decode 失敗: {}", e))?;
+    vp_paths::term_trace("B:sp-recv", lane, &bytes);
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("terminal_write: lane パース失敗: {}", lane));
     };

@@ -2641,6 +2641,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             // terminal S4: xterm onData → 当該 lane の terminal session に渡す (上り request)。
             Event::UserEvent(AppEvent::TerminalWrite { lane, data }) => {
+                vp_paths::term_trace("A:app-dispatch(b64)", &lane, data.as_bytes());
                 if let Some(session) = terminal_sessions.get(&lane) {
                     let _ = session.cmd_tx.send(TermCmd::Write(data));
                 }
