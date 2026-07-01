@@ -172,4 +172,29 @@ mod tests {
         let found = found.unwrap();
         assert!(found.join(".mise/tasks/vp/stand").is_dir());
     }
+
+    /// Mac .app bundle 配布 (step 6): `<bundle>/Contents/MacOS/vp` 起点の walk-up が
+    /// `Contents/Resources/.mise/tasks/vp/stand/` を install root として解決する。
+    /// release:mac が stand init_script を Resources に bundle する前提の contract を lock する
+    /// (この Resources 特殊 case は step 6 の bundling 実装まで未検証だった)。
+    #[test]
+    fn walk_up_finds_app_bundle_resources() {
+        let tmp = std::env::temp_dir().join(format!("vp-bundle-test-{}", std::process::id()));
+        let macos = tmp.join("VantagePoint.app/Contents/MacOS");
+        let stand = tmp.join("VantagePoint.app/Contents/Resources/.mise/tasks/vp/stand");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::create_dir_all(&stand).unwrap();
+        std::fs::write(stand.join("echoes"), "#!/usr/bin/env bash\n").unwrap();
+
+        let found = walk_up_for_stand_tasks(&macos.join("vp"))
+            .expect("bundle の Contents/Resources を install root として見つけるはず");
+        assert!(
+            found.ends_with("Contents/Resources"),
+            "walk-up は Resources を返すはず、 got: {}",
+            found.display()
+        );
+        assert!(found.join(".mise/tasks/vp/stand/echoes").is_file());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
