@@ -62,6 +62,20 @@ FileUtils.mkdir_p([macos, res])
 FileUtils.cp(File.join(rel, "vp-app"), File.join(macos, "vp-app"))
 FileUtils.cp(File.join(rel, "vp"),     File.join(macos, "vp"))
 
+# stand init_script (echoes/shell/tmux) を bundle する。 install_root.rs の current_exe walk-up は
+# <bundle>/Contents/MacOS/vp 起点で Contents/Resources/.mise/tasks/vp/stand/ を探す特殊 case を
+# 既に持つので、 ここに置けば pure-cask (dev repo 無し) の end-user でも install_root が解決し、
+# stand script を直接 exec できる (step 2 で mise 非依存化済 = end-user に mise install 不要)。
+# これが無いと install_root=None → echoes spawn 不能で end-user は VP を使えない (配布 gap の根治)。
+stand_dst = File.join(res, ".mise", "tasks", "vp", "stand")
+FileUtils.mkdir_p(File.dirname(stand_dst))
+FileUtils.cp_r(".mise/tasks/vp/stand", stand_dst)
+# 直接 exec するので script の実行ビットを保証する (README.md 以外、 cp_r の mode 非保持対策)。
+Dir.glob(File.join(stand_dst, "*")).each do |f|
+  FileUtils.chmod(0o755, f) if File.file?(f) && !f.end_with?(".md")
+end
+VP.log "#{VP.icon(:info)} stand init_script bundled → Contents/Resources/.mise/tasks/vp/stand"
+
 icon_src = "crates/vp-app/assets/icon.icns"
 has_icon = File.exist?(icon_src)
 FileUtils.cp(icon_src, File.join(res, "icon.icns")) if has_icon
