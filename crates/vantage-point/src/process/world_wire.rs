@@ -112,14 +112,6 @@ async fn invalidate(link: &Arc<WireLink>) {
     }
 }
 
-/// cache 中の接続を無条件破棄する (outer timeout 発火時の self-heal)。
-async fn invalidate_current() {
-    let mut guard = WIRE_LINK.lock().await;
-    if let Some(stale) = guard.take() {
-        let _ = stale.client.disconnect().await;
-    }
-}
-
 /// TheWorld の wire/delegation API を呼ぶ。 `path` は `/api/wire/send` / `/api/delegation/create` 等。
 ///
 /// path から `/api/` prefix を剥いだ残り (= `"wire/send"` / `"delegation/create"`) を unison "wire"
@@ -139,8 +131,14 @@ pub(crate) async fn call(
     let method = path.strip_prefix("/api/").unwrap_or(path);
     let addr = format!("[::1]:{}", world_port());
 
+    // outer timeout 発火時に「自分が使った接続」だけを invalidate するための退避先。
+    // 無条件破棄 (cache を丸ごと take) だと、 同じ共有接続上で健全に進行中の他の並行呼び出しを
+    // 巻き添えにし、 高負荷時 (TheWorld が単に遅いだけ) に集団切断 → reconnect storm を誘発する。
+    // critical section は await を跨がないため std::sync::Mutex で足りる。
+    let used_link: std::sync::Mutex<Option<Arc<WireLink>>> = std::sync::Mutex::new(None);
     let work = async {
         let link = get_or_connect(&addr).await?;
+        *used_link.lock().expect("used_link poisoned") = Some(Arc::clone(&link));
         match link
             .channel
             .request::<serde_json::Value, serde_json::Value>(method, &payload)
@@ -167,9 +165,13 @@ pub(crate) async fn call(
     match tokio::time::timeout(REQUEST_TIMEOUT, work).await {
         Ok(result) => result,
         Err(_) => {
-            // 40s 無応答 = 接続 wedge の疑い。 破棄して次の call を fresh connect に倒す
-            // (旧 per-call 実装が持っていた「毎回 fresh」の self-heal と等価)。
-            invalidate_current().await;
+            // 40s 無応答 = 接続 wedge の疑い。 自分が使った接続だけを identity チェック付きで
+            // 破棄し、 次の call を fresh connect に倒す (get_or_connect 段階で timeout した場合は
+            // used_link が None = 破棄対象なし)。
+            let link = used_link.lock().expect("used_link poisoned").take();
+            if let Some(link) = link {
+                invalidate(&link).await;
+            }
             Err(format!(
                 "TheWorld ({addr}) wire channel ({method}) が {}s 以内に応答しませんでした",
                 REQUEST_TIMEOUT.as_secs()
