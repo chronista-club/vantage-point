@@ -1531,6 +1531,12 @@ impl ProcessManagerCapability {
 
     /// Phase 5-C: SP を restart する。 stop → 短い grace period → start を atomic に chain。
     /// stop が「No running Process」 なら start のみ実行 (= ensure-running 的な挙動)。
+    ///
+    /// ⚠️ 旧 SP の graceful shutdown が db LOCK の retry 予算 (~7s、 db/mod.rs) を超えて
+    /// flock を保持し続けた場合、 新 SP は重複 spawn 検出 (`DbLockHeldByLiveHolder`) で
+    /// 起動中止し、 本関数は一時的に Err を返しうる。 その場合は `run_health_monitor` の
+    /// crash 検知 (~60s debounce) が respawn して自己修復する想定 (= silent な DB なし
+    /// 並走より、 abort → 健全 respawn の方が最終状態が正しい)。
     pub async fn restart_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
         // stop が失敗しても start を試みる (= dead な project でも restart で起こす UX)
         match self.stop_process(project_name).await {

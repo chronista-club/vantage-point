@@ -81,6 +81,10 @@ pub type SharedVpDb = Arc<VpDb>;
 /// 決定的シグナル (SP は db を process 生存中ずっと開いたまま = LOCK 保持)。 SP 起動路
 /// (process/server.rs) はこれを downcast で検出し、 「DB なしで継続」の degrade ではなく
 /// 重複 spawn として起動を中止する。
+///
+/// なお World の `db/world/` 接続や `vp db` CLI でも surface しうるが、 そちらは従来通り
+/// degrade / エラー表示のまま (World の重複防止は :32000 の port bind が担保)。 abort に
+/// 使うのは SP 起動路のみ。
 #[derive(Debug)]
 pub struct DbLockHeldByLiveHolder {
     endpoint: String,
