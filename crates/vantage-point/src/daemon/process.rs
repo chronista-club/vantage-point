@@ -385,10 +385,10 @@ mod tests {
     #[test]
     fn test_daemon_dir_path() {
         let dir = daemon_dir();
-        // VP_PROFILE 未設定 (通常 test 環境) では temp_dir 配下の "vp" (= app_dir_name)。
-        // profile 分離で dev は "vp-dev" になる (同一プロセス内で branch 検証不可、コード inspection)。
+        // temp_dir 配下の app_dir_name (profile 準拠: brew "vp" / dev "vp-dev")。
+        // "vp" 固定 assert だと VP_PROFILE=dev 環境の cargo test で偽陽性に落ちる。
         assert!(dir.starts_with(std::env::temp_dir()));
-        assert_eq!(dir.file_name().unwrap(), "vp");
+        assert_eq!(dir.file_name().unwrap(), vp_paths::app_dir_name());
     }
 
     #[test]
