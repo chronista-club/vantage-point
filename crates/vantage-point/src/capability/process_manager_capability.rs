@@ -1910,22 +1910,64 @@ impl ProcessManagerCapability {
     ///
     /// daemon restart 後に working set を復元する (VP-207)。 TheWorld 起動時に
     /// バックグラウンドタスクとして 1 回だけ spawn される。
-    /// 1. 5 秒待機 — QUIC 自己登録 + 初期スキャンが `running_processes` を埋める猶予
-    /// 2. `refresh_process_status` で稼働中 SP をポートスキャン把握
+    /// 1. registry 静穏待ち — 旧 SP の QUIC heal 再登録が落ち着くまで待つ (下記)
+    /// 2. `refresh_process_status` で PID liveness / project 状態を同期
     /// 3. `enabled == true` かつ未稼働の project を収集
     /// 4. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
     ///
     /// 検出漏れがあっても `vp sp start` 側の collision check が bail するので
     /// 二重起動は安全。 lock 規律は `run_health_monitor` を踏襲する。
     pub async fn autostart_enabled_projects(world: Arc<RwLock<Self>>) {
-        // QUIC 自己登録 + 初期スキャンが running_processes を埋める猶予。
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // respawn-leak 根治 (a): daemon boot 直後は Push-only registry が空で、 旧 SP の
+        // QUIC heal 再接続 (exp backoff 1s→60s cap、 gentle 再起動の実測は boot 後 7〜12s)
+        // が届くまで旧 SP が見えない盲目期間がある。 旧実装の固定 5s 待機ではこの期間に
+        // 「稼働なし」と誤判定して重複 spawn していた (実測: 4 project × 2 世代 = SP 8 本)。
+        //
+        // → 「登録の静穏待ち」: registry のキー集合が QUIET_WINDOW の間変化しなくなる
+        // まで待つ (安全弁として上限 MAX_WAIT)。 fresh boot (旧 SP なし) は空のまま安定
+        // するので QUIET_WINDOW 経過で先へ進む。 backoff が cap 付近まで伸びた straggler
+        // の再登録は取りこぼしうるが、 その場合の重複 spawn は SP 側の db LOCK 生存
+        // holder 検出 (根治 c、 process/server.rs) が起動中止させるので収束する。
+        const QUIET_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+        let wait_start = std::time::Instant::now();
+        let mut last_change = std::time::Instant::now();
+        let mut prev_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        loop {
+            let keys: std::collections::HashSet<String> = {
+                let w = world.read().await;
+                let running = w.running_processes.read().await;
+                running.keys().cloned().collect()
+            };
+            if keys != prev_keys {
+                prev_keys = keys;
+                last_change = std::time::Instant::now();
+            }
+            if last_change.elapsed() >= QUIET_WINDOW {
+                break;
+            }
+            if wait_start.elapsed() >= MAX_WAIT {
+                tracing::info!(
+                    "autostart: registry 静穏待ち上限 {}s 到達、現状 ({} SP 登録済) で判定に進む",
+                    MAX_WAIT.as_secs(),
+                    prev_keys.len()
+                );
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        tracing::info!(
+            "autostart: registry 静穏 ({} SP 登録済、boot 後 {:.1}s)",
+            prev_keys.len(),
+            wait_start.elapsed().as_secs_f32()
+        );
 
-        // 稼働中 SP をポートスキャンで把握（read ガードは即解放）。
+        // PID liveness / project 状態を同期（read ガードは即解放）。
         {
             let w = world.read().await;
             if let Err(e) = w.refresh_process_status().await {
-                tracing::warn!("autostart: 初期スキャン失敗: {}", e);
+                tracing::warn!("autostart: 初期同期失敗: {}", e);
             }
         }
 
