@@ -74,7 +74,7 @@ enum Commands {
     #[command(visible_alias = "world")]
     Daemon {
         /// 待ち受けポート番号（サブコマンド省略時に使用）
-        #[arg(short, long, default_value_t = cli::WORLD_PORT)]
+        #[arg(short, long, default_value_t = cli::world_port())]
         port: u16,
         /// サブコマンド（省略時は start として動作）
         #[command(subcommand)]
@@ -717,7 +717,7 @@ fn list_performers_detail() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("repo path に invalid UTF-8"))?;
 
     let resp = vantage_point::commands::process_client::world_process_request_blocking(
-        cli::WORLD_PORT,
+        cli::world_port(),
         project_path,
         "lanes_list",
         serde_json::json!({}),
@@ -766,7 +766,7 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
     };
     let payload = serde_json::to_value(&msg)?;
     vantage_point::commands::process_client::world_process_request_blocking(
-        cli::WORLD_PORT,
+        cli::world_port(),
         project_path,
         "switch_lane",
         payload,
@@ -818,7 +818,7 @@ fn try_sp_delete_performer(performer_name: &str) -> bool {
     let payload = serde_json::json!({ "address": address, "cleanup": true });
 
     match vantage_point::commands::process_client::world_process_request_blocking(
-        cli::WORLD_PORT,
+        cli::world_port(),
         project_path,
         "lane_delete",
         payload,

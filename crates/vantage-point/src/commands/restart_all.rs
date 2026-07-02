@@ -61,12 +61,12 @@ pub fn execute() -> Result<()> {
 
     // 5. TheWorld を再起動
     println!("🚀 TheWorld を起動中...");
-    if let Err(e) = daemon::ensure_daemon_running(crate::cli::WORLD_PORT) {
+    if let Err(e) = daemon::ensure_daemon_running(crate::cli::world_port()) {
         eprintln!("✗ TheWorld 起動失敗: {}", e);
         return Err(e);
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
-    println!("  ✓ TheWorld ready (port {})", crate::cli::WORLD_PORT);
+    println!("  ✓ TheWorld ready (port {})", crate::cli::world_port());
 
     // 6. 全 SP を再起動
     if !processes.is_empty() {

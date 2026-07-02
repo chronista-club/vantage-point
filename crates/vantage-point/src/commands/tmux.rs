@@ -67,7 +67,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 Some(q) => {
                     let (pane_id, display) = resolve_pane_via_world(&project_path, q)?;
                     let resp = world_process_request_blocking(
-                        crate::cli::WORLD_PORT,
+                        crate::cli::world_port(),
                         &project_path,
                         "tmux_capture",
                         serde_json::json!({ "pane_id": pane_id }),
@@ -80,7 +80,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 }
                 None => {
                     let resp = world_process_request_blocking(
-                        crate::cli::WORLD_PORT,
+                        crate::cli::world_port(),
                         &project_path,
                         "tmux_capture_all",
                         serde_json::json!({}),
@@ -122,7 +122,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
             let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             let (pane_id, display) = resolve_pane_via_world(&project_path, &pane)?;
             let resp = world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "tmux_send_keys",
                 serde_json::json!({ "pane_id": pane_id, "text": text, "enter": !no_enter }),
@@ -136,7 +136,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
             let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             let (pane_id, display) = resolve_pane_via_world(&project_path, &pane)?;
             let resp = world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "tmux_close",
                 serde_json::json!({ "pane_id": pane_id }),

@@ -257,7 +257,7 @@ fn extract_id_from_session<'a>(session: &'a str, project_prefix: &str) -> Option
 // =============================================================================
 
 fn tmux_session_exists(name: &str) -> bool {
-    std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+    crate::tmux::tmux_command()
         .args(["has-session", "-t", name])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -302,7 +302,7 @@ fn create_tmux_session(
     }
 
     // TUI が自前のヘッダー/フッターを持つため tmux ステータスバーを非表示
-    let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+    let _ = crate::tmux::tmux_command()
         .args(["set-option", "-t", name, "status", "off"])
         .status();
 
@@ -311,20 +311,19 @@ fn create_tmux_session(
     // ─ focus-events on: terminal focus 変化を Claude CLI 等に forward
     //   → NSWindow become-key で TUI redraw → HD 入力 area の 2 行問題緩和の期待
     // ─ terminal-overrides *:Tc: 24-bit truecolor を 256 色にダウングレードさせない
-    let tmux_bin = crate::tmux::tmux_bin().unwrap_or("tmux");
-    let _ = std::process::Command::new(tmux_bin)
+    let _ = crate::tmux::tmux_command()
         .args(["set-option", "-t", name, "escape-time", "0"])
         .status();
-    let _ = std::process::Command::new(tmux_bin)
+    let _ = crate::tmux::tmux_command()
         .args(["set-option", "-t", name, "focus-events", "on"])
         .status();
-    let _ = std::process::Command::new(tmux_bin)
+    let _ = crate::tmux::tmux_command()
         .args(["set-option", "-ga", "terminal-overrides", ",*:Tc"])
         .status();
 
     // mise 環境変数を tmux セッションにも set-environment（後続ペイン用）
     for (key, value) in &mise_envs {
-        let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        let _ = crate::tmux::tmux_command()
             .args(["set-environment", "-t", name, key, value])
             .status();
     }
@@ -367,9 +366,7 @@ fn try_create_tmux_claude(
     args.push("-lc".to_string());
     args.push(claude_cmd);
 
-    let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
-        .args(&args)
-        .status()?;
+    let status = crate::tmux::tmux_command().args(&args).status()?;
 
     Ok(status.success())
 }

@@ -50,7 +50,10 @@ impl Default for PortLayout {
         roles.insert("canvas".into(), 3);
         roles.insert("preview".into(), 4);
         Self {
-            world_port: 32000,
+            // VP_PROFILE 分離 (#643): brew=32000 / dev=32100。 SSOT は vp_paths::default_world_port()。
+            // ここを 32000 固定にすると Config::port_layout() 経由の解決 (world_wire 等) だけが
+            // profile を無視して brew namespace に越境する (dev/brew 混在の再発)。
+            world_port: vp_paths::default_world_port(),
             project_slot_base: 33000,
             project_slot_size: 100,
             max_projects: 20,
@@ -133,7 +136,12 @@ mod tests {
 
     #[test]
     fn default_world_port() {
-        assert_eq!(PortLayout::default().world_port, 32000);
+        // profile 依存 (brew=32000 / dev=32100) なので SSOT と一致することを検証する
+        // (32000 固定 assert だと VP_PROFILE=dev 環境の cargo test で偽陽性に落ちる)。
+        assert_eq!(
+            PortLayout::default().world_port,
+            vp_paths::default_world_port()
+        );
     }
 
     #[test]

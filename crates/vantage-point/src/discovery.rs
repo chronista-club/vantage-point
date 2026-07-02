@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::{PORT_RANGE_END, PORT_RANGE_START, WORLD_PORT};
+use crate::cli::{PORT_RANGE_END, PORT_RANGE_START, world_port};
 use crate::config::Config;
 
 /// 発見された Process の情報
@@ -129,7 +129,7 @@ fn is_port_available(port: u16) -> bool {
 /// TheWorld API に問い合わせ
 async fn query_world() -> Option<Vec<ProcessInfo>> {
     let client = build_client(1000);
-    let url = format!("http://[::1]:{}/api/world/processes", WORLD_PORT);
+    let url = format!("http://[::1]:{}/api/world/processes", world_port());
 
     let resp = client.get(&url).send().await.ok()?;
     if !resp.status().is_success() {
@@ -424,7 +424,7 @@ async fn connect_world_uplink(
         .map_err(|e| format!("QUIC client 作成失敗: {}", e))?;
     let client = unison::ProtocolClient::new(transport);
 
-    let addr = format!("[::1]:{}", WORLD_PORT);
+    let addr = format!("[::1]:{}", world_port());
     client
         .connect(&addr)
         .await

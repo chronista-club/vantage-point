@@ -72,7 +72,7 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
             };
 
             world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "watch_file",
                 serde_json::to_value(&watch_config)?,
@@ -83,7 +83,7 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
         FileCommands::Unwatch { pane_id, target } => {
             let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
             world_process_request_blocking(
-                crate::cli::WORLD_PORT,
+                crate::cli::world_port(),
                 &project_path,
                 "unwatch_file",
                 serde_json::json!({ "pane_id": pane_id }),

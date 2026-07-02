@@ -166,6 +166,27 @@ cargo clippy --workspace --all-targets    # Lint
   - SP → World の QUIC は **outbound のみ**（registry / canvas-ingest / control の自己登録接続）。SP 自身は per-process な QUIC listener を持たない
 - `vp ps` は TheWorld registry（:32000）に問い合わせて一覧化（ポートスキャンは廃止）
 
+### VP_PROFILE — dev / brew の state 分離（#643）
+
+dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突 / tmux adopt 混線）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_world_port()`）。
+
+| レバー | 未設定 = **brew**（一般ユーザ・従来通り） | `VP_PROFILE=dev`（開発者） |
+|---|---|---|
+| config/data/state/db dir | `vp`（`~/.local/share/vp/` 等） | `vp-dev`（`~/.local/share/vp-dev/` 等） |
+| world port | 32000 | 32100 |
+| tmux socket | `-L vp` | `-L vp-dev` |
+| daemon pidfile | `$TMPDIR/vp/` | `$TMPDIR/vp-dev/` |
+
+- env は継承で伝播する（dev shell → daemon → SP → tmux）ので **`export VP_PROFILE=dev` 一発**で以降の全 vp が dev namespace になる。`vp switch` command / 起動時 guard / LaunchAgent 処理は不要。brew は LaunchAgent 起動で env を持たないため自然に brew namespace。
+- **dev 起動は専用 alias（`.zprofile`）**: `alias vpd='VP_PROFILE=dev ~/.cargo/bin/vp'`。素の `vp`（release）と混ざらないよう cargo dev binary を明示指定する。
+  ```zsh
+  vpd daemon start   # → TheWorld :32100 / ~/.local/share/vp-dev / tmux -L vp-dev
+  vpd daemon status  # → Port: 32100 で確認 / vpd db path → .../vp-dev/db/...
+  vpd app start      # dev GUI（要 `cargo install --path crates/vp-app` で dev vp-app）
+  ```
+- release（brew）は素の `vp`（= `.app` 同梱 CLI への symlink）/ GUI は `VantagePoint.app`。dev(32100) と release(32000) は完全並列で常駐でき、互いに衝突しない。
+- ⚠️ `VP_PROFILE` を honor するのは **#643 を含む binary のみ**。未対応 binary に `VP_PROFILE=dev` を渡しても無視され brew namespace(32000) に落ちる（混在再発）ので、dev alias は feature 込みで `cargo install` した `~/.cargo/bin/vp` を明示指定する。
+
 ### プロセス管理（Reconciliation）
 
 TheWorld が **QUIC registry（Push）** でプロセスを管理する。SP-portless 化に伴い旧 Pull（ポートスキャン）は撤去され、registry が**単一の真実源**になった（portless SP は listen しないためポートスキャンでは発見できない）。
@@ -306,7 +327,7 @@ MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯�
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (11951 symbols, 26243 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point** (11644 symbols, 25182 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

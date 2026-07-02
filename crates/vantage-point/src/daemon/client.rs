@@ -12,8 +12,12 @@ use unison::{ProtocolClient, UnisonChannel};
 
 use super::protocol::*;
 
-/// TheWorld QUIC ポート（Daemon 統合: [::1]:32000）
-pub const DAEMON_QUIC_PORT: u16 = 32000;
+/// TheWorld QUIC ポート（Daemon 統合: [::1]:32000）。
+///
+/// VP_PROFILE 分離: brew=32000 / dev=32100。 world port と同一 (`vp_paths::default_world_port()`)。
+pub fn daemon_quic_port() -> u16 {
+    crate::cli::world_port()
+}
 
 /// Daemon への Unison チャネルクライアント
 ///
@@ -325,7 +329,9 @@ mod tests {
 
     #[test]
     fn test_daemon_quic_port() {
-        assert_eq!(DAEMON_QUIC_PORT, 32000);
+        // profile 準拠 (brew=32000 / dev=32100)。 SSOT と一致することを検証する
+        // (32000 固定 assert だと VP_PROFILE=dev 環境の cargo test で偽陽性に落ちる)。
+        assert_eq!(daemon_quic_port(), vp_paths::default_world_port());
     }
 
     #[test]

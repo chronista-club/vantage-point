@@ -520,22 +520,23 @@ startup {
 
     #[test]
     fn test_vp_config_dir_ends_with_vp() {
-        // VP-192: config dir は OS によらず末尾が `vp`
+        // VP-192: config dir は OS によらず末尾が app_dir_name (= profile 準拠: brew "vp" / dev "vp-dev")。
+        // "vp" 固定 assert だと VP_PROFILE=dev 環境 (lane 内 dogfood) の cargo test で偽陽性に落ちる。
         let dir = vp_config_dir();
         assert!(
-            dir.ends_with("vp"),
-            "vp_config_dir は 'vp' で終わるべき: {}",
+            dir.ends_with(vp_paths::app_dir_name()),
+            "vp_config_dir は app_dir_name で終わるべき: {}",
             dir.display()
         );
     }
 
     #[test]
     fn test_vp_data_dir_ends_with_vp() {
-        // VP-192: data dir も末尾が `vp`
+        // VP-192: data dir も末尾が app_dir_name (profile 準拠、上の test と同旨)
         let dir = vp_data_dir();
         assert!(
-            dir.ends_with("vp"),
-            "vp_data_dir は 'vp' で終わるべき: {}",
+            dir.ends_with(vp_paths::app_dir_name()),
+            "vp_data_dir は app_dir_name で終わるべき: {}",
             dir.display()
         );
     }

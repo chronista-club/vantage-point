@@ -132,7 +132,7 @@ fn sp_start(
     }
 
     // TheWorld 自動起動
-    if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::WORLD_PORT) {
+    if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::world_port()) {
         tracing::warn!("TheWorld 自動起動失敗（SP は続行）: {}", e);
     }
 

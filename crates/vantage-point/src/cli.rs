@@ -43,7 +43,7 @@ pub async fn stop_process(port: u16) -> Result<()> {
     // (best-effort)。SP は QUIC listen を持たないため、World が reverse-routing (control
     // channel) で SP に "shutdown" を届ける。無応答でも下の force_kill fallback で確実に停止する。
     let _ = crate::commands::process_client::world_process_request(
-        WORLD_PORT,
+        world_port(),
         &info.project_dir,
         "shutdown",
         serde_json::json!({}),
@@ -104,8 +104,14 @@ pub fn force_kill(_pid: u32) {}
 pub const PORT_RANGE_START: u16 = 33000;
 pub const PORT_RANGE_END: u16 = 33024;
 
-/// TheWorld（Daemon 統合）のデフォルトポート
-pub const WORLD_PORT: u16 = 32000;
+/// TheWorld（Daemon 統合）のデフォルトポート。
+///
+/// VP_PROFILE 分離 (dev/brew 混在根治): brew=32000 / dev=32100。 SP portless なので実 listener は
+/// world 単一 → この 1 本を profile でずらせば daemon bind / app connect / SP→world connect が
+/// 芋づるで追随する。 定義は `vp_paths::default_world_port()` (全 crate 共有の SSOT)。
+pub fn world_port() -> u16 {
+    vp_paths::default_world_port()
+}
 
 /// 稼働中インスタンスをプロジェクト名ベースで一覧表示する。
 ///

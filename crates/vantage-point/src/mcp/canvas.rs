@@ -149,7 +149,7 @@ impl VantageMcp {
         });
 
         // TheWorld 経由で Canvas にキャプチャリクエスト（Canvas は常に TheWorld の WS に接続）
-        let world_port = crate::cli::WORLD_PORT;
+        let world_port = crate::cli::world_port();
         let url = format!("http://[::1]:{}/api/canvas/capture", world_port);
         let resp = self
             .client

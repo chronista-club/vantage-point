@@ -26,6 +26,26 @@ pub fn is_tmux_available() -> bool {
     tmux_bin().is_some()
 }
 
+/// VP profile に応じた tmux socket 名 (`-L` の値)。 brew=`vp` / dev=`vp-dev`。
+///
+/// dir 名と同一 ([`vp_paths::app_dir_name`])。 dev binary と brew cask の tmux server を
+/// 完全分離し、 同名 session の adopt 混線 (2026-07-01 実機事故) を構造的に防ぐ。
+/// 別 socket = 別 server なので session 名は profile 間で衝突しない。
+pub fn tmux_socket() -> &'static str {
+    vp_paths::app_dir_name()
+}
+
+/// socket (`-L`) 指定込みで tmux `Command` を組み立てる SSOT。
+///
+/// **全ての tmux 呼び出しはこれを経由する** (raw `Command::new(tmux_bin())` を直接使わない)。
+/// profile 分離の socket 指定を 1 箇所に集約し、 呼び出し漏れ (= 別 profile の server に誤接続)
+/// を防ぐ。 `-L` は tmux の全 subcommand より前に置く必要があるため先頭 args で注入する。
+pub fn tmux_command() -> Command {
+    let mut cmd = Command::new(tmux_bin().unwrap_or("tmux"));
+    cmd.args(["-L", tmux_socket()]);
+    cmd
+}
+
 /// 現在のプロセスが tmux セッション内で実行されているか確認
 pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok()
@@ -54,7 +74,7 @@ pub fn session_name_with_id(project_name: &str, id: Option<&str>) -> String {
 
 /// 指定名の tmux セッションが存在するか確認
 pub fn session_exists(name: &str) -> bool {
-    Command::new(tmux_bin().unwrap_or("tmux"))
+    tmux_command()
         .args(["has-session", "-t", name])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -76,7 +96,17 @@ pub fn create_and_exec(name: &str, vp_bin: &Path, args: &[&str]) -> ! {
 
     tracing::info!("tmux new-session -s {} で VP を再起動します", name);
 
-    let err = exec_command("tmux", &["new-session", "-s", name, &shell_command]);
+    let err = exec_command(
+        "tmux",
+        &[
+            "-L",
+            tmux_socket(),
+            "new-session",
+            "-s",
+            name,
+            &shell_command,
+        ],
+    );
 
     // exec が失敗した場合（通常は到達しない）
     eprintln!("tmux exec に失敗しました: {}", err);
@@ -92,7 +122,7 @@ pub fn attach_and_exec(name: &str) -> ! {
         name
     );
 
-    let err = exec_command("tmux", &["attach-session", "-t", name]);
+    let err = exec_command("tmux", &["-L", tmux_socket(), "attach-session", "-t", name]);
 
     eprintln!("tmux exec に失敗しました: {}", err);
     std::process::exit(1);
@@ -100,7 +130,7 @@ pub fn attach_and_exec(name: &str) -> ! {
 
 /// tmux セッションを kill する（存在しなくてもエラーにしない）
 pub fn kill_session(name: &str) -> bool {
-    Command::new(tmux_bin().unwrap_or("tmux"))
+    tmux_command()
         .args(["kill-session", "-t", name])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -118,7 +148,7 @@ pub fn create_detached(name: &str, vp_bin: &Path, args: &[&str]) -> std::io::Res
     cmd_parts.extend(args.iter().map(|s| s.to_string()));
     let shell_command = cmd_parts.join(" ");
 
-    let status = Command::new(tmux_bin().unwrap_or("tmux"))
+    let status = tmux_command()
         .args(["new-session", "-d", "-s", name, &shell_command])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -136,7 +166,7 @@ pub fn create_detached(name: &str, vp_bin: &Path, args: &[&str]) -> std::io::Res
 
 /// `-vp` サフィックスを持つ全 tmux セッション名を列挙
 pub fn list_vp_sessions() -> Vec<String> {
-    let output = Command::new(tmux_bin().unwrap_or("tmux"))
+    let output = tmux_command()
         .args(["list-sessions", "-F", "#{session_name}"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -160,7 +190,7 @@ pub fn is_in_session(session_name: &str) -> bool {
         return false;
     }
     // tmux display-message で現在のセッション名を取得
-    let output = Command::new(tmux_bin().unwrap_or("tmux"))
+    let output = tmux_command()
         .args(["display-message", "-p", "#{session_name}"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -179,7 +209,7 @@ pub fn is_in_session(session_name: &str) -> bool {
 ///
 /// tmux 内からプロジェクトを切り替える場合に使用。
 pub fn switch_client(target_session: &str) {
-    let _ = Command::new(tmux_bin().unwrap_or("tmux"))
+    let _ = tmux_command()
         .args(["switch-client", "-t", target_session])
         .status();
 }

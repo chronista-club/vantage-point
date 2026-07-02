@@ -64,7 +64,10 @@ fn fetch_projects_from_theworld() -> Option<Vec<(String, String)>> {
         .build()
         .ok()?;
 
-    let url = format!("http://[::1]:{}/api/world/projects", crate::cli::WORLD_PORT);
+    let url = format!(
+        "http://[::1]:{}/api/world/projects",
+        crate::cli::world_port()
+    );
     let resp = client.get(&url).send().ok()?;
     let json: serde_json::Value = resp.json().ok()?;
 
@@ -90,7 +93,7 @@ fn fetch_running_processes() -> Vec<String> {
 
     let url = format!(
         "http://[::1]:{}/api/world/processes",
-        crate::cli::WORLD_PORT
+        crate::cli::world_port()
     );
     let resp = match client.get(&url).send() {
         Ok(r) => r,
