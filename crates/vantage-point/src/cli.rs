@@ -265,13 +265,19 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
     // VP_LOGが設定されていない場合、debug_modeに基づいてRUST_LOGを設定
     // SAFETY: main()開始直後、他スレッド起動前に呼ばれるため安全
     if std::env::var("VP_LOG").is_err() && std::env::var("RUST_LOG").is_err() {
-        let log_level = match debug_mode {
-            DebugMode::None => "warn",
-            DebugMode::Simple => "info",
-            DebugMode::Detail => "debug",
-        };
-        unsafe {
-            std::env::set_var("RUST_LOG", format!("vantage_point={}", log_level));
+        // DebugMode::None (= 通常運転) は set しない — 後段の default EnvFilter
+        // (vantage_point=info + 依存 crate の chatty log 抑制) に落とす。
+        // 旧実装は None でも `vantage_point=warn` を焼き込んでいたため後段 default が
+        // 到達不能になり、daemon の INFO (Bastet/QUIC 起動等の運転記録) が全起動経路で
+        // 恒久的に沈黙していた (log 出力先とは独立の第 2 の結線切れ)。
+        match debug_mode {
+            DebugMode::None => {}
+            DebugMode::Simple => unsafe {
+                std::env::set_var("RUST_LOG", "vantage_point=info");
+            },
+            DebugMode::Detail => unsafe {
+                std::env::set_var("RUST_LOG", "vantage_point=debug");
+            },
         }
     } else if let Ok(vp_log) = std::env::var("VP_LOG") {
         // VP_LOG -> RUST_LOG に変換
