@@ -2102,7 +2102,12 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             move |_ctx, stream| {
                 let state = state.clone();
                 async move {
-                    let channel = UnisonChannel::new(stream);
+                    // SP は永続 link の 1 channel に全 wire request を多重化する (world_wire.rs の
+                    // fd leak 根治)。 直列 loop のままだと wire/recv long-poll (≤25s) の await 中に
+                    // 同一 channel の後続 request (wire/send 等) を読めず塞ぐため、 request ごとに
+                    // spawn して並行処理する。 応答は message id で対応付くので順序保証は不要、
+                    // 送信は UnisonStream 内部の Mutex で frame 単位に直列化される。
+                    let channel = Arc::new(UnisonChannel::new(stream));
                     loop {
                         let msg = match channel.recv().await {
                             Ok(msg) => msg,
@@ -2114,19 +2119,20 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let payload = msg.payload_as_value().unwrap_or_default();
                         let method = msg.method.clone();
                         let request_id = msg.id;
-                        // 成功時 result JSON、 失敗時は success frame に {"error": ...} を詰める
-                        // (Unison は専用 error frame を持たない、 VP-163 慣習)。
-                        let response = match handle_wire_channel(&state, &method, payload).await {
-                            Ok(v) => v,
-                            Err(e) => serde_json::json!({ "error": e }),
-                        };
-                        if channel
-                            .send_response(request_id, &method, &response)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                        let state = state.clone();
+                        let channel = Arc::clone(&channel);
+                        tokio::spawn(async move {
+                            // 成功時 result JSON、 失敗時は success frame に {"error": ...} を詰める
+                            // (Unison は専用 error frame を持たない、 VP-163 慣習)。
+                            let response = match handle_wire_channel(&state, &method, payload).await
+                            {
+                                Ok(v) => v,
+                                Err(e) => serde_json::json!({ "error": e }),
+                            };
+                            // 送信失敗 = 接続断。 loop 側の recv Err で channel ごと終了するため
+                            // ここでは無視してよい。
+                            let _ = channel.send_response(request_id, &method, &response).await;
+                        });
                     }
                     Ok(())
                 }
