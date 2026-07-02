@@ -32,6 +32,14 @@ ignore = [
     "RUSTSEC-2024-0420", # gtk-sys
     "RUSTSEC-2024-0429", # glib VariantStrIter unsoundness
 
+    # === quick-xml DoS 系 (修正版 >=0.41 への semver 互換 upgrade 経路なし、2026-07-02) ===
+    # 0.39.4 ← plist ← syntect ← tui-markdown: ローカルの信頼済み theme/plist 解析のみで
+    # 攻撃者制御 XML を読まない。0.37.5 ← tauri-winrt-notification ← notify-rust は
+    # Windows toast 用で macOS では未コンパイル。plist / tauri-winrt-notification が
+    # quick-xml >=0.41 に上がったら cargo update して本 2 件を削除する。
+    "RUSTSEC-2026-0194", # quick-xml NsReader memory-exhaustion DoS
+    "RUSTSEC-2026-0195", # quick-xml 重複属性チェックの quadratic time
+
     # === unmaintained な transitive 依存 (VP から直接制御不可) ===
     "RUSTSEC-2023-0089", # atomic-polyfill (transitive、portable-atomic へ未移行)
     "RUSTSEC-2024-0320", # yaml-rust ← syntect ← tui-markdown

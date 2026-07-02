@@ -188,8 +188,11 @@ fn config_projects_to_entries(config: &Config) -> Vec<crate::projects_file::Proj
 /// L0 finale で判定源を `/api/health` HTTP → QUIC registry (`running_processes`) に変更。
 #[derive(Debug)]
 enum HealthCheckResult {
-    /// QUIC registry に `expected_key` が当該 `port` で登録された → 自分の SP が立った
-    Ours,
+    /// QUIC registry に `expected_key` が当該 `port` で登録された → 当該 project の SP が立った。
+    /// payload は registry に登録された entry そのもの (= SP 自己登録が真実源)。 spawn した
+    /// 子とは**別の既存 SP** が登録するケースがある (子は db LOCK 生存 holder 検出で自殺)
+    /// ため、 daemon 側の子 pid ではなくこの entry を採用する。
+    Ours(RunningProcess),
     /// registry に別 project が同 `port` で登録済 (reverse-lookup) → 外部衝突 (auto-reassign trigger)
     WrongProject(String),
     /// timeout かつ port が TCP listening = 非 VP プロセス占有 (auto-reassign trigger)
@@ -1309,7 +1312,7 @@ impl ProcessManagerCapability {
         let project_path_str = project.path.to_string_lossy().to_string();
         let max_attempts = 2; // 初回 + auto-reassign 後 1 回
         let mut attempt = 0;
-        let (port, pid) = loop {
+        let running_process = loop {
             attempt += 1;
 
             // port 解決 (slot ベース、 新規割当なら config 永続)。 失敗時は find_available_port に fallback
@@ -1346,7 +1349,7 @@ impl ProcessManagerCapability {
             let child = cmd
                 .spawn()
                 .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
-            let pid = child.id().unwrap_or(0);
+            let spawned_pid = child.id().unwrap_or(0);
 
             // health 確認 (port 既知なので range scan 不要)
             let health = self
@@ -1360,7 +1363,22 @@ impl ProcessManagerCapability {
                 .await;
 
             match health {
-                HealthCheckResult::Ours => break (port, pid),
+                HealthCheckResult::Ours(registered) => {
+                    // respawn-leak 根治: registry の登録 entry (Push) が真実源。 spawn した子と
+                    // は別の既存 SP が登録するケース (子は db LOCK 生存 holder 検出で自殺) で
+                    // 子 pid を採用すると、 dead pid が registry を汚染 → PID liveness の ghost
+                    // 除去で「生存 SP が registry から恒久欠落」する gap になっていた (実測:
+                    // 2026-07-02 検証中に nexus で発生)。
+                    if registered.pid != spawned_pid {
+                        tracing::info!(
+                            "start_process: spawn した子 (pid={}) ではなく既存 SP (pid={}) が登録 → registry entry を採用 (project='{}')",
+                            spawned_pid,
+                            registered.pid,
+                            project_name
+                        );
+                    }
+                    break registered;
+                }
                 HealthCheckResult::WrongProject(actual) => {
                     if attempt >= max_attempts {
                         return Err(CapabilityError::Other(format!(
@@ -1403,14 +1421,6 @@ impl ProcessManagerCapability {
             }
         };
 
-        let running_process = RunningProcess {
-            project_name: project_name.to_string(),
-            port,
-            pid,
-            project_path: project.path.clone(),
-            tmux_session: None,
-        };
-
         // 状態を更新
         {
             let mut projects = self.projects.write().await;
@@ -1419,15 +1429,21 @@ impl ProcessManagerCapability {
             }
         }
 
-        {
-            let mut procs = self.running_processes.write().await;
-            procs.insert(key.clone(), running_process.clone());
-        }
+        // running_processes への daemon 側 insert は撤去 (Pull 時代の遺物)。
+        // wait_for_health が Ours を返した時点で SP の QUIC 自己登録が entry を書いており、
+        // daemon 側の子 pid で上書きすると Push-canonical を壊す (上記 gap の root cause)。
 
-        // DB に書き込み（正規化パスで保存）
+        // DB に書き込み（正規化パスで保存、 pid/port は registry entry の真実を使う）
         if let Some(ref db) = self.vpdb
             && let Err(e) = db
-                .upsert_process(&key, project_name, port, pid, "running", None)
+                .upsert_process(
+                    &key,
+                    project_name,
+                    running_process.port,
+                    running_process.pid,
+                    "running",
+                    None,
+                )
                 .await
         {
             tracing::warn!("DB process 登録失敗: {}", e);
@@ -1435,8 +1451,8 @@ impl ProcessManagerCapability {
 
         tracing::info!(
             project = project_name,
-            port = port,
-            pid = pid,
+            port = running_process.port,
+            pid = running_process.pid,
             "Process started"
         );
 
@@ -1515,6 +1531,12 @@ impl ProcessManagerCapability {
 
     /// Phase 5-C: SP を restart する。 stop → 短い grace period → start を atomic に chain。
     /// stop が「No running Process」 なら start のみ実行 (= ensure-running 的な挙動)。
+    ///
+    /// ⚠️ 旧 SP の graceful shutdown が db LOCK の retry 予算 (~7s、 db/mod.rs) を超えて
+    /// flock を保持し続けた場合、 新 SP は重複 spawn 検出 (`DbLockHeldByLiveHolder`) で
+    /// 起動中止し、 本関数は一時的に Err を返しうる。 その場合は `run_health_monitor` の
+    /// crash 検知 (~60s debounce) が respawn して自己修復する想定 (= silent な DB なし
+    /// 並走より、 abort → 健全 respawn の方が最終状態が正しい)。
     pub async fn restart_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
         // stop が失敗しても start を試みる (= dead な project でも restart で起こす UX)
         match self.stop_process(project_name).await {
@@ -1702,7 +1724,7 @@ impl ProcessManagerCapability {
                         port,
                         expected_path.display()
                     );
-                    return HealthCheckResult::Ours;
+                    return HealthCheckResult::Ours(p.clone());
                 }
                 // 別 project が同 port を占有 (registry reverse-lookup)
                 if let Some((other_key, _)) = procs
@@ -1910,22 +1932,64 @@ impl ProcessManagerCapability {
     ///
     /// daemon restart 後に working set を復元する (VP-207)。 TheWorld 起動時に
     /// バックグラウンドタスクとして 1 回だけ spawn される。
-    /// 1. 5 秒待機 — QUIC 自己登録 + 初期スキャンが `running_processes` を埋める猶予
-    /// 2. `refresh_process_status` で稼働中 SP をポートスキャン把握
+    /// 1. registry 静穏待ち — 旧 SP の QUIC heal 再登録が落ち着くまで待つ (下記)
+    /// 2. `refresh_process_status` で PID liveness / project 状態を同期
     /// 3. `enabled == true` かつ未稼働の project を収集
     /// 4. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
     ///
     /// 検出漏れがあっても `vp sp start` 側の collision check が bail するので
     /// 二重起動は安全。 lock 規律は `run_health_monitor` を踏襲する。
     pub async fn autostart_enabled_projects(world: Arc<RwLock<Self>>) {
-        // QUIC 自己登録 + 初期スキャンが running_processes を埋める猶予。
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // respawn-leak 根治 (a): daemon boot 直後は Push-only registry が空で、 旧 SP の
+        // QUIC heal 再接続 (exp backoff 1s→60s cap、 gentle 再起動の実測は boot 後 7〜12s)
+        // が届くまで旧 SP が見えない盲目期間がある。 旧実装の固定 5s 待機ではこの期間に
+        // 「稼働なし」と誤判定して重複 spawn していた (実測: 4 project × 2 世代 = SP 8 本)。
+        //
+        // → 「登録の静穏待ち」: registry のキー集合が QUIET_WINDOW の間変化しなくなる
+        // まで待つ (安全弁として上限 MAX_WAIT)。 fresh boot (旧 SP なし) は空のまま安定
+        // するので QUIET_WINDOW 経過で先へ進む。 backoff が cap 付近まで伸びた straggler
+        // の再登録は取りこぼしうるが、 その場合の重複 spawn は SP 側の db LOCK 生存
+        // holder 検出 (根治 c、 process/server.rs) が起動中止させるので収束する。
+        const QUIET_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+        let wait_start = std::time::Instant::now();
+        let mut last_change = std::time::Instant::now();
+        let mut prev_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        loop {
+            let keys: std::collections::HashSet<String> = {
+                let w = world.read().await;
+                let running = w.running_processes.read().await;
+                running.keys().cloned().collect()
+            };
+            if keys != prev_keys {
+                prev_keys = keys;
+                last_change = std::time::Instant::now();
+            }
+            if last_change.elapsed() >= QUIET_WINDOW {
+                break;
+            }
+            if wait_start.elapsed() >= MAX_WAIT {
+                tracing::info!(
+                    "autostart: registry 静穏待ち上限 {}s 到達、現状 ({} SP 登録済) で判定に進む",
+                    MAX_WAIT.as_secs(),
+                    prev_keys.len()
+                );
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        tracing::info!(
+            "autostart: registry 静穏 ({} SP 登録済、boot 後 {:.1}s)",
+            prev_keys.len(),
+            wait_start.elapsed().as_secs_f32()
+        );
 
-        // 稼働中 SP をポートスキャンで把握（read ガードは即解放）。
+        // PID liveness / project 状態を同期（read ガードは即解放）。
         {
             let w = world.read().await;
             if let Err(e) = w.refresh_process_status().await {
-                tracing::warn!("autostart: 初期スキャン失敗: {}", e);
+                tracing::warn!("autostart: 初期同期失敗: {}", e);
             }
         }
 

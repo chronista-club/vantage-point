@@ -74,6 +74,36 @@ pub struct VpDb {
 /// Arc でラップした VpDb（複数コンポーネントで共有するため）
 pub type SharedVpDb = Arc<VpDb>;
 
+/// respawn-leak 根治 (c): 生存 holder が LOCK を保持したまま backoff retry が尽きたことを
+/// 示す marker error。
+///
+/// per-project db dir (`db/sp_{slug}/`) では「同 project の SP が既に稼働中」を意味する
+/// 決定的シグナル (SP は db を process 生存中ずっと開いたまま = LOCK 保持)。 SP 起動路
+/// (process/server.rs) はこれを downcast で検出し、 「DB なしで継続」の degrade ではなく
+/// 重複 spawn として起動を中止する。
+///
+/// なお World の `db/world/` 接続や `vp db` CLI でも surface しうるが、 そちらは従来通り
+/// degrade / エラー表示のまま (World の重複防止は :32000 の port bind が担保)。 abort に
+/// 使うのは SP 起動路のみ。
+#[derive(Debug)]
+pub struct DbLockHeldByLiveHolder {
+    endpoint: String,
+    attempts: u32,
+    last_err: String,
+}
+
+impl std::fmt::Display for DbLockHeldByLiveHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SurrealDB embedded 接続失敗 ({}): lock 衝突が {} 回 retry 後も解消せず (holder 生存): {}",
+            self.endpoint, self.attempts, self.last_err
+        )
+    }
+}
+
+impl std::error::Error for DbLockHeldByLiveHolder {}
+
 impl VpDb {
     /// ローカルファイルシステム上の surrealkv DB を開いて接続する
     ///
@@ -146,12 +176,13 @@ impl VpDb {
                 }
             }
         }
-        Err(anyhow::anyhow!(
-            "SurrealDB embedded 接続失敗 ({}): lock 衝突が {} 回 retry 後も解消せず: {}",
+        // ここまで来た = 全 attempt で LOCK 衝突が続き、 stale 判定 (clear_stale_lock) も
+        // 毎回 false (= holder 生存)。 caller が重複 spawn 判定に使えるよう typed marker で返す。
+        Err(anyhow::Error::new(DbLockHeldByLiveHolder {
             endpoint,
-            MAX_ATTEMPTS,
-            last_err.map(|e| e.to_string()).unwrap_or_default()
-        ))
+            attempts: MAX_ATTEMPTS,
+            last_err: last_err.map(|e| e.to_string()).unwrap_or_default(),
+        }))
     }
 
     /// LOCK ファイルに live holder が居ない (= 自分で非ブロッキング flock を取得できる) なら
