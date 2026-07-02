@@ -188,8 +188,11 @@ fn config_projects_to_entries(config: &Config) -> Vec<crate::projects_file::Proj
 /// L0 finale で判定源を `/api/health` HTTP → QUIC registry (`running_processes`) に変更。
 #[derive(Debug)]
 enum HealthCheckResult {
-    /// QUIC registry に `expected_key` が当該 `port` で登録された → 自分の SP が立った
-    Ours,
+    /// QUIC registry に `expected_key` が当該 `port` で登録された → 当該 project の SP が立った。
+    /// payload は registry に登録された entry そのもの (= SP 自己登録が真実源)。 spawn した
+    /// 子とは**別の既存 SP** が登録するケースがある (子は db LOCK 生存 holder 検出で自殺)
+    /// ため、 daemon 側の子 pid ではなくこの entry を採用する。
+    Ours(RunningProcess),
     /// registry に別 project が同 `port` で登録済 (reverse-lookup) → 外部衝突 (auto-reassign trigger)
     WrongProject(String),
     /// timeout かつ port が TCP listening = 非 VP プロセス占有 (auto-reassign trigger)
@@ -1309,7 +1312,7 @@ impl ProcessManagerCapability {
         let project_path_str = project.path.to_string_lossy().to_string();
         let max_attempts = 2; // 初回 + auto-reassign 後 1 回
         let mut attempt = 0;
-        let (port, pid) = loop {
+        let running_process = loop {
             attempt += 1;
 
             // port 解決 (slot ベース、 新規割当なら config 永続)。 失敗時は find_available_port に fallback
@@ -1346,7 +1349,7 @@ impl ProcessManagerCapability {
             let child = cmd
                 .spawn()
                 .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
-            let pid = child.id().unwrap_or(0);
+            let spawned_pid = child.id().unwrap_or(0);
 
             // health 確認 (port 既知なので range scan 不要)
             let health = self
@@ -1360,7 +1363,22 @@ impl ProcessManagerCapability {
                 .await;
 
             match health {
-                HealthCheckResult::Ours => break (port, pid),
+                HealthCheckResult::Ours(registered) => {
+                    // respawn-leak 根治: registry の登録 entry (Push) が真実源。 spawn した子と
+                    // は別の既存 SP が登録するケース (子は db LOCK 生存 holder 検出で自殺) で
+                    // 子 pid を採用すると、 dead pid が registry を汚染 → PID liveness の ghost
+                    // 除去で「生存 SP が registry から恒久欠落」する gap になっていた (実測:
+                    // 2026-07-02 検証中に nexus で発生)。
+                    if registered.pid != spawned_pid {
+                        tracing::info!(
+                            "start_process: spawn した子 (pid={}) ではなく既存 SP (pid={}) が登録 → registry entry を採用 (project='{}')",
+                            spawned_pid,
+                            registered.pid,
+                            project_name
+                        );
+                    }
+                    break registered;
+                }
                 HealthCheckResult::WrongProject(actual) => {
                     if attempt >= max_attempts {
                         return Err(CapabilityError::Other(format!(
@@ -1403,14 +1421,6 @@ impl ProcessManagerCapability {
             }
         };
 
-        let running_process = RunningProcess {
-            project_name: project_name.to_string(),
-            port,
-            pid,
-            project_path: project.path.clone(),
-            tmux_session: None,
-        };
-
         // 状態を更新
         {
             let mut projects = self.projects.write().await;
@@ -1419,15 +1429,21 @@ impl ProcessManagerCapability {
             }
         }
 
-        {
-            let mut procs = self.running_processes.write().await;
-            procs.insert(key.clone(), running_process.clone());
-        }
+        // running_processes への daemon 側 insert は撤去 (Pull 時代の遺物)。
+        // wait_for_health が Ours を返した時点で SP の QUIC 自己登録が entry を書いており、
+        // daemon 側の子 pid で上書きすると Push-canonical を壊す (上記 gap の root cause)。
 
-        // DB に書き込み（正規化パスで保存）
+        // DB に書き込み（正規化パスで保存、 pid/port は registry entry の真実を使う）
         if let Some(ref db) = self.vpdb
             && let Err(e) = db
-                .upsert_process(&key, project_name, port, pid, "running", None)
+                .upsert_process(
+                    &key,
+                    project_name,
+                    running_process.port,
+                    running_process.pid,
+                    "running",
+                    None,
+                )
                 .await
         {
             tracing::warn!("DB process 登録失敗: {}", e);
@@ -1435,8 +1451,8 @@ impl ProcessManagerCapability {
 
         tracing::info!(
             project = project_name,
-            port = port,
-            pid = pid,
+            port = running_process.port,
+            pid = running_process.pid,
             "Process started"
         );
 
@@ -1702,7 +1718,7 @@ impl ProcessManagerCapability {
                         port,
                         expected_path.display()
                     );
-                    return HealthCheckResult::Ours;
+                    return HealthCheckResult::Ours(p.clone());
                 }
                 // 別 project が同 port を占有 (registry reverse-lookup)
                 if let Some((other_key, _)) = procs
