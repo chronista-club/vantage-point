@@ -812,52 +812,60 @@ impl VantageMcp {
         client.connect(&addr).await.map_err(|e| {
             McpError::internal_error(format!("canvas connect {}: {}", addr, e), None)
         })?;
-        let channel = client
-            .open_channel("canvas")
-            .await
-            .map_err(|e| McpError::internal_error(format!("open canvas channel: {}", e), None))?;
+        // 接続確立後は全経路で disconnect を通す — drop 任せでは unison client の UDP socket が
+        // 解放されず、 長寿命の `vp mcp` では 1 call = 1 fd leak になる (world_wire.rs と同根)。
+        let result = async {
+            let channel = client.open_channel("canvas").await.map_err(|e| {
+                McpError::internal_error(format!("open canvas channel: {}", e), None)
+            })?;
 
-        // per-lane PP: list_canvas / read_pane は呼び出し元 (cwd 由来) の lane の pane だけ返す。
-        // canvas channel は全 lane の retained を流すため、self lane で filter しないと
-        // 別 lane の同名 pane_id が混ざる (lane 欠落 = conductor)。
-        let self_lane = SelfLane::detect().lane_name;
+            // per-lane PP: list_canvas / read_pane は呼び出し元 (cwd 由来) の lane の pane だけ返す。
+            // canvas channel は全 lane の retained を流すため、self lane で filter しないと
+            // 別 lane の同名 pane_id が混ざる (lane 欠落 = conductor)。
+            let self_lane = SelfLane::detect().lane_name;
 
-        // pane_id ごとに最新を保持。 append:false は上書き、 append:true は既存内容に追記
-        // (canvas_state と同義)。 追記先が無ければ新規 (= 単独追記でも内容が残る)。
-        let mut panes: std::collections::HashMap<String, CanvasPane> =
-            std::collections::HashMap::new();
-        loop {
-            match tokio::time::timeout(Duration::from_millis(500), channel.recv()).await {
-                Ok(Ok(msg)) => {
-                    if msg.msg_type != MessageType::Event || msg.method != "pane" {
-                        continue;
-                    }
-                    if let Ok(v) = msg.payload_as_value() {
-                        // 別 lane の pane は除外
-                        let msg_lane = v
-                            .get("lane")
-                            .and_then(|l| l.as_str())
-                            .unwrap_or("conductor");
-                        if msg_lane != self_lane {
+            // pane_id ごとに最新を保持。 append:false は上書き、 append:true は既存内容に追記
+            // (canvas_state と同義)。 追記先が無ければ新規 (= 単独追記でも内容が残る)。
+            let mut panes: std::collections::HashMap<String, CanvasPane> =
+                std::collections::HashMap::new();
+            loop {
+                match tokio::time::timeout(Duration::from_millis(500), channel.recv()).await {
+                    Ok(Ok(msg)) => {
+                        if msg.msg_type != MessageType::Event || msg.method != "pane" {
                             continue;
                         }
-                        if let Some(p) = parse_show_payload(&v) {
-                            match panes.get_mut(&p.pane_id) {
-                                Some(existing) if p.append => existing.content.push_str(&p.content),
-                                _ => {
-                                    panes.insert(p.pane_id.clone(), p);
+                        if let Ok(v) = msg.payload_as_value() {
+                            // 別 lane の pane は除外
+                            let msg_lane = v
+                                .get("lane")
+                                .and_then(|l| l.as_str())
+                                .unwrap_or("conductor");
+                            if msg_lane != self_lane {
+                                continue;
+                            }
+                            if let Some(p) = parse_show_payload(&v) {
+                                match panes.get_mut(&p.pane_id) {
+                                    Some(existing) if p.append => {
+                                        existing.content.push_str(&p.content)
+                                    }
+                                    _ => {
+                                        panes.insert(p.pane_id.clone(), p);
+                                    }
                                 }
                             }
                         }
                     }
+                    Ok(Err(_)) => break, // channel closed
+                    Err(_) => break,     // timeout = snapshot drained
                 }
-                Ok(Err(_)) => break, // channel closed
-                Err(_) => break,     // timeout = snapshot drained
             }
+            let mut out: Vec<CanvasPane> = panes.into_values().collect();
+            out.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
+            Ok(out)
         }
-        let mut out: Vec<CanvasPane> = panes.into_values().collect();
-        out.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
-        Ok(out)
+        .await;
+        let _ = client.disconnect().await;
+        result
     }
 
     /// Restart the Vantage Point Process

@@ -329,8 +329,9 @@ mod tests {
 
     #[test]
     fn test_daemon_quic_port() {
-        // VP_PROFILE 未設定 (通常 test 環境) では base の 32000
-        assert_eq!(daemon_quic_port(), 32000);
+        // profile 準拠 (brew=32000 / dev=32100)。 SSOT と一致することを検証する
+        // (32000 固定 assert だと VP_PROFILE=dev 環境の cargo test で偽陽性に落ちる)。
+        assert_eq!(daemon_quic_port(), vp_paths::default_world_port());
     }
 
     #[test]
