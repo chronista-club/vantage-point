@@ -304,6 +304,26 @@ fn main() -> Result<()> {
     // 引数なし → vp ps（稼働中インスタンス一覧）
     let command = cli.command.unwrap_or(Commands::Ps);
 
+    // daemon server 本体 (`vp daemon start` / `vp world` / subcommand 省略) は stdout/stderr が
+    // spawn 経路依存で闇に落ちる (daemonize・restart-all の Stdio::null・launchd redirect の混在)
+    // ため、VP_DAEMON_LOG_FILE 未設定なら vp_log_dir()/daemon.kdl.log を default にして
+    // init_tracing の file appender 分岐 (rotate 付き) へ固定する。spawn 経路非依存の log SSOT。
+    // Stop/Status 等の短命 subcommand は対象外 (従来どおり stderr)。
+    let is_daemon_server = matches!(
+        &command,
+        Commands::Daemon { command: None, .. }
+            | Commands::Daemon {
+                command: Some(commands::daemon::DaemonCommands::Start { .. }),
+                ..
+            }
+    );
+    if is_daemon_server && std::env::var("VP_DAEMON_LOG_FILE").map_or(true, |v| v.trim().is_empty())
+    {
+        let default_log = vantage_point::config::vp_log_dir().join("daemon.kdl.log");
+        // main 冒頭・tokio runtime 起動前の single-thread 区間なので set_var は安全
+        unsafe { std::env::set_var("VP_DAEMON_LOG_FILE", &default_log) };
+    }
+
     // Initialize tracing
     let debug_mode_for_tracing = parse_debug_env().unwrap_or_default();
     cli::init_tracing(debug_mode_for_tracing, false);

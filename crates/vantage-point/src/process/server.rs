@@ -128,6 +128,24 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
                 }
             }
             Err(e) => {
+                // respawn-leak 根治 (c): per-project db (`db/sp_{slug}/`) の LOCK を生存
+                // holder が保持し続けている = 同 project の SP が既に稼働中。 旧挙動の
+                // 「DB なしで継続」だと重複 SP が silent に並走して事故を増幅していた
+                // (実測: daemon 再起動 race で 4 project × 2 世代 = SP 8 本)。 重複 spawn
+                // と判断して起動を中止する。 先行 SP は QUIC heal 再接続で registry に
+                // 自力復帰するので、 daemon 側の後始末は不要。
+                if e.downcast_ref::<crate::db::DbLockHeldByLiveHolder>()
+                    .is_some()
+                {
+                    tracing::error!(
+                        "SP: project db の LOCK を既存 SP が保持 → 重複 spawn と判断して起動中止: {}",
+                        e
+                    );
+                    return Err(anyhow::anyhow!(
+                        "重複 spawn 検出: project db の LOCK を既存 SP が保持しています \
+                         (この project の SP は既に稼働中)"
+                    ));
+                }
                 tracing::warn!("SP: SurrealDB 未接続、DB なしで継続: {}", e);
                 None
             }

@@ -47,9 +47,10 @@ use super::midi::{
 /// 退行になる: reconnect 直後は loop 入場時に `poll.tick()` の初回が即時発火し、`lanes` は
 /// 空 Vec 始まりなので非空 poll 結果と `next != lanes` が必ず真 → `if view.activated` gate を
 /// 通って `roto_project_slots_full` で即再描画される（`activated=true` が必要）。逆に reset
-/// すると fresh connect 同様ユーザーが物理操作するまで LCD が blank になる。`activated` block
-/// （初回 SysEx での activation）は keepalive SysEx では発火しない（`roto_autorespond` が
-/// HELLO/QUERY を先取り continue するため）ので、reconnect の即描画は専ら poll 経路が担う。
+/// すると次の hello (≤1s) まで LCD 再描画が遅れる。`activated` は任意の SysEx（keepalive
+/// hello 含む）で立つ — daemon 側だけの再起動では session 継続中の ROTO が full handshake を
+/// 再送せず hello しか送らないため、hello を activation 信号に数えないと LCD が永久に沈黙する
+/// （`roto_control_loop` の activation 判定コメント参照）。
 #[derive(Default, Clone)]
 pub(crate) struct RotoView {
     /// 表示ページ（1 ページ = 8 lane）。reconnect で保持。
@@ -155,12 +156,20 @@ pub(crate) async fn roto_control_loop(
                     continue;
                 }
                 // keepalive SysEx は自動応答（接続維持）。out 送信失敗 = ROTO 切断。
-                match roto_autorespond(&bytes, conn_out) {
-                    Ok(true) => continue,
-                    Ok(false) => {}
+                // 応答 latency を増やさないため activation 判定より先に応答する（continue は
+                // activation 判定の後まで遅延 — 下記参照）。
+                let autoresponded = match roto_autorespond(&bytes, conn_out) {
+                    Ok(r) => r,
                     Err(_) => return Ok(LoopExit::Disconnected),
-                }
-                // 最初の SysEx で activated（lanes 到着済なら即 projection）
+                };
+                // 最初の SysEx で activated（lanes 到着済なら即 projection）。
+                // ⚠️ keepalive hello (0A 02) も activation 信号に数える（autorespond 済みでも
+                // 判定する）: daemon 側だけが再起動した場合、session 継続中の ROTO は full
+                // handshake (0A 0E version 等) を再送せず hello しか送らない。hello を signal に
+                // しないと activated が永遠に立たず、LCD projection が全経路 gate されたままになる
+                // （track button は channel message で activation 不要のため「lane 切替は効くのに
+                // LCD だけ沈黙」という片肺状態に見える）。hello 到来 = device は DAW session 中
+                // = projection 可能、なので activation 根拠として十分。
                 if !view.activated && bytes.first() == Some(&0xF0) {
                     view.activated = true;
                     if !lanes.is_empty() && !view.lcd_projected {
@@ -172,6 +181,8 @@ pub(crate) async fn roto_control_loop(
                         view.lcd_projected = true;
                     }
                     tracing::info!("🧲 ROTO 接続成立 — {} lanes", lanes.len());
+                }
+                if autoresponded {
                     continue;
                 }
                 // channel message を ControlEvent に → binding 表で nav 解決
