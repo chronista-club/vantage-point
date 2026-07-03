@@ -222,6 +222,39 @@ pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
     }
 }
 
+/// stand script の path を OS 別に (program, args) へ組み替える。
+///
+/// - **Unix**: script は shebang 実行可能ファイル → program = script、 args なし。
+/// - **Windows**: CreateProcess は shebang を無視する (script を直接 program にすると
+///   "%1 is not a valid Win32 application" 相当で spawn 失敗) ため、 git-bash を program、
+///   script path を arg にする。 git-bash は `C:\...` 引数を MSYS path に自動変換するので
+///   script path はそのまま渡してよい。 git-bash 不在時は actionable な error を出しつつ
+///   標準 install path を program にして ENOENT を明示化する (Git for Windows が前提依存)。
+#[cfg(not(windows))]
+fn stand_program_args(script_path: String) -> (String, Vec<String>) {
+    (script_path, vec![])
+}
+
+/// Windows 版 — git-bash 経由で stand script を起動する。 詳細は non-windows 版 doc 参照。
+#[cfg(windows)]
+fn stand_program_args(script_path: String) -> (String, Vec<String>) {
+    match vp_paths::shell::find_git_bash() {
+        Some(bash) => (bash.to_string_lossy().into_owned(), vec![script_path]),
+        None => {
+            tracing::error!(
+                "git-bash (Git for Windows) が見つかりません。 stand script を起動できません。 \
+                 `winget install Git.Git` で導入してください。 script={}",
+                script_path
+            );
+            // 標準 install path を program に据えて ENOENT を発生させる (bash.exe 不在が失敗理由と分かる)。
+            (
+                r"C:\Program Files\Git\bin\bash.exe".to_string(),
+                vec![script_path],
+            )
+        }
+    }
+}
+
 /// Stand 名に応じた spawn command を構築 (doc 11 PR-B、 mise task 経路)。
 ///
 /// `mise run vp:stand:{stand_name}` を呼び、 mise task が tmux + shell + LLM auto-launch を
@@ -263,27 +296,36 @@ pub fn build_stand_command(
     //  mise が spawn 経路で提供していたのは実質「task 名 → script file の解決」だけで、 VP は
     //  script の path (`install root/.mise/tasks/vp/stand/{name}`) を知っているので task runner は
     //  不要。 tool (tmux/claude/vp) の PATH は PtySlot の augment_path が既に補う (`~/.local/bin` /
-    //  `/opt/homebrew/bin` / `~/.cargo/bin`) ため mise 無しで解決できる。 script は shebang
-    //  (`#!/usr/bin/env bash`) を持つ実行可能ファイルなので、 program に path を渡せばそのまま走る。
+    //  `/opt/homebrew/bin` / `~/.cargo/bin`) ため mise 無しで解決できる。
+    //
+    //  - **Unix**: script は shebang (`#!/usr/bin/env bash`) を持つ実行可能ファイルなので、
+    //    program に path を渡せばそのまま走る。
+    //  - **Windows**: CreateProcess は shebang を解さないため、 git-bash を program、 script path を
+    //    arg に組み替える ([`stand_program_args`])。 git-bash 不在時は明示 error。
+    //
     //  なお install root 解決 (`has_stand_tasks`) が保証するのは `stand/` **dir** の存在までで、
     //  特定 `{stand_name}` script の実在は検査しない。 既知 3 stand (echoes/shell/tmux) は実在するが、
     //  未知 stand 名は nonexistent path → `PtySlot::spawn` が ENOENT を同期 Err で返す (旧 mise の
     //  task-not-found と同じ失敗クラス = 無回帰、 むしろ 800ms early-exit 窓を待たず即失敗する分 clean)。
     match super::install_root::locate_install_root() {
-        Some(root) => StandCommand {
-            program: root
+        Some(root) => {
+            let script_path = root
                 .join(".mise/tasks/vp/stand")
                 .join(stand_name)
                 .to_string_lossy()
-                .to_string(),
-            args: vec![],
-            // stand script は早期 exit せず PTY を take over するので fallback / initial_input は None。
-            fallback_args: None,
-            initial_input: None,
-            env,
-            // cwd は install root。 script は VP_CWD で project を受け取り自身で cd する。
-            cwd: root.to_string_lossy().to_string(),
-        },
+                .to_string();
+            let (program, args) = stand_program_args(script_path);
+            StandCommand {
+                program,
+                args,
+                // stand script は早期 exit せず PTY を take over するので fallback / initial_input は None。
+                fallback_args: None,
+                initial_input: None,
+                env,
+                // cwd は install root。 script は VP_CWD で project を受け取り自身で cd する。
+                cwd: root.to_string_lossy().to_string(),
+            }
+        }
         // install root 解決失敗 (degraded): script path が引けないので、 従来の mise task runner
         //  経由に fallback する (mise が cwd=project からの task discovery を担う)。 警告 log は
         //  locate_install_root 内で emit 済。
@@ -302,27 +344,55 @@ pub fn build_stand_command(
 mod tests {
     use super::*;
 
-    /// build_stand_command が mise を介さず stand script を直接 program にすること。
+    /// build_stand_command が mise を介さず stand script を起動対象にすること。
     /// (install root は cargo test 環境では workspace root に解決される)
+    ///
+    /// Unix: program = script path (shebang 直 exec)。
+    /// Windows: program = git-bash、 args[0] = script path (shebang 非対応の回避)。
     #[test]
     fn build_stand_command_execs_stand_script_directly() {
         let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+
+        // OS 差を吸収: 実際に起動される script path (Unix=program / Windows=args[0]) を取り出す。
+        #[cfg(not(windows))]
+        let script = cmd.program.clone();
+        #[cfg(windows)]
+        let script = {
+            assert!(
+                cmd.program.to_lowercase().ends_with("bash.exe"),
+                "Windows は git-bash を program にするはず、 got: {}",
+                cmd.program
+            );
+            assert_eq!(
+                cmd.args.len(),
+                1,
+                "Windows は args=[script path] のはず、 got: {:?}",
+                cmd.args
+            );
+            cmd.args[0].clone()
+        };
+
+        // 分離子を `/` に正規化して比較 (Windows の Path::join は `\` を混ぜる)。
+        let normalized = script.replace('\\', "/");
         assert!(
-            cmd.program.ends_with(".mise/tasks/vp/stand/echoes"),
-            "program は stand script path のはず (mise 非経由)、 got: {}",
-            cmd.program
+            normalized.ends_with(".mise/tasks/vp/stand/echoes"),
+            "起動対象は stand script path のはず (mise 非経由)、 got: {}",
+            script
         );
         assert!(
-            std::path::Path::new(&cmd.program).exists(),
+            std::path::Path::new(&script).exists(),
             "echoes script が実在するはず: {}",
-            cmd.program
+            script
         );
+
+        #[cfg(not(windows))]
         assert!(
             cmd.args.is_empty(),
-            "script 直接 exec なので args は空のはず、 got: {:?}",
+            "Unix は script 直接 exec なので args 空、 got: {:?}",
             cmd.args
         );
+
         assert!(cmd.fallback_args.is_none());
         assert!(cmd.initial_input.is_none());
         // spawn cwd は VP install root
@@ -359,9 +429,17 @@ mod tests {
     fn build_stand_command_passes_arbitrary_stand_name() {
         let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("opus-xhigh", &addr, Path::new("/tmp"));
+        // 起動対象 script path (Unix=program / Windows=args[0]) を取り出し `/` 正規化して比較。
+        #[cfg(not(windows))]
+        let script = cmd.program.clone();
+        #[cfg(windows)]
+        let script = cmd.args.first().cloned().unwrap_or_default();
         assert!(
-            cmd.program.ends_with(".mise/tasks/vp/stand/opus-xhigh"),
-            "未知 stand でも program path に stand_name が入るはず、 got: {}",
+            script
+                .replace('\\', "/")
+                .ends_with(".mise/tasks/vp/stand/opus-xhigh"),
+            "未知 stand でも起動対象 path に stand_name が入るはず、 got: {} (program={})",
+            script,
             cmd.program
         );
         // tmux_session_name にも stand_name そのまま入る

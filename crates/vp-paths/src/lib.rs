@@ -23,6 +23,9 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+pub mod shell;
+pub mod spawn_env;
+
 /// VP の実行 profile (`VP_PROFILE` env var)。
 ///
 /// - 未設定 / 空文字 = `None` = **brew (一般ユーザ)** — 従来の `vp` namespace。
