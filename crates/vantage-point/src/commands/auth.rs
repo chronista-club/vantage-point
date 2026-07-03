@@ -40,6 +40,25 @@ pub const DEFAULT_TOKEN_ENDPOINT: &str = "https://id.creo-memories.in/oauth/toke
 /// scope の default (= 最小 openid set)。
 pub const DEFAULT_SCOPE: &str = "openid profile email";
 
+/// OAuth client_id の default (= Auth0「Vantage Point CLI」、Native app)。
+///
+/// Native app の client_id は public 識別子（秘密ではない、RFC 8252 §8.5）なので焼き込んで
+/// よい。これにより一般ユーザーは env 設定なしの `vp auth login` だけでログインできる。
+/// 別 tenant / 別 app で試す場合は env `VP_OIDC_CLIENT_ID` で上書き。
+pub const DEFAULT_CLIENT_ID: &str = "KF9BRED9ZVWEI7YDqbncNQ0LhX9QoUYm";
+
+/// Auth0 API audience の default (= chronista-hub federation、恒久 identifier)。
+///
+/// audience 付きで発行された access_token は RS256 JWS（aud claim 付き）になり、hub の
+/// federation auth（`CREO_ID_AUDIENCES=https://hub.chronista.club`、fail-closed）を通る。
+/// audience 無しだと Auth0 は JWE (alg=dir) を返し hub verify を構造的に通らない（実測）。
+///
+/// ⚠️ トレードオフ: この token は nexus（`aud=https://api.vantage-point.app` 期待）では
+/// 拒否される。1 login = 1 audience が Auth0 の制約。現在の実用途は federation なので
+/// hub 側を default とし、nexus 用 token が要る場合は `VP_OIDC_AUDIENCE` で上書きする
+/// （空文字を設定すると audience なし = 従来の JWE 発行に倒せる escape hatch）。
+pub const DEFAULT_AUDIENCE: &str = "https://hub.chronista.club";
+
 /// PKCE verifier の長さ (= RFC 7636 で 43-128、 64 を採用)。
 const VERIFIER_LEN: usize = 64;
 
@@ -110,30 +129,38 @@ pub struct OidcConfig {
     pub authorize_endpoint: String,
     pub token_endpoint: String,
     pub scope: String,
-    /// Auth0 API audience（optional、env `VP_OIDC_AUDIENCE`）。
+    /// Auth0 API audience（default = [`DEFAULT_AUDIENCE`]（hub）、env `VP_OIDC_AUDIENCE` で上書き）。
     ///
-    /// 指定すると access_token が **その API 向けの RS256 JWS**（aud claim 付き）で発行される。
-    /// 未指定だと Auth0 は JWE (alg=dir) の opaque token を返し、外部 verifier（例:
-    /// chronista-hub の federation auth、fail-closed で exp/iss/aud 必須）を**構造的に通らない**
-    /// （2026-07-04 実測）。hub federation の credential にする場合は hub の
-    /// `CREO_ID_AUDIENCES` と交差する audience を指定すること。
+    /// `Some` なら access_token が **その API 向けの RS256 JWS**（aud claim 付き）で発行される。
+    /// `None`（env に空文字を設定した escape hatch）だと Auth0 は JWE (alg=dir) の opaque token を
+    /// 返し、外部 verifier（例: chronista-hub の federation auth、fail-closed で exp/iss/aud 必須）
+    /// を**構造的に通らない**（2026-07-04 実測）。3 値の解決規則は [`OidcConfig::from_env`] 参照。
     pub audience: Option<String>,
 }
 
 impl OidcConfig {
-    /// env から load。 必須は `VP_OIDC_CLIENT_ID`、 他は default fallback。
+    /// env から load。 全 field に default があり env は上書き用（zero-config で `vp auth login`
+    /// が federation-ready な token を取れる）。
     pub fn from_env() -> Result<Self> {
         let client_id = std::env::var("VP_OIDC_CLIENT_ID")
-            .context("VP_OIDC_CLIENT_ID not set — run `vp auth login` requires a client_id (= Auth0 console で発行)")?;
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string());
         let authorize_endpoint = std::env::var("VP_OIDC_AUTHORIZE_ENDPOINT")
             .unwrap_or_else(|_| DEFAULT_AUTHORIZE_ENDPOINT.to_string());
         let token_endpoint = std::env::var("VP_OIDC_TOKEN_ENDPOINT")
             .unwrap_or_else(|_| DEFAULT_TOKEN_ENDPOINT.to_string());
         let scope = std::env::var("VP_OIDC_SCOPE").unwrap_or_else(|_| DEFAULT_SCOPE.to_string());
-        let audience = std::env::var("VP_OIDC_AUDIENCE")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        // audience は 3 値: env 未設定 = default (hub) / env 空文字 = audience なし
+        // （従来の JWE 発行に倒す escape hatch）/ env 非空 = その値で上書き。
+        let audience = match std::env::var("VP_OIDC_AUDIENCE") {
+            Err(_) => Some(DEFAULT_AUDIENCE.to_string()),
+            Ok(s) => {
+                let s = s.trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            }
+        };
         Ok(Self {
             client_id,
             authorize_endpoint,
@@ -536,8 +563,9 @@ async fn login(no_browser: bool) -> Result<()> {
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
-    // audience 指定時のみ付与 — 指定すると access_token が当該 API 向け RS256 JWS になる
-    // （未指定 = 従来どおり JWE opaque、既存の nexus 経路の挙動は不変）。
+    // audience が Some（= default の hub、または env 上書き）なら付与 — access_token が当該
+    // API 向け RS256 JWS になる。None は env 空文字の escape hatch（JWE opaque 発行、nexus 等
+    // audience なし前提の経路で使う）。
     if let Some(aud) = &config.audience {
         qs.append_pair("audience", aud);
     }
@@ -778,28 +806,42 @@ mod tests {
     #[test]
     fn oidc_config_from_env_resolution() {
         let _g = env_guard();
-        // Phase 1: VP_OIDC_CLIENT_ID 未設定 → error
+        // Phase 1: 全 env 未設定 → 全 field が default（zero-config login）
         unsafe {
             std::env::remove_var("VP_OIDC_CLIENT_ID");
-        }
-        assert!(OidcConfig::from_env().is_err());
-
-        // Phase 2: client_id のみ set、 他は default
-        unsafe {
             std::env::remove_var("VP_OIDC_AUTHORIZE_ENDPOINT");
             std::env::remove_var("VP_OIDC_TOKEN_ENDPOINT");
             std::env::remove_var("VP_OIDC_SCOPE");
-            std::env::set_var("VP_OIDC_CLIENT_ID", "test-cid");
+            std::env::remove_var("VP_OIDC_AUDIENCE");
         }
-        let config = OidcConfig::from_env().expect("should load");
-        assert_eq!(config.client_id, "test-cid");
+        let config = OidcConfig::from_env().expect("should load with defaults");
+        assert_eq!(config.client_id, DEFAULT_CLIENT_ID);
         assert_eq!(config.authorize_endpoint, DEFAULT_AUTHORIZE_ENDPOINT);
         assert_eq!(config.token_endpoint, DEFAULT_TOKEN_ENDPOINT);
         assert_eq!(config.scope, DEFAULT_SCOPE);
+        // audience 未設定 = default（hub、federation-ready な RS256 JWS を発行させる）
+        assert_eq!(config.audience.as_deref(), Some(DEFAULT_AUDIENCE));
+
+        // Phase 2: env set → 上書き
+        unsafe {
+            std::env::set_var("VP_OIDC_CLIENT_ID", "test-cid");
+            std::env::set_var("VP_OIDC_AUDIENCE", "https://api.example.test");
+        }
+        let config = OidcConfig::from_env().expect("should load");
+        assert_eq!(config.client_id, "test-cid");
+        assert_eq!(config.audience.as_deref(), Some("https://api.example.test"));
+
+        // Phase 3: audience の escape hatch — 空文字 = audience なし（従来の JWE 発行に倒す）
+        unsafe {
+            std::env::set_var("VP_OIDC_AUDIENCE", "");
+        }
+        let config = OidcConfig::from_env().expect("should load");
+        assert_eq!(config.audience, None);
 
         // cleanup
         unsafe {
             std::env::remove_var("VP_OIDC_CLIENT_ID");
+            std::env::remove_var("VP_OIDC_AUDIENCE");
         }
     }
 
