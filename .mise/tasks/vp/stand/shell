@@ -16,4 +16,6 @@ set -euo pipefail
 cd "$VP_CWD"
 
 # 素 login shell に切替。 mise / volta / nvm 等の PATH を rc 経由で取り込む。
-exec "${SHELL:-/bin/zsh}" -l
+# $SHELL 未設定 (Windows git-bash の非対話 spawn 等) は zsh → bash → sh の順で実在 shell を探す。
+LOGIN_SHELL="${SHELL:-$(command -v zsh || command -v bash || echo /bin/sh)}"
+exec "$LOGIN_SHELL" -l

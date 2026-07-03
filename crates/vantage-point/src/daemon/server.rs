@@ -334,11 +334,11 @@ async fn handle_world_control(
         }
         // chronista-hub federation: hub registry に居る world 一覧を取得する。
         // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
-        // (= 直接 hub に接続しない)。`CHRONISTA_HUB_ADDR` 未設定なら federation 無効を返す。
+        // (= 直接 hub に接続しない)。hub addr（env > config.kdl）未設定なら federation 無効を返す。
         "hub/discover" => {
             let Some(addr) = crate::daemon::hub_client::hub_addr() else {
                 return Err(format!(
-                    "{} 未設定 — hub federation 無効",
+                    "hub addr 未設定（env {} / config.kdl hub-addr）— hub federation 無効",
                     crate::daemon::hub_client::HUB_ADDR_ENV
                 ));
             };
@@ -688,7 +688,8 @@ async fn handle_wire_channel(
                 .ok_or_else(|| "wire/federate: 'world' (宛先 world handle) required".to_string())?
                 .to_string();
             let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
-                "wire/federate: CHRONISTA_HUB_ADDR 未設定（federation 無効）".to_string()
+                "wire/federate: hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）— federation 無効"
+                    .to_string()
             })?;
             let from_label = crate::daemon::hub_client::resolve_handle(None);
             // envelope = payload から `world`（transport 用 routing key）を除いた wire 本体。
@@ -718,7 +719,8 @@ async fn handle_wire_channel(
                 })?
                 .to_string();
             let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
-                "wire/discover-lanes: CHRONISTA_HUB_ADDR 未設定（federation 無効）".to_string()
+                "wire/discover-lanes: hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）— federation 無効"
+                    .to_string()
             })?;
             let lanes = crate::daemon::hub_client::federate_discover_lanes(&hub_addr, &world)
                 .await

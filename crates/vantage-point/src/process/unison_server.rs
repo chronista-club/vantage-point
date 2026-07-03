@@ -1010,6 +1010,19 @@ mod tests {
         assert_eq!(normalize_agent_addr("canvas@vp", "vp"), "canvas@vp");
     }
 
+    /// テスト用の spawn 可能な shell。 `$SHELL` があればそれを、 無ければ OS 既定
+    /// (Unix: `/bin/sh`、 Windows: `cmd.exe`) を使う。 Windows には `/bin/sh` が無いので
+    /// OS 分岐が必須 (pty_slot の `default_test_shell` と同方針)。
+    fn default_test_shell() -> String {
+        std::env::var("SHELL").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "cmd.exe".to_string()
+            } else {
+                "/bin/sh".to_string()
+            }
+        })
+    }
+
     // =========================================================================
     // S2 (doc 27 §4.1): demand-driven terminal pump の SP 側 e2e
     // =========================================================================
@@ -1027,7 +1040,7 @@ mod tests {
         use std::time::Duration;
 
         let state = build_test_app_state(None).await;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::conductor("vp");
         let lane = addr.to_string(); // "vp/conductor"
@@ -1113,7 +1126,7 @@ mod tests {
         use std::time::Duration;
 
         let state = build_test_app_state(None).await;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::conductor("vp");
         let lane = addr.to_string();
@@ -1138,8 +1151,14 @@ mod tests {
         // シェル初期化待ち。
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // terminal_write: base64 の "echo VP_S3_OK\n" を PtySlot に届ける。
-        let data = base64::engine::general_purpose::STANDARD.encode(b"echo VP_S3_OK\n");
+        // terminal_write: "echo VP_S3_OK" を PtySlot に届ける。 行確定の改行は OS 依存
+        // (Unix shell は LF、 cmd.exe(ConPTY) は Enter=CR、 pty_slot の write test と同方針)。
+        let echo_cmd: &[u8] = if cfg!(windows) {
+            b"echo VP_S3_OK\r"
+        } else {
+            b"echo VP_S3_OK\n"
+        };
+        let data = base64::engine::general_purpose::STANDARD.encode(echo_cmd);
         let res = dispatch_process_method(
             &state,
             "terminal_write",
@@ -1155,7 +1174,20 @@ mod tests {
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_secs(1), out.recv()).await {
                 Ok(Ok(bytes)) => {
-                    if String::from_utf8_lossy(&bytes).contains("VP_S3_OK") {
+                    let text = String::from_utf8_lossy(&bytes);
+                    // ConPTY は DSR (`\x1b[6n` = カーソル位置問い合わせ) の応答を端末側から
+                    // 受け取るまで描画を進めない。 本番は xterm.js が応答するが、 test では
+                    // 端末役として terminal_write 経由で応答する (pty_slot の write test と同型)。
+                    if text.contains("\u{1b}[6n") {
+                        let dsr = base64::engine::general_purpose::STANDARD.encode(b"\x1b[1;1R");
+                        let _ = dispatch_process_method(
+                            &state,
+                            "terminal_write",
+                            serde_json::json!({ "lane": lane, "data": dsr }),
+                        )
+                        .await;
+                    }
+                    if text.contains("VP_S3_OK") {
                         found = true;
                         break;
                     }
@@ -1208,7 +1240,7 @@ mod tests {
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::performer("vp", "chore");
         let address = addr.to_string();

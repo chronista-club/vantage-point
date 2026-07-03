@@ -52,31 +52,18 @@ pub fn detect_shell() -> String {
     }
     #[cfg(windows)]
     {
-        // 1. git-bash の標準 install path を最優先 (Git for Windows)
-        let git_bash_candidates = [
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-        ];
-        for path in &git_bash_candidates {
-            if Path::new(path).exists() {
-                return (*path).to_string();
-            }
+        // 1. git-bash (標準 install path → PATH 上の bash.exe、 WSL stub 除外)。
+        //    検出ロジックは vp-paths に集約 (stand_spawner と共有、 WindowsApps stub も除外)。
+        if let Some(p) = vp_paths::shell::find_git_bash() {
+            return p.to_string_lossy().into_owned();
         }
-        // 2. PATH から bash.exe (Git for Windows が PATH 設定してる場合)。
-        //    ただし WSL の C:\Windows\System32\bash.exe は除外。
-        if let Some(p) = find_in_path("bash.exe") {
-            let p_lower = p.to_string_lossy().to_lowercase();
-            if !p_lower.contains(r"\windows\system32\") {
-                return p.to_string_lossy().into_owned();
-            }
-        }
-        // 3. PowerShell (pwsh > powershell)
+        // 2. PowerShell (pwsh > powershell)
         for shell in &["pwsh.exe", "powershell.exe"] {
             if let Some(p) = find_in_path(shell) {
                 return p.to_string_lossy().into_owned();
             }
         }
-        // 4. cmd.exe (COMSPEC)
+        // 3. cmd.exe (COMSPEC)
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
     }
 }
