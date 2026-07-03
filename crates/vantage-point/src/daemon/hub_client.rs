@@ -6,6 +6,15 @@
 //!   未設定なら全 skip（= machine-local 動作）。常設運用は config.kdl 側（launchd daemon は env を持たない）。
 //! - **degradation**: hub down でも world は machine-local で動き続ける（federation 機能だけ失う）。
 //!
+//! ## connection-level auth（ADR-020 §S3、credential = Creo ID user-jwt）
+//! - 接続時に [`hub_credential`]（= `~/.vp/credentials.json` の access_token）が有れば
+//!   `connect_with_credential` で提示、無ければ credential なしで接続（graceful degrade）。
+//! - credential 提示は全 hub 経路（常駐 register / federate_wire_send / federate_discover_lanes /
+//!   hub-discover RPC）で共通 —— 接続確立が [`connect_and_open_worlds`] の 1 点に集約されているため。
+//! - hub は現状 permissive = **observe mode**（credential を verify してログるが未認証も通す）。
+//!   VP のこの提示は非破壊で、hub が required に反転した後は未ログイン connection が gate される。
+//!   contract 確定の経緯は wire thread 019f28c9（hub↔VP coordination、2026-07-04）。
+//!
 //! ## hub 側の契約（chronista-hub v0.1.0, `hub_protocol.kdl`、変更不可）
 //! - Unison surface addr: env `CHRONISTA_HUB_UNISON_ADDR`、default `[::1]:7879`（QUIC/UDP）
 //! - channel `worlds`:
@@ -153,6 +162,48 @@ pub fn hub_addr() -> Option<String> {
 fn resolve_hub_addr(env_val: Option<String>, config_val: Option<String>) -> Option<String> {
     let clean = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     clean(env_val).or_else(|| clean(config_val))
+}
+
+/// hub connection-level auth（ADR-020 §S3）に提示する credential を解決する。
+///
+/// credential = **raw Creo ID user-jwt（UTF-8 bytes）**（hub 契約、thread 019f28c9 で確定）。
+/// hub 側は `String::from_utf8(cred)` → `verify_user_token` → principal を立てる。
+///
+/// 実体は `vp auth login` が保存する `~/.vp/credentials.json` の `access_token`。未ログイン
+/// （file 不在 / 空 token）なら `None` を返し、caller は **credential なしで接続**する
+/// （graceful degrade）。現状 hub は permissive = observe mode なので、credential 不在でも
+/// federation は動く（verify されないだけ）。hub が required に反転した後は、未ログインだと
+/// hub 側で connection が gate される（その時点で `vp auth login` を促すのが正しい挙動）。
+///
+/// token 期限切れは**ここでは検査しない**（verify は hub 側の責務）。期限切れ token を送れば
+/// hub の verify が失敗するが、observe 下では非破壊（ログに verify 失敗が出るだけ）。
+fn hub_credential() -> Option<Vec<u8>> {
+    match crate::commands::auth::read_credentials() {
+        Ok(creds) => credential_from_creds(creds),
+        // file 読み込み失敗（壊れた file 等）は credential なし扱い。federation を止めるより
+        // observe/permissive で繋ぐ方が degrade として穏当。
+        Err(e) => {
+            tracing::debug!(
+                "hub credential 読み込み失敗（credential なしで接続）: {}",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// credentials から credential bytes を作る純関数（I/O と分離、env 非依存でテスト可能）。
+///
+/// access_token が有れば raw UTF-8 bytes を返す。file 不在（`None`）or 空白のみ token は
+/// `None`（未ログイン相当 = credential なしで接続に degrade）。
+fn credential_from_creds(creds: Option<crate::commands::auth::Credentials>) -> Option<Vec<u8>> {
+    let token = creds?.access_token;
+    let token = token.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.as_bytes().to_vec())
+    }
 }
 
 /// この world の handle（hub registry の一意キー）を解決する。
@@ -394,15 +445,35 @@ fn build_hub_client(addr: &str) -> Result<ProtocolClient> {
 /// register/discover/relay-dialer 共通の接続確立。relay target inbound 用の handler 登録は
 /// **connect より前**に済ませておく必要があるため、この関数の呼び出し前に行う（[`HubClient::
 /// connect_with_inbound`] 参照）。
+///
+/// ## connection-level auth（ADR-020 §S3）
+/// [`hub_credential`] が Creo ID user-jwt を返せば `connect_with_credential`（connect 直後に
+/// `unison.auth` で credential を 1 回提示）で接続する。未ログイン等で credential が無ければ
+/// 従来どおり `connect`（credential なし）に degrade する。hub は permissive = observe の間
+/// どちらでも繋がり、required 反転後は credential 無しの connection が gate される。
+///
+/// credential 付き接続が**失敗**した場合は原因不問（verifier 拒否 / hub の auth 未対応 /
+/// 網断）で warn を出して credential なしに降格し再試行する — 無効 token や旧 hub 相手でも
+/// federation が全落ちしない（permissive では従来同等に繋がる。網断なら降格後も同じ理由で
+/// 失敗するだけで、次回呼び出し時に credential は再評価される）。
+///
+/// **auth channel は他 channel より先**という club-unison の制約は `connect_with_credential`
+/// が内部で満たす（connect → auth → 本メソッドが worlds を open）。
 async fn connect_and_open_worlds(
     client: &ProtocolClient,
     addr: &str,
     retries: u32,
 ) -> Result<UnisonChannel> {
+    let mut credential = hub_credential();
     let attempts = retries.max(1);
     let mut last_err: Option<String> = None;
     for attempt in 0..attempts {
-        match client.connect(addr).await {
+        // credential があれば connection-level auth 付きで、無ければ従来どおり接続する。
+        let connected = match &credential {
+            Some(cred) => client.connect_with_credential(addr, cred).await,
+            None => client.connect(addr).await,
+        };
+        match connected {
             Ok(_) => {
                 return client
                     .open_channel("worlds")
@@ -410,6 +481,22 @@ async fn connect_and_open_worlds(
                     .map_err(|e| anyhow::anyhow!("worlds チャネル open 失敗: {}", e));
             }
             Err(e) => {
+                // credential 付き接続の失敗は**原因を問わず** credential なしに降格して以降の
+                // 試行を続ける。失敗モードは複数あり（verifier 拒否 = 期限切れ / audience 不一致、
+                // hub が auth 未対応 = `unison.auth` channel 不在の旧 hub / dev hub、等）、error
+                // 文言での選別は club-unison の内部文言に依存して取りこぼす（moody-blues レビューで
+                // channel 不在経路の取りこぼしを指摘）。credential なし接続は既存の安全パス
+                //（permissive なら従来同等）なので無条件降格で悪化しない — 純粋な網断なら降格後も
+                // 同じ理由で失敗するだけで、次回の `connect_and_open_worlds` 呼び出し時には
+                // [`hub_credential`] が再評価されるため恒久降格にもならない。
+                if credential.take().is_some() {
+                    tracing::warn!(
+                        "hub への credential 付き接続に失敗 — credential なしに降格して再試行します\
+                         （verifier 拒否 = token 期限切れ / audience 不一致、または hub が auth \
+                         未対応の可能性。`vp auth login` での再ログインも検討）: {}",
+                        e
+                    );
+                }
                 last_err = Some(e.to_string());
                 if attempt + 1 < attempts {
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -737,6 +824,45 @@ mod tests {
         assert_eq!(
             resolve_hub_addr(None, s(" hub.example:7879 ")),
             s("hub.example:7879")
+        );
+    }
+
+    /// テスト用の Credentials を access_token だけ埋めて作る。
+    fn creds_with_token(token: &str) -> crate::commands::auth::Credentials {
+        crate::commands::auth::Credentials {
+            access_token: token.to_string(),
+            token_type: None,
+            expires_at: None,
+            refresh_token: None,
+            scope: None,
+        }
+    }
+
+    #[test]
+    fn credential_from_creds_maps_token_to_bytes() {
+        // access_token 有り → raw UTF-8 bytes を credential として返す。
+        assert_eq!(
+            credential_from_creds(Some(creds_with_token("jwt.abc.def"))),
+            Some(b"jwt.abc.def".to_vec())
+        );
+    }
+
+    #[test]
+    fn credential_from_creds_none_when_absent_or_blank() {
+        // file 不在（未ログイン）→ None（credential なしで接続に degrade）。
+        assert_eq!(credential_from_creds(None), None);
+        // 空白のみ token → None（空 credential を送らない）。
+        assert_eq!(credential_from_creds(Some(creds_with_token("   "))), None);
+        // 空文字も同様。
+        assert_eq!(credential_from_creds(Some(creds_with_token(""))), None);
+    }
+
+    #[test]
+    fn credential_from_creds_trims_surrounding_whitespace() {
+        // 前後空白は trim（file 手編集の揺れ吸収、JWT 本体だけを送る）。
+        assert_eq!(
+            credential_from_creds(Some(creds_with_token("  jwt.abc.def  "))),
+            Some(b"jwt.abc.def".to_vec())
         );
     }
 
