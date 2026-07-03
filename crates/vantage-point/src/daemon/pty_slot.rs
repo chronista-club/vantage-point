@@ -10,6 +10,7 @@
 //! (ring buffer) は consumer (ws_terminal) ごと撤去した (live stream のみ)。
 
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -20,8 +21,11 @@ use tokio::sync::broadcast;
 /// 1つのPTYプロセスを所有し、broadcast channel 経由で
 /// 出力を配信する。Daemon がこのスロットをペインごとに持つ。
 pub struct PtySlot {
-    /// PTY への書き込みハンドル
-    writer: Box<dyn Write + Send>,
+    /// PTY への書き込みハンドル。
+    ///
+    /// Windows の ConPTY DSR auto-answer (reader task が起動時 `\x1b[6n` に応答する) と
+    /// 外部 `write()` の両方が同じ writer を使うため `Arc<Mutex<_>>` で共有する。
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// PTY ペア（リサイズ用に保持）
     pair: portable_pty::PtyPair,
     /// 子プロセスハンドル（ゾンビプロセス防止のため保持）
@@ -123,15 +127,16 @@ impl PtySlot {
 
         // マスター側の読み書きハンドル
         let reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
+        // writer は外部 write() と reader task の DSR auto-answer で共有する。
+        let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
 
         // broadcast channel（バッファ 256）
         // initial_rx を保持し、reader_task 開始前に subscriber を確保する。
         // これにより PTY からの最初のバイト（シェルプロンプト等）を取りこぼさない。
         let (output_tx, initial_rx) = broadcast::channel(256);
 
-        // reader task 開始
-        let reader_handle = start_reader_task(reader, output_tx.clone());
+        // reader task 開始 (writer を渡して ConPTY DSR に応答できるようにする)
+        let reader_handle = start_reader_task(reader, output_tx.clone(), Arc::clone(&writer));
 
         Ok((
             Self {
@@ -149,8 +154,12 @@ impl PtySlot {
 
     /// PTY に入力を書き込む
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.writer.write_all(data)?;
-        self.writer.flush()?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PtySlot writer mutex poisoned"))?;
+        writer.write_all(data)?;
+        writer.flush()?;
         Ok(())
     }
 
@@ -210,8 +219,13 @@ impl Drop for PtySlot {
 fn start_reader_task(
     mut reader: Box<dyn Read + Send>,
     tx: broadcast::Sender<Vec<u8>>,
+    #[cfg_attr(not(windows), allow(unused_variables))] writer: Arc<Mutex<Box<dyn Write + Send>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
+        // Windows ConPTY DSR gating の回避状態。 起動時の cursor-position query に一度だけ
+        // 応答したかを覚える (詳細は下の応答ブロック参照)。
+        #[cfg(windows)]
+        let mut dsr_answered = false;
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
@@ -221,7 +235,38 @@ fn start_reader_task(
                     break;
                 }
                 Ok(n) => {
-                    let chunk = buf[..n].to_vec();
+                    #[cfg_attr(not(windows), allow(unused_mut))]
+                    let mut chunk = buf[..n].to_vec();
+
+                    // ── Windows ConPTY DSR auto-answer ──
+                    // ConPTY は起動直後に DSR (`\x1b[6n` = カーソル位置問い合わせ) を 1 回出し、
+                    // その応答 (`\x1b[row;colR`) を受け取るまで**以降の全出力を止める** (Unix PTY に
+                    // ない gating)。 応答すべき端末 (xterm.js) は VP では demand-driven な terminal
+                    // pump 経由で**後から** subscribe するため、 起動時 DSR に間に合わず (tokio
+                    // broadcast は新 subscriber へ過去メッセージを配らない)、 ConPTY が永久ブロック →
+                    // console 空 + claude が端末セットアップ待ちで exit、 という症状になる。
+                    //
+                    // reader task は PTY spawn 時から存在する唯一の consumer なので、 ここで起動時
+                    // DSR に一度だけ応答して出力を解禁する。 起動直後は cursor が原点にあるため
+                    // `\x1b[1;1R` が正しい応答。 二重応答 (xterm も後で応答) を避けるため、 応答した
+                    // DSR は forward stream から除去する。 以降 (mid-session) の DSR は実カーソル位置を
+                    // 知る xterm.js が round-trip で応答する。
+                    #[cfg(windows)]
+                    {
+                        const DSR_QUERY: &[u8] = b"\x1b[6n";
+                        if !dsr_answered && chunk.windows(DSR_QUERY.len()).any(|w| w == DSR_QUERY) {
+                            if let Ok(mut w) = writer.lock() {
+                                let _ = w.write_all(b"\x1b[1;1R");
+                                let _ = w.flush();
+                            }
+                            dsr_answered = true;
+                            chunk = strip_byte_seq(&chunk, DSR_QUERY);
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                        }
+                    }
+
                     // 受信者がいなくても送信を試行（正常動作）
                     let _ = tx.send(chunk);
                 }
@@ -232,6 +277,25 @@ fn start_reader_task(
             }
         }
     })
+}
+
+/// `data` から `seq` の全出現を取り除いた新しい Vec を返す (ConPTY DSR の二重応答防止用)。
+#[cfg(windows)]
+fn strip_byte_seq(data: &[u8], seq: &[u8]) -> Vec<u8> {
+    if seq.is_empty() {
+        return data.to_vec();
+    }
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i..].starts_with(seq) {
+            i += seq.len();
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -393,5 +457,57 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+
+    /// 回帰 (W2b console blank 根治): Windows ConPTY は起動時 DSR (`\x1b[6n`) の応答を
+    /// 受け取るまで全出力を gate する。 PtySlot reader task が起動時 DSR に自動応答することで、
+    /// 端末役が何もしなくても PTY 出力が流れることを pin する。 応答が無いと ConPTY は
+    /// `\x1b[6n` 4 byte だけ出して以降を止める (= console 空の根因)。
+    ///
+    /// git-bash 依存 (ConPTY × MSYS bash が最も顕著に DSR gating する) なので、 git-bash 不在の
+    /// CI では skip する。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn conpty_dsr_auto_answer_unblocks_output() {
+        let Some(bash) = vp_paths::shell::find_git_bash() else {
+            eprintln!("git-bash 不在のため skip (ConPTY DSR 回帰テスト)");
+            return;
+        };
+        let bash = bash.to_string_lossy().to_string();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+
+        // 端末役 (DSR 応答) を一切せずに git-bash の echo 出力を集める。
+        // PtySlot が自動応答しなければ ConPTY は `\x1b[6n` で止まり VPMARKER は出ない。
+        let args = vec!["-lc".to_string(), "echo VPMARKER_OUT; sleep 1".to_string()];
+        let (_slot, mut rx) = PtySlot::spawn(&cwd, &bash, &args, &[], 80, 24).expect("PTY spawn");
+
+        let mut buf: Vec<u8> = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
+                Ok(Ok(b)) => {
+                    buf.extend_from_slice(&b);
+                    if String::from_utf8_lossy(&buf).contains("VPMARKER_OUT") {
+                        break;
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+
+        let text = String::from_utf8_lossy(&buf);
+        assert!(
+            text.contains("VPMARKER_OUT"),
+            "PtySlot の DSR auto-answer で ConPTY 出力が解禁されるはず。 受信={} bytes: <<{}>>",
+            buf.len(),
+            text.replace('\x1b', "\\e")
+        );
+        // 応答済 DSR は forward stream から除去される (二重応答防止)。
+        assert!(
+            !text.contains("\u{1b}[6n"),
+            "応答した startup DSR は stream から除去されるはず: <<{}>>",
+            text.replace('\x1b', "\\e")
+        );
     }
 }
