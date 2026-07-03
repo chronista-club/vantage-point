@@ -897,11 +897,12 @@ pub async fn run_world(
         port
     );
 
-    // chronista-hub federation (opt-in): env `CHRONISTA_HUB_ADDR` が設定されていれば、この world を
-    // hub registry に register（他 world から discover 可能に）し、**relay の target inbound を常駐で
-    // 受ける**（ADR-020 §S4）。旧実装は起動時に register して即 drop する使い捨てだったが、relay 受信
-    // には接続維持が必要なため常駐セッション（[`run_hub_federation`]）へ昇格した（接続が切れたら自律
-    // 再接続）。未設定なら machine-local 動作（= skip）。SSOT 原則により hub と話すのは TheWorld のみ。
+    // chronista-hub federation (opt-in): hub addr（env `CHRONISTA_HUB_ADDR` > config.kdl `hub-addr`、
+    // `hub_client::hub_addr()` が解決）が設定されていれば、この world を hub registry に register
+    // （他 world から discover 可能に）し、**relay の target inbound を常駐で受ける**（ADR-020 §S4）。
+    // 旧実装は起動時に register して即 drop する使い捨てだったが、relay 受信には接続維持が必要なため
+    // 常駐セッション（[`run_hub_federation`]）へ昇格した（接続が切れたら自律再接続）。未設定なら
+    // machine-local 動作（= skip）。SSOT 原則により hub と話すのは TheWorld のみ。
     if let Some(hub_addr) = crate::daemon::hub_client::hub_addr() {
         // handle = この machine の identity（OS hostname → "vp-world" fallback）。
         let handle = crate::daemon::hub_client::resolve_handle(None);
@@ -1035,7 +1036,7 @@ pub async fn run_world(
         ));
     } else {
         tracing::debug!(
-            "chronista-hub federation 無効 ({} 未設定) — machine-local 動作",
+            "chronista-hub federation 無効 (env {} / config.kdl hub-addr とも未設定) — machine-local 動作",
             crate::daemon::hub_client::HUB_ADDR_ENV
         );
     }
