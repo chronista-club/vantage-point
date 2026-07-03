@@ -569,7 +569,7 @@ async fn relay_send_on(
 /// federation 宛先は handle 明示で受け、ここで routing key（wld_id）に解決する。
 async fn discover_wld_by_handle(client: &HubClient, handle: &str) -> Result<String> {
     let worlds = client.discover().await.context("discover に失敗")?;
-    let target = worlds.iter().find(|w| w.handle == handle).ok_or_else(|| {
+    let target = pick_latest_by_handle(&worlds, handle).ok_or_else(|| {
         anyhow::anyhow!(
             "world '{}' が hub registry に居ない（discover {} 件）",
             handle,
@@ -583,6 +583,19 @@ async fn discover_wld_by_handle(client: &HubClient, handle: &str) -> Result<Stri
         );
     }
     Ok(target.wld_id.clone())
+}
+
+/// handle 一致の world から採用する 1 件を選ぶ純関数 — **registered_at 最新を選ぶ**。
+///
+/// registry には同一 handle の stale entry が残留し得る（daemon 再作成による wld_id 変化後の
+/// 再 register、hub 側 cleanup 前 等）。先頭一致だと stale（死んだ wld_id）を拾って relay が
+/// offline で失敗する（2026-07-04 実害: 別 PC の discover が mito-mba.local の stale を掴んだ）。
+/// `registered_at` は ISO 8601（同一フォーマット）なので辞書順比較 = 時系列比較。
+fn pick_latest_by_handle<'a>(worlds: &'a [WorldEntry], handle: &str) -> Option<&'a WorldEntry> {
+    worlds
+        .iter()
+        .filter(|w| w.handle == handle)
+        .max_by(|a, b| a.registered_at.cmp(&b.registered_at))
 }
 
 /// 指定 wld_id へ短命接続で relay envelope を送る（handle 解決なし）。宛先 wld_id が既知のケース
@@ -864,6 +877,38 @@ mod tests {
             credential_from_creds(Some(creds_with_token("  jwt.abc.def  "))),
             Some(b"jwt.abc.def".to_vec())
         );
+    }
+
+    /// テスト用 WorldEntry を最小構成で作る。
+    fn entry(handle: &str, wld_id: &str, registered_at: &str) -> WorldEntry {
+        WorldEntry {
+            wld_id: wld_id.to_string(),
+            endpoints: vec![],
+            handle: handle.to_string(),
+            name: String::new(),
+            registered_at: registered_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn pick_latest_by_handle_prefers_newest_registration() {
+        // stale（旧 wld）が先頭でも registered_at 最新の現役 entry を選ぶ（2026-07-04 実害の再現形）。
+        let worlds = vec![
+            entry("mba.local", "wld_stale", "2026-07-03T10:38:33.760655172Z"),
+            entry("other.local", "wld_other", "2026-07-03T23:15:30.389430772Z"),
+            entry("mba.local", "wld_live", "2026-07-03T23:00:07.784137934Z"),
+        ];
+        assert_eq!(
+            pick_latest_by_handle(&worlds, "mba.local").map(|w| w.wld_id.as_str()),
+            Some("wld_live")
+        );
+        // 一致 1 件ならそれを返す
+        assert_eq!(
+            pick_latest_by_handle(&worlds, "other.local").map(|w| w.wld_id.as_str()),
+            Some("wld_other")
+        );
+        // 一致なしは None
+        assert!(pick_latest_by_handle(&worlds, "nowhere.local").is_none());
     }
 
     #[test]
