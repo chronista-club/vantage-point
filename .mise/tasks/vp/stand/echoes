@@ -59,7 +59,9 @@ tmux -L "$SOCK" set-option -as terminal-features 'xterm*:extkeys' 2>/dev/null ||
 #     cd "$VP_CWD" && eval "$CLAUDE_CMD"
 #     ─ shell 上で素 claude を起動。 doc 11 PR-D (Z 系統) で spawn cwd は VP install
 #       root なので、 明示的に project dir に cd してから claude を起動する。
-LOGIN_SHELL="${SHELL:-/bin/zsh}"
+# login shell fallback: $SHELL を尊重、 未設定なら実在する shell を探す。 Windows(git-bash)は
+# /bin/zsh が無く $SHELL も非対話 spawn では空になりがちなので、 zsh → bash → sh の順で解決する。
+LOGIN_SHELL="${SHELL:-$(command -v zsh || command -v bash || echo /bin/sh)}"
 
 # wiremsg R2-c (チャネル B、 決定 D2): wire 未読通知 hook を VP が spawn 時に注入する。
 # dotfile 非依存で箱から動く (#512/#515 と同じ「VP が自前担保」哲学)。 hook 実体は

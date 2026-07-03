@@ -23,6 +23,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+pub mod shell;
 pub mod spawn_env;
 
 /// VP の実行 profile (`VP_PROFILE` env var)。
