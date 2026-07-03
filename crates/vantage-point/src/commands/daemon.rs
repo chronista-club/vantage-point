@@ -53,9 +53,10 @@ pub enum DaemonCommands {
     },
     /// chronista-hub registry に居る world 一覧を取得（federation discovery）
     ///
-    /// `CHRONISTA_HUB_ADDR` を設定した状態で `vp daemon start` していると、World が起動時に
-    /// 自身を hub に register する。本コマンドは TheWorld 経由で hub の `worlds.Discover` を叩き、
-    /// 同 hub に register した他 world を列挙する。env 未設定なら federation 無効。
+    /// hub addr（env `CHRONISTA_HUB_ADDR` or config.kdl `hub-addr`）を設定した状態で
+    /// `vp daemon start` していると、World が起動時に自身を hub に register する。本コマンドは
+    /// TheWorld 経由で hub の `worlds.Discover` を叩き、同 hub に register した他 world を
+    /// 列挙する。env / config とも未設定なら federation 無効。
     Discover,
     /// L1 lifecycle: TheWorld を LaunchAgent として常駐化（macOS、login always-on + crash 自動再起動）
     ///
@@ -287,6 +288,12 @@ fn status() -> Result<()> {
                     json.get("version").and_then(|v| v.as_str()).unwrap_or("?")
                 );
                 println!("  Port: {}", crate::cli::world_port());
+                // hub federation 状態 (disabled/connecting/connected/disconnected)。
+                // dogfood で「federation が本当に ON か」を CLI だけで確認できるようにする
+                // (config.kdl hub-addr 永続化とペア、旧 daemon の health に hub field は無いので if let)。
+                if let Some(hub) = json.get("hub").and_then(|v| v.as_str()) {
+                    println!("  Hub: {}", hub);
+                }
             }
             // Process 一覧
             if let Ok(resp) = reqwest::blocking::get(format!(

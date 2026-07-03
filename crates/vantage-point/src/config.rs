@@ -108,6 +108,16 @@ pub struct Config {
     #[kdl(child, name = "default-stand", unwrap_arg)]
     pub default_stand: Option<String>,
 
+    /// chronista-hub の Unison surface addr（federation opt-in、例: "hub.chronista.club:12879"）。
+    ///
+    /// 未設定 = federation off（machine-local 動作）。env `CHRONISTA_HUB_ADDR` が設定されて
+    /// いればそちらが優先（dev override）— 解決は `daemon::hub_client::hub_addr()` が担う。
+    /// launchd (LaunchAgent) 起動の daemon は shell env を持たないため、常設運用は
+    /// この config.kdl 側が SSOT（TERM/PATH/LANG と同じ launchd env 問題の構造的回避）。
+    #[serde(default)]
+    #[kdl(child, name = "hub-addr", unwrap_arg)]
+    pub hub_addr: Option<String>,
+
     /// Projects configuration
     ///
     /// VP-188: SSOT は `~/.config/vp/projects.kdl`。 `Config::load()` が projects.kdl を
@@ -498,6 +508,7 @@ default-project-dir "/home/user/projects/main"
 default-port 33001
 claude-cli-path "/opt/claude/bin/claude"
 default-stand "echoes"
+hub-addr "hub.chronista.club:12879"
 startup {
     max-concurrent-lane-spawn 3
 }
@@ -513,6 +524,7 @@ startup {
             Some("/opt/claude/bin/claude")
         );
         assert_eq!(config.default_stand.as_deref(), Some("echoes"));
+        assert_eq!(config.hub_addr.as_deref(), Some("hub.chronista.club:12879"));
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
         // projects は config.kdl に出さない (#[kdl(skip)]、 SSOT は projects.kdl)
         assert!(config.projects.is_empty());
@@ -564,6 +576,8 @@ startup {
         let config: Config = club_kdl::from_str(kdl).expect("minimal config.kdl parse");
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
         assert!(config.default_project_dir.is_none());
+        // hub-addr node 不在 → None (= federation off、 machine-local 動作)
+        assert!(config.hub_addr.is_none());
         // default-port node 不在 → KDL field default は 0 (load の post-process で 33000)
         assert_eq!(config.default_port, 0);
     }

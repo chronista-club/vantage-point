@@ -2,7 +2,8 @@
 //!
 //! ## 責務分担（prior art: mem_1CaVeTysipdgVHoxwxUcPj / mem_1Cc1dA79VZu586fjqafiBS）
 //! - **SSOT**: hub への register は **TheWorld 経由のみ**。個別 SP / performer は hub と直接話さない。
-//! - **opt-in**: hub 依存は env `CHRONISTA_HUB_ADDR` 未設定なら全 skip（= machine-local 動作）。
+//! - **opt-in**: hub addr（env `CHRONISTA_HUB_ADDR` > config.kdl `hub-addr`、[`hub_addr()`] が解決）
+//!   未設定なら全 skip（= machine-local 動作）。常設運用は config.kdl 側（launchd daemon は env を持たない）。
 //! - **degradation**: hub down でも world は machine-local で動き続ける（federation 機能だけ失う）。
 //!
 //! ## hub 側の契約（chronista-hub v0.1.0, `hub_protocol.kdl`、変更不可）
@@ -44,7 +45,8 @@ use unison::network::{ClientConnectionEvent, ClientConnectionEventReceiver, Netw
 /// 表示は「world online の近くに `Hub ● connected`」のシンプルなインジケータ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HubFederationState {
-    /// `CHRONISTA_HUB_ADDR` 未設定（machine-local 動作、federation off）。
+    /// hub addr 未設定（env `CHRONISTA_HUB_ADDR` / config.kdl `hub-addr` とも無し =
+    /// machine-local 動作、federation off）。
     Disabled,
     /// 接続試行中 or 再接続 backoff 待ち（まだ register 未確立）。
     Connecting,
@@ -108,7 +110,8 @@ impl HubFederationStatus {
     }
 }
 
-/// hub Unison surface の addr を読む env var。未設定/空なら hub federation は opt-out。
+/// hub Unison surface の addr を読む env var（dev override）。config.kdl `hub-addr` より優先。
+/// env / config とも未設定なら hub federation は opt-out（解決は [`hub_addr()`]）。
 pub const HUB_ADDR_ENV: &str = "CHRONISTA_HUB_ADDR";
 
 /// hub registry に登録された 1 world の entry（`worlds.Discover` の戻り要素）。
@@ -131,12 +134,25 @@ pub struct WorldEntry {
     pub registered_at: String,
 }
 
-/// env から hub addr を取得する（= opt-in 判定）。未設定 or 空白のみなら `None`（federation skip）。
+/// hub addr を解決する（= federation opt-in 判定の SSOT）。優先順位: env > config.kdl。
+///
+/// - env `CHRONISTA_HUB_ADDR` — dev override / 一時切替用（従来経路、互換維持）
+/// - config.kdl `hub-addr` — 常設運用の SSOT。launchd (LaunchAgent) 起動の daemon は
+///   shell env を持たないため、brew / 常駐運用では config 側でしか federation を
+///   常時 ON にできない（TERM/PATH/LANG と同じ launchd env 問題の構造的回避）
+///
+/// どちらも未設定 or 空白のみなら `None`（federation skip = machine-local 動作）。
+/// config 読み込み失敗（parse error 等）は env のみで判定する（fail-open で従来動作に degrade）。
 pub fn hub_addr() -> Option<String> {
-    std::env::var(HUB_ADDR_ENV)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let env_val = std::env::var(HUB_ADDR_ENV).ok();
+    let config_val = crate::config::Config::load().ok().and_then(|c| c.hub_addr);
+    resolve_hub_addr(env_val, config_val)
+}
+
+/// 優先順位の純関数（env > config）。空白のみは「未設定」として次の候補に fall through する。
+fn resolve_hub_addr(env_val: Option<String>, config_val: Option<String>) -> Option<String> {
+    let clean = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    clean(env_val).or_else(|| clean(config_val))
 }
 
 /// この world の handle（hub registry の一意キー）を解決する。
@@ -700,6 +716,28 @@ mod tests {
     fn hub_addr_env_name() {
         // env var 名は hub エコシステム命名と揃える（hub 側は CHRONISTA_HUB_UNISON_ADDR）。
         assert_eq!(HUB_ADDR_ENV, "CHRONISTA_HUB_ADDR");
+    }
+
+    #[test]
+    fn resolve_hub_addr_precedence() {
+        let s = |v: &str| Some(v.to_string());
+        // env > config（両方あれば env が勝つ = dev override）
+        assert_eq!(resolve_hub_addr(s("env:1"), s("cfg:1")), s("env:1"));
+        // env 不在 → config に fall through（launchd 常設運用の本線）
+        assert_eq!(resolve_hub_addr(None, s("cfg:1")), s("cfg:1"));
+        // 空白のみの env は「未設定」扱いで config へ
+        assert_eq!(resolve_hub_addr(s("   "), s("cfg:1")), s("cfg:1"));
+        // 両方なし = federation off
+        assert_eq!(resolve_hub_addr(None, None), None);
+        // 前後空白は trim（config 手編集の揺れ吸収）
+        assert_eq!(
+            resolve_hub_addr(s(" hub.example:7879 "), None),
+            s("hub.example:7879")
+        );
+        assert_eq!(
+            resolve_hub_addr(None, s(" hub.example:7879 ")),
+            s("hub.example:7879")
+        );
     }
 
     #[test]
