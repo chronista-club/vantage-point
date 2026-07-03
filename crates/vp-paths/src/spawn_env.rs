@@ -211,6 +211,35 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn augment_path_unix_skips_prefixes_already_present() {
+        // Mac 回帰 pin: 健全な dev shell で base に既存の prefix (homebrew 等) は重複させない。
+        let r = augment_path("/opt/homebrew/bin:/usr/bin", Some("/Users/x"));
+        assert_eq!(
+            r,
+            "/Users/x/.local/bin:/Users/x/.local/share/mise/shims:/Users/x/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn augment_path_unix_builds_from_prefixes_when_base_empty() {
+        // Mac 回帰 pin: base が空でも prefix だけで PATH を構築できる。
+        assert_eq!(
+            augment_path("", Some("/Users/x")),
+            "/Users/x/.local/bin:/Users/x/.local/share/mise/shims:/Users/x/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn augment_path_unix_all_prefixes_present_returns_base_unchanged() {
+        // Mac 回帰 pin: 全 prefix が既に base にあれば base をそのまま返す (肥大化しない)。
+        let base = "/Users/x/.local/bin:/Users/x/.local/share/mise/shims:/Users/x/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin";
+        assert_eq!(augment_path(base, Some("/Users/x")), base);
+    }
+
     // ── Windows 固有の prefix セットと区切り ──
 
     #[cfg(windows)]
