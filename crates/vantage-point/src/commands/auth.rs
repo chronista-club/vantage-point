@@ -7,7 +7,10 @@
 //! ## A2b (= dogfood 10): `vp auth login` (= loopback OAuth Native App + PKCE) + refresh
 //!
 //! - RFC 8252 (= OAuth 2.0 for Native Apps) 準拠の loopback IP pattern
-//! - vp-cli が `127.0.0.1:0` で一時 TCP listener を立て、 取得した port を redirect_uri に embed
+//! - vp-cli が `127.0.0.1:32800`（固定、 env `VP_OIDC_CALLBACK_PORT` で上書き可）に TCP listener を
+//!   立て、 その port を redirect_uri に embed。 Auth0 は loopback でも port 完全一致を要求する
+//!   （2026-07-04 実測）ため RFC 8252 の random-port は使えない — Auth0 app の Allowed Callback
+//!   URLs `http://127.0.0.1:32800/callback` と対で固定する
 //! - PKCE S256 (= RFC 7636) で code interception 防止
 //! - 32-char CSRF state で session fixation 防止
 //! - default browser を `webbrowser` crate で spawn、 authorize URL を開く
@@ -107,6 +110,14 @@ pub struct OidcConfig {
     pub authorize_endpoint: String,
     pub token_endpoint: String,
     pub scope: String,
+    /// Auth0 API audience（optional、env `VP_OIDC_AUDIENCE`）。
+    ///
+    /// 指定すると access_token が **その API 向けの RS256 JWS**（aud claim 付き）で発行される。
+    /// 未指定だと Auth0 は JWE (alg=dir) の opaque token を返し、外部 verifier（例:
+    /// chronista-hub の federation auth、fail-closed で exp/iss/aud 必須）を**構造的に通らない**
+    /// （2026-07-04 実測）。hub federation の credential にする場合は hub の
+    /// `CREO_ID_AUDIENCES` と交差する audience を指定すること。
+    pub audience: Option<String>,
 }
 
 impl OidcConfig {
@@ -119,11 +130,16 @@ impl OidcConfig {
         let token_endpoint = std::env::var("VP_OIDC_TOKEN_ENDPOINT")
             .unwrap_or_else(|_| DEFAULT_TOKEN_ENDPOINT.to_string());
         let scope = std::env::var("VP_OIDC_SCOPE").unwrap_or_else(|_| DEFAULT_SCOPE.to_string());
+        let audience = std::env::var("VP_OIDC_AUDIENCE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         Ok(Self {
             client_id,
             authorize_endpoint,
             token_endpoint,
             scope,
+            audience,
         })
     }
 }
@@ -489,26 +505,43 @@ async fn login(no_browser: bool) -> Result<()> {
     let (verifier, challenge) = pkce_pair();
     let state = random_state();
 
-    // 127.0.0.1:0 で OS 任せの port を取得、 redirect_uri に embed
-    let listener = TcpListener::bind("127.0.0.1:0")
+    // callback listener は**固定 port**（default 32800、env `VP_OIDC_CALLBACK_PORT` で上書き）。
+    // 旧実装は `127.0.0.1:0` のランダム port を redirect_uri に埋めていたが、Auth0 は loopback
+    // callback でも **port の完全一致**を要求する（2026-07-04 実測: tenant log
+    // "http://127.0.0.1:62294/callback is not in the list of allowed callback URLs"、
+    // 公称の loopback port 無視は効かない）。gcloud / rclone と同じ固定 port 方式に変更。
+    // Auth0 app（Vantage Point CLI）の Allowed Callback URLs に
+    // `http://127.0.0.1:32800/callback` を登録して対にする。
+    let port = std::env::var("VP_OIDC_CALLBACK_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(32800);
+    let listener = TcpListener::bind(("127.0.0.1", port))
         .await
-        .context("failed to bind loopback listener")?;
-    let port = listener
-        .local_addr()
-        .context("failed to read listener addr")?
-        .port();
+        .with_context(|| {
+            format!(
+                "callback port {port} を bind できません（他プロセスが使用中なら \
+             VP_OIDC_CALLBACK_PORT で変更し、Auth0 app の Allowed Callback URLs にも \
+             同じ port の URL を追加してください）"
+            )
+        })?;
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
     // authorize URL 構築
-    let query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("response_type", "code")
+    let mut qs = form_urlencoded::Serializer::new(String::new());
+    qs.append_pair("response_type", "code")
         .append_pair("client_id", &config.client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("scope", &config.scope)
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .finish();
+        .append_pair("code_challenge_method", "S256");
+    // audience 指定時のみ付与 — 指定すると access_token が当該 API 向け RS256 JWS になる
+    // （未指定 = 従来どおり JWE opaque、既存の nexus 経路の挙動は不変）。
+    if let Some(aud) = &config.audience {
+        qs.append_pair("audience", aud);
+    }
+    let query = qs.finish();
     let authorize_url = format!("{}?{}", config.authorize_endpoint, query);
 
     if no_browser {
