@@ -84,11 +84,9 @@ impl PtySlot {
                 .map(|(_, v)| v.clone())
                 .or_else(|| std::env::var("PATH").ok())
                 .unwrap_or_default();
-            let home = std::env::var("HOME").ok();
-            cmd.env(
-                "PATH",
-                crate::spawn_env::augment_path(&base_path, home.as_deref()),
-            );
+            // home は `dirs::home_dir()` で解決 (Windows で `HOME` 未設定 = `USERPROFILE` のみ
+            // でも claude.exe 等の user tool prefix を引ける)。 base は caller env の PATH override。
+            cmd.env("PATH", crate::spawn_env::augment_path_env(&base_path));
         }
 
         // TERM 補正: vp-app を GUI / launchd 経由で起動 (= 再起動後の LaunchAgent 自動起動) すると、
