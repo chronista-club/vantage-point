@@ -364,7 +364,12 @@ mod tests {
                 "Windows は git-bash を program にするはず、 got: {}",
                 cmd.program
             );
-            assert_eq!(cmd.args.len(), 1, "Windows は args=[script path] のはず、 got: {:?}", cmd.args);
+            assert_eq!(
+                cmd.args.len(),
+                1,
+                "Windows は args=[script path] のはず、 got: {:?}",
+                cmd.args
+            );
             cmd.args[0].clone()
         };
 
@@ -382,7 +387,11 @@ mod tests {
         );
 
         #[cfg(not(windows))]
-        assert!(cmd.args.is_empty(), "Unix は script 直接 exec なので args 空、 got: {:?}", cmd.args);
+        assert!(
+            cmd.args.is_empty(),
+            "Unix は script 直接 exec なので args 空、 got: {:?}",
+            cmd.args
+        );
 
         assert!(cmd.fallback_args.is_none());
         assert!(cmd.initial_input.is_none());
@@ -426,7 +435,9 @@ mod tests {
         #[cfg(windows)]
         let script = cmd.args.first().cloned().unwrap_or_default();
         assert!(
-            script.replace('\\', "/").ends_with(".mise/tasks/vp/stand/opus-xhigh"),
+            script
+                .replace('\\', "/")
+                .ends_with(".mise/tasks/vp/stand/opus-xhigh"),
             "未知 stand でも起動対象 path に stand_name が入るはず、 got: {} (program={})",
             script,
             cmd.program

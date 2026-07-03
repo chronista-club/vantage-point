@@ -12,10 +12,10 @@ use std::path::PathBuf;
 /// 探索順:
 /// 1. 標準 install path (`C:\Program Files\Git\bin\bash.exe` / `Program Files (x86)`)
 /// 2. PATH 上の `bash.exe` ── ただし **WSL stub を除外**:
-///    - `C:\Windows\System32\bash.exe` (WSL launcher)
-///    - `...\WindowsApps\bash.exe` (Microsoft Store の WSL app execution alias)
-///    どちらも native binary を Linux 環境で動かす stub で、 git-bash とは別物。 これらを掴むと
-///    stand script が WSL 内で動いてしまい cwd / path / tool 解決が全て破綻する。
+///    `C:\Windows\System32\bash.exe` (WSL launcher) と `...\WindowsApps\bash.exe`
+///    (Microsoft Store の WSL app execution alias)。 どちらも native binary を Linux 環境で
+///    動かす stub で git-bash とは別物。 これらを掴むと stand script が WSL 内で動いてしまい
+///    cwd / path / tool 解決が全て破綻する。
 ///
 /// non-Windows では常に `None` (呼び出し側は Unix path を別途使う)。
 #[cfg(windows)]
@@ -73,6 +73,8 @@ mod tests {
 
     #[test]
     fn git_bash_is_not_a_stub() {
-        assert!(!is_wsl_stub(Path::new(r"C:\Program Files\Git\bin\bash.exe")));
+        assert!(!is_wsl_stub(Path::new(
+            r"C:\Program Files\Git\bin\bash.exe"
+        )));
     }
 }

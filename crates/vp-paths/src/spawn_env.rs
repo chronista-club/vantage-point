@@ -149,14 +149,20 @@ mod tests {
     #[test]
     fn augment_path_with_prepends_missing_prefixes() {
         let prefixes = vec!["/a".to_string(), "/b".to_string()];
-        assert_eq!(augment_path_with("/usr/bin", &prefixes, ':'), "/a:/b:/usr/bin");
+        assert_eq!(
+            augment_path_with("/usr/bin", &prefixes, ':'),
+            "/a:/b:/usr/bin"
+        );
     }
 
     #[test]
     fn augment_path_with_skips_present_prefixes() {
         let prefixes = vec!["/a".to_string(), "/b".to_string()];
         // /a は base に既存 → 前置しない。
-        assert_eq!(augment_path_with("/a:/usr/bin", &prefixes, ':'), "/b:/a:/usr/bin");
+        assert_eq!(
+            augment_path_with("/a:/usr/bin", &prefixes, ':'),
+            "/b:/a:/usr/bin"
+        );
     }
 
     #[test]
@@ -178,7 +184,10 @@ mod tests {
     #[test]
     fn augment_path_with_all_present_returns_base() {
         let prefixes = vec!["/a".to_string()];
-        assert_eq!(augment_path_with("/a:/usr/bin", &prefixes, ':'), "/a:/usr/bin");
+        assert_eq!(
+            augment_path_with("/a:/usr/bin", &prefixes, ':'),
+            "/a:/usr/bin"
+        );
     }
 
     // ── Unix 固有の prefix セットと区切り ──
@@ -196,7 +205,10 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn augment_path_unix_without_home_only_system_prefixes() {
-        assert_eq!(augment_path("/usr/bin", None), "/opt/homebrew/bin:/usr/local/bin:/usr/bin");
+        assert_eq!(
+            augment_path("/usr/bin", None),
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin"
+        );
     }
 
     // ── Windows 固有の prefix セットと区切り ──
