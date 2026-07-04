@@ -43,7 +43,7 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
         ├── Echoes 💬 (Coding Assistant / Claude CLI オーケストレーター、 旧 Heaven's Door 📖)
         ├── Paisley Park 🧭 (Information Navigator / Canvas・情報提供)
         ├── Gold Experience 🌿 (Code Runner / 動的生命注入エンジン)
-        └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
+        └── Hermit Purple 🍇 (External Control / MIDI・MCP)
 ```
 
 ## 技術スタック
@@ -57,6 +57,20 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 | MIDI | midir |
 
 > **Process**: プロジェクトの開発プロセスを表す本体。JoJo の Stand（能力）を保持し、ユーザーの開発を支援する。
+
+### 依存境界（runtime dependency 方針、2026-07-04 確定）
+
+**基準 = 「user のマシンで要求されるか」**。 brew cask を入れた user の環境で必要になるものだけが
+product の依存。 maintainer の repo にある道具は project の道具（各 lane の project が何を使うかも自由）。
+
+- **vp runtime は外部ツールに依存しない**: tmux / mise は不使用（tmux decoupling PR1-2 で撤去）。
+  lane の依存は「user 自身の login shell」と「claude 本体」のみ。 DB も embedded surrealkv
+  （外部 `surreal` バイナリ不要）。
+- **許容 ≠ 依存**: `spawn_env` が mise shims を PATH に足すのは「user が mise で claude を
+  管理していても見つかる」ための許容。 mise 不在でも全機能が動く。
+- **repo の dev tooling**（`.mise/tasks` = release/build/daemon 系 + toolchain pin）は
+  maintainer 専用で product に同梱されない — この層の mise 使用は「1 project の task runner」
+  として許容側。
 
 ### システム構成
 
@@ -106,10 +120,11 @@ vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on +
 vp sp start [-d simple|detail]  # SP サーバー起動（デバッグモードはここ）
 vp sp stop|status
 # ⚠️ daemon 再起動の 2 つの stop（lane の中から検証/dogfood する時に超重要）:
-#   - `vp daemon stop` = gentle（daemon のみ停止。SP / Lane tmux は温存 → 自分の lane が生き残る）。
-#   - `mr daemon` / `daemon:stop` = cascade nuke（daemon + SP + Lane tmux session 全停止）→ lane 内で回すと自分を殺す。
-#   lane の中から実機確認する時は必ず gentle 側。cascade は full reset 専用。tmux server は daemon/SP と独立なので
-#   gentle 再起動なら claude セッションは生存し続ける（dogfood の肝）。
+#   - `vp daemon stop` = gentle（daemon のみ停止。SP は温存 → SP の子である lane claude も生き残る）。
+#   - `mr daemon` / `daemon:stop` = cascade nuke（daemon + SP 全停止 = lane claude も落ちる）→ lane 内で回すと自分を殺す。
+#   lane の中から実機確認する時は必ず gentle 側。cascade は full reset 専用。
+#   tmux decoupling 後: lane claude は SP の PtySlot の子。SP が落ちても会話は cc_session の
+#   `--resume` で次回 spawn 時に継がれる（「プロセスは死ぬがコンテキストは蘇る」）。
 
 # App（GUI）
 vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
@@ -121,9 +136,8 @@ vp shot                # vp-app window の screenshot を PNG 保存
 vp lane                # performer Lane 管理（Stone Free 🧵）
 vp flow handoff|progress  # Conductor × Performer orchestration
 vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は TheWorld :32000 に中央化。hook-check は claude hook 実体、R2-c）
-vp directmsg           # tmux send-keys 直接メッセージ（緊急用、wiremsg の補助）
-vp hd start|stop|attach|list  # tmux + Claude CLI セッション管理（旧 TUI 経路）
-vp tmux                # tmux ペイン操作（capture/split/send/dashboard）
+vp lane capture <lane> # lane console の現在画面を読む（旧 vp tmux capture の後継、tmux 非依存）
+vp lane nudge <lane> <text>  # lane の claude に text+Enter を注入（旧 vp tmux send-keys / directmsg の後継）
 
 # その他
 vp port                # deterministic port layout の計算・表示
@@ -137,6 +151,7 @@ vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ 
 ```
 
 > ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
+> ⚠️ `vp hd` / `vp tmux` / `vp directmsg` も**存在しない**（tmux decoupling PR1-2 で退役。console の read/write は `vp lane capture` / `vp lane nudge`）。**VP は tmux に依存しない**（lane = SP の PtySlot が claude を直接ホスト、design doc `docs/design/tmux-decoupling.md`）。
 
 ## 開発コマンド
 
@@ -169,19 +184,20 @@ cargo clippy --workspace --all-targets    # Lint
 
 ### VP_PROFILE — dev / brew の state 分離（#643）
 
-dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突 / tmux adopt 混線）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_world_port()`）。
+dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_world_port()`）。
 
 | レバー | 未設定 = **brew**（一般ユーザ・従来通り） | `VP_PROFILE=dev`（開発者） |
 |---|---|---|
 | config/data/state/db dir | `vp`（`~/.local/share/vp/` 等） | `vp-dev`（`~/.local/share/vp-dev/` 等） |
 | world port | 32000 | 32100 |
-| tmux socket | `-L vp` | `-L vp-dev` |
 | daemon pidfile | `$TMPDIR/vp/` | `$TMPDIR/vp-dev/` |
 
-- env は継承で伝播する（dev shell → daemon → SP → tmux）ので **`export VP_PROFILE=dev` 一発**で以降の全 vp が dev namespace になる。`vp switch` command / 起動時 guard / LaunchAgent 処理は不要。brew は LaunchAgent 起動で env を持たないため自然に brew namespace。
+> （旧レバー「tmux socket `-L vp` / `-L vp-dev`」は tmux decoupling PR2 で退役 — lane は SP の PtySlot 直ホストで tmux server を持たない）
+
+- env は継承で伝播する（dev shell → daemon → SP → lane claude）ので **`export VP_PROFILE=dev` 一発**で以降の全 vp が dev namespace になる。`vp switch` command / 起動時 guard / LaunchAgent 処理は不要。brew は LaunchAgent 起動で env を持たないため自然に brew namespace。
 - **dev 起動は専用 alias（`.zprofile`）**: `alias vpd='VP_PROFILE=dev ~/.cargo/bin/vp'`。素の `vp`（release）と混ざらないよう cargo dev binary を明示指定する。
   ```zsh
-  vpd daemon start   # → TheWorld :32100 / ~/.local/share/vp-dev / tmux -L vp-dev
+  vpd daemon start   # → TheWorld :32100 / ~/.local/share/vp-dev
   vpd daemon status  # → Port: 32100 で確認 / vpd db path → .../vp-dev/db/...
   vpd app start      # dev GUI（要 `cargo install --path crates/vp-app` で dev vp-app）
   ```
@@ -208,7 +224,7 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 | **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
 | **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
 
-> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の tmux 経路**（`.mise/tasks/vp/stand/echoes` が `tmux new-session` 内で claude を起動）が担う。 PTY ベースの agent API は存在しない。
+> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が login shell の床に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
 
 ### Stream-JSON 入力フォーマット
 
@@ -328,7 +344,7 @@ MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯�
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (11836 symbols, 26122 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point** (11666 symbols, 25581 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

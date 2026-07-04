@@ -88,8 +88,8 @@ pub(crate) enum Outcome {
     NeedsInput { question: String },
 }
 
-/// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_session`] が解する
-/// lane address query（`<project>/conductor` / `<project>/performer/<name>`）に翻訳する。
+/// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_address`](crate::process::state::AppState::resolve_lane_address)
+/// が解する lane address query（`<project>/conductor` / `<project>/performer/<name>`）に翻訳する。
 ///
 /// これが resolution の **local 分岐**（= federation 不変条件の swappable 層）。後で
 /// `world-handle:` 接頭を見て remote World に振る分岐を足すだけで federation 化できる。
@@ -365,6 +365,7 @@ fn wake_for(d: &Delegation) -> (String, String) {
 pub(crate) fn spawn_reconcile_loop(
     store: crate::capability::DelegationStore,
     lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
+    control_channels: crate::daemon::server::ControlChannels,
     shutdown: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -378,7 +379,9 @@ pub(crate) fn spawn_reconcile_loop(
                 _ = shutdown.cancelled() => break,
                 _ = tokio::time::sleep(RECONCILE_TICK) => {}
             }
-            if let Err(e) = reconcile_pulse(&store, &lane_registry, TIMEOUT_MS).await {
+            if let Err(e) =
+                reconcile_pulse(&store, &lane_registry, &control_channels, TIMEOUT_MS).await
+            {
                 tracing::warn!("delegation reconcile pulse 失敗 (次 tick で再試行): {e}");
             }
         }
@@ -390,6 +393,7 @@ pub(crate) fn spawn_reconcile_loop(
 async fn reconcile_pulse(
     store: &crate::capability::DelegationStore,
     lane_registry: &Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
+    control_channels: &crate::daemon::server::ControlChannels,
     timeout_ms: i64,
 ) -> anyhow::Result<()> {
     let now = chrono::Utc::now().timestamp_millis();
@@ -410,27 +414,31 @@ async fn reconcile_pulse(
     if undelivered.is_empty() {
         return Ok(());
     }
-    let lanes: Vec<LaneInfo> = lane_registry
+    // tmux decoupling PR1: (path_key, lane) ペアで収集（forward 先 SP を path_key で特定）。
+    let lanes: Vec<(String, LaneInfo)> = lane_registry
         .read()
         .await
-        .values()
-        .flatten()
-        .cloned()
+        .iter()
+        .flat_map(|(k, v)| v.iter().map(move |l| (k.clone(), l.clone())))
         .collect();
     for d in undelivered {
         let (target, text) = wake_for(&d);
-        // wire address → lane display → tmux session（delivery_actor と同経路）。
+        // wire address → lane display（delivery_actor と同経路）。
         let Some(display) = super::delivery_actor::wire_agent_to_lane_display(&target) else {
             continue;
         };
-        let Some((session, _, _)) = super::delivery_actor::pick_nudge_target(&lanes, &display)
-        else {
+        let Some(nudge) = super::delivery_actor::pick_nudge_target(&lanes, &display) else {
             continue; // lane 不在 / 非 Running = まだ起こせない（次 tick で再試行、pending 保持）
         };
-        if super::delivery_actor::send_keys_to_session(&session, &text)
-            .await
-            .is_ok()
-        {
+        // 所有 SP の control channel に lane_nudge を forward（旧 daemon 直 send-keys の置換）。
+        let resp = crate::daemon::server::forward_to_sp_control(
+            control_channels,
+            &nudge.path_key,
+            "lane_nudge",
+            &serde_json::json!({ "lane": nudge.lane_display, "text": text }),
+        )
+        .await;
+        if resp.get("error").is_none() {
             store.mark_delivered(&d.id, true).await?;
             tracing::info!(
                 "delegation reconcile: re-nudge delivered (id={}, target={})",

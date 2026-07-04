@@ -3,7 +3,7 @@
 //! Usage:
 //!   vp            # 稼働中インスタンス一覧（vp ps）
 //!   vp sp start   # SP サーバーを起動
-//!   vp hd start   # HD (Claude CLI) を起動
+//!   vp lane capture <lane>  # lane console を読む (tmux 非依存)
 //!   vp mcp        # MCPサーバーとして起動（stdio）
 //!   vp daemon     # TheWorld デーモン管理 (alias: vp world)
 //!
@@ -28,7 +28,6 @@ use commands::file::FileCommands;
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
-use commands::tmux::TmuxCommands;
 use vp_cli::lane;
 
 #[derive(Parser)]
@@ -85,10 +84,6 @@ enum Commands {
     #[command(subcommand)]
     Sp(commands::sp::SpCommands),
 
-    /// HD インスタンス管理（tmux + Claude CLI）
-    #[command(subcommand)]
-    Hd(commands::hd::HdCommands),
-
     /// wire accumulation messaging — `watch` (long-poll subscribe) / `send` / `watch-supervised` を提供。
     /// Claude Code Monitor の subscription source として使う想定 (wiremsg R5-2)。
     #[command(subcommand)]
@@ -107,23 +102,6 @@ enum Commands {
     /// MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同 semantics。
     #[command(subcommand)]
     Flow(commands::flow::FlowCommands),
-
-    /// directmsg — tmux send-keys ベースの直接メッセージ（緊急 / ephemeral 用、wiremsg の補助）
-    ///
-    /// 宛先 lane の tmux session に直接テキストを send-keys する。SP / DB 非依存。
-    Directmsg {
-        /// 宛先 lane address（"<project>/conductor" または "<project>/performer/<name>"）
-        lane: String,
-        /// 送信テキスト
-        text: String,
-        /// 末尾に Enter を付けない
-        #[arg(long)]
-        no_enter: bool,
-    },
-
-    /// tmux ペイン操作（キャプチャ・分割・送信・ダッシュボード）
-    #[command(subcommand)]
-    Tmux(TmuxCommands),
 
     /// MIDIハードウェア操作
     #[cfg(feature = "midi")]
@@ -286,6 +264,20 @@ enum LaneCommands {
         #[arg(long)]
         lane: Option<String>,
     },
+    /// lane console の現在画面を読む (tmux decoupling: 旧 `vp tmux capture` の後継)
+    ///
+    /// SP の per-lane Term grid (TermAttach) を render して返す。tmux 不要。
+    Capture {
+        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        lane: String,
+    },
+    /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
+    Nudge {
+        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        lane: String,
+        /// 注入するテキスト (Enter は自動付与、submit 意味論は SP 側 deliver_nudge)
+        text: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -357,9 +349,8 @@ fn main() -> Result<()> {
             commands::daemon::execute(cmd)
         }
         Commands::Sp(cmd) => commands::sp::execute(cmd, &config),
-        Commands::Hd(cmd) => commands::hd::execute(cmd, &config),
-
-        Commands::Tmux(cmd) => commands::tmux::execute(cmd, &config),
+        // tmux decoupling PR2: `vp hd` / `vp tmux` は退役。 lane の console 操作は
+        // `vp lane capture` / `vp lane nudge` (lane 語彙の後継)。
         #[cfg(feature = "midi")]
         Commands::Midi(cmd) => commands::midi::execute(cmd),
         Commands::Db(cmd) => commands::db::execute(cmd),
@@ -408,11 +399,6 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::flow::run(cmd))
         }
-        Commands::Directmsg {
-            lane,
-            text,
-            no_enter,
-        } => commands::directmsg::run(&lane, &text, !no_enter),
     }
 }
 
@@ -716,6 +702,14 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             }
             Ok(())
         }
+        LaneCommands::Capture { lane } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::capture(&lane, &config)
+        }
+        LaneCommands::Nudge { lane, text } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::nudge(&lane, &text, &config)
+        }
     }
 }
 
@@ -846,17 +840,11 @@ fn try_sp_delete_performer(performer_name: &str) -> bool {
         Ok(resp) => {
             // 成功 body は DeletedLaneInfo JSON、 user 向けに要点だけ要約。
             let pid = resp.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
-            let tmux_killed = resp
-                .get("tmux_killed")
-                .and_then(|t| t.as_bool())
-                .unwrap_or(false);
             let cleanup = resp
                 .get("cleanup")
                 .and_then(|c| c.as_str())
                 .unwrap_or("(skipped)");
-            eprintln!(
-                "削除: {address} (SP orchestrated: pid={pid} tmux_killed={tmux_killed} cleanup={cleanup})"
-            );
+            eprintln!("削除: {address} (SP orchestrated: pid={pid} cleanup={cleanup})");
             true
         }
         Err(e) => {
