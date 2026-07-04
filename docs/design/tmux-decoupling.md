@@ -217,3 +217,12 @@ PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「床�
 
 **既知挙動（PR2 起因でない）:** daemon は SP 死亡を registry から除去するが auto-respawn しない
 （autostart は daemon boot 時のみ）。SP 復帰は手動 or daemon 再起動。
+
+### 13.7 Follow-up ideas（PR3 候補、本 PR 非対象）
+
+1. **SP 起動数の CPU コアベース cap**（user mito 発案 2026-07-04、creo `mem_1CcgqCxDrcNfuhLZbJ9vcS`）:
+   PR2 で lane claude = SP の子になったため、SP 起動数 = 実行中 claude 数の上限という意味を持つ。
+   `max = cores − k` の semaphore で autostart / respawn の起動数を管理（Workflow の
+   concurrency cap `min(16, cores-2)` と同じ発想）。
+2. **SP auto-respawn**（health monitor）: SP 死亡 → registry 除去のみ、の現状を respawn まで
+   繋げる。①の cap と同じ経路に通すと自然。
