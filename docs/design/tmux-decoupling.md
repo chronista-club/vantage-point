@@ -228,8 +228,13 @@ tmux 撤去後は PtySlot が claude の PTY master を直接持ち paste-wrap �
 2-phase（text → 50ms → Enter）は不要だった。 1 write に畳み → レビュー B5 の「50ms 窓での
 並行 nudge / user 入力との interleave」も構造的に消滅、 write は `write_to_lane` 1 回のみ。
 
-**既知挙動（PR2 起因でない）:** daemon は SP 死亡を registry から除去するが auto-respawn しない
-（autostart は daemon boot 時のみ）。SP 復帰は手動 or daemon 再起動。
+**既知挙動（PR2 起因でない）:** daemon は SP 死亡を検知すると `run_health_monitor` が
+30s × 2-strike（= 60s）で auto-respawn する（crash recovery、仕様 doc 15 §3.1）。
+ただし *意図的な* `vp sp stop` も crash と同一視されて respawn される（在/不在の binary しか
+持たず「user 意図 = Stopped」を表現できないため）— これが本当の gap で、解は Stage B の
+`SpDesiredState` enum + supervisor（doc 15 §5、未着手）。
+（注: 旧版はここを「auto-respawn しない」と誤記していた。health monitor の respawn は
+#615 以前から存在するため、doc 15 と実装が正。2026-07-04 PR3 spec review で訂正。）
 
 ### 13.7b dev tooling footgun 修正（release 前 polish）
 
@@ -239,9 +244,12 @@ tmux 撤去後は PtySlot が claude の PTY master を直接持ち paste-wrap �
 
 ### 13.7 Follow-up ideas（PR3 候補、本 PR 非対象）
 
-1. **SP 起動数の CPU コアベース cap**（user mito 発案 2026-07-04、creo `mem_1CcgqCxDrcNfuhLZbJ9vcS`）:
-   PR2 で lane claude = SP の子になったため、SP 起動数 = 実行中 claude 数の上限という意味を持つ。
-   `max = cores − k` の semaphore で autostart / respawn の起動数を管理（Workflow の
-   concurrency cap `min(16, cores-2)` と同じ発想）。
-2. **SP auto-respawn**（health monitor）: SP 死亡 → registry 除去のみ、の現状を respawn まで
-   繋げる。①の cap と同じ経路に通すと自然。
+1. **SP spawn の CPU コアベース cap**（user mito 発案 2026-07-04、creo `mem_1CcgqCxDrcNfuhLZbJ9vcS`）:
+   PR2 で lane claude = SP の子になったため、同時 spawn が CPU を圧迫すると claude 群の起動が
+   団子になる。`start_process`（全 trigger の sink、doc 15 §2）を `cores − 2`（floor 1）の
+   semaphore でゲートし、一度に走る `vp sp start` を平滑化する（**semantics A** = 総稼働数は
+   縛らず spawn 同時数だけ制限、Workflow の `min(16, cores-2)` と同発想）。
+   → **実装済み**（`spawn_semaphore` / `spawn_cap()`、2026-07-04）。
+2. ~~**SP auto-respawn**~~: 上の「既知挙動」の訂正どおり **respawn は既に存在**する
+   （`run_health_monitor`、doc 15 §3.1）。残るのは *意図的 stop* を respawn しない区別で、
+   それは doc 15 §5 の `SpDesiredState`（Stage B）の領分。この follow-up 項目は誤認だった。
