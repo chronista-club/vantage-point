@@ -16,6 +16,13 @@ use unison::network::{
 use super::protocol::{ChannelMessage, ProcessLifecycleEvent, ProcessSnapshot};
 use crate::capability::{ProcessPresenceState, RunningProcess};
 
+/// SP control channel registry（key = `path_key`、 value = SP の live control channel）。
+///
+/// daemon server の process-proxy / registry handler が populate し、 canvas/terminal_write の
+/// reverse-routing に使う。 tmux decoupling PR1: World-side の nudge loop（delivery_actor /
+/// delegation reconcile）も同一 map を引いて `lane_nudge` を所有 SP に forward する（SSOT はここ）。
+pub(crate) type ControlChannels = Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>;
+
 /// Daemon の共有状態
 pub struct DaemonState {
     /// Daemon 起動時刻（uptime計算用）
@@ -186,6 +193,21 @@ impl DaemonState {
         world_cap: Arc<RwLock<crate::capability::ProcessManagerCapability>>,
     ) -> Self {
         self.world_cap = Some(world_cap);
+        self
+    }
+
+    /// tmux decoupling PR1: SP control channel registry を外部の Arc と共有する。
+    ///
+    /// `control_channels` は SP 接続の live handle map（key = `path_key`）。 daemon server の
+    /// process-proxy handler が populate し、 canvas/terminal_write の reverse-routing に使う。
+    /// World-side の nudge loop（delivery_actor / delegation reconcile）も同一 map を引いて
+    /// `lane_nudge` を所有 SP に forward するため、 `run_world` が hoist した同一 Arc を
+    /// DaemonState と両 loop の双方に注入する（別々に `new()` すると map が分裂して forward 不能）。
+    pub fn with_control_channels(
+        mut self,
+        control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    ) -> Self {
+        self.control_channels = control_channels;
         self
     }
 
@@ -641,7 +663,7 @@ async fn recv_subscribe_handshake_with_pattern(
 /// "process-proxy" channel (MCP/CLI) と bidirectional "canvas" channel の upstream request
 /// (S3 terminal_write/terminal_resize) が共有する。 SP 未接続 / forward 失敗は error JSON で
 /// 返し、 caller が `send_response` でそのまま client に relay する。
-async fn forward_to_sp_control(
+pub(crate) async fn forward_to_sp_control(
     control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
     path_key: &str,
     method: &str,
@@ -856,7 +878,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             project_name: p.project_name.clone(),
                                             port: p.port,
                                             pid: p.pid,
-                                            tmux_session: p.tmux_session.clone(),
                                         })
                                         .collect();
                                     if channel
@@ -1236,8 +1257,26 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 break;
                             }
                         }
-                        control_channels.write().await.remove(&path_key);
-                        tracing::info!("Control: SP 除去 (key={})", path_key);
+                        // 「自分が現行 entry の時のみ」remove する (Arc::ptr_eq guard)。
+                        // 高速再接続 / 重複 SP で新接続の insert が先行した場合、 旧接続の
+                        // 切断 handler が新 live channel を clobber すると nudge / process-proxy
+                        // が「SP 未接続」で静かに全滅し次の再接続まで自己回復しない
+                        // (PR2 review B1 — nudge が本 map に依存するようになったため障害面が拡大)。
+                        {
+                            let mut map = control_channels.write().await;
+                            match map.get(&path_key) {
+                                Some(current) if Arc::ptr_eq(current, &channel) => {
+                                    map.remove(&path_key);
+                                    tracing::info!("Control: SP 除去 (key={})", path_key);
+                                }
+                                _ => {
+                                    tracing::info!(
+                                        "Control: 旧接続の切断を skip — 新接続が登録済み (key={})",
+                                        path_key
+                                    );
+                                }
+                            }
+                        }
                         Ok(())
                     }
                 }
@@ -1501,16 +1540,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .unwrap_or("")
                                         .to_string();
 
-                                    let tmux_session = payload["tmux_session"]
-                                        .as_str()
-                                        .map(|s| s.to_string());
-
+                                    // tmux decoupling PR2: 旧 register payload の "tmux_session" は
+                                    // 無視する (旧 binary の SP が送ってきても互換維持で読み飛ばす)。
                                     let process = RunningProcess {
                                         project_name: project_name.clone(),
                                         port,
                                         pid,
                                         project_path: project_dir.clone().into(),
-                                        tmux_session,
                                     };
 
                                     // パスキーで一意識別

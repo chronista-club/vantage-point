@@ -13,7 +13,6 @@ use super::hub::Hub;
 use super::process_runner::ProcessRegistry;
 use super::pty::PtyManager;
 use super::session::SessionManager;
-use super::tmux_actor::TmuxHandle;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
@@ -79,12 +78,6 @@ pub(crate) struct AppState {
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
     /// Terminal チャネル認証トークン
     pub terminal_token: String,
-    /// tmux ペイン管理 Actor（遅延初期化: 初回アクセス時にセッションを検索して起動）
-    ///
-    /// 束縛 session は固定値ではなく `primary_tmux_session()` で lane_pool から動的解決する
-    /// (旧: `{project}-vp` 固定 → lane scheme `vp-{project}-{lane}-{stand}` と不一致で全 op が
-    /// 「tmux 未使用環境です」になる bug の根治、 fix-tmux-session-naming)。
-    pub tmux: Arc<tokio::sync::Mutex<Option<TmuxHandle>>>,
     /// スクリーンショット応答待ち: request_id → oneshot sender
     /// プロセスレジストリ（ProcessRunner）
     pub process_registry: Arc<tokio::sync::Mutex<ProcessRegistry>>,
@@ -161,113 +154,53 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    /// tmux ハンドルを取得（遅延初期化: 未接続なら tmux セッションを検索して起動）
+    // tmux decoupling PR2: `ensure_tmux` / `primary_tmux_session` / `resolve_lane_session`
+    // (TmuxActor 遅延初期化 + LaneAddress ⇄ tmux session 名の翻訳層) は退役。
+    // lane の解決は `resolve_lane_address`、 console I/O は PtySlot (deliver_nudge / lane_capture)。
+
+    /// lane address 文字列（`<project>/conductor` / `<project>/performer/<name>`）を、
+    /// Running な lane の [`LaneAddress`](super::lanes_state::LaneAddress) に解決する。
     ///
-    /// 束縛 session は lane_pool から動的解決する（`primary_tmux_session()`）。 SP は固定の
-    /// 自前 session を持たず、 conductor lane の実 session を primary 舞台として借りる。
-    /// split / list / capture_all 等の session-scoped op はこの primary session を対象にする。
-    /// send-keys / capture(単一) / close は global な pane/session target で動くので、
-    /// 束縛 session が何であっても正しく届く（gate を通すためだけに 1 つ存在すれば良い）。
-    pub async fn ensure_tmux(&self) -> Option<TmuxHandle> {
-        // 既存ハンドルがあれば即返す（lock は最小区間で解放してから次に進む）。
-        {
-            let guard = self.tmux.lock().await;
-            if let Some(ref handle) = *guard {
-                return Some(handle.clone());
-            }
-        }
-
-        if !crate::tmux::is_tmux_available() {
-            return None;
-        }
-
-        // primary session を lane_pool から解決 (= VP 管理 session が 1 つでもあれば actor 起動)。
-        // tmux Mutex を保持したまま lane_pool RwLock を取らない（lock 取得順を直交させ、
-        // 将来の逆順取得によるデッドロック余地を残さない）。
-        let session = self.primary_tmux_session().await?;
-
-        let mut guard = self.tmux.lock().await;
-        // double-check: lock を一度手放した間に別 task が初期化済みかもしれない。
-        if let Some(ref handle) = *guard {
-            return Some(handle.clone());
-        }
-        if crate::tmux::session_exists(&session)
-            && let Some(handle) = super::tmux_actor::spawn_for_session(&session)
-        {
-            *guard = Some(handle.clone());
-            tracing::info!("TmuxActor 遅延初期化: session={}", session);
-            return Some(handle);
-        }
-
-        None
-    }
-
-    /// SP が借りる primary tmux session を lane_pool から解決する。
-    ///
-    /// conductor lane の実 session（`LaneInfo.tmux[].session`、 spawn 時 populate）を優先し、
-    /// 無ければ任意の tmux entry を持つ lane の session に fallback する。
-    /// 該当 lane が無ければ None（= tmux 不使用扱い、 World mode 含む）。
-    ///
-    /// Running な lane のみ対象にする（`resolve_lane_session` と一貫）。 Dead lane は
-    /// `LaneInfo.tmux` を clear しない経路があり（`kill_by_pid` 等）、 filter が無いと Dead
-    /// conductor の session 名が Running performer より優先される意図しない順序が生じうる。
-    pub async fn primary_tmux_session(&self) -> Option<String> {
-        use super::lanes_state::{LaneKind, LaneState};
-        let pool = self.lane_pool.read().await;
-        let lanes = pool.list();
-        // Running な conductor 優先 → 無ければ Running な任意 lane の tmux entry
-        lanes
-            .iter()
-            .find(|l| l.kind == LaneKind::Conductor && l.state == LaneState::Running)
-            .and_then(|l| l.tmux.first())
-            .or_else(|| {
-                lanes.iter().find_map(|l| {
-                    (l.state == LaneState::Running)
-                        .then(|| l.tmux.first())
-                        .flatten()
-                })
-            })
-            .map(|t| t.session.clone())
-    }
-
-    /// lane address 文字列（`<project>/conductor` / `<project>/performer/<name>`）を
-    /// その lane の実 tmux session 名に解決する。
-    ///
-    /// nudge / resolve-pane の宛先解決に使う。 lane_pool に Running な lane があれば
-    /// `tmux[0].session`（spawn 時の実 session）を返す。 lane address として parse できない、
-    /// もしくは該当 lane が無い / tmux 不在なら None。
-    ///
-    /// `tmux send-keys -t <session>` は session の active pane に届くため、 pane_id や
-    /// agent_metadata、 単一 TmuxActor の束縛 session を一切介さずに任意 lane へ届く。
-    pub async fn resolve_lane_session(&self, query: &str) -> Option<String> {
+    /// nudge の宛先を `LaneAddress` で返し、
+    /// [`deliver_nudge`](super::lanes_state::deliver_nudge) の入力にする。
+    /// parse 不能 / lane 不在 / 非 Running なら None。
+    pub async fn resolve_lane_address(
+        &self,
+        query: &str,
+    ) -> Option<super::lanes_state::LaneAddress> {
         let addr = super::lanes_state::LanePool::parse_address(query)?;
         let pool = self.lane_pool.read().await;
         let info = pool.get(&addr)?;
         if !matches!(info.state, super::lanes_state::LaneState::Running) {
             return None;
         }
-        info.tmux.first().map(|t| t.session.clone())
+        Some(addr)
     }
 
     /// 論理 lane address（`agent@<project>[/<name>]` or bare `<project>/<lane>`）を実 tmux
     /// session に解決し、literal text + Enter を送る（= wake）。
     ///
     /// 委譲（`process/delegation.rs`）の `delegate` / `complete` が doer / requester を起こす
-    /// 共通 helper。resolution は [`Self::resolve_lane_session`] を介す
-    /// （federation 不変条件: `address → local lane session` の翻訳層だけが swappable。後で
+    /// 共通 helper。resolution は [`Self::resolve_lane_address`] を介す
+    /// （federation 不変条件: `address → local lane` の翻訳層だけが swappable。後で
     /// `world-handle:` 接頭の remote 分岐を足すだけで federation 化できる）。
     ///
-    /// 解決できない（lane 不在 / 非 Running / tmux 不在）場合は `false` を返し graceful に握る
+    /// tmux decoupling PR1: 旧 `tmux send-keys`（`send_keys_to_session`）を SP-local な
+    /// [`deliver_nudge`](super::lanes_state::deliver_nudge) 直書きに置換。 delegation handler は
+    /// SP プロセス内で走る（`&AppState` を持つ）ため、 PtySlot に in-process で直接届く
+    /// （World-side re-nudge は `lane_nudge` proxy 経由、 同じ `deliver_nudge` sink に収束）。
+    ///
+    /// 解決できない（lane 不在 / 非 Running / PtySlot 不在）場合は `false` を返し graceful に握る
     /// （no-lane test や実機外で panic しない / wake 取りこぼしは reconcile・pull-hook が後で拾う）。
     pub async fn nudge_lane(&self, addr: &str, text: &str) -> bool {
         let query = super::delegation::lane_query_for(addr);
-        let Some(session) = self.resolve_lane_session(&query).await else {
+        let Some(lane_addr) = self.resolve_lane_address(&query).await else {
             return false;
         };
-        match super::delivery_actor::send_keys_to_session(&session, text).await {
+        match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, text).await {
             Ok(()) => true,
             Err(e) => {
-                tracing::warn!("nudge_lane: send-keys 失敗 (addr={addr}, session={session}): {e}");
+                tracing::warn!("nudge_lane: deliver_nudge 失敗 (addr={addr}, lane={lane_addr}): {e}");
                 false
             }
         }
@@ -488,7 +421,6 @@ pub(crate) async fn build_test_app_state(
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "test".to_string(),
-        tmux: Arc::new(tokio::sync::Mutex::new(None)),
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router: Arc::new(TopicRouter::new()),
@@ -511,15 +443,12 @@ pub(crate) async fn build_test_app_state(
 }
 
 #[cfg(test)]
-mod tmux_session_resolve_tests {
+mod lane_resolve_tests {
     use super::build_test_app_state;
-    use crate::process::lanes_state::{
-        LaneAddress, LaneInfo, LaneState, TmuxLaneAddress, TmuxMode,
-    };
+    use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
-    /// 指定 lane の Running + tmux session 入り LaneInfo を作る test helper
+    /// 指定 lane の Running な LaneInfo を作る test helper
     fn running_lane(addr: LaneAddress, stand: &str) -> LaneInfo {
-        let session = addr.tmux_session_name(stand);
         LaneInfo {
             id: Default::default(),
             address: addr.clone(),
@@ -532,17 +461,12 @@ mod tmux_session_resolve_tests {
             cwd: "/tmp/work".to_string(),
             performer_status: None,
             cc_session_id: None,
-            tmux: vec![TmuxLaneAddress {
-                stand: stand.to_string(),
-                session,
-                mode: TmuxMode::Tmux,
-            }],
         }
     }
 
-    /// lane address が実 session（lane scheme）に解決される。 legacy `{project}-vp` ではない。
+    /// Running な lane は LaneAddress に解決される（conductor / performer 両方）。
     #[tokio::test]
-    async fn resolve_lane_session_returns_real_lane_scheme_session() {
+    async fn resolve_lane_address_returns_running_lane() {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
@@ -556,97 +480,36 @@ mod tmux_session_resolve_tests {
             ));
         }
 
-        // conductor
         assert_eq!(
-            state.resolve_lane_session("vantage-point/conductor").await,
-            Some("vp-vantage-point-conductor-echoes".to_string())
+            state.resolve_lane_address("vantage-point/conductor").await,
+            Some(LaneAddress::conductor("vantage-point"))
         );
-        // performer（受け入れ条件の dogfood 対象）
         assert_eq!(
             state
-                .resolve_lane_session("vantage-point/performer/hub-unison-client")
+                .resolve_lane_address("vantage-point/performer/hub-unison-client")
                 .await,
-            Some("vp-vantage-point-hub-unison-client-echoes".to_string())
+            Some(LaneAddress::performer("vantage-point", "hub-unison-client"))
         );
     }
 
-    /// lane address として parse できない query は None（従来 pane_id / label 経路に fallback）
+    /// lane address として parse できない query は None。
     #[tokio::test]
-    async fn resolve_lane_session_none_for_non_lane_query() {
+    async fn resolve_lane_address_none_for_non_lane_query() {
         let state = build_test_app_state(None).await;
-        assert_eq!(state.resolve_lane_session("%3").await, None);
-        assert_eq!(state.resolve_lane_session("some-label").await, None);
+        assert_eq!(state.resolve_lane_address("%3").await, None);
+        assert_eq!(state.resolve_lane_address("some-label").await, None);
     }
 
-    /// Dead lane は nudge 不可なので None
+    /// Dead lane は nudge 不可なので None。
     #[tokio::test]
-    async fn resolve_lane_session_none_for_dead_lane() {
+    async fn resolve_lane_address_none_for_dead_lane() {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
             let mut info = running_lane(LaneAddress::conductor("vp"), "echoes");
             info.state = LaneState::Dead;
-            info.tmux.clear();
             pool.insert(info);
         }
-        assert_eq!(state.resolve_lane_session("vp/conductor").await, None);
-    }
-
-    /// primary session は conductor lane を優先する
-    #[tokio::test]
-    async fn primary_tmux_session_prefers_conductor() {
-        let state = build_test_app_state(None).await;
-        {
-            let mut pool = state.lane_pool.write().await;
-            pool.insert(running_lane(
-                LaneAddress::performer("vp", "perf-a"),
-                "echoes",
-            ));
-            pool.insert(running_lane(LaneAddress::conductor("vp"), "echoes"));
-        }
-        assert_eq!(
-            state.primary_tmux_session().await,
-            Some("vp-vp-conductor-echoes".to_string())
-        );
-    }
-
-    /// Dead conductor（tmux entry は stale で残置）より Running performer を優先する（Issue #1）
-    #[tokio::test]
-    async fn primary_tmux_session_skips_dead_conductor() {
-        let state = build_test_app_state(None).await;
-        {
-            let mut pool = state.lane_pool.write().await;
-            // Dead conductor だが tmux entry は clear されず残っている状況を再現
-            let mut dead_conductor = running_lane(LaneAddress::conductor("vp"), "echoes");
-            dead_conductor.state = LaneState::Dead;
-            pool.insert(dead_conductor);
-            pool.insert(running_lane(
-                LaneAddress::performer("vp", "perf-a"),
-                "echoes",
-            ));
-        }
-        // Dead conductor を飛ばして Running performer の session が返る
-        assert_eq!(
-            state.primary_tmux_session().await,
-            Some("vp-vp-perf-a-echoes".to_string())
-        );
-    }
-
-    /// conductor が無ければ任意の tmux lane に fallback、 lane 皆無なら None
-    #[tokio::test]
-    async fn primary_tmux_session_fallback_and_empty() {
-        let state = build_test_app_state(None).await;
-        assert_eq!(state.primary_tmux_session().await, None);
-        {
-            let mut pool = state.lane_pool.write().await;
-            pool.insert(running_lane(
-                LaneAddress::performer("vp", "perf-a"),
-                "echoes",
-            ));
-        }
-        assert_eq!(
-            state.primary_tmux_session().await,
-            Some("vp-vp-perf-a-echoes".to_string())
-        );
+        assert_eq!(state.resolve_lane_address("vp/conductor").await, None);
     }
 }

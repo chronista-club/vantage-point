@@ -95,9 +95,6 @@ pub struct RunningProcess {
     pub pid: u32,
     /// プロジェクトパス
     pub project_path: PathBuf,
-    /// tmux セッション名（`{project}-vp` 形式）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_session: Option<String>,
 }
 
 /// SP（Project Process）の presence 状態（World daemon-canonical、vp-app sidebar の ●◐○ 表示用）。
@@ -137,9 +134,9 @@ impl ProcessPresenceState {
 
 /// vp-app sidebar 向けの SP presence 1 件（`/api/health` の `processes[]` 要素）。
 ///
-/// `projects`（desired = 全登録 project）を軸に、`running_processes`（live port/pid/tmux）と
+/// `projects`（desired = 全登録 project）を軸に、`running_processes`（live port/pid）と
 /// `process_presence`（接続状態）を join した結果。Connected でない（= live 不在）SP は
-/// port/pid/tmux が `None` になるが、project として sidebar には残り続ける（Model Q）。
+/// port/pid が `None` になるが、project として sidebar には残り続ける（Model Q）。
 #[derive(Debug, Clone, Serialize)]
 pub struct ProcessHealthInfo {
     /// プロジェクト名（表示用ラベル）。
@@ -154,9 +151,6 @@ pub struct ProcessHealthInfo {
     /// live pid（同上）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    /// tmux セッション名（同上）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tmux_session: Option<String>,
 }
 
 /// 正規化パスキーを生成（HashMap のキーに使用）
@@ -294,7 +288,7 @@ impl ProcessManagerCapability {
 
     /// L1 lifecycle: vp-app sidebar 用の SP presence 一覧を作る（World daemon-canonical）。
     ///
-    /// `projects`（desired = 全登録 project）を軸に `running_processes`（live port/pid/tmux）と
+    /// `projects`（desired = 全登録 project）を軸に `running_processes`（live port/pid）と
     /// `process_presence`（接続状態）を join する。SP が crash/disconnect しても projects には
     /// 残るので sidebar から消えず ○ disconnected として見える（Model Q）。HashMap 反復順は
     /// 非決定的なので project 名で sort して返す（sidebar の表示 jitter を防ぐ）。
@@ -318,7 +312,6 @@ impl ProcessManagerCapability {
                     presence: state.as_str(),
                     port: live.map(|p| p.port),
                     pid: live.map(|p| p.pid),
-                    tmux_session: live.and_then(|p| p.tmux_session.clone()),
                 }
             })
             .collect();
@@ -938,7 +931,6 @@ impl ProcessManagerCapability {
             cwd: performer_dir.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
-            tmux: Vec::new(),
         };
         self.lane_registry
             .write()
@@ -1442,7 +1434,6 @@ impl ProcessManagerCapability {
                     running_process.port,
                     running_process.pid,
                     "running",
-                    None,
                 )
                 .await
         {
@@ -1602,12 +1593,11 @@ impl ProcessManagerCapability {
                 .to_string()
         });
 
-        let mut process = RunningProcess {
+        let process = RunningProcess {
             project_name: name.clone(),
             port,
             pid,
             project_path: project_dir.into(),
-            tmux_session: None,
         };
 
         // プロジェクト状態を更新
@@ -1619,25 +1609,12 @@ impl ProcessManagerCapability {
         }
 
         let mut procs = self.running_processes.write().await;
-        // 既存の tmux_session を保持（QUIC 登録済みのセッション名を HTTP で上書きしない）
-        if let Some(existing) = procs.get(&key)
-            && process.tmux_session.is_none()
-        {
-            process.tmux_session = existing.tmux_session.clone();
-        }
         procs.insert(key.clone(), process.clone());
 
         // DB に書き込み（正規化パスで保存）
         if let Some(ref db) = self.vpdb
             && let Err(e) = db
-                .upsert_process(
-                    &key,
-                    &name,
-                    port,
-                    pid,
-                    "running",
-                    process.tmux_session.as_deref(),
-                )
+                .upsert_process(&key, &name, port, pid, "running")
                 .await
         {
             tracing::warn!("DB process 登録失敗: {}", e);
@@ -2912,7 +2889,6 @@ mod tests {
                     port: 33000,
                     pid: 4242,
                     project_path: "/tmp/proj-a".into(),
-                    tmux_session: Some("proj-a-vp".to_string()),
                 },
             );
         }
@@ -2929,17 +2905,15 @@ mod tests {
         assert_eq!(snap[0].project, "proj-a");
         assert_eq!(snap[1].project, "proj-b");
 
-        // proj-a: Connected + live port/pid/tmux。
+        // proj-a: Connected + live port/pid。
         assert_eq!(snap[0].presence, "connected");
         assert_eq!(snap[0].port, Some(33000));
         assert_eq!(snap[0].pid, Some(4242));
-        assert_eq!(snap[0].tmux_session.as_deref(), Some("proj-a-vp"));
 
         // proj-b: Disconnected + live 値は None (project としては sidebar に残る)。
         assert_eq!(snap[1].presence, "disconnected");
         assert_eq!(snap[1].port, None);
         assert_eq!(snap[1].pid, None);
-        assert_eq!(snap[1].tmux_session, None);
     }
 
     #[tokio::test]
@@ -3112,7 +3086,6 @@ mod tests {
             cwd: cwd.to_string(),
             performer_status: None,
             cc_session_id: None,
-            tmux: Vec::new(),
         };
         let conductor = mk(
             LaneAddress::conductor("bdestroy"),
@@ -3261,7 +3234,6 @@ mod tests {
             cwd: cwd.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
-            tmux: Vec::new(),
         };
         cap.lane_registry_ref().write().await.insert(
             key.to_string(),

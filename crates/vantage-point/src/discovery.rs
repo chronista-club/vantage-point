@@ -379,18 +379,13 @@ async fn build_agent_card(
     pid: u32,
 ) -> serde_json::Value {
     let lanes = state.lane_pool.read().await.list();
-    let tmux_session = lanes
-        .iter()
-        .find(|l| l.kind == crate::process::lanes_state::LaneKind::Conductor)
-        .and_then(|l| l.tmux.first())
-        .map(|t| t.session.clone());
+    // tmux decoupling PR2: 旧 "tmux_session" field は退役 (lane identity は lanes[].address)。
     serde_json::json!({
         "project_name": project_name,
         "port": port,
         "project_dir": state.project_dir,
         "pid": pid,
         "terminal_token": state.terminal_token,
-        "tmux_session": tmux_session,
         "lanes": lanes,
     })
 }

@@ -322,7 +322,6 @@ impl VpDb {
         port: u16,
         pid: u32,
         status: &str,
-        tmux_session: Option<&str>,
     ) -> Result<()> {
         self.db
             .query(
@@ -332,21 +331,18 @@ impl VpDb {
                     port: $port,
                     pid: $pid,
                     status: $status,
-                    started_at: time::now(),
-                    tmux_session: $tmux_session
+                    started_at: time::now()
                 } ON DUPLICATE KEY UPDATE
                     project_name = $input.project_name,
                     port = $input.port,
                     pid = $input.pid,
-                    status = $input.status,
-                    tmux_session = $input.tmux_session",
+                    status = $input.status",
             )
             .bind(("project_path", project_path.to_string()))
             .bind(("project_name", project_name.to_string()))
             .bind(("port", port as i64))
             .bind(("pid", pid as i64))
             .bind(("status", status.to_string()))
-            .bind(("tmux_session", tmux_session.map(|s| s.to_string())))
             .await
             .map_err(|e| anyhow::anyhow!("process upsert 失敗: {}", e))?
             .check()
@@ -993,7 +989,6 @@ DEFINE FIELD IF NOT EXISTS pid ON processes TYPE int;
 DEFINE FIELD IF NOT EXISTS status ON processes TYPE string;
 DEFINE FIELD IF NOT EXISTS started_at ON processes TYPE datetime;
 DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
-DEFINE FIELD IF NOT EXISTS tmux_session ON processes TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path UNIQUE;
 
 -- home-World identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
@@ -1367,7 +1362,6 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 performer_status: None,
                 cc_session_id: None,
-                tmux: Vec::new(),
             }
         };
 
@@ -1506,7 +1500,7 @@ mod tests {
         let db = make_test_db().await;
 
         // 登録
-        db.upsert_process("/repos/vp", "vp", 33000, 1234, "running", None)
+        db.upsert_process("/repos/vp", "vp", 33000, 1234, "running")
             .await
             .unwrap();
 
@@ -1517,13 +1511,12 @@ mod tests {
         assert_eq!(procs[0]["port"], 33000);
 
         // 更新（同じ path で upsert）
-        db.upsert_process("/repos/vp", "vp", 33001, 5678, "running", Some("vp-vp"))
+        db.upsert_process("/repos/vp", "vp", 33001, 5678, "running")
             .await
             .unwrap();
         let procs = db.list_processes().await.unwrap();
         assert_eq!(procs.len(), 1);
         assert_eq!(procs[0]["port"], 33001);
-        assert_eq!(procs[0]["tmux_session"], "vp-vp");
 
         // 削除
         db.delete_process("/repos/vp").await.unwrap();
@@ -1535,10 +1528,10 @@ mod tests {
     async fn test_processes_clear_all() {
         let db = make_test_db().await;
 
-        db.upsert_process("/a", "a", 33000, 1, "running", None)
+        db.upsert_process("/a", "a", 33000, 1, "running")
             .await
             .unwrap();
-        db.upsert_process("/b", "b", 33001, 2, "running", None)
+        db.upsert_process("/b", "b", 33001, 2, "running")
             .await
             .unwrap();
 
@@ -1570,25 +1563,6 @@ mod tests {
     // =========================================================================
     // Processes エッジケーステスト
     // =========================================================================
-
-    /// tmux_session=None を保存 → NULL として保存される
-    #[tokio::test]
-    async fn test_processes_tmux_session_none() {
-        let db = make_test_db().await;
-
-        db.upsert_process("/repos/vp", "vp", 33000, 1234, "running", None)
-            .await
-            .unwrap();
-
-        let procs = db.list_processes().await.unwrap();
-        assert_eq!(procs.len(), 1);
-        // NULL は serde_json::Value::Null として取得される
-        assert!(
-            procs[0]["tmux_session"].is_null(),
-            "tmux_session が NULL でない: {:?}",
-            procs[0]["tmux_session"]
-        );
-    }
 
     /// 存在しない project_path を delete_process してもエラーにならない
     #[tokio::test]

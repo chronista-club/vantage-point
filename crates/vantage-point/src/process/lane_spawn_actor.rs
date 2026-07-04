@@ -293,25 +293,24 @@ async fn handle_cmd(
     );
     let started = Instant::now();
 
-    // spawn_with_fallback は内部で std::thread::sleep(800ms) を呼ぶ sync 関数。
+    // spawn_stand は内部で std::thread::sleep(800ms) を呼ぶ sync 関数。
     // tokio worker thread を block しないよう spawn_blocking で隔離する。
     let cwd_for_blocking = cwd.clone();
     // Phase 1e: build_stand_command が addr を要求するので clone を closure に move
     let addr_for_blocking = addr.clone();
     let stand_for_blocking = stand.clone();
     let result = tokio::task::spawn_blocking(move || {
+        // tmux decoupling PR2: 床 + claude 注入の Rust-native spawn (adopt は退役、 §13.3)。
         let cmd_built = super::stand_spawner::build_stand_command(
             &stand_for_blocking,
             &addr_for_blocking,
             Path::new(&cwd_for_blocking),
+            false,
         );
         // PTY 初期 winsize 120x48: xterm.js が fitAddon で実サイズに resize する
         // までの初期値 + headless Stand の作業サイズ。 classic 80x24 は VP の広い
         // terminal には狭く、 claude TUI の reflow ジャンプも大きいため 120x48。
-        // reconcile gap fix (2026-06-30、 横展開): performer も既存 tmux session を
-        // adopt して重複 SP spawn での Dead 化を防ぐ（conductor と同じ ground-truth 経路）。
-        let session = addr_for_blocking.tmux_session_name(&stand_for_blocking);
-        super::stand_spawner::spawn_or_adopt(&cmd_built, &session, 120, 48)
+        super::stand_spawner::spawn_stand(&cmd_built, 120, 48)
     })
     .await;
 
@@ -369,14 +368,6 @@ async fn handle_cmd(
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         performer_status: None,
         cc_session_id: None,
-        // Phase 1e: spawn 成功時のみ tmux address を populate
-        tmux: if matches!(state, super::lanes_state::LaneState::Running) {
-            vec![super::lanes_state::TmuxLaneAddress::for_spawn(
-                &addr, &stand,
-            )]
-        } else {
-            Vec::new()
-        },
     };
     let mut pool_write = pool.write().await;
     if pool_write.get(&addr).is_some() {

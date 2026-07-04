@@ -624,45 +624,8 @@ impl VantageMcp {
         Some(format!("http://[::1]:{}{}", new_port, endpoint))
     }
 
-    /// label または pane_id を受け取り、(pane_id, 表示名) を返す
-    ///
-    /// `%` で始まる場合もそうでない場合も `tmux_resolve_pane` を1回呼ぶ。
-    /// サーバー側で pane_id → 即返却 + meta 取得、label → 逆引き + meta 取得を統一処理。
-    async fn resolve_pane(&self, query: &str) -> Result<(String, String), McpError> {
-        if query.starts_with('%') {
-            // pane_id → meta を取得して表示名を生成
-            let display = match self
-                .quic_call("tmux_resolve_pane", serde_json::json!({"query": query}))
-                .await
-            {
-                Ok(resp) => {
-                    if let Some(label) = resp.pointer("/meta/label").and_then(|v| v.as_str()) {
-                        format!("{} ({})", label, query)
-                    } else {
-                        query.to_string()
-                    }
-                }
-                Err(_) => query.to_string(),
-            };
-            return Ok((query.to_string(), display));
-        }
-        let resp = self
-            .quic_call("tmux_resolve_pane", serde_json::json!({"query": query}))
-            .await?;
-        let pane_id = resp
-            .get("pane_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| {
-                McpError::invalid_params(format!("ペインが見つかりません: {}", query), None)
-            })?;
-        let label = resp.pointer("/meta/label").and_then(|v| v.as_str());
-        let display = match label {
-            Some(l) => format!("{} ({})", l, pane_id),
-            None => pane_id.clone(),
-        };
-        Ok((pane_id, display))
-    }
+    // tmux decoupling PR1-2: `resolve_pane`（label/pane_id → tmux pane 解決 helper）は退役。
+    // lane の宛先解決は lane address 直（`lane_nudge` / `lane_capture`）に一本化。
 
     /// Process が見つからない場合に自動起動する
     ///

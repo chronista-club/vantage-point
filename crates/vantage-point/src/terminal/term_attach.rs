@@ -58,6 +58,38 @@ impl TermAttach {
     pub fn resize(&self, cols: u16, rows: u16) {
         let _ = self.resize_tx.send((cols, rows));
     }
+
+    /// grid の現在画面を plain text で render する（tmux decoupling: `capture-pane` の native 代替）。
+    ///
+    /// conductor が performer の console を読む dev-flow 用途（`vp lane capture` / process-proxy
+    /// `lane_capture`）。各行の trailing whitespace と末尾の空行ブロックを落とした
+    /// 「見えている内容」のみ返す（色/ANSI は持たない — agent 消費なので内容が要点）。
+    /// mutex poisoned（feed task の panic 後）は空文字で graceful degrade。
+    pub fn grid_text(&self) -> String {
+        let snap = match self.state.lock() {
+            Ok(s) => s.snapshot(),
+            Err(_) => return String::new(),
+        };
+        let mut lines: Vec<String> = snap
+            .cells
+            .iter()
+            .map(|row| {
+                row.iter()
+                    // CJK 等の wide char は grid 上で [char][spacer] の 2 cell を占める。
+                    // spacer を含めると「検 証」のように 1 文字ごとに空白が入るため落とす
+                    // (PR2 実機検証で発見)。
+                    .filter(|c| !c.wide_spacer)
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
 }
 
 impl Drop for TermAttach {
@@ -140,6 +172,27 @@ mod tests {
         let snap = attach.state.lock().unwrap().snapshot();
         assert_eq!(snap.cols, 120);
         assert_eq!(snap.lines, 40);
+    }
+
+    /// grid_text: CJK (wide char) が 1 文字ごとに空白化しない（wide_spacer filter、
+    /// PR2 実機検証で発見したバグの回帰ガード）+ 行の trailing whitespace と末尾空行の除去。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_grid_text_cjk_and_trailing_trim() {
+        let (tx, rx) = broadcast::channel(16);
+        let attach = TermAttach::spawn(rx, 80, 24);
+        // 1 行目: CJK、 2 行目: ASCII + trailing spaces。 以降は空行 (grid の残り)。
+        tx.send("検証OK\r\nabc   \r\n".as_bytes().to_vec()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let text = attach.grid_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("検証OK"),
+            "wide_spacer が混ざると『検 証 O K』になる: {text:?}"
+        );
+        assert_eq!(lines.get(1).copied(), Some("abc"), "trailing space は落ちる");
+        assert_eq!(lines.len(), 2, "末尾の空行ブロックは落ちる: {lines:?}");
     }
 
     /// Drop で task が abort されることを ─ 厳密検証は probabilistic だが、

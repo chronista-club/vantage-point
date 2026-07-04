@@ -43,7 +43,6 @@ pub mod screenshot;
 pub mod spawn_env;
 pub mod stands;
 pub mod terminal;
-pub mod tmux;
 pub mod trace_log;
 pub mod world;
 pub mod world_client;

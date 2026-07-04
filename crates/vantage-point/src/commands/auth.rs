@@ -37,8 +37,13 @@ pub const DEFAULT_AUTHORIZE_ENDPOINT: &str = "https://id.creo-memories.in/author
 /// IdP token endpoint の default。
 pub const DEFAULT_TOKEN_ENDPOINT: &str = "https://id.creo-memories.in/oauth/token";
 
-/// scope の default (= 最小 openid set)。
-pub const DEFAULT_SCOPE: &str = "openid profile email";
+/// scope の default (= 最小 openid set + refresh_token 取得用 offline_access)。
+///
+/// `offline_access` は refresh_token を発行させるための scope（OIDC）。ただし実際に
+/// refresh_token が返るのは **token を出す Auth0 API（audience）が `allow_offline_access=true`**
+/// の時のみ（AND 条件）。scope だけ要求して API が非対応なら refresh_token は出ない（無害）。
+/// hub audience（Chronista Hub API）側の設定は hub と調整中（wire thread 019f2a67）。
+pub const DEFAULT_SCOPE: &str = "openid profile email offline_access";
 
 /// OAuth client_id の default (= Auth0「Vantage Point CLI」、Native app)。
 ///
@@ -457,6 +462,50 @@ async fn refresh_tokens(config: &OidcConfig, refresh_token: &str) -> Result<Toke
         .context("failed to parse refresh endpoint JSON response")
 }
 
+/// 保存済み credential を返す。期限が近ければ refresh_token で更新してから返す（proactive）。
+///
+/// daemon の hub 接続経路（[`crate::daemon::hub_client`]）が接続直前に呼ぶ想定。credential が
+/// 24h で切れると required hub では federation が停止するため、切れる前に無音で巻き直す。
+///
+/// 挙動:
+/// - 未ログイン（file 不在）→ `Ok(None)`（caller は credential なしで接続 = 従来 degrade）
+/// - token が有効（skew 内で切れない）→ そのまま返す（refresh しない）
+/// - 切れそう & refresh_token あり → refresh 成功で新 token を保存して返す。**失敗しても
+///   既存 token をそのまま返す**（fail-safe: まだ有効かもしれず、hub 側の降格経路が最終防御）
+/// - 切れそう & refresh_token なし（offline_access 未付与 / API 非対応）→ 既存 token を返す
+///   （refresh 不能。期限切れなら hub 側で拒否 → 降格。UX 改善は再 login 誘導が別途必要）
+///
+/// `skew_secs` = 期限までこの秒数を切ったら「切れそう」とみなす slack（clock 誤差 + refresh
+/// 往復の余裕）。
+pub async fn credentials_refreshed_if_needed(skew_secs: u64) -> Result<Option<Credentials>> {
+    let Some(creds) = read_credentials()? else {
+        return Ok(None);
+    };
+    // まだ十分に有効なら触らない（大多数のケース、HTTP を撃たない）。
+    if !creds.is_expired(skew_secs) {
+        return Ok(Some(creds));
+    }
+    // 切れそう。refresh_token が無ければ巻き直せない — 既存を返す（期限切れは hub が判断）。
+    let Some(refresh) = creds.refresh_token.as_deref() else {
+        return Ok(Some(creds));
+    };
+    let config = OidcConfig::from_env().context("refresh: OidcConfig 構築に失敗")?;
+    match refresh_tokens(&config, refresh).await {
+        Ok(new_tokens) => {
+            let new_creds = new_tokens.into_credentials();
+            save_credentials(&new_creds)?;
+            Ok(Some(new_creds))
+        }
+        // refresh 失敗（network / IdP 側）でも既存 token を返す。まだ有効な可能性があり、
+        // ここで None にすると「有効 token を持っているのに credential なし接続」になって
+        // required hub で無用に弾かれる。
+        Err(e) => {
+            tracing::warn!("hub credential の proactive refresh に失敗（既存 token で続行）: {e}");
+            Ok(Some(creds))
+        }
+    }
+}
+
 /// `vp auth <subcommand>` のエントリ — main.rs から呼ばれる dispatch。
 pub async fn execute(cmd: AuthCommands) -> Result<()> {
     match cmd {
@@ -683,10 +732,20 @@ mod tests {
     /// 触る test を直列化する共有ロック。 parallel runner だと別 test の `set_var`/`remove_var`
     /// が割り込み、 save→read 間で値が変わって flake する (= dogfood 4/9/10/11 N4 trap の真因。
     /// 各 test は phase 統合で intra-test race を消していたが inter-test race が残っていた)。
-    /// poison は復帰させる (= panic した test があっても次の取得を巻き込まない)。
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    ///
+    /// `tokio::sync::Mutex` を使うのは async test（`#[tokio::test]`、A2e で追加）も同じロックを
+    /// 共有する必要があるため。sync test は [`env_guard`]（`blocking_lock`、tokio runtime 外から
+    /// 呼ぶので安全）、async test は [`env_guard_async`]（`.await` 越しに保持しても
+    /// `clippy::await_holding_lock` を踏まない）を使い分ける。
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.blocking_lock()
+    }
+
+    /// async test 用の [`env_guard`]。同じ `ENV_LOCK` を待つので sync/async test 間でも直列化される。
+    async fn env_guard_async() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().await
     }
 
     // === A2a tests (= dogfood 9 で導入、 不変) ===
@@ -1027,5 +1086,81 @@ mod tests {
         assert_eq!(creds.access_token, "at");
         assert_eq!(creds.refresh_token.as_deref(), Some("rt"));
         assert_eq!(creds.scope.as_deref(), Some("openid"));
+    }
+
+    /// テスト用に credentials.json を temp path に書いて VP_CREDENTIALS_PATH で差し替える。
+    /// 返り値の PathBuf を drop 時に消す簡易 guard は使わず、各テストで remove する。
+    fn write_temp_creds(name: &str, json: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("credentials.json");
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn refreshed_returns_none_when_not_logged_in() {
+        let _g = env_guard_async().await;
+        let missing = std::env::temp_dir().join("vp-refresh-absent/credentials.json");
+        // SAFETY: env_guard で直列化済み。
+        unsafe {
+            std::env::set_var("VP_CREDENTIALS_PATH", &missing);
+        }
+        // file 不在 → None（credential なし接続に degrade）。HTTP は撃たない。
+        let got = credentials_refreshed_if_needed(300).await.expect("ok");
+        assert!(got.is_none());
+        unsafe {
+            std::env::remove_var("VP_CREDENTIALS_PATH");
+        }
+    }
+
+    #[tokio::test]
+    async fn refreshed_passes_through_valid_token_without_http() {
+        let _g = env_guard_async().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // expires が skew の遥か先 → refresh 判定に入らず、そのまま返る（HTTP を撃たない）。
+        let json = format!(
+            r#"{{"access_token": "still-valid", "expires_at": {}}}"#,
+            now + 3600
+        );
+        let path = write_temp_creds("vp-refresh-valid", &json);
+        // SAFETY: env_guard で直列化済み。
+        unsafe {
+            std::env::set_var("VP_CREDENTIALS_PATH", &path);
+        }
+        let got = credentials_refreshed_if_needed(300).await.expect("ok");
+        assert_eq!(got.expect("some").access_token, "still-valid");
+        unsafe {
+            std::env::remove_var("VP_CREDENTIALS_PATH");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn refreshed_returns_existing_when_expiring_but_no_refresh_token() {
+        let _g = env_guard_async().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // 期限が近い（skew 内）が refresh_token が無い → 巻き直せないので既存を返す（HTTP 不発）。
+        let json = format!(
+            r#"{{"access_token": "expiring-no-refresh", "expires_at": {}}}"#,
+            now + 10
+        );
+        let path = write_temp_creds("vp-refresh-norefresh", &json);
+        // SAFETY: env_guard で直列化済み。
+        unsafe {
+            std::env::set_var("VP_CREDENTIALS_PATH", &path);
+        }
+        let got = credentials_refreshed_if_needed(300).await.expect("ok");
+        assert_eq!(got.expect("some").access_token, "expiring-no-refresh");
+        unsafe {
+            std::env::remove_var("VP_CREDENTIALS_PATH");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }

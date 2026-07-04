@@ -227,16 +227,15 @@ pub(crate) async fn create_performer_orchestrated(
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の lane clone と同じ pattern。
-    // Phase 1e: addr を渡して HD spec の tmux session 名導出に使う
+    // tmux decoupling PR2: 床 (login shell) + claude 注入の Rust-native spawn (design §13)。
     let cmd = crate::process::stand_spawner::build_stand_command(
         &stand,
         &addr,
         std::path::Path::new(&cwd),
+        false,
     );
-    // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
-    // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
     let spawn_result = tokio::task::spawn_blocking(move || {
-        crate::process::stand_spawner::spawn_with_fallback(&cmd, 120, 48)
+        crate::process::stand_spawner::spawn_stand(&cmd, 120, 48)
     })
     .await
     .map_err(|e| format!("PtySlot spawn task join: {}", e))?;
@@ -313,14 +312,6 @@ pub(crate) async fn create_performer_orchestrated(
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
         cc_session_id: None,
-        // Phase 1e: spawn 成功時のみ tmux address を populate
-        tmux: if matches!(lane_state, crate::process::lanes_state::LaneState::Running) {
-            vec![crate::process::lanes_state::TmuxLaneAddress::for_spawn(
-                &addr, &stand,
-            )]
-        } else {
-            Vec::new()
-        },
     };
 
     {
@@ -356,8 +347,6 @@ pub struct DeletedLaneInfo {
     pub address: String,
     /// PtySlot drop 直前の child pid (= killed)
     pub pid: Option<u32>,
-    /// tmux session を kill できたか (best-effort、 不存在なら false)
-    pub tmux_killed: bool,
     /// lane workspace cleanup の結果 (None = cleanup=false で skip)
     pub cleanup_status: Option<String>,
 }
@@ -427,22 +416,8 @@ pub async fn delete_lane_orchestrated(
         pid
     );
 
-    // Phase 2a: tmux session cleanup (best-effort)。
-    // info.tmux は spawn 成功時に populate された session 情報、 各 entry の `session` 名で
-    // `tmux kill-session -t <name>` を実行。 既存挙動では欠落していた → keystage 削除時の
-    // orphan tmux session bug の根本原因 (= 本 PR で fix)。
-    // for ループで全 entry に kill_session 副作用を実行 (= 短絡しない)、 結果を OR 合成。
-    // `.any()` だと short-circuit で副作用 path が変わるため避ける。
-    let mut tmux_killed = false;
-    for t in &info.tmux {
-        let killed = crate::tmux::kill_session(&t.session);
-        if killed {
-            tracing::info!("tmux session killed: {}", t.session);
-        } else {
-            tracing::warn!("tmux session kill failed (or did not exist): {}", t.session);
-        }
-        tmux_killed = tmux_killed || killed;
-    }
+    // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
+    // 子なので Phase 1 の remove (= PtySlot drop) で完全停止する（第 2 の生存木は無い）。
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
@@ -496,7 +471,6 @@ pub async fn delete_lane_orchestrated(
     Ok(DeletedLaneInfo {
         address: addr.to_string(),
         pid,
-        tmux_killed,
         cleanup_status,
     })
 }

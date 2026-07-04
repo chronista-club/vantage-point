@@ -189,9 +189,6 @@ pub struct ProcessSnapshot {
     pub project_name: String,
     pub port: u16,
     pub pid: u32,
-    /// tmux session 名 (= SP register 時に渡された場合のみ Some)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tmux_session: Option<String>,
 }
 
 #[cfg(test)]
@@ -254,33 +251,14 @@ mod tests {
         assert_eq!(restored, event);
     }
 
+    /// tmux decoupling PR2: 旧 wire payload (tmux_session 入り、旧 binary の SP/daemon) が
+    /// 新 ProcessSnapshot に decode できる（unknown field は serde が無視 = 後方互換）。
     #[test]
-    fn test_process_snapshot_serialize_with_tmux() {
-        let snap = ProcessSnapshot {
-            project_path: "/x".to_string(),
-            project_name: "vp".to_string(),
-            port: 33002,
-            pid: 99,
-            tmux_session: Some("vp-session".to_string()),
-        };
-        let json = serde_json::to_string(&snap).unwrap();
-        assert!(json.contains("tmux_session"), "got: {}", json);
-        let restored: ProcessSnapshot = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored, snap);
-    }
-
-    #[test]
-    fn test_process_snapshot_omits_tmux_when_none() {
-        // skip_serializing_if で None 時は wire に出さない (= tmux_session field 不在)
-        let snap = ProcessSnapshot {
-            project_path: "/x".to_string(),
-            project_name: "vp".to_string(),
-            port: 33002,
-            pid: 99,
-            tmux_session: None,
-        };
-        let json = serde_json::to_string(&snap).unwrap();
-        assert!(!json.contains("tmux_session"), "got: {}", json);
+    fn test_process_snapshot_decodes_legacy_payload_with_tmux_session() {
+        let legacy = r#"{"project_path":"/x","project_name":"vp","port":33002,"pid":99,"tmux_session":"vp-session"}"#;
+        let snap: ProcessSnapshot = serde_json::from_str(legacy).unwrap();
+        assert_eq!(snap.project_name, "vp");
+        assert_eq!(snap.port, 33002);
     }
 
     #[test]
