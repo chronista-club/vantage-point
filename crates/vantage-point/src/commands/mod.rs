@@ -11,6 +11,7 @@ pub mod events;
 pub mod file;
 pub mod flow;
 pub mod hd;
+pub mod lane_ctl;
 #[cfg(feature = "midi")]
 pub mod midi;
 pub mod pane;

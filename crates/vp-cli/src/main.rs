@@ -273,6 +273,20 @@ enum LaneCommands {
         #[arg(long)]
         lane: Option<String>,
     },
+    /// lane console の現在画面を読む (tmux decoupling: 旧 `vp tmux capture` の後継)
+    ///
+    /// SP の per-lane Term grid (TermAttach) を render して返す。tmux 不要。
+    Capture {
+        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        lane: String,
+    },
+    /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
+    Nudge {
+        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        lane: String,
+        /// 注入するテキスト (Enter は自動付与、submit 意味論は SP 側 deliver_nudge)
+        text: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -697,6 +711,14 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
                 println!("{id}");
             }
             Ok(())
+        }
+        LaneCommands::Capture { lane } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::capture(&lane, &config)
+        }
+        LaneCommands::Nudge { lane, text } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::nudge(&lane, &text, &config)
         }
     }
 }

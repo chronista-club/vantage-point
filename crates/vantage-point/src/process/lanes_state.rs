@@ -774,6 +774,15 @@ impl LanePool {
         }
     }
 
+    /// lane の console 現在画面を text で返す（tmux decoupling: `capture-pane` の native 代替）。
+    ///
+    /// per-lane に張られた TermAttach（alacritty grid、`insert_pty_slot` で全 lane 配線済）から
+    /// [`TermAttach::grid_text`](crate::terminal::term_attach::TermAttach::grid_text) を render。
+    /// lane 不在 / attach 不在（spawn 失敗 = Dead 等）は None。
+    pub fn capture_lane(&self, addr: &LaneAddress) -> Option<String> {
+        self.term_attaches.get(addr).map(|t| t.grid_text())
+    }
+
     /// 既存 Lane の PtySlot に新しい subscriber を追加 (PTY output を WS に流す等の用途)。
     /// `None` = address に対応する Lane が無い、 もしくは PtySlot が無い (state=Dead 等)。
     ///

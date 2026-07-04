@@ -127,3 +127,58 @@ Explore agent が全 surface（44 の .rs + mise task）を実読。**判定 = 2
 - **⚠️ submit されない → 2 phase 化で対処（PR1 内で修正済）**: 当初 `write_nudge` は `text + \r` を **1 回**で PtySlot に write していたが、submit されず input に留まる事象を確認。根因 = **PtySlot は tmux client の stdin を wrap**しており、burst 入力を tmux が **bracketed paste** 扱いにして paste 内 CR が改行化する（Enter keystroke の意味論が失われる）。旧 `send-keys -l text` + 別 `send-keys Enter` は tmux server が **pane PTY へ直接**注入するため submit が効いていた。
   - **対処**: `LanePool::write_nudge`（bundled）を廃し、`lanes_state::deliver_nudge`（async, 2 phase）に置換。① text を write（末尾 CR/LF 落とし）② `assume-paste-time`(既定1ms)を跨ぐ猶予(50ms) ③ Enter を**単独** write。paste の外の keystroke として Enter を成立させ submit させる。SP-local `nudge_lane` / proxy `handle_lane_nudge` の双方が同 sink に収束。
   - **PR2 への含意**: tmux 撤去（PtySlot→claude 直結）後は bracketed paste の wrap 主体（tmux client）が消えるため、この 2 phase は**中間状態の互換層**。PR2 で claude 直結にした際、`text\r` の 1 発 submit が効くか（= 2 phase を畳めるか）を再検証する。逆に効かない場合は claude 側の入力意味論に依存するので 2 phase を残す。
+
+## 13. PR2 ゼロベース再設計 — 「1 つの lane に、1 つの名前、1 つの所有者」（2026-07-04 確定）
+
+> user 指示「tmux のせいで交通渋滞を起こしてる実装かもだから、ゼロベースでリデザイン。強く美しい構造を」。
+> 当初 PR2 案（§11 = echoes script から tmux を抜く）を破棄し、**script 層ごと消す** Rust-native 化に拡大。
+
+### 13.1 診断 — 渋滞の実体
+
+lane には現在 **4 つの名前**（LaneAddress / tmux session 名 / socket 名 / pane id）と
+**4 層の env 中継**（launchd plist → SP → bash script → tmux -e → claude）があり、全サブシステムが
+この翻訳に税を払う。LANG guard / plist 焼き込み / `-e VP_*` / SOCK 二重導出 / adopt / 800ms peek /
+2-phase nudge / allow-passthrough / Tc override は全てこの翻訳層の瘢痕。
+
+### 13.2 目標構造
+
+| 層 | 所有者（唯一） | 消えるもの |
+|---|---|---|
+| Identity | `LaneAddress` | tmux session 名 / socket 名 / pane id / `tmux_session_name()` / TmuxLaneAddress / TmuxMode |
+| Host | `PtySlot`（env 注入は spawn の 1 箇所） | bash → tmux server → tmux client の env 中継、LANG guard |
+| Program | Rust の command builder（**bash script 層ごと削除**） | `.mise/tasks/vp/stand/*` 3 本、mise fallback、install-root cwd ダンス（PR-D Z 系統）、Windows shebang 回避 |
+| Control | `deliver_nudge`（PR1 の形を維持、内部は要再検証） | send-keys / paste 意味論の補正 |
+| View | broadcast → xterm.js ＋ per-lane grid `lane_capture` | TmuxActor / capture-pane / handle_tmux_* |
+| Lifecycle | spawn / Drop=kill / restart=Drop+respawn(`--resume`) | adopt / kill_session / orphan reconcile |
+
+Program の中身は **Act1-layered**（`echoes-act1-primary-design` と合流）:
+
+```
+PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「床」（self-healing、/exit 後も prompt）
+   ↓ initial_input（spawn 後に PTY へ type-ahead 注入）
+   claude --resume 'ID' --settings 'HOOKS' || claude --settings 'HOOKS'   ← Act3（|| fallback は shell が native 処理）
+```
+
+- **死んでいた機構の復権**: `StandCommand.initial_input` と early-exit fallback（「PR-B 以降 dead、防御的維持」）が主機構に戻る。新しい状態機械は不要。
+- **層の逆転の解消**: bash が `vp lane last-session` を子→親 CLI 呼び出ししていたのを、spawn 前に Rust が `lane::cc_session` を直読み。
+- **VP_SESSION は lane display 形（`<project>/conductor` 等）に再定義**（tmux の「/ 禁止」制約で生まれた `vp-...-echoes` 形は不要に。env 変数名は互換のため維持）。
+- **Windows unlock**: tmux が Windows lane の最大障壁だった。可搬点は LOGIN_SHELL 解決（git-bash）1 点に集約 — この再設計がそのまま Windows lane 戦略。
+
+### 13.3 dedup 確定（Explore 裏取り、2026-07-04）
+
+- DB-LOCK abort（`server.rs:120→137→144`）は conductor spawn（`server.rs:206`）より**上流** → 重複 SP は lane に触る前に死ぬ。adopt は tmux 層の二次防御にすぎず、tmux 撤去と同時に無意味化。**代替 dedup 不要**。
+- 残る window = DB-less SP（LOCK 以外の DB 失敗で継続）のみ。だが tmux 撤去後は重複 SP が衝突する共有資源（tmux session）自体が無く、各自の PtySlot を持って並走するだけ（2026-06-30 バグの同形再発は構造的に不可能）。受容。
+- `restart_lane` は元々 adopt を通らない（`lanes_state.rs:727` → spawn_with_fallback 直）。
+
+### 13.4 新規実装（ここだけ新コード）
+
+1. **`lane_capture`**: `read_pane` MCP / capture は実利用機能（conductor が performer console を読む）。per-lane Term grid（TermAttach）を全 lane に張り、grid→text で置換。tmux 撤去で唯一「消すと機能が失われる」箇所。
+2. **resume 配線**: spawn/restart 時に (project, lane) → cc_session id を読み command に埋める。`VP_FRESH` env → spawn パラメータ化。
+3. **legacy stand 吸収**: DB descriptor の `stand="tmux"/"hd"` → 床 shell に graceful mapping（warn log）。
+
+### 13.5 実機確認項目（PR2 後の検証フェーズへ）
+
+- extended-keys（Shift+Enter）/ truecolor が tmux shim 無しで xterm.js↔claude 間で成立するか（対処点は vp-app の xterm.js 設定側 = 端点交渉）
+- initial_input の type-ahead（重い rc でも PTY line discipline がバッファするはず）
+- 2-phase nudge → 1 write に畳めるか（§12）
+- 移行 UX: 旧 tmux session は orphan 生存 → 会話は `--resume` で新 lane に継続、orphan は手動掃除（brew canonical は release cut まで無傷）

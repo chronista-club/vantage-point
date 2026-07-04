@@ -576,6 +576,30 @@ async fn handle_lane_nudge(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// tmux decoupling: lane console capture。 lane の Term grid（TermAttach）を text で返す。
+///
+/// 旧 `tmux capture-pane`（`handle_tmux_capture`）の native 代替 — conductor が performer の
+/// console を読む dev-flow 用途。 CLI `vp lane capture` / 将来の MCP がこの method を ask する。
+async fn handle_lane_capture(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_capture: lane 未指定".to_string());
+    }
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("lane_capture: lane パース失敗: {}", lane));
+    };
+    let content = state
+        .lane_pool
+        .read()
+        .await
+        .capture_lane(&addr)
+        .ok_or_else(|| format!("lane_capture: lane 不在 or console 未配線: {}", lane))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "content": content}))
+}
+
 /// S3: terminal resize。 PtySlot (+ TermAttach grid) を cols×rows に同期する。
 async fn handle_terminal_resize(
     state: &AppState,
@@ -789,6 +813,8 @@ pub(crate) async fn dispatch_process_method(
         "terminal_write" => handle_terminal_write(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
         "lane_nudge" => handle_lane_nudge(state, payload).await,
+        // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
+        "lane_capture" => handle_lane_capture(state, payload).await,
         "terminal_resize" => handle_terminal_resize(state, payload).await,
         // F6: PP Canvas state (旧 SP HTTP /api/pp/state を process-proxy ask に移管)
         "pp_state_save" => handle_pp_state_save(state, payload).await,

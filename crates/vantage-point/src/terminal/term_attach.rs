@@ -58,6 +58,34 @@ impl TermAttach {
     pub fn resize(&self, cols: u16, rows: u16) {
         let _ = self.resize_tx.send((cols, rows));
     }
+
+    /// grid の現在画面を plain text で render する（tmux decoupling: `capture-pane` の native 代替）。
+    ///
+    /// conductor が performer の console を読む dev-flow 用途（`vp lane capture` / process-proxy
+    /// `lane_capture`）。各行の trailing whitespace と末尾の空行ブロックを落とした
+    /// 「見えている内容」のみ返す（色/ANSI は持たない — agent 消費なので内容が要点）。
+    /// mutex poisoned（feed task の panic 後）は空文字で graceful degrade。
+    pub fn grid_text(&self) -> String {
+        let snap = match self.state.lock() {
+            Ok(s) => s.snapshot(),
+            Err(_) => return String::new(),
+        };
+        let mut lines: Vec<String> = snap
+            .cells
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
 }
 
 impl Drop for TermAttach {
