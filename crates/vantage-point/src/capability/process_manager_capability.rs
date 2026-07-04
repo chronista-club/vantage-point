@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 /// PID が生存しているか確認（crossplat）
 fn is_pid_alive(pid: u32) -> bool {
@@ -227,6 +227,28 @@ pub struct ProcessManagerCapability {
     /// `run_health_monitor` の respawn 着手が Connecting を立てる。`/api/health` の `processes[]` で expose。
     /// DaemonState と Arc 共有 (`process_presence_ref`) し、registry handler 側からも書ける。
     process_presence: Arc<RwLock<HashMap<String, ProcessPresenceState>>>,
+    /// PR3: SP spawn の同時実行数 cap (= CPU コアベースの平滑化)。
+    ///
+    /// tmux decoupling 後は lane claude = SP の PtySlot の子なので、同時 spawn が CPU を
+    /// 圧迫すると claude 群の起動が団子になる。`start_process` (全 spawn trigger の sink) を
+    /// この permit でゲートし、一度に走る `vp sp start` を `cores − 2` (floor 1) に平滑化する。
+    /// permit は spawn 区間だけ RAII 保持 → 総稼働 SP 数は縛らない (semantics A)。
+    /// `Semaphore::new(0)` は永久 block なので permit は必ず ≥1 (spawn_cap で floor)。
+    spawn_semaphore: Arc<Semaphore>,
+}
+
+/// PR3: SP spawn の同時実行 cap を CPU コア数から算出する (= `cores − 2`、floor 1)。
+///
+/// Workflow の concurrency cap `min(16, cores − 2)` と同発想の `k = 2` (daemon 本体 +
+/// 余裕分を空ける)。`available_parallelism()` は std (依存追加不要)。1〜2 core 機では
+/// `saturating_sub(2) = 0` になるため `.max(1)` で床を保証 — `Semaphore::new(0)` は
+/// 永久 block する地雷 (lane_spawn_actor が踏んだ前例)。
+fn spawn_cap() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .saturating_sub(2)
+        .max(1)
 }
 
 impl ProcessManagerCapability {
@@ -244,6 +266,7 @@ impl ProcessManagerCapability {
             vpdb: None,
             active_lanes: Arc::new(RwLock::new(HashMap::new())),
             process_presence: Arc::new(RwLock::new(HashMap::new())),
+            spawn_semaphore: Arc::new(Semaphore::new(spawn_cap())),
         }
     }
 
@@ -1283,6 +1306,23 @@ impl ProcessManagerCapability {
             }
             return Ok(existing);
         }
+
+        // PR3: SP spawn 平滑化 — early-return (already-running / dedup) を抜けた「実 spawn 確定」
+        // 地点で permit を取得。permit は関数 return まで RAII 保持され、一度に走る
+        // `vp sp start` を `spawn_cap()` 本に絞る (semantics A)。非輻輳時は即取得 =
+        // レイテンシ影響なし。`Semaphore` は close しないので acquire は必ず成功する。
+        if self.spawn_semaphore.available_permits() == 0 {
+            tracing::debug!(
+                "start_process: spawn permit 全 in-flight、'{}' は空き待ち (spawn cap 平滑化)",
+                project_name
+            );
+        }
+        let _spawn_permit = self
+            .spawn_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("spawn_semaphore は close されない");
 
         // 状態を Starting に
         {
@@ -2607,6 +2647,31 @@ mod tests {
     fn test_world_capability_new() {
         let cap = ProcessManagerCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
+    }
+
+    // --- PR3: SP spawn 平滑化 (CPU cap) ---
+
+    /// floor 保証: 1〜2 core 機でも `spawn_cap()` は最低 1。
+    /// `Semaphore::new(0)` は permit 永久枯渇で spawn が全 block する地雷なので、
+    /// この floor が崩れると daemon が SP を一切起動できなくなる (回帰の急所)。
+    #[test]
+    fn spawn_cap_is_floored_at_one() {
+        assert!(
+            spawn_cap() >= 1,
+            "spawn_cap() は最低 1 (Semaphore::new(0) の永久 block 回避)"
+        );
+    }
+
+    /// wiring: `new()` の spawn_semaphore は `spawn_cap()` permits で初期化される
+    /// (gate 値が cap とズレていないことの確認)。
+    #[test]
+    fn new_wires_spawn_semaphore_to_cap() {
+        let cap = ProcessManagerCapability::new();
+        assert_eq!(
+            cap.spawn_semaphore.available_permits(),
+            spawn_cap(),
+            "spawn_semaphore は spawn_cap() 本の permit を持つ"
+        );
     }
 
     // --- resolve_lane_event (project-local lane refactor PR 4c) ---
