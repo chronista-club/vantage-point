@@ -375,6 +375,191 @@ pub fn uninstall_launch_agent() -> Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// L1 lifecycle (Windows): Task Scheduler 常駐化（logon always-on + crash 自動再起動）
+// ============================================================================
+//
+// macOS の LaunchAgent 対応物。schtasks で「ログオン時トリガ + 失敗時再起動」の task を
+// 登録する。`vp world --port N`（foreground daemon = plist の ProgramArguments と同形）を
+// action に焼き、Task Scheduler が supervisor になる。run-as-user (InteractiveToken) 必須:
+// system/LocalSystem だと %USERPROFILE% / Creo credential / surrealkv data_dir を見失う。
+//
+// LaunchAgent との対応: LogonTrigger=RunAtLoad / RestartOnFailure=KeepAlive /
+// InteractiveToken+LeastPrivilege=user 実行(admin 不要) / Hidden=ProcessType Background。
+// surrealkv の stale LOCK は Windows では OS が TerminateProcess で自動解放するため
+// 再起動が self-heal する（実測確定 2026-07-05）→ clear_stale_lock の Windows 移植は不要。
+
+/// Task Scheduler の task 名（profile 分離: dev/brew を別 task に）。
+#[cfg(windows)]
+pub fn scheduled_task_name() -> String {
+    match vp_paths::vp_profile() {
+        Some(profile) => format!(r"VP\TheWorld-{profile}"),
+        None => r"VP\TheWorld".to_string(),
+    }
+}
+
+/// task を実行する user（`USERDOMAIN\USERNAME`）。InteractiveToken の Principal / LogonTrigger 用。
+#[cfg(windows)]
+fn current_user() -> String {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    match std::env::var("USERDOMAIN") {
+        Ok(domain) if !domain.is_empty() => format!(r"{domain}\{user}"),
+        _ => user,
+    }
+}
+
+/// Task Scheduler task 定義 XML を生成する（純関数: data → calculation、env/fs に触れない）。
+///
+/// - `Actions.Exec` = `<vp_binary> world --port <port>`（plist の ProgramArguments と同形）
+/// - `LogonTrigger`（logon always-on）/ `RestartOnFailure`（crash 自動再起動、KeepAlive 相当）
+/// - `Principal` = InteractiveToken + LeastPrivilege（run-as-user、admin 不要）
+/// - `ExecutionTimeLimit=PT0S`（daemon なので無制限）/ `Hidden`（コンソール窓なし）/
+///   `MultipleInstancesPolicy=IgnoreNew`（二重起動抑止）/ バッテリ時も停止しない
+#[cfg(windows)]
+pub fn generate_task_xml(vp_binary: &Path, port: u16, user: &str, task_uri: &str) -> String {
+    let command = xml_escape(&vp_binary.to_string_lossy());
+    let user = xml_escape(user);
+    let uri = xml_escape(task_uri);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Vantage Point TheWorld daemon (logon always-on + crash auto-restart)</Description>
+    <URI>{uri}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <!-- keep-alive: 過去 StartBoundary + 無期限 Repetition。 毎分発火し、 daemon 生存中は
+         MultipleInstancesPolicy=IgnoreNew で skip、 死んでいれば再起動する（RestartOnFailure は
+         外部 kill に対し発火が不安定なため、 これを主機構にする）。 StartWhenAvailable で
+         現ログオンセッションでも即起動し、 reboot 後の取りこぼしも拾う。 -->
+    <TimeTrigger>
+      <StartBoundary>2020-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <!-- reboot / 再ログオン時の即時起動（TimeTrigger の StartWhenAvailable と二重の安全網）。 -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>world --port {port}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
+}
+
+/// 文字列を UTF-16LE + BOM で書き出す。schtasks の `/xml` は UTF-16 を要求し、
+/// UTF-8 だと "The task XML is malformed" 等で弾かれるため。
+#[cfg(windows)]
+fn write_utf16le_bom(path: &Path, s: &str) -> std::io::Result<()> {
+    let mut bytes: Vec<u8> = vec![0xFF, 0xFE]; // UTF-16LE BOM
+    for unit in s.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    std::fs::write(path, bytes)
+}
+
+/// Task Scheduler task を install する（idempotent、`/f` で既存を上書き）。
+///
+/// XML を temp に書き出し `schtasks /create /xml` で登録する（macOS の
+/// 「plist 書き出し + launchctl」と同型の file + shell-out）。戻り値 = 登録した task 名。
+#[cfg(windows)]
+pub fn install_scheduled_task(vp_binary: &Path, port: u16) -> Result<String> {
+    use anyhow::Context;
+
+    let task_name = scheduled_task_name();
+    let task_uri = format!(r"\{task_name}");
+    let user = current_user();
+    let xml = generate_task_xml(vp_binary, port, &user, &task_uri);
+
+    let xml_path = std::env::temp_dir().join(format!("vp-theworld-task-{port}.xml"));
+    write_utf16le_bom(&xml_path, &xml)
+        .with_context(|| format!("task XML 書き出し失敗: {}", xml_path.display()))?;
+
+    let out = std::process::Command::new("schtasks")
+        .args([
+            "/create",
+            "/tn",
+            &task_name,
+            "/xml",
+            &xml_path.to_string_lossy(),
+            "/f",
+        ])
+        .output()
+        .context("schtasks /create 実行失敗（schtasks が PATH に無い？）")?;
+    let _ = std::fs::remove_file(&xml_path); // best-effort cleanup
+
+    if !out.status.success() {
+        // schtasks の出力は console codepage のことがあるので lossy で best-effort 表示。
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        anyhow::bail!(
+            "schtasks /create 失敗（task={task_name}）: {} {}",
+            stderr.trim(),
+            stdout.trim()
+        );
+    }
+    Ok(task_name)
+}
+
+/// Task Scheduler task を uninstall する（idempotent、未登録でも error にしない）。
+///
+/// macOS の `launchctl bootout`（稼働 daemon も停止）と parity を取るため、 `/end` で
+/// 稼働インスタンス（= 常駐中の daemon）を止めてから `/delete` する。 hard 停止で残る
+/// stale surrealkv LOCK は Windows では OS が自動解放するため次回起動が self-heal する。
+#[cfg(windows)]
+pub fn uninstall_scheduled_task() -> Result<String> {
+    let task_name = scheduled_task_name();
+    // 稼働中インスタンスを停止（未稼働なら no-op）。
+    let _ = std::process::Command::new("schtasks")
+        .args(["/end", "/tn", &task_name])
+        .output();
+    // task 削除（未登録でも error は無視 = idempotent）。
+    let _ = std::process::Command::new("schtasks")
+        .args(["/delete", "/tn", &task_name, "/f"])
+        .output();
+    Ok(task_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +621,34 @@ mod tests {
         assert!(plist.contains("/Users/a&amp;b/vp"));
         assert!(plist.contains("/x&lt;y&gt;/bin"));
         assert!(!plist.contains("a&b/vp"), "生の & が残ってはいけない");
+    }
+
+    /// Task Scheduler XML の要点（action = world --port / LogonTrigger / RestartOnFailure /
+    /// run-as-user / 無制限実行）と XML escape を固定する。
+    #[cfg(windows)]
+    #[test]
+    fn test_generate_task_xml_shape() {
+        let xml = generate_task_xml(
+            Path::new(r"C:\Users\a&b\vp.exe"),
+            32000,
+            r"DOMAIN\user",
+            r"\VP\TheWorld",
+        );
+        // action = plist の ProgramArguments と同形（world --port N）
+        assert!(xml.contains("<Arguments>world --port 32000</Arguments>"));
+        // keep-alive の主機構 = TimeTrigger + 無期限 Repetition + IgnoreNew（RestartOnFailure は
+        // 外部 kill に発火が不安定なため補助）。 logon always-on / run-as-user / daemon 無制限。
+        assert!(xml.contains("<TimeTrigger>"));
+        assert!(xml.contains("<Repetition>"));
+        assert!(xml.contains("<Interval>PT1M</Interval>"));
+        assert!(xml.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
+        assert!(xml.contains("<LogonTrigger>"));
+        assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(xml.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+        // XML escape（Command path の & を壊さない）
+        assert!(xml.contains(r"C:\Users\a&amp;b\vp.exe"));
+        assert!(!xml.contains(r"a&b\vp.exe"), "生の & が残ってはいけない");
     }
 
     #[test]

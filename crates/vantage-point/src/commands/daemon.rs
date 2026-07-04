@@ -150,10 +150,46 @@ fn install() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// `vp daemon install` — TheWorld を Task Scheduler 常駐化（Windows）。
+#[cfg(windows)]
+fn install() -> Result<()> {
+    // task の action に焼く binary = 今 install を呼んでいる vp 自身。
+    let exe = std::env::current_exe()?;
+    let task = process::install_scheduled_task(&exe, crate::cli::world_port())?;
+    println!("👑 Task Scheduler task を install しました: {task}");
+    println!(
+        "   ログオン時に自動起動 + crash 時に自動再起動します（vp daemon uninstall で解除）。"
+    );
+
+    // 即時有効化: 既存 daemon が無ければ今すぐ task を走らせる。
+    // 稼働中なら二重起動（port bind 衝突 → RestartOnFailure loop）を避けて skip。
+    if process::is_daemon_running().is_none() {
+        let ran = std::process::Command::new("schtasks")
+            .args(["/run", "/tn", &task])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ran {
+            println!("   今すぐ起動しました（schtasks /run）。");
+        } else {
+            println!(
+                "   注: 次回ログオンから自動起動します（今すぐは再ログオン or `schtasks /run /tn {task}`）。"
+            );
+        }
+    } else {
+        // KeepAlive 相当（RestartOnFailure）常駐化後は、TerminateProcess で落としても
+        // 次回ログオン以降 task が拾う。恒久停止は uninstall。
+        println!(
+            "   注: 既に daemon 稼働中。常駐は次回ログオンから。恒久停止は `vp daemon uninstall`。"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn install() -> Result<()> {
     anyhow::bail!(
-        "LaunchAgent 常駐化は macOS のみ対応です（Linux は systemd user unit、Windows は別途）"
+        "常駐化は macOS(LaunchAgent) / Windows(Task Scheduler) のみ対応です（Linux は systemd user unit 予定）"
     )
 }
 
@@ -165,9 +201,17 @@ fn uninstall() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// `vp daemon uninstall` — Task Scheduler 常駐を解除（Windows）。
+#[cfg(windows)]
 fn uninstall() -> Result<()> {
-    anyhow::bail!("LaunchAgent 常駐化は macOS のみ対応です")
+    let task = process::uninstall_scheduled_task()?;
+    println!("👑 Task Scheduler task を uninstall しました（schtasks /delete）: {task}");
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn uninstall() -> Result<()> {
+    anyhow::bail!("常駐化は macOS / Windows のみ対応です")
 }
 
 /// VP-154 PR-2.5: `vp daemon processes [--watch]` 実装。

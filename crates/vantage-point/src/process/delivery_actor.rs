@@ -618,7 +618,10 @@ mod tests {
     fn pick_running_lane_returns_target() {
         let lanes = registry(test_lane(LaneState::Running));
         let t = pick_nudge_target(&lanes, "vp/conductor").expect("nudge 可能");
-        assert_eq!(t.path_key, "/repo/vp", "forward 先 SP の control channel key");
+        assert_eq!(
+            t.path_key, "/repo/vp",
+            "forward 先 SP の control channel key"
+        );
         assert_eq!(t.lane_display, "vp/conductor", "lane_nudge の宛先");
         assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
