@@ -192,3 +192,28 @@ PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「床�
 - initial_input の type-ahead（重い rc でも PTY line discipline がバッファするはず）
 - 2-phase nudge → 1 write に畳めるか（§12）
 - 移行 UX: 旧 tmux session は orphan 生存 → 会話は `--resume` で新 lane に継続、orphan は手動掃除（brew canonical は release cut まで無傷）
+
+### 13.6 実機検証結果（2026-07-04、dev :32100、brew 終始無傷）
+
+**✅ 検証済み:**
+1. **spawn**: `Lane spawned: program=/bin/zsh args=["-l"]` — 床 + claude 注入、mise/tmux 無し
+2. **`--resume` 会話継続 ×3**: 旧 tmux 世代 → 新 PtySlot lane、SP kill → 再起動、の各遷移で
+   conductor の会話が継続（「プロセスは死ぬがコンテキストは蘇る」実証）。旧世代からの移行も
+   cc_session 経由で無縫合
+3. **nudge submit（tmux 無し）**: conductor claude（`✶ Synthesizing…` = 送信成立）+
+   performer 床 shell（`command not found` = text+Enter 実行の直接証拠）の両方で 2-phase 成立
+4. **lane_capture**: grid render 成立。発見 → 修正 2 件: wide-char spacer 混入（CJK 1 文字ごと空白）、
+   TermAttach 初期 dims 80x24 ≠ PtySlot 120x48（headless capture が再 wrap で崩れ）
+5. **flow handoff 全通**: performer 作成（worktree）+ wire + nudge、delete 経路も完走
+6. **⚠️ mise trust footgun（発見 → env-only 修正）**: 床 = login shell 化で user rc の mise activate
+   が新 worktree の未 trust config に interactive prompt → 床を塞ぐ。`MISE_TRUSTED_CONFIG_PATHS` に
+   lane cwd を注入して抑止（mise 不 exec = 依存境界維持）。`echoes-act1-primary-design` の予見が的中
+7. **CJK**: 配送・console 描画とも無破損
+
+**⏳ 残（GUI フェーズ / 任意）:**
+- vp-app xterm.js での truecolor / Shift+Enter（GUI dogfood で確認）
+- statusline の lane label が旧形式表示（user の statusline script が独自導出、cosmetic）
+- 2-phase → 1 write への畳み込み（動いているので任意の最適化）
+
+**既知挙動（PR2 起因でない）:** daemon は SP 死亡を registry から除去するが auto-respawn しない
+（autostart は daemon boot 時のみ）。SP 復帰は手動 or daemon 再起動。
