@@ -10,15 +10,24 @@ require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 vp = VP.cargo_bin("vp")
 
-# pgrep -f 'vp sp start' の PID 群 (= SP プロセス、 daemon:reset:sp と同ロジック)。
-def sp_pids = `pgrep -f 'vp sp start'`.split.map(&:to_i)
+# SP プロセスの PID 群。 VP_PROFILE 分離 (tmux decoupling 後の footgun 対策): dev で
+# `daemon:stop` を回しても brew SP (VP_PROFILE 未設定) を巻き込まないよう、 各 SP の env を
+# `ps eww` で読み、 現プロファイル (ENV["VP_PROFILE"]、 nil=brew) と一致するものだけ対象にする。
+# tmux 撤去で SP kill = lane claude kill になったため、 profile を跨いだ誤爆の被害が大きい。
+def sp_pids
+  want = ENV["VP_PROFILE"] # nil = brew namespace
+  `pgrep -f 'vp sp start'`.split.map(&:to_i).select do |pid|
+    got = `ps eww -p #{pid} 2>/dev/null`[/\bVP_PROFILE=(\S+)/, 1] # nil if unset
+    got == want
+  end
+end
 # 個別 signal (既に消えた PID の ESRCH は握り潰す = bash の `|| true`)。
 def signal_all(sig, pids) = pids.each { Process.kill(sig, it) rescue nil }
 
 VP.log "#{VP.icon(:bomb)} Vantage Point daemon + 関連プロセス停止 (cascade kill)…"
 
-# ── [1/3] SP プロセスを kill ──────────────────────────────────────────────
-warn "#{VP.icon(:sync)} [1/2] 全 SP プロセス検出…"
+# ── [1/2] SP プロセスを kill (現プロファイルのみ) ─────────────────────────
+warn "#{VP.icon(:sync)} [1/2] SP プロセス検出 (profile=#{ENV['VP_PROFILE'] || 'brew'})…"
 pids = sp_pids
 if pids.empty?
   warn "   #{VP.icon(:info)} 実行中の SP プロセスはありません"
