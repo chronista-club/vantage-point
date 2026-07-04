@@ -878,7 +878,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             project_name: p.project_name.clone(),
                                             port: p.port,
                                             pid: p.pid,
-                                            tmux_session: p.tmux_session.clone(),
                                         })
                                         .collect();
                                     if channel
@@ -1523,16 +1522,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .unwrap_or("")
                                         .to_string();
 
-                                    let tmux_session = payload["tmux_session"]
-                                        .as_str()
-                                        .map(|s| s.to_string());
-
+                                    // tmux decoupling PR2: 旧 register payload の "tmux_session" は
+                                    // 無視する (旧 binary の SP が送ってきても互換維持で読み飛ばす)。
                                     let process = RunningProcess {
                                         project_name: project_name.clone(),
                                         port,
                                         pid,
                                         project_path: project_dir.clone().into(),
-                                        tmux_session,
                                     };
 
                                     // パスキーで一意識別

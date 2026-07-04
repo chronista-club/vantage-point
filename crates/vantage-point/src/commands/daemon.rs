@@ -196,14 +196,9 @@ fn processes(watch: bool) -> Result<()> {
             println!("  (= まだ SP register なし)");
         } else {
             for p in &snapshot {
-                let tmux = p
-                    .tmux_session
-                    .as_deref()
-                    .map(|s| format!(" tmux={}", s))
-                    .unwrap_or_default();
                 println!(
-                    "  • {} (port={}, pid={}{}, path={})",
-                    p.project_name, p.port, p.pid, tmux, p.project_path
+                    "  • {} (port={}, pid={}, path={})",
+                    p.project_name, p.port, p.pid, p.project_path
                 );
             }
         }

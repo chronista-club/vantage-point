@@ -1,15 +1,15 @@
 //! `vp restart` コマンドの実行ロジック（restart-all から内部利用）
 //!
-//! SP サーバーを再起動する。tmux セッションの再起動は hd_cmd.rs が担当。
+//! SP サーバーを再起動する。claude は SP の PtySlot の子なので、SP 停止 = lane 停止、
+//! 再起動後は conductor spawn が `--resume` で会話を継ぐ（tmux decoupling PR2）。
 
 use anyhow::Result;
 
 use crate::cli::stop_process;
 use crate::config::Config;
 use crate::resolve::{self, ResolvedTarget};
-use crate::tmux;
 
-/// SP + tmux をセットで再起動（restart-all から呼ばれる）
+/// SP を再起動（restart-all から呼ばれる）
 pub fn execute(
     target: Option<&str>,
     _browser: bool,
@@ -49,23 +49,9 @@ pub fn execute(
         Ok::<(), anyhow::Error>(())
     })?;
 
-    // 2. tmux セッションを kill（存在する場合）
-    // SP は固定の自前 session を持たず、 conductor lane が `vp-{project}-conductor-{stand}` を持つ。
-    // この時点で SP は停止済みのため API 照会できないので、 default stand（echoes）で deterministic
-    // 導出する。 別 stand の conductor session は残置しうるが、 SP 再起動時に再 spawn される
-    // （`tmux new-session -A` で再 attach、 best-effort cleanup の範疇、 fix-tmux-session-naming）。
-    let session = crate::process::lanes_state::LaneAddress::conductor(&project_name)
-        .tmux_session_name("echoes");
-    if tmux::is_tmux_available() && tmux::session_exists(&session) {
-        print!("  ⏹ tmux:{}... ", session);
-        if tmux::kill_session(&session) {
-            println!("ok");
-        } else {
-            println!("skip");
-        }
-    }
-
-    // 3. SP を再起動（detached subprocess として spawn）
+    // 2. SP を再起動（detached subprocess として spawn）
+    // tmux decoupling PR2: 旧 step 2 (tmux session kill) は退役 — claude は SP の子なので
+    // step 1 の SP 停止で完全に落ち、 再起動後の conductor spawn が --resume で会話を継ぐ。
     println!("\u{1f680} Starting SP...");
     if let Err(e) = crate::commands::sp::spawn_sp_detached(&project_dir, None) {
         eprintln!("⚠️  SP 起動失敗: {}", e);

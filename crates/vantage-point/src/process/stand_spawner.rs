@@ -1,29 +1,28 @@
-//! StandSpawner — Stand 名 (`vp:stand:{name}` task) に応じた process command 構築
+//! StandSpawner — Stand 名に応じた spawn command 構築（tmux decoupling PR2 で Rust-native 化）
 //!
-//! 関連 memory:
-//! - `mem_1CaTpCQH8iLJ2PasRcPjHv` (Architecture v4: Process recursive、9 component minimum)
-//! - `mem_1CaSmvKgsX2AQxRYFYgNM3` (Conductor pane shell — TheHand path、 PR-B 後は vp:stand:shell)
+//! ## 構造（design doc §13: Act1-layered）
 //!
-//! ## 役割
+//! ```text
+//! PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「床」（self-healing）
+//!    ↓ initial_input（spawn 後に PTY へ type-ahead 注入）
+//!    claude --resume 'ID' … || claude …        ← Act3（|| fallback は shell が native 処理）
+//! ```
 //!
-//! Lane (Session kind の Process) を起動する時、 内部の Stand を spawn するための command を
-//! 構築する。 init_script は `.mise/tasks/vp/stand/{name}` の file-based script (tmux setup /
-//! shell exec / LLM auto-launch を担当)。 VP は script の path を知っているので **`mise` を介さず
-//! 直接 exec** する (依存削減 + mise trust footgun 回避、 `build_stand_command` 参照)。 install root
-//! 解決失敗時のみ従来の `mise run vp:stand:{name}` に degrade する。
-//!
-//! - `echoes` → `.mise/tasks/vp/stand/echoes` (Layer 2: tmux + claude auto-launch、 旧 hd/HeavensDoor)
-//! - `shell`  → `.mise/tasks/vp/stand/shell`  (Layer 0: bare login shell、 旧 TheHand)
-//! - `tmux`   → `.mise/tasks/vp/stand/tmux`   (Layer 1: tmux session attach、 LLM なし)
-//! - 任意の `{name}` script ─ 将来 stand 追加に対応 (mise 非経由なので project-local override は無し)
+//! 旧構造（PtySlot → bash script → tmux new-session → claude）の bash/mise/tmux 層は全廃。
+//! - env 注入は PtySlot spawn の 1 箇所（TERM/LANG/PATH は `spawn_env`、 VP_* はここで構築）
+//! - claude 終了後は床の login shell prompt に自然に戻る（旧 `; exec $SHELL -l` chain 不要）
+//! - `--resume` 失敗 → fresh claude の fallback は shell の `||` が担う
+//! - resume id は spawn 前に Rust が `lane::cc_session` を直読み
+//!   （旧: bash が `vp lane last-session` を子→親 CLI 呼び出し = 層の逆転、解消）
 //!
 //! ## VP_* 環境変数
 //!
-//! mise task は以下の env を VP から受け取る (doc 11 §3.3):
-//! - `VP_CWD`     : project directory (= `cwd` 引数)
-//! - `VP_SESSION` : tmux session 名 (deterministic、 `addr.tmux_session_name(stand_name)`)
+//! - `VP_CWD`     : project directory
+//! - `VP_SESSION` : lane 論理 identity（= `LaneAddress` の Display 形。旧 tmux session 名は
+//!                  tmux の「`/` 禁止」制約由来の sanitize 形だった — tmux 撤去で不要に）
 //! - `VP_PROJECT` : `addr.project`
-//! - `VP_LANE`    : lane label (`conductor` / performer name / `unnamed`)
+//! - `VP_LANE`    : lane label（`conductor` / performer 名 / `unnamed`）
+//! - `VP_PROFILE` : dev/brew namespace（設定時のみ）
 
 use std::path::Path;
 
@@ -33,82 +32,59 @@ use tokio::sync::broadcast;
 use super::lanes_state::{LaneAddress, LaneKind};
 use crate::daemon::pty_slot::PtySlot;
 
-/// Stand spawn 用 command (binary + args + env + cwd + 任意の初期入力)
+/// wiremsg R2-c（チャネル B、決定 D2）: wire 未読通知 hook を VP が spawn 時に注入する。
+/// dotfile 非依存で箱から動く。 hook 実体は `vp wire hook-check`（vp CLI 同梱）。
+/// UserPromptSubmit で未読 wire を additionalContext 通知、 daemon 不在時は silent 成功
+/// （fail-open）。 JSON に single quote が無いため `'…'` 埋め込みで安全に quote できる。
+///
+/// NOTE: SessionStart（session_id 記録、R3-b）は global settings（~/.claude/settings.json）の
+/// hook に移管済み（inline だと手動起動 session の id を取りこぼすため）。
+const WIRE_HOOKS: &str = r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}"#;
+
+/// Stand spawn 用 command（program + args + env + cwd + 初期入力）
 #[derive(Debug, Clone)]
 pub struct StandCommand {
     pub program: String,
     pub args: Vec<String>,
-    /// Phase 5-D の遺産: primary spawn が早期 exit した時に試す fallback args。
-    ///  PR-B 後は mise task が早期 exit せず PTY を take over するので実質 dead path、
-    ///  ただし shell spawn 自体の防御として field 自体は維持。 None = fallback なし。
-    pub fallback_args: Option<Vec<String>>,
-    /// Phase 6-E の遺産: spawn 直後に PTY に書き込む初期入力。
+    /// spawn 後に PTY へ type-ahead 注入する初期入力（= Act3 の claude 起動 command line）。
     ///
-    /// PR-B 後は mise task が直接 PTY を take over するため None 固定。 旧 LlmStand /
-    /// TheHand 経路では shell + initial_input で auto-launch していた。
+    /// PTY line discipline が入力をバッファするため、 shell の rc 読込完了を待たずに書いてよい
+    /// （shell が読み始めた時点で消費される）。 None = 床の shell のみ（Act1 で止まる）。
     pub initial_input: Option<String>,
-    /// doc 11 (PR-B): mise task に渡す環境変数。
-    ///
-    /// `mise run vp:stand:{name}` の child process env として注入、 task 内で
-    /// `"$VP_CWD"` / `"$VP_SESSION"` 等で参照される (quoting 規約 doc 11 §3.3)。
+    /// PtySlot spawn に渡す環境変数（VP_* identity）。 TERM/LANG/PATH は PtySlot 側の
+    /// `spawn_env` が注入する（ここでは持たない — 注入点を 1 箇所に保つ）。
     pub env: Vec<(String, String)>,
-    /// doc 11 (PR-D / Z 系統): spawn 時の cwd。
-    ///
-    /// PR-D 以前は spawn_with_fallback の引数で受け取っていたが、 cwd 解決ロジック
-    /// (install root vs project_dir fallback) を build_stand_command 内に集約するため
-    /// StandCommand 自身に持たせた。 PtySlot::spawn は `cmd.cwd` を `current_dir()` に渡す。
-    ///
-    /// - mise task 経路 (PR-B 以降): VP install root (= `.mise/tasks/vp/stand/` の住処)
-    ///   ─ user の project dir は env `VP_CWD` で task に渡される。
-    /// - install root 解決失敗時 (degraded fallback): project_dir
+    /// spawn 時の cwd = project directory（旧 install-root ダンスは script 層と共に廃止）。
     pub cwd: String,
 }
 
-/// 早期 exit 検知の wait 時間 (ms)。 PR-B 後は dead path だが defensive に維持。
+/// 早期 exit 検知の wait 時間 (ms)。 床の login shell がこの窓内に死ぬ = 環境異常
+/// （shell 不在 / PTY 失敗等）。 死因は PTY 出力の tail を添えて bail する。
+/// initial_input の書込みもこの窓の後（= 床の生存確認後）に行う。
 const EARLY_EXIT_CHECK_MS: u64 = 800;
 
-/// `StandCommand` を spawn、 primary が `EARLY_EXIT_CHECK_MS` 以内に死んだら fallback で retry。
+/// `StandCommand` を spawn し、 床の生存確認後に initial_input を注入する。
 ///
-/// PR-B 後は mise task 経路で fallback / initial_input は None 固定、 dead path だが
-/// 既存 code shape を維持 (shell tinkering で task 経由しない直接 spawn の保険)。
-///
-/// PR-D (Z 系統): `cwd` は `cmd.cwd` から取得 (build_stand_command で install root に
-/// 解決済み)。 caller は project_dir を別経路 (VP_CWD env) で扱う。
-pub fn spawn_with_fallback(
+/// 床（login shell）が `EARLY_EXIT_CHECK_MS` 以内に死んだら、 PTY 出力の末尾を添えて
+/// bail する（死因の握り潰し防止 — console blackout 調査の教訓）。
+pub fn spawn_stand(
     cmd: &StandCommand,
     cols: u16,
     rows: u16,
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
-    let cwd = cmd.cwd.as_str();
-    let (mut slot, mut rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
+    let (mut slot, mut rx) =
+        PtySlot::spawn(cmd.cwd.as_str(), &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
 
-    // primary が早期 exit するか peek
+    // 床が早期 exit するか peek（rc 読込より短い可能性はあるが、 type-ahead は line discipline
+    // がバッファするので「注入が早すぎて落ちる」ことはない — ここは純粋に死活確認）。
     std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
 
-    if slot.is_alive() {
-        // initial_input は PR-B 後 None 固定、 でも defensive に維持。
-        if let Some(input) = cmd.initial_input.as_deref()
-            && let Err(e) = slot.write(input.as_bytes())
-        {
-            tracing::warn!(
-                "initial_input write failed (Stand spawn keeps shell alive): err={} program={} input_len={}",
-                e,
-                cmd.program,
-                input.len()
-            );
-        }
-        return Ok((slot, rx));
-    }
-
-    let Some(fb_args) = cmd.fallback_args.as_ref() else {
-        // 死因究明ログ (要所): 早期 exit した子プロセス (mise/tmux/claude) が PTY に書いた
-        // stderr/stdout を broadcast channel から drain して bail message に載せる。これが
-        // 無いと「800ms 以内に死んだ」事実しか残らず、死因 (例: tmux の
-        // "open terminal failed: terminal does not support clear" = TERM 不在) が握り潰されて
-        // diagnosis が長引く (本 fix の console blackout 調査がまさにこの穴を踏んだ)。
+    if !slot.is_alive() {
+        // 死因究明ログ（要所）: 早期 exit した床が PTY に書いた stderr/stdout を drain して
+        // bail message に載せる。 無いと「800ms 以内に死んだ」事実しか残らない。
         let tail = drain_pty_tail(&mut rx);
         anyhow::bail!(
-            "Stand spawn early-exit (no fallback): program={} args={:?}{}",
+            "Stand spawn early-exit: program={} args={:?}{}",
             cmd.program,
             cmd.args,
             if tail.is_empty() {
@@ -117,91 +93,24 @@ pub fn spawn_with_fallback(
                 format!(" 子プロセス出力(末尾)=<<{}>>", tail)
             }
         );
-    };
+    }
 
-    tracing::warn!(
-        "Stand primary spawn early-exit, fallback to args={:?}: program={}",
-        fb_args,
-        cmd.program
-    );
-
-    drop(slot);
-    drop(rx);
-
-    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, fb_args, &cmd.env, cols, rows)?;
     if let Some(input) = cmd.initial_input.as_deref()
         && let Err(e) = slot.write(input.as_bytes())
     {
+        // 床は生きているので lane 自体は成立させる（user が手打ちで claude を起動できる）。
         tracing::warn!(
-            "initial_input write failed on fallback (shell alive): err={} program={}",
+            "initial_input write failed (床の shell は生存): err={} program={} input_len={}",
             e,
-            cmd.program
+            cmd.program,
+            input.len()
         );
     }
     Ok((slot, rx))
 }
 
-/// 既存 tmux session があれば adopt（attach）、 無ければ従来の fresh spawn。
-///
-/// ## なぜ必要か（rebuild Epic 残骸 / reconcile gap、 2026-06-30）
-/// L0 portless 化で port ベースの SP 重複検出（`find_running_sp_at_path` 等）が
-/// 無効化された結果、 gentle daemon 再起動時に registry が空のまま `autostart` が
-/// 全 project を重複 spawn しうる。 各重複 SP は起動最初期（`with_conductor`）に
-/// conductor lane を fresh spawn するが、 tmux session は前世代から温存されている →
-/// `mise run vp:stand:*`（`tmux new-session -A`）が `EARLY_EXIT_CHECK_MS` 窓の中で
-/// 競合し死ぬ → `state=Dead` を daemon に register で上書きし、 実際は生きている
-/// session が vp-app から Dead に見える（console blank）。
-///
-/// ## 修正
-/// tmux session = ground truth。 在れば lane は生きている → fresh spawn せず
-/// `tmux attach-session` する PtySlot を terminal source として立てて adopt する。
-/// `mise` / `new-session` / `-e` の create 経路を通さないので重ね作成競合も
-/// 800ms early-exit 誤判定も起きない（= 何個 SP が重複しても lane は 1 本・生存）。
-///
-/// 意図的な fresh restart（`restart_lane`、 tmux session を先に kill 済）は本関数を
-/// 通さず `spawn_with_fallback` を直接使うので影響しない。
-pub fn spawn_or_adopt(
-    cmd: &StandCommand,
-    session: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
-    if crate::tmux::session_exists(session) {
-        let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
-        // adopt も fresh spawn (bash script) と同じ profile socket (`-L`) を使う。
-        // 別 socket = 別 server なので、 これが無いと dev daemon が brew socket 上の
-        // 同名 session を掴む (2026-07-01 adopt 混線) / または存在しない扱いになる。
-        let attach_args = [
-            "-L".to_string(),
-            crate::tmux::tmux_socket().to_string(),
-            "attach-session".to_string(),
-            "-t".to_string(),
-            session.to_string(),
-        ];
-        match PtySlot::spawn(cmd.cwd.as_str(), tmux, &attach_args, &cmd.env, cols, rows) {
-            Ok((slot, rx)) => {
-                tracing::info!(
-                    "Lane adopt: 既存 tmux session に attach (fresh spawn skip): session={}",
-                    session
-                );
-                return Ok((slot, rx));
-            }
-            Err(e) => {
-                // session 消失 race 等で attach 不能 → fresh spawn に fallback。
-                tracing::warn!(
-                    "Lane adopt の attach 失敗、 fresh spawn に fallback: session={} err={}",
-                    session,
-                    e
-                );
-            }
-        }
-    }
-    spawn_with_fallback(cmd, cols, rows)
-}
-
-/// 早期 exit した stand の死因究明用に、 PTY broadcast channel に buffer された直近出力を
-/// drain して文字列化する (最大 ~4KB)。 `spawn_with_fallback` の early-exit 分岐専用。
-/// non-blocking (`try_recv`) なので bufferに溜まった分だけを拾い、 子の生死には影響しない。
+/// 早期 exit した床の死因究明用に、 PTY broadcast channel に buffer された直近出力を
+/// drain して文字列化する（最大 ~4KB）。 non-blocking（`try_recv`）。
 fn drain_pty_tail(rx: &mut broadcast::Receiver<Vec<u8>>) -> String {
     let mut buf: Vec<u8> = Vec::new();
     while let Ok(chunk) = rx.try_recv() {
@@ -222,121 +131,142 @@ pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
     }
 }
 
-/// stand script の path を OS 別に (program, args) へ組み替える。
+/// 床になる login shell を (program, args) で解決する。
 ///
-/// - **Unix**: script は shebang 実行可能ファイル → program = script、 args なし。
-/// - **Windows**: CreateProcess は shebang を無視する (script を直接 program にすると
-///   "%1 is not a valid Win32 application" 相当で spawn 失敗) ため、 git-bash を program、
-///   script path を arg にする。 git-bash は `C:\...` 引数を MSYS path に自動変換するので
-///   script path はそのまま渡してよい。 git-bash 不在時は actionable な error を出しつつ
-///   標準 install path を program にして ENOENT を明示化する (Git for Windows が前提依存)。
+/// - **Unix**: `$SHELL` を尊重（SP が launchd 起動だと SHELL env 不在のことがある →
+///   `/bin/zsh` → `/bin/bash` → `/bin/sh` の順で実在 shell に fallback）。 `-l` で
+///   login shell 化し、 mise / volta / nvm 等の PATH を rc 経由で取り込む（Act1 = env の床）。
+/// - **Windows**: git-bash（`vp_paths::shell::find_git_bash`）。 不在時は標準 install path を
+///   program に据えて ENOENT を明示化する（Git for Windows が前提依存）。
 #[cfg(not(windows))]
-fn stand_program_args(script_path: String) -> (String, Vec<String>) {
-    (script_path, vec![])
+fn login_shell() -> (String, Vec<String>) {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            ["/bin/zsh", "/bin/bash"]
+                .iter()
+                .find(|p| Path::new(p).exists())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "/bin/sh".to_string());
+    (shell, vec!["-l".to_string()])
 }
 
-/// Windows 版 — git-bash 経由で stand script を起動する。 詳細は non-windows 版 doc 参照。
+/// Windows 版 — git-bash を login + interactive で起動する。 詳細は non-windows 版 doc 参照。
 #[cfg(windows)]
-fn stand_program_args(script_path: String) -> (String, Vec<String>) {
-    match vp_paths::shell::find_git_bash() {
-        Some(bash) => (bash.to_string_lossy().into_owned(), vec![script_path]),
+fn login_shell() -> (String, Vec<String>) {
+    let program = match vp_paths::shell::find_git_bash() {
+        Some(bash) => bash.to_string_lossy().into_owned(),
         None => {
             tracing::error!(
-                "git-bash (Git for Windows) が見つかりません。 stand script を起動できません。 \
-                 `winget install Git.Git` で導入してください。 script={}",
-                script_path
+                "git-bash (Git for Windows) が見つかりません。 lane の床 shell を起動できません。 \
+                 `winget install Git.Git` で導入してください。"
             );
-            // 標準 install path を program に据えて ENOENT を発生させる (bash.exe 不在が失敗理由と分かる)。
-            (
-                r"C:\Program Files\Git\bin\bash.exe".to_string(),
-                vec![script_path],
-            )
+            r"C:\Program Files\Git\bin\bash.exe".to_string()
         }
+    };
+    (program, vec!["--login".to_string(), "-i".to_string()])
+}
+
+/// CC session id として安全な形式か（英数 + ハイフンのみ）。
+///
+/// `--resume '<id>'` の single-quote 埋め込みが shell injection にならないための防壁。
+/// 書き手（SessionStart hook）は UUID を記録するので通常は常に真。
+fn is_safe_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Act3: claude 起動 command line を組み立てる（旧 echoes bash script の CLAUDE_CMD 分岐の移植）。
+///
+/// CC 2.1 Background Agents insulate: `--continue` は「cwd の最新」を拾うため bg session 在りで
+/// Agent View dashboard 化する（send-keys handoff が list-nav UI に化ける既知バグ）。 id を指名する
+/// `--resume '<id>'` はこの罠を構造的に回避する（設計 mem_1CbXZyCiqrdgteGhRFDaHW / R3-b）。
+///
+/// - fresh（"New Conductor Session"）: 素の claude（resume/continue 回避）
+/// - conductor + id あり: `--resume '<id>' || fresh`（session 消失時は fresh に fallback）
+/// - conductor + id なし（初回/移行直後）: `--continue || fresh`（従来 chain 維持 —
+///   一度 session が立てば hook が id を記録し、 以後は --resume 側に乗る）
+/// - performer + id あり: `--resume '<id>' || fresh`（tmux 撤去で SP restart = claude 再起動に
+///   なったため、 performer も会話継続を resume で担う。 id 指名なので dashboard 罠は踏まない）
+/// - performer + id なし: fresh（`--continue` は dashboard 罠のため使わない）
+fn claude_command(kind: LaneKind, fresh: bool, resume_id: Option<&str>) -> String {
+    let fresh_cmd = format!("claude --settings '{}'", WIRE_HOOKS);
+    if fresh {
+        return fresh_cmd;
+    }
+    match (kind, resume_id.filter(|id| is_safe_session_id(id))) {
+        (_, Some(id)) => format!(
+            "claude --resume '{}' --settings '{}' || {}",
+            id, WIRE_HOOKS, fresh_cmd
+        ),
+        (LaneKind::Conductor, None) => format!(
+            "claude --continue --settings '{}' || {}",
+            WIRE_HOOKS, fresh_cmd
+        ),
+        (LaneKind::Performer, None) => fresh_cmd,
     }
 }
 
-/// Stand 名に応じた spawn command を構築 (doc 11 PR-B、 mise task 経路)。
+/// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
-/// `mise run vp:stand:{stand_name}` を呼び、 mise task が tmux + shell + LLM auto-launch を
-/// 担当する file-based init_script 設計に統一。
+/// - `"echoes"`（+ 旧名 `"hd"`）: 床 + claude 注入（`fresh` / cc_session により resume 分岐）
+/// - `"shell"`: 床のみ
+/// - `"tmux"`（退役 stand）/ 未知名: 床のみ + warn（DB descriptor の legacy 値を graceful 吸収）
 ///
-/// - `stand_name`: task 名 `vp:stand:{name}` の `name` 部分 (例: `"hd"` / `"shell"` / `"tmux"`)
-/// - `addr`: `VP_SESSION` / `VP_PROJECT` / `VP_LANE` env 導出
-/// - `project_dir`: `VP_CWD` env、 task 内で tmux session の cwd / fallback 経路の cd 先に使用
-///
-/// PR-D (Z 系統): spawn cwd は **VP install root** に固定 (`.mise/tasks/vp/stand/` の住処)。
-/// mise の filesystem cascade で task が必ず見つかるよう、 user の project_dir ではなく
-/// install root を cwd にする。 install root 解決失敗時は project_dir に fallback (= 旧 PR-B
-/// 挙動に degrade)、 ただし `mise tasks ls` で task が見えない project では spawn 失敗。
-///
-/// 旧 `LaneStand` enum + `LaneStandSpec` trait dispatch は廃止 (stand_spec.rs 全削除)。
+/// `fresh=true` は resume/continue を回避して素の claude を起動する
+/// （sidebar "New Conductor Session"。 旧 `VP_FRESH=1` env の spawn パラメータ化）。
 pub fn build_stand_command(
     stand_name: &str,
     addr: &LaneAddress,
     project_dir: &Path,
+    fresh: bool,
 ) -> StandCommand {
-    let session = addr.tmux_session_name(stand_name);
     let project_cwd = project_dir.to_string_lossy().to_string();
 
     let mut env = vec![
         ("VP_CWD".into(), project_cwd.clone()),
-        ("VP_SESSION".into(), session),
+        // VP_SESSION = lane の論理 identity（LaneAddress Display 形）。 statusline 等の表示用。
+        ("VP_SESSION".into(), addr.to_string()),
         ("VP_PROJECT".into(), addr.project.clone()),
         ("VP_LANE".into(), lane_label(addr).into()),
     ];
-    // VP_PROFILE 分離: dev profile を stand script へ明示伝播し、 tmux socket 名 (`-L`) を
-    // Rust (adopt path = `tmux_socket()`) と bash (fresh spawn = `vp${VP_PROFILE:+-$VP_PROFILE}`)
-    // で一致させる。 未設定 (brew) は push しない (script は SOCK を素の `vp` に default)。
-    // portable_pty の env 継承に頼らず確定させる (PATH/TERM/LANG 三つ子と同じ末端注入方針)。
+    // VP_PROFILE 分離: dev profile を子プロセス（claude の statusline / vp CLI 呼び出し）へ
+    // 明示伝播する。 未設定 (brew) は push しない。
     if let Some(profile) = vp_paths::vp_profile() {
         env.push(("VP_PROFILE".into(), profile.to_string()));
     }
 
-    // stand は `mise` を介さず script を直接 exec する (依存削減 + mise trust footgun 回避)。
-    //  mise が spawn 経路で提供していたのは実質「task 名 → script file の解決」だけで、 VP は
-    //  script の path (`install root/.mise/tasks/vp/stand/{name}`) を知っているので task runner は
-    //  不要。 tool (tmux/claude/vp) の PATH は PtySlot の augment_path が既に補う (`~/.local/bin` /
-    //  `/opt/homebrew/bin` / `~/.cargo/bin`) ため mise 無しで解決できる。
-    //
-    //  - **Unix**: script は shebang (`#!/usr/bin/env bash`) を持つ実行可能ファイルなので、
-    //    program に path を渡せばそのまま走る。
-    //  - **Windows**: CreateProcess は shebang を解さないため、 git-bash を program、 script path を
-    //    arg に組み替える ([`stand_program_args`])。 git-bash 不在時は明示 error。
-    //
-    //  なお install root 解決 (`has_stand_tasks`) が保証するのは `stand/` **dir** の存在までで、
-    //  特定 `{stand_name}` script の実在は検査しない。 既知 3 stand (echoes/shell/tmux) は実在するが、
-    //  未知 stand 名は nonexistent path → `PtySlot::spawn` が ENOENT を同期 Err で返す (旧 mise の
-    //  task-not-found と同じ失敗クラス = 無回帰、 むしろ 800ms early-exit 窓を待たず即失敗する分 clean)。
-    match super::install_root::locate_install_root() {
-        Some(root) => {
-            let script_path = root
-                .join(".mise/tasks/vp/stand")
-                .join(stand_name)
-                .to_string_lossy()
-                .to_string();
-            let (program, args) = stand_program_args(script_path);
-            StandCommand {
-                program,
-                args,
-                // stand script は早期 exit せず PTY を take over するので fallback / initial_input は None。
-                fallback_args: None,
-                initial_input: None,
-                env,
-                // cwd は install root。 script は VP_CWD で project を受け取り自身で cd する。
-                cwd: root.to_string_lossy().to_string(),
-            }
+    let (program, args) = login_shell();
+
+    let initial_input = match stand_name {
+        "echoes" | "hd" => {
+            // resume id は lane 単位の state file（書き手 = global SessionStart hook）を直読み。
+            let resume_id = crate::lane::cc_session::last(&addr.project, lane_label(addr));
+            let cmd = claude_command(addr.kind, fresh, resume_id.as_deref());
+            Some(format!("{}\r", cmd))
         }
-        // install root 解決失敗 (degraded): script path が引けないので、 従来の mise task runner
-        //  経由に fallback する (mise が cwd=project からの task discovery を担う)。 警告 log は
-        //  locate_install_root 内で emit 済。
-        None => StandCommand {
-            program: "mise".into(),
-            args: vec!["run".into(), format!("vp:stand:{}", stand_name)],
-            fallback_args: None,
-            initial_input: None,
-            env,
-            cwd: project_cwd,
-        },
+        "shell" => None,
+        other => {
+            // "tmux"（PR2 で退役）や未知 stand の DB descriptor を床 shell で受ける。
+            tracing::warn!(
+                "unknown/legacy stand '{}' — 床の login shell で起動します (addr={})",
+                other,
+                addr
+            );
+            None
+        }
+    };
+
+    StandCommand {
+        program,
+        args,
+        initial_input,
+        env,
+        cwd: project_cwd,
     }
 }
 
@@ -344,78 +274,33 @@ pub fn build_stand_command(
 mod tests {
     use super::*;
 
-    /// build_stand_command が mise を介さず stand script を起動対象にすること。
-    /// (install root は cargo test 環境では workspace root に解決される)
-    ///
-    /// Unix: program = script path (shebang 直 exec)。
-    /// Windows: program = git-bash、 args[0] = script path (shebang 非対応の回避)。
+    /// 床は login shell、 cwd は project dir（旧 install-root ダンスの廃止を固定）。
     #[test]
-    fn build_stand_command_execs_stand_script_directly() {
+    fn build_stand_command_floor_is_login_shell_at_project_dir() {
         let addr = LaneAddress::conductor("vp");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
-
-        // OS 差を吸収: 実際に起動される script path (Unix=program / Windows=args[0]) を取り出す。
-        #[cfg(not(windows))]
-        let script = cmd.program.clone();
-        #[cfg(windows)]
-        let script = {
-            assert!(
-                cmd.program.to_lowercase().ends_with("bash.exe"),
-                "Windows は git-bash を program にするはず、 got: {}",
-                cmd.program
-            );
-            assert_eq!(
-                cmd.args.len(),
-                1,
-                "Windows は args=[script path] のはず、 got: {:?}",
-                cmd.args
-            );
-            cmd.args[0].clone()
-        };
-
-        // 分離子を `/` に正規化して比較 (Windows の Path::join は `\` を混ぜる)。
-        let normalized = script.replace('\\', "/");
-        assert!(
-            normalized.ends_with(".mise/tasks/vp/stand/echoes"),
-            "起動対象は stand script path のはず (mise 非経由)、 got: {}",
-            script
-        );
-        assert!(
-            std::path::Path::new(&script).exists(),
-            "echoes script が実在するはず: {}",
-            script
-        );
-
+        let cmd = build_stand_command("shell", &addr, Path::new("/work/vp"), false);
+        assert_eq!(cmd.cwd, "/work/vp", "cwd は project dir 直（install root ではない）");
+        assert!(cmd.initial_input.is_none(), "shell stand は床のみ");
         #[cfg(not(windows))]
         assert!(
-            cmd.args.is_empty(),
-            "Unix は script 直接 exec なので args 空、 got: {:?}",
+            cmd.args.contains(&"-l".to_string()),
+            "床は login shell (-l)、 got: {:?}",
             cmd.args
-        );
-
-        assert!(cmd.fallback_args.is_none());
-        assert!(cmd.initial_input.is_none());
-        // spawn cwd は VP install root
-        assert!(
-            std::path::Path::new(&cmd.cwd)
-                .join(".mise/tasks/vp/stand/echoes")
-                .exists(),
-            "spawn cwd は install root のはず、 got: {}",
-            cmd.cwd
         );
     }
 
-    /// VP_* env が doc 11 §3.3 通りに injected されていること。
+    /// VP_* env が注入されること（VP_SESSION は lane display 形 = tmux 名は廃止）。
     #[test]
     fn build_stand_command_injects_vp_env() {
         let addr = LaneAddress::performer("vantage-point", "sub");
-        let cmd = build_stand_command("hd", &addr, Path::new("/work/vp"));
+        let cmd = build_stand_command("echoes", &addr, Path::new("/work/vp"), false);
 
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert_eq!(env.get("VP_CWD").map(String::as_str), Some("/work/vp"));
         assert_eq!(
             env.get("VP_SESSION").map(String::as_str),
-            Some("vp-vantage-point-sub-hd")
+            Some("vantage-point/performer/sub"),
+            "VP_SESSION = LaneAddress Display 形"
         );
         assert_eq!(
             env.get("VP_PROJECT").map(String::as_str),
@@ -424,47 +309,67 @@ mod tests {
         assert_eq!(env.get("VP_LANE").map(String::as_str), Some("sub"));
     }
 
-    /// stand_name は script path にそのまま埋め込まれる (新規 stand の追加耐性)。
+    /// echoes は claude を initial_input で注入（wire hook 同梱）。
     #[test]
-    fn build_stand_command_passes_arbitrary_stand_name() {
+    fn echoes_injects_claude_via_initial_input() {
+        let addr = LaneAddress::performer("vp", "w1");
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let input = cmd.initial_input.expect("echoes は initial_input あり");
+        assert!(input.starts_with("claude"), "claude 起動 command: {input}");
+        assert!(input.contains("wire hook-check"), "wire hook 同梱: {input}");
+        assert!(input.ends_with('\r'), "Enter (CR) で submit: {input:?}");
+    }
+
+    /// 退役 stand ("tmux") / 未知 stand は床 shell に graceful 吸収。
+    #[test]
+    fn legacy_and_unknown_stands_fall_back_to_floor() {
         let addr = LaneAddress::conductor("vp");
-        let cmd = build_stand_command("opus-xhigh", &addr, Path::new("/tmp"));
-        // 起動対象 script path (Unix=program / Windows=args[0]) を取り出し `/` 正規化して比較。
-        #[cfg(not(windows))]
-        let script = cmd.program.clone();
-        #[cfg(windows)]
-        let script = cmd.args.first().cloned().unwrap_or_default();
+        for stand in ["tmux", "opus-xhigh"] {
+            let cmd = build_stand_command(stand, &addr, Path::new("/tmp"), false);
+            assert!(
+                cmd.initial_input.is_none(),
+                "{stand} は床のみ（initial_input なし）"
+            );
+        }
+    }
+
+    /// claude_command の分岐: fresh / resume / continue / performer-fresh。
+    #[test]
+    fn claude_command_variants() {
+        // fresh は resume/continue を含まない
+        let fresh = claude_command(LaneKind::Conductor, true, Some("abc-123"));
+        assert!(!fresh.contains("--resume") && !fresh.contains("--continue"));
+
+        // conductor + id → --resume '<id>' || fresh
+        let resume = claude_command(LaneKind::Conductor, false, Some("abc-123"));
+        assert!(resume.contains("--resume 'abc-123'"), "{resume}");
+        assert!(resume.contains("||"), "session 消失時の fresh fallback: {resume}");
+
+        // conductor + id なし → --continue || fresh（初回/移行直後の従来 chain）
+        let cont = claude_command(LaneKind::Conductor, false, None);
+        assert!(cont.contains("--continue"), "{cont}");
+
+        // performer + id → --resume（SP restart 後の会話継続、 dashboard 罠は id 指名で回避）
+        let perf = claude_command(LaneKind::Performer, false, Some("abc-123"));
+        assert!(perf.contains("--resume 'abc-123'"), "{perf}");
+
+        // performer + id なし → fresh（--continue は dashboard 罠のため使わない）
+        let perf_fresh = claude_command(LaneKind::Performer, false, None);
         assert!(
-            script
-                .replace('\\', "/")
-                .ends_with(".mise/tasks/vp/stand/opus-xhigh"),
-            "未知 stand でも起動対象 path に stand_name が入るはず、 got: {} (program={})",
-            script,
-            cmd.program
-        );
-        // tmux_session_name にも stand_name そのまま入る
-        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
-        assert_eq!(
-            env.get("VP_SESSION").map(String::as_str),
-            Some("vp-vp-conductor-opus-xhigh")
+            !perf_fresh.contains("--continue") && !perf_fresh.contains("--resume"),
+            "{perf_fresh}"
         );
     }
 
-    /// Conductor lane の VP_LANE は "conductor"、 Performer(None) は "unnamed"。
+    /// 不正な session id（quote 破り / 空）は resume に採用されない。
     #[test]
-    fn build_stand_command_lane_label_variants() {
-        let conductor = LaneAddress::conductor("vp");
-        let cmd = build_stand_command("hd", &conductor, Path::new("/tmp"));
-        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
-        assert_eq!(env.get("VP_LANE").map(String::as_str), Some("conductor"));
-
-        let unnamed = LaneAddress {
-            project: "vp".into(),
-            kind: LaneKind::Performer,
-            name: None,
-        };
-        let cmd = build_stand_command("hd", &unnamed, Path::new("/tmp"));
-        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
-        assert_eq!(env.get("VP_LANE").map(String::as_str), Some("unnamed"));
+    fn unsafe_session_ids_are_rejected() {
+        for bad in ["", "a'b", "x;rm -rf /", "id with space"] {
+            let cmd = claude_command(LaneKind::Conductor, false, Some(bad));
+            assert!(
+                !cmd.contains("--resume"),
+                "不正 id '{bad}' は resume に使わない: {cmd}"
+            );
+        }
     }
 }

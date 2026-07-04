@@ -105,50 +105,16 @@ impl fmt::Display for LaneKind {
     }
 }
 
-// `LaneStand` enum は doc 11 (PR-B) で削除。 stand 識別子は `String` に統一、
-// `mise tasks ls --json` で動的 discovery する設計に移行。
-//   旧: enum { HeavensDoor, TheHand }
-//   新: String (例: "hd" / "shell" / "tmux" / 任意の vp:stand:* task 名)
+// `LaneStand` enum は doc 11 (PR-B) で削除。 stand 識別子は `String` に統一
+// (例: "echoes" / "shell")。 tmux decoupling PR2 で stand script 層 (mise task) も廃止され、
+// stand は `stand_spawner::build_stand_command` の Rust-native 分岐になった。
 //
 // wire format の legacy 名は `process::routes::lanes::migrate_legacy_stand` で
 // 1 release の deprecation 期間 shim 経由で吸収 ("heavens_door" → "hd"、 "the_hand" → "shell")。
-
-/// tmux session の起動 mode (Phase 1a: Lane → tmux registry の foundation)
-///
-/// `LaneInfo.tmux` の `mode` field で「実際に tmux で起動できたか」を区別する。
-/// init_script は `tmux new-session -A -s ${SLUG} '$CLAUDE_CMD; exec $SHELL -l' || (cd $CWD && eval "$CLAUDE_CMD")`
-/// の形 (Option 1 inline cmd、idempotent。`.mise/tasks/vp/stand/echoes` 参照)。
-/// `$CLAUDE_CMD` は conductor = `claude --continue || claude` / performer = fresh `claude`
-/// (CC 2.1 Agent View dashboard からの insulate、Phase B)。tmux 不在環境などで外側
-/// fallback に降格した場合は `PtySlotFallback` を立てる。
-///
-/// 関連 memory: vp_mailbox_monitor_agent_inbox + vp_lane_init_script (Phase 1)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TmuxMode {
-    /// tmux session 起動 + claude 注入が成功 → send-keys で agent 間連携可能
-    Tmux,
-    /// tmux 不在 / 起動失敗 → 外側 `||` で素 claude にフォールバック
-    PtySlotFallback,
-}
-
-/// Lane の tmux address (Phase 1a: deterministic derivation で agent が引ける)
-///
-/// session 名は `LaneAddress::tmux_session_name(stand)` で deterministic に決まる。
-/// 例: conductor@vantage-point (HD) → `"vp-vantage-point-conductor-hd"`
-///
-/// `mode` で fallback 検出可能 (実 spawn 結果に基づき SP が populate)。
-///
-/// `stand` field は **どの Stand の tmux か** を表現 (1 Lane に複数 Stand を立てる
-/// 将来想定: HD + TH 並立、 future custom Stand 等)。 Phase 1 MVP は通常 1 entry だが、
-/// 型として複数対応可能。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TmuxLaneAddress {
-    /// Stand 名 (例: "hd" / "shell" / "tmux"、 doc 11 PR-B で String に変更)
-    pub stand: String,
-    pub session: String,
-    pub mode: TmuxMode,
-}
+//
+// `TmuxMode` / `TmuxLaneAddress` (Phase 1a の tmux session registry) は tmux decoupling PR2 で
+// 退役 — lane の identity は `LaneAddress` ただ一つ、 process host は PtySlot ただ一つ
+// (design doc §13)。
 
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
 ///
@@ -237,59 +203,9 @@ impl LaneAddress {
         }
     }
 
-    /// Phase 1a: tmux session 名を deterministic に導出する。
-    ///
-    /// 形式: `vp-{project}-{lane_label}-{stand_short}` を sanitize ([A-Za-z0-9_-] 以外は '-')。
-    /// - `vp-` prefix: VP 管理 session の owner mark (user 自前 session と確実に分離)
-    /// - project: lexicographic sort で project 単位にまとまる (`tmux ls` 視認性 ↑)
-    /// - lane_label: Conductor → "conductor"、Performer(Some(name)) → name、Performer(None) → "unnamed"
-    /// - stand_short: HD → "hd"、TH → "th" (suffix なので将来 `gemini` / `opus` 等の追加も自然)
-    ///
-    /// 例:
-    /// - `LaneAddress::conductor("vantage-point")` + HD → `"vp-vantage-point-conductor-hd"`
-    /// - `LaneAddress::performer("vantage-point", "sub")` + HD → `"vp-vantage-point-sub-hd"`
-    /// - `LaneAddress` の `.` `@` 等 → `-` に置換
-    ///
-    /// agent (Claude CLI on HD) はこの関数の戻り値を `tmux send-keys -t <session>` の
-    /// 宛先として使う。`/api/lanes` の cache 値とも一致する (deterministic)。
-    /// tmux session 名の stand を除いた prefix。形式 `vp-{project}-{lane_label}-`。
-    ///
-    /// stand を指定せず session を prefix 一致で引きたい用途（`vp directmsg` 等）に使う。
-    /// sanitize は per-char なので、`tmux_session_prefix()` は必ず `tmux_session_name()` の
-    /// 戻り値の prefix に一致する。
-    pub fn tmux_session_prefix(&self) -> String {
-        let lane_label: &str = match (&self.kind, self.name.as_deref()) {
-            (LaneKind::Conductor, _) => "conductor",
-            (LaneKind::Performer, Some(n)) => n,
-            (LaneKind::Performer, None) => "unnamed",
-        };
-        sanitize_tmux_name(&format!("vp-{}-{}-", self.project, lane_label))
-    }
-
-    pub fn tmux_session_name(&self, stand_name: &str) -> String {
-        // stand_name は `vp:stand:{name}` の name 部分そのまま (例: "hd" / "shell" / "tmux")。
-        // 旧 enum dispatch (HeavensDoor → "hd"、 TheHand → "th") は廃止。
-        // 旧 TH の "th" は wire format 上では "shell" に rename された (doc 11)。
-        // prefix + sanitize 済 stand の連結 (sanitize は per-char なので分配可能)。
-        format!(
-            "{}{}",
-            self.tmux_session_prefix(),
-            sanitize_tmux_name(stand_name)
-        )
-    }
-}
-
-/// tmux session 名に使えない文字 ([A-Za-z0-9_-] 以外) を '-' に置換する。
-fn sanitize_tmux_name(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
+    // `tmux_session_name` / `tmux_session_prefix` (Phase 1a の deterministic tmux 名導出) は
+    // tmux decoupling PR2 で退役。 lane の identity は Display 形 (`<project>/conductor` 等)
+    // ただ一つ (design doc §13.2 — sanitize 形は tmux の「`/` 禁止」制約由来だった)。
 }
 
 impl fmt::Display for LaneAddress {
@@ -361,29 +277,6 @@ pub enum SystemEvent {
     //   Process(Diff<ProcessKey, RunningProcess>),  // Process registry diff
 }
 
-impl TmuxLaneAddress {
-    /// Phase 1e: spawn 成功時の tmux address を生成する helper。
-    ///
-    /// `crate::tmux::is_tmux_available()` で mode を事前判定 (Phase 1e 設計確定軸 A):
-    /// - tmux PATH 内 → `Tmux` mode (副舞台あり、 agent が `tmux send-keys -t {session}` で
-    ///   他 Lane の HD に入力リレー可能)
-    /// - tmux なし → `PtySlotFallback` mode (shell 内 `||` で素 LLM CLI に降格、 send-keys 不可)
-    ///
-    /// session 名は `addr.tmux_session_name(stand)` で deterministic 導出。
-    pub fn for_spawn(addr: &LaneAddress, stand_name: &str) -> Self {
-        let mode = if crate::tmux::is_tmux_available() {
-            TmuxMode::Tmux
-        } else {
-            TmuxMode::PtySlotFallback
-        };
-        Self {
-            stand: stand_name.to_string(),
-            session: addr.tmux_session_name(stand_name),
-            mode,
-        }
-    }
-}
-
 /// Lane の info (REST response 用 + 内部 registry の値)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneInfo {
@@ -410,14 +303,6 @@ pub struct LaneInfo {
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub performer_status: Option<crate::lane::commands::PerformerStatus>,
-    /// Phase 1a: Lane に attach した Stand ごとの tmux session address (deterministic)。
-    /// SP push 経由で TheWorld cache に流れる (agent から `/api/lanes` で resolve)。
-    ///
-    /// **複数 entry 想定**: 1 Lane に複数 Stand を並立させる将来 (HD + TH、 future custom Stand) に
-    /// 対応するため `Vec`。 Phase 1 MVP は通常 0 or 1 entry。 順序は spawn 順を表現。
-    /// `panes` の論理 ID 管理は tmux 側に委譲 (1 session 内 split は tmux native 機能)。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tmux: Vec<TmuxLaneAddress>,
     /// R3-b: この lane の最後の CC session id。 registry には保存せず `/api/lanes` 応答時に
     /// state file (`lane::cc_session`、 書き手は SessionStart hook) を lazy read する
     /// (`performer_status` と同じ前例)。 echoes の `--resume` 再利用と R3-c の
@@ -479,20 +364,17 @@ impl LanePool {
         // PR-pre2 (VP-118): "hd" → "echoes" rename。 mise task `vp:stand:echoes` (旧 hd)。
         let stand_name = "echoes";
 
+        // tmux decoupling PR2: 床 (login shell) + claude 注入の Rust-native spawn (design §13)。
+        // 旧 spawn_or_adopt (tmux session の adopt) は退役 — 重複 SP は DB-LOCK が spawn 前に
+        // abort し (§13.3)、 claude は SP の子なので orphan session は存在しない。
         let cmd = crate::process::stand_spawner::build_stand_command(
             stand_name,
             &addr,
             std::path::Path::new(&cwd),
+            false,
         );
 
-        // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
-        // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
-        // reconcile gap fix (2026-06-30): 既存 tmux session があれば fresh spawn せず adopt。
-        // gentle daemon 再起動 / 重複 SP spawn でも conductor lane を Dead 化させない。
-        let session = addr.tmux_session_name(stand_name);
-        let (state, pid) = match crate::process::stand_spawner::spawn_or_adopt(
-            &cmd, &session, 120, 48,
-        ) {
+        let (state, pid) = match crate::process::stand_spawner::spawn_stand(&cmd, 120, 48) {
             Ok((slot, term_rx)) => {
                 let pid = slot.pid();
                 tracing::info!(
@@ -536,13 +418,6 @@ impl LanePool {
             // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
             performer_status: None,
             cc_session_id: None,
-            // Phase 1e: spawn 成功時のみ tmux address を populate
-            // (spawn 失敗 = Dead → 空 Vec で副舞台不在 signal)
-            tmux: if matches!(state, LaneState::Running) {
-                vec![TmuxLaneAddress::for_spawn(&addr, stand_name)]
-            } else {
-                Vec::new()
-            },
         };
         pool.lanes.insert(addr, info);
         pool
@@ -673,9 +548,9 @@ impl LanePool {
     /// release 後に新しい broadcast channel + scrollback を subscribe する。
     ///
     /// spawn 失敗時は LaneInfo.state を Dead にして error を返す (caller の責任で UI 通知)。
-    /// `fresh=true` は echoes task に `VP_FRESH=1` を渡し、 resume/continue を回避して
-    /// 素の `claude` を起動させる (sidebar "New Conductor Session")。 false は従来の restart
-    /// (conductor は `--resume`/`--continue` で会話を継ぐ)。
+    /// `fresh=true` は resume/continue を回避して素の `claude` を起動させる
+    /// (sidebar "New Conductor Session")。 false は従来の restart
+    /// (`--resume <cc_session_id>` で会話を継ぐ — tmux decoupling 後の継続性はこれが担う)。
     pub fn restart_lane(&mut self, addr: &LaneAddress, fresh: bool) -> anyhow::Result<()> {
         let info = self
             .lanes
@@ -683,48 +558,23 @@ impl LanePool {
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
         let cwd = info.cwd.clone();
         let stand = info.stand.clone();
-        // VP-131 fix: tmux session 名を事前に capture して step 1.5 で kill する。
-        // PtySlot drop だけだと mise が起動した detached tmux session が tmux server
-        // 配下で生存継続、 同名 session 残存のまま respawn すると `tmux new-session` 衝突で
-        // mise task `vp:stand:<name>` が即 fail (= `[lost tty] / ERROR task failed`)。
-        // VP-124 Phase 1 で `delete_lane_orchestrated` には同型 fix 済、 restart path も補完。
-        let tmux_sessions: Vec<String> = info.tmux.iter().map(|t| t.session.clone()).collect();
 
         // step 1: 既存 PtySlot + TermAttach を drop (Drop で child.kill() + child.wait() = zombie 解消)。
+        // tmux decoupling PR2: claude は PtySlot の子なので drop = 完全停止。 旧 step 1.5
+        // (VP-131 の tmux kill_session) は tmux session という第 2 の生存木と共に消滅。
         // Stage 1 (ADR-0001): 順序は LanePool::remove と一致 (term_attaches → pty_slots、
         // broadcast::Sender は pty_slots が保持なので task は次 iter で Closed 検知して exit)。
-        // step 2 が Err でも term_attaches に死んだ entry が残らない (= lifecycle clean)。
         self.term_attaches.remove(addr);
         let _ = self.pty_slots.remove(addr);
 
-        // step 1.5 (VP-131): tmux session を kill して name 衝突を避ける (best-effort、
-        // 不存在 / 既 kill 済は false 戻り = no-op)。 PtySlot drop と respawn の間に挟むことで
-        // `tmux new-session -d -s <name>` が衝突せず succeed する。
-        for session in &tmux_sessions {
-            let killed = crate::tmux::kill_session(session);
-            if killed {
-                tracing::info!("restart_lane: tmux session killed: {}", session);
-            } else {
-                tracing::debug!(
-                    "restart_lane: tmux session kill returned false (already gone?): {}",
-                    session
-                );
-            }
-        }
-
-        // step 2: 同 stand で respawn (Phase 5-D: spawn_with_fallback で early-exit retry)
-        // doc 11 PR-B: stand は String 化 (旧 enum 廃止)
-        let mut cmd = crate::process::stand_spawner::build_stand_command(
+        // step 2: 同 stand で respawn (fresh は builder に直接渡す — 旧 VP_FRESH env の後継)。
+        let cmd = crate::process::stand_spawner::build_stand_command(
             &stand,
             addr,
             std::path::Path::new(&cwd),
+            fresh,
         );
-        // New Session: build_stand_command の signature は不変のまま、 戻り値の env に
-        // VP_FRESH を後付けする (HIGH risk な共通 builder に触れず変更を局所化)。
-        if fresh {
-            cmd.env.push(("VP_FRESH".to_string(), "1".to_string()));
-        }
-        match crate::process::stand_spawner::spawn_with_fallback(&cmd, 120, 48) {
+        match crate::process::stand_spawner::spawn_stand(&cmd, 120, 48) {
             Ok((slot, term_rx)) => {
                 let pid = slot.pid();
                 // Stage 1 (ADR-0001): PtySlot insert + TermAttach 再 spawn を集約。
@@ -832,19 +682,18 @@ impl LanePool {
 
 /// nudge 配送: lane の PtySlot に text を流し込み、続けて Enter(`\r`) を送って submit させる。
 ///
-/// tmux decoupling PR1: 旧 `tmux send-keys -l <text>` + `send-keys Enter` の置換。当初は
-/// `text + \r` を 1 回で write していたが、実機検証で **submit されない** ことが判明した:
-/// PtySlot は現状 tmux client の stdin を wrap しており、burst 入力を tmux が **bracketed paste**
-/// 扱いにするため、paste 内の CR が改行化して Enter として効かない。
+/// tmux decoupling PR1 で `tmux send-keys` を置換した際、`text + \r` の 1 回 write だと
+/// 当時の中間層（tmux client）が burst を bracketed paste 化して submit しない事象を確認し
+/// **2 phase** にした（design doc §12）:
+///   1. text 本体を write（末尾改行は submit の妨げになり得るので落とす）
+///   2. 猶予（50ms）を空けて Enter を**単独** write → 独立 keystroke として submit
 ///
-/// そこで **2 phase** に分ける:
-///   1. text 本体を write（paste でよい。末尾改行は submit の妨げになり得るので落とす）
-///   2. tmux の paste 判定（`assume-paste-time` 既定 1ms）を跨ぐ猶予を空けてから、Enter を
-///      **単独** で write → paste の外の keystroke として扱われ claude が submit する
+/// PR2（tmux 撤去、PtySlot→claude 直結）後は paste wrap の主体が消えたため 1 write に
+/// 畳める可能性が高いが、claude 側 TUI の paste 判定にも依存するため、実機確認（§13.5）まで
+/// 2 phase を保守的に維持する（50ms は best-effort nudge で体感遅延にならない範囲）。
 ///
 /// PtySlot の std `Mutex` guard を await 跨ぎで保持しないよう、各 write は `read().await` で
-/// 都度 lock を取り即 drop し、間の sleep は無 lock で行う。tmux 撤去後（PR2）は paste wrap 主体
-/// が消えるため、この 2 phase は tmux 存置中の互換層。in-process nudge（`AppState::nudge_lane`）と
+/// 都度 lock を取り即 drop し、間の sleep は無 lock で行う。in-process nudge（`AppState::nudge_lane`）と
 /// World→SP proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
 pub async fn deliver_nudge(
     pool: &std::sync::Arc<tokio::sync::RwLock<LanePool>>,
@@ -965,147 +814,21 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // Phase 1a — Lane → tmux session address resolution
-    // ========================================================================
-
+    /// tmux decoupling PR2: 旧 wire payload (tmux field 入り) が新 LaneInfo に decode できる
+    /// （unknown field は serde が無視 = 旧 client / 旧 DB descriptor との後方互換）。
     #[test]
-    fn tmux_session_name_conductor_hd() {
-        // Conductor Lane + Heaven's Door → "vp-{project}-conductor-hd"
-        let addr = LaneAddress::conductor("vantage-point");
-        assert_eq!(
-            addr.tmux_session_name("hd"),
-            "vp-vantage-point-conductor-hd"
-        );
-    }
-
-    #[test]
-    fn tmux_session_name_performer_hd() {
-        // Performer(name) + HD → "vp-{project}-{name}-hd"
-        let addr = LaneAddress::performer("vantage-point", "sub");
-        assert_eq!(addr.tmux_session_name("hd"), "vp-vantage-point-sub-hd");
-    }
-
-    #[test]
-    fn tmux_session_name_conductor_shell() {
-        // doc 11 PR-B: 旧 TH stand → "shell" stand 名に rename (mise task `vp:stand:shell`)
-        // tmux session 名も "vp-{project}-conductor-shell" に変わる (旧: "-th")。
-        let addr = LaneAddress::conductor("vp");
-        assert_eq!(addr.tmux_session_name("shell"), "vp-vp-conductor-shell");
-    }
-
-    #[test]
-    fn tmux_session_name_sanitize_special_chars() {
-        // project 名に '.' 等の tmux session 名で escape 必要な文字 → '-' に置換
-        let addr = LaneAddress {
-            project: "creo.memories".to_string(),
-            kind: LaneKind::Conductor,
-            name: None,
-        };
-        assert_eq!(
-            addr.tmux_session_name("hd"),
-            "vp-creo-memories-conductor-hd"
-        );
-    }
-
-    #[test]
-    fn tmux_session_name_unnamed_performer_fallback() {
-        // Performer(name=None) は仕様上想定外だが defensive に "unnamed" にフォールバック
-        let addr = LaneAddress {
-            project: "vp".to_string(),
-            kind: LaneKind::Performer,
-            name: None,
-        };
-        assert_eq!(addr.tmux_session_name("hd"), "vp-vp-unnamed-hd");
-    }
-
-    #[test]
-    fn tmux_lane_address_serde_snake_case_mode_and_stand() {
-        // doc 11 PR-B: stand は String 化、 wire format は task 名そのまま ("hd" / "shell" 等)。
-        let t = TmuxLaneAddress {
-            stand: "hd".to_string(),
-            session: "vp-vp-conductor-hd".to_string(),
-            mode: TmuxMode::Tmux,
-        };
-        let json = serde_json::to_string(&t).unwrap();
-        assert!(json.contains("\"mode\":\"tmux\""), "got: {}", json);
-        assert!(json.contains("\"stand\":\"hd\""), "got: {}", json);
-
-        let fb = TmuxLaneAddress {
-            stand: "shell".to_string(),
-            session: "vp-vp-conductor-shell".to_string(),
-            mode: TmuxMode::PtySlotFallback,
-        };
-        let json2 = serde_json::to_string(&fb).unwrap();
-        assert!(
-            json2.contains("\"mode\":\"pty_slot_fallback\""),
-            "got: {}",
-            json2
-        );
-        assert!(json2.contains("\"stand\":\"shell\""), "got: {}", json2);
-    }
-
-    #[test]
-    fn lane_info_tmux_field_empty_vec_serde_omitted() {
-        // tmux が空 Vec なら skip_serializing_if で wire 形式から省略 → 古 client と互換
-        let info = LaneInfo {
-            id: Default::default(),
-            address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
-            state: LaneState::Running,
-            stand: "hd".to_string(),
-            created_at: "2026-05-01T00:00:00Z".to_string(),
-            pid: None,
-            cwd: "/tmp".to_string(),
-            performer_status: None,
-            cc_session_id: None,
-            tmux: Vec::new(),
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(
-            !json.contains("\"tmux\""),
-            "tmux should be omitted when empty: {}",
-            json
-        );
-    }
-
-    #[test]
-    fn lane_info_tmux_field_multi_stand_serde_round_trip() {
-        // Phase 1a multi-stand 設計: 1 Lane が 複数 Stand 並立 (HD + TH) で
-        // 複数 tmux session を持つケースを serde round-trip で検証
-        let original = LaneInfo {
-            id: Default::default(),
-            address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
-            state: LaneState::Running,
-            stand: "hd".to_string(),
-            created_at: "2026-05-01T00:00:00Z".to_string(),
-            pid: None,
-            cwd: "/tmp".to_string(),
-            performer_status: None,
-            cc_session_id: None,
-            tmux: vec![
-                TmuxLaneAddress {
-                    stand: "hd".to_string(),
-                    session: "vp-vp-conductor-hd".to_string(),
-                    mode: TmuxMode::Tmux,
-                },
-                TmuxLaneAddress {
-                    stand: "shell".to_string(),
-                    session: "vp-vp-conductor-shell".to_string(),
-                    mode: TmuxMode::Tmux,
-                },
-            ],
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let restored: LaneInfo = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.tmux.len(), 2);
-        assert_eq!(restored.tmux[0].stand, "hd");
-        assert_eq!(restored.tmux[1].stand, "shell");
-        assert_eq!(restored.tmux[0].session, "vp-vp-conductor-hd");
-        assert_eq!(restored.tmux[1].session, "vp-vp-conductor-shell");
+    fn lane_info_decodes_legacy_payload_with_tmux_field() {
+        let legacy = r#"{
+            "address": {"project": "vp", "kind": "conductor"},
+            "kind": "conductor",
+            "state": "running",
+            "stand": "echoes",
+            "created_at": "2026-05-01T00:00:00Z",
+            "cwd": "/tmp",
+            "tmux": [{"stand": "echoes", "session": "vp-vp-conductor-echoes", "mode": "tmux"}]
+        }"#;
+        let info: LaneInfo = serde_json::from_str(legacy).expect("legacy payload decodes");
+        assert_eq!(info.address, LaneAddress::conductor("vp"));
     }
 
     // ========================================================================
@@ -1127,11 +850,6 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
-            tmux: vec![TmuxLaneAddress {
-                stand: "hd".to_string(),
-                session: "vp-vp-sub-hd".to_string(),
-                mode: TmuxMode::Tmux,
-            }],
         };
         let diff: LaneDiff = Diff::Add {
             payload: info.clone(),
@@ -1144,7 +862,6 @@ mod tests {
         match restored {
             Diff::Add { payload } => {
                 assert_eq!(payload.address, info.address);
-                assert_eq!(payload.tmux.len(), 1);
             }
             _ => panic!("expected Diff::Add"),
         }
@@ -1183,7 +900,6 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
-            tmux: Vec::new(),
         };
         let event = SystemEvent::Lane(Diff::Add {
             payload: info.clone(),

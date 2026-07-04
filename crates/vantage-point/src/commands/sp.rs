@@ -190,29 +190,8 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
         println!("   サーバー: ❌ not running");
     }
 
-    // HD セッション情報も参考表示
-    let sessions = crate::tmux::list_vp_sessions();
-    let prefix = project_name.replace('.', "-");
-    let other_prefixes: Vec<String> = config
-        .projects
-        .iter()
-        .map(|p| {
-            let name = crate::resolve::project_name_from_path(&p.path, config);
-            name.replace('.', "-")
-        })
-        .filter(|name| *name != prefix)
-        .collect();
-    let hd_sessions: Vec<_> = sessions
-        .iter()
-        .filter(|s| crate::commands::hd::is_own_session(s, &prefix, &other_prefixes))
-        .collect();
-    if !hd_sessions.is_empty() {
-        println!();
-        println!("   HD セッション:");
-        for s in &hd_sessions {
-            println!("     {}", s);
-        }
-    }
+    // (tmux decoupling PR2: 旧「HD セッション情報の参考表示」は tmux と共に退役 —
+    //  lane の状態は `vp lane ls --detail` / `vp lane capture` で確認する)
 
     Ok(())
 }

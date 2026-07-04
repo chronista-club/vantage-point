@@ -1,14 +1,13 @@
 //! `vp restart-all` コマンドの実行ロジック
 //!
-//! TheWorld + 全 SP + tmux セッションを一括再起動する。
-//! 主に新バイナリへの切り替え時に使用。
+//! TheWorld + 全 SP を一括再起動する。主に新バイナリへの切り替え時に使用。
+//! claude は SP の PtySlot の子なので、SP 停止 = lane 停止（tmux decoupling PR2）。
 
 use anyhow::Result;
 
 use crate::cli::stop_process;
 use crate::daemon::process as daemon;
 use crate::discovery;
-use crate::tmux;
 
 /// `vp restart-all` を実行
 pub fn execute() -> Result<()> {
@@ -34,20 +33,8 @@ pub fn execute() -> Result<()> {
         }
     });
 
-    // 3. tmux セッションを kill
-    if tmux::is_tmux_available() {
-        let sessions = tmux::list_vp_sessions();
-        for session in &sessions {
-            print!("  ⏹ tmux:{} ... ", session);
-            if tmux::kill_session(session) {
-                println!("ok");
-            } else {
-                println!("skip");
-            }
-        }
-    }
-
-    // 4. TheWorld を停止
+    // 3. TheWorld を停止
+    // (tmux decoupling PR2: 旧 step 3 の tmux session kill は退役 — lane は SP の子で停止済)
     if let Some(pid) = daemon::is_daemon_running() {
         print!("  ⏹ TheWorld (pid {})... ", pid);
         match daemon::stop_daemon(pid) {

@@ -74,12 +74,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
 
-    // tmux session は lane（conductor/performer）が各々 `vp-{project}-{lane}-{stand}` で持つ。
-    // SP は固定の自前 session を持たず、 ペイン操作（tmux_split 等）時に `ensure_tmux()` が
-    // lane_pool から primary session（conductor lane）を遅延解決して TmuxActor を起動する。
-    // 起動時点では conductor lane の session がまだ無い可能性があるため eager spawn はしない。
-    let tmux_handle: Option<super::tmux_actor::TmuxHandle> = None;
-
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）
     let topic_router = Arc::new(TopicRouter::new());
     {
@@ -180,7 +174,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
-        tmux: Arc::new(tokio::sync::Mutex::new(tmux_handle)),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
@@ -480,7 +473,7 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
 
-    // tmux セッションは vp hd stop で管理（SP 停止時には触らない）
+    // (tmux decoupling PR2: lane は PtySlot の子 — SP 停止で完全に落ちる)
 
     // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");
@@ -676,7 +669,6 @@ pub async fn run_world(
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "WORLD_DISABLED".to_string(),
-        tmux: Arc::new(tokio::sync::Mutex::new(None)),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),

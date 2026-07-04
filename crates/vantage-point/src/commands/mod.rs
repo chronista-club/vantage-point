@@ -10,7 +10,6 @@ pub mod db;
 pub mod events;
 pub mod file;
 pub mod flow;
-pub mod hd;
 pub mod lane_ctl;
 #[cfg(feature = "midi")]
 pub mod midi;
@@ -24,6 +23,5 @@ pub mod restart_all;
 pub mod roto_control;
 pub mod sp;
 pub mod sync;
-pub mod tmux;
 pub mod update;
 pub mod wire;

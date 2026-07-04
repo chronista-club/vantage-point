@@ -95,210 +95,6 @@ async fn handle_unwatch_file(
 }
 
 // =============================================================================
-// tmux Actor ハンドラー
-// =============================================================================
-
-/// tmux ペイン分割
-async fn handle_tmux_split(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let horizontal = payload["horizontal"].as_bool().unwrap_or(true);
-    let command = payload["command"].as_str().map(|s| s.to_string());
-    let content_type = payload["content_type"].as_str();
-    let command = crate::process::routes::health::resolve_content_command(content_type, command);
-    let pane = handle.split(horizontal, command).await?;
-    Ok(serde_json::json!({"status": "ok", "pane": pane}))
-}
-
-/// tmux ペイン一覧
-async fn handle_tmux_list(state: &AppState) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let panes = handle.list().await;
-    Ok(serde_json::json!({"panes": panes}))
-}
-
-/// tmux ペイン閉鎖
-async fn handle_tmux_close(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let pane_id = payload["pane_id"]
-        .as_str()
-        .ok_or_else(|| "pane_id が必要です".to_string())?;
-    handle.close(pane_id).await?;
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// tmux ペインキャプチャ（単一）
-async fn handle_tmux_capture(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let pane_id = payload["pane_id"]
-        .as_str()
-        .ok_or_else(|| "pane_id が必要です".to_string())?;
-    let content = handle.capture(pane_id).await?;
-    Ok(serde_json::json!({"status": "ok", "pane_id": pane_id, "content": content}))
-}
-
-/// tmux 全ペインキャプチャ（ダッシュボード用）
-async fn handle_tmux_capture_all(state: &AppState) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let captures = handle.capture_all().await;
-    Ok(serde_json::json!({"status": "ok", "captures": captures}))
-}
-
-/// エージェントメタデータ設定
-async fn handle_tmux_set_agent_meta(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let pane_id = payload["pane_id"]
-        .as_str()
-        .ok_or_else(|| "pane_id が必要です".to_string())?;
-    let label = payload["label"]
-        .as_str()
-        .ok_or_else(|| "label が必要です".to_string())?;
-    let status = payload["status"].as_str().unwrap_or("running");
-    let task = payload["task"].as_str().map(|s| s.to_string());
-
-    let meta = crate::process::tmux_actor::AgentMeta {
-        label: label.to_string(),
-        status: status.to_string(),
-        task,
-    };
-    handle.set_agent_meta(pane_id, meta).await?;
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// エージェントステータス更新
-async fn handle_tmux_update_agent_status(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let pane_id = payload["pane_id"]
-        .as_str()
-        .ok_or_else(|| "pane_id が必要です".to_string())?;
-    let status = payload["status"]
-        .as_str()
-        .ok_or_else(|| "status が必要です".to_string())?;
-    let task = payload["task"].as_str().map(|s| s.to_string());
-
-    // 既存メタデータから label/task を引き継ぎ（capture_all 不要）
-    let existing = handle.get_agent_meta(pane_id).await;
-    let existing_label = existing
-        .as_ref()
-        .map(|a| a.label.clone())
-        .unwrap_or_else(|| "unknown".to_string());
-    let existing_task = if task.is_none() {
-        existing.and_then(|a| a.task)
-    } else {
-        None
-    };
-
-    let meta = crate::process::tmux_actor::AgentMeta {
-        label: existing_label,
-        status: status.to_string(),
-        task: task.or(existing_task),
-    };
-    handle.set_agent_meta(pane_id, meta).await?;
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// エージェントメタデータクリア
-async fn handle_tmux_clear_agent_meta(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let pane_id = payload["pane_id"]
-        .as_str()
-        .ok_or_else(|| "pane_id が必要です".to_string())?;
-    handle.clear_agent_meta(pane_id).await?;
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// tmux send-keys（ペインへのテキスト送信）
-async fn handle_tmux_send_keys(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    let pane_id = payload["pane_id"]
-        .as_str()
-        .ok_or_else(|| "pane_id が必要です".to_string())?;
-    let keys = payload["keys"]
-        .as_str()
-        .ok_or_else(|| "keys が必要です".to_string())?;
-    handle.send_keys(pane_id, keys).await?;
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// label または pane_id からペイン ID を解決
-async fn handle_tmux_resolve_pane(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let query = payload["query"]
-        .as_str()
-        .ok_or_else(|| "query が必要です".to_string())?;
-
-    // lane address（`<project>/conductor` / `<project>/performer/<name>`）なら実 session に解決。
-    // `tmux send-keys -t <session>` で active pane に届くため、 単一 TmuxActor の束縛 session や
-    // agent_metadata を介さずに任意 lane へ nudge できる（fix-tmux-session-naming 根治経路）。
-    if let Some(session) = state.resolve_lane_session(query).await {
-        return Ok(
-            serde_json::json!({"status": "ok", "pane_id": session, "meta": serde_json::Value::Null}),
-        );
-    }
-
-    let handle = state
-        .ensure_tmux()
-        .await
-        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
-    match handle.resolve_pane_id(query).await {
-        Some(pane_id) => {
-            let meta = handle.get_agent_meta(&pane_id).await;
-            Ok(serde_json::json!({"status": "ok", "pane_id": pane_id, "meta": meta}))
-        }
-        None => Err(format!("ペインが見つかりません: {}", query)),
-    }
-}
-
-// =============================================================================
 // ProcessRunner ハンドラー
 // =============================================================================
 
@@ -735,7 +531,6 @@ async fn handle_lane_delete(
         Ok(info) => Ok(serde_json::json!({
             "deleted": info.address,
             "pid": info.pid,
-            "tmux_killed": info.tmux_killed,
             "cleanup": info.cleanup_status,
         })),
         Err(e) => Err(e.to_string()),
@@ -785,10 +580,9 @@ async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, S
 }
 
 /// F6④ (doc 27 §3.4.5/§6): Stand 一覧。 旧 SP HTTP `GET /api/stands` を process-proxy ask に移管。
-/// install root の mise task scan は process-global (TTL cache、 per-project state 不要) なので
-/// state/payload 不問。 wire wrapping (`{stands:[...]}`) は旧 HTTP handler と互換で本 dispatch 側が担う。
+/// tmux decoupling PR2: built-in 静的テーブル (旧 mise task scan + TTL cache は廃止)。
 async fn handle_stands_list() -> Result<serde_json::Value, String> {
-    let stands = super::routes::stands::list_stands_cached().await;
+    let stands = super::routes::stands::list_stands();
     Ok(serde_json::json!({ "stands": stands }))
 }
 
@@ -836,17 +630,8 @@ pub(crate) async fn dispatch_process_method(
             state.shutdown_token.cancel();
             Ok(serde_json::json!({"status": "shutting_down"}))
         }
-        "tmux_split" => handle_tmux_split(state, payload).await,
-        "tmux_list" => handle_tmux_list(state).await,
-        "tmux_close" => handle_tmux_close(state, payload).await,
-        "tmux_capture" => handle_tmux_capture(state, payload).await,
-        "tmux_capture_all" => handle_tmux_capture_all(state).await,
-        // エージェントメタデータ
-        "tmux_set_agent_meta" => handle_tmux_set_agent_meta(state, payload).await,
-        "tmux_update_agent_status" => handle_tmux_update_agent_status(state, payload).await,
-        "tmux_clear_agent_meta" => handle_tmux_clear_agent_meta(state, payload).await,
-        "tmux_send_keys" => handle_tmux_send_keys(state, payload).await,
-        "tmux_resolve_pane" => handle_tmux_resolve_pane(state, payload).await,
+        // tmux decoupling PR2: 旧 "tmux_*" dispatch (split/list/close/capture/agent_meta/
+        // send_keys/resolve_pane) は退役。 後継は lane 語彙の "lane_nudge" / "lane_capture"。
         // ProcessRunner
         "process_run" => handle_process_run(state, payload).await,
         "process_stop" => handle_process_stop(state, payload).await,
@@ -1312,7 +1097,6 @@ mod tests {
                 pid: None,
                 cwd: cwd.clone(),
                 performer_status: None,
-                tmux: Vec::new(),
                 cc_session_id: None,
             });
             pool.insert_pty_slot(addr.clone(), slot, rx);
