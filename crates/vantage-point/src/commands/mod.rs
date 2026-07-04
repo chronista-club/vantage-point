@@ -7,7 +7,6 @@ pub mod auth;
 pub mod config;
 pub mod daemon;
 pub mod db;
-pub mod directmsg;
 pub mod events;
 pub mod file;
 pub mod flow;

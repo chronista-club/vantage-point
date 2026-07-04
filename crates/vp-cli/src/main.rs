@@ -108,19 +108,6 @@ enum Commands {
     #[command(subcommand)]
     Flow(commands::flow::FlowCommands),
 
-    /// directmsg — tmux send-keys ベースの直接メッセージ（緊急 / ephemeral 用、wiremsg の補助）
-    ///
-    /// 宛先 lane の tmux session に直接テキストを send-keys する。SP / DB 非依存。
-    Directmsg {
-        /// 宛先 lane address（"<project>/conductor" または "<project>/performer/<name>"）
-        lane: String,
-        /// 送信テキスト
-        text: String,
-        /// 末尾に Enter を付けない
-        #[arg(long)]
-        no_enter: bool,
-    },
-
     /// tmux ペイン操作（キャプチャ・分割・送信・ダッシュボード）
     #[command(subcommand)]
     Tmux(TmuxCommands),
@@ -408,11 +395,6 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::flow::run(cmd))
         }
-        Commands::Directmsg {
-            lane,
-            text,
-            no_enter,
-        } => commands::directmsg::run(&lane, &text, !no_enter),
     }
 }
 

@@ -552,6 +552,30 @@ async fn handle_terminal_write(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
+///
+/// 旧制御面 (`tmux send-keys -t <session>`) の SP-proxy 置換。 World daemon (delivery/reconcile
+/// loop の re-nudge) / CLI (`vp flow handoff`) / MCP (`flow_handoff`) が control channel 経由で
+/// この method を ask する。 SP-local な `AppState::nudge_lane` は同じ `deliver_nudge` sink を
+/// in-process で呼ぶ (text→Enter の submit 意味論は `deliver_nudge` に集約)。
+async fn handle_lane_nudge(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_nudge: lane 未指定".to_string());
+    }
+    let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("lane_nudge: lane パース失敗: {}", lane));
+    };
+    crate::process::lanes_state::deliver_nudge(&state.lane_pool, &addr, text)
+        .await
+        .map_err(|e| format!("lane_nudge 失敗: {}", e))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
 /// S3: terminal resize。 PtySlot (+ TermAttach grid) を cols×rows に同期する。
 async fn handle_terminal_resize(
     state: &AppState,
@@ -763,6 +787,8 @@ pub(crate) async fn dispatch_process_method(
         "terminal_demand_stop" => handle_terminal_demand_stop(state, payload).await,
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
+        // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
+        "lane_nudge" => handle_lane_nudge(state, payload).await,
         "terminal_resize" => handle_terminal_resize(state, payload).await,
         // F6: PP Canvas state (旧 SP HTTP /api/pp/state を process-proxy ask に移管)
         "pp_state_save" => handle_pp_state_save(state, payload).await,

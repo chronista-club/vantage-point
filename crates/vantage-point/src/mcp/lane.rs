@@ -73,7 +73,7 @@ pub struct ListLanesParams {
 
 /// Parameters for the flow_handoff tool (dev-flow primitive: handoff in 1 call)
 ///
-/// P4 (= 3-step orchestration: add_performer + wire_send + tmux send-keys) を atomic 1 step に圧縮する。
+/// P4 (= 3-step orchestration: add_performer + wire_send + lane_nudge) を atomic 1 step に圧縮する。
 /// 失敗時は performer 削除で rollback、 dirty state を残さない。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FlowHandoffParams {
@@ -106,9 +106,9 @@ pub struct FlowHandoffParams {
     #[serde(default)]
     pub mode: Option<String>,
 
-    /// Nudge enable (default: true)。 false で tmux send-keys を skip。
+    /// Nudge enable (default: true)。 false で lane_nudge を skip。
     #[schemars(
-        description = "tmux send-keys で wire_recv 受信を促す nudge を発火するか (default: true)。 false で send のみ実行 (= 完全 async)。"
+        description = "lane_nudge で wire_recv 受信を促す nudge を発火するか (default: true)。 false で send のみ実行 (= 完全 async)。"
     )]
     #[serde(default)]
     pub nudge: Option<bool>,
@@ -397,7 +397,7 @@ impl VantageMcp {
 
     /// flow_handoff: 新 Performer 作成 + 初手 wire_send + nudge を atomic に
     #[tool(
-        description = "Atomic dev-flow handoff: (1) Performer Lane 新規作成、 (2) task_spec を wire_send (= 初手 thread root)、 (3) `nudge=true` (default) 時は tmux send-keys で wire_recv を促す。 失敗時は performer 削除で rollback。 既存 3 step (add_performer + wire_send + tmux_agent_send) を 1 call に圧縮 (= dev-flow P4 = 'handoff' を 1 call で完結)。"
+        description = "Atomic dev-flow handoff: (1) Performer Lane 新規作成、 (2) task_spec を wire_send (= 初手 thread root)、 (3) `nudge=true` (default) 時は lane_nudge で wire_recv を促す。 失敗時は performer 削除で rollback。 既存 3 step (add_performer + wire_send + nudge) を 1 call に圧縮 (= dev-flow P4 = 'handoff' を 1 call で完結)。"
     )]
     async fn flow_handoff(
         &self,
@@ -527,34 +527,26 @@ impl VantageMcp {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        // ── Step 3: nudge — tmux send-keys で worker に wire_recv を促す ──
-        // tmux 経路は best-effort。 nudge 失敗で handoff 全体は失敗扱いにしない
-        // (= wire は届いており worker は自走可、 nudge は immediacy の向上目的)。
+        // ── Step 3: nudge — lane_nudge proxy で worker に wire_recv を促す ──
+        // tmux decoupling PR1: 旧 resolve_pane + tmux_send_keys の置換。 lane address を
+        // 直接渡し、 SP 側 write_nudge が PtySlot に書く。 best-effort — nudge 失敗で handoff
+        // 全体は失敗扱いにしない (= wire は届いており worker は自走可、 nudge は immediacy 向上目的)。
         let mut nudge_status = if nudge { "skipped" } else { "off" }.to_string();
         if nudge {
-            // tmux pane は lane address ("project/performer/name") で resolve できる
-            // (resolve_pane が tmux_resolve_pane → meta から label 引き)。
             let nudge_text = "conductor から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n".to_string();
-            match self.resolve_pane(&lane_address).await {
-                Ok((pane_id, _display)) => {
-                    let send_keys = self
-                        .quic_call(
-                            "tmux_send_keys",
-                            serde_json::json!({
-                                "pane_id": pane_id,
-                                "keys": nudge_text,
-                            }),
-                        )
-                        .await;
-                    nudge_status = match send_keys {
-                        Ok(_) => "sent".to_string(),
-                        Err(e) => format!("failed (best-effort): {}", e),
-                    };
-                }
-                Err(e) => {
-                    nudge_status = format!("pane resolve failed (best-effort): {}", e);
-                }
-            }
+            let send = self
+                .quic_call(
+                    "lane_nudge",
+                    serde_json::json!({
+                        "lane": lane_address,
+                        "text": nudge_text,
+                    }),
+                )
+                .await;
+            nudge_status = match send {
+                Ok(_) => "sent".to_string(),
+                Err(e) => format!("failed (best-effort): {}", e),
+            };
         }
 
         let result = serde_json::json!({

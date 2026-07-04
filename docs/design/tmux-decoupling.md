@@ -120,3 +120,10 @@ Explore agent が全 surface（44 の .rs + mise task）を実読。**判定 = 2
 3. **adopt = reconcile の要**（duplicate-SP Dead 化バグ 2026-06-30 の防波堤）— 単純削除で再発。dedup 代替を PR2 に同梱必須。
 4. **crash recovery 意味論変更** — tmux detached 生存 → PtySlot Drop で claude kill、復帰は `--resume`（会話復元）。#1 で合意済。
 5. **描画/keys** — truecolor(`Tc`)/extended-keys が tmux shim 無しで xterm.js に出るか要実機検証。per-session `VP_*` env の cross-project leak 防止は PtySlot 直 env で自然消滅（簡素化）。
+
+## 12. PR1 実機検証で判明した点（2026-07-04, dev-profile :32100）
+
+- **配送は成立・CJK 無破損**: `vp wire send --category command` → delivery_actor(World) → `forward_to_sp_control`（新 control_channels 配線）→ SP `handle_lane_nudge` → PtySlot → tmux → conductor claude、で nudge text が実配送で `❯` に着弾。日本語/emoji も PtySlot の LANG 注入だけで化けない（§8-b 満たす）。最高リスクだった「同一 control_channels Arc を daemon + 両 World loop に配る」配線が実機で機能。
+- **⚠️ submit されない → 2 phase 化で対処（PR1 内で修正済）**: 当初 `write_nudge` は `text + \r` を **1 回**で PtySlot に write していたが、submit されず input に留まる事象を確認。根因 = **PtySlot は tmux client の stdin を wrap**しており、burst 入力を tmux が **bracketed paste** 扱いにして paste 内 CR が改行化する（Enter keystroke の意味論が失われる）。旧 `send-keys -l text` + 別 `send-keys Enter` は tmux server が **pane PTY へ直接**注入するため submit が効いていた。
+  - **対処**: `LanePool::write_nudge`（bundled）を廃し、`lanes_state::deliver_nudge`（async, 2 phase）に置換。① text を write（末尾 CR/LF 落とし）② `assume-paste-time`(既定1ms)を跨ぐ猶予(50ms) ③ Enter を**単独** write。paste の外の keystroke として Enter を成立させ submit させる。SP-local `nudge_lane` / proxy `handle_lane_nudge` の双方が同 sink に収束。
+  - **PR2 への含意**: tmux 撤去（PtySlot→claude 直結）後は bracketed paste の wrap 主体（tmux client）が消えるため、この 2 phase は**中間状態の互換層**。PR2 で claude 直結にした際、`text\r` の 1 発 submit が効くか（= 2 phase を畳めるか）を再検証する。逆に効かない場合は claude 側の入力意味論に依存するので 2 phase を残す。

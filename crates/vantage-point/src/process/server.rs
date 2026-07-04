@@ -708,7 +708,14 @@ pub async fn run_world(
         delegation_store,
     });
 
-    // R2-b: wire delivery loop (未 ack command の tmux nudge + 再掲示) を spawn。
+    // tmux decoupling PR1: SP control channel registry を hoist する。 daemon server (下記
+    // daemon_state) がこの map を populate し、 World-side の nudge loop (delivery / reconcile) が
+    // 同一 Arc を引いて `lane_nudge` を所有 SP に forward する。 別々に new() すると map が分裂して
+    // forward 不能になるため、 ここで作った 1 つを 3 者 (daemon_state + 両 loop) に配る。
+    let control_channels: crate::daemon::server::ControlChannels =
+        std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+
+    // R2-b: wire delivery loop (未 ack command の nudge + 再掲示) を spawn。
     // store 未構築 (DB 接続失敗) なら skip — wire 自体が動かないため delivery も不要。
     if let Some(store) = state.wiremsg_store.clone() {
         let lane_registry = world_cap.read().await.lane_registry_ref();
@@ -716,6 +723,7 @@ pub async fn run_world(
             super::delivery_actor::DeliveryActor::new(
                 store,
                 lane_registry,
+                control_channels.clone(),
                 state.delivery_notify.clone(),
             ),
             shutdown_token.clone(),
@@ -724,10 +732,16 @@ pub async fn run_world(
 
     // 委譲 reconcile loop (doc 28 §7、 Push+Pull の Pull パス) を spawn。
     // delivered=false の再 nudge + stale な未終了の timeout → Failed{timeout}。
-    // World-side wake (lane_registry + send-keys) なので delivery loop と同じ lane_registry を使う。
+    // World-side wake (lane_registry + SP-proxy lane_nudge) なので delivery loop と同じ
+    // lane_registry / control_channels を使う。
     if let Some(store) = state.delegation_store.clone() {
         let lane_registry = world_cap.read().await.lane_registry_ref();
-        super::delegation::spawn_reconcile_loop(store, lane_registry, shutdown_token.clone());
+        super::delegation::spawn_reconcile_loop(
+            store,
+            lane_registry,
+            control_channels.clone(),
+            shutdown_token.clone(),
+        );
     }
 
     let app = Router::new()
@@ -864,7 +878,10 @@ pub async fn run_world(
         )
         // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
         // Unison "world-control" channel から projects mutation を受けられるようにする。
-        .with_world_cap(world_cap.clone());
+        .with_world_cap(world_cap.clone())
+        // tmux decoupling PR1: 上で hoist した control channel map を daemon server と共有する
+        // (daemon が SP 接続で populate → nudge loop がここから forward 先を引く)。
+        .with_control_channels(control_channels.clone());
     // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
     if let Some(ref db) = vpdb {
         daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());

@@ -249,25 +249,50 @@ impl AppState {
         info.tmux.first().map(|t| t.session.clone())
     }
 
+    /// lane address 文字列（`<project>/conductor` / `<project>/performer/<name>`）を、
+    /// Running な lane の [`LaneAddress`](super::lanes_state::LaneAddress) に解決する（tmux 非依存）。
+    ///
+    /// tmux decoupling PR1: [`Self::resolve_lane_session`] の PtySlot 版。 nudge の宛先を tmux
+    /// session 名ではなく `LaneAddress` で返し、 [`LanePool::write_nudge`](super::lanes_state::LanePool::write_nudge)
+    /// の入力にする。 tmux の起動可否（`TmuxMode`）に依存しないため、 tmux 不在 lane でも nudge 可能。
+    /// parse 不能 / lane 不在 / 非 Running なら None。
+    pub async fn resolve_lane_address(
+        &self,
+        query: &str,
+    ) -> Option<super::lanes_state::LaneAddress> {
+        let addr = super::lanes_state::LanePool::parse_address(query)?;
+        let pool = self.lane_pool.read().await;
+        let info = pool.get(&addr)?;
+        if !matches!(info.state, super::lanes_state::LaneState::Running) {
+            return None;
+        }
+        Some(addr)
+    }
+
     /// 論理 lane address（`agent@<project>[/<name>]` or bare `<project>/<lane>`）を実 tmux
     /// session に解決し、literal text + Enter を送る（= wake）。
     ///
     /// 委譲（`process/delegation.rs`）の `delegate` / `complete` が doer / requester を起こす
-    /// 共通 helper。resolution は [`Self::resolve_lane_session`] を介す
-    /// （federation 不変条件: `address → local lane session` の翻訳層だけが swappable。後で
+    /// 共通 helper。resolution は [`Self::resolve_lane_address`] を介す
+    /// （federation 不変条件: `address → local lane` の翻訳層だけが swappable。後で
     /// `world-handle:` 接頭の remote 分岐を足すだけで federation 化できる）。
     ///
-    /// 解決できない（lane 不在 / 非 Running / tmux 不在）場合は `false` を返し graceful に握る
+    /// tmux decoupling PR1: 旧 `tmux send-keys`（`send_keys_to_session`）を SP-local な
+    /// [`deliver_nudge`](super::lanes_state::deliver_nudge) 直書きに置換。 delegation handler は
+    /// SP プロセス内で走る（`&AppState` を持つ）ため、 PtySlot に in-process で直接届く
+    /// （World-side re-nudge は `lane_nudge` proxy 経由、 同じ `deliver_nudge` sink に収束）。
+    ///
+    /// 解決できない（lane 不在 / 非 Running / PtySlot 不在）場合は `false` を返し graceful に握る
     /// （no-lane test や実機外で panic しない / wake 取りこぼしは reconcile・pull-hook が後で拾う）。
     pub async fn nudge_lane(&self, addr: &str, text: &str) -> bool {
         let query = super::delegation::lane_query_for(addr);
-        let Some(session) = self.resolve_lane_session(&query).await else {
+        let Some(lane_addr) = self.resolve_lane_address(&query).await else {
             return false;
         };
-        match super::delivery_actor::send_keys_to_session(&session, text).await {
+        match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, text).await {
             Ok(()) => true,
             Err(e) => {
-                tracing::warn!("nudge_lane: send-keys 失敗 (addr={addr}, session={session}): {e}");
+                tracing::warn!("nudge_lane: deliver_nudge 失敗 (addr={addr}, lane={lane_addr}): {e}");
                 false
             }
         }

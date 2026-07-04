@@ -19,11 +19,12 @@
 //! 共通 GC で落とす。 TheWorld 再起動でリセットされ上限回が再付与されるが、 ack されれば
 //! 止まるため許容 (table 化は必要になってから)。
 //!
-//! ## チャネル C の送出は tmux 直 (directmsg と同方式)
+//! ## チャネル C の送出は SP control channel 経由 (tmux decoupling PR1)
 //!
-//! TheWorld は SP と同一マシンで動く daemon なので、 SP を hop せず lane registry の
-//! tmux session 名に直接 send-keys する。 C は Phase A 後に native channels (A) へ
-//! 移行予定のつなぎ (設計の配信チャネル表)。
+//! TheWorld は PtySlot を持たない（PtySlot は SP scope）ので、 lane を所有する SP の control
+//! channel に `lane_nudge` を forward し、 SP 側で `LanePool::write_nudge` が PtySlot に直書きする。
+//! 旧実装は lane registry の tmux session 名に daemon から直接 `send-keys` していた（cross-process
+//! IPC namespace = tmux session への依存）が、 PR1 で SP-proxy に寄せて tmux 非依存化した。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +36,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::capability::WiremsgStore;
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
-use crate::process::lanes_state::{LaneInfo, LaneState, TmuxMode};
+// tmux decoupling PR1: nudge の forward 先解決に使う SP control channel registry（SSOT は daemon）。
+use crate::daemon::server::ControlChannels;
+use crate::process::lanes_state::{LaneInfo, LaneState};
 
 /// 配信 pulse の定期 tick (Notify wake の取りこぼし安全網)
 const TICK: Duration = Duration::from_secs(30);
@@ -105,24 +108,43 @@ pub(crate) fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
     }
 }
 
-/// lane 一覧から nudge 先 (tmux session 名, lane cwd, cc_session_id) を引く (純関数)
+/// nudge 先の解決結果 (tmux decoupling PR1)
 ///
-/// Running かつ Tmux mode の session を持つ lane のみ nudge 可能。
-/// 該当なし = offline 扱い (pending 保持)。 cwd は R3-a の CC activity 照合
-/// (`agents --json` の cwd と突き合わせ) に使う。 cc_session_id は R3-c の
-/// `claude -p --resume <id>` headless 再開に使う (None なら fresh headless)。
+/// 旧 `(tmux session 名, cwd, cc_session_id)` タプルの置換。 tmux session の代わりに、
+/// 所有 SP への forward に必要な `path_key`（= `control_channels` の key）と、 SP 側 `lane_nudge`
+/// の宛先になる `lane_display`（`LaneAddress` の Display 形）を持つ。
+#[derive(Debug, PartialEq)]
+pub(crate) struct NudgeTarget {
+    /// lane を所有する SP の path_key（`lane_registry` / `control_channels` の HashMap key）
+    pub path_key: String,
+    /// `LaneAddress` の Display 形（`lane_nudge` payload の `lane`）
+    pub lane_display: String,
+    /// R3-a の CC activity 照合（`agents --json` の cwd と突き合わせ）に使う lane cwd
+    pub cwd: String,
+    /// R3-c の `claude -p --resume <id>` headless 再開に使う（None なら fresh headless）
+    pub cc_session_id: Option<String>,
+}
+
+/// `(path_key, lane)` 一覧から nudge 先を引く (純関数、 tmux decoupling PR1)
+///
+/// Running な lane なら nudge 可能（PtySlot 直書きは tmux 起動可否に依存しないため、 旧
+/// `TmuxMode::Tmux` gate は撤去）。 該当なし = offline 扱い (pending 保持)。 入力を
+/// `(path_key, LaneInfo)` ペアにするのは、 forward 先 SP を `path_key` で特定するため
+/// （`lane_registry` の HashMap key が path_key）。
 pub(crate) fn pick_nudge_target(
-    lanes: &[LaneInfo],
+    lanes: &[(String, LaneInfo)],
     lane_display: &str,
-) -> Option<(String, String, Option<String>)> {
+) -> Option<NudgeTarget> {
     lanes
         .iter()
-        .find(|l| l.address.to_string() == lane_display && matches!(l.state, LaneState::Running))
-        .and_then(|l| {
-            l.tmux
-                .iter()
-                .find(|t| matches!(t.mode, TmuxMode::Tmux))
-                .map(|t| (t.session.clone(), l.cwd.clone(), l.cc_session_id.clone()))
+        .find(|(_, l)| {
+            l.address.to_string() == lane_display && matches!(l.state, LaneState::Running)
+        })
+        .map(|(path_key, l)| NudgeTarget {
+            path_key: path_key.clone(),
+            lane_display: l.address.to_string(),
+            cwd: l.cwd.clone(),
+            cc_session_id: l.cc_session_id.clone(),
         })
 }
 
@@ -229,6 +251,8 @@ pub struct DeliveryActor {
     store: WiremsgStore,
     /// TheWorld lane registry (QUIC push でリアルタイム更新される)
     lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
+    /// tmux decoupling PR1: SP control channel registry（nudge の forward 先解決に使う）
+    control_channels: ControlChannels,
     /// wire_send (command) 時の即時 wake (AppState.delivery_notify と共有)
     wake: Arc<tokio::sync::Notify>,
 }
@@ -237,11 +261,13 @@ impl DeliveryActor {
     pub fn new(
         store: WiremsgStore,
         lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
+        control_channels: ControlChannels,
         wake: Arc<tokio::sync::Notify>,
     ) -> Self {
         Self {
             store,
             lane_registry,
+            control_channels,
             wake,
         }
     }
@@ -268,6 +294,7 @@ impl SpawnableService for DeliveryActor {
             let Self {
                 store,
                 lane_registry,
+                control_channels,
                 wake,
             } = self;
             // nudge 台帳: (message_id, agent) → record。 in-memory (module doc 参照)
@@ -288,7 +315,15 @@ impl SpawnableService for DeliveryActor {
                     _ = wake.notified() => {}
                     _ = tokio::time::sleep(TICK) => {}
                 }
-                if let Err(e) = pulse(&store, &lane_registry, &mut ledger, &mut bg_ledger).await {
+                if let Err(e) = pulse(
+                    &store,
+                    &lane_registry,
+                    &control_channels,
+                    &mut ledger,
+                    &mut bg_ledger,
+                )
+                .await
+                {
                     tracing::warn!("wire delivery pulse 失敗 (次 tick で再試行): {}", e);
                 }
             }
@@ -301,6 +336,7 @@ impl SpawnableService for DeliveryActor {
 async fn pulse(
     store: &WiremsgStore,
     lane_registry: &Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
+    control_channels: &ControlChannels,
     ledger: &mut HashMap<(String, String), NudgeRecord>,
     bg_ledger: &mut HashMap<(String, String), NudgeRecord>,
 ) -> anyhow::Result<()> {
@@ -317,12 +353,13 @@ async fn pulse(
     if pending.is_empty() {
         return Ok(());
     }
-    let lanes: Vec<LaneInfo> = lane_registry
+    // tmux decoupling PR1: (path_key, lane) ペアで収集する。 path_key は所有 SP の control
+    // channel key（forward 先の特定に要る）= lane_registry の HashMap key。
+    let lanes: Vec<(String, LaneInfo)> = lane_registry
         .read()
         .await
-        .values()
-        .flatten()
-        .cloned()
+        .iter()
+        .flat_map(|(k, v)| v.iter().map(move |l| (k.clone(), l.clone())))
         .collect();
     if lanes.is_empty() {
         // lane なし = nudge 先がない (TheWorld 起動直後等)。 poll の claude fork を省く
@@ -342,21 +379,21 @@ async fn pulse(
             let target = pick_nudge_target(&lanes, &lane_display);
             // R3-a policy: lane の cwd で CC 状態を照合 (設計 policy table)
             let act_view = activity.as_ref().map(|s| match &target {
-                Some((_, cwd, _)) => crate::process::cc_activity::state_for_cwd(s, cwd),
+                Some(t) => crate::process::cc_activity::state_for_cwd(s, &t.cwd),
                 None => None,
             });
-            let Some((session, cwd, cc_session_id)) = target else {
-                continue; // lane 不在 / Dead / PtySlotFallback = offline (pending 保持)
+            let Some(t) = target else {
+                continue; // lane 不在 / Dead = offline (pending 保持)
             };
-            // 不変条件: target=Some が確定した後のみここに到達 = lane Running + Tmux
+            // 不変条件: target=Some が確定した後のみここに到達 = lane Running
             // = lane_nudgeable は常に真 (target=None は直前の continue で排除済み)
             let key = (msg.id.clone(), agent.clone());
             match recipient_readiness(true, act_view) {
                 Readiness::Ready => {}
                 // busy: 待つ (台帳は進めない — idle 遷移を次 pulse で拾う)。
                 Readiness::Busy => continue,
-                // R3-c (channel D, scope a): lane は Running+Tmux だが interactive CC
-                // session が落ちている (Some(None))。 send-keys は届かないので headless
+                // R3-c (channel D, scope a): lane は Running だが interactive CC
+                // session が落ちている (Some(None))。 nudge は届かないので headless
                 // `claude -p --resume` を detached 起動して wire を処理させる。
                 Readiness::Offline => {
                     match decide_nudge(
@@ -369,20 +406,20 @@ async fn pulse(
                             if let Some((project, lane_label)) = lane_identity_from_agent(agent) {
                                 let count = bg_ledger.get(&key).map(|r| r.count).unwrap_or(0);
                                 let prompt = bg_dispatch_prompt(&msg.id);
-                                let args = build_bg_args(cc_session_id.as_deref(), &prompt);
+                                let args = build_bg_args(t.cc_session_id.as_deref(), &prompt);
                                 spawn_bg_dispatch(
-                                    cwd.clone(),
+                                    t.cwd.clone(),
                                     project,
                                     lane_label,
-                                    session.clone(),
+                                    t.lane_display.clone(),
                                     args,
                                 );
                                 tracing::info!(
                                     "wire delivery: bg dispatch 起動 (msg={}, agent={}, cwd={}, resume={}, count={})",
                                     msg.id,
                                     agent,
-                                    cwd,
-                                    cc_session_id.is_some(),
+                                    t.cwd,
+                                    t.cc_session_id.is_some(),
                                     count + 1
                                 );
                                 bg_ledger.insert(
@@ -408,39 +445,45 @@ async fn pulse(
                 NudgeDecision::Send => {
                     let count = ledger.get(&key).map(|r| r.count).unwrap_or(0);
                     let text = nudge_text(&msg.id, count);
-                    match send_keys_to_session(&session, &text).await {
-                        Ok(()) => {
-                            tracing::info!(
-                                "wire delivery: nudge 送出 (msg={}, agent={}, session={}, count={}, activity={})",
-                                msg.id,
-                                agent,
-                                session,
-                                count + 1,
-                                // degraded か精密 (poll 成功) かを後から判別できるように
-                                if activity.is_some() {
-                                    "precise"
-                                } else {
-                                    "degraded"
-                                }
-                            );
-                            ledger.insert(
-                                key,
-                                NudgeRecord {
-                                    count: count + 1,
-                                    last_at: now,
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            // best-effort: 送出失敗は台帳を進めない (次 pulse で再試行)
-                            tracing::warn!(
-                                "wire delivery: nudge 失敗 (msg={}, agent={}, session={}): {}",
-                                msg.id,
-                                agent,
-                                session,
-                                e
-                            );
-                        }
+                    // tmux decoupling PR1: 所有 SP の control channel に lane_nudge を forward し、
+                    // SP 側 write_nudge が PtySlot に直書きする（旧 daemon 直 send-keys の置換）。
+                    let resp = crate::daemon::server::forward_to_sp_control(
+                        control_channels,
+                        &t.path_key,
+                        "lane_nudge",
+                        &serde_json::json!({ "lane": t.lane_display, "text": text }),
+                    )
+                    .await;
+                    if resp.get("error").is_none() {
+                        tracing::info!(
+                            "wire delivery: nudge 送出 (msg={}, agent={}, lane={}, count={}, activity={})",
+                            msg.id,
+                            agent,
+                            t.lane_display,
+                            count + 1,
+                            // degraded か精密 (poll 成功) かを後から判別できるように
+                            if activity.is_some() {
+                                "precise"
+                            } else {
+                                "degraded"
+                            }
+                        );
+                        ledger.insert(
+                            key,
+                            NudgeRecord {
+                                count: count + 1,
+                                last_at: now,
+                            },
+                        );
+                    } else {
+                        // best-effort: 送出失敗は台帳を進めない (次 pulse で再試行)
+                        tracing::warn!(
+                            "wire delivery: nudge 失敗 (msg={}, agent={}, lane={}): {}",
+                            msg.id,
+                            agent,
+                            t.lane_display,
+                            resp
+                        );
                     }
                 }
                 NudgeDecision::Wait | NudgeDecision::Exhausted => {}
@@ -448,32 +491,6 @@ async fn pulse(
         }
     }
     Ok(())
-}
-
-/// tmux session に literal text + Enter を送る (directmsg と同方式、 blocking を隔離)
-///
-/// 委譲 (`process/delegation.rs`) の wake も同経路を再利用するため `pub(crate)`
-/// (`AppState::nudge_lane` から呼ばれる)。
-pub(crate) async fn send_keys_to_session(session: &str, text: &str) -> anyhow::Result<()> {
-    let session = session.to_string();
-    let text = text.to_string();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let status = crate::tmux::tmux_command()
-            .args(["send-keys", "-t", &session, "-l", &text])
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("tmux send-keys 失敗 (session={session})");
-        }
-        // Enter は別 send-keys で送る (`-l` と混ぜると Enter も literal 文字列扱いになる)
-        let status = crate::tmux::tmux_command()
-            .args(["send-keys", "-t", &session, "Enter"])
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("tmux send-keys Enter 失敗 (session={session})");
-        }
-        Ok(())
-    })
-    .await?
 }
 
 /// R3-c: headless `claude -p [--resume <id>] "<prompt>"` を detached 起動する。
@@ -572,9 +589,10 @@ mod tests {
         );
     }
 
-    /// pick_tmux_session 用の test lane (vp/conductor)
-    fn test_lane(state: LaneState, mode: TmuxMode) -> LaneInfo {
-        use crate::process::lanes_state::{LaneAddress, LaneKind, TmuxLaneAddress};
+    /// pick_nudge_target 用の test lane (vp/conductor)。 tmux decoupling PR1 で nudge は
+    /// tmux 状態を読まなくなったため tmux entry は空でよい。
+    fn test_lane(state: LaneState) -> LaneInfo {
+        use crate::process::lanes_state::{LaneAddress, LaneKind};
         LaneInfo {
             id: Default::default(),
             address: LaneAddress::conductor("vp"),
@@ -587,34 +605,37 @@ mod tests {
             cwd: String::new(),
             performer_status: None,
             cc_session_id: None,
-            tmux: vec![TmuxLaneAddress {
-                stand: "echoes".to_string(),
-                session: "vp-vp-conductor-echoes".to_string(),
-                mode,
-            }],
+            tmux: vec![],
         }
     }
 
-    /// Running + Tmux mode の lane は (session 名, cwd, cc_session_id) が返る (nudge 可能)
+    /// registry の `(path_key, lane)` ペアに包む test helper（path_key = "/repo/vp"）
+    fn registry(l: LaneInfo) -> Vec<(String, LaneInfo)> {
+        vec![("/repo/vp".to_string(), l)]
+    }
+
+    /// Running な lane は NudgeTarget (path_key, lane_display, cwd, cc_session_id) が返る (nudge 可能)
     #[test]
-    fn pick_running_tmux_lane_returns_session() {
-        let lanes = vec![test_lane(LaneState::Running, TmuxMode::Tmux)];
-        let (session, cwd, cc_session_id) =
-            pick_nudge_target(&lanes, "vp/conductor").expect("nudge 可能");
-        assert_eq!(session, "vp-vp-conductor-echoes");
-        assert_eq!(cwd, "", "test_lane の cwd (CC activity 照合に使う)");
-        assert_eq!(cc_session_id, None, "test_lane は cc_session_id 未設定");
+    fn pick_running_lane_returns_target() {
+        let lanes = registry(test_lane(LaneState::Running));
+        let t = pick_nudge_target(&lanes, "vp/conductor").expect("nudge 可能");
+        assert_eq!(t.path_key, "/repo/vp", "forward 先 SP の control channel key");
+        assert_eq!(t.lane_display, "vp/conductor", "lane_nudge の宛先");
+        assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
+        assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
         // 別 lane 宛は None (offline 扱い = pending 保持)
         assert_eq!(pick_nudge_target(&lanes, "other/conductor"), None);
     }
 
-    /// PtySlotFallback (send-keys 不可) と Dead lane は nudge 対象外 = pending 保持
+    /// tmux decoupling PR1: Running なら tmux 状態に関係なく nudge 可能 (旧 TmuxMode gate 撤去)、
+    /// Dead lane のみ nudge 対象外 = pending 保持。
     #[test]
-    fn pick_skips_fallback_mode_and_dead_lane() {
-        let fallback = vec![test_lane(LaneState::Running, TmuxMode::PtySlotFallback)];
-        assert_eq!(pick_nudge_target(&fallback, "vp/conductor"), None);
+    fn pick_nudges_running_regardless_of_tmux_and_skips_dead() {
+        // tmux entry 無し (旧 PtySlotFallback 相当) でも Running なら nudge 可能
+        let running = registry(test_lane(LaneState::Running));
+        assert!(pick_nudge_target(&running, "vp/conductor").is_some());
 
-        let dead = vec![test_lane(LaneState::Dead, TmuxMode::Tmux)];
+        let dead = registry(test_lane(LaneState::Dead));
         assert_eq!(pick_nudge_target(&dead, "vp/conductor"), None);
     }
 

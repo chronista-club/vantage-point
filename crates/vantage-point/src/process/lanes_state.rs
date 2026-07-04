@@ -821,6 +821,36 @@ impl LanePool {
     }
 }
 
+/// nudge 配送: lane の PtySlot に text を流し込み、続けて Enter(`\r`) を送って submit させる。
+///
+/// tmux decoupling PR1: 旧 `tmux send-keys -l <text>` + `send-keys Enter` の置換。当初は
+/// `text + \r` を 1 回で write していたが、実機検証で **submit されない** ことが判明した:
+/// PtySlot は現状 tmux client の stdin を wrap しており、burst 入力を tmux が **bracketed paste**
+/// 扱いにするため、paste 内の CR が改行化して Enter として効かない。
+///
+/// そこで **2 phase** に分ける:
+///   1. text 本体を write（paste でよい。末尾改行は submit の妨げになり得るので落とす）
+///   2. tmux の paste 判定（`assume-paste-time` 既定 1ms）を跨ぐ猶予を空けてから、Enter を
+///      **単独** で write → paste の外の keystroke として扱われ claude が submit する
+///
+/// PtySlot の std `Mutex` guard を await 跨ぎで保持しないよう、各 write は `read().await` で
+/// 都度 lock を取り即 drop し、間の sleep は無 lock で行う。tmux 撤去後（PR2）は paste wrap 主体
+/// が消えるため、この 2 phase は tmux 存置中の互換層。in-process nudge（`AppState::nudge_lane`）と
+/// World→SP proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
+pub async fn deliver_nudge(
+    pool: &std::sync::Arc<tokio::sync::RwLock<LanePool>>,
+    addr: &LaneAddress,
+    text: &str,
+) -> anyhow::Result<()> {
+    // phase 1: text 本体（末尾 CR/LF は落として単一行の paste にする）
+    let body = text.trim_end_matches(['\r', '\n']);
+    pool.read().await.write_to_lane(addr, body.as_bytes())?;
+    // paste 判定を跨ぐ猶予（1ms を十分上回る。best-effort nudge なので体感遅延にならない範囲）
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // phase 2: Enter(CR) 単独 → submit
+    pool.read().await.write_to_lane(addr, b"\r")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

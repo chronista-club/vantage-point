@@ -121,7 +121,6 @@ vp shot                # vp-app window の screenshot を PNG 保存
 vp lane                # performer Lane 管理（Stone Free 🧵）
 vp flow handoff|progress  # Conductor × Performer orchestration
 vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は TheWorld :32000 に中央化。hook-check は claude hook 実体、R2-c）
-vp directmsg           # tmux send-keys 直接メッセージ（緊急用、wiremsg の補助）
 vp hd start|stop|attach|list  # tmux + Claude CLI セッション管理（旧 TUI 経路）
 vp tmux                # tmux ペイン操作（capture/split/send/dashboard）
 

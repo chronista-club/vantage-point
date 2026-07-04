@@ -220,41 +220,23 @@ async fn handoff(
     Ok(())
 }
 
-/// nudge — tmux send-keys で performer の Claude session に wire_recv を促す (best-effort)。
+/// nudge — lane_nudge proxy で performer の Claude session に wire_recv を促す (best-effort)。
 ///
-/// lanes portless: 旧 SP HTTP (`/api/tmux/resolve-pane` + `/api/tmux/send-keys`) を World
-/// process-proxy ask (`tmux_resolve_pane` + `tmux_send_keys`) に移管。 dispatch の payload shape は
-/// resolve=`{query}`→`{pane_id, meta:{label}}` / send=`{pane_id, keys}` (MCP flow_handoff と同型)。
+/// tmux decoupling PR1: 旧 2 段 (`tmux_resolve_pane` で pane 解決 → `tmux_send_keys` で送信) を
+/// World process-proxy ask `lane_nudge` の 1 発に置換。 lane address を直接渡し、 SP 側の
+/// `write_nudge` が PtySlot に literal text + Enter を書く (pane 解決の中間層が消える)。
 async fn try_nudge(project_path: &str, lane_address: &str) -> String {
-    // 1. lane address (project/performer/name) を tmux pane id に resolve
-    let resolve_json = match world_process_request(
-        crate::cli::world_port(),
-        project_path,
-        "tmux_resolve_pane",
-        serde_json::json!({ "query": lane_address }),
-    )
-    .await
-    {
-        Ok(j) => j,
-        Err(e) => return format!("pane resolve 失敗 (best-effort): {}", e),
-    };
-    let pane_id = match resolve_json.get("pane_id").and_then(|v| v.as_str()) {
-        Some(p) => p.to_string(),
-        None => return format!("pane 不在 (best-effort): {}", resolve_json),
-    };
-
-    // 2. send-keys で nudge text を送信 (dispatch tmux_send_keys は `keys` field)
     let nudge_text = "conductor から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n";
     match world_process_request(
         crate::cli::world_port(),
         project_path,
-        "tmux_send_keys",
-        serde_json::json!({ "pane_id": pane_id, "keys": nudge_text }),
+        "lane_nudge",
+        serde_json::json!({ "lane": lane_address, "text": nudge_text }),
     )
     .await
     {
         Ok(_) => "sent".to_string(),
-        Err(e) => format!("send-keys 失敗 (best-effort): {}", e),
+        Err(e) => format!("nudge 失敗 (best-effort): {}", e),
     }
 }
 
