@@ -686,33 +686,26 @@ impl LanePool {
     }
 }
 
-/// nudge 配送: lane の PtySlot に text を流し込み、続けて Enter(`\r`) を送って submit させる。
+/// nudge 配送: lane の PtySlot に text + Enter(`\r`) を 1 回で書き込み submit させる。
 ///
-/// tmux decoupling PR1 で `tmux send-keys` を置換した際、`text + \r` の 1 回 write だと
-/// 当時の中間層（tmux client）が burst を bracketed paste 化して submit しない事象を確認し
-/// **2 phase** にした（design doc §12）:
-///   1. text 本体を write（末尾改行は submit の妨げになり得るので落とす）
-///   2. 猶予（50ms）を空けて Enter を**単独** write → 独立 keystroke として submit
+/// tmux decoupling PR1 で `tmux send-keys` を置換した当初は、間に居た tmux client が burst を
+/// bracketed paste 化して `\r` を改行化するため、text と Enter を 50ms 空けて別 write する
+/// **2 phase** が必要だった（design doc §12）。 PR2 で tmux を撤去し PtySlot が claude の PTY
+/// master を直接持つ構成になった後は、 raw bytes を書いても paste-wrap する主体が居ないため
+/// **`text + \r` の 1 write で submit する**ことを実機検証で確認（§13.6c）、 2 phase を畳んだ。
 ///
-/// PR2（tmux 撤去、PtySlot→claude 直結）後は paste wrap の主体が消えたため 1 write に
-/// 畳める可能性が高いが、claude 側 TUI の paste 判定にも依存するため、実機確認（§13.5）まで
-/// 2 phase を保守的に維持する（50ms は best-effort nudge で体感遅延にならない範囲）。
-///
-/// PtySlot の std `Mutex` guard を await 跨ぎで保持しないよう、各 write は `read().await` で
-/// 都度 lock を取り即 drop し、間の sleep は無 lock で行う。in-process nudge（`AppState::nudge_lane`）と
+/// 末尾 CR/LF は落としてから `\r` を 1 つだけ付ける（元の text に改行が混ざっても単一 submit に
+/// 正規化）。 write は `write_to_lane` の 1 回のみで、 PtySlot mutex を 1 度取って即 drop する
+/// （並行 nudge / user 入力との interleave 窓が無い）。 in-process nudge（`AppState::nudge_lane`）と
 /// World→SP proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
 pub async fn deliver_nudge(
     pool: &std::sync::Arc<tokio::sync::RwLock<LanePool>>,
     addr: &LaneAddress,
     text: &str,
 ) -> anyhow::Result<()> {
-    // phase 1: text 本体（末尾 CR/LF は落として単一行の paste にする）
-    let body = text.trim_end_matches(['\r', '\n']);
-    pool.read().await.write_to_lane(addr, body.as_bytes())?;
-    // paste 判定を跨ぐ猶予（1ms を十分上回る。best-effort nudge なので体感遅延にならない範囲）
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    // phase 2: Enter(CR) 単独 → submit
-    pool.read().await.write_to_lane(addr, b"\r")
+    let mut bytes = text.trim_end_matches(['\r', '\n']).as_bytes().to_vec();
+    bytes.push(b'\r');
+    pool.read().await.write_to_lane(addr, &bytes)
 }
 
 #[cfg(test)]

@@ -220,8 +220,22 @@ release cut 前に **brew namespace(:32000) を新 binary で起動**（launchd 
 - ⏳ **Shift+Enter**: xterm.js に custom handler なし（copy/paste のみ）。daemon 側でなく vp-app 端点の話で、tmux 撤去の回帰ではない。GUI 全体は良好、必要なら vp-app に key handler 追加（follow-up）
 - **中間状態の注意**: shell の `vp`（.app symlink）は旧版のまま → CLI は `~/.cargo/bin/vp` を使う。release cut で解消
 
+### 13.6c deliver_nudge 1-write 畳み込み（2026-07-04、release 前 polish で決着）
+
+§12/§13.5 の宿題を empirical に決着。 brew :32000（新 binary）で throwaway echoes performer に
+`text + \r` の **1 回 write** で nudge → claude が submit（`⏺ Calling… Synthesizing…`）を確認。
+tmux 撤去後は PtySlot が claude の PTY master を直接持ち paste-wrap する主体が居ないため、
+2-phase（text → 50ms → Enter）は不要だった。 1 write に畳み → レビュー B5 の「50ms 窓での
+並行 nudge / user 入力との interleave」も構造的に消滅、 write は `write_to_lane` 1 回のみ。
+
 **既知挙動（PR2 起因でない）:** daemon は SP 死亡を registry から除去するが auto-respawn しない
 （autostart は daemon boot 時のみ）。SP 復帰は手動 or daemon 再起動。
+
+### 13.7b dev tooling footgun 修正（release 前 polish）
+
+- `.mise/tasks/daemon/stop` の `pgrep -f 'vp sp start'` は **profile-blind**（dev で回すと brew SP も
+  巻き込んで kill）。 各 SP の `ps eww` env の `VP_PROFILE` を現プロファイルと照合して対象を絞る。
+  tmux 撤去で「SP kill = lane claude kill」になったため profile 跨ぎ誤爆の被害が大きくなった対策。
 
 ### 13.7 Follow-up ideas（PR3 候補、本 PR 非対象）
 
