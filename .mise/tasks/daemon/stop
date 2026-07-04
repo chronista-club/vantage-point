@@ -1,9 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="TheWorld daemon + 裏で動く SP プロセス + Lane tmux session を一括停止 (旧 nuke 相当)"
+#MISE description="TheWorld daemon + 裏で動く SP プロセスを一括停止 (旧 nuke 相当)"
 #
-# 2026-05-30 daemon→world 改名。 cascade teardown (World + SP + tmux) を担う world group の一員。
-# 3-phase cascade kill: [1/3] SP プロセス (TERM→KILL) → [2/3] VP-managed tmux session → [3/3] daemon stop。
+# 2026-05-30 daemon→world 改名。 cascade teardown (World + SP) を担う world group の一員。
+# 2-phase cascade kill: [1/2] SP プロセス (TERM→KILL、 PtySlot Drop で lane claude も落ちる) → [2/2] daemon stop。
+# tmux decoupling PR2: 旧 [2/3] tmux session kill phase は退役 (lane は SP の子 = SP kill で完全停止)。
+# 移行 note: 旧 binary 世代の orphan tmux session が残っている場合は `tmux -L vp kill-server` で手動掃除。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 vp = VP.cargo_bin("vp")
@@ -16,7 +18,7 @@ def signal_all(sig, pids) = pids.each { Process.kill(sig, it) rescue nil }
 VP.log "#{VP.icon(:bomb)} Vantage Point daemon + 関連プロセス停止 (cascade kill)…"
 
 # ── [1/3] SP プロセスを kill ──────────────────────────────────────────────
-warn "#{VP.icon(:sync)} [1/3] 全 SP プロセス検出…"
+warn "#{VP.icon(:sync)} [1/2] 全 SP プロセス検出…"
 pids = sp_pids
 if pids.empty?
   warn "   #{VP.icon(:info)} 実行中の SP プロセスはありません"
@@ -35,28 +37,8 @@ else
   warn "   #{VP.icon(:ok)} SP kill 完了"
 end
 
-# ── [2/3] VP-managed tmux session を kill ─────────────────────────────────
-# 命名 convention (lanes_state.rs::tmux_session_name): vp-{project}-{lane}-{stand}。
-# `vp-` prefix で user 自前 session と確実分離。 legacy hd-*/th-* も cleanup 対象として併記
-# (新形式では生成されないので残しても害なし)。 SP/daemon を kill しても tmux server に session が
-# 保持され、 古い cwd を引き継ぐ罠 (commit 1556868 以前作成分) があるため明示 kill して、 次回
-# `mise run app` で fix 済 path で再生成させる。 対象外: TUI mode の `{project}-vp` suffix session。
-warn "#{VP.icon(:sync)} [2/3] VP-managed tmux session 検出 (vp-* prefix、 legacy hd-*/th-* 含む)…"
-# tmux の -F '#{session_name}' は ruby の式展開と衝突するため、 array 形式 + single-quote ruby
-# string でリテラルの #{session_name} を tmux に渡す (shell も経由しない)。
-listing = IO.popen(["tmux", "list-sessions", "-F", '#{session_name}', err: File::NULL], &:read) || ""
-sessions = listing.lines.map(&:strip).grep(/\A(?:vp-|hd-|th-)/)
-if sessions.empty?
-  warn "   #{VP.icon(:info)} VP-managed tmux session はありません"
-else
-  warn "   #{VP.icon(:note)} kill 対象:"
-  sessions.each { warn "      #{it}" }
-  sessions.each { system("tmux", "kill-session", "-t", it, err: File::NULL) }
-  warn "   #{VP.icon(:ok)} tmux session kill 完了"
-end
-
-# ── [3/3] TheWorld daemon を停止 ──────────────────────────────────────────
-warn "#{VP.icon(:sync)} [3/3] TheWorld daemon 停止…"
+# ── [2/2] TheWorld daemon を停止 ──────────────────────────────────────────
+warn "#{VP.icon(:sync)} [2/2] TheWorld daemon 停止…"
 if File.executable?(vp)
   if system(vp, "daemon", "stop", out: File::NULL, err: File::NULL)
     warn "   #{VP.icon(:ok)} daemon stop 完了"

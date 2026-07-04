@@ -4,9 +4,13 @@
 //!
 //! vp-app (`.app`) を GUI / launchd / Dock 経由で起動すると、 プロセスの PATH が
 //! `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になる。 この痩せた PATH は spawn chain
-//! (vp-app → daemon → SP → mise → tmux → claude) を伝播し、 user-installed tool
-//! (特に `mise`、 conductor lane の program、 Windows は `claude.exe`) を見つけられず
-//! spawn が失敗 → lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
+//! (vp-app → daemon → SP → PtySlot → login shell → claude) を伝播し、 user-installed tool
+//! (claude、 Windows は `claude.exe`) を見つけられず spawn が失敗 → lane が即 Dead 化 →
+//! Echoes コンソールが出ない、 という症状の根因になる。
+//!
+//! note: mise shims を PATH に足すのは「user が mise で claude を管理していても見つかる」
+//! **許容**であり、 vp が mise に依存するわけではない (tmux decoupling PR2 で vp runtime は
+//! mise-free — mise を exec する箇所は product に存在しない)。
 //!
 //! この補正は **vantage-point (daemon / SP / PtySlot) と vp-app (daemon_launcher) の双方**が
 //! spawn 最上流で必要とする。 かつては `vantage_point::spawn_env` が SSOT で vp-app が手動同期

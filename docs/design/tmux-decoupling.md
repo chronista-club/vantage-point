@@ -176,6 +176,16 @@ PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「床�
 2. **resume 配線**: spawn/restart 時に (project, lane) → cc_session id を読み command に埋める。`VP_FRESH` env → spawn パラメータ化。
 3. **legacy stand 吸収**: DB descriptor の `stand="tmux"/"hd"` → 床 shell に graceful mapping（warn log）。
 
+### 13.4b mise 境界（user 決定 2026-07-04: 「project の task runner としては可、vp 自体は依存しない」）
+
+- **product runtime は mise-free**（PR2 で達成）: stand script 層 / `stands_list` の
+  `mise tasks ls` scan / builder の mise degraded fallback が全て消え、 product code に
+  mise を exec する箇所はゼロ。 lane の runtime 依存 = login shell + claude のみ。
+- `spawn_env` の mise-shims PATH 追加は**許容であって依存ではない**（mise 不在でも全機能動作）。
+- repo の dev tooling（`.mise/tasks` + mise.toml toolchain pin）は maintainer 専用 = 「1 project
+  の task runner」として存続。 script 化は user 価値ゼロのため非対象（やるなら別 chore）。
+- 基準の一般化: **「user のマシンで要求されるか」が product 依存の定義**（CLAUDE.md 依存境界に明文化）。
+
 ### 13.5 実機確認項目（PR2 後の検証フェーズへ）
 
 - extended-keys（Shift+Enter）/ truecolor が tmux shim 無しで xterm.js↔claude 間で成立するか（対処点は vp-app の xterm.js 設定側 = 端点交渉）
