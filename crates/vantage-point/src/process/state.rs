@@ -200,7 +200,9 @@ impl AppState {
         match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, text).await {
             Ok(()) => true,
             Err(e) => {
-                tracing::warn!("nudge_lane: deliver_nudge 失敗 (addr={addr}, lane={lane_addr}): {e}");
+                tracing::warn!(
+                    "nudge_lane: deliver_nudge 失敗 (addr={addr}, lane={lane_addr}): {e}"
+                );
                 false
             }
         }

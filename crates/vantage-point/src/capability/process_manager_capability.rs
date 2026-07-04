@@ -1653,9 +1653,7 @@ impl ProcessManagerCapability {
 
         // DB に書き込み（正規化パスで保存）
         if let Some(ref db) = self.vpdb
-            && let Err(e) = db
-                .upsert_process(&key, &name, port, pid, "running")
-                .await
+            && let Err(e) = db.upsert_process(&key, &name, port, pid, "running").await
         {
             tracing::warn!("DB process 登録失敗: {}", e);
         }

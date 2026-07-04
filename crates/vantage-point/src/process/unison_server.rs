@@ -1118,7 +1118,10 @@ mod tests {
             serde_json::json!({ "lane": "vp/conductor" }),
         )
         .await;
-        assert!(res.is_err(), "console 未配線 lane の capture は Err: {res:?}");
+        assert!(
+            res.is_err(),
+            "console 未配線 lane の capture は Err: {res:?}"
+        );
     }
 
     /// F6②: lane_delete dispatch e2e — performer lane を pool に作り、 lane_delete で除去できる。
