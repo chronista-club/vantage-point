@@ -7,8 +7,9 @@
 //! - **degradation**: hub down でも world は machine-local で動き続ける（federation 機能だけ失う）。
 //!
 //! ## connection-level auth（ADR-020 §S3、credential = Creo ID user-jwt）
-//! - 接続時に [`hub_credential`]（= `~/.vp/credentials.json` の access_token）が有れば
-//!   `connect_with_credential` で提示、無ければ credential なしで接続（graceful degrade）。
+//! - 接続時に [`hub_credential`]（= `~/.vp/credentials.json` の access_token、期限が近ければ
+//!   refresh_token で proactive に巻き直す）が有れば `connect_with_credential` で提示、無ければ
+//!   credential なしで接続（graceful degrade）。
 //! - credential 提示は全 hub 経路（常駐 register / federate_wire_send / federate_discover_lanes /
 //!   hub-discover RPC）で共通 —— 接続確立が [`connect_and_open_worlds`] の 1 点に集約されているため。
 //! - hub は現状 permissive = **observe mode**（credential を verify してログるが未認証も通す）。
@@ -175,13 +176,17 @@ fn resolve_hub_addr(env_val: Option<String>, config_val: Option<String>) -> Opti
 /// federation は動く（verify されないだけ）。hub が required に反転した後は、未ログインだと
 /// hub 側で connection が gate される（その時点で `vp auth login` を促すのが正しい挙動）。
 ///
-/// token 期限切れは**ここでは検査しない**（verify は hub 側の責務）。期限切れ token を送れば
-/// hub の verify が失敗するが、observe 下では非破壊（ログに verify 失敗が出るだけ）。
-fn hub_credential() -> Option<Vec<u8>> {
-    match crate::commands::auth::read_credentials() {
+/// token が期限に近ければ **refresh_token で proactive に巻き直してから** credential を返す。
+/// refresh の可否・fail-safe 挙動は [`crate::commands::auth::credentials_refreshed_if_needed`]
+/// 参照。24h token が required hub 接続中に切れて federation が止まるのを防ぐ（利便性改善）。
+///
+/// refresh 往復の余裕として skew = 5 分を見る（この間に切れる token は先に巻き直す）。
+async fn hub_credential() -> Option<Vec<u8>> {
+    const REFRESH_SKEW_SECS: u64 = 300;
+    match crate::commands::auth::credentials_refreshed_if_needed(REFRESH_SKEW_SECS).await {
         Ok(creds) => credential_from_creds(creds),
-        // file 読み込み失敗（壊れた file 等）は credential なし扱い。federation を止めるより
-        // observe/permissive で繋ぐ方が degrade として穏当。
+        // file 読み込み / refresh 構築失敗（壊れた file 等）は credential なし扱い。federation を
+        // 止めるより observe/permissive で繋ぐ方が degrade として穏当。
         Err(e) => {
             tracing::debug!(
                 "hub credential 読み込み失敗（credential なしで接続）: {}",
@@ -464,7 +469,7 @@ async fn connect_and_open_worlds(
     addr: &str,
     retries: u32,
 ) -> Result<UnisonChannel> {
-    let mut credential = hub_credential();
+    let mut credential = hub_credential().await;
     let attempts = retries.max(1);
     let mut last_err: Option<String> = None;
     for attempt in 0..attempts {
