@@ -210,10 +210,15 @@ PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「床�
    lane cwd を注入して抑止（mise 不 exec = 依存境界維持）。`echoes-act1-primary-design` の予見が的中
 7. **CJK**: 配送・console 描画とも無破損
 
-**⏳ 残（GUI フェーズ / 任意）:**
-- vp-app xterm.js での truecolor / Shift+Enter（GUI dogfood で確認）
-- statusline の lane label が旧形式表示（user の statusline script が独自導出、cosmetic）
-- 2-phase → 1 write への畳み込み（動いているので任意の最適化）
+### 13.6b brew 本番 dogfood + GUI 検証（2026-07-04、:32000 namespace で新コード実行）
+
+release cut 前に **brew namespace(:32000) を新 binary で起動**（launchd を bootout → `~/.cargo/bin/vp daemon start`）して実プロジェクト 5 本で dogfood。
+
+- ✅ **全 conductor が PtySlot 直ホストで起動**（`program=/bin/zsh args=["-l"]`）、`tmux -L vp` は「no server running」= 本番で tmux ゼロ。実 conductor の会話は `--resume` で無縫合継続（handoff 元セッションが履歴ごと復活）
+- ✅ **truecolor 復活**（GUI 実機）: 旧 echoes は tmux の `Tc` override で truecolor を交渉していた → tmux 撤去で 256 色退行。**PtySlot が端点として `COLORTERM=truecolor` を宣言**する fix（`daemon/pty_slot.rs`）で解消。全 conductor claude env に注入確認 + vp-app xterm.js で色描画確認
+- ✅ **CJK 完璧**（GUI）: 日本語が `_` 化も spacer 混入もなく描画
+- ⏳ **Shift+Enter**: xterm.js に custom handler なし（copy/paste のみ）。daemon 側でなく vp-app 端点の話で、tmux 撤去の回帰ではない。GUI 全体は良好、必要なら vp-app に key handler 追加（follow-up）
+- **中間状態の注意**: shell の `vp`（.app symlink）は旧版のまま → CLI は `~/.cargo/bin/vp` を使う。release cut で解消
 
 **既知挙動（PR2 起因でない）:** daemon は SP 死亡を registry から除去するが auto-respawn しない
 （autostart は daemon boot 時のみ）。SP 復帰は手動 or daemon 再起動。
