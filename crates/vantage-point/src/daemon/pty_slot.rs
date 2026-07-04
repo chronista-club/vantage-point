@@ -106,6 +106,15 @@ impl PtySlot {
             cmd.env("TERM", "xterm-256color");
         }
 
+        // COLORTERM 補正 (tmux decoupling PR2): 旧 echoes stand は tmux の
+        // `terminal-overrides ',xterm-256color:Tc'` で truecolor を交渉していた。 tmux 撤去で
+        // その交渉主体が消えたため、 PtySlot が新たな端点として `COLORTERM=truecolor` を宣言する。
+        // これが無いと claude は TERM=xterm-256color を見て 24-bit を諦め 256 色に退行する
+        // (実際の描画先 xterm.js は truecolor 対応なので、 宣言さえすれば 24-bit がそのまま届く)。
+        if !env.iter().any(|(k, _)| k == "COLORTERM") {
+            cmd.env("COLORTERM", "truecolor");
+        }
+
         // LANG/LC_CTYPE 補正: PATH (#498) / TERM の双子で、 launchd / GUI 起動の daemon は
         // C ロケール伝播で LANG 不在になり、 echoes stand の tmux client が utf8=0 で起動 →
         // console の CJK (日本語) が `_` 化する (三つ子の三本目)。 plist EnvironmentVariables や
