@@ -840,17 +840,11 @@ fn try_sp_delete_performer(performer_name: &str) -> bool {
         Ok(resp) => {
             // 成功 body は DeletedLaneInfo JSON、 user 向けに要点だけ要約。
             let pid = resp.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
-            let tmux_killed = resp
-                .get("tmux_killed")
-                .and_then(|t| t.as_bool())
-                .unwrap_or(false);
             let cleanup = resp
                 .get("cleanup")
                 .and_then(|c| c.as_str())
                 .unwrap_or("(skipped)");
-            eprintln!(
-                "削除: {address} (SP orchestrated: pid={pid} tmux_killed={tmux_killed} cleanup={cleanup})"
-            );
+            eprintln!("削除: {address} (SP orchestrated: pid={pid} cleanup={cleanup})");
             true
         }
         Err(e) => {

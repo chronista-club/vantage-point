@@ -240,6 +240,25 @@ pub fn build_stand_command(
         env.push(("VP_PROFILE".into(), profile.to_string()));
     }
 
+    // mise trust footgun 回避（env-only、 mise は exec しない = 依存境界維持、 PR2 実機検証で発見）:
+    // 床 = login shell 化により、 user rc の mise activate が新 worktree (`.vp/lanes/*`) の
+    // 未 trust config に interactive prompt（"Trust them?"）を出して床を塞ぎ、 initial_input
+    // （claude 起動 command）がダイアログに食われる。 lane cwd を MISE_TRUSTED_CONFIG_PATHS に
+    // 足して抑止する（worktree の mise config は repo root と同一内容 = 信頼済みと同義）。
+    // mise 不在環境では読まれない無害な env。 既存値には platform separator で追記。
+    {
+        let mut trusted: Vec<std::path::PathBuf> = std::env::var_os("MISE_TRUSTED_CONFIG_PATHS")
+            .map(|v| std::env::split_paths(&v).collect())
+            .unwrap_or_default();
+        trusted.push(project_dir.to_path_buf());
+        if let Ok(joined) = std::env::join_paths(trusted) {
+            env.push((
+                "MISE_TRUSTED_CONFIG_PATHS".into(),
+                joined.to_string_lossy().into_owned(),
+            ));
+        }
+    }
+
     let (program, args) = login_shell();
 
     let initial_input = match stand_name {
@@ -307,6 +326,13 @@ mod tests {
             Some("vantage-point")
         );
         assert_eq!(env.get("VP_LANE").map(String::as_str), Some("sub"));
+        // mise trust footgun 回避: lane cwd が MISE_TRUSTED_CONFIG_PATHS に含まれる
+        assert!(
+            env.get("MISE_TRUSTED_CONFIG_PATHS")
+                .is_some_and(|v| v.contains("/work/vp")),
+            "lane cwd が mise trust に含まれるはず: {:?}",
+            env.get("MISE_TRUSTED_CONFIG_PATHS")
+        );
     }
 
     /// echoes は claude を initial_input で注入（wire hook 同梱）。

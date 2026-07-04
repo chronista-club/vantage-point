@@ -238,8 +238,8 @@ impl VantageMcp {
         let address = format!("{}/performer/{}", project_name, params.name);
         let cleanup = params.cleanup.unwrap_or(true);
 
-        // World process-proxy 経由で SP の lane_delete を ask (tmux kill 等 orchestration を含むため
-        // outer timeout 30s)。 server Err は quic_call_with_timeout が McpError に変換して返す。
+        // World process-proxy 経由で SP の lane_delete を ask (workspace cleanup 等 orchestration を
+        // 含むため outer timeout 30s)。 server Err は quic_call_with_timeout が McpError に変換して返す。
         let payload = serde_json::json!({ "address": address, "cleanup": cleanup });
         match self
             .quic_call_with_timeout("lane_delete", payload, Duration::from_secs(30))
@@ -252,18 +252,14 @@ impl VantageMcp {
                     .and_then(|v| v.as_u64())
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "(no pid)".to_string());
-                let tmux_killed = resp
-                    .get("tmux_killed")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
                 let cleanup_status = resp
                     .get("cleanup")
                     .and_then(|v| v.as_str())
                     .unwrap_or("(skipped)");
                 Ok(CallToolResult::success(vec![rmcp::model::Content::text(
                     format!(
-                        "Performer Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
-                        address, pid, tmux_killed, cleanup_status
+                        "Performer Lane deleted: {}\n  pid: {} (killed)\n  cleanup: {}",
+                        address, pid, cleanup_status
                     ),
                 )]))
             }
