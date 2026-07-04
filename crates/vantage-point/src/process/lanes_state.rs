@@ -463,7 +463,7 @@ impl LanePool {
 
     /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Performer create で使う)。
     ///
-    /// Stage 1 (ADR-0001): TermAttach も同期 spawn する。 `term_rx` は spawn_with_fallback の
+    /// Stage 1 (ADR-0001): TermAttach も同期 spawn する。 `term_rx` は spawn_stand の
     /// 戻り値 (= broadcast::channel 作成と同時の initial_rx)、 reader_task が start する前に
     /// subscribe 済 = race フリー。 既存 entry があれば HashMap::insert で replace、
     /// 旧 TermAttach は Drop で handle.abort() (= restart 経路の再 attach に対応)。
@@ -475,7 +475,10 @@ impl LanePool {
     ) {
         self.pty_slots
             .insert(addr.clone(), std::sync::Mutex::new(slot));
-        let term_attach = crate::terminal::term_attach::TermAttach::spawn(term_rx, 80, 24);
+        // grid dims は PtySlot の初期 winsize (120x48、 spawn_stand 呼び出し側) と一致させる。
+        // 不一致 (旧 80x24) だと headless (vp-app 未 attach) lane の capture が 80 桁で再 wrap
+        // されて崩れる (PR2 実機検証で発見)。 client attach 後は resize_lane が両者を同期する。
+        let term_attach = crate::terminal::term_attach::TermAttach::spawn(term_rx, 120, 48);
         self.term_attaches.insert(addr, term_attach);
     }
 

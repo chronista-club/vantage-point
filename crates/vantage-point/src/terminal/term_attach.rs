@@ -75,6 +75,10 @@ impl TermAttach {
             .iter()
             .map(|row| {
                 row.iter()
+                    // CJK 等の wide char は grid 上で [char][spacer] の 2 cell を占める。
+                    // spacer を含めると「検 証」のように 1 文字ごとに空白が入るため落とす
+                    // (PR2 実機検証で発見)。
+                    .filter(|c| !c.wide_spacer)
                     .map(|c| c.ch)
                     .collect::<String>()
                     .trim_end()
