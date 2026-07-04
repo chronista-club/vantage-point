@@ -213,8 +213,11 @@ pub fn credentials_path() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("VP_CREDENTIALS_PATH") {
         return Ok(PathBuf::from(p));
     }
-    let home = std::env::var("HOME").context("HOME env not set")?;
-    Ok(PathBuf::from(home).join(".vp").join("credentials.json"))
+    // home は `dirs::home_dir()` で解決 (Windows で `HOME` 未設定 = `USERPROFILE` を引く。
+    // pty_slot.rs / vp-paths と同じ idiom)。 `HOME` 直読みは Windows で federation login を
+    // 全滅させる (HOME 不在で即 error) ため使わない。
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home.join(".vp").join("credentials.json"))
 }
 
 /// credentials を file から読む。 file 不在なら `Ok(None)` を返し、 上位で usage 表示。
@@ -801,6 +804,41 @@ mod tests {
         assert_eq!(path, PathBuf::from("/tmp/test-vp-creds.json"));
         unsafe {
             std::env::remove_var("VP_CREDENTIALS_PATH");
+        }
+    }
+
+    /// `credentials_path()` が `HOME` env に依存しないこと (bug/win の回帰ガード)。
+    /// override 無し + `HOME` 未設定 = Windows のバグ条件を unix 上で再現し、旧実装
+    /// (`std::env::var("HOME")`) なら Err で落ちること、新実装 (`dirs::home_dir()`) は
+    /// unix の getpwuid フォールバックで解決することを実証する。
+    #[test]
+    fn credentials_path_is_home_env_independent() {
+        let _g = env_guard();
+        let saved_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::remove_var("VP_CREDENTIALS_PATH");
+            std::env::remove_var("HOME");
+        }
+        // HOME 未設定のまま結果を確保し、 assert 前に HOME を復元
+        // (panic で他テストへ unset を漏らさない)。
+        let resolved = credentials_path();
+        let home_fallback = dirs::home_dir();
+        unsafe {
+            if let Some(home) = saved_home {
+                std::env::set_var("HOME", home);
+            }
+        }
+        // 旧実装は HOME 未設定で Err → ここで検知。 fallback も無い稀環境では旧新とも
+        // 解決不可で一致するので is_err を許容する。
+        match home_fallback {
+            Some(home) => assert_eq!(
+                resolved.expect("HOME 未設定でも dirs::home_dir() で解決できること"),
+                home.join(".vp").join("credentials.json"),
+            ),
+            None => assert!(
+                resolved.is_err(),
+                "getpwuid フォールバックも無い環境では解決不可で旧新一致",
+            ),
         }
     }
 
