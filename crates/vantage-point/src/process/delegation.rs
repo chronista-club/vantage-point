@@ -88,8 +88,8 @@ pub(crate) enum Outcome {
     NeedsInput { question: String },
 }
 
-/// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_session`] が解する
-/// lane address query（`<project>/conductor` / `<project>/performer/<name>`）に翻訳する。
+/// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_address`](crate::process::state::AppState::resolve_lane_address)
+/// が解する lane address query（`<project>/conductor` / `<project>/performer/<name>`）に翻訳する。
 ///
 /// これが resolution の **local 分岐**（= federation 不変条件の swappable 層）。後で
 /// `world-handle:` 接頭を見て remote World に振る分岐を足すだけで federation 化できる。

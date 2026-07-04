@@ -398,4 +398,33 @@ mod tests {
             );
         }
     }
+
+    /// WIRE_HOOKS は妥当な JSON かつ single quote を含まない（`'…'` 埋め込みの前提条件）。
+    /// raw string literal はコンパイル時に検証されず、壊れると lane 起動の実機でしか発覚しない。
+    #[test]
+    fn wire_hooks_is_valid_json_without_single_quotes() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(WIRE_HOOKS).expect("WIRE_HOOKS は妥当な JSON");
+        assert!(
+            parsed.pointer("/hooks/UserPromptSubmit").is_some(),
+            "UserPromptSubmit hook を含む: {parsed}"
+        );
+        assert!(
+            !WIRE_HOOKS.contains('\''),
+            "single quote を含むと `--settings '...'` の quote が破れる"
+        );
+    }
+
+    /// fresh=true は builder 経由（統合）でも resume/continue を含まない
+    /// （sidebar "New Conductor Session" の契約。 実行環境の cc_session state に依存しない）。
+    #[test]
+    fn fresh_true_never_resumes_via_builder() {
+        let addr = LaneAddress::conductor("vp");
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), true);
+        let input = cmd.initial_input.expect("echoes は initial_input あり");
+        assert!(
+            !input.contains("--resume") && !input.contains("--continue"),
+            "fresh は素の claude: {input}"
+        );
+    }
 }

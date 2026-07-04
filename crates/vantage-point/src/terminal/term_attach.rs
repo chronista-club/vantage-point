@@ -174,6 +174,27 @@ mod tests {
         assert_eq!(snap.lines, 40);
     }
 
+    /// grid_text: CJK (wide char) が 1 文字ごとに空白化しない（wide_spacer filter、
+    /// PR2 実機検証で発見したバグの回帰ガード）+ 行の trailing whitespace と末尾空行の除去。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_grid_text_cjk_and_trailing_trim() {
+        let (tx, rx) = broadcast::channel(16);
+        let attach = TermAttach::spawn(rx, 80, 24);
+        // 1 行目: CJK、 2 行目: ASCII + trailing spaces。 以降は空行 (grid の残り)。
+        tx.send("検証OK\r\nabc   \r\n".as_bytes().to_vec()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let text = attach.grid_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("検証OK"),
+            "wide_spacer が混ざると『検 証 O K』になる: {text:?}"
+        );
+        assert_eq!(lines.get(1).copied(), Some("abc"), "trailing space は落ちる");
+        assert_eq!(lines.len(), 2, "末尾の空行ブロックは落ちる: {lines:?}");
+    }
+
     /// Drop で task が abort されることを ─ 厳密検証は probabilistic だが、
     /// 少なくとも compile / Drop 走行を確認する smoke test。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

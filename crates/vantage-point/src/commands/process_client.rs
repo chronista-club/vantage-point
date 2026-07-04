@@ -3,18 +3,15 @@
 //! L0 portless: 旧 `ProcessClient` (SP HTTP 直結) は撤去。 CLI は World :32000 の process-proxy ask
 //! で SP を操作する。
 //! - `world_process_request` / `_blocking`: World process-proxy ask の core (async / sync 版)。
-//! - `resolve_project_path_from_target` / `resolve_pane_via_world`: target → project_path /
-//!   tmux pane 解決。
+//! - `resolve_project_path_from_target`: target → project_path 解決。
 
 use anyhow::{Result, bail};
 
 use crate::config::Config;
 use crate::resolve::{self, ResolvedTarget};
 
-// L0 portless: `ProcessClient` (SP HTTP 直結 blocking client) は最後の user だった `vp tmux` が
-// World process-proxy ask に移行して全 dead 化したため撤去。 CLI の World ask は
-// `world_process_request_blocking` / `resolve_pane_via_world` / `resolve_project_path_from_target`
-// を使う (SP port 解決も不要)。
+// L0 portless: `ProcessClient` (SP HTTP 直結 blocking client) は撤去済。 CLI の World ask は
+// `world_process_request_blocking` / `resolve_project_path_from_target` を使う (SP port 解決も不要)。
 
 /// F6 (doc 27 §3.4.5/§6): World :32000 の "process-proxy" channel 経由で SP process method を
 /// ask する helper。 L0 portless 後の CLI → SP 操作の唯一の入口 (旧来の SP 直結 port QUIC は撤去)。
@@ -136,44 +133,6 @@ pub fn resolve_project_path_from_target(target: Option<&str>, config: &Config) -
     })
 }
 
-/// L0 portless: tmux の label / pane_id / lane address を `(pane_id, 表示名)` に解決する。
-///
-/// 旧 `ProcessClient::resolve_pane`（HTTP `/api/tmux/resolve-pane?q=`）の World ask 版。
-/// `tmux_resolve_pane` dispatch に `{query}` を送り、 応答 `{pane_id, meta:{label}}` から組み立てる。
-/// `%`-prefix の pane_id は resolve を display 用 best-effort にし、 pane_id は query をそのまま使う
-/// （旧挙動を保持）。 label / lane address は resolve 必須。
-pub fn resolve_pane_via_world(project_path: &str, query: &str) -> Result<(String, String)> {
-    let resp = world_process_request_blocking(
-        crate::cli::world_port(),
-        project_path,
-        "tmux_resolve_pane",
-        serde_json::json!({ "query": query }),
-    );
-    if query.starts_with('%') {
-        // pane_id 直指定: resolve は display 用 best-effort、 pane_id は query をそのまま使う。
-        let display = match resp {
-            Ok(r) => match r.pointer("/meta/label").and_then(|v| v.as_str()) {
-                Some(label) => format!("{} ({})", label, query),
-                None => query.to_string(),
-            },
-            Err(_) => query.to_string(),
-        };
-        return Ok((query.to_string(), display));
-    }
-    // label / lane address: resolve 必須。
-    let resp = resp?;
-    if let Some(pane_id) = resp.get("pane_id").and_then(|v| v.as_str()) {
-        let label = resp.pointer("/meta/label").and_then(|v| v.as_str());
-        let display = match label {
-            Some(l) => format!("{} ({})", l, pane_id),
-            None => pane_id.to_string(),
-        };
-        Ok((pane_id.to_string(), display))
-    } else {
-        let err = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("ペインが見つかりません");
-        bail!("{}", err);
-    }
-}
+// tmux decoupling PR2: `resolve_pane_via_world`（label/pane_id → tmux pane 解決）は唯一の
+// 呼び手だった `vp tmux` と dispatch 先 `tmux_resolve_pane` の撤去で退役。lane の宛先解決は
+// lane address 直（`lane_nudge` / `lane_capture`）に一本化。

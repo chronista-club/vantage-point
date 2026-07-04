@@ -1257,8 +1257,26 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 break;
                             }
                         }
-                        control_channels.write().await.remove(&path_key);
-                        tracing::info!("Control: SP 除去 (key={})", path_key);
+                        // 「自分が現行 entry の時のみ」remove する (Arc::ptr_eq guard)。
+                        // 高速再接続 / 重複 SP で新接続の insert が先行した場合、 旧接続の
+                        // 切断 handler が新 live channel を clobber すると nudge / process-proxy
+                        // が「SP 未接続」で静かに全滅し次の再接続まで自己回復しない
+                        // (PR2 review B1 — nudge が本 map に依存するようになったため障害面が拡大)。
+                        {
+                            let mut map = control_channels.write().await;
+                            match map.get(&path_key) {
+                                Some(current) if Arc::ptr_eq(current, &channel) => {
+                                    map.remove(&path_key);
+                                    tracing::info!("Control: SP 除去 (key={})", path_key);
+                                }
+                                _ => {
+                                    tracing::info!(
+                                        "Control: 旧接続の切断を skip — 新接続が登録済み (key={})",
+                                        path_key
+                                    );
+                                }
+                            }
+                        }
                         Ok(())
                     }
                 }

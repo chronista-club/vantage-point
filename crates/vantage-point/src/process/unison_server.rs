@@ -1066,6 +1066,61 @@ mod tests {
         assert!(res.is_err(), "PtySlot 無 lane への write は Err");
     }
 
+    /// tmux decoupling PR1-2: lane_nudge dispatch の error 経路 3 種
+    /// (lane 未指定 / parse 失敗 / lane 不在 = PtySlot 無)。 happy path は実機検証済 (design §13.6)。
+    #[tokio::test]
+    async fn lane_nudge_dispatch_error_paths() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // lane 未指定
+        let res =
+            dispatch_process_method(&state, "lane_nudge", serde_json::json!({ "text": "x" })).await;
+        assert!(res.is_err(), "lane 未指定は Err: {res:?}");
+        // parse 失敗 (lane address 形式でない)
+        let res = dispatch_process_method(
+            &state,
+            "lane_nudge",
+            serde_json::json!({ "lane": "%3", "text": "x" }),
+        )
+        .await;
+        assert!(res.is_err(), "parse 不能 lane は Err: {res:?}");
+        // lane 不在 (PtySlot 無)
+        let res = dispatch_process_method(
+            &state,
+            "lane_nudge",
+            serde_json::json!({ "lane": "vp/conductor", "text": "x" }),
+        )
+        .await;
+        assert!(res.is_err(), "PtySlot 無 lane への nudge は Err: {res:?}");
+    }
+
+    /// tmux decoupling PR2: lane_capture dispatch の error 経路 3 種。
+    #[tokio::test]
+    async fn lane_capture_dispatch_error_paths() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(&state, "lane_capture", serde_json::json!({})).await;
+        assert!(res.is_err(), "lane 未指定は Err: {res:?}");
+        let res = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": "some-label" }),
+        )
+        .await;
+        assert!(res.is_err(), "parse 不能 lane は Err: {res:?}");
+        let res = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": "vp/conductor" }),
+        )
+        .await;
+        assert!(res.is_err(), "console 未配線 lane の capture は Err: {res:?}");
+    }
+
     /// F6②: lane_delete dispatch e2e — performer lane を pool に作り、 lane_delete で除去できる。
     /// 二度目の delete は LaneNotFound で Err (= idempotent re-call の契約)。 Err message が
     /// "Lane not found" を含むことも固定する (MCP/CLI の idempotent 判定がこの文字列に依存)。

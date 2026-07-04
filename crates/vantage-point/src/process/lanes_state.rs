@@ -535,6 +535,9 @@ impl LanePool {
                 info.state = LaneState::Dead;
                 transitioned += 1;
             }
+            // TermAttach も同時に落とす (remove/restart_lane と順序統一)。 残すと Dead lane の
+            // capture_lane が凍結した最終フレームを返し続ける (PR2 review B2)。
+            self.term_attaches.remove(&addr);
             // PtySlot Drop で child.kill() + child.wait() = zombie 解消
             self.pty_slots.remove(&addr);
         }

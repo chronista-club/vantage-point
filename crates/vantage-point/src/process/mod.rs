@@ -13,10 +13,9 @@ pub mod capabilities;
 pub(crate) mod cc_activity;
 /// Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom (doc 28 §4)
 pub(crate) mod delegation;
-/// wire delivery loop — 未 ack command の tmux nudge + 再掲示 (R2-b、 TheWorld 常駐)
+/// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 TheWorld 常駐)
 pub(crate) mod delivery_actor;
 pub(crate) mod hub;
-/// VP install root の runtime 解決 (doc 11 PR-D / Z 系統)
 /// Lane 階層 Stand container (LSCM doc 12 §9 / doc 13 §3、 PR-β-1 受け皿、 VP-119)
 pub(crate) mod lane_capabilities;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
@@ -37,11 +36,8 @@ pub(crate) mod retained;
 pub(crate) mod routes;
 mod server;
 mod session;
-/// Stand metadata reader — `.mise/tasks/vp/stand/{name}` 冒頭の `#VP key=value` を parse (VP-108)
-/// StandSpawner — Stand 名 → mise task spawn command 構築 (doc 11 PR-B)
+/// StandSpawner — Stand 名 → 床 (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
 pub(crate) mod stand_spawner;
-// stand_spec module は doc 11 PR-B で削除 (LaneStandSpec trait / TheHand / LlmStand 全廃、
-// `mise run vp:stand:{name}` 1 経路に集約)。
 pub(crate) mod state;
 pub(crate) mod terminal_pump;
 pub mod topic;

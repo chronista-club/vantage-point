@@ -624,9 +624,8 @@ impl VantageMcp {
         Some(format!("http://[::1]:{}{}", new_port, endpoint))
     }
 
-    // tmux decoupling PR1: `resolve_pane`（label/pane_id → tmux pane 解決 helper）は唯一の呼び手
-    // だった flow_handoff が lane_nudge proxy 化で pane 解決を要さなくなったため撤去。 `vp tmux` の
-    // pane 解決は CLI 側 `resolve_pane_via_world`（別実装）が担う（それも PR2 の tmux 撤去対象）。
+    // tmux decoupling PR1-2: `resolve_pane`（label/pane_id → tmux pane 解決 helper）は退役。
+    // lane の宛先解決は lane address 直（`lane_nudge` / `lane_capture`）に一本化。
 
     /// Process が見つからない場合に自動起動する
     ///
