@@ -98,6 +98,11 @@ rfd = "0.17"
 # .git/exclude をデフォルト除外、 target / node_modules 等は post-filter で潰す。
 ignore = "0.4"
 
+# console (xterm) の URL を OS default browser で開く。 WebLinksAddon の cmd/ctrl+click
+# → `open-url` IPC → terminal::handle_ipc_message で webbrowser::open。 webview 内遷移
+# (window.open) を避けるための native open 経路。 vantage-point auth.rs と同じ crate に揃える。
+webbrowser = "1"
+
 # Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で TheWorld を真の daemon 化、
 #  vp-app 死亡時に SIGHUP 巻き添えで TheWorld も死ぬ問題の修正)。
 # **重要**: target-specific section は file 末尾に置くこと。 途中に置くと TOML 仕様で

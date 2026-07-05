@@ -146,6 +146,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "pp:state:save"
                 | "pp:state:load"
                 | "console"
+                | "open-url"
         )
     )
 }

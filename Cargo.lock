@@ -9319,6 +9319,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "vp-paths",
+ "webbrowser",
  "wry",
 ]
 
