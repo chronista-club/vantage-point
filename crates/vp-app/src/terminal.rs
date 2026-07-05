@@ -219,6 +219,24 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 }
             }
         }
+        Some("open-url") => {
+            // console (xterm) の link を cmd/ctrl+click した時の OS default browser 起動。
+            // webview 内遷移 (window.open) を避け、 Rust から native open する。
+            // 安全: webview 由来の URL を無検証で OS に渡すと file:// 等の scheme を
+            // 開かせる隙になるため http(s) のみ許可 (多層防御、 linkify 側も http(s) 限定)。
+            if let Some(url) = parsed.get("url").and_then(|v| v.as_str()) {
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    match webbrowser::open(url) {
+                        Ok(_) => tracing::info!("[link] open in browser: {}", url),
+                        Err(e) => {
+                            tracing::warn!("[link] webbrowser::open failed: {} ({})", url, e)
+                        }
+                    }
+                } else {
+                    tracing::warn!("[link] 非 http(s) scheme は open しない: {}", url);
+                }
+            }
+        }
         Some("paste:request") => {
             // Phase 4-paste-fix: navigator.clipboard.readText() が webview で permission denied する
             // ケースの fallback。 arboard で OS clipboard を読んで AppEvent::PasteText で main thread
