@@ -180,6 +180,49 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
     Ok(pid)
 }
 
+/// Windows 専用: daemon に HTTP graceful shutdown を要求し clean exit を待つ。
+///
+/// Windows の `process_terminate` は `TerminateProcess` = hard kill で SIGTERM 相当が無く、
+/// DETACHED_PROCESS の daemon には console-ctrl も届かない。daemon が既に listen している
+/// `POST /api/shutdown`（`shutdown_token.cancel()`）を叩いて `run_world` を正常終了させ、
+/// embedded surrealkv を Drop で flush/close させる。Unix は `process_terminate` = SIGTERM が
+/// 既に graceful なので不要（この関数は呼ばない）。
+///
+/// 戻り値: graceful に exit したか（false = RPC 不達 / timeout → caller が hard kill に移行）。
+/// surrealkv の stale LOCK は Windows では OS が自動解放するため、hard kill fallback でも安全。
+#[cfg(windows)]
+fn try_graceful_shutdown(pid: u32) -> bool {
+    let port = crate::cli::world_port();
+    let url = format!("http://127.0.0.1:{port}/api/shutdown");
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("graceful shutdown client 生成失敗: {e} — hard kill に移行");
+            return false;
+        }
+    };
+    if let Err(e) = client.post(&url).send() {
+        tracing::warn!("graceful shutdown RPC 不達 ({url}): {e} — hard kill に移行");
+        return false;
+    }
+    tracing::info!("graceful shutdown RPC 送信 (POST {url})、 clean exit を待機");
+
+    // clean exit を最大 5 秒待つ（surrealkv flush + run_world 終了）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if !crate::platform::process_alive(pid) {
+            return true;
+        }
+    }
+    tracing::warn!("graceful shutdown timeout (5s) — hard kill に移行");
+    false
+}
+
 /// PIDを指定してDaemonプロセスを停止する
 pub fn stop_daemon(pid: u32) -> Result<()> {
     tracing::info!("Daemon 停止要求 (PID: {})", pid);
@@ -189,6 +232,15 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
     //  Windows DWORD に合わせてこの制限を外す)
     if i32::try_from(pid).is_err() {
         anyhow::bail!("PID {} が i32 範囲外 — 停止対象として不正", pid);
+    }
+
+    // Windows: SIGTERM 相当が無く TerminateProcess は hard kill のため、先に HTTP graceful
+    // shutdown を試して surrealkv を clean close させる。失敗/timeout 時は下の hard kill に移行。
+    #[cfg(windows)]
+    if try_graceful_shutdown(pid) {
+        tracing::info!("Daemon graceful shutdown 完了 (PID: {})", pid);
+        remove_pid_file();
+        return Ok(());
     }
 
     // SIGTERM を送信
