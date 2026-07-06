@@ -191,7 +191,11 @@ mod tests {
             Some("検証OK"),
             "wide_spacer が混ざると『検 証 O K』になる: {text:?}"
         );
-        assert_eq!(lines.get(1).copied(), Some("abc"), "trailing space は落ちる");
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("abc"),
+            "trailing space は落ちる"
+        );
         assert_eq!(lines.len(), 2, "末尾の空行ブロックは落ちる: {lines:?}");
     }
 

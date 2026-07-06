@@ -70,11 +70,16 @@ jobs:
   check-windows:
     name: Check (Windows)
     runs-on: windows-latest
-    # CI 時間短縮 (2026-05-01): PR では skip、 main push (= merge 後 + 直 commit) のみで
-    # regression 検証。 vp-app は Mac 主軸 (memory MEMORY.md "2026-04-26 移行") で
-    # Windows backend (PR #219) は backlog 扱い。 branch protection は既に optional
-    # (Format + Clippy + Test のみ required) なので merge blocking 影響なし。
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Windows 能動開発 (2026-07-05: dogfood + daemon 常駐化 #669) に伴い PR でも検証する。
+    # PR (nightly/main 宛) + main/nightly push で走らせ、 feat/* push は skip (PR 前段のため)。
+    # 旧: main push のみ (2026-05-01 の CI 時間短縮、 Windows backlog 時の設定)。
+    # cargo check --all-targets は test target も compile するので cfg(windows) コードの
+    # compile regression を PR 段階で検出できる (clippy/test on Windows は後続 Phase)。
+    # branch protection は optional のまま (Format + Clippy + Test のみ required) = 可視化目的。
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/nightly'
     steps:
       - uses: actions/checkout@v4
 

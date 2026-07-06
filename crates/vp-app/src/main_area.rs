@@ -700,12 +700,21 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       console.warn('[xterm:' + address + '] ProgressAddon load failed:', e);
     }
 
-    // === WebLinksAddon = URL auto-link + cmd+click handler (V4+ enhancer) ===
-    //  default handler は window.open ─ wry/tao の WebView では tao の navigation handler が
-    //  intercept する想定。 WebView 内遷移なら custom handler で IPC 経由 Mac native open に置換。
-    //  MVP: default handler、 dogfood で挙動を観察してから wire 方針を決める。
+    // === WebLinksAddon = URL auto-link + cmd/ctrl+click で OS ブラウザ起動 ===
+    //  default handler の window.open は WebView 内遷移になり OS ブラウザに繋がらないため、
+    //  custom handler で `open-url` IPC を送り Rust (terminal::handle_ipc_message) が
+    //  webbrowser::open で OS default browser を起動する (native open 経路)。
+    //  cmd (Mac) / ctrl (win/linux) + click 限定 = iTerm/VSCode/Terminal.app と同じ端末慣習。
+    //  素の click は cursor 位置 / text 選択に残す (誤爆防止)。
     try {
-      const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+      const webLinksAddon = new WebLinksAddon.WebLinksAddon((event, uri) => {
+        if (!event.metaKey && !event.ctrlKey) return;
+        try {
+          window.ipc.postMessage(JSON.stringify({ t: 'open-url', url: uri }));
+        } catch (e) {
+          console.warn('[xterm:' + address + '] open-url IPC failed:', e);
+        }
+      });
       term.loadAddon(webLinksAddon);
     } catch (e) {
       console.warn('[xterm:' + address + '] WebLinksAddon load failed:', e);

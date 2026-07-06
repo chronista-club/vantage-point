@@ -72,8 +72,14 @@ pub fn spawn_stand(
     cols: u16,
     rows: u16,
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
-    let (mut slot, mut rx) =
-        PtySlot::spawn(cmd.cwd.as_str(), &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
+    let (mut slot, mut rx) = PtySlot::spawn(
+        cmd.cwd.as_str(),
+        &cmd.program,
+        &cmd.args,
+        &cmd.env,
+        cols,
+        rows,
+    )?;
 
     // 床が早期 exit するか peek（rc 読込より短い可能性はあるが、 type-ahead は line discipline
     // がバッファするので「注入が早すぎて落ちる」ことはない — ここは純粋に死活確認）。
@@ -174,10 +180,7 @@ fn login_shell() -> (String, Vec<String>) {
 /// `--resume '<id>'` の single-quote 埋め込みが shell injection にならないための防壁。
 /// 書き手（SessionStart hook）は UUID を記録するので通常は常に真。
 fn is_safe_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Act3: claude 起動 command line を組み立てる（旧 echoes bash script の CLAUDE_CMD 分岐の移植）。
@@ -298,7 +301,10 @@ mod tests {
     fn build_stand_command_floor_is_login_shell_at_project_dir() {
         let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("shell", &addr, Path::new("/work/vp"), false);
-        assert_eq!(cmd.cwd, "/work/vp", "cwd は project dir 直（install root ではない）");
+        assert_eq!(
+            cmd.cwd, "/work/vp",
+            "cwd は project dir 直（install root ではない）"
+        );
         assert!(cmd.initial_input.is_none(), "shell stand は床のみ");
         #[cfg(not(windows))]
         assert!(
@@ -369,7 +375,10 @@ mod tests {
         // conductor + id → --resume '<id>' || fresh
         let resume = claude_command(LaneKind::Conductor, false, Some("abc-123"));
         assert!(resume.contains("--resume 'abc-123'"), "{resume}");
-        assert!(resume.contains("||"), "session 消失時の fresh fallback: {resume}");
+        assert!(
+            resume.contains("||"),
+            "session 消失時の fresh fallback: {resume}"
+        );
 
         // conductor + id なし → --continue || fresh（初回/移行直後の従来 chain）
         let cont = claude_command(LaneKind::Conductor, false, None);
