@@ -686,26 +686,34 @@ impl LanePool {
     }
 }
 
-/// nudge 配送: lane の PtySlot に text + Enter(`\r`) を 1 回で書き込み submit させる。
+/// nudge 配送: lane の PtySlot に text を流し込み、続けて Enter(`\r`) を**単独**送って submit させる。
 ///
-/// tmux decoupling PR1 で `tmux send-keys` を置換した当初は、間に居た tmux client が burst を
-/// bracketed paste 化して `\r` を改行化するため、text と Enter を 50ms 空けて別 write する
-/// **2 phase** が必要だった（design doc §12）。 PR2 で tmux を撤去し PtySlot が claude の PTY
-/// master を直接持つ構成になった後は、 raw bytes を書いても paste-wrap する主体が居ないため
-/// **`text + \r` の 1 write で submit する**ことを実機検証で確認（§13.6c）、 2 phase を畳んだ。
+/// ## なぜ 2-phase（text → 50ms → 単独 `\r`）か
+/// claude の TUI は入力の burst を **paste として検出**し、`text + \r` を 1 回で write すると
+/// 末尾 `\r` を「改行(literal newline)」として paste に飲み込み **submit しない**（プロンプトに
+/// 残り、人が RETURN を押す羽目になる）。text を write → 50ms 空けて `\r` を**別 write** すると
+/// `\r` が独立した read = Enter keystroke として届き submit される（design doc §12）。
 ///
-/// 末尾 CR/LF は落としてから `\r` を 1 つだけ付ける（元の text に改行が混ざっても単一 submit に
-/// 正規化）。 write は `write_to_lane` の 1 回のみで、 PtySlot mutex を 1 度取って即 drop する
-/// （並行 nudge / user 入力との interleave 窓が無い）。 in-process nudge（`AppState::nudge_lane`）と
+/// ⚠️ #663 で「PtySlot 直結後は paste-wrap 主体が消えたので 1-write で OK」と畳んだが、その
+/// §13.6c 実機検証は login shell 側で、claude TUI の paste 検出経路を踏んでいなかった。実運用で
+/// 「command が届くが自動読み込みされず手動 RETURN が要る」regression になったため 2-phase に戻す。
+/// **1-write へ再度畳まないこと**（claude TUI の paste 判定に依存する submit のため）。
+///
+/// PtySlot の lock は各 write ごとに `read().await` で都度取り即 drop し、間の sleep は無 lock で
+/// 行う（await 跨ぎで guard を保持しない）。 in-process nudge（`AppState::nudge_lane`）と
 /// World→SP proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
 pub async fn deliver_nudge(
     pool: &std::sync::Arc<tokio::sync::RwLock<LanePool>>,
     addr: &LaneAddress,
     text: &str,
 ) -> anyhow::Result<()> {
-    let mut bytes = text.trim_end_matches(['\r', '\n']).as_bytes().to_vec();
-    bytes.push(b'\r');
-    pool.read().await.write_to_lane(addr, &bytes)
+    // phase 1: text 本体（末尾 CR/LF は落として単一行の paste にする）
+    let body = text.trim_end_matches(['\r', '\n']);
+    pool.read().await.write_to_lane(addr, body.as_bytes())?;
+    // paste 判定を跨ぐ猶予（best-effort nudge なので体感遅延にならない範囲）
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // phase 2: Enter(CR) 単独 → 独立 keystroke として submit
+    pool.read().await.write_to_lane(addr, b"\r")
 }
 
 #[cfg(test)]
