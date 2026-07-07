@@ -1,0 +1,21 @@
+# winget installer manifest — Chronista.VantagePoint
+# InstallerType: portable
+#   vp.exe 単体を配る CLI なので MSI/WiX は不要。winget が exe を Links dir に置き
+#   PATH を通す(= `vp` コマンドが即使える)。Homebrew の bin symlink に相当。
+# InstallerUrl:
+#   公開 release を source にする(cask の dmg_url と同じ思想)。まだ Windows 資産は
+#   GitHub Release に添付していないため、この URL は「次に添付する資産名」を先取り指定。
+#   ローカル検証は InstallerUrl を localhost に差し替えた temp manifest で行う(README 参照)。
+# InstallerSha256:
+#   target/release/vp.exe の実 sha256。release ビルドを差し替えたら必ず再計算する。
+PackageIdentifier: Chronista.VantagePoint
+PackageVersion: 0.32.0
+InstallerType: portable
+Commands:
+  - vp
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/chronista-club/vantage-point/releases/download/v0.32.0/vp-x86_64-pc-windows-msvc.exe
+    InstallerSha256: D0F78E006D8674F0D3E6FBC498FE7E5DBA0F3C6DCC3AA88023CAC7939B9D1361
+ManifestType: installer
+ManifestVersion: 1.6.0
