@@ -27,7 +27,7 @@ use crate::protocol::ProcessMessage;
 // complete / wire_recv の imperative 本体だけは下の *_impl に手書きで残し、生成 wrapper が委譲する。
 #[path = "generated/agent_tools.rs"]
 mod agent_tools_generated;
-use agent_tools_generated::{CompleteParams, WireRecvParams};
+use agent_tools_generated::{CompleteParams, WireRecvParams, WireSendParams};
 
 mod canvas;
 mod lane;
@@ -897,9 +897,10 @@ impl VantageMcp {
     // wiremsg / delegation の imperative helper（生成 tool wrapper から委譲）。
     //
     // tool 定義本体は schema/vp-agent.kdl → generated/agent_tools.rs に移行済
-    // （rebuild Epic L2 第二手、doc 27 §5）。ここに残すのは「宣言に落ちない」2 本だけ:
+    // （rebuild Epic L2 第二手、doc 27 §5）。ここに残すのは「宣言に落ちない」3 本:
     //   - wire_recv: server が最大 timeout 秒ブロックするため outer timeout に +5s 余裕が要る（VP-163）。
     //   - complete : outcome string → typed {kind, ...} の wire shape 変換 + validation。
+    //   - wire_send: body.category 省略時の default="command" 注入（body-field default が宣言に落ちない、B1）。
     // ========================================================================
 
     /// wire_recv の本体（生成 tool wrapper `wire_recv` から委譲）。
@@ -947,6 +948,34 @@ impl VantageMcp {
         let resp = self.quic_call("complete", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "completed".to_string()),
+        )]))
+    }
+
+    /// wire_send の本体（生成 tool wrapper `wire_send` から委譲、body="custom"）。
+    ///
+    /// B1: CC 経由の wire_send は `body.category` 省略時に `"command"` を default 注入する。
+    /// 「投げたら読んでほしい」が多数派なので、素の wire_send を「配送 + 自動読み込み + ack 必須」
+    /// (= command 挙動) に昇格させる。FYI は `body.category` に `"event"` / `"data"` / `"state"` /
+    /// `"log"` を明示して opt-out（明示指定は尊重し上書きしない）。default 注入をこの MCP 経路に
+    /// 閉じることで、category を明示しない内部 sender（delegation / server の `world_wire::call`）を
+    /// 巻き込まない（= CC 限定 scope、global 反転による予期せぬ nudge を回避）。
+    async fn wire_send_impl(&self, params: WireSendParams) -> Result<CallToolResult, McpError> {
+        let __self_lane = self.self_lane.from_address()?;
+        // category 省略時のみ "command" を注入（明示された category は温存）。
+        let mut body = params.body;
+        if let Some(obj) = body.as_object_mut() {
+            obj.entry("category")
+                .or_insert_with(|| serde_json::Value::String("command".to_string()));
+        }
+        let payload = serde_json::json!({
+            "from": __self_lane,
+            "to": params.to,
+            "body": body,
+            "reply_to": params.reply_to,
+        });
+        let resp = self.quic_call("wire_send", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "wire message sent".to_string()),
         )]))
     }
 }

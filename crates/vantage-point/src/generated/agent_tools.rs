@@ -98,23 +98,13 @@ pub struct RespondParams {
 #[tool_router(router = agent_tool_router, vis = "pub(crate)")]
 impl VantageMcp {
     #[tool(
-        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication. Set body.category to one of {command, event, state, data, log} to control delivery policy: 'command' messages are re-nudged to the recipient until they wire_ack; omitted category defaults to 'event' (no nudge)."
+        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication. Set body.category to one of {command, event, state, data, log} to control delivery policy: 'command' messages are re-nudged to the recipient until they wire_ack. Omitted category defaults to 'command' — the common case is 'sent it, want it read', so a plain wire_send is delivered and re-nudged until the recipient wire_acks. For a fire-and-forget FYI that is NOT nudged, set body.category explicitly to 'event' (or 'data' / 'state' / 'log')."
     )]
     async fn wire_send(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireSendParams>,
     ) -> Result<CallToolResult, McpError> {
-        let __self_lane = self.self_lane.from_address()?;
-        let payload = serde_json::json!({
-            "from": __self_lane,
-            "to": params.to,
-            "body": params.body,
-            "reply_to": params.reply_to,
-        });
-        let resp = self.quic_call("wire_send", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "wire message sent".to_string()),
-        )]))
+        self.wire_send_impl(params).await
     }
 
     #[tool(
