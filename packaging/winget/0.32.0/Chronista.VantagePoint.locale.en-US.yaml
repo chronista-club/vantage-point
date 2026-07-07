@@ -1,6 +1,6 @@
 # winget default-locale manifest — Chronista.VantagePoint
 PackageIdentifier: Chronista.VantagePoint
-PackageVersion: 0.31.0
+PackageVersion: 0.32.0
 PackageLocale: en-US
 Publisher: Chronista Club
 PublisherUrl: https://github.com/chronista-club

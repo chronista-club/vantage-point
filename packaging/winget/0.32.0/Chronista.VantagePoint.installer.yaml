@@ -9,13 +9,13 @@
 # InstallerSha256:
 #   target/release/vp.exe の実 sha256。release ビルドを差し替えたら必ず再計算する。
 PackageIdentifier: Chronista.VantagePoint
-PackageVersion: 0.31.0
+PackageVersion: 0.32.0
 InstallerType: portable
 Commands:
   - vp
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/chronista-club/vantage-point/releases/download/v0.31.0/vp-x86_64-pc-windows-msvc.exe
-    InstallerSha256: 655F6D96AEF7C275A9E9789CA9E5430E1779F00F98ED5C50603A683807374153
+    InstallerUrl: https://github.com/chronista-club/vantage-point/releases/download/v0.32.0/vp-x86_64-pc-windows-msvc.exe
+    InstallerSha256: D0F78E006D8674F0D3E6FBC498FE7E5DBA0F3C6DCC3AA88023CAC7939B9D1361
 ManifestType: installer
 ManifestVersion: 1.6.0

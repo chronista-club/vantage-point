@@ -2,7 +2,7 @@
 # SSOT の対応物: Homebrew cask (chronista-club/homebrew-tap の Casks/vantage-point.rb)。
 # winget は cask の Windows 側カウンターパート。まずは手動 manifest でローカル検証する段階。
 PackageIdentifier: Chronista.VantagePoint
-PackageVersion: 0.31.0
+PackageVersion: 0.32.0
 DefaultLocale: en-US
 ManifestType: version
 ManifestVersion: 1.6.0
