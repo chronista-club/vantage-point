@@ -220,13 +220,20 @@ release cut 前に **brew namespace(:32000) を新 binary で起動**（launchd 
 - ⏳ **Shift+Enter**: xterm.js に custom handler なし（copy/paste のみ）。daemon 側でなく vp-app 端点の話で、tmux 撤去の回帰ではない。GUI 全体は良好、必要なら vp-app に key handler 追加（follow-up）
 - **中間状態の注意**: shell の `vp`（.app symlink）は旧版のまま → CLI は `~/.cargo/bin/vp` を使う。release cut で解消
 
-### 13.6c deliver_nudge 1-write 畳み込み（2026-07-04、release 前 polish で決着）
+### 13.6c deliver_nudge 1-write 畳み込み（2026-07-04）→ 2-phase へ revert（2026-07-07、#674）
 
-§12/§13.5 の宿題を empirical に決着。 brew :32000（新 binary）で throwaway echoes performer に
-`text + \r` の **1 回 write** で nudge → claude が submit（`⏺ Calling… Synthesizing…`）を確認。
-tmux 撤去後は PtySlot が claude の PTY master を直接持ち paste-wrap する主体が居ないため、
-2-phase（text → 50ms → Enter）は不要だった。 1 write に畳み → レビュー B5 の「50ms 窓での
-並行 nudge / user 入力との interleave」も構造的に消滅、 write は `write_to_lane` 1 回のみ。
+§12/§13.5 の宿題を empirical に決着「したつもり」で 1-write に畳んだが、**後に revert された**。
+経緯: brew :32000（新 binary）で throwaway echoes performer に `text + \r` の 1 回 write で nudge
+→ claude が submit するのを確認し 1-write に畳んだ。だが**この検証は login shell 側**で、claude
+TUI の paste 検出経路を踏んでいなかった。実運用では claude TUI が入力 burst を paste 検出し末尾
+`\r` を改行として飲むため **submit されず手動 RETURN が要る** regression になり（#663）、#674 で
+2-phase（text → 50ms → 単独 `\r`）に戻した。**1-write へ再度畳まないこと。**
+
+> ⚠️ **訂正**: 旧版は「1-write で B5 の 50ms 窓（並行 nudge / user 入力との interleave）も構造的に
+> 消滅」と書いていたが、2-phase revert でこの interleave 窓は**再オープン**した。#674 後は
+> `LanePool::nudge_locks`（lane 単位 async lock）で `deliver_nudge` の phase1→sleep→phase2 を直列化
+> して塞いでいる（2026-07-08、v0.32.1）。「interleave が構造的に消滅」は 1-write 前提の記述で、
+> 現行の 2-phase + per-lane lock 構成には当てはまらない。
 
 **既知挙動（PR2 起因でない）:** daemon は SP 死亡を検知すると `run_health_monitor` が
 30s × 2-strike（= 60s）で auto-respawn する（crash recovery、仕様 doc 15 §3.1）。
