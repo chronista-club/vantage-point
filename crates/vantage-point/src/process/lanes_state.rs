@@ -331,6 +331,13 @@ pub struct LanePool {
     /// task は spawn_blocking で 1 Lane = 1 task、 broadcast::Receiver を消費。
     /// MVP: Conductor Lane のみ attach。 Performer spawn 経路 (insert_pty_slot) は別 PR で配線予定。
     term_attaches: HashMap<LaneAddress, crate::terminal::term_attach::TermAttach>,
+    /// [`deliver_nudge`] の phase1→sleep→phase2 を **lane 単位で直列化**する async lock。
+    /// 2-phase nudge は sleep 中 PtySlot lock を手放すため、直列化しないと同一 lane への並行
+    /// nudge が text を interleave させ、連結された誤 command を submit してしまう（#674 で
+    /// 2-phase に戻した際に再オープンした race、B1 #675 の default=command 化で頻度増）。
+    /// 内部可変性で持つので `deliver_nudge` は `pool.read()` のまま get-or-insert できる。
+    /// map は lane 数ぶんだけ増える（bounded、lane teardown での GC は未実装だが実害小）。
+    nudge_locks: std::sync::Mutex<HashMap<LaneAddress, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl std::fmt::Debug for LanePool {
@@ -654,6 +661,23 @@ impl LanePool {
         Some(slot.subscribe_output())
     }
 
+    /// [`deliver_nudge`] の per-lane 直列化 lock を get-or-insert で返す。
+    /// 同一 `addr` には常に同じ `Arc<Mutex>` を返し（→ 直列化が効く）、別 `addr` には別の lock を
+    /// 返す（→ cross-lane は並行のまま）。`nudge_locks` の std Mutex は await を跨がず即 drop する。
+    fn nudge_lock_handle(
+        &self,
+        addr: &LaneAddress,
+    ) -> anyhow::Result<std::sync::Arc<tokio::sync::Mutex<()>>> {
+        let mut locks = self
+            .nudge_locks
+            .lock()
+            .map_err(|_| anyhow::anyhow!("nudge_locks mutex poisoned: {}", addr))?;
+        Ok(locks
+            .entry(addr.clone())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone())
+    }
+
     /// 既存 Lane の PtySlot に input を書き込む (WS から user 入力を受けた時に使う)。
     /// `Mutex<PtySlot>` を lock するので、 broadcast 経路と直交して同期書込み。
     pub fn write_to_lane(&self, addr: &LaneAddress, data: &[u8]) -> anyhow::Result<()> {
@@ -702,11 +726,25 @@ impl LanePool {
 /// PtySlot の lock は各 write ごとに `read().await` で都度取り即 drop し、間の sleep は無 lock で
 /// 行う（await 跨ぎで guard を保持しない）。 in-process nudge（`AppState::nudge_lane`）と
 /// World→SP proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
+///
+/// ## 並行 nudge の直列化（#674 の race を塞ぐ）
+/// phase 間の sleep 中は PtySlot lock を手放すため、同一 lane へ並行に走る 2 本の `deliver_nudge`
+/// が phase1 の text を interleave させると、`text_A` + `text_B` が連結された誤 command が
+/// submit されうる（B1 #675 で CC の素の `wire_send` が default=command 化し、delivery-loop の
+/// 即時 re-nudge で同一 recipient への近接 nudge が起きやすくなった）。lane 単位の async lock
+/// （[`LanePool::nudge_locks`]）で phase1→sleep→phase2 全体を直列化してこれを防ぐ。lock は
+/// lane 単位なので別 lane への nudge は並行のまま（cross-lane の head-of-line blocking なし）。
 pub async fn deliver_nudge(
     pool: &std::sync::Arc<tokio::sync::RwLock<LanePool>>,
     addr: &LaneAddress,
     text: &str,
 ) -> anyhow::Result<()> {
+    // 同一 lane への並行 nudge を直列化する per-lane lock を get-or-insert（内部可変性なので
+    // read guard で足りる。handle 取得後は pool read lock を手放す）。
+    let nudge_lock = pool.read().await.nudge_lock_handle(addr)?;
+    // この guard を phase1→sleep→phase2 の間ずっと保持し、同一 lane の他 nudge を待たせる。
+    let _serialized = nudge_lock.lock().await;
+
     // phase 1: text 本体（末尾 CR/LF は落として単一行の paste にする）
     let body = text.trim_end_matches(['\r', '\n']);
     pool.read().await.write_to_lane(addr, body.as_bytes())?;
@@ -726,6 +764,53 @@ mod tests {
         assert_eq!(
             LaneAddress::performer("vp", "foo").to_string(),
             "vp/performer/foo"
+        );
+    }
+
+    // deliver_nudge の並行 interleave 防止 (#674 race) の要は「同一 lane が同じ lock を共有し、
+    // 別 lane は別 lock を持つ」こと。PTY 無しで検証できる直列化 invariant をここで固定する。
+    #[test]
+    fn nudge_lock_is_stable_per_lane_and_distinct_across_lanes() {
+        let pool = LanePool::new();
+        let a = LaneAddress::conductor("proj-a");
+        let b = LaneAddress::conductor("proj-b");
+
+        let a1 = pool.nudge_lock_handle(&a).unwrap();
+        let a2 = pool.nudge_lock_handle(&a).unwrap();
+        let b1 = pool.nudge_lock_handle(&b).unwrap();
+
+        // 同一 lane → 同じ Arc<Mutex>（ptr 一致）。これがないと 2 本の deliver_nudge が
+        // 別々の lock を取り直列化が効かず、phase1 の text が interleave する。
+        assert!(
+            std::sync::Arc::ptr_eq(&a1, &a2),
+            "同一 lane は同じ nudge lock を共有すべき"
+        );
+        // 別 lane → 別 lock。cross-lane の head-of-line blocking を避ける。
+        assert!(
+            !std::sync::Arc::ptr_eq(&a1, &b1),
+            "別 lane は別の nudge lock を持つべき"
+        );
+    }
+
+    // 同一 lane の 2 本目の deliver_nudge が 1 本目の critical section 完了まで待たされること
+    // （＝直列化が実際に効く）を、per-lane lock の hold 経由で確認する。
+    #[tokio::test]
+    async fn nudge_lock_serializes_same_lane() {
+        let pool = LanePool::new();
+        let addr = LaneAddress::conductor("proj");
+        let lock = pool.nudge_lock_handle(&addr).unwrap();
+
+        // 1 本目が critical section を保持中は、同 lane の 2 本目 (try_lock) は取れない。
+        let held = lock.lock().await;
+        let second = pool.nudge_lock_handle(&addr).unwrap();
+        assert!(
+            second.try_lock().is_err(),
+            "同一 lane の nudge は先行 critical section 完了まで待つべき"
+        );
+        drop(held);
+        assert!(
+            second.try_lock().is_ok(),
+            "先行 nudge 完了後は次の nudge が進める"
         );
     }
 
