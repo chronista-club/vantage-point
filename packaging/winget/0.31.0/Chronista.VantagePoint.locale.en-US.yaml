@@ -1,0 +1,27 @@
+# winget default-locale manifest — Chronista.VantagePoint
+PackageIdentifier: Chronista.VantagePoint
+PackageVersion: 0.31.0
+PackageLocale: en-US
+Publisher: Chronista Club
+PublisherUrl: https://github.com/chronista-club
+PublisherSupportUrl: https://github.com/chronista-club/vantage-point/issues
+PackageName: Vantage Point
+PackageUrl: https://github.com/chronista-club/vantage-point
+License: MIT OR Apache-2.0
+LicenseUrl: https://github.com/chronista-club/vantage-point/blob/main/LICENSE
+Copyright: Copyright (c) Chronista Club
+ShortDescription: AI-native development environment — vp CLI + daemon (TheWorld).
+Description: |-
+  Vantage Point (vp) is a Rust-based AI-native development environment that uses
+  the Claude CLI as its engine, integrating a TUI console, Canvas (WebView), and
+  external control. This package installs the `vp` command-line tool and its
+  resident daemon (TheWorld) for Windows.
+Moniker: vantage-point
+Tags:
+  - ai
+  - cli
+  - claude
+  - developer-tools
+  - rust
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
