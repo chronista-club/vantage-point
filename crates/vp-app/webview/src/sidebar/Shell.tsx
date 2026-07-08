@@ -11,7 +11,7 @@
  *   操作 (click 選択・context menu・restart/delete・Add Performer form・DnD) は PR-3。
  *   World widget 本体は後続 increment。
  */
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, untrack } from "solid-js";
 import { CreoIcon } from "creoui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
@@ -29,6 +29,26 @@ import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { ProjectAccordion } from "./ProjectAccordion";
 import { WorldWidget } from "./WorldWidget";
+
+/**
+ * 指定 path の project accordion を view にスクロールして一瞬 flash させる。
+ * タブ切替後の DOM 反映を待つため requestAnimationFrame 越しに実行する。
+ * path は slash や特殊文字を含むので querySelector 属性セレクタのエスケープを避け、
+ * 全 `.vp-proj` を走査して `data-path` 一致で引く。
+ */
+function flashProject(path: string): void {
+	requestAnimationFrame(() => {
+		const target = Array.from(
+			document.querySelectorAll<HTMLElement>(".vp-proj"),
+		).find((el) => el.getAttribute("data-path") === path);
+		if (!target) return;
+		target.scrollIntoView({ block: "nearest", behavior: "smooth" });
+		target.classList.remove("vp-proj-flash");
+		// reflow を挟んで animation を確実に再スタートさせる。
+		void target.offsetWidth;
+		target.classList.add("vp-proj-flash");
+	});
+}
 
 export function Shell() {
 	// D&D 並べ替え順 (`currents_order`) を適用してから 稼働中 / 一時停止中 に分割する。
@@ -52,6 +72,40 @@ export function Shell() {
 		localStorage.setItem("vp.sidebar.tab", t);
 	};
 	const shown = createMemo(() => (tab() === "running" ? running() : paused()));
+
+	// 新規追加 project の discoverability: サイドバーは常に片タブしか出さないので、
+	// セッション途中で追加した project がその SP の稼働状態次第で今見えていないタブ
+	// (例: 停止中 project → 「一時停止中」) に入ると、 default「稼働中」タブしか見ていない
+	// user には「追加したのに出てこない」に見える (実体は登録済み・永続化済み)。
+	// → 途中で新しい path が現れたら、 それが属するタブへ自動で切替 + 対象を flash して
+	//    見失わせない。 タブ切替は localStorage 永続させない (= その場限りの reveal、
+	//    user が選んだ default タブ設定は汚さない)。
+	//
+	// 初回 populate (= app 再起動時の一括ロード / 復元) は「追加」ではないので切替しない。
+	// prevPaths を跨いで持ち、 最初に project 群を受け取った push を初期ロードとして素通り
+	// させ、 それ以降の push で現れた差分だけを「追加」と見なす。
+	let prevPaths = new Set<string>();
+	let sawProjects = false;
+	createEffect(() => {
+		const procs = sidebar.processes;
+		const cur = new Set(procs.map((p) => p.path));
+		if (!sawProjects) {
+			// 初回ロード確定は「非空の push を初めて受けた時」。 それまで (mount 直後の空 state
+			// や project 0 件) は prev を更新して待つ。
+			if (cur.size > 0) sawProjects = true;
+			prevPaths = cur;
+			return;
+		}
+		const added = procs.filter((p) => !prevPaths.has(p.path));
+		prevPaths = cur;
+		if (added.length === 0) return;
+		// 複数同時追加は稀。 最後に現れた 1 件を代表として reveal する。
+		const rep = added[added.length - 1];
+		const target = isRunningProcess(rep) ? "running" : "paused";
+		// selectTab (localStorage 永続) ではなく raw setTab で一過性に切替える。
+		if (untrack(tab) !== target) setTab(target);
+		flashProject(rep.path);
+	});
 
 	return (
 		<div class="vp-sidebar-shell">
@@ -209,6 +263,11 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-proj-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-proj-hint{padding:6px 12px 6px 20px;font-size:11px;
   color:var(--color-text-tertiary);font-style:italic;}
+/* 新規追加 project の reveal flash — auto tab-switch と併用して見失わせない
+   (Shell の createEffect が対象に .vp-proj-flash を付与)。summary 背景を一瞬 brand 色に。 */
+@keyframes vp-proj-flash{0%{background:var(--color-brand-primary-subtle);}
+  100%{background:transparent;}}
+.vp-proj-flash > .vp-proj-summary{animation:vp-proj-flash 1.3s ease-out;}
 
 /* Project D&D 並べ替え (#124) — summary を掴んで他 Project の上下に落とす。
    draggable は details 要素 (.vp-proj) に付く (WebKit の summary 活性化対策)。

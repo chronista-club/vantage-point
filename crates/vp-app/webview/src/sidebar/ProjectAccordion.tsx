@@ -240,6 +240,7 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 	return (
 		<details
 			class="vp-proj"
+			data-path={props.proc.path}
 			classList={{
 				dragging: isDragging(),
 				"drop-before": dropBefore(),
