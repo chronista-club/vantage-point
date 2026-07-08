@@ -114,10 +114,13 @@ FileUtils.cp_r(app, File.join(stage, APP_BUNDLE))
 File.symlink("/Applications", File.join(stage, "Applications")) rescue nil
 dmg = File.join(dist, "VantagePoint-#{version}-arm64.dmg")
 FileUtils.rm_f(dmg)
-# hdiutil の auto-size は content ぴったりで HFS overhead 分溢れる (No space) ので、
-# staging サイズ ×2 + 50MB の余裕を明示。 UDZO 圧縮されるので最終 dmg は膨らまない。
+# hdiutil の auto-size は content ぴったりで HFS overhead 分溢れる (No space) ので size を明示。
+# ×2+50 だと staging 101MB (vp 85MB + vp-app 19MB) で 252m となり、 hdiutil が
+# 「image data corrupted」で間欠的に失敗した (v0.33.0、 512m で実証成功)。 大きな単一 binary で
+# HFS+ intermediate が想定以上を要するため、 倍率と floor を引き上げて余裕を確保する。
+# UDZO 圧縮されるので最終 dmg 自体は膨らまない (256m でも最終 ~45MB)。
 stage_mb = `du -sm '#{stage}'`.to_i
-dmg_size = [stage_mb * 2 + 50, 200].max
+dmg_size = [stage_mb * 4 + 100, 512].max
 VP.sh "hdiutil create -size #{dmg_size}m -volname '#{APP}' -srcfolder '#{stage}' -ov -format UDZO '#{dmg}'"
 VP.sh "codesign --force --timestamp -s '#{SIGN_ID}' '#{dmg}'"
 VP.log "#{VP.icon(:ok)} dmg: #{dmg}"
