@@ -1,4 +1,4 @@
-//! Lane echoes pump — Act II 版の terminal_pump（doc 30 §3）。
+//! Lane echoes pump — Act II 版の terminal_pump（doc 32 §3）。
 //!
 //! 1 つの Lane の [`EchoesAgentHost`] が broadcast する [`EchoesEvent`] を購読し、
 //! per-lane topic (`process/echoes/data/{lane}/event`) に [`ProcessMessage::EchoesEvent`]

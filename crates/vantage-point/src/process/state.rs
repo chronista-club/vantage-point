@@ -144,7 +144,7 @@ pub(crate) struct AppState {
     /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
     /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
     pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    /// Act II (doc 30): lane → EchoesAgentHost（headless claude engine）。
+    /// Act II (doc 32): lane → EchoesAgentHost（headless claude engine）。
     ///
     /// `echoes_submit` の初回で lazy spawn し、以降の submit は同 host を再利用する。
     /// key は LaneAddress の Display 形（terminal_pumps と同じ）。engine は会話を保持するため

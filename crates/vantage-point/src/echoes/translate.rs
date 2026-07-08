@@ -2,7 +2,7 @@
 //!
 //! claude 2.1.197 の `--output-format stream-json --include-partial-messages`
 //! が吐く JSONL を、GUI 語彙 [`EchoesEvent`] の列へ変換する状態機械。
-//! 実スキーマの根拠は design doc 30 §10（Step 0 スパイク）。
+//! 実スキーマの根拠は design doc 32 §10（Step 0 スパイク）。
 //!
 //! ## 状態機械の要点
 //! - streaming 本文/thinking は `stream_event` の `content_block_delta` から取る
@@ -244,7 +244,7 @@ fn plan_from_todowrite(input: &serde_json::Value) -> Option<EchoesEvent> {
 }
 
 // =============================================================================
-// 生 stream-json スキーマ（Step 0 実測、doc 30 §10）
+// 生 stream-json スキーマ（Step 0 実測、doc 32 §10）
 // =============================================================================
 
 /// stream-json の 1 行（外側 tag = "type"）。

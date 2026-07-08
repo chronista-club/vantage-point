@@ -5,7 +5,7 @@
 //! 足すときは翻訳層を 1 個追加するだけで GUI は無改修 — これが多 engine 方針の支え。
 //!
 //! 語彙は ACP `session/update` の実績あるサブセットを借用。
-//! 由来のマッピングは design doc 30 §4 / §10（Step 0 実測スキーマ）を参照。
+//! 由来のマッピングは design doc 32 §4 / §10（Step 0 実測スキーマ）を参照。
 
 use serde::{Deserialize, Serialize};
 
@@ -70,7 +70,7 @@ pub enum EchoesEvent {
     /// engine / 翻訳層のエラー。
     Error { message: String },
     // NOTE: permission_request（control protocol / can_use_tool）は MVP 非対象。
-    //       acceptEdits で回避する（doc 30 §10.1）。将来 control protocol ごと実装。
+    //       acceptEdits で回避する（doc 32 §10.1）。将来 control protocol ごと実装。
 }
 
 /// plan の 1 項目（TodoWrite の todo に対応）。

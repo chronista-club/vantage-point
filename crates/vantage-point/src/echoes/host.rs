@@ -1,6 +1,6 @@
 //! EchoesAgentHost — headless claude を lane 単位で常駐駆動する（Act II engine host）
 //!
-//! doc 30 §3。`claude -p --input-format stream-json --output-format stream-json` を
+//! doc 32 §3。`claude -p --input-format stream-json --output-format stream-json` を
 //! piped stdio で spawn し、stdout を [`EchoesTranslator`] に通して [`EchoesEvent`] を
 //! `broadcast::Sender` に流す。Act I（PtySlot + TUI）とは別系統の「headless engine」。
 //!
@@ -60,7 +60,7 @@ impl EchoesAgentHost {
             cmd.current_dir(&config.cwd);
         }
 
-        // 双方向 stream-json + partial（Step 0 で確定した Act II 駆動形、doc 30 §10）。
+        // 双方向 stream-json + partial（Step 0 で確定した Act II 駆動形、doc 32 §10）。
         cmd.arg("-p")
             .arg("--input-format")
             .arg("stream-json")

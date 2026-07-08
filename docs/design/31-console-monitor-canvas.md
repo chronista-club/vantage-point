@@ -4,7 +4,7 @@
 - **status**: 設計確定
 
 > ⚠️ **用語再定義（2 度目の前例）**: Heaven's Door はかつて CC オーケストレーター（現 Echoes）の旧名だった（VP-118 で改名）。本 doc 以降、**Heaven's Door = Canvas Author（描く能力）**を正とする。岸辺露伴 = JoJo 随一の「描く」人であり、読み書き能力が canvas authoring と一致するための復活採用。旧文脈（`vp hd` 等）は既に退役済みで実害はない。
-- **関連 doc**: [05 Pane/Content モデル](05-pane-content-lane-smart-canvas.md) / [13 PP revival](13-paisley-park-revival.md) / [19 Canvas stack](19-canvas-stack-model.md) / [30 Echoes Act II](30-echoes-act2-gui.md)
+- **関連 doc**: [05 Pane/Content モデル](05-pane-content-lane-smart-canvas.md) / [13 PP revival](13-paisley-park-revival.md) / [19 Canvas stack](19-canvas-stack-model.md) / [32 Echoes Act II](32-echoes-act2-gui.md)
 
 ## 0. TL;DR — 三層の語彙
 
@@ -22,13 +22,13 @@
 
 ## 1. Why
 
-Echoes Act II（doc 30）で会話面が構造化 GUI になると、対になる「描画・成果物・配信」の語彙の混濁が露出する。現状 `PAISLEY_PARK { id: "canvas" }` は (a) 表示面 pane、(b) show/clear の書き込み能動、(c) 情報ルーティングの 3 役を 1 stand に混載。GUI 時代の pane 命名（PR2 が実装で直面）の前に分離する。
+Echoes Act II（doc 32）で会話面が構造化 GUI になると、対になる「描画・成果物・配信」の語彙の混濁が露出する。現状 `PAISLEY_PARK { id: "canvas" }` は (a) 表示面 pane、(b) show/clear の書き込み能動、(c) 情報ルーティングの 3 役を 1 stand に混載。GUI 時代の pane 命名（PR2 が実装で直面）の前に分離する。
 
 ## 2. 情報の流れ（refactor 後の全体像）
 
 ```
 User ⇄ Console（対話面: Act I xterm / Act II EchoesChatPane）
-          │  Echoes 💬 が会話を駆動（doc 30）
+          │  Echoes 💬 が会話を駆動（doc 32）
           ▼
        Heaven's Door 📖 が成果を Canvas に描く（Draft to Canvas）
           ▼
@@ -55,7 +55,7 @@ User ⇄ Console（対話面: Act I xterm / Act II EchoesChatPane）
 |---|---|---|---|
 | TheWorld 👑 | `world` | Process Manager | — |
 | Star Platinum ⭐ | `process` | Project Core | — |
-| Echoes 💬 | `agent` | Coding Assistant | —（Act I/II は doc 30） |
+| Echoes 💬 | `agent` | Coding Assistant | —（Act I/II は doc 32） |
 | **Paisley Park 🧭** | `canvas`→**`router`** | Information Navigator→**Information Router** | **再定義**: 「何をどの面に映すか」のルーティング + 表示資産（Monitor 群・layout・pin・mirror）の運用（= & Display）。show の「置き場所を決める」半分は PP の裁き |
 | **Heaven's Door 📖**（復活） | **`canvas`**（PP から継承） | **Canvas Author** | **新設**: Draft to Canvas — canvas を書き起こす・版重ねで更新する能動。show の「内容を作る」半分の後継。short: "HD" |
 | Gold Experience 🌿 | `runner` | Code Runner | — |

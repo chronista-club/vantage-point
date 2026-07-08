@@ -348,7 +348,7 @@ async fn handle_terminal_write(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// Act II (doc 30): echoes プロンプト投入。
+/// Act II (doc 32): echoes プロンプト投入。
 ///
 /// surface (vp-app) → World canvas channel → SP control → 本 dispatch。
 /// 当該 Lane の [`EchoesAgentHost`] を lazy spawn（初回のみ）し、prompt を submit する。

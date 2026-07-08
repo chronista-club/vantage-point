@@ -1,4 +1,6 @@
-# 30. Echoes Act II — 構造化会話 GUI
+# 32. Echoes Act II — 構造化会話 GUI
+
+> ⚠️ 旧番号 30。nightly の `30-window-state.md` と衝突したため 32 に改番（2026-07-09 rebase 時）。
 
 - **日付**: 2026-07-09（hearing 収束、実装前）
 - **branch**: `mako/acp`
