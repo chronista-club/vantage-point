@@ -428,6 +428,12 @@ fn spawn_lanes_subscription(
     rt_handle.spawn(lanes_subscription_loop(proxy, process_path, conn));
 }
 
+/// lanes 購読の各フェーズ (wait_client / open / subscribe / 初回 snapshot) の stall 判定 timeout。
+/// これを超えたら World lanes channel 無応答 (half-alive) or QUIC 未接続とみなし Err 化 →
+/// `LanesError` surface (UI が stalled 表示) + retry (self-heal)。 retained topic は本来即応するので
+/// 余裕を見て 12s。 doc 30 §5-3 (loading lanes の状態区別)。
+const LANES_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
 /// "lanes" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
 ///
 /// reconnect は `SharedWorldConn` の manager が一手に所有するので、 本ループは
@@ -439,10 +445,20 @@ async fn lanes_subscription_loop(
     mut conn: SharedWorldConn,
 ) {
     loop {
-        // 共有 connection が確立するまで待つ (None の間はここでブロック = busy loop 無し)。
-        let client = match conn.wait_client().await {
-            Some(c) => c,
-            None => return, // app 終了
+        // 共有 connection が確立するまで待つ。 self-heal: World QUIC が長時間 未接続 (dead World)
+        // だと wait_client が永久ブロックし「loading lanes」が silent 滞留する。 timeout を張って
+        // 未接続を LanesError として surface し (UI が stalled 表示 → user が daemon restart できる)、
+        // 待ち直す。 App 終了 (sender drop) は None で即抜ける。
+        let client = match tokio::time::timeout(LANES_STALL_TIMEOUT, conn.wait_client()).await {
+            Ok(Some(c)) => c,
+            Ok(None) => return, // app 終了
+            Err(_) => {
+                let _ = proxy.send_event(AppEvent::LanesError {
+                    process_path: process_path.clone(),
+                    message: "world QUIC 未接続 (wait_client timeout)".to_string(),
+                });
+                continue;
+            }
         };
         match run_lanes_session(&proxy, &process_path, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
@@ -472,33 +488,66 @@ async fn run_lanes_session(
     process_path: &str,
     client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
+    // F1b: 共有 connection 上に "lanes" stream を開く (旧: session ごと別 connect)。
+    // self-heal: open を LANES_STALL_TIMEOUT で括る。 timeout 時は channel 未確立 (recv_task も
+    // 未起動) なので、 raw stream の drop = implicit reset で片付く (close 不要)。
+    let channel = tokio::time::timeout(LANES_STALL_TIMEOUT, client.open_channel("lanes"))
+        .await
+        .map_err(|_| "open lanes channel: timeout".to_string())?
+        .map_err(|e| format!("open lanes channel: {}", e))?;
+
+    // ここから先の全 early-return は **確立済み channel** を残すため、 内側で結果を作ってから
+    // 抜けに 1 度だけ `channel.close()` する (recv_task abort + stream close)。 close せず drop すると
+    // recv_task と QUIC stream がリークし、 half-alive 障害の 12.5s retry ごとに積み上がって
+    // MAX_STREAMS 枯渇 → この fix が直そうとした症状が再発する (Moody Blues #1)。
+    let outcome = lanes_session_after_open(proxy, process_path, &channel).await;
+    let _ = channel.close().await;
+    outcome
+}
+
+/// `run_lanes_session` の channel 確立後のロジック (subscribe → recv loop)。 呼び出し元が
+/// 戻り後に必ず `channel.close()` するため、 本体は close を気にせず早期 return してよい。
+async fn lanes_session_after_open(
+    proxy: &EventLoopProxy<AppEvent>,
+    process_path: &str,
+    channel: &unison::network::UnisonChannel,
+) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
-    // F1b: 共有 connection 上に "lanes" stream を開く (旧: session ごと別 connect)。
-    let channel = client
-        .open_channel("lanes")
-        .await
-        .map_err(|e| format!("open lanes channel: {}", e))?;
     // L0 SP-portless: World "lanes" channel は project 単位なので、 接続後に subscribe
     // handshake で project_path を渡す (World 側で path_key に正規化されて lane_registry と突合)。
     // ack 後に当該 project の snapshot が `send_event("snapshot", ...)` で初期配信される。
-    channel
-        .request::<serde_json::Value, serde_json::Value>(
+    // self-heal: subscribe を LANES_STALL_TIMEOUT で括る (half-alive で永久ブロックしない)。
+    tokio::time::timeout(
+        LANES_STALL_TIMEOUT,
+        channel.request::<serde_json::Value, serde_json::Value>(
             "subscribe",
             &serde_json::json!({ "project_path": process_path }),
-        )
-        .await
-        .map_err(|e| format!("lanes subscribe handshake: {}", e))?;
+        ),
+    )
+    .await
+    .map_err(|_| "lanes subscribe handshake: timeout".to_string())?
+    .map_err(|e| format!("lanes subscribe handshake: {}", e))?;
     tracing::info!(
         "lanes subscription connected (via World): project={}",
         process_path
     );
 
+    // 初回 snapshot deadline: retained topic なので即届くはず。 来なければ stall とみなし Err (retry)。
+    // 初回受信後は deadline を外し、 steady-state の変化 push を無期限に待つ。
+    let mut first_snapshot_deadline = Some(tokio::time::Instant::now() + LANES_STALL_TIMEOUT);
     loop {
-        let msg = match channel.recv().await {
-            Ok(m) => m,
+        let msg = match first_snapshot_deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, channel.recv()).await {
+                Ok(Ok(m)) => m,
+                Ok(Err(_)) => return Ok(SubscriptionOutcome::Disconnected),
+                Err(_) => return Err("lanes first snapshot timeout".to_string()),
+            },
             // セッション確立後の切断 (SP 停止 / channel close)。再接続対象。
-            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+            None => match channel.recv().await {
+                Ok(m) => m,
+                Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+            },
         };
         // SP 側 "lanes" channel は `send_event("snapshot", ...)` で push する。
         if msg.msg_type != MessageType::Event || msg.method != "snapshot" {
@@ -525,6 +574,8 @@ async fn run_lanes_session(
                     continue;
                 }
             };
+        // 初回 snapshot を受けたら deadline 解除 (以降は変化 push を無期限に待つ = steady-state)。
+        first_snapshot_deadline = None;
         // LanesLoaded push (= retained snapshot + delta) は project × frequency で
         // ループする systematic event なので log omit (= info / debug どちらでも noise)。
         if proxy
@@ -2475,6 +2526,12 @@ pub fn run() -> anyhow::Result<()> {
                     sidebar_state.lane_inboxes.remove(addr);
                 }
                 sidebar_state.lanes_by_project.insert(process_path, lanes);
+                // 購読フェーズを "ready" に (= snapshot を 1 度でも受けた)。 stalled から復帰した場合も
+                // ここで解消。 absent(初期 loading) / stalled と区別して hintFor が lane 0本 を
+                // 「📡 lane なし」 と正しく出せる (doc 30 §5-3)。
+                sidebar_state
+                    .lane_sub_state
+                    .insert(path_key.clone(), "ready".to_string());
                 // terminal S4: per-lane instance — SP port には依存しない (xterm transport は
                 // World "canvas" channel)。 live lane (pid あり) ごとに ensureLane (JS xterm 作成) +
                 // terminal session start (World 購読 → demand → SP pump)。 どちらも idempotent。
@@ -2547,7 +2604,14 @@ pub fn run() -> anyhow::Result<()> {
                     process_path,
                     message
                 );
-                // SP 接続失敗 (Project SP 未起動等) — sidebar の lanes_by_project は更新しない
+                // SP 接続失敗 / lanes channel stall — lanes_by_project は更新しない (前回値を保持) が、
+                // 購読フェーズを "stalled" に倒して UI に surface する (doc 30 §5-3)。 hintFor が
+                // `📡 loading lanes…` ではなく「⚠️ lane 接続が停滞 — restart で復帰」を出す。 復帰時の
+                // snapshot 受信 (LanesLoaded) で "ready" に上書きされて自動解消する (self-heal と連動)。
+                sidebar_state
+                    .lane_sub_state
+                    .insert(process_path, "stalled".to_string());
+                push_sidebar_state(&webview, &sidebar_state);
             }
             // オンデマンド respawn の restart_lane が失敗した lane を guard から解除する。
             // 解除しておくと、 次に同 lane を active にした (or LanesLoaded for Dead の) 時点で
