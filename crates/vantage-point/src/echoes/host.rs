@@ -55,7 +55,10 @@ impl EchoesAgentHost {
         let mut cmd = Command::new(&claude_path);
         // 親（SP）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
         cmd.envs(std::env::vars());
-        cmd.current_dir(&config.cwd);
+        // cwd 空は「継承」（呼び元の cwd を使う）— test / project_dir 未解決時の防御。
+        if !config.cwd.is_empty() {
+            cmd.current_dir(&config.cwd);
+        }
 
         // 双方向 stream-json + partial（Step 0 で確定した Act II 駆動形、doc 30 §10）。
         cmd.arg("-p")
@@ -80,6 +83,9 @@ impl EchoesAgentHost {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        // host が drop されたら engine プロセスも殺す（map から外れた headless claude を
+        // orphan にしない）。stop() を明示しない撤収経路の安全網。
+        cmd.kill_on_drop(true);
 
         tracing::info!(
             "EchoesAgentHost spawn (project={}, lane={}, resume={:?})",

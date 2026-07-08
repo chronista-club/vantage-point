@@ -348,6 +348,80 @@ async fn handle_terminal_write(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// Act II (doc 30): echoes プロンプト投入。
+///
+/// surface (vp-app) → World canvas channel → SP control → 本 dispatch。
+/// 当該 Lane の [`EchoesAgentHost`] を lazy spawn（初回のみ）し、prompt を submit する。
+/// engine が吐く EchoesEvent は echoes_pump 経由で `process/echoes/data/{lane}/event` に流れ、
+/// vp-app へ届く（terminal_write の Act II 対応）。
+async fn handle_echoes_submit(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_submit: lane 未指定".to_string());
+    }
+    let prompt = payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    if prompt.is_empty() {
+        return Err("echoes_submit: prompt 未指定".to_string());
+    }
+
+    ensure_echoes_host(state, lane).await?;
+
+    let mut hosts = state.echoes_hosts.write().await;
+    let host = hosts
+        .get_mut(lane)
+        .ok_or_else(|| format!("echoes_submit: host 起動失敗 (lane={lane})"))?;
+    host.submit(prompt)
+        .await
+        .map_err(|e| format!("echoes_submit 失敗: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// 当該 lane の EchoesAgentHost を確保する（無ければ spawn + echoes_pump 起動）。
+///
+/// cwd は PR1 では `state.project_dir`（conductor 前提）。performer の worker_dir 対応は後続。
+/// resume は cc_session から引く（Act I ⇄ II / SP 再起動で同一 session を継続）。
+async fn ensure_echoes_host(state: &AppState, lane: &str) -> Result<(), String> {
+    // check-and-spawn を hosts の write lock 下で atomic に行い、二重 spawn を防ぐ。
+    let mut hosts = state.echoes_hosts.write().await;
+    if hosts.contains_key(lane) {
+        return Ok(());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_submit: lane パース失敗: {lane}"))?;
+    let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+    let resume = crate::lane::cc_session::last(&addr.project, &lane_label);
+
+    let host = crate::echoes::EchoesAgentHost::spawn(crate::echoes::EchoesHostConfig {
+        cwd: state.project_dir.clone(),
+        project: addr.project.clone(),
+        lane: lane_label,
+        resume_session_id: resume,
+        model: None,
+        claude_cli_path: None,
+    })
+    .map_err(|e| format!("echoes host spawn 失敗: {e}"))?;
+
+    let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(
+        lane.to_string(),
+        host.subscribe(),
+        state.topic_router.clone(),
+    );
+    if let Some(old) = state
+        .echoes_pumps
+        .write()
+        .await
+        .insert(lane.to_string(), pump)
+    {
+        old.abort();
+    }
+    hosts.insert(lane.to_string(), host);
+    tracing::info!("EchoesAgentHost start (lane={lane})");
+    Ok(())
+}
+
 /// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
 ///
 /// 旧制御面 (`tmux send-keys -t <session>`) の SP-proxy 置換。 World daemon (delivery/reconcile
@@ -605,6 +679,7 @@ pub(crate) async fn dispatch_process_method(
         "terminal_demand_stop" => handle_terminal_demand_stop(state, payload).await,
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
+        "echoes_submit" => handle_echoes_submit(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
         "lane_nudge" => handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
@@ -1343,5 +1418,91 @@ mod tests {
                 .is_err(),
             "respond answer 欠落は Err"
         );
+    }
+
+    /// echoes_submit の lane / prompt 欠落は graceful Err（claude 不要）。
+    #[tokio::test]
+    async fn echoes_submit_missing_fields_is_graceful() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        assert!(
+            dispatch_process_method(
+                &state,
+                "echoes_submit",
+                serde_json::json!({ "prompt": "hi" })
+            )
+            .await
+            .is_err(),
+            "lane 欠落は Err"
+        );
+        assert!(
+            dispatch_process_method(
+                &state,
+                "echoes_submit",
+                serde_json::json!({ "lane": "vp/conductor" })
+            )
+            .await
+            .is_err(),
+            "prompt 欠落は Err"
+        );
+        // host は一切 spawn されない。
+        assert!(state.echoes_hosts.read().await.is_empty());
+    }
+
+    /// 実機統合: echoes_submit が host を lazy spawn し、EchoesEvent が
+    /// `process/echoes/data/{lane}/event` topic に届く SP 終端 round-trip を検証する。
+    /// `cargo test -p vantage-point --ignored echoes_submit_roundtrip`（要 claude CLI）。
+    #[tokio::test]
+    #[ignore = "requires claude CLI + subscription"]
+    async fn echoes_submit_roundtrip() {
+        use super::dispatch_process_method;
+        use crate::echoes::EchoesEvent;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use std::time::Duration;
+
+        let state = build_test_app_state(None).await;
+        // echoes data は非 retained なので submit 前に subscribe。
+        let (_id, mut srx) = state
+            .topic_router
+            .subscribe("process/echoes/data/vp~conductor/event")
+            .await;
+
+        dispatch_process_method(
+            &state,
+            "echoes_submit",
+            serde_json::json!({ "lane": "vp/conductor", "prompt": "Reply with exactly: PONG" }),
+        )
+        .await
+        .expect("echoes_submit ok");
+
+        // 同一 lane の 2 回目 submit は host を再利用（新 spawn しない）。
+        assert_eq!(state.echoes_hosts.read().await.len(), 1);
+
+        let mut got_init = false;
+        let mut text = String::new();
+        let mut got_done = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(90), srx.recv()).await {
+                Ok(Some((_topic, ProcessMessage::EchoesEvent { event, .. }))) => match event {
+                    EchoesEvent::SessionInit { .. } => got_init = true,
+                    EchoesEvent::MessageChunk { text: t } => text.push_str(&t),
+                    EchoesEvent::TurnCompleted { .. } => {
+                        got_done = true;
+                        break;
+                    }
+                    EchoesEvent::Error { message } => panic!("engine error: {message}"),
+                    _ => {}
+                },
+                _ => break,
+            }
+        }
+
+        assert!(got_init, "SessionInit が topic に届く");
+        assert!(got_done, "TurnCompleted が topic に届く");
+        assert!(text.to_uppercase().contains("PONG"), "本文 PONG: {text:?}");
     }
 }

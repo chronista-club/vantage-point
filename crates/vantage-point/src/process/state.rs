@@ -144,6 +144,14 @@ pub(crate) struct AppState {
     /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
     /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
     pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// Act II (doc 30): lane → EchoesAgentHost（headless claude engine）。
+    ///
+    /// `echoes_submit` の初回で lazy spawn し、以降の submit は同 host を再利用する。
+    /// key は LaneAddress の Display 形（terminal_pumps と同じ）。engine は会話を保持するため
+    /// terminal pump のような demand-driven ではなく、submit 契機で常駐する。
+    pub echoes_hosts: Arc<RwLock<HashMap<String, crate::echoes::EchoesAgentHost>>>,
+    /// Act II: lane → echoes_pump JoinHandle（EchoesEvent → topic route、host と対）。
+    pub echoes_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// Agent 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。
     ///
     /// **World mode (`run_world`) でのみ Some**、SP mode (`run`) では None。delegation record は
@@ -438,6 +446,8 @@ pub(crate) async fn build_test_app_state(
         world_capabilities: None,
         lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
+        echoes_hosts: Arc::new(RwLock::new(HashMap::new())),
+        echoes_pumps: Arc::new(RwLock::new(HashMap::new())),
         // test fixture は SP 相当 (World store 無し)。delegation の store test は
         // capability::delegation_store の単体 test が担う。
         delegation_store: None,
