@@ -247,6 +247,16 @@ pub struct LaneInfo {
     /// Phase 5-D: Performer Lane のみ有効、 git workspace の状態 snapshot。
     #[serde(default)]
     pub performer_status: Option<PerformerStatusWire>,
+    /// doc 33: Console のエンジンモード（"tui" | "chat"）。default = "tui"（wire 後方互換）。
+    /// chat lane は engine-less（pid=None）が正常形なので、Dead-lane auto-respawn を
+    /// 本 field で gate する（#683 再演防止）。
+    #[serde(default = "default_console_mode")]
+    pub console_mode: String,
+}
+
+/// LaneInfo.console_mode の serde default（旧 SP からの wire に field が無い時）。
+fn default_console_mode() -> String {
+    "tui".to_string()
 }
 
 /// Phase 5-D: vantage-point 側 `lane::commands::PerformerStatus` の wire shape。

@@ -39,10 +39,14 @@ pub struct EchoesHostConfig {
 }
 
 /// lane 単位の headless claude engine host。
+///
+/// doc 33: LanePool のエンジンスロットに保持される。`RwLock<LanePool>` の **read lock 下で
+/// submit** できるよう、stdin は内部 `tokio::sync::Mutex` で持つ（`submit(&self)`）。
 pub struct EchoesAgentHost {
     child: Child,
-    stdin: tokio::process::ChildStdin,
+    stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
     event_tx: broadcast::Sender<EchoesEvent>,
+    pid: Option<u32>,
 }
 
 impl EchoesAgentHost {
@@ -144,10 +148,12 @@ impl EchoesAgentHost {
             }
         });
 
+        let pid = child.id();
         Ok(Self {
             child,
-            stdin,
+            stdin: tokio::sync::Mutex::new(stdin),
             event_tx,
+            pid,
         })
     }
 
@@ -156,16 +162,24 @@ impl EchoesAgentHost {
         self.event_tx.subscribe()
     }
 
+    /// engine プロセスの pid（spawn 直後に採取。LaneInfo.pid に載せる）。
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
     /// ユーザープロンプトを engine に投入する（1 ターン開始）。
-    pub async fn submit(&mut self, prompt: &str) -> anyhow::Result<()> {
+    ///
+    /// `&self`: 内部 Mutex で stdin を直列化（LanePool read lock 下から呼べる）。
+    pub async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
         let json = user_message_json(prompt);
-        self.stdin.write_all(json.as_bytes()).await?;
-        self.stdin.write_all(b"\n").await?;
-        self.stdin.flush().await?;
+        let mut stdin = self.stdin.lock().await;
+        stdin.write_all(json.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
         Ok(())
     }
 
-    /// engine プロセスを停止する。
+    /// engine プロセスを停止する（drop でも kill_on_drop が効くが、明示停止用）。
     pub async fn stop(&mut self) -> anyhow::Result<()> {
         self.child.kill().await?;
         Ok(())

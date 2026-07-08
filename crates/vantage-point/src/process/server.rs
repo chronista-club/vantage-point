@@ -217,8 +217,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             super::lane_capabilities::LaneCapabilitiesPool::new(),
         ))),
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        echoes_hosts: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        echoes_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // SP mode は delegation store を持たない (World 中央 store に proxy する)。
         delegation_store: None,
     });
@@ -698,8 +696,6 @@ pub async fn run_world(
         lane_capabilities: None,
         // S2: World mode は SP の per-lane pump を持たない (terminal pump は SP scope)。
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        echoes_hosts: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        echoes_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // 委譲 (delegation) の World 中央 store (doc 28 §6)。World mode のみ Some。
         delegation_store,
     });

@@ -348,12 +348,12 @@ async fn handle_terminal_write(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// Act II (doc 32): echoes プロンプト投入。
+/// Act II (doc 33): echoes プロンプト投入。
 ///
 /// surface (vp-app) → World canvas channel → SP control → 本 dispatch。
-/// 当該 Lane の [`EchoesAgentHost`] を lazy spawn（初回のみ）し、prompt を submit する。
-/// engine が吐く EchoesEvent は echoes_pump 経由で `process/echoes/data/{lane}/event` に流れ、
-/// vp-app へ届く（terminal_write の Act II 対応）。
+/// **mode=chat が前提**（法: 1 lane 高々 1 エンジン。tui のまま submit は Err で弾き、
+/// 生きた TUI を暗黙に殺さない）。engine は LanePool が lazy spawn（初回のみ）し、
+/// EchoesEvent は echoes_pump 経由で `process/echoes/data/{lane}/event` に流れる。
 async fn handle_echoes_submit(
     state: &AppState,
     payload: serde_json::Value,
@@ -366,60 +366,69 @@ async fn handle_echoes_submit(
     if prompt.is_empty() {
         return Err("echoes_submit: prompt 未指定".to_string());
     }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_submit: lane パース失敗: {lane}"))?;
 
-    ensure_echoes_host(state, lane).await?;
-
-    let mut hosts = state.echoes_hosts.write().await;
-    let host = hosts
-        .get_mut(lane)
-        .ok_or_else(|| format!("echoes_submit: host 起動失敗 (lane={lane})"))?;
-    host.submit(prompt)
+    // ensure（mode ガード + lazy spawn は LanePool = 法の番人が行う）。
+    state
+        .lane_pool
+        .write()
         .await
-        .map_err(|e| format!("echoes_submit 失敗: {e}"))?;
+        .ensure_chat_engine(&addr, &state.topic_router)
+        .map_err(|e| format!("echoes_submit: {e}"))?;
+
+    // submit（read lock — 他 lane の操作をブロックしない）。
+    let submit_result = state
+        .lane_pool
+        .read()
+        .await
+        .submit_chat(&addr, prompt)
+        .await;
+    if let Err(e) = submit_result {
+        // self-heal: engine が死んでいた場合は落として 1 回だけ張り直す。
+        tracing::warn!("echoes_submit 失敗 → engine 再起動して retry: {e}");
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.drop_chat_engine(&addr);
+            pool.ensure_chat_engine(&addr, &state.topic_router)
+                .map_err(|e| format!("echoes_submit: engine 再起動失敗: {e}"))?;
+        }
+        state
+            .lane_pool
+            .read()
+            .await
+            .submit_chat(&addr, prompt)
+            .await
+            .map_err(|e| format!("echoes_submit 失敗（retry 後）: {e}"))?;
+    }
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// 当該 lane の EchoesAgentHost を確保する（無ければ spawn + echoes_pump 起動）。
+/// Act II (doc 33): Console のエンジンモード切替。
 ///
-/// cwd は PR1 では `state.project_dir`（conductor 前提）。performer の worker_dir 対応は後続。
-/// resume は cc_session から引く（Act I ⇄ II / SP 再起動で同一 session を継続）。
-async fn ensure_echoes_host(state: &AppState, lane: &str) -> Result<(), String> {
-    // check-and-spawn を hosts の write lock 下で atomic に行い、二重 spawn を防ぐ。
-    let mut hosts = state.echoes_hosts.write().await;
-    if hosts.contains_key(lane) {
-        return Ok(());
+/// `{lane, mode: "tui"|"chat"}`。遷移の実体（旧エンジン stop → 永続 → 新エンジン spawn）は
+/// `LanePool::set_console_mode`。切替後の同一会話継続は cc_session `--resume` が担う。
+async fn handle_console_set_mode(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("console_set_mode: lane 未指定".to_string());
     }
+    let mode_str = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+    let mode = crate::lane::console_mode::ConsoleMode::parse(mode_str)
+        .ok_or_else(|| format!("console_set_mode: mode 不正: {mode_str:?}（tui|chat）"))?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
-        .ok_or_else(|| format!("echoes_submit: lane パース失敗: {lane}"))?;
-    let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
-    let resume = crate::lane::cc_session::last(&addr.project, &lane_label);
+        .ok_or_else(|| format!("console_set_mode: lane パース失敗: {lane}"))?;
 
-    let host = crate::echoes::EchoesAgentHost::spawn(crate::echoes::EchoesHostConfig {
-        cwd: state.project_dir.clone(),
-        project: addr.project.clone(),
-        lane: lane_label,
-        resume_session_id: resume,
-        model: None,
-        claude_cli_path: None,
-    })
-    .map_err(|e| format!("echoes host spawn 失敗: {e}"))?;
-
-    let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(
-        lane.to_string(),
-        host.subscribe(),
-        state.topic_router.clone(),
-    );
-    if let Some(old) = state
-        .echoes_pumps
+    state
+        .lane_pool
         .write()
         .await
-        .insert(lane.to_string(), pump)
-    {
-        old.abort();
-    }
-    hosts.insert(lane.to_string(), host);
-    tracing::info!("EchoesAgentHost start (lane={lane})");
-    Ok(())
+        .set_console_mode(&addr, mode)
+        .map_err(|e| format!("console_set_mode 失敗: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "mode": mode.as_str()}))
 }
 
 /// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
@@ -680,6 +689,7 @@ pub(crate) async fn dispatch_process_method(
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
         "echoes_submit" => handle_echoes_submit(state, payload).await,
+        "console_set_mode" => handle_console_set_mode(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
         "lane_nudge" => handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
@@ -1220,6 +1230,7 @@ mod tests {
             let mut pool = state.lane_pool.write().await;
             // delete は lanes map (LaneInfo) を remove するので LaneInfo + PtySlot 両方を登録する。
             pool.insert(LaneInfo {
+                console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
                 kind: LaneKind::Performer,
@@ -1420,6 +1431,31 @@ mod tests {
         );
     }
 
+    /// C1 test 用の chat-mode conductor LaneInfo を pool に登録する（claude 不要）。
+    async fn insert_test_lane(
+        state: &crate::process::state::AppState,
+        project: &str,
+        mode: crate::lane::console_mode::ConsoleMode,
+    ) -> crate::process::lanes_state::LaneAddress {
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        let addr = LaneAddress::conductor(project);
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: mode,
+            id: Default::default(),
+            address: addr.clone(),
+            kind: LaneKind::Conductor,
+            name: None,
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+        });
+        addr
+    }
+
     /// echoes_submit の lane / prompt 欠落は graceful Err（claude 不要）。
     #[tokio::test]
     async fn echoes_submit_missing_fields_is_graceful() {
@@ -1447,11 +1483,86 @@ mod tests {
             .is_err(),
             "prompt 欠落は Err"
         );
-        // host は一切 spawn されない。
-        assert!(state.echoes_hosts.read().await.is_empty());
+        // pool 未登録 lane への submit も graceful Err（engine spawn は起きない）。
+        assert!(
+            dispatch_process_method(
+                &state,
+                "echoes_submit",
+                serde_json::json!({ "lane": "vp/conductor", "prompt": "hi" })
+            )
+            .await
+            .is_err(),
+            "未登録 lane は Err"
+        );
     }
 
-    /// 実機統合: echoes_submit が host を lazy spawn し、EchoesEvent が
+    /// doc 33 の法: mode=tui の lane への echoes_submit は Err（暗黙切替しない）。
+    /// claude 不要 — mode ガードは engine spawn 前に弾く。
+    #[tokio::test]
+    async fn echoes_submit_rejected_in_tui_mode() {
+        use super::dispatch_process_method;
+        use crate::lane::console_mode::ConsoleMode;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        insert_test_lane(&state, "vptest-c1-tui", ConsoleMode::Tui).await;
+        let err = dispatch_process_method(
+            &state,
+            "echoes_submit",
+            serde_json::json!({ "lane": "vptest-c1-tui/conductor", "prompt": "hi" }),
+        )
+        .await
+        .expect_err("tui mode は Err");
+        assert!(
+            err.contains("console_set_mode") || err.contains("mode"),
+            "切替を促すメッセージ: {err}"
+        );
+    }
+
+    /// console_set_mode の入力検証（claude 不要。engine-less lane の tui→chat 遷移も確認）。
+    #[tokio::test]
+    async fn console_set_mode_validates_and_transitions() {
+        use super::dispatch_process_method;
+        use crate::lane::console_mode::ConsoleMode;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // mode 不正 / lane 不正
+        assert!(
+            dispatch_process_method(
+                &state,
+                "console_set_mode",
+                serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "gui" })
+            )
+            .await
+            .is_err(),
+            "mode 不正は Err"
+        );
+        // engine-less の tui lane → chat へ遷移（PTY 不在でも成立、registry が更新される）
+        let addr = insert_test_lane(&state, "vptest-c1-sm", ConsoleMode::Tui).await;
+        let res = dispatch_process_method(
+            &state,
+            "console_set_mode",
+            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+        )
+        .await
+        .expect("tui→chat ok");
+        assert_eq!(res["mode"], "chat");
+        assert_eq!(
+            state.lane_pool.read().await.console_mode(&addr),
+            Some(ConsoleMode::Chat)
+        );
+        // 同一 mode への再切替は no-op Ok
+        dispatch_process_method(
+            &state,
+            "console_set_mode",
+            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+        )
+        .await
+        .expect("chat→chat no-op ok");
+    }
+
+    /// 実機統合: mode=chat の lane への echoes_submit が engine を lazy spawn し、EchoesEvent が
     /// `process/echoes/data/{lane}/event` topic に届く SP 終端 round-trip を検証する。
     /// `cargo test -p vantage-point --ignored echoes_submit_roundtrip`（要 claude CLI）。
     #[tokio::test]
@@ -1459,27 +1570,29 @@ mod tests {
     async fn echoes_submit_roundtrip() {
         use super::dispatch_process_method;
         use crate::echoes::EchoesEvent;
+        use crate::lane::console_mode::ConsoleMode;
         use crate::process::state::build_test_app_state;
         use crate::protocol::ProcessMessage;
         use std::time::Duration;
 
         let state = build_test_app_state(None).await;
+        // doc 33: submit には mode=chat の lane が pool に要る。
+        // project 名はテスト固有にする — 実在 project だと cc_session::last が本物の
+        // session id を返し、temp cwd との不整合で resume が失敗する。
+        insert_test_lane(&state, "vptest-c1-rt", ConsoleMode::Chat).await;
         // echoes data は非 retained なので submit 前に subscribe。
         let (_id, mut srx) = state
             .topic_router
-            .subscribe("process/echoes/data/vp~conductor/event")
+            .subscribe("process/echoes/data/vptest-c1-rt~conductor/event")
             .await;
 
         dispatch_process_method(
             &state,
             "echoes_submit",
-            serde_json::json!({ "lane": "vp/conductor", "prompt": "Reply with exactly: PONG" }),
+            serde_json::json!({ "lane": "vptest-c1-rt/conductor", "prompt": "Reply with exactly: PONG" }),
         )
         .await
         .expect("echoes_submit ok");
-
-        // 同一 lane の 2 回目 submit は host を再利用（新 spawn しない）。
-        assert_eq!(state.echoes_hosts.read().await.len(), 1);
 
         let mut got_init = false;
         let mut text = String::new();

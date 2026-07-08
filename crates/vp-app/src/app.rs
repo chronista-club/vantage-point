@@ -1474,13 +1474,18 @@ fn maybe_respawn_dead_lane(
         lanes
             .iter()
             .find(|l| l.address.key() == addr)
-            .map(|l| (path.clone(), l.pid))
+            .map(|l| (path.clone(), l.pid, l.console_mode.clone()))
     });
-    let Some((project_path, pid)) = entry else {
+    let Some((project_path, pid, console_mode)) = entry else {
         return; // lane 未知 (まだ LanesLoaded 来てない等) — 後続の LanesLoaded で再評価される
     };
     if pid.is_some() {
         return; // Running、 respawn 不要
+    }
+    // doc 33 §3: chat mode の lane は engine-less (pid=None) が正常形。
+    // respawn 対象は「mode=tui かつ pid=None」のみ（chat lane を殺しに行かない — #683 再演防止）。
+    if console_mode == "chat" {
+        return;
     }
     // dedup: 既に respawn 進行中なら skip
     if !triggered.insert(addr.to_string()) {
@@ -2872,12 +2877,12 @@ pub fn run() -> anyhow::Result<()> {
             // Echoes Act II (doc 32): SP から受信した構造化イベントを当該 lane の Console pane に渡す。
             Event::UserEvent(AppEvent::EchoesEvent { lane, event }) => {
                 let script = format!(
-                    "window.vpEchoes && window.vpEchoes.handleEvent({}, {})",
+                    "window.vpConsole && window.vpConsole.handleEvent({}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
                     serde_json::to_string(&event).unwrap_or_else(|_| "null".into()),
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("vpEchoes.handleEvent 失敗 (lane={}): {}", lane, e);
+                    tracing::warn!("vpConsole.handleEvent 失敗 (lane={}): {}", lane, e);
                 }
             }
             // Echoes Act II: EchoesChatPane の submit → 当該 lane の echoes session に渡す。

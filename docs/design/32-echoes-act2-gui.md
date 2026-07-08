@@ -150,6 +150,8 @@ GUI が話す言葉を 1 つに固定する。エンジン追加時は SP 側に
 
 ### PR2 — 読む: vp-app 恒久ブリッジ + EchoesChatPane（a + 薄い配管 + e）
 
+> **再編（2026-07-09、doc 33）**: PR2a（Rust ブリッジ）実装後の構造リデザインにより、本 PR の残りは **doc 33 の C1（Console 骨格 = engine 排他スロット + console_mode + vpConsole facade）→ C2（ChatView）** に分割・置換された。エンジン排他の不変条件と reconcile 安全（chat lane を Dead 扱いしない）が C1 で先行する。以降の実装順序の SSOT は **doc 33 §7**。
+
 - **vp-app 恒久ブリッジ**（PR1 から統合、throwaway でない）: `spawn_echoes_session`（`spawn_terminal_session` 同型）で `process/echoes/data/{lane}/event` を "canvas" channel 購読 → `AppEvent::EchoesEvent { lane, event: Value }` → JS へ。IPC `echoes:submit {lane, prompt}` → `echoes_submit` request。⚠️ lane reconcile 中枢（`terminal_sessions` map 隣接）を触るため teardown バグ（memory: performer console snapshot teardown）に注意
 - vp-app に `EchoesChatPane`（SolidJS + creo-ui、marked + mermaid は既存 dep）
 - メッセージ流: streaming 描画（カーソル/フェード、§7）、code block、mermaid、thinking 折りたたみ

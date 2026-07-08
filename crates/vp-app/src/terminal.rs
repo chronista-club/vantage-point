@@ -156,7 +156,7 @@ pub enum AppEvent {
     TerminalResize { lane: String, cols: u16, rows: u16 },
     /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
     /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
-    /// event loop が `window.vpEchoes.handleEvent(lane, event)` で当該 lane の Console pane に渡す。
+    /// event loop が `window.vpConsole.handleEvent(lane, event)` で当該 lane の Console pane に渡す。
     EchoesEvent {
         lane: String,
         event: serde_json::Value,

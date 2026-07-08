@@ -90,6 +90,7 @@ import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
+import { installConsole } from "./console";
 import { renderDevices as renderBastetDevices } from "./bastet";
 import {
 	handleMessage as handleCanvasMessage,
@@ -404,6 +405,13 @@ console.info("[vp-bundle] vpFrame attached to window — bundle init complete");
 	clearPP,
 	appendPP,
 };
+
+// ===== Echoes Act II (doc 33): Console facade =====
+// window.vpConsole を公開（EchoesEvent の per-lane ring buffer + ChatView renderer 接続点）。
+// Rust event loop が `window.vpConsole.handleEvent(lane, event)` で EchoesEvent を届け、
+// `window.vpConsole.setMode(lane, mode)` でエンジンモードを通知する。
+// DevTools 検分: window.vpConsole.peek("<project>/conductor")
+installConsole();
 
 // ===== Bastet 🧲 device 一覧 render API =====
 // window.vpBastet.renderDevices(devices) で Bastet pane (pane-bastet) に接続中 device を render。

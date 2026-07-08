@@ -594,6 +594,7 @@ mod tests {
     fn test_lane(state: LaneState) -> LaneInfo {
         use crate::process::lanes_state::{LaneAddress, LaneKind};
         LaneInfo {
+            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::conductor("vp"),
             kind: LaneKind::Conductor,
