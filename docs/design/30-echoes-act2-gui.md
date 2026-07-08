@@ -134,13 +134,21 @@ GUI が話す言葉を 1 つに固定する。エンジン追加時は SP 側に
 - `EchoesEvent` enum（§4 の語彙、serde）と stream-json → EchoesEvent 翻訳層。**この PR で語彙を凍結**
 - session id は init イベントから直接 `cc_session.rs` に記録（wire hook 経由にしない。headless への wire hooks 注入要否は本 PR で判断・記録）
 - Unison channel `"echoes"`（仮）で配信 — canvas / lanes / terminal と同型パターンを踏襲
-- 【発見タスク】vp-app → SP の入力経路: 既存の xterm キー入力が PtySlot に届く経路を特定し、同じ口で「prompt submit」を通す
-- vp-app: デバッグ表示のみ（raw EchoesEvent JSON を pane に流す。`-d detail` デバッグパネル流用可）
+- 【発見タスク】vp-app → SP の入力経路: 既存の xterm キー入力が PtySlot に届く経路を特定 → `terminal_write` と同型の `echoes_submit` dispatch で通す ✅ 特定・実装済み
 
-**Exit criteria**: `vpd` dev 環境で、素朴な入力からプロンプトが往復し、イベント列が見える。SP 再起動後に同一セッションが resume で継続する。
+**Exit criteria（SP 側）**: ✅ **達成（2026-07-09）**。実 claude 統合テスト `echoes_submit_roundtrip` が dispatch→topic 終端で SessionInit/MessageChunk/TurnCompleted を通し、host 再利用も確認。SP 再起動後 resume は cc_session + `--resume` で構造的に担保（host 実装済）。
 
-### PR2 — 読む: EchoesChatPane（a + 薄い配管 + e）
+> **スコープ変更（2026-07-09 決定）**: PR1 の vp-app 側（デバッグ表示）は **PR2 に統合**。理由: 購読ループ + IPC submit は PR2 EchoesChatPane が再利用する恒久ブリッジであり、throwaway なデバッグ pane を挟むのは pre-MVP 方針に反する。SP 契約は自動テストで証明済みなので、vp-app は本番 Console UI（PR2）と一体で作る。**PR1 = SP 側で完了**。
 
+**PR1 成果物**（commit 20e9c6b / bc8b898 / ae93f73、mako/acp）:
+- `echoes/{event,translate,host}.rs` + `process/echoes_pump.rs`
+- `ProcessMessage::EchoesEvent` + topic `process/echoes/data/{lane}/event`
+- `unison_server: echoes_submit` dispatch + `ensure_echoes_host`（lazy spawn/再利用）
+- AppState `echoes_hosts`/`echoes_pumps`
+
+### PR2 — 読む: vp-app 恒久ブリッジ + EchoesChatPane（a + 薄い配管 + e）
+
+- **vp-app 恒久ブリッジ**（PR1 から統合、throwaway でない）: `spawn_echoes_session`（`spawn_terminal_session` 同型）で `process/echoes/data/{lane}/event` を "canvas" channel 購読 → `AppEvent::EchoesEvent { lane, event: Value }` → JS へ。IPC `echoes:submit {lane, prompt}` → `echoes_submit` request。⚠️ lane reconcile 中枢（`terminal_sessions` map 隣接）を触るため teardown バグ（memory: performer console snapshot teardown）に注意
 - vp-app に `EchoesChatPane`（SolidJS + creo-ui、marked + mermaid は既存 dep）
 - メッセージ流: streaming 描画（カーソル/フェード、§7）、code block、mermaid、thinking 折りたたみ
 - 薄い配管: tool 実行 1 行インジケータ（パルス）/ AskUserQuestion 最小ボタン（応答は PR1 の入力経路に相乗り）/ acceptEdits 既定
