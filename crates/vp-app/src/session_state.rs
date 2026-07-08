@@ -69,7 +69,20 @@ pub struct ProjectUiState {
 pub const GEOMETRY_MIN_WIDTH: f64 = 720.0;
 pub const GEOMETRY_MIN_HEIGHT: f64 = 480.0;
 
-/// 起動時に main window の位置 / サイズ / monitor を復元するための snapshot。
+/// Window の表示モード (= 通常ウィンドウ / 全画面)。 起動を跨いで復元する対象 (doc 30 §6.1)。
+/// serde default = `Windowed` ── 旧 session file (`display_mode` 不在) は通常ウィンドウ扱い。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayMode {
+    /// 通常ウィンドウ。 位置・サイズ = `WindowGeometry` の x/y/width/height。
+    #[default]
+    Windowed,
+    /// 全画面 (macOS の Space 分離 fullscreen = tao `Fullscreen::Borderless`)。
+    /// 復元は windowed 座標を base に build 後 `set_fullscreen` する (元の窓サイズを保つ)。
+    Fullscreen,
+}
+
+/// 起動時に main window の位置 / サイズ / monitor / 表示モードを復元するための snapshot。
 ///
 /// 単位は **LogicalPixel** (= scale_factor 込みの DPI 補正後座標)。 保存時に
 /// `outer_position().to_logical(scale_factor)` で取得し、 復元時に `with_position`
@@ -93,6 +106,11 @@ pub struct WindowGeometry {
     /// primary monitor 内に clamp する。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monitor: Option<String>,
+    /// 保存時の表示モード (通常 / 全画面)。 `#[serde(default)]` で旧 file は `Windowed`。
+    /// 全画面時は x/y/width/height に **直前の windowed 値**を保持し (fullscreen frame で
+    /// 上書きしない)、 復元時に windowed 座標 → build → `set_fullscreen` の順で戻す。
+    #[serde(default)]
+    pub display_mode: DisplayMode,
 }
 
 impl WindowGeometry {
@@ -268,6 +286,32 @@ impl SessionState {
     /// この instance の window geometry を更新する。
     pub fn set_window_geometry(&mut self, geom: WindowGeometry) {
         self.window_geometry = Some(geom);
+    }
+
+    /// この instance の表示モードのみ更新する (windowed 座標は保持)。
+    /// 全画面 save 時に呼ぶ ── `set_window_geometry` は fullscreen frame で windowed 値を
+    /// 潰すため、 mode だけ差し替えて元の窓サイズを残す。 `monitor` が Some なら全画面先の
+    /// display も更新。 既存 geometry が無ければ (= windowed save 前に即全画面) MIN サイズの
+    /// 箱を作って mode を立てる (実際には起動直後の初回 Resized で windowed geometry が先に入る)。
+    pub fn set_display_mode(&mut self, mode: DisplayMode, monitor: Option<String>) {
+        match self.window_geometry.as_mut() {
+            Some(g) => {
+                g.display_mode = mode;
+                if monitor.is_some() {
+                    g.monitor = monitor;
+                }
+            }
+            None => {
+                self.window_geometry = Some(WindowGeometry {
+                    width: GEOMETRY_MIN_WIDTH,
+                    height: GEOMETRY_MIN_HEIGHT,
+                    x: 0.0,
+                    y: 0.0,
+                    monitor,
+                    display_mode: mode,
+                });
+            }
+        }
     }
 
     /// この instance の valid geometry を取得 (= 起動時 restore 用)。 invalid なら None。
@@ -464,8 +508,69 @@ mod tests {
             x: 0.0,
             y: 0.0,
             monitor: None,
+            display_mode: DisplayMode::Windowed,
         });
         assert!(s.window_geometry().is_none());
+    }
+
+    #[test]
+    fn display_mode_defaults_to_windowed_on_legacy_file() {
+        // 旧 session file は display_mode を持たない → serde default で Windowed に埋まる。
+        let json = r#"{"window_geometry":{"width":1200.0,"height":800.0,"x":0.0,"y":0.0}}"#;
+        let parsed: SessionState = serde_json::from_str(json).unwrap();
+        let g = parsed.window_geometry().expect("valid geometry");
+        assert_eq!(g.display_mode, DisplayMode::Windowed);
+    }
+
+    #[test]
+    fn display_mode_round_trips() {
+        let mut s = SessionState::default();
+        s.set_window_geometry(WindowGeometry {
+            width: 1200.0,
+            height: 800.0,
+            x: 10.0,
+            y: 20.0,
+            monitor: Some("Built-in".into()),
+            display_mode: DisplayMode::Fullscreen,
+        });
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"display_mode\":\"fullscreen\""));
+        let parsed: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.window_geometry().unwrap().display_mode,
+            DisplayMode::Fullscreen
+        );
+    }
+
+    #[test]
+    fn set_display_mode_preserves_windowed_bounds() {
+        // 全画面 save は windowed 座標 (x/y/w/h) を潰さず mode + monitor だけ更新する。
+        let mut s = SessionState::default();
+        s.set_window_geometry(WindowGeometry {
+            width: 1200.0,
+            height: 800.0,
+            x: 10.0,
+            y: 20.0,
+            monitor: Some("Built-in".into()),
+            display_mode: DisplayMode::Windowed,
+        });
+        s.set_display_mode(DisplayMode::Fullscreen, Some("DELL".into()));
+        let g = s.window_geometry().expect("bounds 保持");
+        assert_eq!(g.width, 1200.0); // windowed 座標は保持
+        assert_eq!(g.height, 800.0);
+        assert_eq!(g.x, 10.0);
+        assert_eq!(g.display_mode, DisplayMode::Fullscreen); // mode は更新
+        assert_eq!(g.monitor.as_deref(), Some("DELL")); // monitor も更新
+    }
+
+    #[test]
+    fn set_display_mode_without_prior_geometry_creates_box() {
+        // windowed save 前に即全画面 (edge case) → MIN サイズの箱を作って mode を立てる。
+        let mut s = SessionState::default();
+        s.set_display_mode(DisplayMode::Fullscreen, None);
+        let g = s.window_geometry().expect("MIN 箱が作られる");
+        assert_eq!(g.display_mode, DisplayMode::Fullscreen);
+        assert_eq!(g.width, GEOMETRY_MIN_WIDTH);
     }
 
     #[test]
