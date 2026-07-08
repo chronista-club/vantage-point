@@ -22,6 +22,7 @@ pub mod device_input;
 #[cfg(feature = "midi")]
 pub mod device_profile;
 pub mod discovery;
+pub mod echoes;
 pub mod file_watcher;
 pub mod flow;
 #[cfg(feature = "midi")]
