@@ -69,6 +69,52 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     let mut lanes = pool.list();
     drop(pool); // git subprocess 中の lock を保たない (performer_status は数 100ms かかる事あり)
 
+    // 起動窓 self-heal: disk 上の intended performer で LanePool にまだ入っていない
+    // (= SP 再起動直後、bootstrap の SpawnLane がまだ処理されず pool に入る前) ものを
+    // Spawning(pid=null) で snapshot に merge する。
+    //
+    // 背景: F.8 B Convergent で disk-scan merge を撤去した結果、SP 再起動直後の初回 snapshot が
+    // conductor-only になり、vp-app の LanesLoaded reconcile が performer を「消えた」と誤判定して
+    // console を teardown する regression が発生していた。snapshot に常に intended performer を
+    // 含めることで根治する。pid=null なので vp-app は ensureLane せず(xterm を描画しない)、spawn
+    // 完了で pid が付いた次 snapshot で ensure される。steady-state では全 performer が pool 由来で
+    // 既に snapshot に居るため address key で dedup し無加算。
+    let project = std::path::Path::new(&state.project_dir)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let present: std::collections::HashSet<String> =
+        lanes.iter().map(|l| l.address.to_string()).collect();
+    let default_stand = crate::config::Config::load()
+        .unwrap_or_default()
+        .default_stand_or_echoes()
+        .to_string();
+    for entry in
+        crate::lane::commands::list_performers_for_repo(std::path::Path::new(&state.project_dir))
+    {
+        let address = crate::process::lanes_state::LaneAddress::performer(
+            project.clone(),
+            entry.name.clone(),
+        );
+        if present.contains(&address.to_string()) {
+            continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
+        }
+        lanes.push(LaneInfo {
+            id: crate::lane::lane_id::load_or_create(&project, &entry.name),
+            address,
+            kind: LaneKind::Performer,
+            name: Some(entry.name.clone()),
+            state: crate::process::lanes_state::LaneState::Spawning,
+            stand: default_stand.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: entry.path,
+            performer_status: None,
+            cc_session_id: None,
+        });
+    }
+
     // 既存 Performer の git status を populate
     for lane in lanes.iter_mut() {
         if matches!(lane.kind, LaneKind::Performer) {
@@ -680,17 +726,20 @@ mod core_tests {
         }
     }
 
-    /// F.8 B Convergent: disk-scan merge 撤去後の `build_lanes_snapshot` は
-    /// LanePool が空 → lanes 空を返す (disk dir が何があっても list に乗らない)。
-    /// 旧版は disk-scan で pid: None Inactive Performer を merge していた。
+    /// boot-window merge 後: `build_lanes_snapshot` は LanePool 由来 + `list_performers_for_repo`
+    /// の disk performer (pool 未登録分) を Spawning(pid=null) で merge する。ただし merge は
+    /// **実在する intended performer 限定** (`<project_dir>/.vp/lanes/*`) なので、
+    /// project_dir に performer worktree が無ければ (build_test_app_state は project_dir="" →
+    /// list_performers_for_repo 空) LanePool が空 → snapshot も空。
+    /// (performer 有りの merge 検証は project_dir を差せる fixture が要るため follow-up)
     #[tokio::test]
-    async fn build_lanes_snapshot_returns_only_lanepool_entries() {
+    async fn build_lanes_snapshot_empty_when_pool_and_disk_empty() {
         let state = crate::process::state::build_test_app_state(None).await;
-        // LanePool は build_test_app_state で空 (LanePool::new()) → 0 件
+        // LanePool 空 (LanePool::new()) + project_dir="" (performer 不在) → 0 件
         let lanes = build_lanes_snapshot(&state).await;
         assert!(
             lanes.is_empty(),
-            "LanePool が空なら disk に何があっても snapshot は空 (disk-scan merge 撤去済)"
+            "LanePool 空 + performer worktree 不在なら snapshot は空 (merge は intended performer 限定)"
         );
     }
 
