@@ -1443,6 +1443,21 @@ fn activate_lane(
     // genuine activation で高頻度発火しないため、 毎回 push しても focus 奪取 flood は起きない。
     push_sidebar_state(webview, sidebar_state);
     push_active_view(webview, sidebar_state);
+    // doc 33 C2: この lane の console_mode を WebView に同期する（xterm⇄chat 表示を確定 +
+    // Act toggle の宛先 consoleActiveLane を初期化）。lane の mode は LaneInfo から引く。
+    let mode = sidebar_state
+        .lanes_by_project
+        .values()
+        .flatten()
+        .find(|l| l.address.key() == address)
+        .map(|l| l.console_mode.clone())
+        .unwrap_or_else(|| "tui".to_string());
+    let script = format!(
+        "window.vpConsole && window.vpConsole.setMode({}, {})",
+        serde_json::to_string(address).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(&mode).unwrap_or_else(|_| "\"tui\"".into()),
+    );
+    let _ = webview.evaluate_script(&script);
     maybe_respawn_dead_lane(
         address,
         sidebar_state,
@@ -2901,6 +2916,49 @@ pub fn run() -> anyhow::Result<()> {
                     )
                 });
                 let _ = session.cmd_tx.send(EchoesCmd::Submit(prompt));
+            }
+            // doc 33 C2: Act toggle → SP console_set_mode。成功したら vpConsole.setMode で
+            // WebView の表示を切替える（成功後に反映 = SP が真実源）。
+            Event::UserEvent(AppEvent::ConsoleSetMode { lane, mode }) => {
+                let Some(path) = resolve_active_project_path(&sidebar_state) else {
+                    tracing::warn!("console:set_mode skip — active project 解決失敗");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                let mode_for_js = mode.clone();
+                let lane_for_js = lane.clone();
+                rt_handle.spawn(async move {
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "console_set_mode",
+                        serde_json::json!({ "lane": lane, "mode": mode }),
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            tracing::info!("console_set_mode ok: lane={lane_for_js} mode={mode_for_js}");
+                            // 表示切替は main thread の evaluate_script で行う必要があるため
+                            // ConsoleModeApplied event を投げ直す。
+                            let _ = proxy.send_event(AppEvent::ConsoleModeApplied {
+                                lane: lane_for_js,
+                                mode: mode_for_js,
+                            });
+                        }
+                        Err(e) => tracing::warn!("console_set_mode 失敗: {e}"),
+                    }
+                });
+            }
+            // doc 33 C2: console_set_mode 成功後、WebView に mode を反映（xterm⇄chat 表示切替）。
+            Event::UserEvent(AppEvent::ConsoleModeApplied { lane, mode }) => {
+                let script = format!(
+                    "window.vpConsole && window.vpConsole.setMode({}, {})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(&mode).unwrap_or_else(|_| "\"tui\"".into()),
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("vpConsole.setMode 失敗 (lane={}): {}", lane, e);
+                }
             }
             Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
                 // F6: WebView の save IPC を World process-proxy ask (pp_state_save) で SP に forward。

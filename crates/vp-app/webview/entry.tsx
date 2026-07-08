@@ -91,6 +91,7 @@ import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
 import { installConsole } from "./console";
+import { installChatView, CHATVIEW_CSS } from "./chatview";
 import { renderDevices as renderBastetDevices } from "./bastet";
 import {
 	handleMessage as handleCanvasMessage,
@@ -406,12 +407,66 @@ console.info("[vp-bundle] vpFrame attached to window — bundle init complete");
 	appendPP,
 };
 
-// ===== Echoes Act II (doc 33): Console facade =====
+// ===== Echoes Act II (doc 33): Console facade + ChatView =====
 // window.vpConsole を公開（EchoesEvent の per-lane ring buffer + ChatView renderer 接続点）。
 // Rust event loop が `window.vpConsole.handleEvent(lane, event)` で EchoesEvent を届け、
 // `window.vpConsole.setMode(lane, mode)` でエンジンモードを通知する。
 // DevTools 検分: window.vpConsole.peek("<project>/conductor")
-installConsole();
+const vpConsole = installConsole();
+
+// ChatView (C2): #console-chat-host に SolidJS ChatView を mount。scoped CSS を注入。
+const chatStyle = document.createElement("style");
+chatStyle.textContent = CHATVIEW_CSS;
+document.head.appendChild(chatStyle);
+const chatHost = document.getElementById("console-chat-host");
+const chatView = chatHost ? installChatView(chatHost, vpConsole) : null;
+
+// 現在 active な lane（toggle が console_set_mode を送る宛先）。
+let consoleActiveLane: string | null = null;
+
+// mode に応じて lane-host(xterm, World A) と console-chat(World B) を排他表示する。
+// ⚠️ World A の xterm ロジックには触れず、host コンテナの .active class だけ toggle する。
+const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
+	consoleActiveLane = lane;
+	const laneHost = document.getElementById("lane-host");
+	if (mode === "chat") {
+		chatHost?.classList.add("active");
+		laneHost?.classList.add("console-hidden");
+		chatView?.showLane(lane);
+	} else {
+		chatHost?.classList.remove("active");
+		laneHost?.classList.remove("console-hidden");
+	}
+};
+
+// vpConsole.setMode(lane, mode) が投げる CustomEvent を受けて表示を切替える
+// (Rust が lane 選択 / console_set_mode 成功時に setMode を呼ぶ)。
+document.addEventListener("vp:console-mode", (e) => {
+	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
+	if (detail?.lane) applyConsoleMode(detail.lane, detail.mode);
+});
+
+// Act toggle: #pane-terminal 右上の floating button。現在 mode を反転して console_set_mode を送る
+// (World B 所有、xterm/chat どちらの表示中でも常に押せる)。root(conductor) の切替を主眼とする。
+const paneTerminal = document.getElementById("pane-terminal");
+if (paneTerminal) {
+	const toggle = document.createElement("button");
+	toggle.className = "echoes-act-toggle";
+	toggle.textContent = "💬 Act II";
+	const syncLabel = (): void => {
+		const chatOn = chatHost?.classList.contains("active");
+		toggle.textContent = chatOn ? "⌨ Act I" : "💬 Act II";
+	};
+	document.addEventListener("vp:console-mode", syncLabel);
+	toggle.addEventListener("click", () => {
+		if (!consoleActiveLane) return;
+		const chatOn = chatHost?.classList.contains("active");
+		const next = chatOn ? "tui" : "chat";
+		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+		ipc?.postMessage(JSON.stringify({ t: "console:set_mode", lane: consoleActiveLane, mode: next }));
+	});
+	paneTerminal.appendChild(toggle);
+}
 
 // ===== Bastet 🧲 device 一覧 render API =====
 // window.vpBastet.renderDevices(devices) で Bastet pane (pane-bastet) に接続中 device を render。

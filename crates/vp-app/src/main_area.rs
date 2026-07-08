@@ -149,6 +149,11 @@ body{overflow:hidden;}
 #lane-host{position:absolute;inset:0;}
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
+/* doc 33 C2: Echoes Act II (Console GUI) mount 点。default 非表示、mode=chat で .active。
+   lane-host(xterm) と排他 — chat 表示中は lane-host を .console-hidden で隠す。 */
+#console-chat-host{position:absolute;inset:0;display:none;}
+#console-chat-host.active{display:block;}
+#lane-host.console-hidden{display:none;}
 .lane-pane .lane-term{padding:0;height:100%;width:100%;box-sizing:border-box;}
 /* どの Lane も無い時の placeholder (active class で表示制御、 default は表示) */
 #lane-empty{position:absolute;inset:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
@@ -304,6 +309,10 @@ body{overflow:hidden;}
        Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
   <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;">
     <div id="lane-host"></div>
+    <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
+         ChatView がここに render する。default hidden — console_mode=chat の時だけ .active で表示
+         (lane-host xterm と排他表示、entry.tsx の vp:console-mode listener が toggle)。 -->
+    <div id="console-chat-host"></div>
     <!-- empty placeholder: どの Lane も無い時に出す -->
     <div id="lane-empty" class="lane-empty active">
       <main>
