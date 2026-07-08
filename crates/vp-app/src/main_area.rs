@@ -98,7 +98,7 @@ pub const MAIN_AREA_HTML: &str = concat!(
 "#,
     include_str!("../assets/xterm.css"),
     r#"
-html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);}
+html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:'Gen Interface JP',var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 body{overflow:hidden;}
 /* WebView 統合 (step 3a): sidebar + main を 1 DOM に CSS flex で同居。
    app-shell が [sidebar-root | host] を横並び、editor-root は別 (floating overlay)。 */
@@ -213,12 +213,12 @@ body{overflow:hidden;}
    pp-content-persist follow-up: font-family を Mizolet 先頭で指定 (= みぞれ system install を
    WebKit で確実に拾わせる、 日本語 family 名先頭は resolve 不安定)。 font-size / 背景は別 step。 */
 .pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
-  font-family:Mizolet,'みぞれ',system-ui,sans-serif;}
+  font-family:Mizolet,'みぞれ',system-ui,sans-serif;font-weight:300;}
 /* pp-content-persist follow-up: PP pane 全体 (header / breadcrumb / button 等) も みぞれ family へ。
    pane の他 CSS は触らず font-family のみ override。 */
 #pane-paisley-park,#pane-paisley-park .pane-header,#pane-paisley-park .pane-name,
 #pane-paisley-park .pane-breadcrumb,#pane-paisley-park .pane-action-btn{
-  font-family:Mizolet,'みぞれ',system-ui,sans-serif;}
+  font-family:Mizolet,'みぞれ',system-ui,sans-serif;font-weight:300;}
 .pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
 .pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
 .pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
