@@ -197,6 +197,15 @@ impl TopicRouter {
                     Self::terminal_lane_key(lane)
                 )
             }
+            // === Echoes Act II（構造化会話 GUI）===
+            // doc 30: per-lane の構造化イベント stream。category(seg2)=data → 非 retained。
+            // lane address ('/' 含む) は seg3 で 1 token 化（terminal と同じ規則）。
+            ProcessMessage::EchoesEvent { lane, .. } => {
+                format!(
+                    "process/echoes/data/{}/event",
+                    Self::terminal_lane_key(lane)
+                )
+            }
 
             // === Debug（デバッグ情報）===
             ProcessMessage::DebugInfo { .. } => "process/debug/log".to_string(),
@@ -493,6 +502,21 @@ mod tests {
             data: String::new(),
         });
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_message_to_topic_echoes_event() {
+        // doc 30: Echoes Act II の per-lane 構造化イベント。lane の '/' は '~' に encode、
+        // category(seg2)=data なので 非 retained（ephemeral stream、terminal と同じ規則）。
+        let msg = ProcessMessage::EchoesEvent {
+            lane: "vp/performer/foo".to_string(),
+            event: crate::echoes::EchoesEvent::MessageChunk {
+                text: "hi".to_string(),
+            },
+        };
+        let topic = TopicRouter::message_to_topic(&msg);
+        assert_eq!(topic, "process/echoes/data/vp~performer~foo/event");
+        assert!(!TopicPath::parse(&topic).is_retained());
     }
 
     #[test]

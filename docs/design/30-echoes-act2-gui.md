@@ -178,6 +178,7 @@ GUI が話す言葉を 1 つに固定する。エンジン追加時は SP 側に
 ## 9. 未決事項
 
 - `EchoesAgentHost` / channel 名 / Content kind（`echoes` mode: chat、doc 05 案）の最終命名 → stands.rs / 実装時
+- pane の役割語彙（EchoesChatPane = **Console**、表示面 = **Monitor**、媒体 = **Canvas**）は **doc 31** で確定 — PR2 は doc 31 の語彙で実装する
 - performer lane への Act II 適用範囲（conductor 先行か）
 - plan mode（claude の permission mode）の Act II での扱い
 - vp-mdast への置換タイミング（MVP は marked で開始）

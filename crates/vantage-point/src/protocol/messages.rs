@@ -167,6 +167,14 @@ pub enum ProcessMessage {
     /// (raw WebSocket `/ws/terminal` 退役の置換)。 session 系 `TerminalOutput` とは別系統
     /// (こちらは LanePool スコープ、 lane address を持つ)。
     LaneTerminalOutput { lane: String, data: String },
+    /// Echoes Act II（構造化会話 GUI）の翻訳済みイベント（per-lane）。doc 30。
+    /// `EchoesAgentHost` が headless claude の stream-json を [`crate::echoes::EchoesEvent`]
+    /// へ翻訳し、`process/echoes/data/{lane}/event` topic に乗せて vp-app へ届ける。
+    /// LaneTerminalOutput（Act I の生 PTY）とは別系統の per-lane ephemeral stream。
+    EchoesEvent {
+        lane: String,
+        event: crate::echoes::EchoesEvent,
+    },
     /// トレースログエントリ（debug.log ファイルからの配信）
     TraceLog {
         ts: String,

@@ -9,11 +9,14 @@
 //! ## モジュール構成（PR1 時点）
 //! - [`event`]: GUI 語彙 [`EchoesEvent`]（engine 非依存、PR1 で凍結）
 //! - [`translate`]: claude stream-json → [`EchoesEvent`] 翻訳層
+//! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で常駐駆動
 //!
-//! host（常駐 spawn / stdin 送信 / respawn）と Unison 配信は PR1 の後続で追加。
+//! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。
 
 pub mod event;
+pub mod host;
 pub mod translate;
 
 pub use event::{EchoesEvent, PlanEntry};
+pub use host::{EchoesAgentHost, EchoesHostConfig};
 pub use translate::EchoesTranslator;
