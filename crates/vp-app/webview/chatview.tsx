@@ -44,85 +44,73 @@ const [activeLane, setActiveLane] = createSignal<string | null>(null)
 function laneChat(lane: string): LaneChat {
   let lc = laneChats.get(lane)
   if (!lc) {
-    const [state, set] = createStore<ChatState>({
-      header: null,
-      items: [],
-      plan: [],
-      streaming: false,
-      cost: null,
-    })
+    const [state, set] = createStore<ChatState>(emptyChatState())
     lc = { state, set }
     laneChats.set(lane, lc)
   }
   return lc
 }
 
-/** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。 */
-function foldEvent(lane: string, ev: EchoesEvent): void {
-  const { set } = laneChat(lane)
+/**
+ * EchoesEvent を ChatState に畳み込む純粋 mutation（reducer 本体）。
+ *
+ * solid の `produce` draft でも plain object でも同じに動く（＝ store 非依存 = 単体テスト可能）。
+ * 会話モデリングの肝: message_chunk / thought_chunk は末尾同種 item に append（accumulate）、
+ * tool_call_update は id 一致で done 化。ここが Act II の描画正しさの中核。
+ */
+export function foldInto(s: ChatState, ev: EchoesEvent): void {
   switch (ev.kind) {
     case 'session_init':
-      set('header', { model: ev.model, sessionId: ev.session_id })
+      s.header = { model: ev.model, sessionId: ev.session_id }
       break
-    case 'message_chunk':
-      set(
-        produce((s) => {
-          s.streaming = true
-          const last = s.items[s.items.length - 1]
-          if (last && last.kind === 'assistant') last.text += ev.text
-          else s.items.push({ kind: 'assistant', text: ev.text })
-        }),
-      )
+    case 'message_chunk': {
+      s.streaming = true
+      const last = s.items[s.items.length - 1]
+      if (last && last.kind === 'assistant') last.text += ev.text
+      else s.items.push({ kind: 'assistant', text: ev.text })
       break
-    case 'thought_chunk':
-      set(
-        produce((s) => {
-          const last = s.items[s.items.length - 1]
-          if (last && last.kind === 'thinking') last.text += ev.text
-          else s.items.push({ kind: 'thinking', text: ev.text })
-        }),
-      )
+    }
+    case 'thought_chunk': {
+      const last = s.items[s.items.length - 1]
+      if (last && last.kind === 'thinking') last.text += ev.text
+      else s.items.push({ kind: 'thinking', text: ev.text })
       break
+    }
     case 'tool_call':
-      set(
-        produce((s) => {
-          s.items.push({ kind: 'tool', id: ev.id, name: ev.name, done: false, error: false })
-        }),
-      )
+      s.items.push({ kind: 'tool', id: ev.id, name: ev.name, done: false, error: false })
       break
-    case 'tool_call_update':
-      set(
-        produce((s) => {
-          const t = s.items.find(
-            (i) => i.kind === 'tool' && i.id === ev.tool_use_id,
-          ) as Extract<ChatItem, { kind: 'tool' }> | undefined
-          if (t) {
-            t.done = true
-            t.error = ev.is_error ?? false
-          }
-        }),
-      )
+    case 'tool_call_update': {
+      const t = s.items.find((i) => i.kind === 'tool' && i.id === ev.tool_use_id) as
+        | Extract<ChatItem, { kind: 'tool' }>
+        | undefined
+      if (t) {
+        t.done = true
+        t.error = ev.is_error ?? false
+      }
       break
+    }
     case 'plan':
-      set('plan', ev.entries)
+      s.plan = ev.entries
       break
     case 'turn_completed':
-      set(
-        produce((s) => {
-          s.streaming = false
-          s.cost = ev.cost_usd ?? s.cost
-        }),
-      )
+      s.streaming = false
+      s.cost = ev.cost_usd ?? s.cost
       break
     case 'error':
-      set(
-        produce((s) => {
-          s.streaming = false
-          s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
-        }),
-      )
+      s.streaming = false
+      s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
   }
+}
+
+/** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。 */
+function foldEvent(lane: string, ev: EchoesEvent): void {
+  laneChat(lane).set(produce((s) => foldInto(s, ev)))
+}
+
+/** 空の ChatState（store 初期値 + テスト用）。 */
+export function emptyChatState(): ChatState {
+  return { header: null, items: [], plan: [], streaming: false, cost: null }
 }
 
 // ---------------------------------------------------------------------------
