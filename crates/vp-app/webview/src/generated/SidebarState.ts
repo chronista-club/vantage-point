@@ -89,4 +89,16 @@ lane_inboxes?: { [key in string]?: MessageState },
  * Bastet 🧲 接続中 device 一覧 (`bastet.device_connected` / `disconnected` で更新)。
  * JS 側は Bastet pane に device list を render する。 disk persist 不要 (起動時 0)。
  */
-bastet_devices?: Array<DeviceSnapshot>, };
+bastet_devices?: Array<DeviceSnapshot>, 
+/**
+ * doc 30 §5-3 / lanes 購読 self-heal: per-project の World "lanes" channel 購読フェーズ。
+ * Key: project_path。 Value は 3 値モデル (entry 有無 + 2 文字列):
+ *
+ * - entry なし (absent) = 初期 (購読開始〜初回 snapshot 未受信)。 `hintFor` は `📡 loading lanes…`
+ * - `"stalled"` = open / subscribe / 初回 snapshot が timeout (World lanes channel 無応答 or QUIC 未接続)。 `LanesError` で挿入。 `hintFor` は `⚠️ lane 接続が停滞 — daemon restart で復帰`
+ * - `"ready"` = snapshot を 1 度でも受信 (`LanesLoaded` で挿入、 以後 entry は残る)。 lane 0 本なら `hintFor` は `📡 lane なし`
+ *
+ * stall→ready は復帰時の snapshot で上書きされ自動解消 (self-heal と連動)。 起動時は全 project entry
+ * なしなので `skip_serializing_if = is_empty` で初期は wire に出ない (disk 非永続なので実害なし)。
+ */
+lane_sub_state?: { [key in string]?: string }, };

@@ -73,7 +73,11 @@ function laneConnector(
  * 旧 SIDEBAR_HTML のロジックを踏襲 — SP 未起動/過渡/error は spinner で永久ロード
  * 表示にならないよう、 state 別に明示的な hint を返す。
  */
-function hintFor(proc: ProjectPaneState, laneCount: number): string | null {
+function hintFor(
+	proc: ProjectPaneState,
+	laneCount: number,
+	subState: string | undefined,
+): string | null {
 	const s = proc.state;
 	if (!s || s === "stopped") {
 		return proc.expanded ? "⏳ SP starting…" : "💤 SP stopped — open to spawn";
@@ -81,13 +85,25 @@ function hintFor(proc: ProjectPaneState, laneCount: number): string | null {
 	if (s === "starting") return "⏳ SP starting…";
 	if (s === "stopping") return "⏳ SP stopping…";
 	if (s === "error") return "⚠️ SP error — restart で復帰";
-	if (laneCount === 0) return "📡 loading lanes…";
+	// lane 供給 (World "lanes" channel) の可用性を SP state とは別軸で見る (doc 30 §5-3)。
+	// QUIC 購読が停滞 (open/subscribe/snapshot timeout or QUIC 未接続) したら `loading lanes` に
+	// 潰さず、 daemon restart で復帰できると surface する。 snapshot 受信で "ready" に解消。
+	if (laneCount === 0) {
+		if (subState === "stalled") return "⚠️ lane 接続が停滞 — daemon restart で復帰";
+		if (subState === "ready") return "📡 lane なし";
+		return "📡 loading lanes…"; // 初期 (購読開始〜初回 snapshot 待ち)
+	}
 	return null;
 }
 
 export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 	const lanes = () => sidebar.lanes_by_project[props.proc.path] ?? [];
-	const hint = () => hintFor(props.proc, lanes().length);
+	const hint = () =>
+		hintFor(
+			props.proc,
+			lanes().length,
+			sidebar.lane_sub_state?.[props.proc.path],
+		);
 	// L1 lifecycle: SP の presence（daemon-canonical、`/api/health` の processes[] 由来）。
 	// entry 不在（旧 daemon / 未取得）は "unregistered" 扱いで ○（dim）。
 	const presence = () =>
