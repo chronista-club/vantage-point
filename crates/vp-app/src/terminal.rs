@@ -154,6 +154,16 @@ pub enum AppEvent {
     /// terminal S4: WebView からの resize。 event loop が当該 lane の terminal session に渡し、
     /// canvas channel 上り request `terminal_resize` で SP へ。
     TerminalResize { lane: String, cols: u16, rows: u16 },
+    /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
+    /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
+    /// event loop が `window.vpEchoes.handleEvent(lane, event)` で当該 lane の Console pane に渡す。
+    EchoesEvent {
+        lane: String,
+        event: serde_json::Value,
+    },
+    /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
+    /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で SP へ。
+    EchoesSubmit { lane: String, prompt: String },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -196,6 +206,17 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     lane: lane.to_string(),
                     cols: cols as u16,
                     rows: rows as u16,
+                });
+            }
+        }
+        // Echoes Act II (doc 32): EchoesChatPane からのプロンプト投入。 lane + prompt 必須。
+        Some("echoes:submit") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let prompt = parsed.get("prompt").and_then(|v| v.as_str());
+            if let (Some(lane), Some(prompt)) = (lane, prompt) {
+                let _ = proxy.send_event(AppEvent::EchoesSubmit {
+                    lane: lane.to_string(),
+                    prompt: prompt.to_string(),
                 });
             }
         }

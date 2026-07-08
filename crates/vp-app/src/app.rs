@@ -852,6 +852,146 @@ async fn run_terminal_session(
     }
 }
 
+// =============================================================================
+// Echoes Act II (doc 32): per-lane echoes session — 構造化イベント購読 + prompt 投入
+// =============================================================================
+//
+// terminal session と同型だが **demand-driven**: lane reconcile には結合させず、
+// EchoesChatPane を開いた lane で初回 submit された時に lazy spawn する (SP 側 host の
+// lazy モデルと一致)。subscribe → submit の順で走るため取りこぼしなし。
+
+/// Echoes session への command (WebView → SP)。
+#[derive(Debug)]
+enum EchoesCmd {
+    /// プロンプト投入。 canvas channel 上り request `echoes_submit` で SP に送る。
+    Submit(String),
+}
+
+/// 1 lane の echoes session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
+struct LaneEchoes {
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<EchoesCmd>,
+}
+
+/// lane の echoes を World "canvas" channel に乗せる per-lane session を spawn。
+///
+/// `process/echoes/data/{lane_key}/event` を subscribe → SP host が emit する EchoesEvent を
+/// `AppEvent::EchoesEvent` で event loop に流し、 cmd (submit) は同 channel の上り request
+/// `echoes_submit` で SP に forward する (terminal session の Act II 対応)。
+fn spawn_echoes_session(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    conn: SharedWorldConn,
+    process_path: String,
+    lane_key: String,
+) -> LaneEchoes {
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    rt_handle.spawn(echoes_session_loop(
+        proxy,
+        conn,
+        process_path,
+        lane_key,
+        cmd_rx,
+    ));
+    LaneEchoes { cmd_tx }
+}
+
+/// echoes session の購読 → 再購読を司る long-lived ループ (terminal_session_loop と同型)。
+async fn echoes_session_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    mut conn: SharedWorldConn,
+    process_path: String,
+    lane_key: String,
+    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
+) {
+    loop {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_echoes_session(&proxy, &process_path, &lane_key, &client, &mut cmd_rx).await {
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => {}
+            Err(e) => {
+                tracing::warn!("echoes session error: lane={}: {}", lane_key, e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+}
+
+/// 1 回の echoes session: connect → `open_channel("canvas")` → subscribe(echoes pattern) →
+/// recv (EchoesEvent) / cmd (submit) の select ループ (run_terminal_session と同型)。
+async fn run_echoes_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    process_path: &str,
+    lane_key: &str,
+    client: &unison::ProtocolClient,
+    cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
+) -> Result<SubscriptionOutcome, String> {
+    use unison::network::MessageType;
+
+    let channel = client
+        .open_channel("canvas")
+        .await
+        .map_err(|e| format!("open canvas channel (echoes): {}", e))?;
+    let topic = format!("process/echoes/data/{}/event", lane_key.replace('/', "~"));
+    channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "subscribe",
+            &serde_json::json!({ "project_path": process_path, "pattern": topic }),
+        )
+        .await
+        .map_err(|e| format!("echoes subscribe handshake: {}", e))?;
+    tracing::info!(
+        "echoes session connected: lane={} topic={}",
+        lane_key,
+        topic
+    );
+
+    loop {
+        tokio::select! {
+            recvd = channel.recv() => {
+                let msg = match recvd {
+                    Ok(m) => m,
+                    Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+                };
+                if msg.msg_type != MessageType::Event || msg.method != "pane" {
+                    continue;
+                }
+                let payload = match msg.payload_as_value() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                // ProcessMessage::EchoesEvent { lane, event } の生 JSON。 event (EchoesEvent) を
+                // 抜いて lane_key 付きで JS に渡す (lane は subscription で確定済)。
+                if let Some(event) = payload.get("event")
+                    && proxy
+                        .send_event(AppEvent::EchoesEvent {
+                            lane: lane_key.to_string(),
+                            event: event.clone(),
+                        })
+                        .is_err()
+                {
+                    return Ok(SubscriptionOutcome::AppClosing);
+                }
+            }
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(EchoesCmd::Submit(prompt)) => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "echoes_submit",
+                                &serde_json::json!({ "lane": lane_key, "prompt": prompt }),
+                            )
+                            .await;
+                    }
+                    None => return Ok(SubscriptionOutcome::AppClosing),
+                }
+            }
+        }
+    }
+}
+
 /// F6 (doc 27 §3.4): vp-app → World process-proxy → SP の one-shot ask。
 ///
 /// 旧 SP HTTP 直結 (`reqwest http://127.0.0.1:{sp_port}/api/...`) の置換。 surface は World :32000
@@ -2051,6 +2191,10 @@ pub fn run() -> anyhow::Result<()> {
     // LanesLoaded で live lane に対し start、 消えた lane / app 終了で stop (= map から remove)。
     let mut terminal_sessions: std::collections::HashMap<String, LaneTerminal> =
         std::collections::HashMap::new();
+    // Echoes Act II (doc 32): per-lane echoes session registry (lane key → LaneEchoes)。
+    // terminal と違い demand-driven: EchoesSubmit の初回で lazy spawn (reconcile 非結合)。
+    let mut echoes_sessions: std::collections::HashMap<String, LaneEchoes> =
+        std::collections::HashMap::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
@@ -2724,6 +2868,34 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(session) = terminal_sessions.get(&lane) {
                     let _ = session.cmd_tx.send(TermCmd::Resize(cols, rows));
                 }
+            }
+            // Echoes Act II (doc 32): SP から受信した構造化イベントを当該 lane の Console pane に渡す。
+            Event::UserEvent(AppEvent::EchoesEvent { lane, event }) => {
+                let script = format!(
+                    "window.vpEchoes && window.vpEchoes.handleEvent({}, {})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(&event).unwrap_or_else(|_| "null".into()),
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("vpEchoes.handleEvent 失敗 (lane={}): {}", lane, e);
+                }
+            }
+            // Echoes Act II: EchoesChatPane の submit → 当該 lane の echoes session に渡す。
+            // demand-driven: 未起動なら lazy spawn (subscribe → submit の順で取りこぼしなし)。
+            Event::UserEvent(AppEvent::EchoesSubmit { lane, prompt }) => {
+                let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
+                    // process_path は active project から解決 (echoes pane = active lane 前提)。
+                    let process_path =
+                        resolve_active_project_path(&sidebar_state).unwrap_or_default();
+                    spawn_echoes_session(
+                        &rt_handle,
+                        async_action_proxy.clone(),
+                        world_conn.clone(),
+                        process_path,
+                        lane.clone(),
+                    )
+                });
+                let _ = session.cmd_tx.send(EchoesCmd::Submit(prompt));
             }
             Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
                 // F6: WebView の save IPC を World process-proxy ask (pp_state_save) で SP に forward。
