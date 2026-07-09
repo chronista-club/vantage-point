@@ -144,15 +144,15 @@ pub struct Config {
 
 /// SP startup behavior config (I-b、 2026-04-30)。
 ///
-/// Mailbox actor (`lane-spawn@<project>`) で Performer spawn を Cmd 化した上で、
-/// 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
+/// [`LaneSpawnActor`](crate::process::lane_spawn_actor) が Performer spawn を Cmd 化
+/// (in-process channel) した上で、 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
 /// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
 /// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を
 /// dogfood で集計して N 値を実証的に上げる方針。
 #[derive(Debug, Clone, Serialize, Deserialize, KdlDeserialize)]
 #[kdl(name = "startup")]
 pub struct StartupConfig {
-    /// 同時 Lane spawn 数の上限 (= Mailbox actor 内部 `Semaphore::new(N)`)。
+    /// 同時 Lane spawn 数の上限 (= LaneSpawnActor 内部 `Semaphore::new(N)`)。
     /// default 1 = sequential。
     ///
     /// 注: `default-port` と同様、 KDL field-level `default` は u32 → 0 になる。

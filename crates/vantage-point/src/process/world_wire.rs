@@ -1,9 +1,10 @@
 //! SP → TheWorld の wire/delegation transport (L0 portless B-4: unison "wire" channel)
 //!
 //! wire store / delegation store は TheWorld (daemon QUIC、 port 32000、 config override 可) に
-//! 中央化されている。 SP の wire ハンドラ ([`crate::process::unison_server`]) / actor
-//! (notify / lane-spawn) / delegation ([`crate::process::delegation`]) はこの client 経由で
-//! 中央 store を読み書きする。
+//! 中央化されている。 SP の wire ハンドラ ([`crate::process::unison_server`]) /
+//! delegation ([`crate::process::delegation`]) はこの client 経由で中央 store を読み書きする。
+//! (旧 lane-spawn actor の wire recv は in-process channel 直結に移行済 — 2026-07-09、
+//! 詳細は [`crate::process::lane_spawn_actor`] module doc)
 //!
 //! ## B-4: transport を HTTP → unison channel に移行 (doc 27 §62「全通信 unison channel」)
 //!
@@ -26,7 +27,6 @@
 //! TheWorld 停止 = wire 停止 (設計決定 D1-c で許容済、 実運用は既に事実上依存)。
 //! 呼び出し側は Err を受けて各自の方針で扱う:
 //! - proxy (handle_wire_*): エラーをそのまま caller に返す
-//! - actor (notify / lane-spawn): retry loop で TheWorld 復帰を待つ
 
 use std::sync::Arc;
 use std::time::Duration;
