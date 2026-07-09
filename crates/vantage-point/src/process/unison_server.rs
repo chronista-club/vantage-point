@@ -422,12 +422,19 @@ async fn handle_console_set_mode(
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("console_set_mode: lane パース失敗: {lane}"))?;
 
-    state
-        .lane_pool
-        .write()
-        .await
-        .set_console_mode(&addr, mode)
-        .map_err(|e| format!("console_set_mode 失敗: {e}"))?;
+    {
+        let mut pool = state.lane_pool.write().await;
+        pool.set_console_mode(&addr, mode)
+            .map_err(|e| format!("console_set_mode 失敗: {e}"))?;
+        // doc 33 §9: chat へは engine を eager spawn（切替時に resume を開始 → session_init を
+        // 早く出す = 引き継ぎ progress を切替時に集約）。失敗しても mode 切替自体は成功扱いにし、
+        // engine は次の submit で self-heal 再試行される（切替 UX を engine エラーで巻き戻さない）。
+        if mode == crate::lane::console_mode::ConsoleMode::Chat
+            && let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router)
+        {
+            tracing::warn!("console_set_mode: eager chat engine spawn 失敗（submit で再試行）: {e}");
+        }
+    }
     Ok(serde_json::json!({"status": "ok", "lane": lane, "mode": mode.as_str()}))
 }
 

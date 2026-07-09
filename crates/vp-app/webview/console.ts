@@ -96,6 +96,13 @@ export function installConsole(): VpConsole {
       if (entry.buffer.length > BUFFER_CAP) {
         entry.buffer.splice(0, entry.buffer.length - BUFFER_CAP)
       }
+      // doc 33 §9: session_init = engine が resume を確定した瞬間。切替の progress を
+      // ここで clear する（「resume してから切替完了」= 安全なハンドオフ）。
+      if (event.kind === 'session_init') {
+        document.dispatchEvent(
+          new CustomEvent('vp:console-ready', { detail: { lane } }),
+        )
+      }
       if (entry.renderer) {
         try {
           entry.renderer(event)

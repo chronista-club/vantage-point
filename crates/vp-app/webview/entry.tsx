@@ -446,6 +446,51 @@ document.addEventListener("vp:console-mode", (e) => {
 	if (detail?.lane) applyConsoleMode(detail.lane, detail.mode);
 });
 
+// doc 33 §9: Act I⇄II 切替の progress overlay + switch lock。
+// 「resume 確定まで切替を見せる + 二重切替を防ぐ」= 安全なハンドオフ。
+const switchingOverlay = document.getElementById("console-switching");
+const switchingMsg = switchingOverlay?.querySelector(".console-switching-msg") as
+	| HTMLElement
+	| undefined;
+// 進行中の handoff。null = idle。set 中は toggle をロックする。
+let handoffPending: { lane: string; target: "tui" | "chat" } | null = null;
+let handoffTimer: number | undefined;
+
+const beginHandoff = (lane: string, target: "tui" | "chat"): void => {
+	handoffPending = { lane, target };
+	if (switchingMsg) {
+		switchingMsg.textContent =
+			target === "chat" ? "Act II にセッションを引き継ぎ中…" : "Act I にセッションを引き継ぎ中…";
+	}
+	switchingOverlay?.classList.add("active");
+	// safety: ready 信号が来なくても 30s で解除（stuck 防止）。
+	if (handoffTimer) clearTimeout(handoffTimer);
+	handoffTimer = window.setTimeout(() => endHandoff(), 30000);
+};
+const endHandoff = (): void => {
+	handoffPending = null;
+	if (handoffTimer) {
+		clearTimeout(handoffTimer);
+		handoffTimer = undefined;
+	}
+	switchingOverlay?.classList.remove("active");
+};
+
+// → chat: engine が resume を確定 (session_init) したら overlay を clear。
+document.addEventListener("vp:console-ready", (e) => {
+	const detail = (e as CustomEvent<{ lane: string }>).detail;
+	if (handoffPending?.target === "chat" && detail?.lane === handoffPending.lane) {
+		endHandoff();
+	}
+});
+// → tui: mode 適用 (PTY respawn 済) で clear。claude の続きは xterm に load される。
+document.addEventListener("vp:console-mode", (e) => {
+	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
+	if (handoffPending?.target === "tui" && detail?.mode === "tui" && detail?.lane === handoffPending.lane) {
+		endHandoff();
+	}
+});
+
 // Act toggle: #pane-terminal 右上の floating button。現在 mode を反転して console_set_mode を送る
 // (World B 所有、xterm/chat どちらの表示中でも常に押せる)。root(conductor) の切替を主眼とする。
 const paneTerminal = document.getElementById("pane-terminal");
@@ -459,6 +504,8 @@ if (paneTerminal) {
 	};
 	document.addEventListener("vp:console-mode", syncLabel);
 	toggle.addEventListener("click", () => {
+		// resume 確定前の二重切替をロック（中間状態を作らない）。
+		if (handoffPending) return;
 		// 宛先 lane は setActivePane bridge が確実に追う activeLaneAddress を使う
 		// (consoleActiveLane は起動レースで未設定のことがあり no-op になっていた)。
 		const lane = activeLaneAddress ?? consoleActiveLane;
@@ -467,7 +514,9 @@ if (paneTerminal) {
 			return;
 		}
 		const chatOn = chatHost?.classList.contains("active");
-		const next = chatOn ? "tui" : "chat";
+		const next: "tui" | "chat" = chatOn ? "tui" : "chat";
+		// 押下で即 progress を出す（round-trip 前に反応 = 待ち時間を可視化）。
+		beginHandoff(lane, next);
 		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
 		ipc?.postMessage(JSON.stringify({ t: "console:set_mode", lane, mode: next }));
 	});
