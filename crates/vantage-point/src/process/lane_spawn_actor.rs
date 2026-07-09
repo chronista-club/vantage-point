@@ -275,6 +275,47 @@ async fn handle_cmd(
     );
     let started = Instant::now();
 
+    // doc 33 §2: 永続 console_mode を boot で honor（conductor の with_conductor と同じ規律）。
+    // chat の lane に PTY を立てない — 立てると echoes_submit がもう 1 本の engine を呼び、
+    // 同一 cc_session に 2 エンジン（PTY claude + EchoesAgentHost）が発生する。
+    let console_mode = crate::lane::console_mode::last(&addr.project, &name)
+        .unwrap_or(crate::lane::console_mode::ConsoleMode::Tui);
+    if console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+        // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
+        // pid=None + state=Running は chat lane の正常形（vp-app は console_mode で
+        // respawn 判定を gate する — doc 33 §3）。
+        tracing::info!("Lane boot as chat mode (PTY skip): addr={}", addr);
+        let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &name);
+        let info = LaneInfo {
+            console_mode,
+            id: lane_id,
+            address: addr.clone(),
+            kind: LaneKind::Performer,
+            name: Some(name),
+            state: LaneState::Running,
+            stand: stand.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd,
+            performer_status: None,
+            cc_session_id: None,
+        };
+        let mut pool_write = pool.write().await;
+        if pool_write.get(&addr).is_some() {
+            tracing::debug!(
+                "Lane spawn actor: race lost (chat register) addr={}、 skip",
+                addr
+            );
+            return;
+        }
+        pool_write.insert(info.clone());
+        drop(pool_write);
+        if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {
+            tracing::warn!("Lane chat register の SystemEvent push 失敗 (best-effort): {e}");
+        }
+        return;
+    }
+
     // spawn_stand は内部で std::thread::sleep(800ms) を呼ぶ sync 関数。
     // tokio worker thread を block しないよう spawn_blocking で隔離する。
     let cwd_for_blocking = cwd.clone();
@@ -338,7 +379,9 @@ async fn handle_cmd(
     // spawn_blocking 隔離は省略 (pre-MVP の単純化。 重い処理は上の spawn_with_fallback で隔離済)。
     let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &name);
     let info = LaneInfo {
-        console_mode: Default::default(),
+        // ここは tui 経路のみ到達（chat は上で早期 return 済）だが、 変数を通して
+        // 「persisted mode を honor した」事実を型の流れで残す。
+        console_mode,
         id: lane_id,
         address: addr.clone(),
         kind: LaneKind::Performer,
@@ -479,6 +522,7 @@ mod tests {
         // race guard を意図的に踏ませる: 同 addr を事前に pool へ insert しておく
         let addr = LaneAddress::performer("proj", "already-there");
         pool.write().await.insert(LaneInfo {
+            console_mode: Default::default(),
             id: Default::default(),
             address: addr,
             kind: LaneKind::Performer,

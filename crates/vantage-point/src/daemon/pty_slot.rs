@@ -7,14 +7,25 @@
 //!
 //! terminal S4 (doc 27 §4.1): PTY 出力は broadcast → per-lane terminal pump →
 //! World "canvas" topic 空間に流れる。 旧 `/ws/terminal` attach 時の scrollback replay
-//! (ring buffer) は consumer (ws_terminal) ごと撤去した (live stream のみ)。
+//! (ring buffer) は consumer (ws_terminal) ごと撤去したが、 replay-on-attach で復活した:
+//! vp-app 再起動後の新 xterm は live stream だけでは空白のままになる (claude TUI は次の
+//! 出力まで沈黙する) ため、 PtySlot が直近出力の ring buffer を保持し、 attach 時に
+//! snapshot を先頭配送してから live に繋ぐ ([`PtySlot::attach_output`])。
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::broadcast;
+
+/// replay ring buffer の上限バイト数。
+///
+/// claude TUI の現画面 + 直近履歴の再現に十分な量で、 attach ごとの初回配送コストを抑える。
+/// xterm.js 側 scrollback は 5000 行 (main_area.rs) だが、 replay の目的は「再起動後に
+/// 前回の画面が見える」ことなので全履歴の忠実再現は狙わない。
+const REPLAY_CAP: usize = 256 * 1024;
 
 /// PTYプロセスを管理するスロット
 ///
@@ -36,6 +47,13 @@ pub struct PtySlot {
     shell_cmd: String,
     /// 出力配信チャネル（送信側）
     output_tx: broadcast::Sender<Vec<u8>>,
+    /// 直近出力の replay ring buffer（[`REPLAY_CAP`] bytes 上限）。
+    ///
+    /// reader task が **lock 保持のまま append → broadcast send** するため、
+    /// [`Self::attach_output`] の snapshot+subscribe と原子的に直列化される
+    /// (= あるバイトは「snapshot に含まれる」か「subscribe 後の rx に届く」の排他二択。
+    /// 取りこぼしも二重配送も構造的に起きない)。
+    replay: Arc<Mutex<VecDeque<u8>>>,
     /// reader task のハンドル
     _reader_handle: tokio::task::JoinHandle<()>,
 }
@@ -144,8 +162,16 @@ impl PtySlot {
         // これにより PTY からの最初のバイト（シェルプロンプト等）を取りこぼさない。
         let (output_tx, initial_rx) = broadcast::channel(256);
 
+        // replay ring buffer (attach 時の画面復元用)
+        let replay = Arc::new(Mutex::new(VecDeque::new()));
+
         // reader task 開始 (writer を渡して ConPTY DSR に応答できるようにする)
-        let reader_handle = start_reader_task(reader, output_tx.clone(), Arc::clone(&writer));
+        let reader_handle = start_reader_task(
+            reader,
+            output_tx.clone(),
+            Arc::clone(&writer),
+            Arc::clone(&replay),
+        );
 
         Ok((
             Self {
@@ -155,6 +181,7 @@ impl PtySlot {
                 pid,
                 shell_cmd: shell_cmd.to_string(),
                 output_tx,
+                replay,
                 _reader_handle: reader_handle,
             },
             initial_rx,
@@ -186,6 +213,20 @@ impl PtySlot {
     /// 出力ストリームを購読（broadcast receiver）
     pub fn subscribe_output(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
+    }
+
+    /// replay snapshot + 購読を原子的に取得する（attach 用）。
+    ///
+    /// reader task は replay lock を保持したまま append → broadcast send するため、
+    /// 本 method が lock 中に「snapshot 取得 → subscribe」を済ませれば、 全バイトは
+    /// snapshot か receiver のどちらか一方にだけ現れる（gap / 重複なし）。
+    /// caller (terminal pump) は snapshot を先に配送してから receiver の live stream に繋ぐ。
+    pub fn attach_output(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
+        let guard = self.replay.lock().unwrap_or_else(|p| p.into_inner());
+        let snapshot: Vec<u8> = guard.iter().copied().collect();
+        let rx = self.output_tx.subscribe();
+        drop(guard);
+        (snapshot, rx)
     }
 
     /// プロセスID
@@ -229,6 +270,7 @@ fn start_reader_task(
     mut reader: Box<dyn Read + Send>,
     tx: broadcast::Sender<Vec<u8>>,
     #[cfg_attr(not(windows), allow(unused_variables))] writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    replay: Arc<Mutex<VecDeque<u8>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         // Windows ConPTY DSR gating の回避状態。 起動時の cursor-position query に一度だけ
@@ -276,8 +318,20 @@ fn start_reader_task(
                         }
                     }
 
-                    // 受信者がいなくても送信を試行（正常動作）
-                    let _ = tx.send(chunk);
+                    // replay ring buffer へ append → broadcast send を同一 lock 内で行う
+                    // (= attach_output の snapshot+subscribe との原子性を保証する。
+                    // 詳細は PtySlot.replay の doc comment)。 poisoned は into_inner で継続
+                    // (buffer は劣化してもよい best-effort、 live stream を止めない)。
+                    {
+                        let mut buf = replay.lock().unwrap_or_else(|p| p.into_inner());
+                        buf.extend(chunk.iter().copied());
+                        let overflow = buf.len().saturating_sub(REPLAY_CAP);
+                        if overflow > 0 {
+                            buf.drain(..overflow);
+                        }
+                        // 受信者がいなくても送信を試行（正常動作）
+                        let _ = tx.send(chunk);
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("PtySlot reader error: {}", e);
@@ -344,6 +398,38 @@ mod tests {
         assert!(
             result.is_ok(),
             "タイムアウト: PTY から出力を受信できなかった"
+        );
+    }
+
+    /// attach_output: 過去出力が replay snapshot に入り、 以降の出力は receiver に届く
+    /// (replay-on-attach の要 — vp-app 再起動後の新 xterm が前回画面を復元できる根拠)。
+    #[tokio::test]
+    async fn test_attach_output_replays_past_bytes() {
+        let shell = default_test_shell();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+
+        let (slot, mut rx) =
+            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
+
+        // シェル初期出力 (プロンプト等) を待つ = replay buffer に何か溜まる
+        let first = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await
+            .expect("タイムアウト: PTY 初期出力なし")
+            .expect("recv");
+        assert!(!first.is_empty());
+
+        // 後発 attach: 初期出力を「過去」として snapshot で受け取れる
+        let (snapshot, _live_rx) = slot.attach_output();
+        assert!(
+            !snapshot.is_empty(),
+            "attach_output の snapshot に過去出力が含まれるはず"
+        );
+        // snapshot は broadcast 済 bytes の先頭を含む (欠落なしの根拠)
+        assert!(
+            snapshot
+                .windows(first.len().min(snapshot.len()))
+                .any(|w| w == &first[..first.len().min(snapshot.len())]),
+            "snapshot に初期出力の bytes が含まれるはず"
         );
     }
 
