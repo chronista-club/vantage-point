@@ -943,6 +943,7 @@ impl ProcessManagerCapability {
         let performer_dir = repo_root.join(".vp").join("lanes").join(name);
         let addr_str = addr.to_string();
         let info = LaneInfo {
+            console_mode: Default::default(),
             id: crate::lane::lane_id::load_or_create(&project_id, name),
             address: addr.clone(),
             kind: LaneKind::Performer,
@@ -3138,6 +3139,7 @@ mod tests {
         // lane_registry に conductor + performer descriptor を投入 (daemon-canonical truth)。
         let key = normalize_path_key(&PathBuf::from(&project_path));
         let mk = |addr: LaneAddress, kind: LaneKind, name: Option<&str>, cwd: &str| LaneInfo {
+            console_mode: Default::default(),
             id: Default::default(),
             address: addr,
             kind,
@@ -3286,6 +3288,7 @@ mod tests {
 
         let key = "/test/proj";
         let mk = |name: &str, cwd: &std::path::Path| LaneInfo {
+            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::performer("proj", name),
             kind: LaneKind::Performer,

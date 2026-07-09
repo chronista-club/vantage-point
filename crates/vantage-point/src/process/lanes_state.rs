@@ -309,6 +309,12 @@ pub struct LaneInfo {
     /// `--bg` session 管理の土台。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cc_session_id: Option<String>,
+    /// doc 33: Console のエンジンモード（Tui = PtySlot+claude TUI / Chat = EchoesAgentHost）。
+    /// serde default = Tui で wire 後方互換。永続 SSOT は `lane::console_mode`（state file）、
+    /// 本 field はその registry cache。vp-app は本 field で Dead-lane respawn 判定を gate する
+    /// （chat lane の engine-less は正常状態 — #683 再演防止）。
+    #[serde(default)]
+    pub console_mode: crate::lane::console_mode::ConsoleMode,
 }
 
 /// Lane Pool — Conductor/Performer registry
@@ -338,6 +344,28 @@ pub struct LanePool {
     /// 内部可変性で持つので `deliver_nudge` は `pool.read()` のまま get-or-insert できる。
     /// map は lane 数ぶんだけ増える（bounded、lane teardown での GC は未実装だが実害小）。
     nudge_locks: std::sync::Mutex<HashMap<LaneAddress, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// doc 33: Act II の chat engine スロット（EchoesAgentHost + pump）。
+    ///
+    /// **エンジン排他の法**: 1 lane につき `pty_slots` xor `chat_engines` のどちらか高々 1 つ。
+    /// 排他は [`Self::set_console_mode`] / [`Self::ensure_chat_engine`] が保証する
+    /// （chat spawn は mode=Chat 時のみ、mode 切替は旧エンジンを必ず落としてから）。
+    chat_engines: HashMap<LaneAddress, ChatEngineSlot>,
+}
+
+/// chat engine の 1 スロット（host と、その EchoesEvent を topic に流す pump）。
+///
+/// drop = engine 停止（host は kill_on_drop、pump は明示 abort が要るため Drop impl で畳む）。
+struct ChatEngineSlot {
+    host: crate::echoes::EchoesAgentHost,
+    pump: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ChatEngineSlot {
+    fn drop(&mut self) {
+        // host の drop で engine プロセスは死ぬ（kill_on_drop）。pump は broadcast Closed で
+        // 自然終了するが、即時性のため明示 abort する。
+        self.pump.abort();
+    }
 }
 
 impl std::fmt::Debug for LanePool {
@@ -371,47 +399,61 @@ impl LanePool {
         // PR-pre2 (VP-118): "hd" → "echoes" rename。 mise task `vp:stand:echoes` (旧 hd)。
         let stand_name = "echoes";
 
-        // tmux decoupling PR2: 床 (login shell) + claude 注入の Rust-native spawn (design §13)。
-        // 旧 spawn_or_adopt (tmux session の adopt) は退役 — 重複 SP は DB-LOCK が spawn 前に
-        // abort し (§13.3)、 claude は SP の子なので orphan session は存在しない。
-        let cmd = crate::process::stand_spawner::build_stand_command(
-            stand_name,
-            &addr,
-            std::path::Path::new(&cwd),
-            false,
-        );
+        // doc 33 §2: 永続 console_mode を boot で honor。chat の lane に PTY を立てない
+        // （立てると echoes_submit がもう 1 本の engine を呼び、1 会話 2 エンジンになる）。
+        let console_mode = crate::lane::console_mode::last(&project_id, "conductor")
+            .unwrap_or(crate::lane::console_mode::ConsoleMode::Tui);
 
-        let (state, pid) = match crate::process::stand_spawner::spawn_stand(&cmd, 120, 48) {
-            Ok((slot, term_rx)) => {
-                let pid = slot.pid();
-                tracing::info!(
-                    "Lane spawned: addr={} stand={} program={} args={:?} pid={}",
-                    addr,
-                    stand_name,
-                    cmd.program,
-                    cmd.args,
-                    pid
-                );
-                // Stage 1 (ADR-0001): PtySlot insert と TermAttach spawn を 1 関数に集約。
-                // term_rx は initial_rx (= reader_task start 前に取得) なので race フリー。
-                pool.insert_pty_slot(addr.clone(), slot, term_rx);
-                (LaneState::Running, Some(pid))
-            }
-            Err(e) => {
-                // graceful degrade: SP 自体は起動継続、 Lane は Dead で record
-                tracing::warn!(
-                    "Lane spawn failed (graceful degrade to Dead): addr={} stand={} program={} cwd={} err={}",
-                    addr,
-                    stand_name,
-                    cmd.program,
-                    cwd,
-                    e
-                );
-                (LaneState::Dead, None)
+        let (state, pid) = if console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+            // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
+            // pid=None + state=Running は chat lane の正常形（vp-app は console_mode で
+            // respawn 判定を gate する — doc 33 §3）。
+            tracing::info!("Lane boot as chat mode (PTY skip): addr={}", addr);
+            (LaneState::Running, None)
+        } else {
+            // tmux decoupling PR2: 床 (login shell) + claude 注入の Rust-native spawn (design §13)。
+            // 旧 spawn_or_adopt (tmux session の adopt) は退役 — 重複 SP は DB-LOCK が spawn 前に
+            // abort し (§13.3)、 claude は SP の子なので orphan session は存在しない。
+            let cmd = crate::process::stand_spawner::build_stand_command(
+                stand_name,
+                &addr,
+                std::path::Path::new(&cwd),
+                false,
+            );
+
+            match crate::process::stand_spawner::spawn_stand(&cmd, 120, 48) {
+                Ok((slot, term_rx)) => {
+                    let pid = slot.pid();
+                    tracing::info!(
+                        "Lane spawned: addr={} stand={} program={} args={:?} pid={}",
+                        addr,
+                        stand_name,
+                        cmd.program,
+                        cmd.args,
+                        pid
+                    );
+                    // Stage 1 (ADR-0001): PtySlot insert と TermAttach spawn を 1 関数に集約。
+                    // term_rx は initial_rx (= reader_task start 前に取得) なので race フリー。
+                    pool.insert_pty_slot(addr.clone(), slot, term_rx);
+                    (LaneState::Running, Some(pid))
+                }
+                Err(e) => {
+                    // graceful degrade: SP 自体は起動継続、 Lane は Dead で record
+                    tracing::warn!(
+                        "Lane spawn failed (graceful degrade to Dead): addr={} stand={} program={} cwd={} err={}",
+                        addr,
+                        stand_name,
+                        cmd.program,
+                        cwd,
+                        e
+                    );
+                    (LaneState::Dead, None)
+                }
             }
         };
 
         let info = LaneInfo {
+            console_mode,
             // I1: conductor の安定 id を address (project, "conductor") で load_or_create
             id: crate::lane::lane_id::load_or_create(&project_id, "conductor"),
             address: addr.clone(),
@@ -496,6 +538,8 @@ impl LanePool {
         // 順序: term_attaches → pty_slots → lanes (broadcast::Sender は pty_slots が保持)。
         self.term_attaches.remove(addr);
         self.pty_slots.remove(addr);
+        // doc 33: chat engine も同時に drop（kill_on_drop + pump abort）。
+        self.chat_engines.remove(addr);
         self.lanes.remove(addr)
     }
 
@@ -571,6 +615,19 @@ impl LanePool {
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
         let cwd = info.cwd.clone();
         let stand = info.stand.clone();
+
+        // doc 33: chat mode の lane の restart = chat engine の入れ替え（PTY は立てない）。
+        // engine を drop するだけで、次の echoes_submit が新 engine を lazy spawn する
+        // （--resume 継承。fresh の「素の新規 session」対応は C2+ で扱う）。
+        if info.console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+            self.chat_engines.remove(addr);
+            if let Some(info) = self.lanes.get_mut(addr) {
+                info.pid = None;
+                info.state = LaneState::Running;
+            }
+            tracing::info!("Lane restart (chat mode): engine drop、次 submit で再 spawn: {addr}");
+            return Ok(());
+        }
 
         // step 1: 既存 PtySlot + TermAttach を drop (Drop で child.kill() + child.wait() = zombie 解消)。
         // tmux decoupling PR2: claude は PtySlot の子なので drop = 完全停止。 旧 step 1.5
@@ -689,6 +746,164 @@ impl LanePool {
             .lock()
             .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {}", addr))?;
         slot.write(data)
+    }
+
+    // =========================================================================
+    // doc 33: Console engine slot（Act I/II 排他）
+    //
+    // 法: 1 lane = 高々 1 エンジン（pty_slots xor chat_engines）= 1 cc_session。
+    // 排他は set_console_mode / ensure_chat_engine のみが engine を作る・壊すことで保証。
+    // =========================================================================
+
+    /// lane の console mode（registry cache）。lane 不在は None。
+    pub fn console_mode(
+        &self,
+        addr: &LaneAddress,
+    ) -> Option<crate::lane::console_mode::ConsoleMode> {
+        self.lanes.get(addr).map(|i| i.console_mode)
+    }
+
+    /// Console のエンジンモードを切り替える（doc 33 §2 の状態機械）。
+    ///
+    /// - → Chat: PtySlot + TermAttach を drop（claude TUI 停止）→ mode 永続 → engine-less
+    ///   （EchoesAgentHost は初回 submit で lazy spawn）
+    /// - → Tui: chat engine を drop（headless 停止）→ mode 永続 → PTY respawn
+    ///   （`restart_lane` 再利用 = cc_session `--resume` で文脈継承）
+    ///
+    /// 同一 mode への切替は no-op。Chat が許されるのは stand="echoes" の lane のみ。
+    pub fn set_console_mode(
+        &mut self,
+        addr: &LaneAddress,
+        mode: crate::lane::console_mode::ConsoleMode,
+    ) -> anyhow::Result<()> {
+        use crate::lane::console_mode::ConsoleMode;
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        if info.console_mode == mode {
+            return Ok(());
+        }
+        if mode == ConsoleMode::Chat && info.stand != "echoes" {
+            anyhow::bail!(
+                "console mode Chat は stand=echoes の lane のみ（addr={}, stand={}）",
+                addr,
+                info.stand
+            );
+        }
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+
+        match mode {
+            ConsoleMode::Chat => {
+                // TUI engine 停止（PtySlot Drop = child kill + wait、restart_lane step1 と同順序）。
+                self.term_attaches.remove(addr);
+                let _ = self.pty_slots.remove(addr);
+                if let Err(e) = crate::lane::console_mode::record(&addr.project, &lane_label, mode)
+                {
+                    tracing::warn!("console_mode 永続失敗（addr={addr}）: {e}");
+                }
+                if let Some(info) = self.lanes.get_mut(addr) {
+                    info.console_mode = ConsoleMode::Chat;
+                    info.pid = None;
+                    info.state = LaneState::Running; // chat-idle は正常形（doc 33 §3）
+                }
+                tracing::info!("console mode → chat（TUI 停止、engine は submit で lazy）: {addr}");
+                Ok(())
+            }
+            ConsoleMode::Tui => {
+                // chat engine 停止（Drop = kill_on_drop + pump abort）。
+                self.chat_engines.remove(addr);
+                if let Err(e) = crate::lane::console_mode::record(&addr.project, &lane_label, mode)
+                {
+                    tracing::warn!("console_mode 永続失敗（addr={addr}）: {e}");
+                }
+                if let Some(info) = self.lanes.get_mut(addr) {
+                    info.console_mode = ConsoleMode::Tui;
+                }
+                // PTY respawn は restart_lane を再利用（--resume は build_stand_command が
+                // cc_session から拾う = 会話継続）。
+                tracing::info!("console mode → tui（headless 停止、PTY respawn）: {addr}");
+                self.restart_lane(addr, false)
+            }
+        }
+    }
+
+    /// chat engine を確保する（無ければ spawn + pump 起動）。
+    ///
+    /// **法の番人**: mode=Chat 以外では拒否（= PtySlot が生きたまま headless を立てる経路を
+    /// 型ではなくここで一元的に塞ぐ）。pty_slots 残存は不変条件違反として明示 Err。
+    pub fn ensure_chat_engine(
+        &mut self,
+        addr: &LaneAddress,
+        topic_router: &std::sync::Arc<crate::process::topic_router::TopicRouter>,
+    ) -> anyhow::Result<()> {
+        use crate::lane::console_mode::ConsoleMode;
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        if info.console_mode != ConsoleMode::Chat {
+            anyhow::bail!(
+                "echoes_submit には console mode=chat が必要（addr={}、現在 {:?}。console_set_mode で切替）",
+                addr,
+                info.console_mode
+            );
+        }
+        if self.pty_slots.contains_key(addr) {
+            anyhow::bail!(
+                "不変条件違反: mode=chat なのに PtySlot が残存（addr={}）",
+                addr
+            );
+        }
+        if self.chat_engines.contains_key(addr) {
+            return Ok(());
+        }
+
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+        // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
+        // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
+        let resume = crate::lane::cc_session::last(&addr.project, &lane_label)
+            .filter(|id| crate::lane::cc_session::transcript_exists(id));
+        let host = crate::echoes::EchoesAgentHost::spawn(crate::echoes::EchoesHostConfig {
+            cwd: info.cwd.clone(),
+            project: addr.project.clone(),
+            lane: lane_label,
+            resume_session_id: resume,
+            model: None,
+            claude_cli_path: None,
+        })?;
+        let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(
+            addr.to_string(),
+            host.subscribe(),
+            topic_router.clone(),
+        );
+        let pid = host.pid();
+        if let Some(info) = self.lanes.get_mut(addr) {
+            info.pid = pid;
+            info.state = LaneState::Running;
+        }
+        self.chat_engines
+            .insert(addr.clone(), ChatEngineSlot { host, pump });
+        tracing::info!("chat engine start: addr={addr} pid={pid:?}");
+        Ok(())
+    }
+
+    /// chat engine に prompt を投入する（`&self` — read lock 下で呼べる）。
+    pub async fn submit_chat(&self, addr: &LaneAddress, prompt: &str) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
+        slot.host.submit(prompt).await
+    }
+
+    /// chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
+    pub fn drop_chat_engine(&mut self, addr: &LaneAddress) -> bool {
+        let dropped = self.chat_engines.remove(addr).is_some();
+        if dropped && let Some(info) = self.lanes.get_mut(addr) {
+            info.pid = None;
+        }
+        dropped
     }
 
     /// 既存 Lane の PtySlot を resize する。
@@ -931,6 +1146,7 @@ mod tests {
     fn lane_diff_add_serde_round_trip() {
         // Diff::Add { payload: LaneInfo } の wire 形式 + decode
         let info = LaneInfo {
+            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::performer("vp", "sub"),
             kind: LaneKind::Performer,
@@ -981,6 +1197,7 @@ mod tests {
         // {"scope": "lane", "kind": "add", "payload": {...}} のように
         // outer scope tag + inner Diff tag が同 level に flatten される。
         let info = LaneInfo {
+            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::conductor("vp"),
             kind: LaneKind::Conductor,

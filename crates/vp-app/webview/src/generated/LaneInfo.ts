@@ -26,4 +26,10 @@ stand: string, created_at: string, pid: number | null, cwd: string,
 /**
  * Phase 5-D: Performer Lane のみ有効、 git workspace の状態 snapshot。
  */
-performer_status: PerformerStatusWire | null, };
+performer_status: PerformerStatusWire | null, 
+/**
+ * doc 33: Console のエンジンモード（"tui" | "chat"）。default = "tui"（wire 後方互換）。
+ * chat lane は engine-less（pid=None）が正常形なので、Dead-lane auto-respawn を
+ * 本 field で gate する（#683 再演防止）。
+ */
+console_mode: string, };

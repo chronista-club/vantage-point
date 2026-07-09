@@ -348,6 +348,96 @@ async fn handle_terminal_write(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// Act II (doc 33): echoes プロンプト投入。
+///
+/// surface (vp-app) → World canvas channel → SP control → 本 dispatch。
+/// **mode=chat が前提**（法: 1 lane 高々 1 エンジン。tui のまま submit は Err で弾き、
+/// 生きた TUI を暗黙に殺さない）。engine は LanePool が lazy spawn（初回のみ）し、
+/// EchoesEvent は echoes_pump 経由で `process/echoes/data/{lane}/event` に流れる。
+async fn handle_echoes_submit(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_submit: lane 未指定".to_string());
+    }
+    let prompt = payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    if prompt.is_empty() {
+        return Err("echoes_submit: prompt 未指定".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_submit: lane パース失敗: {lane}"))?;
+
+    // ensure（mode ガード + lazy spawn は LanePool = 法の番人が行う）。
+    state
+        .lane_pool
+        .write()
+        .await
+        .ensure_chat_engine(&addr, &state.topic_router)
+        .map_err(|e| format!("echoes_submit: {e}"))?;
+
+    // submit（read lock — 他 lane の操作をブロックしない）。
+    let submit_result = state
+        .lane_pool
+        .read()
+        .await
+        .submit_chat(&addr, prompt)
+        .await;
+    if let Err(e) = submit_result {
+        // self-heal: engine が死んでいた場合は落として 1 回だけ張り直す。
+        tracing::warn!("echoes_submit 失敗 → engine 再起動して retry: {e}");
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.drop_chat_engine(&addr);
+            pool.ensure_chat_engine(&addr, &state.topic_router)
+                .map_err(|e| format!("echoes_submit: engine 再起動失敗: {e}"))?;
+        }
+        state
+            .lane_pool
+            .read()
+            .await
+            .submit_chat(&addr, prompt)
+            .await
+            .map_err(|e| format!("echoes_submit 失敗（retry 後）: {e}"))?;
+    }
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// Act II (doc 33): Console のエンジンモード切替。
+///
+/// `{lane, mode: "tui"|"chat"}`。遷移の実体（旧エンジン stop → 永続 → 新エンジン spawn）は
+/// `LanePool::set_console_mode`。切替後の同一会話継続は cc_session `--resume` が担う。
+async fn handle_console_set_mode(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("console_set_mode: lane 未指定".to_string());
+    }
+    let mode_str = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+    let mode = crate::lane::console_mode::ConsoleMode::parse(mode_str)
+        .ok_or_else(|| format!("console_set_mode: mode 不正: {mode_str:?}（tui|chat）"))?;
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("console_set_mode: lane パース失敗: {lane}"))?;
+
+    {
+        let mut pool = state.lane_pool.write().await;
+        pool.set_console_mode(&addr, mode)
+            .map_err(|e| format!("console_set_mode 失敗: {e}"))?;
+        // doc 33 §9: chat へは engine を eager spawn（切替時に resume を開始 → session_init を
+        // 早く出す = 引き継ぎ progress を切替時に集約）。失敗しても mode 切替自体は成功扱いにし、
+        // engine は次の submit で self-heal 再試行される（切替 UX を engine エラーで巻き戻さない）。
+        if mode == crate::lane::console_mode::ConsoleMode::Chat
+            && let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router)
+        {
+            tracing::warn!("console_set_mode: eager chat engine spawn 失敗（submit で再試行）: {e}");
+        }
+    }
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "mode": mode.as_str()}))
+}
+
 /// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
 ///
 /// 旧制御面 (`tmux send-keys -t <session>`) の SP-proxy 置換。 World daemon (delivery/reconcile
@@ -605,6 +695,8 @@ pub(crate) async fn dispatch_process_method(
         "terminal_demand_stop" => handle_terminal_demand_stop(state, payload).await,
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
+        "echoes_submit" => handle_echoes_submit(state, payload).await,
+        "console_set_mode" => handle_console_set_mode(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
         "lane_nudge" => handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
@@ -1145,6 +1237,7 @@ mod tests {
             let mut pool = state.lane_pool.write().await;
             // delete は lanes map (LaneInfo) を remove するので LaneInfo + PtySlot 両方を登録する。
             pool.insert(LaneInfo {
+                console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
                 kind: LaneKind::Performer,
@@ -1343,5 +1436,193 @@ mod tests {
                 .is_err(),
             "respond answer 欠落は Err"
         );
+    }
+
+    /// C1 test 用の chat-mode conductor LaneInfo を pool に登録する（claude 不要）。
+    async fn insert_test_lane(
+        state: &crate::process::state::AppState,
+        project: &str,
+        mode: crate::lane::console_mode::ConsoleMode,
+    ) -> crate::process::lanes_state::LaneAddress {
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        let addr = LaneAddress::conductor(project);
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: mode,
+            id: Default::default(),
+            address: addr.clone(),
+            kind: LaneKind::Conductor,
+            name: None,
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+        });
+        addr
+    }
+
+    /// echoes_submit の lane / prompt 欠落は graceful Err（claude 不要）。
+    #[tokio::test]
+    async fn echoes_submit_missing_fields_is_graceful() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        assert!(
+            dispatch_process_method(
+                &state,
+                "echoes_submit",
+                serde_json::json!({ "prompt": "hi" })
+            )
+            .await
+            .is_err(),
+            "lane 欠落は Err"
+        );
+        assert!(
+            dispatch_process_method(
+                &state,
+                "echoes_submit",
+                serde_json::json!({ "lane": "vp/conductor" })
+            )
+            .await
+            .is_err(),
+            "prompt 欠落は Err"
+        );
+        // pool 未登録 lane への submit も graceful Err（engine spawn は起きない）。
+        assert!(
+            dispatch_process_method(
+                &state,
+                "echoes_submit",
+                serde_json::json!({ "lane": "vp/conductor", "prompt": "hi" })
+            )
+            .await
+            .is_err(),
+            "未登録 lane は Err"
+        );
+    }
+
+    /// doc 33 の法: mode=tui の lane への echoes_submit は Err（暗黙切替しない）。
+    /// claude 不要 — mode ガードは engine spawn 前に弾く。
+    #[tokio::test]
+    async fn echoes_submit_rejected_in_tui_mode() {
+        use super::dispatch_process_method;
+        use crate::lane::console_mode::ConsoleMode;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        insert_test_lane(&state, "vptest-c1-tui", ConsoleMode::Tui).await;
+        let err = dispatch_process_method(
+            &state,
+            "echoes_submit",
+            serde_json::json!({ "lane": "vptest-c1-tui/conductor", "prompt": "hi" }),
+        )
+        .await
+        .expect_err("tui mode は Err");
+        assert!(
+            err.contains("console_set_mode") || err.contains("mode"),
+            "切替を促すメッセージ: {err}"
+        );
+    }
+
+    /// console_set_mode の入力検証（claude 不要。engine-less lane の tui→chat 遷移も確認）。
+    #[tokio::test]
+    async fn console_set_mode_validates_and_transitions() {
+        use super::dispatch_process_method;
+        use crate::lane::console_mode::ConsoleMode;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // mode 不正 / lane 不正
+        assert!(
+            dispatch_process_method(
+                &state,
+                "console_set_mode",
+                serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "gui" })
+            )
+            .await
+            .is_err(),
+            "mode 不正は Err"
+        );
+        // engine-less の tui lane → chat へ遷移（PTY 不在でも成立、registry が更新される）
+        let addr = insert_test_lane(&state, "vptest-c1-sm", ConsoleMode::Tui).await;
+        let res = dispatch_process_method(
+            &state,
+            "console_set_mode",
+            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+        )
+        .await
+        .expect("tui→chat ok");
+        assert_eq!(res["mode"], "chat");
+        assert_eq!(
+            state.lane_pool.read().await.console_mode(&addr),
+            Some(ConsoleMode::Chat)
+        );
+        // 同一 mode への再切替は no-op Ok
+        dispatch_process_method(
+            &state,
+            "console_set_mode",
+            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+        )
+        .await
+        .expect("chat→chat no-op ok");
+    }
+
+    /// 実機統合: mode=chat の lane への echoes_submit が engine を lazy spawn し、EchoesEvent が
+    /// `process/echoes/data/{lane}/event` topic に届く SP 終端 round-trip を検証する。
+    /// `cargo test -p vantage-point --ignored echoes_submit_roundtrip`（要 claude CLI）。
+    #[tokio::test]
+    #[ignore = "requires claude CLI + subscription"]
+    async fn echoes_submit_roundtrip() {
+        use super::dispatch_process_method;
+        use crate::echoes::EchoesEvent;
+        use crate::lane::console_mode::ConsoleMode;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use std::time::Duration;
+
+        let state = build_test_app_state(None).await;
+        // doc 33: submit には mode=chat の lane が pool に要る。
+        // project 名はテスト固有にする — 実在 project だと cc_session::last が本物の
+        // session id を返し、temp cwd との不整合で resume が失敗する。
+        insert_test_lane(&state, "vptest-c1-rt", ConsoleMode::Chat).await;
+        // echoes data は非 retained なので submit 前に subscribe。
+        let (_id, mut srx) = state
+            .topic_router
+            .subscribe("process/echoes/data/vptest-c1-rt~conductor/event")
+            .await;
+
+        dispatch_process_method(
+            &state,
+            "echoes_submit",
+            serde_json::json!({ "lane": "vptest-c1-rt/conductor", "prompt": "Reply with exactly: PONG" }),
+        )
+        .await
+        .expect("echoes_submit ok");
+
+        let mut got_init = false;
+        let mut text = String::new();
+        let mut got_done = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(90), srx.recv()).await {
+                Ok(Some((_topic, ProcessMessage::EchoesEvent { event, .. }))) => match event {
+                    EchoesEvent::SessionInit { .. } => got_init = true,
+                    EchoesEvent::MessageChunk { text: t } => text.push_str(&t),
+                    EchoesEvent::TurnCompleted { .. } => {
+                        got_done = true;
+                        break;
+                    }
+                    EchoesEvent::Error { message } => panic!("engine error: {message}"),
+                    _ => {}
+                },
+                _ => break,
+            }
+        }
+
+        assert!(got_init, "SessionInit が topic に届く");
+        assert!(got_done, "TurnCompleted が topic に届く");
+        assert!(text.to_uppercase().contains("PONG"), "本文 PONG: {text:?}");
     }
 }
