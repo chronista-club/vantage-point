@@ -71,6 +71,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     }
     case 'thought_chunk': {
+      // thinking も active turn の一部（extended thinking は message より前に来る）。
+      // streaming を立てることで末尾 thinking の live 判定 = shimmer 演出に使える。
+      s.streaming = true
       const last = s.items[s.items.length - 1]
       if (last && last.kind === 'thinking') last.text += ev.text
       else s.items.push({ kind: 'thinking', text: ev.text })
@@ -121,15 +124,20 @@ function mdToHtml(text: string): string {
   return marked.parse(text) as string
 }
 
-function ThinkingBlock(props: { text: string }) {
+function ThinkingBlock(props: { text: string; active: () => boolean }) {
   const [open, setOpen] = createSignal(false)
   return (
     <div class="echoes-thinking">
-      <button class="echoes-thinking-toggle" onClick={() => setOpen(!open())}>
+      <button
+        class="echoes-thinking-toggle"
+        classList={{ live: props.active() }}
+        onClick={() => setOpen(!open())}
+      >
         <span class="echoes-thinking-caret" classList={{ open: open() }}>
           ▸
         </span>
-        thinking
+        {/* active 中はラベルを shimmer で光らせる（考え中の質感）。 */}
+        <span class="echoes-thinking-label">thinking</span>
       </button>
       <Show when={open()}>
         <div class="echoes-thinking-body">{props.text}</div>
@@ -199,8 +207,15 @@ function ChatView() {
         <PlanWidget entries={() => state()!.plan} />
         <div class="echoes-stream">
           <For each={state()!.items}>
-            {(item) => {
-              if (item.kind === 'thinking') return <ThinkingBlock text={item.text} />
+            {(item, index) => {
+              if (item.kind === 'thinking')
+                return (
+                  <ThinkingBlock
+                    text={item.text}
+                    // 末尾 thinking かつ turn 進行中 = 今まさに考え中 → shimmer。
+                    active={() => index() === state()!.items.length - 1 && state()!.streaming}
+                  />
+                )
               if (item.kind === 'tool') {
                 return <ToolRow name={item.name} done={item.done} error={item.error} />
               }
@@ -262,6 +277,14 @@ export const CHATVIEW_CSS = `
   cursor:pointer; font-size:12px; padding:2px 0; display:flex; align-items:center; gap:5px; }
 .echoes-thinking-caret { transition: transform .15s ease; display:inline-block; }
 .echoes-thinking-caret.open { transform: rotate(90deg); }
+.echoes-thinking-label { display:inline-block; }
+/* active（末尾 thinking かつ turn 進行中）: 文字を gradient sweep で shimmer させ「考え中」を伝える。 */
+.echoes-thinking-toggle.live .echoes-thinking-label {
+  background: linear-gradient(100deg, var(--color-text-tertiary,#8b93a7) 30%,
+    var(--color-text,#e6e9ef) 50%, var(--color-text-tertiary,#8b93a7) 70%);
+  background-size: 220% 100%; -webkit-background-clip:text; background-clip:text;
+  -webkit-text-fill-color:transparent; color:transparent;
+  animation: echoes-shimmer 1.5s linear infinite; }
 .echoes-thinking-body { margin:4px 0 0 16px; padding:8px 12px; border-left:2px solid var(--color-border,#2a3040);
   color: var(--color-text-secondary,#a8b0c0); white-space:pre-wrap; font-size:12px; line-height:1.55; }
 .echoes-tool { align-self:flex-start; display:flex; align-items:center; gap:8px; font-size:12px;
@@ -297,9 +320,13 @@ export const CHATVIEW_CSS = `
 @keyframes echoes-fade { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform:none; } }
 @keyframes echoes-spin { to { transform: rotate(360deg); } }
 @keyframes echoes-blink { 50% { opacity:0; } }
+@keyframes echoes-shimmer { from { background-position: 220% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) {
   .echoes-msg, .echoes-tool { animation:none; }
   .echoes-tool-spinner { animation-duration: 1.5s; } .echoes-cursor { animation:none; opacity:.6; }
+  /* motion off: shimmer は止めるが text-fill:transparent のままだと消えるので色を戻す。 */
+  .echoes-thinking-toggle.live .echoes-thinking-label { animation:none; background:none;
+    -webkit-text-fill-color: currentColor; color: var(--color-text,#e6e9ef); }
 }
 `
 

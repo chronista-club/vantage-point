@@ -476,17 +476,26 @@ const endHandoff = (): void => {
 	switchingOverlay?.classList.remove("active");
 };
 
-// → chat: engine が resume を確定 (session_init) したら overlay を clear。
-document.addEventListener("vp:console-ready", (e) => {
-	const detail = (e as CustomEvent<{ lane: string }>).detail;
-	if (handoffPending?.target === "chat" && detail?.lane === handoffPending.lane) {
+// mode 適用（tui=PTY respawn 済 / chat=engine スロット確定）で overlay を clear。
+// doc 33 §9 改訂（Act I レベルに合わせる）: chat 行きも session_init を待たず、
+// mode 適用で即解除する。Act I の「切替は即・claude の load は非同期」と同じ哲学で、
+// overlay が engine 起動（resume 確定）を gate して固まるのを防ぐ。切替を表示した
+// のと同じ vp:console-mode で overlay も畳むので、ハングが構造的に起きない。
+document.addEventListener("vp:console-mode", (e) => {
+	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
+	if (
+		handoffPending &&
+		detail?.lane === handoffPending.lane &&
+		detail?.mode === handoffPending.target
+	) {
 		endHandoff();
 	}
 });
-// → tui: mode 適用 (PTY respawn 済) で clear。claude の続きは xterm に load される。
-document.addEventListener("vp:console-mode", (e) => {
-	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
-	if (handoffPending?.target === "tui" && detail?.mode === "tui" && detail?.lane === handoffPending.lane) {
+// chat: engine が resume を確定 (session_init) したら、mode 適用より早ければ先に clear
+// する belt-and-suspenders（overlay の完了条件ではなく「更に早い解除」の位置づけ）。
+document.addEventListener("vp:console-ready", (e) => {
+	const detail = (e as CustomEvent<{ lane: string }>).detail;
+	if (handoffPending?.target === "chat" && detail?.lane === handoffPending.lane) {
 		endHandoff();
 	}
 });

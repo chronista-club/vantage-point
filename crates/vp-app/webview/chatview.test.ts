@@ -38,6 +38,11 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     ])
   })
 
+  it('thought_chunk で streaming が立つ（thinking も active turn = shimmer 判定用）', () => {
+    const s = fold([{ kind: 'thought_chunk', text: '考え' }])
+    expect(s.streaming).toBe(true)
+  })
+
   it('tool_call → tool_call_update が id 一致で done 化する', () => {
     const s = fold([
       { kind: 'tool_call', id: 'tu-1', name: 'Bash', input: { command: 'ls' } },
