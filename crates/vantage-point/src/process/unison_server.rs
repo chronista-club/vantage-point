@@ -260,9 +260,10 @@ async fn handle_terminal_demand_start(
 
 /// 指定 Lane の **現時点の** PtySlot output に terminal pump を張り直す (idempotent)。
 ///
-/// `subscribe_output` で今の PtySlot broadcast を取得して pump を spawn、 既存 pump handle が
-/// あれば `abort()` して差し替える (二重 demand_start / restart 後の付け替えでも 1 本に収束)。
-/// Lane に PtySlot が無ければ `false` (pump は張れない)。
+/// `attach_output` で今の PtySlot の replay snapshot + broadcast を原子的に取得して pump を
+/// spawn (= 新 subscriber には直近画面が replay されてから live が続く、 replay-on-attach)。
+/// 既存 pump handle があれば `abort()` して差し替える (二重 demand_start / restart 後の
+/// 付け替えでも 1 本に収束)。 Lane に PtySlot が無ければ `false` (pump は張れない)。
 ///
 /// demand hook (購読 0→1) の start 経路と、 restart_lane 後の pump 付け替え (BUG#1: restart で
 /// slot を差し替えても World 側 subscriber は張りっぱなしで demand が再発火しない) が、
@@ -271,13 +272,14 @@ pub(crate) async fn respawn_terminal_pump(state: &AppState, lane: &str) -> bool 
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return false;
     };
-    let rx = state.lane_pool.read().await.subscribe_output(&addr);
-    let Some(rx) = rx else {
+    let attached = state.lane_pool.read().await.attach_output(&addr);
+    let Some((replay, rx)) = attached else {
         tracing::debug!("respawn_terminal_pump: Lane に PtySlot 無 (lane={})", lane);
         return false;
     };
     let handle = crate::process::terminal_pump::spawn_lane_terminal_pump(
         lane.to_string(),
+        replay,
         rx,
         state.topic_router.clone(),
     );
@@ -432,7 +434,9 @@ async fn handle_console_set_mode(
         if mode == crate::lane::console_mode::ConsoleMode::Chat
             && let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router)
         {
-            tracing::warn!("console_set_mode: eager chat engine spawn 失敗（submit で再試行）: {e}");
+            tracing::warn!(
+                "console_set_mode: eager chat engine spawn 失敗（submit で再試行）: {e}"
+            );
         }
     }
     Ok(serde_json::json!({"status": "ok", "lane": lane, "mode": mode.as_str()}))
@@ -1138,6 +1142,105 @@ mod tests {
         assert_eq!(res["status"], "ok");
         assert_eq!(res["cols"], 120);
         assert_eq!(res["rows"], 40);
+    }
+
+    /// replay-on-attach を **performer lane** で end-to-end 検証する。
+    ///
+    /// 「vp-app 再起動 → 新 xterm が後発 subscribe → 前回画面が replay で戻る」を再現:
+    /// PTY 出力を先に発生させ (= replay buffer に溜める)、 その **後で** topic を新規購読し、
+    /// demand_start (= respawn_terminal_pump → attach_output) を撃つ。 購読が出力より後でも
+    /// replay snapshot 経由でマーカーが届けば、 performer でも画面復元が効くことの証明になる。
+    /// performer は conductor と別 topic key (`vp~performer~<name>`) に載るため、 conductor
+    /// テストとは別に経路を固める価値がある。
+    #[tokio::test]
+    async fn replay_on_attach_restores_screen_for_performer_lane() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::LaneAddress;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use base64::Engine;
+        use std::time::Duration;
+
+        let state = build_test_app_state(None).await;
+        let shell = default_test_shell();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        // performer lane (conductor とは別 topic key になる)
+        let addr = LaneAddress::performer("vp", "feat-replay");
+        let lane = addr.to_string();
+        assert_eq!(lane, "vp/performer/feat-replay");
+
+        // 実 PtySlot を performer address で登録
+        {
+            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            state
+                .lane_pool
+                .write()
+                .await
+                .insert_pty_slot(addr.clone(), slot, rx);
+        }
+
+        // マーカーを PTY に出力させる (echo)。 この出力は「過去」= replay buffer に溜まる。
+        // 改行は OS 依存 (S3 test と同方針)。 ConPTY の DSR gating は reader task が起動時に
+        // 自己応答する (pty_slot の Windows 分岐) ため、 ここでは端末役の応答は不要。
+        let marker = "VP_PERFORMER_REPLAY_MARKER";
+        let echo_cmd: Vec<u8> = if cfg!(windows) {
+            format!("echo {marker}\r").into_bytes()
+        } else {
+            format!("echo {marker}\n").into_bytes()
+        };
+        {
+            let pool = state.lane_pool.write().await;
+            pool.write_to_lane(&addr, &echo_cmd).expect("write to PTY");
+        }
+
+        // マーカーが replay buffer に確実に入るまで待つ (PtySlot が echo を読み終える猶予)。
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        // ここで初めて topic を新規購読する (= 再起動後の新 xterm。 出力より後発)。
+        let topic = format!("process/terminal/data/{}/out", lane.replace('/', "~"));
+        let (_sub_id, mut srx) = state.topic_router.subscribe(&topic).await;
+
+        // demand_start → respawn_terminal_pump → attach_output → replay 先頭配送。
+        let res = dispatch_process_method(
+            &state,
+            "terminal_demand_start",
+            serde_json::json!({ "lane": lane }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(
+            res["status"], "started",
+            "performer lane に pump が張れるはず"
+        );
+
+        // 後発購読でも replay 経由でマーカーが届く (= 画面復元)。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut seen = String::new();
+        let mut found = false;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(1), srx.recv()).await {
+                Ok(Some((got_topic, ProcessMessage::LaneTerminalOutput { lane: l, data }))) => {
+                    assert_eq!(got_topic, topic);
+                    assert_eq!(l, lane, "message は full lane address を載せる");
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .expect("base64");
+                    seen.push_str(&String::from_utf8_lossy(&bytes));
+                    if seen.contains(marker) {
+                        found = true;
+                        break;
+                    }
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => break,
+                Err(_) => continue,
+            }
+        }
+        assert!(
+            found,
+            "performer lane の後発 attach で replay されず画面が復元しない (seen={seen:?})"
+        );
     }
 
     /// PtySlot を持たない Lane への terminal_write は Err (lane 不在を上位に伝える)。
