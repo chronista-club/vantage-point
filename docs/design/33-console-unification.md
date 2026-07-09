@@ -97,3 +97,28 @@ PR1.5（doc 31 語彙）は独立。C2 の後が視覚的にまとまる（pane 
 - **LanePool 改修の blast radius**: `subscribe_output` / `write_to_lane` / spawn 経路の callers — 実装前に gitnexus impact 必須
 - **reconcile 変更**: #683（performer teardown）の隣接領域。LaneInfo 拡張は additive + serde default で後方互換に留める
 - **World A/B の境界規律**: C1 以降、Console 関連の新 JS は必ず World B（bundle）に書く。World A への追記は禁止（境界が再び溶ける）
+
+## 9. 方向性 — Act II を primary console へ（2026-07-09 dogfood 中の user 所感）
+
+> 「多分 Act II できたら、そっちメインになりそう」— C2 の初回実機 dogfood で。
+
+Act II（Console GUI）が成熟したら **Console の既定モードを Chat へ倒す**（現状 `ConsoleMode::default() = Tui` は後方互換のための保守的既定）。含意:
+
+- **default 反転**: `ConsoleMode::default()` を Chat へ、または `config.kdl` で per-user 既定を選べるように（Tui 派も残す）。boot 時 `with_conductor` が既定 mode を honor する土台は C1 で入っている
+- **成熟条件**（反転の前提）: C2 streaming / C3 diff / C4 入力が揃い、resume 継続・self-heal・reconnect が実機で安定してから。中途半端な Act II を既定にしない
+- **cc_session 継承が体験の核**（user 明言「session id 引き継げたら最高」）: Act I ⇄ II は同一 cc_session の resume。transcript pre-flight（`cc_session::transcript_exists`）で stale id は fresh に倒し、live session は継続する（C2 実装）
+- **示唆**: primary になるなら Act II の完成度優先度が上がる。TUI(Act I) は power user / 低レベル操作用に残るが、1st ビューは GUI へ
+
+## 10. dogfood で潰した配線バグ（C2 初回、2026-07-09）— 同型の「新経路の登録漏れ」
+
+Act II の新経路が既存インフラの登録リストから漏れる同型バグを 4 連続で発見・修正。今後 engine/pane 種別を足す時のチェックリスト:
+
+1. **toggle no-op**: 宛先 lane を起動レースで未設定の変数から取っていた → `setActivePane` 追跡の `activeLaneAddress` を使う
+2. **IPC 誤配送**: `is_main_ipc_tag`（app.rs）に新 tag 未登録 → `console:set_mode`/`echoes:submit` を追加。**新 IPC tag は必ずここに足す**
+3. **SP→World 転送漏れ**: canvas-ingest driver（discovery.rs）が `process/echoes/data/#` 未購読 → 追加。**新 topic 系統は canvas driver の subscribe に足す**
+4. **resume ハードエラー**: stale cc_session id で `--resume` 失敗 → `transcript_exists` pre-flight で fresh に fallback（TUI の `|| claude` 相当）
+
+## 11. 未決事項
+
+- `id` 移行の blast radius — 実装時に gitnexus impact で確定
+- default mode 反転のタイミング（§9、成熟条件を満たしてから）

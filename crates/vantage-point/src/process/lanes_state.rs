@@ -860,7 +860,10 @@ impl LanePool {
         }
 
         let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-        let resume = crate::lane::cc_session::last(&addr.project, &lane_label);
+        // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
+        // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
+        let resume = crate::lane::cc_session::last(&addr.project, &lane_label)
+            .filter(|id| crate::lane::cc_session::transcript_exists(id));
         let host = crate::echoes::EchoesAgentHost::spawn(crate::echoes::EchoesHostConfig {
             cwd: info.cwd.clone(),
             project: addr.project.clone(),

@@ -492,6 +492,9 @@ async fn run_canvas_driver(
     // router → surface)。 pump 不在なら本 subscription には何も流れない (= 無駄 push ゼロ)。
     // LanesSnapshot 等の dead data 混入を避けるため `process/#` 全広げはしない。
     let (term_sub_id, mut rx_term) = topic_router.subscribe("process/terminal/data/#").await;
+    // doc 33 C2: Echoes Act II の構造化イベントも同 ingest 経路で World に push
+    // (EchoesAgentHost → echoes_pump → 本 subscription → World canvas router → vp-app)。
+    let (echoes_sub_id, mut rx_echoes) = topic_router.subscribe("process/echoes/data/#").await;
 
     loop {
         tokio::select! {
@@ -519,6 +522,18 @@ async fn run_canvas_driver(
                     None => break,
                 }
             }
+            recvd_echoes = rx_echoes.recv() => {
+                match recvd_echoes {
+                    Some((_topic, msg)) => {
+                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                        if channel.send_event("pane", &json).await.is_err() {
+                            tracing::warn!("World uplink/canvas: echoes send 失敗 → 再接続 (project={})", project_dir);
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
             _ = epoch.cancelled() => break,
         }
     }
@@ -526,6 +541,7 @@ async fn run_canvas_driver(
     // 再接続前に subscription を畳む (次 epoch で貼り直す)。
     topic_router.unsubscribe(sub_id).await;
     topic_router.unsubscribe(term_sub_id).await;
+    topic_router.unsubscribe(echoes_sub_id).await;
     // 自分の channel が死んだケースでも reconnect を誘発する (epoch.cancelled() で抜けた
     // 場合は既に cancelled なので no-op)。
     epoch.cancel();
