@@ -73,8 +73,11 @@ impl EchoesAgentHost {
             .arg("--include-partial-messages")
             .arg("--verbose");
 
-        // MVP は acceptEdits で auto-apply（--permission-prompt-tool は 2.1.197 で削除）。
-        cmd.arg("--permission-mode").arg("acceptEdits");
+        // Act I（TUI）が bypassPermissions で全ツール素通しなのに Act II を揃える（doc 33 §9、
+        // user 要件 2026-07-09「act I レベルにここも合わせよう」）。acceptEdits だと Edit は
+        // auto-apply されるが Bash 等は headless で許可待ち→承認 UI が無い（--permission-prompt-tool
+        // は 2.1.197 で削除済）ため error 化していた。bypassPermissions で TUI と同じ体験にする。
+        cmd.arg("--permission-mode").arg("bypassPermissions");
 
         if let Some(ref model) = config.model {
             cmd.arg("--model").arg(model);
