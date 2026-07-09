@@ -85,6 +85,15 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
 
 #[cfg(feature = "midi")]
 fn start(port: u16, midi: Option<String>) -> Result<()> {
+    // 二重起動ガード: 既に TheWorld が稼働中なら讓って正常終了する。
+    // これが無いと LaunchAgent(KeepAlive) / vp-app auto-launch / 手動 `vp world` が
+    // 既存 daemon を確認せず run_world に突入し、SurrealDB world lock 衝突 → :port bind
+    // AddrInUse → 異常終了 → KeepAlive 再起動の無限ループに陥る (2026-07-09 二重起動事故)。
+    // is_daemon_running() は pidfile + port ping の二段確認なので pidfile 不整合でも検出できる。
+    if let Some(pid) = process::is_daemon_running() {
+        println!("👑 TheWorld は既に稼働中 (PID: {pid})。二重起動を避けて終了します。");
+        return Ok(());
+    }
     let midi_config = midi.as_ref().map(|midi_arg| build_midi_config(midi_arg));
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(crate::process::run_world(port, midi_config))
@@ -92,6 +101,13 @@ fn start(port: u16, midi: Option<String>) -> Result<()> {
 
 #[cfg(not(feature = "midi"))]
 fn start(port: u16) -> Result<()> {
+    // 二重起動ガード（midi 版 start と同旨）: 既存 daemon 稼働中なら讓って正常終了。
+    // LaunchAgent(KeepAlive) / vp-app auto-launch / 手動 `vp world` の二重起動 →
+    // world DB lock 衝突 + bind AddrInUse → crash ループを防ぐ (2026-07-09 事故)。
+    if let Some(pid) = process::is_daemon_running() {
+        println!("👑 TheWorld は既に稼働中 (PID: {pid})。二重起動を避けて終了します。");
+        return Ok(());
+    }
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(crate::process::run_world(port))
 }
