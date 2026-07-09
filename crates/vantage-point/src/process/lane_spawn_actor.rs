@@ -310,6 +310,17 @@ async fn handle_cmd(
         }
         pool_write.insert(info.clone());
         drop(pool_write);
+        // doc 13 §6: Lane 起動時に PP (Paisley Park / Justice) を同時 spawn するのが default。
+        // conductor の chat-boot は console_mode 非依存で常時 populate される (server.rs) ため、
+        // performer の chat-boot でも populate して非対称を作らない (chat lane も Running=生存)。
+        if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
+            lc_pool.write().await.populate_lane(addr.clone(), &stand);
+            tracing::debug!(
+                "LaneCapabilities pool に chat Performer Lane populate (addr={}, stand={})",
+                addr,
+                stand
+            );
+        }
         if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {
             tracing::warn!("Lane chat register の SystemEvent push 失敗 (best-effort): {e}");
         }
@@ -559,5 +570,87 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // race guard により重複 spawn されず、 pool は事前 insert の 1 件のまま
         assert_eq!(pool.read().await.count(), 1);
+    }
+
+    /// `XDG_STATE_HOME` を触る test を直列化する共有ロック (parallel runner で別 test の
+    /// env 変更と混ざらないよう)。 async-aware Mutex なので `.await` 越しに保持しても
+    /// `clippy::await_holding_lock` を踏まない (auth.rs `env_guard_async` と同型)。
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// **performer** の永続 console_mode=chat が boot spawn で honor され、 engine-less
+    /// (pid=None + state=Running + PtySlot なし) で登録されること。
+    ///
+    /// これが「Act II の performer lane を再起動しても chat のまま復活する」の中核。
+    /// 壊れると chat performer が boot で PTY を立て、 echoes_submit が 2 本目 engine を
+    /// 呼んで 1 会話 2 エンジンになる (conductor `with_conductor` と同じ規律を performer に適用)。
+    #[tokio::test]
+    async fn chat_mode_performer_boots_engine_less() {
+        use crate::lane::console_mode::ConsoleMode;
+        let _guard = ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // console_mode::last / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
+        let prev = std::env::var_os("XDG_STATE_HOME");
+        // SAFETY: edition 2024 で env::set_var は unsafe。 ENV_LOCK で他 test と直列化済、
+        // 本 test 内でのみ XDG_STATE_HOME を差し替え、 末尾で復元する。
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+
+        // performer "proj"/"chat-perf" を chat mode で永続化
+        crate::lane::console_mode::record("proj", "chat-perf", ConsoleMode::Chat)
+            .expect("record chat mode");
+
+        let pool = Arc::new(RwLock::new(LanePool::new()));
+        let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
+        let shutdown = CancellationToken::new();
+
+        cmd_tx
+            .send(LaneCmd::SpawnLane {
+                project_id: "proj".to_string(),
+                name: "chat-perf".to_string(),
+                cwd: tmp.path().to_string_lossy().to_string(),
+                stand: "echoes".to_string(),
+            })
+            .expect("send SpawnLane");
+        drop(cmd_tx);
+
+        let handle = LaneSpawnActor::new(pool.clone(), None, tx, 1, cmd_rx).spawn_loop(shutdown);
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("actor 終了")
+            .expect("actor task panic せず");
+        // detach spawn task の完了待ち
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let addr = LaneAddress::performer("proj", "chat-perf");
+        let pool_read = pool.read().await;
+        let info = pool_read
+            .get(&addr)
+            .expect("chat performer が登録されるはず");
+        assert_eq!(
+            info.console_mode,
+            ConsoleMode::Chat,
+            "永続 chat mode が honor される"
+        );
+        assert_eq!(
+            info.state,
+            LaneState::Running,
+            "chat lane は Running が正常形"
+        );
+        assert_eq!(info.pid, None, "chat lane は engine-less (PTY を立てない)");
+        assert!(
+            pool_read.subscribe_output(&addr).is_none(),
+            "chat lane に PtySlot は存在しないはず"
+        );
+        drop(pool_read);
+
+        // env 復元。 SAFETY: set_var と同じく ENV_LOCK 保持中。
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("XDG_STATE_HOME", v),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+        }
     }
 }

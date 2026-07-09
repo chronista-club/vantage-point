@@ -32,6 +32,17 @@ use crate::protocol::ProcessMessage;
 /// 大きめの 32KiB で分割して順次 route する。
 const REPLAY_CHUNK: usize = 32 * 1024;
 
+/// replay の冪等化 prefix — clear scrollback + clear screen + cursor home。
+///
+/// replay は「新規 xterm への画面復元」だけでなく、 **既存 xterm が生きたまま** demand が
+/// 撃ち直される経路 (vp-app WS 瞬断の 1→0→1 再 subscribe / SP↔World control 再接続時の
+/// `refire_active_demands`) でも走る。 backend は「新規 attach」と「reconnect」を区別できない
+/// (どちらも topic への fresh subscribe) ため、 raw replay を単純追記すると既存画面に
+/// 二重描画 (ゴースト) が出る。 replay 先頭で端末を clear してから raw を流し直すことで、
+/// cold-start でも reconnect でも同一の最終画面に収束する (= 冪等な screen snapshot)。
+/// `\x1b[3J` は xterm 拡張の scrollback clear、 `\x1b[2J` は画面 clear、 `\x1b[H` は cursor home。
+const REPLAY_CLEAR_PREFIX: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+
 /// 1 Lane の PtySlot output broadcast を購読し、 `LaneTerminalOutput` topic に流す pump を spawn。
 ///
 /// - `lane`: LaneAddress の Display 形 (`"vp/conductor"` / `"vp/performer/foo"`)。 vp-app が
@@ -52,13 +63,17 @@ pub fn spawn_lane_terminal_pump(
     tokio::spawn(async move {
         let engine = base64::engine::general_purpose::STANDARD;
         // replay 先頭配送 → その後 live stream。 rx は snapshot と同時 subscribe 済なので
-        // この順序で全バイトが exactly-once で届く。
+        // この順序で全バイトが exactly-once で届く。 先頭に clear prefix を付けて冪等化する
+        // (既存 xterm が生きたままの reconnect でも二重描画にならない、 REPLAY_CLEAR_PREFIX 参照)。
         if !replay.is_empty() {
             tracing::info!(
                 "terminal pump replay: {} bytes を先頭配送 (lane={lane})",
                 replay.len()
             );
-            for chunk in replay.chunks(REPLAY_CHUNK) {
+            let mut framed = Vec::with_capacity(REPLAY_CLEAR_PREFIX.len() + replay.len());
+            framed.extend_from_slice(REPLAY_CLEAR_PREFIX);
+            framed.extend_from_slice(&replay);
+            for chunk in framed.chunks(REPLAY_CHUNK) {
                 let data = engine.encode(chunk);
                 topic_router
                     .route(ProcessMessage::LaneTerminalOutput {
@@ -165,8 +180,44 @@ mod tests {
                 );
             }
         }
-        assert_eq!(received[0], b"replayed-screen");
+        // replay は clear prefix で冪等化されてから配送される
+        let mut expected_replay = REPLAY_CLEAR_PREFIX.to_vec();
+        expected_replay.extend_from_slice(b"replayed-screen");
+        assert_eq!(received[0], expected_replay);
         assert_eq!(received[1], b"live");
+    }
+
+    /// reconnect (既存 xterm 生存) を想定した 2 回目 replay も clear prefix で始まり、
+    /// 冪等 (= 二重描画にならず、 同じ clear+snapshot に収束する) こと。
+    #[tokio::test]
+    async fn test_pump_replay_starts_with_clear_prefix() {
+        let router = Arc::new(TopicRouter::new());
+        let (_tx, rx) = broadcast::channel::<Vec<u8>>(16);
+        let (_id, mut srx) = router
+            .subscribe("process/terminal/data/vp~conductor/out")
+            .await;
+        let _h = spawn_lane_terminal_pump(
+            "vp/conductor".to_string(),
+            b"screen".to_vec(),
+            rx,
+            router.clone(),
+        );
+
+        let (_topic, msg) = tokio::time::timeout(Duration::from_secs(1), srx.recv())
+            .await
+            .expect("timeout")
+            .expect("recv");
+        if let ProcessMessage::LaneTerminalOutput { data, .. } = msg {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .expect("base64");
+            assert!(
+                decoded.starts_with(REPLAY_CLEAR_PREFIX),
+                "replay の先頭は clear prefix で冪等化されるはず"
+            );
+        } else {
+            panic!("想定外の message");
+        }
     }
 
     /// replay が REPLAY_CHUNK を超える場合は分割して順序通り配送される。
@@ -203,7 +254,10 @@ mod tests {
                 );
             }
         }
-        assert_eq!(reassembled, replay);
+        // clear prefix + replay が分割 → 再結合で復元される
+        let mut expected = REPLAY_CLEAR_PREFIX.to_vec();
+        expected.extend_from_slice(&replay);
+        assert_eq!(reassembled, expected);
     }
 
     /// 空バイト列は route しない (no-op)。
