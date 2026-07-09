@@ -101,6 +101,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
         }
         lanes.push(LaneInfo {
+            console_mode: Default::default(),
             id: crate::lane::lane_id::load_or_create(&project, &entry.name),
             address,
             kind: LaneKind::Performer,
@@ -346,6 +347,7 @@ pub(crate) async fn create_performer_orchestrated(
     // 注: 同期 file IO だが cc_session lazy read と同様 数 ms、 spawn_blocking 隔離は省略 (pre-MVP)。
     let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &req.name);
     let info = LaneInfo {
+        console_mode: Default::default(),
         id: lane_id,
         address: addr.clone(),
         kind: LaneKind::Performer,

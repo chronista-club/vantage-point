@@ -149,6 +149,24 @@ body{overflow:hidden;}
 #lane-host{position:absolute;inset:0;}
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
+/* doc 33 C2: Echoes Act II (Console GUI) mount 点。default 非表示、mode=chat で .active。
+   lane-host(xterm) と排他 — chat 表示中は lane-host を .console-hidden で隠す。 */
+#console-chat-host{position:absolute;inset:0;display:none;}
+#console-chat-host.active{display:block;}
+#lane-host.console-hidden{display:none;}
+/* doc 33 §9: 切替 progress overlay。pane 全面を覆い、resume 確定まで表示 (= switch lock)。 */
+#console-switching{position:absolute;inset:0;display:none;z-index:20;
+  align-items:center;justify-content:center;
+  background:color-mix(in srgb, var(--color-bg,#0f1115) 82%, transparent);backdrop-filter:blur(2px);}
+#console-switching.active{display:flex;}
+.console-switching-card{display:flex;flex-direction:column;align-items:center;gap:14px;
+  color:var(--color-text-secondary,#a8b0c0);font-size:13px;
+  font-family:var(--font-ui,system-ui,sans-serif);}
+.console-switching-spinner{width:26px;height:26px;border-radius:50%;
+  border:2.5px solid var(--color-border,#2a3040);border-top-color:var(--color-accent,#3b82f6);
+  animation:console-spin .7s linear infinite;}
+@keyframes console-spin{to{transform:rotate(360deg);}}
+@media (prefers-reduced-motion:reduce){.console-switching-spinner{animation-duration:1.6s;}}
 .lane-pane .lane-term{padding:0;height:100%;width:100%;box-sizing:border-box;}
 /* どの Lane も無い時の placeholder (active class で表示制御、 default は表示) */
 #lane-empty{position:absolute;inset:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
@@ -304,6 +322,18 @@ body{overflow:hidden;}
        Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
   <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;">
     <div id="lane-host"></div>
+    <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
+         ChatView がここに render する。default hidden — console_mode=chat の時だけ .active で表示
+         (lane-host xterm と排他表示、entry.tsx の vp:console-mode listener が toggle)。 -->
+    <div id="console-chat-host"></div>
+    <!-- doc 33 §9: Act I⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
+         resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
+    <div id="console-switching">
+      <div class="console-switching-card">
+        <div class="console-switching-spinner"></div>
+        <div class="console-switching-msg">セッションを引き継ぎ中…</div>
+      </div>
+    </div>
     <!-- empty placeholder: どの Lane も無い時に出す -->
     <div id="lane-empty" class="lane-empty active">
       <main>

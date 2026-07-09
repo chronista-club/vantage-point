@@ -452,6 +452,7 @@ mod lane_resolve_tests {
     /// 指定 lane の Running な LaneInfo を作る test helper
     fn running_lane(addr: LaneAddress, stand: &str) -> LaneInfo {
         LaneInfo {
+            console_mode: Default::default(),
             id: Default::default(),
             address: addr.clone(),
             kind: addr.kind,

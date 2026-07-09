@@ -54,7 +54,7 @@ use tokio::sync::{Mutex, mpsc};
 /// kitty等のGUIランチャーから起動した場合、シェルプロファイルが読まれず
 /// PATHに `~/.local/bin` が含まれないことがある。
 /// well-known locations へのフォールバックで確実にCLIを見つける。
-fn get_claude_cli_path(config_path: Option<&str>) -> String {
+pub(crate) fn get_claude_cli_path(config_path: Option<&str>) -> String {
     // 1. 設定で指定されていればそれを使用
     if let Some(path) = config_path {
         return path.to_string();

@@ -154,6 +154,23 @@ pub enum AppEvent {
     /// terminal S4: WebView からの resize。 event loop が当該 lane の terminal session に渡し、
     /// canvas channel 上り request `terminal_resize` で SP へ。
     TerminalResize { lane: String, cols: u16, rows: u16 },
+    /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
+    /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
+    /// event loop が `window.vpConsole.handleEvent(lane, event)` で当該 lane の Console pane に渡す。
+    EchoesEvent {
+        lane: String,
+        event: serde_json::Value,
+    },
+    /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
+    /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で SP へ。
+    EchoesSubmit { lane: String, prompt: String },
+    /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
+    /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
+    /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
+    ConsoleSetMode { lane: String, mode: String },
+    /// doc 33 C2: console_set_mode 成功後、WebView へ mode を反映する内部 event
+    /// (async task → main thread の evaluate_script 橋渡し)。
+    ConsoleModeApplied { lane: String, mode: String },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -196,6 +213,28 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     lane: lane.to_string(),
                     cols: cols as u16,
                     rows: rows as u16,
+                });
+            }
+        }
+        // Echoes Act II (doc 32): EchoesChatPane からのプロンプト投入。 lane + prompt 必須。
+        Some("echoes:submit") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let prompt = parsed.get("prompt").and_then(|v| v.as_str());
+            if let (Some(lane), Some(prompt)) = (lane, prompt) {
+                let _ = proxy.send_event(AppEvent::EchoesSubmit {
+                    lane: lane.to_string(),
+                    prompt: prompt.to_string(),
+                });
+            }
+        }
+        // doc 33 C2: Act toggle。 console mode 切替要求を event loop へ。
+        Some("console:set_mode") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let mode = parsed.get("mode").and_then(|v| v.as_str());
+            if let (Some(lane), Some(mode)) = (lane, mode) {
+                let _ = proxy.send_event(AppEvent::ConsoleSetMode {
+                    lane: lane.to_string(),
+                    mode: mode.to_string(),
                 });
             }
         }

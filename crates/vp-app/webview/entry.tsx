@@ -90,6 +90,8 @@ import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
+import { installConsole } from "./console";
+import { installChatView, CHATVIEW_CSS } from "./chatview";
 import { renderDevices as renderBastetDevices } from "./bastet";
 import {
 	handleMessage as handleCanvasMessage,
@@ -404,6 +406,131 @@ console.info("[vp-bundle] vpFrame attached to window — bundle init complete");
 	clearPP,
 	appendPP,
 };
+
+// ===== Echoes Act II (doc 33): Console facade + ChatView =====
+// window.vpConsole を公開（EchoesEvent の per-lane ring buffer + ChatView renderer 接続点）。
+// Rust event loop が `window.vpConsole.handleEvent(lane, event)` で EchoesEvent を届け、
+// `window.vpConsole.setMode(lane, mode)` でエンジンモードを通知する。
+// DevTools 検分: window.vpConsole.peek("<project>/conductor")
+const vpConsole = installConsole();
+
+// ChatView (C2): #console-chat-host に SolidJS ChatView を mount。scoped CSS を注入。
+const chatStyle = document.createElement("style");
+chatStyle.textContent = CHATVIEW_CSS;
+document.head.appendChild(chatStyle);
+const chatHost = document.getElementById("console-chat-host");
+const chatView = chatHost ? installChatView(chatHost, vpConsole) : null;
+
+// 現在 active な lane（toggle が console_set_mode を送る宛先）。
+let consoleActiveLane: string | null = null;
+
+// mode に応じて lane-host(xterm, World A) と console-chat(World B) を排他表示する。
+// ⚠️ World A の xterm ロジックには触れず、host コンテナの .active class だけ toggle する。
+const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
+	consoleActiveLane = lane;
+	const laneHost = document.getElementById("lane-host");
+	if (mode === "chat") {
+		chatHost?.classList.add("active");
+		laneHost?.classList.add("console-hidden");
+		chatView?.showLane(lane);
+	} else {
+		chatHost?.classList.remove("active");
+		laneHost?.classList.remove("console-hidden");
+	}
+};
+
+// vpConsole.setMode(lane, mode) が投げる CustomEvent を受けて表示を切替える
+// (Rust が lane 選択 / console_set_mode 成功時に setMode を呼ぶ)。
+document.addEventListener("vp:console-mode", (e) => {
+	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
+	if (detail?.lane) applyConsoleMode(detail.lane, detail.mode);
+});
+
+// doc 33 §9: Act I⇄II 切替の progress overlay + switch lock。
+// 「resume 確定まで切替を見せる + 二重切替を防ぐ」= 安全なハンドオフ。
+const switchingOverlay = document.getElementById("console-switching");
+const switchingMsg = switchingOverlay?.querySelector(".console-switching-msg") as
+	| HTMLElement
+	| undefined;
+// 進行中の handoff。null = idle。set 中は toggle をロックする。
+let handoffPending: { lane: string; target: "tui" | "chat" } | null = null;
+let handoffTimer: number | undefined;
+
+const beginHandoff = (lane: string, target: "tui" | "chat"): void => {
+	handoffPending = { lane, target };
+	if (switchingMsg) {
+		switchingMsg.textContent =
+			target === "chat" ? "Act II にセッションを引き継ぎ中…" : "Act I にセッションを引き継ぎ中…";
+	}
+	switchingOverlay?.classList.add("active");
+	// safety: ready 信号が来なくても 30s で解除（stuck 防止）。
+	if (handoffTimer) clearTimeout(handoffTimer);
+	handoffTimer = window.setTimeout(() => endHandoff(), 30000);
+};
+const endHandoff = (): void => {
+	handoffPending = null;
+	if (handoffTimer) {
+		clearTimeout(handoffTimer);
+		handoffTimer = undefined;
+	}
+	switchingOverlay?.classList.remove("active");
+};
+
+// mode 適用（tui=PTY respawn 済 / chat=engine スロット確定）で overlay を clear。
+// doc 33 §9 改訂（Act I レベルに合わせる）: chat 行きも session_init を待たず、
+// mode 適用で即解除する。Act I の「切替は即・claude の load は非同期」と同じ哲学で、
+// overlay が engine 起動（resume 確定）を gate して固まるのを防ぐ。切替を表示した
+// のと同じ vp:console-mode で overlay も畳むので、ハングが構造的に起きない。
+document.addEventListener("vp:console-mode", (e) => {
+	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
+	if (
+		handoffPending &&
+		detail?.lane === handoffPending.lane &&
+		detail?.mode === handoffPending.target
+	) {
+		endHandoff();
+	}
+});
+// chat: engine が resume を確定 (session_init) したら、mode 適用より早ければ先に clear
+// する belt-and-suspenders（overlay の完了条件ではなく「更に早い解除」の位置づけ）。
+document.addEventListener("vp:console-ready", (e) => {
+	const detail = (e as CustomEvent<{ lane: string }>).detail;
+	if (handoffPending?.target === "chat" && detail?.lane === handoffPending.lane) {
+		endHandoff();
+	}
+});
+
+// Act toggle: #pane-terminal 右上の floating button。現在 mode を反転して console_set_mode を送る
+// (World B 所有、xterm/chat どちらの表示中でも常に押せる)。root(conductor) の切替を主眼とする。
+const paneTerminal = document.getElementById("pane-terminal");
+if (paneTerminal) {
+	const toggle = document.createElement("button");
+	toggle.className = "echoes-act-toggle";
+	toggle.textContent = "💬 Act II";
+	const syncLabel = (): void => {
+		const chatOn = chatHost?.classList.contains("active");
+		toggle.textContent = chatOn ? "⌨ Act I" : "💬 Act II";
+	};
+	document.addEventListener("vp:console-mode", syncLabel);
+	toggle.addEventListener("click", () => {
+		// resume 確定前の二重切替をロック（中間状態を作らない）。
+		if (handoffPending) return;
+		// 宛先 lane は setActivePane bridge が確実に追う activeLaneAddress を使う
+		// (consoleActiveLane は起動レースで未設定のことがあり no-op になっていた)。
+		const lane = activeLaneAddress ?? consoleActiveLane;
+		if (!lane) {
+			console.warn("[console-toggle] active lane 不明 — lane を選択してから押してください");
+			return;
+		}
+		const chatOn = chatHost?.classList.contains("active");
+		const next: "tui" | "chat" = chatOn ? "tui" : "chat";
+		// 押下で即 progress を出す（round-trip 前に反応 = 待ち時間を可視化）。
+		beginHandoff(lane, next);
+		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+		ipc?.postMessage(JSON.stringify({ t: "console:set_mode", lane, mode: next }));
+	});
+	paneTerminal.appendChild(toggle);
+}
 
 // ===== Bastet 🧲 device 一覧 render API =====
 // window.vpBastet.renderDevices(devices) で Bastet pane (pane-bastet) に接続中 device を render。

@@ -1351,6 +1351,7 @@ mod tests {
                 LaneKind::Performer => LaneAddress::performer(project, name.unwrap()),
             };
             LaneInfo {
+                console_mode: Default::default(),
                 id: Default::default(),
                 address,
                 kind,
