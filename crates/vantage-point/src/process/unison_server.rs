@@ -980,7 +980,8 @@ mod tests {
 
         // 実 PtySlot を attach (subscribe_output が Some を返す前提を作る)。
         {
-            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            let (slot, rx) =
+                PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn");
             state
                 .lane_pool
                 .write()
@@ -1065,7 +1066,8 @@ mod tests {
         let lane = addr.to_string();
 
         {
-            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            let (slot, rx) =
+                PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn");
             state
                 .lane_pool
                 .write()
@@ -1172,7 +1174,8 @@ mod tests {
 
         // 実 PtySlot を performer address で登録
         {
-            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            let (slot, rx) =
+                PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn");
             state
                 .lane_pool
                 .write()
@@ -1336,7 +1339,8 @@ mod tests {
         let address = addr.to_string();
 
         {
-            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn");
+            let (slot, rx) =
+                PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn");
             let mut pool = state.lane_pool.write().await;
             // delete は lanes map (LaneInfo) を remove するので LaneInfo + PtySlot 両方を登録する。
             pool.insert(LaneInfo {
