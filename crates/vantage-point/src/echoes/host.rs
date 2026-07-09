@@ -139,6 +139,14 @@ impl EchoesAgentHost {
                 }
             }
             tracing::debug!("EchoesAgentHost stdout ポンプ終了（project={project}, lane={lane}）");
+            // stream 途絶（engine crash / stop）を GUI に可視化する。stdout close =
+            // engine プロセス終了だが、従来は debug log に落ちるだけで購読者（chatview）に
+            // 届かず「止まった?」が見えなかった（Act I は PTY 切断が xterm に即見える）。
+            // 既存 Error 経路に相乗りして chatview に途絶を出す。
+            // （stop/crash の区別・EngineExited 専用 variant・再起動ボタンは後続 PR）
+            let _ = tx.send(EchoesEvent::Error {
+                message: "エンジンとの接続が途絶しました（メッセージ送信で再起動します）".to_string(),
+            });
         });
 
         // stderr はログのみ。
