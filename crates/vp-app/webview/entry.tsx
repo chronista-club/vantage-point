@@ -459,11 +459,17 @@ if (paneTerminal) {
 	};
 	document.addEventListener("vp:console-mode", syncLabel);
 	toggle.addEventListener("click", () => {
-		if (!consoleActiveLane) return;
+		// 宛先 lane は setActivePane bridge が確実に追う activeLaneAddress を使う
+		// (consoleActiveLane は起動レースで未設定のことがあり no-op になっていた)。
+		const lane = activeLaneAddress ?? consoleActiveLane;
+		if (!lane) {
+			console.warn("[console-toggle] active lane 不明 — lane を選択してから押してください");
+			return;
+		}
 		const chatOn = chatHost?.classList.contains("active");
 		const next = chatOn ? "tui" : "chat";
 		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
-		ipc?.postMessage(JSON.stringify({ t: "console:set_mode", lane: consoleActiveLane, mode: next }));
+		ipc?.postMessage(JSON.stringify({ t: "console:set_mode", lane, mode: next }));
 	});
 	paneTerminal.appendChild(toggle);
 }
