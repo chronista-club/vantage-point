@@ -251,34 +251,40 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     }
 
     // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane performers を Cmd 化して投入。
-    // Mailbox actor + Semaphore で並列 spawn を gate する設計。
-    // - actor は `lane-spawn` mailbox を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
-    // - bootstrap は lane performers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
+    // in-process channel + Semaphore で並列 spawn を gate する設計。
+    // - actor は `cmd_rx` (unbounded channel) を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
+    // - bootstrap は lane performers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)。
+    //   block 終端で Sender drop → actor は buffered Cmd を全 drain 後に正常終了する
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
     // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Performer spawn 時に populate_lane する。
+    //
+    // in-process 直結 (2026-07-09): 旧 wiremsg R2-a 経路 (TheWorld 中央 wire store の
+    // `lane-spawn@<project>` mailbox 往復) を撤去。 producer は本 bootstrap のみで、 at-most-once
+    // 配送 + SP 再起動時の幽霊 long-poll 消費で Cmd が失われ performer が永久 Spawning になる
+    // 障害があった (詳細は lane_spawn_actor.rs module doc)。 channel は process-local なので
+    // この failure mode が構造的に消滅し、 TheWorld 不達 retry も不要 (standalone SP でも spawn 可)。
     {
         let max_concurrent = crate::config::Config::load()
             .unwrap_or_default()
             .startup
             .max_concurrent_lane_spawn as usize;
+        // bootstrap → actor の in-process 直結 channel。 unbounded なので send は同期・即時
+        // (receiver 生存中は infallible)、 recv loop 開始前の send もバッファされる。
+        let (lane_spawn_tx, lane_spawn_rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::lane_cmd::LaneCmd>();
         // VP-159 PR-4b: ActorRegistry 経由で spawn + register (= JoinHandle を registry が保持、
         // PR-5 supervisor 統一で abort / await を activate)。 Semaphore gate / race guard は完全互換。
-        // wiremsg R2-a: actor の recv は TheWorld への HTTP long-poll (wire 系引数は撤去)。
         state.actor_registry.write().await.spawn_service(
             super::lane_spawn_actor::LaneSpawnActor::new(
-                project_name_for_remote.clone(), // `lane-spawn@<project>` の project
                 state.lane_pool.clone(),
                 state.lane_capabilities.clone(), // PR-β-2 (VP-120): Performer spawn 時に populate_lane する
                 state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
                 max_concurrent,
+                lane_spawn_rx,
             ),
             shutdown_token.clone(),
         );
 
-        // wiremsg R2-a: bootstrap producer は中央 store (TheWorld) へ HTTP send。
-        // `lane-spawn@<project>` 宛に send → LaneSpawnActor が TheWorld long-poll で取り出す。
-        let bootstrap_from = format!("sp-bootstrap@{}", project_name_for_remote);
-        let lane_spawn_addr = format!("lane-spawn@{}", project_name_for_remote);
         let performers_project_id = std::path::Path::new(&state.project_dir)
             .file_name()
             .and_then(|s| s.to_str())
@@ -302,55 +308,22 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
                 .unwrap_or_default()
                 .default_stand_or_echoes()
                 .to_string();
-            let bootstrap_cmds: Vec<serde_json::Value> = performers
-                .iter()
-                .filter_map(|entry| {
-                    let cmd = super::lane_cmd::LaneCmd::SpawnLane {
-                        project_id: performers_project_id.clone(),
-                        name: entry.name.clone(),
-                        cwd: entry.path.clone(),
-                        stand: default_stand.clone(),
-                    };
-                    match serde_json::to_value(&cmd) {
-                        Ok(b) => Some(b),
-                        Err(e) => {
-                            tracing::warn!(
-                                "SP startup bootstrap: LaneCmd serialize 失敗 name={} err={}",
-                                entry.name,
-                                e
-                            );
-                            None
-                        }
-                    }
-                })
-                .collect();
-            // daemon (TheWorld) 起動前に SP が上がるケースがあるため、 各 cmd 独立の task で
-            // 最大 60s (5s × 12) retry する (SP 起動は block しない)。 performer ごとに並列化
-            // することで、 1 performer の retry 完走が他 performer の投入を遅らせない
-            // (moody 指摘: 直列だと最悪 60s × N の段積み遅延)。 投入順序は Semaphore gate が
-            // 並列度を制御するため保証不要。
-            for body in bootstrap_cmds {
-                let payload = serde_json::json!({
-                    "from": bootstrap_from.clone(),
-                    "to": [lane_spawn_addr.clone()],
-                    "body": body,
-                });
-                tokio::spawn(async move {
-                    for _attempt in 0..12u32 {
-                        match crate::process::world_wire::call("/api/wire/send", payload.clone())
-                            .await
-                        {
-                            Ok(_) => return,
-                            Err(_) => {
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                            }
-                        }
-                    }
+            // in-process 直結: 型付き LaneCmd を channel に同期 send (serialize / retry 不要)。
+            // send が Err を返すのは receiver drop 後のみ (= actor task 終了後。 startup 時点では
+            // 起き得ないが防御的に warn)。 投入順序は Semaphore gate が並列度を制御するため保証不要。
+            for entry in &performers {
+                let cmd = super::lane_cmd::LaneCmd::SpawnLane {
+                    project_id: performers_project_id.clone(),
+                    name: entry.name.clone(),
+                    cwd: entry.path.clone(),
+                    stand: default_stand.clone(),
+                };
+                if lane_spawn_tx.send(cmd).is_err() {
                     tracing::warn!(
-                        "SP startup bootstrap: TheWorld 不達で SpawnLane 投入失敗 (60s retry 後)。 \
-                         `vp daemon start` 後に SP を再起動してください"
+                        "SP startup bootstrap: lane-spawn channel closed (actor 未起動?) name={}",
+                        entry.name
                     );
-                });
+                }
             }
         } else {
             tracing::info!(

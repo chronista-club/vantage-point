@@ -1,4 +1,4 @@
-//! Lane spawn actor — `LaneCmd::SpawnLane` を Mailbox 経由で受信し、 内部 Semaphore で
+//! Lane spawn actor — `LaneCmd::SpawnLane` を in-process channel 経由で受信し、 内部 Semaphore で
 //! 並列度を gate しつつ `stand_spawner::spawn_with_fallback` で Lane を spawn する Service actor。
 //!
 //! ## 背景 (I-b、 2026-04-30)
@@ -20,21 +20,30 @@
 //!   JoinHandle<()>` に統一)、 caller (= server.rs) は `ActorRegistry::spawn_service` 経由に集約
 //!   (= JoinHandle を ActorRegistry が保持、 PR-5 supervisor 統一の foundation)。
 //!
-//! ## wiremsg R2-a (store 中央化、 2026-06-11) — recv path を TheWorld long-poll に rewire
+//! ## in-process channel 直結 (2026-07-09) — SP 再起動時の幽霊 long-poll 消費の根治
 //!
-//! R4 で wire accumulation (per-SP `WiremsgStore`) に移行した recv path を、 store 中央化
-//! (設計 mem_1CbvcJj4ppU3QKH9d7xMpT) に伴い TheWorld への HTTP long-poll
-//! (`crate::process::world_wire`) に切替。 待機は TheWorld 側 `wire_recv` の long-poll が
-//! 担うため in-process `WireNotifier` は不要になった。 TheWorld 不在 (standalone SP) は
-//! IDLE_POLL 間隔の retry で gracefully degrade。 旧 msgbox の `claim → mark_consumed`
-//! destructive 消費は wire の per-agent cursor 前進 (非破壊) のまま。
+//! 旧実装 (wiremsg R2-a、 2026-06-11) は recv path を TheWorld 中央 wire store への
+//! HTTP long-poll (`lane-spawn@<project>` mailbox) で行っていたが、 producer は同一
+//! process の bootstrap (server.rs) **のみ**であり、 自プロセス内の指示に TheWorld 往復
+//! (4-hop) を挟む構造だった。 この配送は at-most-once (recv = fetch と同時に per-agent
+//! cursor 前進の破壊的読み出し) のため、 SP 再起動シーケンスで Cmd が失われる:
+//! 旧 SP の actor が張った long-poll が World 側に残存 (≤30s 窓) → 新 SP bootstrap の
+//! Cmd を fetch → cursor 前進 → 応答は死んだ接続へ → 新 actor には何も届かない
+//! → performer 永久 Spawning (2026-07-09 障害)。
+//!
+//! 本修正で bootstrap → actor を `tokio::sync::mpsc` unbounded channel に直結。
+//! channel は process-local なので旧 SP の consumer が新 SP の Cmd を消費する経路が
+//! 構造的に消滅し、 TheWorld 不達 retry も不要になった (standalone SP でも spawn 可能)。
 //! Semaphore gate / race guard / `handle_cmd` の内部挙動は完全互換。
 //!
 //! ## 設計
 //!
-//! - **address**: `lane-spawn@<project>` (= TheWorld 中央 wire store の address)。
-//!   producer は同 Process の `sp-bootstrap@<project>` (server.rs の bootstrap loop)
-//! - **wire format**: `LaneCmd::SpawnLane{...}` (= `crate::process::lane_cmd`)、 serde tag="kind"
+//! - **入口**: `cmd_rx: mpsc::UnboundedReceiver<LaneCmd>` (constructor 注入)。
+//!   producer は同 Process の bootstrap (server.rs) が持つ Sender のみ。 bootstrap 完了で
+//!   Sender drop → channel close → actor は buffered Cmd を全 drain 後に**正常終了**する
+//!   (= actor は「起動時一斉 spawn の Semaphore gate」、 仕事が尽きたら畳む)
+//! - **Cmd 型**: `LaneCmd::SpawnLane{...}` (= `crate::process::lane_cmd`) を型付きで直接 send
+//!   (serialize 不要)
 //! - **concurrency**: `Arc<Semaphore::new(max_concurrent)>` で permit gate、 各 Cmd は
 //!   `tokio::spawn` で並列処理されるが Semaphore で同時実行上限を制御
 //! - **blocking 隔離**: `spawn_with_fallback` の 800ms sync sleep を `tokio::task::spawn_blocking`
@@ -52,8 +61,11 @@
 //!
 //! ## shutdown
 //!
-//! `shutdown_token.cancelled()` で recv loop 終了。 in-flight tokio task は detach (= 自然完了)
-//! で graceful。 max_concurrent 個までの待機時間を許容する trade-off。
+//! 2 経路とも clean: (1) `shutdown_token.cancelled()` で recv loop 終了、 (2) Sender drop
+//! (= bootstrap 完了) で `recv() == None` → buffered Cmd を drain し切ってから**正常終了**
+//! (終了 log に明記 — 将来の supervisor が「完了 = crash」と誤判定しないため)。
+//! in-flight tokio task は detach (= 自然完了) で graceful。
+//! max_concurrent 個までの待機時間を許容する trade-off。
 //!
 //! ## 関連
 //!
@@ -66,7 +78,7 @@
 use std::any::Any;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinHandle;
@@ -78,49 +90,46 @@ use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
 use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
 
-/// lane-spawn recv の retry 間隔 (TheWorld 不達時)。 通常は TheWorld 側 long-poll が
-/// 待機を担うため、 この sleep は TheWorld 不在時の再接続間隔としてのみ効く。
-const IDLE_POLL: Duration = Duration::from_secs(5);
-
-/// Lane spawn Service (= `lane-spawn` mailbox から `LaneCmd::SpawnLane` を recv、
+/// Lane spawn Service (= in-process channel から `LaneCmd::SpawnLane` を recv、
 /// 並列度 N で gate しつつ Lane を spawn する infra actor)。
 ///
-/// SP-local Service (= 1 Project per Process)、 mailbox handle + dependencies を保持し、
-/// `spawn(shutdown)` で background recv loop を `tokio::spawn` 起動する。
+/// SP-local Service (= 1 Project per Process)、 channel receiver + dependencies を保持し、
+/// `spawn_loop(shutdown)` で background recv loop を `tokio::spawn` 起動する。
 ///
 /// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Performer spawn 成功時に
 /// `populate_lane` を呼び、 Lane あたり独立 PaisleyParkState を host する。
 pub struct LaneSpawnActor {
-    /// wire address の project segment (`lane-spawn@<project>`)
-    project: String,
     lane_pool: Arc<RwLock<LanePool>>,
     lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     max_concurrent: usize,
+    /// bootstrap (server.rs) からの in-process Cmd 入口。 Sender drop = 投入完了の合図
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<LaneCmd>,
 }
 
 impl LaneSpawnActor {
     /// 新しい `LaneSpawnActor` を構築する。
     ///
-    /// wiremsg R2-a: store 中央化に伴い、 旧 `new(wiremsg_store, wire_notifier, ...)` から
-    /// wire 系引数を撤去。 recv は TheWorld への HTTP long-poll
-    /// ([`crate::process::world_wire`]) で行う。
+    /// in-process 直結 (2026-07-09): 旧 wire long-poll (TheWorld 中央 store の
+    /// `lane-spawn@<project>` mailbox) を撤去し、 `cmd_rx` (unbounded channel) を
+    /// constructor 注入する。 unbounded なので producer の send は receiver 生存中
+    /// infallible かつ recv loop 開始前の send もバッファされる (投入順序に依存しない)。
     ///
     /// `max_concurrent=0` は意味的に「全 spawn を block」 だが事故 config の可能性が高いため、
-    /// `spawn()` 内で 1 に丸めて warn する (= sequential、 `Semaphore::new(0)` の永久 block 回避)。
+    /// `spawn_loop()` 内で 1 に丸めて warn する (= sequential、 `Semaphore::new(0)` の永久 block 回避)。
     pub fn new(
-        project: String,
         lane_pool: Arc<RwLock<LanePool>>,
         lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
         system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
         max_concurrent: usize,
+        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<LaneCmd>,
     ) -> Self {
         Self {
-            project,
             lane_pool,
             lane_capabilities_pool,
             system_event_tx,
             max_concurrent,
+            cmd_rx,
         }
     }
 }
@@ -160,72 +169,45 @@ impl SpawnableService for LaneSpawnActor {
         let semaphore = Arc::new(Semaphore::new(n));
 
         let Self {
-            project,
             lane_pool,
             lane_capabilities_pool,
             system_event_tx,
+            mut cmd_rx,
             ..
         } = self;
 
         tokio::spawn(async move {
-            let address = format!("lane-spawn@{}", project);
             tracing::info!(
-                "Lane spawn actor 起動 (= TheWorld 中央 wire store long-poll、 address={}, max_concurrent={})",
-                address,
+                "Lane spawn actor 起動 (in-process channel, max_concurrent={})",
                 n
             );
             loop {
-                if shutdown.is_cancelled() {
-                    tracing::info!("Lane spawn actor: shutdown");
-                    return;
-                }
-                // R2-a: TheWorld 側 handler が max 30s の long-poll を行う。 25s で投げて
-                // 余裕を持つ (待機は server 側なので busy loop にならない)。
-                let payload = serde_json::json!({ "agent": address, "timeout": 25 });
-                let resp = tokio::select! {
-                    _ = shutdown.cancelled() => { tracing::info!("Lane spawn actor: shutdown"); return; }
-                    r = crate::process::world_wire::call("/api/wire/recv", payload) => r,
-                };
-                let msgs = match resp {
-                    Ok(v) => v
-                        .get("messages")
-                        .and_then(|m| m.as_array())
-                        .cloned()
-                        .unwrap_or_default(),
-                    Err(e) => {
-                        // TheWorld 不在は standalone SP (`vp sp start` 単独) で正常系。
-                        // debug に留め、 IDLE_POLL 間隔で再試行する。
-                        tracing::debug!("lane-spawn wire recv (TheWorld) 失敗、 retry: {}", e);
-                        tokio::select! {
-                            _ = shutdown.cancelled() => return,
-                            _ = tokio::time::sleep(IDLE_POLL) => {}
-                        }
-                        continue;
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::info!("Lane spawn actor: shutdown");
+                        return;
                     }
-                };
-
-                for msg in msgs {
-                    // body は `LaneCmd` (serde tag="kind") の JSON object。 parse 失敗 =
-                    // 想定外 message、 log して skip (cursor は recv で既に前進済)。
-                    let body = msg.get("body").cloned().unwrap_or(serde_json::Value::Null);
-                    let cmd = match serde_json::from_value::<LaneCmd>(body) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            tracing::warn!(
-                                "Lane spawn actor: body を LaneCmd として parse 失敗 (msg.id={}): {}",
-                                msg.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
-                                e
-                            );
-                            continue;
+                    maybe = cmd_rx.recv() => match maybe {
+                        Some(cmd) => {
+                            let sem = semaphore.clone();
+                            let pool = lane_pool.clone();
+                            let lc_pool = lane_capabilities_pool.clone();
+                            let tx = system_event_tx.clone();
+                            tokio::spawn(async move {
+                                handle_cmd(cmd, pool, lc_pool, tx, sem).await;
+                            });
                         }
-                    };
-                    let sem = semaphore.clone();
-                    let pool = lane_pool.clone();
-                    let lc_pool = lane_capabilities_pool.clone();
-                    let tx = system_event_tx.clone();
-                    tokio::spawn(async move {
-                        handle_cmd(cmd, pool, lc_pool, tx, sem).await;
-                    });
+                        None => {
+                            // Sender drop = bootstrap 投入完了。 buffered Cmd は全 drain 済
+                            // (recv は close 後も buffer を返し切ってから None になる)。
+                            // これは**正常終了** — 将来の supervisor が「完了 = crash」と
+                            // 誤判定しないよう明記しておく。
+                            tracing::info!(
+                                "Lane spawn actor: channel closed (bootstrap 投入完了・全 Cmd drain 済) → 正常終了"
+                            );
+                            return;
+                        }
+                    }
                 }
             }
         })
@@ -417,47 +399,120 @@ mod tests {
     use super::*;
 
     /// max_concurrent=0 は 1 に丸められること。 Semaphore::new(0) を踏むと永久 block するため
-    /// runtime に到達しないことを serde 側ではなく actor 側で防ぐ contract test。
-    ///
-    /// R2-a: recv は TheWorld への HTTP long-poll。 test 環境に TheWorld は居ないため
-    /// recv は失敗 → IDLE_POLL retry で idle になる (= 0 → 1 丸め contract は
-    /// TheWorld の有無と無関係に検証可能)。
+    /// runtime に到達しないことを config 側ではなく actor 側で防ぐ contract test。
     #[tokio::test]
     async fn spawn_zero_concurrent_does_not_hang() {
         let pool = Arc::new(RwLock::new(LanePool::new()));
         let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
         let shutdown = CancellationToken::new();
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
-        LaneSpawnActor::new("test".to_string(), pool, None, tx, 0).spawn_loop(shutdown.clone());
+        let handle = LaneSpawnActor::new(pool, None, tx, 0, cmd_rx).spawn_loop(shutdown.clone());
 
-        // shutdown して terminate を確認 (= 永久 block 回避)
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // shutdown して terminate を確認 (= 永久 block 回避)。 JoinHandle 完了を timeout 付きで
+        // 決定的に検証 (旧 sleep ベースから改善)。
         shutdown.cancel();
-        // shutdown が伝播する time を確保
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("actor は shutdown cancel で 1s 以内に終了するはず")
+            .expect("actor task は panic せず終了するはず");
     }
 
-    /// actor 起動 → shutdown 完了の smoke test。
-    ///
-    /// R2-a: test 環境に TheWorld は居ないため recv は失敗 → IDLE_POLL retry で idle。
-    /// shutdown contract のみ smoke 検証する。
+    /// actor 起動 → shutdown 完了の smoke test (shutdown_token 経路)。
     #[tokio::test]
     async fn actor_shuts_down_cleanly() {
         let pool = Arc::new(RwLock::new(LanePool::new()));
         let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
         let shutdown = CancellationToken::new();
 
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test
-        LaneSpawnActor::new("test".to_string(), pool.clone(), None, tx, 1)
-            .spawn_loop(shutdown.clone());
+        let handle =
+            LaneSpawnActor::new(pool.clone(), None, tx, 1, cmd_rx).spawn_loop(shutdown.clone());
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        // pool は空のまま (= recv 経路なしで何も起こらない)
+        // Cmd 未投入なので pool は空のまま
         assert_eq!(pool.read().await.count(), 0);
 
         shutdown.cancel();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("actor は shutdown cancel で 1s 以内に終了するはず")
+            .expect("actor task は panic せず終了するはず");
+    }
+
+    /// Sender drop (= bootstrap 投入完了) で actor が正常終了する contract test。
+    ///
+    /// in-process 直結 (2026-07-09) の終了契約: channel close → recv() が None → return。
+    #[tokio::test]
+    async fn actor_exits_when_channel_closes() {
+        let pool = Arc::new(RwLock::new(LanePool::new()));
+        let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
+        let shutdown = CancellationToken::new();
+
+        let handle = LaneSpawnActor::new(pool, None, tx, 1, cmd_rx).spawn_loop(shutdown);
+
+        // Sender を drop → channel close → actor は自発的に正常終了するはず
+        drop(cmd_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("actor は Sender drop で 1s 以内に正常終了するはず")
+            .expect("actor task は panic せず終了するはず");
+    }
+
+    /// recv loop 開始**前**に send された Cmd も失われず drain されること (投入順序の安全性)。
+    ///
+    /// unbounded channel は receiver 生存中の send をバッファするため、 bootstrap の send が
+    /// actor の recv loop 開始より先でも喪失しない — 幽霊消費バグ (2026-07-09) の対極となる
+    /// 配送保証の直接検証。 addr を事前に pool へ insert しておくことで handle_cmd は
+    /// pre-acquire race guard で即 return し、 実 PTY spawn / file IO なしで完結する。
+    #[tokio::test]
+    async fn buffered_cmds_are_drained_before_close() {
+        let pool = Arc::new(RwLock::new(LanePool::new()));
+        let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
+        let shutdown = CancellationToken::new();
+
+        // race guard を意図的に踏ませる: 同 addr を事前に pool へ insert しておく
+        let addr = LaneAddress::performer("proj", "already-there");
+        pool.write().await.insert(LaneInfo {
+            id: Default::default(),
+            address: addr,
+            kind: LaneKind::Performer,
+            name: Some("already-there".to_string()),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: "/nonexistent".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+        });
+
+        // actor 起動**前**に send → buffer される
+        cmd_tx
+            .send(LaneCmd::SpawnLane {
+                project_id: "proj".to_string(),
+                name: "already-there".to_string(),
+                cwd: "/nonexistent".to_string(),
+                stand: "echoes".to_string(),
+            })
+            .expect("receiver 生存中の send は成功するはず");
+        drop(cmd_tx);
+
+        let handle = LaneSpawnActor::new(pool.clone(), None, tx, 1, cmd_rx).spawn_loop(shutdown);
+
+        // buffered Cmd を drain (→ race guard で skip) してから channel close で正常終了
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("actor は buffered Cmd drain 後 2s 以内に終了するはず")
+            .expect("actor task は panic せず終了するはず");
+
+        // handle_cmd の spawn task が guard で return するのを待つ (dispatch は detach のため)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // race guard により重複 spawn されず、 pool は事前 insert の 1 件のまま
+        assert_eq!(pool.read().await.count(), 1);
     }
 }
