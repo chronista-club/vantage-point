@@ -85,10 +85,15 @@
 
 | PR | 内容 | Exit |
 |---|---|---|
-| **C1 — Console 骨格（交通整理本体）** | §2 SP engine slot + console_mode + `console_set_mode` + submit ガード / §3 wire + reconcile 安全 / §4 vpConsole facade + ring buffer / §5 ts-rs | 実機: tui⇄chat 切替で同一会話が継続（`vp lane capture` と `vpConsole.peek` で両モード確認）。二重エンジンが**作れない** |
-| **C2 — ChatView（旧 PR2b）** | SolidJS ChatView（MVP a: streaming markdown + thinking 折りたたみ + tool 1 行 + e: plan ウィジェット + motion）+ **最小 Act toggle**（explicit 切替に必須。**root = conductor の Console 先行**、2026-07-09 user 要件。performer への露出と正式な切替 UX は C4） | 実会話 1 本を GUI だけで完走 |
+| ✅ **C1 — Console 骨格（交通整理本体）** | §2 SP engine slot + console_mode + `console_set_mode` + submit ガード / §3 wire + reconcile 安全 / §4 vpConsole facade + ring buffer / §5 ts-rs | 実機: tui⇄chat 切替で同一会話が継続（`vp lane capture` と `vpConsole.peek` で両モード確認）。二重エンジンが**作れない** |
+| ✅ **C2 — ChatView（旧 PR2b）** | SolidJS ChatView（MVP a: streaming markdown + thinking 折りたたみ + tool 1 行 + e: plan ウィジェット + motion）+ **最小 Act toggle**（explicit 切替に必須。**root = conductor の Console 先行**、2026-07-09 user 要件。performer への露出と正式な切替 UX は C4） | 実会話 1 本を GUI だけで完走 |
 | C3（旧 PR3） | 事後 diff カード | doc 32 §8 のまま |
 | C4（旧 PR4） | 画像・@-mention + 正式切替 UX | doc 32 §8 のまま |
+
+> **C1 + C2 は nightly 着地済み（PR #689、2026-07-09）**。C2 dogfood 仕上げ 3 件を同梱:
+> - **Act II engine を `bypassPermissions` で spawn**（`acceptEdits` だと Bash 等が headless で許可待ち→承認 UI 不在で error 化。Act I(TUI) と同レベルの全ツール素通しに揃える）
+> - **overlay hang 解消**（I→II 切替で overlay を `session_init` に gate → live session resume で永久ハング。`vp:console-mode`(mode 適用)で両方向即解除、`console-ready` は belt-and-suspenders に格下げ。§9 の「Act I の resume 失敗=即 fresh・ブロックしない」哲学へ整合）
+> - **thinking shimmer**（末尾 thinking かつ turn 進行中のとき "thinking" ラベルを CSS shimmer で光らせ考え中を可視化。`prefers-reduced-motion` 対応）
 
 PR1.5（doc 31 語彙）は独立。C2 の後が視覚的にまとまる（pane ラベルと ChatView が同時に新語彙になる）。
 
