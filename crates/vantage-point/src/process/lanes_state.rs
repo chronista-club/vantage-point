@@ -718,6 +718,20 @@ impl LanePool {
         Some(slot.subscribe_output())
     }
 
+    /// [`Self::subscribe_output`] の replay 付き版 — 直近出力 snapshot + 購読を原子的に取得。
+    ///
+    /// terminal pump の attach 経路が使う（vp-app 再起動後の新 xterm に前回画面を復元する
+    /// replay-on-attach）。 snapshot と receiver の境界は
+    /// [`PtySlot::attach_output`](crate::daemon::pty_slot::PtySlot::attach_output) が保証する。
+    pub fn attach_output(
+        &self,
+        addr: &LaneAddress,
+    ) -> Option<(Vec<u8>, tokio::sync::broadcast::Receiver<Vec<u8>>)> {
+        let slot_mutex = self.pty_slots.get(addr)?;
+        let slot = slot_mutex.lock().ok()?;
+        Some(slot.attach_output())
+    }
+
     /// [`deliver_nudge`] の per-lane 直列化 lock を get-or-insert で返す。
     /// 同一 `addr` には常に同じ `Arc<Mutex>` を返し（→ 直列化が効く）、別 `addr` には別の lock を
     /// 返す（→ cross-lane は並行のまま）。`nudge_locks` の std Mutex は await を跨がず即 drop する。

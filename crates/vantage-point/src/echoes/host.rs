@@ -145,7 +145,8 @@ impl EchoesAgentHost {
             // 既存 Error 経路に相乗りして chatview に途絶を出す。
             // （stop/crash の区別・EngineExited 専用 variant・再起動ボタンは後続 PR）
             let _ = tx.send(EchoesEvent::Error {
-                message: "エンジンとの接続が途絶しました（メッセージ送信で再起動します）".to_string(),
+                message: "エンジンとの接続が途絶しました（メッセージ送信で再起動します）"
+                    .to_string(),
             });
         });
 

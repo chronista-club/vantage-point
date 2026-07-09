@@ -101,7 +101,11 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
         }
         lanes.push(LaneInfo {
-            console_mode: Default::default(),
+            // doc 33 §2: 永続 console_mode (state file) を honor。 Default (=Tui) で埋めると
+            // SP 再起動直後の boot 窓で chat lane が "tui" として snapshot に載り、 その窓で
+            // vp-app が active lane を復元すると Act II の lane が xterm で開いてしまう。
+            console_mode: crate::lane::console_mode::last(&project, &entry.name)
+                .unwrap_or_default(),
             id: crate::lane::lane_id::load_or_create(&project, &entry.name),
             address,
             kind: LaneKind::Performer,
