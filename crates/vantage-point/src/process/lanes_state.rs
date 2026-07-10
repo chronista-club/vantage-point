@@ -617,15 +617,34 @@ impl LanePool {
         let stand = info.stand.clone();
 
         // doc 33: chat mode の lane の restart = chat engine の入れ替え（PTY は立てない）。
-        // engine を drop するだけで、次の echoes_submit が新 engine を lazy spawn する
-        // （--resume 継承。fresh の「素の新規 session」対応は C2+ で扱う）。
+        // engine を drop するだけで、次の echoes_submit が新 engine を lazy spawn する。
+        //
+        // fresh=true は cc_session の記録を消して表現する。 engine は lazy spawn なので
+        // 「今 fresh に立て直す」対象が存在せず、 意図は次回 spawn まで state で運ぶしかない:
+        // - `ensure_chat_engine` の `cc_session::last` が None → --resume 無しで spawn
+        //   → `EchoesAgentHost` が SessionInit で新 id を書き戻す（SSOT 復旧）
+        // - transcript replay-on-attach も参照先を失う → 前の会話を映さない
+        //   （消さないと「New Session なのに前の会話が出る」嘘になる）
         if info.console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+            // ⚠️ 破壊 (engine drop) より先に fresh の前提を満たす。 消せなければ resume が残り
+            // fresh でなくなるので黙って成功にできないが、 engine を先に落としてから bail すると
+            // 「engine は死んだのに pid/state は旧値」 の不整合が残る。 順序を逆にすることで
+            // 「失敗したら何も遷移していない」 を不変条件にでき、 orchestrator の透過 retry も
+            // 副作用なしの再試行になる。
+            if fresh {
+                let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+                crate::lane::cc_session::clear(&addr.project, &lane_label).map_err(|e| {
+                    anyhow::anyhow!("fresh restart: cc_session の破棄に失敗（addr={addr}）: {e}")
+                })?;
+            }
             self.chat_engines.remove(addr);
             if let Some(info) = self.lanes.get_mut(addr) {
                 info.pid = None;
                 info.state = LaneState::Running;
             }
-            tracing::info!("Lane restart (chat mode): engine drop、次 submit で再 spawn: {addr}");
+            tracing::info!(
+                "Lane restart (chat mode): engine drop、次 submit で再 spawn: {addr} fresh={fresh}"
+            );
             return Ok(());
         }
 
@@ -986,6 +1005,64 @@ pub async fn deliver_nudge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// chat mode の lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は
+    /// 早期 return するので spawn 不要）。
+    fn insert_chat_lane(pool: &mut LanePool, addr: &LaneAddress) {
+        pool.insert(LaneInfo {
+            console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+            id: Default::default(),
+            address: addr.clone(),
+            kind: LaneKind::Conductor,
+            name: None,
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-10T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/tmp".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+        });
+    }
+
+    /// doc 33: chat lane の restart は `fresh` で意味が割れる。
+    /// - fresh=false → cc_session を残す（次 spawn が `--resume` で会話を継ぐ）
+    /// - fresh=true  → cc_session を捨てる（素の新規 session + replay も前会話を映さない）
+    ///
+    /// engine は lazy spawn なので「fresh に立て直す対象」がその場に無く、意図は state
+    /// (cc_session の有無) でしか運べない。 その 1 点をここで固定する。
+    #[test]
+    fn chat_restart_clears_cc_session_only_when_fresh() {
+        // cc_session は vp_state_dir() = $XDG_STATE_HOME/vp を読む。 crate 唯一のロック下で
+        // tempdir に向け、 guard の drop で復元する。
+        let _state = crate::test_env::state_dir();
+
+        let addr = LaneAddress::conductor("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+
+        // fresh=false: 会話を継ぐので記録は残る
+        crate::lane::cc_session::record("vp", "conductor", "old-session-id").expect("record");
+        pool.restart_lane(&addr, false).expect("chat restart");
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor").as_deref(),
+            Some("old-session-id"),
+            "fresh でない restart は resume の矢印を保つ"
+        );
+
+        // fresh=true: 素の新規 session にするため記録を捨てる
+        pool.restart_lane(&addr, true).expect("fresh chat restart");
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor"),
+            None,
+            "fresh restart は resume の矢印を捨てる"
+        );
+
+        // chat 分岐は PTY を立てない = engine-less (pid=None) のまま Running が正常形
+        let info = pool.get(&addr).expect("lane");
+        assert_eq!(info.pid, None);
+        assert_eq!(info.state, LaneState::Running);
+    }
 
     #[test]
     fn lane_address_display_conductor_and_performer() {

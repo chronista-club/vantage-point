@@ -63,6 +63,20 @@ export function isPerformerLane(lane: LaneInfo): boolean {
 	return isPerformerKind(lane.kind) || isPerformerKind(lane.address.kind);
 }
 
+/**
+ * Lane が生きているか (= engine を持ちうる状態か)。
+ *
+ * ⚠️ 生死を `pid` だけで測らない。 doc 33: chat lane (Act II) は engine-less (pid=null) が
+ * **正常形**で、 chat engine は submit 契機の lazy spawn。 よって pid は「今 engine が
+ * 生きているか」で揺れ、 pid だけの判定は同じ lane の見え方を時間で変える。
+ *
+ * dim 表示 (`inactive`) と context menu (Restart / Respawn の分岐) の両方がこの 1 つの
+ * 述語を共有する — 片方だけ chat の手当てが漏れる形が過去のバグだった。
+ */
+export function isLaneAlive(lane: LaneInfo): boolean {
+	return lane.pid != null || lane.console_mode === "chat";
+}
+
 /** Lane の表示ラベル。 Conductor はそのまま、 Performer は `Performer: <name>`。 */
 export function laneLabel(lane: LaneInfo): string {
 	const kind = lane.kind || lane.address.kind;

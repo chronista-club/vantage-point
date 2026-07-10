@@ -44,6 +44,9 @@ pub mod screenshot;
 pub mod spawn_env;
 pub mod stands;
 pub mod terminal;
+/// test 専用: process-global env (`XDG_STATE_HOME`) を触る test の直列化 + RAII 復元。
+#[cfg(test)]
+pub(crate) mod test_env;
 pub mod trace_log;
 pub mod world;
 pub mod world_client;
