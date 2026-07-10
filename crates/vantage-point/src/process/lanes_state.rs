@@ -897,12 +897,16 @@ impl LanePool {
         // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
         let resume = crate::lane::cc_session::last(&addr.project, &lane_label)
             .filter(|id| crate::lane::cc_session::transcript_exists(id));
+        // Act II モデル切替: lane に永続された model を `--model` に渡す（未記録 = claude default）。
+        // 切替（console_set_model）は record → engine 入替で行われ、resume と組むことで
+        // 会話コンテキストを保ったままモデルだけ替わる。
+        let model = crate::lane::engine_model::last(&addr.project, &lane_label);
         let host = crate::echoes::EchoesAgentHost::spawn(crate::echoes::EchoesHostConfig {
             cwd: info.cwd.clone(),
             project: addr.project.clone(),
             lane: lane_label,
             resume_session_id: resume,
-            model: None,
+            model,
             claude_cli_path: None,
         })?;
         let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(

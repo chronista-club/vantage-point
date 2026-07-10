@@ -171,6 +171,16 @@ pub enum AppEvent {
     /// doc 33 C2: console_set_mode 成功後、WebView へ mode を反映する内部 event
     /// (async task → main thread の evaluate_script 橋渡し)。
     ConsoleModeApplied { lane: String, mode: String },
+    /// 新セッション開始要求（console の New Session ボタン）。 event loop が
+    /// `lane_restart` (fresh=true) で SP に forward — cc_session 破棄 = `/exit` → 手打ち
+    /// `claude` の置き換え。 Act I/II 両対応（restart_lane が mode で分岐）。
+    ConsoleNewSession { lane: String },
+    /// lane_restart(fresh=true) 成功後、WebView の会話表示をクリアする内部 event
+    /// (ConsoleModeApplied と同じ async → main thread 橋渡し)。
+    ConsoleSessionRenewed { lane: String },
+    /// Act II モデル切替要求（ChatView の model picker）。 event loop が
+    /// `console_set_model` で SP に forward。 `model` None = claude default に戻す。
+    ConsoleSetModel { lane: String, model: Option<String> },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -235,6 +245,28 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::ConsoleSetMode {
                     lane: lane.to_string(),
                     mode: mode.to_string(),
+                });
+            }
+        }
+        // 新セッション開始（console の New Session ボタン）。 lane 必須。
+        Some("console:new_session") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::ConsoleNewSession {
+                    lane: lane.to_string(),
+                });
+            }
+        }
+        // Act II モデル切替（ChatView の model picker）。 lane 必須、 model 省略/null = default。
+        Some("console:set_model") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let model = parsed
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let _ = proxy.send_event(AppEvent::ConsoleSetModel {
+                    lane: lane.to_string(),
+                    model,
                 });
             }
         }

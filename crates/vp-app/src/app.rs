@@ -149,6 +149,8 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "open-url"
                 | "echoes:submit"
                 | "console:set_mode"
+                | "console:new_session"
+                | "console:set_model"
         )
     )
 }
@@ -1033,10 +1035,18 @@ async fn world_process_request(
         .await
         .map_err(|e| format!("process-proxy handshake: {}", e))?;
     // ask: method を World が SP dispatch_process_method へ forward し応答を relay。
-    channel
+    let resp = channel
         .request::<serde_json::Value, serde_json::Value>(method, &payload)
         .await
-        .map_err(|e| format!("process-proxy {}: {}", method, e))
+        .map_err(|e| format!("process-proxy {}: {}", method, e))?;
+    // SP は dispatch の Err を `{"error": ...}` の**正常応答**として返す（discovery.rs の
+    // World uplink/control）。transport 成功 = 処理成功ではないので、ここで Err に戻す。
+    // これが無いと呼び手は全員「ok」と読み、未実装 method を旧 binary の SP に投げた時などに
+    // 「成功ログが出るのに何も起きない」silent success になる。
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("process-proxy {}: {}", method, err));
+    }
+    Ok(resp)
 }
 
 /// Bastet 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
@@ -3123,6 +3133,70 @@ pub fn run() -> anyhow::Result<()> {
                         &world_conn,
                     );
                 }
+            }
+            // 新セッション開始（New Session ボタン）: lane_restart(fresh=true) で SP に forward。
+            // fresh = cc_session 破棄 + Act I は素の claude respawn / Act II は engine drop →
+            // restart_lane_orchestrated が eager 再 spawn（新 session_init が即届く）。
+            Event::UserEvent(AppEvent::ConsoleNewSession { lane }) => {
+                // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
+                // active lane が変わり得るため resolve_active_project_path は使わない）。
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("console:new_session skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                rt_handle.spawn(async move {
+                    let payload = serde_json::json!({ "address": &lane, "fresh": true });
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "lane_restart",
+                        payload,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            tracing::info!("console:new_session ok: lane={lane}");
+                            let _ = proxy.send_event(AppEvent::ConsoleSessionRenewed { lane });
+                        }
+                        Err(e) => tracing::warn!("console:new_session 失敗 (lane={lane}): {e}"),
+                    }
+                });
+            }
+            // fresh restart 成功 → ChatView の会話表示をクリアする。replay_start は foldInto が
+            // 「会話 clear + header 保持」で畳む既存意味論（chatview.tsx）— 新 engine の
+            // session_init が届けば header も新しくなる。tui lane は追加処理不要（新 PtySlot の
+            // pump replay が clear prefix 付きで xterm を拭く）。
+            Event::UserEvent(AppEvent::ConsoleSessionRenewed { lane }) => {
+                let script = format!(
+                    "window.vpConsole && window.vpConsole.handleEvent({}, {{kind:'replay_start'}})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("console:new_session の ChatView クリア失敗 (lane={lane}): {e}");
+                }
+            }
+            // Act II モデル切替: console_set_model で SP に forward（fire & forget）。
+            // 適用の視覚確認は新 engine の session_init が header.model を更新することで得る。
+            Event::UserEvent(AppEvent::ConsoleSetModel { lane, model }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("console:set_model skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                rt_handle.spawn(async move {
+                    let payload = serde_json::json!({ "lane": &lane, "model": model });
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "console_set_model",
+                        payload,
+                    )
+                    .await
+                    {
+                        Ok(_) => tracing::info!("console:set_model ok: lane={lane}"),
+                        Err(e) => tracing::warn!("console:set_model 失敗 (lane={lane}): {e}"),
+                    }
+                });
             }
             Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
                 // F6: WebView の save IPC を World process-proxy ask (pp_state_save) で SP に forward。
