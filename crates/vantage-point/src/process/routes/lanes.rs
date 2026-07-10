@@ -468,6 +468,14 @@ pub async fn delete_lane_orchestrated(
         pid
     );
 
+    // terminal pump の entry を掃除する。task 自体は PtySlot drop の broadcast Closed で
+    // 自壊するが、entry は demand_stop か次の respawn でしか消えず lane 削除では残留する。
+    // ⚠️ 消してよいのは削除経路だけ — 生存 lane の dead entry は restart_lane_orchestrated の
+    // had_pump（購読者が居た証跡）が再 attach 判定に使うので、几帳面に消すと console が凍る。
+    if let Some(handle) = state.terminal_pumps.write().await.remove(&addr.to_string()) {
+        handle.abort();
+    }
+
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
     // 子なので Phase 1 の remove (= PtySlot drop) で完全停止する（第 2 の生存木は無い）。
 
