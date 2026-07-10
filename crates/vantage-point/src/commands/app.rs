@@ -170,7 +170,7 @@ fn find_vp_app_binary() -> Option<PathBuf> {
         // 指してしまうため、canonicalize で実体 (bundle 内) に解決してから隣を見る。
         // canonicalize 失敗時は raw path の隣に fallback。
         if let Ok(self_exe) = std::env::current_exe() {
-            let resolved = self_exe.canonicalize().unwrap_or(self_exe);
+            let resolved = dunce::canonicalize(&self_exe).unwrap_or(self_exe);
             if let Some(dir) = resolved.parent() {
                 let candidate = dir.join(&name);
                 if candidate.is_file() {

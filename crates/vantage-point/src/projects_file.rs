@@ -74,7 +74,16 @@ pub fn projects_file_path() -> PathBuf {
 impl ProjectsFile {
     /// projects.kdl を読み込む。 ファイルが無ければ空の `ProjectsFile` を返す
     /// (= 初回起動 / 未登録状態を空 projects として扱う)。
+    ///
+    /// 読み込み時に verbatim prefix を落とす ([`Self::strip_verbatim_paths`])。
     pub fn load() -> Result<Self> {
+        let mut pf = Self::load_raw()?;
+        pf.strip_verbatim_paths();
+        Ok(pf)
+    }
+
+    /// projects.kdl を verbatim prefix の正規化なしで読み込む (`sync` の移行判定用)。
+    fn load_raw() -> Result<Self> {
         let path = projects_file_path();
         if !path.exists() {
             return Ok(Self::default());
@@ -89,6 +98,23 @@ impl ProjectsFile {
             .with_context(|| format!("projects.kdl パース失敗: {}", path.display()))
     }
 
+    /// 各 entry の path から Windows の verbatim prefix (`\\?\`) を落とす。 1 件でも変われば `true`。
+    ///
+    /// 旧版 (`std::fs::canonicalize` を使っていた頃) の Windows が保存した
+    /// `path="\\?\C:\Users\..."` を読み込み時に修復する。 これを放置すると SP の spawn 引数
+    /// (`vp sp start -C \\?\C:\...`) まで伝播し、 同じ dir が別 key として二重登録されうる。
+    fn strip_verbatim_paths(&mut self) -> bool {
+        let mut changed = false;
+        for p in &mut self.projects {
+            let stripped = crate::config::strip_verbatim_prefix(&p.path);
+            if stripped.len() != p.path.len() {
+                p.path = stripped.to_string();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// kdl 文字列に serialize（path 非依存、 PoC: DB→projects.kdl 一方向 export 用）。
     pub fn to_kdl(&self) -> Result<String> {
         club_kdl::to_string_pretty(self).context("projects.kdl シリアライズ失敗")
@@ -99,7 +125,9 @@ impl ProjectsFile {
         if s.trim().is_empty() {
             return Ok(Self::default());
         }
-        club_kdl::from_str(s).context("projects.kdl パース失敗")
+        let mut pf: Self = club_kdl::from_str(s).context("projects.kdl パース失敗")?;
+        pf.strip_verbatim_paths();
+        Ok(pf)
     }
 
     /// projects.kdl に書き出す。 atomic write (temp → rename) で partial read を防ぐ。
@@ -225,17 +253,24 @@ impl ProjectsFile {
     ///
     /// かつて `start_dir` で「起点 dir の自動登録」も行っていたが、 `vp sp start` の
     /// 起動時 sync が **削除済 project を復活させる** resurrection バグの温床だったため
-    /// 撤去した。 project 登録は `add_project` 経由の明示操作のみ (sidebar Add /
+    /// 撤去した (#721)。 project 登録は `add_project` 経由の明示操作のみ (sidebar Add /
     /// `vp projects add`)。
+    ///
+    /// 併せて、 旧 Windows が保存した verbatim prefix (`\\?\C:\...`) を sync 時に恒久除去する
+    /// (read 側は `load()` が毎回落とすが、 sync は file を書き戻す機会なので projects.kdl の
+    /// 見た目も治す)。
     pub fn sync() -> Result<SyncOutcome> {
-        let mut pf = ProjectsFile::load()?;
+        let mut pf = ProjectsFile::load_raw()?;
+
+        // 0. 旧 Windows が保存した verbatim prefix (`\\?\C:\...`) を落とす (永続除去)。
+        let migrated = pf.strip_verbatim_paths();
 
         // ghost 除去: path が実在しない (ディレクトリでない) entry を落とす。
         let outcome = SyncOutcome {
             removed: prune_ghosts_with(&mut pf, |path| std::path::Path::new(path).is_dir()),
         };
 
-        if outcome.changed() {
+        if outcome.changed() || migrated {
             pf.save()?;
             // 稼働中 daemon に projects.kdl の変更を伝える (best-effort)。
             notify_daemon_reload();
@@ -247,6 +282,55 @@ impl ProjectsFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 旧 Windows が保存した `\\?\C:\...` は読み込み時に落ちる (移行)。 UNC は温存。
+    #[test]
+    fn from_kdl_strips_verbatim_prefix() {
+        let pf = ProjectsFile {
+            projects: vec![
+                ProjectEntry {
+                    name: "vantage-point".to_string(),
+                    path: r"\\?\C:\Users\mito\repos\vantage-point".to_string(),
+                    enabled: None,
+                    slot: Some(1),
+                },
+                ProjectEntry {
+                    name: "on-share".to_string(),
+                    path: r"\\?\UNC\server\share\proj".to_string(),
+                    enabled: None,
+                    slot: None,
+                },
+            ],
+        };
+        let back = ProjectsFile::from_kdl(&pf.to_kdl().expect("serialize")).expect("parse");
+        assert_eq!(back.projects[0].path, r"C:\Users\mito\repos\vantage-point");
+        assert_eq!(back.projects[1].path, r"\\?\UNC\server\share\proj");
+    }
+
+    /// 正規化不要な projects.kdl では `strip_verbatim_paths` が false (= 無駄な save をしない)。
+    #[test]
+    fn strip_verbatim_paths_reports_change() {
+        let mut clean = ProjectsFile {
+            projects: vec![ProjectEntry {
+                name: "vp".to_string(),
+                path: "/Users/makoto/repos/vp".to_string(),
+                enabled: None,
+                slot: None,
+            }],
+        };
+        assert!(!clean.strip_verbatim_paths());
+
+        let mut dirty = ProjectsFile {
+            projects: vec![ProjectEntry {
+                name: "vp".to_string(),
+                path: r"\\?\C:\vp".to_string(),
+                enabled: None,
+                slot: None,
+            }],
+        };
+        assert!(dirty.strip_verbatim_paths());
+        assert_eq!(dirty.projects[0].path, r"C:\vp");
+    }
 
     /// ProjectsFile の KDL round-trip (serialize → parse で等価)
     #[test]

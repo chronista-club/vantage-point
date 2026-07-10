@@ -558,7 +558,7 @@ fn get_claude_config_path() -> Option<PathBuf> {
 /// 2つのパスが同じディレクトリを指すか確認
 fn paths_match(path1: &Path, path2: &Path) -> bool {
     // 両方を正規化して比較
-    match (path1.canonicalize(), path2.canonicalize()) {
+    match (dunce::canonicalize(path1), dunce::canonicalize(path2)) {
         (Ok(p1), Ok(p2)) => p1 == p2,
         _ => {
             // 正規化に失敗した場合は文字列比較
