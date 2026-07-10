@@ -134,8 +134,8 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 		}
 	};
 
-	// 一時停止中 = SP の Process が無い state。 稼働中 / 一時停止中 タブの分類基準
-	// (`isRunningProcess`) と揃える。 Start ボタンと context menu の出し分けに使う。
+	// 停止中 = SP の Process が無い state (`isRunningProcess` の否定)。 Start ボタン (▶) と
+	// context menu の出し分けに使う (タブ分割は撤去済、 project は 1 リストに留まる)。
 	const isPaused = () => !isRunningProcess(props.proc);
 
 	// Add Performer「+」を出す条件。 isActiveProject だけだと、 一度 active にした project を
@@ -165,8 +165,8 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 				icon: "ph:arrow-clockwise",
 				onSelect: () => sendIpc({ t: "process:restart", path: proc.path }),
 			});
-			// Stop project: SP が実際に listen 中 (port あり) の時のみ。 停止すると
-			// project は registered のまま「一時停止中」 tab へ移る。
+			// Stop project: SP が実際に listen 中 (port あり) の時のみ。 停止しても
+			// project は registered のまま同じリストに残り、 起動 ▶ affordance が出る。
 			if (proc.port != null) {
 				items.push({
 					label: "Stop project",
@@ -302,7 +302,7 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 						<CreoIcon name="ph:plus" size={12} />
 					</button>
 				</Show>
-				{/* 一時停止中 project の起動 affordance。 「+」(showAddPerformer) は稼働中限定
+				{/* 停止中 project の起動 affordance。 「+」(showAddPerformer) は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
 				<Show when={isPaused()}>
 					<button

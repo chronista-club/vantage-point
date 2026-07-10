@@ -56,6 +56,11 @@ pub struct StandCommand {
     pub env: Vec<(String, String)>,
     /// spawn 時の cwd = project directory（旧 install-root ダンスは script 層と共に廃止）。
     pub cwd: String,
+    /// replay buffer の disk 永続 path（`build_stand_command` が lane address から算出）。
+    ///
+    /// Some のとき PtySlot は spawn 時に前回画面を seed + 定期/Drop で flush する
+    /// （SP / daemon 再起動をまたいで console を復元する。 [`crate::daemon::pty_slot`]）。
+    pub replay_path: Option<std::path::PathBuf>,
 }
 
 /// 早期 exit 検知の wait 時間 (ms)。 床の login shell がこの窓内に死ぬ = 環境異常
@@ -79,6 +84,7 @@ pub fn spawn_stand(
         &cmd.env,
         cols,
         rows,
+        cmd.replay_path.clone(),
     )?;
 
     // 床が早期 exit するか peek（rc 読込より短い可能性はあるが、 type-ahead は line discipline
@@ -289,6 +295,11 @@ pub fn build_stand_command(
         initial_input,
         env,
         cwd: project_cwd,
+        // console replay の disk 永続 path（lane 単位）。 SP 再起動をまたぐ画面復元に使う。
+        replay_path: Some(crate::daemon::pty_slot::replay_file_path(
+            &addr.project,
+            lane_label(addr),
+        )),
     }
 }
 

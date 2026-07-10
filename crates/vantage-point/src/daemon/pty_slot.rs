@@ -11,14 +11,28 @@
 //! vp-app 再起動後の新 xterm は live stream だけでは空白のままになる (claude TUI は次の
 //! 出力まで沈黙する) ため、 PtySlot が直近出力の ring buffer を保持し、 attach 時に
 //! snapshot を先頭配送してから live に繋ぐ ([`PtySlot::attach_output`])。
+//!
+//! ## disk 永続 (SP 再起動をまたぐ復元)
+//!
+//! ring buffer は in-memory なので、 SP / daemon の再起動 (upgrade / crash / daemon 再起動) で
+//! PtySlot が作り直されると消える → 新 PtySlot は空 buffer から始まり、 前画面が戻らない
+//! (in-memory replay だけでは「GUI のみ再起動・SP 生存」しかカバーできない)。 これを埋めるため
+//! `replay_path` が Some のとき、 ring buffer を disk (`vp_state_dir()/terminal_replay/`) に
+//! **定期 flush** (crash 耐性) + **Drop 時 final flush** (graceful freshness) で落とし、 spawn 時に
+//! seed する。 これで app / SP / daemon いずれの再起動でも spawn 直後に前画面を replay できる
+//! (その後 `claude --resume` の repaint が追随)。
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 
 /// replay ring buffer の上限バイト数。
 ///
@@ -26,6 +40,87 @@ use tokio::sync::broadcast;
 /// xterm.js 側 scrollback は 5000 行 (main_area.rs) だが、 replay の目的は「再起動後に
 /// 前回の画面が見える」ことなので全履歴の忠実再現は狙わない。
 const REPLAY_CAP: usize = 256 * 1024;
+
+/// replay buffer を disk に flush する間隔。 crash 時に失う窓を数秒に抑える (memory: ~2-3s)。
+/// blocking reader ループ内 debounce では「出力が止まった後の idle 画面」(= 一番残したい状態)
+/// を拾えないため、 別の定期 task で seq 変化時のみ書く。
+const REPLAY_FLUSH_INTERVAL: Duration = Duration::from_secs(3);
+
+/// lane の replay 永続 file path。 `<project>__<lane>` (console_mode と同一命名規則)。
+///
+/// `project` / `lane` は LaneAddress 由来 (`lane` は "conductor" / performer 名)。
+pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
+    fn sanitize(part: &str) -> String {
+        part.chars()
+            .map(|c| {
+                if matches!(c, '/' | '\\' | '.') {
+                    '-'
+                } else {
+                    c
+                }
+            })
+            .collect()
+    }
+    crate::config::vp_state_dir()
+        .join("terminal_replay")
+        .join(format!("{}__{}", sanitize(project), sanitize(lane)))
+}
+
+/// replay buffer を atomic (`.tmp` → rename) に disk へ書く。 親 dir は都度 ensure。
+/// 失敗は best-effort (replay は無くても console は live で動く) なので呼び手が握りつぶす。
+fn write_replay_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// disk から replay seed を読む (末尾 [`REPLAY_CAP`] bytes)。 無ければ空。
+fn load_replay_seed(path: &Path) -> VecDeque<u8> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let start = bytes.len().saturating_sub(REPLAY_CAP);
+            bytes[start..].iter().copied().collect()
+        }
+        Err(_) => VecDeque::new(),
+    }
+}
+
+/// replay buffer を定期 flush する task を spawn する (runtime 不在なら None = 永続なし)。
+///
+/// `seq` (reader が append ごとに bump) を watch し、 前回 flush 以降に変化があった時だけ
+/// snapshot を disk へ書く (= 無変化 lane の無駄 I/O を避ける)。 handle は PtySlot が保持し、
+/// Drop で abort する。
+fn spawn_replay_flush_task(
+    path: PathBuf,
+    replay: Arc<Mutex<VecDeque<u8>>>,
+    seq: Arc<AtomicU64>,
+) -> Option<JoinHandle<()>> {
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    Some(handle.spawn(async move {
+        let mut interval = tokio::time::interval(REPLAY_FLUSH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_flushed: u64 = 0;
+        // 初回 tick は即座に返るので skip (spawn 直後の seed をそのまま書き戻さない)。
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let cur = seq.load(Ordering::Relaxed);
+            if cur == last_flushed {
+                continue;
+            }
+            let snapshot: Vec<u8> = {
+                let buf = replay.lock().unwrap_or_else(|p| p.into_inner());
+                buf.iter().copied().collect()
+            };
+            if write_replay_atomic(&path, &snapshot).is_ok() {
+                last_flushed = cur;
+            }
+        }
+    }))
+}
 
 /// PTYプロセスを管理するスロット
 ///
@@ -52,8 +147,14 @@ pub struct PtySlot {
     /// reader task が **lock 保持のまま append → broadcast send** するため、
     /// [`Self::attach_output`] の snapshot+subscribe と原子的に直列化される
     /// (= あるバイトは「snapshot に含まれる」か「subscribe 後の rx に届く」の排他二択。
-    /// 取りこぼしも二重配送も構造的に起きない)。
+    /// 取りこぼしも二重配送も構造的に起きない)。 spawn 時に disk seed で初期化されうる。
     replay: Arc<Mutex<VecDeque<u8>>>,
+    /// replay の書き込み世代カウンタ (reader が append ごとに bump)。 flush task の dirty 判定用。
+    replay_seq: Arc<AtomicU64>,
+    /// replay の disk 永続 path (Some = 永続あり)。 Drop 時の final flush で使う。
+    replay_path: Option<PathBuf>,
+    /// replay 定期 flush task のハンドル (Drop で abort)。 runtime 不在 / 永続なしなら None。
+    flush_handle: Option<JoinHandle<()>>,
     /// reader task のハンドル
     _reader_handle: tokio::task::JoinHandle<()>,
 }
@@ -63,6 +164,8 @@ impl PtySlot {
     ///
     /// 指定したシェルコマンドを PTY 上で起動し、
     /// 出力を broadcast channel に配信する reader task を開始する。
+    /// `replay_path` が Some のとき、 spawn 時に disk seed を読み込み (前回画面) + 定期/Drop で
+    /// disk へ flush する (SP 再起動をまたぐ復元)。 None なら in-memory replay のみ (テスト等)。
     pub fn spawn(
         cwd: &str,
         shell_cmd: &str,
@@ -70,6 +173,7 @@ impl PtySlot {
         env: &[(String, String)],
         cols: u16,
         rows: u16,
+        replay_path: Option<PathBuf>,
     ) -> Result<(Self, broadcast::Receiver<Vec<u8>>)> {
         let pty_system = NativePtySystem::default();
 
@@ -162,8 +266,14 @@ impl PtySlot {
         // これにより PTY からの最初のバイト（シェルプロンプト等）を取りこぼさない。
         let (output_tx, initial_rx) = broadcast::channel(256);
 
-        // replay ring buffer (attach 時の画面復元用)
-        let replay = Arc::new(Mutex::new(VecDeque::new()));
+        // replay ring buffer (attach 時の画面復元用)。 disk 永続がある lane は前回画面を seed
+        // (spawn 直後の attach で前画面を replay → 続いて claude --resume の repaint が追随)。
+        let seed = match &replay_path {
+            Some(p) => load_replay_seed(p),
+            None => VecDeque::new(),
+        };
+        let replay = Arc::new(Mutex::new(seed));
+        let replay_seq = Arc::new(AtomicU64::new(0));
 
         // reader task 開始 (writer を渡して ConPTY DSR に応答できるようにする)
         let reader_handle = start_reader_task(
@@ -171,7 +281,13 @@ impl PtySlot {
             output_tx.clone(),
             Arc::clone(&writer),
             Arc::clone(&replay),
+            Arc::clone(&replay_seq),
         );
+
+        // disk 永続がある lane は定期 flush task を起動 (runtime 不在なら None = 永続なし)。
+        let flush_handle = replay_path.as_ref().and_then(|p| {
+            spawn_replay_flush_task(p.clone(), Arc::clone(&replay), Arc::clone(&replay_seq))
+        });
 
         Ok((
             Self {
@@ -182,6 +298,9 @@ impl PtySlot {
                 shell_cmd: shell_cmd.to_string(),
                 output_tx,
                 replay,
+                replay_seq,
+                replay_path,
+                flush_handle,
                 _reader_handle: reader_handle,
             },
             initial_rx,
@@ -251,8 +370,23 @@ impl Drop for PtySlot {
     /// PtySlot 破棄時に子プロセスを確実に終了させる
     ///
     /// kill() で終了シグナルを送り、wait() で回収することで
-    /// ゾンビプロセスの発生を防ぐ。
+    /// ゾンビプロセスの発生を防ぐ。 加えて replay を disk へ final flush する
+    /// (graceful な lane restart / SP 停止で最新画面を残す。 crash 経路は定期 flush が担保)。
     fn drop(&mut self) {
+        // flush task を止めてから final flush (定期 flush と競合させない)。
+        if let Some(h) = self.flush_handle.take() {
+            h.abort();
+        }
+        if let Some(path) = &self.replay_path {
+            let snapshot: Vec<u8> = {
+                let buf = self.replay.lock().unwrap_or_else(|p| p.into_inner());
+                buf.iter().copied().collect()
+            };
+            // 空 buffer は書かない (seed 前 / 出力ゼロの lane で既存 disk 画面を潰さない)。
+            if !snapshot.is_empty() {
+                let _ = write_replay_atomic(path, &snapshot);
+            }
+        }
         if let Err(e) = self.child.kill() {
             tracing::debug!("PtySlot drop: kill 失敗（既に終了済みの可能性）: {}", e);
         }
@@ -271,6 +405,7 @@ fn start_reader_task(
     tx: broadcast::Sender<Vec<u8>>,
     #[cfg_attr(not(windows), allow(unused_variables))] writer: Arc<Mutex<Box<dyn Write + Send>>>,
     replay: Arc<Mutex<VecDeque<u8>>>,
+    replay_seq: Arc<AtomicU64>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         // Windows ConPTY DSR gating の回避状態。 起動時の cursor-position query に一度だけ
@@ -329,6 +464,8 @@ fn start_reader_task(
                         if overflow > 0 {
                             buf.drain(..overflow);
                         }
+                        // flush task の dirty 判定用に世代を進める (lock 内で bump = snapshot と整合)。
+                        replay_seq.fetch_add(1, Ordering::Relaxed);
                         // 受信者がいなくても送信を試行（正常動作）
                         let _ = tx.send(chunk);
                     }
@@ -385,7 +522,7 @@ mod tests {
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (slot, mut rx) =
-            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
+            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn に失敗");
 
         // PIDが取得できること
         assert!(slot.pid() > 0 || slot.pid() == 0); // CI環境では0の可能性
@@ -409,7 +546,7 @@ mod tests {
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (slot, mut rx) =
-            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
+            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn に失敗");
 
         // シェル初期出力 (プロンプト等) を待つ = replay buffer に何か溜まる
         let first = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
@@ -433,13 +570,76 @@ mod tests {
         );
     }
 
+    /// disk 永続 round-trip: 出力 → flush task が disk へ書く → その file を seed に新 PtySlot を
+    /// spawn すると、 前回出力が attach_output の snapshot に replay される (SP 再起動をまたぐ復元)。
+    #[tokio::test]
+    async fn test_replay_persists_and_seeds_across_respawn() {
+        let shell = default_test_shell();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("terminal_replay").join("proj__conductor");
+
+        // --- 1 本目: 出力を出して disk flush を待つ ---
+        let marker = "VP_PERSIST_MARKER";
+        {
+            let (mut slot, mut rx) =
+                PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, Some(path.clone()))
+                    .expect("PTY spawn");
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            let echo: &[u8] = if cfg!(windows) {
+                b"echo VP_PERSIST_MARKER\r"
+            } else {
+                b"echo VP_PERSIST_MARKER\n"
+            };
+            slot.write(echo).expect("write");
+            // marker が出力に現れるまで drain (ConPTY DSR は端末役として応答)
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut seen = String::new();
+            while tokio::time::Instant::now() < deadline && !seen.contains(marker) {
+                if let Ok(Ok(b)) =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await
+                {
+                    let t = String::from_utf8_lossy(&b);
+                    if t.contains("\u{1b}[6n") {
+                        let _ = slot.write(b"\x1b[1;1R");
+                    }
+                    seen.push_str(&t);
+                }
+            }
+            assert!(seen.contains(marker), "1 本目で marker が出力される");
+            // flush task (3s interval) が disk へ書くまで待つ
+            let flush_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+            while tokio::time::Instant::now() < flush_deadline && !path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            assert!(path.exists(), "flush task が disk へ replay を書くはず");
+            // slot は scope 終端で Drop → final flush も走る
+        }
+
+        // disk file に marker が入っている
+        let disk = std::fs::read(&path).expect("read replay file");
+        assert!(
+            String::from_utf8_lossy(&disk).contains(marker),
+            "disk replay に前回出力が残る"
+        );
+
+        // --- 2 本目: 同 path を seed に spawn → attach_output に前回出力が乗る ---
+        let (slot2, _rx2) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, Some(path.clone()))
+            .expect("PTY spawn 2");
+        let (snapshot, _live) = slot2.attach_output();
+        assert!(
+            String::from_utf8_lossy(&snapshot).contains(marker),
+            "seed した前回画面が attach snapshot に replay される (SP 再起動復元)"
+        );
+    }
+
     #[tokio::test]
     async fn test_pty_write_input() {
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (mut slot, mut rx) =
-            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
+            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn に失敗");
 
         // 少し待ってからコマンドを送信 (シェル初期化を待つ)
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -496,7 +696,7 @@ mod tests {
             "printf 'VPTERM[%s]\\n' \"$TERM\"; sleep 0.2".to_string(),
         ];
         let (_slot, mut rx) =
-            PtySlot::spawn(&cwd, "/bin/sh", &args, &[], 80, 24).expect("PTY spawn に失敗");
+            PtySlot::spawn(&cwd, "/bin/sh", &args, &[], 80, 24, None).expect("PTY spawn に失敗");
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut buf = String::new();
@@ -526,7 +726,8 @@ mod tests {
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let (slot, _rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
+        let (slot, _rx) =
+            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn に失敗");
         let pid = slot.pid();
 
         // CI環境ではPIDが0の場合がある
@@ -574,7 +775,8 @@ mod tests {
         // 端末役 (DSR 応答) を一切せずに git-bash の echo 出力を集める。
         // PtySlot が自動応答しなければ ConPTY は `\x1b[6n` で止まり VPMARKER は出ない。
         let args = vec!["-lc".to_string(), "echo VPMARKER_OUT; sleep 1".to_string()];
-        let (_slot, mut rx) = PtySlot::spawn(&cwd, &bash, &args, &[], 80, 24).expect("PTY spawn");
+        let (_slot, mut rx) =
+            PtySlot::spawn(&cwd, &bash, &args, &[], 80, 24, None).expect("PTY spawn");
 
         let mut buf: Vec<u8> = Vec::new();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);

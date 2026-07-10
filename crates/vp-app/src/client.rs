@@ -395,7 +395,8 @@ impl TheWorldClient {
     /// SP (Project Process) を停止する (POST /api/world/processes/{name}/stop)。
     ///
     /// project は registered のまま (`enabled` フラグ不変) — SP プロセスだけ落とす。
-    /// stop 後は `process_status = Stopped` になり、 sidebar の「一時停止中」 tab へ移る。
+    /// stop 後は `process_status = Stopped` になり、 sidebar 上は同じリストに残ったまま
+    /// 起動 ▶ affordance が出る (稼働中 / 一時停止中 タブ分割は撤去済)。
     pub async fn stop_process(&self, project_name: &str) -> Result<()> {
         let url = format!(
             "{}/api/world/processes/{}/stop",
