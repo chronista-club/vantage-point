@@ -3432,9 +3432,9 @@ ${n}`,i.replaceWith(o)}}}}function kMe(e,t){if(t==="markdown")return an.parse(e)
 .echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
 .echoes-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
-/* \u8FD4\u4FE1\uFF08assistant\uFF09\u306E\u672C\u6587\u3060\u3051 +2 = 15.5px\uFF08\u81EA\u5206\u306E\u5165\u529B\u30D0\u30D6\u30EB\u306F 13.5px \u306E\u307E\u307E\uFF09\u3002
+/* \u8FD4\u4FE1\uFF08assistant\uFF09\u306E\u672C\u6587\u3060\u3051\u62E1\u5927 = 15px\uFF08\u81EA\u5206\u306E\u5165\u529B\u30D0\u30D6\u30EB\u306F 13.5px \u306E\u307E\u307E\uFF09\u3002
    line-height \u306F unitless \u306A\u306E\u3067 font-size \u306B\u8FFD\u5F93\u3057\u3066\u30B9\u30B1\u30FC\u30EB\u3059\u308B\u3002 */
-.echoes-msg:not(.user) .echoes-msg-body { font-size:15.5px; }
+.echoes-msg:not(.user) .echoes-msg-body { font-size:15px; }
 .echoes-msg-body :first-child { margin-top:0; } .echoes-msg-body :last-child { margin-bottom:0; }
 .echoes-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
   border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12px; }
