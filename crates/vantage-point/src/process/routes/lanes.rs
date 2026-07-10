@@ -427,8 +427,8 @@ pub enum DeleteLaneError {
 /// 1. **architecture rule check**: Conductor は削除拒否 (`DeleteLaneError::ConductorCannotBeDeleted`)
 /// 2. **Phase 1 (in-memory authoritative mutation)**: `LanePool::remove` で LaneInfo + PtySlot を
 ///    drop (PtySlot::Drop で child kill + wait)
-/// 3. **Phase 2a (tmux container cleanup)**: `tmux::kill_session` で PTY container 削除
-///    (best-effort、 既存挙動では欠落していた → orphan tmux session の根本原因)
+/// 3. **Phase 2a (state file GC)**: `console_mode::clear` + `cc_session::clear` で lane 単位
+///    state file を削除 (best-effort。 残すと同名 lane 再作成時に旧 mode / 旧 session が蘇る)
 /// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_performer_in` で workspace
 ///    dir 削除 (best-effort、 既存挙動踏襲)
 /// 5. **Phase 3 (broadcast)**: `SystemEvent::Lane(Diff::Remove)` を broadcast → sidebar 即時反映
@@ -468,8 +468,44 @@ pub async fn delete_lane_orchestrated(
         pid
     );
 
+    // terminal pump の entry を掃除する。task 自体は PtySlot drop の broadcast Closed で
+    // 自壊するが、entry は demand_stop か次の respawn でしか消えず lane 削除では残留する。
+    // ⚠️ 消してよいのは削除経路だけ — 生存 lane の dead entry は restart_lane_orchestrated の
+    // had_pump（購読者が居た証跡）が再 attach 判定に使うので、几帳面に消すと console が凍る。
+    if let Some(handle) = state.terminal_pumps.write().await.remove(&addr.to_string()) {
+        handle.abort();
+    }
+
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
     // 子なので Phase 1 の remove (= PtySlot drop) で完全停止する（第 2 の生存木は無い）。
+
+    // Phase 2a: lane 単位 state file の GC (best-effort)。 console_mode / cc_session は
+    // lane 削除後に file が残ると、 同名 lane を作り直した時に旧 mode / 旧 session が
+    // 蘇る (ghost file の state leak)。 lane lifecycle の終端であるここで両方消す。
+    // cleanup flag には従わない — workspace dir と違い state file は lane が消えた時点で
+    // 意味を失う (残す価値がない)。
+    let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+    if let Err(e) = crate::lane::console_mode::clear(&addr.project, &lane_label) {
+        tracing::warn!(
+            "lane delete: console_mode state の破棄に失敗 (file 残置): addr={} err={}",
+            addr,
+            e
+        );
+    }
+    if let Err(e) = crate::lane::cc_session::clear(&addr.project, &lane_label) {
+        tracing::warn!(
+            "lane delete: cc_session state の破棄に失敗 (file 残置): addr={} err={}",
+            addr,
+            e
+        );
+    }
+    if let Err(e) = crate::lane::engine_model::clear(&addr.project, &lane_label) {
+        tracing::warn!(
+            "lane delete: engine_model state の破棄に失敗 (file 残置): addr={} err={}",
+            addr,
+            e
+        );
+    }
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
@@ -583,6 +619,22 @@ pub async fn restart_lane_orchestrated(
                         lane_key,
                         reattached
                     );
+                }
+                // Act II（chat lane）の restart_lane は engine drop（lazy respawn）で終わる。
+                // console_set_mode の chat 分岐と同じ理由でここで eager spawn する —
+                // fresh 直後に新 session_init が届き「新品になった」フィードバックが即出る
+                // （resume の開始も早い）。失敗しても restart 自体は成功扱い、次 submit の
+                // self-heal で再試行される。
+                let is_chat = state.lane_pool.read().await.get(&addr).is_some_and(|i| {
+                    i.console_mode == crate::lane::console_mode::ConsoleMode::Chat
+                });
+                if is_chat {
+                    let mut pool = state.lane_pool.write().await;
+                    if let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router) {
+                        tracing::warn!(
+                            "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
+                        );
+                    }
                 }
                 tracing::info!(
                     "Lane restart OK: addr={} new_pid={} attempts={}",

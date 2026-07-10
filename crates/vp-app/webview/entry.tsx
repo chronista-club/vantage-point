@@ -178,6 +178,10 @@ interface SetActivePaneInfo {
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
 let activeLaneAddress: string | null = null;
 
+/** New Session ボタンの armed 状態を解除する hook（ボタン生成時に代入）。lane 切替で
+ *  「✨ New Session?」表示が残ると、別 lane を見ながら「もう一押しで実行」と誤読させる。 */
+let disarmNewSession: (() => void) | null = null;
+
 /**
  * LaneAddress::Display 形を canvas-handler が使う flat lane_name に翻訳する。
  * `null` = conductor（lead）、`string` = performer 名。
@@ -238,6 +242,9 @@ const installSetActivePaneBridge = (): void => {
 					laneScenes.set(activeLaneAddress, currentScene);
 				}
 			}
+			// lane が変わったら New Session の armed 表示を落とす（実行はされないが、
+			// 別 lane を見ながら armed ラベルが残ると誤読を招く）。
+			if (activeLaneAddress !== newLane) disarmNewSession?.();
 			activeLaneAddress = newLane;
 			// wiremsg Stage 2: canvas (PP body) の供給は Rust 側 spawn_canvas_subscription が
 			// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
@@ -443,7 +450,12 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 // (Rust が lane 選択 / console_set_mode 成功時に setMode を呼ぶ)。
 document.addEventListener("vp:console-mode", (e) => {
 	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
-	if (detail?.lane) applyConsoleMode(detail.lane, detail.mode);
+	if (!detail?.lane) return;
+	// SP 応答待ちの間に別 lane へ移った後から届いた mode 適用で、表示ごと元の lane に
+	// 引き戻さない（overlay 解除 / toggle label は別 listener なので影響なし）。lane の
+	// mode 自体は vpConsole 側 map に記録済みで、再選択時の setMode 同期が正しく開く。
+	if (activeLaneAddress && detail.lane !== activeLaneAddress) return;
+	applyConsoleMode(detail.lane, detail.mode);
 });
 
 // doc 33 §9: Act I⇄II 切替の progress overlay + switch lock。
@@ -529,7 +541,53 @@ if (paneTerminal) {
 		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
 		ipc?.postMessage(JSON.stringify({ t: "console:set_mode", lane, mode: next }));
 	});
-	paneTerminal.appendChild(toggle);
+
+	// New Session ボタン: 旧「/exit → 手打ち claude」の置き換え。lane_restart(fresh=true) を
+	// 撃つ = cc_session 破棄 + Act I は素の claude respawn / Act II は engine 入れ替え。
+	// wry では window.confirm が既定 false を返すため、誤爆防止は 2 クリック armed 方式
+	// （1 回目で「New Session?」表示、3s 放置 or lane が変わったら解除、2 回目で実行）。
+	const newSession = document.createElement("button");
+	newSession.className = "echoes-act-toggle echoes-new-session";
+	const NEW_LABEL = "✨ New";
+	newSession.textContent = NEW_LABEL;
+	let armedLane: string | null = null;
+	let armedTimer: number | undefined;
+	const disarm = (): void => {
+		armedLane = null;
+		if (armedTimer) clearTimeout(armedTimer);
+		armedTimer = undefined;
+		newSession.classList.remove("armed");
+		newSession.textContent = NEW_LABEL;
+	};
+	// lane 切替（setActivePane bridge）からも解除できるよう hook を公開する。
+	disarmNewSession = disarm;
+	newSession.addEventListener("click", () => {
+		if (handoffPending) return;
+		const lane = activeLaneAddress ?? consoleActiveLane;
+		if (!lane) {
+			console.warn("[new-session] active lane 不明 — lane を選択してから押してください");
+			return;
+		}
+		if (armedLane !== lane) {
+			// 1 段目（or 別 lane で armed のまま）: この lane で arm し直す。
+			disarm();
+			armedLane = lane;
+			newSession.classList.add("armed");
+			newSession.textContent = "✨ New Session?";
+			armedTimer = window.setTimeout(disarm, 3000);
+			return;
+		}
+		disarm();
+		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+		ipc?.postMessage(JSON.stringify({ t: "console:new_session", lane }));
+	});
+
+	// 右上の操作群コンテナ（位置は container が持ち、子は static で並ぶ — CHATVIEW_CSS）。
+	const actions = document.createElement("div");
+	actions.className = "echoes-console-actions";
+	actions.appendChild(newSession);
+	actions.appendChild(toggle);
+	paneTerminal.appendChild(actions);
 }
 
 // ===== Bastet 🧲 device 一覧 render API =====

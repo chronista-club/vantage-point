@@ -149,6 +149,8 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "open-url"
                 | "echoes:submit"
                 | "console:set_mode"
+                | "console:new_session"
+                | "console:set_model"
         )
     )
 }
@@ -1033,10 +1035,18 @@ async fn world_process_request(
         .await
         .map_err(|e| format!("process-proxy handshake: {}", e))?;
     // ask: method を World が SP dispatch_process_method へ forward し応答を relay。
-    channel
+    let resp = channel
         .request::<serde_json::Value, serde_json::Value>(method, &payload)
         .await
-        .map_err(|e| format!("process-proxy {}: {}", method, e))
+        .map_err(|e| format!("process-proxy {}: {}", method, e))?;
+    // SP は dispatch の Err を `{"error": ...}` の**正常応答**として返す（discovery.rs の
+    // World uplink/control）。transport 成功 = 処理成功ではないので、ここで Err に戻す。
+    // これが無いと呼び手は全員「ok」と読み、未実装 method を旧 binary の SP に投げた時などに
+    // 「成功ログが出るのに何も起きない」silent success になる。
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("process-proxy {}: {}", method, err));
+    }
+    Ok(resp)
 }
 
 /// Bastet 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
@@ -1507,7 +1517,12 @@ fn activate_lane(
         .flatten()
         .find(|l| l.address.key() == address)
         .map(|l| l.console_mode.clone())
-        .unwrap_or_else(|| "tui".to_string());
+        .unwrap_or_else(|| {
+            // snapshot 欠落時は tui に落ちる = chat lane が Act I 表示で開く。起動レースでしか
+            // 起きないはずなので、黙って既定値を使わず観測できるようにしておく。
+            tracing::warn!("activate_lane: lane が snapshot に不在、console_mode を tui と仮定 (lane={address})");
+            "tui".to_string()
+        });
     let script = format!(
         "window.vpConsole && window.vpConsole.setMode({}, {})",
         serde_json::to_string(address).unwrap_or_else(|_| "\"\"".into()),
@@ -2741,6 +2756,9 @@ pub fn run() -> anyhow::Result<()> {
                     // terminal S4: 消えた lane の terminal session を停止 (= map から remove で
                     // cmd_tx drop → canvas channel close → World demand stop → SP pump stop)。
                     terminal_sessions.remove(addr);
+                    // echoes session も対で停止（terminal_sessions と同寿命）。remove が無いと
+                    // 削除済 lane の購読 task が demand を立てたまま永久残留する。
+                    echoes_sessions.remove(addr);
                     // VP-147 PR-P2-3 Moody Blues fix #1: lane delete 検出時に lane_inboxes
                     // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
                     sidebar_state.lane_inboxes.remove(addr);
@@ -2760,10 +2778,12 @@ pub fn run() -> anyhow::Result<()> {
                         // pid:null = PtySlot 不在 → xterm を作らない。 内訳は 2 種で、 どちらも
                         // ここでは対象外にするのが正しい:
                         //  - Dead Lane (spawn 失敗、 F.8 B Convergent) → 別途 on-demand respawn
-                        //  - chat lane (Act II、 engine-less が正常形) → 内容は ChatView が描く
-                        // ⚠️ 「pid=null = 死」ではない。 表示側 (showLane placeholder / LaneRow の
-                        //    dim 判定) は console_mode で chat を除外すること (doc 33)。
-                        if lane.pid.is_none() {
+                        //  - chat lane (Act II) → 内容は ChatView が描く
+                        // ⚠️ 「pid=null = 死」ではない。逆に「pid あり = tui」でもない — chat lane
+                        //    は engine 稼働中 pid=Some になる（ensure_chat_engine が host pid を
+                        //    記録）ため、pid だけで gate すると chat lane に xterm と terminal
+                        //    購読を作ってしまう。console_mode の除外を必ず併用（#702 と同じ教訓）。
+                        if lane.pid.is_none() || lane.console_mode == "chat" {
                             continue;
                         }
                         // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
@@ -3035,6 +3055,50 @@ pub fn run() -> anyhow::Result<()> {
             }
             // doc 33 C2: console_set_mode 成功後、WebView に mode を反映（xterm⇄chat 表示切替）。
             Event::UserEvent(AppEvent::ConsoleModeApplied { lane, mode }) => {
+                // SP が Ok を返した = mode は確定。だが lanes snapshot への反映は 5s periodic
+                // 頼み（SystemEvent::Lane は Add/Remove しか fire しない）で最大 5 秒 stale が
+                // 残るため、手元 snapshot に即時反映する。これが無いと (a) 5 秒以内に lane を
+                // 離れて戻ると activate_lane が旧 mode で開く（間欠の「戻ると Act I で開く」）、
+                // (b) 下の ensure_echoes_attach が旧 mode を読んで skip する。
+                for lanes in sidebar_state.lanes_by_project.values_mut() {
+                    if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane) {
+                        l.console_mode = mode.clone();
+                    }
+                }
+                push_sidebar_state(&webview, &sidebar_state);
+                // Act I 復帰では xterm と terminal session を mode 反映の前に用意する。
+                // 起動時に chat だった lane は LanesLoaded の pid=None 分岐で ensure_lane も
+                // session start も素通りしており、mode を反映しただけでは購読者が居ないまま
+                // SP の pump が出力を route する。terminal topic は非 retained なので、その間の
+                // PTY 出力は復元されず xterm が空のままになる（II→I で何も出ない の真因）。
+                // subscribe すると demand 0→1 が World の hook を撃ち、SP が pump を張り直して
+                // replay を先頭配送する。どちらも idempotent（起動時 tui の lane は entry 既存）。
+                let is_tui = mode == "tui";
+                if is_tui {
+                    lane_js::ensure_lane(&webview, &lane);
+                    // SP 応答待ちの間に user が別 lane / 別 project へ移り得るため、project は
+                    // 「今の active lane」ではなく対象 lane 自身から逆引きする（chat 分岐の
+                    // ensure_echoes_attach と同じ resolver — 揃えないと遅着応答が別 project の
+                    // path で購読を張る）。
+                    match resolve_project_path_for_lane(&sidebar_state, &lane) {
+                        Some(path) => {
+                            terminal_sessions.entry(lane.clone()).or_insert_with(|| {
+                                spawn_terminal_session(
+                                    &rt_handle,
+                                    async_action_proxy.clone(),
+                                    world_conn.clone(),
+                                    path,
+                                    lane.clone(),
+                                )
+                            });
+                        }
+                        // 購読を張れない = PTY 出力が届かず xterm が空のままになる。切替は
+                        // 成立しているので黙って落とさず、原因を残す。
+                        None => tracing::warn!(
+                            "console:mode_applied — lane の project 解決失敗、terminal session を張れず (lane={lane})"
+                        ),
+                    }
+                }
                 let script = format!(
                     "window.vpConsole && window.vpConsole.setMode({}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
@@ -3043,6 +3107,96 @@ pub fn run() -> anyhow::Result<()> {
                 if let Err(e) = webview.evaluate_script(&script) {
                     tracing::warn!("vpConsole.setMode 失敗 (lane={}): {}", lane, e);
                 }
+                // Act I 復帰は xterm container を active 化しないと見えない（applyConsoleMode の
+                // tui 分岐は laneHost の console-hidden を外すだけ = chat で生まれた lane の
+                // container は非 active のまま）。showLane は active 化に加えて rAF 2 段で
+                // fit / sendResize / focus まで行う。⚠️ setMode より後に呼ぶこと — console-hidden
+                // が残ったままだと clientWidth=0 で fit が見送られ 80×24 に固定される。
+                if is_tui {
+                    // SP 応答待ちの間に別 lane へ移っていたら表示は奪わない。mode は上で手元
+                    // snapshot に反映済みなので、戻った時の activate_lane が正しい mode で開く。
+                    if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
+                        lane_js::show_lane(&webview, Some(&lane), false);
+                    }
+                } else {
+                    // I→II の対称: toggle 経路でも echoes topic に即 attach（→ demand 0→1 →
+                    // transcript replay）。attach は lane 選択時と LanesLoaded にしか無く、
+                    // tui 起点の lane を初めて chat に切替えた場合は periodic snapshot（最大
+                    // 5 秒）まで会話が出ない。上の手元 snapshot 反映が先に要る（attach の
+                    // gate が lane_is_chat を読む）。attach 済みなら no-op（idempotent）。
+                    ensure_echoes_attach(
+                        &lane,
+                        &sidebar_state,
+                        &mut echoes_sessions,
+                        &rt_handle,
+                        &async_action_proxy,
+                        &world_conn,
+                    );
+                }
+            }
+            // 新セッション開始（New Session ボタン）: lane_restart(fresh=true) で SP に forward。
+            // fresh = cc_session 破棄 + Act I は素の claude respawn / Act II は engine drop →
+            // restart_lane_orchestrated が eager 再 spawn（新 session_init が即届く）。
+            Event::UserEvent(AppEvent::ConsoleNewSession { lane }) => {
+                // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
+                // active lane が変わり得るため resolve_active_project_path は使わない）。
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("console:new_session skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                rt_handle.spawn(async move {
+                    let payload = serde_json::json!({ "address": &lane, "fresh": true });
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "lane_restart",
+                        payload,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            tracing::info!("console:new_session ok: lane={lane}");
+                            let _ = proxy.send_event(AppEvent::ConsoleSessionRenewed { lane });
+                        }
+                        Err(e) => tracing::warn!("console:new_session 失敗 (lane={lane}): {e}"),
+                    }
+                });
+            }
+            // fresh restart 成功 → ChatView の会話表示をクリアする。replay_start は foldInto が
+            // 「会話 clear + header 保持」で畳む既存意味論（chatview.tsx）— 新 engine の
+            // session_init が届けば header も新しくなる。tui lane は追加処理不要（新 PtySlot の
+            // pump replay が clear prefix 付きで xterm を拭く）。
+            Event::UserEvent(AppEvent::ConsoleSessionRenewed { lane }) => {
+                let script = format!(
+                    "window.vpConsole && window.vpConsole.handleEvent({}, {{kind:'replay_start'}})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("console:new_session の ChatView クリア失敗 (lane={lane}): {e}");
+                }
+            }
+            // Act II モデル切替: console_set_model で SP に forward（fire & forget）。
+            // 適用の視覚確認は新 engine の session_init が header.model を更新することで得る。
+            Event::UserEvent(AppEvent::ConsoleSetModel { lane, model }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("console:set_model skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                rt_handle.spawn(async move {
+                    let payload = serde_json::json!({ "lane": &lane, "model": model });
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "console_set_model",
+                        payload,
+                    )
+                    .await
+                    {
+                        Ok(_) => tracing::info!("console:set_model ok: lane={lane}"),
+                        Err(e) => tracing::warn!("console:set_model 失敗 (lane={lane}): {e}"),
+                    }
+                });
             }
             Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
                 // F6: WebView の save IPC を World process-proxy ask (pp_state_save) で SP に forward。

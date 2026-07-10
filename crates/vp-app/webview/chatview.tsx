@@ -10,7 +10,7 @@
  */
 
 import { render } from 'solid-js/web'
-import { createSignal, For, Show, type Accessor } from 'solid-js'
+import { createSignal, createEffect, onMount, onCleanup, For, Show, type Accessor } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
 import type { EchoesEvent, PlanEntry, VpConsole } from './console'
@@ -194,12 +194,42 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
   )
 }
 
+/** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
+ *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
+const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
+  ['', 'Default'],
+  ['claude-fable-5', 'Fable 5'],
+  ['claude-opus-4-8', 'Opus 4.8'],
+  ['claude-sonnet-5', 'Sonnet 5'],
+  ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
+]
+
 function ChatView() {
   const current = (): LaneChat | null => {
     const l = activeLane()
     return l ? laneChat(l) : null
   }
   const state = (): ChatState | null => current()?.state ?? null
+
+  // Act II モデル切替（spec: セッション進行中でも切替可能）。SP が engine を --resume +
+  // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
+  // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
+  // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
+  const currentModel = (): string => state()?.header?.model ?? ''
+  const modelChoices = (): ReadonlyArray<readonly [string, string]> => {
+    const m = currentModel()
+    return m && !MODEL_CHOICES.some(([v]) => v === m)
+      ? [...MODEL_CHOICES, [m, m] as const]
+      : MODEL_CHOICES
+  }
+  const setModel = (model: string) => {
+    const lane = activeLane()
+    if (!lane) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(
+      JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
+    )
+  }
 
   const [draft, setDraft] = createSignal('')
   const submit = () => {
@@ -213,14 +243,123 @@ function ChatView() {
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
   }
 
+  // --- auto-scroll（sticky bottom）+ キーボードスクロール（Home/End/PgUp/PgDn）---------
+  // stream 要素の ref。<Show> 内なので lane 選択時のみ存在する。
+  let streamEl: HTMLDivElement | undefined
+  // ユーザーが最下部に貼り付いているか。history を遡って読んでいる間は追従を止める
+  // （chat の定石: 下端にいる時だけ新着で追う。上にスクロールしたら勝手に引き戻さない）。
+  let stuckToBottom = true
+  const BOTTOM_EPS = 48 // 「最下部」と見なす許容 px（行の途中でも追従を継続させる遊び）
+  const isAtBottom = (el: HTMLElement): boolean =>
+    el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_EPS
+
+  // scroll のたびに「下端張り付き」を測り直す。プログラム的 scroll でも発火するが、
+  // 最下部へ動かした直後は isAtBottom=true に収束するので振動しない。
+  const onStreamScroll = (): void => {
+    if (streamEl) stuckToBottom = isAtBottom(streamEl)
+  }
+
+  // 4 キーで history を scroll する実体。対象キー以外は false（呼び側が素通し判定に使う）。
+  const scrollByKey = (key: string): boolean => {
+    const el = streamEl
+    if (!el) return false
+    const page = el.clientHeight * 0.9 // 1 画面弱（10% 重ねて文脈を維持）
+    switch (key) {
+      case 'Home':
+        el.scrollTop = 0
+        break
+      case 'End':
+        el.scrollTop = el.scrollHeight
+        break
+      case 'PageUp':
+        el.scrollTop -= page
+        break
+      case 'PageDown':
+        el.scrollTop += page
+        break
+      default:
+        return false
+    }
+    stuckToBottom = isAtBottom(el)
+    return true
+  }
+
+  // pane-level（document）keydown: 入力欄で作文しながらでも history を scroll できるように
+  // する（ユーザ要望「後者」）。keydown は focus 要素で発火し document へ bubble するので、
+  // textarea 入力中でも bubble を document で受ければ拾える（stream 局所ハンドラでは届かない）。
+  // テキスト編集を壊さない棲み分け:
+  //   - PageUp/PageDown: 常に history へ（小さな textarea では page 移動は無意味なので奪う）
+  //   - Home/End: textarea に focus がある間は行内キャレット移動を尊重して奪わない。
+  //     それ以外（history/pane に focus）では history 先頭/末尾へ。
+  // chat 非表示時（Act I 表示中 = streamEl が display:none 配下 → offsetParent=null）は
+  // 一切介入せず、xterm 等にキーを渡す。
+  const onDocKey = (e: KeyboardEvent): void => {
+    if (!streamEl || streamEl.offsetParent === null) return // chat 非表示 → 素通し
+    const key = e.key
+    if (key !== 'Home' && key !== 'End' && key !== 'PageUp' && key !== 'PageDown') return
+    const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
+    if ((key === 'Home' || key === 'End') && inTextarea) return // 作文中の caret 移動を尊重
+    if (scrollByKey(key)) e.preventDefault()
+  }
+  onMount(() => {
+    document.addEventListener('keydown', onDocKey)
+    onCleanup(() => document.removeEventListener('keydown', onDocKey))
+  })
+
+  // 新着で下端に追従（sticky）。streaming の chunk 追記（末尾 item の text 伸長 = items.length は
+  // 不変）にも反応させるため、length だけでなく末尾 text 長も reactive に読む。rev の read 自体が
+  // Solid の依存追跡を張る（値は「内容が動いた」印としてのみ使う）。
+  createEffect(() => {
+    const s = state()
+    if (!s) return
+    const last = s.items[s.items.length - 1]
+    const rev = s.items.length + (last && 'text' in last ? last.text.length : 0)
+    if (rev >= 0 && stuckToBottom) {
+      // DOM patch 後の実寸で scroll するため rAF に載せる（markdown/font の layout 確定待ち）。
+      requestAnimationFrame(() => {
+        if (streamEl && stuckToBottom) streamEl.scrollTop = streamEl.scrollHeight
+      })
+    }
+  })
+
+  // lane 切替時は「その lane の最新（下端）」を見せる（履歴の途中で開かない）。
+  createEffect(() => {
+    activeLane() // dep
+    stuckToBottom = true
+    requestAnimationFrame(() => {
+      if (streamEl) streamEl.scrollTop = streamEl.scrollHeight
+    })
+  })
+
   return (
     <div class="echoes-chat">
       <Show
         when={state()}
         fallback={<div class="echoes-empty">Console (Act II) — lane 未選択</div>}
       >
+        <div class="echoes-header">
+          <span class="echoes-header-label">model</span>
+          <select
+            class="echoes-model-select"
+            disabled={state()!.streaming}
+            onChange={(e) => setModel(e.currentTarget.value)}
+          >
+            <For each={modelChoices()}>
+              {([v, label]) => (
+                <option value={v} selected={v === currentModel()}>
+                  {label}
+                </option>
+              )}
+            </For>
+          </select>
+        </div>
         <PlanWidget entries={() => state()!.plan} />
-        <div class="echoes-stream">
+        <div
+          class="echoes-stream"
+          ref={streamEl}
+          tabindex={0}
+          onScroll={onStreamScroll}
+        >
           <For each={state()!.items}>
             {(item, index) => {
               if (item.kind === 'thinking')
@@ -279,6 +418,9 @@ export const CHATVIEW_CSS = `
   font-family: var(--font-ui, system-ui, -apple-system, sans-serif); overflow:hidden; }
 .echoes-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .echoes-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+/* history は tabindex=0 で focus 可能（Home/End/PgUp/PgDn 用）。領域全体を囲む outline は
+   目障りなので抑制する（focus 合図は scrollbar 操作で十分伝わる）。 */
+.echoes-stream:focus, .echoes-stream:focus-visible { outline:none; }
 .echoes-msg { max-width:100%; animation: echoes-fade .18s ease-out; }
 .echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
@@ -332,6 +474,19 @@ export const CHATVIEW_CSS = `
   border-radius:14px; border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); cursor:pointer; opacity:.75; transition: opacity .15s ease; }
 .echoes-act-toggle:hover { opacity:1; }
+/* console 右上の操作群（New Session + Act toggle）。container が位置を持ち、子は並ぶだけ。 */
+.echoes-console-actions { position:absolute; top:8px; right:12px; z-index:10; display:flex; gap:8px; }
+.echoes-console-actions .echoes-act-toggle { position:static; }
+/* New Session の armed 状態（2 クリック確認の 1 段目）: 誤爆防止の視覚合図。 */
+.echoes-new-session.armed { color: var(--color-accent,#e2b96f); border-color: var(--color-accent,#e2b96f); opacity:1; }
+.echoes-header { display:flex; align-items:center; gap:8px; padding:7px 14px;
+  border-bottom:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#13161c); }
+.echoes-header-label { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+  color: var(--color-text-tertiary,#616b80); }
+.echoes-model-select { font-size:11px; padding:3px 7px; border-radius:7px; outline:none; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
+  color: var(--color-text-secondary,#a8b0c0); }
+.echoes-model-select:disabled { opacity:.45; cursor:default; }
 @keyframes echoes-fade { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform:none; } }
 @keyframes echoes-spin { to { transform: rotate(360deg); } }
 @keyframes echoes-blink { 50% { opacity:0; } }
