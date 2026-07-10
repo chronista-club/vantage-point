@@ -1,6 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <!-- Mountain silhouette, Vantage Point metaphor -->
-  <rect width="64" height="64" rx="12" fill="#0b1120"/>
-  <path d="M8 48 L22 24 L32 38 L42 18 L56 48 Z" fill="#88c0d0" opacity="0.9"/>
-  <circle cx="48" cy="16" r="3" fill="#b4c8e0"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Vantage Point — Mac App Icon 素地。角丸ダーク背景 + Mountains グリフ（favicon 合成を 4x / rx=0.2237） -->
+  <rect width="1024" height="1024" rx="229" fill="#0b1120"/>
+  <g transform="translate(160 192) scale(2.76)" fill="#617de6">
+    <path d="M164,80a28,28,0,1,0-28-28A28,28,0,0,0,164,80Zm0-40a12,12,0,1,1-12,12A12,12,0,0,1,164,40Zm90.88,155.92-54.56-92.08A15.87,15.87,0,0,0,186.55,96h0a15.85,15.85,0,0,0-13.76,7.84L146.63,148l-44.84-76.1a16,16,0,0,0-27.58,0L1.11,195.94A8,8,0,0,0,8,208H248a8,8,0,0,0,6.88-12.08ZM88,80l23.57,40H64.43ZM22,192l33-56h66l18.74,31.8,0,0L154,192Zm150.57,0-16.66-28.28L186.55,112,234,192Z"/>
+  </g>
 </svg>
