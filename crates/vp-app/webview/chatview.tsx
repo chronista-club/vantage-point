@@ -194,12 +194,42 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
   )
 }
 
+/** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
+ *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
+const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
+  ['', 'Default'],
+  ['claude-fable-5', 'Fable 5'],
+  ['claude-opus-4-8', 'Opus 4.8'],
+  ['claude-sonnet-5', 'Sonnet 5'],
+  ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
+]
+
 function ChatView() {
   const current = (): LaneChat | null => {
     const l = activeLane()
     return l ? laneChat(l) : null
   }
   const state = (): ChatState | null => current()?.state ?? null
+
+  // Act II モデル切替（spec: セッション進行中でも切替可能）。SP が engine を --resume +
+  // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
+  // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
+  // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
+  const currentModel = (): string => state()?.header?.model ?? ''
+  const modelChoices = (): ReadonlyArray<readonly [string, string]> => {
+    const m = currentModel()
+    return m && !MODEL_CHOICES.some(([v]) => v === m)
+      ? [...MODEL_CHOICES, [m, m] as const]
+      : MODEL_CHOICES
+  }
+  const setModel = (model: string) => {
+    const lane = activeLane()
+    if (!lane) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(
+      JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
+    )
+  }
 
   const [draft, setDraft] = createSignal('')
   const submit = () => {
@@ -219,6 +249,22 @@ function ChatView() {
         when={state()}
         fallback={<div class="echoes-empty">Console (Act II) — lane 未選択</div>}
       >
+        <div class="echoes-header">
+          <span class="echoes-header-label">model</span>
+          <select
+            class="echoes-model-select"
+            disabled={state()!.streaming}
+            onChange={(e) => setModel(e.currentTarget.value)}
+          >
+            <For each={modelChoices()}>
+              {([v, label]) => (
+                <option value={v} selected={v === currentModel()}>
+                  {label}
+                </option>
+              )}
+            </For>
+          </select>
+        </div>
         <PlanWidget entries={() => state()!.plan} />
         <div class="echoes-stream">
           <For each={state()!.items}>
@@ -332,6 +378,19 @@ export const CHATVIEW_CSS = `
   border-radius:14px; border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); cursor:pointer; opacity:.75; transition: opacity .15s ease; }
 .echoes-act-toggle:hover { opacity:1; }
+/* console 右上の操作群（New Session + Act toggle）。container が位置を持ち、子は並ぶだけ。 */
+.echoes-console-actions { position:absolute; top:8px; right:12px; z-index:10; display:flex; gap:8px; }
+.echoes-console-actions .echoes-act-toggle { position:static; }
+/* New Session の armed 状態（2 クリック確認の 1 段目）: 誤爆防止の視覚合図。 */
+.echoes-new-session.armed { color: var(--color-accent,#e2b96f); border-color: var(--color-accent,#e2b96f); opacity:1; }
+.echoes-header { display:flex; align-items:center; gap:8px; padding:7px 14px;
+  border-bottom:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#13161c); }
+.echoes-header-label { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+  color: var(--color-text-tertiary,#616b80); }
+.echoes-model-select { font-size:11px; padding:3px 7px; border-radius:7px; outline:none; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
+  color: var(--color-text-secondary,#a8b0c0); }
+.echoes-model-select:disabled { opacity:.45; cursor:default; }
 @keyframes echoes-fade { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform:none; } }
 @keyframes echoes-spin { to { transform: rotate(360deg); } }
 @keyframes echoes-blink { 50% { opacity:0; } }

@@ -545,6 +545,63 @@ async fn handle_console_set_mode(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "mode": mode.as_str()}))
 }
 
+/// Act II モデル切替: chat engine の `--model` を lane 単位で切替える。
+///
+/// `{lane, model: string|null}`。null / 省略 = 記録を消して claude default に戻す。
+/// spec「セッション進行中でも切り替えられる」の実体はここ — 稼働中 engine を drop して
+/// `ensure_chat_engine` で即再 spawn すると、cc_session の `--resume` + 新 `--model` で
+/// **会話コンテキストを保ったままモデルだけ替わる**（CC の `/model` の VP 版）。
+/// engine 不在（tui 中 / chat-idle）は記録のみ = 次 spawn から適用。
+/// ⚠️ 進行中の turn は engine drop で切れる（UI 側は streaming 中 picker を disable して抑止）。
+async fn handle_console_set_model(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("console_set_model: lane 未指定".to_string());
+    }
+    let model = payload
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if let Some(ref m) = model
+        && !crate::lane::engine_model::is_valid_model(m)
+    {
+        return Err(format!("console_set_model: model 名が不正: {m:?}"));
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("console_set_model: lane パース失敗: {lane}"))?;
+
+    {
+        let mut pool = state.lane_pool.write().await;
+        let info = pool
+            .get(&addr)
+            .ok_or_else(|| format!("console_set_model: Lane not found: {lane}"))?;
+        if info.stand != "echoes" {
+            return Err(format!(
+                "console_set_model は stand=echoes の lane のみ（lane={lane}, stand={}）",
+                info.stand
+            ));
+        }
+        let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+        match &model {
+            Some(m) => crate::lane::engine_model::record(&addr.project, &lane_label, m),
+            None => crate::lane::engine_model::clear(&addr.project, &lane_label),
+        }
+        .map_err(|e| format!("console_set_model: model 永続失敗: {e}"))?;
+        // 稼働中 engine の入替（drop → resume 付き eager 再 spawn）。spawn 失敗しても
+        // 記録は成功済みなので mode 切替と同様に成功扱い — 次 submit で self-heal される。
+        if pool.drop_chat_engine(&addr)
+            && let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router)
+        {
+            tracing::warn!("console_set_model: engine 再 spawn 失敗（submit で再試行）: {e}");
+        }
+    }
+    tracing::info!("console_set_model: lane={lane} model={model:?}");
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "model": model}))
+}
+
 /// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
 ///
 /// 旧制御面 (`tmux send-keys -t <session>`) の SP-proxy 置換。 World daemon (delivery/reconcile
@@ -807,6 +864,7 @@ pub(crate) async fn dispatch_process_method(
         "terminal_write" => handle_terminal_write(state, payload).await,
         "echoes_submit" => handle_echoes_submit(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
+        "console_set_model" => handle_console_set_model(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
         "lane_nudge" => handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)

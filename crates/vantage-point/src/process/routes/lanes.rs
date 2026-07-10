@@ -499,6 +499,13 @@ pub async fn delete_lane_orchestrated(
             e
         );
     }
+    if let Err(e) = crate::lane::engine_model::clear(&addr.project, &lane_label) {
+        tracing::warn!(
+            "lane delete: engine_model state の破棄に失敗 (file 残置): addr={} err={}",
+            addr,
+            e
+        );
+    }
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
@@ -612,6 +619,22 @@ pub async fn restart_lane_orchestrated(
                         lane_key,
                         reattached
                     );
+                }
+                // Act II（chat lane）の restart_lane は engine drop（lazy respawn）で終わる。
+                // console_set_mode の chat 分岐と同じ理由でここで eager spawn する —
+                // fresh 直後に新 session_init が届き「新品になった」フィードバックが即出る
+                // （resume の開始も早い）。失敗しても restart 自体は成功扱い、次 submit の
+                // self-heal で再試行される。
+                let is_chat = state.lane_pool.read().await.get(&addr).is_some_and(|i| {
+                    i.console_mode == crate::lane::console_mode::ConsoleMode::Chat
+                });
+                if is_chat {
+                    let mut pool = state.lane_pool.write().await;
+                    if let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router) {
+                        tracing::warn!(
+                            "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
+                        );
+                    }
                 }
                 tracing::info!(
                     "Lane restart OK: addr={} new_pid={} attempts={}",

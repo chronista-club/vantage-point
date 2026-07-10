@@ -471,6 +471,9 @@ fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
     if let Err(e) = super::cc_session::clear_in(base, project, lane) {
         eprintln!("⚠ cc_session state の破棄に失敗 (file 残置): lane={lane} err={e}");
     }
+    if let Err(e) = super::engine_model::clear_in(base, project, lane) {
+        eprintln!("⚠ engine_model state の破棄に失敗 (file 残置): lane={lane} err={e}");
+    }
 }
 
 /// List all performer environments under cwd の `<repo>/.vp/lanes/`。
