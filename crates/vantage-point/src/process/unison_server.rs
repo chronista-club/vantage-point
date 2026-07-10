@@ -525,6 +525,23 @@ async fn handle_console_set_mode(
             );
         }
     }
+    // doc 33: Tui 方向は set_console_mode 内の restart_lane が新しい PtySlot を立てる。
+    // その新 slot の PTY 出力を terminal topic に route するため pump を張り直す（chat 分岐の
+    // eager engine spawn と対称。restart_lane_orchestrated と同じ付け替え配線）。
+    //
+    // これが要るのは「vp-app が II→I を跨いで購読を維持している」lane（= 起動時 tui）だけ。
+    // demand が 1 のままなので購読 0→1 の hook（handle_terminal_demand_start）が発火せず、
+    // 誰も新 PtySlot に pump を張らない。逆に購読を持たない lane（= 起動時 chat）では vp-app の
+    // subscribe が demand 0→1 を撃ってこの pump が張られる。terminal topic は非 retained なので、
+    // どちらの経路でも購読者不在の間に流れた PTY 出力は復元されない。
+    // 上の write lock は block を抜けて drop 済（respawn_terminal_pump は内部で read lock を取る）。
+    if mode == crate::lane::console_mode::ConsoleMode::Tui
+        && !respawn_terminal_pump(state, lane).await
+    {
+        tracing::warn!(
+            "console_set_mode(tui): PtySlot 不在で terminal pump 張り直し不発（lane={lane}）"
+        );
+    }
     Ok(serde_json::json!({"status": "ok", "lane": lane, "mode": mode.as_str()}))
 }
 

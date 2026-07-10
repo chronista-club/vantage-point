@@ -443,7 +443,12 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 // (Rust が lane 選択 / console_set_mode 成功時に setMode を呼ぶ)。
 document.addEventListener("vp:console-mode", (e) => {
 	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
-	if (detail?.lane) applyConsoleMode(detail.lane, detail.mode);
+	if (!detail?.lane) return;
+	// SP 応答待ちの間に別 lane へ移った後から届いた mode 適用で、表示ごと元の lane に
+	// 引き戻さない（overlay 解除 / toggle label は別 listener なので影響なし）。lane の
+	// mode 自体は vpConsole 側 map に記録済みで、再選択時の setMode 同期が正しく開く。
+	if (activeLaneAddress && detail.lane !== activeLaneAddress) return;
+	applyConsoleMode(detail.lane, detail.mode);
 });
 
 // doc 33 §9: Act I⇄II 切替の progress overlay + switch lock。

@@ -1507,7 +1507,12 @@ fn activate_lane(
         .flatten()
         .find(|l| l.address.key() == address)
         .map(|l| l.console_mode.clone())
-        .unwrap_or_else(|| "tui".to_string());
+        .unwrap_or_else(|| {
+            // snapshot 欠落時は tui に落ちる = chat lane が Act I 表示で開く。起動レースでしか
+            // 起きないはずなので、黙って既定値を使わず観測できるようにしておく。
+            tracing::warn!("activate_lane: lane が snapshot に不在、console_mode を tui と仮定 (lane={address})");
+            "tui".to_string()
+        });
     let script = format!(
         "window.vpConsole && window.vpConsole.setMode({}, {})",
         serde_json::to_string(address).unwrap_or_else(|_| "\"\"".into()),
@@ -2741,6 +2746,9 @@ pub fn run() -> anyhow::Result<()> {
                     // terminal S4: 消えた lane の terminal session を停止 (= map から remove で
                     // cmd_tx drop → canvas channel close → World demand stop → SP pump stop)。
                     terminal_sessions.remove(addr);
+                    // echoes session も対で停止（terminal_sessions と同寿命）。remove が無いと
+                    // 削除済 lane の購読 task が demand を立てたまま永久残留する。
+                    echoes_sessions.remove(addr);
                     // VP-147 PR-P2-3 Moody Blues fix #1: lane delete 検出時に lane_inboxes
                     // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
                     sidebar_state.lane_inboxes.remove(addr);
@@ -2760,10 +2768,12 @@ pub fn run() -> anyhow::Result<()> {
                         // pid:null = PtySlot 不在 → xterm を作らない。 内訳は 2 種で、 どちらも
                         // ここでは対象外にするのが正しい:
                         //  - Dead Lane (spawn 失敗、 F.8 B Convergent) → 別途 on-demand respawn
-                        //  - chat lane (Act II、 engine-less が正常形) → 内容は ChatView が描く
-                        // ⚠️ 「pid=null = 死」ではない。 表示側 (showLane placeholder / LaneRow の
-                        //    dim 判定) は console_mode で chat を除外すること (doc 33)。
-                        if lane.pid.is_none() {
+                        //  - chat lane (Act II) → 内容は ChatView が描く
+                        // ⚠️ 「pid=null = 死」ではない。逆に「pid あり = tui」でもない — chat lane
+                        //    は engine 稼働中 pid=Some になる（ensure_chat_engine が host pid を
+                        //    記録）ため、pid だけで gate すると chat lane に xterm と terminal
+                        //    購読を作ってしまう。console_mode の除外を必ず併用（#702 と同じ教訓）。
+                        if lane.pid.is_none() || lane.console_mode == "chat" {
                             continue;
                         }
                         // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
@@ -3035,6 +3045,50 @@ pub fn run() -> anyhow::Result<()> {
             }
             // doc 33 C2: console_set_mode 成功後、WebView に mode を反映（xterm⇄chat 表示切替）。
             Event::UserEvent(AppEvent::ConsoleModeApplied { lane, mode }) => {
+                // SP が Ok を返した = mode は確定。だが lanes snapshot への反映は 5s periodic
+                // 頼み（SystemEvent::Lane は Add/Remove しか fire しない）で最大 5 秒 stale が
+                // 残るため、手元 snapshot に即時反映する。これが無いと (a) 5 秒以内に lane を
+                // 離れて戻ると activate_lane が旧 mode で開く（間欠の「戻ると Act I で開く」）、
+                // (b) 下の ensure_echoes_attach が旧 mode を読んで skip する。
+                for lanes in sidebar_state.lanes_by_project.values_mut() {
+                    if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane) {
+                        l.console_mode = mode.clone();
+                    }
+                }
+                push_sidebar_state(&webview, &sidebar_state);
+                // Act I 復帰では xterm と terminal session を mode 反映の前に用意する。
+                // 起動時に chat だった lane は LanesLoaded の pid=None 分岐で ensure_lane も
+                // session start も素通りしており、mode を反映しただけでは購読者が居ないまま
+                // SP の pump が出力を route する。terminal topic は非 retained なので、その間の
+                // PTY 出力は復元されず xterm が空のままになる（II→I で何も出ない の真因）。
+                // subscribe すると demand 0→1 が World の hook を撃ち、SP が pump を張り直して
+                // replay を先頭配送する。どちらも idempotent（起動時 tui の lane は entry 既存）。
+                let is_tui = mode == "tui";
+                if is_tui {
+                    lane_js::ensure_lane(&webview, &lane);
+                    // SP 応答待ちの間に user が別 lane / 別 project へ移り得るため、project は
+                    // 「今の active lane」ではなく対象 lane 自身から逆引きする（chat 分岐の
+                    // ensure_echoes_attach と同じ resolver — 揃えないと遅着応答が別 project の
+                    // path で購読を張る）。
+                    match resolve_project_path_for_lane(&sidebar_state, &lane) {
+                        Some(path) => {
+                            terminal_sessions.entry(lane.clone()).or_insert_with(|| {
+                                spawn_terminal_session(
+                                    &rt_handle,
+                                    async_action_proxy.clone(),
+                                    world_conn.clone(),
+                                    path,
+                                    lane.clone(),
+                                )
+                            });
+                        }
+                        // 購読を張れない = PTY 出力が届かず xterm が空のままになる。切替は
+                        // 成立しているので黙って落とさず、原因を残す。
+                        None => tracing::warn!(
+                            "console:mode_applied — lane の project 解決失敗、terminal session を張れず (lane={lane})"
+                        ),
+                    }
+                }
                 let script = format!(
                     "window.vpConsole && window.vpConsole.setMode({}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
@@ -3042,6 +3096,32 @@ pub fn run() -> anyhow::Result<()> {
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
                     tracing::warn!("vpConsole.setMode 失敗 (lane={}): {}", lane, e);
+                }
+                // Act I 復帰は xterm container を active 化しないと見えない（applyConsoleMode の
+                // tui 分岐は laneHost の console-hidden を外すだけ = chat で生まれた lane の
+                // container は非 active のまま）。showLane は active 化に加えて rAF 2 段で
+                // fit / sendResize / focus まで行う。⚠️ setMode より後に呼ぶこと — console-hidden
+                // が残ったままだと clientWidth=0 で fit が見送られ 80×24 に固定される。
+                if is_tui {
+                    // SP 応答待ちの間に別 lane へ移っていたら表示は奪わない。mode は上で手元
+                    // snapshot に反映済みなので、戻った時の activate_lane が正しい mode で開く。
+                    if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
+                        lane_js::show_lane(&webview, Some(&lane), false);
+                    }
+                } else {
+                    // I→II の対称: toggle 経路でも echoes topic に即 attach（→ demand 0→1 →
+                    // transcript replay）。attach は lane 選択時と LanesLoaded にしか無く、
+                    // tui 起点の lane を初めて chat に切替えた場合は periodic snapshot（最大
+                    // 5 秒）まで会話が出ない。上の手元 snapshot 反映が先に要る（attach の
+                    // gate が lane_is_chat を読む）。attach 済みなら no-op（idempotent）。
+                    ensure_echoes_attach(
+                        &lane,
+                        &sidebar_state,
+                        &mut echoes_sessions,
+                        &rt_handle,
+                        &async_action_proxy,
+                        &world_conn,
+                    );
                 }
             }
             Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
