@@ -1626,7 +1626,7 @@ struct SidebarIpcOutcome {
     restart_process_request: Option<String>,
     /// Process stop 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/stop` を呼ぶ。
-    /// project は registered のまま (一時停止中 tab へ移る)。
+    /// project は registered のまま (停止しても sidebar リストに残り ▶ 起動が出る)。
     stop_process_request: Option<String>,
     /// Project delete 要求 `(project_name, project_path)`。
     /// caller が SP を stop してから `/api/world/projects/remove` を呼ぶ。
@@ -1829,7 +1829,7 @@ fn handle_sidebar_ipc(
             out.restart_process_request = Some(project_name);
         }
         IpcEnvelope::ProcessStop(m) => {
-            // SP を停止する (project は registered のまま → 一時停止中 tab へ)。
+            // SP を停止する (project は registered のまま sidebar リストに残る)。
             // restart と同様 path の leaf name を project name として扱う。
             if m.path.is_empty() {
                 tracing::warn!("process:stop with empty path: {}", msg);
@@ -3274,7 +3274,7 @@ pub fn run() -> anyhow::Result<()> {
                         match client.stop_process(&project_name).await {
                             Ok(()) => {
                                 tracing::info!("stop_process OK: {}", project_name);
-                                // 完了 → projects 再 fetch → 一時停止中 tab へ反映。
+                                // 完了 → projects 再 fetch → 停止 state を sidebar に反映。
                                 // restart と同じく `fetch_projects_with_ports` 経由で
                                 // 他 project の runtime port を保つ。
                                 if let Ok(projects) = fetch_projects_with_ports(&client).await {
@@ -3300,7 +3300,7 @@ pub fn run() -> anyhow::Result<()> {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
                         let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
-                        // stop は best-effort: SP が未起動 (= 一時停止中) なら
+                        // stop は best-effort: SP が未起動 (= 停止中) なら
                         // 「No running Process」 エラーが返るが、 続行して remove する。
                         match client.stop_process(&project_name).await {
                             Ok(()) => {

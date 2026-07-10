@@ -83,8 +83,7 @@ export function moveInOrder(
  * ① が無いと、 Rust が re-push しない設計のため drop しても次の push まで並びが
  * 変わらない。 ① で `ordered()` メモが即再計算され `<For>` が即座に並び替わる。
  *
- * 解決順は running / paused タブ越しの全 Project を含む。 タブ表示は `Shell` 側の
- * filter なので、 全体 order のどこに挿しても表示タブ内の見た目順は正しくなる。
+ * 解決順は全 Project を含む (タブ分割は撤去済、 Shell は 1 リストで全 project を表示)。
  */
 export function commitProjectReorder(dragged: string, target: string, pos: DropPos): void {
   const resolved = resolveProjectOrder(sidebar.processes, sidebar.currents_order)

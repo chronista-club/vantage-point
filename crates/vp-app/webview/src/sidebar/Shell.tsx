@@ -2,20 +2,22 @@
  * sidebar の shell layout component。
  *
  * v1.0 柱 2。 3 段 layout (header / scrollable list / World widget) の骨格と、
- * Project を「稼働中 / 一時停止中」 の 2 セクションに分け、 各 Project を accordion +
- * Lane ツリーで描画する。
+ * 全 Project を 1 リストで accordion + Lane ツリーとして描画する。
+ *
+ * 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 SP presence の再起動フラップで
+ * project がタブ間を移動して見ているタブから消える体感バグを構造的に断つため、 全 project を
+ * 常時 1 リストに出す。 停止中 project の起動 (▶) は ProjectAccordion が per-project で扱う。
  *
  * - PR-1: shell layout + Solid store の最小可視化。
- * - PR-2: 稼働中 / 一時停止中 の 2 セクション分割 + Project accordion + Lane ツリー
+ * - PR-2: Project accordion + Lane ツリー
  *   (stand icon / status / awaiting dot / mailbox icon / performer git meta)。
  *   操作 (click 選択・context menu・restart/delete・Add Performer form・DnD) は PR-3。
  *   World widget 本体は後続 increment。
  */
-import { For, Show, createEffect, createMemo, createSignal, untrack } from "solid-js";
+import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "creoui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
-import { isRunningProcess } from "./classify";
 import { resolveProjectOrder } from "./dnd";
 import { ContextMenu } from "./ContextMenu";
 import {
@@ -51,37 +53,23 @@ function flashProject(path: string): void {
 }
 
 export function Shell() {
-	// D&D 並べ替え順 (`currents_order`) を適用してから 稼働中 / 一時停止中 に分割する。
+	// D&D 並べ替え順 (`currents_order`) を適用した全 Project を 1 リストで表示する。
 	// `currents_order` は Rust が `process:reorder` で永続化する並び順 — これを読まないと
 	// 並べ替え結果が re-push で消えてしまう (#124)。
+	//
+	// 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 SP presence は再起動で
+	// フラップするため、 project が running↔paused を行き来するたびタブ間を移動し、 見ている
+	// タブから消える (= 「サイドバーから project が消えた」 体感バグの一因)。 全 project を
+	// 常時 1 リストに出せば分類フラップが構造的に消える。 停止中 project の起動 affordance
+	// (▶) は ProjectAccordion が per-project の state で出し分けるので影響しない。
 	const ordered = createMemo(() =>
 		resolveProjectOrder(sidebar.processes, sidebar.currents_order),
 	);
-	const running = createMemo(() => ordered().filter(isRunningProcess));
-	const paused = createMemo(() =>
-		ordered().filter((p) => !isRunningProcess(p)),
-	);
 
-	// 表示中のタブ (稼働中 / 一時停止中)。 localStorage 永続、 default は稼働中。
-	// 15+ project で list が溢れるため、 常に 1 セットだけ表示して crowding を防ぐ。
-	const [tab, setTab] = createSignal<"running" | "paused">(
-		localStorage.getItem("vp.sidebar.tab") === "paused" ? "paused" : "running",
-	);
-	const selectTab = (t: "running" | "paused") => {
-		setTab(t);
-		localStorage.setItem("vp.sidebar.tab", t);
-	};
-	const shown = createMemo(() => (tab() === "running" ? running() : paused()));
-
-	// 新規追加 project の discoverability: サイドバーは常に片タブしか出さないので、
-	// セッション途中で追加した project がその SP の稼働状態次第で今見えていないタブ
-	// (例: 停止中 project → 「一時停止中」) に入ると、 default「稼働中」タブしか見ていない
-	// user には「追加したのに出てこない」に見える (実体は登録済み・永続化済み)。
-	// → 途中で新しい path が現れたら、 それが属するタブへ自動で切替 + 対象を flash して
-	//    見失わせない。 タブ切替は localStorage 永続させない (= その場限りの reveal、
-	//    user が選んだ default タブ設定は汚さない)。
+	// 新規追加 project の discoverability: セッション途中で追加された project を flash して
+	// 見失わせない (タブが無くなったので tab 切替は不要、 scroll + highlight だけ)。
 	//
-	// 初回 populate (= app 再起動時の一括ロード / 復元) は「追加」ではないので切替しない。
+	// 初回 populate (= app 再起動時の一括ロード / 復元) は「追加」ではないので flash しない。
 	// prevPaths を跨いで持ち、 最初に project 群を受け取った push を初期ロードとして素通り
 	// させ、 それ以降の push で現れた差分だけを「追加」と見なす。
 	let prevPaths = new Set<string>();
@@ -100,11 +88,7 @@ export function Shell() {
 		prevPaths = cur;
 		if (added.length === 0) return;
 		// 複数同時追加は稀。 最後に現れた 1 件を代表として reveal する。
-		const rep = added[added.length - 1];
-		const target = isRunningProcess(rep) ? "running" : "paused";
-		// selectTab (localStorage 永続) ではなく raw setTab で一過性に切替える。
-		if (untrack(tab) !== target) setTab(target);
-		flashProject(rep.path);
+		flashProject(added[added.length - 1].path);
 	});
 
 	return (
@@ -126,37 +110,10 @@ export function Shell() {
 					when={sidebar.processes.length > 0}
 					fallback={<div class="vp-sidebar-empty">プロジェクトなし</div>}
 				>
-					<Show
-						when={shown().length > 0}
-						fallback={
-							<div class="vp-sidebar-empty">
-								{tab() === "running" ? "稼働中なし" : "一時停止中なし"}
-							</div>
-						}
-					>
-						<For each={shown()}>
-							{(proc) => <ProjectAccordion proc={proc} />}
-						</For>
-					</Show>
+					<For each={ordered()}>
+						{(proc) => <ProjectAccordion proc={proc} />}
+					</For>
 				</Show>
-			</div>
-
-			{/* 稼働中 / 一時停止中 タブ切替 (sidebar 下部、 World widget の上)。 */}
-			<div class="vp-sidebar-tabs">
-				<button
-					class="vp-sidebar-tab"
-					classList={{ active: tab() === "running" }}
-					onClick={() => selectTab("running")}
-				>
-					稼働中 <span class="vp-sidebar-tab-count">{running().length}</span>
-				</button>
-				<button
-					class="vp-sidebar-tab"
-					classList={{ active: tab() === "paused" }}
-					onClick={() => selectTab("paused")}
-				>
-					一時停止中 <span class="vp-sidebar-tab-count">{paused().length}</span>
-				</button>
 			</div>
 
 			<WorldWidget />
@@ -226,24 +183,6 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-sidebar-list{flex:1;overflow-y:auto;padding:var(--spacing-xs,4px) 0;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--color-text-tertiary);
   font-size:11px;}
-
-/* 稼働中 / 一時停止中 タブ切替 (sidebar 下部、 World widget の上) */
-.vp-sidebar-tabs{flex:0 0 auto;display:flex;
-  border-top:1px solid var(--color-surface-border,#1f2233);}
-.vp-sidebar-tab{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
-  padding:6px 4px;border:none;background:transparent;cursor:pointer;
-  font-family:inherit;font-size:11px;color:var(--color-text-tertiary);
-  transition:color .1s ease,background .1s ease,box-shadow .1s ease;}
-.vp-sidebar-tab + .vp-sidebar-tab{
-  border-left:1px solid var(--color-surface-border,#1f2233);}
-.vp-sidebar-tab:hover{background:var(--color-surface-bg-emphasis);
-  color:var(--color-text-secondary);}
-.vp-sidebar-tab.active{color:var(--color-brand-primary);
-  background:var(--color-brand-primary-subtle);
-  box-shadow:inset 0 2px 0 0 var(--color-brand-primary);}
-.vp-sidebar-tab-count{font-size:10px;font-variant-numeric:tabular-nums;
-  color:var(--color-text-tertiary);}
-.vp-sidebar-tab.active .vp-sidebar-tab-count{color:var(--color-brand-primary);}
 
 /* Project accordion */
 .vp-proj{margin:0;}
