@@ -15,7 +15,7 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
-import { laneAddressKey, isPerformerLane } from "./lane";
+import { laneAddressKey, isLaneAlive, isPerformerLane } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
 import { LaneRow } from "./LaneRow";
 import { AddPerformer } from "./AddPerformer";
@@ -51,7 +51,8 @@ function laneConnector(
 	}
 	// performer: 右 = 線種で状態を出し分け。
 	const addr = laneAddressKey(lane);
-	const inactive = lane.pid == null;
+	// 生死は isLaneAlive に一本化 (pid 直参照だと chat performer を dotted = 休眠に描いてしまう)。
+	const inactive = !isLaneAlive(lane);
 	const awaiting = !!sidebar.awaiting_input[addr];
 	let line = "─";
 	let cls = "conn-run";

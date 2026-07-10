@@ -15,6 +15,7 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
+	isLaneAlive,
 	isPerformerLane,
 	laneAddressKey,
 	laneLabel,
@@ -52,10 +53,7 @@ export function LaneRow(props: {
 	const addr = () => laneAddressKey(props.lane);
 	const isActive = () => sidebar.active_lane_address === addr();
 	// F.8 B Convergent: Pane (Echoes) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
-	// ⚠️ doc 33: chat lane (Act II) は engine-less (pid=None) が**正常形**なので Dead ではない。
-	// pid だけで判定すると生きている Act II lane を dim/italic で「死んでいる」ように見せてしまう。
-	const isInactive = () =>
-		props.lane.pid == null && props.lane.console_mode !== "chat";
+	const isInactive = () => !isLaneAlive(props.lane);
 	const isPerformer = () => isPerformerLane(props.lane);
 	const icon = () => standIcon(props.lane.stand, isActive());
 	// mailbox inbox: entry がある Lane のみ icon 表示 (mailbox infra が active)。
@@ -81,7 +79,8 @@ export function LaneRow(props: {
 	const onContextMenu = (e: MouseEvent) => {
 		const lane = props.lane;
 		const performer = isPerformerLane(lane);
-		const active = lane.pid != null;
+		// dim 表示 (isInactive) と同じ述語を使う — 生死判定を 2 箇所に散らさない。
+		const active = isLaneAlive(lane);
 		const items: ContextMenuItem[] = [];
 		if (active) {
 			items.push({
