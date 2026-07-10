@@ -78,3 +78,9 @@ crossterm = "0.29"
 # Database (DB は SurrealDB に一本化、 sqlx / rusqlite は dead dep として撤去 — PR 457)
 surrealdb = { version = "3.1", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
 
+
+# ── ADR-020 §S6: connect_race (Happy Eyeballs v2 dialer) の先行消費 ──
+# club-unison の connect_race は未 release (chronista-club/club-unison#86)。
+# 1.6.0 release + version bump 後にこの patch を外して通常の crates.io 依存に戻すこと。
+[patch.crates-io]
+club-unison = { git = "https://github.com/chronista-club/club-unison", branch = "feat/connect-race-happy-eyeballs" }
