@@ -68,12 +68,19 @@ pub fn new_performer_in(
 pub fn remove_performer_in(repo_root: &Path, name: &str) -> Result<(), String> {
     config::validate_performer_name(name)?;
     let Some(performer_dir) = find_performer_dir(repo_root, name) else {
+        // workspace が既に無くても state file だけ残る orphan は掃除する (leak の典型:
+        // 手動 rm 済 dir + 残留 console_mode/cc_session)。Err semantics は維持。
+        clear_lane_state_files(repo_root, name);
         return Err(format!(
             "performer not found: '{name}' (looked in {}/.vp/lanes/)",
             repo_root.display()
         ));
     };
-    remove_performer_workspace(repo_root, &performer_dir)
+    remove_performer_workspace(repo_root, &performer_dir)?;
+    // state file GC: orchestrated 経路 (Phase 2a) と重複しても冪等。 project remove の
+    // B-destroy reclaim (process_manager_capability) はここしか通らないので必須。
+    clear_lane_state_files(repo_root, name);
+    Ok(())
 }
 
 /// Fork current dirty state into a new performer environment
@@ -435,6 +442,37 @@ fn remove_performer_workspace(repo_root: &Path, performer_dir: &Path) -> Result<
     }
 }
 
+/// lane 単位 state file (console_mode / cc_session) の GC (best-effort)。
+///
+/// 削除系経路 (`remove_performer` / `remove_performer_in` / `cleanup_performers`) から呼ぶ。
+/// 残すと同名 lane を作り直した時に旧 mode / 旧 session が蘇る (ghost file の state leak、
+/// `delete_lane_orchestrated` Phase 2a と同旨)。orchestrated 経路と二重に呼ばれても clear は
+/// 冪等 (未記録は no-op)。
+///
+/// ⚠️ `remove_performer_workspace` には置かない — `setup_performer` の `--force` 再作成も
+/// あれを通るため、そこで cc_session を消すと workspace 再作成後の `--resume` 継続性を壊す。
+///
+/// キーは SP の書き手 (lanes_state::set_console_mode / stand_spawner の VP_PROJECT env、
+/// create_performer_orchestrated 等) と同じ derivation: project = repo_root の basename、
+/// lane = performer 名。
+fn clear_lane_state_files(repo_root: &Path, lane: &str) {
+    clear_lane_state_files_in(&crate::config::vp_state_dir(), repo_root, lane);
+}
+
+/// state base dir 注入版 (テスト用)。
+fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
+    let project = repo_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    if let Err(e) = super::console_mode::clear_in(base, project, lane) {
+        eprintln!("⚠ console_mode state の破棄に失敗 (file 残置): lane={lane} err={e}");
+    }
+    if let Err(e) = super::cc_session::clear_in(base, project, lane) {
+        eprintln!("⚠ cc_session state の破棄に失敗 (file 残置): lane={lane} err={e}");
+    }
+}
+
 /// List all performer environments under cwd の `<repo>/.vp/lanes/`。
 ///
 /// project-local lane refactor PR 4b: legacy global path 列挙を削除、 cwd の repo
@@ -559,9 +597,22 @@ pub fn remove_performer(name: Option<&str>, all: bool, force: bool) -> Result<()
             return Err("--all には --force が必要です（誤削除防止）".into());
         }
         if pl_dir.exists() {
+            // state file GC 用に削除前の performer 名を控える (dir ごと消すと名前が失われる)。
+            let names: Vec<String> = fs::read_dir(&pl_dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|e| e.path().is_dir())
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
             fs::remove_dir_all(&pl_dir).map_err(|e| e.to_string())?;
             // worktree lane: dir を消すと `.git/worktrees/<name>` 登録が stale で残るので prune。
             let _ = run_git_in(&repo_root, &["worktree", "prune"]);
+            for name in &names {
+                clear_lane_state_files(&repo_root, name);
+            }
             eprintln!("project-local パフォーマー全削除: {}", pl_dir.display());
         } else {
             eprintln!("削除対象のパフォーマーはありませんでした");
@@ -573,11 +624,14 @@ pub fn remove_performer(name: Option<&str>, all: bool, force: bool) -> Result<()
     config::validate_performer_name(name)?;
 
     let Some(performer_dir) = find_performer_dir(&repo_root, name) else {
+        // workspace が既に無くても state file だけ残る orphan は掃除する (Err semantics は維持)。
+        clear_lane_state_files(&repo_root, name);
         return Err(format!(
             "パフォーマー '{name}' が見つかりません。`vp lane ls` で一覧を確認してください。"
         ));
     };
     remove_performer_workspace(&repo_root, &performer_dir)?;
+    clear_lane_state_files(&repo_root, name);
     eprintln!("削除: {}", performer_dir.display());
     Ok(())
 }
@@ -659,6 +713,7 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
 
     for (name, path, branch) in &to_remove {
         remove_performer_workspace(&repo_root, path)?;
+        clear_lane_state_files(&repo_root, name);
         // worktree: merged branch を共有 .git から `-d` で安全に掃除 (設計 E)。
         // clone: branch は独立 .git 内なので親 repo では no-op (失敗は握り潰す)。
         if let Some(b) = branch {
@@ -1040,6 +1095,30 @@ fn get_ahead_behind_counts(dir: &Path) -> (u32, u32, bool) {
 mod tests {
     use super::*;
     use std::process::Command as Cmd;
+
+    #[test]
+    fn clear_lane_state_files_uses_repo_basename_key() {
+        // キー凍結: project = repo_root の basename (SP 書き手の derivation と一致、
+        // create_performer_orchestrated 等参照)。ズレると GC が空振りして leak が再発する。
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let repo_root = tmp.path().join("parent").join("vp");
+        crate::lane::console_mode::record_in(
+            base,
+            "vp",
+            "feat",
+            crate::lane::console_mode::ConsoleMode::Chat,
+        )
+        .expect("record mode");
+        crate::lane::cc_session::record_in(base, "vp", "feat", "sess-1").expect("record session");
+
+        clear_lane_state_files_in(base, &repo_root, "feat");
+
+        assert_eq!(crate::lane::console_mode::last_in(base, "vp", "feat"), None);
+        assert_eq!(crate::lane::cc_session::last_in(base, "vp", "feat"), None);
+        // 未記録 lane / 二重呼び出しでも panic しない (best-effort 冪等)
+        clear_lane_state_files_in(base, &repo_root, "feat");
+    }
 
     // --- test helpers ---
 
