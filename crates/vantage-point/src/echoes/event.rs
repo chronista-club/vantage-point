@@ -34,6 +34,22 @@ pub enum EchoesEvent {
         slash_commands: Vec<String>,
     },
 
+    /// transcript replay の開始マーカー（attach 時に 1 回、以降の event 列が過去会話）。
+    ///
+    /// GUI は受信時に当該 lane の会話表示を **クリア**してから後続を fold する。
+    /// これで replay は冪等になる: backend は「新規 attach」と「reconnect / demand 再発火」を
+    /// 区別できないため（terminal replay の clear-prefix と同じ問題）、単純追記だと再接続の
+    /// たび会話が二重化する。 reset してから描き直すことで、cold-start でも reconnect でも
+    /// 同一の最終状態に収束する。
+    ReplayStart,
+
+    /// user 自身の発話（transcript replay 専用）。
+    ///
+    /// live 経路では ChatView が submit 時に optimistic に user bubble を足すため発火しない。
+    /// replay では過去の user turn を再現する手段が他に無いので本 variant で運ぶ。
+    /// engine 非依存（どの engine にも user turn がある）なので語彙原則には反しない。
+    UserMessage { text: String },
+
     /// 本文テキストの増分（1 token 前後）。GUI は末尾に append。
     MessageChunk { text: String },
 

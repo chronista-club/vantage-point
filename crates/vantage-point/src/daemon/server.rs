@@ -552,32 +552,72 @@ async fn canvas_router_for(
     }
     let router = Arc::new(crate::process::topic_router::TopicRouter::new());
     register_terminal_demand(&router, control_channels.clone(), path_key.to_string());
+    // Act II: chat lane の transcript replay-on-attach（terminal と対称）。
+    register_echoes_demand(&router, control_channels.clone(), path_key.to_string());
     routers.insert(path_key.to_string(), router.clone());
     router
 }
 
 /// S2 (doc 27 §4.1 Cap2): project canvas router に terminal demand hook を登録する。
 ///
-/// `process/terminal/data/+/out` の購読者増減を監視し、 0↔1 遷移で当該 SP に
-/// `terminal_demand_start/stop {lane}` を control reverse-route で撃つ。 cb は sync で呼ばれる
-/// ため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
+/// `process/terminal/data/+/out` の購読者増減 0↔1 で `terminal_demand_start/stop {lane}` を
+/// 当該 SP に control reverse-route で撃つ（Act I: PtySlot の replay + live pump 起動）。
 fn register_terminal_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
     control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
     path_key: String,
 ) {
-    router.register_demand("process/terminal/data/+/out", move |topic, active| {
-        // topic = `process/terminal/data/{lanekey}/out` → lane address を復元
+    register_lane_demand(
+        router,
+        control_channels,
+        path_key,
+        "process/terminal/data/+/out",
+        "terminal_demand_start",
+        "terminal_demand_stop",
+    );
+}
+
+/// Act II replay-on-attach: project canvas router に echoes demand hook を登録する。
+///
+/// `process/echoes/data/+/event` の購読者 0↔1 で `echoes_demand_start/stop {lane}` を撃つ。
+/// start を受けた SP は chat lane の transcript を `EchoesEvent` に起こして replay する
+/// （非 retained topic なので、 これが無いと app 再起動後の ChatView が空になる）。
+fn register_echoes_demand(
+    router: &Arc<crate::process::topic_router::TopicRouter>,
+    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    path_key: String,
+) {
+    register_lane_demand(
+        router,
+        control_channels,
+        path_key,
+        "process/echoes/data/+/event",
+        "echoes_demand_start",
+        "echoes_demand_stop",
+    );
+}
+
+/// per-lane topic の demand hook を登録する共通実装（terminal / echoes で共有）。
+///
+/// `pattern` は `process/<x>/data/+/<y>` 形（lane key は segment 3）。 購読者 0↔1 遷移で
+/// `start_method` / `stop_method` を当該 SP に control reverse-route で撃つ。 cb は sync で
+/// 呼ばれるため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
+fn register_lane_demand(
+    router: &Arc<crate::process::topic_router::TopicRouter>,
+    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    path_key: String,
+    pattern: &str,
+    start_method: &'static str,
+    stop_method: &'static str,
+) {
+    router.register_demand(pattern, move |topic, active| {
+        // topic = `process/<x>/data/{lanekey}/<y>` → lane address を復元
         // (topic key は LaneAddress の '/' を '~' に encode したもの。 逆変換する)。
         let Some(lane_key) = topic.split('/').nth(3) else {
             return;
         };
         let lane = lane_key.replace('~', "/");
-        let method = if active {
-            "terminal_demand_start"
-        } else {
-            "terminal_demand_stop"
-        };
+        let method = if active { start_method } else { stop_method };
         let control_channels = control_channels.clone();
         let path_key = path_key.clone();
         tokio::spawn(async move {
@@ -592,7 +632,7 @@ fn register_terminal_demand(
                         .await
                     {
                         tracing::warn!(
-                            "terminal demand reverse-route 失敗 ({} lane={}): {}",
+                            "lane demand reverse-route 失敗 ({} lane={}): {}",
                             method,
                             lane,
                             e
@@ -601,9 +641,9 @@ fn register_terminal_demand(
                 }
                 None => {
                     // SP control channel 未接続 (SP 起動前に surface が subscribe した等)。
-                    // SP 接続後の再 demand 機構は follow-up (S2 polish)。
+                    // SP 接続時に `refire_active_demands` が撃ち直す (S2 polish)。
                     tracing::debug!(
-                        "terminal demand: SP control channel 不在 (key={}, lane={}, {})",
+                        "lane demand: SP control channel 不在 (key={}, lane={}, {})",
                         path_key,
                         lane,
                         method
