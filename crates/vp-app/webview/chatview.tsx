@@ -60,6 +60,21 @@ function laneChat(lane: string): LaneChat {
  */
 export function foldInto(s: ChatState, ev: EchoesEvent): void {
   switch (ev.kind) {
+    case 'replay_start':
+      // 以降は transcript replay（過去会話の再送）。会話を一度クリアしてから畳み直す。
+      // backend は「新規 attach」と「reconnect / demand 再発火」を区別できないため、reset せず
+      // 追記すると再接続のたび会話が二重化する（terminal replay の clear-prefix と同型の問題）。
+      // reset → 再構築なら cold-start でも reconnect でも同じ最終状態に収束する（= 冪等）。
+      // header は live engine の session_init が持つ情報なので保持する。
+      s.items = []
+      s.plan = []
+      s.streaming = false
+      s.cost = null
+      break
+    case 'user_message':
+      // replay 専用（live は submit 時に ChatView が optimistic に足す）。常に新 bubble。
+      s.items.push({ kind: 'user', text: ev.text })
+      break
     case 'session_init':
       s.header = { model: ev.model, sessionId: ev.session_id }
       break

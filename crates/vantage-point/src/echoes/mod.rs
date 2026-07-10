@@ -7,14 +7,16 @@
 //! 設計 SSOT: `docs/design/32-echoes-act2-gui.md`。
 //!
 //! ## モジュール構成（PR1 時点）
-//! - [`event`]: GUI 語彙 [`EchoesEvent`]（engine 非依存、PR1 で凍結）
-//! - [`translate`]: claude stream-json → [`EchoesEvent`] 翻訳層
+//! - [`event`]: GUI 語彙 [`EchoesEvent`]（engine 非依存）
+//! - [`translate`]: claude stream-json → [`EchoesEvent`] 翻訳層（live）
+//! - [`transcript`]: claude session transcript(jsonl) → [`EchoesEvent`] 翻訳層（replay-on-attach）
 //! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で常駐駆動
 //!
 //! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。
 
 pub mod event;
 pub mod host;
+pub mod transcript;
 pub mod translate;
 
 pub use event::{EchoesEvent, PlanEntry};

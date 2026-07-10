@@ -47,6 +47,13 @@ pub struct ActivePaneInfo<'a> {
     pub pane_id: Option<&'a str>,
     /// Preview kind の URL (preview kind 以外では None)
     pub preview_url: Option<&'a str>,
+    /// この Lane が Act II (console_mode="chat") か。terminal kind でのみ意味を持つ。
+    ///
+    /// chat lane は engine-less (pid=None) が正常形で **xterm instance を持たない**ため、
+    /// JS の `showLane` が「xterm が無い = 表示すべき内容が無い」と誤判定して
+    /// `#lane-empty` placeholder を ChatView の上に被せてしまう。 本 flag で
+    /// 「xterm は無いが ChatView が内容を持つ」を伝え、 placeholder を抑止する。
+    pub chat: bool,
 }
 
 /// `window.setActivePane(info)` を呼ぶ JS スニペットを生成
@@ -1097,10 +1104,15 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     }
   };
 
-  window.showLane = function(address) {
-    // empty placeholder は非表示に
+  window.showLane = function(address, isChat) {
+    // empty placeholder は「Lane が選ばれていない」時だけ出す。
+    //  Act I (tui): 内容 = xterm instance。 未 ensure (Dead lane 等) なら placeholder。
+    //  Act II (chat): 内容 = ChatView。 xterm instance を持たないのが正常形なので、
+    //   laneInstances 基準で判定すると placeholder が ChatView を覆い続ける
+    //   (#lane-empty は position:absolute; inset:0)。 isChat で抑止する。
+    const hasContent = !!address && (isChat === true || laneInstances.has(address));
     const empty = document.getElementById('lane-empty');
-    if (empty) empty.classList.toggle('active', !address || !laneInstances.has(address));
+    if (empty) empty.classList.toggle('active', !hasContent);
     for (const [addr, info] of laneInstances) {
       info.container.classList.toggle('active', addr === address);
     }
@@ -1255,9 +1267,10 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     }
     if (kind === 'terminal') {
       // Phase 2.5: per-Lane instance を切替 (= showLane(address))。 pane_id は Lane address。
-      // showLane が空なら lane-empty placeholder を出す。
+      // showLane が空なら lane-empty placeholder を出す。 chat (Act II) lane は xterm を
+      // 持たない (ChatView が内容) ので、 その旨を渡して placeholder 抑止させる。
       try {
-        window.showLane(info && info.pane_id);
+        window.showLane(info && info.pane_id, !!(info && info.chat));
       } catch (_) {}
     }
     // active 切替直後に slot rect を一発送る (ResizeObserver 起動前 fail-safe)
@@ -1355,3 +1368,59 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
 </body>
 </html>"#
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// doc 33: chat lane (Act II) は `chat: true` で JS に伝わる。
+    ///
+    /// これが落ちると `showLane` が「xterm instance 無し = 内容無し」と誤判定し、
+    /// `#lane-empty` placeholder が ChatView を覆って「Lane が選択されていません」で
+    /// 固着する（Act II が選べない体感バグ）。
+    #[test]
+    fn active_pane_script_carries_chat_flag_for_act2_lane() {
+        let script = build_set_active_pane_script(&ActivePaneInfo {
+            kind: Some("terminal"),
+            pane_id: Some("vp/conductor"),
+            preview_url: None,
+            chat: true,
+        });
+        assert!(script.contains("\"chat\":true"), "script={script}");
+        assert!(script.contains("\"pane_id\":\"vp/conductor\""));
+    }
+
+    /// Act I (tui) lane と非 terminal kind は `chat: false`（従来の xterm 判定に従う）。
+    #[test]
+    fn active_pane_script_chat_false_for_tui_and_stand() {
+        let tui = build_set_active_pane_script(&ActivePaneInfo {
+            kind: Some("terminal"),
+            pane_id: Some("vp/performer/x"),
+            preview_url: None,
+            chat: false,
+        });
+        assert!(tui.contains("\"chat\":false"), "script={tui}");
+
+        let stand = build_set_active_pane_script(&ActivePaneInfo {
+            kind: Some("bastet"),
+            pane_id: None,
+            preview_url: None,
+            chat: false,
+        });
+        assert!(stand.contains("\"chat\":false"), "script={stand}");
+    }
+
+    /// showLane は 2 引数 (address, isChat) で呼ばれる — JS 側 signature との contract。
+    /// 1 引数のままだと chat lane で placeholder が残る（isChat=undefined → falsy）。
+    #[test]
+    fn embedded_show_lane_takes_is_chat_arg() {
+        assert!(
+            MAIN_AREA_HTML.contains("window.showLane = function(address, isChat)"),
+            "showLane の signature が (address, isChat) でない"
+        );
+        assert!(
+            MAIN_AREA_HTML.contains("window.showLane(info && info.pane_id, !!(info && info.chat))"),
+            "setActiveImpl が chat flag を showLane に渡していない"
+        );
+    }
+}

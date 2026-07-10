@@ -1151,11 +1151,14 @@ mod lane_js {
         }
     }
 
-    /// `window.showLane(address)` を呼ぶ — active な 1 Lane を表示。 None / 不在の address なら empty placeholder。
-    pub fn show_lane(main_view: &WebView, address: Option<&str>) {
+    /// `window.showLane(address, isChat)` を呼ぶ — active な 1 Lane を表示。 None なら empty placeholder。
+    ///
+    /// `is_chat` = Act II (console_mode="chat")。 chat lane は xterm を持たない (ChatView が内容) ため、
+    /// これを渡さないと JS 側が「xterm 無し = 内容無し」と誤判定して placeholder を被せる。
+    pub fn show_lane(main_view: &WebView, address: Option<&str>, is_chat: bool) {
         let script = match address {
-            Some(a) => format!("window.showLane({})", js_str(a)),
-            None => "window.showLane(null)".into(),
+            Some(a) => format!("window.showLane({}, {})", js_str(a), is_chat),
+            None => "window.showLane(null, false)".into(),
         };
         if let Err(e) = main_view.evaluate_script(&script) {
             tracing::warn!("showLane script failed: {}", e);
@@ -1361,24 +1364,75 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
 ///   3. 両方 None → kind=None で empty placeholder
 ///
 /// Lane address ごとの terminal 接続は per-Lane xterm.js (Phase 2.5) が JS-side で管理。
+/// 指定 lane address が Act II (console_mode="chat") かを `lanes_by_project` から引く。
+///
+/// 未知 address (LanesLoaded 未着 等) は false (= Act I 扱い) に倒す。 chat lane は
+/// engine-less (pid=None) が正常形なので、 pid では判定できない — mode が唯一の真実源。
+fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
+    state
+        .lanes_by_project
+        .values()
+        .flatten()
+        .find(|l| l.address.key() == address)
+        .map(|l| l.console_mode == "chat")
+        .unwrap_or(false)
+}
+
+/// Act II: active になった chat lane を echoes topic に attach する（`terminal_sessions` の対）。
+///
+/// 購読 0→1 が World の demand hook を撃ち、SP が **transcript replay**（過去会話）を返す。
+/// これが無いと echoes topic は非 retained なので「submit するまで ChatView が空」になる
+/// （app 再起動で会話が消えたように見える）。 idempotent — 既に session があれば no-op。
+///
+/// tui lane では何もしない（Act I の履歴は PtySlot の terminal replay が担う）。
+fn ensure_echoes_attach(
+    address: &str,
+    sidebar_state: &SidebarState,
+    echoes_sessions: &mut std::collections::HashMap<String, LaneEchoes>,
+    rt_handle: &tokio::runtime::Handle,
+    proxy: &EventLoopProxy<AppEvent>,
+    world_conn: &SharedWorldConn,
+) {
+    if !lane_is_chat(sidebar_state, address) || echoes_sessions.contains_key(address) {
+        return;
+    }
+    let Some(process_path) = resolve_project_path_for_lane(sidebar_state, address) else {
+        return; // project 未解決 (LanesLoaded 未着) — 後続の LanesLoaded で再評価される
+    };
+    tracing::info!("echoes attach (chat lane): {}", address);
+    let session = spawn_echoes_session(
+        rt_handle,
+        proxy.clone(),
+        world_conn.clone(),
+        process_path,
+        address.to_string(),
+    );
+    echoes_sessions.insert(address.to_string(), session);
+}
+
 fn push_active_view(main_view: &WebView, state: &SidebarState) {
     let info = if let Some(stand) = state.active_stand.as_ref() {
         ActivePaneInfo {
             kind: Some(stand.kind.as_str()),
             pane_id: None,
             preview_url: None,
+            chat: false,
         }
     } else if let Some(addr) = state.active_lane_address.as_deref() {
         ActivePaneInfo {
             kind: Some("terminal"),
             pane_id: Some(addr),
             preview_url: None,
+            // doc 33: chat lane は xterm を持たない (ChatView が内容)。 これを JS に伝えないと
+            // showLane が「xterm 無し = 内容無し」と誤判定し placeholder が ChatView を覆う。
+            chat: lane_is_chat(state, addr),
         }
     } else {
         ActivePaneInfo {
             kind: None,
             pane_id: None,
             preview_url: None,
+            chat: false,
         }
     };
     let script = main_area::build_set_active_pane_script(&info);
@@ -2703,7 +2757,12 @@ pub fn run() -> anyhow::Result<()> {
                 // terminal session start (World 購読 → demand → SP pump)。 どちらも idempotent。
                 if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
                     for lane in lanes_for_proj {
-                        // F.8 B Convergent: pid:null = Dead Lane (spawn 失敗、 PtySlot 不在) は対象外。
+                        // pid:null = PtySlot 不在 → xterm を作らない。 内訳は 2 種で、 どちらも
+                        // ここでは対象外にするのが正しい:
+                        //  - Dead Lane (spawn 失敗、 F.8 B Convergent) → 別途 on-demand respawn
+                        //  - chat lane (Act II、 engine-less が正常形) → 内容は ChatView が描く
+                        // ⚠️ 「pid=null = 死」ではない。 表示側 (showLane placeholder / LaneRow の
+                        //    dim 判定) は console_mode で chat を除外すること (doc 33)。
                         if lane.pid.is_none() {
                             continue;
                         }
@@ -2739,6 +2798,19 @@ pub fn run() -> anyhow::Result<()> {
                 } else {
                     push_sidebar_state(&webview, &sidebar_state);
                 }
+                // Act II: active chat lane を echoes topic に attach（→ demand → transcript replay）。
+                // LanesLoaded は lane snapshot 到着のたび走るので、 起動直後の session 復元
+                // (activate は LanesLoaded 前に済んでいる場合がある) もここで確実に拾える。
+                if let Some(addr) = sidebar_state.active_lane_address.clone() {
+                    ensure_echoes_attach(
+                        &addr,
+                        &sidebar_state,
+                        &mut echoes_sessions,
+                        &rt_handle,
+                        &async_action_proxy,
+                        &world_conn,
+                    );
+                }
             }
             // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
             // 起動 race で silent drop された ensureLane を再発行する (WebView HTML load 完了
@@ -2748,7 +2820,7 @@ pub fn run() -> anyhow::Result<()> {
                 // terminal session 自体は LanesLoaded reconcile が管理するのでここでは触らない。
                 for (_project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
                     for lane in lanes {
-                        // F.8 B Convergent: pid:null = Dead Lane は対象外
+                        // pid:null = PtySlot 不在 (Dead Lane / chat lane) → xterm 不要。
                         if lane.pid.is_none() {
                             continue;
                         }
@@ -2757,7 +2829,8 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
                 if let Some(addr) = &sidebar_state.active_lane_address {
-                    lane_js::show_lane(&webview, Some(addr));
+                    let is_chat = lane_is_chat(&sidebar_state, addr);
+                    lane_js::show_lane(&webview, Some(addr), is_chat);
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
             }
@@ -2839,6 +2912,15 @@ pub fn run() -> anyhow::Result<()> {
                                 &mut lane_respawn_triggered,
                                 &rt_handle,
                                 &respawn_proxy,
+                            );
+                            // Act II: chat lane なら echoes topic に attach（→ transcript replay）。
+                            ensure_echoes_attach(
+                                &address,
+                                &sidebar_state,
+                                &mut echoes_sessions,
+                                &rt_handle,
+                                &async_action_proxy,
+                                &world_conn,
                             );
                         } else {
                             tracing::debug!(
@@ -3200,6 +3282,15 @@ pub fn run() -> anyhow::Result<()> {
                         &mut lane_respawn_triggered,
                         &rt_handle,
                         &respawn_proxy,
+                    );
+                    // Act II: chat lane なら echoes topic に attach（→ transcript replay）。
+                    ensure_echoes_attach(
+                        &addr,
+                        &sidebar_state,
+                        &mut echoes_sessions,
+                        &rt_handle,
+                        &async_action_proxy,
+                        &world_conn,
                     );
                 } else {
                     if outcome.changed {

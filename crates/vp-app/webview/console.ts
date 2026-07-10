@@ -37,6 +37,11 @@ export type EchoesEvent =
       mcp_servers?: string[]
       slash_commands?: string[]
     }
+  /** transcript replay の開始マーカー。受信側は会話表示 + buffer をクリアしてから後続を畳む
+   *  （replay を冪等にする = reconnect / demand 再発火で会話が二重化しない）。 */
+  | { kind: 'replay_start' }
+  /** user 自身の過去発話（transcript replay 専用。live では ChatView が submit 時に足す）。 */
+  | { kind: 'user_message'; text: string }
   | { kind: 'message_chunk'; text: string }
   | { kind: 'thought_chunk'; text: string }
   | { kind: 'tool_call'; id: string; name: string; input: unknown }
@@ -92,6 +97,9 @@ export function installConsole(): VpConsole {
   const api: VpConsole = {
     handleEvent(lane, event) {
       const entry = laneOf(lane)
+      // replay 開始 = 過去会話の再送。 buffer も捨てて張り直す（ChatView 未 mount のまま
+      // 2 回 replay された場合に、 後で attach した renderer が二重の会話を畳むのを防ぐ）。
+      if (event.kind === 'replay_start') entry.buffer.length = 0
       entry.buffer.push(event)
       if (entry.buffer.length > BUFFER_CAP) {
         entry.buffer.splice(0, entry.buffer.length - BUFFER_CAP)
