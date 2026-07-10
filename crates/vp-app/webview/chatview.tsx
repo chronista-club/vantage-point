@@ -10,7 +10,7 @@
  */
 
 import { render } from 'solid-js/web'
-import { createSignal, For, Show, type Accessor } from 'solid-js'
+import { createSignal, createEffect, onMount, onCleanup, For, Show, type Accessor } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
 import type { EchoesEvent, PlanEntry, VpConsole } from './console'
@@ -243,6 +243,94 @@ function ChatView() {
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
   }
 
+  // --- auto-scroll（sticky bottom）+ キーボードスクロール（Home/End/PgUp/PgDn）---------
+  // stream 要素の ref。<Show> 内なので lane 選択時のみ存在する。
+  let streamEl: HTMLDivElement | undefined
+  // ユーザーが最下部に貼り付いているか。history を遡って読んでいる間は追従を止める
+  // （chat の定石: 下端にいる時だけ新着で追う。上にスクロールしたら勝手に引き戻さない）。
+  let stuckToBottom = true
+  const BOTTOM_EPS = 48 // 「最下部」と見なす許容 px（行の途中でも追従を継続させる遊び）
+  const isAtBottom = (el: HTMLElement): boolean =>
+    el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_EPS
+
+  // scroll のたびに「下端張り付き」を測り直す。プログラム的 scroll でも発火するが、
+  // 最下部へ動かした直後は isAtBottom=true に収束するので振動しない。
+  const onStreamScroll = (): void => {
+    if (streamEl) stuckToBottom = isAtBottom(streamEl)
+  }
+
+  // 4 キーで history を scroll する実体。対象キー以外は false（呼び側が素通し判定に使う）。
+  const scrollByKey = (key: string): boolean => {
+    const el = streamEl
+    if (!el) return false
+    const page = el.clientHeight * 0.9 // 1 画面弱（10% 重ねて文脈を維持）
+    switch (key) {
+      case 'Home':
+        el.scrollTop = 0
+        break
+      case 'End':
+        el.scrollTop = el.scrollHeight
+        break
+      case 'PageUp':
+        el.scrollTop -= page
+        break
+      case 'PageDown':
+        el.scrollTop += page
+        break
+      default:
+        return false
+    }
+    stuckToBottom = isAtBottom(el)
+    return true
+  }
+
+  // pane-level（document）keydown: 入力欄で作文しながらでも history を scroll できるように
+  // する（ユーザ要望「後者」）。keydown は focus 要素で発火し document へ bubble するので、
+  // textarea 入力中でも bubble を document で受ければ拾える（stream 局所ハンドラでは届かない）。
+  // テキスト編集を壊さない棲み分け:
+  //   - PageUp/PageDown: 常に history へ（小さな textarea では page 移動は無意味なので奪う）
+  //   - Home/End: textarea に focus がある間は行内キャレット移動を尊重して奪わない。
+  //     それ以外（history/pane に focus）では history 先頭/末尾へ。
+  // chat 非表示時（Act I 表示中 = streamEl が display:none 配下 → offsetParent=null）は
+  // 一切介入せず、xterm 等にキーを渡す。
+  const onDocKey = (e: KeyboardEvent): void => {
+    if (!streamEl || streamEl.offsetParent === null) return // chat 非表示 → 素通し
+    const key = e.key
+    if (key !== 'Home' && key !== 'End' && key !== 'PageUp' && key !== 'PageDown') return
+    const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
+    if ((key === 'Home' || key === 'End') && inTextarea) return // 作文中の caret 移動を尊重
+    if (scrollByKey(key)) e.preventDefault()
+  }
+  onMount(() => {
+    document.addEventListener('keydown', onDocKey)
+    onCleanup(() => document.removeEventListener('keydown', onDocKey))
+  })
+
+  // 新着で下端に追従（sticky）。streaming の chunk 追記（末尾 item の text 伸長 = items.length は
+  // 不変）にも反応させるため、length だけでなく末尾 text 長も reactive に読む。rev の read 自体が
+  // Solid の依存追跡を張る（値は「内容が動いた」印としてのみ使う）。
+  createEffect(() => {
+    const s = state()
+    if (!s) return
+    const last = s.items[s.items.length - 1]
+    const rev = s.items.length + (last && 'text' in last ? last.text.length : 0)
+    if (rev >= 0 && stuckToBottom) {
+      // DOM patch 後の実寸で scroll するため rAF に載せる（markdown/font の layout 確定待ち）。
+      requestAnimationFrame(() => {
+        if (streamEl && stuckToBottom) streamEl.scrollTop = streamEl.scrollHeight
+      })
+    }
+  })
+
+  // lane 切替時は「その lane の最新（下端）」を見せる（履歴の途中で開かない）。
+  createEffect(() => {
+    activeLane() // dep
+    stuckToBottom = true
+    requestAnimationFrame(() => {
+      if (streamEl) streamEl.scrollTop = streamEl.scrollHeight
+    })
+  })
+
   return (
     <div class="echoes-chat">
       <Show
@@ -266,7 +354,12 @@ function ChatView() {
           </select>
         </div>
         <PlanWidget entries={() => state()!.plan} />
-        <div class="echoes-stream">
+        <div
+          class="echoes-stream"
+          ref={streamEl}
+          tabindex={0}
+          onScroll={onStreamScroll}
+        >
           <For each={state()!.items}>
             {(item, index) => {
               if (item.kind === 'thinking')
@@ -325,6 +418,9 @@ export const CHATVIEW_CSS = `
   font-family: var(--font-ui, system-ui, -apple-system, sans-serif); overflow:hidden; }
 .echoes-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .echoes-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+/* history は tabindex=0 で focus 可能（Home/End/PgUp/PgDn 用）。領域全体を囲む outline は
+   目障りなので抑制する（focus 合図は scrollbar 操作で十分伝わる）。 */
+.echoes-stream:focus, .echoes-stream:focus-visible { outline:none; }
 .echoes-msg { max-width:100%; animation: echoes-fade .18s ease-out; }
 .echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
