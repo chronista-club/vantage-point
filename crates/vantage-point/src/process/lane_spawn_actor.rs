@@ -572,11 +572,6 @@ mod tests {
         assert_eq!(pool.read().await.count(), 1);
     }
 
-    /// `XDG_STATE_HOME` を触る test を直列化する共有ロック (parallel runner で別 test の
-    /// env 変更と混ざらないよう)。 async-aware Mutex なので `.await` 越しに保持しても
-    /// `clippy::await_holding_lock` を踏まない (auth.rs `env_guard_async` と同型)。
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     /// **performer** の永続 console_mode=chat が boot spawn で honor され、 engine-less
     /// (pid=None + state=Running + PtySlot なし) で登録されること。
     ///
@@ -586,15 +581,9 @@ mod tests {
     #[tokio::test]
     async fn chat_mode_performer_boots_engine_less() {
         use crate::lane::console_mode::ConsoleMode;
-        let _guard = ENV_LOCK.lock().await;
-        let tmp = tempfile::tempdir().expect("tempdir");
         // console_mode::last / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
-        let prev = std::env::var_os("XDG_STATE_HOME");
-        // SAFETY: edition 2024 で env::set_var は unsafe。 ENV_LOCK で他 test と直列化済、
-        // 本 test 内でのみ XDG_STATE_HOME を差し替え、 末尾で復元する。
-        unsafe {
-            std::env::set_var("XDG_STATE_HOME", tmp.path());
-        }
+        // crate 唯一のロック下で tempdir に向け、 guard の drop で復元する。
+        let state = crate::test_env::state_dir_async().await;
 
         // performer "proj"/"chat-perf" を chat mode で永続化
         crate::lane::console_mode::record("proj", "chat-perf", ConsoleMode::Chat)
@@ -609,7 +598,7 @@ mod tests {
             .send(LaneCmd::SpawnLane {
                 project_id: "proj".to_string(),
                 name: "chat-perf".to_string(),
-                cwd: tmp.path().to_string_lossy().to_string(),
+                cwd: state.path().to_string_lossy().to_string(),
                 stand: "echoes".to_string(),
             })
             .expect("send SpawnLane");
@@ -644,13 +633,6 @@ mod tests {
             "chat lane に PtySlot は存在しないはず"
         );
         drop(pool_read);
-
-        // env 復元。 SAFETY: set_var と同じく ENV_LOCK 保持中。
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("XDG_STATE_HOME", v),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-        }
+        // env は `state` guard の drop で復元される。
     }
 }

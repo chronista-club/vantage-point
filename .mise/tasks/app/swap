@@ -1,0 +1,58 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="手元の /Applications/VantagePoint.app を作業ツリーの build で差し替えて再起動 (dogfood ループ)"
+#
+# dogfood 差し替えループ (2026-07-10)。 「今書いたコードを、普段使っている .app の形で触る」 ための task。
+#
+# なぜ dev profile (VP_PROFILE=dev) ではなくこれか:
+#   - dev profile は state を別 namespace に切るので daemon / SP / GUI を三点セットで立て直す要がある
+#   - 素の binary (~/.cargo/bin/vp-app) は .app bundle でないため macOS の app として扱えない
+#     (computer-use の screenshot 許可対象にすらならない)
+#   本 task は本番と同じ .app 形のまま、 notarize の待ち時間だけを落とす。
+#
+# なぜ notarize 不要か:
+#   Gatekeeper が notarization ticket を要求するのは `com.apple.quarantine` xattr 付き
+#   (= browser / dmg 経由で DL された) binary だけ。 自前 build を ditto で置いた bundle には
+#   quarantine が付かないので、 Developer ID 署名さえ通っていれば起動する。
+#   → `VP_RELEASE_DRY=1` (build → 組立 → codesign → dmg、 notarize/publish skip) で足りる。
+#
+# ⚠️ daemon / SP は差し替えても**即座には入れ替わらない** (既に memory 上の旧 binary で走っている)。
+#    server 側 (crates/vantage-point) を触ったなら `VP_SWAP_RESTART_DAEMON=1` を付ける。
+#    その場合 SP の子である lane の claude が全部落ちる (会話は cc_session の --resume で復帰)。
+require "fileutils"
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+APP_BUNDLE  = "VantagePoint.app"
+BUILT       = File.join("target", "dist", APP_BUNDLE)
+INSTALLED   = File.join("/Applications", APP_BUNDLE)
+RESTART_DAEMON = ENV["VP_SWAP_RESTART_DAEMON"] == "1"
+
+# ── 1. build + codesign (release:mac の DRY = 組立経路を release と共有し drift させない) ──
+VP.log "#{VP.icon(:build)} building signed .app (VP_RELEASE_DRY=1)…"
+VP.sh "VP_RELEASE_DRY=1 LANG=en_US.UTF-8 mise run release:mac"
+File.directory?(BUILT) or VP.die("build 成果物が無い: #{BUILT}")
+
+# ── 2. 走っている GUI を止める (差し替え先を掴んだままにしない) ──
+VP.sh "#{VP.cargo_bin('vp')} app stop || true"
+VP.sh "pkill -f '#{INSTALLED}' || true"
+sleep 2
+
+# ── 3. 差し替え (ditto = 署名と xattr を保つ。 cp -r は署名を壊す) ──
+# INSTALLED は brew cask 管理下。 壊しても `brew reinstall --cask vantage-point` で戻せる。
+VP.log "#{VP.icon(:arrow)} swapping #{INSTALLED}"
+FileUtils.rm_rf(INSTALLED)
+VP.sh "ditto '#{BUILT}' '#{INSTALLED}'"
+VP.sh "codesign --verify --strict '#{INSTALLED}'"
+
+# ── 4. server 側も入れ替えるなら daemon を落とす (lane が道連れになる) ──
+if RESTART_DAEMON
+  VP.log "#{VP.icon(:warn)} restarting daemon — lane の claude も落ちる (--resume で復帰)"
+  VP.sh "#{VP.cargo_bin('vp')} daemon stop || true"
+  sleep 2
+  VP.sh "pkill -f '/opt/homebrew/bin/vp sp start' || true"
+  sleep 1
+end
+
+# ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
+VP.sh "open '#{INSTALLED}'"
+VP.log "#{VP.icon(:ok)} swapped & launched#{RESTART_DAEMON ? ' (daemon 再起動込み)' : ' (daemon は旧 binary のまま — server 変更を効かせるなら VP_SWAP_RESTART_DAEMON=1)'}"

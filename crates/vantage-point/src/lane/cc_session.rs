@@ -70,9 +70,29 @@ pub fn last_in(base: &Path, project: &str, lane: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+/// 記録を消す (未記録なら no-op)。
+///
+/// 「素の新規 session を張る」 (= fresh) の意味を state 側で表現する唯一の手段。
+/// 消した後は `last` が None になるので:
+/// - chat engine は `--resume` 無しで spawn → `SessionInit` で新 id を書き戻す
+/// - transcript replay-on-attach は再生対象を失う (= 前の会話を映さない)
+///
+/// 旧 session の transcript 自体は `~/.claude/projects/` に残る (指す矢印を捨てるだけ)。
+pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(session_file_in(base, project, lane)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
+}
+
 /// 本番 base (vp_state_dir) での record (hook-check から呼ぶ)
 pub fn record(project: &str, lane: &str, session_id: &str) -> std::io::Result<()> {
     record_in(&crate::config::vp_state_dir(), project, lane, session_id)
+}
+
+/// 本番 base (vp_state_dir) での clear (fresh restart から呼ぶ)
+pub fn clear(project: &str, lane: &str) -> std::io::Result<()> {
+    clear_in(&crate::config::vp_state_dir(), project, lane)
 }
 
 /// 本番 base (vp_state_dir) での last (`vp lane last-session` / lazy populate から呼ぶ)
@@ -133,6 +153,24 @@ mod tests {
             last_in(tmp.path(), "vp", "conductor").as_deref(),
             Some("good-id"),
             "正常な記録が保持される"
+        );
+    }
+
+    #[test]
+    fn clear_removes_record_and_is_idempotent() {
+        // fresh restart は「resume の矢印を捨てる」= last が None に戻る。
+        let tmp = tempfile::tempdir().expect("tempdir");
+        record_in(tmp.path(), "vp", "conductor", "old-id").expect("record");
+        clear_in(tmp.path(), "vp", "conductor").expect("clear");
+        assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
+        // 未記録 lane の clear は no-op (二重 restart で Err にしない)
+        clear_in(tmp.path(), "vp", "conductor").expect("未記録の clear は Ok");
+        // 他 lane の記録は巻き添えにしない
+        record_in(tmp.path(), "vp", "performer-a", "keep-id").expect("record");
+        clear_in(tmp.path(), "vp", "conductor").expect("clear");
+        assert_eq!(
+            last_in(tmp.path(), "vp", "performer-a").as_deref(),
+            Some("keep-id")
         );
     }
 

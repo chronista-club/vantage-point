@@ -161,7 +161,14 @@ cargo test --workspace                    # テスト
 cargo install --path crates/vp-cli --locked  # インストール（codesign 自動付与。--locked 必須 — install は Cargo.lock を無視して最新依存を解決するため、未検証の新リリース（例: time 0.3.48 × ratatui-widgets の E0119）を踏む）
 cargo fmt --all -- --check                # フォーマットチェック
 cargo clippy --workspace --all-targets    # Lint
+
+# dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
+mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動
+VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も効かせる（lane が全部落ちる）
 ```
+
+> **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / SP / GUI を三点セットで立て直す要があり、素の `~/.cargo/bin/vp-app` は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
+> ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / SP は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= SP の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
 
 ## 設定・ポート
 
