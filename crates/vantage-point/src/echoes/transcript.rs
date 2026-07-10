@@ -26,16 +26,25 @@
 //! ため（terminal replay の clear-prefix と同型の問題）、単純追記だと再接続のたび会話が
 //! 二重化する。 reset してから描き直せば、どちらの経路でも同じ最終状態に収束する。
 //!
+//! ## 生成中（in-flight）の message
+//!
+//! claude は message を **完了時にしか** transcript へ flush しない。 よって replay が assistant の
+//! 生成中に着地すると、transcript だけでは「生成中 message の直前まで」しか復元できない。
+//! この欠けは [`super::host::EchoesAgentHost`] の **in-flight tail** が埋める（未 commit の
+//! `MessageChunk` / `ThoughtChunk` を保持し、replay handler が本 module の出力の後ろへ継ぐ）。
+//! 「replay = transcript(commit 済み) ++ tail(未 commit)」で現在状態が厳密に再現される。
+//!
 //! ## 復元できないもの（transcript 側の制約）
 //!
 //! - **thinking**: transcript の thinking block は `{"thinking":"","signature":"…"}` の形で
 //!   本文が空（signature は暗号化ペイロード）。 つまり **思考内容は disk に残っていない**ので
 //!   [`EchoesEvent::ThoughtChunk`] は replay できない。 live 経路（stream-json の
-//!   `thinking_delta`）でのみ流れる。
+//!   `thinking_delta`）でのみ流れる。 例外として、 **生成中の thinking** は in-flight tail 側に
+//!   居るので replay できる。
 //! - **image**: ChatView に描く語彙が無いため捨てる（MVP）。
 //!
 //! data / calculations / actions:
-//! - calculations: [`events_from_lines`]（純関数、テスト対象）
+//! - calculations: [`events_from_lines`] / [`drop_orphan_updates`]（純関数、テスト対象）
 //! - actions: [`replay_events`]（disk read → calculations に委譲）
 
 use serde_json::Value;
@@ -68,9 +77,48 @@ pub fn replay_events(session_id: &str) -> Vec<EchoesEvent> {
         let drop = events.len() - REPLAY_EVENT_CAP;
         tracing::debug!("transcript replay: {drop} 件の古い event を切り詰め");
         events.drain(..drop);
+        // 切り詰めは ToolCall / ToolCallUpdate のペアを断ち切りうる。 孤児 update を残さない。
+        drop_orphan_updates(&mut events);
     }
     out.extend(events);
     out
+}
+
+/// 対応する [`EchoesEvent::ToolCall`] を持たない [`EchoesEvent::ToolCallUpdate`] を落とす（純関数）。
+///
+/// GUI（`chatview.tsx` の `foldInto`）は update を `tool_use_id` で ToolCall に結びつけて done 化する。
+/// 結び先が無い update は黙って捨てられる（no-op）ので実害は無いが、 それを **backend 側の不変条件**
+/// に格上げしておく: 「replay 列に孤児 update は現れない」。 こうしておけば、 もし GUI が孤児を
+/// 観測したらそれは配送順序のバグであって切り詰めの副作用ではない、 と切り分けられる。
+///
+/// 孤児が生まれる唯一の決定的経路は [`REPLAY_EVENT_CAP`] の切り詰め（ToolCall だけが古くて落ちる）。
+fn drop_orphan_updates(events: &mut Vec<EchoesEvent>) {
+    let known: std::collections::HashSet<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            EchoesEvent::ToolCall { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let orphans: std::collections::HashSet<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            EchoesEvent::ToolCallUpdate { tool_use_id, .. }
+                if !known.contains(tool_use_id.as_str()) =>
+            {
+                Some(tool_use_id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if orphans.is_empty() {
+        return;
+    }
+    tracing::debug!(
+        "transcript replay: 孤児 tool_call_update を {} 件除去",
+        orphans.len()
+    );
+    events.retain(|e| !matches!(e, EchoesEvent::ToolCallUpdate { tool_use_id, .. } if orphans.contains(tool_use_id)));
 }
 
 /// transcript の全行を [`EchoesEvent`] 列へ翻訳する（純関数）。
@@ -442,6 +490,72 @@ mod tests {
                 text: "本文".into()
             }]
         );
+    }
+
+    /// 切り詰めで ToolCall が落ちた場合、対応する ToolCallUpdate も落とす（孤児を作らない）。
+    /// ペアが揃っている update / 他の event は残す。
+    #[test]
+    fn orphan_tool_call_updates_are_dropped() {
+        let mut events = vec![
+            // t0 の ToolCall は切り詰めで既に消えた想定 → update が孤児。
+            EchoesEvent::ToolCallUpdate {
+                tool_use_id: "t0".into(),
+                content: "old".into(),
+                is_error: false,
+            },
+            EchoesEvent::MessageChunk {
+                text: "残る".into(),
+            },
+            EchoesEvent::ToolCall {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: serde_json::json!({}),
+            },
+            EchoesEvent::ToolCallUpdate {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            },
+        ];
+        drop_orphan_updates(&mut events);
+        assert_eq!(
+            events,
+            vec![
+                EchoesEvent::MessageChunk {
+                    text: "残る".into()
+                },
+                EchoesEvent::ToolCall {
+                    id: "t1".into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({}),
+                },
+                EchoesEvent::ToolCallUpdate {
+                    tool_use_id: "t1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                },
+            ]
+        );
+    }
+
+    /// 孤児が無ければ列は不変（no-op）。
+    #[test]
+    fn drop_orphan_updates_is_noop_without_orphans() {
+        let mut events = vec![
+            EchoesEvent::ToolCall {
+                id: "t1".into(),
+                name: "Read".into(),
+                input: serde_json::json!({}),
+            },
+            EchoesEvent::ToolCallUpdate {
+                tool_use_id: "t1".into(),
+                content: "x".into(),
+                is_error: false,
+            },
+        ];
+        let before = events.clone();
+        drop_orphan_updates(&mut events);
+        assert_eq!(events, before);
     }
 
     /// replay_events は transcript 不在でも ReplayStart だけ返す（GUI は空会話に収束）。

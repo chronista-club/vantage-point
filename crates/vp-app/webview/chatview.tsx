@@ -66,6 +66,11 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       // 追記すると再接続のたび会話が二重化する（terminal replay の clear-prefix と同型の問題）。
       // reset → 再構築なら cold-start でも reconnect でも同じ最終状態に収束する（= 冪等）。
       // header は live engine の session_init が持つ情報なので保持する。
+      //
+      // replay 列は `transcript(commit 済み) ++ in-flight tail(生成中の未 commit 増分)`。
+      // よって生成の真っ最中に着地しても、末尾には「途中まで書かれた assistant バブル」が
+      // 再構築される。復帰後の message_chunk はそこへ自然に append される（= 文の途中から
+      // 新バブルが立つことはない）。tail が streaming を立て直すのでカーソルも戻る。
       s.items = []
       s.plan = []
       s.streaming = false
@@ -104,6 +109,11 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       if (t) {
         t.done = true
         t.error = ev.is_error ?? false
+      } else {
+        // 結び先の無い update。backend 側で「replay 列に孤児は現れない」を不変条件にした
+        // （transcript の切り詰めが ToolCall/Update のペアを割らない、in-flight tail は
+        // ToolCall を二重に持たない）。ここに来たら配送順序のバグなので、黙って捨てず残す。
+        console.warn('[chatview] 孤児 tool_call_update（結び先の tool_call が無い）', ev.tool_use_id)
       }
       break
     }
