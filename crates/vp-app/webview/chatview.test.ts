@@ -113,3 +113,54 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(s.streaming).toBe(false)
   })
 })
+
+describe('transcript replay — Act II replay-on-attach', () => {
+  /** SP が attach 時に送る replay 列（ReplayStart + 過去会話）。 */
+  const replay: EchoesEvent[] = [
+    { kind: 'replay_start' },
+    { kind: 'user_message', text: '直して' },
+    { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
+    { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+    { kind: 'message_chunk', text: '直しました' },
+  ]
+
+  it('user_message が user bubble として復元される', () => {
+    const s = fold(replay)
+    expect(s.items).toEqual([
+      { kind: 'user', text: '直して' },
+      { kind: 'tool', id: 't1', name: 'Edit', done: true, error: false },
+      { kind: 'assistant', text: '直しました' },
+    ])
+  })
+
+  it('replay_start は既存の会話をクリアする（live 途中で attach しても混ざらない）', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'message_chunk', text: '古い応答' })
+    foldInto(s, { kind: 'plan', entries: [{ content: 'old', status: 'pending' }] })
+    expect(s.items).toHaveLength(1)
+
+    for (const ev of replay) foldInto(s, ev)
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'tool', 'assistant'])
+    expect(s.plan).toEqual([])
+  })
+
+  /** terminal replay の clear-prefix と同じ教訓: backend は新規 attach と reconnect を
+   *  区別できないので、replay は冪等でなければならない。 */
+  it('replay が二重に届いても会話は二重化しない（冪等 — reconnect / demand 再発火）', () => {
+    const once = fold(replay)
+    const twice = fold([...replay, ...replay])
+    expect(twice.items).toEqual(once.items)
+  })
+
+  it('replay 後に live event が続いても正しく積み上がる', () => {
+    const s = fold([...replay, { kind: 'user_message', text: '次' }])
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'tool', 'assistant', 'user'])
+  })
+
+  it('replay_start は header を保持する（live engine の session_init 由来）', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'session_init', session_id: 'sid', model: 'opus' })
+    foldInto(s, { kind: 'replay_start' })
+    expect(s.header).toEqual({ model: 'opus', sessionId: 'sid' })
+  })
+})

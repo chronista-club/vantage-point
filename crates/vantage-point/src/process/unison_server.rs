@@ -319,6 +319,92 @@ async fn handle_terminal_demand_stop(
     }
 }
 
+/// Act II replay-on-attach: echoes demand start ハンドラー。
+///
+/// World の demand hook が `process/echoes/data/{lane}/event` の購読者 0→1 を検知し、 control
+/// reverse-route で本 method を撃つ。 SP は当該 chat lane の **transcript を replay** して topic に
+/// route する（`ReplayStart` + 過去会話の EchoesEvent 列）。
+///
+/// なぜ必要か: echoes topic は非 retained で、 会話履歴は vp-app の in-memory ring buffer に
+/// しか無い。 app 再起動で ChatView が空になる（engine 側は `--resume` で会話を保持しているのに
+/// 描く履歴が無い）。 唯一の履歴 SSOT である claude の transcript(jsonl) から起こし直す。
+///
+/// 冪等: 先頭の `ReplayStart` を見て GUI が会話表示をクリアするため、 reconnect / demand 再発火で
+/// 二重化しない（terminal replay の clear-prefix と同型）。
+///
+/// chat mode でない lane / cc_session id 不明 / transcript 不在は「replay 無し」で graceful に返す
+/// （console は live event を待つだけで壊れない）。
+async fn handle_echoes_demand_start(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if lane.is_empty() {
+        return Err("echoes_demand_start: lane 未指定".to_string());
+    }
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(&lane) else {
+        return Err(format!("echoes_demand_start: lane パース失敗: {lane}"));
+    };
+
+    // chat lane 以外は replay しない（Act I の履歴は PtySlot の terminal replay が担う）。
+    let is_chat = {
+        let pool = state.lane_pool.read().await;
+        pool.console_mode(&addr) == Some(crate::lane::console_mode::ConsoleMode::Chat)
+    };
+    if !is_chat {
+        return Ok(serde_json::json!({"status": "not_chat", "lane": lane}));
+    }
+
+    let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+    let Some(session_id) = crate::lane::cc_session::last(&addr.project, &lane_label) else {
+        // 初回 (まだ会話が無い) lane。 空会話に収束させるため ReplayStart だけ送る。
+        route_echoes(state, &lane, vec![crate::echoes::EchoesEvent::ReplayStart]).await;
+        return Ok(serde_json::json!({"status": "no_session", "lane": lane}));
+    };
+
+    // disk read + 翻訳は同期 I/O（数 MB / 数千行）。 tokio worker を塞がないよう隔離する。
+    let events =
+        tokio::task::spawn_blocking(move || crate::echoes::transcript::replay_events(&session_id))
+            .await
+            .map_err(|e| format!("echoes_demand_start: transcript 変換 join 失敗: {e}"))?;
+
+    let count = events.len();
+    route_echoes(state, &lane, events).await;
+    tracing::info!("echoes transcript replay: {count} events を配送 (lane={lane})");
+    Ok(serde_json::json!({"status": "replayed", "lane": lane, "events": count}))
+}
+
+/// echoes demand stop ハンドラー。 replay は on-attach の一度きりなので停止対象の task は無い。
+/// （live event の producer は `EchoesAgentHost` + `echoes_pump` で、 engine の生存に紐づく）
+async fn handle_echoes_demand_stop(
+    _state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(serde_json::json!({"status": "noop", "lane": lane}))
+}
+
+/// EchoesEvent 列を per-lane echoes topic に順に route する（echoes_pump と同じ経路）。
+async fn route_echoes(state: &AppState, lane: &str, events: Vec<crate::echoes::EchoesEvent>) {
+    for event in events {
+        state
+            .topic_router
+            .route(crate::protocol::ProcessMessage::EchoesEvent {
+                lane: lane.to_string(),
+                event,
+            })
+            .await;
+    }
+}
+
 /// S3 (doc 27 §4.1, 経路 B): terminal 入力。
 ///
 /// surface (vp-app) → World canvas channel (upstream request) → SP control → 本 dispatch。
@@ -697,6 +783,9 @@ pub(crate) async fn dispatch_process_method(
         // S2: demand-driven terminal pump (World demand hook → control reverse-route)
         "terminal_demand_start" => handle_terminal_demand_start(state, payload).await,
         "terminal_demand_stop" => handle_terminal_demand_stop(state, payload).await,
+        // Act II replay-on-attach: chat lane の transcript を attach 時に replay
+        "echoes_demand_start" => handle_echoes_demand_start(state, payload).await,
+        "echoes_demand_stop" => handle_echoes_demand_stop(state, payload).await,
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
         "echoes_submit" => handle_echoes_submit(state, payload).await,

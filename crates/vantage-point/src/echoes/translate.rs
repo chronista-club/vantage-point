@@ -208,7 +208,8 @@ fn on_result(res: RawResult) -> EchoesEvent {
 }
 
 /// tool_result の `content`（string または block 配列）を表示用 text へ潰す。
-fn tool_result_text(content: &serde_json::Value) -> String {
+/// transcript replay（[`super::transcript`]）も同じ潰し方を使うため crate 内公開。
+pub(super) fn tool_result_text(content: &serde_json::Value) -> String {
     match content {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Array(blocks) => blocks
@@ -221,7 +222,8 @@ fn tool_result_text(content: &serde_json::Value) -> String {
 }
 
 /// TodoWrite の input（`{"todos":[{content,status,activeForm}]}`）を Plan へ。
-fn plan_from_todowrite(input: &serde_json::Value) -> Option<EchoesEvent> {
+/// transcript replay（[`super::transcript`]）も同じ導出を使うため crate 内公開。
+pub(super) fn plan_from_todowrite(input: &serde_json::Value) -> Option<EchoesEvent> {
     let todos = input.get("todos")?.as_array()?;
     let entries = todos
         .iter()
