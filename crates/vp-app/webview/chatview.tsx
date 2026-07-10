@@ -425,6 +425,9 @@ export const CHATVIEW_CSS = `
 .echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
 .echoes-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
+/* 返信（assistant）の本文だけ拡大 = 15px（自分の入力バブルは 13.5px のまま）。
+   line-height は unitless なので font-size に追従してスケールする。 */
+.echoes-msg:not(.user) .echoes-msg-body { font-size:15px; }
 .echoes-msg-body :first-child { margin-top:0; } .echoes-msg-body :last-child { margin-bottom:0; }
 .echoes-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
   border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12px; }

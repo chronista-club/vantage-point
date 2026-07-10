@@ -1660,6 +1660,36 @@ fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
     }
 }
 
+/// lane を「入力待ち（要注意）」として記録し、sidebar の unread count / 黄 dot を更新する。
+///
+/// active lane（今まさに見ている lane）は即読扱いで skip する（見ている lane に dot を出さない）。
+/// これは通知の**単一 sink** で、2 つのソースがここに合流する。Act I は OSC 99/9/777
+/// notification（`AppEvent::OscNotification`、xterm が parse）。Act II は
+/// `EchoesEvent::turn_completed`（headless stream-json は Notification hook を発火しないため、
+/// stream `result` 由来の turn_completed が「Claude が返し終えた＝入力待ち」の唯一のシグナル。
+/// memory echoes-act2-notification-signal 参照）。
+/// `source` はログ用ラベル（`"osc:notification"` / `"act2:turn_completed"` 等）。
+fn mark_lane_awaiting_input(
+    lane: &str,
+    source: &str,
+    sidebar_state: &mut SidebarState,
+    webview: &WebView,
+) {
+    if sidebar_state.active_lane_address.as_deref() == Some(lane) {
+        tracing::debug!("{source} skip (active lane): lane={lane}");
+        return;
+    }
+    let count = sidebar_state
+        .unread_notifications
+        .entry(lane.to_string())
+        .or_insert(0);
+    *count += 1;
+    // 「入力待ち」 = 行右端に黄 dot。 active 切替で reset される。
+    sidebar_state.awaiting_input.insert(lane.to_string(), true);
+    tracing::info!("{source} lane={lane} unread={}", *count);
+    push_sidebar_state(webview, sidebar_state);
+}
+
 /// sidebar IPC を解釈した結果
 #[derive(Debug, Default)]
 struct SidebarIpcOutcome {
@@ -2472,22 +2502,10 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
             }
-            Event::UserEvent(AppEvent::OscNotification { lane, code }) => {
-                // Phase 5-D Sprint C P2.1: per-Lane HD notification の unread count 加算。
-                //  Skip increment if user is currently looking at this lane (即読扱い)。
-                if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
-                    tracing::debug!("osc:notification skip (active lane): lane={} code={}", lane, code);
-                } else {
-                    let count = sidebar_state
-                        .unread_notifications
-                        .entry(lane.clone())
-                        .or_insert(0);
-                    *count += 1;
-                    // 「入力待ち」 状態 = 行右端に黄 dot を表示。 active 切替で reset される。
-                    sidebar_state.awaiting_input.insert(lane.clone(), true);
-                    tracing::info!("osc:notification lane={} code={} unread={}", lane, code, *count);
-                    push_sidebar_state(&webview, &sidebar_state);
-                }
+            Event::UserEvent(AppEvent::OscNotification { lane, code: _ }) => {
+                // Phase 5-D Sprint C P2.1: per-Lane HD notification（Act I / OSC 由来）。
+                // active lane は即読 skip。共通 sink（Act II の turn_completed と合流）。
+                mark_lane_awaiting_input(&lane, "osc:notification", &mut sidebar_state, &webview);
             }
             Event::UserEvent(AppEvent::ResolveSessionTitles) => {
                 // VP-143: 全 lane の cwd を walk → cc custom-title resolve → diff → sidebar に push。
@@ -3002,6 +3020,20 @@ pub fn run() -> anyhow::Result<()> {
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
                     tracing::warn!("vpConsole.handleEvent 失敗 (lane={}): {}", lane, e);
+                }
+                // 路 A（memory echoes-act2-notification-signal）: Act II の完了/エラーを Act I の
+                // OSC 通知と同じ sink に流す。headless stream-json は Notification hook を発火しない
+                // ため、turn_completed（stream `result` 由来）が「Claude が返し終えた＝入力待ち」の
+                // 唯一のシグナル。active lane は helper が即読 skip する。
+                if let Some(kind) = event.get("kind").and_then(|k| k.as_str())
+                    && (kind == "turn_completed" || kind == "error")
+                {
+                    mark_lane_awaiting_input(
+                        &lane,
+                        &format!("act2:{kind}"),
+                        &mut sidebar_state,
+                        &webview,
+                    );
                 }
             }
             // Echoes Act II: EchoesChatPane の submit → 当該 lane の echoes session に渡す。
