@@ -75,9 +75,25 @@ pub fn last_in(base: &Path, project: &str, lane: &str) -> Option<ConsoleMode> {
     ConsoleMode::parse(&raw)
 }
 
+/// 記録を消す（未記録なら no-op）。
+///
+/// lane 削除時の state GC 用（[`super::cc_session::clear_in`] と同型）。消さないと
+/// 同名 lane を作り直した時に旧 mode が蘇る（ghost file の state leak）。
+pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(mode_file_in(base, project, lane)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
+}
+
 /// 本番 base（vp_state_dir）での record。
 pub fn record(project: &str, lane: &str, mode: ConsoleMode) -> std::io::Result<()> {
     record_in(&crate::config::vp_state_dir(), project, lane, mode)
+}
+
+/// 本番 base（vp_state_dir）での clear（lane 削除経路から呼ぶ）。
+pub fn clear(project: &str, lane: &str) -> std::io::Result<()> {
+    clear_in(&crate::config::vp_state_dir(), project, lane)
 }
 
 /// 本番 base（vp_state_dir）での last。
@@ -105,6 +121,21 @@ mod tests {
             last_in(tmp.path(), "vp", "conductor"),
             Some(ConsoleMode::Tui)
         );
+    }
+
+    #[test]
+    fn clear_removes_record_and_is_idempotent() {
+        // lane 削除 = 記録の終端。last が None に戻り、同名 lane 再作成で旧 mode が蘇らない。
+        let tmp = tempfile::tempdir().expect("tempdir");
+        record_in(tmp.path(), "vp", "chore", ConsoleMode::Chat).expect("record");
+        clear_in(tmp.path(), "vp", "chore").expect("clear");
+        assert_eq!(last_in(tmp.path(), "vp", "chore"), None);
+        // 未記録 lane の clear は no-op（二重 delete で Err にしない）
+        clear_in(tmp.path(), "vp", "chore").expect("未記録の clear は Ok");
+        // 他 lane の記録は巻き添えにしない
+        record_in(tmp.path(), "vp", "keep", ConsoleMode::Chat).expect("record");
+        clear_in(tmp.path(), "vp", "chore").expect("clear");
+        assert_eq!(last_in(tmp.path(), "vp", "keep"), Some(ConsoleMode::Chat));
     }
 
     #[test]
