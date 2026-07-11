@@ -387,11 +387,23 @@ async fn progress(format: &str) -> Result<()> {
             Err(_) => None,
         };
         let performer_status_view = crate::flow::PerformerStatusView::from_json(&performer_status);
+        // AwaitingUser 判定: 未 ack needs_user (best-effort、 失敗は None = 判定 off で degrade)
+        let needs_user_view = match crate::process::world_wire::call(
+            "/api/wire/needs-user-pending",
+            serde_json::json!({ "agent": agent_addr }),
+        )
+        .await
+        {
+            Ok(j) => j
+                .get("message")
+                .and_then(crate::flow::LatestMsgView::from_json),
+            Err(_) => None,
+        };
         let fsm = crate::flow::derive_flow_state(
             latest_view.as_ref(),
             performer_status_view,
             &agent_addr,
-            None, // needs_user pending は次 step で接続 (awaiting_user 未使用のうちは None)
+            needs_user_view.as_ref(),
         );
 
         performers.push(serde_json::json!({

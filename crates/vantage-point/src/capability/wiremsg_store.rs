@@ -536,6 +536,45 @@ impl WiremsgStore {
         Ok(out)
     }
 
+    /// 指定 agent **発** の未 ack `needs_user` wire のうち最新 1 件を返す (read-only)
+    ///
+    /// dev-flow FSM の `AwaitingUser` 判定入力 (`flow::derive_flow_state` の
+    /// `pending_needs_user`)。 判定 = `from_addr == agent` かつ `body.kind == 'needs_user'`
+    /// かつ pending 受信者 (= `to` から送信者自身と ack 済 agent を除いた残り) が 1 人でも
+    /// 残っている message。 ack 照合規則は [`unacked_commands`](Self::unacked_commands) と同一。
+    ///
+    /// 注: `body.kind` には index が無く ack 照合も message ごとに `acks_for` を呼ぶが、
+    /// needs_user は「ユーザ本人への相談」という設計上の低頻度 kind (性能トリアージは
+    /// unacked_commands の note と同じ基準)。
+    pub async fn pending_needs_user(&self, agent: &str) -> Result<Option<WireMessage>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT * FROM wire_messages
+                     WHERE from_addr = $agent AND body.kind = 'needs_user'
+                     ORDER BY local_seq DESC;",
+            )
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg pending_needs_user failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg pending_needs_user take failed: {e}"))?;
+
+        for row in &rows {
+            let msg = Self::row_to_message(row)?;
+            let acked = self.acks_for(&msg.id).await?;
+            let has_pending = msg
+                .to
+                .iter()
+                .any(|a| *a != msg.from && !acked.contains(a));
+            if has_pending {
+                return Ok(Some(msg)); // local_seq DESC なので最初の pending が最新
+            }
+        }
+        Ok(None)
+    }
+
     // -------------------------------------------------------------------------
     // 内部 helper
     // -------------------------------------------------------------------------
@@ -1871,5 +1910,96 @@ mod tests {
             .await
             .expect("send");
         assert!(store.unacked_commands().await.expect("unacked").is_empty());
+    }
+
+    /// pending_needs_user: 未 ack の needs_user のみ・最新 1 件が返り、 ack で消える
+    #[tokio::test]
+    async fn pending_needs_user_returns_latest_and_clears_on_ack() {
+        let store = make_test_store().await;
+        let performer = "agent@vp/feat";
+
+        // needs_user 以外の kind は対象外
+        store
+            .send_root(
+                performer,
+                &["agent@vp".to_string()],
+                serde_json::json!({"kind": "question", "category": "command", "text": "相談"}),
+            )
+            .await
+            .expect("question send");
+        assert!(
+            store
+                .pending_needs_user(performer)
+                .await
+                .expect("pending 0")
+                .is_none(),
+            "question は needs_user 判定に載らない"
+        );
+
+        // needs_user を 2 通 (古い方 → 新しい方)
+        let old = store
+            .send_root(
+                performer,
+                &["agent@vp".to_string()],
+                serde_json::json!({"kind": "needs_user", "category": "command", "text": "A or B?"}),
+            )
+            .await
+            .expect("needs_user send 1");
+        let newer = store
+            .send_root(
+                performer,
+                &["agent@vp".to_string()],
+                serde_json::json!({"kind": "needs_user", "category": "command", "text": "C も?"}),
+            )
+            .await
+            .expect("needs_user send 2");
+
+        let pending = store
+            .pending_needs_user(performer)
+            .await
+            .expect("pending 1")
+            .expect("Some");
+        assert_eq!(pending.id, newer.id, "最新の未 ack needs_user が返る");
+
+        // 最新を ack → 古い方が浮上 (どちらも未回答なら古い相談が残っている)
+        store.ack(&newer.id, "agent@vp").await.expect("ack newer");
+        let pending = store
+            .pending_needs_user(performer)
+            .await
+            .expect("pending 2")
+            .expect("Some");
+        assert_eq!(pending.id, old.id, "残った未 ack needs_user が返る");
+
+        // 全部 ack → None (= AwaitingUser 解消)
+        store.ack(&old.id, "agent@vp").await.expect("ack old");
+        assert!(
+            store
+                .pending_needs_user(performer)
+                .await
+                .expect("pending 3")
+                .is_none()
+        );
+    }
+
+    /// pending_needs_user: from が別 agent の needs_user は対象外 (per-performer 判定)
+    #[tokio::test]
+    async fn pending_needs_user_scopes_by_sender() {
+        let store = make_test_store().await;
+        store
+            .send_root(
+                "agent@vp/other",
+                &["agent@vp".to_string()],
+                serde_json::json!({"kind": "needs_user", "category": "command", "text": "x"}),
+            )
+            .await
+            .expect("send");
+        assert!(
+            store
+                .pending_needs_user("agent@vp/feat")
+                .await
+                .expect("pending")
+                .is_none(),
+            "他 performer の needs_user は載らない"
+        );
     }
 }
