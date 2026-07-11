@@ -151,7 +151,7 @@ fn validate_watch_path(path: &str) -> Result<(), String> {
     }
 
     // 存在するパスはシンボリックリンクを解決してから検証
-    let resolved = std::fs::canonicalize(p)
+    let resolved = dunce::canonicalize(p)
         .map(|c| c.to_string_lossy().to_string())
         .unwrap_or_else(|_| path.to_string()); // 未作成ファイルは元パスで検証
 

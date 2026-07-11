@@ -113,12 +113,36 @@ pub async fn execute(cmd: ProjectsCommands) -> Result<()> {
 
 /// `path` (省略時 cwd) を絶対パスに解決する。 実在 dir なら canonicalize、 失敗時は
 /// そのまま送って World 側の `is_dir` チェックにエラーを委ねる (= 二重バリデーション回避)。
+///
+/// canonicalize は `dunce` 経由。 std の方は Windows で `\\?\C:\...` (verbatim prefix) を返し、
+/// それが projects.kdl と SP の spawn 引数まで伝播してしまう。
 fn resolve_dir(path: Option<String>) -> Result<String> {
     let raw = match path {
         Some(p) => std::path::PathBuf::from(p),
         None => std::env::current_dir()?,
     };
-    Ok(std::fs::canonicalize(&raw)
+    Ok(dunce::canonicalize(&raw)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| raw.to_string_lossy().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `vp projects add` が projects.kdl に verbatim prefix 付き path を渡さない。
+    /// Windows でのみ意味を持つ assertion (Mac/Linux では常に真)。
+    #[test]
+    fn resolve_dir_has_no_verbatim_prefix() {
+        // cwd (実在 dir → canonicalize 成功パス)
+        let cwd = resolve_dir(None).expect("cwd");
+        assert!(!cwd.starts_with(r"\\?\"), "verbatim prefix が付いた: {cwd}");
+
+        // 明示指定 (実在 dir)
+        let explicit = resolve_dir(Some(".".to_string())).expect("explicit");
+        assert!(
+            !explicit.starts_with(r"\\?\"),
+            "verbatim prefix が付いた: {explicit}"
+        );
+    }
 }

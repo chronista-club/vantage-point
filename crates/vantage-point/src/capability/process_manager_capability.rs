@@ -390,13 +390,17 @@ impl ProcessManagerCapability {
         order.clear();
 
         for e in &entries {
-            let key = normalize_path_key(&PathBuf::from(&e.path));
+            // db 由来の entry は `ProjectsFile::load` を経ないため、 旧 Windows が保存した
+            // verbatim prefix (`\\?\C:\...`) を落とす最後の関所がここ。 素通しすると
+            // `ProjectInfo.path` が SP の spawn 引数 (`-C`) までそのまま流れる。
+            let path = crate::config::strip_verbatim_prefix(&e.path);
+            let key = normalize_path_key(&PathBuf::from(path));
             order.push(key.clone());
             projects.insert(
                 key,
                 ProjectInfo {
                     name: e.name.clone(),
-                    path: e.path.clone().into(),
+                    path: PathBuf::from(path),
                     process_status: ProcessStatus::Stopped,
                     port: None, // port は動的割当 (port_layout が slot から計算)
                     enabled: e.is_enabled(),

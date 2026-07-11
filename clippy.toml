@@ -1,0 +1,8 @@
+# `canonicalize` は Windows で `\\?\C:\...` (verbatim prefix) 付きの path を返す。
+# これを projects.kdl に保存したり SP の spawn 引数 (`-C`) に渡すと、 同じディレクトリが
+# 別文字列として扱われ重複 entry を生む。 workspace 全体で `dunce::canonicalize` に寄せる
+# (Mac/Linux では `std::fs::canonicalize` と同一挙動)。
+disallowed-methods = [
+  { path = "std::fs::canonicalize", reason = 'Windows で `\\?\` verbatim prefix が付く。 dunce::canonicalize を使う' },
+  { path = "std::path::Path::canonicalize", reason = 'Windows で `\\?\` verbatim prefix が付く。 dunce::canonicalize を使う' },
+]

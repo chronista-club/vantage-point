@@ -479,9 +479,9 @@ impl Config {
 
     /// パスを正規化（相対パス→絶対パス変換）
     pub fn normalize_path(path: &std::path::Path) -> String {
-        if path.is_absolute() {
+        let resolved = if path.is_absolute() {
             // 絶対パスはそのまま正規化を試みる
-            path.canonicalize()
+            dunce::canonicalize(path)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| path.display().to_string())
         } else {
@@ -489,16 +489,89 @@ impl Config {
             std::env::current_dir()
                 .ok()
                 .map(|cwd| cwd.join(path))
-                .and_then(|p| p.canonicalize().ok())
+                .and_then(|p| dunce::canonicalize(p).ok())
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| path.display().to_string())
-        }
+        };
+        // canonicalize 失敗時 (未実在 path) は入力をそのまま返しているので、 verbatim
+        // prefix 付きの入力が素通りしないようここでも落とす。
+        strip_verbatim_prefix(&resolved).to_string()
+    }
+}
+
+/// Windows の verbatim path prefix (`\\?\`) を落とす。 pure string 操作で、 全 OS で同じ結果。
+///
+/// `std::fs::canonicalize` は Windows で `\\?\C:\...` を返す。 これを projects.kdl に保存したり
+/// SP の spawn 引数 (`-C`) に渡すと、 見た目が汚れるだけでなく「同じディレクトリなのに文字列が
+/// 違う」 重複 entry を生む。 新規の正規化は [`dunce::canonicalize`] が防ぐが、 既に保存済みの
+/// `\\?\` 付き path は読み込み時にここで落とす (移行)。
+///
+/// `dunce::simplified` と同じく「剥がして安全な形」だけを対象にする:
+///
+/// - drive letter 形式 (`\\?\C:\...`) のみ。 `\\?\UNC\server\share` は prefix を落とすと別 path。
+/// - `MAX_PATH` (260) 以内のみ。 それを超える path は verbatim prefix が無いと Win32 API から
+///   開けないので、 剥がさず温存する。 非 ASCII を含む path では byte 長で測る分だけ保守的に
+///   (= 剥がさない側に) 倒れるが、 verbatim のまま残っても動作は正しい。
+pub fn strip_verbatim_prefix(path: &str) -> &str {
+    let Some(rest) = path.strip_prefix(r"\\?\") else {
+        return path;
+    };
+    if rest.len() > 260 {
+        return path;
+    }
+    let mut chars = rest.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(drive), Some(':'), Some('\\')) if drive.is_ascii_alphabetic() => rest,
+        _ => path,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// drive letter 形式の verbatim prefix だけを落とす (pure string なので全 OS で同じ結果)。
+    #[test]
+    fn test_strip_verbatim_prefix() {
+        // 落とす: `\\?\C:\...` (旧 Windows の canonicalize 出力)
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\C:\Users\mito\repos\vantage-point"),
+            r"C:\Users\mito\repos\vantage-point"
+        );
+        assert_eq!(strip_verbatim_prefix(r"\\?\d:\tmp"), r"d:\tmp");
+
+        // 落とさない: UNC は prefix を剥がすと別 path になる
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share"),
+            r"\\?\UNC\server\share"
+        );
+        // 落とさない: drive letter の形をしていない
+        assert_eq!(strip_verbatim_prefix(r"\\?\C:"), r"\\?\C:");
+        assert_eq!(strip_verbatim_prefix(r"\\?\1:\x"), r"\\?\1:\x");
+
+        // 落とさない: MAX_PATH 超は verbatim prefix が無いと Win32 API から開けない
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(strip_verbatim_prefix(&long), long);
+
+        // prefix なしはそのまま (Mac/Linux の通常 path を含む)
+        assert_eq!(strip_verbatim_prefix(r"C:\Users\mito"), r"C:\Users\mito");
+        assert_eq!(
+            strip_verbatim_prefix("/Users/makoto/repos/vp"),
+            "/Users/makoto/repos/vp"
+        );
+        assert_eq!(strip_verbatim_prefix(""), "");
+    }
+
+    /// `normalize_path` は canonicalize 失敗時 (未実在 path) も verbatim prefix を残さない。
+    #[test]
+    fn test_normalize_path_strips_verbatim_on_fallback() {
+        let missing = r"\\?\C:\definitely\does\not\exist\vp-test";
+        let normalized = Config::normalize_path(std::path::Path::new(missing));
+        assert!(
+            !normalized.starts_with(r"\\?\"),
+            "verbatim prefix が残っている: {normalized}"
+        );
+    }
 
     /// VP-189: 全 section を含む config.kdl が正しく parse される
     #[test]

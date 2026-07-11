@@ -128,7 +128,7 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
 
         let cwd = std::env::current_dir()
             .ok()
-            .and_then(|p| std::fs::canonicalize(&p).ok())
+            .and_then(|p| dunce::canonicalize(&p).ok())
             .map(|p| p.display().to_string());
 
         println!();
@@ -138,10 +138,13 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
         for inst in &instances {
             let name = crate::resolve::project_name_from_path(&inst.project_dir, config);
             let is_cwd = if let Some(cwd_str) = &cwd {
-                let canonical_proj = std::fs::canonicalize(&inst.project_dir)
+                let canonical_proj = dunce::canonicalize(&inst.project_dir)
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| inst.project_dir.clone());
-                cwd_str == &canonical_proj || cwd_str.starts_with(&format!("{}/", canonical_proj))
+                // separator は OS 依存 (Windows は `\`)。 `/` 決め打ちだと Windows で
+                // 子ディレクトリからの `← cwd` マーカーが出ない。
+                let prefix = format!("{}{}", canonical_proj, std::path::MAIN_SEPARATOR);
+                cwd_str == &canonical_proj || cwd_str.starts_with(&prefix)
             } else {
                 false
             };
