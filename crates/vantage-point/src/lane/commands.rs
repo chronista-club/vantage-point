@@ -479,6 +479,18 @@ fn remove_performer_workspace(repo_root: &Path, performer_dir: &Path) -> Result<
         let _ = run_git_in(repo_root, &["worktree", "prune"]);
         Ok(())
     } else {
+        // dep symlink 防御 (defense-in-depth の壁 2): find_performer_dir で既に弾かれるが、
+        // 万一 symlink path が渡っても `remove_dir_all` を走らせず明示 Err で止める。
+        // `.git` は上の is_file 分岐で false = symlink か clone dir。symlink_metadata で確定する。
+        let ft = fs::symlink_metadata(performer_dir)
+            .map_err(|e| e.to_string())?
+            .file_type();
+        if ft.is_symlink() {
+            return Err(format!(
+                "{} は dependency symlink です。performer ではありません。意図的な削除は rm で行ってください。",
+                performer_dir.display()
+            ));
+        }
         fs::remove_dir_all(performer_dir).map_err(|e| e.to_string())
     }
 }
@@ -552,6 +564,29 @@ fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
     }
 }
 
+/// `.vp/lanes/` の [`fs::DirEntry`] が **実 performer lane** かを判定する (dep symlink を除外)。
+///
+/// `.vp/lanes/` には 2 種のエントリが同居する:
+/// - **performer lane** = `vp lane new` が `git worktree add` で作る**実ディレクトリ**
+///   (`.git` は gitdir ポインタの file)
+/// - **dep symlink** = webview の `file:../../../../{creoui,club-unison}` 依存を解決するための
+///   sibling repo への**シンボリックリンク** (例 `.vp/lanes/creoui -> ~/repos/creoui`)
+///
+/// **不変条件**: 実 performer lane は必ず実ディレクトリで symlink にはならない。よって
+/// 「`.vp/lanes/` 内の symlink ⟺ dep」が成立し、symlink を弾けば dep が cockpit 列挙 /
+/// cleanup 誤判定 / delete 誤操作から構造的に消える。
+///
+/// `Path::is_dir()` は内部で `stat(2)` を呼び **symlink を辿る**ため、dep symlink を実 dir と
+/// 誤認する (= このバグの物理的な根)。対して [`fs::DirEntry::file_type`] は `readdir` の d_type /
+/// `lstat(2)` 由来で **symlink 自体の型**を返す (辿らない) ので、これで symlink を先に落とす。
+/// file_type 取得不能 (Err) は防御的に「非 performer」扱い (列挙から除外)。
+fn is_performer_entry(entry: &fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(ft) => !ft.is_symlink() && ft.is_dir(),
+        Err(_) => false,
+    }
+}
+
 /// List all performer environments under cwd の `<repo>/.vp/lanes/`。
 ///
 /// project-local lane refactor PR 4b: legacy global path 列挙を削除、 cwd の repo
@@ -566,10 +601,10 @@ pub fn list_performers() -> Result<(), String> {
     }
     let entries = fs::read_dir(&pl_dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+        if !is_performer_entry(&entry) {
+            continue; // dep symlink を除外 (is_performer_entry doc 参照)
         }
+        let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let branch = get_branch(&path).unwrap_or_else(|| "-".to_string());
@@ -611,10 +646,10 @@ pub fn list_performers_for_repo(repo_root: &Path) -> Vec<InactivePerformerEntry>
         return out;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+        if !is_performer_entry(&entry) {
+            continue; // dep symlink を除外 (SP snapshot / sidebar / flow progress の choke point)
         }
+        let path = entry.path();
         let dir_name = entry.file_name();
         out.push(InactivePerformerEntry {
             name: dir_name.to_string_lossy().into_owned(),
@@ -675,27 +710,34 @@ pub fn remove_performer(name: Option<&str>, all: bool, force: bool) -> Result<()
         if !force {
             return Err("--all には --force が必要です（誤削除防止）".into());
         }
-        if pl_dir.exists() {
-            // state file GC 用に削除前の performer 名を控える (dir ごと消すと名前が失われる)。
-            let names: Vec<String> = fs::read_dir(&pl_dir)
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .filter(|e| e.path().is_dir())
-                        .map(|e| e.file_name().to_string_lossy().to_string())
-                        .collect()
-                })
-                .unwrap_or_default();
-            fs::remove_dir_all(&pl_dir).map_err(|e| e.to_string())?;
-            // worktree lane: dir を消すと `.git/worktrees/<name>` 登録が stale で残るので prune。
-            let _ = run_git_in(&repo_root, &["worktree", "prune"]);
-            for name in &names {
-                clear_lane_state_files(&repo_root, name);
-            }
-            eprintln!("project-local パフォーマー全削除: {}", pl_dir.display());
-        } else {
+        if !pl_dir.exists() {
             eprintln!("削除対象のパフォーマーはありませんでした");
+            return Ok(());
         }
+        // 実 performer entry のみ対象 (dep symlink は温存 — creoui/club-unison は build 生命線)。
+        // 旧 `fs::remove_dir_all(&pl_dir)` の一括削除は dep symlink まで unlink するため使わない
+        // (symlink 自体を除去、 target repo は残るが webview の依存解決が壊れる)。
+        let performers: Vec<(String, PathBuf)> = fs::read_dir(&pl_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(is_performer_entry)
+                    .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if performers.is_empty() {
+            eprintln!("削除対象のパフォーマーはありませんでした");
+            return Ok(());
+        }
+        for (name, dir) in &performers {
+            // worktree / clone を問わず正しく後始末 (remove_performer_workspace が `.git` で判別)。
+            if let Err(e) = remove_performer_workspace(&repo_root, dir) {
+                eprintln!("⚠ パフォーマー削除に失敗: {name} ({e})");
+            }
+            clear_lane_state_files(&repo_root, name);
+        }
+        eprintln!("project-local パフォーマー全削除: {} 件", performers.len());
         return Ok(());
     }
 
@@ -727,8 +769,11 @@ pub fn status_performers() -> Result<(), String> {
             && let Ok(entries) = fs::read_dir(&pl_dir)
         {
             for entry in entries.flatten() {
+                if !is_performer_entry(&entry) {
+                    continue; // dep symlink を除外
+                }
                 let path = entry.path();
-                if !path.is_dir() || !path.join(".git").exists() {
+                if !path.join(".git").exists() {
                     continue;
                 }
                 found = true;
@@ -836,9 +881,13 @@ fn classify_performer_for_cleanup(
     to_remove: &mut Vec<(String, std::path::PathBuf, Option<String>)>,
     kept: &mut Vec<(String, String)>,
 ) {
+    // dep symlink を除外 (branch が origin/HEAD に merged 済みに見え「削除可能」誤判定される)。
+    if !is_performer_entry(&entry) {
+        return;
+    }
     let path = entry.path();
     // `.git` は clone なら dir / worktree なら file。 `exists()` は両方 true。
-    if !path.is_dir() || !path.join(".git").exists() {
+    if !path.join(".git").exists() {
         return;
     }
     let name = entry.file_name().to_string_lossy().to_string();
@@ -864,7 +913,12 @@ fn classify_performer_for_cleanup(
 /// performer_path / remove_performer / remove_performer_in が共有。
 fn find_performer_dir(repo_root: &Path, name: &str) -> Option<PathBuf> {
     let dir = config::project_lanes_dir(repo_root).join(name);
-    if dir.is_dir() { Some(dir) } else { None }
+    // dep symlink は performer ではない (delete が dep を対象に取るのを防ぐ、defense-in-depth の壁 1)。
+    // `symlink_metadata` は symlink を辿らないので、symlink を弾いた上で実 dir のみ Some。
+    match fs::symlink_metadata(&dir) {
+        Ok(md) if !md.file_type().is_symlink() && md.is_dir() => Some(dir),
+        _ => None,
+    }
 }
 
 // --- helpers ---
@@ -1704,6 +1758,104 @@ mod tests {
         let listed = list_performers_for_repo(&repo);
         assert!(listed.is_empty());
         let _ = fs::remove_dir_all(&repo);
+    }
+
+    // --- dep symlink 隔離 (lane kind 分離): 「.vp/lanes/ 内の symlink ⟺ dep」不変条件 ---
+
+    /// 実測 characterization: `std::fs::remove_dir_all(symlink→dir)` は **symlink 自体を
+    /// unlink するだけで target とその中身は破壊しない** (rustc 1.96 / macOS で確認)。
+    ///
+    /// ただしこの挙動は std version / OS 依存で保証が弱い (conductor が「確信持てない」と保留した点)。
+    /// よって [`remove_performer_workspace`] は std 挙動に依存せず明示 Err で止める設計にした
+    /// (下の `remove_performer_workspace_refuses_symlink`)。本テストは万一 std が target 破壊に
+    /// 退行したら赤で気付くための canary。
+    #[cfg(unix)]
+    #[test]
+    fn remove_dir_all_on_symlink_preserves_target() {
+        let base = test_dir("rmall-symlink");
+        let target = base.join("target");
+        fs::create_dir_all(&target).unwrap();
+        let sentinel = target.join("SENTINEL");
+        fs::write(&sentinel, b"alive").unwrap();
+        let link = base.join("link");
+        symlink(&target, &link).unwrap();
+
+        let res = fs::remove_dir_all(&link);
+        assert!(res.is_ok(), "remove_dir_all(symlink) は Ok: {res:?}");
+        assert!(
+            fs::symlink_metadata(&link).is_err(),
+            "symlink 自体は unlink される"
+        );
+        assert!(target.is_dir(), "target dir は生存する");
+        assert!(sentinel.exists(), "target 内の sentinel は破壊されない");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 列挙 (SP snapshot / sidebar / flow progress の choke point) が dep symlink を除外する。
+    #[cfg(unix)]
+    #[test]
+    fn list_performers_for_repo_excludes_dep_symlink() {
+        let (repo, pl) = setup_pl_fixture("list-dep");
+        // 実 performer lane (worktree 相当、 .git を持つ)。
+        fs::create_dir_all(pl.join("feat").join(".git")).unwrap();
+        // dep target (sibling repo 相当、 .git dir を持つ) を repo 外に用意。
+        let sibling = test_dir("list-dep-sibling");
+        fs::create_dir_all(sibling.join(".git")).unwrap();
+        // dep symlink: .vp/lanes/creoui -> sibling。
+        symlink(&sibling, &pl.join("creoui")).unwrap();
+
+        let listed: Vec<String> = list_performers_for_repo(&repo)
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(listed, vec!["feat"], "symlink (dep) は列挙されない");
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&sibling);
+    }
+
+    /// delete lookup が dep symlink に None を返す (delete が dep を対象に取れない、壁 1)。
+    #[cfg(unix)]
+    #[test]
+    fn find_performer_dir_returns_none_for_symlink() {
+        let (repo, pl) = setup_pl_fixture("find-dep");
+        let sibling = test_dir("find-dep-sibling");
+        fs::create_dir_all(sibling.join(".git")).unwrap();
+        symlink(&sibling, &pl.join("creoui")).unwrap();
+
+        assert!(
+            find_performer_dir(&repo, "creoui").is_none(),
+            "dep symlink は performer として解決されない"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&sibling);
+    }
+
+    /// 壁 2: symlink が渡っても remove_performer_workspace は remove_dir_all せず明示 Err、
+    /// target とその中身は無傷。
+    #[cfg(unix)]
+    #[test]
+    fn remove_performer_workspace_refuses_symlink() {
+        let (repo, pl) = setup_pl_fixture("rmws-dep");
+        let sibling = test_dir("rmws-dep-sibling");
+        fs::create_dir_all(sibling.join(".git")).unwrap();
+        let sentinel = sibling.join("SENTINEL");
+        fs::write(&sentinel, b"alive").unwrap();
+        let link = pl.join("creoui");
+        symlink(&sibling, &link).unwrap();
+
+        let err = remove_performer_workspace(&repo, &link).unwrap_err();
+        assert!(
+            err.contains("dependency symlink"),
+            "symlink は明示 Err で拒否: {err}"
+        );
+        assert!(fs::symlink_metadata(&link).is_ok(), "symlink 自体は残る");
+        assert!(sentinel.exists(), "target 内の sentinel は無傷");
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&sibling);
     }
 
     #[test]
