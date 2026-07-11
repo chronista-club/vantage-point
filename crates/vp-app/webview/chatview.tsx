@@ -31,6 +31,9 @@ type ChatState = {
   plan: PlanEntry[]
   streaming: boolean
   cost: number | null
+  /** context ゲージ（Act I statusline の bar :context 相当）。turn_completed で更新。 */
+  contextTokens: number | null
+  contextWindow: number | null
 }
 
 type LaneChat = {
@@ -65,7 +68,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       // backend は「新規 attach」と「reconnect / demand 再発火」を区別できないため、reset せず
       // 追記すると再接続のたび会話が二重化する（terminal replay の clear-prefix と同型の問題）。
       // reset → 再構築なら cold-start でも reconnect でも同じ最終状態に収束する（= 冪等）。
-      // header は live engine の session_init が持つ情報なので保持する。
+      // header / context ゲージは live engine 由来の session 状態（会話 item ではない）なので
+      // 保持する — transcript replay は turn_completed / session_init を運ばないため、消すと
+      // reconnect のたびゲージ・ヘッダーが空に戻ってしまう。
       //
       // replay 列は `transcript(commit 済み) ++ in-flight tail(生成中の未 commit 増分)`。
       // よって生成の真っ最中に着地しても、末尾には「途中まで書かれた assistant バブル」が
@@ -123,6 +128,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
     case 'turn_completed':
       s.streaming = false
       s.cost = ev.cost_usd ?? s.cost
+      // 欠落 turn（engine が値を運ばない版）では前値を保つ — ゲージが点滅しないように。
+      s.contextTokens = ev.context_tokens ?? s.contextTokens
+      s.contextWindow = ev.context_window ?? s.contextWindow
       break
     case 'error':
       s.streaming = false
@@ -138,7 +146,15 @@ function foldEvent(lane: string, ev: EchoesEvent): void {
 
 /** 空の ChatState（store 初期値 + テスト用）。 */
 export function emptyChatState(): ChatState {
-  return { header: null, items: [], plan: [], streaming: false, cost: null }
+  return {
+    header: null,
+    items: [],
+    plan: [],
+    streaming: false,
+    cost: null,
+    contextTokens: null,
+    contextWindow: null,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +255,19 @@ function ChatView() {
     ipc?.postMessage(
       JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
     )
+  }
+
+  // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
+  // 閾値は cc-status の意味論を踏襲: >=60% warn / >=85% critical。
+  const ctxPct = (): number | null => {
+    const s = state()
+    if (!s || s.contextTokens == null || !s.contextWindow) return null
+    return Math.min(100, Math.round((s.contextTokens / s.contextWindow) * 100))
+  }
+  const ctxTitle = (): string => {
+    const s = state()
+    if (!s || s.contextTokens == null || !s.contextWindow) return ''
+    return `context ${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} tokens`
   }
 
   const [draft, setDraft] = createSignal('')
@@ -362,6 +391,18 @@ function ChatView() {
               )}
             </For>
           </select>
+          <Show when={ctxPct() !== null}>
+            <span
+              class="echoes-context"
+              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
+              title={ctxTitle()}
+            >
+              <span class="echoes-context-bar">
+                <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
+              </span>
+              <span class="echoes-context-pct">{ctxPct()}%</span>
+            </span>
+          </Show>
         </div>
         <PlanWidget entries={() => state()!.plan} />
         <div
@@ -425,7 +466,7 @@ function ChatView() {
 export const CHATVIEW_CSS = `
 .echoes-chat { position:absolute; inset:0; display:flex; flex-direction:column;
   background: var(--color-bg, #0f1115); color: var(--color-text, #e6e9ef);
-  font-family: var(--font-ui, system-ui, -apple-system, sans-serif); overflow:hidden; }
+  font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
 .echoes-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .echoes-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
 /* history は tabindex=0 で focus 可能（Home/End/PgUp/PgDn 用）。領域全体を囲む outline は
@@ -441,7 +482,7 @@ export const CHATVIEW_CSS = `
 .echoes-msg-body :first-child { margin-top:0; } .echoes-msg-body :last-child { margin-bottom:0; }
 .echoes-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
   border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12px; }
-.echoes-msg-body code { font-family: var(--font-mono, ui-monospace, monospace); }
+.echoes-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
 .echoes-thinking { align-self:flex-start; font-size:12px; }
 .echoes-thinking-toggle { background:none; border:none; color: var(--color-text-tertiary,#8b93a7);
   cursor:pointer; font-size:12px; padding:2px 0; display:flex; align-items:center; gap:5px; }
@@ -464,7 +505,7 @@ export const CHATVIEW_CSS = `
   border-top-color: transparent; animation: echoes-spin .7s linear infinite; }
 .echoes-tool.done .echoes-tool-spinner, .echoes-tool.error .echoes-tool-spinner { display:none; }
 .echoes-tool.done { color: var(--color-text-tertiary,#616b80); } .echoes-tool.error { color:#f0a3a3; }
-.echoes-tool-name { font-family: var(--font-mono, ui-monospace, monospace); }
+.echoes-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
 .echoes-tool-status { margin-left:auto; font-size:11px; }
 .echoes-cursor { width:7px; height:15px; background: var(--color-accent,#3b82f6); border-radius:1px;
   animation: echoes-blink 1s step-start infinite; align-self:flex-start; }
@@ -477,7 +518,7 @@ export const CHATVIEW_CSS = `
 .echoes-plan-item.completed .echoes-plan-text { text-decoration: line-through; }
 .echoes-input { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--color-border,#2a3040); }
 .echoes-input-box { flex:1; resize:none; min-height:38px; max-height:160px; padding:9px 12px; font-size:13px;
-  font-family: var(--font-ui, system-ui, sans-serif); color: var(--color-text,#e6e9ef);
+  font-family: var(--vp-font-sans),var(--typography-family-sans); color: var(--color-text,#e6e9ef);
   background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040); border-radius:9px; outline:none; }
 .echoes-input-box:focus { border-color: var(--color-accent,#3b82f6); }
 .echoes-send { align-self:flex-end; padding:9px 16px; font-size:13px; border-radius:9px; border:none; cursor:pointer;
@@ -500,6 +541,17 @@ export const CHATVIEW_CSS = `
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); }
 .echoes-model-select:disabled { opacity:.45; cursor:default; }
+/* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
+.echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
+.echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
+  background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); }
+.echoes-context-fill { display:block; height:100%; border-radius:2px;
+  background: var(--color-success,#6fe2a8); transition: width .3s ease, background .3s ease; }
+.echoes-context-pct { font-size:10.5px; min-width:32px; text-align:right;
+  font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7); }
+.echoes-context.warn .echoes-context-fill { background: var(--color-accent,#e2b96f); }
+.echoes-context.crit .echoes-context-fill { background: #f0a3a3; }
+.echoes-context.crit .echoes-context-pct { color: #f0a3a3; }
 @keyframes echoes-fade { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform:none; } }
 @keyframes echoes-spin { to { transform: rotate(360deg); } }
 @keyframes echoes-blink { 50% { opacity:0; } }

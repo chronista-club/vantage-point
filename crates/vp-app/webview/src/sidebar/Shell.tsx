@@ -160,51 +160,135 @@ export function Shell() {
  * SIDEBAR_HTML_V2 が `creo-tokens.css` を inline 済なので、 ここは layout のみ定義する。
  */
 export const SHELL_CSS = `
-html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
-  color:var(--color-text-primary);font-family:'VPMono',monospace;font-size:12px;
-  line-height:1.4;overflow:hidden;}
+/* sidebar Live Token (--sb-*) の定義は :root に置く。 適用 (use site) は #sidebar-root
+   以下に閉じているので他 pane を汚染しない。 :root 定義にする理由 = creo-ui Editor Mode
+   (editor-host) の cssVarTarget が document.documentElement.style.setProperty で書くため:
+   #sidebar-root 側に定義があると「近い祖先の定義が勝つ」で :root への書き込みがマスクされ、
+   Ctrl+Shift+E の slider が効かなくなる (2026-07-11 Editor Mode 作業台化)。
+   text scale 4 段 (Live Token): base=行タイトル/summary、 hint=行本文/menu/input、
+   meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。
+   connector 系 (--sb-conn-*) は lane tree connector の演奏 knob: width=線幅、 slot=gutter 幅、
+   dash=idle 破線の dash 長、 flow-beat=HITL pulse の 1 beat (= creo-ui timeline BPM 82.7)、
+   photon-period=photon が spine を root→末端に走る周期、 glow=発光半径。
+   色 (hitl/auto) は Light Grid palette の magenta/cyan (Editor Mode picker で演奏可)。
+
+   Light Grid palette (--lg-*, Step 7 = Direction B「Light Grid / TRON origin」再スキン):
+   sidebar スコープ専用の静的 palette。 app 全体の paradox-violet テーマは変えない —
+   適用は #sidebar-root 以下に封じ込める (定義が :root なのは Editor Mode の書き込み先と
+   揃えるため。 定義自体は inert)。 視覚仕様の SSOT = artifact c203944c (mako 承認済)。 */
+:root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
+  --sb-conn-width:2px;--sb-conn-slot:22px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
+  --sb-photon-period:1800ms;--sb-glow:6px;
+  --sb-conn-hitl:#FF3DAE;
+  --sb-conn-auto:#22E0FF;
+  --lg-void:#05070A;--lg-void-2:#080B11;--lg-panel:#0A0E15;
+  --lg-grid:#0E2A33;--lg-hairline:#12222b;
+  --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;}
+html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
-   この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。 */
-#sidebar-root{height:100%;}
+   この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。
+   脱 TUI (2026-07): font / color / bg を #sidebar-root スコープに閉じる。 旧 html,body
+   直書きは単一 WebView の document 全体を汚染し、 pane header まで 'VPMono' 12px に
+   mono 化していた。 サイドバーを sans 全面化しつつ pane header への波及を断つ。 */
+#sidebar-root{height:100%;position:relative;
+  /* Light Grid: 地は void。 sidebar スコープの再スキンはここから下の .vp-* 系にのみ効く。 */
+  background:var(--lg-void,#05070A);color:var(--lg-hot,#EAFBFF);
+  /* サイドバー全面 sans (font zero-start: --vp-font-sans = 'Gen Interface JP')。 var() 2 段
+     fallback は vp-tokens.css 規約 (WKWebView が var() chain を invalidate するため use site
+     で並べる)。 未 install 環境でも creo sans stack に縮退し proper sans で描画される。 */
+  font-family:var(--vp-font-sans),var(--typography-family-sans);
+  /* sidebar 内の font-size は全て --sb-text-* 4 token を参照する (glyph 一点物 9px/14px を
+     除く)。 定義は上の :root ブロック (Editor Mode の書き込み先と揃えるため)。 */
+  font-size:var(--sb-text-base,13px);line-height:1.45;}
+/* TRON grid ambience — sidebar 背景に 1 枚だけ (course-correction 2026-07-11: project
+   カード上の grid は行を横切る scanline ノイズになるため撤去、 ambience はここに集約)。
+   2 軸 grid + radial mask で上部中央から溶ける。 opacity 5% = 気配だけ。 */
+#sidebar-root::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:
+    linear-gradient(var(--lg-grid,#0E2A33) 1px,transparent 1px),
+    linear-gradient(90deg,var(--lg-grid,#0E2A33) 1px,transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(340px 480px at 50% 16%,#000 0%,transparent 76%);
+  mask-image:radial-gradient(340px 480px at 50% 16%,#000 0%,transparent 76%);
+  opacity:.05;}
 /* position:relative は FileExplorer overlay の inset:0 を sidebar 領域に閉じるために必要。
    無いと overlay が viewport 基準になり、 sidebar 外の領域 (= ContextMenu と重なる場所) に
-   描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。 */
+   描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。
+   (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
+/* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
+   header 下線 / World・Bastet 上線 / detail 破線は全削除、 区切りは spacing で。 */
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
-  padding:var(--spacing-sm,8px);font-size:11px;
-  font-weight:500;color:var(--color-text-secondary);
-  border-bottom:1px solid var(--color-surface-border,#1f2233);user-select:none;}
+  padding:12px 12px 8px;font-size:var(--sb-text-micro,10px);letter-spacing:.14em;
+  text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
+  color:var(--lg-mute,#5C7A85);user-select:none;}
 .vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
-  border:none;background:transparent;color:var(--color-text-tertiary);cursor:pointer;
+  border:none;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
-.vp-sidebar-add:hover{background:var(--color-surface-bg-emphasis);
-  color:var(--color-brand-primary);}
-.vp-sidebar-list{flex:1;overflow-y:auto;padding:var(--spacing-xs,4px) 0;}
-.vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--color-text-tertiary);
-  font-size:11px;}
+.vp-sidebar-add:hover{background:#ffffff08;
+  color:var(--sb-conn-auto,#22E0FF);}
+.vp-sidebar-list{flex:1;overflow-y:auto;padding:0 0 10px;}
+.vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
+  font-size:var(--sb-text-meta,11px);}
 
-/* Project accordion */
-.vp-proj{margin:0;}
-/* project が所有する tree spine (= 縦ライン)。 connector の ├/└ 縦棒と同じ x に重ね、
-   行間 padding の隙間を埋めて proj 領域から伸びる 1 本の連続縦線に見せる (SoC: 縦は proj、
-   枝は connector)。 top:0 = summary 直下から、 bottom = 最後の lane 中央で止める。 */
+/* Project accordion — Light Grid: project = 地 (ground)。 発光させず void に沈む静かな地形。
+   faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
+   カード上の grid テクスチャは行が透明なため文字を横切る scanline ノイズになる → 撤去、
+   ambience は #sidebar-root::before の 1 枚に集約)。
+   glow なし — 図 (= session の current / photon) を引き立てるため必ず後退させる。 */
+.vp-proj{margin:8px 8px 0;border-radius:11px;
+  background:#ffffff04;
+  box-shadow:inset 0 0 0 1px #ffffff08;
+  padding:2px 4px 6px;}
+/* project が所有する current-spine (= 縦ライン)。 Light Grid: session が地の上を走る
+   light-trail の幹。 cyan-dim → 暗 の gradient で下に減衰。 top:0 = summary 直下から、
+   bottom = 最後の lane 中央で止める。 connector の tap (::before) がここから row へ分岐する。 */
 .vp-proj-content{position:relative;}
 .vp-proj-content::before{content:"";position:absolute;left:10.5px;top:0;bottom:17px;
-  width:1.5px;background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
+  width:var(--sb-conn-width,2px);border-radius:2px;
+  background:linear-gradient(var(--lg-cyan-dim,#1C6C7C),#123039);
   pointer-events:none;}
-.vp-proj + .vp-proj{border-top:1px solid var(--color-surface-border,#1f2233);}
-.vp-proj-summary{list-style:none;display:flex;align-items:center;gap:6px;
-  padding:6px var(--spacing-sm,8px);cursor:pointer;font-size:13px;user-select:none;
-  transition:background .1s ease;}
+/* photon = 文字通りの「current」。 mako motion 方針 (019f50ff): 常時アニメ禁止 —
+   イベント駆動の one-shot のみ。 lane が working に遷移した瞬間に ProjectAccordion が
+   .photon-fire を 1 回付与 → spine を root→末端に 1 度だけ走って消える。 定常状態では
+   描画しない (base opacity:0)。 glow は 1 層に抑制 (quiet pass 019f5100)。
+   iteration は Live Token (--sb-photon-loop、 default 1) — REPL で infinite にも戻せる。 */
+.vp-proj-content::after{content:"";position:absolute;
+  left:calc(10.5px + var(--sb-conn-width,2px) / 2 - 4px);top:-4px;
+  width:8px;height:8px;border-radius:50%;
+  background:var(--sb-conn-auto,#22E0FF);
+  box-shadow:0 0 var(--sb-glow,6px) 2px
+    color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 40%);
+  opacity:0;pointer-events:none;}
+.vp-proj-content.photon-fire::after{
+  animation:lg-photon var(--sb-photon-period,1800ms) cubic-bezier(.55,0,.5,1)
+    var(--sb-photon-loop,1);}
+@keyframes lg-photon{
+  0%{top:-4px;opacity:0;}
+  12%{opacity:1;}
+  82%{opacity:1;}
+  100%{top:calc(100% - 21px);opacity:0;}}
+@media (prefers-reduced-motion:reduce){
+  /* one-shot 前提なので reduced-motion では単に走らせない (定常は元々無表示)。 */
+  .vp-proj-content.photon-fire::after{animation:none;}}
+.vp-proj + .vp-proj{border-top:none;}
+/* project ラベル = 地の目印 (quiet ground marker)。 muted uppercase の小さい tab、 発光なし。
+   course-correction 2026-07-11: 「地なのに図として主張」しないようさらに小さく (10px)、
+   tracking も .15em に詰める。 weight は明示 400 (body の 300 継承より一段だけ立てる)。 */
+.vp-proj-summary{list-style:none;display:flex;align-items:center;gap:7px;
+  padding:7px 8px 5px;cursor:pointer;user-select:none;
+  font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:400;
+  color:var(--lg-mute-2,#38525b);
+  transition:color .12s ease;}
 .vp-proj-summary::-webkit-details-marker{display:none;}
-.vp-proj-summary:hover{background:var(--color-surface-bg-emphasis);}
+.vp-proj-summary:hover{color:var(--lg-mute,#5C7A85);}
 .vp-proj-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-proj-hint{padding:6px 12px 6px 20px;font-size:11px;
-  color:var(--color-text-tertiary);font-style:italic;}
+.vp-proj-hint{padding:6px 12px 6px 20px;font-size:var(--sb-text-meta,11px);
+  color:var(--lg-mute,#5C7A85);font-style:italic;}
 /* 新規追加 project の reveal flash — auto tab-switch と併用して見失わせない
    (Shell の createEffect が対象に .vp-proj-flash を付与)。summary 背景を一瞬 brand 色に。 */
-@keyframes vp-proj-flash{0%{background:var(--color-brand-primary-subtle);}
+@keyframes vp-proj-flash{0%{background:#22e0ff14;}
   100%{background:transparent;}}
 .vp-proj-flash > .vp-proj-summary{animation:vp-proj-flash 1.3s ease-out;}
 
@@ -213,152 +297,212 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
    dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線で示す。 */
 .vp-proj-summary{cursor:grab;}
 .vp-proj.dragging{opacity:.4;}
-.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--color-brand-primary);}
-.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--color-brand-primary);}
+/* drop marker は cyan。 ground の inset ring (box-shadow 単一 property) を失わないよう併記。 */
+.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#22E0FF),
+  inset 0 0 0 1px #ffffff08;}
+.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#22E0FF),
+  inset 0 0 0 1px #ffffff08;}
 
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
    2 段目 / "—" placeholder / Conductor ラベルは廃止、 nowrap で 1 行固定。 */
-/* tree connector は LaneRow が box-drawing text で持つ (= 線種で状態を表現、 2026-05-30)。
-   VPMono (PlemolJP) の等幅 + 罫線 glyph で全行の縦線が揃う。 線種 = control surrender FSM。 */
-.vp-lane-connector{font-family:'VPMono',monospace;white-space:pre;flex:0 0 auto;
-  font-size:13px;line-height:1;letter-spacing:0;font-weight:700;
-  -webkit-text-stroke:0.4px currentColor;user-select:none;}
-.vp-lane-connector.conn-conductor{
-  color:color-mix(in oklch,var(--color-brand-primary),transparent 30%);}
-.vp-lane-connector.conn-run{color:var(--color-text-tertiary);}
-.vp-lane-connector.conn-dead{
-  color:color-mix(in oklch,var(--color-text-tertiary),transparent 50%);}
-.vp-lane-connector.conn-hitl{color:var(--color-status-warning,#d49b3f);}
-.vp-lane-connector.conn-auto{color:var(--color-status-info,#3fb9d4);}
+/* tree connector — Light Grid (Step 7): 「tap + node」言語。 spine (proj 所有の縦線) から
+   row へ分岐する横 tap (::before) と、 行の結節点 node (::after) で状態を語る。
+   「線種/形 = control surrender FSM」の意味論は glyph 時代 (2026-05-30) から連続:
+   - working (conn-auto): solid cyan tap + cyan node (glow)
+   - idle (conn-dead): dim 破線 tap + 中空 node (縁 dim)
+   - needs-you (conn-hitl): magenta tap + diamond node が downbeat (725ms) で pulse
+   - root (conn-conductor): spine の頭 = cyan diamond head (tap なし)
+   tap 起点 x=2.5px は spine (10.5px) と同座標 (row padding-left 8px + 2.5px)。 */
+.vp-lane-connector{position:relative;flex:0 0 var(--sb-conn-slot,22px);align-self:stretch;
+  user-select:none;}
+.vp-lane-connector::before{content:"";position:absolute;left:2.5px;right:11px;top:50%;
+  height:var(--sb-conn-width,2px);
+  margin-top:calc(var(--sb-conn-width,2px) / -2);border-radius:2px;}
+.vp-lane-connector::after{content:"";position:absolute;right:2px;top:50%;
+  width:8px;height:8px;margin-top:-4px;border-radius:50%;}
+/* working = solid cyan tap + ベタ塗り小径 node。 quiet pass (019f5100): glow なし —
+   cyan が許されるのはこの tap + node だけ、 光量の主張は needs-you に譲る。 */
+.vp-lane-connector.conn-auto::before{background:var(--sb-conn-auto,#22E0FF);}
+.vp-lane-connector.conn-auto::after{width:6px;height:6px;margin-top:-3px;
+  background:var(--sb-conn-auto,#22E0FF);}
+/* conn-run は FSM 上 dead path (working は conn-auto に集約) — 保険で working と同扱い */
+.vp-lane-connector.conn-run::before{background:var(--sb-conn-auto,#22E0FF);}
+.vp-lane-connector.conn-run::after{width:6px;height:6px;margin-top:-3px;
+  background:var(--sb-conn-auto,#22E0FF);}
+/* idle = ほぼ消える (quiet pass): 極薄の破線 tap + 中空 node。 */
+.vp-lane-connector.conn-dead::before{background-image:repeating-linear-gradient(90deg,
+  color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 45%) 0 calc(var(--sb-conn-dash,4px) / 2),
+  transparent calc(var(--sb-conn-dash,4px) / 2) var(--sb-conn-dash,4px));}
+.vp-lane-connector.conn-dead::after{background:#123039;
+  border:1px solid color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 40%);}
+/* needs-you / HITL = magenta tap + diamond node。 唯一 glow を許される状態 (quiet pass)。
+   pulse は「needs-you に入った瞬間に 1 回だけ」 (one-shot、 常時 pulse 禁止 019f50ff) —
+   .conn-hitl が付いた時に animation が 1 度走り、 終わると静的 glow に落ち着く。
+   data source は既存 awaiting_input (laneConnector が conn-hitl を導出済) — 配線済み。 */
+.vp-lane-connector.conn-hitl::before{background:var(--sb-conn-hitl,#FF3DAE);}
+.vp-lane-connector.conn-hitl::after{width:9px;height:9px;margin-top:-4.5px;
+  background:var(--sb-conn-hitl,#FF3DAE);border-radius:2px;transform:rotate(45deg);
+  box-shadow:0 0 var(--sb-glow,6px) 1px
+    color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 55%);
+  animation:lg-hitl var(--sb-conn-flow-beat,.7255s) steps(1,end) var(--sb-hitl-loop,1);}
+@keyframes lg-hitl{
+  0%,60%{opacity:1;box-shadow:0 0 calc(var(--sb-glow,6px) * 1.4) 2px
+    color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 40%);}
+  61%,100%{opacity:.55;box-shadow:0 0 calc(var(--sb-glow,6px) * .6) 1px
+    color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 67%);}}
+@media (prefers-reduced-motion:reduce){
+  .vp-lane-connector.conn-hitl::after{animation:none;}}
+/* root (conductor) = spine の頭。 tap は描かず diamond を頭石として置く。 quiet pass:
+   cyan は working 専用なので頭石は cyan-dim のベタ塗り (glow なし)。 */
+.vp-lane-connector.conn-conductor::before{display:none;}
+.vp-lane-connector.conn-conductor::after{width:9px;height:9px;margin-top:-4.5px;
+  left:6.5px;right:auto;border-radius:2px;transform:rotate(45deg);
+  background:var(--lg-cyan-dim,#1C6C7C);}
 .vp-lane-row{position:relative;display:flex;flex-wrap:nowrap;align-items:center;
-  gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:12px;cursor:pointer;
-  transition:background .1s ease;}
-.vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
-.vp-lane-row + .vp-lane-row{border-top:1px solid
-  color-mix(in oklch, var(--color-surface-border,#1f2233), transparent 60%);}
-/* active lane は横線 (上下 border) で認識させる (= 縦線でなく横方向の帯で demarcate、 2026-05-30)。
-   文字は brand-primary を少しだけ明るく (= white 16% 混合) して存在感を上げる。 */
-.vp-lane-row.active{background:var(--color-brand-primary-subtle);
-  color:color-mix(in oklch,var(--color-brand-primary),white 16%);font-weight:500;
-  box-shadow:inset 0 2px 0 0 var(--color-brand-primary),
-             inset 0 -2px 0 0 var(--color-brand-primary);}
-.vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary),
-  transparent 45%);font-style:italic;cursor:default;}
-/* Conductor / Performer の indent 差は connector glyph (├─ vs │ ├) が担うため padding override 不要。 */
+  gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:var(--sb-text-hint,12px);cursor:pointer;
+  border-radius:8px;transition:background .1s ease;}
+.vp-lane-row:hover{background:#ffffff06;}
+/* row 間の旧 border は撤去 — 地は無地 (行を横切る線は作らない)。 */
+.vp-lane-row + .vp-lane-row{border-top:none;}
+/* active (= 選択中) lane — 選択表現は faint tint のみ (mako 019f5114: ブラケット/
+   ブロック/バー等のアクセント要素はゼロ)。 tint は判別性のため僅かに強め (8%)、
+   光り物は増やさない。 「光る」 のは state (photon / node) の仕事。 */
+.vp-lane-row.active{background:#22e0ff14;}
+.vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
+/* root session (= conductor、 spine の頭)。 quiet pass (019f5100): cyan wash / glyph glow は
+   撤去、 weight 600 だけで静かに立たせる (行 tint と glyph 彩色は光の総量を増やすため落とす)。 */
+.vp-lane-row:not(.performer){font-weight:600;letter-spacing:-.01em;margin-top:2px;}
+/* Conductor / Performer の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
 /* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */
 .vp-lane-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;color:var(--color-text-secondary);}
+  white-space:nowrap;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 18%);}
 /* fallback (= session title 未設定で proj 名 / performer 名を出す時) は dimmed で控えめに。 */
-.vp-lane-title.is-fallback{color:var(--color-text-tertiary);opacity:0.7;}
-.vp-lane-row.active .vp-lane-title{color:var(--color-brand-primary);opacity:1;}
+.vp-lane-title.is-fallback{color:var(--lg-mute,#5C7A85);}
+.vp-lane-row.inactive .vp-lane-title{color:var(--lg-mute,#5C7A85);}
+.vp-lane-row.active .vp-lane-title{color:var(--lg-hot,#EAFBFF);}
+/* state 文字 (working / needs you) — 右端、 mono micro uppercase。 quiet pass (019f5100):
+   muted 一色、 needs-you だけ magenta。 idle は文字ごと出さない (stateLabel が null)。 */
+.vp-lane-state{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;
+  color:var(--lg-mute-2,#38525b);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.vp-lane-connector.conn-hitl ~ .vp-lane-right .vp-lane-state{
+  color:var(--sb-conn-hitl,#FF3DAE);}
 /* 右端 block: meta / awaiting / files / mailbox を右寄せで横並び。 */
 .vp-lane-right{display:flex;align-items:center;gap:5px;flex:0 0 auto;margin-left:auto;}
 /* files / mailbox は hover 時のみ表示 (= noise 減)。 ただし mailbox unread と
    awaiting dot は signal なので常時表示。 */
-.vp-lane-msg{display:inline-flex;color:var(--color-text-tertiary);opacity:0;
+.vp-lane-msg{display:inline-flex;color:var(--lg-mute,#5C7A85);opacity:0;
   transition:opacity .1s ease;}
 .vp-lane-row:hover .vp-lane-msg{opacity:0.55;}
-.vp-lane-msg.unread{color:var(--color-brand-primary);opacity:1;}
+.vp-lane-msg.unread{color:var(--lg-cyan-dim,#1C6C7C);opacity:1;}
 .vp-lane-row:hover .vp-lane-msg.unread{opacity:1;}
-.vp-lane-meta{display:flex;gap:5px;font-size:10px;color:var(--color-text-tertiary);
-  white-space:nowrap;}
-.vp-lane-meta .ahead{color:var(--color-status-info,#3fb9d4);}
-.vp-lane-meta .behind{color:var(--color-status-warning,#d49b3f);}
-.vp-lane-meta .dirty{color:var(--color-status-warning,#d49b3f);font-weight:500;}
+/* git meta (IDs & counts) は mono 面 (UDEV Gothic NF)。 ahead=cyan-dim / behind・dirty=magenta 系。 */
+.vp-lane-meta{display:flex;gap:5px;font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);
+  font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-variant-numeric:tabular-nums;white-space:nowrap;}
+.vp-lane-meta .ahead{color:var(--lg-cyan-dim,#1C6C7C);}
+.vp-lane-meta .behind{color:color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 30%);}
+.vp-lane-meta .dirty{color:color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 30%);
+  font-weight:500;}
+/* awaiting dot — needs-you 言語 (magenta) に従属。 diamond node と同源の信号。 */
 .vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
-  background:var(--color-status-warning,#d49b3f);flex:0 0 auto;}
+  background:var(--sb-conn-hitl,#FF3DAE);flex:0 0 auto;}
 
 /* Add Performer「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
 .vp-proj-addperformer,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
-  padding:2px;border:none;background:transparent;color:var(--color-text-tertiary);
+  padding:2px;border:none;background:transparent;color:var(--lg-mute,#5C7A85);
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
 .vp-proj-addperformer:hover,.vp-proj-addperformer.open,.vp-proj-start:hover{
-  background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
-.vp-proj-start{color:var(--color-brand-primary);}
+  background:#ffffff08;color:var(--sb-conn-auto,#22E0FF);}
+/* Start ▶ も quiet: 定常は muted、 hover 時のみ cyan (interaction feedback)。 */
+.vp-proj-start{color:var(--lg-mute,#5C7A85);}
 .vp-add-performer-form{display:flex;flex-direction:column;gap:5px;
   padding:4px var(--spacing-sm,8px) 6px 14px;}
-.vp-add-performer-input{padding:5px 8px;border:1px solid var(--color-surface-border,#1f2233);
-  background:var(--color-surface-bg-base);color:var(--color-text-primary);
-  border-radius:var(--radius-sm,6px);font-family:inherit;font-size:11px;
+.vp-add-performer-input{padding:5px 8px;border:1px solid var(--lg-hairline,#12222b);
+  background:var(--lg-panel,#0A0E15);color:var(--lg-hot,#EAFBFF);
+  border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-meta,11px);
   box-sizing:border-box;}
-.vp-add-performer-input:focus{outline:none;border-color:var(--color-brand-primary);}
+.vp-add-performer-input:focus{outline:none;border-color:var(--sb-conn-auto,#22E0FF);}
 .vp-add-performer-actions{display:flex;justify-content:flex-end;gap:6px;}
 .vp-add-performer-actions button{padding:3px 10px;
-  border:1px solid var(--color-surface-border,#1f2233);background:transparent;
-  color:var(--color-text-secondary);border-radius:var(--radius-sm,6px);cursor:pointer;
-  font-size:10px;font-family:inherit;transition:background .12s ease,color .12s ease;}
-.vp-add-performer-actions button:hover{background:var(--color-surface-bg-emphasis);
-  color:var(--color-text-primary);}
-.vp-add-performer-actions button.primary{background:var(--color-brand-primary-subtle);
-  color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
+  border:1px solid var(--lg-hairline,#12222b);background:transparent;
+  color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);border-radius:var(--radius-sm,6px);cursor:pointer;
+  font-size:var(--sb-text-micro,10px);font-family:inherit;transition:background .12s ease,color .12s ease;}
+.vp-add-performer-actions button:hover{background:#ffffff08;
+  color:var(--lg-hot,#EAFBFF);}
+.vp-add-performer-actions button.primary{background:#22e0ff14;
+  color:var(--sb-conn-auto,#22E0FF);border-color:#22e0ff2e;}
 
-/* World widget (sidebar 最下部、 collapsed 1 行 + expanded 詳細の accordion) */
-.vp-world{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);
-  background:var(--color-surface-bg-base);}
-.vp-world-summary{list-style:none;display:flex;align-items:center;gap:6px;
-  padding:var(--spacing-xs,4px) var(--spacing-sm,8px);cursor:pointer;
-  font-size:11px;color:var(--color-text-secondary);user-select:none;}
+/* World widget (sidebar 最下部) — Light Grid foot: mono 面、 muted、 dot は cyan-dim。
+   地の一部なので発光させない (online の緑 dot 廃止)。 offline だけ僅かに magenta。 */
+.vp-world{flex:0 0 auto;background:transparent;padding-top:4px;}
+.vp-world-summary{list-style:none;display:flex;align-items:center;gap:8px;
+  padding:8px var(--spacing-sm,10px);cursor:pointer;
+  font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-meta,11px);color:var(--lg-mute-2,#38525b);user-select:none;}
 .vp-world-summary::-webkit-details-marker{display:none;}
-.vp-world-summary:hover{background:var(--color-surface-bg-emphasis);}
+.vp-world-summary:hover{color:var(--lg-mute,#5C7A85);}
 .vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
-  background:var(--color-status-success,#3fb950);}
-.vp-world-dot.offline{background:var(--color-status-error,#d4444c);}
-/* L1 lifecycle: project 行の SP presence dot（●◐○）。daemon-canonical の接続状態を可視化。
-   default は unregistered 相当（dim）、 各 state class で色付け。 connecting は pulse。 */
-.vp-proj-presence-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
-  background:var(--color-text-tertiary,#6e7681);opacity:.5;}
-.vp-proj-presence-dot.connected{background:var(--color-status-success,#3fb950);opacity:1;}
-.vp-proj-presence-dot.connecting{background:var(--color-status-warning,#d49b3f);opacity:1;
+  background:var(--lg-cyan-dim,#1C6C7C);}
+.vp-world-dot.offline{background:color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 40%);}
+/* L1 lifecycle: project 行の SP presence dot。 Light Grid では project = 地なので発光させない
+   (「発光ドット無し」)。 semantics は残しつつ muted 表現に落とす: connected = mute-2 定常、
+   connecting = mute pulse、 disconnected = magenta 60% (要注意だけが僅かに彩度を持つ)、
+   unregistered = mute-2 40%。 */
+.vp-proj-presence-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
+  background:var(--lg-mute-2,#38525b);opacity:.4;}
+.vp-proj-presence-dot.connected{background:var(--lg-mute-2,#38525b);opacity:1;}
+.vp-proj-presence-dot.connecting{background:var(--lg-mute,#5C7A85);opacity:1;
   animation:vp-presence-pulse 1.1s ease-in-out infinite;}
-.vp-proj-presence-dot.disconnected{background:var(--color-status-error,#d4444c);opacity:1;}
-.vp-proj-presence-dot.unregistered{background:var(--color-text-tertiary,#6e7681);opacity:.5;}
+.vp-proj-presence-dot.disconnected{background:var(--sb-conn-hitl,#FF3DAE);opacity:.6;}
+.vp-proj-presence-dot.unregistered{background:var(--lg-mute-2,#38525b);opacity:.4;}
 @keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
 .vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums;}
-.vp-world-detail{padding:var(--spacing-xs,4px) var(--spacing-sm,8px);
-  border-top:1px dashed var(--color-surface-border,#1f2233);}
-.vp-world-stat{display:flex;justify-content:space-between;font-size:11px;
-  padding:1px 0;}
-.vp-world-stat .k{color:var(--color-text-tertiary);}
-.vp-world-stat .v{color:var(--color-text-primary);font-weight:500;
+.vp-world-detail{padding:2px var(--spacing-sm,8px) 6px;}
+.vp-world-stat{display:flex;justify-content:space-between;font-size:var(--sb-text-meta,11px);
+  font-family:var(--vp-font-mono),var(--typography-family-mono);padding:1px 0;}
+.vp-world-stat .k{color:var(--lg-mute-2,#38525b);}
+.vp-world-stat .v{color:var(--lg-mute,#5C7A85);font-weight:500;
   font-variant-numeric:tabular-nums;}
 
 /* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
-.vp-devices{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);}
+.vp-devices{flex:0 0 auto;padding-bottom:4px;}
 .vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
-  padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:12px;
-  color:var(--color-text-secondary);}
-.vp-stand-row:hover{background:var(--color-surface-bg-emphasis);}
-.vp-stand-row.active{background:var(--color-brand-primary-subtle);
-  color:var(--color-brand-primary);}
+  padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);
+  color:var(--lg-mute,#5C7A85);}
+.vp-stand-row:hover{background:#ffffff06;}
+.vp-stand-row.active{background:#22e0ff10;
+  color:var(--sb-conn-auto,#22E0FF);}
 .vp-stand-icon{display:flex;align-items:center;flex:0 0 auto;}
 .vp-stand-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
-.vp-stand-badge{flex:0 0 auto;font-size:10px;padding:1px 6px;border-radius:8px;
-  background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);
+.vp-stand-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
+  background:#ffffff08;color:var(--lg-mute,#5C7A85);
+  font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}
 
 /* Lane 行 右クリック context menu (VP-204 PR-1、 singleton popup) */
 .vp-ctx-backdrop{position:fixed;inset:0;z-index:9998;}
 .vp-ctx-menu{position:fixed;z-index:9999;min-width:180px;
-  background:var(--color-surface-bg-base);
-  border:1px solid var(--color-surface-border,#1f2233);
+  background:var(--lg-panel,#0A0E15);
+  border:1px solid var(--lg-hairline,#12222b);
   border-radius:var(--radius-md,6px);box-shadow:0 8px 24px rgba(0,0,0,.4);
-  padding:4px 0;font-size:12px;user-select:none;}
-.vp-ctx-header{padding:4px 14px 6px;font-size:10px;
-  color:var(--color-text-tertiary);
-  border-bottom:1px solid var(--color-surface-border,#1f2233);
+  padding:4px 0;font-size:var(--sb-text-hint,12px);user-select:none;}
+.vp-ctx-header{padding:4px 14px 6px;font-size:var(--sb-text-micro,10px);
+  color:var(--lg-mute,#5C7A85);
+  border-bottom:1px solid var(--lg-hairline,#12222b);
   margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-ctx-item{padding:6px 14px;cursor:pointer;display:flex;align-items:center;
-  gap:8px;color:var(--color-text-secondary);
+  gap:8px;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);
   transition:background .1s ease,color .1s ease;}
-.vp-ctx-item:hover{background:var(--color-surface-bg-emphasis);
-  color:var(--color-text-primary);}
+.vp-ctx-item:hover{background:#ffffff08;
+  color:var(--lg-hot,#EAFBFF);}
 .vp-ctx-item.danger:hover{background:var(--color-status-error,#d4444c);color:#fff;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
@@ -369,12 +513,12 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
    (moody-blues PR #439 final review Issue 1、 dogfood で実機目撃済)。 */
 /* Lane row のフォルダピッカー起動ボタン (FileExplorer overlay を開く trigger) */
 .vp-lane-files-btn{display:inline-flex;align-items:center;padding:1px 3px;
-  border:none;background:transparent;color:var(--color-text-tertiary);
+  border:none;background:transparent;color:var(--lg-mute,#5C7A85);
   cursor:pointer;border-radius:3px;flex:0 0 auto;opacity:0;
   transition:background .12s ease,color .12s ease,opacity .12s ease;}
 .vp-lane-row:hover .vp-lane-files-btn{opacity:1;}
-.vp-lane-files-btn:hover{background:var(--color-surface-bg-emphasis);
-  color:var(--color-brand-primary);}
+.vp-lane-files-btn:hover{background:#ffffff08;
+  color:var(--sb-conn-auto,#22E0FF);}
 ${FILE_EXPLORER_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}

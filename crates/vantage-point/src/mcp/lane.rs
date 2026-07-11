@@ -707,10 +707,22 @@ impl VantageMcp {
                 .and_then(crate::flow::LatestMsgView::from_json);
             let performer_status_view =
                 crate::flow::PerformerStatusView::from_json(&performer_status);
+            // AwaitingUser 判定: 未 ack needs_user (best-effort、 失敗は None = 判定 off で degrade)
+            let needs_user_view = self
+                .quic_call(
+                    "wire_needs_user_pending",
+                    serde_json::json!({ "agent": agent_addr }),
+                )
+                .await
+                .ok()
+                .as_ref()
+                .and_then(|v| v.get("message"))
+                .and_then(crate::flow::LatestMsgView::from_json);
             let fsm = crate::flow::derive_flow_state(
                 latest_view.as_ref(),
                 performer_status_view,
                 &agent_addr,
+                needs_user_view.as_ref(),
             );
 
             performers.push(serde_json::json!({

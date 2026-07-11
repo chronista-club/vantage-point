@@ -1,21 +1,37 @@
 /**
  * Vantage Point ローカル token 拡張 layer。
  *
- * VP 独自 "principal" token (`--vp-font-*`) を creo-tokens.css とは独立して宣言する。
- * 値は Mizolet (= みぞれ / みぞれ mono) のみ。 fallback は **使用箇所** で
+ * font zero-start (2026-07-11): 画面書体を principal 2 token に統一する。
+ *   --vp-font-sans = 'Gen Interface JP'  (UI / 本文 / PP、 8 weight)
+ *   --vp-font-mono = 'UDEV Gothic NF'    (terminal / code / kbd、 Nerd Font glyph 込み)
+ * bundle はせず local (OS install 済) font を名前参照するのみ。 fallback は **使用箇所** で
  * `var(--vp-font-sans), var(--typography-family-sans)` のように creo token と並べて
  * 解決する (2 段 var())。
  *
  * 注: var() chain (例: `--vp-font-sans: ..., var(--typography-family-sans);`) は WKWebView
  * (wry が macOS で使う WebKit) で declaration が invalidate される挙動を確認。 declared 値が
  * 空文字列に倒れるため、 chain は使わず use site で 2 段に並べる方式を採る (Chrome/Firefox では
- * chain も動く)。
- *
- * Mizolet は一時凌ぎ。 将来ライセンス購入して @font-face で bundle 予定 — その時はこの token は
- * 維持し、 上に `@font-face { font-family: 'Mizolet'; src: url(...) }` を追加するだけで移行できる
- * (use site 無改修)。
+ * chain も動く)。 下の --typography-family-* 上書きも同理由で var() 参照ではなく literal 重複。
  */
+
+/* Gen Interface JP は weight ごとに別 family として OS 登録される (例: Light の family 名は
+   "Gen Interface JP Light")。 そのままでは font-weight:300 で Light が選ばれないため、
+   @font-face + local(PostScript 名) で 1 family 8 weight に束ね直す。 */
+@font-face { font-family: 'Gen Interface JP'; font-weight: 100; src: local('GenInterfaceJP-Thin'); }
+@font-face { font-family: 'Gen Interface JP'; font-weight: 200; src: local('GenInterfaceJP-ExtraLight'); }
+@font-face { font-family: 'Gen Interface JP'; font-weight: 300; src: local('GenInterfaceJP-Light'); }
+@font-face { font-family: 'Gen Interface JP'; font-weight: 400; src: local('GenInterfaceJP-Regular'); }
+@font-face { font-family: 'Gen Interface JP'; font-weight: 500; src: local('GenInterfaceJP-Medium'); }
+@font-face { font-family: 'Gen Interface JP'; font-weight: 600; src: local('GenInterfaceJP-SemiBold'); }
+@font-face { font-family: 'Gen Interface JP'; font-weight: 700; src: local('GenInterfaceJP-Bold'); }
+@font-face { font-family: 'Gen Interface JP'; font-weight: 800; src: local('GenInterfaceJP-ExtraBold'); }
+
 :root {
-  --vp-font-sans: 'Mizolet', 'みぞれ';
-  --vp-font-mono: 'Mizolet-Mono', 'みぞれ 等幅';
+  --vp-font-sans: 'Gen Interface JP', sans-serif;
+  --vp-font-mono: 'UDEV Gothic NF', monospace;
+  /* creo-ui token の収束: creo-ui component 由来の描画も 2 書体に落とす。
+     creo-tokens.css の定義をここ (後読み) で上書き。 var(--vp-font-*) 参照にしたいところだが
+     上記 WKWebView の var() chain invalidate があるため literal 重複で書く。 */
+  --typography-family-sans: 'Gen Interface JP', sans-serif;
+  --typography-family-mono: 'UDEV Gothic NF', monospace;
 }

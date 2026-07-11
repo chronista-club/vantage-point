@@ -34,6 +34,17 @@ lane の一覧は git-native に取得する（manifest ファイルは存在し
 - `git worktree list` — live registry（worktree lane の全列挙）
 - `git branch --list 'mako/*'` — lane branch の列挙
 
+## wire 規約（inter-agent messaging）
+
+wire message の `body.kind` は dev-flow FSM の入力になる（taxonomy と FSM の詳細 =
+`docs/guide/dev-flow-primitives.md` §3）。特に:
+
+- **`needs_user`**: 「conductor では捌けない、**ユーザ本人**の意見が要る」相談を投げる時は
+  `body.kind = "needs_user"` + `body.category = "command"` で conductor 宛に送る。
+  受信側は**ユーザの回答を relay してから** `wire_ack` する — 未 ack の間、その performer は
+  `awaiting_user`（sidebar の needs-you 表示）のまま。conductor が自分で判断できる相談は
+  `question` を使い、needs_user は乱発しない（needs-you signal の希少性を守る）。
+
 ### GitNexus との読み替え
 
 下記 GitNexus block の `detect_changes` 例にある `base_ref: "main"` は、この repo では **`base_ref: "nightly"`** に読み替えること（main は公開 release 専用で dev からの diff が膨らむ）。
@@ -42,7 +53,7 @@ lane の一覧は git-native に取得する（manifest ファイルは存在し
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (12056 symbols, 26451 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point** (12314 symbols, 27237 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -51,8 +62,9 @@ This project is indexed by GitNexus as **vantage-point** (12056 symbols, 26451 r
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
 - **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
 
 ## Never Do
 

@@ -315,6 +315,13 @@ pub struct LaneInfo {
     /// （chat lane の engine-less は正常状態 — #683 再演防止）。
     #[serde(default)]
     pub console_mode: crate::lane::console_mode::ConsoleMode,
+    /// FSM 投影 (2026-07-11): dev-flow FSM (`flow::derive_flow_state`) の現在 state。
+    /// **TheWorld が vp-app への snapshot 送信時に enrich する derive 値** — SP / lane_registry /
+    /// db では常に `None` (derive できるものは store しない原則)。 source は wire store
+    /// (latest msg + 未 ack needs_user) + performer_status で、 `vp flow progress` と同一判定。
+    /// serde default + skip で旧 SP / 旧 client と wire 完全互換。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_state: Option<crate::flow::FlowState>,
 }
 
 /// Lane Pool — Conductor/Performer registry
@@ -467,6 +474,7 @@ impl LanePool {
             // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         };
         pool.lanes.insert(addr, info);
         pool
@@ -1044,6 +1052,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         });
     }
 
@@ -1271,6 +1280,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         };
         let diff: LaneDiff = Diff::Add {
             payload: info.clone(),
@@ -1322,6 +1332,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         };
         let event = SystemEvent::Lane(Diff::Add {
             payload: info.clone(),

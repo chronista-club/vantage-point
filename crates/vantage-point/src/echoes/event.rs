@@ -76,11 +76,22 @@ pub enum EchoesEvent {
     /// plan（TodoWrite の input から導出）。plan ウィジェット用。
     Plan { entries: Vec<PlanEntry> },
 
-    /// turn 終了。diff 集計トリガ + コスト表示。
+    /// turn 終了。diff 集計トリガ + コスト表示 + context ゲージ更新。
+    ///
+    /// context_* は Act I statusline（cc-status の `bar :context`）と同じ意味論:
+    /// tokens = turn 最後の assistant usage の合算（input + cache_read + cache_creation）、
+    /// window = `result.modelUsage[*].contextWindow`。engine / 版が値を運ばなければ None
+    /// （GUI はゲージを出さないだけ）。凍結語彙への additive optional なので後方互換。
     TurnCompleted {
         session_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
+        /// 現在の会話が占める context tokens（ゲージの分子）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_tokens: Option<u64>,
+        /// モデルの context window 総量（ゲージの分母）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_window: Option<u64>,
     },
 
     /// engine / 翻訳層のエラー。

@@ -508,21 +508,153 @@ pub(crate) async fn build_world_lanes(
 /// **同一の event 形** (`method="snapshot"`、 payload = `{"type":"lanes_snapshot","lanes":[...]}`) で
 /// 送る。 これにより vp-app の consumer (`run_lanes_session`) は接続先が SP→World に変わっても無改造。
 /// 登録が無い project は空 Vec を送る (SP 未登録/lane 無しを「空」として正しく表現)。
+///
+/// FSM 投影 (2026-07-11): 送信直前に performer LaneInfo へ `flow_state` を enrich する
+/// ([`enrich_lanes_flow_state`])。 送信時 derive であり `lane_registry` / db には書き戻さない。
 #[allow(clippy::type_complexity)]
 async fn send_lanes_snapshot(
     channel: &UnisonChannel,
     lane_registry: &Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
     path_key: &str,
+    wiremsg_store: &Option<crate::capability::WiremsgStore>,
+    running_processes: &Option<Arc<RwLock<HashMap<String, RunningProcess>>>>,
 ) -> Result<(), NetworkError> {
-    let lanes = lane_registry
+    let mut lanes = lane_registry
         .read()
         .await
         .get(path_key)
         .cloned()
         .unwrap_or_default();
+    if let Some(store) = wiremsg_store {
+        // wire address の `<project>` は registry 登録名 (= SP の config 登録名) が SSOT
+        // (`resolve::project_name_from_path` と同値)。 SP 未接続の窓は lane address の
+        // project (basename 由来) で代用する (両者は通常一致)。
+        let project_name = match running_processes {
+            Some(rp) => rp
+                .read()
+                .await
+                .get(path_key)
+                .map(|p| p.project_name.clone()),
+            None => None,
+        }
+        .or_else(|| lanes.first().map(|l| l.address.project.clone()));
+        if let Some(project_name) = project_name {
+            enrich_lanes_flow_state(&mut lanes, store, &project_name).await;
+        }
+    }
     let snapshot = crate::protocol::ProcessMessage::LanesSnapshot { lanes };
     let json = serde_json::to_value(&snapshot).unwrap_or_default();
     channel.send_event("snapshot", &json).await
+}
+
+/// FSM 投影 (2026-07-11): performer LaneInfo へ dev-flow FSM の現在 state を enrich する。
+///
+/// source は `vp flow progress` / MCP `flow_progress` と同一判定 (`flow::derive_flow_state`):
+/// wire store の latest msg + 未 ack needs_user + `LaneInfo.performer_status`。 World は
+/// wire store を in-process に持つため hop なしで derive できる (= 計算点を World に置く理由)。
+/// conductor は dev-flow FSM の対象外 (spine の頭) で `None` のまま。 store クエリ失敗は
+/// 当該 lane を `None` に留めて degrade (client 側は pid heuristic に fallback)。
+async fn enrich_lanes_flow_state(
+    lanes: &mut [crate::process::lanes_state::LaneInfo],
+    store: &crate::capability::WiremsgStore,
+    project_name: &str,
+) {
+    for lane in lanes.iter_mut() {
+        if !matches!(lane.kind, crate::process::lanes_state::LaneKind::Performer) {
+            continue;
+        }
+        let Some(name) = lane.address.name.as_deref() else {
+            continue;
+        };
+        let agent_addr = format!("agent@{}/{}", project_name, name);
+        let latest = store
+            .latest_msg_for_agent(&agent_addr)
+            .await
+            .unwrap_or_default();
+        let needs_user = store
+            .pending_needs_user(&agent_addr)
+            .await
+            .unwrap_or_default();
+        // performer_status は SP push の LaneInfo に埋まっている typed 値をそのまま view 化
+        // (PerformerStatusView::from_json と同じ判定規則)。
+        let ps_view = lane
+            .performer_status
+            .as_ref()
+            .map(|ps| crate::flow::PerformerStatusView {
+                dirty: ps.dirty_count > 0,
+                has_commit: !ps.last_commit.is_empty() && ps.last_commit != "-",
+            })
+            .unwrap_or_default();
+        let latest_view = latest.as_ref().map(wire_msg_view);
+        let needs_view = needs_user.as_ref().map(wire_msg_view);
+        let fsm = crate::flow::derive_flow_state(
+            latest_view.as_ref(),
+            ps_view,
+            &agent_addr,
+            needs_view.as_ref(),
+        );
+        lane.flow_state = Some(fsm.state);
+    }
+}
+
+/// `WireMessage` (typed、 World in-process) → `LatestMsgView`。 JSON round-trip 不要の直変換。
+fn wire_msg_view(m: &crate::capability::WireMessage) -> crate::flow::LatestMsgView {
+    crate::flow::LatestMsgView {
+        from_addr: m.from.clone(),
+        body_kind: m
+            .body
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        created_at_ms: m.created_at as i64,
+    }
+}
+
+/// FSM 投影: wire payload から関与 project 名を抽出する (純関数)。
+///
+/// `wire/send` (from + to[]) / `wire/ack` (agent) の payload に現れる agent address
+/// (`<actor>@<project>[/<lane>]`) から `<project>` を集める。 flow_state は wire 活動で
+/// 変わるため、 send/ack 成功後にこれらの project の "lanes" subscriber へ再 push を促す。
+fn collect_wire_projects(payload: &serde_json::Value) -> Vec<String> {
+    let mut projects = std::collections::BTreeSet::new();
+    let mut push_addr = |addr: &str| {
+        if let Some((_, rest)) = addr.split_once('@') {
+            let project = rest.split('/').next().unwrap_or("");
+            if !project.is_empty() {
+                projects.insert(project.to_string());
+            }
+        }
+    };
+    for key in ["from", "agent"] {
+        if let Some(a) = payload.get(key).and_then(|v| v.as_str()) {
+            push_addr(a);
+        }
+    }
+    if let Some(to) = payload.get("to").and_then(|v| v.as_array()) {
+        for a in to.iter().filter_map(|v| v.as_str()) {
+            push_addr(a);
+        }
+    }
+    projects.into_iter().collect()
+}
+
+/// FSM 投影: wire 活動 (send/ack) 後に、 関与 project の "lanes" subscriber へ snapshot
+/// 再 push を促す。 flow_state は送信時 derive のため wire 活動がそのまま sidebar の
+/// 更新トリガになる (= event-driven、 polling 無し)。 未登録 project は黙って skip (best-effort)。
+async fn notify_lane_change_for_projects(state: &DaemonState, projects: &[String]) {
+    let Some(rp) = &state.running_processes else {
+        return;
+    };
+    if projects.is_empty() {
+        return;
+    }
+    let procs = rp.read().await;
+    for (path_key, proc) in procs.iter() {
+        if projects.iter().any(|p| p == &proc.project_name) {
+            // receiver 不在 (subscriber 0) の SendError は無害なので無視
+            let _ = state.lane_change_tx.send(path_key.clone());
+        }
+    }
 }
 
 /// L0 SP-portless (canvas slice): project の Canvas TopicRouter を get-or-create する。
@@ -800,7 +932,20 @@ async fn handle_wire_channel(
             .delivery_notify
             .as_ref()
             .ok_or_else(|| "wire delivery_notify not initialized".to_string())?;
-        crate::process::routes::wire::dispatch_wire(store, notifier, delivery, sub, payload).await
+        // FSM 投影: send/ack は flow_state を変え得るので、 関与 project を dispatch 前に
+        // 控えておき (payload は dispatch に move される)、 成功後に lanes 再 push を促す。
+        let wire_projects = if matches!(sub, "send" | "ack") {
+            collect_wire_projects(&payload)
+        } else {
+            Vec::new()
+        };
+        let result =
+            crate::process::routes::wire::dispatch_wire(store, notifier, delivery, sub, payload)
+                .await;
+        if result.is_ok() {
+            notify_lane_change_for_projects(state, &wire_projects).await;
+        }
+        result
     } else if let Some(sub) = method.strip_prefix("delegation/") {
         let store = state.delegation_store.as_ref().ok_or_else(|| {
             "delegation store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
@@ -1066,11 +1211,16 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     if let Some(ref lane_registry) = state.lane_registry {
         let lane_registry = lane_registry.clone();
         let lane_change_tx = state.lane_change_tx.clone();
+        // FSM 投影: snapshot 送信時の flow_state enrich に使う (store 不在 = enrich skip)。
+        let wiremsg_store = state.wiremsg_store.clone();
+        let running_processes = state.running_processes.clone();
         server
             .register_channel("lanes", {
                 move |_ctx, stream| {
                     let lane_registry = lane_registry.clone();
                     let lane_change_tx = lane_change_tx.clone();
+                    let wiremsg_store = wiremsg_store.clone();
+                    let running_processes = running_processes.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
 
@@ -1086,7 +1236,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let mut rx = lane_change_tx.subscribe();
 
                         // 初期 snapshot 配信
-                        if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                        if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
                             .await
                             .is_err()
                         {
@@ -1100,7 +1250,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     if changed_key != path_key {
                                         continue; // 別 project の変更は無視
                                     }
-                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
                                         .await
                                         .is_err()
                                     {
@@ -1113,7 +1263,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         "lanes channel subscribe lagged: {} events dropped (resync)",
                                         n
                                     );
-                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key)
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
                                         .await
                                         .is_err()
                                     {
@@ -2389,6 +2539,39 @@ mod tests {
         assert!(
             result.is_err(),
             "subscriber 不在では SendError が想定通り返る"
+        );
+    }
+
+    /// FSM 投影: wire payload からの関与 project 抽出 (send = from + to[]、 ack = agent)
+    #[test]
+    fn collect_wire_projects_extracts_from_send_and_ack_payloads() {
+        // wire/send: from + to[] (cross-project 宛先も拾う)
+        let send = serde_json::json!({
+            "from": "agent@vantage-point",
+            "to": ["agent@vantage-point/fsm-projection", "notify@creo-memories"],
+            "body": {"kind": "task"}
+        });
+        assert_eq!(
+            collect_wire_projects(&send),
+            vec!["creo-memories".to_string(), "vantage-point".to_string()],
+            "from + to[] の project を dedup して抽出 (BTreeSet = 辞書順)"
+        );
+
+        // wire/ack: agent のみ
+        let ack = serde_json::json!({
+            "message_id": "x",
+            "agent": "agent@vantage-point"
+        });
+        assert_eq!(
+            collect_wire_projects(&ack),
+            vec!["vantage-point".to_string()]
+        );
+
+        // address 無し / 不正形は空
+        assert!(collect_wire_projects(&serde_json::json!({})).is_empty());
+        assert!(
+            collect_wire_projects(&serde_json::json!({"from": "bare-name"})).is_empty(),
+            "@ 無しの address は project を持たない"
         );
     }
 }

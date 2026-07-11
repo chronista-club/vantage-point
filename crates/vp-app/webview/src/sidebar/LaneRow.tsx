@@ -44,11 +44,31 @@ function PerformerMeta(props: { ws: PerformerStatusWire }) {
 	);
 }
 
+/**
+ * connector class (= control surrender FSM の投影) から state 文字を導出する。
+ * conn-auto/run = working、 conn-hitl = needs you。
+ * idle (conn-dead) は quiet pass (mako 019f5100) で文字を出さない — 「idle はほぼ消える」。
+ * conn-conductor (root) も state を持たない (spine の頭) ので null。
+ */
+function stateLabel(connectorClass: string | undefined): string | null {
+	switch (connectorClass) {
+		case "conn-auto":
+		case "conn-run":
+			return "working";
+		case "conn-hitl":
+			return "needs you";
+		default:
+			return null;
+	}
+}
+
 export function LaneRow(props: {
 	lane: LaneInfo;
 	projectPath: string;
-	connector?: string;
+	/** connector の線種 class (conn-*)。 未指定なら connector 自体を描かない。 */
 	connectorClass?: string;
+	/** lane list 内の最終行 (= tree corner を └ 相当にする)。 */
+	connectorLast?: boolean;
 }) {
 	const addr = () => laneAddressKey(props.lane);
 	const isActive = () => sidebar.active_lane_address === addr();
@@ -144,15 +164,21 @@ export function LaneRow(props: {
 	return (
 		<div
 			class="vp-lane-row"
-			classList={{ active: isActive(), inactive: isInactive(), performer: isPerformer() }}
+			classList={{
+				active: isActive(),
+				inactive: isInactive(),
+				performer: isPerformer(),
+			}}
 			onClick={onSelect}
 			onContextMenu={onContextMenu}
 		>
-			{/* ⓪ tree connector (box-drawing、 線種で control surrender FSM を表現) */}
-			<Show when={props.connector}>
-				<span class={`vp-lane-connector ${props.connectorClass ?? ""}`}>
-					{props.connector}
-				</span>
+			{/* ⓪ tree connector (CSS 描画、 線種で control surrender FSM を表現。
+			    脱 TUI hybrid 2026-07: glyph → pseudo-element、 描画は SHELL_CSS 参照) */}
+			<Show when={props.connectorClass}>
+				<span
+					class={`vp-lane-connector ${props.connectorClass}`}
+					classList={{ last: props.connectorLast }}
+				/>
 			</Show>
 			{/* ① stand icon */}
 			<Show when={icon()}>
@@ -172,8 +198,13 @@ export function LaneRow(props: {
 				{sessionTitle() ??
 					(isPerformer() ? laneLabel(props.lane) : props.lane.address.project)}
 			</span>
-			{/* 右端ブロック: ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
+			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
 			<span class="vp-lane-right">
+				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
+				    connectorClass (laneConnector 導出) — 二重導出しない。 root (conductor) は出さない。 */}
+				<Show when={stateLabel(props.connectorClass)}>
+					<span class="vp-lane-state">{stateLabel(props.connectorClass)}</span>
+				</Show>
 				<Show when={isPerformer() && props.lane.performer_status}>
 					<PerformerMeta ws={props.lane.performer_status!} />
 				</Show>
