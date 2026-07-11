@@ -479,6 +479,18 @@ fn remove_performer_workspace(repo_root: &Path, performer_dir: &Path) -> Result<
         let _ = run_git_in(repo_root, &["worktree", "prune"]);
         Ok(())
     } else {
+        // dep symlink 防御 (defense-in-depth の壁 2): find_performer_dir で既に弾かれるが、
+        // 万一 symlink path が渡っても `remove_dir_all` を走らせず明示 Err で止める。
+        // `.git` は上の is_file 分岐で false = symlink か clone dir。symlink_metadata で確定する。
+        let ft = fs::symlink_metadata(performer_dir)
+            .map_err(|e| e.to_string())?
+            .file_type();
+        if ft.is_symlink() {
+            return Err(format!(
+                "{} は dependency symlink です。performer ではありません。意図的な削除は rm で行ってください。",
+                performer_dir.display()
+            ));
+        }
         fs::remove_dir_all(performer_dir).map_err(|e| e.to_string())
     }
 }
@@ -901,7 +913,12 @@ fn classify_performer_for_cleanup(
 /// performer_path / remove_performer / remove_performer_in が共有。
 fn find_performer_dir(repo_root: &Path, name: &str) -> Option<PathBuf> {
     let dir = config::project_lanes_dir(repo_root).join(name);
-    if dir.is_dir() { Some(dir) } else { None }
+    // dep symlink は performer ではない (delete が dep を対象に取るのを防ぐ、defense-in-depth の壁 1)。
+    // `symlink_metadata` は symlink を辿らないので、symlink を弾いた上で実 dir のみ Some。
+    match fs::symlink_metadata(&dir) {
+        Ok(md) if !md.file_type().is_symlink() && md.is_dir() => Some(dir),
+        _ => None,
+    }
 }
 
 // --- helpers ---
