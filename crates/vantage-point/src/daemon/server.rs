@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 use unison::network::quic::QuicServer;
@@ -2401,9 +2401,117 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         return;
     }
     tracing::info!("Daemon Unison QUIC listening on {:?}", quic.local_addr());
+    // QUIC 面 liveness watchdog を起動 (self-heal、 mem_1CcvYA5TRF4EcFafbyKqPg)。
+    // quic.start() は永久 block するため、 watchdog は別 task で並走させる。
+    tokio::spawn(quic_liveness_watchdog(port));
     if let Err(e) = quic.start().await {
         tracing::error!("Daemon Unison サーバーエラー: {}", e);
     }
+}
+
+/// QUIC 面 liveness watchdog + self-heal (2026-07-12、 mem_1CcvYA5TRF4EcFafbyKqPg)。
+///
+/// 観測された故障モード: HTTP 面は生存したまま QUIC accept が wedge し、 SP uplink /
+/// wire / process-proxy が全滅する「片肺死」。 `quic.start()` は club-unison 内で永久 block
+/// するため VP 側で Err として catch できず、 HTTP ベースの health check でも検知不能だった。
+///
+/// この watchdog は自プロセスの QUIC :port へ周期的に fresh self-connect し、 accept path の
+/// 生存を probe する。 連続 `MAX_FAILURES` 回失敗 = 片肺死と判定し、 loud log の後 process::exit
+/// する。 supervisor (macOS launchd KeepAlive / systemd) が fresh 再起動して回復する
+/// (「プロセスは死ぬがコンテキストは蘇る」 — SP は setsid 分離で生存、 lane claude は --resume)。
+///
+/// false-positive で健全な daemon を殺さないための保険:
+/// - 起動直後は `STARTUP_GRACE` の猶予 (bind 完了直後の未 ready 状態を数えない)
+/// - `MAX_FAILURES` **連続** 失敗のみ発火 (単発 transient は counter を reset)
+/// - probe は `PROBE_TIMEOUT` で cap
+/// - env `VP_DISABLE_QUIC_WATCHDOG` で無効化 (誤検知時の escape hatch)
+async fn quic_liveness_watchdog(port: u16) {
+    if std::env::var_os("VP_DISABLE_QUIC_WATCHDOG").is_some() {
+        tracing::info!(
+            "QUIC liveness watchdog は VP_DISABLE_QUIC_WATCHDOG により無効化されています"
+        );
+        return;
+    }
+    const STARTUP_GRACE: Duration = Duration::from_secs(30);
+    const PROBE_INTERVAL: Duration = Duration::from_secs(30);
+    const MAX_FAILURES: u32 = 3;
+
+    tokio::time::sleep(STARTUP_GRACE).await;
+    let addr = format!("[::1]:{port}");
+    tracing::info!(
+        "QUIC liveness watchdog 起動 (probe 先={addr}、 間隔={}s)",
+        PROBE_INTERVAL.as_secs()
+    );
+    let mut consecutive: u32 = 0;
+    loop {
+        tokio::time::sleep(PROBE_INTERVAL).await;
+        // probe_quic_once は内部 timeout で自己完結する (ハング時も disconnect まで到達し
+        // socket を leak しない)。 ここで外側 timeout を重ねない。
+        match probe_quic_once(&addr).await {
+            Ok(()) => {
+                if consecutive > 0 {
+                    tracing::info!("QUIC liveness probe 回復 ({} 回連続失敗の後)", consecutive);
+                }
+                consecutive = 0;
+            }
+            Err(e) => {
+                consecutive += 1;
+                tracing::warn!("QUIC liveness probe 失敗 ({consecutive}/{MAX_FAILURES}): {e}");
+            }
+        }
+        if consecutive >= MAX_FAILURES {
+            tracing::error!(
+                "QUIC 面の wedge を検知 ({MAX_FAILURES} 回連続 probe 失敗)。 self-heal: supervisor \
+                 による fresh 再起動のため exit します (mem_1CcvYA5TRF4EcFafbyKqPg)"
+            );
+            // tracing subscriber の flush 猶予を少し与えてから exit する。
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            std::process::exit(70); // EX_SOFTWARE — supervisor (launchd KeepAlive) が relaunch する
+        }
+    }
+}
+
+/// 自プロセスの QUIC `:port` へ fresh connect + channel open で accept path の生存を確認する。
+///
+/// 観測された故障は `client.connect()` レベルの「Failed to establish QUIC connection」だったため、
+/// connect が最も忠実な liveness 信号。 加えて `open_channel` で stream accept path も exercise する
+/// (registry handler は subscribe 前の切断を `Ok(())` として扱うので即 disconnect は無害)。
+///
+/// ⚠️ QUIC(UDP) は TCP と違い dead port への connect が即失敗せず handshake timeout まで
+/// ハングする (RST が無い)。 そのため timeout は **内部** に持ち、 ハング時も必ず `disconnect()`
+/// に到達させて UDP socket leak を防ぐ (drop 任せでは socket が残る、 world_wire.rs module doc 参照)。
+async fn probe_quic_once(addr: &str) -> Result<(), String> {
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+    const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+    // QUIC(rustls) は CryptoProvider install が前提 (install 済みなら no-op)。
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("probe client build 失敗: {e}"))?;
+    let client = unison::ProtocolClient::new(transport);
+    let inner = async {
+        client
+            .connect(addr)
+            .await
+            .map_err(|e| format!("connect 失敗: {e}"))?;
+        client
+            .open_channel("registry")
+            .await
+            .map_err(|e| format!("open_channel 失敗: {e}"))?;
+        Ok::<(), String>(())
+    };
+    let result = match tokio::time::timeout(PROBE_TIMEOUT, inner).await {
+        Ok(r) => r,
+        Err(_) => Err(format!(
+            "probe timeout ({}s 無応答)",
+            PROBE_TIMEOUT.as_secs()
+        )),
+    };
+    // 成否に関わらず接続を解放 (UDP socket leak 防止)。 disconnect 自体のハングにも上限。
+    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, client.disconnect()).await;
+    result
 }
 
 #[cfg(test)]
@@ -2423,6 +2531,36 @@ mod tests {
         Arc::new(RwLock::new(
             crate::capability::ProcessManagerCapability::new(),
         ))
+    }
+
+    // =====================================================================
+    // QUIC liveness watchdog — probe の故障検知方向 (safety-critical)
+    //
+    // watchdog の最悪の regression は「健全な daemon を false-positive で殺す」こと。
+    // それを防ぐ根幹は「probe が本当に死んでいる時だけ Err を返す」= 死を正しく死と
+    // 判定できること。 誰も listen していない port への probe が、 probe **内部** の timeout で
+    // 自己完結して Err を返す (= 外側でハングしない) ことを検証する。 QUIC(UDP) は dead port へ
+    // の connect が RST を返さずハングするため、 内部 timeout が効くことがこのテストの主眼。
+    // 逆方向 (生きた server で Ok) は実 daemon 差替で検証する。
+    // =====================================================================
+    #[tokio::test]
+    async fn probe_quic_fails_on_unbound_port() {
+        // 誰も bind していない高位 port。 QUIC connect はハングするが probe 内部 timeout (8s) で
+        // Err に落ちるはず。 外側 15s guard は「内部 timeout が効かず無限ハング」の回帰検出用。
+        let addr = "[::1]:59321";
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            super::probe_quic_once(addr),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "probe が 15s 以内に返らなかった — 内部 timeout が効いていない (socket leak / 無限ハングの回帰)"
+        );
+        assert!(
+            result.unwrap().is_err(),
+            "unbound port への probe は Err を返すべき (死を死と判定できる = self-heal の前提)"
+        );
     }
 
     #[tokio::test]
