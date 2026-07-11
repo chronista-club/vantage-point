@@ -1,9 +1,11 @@
 # Guide: dev-flow primitives (`flow_handoff` / `flow_progress`)
 
-> **Status**: MVP + 5-state FSM (2026-05-28、 `mako/flow-tools`)
+> **Status**: MVP + 6-state FSM (2026-05-28 初版 5-state、 2026-07-11 `awaiting_user` 追加で 6-state、 `mako/flow-tools`)
 > **Scope**: Conductor × Performer × Memory orchestration の core 操作を CLI + MCP 両方から 1 call で。
 
 dev-flow (= Conductor が複数 Performer に並列 task を渡し、 進捗を集約する開発手順) の頻出操作を atomic primitive 化した。
+
+> messaging 全体（wire store / category / ack 台帳 / federation / flow_state の sidebar 投影）の見取り図は [`messaging.md`](./messaging.md)。 本 doc は dev-flow primitive（`flow_handoff` / `flow_progress`）の tool 詳細に絞る。
 
 | 操作 | 旧 (= 多 step) | 新 (= 1 step) |
 |------|---------------|---------------|
@@ -64,7 +66,7 @@ vp flow handoff feat-api --task-spec /tmp/task.md --mode auto
 
 ## 2. `flow_progress` — 並列追跡集約 view
 
-現 project の全 lane (conductor + performers) の **git status + 未読 wire 数 + 5-state FSM (= control surrender model)** を 1 view で。 read-only (= cursor 不触り)、 何度 call しても side-effect なし。
+現 project の全 lane (conductor + performers) の **git status + 未読 wire 数 + 6-state FSM (= control surrender model)** を 1 view で。 read-only (= cursor 不触り)、 何度 call しても side-effect なし。
 
 ### MCP tool
 
@@ -96,8 +98,8 @@ mcp__vantage-point__flow_progress {}
     "unread_wire_count": 0,
     "unread_by_thread": {},
 
-    // 5-state FSM (= 後述 §3、 cursor 不触りで derive)
-    "flow_state": "hitl_pending",                 // idle | working | hitl_pending | completed | stuck
+    // 6-state FSM (= 後述 §3、 cursor 不触りで derive)
+    "flow_state": "hitl_pending",                 // idle | working | hitl_pending | awaiting_user | completed | stuck
     "control_surrender": false,                   // conductor が control 手放したか
     "state_reason": "performer posted question, awaiting conductor reply",
     "last_state_transition_at": 1779986000000     // epoch ms (= latest wmsg created_at proxy)

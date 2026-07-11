@@ -3,7 +3,7 @@
 > **改訂 (2026-05-21)**: 旧 msgbox 実装は 2026-05 の wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃された。
 > 本 doc の **address syntax (`<actor>@<location>`) は wiremsg がそのまま継承**しており現行有効。
 > ただし CLI は `vp msg` → **`vp wire`** に、 MCP tool は `msg_send` / `msg_recv` → **`wire_send` / `wire_recv` / `wire_thread`** に置き換わった。 本 doc の CLI / MCP example は現行の wiremsg 系コマンドに更新済。
-> Ruby DSL / mDNS / hub の example はいずれも将来計画 (Phase 3+) であり、 syntax は wiremsg 上で有効。
+> Ruby DSL / mDNS の example は将来計画。 **hub 経由の federation (cross-PC) は既に実装済** — `vp wire discover --world` / `vp wire send --world` の現行挙動と direct→relay 配送は [`messaging.md`](./messaging.md) §3 を参照 (本 doc の address 文法はその上で有効)。
 
 > **Status**: address syntax は現行有効 (wiremsg が継承)。 旧称 "Msgbox address v3.1" (VP-144 Epic、 Phase 0 SDG)。
 > **Spec**: [docs/spec/wire-address-v3.md](../spec/wire-address-v3.md) (Why + What)
