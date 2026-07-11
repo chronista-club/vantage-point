@@ -269,9 +269,10 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 					}}
 					title={`SP presence: ${presence()}`}
 				/>
+				{/* Light Grid course-correction: ラベルは地の目印なので icon も 11px に縮小。 */}
 				<CreoIcon
 					name={props.proc.expanded ? "ph:folder-open" : "ph:folder"}
-					size={14}
+					size={11}
 				/>
 				<span class="vp-proj-name">{props.proc.name}</span>
 				<Show when={showAddPerformer()}>

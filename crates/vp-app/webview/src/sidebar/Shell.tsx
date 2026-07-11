@@ -190,7 +190,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    脱 TUI (2026-07): font / color / bg を #sidebar-root スコープに閉じる。 旧 html,body
    直書きは単一 WebView の document 全体を汚染し、 pane header まで 'VPMono' 12px に
    mono 化していた。 サイドバーを sans 全面化しつつ pane header への波及を断つ。 */
-#sidebar-root{height:100%;
+#sidebar-root{height:100%;position:relative;
   /* Light Grid: 地は void。 sidebar スコープの再スキンはここから下の .vp-* 系にのみ効く。 */
   background:var(--lg-void,#05070A);color:var(--lg-hot,#EAFBFF);
   /* サイドバー全面 sans (font zero-start: --vp-font-sans = 'Gen Interface JP')。 var() 2 段
@@ -200,9 +200,21 @@ html,body{margin:0;height:100%;overflow:hidden;}
   /* sidebar 内の font-size は全て --sb-text-* 4 token を参照する (glyph 一点物 9px/14px を
      除く)。 定義は上の :root ブロック (Editor Mode の書き込み先と揃えるため)。 */
   font-size:var(--sb-text-base,13px);line-height:1.45;}
+/* TRON grid ambience — sidebar 背景に 1 枚だけ (course-correction 2026-07-11: project
+   カード上の grid は行を横切る scanline ノイズになるため撤去、 ambience はここに集約)。
+   2 軸 grid + radial mask で上部中央から溶ける。 opacity 5% = 気配だけ。 */
+#sidebar-root::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:
+    linear-gradient(var(--lg-grid,#0E2A33) 1px,transparent 1px),
+    linear-gradient(90deg,var(--lg-grid,#0E2A33) 1px,transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(340px 480px at 50% 16%,#000 0%,transparent 76%);
+  mask-image:radial-gradient(340px 480px at 50% 16%,#000 0%,transparent 76%);
+  opacity:.05;}
 /* position:relative は FileExplorer overlay の inset:0 を sidebar 領域に閉じるために必要。
    無いと overlay が viewport 基準になり、 sidebar 外の領域 (= ContextMenu と重なる場所) に
-   描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。 */
+   描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。
+   (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
   padding:12px 12px 10px;font-size:var(--sb-text-micro,10px);letter-spacing:.2em;
@@ -220,12 +232,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
   font-size:var(--sb-text-meta,11px);}
 
 /* Project accordion — Light Grid: project = 地 (ground)。 発光させず void に沈む静かな地形。
-   faint fill (#ffffff04) + 微 TRON grid テクスチャ (22px 間隔の横線) + inset hairline ring。
+   faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
+   カード上の grid テクスチャは行が透明なため文字を横切る scanline ノイズになる → 撤去、
+   ambience は #sidebar-root::before の 1 枚に集約)。
    glow なし — 図 (= session の current / photon) を引き立てるため必ず後退させる。 */
 .vp-proj{margin:8px 8px 0;border-radius:11px;
-  background:
-    linear-gradient(var(--lg-grid,#0E2A33) 1px,transparent 1px) 0 0 / 100% 22px,
-    #ffffff04;
+  background:#ffffff04;
   box-shadow:inset 0 0 0 1px #ffffff08;
   padding:2px 4px 6px;}
 /* project が所有する current-spine (= 縦ライン)。 Light Grid: session が地の上を走る
@@ -259,10 +271,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
   .vp-proj-content:has(.vp-lane-connector.conn-auto)::after{
     animation:none;opacity:1;top:45%;}}
 .vp-proj + .vp-proj{border-top:none;}
-/* project ラベル = 地の目印 (quiet ground marker)。 muted uppercase の小さい tab、 発光なし。 */
+/* project ラベル = 地の目印 (quiet ground marker)。 muted uppercase の小さい tab、 発光なし。
+   course-correction 2026-07-11: 「地なのに図として主張」しないようさらに小さく (10px)、
+   tracking も .15em に詰める。 weight は明示 400 (body の 300 継承より一段だけ立てる)。 */
 .vp-proj-summary{list-style:none;display:flex;align-items:center;gap:7px;
   padding:7px 8px 5px;cursor:pointer;user-select:none;
-  font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;
+  font-size:10px;letter-spacing:.15em;text-transform:uppercase;font-weight:400;
   color:var(--lg-mute-2,#38525b);
   transition:color .12s ease;}
 .vp-proj-summary::-webkit-details-marker{display:none;}
@@ -347,12 +361,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
   gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:var(--sb-text-hint,12px);cursor:pointer;
   border-radius:8px;transition:background .1s ease;}
 .vp-lane-row:hover{background:#ffffff06;}
-/* row 間の旧 border は撤去 — ground の grid テクスチャが地の目盛りを担う (二重線回避)。 */
+/* row 間の旧 border は撤去 — 地は無地 (行を横切る線は作らない)。 */
 .vp-lane-row + .vp-lane-row{border-top:none;}
-/* active (= 選択中) lane: Light Grid では violet 帯をやめ、 cyan の薄い wash + hairline ring。
-   「光る」 のは state (photon / node) の仕事で、 選択はあくまで静かな指示に留める。 */
+/* active (= 選択中) lane — course-correction 2026-07-11: 太 border 箱は使わない。
+   行 fill に faint cyan tint + 左端に太め cyan tap。 「光る」 のは state (photon / node)
+   の仕事で、 選択はあくまで静かな指示に留める。 */
 .vp-lane-row.active{background:#22e0ff10;
-  box-shadow:inset 0 0 0 1px #22e0ff2e;}
+  box-shadow:inset 3px 0 0 0 var(--sb-conn-auto,#22E0FF);}
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
 /* root session (= conductor、 spine の頭)。 図の一部として僅かに立たせる:
    weight 600 + 左から右へ減衰する cyan wash。 glow は glyph (icon) 側だけ。 */
@@ -360,7 +375,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:linear-gradient(90deg,#22e0ff12,transparent 72%);margin-top:2px;}
 .vp-lane-row:not(.performer):hover{background:linear-gradient(90deg,#22e0ff1a,transparent 72%);}
 .vp-lane-row:not(.performer).active{background:linear-gradient(90deg,#22e0ff1f,transparent 78%);
-  box-shadow:inset 0 0 0 1px #22e0ff2e;}
+  box-shadow:inset 3px 0 0 0 var(--sb-conn-auto,#22E0FF);}
 .vp-lane-row:not(.performer) .vp-lane-icon{color:var(--sb-conn-auto,#22E0FF);
   filter:drop-shadow(0 0 5px color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 47%));}
 /* Conductor / Performer の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
