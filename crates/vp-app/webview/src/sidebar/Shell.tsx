@@ -160,6 +160,14 @@ export function Shell() {
  * SIDEBAR_HTML_V2 が `creo-tokens.css` を inline 済なので、 ここは layout のみ定義する。
  */
 export const SHELL_CSS = `
+/* sidebar Live Token (--sb-*) の定義は :root に置く。 適用 (use site) は #sidebar-root
+   以下に閉じているので他 pane を汚染しない。 :root 定義にする理由 = creo-ui Editor Mode
+   (editor-host) の cssVarTarget が document.documentElement.style.setProperty で書くため:
+   #sidebar-root 側に定義があると「近い祖先の定義が勝つ」で :root への書き込みがマスクされ、
+   Ctrl+Shift+E の slider が効かなくなる (2026-07-11 Editor Mode 作業台化)。
+   text scale 4 段 (Live Token): base=行タイトル/summary、 hint=行本文/menu/input、
+   meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。 */
+:root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;}
 html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
    この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。
@@ -172,10 +180,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
      chain を invalidate するため use site で並べる)。 Mizolet 不在でも creo sans stack
      (-apple-system 等) に縮退し proper sans で描画される。 */
   font-family:var(--vp-font-sans),var(--typography-family-sans);
-  /* text scale 4 段 (Live Token 候補): base=行タイトル/summary、 hint=行本文/menu/input、
-     meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。 sidebar 内の font-size は
-     全てこの 4 token を参照する (glyph 一点物 9px/14px を除く)。 */
-  --sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
+  /* sidebar 内の font-size は全て --sb-text-* 4 token を参照する (glyph 一点物 9px/14px を
+     除く)。 定義は上の :root ブロック (Editor Mode の書き込み先と揃えるため)。 */
   font-size:var(--sb-text-base,13px);line-height:1.45;}
 /* position:relative は FileExplorer overlay の inset:0 を sidebar 領域に閉じるために必要。
    無いと overlay が viewport 基準になり、 sidebar 外の領域 (= ContextMenu と重なる場所) に
