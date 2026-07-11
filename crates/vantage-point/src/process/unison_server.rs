@@ -972,6 +972,8 @@ pub(crate) async fn dispatch_process_method(
         "wire_unread_count" => handle_wire_unread_count(state, payload).await,
         // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
         "wire_latest_msg" => handle_wire_latest_msg(state, payload).await,
+        // flow_progress AwaitingUser 判定用 read-only 未 ack needs_user
+        "wire_needs_user_pending" => handle_wire_needs_user_pending(state, payload).await,
         "wire_ack" => handle_wire_ack(state, payload).await,
         // Agent 委譲 (doc 28 §4): delegate=B を wake / complete=A を wake /
         // respond=NeedsInput(Reborn) に A が回答して B を再 wake (Active へ loop)。
@@ -1104,6 +1106,25 @@ pub(crate) async fn handle_wire_latest_msg(
         .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?;
     super::world_wire::call(
         "/api/wire/latest-msg",
+        serde_json::json!({ "agent": agent }),
+    )
+    .await
+}
+
+/// wiremsg の agent 発 未 ack needs_user を取得する (TheWorld proxy、 read-only)
+///
+/// payload: `{ agent }` → `{ status, message }`。 `flow_progress` の `AwaitingUser` 判定で使う。
+pub(crate) async fn handle_wire_needs_user_pending(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let agent = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_needs_user_pending: 'agent' required".to_string())?;
+    super::world_wire::call(
+        "/api/wire/needs-user-pending",
         serde_json::json!({ "agent": agent }),
     )
     .await
@@ -1581,6 +1602,7 @@ mod tests {
                 cwd: cwd.clone(),
                 performer_status: None,
                 cc_session_id: None,
+                flow_state: None,
             });
             pool.insert_pty_slot(addr.clone(), slot, rx);
         }
@@ -1791,6 +1813,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         });
         addr
     }

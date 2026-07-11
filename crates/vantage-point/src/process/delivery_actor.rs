@@ -606,6 +606,7 @@ mod tests {
             cwd: String::new(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         }
     }
 

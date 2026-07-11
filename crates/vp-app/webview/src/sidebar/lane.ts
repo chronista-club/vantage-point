@@ -98,3 +98,46 @@ export function laneAddressKey(lane: LaneInfo): string {
 	}
 	return `${a.project}/${a.kind || "conductor"}`;
 }
+
+/**
+ * Lane の tree connector の状態 class を導出する (Light Grid state 言語の FSM 投影、 純関数)。
+ *
+ * 描画は Shell.tsx の `.vp-lane-connector` (CSS pseudo-element) が担い、 ここは意味論だけを
+ * class で返す。 `awaitingInput` は OSC 99 由来の console 入力待ち (caller が
+ * `sidebar.awaiting_input[addr]` を渡す — store 依存を外に出して testable に保つ)。
+ *
+ * - conductor: spine の頭 (頭石)
+ * - working (conn-auto): flow が動いている = solid cyan tap + node
+ * - needs-you (conn-hitl): ユーザ本人待ち = magenta diamond (盤面で唯一光る状態)
+ * - idle (conn-dead): flow 不在 = No current (極薄破線 + 中空 node)
+ *
+ * FSM 投影 (2026-07-11、 mem_1Ccv39yTsb9knkjucKCP3Z): 一次 source は **server 側
+ * flow_state** (LaneInfo.flow_state、 TheWorld が wire store から derive = vp flow progress と
+ * 同一判定)。 client で再推定しない。 これで「プロンプト待ちの TUI claude は pid が生きて
+ * いるため working と誤判定」 (dep symlink lane の偽 WORKING) が根治する — wire 活動の
+ * 無い lane は flow_state = "idle" でほぼ消える。
+ *
+ * - awaiting_user → needs-you: 未 ack needs_user wire (ユーザ本人の回答待ち)。
+ * - awaitingInput (OSC 99) も needs-you に残す — flow とは別軸の「console がユーザを
+ *   待っている」 signal で、 active console の HITL (AskUserQuestion 等) を拾える唯一の経路。
+ * - flow_state 欠落 (旧 daemon) は従来の pid heuristic に fallback。
+ */
+export function laneConnector(lane: LaneInfo, awaitingInput: boolean): string {
+	if (!isPerformerLane(lane)) {
+		return "conn-conductor"; // conductor は幹 = spine の頭
+	}
+	const fs = lane.flow_state;
+	if (fs === "awaiting_user") return "conn-hitl"; // ユーザ本人待ち = needs-you
+	if (awaitingInput) return "conn-hitl"; // console 入力待ち = needs-you
+	if (fs != null) {
+		// working / hitl_pending / stuck = flow が動いている (hitl_pending は conductor の
+		// 仕事、 stuck は conductor が捌く異常 — どちらもユーザを光で呼ぶ状態ではない)
+		if (fs === "working" || fs === "hitl_pending" || fs === "stuck") {
+			return "conn-auto";
+		}
+		return "conn-dead"; // idle / completed = ほぼ消える
+	}
+	// fallback (旧 daemon = flow_state 未投影): engine 実在 (pid) heuristic
+	if (lane.pid == null) return "conn-dead";
+	return "conn-auto";
+}

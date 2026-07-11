@@ -955,6 +955,7 @@ impl ProcessManagerCapability {
             cwd: performer_dir.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         };
         self.lane_registry
             .write()
@@ -3135,6 +3136,7 @@ mod tests {
             cwd: cwd.to_string(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         };
         let conductor = mk(
             LaneAddress::conductor("bdestroy"),
@@ -3205,6 +3207,7 @@ mod tests {
             cwd: tmp.join(".vp/lanes/foo").to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         };
         cap.lane_registry_ref()
             .write()
@@ -3339,6 +3342,7 @@ mod tests {
             cwd: cwd.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         };
         cap.lane_registry_ref().write().await.insert(
             key.to_string(),

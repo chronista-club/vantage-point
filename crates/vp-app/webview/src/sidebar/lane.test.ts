@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { LaneInfo } from "../generated/LaneInfo";
-import { isLaneAlive } from "./lane";
+import { isLaneAlive, laneConnector } from "./lane";
 
 /** 最小の LaneInfo。 テストが着目する field だけ上書きする。 */
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
@@ -43,5 +43,64 @@ describe("isLaneAlive", () => {
 		const idle = isLaneAlive(lane({ console_mode: "chat", pid: null }));
 		const running = isLaneAlive(lane({ console_mode: "chat", pid: 4321 }));
 		expect(idle).toBe(running);
+	});
+});
+
+/** performer の最小 LaneInfo (laneConnector 用)。 */
+function performer(over: Partial<LaneInfo> = {}): LaneInfo {
+	return lane({
+		kind: "performer",
+		address: { kind: "performer", project: "vp", name: "feat" },
+		name: "feat",
+		...over,
+	} as Partial<LaneInfo>);
+}
+
+describe("laneConnector (FSM 投影)", () => {
+	it("conductor は spine の頭 (state を持たない)", () => {
+		expect(laneConnector(lane(), false)).toBe("conn-conductor");
+	});
+
+	it("flow_state が一次 source: プロンプト待ちの TUI claude (pid あり + idle) は消える", () => {
+		// 偽 WORKING の根治対象: dep symlink lane 等、 wire 活動が無いのに pid が生きている lane。
+		expect(
+			laneConnector(performer({ pid: 1234, flow_state: "idle" }), false),
+		).toBe("conn-dead");
+		expect(
+			laneConnector(performer({ pid: 1234, flow_state: "completed" }), false),
+		).toBe("conn-dead");
+	});
+
+	it("working / hitl_pending / stuck = flow が動いている (cyan)", () => {
+		for (const fs of ["working", "hitl_pending", "stuck"]) {
+			expect(laneConnector(performer({ flow_state: fs }), false)).toBe(
+				"conn-auto",
+			);
+		}
+	});
+
+	it("awaiting_user = needs-you (盤面で唯一光る状態)", () => {
+		// pid や他の signal に関係なく magenta diamond。
+		expect(
+			laneConnector(
+				performer({ flow_state: "awaiting_user", pid: null }),
+				false,
+			),
+		).toBe("conn-hitl");
+	});
+
+	it("OSC awaiting_input も needs-you (console HITL の別軸 signal)", () => {
+		expect(laneConnector(performer({ flow_state: "working" }), true)).toBe(
+			"conn-hitl",
+		);
+	});
+
+	it("flow_state 欠落 (旧 daemon) は pid heuristic に fallback", () => {
+		expect(
+			laneConnector(performer({ flow_state: null, pid: 1234 }), false),
+		).toBe("conn-auto");
+		expect(
+			laneConnector(performer({ flow_state: null, pid: null }), false),
+		).toBe("conn-dead");
 	});
 });

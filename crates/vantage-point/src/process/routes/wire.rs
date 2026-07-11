@@ -285,6 +285,31 @@ pub(crate) async fn wire_latest_msg_store(
     }))
 }
 
+/// 指定 agent 発の未 ack `needs_user` wire (最新 1 件) を返す (read-only、 cursor 不触り)
+///
+/// payload: `{ agent }` → `{ status, message: WireMessage | null }`。
+/// dev-flow FSM の `AwaitingUser` 判定入力 (LaneInfo flow_state 投影 / flow progress が使う)。
+pub(crate) async fn wire_needs_user_pending_store(
+    store: &WiremsgStore,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let agent = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_needs_user_pending: 'agent' required".to_string())?
+        .to_string();
+    validate_addr(&agent)?;
+
+    let pending = store
+        .pending_needs_user(&agent)
+        .await
+        .map_err(|e| format!("wire_needs_user_pending failed: {e}"))?;
+    Ok(serde_json::json!({
+        "status": "ok",
+        "message": pending,
+    }))
+}
+
 /// wiremsg を ack する (R2-a 新設、 決定 D3: cursor 非破壊の ack 台帳)
 ///
 /// payload: `{ message_id, agent }` → `{ status, acked }` (acked: 新規 = true / 冪等 = false)
@@ -348,6 +373,7 @@ pub(crate) async fn dispatch_wire(
         "thread" => wire_thread_store(store, payload).await,
         "unread-count" => wire_unread_count_store(store, payload).await,
         "latest-msg" => wire_latest_msg_store(store, payload).await,
+        "needs-user-pending" => wire_needs_user_pending_store(store, payload).await,
         "ack" => wire_ack_store(store, payload).await,
         _ => Err(format!("不明な wire method: {method}")),
     }
