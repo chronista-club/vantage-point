@@ -68,6 +68,12 @@ pub(crate) struct AppState {
     /// World mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
     /// 遷移ごとに更新する。SP / test mode では `Disabled` のまま（federation は TheWorld のみ）。
     pub hub_status: crate::daemon::hub_client::HubFederationStatus,
+    /// hub registry の available worlds cache（`/api/health` の `hub_worlds` field）。
+    ///
+    /// World mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
+    /// 接続直後 + 定期 discover で更新する（自 world 除外・handle dedup 済、切断で clear）。
+    /// SP / test mode では常に空。
+    pub hub_worlds: crate::daemon::hub_client::HubWorldsCache,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
@@ -418,6 +424,7 @@ pub(crate) async fn build_test_app_state(
         world,
         update: None,
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
+        hub_worlds: crate::daemon::hub_client::HubWorldsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port: 0,
