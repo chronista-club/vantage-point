@@ -3213,7 +3213,10 @@ mod tests {
 
         // 削除 → project も performer descriptor も畳まれる。
         cap.remove_project(&project_path).await.unwrap();
-        assert!(cap.list_projects().await.is_empty(), "削除で project は消える");
+        assert!(
+            cap.list_projects().await.is_empty(),
+            "削除で project は消える"
+        );
 
         // sync を回しても復活しない (起点 dir 自動登録が撤去済のため)。
         let outcome = cap.sync_projects().await.unwrap();
@@ -3409,7 +3412,11 @@ mod tests {
         // 実在 dir の project は残る (ghost 除去されない)、 何も新規登録しない。
         let outcome = cap.sync_projects().await.unwrap();
         assert!(outcome.removed.is_empty(), "実在 dir は ghost 除去されない");
-        assert_eq!(cap.list_projects().await.len(), 1, "sync は project を増やさない");
+        assert_eq!(
+            cap.list_projects().await.len(),
+            1,
+            "sync は project を増やさない"
+        );
     }
 
     #[tokio::test]
