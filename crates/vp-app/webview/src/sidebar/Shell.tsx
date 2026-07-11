@@ -197,7 +197,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 
 /* Project accordion */
 .vp-proj{margin:0;}
-/* project が所有する tree spine (= 縦ライン)。 connector の ├/└ 縦棒と同じ x に重ね、
+/* project が所有する tree spine (= 縦ライン)。 connector の縦棒 (::before) と同じ x に重ね、
    行間 padding の隙間を埋めて proj 領域から伸びる 1 本の連続縦線に見せる (SoC: 縦は proj、
    枝は connector)。 top:0 = summary 直下から、 bottom = 最後の lane 中央で止める。 */
 .vp-proj-content{position:relative;}
@@ -230,11 +230,28 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
    2 段目 / "—" placeholder / Conductor ラベルは廃止、 nowrap で 1 行固定。 */
-/* tree connector は LaneRow が box-drawing text で持つ (= 線種で状態を表現、 2026-05-30)。
-   VPMono (PlemolJP) の等幅 + 罫線 glyph で全行の縦線が揃う。 線種 = control surrender FSM。 */
-.vp-lane-connector{font-family:'VPMono',monospace;white-space:pre;flex:0 0 auto;
-  font-size:var(--sb-text-base,13px);line-height:1;letter-spacing:0;font-weight:700;
-  -webkit-text-stroke:0.4px currentColor;user-select:none;}
+/* tree connector — 脱 TUI hybrid (2026-07, mako 選択): box-drawing glyph (VPMono) を
+   CSS pseudo-element 描画に置換。 「線種 = control surrender FSM」 の意味論 (2026-05-30) は
+   そのまま継承し、 質感だけ GUI 化 (zoom 非依存で crisp、 font metrics に揃え不要)。
+   ::before = 縦棒 (tree corner: ├ は行全高 / └ = .last は中央止め、 常に solid)、
+   ::after = 横枝 (線種 slot: conductor/HITL solid、 休眠 dotted、 自走 = 流れる破線)。
+   縦棒 x=10.5px は .vp-proj-content::before の proj spine と同座標 (row padding-left 8px
+   + left 2.5px)。 */
+.vp-lane-connector{position:relative;flex:0 0 16px;align-self:stretch;user-select:none;}
+.vp-lane-connector::before{content:"";position:absolute;left:2.5px;width:1.5px;
+  top:0;bottom:0;background:currentColor;}
+.vp-lane-connector.last::before{bottom:50%;}
+.vp-lane-connector::after{content:"";position:absolute;left:2.5px;right:2px;top:50%;
+  margin-top:-0.75px;border-top:1.5px solid currentColor;}
+.vp-lane-connector.conn-dead::after{border-top-style:dotted;}
+/* 自走 = 破線が右へ流れる (= control を手放して自分で進んでいる)。 周期は creo-ui の
+   internal timeline BPM 82.7 に同期: 60 / 82.7 ≈ 0.7255s で 1 dash 周期 (8px) 進む。 */
+.vp-lane-connector.conn-auto::after{border-top:none;height:1.5px;
+  background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 8px);
+  animation:vp-conn-flow .7255s linear infinite;}
+@keyframes vp-conn-flow{to{background-position:8px 0;}}
+@media (prefers-reduced-motion:reduce){
+  .vp-lane-connector.conn-auto::after{animation:none;}}
 .vp-lane-connector.conn-conductor{
   color:color-mix(in oklch,var(--color-brand-primary),transparent 30%);}
 .vp-lane-connector.conn-run{color:var(--color-text-tertiary);}
@@ -256,7 +273,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
              inset 0 -2px 0 0 var(--color-brand-primary);}
 .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary),
   transparent 45%);cursor:default;}
-/* Conductor / Performer の indent 差は connector glyph (├─ vs │ ├) が担うため padding override 不要。 */
+/* Conductor / Performer の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
 /* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */

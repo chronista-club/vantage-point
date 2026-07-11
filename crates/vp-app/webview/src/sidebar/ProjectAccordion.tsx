@@ -31,42 +31,27 @@ import {
 } from "./dnd";
 
 /**
- * Lane の tree connector を 2 文字で導出する (2026-05-30)。
+ * Lane の tree connector の状態 class を導出する (2026-05-30 glyph 版 → 2026-07 CSS 描画版)。
  *
- * - 左 1 文字 = ツリー構造: `├`(途中) / `└`(末尾)。 lane list 内の最終行が `└`。
- * - 右 1 文字 = 線種 (= control surrender FSM の表現):
- *   - conductor: solid `─` (= 幹、 固定)
- *   - performer inactive (idle/dead, pid null): dotted `┈` (= 休眠、 dim)
- *   - performer awaiting (hitl_pending): solid `─` warn 色 (= 人を待つ、 control 握る)
- *   - performer 自走 (working/autonomous = active & not awaiting): 波線 `〜` info 色
- *     (= control 手放した = self-running)
+ * 脱 TUI hybrid: 描画は Shell.tsx の `.vp-lane-connector` (CSS pseudo-element) が担い、
+ * ここは「線種 = control surrender FSM」の意味論だけを class で返す。
+ * ツリー構造 (途中 ├ / 末尾 └ 相当) は LaneRow の `connectorLast` prop で伝える。
+ *
+ * - conductor: solid (= 幹、 固定)
+ * - performer inactive (idle/dead, pid null): dotted (= 休眠、 dim)
+ * - performer awaiting (hitl_pending): solid warn 色 (= 人を待つ、 control 握る)
+ * - performer 自走 (working/autonomous = active & not awaiting): 流れる破線 info 色
+ *   (= control 手放した = self-running、 BPM 82.7 同期アニメ)
  */
-function laneConnector(
-	lane: LaneInfo,
-	isLast: boolean,
-): { text: string; cls: string } {
-	const corner = isLast ? "└" : "├"; // 左 = ツリー構造
+function laneConnector(lane: LaneInfo): string {
 	if (!isPerformerLane(lane)) {
-		return { text: `${corner}─`, cls: "conn-conductor" }; // conductor は幹 = solid
+		return "conn-conductor"; // conductor は幹 = solid
 	}
-	// performer: 右 = 線種で状態を出し分け。
 	const addr = laneAddressKey(lane);
 	// 生死は isLaneAlive に一本化 (pid 直参照だと chat performer を dotted = 休眠に描いてしまう)。
-	const inactive = !isLaneAlive(lane);
-	const awaiting = !!sidebar.awaiting_input[addr];
-	let line = "─";
-	let cls = "conn-run";
-	if (inactive) {
-		line = "┈"; // 休眠 = dotted
-		cls = "conn-dead";
-	} else if (awaiting) {
-		line = "─"; // HITL = solid (色で warn)
-		cls = "conn-hitl";
-	} else {
-		line = "〜"; // 自走 = 波線
-		cls = "conn-auto";
-	}
-	return { text: `${corner}${line}`, cls };
+	if (!isLaneAlive(lane)) return "conn-dead"; // 休眠 = dotted
+	if (sidebar.awaiting_input[addr]) return "conn-hitl"; // HITL = solid (色で warn)
+	return "conn-auto"; // 自走 = 流れる破線
 }
 
 /**
@@ -90,7 +75,8 @@ function hintFor(
 	// QUIC 購読が停滞 (open/subscribe/snapshot timeout or QUIC 未接続) したら `loading lanes` に
 	// 潰さず、 daemon restart で復帰できると surface する。 snapshot 受信で "ready" に解消。
 	if (laneCount === 0) {
-		if (subState === "stalled") return "⚠️ lane 接続が停滞 — daemon restart で復帰";
+		if (subState === "stalled")
+			return "⚠️ lane 接続が停滞 — daemon restart で復帰";
 		if (subState === "ready") return "📡 lane なし";
 		return "📡 loading lanes…"; // 初期 (購読開始〜初回 snapshot 待ち)
 	}
@@ -326,18 +312,14 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 					fallback={
 						<>
 							<For each={lanes()}>
-								{(lane, i) => {
-									const isLast = i() === lanes().length - 1;
-									const conn = laneConnector(lane, isLast);
-									return (
-										<LaneRow
-											lane={lane}
-											projectPath={props.proc.path}
-											connector={conn.text}
-											connectorClass={conn.cls}
-										/>
-									);
-								}}
+								{(lane, i) => (
+									<LaneRow
+										lane={lane}
+										projectPath={props.proc.path}
+										connectorClass={laneConnector(lane)}
+										connectorLast={i() === lanes().length - 1}
+									/>
+								)}
 							</For>
 							<Show when={addPerformerOpen()}>
 								<AddPerformer

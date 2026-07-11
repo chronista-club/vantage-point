@@ -47,8 +47,10 @@ function PerformerMeta(props: { ws: PerformerStatusWire }) {
 export function LaneRow(props: {
 	lane: LaneInfo;
 	projectPath: string;
-	connector?: string;
+	/** connector の線種 class (conn-*)。 未指定なら connector 自体を描かない。 */
 	connectorClass?: string;
+	/** lane list 内の最終行 (= tree corner を └ 相当にする)。 */
+	connectorLast?: boolean;
 }) {
 	const addr = () => laneAddressKey(props.lane);
 	const isActive = () => sidebar.active_lane_address === addr();
@@ -144,15 +146,21 @@ export function LaneRow(props: {
 	return (
 		<div
 			class="vp-lane-row"
-			classList={{ active: isActive(), inactive: isInactive(), performer: isPerformer() }}
+			classList={{
+				active: isActive(),
+				inactive: isInactive(),
+				performer: isPerformer(),
+			}}
 			onClick={onSelect}
 			onContextMenu={onContextMenu}
 		>
-			{/* ⓪ tree connector (box-drawing、 線種で control surrender FSM を表現) */}
-			<Show when={props.connector}>
-				<span class={`vp-lane-connector ${props.connectorClass ?? ""}`}>
-					{props.connector}
-				</span>
+			{/* ⓪ tree connector (CSS 描画、 線種で control surrender FSM を表現。
+			    脱 TUI hybrid 2026-07: glyph → pseudo-element、 描画は SHELL_CSS 参照) */}
+			<Show when={props.connectorClass}>
+				<span
+					class={`vp-lane-connector ${props.connectorClass}`}
+					classList={{ last: props.connectorLast }}
+				/>
 			</Show>
 			{/* ① stand icon */}
 			<Show when={icon()}>
