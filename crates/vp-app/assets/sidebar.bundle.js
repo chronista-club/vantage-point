@@ -145,14 +145,23 @@
    Ctrl+Shift+E \u306E slider \u304C\u52B9\u304B\u306A\u304F\u306A\u308B (2026-07-11 Editor Mode \u4F5C\u696D\u53F0\u5316)\u3002
    text scale 4 \u6BB5 (Live Token): base=\u884C\u30BF\u30A4\u30C8\u30EB/summary\u3001 hint=\u884C\u672C\u6587/menu/input\u3001
    meta=\u30E9\u30D9\u30EB/\u30D8\u30C3\u30C0/stats\u3001 micro=badge/kbd/footer/git meta\u3002
-   connector \u7CFB (--sb-conn-*) \u306F lane tree connector \u306E\u6F14\u594F knob: width=\u7DDA\u5E45 (\u7E26\u68D2/\u6A2A\u679D/
-   proj spine \u5171\u901A)\u3001 slot=connector box \u5E45 (= \u6A2A\u679D\u306E\u9577\u3055)\u3001 dash=\u81EA\u8D70\u7834\u7DDA\u306E dash \u9577\u3001
-   flow-beat=\u7834\u7DDA\u304C 1 \u5468\u671F\u6D41\u308C\u308B\u79D2\u6570 (default = creo-ui timeline BPM 82.7 \u306E 1 beat)\u3002
-   \u8272 (hitl/auto) \u306F\u63A2\u7D22\u7528\u306E flat token \u2014 \u521D\u671F\u5024\u306F creo status token \u3068\u540C\u5024\u3002 */
+   connector \u7CFB (--sb-conn-*) \u306F lane tree connector \u306E\u6F14\u594F knob: width=\u7DDA\u5E45\u3001 slot=gutter \u5E45\u3001
+   dash=idle \u7834\u7DDA\u306E dash \u9577\u3001 flow-beat=HITL pulse \u306E 1 beat (= creo-ui timeline BPM 82.7)\u3001
+   photon-period=photon \u304C spine \u3092 root\u2192\u672B\u7AEF\u306B\u8D70\u308B\u5468\u671F\u3001 glow=\u767A\u5149\u534A\u5F84\u3002
+   \u8272 (hitl/auto) \u306F Light Grid palette \u306E magenta/cyan (Editor Mode picker \u3067\u6F14\u594F\u53EF)\u3002
+
+   Light Grid palette (--lg-*, Step 7 = Direction B\u300CLight Grid / TRON origin\u300D\u518D\u30B9\u30AD\u30F3):
+   sidebar \u30B9\u30B3\u30FC\u30D7\u5C02\u7528\u306E\u9759\u7684 palette\u3002 app \u5168\u4F53\u306E paradox-violet \u30C6\u30FC\u30DE\u306F\u5909\u3048\u306A\u3044 \u2014
+   \u9069\u7528\u306F #sidebar-root \u4EE5\u4E0B\u306B\u5C01\u3058\u8FBC\u3081\u308B (\u5B9A\u7FA9\u304C :root \u306A\u306E\u306F Editor Mode \u306E\u66F8\u304D\u8FBC\u307F\u5148\u3068
+   \u63C3\u3048\u308B\u305F\u3081\u3002 \u5B9A\u7FA9\u81EA\u4F53\u306F inert)\u3002 \u8996\u899A\u4ED5\u69D8\u306E SSOT = artifact c203944c (mako \u627F\u8A8D\u6E08)\u3002 */
 :root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
-  --sb-conn-width:1.5px;--sb-conn-slot:16px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
-  --sb-conn-hitl:var(--color-status-warning,#d49b3f);
-  --sb-conn-auto:var(--color-status-info,#3fb9d4);}
+  --sb-conn-width:2px;--sb-conn-slot:22px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
+  --sb-photon-period:1800ms;--sb-glow:6px;
+  --sb-conn-hitl:#FF3DAE;
+  --sb-conn-auto:#22E0FF;
+  --lg-void:#05070A;--lg-void-2:#080B11;--lg-panel:#0A0E15;
+  --lg-grid:#0E2A33;--lg-hairline:#12222b;
+  --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;}
 html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point\u3002 height chain (html\u2192body\u2192#sidebar-root\u2192shell) \u3092\u7E4B\u3050\u3002
    \u3053\u306E\u898F\u5247\u304C\u7121\u3044\u3068 shell \u304C content \u9AD8\u3055\u306B collapse \u3057\u3001 window \u4E0B\u90E8\u306B gap \u304C\u51FA\u308B\u3002
@@ -160,7 +169,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
    \u76F4\u66F8\u304D\u306F\u5358\u4E00 WebView \u306E document \u5168\u4F53\u3092\u6C5A\u67D3\u3057\u3001 pane header \u307E\u3067 'VPMono' 12px \u306B
    mono \u5316\u3057\u3066\u3044\u305F\u3002 \u30B5\u30A4\u30C9\u30D0\u30FC\u3092 sans \u5168\u9762\u5316\u3057\u3064\u3064 pane header \u3078\u306E\u6CE2\u53CA\u3092\u65AD\u3064\u3002 */
 #sidebar-root{height:100%;
-  background:var(--color-surface-bg-subtle);color:var(--color-text-primary);
+  /* Light Grid: \u5730\u306F void\u3002 sidebar \u30B9\u30B3\u30FC\u30D7\u306E\u518D\u30B9\u30AD\u30F3\u306F\u3053\u3053\u304B\u3089\u4E0B\u306E .vp-* \u7CFB\u306B\u306E\u307F\u52B9\u304F\u3002 */
+  background:var(--lg-void,#05070A);color:var(--lg-hot,#EAFBFF);
   /* \u30B5\u30A4\u30C9\u30D0\u30FC\u5168\u9762 sans (font zero-start: --vp-font-sans = 'Gen Interface JP')\u3002 var() 2 \u6BB5
      fallback \u306F vp-tokens.css \u898F\u7D04 (WKWebView \u304C var() chain \u3092 invalidate \u3059\u308B\u305F\u3081 use site
      \u3067\u4E26\u3079\u308B)\u3002 \u672A install \u74B0\u5883\u3067\u3082 creo sans stack \u306B\u7E2E\u9000\u3057 proper sans \u3067\u63CF\u753B\u3055\u308C\u308B\u3002 */
@@ -173,21 +183,29 @@ html,body{margin:0;height:100%;overflow:hidden;}
    \u63CF\u753B\u3055\u308C\u3066\u691C\u7D22 input \u304C\u898B\u3048\u306A\u304F\u306A\u308B (PR #439 dogfood feedback)\u3002 */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
-  padding:10px var(--spacing-sm,10px);font-size:var(--sb-text-meta,11px);letter-spacing:.06em;
-  font-weight:var(--typography-weight-semibold,600);color:var(--color-text-tertiary);
-  border-bottom:1px solid var(--color-surface-border,#1f2233);user-select:none;}
+  padding:12px 12px 10px;font-size:var(--sb-text-micro,10px);letter-spacing:.2em;
+  text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
+  color:var(--lg-mute,#5C7A85);
+  border-bottom:1px solid var(--lg-hairline,#12222b);user-select:none;}
 .vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
   border:none;background:transparent;color:var(--color-text-tertiary);cursor:pointer;
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
 .vp-sidebar-add:hover{background:var(--color-surface-bg-emphasis);
   color:var(--color-brand-primary);}
-.vp-sidebar-list{flex:1;overflow-y:auto;padding:var(--spacing-xs,4px) 0;}
-.vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--color-text-tertiary);
+.vp-sidebar-list{flex:1;overflow-y:auto;padding:0 0 10px;}
+.vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 
-/* Project accordion */
-.vp-proj{margin:0;}
+/* Project accordion \u2014 Light Grid: project = \u5730 (ground)\u3002 \u767A\u5149\u3055\u305B\u305A void \u306B\u6C88\u3080\u9759\u304B\u306A\u5730\u5F62\u3002
+   faint fill (#ffffff04) + \u5FAE TRON grid \u30C6\u30AF\u30B9\u30C1\u30E3 (22px \u9593\u9694\u306E\u6A2A\u7DDA) + inset hairline ring\u3002
+   glow \u306A\u3057 \u2014 \u56F3 (= session \u306E current / photon) \u3092\u5F15\u304D\u7ACB\u3066\u308B\u305F\u3081\u5FC5\u305A\u5F8C\u9000\u3055\u305B\u308B\u3002 */
+.vp-proj{margin:8px 8px 0;border-radius:11px;
+  background:
+    linear-gradient(var(--lg-grid,#0E2A33) 1px,transparent 1px) 0 0 / 100% 22px,
+    #ffffff04;
+  box-shadow:inset 0 0 0 1px #ffffff08;
+  padding:2px 4px 6px;}
 /* project \u304C\u6240\u6709\u3059\u308B tree spine (= \u7E26\u30E9\u30A4\u30F3)\u3002 connector \u306E\u7E26\u68D2 (::before) \u3068\u540C\u3058 x \u306B\u91CD\u306D\u3001
    \u884C\u9593 padding \u306E\u9699\u9593\u3092\u57CB\u3081\u3066 proj \u9818\u57DF\u304B\u3089\u4F38\u3073\u308B 1 \u672C\u306E\u9023\u7D9A\u7E26\u7DDA\u306B\u898B\u305B\u308B (SoC: \u7E26\u306F proj\u3001
    \u679D\u306F connector)\u3002 top:0 = summary \u76F4\u4E0B\u304B\u3089\u3001 bottom = \u6700\u5F8C\u306E lane \u4E2D\u592E\u3067\u6B62\u3081\u308B\u3002 */
@@ -196,18 +214,21 @@ html,body{margin:0;height:100%;overflow:hidden;}
   width:var(--sb-conn-width,1.5px);
   background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
   pointer-events:none;}
-.vp-proj + .vp-proj{border-top:1px solid var(--color-surface-border,#1f2233);}
-.vp-proj-summary{list-style:none;display:flex;align-items:center;gap:6px;
-  padding:6px var(--spacing-sm,8px);cursor:pointer;font-size:var(--sb-text-base,13px);user-select:none;
-  transition:background .1s ease;}
+.vp-proj + .vp-proj{border-top:none;}
+/* project \u30E9\u30D9\u30EB = \u5730\u306E\u76EE\u5370 (quiet ground marker)\u3002 muted uppercase \u306E\u5C0F\u3055\u3044 tab\u3001 \u767A\u5149\u306A\u3057\u3002 */
+.vp-proj-summary{list-style:none;display:flex;align-items:center;gap:7px;
+  padding:7px 8px 5px;cursor:pointer;user-select:none;
+  font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--lg-mute-2,#38525b);
+  transition:color .12s ease;}
 .vp-proj-summary::-webkit-details-marker{display:none;}
-.vp-proj-summary:hover{background:var(--color-surface-bg-emphasis);}
+.vp-proj-summary:hover{color:var(--lg-mute,#5C7A85);}
 .vp-proj-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-proj-hint{padding:6px 12px 6px 20px;font-size:var(--sb-text-meta,11px);
-  color:var(--color-text-tertiary);font-style:italic;}
+  color:var(--lg-mute,#5C7A85);font-style:italic;}
 /* \u65B0\u898F\u8FFD\u52A0 project \u306E reveal flash \u2014 auto tab-switch \u3068\u4F75\u7528\u3057\u3066\u898B\u5931\u308F\u305B\u306A\u3044
    (Shell \u306E createEffect \u304C\u5BFE\u8C61\u306B .vp-proj-flash \u3092\u4ED8\u4E0E)\u3002summary \u80CC\u666F\u3092\u4E00\u77AC brand \u8272\u306B\u3002 */
-@keyframes vp-proj-flash{0%{background:var(--color-brand-primary-subtle);}
+@keyframes vp-proj-flash{0%{background:#22e0ff14;}
   100%{background:transparent;}}
 .vp-proj-flash > .vp-proj-summary{animation:vp-proj-flash 1.3s ease-out;}
 
@@ -216,8 +237,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
    dragging = \u63B4\u307F\u4E2D\u3092\u534A\u900F\u660E\u3001 drop-before/after = \u633F\u5165\u5148\u3092 brand \u8272\u306E\u7DDA\u3067\u793A\u3059\u3002 */
 .vp-proj-summary{cursor:grab;}
 .vp-proj.dragging{opacity:.4;}
-.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--color-brand-primary);}
-.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--color-brand-primary);}
+/* drop marker \u306F cyan\u3002 ground \u306E inset ring (box-shadow \u5358\u4E00 property) \u3092\u5931\u308F\u306A\u3044\u3088\u3046\u4F75\u8A18\u3002 */
+.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#22E0FF),
+  inset 0 0 0 1px #ffffff08;}
+.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#22E0FF),
+  inset 0 0 0 1px #ffffff08;}
 
 /* Lane \u884C */
 /* \u30DF\u30CB\u30DE\u30E0 1 \u884C (2026-05-30): icon + session title + \u53F3\u7AEF block (meta/awaiting/files/mailbox)\u3002
@@ -332,15 +356,17 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--color-status-success,#3fb950);}
 .vp-world-dot.offline{background:var(--color-status-error,#d4444c);}
-/* L1 lifecycle: project \u884C\u306E SP presence dot\uFF08\u25CF\u25D0\u25CB\uFF09\u3002daemon-canonical \u306E\u63A5\u7D9A\u72B6\u614B\u3092\u53EF\u8996\u5316\u3002
-   default \u306F unregistered \u76F8\u5F53\uFF08dim\uFF09\u3001 \u5404 state class \u3067\u8272\u4ED8\u3051\u3002 connecting \u306F pulse\u3002 */
-.vp-proj-presence-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
-  background:var(--color-text-tertiary,#6e7681);opacity:.5;}
-.vp-proj-presence-dot.connected{background:var(--color-status-success,#3fb950);opacity:1;}
-.vp-proj-presence-dot.connecting{background:var(--color-status-warning,#d49b3f);opacity:1;
+/* L1 lifecycle: project \u884C\u306E SP presence dot\u3002 Light Grid \u3067\u306F project = \u5730\u306A\u306E\u3067\u767A\u5149\u3055\u305B\u306A\u3044
+   (\u300C\u767A\u5149\u30C9\u30C3\u30C8\u7121\u3057\u300D)\u3002 semantics \u306F\u6B8B\u3057\u3064\u3064 muted \u8868\u73FE\u306B\u843D\u3068\u3059: connected = mute-2 \u5B9A\u5E38\u3001
+   connecting = mute pulse\u3001 disconnected = magenta 60% (\u8981\u6CE8\u610F\u3060\u3051\u304C\u50C5\u304B\u306B\u5F69\u5EA6\u3092\u6301\u3064)\u3001
+   unregistered = mute-2 40%\u3002 */
+.vp-proj-presence-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
+  background:var(--lg-mute-2,#38525b);opacity:.4;}
+.vp-proj-presence-dot.connected{background:var(--lg-mute-2,#38525b);opacity:1;}
+.vp-proj-presence-dot.connecting{background:var(--lg-mute,#5C7A85);opacity:1;
   animation:vp-presence-pulse 1.1s ease-in-out infinite;}
-.vp-proj-presence-dot.disconnected{background:var(--color-status-error,#d4444c);opacity:1;}
-.vp-proj-presence-dot.unregistered{background:var(--color-text-tertiary,#6e7681);opacity:.5;}
+.vp-proj-presence-dot.disconnected{background:var(--sb-conn-hitl,#FF3DAE);opacity:.6;}
+.vp-proj-presence-dot.unregistered{background:var(--lg-mute-2,#38525b);opacity:.4;}
 @keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
 .vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums;}

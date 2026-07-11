@@ -167,14 +167,23 @@ export const SHELL_CSS = `
    Ctrl+Shift+E の slider が効かなくなる (2026-07-11 Editor Mode 作業台化)。
    text scale 4 段 (Live Token): base=行タイトル/summary、 hint=行本文/menu/input、
    meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。
-   connector 系 (--sb-conn-*) は lane tree connector の演奏 knob: width=線幅 (縦棒/横枝/
-   proj spine 共通)、 slot=connector box 幅 (= 横枝の長さ)、 dash=自走破線の dash 長、
-   flow-beat=破線が 1 周期流れる秒数 (default = creo-ui timeline BPM 82.7 の 1 beat)。
-   色 (hitl/auto) は探索用の flat token — 初期値は creo status token と同値。 */
+   connector 系 (--sb-conn-*) は lane tree connector の演奏 knob: width=線幅、 slot=gutter 幅、
+   dash=idle 破線の dash 長、 flow-beat=HITL pulse の 1 beat (= creo-ui timeline BPM 82.7)、
+   photon-period=photon が spine を root→末端に走る周期、 glow=発光半径。
+   色 (hitl/auto) は Light Grid palette の magenta/cyan (Editor Mode picker で演奏可)。
+
+   Light Grid palette (--lg-*, Step 7 = Direction B「Light Grid / TRON origin」再スキン):
+   sidebar スコープ専用の静的 palette。 app 全体の paradox-violet テーマは変えない —
+   適用は #sidebar-root 以下に封じ込める (定義が :root なのは Editor Mode の書き込み先と
+   揃えるため。 定義自体は inert)。 視覚仕様の SSOT = artifact c203944c (mako 承認済)。 */
 :root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
-  --sb-conn-width:1.5px;--sb-conn-slot:16px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
-  --sb-conn-hitl:var(--color-status-warning,#d49b3f);
-  --sb-conn-auto:var(--color-status-info,#3fb9d4);}
+  --sb-conn-width:2px;--sb-conn-slot:22px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
+  --sb-photon-period:1800ms;--sb-glow:6px;
+  --sb-conn-hitl:#FF3DAE;
+  --sb-conn-auto:#22E0FF;
+  --lg-void:#05070A;--lg-void-2:#080B11;--lg-panel:#0A0E15;
+  --lg-grid:#0E2A33;--lg-hairline:#12222b;
+  --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;}
 html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
    この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。
@@ -182,7 +191,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
    直書きは単一 WebView の document 全体を汚染し、 pane header まで 'VPMono' 12px に
    mono 化していた。 サイドバーを sans 全面化しつつ pane header への波及を断つ。 */
 #sidebar-root{height:100%;
-  background:var(--color-surface-bg-subtle);color:var(--color-text-primary);
+  /* Light Grid: 地は void。 sidebar スコープの再スキンはここから下の .vp-* 系にのみ効く。 */
+  background:var(--lg-void,#05070A);color:var(--lg-hot,#EAFBFF);
   /* サイドバー全面 sans (font zero-start: --vp-font-sans = 'Gen Interface JP')。 var() 2 段
      fallback は vp-tokens.css 規約 (WKWebView が var() chain を invalidate するため use site
      で並べる)。 未 install 環境でも creo sans stack に縮退し proper sans で描画される。 */
@@ -195,21 +205,29 @@ html,body{margin:0;height:100%;overflow:hidden;}
    描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。 */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
-  padding:10px var(--spacing-sm,10px);font-size:var(--sb-text-meta,11px);letter-spacing:.06em;
-  font-weight:var(--typography-weight-semibold,600);color:var(--color-text-tertiary);
-  border-bottom:1px solid var(--color-surface-border,#1f2233);user-select:none;}
+  padding:12px 12px 10px;font-size:var(--sb-text-micro,10px);letter-spacing:.2em;
+  text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
+  color:var(--lg-mute,#5C7A85);
+  border-bottom:1px solid var(--lg-hairline,#12222b);user-select:none;}
 .vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
   border:none;background:transparent;color:var(--color-text-tertiary);cursor:pointer;
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
 .vp-sidebar-add:hover{background:var(--color-surface-bg-emphasis);
   color:var(--color-brand-primary);}
-.vp-sidebar-list{flex:1;overflow-y:auto;padding:var(--spacing-xs,4px) 0;}
-.vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--color-text-tertiary);
+.vp-sidebar-list{flex:1;overflow-y:auto;padding:0 0 10px;}
+.vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 
-/* Project accordion */
-.vp-proj{margin:0;}
+/* Project accordion — Light Grid: project = 地 (ground)。 発光させず void に沈む静かな地形。
+   faint fill (#ffffff04) + 微 TRON grid テクスチャ (22px 間隔の横線) + inset hairline ring。
+   glow なし — 図 (= session の current / photon) を引き立てるため必ず後退させる。 */
+.vp-proj{margin:8px 8px 0;border-radius:11px;
+  background:
+    linear-gradient(var(--lg-grid,#0E2A33) 1px,transparent 1px) 0 0 / 100% 22px,
+    #ffffff04;
+  box-shadow:inset 0 0 0 1px #ffffff08;
+  padding:2px 4px 6px;}
 /* project が所有する tree spine (= 縦ライン)。 connector の縦棒 (::before) と同じ x に重ね、
    行間 padding の隙間を埋めて proj 領域から伸びる 1 本の連続縦線に見せる (SoC: 縦は proj、
    枝は connector)。 top:0 = summary 直下から、 bottom = 最後の lane 中央で止める。 */
@@ -218,18 +236,21 @@ html,body{margin:0;height:100%;overflow:hidden;}
   width:var(--sb-conn-width,1.5px);
   background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
   pointer-events:none;}
-.vp-proj + .vp-proj{border-top:1px solid var(--color-surface-border,#1f2233);}
-.vp-proj-summary{list-style:none;display:flex;align-items:center;gap:6px;
-  padding:6px var(--spacing-sm,8px);cursor:pointer;font-size:var(--sb-text-base,13px);user-select:none;
-  transition:background .1s ease;}
+.vp-proj + .vp-proj{border-top:none;}
+/* project ラベル = 地の目印 (quiet ground marker)。 muted uppercase の小さい tab、 発光なし。 */
+.vp-proj-summary{list-style:none;display:flex;align-items:center;gap:7px;
+  padding:7px 8px 5px;cursor:pointer;user-select:none;
+  font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--lg-mute-2,#38525b);
+  transition:color .12s ease;}
 .vp-proj-summary::-webkit-details-marker{display:none;}
-.vp-proj-summary:hover{background:var(--color-surface-bg-emphasis);}
+.vp-proj-summary:hover{color:var(--lg-mute,#5C7A85);}
 .vp-proj-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-proj-hint{padding:6px 12px 6px 20px;font-size:var(--sb-text-meta,11px);
-  color:var(--color-text-tertiary);font-style:italic;}
+  color:var(--lg-mute,#5C7A85);font-style:italic;}
 /* 新規追加 project の reveal flash — auto tab-switch と併用して見失わせない
    (Shell の createEffect が対象に .vp-proj-flash を付与)。summary 背景を一瞬 brand 色に。 */
-@keyframes vp-proj-flash{0%{background:var(--color-brand-primary-subtle);}
+@keyframes vp-proj-flash{0%{background:#22e0ff14;}
   100%{background:transparent;}}
 .vp-proj-flash > .vp-proj-summary{animation:vp-proj-flash 1.3s ease-out;}
 
@@ -238,8 +259,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
    dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線で示す。 */
 .vp-proj-summary{cursor:grab;}
 .vp-proj.dragging{opacity:.4;}
-.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--color-brand-primary);}
-.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--color-brand-primary);}
+/* drop marker は cyan。 ground の inset ring (box-shadow 単一 property) を失わないよう併記。 */
+.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#22E0FF),
+  inset 0 0 0 1px #ffffff08;}
+.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#22E0FF),
+  inset 0 0 0 1px #ffffff08;}
 
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
@@ -354,15 +378,17 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--color-status-success,#3fb950);}
 .vp-world-dot.offline{background:var(--color-status-error,#d4444c);}
-/* L1 lifecycle: project 行の SP presence dot（●◐○）。daemon-canonical の接続状態を可視化。
-   default は unregistered 相当（dim）、 各 state class で色付け。 connecting は pulse。 */
-.vp-proj-presence-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
-  background:var(--color-text-tertiary,#6e7681);opacity:.5;}
-.vp-proj-presence-dot.connected{background:var(--color-status-success,#3fb950);opacity:1;}
-.vp-proj-presence-dot.connecting{background:var(--color-status-warning,#d49b3f);opacity:1;
+/* L1 lifecycle: project 行の SP presence dot。 Light Grid では project = 地なので発光させない
+   (「発光ドット無し」)。 semantics は残しつつ muted 表現に落とす: connected = mute-2 定常、
+   connecting = mute pulse、 disconnected = magenta 60% (要注意だけが僅かに彩度を持つ)、
+   unregistered = mute-2 40%。 */
+.vp-proj-presence-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
+  background:var(--lg-mute-2,#38525b);opacity:.4;}
+.vp-proj-presence-dot.connected{background:var(--lg-mute-2,#38525b);opacity:1;}
+.vp-proj-presence-dot.connecting{background:var(--lg-mute,#5C7A85);opacity:1;
   animation:vp-presence-pulse 1.1s ease-in-out infinite;}
-.vp-proj-presence-dot.disconnected{background:var(--color-status-error,#d4444c);opacity:1;}
-.vp-proj-presence-dot.unregistered{background:var(--color-text-tertiary,#6e7681);opacity:.5;}
+.vp-proj-presence-dot.disconnected{background:var(--sb-conn-hitl,#FF3DAE);opacity:.6;}
+.vp-proj-presence-dot.unregistered{background:var(--lg-mute-2,#38525b);opacity:.4;}
 @keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
 .vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums;}
