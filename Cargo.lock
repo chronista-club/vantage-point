@@ -1386,8 +1386,9 @@ checksum = "cb6b41dc066e3a08b96b5b2201b6fc4f033170fabf7cb389c4904345132275ec"
 
 [[package]]
 name = "club-unison"
-version = "1.5.0"
-source = "git+https://github.com/chronista-club/club-unison?branch=feat%2Fconnect-race-happy-eyeballs#cb87b58fe26fd3cc5d2e2bd546b69067e246c231"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f147d1bb61fa0ce27e6257d98fc6009174b3a5c014b3fe040dbdd56657989aa4"
 dependencies = [
  "anyhow",
  "async-stream",
