@@ -57,7 +57,10 @@ tokio-stream = "0.1"
 # 1.5.0 (federation S4 relay で bump): server-initiated stream primitive
 # (`register_server_channel` / `open_server_stream`)。 hub の relay floor (source→target を
 # 片方向 forward) が依存。 VP の dialer + target inbound (③) がこれを使う。 既存 API 非破壊 (additive)。
-unison = { package = "club-unison", version = "1.5.0" }
+# 1.6.0 (federation §S6 dialer で bump): connect_race (Happy Eyeballs v2 staggered race、
+# RFC 8305) + `network::dial` engine。 VP の direct dialer (daemon/dialer.rs、 discover→direct
+# race→relay floor) が依存。 既存 API 非破壊 (additive)。
+unison = { package = "club-unison", version = "1.6.0" }
 
 # Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
 # `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:
@@ -77,4 +80,3 @@ crossterm = "0.29"
 
 # Database (DB は SurrealDB に一本化、 sqlx / rusqlite は dead dep として撤去 — PR 457)
 surrealdb = { version = "3.1", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
-
