@@ -57,12 +57,15 @@ windows_default_inline_shell_args = "bash -c"
 # app:stop は file-based task に移行 (.mise/tasks/app/stop、 2026-05-30)。
 
 [tasks."app"]
-description = "vp-app を build → 既存 app stop → app start (World は touch しない、 World 再起動は `mise run daemon`)"
+description = "既存 app stop → vp-app build → app start (World は touch しない、 World 再起動は `mise run daemon`)"
 run = """
 set -euo pipefail
-mise run app:build
-# stop は running 不在でも success にする (chain breaking 回避)
+# build より先に stop する: Windows は実行中の .exe を置換できないため、 running app が
+# いる状態で先に build (cargo install) すると「アクセスが拒否されました (os error 5)」 で
+# 失敗する (Mac は実行中でも上書き可だが順序を統一)。
+# stop は running 不在でも success にする (chain breaking 回避)。
 mise run app:stop 2>/dev/null || echo "(running app なし、 stop はスキップ)"
+mise run app:build
 mise run app:start
 """
 

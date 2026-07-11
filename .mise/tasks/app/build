@@ -5,8 +5,11 @@
 # file-based mise task 移行 (2026-05-30)。 旧 [tasks."app:build"] を Ruby file task に移植。
 # cargo install --path で codesign 付き binary を ~/.cargo/bin に配置 (cp だと codesign 剥がれて
 # macOS に kill される、 CLAUDE.md feedback)。 build artifact (target/) も副産物で生成される。
+#
+# --locked 必須 (CLAUDE.md): cargo install は Cargo.lock を無視して依存を最新解決するため、
+# 未検証の新リリースを踏んで build が壊れる。 daemon:build と揃える (鏡像を保つ)。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 VP.log "Building vp-app (release) + install to ~/.cargo/bin…"
-VP.sh "cargo install --path crates/vp-app"
+VP.sh "cargo install --path crates/vp-app --locked"
 VP.log "#{VP.icon(:ok)} Installed: #{VP.cargo_bin('vp-app')}"

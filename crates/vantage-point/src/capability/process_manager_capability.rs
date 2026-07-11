@@ -1364,6 +1364,14 @@ impl ProcessManagerCapability {
             cmd.current_dir(&project.path);
             // GUI/launchd 起動の最小 PATH が SP → mise → claude へ伝播するのを spawn 最上流で断つ。
             cmd.env("PATH", crate::spawn_env::augmented_spawn_path());
+            // Windows: SP は background server。 親 (daemon) が console を持たない (DETACHED) ため、
+            // console subsystem の vp.exe を素で spawn すると Windows が新規 console を割り当てて
+            // 黒い console 窓が出てしまう。 CREATE_NO_WINDOW で window 無しの background 実行にする。
+            #[cfg(windows)]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
             let child = cmd
                 .spawn()
                 .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
