@@ -564,10 +564,7 @@ impl WiremsgStore {
         for row in &rows {
             let msg = Self::row_to_message(row)?;
             let acked = self.acks_for(&msg.id).await?;
-            let has_pending = msg
-                .to
-                .iter()
-                .any(|a| *a != msg.from && !acked.contains(a));
+            let has_pending = msg.to.iter().any(|a| *a != msg.from && !acked.contains(a));
             if has_pending {
                 return Ok(Some(msg)); // local_seq DESC なので最初の pending が最新
             }

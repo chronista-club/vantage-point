@@ -2562,7 +2562,10 @@ mod tests {
             "message_id": "x",
             "agent": "agent@vantage-point"
         });
-        assert_eq!(collect_wire_projects(&ack), vec!["vantage-point".to_string()]);
+        assert_eq!(
+            collect_wire_projects(&ack),
+            vec!["vantage-point".to_string()]
+        );
 
         // address 無し / 不正形は空
         assert!(collect_wire_projects(&serde_json::json!({})).is_empty());
