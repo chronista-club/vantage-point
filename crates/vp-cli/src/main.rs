@@ -197,6 +197,10 @@ enum LaneCommands {
         /// performer-files.kdl の base-ref → origin/HEAD → main
         #[arg(long)]
         base: Option<String>,
+        /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
+        /// `--model` として読まれる。省略時は claude default
+        #[arg(long)]
+        model: Option<String>,
     },
     /// 現在の dirty state を新しい performer 環境に fork
     Fork {
@@ -214,6 +218,10 @@ enum LaneCommands {
         /// performer-files.kdl の base-ref → origin/HEAD → main
         #[arg(long)]
         base: Option<String>,
+        /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
+        /// `--model` として読まれる。省略時は claude default
+        #[arg(long)]
+        model: Option<String>,
     },
     /// performer 環境一覧
     ///
@@ -658,9 +666,17 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             force,
             isolation,
             base,
+            model,
         } => {
-            ws::new_performer(&name, &branch, force, isolation, base.as_deref())
-                .map_err(|e| anyhow::anyhow!(e))?;
+            ws::new_performer(
+                &name,
+                &branch,
+                force,
+                isolation,
+                base.as_deref(),
+                model.as_deref(),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Fork {
@@ -669,9 +685,17 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             force,
             isolation,
             base,
+            model,
         } => {
-            ws::fork_performer(&name, &branch, force, isolation, base.as_deref())
-                .map_err(|e| anyhow::anyhow!(e))?;
+            ws::fork_performer(
+                &name,
+                &branch,
+                force,
+                isolation,
+                base.as_deref(),
+                model.as_deref(),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Ls { detail } => {

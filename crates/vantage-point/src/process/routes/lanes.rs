@@ -167,6 +167,11 @@ pub struct CreateLaneReq {
     /// 省略時は performer-files.kdl の base-ref → origin/HEAD → main。
     #[serde(default)]
     pub base: Option<String>,
+    /// lane の claude model alias (co-evolution #1、例: 'opus' / 'sonnet' / 'claude-fable-5')。
+    /// spawn 前に `engine_model` へ永続し、Act I spawn / respawn / Act II engine が共有する。
+    /// 省略時は claude default（`--model` を渡さない）。
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Performer Lane create core orchestration (Phase 3-A: lane clone + PtySlot spawn)。
@@ -280,6 +285,26 @@ pub(crate) async fn create_performer_orchestrated(
         );
         (path_buf.to_string_lossy().into_owned(), true)
     };
+
+    // co-evolution #1: model 指定を spawn 前に永続する。 build_stand_command が Act I claude の
+    // `--model` として読み、 respawn（SP restart）や Act II engine も同じ file を共有する。
+    // 不正な model 名は早期 error（bad input で lane を spawn する前に弾く）。 IO 失敗は
+    // best-effort warn（claude default に degrade するだけで lane 作成は続行）。
+    if let Some(model) = req.model.as_ref().filter(|m| !m.trim().is_empty()) {
+        let model = model.trim();
+        if !crate::lane::engine_model::is_valid_model(model) {
+            return Err(format!("model 名が不正です: {model:?}"));
+        }
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        if let Err(e) = crate::lane::engine_model::record(&addr.project, lane_label, model) {
+            tracing::warn!(
+                "engine_model 永続失敗（claude default で spawn）: addr={} model={} err={}",
+                addr,
+                model,
+                e
+            );
+        }
+    }
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
@@ -788,6 +813,7 @@ mod core_tests {
             cwd: None,
             branch: None,
             base: None,
+            model: None,
         }
     }
 
