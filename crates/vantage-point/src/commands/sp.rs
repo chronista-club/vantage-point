@@ -73,23 +73,21 @@ fn sp_start(
     debug: Option<DebugModeArg>,
     config: &Config,
 ) -> Result<()> {
-    // VP-189 follow-up: projects.kdl を sync (起点 dir 登録 + ghost 除去)。
-    // 「起点 dir → SP」 のメンタルモデル: 全 SP 起動経路 (GUI / vp sp start 直 /
-    // daemon spawn) がこの sp_start に収束するため、 ここ 1 点で漏れなく同期できる。
+    // projects.kdl を sync (ghost 除去のみ)。 全 SP 起動経路 (GUI / vp sp start 直 /
+    // daemon spawn) がこの sp_start に収束するため、 ここ 1 点で漏れなく ghost を掃除できる。
     //
-    // PR-D: daemon 在なら notify_world_sync 経由で daemon 側 (DB) が直列化するため file lock 不要。
-    // daemon 不在フォールバック (kdl 直書き) 時のみ write 競合がありうるが、 現状
-    // default=1 (sequential) なので実害なし。 並列化時は daemon 経由を前提にする。
-    // PR-D: 起点登録 + ghost 除去を daemon (db/world 真実源) 経由で。 daemon 不在は kdl フォールバック。
-    let sync_outcome = match crate::world_client::notify_world_sync(Some(project_dir)) {
+    // かつては起点 dir を自動登録もしていたが、 SP 起動時 sync が **削除済 project を復活**
+    // させる resurrection バグ (mem_1CcuRsC9pF3fiZptwmdgTS) の温床だったため撤去した。
+    // project 登録は sidebar Add / `vp projects add` の明示操作のみ (SP 起動 ≠ project 登録)。
+    //
+    // PR-D: daemon 在なら notify_world_sync 経由で daemon 側 (DB) が直列化する。
+    // daemon 不在は kdl フォールバック (ghost 除去のみ)。
+    let sync_outcome = match crate::world_client::notify_world_sync() {
         Some(o) => Ok(o),
-        None => crate::projects_file::ProjectsFile::sync(Some(std::path::Path::new(project_dir))),
+        None => crate::projects_file::ProjectsFile::sync(),
     };
     match sync_outcome {
         Ok(outcome) => {
-            if let Some(name) = &outcome.added {
-                println!("📁 project を登録しました: {name}");
-            }
             for name in &outcome.removed {
                 println!("🧹 ghost project を除去: {name}");
             }

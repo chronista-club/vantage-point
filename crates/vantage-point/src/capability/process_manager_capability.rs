@@ -1175,35 +1175,17 @@ impl ProcessManagerCapability {
 
     /// projects を現実と同期 (PR-D: CLI の `ProjectsFile::sync` を daemon 経由に移管)。
     ///
-    /// 1. `start_dir` が Some なら起点 dir を project 登録 (未登録時、 `vp app/sp start` の起点登録)。
-    /// 2. dir が実在しない ghost project を除去 (running process を持つものは安全側で残す)。
+    /// dir が実在しない ghost project を除去する (running process を持つものは安全側で残す)。
+    /// 永続化は内部の remove_project が persist_projects 経由で行う。
     ///
-    /// 永続化は内部の add_project / remove_project が persist_projects 経由で行う。
-    pub async fn sync_projects(
-        &self,
-        start_dir: Option<&str>,
-    ) -> CapabilityResult<crate::projects_file::SyncOutcome> {
+    /// かつて `start_dir` で「起点 dir 自動登録」も行っていたが、 `vp sp start` の起動時
+    /// sync が **削除済 project を復活させる** resurrection バグの温床だったため撤去した
+    /// (削除 → SP 再起動 → sync が起点 dir を無条件再登録 → db/kdl に復活)。 project 登録は
+    /// `add_project` 経由の明示操作のみ (sidebar Add / `vp projects add`)。
+    pub async fn sync_projects(&self) -> CapabilityResult<crate::projects_file::SyncOutcome> {
         let mut outcome = crate::projects_file::SyncOutcome::default();
 
-        // 1. 起点 dir 登録 (未登録なら)。
-        if let Some(dir) = start_dir {
-            let dir_path = Config::normalize_path(&PathBuf::from(dir));
-            let key = normalize_path_key(&PathBuf::from(&dir_path));
-            let exists = { self.projects.read().await.contains_key(&key) };
-            if !exists {
-                let name = std::path::Path::new(&dir_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("project")
-                    .to_string();
-                // add_project は path.is_dir() を要求 (起点 dir は実在前提)。
-                if self.add_project(&name, &dir_path).await.is_ok() {
-                    outcome.added = Some(name);
-                }
-            }
-        }
-
-        // 2. ghost 除去 (dir 非実在 & 非 running)。ロック順序 projects → running_processes を遵守。
+        // ghost 除去 (dir 非実在 & 非 running)。ロック順序 projects → running_processes を遵守。
         let ghosts: Vec<(String, String)> = {
             let projects = self.projects.read().await;
             let running: std::collections::HashSet<String> = {
@@ -3193,6 +3175,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_sync_does_not_revive_project_that_had_performer() {
+        // lead #2: 実バグ条件に近い robustness 回帰。 performer を抱えた project SP を削除した後、
+        // sync (= `vp sp start` が起動時に撃つ) を回しても復活しないことを焼き付ける。 旧挙動では
+        // sync_projects(Some(dir)) が起点 dir を無条件再登録し、 生きた performer で project SP が
+        // 死にきれず後で sp start → 復活する経路があった (mem_1CcuRsC9pF3fiZptwmdgTS)。
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+
+        let cap = make_test_cap();
+        let tmp = std::env::temp_dir().join(format!("vp-test-sync-revive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let project_path = tmp.to_string_lossy().to_string();
+        cap.add_project("hasperf", &project_path).await.unwrap();
+
+        // performer descriptor を lane_registry に投入 (project SP に performer 子がぶら下がる
+        // 状態を模す。 plain dir なので worktree reclaim は fs 削除に落ちる = git 非依存)。
+        let key = normalize_path_key(&PathBuf::from(&project_path));
+        let performer = LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::performer("hasperf", "foo"),
+            kind: LaneKind::Performer,
+            name: Some("foo".to_string()),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-11T00:00:00Z".to_string(),
+            pid: None,
+            cwd: tmp.join(".vp/lanes/foo").to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+        };
+        cap.lane_registry_ref()
+            .write()
+            .await
+            .insert(key.clone(), vec![performer]);
+
+        // 削除 → project も performer descriptor も畳まれる。
+        cap.remove_project(&project_path).await.unwrap();
+        assert!(
+            cap.list_projects().await.is_empty(),
+            "削除で project は消える"
+        );
+
+        // sync を回しても復活しない (起点 dir 自動登録が撤去済のため)。
+        let outcome = cap.sync_projects().await.unwrap();
+        assert!(outcome.removed.is_empty());
+        assert!(
+            cap.list_projects().await.is_empty(),
+            "performer を抱えていた project も sync で復活しない (resurrection 回帰)"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
     async fn test_create_lane_provisions_worktree_and_owns_descriptor() {
         // doc 24 §10 Phase 2 B-create: daemon が performer lane を create し、 worktree(ground)
         // を provision して descriptor を daemon-canonical truth として所有する end-to-end 検証。
@@ -3365,22 +3402,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sync_projects_registers_start_dir() {
+    async fn test_sync_projects_prunes_ghosts_only() {
+        // sync は ghost (dir 非実在) を除去するのみ。 起点 dir の自動登録は撤去済
+        // (削除済 project を SP 起動時 sync が復活させる resurrection バグの温床だった)。
         let cap = make_test_cap();
-        let dir = std::env::temp_dir();
-        let path = dir.to_string_lossy().to_string();
+        let real = std::env::temp_dir().to_string_lossy().to_string();
+        cap.add_project("real", &real).await.unwrap();
 
-        // 起点 dir 登録 (未登録 → added)
-        let outcome = cap.sync_projects(Some(&path)).await.unwrap();
-        assert!(outcome.added.is_some(), "起点 dir が新規登録される");
-        assert_eq!(cap.list_projects().await.len(), 1);
+        // 実在 dir の project は残る (ghost 除去されない)、 何も新規登録しない。
+        let outcome = cap.sync_projects().await.unwrap();
+        assert!(outcome.removed.is_empty(), "実在 dir は ghost 除去されない");
+        assert_eq!(
+            cap.list_projects().await.len(),
+            1,
+            "sync は project を増やさない"
+        );
+    }
 
-        // 再 sync (登録済み → added なし)
-        let outcome2 = cap.sync_projects(Some(&path)).await.unwrap();
-        assert!(outcome2.added.is_none(), "登録済みは再登録しない");
+    #[tokio::test]
+    async fn test_sync_does_not_revive_removed_project() {
+        // resurrection バグ回帰テスト: 削除した project は sync で復活しない。
+        // 以前は `vp sp start <dir>` の起動時 sync が起点 dir を無条件再登録し、
+        // 削除済 project が db/kdl に復活した (mem_1CcuRsC9pF3fiZptwmdgTS)。
+        let cap = make_test_cap();
+        // temp_dir は実在するので ghost 除去の対象にはならない (= 復活するとしたら
+        // 起点 dir 自動登録が原因、 という切り分けになる)。
+        let dir = std::env::temp_dir().to_string_lossy().to_string();
+
+        cap.add_project("victim", &dir).await.unwrap();
+        cap.remove_project(&dir).await.unwrap();
+        assert!(cap.list_projects().await.is_empty(), "削除直後は空");
+
+        // sync を回しても復活しない (起点 dir 自動登録が無いため)。
+        let outcome = cap.sync_projects().await.unwrap();
+        assert!(outcome.removed.is_empty());
         assert!(
-            outcome2.removed.is_empty(),
-            "実在 dir は ghost 除去されない"
+            cap.list_projects().await.is_empty(),
+            "sync は削除済 project を復活させない (resurrection 回帰)"
         );
     }
 

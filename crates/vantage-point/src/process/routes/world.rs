@@ -480,19 +480,12 @@ pub async fn world_unassign_slot(
     }
 }
 
-/// projects 同期リクエスト (PR-D: CLI の ghost 除去 + 起点登録を daemon 経由に)
-#[derive(serde::Deserialize)]
-pub struct SyncProjectsRequest {
-    /// 起点 dir (Some なら登録)。 null なら ghost 除去のみ。
-    #[serde(default)]
-    pub start_dir: Option<String>,
-}
-
-/// POST /api/world/projects/sync - 起点 dir 登録 + ghost 除去 (db/world に永続化)
-pub async fn world_sync_projects(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<SyncProjectsRequest>,
-) -> impl IntoResponse {
+/// POST /api/world/projects/sync - ghost project 除去 (db/world に永続化)。
+///
+/// かつては body の `start_dir` で起点 dir を自動登録もしていたが、 削除済 project を
+/// 復活させる resurrection バグの温床だったため撤去した (登録は add_project 経由のみ)。
+/// 旧 client が body を送っても無視される (後方互換)。
+pub async fn world_sync_projects(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(world) = &state.world else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -500,10 +493,10 @@ pub async fn world_sync_projects(
         );
     };
     let world = world.read().await;
-    match world.sync_projects(req.start_dir.as_deref()).await {
+    match world.sync_projects().await {
         Ok(outcome) => (
             axum::http::StatusCode::OK,
-            Json(serde_json::json!({"added": outcome.added, "removed": outcome.removed})),
+            Json(serde_json::json!({"removed": outcome.removed})),
         ),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
