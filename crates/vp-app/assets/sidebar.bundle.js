@@ -343,13 +343,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-row:hover{background:#ffffff06;}
 /* row \u9593\u306E\u65E7 border \u306F\u64A4\u53BB \u2014 \u5730\u306F\u7121\u5730 (\u884C\u3092\u6A2A\u5207\u308B\u7DDA\u306F\u4F5C\u3089\u306A\u3044)\u3002 */
 .vp-lane-row + .vp-lane-row{border-top:none;}
-/* active (= \u9078\u629E\u4E2D) lane \u2014 \u9078\u629E\u306E\u4E3B\u8868\u73FE\u306F faint tint\u3002 \u30A2\u30AF\u30BB\u30F3\u30C8\u306F\u5DE6\u4E0B\u306E\u5C0F\u3055\u306A\u7E26\u9577
-   \u30D6\u30ED\u30C3\u30AF\u3060\u3051 (mako 019f5110: full-height \u306E\u592A\u30D6\u30E9\u30B1\u30C3\u30C8\u306F quiet pass \u539F\u5247\u306B\u53CD\u3059\u308B\u305F\u3081
-   \u5EC3\u6B62)\u3002 \u300C\u5149\u308B\u300D \u306E\u306F state (photon / node) \u306E\u4ED5\u4E8B\u3067\u3001 \u9078\u629E\u306F\u3042\u304F\u307E\u3067\u9759\u304B\u306A\u6307\u793A\u306B\u7559\u3081\u308B\u3002 */
-.vp-lane-row.active{background:#22e0ff10;}
-.vp-lane-row.active::before{content:"";position:absolute;left:0;bottom:5px;
-  width:3px;height:33%;border-radius:2px;
-  background:var(--sb-conn-auto,#22E0FF);}
+/* active (= \u9078\u629E\u4E2D) lane \u2014 \u9078\u629E\u8868\u73FE\u306F faint tint \u306E\u307F (mako 019f5114: \u30D6\u30E9\u30B1\u30C3\u30C8/
+   \u30D6\u30ED\u30C3\u30AF/\u30D0\u30FC\u7B49\u306E\u30A2\u30AF\u30BB\u30F3\u30C8\u8981\u7D20\u306F\u30BC\u30ED)\u3002 tint \u306F\u5224\u5225\u6027\u306E\u305F\u3081\u50C5\u304B\u306B\u5F37\u3081 (8%)\u3001
+   \u5149\u308A\u7269\u306F\u5897\u3084\u3055\u306A\u3044\u3002 \u300C\u5149\u308B\u300D \u306E\u306F state (photon / node) \u306E\u4ED5\u4E8B\u3002 */
+.vp-lane-row.active{background:#22e0ff14;}
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
 /* root session (= conductor\u3001 spine \u306E\u982D)\u3002 quiet pass (019f5100): cyan wash / glyph glow \u306F
    \u64A4\u53BB\u3001 weight 600 \u3060\u3051\u3067\u9759\u304B\u306B\u7ACB\u305F\u305B\u308B (\u884C tint \u3068 glyph \u5F69\u8272\u306F\u5149\u306E\u7DCF\u91CF\u3092\u5897\u3084\u3059\u305F\u3081\u843D\u3068\u3059)\u3002 */
