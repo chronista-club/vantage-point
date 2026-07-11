@@ -446,7 +446,7 @@ fn print_table(view: &serde_json::Value) {
         .unwrap_or(0);
     println!("Project: {}", project);
     println!("  Conductor unread wire: {}", conductor_unread);
-    let performers = view
+    let mut performers = view
         .get("performers")
         .and_then(|v| v.as_array())
         .cloned()
@@ -454,6 +454,20 @@ fn print_table(view: &serde_json::Value) {
     if performers.is_empty() {
         println!("  (no performers)");
         return;
+    }
+    // needs-you (awaiting_user) を先頭に浮かせる (= ユーザが見るべき行を最初に。 stable sort
+    // なので残りの順序は不変)
+    performers
+        .sort_by_key(|w| w.get("flow_state").and_then(|v| v.as_str()) != Some("awaiting_user"));
+    let needs_you = performers
+        .iter()
+        .filter(|w| w.get("flow_state").and_then(|v| v.as_str()) == Some("awaiting_user"))
+        .count();
+    if needs_you > 0 {
+        println!(
+            "  🙋 needs-you: {} performer(s) がユーザの回答待ち",
+            needs_you
+        );
     }
     println!();
     println!(
@@ -483,18 +497,12 @@ fn print_table(view: &serde_json::Value) {
             .pointer("/performer_status/branch")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
-        // flow_state を emoji label に変換 (= "idle" → "⏸ idle" 等、 FSM 未 derive の performer は "-")
+        // flow_state を emoji label に変換 (serde 経由で FlowState に戻す — 手書き match は
+        // 状態追加時の漏れ源 (awaiting_user で発覚) なので撤去。 FSM 未 derive は "-")
         let mode_label = w
             .get("flow_state")
-            .and_then(|v| v.as_str())
-            .and_then(|s| match s {
-                "idle" => Some(crate::flow::FlowState::Idle),
-                "working" => Some(crate::flow::FlowState::Working),
-                "hitl_pending" => Some(crate::flow::FlowState::HitlPending),
-                "completed" => Some(crate::flow::FlowState::Completed),
-                "stuck" => Some(crate::flow::FlowState::Stuck),
-                _ => None,
-            })
+            .cloned()
+            .and_then(|v| serde_json::from_value::<crate::flow::FlowState>(v).ok())
             .map(|s| s.label())
             .unwrap_or("-");
         println!(
@@ -554,6 +562,18 @@ mod tests {
                 "control_surrender": false,
                 "state_reason": "performer posted question, awaiting conductor reply",
                 "last_state_transition_at": 1_000_000_000_000_i64,
+            }, {
+                // awaiting_user: serde 経由の label 変換 + needs-you 先頭 sort の経路を踏む
+                "name": "feat-b",
+                "address": "agent@demo/feat-b",
+                "state": "Running",
+                "cwd": "/tmp/performer-b",
+                "performer_status": null,
+                "unread_wire_count": 0,
+                "flow_state": "awaiting_user",
+                "control_surrender": false,
+                "state_reason": "performer posted needs_user, awaiting the user's answer (unacked)",
+                "last_state_transition_at": 1_000_000_000_001_i64,
             }]
         });
         print_table(&v);
