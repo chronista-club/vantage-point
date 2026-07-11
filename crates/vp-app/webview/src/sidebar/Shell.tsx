@@ -166,8 +166,15 @@ export const SHELL_CSS = `
    #sidebar-root 側に定義があると「近い祖先の定義が勝つ」で :root への書き込みがマスクされ、
    Ctrl+Shift+E の slider が効かなくなる (2026-07-11 Editor Mode 作業台化)。
    text scale 4 段 (Live Token): base=行タイトル/summary、 hint=行本文/menu/input、
-   meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。 */
-:root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;}
+   meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。
+   connector 系 (--sb-conn-*) は lane tree connector の演奏 knob: width=線幅 (縦棒/横枝/
+   proj spine 共通)、 slot=connector box 幅 (= 横枝の長さ)、 dash=自走破線の dash 長、
+   flow-beat=破線が 1 周期流れる秒数 (default = creo-ui timeline BPM 82.7 の 1 beat)。
+   色 (hitl/auto) は探索用の flat token — 初期値は creo status token と同値。 */
+:root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
+  --sb-conn-width:1.5px;--sb-conn-slot:16px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
+  --sb-conn-hitl:var(--color-status-warning,#d49b3f);
+  --sb-conn-auto:var(--color-status-info,#3fb9d4);}
 html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
    この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。
@@ -208,7 +215,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
    枝は connector)。 top:0 = summary 直下から、 bottom = 最後の lane 中央で止める。 */
 .vp-proj-content{position:relative;}
 .vp-proj-content::before{content:"";position:absolute;left:10.5px;top:0;bottom:17px;
-  width:1.5px;background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
+  width:var(--sb-conn-width,1.5px);
+  background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
   pointer-events:none;}
 .vp-proj + .vp-proj{border-top:1px solid var(--color-surface-border,#1f2233);}
 .vp-proj-summary{list-style:none;display:flex;align-items:center;gap:6px;
@@ -243,19 +251,23 @@ html,body{margin:0;height:100%;overflow:hidden;}
    ::after = 横枝 (線種 slot: conductor/HITL solid、 休眠 dotted、 自走 = 流れる破線)。
    縦棒 x=10.5px は .vp-proj-content::before の proj spine と同座標 (row padding-left 8px
    + left 2.5px)。 */
-.vp-lane-connector{position:relative;flex:0 0 16px;align-self:stretch;user-select:none;}
-.vp-lane-connector::before{content:"";position:absolute;left:2.5px;width:1.5px;
-  top:0;bottom:0;background:currentColor;}
+.vp-lane-connector{position:relative;flex:0 0 var(--sb-conn-slot,16px);align-self:stretch;
+  user-select:none;}
+.vp-lane-connector::before{content:"";position:absolute;left:2.5px;
+  width:var(--sb-conn-width,1.5px);top:0;bottom:0;background:currentColor;}
 .vp-lane-connector.last::before{bottom:50%;}
 .vp-lane-connector::after{content:"";position:absolute;left:2.5px;right:2px;top:50%;
-  margin-top:-0.75px;border-top:1.5px solid currentColor;}
+  margin-top:calc(var(--sb-conn-width,1.5px) / -2);
+  border-top:var(--sb-conn-width,1.5px) solid currentColor;}
 .vp-lane-connector.conn-dead::after{border-top-style:dotted;}
-/* 自走 = 破線が右へ流れる (= control を手放して自分で進んでいる)。 周期は creo-ui の
-   internal timeline BPM 82.7 に同期: 60 / 82.7 ≈ 0.7255s で 1 dash 周期 (8px) 進む。 */
-.vp-lane-connector.conn-auto::after{border-top:none;height:1.5px;
-  background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 8px);
-  animation:vp-conn-flow .7255s linear infinite;}
-@keyframes vp-conn-flow{to{background-position:8px 0;}}
+/* 自走 = 破線が右へ流れる (= control を手放して自分で進んでいる)。 周期 (--sb-conn-flow-beat)
+   の default は creo-ui internal timeline BPM 82.7 の 1 beat = 60 / 82.7 ≈ 0.7255s。
+   1 beat で 1 dash 周期 (= dash 長 × 2) 進む。 */
+.vp-lane-connector.conn-auto::after{border-top:none;height:var(--sb-conn-width,1.5px);
+  background:repeating-linear-gradient(90deg,currentColor 0 var(--sb-conn-dash,4px),
+    transparent var(--sb-conn-dash,4px) calc(var(--sb-conn-dash,4px) * 2));
+  animation:vp-conn-flow var(--sb-conn-flow-beat,.7255s) linear infinite;}
+@keyframes vp-conn-flow{to{background-position:calc(var(--sb-conn-dash,4px) * 2) 0;}}
 @media (prefers-reduced-motion:reduce){
   .vp-lane-connector.conn-auto::after{animation:none;}}
 .vp-lane-connector.conn-conductor{
@@ -263,8 +275,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-connector.conn-run{color:var(--color-text-tertiary);}
 .vp-lane-connector.conn-dead{
   color:color-mix(in oklch,var(--color-text-tertiary),transparent 50%);}
-.vp-lane-connector.conn-hitl{color:var(--color-status-warning,#d49b3f);}
-.vp-lane-connector.conn-auto{color:var(--color-status-info,#3fb9d4);}
+.vp-lane-connector.conn-hitl{color:var(--sb-conn-hitl,var(--color-status-warning,#d49b3f));}
+.vp-lane-connector.conn-auto{color:var(--sb-conn-auto,var(--color-status-info,#3fb9d4));}
 .vp-lane-row{position:relative;display:flex;flex-wrap:nowrap;align-items:center;
   gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:var(--sb-text-hint,12px);cursor:pointer;
   transition:background .1s ease;}

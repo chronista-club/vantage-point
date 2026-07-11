@@ -144,8 +144,15 @@
    #sidebar-root \u5074\u306B\u5B9A\u7FA9\u304C\u3042\u308B\u3068\u300C\u8FD1\u3044\u7956\u5148\u306E\u5B9A\u7FA9\u304C\u52DD\u3064\u300D\u3067 :root \u3078\u306E\u66F8\u304D\u8FBC\u307F\u304C\u30DE\u30B9\u30AF\u3055\u308C\u3001
    Ctrl+Shift+E \u306E slider \u304C\u52B9\u304B\u306A\u304F\u306A\u308B (2026-07-11 Editor Mode \u4F5C\u696D\u53F0\u5316)\u3002
    text scale 4 \u6BB5 (Live Token): base=\u884C\u30BF\u30A4\u30C8\u30EB/summary\u3001 hint=\u884C\u672C\u6587/menu/input\u3001
-   meta=\u30E9\u30D9\u30EB/\u30D8\u30C3\u30C0/stats\u3001 micro=badge/kbd/footer/git meta\u3002 */
-:root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;}
+   meta=\u30E9\u30D9\u30EB/\u30D8\u30C3\u30C0/stats\u3001 micro=badge/kbd/footer/git meta\u3002
+   connector \u7CFB (--sb-conn-*) \u306F lane tree connector \u306E\u6F14\u594F knob: width=\u7DDA\u5E45 (\u7E26\u68D2/\u6A2A\u679D/
+   proj spine \u5171\u901A)\u3001 slot=connector box \u5E45 (= \u6A2A\u679D\u306E\u9577\u3055)\u3001 dash=\u81EA\u8D70\u7834\u7DDA\u306E dash \u9577\u3001
+   flow-beat=\u7834\u7DDA\u304C 1 \u5468\u671F\u6D41\u308C\u308B\u79D2\u6570 (default = creo-ui timeline BPM 82.7 \u306E 1 beat)\u3002
+   \u8272 (hitl/auto) \u306F\u63A2\u7D22\u7528\u306E flat token \u2014 \u521D\u671F\u5024\u306F creo status token \u3068\u540C\u5024\u3002 */
+:root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
+  --sb-conn-width:1.5px;--sb-conn-slot:16px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
+  --sb-conn-hitl:var(--color-status-warning,#d49b3f);
+  --sb-conn-auto:var(--color-status-info,#3fb9d4);}
 html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point\u3002 height chain (html\u2192body\u2192#sidebar-root\u2192shell) \u3092\u7E4B\u3050\u3002
    \u3053\u306E\u898F\u5247\u304C\u7121\u3044\u3068 shell \u304C content \u9AD8\u3055\u306B collapse \u3057\u3001 window \u4E0B\u90E8\u306B gap \u304C\u51FA\u308B\u3002
@@ -186,7 +193,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
    \u679D\u306F connector)\u3002 top:0 = summary \u76F4\u4E0B\u304B\u3089\u3001 bottom = \u6700\u5F8C\u306E lane \u4E2D\u592E\u3067\u6B62\u3081\u308B\u3002 */
 .vp-proj-content{position:relative;}
 .vp-proj-content::before{content:"";position:absolute;left:10.5px;top:0;bottom:17px;
-  width:1.5px;background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
+  width:var(--sb-conn-width,1.5px);
+  background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
   pointer-events:none;}
 .vp-proj + .vp-proj{border-top:1px solid var(--color-surface-border,#1f2233);}
 .vp-proj-summary{list-style:none;display:flex;align-items:center;gap:6px;
@@ -221,19 +229,23 @@ html,body{margin:0;height:100%;overflow:hidden;}
    ::after = \u6A2A\u679D (\u7DDA\u7A2E slot: conductor/HITL solid\u3001 \u4F11\u7720 dotted\u3001 \u81EA\u8D70 = \u6D41\u308C\u308B\u7834\u7DDA)\u3002
    \u7E26\u68D2 x=10.5px \u306F .vp-proj-content::before \u306E proj spine \u3068\u540C\u5EA7\u6A19 (row padding-left 8px
    + left 2.5px)\u3002 */
-.vp-lane-connector{position:relative;flex:0 0 16px;align-self:stretch;user-select:none;}
-.vp-lane-connector::before{content:"";position:absolute;left:2.5px;width:1.5px;
-  top:0;bottom:0;background:currentColor;}
+.vp-lane-connector{position:relative;flex:0 0 var(--sb-conn-slot,16px);align-self:stretch;
+  user-select:none;}
+.vp-lane-connector::before{content:"";position:absolute;left:2.5px;
+  width:var(--sb-conn-width,1.5px);top:0;bottom:0;background:currentColor;}
 .vp-lane-connector.last::before{bottom:50%;}
 .vp-lane-connector::after{content:"";position:absolute;left:2.5px;right:2px;top:50%;
-  margin-top:-0.75px;border-top:1.5px solid currentColor;}
+  margin-top:calc(var(--sb-conn-width,1.5px) / -2);
+  border-top:var(--sb-conn-width,1.5px) solid currentColor;}
 .vp-lane-connector.conn-dead::after{border-top-style:dotted;}
-/* \u81EA\u8D70 = \u7834\u7DDA\u304C\u53F3\u3078\u6D41\u308C\u308B (= control \u3092\u624B\u653E\u3057\u3066\u81EA\u5206\u3067\u9032\u3093\u3067\u3044\u308B)\u3002 \u5468\u671F\u306F creo-ui \u306E
-   internal timeline BPM 82.7 \u306B\u540C\u671F: 60 / 82.7 \u2248 0.7255s \u3067 1 dash \u5468\u671F (8px) \u9032\u3080\u3002 */
-.vp-lane-connector.conn-auto::after{border-top:none;height:1.5px;
-  background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 8px);
-  animation:vp-conn-flow .7255s linear infinite;}
-@keyframes vp-conn-flow{to{background-position:8px 0;}}
+/* \u81EA\u8D70 = \u7834\u7DDA\u304C\u53F3\u3078\u6D41\u308C\u308B (= control \u3092\u624B\u653E\u3057\u3066\u81EA\u5206\u3067\u9032\u3093\u3067\u3044\u308B)\u3002 \u5468\u671F (--sb-conn-flow-beat)
+   \u306E default \u306F creo-ui internal timeline BPM 82.7 \u306E 1 beat = 60 / 82.7 \u2248 0.7255s\u3002
+   1 beat \u3067 1 dash \u5468\u671F (= dash \u9577 \xD7 2) \u9032\u3080\u3002 */
+.vp-lane-connector.conn-auto::after{border-top:none;height:var(--sb-conn-width,1.5px);
+  background:repeating-linear-gradient(90deg,currentColor 0 var(--sb-conn-dash,4px),
+    transparent var(--sb-conn-dash,4px) calc(var(--sb-conn-dash,4px) * 2));
+  animation:vp-conn-flow var(--sb-conn-flow-beat,.7255s) linear infinite;}
+@keyframes vp-conn-flow{to{background-position:calc(var(--sb-conn-dash,4px) * 2) 0;}}
 @media (prefers-reduced-motion:reduce){
   .vp-lane-connector.conn-auto::after{animation:none;}}
 .vp-lane-connector.conn-conductor{
@@ -241,8 +253,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-connector.conn-run{color:var(--color-text-tertiary);}
 .vp-lane-connector.conn-dead{
   color:color-mix(in oklch,var(--color-text-tertiary),transparent 50%);}
-.vp-lane-connector.conn-hitl{color:var(--color-status-warning,#d49b3f);}
-.vp-lane-connector.conn-auto{color:var(--color-status-info,#3fb9d4);}
+.vp-lane-connector.conn-hitl{color:var(--sb-conn-hitl,var(--color-status-warning,#d49b3f));}
+.vp-lane-connector.conn-auto{color:var(--sb-conn-auto,var(--color-status-info,#3fb9d4));}
 .vp-lane-row{position:relative;display:flex;flex-wrap:nowrap;align-items:center;
   gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:var(--sb-text-hint,12px);cursor:pointer;
   transition:background .1s ease;}

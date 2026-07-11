@@ -85,7 +85,9 @@ import {
 	EditorHostProvider,
 	EditorLayer,
 	bind,
+	color,
 	cssVarNumberTarget,
+	cssVarTarget,
 	number,
 } from "@chronista-club/creoui-editor-host";
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
@@ -712,6 +714,97 @@ function SidebarTokenBinds() {
 				semantic: "tool",
 				group: "sidebar",
 				order: 100 + i,
+				role: "dev",
+			},
+		});
+	});
+
+	// connector 演奏 knob (2026-07-11 lead 指示): mako の Editor Mode 探索がそのまま
+	// connector 設計になるよう、 線幅 / slot 幅 / dash 長 / 破線周期を slider 化。
+	// unit が px / s で混在するため各 entry に持たせる。
+	const connNumbers: Array<{
+		id: string;
+		cssVar: string;
+		value: number;
+		min: number;
+		max: number;
+		step: number;
+		unit: string;
+	}> = [
+		{
+			id: "sb.conn.width",
+			cssVar: "--sb-conn-width",
+			value: 1.5,
+			min: 0.5,
+			max: 4,
+			step: 0.25,
+			unit: "px",
+		},
+		{
+			id: "sb.conn.slot",
+			cssVar: "--sb-conn-slot",
+			value: 16,
+			min: 10,
+			max: 28,
+			step: 1,
+			unit: "px",
+		},
+		{
+			id: "sb.conn.dash",
+			cssVar: "--sb-conn-dash",
+			value: 4,
+			min: 2,
+			max: 12,
+			step: 0.5,
+			unit: "px",
+		},
+		{
+			// 自走破線の 1 周期秒数。 default = creo-ui timeline BPM 82.7 の 1 beat (60/82.7)。
+			id: "sb.conn.flow.beat",
+			cssVar: "--sb-conn-flow-beat",
+			value: 0.7255,
+			min: 0.15,
+			max: 2,
+			step: 0.05,
+			unit: "s",
+		},
+	];
+	connNumbers.forEach((t, i) => {
+		bind<number>({
+			target: cssVarNumberTarget(t.id, t.cssVar, t.value, t.unit),
+			control: number({
+				min: t.min,
+				max: t.max,
+				step: t.step,
+				unit: t.unit,
+				variant: "slider",
+			}),
+			placement: {
+				label: t.id,
+				semantic: "tool",
+				group: "sidebar-connector",
+				order: 110 + i,
+				role: "dev",
+			},
+		});
+	});
+
+	// connector 状態色 (HITL / 自走)。 初期値は creo status token の実効値 (creo-tokens.css
+	// 未定義のため fallback #d49b3f / #3fb9d4 が実体)。 picker で書くと :root inline に
+	// concrete 値が入り、 stylesheet の var() 間接参照を上書きする (探索用の想定挙動)。
+	const connColors: Array<{ id: string; cssVar: string; value: string }> = [
+		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#d49b3f" },
+		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#3fb9d4" },
+	];
+	connColors.forEach((t, i) => {
+		bind<string>({
+			target: cssVarTarget(t.id, t.cssVar, t.value),
+			control: color({ variant: "picker" }),
+			placement: {
+				label: t.id,
+				semantic: "tool",
+				group: "sidebar-connector",
+				order: 120 + i,
 				role: "dev",
 			},
 		});
