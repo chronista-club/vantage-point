@@ -252,7 +252,7 @@ enum LaneCommands {
     },
     /// 全 performer の状態表示
     Status,
-    /// branch が main に merge 済の performer を削除
+    /// branch が default branch (origin/HEAD) に merge 済の performer を削除（squash merge も検出）
     Cleanup {
         /// 確認なしで強制削除
         #[arg(long, short)]
