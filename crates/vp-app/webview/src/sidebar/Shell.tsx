@@ -160,19 +160,27 @@ export function Shell() {
  * SIDEBAR_HTML_V2 が `creo-tokens.css` を inline 済なので、 ここは layout のみ定義する。
  */
 export const SHELL_CSS = `
-html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
-  color:var(--color-text-primary);font-family:'VPMono',monospace;font-size:12px;
-  line-height:1.4;overflow:hidden;}
+html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
-   この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。 */
-#sidebar-root{height:100%;}
+   この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。
+   脱 TUI (2026-07): font / color / bg を #sidebar-root スコープに閉じる。 旧 html,body
+   直書きは単一 WebView の document 全体を汚染し、 pane header まで 'VPMono' 12px に
+   mono 化していた。 サイドバーを sans 全面化しつつ pane header への波及を断つ。 */
+#sidebar-root{height:100%;
+  background:var(--color-surface-bg-subtle);color:var(--color-text-primary);
+  /* サイドバー全面 sans。 var() 2 段 fallback は vp-tokens.css 規約 (WKWebView が var()
+     chain を invalidate するため use site で並べる)。 Mizolet 不在でも creo sans stack
+     (-apple-system 等) に縮退し proper sans で描画される。 */
+  font-family:var(--vp-font-sans),var(--typography-family-sans);
+  font-size:13px;line-height:1.45;
+  --sb-text-meta:11px;--sb-text-hint:12px;}
 /* position:relative は FileExplorer overlay の inset:0 を sidebar 領域に閉じるために必要。
    無いと overlay が viewport 基準になり、 sidebar 外の領域 (= ContextMenu と重なる場所) に
    描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。 */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
-  padding:var(--spacing-sm,8px);font-size:11px;
-  font-weight:500;color:var(--color-text-secondary);
+  padding:10px var(--spacing-sm,10px);font-size:11px;letter-spacing:.06em;
+  font-weight:var(--typography-weight-semibold,600);color:var(--color-text-tertiary);
   border-bottom:1px solid var(--color-surface-border,#1f2233);user-select:none;}
 .vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
@@ -244,7 +252,7 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
   box-shadow:inset 0 2px 0 0 var(--color-brand-primary),
              inset 0 -2px 0 0 var(--color-brand-primary);}
 .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary),
-  transparent 45%);font-style:italic;cursor:default;}
+  transparent 45%);cursor:default;}
 /* Conductor / Performer の indent 差は connector glyph (├─ vs │ ├) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
