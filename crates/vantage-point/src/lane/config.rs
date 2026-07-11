@@ -116,19 +116,52 @@ impl From<RawConfig> for PerformerConfig {
     }
 }
 
-/// Find the git repo root from the current directory
+/// Find the git repo root — **always the main worktree root**, even when called from a
+/// linked worktree (`.vp/lanes/*` 等)。
+///
+/// `git rev-parse --show-toplevel` は呼び出し元の worktree 自身を返すため、 lane worktree の
+/// 中から `vp lane` を実行すると project 同一性がズレていた: lane が worktree 配下にネスト、
+/// state file (engine_model / cc_session / console_mode) の project key が SP 読み手
+/// (`addr.project` = main root basename) と mismatch、 World handshake の project_path が SP
+/// 登録値と不一致。 全 worktree が共有する git-common-dir (`<main>/.git`) の親を main worktree
+/// root として解決し、 どの worktree からでも同一 project に着地させる (project key 正規化)。
 pub fn find_repo_root() -> io::Result<PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()?;
+    find_repo_root_from(None)
+}
 
+/// [`find_repo_root`] の dir 注入版 (None = process cwd)。 テスト用に worktree path を渡せる。
+fn find_repo_root_from(dir: Option<&Path>) -> io::Result<PathBuf> {
+    let run = |args: &[&str]| -> io::Result<std::process::Output> {
+        let mut cmd = std::process::Command::new("git");
+        if let Some(d) = dir {
+            cmd.arg("-C").arg(d);
+        }
+        cmd.args(args).output()
+    };
+
+    // 1. main worktree root = git-common-dir (全 worktree 共有の .git) の親。
+    //    linked worktree の中からでも main root に着地する (`--show-toplevel` との違い)。
+    if let Ok(out) = run(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        && out.status.success()
+    {
+        let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        // 標準の non-bare repo は `<main>/.git`。 その親が main worktree root。
+        // bare / 予期せぬ git-dir 形は下の show-toplevel fallback に委ねる。
+        if common.file_name().is_some_and(|n| n == ".git")
+            && let Some(root) = common.parent()
+        {
+            return Ok(root.to_path_buf());
+        }
+    }
+
+    // 2. fallback: 従来の show-toplevel (古い git で --path-format 非対応、 bare 等)。
+    let output = run(&["rev-parse", "--show-toplevel"])?;
     if !output.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "not a git repository",
         ));
     }
-
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok(PathBuf::from(path))
 }
@@ -353,6 +386,68 @@ mod tests {
         assert!(validate_performer_name("leader").is_ok());
         assert!(validate_performer_name("my-conductor").is_ok());
         assert!(validate_performer_name("conductor-fix").is_ok());
+    }
+
+    // --- find_repo_root (worktree 正規化) ---
+
+    #[test]
+    fn find_repo_root_from_linked_worktree_returns_main_root() {
+        use std::process::Command;
+        let base = test_dir("worktree-root");
+        fs::create_dir_all(&base).unwrap();
+        let main = base.join("main");
+        let main_s = main.to_str().unwrap();
+
+        Command::new("git")
+            .args(["init", "--initial-branch=main", main_s])
+            .output()
+            .unwrap();
+        for (k, v) in [("user.email", "t@e.com"), ("user.name", "T")] {
+            Command::new("git")
+                .args(["-C", main_s, "config", k, v])
+                .output()
+                .unwrap();
+        }
+        fs::write(main.join("README.md"), "# x\n").unwrap();
+        Command::new("git")
+            .args(["-C", main_s, "add", "."])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["-C", main_s, "commit", "-m", "init"])
+            .output()
+            .unwrap();
+
+        // linked worktree を生やす
+        let linked = base.join("linked");
+        Command::new("git")
+            .args([
+                "-C",
+                main_s,
+                "worktree",
+                "add",
+                "-b",
+                "wt",
+                linked.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        // linked worktree の中からでも main worktree root に着地する (project key 正規化)
+        let from_linked = find_repo_root_from(Some(&linked)).unwrap();
+        assert_eq!(
+            fs::canonicalize(&from_linked).unwrap(),
+            fs::canonicalize(&main).unwrap(),
+            "linked worktree からは main worktree root を返すべき"
+        );
+        // main worktree 自身からも同一 root (回帰なし)
+        let from_main = find_repo_root_from(Some(&main)).unwrap();
+        assert_eq!(
+            fs::canonicalize(&from_main).unwrap(),
+            fs::canonicalize(&main).unwrap()
+        );
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     // --- load_config (KDL parsing) ---

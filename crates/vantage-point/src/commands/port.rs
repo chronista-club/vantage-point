@@ -153,7 +153,7 @@ fn resolve_lane(project: Option<&str>, performer: Option<&str>, lane: u16) -> Re
 ///
 /// 優先順位:
 /// - `project` 指定 → projects.kdl から path lookup → 該当 path
-/// - 不在 → cwd の `git rev-parse --show-toplevel`
+/// - 不在 → cwd から [`crate::lane::config::find_repo_root`] (main worktree root に正規化)
 fn resolve_repo_root(project: Option<&str>) -> Result<PathBuf> {
     if let Some(name) = project {
         let config = Config::load().unwrap_or_default();
