@@ -39,6 +39,10 @@ pub enum FlowCommands {
         /// Lane Stand: 'echoes' (default、 Claude CLI) or 'shell'
         #[arg(long, short)]
         stand: Option<String>,
+        /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
+        /// performer-files.kdl の base-ref → origin/HEAD → main
+        #[arg(long)]
+        base: Option<String>,
         /// 実行モード: 'hitl' (default、 nudge 後応答期待) / 'auto' (nudge 後放置)
         #[arg(long, default_value = "hitl")]
         mode: String,
@@ -62,9 +66,10 @@ pub async fn run(cmd: FlowCommands) -> Result<()> {
             task_spec,
             branch,
             stand,
+            base,
             mode,
             no_nudge,
-        } => handoff(&name, &task_spec, branch, stand, &mode, !no_nudge).await,
+        } => handoff(&name, &task_spec, branch, stand, base, &mode, !no_nudge).await,
         FlowCommands::Progress { format } => progress(&format).await,
     }
 }
@@ -108,6 +113,7 @@ async fn handoff(
     task_spec_arg: &str,
     branch: Option<String>,
     stand: Option<String>,
+    base: Option<String>,
     mode: &str,
     nudge: bool,
 ) -> Result<()> {
@@ -134,6 +140,9 @@ async fn handoff(
     }
     if let Some(ref s) = stand.as_ref().filter(|s| !s.trim().is_empty()) {
         create_body["stand"] = serde_json::Value::String(s.to_string());
+    }
+    if let Some(ref b) = base.as_ref().filter(|s| !s.trim().is_empty()) {
+        create_body["base"] = serde_json::Value::String(b.to_string());
     }
     // lane_create は SP 側で git clone を含み数 10 sec かかり得るので outer timeout 60s
     // (MCP add_performer/flow_handoff の quic_call_with_timeout と揃える、 orphan lane race 回避)。

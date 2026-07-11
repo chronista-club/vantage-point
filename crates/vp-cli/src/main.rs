@@ -193,6 +193,10 @@ enum LaneCommands {
         /// 隔離方式: worktree (default、 conductor の .git 共有) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
+        /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
+        /// performer-files.kdl の base-ref → origin/HEAD → main
+        #[arg(long)]
+        base: Option<String>,
     },
     /// 現在の dirty state を新しい performer 環境に fork
     Fork {
@@ -206,6 +210,10 @@ enum LaneCommands {
         /// 隔離方式: worktree (default) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
+        /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
+        /// performer-files.kdl の base-ref → origin/HEAD → main
+        #[arg(long)]
+        base: Option<String>,
     },
     /// performer 環境一覧
     ///
@@ -649,8 +657,10 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             branch,
             force,
             isolation,
+            base,
         } => {
-            ws::new_performer(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
+            ws::new_performer(&name, &branch, force, isolation, base.as_deref())
+                .map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Fork {
@@ -658,8 +668,10 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             branch,
             force,
             isolation,
+            base,
         } => {
-            ws::fork_performer(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
+            ws::fork_performer(&name, &branch, force, isolation, base.as_deref())
+                .map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Ls { detail } => {
