@@ -515,8 +515,43 @@ async fn handle_echoes_submit(
     if prompt.is_empty() {
         return Err("echoes_submit: prompt 未指定".to_string());
     }
+    ensure_and_submit_chat(state, "echoes_submit", lane, prompt).await?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// channel E（doc 34 §3）: wire delivery / delegation reconcile からの engine 直接注入。
+///
+/// `{lane, text}` — Tui の `lane_nudge`（PtySlot 直書き）の Chat 対応物。nudge 文言を 1 ターン
+/// として submit する。turn 実行中でも engine 側が queue するため任意時点で呼べる
+/// （doc 34 Step 0 spike ①実測）。
+async fn handle_echoes_nudge(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_nudge: lane 未指定".to_string());
+    }
+    let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    if text.is_empty() {
+        return Err("echoes_nudge: text 未指定".to_string());
+    }
+    ensure_and_submit_chat(state, "echoes_nudge", lane, text).await?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
+///
+/// `echoes_submit`（GUI 入力）と `echoes_nudge`（channel E）が共用する。`ctx` はエラー文言の
+/// 前置き（呼び出し元 method 名 — 嘘ログ防止のため呼び元を正しく名乗る）。
+async fn ensure_and_submit_chat(
+    state: &AppState,
+    ctx: &str,
+    lane: &str,
+    prompt: &str,
+) -> Result<(), String> {
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
-        .ok_or_else(|| format!("echoes_submit: lane パース失敗: {lane}"))?;
+        .ok_or_else(|| format!("{ctx}: lane パース失敗: {lane}"))?;
 
     // ensure（mode ガード + lazy spawn は LanePool = 法の番人が行う）。
     state
@@ -524,7 +559,7 @@ async fn handle_echoes_submit(
         .write()
         .await
         .ensure_chat_engine(&addr, &state.topic_router)
-        .map_err(|e| format!("echoes_submit: {e}"))?;
+        .map_err(|e| format!("{ctx}: {e}"))?;
 
     // submit（read lock — 他 lane の操作をブロックしない）。
     let submit_result = state
@@ -535,12 +570,12 @@ async fn handle_echoes_submit(
         .await;
     if let Err(e) = submit_result {
         // self-heal: engine が死んでいた場合は落として 1 回だけ張り直す。
-        tracing::warn!("echoes_submit 失敗 → engine 再起動して retry: {e}");
+        tracing::warn!("{ctx} 失敗 → engine 再起動して retry: {e}");
         {
             let mut pool = state.lane_pool.write().await;
             pool.drop_chat_engine(&addr);
             pool.ensure_chat_engine(&addr, &state.topic_router)
-                .map_err(|e| format!("echoes_submit: engine 再起動失敗: {e}"))?;
+                .map_err(|e| format!("{ctx}: engine 再起動失敗: {e}"))?;
         }
         state
             .lane_pool
@@ -548,9 +583,9 @@ async fn handle_echoes_submit(
             .await
             .submit_chat(&addr, prompt)
             .await
-            .map_err(|e| format!("echoes_submit 失敗（retry 後）: {e}"))?;
+            .map_err(|e| format!("{ctx} 失敗（retry 後）: {e}"))?;
     }
-    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+    Ok(())
 }
 
 /// Act II (doc 33): Console のエンジンモード切替。
@@ -924,6 +959,8 @@ pub(crate) async fn dispatch_process_method(
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
         "echoes_submit" => handle_echoes_submit(state, payload).await,
+        // channel E (doc 34): wire/delegation nudge の chat-engine 注入 (lane_nudge の Chat 対応物)
+        "echoes_nudge" => handle_echoes_nudge(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
@@ -1538,6 +1575,46 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への nudge は Err: {res:?}");
+    }
+
+    /// channel E (doc 34): echoes_nudge dispatch の error 経路 4 種
+    /// (lane 未指定 / text 未指定 / parse 失敗 / lane 不在)。happy path は実 engine 要のため
+    /// echoes_host_roundtrip (ignored) と実機 dogfood で検証。
+    #[tokio::test]
+    async fn echoes_nudge_dispatch_error_paths() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // lane 未指定
+        let res =
+            dispatch_process_method(&state, "echoes_nudge", serde_json::json!({ "text": "x" }))
+                .await;
+        assert!(res.is_err(), "lane 未指定は Err: {res:?}");
+        // text 未指定
+        let res = dispatch_process_method(
+            &state,
+            "echoes_nudge",
+            serde_json::json!({ "lane": "vp/conductor" }),
+        )
+        .await;
+        assert!(res.is_err(), "text 未指定は Err: {res:?}");
+        // parse 失敗 (lane address 形式でない)
+        let res = dispatch_process_method(
+            &state,
+            "echoes_nudge",
+            serde_json::json!({ "lane": "%3", "text": "x" }),
+        )
+        .await;
+        assert!(res.is_err(), "parse 不能 lane は Err: {res:?}");
+        // lane 不在 (ensure_chat_engine が Lane not found)
+        let res = dispatch_process_method(
+            &state,
+            "echoes_nudge",
+            serde_json::json!({ "lane": "vp/conductor", "text": "x" }),
+        )
+        .await;
+        assert!(res.is_err(), "不在 lane への nudge は Err: {res:?}");
     }
 
     /// tmux decoupling PR2: lane_capture dispatch の error 経路 3 種。

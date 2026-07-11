@@ -430,11 +430,13 @@ async fn reconcile_pulse(
         let Some(nudge) = super::delivery_actor::pick_nudge_target(&lanes, &display) else {
             continue; // lane 不在 / 非 Running = まだ起こせない（次 tick で再試行、pending 保持）
         };
-        // 所有 SP の control channel に lane_nudge を forward（旧 daemon 直 send-keys の置換）。
+        // 所有 SP の control channel へ forward。method は console_mode で分岐（Tui = lane_nudge
+        // → PtySlot 直書き / Chat = echoes_nudge → engine 注入、doc 34 §3 channel E）。Chat lane
+        // に lane_nudge を送ると PtySlot 不在で必ず失敗し、delivered が立たず永久リトライになる。
         let resp = crate::daemon::server::forward_to_sp_control(
             control_channels,
             &nudge.path_key,
-            "lane_nudge",
+            nudge.nudge_method(),
             &serde_json::json!({ "lane": nudge.lane_display, "text": text }),
         )
         .await;
