@@ -36,8 +36,9 @@ lane の一覧は git-native に取得する（manifest ファイルは存在し
 
 ## wire 規約（inter-agent messaging）
 
-wire message の `body.kind` は dev-flow FSM の入力になる（taxonomy と FSM の詳細 =
-`docs/guide/dev-flow-primitives.md` §3）。特に:
+wire messaging 全体の見取り図（store / category / ack 台帳 / federation / flow_state 投影）は
+`docs/guide/messaging.md`。wire message の `body.kind` は dev-flow FSM の入力になる（taxonomy と
+FSM の詳細 = `docs/guide/dev-flow-primitives.md` §3）。特に:
 
 - **`needs_user`**: 「conductor では捌けない、**ユーザ本人**の意見が要る」相談を投げる時は
   `body.kind = "needs_user"` + `body.category = "command"` で conductor 宛に送る。
