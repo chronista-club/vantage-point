@@ -131,8 +131,9 @@ body{overflow:hidden;}
   --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
   /* 'SeptemberMonoN' を Echoes terminal の primary font に。 bundle はせず local (OS install 済) font
-     を名前参照するのみ。 install されていない環境では直後の 'VPMono' (web_assets.rs に base64 bundle 済の
-     PlemolJP Console NF) に必ず縮退するので、 どの OS でも描画が壊れない。 末尾 monospace まで保険を残す。 */
+     を名前参照するのみ。 install されていない環境では直後の 'VPMono' (PlemolJP Console NF、 これも
+     OS install 依存 — 旧 web_assets.rs の base64 bundle は 2026-05-30 に撤去済) に縮退し、
+     末尾 monospace まで保険を残すので、 どの OS でも描画が壊れない。 */
   --terminal-font-family:'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
   --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
 }
@@ -194,8 +195,8 @@ body{overflow:hidden;}
   gap:8px;
   padding:0 10px;
   font-size:12px;
-  background:var(--color-surface-bg-raised);
-  border-bottom:1px solid var(--color-border-subtle);
+  background:var(--color-surface-surface);
+  border-bottom:1px solid var(--color-surface-border-subtle);
   user-select:none;
   -webkit-app-region:drag;
   z-index:1;
@@ -221,12 +222,12 @@ body{overflow:hidden;}
   padding:2px 8px;
   font-size:11px;
   background:transparent;
-  border:1px solid var(--color-border-subtle);
+  border:1px solid var(--color-surface-border-subtle);
   border-radius:4px;
   color:var(--color-text-secondary);
   font-family:inherit;
 }
-.pane-header .pane-action-btn:hover{background:var(--color-surface-bg-elevated);color:var(--color-text-primary);}
+.pane-header .pane-action-btn:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
 .pane-body{
   position:absolute;
   top:28px;left:0;right:0;bottom:0;
@@ -248,15 +249,15 @@ body{overflow:hidden;}
 .pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
 .pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
 .pp-content p{margin:.5rem 0;color:var(--color-text-secondary);}
-.pp-content code{background:var(--color-surface-bg-raised);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
-.pp-content pre{background:var(--color-surface-bg-raised);padding:12px;border-radius:6px;overflow-x:auto;}
+.pp-content code{background:var(--color-surface-surface);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
+.pp-content pre{background:var(--color-surface-surface);padding:12px;border-radius:6px;overflow-x:auto;}
 .pp-content pre code{background:transparent;padding:0;}
 .pp-content a{color:var(--color-brand-primary);}
 .pp-content ul,.pp-content ol{padding-left:1.5em;margin:.5rem 0;}
 .pp-content blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;color:var(--color-text-tertiary);}
 .pp-content table{border-collapse:collapse;margin:.5rem 0;}
-.pp-content th,.pp-content td{border:1px solid var(--color-border-subtle);padding:4px 8px;}
-.pp-content hr{border:0;border-top:1px solid var(--color-border-subtle);margin:1rem 0;}
+.pp-content th,.pp-content td{border:1px solid var(--color-surface-border-subtle);padding:4px 8px;}
+.pp-content hr{border:0;border-top:1px solid var(--color-surface-border-subtle);margin:1rem 0;}
 .pp-placeholder{color:var(--color-text-tertiary);font-style:italic;}
 /* content_type=html: sandbox iframe を PP pane いっぱいに広げる。
    renderPP が container に .pp-content-html を付与し full-bleed に切り替える。 */
