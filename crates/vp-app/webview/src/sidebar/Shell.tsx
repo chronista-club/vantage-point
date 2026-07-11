@@ -470,6 +470,16 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-world-stat .k{color:var(--lg-mute-2,#38525b);}
 .vp-world-stat .v{color:var(--lg-mute,#5C7A85);font-weight:500;
   font-variant-numeric:tabular-nums;}
+/* Hub available worlds — Hub 行直下に常時リスト表示。地の一部なので発光なし、muted mono。
+   左 24px indent = Hub 行の dot(6px) + gap(8px) + 行 padding(10px) に合わせて label 下に揃える。 */
+.vp-hub-worlds{padding:0 var(--spacing-sm,10px) 4px 24px;}
+.vp-hub-world{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  font-size:var(--sb-text-meta,11px);font-family:var(--vp-font-mono),var(--typography-family-mono);
+  padding:1px 0;}
+.vp-hub-world .k{color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;}
+.vp-hub-world .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
+  font-variant-numeric:tabular-nums;}
 
 /* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
 .vp-devices{flex:0 0 auto;padding-bottom:4px;}

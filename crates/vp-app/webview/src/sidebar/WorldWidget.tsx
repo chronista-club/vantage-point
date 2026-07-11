@@ -5,7 +5,7 @@
  * collapsed = 1 行サマリ (状態 dot + version + P/R count)、 expanded = 詳細 stats。
  * `ActivitySnapshot` (Rust が 5s 周期で push) を消費する。
  */
-import { Show, createSignal, onCleanup } from "solid-js";
+import { For, Show, createSignal, onCleanup } from "solid-js";
 import { CreoIcon } from "creoui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
@@ -38,10 +38,17 @@ export function WorldWidget() {
 	// （federation を使っていない world にノイズを出さない）。
 	const hub = () => a().hub ?? "";
 	const hubConnected = () => hub() === "connected";
+	// hub の向こうの available worlds（daemon が 45s 周期 discover で更新、切断で空に戻る）。
+	// Hub 行の label に「· N worlds」を足し、行の直下に handle を常時リスト表示する。
+	const hubWorlds = () => a().hub_worlds ?? [];
 	const hubLabel = () => {
 		switch (hub()) {
-			case "connected":
-				return "Hub — connected";
+			case "connected": {
+				const n = hubWorlds().length;
+				return n > 0
+					? `Hub — connected · ${n} world${n > 1 ? "s" : ""}`
+					: "Hub — connected";
+			}
 			case "connecting":
 				return "Hub — connecting…";
 			case "disconnected":
@@ -97,12 +104,26 @@ export function WorldWidget() {
 					class="vp-world-summary"
 					title={`chronista-hub federation: ${hub()}`}
 				>
-					<span
-						class="vp-world-dot"
-						classList={{ offline: !hubConnected() }}
-					/>
+					<span class="vp-world-dot" classList={{ offline: !hubConnected() }} />
 					<span class="vp-world-line">{hubLabel()}</span>
 				</div>
+				<Show when={hubConnected() && hubWorlds().length > 0}>
+					<div class="vp-hub-worlds">
+						<For each={hubWorlds()}>
+							{(w) => (
+								<div
+									class="vp-hub-world"
+									title={w.wld_id ? `${w.handle} (${w.wld_id})` : w.handle}
+								>
+									<span class="k">{w.handle}</span>
+									<Show when={w.endpoints_count > 0}>
+										<span class="v">{w.endpoints_count} ep</span>
+									</Show>
+								</div>
+							)}
+						</For>
+					</div>
+				</Show>
 			</Show>
 			<div class="vp-devices">
 				<div
