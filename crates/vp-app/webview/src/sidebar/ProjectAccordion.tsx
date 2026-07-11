@@ -22,7 +22,7 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
-import { laneAddressKey, isLaneAlive, isPerformerLane } from "./lane";
+import { laneAddressKey, isPerformerLane } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
 import { LaneRow } from "./LaneRow";
 import { AddPerformer } from "./AddPerformer";
@@ -38,27 +38,31 @@ import {
 } from "./dnd";
 
 /**
- * Lane の tree connector の状態 class を導出する (2026-05-30 glyph 版 → 2026-07 CSS 描画版)。
+ * Lane の tree connector の状態 class を導出する (Light Grid state 言語の FSM 投影)。
  *
- * 脱 TUI hybrid: 描画は Shell.tsx の `.vp-lane-connector` (CSS pseudo-element) が担い、
- * ここは「線種 = control surrender FSM」の意味論だけを class で返す。
- * ツリー構造 (途中 ├ / 末尾 └ 相当) は LaneRow の `connectorLast` prop で伝える。
+ * 描画は Shell.tsx の `.vp-lane-connector` (CSS pseudo-element) が担い、
+ * ここは意味論だけを class で返す。 ツリー構造 (└ 相当) は `connectorLast` prop で伝える。
  *
- * - conductor: solid (= 幹、 固定)
- * - performer inactive (idle/dead, pid null): dotted (= 休眠、 dim)
- * - performer awaiting (hitl_pending): solid warn 色 (= 人を待つ、 control 握る)
- * - performer 自走 (working/autonomous = active & not awaiting): 流れる破線 info 色
- *   (= control 手放した = self-running、 BPM 82.7 同期アニメ)
+ * - conductor: spine の頭 (頭石)
+ * - working (conn-auto): engine が実在して自走中 = solid cyan tap + node
+ * - needs-you (conn-hitl): engine 実在 + awaiting_input = magenta diamond
+ * - idle (conn-dead): engine 不在 = No current (極薄破線 + 中空 node)
+ *
+ * ⚠️ working 判定に isLaneAlive を使わない (conductor 指摘 019f5104): isLaneAlive は
+ * 「chat lane は engine-less (pid=null) でも生存扱い」という dim 表示 / context menu 用の
+ * 述語で、 これを working に流用すると常設 chat lane が全部 WORKING に化ける。
+ * ここでは「engine の実在 = pid」を一次 signal にする。 真の flow_state (flow progress)
+ * は wire (LaneInfo) に未投影 — FSM 投影 task (mem_1Ccv39yTsb9knkjucKCP3Z) が server 側
+ * field を足したらそちらへ差し替える。
  */
 function laneConnector(lane: LaneInfo): string {
 	if (!isPerformerLane(lane)) {
-		return "conn-conductor"; // conductor は幹 = solid
+		return "conn-conductor"; // conductor は幹 = spine の頭
 	}
+	if (lane.pid == null) return "conn-dead"; // engine 不在 = idle (No current)
 	const addr = laneAddressKey(lane);
-	// 生死は isLaneAlive に一本化 (pid 直参照だと chat performer を dotted = 休眠に描いてしまう)。
-	if (!isLaneAlive(lane)) return "conn-dead"; // 休眠 = dotted
-	if (sidebar.awaiting_input[addr]) return "conn-hitl"; // HITL = solid (色で warn)
-	return "conn-auto"; // 自走 = 流れる破線
+	if (sidebar.awaiting_input[addr]) return "conn-hitl"; // 人待ち = needs-you
+	return "conn-auto"; // engine 実在 & 非 awaiting = working
 }
 
 /**
