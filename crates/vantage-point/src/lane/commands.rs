@@ -1760,6 +1760,104 @@ mod tests {
         let _ = fs::remove_dir_all(&repo);
     }
 
+    // --- dep symlink 隔離 (lane kind 分離): 「.vp/lanes/ 内の symlink ⟺ dep」不変条件 ---
+
+    /// 実測 characterization: `std::fs::remove_dir_all(symlink→dir)` は **symlink 自体を
+    /// unlink するだけで target とその中身は破壊しない** (rustc 1.96 / macOS で確認)。
+    ///
+    /// ただしこの挙動は std version / OS 依存で保証が弱い (conductor が「確信持てない」と保留した点)。
+    /// よって [`remove_performer_workspace`] は std 挙動に依存せず明示 Err で止める設計にした
+    /// (下の `remove_performer_workspace_refuses_symlink`)。本テストは万一 std が target 破壊に
+    /// 退行したら赤で気付くための canary。
+    #[cfg(unix)]
+    #[test]
+    fn remove_dir_all_on_symlink_preserves_target() {
+        let base = test_dir("rmall-symlink");
+        let target = base.join("target");
+        fs::create_dir_all(&target).unwrap();
+        let sentinel = target.join("SENTINEL");
+        fs::write(&sentinel, b"alive").unwrap();
+        let link = base.join("link");
+        symlink(&target, &link).unwrap();
+
+        let res = fs::remove_dir_all(&link);
+        assert!(res.is_ok(), "remove_dir_all(symlink) は Ok: {res:?}");
+        assert!(
+            fs::symlink_metadata(&link).is_err(),
+            "symlink 自体は unlink される"
+        );
+        assert!(target.is_dir(), "target dir は生存する");
+        assert!(sentinel.exists(), "target 内の sentinel は破壊されない");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 列挙 (SP snapshot / sidebar / flow progress の choke point) が dep symlink を除外する。
+    #[cfg(unix)]
+    #[test]
+    fn list_performers_for_repo_excludes_dep_symlink() {
+        let (repo, pl) = setup_pl_fixture("list-dep");
+        // 実 performer lane (worktree 相当、 .git を持つ)。
+        fs::create_dir_all(pl.join("feat").join(".git")).unwrap();
+        // dep target (sibling repo 相当、 .git dir を持つ) を repo 外に用意。
+        let sibling = test_dir("list-dep-sibling");
+        fs::create_dir_all(sibling.join(".git")).unwrap();
+        // dep symlink: .vp/lanes/creoui -> sibling。
+        symlink(&sibling, &pl.join("creoui")).unwrap();
+
+        let listed: Vec<String> = list_performers_for_repo(&repo)
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(listed, vec!["feat"], "symlink (dep) は列挙されない");
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&sibling);
+    }
+
+    /// delete lookup が dep symlink に None を返す (delete が dep を対象に取れない、壁 1)。
+    #[cfg(unix)]
+    #[test]
+    fn find_performer_dir_returns_none_for_symlink() {
+        let (repo, pl) = setup_pl_fixture("find-dep");
+        let sibling = test_dir("find-dep-sibling");
+        fs::create_dir_all(sibling.join(".git")).unwrap();
+        symlink(&sibling, &pl.join("creoui")).unwrap();
+
+        assert!(
+            find_performer_dir(&repo, "creoui").is_none(),
+            "dep symlink は performer として解決されない"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&sibling);
+    }
+
+    /// 壁 2: symlink が渡っても remove_performer_workspace は remove_dir_all せず明示 Err、
+    /// target とその中身は無傷。
+    #[cfg(unix)]
+    #[test]
+    fn remove_performer_workspace_refuses_symlink() {
+        let (repo, pl) = setup_pl_fixture("rmws-dep");
+        let sibling = test_dir("rmws-dep-sibling");
+        fs::create_dir_all(sibling.join(".git")).unwrap();
+        let sentinel = sibling.join("SENTINEL");
+        fs::write(&sentinel, b"alive").unwrap();
+        let link = pl.join("creoui");
+        symlink(&sibling, &link).unwrap();
+
+        let err = remove_performer_workspace(&repo, &link).unwrap_err();
+        assert!(
+            err.contains("dependency symlink"),
+            "symlink は明示 Err で拒否: {err}"
+        );
+        assert!(fs::symlink_metadata(&link).is_ok(), "symlink 自体は残る");
+        assert!(sentinel.exists(), "target 内の sentinel は無傷");
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&sibling);
+    }
+
     #[test]
     fn is_branch_merged_returns_false_when_head_equals_origin_main() {
         let base = test_dir("merged-false-fresh");
