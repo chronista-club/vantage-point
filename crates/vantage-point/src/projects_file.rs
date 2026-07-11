@@ -158,23 +158,6 @@ impl ProjectsFile {
     }
 }
 
-/// `dir_path` が `pf` に未登録なら `ProjectEntry` を追加する純粋ロジック。
-///
-/// 登録したら `true`、 既に同 path が登録済みなら `false` (idempotent)。
-/// fs / cwd に触らないので単体テストできる。
-fn register_dir_into(pf: &mut ProjectsFile, dir_path: &str, name: &str) -> bool {
-    if pf.projects.iter().any(|p| p.path == dir_path) {
-        return false;
-    }
-    pf.projects.push(ProjectEntry {
-        name: name.to_string(),
-        path: dir_path.to_string(),
-        enabled: None,
-        slot: None,
-    });
-    true
-}
-
 /// `pf` から「`dir_exists` が `false` を返す path」 の entry を除去する純粋ロジック。
 ///
 /// 除去した project 名を出現順で返す。 dir 実在判定 (`dir_exists`) を注入式に
@@ -222,8 +205,6 @@ fn notify_daemon_reload() {
 /// [`ProjectsFile::sync`] の結果サマリ。
 #[derive(Debug, Default)]
 pub struct SyncOutcome {
-    /// 新規登録した起点 project 名 (起動時 sync で起点 dir が未登録だった場合)。
-    pub added: Option<String>,
     /// ghost (dir 実在せず) として除去した project 名。
     pub removed: Vec<String>,
 }
@@ -231,46 +212,26 @@ pub struct SyncOutcome {
 impl SyncOutcome {
     /// projects.kdl に変更があったか。
     pub fn changed(&self) -> bool {
-        self.added.is_some() || !self.removed.is_empty()
+        !self.removed.is_empty()
     }
 }
 
 impl ProjectsFile {
-    /// projects.kdl を現実と同期する (VP-189 follow-up)。
+    /// projects.kdl から ghost project を除去して現実と同期する (VP-189 follow-up)。
     ///
-    /// 2 つの操作を 1 回の load → save にまとめる:
+    /// path が実在しない (dir が削除/移動された) ghost project を projects.kdl から
+    /// 除去する。 サイドバーに出るが開けない死に entry を掃除する。 変更があったときだけ
+    /// save する (= projects.kdl への無駄な書き込みを避ける)。
     ///
-    /// 1. **起点 dir の登録** — `start_dir` が `Some` なら、 その起点ディレクトリを
-    ///    project として登録 (未登録なら)。 VP のメンタルモデル「起点ディレクトリ →
-    ///    そこから SP が立ち上がる」 に沿い、 `vp app start` / `vp sp start` で
-    ///    起点 dir を VP に追加する (起動アクション = project 追加)。 `dir` は
-    ///    そのまま (正規化のみ) project になる ── git repo root への丸めや git 判定は
-    ///    しない (D11「正規化ディレクトリパスが Process の一意キー」)。
-    /// 2. **ghost 除去** — path が実在しない (dir が削除/移動された) ghost project を
-    ///    projects.kdl から除去する。 サイドバーに出るが開けない死に entry を掃除。
-    ///
-    /// `vp sync` (明示コマンド) は `start_dir = None` で呼び ghost 除去のみ。 起動時
-    /// (`vp app start` / `vp sp start`) は起点 dir を渡し「追加 + 除去」 を同時に行う。
-    /// 変更があったときだけ save する (= projects.kdl への無駄な書き込みを避ける)。
-    pub fn sync(start_dir: Option<&std::path::Path>) -> Result<SyncOutcome> {
+    /// かつて `start_dir` で「起点 dir の自動登録」も行っていたが、 `vp sp start` の
+    /// 起動時 sync が **削除済 project を復活させる** resurrection バグの温床だったため
+    /// 撤去した。 project 登録は `add_project` 経由の明示操作のみ (sidebar Add /
+    /// `vp projects add`)。
+    pub fn sync() -> Result<SyncOutcome> {
         let mut pf = ProjectsFile::load()?;
         let mut outcome = SyncOutcome::default();
 
-        // 1. 起点 dir を登録 (起動時 sync のみ)。
-        if let Some(dir) = start_dir {
-            // 他の project entry と比較可能なよう正規化パスに揃える。
-            let dir_path = crate::config::Config::normalize_path(dir);
-            let name = std::path::Path::new(&dir_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project")
-                .to_string();
-            if register_dir_into(&mut pf, &dir_path, &name) {
-                outcome.added = Some(name);
-            }
-        }
-
-        // 2. ghost 除去: path が実在しない (ディレクトリでない) entry を落とす。
+        // ghost 除去: path が実在しない (ディレクトリでない) entry を落とす。
         outcome.removed = prune_ghosts_with(&mut pf, |path| std::path::Path::new(path).is_dir());
 
         if outcome.changed() {
@@ -327,34 +288,6 @@ mod tests {
         let kdl = club_kdl::to_string_pretty(&pf).expect("serialize");
         let back: ProjectsFile = club_kdl::from_str(&kdl).unwrap_or_default();
         assert_eq!(back.projects.len(), 0);
-    }
-
-    /// VP-189: 起点ディレクトリの新規登録と重複スキップ (register_dir_into 純粋ロジック)
-    #[test]
-    fn register_dir_into_adds_new_and_skips_duplicate() {
-        let mut pf = ProjectsFile::default();
-        // 新規登録 → true、 entry 追加
-        assert!(register_dir_into(
-            &mut pf,
-            "/repos/vantage-point",
-            "vantage-point"
-        ));
-        assert_eq!(pf.projects.len(), 1);
-        assert_eq!(pf.projects[0].name, "vantage-point");
-        assert_eq!(pf.projects[0].path, "/repos/vantage-point");
-        // enabled / slot は省略 (None) で登録される
-        assert!(pf.projects[0].enabled.is_none());
-        assert!(pf.projects[0].slot.is_none());
-        // 同 path の再登録 → false、 件数不変 (idempotent)
-        assert!(!register_dir_into(&mut pf, "/repos/vantage-point", "別名"));
-        assert_eq!(pf.projects.len(), 1);
-        // 別 path → true、 件数増加
-        assert!(register_dir_into(
-            &mut pf,
-            "/repos/creo-memories",
-            "creo-memories"
-        ));
-        assert_eq!(pf.projects.len(), 2);
     }
 
     /// VP-189: ghost project (dir 実在せず) のみ除去する (prune_ghosts_with 純粋ロジック)
