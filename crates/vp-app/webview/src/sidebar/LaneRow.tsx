@@ -46,16 +46,15 @@ function PerformerMeta(props: { ws: PerformerStatusWire }) {
 
 /**
  * connector class (= control surrender FSM の投影) から state 文字を導出する。
- * conn-auto/run = working、 conn-dead = idle、 conn-hitl = needs you。
- * conn-conductor (root) は state を持たない (spine の頭) ので null。
+ * conn-auto/run = working、 conn-hitl = needs you。
+ * idle (conn-dead) は quiet pass (mako 019f5100) で文字を出さない — 「idle はほぼ消える」。
+ * conn-conductor (root) も state を持たない (spine の頭) ので null。
  */
 function stateLabel(connectorClass: string | undefined): string | null {
 	switch (connectorClass) {
 		case "conn-auto":
 		case "conn-run":
 			return "working";
-		case "conn-dead":
-			return "idle";
 		case "conn-hitl":
 			return "needs you";
 		default:

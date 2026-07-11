@@ -8,7 +8,14 @@
  * PR-3: active project (= 現在 active な Lane を含む project) の summary 右上に
  * 「+」アイコンを出し、 click で Add Performer フォームを開閉する。
  */
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import {
+	For,
+	Show,
+	createEffect,
+	createSignal,
+	onCleanup,
+	onMount,
+} from "solid-js";
 import { CreoIcon } from "creoui-icons-web";
 import type { ProjectPaneState } from "../generated/ProjectPaneState";
 import { sidebar } from "./store";
@@ -100,6 +107,24 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 		const a = sidebar.active_lane_address;
 		return a != null && lanes().some((l) => laneAddressKey(l) === a);
 	};
+
+	// photon one-shot fire (mako motion 方針 019f50ff: 常時アニメ禁止、 イベント駆動のみ)。
+	// working (conn-auto) の lane 数を監視し、 増えた瞬間 = どこかの lane が working に
+	// 遷移した時だけ .photon-fire を付与 → CSS animation が spine を 1 回走る。
+	// 終了検知は animationend (pseudo-element の animation も host で拾える) で class を外す。
+	const [photonFire, setPhotonFire] = createSignal(false);
+	let prevWorking = 0;
+	createEffect(() => {
+		const working = lanes().filter(
+			(l) => laneConnector(l) === "conn-auto",
+		).length;
+		if (working > prevWorking) {
+			// 連続遷移でも再発火するよう一度 false に落としてから次 frame で立てる。
+			setPhotonFire(false);
+			requestAnimationFrame(() => setPhotonFire(true));
+		}
+		prevWorking = working;
+	});
 
 	const [addPerformerOpen, setAddPerformerOpen] = createSignal(false);
 	// PR 445 `n` directive: keyboard で AddPerformer form を open するため、 ProjectAccordion 内 local
@@ -307,7 +332,14 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 					</button>
 				</Show>
 			</summary>
-			<div class="vp-proj-content">
+			<div
+				class="vp-proj-content"
+				classList={{ "photon-fire": photonFire() }}
+				onAnimationEnd={(e) => {
+					// ::after (photon) の one-shot 終了で class を回収。 他 animation は無視。
+					if (e.animationName === "lg-photon") setPhotonFire(false);
+				}}
+			>
 				<Show
 					when={hint()}
 					fallback={
