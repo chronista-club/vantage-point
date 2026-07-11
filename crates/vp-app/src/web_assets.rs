@@ -9,9 +9,9 @@
 //! 旧称は「font 集約モジュール」。 PlemolJP Console NF (`VPMono` / `VPMono35`、 32 variant、 ~248MB) を
 //! `include_bytes!` で bundle + JS の `FontFace` loader (`NERD_FONT_LOADER_JS`) で動的登録していた。
 //! しかし SolidJS sidebar 化 (VP-208) で loader の consumer が消滅し、
-//! bundle font は **未登録の orphan** に (現行 `MAIN_AREA_HTML` は `creo-tokens.css` /
-//! `vp-tokens.css` を inline するだけで `@font-face` / `FontFace` を持たない)。 font の SSOT は
-//! その 2 つの token file の **system-reference family** (Nerd Font chain + Mizolet/みぞれ) に移行済み。
+//! bundle font は **未登録の orphan** に。 font の SSOT は `vp-tokens.css` の principal 2 token
+//! (font zero-start 2026-07-11: sans='Gen Interface JP' / mono='UDEV Gothic NF'、 いずれも
+//! OS install 済 font の名前参照 + local() weight 束ね) に移行済み。
 //! よって bundle font 一式 + nerd-font loader (`nerd-font.css` / `nerd-font-loader.js`) を撤去し、
 //! 当モジュールは汎用 asset 配信のみに縮小した (binary ~248MB 減)。
 

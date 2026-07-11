@@ -466,7 +466,7 @@ function ChatView() {
 export const CHATVIEW_CSS = `
 .echoes-chat { position:absolute; inset:0; display:flex; flex-direction:column;
   background: var(--color-bg, #0f1115); color: var(--color-text, #e6e9ef);
-  font-family: var(--font-ui, system-ui, -apple-system, sans-serif); overflow:hidden; }
+  font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
 .echoes-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .echoes-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
 /* history は tabindex=0 で focus 可能（Home/End/PgUp/PgDn 用）。領域全体を囲む outline は
@@ -482,7 +482,7 @@ export const CHATVIEW_CSS = `
 .echoes-msg-body :first-child { margin-top:0; } .echoes-msg-body :last-child { margin-bottom:0; }
 .echoes-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
   border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12px; }
-.echoes-msg-body code { font-family: var(--font-mono, ui-monospace, monospace); }
+.echoes-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
 .echoes-thinking { align-self:flex-start; font-size:12px; }
 .echoes-thinking-toggle { background:none; border:none; color: var(--color-text-tertiary,#8b93a7);
   cursor:pointer; font-size:12px; padding:2px 0; display:flex; align-items:center; gap:5px; }
@@ -505,7 +505,7 @@ export const CHATVIEW_CSS = `
   border-top-color: transparent; animation: echoes-spin .7s linear infinite; }
 .echoes-tool.done .echoes-tool-spinner, .echoes-tool.error .echoes-tool-spinner { display:none; }
 .echoes-tool.done { color: var(--color-text-tertiary,#616b80); } .echoes-tool.error { color:#f0a3a3; }
-.echoes-tool-name { font-family: var(--font-mono, ui-monospace, monospace); }
+.echoes-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
 .echoes-tool-status { margin-left:auto; font-size:11px; }
 .echoes-cursor { width:7px; height:15px; background: var(--color-accent,#3b82f6); border-radius:1px;
   animation: echoes-blink 1s step-start infinite; align-self:flex-start; }
@@ -518,7 +518,7 @@ export const CHATVIEW_CSS = `
 .echoes-plan-item.completed .echoes-plan-text { text-decoration: line-through; }
 .echoes-input { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--color-border,#2a3040); }
 .echoes-input-box { flex:1; resize:none; min-height:38px; max-height:160px; padding:9px 12px; font-size:13px;
-  font-family: var(--font-ui, system-ui, sans-serif); color: var(--color-text,#e6e9ef);
+  font-family: var(--vp-font-sans),var(--typography-family-sans); color: var(--color-text,#e6e9ef);
   background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040); border-radius:9px; outline:none; }
 .echoes-input-box:focus { border-color: var(--color-accent,#3b82f6); }
 .echoes-send { align-self:flex-end; padding:9px 16px; font-size:13px; border-radius:9px; border:none; cursor:pointer;
@@ -548,7 +548,7 @@ export const CHATVIEW_CSS = `
 .echoes-context-fill { display:block; height:100%; border-radius:2px;
   background: var(--color-success,#6fe2a8); transition: width .3s ease, background .3s ease; }
 .echoes-context-pct { font-size:10.5px; min-width:32px; text-align:right;
-  font-family: var(--font-mono, ui-monospace, monospace); color: var(--color-text-tertiary,#8b93a7); }
+  font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7); }
 .echoes-context.warn .echoes-context-fill { background: var(--color-accent,#e2b96f); }
 .echoes-context.crit .echoes-context-fill { background: #f0a3a3; }
 .echoes-context.crit .echoes-context-pct { color: #f0a3a3; }

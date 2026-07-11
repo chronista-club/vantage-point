@@ -105,7 +105,7 @@ pub const MAIN_AREA_HTML: &str = concat!(
 "#,
     include_str!("../assets/xterm.css"),
     r#"
-html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:'Gen Interface JP',var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 body{overflow:hidden;}
 /* WebView 統合 (step 3a): sidebar + main を 1 DOM に CSS flex で同居。
    app-shell が [sidebar-root | host] を横並び、editor-root は別 (floating overlay)。 */
@@ -130,10 +130,10 @@ body{overflow:hidden;}
   --terminal-font-size:16;
   --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
-  /* 'SeptemberMonoN' を Echoes terminal の primary font に。 bundle はせず local (OS install 済) font
-     を名前参照するのみ。 install されていない環境では直後の 'VPMono' (web_assets.rs に base64 bundle 済の
-     PlemolJP Console NF) に必ず縮退するので、 どの OS でも描画が壊れない。 末尾 monospace まで保険を残す。 */
-  --terminal-font-family:'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  /* font zero-start (2026-07-11): Echoes terminal は principal mono ('UDEV Gothic NF'、
+     Nerd Font glyph 込み) のみ。 bundle はせず local (OS install 済) font を名前参照、
+     未 install 環境は末尾 monospace に縮退するのでどの OS でも描画は壊れない。 */
+  --terminal-font-family:'UDEV Gothic NF', monospace;
   --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
 }
 .pane{
@@ -168,7 +168,7 @@ body{overflow:hidden;}
 #console-switching.active{display:flex;}
 .console-switching-card{display:flex;flex-direction:column;align-items:center;gap:14px;
   color:var(--color-text-secondary,#a8b0c0);font-size:13px;
-  font-family:var(--font-ui,system-ui,sans-serif);}
+  font-family:var(--vp-font-sans),var(--typography-family-sans);}
 .console-switching-spinner{width:26px;height:26px;border-radius:50%;
   border:2.5px solid var(--color-border,#2a3040);border-top-color:var(--color-accent,#3b82f6);
   animation:console-spin .7s linear infinite;}
@@ -194,8 +194,8 @@ body{overflow:hidden;}
   gap:8px;
   padding:0 10px;
   font-size:12px;
-  background:var(--color-surface-bg-raised);
-  border-bottom:1px solid var(--color-border-subtle);
+  background:var(--color-surface-surface);
+  border-bottom:1px solid var(--color-surface-border-subtle);
   user-select:none;
   -webkit-app-region:drag;
   z-index:1;
@@ -221,12 +221,12 @@ body{overflow:hidden;}
   padding:2px 8px;
   font-size:11px;
   background:transparent;
-  border:1px solid var(--color-border-subtle);
+  border:1px solid var(--color-surface-border-subtle);
   border-radius:4px;
   color:var(--color-text-secondary);
   font-family:inherit;
 }
-.pane-header .pane-action-btn:hover{background:var(--color-surface-bg-elevated);color:var(--color-text-primary);}
+.pane-header .pane-action-btn:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
 .pane-body{
   position:absolute;
   top:28px;left:0;right:0;bottom:0;
@@ -235,28 +235,27 @@ body{overflow:hidden;}
 .pane-body.center{display:grid;place-items:center;}
 .pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
 /* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
-   pp-content-persist follow-up: font-family を Mizolet 先頭で指定 (= みぞれ system install を
-   WebKit で確実に拾わせる、 日本語 family 名先頭は resolve 不安定)。 font-size / 背景は別 step。 */
+   font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
 .pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
-  font-family:Mizolet,'みぞれ',system-ui,sans-serif;font-weight:300;}
-/* pp-content-persist follow-up: PP pane 全体 (header / breadcrumb / button 等) も みぞれ family へ。
-   pane の他 CSS は触らず font-family のみ override。 */
+  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+/* PP pane 全体 (header / breadcrumb / button 等) も同 family。 pane の他 CSS は触らず
+   font-family のみ override。 */
 #pane-paisley-park,#pane-paisley-park .pane-header,#pane-paisley-park .pane-name,
 #pane-paisley-park .pane-breadcrumb,#pane-paisley-park .pane-action-btn{
-  font-family:Mizolet,'みぞれ',system-ui,sans-serif;font-weight:300;}
+  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 .pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
 .pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
 .pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
 .pp-content p{margin:.5rem 0;color:var(--color-text-secondary);}
-.pp-content code{background:var(--color-surface-bg-raised);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
-.pp-content pre{background:var(--color-surface-bg-raised);padding:12px;border-radius:6px;overflow-x:auto;}
+.pp-content code{background:var(--color-surface-surface);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
+.pp-content pre{background:var(--color-surface-surface);padding:12px;border-radius:6px;overflow-x:auto;}
 .pp-content pre code{background:transparent;padding:0;}
 .pp-content a{color:var(--color-brand-primary);}
 .pp-content ul,.pp-content ol{padding-left:1.5em;margin:.5rem 0;}
 .pp-content blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;color:var(--color-text-tertiary);}
 .pp-content table{border-collapse:collapse;margin:.5rem 0;}
-.pp-content th,.pp-content td{border:1px solid var(--color-border-subtle);padding:4px 8px;}
-.pp-content hr{border:0;border-top:1px solid var(--color-border-subtle);margin:1rem 0;}
+.pp-content th,.pp-content td{border:1px solid var(--color-surface-border-subtle);padding:4px 8px;}
+.pp-content hr{border:0;border-top:1px solid var(--color-surface-border-subtle);margin:1rem 0;}
 .pp-placeholder{color:var(--color-text-tertiary);font-style:italic;}
 /* content_type=html: sandbox iframe を PP pane いっぱいに広げる。
    renderPP が container に .pp-content-html を付与し full-bleed に切り替える。 */
@@ -561,7 +560,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // 内 var()) を invalidate するが、 use site で並べる形なら正しく resolve する。
   probe.style.fontFamily = 'var(--vp-font-mono), var(--typography-family-mono)';
   const monoFamily = (getComputedStyle(probe).fontFamily || '').trim()
-    || `'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
+    || `'UDEV Gothic NF', monospace`;
   probe.remove();
 
   // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========

@@ -84,6 +84,11 @@ import { render } from "solid-js/web";
 import {
 	EditorHostProvider,
 	EditorLayer,
+	bind,
+	color,
+	cssVarNumberTarget,
+	cssVarTarget,
+	number,
 } from "@chronista-club/creoui-editor-host";
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
@@ -291,40 +296,12 @@ const historyStripStyle = document.createElement("style");
 historyStripStyle.textContent = HISTORY_STRIP_CSS;
 document.head.appendChild(historyStripStyle);
 
-// PP Canvas font (2026-06-01): Canvas 全体 (本文 + code/pre + mermaid-error) を
-// **ルイカ等幅 細め (TLT-RuikaMono-02)** に統一。 旧構成 (本文=みぞれ sans / code=墨東レラ mono) を廃し、
-// 手書き調 monospace の console look に振り切る (user 選択: 適用範囲=Canvas 全体 / weight=02)。
-// system install 済の font family を `font-family` 直指定 (= vp-asset:// 経由の font fetch 不要)。
-// WebKit は日本語 family 名を先頭にすると resolve 不安定なため、 英字 PostScript 名 (TLT-RuikaMono-02)
-// を先頭・日本語名 (TLT-ルイカ等幅-０２) を fallback に並記。 番号付き名で weight 02 を固定し、
-// 番号なし family 名 (TLT-RuikaMono) は default weight への degrade 用。
-// marked-based revert (2026-05-28): selector は marked が #pp-content 直下に吐く要素に向ける
-// (= creoui-md-view の `.creo-md` wrapper は廃止)。
+// PP Canvas font — font zero-start (2026-07-11): 旧 ルイカ等幅 (TLT-RuikaMono-02、
+// 2026-06-01 の console look 意匠) の font-family 注入を撤去。 PP の書体は main_area.rs 側の
+// principal token (本文 = --vp-font-sans / code = --typography-family-mono) に従う。
+// この style block には font 以外の意匠 (font-size 段上げ / mermaid 余白) が残るため維持する。
 const ppFontStyle = document.createElement("style");
 ppFontStyle.textContent = `
-/* PP body markdown — ルイカ等幅 細め (TLT-RuikaMono-02) を Canvas 全 text に適用 (本文も等幅)。
-   marked-based revert (2026-05-28): selector は marked が #pp-content 直下に吐く要素に向ける
-   (= creoui-md-view の .creo-md wrapper は廃止)。
-   WebKit で日本語 family 名先頭は resolve 不安定なため、 英字 PostScript 名 (TLT-RuikaMono-02)
-   を先頭に書き、 日本語名 (TLT-ルイカ等幅-０２) / family 名 / monospace に degrade させる。 */
-#pp-content,
-#pp-content p,
-#pp-content li,
-#pp-content blockquote,
-#pp-content h1,
-#pp-content h2,
-#pp-content h3,
-#pp-content h4,
-#pp-content h5,
-#pp-content h6,
-#pp-content table,
-#pp-content a {
-  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-ルイカ等幅-０２', 'TLT-ルイカ等幅', monospace;
-}
-#pp-content code,
-#pp-content pre {
-  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-ルイカ等幅-０２', 'TLT-ルイカ等幅', monospace;
-}
 /* PP body の base font-size を 1 段上げる (= creoui token chain: base → l)。
    fallback で 1.125em (= 16→18px 相当)。 #pp-content scope 内のみ override し
    sidebar 等の別 webview には波及しない。 marked-based revert (#477) で .creo-md
@@ -336,7 +313,7 @@ ppFontStyle.textContent = `
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
 #pp-content .creo-md-mermaid-error {
-  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-ルイカ等幅-０２', 'TLT-ルイカ等幅', monospace;
+  font-family: var(--vp-font-mono),var(--typography-family-mono);
   color: var(--color-text-secondary, #c66);
   background: var(--color-surface-bg-subtle, #1a1a22);
   padding: 8px; border-radius: 4px; white-space: pre-wrap;
@@ -449,7 +426,8 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 // vpConsole.setMode(lane, mode) が投げる CustomEvent を受けて表示を切替える
 // (Rust が lane 選択 / console_set_mode 成功時に setMode を呼ぶ)。
 document.addEventListener("vp:console-mode", (e) => {
-	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
+	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>)
+		.detail;
 	if (!detail?.lane) return;
 	// SP 応答待ちの間に別 lane へ移った後から届いた mode 適用で、表示ごと元の lane に
 	// 引き戻さない（overlay 解除 / toggle label は別 listener なので影響なし）。lane の
@@ -461,9 +439,9 @@ document.addEventListener("vp:console-mode", (e) => {
 // doc 33 §9: Act I⇄II 切替の progress overlay + switch lock。
 // 「resume 確定まで切替を見せる + 二重切替を防ぐ」= 安全なハンドオフ。
 const switchingOverlay = document.getElementById("console-switching");
-const switchingMsg = switchingOverlay?.querySelector(".console-switching-msg") as
-	| HTMLElement
-	| undefined;
+const switchingMsg = switchingOverlay?.querySelector(
+	".console-switching-msg",
+) as HTMLElement | undefined;
 // 進行中の handoff。null = idle。set 中は toggle をロックする。
 let handoffPending: { lane: string; target: "tui" | "chat" } | null = null;
 let handoffTimer: number | undefined;
@@ -472,7 +450,9 @@ const beginHandoff = (lane: string, target: "tui" | "chat"): void => {
 	handoffPending = { lane, target };
 	if (switchingMsg) {
 		switchingMsg.textContent =
-			target === "chat" ? "Act II にセッションを引き継ぎ中…" : "Act I にセッションを引き継ぎ中…";
+			target === "chat"
+				? "Act II にセッションを引き継ぎ中…"
+				: "Act I にセッションを引き継ぎ中…";
 	}
 	switchingOverlay?.classList.add("active");
 	// safety: ready 信号が来なくても 30s で解除（stuck 防止）。
@@ -494,7 +474,8 @@ const endHandoff = (): void => {
 // overlay が engine 起動（resume 確定）を gate して固まるのを防ぐ。切替を表示した
 // のと同じ vp:console-mode で overlay も畳むので、ハングが構造的に起きない。
 document.addEventListener("vp:console-mode", (e) => {
-	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
+	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>)
+		.detail;
 	if (
 		handoffPending &&
 		detail?.lane === handoffPending.lane &&
@@ -507,7 +488,10 @@ document.addEventListener("vp:console-mode", (e) => {
 // する belt-and-suspenders（overlay の完了条件ではなく「更に早い解除」の位置づけ）。
 document.addEventListener("vp:console-ready", (e) => {
 	const detail = (e as CustomEvent<{ lane: string }>).detail;
-	if (handoffPending?.target === "chat" && detail?.lane === handoffPending.lane) {
+	if (
+		handoffPending?.target === "chat" &&
+		detail?.lane === handoffPending.lane
+	) {
 		endHandoff();
 	}
 });
@@ -531,15 +515,21 @@ if (paneTerminal) {
 		// (consoleActiveLane は起動レースで未設定のことがあり no-op になっていた)。
 		const lane = activeLaneAddress ?? consoleActiveLane;
 		if (!lane) {
-			console.warn("[console-toggle] active lane 不明 — lane を選択してから押してください");
+			console.warn(
+				"[console-toggle] active lane 不明 — lane を選択してから押してください",
+			);
 			return;
 		}
 		const chatOn = chatHost?.classList.contains("active");
 		const next: "tui" | "chat" = chatOn ? "tui" : "chat";
 		// 押下で即 progress を出す（round-trip 前に反応 = 待ち時間を可視化）。
 		beginHandoff(lane, next);
-		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
-		ipc?.postMessage(JSON.stringify({ t: "console:set_mode", lane, mode: next }));
+		const ipc = (
+			window as unknown as { ipc?: { postMessage(m: string): void } }
+		).ipc;
+		ipc?.postMessage(
+			JSON.stringify({ t: "console:set_mode", lane, mode: next }),
+		);
 	});
 
 	// New Session ボタン: 旧「/exit → 手打ち claude」の置き換え。lane_restart(fresh=true) を
@@ -565,7 +555,9 @@ if (paneTerminal) {
 		if (handoffPending) return;
 		const lane = activeLaneAddress ?? consoleActiveLane;
 		if (!lane) {
-			console.warn("[new-session] active lane 不明 — lane を選択してから押してください");
+			console.warn(
+				"[new-session] active lane 不明 — lane を選択してから押してください",
+			);
 			return;
 		}
 		if (armedLane !== lane) {
@@ -578,7 +570,9 @@ if (paneTerminal) {
 			return;
 		}
 		disarm();
-		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+		const ipc = (
+			window as unknown as { ipc?: { postMessage(m: string): void } }
+		).ipc;
 		ipc?.postMessage(JSON.stringify({ t: "console:new_session", lane }));
 	});
 
@@ -631,9 +625,189 @@ document.addEventListener(
 	false,
 );
 
+// ===== sidebar Live Token の恒久 bind (2026-07-11 Editor Mode 作業台化) =====
+// auto-discover は :root の既知 prefix (--color- 等) しか拾わないため、 vp-app 固有の
+// --sb-text-* 4 token をここで明示 bind する (REPL 手動 creoEditor.slider() の恒久化)。
+// 定義は sidebar/Shell.tsx の SHELL_CSS `:root` ブロック — editor-host の cssVarTarget が
+// documentElement.style.setProperty で書くのと同 scope に揃えてある (#sidebar-root 定義の
+// ままだと「近い祖先が勝つ」で slider 書き込みがマスクされる)。
+// bind() は useEditorHost() を呼ぶので EditorHostProvider ツリー内で実行が必須 —
+// component の setup phase で回す。 UI は持たないので null を返す。
+function SidebarTokenBinds() {
+	// text scale 4 段。 range は現値 ±数 px の演奏域 (heuristic 任せにしない)。
+	const tokens: Array<{
+		id: string;
+		cssVar: string;
+		value: number;
+		min: number;
+		max: number;
+	}> = [
+		{
+			id: "sb.text.base",
+			cssVar: "--sb-text-base",
+			value: 13,
+			min: 10,
+			max: 18,
+		},
+		{
+			id: "sb.text.hint",
+			cssVar: "--sb-text-hint",
+			value: 12,
+			min: 9,
+			max: 16,
+		},
+		{
+			id: "sb.text.meta",
+			cssVar: "--sb-text-meta",
+			value: 11,
+			min: 8,
+			max: 15,
+		},
+		{
+			id: "sb.text.micro",
+			cssVar: "--sb-text-micro",
+			value: 10,
+			min: 7,
+			max: 14,
+		},
+	];
+	tokens.forEach((t, i) => {
+		bind<number>({
+			target: cssVarNumberTarget(t.id, t.cssVar, t.value, "px"),
+			control: number({
+				min: t.min,
+				max: t.max,
+				step: 0.5,
+				unit: "px",
+				variant: "slider",
+			}),
+			placement: {
+				label: t.id,
+				semantic: "tool",
+				group: "sidebar",
+				order: 100 + i,
+				role: "dev",
+			},
+		});
+	});
+
+	// connector 演奏 knob (2026-07-11 lead 指示 + Step 7 Light Grid): mako の Editor Mode
+	// 探索がそのまま connector / photon 設計になるよう slider 化。 default は Light Grid
+	// 視覚仕様 (artifact c203944c) の値。 unit が px / s / ms で混在するため各 entry に持たせる。
+	const connNumbers: Array<{
+		id: string;
+		cssVar: string;
+		value: number;
+		min: number;
+		max: number;
+		step: number;
+		unit: string;
+	}> = [
+		{
+			id: "sb.conn.width",
+			cssVar: "--sb-conn-width",
+			value: 2,
+			min: 0.5,
+			max: 4,
+			step: 0.25,
+			unit: "px",
+		},
+		{
+			id: "sb.conn.slot",
+			cssVar: "--sb-conn-slot",
+			value: 22,
+			min: 12,
+			max: 32,
+			step: 1,
+			unit: "px",
+		},
+		{
+			// idle 破線 tap の dash 長。
+			id: "sb.conn.dash",
+			cssVar: "--sb-conn-dash",
+			value: 4,
+			min: 2,
+			max: 12,
+			step: 0.5,
+			unit: "px",
+		},
+		{
+			// HITL diamond pulse の 1 beat。 default = creo-ui timeline BPM 82.7 (60/82.7)。
+			id: "sb.conn.flow.beat",
+			cssVar: "--sb-conn-flow-beat",
+			value: 0.7255,
+			min: 0.15,
+			max: 2,
+			step: 0.05,
+			unit: "s",
+		},
+		{
+			// photon が spine を root→末端に走る周期 (Light Grid の signature motion)。
+			id: "sb.conn.photon.period",
+			cssVar: "--sb-photon-period",
+			value: 1800,
+			min: 600,
+			max: 4000,
+			step: 100,
+			unit: "ms",
+		},
+		{
+			// 発光半径 (photon / node / diamond の glow に波及)。
+			id: "sb.conn.glow",
+			cssVar: "--sb-glow",
+			value: 6,
+			min: 0,
+			max: 14,
+			step: 0.5,
+			unit: "px",
+		},
+	];
+	connNumbers.forEach((t, i) => {
+		bind<number>({
+			target: cssVarNumberTarget(t.id, t.cssVar, t.value, t.unit),
+			control: number({
+				min: t.min,
+				max: t.max,
+				step: t.step,
+				unit: t.unit,
+				variant: "slider",
+			}),
+			placement: {
+				label: t.id,
+				semantic: "tool",
+				group: "sidebar-connector",
+				order: 110 + i,
+				role: "dev",
+			},
+		});
+	});
+
+	// connector 状態色 = Light Grid の 2 hue: needs-you の magenta / working・current の cyan。
+	// picker で書くと :root inline に concrete 値が入り stylesheet 定義を上書きする (探索用)。
+	const connColors: Array<{ id: string; cssVar: string; value: string }> = [
+		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#FF3DAE" },
+		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#22E0FF" },
+	];
+	connColors.forEach((t, i) => {
+		bind<string>({
+			target: cssVarTarget(t.id, t.cssVar, t.value),
+			control: color({ variant: "picker" }),
+			placement: {
+				label: t.id,
+				semantic: "tool",
+				group: "sidebar-connector",
+				order: 120 + i,
+				role: "dev",
+			},
+		});
+	});
+	return null;
+}
+
 function App() {
 	return (
 		<EditorHostProvider>
+			<SidebarTokenBinds />
 			<EditorLayer />
 		</EditorHostProvider>
 	);
