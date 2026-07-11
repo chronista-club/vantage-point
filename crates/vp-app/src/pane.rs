@@ -75,6 +75,23 @@ pub enum WidgetKind {
     Notes,
 }
 
+/// hub の向こうに居る available world 1 件（`/api/health` の `hub_worlds[]` 要素）。
+///
+/// daemon 側 `HubWorldInfo` と同形。deserialize（`/api/health` 受け）と serialize
+/// （sidebar への push）の両面で使うため中間 mapping を持たない。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct HubWorld {
+    /// world の identity（hostname 由来、hub registry の一意キー相当）
+    pub handle: String,
+    /// 位置独立 routing key `wld_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
+    #[serde(default)]
+    pub wld_id: String,
+    /// direct 到達 endpoint 候補数（hub S2 前は 0）
+    #[serde(default)]
+    pub endpoints_count: usize,
+}
+
 /// Activity widget の payload
 ///
 /// 5-10 秒間隔で Rust 側が `/api/health` + `/api/world/projects` +
@@ -98,6 +115,10 @@ pub struct ActivitySnapshot {
     /// `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
     #[serde(default)]
     pub hub: String,
+    /// hub の向こうに居る available worlds（`/api/health` の `hub_worlds`、自 world 除外・dedup 済）。
+    /// Hub 行の下に常時リスト表示する。未接続 / 旧 daemon は空。
+    #[serde(default)]
+    pub hub_worlds: Vec<HubWorld>,
     /// L1 lifecycle: SP presence map（project path → `"connected"`|`"connecting"`|`"disconnected"`
     /// |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
     /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。

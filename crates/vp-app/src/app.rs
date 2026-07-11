@@ -1347,8 +1347,9 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
         if !h.started_at.is_empty() {
             snap.world_started_at = Some(h.started_at);
         }
-        // hub federation 接続状態（World 横の Hub インジケータ用）。
+        // hub federation 接続状態（World 横の Hub インジケータ用）+ available worlds リスト。
         snap.hub = h.hub;
+        snap.hub_worlds = h.hub_worlds;
         // L1 lifecycle: SP presence map（project 行の ●◐○ dot 用、path → presence）。
         snap.presence = h
             .processes

@@ -167,8 +167,9 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
         update: None,
-        // SP mode は hub federation を持たない（TheWorld のみ）→ Disabled のまま。
+        // SP mode は hub federation を持たない（TheWorld のみ）→ Disabled / 空のまま。
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
+        hub_worlds: crate::daemon::hub_client::HubWorldsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port,
@@ -614,6 +615,9 @@ pub async fn run_world(
     // chronista-hub federation の接続状態。run_hub_federation（writer）と AppState（= /api/health
     // reader）で同一 instance を共有する（World mode のみ更新、初期 Disabled）。
     let hub_status = crate::daemon::hub_client::HubFederationStatus::new();
+    // hub registry の available worlds cache も同 pattern で共有（writer = run_hub_federation の
+    // 定期 discover、reader = /api/health の `hub_worlds` field。初期 = 空）。
+    let hub_worlds = crate::daemon::hub_client::HubWorldsCache::new();
 
     // Create minimal state for world mode
     let state = Arc::new(AppState {
@@ -623,6 +627,7 @@ pub async fn run_world(
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),
+        hub_worlds: hub_worlds.clone(),
         project_dir: String::new(),
         // R3: World mode は cross-process forward の対象外 (= 自 project を持たない)
         project_name: String::new(),
@@ -1005,7 +1010,7 @@ pub async fn run_world(
         };
 
         // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
-        // hub_status は AppState と共有（run_hub_federation が更新、/api/health が読む）。
+        // hub_status / hub_worlds は AppState と共有（run_hub_federation が更新、/api/health が読む）。
         tokio::spawn(crate::daemon::hub_client::run_hub_federation(
             hub_addr,
             wld_id,
@@ -1013,6 +1018,7 @@ pub async fn run_world(
             handle,
             name,
             hub_status,
+            hub_worlds,
             shutdown_token.clone(),
             on_relay,
         ));

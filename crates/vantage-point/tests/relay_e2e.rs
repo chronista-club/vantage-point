@@ -110,6 +110,7 @@ async fn run_hub_federation_resident_relay_target() {
     // 本番 daemon（process/server.rs）と同じ常駐セッションを起動。
     let shutdown = CancellationToken::new();
     let status = hub_client::HubFederationStatus::new();
+    let worlds_cache = hub_client::HubWorldsCache::new();
     // この test は register + relay target liveness を見るので、配送 handler は no-op で十分。
     let driver = tokio::spawn(hub_client::run_hub_federation(
         addr.clone(),
@@ -118,6 +119,7 @@ async fn run_hub_federation_resident_relay_target() {
         target_handle.to_string(),
         "VP resident target".to_string(),
         status.clone(),
+        worlds_cache.clone(),
         shutdown.clone(),
         |_inbound| async {},
     ));
@@ -152,6 +154,14 @@ async fn run_hub_federation_resident_relay_target() {
         status.get(),
         hub_client::HubFederationState::Connected,
         "run_hub_federation の status が Connected に遷移していない"
+    );
+
+    // available worlds cache に**自 world は決して混入しない**（available_worlds の意味論 =
+    // 「hub の向こうに誰がいるか」）。cache が空か populated かは discover tick の timing 次第
+    // なので断定しない（初回 discover は接続直後、以降 45s 周期）。
+    assert!(
+        worlds_cache.get().iter().all(|w| w.handle != target_handle),
+        "worlds cache に自 world (handle={target_handle}) が混入している"
     );
 
     // 常駐 target は relay registry にも居るはず → established を返せば relay target として live。

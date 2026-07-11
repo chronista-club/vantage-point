@@ -21,6 +21,18 @@ pub struct StandStatus {
     pub detail: Option<serde_json::Value>,
 }
 
+/// `/api/health` の `hub_worlds` 要素 — hub の向こうに居る available world 1 件。
+#[derive(serde::Serialize)]
+pub struct HubWorldInfo {
+    /// world の identity（hostname 由来、hub registry の一意キー相当）
+    pub handle: String,
+    /// 位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 前は空になり得るため空なら omit。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub wld_id: String,
+    /// direct 到達 endpoint 候補数（hub S2 前は 0）
+    pub endpoints_count: usize,
+}
+
 /// Health check response
 #[derive(serde::Serialize)]
 pub struct HealthResponse {
@@ -40,6 +52,10 @@ pub struct HealthResponse {
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`）。
     /// World mode のみ意味を持つ（SP mode は常に `"disabled"`）。vp-app が world status 横に表示。
     pub hub: &'static str,
+    /// hub の向こうに居る available worlds（**自 world は除外**、handle dedup 済）。
+    /// World mode + hub connected の間だけ非空（SP mode / 未接続は空配列）。既存 `hub` field
+    /// （string）は不変のまま additive に足す — 旧 client は本 field を無視するだけで壊れない。
+    pub hub_worlds: Vec<HubWorldInfo>,
     /// L1 lifecycle (Phase C): World 配下の SP presence 一覧（vp-app sidebar の ●◐○ 表示用）。
     /// daemon-canonical（doc 27 §3.2 / Model Q）。World mode のみ Some、SP mode では None。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,6 +209,18 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         None => None,
     };
 
+    // hub の向こうの available worlds（run_hub_federation が discover で更新する cache を読む）。
+    let hub_worlds = state
+        .hub_worlds
+        .get()
+        .into_iter()
+        .map(|w| HubWorldInfo {
+            handle: w.handle,
+            wld_id: w.wld_id,
+            endpoints_count: w.endpoints.len(),
+        })
+        .collect();
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -202,6 +230,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         started_at: state.started_at.clone(),
         stands,
         hub: state.hub_status.get().as_str(),
+        hub_worlds,
         processes,
     })
 }
@@ -492,6 +521,14 @@ mod tests {
             body.get("hub").and_then(|v| v.as_str()),
             Some("disabled"),
             "hub field 必須 (SP/test mode は Disabled = \"disabled\")"
+        );
+        // hub_worlds は常時 serialize（SP/test mode = HubWorldsCache::new() は空配列）。
+        assert_eq!(
+            body.get("hub_worlds")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(0),
+            "hub_worlds field 必須 (SP/test mode は空配列)"
         );
     }
 }

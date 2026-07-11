@@ -176,6 +176,10 @@ pub struct WorldHealthInfo {
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`、旧 daemon は空文字）。
     #[serde(default)]
     pub hub: String,
+    /// hub の向こうに居る available worlds（`hub_worlds[]`、旧 daemon は field 不在 → 空）。
+    /// daemon 側と同形なので `crate::pane::HubWorld` をそのまま deserialize に使う。
+    #[serde(default)]
+    pub hub_worlds: Vec<crate::pane::HubWorld>,
     /// L1 lifecycle: World 配下 SP の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
     /// 旧 daemon は field 不在 → 空。`path` で project 行に join する。
     #[serde(default)]
