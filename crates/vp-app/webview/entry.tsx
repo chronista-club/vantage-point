@@ -691,9 +691,9 @@ function SidebarTokenBinds() {
 		});
 	});
 
-	// connector 演奏 knob (2026-07-11 lead 指示): mako の Editor Mode 探索がそのまま
-	// connector 設計になるよう、 線幅 / slot 幅 / dash 長 / 破線周期を slider 化。
-	// unit が px / s で混在するため各 entry に持たせる。
+	// connector 演奏 knob (2026-07-11 lead 指示 + Step 7 Light Grid): mako の Editor Mode
+	// 探索がそのまま connector / photon 設計になるよう slider 化。 default は Light Grid
+	// 視覚仕様 (artifact c203944c) の値。 unit が px / s / ms で混在するため各 entry に持たせる。
 	const connNumbers: Array<{
 		id: string;
 		cssVar: string;
@@ -706,7 +706,7 @@ function SidebarTokenBinds() {
 		{
 			id: "sb.conn.width",
 			cssVar: "--sb-conn-width",
-			value: 1.5,
+			value: 2,
 			min: 0.5,
 			max: 4,
 			step: 0.25,
@@ -715,13 +715,14 @@ function SidebarTokenBinds() {
 		{
 			id: "sb.conn.slot",
 			cssVar: "--sb-conn-slot",
-			value: 16,
-			min: 10,
-			max: 28,
+			value: 22,
+			min: 12,
+			max: 32,
 			step: 1,
 			unit: "px",
 		},
 		{
+			// idle 破線 tap の dash 長。
 			id: "sb.conn.dash",
 			cssVar: "--sb-conn-dash",
 			value: 4,
@@ -731,7 +732,7 @@ function SidebarTokenBinds() {
 			unit: "px",
 		},
 		{
-			// 自走破線の 1 周期秒数。 default = creo-ui timeline BPM 82.7 の 1 beat (60/82.7)。
+			// HITL diamond pulse の 1 beat。 default = creo-ui timeline BPM 82.7 (60/82.7)。
 			id: "sb.conn.flow.beat",
 			cssVar: "--sb-conn-flow-beat",
 			value: 0.7255,
@@ -739,6 +740,26 @@ function SidebarTokenBinds() {
 			max: 2,
 			step: 0.05,
 			unit: "s",
+		},
+		{
+			// photon が spine を root→末端に走る周期 (Light Grid の signature motion)。
+			id: "sb.conn.photon.period",
+			cssVar: "--sb-photon-period",
+			value: 1800,
+			min: 600,
+			max: 4000,
+			step: 100,
+			unit: "ms",
+		},
+		{
+			// 発光半径 (photon / node / diamond の glow に波及)。
+			id: "sb.conn.glow",
+			cssVar: "--sb-glow",
+			value: 6,
+			min: 0,
+			max: 14,
+			step: 0.5,
+			unit: "px",
 		},
 	];
 	connNumbers.forEach((t, i) => {
@@ -761,12 +782,11 @@ function SidebarTokenBinds() {
 		});
 	});
 
-	// connector 状態色 (HITL / 自走)。 初期値は creo status token の実効値 (creo-tokens.css
-	// 未定義のため fallback #d49b3f / #3fb9d4 が実体)。 picker で書くと :root inline に
-	// concrete 値が入り、 stylesheet の var() 間接参照を上書きする (探索用の想定挙動)。
+	// connector 状態色 = Light Grid の 2 hue: needs-you の magenta / working・current の cyan。
+	// picker で書くと :root inline に concrete 値が入り stylesheet 定義を上書きする (探索用)。
 	const connColors: Array<{ id: string; cssVar: string; value: string }> = [
-		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#d49b3f" },
-		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#3fb9d4" },
+		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#FF3DAE" },
+		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#22E0FF" },
 	];
 	connColors.forEach((t, i) => {
 		bind<string>({
