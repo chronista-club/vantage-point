@@ -130,7 +130,7 @@
 .vp-cp-row.selected .vp-cp-title{color:var(--color-brand-primary,#3fb9d4);}
 .vp-cp-desc{font-size:var(--sb-text-micro,10px);color:var(--color-text-tertiary);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-cp-kbd{flex:0 0 auto;font-family:'VPMono',monospace;font-size:var(--sb-text-micro,10px);
+.vp-cp-kbd{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);font-size:var(--sb-text-micro,10px);
   color:var(--color-text-tertiary);
   border:1px solid var(--color-surface-border,#1f2233);
   border-radius:4px;padding:1px 5px;background:var(--color-surface-bg-subtle);}

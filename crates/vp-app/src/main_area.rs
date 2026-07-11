@@ -105,7 +105,7 @@ pub const MAIN_AREA_HTML: &str = concat!(
 "#,
     include_str!("../assets/xterm.css"),
     r#"
-html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:'Gen Interface JP',var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 body{overflow:hidden;}
 /* WebView 統合 (step 3a): sidebar + main を 1 DOM に CSS flex で同居。
    app-shell が [sidebar-root | host] を横並び、editor-root は別 (floating overlay)。 */
@@ -130,11 +130,10 @@ body{overflow:hidden;}
   --terminal-font-size:16;
   --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
-  /* 'SeptemberMonoN' を Echoes terminal の primary font に。 bundle はせず local (OS install 済) font
-     を名前参照するのみ。 install されていない環境では直後の 'VPMono' (PlemolJP Console NF、 これも
-     OS install 依存 — 旧 web_assets.rs の base64 bundle は 2026-05-30 に撤去済) に縮退し、
-     末尾 monospace まで保険を残すので、 どの OS でも描画が壊れない。 */
-  --terminal-font-family:'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  /* font zero-start (2026-07-11): Echoes terminal は principal mono ('UDEV Gothic NF'、
+     Nerd Font glyph 込み) のみ。 bundle はせず local (OS install 済) font を名前参照、
+     未 install 環境は末尾 monospace に縮退するのでどの OS でも描画は壊れない。 */
+  --terminal-font-family:'UDEV Gothic NF', monospace;
   --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
 }
 .pane{
@@ -169,7 +168,7 @@ body{overflow:hidden;}
 #console-switching.active{display:flex;}
 .console-switching-card{display:flex;flex-direction:column;align-items:center;gap:14px;
   color:var(--color-text-secondary,#a8b0c0);font-size:13px;
-  font-family:var(--font-ui,system-ui,sans-serif);}
+  font-family:var(--vp-font-sans),var(--typography-family-sans);}
 .console-switching-spinner{width:26px;height:26px;border-radius:50%;
   border:2.5px solid var(--color-border,#2a3040);border-top-color:var(--color-accent,#3b82f6);
   animation:console-spin .7s linear infinite;}
@@ -562,7 +561,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // 内 var()) を invalidate するが、 use site で並べる形なら正しく resolve する。
   probe.style.fontFamily = 'var(--vp-font-mono), var(--typography-family-mono)';
   const monoFamily = (getComputedStyle(probe).fontFamily || '').trim()
-    || `'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
+    || `'UDEV Gothic NF', monospace`;
   probe.remove();
 
   // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========
