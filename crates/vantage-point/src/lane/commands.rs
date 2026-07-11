@@ -38,15 +38,21 @@ pub enum Isolation {
 ///
 /// `base`: worktree の分岐元 ref の per-invocation override (co-evolution #2)。
 /// None なら従来通り performer-files.kdl の `base-ref` → origin/HEAD → "main"。
+///
+/// `model`: lane の claude model alias (co-evolution #1)。 Some なら `engine_model` へ永続し、
+/// この lane が spawn される際に Act I claude の `--model` として読まれる。 None なら claude default。
+/// worktree 作成のみ（spawn は SP が別途行う）なので、 ここでは state file を書くだけ。
 pub fn new_performer(
     name: &str,
     branch: &str,
     force: bool,
     isolation: Isolation,
     base: Option<&str>,
+    model: Option<&str>,
 ) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
     let performer_dir = setup_performer(name, branch, &repo_root, force, isolation, base)?;
+    persist_lane_model(&repo_root, name, model)?;
     println!("{}", performer_dir.display());
     Ok(())
 }
@@ -95,6 +101,7 @@ pub fn fork_performer(
     force: bool,
     isolation: Isolation,
     base: Option<&str>,
+    model: Option<&str>,
 ) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
 
@@ -102,6 +109,7 @@ pub fn fork_performer(
     let diff = capture_dirty_diff(&repo_root)?;
 
     let performer_dir = setup_performer(name, branch, &repo_root, force, isolation, base)?;
+    persist_lane_model(&repo_root, name, model)?;
 
     // Apply the captured diff to the performer
     if let Some(patch) = diff {
@@ -490,6 +498,44 @@ fn remove_performer_workspace(repo_root: &Path, performer_dir: &Path) -> Result<
 /// lane = performer 名。
 fn clear_lane_state_files(repo_root: &Path, lane: &str) {
     clear_lane_state_files_in(&crate::config::vp_state_dir(), repo_root, lane);
+}
+
+/// lane の claude model を `engine_model` へ永続する (co-evolution #1、CLI `vp lane new/fork --model`)。
+///
+/// project key は `clear_lane_state_files` / SP `create_performer_orchestrated` と同一
+/// derivation (repo_root basename) — CLI で書いた model を SP spawn 経路が読めるようにする。
+/// None は no-op (= claude default)。 不正な model 名は Err で早期に弾く (worktree は作成済だが
+/// spawn 前に失敗を返す方が silent degrade より良い)。
+///
+/// ⚠️ 既知の制約 (既存 `clear_lane_state_files_in` と共通、根治は project key 正規化 = 別 task):
+/// `find_repo_root()` は worktree 内では worktree 自身を返すため、 **lane worktree の中から**
+/// `vp lane new/fork --model` を実行すると project key が SP 読み手 (conductor project basename)
+/// とズレ、 model が silent に無視される。 conductor root からの実行 (= `vp lane new` の想定運用、
+/// AGENTS.md) では一致する。 high-value 経路 (MCP add_performer / flow_handoff / SP) は
+/// `create_performer_orchestrated` が `addr.project` で直書きするため常に一致する。
+fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
+    persist_lane_model_in(&crate::config::vp_state_dir(), repo_root, lane, model)
+}
+
+/// state base dir 注入版 (テスト用)。
+fn persist_lane_model_in(
+    base: &Path,
+    repo_root: &Path,
+    lane: &str,
+    model: Option<&str>,
+) -> Result<(), String> {
+    let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(());
+    };
+    if !super::engine_model::is_valid_model(model) {
+        return Err(format!("model 名が不正です: {model:?}"));
+    }
+    let project = repo_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    super::engine_model::record_in(base, project, lane, model)
+        .map_err(|e| format!("model 永続に失敗: {e}"))
 }
 
 /// state base dir 注入版 (テスト用)。
@@ -1154,6 +1200,36 @@ mod tests {
         assert_eq!(crate::lane::cc_session::last_in(base, "vp", "feat"), None);
         // 未記録 lane / 二重呼び出しでも panic しない (best-effort 冪等)
         clear_lane_state_files_in(base, &repo_root, "feat");
+    }
+
+    #[test]
+    fn persist_lane_model_writes_engine_model_with_basename_key() {
+        // co-evolution #1: CLI `--model` は SP spawn 経路が読む engine_model へ、
+        // repo basename を project key として書く (key derivation は clear と同一)。
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let repo_root = tmp.path().join("parent").join("vp");
+
+        // None は no-op（未記録のまま = claude default）
+        persist_lane_model_in(base, &repo_root, "feat", None).expect("None は Ok");
+        assert_eq!(crate::lane::engine_model::last_in(base, "vp", "feat"), None);
+
+        // 空白のみも no-op
+        persist_lane_model_in(base, &repo_root, "feat", Some("  ")).expect("空白は Ok");
+        assert_eq!(crate::lane::engine_model::last_in(base, "vp", "feat"), None);
+
+        // 有効な model は engine_model に basename key で書かれる
+        persist_lane_model_in(base, &repo_root, "feat", Some("claude-fable-5")).expect("record");
+        assert_eq!(
+            crate::lane::engine_model::last_in(base, "vp", "feat").as_deref(),
+            Some("claude-fable-5"),
+            "SP spawn が読む project=basename('vp') key に書かれる"
+        );
+
+        // 不正 model は Err（worktree 作成後でも spawn 前に弾く）
+        let err =
+            persist_lane_model_in(base, &repo_root, "feat", Some("opus; rm -rf /")).unwrap_err();
+        assert!(err.contains("不正"), "injection 形は Err: {err}");
     }
 
     // --- test helpers ---

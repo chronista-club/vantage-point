@@ -39,6 +39,11 @@ pub struct AddPerformerParams {
         description = "worktree の分岐元 ref (省略可)。未 push の local branch も可 (conductor の feature branch 上の未 merge 土台を wing に配れる)。省略時は performer-files.kdl の base-ref → origin/HEAD → main。"
     )]
     pub base: Option<String>,
+    /// Optional claude model alias for this lane (co-evolution #1).
+    #[schemars(
+        description = "この lane の claude model alias (省略可、例: 'opus' / 'sonnet' / 'haiku' / 'claude-fable-5')。task 難度に合わせて指定する (機械的作業=sonnet / 中核設計=opus 等)。Act I spawn・respawn・Act II engine が共有。省略時は claude default。"
+    )]
+    pub model: Option<String>,
 }
 
 /// Parameters for the delete_performer tool (VP-124 Phase 1).
@@ -104,6 +109,13 @@ pub struct FlowHandoffParams {
     )]
     #[serde(default)]
     pub base: Option<String>,
+
+    /// Optional claude model alias for this lane (co-evolution #1)
+    #[schemars(
+        description = "worker の claude model alias (省略可、例: 'opus' / 'sonnet' / 'haiku' / 'claude-fable-5')。task 難度に合わせて指定 (機械的=sonnet / 中核設計=opus)。省略時は claude default。"
+    )]
+    #[serde(default)]
+    pub model: Option<String>,
 
     /// Task spec — wire_send body の markdown 仕様 (= worker への指示)
     #[schemars(
@@ -191,6 +203,9 @@ impl VantageMcp {
         }
         if let Some(b) = params.base.as_ref().filter(|s| !s.trim().is_empty()) {
             body["base"] = serde_json::Value::String(b.clone());
+        }
+        if let Some(m) = params.model.as_ref().filter(|s| !s.trim().is_empty()) {
+            body["model"] = serde_json::Value::String(m.clone());
         }
         // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
         // `lane_create` に移管。 lane clone は 数 sec ~ 数 10 sec かかるので outer timeout 60s。
@@ -457,6 +472,9 @@ impl VantageMcp {
         }
         if let Some(b) = params.base.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["base"] = serde_json::Value::String(b.clone());
+        }
+        if let Some(m) = params.model.as_ref().filter(|s| !s.trim().is_empty()) {
+            create_body["model"] = serde_json::Value::String(m.clone());
         }
         let lane_info = self
             .quic_call_with_timeout("lane_create", create_body, Duration::from_secs(60))
