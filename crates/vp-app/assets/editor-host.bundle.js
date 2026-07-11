@@ -3751,29 +3751,6 @@ ${n}`,i.replaceWith(o)}}}}function iGe(e,t){if(t==="markdown")return kn.parse(e)
 #pane-paisley-park .pane-body .pp-content{flex:1;overflow-y:auto;min-height:0;}
 #pane-paisley-park .pane-body .pp-history-strip{flex:0 0 auto;}
 `;RS(["click"]);console.info("[vp-bundle] booting (VP-140 diagnostic)");window.vpBundleStatus={booted:!0,importsResolved:!1,vpFrameSet:!1};(()=>{let e=["log","info","warn","error","debug"];for(let t of e){let r=console[t].bind(console);console[t]=(...n)=>{r(...n);let i=window.ipc;if(i)try{let a=n.map(s=>{if(typeof s=="string")return s;try{return JSON.stringify(s)}catch{return"[unserializable]"}}).join(" ");i.postMessage(JSON.stringify({t:"console",level:t,text:a}))}catch{}}}})();window.addEventListener("error",e=>{console.error("[vp-bundle] window.error",e.message,e.filename,e.lineno,e.error)});window.addEventListener("unhandledrejection",e=>{console.error("[vp-bundle] unhandledrejection",e.reason)});console.info("[vp-bundle] imports resolved");window.vpBundleStatus.importsResolved=!0;var Tqt=["echoes","pp","ge","hp","preview","empty"],wqt=["echoes","pp","ge","hp","preview"],al=new VS;Tqt.forEach(e=>al.registerPane({id:e,kind:e}));xQ.forEach(e=>al.registerScene(e));al.registerScene(TQ);wQ(wqt).forEach(e=>al.registerScene(e));kQ(al,document);CQ(al,window);var kqt={terminal:"echoes",paisley_park:"pp",gold_experience:"ge",hermit_purple:"hp",preview:"preview",empty:"empty"},du=null,IVe=null;function Cqt(e){if(!e||e.endsWith("/conductor")||e.endsWith("/lead"))return null;let t=e.match(/\/(?:performer|wing)\/(.+)$/);return t?t[1]??null:null}var fI=new Map;al.onSceneChange(e=>{du&&e!=="empty"&&fI.set(du,e)});var Sqt=()=>{let e=window,t=e.setActivePane;e.setActivePane=r=>{if(typeof t=="function")try{t(r)}catch(i){console.warn("[frame-engine] legacy setActivePane error",i)}if(!r||!r.kind||r.kind==="empty"){al.applyScene("empty");return}if(r.kind==="terminal"&&r.pane_id){let i=r.pane_id;if(du&&du!==i){let o=al.getCurrentSceneId();o&&o!=="empty"&&fI.set(du,o)}du!==i&&IVe?.(),du=i;let a=fI.get(i)??"lead-focus";al.applyScene(a);let s=Cqt(i);TGe(s),wGe(s);return}let n=kqt[r.kind];if(!n){console.warn("[frame-engine] unknown kind for setActivePane:",r.kind),al.applyScene("empty");return}al.applyScene(`${n}-focus`)}};window.vpLaneScenes=fI;window.vpCanvas={handleMessage:MK};var MVe=document.createElement("style");MVe.textContent=oVe;document.head.appendChild(MVe);var DVe=document.createElement("style");DVe.textContent=`
-/* PP body markdown \u2014 \u30EB\u30A4\u30AB\u7B49\u5E45 \u7D30\u3081 (TLT-RuikaMono-02) \u3092 Canvas \u5168 text \u306B\u9069\u7528 (\u672C\u6587\u3082\u7B49\u5E45)\u3002
-   marked-based revert (2026-05-28): selector \u306F marked \u304C #pp-content \u76F4\u4E0B\u306B\u5410\u304F\u8981\u7D20\u306B\u5411\u3051\u308B
-   (= creoui-md-view \u306E .creo-md wrapper \u306F\u5EC3\u6B62)\u3002
-   WebKit \u3067\u65E5\u672C\u8A9E family \u540D\u5148\u982D\u306F resolve \u4E0D\u5B89\u5B9A\u306A\u305F\u3081\u3001 \u82F1\u5B57 PostScript \u540D (TLT-RuikaMono-02)
-   \u3092\u5148\u982D\u306B\u66F8\u304D\u3001 \u65E5\u672C\u8A9E\u540D (TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12) / family \u540D / monospace \u306B degrade \u3055\u305B\u308B\u3002 */
-#pp-content,
-#pp-content p,
-#pp-content li,
-#pp-content blockquote,
-#pp-content h1,
-#pp-content h2,
-#pp-content h3,
-#pp-content h4,
-#pp-content h5,
-#pp-content h6,
-#pp-content table,
-#pp-content a {
-  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45', monospace;
-}
-#pp-content code,
-#pp-content pre {
-  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45', monospace;
-}
 /* PP body \u306E base font-size \u3092 1 \u6BB5\u4E0A\u3052\u308B (= creoui token chain: base \u2192 l)\u3002
    fallback \u3067 1.125em (= 16\u219218px \u76F8\u5F53)\u3002 #pp-content scope \u5185\u306E\u307F override \u3057
    sidebar \u7B49\u306E\u5225 webview \u306B\u306F\u6CE2\u53CA\u3057\u306A\u3044\u3002 marked-based revert (#477) \u3067 .creo-md
@@ -3785,7 +3762,7 @@ ${n}`,i.replaceWith(o)}}}}function iGe(e,t){if(t==="markdown")return kn.parse(e)
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
 #pp-content .creo-md-mermaid-error {
-  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45', monospace;
+  font-family: var(--vp-font-mono),var(--typography-family-mono);
   color: var(--color-text-secondary, #c66);
   background: var(--color-surface-bg-subtle, #1a1a22);
   padding: 8px; border-radius: 4px; white-space: pre-wrap;

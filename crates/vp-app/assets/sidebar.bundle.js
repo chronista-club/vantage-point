@@ -161,9 +161,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
    mono \u5316\u3057\u3066\u3044\u305F\u3002 \u30B5\u30A4\u30C9\u30D0\u30FC\u3092 sans \u5168\u9762\u5316\u3057\u3064\u3064 pane header \u3078\u306E\u6CE2\u53CA\u3092\u65AD\u3064\u3002 */
 #sidebar-root{height:100%;
   background:var(--color-surface-bg-subtle);color:var(--color-text-primary);
-  /* \u30B5\u30A4\u30C9\u30D0\u30FC\u5168\u9762 sans\u3002 var() 2 \u6BB5 fallback \u306F vp-tokens.css \u898F\u7D04 (WKWebView \u304C var()
-     chain \u3092 invalidate \u3059\u308B\u305F\u3081 use site \u3067\u4E26\u3079\u308B)\u3002 Mizolet \u4E0D\u5728\u3067\u3082 creo sans stack
-     (-apple-system \u7B49) \u306B\u7E2E\u9000\u3057 proper sans \u3067\u63CF\u753B\u3055\u308C\u308B\u3002 */
+  /* \u30B5\u30A4\u30C9\u30D0\u30FC\u5168\u9762 sans (font zero-start: --vp-font-sans = 'Gen Interface JP')\u3002 var() 2 \u6BB5
+     fallback \u306F vp-tokens.css \u898F\u7D04 (WKWebView \u304C var() chain \u3092 invalidate \u3059\u308B\u305F\u3081 use site
+     \u3067\u4E26\u3079\u308B)\u3002 \u672A install \u74B0\u5883\u3067\u3082 creo sans stack \u306B\u7E2E\u9000\u3057 proper sans \u3067\u63CF\u753B\u3055\u308C\u308B\u3002 */
   font-family:var(--vp-font-sans),var(--typography-family-sans);
   /* sidebar \u5185\u306E font-size \u306F\u5168\u3066 --sb-text-* 4 token \u3092\u53C2\u7167\u3059\u308B (glyph \u4E00\u70B9\u7269 9px/14px \u3092
      \u9664\u304F)\u3002 \u5B9A\u7FA9\u306F\u4E0A\u306E :root \u30D6\u30ED\u30C3\u30AF (Editor Mode \u306E\u66F8\u304D\u8FBC\u307F\u5148\u3068\u63C3\u3048\u308B\u305F\u3081)\u3002 */

@@ -183,9 +183,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
    mono 化していた。 サイドバーを sans 全面化しつつ pane header への波及を断つ。 */
 #sidebar-root{height:100%;
   background:var(--color-surface-bg-subtle);color:var(--color-text-primary);
-  /* サイドバー全面 sans。 var() 2 段 fallback は vp-tokens.css 規約 (WKWebView が var()
-     chain を invalidate するため use site で並べる)。 Mizolet 不在でも creo sans stack
-     (-apple-system 等) に縮退し proper sans で描画される。 */
+  /* サイドバー全面 sans (font zero-start: --vp-font-sans = 'Gen Interface JP')。 var() 2 段
+     fallback は vp-tokens.css 規約 (WKWebView が var() chain を invalidate するため use site
+     で並べる)。 未 install 環境でも creo sans stack に縮退し proper sans で描画される。 */
   font-family:var(--vp-font-sans),var(--typography-family-sans);
   /* sidebar 内の font-size は全て --sb-text-* 4 token を参照する (glyph 一点物 9px/14px を
      除く)。 定義は上の :root ブロック (Editor Mode の書き込み先と揃えるため)。 */
