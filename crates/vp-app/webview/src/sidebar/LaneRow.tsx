@@ -44,6 +44,25 @@ function PerformerMeta(props: { ws: PerformerStatusWire }) {
 	);
 }
 
+/**
+ * connector class (= control surrender FSM の投影) から state 文字を導出する。
+ * conn-auto/run = working、 conn-dead = idle、 conn-hitl = needs you。
+ * conn-conductor (root) は state を持たない (spine の頭) ので null。
+ */
+function stateLabel(connectorClass: string | undefined): string | null {
+	switch (connectorClass) {
+		case "conn-auto":
+		case "conn-run":
+			return "working";
+		case "conn-dead":
+			return "idle";
+		case "conn-hitl":
+			return "needs you";
+		default:
+			return null;
+	}
+}
+
 export function LaneRow(props: {
 	lane: LaneInfo;
 	projectPath: string;
@@ -180,8 +199,13 @@ export function LaneRow(props: {
 				{sessionTitle() ??
 					(isPerformer() ? laneLabel(props.lane) : props.lane.address.project)}
 			</span>
-			{/* 右端ブロック: ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
+			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
 			<span class="vp-lane-right">
+				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
+				    connectorClass (laneConnector 導出) — 二重導出しない。 root (conductor) は出さない。 */}
+				<Show when={stateLabel(props.connectorClass)}>
+					<span class="vp-lane-state">{stateLabel(props.connectorClass)}</span>
+				</Show>
 				<Show when={isPerformer() && props.lane.performer_status}>
 					<PerformerMeta ws={props.lane.performer_status!} />
 				</Show>
