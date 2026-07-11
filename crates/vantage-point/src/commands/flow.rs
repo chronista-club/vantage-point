@@ -391,6 +391,7 @@ async fn progress(format: &str) -> Result<()> {
             latest_view.as_ref(),
             performer_status_view,
             &agent_addr,
+            None, // needs_user pending は次 step で接続 (awaiting_user 未使用のうちは None)
         );
 
         performers.push(serde_json::json!({
