@@ -1363,6 +1363,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 performer_status: None,
                 cc_session_id: None,
+                flow_state: None,
             }
         };
 

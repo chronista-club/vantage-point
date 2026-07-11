@@ -117,6 +117,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             cwd: entry.path,
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         });
     }
 
@@ -395,6 +396,7 @@ pub(crate) async fn create_performer_orchestrated(
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
         cc_session_id: None,
+        flow_state: None,
     };
 
     {

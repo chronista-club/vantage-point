@@ -1602,6 +1602,7 @@ mod tests {
                 cwd: cwd.clone(),
                 performer_status: None,
                 cc_session_id: None,
+                flow_state: None,
             });
             pool.insert_pty_slot(addr.clone(), slot, rx);
         }
@@ -1812,6 +1813,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            flow_state: None,
         });
         addr
     }
