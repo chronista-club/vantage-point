@@ -252,6 +252,12 @@ pub struct LaneInfo {
     /// 本 field で gate する（#683 再演防止）。
     #[serde(default = "default_console_mode")]
     pub console_mode: String,
+    /// FSM 投影 (2026-07-11): dev-flow FSM の現在 state。 "idle" | "working" | "hitl_pending" |
+    /// "awaiting_user" | "completed" | "stuck"。 TheWorld が snapshot 送信時に enrich する
+    /// (source = `vp flow progress` と同一判定)。 欠落 (旧 daemon) = None → sidebar は
+    /// pid heuristic に fallback。 conductor lane は常に None (dev-flow FSM の対象外)。
+    #[serde(default)]
+    pub flow_state: Option<String>,
 }
 
 /// LaneInfo.console_mode の serde default（旧 SP からの wire に field が無い時）。

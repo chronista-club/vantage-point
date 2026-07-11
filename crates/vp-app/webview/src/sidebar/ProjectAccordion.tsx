@@ -22,7 +22,7 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
-import { laneAddressKey, isPerformerLane } from "./lane";
+import { laneAddressKey, laneConnector } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
 import { LaneRow } from "./LaneRow";
 import { AddPerformer } from "./AddPerformer";
@@ -38,31 +38,13 @@ import {
 } from "./dnd";
 
 /**
- * Lane の tree connector の状態 class を導出する (Light Grid state 言語の FSM 投影)。
+ * Lane の tree connector class (FSM 投影 2026-07-11: 実体は lane.ts の純関数 `laneConnector`)。
  *
- * 描画は Shell.tsx の `.vp-lane-connector` (CSS pseudo-element) が担い、
- * ここは意味論だけを class で返す。 ツリー構造 (└ 相当) は `connectorLast` prop で伝える。
- *
- * - conductor: spine の頭 (頭石)
- * - working (conn-auto): engine が実在して自走中 = solid cyan tap + node
- * - needs-you (conn-hitl): engine 実在 + awaiting_input = magenta diamond
- * - idle (conn-dead): engine 不在 = No current (極薄破線 + 中空 node)
- *
- * ⚠️ working 判定に isLaneAlive を使わない (conductor 指摘 019f5104): isLaneAlive は
- * 「chat lane は engine-less (pid=null) でも生存扱い」という dim 表示 / context menu 用の
- * 述語で、 これを working に流用すると常設 chat lane が全部 WORKING に化ける。
- * ここでは「engine の実在 = pid」を一次 signal にする。 真の flow_state (flow progress)
- * は wire (LaneInfo) に未投影 — FSM 投影 task (mem_1Ccv39yTsb9knkjucKCP3Z) が server 側
- * field を足したらそちらへ差し替える。
+ * 一次 source = server 側 flow_state (World が wire store から derive)、 fallback = pid
+ * heuristic。 OSC 99 の awaiting_input (store 依存) だけここで束ねて渡す。
  */
-function laneConnector(lane: LaneInfo): string {
-	if (!isPerformerLane(lane)) {
-		return "conn-conductor"; // conductor は幹 = spine の頭
-	}
-	if (lane.pid == null) return "conn-dead"; // engine 不在 = idle (No current)
-	const addr = laneAddressKey(lane);
-	if (sidebar.awaiting_input[addr]) return "conn-hitl"; // 人待ち = needs-you
-	return "conn-auto"; // engine 実在 & 非 awaiting = working
+function connectorFor(lane: LaneInfo): string {
+	return laneConnector(lane, !!sidebar.awaiting_input[laneAddressKey(lane)]);
 }
 
 /**
@@ -120,7 +102,7 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 	let prevWorking = 0;
 	createEffect(() => {
 		const working = lanes().filter(
-			(l) => laneConnector(l) === "conn-auto",
+			(l) => connectorFor(l) === "conn-auto",
 		).length;
 		if (working > prevWorking) {
 			// 連続遷移でも再発火するよう一度 false に落としてから次 frame で立てる。
@@ -353,7 +335,7 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 									<LaneRow
 										lane={lane}
 										projectPath={props.proc.path}
-										connectorClass={laneConnector(lane)}
+										connectorClass={connectorFor(lane)}
 										connectorLast={i() === lanes().length - 1}
 									/>
 								)}
