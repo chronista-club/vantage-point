@@ -163,6 +163,10 @@ pub struct CreateLaneReq {
     /// `vp lane new <name> <branch>` を SP 内で実行して performer dir を作成、 そこに Lane を spawn する。
     #[serde(default)]
     pub branch: Option<String>,
+    /// worktree の分岐元 ref の override (co-evolution #2)。未 push の local branch も可。
+    /// 省略時は performer-files.kdl の base-ref → origin/HEAD → main。
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 /// Performer Lane create core orchestration (Phase 3-A: lane clone + PtySlot spawn)。
@@ -250,6 +254,7 @@ pub(crate) async fn create_performer_orchestrated(
         let project_dir = state.project_dir.clone();
         let name = req.name.clone();
         let branch_for_log = branch.clone();
+        let base = req.base.clone().filter(|s| !s.trim().is_empty());
         let result = tokio::task::spawn_blocking(move || {
             crate::lane::commands::new_performer_in(
                 std::path::Path::new(&project_dir),
@@ -257,6 +262,7 @@ pub(crate) async fn create_performer_orchestrated(
                 &branch,
                 false,                                      // force=false
                 crate::lane::commands::Isolation::Worktree, // SP は worktree default
+                base.as_deref(),
             )
         })
         .await
@@ -781,6 +787,7 @@ mod core_tests {
             stand: None,
             cwd: None,
             branch: None,
+            base: None,
         }
     }
 

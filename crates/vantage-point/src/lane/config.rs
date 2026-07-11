@@ -89,7 +89,7 @@ struct RawConfig {
 }
 
 /// Parsed performer config
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PerformerConfig {
     pub symlinks: Vec<String>,
     pub copies: Vec<String>,

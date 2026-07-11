@@ -991,6 +991,8 @@ impl ProcessManagerCapability {
                     &branch,
                     false,
                     crate::lane::commands::Isolation::Worktree,
+                    // daemon ground provision (GUI 経由) は base override 未対応 = 従来挙動
+                    None,
                 )
             })
             .await

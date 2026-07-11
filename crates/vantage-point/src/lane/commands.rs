@@ -35,14 +35,18 @@ pub enum Isolation {
 }
 
 /// Create a new performer environment
+///
+/// `base`: worktree の分岐元 ref の per-invocation override (co-evolution #2)。
+/// None なら従来通り performer-files.kdl の `base-ref` → origin/HEAD → "main"。
 pub fn new_performer(
     name: &str,
     branch: &str,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
 ) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
-    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation)?;
+    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation, base)?;
     println!("{}", performer_dir.display());
     Ok(())
 }
@@ -55,8 +59,9 @@ pub fn new_performer_in(
     branch: &str,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
 ) -> Result<PathBuf, String> {
-    setup_performer(name, branch, repo_root, force, isolation)
+    setup_performer(name, branch, repo_root, force, isolation, base)
 }
 
 /// Phase 4-X: SP-friendly remove。 repo_root を明示的に受け取り、 project-local 新 path で
@@ -89,13 +94,14 @@ pub fn fork_performer(
     branch: &str,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
 ) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
 
     // Capture dirty state as a diff BEFORE creating the performer
     let diff = capture_dirty_diff(&repo_root)?;
 
-    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation)?;
+    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation, base)?;
 
     // Apply the captured diff to the performer
     if let Some(patch) = diff {
@@ -121,6 +127,7 @@ fn setup_performer(
     repo_root: &Path,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
 ) -> Result<PathBuf, String> {
     config::validate_performer_name(name)?;
 
@@ -151,8 +158,18 @@ fn setup_performer(
     // provisioning: worktree (default) は branch も atomic に作る。 clone は内部で checkout -b。
     // 以降の symlink/copy/post-setup は両者で共通。
     match isolation {
-        Isolation::Worktree => provision_worktree(repo_root, &performer_dir, branch, &cfg)?,
-        Isolation::Clone => provision_clone(repo_root, &performer_dir, branch)?,
+        Isolation::Worktree => provision_worktree(repo_root, &performer_dir, branch, &cfg, base)?,
+        Isolation::Clone => {
+            // clone は conductor HEAD の depth-1 複製 (= 任意 ref からの分岐に非対応)。
+            // silent に無視せず明示 error (co-evolution #2 は worktree が対象)。
+            if base.is_some_and(|b| !b.trim().is_empty()) {
+                return Err(
+                    "--base は isolation=worktree のみ対応 (clone は conductor HEAD の複製)"
+                        .to_string(),
+                );
+            }
+            provision_clone(repo_root, &performer_dir, branch)?
+        }
     }
 
     // Symlinks
@@ -236,8 +253,9 @@ fn provision_worktree(
     performer_dir: &Path,
     branch: &str,
     cfg: &config::PerformerConfig,
+    base_override: Option<&str>,
 ) -> Result<(), String> {
-    let base = resolve_base_ref(repo_root, cfg);
+    let base = resolve_base_ref(repo_root, cfg, base_override);
     // base を best-effort fetch (= offline でも local ref で worktree add は進める)。
     if let Err(e) = run_git_in(repo_root, &["fetch", "origin", &base]) {
         eprintln!("⚠ fetch origin {base} 失敗 (続行、 local ref で worktree 作成): {e}");
@@ -267,8 +285,23 @@ fn provision_clone(repo_root: &Path, performer_dir: &Path, branch: &str) -> Resu
 }
 
 /// worktree lane の base branch (= dev trunk) を解決。
-/// 優先順: performer-files.kdl の `base-ref` → [`resolve_default_branch`] (origin/HEAD) → "main"。
-fn resolve_base_ref(repo_root: &Path, cfg: &config::PerformerConfig) -> String {
+/// 優先順: per-invocation override (`--base` / API `base`、co-evolution #2) →
+/// performer-files.kdl の `base-ref` → [`resolve_default_branch`] (origin/HEAD) → "main"。
+///
+/// override は未 push の local branch でもよい ([`resolve_start_point`] が
+/// `origin/<base>` → `<base>` の順で probe するため、conductor の feature branch 上の
+/// 未 merge 土台を wing に配れる)。
+fn resolve_base_ref(
+    repo_root: &Path,
+    cfg: &config::PerformerConfig,
+    base_override: Option<&str>,
+) -> String {
+    if let Some(b) = base_override {
+        let b = b.trim();
+        if !b.is_empty() {
+            return b.to_string();
+        }
+    }
     if let Some(b) = &cfg.base_ref
         && !b.trim().is_empty()
     {
@@ -1562,8 +1595,15 @@ mod tests {
     #[test]
     fn setup_performer_worktree_creates_shared_worktree() {
         let (base, conductor) = setup_worktree_fixture("create");
-        let performer =
-            setup_performer("feat", "mako/feat", &conductor, false, Isolation::Worktree).unwrap();
+        let performer = setup_performer(
+            "feat",
+            "mako/feat",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap();
         // worktree marker: .git は file (gitdir pointer)、clone なら dir
         assert!(
             performer.join(".git").is_file(),
@@ -1586,8 +1626,15 @@ mod tests {
     #[test]
     fn remove_performer_workspace_worktree_keeps_branch() {
         let (base, conductor) = setup_worktree_fixture("remove-keeps-branch");
-        let performer =
-            setup_performer("rm", "mako/rm", &conductor, false, Isolation::Worktree).unwrap();
+        let performer = setup_performer(
+            "rm",
+            "mako/rm",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap();
         assert!(performer.exists());
 
         remove_performer_workspace(&conductor, &performer).unwrap();
@@ -1621,12 +1668,110 @@ mod tests {
     fn setup_performer_worktree_duplicate_branch_errors() {
         // F3: 同名 branch で 2 つ目の worktree を作ろうとすると actionable error
         let (base, conductor) = setup_worktree_fixture("dup-branch");
-        setup_performer("first", "mako/dup", &conductor, false, Isolation::Worktree).unwrap();
-        let err = setup_performer("second", "mako/dup", &conductor, false, Isolation::Worktree)
-            .unwrap_err();
+        setup_performer(
+            "first",
+            "mako/dup",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap();
+        let err = setup_performer(
+            "second",
+            "mako/dup",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap_err();
         assert!(
             err.contains("既に存在") || err.contains("使用中") || err.contains("mako/dup"),
             "branch 衝突は分かりやすい error を返すべき: {err}"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn setup_performer_worktree_base_override_uses_local_branch() {
+        // co-evolution #2 の dogfood シナリオ: conductor の未 push feature branch を
+        // base に wing を切る (origin に無い ref でも resolve_start_point の local probe で通る)。
+        let (base, conductor) = setup_worktree_fixture("base-override");
+        Cmd::new("git")
+            .args(["checkout", "-b", "mako/feature-base"])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+        fs::write(conductor.join("feature.txt"), "土台 ADT\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "feature base"])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["checkout", "main"])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+
+        let performer = setup_performer(
+            "wing",
+            "mako/wing",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            Some("mako/feature-base"),
+        )
+        .unwrap();
+        assert!(
+            performer.join("feature.txt").exists(),
+            "wing は feature branch の内容 (未 merge 土台) から分岐すべき"
+        );
+        assert_eq!(get_branch(&performer).as_deref(), Some("mako/wing"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_base_ref_priority_override_then_kdl() {
+        // 優先順: override → performer-files.kdl base-ref → origin/HEAD。空白 override は無視。
+        let (base, conductor) = setup_worktree_fixture("base-priority");
+        let cfg = config::PerformerConfig {
+            base_ref: Some("kdl-base".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_base_ref(&conductor, &cfg, Some("cli-base")),
+            "cli-base"
+        );
+        assert_eq!(resolve_base_ref(&conductor, &cfg, Some("  ")), "kdl-base");
+        assert_eq!(resolve_base_ref(&conductor, &cfg, None), "kdl-base");
+        let no_kdl = config::PerformerConfig::default();
+        assert_eq!(resolve_base_ref(&conductor, &no_kdl, None), "main");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn setup_performer_clone_with_base_errors() {
+        // clone isolation は conductor HEAD の depth-1 複製で base 分岐に非対応 → 明示 error
+        let (base, conductor) = setup_worktree_fixture("clone-base");
+        let err = setup_performer(
+            "cl",
+            "mako/cl",
+            &conductor,
+            false,
+            Isolation::Clone,
+            Some("main"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("worktree"),
+            "clone + base は worktree のみ対応の error を返すべき: {err}"
         );
         let _ = fs::remove_dir_all(&base);
     }

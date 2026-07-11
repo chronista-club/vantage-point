@@ -814,7 +814,7 @@ async fn handle_lane_restart(
 
 /// lanes portless (doc 27 §3.4.5): Lane create。 旧 SP HTTP `POST /api/lanes` を process-proxy ask に
 /// 移管。 core の `create_performer_orchestrated` (lane clone + PtySlot spawn) を呼ぶ薄い adapter。
-/// payload は `CreateLaneReq` 互換 JSON (kind/name/stand?/cwd?/branch?)。 成功は LaneInfo JSON、
+/// payload は `CreateLaneReq` 互換 JSON (kind/name/stand?/cwd?/branch?/base?)。 成功は LaneInfo JSON、
 /// 失敗は core が返す String error (旧 HTTP の CONFLICT="already exists" 等を保持)。
 async fn handle_lane_create(
     state: &Arc<AppState>,
