@@ -229,10 +229,11 @@ impl ProjectsFile {
     /// `vp projects add`)。
     pub fn sync() -> Result<SyncOutcome> {
         let mut pf = ProjectsFile::load()?;
-        let mut outcome = SyncOutcome::default();
 
         // ghost 除去: path が実在しない (ディレクトリでない) entry を落とす。
-        outcome.removed = prune_ghosts_with(&mut pf, |path| std::path::Path::new(path).is_dir());
+        let outcome = SyncOutcome {
+            removed: prune_ghosts_with(&mut pf, |path| std::path::Path::new(path).is_dir()),
+        };
 
         if outcome.changed() {
             pf.save()?;
