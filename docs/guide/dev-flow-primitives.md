@@ -134,21 +134,24 @@ emoji label の意味:
 | `⏸ idle` | `idle` | wire activity 一切なし (= 新規 performer) |
 | `🤖 auto-running` | `working` | conductor が control 手放し中、 performer 自走 |
 | `🤝 hitl-pending` | `hitl_pending` | performer が question 投げて conductor reply 待ち |
+| `🙋 needs-you` | `awaiting_user` | performer が needs_user 投げて **ユーザ本人**の回答待ち (未 ack) |
 | `✅ completed` | `completed` | performer が complete 報告済 |
 | `⚠ stuck` | `stuck` | conductor 指示後 dirty 残り commit 無し |
 
 ---
 
-## 3. 5-state FSM (= control surrender model)
+## 3. 6-state FSM (= control surrender model)
 
-各 performer の `flow_state` は **2 つの input から derive** される (= store なし、 pure derivation):
+各 performer の `flow_state` は **3 つの input から derive** される (= store なし、 pure derivation):
 
 1. **最新 wire activity** (= `wire_latest_msg(agent_addr)` の direction + `body.kind`)
 2. **performer_status** (= `dirty_count` / `last_commit` から `dirty` / `has_commit` を抽出)
+3. **未 ack の needs_user wire** (= `wire/needs-user-pending`、 ack 台帳ベースの述語)
 
 cascade match (= Rust の match 表現):
 
 ```rust
+if pending_needs_user => AwaitingUser  // 未 ack needs_user は cascade より優先 (ack 台帳が SSOT)
 match (latest_msg, dirty, has_commit) {
     (None, _, _) => Idle,                                                       // wire 無し
     (Some(m), _, _) if m.from == conductor && m.kind == "task"       => Working,      // 初手 handoff
@@ -170,7 +173,8 @@ state ∈ {Working, Completed} && (last_msg.from == performer || last_msg is Non
 | kind | direction | 意味 |
 |---|---|---|
 | `task` | conductor → performer | 初手 handoff spec |
-| `question` | performer → conductor | 質問 / decision 依頼 |
+| `question` | performer → conductor | 質問 / decision 依頼 (= conductor が捌ける相談) |
+| `needs_user` | performer → conductor | **ユーザ本人**の意見が要る相談 (ack まで `awaiting_user`) |
 | `ack` | performer → conductor | 受領 / progress |
 | `decision` | performer → conductor | 自己判断表明 |
 | `approve` / `modify` / `clarify` | conductor → performer | reply |
@@ -178,6 +182,29 @@ state ∈ {Working, Completed} && (last_msg.from == performer || last_msg is Non
 | `request` | performer → conductor | action 依頼 (= dogfood 等) |
 
 wmsg を送るときは `body.kind` に上記のいずれかを入れる (= FSM derive が正しく走るため)。 規約は **convention であり enforcement ではない** — 不明な kind は fallback で `Working` に倒れる。
+
+### needs_user 規約 (= awaiting_user の入力、 2026-07-11)
+
+performer が「conductor では捌けない、 **ユーザ本人**の意見が要る」相談を投げる時の規約:
+
+- `body.kind = "needs_user"` + `body.category = "command"` で conductor 宛に `wire_send`
+  (command なので ack されるまで delivery loop が re-nudge する)。
+- 受信側 (conductor) は **ユーザの回答を performer に relay してから** `wire_ack` する。
+  ack した瞬間に `awaiting_user` が解消される (= ack 台帳が SSOT)。
+- 未 ack の needs_user が存在する間は、 performer が追加の wire (ack / decision 等) を
+  送っても `awaiting_user` のまま (= latest cascade より優先)。
+- `question` との使い分け: conductor が自分で判断して返せる相談は `question` (= `hitl_pending`)、
+  ユーザの好み・意思決定が要る相談だけ `needs_user`。 sidebar の needs-you 表示
+  (magenta diamond) は `awaiting_user` にのみ接続される — 乱発すると盤面が常時光って
+  signal が死ぬので、 本当にユーザが要る時だけ使う。
+
+### sidebar への投影 (= LaneInfo.flow_state、 2026-07-11)
+
+TheWorld が vp-app へ lane snapshot を送る直前に、 performer の `LaneInfo` へ `flow_state` を
+enrich する (= `vp flow progress` と同一判定、 送信時 derive で registry / db には保存しない)。
+wire send/ack の成功が関与 project の snapshot 再 push をトリガするため、 flow_state の変化は
+polling 無しで sidebar に届く。 vp-app 側は `flow_state` を state 言語 (working / idle /
+needs-you) の一次 source とし、 field 欠落時 (旧 daemon) は pid heuristic に fallback する。
 
 ---
 
@@ -205,6 +232,7 @@ supporting method (= cursor 不触り、 read-only、 World "wire" channel):
 
 - `wire/unread-count` — `{agent}` → `{total, by_thread}`
 - `wire/latest-msg` — `{agent}` → `{message}` (= 最新 1 件 or null)
+- `wire/needs-user-pending` — `{agent}` → `{message}` (= agent **発**の未 ack needs_user 最新 1 件 or null)
 
 ---
 

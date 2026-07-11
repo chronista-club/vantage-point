@@ -34,6 +34,17 @@ lane の一覧は git-native に取得する（manifest ファイルは存在し
 - `git worktree list` — live registry（worktree lane の全列挙）
 - `git branch --list 'mako/*'` — lane branch の列挙
 
+## wire 規約（inter-agent messaging）
+
+wire message の `body.kind` は dev-flow FSM の入力になる（taxonomy と FSM の詳細 =
+`docs/guide/dev-flow-primitives.md` §3）。特に:
+
+- **`needs_user`**: 「conductor では捌けない、**ユーザ本人**の意見が要る」相談を投げる時は
+  `body.kind = "needs_user"` + `body.category = "command"` で conductor 宛に送る。
+  受信側は**ユーザの回答を relay してから** `wire_ack` する — 未 ack の間、その performer は
+  `awaiting_user`（sidebar の needs-you 表示）のまま。conductor が自分で判断できる相談は
+  `question` を使い、needs_user は乱発しない（needs-you signal の希少性を守る）。
+
 ### GitNexus との読み替え
 
 下記 GitNexus block の `detect_changes` 例にある `base_ref: "main"` は、この repo では **`base_ref: "nightly"`** に読み替えること（main は公開 release 専用で dev からの diff が膨らむ）。
