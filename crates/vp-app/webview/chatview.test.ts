@@ -193,3 +193,111 @@ describe('transcript replay — Act II replay-on-attach', () => {
     expect(s.contextWindow).toBe(200000)
   })
 })
+
+/**
+ * 生成中（in-flight）の replay 着地。
+ *
+ * claude は message を完了時にしか transcript へ flush しない。assistant が生成している最中に
+ * WS/QUIC が瞬断して demand が再発火すると、replay は「生成中 message の直前まで」しか
+ * disk から復元できない。echoes topic は非 retained なので、瞬断前に届いていた delta は
+ * どこにも残っていない。
+ *
+ * そこで backend（EchoesAgentHost）は未 commit の増分を in-flight tail として保持し、
+ * replay 列を `transcript(commit 済み) ++ tail(未 commit)` として送る。以下はその契約を
+ * frontend 側から固定するテスト。
+ */
+describe('replay が in-flight stream の途中に着地した場合', () => {
+  /** 瞬断前に GUI が既に描いていた状態（committed 部 + 生成中の途中まで）。 */
+  function liveStateBeforeBlip() {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'user_message', text: '直して' })
+    foldInto(s, { kind: 'tool_call', id: 't1', name: 'Edit', input: {} })
+    foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' })
+    foldInto(s, { kind: 'message_chunk', text: '直しま' })
+    return s
+  }
+
+  /** backend が瞬断後に送る replay 列。tail が生成中 message の現在までを運ぶ。 */
+  const replayWithTail: EchoesEvent[] = [
+    { kind: 'replay_start' },
+    // --- transcript（commit 済み） ---
+    { kind: 'user_message', text: '直して' },
+    { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
+    { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+    // --- in-flight tail（disk にまだ無い増分） ---
+    { kind: 'message_chunk', text: '直しま' },
+  ]
+
+  it('tail が生成中の assistant バブルを復元する（瞬断前と同じ state に収束）', () => {
+    const before = liveStateBeforeBlip()
+    const restored = fold(replayWithTail)
+    expect(restored.items).toEqual(before.items)
+  })
+
+  it('復帰後の message_chunk は既存バブルに繋がる（文の途中で新バブルを立てない）', () => {
+    const s = fold(replayWithTail)
+    foldInto(s, { kind: 'message_chunk', text: 'した' })
+
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'tool', 'assistant'])
+    const last = s.items[s.items.length - 1]
+    expect(last.kind === 'assistant' && last.text).toBe('直しました')
+  })
+
+  it('tail が無いまま chunk が続くと文が割れる（= tail が防いでいる退行の再現）', () => {
+    // tail を落とした replay 列（PR #699 時点の挙動）。
+    const withoutTail = replayWithTail.filter((e) => e.kind !== 'message_chunk')
+    const s = fold(withoutTail)
+    foldInto(s, { kind: 'message_chunk', text: 'した' })
+
+    const last = s.items[s.items.length - 1]
+    expect(last.kind === 'assistant' && last.text).toBe('した') // 「直しま」が失われる
+  })
+
+  it('tail の message_chunk が streaming を立て直す（カーソルが戻る）', () => {
+    const s = fold(replayWithTail)
+    expect(s.streaming).toBe(true)
+  })
+
+  it('生成中の thinking も tail 経由なら復元される（commit 済み thinking は disk に残らない）', () => {
+    const s = fold([
+      { kind: 'replay_start' },
+      { kind: 'user_message', text: 'やって' },
+      // tail: 生成中の thinking 増分
+      { kind: 'thought_chunk', text: '考え' },
+      { kind: 'thought_chunk', text: '中' },
+    ])
+    expect(s.items).toEqual([
+      { kind: 'user', text: 'やって' },
+      { kind: 'thinking', text: '考え中' },
+    ])
+    expect(s.streaming).toBe(true)
+  })
+
+  it('tail 込みの replay も冪等（demand が何度再発火しても二重化しない）', () => {
+    const once = fold(replayWithTail)
+    const twice = fold([...replayWithTail, ...replayWithTail])
+    expect(twice.items).toEqual(once.items)
+  })
+
+  it('replay 直後に届く tool_call_update も id で結ばれる（tool 実行中に着地）', () => {
+    // 瞬断時に Edit が実行中 → transcript には tool_call だけが載っている。
+    const s = fold([
+      { kind: 'replay_start' },
+      { kind: 'user_message', text: '直して' },
+      { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
+    ])
+    foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' })
+
+    expect(s.items[1]).toEqual({ kind: 'tool', id: 't1', name: 'Edit', done: true, error: false })
+  })
+
+  it('孤児 tool_call_update は既存 item を壊さない（backend 不変条件の最終防衛線）', () => {
+    const s = fold([
+      { kind: 'replay_start' },
+      { kind: 'message_chunk', text: '本文' },
+      // 結び先の tool_call が無い update（起きたら backend のバグ）
+      { kind: 'tool_call_update', tool_use_id: 'ghost', content: 'x' },
+    ])
+    expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
+  })
+})

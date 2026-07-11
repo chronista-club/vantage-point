@@ -796,6 +796,24 @@ impl LanePool {
         self.lanes.get(addr).map(|i| i.console_mode)
     }
 
+    /// chat engine の in-flight tail（disk にまだ載っていない増分 + commit 世代）。
+    ///
+    /// engine 未起動（chat-idle / Act I）は None = 継ぐものが無い。
+    /// transcript replay がこれを後ろに継いで「生成中の message」まで復元する
+    /// （[`crate::echoes::host`] の module doc）。
+    pub fn chat_in_flight(&self, addr: &LaneAddress) -> Option<crate::echoes::InFlight> {
+        self.chat_engines
+            .get(addr)
+            .map(|slot| slot.host.in_flight())
+    }
+
+    /// chat engine の commit 世代のみ（transcript 読み後の検算用）。
+    pub fn chat_commit_seq(&self, addr: &LaneAddress) -> Option<u64> {
+        self.chat_engines
+            .get(addr)
+            .map(|slot| slot.host.commit_seq())
+    }
+
     /// Console のエンジンモードを切り替える（doc 33 §2 の状態機械）。
     ///
     /// - → Chat: PtySlot + TermAttach を drop（claude TUI 停止）→ mode 永続 → engine-less

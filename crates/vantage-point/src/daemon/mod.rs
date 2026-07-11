@@ -4,6 +4,7 @@
 //! Unison Protocol 経由で中継する。
 
 pub mod client;
+pub mod dialer;
 pub mod event_log;
 pub mod hub_client;
 pub mod process;

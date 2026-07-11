@@ -1386,9 +1386,9 @@ checksum = "cb6b41dc066e3a08b96b5b2201b6fc4f033170fabf7cb389c4904345132275ec"
 
 [[package]]
 name = "club-unison"
-version = "1.5.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86cae03c3fa6f58329f692da6ffe0b6d10a1e9d659897c1dbd9c7f0e264722bf"
+checksum = "f147d1bb61fa0ce27e6257d98fc6009174b3a5c014b3fe040dbdd56657989aa4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -9188,7 +9188,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vantage-point"
-version = "0.41.0"
+version = "0.42.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -9282,7 +9282,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vp-app"
-version = "0.41.0"
+version = "0.42.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -9325,7 +9325,7 @@ dependencies = [
 
 [[package]]
 name = "vp-cli"
-version = "0.41.0"
+version = "0.42.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -9342,7 +9342,7 @@ dependencies = [
 
 [[package]]
 name = "vp-nexus"
-version = "0.41.0"
+version = "0.42.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -9366,7 +9366,7 @@ dependencies = [
 
 [[package]]
 name = "vp-paths"
-version = "0.41.0"
+version = "0.42.0"
 dependencies = [
  "dirs",
  "tracing",

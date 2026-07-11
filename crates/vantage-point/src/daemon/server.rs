@@ -821,6 +821,24 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     let server =
         ProtocolServer::with_identity("vp-daemon", env!("CARGO_PKG_VERSION"), "vantage-point");
 
+    // VP × unison-mcp Phase 1: daemon channel の wire protocol を KDL で記述し、unison.discovery
+    // channel を有効化する。無改造の unison-mcp がこの KDL を runtime fetch し、registry / events の
+    // typed tool（`unison_<channel>_<method>`）を合成できる（= VP 開発のデバッグ機）。KDL は記述的
+    // スキーマで、request 名 = wire の msg.method と文字列一致する。SSOT: schema/vp-daemon.kdl、
+    // drift 検出は tests/vp_daemon_kdl.rs。start_daemon_server は () 返しのため `?` は使えず、失敗は
+    // log で握る（discovery 有効化の失敗は致命ではない = 既存 channel は無影響で動く。KDL 破損時に
+    // 起動ログで気付ける。健全性は上記 drift テストが CI で先取りする）。
+    // starter は registry + events のみ。process-proxy は subscribe handshake 前提で無改造
+    // unison-mcp から駆動不可（ハング）＋要 SP 起動のため follow-up（creo mem_1CcuR73WSNFkyAgzVJvWyF）。
+    if let Err(e) = server
+        .enable_discovery(include_str!("../../schema/vp-daemon.kdl"))
+        .await
+    {
+        tracing::error!(
+            "vp-daemon discovery の有効化に失敗（KDL parse エラー等、schema/vp-daemon.kdl を確認）: {e}"
+        );
+    }
+
     // L2 (doc 27 §5-3): event log auto-feed — process lifecycle を baseline event として log に流す。
     // SP register → "process.up" / unregister・切断 → "process.down"。これで `vp events` が
     // emit なしでも「SP が上がった/落ちた」を最初から持つ（build/test 等の追加 source は follow-up）。

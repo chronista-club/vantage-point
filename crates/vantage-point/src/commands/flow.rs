@@ -39,6 +39,14 @@ pub enum FlowCommands {
         /// Lane Stand: 'echoes' (default、 Claude CLI) or 'shell'
         #[arg(long, short)]
         stand: Option<String>,
+        /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
+        /// performer-files.kdl の base-ref → origin/HEAD → main
+        #[arg(long)]
+        base: Option<String>,
+        /// worker の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。task 難度に
+        /// 合わせて指定。省略時は claude default
+        #[arg(long)]
+        model: Option<String>,
         /// 実行モード: 'hitl' (default、 nudge 後応答期待) / 'auto' (nudge 後放置)
         #[arg(long, default_value = "hitl")]
         mode: String,
@@ -62,9 +70,16 @@ pub async fn run(cmd: FlowCommands) -> Result<()> {
             task_spec,
             branch,
             stand,
+            base,
+            model,
             mode,
             no_nudge,
-        } => handoff(&name, &task_spec, branch, stand, &mode, !no_nudge).await,
+        } => {
+            handoff(
+                &name, &task_spec, branch, stand, base, model, &mode, !no_nudge,
+            )
+            .await
+        }
         FlowCommands::Progress { format } => progress(&format).await,
     }
 }
@@ -103,11 +118,17 @@ fn read_task_spec(arg: &str) -> Result<String> {
 }
 
 /// handoff orchestration: SP 経由で performer 作成 → wire_send → nudge を atomic に
+///
+/// 引数は `vp flow handoff` の CLI flag をそのまま流す薄い passthrough（構造体に束ねる
+/// メリットが薄く、 呼び出しは `run` の 1 箇所のみ）。
+#[allow(clippy::too_many_arguments)]
 async fn handoff(
     name: &str,
     task_spec_arg: &str,
     branch: Option<String>,
     stand: Option<String>,
+    base: Option<String>,
+    model: Option<String>,
     mode: &str,
     nudge: bool,
 ) -> Result<()> {
@@ -134,6 +155,12 @@ async fn handoff(
     }
     if let Some(ref s) = stand.as_ref().filter(|s| !s.trim().is_empty()) {
         create_body["stand"] = serde_json::Value::String(s.to_string());
+    }
+    if let Some(ref b) = base.as_ref().filter(|s| !s.trim().is_empty()) {
+        create_body["base"] = serde_json::Value::String(b.to_string());
+    }
+    if let Some(ref m) = model.as_ref().filter(|s| !s.trim().is_empty()) {
+        create_body["model"] = serde_json::Value::String(m.to_string());
     }
     // lane_create は SP 側で git clone を含み数 10 sec かかり得るので outer timeout 60s
     // (MCP add_performer/flow_handoff の quic_call_with_timeout と揃える、 orphan lane race 回避)。

@@ -13,6 +13,20 @@
 //!   `content_block_stop` で 1 度だけ parse して [`EchoesEvent::ToolCall`] を発火。
 //! - tool 結果は `user` message の `tool_result` から [`EchoesEvent::ToolCallUpdate`]。
 //! - `TodoWrite` の ToolCall は [`EchoesEvent::Plan`] へ導出する。
+//!
+//! ## transcript commit 境界（[`Ingested::commits_transcript`]）
+//!
+//! claude は完成した message を disk の transcript(jsonl) に flush する。 その瞬間は stream 上でも
+//! 観測できる: **`assistant` 全文スナップショット行 / `user` message 行**が、transcript の 1 行と
+//! 1:1 で対応する（実測: transcript は content block ごとに 1 行、 stream の snapshot も block
+//! ごとに 1 本）。 [`EchoesTranslator`] はこれを `commits_transcript` として通知し、
+//! [`super::host::EchoesAgentHost`] が「まだ disk に無い streaming 中の tail」を切り出すのに使う
+//! （replay 時に transcript の後ろへ継ぐため）。
+//!
+//! ⚠️ snapshot 行は対応する `content_block_stop` の **前**に来る（実測）。 つまり本翻訳器が
+//! `content_block_stop` で発火する [`EchoesEvent::ToolCall`] は「commit 済み block の遅れた表現」
+//! であり、 tail に含めてはならない（transcript replay と二重化する）。 tail に載せてよいのは
+//! commit 前にしか存在しない増分 = [`EchoesEvent::MessageChunk`] / [`EchoesEvent::ThoughtChunk`]。
 
 use std::collections::HashMap;
 
@@ -37,6 +51,26 @@ pub struct EchoesTranslator {
     session_model: Option<String>,
 }
 
+/// [`EchoesTranslator::ingest`] の結果 — 「この行が生んだ event」と「この行が disk に commit したか」。
+#[derive(Debug, Default, PartialEq)]
+pub struct Ingested {
+    /// GUI へ流す event 列（0 個以上）。
+    pub events: Vec<EchoesEvent>,
+    /// この行が transcript(jsonl) の 1 行に対応する = ここまでの内容は disk 側に存在する。
+    /// [`super::host::EchoesAgentHost`] が in-flight tail を切るのに使う（module doc 参照）。
+    pub commits_transcript: bool,
+}
+
+impl Ingested {
+    /// event だけの結果（commit 境界ではない）。
+    fn events(events: Vec<EchoesEvent>) -> Self {
+        Self {
+            events,
+            commits_transcript: false,
+        }
+    }
+}
+
 /// content block の進行中状態（`content_block_start`〜`stop` の間だけ生きる）。
 #[derive(Debug, Clone)]
 enum BlockState {
@@ -58,41 +92,51 @@ impl EchoesTranslator {
         Self::default()
     }
 
-    /// stream-json の 1 行を食わせ、0 個以上の [`EchoesEvent`] を得る。
+    /// stream-json の 1 行を食わせ、0 個以上の [`EchoesEvent`] と commit 境界フラグを得る。
     ///
     /// parse 不能な行・未知 type は握り潰して空を返す（stream を止めない）。
-    pub fn ingest(&mut self, line: &str) -> Vec<EchoesEvent> {
+    pub fn ingest(&mut self, line: &str) -> Ingested {
         let line = line.trim();
         if line.is_empty() {
-            return Vec::new();
+            return Ingested::default();
         }
         match serde_json::from_str::<RawLine>(line) {
             Ok(raw) => self.translate(raw),
             Err(e) => {
                 tracing::debug!("echoes: stream-json parse 失敗（無視）: {e} - line: {line}");
-                Vec::new()
+                Ingested::default()
             }
         }
     }
 
-    fn translate(&mut self, raw: RawLine) -> Vec<EchoesEvent> {
+    fn translate(&mut self, raw: RawLine) -> Ingested {
         match raw {
-            RawLine::System(sys) => self.on_system(sys),
-            RawLine::StreamEvent { event } => self.on_stream_event(event),
-            RawLine::User { message } => on_user(message),
-            RawLine::Result(res) => vec![self.on_result(res)],
+            RawLine::System(sys) => Ingested::events(self.on_system(sys)),
+            RawLine::StreamEvent { event } => Ingested::events(self.on_stream_event(event)),
+            // user(tool_result) / assistant(全文スナップショット) はどちらも transcript の 1 行に
+            // 対応する = ここまでが disk に載った合図。 assistant の中身は delta の累積なので捨てる。
+            RawLine::User { message } => Ingested {
+                events: on_user(message),
+                commits_transcript: true,
+            },
             RawLine::Assistant { message } => {
-                // 本文は delta の累積スナップショットなので描画しない。usage だけ退避する
-                // （context ゲージの分子。cc-status が transcript から掘るのと同じ値）。
+                // 本文は delta の累積なので描画しないが、`message.usage` だけ context ゲージの
+                // 分子として退避する（usage はこの行にしか載らない一次情報。cc-status が
+                // transcript から掘るのと同じ値）。assistant 行自体は transcript に 1 行 flush
+                // された合図なので commit 境界を立てる。
                 if let Some(u) = message.usage {
                     self.last_context_tokens = Some(
                         u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens,
                     );
                 }
-                Vec::new()
+                Ingested {
+                    events: Vec::new(),
+                    commits_transcript: true,
+                }
             }
-            // rate_limit_event 等の未知 type は破棄。
-            RawLine::Other => Vec::new(),
+            RawLine::Result(res) => Ingested::events(vec![self.on_result(res)]),
+            // rate_limit_event 等は破棄。
+            RawLine::Other => Ingested::default(),
         }
     }
 
@@ -307,19 +351,23 @@ enum RawLine {
     User {
         message: RawUserMessage,
     },
-    Result(RawResult),
-    /// assistant の累積スナップショット。本文は使わないが `message.usage` だけ
-    /// context ゲージ用に拾う（usage はこの行にしか載らない）。
+    /// assistant 全文スナップショット。 中身は delta の累積なので描画しないが 2 つの役割を持つ:
+    /// (1) **transcript に 1 行 flush された合図**として commit 境界に使う（module doc 参照）、
+    /// (2) `message.usage` は context ゲージの分子（usage はこの行にしか載らない一次情報）。
+    /// `message` 欠落の assistant 行でも commit 境界は立てたいので `serde(default)`。
     Assistant {
+        #[serde(default)]
         message: RawAssistantMessage,
     },
+    Result(RawResult),
     /// rate_limit_event / 未知 type を全て吸収。
     #[serde(other)]
     Other,
 }
 
 /// assistant snapshot 行の `message`（usage 以外は見ない）。
-#[derive(Debug, Deserialize)]
+/// `Default` は `RawLine::Assistant` の `#[serde(default)]`（message 欠落許容）用。
+#[derive(Debug, Default, Deserialize)]
 struct RawAssistantMessage {
     #[serde(default)]
     usage: Option<RawUsage>,
@@ -470,7 +518,7 @@ mod tests {
     fn parses_session_init() {
         let line = r#"{"type":"system","subtype":"init","cwd":"/tmp/x","session_id":"sid-1","model":"claude-haiku-4-5","permissionMode":"acceptEdits","tools":["Bash","Edit"],"mcp_servers":[{"name":"vantage-point","status":"connected"}],"slash_commands":["a","b"]}"#;
         let mut t = EchoesTranslator::new();
-        let evs = t.ingest(line);
+        let evs = t.ingest(line).events;
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             EchoesEvent::SessionInit {
@@ -498,7 +546,7 @@ mod tests {
     fn streams_text_and_thinking_deltas() {
         let mut t = EchoesTranslator::new();
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}}"#);
-        let think = t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"考え"}}}"#);
+        let think = t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"考え"}}}"#).events;
         assert_eq!(
             think,
             vec![EchoesEvent::ThoughtChunk {
@@ -507,7 +555,7 @@ mod tests {
         );
 
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}}"#);
-        let text = t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"hello"}}}"#);
+        let text = t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"hello"}}}"#).events;
         assert_eq!(
             text,
             vec![EchoesEvent::MessageChunk {
@@ -523,8 +571,9 @@ mod tests {
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu-1","name":"Bash","input":{}}}}"#);
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"echo "}}}"#);
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"hi\"}"}}}"#);
-        let evs =
-            t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#);
+        let evs = t
+            .ingest(r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#)
+            .events;
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             EchoesEvent::ToolCall { id, name, input } => {
@@ -542,8 +591,9 @@ mod tests {
         let mut t = EchoesTranslator::new();
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu-2","name":"TodoWrite","input":{}}}}"#);
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"todos\":[{\"content\":\"step1\",\"status\":\"in_progress\",\"activeForm\":\"doing step1\"}]}"}}}"#);
-        let evs =
-            t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#);
+        let evs = t
+            .ingest(r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#)
+            .events;
         assert_eq!(
             evs,
             vec![EchoesEvent::Plan {
@@ -560,7 +610,7 @@ mod tests {
     #[test]
     fn user_tool_result_becomes_update() {
         let mut t = EchoesTranslator::new();
-        let evs = t.ingest(r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-1","type":"tool_result","content":"PERMISSION_TEST_OK","is_error":false}]}}"#);
+        let evs = t.ingest(r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-1","type":"tool_result","content":"PERMISSION_TEST_OK","is_error":false}]}}"#).events;
         assert_eq!(
             evs,
             vec![EchoesEvent::ToolCallUpdate {
@@ -575,7 +625,7 @@ mod tests {
     #[test]
     fn result_becomes_turn_completed() {
         let mut t = EchoesTranslator::new();
-        let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"sid-1","is_error":false,"total_cost_usd":0.012}"#);
+        let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"sid-1","is_error":false,"total_cost_usd":0.012}"#).events;
         assert_eq!(
             evs,
             vec![EchoesEvent::TurnCompleted {
@@ -597,7 +647,7 @@ mod tests {
         t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":8,"cache_read_input_tokens":200,"cache_creation_input_tokens":2,"output_tokens":1}}}"#);
         let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"sid-1","is_error":false,"total_cost_usd":0.01,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":18,"cacheReadInputTokens":300,"contextWindow":200000}}}"#);
         assert_eq!(
-            evs,
+            evs.events,
             vec![EchoesEvent::TurnCompleted {
                 session_id: "sid-1".into(),
                 cost_usd: Some(0.01),
@@ -616,7 +666,7 @@ mod tests {
         t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}}}"#);
         // subagent (haiku) の方が usage が大きくても、session model の entry が勝つ。
         let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"s","is_error":false,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":999,"cacheReadInputTokens":999999,"contextWindow":1000000},"claude-fable-5":{"inputTokens":10,"cacheReadInputTokens":100,"contextWindow":200000}}}"#);
-        match &evs[..] {
+        match &evs.events[..] {
             [EchoesEvent::TurnCompleted { context_window, .. }] => {
                 assert_eq!(*context_window, Some(200000));
             }
@@ -636,8 +686,76 @@ mod tests {
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"snapshot"}]},"session_id":"s"}"#,
             r#"not even json"#,
         ] {
-            assert!(t.ingest(line).is_empty(), "should ignore: {line}");
+            assert!(t.ingest(line).events.is_empty(), "should ignore: {line}");
         }
+    }
+
+    /// commit 境界: assistant スナップショット / user 行だけが `commits_transcript` を立てる。
+    /// stream_event（delta 等）は disk に何も書かないので立てない。
+    #[test]
+    fn only_message_lines_commit_transcript() {
+        let mut t = EchoesTranslator::new();
+        let snapshot = t.ingest(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"本文"}]},"session_id":"s"}"#,
+        );
+        assert!(snapshot.commits_transcript, "assistant 行は commit 境界");
+        assert!(snapshot.events.is_empty(), "中身は使わない（delta の累積）");
+
+        let user = t.ingest(
+            r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-1","type":"tool_result","content":"ok","is_error":false}]}}"#,
+        );
+        assert!(user.commits_transcript, "user 行は commit 境界");
+        assert_eq!(user.events.len(), 1, "ToolCallUpdate は出る");
+
+        for line in [
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_stop"}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"s","is_error":false}"#,
+            r#"{"type":"rate_limit_event"}"#,
+            "not json",
+        ] {
+            assert!(
+                !t.ingest(line).commits_transcript,
+                "commit 境界ではない: {line}"
+            );
+        }
+    }
+
+    /// ゴールデン回帰（in-flight tail 設計の前提）: tool_use block では
+    /// **assistant スナップショット（commit）が `content_block_stop`（ToolCall 発火）より先**に来る。
+    ///
+    /// つまり ToolCall は「既に disk にある block の遅れた表現」であり、
+    /// [`super::super::host::EchoesAgentHost`] の in-flight tail に載せてはならない。
+    /// この順序が逆転すると tail が ToolCall を掴んで replay が二重化する。
+    #[test]
+    fn tool_use_snapshot_commits_before_tool_call_fires() {
+        let raw = include_str!("testdata/turn_read_edit.jsonl");
+        let mut t = EchoesTranslator::new();
+        let mut commits = 0usize;
+        let mut commits_at_first_tool_call = None;
+
+        for line in raw.lines() {
+            let out = t.ingest(line);
+            if out
+                .events
+                .iter()
+                .any(|e| matches!(e, EchoesEvent::ToolCall { .. }))
+            {
+                commits_at_first_tool_call = Some(commits);
+                break;
+            }
+            if out.commits_transcript {
+                commits += 1;
+            }
+        }
+        // 実測の 1 ターン目: thinking block の snapshot → tool_use block の snapshot →
+        // content_block_stop(ToolCall)。 よって ToolCall 発火時点で commit は 2 本済んでいる。
+        // snapshot が stop の後に来る実装なら 1 本しか観測されない。
+        assert_eq!(
+            commits_at_first_tool_call,
+            Some(2),
+            "ToolCall 発火時点で当該 tool_use block は既に commit 済みのはず"
+        );
     }
 
     /// ゴールデン: 実測の Read→Edit→text 完全ターン（Step 0 spike B）を通す。
@@ -647,7 +765,7 @@ mod tests {
         let mut t = EchoesTranslator::new();
         let mut evs = Vec::new();
         for line in raw.lines() {
-            evs.extend(t.ingest(line));
+            evs.extend(t.ingest(line).events);
         }
 
         let session_inits = evs

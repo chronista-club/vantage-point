@@ -35,9 +35,9 @@ fn start() -> Result<()> {
     // ghost project の除去のみ実行（cwd の自動登録はしない）。
     // 以前は cwd を project として自動登録していたが、~/等の意図しないディレクトリが
     // 登録されてしまう問題があったため、sync は登録なし(None)で呼ぶ。
-    let outcome = match crate::world_client::notify_world_sync(None) {
+    let outcome = match crate::world_client::notify_world_sync() {
         Some(o) => Ok(o),
-        None => crate::projects_file::ProjectsFile::sync(None),
+        None => crate::projects_file::ProjectsFile::sync(),
     };
     if let Ok(outcome) = outcome {
         for name in &outcome.removed {
