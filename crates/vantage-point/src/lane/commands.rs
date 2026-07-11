@@ -507,12 +507,9 @@ fn clear_lane_state_files(repo_root: &Path, lane: &str) {
 /// None は no-op (= claude default)。 不正な model 名は Err で早期に弾く (worktree は作成済だが
 /// spawn 前に失敗を返す方が silent degrade より良い)。
 ///
-/// ⚠️ 既知の制約 (既存 `clear_lane_state_files_in` と共通、根治は project key 正規化 = 別 task):
-/// `find_repo_root()` は worktree 内では worktree 自身を返すため、 **lane worktree の中から**
-/// `vp lane new/fork --model` を実行すると project key が SP 読み手 (conductor project basename)
-/// とズレ、 model が silent に無視される。 conductor root からの実行 (= `vp lane new` の想定運用、
-/// AGENTS.md) では一致する。 high-value 経路 (MCP add_performer / flow_handoff / SP) は
-/// `create_performer_orchestrated` が `addr.project` で直書きするため常に一致する。
+/// `repo_root` は [`config::find_repo_root`] 由来で **常に main worktree root** に正規化される
+/// (lane worktree の中から呼んでも SP 読み手の `addr.project` = main root basename と一致する。
+/// 旧: worktree 内実行で project key mismatch → model が silent 無視。project key 正規化で解消)。
 fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
     persist_lane_model_in(&crate::config::vp_state_dir(), repo_root, lane, model)
 }
