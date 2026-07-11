@@ -47,7 +47,14 @@ export type EchoesEvent =
   | { kind: 'tool_call'; id: string; name: string; input: unknown }
   | { kind: 'tool_call_update'; tool_use_id: string; content: string; is_error?: boolean }
   | { kind: 'plan'; entries: PlanEntry[] }
-  | { kind: 'turn_completed'; session_id: string; cost_usd?: number }
+  /** context_tokens/window = Act I statusline 相当の context ゲージ（省略時 GUI は前値を保つ）。 */
+  | {
+      kind: 'turn_completed'
+      session_id: string
+      cost_usd?: number
+      context_tokens?: number
+      context_window?: number
+    }
   | { kind: 'error'; message: string }
 
 /** ChatView（C2）が lane ごとに登録する renderer。 */

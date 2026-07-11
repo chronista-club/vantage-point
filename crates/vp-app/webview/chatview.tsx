@@ -31,6 +31,9 @@ type ChatState = {
   plan: PlanEntry[]
   streaming: boolean
   cost: number | null
+  /** context ゲージ（Act I statusline の bar :context 相当）。turn_completed で更新。 */
+  contextTokens: number | null
+  contextWindow: number | null
 }
 
 type LaneChat = {
@@ -65,7 +68,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       // backend は「新規 attach」と「reconnect / demand 再発火」を区別できないため、reset せず
       // 追記すると再接続のたび会話が二重化する（terminal replay の clear-prefix と同型の問題）。
       // reset → 再構築なら cold-start でも reconnect でも同じ最終状態に収束する（= 冪等）。
-      // header は live engine の session_init が持つ情報なので保持する。
+      // header / context ゲージは live engine 由来の session 状態（会話 item ではない）なので
+      // 保持する — transcript replay は turn_completed を運ばないため、消すと reconnect の
+      // たびゲージが空に戻ってしまう。
       s.items = []
       s.plan = []
       s.streaming = false
@@ -113,6 +118,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
     case 'turn_completed':
       s.streaming = false
       s.cost = ev.cost_usd ?? s.cost
+      // 欠落 turn（engine が値を運ばない版）では前値を保つ — ゲージが点滅しないように。
+      s.contextTokens = ev.context_tokens ?? s.contextTokens
+      s.contextWindow = ev.context_window ?? s.contextWindow
       break
     case 'error':
       s.streaming = false
@@ -128,7 +136,15 @@ function foldEvent(lane: string, ev: EchoesEvent): void {
 
 /** 空の ChatState（store 初期値 + テスト用）。 */
 export function emptyChatState(): ChatState {
-  return { header: null, items: [], plan: [], streaming: false, cost: null }
+  return {
+    header: null,
+    items: [],
+    plan: [],
+    streaming: false,
+    cost: null,
+    contextTokens: null,
+    contextWindow: null,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +245,19 @@ function ChatView() {
     ipc?.postMessage(
       JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
     )
+  }
+
+  // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
+  // 閾値は cc-status の意味論を踏襲: >=60% warn / >=85% critical。
+  const ctxPct = (): number | null => {
+    const s = state()
+    if (!s || s.contextTokens == null || !s.contextWindow) return null
+    return Math.min(100, Math.round((s.contextTokens / s.contextWindow) * 100))
+  }
+  const ctxTitle = (): string => {
+    const s = state()
+    if (!s || s.contextTokens == null || !s.contextWindow) return ''
+    return `context ${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} tokens`
   }
 
   const [draft, setDraft] = createSignal('')
@@ -352,6 +381,18 @@ function ChatView() {
               )}
             </For>
           </select>
+          <Show when={ctxPct() !== null}>
+            <span
+              class="echoes-context"
+              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
+              title={ctxTitle()}
+            >
+              <span class="echoes-context-bar">
+                <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
+              </span>
+              <span class="echoes-context-pct">{ctxPct()}%</span>
+            </span>
+          </Show>
         </div>
         <PlanWidget entries={() => state()!.plan} />
         <div
@@ -490,6 +531,17 @@ export const CHATVIEW_CSS = `
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); }
 .echoes-model-select:disabled { opacity:.45; cursor:default; }
+/* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
+.echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
+.echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
+  background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); }
+.echoes-context-fill { display:block; height:100%; border-radius:2px;
+  background: var(--color-success,#6fe2a8); transition: width .3s ease, background .3s ease; }
+.echoes-context-pct { font-size:10.5px; min-width:32px; text-align:right;
+  font-family: var(--font-mono, ui-monospace, monospace); color: var(--color-text-tertiary,#8b93a7); }
+.echoes-context.warn .echoes-context-fill { background: var(--color-accent,#e2b96f); }
+.echoes-context.crit .echoes-context-fill { background: #f0a3a3; }
+.echoes-context.crit .echoes-context-pct { color: #f0a3a3; }
 @keyframes echoes-fade { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform:none; } }
 @keyframes echoes-spin { to { transform: rotate(360deg); } }
 @keyframes echoes-blink { 50% { opacity:0; } }

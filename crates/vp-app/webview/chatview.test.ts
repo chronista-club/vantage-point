@@ -93,6 +93,22 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(s.cost).toBe(0.012)
   })
 
+  it('turn_completed が context ゲージ（tokens/window）を載せ、欠落 turn では前値を保つ', () => {
+    const s = emptyChatState()
+    foldInto(s, {
+      kind: 'turn_completed',
+      session_id: 's',
+      context_tokens: 38403,
+      context_window: 200000,
+    })
+    expect(s.contextTokens).toBe(38403)
+    expect(s.contextWindow).toBe(200000)
+    // 値を運ばない turn（別 engine / 旧版）ではゲージを消さない。
+    foldInto(s, { kind: 'turn_completed', session_id: 's' })
+    expect(s.contextTokens).toBe(38403)
+    expect(s.contextWindow).toBe(200000)
+  })
+
   it('error は streaming を下ろし assistant item に警告を積む', () => {
     const s = fold([{ kind: 'error', message: 'boom' }])
     expect(s.streaming).toBe(false)
@@ -162,5 +178,18 @@ describe('transcript replay — Act II replay-on-attach', () => {
     foldInto(s, { kind: 'session_init', session_id: 'sid', model: 'opus' })
     foldInto(s, { kind: 'replay_start' })
     expect(s.header).toEqual({ model: 'opus', sessionId: 'sid' })
+  })
+
+  it('replay_start は context ゲージを保持する（transcript は turn_completed を運ばないため）', () => {
+    const s = emptyChatState()
+    foldInto(s, {
+      kind: 'turn_completed',
+      session_id: 'sid',
+      context_tokens: 50000,
+      context_window: 200000,
+    })
+    foldInto(s, { kind: 'replay_start' })
+    expect(s.contextTokens).toBe(50000)
+    expect(s.contextWindow).toBe(200000)
   })
 })

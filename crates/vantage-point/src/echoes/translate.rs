@@ -25,6 +25,16 @@ use super::event::{EchoesEvent, PlanEntry};
 pub struct EchoesTranslator {
     /// content block index → 進行中の block 状態。
     blocks: HashMap<u64, BlockState>,
+    /// 最後に観測した assistant snapshot の usage 合算（= 現在の context 占有 tokens）。
+    ///
+    /// assistant 行は本文としては破棄する（delta の累積スナップショット）が、`message.usage`
+    /// はこの行にしか載らない一次情報なので、ここに退避して [`EchoesEvent::TurnCompleted`] の
+    /// context ゲージに載せる。⚠️ `result.usage` は turn 内 iteration の**合算**で
+    /// cache_read が重複計上されるため分子には使えない（Step 0 実測）。
+    last_context_tokens: Option<u64>,
+    /// init の model id。`result.modelUsage` が複数 entry（subagent が別 model を使った turn）
+    /// のとき、本 session の entry を突き合わせるために保持する。
+    session_model: Option<String>,
 }
 
 /// content block の進行中状態（`content_block_start`〜`stop` の間だけ生きる）。
@@ -70,8 +80,18 @@ impl EchoesTranslator {
             RawLine::System(sys) => self.on_system(sys),
             RawLine::StreamEvent { event } => self.on_stream_event(event),
             RawLine::User { message } => on_user(message),
-            RawLine::Result(res) => vec![on_result(res)],
-            // assistant（累積スナップショット）/ rate_limit_event 等は破棄。
+            RawLine::Result(res) => vec![self.on_result(res)],
+            RawLine::Assistant { message } => {
+                // 本文は delta の累積スナップショットなので描画しない。usage だけ退避する
+                // （context ゲージの分子。cc-status が transcript から掘るのと同じ値）。
+                if let Some(u) = message.usage {
+                    self.last_context_tokens = Some(
+                        u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens,
+                    );
+                }
+                Vec::new()
+            }
+            // rate_limit_event 等の未知 type は破棄。
             RawLine::Other => Vec::new(),
         }
     }
@@ -84,6 +104,8 @@ impl EchoesTranslator {
         let Some(session_id) = sys.session_id else {
             return Vec::new();
         };
+        // modelUsage 突き合わせ用（context ゲージの分母選択）。
+        self.session_model = sys.model.clone();
         let mcp_servers = sys
             .mcp_servers
             .unwrap_or_default()
@@ -167,10 +189,50 @@ impl EchoesTranslator {
             _ => Vec::new(),
         }
     }
+
+    fn on_result(&self, res: RawResult) -> EchoesEvent {
+        if res.is_error {
+            EchoesEvent::Error {
+                message: res
+                    .result
+                    .unwrap_or_else(|| "engine turn error".to_string()),
+            }
+        } else {
+            EchoesEvent::TurnCompleted {
+                session_id: res.session_id,
+                cost_usd: res.total_cost_usd,
+                context_tokens: self.last_context_tokens,
+                context_window: self.context_window(&res.model_usage),
+            }
+        }
+    }
+
+    /// `result.modelUsage` から本 session の context window（ゲージの分母）を選ぶ。
+    ///
+    /// 複数 entry になるのは subagent が別 model を使った turn。init の model id と
+    /// 前方一致する entry を優先し（init は `claude-haiku-4-5`、key は
+    /// `claude-haiku-4-5-20251001` のように長短どちらもあり得るため双方向で見る）、
+    /// 突き合わせられなければ context 占有が最大の entry = main loop とみなして倒す。
+    fn context_window(&self, usage: &HashMap<String, RawModelUsage>) -> Option<u64> {
+        let pick = self
+            .session_model
+            .as_deref()
+            .and_then(|m| {
+                usage
+                    .iter()
+                    .find(|(k, _)| k.starts_with(m) || m.starts_with(k.as_str()))
+            })
+            .or_else(|| {
+                usage
+                    .iter()
+                    .max_by_key(|(_, v)| v.input_tokens + v.cache_read_input_tokens)
+            });
+        pick.and_then(|(_, v)| v.context_window)
+    }
 }
 
 // =============================================================================
-// user message（tool_result）/ result の変換（状態不要 = 自由関数）
+// user message（tool_result）の変換（状態不要 = 自由関数）
 // =============================================================================
 
 fn on_user(message: RawUserMessage) -> Vec<EchoesEvent> {
@@ -190,21 +252,6 @@ fn on_user(message: RawUserMessage) -> Vec<EchoesEvent> {
             RawUserContent::Other => None,
         })
         .collect()
-}
-
-fn on_result(res: RawResult) -> EchoesEvent {
-    if res.is_error {
-        EchoesEvent::Error {
-            message: res
-                .result
-                .unwrap_or_else(|| "engine turn error".to_string()),
-        }
-    } else {
-        EchoesEvent::TurnCompleted {
-            session_id: res.session_id,
-            cost_usd: res.total_cost_usd,
-        }
-    }
 }
 
 /// tool_result の `content`（string または block 配列）を表示用 text へ潰す。
@@ -261,9 +308,32 @@ enum RawLine {
         message: RawUserMessage,
     },
     Result(RawResult),
-    /// assistant（累積スナップショット）/ rate_limit_event / 未知 type を全て吸収。
+    /// assistant の累積スナップショット。本文は使わないが `message.usage` だけ
+    /// context ゲージ用に拾う（usage はこの行にしか載らない）。
+    Assistant {
+        message: RawAssistantMessage,
+    },
+    /// rate_limit_event / 未知 type を全て吸収。
     #[serde(other)]
     Other,
+}
+
+/// assistant snapshot 行の `message`（usage 以外は見ない）。
+#[derive(Debug, Deserialize)]
+struct RawAssistantMessage {
+    #[serde(default)]
+    usage: Option<RawUsage>,
+}
+
+/// API usage block のうち context 計算に要る 3 field（現在の prompt 占有量）。
+#[derive(Debug, Deserialize)]
+struct RawUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -375,6 +445,20 @@ struct RawResult {
     result: Option<String>,
     #[serde(default)]
     total_cost_usd: Option<f64>,
+    /// ⚠️ result 行では camelCase（init の `permissionMode` と同じく混在スキーマ）。
+    #[serde(default, rename = "modelUsage")]
+    model_usage: HashMap<String, RawModelUsage>,
+}
+
+/// `result.modelUsage` の 1 entry（context ゲージの分母 + 主 model 判定に要る field のみ）。
+#[derive(Debug, Deserialize)]
+struct RawModelUsage {
+    #[serde(default, rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(default, rename = "cacheReadInputTokens")]
+    cache_read_input_tokens: u64,
+    #[serde(default, rename = "contextWindow")]
+    context_window: Option<u64>,
 }
 
 #[cfg(test)]
@@ -487,7 +571,7 @@ mod tests {
         );
     }
 
-    /// result/success は TurnCompleted。
+    /// result/success は TurnCompleted。usage を見ていない turn では context は None。
     #[test]
     fn result_becomes_turn_completed() {
         let mut t = EchoesTranslator::new();
@@ -497,8 +581,47 @@ mod tests {
             vec![EchoesEvent::TurnCompleted {
                 session_id: "sid-1".into(),
                 cost_usd: Some(0.012),
+                context_tokens: None,
+                context_window: None,
             }]
         );
+    }
+
+    /// context ゲージ: assistant snapshot の usage（最後の値）が分子、
+    /// result の modelUsage.contextWindow が分母として TurnCompleted に載る。
+    /// ⚠️ result.usage（turn 合算、cache_read 重複計上）ではなく最終 assistant usage を使う。
+    #[test]
+    fn turn_completed_carries_context_gauge() {
+        let mut t = EchoesTranslator::new();
+        t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":1}}}"#);
+        t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":8,"cache_read_input_tokens":200,"cache_creation_input_tokens":2,"output_tokens":1}}}"#);
+        let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"sid-1","is_error":false,"total_cost_usd":0.01,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":18,"cacheReadInputTokens":300,"contextWindow":200000}}}"#);
+        assert_eq!(
+            evs,
+            vec![EchoesEvent::TurnCompleted {
+                session_id: "sid-1".into(),
+                cost_usd: Some(0.01),
+                context_tokens: Some(210), // 最後の assistant: 8 + 200 + 2
+                context_window: Some(200000),
+            }]
+        );
+    }
+
+    /// modelUsage が複数 entry（subagent が別 model を使った turn）でも、
+    /// init の model と前方一致する entry の contextWindow を選ぶ。
+    #[test]
+    fn context_window_prefers_session_model_entry() {
+        let mut t = EchoesTranslator::new();
+        t.ingest(r#"{"type":"system","subtype":"init","session_id":"s","model":"claude-fable-5"}"#);
+        t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}}}"#);
+        // subagent (haiku) の方が usage が大きくても、session model の entry が勝つ。
+        let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"s","is_error":false,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":999,"cacheReadInputTokens":999999,"contextWindow":1000000},"claude-fable-5":{"inputTokens":10,"cacheReadInputTokens":100,"contextWindow":200000}}}"#);
+        match &evs[..] {
+            [EchoesEvent::TurnCompleted { context_window, .. }] => {
+                assert_eq!(*context_window, Some(200000));
+            }
+            other => panic!("expected TurnCompleted, got {other:?}"),
+        }
     }
 
     /// ノイズ行（hook / status / rate_limit / assistant スナップショット）は無視。
@@ -570,6 +693,18 @@ mod tests {
             "最終 text に done を含む: {text:?}"
         );
         assert_eq!(turn_completed, 1, "turn_completed は 1 回");
+
+        // context ゲージが実測 turn から取れる（分子 = 最終 assistant usage 8+3932+34463、
+        // 分母 = modelUsage.contextWindow）。result.usage の合算 106,945 ではないことが肝。
+        let ctx = evs.iter().find_map(|e| match e {
+            EchoesEvent::TurnCompleted {
+                context_tokens,
+                context_window,
+                ..
+            } => Some((*context_tokens, *context_window)),
+            _ => None,
+        });
+        assert_eq!(ctx, Some((Some(38403), Some(200000))), "context ゲージ");
 
         // Edit tool_call の完全 input（PR3 diff 合成の素材）が取れている。
         let edit_input = evs.iter().find_map(|e| match e {
