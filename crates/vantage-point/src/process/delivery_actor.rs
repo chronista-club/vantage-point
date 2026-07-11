@@ -3,9 +3,13 @@
 //! 未 ack の command category message を受信者の tmux session に nudge (チャネル C) する。
 //! TheWorld 上で store と同居 (in-process query、 決定 D1-c)。
 //!
-//! ## policy (R3-a 精密化 + R3-c channel D)
+//! ## policy (R3-a 精密化 + R3-c channel D + doc 34 channel E)
 //!
 //! CC activity poll (`agents --json`) を供給に、 受信者 lane の状態で配信経路を分ける:
+//! - **lane Running + console_mode=Chat → engine 直接注入 (チャネル E、 doc 34 §3)**。
+//!   Chat lane は PtySlot を持たず (nudge 不能)、 engine は lazy spawn + turn 中 submit を
+//!   自前 queue するため、 R3-a readiness とチャネル D は適用しない (常時 deliverable)。
+//!   台帳・再掲示パラメータはチャネル C と共有。
 //! - lane Running + CC idle/waiting (or poll 不能の degraded) → 即 nudge (チャネル C)
 //! - lane Running + CC busy → 待つ (idle 遷移を次 pulse で拾う、 台帳は進めない)
 //! - **lane Running + CC session 不在 (Some(None)) → headless bg dispatch (チャネル D、 R3-c)**
@@ -38,6 +42,8 @@ use crate::capability::WiremsgStore;
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 // tmux decoupling PR1: nudge の forward 先解決に使う SP control channel registry（SSOT は daemon）。
 use crate::daemon::server::ControlChannels;
+// channel E (doc 34): console_mode が forward method (lane_nudge / echoes_nudge) を分ける。
+use crate::lane::console_mode::ConsoleMode;
 use crate::process::lanes_state::{LaneInfo, LaneState};
 
 /// 配信 pulse の定期 tick (Notify wake の取りこぼし安全網)
@@ -123,6 +129,22 @@ pub(crate) struct NudgeTarget {
     pub cwd: String,
     /// R3-c の `claude -p --resume <id>` headless 再開に使う（None なら fresh headless）
     pub cc_session_id: Option<String>,
+    /// lane の console engine 種別（doc 33 の排他スロット）。forward method の分水嶺（doc 34 §3）。
+    pub console_mode: ConsoleMode,
+}
+
+impl NudgeTarget {
+    /// forward する SP control method（channel 判別の純関数、doc 34 §3）。
+    ///
+    /// Chat lane は PtySlot を持たないため `lane_nudge` は構造的に失敗する（`write_to_lane` が
+    /// `Err("Lane has no PtySlot")`）— engine 直接注入の `echoes_nudge` へ route する。
+    /// payload は両 method とも `{lane, text}` で共通。
+    pub(crate) fn nudge_method(&self) -> &'static str {
+        match self.console_mode {
+            ConsoleMode::Chat => "echoes_nudge",
+            ConsoleMode::Tui => "lane_nudge",
+        }
+    }
 }
 
 /// `(path_key, lane)` 一覧から nudge 先を引く (純関数、 tmux decoupling PR1)
@@ -145,6 +167,7 @@ pub(crate) fn pick_nudge_target(
             lane_display: l.address.to_string(),
             cwd: l.cwd.clone(),
             cc_session_id: l.cc_session_id.clone(),
+            console_mode: l.console_mode,
         })
 }
 
@@ -388,78 +411,88 @@ async fn pulse(
             // 不変条件: target=Some が確定した後のみここに到達 = lane Running
             // = lane_nudgeable は常に真 (target=None は直前の continue で排除済み)
             let key = (msg.id.clone(), agent.clone());
-            match recipient_readiness(true, act_view) {
-                Readiness::Ready => {}
-                // busy: 待つ (台帳は進めない — idle 遷移を次 pulse で拾う)。
-                Readiness::Busy => continue,
-                // R3-c (channel D, scope a): lane は Running だが interactive CC
-                // session が落ちている (Some(None))。 nudge は届かないので headless
-                // `claude -p --resume` を detached 起動して wire を処理させる。
-                Readiness::Offline => {
-                    match decide_nudge(
-                        bg_ledger.get(&key),
-                        now,
-                        BG_REDISPATCH_AFTER,
-                        MAX_BG_DISPATCHES,
-                    ) {
-                        NudgeDecision::Send => {
-                            if let Some((project, lane_label)) = lane_identity_from_agent(agent) {
-                                let count = bg_ledger.get(&key).map(|r| r.count).unwrap_or(0);
-                                let prompt = bg_dispatch_prompt(&msg.id);
-                                let args = build_bg_args(t.cc_session_id.as_deref(), &prompt);
-                                spawn_bg_dispatch(
-                                    t.cwd.clone(),
-                                    project,
-                                    lane_label,
-                                    t.lane_display.clone(),
-                                    args,
-                                );
-                                tracing::info!(
-                                    "wire delivery: bg dispatch 起動 (msg={}, agent={}, cwd={}, resume={}, count={})",
-                                    msg.id,
-                                    agent,
-                                    t.cwd,
-                                    t.cc_session_id.is_some(),
-                                    count + 1
-                                );
-                                bg_ledger.insert(
-                                    key,
-                                    NudgeRecord {
-                                        count: count + 1,
-                                        last_at: now,
-                                    },
-                                );
-                            } else {
-                                tracing::warn!(
-                                    "wire delivery: bg dispatch 不能 (agent address 解析失敗: {})",
-                                    agent
-                                );
+            // channel E (doc 34 §3): chat lane は R3-a readiness と channel D を通らない。
+            // engine は lazy spawn（Offline が無い）かつ turn 実行中の submit を自前 queue する
+            // （Busy が無い、doc 34 Step 0 spike ①実測）ため常時 deliverable — PTY / CC-activity
+            // の意味論は Tui 専用。channel D を踏ませないこと自体が、同一 session 二重 --resume
+            // （conductor）/ fresh headless 文脈喪失（performer）の構造的排除でもある（doc 34 §2-3）。
+            if t.console_mode == ConsoleMode::Tui {
+                match recipient_readiness(true, act_view) {
+                    Readiness::Ready => {}
+                    // busy: 待つ (台帳は進めない — idle 遷移を次 pulse で拾う)。
+                    Readiness::Busy => continue,
+                    // R3-c (channel D, scope a): lane は Running だが interactive CC
+                    // session が落ちている (Some(None))。 nudge は届かないので headless
+                    // `claude -p --resume` を detached 起動して wire を処理させる。
+                    Readiness::Offline => {
+                        match decide_nudge(
+                            bg_ledger.get(&key),
+                            now,
+                            BG_REDISPATCH_AFTER,
+                            MAX_BG_DISPATCHES,
+                        ) {
+                            NudgeDecision::Send => {
+                                if let Some((project, lane_label)) = lane_identity_from_agent(agent)
+                                {
+                                    let count = bg_ledger.get(&key).map(|r| r.count).unwrap_or(0);
+                                    let prompt = bg_dispatch_prompt(&msg.id);
+                                    let args = build_bg_args(t.cc_session_id.as_deref(), &prompt);
+                                    spawn_bg_dispatch(
+                                        t.cwd.clone(),
+                                        project,
+                                        lane_label,
+                                        t.lane_display.clone(),
+                                        args,
+                                    );
+                                    tracing::info!(
+                                        "wire delivery: bg dispatch 起動 (msg={}, agent={}, cwd={}, resume={}, count={})",
+                                        msg.id,
+                                        agent,
+                                        t.cwd,
+                                        t.cc_session_id.is_some(),
+                                        count + 1
+                                    );
+                                    bg_ledger.insert(
+                                        key,
+                                        NudgeRecord {
+                                            count: count + 1,
+                                            last_at: now,
+                                        },
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "wire delivery: bg dispatch 不能 (agent address 解析失敗: {})",
+                                        agent
+                                    );
+                                }
                             }
+                            NudgeDecision::Wait | NudgeDecision::Exhausted => {}
                         }
-                        NudgeDecision::Wait | NudgeDecision::Exhausted => {}
+                        continue;
                     }
-                    continue;
                 }
             }
             match decide_nudge(ledger.get(&key), now, RENUDGE_AFTER, MAX_NUDGES) {
                 NudgeDecision::Send => {
                     let count = ledger.get(&key).map(|r| r.count).unwrap_or(0);
                     let text = nudge_text(&msg.id, count);
-                    // tmux decoupling PR1: 所有 SP の control channel に lane_nudge を forward し、
-                    // SP 側 write_nudge が PtySlot に直書きする（旧 daemon 直 send-keys の置換）。
+                    // 所有 SP の control channel へ forward。method は console_mode で分岐
+                    // （Tui = lane_nudge → PtySlot 直書き / Chat = echoes_nudge → engine 注入、
+                    // doc 34 §3。payload は共通 {lane, text}）。
                     let resp = crate::daemon::server::forward_to_sp_control(
                         control_channels,
                         &t.path_key,
-                        "lane_nudge",
+                        t.nudge_method(),
                         &serde_json::json!({ "lane": t.lane_display, "text": text }),
                     )
                     .await;
                     if resp.get("error").is_none() {
                         tracing::info!(
-                            "wire delivery: nudge 送出 (msg={}, agent={}, lane={}, count={}, activity={})",
+                            "wire delivery: nudge 送出 (msg={}, agent={}, lane={}, method={}, count={}, activity={})",
                             msg.id,
                             agent,
                             t.lane_display,
+                            t.nudge_method(),
                             count + 1,
                             // degraded か精密 (poll 成功) かを後から判別できるように
                             if activity.is_some() {
@@ -627,8 +660,33 @@ mod tests {
         assert_eq!(t.lane_display, "vp/conductor", "lane_nudge の宛先");
         assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
+        assert_eq!(t.console_mode, ConsoleMode::Tui, "default は Tui");
         // 別 lane 宛は None (offline 扱い = pending 保持)
         assert_eq!(pick_nudge_target(&lanes, "other/conductor"), None);
+    }
+
+    /// channel E (doc 34 §3): console_mode が forward method を分ける。
+    /// Chat lane は PtySlot を持たないため lane_nudge は構造的に失敗する — echoes_nudge へ。
+    #[test]
+    fn nudge_method_follows_console_mode() {
+        let mut lane = test_lane(LaneState::Running);
+        lane.console_mode = ConsoleMode::Chat;
+        let t = pick_nudge_target(&registry(lane), "vp/conductor")
+            .expect("chat lane も Running なら target");
+        assert_eq!(
+            t.console_mode,
+            ConsoleMode::Chat,
+            "LaneInfo の console_mode が伝播する"
+        );
+        assert_eq!(t.nudge_method(), "echoes_nudge", "Chat は engine 直接注入");
+
+        let t = pick_nudge_target(&registry(test_lane(LaneState::Running)), "vp/conductor")
+            .expect("tui lane");
+        assert_eq!(
+            t.nudge_method(),
+            "lane_nudge",
+            "Tui は従来の PtySlot 直書き"
+        );
     }
 
     /// tmux decoupling PR1: Running なら tmux 状態に関係なく nudge 可能 (旧 TmuxMode gate 撤去)、
