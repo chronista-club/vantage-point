@@ -433,7 +433,7 @@ export const FILE_EXPLORER_CSS = `
 .vp-fe-search{flex:1;padding:5px 8px;
   border:1px solid var(--color-surface-border,#1f2233);
   background:var(--color-surface-bg-subtle);color:var(--color-text-primary);
-  border-radius:var(--radius-sm,6px);font-family:inherit;font-size:12px;}
+  border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-hint,12px);}
 .vp-fe-search:focus{outline:none;border-color:var(--color-brand-primary);}
 .vp-fe-pin{display:inline-flex;align-items:center;padding:3px 5px;
   border:none;background:transparent;color:var(--color-text-tertiary);
@@ -448,12 +448,12 @@ export const FILE_EXPLORER_CSS = `
 .vp-fe-close:hover{background:var(--color-surface-bg-emphasis);
   color:var(--color-text-primary);}
 .vp-fe-meta{flex:0 0 auto;display:flex;justify-content:space-between;gap:8px;
-  padding:4px 8px;font-size:10px;color:var(--color-text-tertiary);
+  padding:4px 8px;font-size:var(--sb-text-micro,10px);color:var(--color-text-tertiary);
   border-bottom:1px solid var(--color-surface-border,#1f2233);}
 .vp-fe-addr{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-fe-warn{color:var(--color-status-warning,#d49b3f);white-space:nowrap;}
 .vp-fe-body{flex:1;overflow-y:auto;padding:4px 0;
-  font-family:'VPMono',monospace;font-size:11px;}
+  font-family:'VPMono',monospace;font-size:var(--sb-text-meta,11px);}
 .vp-fe-empty{padding:12px;text-align:center;color:var(--color-text-tertiary);}
 .vp-fe-row{display:flex;align-items:center;gap:6px;padding:3px 8px;cursor:pointer;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -464,7 +464,7 @@ export const FILE_EXPLORER_CSS = `
 .vp-fe-icon{display:inline-block;width:10px;text-align:center;flex:0 0 auto;
   color:var(--color-text-tertiary);font-size:9px;}
 .vp-fe-name{overflow:hidden;text-overflow:ellipsis;}
-.vp-fe-footer{flex:0 0 auto;padding:4px 8px;font-size:10px;text-align:center;
+.vp-fe-footer{flex:0 0 auto;padding:4px 8px;font-size:var(--sb-text-micro,10px);text-align:center;
   color:var(--color-text-tertiary);
   border-top:1px solid var(--color-surface-border,#1f2233);}
 `

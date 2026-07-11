@@ -172,14 +172,17 @@ html,body{margin:0;height:100%;overflow:hidden;}
      chain を invalidate するため use site で並べる)。 Mizolet 不在でも creo sans stack
      (-apple-system 等) に縮退し proper sans で描画される。 */
   font-family:var(--vp-font-sans),var(--typography-family-sans);
-  font-size:13px;line-height:1.45;
-  --sb-text-meta:11px;--sb-text-hint:12px;}
+  /* text scale 4 段 (Live Token 候補): base=行タイトル/summary、 hint=行本文/menu/input、
+     meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。 sidebar 内の font-size は
+     全てこの 4 token を参照する (glyph 一点物 9px/14px を除く)。 */
+  --sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
+  font-size:var(--sb-text-base,13px);line-height:1.45;}
 /* position:relative は FileExplorer overlay の inset:0 を sidebar 領域に閉じるために必要。
    無いと overlay が viewport 基準になり、 sidebar 外の領域 (= ContextMenu と重なる場所) に
    描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。 */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
-  padding:10px var(--spacing-sm,10px);font-size:11px;letter-spacing:.06em;
+  padding:10px var(--spacing-sm,10px);font-size:var(--sb-text-meta,11px);letter-spacing:.06em;
   font-weight:var(--typography-weight-semibold,600);color:var(--color-text-tertiary);
   border-bottom:1px solid var(--color-surface-border,#1f2233);user-select:none;}
 .vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -190,7 +193,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   color:var(--color-brand-primary);}
 .vp-sidebar-list{flex:1;overflow-y:auto;padding:var(--spacing-xs,4px) 0;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--color-text-tertiary);
-  font-size:11px;}
+  font-size:var(--sb-text-meta,11px);}
 
 /* Project accordion */
 .vp-proj{margin:0;}
@@ -203,12 +206,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
   pointer-events:none;}
 .vp-proj + .vp-proj{border-top:1px solid var(--color-surface-border,#1f2233);}
 .vp-proj-summary{list-style:none;display:flex;align-items:center;gap:6px;
-  padding:6px var(--spacing-sm,8px);cursor:pointer;font-size:13px;user-select:none;
+  padding:6px var(--spacing-sm,8px);cursor:pointer;font-size:var(--sb-text-base,13px);user-select:none;
   transition:background .1s ease;}
 .vp-proj-summary::-webkit-details-marker{display:none;}
 .vp-proj-summary:hover{background:var(--color-surface-bg-emphasis);}
 .vp-proj-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-proj-hint{padding:6px 12px 6px 20px;font-size:11px;
+.vp-proj-hint{padding:6px 12px 6px 20px;font-size:var(--sb-text-meta,11px);
   color:var(--color-text-tertiary);font-style:italic;}
 /* 新規追加 project の reveal flash — auto tab-switch と併用して見失わせない
    (Shell の createEffect が対象に .vp-proj-flash を付与)。summary 背景を一瞬 brand 色に。 */
@@ -230,7 +233,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* tree connector は LaneRow が box-drawing text で持つ (= 線種で状態を表現、 2026-05-30)。
    VPMono (PlemolJP) の等幅 + 罫線 glyph で全行の縦線が揃う。 線種 = control surrender FSM。 */
 .vp-lane-connector{font-family:'VPMono',monospace;white-space:pre;flex:0 0 auto;
-  font-size:13px;line-height:1;letter-spacing:0;font-weight:700;
+  font-size:var(--sb-text-base,13px);line-height:1;letter-spacing:0;font-weight:700;
   -webkit-text-stroke:0.4px currentColor;user-select:none;}
 .vp-lane-connector.conn-conductor{
   color:color-mix(in oklch,var(--color-brand-primary),transparent 30%);}
@@ -240,7 +243,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-connector.conn-hitl{color:var(--color-status-warning,#d49b3f);}
 .vp-lane-connector.conn-auto{color:var(--color-status-info,#3fb9d4);}
 .vp-lane-row{position:relative;display:flex;flex-wrap:nowrap;align-items:center;
-  gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:12px;cursor:pointer;
+  gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:var(--sb-text-hint,12px);cursor:pointer;
   transition:background .1s ease;}
 .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
 .vp-lane-row + .vp-lane-row{border-top:1px solid
@@ -271,7 +274,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-row:hover .vp-lane-msg{opacity:0.55;}
 .vp-lane-msg.unread{color:var(--color-brand-primary);opacity:1;}
 .vp-lane-row:hover .vp-lane-msg.unread{opacity:1;}
-.vp-lane-meta{display:flex;gap:5px;font-size:10px;color:var(--color-text-tertiary);
+.vp-lane-meta{display:flex;gap:5px;font-size:var(--sb-text-micro,10px);color:var(--color-text-tertiary);
   white-space:nowrap;}
 .vp-lane-meta .ahead{color:var(--color-status-info,#3fb9d4);}
 .vp-lane-meta .behind{color:var(--color-status-warning,#d49b3f);}
@@ -292,14 +295,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
   padding:4px var(--spacing-sm,8px) 6px 14px;}
 .vp-add-performer-input{padding:5px 8px;border:1px solid var(--color-surface-border,#1f2233);
   background:var(--color-surface-bg-base);color:var(--color-text-primary);
-  border-radius:var(--radius-sm,6px);font-family:inherit;font-size:11px;
+  border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-meta,11px);
   box-sizing:border-box;}
 .vp-add-performer-input:focus{outline:none;border-color:var(--color-brand-primary);}
 .vp-add-performer-actions{display:flex;justify-content:flex-end;gap:6px;}
 .vp-add-performer-actions button{padding:3px 10px;
   border:1px solid var(--color-surface-border,#1f2233);background:transparent;
   color:var(--color-text-secondary);border-radius:var(--radius-sm,6px);cursor:pointer;
-  font-size:10px;font-family:inherit;transition:background .12s ease,color .12s ease;}
+  font-size:var(--sb-text-micro,10px);font-family:inherit;transition:background .12s ease,color .12s ease;}
 .vp-add-performer-actions button:hover{background:var(--color-surface-bg-emphasis);
   color:var(--color-text-primary);}
 .vp-add-performer-actions button.primary{background:var(--color-brand-primary-subtle);
@@ -310,7 +313,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:var(--color-surface-bg-base);}
 .vp-world-summary{list-style:none;display:flex;align-items:center;gap:6px;
   padding:var(--spacing-xs,4px) var(--spacing-sm,8px);cursor:pointer;
-  font-size:11px;color:var(--color-text-secondary);user-select:none;}
+  font-size:var(--sb-text-meta,11px);color:var(--color-text-secondary);user-select:none;}
 .vp-world-summary::-webkit-details-marker{display:none;}
 .vp-world-summary:hover{background:var(--color-surface-bg-emphasis);}
 .vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
@@ -330,7 +333,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   font-variant-numeric:tabular-nums;}
 .vp-world-detail{padding:var(--spacing-xs,4px) var(--spacing-sm,8px);
   border-top:1px dashed var(--color-surface-border,#1f2233);}
-.vp-world-stat{display:flex;justify-content:space-between;font-size:11px;
+.vp-world-stat{display:flex;justify-content:space-between;font-size:var(--sb-text-meta,11px);
   padding:1px 0;}
 .vp-world-stat .k{color:var(--color-text-tertiary);}
 .vp-world-stat .v{color:var(--color-text-primary);font-weight:500;
@@ -339,7 +342,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
 .vp-devices{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);}
 .vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
-  padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:12px;
+  padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);
   color:var(--color-text-secondary);}
 .vp-stand-row:hover{background:var(--color-surface-bg-emphasis);}
 .vp-stand-row.active{background:var(--color-brand-primary-subtle);
@@ -347,7 +350,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-stand-icon{display:flex;align-items:center;flex:0 0 auto;}
 .vp-stand-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
-.vp-stand-badge{flex:0 0 auto;font-size:10px;padding:1px 6px;border-radius:8px;
+.vp-stand-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
   background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);
   font-variant-numeric:tabular-nums;}
 
@@ -357,8 +360,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:var(--color-surface-bg-base);
   border:1px solid var(--color-surface-border,#1f2233);
   border-radius:var(--radius-md,6px);box-shadow:0 8px 24px rgba(0,0,0,.4);
-  padding:4px 0;font-size:12px;user-select:none;}
-.vp-ctx-header{padding:4px 14px 6px;font-size:10px;
+  padding:4px 0;font-size:var(--sb-text-hint,12px);user-select:none;}
+.vp-ctx-header{padding:4px 14px 6px;font-size:var(--sb-text-micro,10px);
   color:var(--color-text-tertiary);
   border-bottom:1px solid var(--color-surface-border,#1f2233);
   margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
