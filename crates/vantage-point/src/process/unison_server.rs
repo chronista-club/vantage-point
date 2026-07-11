@@ -332,6 +332,15 @@ async fn handle_terminal_demand_stop(
 /// 冪等: 先頭の `ReplayStart` を見て GUI が会話表示をクリアするため、 reconnect / demand 再発火で
 /// 二重化しない（terminal replay の clear-prefix と同型）。
 ///
+/// **生成中に着地した場合**: claude は message を完了時にしか transcript へ flush しないので、
+/// transcript だけでは生成中 message が欠ける（GUI は reset 済みなので、 復帰後の chunk が文の
+/// 途中から新しいバブルを立ててしまう）。 そこで engine host の **in-flight tail** を transcript の
+/// 後ろに継ぐ（`replay = transcript(commit 済み) ++ tail(未 commit)`、 `echoes::host` module doc）。
+///
+/// transcript を読んでいる最中に commit が挟まると tail と transcript が食い違う（欠落 or 二重化）。
+/// commit 世代 `seq` を読み前後で検算し、 動いていたら読み直す。 収束しなければ tail を捨てて
+/// commit 済み状態に収束させる（= 従来動作にフォールバック、 二重化より安全）。
+///
 /// chat mode でない lane / cc_session id 不明 / transcript 不在は「replay 無し」で graceful に返す
 /// （console は live event を待つだけで壊れない）。
 async fn handle_echoes_demand_start(
@@ -366,16 +375,68 @@ async fn handle_echoes_demand_start(
         return Ok(serde_json::json!({"status": "no_session", "lane": lane}));
     };
 
-    // disk read + 翻訳は同期 I/O（数 MB / 数千行）。 tokio worker を塞がないよう隔離する。
-    let events =
-        tokio::task::spawn_blocking(move || crate::echoes::transcript::replay_events(&session_id))
-            .await
-            .map_err(|e| format!("echoes_demand_start: transcript 変換 join 失敗: {e}"))?;
+    let (events, tail_len) = replay_with_in_flight(state, &addr, &session_id).await?;
 
     let count = events.len();
     route_echoes(state, &lane, events).await;
-    tracing::info!("echoes transcript replay: {count} events を配送 (lane={lane})");
-    Ok(serde_json::json!({"status": "replayed", "lane": lane, "events": count}))
+    tracing::info!(
+        "echoes transcript replay: {count} events を配送 (lane={lane}, in-flight tail={tail_len})"
+    );
+    Ok(serde_json::json!({
+        "status": "replayed", "lane": lane, "events": count, "in_flight": tail_len
+    }))
+}
+
+/// transcript 読み + in-flight tail の結合を、 commit 世代 `seq` で検算しながら行う。
+///
+/// 戻り値は `(replay 列, 継いだ tail の長さ)`。 tail 長 0 は「生成中でない」か「収束せず捨てた」。
+async fn replay_with_in_flight(
+    state: &AppState,
+    addr: &crate::process::lanes_state::LaneAddress,
+    session_id: &str,
+) -> Result<(Vec<crate::echoes::EchoesEvent>, usize), String> {
+    /// commit が挟まったときの読み直し回数。 commit 間隔（数百 ms 〜 秒）に対し transcript 読みは
+    /// 数 ms なので、 実運用では 1 回目で収束する。
+    const MAX_ATTEMPTS: usize = 3;
+
+    for _ in 0..MAX_ATTEMPTS {
+        // 先に tail を取る。 「tail → transcript」の順なら、 間に commit が挟まっても
+        // transcript 側が新しい = 情報の欠落は起きない（二重化は seq 検算で弾く）。
+        let before = state.lane_pool.read().await.chat_in_flight(addr);
+
+        // disk read + 翻訳は同期 I/O（数 MB / 数千行）。 tokio worker を塞がないよう隔離する。
+        let sid = session_id.to_string();
+        let mut events =
+            tokio::task::spawn_blocking(move || crate::echoes::transcript::replay_events(&sid))
+                .await
+                .map_err(|e| format!("echoes_demand_start: transcript 変換 join 失敗: {e}"))?;
+
+        let after_seq = state.lane_pool.read().await.chat_commit_seq(addr);
+        let Some(in_flight) = before else {
+            // engine 未起動（chat-idle / 再起動直後）= 継ぐ tail が無い。 transcript がすべて。
+            return Ok((events, 0));
+        };
+        if after_seq != Some(in_flight.seq) {
+            // 読んでいる間に message が commit された（or engine が入れ替わった）。
+            // tail が古い可能性があるので読み直す。
+            continue;
+        }
+        let tail_len = in_flight.tail.len();
+        events.extend(in_flight.tail);
+        return Ok((events, tail_len));
+    }
+
+    // 収束せず（生成が極端に速い / engine が入れ替わり続ける）。 tail を捨て、 commit 済み状態に
+    // 収束させる。 欠けた生成中 message は次の attach cycle で復元される。
+    tracing::warn!(
+        "echoes replay: commit 世代が {MAX_ATTEMPTS} 回連続で動いたため in-flight tail を破棄 (lane={addr})"
+    );
+    let sid = session_id.to_string();
+    let events =
+        tokio::task::spawn_blocking(move || crate::echoes::transcript::replay_events(&sid))
+            .await
+            .map_err(|e| format!("echoes_demand_start: transcript 変換 join 失敗: {e}"))?;
+    Ok((events, 0))
 }
 
 /// echoes demand stop ハンドラー。 replay は on-attach の一度きりなので停止対象の task は無い。
@@ -814,7 +875,7 @@ async fn handle_lane_restart(
 
 /// lanes portless (doc 27 §3.4.5): Lane create。 旧 SP HTTP `POST /api/lanes` を process-proxy ask に
 /// 移管。 core の `create_performer_orchestrated` (lane clone + PtySlot spawn) を呼ぶ薄い adapter。
-/// payload は `CreateLaneReq` 互換 JSON (kind/name/stand?/cwd?/branch?)。 成功は LaneInfo JSON、
+/// payload は `CreateLaneReq` 互換 JSON (kind/name/stand?/cwd?/branch?/base?)。 成功は LaneInfo JSON、
 /// 失敗は core が返す String error (旧 HTTP の CONFLICT="already exists" 等を保持)。
 async fn handle_lane_create(
     state: &Arc<AppState>,

@@ -570,9 +570,10 @@ async fn relay_send_on(
     Ok(())
 }
 
-/// `discover` で `handle` → `wld_id` を引く（不在 / wld_id 空はエラー）。曖昧性回避のため
-/// federation 宛先は handle 明示で受け、ここで routing key（wld_id）に解決する。
-async fn discover_wld_by_handle(client: &HubClient, handle: &str) -> Result<String> {
+/// `discover` で `handle` → 採用 entry を引く（不在 / wld_id 空はエラー）。曖昧性回避のため
+/// federation 宛先は handle 明示で受け、ここで routing key（wld_id）と direct 候補
+/// （endpoints — §S6 dialer が消費）に解決する。
+async fn discover_entry_by_handle(client: &HubClient, handle: &str) -> Result<WorldEntry> {
     let worlds = client.discover().await.context("discover に失敗")?;
     let target = pick_latest_by_handle(&worlds, handle).ok_or_else(|| {
         anyhow::anyhow!(
@@ -587,7 +588,7 @@ async fn discover_wld_by_handle(client: &HubClient, handle: &str) -> Result<Stri
             handle
         );
     }
-    Ok(target.wld_id.clone())
+    Ok(target.clone())
 }
 
 /// handle 一致の world から採用する 1 件を選ぶ純関数 — **registered_at 最新を選ぶ**。
@@ -617,13 +618,16 @@ pub async fn relay_send_to_wld(
     relay_send_on(&client, target_wld, from_label, envelope).await
 }
 
-/// 遠方 world の lane へ wire envelope を relay 経由で送る（flow ③ = federation 送信、daemon-side）。
+/// 遠方 world の lane へ wire envelope を送る（flow ③ = federation 送信、daemon-side）。
 ///
 /// SSOT 原則（hub と話すのは TheWorld のみ）に従い、CLI ではなく **TheWorld の wire channel handler**
 /// （`handle_wire_channel` の `wire/federate` method）から呼ぶ。MVP は短命接続:
-/// connect → `discover` で `target_world_handle` → `wld_id` 解決 → `dial_relay` → send。受信 world が
-/// `dispatch_wire("send")` でローカル配送する。`from_label` は relay の `open{from}` に載るが受信側は
-/// envelope の `from` を使うため cosmetic。永続接続の再利用は後の最適化。
+/// connect → `discover` で `target_world_handle` → entry（wld_id + endpoints）解決 →
+/// **direct 試行（§S6 HEv2 race）→ 全滅で relay floor（§S4）** — ADR-020 degrade ladder の
+/// consume 側。受信 world はどちらの経路でも `dispatch_wire("send")` でローカル配送する
+/// （direct = wire channel 直、relay = hub 経由 inbound handler、payload 形は同一）。
+/// `from_label` は relay の `open{from}` に載るが受信側は envelope の `from` を使うため
+/// cosmetic。永続接続の再利用は後の最適化。
 pub async fn federate_wire_send(
     hub_addr: &str,
     target_world_handle: &str,
@@ -633,12 +637,27 @@ pub async fn federate_wire_send(
     let client = HubClient::connect(hub_addr, 3)
         .await
         .context("federate-send: hub 接続に失敗")?;
-    let target_wld = discover_wld_by_handle(&client, target_world_handle)
+    let entry = discover_entry_by_handle(&client, target_world_handle)
         .await
         .context("federate-send")?;
-    relay_send_on(&client, &target_wld, from_label, envelope)
+    // §S6: direct 試行（endpoints あり && kill-switch 有効）。全滅は relay floor に degrade
+    // — direct の失敗は「エラー」でなく ladder の一段（warn でなく info）。
+    if super::dialer::direct_enabled() && !entry.endpoints.is_empty() {
+        match super::dialer::wire_send_direct(&entry, envelope).await {
+            Ok(()) => {
+                tracing::info!(wld_id = %entry.wld_id, "federation send via=direct");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::info!(wld_id = %entry.wld_id, "direct 全滅 → relay floor へ: {e:#}");
+            }
+        }
+    }
+    relay_send_on(&client, &entry.wld_id, from_label, envelope)
         .await
-        .context("federate-send")
+        .context("federate-send")?;
+    tracing::info!(wld_id = %entry.wld_id, "federation send via=relay");
+    Ok(())
 }
 
 /// 遠方 world の lane 一覧を問い合わせる（flow discovery = step 2、daemon-side）。
@@ -687,9 +706,10 @@ pub async fn federate_discover_lanes(
         .await
         .context("discover-lanes: 一時 register に失敗")?;
 
-    let target_wld = discover_wld_by_handle(&client, target_world_handle)
+    let target_wld = discover_entry_by_handle(&client, target_world_handle)
         .await
-        .context("discover-lanes")?;
+        .context("discover-lanes")?
+        .wld_id;
     let query = json!({
         "kind": "lanes-query",
         "request_id": request_id,

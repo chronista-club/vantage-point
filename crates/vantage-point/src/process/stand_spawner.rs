@@ -202,19 +202,34 @@ fn is_safe_session_id(id: &str) -> bool {
 /// - performer + id あり: `--resume '<id>' || fresh`（tmux 撤去で SP restart = claude 再起動に
 ///   なったため、 performer も会話継続を resume で担う。 id 指名なので dashboard 罠は踏まない）
 /// - performer + id なし: fresh（`--continue` は dashboard 罠のため使わない）
-fn claude_command(kind: LaneKind, fresh: bool, resume_id: Option<&str>) -> String {
-    let fresh_cmd = format!("claude --settings '{}'", WIRE_HOOKS);
+///
+/// `model`（co-evolution #1）: lane 単位の model alias（`engine_model` 由来）。 Some のとき
+/// **全 claude 起動**（fresh / resume / continue の全分岐、`||` fallback 先も含む）に `--model
+/// <alias>` を注入する。 alias は `engine_model::is_valid_model` が `[A-Za-z0-9._-]`（先頭 `-`
+/// 不可）を保証済みなので、 shell metachar / 空白を含まず unquoted 埋め込みで injection 安全。
+fn claude_command(
+    kind: LaneKind,
+    fresh: bool,
+    resume_id: Option<&str>,
+    model: Option<&str>,
+) -> String {
+    // `--model <alias> `（末尾 space 込み、None なら空文字）。 全分岐の "claude " 直後に挿す。
+    let model_flag = match model.filter(|m| crate::lane::engine_model::is_valid_model(m)) {
+        Some(m) => format!("--model {} ", m),
+        None => String::new(),
+    };
+    let fresh_cmd = format!("claude {}--settings '{}'", model_flag, WIRE_HOOKS);
     if fresh {
         return fresh_cmd;
     }
     match (kind, resume_id.filter(|id| is_safe_session_id(id))) {
         (_, Some(id)) => format!(
-            "claude --resume '{}' --settings '{}' || {}",
-            id, WIRE_HOOKS, fresh_cmd
+            "claude {}--resume '{}' --settings '{}' || {}",
+            model_flag, id, WIRE_HOOKS, fresh_cmd
         ),
         (LaneKind::Conductor, None) => format!(
-            "claude --continue --settings '{}' || {}",
-            WIRE_HOOKS, fresh_cmd
+            "claude {}--continue --settings '{}' || {}",
+            model_flag, WIRE_HOOKS, fresh_cmd
         ),
         (LaneKind::Performer, None) => fresh_cmd,
     }
@@ -274,7 +289,11 @@ pub fn build_stand_command(
         "echoes" | "hd" => {
             // resume id は lane 単位の state file（書き手 = global SessionStart hook）を直読み。
             let resume_id = crate::lane::cc_session::last(&addr.project, lane_label(addr));
-            let cmd = claude_command(addr.kind, fresh, resume_id.as_deref());
+            // model は lane 単位の state file（`engine_model`、Act I/II 共有）を直読み。
+            // 未記録 = None = claude default（co-evolution #1）。 respawn（SP restart）でも
+            // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
+            let model = crate::lane::engine_model::last(&addr.project, lane_label(addr));
+            let cmd = claude_command(addr.kind, fresh, resume_id.as_deref(), model.as_deref());
             Some(format!("{}\r", cmd))
         }
         "shell" => None,
@@ -380,11 +399,11 @@ mod tests {
     #[test]
     fn claude_command_variants() {
         // fresh は resume/continue を含まない
-        let fresh = claude_command(LaneKind::Conductor, true, Some("abc-123"));
+        let fresh = claude_command(LaneKind::Conductor, true, Some("abc-123"), None);
         assert!(!fresh.contains("--resume") && !fresh.contains("--continue"));
 
         // conductor + id → --resume '<id>' || fresh
-        let resume = claude_command(LaneKind::Conductor, false, Some("abc-123"));
+        let resume = claude_command(LaneKind::Conductor, false, Some("abc-123"), None);
         assert!(resume.contains("--resume 'abc-123'"), "{resume}");
         assert!(
             resume.contains("||"),
@@ -392,15 +411,15 @@ mod tests {
         );
 
         // conductor + id なし → --continue || fresh（初回/移行直後の従来 chain）
-        let cont = claude_command(LaneKind::Conductor, false, None);
+        let cont = claude_command(LaneKind::Conductor, false, None, None);
         assert!(cont.contains("--continue"), "{cont}");
 
         // performer + id → --resume（SP restart 後の会話継続、 dashboard 罠は id 指名で回避）
-        let perf = claude_command(LaneKind::Performer, false, Some("abc-123"));
+        let perf = claude_command(LaneKind::Performer, false, Some("abc-123"), None);
         assert!(perf.contains("--resume 'abc-123'"), "{perf}");
 
         // performer + id なし → fresh（--continue は dashboard 罠のため使わない）
-        let perf_fresh = claude_command(LaneKind::Performer, false, None);
+        let perf_fresh = claude_command(LaneKind::Performer, false, None, None);
         assert!(
             !perf_fresh.contains("--continue") && !perf_fresh.contains("--resume"),
             "{perf_fresh}"
@@ -411,10 +430,50 @@ mod tests {
     #[test]
     fn unsafe_session_ids_are_rejected() {
         for bad in ["", "a'b", "x;rm -rf /", "id with space"] {
-            let cmd = claude_command(LaneKind::Conductor, false, Some(bad));
+            let cmd = claude_command(LaneKind::Conductor, false, Some(bad), None);
             assert!(
                 !cmd.contains("--resume"),
                 "不正 id '{bad}' は resume に使わない: {cmd}"
+            );
+        }
+    }
+
+    /// model 指定（co-evolution #1）: 全分岐の全 claude 起動に `--model <alias>` が乗る。
+    #[test]
+    fn model_flag_injected_into_all_claude_invocations() {
+        // fresh: 単一 claude に --model
+        let fresh = claude_command(LaneKind::Performer, true, None, Some("sonnet"));
+        assert_eq!(
+            fresh,
+            "claude --model sonnet --settings '{\"hooks\":{\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"vp wire hook-check\"}]}]}}'",
+            "fresh は --model 付き単一 claude: {fresh}"
+        );
+
+        // resume: 主 claude と `||` fallback 先の fresh、 両方に --model が乗る
+        let resume = claude_command(LaneKind::Performer, false, Some("abc-123"), Some("opus"));
+        assert_eq!(
+            resume.matches("--model opus").count(),
+            2,
+            "resume 主 + fallback fresh の両方に --model: {resume}"
+        );
+        assert!(
+            resume.contains("--model opus --resume 'abc-123'"),
+            "{resume}"
+        );
+
+        // continue: 主 claude と fallback fresh の両方
+        let cont = claude_command(LaneKind::Conductor, false, None, Some("claude-fable-5"));
+        assert_eq!(cont.matches("--model claude-fable-5").count(), 2, "{cont}");
+    }
+
+    /// 不正な model 名（injection 形 / 空 / 先頭 `-`）は `--model` に採用されない。
+    #[test]
+    fn unsafe_models_are_rejected() {
+        for bad in ["", "opus --dangerously", "a;rm -rf /", "-x", "mo del"] {
+            let cmd = claude_command(LaneKind::Performer, true, None, Some(bad));
+            assert!(
+                !cmd.contains("--model"),
+                "不正 model '{bad}' は --model に使わない: {cmd}"
             );
         }
     }

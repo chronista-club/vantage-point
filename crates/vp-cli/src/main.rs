@@ -193,6 +193,14 @@ enum LaneCommands {
         /// 隔離方式: worktree (default、 conductor の .git 共有) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
+        /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
+        /// performer-files.kdl の base-ref → origin/HEAD → main
+        #[arg(long)]
+        base: Option<String>,
+        /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
+        /// `--model` として読まれる。省略時は claude default
+        #[arg(long)]
+        model: Option<String>,
     },
     /// 現在の dirty state を新しい performer 環境に fork
     Fork {
@@ -206,6 +214,14 @@ enum LaneCommands {
         /// 隔離方式: worktree (default) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
+        /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
+        /// performer-files.kdl の base-ref → origin/HEAD → main
+        #[arg(long)]
+        base: Option<String>,
+        /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
+        /// `--model` として読まれる。省略時は claude default
+        #[arg(long)]
+        model: Option<String>,
     },
     /// performer 環境一覧
     ///
@@ -236,7 +252,7 @@ enum LaneCommands {
     },
     /// 全 performer の状態表示
     Status,
-    /// branch が main に merge 済の performer を削除
+    /// branch が default branch (origin/HEAD) に merge 済の performer を削除（squash merge も検出）
     Cleanup {
         /// 確認なしで強制削除
         #[arg(long, short)]
@@ -649,8 +665,18 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             branch,
             force,
             isolation,
+            base,
+            model,
         } => {
-            ws::new_performer(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
+            ws::new_performer(
+                &name,
+                &branch,
+                force,
+                isolation,
+                base.as_deref(),
+                model.as_deref(),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Fork {
@@ -658,8 +684,18 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             branch,
             force,
             isolation,
+            base,
+            model,
         } => {
-            ws::fork_performer(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
+            ws::fork_performer(
+                &name,
+                &branch,
+                force,
+                isolation,
+                base.as_deref(),
+                model.as_deref(),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Ls { detail } => {

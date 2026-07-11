@@ -35,14 +35,24 @@ pub enum Isolation {
 }
 
 /// Create a new performer environment
+///
+/// `base`: worktree の分岐元 ref の per-invocation override (co-evolution #2)。
+/// None なら従来通り performer-files.kdl の `base-ref` → origin/HEAD → "main"。
+///
+/// `model`: lane の claude model alias (co-evolution #1)。 Some なら `engine_model` へ永続し、
+/// この lane が spawn される際に Act I claude の `--model` として読まれる。 None なら claude default。
+/// worktree 作成のみ（spawn は SP が別途行う）なので、 ここでは state file を書くだけ。
 pub fn new_performer(
     name: &str,
     branch: &str,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
+    model: Option<&str>,
 ) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
-    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation)?;
+    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation, base)?;
+    persist_lane_model(&repo_root, name, model)?;
     println!("{}", performer_dir.display());
     Ok(())
 }
@@ -55,8 +65,9 @@ pub fn new_performer_in(
     branch: &str,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
 ) -> Result<PathBuf, String> {
-    setup_performer(name, branch, repo_root, force, isolation)
+    setup_performer(name, branch, repo_root, force, isolation, base)
 }
 
 /// Phase 4-X: SP-friendly remove。 repo_root を明示的に受け取り、 project-local 新 path で
@@ -89,13 +100,16 @@ pub fn fork_performer(
     branch: &str,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
+    model: Option<&str>,
 ) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
 
     // Capture dirty state as a diff BEFORE creating the performer
     let diff = capture_dirty_diff(&repo_root)?;
 
-    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation)?;
+    let performer_dir = setup_performer(name, branch, &repo_root, force, isolation, base)?;
+    persist_lane_model(&repo_root, name, model)?;
 
     // Apply the captured diff to the performer
     if let Some(patch) = diff {
@@ -121,6 +135,7 @@ fn setup_performer(
     repo_root: &Path,
     force: bool,
     isolation: Isolation,
+    base: Option<&str>,
 ) -> Result<PathBuf, String> {
     config::validate_performer_name(name)?;
 
@@ -151,8 +166,18 @@ fn setup_performer(
     // provisioning: worktree (default) は branch も atomic に作る。 clone は内部で checkout -b。
     // 以降の symlink/copy/post-setup は両者で共通。
     match isolation {
-        Isolation::Worktree => provision_worktree(repo_root, &performer_dir, branch, &cfg)?,
-        Isolation::Clone => provision_clone(repo_root, &performer_dir, branch)?,
+        Isolation::Worktree => provision_worktree(repo_root, &performer_dir, branch, &cfg, base)?,
+        Isolation::Clone => {
+            // clone は conductor HEAD の depth-1 複製 (= 任意 ref からの分岐に非対応)。
+            // silent に無視せず明示 error (co-evolution #2 は worktree が対象)。
+            if base.is_some_and(|b| !b.trim().is_empty()) {
+                return Err(
+                    "--base は isolation=worktree のみ対応 (clone は conductor HEAD の複製)"
+                        .to_string(),
+                );
+            }
+            provision_clone(repo_root, &performer_dir, branch)?
+        }
     }
 
     // Symlinks
@@ -236,8 +261,9 @@ fn provision_worktree(
     performer_dir: &Path,
     branch: &str,
     cfg: &config::PerformerConfig,
+    base_override: Option<&str>,
 ) -> Result<(), String> {
-    let base = resolve_base_ref(repo_root, cfg);
+    let base = resolve_base_ref(repo_root, cfg, base_override);
     // base を best-effort fetch (= offline でも local ref で worktree add は進める)。
     if let Err(e) = run_git_in(repo_root, &["fetch", "origin", &base]) {
         eprintln!("⚠ fetch origin {base} 失敗 (続行、 local ref で worktree 作成): {e}");
@@ -267,8 +293,23 @@ fn provision_clone(repo_root: &Path, performer_dir: &Path, branch: &str) -> Resu
 }
 
 /// worktree lane の base branch (= dev trunk) を解決。
-/// 優先順: performer-files.kdl の `base-ref` → [`resolve_default_branch`] (origin/HEAD) → "main"。
-fn resolve_base_ref(repo_root: &Path, cfg: &config::PerformerConfig) -> String {
+/// 優先順: per-invocation override (`--base` / API `base`、co-evolution #2) →
+/// performer-files.kdl の `base-ref` → [`resolve_default_branch`] (origin/HEAD) → "main"。
+///
+/// override は未 push の local branch でもよい ([`resolve_start_point`] が
+/// `origin/<base>` → `<base>` の順で probe するため、conductor の feature branch 上の
+/// 未 merge 土台を wing に配れる)。
+fn resolve_base_ref(
+    repo_root: &Path,
+    cfg: &config::PerformerConfig,
+    base_override: Option<&str>,
+) -> String {
+    if let Some(b) = base_override {
+        let b = b.trim();
+        if !b.is_empty() {
+            return b.to_string();
+        }
+    }
     if let Some(b) = &cfg.base_ref
         && !b.trim().is_empty()
     {
@@ -457,6 +498,41 @@ fn remove_performer_workspace(repo_root: &Path, performer_dir: &Path) -> Result<
 /// lane = performer 名。
 fn clear_lane_state_files(repo_root: &Path, lane: &str) {
     clear_lane_state_files_in(&crate::config::vp_state_dir(), repo_root, lane);
+}
+
+/// lane の claude model を `engine_model` へ永続する (co-evolution #1、CLI `vp lane new/fork --model`)。
+///
+/// project key は `clear_lane_state_files` / SP `create_performer_orchestrated` と同一
+/// derivation (repo_root basename) — CLI で書いた model を SP spawn 経路が読めるようにする。
+/// None は no-op (= claude default)。 不正な model 名は Err で早期に弾く (worktree は作成済だが
+/// spawn 前に失敗を返す方が silent degrade より良い)。
+///
+/// `repo_root` は [`config::find_repo_root`] 由来で **常に main worktree root** に正規化される
+/// (lane worktree の中から呼んでも SP 読み手の `addr.project` = main root basename と一致する。
+/// 旧: worktree 内実行で project key mismatch → model が silent 無視。project key 正規化で解消)。
+fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
+    persist_lane_model_in(&crate::config::vp_state_dir(), repo_root, lane, model)
+}
+
+/// state base dir 注入版 (テスト用)。
+fn persist_lane_model_in(
+    base: &Path,
+    repo_root: &Path,
+    lane: &str,
+    model: Option<&str>,
+) -> Result<(), String> {
+    let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(());
+    };
+    if !super::engine_model::is_valid_model(model) {
+        return Err(format!("model 名が不正です: {model:?}"));
+    }
+    let project = repo_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    super::engine_model::record_in(base, project, lane, model)
+        .map_err(|e| format!("model 永続に失敗: {e}"))
 }
 
 /// state base dir 注入版 (テスト用)。
@@ -668,15 +744,22 @@ pub fn status_performers() -> Result<(), String> {
     Ok(())
 }
 
-/// Remove performers whose branch is merged into main (cwd の `<repo>/.vp/lanes/` 対象)。
+/// Remove performers whose branch is merged into the repo's default branch
+/// (cwd の `<repo>/.vp/lanes/` 対象)。
 ///
 /// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
+/// co-evolution #3: default branch を `resolve_default_branch` (origin/HEAD) で解決し、
+/// squash merge も検出する (旧: `origin/main` ハードコード + ancestry only)。
 pub fn cleanup_performers(force: bool) -> Result<(), String> {
     let Ok(repo_root) = config::find_repo_root() else {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());
     };
     let pl_dir = config::project_lanes_dir(&repo_root);
+
+    // default branch を 1 回だけ解決 (per-performer の gh 呼び出しを避ける)。 nightly 等の
+    // 非 main trunk を尊重。 解決不能なら "main" fallback (resolve_default_branch 内で probe 済)。
+    let default_branch = resolve_default_branch(&repo_root).unwrap_or_else(|| "main".to_string());
 
     // (name, path, branch)。 branch は worktree cleanup 時の `git branch -d` 用。
     let mut to_remove: Vec<(String, std::path::PathBuf, Option<String>)> = Vec::new();
@@ -686,7 +769,7 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
         && let Ok(entries) = fs::read_dir(&pl_dir)
     {
         for entry in entries.flatten() {
-            classify_performer_for_cleanup(entry, &mut to_remove, &mut kept);
+            classify_performer_for_cleanup(entry, &default_branch, &mut to_remove, &mut kept);
         }
     }
 
@@ -744,8 +827,12 @@ fn print_performer_status_row(path: &Path, name: &str) {
 }
 
 /// `cleanup_performers` 内の 1 performer 分類 helper
+///
+/// merged 判定は ancestry ([`is_branch_merged`]) → squash/rebase ([`is_branch_squash_merged`]) の
+/// 2 段。 後者は gh PR state を引くため cleanup (明示・低頻度) 経路のみで行う (co-evolution #3)。
 fn classify_performer_for_cleanup(
     entry: fs::DirEntry,
+    default_branch: &str,
     to_remove: &mut Vec<(String, std::path::PathBuf, Option<String>)>,
     kept: &mut Vec<(String, String)>,
 ) {
@@ -756,7 +843,7 @@ fn classify_performer_for_cleanup(
     }
     let name = entry.file_name().to_string_lossy().to_string();
     let _ = run_git_in(&path, &["fetch", "--quiet"]);
-    if is_branch_merged(&path) {
+    if is_branch_merged(&path, default_branch) || is_branch_squash_merged(&path, default_branch) {
         let branch = get_branch(&path);
         to_remove.push((name, path, branch));
     } else {
@@ -964,38 +1051,140 @@ fn get_last_commit(dir: &std::path::Path) -> String {
     }
 }
 
-/// Check if HEAD in the performer dir is merged into origin/main (or origin/master).
+/// Check if HEAD in the performer dir is merged into origin/<default_branch> (ancestry sense)。
 ///
-/// A performer is "merged" only if:
-///   1. HEAD is an ancestor of origin/<main> (merge-base --is-ancestor), AND
-///   2. The performer has diverged (has at least 1 local commit beyond origin/<main>)
+/// "merged" と判定するのは:
+///   1. HEAD が origin/<default> の ancestor (`merge-base --is-ancestor`)、 かつ
+///   2. divergence あり (HEAD != origin/<default>、 = fresh performer の誤判定防止)
 ///
-/// This prevents false positives on freshly-created performers (HEAD == origin/main).
-fn is_branch_merged(performer_dir: &std::path::Path) -> bool {
-    for branch in &["main", "master"] {
-        let remote_ref = format!("origin/{branch}");
+/// merge-commit / fast-forward merge を検出する。 **squash merge は元 commit を歴史に残さない
+/// ため ancestry では false** になる — squash / rebase merge は [`is_branch_squash_merged`] で別途判定。
+///
+/// `default_branch`: repo の default branch 名 (`resolve_default_branch` 由来、 例 "nightly")。
+/// 旧実装の `origin/main`/`origin/master` ハードコードを廃し、 nightly 等の非 main trunk に対応
+/// (co-evolution #3)。 origin/<default> が解決不能なら keep 安全側 (false)。
+fn is_branch_merged(performer_dir: &std::path::Path, default_branch: &str) -> bool {
+    let remote_ref = format!("origin/{default_branch}");
+    let remote_sha = git_rev_parse(performer_dir, &remote_ref);
+    if remote_sha.is_none() {
+        return false;
+    }
+    // fresh (未 divergence): HEAD == origin/<default> → keep
+    if git_rev_parse(performer_dir, "HEAD") == remote_sha {
+        return false;
+    }
+    git_is_ancestor(performer_dir, "HEAD", &remote_ref)
+}
 
-        // Check if HEAD is ancestor of remote main
-        let ancestor = Command::new("git")
-            .args(["merge-base", "--is-ancestor", "HEAD", &remote_ref])
-            .current_dir(performer_dir)
-            .output()
-            .ok();
-        if !matches!(ancestor, Some(ref o) if o.status.success()) {
-            continue;
-        }
-
-        // Guard: skip if HEAD is exactly the same commit as origin/main
-        // (freshly created performer that hasn't diverged yet)
-        let head_sha = git_rev_parse(performer_dir, "HEAD");
-        let remote_sha = git_rev_parse(performer_dir, &remote_ref);
-        if head_sha == remote_sha {
-            continue;
-        }
-
+/// Check if the performer's branch was squash/rebase-merged into origin/<default_branch>。
+///
+/// squash merge は元 commit を歴史に残さないため [`is_branch_merged`] (ancestry) では false。
+/// 別経路で「branch の内容が既に取り込まれたか」を判定する (co-evolution #3):
+///   1. **gh PR state (内容照合付き)**: この branch を head とする merged PR の head commit
+///      (`headRefOid`) を取り、 HEAD がその commit に**含まれる** (HEAD がその ancestor) 場合のみ
+///      merged 扱い。 ⚠️ 名前一致だけだと `mako/{slug}` 規約で同名 branch を再利用 (同じ課題を
+///      再着手) した時に、 過去の merged PR を拾って未 merge の新規 work を `--force` 削除しうる
+///      (moody 指摘 #1)。 commit ancestry で確認して「HEAD が merged tip より進んでいる = 新規
+///      work あり」なら keep に倒す。
+///   2. **git cherry fallback**: branch の全 commit が upstream に patch-equivalent ('-') なら merged。
+///      rebase merge / 単一 commit squash を拾う (複数 commit squash は組合せ patch-id が個別と
+///      一致せず取りこぼすため gh が主、 cherry は gh 不在 / headRefOid 照合不能時の補助)。 cherry も
+///      内容ベースなので、 名前一致だけの誤判定は起きない。
+fn is_branch_squash_merged(performer_dir: &Path, default_branch: &str) -> bool {
+    if let Some(branch) = get_branch(performer_dir)
+        && let Some(head_oid) = gh_merged_pr_head_oid(performer_dir, &branch)
+        && head_contained_in_merged_commit(performer_dir, &head_oid) == Some(true)
+    {
         return true;
     }
-    false
+    // gh 不在 / 非 GitHub / merged PR なし / headRefOid が local 不在 / HEAD が merged tip より
+    // 進んでいる (新規 work) → git cherry の patch-equivalent 判定 (内容ベース) に委ねる。
+    all_commits_patch_equivalent(performer_dir, &format!("origin/{default_branch}"))
+}
+
+/// `git merge-base --is-ancestor <a> <b>` (a が b の祖先か)。
+fn git_is_ancestor(dir: &Path, a: &str, b: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", a, b])
+        .current_dir(dir)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// この branch を head とする **merged** PR の head commit SHA を返す (gh CLI)。
+/// squash merge 後は remote branch が消えていても PR は merged state で残るため
+/// `gh pr list --head <branch> --state merged` で引ける。 `headRefOid` は squash 前の
+/// branch tip commit。 gh 不在 / 非 GitHub / 未認証 / merged PR なしは None。
+///
+/// 出力は `-q .[0].headRefOid` で SHA 1 個に絞り、 hex のみを受理する (空配列時の "null" や
+/// 予期せぬ出力を弾く = spoof 耐性)。
+fn gh_merged_pr_head_oid(dir: &Path, branch: &str) -> Option<String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "merged",
+            "--limit",
+            "1",
+            "--json",
+            "headRefOid",
+            "-q",
+            ".[0].headRefOid",
+        ])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // SHA は hex のみ。 空 / "null" / 予期せぬ出力は None。
+    (!oid.is_empty() && oid.chars().all(|c| c.is_ascii_hexdigit())).then_some(oid)
+}
+
+/// gh が返した merged PR の head commit が現在の HEAD を含む (HEAD がその ancestor) か。
+///
+/// - `Some(true)`: HEAD の作業は merged commit に含まれる (HEAD == merged tip、 または HEAD が
+///   より古い) → merged。
+/// - `Some(false)`: HEAD が merged tip より進んでいる / 分岐 → **未 merge の新規 work あり** → keep。
+/// - `None`: head commit が local に無い → 照合不能 (cherry fallback に委ねる)。
+fn head_contained_in_merged_commit(dir: &Path, head_oid: &str) -> Option<bool> {
+    // `git rev-parse` は 40 桁 hex を実在確認せずそのまま返すので、 `cat-file -e` で commit
+    // object の実在を確認する (存在しない oid で誤って ancestry 判定に進まない)。
+    let exists = Command::new("git")
+        .args(["cat-file", "-e", &format!("{head_oid}^{{commit}}")])
+        .current_dir(dir)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !exists {
+        return None; // commit が local に無い → 内容照合不能
+    }
+    Some(git_is_ancestor(dir, "HEAD", head_oid))
+}
+
+/// branch の全 commit が origin/<default> に patch-equivalent か (`git cherry <upstream> HEAD`)。
+///
+/// 出力の全行が '-' (upstream に等価 commit あり) かつ 1 行以上なら true。 単一 commit squash /
+/// rebase merge を拾う。 commit 無し (空出力) は false (ancestry 側で処理済のはず)。
+fn all_commits_patch_equivalent(dir: &Path, remote_ref: &str) -> bool {
+    let output = Command::new("git")
+        .args(["cherry", remote_ref, "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok();
+    match output {
+        Some(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+            !lines.is_empty() && lines.iter().all(|l| l.starts_with('-'))
+        }
+        _ => false,
+    }
 }
 
 fn git_rev_parse(dir: &std::path::Path, rev: &str) -> Option<String> {
@@ -1048,7 +1237,8 @@ pub struct PerformerStatus {
     pub has_upstream: bool,
     /// 最新 commit `{sha} {message}` (`git log --oneline -1`)、 取得失敗時 "-"
     pub last_commit: String,
-    /// origin/main (or origin/master) に merge 済みで cleanup 候補か
+    /// default branch (origin/HEAD) に ancestry merge 済みで cleanup 候補か。
+    /// sidebar hot path のため squash merge は含まない (`vp lane cleanup` は squash も検出)。
     pub is_merged: bool,
 }
 
@@ -1059,7 +1249,11 @@ pub fn performer_status(dir: &Path) -> PerformerStatus {
     let dirty_count = count_changes(dir);
     let (ahead, behind, has_upstream) = get_ahead_behind_counts(dir);
     let last_commit = get_last_commit(dir);
-    let is_merged = is_branch_merged(dir);
+    // sidebar hot path: default branch は解決するが (nightly 対応)、 squash 判定 (gh) は
+    // 引かない (per-refresh の gh network call を避ける)。 squash-merged lane は sidebar 上
+    // 未マージ表示になるが、 明示的な `vp lane cleanup` は squash も検出する (co-evolution #3)。
+    let default_branch = resolve_default_branch(dir).unwrap_or_else(|| "main".to_string());
+    let is_merged = is_branch_merged(dir, &default_branch);
     PerformerStatus {
         branch,
         dirty_count,
@@ -1121,6 +1315,36 @@ mod tests {
         assert_eq!(crate::lane::cc_session::last_in(base, "vp", "feat"), None);
         // 未記録 lane / 二重呼び出しでも panic しない (best-effort 冪等)
         clear_lane_state_files_in(base, &repo_root, "feat");
+    }
+
+    #[test]
+    fn persist_lane_model_writes_engine_model_with_basename_key() {
+        // co-evolution #1: CLI `--model` は SP spawn 経路が読む engine_model へ、
+        // repo basename を project key として書く (key derivation は clear と同一)。
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let repo_root = tmp.path().join("parent").join("vp");
+
+        // None は no-op（未記録のまま = claude default）
+        persist_lane_model_in(base, &repo_root, "feat", None).expect("None は Ok");
+        assert_eq!(crate::lane::engine_model::last_in(base, "vp", "feat"), None);
+
+        // 空白のみも no-op
+        persist_lane_model_in(base, &repo_root, "feat", Some("  ")).expect("空白は Ok");
+        assert_eq!(crate::lane::engine_model::last_in(base, "vp", "feat"), None);
+
+        // 有効な model は engine_model に basename key で書かれる
+        persist_lane_model_in(base, &repo_root, "feat", Some("claude-fable-5")).expect("record");
+        assert_eq!(
+            crate::lane::engine_model::last_in(base, "vp", "feat").as_deref(),
+            Some("claude-fable-5"),
+            "SP spawn が読む project=basename('vp') key に書かれる"
+        );
+
+        // 不正 model は Err（worktree 作成後でも spawn 前に弾く）
+        let err =
+            persist_lane_model_in(base, &repo_root, "feat", Some("opus; rm -rf /")).unwrap_err();
+        assert!(err.contains("不正"), "injection 形は Err: {err}");
     }
 
     // --- test helpers ---
@@ -1373,7 +1597,7 @@ mod tests {
 
         // performer HEAD は origin/main の祖先 + 分岐あり → merged = true
         assert!(
-            is_branch_merged(&performer_repo),
+            is_branch_merged(&performer_repo, "main"),
             "merged feature branch should return true"
         );
 
@@ -1490,8 +1714,233 @@ mod tests {
         // performer に local commit なし（HEAD == origin/main）
         // false-positive ガード: is_branch_merged は false を返すべき
         assert!(
-            !is_branch_merged(&performer_repo),
+            !is_branch_merged(&performer_repo, "main"),
             "fresh performer (HEAD == origin/main) should return false"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn is_branch_squash_merged_detects_single_commit_squash() {
+        // co-evolution #3: squash merge は ancestry では検出できないが、 git cherry
+        // (patch-equivalent) で拾える。 gh は test 環境 (local bare remote) で不在扱いになり
+        // cherry fallback が効く。
+        let base = test_dir("squash-merged");
+        let (main_repo, performer_repo) = setup_merged_performer_repos(&base);
+
+        // performer: feature branch + 1 commit を push
+        Cmd::new("git")
+            .args(["checkout", "-b", "feat-squash"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        fs::write(performer_repo.join("sq.txt"), "squash me\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "squash target"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push", "origin", "feat-squash"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+
+        // main_repo: feat-squash を squash merge (新 commit = 元 commit は歴史に残らない)
+        Cmd::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["merge", "--squash", "origin/feat-squash"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "squashed feat-squash (#1)"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push", "origin", "main"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+
+        // performer が fetch して origin/main に squash commit を取り込む
+        Cmd::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+
+        // ancestry では検出できない (旧実装の false negative)
+        assert!(
+            !is_branch_merged(&performer_repo, "main"),
+            "squash merge は ancestry (is_branch_merged) では false"
+        );
+        // squash 検出経路 (git cherry fallback) が true を返す
+        assert!(
+            is_branch_squash_merged(&performer_repo, "main"),
+            "squash merge は is_branch_squash_merged で検出されるべき"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn head_contained_in_merged_commit_protects_new_work() {
+        // moody 指摘 #1: gh の branch 名一致だけだと同名 branch 再利用で未 merge work を
+        // 誤削除しうる。 head commit の ancestry で内容照合し、 HEAD が merged tip より進んで
+        // いれば keep に倒す — その content-safety を gh 非依存で検証する。
+        let base = test_dir("merged-oid-guard");
+        let (_, performer_repo) = setup_merged_performer_repos(&base);
+
+        // commit A = 過去 PR の merged head 相当
+        fs::write(performer_repo.join("a.txt"), "a\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "A (merged tip)"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        let a = git_rev_parse(&performer_repo, "HEAD").unwrap();
+
+        // HEAD == A: merged tip そのもの → contained (merged 扱い OK)
+        assert_eq!(
+            head_contained_in_merged_commit(&performer_repo, &a),
+            Some(true),
+            "HEAD == merged tip は contained"
+        );
+
+        // commit B を A の上に積む (= 同名 branch 再利用の新規未 merge work 相当)
+        fs::write(performer_repo.join("b.txt"), "b\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "B (new unmerged work)"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+
+        // HEAD == B, merged tip == A: B は A より進んでいる → not contained → keep (誤削除防止)
+        assert_eq!(
+            head_contained_in_merged_commit(&performer_repo, &a),
+            Some(false),
+            "merged tip より進んだ HEAD は未 merge work あり → false (削除しない)"
+        );
+
+        // local に無い commit は照合不能 → None (cherry fallback に委ねる)
+        assert_eq!(
+            head_contained_in_merged_commit(
+                &performer_repo,
+                "0000000000000000000000000000000000000000"
+            ),
+            None,
+            "未知 oid は照合不能 → None"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn is_branch_merged_respects_non_main_default() {
+        // co-evolution #3: default が main でない (nightly) repo でも ancestry merge を検出、
+        // かつ default branch を正しく尊重する (main には未 merge なので main 指定では false)。
+        let base = test_dir("nightly-default");
+        let (main_repo, performer_repo) = setup_merged_performer_repos(&base);
+
+        // main_repo: main から nightly を派生して push (= dev trunk)
+        Cmd::new("git")
+            .args(["checkout", "-b", "nightly"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push", "-u", "origin", "nightly"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+
+        // performer: feature branch + commit を push
+        Cmd::new("git")
+            .args(["checkout", "-b", "feat-nl"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        fs::write(performer_repo.join("nl.txt"), "night\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "night work"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push", "origin", "feat-nl"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+
+        // main_repo: feat-nl を nightly に (通常) merge + 追加 commit で先に進める
+        Cmd::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["merge", "origin/feat-nl", "--no-edit"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        fs::write(main_repo.join("nl-extra.txt"), "x\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "post"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push", "origin", "nightly"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+
+        Cmd::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&performer_repo)
+            .output()
+            .unwrap();
+
+        // default=nightly では merged (ancestry)、 default=main では未 merge (default 尊重)
+        assert!(
+            is_branch_merged(&performer_repo, "nightly"),
+            "nightly に merge 済 → default=nightly では true"
+        );
+        assert!(
+            !is_branch_merged(&performer_repo, "main"),
+            "main には未 merge → default=main では false (default branch を尊重)"
         );
 
         let _ = fs::remove_dir_all(&base);
@@ -1562,8 +2011,15 @@ mod tests {
     #[test]
     fn setup_performer_worktree_creates_shared_worktree() {
         let (base, conductor) = setup_worktree_fixture("create");
-        let performer =
-            setup_performer("feat", "mako/feat", &conductor, false, Isolation::Worktree).unwrap();
+        let performer = setup_performer(
+            "feat",
+            "mako/feat",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap();
         // worktree marker: .git は file (gitdir pointer)、clone なら dir
         assert!(
             performer.join(".git").is_file(),
@@ -1586,8 +2042,15 @@ mod tests {
     #[test]
     fn remove_performer_workspace_worktree_keeps_branch() {
         let (base, conductor) = setup_worktree_fixture("remove-keeps-branch");
-        let performer =
-            setup_performer("rm", "mako/rm", &conductor, false, Isolation::Worktree).unwrap();
+        let performer = setup_performer(
+            "rm",
+            "mako/rm",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap();
         assert!(performer.exists());
 
         remove_performer_workspace(&conductor, &performer).unwrap();
@@ -1621,12 +2084,110 @@ mod tests {
     fn setup_performer_worktree_duplicate_branch_errors() {
         // F3: 同名 branch で 2 つ目の worktree を作ろうとすると actionable error
         let (base, conductor) = setup_worktree_fixture("dup-branch");
-        setup_performer("first", "mako/dup", &conductor, false, Isolation::Worktree).unwrap();
-        let err = setup_performer("second", "mako/dup", &conductor, false, Isolation::Worktree)
-            .unwrap_err();
+        setup_performer(
+            "first",
+            "mako/dup",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap();
+        let err = setup_performer(
+            "second",
+            "mako/dup",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            None,
+        )
+        .unwrap_err();
         assert!(
             err.contains("既に存在") || err.contains("使用中") || err.contains("mako/dup"),
             "branch 衝突は分かりやすい error を返すべき: {err}"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn setup_performer_worktree_base_override_uses_local_branch() {
+        // co-evolution #2 の dogfood シナリオ: conductor の未 push feature branch を
+        // base に wing を切る (origin に無い ref でも resolve_start_point の local probe で通る)。
+        let (base, conductor) = setup_worktree_fixture("base-override");
+        Cmd::new("git")
+            .args(["checkout", "-b", "mako/feature-base"])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+        fs::write(conductor.join("feature.txt"), "土台 ADT\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "feature base"])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["checkout", "main"])
+            .current_dir(&conductor)
+            .output()
+            .unwrap();
+
+        let performer = setup_performer(
+            "wing",
+            "mako/wing",
+            &conductor,
+            false,
+            Isolation::Worktree,
+            Some("mako/feature-base"),
+        )
+        .unwrap();
+        assert!(
+            performer.join("feature.txt").exists(),
+            "wing は feature branch の内容 (未 merge 土台) から分岐すべき"
+        );
+        assert_eq!(get_branch(&performer).as_deref(), Some("mako/wing"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_base_ref_priority_override_then_kdl() {
+        // 優先順: override → performer-files.kdl base-ref → origin/HEAD。空白 override は無視。
+        let (base, conductor) = setup_worktree_fixture("base-priority");
+        let cfg = config::PerformerConfig {
+            base_ref: Some("kdl-base".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_base_ref(&conductor, &cfg, Some("cli-base")),
+            "cli-base"
+        );
+        assert_eq!(resolve_base_ref(&conductor, &cfg, Some("  ")), "kdl-base");
+        assert_eq!(resolve_base_ref(&conductor, &cfg, None), "kdl-base");
+        let no_kdl = config::PerformerConfig::default();
+        assert_eq!(resolve_base_ref(&conductor, &no_kdl, None), "main");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn setup_performer_clone_with_base_errors() {
+        // clone isolation は conductor HEAD の depth-1 複製で base 分岐に非対応 → 明示 error
+        let (base, conductor) = setup_worktree_fixture("clone-base");
+        let err = setup_performer(
+            "cl",
+            "mako/cl",
+            &conductor,
+            false,
+            Isolation::Clone,
+            Some("main"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("worktree"),
+            "clone + base は worktree のみ対応の error を返すべき: {err}"
         );
         let _ = fs::remove_dir_all(&base);
     }

@@ -1,0 +1,66 @@
+// vp-daemon channel の wire protocol を記述する KDL（runtime discovery 用）。
+//
+// 目的:
+//   VP daemon（TheWorld、Unison ProtocolServer "vp-daemon"）が起動時に enable_discovery で
+//   この KDL を unison.discovery channel から配信する。無改造の unison-mcp（Unison Protocol の
+//   runtime discovery + typed tool 合成 MCP bridge、v1.1.0+）が runtime fetch して
+//   `unison_<channel>_<method>` の typed tool を合成できるようにする。VP 開発のデバッグ機。
+//
+// 位置づけ（重要 — schema/vp-agent.kdl とは別物）:
+//   vp-agent.kdl = agent action space の SSOT（build-time codegen でキュレーション済み MCP tool を
+//   生成）。vp-daemon.kdl = 「daemon channel の wire protocol の記述的スキーマ」。現行のキュレー
+//   ション済み MCP を置き換えない（別プロセス・別 tool namespace の dev/dogfood 面）。
+//   設計判断: docs/design/27-apple-surface-lifecycle.md §5、handoff mem_1Ccu5RK4VMT7xjaMxm9JXM。
+//
+// 制約（drift 防止）:
+//   - request 名 = wire の msg.method と文字列一致必須（記述的スキーマ。リネーム = 既存 client 破壊）。
+//     SSOT: crates/vantage-point/src/daemon/server.rs の各 channel handler の `match method`。
+//   - channel 名 ⊆ daemon が register_channel する集合。drift 検出は tests/vp_daemon_kdl.rs。
+//   - request の description / field の description は synthesized tool の description に昇格する
+//     （unison-mcp mapping.rs、formulaic を override）ので agent 品質で書く。
+//   - method レベルの網羅・追随は当面手動同期（将来 daemon dispatch 側も KDL codegen 化 =
+//     doc 27「1 protocol」方向。open）。
+//
+// starter set（2026-07-11 user 確定 → Phase1 は registry + events を先行）:
+//   handshake なしの純 request/response ＝ 無改造 unison-mcp で即 round-trip 可能な channel を採用。
+//   process-proxy は subscribe handshake 前提（unison-mcp 未対応）＋要 SP 起動のため follow-up
+//   （creo mem_1CcuR73WSNFkyAgzVJvWyF ＝ unison-mcp の handshake 対応 or daemon auto-subscribe が要る）。
+
+protocol "vp-daemon" version="0.1.0" {
+    namespace "club.chronista.vantage-point"
+
+    // registry channel: SP 自己登録 + running process / lane registry の control plane。
+    // handler: server.rs register_channel("registry", ...)（match method: register / unregister /
+    // heartbeat / list / lanes/add / lanes/remove / lanes/update）。
+    // starter では read-safe な `list` のみ記述する。register / unregister / heartbeat は SP 内部用
+    //（手で叩くと registry 状態を壊す）、lanes/* は mutation なので follow-up で記述する。
+    channel "registry" from="client" lifetime="persistent" {
+        request "list" description="VP daemon に登録中の全 running process（Star Platinum / 各 project の SP）の snapshot を返す read-only 照会。`vp ps` 相当を daemon から直接引く。引数なし。" {
+            returns "ProcessList" {
+                field "processes" type="json" required=#true description="running process の配列。各要素は { project_name, port, pid, project_path }。"
+            }
+        }
+    }
+
+    // events channel: daemon の event log（doc 27 §5-3。process.up / process.down を baseline に蓄積、
+    // build/test 等の追加 source は follow-up）。
+    // handler: server.rs register_channel("events", ...)（match method: emit / query）。
+    channel "events" from="client" lifetime="persistent" {
+        request "query" description="daemon の event log を時系列で照会する read-only 面。seq が `since` より後の event を最大 `limit` 件返す（seq 昇順）。" {
+            field "since" type="int" description="この seq より後の event を返す。0 なら先頭から。"
+            field "limit" type="int" description="取得件数の上限。0 は無制限。"
+            returns "EventPage" {
+                field "events" type="json" required=#true description="event の配列（seq 昇順）。各要素は { seq, kind, source?, data, ... }。"
+            }
+        }
+
+        request "emit" description="任意の event を daemon の event log に注入する（dogfood / デバッグ用の手動 emit）。" {
+            field "kind" type="string" required=#true description="event 種別（例 \"process.up\" / \"build.start\"）。空文字は拒否される。"
+            field "source" type="string" description="発生源ラベル（任意、例 project 名）。"
+            field "data" type="json" description="任意の付随データ（JSON オブジェクト等）。"
+            returns "EmitAck" {
+                field "seq" type="int" required=#true description="採番された単調増加の event seq。"
+            }
+        }
+    }
+}

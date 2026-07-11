@@ -7,8 +7,8 @@
 //! ## Library API
 //!
 //! `commands` モジュールが performer 操作の高レベル API を提供:
-//! - `new_performer(name, branch, force, isolation)`
-//! - `fork_performer(name, branch, force, isolation)`
+//! - `new_performer(name, branch, force, isolation, base, model)`
+//! - `fork_performer(name, branch, force, isolation, base, model)`
 //! - `list_performers()`
 //! - `performer_path(name)`
 //! - `remove_performer(name, all, force)`

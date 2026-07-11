@@ -68,27 +68,18 @@ pub fn notify_world_unassign_slot(path: &str) -> bool {
     })
 }
 
-/// 起点 dir 登録 + ghost 除去を daemon に依頼する。
+/// ghost project 除去を daemon に依頼する。
 ///
 /// 成功時 `SyncOutcome`、 daemon 不在 / エラーは None (caller は kdl フォールバックに落とす)。
-pub fn notify_world_sync(start_dir: Option<&str>) -> Option<SyncOutcome> {
-    let start_dir = start_dir.map(|s| s.to_string());
+pub fn notify_world_sync() -> Option<SyncOutcome> {
     in_dedicated_thread(move || {
         let c = client()?;
-        let resp = c
-            .post(url("/api/world/projects/sync"))
-            .json(&serde_json::json!({ "start_dir": start_dir }))
-            .send()
-            .ok()?;
+        let resp = c.post(url("/api/world/projects/sync")).send().ok()?;
         if !resp.status().is_success() {
             return None;
         }
         let v: serde_json::Value = resp.json().ok()?;
         Some(SyncOutcome {
-            added: v
-                .get("added")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
             removed: v
                 .get("removed")
                 .and_then(|x| x.as_array())
