@@ -6,8 +6,11 @@
 # 2026-06-09 task namespace を world: → daemon: にリネーム (`vp daemon` CLI 名に揃える)。
 # cargo install --path で codesign 付き binary を ~/.cargo/bin (PATH) に配置 = shell `vp` と
 # mise task 系で source 共通化 (dual source drift 防止)。 cp は codesign 剥がれ → install 必須。
+#
+# --locked 必須 (CLAUDE.md): cargo install は Cargo.lock を無視して依存を最新解決するため、
+# 未検証の新リリース (例: time 0.3.48 × ratatui-widgets の E0119) を踏んで build が壊れる。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 VP.log "Building vp-cli (vp binary) + install to ~/.cargo/bin…"
-VP.sh "cargo install --path crates/vp-cli"
+VP.sh "cargo install --path crates/vp-cli --locked"
 VP.log "#{VP.icon(:ok)} Installed: #{VP.cargo_bin('vp')}"
