@@ -365,11 +365,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-row:hover{background:#ffffff06;}
 /* row 間の旧 border は撤去 — 地は無地 (行を横切る線は作らない)。 */
 .vp-lane-row + .vp-lane-row{border-top:none;}
-/* active (= 選択中) lane — course-correction 2026-07-11: 太 border 箱は使わない。
-   行 fill に faint cyan tint + 左端に太め cyan tap。 「光る」 のは state (photon / node)
-   の仕事で、 選択はあくまで静かな指示に留める。 */
-.vp-lane-row.active{background:#22e0ff10;
-  box-shadow:inset 3px 0 0 0 var(--sb-conn-auto,#22E0FF);}
+/* active (= 選択中) lane — 選択の主表現は faint tint。 アクセントは左下の小さな縦長
+   ブロックだけ (mako 019f5110: full-height の太ブラケットは quiet pass 原則に反するため
+   廃止)。 「光る」 のは state (photon / node) の仕事で、 選択はあくまで静かな指示に留める。 */
+.vp-lane-row.active{background:#22e0ff10;}
+.vp-lane-row.active::before{content:"";position:absolute;left:0;bottom:5px;
+  width:3px;height:33%;border-radius:2px;
+  background:var(--sb-conn-auto,#22E0FF);}
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
 /* root session (= conductor、 spine の頭)。 quiet pass (019f5100): cyan wash / glyph glow は
    撤去、 weight 600 だけで静かに立たせる (行 tint と glyph 彩色は光の総量を増やすため落とす)。 */
