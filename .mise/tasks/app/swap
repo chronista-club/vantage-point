@@ -70,7 +70,8 @@ end
 # main area のまま終了した)。 mac 側は `open` した .app が必要に応じ daemon を lazy spawn
 # するのでこのレースが顕在化しない。
 #
-# `vp daemon status` は停止中でも exit 0 を返すので終了コードでは判定できない。
+# `vp daemon status` は停止中なら exit 1 を返すが、 判定が pidfile ベースのため
+# process 起動直後 (HTTP listener が立つ前) に 0 を返しうる。 「app が繋げる」保証には
 # /api/health の 200 を単一の真実源にする。
 def wait_daemon_ready(timeout: 30)
   uri = URI("http://127.0.0.1:#{world_port}/api/health")
