@@ -186,6 +186,8 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
         );
     } else {
         println!("   サーバー: ❌ not running");
+        // `vp daemon status` と対称: script から成否で分岐できるよう停止中は非ゼロで返す。
+        std::process::exit(1);
     }
 
     // (tmux decoupling PR2: 旧「HD セッション情報の参考表示」は tmux と共に退役 —
