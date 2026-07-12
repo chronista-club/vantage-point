@@ -754,33 +754,37 @@ impl VantageMcp {
         }
     }
 
-    /// "canvas" Unison channel に one-shot 接続し、 retained snapshot (pane_id ごとの最新 Show)
-    /// を drain して返す (Unison-native read、 app.rs::run_canvas_session のパターン再利用)。
+    /// World :32000 の集約 "canvas" channel に one-shot 接続し、 retained snapshot
+    /// (pane_id ごとの最新 Show) を drain して返す (vp-app `run_canvas_session` と同 protocol)。
     ///
-    /// QUIC listener は SP の HTTP と同 port (UDP)。 retained は接続直後に届くため、
-    /// live update を待たないよう短い timeout で drain する。
+    /// L0 SP-portless (canvas slice): 旧実装は SP `[::1]:{process_port}` へ QUIC 直結していたが、
+    /// portless SP は listen しないため構造的に 100% 失敗していた (bug 019f546f、 L0 の未移行
+    /// 残骸)。 vp-app と同じく World の集約 channel + subscribe handshake (project scope) に乗る。
+    /// retained は handshake ack 直後に届くため、 live update を待たないよう短い timeout で
+    /// drain する。
     async fn fetch_canvas_panes(&self) -> Result<Vec<CanvasPane>, McpError> {
-        use unison::ProtocolClient;
         use unison::network::MessageType;
-        use unison::network::TrustAnchors;
-        use unison::network::quic::QuicClient;
 
-        let port = *self.process_port.lock().await;
-        let addr = format!("[::1]:{}", port);
-        let transport = QuicClient::builder()
-            .trust_anchors(TrustAnchors::SkipVerification)
-            .build()
-            .map_err(|e| McpError::internal_error(format!("QUIC client build: {}", e), None))?;
-        let client = ProtocolClient::new(transport);
-        client.connect(&addr).await.map_err(|e| {
-            McpError::internal_error(format!("canvas connect {}: {}", addr, e), None)
-        })?;
+        let client = connect_quic(&quic_addr(crate::cli::world_port())).await?;
         // 接続確立後は全経路で disconnect を通す — drop 任せでは unison client の UDP socket が
         // 解放されず、 長寿命の `vp mcp` では 1 call = 1 fd leak になる (world_wire.rs と同根)。
         let result = async {
             let channel = client.open_channel("canvas").await.map_err(|e| {
                 McpError::internal_error(format!("open canvas channel: {}", e), None)
             })?;
+            // World "canvas" channel は project 単位。 subscribe handshake で project_path を渡す
+            // (World 側で path_key に正規化して TopicRouter と突合、 `daemon/server.rs` の
+            // recv_subscribe_handshake_with_pattern)。 ack 後に当該 project の retained canvas
+            // (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
+            channel
+                .request::<serde_json::Value, serde_json::Value>(
+                    "subscribe",
+                    &serde_json::json!({ "project_path": self.project_path.as_str() }),
+                )
+                .await
+                .map_err(|e| {
+                    McpError::internal_error(format!("canvas subscribe handshake: {}", e), None)
+                })?;
 
             // per-lane PP: list_canvas / read_pane は呼び出し元 (cwd 由来) の lane の pane だけ返す。
             // canvas channel は全 lane の retained を流すため、self lane で filter しないと
@@ -1105,11 +1109,15 @@ async fn resolve_project_path() -> String {
         .unwrap_or_default()
 }
 
-/// Process port から QUIC 接続先アドレスを組み立てる ([::1] = IPv6 loopback)。
-fn quic_addr(process_port: u16) -> String {
+/// HTTP port から同一 host の QUIC 接続先アドレスを組み立てる ([::1] = IPv6 loopback)。
+///
+/// Process(SP) port と World port(`cli::world_port()`、fetch_canvas_panes 等)の両方で
+/// 使われる。`QUIC_PORT_OFFSET` は両者共通の前提 — SP/World でオフセットを分ける時は
+/// この関数を分割すること。
+fn quic_addr(http_port: u16) -> String {
     format!(
         "[::1]:{}",
-        process_port + crate::process::unison_server::QUIC_PORT_OFFSET
+        http_port + crate::process::unison_server::QUIC_PORT_OFFSET
     )
 }
 

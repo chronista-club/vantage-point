@@ -25,16 +25,22 @@ pub struct MacOsBackend;
 
 impl Capture for MacOsBackend {
     fn list_windows(&self, filter: &CaptureFilter) -> Result<Vec<WindowInfo>, String> {
-        let owner_filter = filter.owner.clone();
+        // owner 候補集合（dev binary "vp-app" ⇄ .app bundle "Vantage Point" の吸収、mod.rs）。
+        let owners_swift = super::owner_candidates(&filter.owner)
+            .iter()
+            .map(|o| format!("\"{}\"", o.replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
         let swift_script = format!(
             r#"
 import CoreGraphics
 import Foundation
+let owners: Set<String> = [{owners}]
 let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
 for w in windows {{
     let owner = w["kCGWindowOwnerName"] as? String ?? ""
     let layer = w["kCGWindowLayer"] as? Int ?? -1
-    if owner == "{owner}" && layer == 0 {{
+    if owners.contains(owner) && layer == 0 {{
         let id = w["kCGWindowNumber"] as? Int ?? 0
         let title = w["kCGWindowName"] as? String ?? ""
         let bounds = w["kCGWindowBounds"] as? [String: Any] ?? [:]
@@ -47,7 +53,7 @@ for w in windows {{
     }}
 }}
 "#,
-            owner = owner_filter.replace('"', "\\\"")
+            owners = owners_swift
         );
         let output = Command::new("swift")
             .args(["-e", &swift_script])
