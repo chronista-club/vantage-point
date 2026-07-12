@@ -58,6 +58,13 @@ pub enum AppEvent {
     /// event loop で lane_respawn_triggered から address を除去し、 次の Dead 検出で
     /// 再 respawn できるようにする (失敗が永続 suppression にならないための解除通知)。
     LaneRespawnFailed { address: String },
+    /// Wire inbox (doc 34 §4 V1): World "wire" channel への read-only fetch 結果。
+    /// event loop が `window.vpWire.handleResult(payload)` で sidebar に push back する。
+    /// payload = `{address, agent, history, unread}` (エラーは `{address, error}`)。
+    WireHistoryResult {
+        address: String,
+        payload: serde_json::Value,
+    },
     /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
     ClonePathPicked(Option<String>),
     /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。

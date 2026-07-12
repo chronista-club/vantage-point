@@ -92,5 +92,19 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
             field "rel_path" type="string"
         }
+        // Wire inbox (doc 34 §4 V1): 選択 lane の wire 履歴を read-only で取得。
+        // Rust が World "wire" channel に wire/history + wire/unread-count を request し、
+        // 結果を window.vpWire.handleResult で push back する (cursor 不触り)。
+        request "wire:fetch" {
+            field "path" type="string"
+            field "address" type="string"
+        }
+        // Wire inbox: message を lane の agent として ack (処理済み宣言)。
+        // ack 成功後に Rust が再 fetch して handleResult で最新状態を push back する。
+        request "wire:ack" {
+            field "path" type="string"
+            field "address" type="string"
+            field "message_id" type="string"
+        }
     }
 }
