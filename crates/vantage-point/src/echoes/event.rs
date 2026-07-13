@@ -109,8 +109,21 @@ pub enum EchoesEvent {
         /// AskUserQuestion input の questions（1〜4 質問 × 2〜4 択、multiSelect 含む）。
         questions: Vec<QuestionSpec>,
     },
-    // NOTE: permission_request（control protocol / can_use_tool）は MVP 非対象。
-    //       acceptEdits で回避する（doc 32 §10.1）。将来 control protocol ごと実装。
+
+    /// tool 承認要求（非 AskUserQuestion の逆方向 `can_use_tool`、doc 35 PR3）。
+    ///
+    /// `permission-mode=default`（GUI から opt-in）に切替えた時、Write/Bash 等の tool 実行前に
+    /// engine が turn を pause してここへ来る。GUI は PromptCard（allow/deny）で描き、`request_id`
+    /// 付きで behavior を戻すと host が `control_response` を書いて実行 or 回避する。Question と同じ
+    /// レール（pending + respond_permission）、種別だけ違う。
+    PermissionRequest {
+        /// `control_response` の request_id マッチング用。
+        request_id: String,
+        /// 承認対象 tool 名（Write / Bash / …）。
+        tool_name: String,
+        /// tool の原 input（GUI が要約表示、allow 時は verbatim echo）。
+        input: serde_json::Value,
+    },
 }
 
 /// plan の 1 項目（TodoWrite の todo に対応）。

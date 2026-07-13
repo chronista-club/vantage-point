@@ -972,6 +972,20 @@ impl LanePool {
         slot.host.interrupt().await
     }
 
+    /// doc 35 §2.5 / PR3: permission mode を動的に切替える（承認モードへ opt-in / 素通しへ戻す）。
+    /// submit_chat と同型（read lock 下）。engine 不在は Err。
+    pub async fn set_permission_mode_chat(
+        &self,
+        addr: &LaneAddress,
+        mode: &str,
+    ) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
+        slot.host.set_permission_mode(mode).await
+    }
+
     /// chat engine の逆方向 `can_use_tool`（[`crate::echoes::EchoesEvent::Question`]）へ回答する
     /// （doc 35 PR1、`&self` — read lock 下で呼べる）。
     ///

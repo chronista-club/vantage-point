@@ -185,6 +185,9 @@ pub enum AppEvent {
     /// Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
     /// event loop が当該 lane の echoes session へ渡し、`echoes_interrupt` で SP へ。
     EchoesInterrupt { lane: String },
+    /// Echoes Act II HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
+    /// echoes session へ渡し、`echoes_set_permission_mode` で SP へ。`mode` = "default"|"bypassPermissions" 等。
+    EchoesSetPermissionMode { lane: String, mode: String },
     /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
     /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
     /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
@@ -284,6 +287,17 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::EchoesInterrupt {
                     lane: lane.to_string(),
+                });
+            }
+        }
+        // Echoes Act II HITL (doc 35 §2.5 / PR3): permission mode 切替。 lane + mode 必須。
+        Some("echoes:set_permission_mode") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let mode = parsed.get("mode").and_then(|v| v.as_str());
+            if let (Some(lane), Some(mode)) = (lane, mode) {
+                let _ = proxy.send_event(AppEvent::EchoesSetPermissionMode {
+                    lane: lane.to_string(),
+                    mode: mode.to_string(),
                 });
             }
         }
