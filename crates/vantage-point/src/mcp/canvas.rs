@@ -57,7 +57,12 @@ pub struct CaptureCanvasParams {
     pub path: Option<String>,
 
     /// Capture specific pane only
-    #[schemars(description = "Capture only a specific pane by its pane_id")]
+    ///
+    /// ネイティブ window capture は GUI window 全体を撮るため、pane 単位の分離は
+    /// 未対応（現状は無視）。将来 region 解決で per-pane 対応の余地あり。
+    #[schemars(
+        description = "Currently ignored — capture is window-level (the whole Vantage Point GUI window). Reserved for future per-pane support."
+    )]
     pub pane_id: Option<String>,
 }
 
@@ -132,70 +137,60 @@ impl VantageMcp {
         )]))
     }
 
-    /// Capture the Canvas window as a PNG screenshot
+    /// Capture the Vantage Point GUI window as a PNG screenshot
     ///
-    /// html2canvas で Canvas の DOM をキャプチャし、PNG ファイルとして保存する。
-    /// 保存されたファイルは Claude の Read ツールで画像として確認可能。
+    /// ネイティブ screenshot backend（`vp shot` と同じ `screenshot::default_backend()`）で
+    /// "Vantage Point" window を直接キャプチャする。旧設計（webview html2canvas を
+    /// World→WS 往復で回収）は往復の両端が移行時に撤去されて機能停止していたため、
+    /// 往復依存を排して `vp shot` と機構を統一した（bug: canvas 可観測性の複合故障 B）。
+    /// window 全体（sidebar + console + PP）を撮るので、PP が非表示なら「非表示のまま」が
+    /// 正直に写る（= GUI の実可視状態が ground truth になる）。保存ファイルは Read ツールで確認可能。
     #[tool(
-        description = "Capture the Canvas window as a PNG screenshot. The saved file can be viewed with the Read tool."
+        description = "Capture the Vantage Point GUI window as a PNG screenshot (the whole window — sidebar, console, and Canvas as actually visible). The saved file can be viewed with the Read tool."
     )]
     async fn capture_canvas(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CaptureCanvasParams>,
     ) -> Result<CallToolResult, McpError> {
-        let body = serde_json::json!({
-            "path": params.path,
-            "pane_id": params.pane_id,
-        });
+        use crate::screenshot::{CaptureFilter, default_backend};
 
-        // TheWorld 経由で Canvas にキャプチャリクエスト（Canvas は常に TheWorld の WS に接続）
-        let world_port = crate::cli::world_port();
-        let url = format!("http://[::1]:{}/api/canvas/capture", world_port);
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .timeout(Duration::from_secs(20))
-            .send()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    format!("Canvas capture 通信失敗: {}. Is vp running?", e),
-                    None,
-                )
-            })?;
+        // 出力 path: 指定が無ければ衝突回避のため timestamp 付き（旧 handler の既定命名を踏襲）。
+        let output = params
+            .path
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                std::path::PathBuf::from(format!("/tmp/vp-canvas-{}.png", ts))
+            });
 
-        let json: serde_json::Value = resp.json().await.map_err(|e| {
-            McpError::internal_error(format!("Canvas capture レスポンスパース失敗: {}", e), None)
-        })?;
-
-        let status = json
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("error");
-        if status != "ok" {
-            let msg = json
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error");
-            return Err(McpError::internal_error(
-                format!("Canvas capture 失敗: {}", msg),
+        // screencapture CLI は同期 blocking のため spawn_blocking で runtime を塞がない。
+        // filter.owner="vp-app"（default）は owner_candidates で .app の "Vantage Point" を
+        // alias 解決するので、cargo dev binary / brew .app どちらの GUI window も掴める。
+        let result = tokio::task::spawn_blocking(move || {
+            let backend = default_backend();
+            let filter = CaptureFilter {
+                owner: "vp-app".into(),
+                index: None,
+                title_match: None,
+            };
+            backend.capture(&filter, Some(output))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("capture task join 失敗: {}", e), None))?
+        .map_err(|e| {
+            McpError::internal_error(
+                format!("Canvas capture 失敗: {}. GUI (vp-app) は起動している？", e),
                 None,
-            ));
-        }
-
-        let saved_path = json
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let width = json.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
-        let height = json.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
-        let size_bytes = json.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
-                "Screenshot saved: {}\nSize: {}x{} ({} bytes)\nUse the Read tool to view this image.",
-                saved_path, width, height, size_bytes
+                "Screenshot saved: {}\nSize: {}x{} ({}ms)\nUse the Read tool to view this image.",
+                result.path.display(),
+                result.width,
+                result.height,
+                result.elapsed_ms
             ),
         )]))
     }

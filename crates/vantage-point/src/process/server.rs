@@ -3,7 +3,6 @@
 //! Process サーバーのエントリーポイント。`run()` と `run_world()` でサーバーを起動する。
 //! ルートハンドラーは `routes/` モジュールに分離されている。
 
-use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
 
@@ -178,7 +177,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
-        screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
@@ -650,7 +648,6 @@ pub async fn run_world(
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
-        screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
@@ -719,7 +716,6 @@ pub async fn run_world(
         .route("/api/shutdown", post(health::shutdown_handler))
         // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
         // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
-        .route("/api/canvas/capture", post(health::canvas_capture_handler))
         .route(
             "/api/canvas/switch_lane",
             post(health::canvas_switch_lane_handler),
