@@ -206,6 +206,14 @@ pub(crate) async fn create_performer_orchestrated(
     if req.name.trim().is_empty() {
         return Err("name is required".to_string());
     }
+    // model 名の検証は reserve / clone より**前**に置く (bad input で reservation も disk dir も
+    // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続 (engine_model::record)
+    // は addr が要るので clone 後まで遅らせる。
+    if let Some(model) = req.model.as_ref().filter(|m| !m.trim().is_empty())
+        && !crate::lane::engine_model::is_valid_model(model.trim())
+    {
+        return Err(format!("model 名が不正です: {:?}", model.trim()));
+    }
 
     // project_id: AppState の project_dir から basename
     let project_id = std::path::Path::new(&state.project_dir)
@@ -227,12 +235,47 @@ pub(crate) async fn create_performer_orchestrated(
         .map(str::to_string)
         .unwrap_or_else(|| config.default_stand_or_echoes().to_string());
 
-    // 重複チェック (早期 return)
+    // 重複チェック + 予約 (check-and-reserve、二重 dispatch race の根治)。
+    //
+    // 旧実装は read lock で存在確認するだけで即 lock 解放 → 登録 (末尾 pool.insert、~400 行後) は
+    // clone+spawn (~1-2s) を跨いだ**後**。この間 pool.lanes に addr が無いため、同 lane への 2 個目
+    // の lane_create が dedup を素通りして 2 個目の PtySlot を fork し、片方が orphan 化する
+    // (= 1 worktree に claude 2 セッション、bug memory mem_1Ccyoa6PuE9z5yKuqxuDWr)。
+    //
+    // 特に filesystem watcher (process_manager_capability の run_lane_watcher) は、この関数自身の
+    // lane clone が作った disk dir を検知して 2 個目の lane_create を loopback 発火するため、
+    // **単独 dispatcher でも** race に入る (watcher が実質 2 人目の dispatcher)。
+    //
+    // 根治: チェックと同じ write lock 内で Spawning placeholder を即 insert して addr を claim する。
+    // 2 個目の ask はこの placeholder を見て "already exists" で弾かれる (watcher 側は既存の
+    // "already exists" substring 判定で silent に飲み込む)。placeholder は build_lanes_snapshot が
+    // intended performer に使う Spawning(pid=None) と同型 = presence を足す方向で、console teardown
+    // 教訓 (mem: performer console snapshot teardown) の安全側。末尾で実 state に置換する。
+    //
+    // ⚠️ reservation lifecycle: reserve 後〜末尾の実 insert 前に return する**全経路**で reservation
+    // を除去しないと placeholder が leak し、その addr の lane が二度と作れなくなる (別種の regression)。
+    // 該当は clone/spawn の失敗系 4 経路 (clone task join panic / clone 実行失敗 / spawn task join
+    // panic / spawn 実行失敗 rollback)。bad input (model 名不正) は reserve **前**に弾くので対象外。
     {
-        let pool = state.lane_pool.read().await;
+        let mut pool = state.lane_pool.write().await;
         if pool.get(&addr).is_some() {
             return Err(format!("Lane {} already exists", addr));
         }
+        pool.insert(LaneInfo {
+            console_mode: Default::default(),
+            id: crate::lane::lane_id::load_or_create(&addr.project, &req.name),
+            address: addr.clone(),
+            kind: LaneKind::Performer,
+            name: Some(req.name.clone()),
+            state: LaneState::Spawning,
+            stand: stand.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
+            performer_status: None,
+            cc_session_id: None,
+            flow_state: None,
+        });
     }
 
     // Phase 4-X / R5: cwd 決定 ── 優先順位 explicit cwd > lane clone (branch 明示 or auto-derive)。
@@ -261,7 +304,7 @@ pub(crate) async fn create_performer_orchestrated(
         let name = req.name.clone();
         let branch_for_log = branch.clone();
         let base = req.base.clone().filter(|s| !s.trim().is_empty());
-        let result = tokio::task::spawn_blocking(move || {
+        let join = tokio::task::spawn_blocking(move || {
             crate::lane::commands::new_performer_in(
                 std::path::Path::new(&project_dir),
                 &name,
@@ -271,13 +314,30 @@ pub(crate) async fn create_performer_orchestrated(
                 base.as_deref(),
             )
         })
-        .await
-        .map_err(|e| format!("lane task join: {}", e))?;
+        .await;
+        let result = match join {
+            Ok(r) => r,
+            Err(e) => {
+                // reservation 除去 (clone task panic で早期 return、placeholder leak 防止)。
+                state.lane_pool.write().await.remove(&addr);
+                return Err(format!("lane task join: {}", e));
+            }
+        };
         // lane::commands::new_performer_in は performer dir 既存 + force=false の時に
         // 「パフォーマー '<name>' は既に存在します」を返す。 error message をそのまま流し、
         // caller (MCP add_performer 等) が "既に存在"/"already exists" を substring 判定可能にする。
-        let path_buf =
-            result.map_err(|e| format!("lane clone failed (branch={}): {}", branch_for_log, e))?;
+        let path_buf = match result {
+            Ok(p) => p,
+            Err(e) => {
+                // reservation 除去 (clone 失敗で早期 return)。disk dir は new_performer_in が
+                // 作れなかった or 途中失敗なので、ここで残すのは pool 上の placeholder のみ。
+                state.lane_pool.write().await.remove(&addr);
+                return Err(format!(
+                    "lane clone failed (branch={}): {}",
+                    branch_for_log, e
+                ));
+            }
+        };
         tracing::info!(
             "Performer Lane clone: name={} branch={} dir={}",
             req.name,
@@ -289,13 +349,10 @@ pub(crate) async fn create_performer_orchestrated(
 
     // co-evolution #1: model 指定を spawn 前に永続する。 build_stand_command が Act I claude の
     // `--model` として読み、 respawn（SP restart）や Act II engine も同じ file を共有する。
-    // 不正な model 名は早期 error（bad input で lane を spawn する前に弾く）。 IO 失敗は
-    // best-effort warn（claude default に degrade するだけで lane 作成は続行）。
+    // 検証は関数冒頭 (reserve 前) で済んでいるので、ここは永続のみ。 IO 失敗は best-effort warn
+    // （claude default に degrade するだけで lane 作成は続行）。
     if let Some(model) = req.model.as_ref().filter(|m| !m.trim().is_empty()) {
         let model = model.trim();
-        if !crate::lane::engine_model::is_valid_model(model) {
-            return Err(format!("model 名が不正です: {model:?}"));
-        }
         let lane_label = crate::process::stand_spawner::lane_label(&addr);
         if let Err(e) = crate::lane::engine_model::record(&addr.project, lane_label, model) {
             tracing::warn!(
@@ -317,11 +374,18 @@ pub(crate) async fn create_performer_orchestrated(
         std::path::Path::new(&cwd),
         false,
     );
-    let spawn_result = tokio::task::spawn_blocking(move || {
+    let spawn_join = tokio::task::spawn_blocking(move || {
         crate::process::stand_spawner::spawn_stand(&cmd, 120, 48)
     })
-    .await
-    .map_err(|e| format!("PtySlot spawn task join: {}", e))?;
+    .await;
+    let spawn_result = match spawn_join {
+        Ok(r) => r,
+        Err(e) => {
+            // reservation 除去 (spawn task panic で早期 return、placeholder leak 防止)。
+            state.lane_pool.write().await.remove(&addr);
+            return Err(format!("PtySlot spawn task join: {}", e));
+        }
+    };
     let (lane_state, pid) = match spawn_result {
         Ok((slot, term_rx)) => {
             let pid = slot.pid();
@@ -364,6 +428,8 @@ pub(crate) async fn create_performer_orchestrated(
                         tracing::warn!("rollback: rm task join 失敗 cwd={}: {}", cwd, join_err)
                     }
                 }
+                // reservation 除去 (spawn 失敗 + disk rollback で早期 return)。
+                state.lane_pool.write().await.remove(&addr);
                 return Err(format!(
                     "Performer Lane spawn failed (rollback executed): {}",
                     e
@@ -862,6 +928,76 @@ mod core_tests {
             err.contains("name is required"),
             "error message に name 必須を含む: {}",
             err
+        );
+    }
+
+    /// 二重 dispatch race の根治 (bug memory mem_1Ccyoa6PuE9z5yKuqxuDWr): 同 addr の
+    /// Spawning placeholder (reservation) が pool に居れば、2 個目の create は clone/spawn に
+    /// 進む前に "already exists" で弾かれる。旧実装は登録が末尾 (spawn 後) だったため、
+    /// この window で 2 個目が素通りして PtySlot を二重 fork していた。
+    ///
+    /// deterministic test: reservation を手で置いた状態で 2 個目 create が早期 Err になり、
+    /// pool に PtySlot が生えない (= claude を fork しない) ことを確認する。
+    #[tokio::test]
+    async fn create_rejects_second_when_reservation_present() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        // project_dir="" → project_id="unknown"。1 個目が claim した想定の Spawning placeholder。
+        let addr = LaneAddress::performer("unknown", "dup");
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                console_mode: Default::default(),
+                id: Default::default(),
+                address: addr.clone(),
+                kind: LaneKind::Performer,
+                name: Some("dup".to_string()),
+                state: LaneState::Spawning,
+                stand: "echoes".to_string(),
+                created_at: "2026-07-13T00:00:00Z".to_string(),
+                pid: None,
+                cwd: String::new(),
+                performer_status: None,
+                cc_session_id: None,
+                flow_state: None,
+            });
+        }
+        let err = create_performer_orchestrated(&state, req("performer", "dup"))
+            .await
+            .expect_err("Spawning reservation 中の同 addr create は Err");
+        assert!(
+            err.contains("already exists"),
+            "reservation 衝突は 'already exists' を返す (clone/spawn 前に弾く): {}",
+            err
+        );
+        // spawn に進んでいない = PtySlot が生えていない (placeholder のみ)。
+        let pool = state.lane_pool.read().await;
+        assert!(
+            pool.get(&addr)
+                .is_some_and(|l| l.state == LaneState::Spawning),
+            "placeholder は Spawning のまま (2 個目が上書きしていない)"
+        );
+    }
+
+    /// reservation cleanup の regression: 1 個目の create が失敗した経路で reservation が
+    /// 確実に除去され、同 addr が再作成可能な状態に戻ることを確認する (placeholder leak しない)。
+    ///
+    /// build_test_app_state は project_dir="" なので、cwd=None の create は clone 経路に入り
+    /// new_performer_in(Path::new("")) が失敗する → clone 失敗 cleanup を通る。失敗が panic でも
+    /// (JoinError cleanup 経路) reservation 除去は同じく走るので、どちらでも placeholder は残らない。
+    #[tokio::test]
+    async fn reservation_removed_after_failed_create() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let addr = LaneAddress::performer("unknown", "fail");
+        let res = create_performer_orchestrated(&state, req("performer", "fail")).await;
+        assert!(
+            res.is_err(),
+            "project_dir 不在での clone は失敗する: {res:?}"
+        );
+        // 失敗経路で reservation が除去済み = placeholder leak なし = 再作成可能。
+        let pool = state.lane_pool.read().await;
+        assert!(
+            pool.get(&addr).is_none(),
+            "失敗した create の Spawning placeholder は pool から除去されている (leak なし)"
         );
     }
 }
