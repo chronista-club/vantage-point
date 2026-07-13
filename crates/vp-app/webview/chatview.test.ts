@@ -17,6 +17,11 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(s.header).toEqual({ model: 'claude-haiku-4-5', sessionId: 'sid-1' })
   })
 
+  it('session_init が permission mode を per-lane に反映する（review #2）', () => {
+    const s = fold([{ kind: 'session_init', session_id: 'sid-2', permission_mode: 'default' }])
+    expect(s.permissionMode).toBe('default')
+  })
+
   it('連続 message_chunk が 1 つの assistant item に accumulate する', () => {
     const s = fold([
       { kind: 'message_chunk', text: 'こん' },
@@ -152,6 +157,22 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     ])
     expect(s.items.map((i) => i.kind)).toEqual(['prompt', 'assistant'])
     expect(s.streaming).toBe(true)
+  })
+
+  it('permission_request が allow/deny 用 permission prompt を積む（doc 35 PR3）', () => {
+    const s = fold([
+      { kind: 'message_chunk', text: 'Bash 実行前' },
+      { kind: 'permission_request', request_id: 'perm-1', tool_name: 'Bash', input: { command: 'ls' } },
+    ])
+    expect(s.streaming).toBe(false)
+    const last = s.items[s.items.length - 1]
+    expect(last.kind).toBe('prompt')
+    if (last.kind === 'prompt') {
+      expect(last.requestId).toBe('perm-1')
+      expect(last.answered).toBe(false)
+      expect(last.permission?.toolName).toBe('Bash')
+      expect(last.questions).toHaveLength(0)
+    }
   })
 
   it('実ターン相当（init→thinking→tool→result→text→done）で item 構成が正しい', () => {

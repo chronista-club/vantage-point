@@ -45,6 +45,8 @@ type ChatState = {
   /** context ゲージ（Act I statusline の bar :context 相当）。turn_completed で更新。 */
   contextTokens: number | null
   contextWindow: number | null
+  /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
+  permissionMode?: string
 }
 
 type LaneChat = {
@@ -98,6 +100,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     case 'session_init':
       s.header = { model: ev.model, sessionId: ev.session_id }
+      // review #2: permission mode の真値を per-lane に反映（engine は respawn 時 bypassPermissions
+      // で立ち上がるので、select が実態とズレないよう session_init の値で上書きする）。
+      s.permissionMode = ev.permission_mode
       break
     case 'message_chunk': {
       s.streaming = true
@@ -187,6 +192,7 @@ export function emptyChatState(): ChatState {
     cost: null,
     contextTokens: null,
     contextWindow: null,
+    permissionMode: undefined,
   }
 }
 
@@ -498,11 +504,15 @@ function ChatView() {
 
   // doc 35 PR3: permission mode（tool 承認の opt-in）。spawn 既定は bypassPermissions（素通し）。
   // "default" に切替えると Write/Bash 等が承認要求（PermissionRequest）経由になる。
-  const [permMode, setPermMode] = createSignal('bypassPermissions')
+  // doc 35 PR3/PR4: permission mode は per-lane（engine の真値 = session_init.permission_mode）。
+  // review #2: 旧実装はグローバル signal で lane 横断共有 + respawn の bypass reset を映さなかった。
+  const currentPermMode = (): string => state()?.permissionMode ?? 'bypassPermissions'
   const setPermissionMode = (mode: string) => {
     const lane = activeLane()
     if (!lane) return
-    setPermMode(mode)
+    // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
+    // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
+    laneChat(lane).set(produce((s) => (s.permissionMode = mode)))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
   }
@@ -721,13 +731,13 @@ function ChatView() {
             class="echoes-model-select"
             onChange={(e) => setPermissionMode(e.currentTarget.value)}
           >
-            <option value="bypassPermissions" selected={permMode() === 'bypassPermissions'}>
+            <option value="bypassPermissions" selected={currentPermMode() === 'bypassPermissions'}>
               素通し
             </option>
-            <option value="default" selected={permMode() === 'default'}>
+            <option value="default" selected={currentPermMode() === 'default'}>
               承認
             </option>
-            <option value="plan" selected={permMode() === 'plan'}>
+            <option value="plan" selected={currentPermMode() === 'plan'}>
               計画
             </option>
           </select>

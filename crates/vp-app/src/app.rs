@@ -3205,11 +3205,15 @@ pub fn run() -> anyhow::Result<()> {
                 // 路 A（memory echoes-act2-notification-signal）: Act II の完了/エラーを Act I の
                 // OSC 通知と同じ sink に流す。headless stream-json は Notification hook を発火しない
                 // ため、turn_completed（stream `result` 由来）が「Claude が返し終えた＝入力待ち」の
-                // 唯一のシグナル。question（doc 35 PR1）は engine が turn を pause して選択を待つ
-                // 明示的 HITL なので、同じ awaiting_input 機構で conn-hitl（magenta diamond）を点灯する。
+                // 唯一のシグナル。question（PR1）/ permission_request（PR3 tool 承認 + PR4 plan の
+                // ExitPlanMode）は engine が turn を pause して人の判断を待つ明示的 HITL なので、同じ
+                // awaiting_input 機構で conn-hitl（magenta diamond）を点灯する（doc 35 §4 の契約）。
                 // active lane は helper が即読 skip し、切替（activate_lane）で reset される。
                 if let Some(kind) = event.get("kind").and_then(|k| k.as_str())
-                    && (kind == "turn_completed" || kind == "error" || kind == "question")
+                    && (kind == "turn_completed"
+                        || kind == "error"
+                        || kind == "question"
+                        || kind == "permission_request")
                 {
                     mark_lane_awaiting_input(
                         &lane,
