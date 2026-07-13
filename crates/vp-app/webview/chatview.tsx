@@ -13,7 +13,7 @@ import { render } from 'solid-js/web'
 import { createSignal, createEffect, onMount, onCleanup, For, Show, type Accessor } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
-import type { EchoesEvent, PlanEntry, VpConsole } from './console'
+import type { EchoesEvent, PlanEntry, QuestionSpec, VpConsole } from './console'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（EchoesEvent を UI 単位に畳む）
@@ -24,6 +24,15 @@ type ChatItem =
   | { kind: 'assistant'; text: string } // message_chunk を末尾 assistant に append
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
   | { kind: 'tool'; id: string; name: string; done: boolean; error: boolean }
+  // doc 35 PR1: HITL 質問（PromptCard）。answered で回答済み表示に折りたたむ。
+  // answers は確定した {question: label(s)} — 折りたたみ表示に使う。
+  | {
+      kind: 'prompt'
+      requestId: string
+      questions: QuestionSpec[]
+      answered: boolean
+      answers?: Record<string, string>
+    }
 
 type ChatState = {
   header: { model?: string; sessionId?: string } | null
@@ -136,6 +145,17 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       s.streaming = false
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
+    case 'question':
+      // engine が turn を pause して選択を待つ（HITL）。カーソル点滅（streaming）は止める。
+      // 回答すると turn が継続し、後続 message_chunk が streaming を立て直す。
+      s.streaming = false
+      s.items.push({
+        kind: 'prompt',
+        requestId: ev.request_id,
+        questions: ev.questions,
+        answered: false,
+      })
+      break
   }
 }
 
@@ -220,6 +240,97 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
   )
 }
 
+/**
+ * PromptCard（doc 35 §4）— HITL 質問（AskUserQuestion 横取り）の選択肢 UI。
+ *
+ * 各 question を見出し + 選択肢ボタンで描く。single-select は radio（クリックで置換）、
+ * multiSelect は toggle（複数選択）。全質問に選択が付いたら「確定」で `answers` を組んで
+ * onAnswer に渡す（親が echoes:respond を送り、カードを回答済み表示へ折りたたむ）。
+ */
+function PromptCard(props: {
+  item: Extract<ChatItem, { kind: 'prompt' }>
+  onAnswer: (requestId: string, answers: Record<string, string>) => void
+}) {
+  // 各質問の選択（label 配列）。single は 1 要素、multi は複数。
+  const [sel, setSel] = createSignal<Record<string, string[]>>({})
+
+  const toggle = (q: QuestionSpec, label: string) => {
+    setSel((prev) => {
+      const cur = prev[q.question] ?? []
+      const next = q.multi_select
+        ? cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        : [label] // single-select = 置換
+      return { ...prev, [q.question]: next }
+    })
+  }
+
+  const isSelected = (q: QuestionSpec, label: string): boolean =>
+    (sel()[q.question] ?? []).includes(label)
+
+  // 全質問が 1 つ以上選択済みなら確定可。
+  const canConfirm = (): boolean =>
+    props.item.questions.every((q) => (sel()[q.question] ?? []).length > 0)
+
+  const confirm = () => {
+    if (!canConfirm()) return
+    const answers: Record<string, string> = {}
+    for (const q of props.item.questions) {
+      const labels = sel()[q.question] ?? []
+      // multiSelect の回答 wire 形は未確定（doc §8 未決点）。保守的に ", " 結合の単一 string。
+      answers[q.question] = q.multi_select ? labels.join(', ') : labels[0]
+    }
+    props.onAnswer(props.item.requestId, answers)
+  }
+
+  return (
+    <div class="echoes-prompt" classList={{ answered: props.item.answered }}>
+      <Show
+        when={!props.item.answered}
+        fallback={
+          <div class="echoes-prompt-answered">
+            <For each={props.item.questions}>
+              {(q) => (
+                <div class="echoes-prompt-arow">
+                  <span class="echoes-prompt-ahead">{q.header}</span>
+                  <span class="echoes-prompt-aval">{props.item.answers?.[q.question] ?? ''}</span>
+                </div>
+              )}
+            </For>
+          </div>
+        }
+      >
+        <For each={props.item.questions}>
+          {(q) => (
+            <div class="echoes-prompt-q">
+              <div class="echoes-prompt-header">{q.header}</div>
+              <div class="echoes-prompt-question">{q.question}</div>
+              <div class="echoes-prompt-options">
+                <For each={q.options}>
+                  {(opt) => (
+                    <button
+                      class="echoes-prompt-opt"
+                      classList={{ selected: isSelected(q, opt.label) }}
+                      onClick={() => toggle(q, opt.label)}
+                      title={opt.description}
+                    >
+                      {opt.label}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          )}
+        </For>
+        <button class="echoes-prompt-confirm" disabled={!canConfirm()} onClick={confirm}>
+          確定
+        </button>
+      </Show>
+    </div>
+  )
+}
+
 /** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
  *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
 const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
@@ -280,6 +391,24 @@ function ChatView() {
     setDraft('')
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+  }
+
+  // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で SP に戻す
+  //（host が control_response を stdin に書いて turn が継続する）。
+  const answerPrompt = (requestId: string, answers: Record<string, string>) => {
+    const lane = activeLane()
+    if (!lane) return
+    laneChat(lane).set(
+      produce((s) => {
+        const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
+        if (it && it.kind === 'prompt') {
+          it.answered = true
+          it.answers = answers
+        }
+      }),
+    )
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, answers }))
   }
 
   // --- auto-scroll（sticky bottom）+ キーボードスクロール（Home/End/PgUp/PgDn）---------
@@ -424,6 +553,9 @@ function ChatView() {
               if (item.kind === 'tool') {
                 return <ToolRow name={item.name} done={item.done} error={item.error} />
               }
+              if (item.kind === 'prompt') {
+                return <PromptCard item={item} onAnswer={answerPrompt} />
+              }
               return (
                 <div class="echoes-msg" classList={{ user: item.kind === 'user' }}>
                   <div class="echoes-msg-body" innerHTML={mdToHtml(item.text)} />
@@ -509,6 +641,32 @@ export const CHATVIEW_CSS = `
 .echoes-tool-status { margin-left:auto; font-size:11px; }
 .echoes-cursor { width:7px; height:15px; background: var(--color-accent,#3b82f6); border-radius:1px;
   animation: echoes-blink 1s step-start infinite; align-self:flex-start; }
+/* PromptCard（doc 35 §4）: HITL 質問。engine が人を待っている合図として左寄せカードで settle。 */
+.echoes-prompt { align-self:flex-start; max-width:88%; display:flex; flex-direction:column; gap:12px;
+  padding:13px 15px; border-radius:12px; background: var(--color-bg-elevated,#16191f);
+  border:1px solid var(--sb-conn-hitl,#FF3DAE); box-shadow:0 0 0 1px color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 78%);
+  animation: echoes-fade .18s ease-out; }
+.echoes-prompt.answered { border-color: var(--color-border,#2a3040); box-shadow:none; opacity:.9; }
+.echoes-prompt-q { display:flex; flex-direction:column; gap:7px; }
+.echoes-prompt-header { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+  color: var(--sb-conn-hitl,#FF3DAE); }
+.echoes-prompt-question { font-size:14px; line-height:1.5; color: var(--color-text,#e6e9ef); }
+.echoes-prompt-options { display:flex; flex-wrap:wrap; gap:8px; }
+.echoes-prompt-opt { font-size:12.5px; padding:6px 13px; border-radius:8px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
+  color: var(--color-text-secondary,#a8b0c0); transition: border-color .15s ease, background .15s ease, color .15s ease; }
+.echoes-prompt-opt:hover { border-color: var(--color-text-tertiary,#616b80); color: var(--color-text,#e6e9ef); }
+.echoes-prompt-opt.selected { border-color: var(--sb-conn-hitl,#FF3DAE); color: var(--color-text,#e6e9ef);
+  background: color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 86%); }
+.echoes-prompt-confirm { align-self:flex-end; padding:7px 16px; font-size:12.5px; border-radius:8px;
+  border:none; cursor:pointer; background: var(--sb-conn-hitl,#FF3DAE); color:#fff; }
+.echoes-prompt-confirm:disabled { opacity:.4; cursor:default; }
+/* 回答済み: 見出し + 選んだ値だけの静かな折りたたみ表示。 */
+.echoes-prompt-answered { display:flex; flex-direction:column; gap:5px; }
+.echoes-prompt-arow { display:flex; gap:9px; align-items:baseline; font-size:12.5px; }
+.echoes-prompt-ahead { font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+  color: var(--color-text-tertiary,#616b80); min-width:0; }
+.echoes-prompt-aval { color: var(--color-text,#e6e9ef); font-weight:500; }
 .echoes-plan { border-bottom:1px solid var(--color-border,#2a3040); padding:10px 18px; background: var(--color-bg-elevated,#13161c); }
 .echoes-plan-title { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color: var(--color-text-tertiary,#616b80); margin-bottom:6px; }
 .echoes-plan-item { display:flex; align-items:center; gap:8px; font-size:12.5px; padding:2px 0; transition: color .2s ease; }
@@ -557,7 +715,7 @@ export const CHATVIEW_CSS = `
 @keyframes echoes-blink { 50% { opacity:0; } }
 @keyframes echoes-shimmer { from { background-position: 220% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .echoes-msg, .echoes-tool { animation:none; }
+  .echoes-msg, .echoes-tool, .echoes-prompt { animation:none; }
   .echoes-tool-spinner { animation-duration: 1.5s; } .echoes-cursor { animation:none; opacity:.6; }
   /* motion off: shimmer は止めるが text-fill:transparent のままだと消えるので色を戻す。 */
   .echoes-thinking-toggle.live .echoes-thinking-label { animation:none; background:none;

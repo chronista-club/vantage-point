@@ -96,6 +96,19 @@ pub enum EchoesEvent {
 
     /// engine / 翻訳層のエラー。
     Error { message: String },
+
+    /// clarifying question（AskUserQuestion の逆方向 `can_use_tool` 横取り、doc 35 PR1）。
+    ///
+    /// engine が turn を pause して人間の選択を待つ HITL 面。GUI は PromptCard（選択肢）で描き、
+    /// 回答を `request_id` 付きで戻すと host が `control_response` を stdin へ書いて turn が継続する。
+    /// **transcript には commit されない**（control 面 = 会話本文ではない）ため in-flight tail には
+    /// 積まない（[`super::host`] module doc の ⚠️）。
+    Question {
+        /// `control_response` の request_id マッチング用（回答時に GUI から戻す）。
+        request_id: String,
+        /// AskUserQuestion input の questions（1〜4 質問 × 2〜4 択、multiSelect 含む）。
+        questions: Vec<QuestionSpec>,
+    },
     // NOTE: permission_request（control protocol / can_use_tool）は MVP 非対象。
     //       acceptEdits で回避する（doc 32 §10.1）。将来 control protocol ごと実装。
 }
@@ -108,4 +121,31 @@ pub struct PlanEntry {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_form: Option<String>,
+}
+
+/// AskUserQuestion の 1 質問（doc 35 §3 / §8 の生 wire を型化）。
+///
+/// 由来は claude の逆方向 `can_use_tool` input（`{questions:[{question,header,options,multiSelect}]}`、
+/// camelCase）。[`super::host`] の control frame 翻訳が本型（GUI 語彙 = snake_case）へ写す。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionSpec {
+    /// 質問文（answers map のキーにもなる）。
+    pub question: String,
+    /// 短い見出し（PromptCard のラベル）。
+    pub header: String,
+    /// 選択肢（2〜4 択）。
+    pub options: Vec<QuestionOption>,
+    /// true = 複数選択（GUI は確定ボタンで束ねる）。
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
+/// 質問の 1 選択肢。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    /// 回答値（answers に詰まる label）。
+    pub label: String,
+    /// 補足説明（無い場合は空）。
+    #[serde(default)]
+    pub description: String,
 }

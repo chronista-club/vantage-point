@@ -148,6 +148,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "console"
                 | "open-url"
                 | "echoes:submit"
+                | "echoes:respond"
                 | "console:set_mode"
                 | "console:new_session"
                 | "console:set_model"
@@ -869,6 +870,13 @@ async fn run_terminal_session(
 enum EchoesCmd {
     /// プロンプト投入。 canvas channel 上り request `echoes_submit` で SP に送る。
     Submit(String),
+    /// doc 35 PR1: PromptCard 回答。 canvas channel 上り request `echoes_respond` で SP に送る。
+    Respond {
+        request_id: String,
+        answers: Option<serde_json::Value>,
+        behavior: Option<String>,
+        message: Option<String>,
+    },
 }
 
 /// 1 lane の echoes session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
@@ -987,6 +995,22 @@ async fn run_echoes_session(
                                 "echoes_submit",
                                 &serde_json::json!({ "lane": lane_key, "prompt": prompt }),
                             )
+                            .await;
+                    }
+                    Some(EchoesCmd::Respond { request_id, answers, behavior, message }) => {
+                        // allow/deny のどちらの形も同 request に載せる（SP 側が behavior で分岐）。
+                        let mut req = serde_json::json!({ "lane": lane_key, "request_id": request_id });
+                        if let Some(a) = answers {
+                            req["answers"] = a;
+                        }
+                        if let Some(b) = behavior {
+                            req["behavior"] = serde_json::Value::String(b);
+                        }
+                        if let Some(m) = message {
+                            req["message"] = serde_json::Value::String(m);
+                        }
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>("echoes_respond", &req)
                             .await;
                     }
                     None => return Ok(SubscriptionOutcome::AppClosing),
@@ -3159,9 +3183,11 @@ pub fn run() -> anyhow::Result<()> {
                 // 路 A（memory echoes-act2-notification-signal）: Act II の完了/エラーを Act I の
                 // OSC 通知と同じ sink に流す。headless stream-json は Notification hook を発火しない
                 // ため、turn_completed（stream `result` 由来）が「Claude が返し終えた＝入力待ち」の
-                // 唯一のシグナル。active lane は helper が即読 skip する。
+                // 唯一のシグナル。question（doc 35 PR1）は engine が turn を pause して選択を待つ
+                // 明示的 HITL なので、同じ awaiting_input 機構で conn-hitl（magenta diamond）を点灯する。
+                // active lane は helper が即読 skip し、切替（activate_lane）で reset される。
                 if let Some(kind) = event.get("kind").and_then(|k| k.as_str())
-                    && (kind == "turn_completed" || kind == "error")
+                    && (kind == "turn_completed" || kind == "error" || kind == "question")
                 {
                     mark_lane_awaiting_input(
                         &lane,
@@ -3187,6 +3213,27 @@ pub fn run() -> anyhow::Result<()> {
                     )
                 });
                 let _ = session.cmd_tx.send(EchoesCmd::Submit(prompt));
+            }
+            // Echoes Act II HITL (doc 35 PR1): PromptCard の回答 → 当該 lane の echoes session へ。
+            // 質問は submit 済み engine 由来なので session は既存のはずだが、防御的に lazy spawn。
+            Event::UserEvent(AppEvent::EchoesRespond { lane, request_id, answers, behavior, message }) => {
+                let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
+                    let process_path =
+                        resolve_active_project_path(&sidebar_state).unwrap_or_default();
+                    spawn_echoes_session(
+                        &rt_handle,
+                        async_action_proxy.clone(),
+                        world_conn.clone(),
+                        process_path,
+                        lane.clone(),
+                    )
+                });
+                let _ = session.cmd_tx.send(EchoesCmd::Respond {
+                    request_id,
+                    answers,
+                    behavior,
+                    message,
+                });
             }
             // doc 33 C2: Act toggle → SP console_set_mode。成功したら vpConsole.setMode で
             // WebView の表示を切替える（成功後に反映 = SP が真実源）。

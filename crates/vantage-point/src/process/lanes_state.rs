@@ -962,6 +962,24 @@ impl LanePool {
         slot.host.submit(prompt).await
     }
 
+    /// chat engine の逆方向 `can_use_tool`（[`crate::echoes::EchoesEvent::Question`]）へ回答する
+    /// （doc 35 PR1、`&self` — read lock 下で呼べる）。
+    ///
+    /// **ensure しない**: 応答対象 engine が居なければ Err。質問した engine が死んでいたら応答先が
+    /// 無い（submit と違い会話を新規に立てても意味が無い = pending 質問はその engine に紐づく）。
+    pub async fn respond_permission_chat(
+        &self,
+        addr: &LaneAddress,
+        request_id: &str,
+        decision: crate::echoes::PermissionDecision,
+    ) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）— 応答先が無い", addr))?;
+        slot.host.respond_permission(request_id, decision).await
+    }
+
     /// chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
     pub fn drop_chat_engine(&mut self, addr: &LaneAddress) -> bool {
         let dropped = self.chat_engines.remove(addr).is_some();
