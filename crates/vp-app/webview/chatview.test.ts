@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { foldInto, emptyChatState } from './chatview'
+import { foldInto, emptyChatState, linkOpenPayload } from './chatview'
 import type { EchoesEvent } from './console'
 
 /** EchoesEvent 列を空 state に順に畳んで結果を返す helper。 */
@@ -337,5 +337,36 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
       { kind: 'tool_call_update', tool_use_id: 'ghost', content: 'x' },
     ])
     expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
+  })
+})
+
+describe('linkOpenPayload — chat リンクの OS ブラウザ起動 一次弾き（scheme 検証）', () => {
+  it('https は open-url ペイロードを返す', () => {
+    expect(linkOpenPayload('https://localhost:5173/creo-ui/')).toBe(
+      JSON.stringify({ t: 'open-url', url: 'https://localhost:5173/creo-ui/' }),
+    )
+  })
+
+  it('http も open-url ペイロードを返す', () => {
+    expect(linkOpenPayload('http://example.com')).toBe(
+      JSON.stringify({ t: 'open-url', url: 'http://example.com' }),
+    )
+  })
+
+  it('file: は null（webview に file:// を開かせない — 多層防御）', () => {
+    expect(linkOpenPayload('file:///etc/passwd')).toBeNull()
+  })
+
+  it('javascript: は null（scheme injection を通さない）', () => {
+    expect(linkOpenPayload('javascript:alert(1)')).toBeNull()
+  })
+
+  it('相対リンクは null（webview 内遷移も抑止 = ハンドラ側 preventDefault で担保、emit はしない）', () => {
+    expect(linkOpenPayload('/creo-ui/')).toBeNull()
+    expect(linkOpenPayload('#section')).toBeNull()
+  })
+
+  it('空 href は null', () => {
+    expect(linkOpenPayload('')).toBeNull()
   })
 })
