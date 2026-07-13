@@ -18,4 +18,9 @@ wld_id: string,
 /**
  * direct 到達 endpoint 候補数（hub S2 前は 0）
  */
-endpoints_count: number, };
+endpoints_count: number, 
+/**
+ * hub との常駐接続が今生きているか（hub protocol v0.6.0、relay registry snapshot 由来）。
+ * false = registry には居るが relay は offline（stale / 切断中）。旧 daemon / 旧 hub は false。
+ */
+connected: boolean, };

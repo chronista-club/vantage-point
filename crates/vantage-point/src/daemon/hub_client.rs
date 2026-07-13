@@ -174,6 +174,11 @@ pub struct WorldEntry {
     pub name: String,
     #[serde(default)]
     pub registered_at: String,
+    /// この world の常駐接続が hub で今生きているか（hub protocol v0.6.0 の additive field、
+    /// relay registry snapshot 由来）。false = registry には居るが relay は offline を返す
+    /// （stale entry / 切断中）。旧 hub は field を返さないため `#[serde(default)]` で false。
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// hub addr を解決する（= federation opt-in 判定の SSOT）。優先順位: env > config.kdl。
@@ -1160,6 +1165,7 @@ mod tests {
             handle: handle.to_string(),
             name: String::new(),
             registered_at: registered_at.to_string(),
+            connected: false,
         }
     }
 

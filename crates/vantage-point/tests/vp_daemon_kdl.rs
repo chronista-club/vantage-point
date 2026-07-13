@@ -63,14 +63,15 @@ fn channels_are_subset_of_daemon_registered() {
     }
 }
 
-/// 3. starter set（registry / events）が KDL に存在する。
+/// 3. starter set（registry / events）+ 2026-07-12 拡張（world-control read-safe subset）が
+///    KDL に存在する。
 #[test]
 fn starter_channels_present() {
     let reg = registry();
-    for want in ["registry", "events"] {
+    for want in ["registry", "events", "world-control"] {
         assert!(
             reg.channel(want).is_some(),
-            "starter channel '{want}' が vp-daemon.kdl に無い"
+            "channel '{want}' が vp-daemon.kdl に無い"
         );
     }
 }
@@ -91,10 +92,21 @@ fn request_names_match_daemon_methods() {
     ];
     // SSOT: server.rs events handler の match method（emit/query）。
     const EVENTS_METHODS: &[&str] = &["emit", "query"];
+    // SSOT: server.rs world-control dispatch の match method（projects/* + hub/discover + ping）。
+    const WORLD_CONTROL_METHODS: &[&str] = &[
+        "projects/list",
+        "projects/add",
+        "projects/remove",
+        "projects/rename",
+        "projects/reorder",
+        "hub/discover",
+        "ping",
+    ];
 
     let reg = registry();
     assert_requests_subset(&reg, "registry", REGISTRY_METHODS);
     assert_requests_subset(&reg, "events", EVENTS_METHODS);
+    assert_requests_subset(&reg, "world-control", WORLD_CONTROL_METHODS);
 }
 
 fn assert_requests_subset(reg: &SchemaRegistry, channel: &str, methods: &[&str]) {
