@@ -415,6 +415,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* awaiting dot — needs-you 言語 (magenta) に従属。 diamond node と同源の信号。 */
 .vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
   background:var(--sb-conn-hitl,#FF3DAE);flex:0 0 auto;}
+/* canvas 着信 (D) — PP に絵が届いた info 信号。 needs-you(magenta glow)とは別語彙。
+   Light Grid「光=注意」に従い bright(--lg-hot)で目を引くが glow(pulse)は付けない
+   (glow は needs-you 専用)。 easel icon は bundled subset 外で不可視だったため pure-CSS の
+   小 square (canvas/frame メタファ) に。 awaiting の円 / mailbox の封筒と形で区別。 */
+.vp-lane-canvas{width:7px;height:7px;border-radius:2px;
+  background:var(--lg-hot,#EAFBFF);flex:0 0 auto;}
 
 /* Add Performer「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */

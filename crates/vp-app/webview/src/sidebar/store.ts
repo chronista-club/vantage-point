@@ -31,6 +31,7 @@ export function emptyState(): SidebarState {
 		lanes_by_project: {},
 		unread_notifications: {},
 		awaiting_input: {},
+		canvas_unread: {},
 	};
 }
 

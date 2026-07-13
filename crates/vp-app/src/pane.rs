@@ -175,6 +175,14 @@ pub struct SidebarState {
     /// `unread_notifications` (履歴 count) と分離した「現在の活動状態」 表現。
     #[serde(default)]
     pub awaiting_input: std::collections::HashMap<String, bool>,
+    /// Canvas (Paisley Park) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
+    /// Key: Lane address (`"<project>/conductor"` 等)、 Value: 現在 active でない lane に
+    /// show が着いた回数。 `CanvasMessage`(show) で increment、 `lane:select` (activate_lane) で
+    /// 対応 Lane を 0 reset。 `unread_notifications` (HITL/OSC = 黄 dot) とは**別 sink** =
+    /// sidebar で Canvas 専用 icon (Phosphor easel) を出し「用事」と「絵が届いた」の語彙を分ける。
+    /// disk persist 不要 (起動で 0)。
+    #[serde(default)]
+    pub canvas_unread: std::collections::HashMap<String, u32>,
     /// VP-143: per-Lane の cc session display name (`/rename` で設定された custom-title)。
     /// Key: Lane address、 Value: title 文字列。
     /// `~/.claude/projects/<encoded-cwd>/<latest>.jsonl` の `custom-title` entry を polling
