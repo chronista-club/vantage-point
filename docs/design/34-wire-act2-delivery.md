@@ -65,7 +65,7 @@ delivery_actor(TheWorld)
 | **PR4** | 可視化 V2: wire 専用バブル(origin タグ)+ 未 ack 可視化 | 注入 wire が user 発話と視覚的に区別され、replay 後も維持される |
 
 - 実装運用は doc 32 §8 と同じ(team-b レビュー → `--base nightly` PR → auto-merge、GitNexus impact/detect_changes、pre-MVP 原則)。
-- **Epic 末尾**: `guide/messaging.md`(配送チャネル表に E を追加、§1.7 更新)と `AGENTS.md` の整合 sweep を doc-only PR で。
+- **Epic 末尾**: `guide/messaging.md`(配送チャネル表に E を追加、§1.7 更新)と `AGENTS.md` の整合 sweep を doc-only PR で。→ **messaging.md 分は `msg-doc-sweep` lane で消化済**(channel C/D/E 分岐を §1.7、Wire Inbox V1 を §4 に反映)。`AGENTS.md` は channel E が agent から透過的(chat lane も wire を turn で受け wire_recv → wire_ack する経路は不変)なため変更不要と確認。
 
 ## 6. Step 0 spike リスト(PR1 着手時に実測、結果は本 doc 付録へ)
 

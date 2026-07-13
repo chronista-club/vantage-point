@@ -1,6 +1,6 @@
 # Guide: VP メッセージング (wire / dev-flow FSM / federation)
 
-> **Status**: 実装同期 doc（2026-07-12、`wire-sync-doc` lane）。
+> **Status**: 実装同期 doc（2026-07-12 新設 / 2026-07-13 に channel E（#738）+ Wire Inbox V1（#742）を反映、`msg-doc-sweep` lane）。
 > **Scope**: agent 間 messaging の全体像を 1 本にまとめた見取り図 — wire 基礎 / dev-flow FSM の投影 / federation（cross-PC）。
 > **SSOT は実装**。この doc はコードに追いつくための地図であり、事実は下記の一次資料から採取している。矛盾を見つけたらコードを正とし、この doc を直す。
 
@@ -11,7 +11,7 @@
 | wire store | `crates/vantage-point/src/capability/wiremsg_store.rs` | store / cursor / thread / ack 台帳 |
 | SP→World transport | `crates/vantage-point/src/process/world_wire.rs` | wire の中央化 transport（QUIC "wire" channel） |
 | dispatch | `crates/vantage-point/src/process/routes/wire.rs` / `src/daemon/server.rs` | channel method → store dispatch |
-| delivery loop | `crates/vantage-point/src/process/delivery_actor.rs` | 未 ack command の再掲示（nudge） |
+| delivery loop | `crates/vantage-point/src/process/delivery_actor.rs`（SP 受け口 = `unison_server.rs` の `lane_nudge` / `echoes_nudge`） | 未 ack command の再掲示（nudge、`console_mode` で channel C/D/E 分岐） |
 | FSM | `crates/vantage-point/src/flow.rs` | FlowState と derive 規則 |
 | 投影 | `crates/vantage-point/src/daemon/server.rs`（enrich / "lanes" channel） | flow_state を vp-app へ届ける経路 |
 | federation | `crates/vantage-point/src/daemon/{hub_client,dialer}.rs` / `src/world/*` | register / discover / direct→relay |
@@ -24,7 +24,8 @@
 | [`dev-flow-primitives.md`](./dev-flow-primitives.md) | `flow_handoff` / `flow_progress` の tool signature・CLI 例・FSM 詳細 |
 | [`wire-address-usage.md`](./wire-address-usage.md) / [`spec/wire-address-v3.md`](../spec/wire-address-v3.md) | address 文法（`actor@world/project/lane`） |
 | [`design/28-agent-delegation.md`](../design/28-agent-delegation.md) | `delegate` / `respond` / `complete`（委譲、wire とは別系統） |
-| [`design/tmux-decoupling.md`](../design/tmux-decoupling.md) | lane console の PtySlot 直ホスト（nudge の着地先） |
+| [`design/tmux-decoupling.md`](../design/tmux-decoupling.md) | lane console の PtySlot 直ホスト（**Tui lane の** nudge 着地先 = channel C。chat lane は channel E で engine に注入、§1.7） |
+| [`design/34-wire-act2-delivery.md`](../design/34-wire-act2-delivery.md) | channel E（chat lane への構造化配送）と wire 可視化（Wire Inbox）の epic 設計 |
 
 ---
 
@@ -37,7 +38,7 @@
    ▼
 world_wire::call  ── QUIC "wire" channel ──▶  TheWorld daemon :32000
                                                 └─ WiremsgStore（唯一の writer / 中央 store）
-                                                └─ delivery_actor（未 ack command を nudge）
+                                                └─ delivery_actor（未 ack command を nudge → channel C/D/E、§1.7）
                                                 └─ enrich_lanes_flow_state（送信時 derive）
                                                      └─ "lanes" channel ──▶ vp-app sidebar
 ```
@@ -119,10 +120,16 @@ store が扱う table:
 
 `delivery_actor.rs` の常駐 actor が、未 ack の `command` を受信者へ nudge する。
 
-- 周期パラメータ: `TICK` 30s、`RENUDGE_AFTER` 600s（= 10 分）、同一 `(message, agent)` への nudge 上限 `MAX_NUDGES` 3（`delivery_actor.rs:44-52`）。
-- nudge の着地先は **PtySlot 直書き**: SP control channel に `lane_nudge` を forward し、SP 側 `LanePool::write_nudge` が lane の PtySlot に直接テキストを打ち込む（`delivery_actor.rs` module doc）。**tmux には依存しない**（tmux decoupling 後、lane = SP の PtySlot 直ホスト）。
-- nudge 回数・最終時刻の台帳は **in-memory**。TheWorld 再起動でリセットされ上限回が再付与されるが、**ack されれば pending から消えて止まる**（ack 台帳が真値、nudge 台帳は運用状態）。
-- 別チャネル（channel B）として、`vp wire hook-check`（claude hook 実体、`commands/wire.rs:136`）が SessionStart 等で未読 wire を `additionalContext` として stdout に出し、会話開始時に未読を気付かせる（fail-open = 失敗は silent 成功で会話を邪魔しない）。
+- 周期パラメータ: `TICK` 30s、`RENUDGE_AFTER` 600s（= 10 分）、同一 `(message, agent)` への nudge 上限 `MAX_NUDGES` 3（`delivery_actor.rs:50-58`）。
+- **配送経路は受信者 lane の `console_mode` で分かれる**（分水嶺は `NudgeTarget::nudge_method()`、`delivery_actor.rs:142`。#738 / doc 34 §3）。pulse ループの `if console_mode == Tui`（`delivery_actor.rs:419`）一箇所が Tui と Chat を切り分ける:
+  - **Tui lane** — CC activity poll（`agents --json`）で readiness を判定（R3-a）してから配送:
+    - idle / waiting（or poll 不能の degraded）→ **channel C** `lane_nudge` を所有 SP の control channel へ forward（`unison_server.rs:707` `handle_lane_nudge`）→ `deliver_nudge`（`lanes_state.rs:1017`）→ `write_to_lane` が **PtySlot に直書き**（`lanes_state.rs:781`）。**tmux 非依存**（tmux decoupling 後、lane = SP の PtySlot 直ホスト）。
+    - busy → 待つ（台帳を進めず、次 pulse で idle 遷移を拾う）。
+    - CC interactive session 不在（`Some(None)`）→ **channel D** headless bg dispatch: `claude -p [--resume <cc_session_id>]` を detached 起動して wire を処理させる（`delivery_actor.rs:427-472` / `spawn_bg_dispatch:541`。`BG_REDISPATCH_AFTER` 600s × `MAX_BG_DISPATCHES` 2、別台帳 `bg_ledger`）。lane 不在 / Dead は channel D 対象外（cwd/session の足場が無い）で pending 保持。
+  - **Chat lane** — **channel E** `echoes_nudge` を forward（`unison_server.rs:527` `handle_echoes_nudge`）→ `ensure_and_submit_chat`（`unison_server.rs:547`）が engine（`EchoesAgentHost`）へ nudge 文言を **1 ターンとして submit**（`lanes_state.rs:957` `submit_chat`）。chat lane は **readiness も channel D も通らない（#738）**: engine は lazy spawn なので Offline が無く、turn 実行中の submit も engine 側が自前 queue するので Busy が無い → 常時 deliverable（doc 34 §3、Step 0 spike ①実測）。そもそも chat lane は PtySlot を持たず `lane_nudge` は構造的に `Err("Lane has no PtySlot")` になる（`lanes_state.rs:785`）ため、この分岐は同時にバグ修正でもある（旧: 30s ごとに無限リトライ）。payload は両 method とも `{lane, text}` 共通。
+  - **delegation reconcile も同じ `nudge_method()` 分岐**を使う（`delegation.rs:436`）。delegation record の re-nudge（`respond` / `complete` 待ち、[design/28](../design/28-agent-delegation.md)）も chat lane では engine 注入に載る。
+- nudge 回数・最終時刻の台帳（`ledger`）は **in-memory**、channel C と channel E で **共有**（同一 `RENUDGE_AFTER` / `MAX_NUDGES`。channel D だけ別台帳 `bg_ledger`）。TheWorld 再起動でリセットされ上限回が再付与されるが、**ack されれば pending から消えて止まる**（ack 台帳が真値、nudge 台帳は運用状態）。
+- 別チャネル（**channel B**）として、`vp wire hook-check`（claude hook 実体、`commands/wire.rs:136`）が SessionStart 等で未読 wire を `additionalContext` として stdout に出し、会話開始時に未読を気付かせる（fail-open = 失敗は silent 成功で会話を邪魔しない）。Act II（chat lane）でも headless の SessionStart hook は走るため有効（doc 34 §2-5）。
 
 ---
 
@@ -292,6 +299,7 @@ let path = if let Some(remote) = world {
 | 系譜 | `wire_thread` | `vp wire thread` | `wire/thread` | read-only、root-first |
 | 継続 watch | —（`wire_recv` の loop 相当） | `vp wire watch` / `watch-supervised` | `wire/recv` loop | Monitor の subscription source |
 | hook | —（hook 実体） | `vp wire hook-check` | `wire/unread-count` + `delegation/poll` | claude hook、fail-open |
+| GUI 履歴 / ack | — | —（vp-app sidebar Wire Inbox panel） | `wire/history` + `wire/unread-count`（fetch）→ `wire/ack` | **#742 / doc 34 §4 V1**。read-only 履歴（`inbound` / `acked` flag 付き）。**cursor 不触り**（`wire/recv` を使わず lane claude の未読を横取りしない）。ack は `wire/ack` を再利用し「ack → 再 fetch」を 1 往復に畳む。LaneRow の mailbox badge click → World "wire" channel を直接 open（`vp-app/src/app.rs` の `wire_fetch_payload`） |
 | federation 送信 | — | `vp wire send --world` | `wire/federate` | §3.4（daemon 層が hub relay へ） |
 | federation 探索 | — | `vp wire discover --world` | `wire/discover-lanes` | §3.3 |
 
