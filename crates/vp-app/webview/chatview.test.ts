@@ -116,6 +116,44 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(last.kind === 'assistant' && last.text.includes('boom')).toBe(true)
   })
 
+  it('question が未回答の prompt item を積み、streaming を下ろす（HITL pause、doc 35 PR1）', () => {
+    const s = fold([
+      { kind: 'message_chunk', text: '確認です' },
+      {
+        kind: 'question',
+        request_id: 'req-1',
+        questions: [
+          {
+            question: 'どちらの言語？',
+            header: 'Language',
+            options: [
+              { label: 'English', description: 'en' },
+              { label: '日本語', description: 'ja' },
+            ],
+            multi_select: false,
+          },
+        ],
+      },
+    ])
+    expect(s.streaming).toBe(false)
+    const last = s.items[s.items.length - 1]
+    expect(last.kind).toBe('prompt')
+    if (last.kind === 'prompt') {
+      expect(last.requestId).toBe('req-1')
+      expect(last.answered).toBe(false)
+      expect(last.questions[0].options).toHaveLength(2)
+    }
+  })
+
+  it('回答後の message_chunk は新 assistant バブルを立てる（質問→継続の流れ）', () => {
+    const s = fold([
+      { kind: 'question', request_id: 'r1', questions: [{ question: 'Q?', header: 'H', options: [{ label: 'A' }] }] },
+      { kind: 'message_chunk', text: '続き' },
+    ])
+    expect(s.items.map((i) => i.kind)).toEqual(['prompt', 'assistant'])
+    expect(s.streaming).toBe(true)
+  })
+
   it('実ターン相当（init→thinking→tool→result→text→done）で item 構成が正しい', () => {
     const s = fold([
       { kind: 'session_init', session_id: 's', model: 'm' },

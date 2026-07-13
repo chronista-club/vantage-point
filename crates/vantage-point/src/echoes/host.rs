@@ -31,10 +31,23 @@
 //! commit 世代 [`InFlight::seq`] を添えて返すので、 呼び手は transcript 読み後に seq を検算して
 //! 世代が動いていたら読み直せる（[`crate::process::unison_server`] の replay handler）。
 //!
+//! ## control protocol client（doc 35 PR1、HITL 面の質問レール）
+//!
+//! spawn に `--permission-prompt-tool stdio` を足すと、engine は逆方向の `can_use_tool`
+//! control_request を **stdout**（EchoesEvent と同じ stream）に流す。stdout pump は translator の
+//! **手前**でこれを検出し、`AskUserQuestion` を [`EchoesEvent::Question`] へ写して broadcast する。
+//! GUI の回答は [`EchoesAgentHost::respond_permission`] が `control_response` として stdin へ書き戻す
+//! （既存 stdin Mutex を submit と共有 = 混線しない、doc §2.3）。制御面を translator に流さないのは
+//! EchoesEvent 語彙（会話の言葉）を engine 制御で汚さないため（責務分離、doc §2.4）。
+//!
 //! data / calculations / actions:
-//! - calculations: stdin メッセージ JSON 生成（[`user_message_json`]、純関数）
-//! - actions: spawn / stdout→translate→broadcast / in-flight tail 更新 / cc_session 記録 / stdin 書き込み
+//! - calculations: stdin メッセージ JSON 生成（[`user_message_json`]）/ control frame の判定
+//!   （[`classify_control_frame`]）/ 質問 input の写像（[`parse_question_specs`]）/ control_response
+//!   の組み立て（[`build_permission_response`]）— いずれも純関数で単体テスト可能。
+//! - actions: spawn / stdout→translate→broadcast / in-flight tail 更新 / cc_session 記録 /
+//!   stdin 書き込み（user message・initialize handshake・control_response）
 
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
@@ -42,8 +55,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::broadcast;
 
-use super::event::EchoesEvent;
+use super::event::{EchoesEvent, QuestionOption, QuestionSpec};
 use super::translate::EchoesTranslator;
+
+/// 我々が spawn 直後に送る initialize control_request の request_id（応答照合用の固定値）。
+const INIT_REQUEST_ID: &str = "vp-init-1";
 
 /// disk（transcript）にまだ載っていない増分と、その commit 世代。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -111,17 +127,34 @@ pub struct EchoesHostConfig {
     pub claude_cli_path: Option<String>,
 }
 
+/// 逆方向 `can_use_tool` への回答（doc 35 §2.3）。GUI の PromptCard 応答を control_response へ写す。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PermissionDecision {
+    /// 許可。`answers` は AskUserQuestion の回答 map（`{question: label}`）で、原 input（questions を
+    /// 含む）へマージして `updatedInput` にする。`None` は「原 input をそのまま許可」（tool 承認 = PR3）。
+    Allow { answers: Option<serde_json::Value> },
+    /// 拒否。`message` を engine に返す（PR3 で使う。PR1 の質問レールでは基本 allow）。
+    Deny { message: String },
+}
+
 /// lane 単位の headless claude engine host。
 ///
 /// doc 33: LanePool のエンジンスロットに保持される。`RwLock<LanePool>` の **read lock 下で
 /// submit** できるよう、stdin は内部 `tokio::sync::Mutex` で持つ（`submit(&self)`）。
+///
+/// stdin は `Arc` 共有: host（submit / respond_permission）と stdout pump（handshake / 想定外
+/// can_use_tool の自動 allow）の両方が書くため。各 write は 1 JSON 行 + flush で完結し Mutex が
+/// 直列化するので、user message と control frame が混線しない（doc §2.3）。
 pub struct EchoesAgentHost {
     child: Child,
-    stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
+    stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
     event_tx: broadcast::Sender<EchoesEvent>,
     pid: Option<u32>,
     /// stdout ポンプが更新する in-flight tail（module doc）。 await を跨がないので std Mutex。
     in_flight: Arc<Mutex<InFlight>>,
+    /// 逆方向 `can_use_tool` の pending 質問（request_id → 原 input）。回答時に原 questions を
+    /// verbatim で `updatedInput` へ echo するため保持する（doc §8 の wire 契約）。await を跨がない。
+    pending_permissions: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }
 
 impl EchoesAgentHost {
@@ -149,10 +182,16 @@ impl EchoesAgentHost {
             .arg("--verbose");
 
         // Act I（TUI）が bypassPermissions で全ツール素通しなのに Act II を揃える（doc 33 §9、
-        // user 要件 2026-07-09「act I レベルにここも合わせよう」）。acceptEdits だと Edit は
-        // auto-apply されるが Bash 等は headless で許可待ち→承認 UI が無い（--permission-prompt-tool
-        // は 2.1.197 で削除済）ため error 化していた。bypassPermissions で TUI と同じ体験にする。
+        // user 要件 2026-07-09「act I レベルにここも合わせよう」）。bypassPermissions で TUI と
+        // 同じ体験にする（通常 tool は素通し）。
         cmd.arg("--permission-mode").arg("bypassPermissions");
+
+        // doc 35 PR1: 質問/承認を stdio control channel へ routing する点火条件（決定 spike §8 で
+        // 実測）。`--permission-prompt-tool stdio` は claude 2.1.197 の `--help` に出ない hidden flag
+        // だが受理・機能する（調査 §10.1 の「削除済み」は非表示からの誤推論を spike が反証）。
+        // bypassPermissions のまま stdio を足すと、通常 tool（Write/Bash）は素通しのまま
+        // AskUserQuestion だけが逆方向 can_use_tool として飛ぶ → 既定を維持したまま質問だけ拾える。
+        cmd.arg("--permission-prompt-tool").arg("stdio");
 
         if let Some(ref model) = config.model {
             cmd.arg("--model").arg(model);
@@ -197,18 +236,39 @@ impl EchoesAgentHost {
         let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
 
         let in_flight = Arc::new(Mutex::new(InFlight::default()));
+        // stdin を Arc 共有（host + pump が書く、doc §2.3）。
+        let stdin = Arc::new(tokio::sync::Mutex::new(stdin));
+        let pending_permissions: Arc<Mutex<HashMap<String, serde_json::Value>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
-        // stdout ポンプ: 行 → translate → in-flight tail 更新 → broadcast
+        // initialize handshake（control channel 確立、doc §2.2）。pump 開始と競うが、submit は
+        // spawn 後の別 dispatch（network 往復先）なので実質先行する。応答は pump が request_id で確認。
+        let handshake_stdin = stdin.clone();
+        tokio::spawn(async move {
+            let frame = initialize_handshake_json();
+            if let Err(e) = write_json_line(&handshake_stdin, &frame).await {
+                tracing::warn!("echoes: initialize handshake 送信失敗: {e}");
+            }
+        });
+
+        // stdout ポンプ: 行 → (control frame なら分岐) → translate → in-flight tail 更新 → broadcast
         //（+ SessionInit で cc_session 記録）。
         let tx = event_tx.clone();
         let project = config.project.clone();
         let lane = config.lane.clone();
         let pump_in_flight = in_flight.clone();
+        let pump_pending = pending_permissions.clone();
+        let pump_stdin = stdin.clone();
         tokio::spawn(async move {
             let mut translator = EchoesTranslator::new();
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                // 制御面は translator の手前で抜く（EchoesEvent 語彙を engine 制御で汚さない）。
+                if let Some(frame) = classify_control_frame(&line) {
+                    handle_control_frame(frame, &tx, &pump_pending, &pump_stdin).await;
+                    continue;
+                }
                 let out = translator.ingest(&line);
                 // tail 更新は broadcast より先。 replay handler が「配信済みだが tail に無い」
                 // 増分を取りこぼさない順序（tail ⊇ 配信済み未 commit 分 を保つ）。
@@ -227,8 +287,9 @@ impl EchoesAgentHost {
             // 届かず「止まった?」が見えなかった（Act I は PTY 切断が xterm に即見える）。
             // 既存 Error 経路に相乗りして chatview に途絶を出す。
             // （stop/crash の区別・EngineExited 専用 variant・再起動ボタンは後続 PR）
-            // engine が死んだ = tail の続きはもう来ない。 replay に出さない。
+            // engine が死んだ = tail の続きも pending 質問への応答先ももう無い。 掃除する。
             pump_in_flight.lock().expect("in_flight lock").reset();
+            pump_pending.lock().expect("pending lock").clear();
             let _ = tx.send(EchoesEvent::Error {
                 message: "エンジンとの接続が途絶しました（メッセージ送信で再起動します）"
                     .to_string(),
@@ -248,10 +309,11 @@ impl EchoesAgentHost {
         let pid = child.id();
         Ok(Self {
             child,
-            stdin: tokio::sync::Mutex::new(stdin),
+            stdin,
             event_tx,
             pid,
             in_flight,
+            pending_permissions,
         })
     }
 
@@ -290,6 +352,26 @@ impl EchoesAgentHost {
         Ok(())
     }
 
+    /// 逆方向 `can_use_tool`（[`EchoesEvent::Question`]）への回答を stdin へ書き戻す（doc §2.3）。
+    ///
+    /// `request_id` は Question event 経由で GUI から戻る。pending から原 input（questions を含む）を
+    /// 引き、`decision` に応じて `control_response{behavior, updatedInput|message}` を組み立てて 1 行書く。
+    /// `&self`: 既存 stdin Mutex を submit と共有（LanePool read lock 下から呼べる）。
+    pub async fn respond_permission(
+        &self,
+        request_id: &str,
+        decision: PermissionDecision,
+    ) -> anyhow::Result<()> {
+        // pending から原 input を取り出す（回答は 1 回きり = remove）。無ければ空 object にフォールバック。
+        let original = self
+            .pending_permissions
+            .lock()
+            .expect("pending lock")
+            .remove(request_id);
+        let frame = build_permission_response(request_id, &decision, original.as_ref());
+        write_json_line(&self.stdin, &frame).await
+    }
+
     /// engine プロセスを停止する（drop でも kill_on_drop が効くが、明示停止用）。
     pub async fn stop(&mut self) -> anyhow::Result<()> {
         self.child.kill().await?;
@@ -315,6 +397,215 @@ fn user_message_json(text: &str) -> String {
 fn record_session(project: &str, lane: &str, session_id: &str) {
     if let Err(e) = crate::lane::cc_session::record(project, lane, session_id) {
         tracing::warn!("cc_session 記録失敗（project={project}, lane={lane}）: {e}");
+    }
+}
+
+// =============================================================================
+// control protocol（doc 35 PR1）— 判定・写像・組み立ては純関数、書き込みだけ action
+// =============================================================================
+
+/// stdin へ 1 JSON 行 + `\n` + flush で書く（action）。submit / respond_permission / handshake /
+/// 自動 allow が共用。各 write を Mutex が直列化するので混線しない（doc §2.3）。
+async fn write_json_line(
+    stdin: &tokio::sync::Mutex<tokio::process::ChildStdin>,
+    value: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let line = serde_json::to_string(value)?;
+    let mut guard = stdin.lock().await;
+    guard.write_all(line.as_bytes()).await?;
+    guard.write_all(b"\n").await?;
+    guard.flush().await?;
+    Ok(())
+}
+
+/// initialize handshake の control_request（純関数、doc §2.2）。`hooks` は空（null）で足りる。
+fn initialize_handshake_json() -> serde_json::Value {
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": INIT_REQUEST_ID,
+        "request": { "subtype": "initialize", "hooks": null }
+    })
+}
+
+/// stdout 1 行を control frame として分類した結果（translator の手前で抜く対象）。
+#[derive(Debug, PartialEq)]
+enum ControlFrame {
+    /// 逆方向 `can_use_tool`（claude → 我々）。tool_name で GUI へ写す or 自動応答する。
+    CanUseTool {
+        request_id: String,
+        tool_name: String,
+        input: serde_json::Value,
+    },
+    /// 我々の能動 control（initialize / interrupt 等）への応答。GUI には出さない。
+    ControlResponse { request_id: Option<String> },
+}
+
+/// stdout 1 行が control frame なら分類する（純関数、doc §2.4）。
+///
+/// - `type=="control_request"` && `request.subtype=="can_use_tool"` → [`ControlFrame::CanUseTool`]。
+/// - `type=="control_response"` → [`ControlFrame::ControlResponse`]。
+/// - それ以外（会話本文 / 未知）は `None` = translator に流す。
+fn classify_control_frame(line: &str) -> Option<ControlFrame> {
+    let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    match v.get("type").and_then(|t| t.as_str())? {
+        "control_request" => {
+            let req = v.get("request")?;
+            // can_use_tool 以外の control_request（稀）は translator の Other が握り潰すので流す。
+            if req.get("subtype").and_then(|s| s.as_str())? != "can_use_tool" {
+                return None;
+            }
+            let request_id = v.get("request_id").and_then(|r| r.as_str())?.to_string();
+            let tool_name = req.get("tool_name").and_then(|t| t.as_str())?.to_string();
+            let input = req
+                .get("input")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            Some(ControlFrame::CanUseTool {
+                request_id,
+                tool_name,
+                input,
+            })
+        }
+        "control_response" => Some(ControlFrame::ControlResponse {
+            request_id: v
+                .get("request_id")
+                .or_else(|| v.get("response").and_then(|r| r.get("request_id")))
+                .and_then(|r| r.as_str())
+                .map(str::to_string),
+        }),
+        _ => None,
+    }
+}
+
+/// AskUserQuestion の逆方向 input（`{questions:[{question,header,options,multiSelect}]}`、camelCase）を
+/// GUI 語彙 [`QuestionSpec`] 列へ写す（純関数、doc §3 / §8 の生 wire）。
+fn parse_question_specs(input: &serde_json::Value) -> Vec<QuestionSpec> {
+    let Some(questions) = input.get("questions").and_then(|q| q.as_array()) else {
+        return Vec::new();
+    };
+    questions
+        .iter()
+        .map(|q| QuestionSpec {
+            question: str_field(q, "question"),
+            header: str_field(q, "header"),
+            options: q
+                .get("options")
+                .and_then(|o| o.as_array())
+                .map(|opts| {
+                    opts.iter()
+                        .map(|o| QuestionOption {
+                            label: str_field(o, "label"),
+                            description: str_field(o, "description"),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            multi_select: q
+                .get("multiSelect")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        })
+        .collect()
+}
+
+/// JSON object の string field を取り出す（無ければ空文字）。
+fn str_field(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 逆方向 `can_use_tool` への control_response JSON を組み立てる（純関数、doc §2.3 / §8 の wire）。
+///
+/// - allow: `updatedInput` = 原 input（AskUserQuestion なら questions を含む）。`answers` があれば
+///   マージ → `{questions, answers}` になる（spike の echo 契約）。原 input 不在なら空 object 起点。
+/// - deny: `{behavior:"deny", message}`。
+fn build_permission_response(
+    request_id: &str,
+    decision: &PermissionDecision,
+    original_input: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let inner = match decision {
+        PermissionDecision::Allow { answers } => {
+            let mut updated = original_input
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(answers) = answers
+                && let Some(obj) = updated.as_object_mut()
+            {
+                obj.insert("answers".to_string(), answers.clone());
+            }
+            serde_json::json!({ "behavior": "allow", "updatedInput": updated })
+        }
+        PermissionDecision::Deny { message } => {
+            serde_json::json!({ "behavior": "deny", "message": message })
+        }
+    };
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": inner,
+        }
+    })
+}
+
+/// 分類済み control frame を処理する（action = broadcast / pending 登録 / 自動応答）。
+///
+/// - AskUserQuestion → 原 input を pending へ退避（回答時に questions を verbatim echo）+
+///   [`EchoesEvent::Question`] を broadcast。
+/// - その他の can_use_tool（bypass では来ないはずだが防御）→ 原 input で自動 allow + warn。
+///   PR3 で [`EchoesEvent::PermissionRequest`] 化する。
+/// - control_response（我々の能動 control への応答）→ init のみ log、他は無視（GUI に出さない）。
+async fn handle_control_frame(
+    frame: ControlFrame,
+    tx: &broadcast::Sender<EchoesEvent>,
+    pending: &Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    stdin: &tokio::sync::Mutex<tokio::process::ChildStdin>,
+) {
+    match frame {
+        ControlFrame::CanUseTool {
+            request_id,
+            tool_name,
+            input,
+        } => {
+            if tool_name == "AskUserQuestion" {
+                let questions = parse_question_specs(&input);
+                pending
+                    .lock()
+                    .expect("pending lock")
+                    .insert(request_id.clone(), input);
+                let _ = tx.send(EchoesEvent::Question {
+                    request_id,
+                    questions,
+                });
+            } else {
+                // 既定は bypassPermissions なので通常 tool は素通し = ここには来ないはず。防御的に
+                // 原 input で自動 allow して turn を止めない。tool 承認 UI は PR3 で PermissionRequest 化。
+                tracing::warn!(
+                    "echoes: 想定外の can_use_tool tool_name={tool_name}（PR3 で PermissionRequest 化予定）— 原 input で自動 allow"
+                );
+                let frame = build_permission_response(
+                    &request_id,
+                    &PermissionDecision::Allow { answers: None },
+                    Some(&input),
+                );
+                if let Err(e) = write_json_line(stdin, &frame).await {
+                    tracing::warn!("echoes: 想定外 can_use_tool の自動 allow 書き込み失敗: {e}");
+                }
+            }
+        }
+        ControlFrame::ControlResponse { request_id } => {
+            // PR1 の能動 control は initialize のみ。応答を request_id で確認する（doc §2.2）。
+            if request_id.as_deref() == Some(INIT_REQUEST_ID) {
+                tracing::debug!(
+                    "echoes: initialize handshake 確認（request_id={INIT_REQUEST_ID}）"
+                );
+            }
+            // interrupt / set_permission_mode の応答（PR2+）はまだ送らないので無視。
+        }
     }
 }
 
@@ -448,6 +739,151 @@ mod tests {
         assert_eq!(v["message"]["content"][0]["text"], tricky);
     }
 
+    // =========================================================================
+    // control protocol（doc 35 PR1）— 純関数の単体テスト
+    // =========================================================================
+
+    /// 決定 spike §8 の生 wire（AskUserQuestion の逆方向 can_use_tool）。
+    const CAN_USE_TOOL_ASK: &str = r#"{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","display_name":"AskUserQuestion","tool_use_id":"toolu_1","input":{"questions":[{"question":"Which language?","header":"Greeting Language","options":[{"label":"English","description":"en"},{"label":"Japanese (日本語)","description":"ja"}],"multiSelect":false}]}}}"#;
+
+    /// can_use_tool(AskUserQuestion) を CanUseTool として分類し、tool_name / input を保つ。
+    #[test]
+    fn classify_detects_can_use_tool() {
+        match classify_control_frame(CAN_USE_TOOL_ASK) {
+            Some(ControlFrame::CanUseTool {
+                request_id,
+                tool_name,
+                input,
+            }) => {
+                assert_eq!(request_id, "req-1");
+                assert_eq!(tool_name, "AskUserQuestion");
+                assert!(input.get("questions").is_some(), "input.questions を保持");
+            }
+            other => panic!("expected CanUseTool, got {other:?}"),
+        }
+    }
+
+    /// control_response は request_id 付きで分類される（init 確認用）。
+    #[test]
+    fn classify_detects_control_response() {
+        let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"vp-init-1","response":{"commands":[]}}}"#;
+        assert_eq!(
+            classify_control_frame(line),
+            Some(ControlFrame::ControlResponse {
+                request_id: Some("vp-init-1".to_string())
+            })
+        );
+    }
+
+    /// 会話本文・未知 type・非 can_use_tool の control_request は None（translator に流す）。
+    #[test]
+    fn classify_passes_through_non_control_lines() {
+        for line in [
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[]},"session_id":"s"}"#,
+            r#"{"type":"result","subtype":"success","session_id":"s","is_error":false}"#,
+            // can_use_tool 以外の control_request（稀）は translator の Other 任せ。
+            r#"{"type":"control_request","request_id":"x","request":{"subtype":"mcp_message"}}"#,
+            "not json",
+        ] {
+            assert_eq!(
+                classify_control_frame(line),
+                None,
+                "translator に流すべき: {line}"
+            );
+        }
+    }
+
+    /// 生 wire（camelCase multiSelect）を QuestionSpec（snake_case）へ正しく写す。
+    #[test]
+    fn parse_question_specs_maps_wire_to_vocab() {
+        let input: serde_json::Value = serde_json::from_str(
+            r#"{"questions":[{"question":"Q?","header":"H","options":[{"label":"A","description":"da"},{"label":"B"}],"multiSelect":true}]}"#,
+        )
+        .unwrap();
+        let specs = parse_question_specs(&input);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].question, "Q?");
+        assert_eq!(specs[0].header, "H");
+        assert!(specs[0].multi_select, "multiSelect→multi_select");
+        assert_eq!(specs[0].options.len(), 2);
+        assert_eq!(specs[0].options[0].label, "A");
+        assert_eq!(specs[0].options[0].description, "da");
+        assert_eq!(specs[0].options[1].label, "B");
+        assert_eq!(specs[0].options[1].description, "", "description 欠落は空");
+    }
+
+    /// questions 不在の input は空列（防御）。
+    #[test]
+    fn parse_question_specs_handles_missing_questions() {
+        assert!(parse_question_specs(&serde_json::json!({})).is_empty());
+    }
+
+    /// allow: updatedInput = 原 input（questions）に answers をマージ = spike の echo 契約。
+    #[test]
+    fn build_allow_response_merges_answers_into_original_input() {
+        let original: serde_json::Value =
+            serde_json::from_str(r#"{"questions":[{"question":"Q?"}]}"#).unwrap();
+        let answers = serde_json::json!({ "Q?": "English" });
+        let frame = build_permission_response(
+            "req-1",
+            &PermissionDecision::Allow {
+                answers: Some(answers.clone()),
+            },
+            Some(&original),
+        );
+        assert_eq!(frame["type"], "control_response");
+        let resp = &frame["response"];
+        assert_eq!(resp["subtype"], "success");
+        assert_eq!(resp["request_id"], "req-1");
+        assert_eq!(resp["response"]["behavior"], "allow");
+        let updated = &resp["response"]["updatedInput"];
+        // 原 questions が verbatim で残り、answers が差し込まれている。
+        assert_eq!(updated["questions"][0]["question"], "Q?");
+        assert_eq!(updated["answers"]["Q?"], "English");
+    }
+
+    /// deny: {behavior:"deny", message}（原 input は使わない）。
+    #[test]
+    fn build_deny_response_carries_message() {
+        let frame = build_permission_response(
+            "req-2",
+            &PermissionDecision::Deny {
+                message: "却下".to_string(),
+            },
+            None,
+        );
+        let inner = &frame["response"]["response"];
+        assert_eq!(inner["behavior"], "deny");
+        assert_eq!(inner["message"], "却下");
+        assert!(inner.get("updatedInput").is_none());
+    }
+
+    /// answers=None（tool 承認 = PR3 の形）: updatedInput = 原 input そのまま。
+    #[test]
+    fn build_allow_response_without_answers_echoes_original() {
+        let original = serde_json::json!({ "command": "ls" });
+        let frame = build_permission_response(
+            "req-3",
+            &PermissionDecision::Allow { answers: None },
+            Some(&original),
+        );
+        assert_eq!(
+            frame["response"]["response"]["updatedInput"]["command"],
+            "ls"
+        );
+    }
+
+    /// initialize handshake frame は固定 request_id + hooks:null。
+    #[test]
+    fn initialize_handshake_is_well_formed() {
+        let f = initialize_handshake_json();
+        assert_eq!(f["type"], "control_request");
+        assert_eq!(f["request_id"], INIT_REQUEST_ID);
+        assert_eq!(f["request"]["subtype"], "initialize");
+        assert!(f["request"]["hooks"].is_null());
+    }
+
     /// 実機統合: headless claude を spawn → submit → EchoesEvent 列を受け取り、
     /// SessionInit / MessageChunk(PONG) / TurnCompleted が揃うことを確認する。
     /// `cargo test -p vantage-point --ignored echoes_host_roundtrip` で実行（要 claude CLI）。
@@ -502,5 +938,75 @@ mod tests {
             text.to_uppercase().contains("PONG"),
             "本文に PONG を含む: {text:?}"
         );
+    }
+
+    /// 実機統合（HITL 質問レール、doc 35 PR1）: AskUserQuestion を誘発する prompt を投入し、
+    /// 逆方向 can_use_tool → [`EchoesEvent::Question`] を受信 → [`EchoesAgentHost::respond_permission`]
+    /// で回答 → turn が継続して TurnCompleted に到達することを確認する。
+    /// `cargo test -p vantage-point --ignored echoes_host_question_roundtrip`（要 claude CLI）。
+    #[tokio::test]
+    #[ignore = "requires claude CLI + subscription"]
+    async fn echoes_host_question_roundtrip() {
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let host = EchoesAgentHost::spawn(EchoesHostConfig {
+            cwd: tmp.path().to_string_lossy().to_string(),
+            project: "vp-test".to_string(),
+            lane: "spike-q".to_string(),
+            resume_session_id: None,
+            model: Some("haiku".to_string()),
+            claude_cli_path: None,
+        })
+        .expect("spawn host");
+
+        let mut rx = host.subscribe();
+        // spike E の question prompt と同型: AskUserQuestion を 1 問誘発して待たせる。
+        host.submit(
+            "I want you to greet me, but I have not decided the language. Use the AskUserQuestion \
+             tool to ask whether the greeting should be in English or Japanese. Ask exactly one \
+             question with those two options, then wait for my answer. Do not guess.",
+        )
+        .await
+        .expect("submit");
+
+        let mut got_question = false;
+        let mut got_done = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(90), rx.recv()).await {
+                Ok(Ok(EchoesEvent::Question {
+                    request_id,
+                    questions,
+                })) => {
+                    got_question = true;
+                    assert!(!questions.is_empty(), "questions が空でない");
+                    let first = &questions[0];
+                    assert!(!first.options.is_empty(), "選択肢がある");
+                    // 最初の選択肢の label で回答（answers map = {question: label}）。
+                    let answers = serde_json::json!({
+                        first.question.clone(): first.options[0].label.clone(),
+                    });
+                    host.respond_permission(
+                        &request_id,
+                        PermissionDecision::Allow {
+                            answers: Some(answers),
+                        },
+                    )
+                    .await
+                    .expect("respond_permission");
+                }
+                Ok(Ok(EchoesEvent::TurnCompleted { .. })) => {
+                    got_done = true;
+                    break;
+                }
+                Ok(Ok(EchoesEvent::Error { message })) => panic!("engine error: {message}"),
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+
+        assert!(got_question, "Question event を受信");
+        assert!(got_done, "回答後 turn が継続して TurnCompleted に到達");
     }
 }

@@ -540,6 +540,54 @@ async fn handle_echoes_nudge(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// Act II HITL (doc 35 PR1): PromptCard の回答を逆方向 `can_use_tool` へ書き戻す。
+///
+/// surface (vp-app) → World canvas channel → SP control → 本 dispatch。`request_id` は Question
+/// event 由来の control_response マッチング用。allow は `{lane, request_id, answers}`、deny は
+/// `{lane, request_id, behavior:"deny", message?}`。**ensure しない**（応答対象 engine 不在は Err —
+/// 質問した engine が死んでいたら応答先が無い、doc §2.3）。
+async fn handle_echoes_respond(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_respond: lane 未指定".to_string());
+    }
+    let request_id = payload
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if request_id.is_empty() {
+        return Err("echoes_respond: request_id 未指定".to_string());
+    }
+    // behavior=="deny" のみ拒否、それ以外（既定 / "allow"）は許可 + answers を運ぶ。
+    let decision = if payload.get("behavior").and_then(|v| v.as_str()) == Some("deny") {
+        crate::echoes::PermissionDecision::Deny {
+            message: payload
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        }
+    } else {
+        crate::echoes::PermissionDecision::Allow {
+            answers: payload.get("answers").cloned(),
+        }
+    };
+
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_respond: lane パース失敗: {lane}"))?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .respond_permission_chat(&addr, request_id, decision)
+        .await
+        .map_err(|e| format!("echoes_respond: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
 ///
 /// `echoes_submit`（GUI 入力）と `echoes_nudge`（channel E）が共用する。`ctx` はエラー文言の
@@ -961,6 +1009,8 @@ pub(crate) async fn dispatch_process_method(
         "echoes_submit" => handle_echoes_submit(state, payload).await,
         // channel E (doc 34): wire/delegation nudge の chat-engine 注入 (lane_nudge の Chat 対応物)
         "echoes_nudge" => handle_echoes_nudge(state, payload).await,
+        // Act II HITL (doc 35 PR1): PromptCard 回答 → 逆方向 can_use_tool へ control_response 書き戻し
+        "echoes_respond" => handle_echoes_respond(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
@@ -1615,6 +1665,49 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "不在 lane への nudge は Err: {res:?}");
+    }
+
+    /// doc 35 PR1: echoes_respond dispatch の error 経路 4 種
+    /// (lane 未指定 / request_id 未指定 / parse 失敗 / engine 不在)。happy path は実 engine 要のため
+    /// echoes_host_question_roundtrip (ignored) と実機 dogfood で検証。
+    #[tokio::test]
+    async fn echoes_respond_dispatch_error_paths() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        // lane 未指定
+        let res = dispatch_process_method(
+            &state,
+            "echoes_respond",
+            serde_json::json!({ "request_id": "r1" }),
+        )
+        .await;
+        assert!(res.is_err(), "lane 未指定は Err: {res:?}");
+        // request_id 未指定
+        let res = dispatch_process_method(
+            &state,
+            "echoes_respond",
+            serde_json::json!({ "lane": "vp/conductor" }),
+        )
+        .await;
+        assert!(res.is_err(), "request_id 未指定は Err: {res:?}");
+        // parse 失敗 (lane address 形式でない)
+        let res = dispatch_process_method(
+            &state,
+            "echoes_respond",
+            serde_json::json!({ "lane": "%3", "request_id": "r1" }),
+        )
+        .await;
+        assert!(res.is_err(), "parse 不能 lane は Err: {res:?}");
+        // engine 不在 (respond_permission_chat が chat engine 未起動)。ensure しないので Err。
+        let res = dispatch_process_method(
+            &state,
+            "echoes_respond",
+            serde_json::json!({ "lane": "vp/conductor", "request_id": "r1", "answers": {} }),
+        )
+        .await;
+        assert!(res.is_err(), "engine 不在への respond は Err: {res:?}");
     }
 
     /// tmux decoupling PR2: lane_capture dispatch の error 経路 3 種。

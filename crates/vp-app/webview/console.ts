@@ -26,6 +26,20 @@ export type PlanEntry = {
   active_form?: string | null
 }
 
+/** AskUserQuestion の 1 選択肢（doc 35 §3）。 */
+export type QuestionOption = {
+  label: string
+  description?: string
+}
+
+/** AskUserQuestion の 1 質問（doc 35 §3）。multiSelect は複数選択 + 確定ボタン。 */
+export type QuestionSpec = {
+  question: string
+  header: string
+  options: QuestionOption[]
+  multi_select?: boolean
+}
+
 export type EchoesEvent =
   | {
       kind: 'session_init'
@@ -56,6 +70,9 @@ export type EchoesEvent =
       context_window?: number
     }
   | { kind: 'error'; message: string }
+  /** clarifying question（AskUserQuestion の can_use_tool 横取り、doc 35 PR1）。
+   *  GUI は PromptCard で選択肢を描き、回答を echoes:respond {request_id, answers} で戻す。 */
+  | { kind: 'question'; request_id: string; questions: QuestionSpec[] }
 
 /** ChatView（C2）が lane ごとに登録する renderer。 */
 export type ConsoleRenderer = (event: EchoesEvent) => void

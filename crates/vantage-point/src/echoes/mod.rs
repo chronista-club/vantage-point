@@ -19,6 +19,6 @@ pub mod host;
 pub mod transcript;
 pub mod translate;
 
-pub use event::{EchoesEvent, PlanEntry};
-pub use host::{EchoesAgentHost, EchoesHostConfig, InFlight};
+pub use event::{EchoesEvent, PlanEntry, QuestionOption, QuestionSpec};
+pub use host::{EchoesAgentHost, EchoesHostConfig, InFlight, PermissionDecision};
 pub use translate::EchoesTranslator;

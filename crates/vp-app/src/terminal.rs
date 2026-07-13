@@ -171,6 +171,17 @@ pub enum AppEvent {
     /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で SP へ。
     EchoesSubmit { lane: String, prompt: String },
+    /// Echoes Act II HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の echoes
+    /// session へ渡し、 canvas channel 上り request `echoes_respond` で SP へ。 `request_id` は
+    /// Question event 由来の control_response マッチング用。 allow は `answers`、 deny は
+    /// `behavior="deny"`+`message` を運ぶ（どちらか）。
+    EchoesRespond {
+        lane: String,
+        request_id: String,
+        answers: Option<serde_json::Value>,
+        behavior: Option<String>,
+        message: Option<String>,
+    },
     /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
     /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
     /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
@@ -241,6 +252,27 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::EchoesSubmit {
                     lane: lane.to_string(),
                     prompt: prompt.to_string(),
+                });
+            }
+        }
+        // Echoes Act II HITL (doc 35 PR1): PromptCard の回答。 lane + request_id 必須。
+        // answers（allow）or behavior+message（deny）を運ぶ。
+        Some("echoes:respond") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let request_id = parsed.get("request_id").and_then(|v| v.as_str());
+            if let (Some(lane), Some(request_id)) = (lane, request_id) {
+                let _ = proxy.send_event(AppEvent::EchoesRespond {
+                    lane: lane.to_string(),
+                    request_id: request_id.to_string(),
+                    answers: parsed.get("answers").cloned(),
+                    behavior: parsed
+                        .get("behavior")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    message: parsed
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
                 });
             }
         }
