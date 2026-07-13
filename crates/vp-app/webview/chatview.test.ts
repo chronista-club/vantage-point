@@ -116,6 +116,24 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(last.kind === 'assistant' && last.text.includes('boom')).toBe(true)
   })
 
+  it('question は PromptCard(prompt item)として積まれる（doc 35）', () => {
+    const questions = [
+      {
+        question: 'どっち？',
+        header: '選択',
+        options: [
+          { label: 'A', description: 'a' },
+          { label: 'B', description: 'b' },
+        ],
+        multiSelect: false,
+      },
+    ]
+    const s = fold([{ kind: 'question', request_id: 'req-1', questions }])
+    expect(s.items).toEqual([
+      { kind: 'prompt', request_id: 'req-1', answered: false, questions },
+    ])
+  })
+
   it('実ターン相当（init→thinking→tool→result→text→done）で item 構成が正しい', () => {
     const s = fold([
       { kind: 'session_init', session_id: 's', model: 'm' },

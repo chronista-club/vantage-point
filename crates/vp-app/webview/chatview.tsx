@@ -13,7 +13,7 @@ import { render } from 'solid-js/web'
 import { createSignal, createEffect, onMount, onCleanup, For, Show, type Accessor } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
-import type { EchoesEvent, PlanEntry, VpConsole } from './console'
+import type { EchoesEvent, PlanEntry, QuestionSpec, VpConsole } from './console'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（EchoesEvent を UI 単位に畳む）
@@ -24,6 +24,8 @@ type ChatItem =
   | { kind: 'assistant'; text: string } // message_chunk を末尾 assistant に append
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
   | { kind: 'tool'; id: string; name: string; done: boolean; error: boolean }
+  // doc 35: clarifying question を PromptCard として会話ストリームに積む。
+  | { kind: 'prompt'; request_id: string; questions: QuestionSpec[]; answered: boolean }
 
 type ChatState = {
   header: { model?: string; sessionId?: string } | null
@@ -136,6 +138,15 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       s.streaming = false
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
+    case 'question':
+      // clarifying question（doc 35）。PromptCard として会話ストリームに積む。
+      s.items.push({
+        kind: 'prompt',
+        request_id: ev.request_id,
+        questions: ev.questions,
+        answered: false,
+      })
+      break
   }
 }
 
@@ -220,6 +231,77 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
   )
 }
 
+/** doc 35: clarifying question の PromptCard。question ごとに選択肢を出し、全問回答で送信可。
+ *  single-select は 1 択、multiSelect は複数トグル。送信で echoes:respond IPC を撃つ。 */
+function PromptCard(props: {
+  item: Extract<ChatItem, { kind: 'prompt' }>
+  onRespond: (requestId: string, answers: Record<string, string | string[]>) => void
+}) {
+  // question 文 → 選択（single=string / multi=string[]）。
+  const [picks, setPicks] = createStore<Record<string, string | string[]>>({})
+  const pick = (q: QuestionSpec, label: string) => {
+    if (q.multiSelect) {
+      const cur = (picks[q.question] as string[] | undefined) ?? []
+      setPicks(q.question, cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label])
+    } else {
+      setPicks(q.question, label)
+    }
+  }
+  const isPicked = (q: QuestionSpec, label: string): boolean => {
+    const v = picks[q.question]
+    return q.multiSelect ? Array.isArray(v) && v.includes(label) : v === label
+  }
+  // 全 question に回答があるか（送信可否）。
+  const complete = (): boolean =>
+    props.item.questions.every((q) => {
+      const v = picks[q.question]
+      return q.multiSelect ? Array.isArray(v) && v.length > 0 : typeof v === 'string' && v.length > 0
+    })
+  const send = () => {
+    if (props.item.answered || !complete()) return
+    props.onRespond(props.item.request_id, { ...picks })
+  }
+  return (
+    <div class="echoes-prompt" classList={{ answered: props.item.answered }}>
+      <For each={props.item.questions}>
+        {(q) => (
+          <div class="echoes-prompt-q">
+            <div class="echoes-prompt-header">{q.header}</div>
+            <div class="echoes-prompt-question">{q.question}</div>
+            <div class="echoes-prompt-options">
+              <For each={q.options}>
+                {(opt) => (
+                  <button
+                    class="echoes-prompt-option"
+                    classList={{ picked: isPicked(q, opt.label) }}
+                    disabled={props.item.answered}
+                    onClick={() => pick(q, opt.label)}
+                    title={opt.description}
+                  >
+                    {opt.label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+        )}
+      </For>
+      <div class="echoes-prompt-actions">
+        <Show
+          when={props.item.answered}
+          fallback={
+            <button class="echoes-prompt-send" disabled={!complete()} onClick={send}>
+              送信
+            </button>
+          }
+        >
+          <span class="echoes-prompt-done">✓ 回答済み</span>
+        </Show>
+      </div>
+    </div>
+  )
+}
+
 /** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
  *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
 const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
@@ -280,6 +362,24 @@ function ChatView() {
     setDraft('')
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+  }
+
+  // doc 35: PromptCard の回答を送る。echoes:respond IPC + 当該 item を answered 化（再送防止）。
+  const respondPrompt = (requestId: string, answers: Record<string, string | string[]>) => {
+    const lane = activeLane()
+    if (!lane) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(
+      JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, answers }),
+    )
+    laneChat(lane).set(
+      produce((s) => {
+        const it = s.items.find((i) => i.kind === 'prompt' && i.request_id === requestId) as
+          | Extract<ChatItem, { kind: 'prompt' }>
+          | undefined
+        if (it) it.answered = true
+      }),
+    )
   }
 
   // --- auto-scroll（sticky bottom）+ キーボードスクロール（Home/End/PgUp/PgDn）---------
@@ -424,6 +524,9 @@ function ChatView() {
               if (item.kind === 'tool') {
                 return <ToolRow name={item.name} done={item.done} error={item.error} />
               }
+              if (item.kind === 'prompt') {
+                return <PromptCard item={item} onRespond={respondPrompt} />
+              }
               return (
                 <div class="echoes-msg" classList={{ user: item.kind === 'user' }}>
                   <div class="echoes-msg-body" innerHTML={mdToHtml(item.text)} />
@@ -516,6 +619,27 @@ export const CHATVIEW_CSS = `
 .echoes-plan-item.in_progress { color: var(--color-text,#e6e9ef); } .echoes-plan-item.in_progress .echoes-plan-dot { background: var(--color-accent,#e2b96f); }
 .echoes-plan-item.completed { color: var(--color-text-tertiary,#616b80); } .echoes-plan-item.completed .echoes-plan-dot { background: var(--color-success,#6fe2a8); }
 .echoes-plan-item.completed .echoes-plan-text { text-decoration: line-through; }
+/* doc 35: PromptCard（clarifying question）。accent フレームで「あなたの判断を待っている」を伝える。 */
+.echoes-prompt { align-self:stretch; max-width:100%; border:1px solid var(--color-accent,#e2b96f);
+  border-radius:10px; padding:12px 14px; background: var(--color-bg-elevated,#16191f);
+  display:flex; flex-direction:column; gap:12px; animation: echoes-fade .18s ease-out; }
+.echoes-prompt.answered { opacity:.55; border-color: var(--color-border,#2a3040); }
+.echoes-prompt-q { display:flex; flex-direction:column; gap:6px; }
+.echoes-prompt-header { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color: var(--color-text-tertiary,#8b93a7); }
+.echoes-prompt-question { font-size:14px; line-height:1.5; color: var(--color-text,#e6e9ef); }
+.echoes-prompt-options { display:flex; flex-wrap:wrap; gap:8px; margin-top:2px; }
+.echoes-prompt-option { font-size:12.5px; padding:6px 12px; border-radius:8px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
+  color: var(--color-text-secondary,#a8b0c0); transition: border-color .15s ease, background .15s ease; }
+.echoes-prompt-option:hover:not(:disabled) { border-color: var(--color-accent,#e2b96f); }
+.echoes-prompt-option.picked { border-color: var(--color-accent,#e2b96f);
+  background: var(--color-accent-soft,#2a2417); color: var(--color-text,#e6e9ef); }
+.echoes-prompt-option:disabled { cursor:default; opacity:.7; }
+.echoes-prompt-actions { display:flex; justify-content:flex-end; align-items:center; }
+.echoes-prompt-send { font-size:12.5px; padding:6px 16px; border-radius:8px; border:none; cursor:pointer;
+  background: var(--color-accent,#e2b96f); color:#1a1206; }
+.echoes-prompt-send:disabled { opacity:.4; cursor:default; }
+.echoes-prompt-done { font-size:12px; color: var(--color-success,#6fe2a8); }
 .echoes-input { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--color-border,#2a3040); }
 .echoes-input-box { flex:1; resize:none; min-height:38px; max-height:160px; padding:9px 12px; font-size:13px;
   font-family: var(--vp-font-sans),var(--typography-family-sans); color: var(--color-text,#e6e9ef);

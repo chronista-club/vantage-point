@@ -148,6 +148,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "console"
                 | "open-url"
                 | "echoes:submit"
+                | "echoes:respond"
                 | "console:set_mode"
                 | "console:new_session"
                 | "console:set_model"
@@ -869,6 +870,11 @@ async fn run_terminal_session(
 enum EchoesCmd {
     /// プロンプト投入。 canvas channel 上り request `echoes_submit` で SP に送る。
     Submit(String),
+    /// doc 35 §4: PromptCard の回答。 canvas channel 上り request `echoes_respond` で SP へ。
+    Respond {
+        request_id: String,
+        answers: serde_json::Value,
+    },
 }
 
 /// 1 lane の echoes session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
@@ -986,6 +992,21 @@ async fn run_echoes_session(
                             .request::<serde_json::Value, serde_json::Value>(
                                 "echoes_submit",
                                 &serde_json::json!({ "lane": lane_key, "prompt": prompt }),
+                            )
+                            .await;
+                    }
+                    Some(EchoesCmd::Respond {
+                        request_id,
+                        answers,
+                    }) => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "echoes_respond",
+                                &serde_json::json!({
+                                    "lane": lane_key,
+                                    "request_id": request_id,
+                                    "answers": answers,
+                                }),
                             )
                             .await;
                     }
@@ -3187,6 +3208,22 @@ pub fn run() -> anyhow::Result<()> {
                     )
                 });
                 let _ = session.cmd_tx.send(EchoesCmd::Submit(prompt));
+            }
+            // doc 35 §4: PromptCard の回答を当該 lane の echoes session に渡す。submit と違い
+            // lazy spawn しない（質問は既存 engine 由来なので session が居るはず）。
+            Event::UserEvent(AppEvent::EchoesRespond {
+                lane,
+                request_id,
+                answers,
+            }) => {
+                if let Some(session) = echoes_sessions.get(&lane) {
+                    let _ = session.cmd_tx.send(EchoesCmd::Respond {
+                        request_id,
+                        answers,
+                    });
+                } else {
+                    tracing::warn!("echoes:respond skip — session 未起動 (lane={lane})");
+                }
             }
             // doc 33 C2: Act toggle → SP console_set_mode。成功したら vpConsole.setMode で
             // WebView の表示を切替える（成功後に反映 = SP が真実源）。

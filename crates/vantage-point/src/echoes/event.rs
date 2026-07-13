@@ -96,8 +96,19 @@ pub enum EchoesEvent {
 
     /// engine / 翻訳層のエラー。
     Error { message: String },
-    // NOTE: permission_request（control protocol / can_use_tool）は MVP 非対象。
-    //       acceptEdits で回避する（doc 32 §10.1）。将来 control protocol ごと実装。
+
+    /// clarifying question — native AskUserQuestion の can_use_tool 横取り（doc 35 §2.4/§3）。
+    ///
+    /// GUI は PromptCard（選択肢）で描き、選択を control_response で engine に返す。
+    /// `request_id` が「どの pending 質問への回答か」を結ぶ（回答時に GUI から戻す）。
+    Question {
+        /// control_response の request_id マッチング用。
+        request_id: String,
+        /// AskUserQuestion input の questions（1〜4 質問 × 2〜4 択、multiSelect 含む）。
+        questions: Vec<QuestionSpec>,
+    },
+    // NOTE: permission_request（tool 承認 = 非 AskUserQuestion の can_use_tool）は PR3 で
+    //       同じ control protocol レールに additive 追加予定（doc 35 §3）。
 }
 
 /// plan の 1 項目（TodoWrite の todo に対応）。
@@ -108,4 +119,27 @@ pub struct PlanEntry {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_form: Option<String>,
+}
+
+/// AskUserQuestion の 1 質問（can_use_tool `input.questions[]` の要素、doc 35 §8 の実 wire）。
+///
+/// engine の control_request から deserialize し、そのまま GUI へ serialize する（round-trip）。
+/// `multiSelect` は engine wire が camelCase なので rename で合わせる。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionSpec {
+    pub question: String,
+    #[serde(default)]
+    pub header: String,
+    pub options: Vec<QuestionOption>,
+    /// 複数選択可か。
+    #[serde(default, rename = "multiSelect")]
+    pub multi_select: bool,
+}
+
+/// 質問の選択肢（`label` = 回答値、`description` = 補足説明）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
 }

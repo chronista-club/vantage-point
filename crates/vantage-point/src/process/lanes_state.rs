@@ -962,6 +962,23 @@ impl LanePool {
         slot.host.submit(prompt).await
     }
 
+    /// doc 35 §4: 逆方向 can_use_tool（質問/承認）への回答を engine に書き戻す。
+    ///
+    /// submit_chat と同型（read lock 下で呼べる — host が stdin Mutex で直列化）。engine 不在は
+    /// Err（質問は engine 由来なので、回答時に engine が居ないのは engine 死亡 = self-heal 対象外）。
+    pub async fn respond_chat(
+        &self,
+        addr: &LaneAddress,
+        request_id: &str,
+        decision: crate::echoes::PermissionDecision,
+    ) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
+        slot.host.respond_permission(request_id, decision).await
+    }
+
     /// chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
     pub fn drop_chat_engine(&mut self, addr: &LaneAddress) -> bool {
         let dropped = self.chat_engines.remove(addr).is_some();

@@ -26,6 +26,14 @@ export type PlanEntry = {
   active_form?: string | null
 }
 
+/** AskUserQuestion の 1 質問（doc 35 §3。can_use_tool input.questions[] を mirror）。 */
+export type QuestionSpec = {
+  question: string
+  header: string
+  options: { label: string; description: string }[]
+  multiSelect: boolean
+}
+
 export type EchoesEvent =
   | {
       kind: 'session_init'
@@ -56,6 +64,8 @@ export type EchoesEvent =
       context_window?: number
     }
   | { kind: 'error'; message: string }
+  /** clarifying question（AskUserQuestion 横取り、doc 35 §3）。GUI は PromptCard(選択肢)で描く。 */
+  | { kind: 'question'; request_id: string; questions: QuestionSpec[] }
 
 /** ChatView（C2）が lane ごとに登録する renderer。 */
 export type ConsoleRenderer = (event: EchoesEvent) => void

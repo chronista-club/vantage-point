@@ -171,6 +171,14 @@ pub enum AppEvent {
     /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で SP へ。
     EchoesSubmit { lane: String, prompt: String },
+    /// doc 35 §4: WebView (PromptCard) からの逆方向 can_use_tool 回答。event loop が当該 lane の
+    /// echoes session へ `EchoesCmd::Respond` を送り、canvas channel 上り request `echoes_respond`
+    /// で SP へ。`answers` = AskUserQuestion の回答（PR1）。
+    EchoesRespond {
+        lane: String,
+        request_id: String,
+        answers: serde_json::Value,
+    },
     /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
     /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
     /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
@@ -241,6 +249,22 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::EchoesSubmit {
                     lane: lane.to_string(),
                     prompt: prompt.to_string(),
+                });
+            }
+        }
+        // doc 35 §4: PromptCard の回答。 lane + request_id 必須、 answers は回答 object。
+        Some("echoes:respond") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let request_id = parsed.get("request_id").and_then(|v| v.as_str());
+            if let (Some(lane), Some(request_id)) = (lane, request_id) {
+                let answers = parsed
+                    .get("answers")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let _ = proxy.send_event(AppEvent::EchoesRespond {
+                    lane: lane.to_string(),
+                    request_id: request_id.to_string(),
+                    answers,
                 });
             }
         }

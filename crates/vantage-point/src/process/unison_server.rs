@@ -519,6 +519,61 @@ async fn handle_echoes_submit(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// doc 35 §4: 逆方向 can_use_tool（質問/承認）への GUI 回答を engine に書き戻す。
+///
+/// `{lane, request_id, answers?, behavior?, message?}` → `LanePool::respond_chat` →
+/// `host.respond_permission`。PR1 は AskUserQuestion の回答（answers）のみ。
+async fn handle_echoes_respond(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_respond: lane 未指定".to_string());
+    }
+    let request_id = payload
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if request_id.is_empty() {
+        return Err("echoes_respond: request_id 未指定".to_string());
+    }
+    let decision = parse_permission_decision(&payload);
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_respond: lane パース失敗: {lane}"))?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .respond_chat(&addr, request_id, decision)
+        .await
+        .map_err(|e| format!("echoes_respond 失敗: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// echoes_respond payload → PermissionDecision（doc 35 §2.3、純粋 calculation）。
+///
+/// - `answers` あり → Answer（AskUserQuestion 回答、PR1）
+/// - `behavior == "deny"` → Deny（質問キャンセル / PR3 却下）
+/// - それ以外（`behavior == "allow"` 等）→ Allow（PR3 の tool 承認）
+fn parse_permission_decision(payload: &serde_json::Value) -> crate::echoes::PermissionDecision {
+    use crate::echoes::PermissionDecision;
+    if let Some(answers) = payload.get("answers") {
+        return PermissionDecision::Answer(answers.clone());
+    }
+    match payload.get("behavior").and_then(|v| v.as_str()) {
+        Some("deny") => {
+            let message = payload
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ユーザーが却下しました")
+                .to_string();
+            PermissionDecision::Deny { message }
+        }
+        _ => PermissionDecision::Allow,
+    }
+}
+
 /// channel E（doc 34 §3）: wire delivery / delegation reconcile からの engine 直接注入。
 ///
 /// `{lane, text}` — Tui の `lane_nudge`（PtySlot 直書き）の Chat 対応物。nudge 文言を 1 ターン
@@ -959,6 +1014,8 @@ pub(crate) async fn dispatch_process_method(
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => handle_terminal_write(state, payload).await,
         "echoes_submit" => handle_echoes_submit(state, payload).await,
+        // doc 35 §4: 逆方向 can_use_tool（質問/承認）への GUI 回答を engine へ書き戻す。
+        "echoes_respond" => handle_echoes_respond(state, payload).await,
         // channel E (doc 34): wire/delegation nudge の chat-engine 注入 (lane_nudge の Chat 対応物)
         "echoes_nudge" => handle_echoes_nudge(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
