@@ -182,6 +182,9 @@ pub enum AppEvent {
         behavior: Option<String>,
         message: Option<String>,
     },
+    /// Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
+    /// event loop が当該 lane の echoes session へ渡し、`echoes_interrupt` で SP へ。
+    EchoesInterrupt { lane: String },
     /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
     /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
     /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
@@ -273,6 +276,14 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                         .get("message")
                         .and_then(|v| v.as_str())
                         .map(str::to_string),
+                });
+            }
+        }
+        // Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断。 lane 必須。
+        Some("echoes:interrupt") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::EchoesInterrupt {
+                    lane: lane.to_string(),
                 });
             }
         }

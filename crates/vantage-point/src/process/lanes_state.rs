@@ -962,6 +962,16 @@ impl LanePool {
         slot.host.submit(prompt).await
     }
 
+    /// doc 35 §5: 実行中 turn を中断する（stop ボタン / Esc）。submit_chat と同型（read lock 下で
+    /// 呼べる — host が stdin Mutex で直列化）。engine 不在は Err（走行中 turn が無ければ何もしない）。
+    pub async fn interrupt_chat(&self, addr: &LaneAddress) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
+        slot.host.interrupt().await
+    }
+
     /// chat engine の逆方向 `can_use_tool`（[`crate::echoes::EchoesEvent::Question`]）へ回答する
     /// （doc 35 PR1、`&self` — read lock 下で呼べる）。
     ///

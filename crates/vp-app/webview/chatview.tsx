@@ -182,7 +182,9 @@ export function emptyChatState(): ChatState {
 // ---------------------------------------------------------------------------
 
 function mdToHtml(text: string): string {
-  return marked.parse(text) as string
+  // breaks: true で単一改行を <br> に変換する。marked 既定（CommonMark）は段落内の単一 \n を
+  // 空白に潰すため、engine が返す改行が Act II のチャット表示で消えていた。gfm は既定 true だが明示。
+  return marked.parse(text, { breaks: true, gfm: true }) as string
 }
 
 /**
@@ -406,6 +408,14 @@ function ChatView() {
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
   }
 
+  // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
+  const interrupt = () => {
+    const lane = activeLane()
+    if (!lane) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:interrupt', lane }))
+  }
+
   // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で SP に戻す
   //（host が control_response を stdin に書いて turn が継続する）。
   const answerPrompt = (requestId: string, answers: Record<string, string>) => {
@@ -493,6 +503,15 @@ function ChatView() {
   const onDocKey = (e: KeyboardEvent): void => {
     if (!streamEl || streamEl.offsetParent === null) return // chat 非表示 → 素通し
     const key = e.key
+    // doc 35 §5: Esc で走行中 turn を中断（作文中の textarea では抑制 = Home/End と同じ棲み分け）。
+    if (key === 'Escape') {
+      const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
+      if (!inTextarea && state()?.streaming) {
+        interrupt()
+        e.preventDefault()
+      }
+      return
+    }
     if (key !== 'Home' && key !== 'End' && key !== 'PageUp' && key !== 'PageDown') return
     const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
     if ((key === 'Home' || key === 'End') && inTextarea) return // 作文中の caret 移動を尊重
@@ -610,6 +629,11 @@ function ChatView() {
               }
             }}
           />
+          <Show when={state()!.streaming}>
+            <button class="echoes-stop" onClick={interrupt} title="turn を中断 (Esc)">
+              停止
+            </button>
+          </Show>
           <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
             送信
           </button>
@@ -712,6 +736,9 @@ export const CHATVIEW_CSS = `
 .echoes-send { align-self:flex-end; padding:9px 16px; font-size:13px; border-radius:9px; border:none; cursor:pointer;
   background: var(--color-accent,#3b82f6); color:#fff; }
 .echoes-send:disabled { opacity:.4; cursor:default; }
+.echoes-stop { align-self:flex-end; padding:9px 14px; font-size:13px; border-radius:9px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f); color: var(--color-text-secondary,#a8b0c0); }
+.echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
 .echoes-act-toggle { position:absolute; top:8px; right:12px; z-index:10; font-size:11px; padding:4px 11px;
   border-radius:14px; border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); cursor:pointer; opacity:.75; transition: opacity .15s ease; }

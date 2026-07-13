@@ -149,6 +149,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "open-url"
                 | "echoes:submit"
                 | "echoes:respond"
+                | "echoes:interrupt"
                 | "console:set_mode"
                 | "console:new_session"
                 | "console:set_model"
@@ -877,6 +878,8 @@ enum EchoesCmd {
         behavior: Option<String>,
         message: Option<String>,
     },
+    /// doc 35 §5 / PR2: 実行中 turn の中断。 canvas channel 上り request `echoes_interrupt` で SP へ。
+    Interrupt,
 }
 
 /// 1 lane の echoes session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
@@ -1011,6 +1014,14 @@ async fn run_echoes_session(
                         }
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>("echoes_respond", &req)
+                            .await;
+                    }
+                    Some(EchoesCmd::Interrupt) => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "echoes_interrupt",
+                                &serde_json::json!({ "lane": lane_key }),
+                            )
                             .await;
                     }
                     None => return Ok(SubscriptionOutcome::AppClosing),
@@ -3234,6 +3245,15 @@ pub fn run() -> anyhow::Result<()> {
                     behavior,
                     message,
                 });
+            }
+            // doc 35 §5 / PR2: 実行中 turn の中断を当該 lane の echoes session に渡す。
+            // interrupt は走行中 turn 前提なので session が居るはず（lazy spawn しない）。
+            Event::UserEvent(AppEvent::EchoesInterrupt { lane }) => {
+                if let Some(session) = echoes_sessions.get(&lane) {
+                    let _ = session.cmd_tx.send(EchoesCmd::Interrupt);
+                } else {
+                    tracing::warn!("echoes:interrupt skip — session 未起動 (lane={lane})");
+                }
             }
             // doc 33 C2: Act toggle → SP console_set_mode。成功したら vpConsole.setMode で
             // WebView の表示を切替える（成功後に反映 = SP が真実源）。

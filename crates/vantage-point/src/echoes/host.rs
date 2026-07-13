@@ -372,6 +372,15 @@ impl EchoesAgentHost {
         write_json_line(&self.stdin, &frame).await
     }
 
+    /// 実行中 turn を中断する（control interrupt、doc 35 §5）。engine は turn を止め、次の submit を
+    /// 受けられる（プロセスは生存）。fire-and-forget: 停止結果は通常の result → TurnCompleted/Error
+    /// として stream に流れるので、専用の応答待ちは持たない。`&self`: stdin Mutex を submit と共有。
+    pub async fn interrupt(&self) -> anyhow::Result<()> {
+        let seq = CONTROL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let frame = interrupt_request_json(&format!("interrupt-{seq}"));
+        write_json_line(&self.stdin, &frame).await
+    }
+
     /// engine プロセスを停止する（drop でも kill_on_drop が効くが、明示停止用）。
     pub async fn stop(&mut self) -> anyhow::Result<()> {
         self.child.kill().await?;
@@ -416,6 +425,19 @@ async fn write_json_line(
     guard.write_all(b"\n").await?;
     guard.flush().await?;
     Ok(())
+}
+
+/// 能動 control（interrupt 等）の request_id 採番用グローバル counter。fire-and-forget なので
+/// host 跨ぎでも衝突は無害だが、hygiene のため単調増加させる。
+static CONTROL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// interrupt control_request（純関数、doc §5）。engine は現在の turn を中断する（spikeB 実測）。
+fn interrupt_request_json(request_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "interrupt" }
+    })
 }
 
 /// initialize handshake の control_request（純関数、doc §2.2）。`hooks` は空（null）で足りる。
@@ -742,6 +764,15 @@ mod tests {
     // =========================================================================
     // control protocol（doc 35 PR1）— 純関数の単体テスト
     // =========================================================================
+
+    /// interrupt control_request（doc 35 §5 / PR2）の wire 形。
+    #[test]
+    fn interrupt_request_json_is_wellformed() {
+        let v = interrupt_request_json("interrupt-7");
+        assert_eq!(v["type"], "control_request");
+        assert_eq!(v["request_id"], "interrupt-7");
+        assert_eq!(v["request"]["subtype"], "interrupt");
+    }
 
     /// 決定 spike §8 の生 wire（AskUserQuestion の逆方向 can_use_tool）。
     const CAN_USE_TOOL_ASK: &str = r#"{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","display_name":"AskUserQuestion","tool_use_id":"toolu_1","input":{"questions":[{"question":"Which language?","header":"Greeting Language","options":[{"label":"English","description":"en"},{"label":"Japanese (日本語)","description":"ja"}],"multiSelect":false}]}}}"#;

@@ -588,6 +588,28 @@ async fn handle_echoes_respond(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// doc 35 §5: 実行中 turn の中断（stop ボタン / Esc）。`{lane}` → `LanePool::interrupt_chat`。
+/// engine は turn を止めるだけでプロセスは生存し、次の submit を受けられる。
+async fn handle_echoes_interrupt(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_interrupt: lane 未指定".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_interrupt: lane パース失敗: {lane}"))?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .interrupt_chat(&addr)
+        .await
+        .map_err(|e| format!("echoes_interrupt: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
 ///
 /// `echoes_submit`（GUI 入力）と `echoes_nudge`（channel E）が共用する。`ctx` はエラー文言の
@@ -1011,6 +1033,8 @@ pub(crate) async fn dispatch_process_method(
         "echoes_nudge" => handle_echoes_nudge(state, payload).await,
         // Act II HITL (doc 35 PR1): PromptCard 回答 → 逆方向 can_use_tool へ control_response 書き戻し
         "echoes_respond" => handle_echoes_respond(state, payload).await,
+        // doc 35 §5: 実行中 turn の中断（stop ボタン / Esc）。
+        "echoes_interrupt" => handle_echoes_interrupt(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
