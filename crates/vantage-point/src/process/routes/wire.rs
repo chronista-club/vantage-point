@@ -238,6 +238,63 @@ pub(crate) async fn wire_thread_store(
 /// wiremsg の per-agent 未読 count を取得する (read-only、 cursor 不触り)
 ///
 /// payload: `{ agent }` → `{ status, total, by_thread }`
+/// wire history handler (read-only、 GUI inbox 表示用 — doc 34 §4 V1)
+///
+/// payload: `{agent, limit?}`。 agent が関与する直近 message(送受信両方)を新しい順で返す。
+/// 各 message に GUI 描画用の derive flag を添える:
+/// - `inbound`: agent ∈ to(受信)か from == agent(送信)か
+/// - `acked`: この agent が ack 済みか(command の「要 ack」badge 用)
+///
+/// **cursor は一切動かさない** — wire_recv と違い、 GUI が覗いても lane の claude の未読は
+/// 減らない(per-agent 単一 cursor の横取り禁止)。
+pub(crate) async fn wire_history_store(
+    store: &WiremsgStore,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let agent = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_history: 'agent' required".to_string())?
+        .to_string();
+    validate_addr(&agent)?;
+    // limit は 1..=100 に clamp(default 30 = GUI inbox 1 画面分)
+    let limit = payload
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30)
+        .clamp(1, 100);
+
+    let msgs = store
+        .history_for_agent(&agent, limit)
+        .await
+        .map_err(|e| format!("wire_history failed: {e}"))?;
+    let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
+    let acked: std::collections::HashSet<String> = store
+        .acked_ids_for_agent(&agent, &ids)
+        .await
+        .map_err(|e| format!("wire_history acks failed: {e}"))?
+        .into_iter()
+        .collect();
+
+    let messages: Vec<serde_json::Value> = msgs
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "prev": m.prev,
+                "from": m.from,
+                "to": m.to,
+                "body": m.body,
+                "created_at": m.created_at,
+                "local_seq": m.local_seq,
+                "inbound": m.to.contains(&agent),
+                "acked": acked.contains(&m.id),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "agent": agent, "count": messages.len(), "messages": messages }))
+}
+
 pub(crate) async fn wire_unread_count_store(
     store: &WiremsgStore,
     payload: serde_json::Value,
@@ -372,6 +429,8 @@ pub(crate) async fn dispatch_wire(
         "recv" => wire_recv_store(store, notifier, payload).await,
         "thread" => wire_thread_store(store, payload).await,
         "unread-count" => wire_unread_count_store(store, payload).await,
+        // doc 34 §4 V1: GUI inbox 用の read-only 履歴 (cursor 不触り)
+        "history" => wire_history_store(store, payload).await,
         "latest-msg" => wire_latest_msg_store(store, payload).await,
         "needs-user-pending" => wire_needs_user_pending_store(store, payload).await,
         "ack" => wire_ack_store(store, payload).await,
@@ -464,6 +523,49 @@ mod tests {
             .await
             .expect("再 ack");
         assert_eq!(again["acked"], false);
+    }
+
+    /// doc 34 §4 V1: history は read-only(cursor 不触り)で、 inbound / acked flag を正しく付ける
+    #[tokio::test]
+    async fn history_is_readonly_with_flags() {
+        let store = mem_store().await;
+        let notifier = WireNotifier::new();
+        // 受信 1 件(command、 後で ack)+ 送信 1 件
+        let sent_in = wire_send_store(
+            &store,
+            &notifier,
+            json!({"from": "agent@vp", "to": ["agent@nexus"], "body": {"category": "command"}}),
+        )
+        .await
+        .expect("send inbound");
+        let in_id = sent_in["id"].as_str().expect("id");
+        wire_send_store(
+            &store,
+            &notifier,
+            json!({"from": "agent@nexus", "to": ["agent@vp"], "body": {"kind": "ack"}}),
+        )
+        .await
+        .expect("send outbound");
+        wire_ack_store(&store, json!({"message_id": in_id, "agent": "agent@nexus"}))
+            .await
+            .expect("ack");
+
+        let hist = wire_history_store(&store, json!({"agent": "agent@nexus"}))
+            .await
+            .expect("history");
+        assert_eq!(hist["count"], 2);
+        let msgs = hist["messages"].as_array().expect("messages");
+        // local_seq 降順 = 新しい順: [0] = 送信(outbound)、 [1] = 受信(inbound, acked)
+        assert_eq!(msgs[0]["inbound"], false, "自分の送信は inbound=false");
+        assert_eq!(msgs[1]["inbound"], true);
+        assert_eq!(msgs[1]["acked"], true, "ack 済み flag");
+        assert_eq!(msgs[1]["id"], in_id);
+
+        // read-only の証明: history を何度呼んでも未読は減らない(cursor 不触り)
+        let inbox = wire_unread_count_store(&store, json!({"agent": "agent@nexus"}))
+            .await
+            .expect("unread_count");
+        assert_eq!(inbox["total"], 1, "history 後も未読 1 件のまま");
     }
 
     /// coerce_wire_body: string で来た JSON object は救済、 非 object は Err (移設に伴う回帰確認)

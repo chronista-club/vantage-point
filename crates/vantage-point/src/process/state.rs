@@ -24,13 +24,6 @@ use crate::protocol::{Content, DebugMode, ProcessMessage};
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 
-/// スクリーンショットキャプチャの応答データ
-pub(crate) struct ScreenshotData {
-    pub data: String,
-    pub width: u32,
-    pub height: u32,
-}
-
 /// Application state
 pub(crate) struct AppState {
     pub hub: Hub,
@@ -84,11 +77,8 @@ pub(crate) struct AppState {
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
     /// Terminal チャネル認証トークン
     pub terminal_token: String,
-    /// スクリーンショット応答待ち: request_id → oneshot sender
     /// プロセスレジストリ（ProcessRunner）
     pub process_registry: Arc<tokio::sync::Mutex<ProcessRegistry>>,
-    pub screenshot_waiters:
-        Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>>>,
     /// Topic ベースのメッセージルーター（Hub → Topic 振り分け）
     pub topic_router: Arc<TopicRouter>,
     /// Canvas WS クライアントへの送信チャネル（HTTP API → lanes WS handler）
@@ -431,7 +421,6 @@ pub(crate) async fn build_test_app_state(
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "test".to_string(),
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
-        screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router: Arc::new(TopicRouter::new()),
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),

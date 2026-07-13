@@ -27,6 +27,7 @@ import {
 	laneSelectHintVisible,
 } from "./keybindings";
 import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
+import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { ProjectAccordion } from "./ProjectAccordion";
@@ -125,6 +126,10 @@ export function Shell() {
           window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
           出現してファイルを選べる。 選択すると Canvas (PP) に投げて dismiss する ephemeral。 */}
 			<FileExplorer />
+
+			{/* Wire Inbox overlay panel (doc 34 §4 V1、 singleton)。 LaneRow の mailbox badge click で
+          window.vpWire.open(address) が呼ばれ、 選択 lane の wire 履歴 (read-only) + ack を表示する。 */}
+			<WirePanel />
 
 			{/* PR 445 `s` directive: Lane / project switcher picker overlay (singleton)。
           Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / project を fuzzy 検索 + 選択。 */}
@@ -536,6 +541,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-files-btn:hover{background:#ffffff08;
   color:var(--sb-conn-auto,#22E0FF);}
 ${FILE_EXPLORER_CSS}
+${WIRE_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}
 `;

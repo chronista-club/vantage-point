@@ -97,6 +97,19 @@ export interface FilesOpen {
   rel_path: string;
 }
 
+/** Request "wire:fetch" */
+export interface WireFetch {
+  path: string;
+  address: string;
+}
+
+/** Request "wire:ack" */
+export interface WireAck {
+  path: string;
+  address: string;
+  message_id: string;
+}
+
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
 export type IpcChannelEventTypes = Record<string, never>;
 
@@ -117,6 +130,8 @@ export type IpcChannelRequestTypes = {
   ProjectClonePickFolder: { request: ProjectClonePickFolder; response: void };
   FilesList: { request: FilesList; response: void };
   FilesOpen: { request: FilesOpen; response: void };
+  WireFetch: { request: WireFetch; response: void };
+  WireAck: { request: WireAck; response: void };
 };
 
 /** Channel metadata for "ipc" (= Phase 2 runtime SDK 用 type-narrowing 入力) */
@@ -142,6 +157,8 @@ export const IpcChannelMeta = {
     ProjectClonePickFolder: { request: "project:clone:pickFolder" as const, response: "void" as const },
     FilesList: { request: "files:list" as const, response: "void" as const },
     FilesOpen: { request: "files:open" as const, response: "void" as const },
+    WireFetch: { request: "wire:fetch" as const, response: "void" as const },
+    WireAck: { request: "wire:ack" as const, response: "void" as const },
   } as const,
   __types: undefined as unknown as { events: IpcChannelEventTypes; requests: IpcChannelRequestTypes },
 } as const;
@@ -162,6 +179,8 @@ export type IpcEnvelope =
   | ({ t: "stand:select" } & StandSelect)
   | ({ t: "project:clone:pickFolder" } & ProjectClonePickFolder)
   | ({ t: "files:list" } & FilesList)
-  | ({ t: "files:open" } & FilesOpen);
+  | ({ t: "files:open" } & FilesOpen)
+  | ({ t: "wire:fetch" } & WireFetch)
+  | ({ t: "wire:ack" } & WireAck);
 
 

@@ -236,10 +236,15 @@ export function LaneRow(props: {
 					<CreoIcon name="ph:folder-open" size={12} />
 				</button>
 				<Show when={inbox()}>
+					{/* mailbox badge は Wire Inbox panel (doc 34 §4 V1) の起動ボタンを兼ねる。 */}
 					<span
 						class="vp-lane-msg"
 						classList={{ unread: (inbox()!.unread_count | 0) > 0 }}
-						title={`mailbox: ${addr()}`}
+						title={`wire inbox を開く: ${addr()}`}
+						onClick={(e) => {
+							e.stopPropagation();
+							window.vpWire?.open(addr());
+						}}
 					>
 						<CreoIcon
 							name={
