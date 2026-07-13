@@ -2170,6 +2170,10 @@ pub fn run() -> anyhow::Result<()> {
     // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
     vp_paths::migrate_legacy_paths();
 
+    // Windows taskbar の identity。 **window を作る前**に設定する必要がある
+    // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
+    crate::icon::set_app_user_model_id();
+
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 
     // 根治: vp-app 共有 Tokio runtime (multi-thread)。
@@ -2280,6 +2284,14 @@ pub fn run() -> anyhow::Result<()> {
     let mut builder = WindowBuilder::new()
         .with_title("Vantage Point")
         .with_min_inner_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
+    // window icon (Windows: titlebar + taskbar / Linux: WM)。 Windows は exe に焼いた icon
+    // resource が主役だが、 window 単位の icon を明示しておくと起動経路によらず確実に出る。
+    // mac は dock icon (icon::set_app_icon) が担当で window icon の概念が無いため素通り。
+    if let Some((rgba, w, h)) = crate::icon::icon_rgba(256)
+        && let Ok(icon) = tao::window::Icon::from_rgba(rgba, w, h)
+    {
+        builder = builder.with_window_icon(Some(icon));
+    }
     if let Some(geom) = &restored_geometry {
         builder = builder
             .with_inner_size(LogicalSize::new(geom.width, geom.height))
