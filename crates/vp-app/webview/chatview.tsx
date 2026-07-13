@@ -185,6 +185,19 @@ function mdToHtml(text: string): string {
   return marked.parse(text) as string
 }
 
+/**
+ * chat メッセージ内リンクを OS ブラウザで開くための `open-url` IPC ペイロード判定（純関数 = calc）。
+ *
+ * http(s) の href なら Act I の xterm と同じ `open-url` IPC の JSON 文字列を返し、それ以外
+ * （相対 / `file:` / `javascript:` / 空）は null を返す。非 http(s) を絶対に通さない一次弾き —
+ * webview に `file://` 等を開かせないための多層防御（scheme 検証の SSOT は Rust 側 terminal.rs、
+ * ここは webview 内遷移を止めるための前段）。terminal.rs と揃えて小文字 scheme を前方一致で見る。
+ */
+export function linkOpenPayload(href: string): string | null {
+  if (!href.startsWith('http://') && !href.startsWith('https://')) return null
+  return JSON.stringify({ t: 'open-url', url: href })
+}
+
 function ThinkingBlock(props: { text: string; active: () => boolean }) {
   const [open, setOpen] = createSignal(false)
   return (
@@ -427,6 +440,22 @@ function ChatView() {
     if (streamEl) stuckToBottom = isAtBottom(streamEl)
   }
 
+  // marked 描画済み HTML 内の <a> クリックを echoes-stream の 1 listener で捌く（イベント委譲 =
+  // メッセージ毎に listener を張らない）。default では webview 内遷移（SPA が localhost リンクで
+  // 飛ぶ事故）になるので preventDefault で止め、http(s) は Act I の xterm と同じ `open-url` IPC で
+  // OS default browser を起動する（Rust: terminal::handle_ipc_message → webbrowser::open）。
+  const onStreamLinkClick = (e: MouseEvent): void => {
+    const anchor = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
+    if (!anchor) return
+    // webview 内遷移を常に抑止（相対 / anchor リンクでも SPA document を飛ばさない）。
+    e.preventDefault()
+    // 生の href（getAttribute）で scheme 判定 — .href プロパティは相対を vp-asset:// に解決して濁る。
+    const payload = linkOpenPayload(anchor.getAttribute('href') ?? '')
+    if (!payload) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(payload)
+  }
+
   // 4 キーで history を scroll する実体。対象キー以外は false（呼び側が素通し判定に使う）。
   const scrollByKey = (key: string): boolean => {
     const el = streamEl
@@ -539,6 +568,7 @@ function ChatView() {
           ref={streamEl}
           tabindex={0}
           onScroll={onStreamScroll}
+          onClick={onStreamLinkClick}
         >
           <For each={state()!.items}>
             {(item, index) => {
