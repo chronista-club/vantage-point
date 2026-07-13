@@ -24,14 +24,16 @@ type ChatItem =
   | { kind: 'assistant'; text: string } // message_chunk を末尾 assistant に append
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
   | { kind: 'tool'; id: string; name: string; done: boolean; error: boolean }
-  // doc 35 PR1: HITL 質問（PromptCard）。answered で回答済み表示に折りたたむ。
-  // answers は確定した {question: label(s)} — 折りたたみ表示に使う。
+  // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
   | {
       kind: 'prompt'
       requestId: string
       questions: QuestionSpec[]
       answered: boolean
       answers?: Record<string, string>
+      // PR3: permission（tool 承認）。存在すれば allow/deny UI を描く。
+      permission?: { toolName: string; input: unknown }
+      decision?: 'allow' | 'deny'
     }
 
 type ChatState = {
@@ -154,6 +156,17 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
         requestId: ev.request_id,
         questions: ev.questions,
         answered: false,
+      })
+      break
+    case 'permission_request':
+      // engine が turn を pause して tool 承認を待つ（HITL）。カーソル点滅を止める。
+      s.streaming = false
+      s.items.push({
+        kind: 'prompt',
+        requestId: ev.request_id,
+        questions: [],
+        answered: false,
+        permission: { toolName: ev.tool_name, input: ev.input },
       })
       break
   }
@@ -346,6 +359,57 @@ function PromptCard(props: {
   )
 }
 
+/** doc 35 §4 / PR3: tool 承認の PromptCard（allow/deny）。permission-mode=default 時の can_use_tool。 */
+function PermissionCard(props: {
+  item: Extract<ChatItem, { kind: 'prompt' }>
+  onDecide: (requestId: string, behavior: 'allow' | 'deny') => void
+}) {
+  const perm = () => props.item.permission!
+  const inputSummary = (): string => {
+    try {
+      const s = JSON.stringify(perm().input)
+      return s.length > 240 ? s.slice(0, 240) + '…' : s
+    } catch {
+      return ''
+    }
+  }
+  return (
+    <div class="echoes-prompt" classList={{ answered: props.item.answered }}>
+      <Show
+        when={!props.item.answered}
+        fallback={
+          <div class="echoes-prompt-answered">
+            <span class="echoes-prompt-ahead">{perm().toolName}</span>
+            <span class="echoes-prompt-aval">
+              {props.item.decision === 'deny' ? '✗ 却下' : '✓ 許可'}
+            </span>
+          </div>
+        }
+      >
+        <div class="echoes-prompt-header">tool 承認</div>
+        <div class="echoes-prompt-question">
+          <code class="echoes-perm-tool">{perm().toolName}</code> の実行を許可しますか？
+        </div>
+        <div class="echoes-perm-input">{inputSummary()}</div>
+        <div class="echoes-perm-actions">
+          <button
+            class="echoes-perm-allow"
+            onClick={() => props.onDecide(props.item.requestId, 'allow')}
+          >
+            許可
+          </button>
+          <button
+            class="echoes-perm-deny"
+            onClick={() => props.onDecide(props.item.requestId, 'deny')}
+          >
+            却下
+          </button>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
 /** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
  *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
 const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
@@ -381,6 +445,17 @@ function ChatView() {
     ipc?.postMessage(
       JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
     )
+  }
+
+  // doc 35 PR3: permission mode（tool 承認の opt-in）。spawn 既定は bypassPermissions（素通し）。
+  // "default" に切替えると Write/Bash 等が承認要求（PermissionRequest）経由になる。
+  const [permMode, setPermMode] = createSignal('bypassPermissions')
+  const setPermissionMode = (mode: string) => {
+    const lane = activeLane()
+    if (!lane) return
+    setPermMode(mode)
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
   }
 
   // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
@@ -432,6 +507,23 @@ function ChatView() {
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, answers }))
+  }
+
+  // doc 35 PR3: permission 承認/却下。カードを decision 表示へ折りたたみ、echoes:respond {behavior} で戻す。
+  const decidePrompt = (requestId: string, behavior: 'allow' | 'deny') => {
+    const lane = activeLane()
+    if (!lane) return
+    laneChat(lane).set(
+      produce((s) => {
+        const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
+        if (it && it.kind === 'prompt') {
+          it.answered = true
+          it.decision = behavior
+        }
+      }),
+    )
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, behavior }))
   }
 
   // --- auto-scroll（sticky bottom）+ キーボードスクロール（Home/End/PgUp/PgDn）---------
@@ -568,6 +660,18 @@ function ChatView() {
               )}
             </For>
           </select>
+          <span class="echoes-header-label">perm</span>
+          <select
+            class="echoes-model-select"
+            onChange={(e) => setPermissionMode(e.currentTarget.value)}
+          >
+            <option value="bypassPermissions" selected={permMode() === 'bypassPermissions'}>
+              素通し
+            </option>
+            <option value="default" selected={permMode() === 'default'}>
+              承認
+            </option>
+          </select>
           <Show when={ctxPct() !== null}>
             <span
               class="echoes-context"
@@ -603,7 +707,11 @@ function ChatView() {
                 return <ToolRow name={item.name} done={item.done} error={item.error} />
               }
               if (item.kind === 'prompt') {
-                return <PromptCard item={item} onAnswer={answerPrompt} />
+                return item.permission ? (
+                  <PermissionCard item={item} onDecide={decidePrompt} />
+                ) : (
+                  <PromptCard item={item} onAnswer={answerPrompt} />
+                )
               }
               return (
                 <div class="echoes-msg" classList={{ user: item.kind === 'user' }}>
@@ -756,6 +864,16 @@ export const CHATVIEW_CSS = `
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); }
 .echoes-model-select:disabled { opacity:.45; cursor:default; }
+/* PR3: permission 承認カード（allow/deny）。question カードと同じ枠、action だけ差し替え。 */
+.echoes-perm-tool { font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-accent,#e2b96f); }
+.echoes-perm-input { font-family: var(--vp-font-mono),var(--typography-family-mono); font-size:11.5px;
+  color: var(--color-text-tertiary,#8b93a7); background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040);
+  border-radius:6px; padding:6px 9px; margin:6px 0; overflow-x:auto; white-space:pre-wrap; word-break:break-all; }
+.echoes-perm-actions { display:flex; gap:8px; margin-top:8px; }
+.echoes-perm-allow, .echoes-perm-deny { font-size:12.5px; padding:6px 16px; border-radius:8px; cursor:pointer; border:1px solid var(--color-border,#2a3040); }
+.echoes-perm-allow { background: var(--color-success,#6fe2a8); color:#06231a; border-color: var(--color-success,#6fe2a8); }
+.echoes-perm-deny { background: var(--color-bg-elevated,#16191f); color:#f0a3a3; }
+.echoes-perm-deny:hover { border-color:#f0a3a3; }
 /* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
 .echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;

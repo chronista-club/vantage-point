@@ -150,6 +150,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "echoes:submit"
                 | "echoes:respond"
                 | "echoes:interrupt"
+                | "echoes:set_permission_mode"
                 | "console:set_mode"
                 | "console:new_session"
                 | "console:set_model"
@@ -880,6 +881,8 @@ enum EchoesCmd {
     },
     /// doc 35 §5 / PR2: 実行中 turn の中断。 canvas channel 上り request `echoes_interrupt` で SP へ。
     Interrupt,
+    /// doc 35 §2.5 / PR3: permission mode 切替。 canvas channel 上り request `echoes_set_permission_mode` で SP へ。
+    SetPermissionMode { mode: String },
 }
 
 /// 1 lane の echoes session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
@@ -1021,6 +1024,14 @@ async fn run_echoes_session(
                             .request::<serde_json::Value, serde_json::Value>(
                                 "echoes_interrupt",
                                 &serde_json::json!({ "lane": lane_key }),
+                            )
+                            .await;
+                    }
+                    Some(EchoesCmd::SetPermissionMode { mode }) => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "echoes_set_permission_mode",
+                                &serde_json::json!({ "lane": lane_key, "mode": mode }),
                             )
                             .await;
                     }
@@ -3253,6 +3264,14 @@ pub fn run() -> anyhow::Result<()> {
                     let _ = session.cmd_tx.send(EchoesCmd::Interrupt);
                 } else {
                     tracing::warn!("echoes:interrupt skip — session 未起動 (lane={lane})");
+                }
+            }
+            // doc 35 §2.5 / PR3: permission mode 切替を当該 lane の echoes session に渡す。
+            Event::UserEvent(AppEvent::EchoesSetPermissionMode { lane, mode }) => {
+                if let Some(session) = echoes_sessions.get(&lane) {
+                    let _ = session.cmd_tx.send(EchoesCmd::SetPermissionMode { mode });
+                } else {
+                    tracing::warn!("echoes:set_permission_mode skip — session 未起動 (lane={lane})");
                 }
             }
             // doc 33 C2: Act toggle → SP console_set_mode。成功したら vpConsole.setMode で

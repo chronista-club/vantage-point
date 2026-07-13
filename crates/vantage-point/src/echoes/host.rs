@@ -258,7 +258,6 @@ impl EchoesAgentHost {
         let lane = config.lane.clone();
         let pump_in_flight = in_flight.clone();
         let pump_pending = pending_permissions.clone();
-        let pump_stdin = stdin.clone();
         tokio::spawn(async move {
             let mut translator = EchoesTranslator::new();
             let reader = BufReader::new(stdout);
@@ -266,7 +265,7 @@ impl EchoesAgentHost {
             while let Ok(Some(line)) = lines.next_line().await {
                 // 制御面は translator の手前で抜く（EchoesEvent 語彙を engine 制御で汚さない）。
                 if let Some(frame) = classify_control_frame(&line) {
-                    handle_control_frame(frame, &tx, &pump_pending, &pump_stdin).await;
+                    handle_control_frame(frame, &tx, &pump_pending);
                     continue;
                 }
                 let out = translator.ingest(&line);
@@ -381,6 +380,15 @@ impl EchoesAgentHost {
         write_json_line(&self.stdin, &frame).await
     }
 
+    /// permission mode を動的に切替える（doc 35 §2.5 / PR3）。`"default"` で tool 承認要求が飛ぶ
+    /// ように、`"bypassPermissions"` で素通しに戻す。fire-and-forget（効果は次の can_use_tool 有無で
+    /// 観測）。`&self`: stdin Mutex を submit と共有。
+    pub async fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
+        let seq = CONTROL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let frame = set_permission_mode_json(&format!("set-mode-{seq}"), mode);
+        write_json_line(&self.stdin, &frame).await
+    }
+
     /// engine プロセスを停止する（drop でも kill_on_drop が効くが、明示停止用）。
     pub async fn stop(&mut self) -> anyhow::Result<()> {
         self.child.kill().await?;
@@ -437,6 +445,15 @@ fn interrupt_request_json(request_id: &str) -> serde_json::Value {
         "type": "control_request",
         "request_id": request_id,
         "request": { "subtype": "interrupt" }
+    })
+}
+
+/// set_permission_mode control_request（純関数、doc §2.5）。mode 動的切替（default / bypassPermissions…）。
+fn set_permission_mode_json(request_id: &str, mode: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "set_permission_mode", "mode": mode }
     })
 }
 
@@ -574,18 +591,18 @@ fn build_permission_response(
     })
 }
 
-/// 分類済み control frame を処理する（action = broadcast / pending 登録 / 自動応答）。
+/// 分類済み control frame を処理する（action = broadcast / pending 登録）。純同期 — stdin へは
+/// 書かない（回答は GUI → respond_permission が担う）。
 ///
 /// - AskUserQuestion → 原 input を pending へ退避（回答時に questions を verbatim echo）+
 ///   [`EchoesEvent::Question`] を broadcast。
-/// - その他の can_use_tool（bypass では来ないはずだが防御）→ 原 input で自動 allow + warn。
-///   PR3 で [`EchoesEvent::PermissionRequest`] 化する。
+/// - その他の can_use_tool（permission-mode=default 時の tool 承認）→ 同じく pending 退避 +
+///   [`EchoesEvent::PermissionRequest`] を broadcast（PR3）。
 /// - control_response（我々の能動 control への応答）→ init のみ log、他は無視（GUI に出さない）。
-async fn handle_control_frame(
+fn handle_control_frame(
     frame: ControlFrame,
     tx: &broadcast::Sender<EchoesEvent>,
     pending: &Arc<Mutex<HashMap<String, serde_json::Value>>>,
-    stdin: &tokio::sync::Mutex<tokio::process::ChildStdin>,
 ) {
     match frame {
         ControlFrame::CanUseTool {
@@ -604,19 +621,18 @@ async fn handle_control_frame(
                     questions,
                 });
             } else {
-                // 既定は bypassPermissions なので通常 tool は素通し = ここには来ないはず。防御的に
-                // 原 input で自動 allow して turn を止めない。tool 承認 UI は PR3 で PermissionRequest 化。
-                tracing::warn!(
-                    "echoes: 想定外の can_use_tool tool_name={tool_name}（PR3 で PermissionRequest 化予定）— 原 input で自動 allow"
-                );
-                let frame = build_permission_response(
-                    &request_id,
-                    &PermissionDecision::Allow { answers: None },
-                    Some(&input),
-                );
-                if let Err(e) = write_json_line(stdin, &frame).await {
-                    tracing::warn!("echoes: 想定外 can_use_tool の自動 allow 書き込み失敗: {e}");
-                }
+                // PR3: tool 承認要求（permission-mode=default 時に飛ぶ）。AskUserQuestion と同じレール —
+                // 原 input を pending へ退避（allow 時に verbatim echo）+ PermissionRequest を broadcast。
+                // GUI が allow/deny を respond_permission で戻し、host が control_response を書く。
+                pending
+                    .lock()
+                    .expect("pending lock")
+                    .insert(request_id.clone(), input.clone());
+                let _ = tx.send(EchoesEvent::PermissionRequest {
+                    request_id,
+                    tool_name,
+                    input,
+                });
             }
         }
         ControlFrame::ControlResponse { request_id } => {
@@ -772,6 +788,44 @@ mod tests {
         assert_eq!(v["type"], "control_request");
         assert_eq!(v["request_id"], "interrupt-7");
         assert_eq!(v["request"]["subtype"], "interrupt");
+    }
+
+    /// set_permission_mode control_request（PR3）の wire 形。
+    #[test]
+    fn set_permission_mode_json_is_wellformed() {
+        let v = set_permission_mode_json("set-mode-1", "default");
+        assert_eq!(v["type"], "control_request");
+        assert_eq!(v["request"]["subtype"], "set_permission_mode");
+        assert_eq!(v["request"]["mode"], "default");
+    }
+
+    /// PR3: 非 AskUserQuestion の can_use_tool は PermissionRequest として broadcast + pending 退避。
+    #[test]
+    fn handle_control_frame_non_question_emits_permission_request() {
+        let (tx, mut rx) = broadcast::channel::<EchoesEvent>(4);
+        let pending: Arc<Mutex<HashMap<String, serde_json::Value>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let frame = ControlFrame::CanUseTool {
+            request_id: "r-perm".to_string(),
+            tool_name: "Bash".to_string(),
+            input: serde_json::json!({ "command": "ls" }),
+        };
+        handle_control_frame(frame, &tx, &pending);
+        assert!(
+            pending.lock().unwrap().contains_key("r-perm"),
+            "原 input が pending に退避される"
+        );
+        match rx.try_recv().expect("event") {
+            EchoesEvent::PermissionRequest {
+                request_id,
+                tool_name,
+                ..
+            } => {
+                assert_eq!(request_id, "r-perm");
+                assert_eq!(tool_name, "Bash");
+            }
+            other => panic!("PermissionRequest を期待: {other:?}"),
+        }
     }
 
     /// 決定 spike §8 の生 wire（AskUserQuestion の逆方向 can_use_tool）。

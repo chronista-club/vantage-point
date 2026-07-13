@@ -610,6 +610,31 @@ async fn handle_echoes_interrupt(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
+/// doc 35 §2.5 / PR3: permission mode の動的切替。`{lane, mode}` → LanePool::set_permission_mode_chat。
+async fn handle_echoes_set_permission_mode(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_set_permission_mode: lane 未指定".to_string());
+    }
+    let mode = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+    if mode.is_empty() {
+        return Err("echoes_set_permission_mode: mode 未指定".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_set_permission_mode: lane パース失敗: {lane}"))?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .set_permission_mode_chat(&addr, mode)
+        .await
+        .map_err(|e| format!("echoes_set_permission_mode: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
 ///
 /// `echoes_submit`（GUI 入力）と `echoes_nudge`（channel E）が共用する。`ctx` はエラー文言の
@@ -1035,6 +1060,8 @@ pub(crate) async fn dispatch_process_method(
         "echoes_respond" => handle_echoes_respond(state, payload).await,
         // doc 35 §5: 実行中 turn の中断（stop ボタン / Esc）。
         "echoes_interrupt" => handle_echoes_interrupt(state, payload).await,
+        // doc 35 §2.5 / PR3: permission mode の動的切替（承認 opt-in）。
+        "echoes_set_permission_mode" => handle_echoes_set_permission_mode(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
