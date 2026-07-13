@@ -45,6 +45,8 @@ type ChatState = {
   /** context ゲージ（Act I statusline の bar :context 相当）。turn_completed で更新。 */
   contextTokens: number | null
   contextWindow: number | null
+  /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
+  permissionMode?: string
 }
 
 type LaneChat = {
@@ -98,6 +100,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     case 'session_init':
       s.header = { model: ev.model, sessionId: ev.session_id }
+      // review #2: permission mode の真値を per-lane に反映（engine は respawn 時 bypassPermissions
+      // で立ち上がるので、select が実態とズレないよう session_init の値で上書きする）。
+      s.permissionMode = ev.permission_mode
       break
     case 'message_chunk': {
       s.streaming = true
@@ -187,6 +192,7 @@ export function emptyChatState(): ChatState {
     cost: null,
     contextTokens: null,
     contextWindow: null,
+    permissionMode: undefined,
   }
 }
 
@@ -410,6 +416,55 @@ function PermissionCard(props: {
   )
 }
 
+/** doc 35 §4 / PR4: plan 承認カード。ExitPlanMode の can_use_tool を plan 本文 + 承認/却下 で描く。 */
+function PlanCard(props: {
+  item: Extract<ChatItem, { kind: 'prompt' }>
+  onDecide: (requestId: string, behavior: 'allow' | 'deny') => void
+}) {
+  // ExitPlanMode input は `{plan: markdown}`（Claude tool schema）。無ければ raw を出す（robust）。
+  const planText = (): string => {
+    const input = props.item.permission?.input as { plan?: unknown } | undefined
+    if (input && typeof input.plan === 'string') return input.plan
+    try {
+      return '```json\n' + JSON.stringify(input, null, 2) + '\n```'
+    } catch {
+      return ''
+    }
+  }
+  return (
+    <div class="echoes-prompt echoes-plan-card" classList={{ answered: props.item.answered }}>
+      <Show
+        when={!props.item.answered}
+        fallback={
+          <div class="echoes-prompt-answered">
+            <span class="echoes-prompt-ahead">plan</span>
+            <span class="echoes-prompt-aval">
+              {props.item.decision === 'deny' ? '✗ 却下' : '✓ 承認'}
+            </span>
+          </div>
+        }
+      >
+        <div class="echoes-prompt-header">plan 承認</div>
+        <div class="echoes-plan-body" innerHTML={mdToHtml(planText())} />
+        <div class="echoes-perm-actions">
+          <button
+            class="echoes-perm-allow"
+            onClick={() => props.onDecide(props.item.requestId, 'allow')}
+          >
+            承認して実行
+          </button>
+          <button
+            class="echoes-perm-deny"
+            onClick={() => props.onDecide(props.item.requestId, 'deny')}
+          >
+            却下
+          </button>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
 /** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
  *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
 const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
@@ -449,11 +504,15 @@ function ChatView() {
 
   // doc 35 PR3: permission mode（tool 承認の opt-in）。spawn 既定は bypassPermissions（素通し）。
   // "default" に切替えると Write/Bash 等が承認要求（PermissionRequest）経由になる。
-  const [permMode, setPermMode] = createSignal('bypassPermissions')
+  // doc 35 PR3/PR4: permission mode は per-lane（engine の真値 = session_init.permission_mode）。
+  // review #2: 旧実装はグローバル signal で lane 横断共有 + respawn の bypass reset を映さなかった。
+  const currentPermMode = (): string => state()?.permissionMode ?? 'bypassPermissions'
   const setPermissionMode = (mode: string) => {
     const lane = activeLane()
     if (!lane) return
-    setPermMode(mode)
+    // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
+    // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
+    laneChat(lane).set(produce((s) => (s.permissionMode = mode)))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
   }
@@ -524,6 +583,13 @@ function ChatView() {
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, behavior }))
+  }
+
+  // doc 35 PR4: plan 承認/却下。承認 = ExitPlanMode を allow + mode を default へ戻す（plan mode を
+  // 抜けて承認フローで実行に移る）。却下 = deny（plan に留まる or 再計画）。
+  const decidePlan = (requestId: string, behavior: 'allow' | 'deny') => {
+    decidePrompt(requestId, behavior)
+    if (behavior === 'allow') setPermissionMode('default')
   }
 
   // --- auto-scroll（sticky bottom）+ キーボードスクロール（Home/End/PgUp/PgDn）---------
@@ -665,11 +731,14 @@ function ChatView() {
             class="echoes-model-select"
             onChange={(e) => setPermissionMode(e.currentTarget.value)}
           >
-            <option value="bypassPermissions" selected={permMode() === 'bypassPermissions'}>
+            <option value="bypassPermissions" selected={currentPermMode() === 'bypassPermissions'}>
               素通し
             </option>
-            <option value="default" selected={permMode() === 'default'}>
+            <option value="default" selected={currentPermMode() === 'default'}>
               承認
+            </option>
+            <option value="plan" selected={currentPermMode() === 'plan'}>
+              計画
             </option>
           </select>
           <Show when={ctxPct() !== null}>
@@ -707,10 +776,11 @@ function ChatView() {
                 return <ToolRow name={item.name} done={item.done} error={item.error} />
               }
               if (item.kind === 'prompt') {
-                return item.permission ? (
-                  <PermissionCard item={item} onDecide={decidePrompt} />
+                if (!item.permission) return <PromptCard item={item} onAnswer={answerPrompt} />
+                return item.permission.toolName === 'ExitPlanMode' ? (
+                  <PlanCard item={item} onDecide={decidePlan} />
                 ) : (
-                  <PromptCard item={item} onAnswer={answerPrompt} />
+                  <PermissionCard item={item} onDecide={decidePrompt} />
                 )
               }
               return (
@@ -874,6 +944,11 @@ export const CHATVIEW_CSS = `
 .echoes-perm-allow { background: var(--color-success,#6fe2a8); color:#06231a; border-color: var(--color-success,#6fe2a8); }
 .echoes-perm-deny { background: var(--color-bg-elevated,#16191f); color:#f0a3a3; }
 .echoes-perm-deny:hover { border-color:#f0a3a3; }
+/* PR4: plan 承認カード。plan 本文は markdown で描き、accent 枠で「あなたの承認を待つ」を伝える。 */
+.echoes-plan-card { border-color: var(--color-accent,#e2b96f); }
+.echoes-plan-body { font-size:13px; line-height:1.6; max-height:280px; overflow-y:auto; margin:6px 0;
+  padding:8px 10px; background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); border-radius:6px; }
+.echoes-plan-body :first-child { margin-top:0; } .echoes-plan-body :last-child { margin-bottom:0; }
 /* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
 .echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
