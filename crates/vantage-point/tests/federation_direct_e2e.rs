@@ -81,6 +81,7 @@ async fn direct_race_delivers_wire_envelope_despite_dead_decoy() -> anyhow::Resu
         handle: "direct-e2e".to_string(),
         name: "direct e2e target".to_string(),
         registered_at: String::new(),
+        connected: false,
     };
     let envelope = json!({ "from": "lane@src", "to": "lane@dst", "body": "hello via direct" });
 
@@ -117,6 +118,7 @@ async fn direct_all_dead_fails_bounded() -> anyhow::Result<()> {
         handle: "direct-dead".to_string(),
         name: "dead target".to_string(),
         registered_at: String::new(),
+        connected: false,
     };
     let envelope = json!({ "body": "never delivered" });
 

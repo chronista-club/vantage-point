@@ -31,6 +31,9 @@ pub struct HubWorldInfo {
     pub wld_id: String,
     /// direct 到達 endpoint 候補数（hub S2 前は 0）
     pub endpoints_count: usize,
+    /// hub との常駐接続が今生きているか（hub protocol v0.6.0 の relay registry snapshot 由来）。
+    /// false = registry には居るが relay は offline（stale entry / 切断中）。旧 hub は常に false。
+    pub connected: bool,
 }
 
 /// Health check response
@@ -218,6 +221,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             handle: w.handle,
             wld_id: w.wld_id,
             endpoints_count: w.endpoints.len(),
+            connected: w.connected,
         })
         .collect();
 

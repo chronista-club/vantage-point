@@ -319,7 +319,13 @@ impl WorldControlClient {
     /// `CHRONISTA_HUB_ADDR` 未設定時は World 側が federation 無効エラーを返す。
     pub async fn hub_discover(&self) -> Result<Vec<serde_json::Value>> {
         let resp = self.call("hub/discover", serde_json::json!({})).await?;
-        serde_json::from_value(resp).context("hub/discover レスポンスのパースに失敗")
+        // 新 daemon は `{ "worlds": [...] }` (channel 慣習 + vp-daemon.kdl の returns と一致)、
+        // 旧 daemon は bare array を返す。binary 更新 ↔ daemon 再起動の skew を両対応で吸収。
+        let worlds = match resp.get("worlds") {
+            Some(w) => w.clone(),
+            None => resp,
+        };
+        serde_json::from_value(worlds).context("hub/discover レスポンスのパースに失敗")
     }
 }
 

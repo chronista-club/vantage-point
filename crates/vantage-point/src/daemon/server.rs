@@ -368,7 +368,9 @@ async fn handle_world_control(
                 .await
                 .map_err(|e| e.to_string())?;
             let worlds = client.discover().await.map_err(|e| e.to_string())?;
-            serde_json::to_value(&worlds).map_err(|e| e.to_string())
+            // channel 慣習 (registry.list={processes} / events.query={events}) に合わせ
+            // object で包む。unison-mcp synthesized tool の returns 記述 (vp-daemon.kdl) と一致。
+            Ok(serde_json::json!({ "worlds": worlds }))
         }
         // F1b heartbeat: surface (vp-app) の共有 connection liveness probe。 client→server の
         // 一方向で、 server は応答するだけ (世界状態に触れない no-op)。 vp-app の

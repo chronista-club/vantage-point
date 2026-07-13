@@ -90,6 +90,10 @@ pub struct HubWorld {
     /// direct 到達 endpoint 候補数（hub S2 前は 0）
     #[serde(default)]
     pub endpoints_count: usize,
+    /// hub との常駐接続が今生きているか（hub protocol v0.6.0、relay registry snapshot 由来）。
+    /// false = registry には居るが relay は offline（stale / 切断中）。旧 daemon / 旧 hub は false。
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// Activity widget の payload
