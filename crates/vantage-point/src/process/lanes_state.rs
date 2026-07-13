@@ -902,8 +902,10 @@ impl LanePool {
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
         if info.console_mode != ConsoleMode::Chat {
+            // 呼び元は echoes_submit / echoes_nudge の両方（doc 34 channel E）— method 名は
+            // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
             anyhow::bail!(
-                "echoes_submit には console mode=chat が必要（addr={}、現在 {:?}。console_set_mode で切替）",
+                "chat engine には console mode=chat が必要（addr={}、現在 {:?}。console_set_mode で切替）",
                 addr,
                 info.console_mode
             );

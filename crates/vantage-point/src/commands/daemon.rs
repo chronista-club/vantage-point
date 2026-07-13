@@ -371,6 +371,10 @@ fn status() -> Result<()> {
         }
         None => {
             println!("TheWorld is not running");
+            // script から `vp daemon status` の成否で分岐できるよう、停止中は非ゼロで返す
+            // (launchctl list / systemctl status と同じ流儀。従来は稼働中/停止中どちらも
+            //  exit 0 で判別不能だった)。表示は出し終えているので即 exit で問題ない。
+            std::process::exit(1);
         }
     }
     Ok(())

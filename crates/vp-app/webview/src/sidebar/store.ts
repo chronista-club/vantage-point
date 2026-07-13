@@ -7,8 +7,8 @@
  *
  * 型は `src/generated/` の ts-rs 生成物をそのまま使う (手書き 1:1 の drift を排除)。
  */
-import { createStore, reconcile } from 'solid-js/store'
-import type { SidebarState } from '../generated/SidebarState'
+import { createStore, reconcile } from "solid-js/store";
+import type { SidebarState } from "../generated/SidebarState";
 
 /**
  * `SidebarState` の空 state。 Rust 側 `#[derive(Default)]` と等価。
@@ -17,26 +17,28 @@ import type { SidebarState } from '../generated/SidebarState'
  * unread_notifications / awaiting_input) のみ埋め、 optional field は省略する。
  */
 export function emptyState(): SidebarState {
-  return {
-    processes: [],
-    widget: 'activity',
-    activity: {
-      world_online: false,
-      project_count: 0,
-      running_process_count: 0,
-      hub: '',
-      presence: {},
-    },
-    lanes_by_project: {},
-    unread_notifications: {},
-    awaiting_input: {},
-  }
+	return {
+		processes: [],
+		widget: "activity",
+		activity: {
+			world_online: false,
+			project_count: 0,
+			running_process_count: 0,
+			hub: "",
+			hub_worlds: [],
+			presence: {},
+		},
+		lanes_by_project: {},
+		unread_notifications: {},
+		awaiting_input: {},
+		canvas_unread: {},
+	};
 }
 
-const [sidebar, setSidebarStore] = createStore<SidebarState>(emptyState())
+const [sidebar, setSidebarStore] = createStore<SidebarState>(emptyState());
 
 /** sidebar component が読む reactive な state proxy。 */
-export { sidebar }
+export { sidebar };
 
 /**
  * Rust から push された `SidebarState` 全体を store に反映する。
@@ -45,7 +47,7 @@ export { sidebar }
  * (Solid の細粒度反応性を活かす)。
  */
 export function applySidebarState(next: SidebarState): void {
-  setSidebarStore(reconcile(next))
+	setSidebarStore(reconcile(next));
 }
 
 /**
@@ -57,5 +59,5 @@ export function applySidebarState(next: SidebarState): void {
  * 次の push 時には値が一致し reconcile が no-op になる (flash しない)。
  */
 export function setCurrentsOrder(order: string[]): void {
-  setSidebarStore('currents_order', order)
+	setSidebarStore("currents_order", order);
 }

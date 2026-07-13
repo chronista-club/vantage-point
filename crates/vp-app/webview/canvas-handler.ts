@@ -26,6 +26,7 @@
  */
 
 import { renderPP, clearPP, type ContentType } from './pp'
+import type { FrameEngine } from './frame-engine'
 
 /** ProcessMessage::Show JSON (serde rename_all = "snake_case", tag = "type"). */
 interface ShowMessage {
@@ -358,6 +359,26 @@ function dispatchShow(msg: ShowMessage): void {
 }
 
 /**
+ * Q2 (bug: canvas 可観測性 D): active lane に show が届いたが PP panel が非表示なら、
+ * `pp-overlay` scene で軽く開いて「配送されたのに見えない」を防ぐ。既に PP が見えている
+ * scene (side-review / pp-overlay / pp-focus) なら何もしない (集中中の視界を奪わない)。
+ * FrameEngine は entry.tsx が `window.vpFrame` に公開済。未 attach (test 等) なら no-op。
+ */
+function maybeAutoOpenPP(): void {
+  // window 直参照は node test 環境で ReferenceError。 globalThis 経由なら
+  // browser (= window) でも node (未 attach → undefined = no-op) でも安全。
+  const frame = (globalThis as unknown as { vpFrame?: FrameEngine }).vpFrame
+  if (!frame) return
+  const sceneId = frame.getCurrentSceneId()
+  if (!sceneId) return
+  const pp = frame.getScene(sceneId)?.panes['pp']
+  const ppVisible = !!pp && pp.state !== 'hidden' && pp.opacity > 0
+  if (!ppVisible) {
+    frame.applyScene('pp-overlay')
+  }
+}
+
+/**
  * Rust 注入口。ProcessMessage 1 件 (parse 済 object) を受け取り処理する。
  * Rust 側 `spawn_canvas_subscription` が active project の canvas message ごとに呼ぶ。
  */
@@ -374,6 +395,8 @@ export function handleMessage(msg: AnyMessage): void {
   }
   if (msg.type === 'show') {
     dispatchShow(msg as ShowMessage)
+    // Q2 (D): active lane 宛の show。 PP panel が非表示なら pp-overlay で軽く開く。
+    maybeAutoOpenPP()
   } else if (msg.type === 'clear') {
     // doc 19: clear は items + cursor を全 reset (= canvas を空にする operation)
     canvasState.items = []

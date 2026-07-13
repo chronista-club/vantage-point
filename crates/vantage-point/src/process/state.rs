@@ -24,13 +24,6 @@ use crate::protocol::{Content, DebugMode, ProcessMessage};
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 
-/// スクリーンショットキャプチャの応答データ
-pub(crate) struct ScreenshotData {
-    pub data: String,
-    pub width: u32,
-    pub height: u32,
-}
-
 /// Application state
 pub(crate) struct AppState {
     pub hub: Hub,
@@ -68,6 +61,12 @@ pub(crate) struct AppState {
     /// World mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
     /// 遷移ごとに更新する。SP / test mode では `Disabled` のまま（federation は TheWorld のみ）。
     pub hub_status: crate::daemon::hub_client::HubFederationStatus,
+    /// hub registry の available worlds cache（`/api/health` の `hub_worlds` field）。
+    ///
+    /// World mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
+    /// 接続直後 + 定期 discover で更新する（自 world 除外・handle dedup 済、切断で clear）。
+    /// SP / test mode では常に空。
+    pub hub_worlds: crate::daemon::hub_client::HubWorldsCache,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
@@ -78,11 +77,8 @@ pub(crate) struct AppState {
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
     /// Terminal チャネル認証トークン
     pub terminal_token: String,
-    /// スクリーンショット応答待ち: request_id → oneshot sender
     /// プロセスレジストリ（ProcessRunner）
     pub process_registry: Arc<tokio::sync::Mutex<ProcessRegistry>>,
-    pub screenshot_waiters:
-        Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>>>,
     /// Topic ベースのメッセージルーター（Hub → Topic 振り分け）
     pub topic_router: Arc<TopicRouter>,
     /// Canvas WS クライアントへの送信チャネル（HTTP API → lanes WS handler）
@@ -418,13 +414,13 @@ pub(crate) async fn build_test_app_state(
         world,
         update: None,
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
+        hub_worlds: crate::daemon::hub_client::HubWorldsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "test".to_string(),
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
-        screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router: Arc::new(TopicRouter::new()),
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),

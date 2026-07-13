@@ -1078,7 +1078,7 @@ fn find_current_binary() -> CapabilityResult<PathBuf> {
     // 1. 現在の実行ファイルパスを取得
     if let Ok(exe_path) = std::env::current_exe() {
         // シンボリックリンクを解決
-        if let Ok(canonical) = exe_path.canonicalize() {
+        if let Ok(canonical) = dunce::canonicalize(&exe_path) {
             return Ok(canonical);
         }
         return Ok(exe_path);

@@ -497,6 +497,67 @@ impl WiremsgStore {
             .collect())
     }
 
+    /// agent が関与する直近 message を返す (read-only、cursor 不触り — GUI inbox 表示用、doc 34 §4 V1)
+    ///
+    /// 対象 = `agent ∈ to_addrs OR from_addr = agent`(送受信両方 — inbox は会話面なので自分の
+    /// 送信も文脈として並べる)。`local_seq` 降順(新しい順)で最大 `limit` 件。
+    ///
+    /// **cursor を一切動かさない**のが wire_recv との決定的な違い: GUI が覗いても lane の claude
+    /// の未読は減らない(per-agent 単一 cursor の横取り禁止 = V1 の必須制約)。
+    /// `limit` は呼び手(route 層)で clamp 済みの前提だが、 injection 面では u64 の直埋めのみ。
+    pub async fn history_for_agent(&self, agent: &str, limit: u64) -> Result<Vec<WireMessage>> {
+        // LIMIT は bind でなく整数直埋め (SurrealDB の LIMIT は bind 変数を受けないため。
+        // u64 なので injection 面は無い)。
+        let query = format!(
+            "SELECT * FROM wire_messages
+                 WHERE to_addrs CONTAINS $agent OR from_addr = $agent
+                 ORDER BY local_seq DESC LIMIT {limit};"
+        );
+        let mut res = self
+            .db
+            .query(query)
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg history_for_agent failed: {e}"))?;
+        // row は from_addr / to_addrs 列名なので直接 deserialize せず row_to_message で変換
+        // (latest_msg_for_agent と同じ作法)。
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg history_for_agent take failed: {e}"))?;
+        rows.iter().map(Self::row_to_message).collect()
+    }
+
+    /// `ids` のうち agent が ack 済の message id 群を返す (read-only、history の ack badge 用)
+    ///
+    /// [`acks_for`](Self::acks_for) の agent 側からの逆引き。 1 query で済ませる
+    /// (history 1 回分 = 高々 limit 件なので INSIDE の線形照合で十分)。
+    pub async fn acked_ids_for_agent(&self, agent: &str, ids: &[String]) -> Result<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut res = self
+            .db
+            .query(
+                "SELECT message_id FROM wire_acks
+                     WHERE agent = $agent AND message_id INSIDE $ids;",
+            )
+            .bind(("agent", agent.to_string()))
+            .bind(("ids", ids.to_vec()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg acked_ids_for_agent failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg acked_ids_for_agent take failed: {e}"))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                r.get("message_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .collect())
+    }
+
     /// 未 ack の command category message を pending 受信者付きで返す (R2-b delivery loop 用)
     ///
     /// 戻り値: `(message, pending_agents)` の Vec (local_seq 昇順)。 pending = `to` から

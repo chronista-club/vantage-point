@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="手元の /Applications/VantagePoint.app を作業ツリーの build で差し替えて再起動 (dogfood ループ)"
+#MISE description="普段使いの VP を作業ツリーの build で差し替えて再起動 (dogfood ループ、 mac=/Applications/*.app / win=~/.cargo/bin)"
 #
-# dogfood 差し替えループ (2026-07-10)。 「今書いたコードを、普段使っている .app の形で触る」 ための task。
+# dogfood 差し替えループ (2026-07-10)。 「今書いたコードを、普段使っている形で触る」 ための task。
 #
 # なぜ dev profile (VP_PROFILE=dev) ではなくこれか:
 #   - dev profile は state を別 namespace に切るので daemon / SP / GUI を三点セットで立て直す要がある
@@ -10,49 +10,200 @@
 #     (computer-use の screenshot 許可対象にすらならない)
 #   本 task は本番と同じ .app 形のまま、 notarize の待ち時間だけを落とす。
 #
-# なぜ notarize 不要か:
+# なぜ notarize 不要か (macOS):
 #   Gatekeeper が notarization ticket を要求するのは `com.apple.quarantine` xattr 付き
 #   (= browser / dmg 経由で DL された) binary だけ。 自前 build を ditto で置いた bundle には
 #   quarantine が付かないので、 Developer ID 署名さえ通っていれば起動する。
 #   → `VP_RELEASE_DRY=1` (build → 組立 → codesign → dmg、 notarize/publish skip) で足りる。
 #
+# Windows の対応物 (2026-07-10 追加):
+#   Windows には .app 相当の installed form がまだ無い (MSI / winget GUI は Phase W4)。 普段使いの
+#   実体は `vp daemon install` が Task Scheduler task の Exec に焼いた ~/.cargo/bin/vp.exe と、
+#   `vp app start` が起動する ~/.cargo/bin/vp-app.exe。 よって Windows の swap = この 2 binary の
+#   cargo install (= app:build / daemon:build 再利用)。 mac と決定的に違う点が 2 つある:
+#     1. 実行中の .exe は置換できない (「アクセスが拒否されました」= os error 5)。 mac は
+#        build → stop の順で良いが、 Windows は **stop を build より先に** 回す必要がある。
+#     2. Task Scheduler の keep-alive (1 分周期 TimeTrigger + RestartOnFailure、
+#        daemon/process.rs generate_task_xml) が daemon を蘇生する。 vp.exe を触る間 task を
+#        disable しないと、 kill した直後に復活して .exe を掴み直し install が失敗する。
+#
 # ⚠️ daemon / SP は差し替えても**即座には入れ替わらない** (既に memory 上の旧 binary で走っている)。
 #    server 側 (crates/vantage-point) を触ったなら `VP_SWAP_RESTART_DAEMON=1` を付ける。
 #    その場合 SP の子である lane の claude が全部落ちる (会話は cc_session の --resume で復帰)。
 require "fileutils"
+require "net/http"
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-APP_BUNDLE  = "VantagePoint.app"
-BUILT       = File.join("target", "dist", APP_BUNDLE)
-INSTALLED   = File.join("/Applications", APP_BUNDLE)
 RESTART_DAEMON = ENV["VP_SWAP_RESTART_DAEMON"] == "1"
 
-# ── 1. build + codesign (release:mac の DRY = 組立経路を release と共有し drift させない) ──
-VP.log "#{VP.icon(:build)} building signed .app (VP_RELEASE_DRY=1)…"
-VP.sh "VP_RELEASE_DRY=1 LANG=en_US.UTF-8 mise run release:mac"
-File.directory?(BUILT) or VP.die("build 成果物が無い: #{BUILT}")
-
-# ── 2. 走っている GUI を止める (差し替え先を掴んだままにしない) ──
-VP.sh "#{VP.cargo_bin('vp')} app stop || true"
-VP.sh "pkill -f '#{INSTALLED}' || true"
-sleep 2
-
-# ── 3. 差し替え (ditto = 署名と xattr を保つ。 cp -r は署名を壊す) ──
-# INSTALLED は brew cask 管理下。 壊しても `brew reinstall --cask vantage-point` で戻せる。
-VP.log "#{VP.icon(:arrow)} swapping #{INSTALLED}"
-FileUtils.rm_rf(INSTALLED)
-VP.sh "ditto '#{BUILT}' '#{INSTALLED}'"
-VP.sh "codesign --verify --strict '#{INSTALLED}'"
-
-# ── 4. server 側も入れ替えるなら daemon を落とす (lane が道連れになる) ──
-if RESTART_DAEMON
-  VP.log "#{VP.icon(:warn)} restarting daemon — lane の claude も落ちる (--resume で復帰)"
-  VP.sh "#{VP.cargo_bin('vp')} daemon stop || true"
-  sleep 2
-  VP.sh "pkill -f '/opt/homebrew/bin/vp sp start' || true"
-  sleep 1
+# 「daemon は旧 binary のまま」 の注意書き (両 OS 共通の締め)。
+def swap_epilogue(restart_daemon)
+  suffix = restart_daemon ? " (daemon 再起動込み)" : " (daemon は旧 binary のまま — server 変更を効かせるなら VP_SWAP_RESTART_DAEMON=1)"
+  VP.log "#{VP.icon(:ok)} swapped & launched#{suffix}"
 end
 
-# ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
-VP.sh "open '#{INSTALLED}'"
-VP.log "#{VP.icon(:ok)} swapped & launched#{RESTART_DAEMON ? ' (daemon 再起動込み)' : ' (daemon は旧 binary のまま — server 変更を効かせるなら VP_SWAP_RESTART_DAEMON=1)'}"
+# ══════════════════════════════════════════════════════════════════════════════
+# Windows: ~/.cargo/bin/{vp,vp-app}.exe を差し替える
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Task Scheduler の task 名。 daemon/process.rs の `scheduled_task_name()` と同形を保つ
+# (profile 分離: dev/brew を別 task に)。 ずれると disable し損ねて install が hang する。
+def win_task_name
+  profile = ENV["VP_PROFILE"]
+  profile.nil? || profile.empty? ? 'VP\TheWorld' : "VP\\TheWorld-#{profile}"
+end
+
+def win_task_installed?(task)
+  VP.try("schtasks", "/query", "/tn", task, out: File::NULL, err: File::NULL)
+end
+
+# TheWorld の listen port。 vp_paths::default_world_port() と同形 (profile 分離)。
+def world_port
+  profile = ENV["VP_PROFILE"]
+  profile.nil? || profile.empty? ? 32_000 : 32_100
+end
+
+# daemon が health を返すまで待つ。
+#
+# `schtasks /run` は task の起動を要求して**即座に返る**ため、 直後に app を起動すると
+# GUI が daemon を掴めないまま立ち上がる (実測 2026-07-10: 起動直後の vp-app が空の
+# main area のまま終了した)。 mac 側は `open` した .app が必要に応じ daemon を lazy spawn
+# するのでこのレースが顕在化しない。
+#
+# `vp daemon status` は停止中なら exit 1 を返すが、 判定が pidfile ベースのため
+# process 起動直後 (HTTP listener が立つ前) に 0 を返しうる。 「app が繋げる」保証には
+# /api/health の 200 を単一の真実源にする。
+def wait_daemon_ready(timeout: 30)
+  uri = URI("http://127.0.0.1:#{world_port}/api/health")
+  VP.log "waiting for daemon health (#{uri})…"
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  loop do
+    begin
+      res = Net::HTTP.start(uri.host, uri.port, open_timeout: 1, read_timeout: 1) do |http|
+        http.get(uri.path)
+      end
+      if res.is_a?(Net::HTTPSuccess)
+        VP.log "#{VP.icon(:ok)} daemon ready"
+        return true
+      end
+    rescue StandardError
+      # 接続不可 = まだ listen していない。 retry。
+    end
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      # daemon 不在でも app 自身が spawn を試みるので、 die せず警告に留める。
+      VP.log "#{VP.icon(:warn)} daemon が #{timeout}s 以内に health を返さず — app 起動を続行"
+      return false
+    end
+    sleep 0.5
+  end
+end
+
+# 指定 .exe を「実行ファイルとして開いている」 process だけを kill する。
+# ImageName ではなく ExecutablePath で絞るのは、 kill したい対象が厳密に
+# 「これから上書きする file を掴んでいる process」 だから (他 profile / 他 install の
+# vp.exe を巻き込まない。 mac 側 daemon:stop が VP_PROFILE で絞るのと同じ意図)。
+def win_kill_holders(paths)
+  targets = paths.map { |p| "'#{p.tr('/', '\\')}'" }.join(",")
+  ps = <<~POWERSHELL
+    $targets = @(#{targets})
+    Get-CimInstance Win32_Process |
+      Where-Object { $_.ExecutablePath -and ($targets -contains $_.ExecutablePath) } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  POWERSHELL
+  VP.try("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+end
+
+def swap_windows(restart_daemon)
+  vp     = VP.cargo_bin("vp")
+  vp_app = VP.cargo_bin("vp-app")
+  task   = win_task_name
+
+  # ── 1. GUI を止める (差し替え先の .exe を掴んだままにしない) ──
+  VP.log "#{VP.icon(:stop)} stopping vp-app…"
+  VP.try(vp, "app", "stop") if File.executable?(vp)
+  win_kill_holders([vp_app])
+
+  # ── 2. server 側も入れ替えるなら daemon を落とす (lane が道連れになる) ──
+  #    蘇生役の Task Scheduler を先に黙らせてから kill する。 順序が逆だと復活する。
+  had_task = false
+  if restart_daemon
+    had_task = win_task_installed?(task)
+    if had_task
+      VP.log "#{VP.icon(:warn)} disabling scheduled task #{task} (1 分周期の keep-alive が vp.exe を掴み直すため)"
+      VP.try("schtasks", "/change", "/tn", task, "/disable", out: File::NULL, err: File::NULL)
+      VP.try("schtasks", "/end", "/tn", task, out: File::NULL, err: File::NULL)
+    end
+
+    VP.log "#{VP.icon(:warn)} restarting daemon — lane の claude も落ちる (--resume で復帰)"
+    VP.try(vp, "daemon", "stop") if File.executable?(vp)
+    # daemon stop は gentle (SP を温存する) が、 SP も vp.exe を掴んでいるので道連れにする。
+    win_kill_holders([vp])
+    sleep 2
+    win_kill_holders([vp]) # 取りこぼし (SP の子が抜ける前に daemon が消えた等)
+    sleep 1
+  end
+
+  # ── 3. build + install (stop の後! 実行中 .exe は置換できない) ──
+  #    cargo install 経路は app:build / daemon:build と共有する (dual source drift 防止)。
+  VP.run("mise", "run", "daemon:build") if restart_daemon
+  VP.run("mise", "run", "app:build")
+
+  # ── 4. daemon を戻す。 task があるなら supervisor ごと復帰させる ──
+  if restart_daemon
+    if had_task
+      VP.try("schtasks", "/change", "/tn", task, "/enable", out: File::NULL, err: File::NULL)
+      VP.run("schtasks", "/run", "/tn", task, out: File::NULL)
+    else
+      # `vp daemon install` 未実施の環境 (常駐化していない) は素の spawn に落とす。
+      VP.run("mise", "run", "daemon:start")
+    end
+    # daemon が listen する前に app を起こすと空の GUI が立つ (上の wait_daemon_ready 参照)。
+    wait_daemon_ready
+  end
+
+  # ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
+  VP.run("mise", "run", "app:start")
+  swap_epilogue(restart_daemon)
+end
+
+# ══════════════════════════════════════════════════════════════════════════════
+# macOS: /Applications/VantagePoint.app を差し替える
+# ══════════════════════════════════════════════════════════════════════════════
+
+def swap_macos(restart_daemon)
+  app_bundle = "VantagePoint.app"
+  built      = File.join("target", "dist", app_bundle)
+  installed  = File.join("/Applications", app_bundle)
+
+  # ── 1. build + codesign (release:mac の DRY = 組立経路を release と共有し drift させない) ──
+  VP.log "#{VP.icon(:build)} building signed .app (VP_RELEASE_DRY=1)…"
+  VP.sh "VP_RELEASE_DRY=1 LANG=en_US.UTF-8 mise run release:mac"
+  File.directory?(built) or VP.die("build 成果物が無い: #{built}")
+
+  # ── 2. 走っている GUI を止める (差し替え先を掴んだままにしない) ──
+  VP.sh "#{VP.cargo_bin('vp')} app stop || true"
+  VP.sh "pkill -f '#{installed}' || true"
+  sleep 2
+
+  # ── 3. 差し替え (ditto = 署名と xattr を保つ。 cp -r は署名を壊す) ──
+  # installed は brew cask 管理下。 壊しても `brew reinstall --cask vantage-point` で戻せる。
+  VP.log "#{VP.icon(:arrow)} swapping #{installed}"
+  FileUtils.rm_rf(installed)
+  VP.sh "ditto '#{built}' '#{installed}'"
+  VP.sh "codesign --verify --strict '#{installed}'"
+
+  # ── 4. server 側も入れ替えるなら daemon を落とす (lane が道連れになる) ──
+  if restart_daemon
+    VP.log "#{VP.icon(:warn)} restarting daemon — lane の claude も落ちる (--resume で復帰)"
+    VP.sh "#{VP.cargo_bin('vp')} daemon stop || true"
+    sleep 2
+    VP.sh "pkill -f '/opt/homebrew/bin/vp sp start' || true"
+    sleep 1
+  end
+
+  # ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
+  VP.sh "open '#{installed}'"
+  swap_epilogue(restart_daemon)
+end
+
+VP.windows? ? swap_windows(RESTART_DAEMON) : swap_macos(RESTART_DAEMON)

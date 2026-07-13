@@ -604,11 +604,10 @@ pub async fn ruby_eval(
 
     if let Some(file) = file_path {
         let full_path = Path::new(project_dir).join(file);
-        let canonical = full_path
-            .canonicalize()
-            .map_err(|e| format!("パス解決エラー: {}", e))?;
-        let project_canonical = Path::new(project_dir)
-            .canonicalize()
+        // dunce: 両辺とも同じ流儀で正規化しないと `starts_with` の封じ込め判定が壊れる。
+        let canonical =
+            dunce::canonicalize(&full_path).map_err(|e| format!("パス解決エラー: {}", e))?;
+        let project_canonical = dunce::canonicalize(project_dir)
             .map_err(|e| format!("プロジェクトディレクトリ解決エラー: {}", e))?;
         if !canonical.starts_with(&project_canonical) {
             return Err(format!(
@@ -649,11 +648,10 @@ pub async fn ruby_run(
 ) -> Result<String, String> {
     let ruby_code = if let Some(file) = file_path {
         let full_path = Path::new(project_dir).join(file);
-        let canonical = full_path
-            .canonicalize()
-            .map_err(|e| format!("パス解決エラー: {}", e))?;
-        let project_canonical = Path::new(project_dir)
-            .canonicalize()
+        // dunce: 両辺とも同じ流儀で正規化しないと `starts_with` の封じ込め判定が壊れる。
+        let canonical =
+            dunce::canonicalize(&full_path).map_err(|e| format!("パス解決エラー: {}", e))?;
+        let project_canonical = dunce::canonicalize(project_dir)
             .map_err(|e| format!("プロジェクトディレクトリ解決エラー: {}", e))?;
         if !canonical.starts_with(&project_canonical) {
             return Err(format!(

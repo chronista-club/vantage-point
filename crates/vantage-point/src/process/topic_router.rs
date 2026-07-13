@@ -153,10 +153,6 @@ impl TopicRouter {
                     pane_id
                 )
             }
-            ProcessMessage::ScreenshotRequest { .. } => {
-                "process/paisley-park/command/screenshot".to_string()
-            }
-
             // === Heaven's Door（AI Agent 能力）===
             ProcessMessage::ChatChunk { .. } => "process/heavens-door/event/text-chunk".to_string(),
             ProcessMessage::ChatMessage { .. } => {

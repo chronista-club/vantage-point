@@ -21,6 +21,18 @@ pub struct StandStatus {
     pub detail: Option<serde_json::Value>,
 }
 
+/// `/api/health` の `hub_worlds` 要素 — hub の向こうに居る available world 1 件。
+#[derive(serde::Serialize)]
+pub struct HubWorldInfo {
+    /// world の identity（hostname 由来、hub registry の一意キー相当）
+    pub handle: String,
+    /// 位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 前は空になり得るため空なら omit。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub wld_id: String,
+    /// direct 到達 endpoint 候補数（hub S2 前は 0）
+    pub endpoints_count: usize,
+}
+
 /// Health check response
 #[derive(serde::Serialize)]
 pub struct HealthResponse {
@@ -40,6 +52,10 @@ pub struct HealthResponse {
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`）。
     /// World mode のみ意味を持つ（SP mode は常に `"disabled"`）。vp-app が world status 横に表示。
     pub hub: &'static str,
+    /// hub の向こうに居る available worlds（**自 world は除外**、handle dedup 済）。
+    /// World mode + hub connected の間だけ非空（SP mode / 未接続は空配列）。既存 `hub` field
+    /// （string）は不変のまま additive に足す — 旧 client は本 field を無視するだけで壊れない。
+    pub hub_worlds: Vec<HubWorldInfo>,
     /// L1 lifecycle (Phase C): World 配下の SP presence 一覧（vp-app sidebar の ●◐○ 表示用）。
     /// daemon-canonical（doc 27 §3.2 / Model Q）。World mode のみ Some、SP mode では None。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,6 +209,18 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         None => None,
     };
 
+    // hub の向こうの available worlds（run_hub_federation が discover で更新する cache を読む）。
+    let hub_worlds = state
+        .hub_worlds
+        .get()
+        .into_iter()
+        .map(|w| HubWorldInfo {
+            handle: w.handle,
+            wld_id: w.wld_id,
+            endpoints_count: w.endpoints.len(),
+        })
+        .collect();
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -202,6 +230,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         started_at: state.started_at.clone(),
         stands,
         hub: state.hub_status.get().as_str(),
+        hub_worlds,
         processes,
     })
 }
@@ -269,121 +298,6 @@ pub async fn canvas_layout_save_handler(
 // L0 portless Group B: file watch/unwatch HTTP handler は CLI を process-proxy ask
 // (`watch_file`/`unwatch_file` → `handle_watch_file`/`handle_unwatch_file`) に移管し撤去。
 // core (`state.file_watchers`) は QUIC dispatch が同じく呼ぶので維持。
-
-/// Canvas キャプチャリクエストのパラメータ
-#[derive(Debug, serde::Deserialize)]
-pub struct CaptureParams {
-    /// 保存先パス（省略時: /tmp/vp-canvas-{timestamp}.png）
-    pub path: Option<String>,
-    /// 特定ペインのみキャプチャ
-    pub pane_id: Option<String>,
-}
-
-/// POST /api/canvas/capture - Canvas のスクリーンショットを取得
-pub async fn canvas_capture_handler(
-    State(state): State<Arc<AppState>>,
-    Json(params): Json<CaptureParams>,
-) -> impl IntoResponse {
-    // 1. request_id 生成、oneshot channel 作成
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-
-    {
-        let mut waiters = state.screenshot_waiters.lock().await;
-        waiters.insert(request_id.clone(), tx);
-    }
-
-    // 3. ScreenshotRequest を Canvas に broadcast
-    state
-        .hub
-        .broadcast(crate::protocol::ProcessMessage::ScreenshotRequest {
-            request_id: request_id.clone(),
-            pane_id: params.pane_id,
-        });
-
-    // 4. タイムアウト付きで応答を待つ
-    let result = tokio::time::timeout(tokio::time::Duration::from_secs(10), rx).await;
-
-    match result {
-        Ok(Ok(screenshot)) => {
-            // width=0 はキャプチャ失敗を示す（JSからのエラー応答、data にエラーメッセージ）
-            if screenshot.width == 0 {
-                return (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "status": "error",
-                        "message": format!("Canvas側でスクリーンショット取得に失敗: {}", screenshot.data)
-                    })),
-                );
-            }
-
-            // 5. base64 デコード → ファイル書き込み
-            use base64::Engine;
-            let engine = base64::engine::general_purpose::STANDARD;
-
-            let bytes = match engine.decode(&screenshot.data) {
-                Ok(b) => b,
-                Err(e) => {
-                    return (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "status": "error",
-                            "message": format!("base64 デコード失敗: {}", e)
-                        })),
-                    );
-                }
-            };
-
-            let save_path = params.path.unwrap_or_else(|| {
-                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                format!("/tmp/vp-canvas-{}.png", ts)
-            });
-
-            if let Err(e) = tokio::fs::write(&save_path, &bytes).await {
-                return (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "status": "error",
-                        "message": format!("ファイル書き込み失敗: {}", e)
-                    })),
-                );
-            }
-
-            (
-                axum::http::StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "ok",
-                    "path": save_path,
-                    "width": screenshot.width,
-                    "height": screenshot.height,
-                    "size_bytes": bytes.len(),
-                })),
-            )
-        }
-        Ok(Err(_)) => {
-            // oneshot sender が drop された（キャンセル）
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "status": "error",
-                    "message": "スクリーンショット応答チャネルが切断"
-                })),
-            )
-        }
-        Err(_) => {
-            // タイムアウト — waiter をクリーンアップ
-            let mut waiters = state.screenshot_waiters.lock().await;
-            waiters.remove(&request_id);
-            (
-                axum::http::StatusCode::GATEWAY_TIMEOUT,
-                Json(serde_json::json!({
-                    "status": "error",
-                    "message": "スクリーンショット取得タイムアウト（10秒）"
-                })),
-            )
-        }
-    }
-}
 
 // 旧 GET /wasm/{filename} (vp-mdast-wasm 配信 endpoint) は 2026-05-25 削除。
 // frontend (vp-app webview) は `marked` (npm) + `@chronista-club/creoui-editor-host`
@@ -492,6 +406,14 @@ mod tests {
             body.get("hub").and_then(|v| v.as_str()),
             Some("disabled"),
             "hub field 必須 (SP/test mode は Disabled = \"disabled\")"
+        );
+        // hub_worlds は常時 serialize（SP/test mode = HubWorldsCache::new() は空配列）。
+        assert_eq!(
+            body.get("hub_worlds")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(0),
+            "hub_worlds field 必須 (SP/test mode は空配列)"
         );
     }
 }

@@ -81,6 +81,13 @@ export function LaneRow(props: {
 	// OSC 99 由来の入力待ち。 active lane は即読扱いで dot を出さない。 inactive も除外。
 	const isAwaiting = () =>
 		!isInactive() && !isActive() && !!sidebar.awaiting_input[addr()];
+	// Canvas (PP) 着信 badge (bug: canvas 可観測性 D): 現在 active でない lane に show が
+	// 届くと点灯。 awaiting(magenta = 用事)とは別語彙の「絵が届いた」 info 信号で、
+	// active 化 (行 click) で reset される。
+	// isInactive は見ない: canvas 着信は「絵が届いた」事実で、lane の claude の生死とは無関係
+	// (dead lane に届いた content も気付かせる。awaiting=入力待ちが alive 前提なのとは意味論が違う)。
+	const canvasUnread = () =>
+		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
 	// cc `/rename` の custom-title (2 行目)。 未設定 lane は dimmed "—"。
 	const sessionTitle = () => sidebar.session_titles?.[addr()];
 
@@ -211,6 +218,12 @@ export function LaneRow(props: {
 				<Show when={isAwaiting()}>
 					<span class="vp-lane-awaiting" title="Claude is waiting for input" />
 				</Show>
+				<Show when={canvasUnread()}>
+					<span
+						class="vp-lane-canvas"
+						title="Canvas に新しい内容が届きました"
+					/>
+				</Show>
 				<button
 					class="vp-lane-files-btn"
 					type="button"
@@ -223,10 +236,15 @@ export function LaneRow(props: {
 					<CreoIcon name="ph:folder-open" size={12} />
 				</button>
 				<Show when={inbox()}>
+					{/* mailbox badge は Wire Inbox panel (doc 34 §4 V1) の起動ボタンを兼ねる。 */}
 					<span
 						class="vp-lane-msg"
 						classList={{ unread: (inbox()!.unread_count | 0) > 0 }}
-						title={`mailbox: ${addr()}`}
+						title={`wire inbox を開く: ${addr()}`}
+						onClick={(e) => {
+							e.stopPropagation();
+							window.vpWire?.open(addr());
+						}}
 					>
 						<CreoIcon
 							name={

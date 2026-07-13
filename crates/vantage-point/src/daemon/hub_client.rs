@@ -120,6 +120,38 @@ impl HubFederationStatus {
     }
 }
 
+/// hub registry に居る available worlds の cache（`/api/health` の `hub_worlds` field の SSOT）。
+///
+/// writer = [`run_hub_federation`]（接続直後 + 定期 discover で更新、切断で clear）、
+/// reader = `/api/health` handler。中身は [`available_worlds`] 適用済（自 world 除外・
+/// handle dedup 済）の list。読み書きとも await を跨がない短い critical section なので
+/// `std::sync::RwLock` で足りる（[`HubFederationStatus`] の AtomicU8 は enum 1 値だから
+/// 成立する手で、可変長 list には使えない）。
+#[derive(Clone, Default)]
+pub struct HubWorldsCache(Arc<std::sync::RwLock<Vec<WorldEntry>>>);
+
+impl HubWorldsCache {
+    /// 初期状態 = 空（hub 未接続相当）。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// discover 結果を反映する（writer = [`run_hub_federation`]）。
+    pub fn set(&self, worlds: Vec<WorldEntry>) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = worlds;
+    }
+
+    /// hub 切断時に空へ戻す（stale list を「available」と見せない）。
+    pub fn clear(&self) {
+        self.set(Vec::new());
+    }
+
+    /// 現在の available worlds（reader = `/api/health` handler）。
+    pub fn get(&self) -> Vec<WorldEntry> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
 /// hub Unison surface の addr を読む env var（dev override）。config.kdl `hub-addr` より優先。
 /// env / config とも未設定なら hub federation は opt-out（解決は [`hub_addr()`]）。
 pub const HUB_ADDR_ENV: &str = "CHRONISTA_HUB_ADDR";
@@ -165,6 +197,66 @@ fn resolve_hub_addr(env_val: Option<String>, config_val: Option<String>) -> Opti
     clean(env_val).or_else(|| clean(config_val))
 }
 
+/// hub credential の refresh を先回りさせる skew（= 失効の何秒前から refresh/再接続するか）。
+///
+/// connect 経路の [`hub_credential`]（reactive refresh）と常駐ループの proactive 再接続
+/// （[`run_hub_federation`]）の**両方が同じ値**を使う。両者が同一だからこそ「proactive 再接続 →
+/// その connect で refresh 発火」が噛み合う（別値だと再接続しても token がまだ skew 外で refresh
+/// されず、同じ deadline で即再接続する storm になる）。旧値 300s は失効直前すぎたため、日和見
+/// reconnect が無い安定接続でも余裕を持って巻き直せるよう 30 分に広げた。
+const HUB_REFRESH_SKEW_SECS: u64 = 30 * 60;
+
+/// proactive 再接続までの残り時間を計算する（純関数 = data/calc、I/O 非依存でテスト可能）。
+///
+/// token 失効の `skew_secs` 前に 1 度だけ再接続し、その connect で [`hub_credential`] の
+/// `credentials_refreshed_if_needed` が refresh_token で巻き直すよう促すための deadline。
+/// - `expires_at` が `None`（期限不明）→ `None`（arm しない = reactive refresh に委ねる）。
+/// - 失効まで skew より長い余裕がある → `Some(残り Duration)`。
+/// - 既に skew 内（refresh 失敗で expiry が進まなかった場合を含む）→ `None`（arm しない）。
+///   これにより「再接続 → refresh 失敗 → 即再々接続」の storm を構造的に防ぐ。
+fn proactive_reconnect_delay(
+    expires_at: Option<u64>,
+    now: u64,
+    skew_secs: u64,
+) -> Option<Duration> {
+    let deadline = expires_at?.checked_sub(skew_secs)?; // 再接続すべき絶対時刻（unix secs）
+    let remaining = deadline.checked_sub(now)?; // 現在からの残り秒（deadline が過去なら None）
+    (remaining > 0).then(|| Duration::from_secs(remaining))
+}
+
+/// 現在の unix epoch 秒（action = clock 読み）。
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 稼働中 daemon が保持する credential の失効時刻（unix secs、action = file 読み）。
+///
+/// proactive 再接続 deadline の計算に使う。file 不在 / parse 失敗 / expires_at 欠落は `None`
+/// （= proactive を arm せず reactive refresh に委ねる、穏当な degrade）。
+///
+/// refresh が失敗して expires_at が進まなかった場合、次の connect 時点で既に skew 内なので
+/// [`proactive_reconnect_delay`] が `None` を返し、proactive は**再武装されない** — 以降の
+/// refresh 機会は次の自然な切断 / 再接続（reactive 経路）に委ねられる。
+fn hub_credential_expires_at() -> Option<u64> {
+    crate::commands::auth::read_credentials()
+        .ok()
+        .flatten()
+        .and_then(|c| c.expires_at)
+}
+
+/// `Some(deadline)` ならその時刻に発火、`None` なら永久 pending（`select!` の他 arm に委ねる）。
+///
+/// proactive 再接続 timer を「期限不明なら無効」にするための optional future ラッパ。
+async fn sleep_until_optional(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(t) => tokio::time::sleep_until(t).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
 /// hub connection-level auth（ADR-020 §S3）に提示する credential を解決する。
 ///
 /// credential = **raw Creo ID user-jwt（UTF-8 bytes）**（hub 契約、thread 019f28c9 で確定）。
@@ -178,12 +270,10 @@ fn resolve_hub_addr(env_val: Option<String>, config_val: Option<String>) -> Opti
 ///
 /// token が期限に近ければ **refresh_token で proactive に巻き直してから** credential を返す。
 /// refresh の可否・fail-safe 挙動は [`crate::commands::auth::credentials_refreshed_if_needed`]
-/// 参照。24h token が required hub 接続中に切れて federation が止まるのを防ぐ（利便性改善）。
-///
-/// refresh 往復の余裕として skew = 5 分を見る（この間に切れる token は先に巻き直す）。
+/// 参照。24h token が required hub 接続中に切れて federation が止まるのを防ぐ（利便性改善）。skew は
+/// [`HUB_REFRESH_SKEW_SECS`]（proactive 再接続と共有 = 「再接続 → その connect で refresh」を噛み合わせる）。
 async fn hub_credential() -> Option<Vec<u8>> {
-    const REFRESH_SKEW_SECS: u64 = 300;
-    match crate::commands::auth::credentials_refreshed_if_needed(REFRESH_SKEW_SECS).await {
+    match crate::commands::auth::credentials_refreshed_if_needed(HUB_REFRESH_SKEW_SECS).await {
         Ok(creds) => credential_from_creds(creds),
         // file 読み込み / refresh 構築失敗（壊れた file 等）は credential なし扱い。federation を
         // 止めるより observe/permissive で繋ぐ方が degrade として穏当。
@@ -195,6 +285,19 @@ async fn hub_credential() -> Option<Vec<u8>> {
             None
         }
     }
+}
+
+/// hub の応答 payload が in-band error（handler の `Err` を `{"error": "..."}` で返す形。
+/// chronista-hub `unison_server.rs` の `unwrap_or_else(|e| json!({ "error": ... }))`）なら、その
+/// message を返す（純関数）。
+///
+/// FEDERATION_AUTH=required 下で credential なし（token 失効 / 未ログイン）の Register / Discover は
+/// **protocol error でなく通常 Response の payload** で `{"error": "authentication required (scope
+/// '...')"}` を返す。素朴な型変換だと「レスポンスのパースに失敗」に潰れて（Discover は "worlds"
+/// キー欠落で無言の空配列に潰れて）診断不能になるため、呼び出し側はこれを見て明示的な auth
+/// エラーへ浮かせる。
+fn hub_reply_error(resp: &Value) -> Option<&str> {
+    resp.get("error").and_then(Value::as_str)
 }
 
 /// credentials から credential bytes を作る純関数（I/O と分離、env 非依存でテスト可能）。
@@ -404,7 +507,17 @@ impl HubClient {
             )
             .await
             .map_err(|e| anyhow::anyhow!("worlds.Register 失敗: {}", e))?;
-        serde_json::from_value(resp).context("Register レスポンスのパースに失敗")
+        // hub は auth 拒否等の handler Err を通常 Response の `{"error": ...}` で返す（in-band）。
+        // WorldEntry 化の前に判定し、FEDERATION_AUTH=required 下の失効/未ログインを「parse 失敗」で
+        // 潰さず明示エラーに浮かせる（2026-07-11 の federation 途絶で診断を数手遠回りさせた元凶）。
+        if let Some(err) = hub_reply_error(&resp) {
+            anyhow::bail!(
+                "hub が Register を拒否しました（FEDERATION_AUTH=required 下では token 失効 / 未ログイン\
+                 が主因 — `vp auth login` で再ログインを検討）: {err}"
+            );
+        }
+        serde_json::from_value::<WorldEntry>(resp.clone())
+            .with_context(|| format!("Register レスポンスのパースに失敗（応答: {resp}）"))
     }
 
     /// hub registry に居る world 一覧を取得する（`worlds.Discover`）。
@@ -414,6 +527,14 @@ impl HubClient {
             .request("Discover", &json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("worlds.Discover 失敗: {}", e))?;
+        // Register と同様、in-band の `{"error": ...}` 拒否を判定する。Discover は "worlds" キー欠落を
+        // 空配列に潰すため、判定しないと auth 拒否が「discover 0 件」に化けて無言で誤誘導する。
+        if let Some(err) = hub_reply_error(&resp) {
+            anyhow::bail!(
+                "hub が Discover を拒否しました（FEDERATION_AUTH=required 下では token 失効 / 未ログイン\
+                 が主因 — `vp auth login` で再ログインを検討）: {err}"
+            );
+        }
         let worlds = resp.get("worlds").cloned().unwrap_or_else(|| json!([]));
         serde_json::from_value(worlds).context("Discover レスポンスのパースに失敗")
     }
@@ -604,6 +725,34 @@ fn pick_latest_by_handle<'a>(worlds: &'a [WorldEntry], handle: &str) -> Option<&
         .max_by(|a, b| a.registered_at.cmp(&b.registered_at))
 }
 
+/// discovery 一時 register（[`federate_discover_lanes`] の短命 identity）の handle。
+/// available worlds 表示（[`available_worlds`]）からは transient ノイズとして除外する。
+pub const TRANSIENT_DISCO_HANDLE: &str = "vp-disco";
+
+/// discover 結果から「hub の向こうに居る available worlds」を選ぶ純関数。
+///
+/// - **自 world（`own_handle`）を除外** — この list の意味論は「hub の向こうに誰がいるか」
+/// - 空 handle と discovery 一時 register（[`TRANSIENT_DISCO_HANDLE`]）を除外（表示ノイズ）
+/// - 同一 handle は registered_at 最新の 1 件に dedup（stale 残留対策、[`pick_latest_by_handle`]
+///   と同基準 — registered_at は ISO 8601 なので辞書順比較 = 時系列比較）
+/// - handle 昇順で返す（表示の安定化）
+pub fn available_worlds(worlds: Vec<WorldEntry>, own_handle: &str) -> Vec<WorldEntry> {
+    let mut by_handle: std::collections::BTreeMap<String, WorldEntry> =
+        std::collections::BTreeMap::new();
+    for w in worlds {
+        if w.handle.is_empty() || w.handle == own_handle || w.handle == TRANSIENT_DISCO_HANDLE {
+            continue;
+        }
+        match by_handle.get(&w.handle) {
+            Some(cur) if cur.registered_at >= w.registered_at => {}
+            _ => {
+                by_handle.insert(w.handle.clone(), w);
+            }
+        }
+    }
+    by_handle.into_values().collect()
+}
+
 /// 指定 wld_id へ短命接続で relay envelope を送る（handle 解決なし）。宛先 wld_id が既知のケース
 /// （discovery の `lanes-reply` 返信等）で使う low-level send。
 pub async fn relay_send_to_wld(
@@ -702,7 +851,12 @@ pub async fn federate_discover_lanes(
         .await
         .context("discover-lanes: hub 接続に失敗")?;
     client
-        .register(&temp_wld, &[], "vp-disco", "VP discovery (transient)")
+        .register(
+            &temp_wld,
+            &[],
+            TRANSIENT_DISCO_HANDLE,
+            "VP discovery (transient)",
+        )
         .await
         .context("discover-lanes: 一時 register に失敗")?;
 
@@ -747,9 +901,11 @@ pub async fn federate_discover_lanes(
 /// この関数自体を呼ばない（caller 側で opt-in 判定）。
 ///
 /// 接続状態は `status`（[`HubFederationStatus`]）に遷移ごとに反映し、`/api/health` 経由で vp-app
-/// が world status 横の `Hub ● connected` インジケータとして表示する。
-// federation session の固有パラメータ（identity 3 つ + status/shutdown/handler）。いずれも独立に
-// 必要で struct 化しても可読性が上がらないため allow（caller は run_world の 1 箇所のみ）。
+/// が world status 横の `Hub ● connected` インジケータとして表示する。available worlds は
+/// `worlds`（[`HubWorldsCache`]）に反映し、同じく `/api/health`（`hub_worlds` field）経由で
+/// vp-app が Hub 行の「· N worlds」として表示する。
+// federation session の固有パラメータ（identity 3 つ + status/worlds/shutdown/handler）。いずれも
+// 独立に必要で struct 化しても可読性が上がらないため allow（caller は run_world の 1 箇所のみ）。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_hub_federation<F, Fut>(
     addr: String,
@@ -758,6 +914,7 @@ pub async fn run_hub_federation<F, Fut>(
     handle: String,
     name: String,
     status: HubFederationStatus,
+    worlds: HubWorldsCache,
     shutdown: CancellationToken,
     on_relay: F,
 ) where
@@ -768,8 +925,16 @@ pub async fn run_hub_federation<F, Fut>(
     const RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
     // Disconnected event を取りこぼした場合の health poll 間隔（backstop）。
     const HEALTH_POLL: Duration = Duration::from_secs(30);
+    // available worlds の定期 discover 間隔（hub への負荷を考え短くしすぎない、30-60s レンジ）。
+    const DISCOVER_INTERVAL: Duration = Duration::from_secs(45);
+    // discover RPC の応答上限。QUIC 面 wedge 等で request が返らない場合に select loop
+    //（= Disconnected 検知）を塞がないための保険。
+    const DISCOVER_TIMEOUT: Duration = Duration::from_secs(10);
 
     while !shutdown.is_cancelled() {
+        // この iteration の再接続が planned（proactive な token 巻き直し）か否か。planned なら末尾の
+        // backoff を飛ばして即再接続する（下記）。
+        let mut planned_reconnect = false;
         status.set(HubFederationState::Connecting);
         // 再接続ごとに handler を再登録するため clone（connect_with_inbound は on_msg を move する）。
         match HubClient::connect_with_inbound(&addr, 5, on_relay.clone()).await {
@@ -792,7 +957,19 @@ pub async fn run_hub_federation<F, Fut>(
                 }
                 // 切断 or shutdown まで待機（この間 relay 受信 handler は background で稼働）。
                 // Disconnected event を主トリガに、取りこぼし対策で is_connected の health poll を併用。
+                // discover_tick の初回 tick は即時発火 → connect(+再接続)直後の即 discover を兼ねる。
                 let mut events = client.subscribe_connection_events();
+                // proactive refresh: この接続で提示した token の失効 skew 前に 1 度だけ再接続し、次の
+                // connect で credential を巻き直させる（安定接続が失効 token を運び続けるのを防ぐ +
+                // refresh_token の idle 失効も防ぐ）。単一 refresh 点（connect 経路）を保つため inner
+                // では refresh せず「再接続を促す」だけに留める。期限不明なら arm せず reactive に委ねる。
+                let proactive_deadline = proactive_reconnect_delay(
+                    hub_credential_expires_at(),
+                    unix_now(),
+                    HUB_REFRESH_SKEW_SECS,
+                )
+                .map(|d| tokio::time::Instant::now() + d);
+                let mut discover_tick = tokio::time::interval(DISCOVER_INTERVAL);
                 loop {
                     tokio::select! {
                         _ = shutdown.cancelled() => return,
@@ -811,10 +988,43 @@ pub async fn run_hub_federation<F, Fut>(
                                 break;
                             }
                         }
+                        _ = sleep_until_optional(proactive_deadline) => {
+                            tracing::info!(
+                                "chronista-hub credential 失効が近い — proactive に再接続して token を巻き直す"
+                            );
+                            planned_reconnect = true;
+                            break;
+                        }
+                        _ = discover_tick.tick() => {
+                            match tokio::time::timeout(DISCOVER_TIMEOUT, client.discover()).await {
+                                Ok(Ok(list)) => {
+                                    let total = list.len();
+                                    let avail = available_worlds(list, &handle);
+                                    tracing::debug!(
+                                        "hub discover: registry {} 件 → available {} 件",
+                                        total,
+                                        avail.len()
+                                    );
+                                    worlds.set(avail);
+                                }
+                                // 一過性 error では cache を消さない（真の切断は Disconnected event /
+                                // HEALTH_POLL 側が検知して下の clear に到達する）。
+                                Ok(Err(e)) => tracing::warn!(
+                                    "hub discover 失敗（cache 維持、次周期で再試行）: {}",
+                                    e
+                                ),
+                                Err(_) => tracing::warn!(
+                                    "hub discover timeout（{}s、cache 維持、次周期で再試行）",
+                                    DISCOVER_TIMEOUT.as_secs()
+                                ),
+                            }
+                        }
                     }
                 }
                 // 切断検知 → Disconnected を反映（次 iteration 冒頭で Connecting に戻る）。
+                // available worlds も clear（未接続の間 stale list を「available」と見せない）。
                 status.set(HubFederationState::Disconnected);
+                worlds.clear();
                 // client drop → connection close。
             }
             Err(e) => tracing::warn!(
@@ -825,10 +1035,13 @@ pub async fn run_hub_federation<F, Fut>(
             ),
         }
 
-        // backoff（shutdown で即中断可能）。
-        tokio::select! {
-            _ = shutdown.cancelled() => return,
-            _ = tokio::time::sleep(RECONNECT_BACKOFF) => {}
+        // backoff（shutdown で即中断可能）。planned な再接続（proactive な token 巻き直し）は hub
+        // 健全が前提なので backoff を挟まず即再接続し、relay 受信 gap を最小化する。
+        if !planned_reconnect {
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(RECONNECT_BACKOFF) => {}
+            }
         }
     }
 }
@@ -836,6 +1049,41 @@ pub async fn run_hub_federation<F, Fut>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proactive_reconnect_delay_arms_only_with_future_headroom() {
+        let skew = HUB_REFRESH_SKEW_SECS;
+        let now = 1_000_000;
+        // 期限不明 → arm しない（reactive refresh に委ねる）。
+        assert_eq!(proactive_reconnect_delay(None, now, skew), None);
+        // 失効まで skew より十分先 → 「失効 skew 前」までの残りを返す。
+        // exp = now + skew + 3600 なら deadline = now + 3600 → 残り 3600s。
+        assert_eq!(
+            proactive_reconnect_delay(Some(now + skew + 3600), now, skew),
+            Some(Duration::from_secs(3600))
+        );
+        // ちょうど skew 手前（deadline == now）→ 残り 0 は arm しない。
+        assert_eq!(proactive_reconnect_delay(Some(now + skew), now, skew), None);
+        // 既に skew 内（refresh 失敗で expiry が進まなかった場合を含む）→ arm しない = storm 防止。
+        assert_eq!(proactive_reconnect_delay(Some(now + 60), now, skew), None);
+        // 既に失効済み → arm しない（次の自然な reconnect が refresh を撃つのに委ねる）。
+        assert_eq!(proactive_reconnect_delay(Some(now - 10), now, skew), None);
+    }
+
+    #[test]
+    fn hub_reply_error_detects_in_band_rejection() {
+        // hub の auth 拒否は通常 Response の {"error": ...} で来る（unison_server.rs の unwrap_or_else）。
+        let rejected = json!({ "error": "authentication required (scope 'federation.register')" });
+        assert_eq!(
+            hub_reply_error(&rejected),
+            Some("authentication required (scope 'federation.register')")
+        );
+        // 成功応答（WorldEntry 形）は error なし → None（通常の型変換に進む）。
+        let ok = json!({ "handle": "mito-mba.local", "registered_at": "2026-07-11T14:55:16Z" });
+        assert_eq!(hub_reply_error(&ok), None);
+        // error が文字列でない異常形も None（誤検出しない）。
+        assert_eq!(hub_reply_error(&json!({ "error": 42 })), None);
+    }
 
     #[test]
     fn hub_addr_env_name() {
@@ -934,6 +1182,53 @@ mod tests {
         );
         // 一致なしは None
         assert!(pick_latest_by_handle(&worlds, "nowhere.local").is_none());
+    }
+
+    #[test]
+    fn available_worlds_excludes_self_and_transient_noise() {
+        // 自 world・discovery 一時 register（vp-disco）・空 handle は「hub の向こうに誰が
+        // いるか」の意味論から外れる表示ノイズ → 全て除外される。
+        let worlds = vec![
+            entry("mito-mba.local", "wld_self", "2026-07-12T00:00:00Z"),
+            entry("other.local", "wld_other", "2026-07-12T00:00:01Z"),
+            entry(TRANSIENT_DISCO_HANDLE, "wld_disco", "2026-07-12T00:00:02Z"),
+            entry("", "wld_anon", "2026-07-12T00:00:03Z"),
+        ];
+        let avail = available_worlds(worlds, "mito-mba.local");
+        assert_eq!(
+            avail.iter().map(|w| w.handle.as_str()).collect::<Vec<_>>(),
+            vec!["other.local"]
+        );
+    }
+
+    #[test]
+    fn available_worlds_dedups_by_handle_keeping_latest() {
+        // 同一 handle の stale 残留（daemon 再作成後の再 register 等）は registered_at 最新の
+        // 1 件に畳む（pick_latest_by_handle と同基準）。返り順は handle 昇順（表示安定化）。
+        let worlds = vec![
+            entry("b.local", "wld_b_stale", "2026-07-10T00:00:00Z"),
+            entry("a.local", "wld_a", "2026-07-11T00:00:00Z"),
+            entry("b.local", "wld_b_live", "2026-07-12T00:00:00Z"),
+        ];
+        let avail = available_worlds(worlds, "self.local");
+        assert_eq!(
+            avail
+                .iter()
+                .map(|w| (w.handle.as_str(), w.wld_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("a.local", "wld_a"), ("b.local", "wld_b_live")]
+        );
+    }
+
+    #[test]
+    fn hub_worlds_cache_set_get_clear() {
+        // set → get で反映、clear で空へ（切断時に stale を「available」と見せない根拠）。
+        let cache = HubWorldsCache::new();
+        assert!(cache.get().is_empty());
+        cache.set(vec![entry("a.local", "wld_a", "2026-07-12T00:00:00Z")]);
+        assert_eq!(cache.get().len(), 1);
+        cache.clear();
+        assert!(cache.get().is_empty());
     }
 
     #[test]

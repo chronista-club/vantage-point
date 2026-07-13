@@ -3,7 +3,6 @@
 //! Process サーバーのエントリーポイント。`run()` と `run_world()` でサーバーを起動する。
 //! ルートハンドラーは `routes/` モジュールに分離されている。
 
-use std::collections::HashMap;
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
 
@@ -167,8 +166,9 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
         update: None,
-        // SP mode は hub federation を持たない（TheWorld のみ）→ Disabled のまま。
+        // SP mode は hub federation を持たない（TheWorld のみ）→ Disabled / 空のまま。
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
+        hub_worlds: crate::daemon::hub_client::HubWorldsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port,
@@ -177,7 +177,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
-        screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
@@ -614,6 +613,9 @@ pub async fn run_world(
     // chronista-hub federation の接続状態。run_hub_federation（writer）と AppState（= /api/health
     // reader）で同一 instance を共有する（World mode のみ更新、初期 Disabled）。
     let hub_status = crate::daemon::hub_client::HubFederationStatus::new();
+    // hub registry の available worlds cache も同 pattern で共有（writer = run_hub_federation の
+    // 定期 discover、reader = /api/health の `hub_worlds` field。初期 = 空）。
+    let hub_worlds = crate::daemon::hub_client::HubWorldsCache::new();
 
     // Create minimal state for world mode
     let state = Arc::new(AppState {
@@ -623,6 +625,7 @@ pub async fn run_world(
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),
+        hub_worlds: hub_worlds.clone(),
         project_dir: String::new(),
         // R3: World mode は cross-process forward の対象外 (= 自 project を持たない)
         project_name: String::new(),
@@ -645,7 +648,6 @@ pub async fn run_world(
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
-        screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
@@ -714,7 +716,6 @@ pub async fn run_world(
         .route("/api/shutdown", post(health::shutdown_handler))
         // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
         // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
-        .route("/api/canvas/capture", post(health::canvas_capture_handler))
         .route(
             "/api/canvas/switch_lane",
             post(health::canvas_switch_lane_handler),
@@ -1005,7 +1006,7 @@ pub async fn run_world(
         };
 
         // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
-        // hub_status は AppState と共有（run_hub_federation が更新、/api/health が読む）。
+        // hub_status / hub_worlds は AppState と共有（run_hub_federation が更新、/api/health が読む）。
         tokio::spawn(crate::daemon::hub_client::run_hub_federation(
             hub_addr,
             wld_id,
@@ -1013,6 +1014,7 @@ pub async fn run_world(
             handle,
             name,
             hub_status,
+            hub_worlds,
             shutdown_token.clone(),
             on_relay,
         ));

@@ -91,7 +91,10 @@ impl Rect {
 /// capture 対象 window の絞り込み
 #[derive(Debug, Clone)]
 pub struct CaptureFilter {
-    /// owning process name で絞り込む (default: "vp-app")
+    /// owning process name で絞り込む (default: "vp-app")。
+    ///
+    /// default 値のときは backend 照合で [`owner_candidates`] の alias（.app bundle の
+    /// "Vantage Point"）も対象になる。 明示指定は exact match。
     pub owner: String,
     /// 絞り込んだ window list の n 番目 (0-based、 None = 0 = frontmost)
     pub index: Option<usize>,
@@ -107,6 +110,21 @@ impl Default for CaptureFilter {
             title_match: None,
         }
     }
+}
+
+/// filter owner → backend 照合に使う owner 候補集合（純関数）。
+///
+/// GUI の window owner はインストール形態で変わる: cargo dev binary は process 名の "vp-app"、
+/// .app bundle は CFBundleName の **"Vantage Point"**（スペースあり。CGWindowList 実測、
+/// CLAUDE.md の capture_terminal 節と同じ値）。default filter("vp-app") のときだけ bundle 名を
+/// alias として足し、`--owner` 明示指定は exact match のまま尊重する（bug 019f546f の C:
+/// brew/.app インストールで `vp shot` が常に「no window」だった件の根治）。
+pub(crate) fn owner_candidates(owner: &str) -> Vec<String> {
+    let mut v = vec![owner.to_string()];
+    if owner == "vp-app" {
+        v.push("Vantage Point".to_string());
+    }
+    v
 }
 
 /// capture 完了時の metadata
@@ -252,6 +270,14 @@ pub fn pick_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bug 019f546f C: default owner("vp-app") は .app bundle 名 "Vantage Point" も候補に含む。
+    /// 明示 owner は exact match のまま（alias を混ぜない）。
+    #[test]
+    fn owner_candidates_aliases_only_default() {
+        assert_eq!(owner_candidates("vp-app"), vec!["vp-app", "Vantage Point"]);
+        assert_eq!(owner_candidates("Finder"), vec!["Finder"]);
+    }
 
     fn sample_window(id: u64, owner: &str, title: &str) -> WindowInfo {
         WindowInfo {

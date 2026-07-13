@@ -75,6 +75,23 @@ pub enum WidgetKind {
     Notes,
 }
 
+/// hub の向こうに居る available world 1 件（`/api/health` の `hub_worlds[]` 要素）。
+///
+/// daemon 側 `HubWorldInfo` と同形。deserialize（`/api/health` 受け）と serialize
+/// （sidebar への push）の両面で使うため中間 mapping を持たない。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct HubWorld {
+    /// world の identity（hostname 由来、hub registry の一意キー相当）
+    pub handle: String,
+    /// 位置独立 routing key `wld_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
+    #[serde(default)]
+    pub wld_id: String,
+    /// direct 到達 endpoint 候補数（hub S2 前は 0）
+    #[serde(default)]
+    pub endpoints_count: usize,
+}
+
 /// Activity widget の payload
 ///
 /// 5-10 秒間隔で Rust 側が `/api/health` + `/api/world/projects` +
@@ -98,6 +115,10 @@ pub struct ActivitySnapshot {
     /// `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
     #[serde(default)]
     pub hub: String,
+    /// hub の向こうに居る available worlds（`/api/health` の `hub_worlds`、自 world 除外・dedup 済）。
+    /// Hub 行の下に常時リスト表示する。未接続 / 旧 daemon は空。
+    #[serde(default)]
+    pub hub_worlds: Vec<HubWorld>,
     /// L1 lifecycle: SP presence map（project path → `"connected"`|`"connecting"`|`"disconnected"`
     /// |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
     /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
@@ -154,6 +175,14 @@ pub struct SidebarState {
     /// `unread_notifications` (履歴 count) と分離した「現在の活動状態」 表現。
     #[serde(default)]
     pub awaiting_input: std::collections::HashMap<String, bool>,
+    /// Canvas (Paisley Park) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
+    /// Key: Lane address (`"<project>/conductor"` 等)、 Value: 現在 active でない lane に
+    /// show が着いた回数。 `CanvasMessage`(show) で increment、 `lane:select` (activate_lane) で
+    /// 対応 Lane を 0 reset。 `unread_notifications` (HITL/OSC = 黄 dot) とは**別 sink** =
+    /// sidebar で Canvas 専用 icon (Phosphor easel) を出し「用事」と「絵が届いた」の語彙を分ける。
+    /// disk persist 不要 (起動で 0)。
+    #[serde(default)]
+    pub canvas_unread: std::collections::HashMap<String, u32>,
     /// VP-143: per-Lane の cc session display name (`/rename` で設定された custom-title)。
     /// Key: Lane address、 Value: title 文字列。
     /// `~/.claude/projects/<encoded-cwd>/<latest>.jsonl` の `custom-title` entry を polling

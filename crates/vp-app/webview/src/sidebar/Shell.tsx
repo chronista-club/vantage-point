@@ -27,6 +27,7 @@ import {
 	laneSelectHintVisible,
 } from "./keybindings";
 import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
+import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { ProjectAccordion } from "./ProjectAccordion";
@@ -125,6 +126,10 @@ export function Shell() {
           window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
           出現してファイルを選べる。 選択すると Canvas (PP) に投げて dismiss する ephemeral。 */}
 			<FileExplorer />
+
+			{/* Wire Inbox overlay panel (doc 34 §4 V1、 singleton)。 LaneRow の mailbox badge click で
+          window.vpWire.open(address) が呼ばれ、 選択 lane の wire 履歴 (read-only) + ack を表示する。 */}
+			<WirePanel />
 
 			{/* PR 445 `s` directive: Lane / project switcher picker overlay (singleton)。
           Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / project を fuzzy 検索 + 選択。 */}
@@ -410,6 +415,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* awaiting dot — needs-you 言語 (magenta) に従属。 diamond node と同源の信号。 */
 .vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
   background:var(--sb-conn-hitl,#FF3DAE);flex:0 0 auto;}
+/* canvas 着信 (D) — PP に絵が届いた info 信号。 needs-you(magenta glow)とは別語彙。
+   Light Grid「光=注意」に従い bright(--lg-hot)で目を引くが glow(pulse)は付けない
+   (glow は needs-you 専用)。 easel icon は bundled subset 外で不可視だったため pure-CSS の
+   小 square (canvas/frame メタファ) に。 awaiting の円 / mailbox の封筒と形で区別。 */
+.vp-lane-canvas{width:7px;height:7px;border-radius:2px;
+  background:var(--lg-hot,#EAFBFF);flex:0 0 auto;}
 
 /* Add Performer「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
@@ -470,6 +481,16 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-world-stat .k{color:var(--lg-mute-2,#38525b);}
 .vp-world-stat .v{color:var(--lg-mute,#5C7A85);font-weight:500;
   font-variant-numeric:tabular-nums;}
+/* Hub available worlds — Hub 行直下に常時リスト表示。地の一部なので発光なし、muted mono。
+   左 24px indent = Hub 行の dot(6px) + gap(8px) + 行 padding(10px) に合わせて label 下に揃える。 */
+.vp-hub-worlds{padding:0 var(--spacing-sm,10px) 4px 24px;}
+.vp-hub-world{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  font-size:var(--sb-text-meta,11px);font-family:var(--vp-font-mono),var(--typography-family-mono);
+  padding:1px 0;}
+.vp-hub-world .k{color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;}
+.vp-hub-world .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
+  font-variant-numeric:tabular-nums;}
 
 /* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
 .vp-devices{flex:0 0 auto;padding-bottom:4px;}
@@ -520,6 +541,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-files-btn:hover{background:#ffffff08;
   color:var(--sb-conn-auto,#22E0FF);}
 ${FILE_EXPLORER_CSS}
+${WIRE_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}
 `;

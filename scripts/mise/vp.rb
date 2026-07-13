@@ -59,9 +59,17 @@ module VP
   # mise 注入の project root。 nesting 深さに依らず絶対解決の基点。
   def root = ENV.fetch("MISE_PROJECT_ROOT")
 
+  # 実行中ホストが Windows か (path / binary 拡張子の分岐に使う)。
+  def windows? = Gem.win_platform?
+
   # ~/.cargo/bin/<name> の絶対 path。 codesign 済 binary の single source
   # (cp だと codesign が剥がれて macOS に kill される → install 経由必須、 CLAUDE.md feedback)。
-  def cargo_bin(name) = File.join(Dir.home, ".cargo", "bin", name)
+  # Windows では cargo install が `<name>.exe` を置くので拡張子を補う (= `vp app` 側の
+  # binary_candidates と同じ Windows 対応、 dual source drift 防止)。
+  def cargo_bin(name)
+    exe = windows? ? "#{name}.exe" : name
+    File.join(Dir.home, ".cargo", "bin", exe)
+  end
 
   # VP の log 出力先 (daemon:start が書き、 logs が tail する共通 dir)。
   # XDG_STATE_HOME → ~/.local/state を基底に vp/log。 VP_LOG_DIR で上書き可。
@@ -96,6 +104,22 @@ module VP
   def exec(*cmd, env: {})
     Kernel.exec(env.transform_keys(&:to_s), *cmd)
   end
+
+  # VP.sh の shell 非経由版 (引数配列をそのまま exec)。 失敗したら die。
+  # Windows の system(string) は cmd.exe を噛ませるため、 `/` 区切り path・single quote・
+  # `|| true` といった POSIX shell idiom が崩れる。 path や引用符を含む command は
+  # 全 OS でこちらを使う (Unix でも system(*argv) は shell を介さず同挙動)。
+  def run(*argv, **opts)
+    warn("\e[2m$ #{argv.join(' ')}\e[0m")
+    return if system(*argv, **opts)
+
+    status = $?&.exitstatus
+    die("command failed (exit #{status}): #{argv.join(' ')}", code: status.to_i.zero? ? 1 : status)
+  end
+
+  # run の「失敗を許す」版 (bash の `cmd || true` 相当)。 成否を bool で返す。
+  # command 不在時に system が返す nil も false に畳む。
+  def try(*argv, **opts) = system(*argv, **opts) ? true : false
 
   # binary が実行可能か確認、 無ければ hint 付きで die (bash の `[ -x ] || { … exit 1; }` 相当)。
   def need_exec(path, hint:)

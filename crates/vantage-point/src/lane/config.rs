@@ -436,15 +436,15 @@ mod tests {
         // linked worktree の中からでも main worktree root に着地する (project key 正規化)
         let from_linked = find_repo_root_from(Some(&linked)).unwrap();
         assert_eq!(
-            fs::canonicalize(&from_linked).unwrap(),
-            fs::canonicalize(&main).unwrap(),
+            dunce::canonicalize(&from_linked).unwrap(),
+            dunce::canonicalize(&main).unwrap(),
             "linked worktree からは main worktree root を返すべき"
         );
         // main worktree 自身からも同一 root (回帰なし)
         let from_main = find_repo_root_from(Some(&main)).unwrap();
         assert_eq!(
-            fs::canonicalize(&from_main).unwrap(),
-            fs::canonicalize(&main).unwrap()
+            dunce::canonicalize(&from_main).unwrap(),
+            dunce::canonicalize(&main).unwrap()
         );
 
         let _ = fs::remove_dir_all(&base);

@@ -91,6 +91,19 @@ pub struct FilesOpen {
     pub rel_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireFetch {
+    pub path: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireAck {
+    pub path: String,
+    pub address: String,
+    pub message_id: String,
+}
+
 /// Envelope enum for channel "ipc" — a discriminated union over its
 /// requests, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,4 +139,8 @@ pub enum IpcEnvelope {
     FilesList(FilesList),
     #[serde(rename = "files:open")]
     FilesOpen(FilesOpen),
+    #[serde(rename = "wire:fetch")]
+    WireFetch(WireFetch),
+    #[serde(rename = "wire:ack")]
+    WireAck(WireAck),
 }

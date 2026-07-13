@@ -1347,8 +1347,9 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
         if !h.started_at.is_empty() {
             snap.world_started_at = Some(h.started_at);
         }
-        // hub federation 接続状態（World 横の Hub インジケータ用）。
+        // hub federation 接続状態（World 横の Hub インジケータ用）+ available worlds リスト。
         snap.hub = h.hub;
+        snap.hub_worlds = h.hub_worlds;
         // L1 lifecycle: SP presence map（project 行の ●◐○ dot 用、path → presence）。
         snap.presence = h
             .processes
@@ -1497,6 +1498,8 @@ fn activate_lane(
     // 3. Notification reset (同 lane click 連打でも badge を消す)
     sidebar_state.unread_notifications.remove(address);
     sidebar_state.awaiting_input.remove(address);
+    // canvas 着信 badge (D) も active 化で消す (unread_notifications と同 lifecycle)。
+    sidebar_state.canvas_unread.remove(address);
 
     // 4-6. UI push + dead lane respawn
     // BUG#3: 旧実装は push_active_view / respawn を `view_changed` (active_lane_address が
@@ -1690,6 +1693,26 @@ fn mark_lane_awaiting_input(
     push_sidebar_state(webview, sidebar_state);
 }
 
+/// lane に Canvas (PP) show が着信したことを sidebar の canvas_unread に計上する。
+///
+/// `mark_lane_awaiting_input` (HITL/OSC = 黄 dot) とは**別 sink**。Canvas 着信は sidebar 行に
+/// Canvas 専用 icon (Phosphor easel) として出し、「用事(黄 dot)」と「絵が届いた(easel)」の
+/// 語彙を分離する (bug: canvas 可観測性 D、show 偽 success の viewer 文脈対策)。
+/// active lane（今見ている lane）宛の show は panel 側 (pp-overlay auto-open) で解決するので、
+/// ここでは badge を出さない（呼び出し側で active 判定済だが二重防御で skip）。
+fn mark_lane_canvas_unread(lane: &str, sidebar_state: &mut SidebarState, webview: &WebView) {
+    if sidebar_state.active_lane_address.as_deref() == Some(lane) {
+        return;
+    }
+    let count = sidebar_state
+        .canvas_unread
+        .entry(lane.to_string())
+        .or_insert(0);
+    *count += 1;
+    tracing::info!("canvas:show lane={lane} canvas_unread={}", *count);
+    push_sidebar_state(webview, sidebar_state);
+}
+
 /// sidebar IPC を解釈した結果
 #[derive(Debug, Default)]
 struct SidebarIpcOutcome {
@@ -1750,6 +1773,13 @@ struct SidebarIpcOutcome {
     /// Model Q: active lane を daemon canonical に永続する要求 `(project_path, lane_address)`。
     /// caller が `client.set_active_lane` を fire-and-forget で呼ぶ (optimistic local は適用済)。
     set_active_lane_request: Option<(String, String)>,
+    /// Wire inbox (doc 34 §4 V1): `wire:fetch` 要求 `(address)`。 caller が World "wire" channel
+    /// へ read-only request (wire/history + wire/unread-count) を投げ、
+    /// `AppEvent::WireHistoryResult` で push back する (cursor 不触り)。
+    wire_fetch_request: Option<String>,
+    /// Wire inbox: `wire:ack` 要求 `(address, message_id)`。 lane の agent として ack した後、
+    /// 再 fetch して `AppEvent::WireHistoryResult` で最新状態を push back する。
+    wire_ack_request: Option<(String, String)>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1976,8 +2006,91 @@ fn handle_sidebar_ipc(
                 out.files_open_request = Some((m.path, m.address, m.rel_path));
             }
         }
+        IpcEnvelope::WireFetch(m) => {
+            // Wire inbox (doc 34 §4 V1): 選択 lane の wire 履歴 fetch 要求。
+            if !m.address.is_empty() {
+                out.wire_fetch_request = Some(m.address);
+            }
+        }
+        IpcEnvelope::WireAck(m) => {
+            // Wire inbox: lane の agent としての ack 要求 (ack 後に再 fetch)。
+            if !m.address.is_empty() && !m.message_id.is_empty() {
+                out.wire_ack_request = Some((m.address, m.message_id));
+            }
+        }
     }
     out
+}
+
+/// sidebar の lane address key (`P/conductor` / `P/performer/N`) → wire agent address。
+///
+/// `LaneAddressWire::key()` の逆写像 (delivery_actor の `wire_agent_to_lane_display` と対)。
+/// 未知 kind (magic 等) は wire address を持たないので `None`。
+fn lane_key_to_wire_agent(address: &str) -> Option<String> {
+    let (project, rest) = address.split_once('/')?;
+    if project.is_empty() {
+        return None;
+    }
+    match rest.split_once('/') {
+        None if rest == "conductor" => Some(format!("agent@{project}")),
+        // "<unnamed>" は spawning 中(name 未確定)の placeholder(`LaneAddressWire::key()`)で
+        // 実在の wire agent ではない — 偽 address で空 inbox を開かないよう除外する。
+        Some(("performer", name)) if !name.is_empty() && name != "<unnamed>" => {
+            Some(format!("agent@{project}/{name}"))
+        }
+        _ => None,
+    }
+}
+
+/// Wire inbox (doc 34 §4 V1): World "wire" channel に read-only request を投げて
+/// `{address, agent, history, unread}` payload を組み立てる (エラーは `{address, error}`)。
+///
+/// **wire/recv は使わない** — per-agent 単一 cursor を GUI が進めると lane の claude から
+/// 未読を横取りするため、 cursor 不触りの wire/history + wire/unread-count のみを叩く。
+/// `ack_message_id` が Some なら先に wire/ack を実行してから fetch する (ack → 最新状態の
+/// 再描画を 1 往復に畳む)。
+async fn wire_fetch_payload(
+    mut conn: SharedWorldConn,
+    address: String,
+    ack_message_id: Option<String>,
+) -> serde_json::Value {
+    let Some(agent) = lane_key_to_wire_agent(&address) else {
+        return serde_json::json!({ "address": address, "error": "wire address を持たない lane" });
+    };
+    let Some(client) = conn.wait_client().await else {
+        return serde_json::json!({ "address": address, "error": "World 未接続" });
+    };
+    let channel = match client.open_channel("wire").await {
+        Ok(c) => c,
+        Err(e) => {
+            return serde_json::json!({ "address": address, "error": format!("wire channel: {e}") });
+        }
+    };
+    if let Some(id) = ack_message_id {
+        // ack は台帳の意味論どおり「処理済み宣言」。 GUI からの手動 ack は dogfood の
+        // オペレーション手段 (needs_user relay 等の規約整合は doc 34 §7 で継続検討)。
+        let _ = channel
+            .request::<serde_json::Value, serde_json::Value>(
+                "wire/ack",
+                &serde_json::json!({ "message_id": id, "agent": agent }),
+            )
+            .await;
+    }
+    let history = channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "wire/history",
+            &serde_json::json!({ "agent": agent }),
+        )
+        .await
+        .unwrap_or_else(|e| serde_json::json!({ "error": format!("wire/history: {e}") }));
+    let unread = channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "wire/unread-count",
+            &serde_json::json!({ "agent": agent }),
+        )
+        .await
+        .unwrap_or_else(|e| serde_json::json!({ "error": format!("wire/unread-count: {e}") }));
+    serde_json::json!({ "address": address, "agent": agent, "history": history, "unread": unread })
 }
 
 /// SidebarState の `lanes_by_project` から (project_path, address) の組に
@@ -2985,6 +3098,28 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     }
                 }
+
+                // Canvas 着信 badge (bug: canvas 可観測性 D): show が現在 active でない lane に
+                // 着いたら sidebar に canvas_unread を計上する。別 project / 別 lane（同 project
+                // だが別 lane）の両ケースを 1 箇所で拾う（上の forward guard とは独立）。active lane
+                // 宛の show は panel 側 (pp-overlay auto-open, canvas-handler.ts) で解決する。
+                if message.get("type").and_then(|t| t.as_str()) == Some("show")
+                    && let Some(project) = msg_project
+                {
+                    let token = message
+                        .get("lane")
+                        .and_then(|l| l.as_str())
+                        .unwrap_or("conductor");
+                    // token → lane address（switch_lane と同じ変換）。
+                    let address = if token.is_empty() || token == "conductor" {
+                        format!("{}/conductor", project)
+                    } else {
+                        format!("{}/performer/{}", project, token)
+                    };
+                    if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
+                        mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
+                    }
+                }
             }
             // terminal S4 (doc 27 §4.1): per-lane terminal session 由来の PTY 出力を当該 lane の
             // xterm に inject する。 data は base64 (JS 側で decode → term.write)。
@@ -3372,6 +3507,18 @@ pub fn run() -> anyhow::Result<()> {
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
                     tracing::warn!("sidebar vpFiles.handleListResult 失敗: {}", e);
+                }
+            }
+            // Wire inbox (doc 34 §4 V1): fetch 結果を sidebar の vpWire 受け口へ push back。
+            Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
+                let payload_str =
+                    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+                let script = format!(
+                    "window.vpWire && window.vpWire.handleResult({})",
+                    payload_str
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("sidebar vpWire.handleResult 失敗 (address={}): {}", address, e);
                 }
             }
             // Sidebar File Explorer: file 読み込み結果を Canvas (PP) に inject。
@@ -3821,6 +3968,26 @@ pub fn run() -> anyhow::Result<()> {
                             stands,
                             error,
                         });
+                    });
+                }
+
+                // Wire inbox (doc 34 §4 V1): World "wire" channel への read-only fetch
+                // (ack 要求は「ack → 再 fetch」に畳む)。 async I/O なので tokio task に逃し、
+                // 結果は AppEvent::WireHistoryResult で event loop に戻して
+                // window.vpWire.handleResult へ push back する。
+                // fetch と ack は別 IPC で、 IpcEnvelope の単一 variant match により同一
+                // outcome で両立しない — 単純な合成で足りる (ack は「ack → 再 fetch」に畳む)。
+                let wire_req = outcome
+                    .wire_ack_request
+                    .map(|(addr, id)| (addr, Some(id)))
+                    .or_else(|| outcome.wire_fetch_request.map(|a| (a, None)));
+                if let Some((address, ack_id)) = wire_req {
+                    let proxy = async_action_proxy.clone();
+                    let conn = world_conn.clone();
+                    rt_handle.spawn(async move {
+                        let payload = wire_fetch_payload(conn, address.clone(), ack_id).await;
+                        let _ =
+                            proxy.send_event(AppEvent::WireHistoryResult { address, payload });
                     });
                 }
 

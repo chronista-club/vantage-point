@@ -390,13 +390,17 @@ impl ProcessManagerCapability {
         order.clear();
 
         for e in &entries {
-            let key = normalize_path_key(&PathBuf::from(&e.path));
+            // db 由来の entry は `ProjectsFile::load` を経ないため、 旧 Windows が保存した
+            // verbatim prefix (`\\?\C:\...`) を落とす最後の関所がここ。 素通しすると
+            // `ProjectInfo.path` が SP の spawn 引数 (`-C`) までそのまま流れる。
+            let path = crate::config::strip_verbatim_prefix(&e.path);
+            let key = normalize_path_key(&PathBuf::from(path));
             order.push(key.clone());
             projects.insert(
                 key,
                 ProjectInfo {
                     name: e.name.clone(),
-                    path: e.path.clone().into(),
+                    path: PathBuf::from(path),
                     process_status: ProcessStatus::Stopped,
                     port: None, // port は動的割当 (port_layout が slot から計算)
                     enabled: e.is_enabled(),
@@ -1364,6 +1368,14 @@ impl ProcessManagerCapability {
             cmd.current_dir(&project.path);
             // GUI/launchd 起動の最小 PATH が SP → mise → claude へ伝播するのを spawn 最上流で断つ。
             cmd.env("PATH", crate::spawn_env::augmented_spawn_path());
+            // Windows: SP は background server。 親 (daemon) が console を持たない (DETACHED) ため、
+            // console subsystem の vp.exe を素で spawn すると Windows が新規 console を割り当てて
+            // 黒い console 窓が出てしまう。 CREATE_NO_WINDOW で window 無しの background 実行にする。
+            #[cfg(windows)]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
             let child = cmd
                 .spawn()
                 .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
