@@ -321,7 +321,18 @@ fn discover() -> Result<()> {
                     .get("registered_at")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                println!("  • {} ({}) registered_at={}", handle, name, at);
+                // connected = hub の relay registry に常駐接続が生きているか (hub v0.6.0)。
+                // 🟢 = relay 到達可 / ⚪ = registry には居るが offline (stale / 切断中)。
+                let dot = if w
+                    .get("connected")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    "🟢"
+                } else {
+                    "⚪"
+                };
+                println!("  {} {} ({}) registered_at={}", dot, handle, name, at);
             }
         }
         Ok::<(), anyhow::Error>(())

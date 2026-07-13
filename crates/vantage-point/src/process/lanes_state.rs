@@ -962,6 +962,48 @@ impl LanePool {
         slot.host.submit(prompt).await
     }
 
+    /// doc 35 §5: 実行中 turn を中断する（stop ボタン / Esc）。submit_chat と同型（read lock 下で
+    /// 呼べる — host が stdin Mutex で直列化）。engine 不在は Err（走行中 turn が無ければ何もしない）。
+    pub async fn interrupt_chat(&self, addr: &LaneAddress) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
+        slot.host.interrupt().await
+    }
+
+    /// doc 35 §2.5 / PR3: permission mode を動的に切替える（承認モードへ opt-in / 素通しへ戻す）。
+    /// submit_chat と同型（read lock 下）。engine 不在は Err。
+    pub async fn set_permission_mode_chat(
+        &self,
+        addr: &LaneAddress,
+        mode: &str,
+    ) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
+        slot.host.set_permission_mode(mode).await
+    }
+
+    /// chat engine の逆方向 `can_use_tool`（[`crate::echoes::EchoesEvent::Question`]）へ回答する
+    /// （doc 35 PR1、`&self` — read lock 下で呼べる）。
+    ///
+    /// **ensure しない**: 応答対象 engine が居なければ Err。質問した engine が死んでいたら応答先が
+    /// 無い（submit と違い会話を新規に立てても意味が無い = pending 質問はその engine に紐づく）。
+    pub async fn respond_permission_chat(
+        &self,
+        addr: &LaneAddress,
+        request_id: &str,
+        decision: crate::echoes::PermissionDecision,
+    ) -> anyhow::Result<()> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）— 応答先が無い", addr))?;
+        slot.host.respond_permission(request_id, decision).await
+    }
+
     /// chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
     pub fn drop_chat_engine(&mut self, addr: &LaneAddress) -> bool {
         let dropped = self.chat_engines.remove(addr).is_some();

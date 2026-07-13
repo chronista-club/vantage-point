@@ -113,9 +113,13 @@ export function WorldWidget() {
 							{(w) => (
 								<div
 									class="vp-hub-world"
-									title={w.wld_id ? `${w.handle} (${w.wld_id})` : w.handle}
+									title={`${w.wld_id ? `${w.handle} (${w.wld_id})` : w.handle} — ${w.connected ? "connected" : "offline (stale registry entry)"}`}
 								>
-									<span class="k">{w.handle}</span>
+									<span
+											class="vp-hub-world-dot"
+											classList={{ offline: !w.connected }}
+										/>
+										<span class="k">{w.handle}</span>
 									<Show when={w.endpoints_count > 0}>
 										<span class="v">{w.endpoints_count} ep</span>
 									</Show>

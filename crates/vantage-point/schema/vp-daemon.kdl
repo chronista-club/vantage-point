@@ -25,8 +25,11 @@
 //   handshake なしの純 request/response ＝ 無改造 unison-mcp で即 round-trip 可能な channel を採用。
 //   process-proxy は subscribe handshake 前提（unison-mcp 未対応）＋要 SP 起動のため follow-up
 //   （creo mem_1CcuR73WSNFkyAgzVJvWyF ＝ unison-mcp の handshake 対応 or daemon auto-subscribe が要る）。
+// 2026-07-12 拡張: world-control の read-safe subset（hub/discover）を追加 — hub registry の
+//   worlds 一覧 + connected liveness（hub protocol v0.6.0）を MCP から照会可能にする。
+//   projects/* mutation は手で叩くと projects.kdl 状態を壊すため記述しない（registry と同じ方針）。
 
-protocol "vp-daemon" version="0.1.0" {
+protocol "vp-daemon" version="0.2.0" {
     namespace "club.chronista.vantage-point"
 
     // registry channel: SP 自己登録 + running process / lane registry の control plane。
@@ -38,6 +41,18 @@ protocol "vp-daemon" version="0.1.0" {
         request "list" description="VP daemon に登録中の全 running process（Star Platinum / 各 project の SP）の snapshot を返す read-only 照会。`vp ps` 相当を daemon から直接引く。引数なし。" {
             returns "ProcessList" {
                 field "processes" type="json" required=#true description="running process の配列。各要素は { project_name, port, pid, project_path }。"
+            }
+        }
+    }
+
+    // world-control channel: World 権威の control plane（CLI → World 直接 Unison）。
+    // handler: server.rs register_channel("world-control", ...)（match method: projects/list /
+    // projects/add / projects/remove / projects/rename / projects/reorder / hub/discover / ping）。
+    // ここでは read-safe な hub/discover のみ記述する。projects/* は mutation なので記述しない。
+    channel "world-control" from="client" lifetime="persistent" {
+        request "hub/discover" description="chronista-hub registry に登録された world 一覧を返す federation discovery。TheWorld が credential 付きで hub の worlds.Discover を叩く（SSOT: hub と話すのは TheWorld のみ）。各 entry の connected (bool) は hub との常駐接続が今生きているかの liveness — false は registry に居るが relay は offline を返す (stale / 切断中)。hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）ならエラーを返す。引数なし。" {
+            returns "WorldList" {
+                field "worlds" type="json" required=#true description="world の配列。各要素は { wld_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
             }
         }
     }

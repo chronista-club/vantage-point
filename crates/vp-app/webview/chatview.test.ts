@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { foldInto, emptyChatState } from './chatview'
+import { foldInto, emptyChatState, linkOpenPayload } from './chatview'
 import type { EchoesEvent } from './console'
 
 /** EchoesEvent 列を空 state に順に畳んで結果を返す helper。 */
@@ -15,6 +15,11 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
       { kind: 'session_init', session_id: 'sid-1', model: 'claude-haiku-4-5' },
     ])
     expect(s.header).toEqual({ model: 'claude-haiku-4-5', sessionId: 'sid-1' })
+  })
+
+  it('session_init が permission mode を per-lane に反映する（review #2）', () => {
+    const s = fold([{ kind: 'session_init', session_id: 'sid-2', permission_mode: 'default' }])
+    expect(s.permissionMode).toBe('default')
   })
 
   it('連続 message_chunk が 1 つの assistant item に accumulate する', () => {
@@ -114,6 +119,60 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(s.streaming).toBe(false)
     const last = s.items[s.items.length - 1]
     expect(last.kind === 'assistant' && last.text.includes('boom')).toBe(true)
+  })
+
+  it('question が未回答の prompt item を積み、streaming を下ろす（HITL pause、doc 35 PR1）', () => {
+    const s = fold([
+      { kind: 'message_chunk', text: '確認です' },
+      {
+        kind: 'question',
+        request_id: 'req-1',
+        questions: [
+          {
+            question: 'どちらの言語？',
+            header: 'Language',
+            options: [
+              { label: 'English', description: 'en' },
+              { label: '日本語', description: 'ja' },
+            ],
+            multi_select: false,
+          },
+        ],
+      },
+    ])
+    expect(s.streaming).toBe(false)
+    const last = s.items[s.items.length - 1]
+    expect(last.kind).toBe('prompt')
+    if (last.kind === 'prompt') {
+      expect(last.requestId).toBe('req-1')
+      expect(last.answered).toBe(false)
+      expect(last.questions[0].options).toHaveLength(2)
+    }
+  })
+
+  it('回答後の message_chunk は新 assistant バブルを立てる（質問→継続の流れ）', () => {
+    const s = fold([
+      { kind: 'question', request_id: 'r1', questions: [{ question: 'Q?', header: 'H', options: [{ label: 'A' }] }] },
+      { kind: 'message_chunk', text: '続き' },
+    ])
+    expect(s.items.map((i) => i.kind)).toEqual(['prompt', 'assistant'])
+    expect(s.streaming).toBe(true)
+  })
+
+  it('permission_request が allow/deny 用 permission prompt を積む（doc 35 PR3）', () => {
+    const s = fold([
+      { kind: 'message_chunk', text: 'Bash 実行前' },
+      { kind: 'permission_request', request_id: 'perm-1', tool_name: 'Bash', input: { command: 'ls' } },
+    ])
+    expect(s.streaming).toBe(false)
+    const last = s.items[s.items.length - 1]
+    expect(last.kind).toBe('prompt')
+    if (last.kind === 'prompt') {
+      expect(last.requestId).toBe('perm-1')
+      expect(last.answered).toBe(false)
+      expect(last.permission?.toolName).toBe('Bash')
+      expect(last.questions).toHaveLength(0)
+    }
   })
 
   it('実ターン相当（init→thinking→tool→result→text→done）で item 構成が正しい', () => {
@@ -299,5 +358,36 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
       { kind: 'tool_call_update', tool_use_id: 'ghost', content: 'x' },
     ])
     expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
+  })
+})
+
+describe('linkOpenPayload — chat リンクの OS ブラウザ起動 一次弾き（scheme 検証）', () => {
+  it('https は open-url ペイロードを返す', () => {
+    expect(linkOpenPayload('https://localhost:5173/creo-ui/')).toBe(
+      JSON.stringify({ t: 'open-url', url: 'https://localhost:5173/creo-ui/' }),
+    )
+  })
+
+  it('http も open-url ペイロードを返す', () => {
+    expect(linkOpenPayload('http://example.com')).toBe(
+      JSON.stringify({ t: 'open-url', url: 'http://example.com' }),
+    )
+  })
+
+  it('file: は null（webview に file:// を開かせない — 多層防御）', () => {
+    expect(linkOpenPayload('file:///etc/passwd')).toBeNull()
+  })
+
+  it('javascript: は null（scheme injection を通さない）', () => {
+    expect(linkOpenPayload('javascript:alert(1)')).toBeNull()
+  })
+
+  it('相対リンクは null（webview 内遷移も抑止 = ハンドラ側 preventDefault で担保、emit はしない）', () => {
+    expect(linkOpenPayload('/creo-ui/')).toBeNull()
+    expect(linkOpenPayload('#section')).toBeNull()
+  })
+
+  it('空 href は null', () => {
+    expect(linkOpenPayload('')).toBeNull()
   })
 })

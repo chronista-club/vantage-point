@@ -13,7 +13,7 @@ import { render } from 'solid-js/web'
 import { createSignal, createEffect, onMount, onCleanup, For, Show, type Accessor } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
-import type { EchoesEvent, PlanEntry, VpConsole } from './console'
+import type { EchoesEvent, PlanEntry, QuestionSpec, VpConsole } from './console'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（EchoesEvent を UI 単位に畳む）
@@ -24,6 +24,17 @@ type ChatItem =
   | { kind: 'assistant'; text: string } // message_chunk を末尾 assistant に append
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
   | { kind: 'tool'; id: string; name: string; done: boolean; error: boolean }
+  // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
+  | {
+      kind: 'prompt'
+      requestId: string
+      questions: QuestionSpec[]
+      answered: boolean
+      answers?: Record<string, string>
+      // PR3: permission（tool 承認）。存在すれば allow/deny UI を描く。
+      permission?: { toolName: string; input: unknown }
+      decision?: 'allow' | 'deny'
+    }
 
 type ChatState = {
   header: { model?: string; sessionId?: string } | null
@@ -34,6 +45,8 @@ type ChatState = {
   /** context ゲージ（Act I statusline の bar :context 相当）。turn_completed で更新。 */
   contextTokens: number | null
   contextWindow: number | null
+  /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
+  permissionMode?: string
 }
 
 type LaneChat = {
@@ -87,6 +100,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     case 'session_init':
       s.header = { model: ev.model, sessionId: ev.session_id }
+      // review #2: permission mode の真値を per-lane に反映（engine は respawn 時 bypassPermissions
+      // で立ち上がるので、select が実態とズレないよう session_init の値で上書きする）。
+      s.permissionMode = ev.permission_mode
       break
     case 'message_chunk': {
       s.streaming = true
@@ -136,6 +152,28 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       s.streaming = false
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
+    case 'question':
+      // engine が turn を pause して選択を待つ（HITL）。カーソル点滅（streaming）は止める。
+      // 回答すると turn が継続し、後続 message_chunk が streaming を立て直す。
+      s.streaming = false
+      s.items.push({
+        kind: 'prompt',
+        requestId: ev.request_id,
+        questions: ev.questions,
+        answered: false,
+      })
+      break
+    case 'permission_request':
+      // engine が turn を pause して tool 承認を待つ（HITL）。カーソル点滅を止める。
+      s.streaming = false
+      s.items.push({
+        kind: 'prompt',
+        requestId: ev.request_id,
+        questions: [],
+        answered: false,
+        permission: { toolName: ev.tool_name, input: ev.input },
+      })
+      break
   }
 }
 
@@ -154,6 +192,7 @@ export function emptyChatState(): ChatState {
     cost: null,
     contextTokens: null,
     contextWindow: null,
+    permissionMode: undefined,
   }
 }
 
@@ -162,7 +201,22 @@ export function emptyChatState(): ChatState {
 // ---------------------------------------------------------------------------
 
 function mdToHtml(text: string): string {
-  return marked.parse(text) as string
+  // breaks: true で単一改行を <br> に変換する。marked 既定（CommonMark）は段落内の単一 \n を
+  // 空白に潰すため、engine が返す改行が Act II のチャット表示で消えていた。gfm は既定 true だが明示。
+  return marked.parse(text, { breaks: true, gfm: true }) as string
+}
+
+/**
+ * chat メッセージ内リンクを OS ブラウザで開くための `open-url` IPC ペイロード判定（純関数 = calc）。
+ *
+ * http(s) の href なら Act I の xterm と同じ `open-url` IPC の JSON 文字列を返し、それ以外
+ * （相対 / `file:` / `javascript:` / 空）は null を返す。非 http(s) を絶対に通さない一次弾き —
+ * webview に `file://` 等を開かせないための多層防御（scheme 検証の SSOT は Rust 側 terminal.rs、
+ * ここは webview 内遷移を止めるための前段）。terminal.rs と揃えて小文字 scheme を前方一致で見る。
+ */
+export function linkOpenPayload(href: string): string | null {
+  if (!href.startsWith('http://') && !href.startsWith('https://')) return null
+  return JSON.stringify({ t: 'open-url', url: href })
 }
 
 function ThinkingBlock(props: { text: string; active: () => boolean }) {
@@ -220,6 +274,197 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
   )
 }
 
+/**
+ * PromptCard（doc 35 §4）— HITL 質問（AskUserQuestion 横取り）の選択肢 UI。
+ *
+ * 各 question を見出し + 選択肢ボタンで描く。single-select は radio（クリックで置換）、
+ * multiSelect は toggle（複数選択）。全質問に選択が付いたら「確定」で `answers` を組んで
+ * onAnswer に渡す（親が echoes:respond を送り、カードを回答済み表示へ折りたたむ）。
+ */
+function PromptCard(props: {
+  item: Extract<ChatItem, { kind: 'prompt' }>
+  onAnswer: (requestId: string, answers: Record<string, string>) => void
+}) {
+  // 各質問の選択（label 配列）。single は 1 要素、multi は複数。
+  const [sel, setSel] = createSignal<Record<string, string[]>>({})
+
+  const toggle = (q: QuestionSpec, label: string) => {
+    setSel((prev) => {
+      const cur = prev[q.question] ?? []
+      const next = q.multi_select
+        ? cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        : [label] // single-select = 置換
+      return { ...prev, [q.question]: next }
+    })
+  }
+
+  const isSelected = (q: QuestionSpec, label: string): boolean =>
+    (sel()[q.question] ?? []).includes(label)
+
+  // 全質問が 1 つ以上選択済みなら確定可。
+  const canConfirm = (): boolean =>
+    props.item.questions.every((q) => (sel()[q.question] ?? []).length > 0)
+
+  const confirm = () => {
+    if (!canConfirm()) return
+    const answers: Record<string, string> = {}
+    for (const q of props.item.questions) {
+      const labels = sel()[q.question] ?? []
+      // multiSelect の回答 wire 形は未確定（doc §8 未決点）。保守的に ", " 結合の単一 string。
+      answers[q.question] = q.multi_select ? labels.join(', ') : labels[0]
+    }
+    props.onAnswer(props.item.requestId, answers)
+  }
+
+  return (
+    <div class="echoes-prompt" classList={{ answered: props.item.answered }}>
+      <Show
+        when={!props.item.answered}
+        fallback={
+          <div class="echoes-prompt-answered">
+            <For each={props.item.questions}>
+              {(q) => (
+                <div class="echoes-prompt-arow">
+                  <span class="echoes-prompt-ahead">{q.header}</span>
+                  <span class="echoes-prompt-aval">{props.item.answers?.[q.question] ?? ''}</span>
+                </div>
+              )}
+            </For>
+          </div>
+        }
+      >
+        <For each={props.item.questions}>
+          {(q) => (
+            <div class="echoes-prompt-q">
+              <div class="echoes-prompt-header">{q.header}</div>
+              <div class="echoes-prompt-question">{q.question}</div>
+              <div class="echoes-prompt-options">
+                <For each={q.options}>
+                  {(opt) => (
+                    <button
+                      class="echoes-prompt-opt"
+                      classList={{ selected: isSelected(q, opt.label) }}
+                      onClick={() => toggle(q, opt.label)}
+                      title={opt.description}
+                    >
+                      {opt.label}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          )}
+        </For>
+        <button class="echoes-prompt-confirm" disabled={!canConfirm()} onClick={confirm}>
+          確定
+        </button>
+      </Show>
+    </div>
+  )
+}
+
+/** doc 35 §4 / PR3: tool 承認の PromptCard（allow/deny）。permission-mode=default 時の can_use_tool。 */
+function PermissionCard(props: {
+  item: Extract<ChatItem, { kind: 'prompt' }>
+  onDecide: (requestId: string, behavior: 'allow' | 'deny') => void
+}) {
+  const perm = () => props.item.permission!
+  const inputSummary = (): string => {
+    try {
+      const s = JSON.stringify(perm().input)
+      return s.length > 240 ? s.slice(0, 240) + '…' : s
+    } catch {
+      return ''
+    }
+  }
+  return (
+    <div class="echoes-prompt" classList={{ answered: props.item.answered }}>
+      <Show
+        when={!props.item.answered}
+        fallback={
+          <div class="echoes-prompt-answered">
+            <span class="echoes-prompt-ahead">{perm().toolName}</span>
+            <span class="echoes-prompt-aval">
+              {props.item.decision === 'deny' ? '✗ 却下' : '✓ 許可'}
+            </span>
+          </div>
+        }
+      >
+        <div class="echoes-prompt-header">tool 承認</div>
+        <div class="echoes-prompt-question">
+          <code class="echoes-perm-tool">{perm().toolName}</code> の実行を許可しますか？
+        </div>
+        <div class="echoes-perm-input">{inputSummary()}</div>
+        <div class="echoes-perm-actions">
+          <button
+            class="echoes-perm-allow"
+            onClick={() => props.onDecide(props.item.requestId, 'allow')}
+          >
+            許可
+          </button>
+          <button
+            class="echoes-perm-deny"
+            onClick={() => props.onDecide(props.item.requestId, 'deny')}
+          >
+            却下
+          </button>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+/** doc 35 §4 / PR4: plan 承認カード。ExitPlanMode の can_use_tool を plan 本文 + 承認/却下 で描く。 */
+function PlanCard(props: {
+  item: Extract<ChatItem, { kind: 'prompt' }>
+  onDecide: (requestId: string, behavior: 'allow' | 'deny') => void
+}) {
+  // ExitPlanMode input は `{plan: markdown}`（Claude tool schema）。無ければ raw を出す（robust）。
+  const planText = (): string => {
+    const input = props.item.permission?.input as { plan?: unknown } | undefined
+    if (input && typeof input.plan === 'string') return input.plan
+    try {
+      return '```json\n' + JSON.stringify(input, null, 2) + '\n```'
+    } catch {
+      return ''
+    }
+  }
+  return (
+    <div class="echoes-prompt echoes-plan-card" classList={{ answered: props.item.answered }}>
+      <Show
+        when={!props.item.answered}
+        fallback={
+          <div class="echoes-prompt-answered">
+            <span class="echoes-prompt-ahead">plan</span>
+            <span class="echoes-prompt-aval">
+              {props.item.decision === 'deny' ? '✗ 却下' : '✓ 承認'}
+            </span>
+          </div>
+        }
+      >
+        <div class="echoes-prompt-header">plan 承認</div>
+        <div class="echoes-plan-body" innerHTML={mdToHtml(planText())} />
+        <div class="echoes-perm-actions">
+          <button
+            class="echoes-perm-allow"
+            onClick={() => props.onDecide(props.item.requestId, 'allow')}
+          >
+            承認して実行
+          </button>
+          <button
+            class="echoes-perm-deny"
+            onClick={() => props.onDecide(props.item.requestId, 'deny')}
+          >
+            却下
+          </button>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
 /** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
  *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
 const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
@@ -257,6 +502,21 @@ function ChatView() {
     )
   }
 
+  // doc 35 PR3: permission mode（tool 承認の opt-in）。spawn 既定は bypassPermissions（素通し）。
+  // "default" に切替えると Write/Bash 等が承認要求（PermissionRequest）経由になる。
+  // doc 35 PR3/PR4: permission mode は per-lane（engine の真値 = session_init.permission_mode）。
+  // review #2: 旧実装はグローバル signal で lane 横断共有 + respawn の bypass reset を映さなかった。
+  const currentPermMode = (): string => state()?.permissionMode ?? 'bypassPermissions'
+  const setPermissionMode = (mode: string) => {
+    const lane = activeLane()
+    if (!lane) return
+    // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
+    // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
+    laneChat(lane).set(produce((s) => (s.permissionMode = mode)))
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
+  }
+
   // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
   // 閾値は cc-status の意味論を踏襲: >=60% warn / >=85% critical。
   const ctxPct = (): number | null => {
@@ -282,6 +542,56 @@ function ChatView() {
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
   }
 
+  // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
+  const interrupt = () => {
+    const lane = activeLane()
+    if (!lane) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:interrupt', lane }))
+  }
+
+  // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で SP に戻す
+  //（host が control_response を stdin に書いて turn が継続する）。
+  const answerPrompt = (requestId: string, answers: Record<string, string>) => {
+    const lane = activeLane()
+    if (!lane) return
+    laneChat(lane).set(
+      produce((s) => {
+        const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
+        if (it && it.kind === 'prompt') {
+          it.answered = true
+          it.answers = answers
+        }
+      }),
+    )
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, answers }))
+  }
+
+  // doc 35 PR3: permission 承認/却下。カードを decision 表示へ折りたたみ、echoes:respond {behavior} で戻す。
+  const decidePrompt = (requestId: string, behavior: 'allow' | 'deny') => {
+    const lane = activeLane()
+    if (!lane) return
+    laneChat(lane).set(
+      produce((s) => {
+        const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
+        if (it && it.kind === 'prompt') {
+          it.answered = true
+          it.decision = behavior
+        }
+      }),
+    )
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, behavior }))
+  }
+
+  // doc 35 PR4: plan 承認/却下。承認 = ExitPlanMode を allow + mode を default へ戻す（plan mode を
+  // 抜けて承認フローで実行に移る）。却下 = deny（plan に留まる or 再計画）。
+  const decidePlan = (requestId: string, behavior: 'allow' | 'deny') => {
+    decidePrompt(requestId, behavior)
+    if (behavior === 'allow') setPermissionMode('default')
+  }
+
   // --- auto-scroll（sticky bottom）+ キーボードスクロール（Home/End/PgUp/PgDn）---------
   // stream 要素の ref。<Show> 内なので lane 選択時のみ存在する。
   let streamEl: HTMLDivElement | undefined
@@ -296,6 +606,22 @@ function ChatView() {
   // 最下部へ動かした直後は isAtBottom=true に収束するので振動しない。
   const onStreamScroll = (): void => {
     if (streamEl) stuckToBottom = isAtBottom(streamEl)
+  }
+
+  // marked 描画済み HTML 内の <a> クリックを echoes-stream の 1 listener で捌く（イベント委譲 =
+  // メッセージ毎に listener を張らない）。default では webview 内遷移（SPA が localhost リンクで
+  // 飛ぶ事故）になるので preventDefault で止め、http(s) は Act I の xterm と同じ `open-url` IPC で
+  // OS default browser を起動する（Rust: terminal::handle_ipc_message → webbrowser::open）。
+  const onStreamLinkClick = (e: MouseEvent): void => {
+    const anchor = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
+    if (!anchor) return
+    // webview 内遷移を常に抑止（相対 / anchor リンクでも SPA document を飛ばさない）。
+    e.preventDefault()
+    // 生の href（getAttribute）で scheme 判定 — .href プロパティは相対を vp-asset:// に解決して濁る。
+    const payload = linkOpenPayload(anchor.getAttribute('href') ?? '')
+    if (!payload) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(payload)
   }
 
   // 4 キーで history を scroll する実体。対象キー以外は false（呼び側が素通し判定に使う）。
@@ -335,6 +661,15 @@ function ChatView() {
   const onDocKey = (e: KeyboardEvent): void => {
     if (!streamEl || streamEl.offsetParent === null) return // chat 非表示 → 素通し
     const key = e.key
+    // doc 35 §5: Esc で走行中 turn を中断（作文中の textarea では抑制 = Home/End と同じ棲み分け）。
+    if (key === 'Escape') {
+      const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
+      if (!inTextarea && state()?.streaming) {
+        interrupt()
+        e.preventDefault()
+      }
+      return
+    }
     if (key !== 'Home' && key !== 'End' && key !== 'PageUp' && key !== 'PageDown') return
     const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
     if ((key === 'Home' || key === 'End') && inTextarea) return // 作文中の caret 移動を尊重
@@ -391,6 +726,21 @@ function ChatView() {
               )}
             </For>
           </select>
+          <span class="echoes-header-label">perm</span>
+          <select
+            class="echoes-model-select"
+            onChange={(e) => setPermissionMode(e.currentTarget.value)}
+          >
+            <option value="bypassPermissions" selected={currentPermMode() === 'bypassPermissions'}>
+              素通し
+            </option>
+            <option value="default" selected={currentPermMode() === 'default'}>
+              承認
+            </option>
+            <option value="plan" selected={currentPermMode() === 'plan'}>
+              計画
+            </option>
+          </select>
           <Show when={ctxPct() !== null}>
             <span
               class="echoes-context"
@@ -410,6 +760,7 @@ function ChatView() {
           ref={streamEl}
           tabindex={0}
           onScroll={onStreamScroll}
+          onClick={onStreamLinkClick}
         >
           <For each={state()!.items}>
             {(item, index) => {
@@ -423,6 +774,14 @@ function ChatView() {
                 )
               if (item.kind === 'tool') {
                 return <ToolRow name={item.name} done={item.done} error={item.error} />
+              }
+              if (item.kind === 'prompt') {
+                if (!item.permission) return <PromptCard item={item} onAnswer={answerPrompt} />
+                return item.permission.toolName === 'ExitPlanMode' ? (
+                  <PlanCard item={item} onDecide={decidePlan} />
+                ) : (
+                  <PermissionCard item={item} onDecide={decidePrompt} />
+                )
               }
               return (
                 <div class="echoes-msg" classList={{ user: item.kind === 'user' }}>
@@ -448,6 +807,11 @@ function ChatView() {
               }
             }}
           />
+          <Show when={state()!.streaming}>
+            <button class="echoes-stop" onClick={interrupt} title="turn を中断 (Esc)">
+              停止
+            </button>
+          </Show>
           <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
             送信
           </button>
@@ -509,6 +873,32 @@ export const CHATVIEW_CSS = `
 .echoes-tool-status { margin-left:auto; font-size:11px; }
 .echoes-cursor { width:7px; height:15px; background: var(--color-accent,#3b82f6); border-radius:1px;
   animation: echoes-blink 1s step-start infinite; align-self:flex-start; }
+/* PromptCard（doc 35 §4）: HITL 質問。engine が人を待っている合図として左寄せカードで settle。 */
+.echoes-prompt { align-self:flex-start; max-width:88%; display:flex; flex-direction:column; gap:12px;
+  padding:13px 15px; border-radius:12px; background: var(--color-bg-elevated,#16191f);
+  border:1px solid var(--sb-conn-hitl,#FF3DAE); box-shadow:0 0 0 1px color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 78%);
+  animation: echoes-fade .18s ease-out; }
+.echoes-prompt.answered { border-color: var(--color-border,#2a3040); box-shadow:none; opacity:.9; }
+.echoes-prompt-q { display:flex; flex-direction:column; gap:7px; }
+.echoes-prompt-header { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+  color: var(--sb-conn-hitl,#FF3DAE); }
+.echoes-prompt-question { font-size:14px; line-height:1.5; color: var(--color-text,#e6e9ef); }
+.echoes-prompt-options { display:flex; flex-wrap:wrap; gap:8px; }
+.echoes-prompt-opt { font-size:12.5px; padding:6px 13px; border-radius:8px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
+  color: var(--color-text-secondary,#a8b0c0); transition: border-color .15s ease, background .15s ease, color .15s ease; }
+.echoes-prompt-opt:hover { border-color: var(--color-text-tertiary,#616b80); color: var(--color-text,#e6e9ef); }
+.echoes-prompt-opt.selected { border-color: var(--sb-conn-hitl,#FF3DAE); color: var(--color-text,#e6e9ef);
+  background: color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 86%); }
+.echoes-prompt-confirm { align-self:flex-end; padding:7px 16px; font-size:12.5px; border-radius:8px;
+  border:none; cursor:pointer; background: var(--sb-conn-hitl,#FF3DAE); color:#fff; }
+.echoes-prompt-confirm:disabled { opacity:.4; cursor:default; }
+/* 回答済み: 見出し + 選んだ値だけの静かな折りたたみ表示。 */
+.echoes-prompt-answered { display:flex; flex-direction:column; gap:5px; }
+.echoes-prompt-arow { display:flex; gap:9px; align-items:baseline; font-size:12.5px; }
+.echoes-prompt-ahead { font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+  color: var(--color-text-tertiary,#616b80); min-width:0; }
+.echoes-prompt-aval { color: var(--color-text,#e6e9ef); font-weight:500; }
 .echoes-plan { border-bottom:1px solid var(--color-border,#2a3040); padding:10px 18px; background: var(--color-bg-elevated,#13161c); }
 .echoes-plan-title { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color: var(--color-text-tertiary,#616b80); margin-bottom:6px; }
 .echoes-plan-item { display:flex; align-items:center; gap:8px; font-size:12.5px; padding:2px 0; transition: color .2s ease; }
@@ -524,6 +914,9 @@ export const CHATVIEW_CSS = `
 .echoes-send { align-self:flex-end; padding:9px 16px; font-size:13px; border-radius:9px; border:none; cursor:pointer;
   background: var(--color-accent,#3b82f6); color:#fff; }
 .echoes-send:disabled { opacity:.4; cursor:default; }
+.echoes-stop { align-self:flex-end; padding:9px 14px; font-size:13px; border-radius:9px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f); color: var(--color-text-secondary,#a8b0c0); }
+.echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
 .echoes-act-toggle { position:absolute; top:8px; right:12px; z-index:10; font-size:11px; padding:4px 11px;
   border-radius:14px; border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); cursor:pointer; opacity:.75; transition: opacity .15s ease; }
@@ -541,6 +934,21 @@ export const CHATVIEW_CSS = `
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); }
 .echoes-model-select:disabled { opacity:.45; cursor:default; }
+/* PR3: permission 承認カード（allow/deny）。question カードと同じ枠、action だけ差し替え。 */
+.echoes-perm-tool { font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-accent,#e2b96f); }
+.echoes-perm-input { font-family: var(--vp-font-mono),var(--typography-family-mono); font-size:11.5px;
+  color: var(--color-text-tertiary,#8b93a7); background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040);
+  border-radius:6px; padding:6px 9px; margin:6px 0; overflow-x:auto; white-space:pre-wrap; word-break:break-all; }
+.echoes-perm-actions { display:flex; gap:8px; margin-top:8px; }
+.echoes-perm-allow, .echoes-perm-deny { font-size:12.5px; padding:6px 16px; border-radius:8px; cursor:pointer; border:1px solid var(--color-border,#2a3040); }
+.echoes-perm-allow { background: var(--color-success,#6fe2a8); color:#06231a; border-color: var(--color-success,#6fe2a8); }
+.echoes-perm-deny { background: var(--color-bg-elevated,#16191f); color:#f0a3a3; }
+.echoes-perm-deny:hover { border-color:#f0a3a3; }
+/* PR4: plan 承認カード。plan 本文は markdown で描き、accent 枠で「あなたの承認を待つ」を伝える。 */
+.echoes-plan-card { border-color: var(--color-accent,#e2b96f); }
+.echoes-plan-body { font-size:13px; line-height:1.6; max-height:280px; overflow-y:auto; margin:6px 0;
+  padding:8px 10px; background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); border-radius:6px; }
+.echoes-plan-body :first-child { margin-top:0; } .echoes-plan-body :last-child { margin-bottom:0; }
 /* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
 .echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
@@ -557,7 +965,7 @@ export const CHATVIEW_CSS = `
 @keyframes echoes-blink { 50% { opacity:0; } }
 @keyframes echoes-shimmer { from { background-position: 220% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .echoes-msg, .echoes-tool { animation:none; }
+  .echoes-msg, .echoes-tool, .echoes-prompt { animation:none; }
   .echoes-tool-spinner { animation-duration: 1.5s; } .echoes-cursor { animation:none; opacity:.6; }
   /* motion off: shimmer は止めるが text-fill:transparent のままだと消えるので色を戻す。 */
   .echoes-thinking-toggle.live .echoes-thinking-label { animation:none; background:none;
