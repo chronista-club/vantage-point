@@ -1498,6 +1498,8 @@ fn activate_lane(
     // 3. Notification reset (同 lane click 連打でも badge を消す)
     sidebar_state.unread_notifications.remove(address);
     sidebar_state.awaiting_input.remove(address);
+    // canvas 着信 badge (D) も active 化で消す (unread_notifications と同 lifecycle)。
+    sidebar_state.canvas_unread.remove(address);
 
     // 4-6. UI push + dead lane respawn
     // BUG#3: 旧実装は push_active_view / respawn を `view_changed` (active_lane_address が
@@ -1688,6 +1690,26 @@ fn mark_lane_awaiting_input(
     // 「入力待ち」 = 行右端に黄 dot。 active 切替で reset される。
     sidebar_state.awaiting_input.insert(lane.to_string(), true);
     tracing::info!("{source} lane={lane} unread={}", *count);
+    push_sidebar_state(webview, sidebar_state);
+}
+
+/// lane に Canvas (PP) show が着信したことを sidebar の canvas_unread に計上する。
+///
+/// `mark_lane_awaiting_input` (HITL/OSC = 黄 dot) とは**別 sink**。Canvas 着信は sidebar 行に
+/// Canvas 専用 icon (Phosphor easel) として出し、「用事(黄 dot)」と「絵が届いた(easel)」の
+/// 語彙を分離する (bug: canvas 可観測性 D、show 偽 success の viewer 文脈対策)。
+/// active lane（今見ている lane）宛の show は panel 側 (pp-overlay auto-open) で解決するので、
+/// ここでは badge を出さない（呼び出し側で active 判定済だが二重防御で skip）。
+fn mark_lane_canvas_unread(lane: &str, sidebar_state: &mut SidebarState, webview: &WebView) {
+    if sidebar_state.active_lane_address.as_deref() == Some(lane) {
+        return;
+    }
+    let count = sidebar_state
+        .canvas_unread
+        .entry(lane.to_string())
+        .or_insert(0);
+    *count += 1;
+    tracing::info!("canvas:show lane={lane} canvas_unread={}", *count);
     push_sidebar_state(webview, sidebar_state);
 }
 
@@ -2984,6 +3006,28 @@ pub fn run() -> anyhow::Result<()> {
                         Err(e) => {
                             tracing::warn!("CanvasMessage serialize 失敗: {}", e);
                         }
+                    }
+                }
+
+                // Canvas 着信 badge (bug: canvas 可観測性 D): show が現在 active でない lane に
+                // 着いたら sidebar に canvas_unread を計上する。別 project / 別 lane（同 project
+                // だが別 lane）の両ケースを 1 箇所で拾う（上の forward guard とは独立）。active lane
+                // 宛の show は panel 側 (pp-overlay auto-open, canvas-handler.ts) で解決する。
+                if message.get("type").and_then(|t| t.as_str()) == Some("show")
+                    && let Some(project) = msg_project
+                {
+                    let token = message
+                        .get("lane")
+                        .and_then(|l| l.as_str())
+                        .unwrap_or("conductor");
+                    // token → lane address（switch_lane と同じ変換）。
+                    let address = if token.is_empty() || token == "conductor" {
+                        format!("{}/conductor", project)
+                    } else {
+                        format!("{}/performer/{}", project, token)
+                    };
+                    if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
+                        mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
                     }
                 }
             }

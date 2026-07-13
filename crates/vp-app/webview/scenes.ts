@@ -47,7 +47,7 @@ const PP_OVERLAY: Scene = {
   name: 'PP Overlay',
   description: '軽い参照 — Echoes は薄く、 PP が右上に浮かぶ',
   panes: {
-    echoes: { x: 0,    y: 0,    w: 1,    h: 1,   z: 0,  opacity: 0.55, state: NORMAL },
+    echoes: { x: 0,    y: 0,    w: 1,    h: 1,   z: 0,  opacity: 0.25, state: NORMAL },
     pp:     { x: 0.58, y: 0.04, w: 0.38, h: 0.6, z: 20, opacity: 1,    state: NORMAL },
   },
 };

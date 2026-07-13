@@ -234,6 +234,10 @@ body{overflow:hidden;}
 }
 .pane-body.center{display:grid;place-items:center;}
 .pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
+/* PP overlay 可読性 (bug: canvas 可観測性 D): pane-body は背景透明のため、pp-overlay scene で
+   PP を浮かせると背後の console が透けて文字が重なり内容が読めない。PP 内容を solid surface に
+   載せて読めるようにする (side-review / pp-focus でも有効)。 */
+#pane-paisley-park .pane-body{background:var(--color-surface-bg-base);}
 /* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
 .pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
