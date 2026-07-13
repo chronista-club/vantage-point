@@ -21,7 +21,7 @@ import type { EchoesEvent, PlanEntry, QuestionSpec, VpConsole } from './console'
 
 type ChatItem =
   | { kind: 'user'; text: string }
-  | { kind: 'assistant'; text: string } // message_chunk を末尾 assistant に append
+  | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
   | { kind: 'tool'; id: string; name: string; done: boolean; error: boolean }
   // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
@@ -47,6 +47,8 @@ type ChatState = {
   contextWindow: number | null
   /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
   permissionMode?: string
+  /** doc 35 §5.1: streaming 中に送られた type-ahead。turn 閉で flush（表示順=処理順の不変条件）。 */
+  pending: string | null
 }
 
 type LaneChat = {
@@ -107,7 +109,7 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
     case 'message_chunk': {
       s.streaming = true
       const last = s.items[s.items.length - 1]
-      if (last && last.kind === 'assistant') last.text += ev.text
+      if (last && last.kind === 'assistant' && !last.sealed) last.text += ev.text
       else s.items.push({ kind: 'assistant', text: ev.text })
       break
     }
@@ -147,9 +149,11 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       // 欠落 turn（engine が値を運ばない版）では前値を保つ — ゲージが点滅しないように。
       s.contextTokens = ev.context_tokens ?? s.contextTokens
       s.contextWindow = ev.context_window ?? s.contextWindow
+      sealLastAssistant(s) // 次 turn の chunk と融合させない（§5.1）
       break
     case 'error':
       s.streaming = false
+      sealLastAssistant(s) // error バブルを前 turn と分ける（§5.1）
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
     case 'question':
@@ -177,9 +181,32 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
   }
 }
 
+function sealLastAssistant(s: ChatState): void {
+  const last = s.items[s.items.length - 1]
+  if (last && last.kind === 'assistant') last.sealed = true
+}
+
 /** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。 */
 function foldEvent(lane: string, ev: EchoesEvent): void {
   laneChat(lane).set(produce((s) => foldInto(s, ev)))
+  // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
+  //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
+  if (ev.kind === 'turn_completed' || ev.kind === 'error') flushPending(lane)
+}
+
+/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象は引数 lane = turn を閉じた lane）。 */
+function flushPending(lane: string): void {
+  const lc = laneChat(lane)
+  const text = lc.state.pending
+  if (!text) return
+  lc.set(
+    produce((s) => {
+      s.items.push({ kind: 'user', text })
+      s.pending = null
+    }),
+  )
+  const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+  ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
 }
 
 /** 空の ChatState（store 初期値 + テスト用）。 */
@@ -193,6 +220,7 @@ export function emptyChatState(): ChatState {
     contextTokens: null,
     contextWindow: null,
     permissionMode: undefined,
+    pending: null,
   }
 }
 
@@ -535,9 +563,15 @@ function ChatView() {
     const lane = activeLane()
     const text = draft().trim()
     if (!lane || !text) return
-    // optimistic: user bubble を即描画
-    laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
     setDraft('')
+    // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
+    // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
+    if (laneChat(lane).state.streaming) {
+      laneChat(lane).set('pending', (p) => (p ? `${p}\n${text}` : text))
+      return
+    }
+    // idle: 送信順 = 処理順なので optimistic に即描画して送る
+    laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
   }
@@ -793,6 +827,12 @@ function ChatView() {
           <Show when={state()!.streaming}>
             <div class="echoes-cursor" />
           </Show>
+          <Show when={state()!.pending}>
+            <div class="echoes-msg user pending">
+              <div class="echoes-msg-body" innerHTML={mdToHtml(state()!.pending!)} />
+              <span class="echoes-pending-badge">送信待ち · turn 完了後に送信</span>
+            </div>
+          </Show>
         </div>
         <div class="echoes-input">
           <textarea
@@ -839,6 +879,9 @@ export const CHATVIEW_CSS = `
 .echoes-msg { max-width:100%; animation: echoes-fade .18s ease-out; }
 .echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
+/* §5.1: 送信待ち type-ahead。半透明 + 破線で「まだ送っていない」を伝える。 */
+.echoes-msg.user.pending { opacity:.62; border-style:dashed; }
+.echoes-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
 .echoes-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
 /* 返信（assistant）の本文だけ拡大 = 15px（自分の入力バブルは 13.5px のまま）。
    line-height は unitless なので font-size に追従してスケールする。 */

@@ -98,6 +98,19 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(s.cost).toBe(0.012)
   })
 
+  it('turn 完了後の chunk は前 turn のバブルに融合しない（§5.1 封印）', () => {
+    const s = fold([
+      { kind: 'user_message', text: 'q1' },
+      { kind: 'message_chunk', text: 'A' },
+      { kind: 'turn_completed', session_id: 's' },
+      { kind: 'message_chunk', text: 'B' }, // 別 turn = 新バブルになるべき
+    ])
+    const assistants = s.items.filter((i) => i.kind === 'assistant')
+    expect(assistants.length).toBe(2) // 融合していない
+    expect(assistants[0]).toMatchObject({ text: 'A', sealed: true })
+    expect(assistants[1]).toMatchObject({ text: 'B' })
+  })
+
   it('turn_completed が context ゲージ（tokens/window）を載せ、欠落 turn では前値を保つ', () => {
     const s = emptyChatState()
     foldInto(s, {
