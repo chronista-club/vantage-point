@@ -222,6 +222,18 @@ function flushPending(lane: string): void {
   ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
 }
 
+/**
+ * 送信待ち type-ahead を composer へ戻せる条件（dequeue-to-composer の MVP ガード）。純粋 = テスト可能。
+ *
+ * 「編集開始 = キューから取り出して入力欄へ戻す」設計（todo 2026-07-14）:
+ * 取り出した時点で pending は空 → ただの下書きに戻るので turn 完了後の flushPending は何も送らない
+ *（`if (!text) return`）= 自動送信が起きずレースが消滅する。
+ * ただし composer に打ちかけ下書きがある時に戻すと下書きを潰す → MVP は「composer が空のときだけ可」。
+ */
+export function canDequeuePending(draftText: string, pending: string | null): boolean {
+  return draftText.trim() === '' && pending != null && pending !== ''
+}
+
 /** 空の ChatState（store 初期値 + テスト用）。 */
 export function emptyChatState(): ChatState {
   return {
@@ -624,6 +636,7 @@ function ChatView() {
   }
 
   const [draft, setDraft] = createSignal('')
+  let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
   // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
   const [nowMs, setNowMs] = createSignal(Date.now())
   onMount(() => {
@@ -646,6 +659,20 @@ function ChatView() {
     laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+  }
+
+  // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
+  // composer が空のときだけ有効（下書きを潰さない）。戻した瞬間 pending は空 = 自動送信されない。
+  const canEditPending = () => canDequeuePending(draft(), state()?.pending ?? null)
+  const editPending = () => {
+    const lane = activeLane()
+    if (!lane) return
+    const lc = laneChat(lane)
+    if (!canDequeuePending(draft(), lc.state.pending)) return
+    const text = lc.state.pending as string
+    lc.set('pending', null) // 先に空にする → 以降の turn_completed が flush しない（レース消滅）
+    setDraft(text)
+    queueMicrotask(() => inputRef?.focus()) // すぐ編集できるよう composer にカーソルを移す
   }
 
   // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
@@ -900,9 +927,20 @@ function ChatView() {
             <div class="echoes-cursor" />
           </Show>
           <Show when={state()!.pending}>
-            <div class="echoes-msg user pending">
+            <div
+              class="echoes-msg user pending"
+              classList={{ editable: canEditPending(), locked: !canEditPending() }}
+              onClick={editPending}
+              title={
+                canEditPending()
+                  ? 'クリックで入力欄に戻して編集'
+                  : '編集するには入力欄を空にしてください'
+              }
+            >
               <div class="echoes-msg-body" innerHTML={mdToHtml(state()!.pending!)} />
-              <span class="echoes-pending-badge">送信待ち · turn 完了後に送信</span>
+              <span class="echoes-pending-badge">
+                {canEditPending() ? '送信待ち · クリックで編集' : '送信待ち · turn 完了後に送信'}
+              </span>
             </div>
           </Show>
         </div>
@@ -924,6 +962,7 @@ function ChatView() {
         </div>
         <div class="echoes-input">
           <textarea
+            ref={inputRef}
             class="echoes-input-box"
             placeholder="メッセージを入力（⌘Enter で送信）"
             value={draft()}
@@ -968,7 +1007,12 @@ export const CHATVIEW_CSS = `
 .echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
 /* §5.1: 送信待ち type-ahead。半透明 + 破線で「まだ送っていない」を伝える。 */
-.echoes-msg.user.pending { opacity:.62; border-style:dashed; }
+.echoes-msg.user.pending { opacity:.62; border-style:dashed; transition: opacity .12s ease, border-color .12s ease; }
+/* dequeue-to-composer: composer が空なら「クリックで入力欄に戻して編集」可（hover で明るく）。 */
+.echoes-msg.user.pending.editable { cursor:pointer; }
+.echoes-msg.user.pending.editable:hover { opacity:.9; border-color: var(--color-accent, #e2b96f); }
+/* composer に打ちかけ下書きがある間は編集不可 = グレーアウト（下書きを潰さないための MVP ガード）。 */
+.echoes-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
 .echoes-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
 /* §5.1 診断: history 最下部の常時 status バー。状態を dot 色 + パルスで表す。 */
 .echoes-status { display:flex; align-items:center; gap:8px; padding:5px 14px; min-height:24px; font-size:11px;
