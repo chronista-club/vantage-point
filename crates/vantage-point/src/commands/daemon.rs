@@ -322,14 +322,31 @@ fn restart(if_running: bool) -> Result<()> {
         }
     }
 
-    if try_kickstart_launch_agent() {
+    let kicked = try_kickstart_launch_agent();
+    if kicked {
         println!("🚀 LaunchAgent kickstart で起動中...");
     } else {
         println!("🚀 TheWorld を起動中 (detached spawn)...");
         process::ensure_daemon_running(port)?;
     }
 
-    let health = wait_health(port)?;
+    // 起動確認。kickstart に委譲したのに up しない場合 = plist 破損の疑い（ProgramArguments[0]
+    // の binary が古い/不在。この repo には「plist に dev binary を焼いた」事故の前例あり。恢復は
+    // `vp daemon install` の再実行）。job が load 済なら try_kickstart は true を返すが launchd は
+    // 起動に失敗するため、旧経路（常に spawn）の後退を防ぐべく detached spawn を最後の救済として
+    // 一段試す。遅延 kickstart と detached spawn が競合しても #687 の二重起動ガード + bind
+    // AddrInUse で片方が譲り自己解決する。
+    let health = match wait_health(port) {
+        Ok(health) => health,
+        Err(_) if kicked => {
+            eprintln!(
+                "⚠️ LaunchAgent kickstart 後も up せず — detached spawn で救済を試みます（plist 破損の疑い、恢復は `vp daemon install` 再実行）"
+            );
+            process::ensure_daemon_running(port)?;
+            wait_health(port)?
+        }
+        Err(e) => return Err(e),
+    };
     println!(
         "👑 TheWorld restarted (PID: {}, version: {}, port: {})",
         health.pid, health.version, port

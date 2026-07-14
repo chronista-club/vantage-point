@@ -180,7 +180,19 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     if try_kickstart_launch_agent() {
         tracing::info!("daemon auto-launch: LaunchAgent kickstart に委譲");
-        return wait_daemon_up(world_url);
+        if wait_daemon_up(world_url).is_ok() {
+            return Ok(());
+        }
+        // kickstart したが up せず = plist 破損の疑い（ProgramArguments[0] の binary が
+        // 古い/不在。この repo には「plist に dev binary を焼いた」事故の前例あり。恢復は
+        // `vp daemon install` の再実行）。job が load 済なら try_kickstart は true を返すが
+        // launchd は起動に失敗するため、旧実装（常に直接 spawn）の恢復経路を後退させないよう、
+        // 下の直接 spawn を最後の救済として一段試す。遅延 kickstart と直接 spawn が競合しても
+        // #687 の二重起動ガード + bind AddrInUse で片方が譲り自己解決する。
+        tracing::warn!(
+            "daemon auto-launch: LaunchAgent kickstart 後も {} が up せず — 直接 spawn で救済を試みる（plist 破損の疑い、恢復は `vp daemon install` 再実行）",
+            world_url
+        );
     }
 
     let vp_bin = locate_vp_binary();
