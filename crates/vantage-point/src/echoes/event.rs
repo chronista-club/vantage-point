@@ -43,6 +43,17 @@ pub enum EchoesEvent {
     /// 同一の最終状態に収束する。
     ReplayStart,
 
+    /// transcript replay の終端マーカー（[`Self::ReplayStart`] と対、replay 列の最後に 1 回）。
+    ///
+    /// `in_flight` = replay 直後に **本当に生成中の turn があるか**（＝継いだ in-flight tail の有無）。
+    /// GUI はこれを見て `streaming` を確定させる。
+    ///
+    /// 無いと何が壊れるか: replay は過去の assistant 発話も [`Self::MessageChunk`] で送るため GUI 側の
+    /// fold で `streaming` が立つ。だが replay 列は [`Self::TurnCompleted`] を運ばないので誰もそれを
+    /// 下ろさず、engine が idle でも「応答中」が永久に居座る。結果、turn 完了を契機にする処理
+    /// （type-ahead の flush 等）が二度と発火しない。終端で真値を宣言して打ち消す。
+    ReplayEnd { in_flight: bool },
+
     /// user 自身の発話（transcript replay 専用）。
     ///
     /// live 経路では ChatView が submit 時に optimistic に user bubble を足すため発火しない。

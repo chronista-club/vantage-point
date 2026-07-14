@@ -54,6 +54,10 @@ export type EchoesEvent =
   /** transcript replay の開始マーカー。受信側は会話表示 + buffer をクリアしてから後続を畳む
    *  （replay を冪等にする = reconnect / demand 再発火で会話が二重化しない）。 */
   | { kind: 'replay_start' }
+  /** transcript replay の終端マーカー（replay_start と対、replay 列の最後に 1 回）。
+   *  in_flight = 直後に本当に生成中の turn があるか。GUI はこれで streaming を確定する
+   *  （過去発話の message_chunk が立てた streaming を打ち消す）。 */
+  | { kind: 'replay_end'; in_flight: boolean }
   /** user 自身の過去発話（transcript replay 専用。live では ChatView が submit 時に足す）。 */
   | { kind: 'user_message'; text: string }
   | { kind: 'message_chunk'; text: string }

@@ -181,7 +181,10 @@ def swap_macos(restart_daemon)
   File.directory?(built) or VP.die("build 成果物が無い: #{built}")
 
   # ── 2. 走っている GUI を止める (差し替え先を掴んだままにしない) ──
-  VP.sh "#{VP.cargo_bin('vp')} app stop || true"
+  # vp の実体は .app 同梱 CLI。 cargo_bin 決め打ちだと brew 運用の機で不在 → サイレント失敗する
+  # (2026-07-14 事故)。 VP.vp_bin は「実行できる物」を選ぶ。
+  vp = VP.vp_bin
+  VP.try(vp, "app", "stop") if vp
   VP.sh "pkill -f '#{installed}' || true"
   sleep 2
 
@@ -192,18 +195,66 @@ def swap_macos(restart_daemon)
   VP.sh "ditto '#{built}' '#{installed}'"
   VP.sh "codesign --verify --strict '#{installed}'"
 
-  # ── 4. server 側も入れ替えるなら daemon を落とす (lane が道連れになる) ──
-  if restart_daemon
-    VP.log "#{VP.icon(:warn)} restarting daemon — lane の claude も落ちる (--resume で復帰)"
-    VP.sh "#{VP.cargo_bin('vp')} daemon stop || true"
-    sleep 2
-    VP.sh "pkill -f '/opt/homebrew/bin/vp sp start' || true"
-    sleep 1
-  end
+  # ── 4. server 側も入れ替えるなら daemon + SP を落とす (lane が道連れになる) ──
+  restart_daemon_macos if restart_daemon
 
   # ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
   VP.sh "open '#{installed}'"
   swap_epilogue(restart_daemon)
+end
+
+# daemon + SP を新 binary に載せ替える (macOS)。
+#
+# ⚠️ 前提: file を差し替えても**走っているプロセスは古いまま**。 Unix は実行中 binary を「置換」
+#    できる (rm + 新規作成 = 新 inode。 走っているプロセスは削除済みの旧 inode を実行し続ける) が、
+#    それはホットスワップではない。 **exec し直して初めて新 inode を読む** → 再起動が要る。
+#
+# 2026-07-14 の dogfood 事故で踏んだ罠を全部畳んである:
+#   1. 旧実装は `~/.cargo/bin/vp daemon stop` 決め打ち。 brew 運用の機には無く `|| true` で
+#      握り潰され、 **daemon が一度も再起動されないまま「再起動込み」と報告**していた。
+#      → VP.vp_bin で実在する物を選ぶ。
+#   2. LaunchAgent は KeepAlive=true。 素の kill では launchd が即蘇生するため「停止」は成立しない。
+#      **`launchctl kickstart -k`** (kill して plist の ProgramArguments から再 exec) が正道。
+#      plist は /opt/homebrew/bin/vp を指すので、 .app 差し替え後なら新 binary で起き直る。
+#   3. SP は setsid で daemon から分離されており **daemon 再起動では死なない** → 明示 kill が要る。
+#      `pkill -f PATTERN` を shell 越しに撃つと pkill 自身を走らせている shell の cmdline にも
+#      パターンが載って親を巻き添えにするため、 VP.sp_pids (shell 非経由 pgrep) + 明示 kill にする。
+def restart_daemon_macos
+  VP.log "#{VP.icon(:warn)} restarting daemon — lane の claude も落ちる (--resume で復帰)"
+
+  # ── SP を落とす (新 binary で spawn し直させる) ──
+  pids = VP.sp_pids
+  if pids.empty?
+    VP.log "running SP: なし"
+  else
+    VP.log "#{VP.icon(:stop)} killing #{pids.size} SP: #{pids.join(', ')}"
+    pids.each { |pid| Process.kill("TERM", pid) rescue nil }
+    sleep 2
+    VP.sp_pids.each { |pid| Process.kill("KILL", pid) rescue nil } # 生き残りに止め
+  end
+
+  # 祖先 SP (= 自分を載せている SP) は原理的に殺せない (pgrep が除外する / 殺せば自分が死ぬ)。
+  # 黙って取りこぼすと「反映したつもり」になるので正直に警告する。
+  if (mine = VP.ancestor_sp_pid)
+    VP.log "#{VP.icon(:warn)} 自分を載せている SP (PID #{mine}) は落とせない — この lane だけ旧 binary のまま。" \
+           " 完全反映は VP 外の terminal から実行するか、 その lane を後で再起動すること"
+  end
+
+  # ── daemon を再起動 ──
+  if VP.launch_agent_loaded?
+    # KeepAlive と喧嘩しない正道: kill → launchd が plist から再 exec (= 新 binary)。
+    VP.run("launchctl", "kickstart", "-k", "gui/#{Process.uid}/#{VP::LAUNCH_AGENT_LABEL}")
+  elsif (vp = VP.vp_bin)
+    # LaunchAgent 未 install (常駐化していない) 環境は素の stop/start に落とす。
+    VP.try(vp, "daemon", "stop")
+    sleep 1
+    VP.try(vp, "daemon", "start")
+  else
+    VP.die("vp binary が見つからず daemon を再起動できない")
+  end
+
+  # daemon が listen する前に app を起こすと空の GUI が立つ (Windows 側と同じ理由)。
+  wait_daemon_ready
 end
 
 VP.windows? ? swap_windows(RESTART_DAEMON) : swap_macos(RESTART_DAEMON)
