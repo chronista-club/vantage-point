@@ -951,7 +951,7 @@ function ChatView() {
             <span class="echoes-status-detail">{statusLine().detail}</span>
           </Show>
           <Show when={statusLine().stalled}>
-            <span class="echoes-status-stalled">無反応 {statusLine().idleSec}s</span>
+            <span class="echoes-status-stalled">反応無 {statusLine().idleSec}s</span>
           </Show>
           <Show when={statusLine().lastEvent}>
             <span class="echoes-status-event">· {statusLine().lastEvent}</span>
