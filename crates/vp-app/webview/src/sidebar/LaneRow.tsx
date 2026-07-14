@@ -18,6 +18,7 @@ import {
 	isLaneAlive,
 	isPerformerLane,
 	laneAddressKey,
+	laneCwdLabel,
 	laneLabel,
 	standDisplayName,
 	standIcon,
@@ -90,6 +91,9 @@ export function LaneRow(props: {
 		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
 	// cc `/rename` の custom-title (2 行目)。 未設定 lane は dimmed "—"。
 	const sessionTitle = () => sidebar.session_titles?.[addr()];
+	// 地 (ground): cwd を project root 起点の差分に畳む。 絶対 path は project が持つので
+	// lane は offset だけを名乗る。 conductor は差分ゼロ = "" → 行ごと出さない。
+	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.projectPath);
 
 	// row click → main area を当該 Lane に切り替え。 Dead Lane (pid:null) も select を通す:
 	// activate_lane 側の maybe_respawn_dead_lane が on-demand で respawn し、 PtySlot 生成後に
@@ -257,6 +261,16 @@ export function LaneRow(props: {
 					</span>
 				</Show>
 			</span>
+			{/* ⑧ 地 (ground): project root 起点の cwd 差分。 1 行目が図 (title / state / git meta)、
+			    ここが地。 mute-2 / micro / mono = git meta と同じ最も引っ込んだ層に置き、 光らせない
+			    (光 = 注意は needs-you の専有)。 CSS の flex:0 0 100% で 2 行目へ折り返す。
+			    差分ゼロ (conductor = project root) は **行ごと出さない** — 語ることが無い行は黙る。
+			    tooltip には常に完全な絶対 path を出すので情報は落ちない。 */}
+			<Show when={cwdLabel()}>
+				<span class="vp-lane-cwd" title={props.lane.cwd}>
+					{cwdLabel()}
+				</span>
+			</Show>
 		</div>
 	);
 }
