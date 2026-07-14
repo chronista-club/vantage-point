@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { foldInto, emptyChatState, linkOpenPayload, deriveStatus } from './chatview'
+import { foldInto, emptyChatState, linkOpenPayload, deriveStatus, canDequeuePending } from './chatview'
 import type { EchoesEvent } from './console'
 
 /** EchoesEvent 列を空 state に順に畳んで結果を返す helper。 */
@@ -127,6 +127,18 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     // 途絶(error)は待機ではなく途絶として出す
     const errored = fold([{ kind: 'error', message: 'x' }])
     expect(deriveStatus(errored)).toMatchObject({ kind: 'error' })
+  })
+
+  it('canDequeuePending: 送信待ちを入力欄へ戻せる条件（composer が空 かつ pending あり）', () => {
+    // 正常系: composer 空 + pending あり → 戻せる
+    expect(canDequeuePending('', 'buffered')).toBe(true)
+    // composer に打ちかけ下書き → 潰さないため戻せない（MVP グレーアウト）
+    expect(canDequeuePending('typing…', 'buffered')).toBe(false)
+    // 空白だけの下書きは「空」とみなす（trim）
+    expect(canDequeuePending('   \n ', 'buffered')).toBe(true)
+    // pending が無ければ戻す対象が無い
+    expect(canDequeuePending('', null)).toBe(false)
+    expect(canDequeuePending('', '')).toBe(false)
   })
 
   it('replay 終端の replay_end で streaming が真値に確定する（応答中の永久居座り根治）', () => {
