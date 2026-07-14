@@ -21,7 +21,7 @@ import type { EchoesEvent, PlanEntry, QuestionSpec, VpConsole } from './console'
 
 type ChatItem =
   | { kind: 'user'; text: string }
-  | { kind: 'assistant'; text: string } // message_chunk を末尾 assistant に append
+  | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
   | { kind: 'tool'; id: string; name: string; done: boolean; error: boolean }
   // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
@@ -47,6 +47,12 @@ type ChatState = {
   contextWindow: number | null
   /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
   permissionMode?: string
+  /** doc 35 §5.1: streaming 中に送られた type-ahead。turn 閉で flush（表示順=処理順の不変条件）。 */
+  pending: string | null
+  /** status 同期: 最後に畳んだイベント種別（foldInto で全イベント更新）。 */
+  lastEvent: string | null
+  /** status 同期: 最後にイベントを受けた時刻 ms（foldEvent で Date.now。hang 検出の時間軸）。 */
+  lastEventAt: number | null
 }
 
 type LaneChat = {
@@ -75,6 +81,7 @@ function laneChat(lane: string): LaneChat {
  * tool_call_update は id 一致で done 化。ここが Act II の描画正しさの中核。
  */
 export function foldInto(s: ChatState, ev: EchoesEvent): void {
+  s.lastEvent = ev.kind // 拾える全イベント種別を status に同期（時刻は foldEvent が Date.now で付す）
   switch (ev.kind) {
     case 'replay_start':
       // 以降は transcript replay（過去会話の再送）。会話を一度クリアしてから畳み直す。
@@ -94,6 +101,13 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       s.streaming = false
       s.cost = null
       break
+    case 'replay_end':
+      // replay 終端で streaming の真値を確定する。replay は過去の assistant 発話も message_chunk で
+      // 送るため fold で streaming が立つが、replay 列は turn_completed を運ばない。生成中 turn が
+      // 無ければここで下ろさないと、engine が idle でも「応答中」が永久に残り、turn 完了契機の処理
+      //（type-ahead の flush 等）が二度と発火しない。
+      s.streaming = ev.in_flight
+      break
     case 'user_message':
       // replay 専用（live は submit 時に ChatView が optimistic に足す）。常に新 bubble。
       s.items.push({ kind: 'user', text: ev.text })
@@ -107,7 +121,7 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
     case 'message_chunk': {
       s.streaming = true
       const last = s.items[s.items.length - 1]
-      if (last && last.kind === 'assistant') last.text += ev.text
+      if (last && last.kind === 'assistant' && !last.sealed) last.text += ev.text
       else s.items.push({ kind: 'assistant', text: ev.text })
       break
     }
@@ -147,9 +161,11 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       // 欠落 turn（engine が値を運ばない版）では前値を保つ — ゲージが点滅しないように。
       s.contextTokens = ev.context_tokens ?? s.contextTokens
       s.contextWindow = ev.context_window ?? s.contextWindow
+      sealLastAssistant(s) // 次 turn の chunk と融合させない（§5.1）
       break
     case 'error':
       s.streaming = false
+      sealLastAssistant(s) // error バブルを前 turn と分ける（§5.1）
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
     case 'question':
@@ -177,9 +193,33 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
   }
 }
 
+function sealLastAssistant(s: ChatState): void {
+  const last = s.items[s.items.length - 1]
+  if (last && last.kind === 'assistant') last.sealed = true
+}
+
 /** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。 */
 function foldEvent(lane: string, ev: EchoesEvent): void {
   laneChat(lane).set(produce((s) => foldInto(s, ev)))
+  laneChat(lane).set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
+  // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
+  //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
+  if (ev.kind === 'turn_completed' || ev.kind === 'error') flushPending(lane)
+}
+
+/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象は引数 lane = turn を閉じた lane）。 */
+function flushPending(lane: string): void {
+  const lc = laneChat(lane)
+  const text = lc.state.pending
+  if (!text) return
+  lc.set(
+    produce((s) => {
+      s.items.push({ kind: 'user', text })
+      s.pending = null
+    }),
+  )
+  const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+  ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
 }
 
 /** 空の ChatState（store 初期値 + テスト用）。 */
@@ -193,7 +233,54 @@ export function emptyChatState(): ChatState {
     contextTokens: null,
     contextWindow: null,
     permissionMode: undefined,
+    pending: null,
+    lastEvent: null,
+    lastEventAt: null,
   }
+}
+
+// ---------------------------------------------------------------------------
+// agent status 導出（doc 35 §5.1 診断用の常時可視化ブロック）— 純粋関数 = テスト可能
+// ---------------------------------------------------------------------------
+
+export type EchoesStatus = {
+  kind: 'idle' | 'streaming' | 'thinking' | 'tool' | 'awaiting' | 'error'
+  label: string
+  detail?: string
+  pending: boolean // 送信待ち type-ahead を抱えているか（待機中 + pending = flush 失敗の兆候）
+  lastEvent?: string // 最後に受けたイベント種別（細かく追う用）
+  idleSec?: number // 最終イベントからの経過秒
+  stalled: boolean // streaming なのに一定時間イベントが来ない = engine hang の兆候（応答中の嘘を暴く）
+}
+
+/** イベントが来なくなってから「無反応」と見なすまでの猶予 ms。 */
+const STALL_MS = 8000
+
+/** ChatState から現在の agent 状態を導く（純粋、nowMs は呼び手が渡す＝テスト可能）。 */
+export function deriveStatus(s: ChatState | null, nowMs = 0): EchoesStatus {
+  if (!s) return { kind: 'idle', label: '—', pending: false, stalled: false }
+  const pending = !!s.pending
+  const lastEvent = s.lastEvent ?? undefined
+  const idleSec =
+    s.lastEventAt != null && nowMs > 0 ? Math.max(0, Math.round((nowMs - s.lastEventAt) / 1000)) : undefined
+  const base = { pending, lastEvent, idleSec }
+  // 未回答の HITL prompt（質問 / 承認）が最優先 = ユーザーにボールがある。
+  const waiting = s.items.find((i) => i.kind === 'prompt' && !i.answered) as
+    | Extract<ChatItem, { kind: 'prompt' }>
+    | undefined
+  if (waiting)
+    return { ...base, kind: 'awaiting', label: waiting.permission ? '承認待ち' : '質問待ち', stalled: false }
+  // streaming なのに最終イベントから STALL 超過 = engine hang を正直に出す（応答中を鵜呑みにしない）。
+  const stalled = s.streaming && s.lastEventAt != null && nowMs > 0 && nowMs - s.lastEventAt >= STALL_MS
+  const last = s.items[s.items.length - 1]
+  if (s.streaming) {
+    if (last?.kind === 'thinking') return { ...base, kind: 'thinking', label: '考え中…', stalled }
+    if (last?.kind === 'tool' && !last.done) return { ...base, kind: 'tool', label: '実行中', detail: last.name, stalled }
+    return { ...base, kind: 'streaming', label: '応答中…', stalled }
+  }
+  // engine 途絶（host.rs の接続途絶 Error 相乗り）は idle だが「途絶」と出す。
+  if (lastEvent === 'error') return { ...base, kind: 'error', label: '途絶/エラー', stalled: false }
+  return { ...base, kind: 'idle', label: '待機中', stalled: false }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,13 +618,26 @@ function ChatView() {
   }
 
   const [draft, setDraft] = createSignal('')
+  // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
+  const [nowMs, setNowMs] = createSignal(Date.now())
+  onMount(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000)
+    onCleanup(() => clearInterval(id))
+  })
+  const statusLine = () => deriveStatus(state(), nowMs())
   const submit = () => {
     const lane = activeLane()
     const text = draft().trim()
     if (!lane || !text) return
-    // optimistic: user bubble を即描画
-    laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
     setDraft('')
+    // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
+    // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
+    if (laneChat(lane).state.streaming) {
+      laneChat(lane).set('pending', (p) => (p ? `${p}\n${text}` : text))
+      return
+    }
+    // idle: 送信順 = 処理順なので optimistic に即描画して送る
+    laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
   }
@@ -793,6 +893,28 @@ function ChatView() {
           <Show when={state()!.streaming}>
             <div class="echoes-cursor" />
           </Show>
+          <Show when={state()!.pending}>
+            <div class="echoes-msg user pending">
+              <div class="echoes-msg-body" innerHTML={mdToHtml(state()!.pending!)} />
+              <span class="echoes-pending-badge">送信待ち · turn 完了後に送信</span>
+            </div>
+          </Show>
+        </div>
+        <div class={`echoes-status s-${statusLine().kind}`} classList={{ stalled: statusLine().stalled }}>
+          <span class="echoes-status-dot" />
+          <span class="echoes-status-label">{statusLine().label}</span>
+          <Show when={statusLine().detail}>
+            <span class="echoes-status-detail">{statusLine().detail}</span>
+          </Show>
+          <Show when={statusLine().stalled}>
+            <span class="echoes-status-stalled">無反応 {statusLine().idleSec}s</span>
+          </Show>
+          <Show when={statusLine().lastEvent}>
+            <span class="echoes-status-event">· {statusLine().lastEvent}</span>
+          </Show>
+          <Show when={statusLine().pending}>
+            <span class="echoes-status-pending">✎ 送信待ち</span>
+          </Show>
         </div>
         <div class="echoes-input">
           <textarea
@@ -839,6 +961,26 @@ export const CHATVIEW_CSS = `
 .echoes-msg { max-width:100%; animation: echoes-fade .18s ease-out; }
 .echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
+/* §5.1: 送信待ち type-ahead。半透明 + 破線で「まだ送っていない」を伝える。 */
+.echoes-msg.user.pending { opacity:.62; border-style:dashed; }
+.echoes-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
+/* §5.1 診断: history 最下部の常時 status バー。状態を dot 色 + パルスで表す。 */
+.echoes-status { display:flex; align-items:center; gap:8px; padding:5px 14px; min-height:24px; font-size:11px;
+  font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7);
+  border-top:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115); }
+.echoes-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
+.echoes-status-label { letter-spacing:.03em; }
+.echoes-status-detail { color: var(--color-text-secondary,#a8b0c0); }
+.echoes-status-pending { margin-left:auto; color: var(--color-accent,#e2b96f); }
+.echoes-status.s-streaming .echoes-status-dot { background: var(--color-success,#6fe2a8); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
+.echoes-status.s-thinking .echoes-status-dot { background:#8fb0ff; animation: echoes-status-pulse 1.2s ease-in-out infinite; }
+.echoes-status.s-tool .echoes-status-dot { background: var(--color-accent,#e2b96f); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
+.echoes-status.s-awaiting .echoes-status-dot { background:#f0a3a3; animation: echoes-status-pulse .8s ease-in-out infinite; }
+.echoes-status.s-error .echoes-status-dot { background:#f0a3a3; }
+.echoes-status.stalled .echoes-status-dot { background:#f0a3a3 !important; animation: echoes-status-pulse .6s ease-in-out infinite; }
+.echoes-status-stalled { color:#f0a3a3; font-weight:600; }
+.echoes-status-event { color: var(--color-text-tertiary,#616b80); opacity:.65; }
+@keyframes echoes-status-pulse { 50% { opacity:.32; } }
 .echoes-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
 /* 返信（assistant）の本文だけ拡大 = 15px（自分の入力バブルは 13.5px のまま）。
    line-height は unitless なので font-size に追従してスケールする。 */

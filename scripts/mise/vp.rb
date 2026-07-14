@@ -71,6 +71,71 @@ module VP
     File.join(Dir.home, ".cargo", "bin", exe)
   end
 
+  # macOS LaunchAgent の Label（daemon/process.rs の `LAUNCH_AGENT_LABEL` と同形）。
+  LAUNCH_AGENT_LABEL = "club.chronista.vantage-point.daemon"
+
+  # 「普段使いの vp CLI」の絶対 path（実在する物を選ぶ）。 無ければ nil。
+  #
+  # mac の実体は **.app 同梱 CLI**（brew cask が /opt/homebrew/bin/vp から symlink する）。
+  # `~/.cargo/bin/vp` は cargo install した開発者にしか無い。
+  #
+  # 2026-07-14 dogfood 事故: app:swap が `cargo_bin("vp")` 決め打ちで `vp app stop` /
+  # `vp daemon stop` を呼んでいたため、 brew 運用の機では binary 不在 → `|| true` で
+  # **サイレント失敗** → **daemon が一度も再起動されず server 変更が反映されない**、を長時間踏んだ。
+  # 「実行できる物を選ぶ」を single source にして再発を防ぐ。
+  def vp_bin
+    candidates =
+      if windows?
+        [cargo_bin("vp")]
+      else
+        ["/Applications/VantagePoint.app/Contents/MacOS/vp", "/opt/homebrew/bin/vp", cargo_bin("vp")]
+      end
+    candidates.find { |p| File.executable?(p) }
+  end
+
+  # LaunchAgent が launchd に load 済みか（= `vp daemon install` 実施済み）。
+  def launch_agent_loaded?
+    return false if windows?
+
+    try("launchctl", "list", LAUNCH_AGENT_LABEL, out: File::NULL, err: File::NULL)
+  end
+
+  # 走っている SP の PID 一覧。
+  #
+  # shell を経由せず引数配列で pgrep を回す: `pkill -f PATTERN` を shell 越しに撃つと
+  # **pkill を走らせている shell 自身の cmdline にパターンが載る**ため親 shell を巻き添えにする
+  # （古典的 footgun）。 配列形なら shell が挟まらない。
+  #
+  # ⚠️ pgrep は **呼び出し元の祖先を除外**する（自殺防止）。 よって VP の lane の中から呼ぶと
+  # 「自分を載せている SP」だけは返らない（2026-07-14 実測）。 それは安全機構だが、
+  # 「全 SP を落としたつもり」の取りこぼしにもなるので、 呼び手は [`ancestor_sp_pid`] で
+  # 取りこぼしを検出して警告すること。
+  def sp_pids
+    IO.popen(["pgrep", "-f", "vp sp start"], &:read).split.map(&:to_i)
+  rescue Errno::ENOENT
+    []
+  end
+
+  # 自分を載せている SP の PID（VP の lane の中から実行された場合）。 居なければ nil。
+  # 祖先を辿って `vp sp start` を探す（pgrep では取れないため ps で親を辿る）。
+  def ancestor_sp_pid
+    return nil if windows?
+
+    pid = Process.pid
+    8.times do
+      ppid = IO.popen(["ps", "-p", pid.to_s, "-o", "ppid="], &:read).strip.to_i
+      break if ppid <= 1
+
+      cmd = IO.popen(["ps", "-p", ppid.to_s, "-o", "command="], &:read).strip
+      return ppid if cmd.include?("vp sp start")
+
+      pid = ppid
+    end
+    nil
+  rescue StandardError
+    nil
+  end
+
   # VP の log 出力先 (daemon:start が書き、 logs が tail する共通 dir)。
   # XDG_STATE_HOME → ~/.local/state を基底に vp/log。 VP_LOG_DIR で上書き可。
   def log_dir = ENV["VP_LOG_DIR"] || File.join(ENV["XDG_STATE_HOME"] || File.join(Dir.home, ".local", "state"), "vp", "log")

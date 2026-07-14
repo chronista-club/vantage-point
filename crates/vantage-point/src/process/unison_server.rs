@@ -371,11 +371,27 @@ async fn handle_echoes_demand_start(
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let Some(session_id) = crate::lane::cc_session::last(&addr.project, &lane_label) else {
         // 初回 (まだ会話が無い) lane。 空会話に収束させるため ReplayStart だけ送る。
-        route_echoes(state, &lane, vec![crate::echoes::EchoesEvent::ReplayStart]).await;
+        // ReplayStart / ReplayEnd は対で送る（session 無し = 生成中 turn も無い）。
+        route_echoes(
+            state,
+            &lane,
+            vec![
+                crate::echoes::EchoesEvent::ReplayStart,
+                crate::echoes::EchoesEvent::ReplayEnd { in_flight: false },
+            ],
+        )
+        .await;
         return Ok(serde_json::json!({"status": "no_session", "lane": lane}));
     };
 
-    let (events, tail_len) = replay_with_in_flight(state, &addr, &session_id).await?;
+    let (mut events, tail_len) = replay_with_in_flight(state, &addr, &session_id).await?;
+    // replay 終端で streaming の真値を宣言する。 replay は過去の assistant 発話も MessageChunk で
+    // 送るため GUI 側で streaming が立つが、 replay 列は TurnCompleted を運ばない。 生成中 turn が
+    // 無ければ（tail_len == 0）ここで下ろさないと、 engine が idle でも「応答中」が永久に残り、
+    // turn 完了契機の処理（type-ahead flush 等）が二度と発火しなくなる。
+    events.push(crate::echoes::EchoesEvent::ReplayEnd {
+        in_flight: tail_len > 0,
+    });
 
     let count = events.len();
     route_echoes(state, &lane, events).await;

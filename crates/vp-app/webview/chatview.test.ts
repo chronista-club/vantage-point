@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { foldInto, emptyChatState, linkOpenPayload } from './chatview'
+import { foldInto, emptyChatState, linkOpenPayload, deriveStatus } from './chatview'
 import type { EchoesEvent } from './console'
 
 /** EchoesEvent 列を空 state に順に畳んで結果を返す helper。 */
@@ -96,6 +96,57 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     ])
     expect(s.streaming).toBe(false)
     expect(s.cost).toBe(0.012)
+  })
+
+  it('turn 完了後の chunk は前 turn のバブルに融合しない（§5.1 封印）', () => {
+    const s = fold([
+      { kind: 'user_message', text: 'q1' },
+      { kind: 'message_chunk', text: 'A' },
+      { kind: 'turn_completed', session_id: 's' },
+      { kind: 'message_chunk', text: 'B' }, // 別 turn = 新バブルになるべき
+    ])
+    const assistants = s.items.filter((i) => i.kind === 'assistant')
+    expect(assistants.length).toBe(2) // 融合していない
+    expect(assistants[0]).toMatchObject({ text: 'A', sealed: true })
+    expect(assistants[1]).toMatchObject({ text: 'B' })
+  })
+
+  it('deriveStatus: streaming→応答中 / idle→待機中 / pending 反映（§5.1 status バー）', () => {
+    expect(deriveStatus(null)).toMatchObject({ kind: 'idle' })
+    const idle = emptyChatState()
+    expect(deriveStatus(idle)).toMatchObject({ kind: 'idle', label: '待機中', pending: false })
+    const streaming = fold([{ kind: 'message_chunk', text: 'hi' }])
+    expect(deriveStatus(streaming)).toMatchObject({ kind: 'streaming', label: '応答中…' })
+    // 待機中 かつ pending = flush 失敗の兆候を status が拾える
+    idle.pending = 'buf'
+    expect(deriveStatus(idle)).toMatchObject({ kind: 'idle', pending: true })
+    // streaming なのに最終イベントから STALL_MS 超過 = 無反応(hang) を status が正直に暴く
+    const stalled = fold([{ kind: 'message_chunk', text: 'hi' }])
+    stalled.lastEventAt = 1000
+    expect(deriveStatus(stalled, 1000 + 9000)).toMatchObject({ kind: 'streaming', stalled: true })
+    // 途絶(error)は待機ではなく途絶として出す
+    const errored = fold([{ kind: 'error', message: 'x' }])
+    expect(deriveStatus(errored)).toMatchObject({ kind: 'error' })
+  })
+
+  it('replay 終端の replay_end で streaming が真値に確定する（応答中の永久居座り根治）', () => {
+    // replay は過去 assistant 発話を message_chunk で送るので streaming が立つ。
+    // 生成中 turn が無ければ replay_end{in_flight:false} が下ろす。
+    const idle = fold([
+      { kind: 'replay_start' },
+      { kind: 'user_message', text: 'q' },
+      { kind: 'message_chunk', text: '過去の返答' },
+      { kind: 'replay_end', in_flight: false },
+    ])
+    expect(idle.streaming).toBe(false)
+    expect(deriveStatus(idle)).toMatchObject({ kind: 'idle', label: '待機中' })
+    // 本当に生成中なら in_flight:true で streaming は立ったまま
+    const live = fold([
+      { kind: 'replay_start' },
+      { kind: 'message_chunk', text: '生成中…' },
+      { kind: 'replay_end', in_flight: true },
+    ])
+    expect(live.streaming).toBe(true)
   })
 
   it('turn_completed が context ゲージ（tokens/window）を載せ、欠落 turn では前値を保つ', () => {

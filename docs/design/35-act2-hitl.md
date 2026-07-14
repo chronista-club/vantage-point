@@ -155,6 +155,57 @@ ChatView（`chatview.tsx`、586 行）の `foldInto` switch（`chatview.tsx:64`�
 - ChatView に**停止ボタン**（送信ボタン `chatview.tsx:451` の隣、turn 実行中のみ活性）。キーは Esc 相当（pane-level の `onDocKey`（`chatview.tsx:335`）に Esc を追加。作文中の textarea では抑制 — 既存 Home/End の textarea 抑制（`:340`）と同じ扱い。Escape の既存 handler は無いので新設）。
 - 中断後、engine は次 submit を受けられる（turn は終わるが engine プロセスは生存）。
 
+### 5.1 type-ahead バッファリング（送信と応答の処理順を保つ）
+
+②の裏面。走行中 turn に対して user が**先に2通目を打って送る**（type-ahead）ときの順序整合を定める。
+
+#### 問題 — 構造的な順序破れ
+
+現状 `submit()`（`chatview.tsx:534`）は streaming 中でも user バブルを optimistic に `items[]` へ即 push する。`message_chunk` の畳み込み（`:107`）は「末尾が assistant なら append / 違えば新バブル」だけで **turn 境界を持たない**ため、走行中に2通目を送ると三重に壊れる:
+
+```
+[user1][assistant A前半]                 末尾=assistant（生成中）
+ └送信→ [user1][assistant A前半][user2]   optimistic push で末尾が user に変わる
+ └turn A の続き→ 末尾=user なので新バブル … [user2][assistant A後半]   ①②
+ └turn 完了は封印しない→ turn B の chunk: 末尾=assistant に append … [assistant A後半＋B]  ③
+```
+
+- ① user2 が turn A 完了前に割り込む
+- ② turn A の残りが user2 への応答に見える（中身は user1 への応答）
+- ③ 別 turn の応答が1バブルに融合（`turn_completed` が末尾バブルを封印しないため）
+
+#### 不変条件
+
+> **表示順序 = engine が実際に処理した順序（= transcript の順序）**
+
+engine の transcript（cc_session）が処理順の正本。live の optimistic 経路はこれを**追い越してはならない**。replay 経路（`replay_start` → `transcript ++ in-flight tail`、`chatview.tsx:88`）は既にこの順序で再構築するので、live もここへ収束させれば reconnect で履歴が並び替わらない（live / replay の冪等収束が保証される）。
+
+原理を一行で言うと: **optimistic 描画が許されるのは engine が idle のときだけ**（送信順 = 処理順）。streaming 中の送信は buffer し、turn が閉じてから流す。
+
+#### 設計（3点）
+
+1. **turn 境界の封印**: `turn_completed` / `error` で末尾 assistant item に `sealed` を立て、次 turn の chunk は必ず新バブルから始める（融合③の根治 + reconnect 等の他経路の保険）。
+2. **streaming 中の送信は buffer**: `submit()` は streaming 中なら engine へ送らず per-lane store の `pending` に退避し、`items[]` を触らない（①②の芽を断つ）。
+3. **turn 閉時に flush**: engine が turn を閉じた瞬間に pending を「user バブル push + `echoes:submit`」で流す。
+
+#### flush トリガは "state" ではなく "event"
+
+flush は `turn_completed` / `error` **イベントの受信**を契機にする（`foldEvent` 入口、`chatview.tsx:181`）。派生状態 `streaming===false` を見てはならない — false になる契機は他に2つあり、どちらも flush してはいけない:
+
+| streaming=false になる契機 | flush? | 理由 |
+|---|---|---|
+| `turn_completed` / `error` | ✅ する | turn が処理し切って ball が user に戻った |
+| `question` / `permission_request`（HITL pause、`:158`/`:168`） | ❌ しない | turn A を処理中（回答待ちで中断）。ここで流すと PromptCard への回答と stdin で混線 |
+| `replay_start`（reconnect / demand replay、`:94`） | ❌ しない | 再同期であって turn 完了ではない。流すと走行中 turn を追い越し = 順序破れ |
+
+イベント契機にすれば、この3ケースは構造的に弁別される（HITL / replay は turn-close イベントではない = トリガ集合に入らない）。
+
+#### 端ケース
+
+- **interrupt（停止）**: 中断は user 起点の turn close で、stream には `error`（`error_during_execution`, §8）/ `turn_completed` として現れる（§5）。よって**通常完了と同じ扱いで pending を flush** する（「止めて、代わりにこれ」= redirect が最頻の意図）。単一ルール（*turn が閉じたら流す*）を保つ。dogfood で「止めるだけで送りたくない」が優勢なら interrupt 時のみ hold に倒せる（reversible）。
+- **flush の対象 lane**: `foldEvent` の `lane` 引数を対象にする（`activeLane()` ではない）。背面 lane の turn 完了はその lane 自身の pending を流す。
+- **buffer は単一 draft**: 「エディタ上でバッファ」= textarea 1枠に対応。streaming 中の追記は同じ `pending` に積み上がり（改行で連結）、turn 閉で **1メッセージ = 1 turn** として流す。複数を別 turn に割る queue 化は将来拡張。
+
 ## 6. UI ギャップ 10 項目との対応
 
 調査 SSOT の 10 項目（優先度付き）に対する本 doc のカバー範囲:
@@ -185,6 +236,7 @@ doc 32/34 と同じ流儀。順序の根拠: **既定を壊さない最小の①
 | **PR2** | turn 中断: host `interrupt()` + `echoes:interrupt` dispatch + ChatView 停止ボタン(Esc) | 走行中 turn を停止ボタンで中断でき、engine は次 submit を受けられる |
 | **PR3** | permission prompt: host `set_permission_mode()` + `PermissionRequest` variant + PromptCard(allow/deny) + mode 切替 UI | `mode=default` に切替えると Write/Bash が承認ダイアログ経由になり、allow で実行・deny で回避する |
 | **PR4** | plan 承認: `set_permission_mode("plan")` + ExitPlanMode / plan clarifying を PromptCard(承認/却下) 化 | plan mode に入れて plan 承認 UI で抜けられる（承認で mode が戻る） |
+| **PR5** | type-ahead バッファリング（§5.1）: `ChatItem.assistant.sealed` + `ChatState.pending` + `submit()` の streaming 分岐 + `foldInto` の `turn_completed`/`error` で封印 + `foldEvent` の flush hook + pending の "送信待ち" chip 描画 | 走行中に送った2通目が turn 完了後に `user2 → assistant B` の順で並び、turn A の応答と融合しない。reconnect / HITL pause 中は流れない |
 | **末尾** | doc-only: `event.rs:99-100` の布石コメント撤去、doc 34 との EchoesEvent 語彙合流 sweep（HITL/wire バブル種別を 1 箇所に整理） | — |
 
 - 実装運用は doc 32 §8 と同じ（team-b レビュー → `gh pr create --base nightly` → auto-merge、GitNexus impact/detect_changes、pre-MVP 原則、dogfood の daemon 再起動は gentle のみ）。
