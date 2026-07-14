@@ -15,12 +15,18 @@ pub enum AppCommands {
     Start,
     /// vp-app を停止 (SIGTERM、 idempotent)
     Stop,
+    /// Start Menu に shortcut を置いて OS の「アプリ」として登録 (Windows、 idempotent)
+    Install,
+    /// Start Menu shortcut を除去 (Windows、 idempotent)
+    Uninstall,
 }
 
 pub fn execute(cmd: AppCommands) -> Result<()> {
     match cmd {
         AppCommands::Start => start(),
         AppCommands::Stop => stop(),
+        AppCommands::Install => install(),
+        AppCommands::Uninstall => uninstall(),
     }
 }
 
@@ -142,6 +148,216 @@ fn stop() -> Result<()> {
     }
 }
 
+/// `vp app install` — Start Menu に shortcut を置き、 OS の「アプリ」として登録する。
+///
+/// mac は `.app` bundle 自体が Launchpad / Spotlight の登録単位なので不要 (no-op)。
+#[cfg(not(windows))]
+fn install() -> Result<()> {
+    println!("`vp app install` は Windows 専用です (mac は .app bundle が登録単位)。");
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn uninstall() -> Result<()> {
+    println!("`vp app uninstall` は Windows 専用です。");
+    Ok(())
+}
+
+/// Start Menu shortcut を作る (Windows、 idempotent = 既存があれば上書き)。
+///
+/// これで検索 (Win キー → "Vantage Point") / ピン留めから起動できるようになる。
+#[cfg(windows)]
+fn install() -> Result<()> {
+    let target = find_vp_app_binary().context(
+        "vp-app binary not found. \
+         Build it first: 'cargo build --release -p vp-app' \
+         or install: 'cargo install --path crates/vp-app'",
+    )?;
+    let lnk = shortcut::install(&target)?;
+    println!("📌 Start Menu shortcut を作成しました: {}", lnk.display());
+    println!("   target: {}", target.display());
+    println!("   AppUserModelID: {}", vp_paths::app_user_model_id());
+    println!("   Win キー → \"Vantage Point\" で起動 / タスクバーにピン留めできます。");
+    Ok(())
+}
+
+/// Start Menu shortcut を除去 (Windows、 idempotent)。
+#[cfg(windows)]
+fn uninstall() -> Result<()> {
+    match shortcut::uninstall()? {
+        Some(lnk) => println!("🧹 Start Menu shortcut を除去しました: {}", lnk.display()),
+        None => println!("(Start Menu shortcut は存在しません)"),
+    }
+    Ok(())
+}
+
+/// Windows の Start Menu shortcut (.lnk) を COM で読み書きする。
+///
+/// `.lnk` は単なる path の別名ではなく、 **AppUserModelID (AUMID) を焼ける入れ物**である点が
+/// 重要。 process 側 (`vp_app::icon::set_app_user_model_id`) と shortcut 側に同じ AUMID が
+/// 入って初めて、 taskbar が「ピン留めした shortcut」と「起動中の window」を同一の app と
+/// 認識する (= ピン留めが機能する)。 AUMID を焼くには `IPropertyStore` が要るため、
+/// `WScript.Shell` (PowerShell) では代替できず COM を直接叩いている。
+#[cfg(windows)]
+mod shortcut {
+    use std::path::{Path, PathBuf};
+
+    use anyhow::{Context, Result};
+    // windows-rs 0.62 での在り処: PKEY_* は EnhancedStorage、 PROPVARIANT は
+    // Com::StructuredStorage に居る (名前から想像する Shell::PropertiesSystem ではない)。
+    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize, IPersistFile,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, PropertiesSystem::IPropertyStore, ShellLink};
+    use windows::core::{HSTRING, Interface};
+
+    /// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Vantage Point.lnk`
+    ///
+    /// user 単位 (= 管理者権限不要)。 profile が付いていれば名前を分けて dev / release の
+    /// shortcut が共存できるようにする (dir / port / AUMID の分離と同じ思想)。
+    fn shortcut_path() -> Result<PathBuf> {
+        let appdata = std::env::var_os("APPDATA").context("APPDATA env が取得できない")?;
+        let name = match vp_paths::vp_profile() {
+            Some(p) => format!("Vantage Point ({p}).lnk"),
+            None => "Vantage Point.lnk".to_string(),
+        };
+        Ok(PathBuf::from(appdata)
+            .join(r"Microsoft\Windows\Start Menu\Programs")
+            .join(name))
+    }
+
+    /// COM を apartment-threaded で初期化し、 drop 時に必ず `CoUninitialize` する guard。
+    struct ComGuard;
+
+    impl ComGuard {
+        fn new() -> Self {
+            // 既に別 mode で初期化済み (RPC_E_CHANGED_MODE) でも、 CoCreateInstance は動くので続行する。
+            // SAFETY: プロセス開始直後の CLI から呼ぶだけ。
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+                .ok()
+                .ok();
+            Self
+        }
+    }
+
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            // SAFETY: new() の CoInitializeEx と 1 対 1 で対応する。
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    /// shortcut を作成する (既存があれば上書き = idempotent)。
+    pub fn install(target: &Path) -> Result<PathBuf> {
+        let lnk = shortcut_path()?;
+        if let Some(dir) = lnk.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("Start Menu dir の作成に失敗: {}", dir.display()))?;
+        }
+
+        let _com = ComGuard::new();
+        let target_h = HSTRING::from(target.as_os_str());
+
+        // SAFETY: 以下は全て「有効な COM object に、 有効な wide string を渡す」だけの呼び出し。
+        // 各呼び出しの失敗は HRESULT で返るので ? で伝播する。
+        unsafe {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+                .context("ShellLink の生成に失敗")?;
+            link.SetPath(&target_h).context("SetPath に失敗")?;
+            link.SetDescription(&HSTRING::from(
+                "Vantage Point — AI native development environment",
+            ))
+            .context("SetDescription に失敗")?;
+            // icon は exe に焼いた icon resource (build.rs) の index 0 を引く。
+            link.SetIconLocation(&target_h, 0)
+                .context("SetIconLocation に失敗")?;
+            if let Some(dir) = target.parent() {
+                link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()))
+                    .context("SetWorkingDirectory に失敗")?;
+            }
+
+            // AUMID を焼く (これがピン留めの成立条件)。
+            let store: IPropertyStore = link.cast().context("IPropertyStore の取得に失敗")?;
+            let aumid = PROPVARIANT::from(vp_paths::app_user_model_id());
+            store
+                .SetValue(&PKEY_AppUserModel_ID, &aumid)
+                .context("AppUserModelID の設定に失敗")?;
+            store.Commit().context("IPropertyStore の Commit に失敗")?;
+
+            let persist: IPersistFile = link.cast().context("IPersistFile の取得に失敗")?;
+            persist
+                .Save(&HSTRING::from(lnk.as_os_str()), true)
+                .with_context(|| format!("shortcut の保存に失敗: {}", lnk.display()))?;
+        }
+
+        Ok(lnk)
+    }
+
+    /// shortcut を除去する。 存在しなければ `None` (idempotent)。
+    pub fn uninstall() -> Result<Option<PathBuf>> {
+        let lnk = shortcut_path()?;
+        if !lnk.is_file() {
+            return Ok(None);
+        }
+        std::fs::remove_file(&lnk)
+            .with_context(|| format!("shortcut の削除に失敗: {}", lnk.display()))?;
+        Ok(Some(lnk))
+    }
+
+    /// test 用: 保存済み shortcut の target path を読み戻す。
+    #[cfg(test)]
+    pub fn read_target(lnk: &Path) -> Result<PathBuf> {
+        use windows::Win32::System::Com::STGM_READ;
+        use windows::Win32::UI::Shell::SLGP_RAWPATH;
+
+        let _com = ComGuard::new();
+        // SAFETY: 保存済み .lnk を読み、 target path を固定長 buffer に受ける。
+        unsafe {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+            let persist: IPersistFile = link.cast()?;
+            persist.Load(&HSTRING::from(lnk.as_os_str()), STGM_READ)?;
+            let mut buf = [0u16; 260];
+            link.GetPath(&mut buf, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)?;
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            Ok(PathBuf::from(String::from_utf16_lossy(&buf[..end])))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// install → 読み戻し → uninstall が一巡すること (実際の Start Menu を触る)。
+        /// AUMID / icon は COM の SetValue が Ok を返した時点で焼けているため、
+        /// ここでは「shortcut が作られ target が保たれ、 消せる」ことを確認する。
+        #[test]
+        fn shortcut_roundtrip() {
+            let target = std::env::current_exe().expect("current_exe");
+            let lnk = install(&target).expect("install");
+            assert!(
+                lnk.is_file(),
+                "shortcut が作られていない: {}",
+                lnk.display()
+            );
+
+            let read = read_target(&lnk).expect("read_target");
+            assert_eq!(
+                read.file_name(),
+                target.file_name(),
+                "shortcut の target が一致しない"
+            );
+
+            assert!(uninstall().expect("uninstall").is_some());
+            assert!(!lnk.is_file(), "shortcut が消えていない");
+            // idempotent: 2 回目は None
+            assert!(uninstall().expect("uninstall 2").is_none());
+        }
+    }
+}
+
 /// vp-app binary を探す:
 /// 1. `VP_APP_BIN` env (mise task / dogfood で `target/release/vp-app` を直接渡す path)
 /// 2. PATH 上の `vp-app` (cargo install で入った場合)
@@ -195,12 +411,27 @@ fn binary_candidates(name: &str) -> Vec<String> {
 }
 
 /// PATH を OS の区切り (`:` Unix / `;` Windows) で split して name を含む path を返す。
+///
+/// version manager の shim dir (`.../shims/`) は除外して **実体 binary** を掴む。 shim は
+/// 実体を exec するだけの wrapper で、 VersionInfo も icon resource も持たない:
+///   - `vp app install` が焼く shortcut は `SetIconLocation(target, 0)` で target の exe から
+///     icon を引くため、 shim を指すと Start Menu が generic icon になる (= icon 対応が無に帰す)
+///   - `vp app start` も wrapper プロセスが 1 枚余計に挟まるだけで得が無い
+/// PATH 上の shim を飛ばしても、 実体は同じ PATH の後段 (`~/.cargo/bin` 等) か vp の隣で拾える。
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     // `std::env::split_paths` は OS の PATH 区切り文字を正しく扱う (Unix=`:`, Windows=`;`)。
     std::env::split_paths(&path_var)
+        .filter(|d| !is_shim_dir(d))
         .map(|d| d.join(name))
         .find(|p| p.is_file())
+}
+
+/// version manager (mise / asdf / rtx) の shim dir か。 いずれも `shims` という dir 名で
+/// wrapper を配る慣習なので、 dir 名 1 本で判定する。
+fn is_shim_dir(dir: &std::path::Path) -> bool {
+    dir.file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("shims"))
 }
 
 /// log 出力先 — XDG state zone 配下 (`vp_log_dir()` = `~/.local/state/vp/log/`)。

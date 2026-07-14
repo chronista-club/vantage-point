@@ -27,7 +27,10 @@ fn main() {
         // VersionInfo — タスクマネージャの「説明」列や exe のプロパティに出る。
         // FileVersion / ProductVersion は CARGO_PKG_VERSION から winresource が自動で入れる。
         res.set("ProductName", "Vantage Point");
-        res.set("FileDescription", "Vantage Point — AI native development environment");
+        res.set(
+            "FileDescription",
+            "Vantage Point — AI native development environment",
+        );
         res.set("CompanyName", "Chronista Club");
         res.set("OriginalFilename", "vp-app.exe");
 
