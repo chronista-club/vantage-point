@@ -7,8 +7,13 @@
 //!
 //! 1. `<world_url>/api/health` を ping (500ms timeout)
 //! 2. 成功 → ready を返す
-//! 3. 失敗 + URL が localhost 相当なら → `vp world` を background spawn
-//!    その後 up になるまで poll (最大 `LAUNCH_TIMEOUT`)
+//! 3. 失敗 + URL が localhost 相当なら → 起動を試み、up まで poll (最大 `LAUNCH_TIMEOUT`)。起動経路は:
+//!    - macOS で LaunchAgent job が load 済みなら `launchctl kickstart`（-k なし）で起こす
+//!      （所有権一本化 2026-07-14: 直接 spawn 個体が port を握ると LaunchAgent 個体が
+//!      二重起動ガードで空回りし続け、brew upgrade の `kickstart -k` が実 holder に
+//!      届かない「所有権分裂」が起きる。job が居るなら起動は launchd に委譲する）
+//!    - job 未 load（LaunchAgent 未 install ユーザー）なら従来どおり `vp world` を
+//!      background spawn（fallback）
 //! 4. 失敗 + 非 localhost → auto-launch せず Err を返す (remote daemon 扱い)
 //!
 //! ## vp バイナリの探索
@@ -27,6 +32,14 @@ use anyhow::{Context, Result};
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// ping 間隔
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// TheWorld LaunchAgent の label。
+///
+/// SSOT は `crates/vantage-point/src/daemon/process.rs` の `LAUNCH_AGENT_LABEL`。
+/// vp-app は重量 crate (vantage-point) に依存しない方針（Cargo.toml 参照）のため
+/// ローカル定数で相互参照する。変更時は両方を同期すること。
+#[cfg(target_os = "macos")]
+const LAUNCH_AGENT_LABEL: &str = "club.chronista.vantage-point.daemon";
 
 /// `vp` バイナリの場所を特定
 fn locate_vp_binary() -> PathBuf {
@@ -82,6 +95,73 @@ fn ping_health(url: &str) -> bool {
     }
 }
 
+/// macOS: LaunchAgent job が load 済みなら `launchctl kickstart`（-k なし）で起こす。
+///
+/// 戻り値 = kickstart を発行したか（false = job 未 load / dev profile → caller は
+/// 従来の直接 spawn fallback へ進む）。
+///
+/// - `launchctl print` の exit 0 は「job が load 済み」しか意味しない（その job が
+///   port holder を所有している保証はない — 2026-07-14 の教訓）。ここでは caller が
+///   health ping 失敗を確認済み = port holder 不在なので、load 済み job に起動を委譲してよい
+/// - `-k` なし kickstart は「停止中なら即起動 / 稼働中なら no-op」の冪等な意味論。
+///   KeepAlive の crash-restart throttle (~10s) を待たずに起こせる
+#[cfg(target_os = "macos")]
+fn try_kickstart_launch_agent() -> bool {
+    // VP_PROFILE=dev では踏まない: label は profile 非分離なので、kickstart しても起きるのは
+    // brew(release) 個体 (:32000) だけで dev(:32100) は上がらず、poll timeout に落ちるだけ。
+    // dev daemon は従来どおり直接 spawn で起動する。
+    if vp_paths::vp_profile().is_some() {
+        return false;
+    }
+    let uid = unsafe { libc::getuid() };
+    let target = format!("gui/{uid}/{LAUNCH_AGENT_LABEL}");
+    let loaded = Command::new("launchctl")
+        .args(["print", &target])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !loaded {
+        return false;
+    }
+    match Command::new("launchctl")
+        .args(["kickstart", &target])
+        .output()
+    {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            tracing::warn!(
+                "launchctl kickstart 非ゼロ ({}): {}",
+                target,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!("launchctl kickstart 実行失敗 ({}): {}", target, e);
+            false
+        }
+    }
+}
+
+/// daemon が up になるまで poll する（最大 [`LAUNCH_TIMEOUT`]）
+fn wait_daemon_up(world_url: &str) -> Result<()> {
+    let deadline = Instant::now() + LAUNCH_TIMEOUT;
+    while Instant::now() < deadline {
+        if ping_health(world_url) {
+            tracing::info!("daemon up after auto-launch");
+            return Ok(());
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    anyhow::bail!(
+        "daemon auto-launch: {} に {}s 以内に応答なし",
+        world_url,
+        LAUNCH_TIMEOUT.as_secs()
+    )
+}
+
 /// daemon が up でなければ auto-launch してから ready まで待つ
 pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
     if ping_health(world_url) {
@@ -93,6 +173,14 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
             "daemon 未起動 ({}): remote URL なので auto-launch しない",
             world_url
         );
+    }
+
+    // 所有権一本化: LaunchAgent job が居るなら起動を launchd に委譲する（直接 spawn 個体が
+    // port を握って launchd job と所有権分裂するのを構造的に防ぐ）。
+    #[cfg(target_os = "macos")]
+    if try_kickstart_launch_agent() {
+        tracing::info!("daemon auto-launch: LaunchAgent kickstart に委譲");
+        return wait_daemon_up(world_url);
     }
 
     let vp_bin = locate_vp_binary();
@@ -147,20 +235,7 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
     drop(child);
     tracing::info!("daemon spawned (pid={})", pid);
 
-    // up まで poll
-    let deadline = Instant::now() + LAUNCH_TIMEOUT;
-    while Instant::now() < deadline {
-        if ping_health(world_url) {
-            tracing::info!("daemon up after auto-launch");
-            return Ok(());
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
-    anyhow::bail!(
-        "daemon auto-launch: {} に {}s 以内に応答なし",
-        world_url,
-        LAUNCH_TIMEOUT.as_secs()
-    )
+    wait_daemon_up(world_url)
 }
 
 // PATH 補強 (`augmented_spawn_path`) の SSOT は `vp_paths::spawn_env` に一本化した。
