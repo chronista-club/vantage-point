@@ -103,6 +103,10 @@ ignore = "0.4"
 # (window.open) を避けるための native open 経路。 vantage-point auth.rs と同じ crate に揃える。
 webbrowser = "1"
 
+# assets/icon.png を runtime に RGBA へ decode する (tray icon / window icon が生 RGBA を要求)。
+# png decode しかしないので default-features を切って軽量に保つ。
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で TheWorld を真の daemon 化、
 #  vp-app 死亡時に SIGHUP 巻き添えで TheWorld も死ぬ問題の修正)。
 # **重要**: target-specific section は file 末尾に置くこと。 途中に置くと TOML 仕様で
@@ -131,3 +135,14 @@ ts-rs = { version = "11", features = ["serde-compat"] }  # 12 で export_all() �
 # SSOT に Rust enum + TS union 生成。 package 名 `club-kdl-codegen` / lib 名 `kdl_codegen`。
 # 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` 経由 (ts-rs と同じ慣習)。
 club-kdl-codegen = "0.11"
+
+# AppUserModelID (taskbar identity) の設定に使う。 版は vantage-point と揃える (0.62)。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_UI_Shell"] }
+
+# build.rs で exe に icon + VersionInfo を焼く (Windows のみ)。
+# build-dependencies の cfg は **host** で評価される = Windows host の時だけ引く。
+# build.rs 側も `#[cfg(windows)]` で揃えてあるので mac/Linux build は winresource を
+# compile すらしない (Windows 対応で mac を退行させない)。
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

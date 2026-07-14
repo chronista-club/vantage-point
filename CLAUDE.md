@@ -116,6 +116,7 @@ vp restart-all         # 全 Process + TheWorld を一括再起動
 
 # TheWorld（Daemon）/ SP
 vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
+vp daemon restart [--if-running]  # ownership-agnostic 再起動（実 port holder を停止 → LaunchAgent 優先で起動。--if-running = 不在なら no-op、brew cask postflight 用）
 vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
 vp sp start [-d simple|detail]  # SP サーバー起動（デバッグモードはここ）
 vp sp stop|status

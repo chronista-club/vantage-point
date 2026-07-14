@@ -69,6 +69,12 @@ export function WorldWidget() {
 	const devices = () => sidebar.bastet_devices ?? [];
 	const bastetActive = () => sidebar.active_stand?.kind === "bastet";
 
+	// in-app update: daemon の定期チェック (起動時 + 24h) が検知した新 release。
+	// update_available 時のみ World widget 直下に「更新する」CTA を出す。latest_version は
+	// ボタン label + `update:apply` IPC の payload (Rust 側の native ダイアログ文言に使う)。
+	const updateAvailable = () => a().update_available;
+	const latestVersion = () => a().latest_version ?? undefined;
+
 	return (
 		<>
 			<details class="vp-world">
@@ -99,6 +105,23 @@ export function WorldWidget() {
 					</div>
 				</div>
 			</details>
+			<Show when={online() && updateAvailable()}>
+				<div
+					class="vp-world-update"
+					title={`v${latestVersion() ?? "?"} が利用可能です。クリックで更新します`}
+					onClick={() => {
+						const v = latestVersion();
+						// version が無い場合は IPC を送らない (Rust arm も空 version を無視)。
+						if (v) sendIpc({ t: "update:apply", version: v });
+					}}
+				>
+					<CreoIcon name="ph:arrow-circle-up" size={14} />
+					<span class="vp-world-update-label">更新する</span>
+					<Show when={latestVersion()}>
+						<span class="vp-world-update-ver">v{latestVersion()}</span>
+					</Show>
+				</div>
+			</Show>
 			<Show when={showHub()}>
 				<div
 					class="vp-world-summary"

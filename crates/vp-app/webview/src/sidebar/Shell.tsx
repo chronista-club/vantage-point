@@ -509,6 +509,19 @@ html,body{margin:0;height:100%;overflow:hidden;}
   white-space:nowrap;}
 .vp-hub-world .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
   font-variant-numeric:tabular-nums;}
+/* in-app update: 新しい release 検知時のみ World widget 直下に出る CTA 行。
+   地の muted 語彙から一段持ち上げて「押せる」ことを示す (cyan accent + hover)。 */
+.vp-world-update{display:flex;align-items:center;gap:8px;margin:2px var(--spacing-sm,10px) 6px;
+  padding:6px 10px;cursor:pointer;border-radius:6px;
+  font-size:var(--sb-text-hint,12px);font-family:var(--vp-font-mono),var(--typography-family-mono);
+  color:var(--sb-conn-auto,#22E0FF);
+  background:color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 90%);
+  border:1px solid color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 78%);
+  user-select:none;}
+.vp-world-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 82%);}
+.vp-world-update-label{flex:1 1 auto;font-weight:600;}
+.vp-world-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
+  font-variant-numeric:tabular-nums;}
 
 /* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
 .vp-devices{flex:0 0 auto;padding-bottom:4px;}

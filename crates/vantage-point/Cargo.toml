@@ -204,6 +204,20 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_System_Threading",
     "Win32_Storage_Xps",
+    # Start Menu shortcut (.lnk) の COM 生成 — IShellLinkW + IPersistFile、
+    # AUMID を焼くための IPropertyStore / PKEY_AppUserModel_ID。
+    # PKEY_* は EnhancedStorage、 PROPVARIANT は Com_StructuredStorage (+ Variant) 側に居る
+    # ので、 IPropertyStore::SetValue を生やすにはこの 3 つが揃っている必要がある。
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_Storage_EnhancedStorage",
+    # test の read_target が使う IShellLinkW::GetPath は引数に WIN32_FIND_DATAW を取るため、
+    # この feature が無いと **メソッドごと cfg で消える** (release build は cfg(test) の外なので
+    # 素通りし、 cargo test で初めて E0599 になる)。
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
 ] }
 
 [dev-dependencies]

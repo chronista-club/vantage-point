@@ -1396,6 +1396,9 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
         // hub federation 接続状態（World 横の Hub インジケータ用）+ available worlds リスト。
         snap.hub = h.hub;
         snap.hub_worlds = h.hub_worlds;
+        // in-app update: daemon の定期チェック結果（「更新する」ボタンの表示 gate + label）。
+        snap.update_available = h.update_available;
+        snap.latest_version = h.latest_version;
         // L1 lifecycle: SP presence map（project 行の ●◐○ dot 用、path → presence）。
         snap.presence = h
             .processes
@@ -1474,8 +1477,20 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             pane_id: None,
             preview_url: None,
             chat: false,
+            // 非 lane pane (Stand) は Echoes ヘッダの lane 情報を持たない。
+            cwd: None,
+            branch: None,
+            lane_name: None,
         }
     } else if let Some(addr) = state.active_lane_address.as_deref() {
+        // Echoes 共通ヘッダ用: active lane の LaneInfo から cwd / branch を引く。cwd は
+        // address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に相乗り
+        // させて運ぶ (新しい配信チャネルは増やさない)。branch は performer のみ (安価に取れる時)。
+        let lane = state
+            .lanes_by_project
+            .values()
+            .flatten()
+            .find(|l| l.address.key() == addr);
         ActivePaneInfo {
             kind: Some("terminal"),
             pane_id: Some(addr),
@@ -1483,6 +1498,13 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             // doc 33: chat lane は xterm を持たない (ChatView が内容)。 これを JS に伝えないと
             // showLane が「xterm 無し = 内容無し」と誤判定し placeholder が ChatView を覆う。
             chat: lane_is_chat(state, addr),
+            cwd: lane.map(|l| l.cwd.as_str()).filter(|c| !c.is_empty()),
+            branch: lane
+                .and_then(|l| l.performer_status.as_ref())
+                .and_then(|p| p.branch.as_deref()),
+            // 現状 LaneInfo.name は常に None（JS は addr 短縮名に fallback）だが、
+            // 将来 populate された時にヘッダが取り残されないよう cwd/branch と同経路で供給。
+            lane_name: lane.and_then(|l| l.name.as_deref()),
         }
     } else {
         ActivePaneInfo {
@@ -1490,6 +1512,9 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             pane_id: None,
             preview_url: None,
             chat: false,
+            cwd: None,
+            branch: None,
+            lane_name: None,
         }
     };
     let script = main_area::build_set_active_pane_script(&info);
@@ -1826,6 +1851,10 @@ struct SidebarIpcOutcome {
     /// Wire inbox: `wire:ack` 要求 `(address, message_id)`。 lane の agent として ack した後、
     /// 再 fetch して `AppEvent::WireHistoryResult` で最新状態を push back する。
     wire_ack_request: Option<(String, String)>,
+    /// in-app update: sidebar footer の「更新する」ボタン click 要求 `(latest_version)`。
+    /// caller (event loop) が `update_flow::spawn_update_flow` を呼び、native 確認ダイアログ →
+    /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
+    update_apply_request: Option<String>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -2064,6 +2093,14 @@ fn handle_sidebar_ipc(
                 out.wire_ack_request = Some((m.address, m.message_id));
             }
         }
+        IpcEnvelope::UpdateApply(m) => {
+            // in-app update: sidebar footer の「更新する」ボタン click。version は
+            // ダイアログ文言用の latest version。caller (event loop) が native 確認ダイアログ →
+            // self-update → daemon restart → relaunch の破壊的フローを専用スレッドで起動する。
+            if !m.version.is_empty() {
+                out.update_apply_request = Some(m.version);
+            }
+        }
     }
     out
 }
@@ -2169,6 +2206,10 @@ pub fn run() -> anyhow::Result<()> {
 
     // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
     vp_paths::migrate_legacy_paths();
+
+    // Windows taskbar の identity。 **window を作る前**に設定する必要がある
+    // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
+    crate::icon::set_app_user_model_id();
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 
@@ -2280,6 +2321,14 @@ pub fn run() -> anyhow::Result<()> {
     let mut builder = WindowBuilder::new()
         .with_title("Vantage Point")
         .with_min_inner_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
+    // window icon (Windows: titlebar + taskbar / Linux: WM)。 Windows は exe に焼いた icon
+    // resource が主役だが、 window 単位の icon を明示しておくと起動経路によらず確実に出る。
+    // mac は dock icon (icon::set_app_icon) が担当で window icon の概念が無いため素通り。
+    if let Some((rgba, w, h)) = crate::icon::icon_rgba(256)
+        && let Ok(icon) = tao::window::Icon::from_rgba(rgba, w, h)
+    {
+        builder = builder.with_window_icon(Some(icon));
+    }
     if let Some(geom) = &restored_geometry {
         builder = builder
             .with_inner_size(LogicalSize::new(geom.width, geom.height))
@@ -3025,9 +3074,23 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
-                if let Some(addr) = &sidebar_state.active_lane_address {
-                    let is_chat = lane_is_chat(&sidebar_state, addr);
-                    lane_js::show_lane(&webview, Some(addr), is_chat);
+                if let Some(addr) = sidebar_state.active_lane_address.clone() {
+                    let is_chat = lane_is_chat(&sidebar_state, &addr);
+                    lane_js::show_lane(&webview, Some(&addr), is_chat);
+                    // 起動 race で silent drop されるのは ensureLane だけではない。 auto-select の
+                    // activate_lane が撃つ setActivePane / vpConsole.setMode も同じ窓で落ちるが、
+                    // この 2 つは JS 側の「active lane」(= Act toggle の宛先) を埋める唯一の経路。
+                    // showLane だけ再発行しても JS の active lane は null のままなので、 Act II 押下が
+                    // "active lane 不明" で早期 return し「Act II に移行できない」になる (lane を手で
+                    // 選び直すと activate_lane が再走して直る、が user から見れば不可解)。 catch-up は
+                    // 3 つとも再発行して JS 側 state を確定させる。 いずれも冪等。
+                    push_active_view(&webview, &sidebar_state);
+                    let script = format!(
+                        "window.vpConsole && window.vpConsole.setMode({}, {})",
+                        serde_json::to_string(&addr).unwrap_or_else(|_| "\"\"".into()),
+                        if is_chat { "\"chat\"" } else { "\"tui\"" },
+                    );
+                    let _ = webview.evaluate_script(&script);
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
             }
@@ -4136,6 +4199,12 @@ pub fn run() -> anyhow::Result<()> {
                             );
                         }
                     }
+                }
+                // in-app update: sidebar footer の「更新する」ボタン click 要求。
+                // native 確認ダイアログ → self-update → daemon restart → relaunch を
+                // 専用スレッドで起動する（event loop = main thread は塞がない）。
+                if let Some(version) = outcome.update_apply_request {
+                    crate::update_flow::spawn_update_flow(version);
                 }
             }
             // VP-100 γ-light: ResizeObserver からの slot 矩形通知を蓄積。

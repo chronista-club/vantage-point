@@ -60,6 +60,24 @@ pub fn app_dir_name() -> &'static str {
     })
 }
 
+/// Windows の AppUserModelID (AUMID)。 brew=`Chronista.VantagePoint` / dev=`Chronista.VantagePoint.dev`。
+///
+/// taskbar は AUMID で「どの window がどの app か」を identify する。 未設定だと exe path 単位の
+/// 暗黙 ID になり、 起動元 (cargo target / Start Menu shortcut) が違うだけで別アプリ扱いになって
+/// pin 留めや grouping が壊れる。 process 側 (`SetCurrentProcessExplicitAppUserModelID`) と
+/// Start Menu shortcut 側に同じ値を焼くことで初めて「pin した shortcut」と「起動中の window」が
+/// 同一視される。
+///
+/// 値は winget の PackageIdentifier (`Chronista.VantagePoint`) に揃える。 dir / port と同様に
+/// profile で分ける — dev と release を並列常駐させた時に taskbar 上でも別アプリとして扱いたい。
+pub fn app_user_model_id() -> &'static str {
+    static AUMID: OnceLock<String> = OnceLock::new();
+    AUMID.get_or_init(|| match vp_profile() {
+        Some(p) => format!("Chronista.VantagePoint.{p}"),
+        None => "Chronista.VantagePoint".to_string(),
+    })
+}
+
 /// world port の base 値 (brew の TheWorld port)。
 pub const WORLD_PORT_BASE: u16 = 32000;
 
