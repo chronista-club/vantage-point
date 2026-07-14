@@ -184,6 +184,13 @@ pub struct WorldHealthInfo {
     /// 旧 daemon は field 不在 → 空。`path` で project 行に join する。
     #[serde(default)]
     pub processes: Vec<SpPresence>,
+    /// in-app update: 新しい release が GitHub にあるか（daemon の定期チェック cache 由来）。
+    /// 旧 daemon は field 不在 → false。sidebar「更新する」ボタンの表示 gate。
+    #[serde(default)]
+    pub update_available: bool,
+    /// 最新 release version（`update_available` 時のボタン label 用、未取得は None）。
+    #[serde(default)]
+    pub latest_version: Option<String>,
 }
 
 /// SP の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。

@@ -1396,6 +1396,9 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
         // hub federation 接続状態（World 横の Hub インジケータ用）+ available worlds リスト。
         snap.hub = h.hub;
         snap.hub_worlds = h.hub_worlds;
+        // in-app update: daemon の定期チェック結果（「更新する」ボタンの表示 gate + label）。
+        snap.update_available = h.update_available;
+        snap.latest_version = h.latest_version;
         // L1 lifecycle: SP presence map（project 行の ●◐○ dot 用、path → presence）。
         snap.presence = h
             .processes
@@ -1848,6 +1851,10 @@ struct SidebarIpcOutcome {
     /// Wire inbox: `wire:ack` 要求 `(address, message_id)`。 lane の agent として ack した後、
     /// 再 fetch して `AppEvent::WireHistoryResult` で最新状態を push back する。
     wire_ack_request: Option<(String, String)>,
+    /// in-app update: sidebar footer の「更新する」ボタン click 要求 `(latest_version)`。
+    /// caller (event loop) が `update_flow::spawn_update_flow` を呼び、native 確認ダイアログ →
+    /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
+    update_apply_request: Option<String>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -2084,6 +2091,14 @@ fn handle_sidebar_ipc(
             // Wire inbox: lane の agent としての ack 要求 (ack 後に再 fetch)。
             if !m.address.is_empty() && !m.message_id.is_empty() {
                 out.wire_ack_request = Some((m.address, m.message_id));
+            }
+        }
+        IpcEnvelope::UpdateApply(m) => {
+            // in-app update: sidebar footer の「更新する」ボタン click。version は
+            // ダイアログ文言用の latest version。caller (event loop) が native 確認ダイアログ →
+            // self-update → daemon restart → relaunch の破壊的フローを専用スレッドで起動する。
+            if !m.version.is_empty() {
+                out.update_apply_request = Some(m.version);
             }
         }
     }
@@ -4184,6 +4199,12 @@ pub fn run() -> anyhow::Result<()> {
                             );
                         }
                     }
+                }
+                // in-app update: sidebar footer の「更新する」ボタン click 要求。
+                // native 確認ダイアログ → self-update → daemon restart → relaunch を
+                // 専用スレッドで起動する（event loop = main thread は塞がない）。
+                if let Some(version) = outcome.update_apply_request {
+                    crate::update_flow::spawn_update_flow(version);
                 }
             }
             // VP-100 γ-light: ResizeObserver からの slot 矩形通知を蓄積。

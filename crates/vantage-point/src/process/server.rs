@@ -675,6 +675,39 @@ pub async fn run_world(
         delegation_store,
     });
 
+    // in-app update: GitHub Releases latest の定期チェック（起動時 + 24h 毎）で
+    // UpdateCapability の cache を温める。/api/health がこの cache を読んで
+    // `update_available` / `latest_version` を vp-app に露出する（handler 側は network なし）。
+    // launchd daemon は shell env を持たない前提で reqwest 直（proxy 等に依存しない）。
+    // チェック失敗は静かに無視（オフライン耐性 — 次の tick で再試行）。
+    {
+        let update_cap = update_cap.clone();
+        let shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    // interval の初回 tick は即時発火 = 起動時チェックを兼ねる
+                    _ = tick.tick() => {
+                        match update_cap.write().await.check_update().await {
+                            Ok(r) if r.update_available => tracing::info!(
+                                current = %r.current_version,
+                                latest = %r.latest_version,
+                                "update check: 新しい release が利用可能"
+                            ),
+                            Ok(r) => tracing::debug!(
+                                current = %r.current_version,
+                                "update check: 最新です"
+                            ),
+                            Err(e) => tracing::debug!("update check 失敗（無視して次回再試行）: {}", e),
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // tmux decoupling PR1: SP control channel registry を hoist する。 daemon server (下記
     // daemon_state) がこの map を populate し、 World-side の nudge loop (delivery / reconcile) が
     // 同一 Arc を引いて `lane_nudge` を所有 SP に forward する。 別々に new() すると map が分裂して

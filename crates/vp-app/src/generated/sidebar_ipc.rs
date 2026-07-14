@@ -104,6 +104,11 @@ pub struct WireAck {
     pub message_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateApply {
+    pub version: String,
+}
+
 /// Envelope enum for channel "ipc" — a discriminated union over its
 /// requests, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,4 +148,6 @@ pub enum IpcEnvelope {
     WireFetch(WireFetch),
     #[serde(rename = "wire:ack")]
     WireAck(WireAck),
+    #[serde(rename = "update:apply")]
+    UpdateApply(UpdateApply),
 }
