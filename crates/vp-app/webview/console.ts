@@ -85,6 +85,60 @@ export type EchoesEvent =
 export type ConsoleRenderer = (event: EchoesEvent) => void
 
 // ---------------------------------------------------------------------------
+// Echoes 共通ヘッダ用の per-lane summary（creo memo `vp-pane-common-header`）
+// ---------------------------------------------------------------------------
+
+/**
+ * EchoesHeader（共通ヘッダ strip）が表示する lane の session summary。
+ * EchoesEvent 既存流（session_init / turn_completed / error）だけから畳む —
+ * 新しい Rust→JS チャネルは作らない。全 field presence-driven（無ければ chip 非表示）。
+ */
+export type EchoesHeaderState = {
+  /** cc session id（Act を跨いで同一 session が継続することの可視化）。 */
+  sessionId?: string
+  model?: string
+  permissionMode?: string
+  /** 直近の engine 途絶/エラー（v0.35.2 の Error broadcast 受け皿）。
+   *  session_init（engine 復帰）/ turn_completed（生存証拠）で clear。 */
+  engineError?: string
+}
+
+/**
+ * header summary への畳み込み（純関数、vitest 対象）。変化があれば true を返す —
+ * caller はその時だけ 'vp:echoes-header' event を dispatch する（message_chunk 等の
+ * 高頻度 event では飛ばない = ヘッダ再描画は低頻度に保たれる）。
+ */
+export function foldHeaderState(h: EchoesHeaderState, event: EchoesEvent): boolean {
+  switch (event.kind) {
+    case 'session_init': {
+      const changed =
+        h.sessionId !== event.session_id ||
+        (event.model !== undefined && h.model !== event.model) ||
+        (event.permission_mode !== undefined && h.permissionMode !== event.permission_mode) ||
+        h.engineError !== undefined
+      h.sessionId = event.session_id
+      if (event.model !== undefined) h.model = event.model
+      if (event.permission_mode !== undefined) h.permissionMode = event.permission_mode
+      h.engineError = undefined
+      return changed
+    }
+    case 'turn_completed': {
+      const changed = h.sessionId !== event.session_id || h.engineError !== undefined
+      h.sessionId = event.session_id
+      h.engineError = undefined
+      return changed
+    }
+    case 'error': {
+      const changed = h.engineError !== event.message
+      h.engineError = event.message
+      return changed
+    }
+    default:
+      return false
+  }
+}
+
+// ---------------------------------------------------------------------------
 // per-lane 状態（buffer / mode / renderer）
 // ---------------------------------------------------------------------------
 
@@ -96,6 +150,8 @@ type LaneConsole = {
   buffer: EchoesEvent[]
   mode: ConsoleMode
   renderer: ConsoleRenderer | null
+  /** Echoes 共通ヘッダ用 summary（session_init / turn_completed / error の畳み込み）。 */
+  header: EchoesHeaderState
 }
 
 const lanes = new Map<string, LaneConsole>()
@@ -103,7 +159,7 @@ const lanes = new Map<string, LaneConsole>()
 function laneOf(lane: string): LaneConsole {
   let entry = lanes.get(lane)
   if (!entry) {
-    entry = { buffer: [], mode: 'tui', renderer: null }
+    entry = { buffer: [], mode: 'tui', renderer: null, header: {} }
     lanes.set(lane, entry)
   }
   return entry
@@ -122,6 +178,11 @@ export type VpConsole = {
   detachRenderer(lane: string): void
   /** devtools 検分: 直近 n 件（default 20）。 */
   peek(lane: string, n?: number): EchoesEvent[]
+  /** Echoes 共通ヘッダ用 summary の snapshot（copy を返す — caller の signal 更新用）。 */
+  headerState(lane: string): EchoesHeaderState
+  /** ChatView の permission mode optimistic 切替をヘッダにも同期する（engine は即時 event を
+   *  返さないため。respawn 時は session_init.permission_mode の真値が上書きする）。 */
+  notePermissionMode(lane: string, mode: string): void
 }
 
 export function installConsole(): VpConsole {
@@ -140,6 +201,12 @@ export function installConsole(): VpConsole {
       if (event.kind === 'session_init') {
         document.dispatchEvent(
           new CustomEvent('vp:console-ready', { detail: { lane } }),
+        )
+      }
+      // Echoes 共通ヘッダ summary。変化した時だけ通知（chunk 系では飛ばない）。
+      if (foldHeaderState(entry.header, event)) {
+        document.dispatchEvent(
+          new CustomEvent('vp:echoes-header', { detail: { lane } }),
         )
       }
       if (entry.renderer) {
@@ -178,6 +245,17 @@ export function installConsole(): VpConsole {
     },
     peek(lane, n = 20) {
       return laneOf(lane).buffer.slice(-n)
+    },
+    headerState(lane) {
+      return { ...laneOf(lane).header }
+    },
+    notePermissionMode(lane, mode) {
+      const h = laneOf(lane).header
+      if (h.permissionMode === mode) return
+      h.permissionMode = mode
+      document.dispatchEvent(
+        new CustomEvent('vp:echoes-header', { detail: { lane } }),
+      )
     },
   }
   ;(window as unknown as { vpConsole: VpConsole }).vpConsole = api

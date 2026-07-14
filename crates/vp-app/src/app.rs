@@ -1474,8 +1474,20 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             pane_id: None,
             preview_url: None,
             chat: false,
+            // 非 lane pane (Stand) は Echoes ヘッダの lane 情報を持たない。
+            cwd: None,
+            branch: None,
+            lane_name: None,
         }
     } else if let Some(addr) = state.active_lane_address.as_deref() {
+        // Echoes 共通ヘッダ用: active lane の LaneInfo から cwd / branch を引く。cwd は
+        // address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に相乗り
+        // させて運ぶ (新しい配信チャネルは増やさない)。branch は performer のみ (安価に取れる時)。
+        let lane = state
+            .lanes_by_project
+            .values()
+            .flatten()
+            .find(|l| l.address.key() == addr);
         ActivePaneInfo {
             kind: Some("terminal"),
             pane_id: Some(addr),
@@ -1483,6 +1495,13 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             // doc 33: chat lane は xterm を持たない (ChatView が内容)。 これを JS に伝えないと
             // showLane が「xterm 無し = 内容無し」と誤判定し placeholder が ChatView を覆う。
             chat: lane_is_chat(state, addr),
+            cwd: lane.map(|l| l.cwd.as_str()).filter(|c| !c.is_empty()),
+            branch: lane
+                .and_then(|l| l.performer_status.as_ref())
+                .and_then(|p| p.branch.as_deref()),
+            // 現状 LaneInfo.name は常に None（JS は addr 短縮名に fallback）だが、
+            // 将来 populate された時にヘッダが取り残されないよう cwd/branch と同経路で供給。
+            lane_name: lane.and_then(|l| l.name.as_deref()),
         }
     } else {
         ActivePaneInfo {
@@ -1490,6 +1509,9 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             pane_id: None,
             preview_url: None,
             chat: false,
+            cwd: None,
+            branch: None,
+            lane_name: None,
         }
     };
     let script = main_area::build_set_active_pane_script(&info);
