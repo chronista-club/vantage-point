@@ -54,6 +54,17 @@ pub struct ActivePaneInfo<'a> {
     /// `#lane-empty` placeholder を ChatView の上に被せてしまう。 本 flag で
     /// 「xterm は無いが ChatView が内容を持つ」を伝え、 placeholder を抑止する。
     pub chat: bool,
+    /// Echoes 共通ヘッダ (操縦席) の cwd chip 用: この lane の cwd (絶対 path)。
+    /// header は `~` 短縮 + 中略で表示し、click で full path を clipboard copy する。
+    /// terminal kind でのみ意味を持つ。None = lane 不明 / 非 lane pane (chip 非表示)。
+    ///
+    /// cwd は address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に
+    /// 相乗りさせて運ぶ (新しい配信チャネルは増やさない — 既存 lane 状態配信経路)。
+    pub cwd: Option<&'a str>,
+    /// Echoes 共通ヘッダの branch chip 用: performer lane の git branch
+    /// (`performer_status.branch` 由来、「安価に取れる場合のみ」)。
+    /// conductor / 取得不能時は None (chip 非表示)。
+    pub branch: Option<&'a str>,
 }
 
 /// `window.setActivePane(info)` を呼ぶ JS スニペットを生成
@@ -151,18 +162,32 @@ body{overflow:hidden;}
 }
 .pane.active{pointer-events:auto;}
 .pane.terminal{padding:0;}
-/* Phase 2.5: per-Lane instance container. lane-host が pane-terminal 全領域を埋め、
+/* Echoes 共通ヘッダ (操縦席、mem `vp-pane-common-header`): Act I(xterm)/Act II(chat) を跨いで
+   載り続ける lane-local な情報 + 操作の strip。DOM の器だけを World A が用意し、中身は
+   editor-host bundle の EchoesHeader component が #echoes-header に mount する
+   (#console-chat-host と同じ mount 点パターン)。
+   高さ 0 が default = header 不在時は xterm/chat が全高 (既存挙動、regression なし)。
+   header が内容を持つ時だけ World B が #pane-terminal に .echoes-header-active を付け、
+   strip を開いて lane-host / console-chat-host / lane-empty をその分だけ押し下げる
+   (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
+   捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
+#pane-terminal{--echoes-header-h:0px;}
+#pane-terminal.echoes-header-active{--echoes-header-h:30px;}
+#echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
+  overflow:hidden;z-index:2;}
+/* Phase 2.5: per-Lane instance container. lane-host が pane-terminal の header 下領域を埋め、
    各 .lane-pane が absolute で重なる。 active のみ display:block。 */
-#lane-host{position:absolute;inset:0;}
+#lane-host{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;}
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
 /* doc 33 C2: Echoes Act II (Console GUI) mount 点。default 非表示、mode=chat で .active。
    lane-host(xterm) と排他 — chat 表示中は lane-host を .console-hidden で隠す。 */
-#console-chat-host{position:absolute;inset:0;display:none;}
+#console-chat-host{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;}
 #console-chat-host.active{display:block;}
 #lane-host.console-hidden{display:none;}
-/* doc 33 §9: 切替 progress overlay。pane 全面を覆い、resume 確定まで表示 (= switch lock)。 */
-#console-switching{position:absolute;inset:0;display:none;z-index:20;
+/* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
+   header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
+#console-switching{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
   align-items:center;justify-content:center;
   background:color-mix(in srgb, var(--color-bg,#0f1115) 82%, transparent);backdrop-filter:blur(2px);}
 #console-switching.active{display:flex;}
@@ -175,8 +200,9 @@ body{overflow:hidden;}
 @keyframes console-spin{to{transform:rotate(360deg);}}
 @media (prefers-reduced-motion:reduce){.console-switching-spinner{animation-duration:1.6s;}}
 .lane-pane .lane-term{padding:0;height:100%;width:100%;box-sizing:border-box;}
-/* どの Lane も無い時の placeholder (active class で表示制御、 default は表示) */
-#lane-empty{position:absolute;inset:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
+/* どの Lane も無い時の placeholder (active class で表示制御、 default は表示)。
+   header 分 (var) 押し下げ — header 不在時は 0 なので従来通り全面。 */
+#lane-empty{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
 #lane-empty.active{display:grid;}
 #lane-empty .lane-empty-icon{width:44px;height:44px;display:block;margin:0 auto .75rem;opacity:.55;}
 #lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
@@ -331,6 +357,10 @@ body{overflow:hidden;}
        少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
        Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
   <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;">
+    <!-- Echoes 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
+         EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
+         Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
+    <div id="echoes-header"></div>
     <div id="lane-host"></div>
     <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
          ChatView がここに render する。default hidden — console_mode=chat の時だけ .active で表示
@@ -1388,6 +1418,8 @@ mod tests {
             pane_id: Some("vp/conductor"),
             preview_url: None,
             chat: true,
+            cwd: None,
+            branch: None,
         });
         assert!(script.contains("\"chat\":true"), "script={script}");
         assert!(script.contains("\"pane_id\":\"vp/conductor\""));
@@ -1401,16 +1433,28 @@ mod tests {
             pane_id: Some("vp/performer/x"),
             preview_url: None,
             chat: false,
+            cwd: Some("/Users/mako/repos/vp/.vp/lanes/x"),
+            branch: Some("mako/x"),
         });
         assert!(tui.contains("\"chat\":false"), "script={tui}");
+        // cwd / branch chip の供給が setActivePane 経由で JS に届くこと（header の情報源）。
+        assert!(
+            tui.contains("\"cwd\":\"/Users/mako/repos/vp/.vp/lanes/x\""),
+            "script={tui}"
+        );
+        assert!(tui.contains("\"branch\":\"mako/x\""), "script={tui}");
 
         let stand = build_set_active_pane_script(&ActivePaneInfo {
             kind: Some("bastet"),
             pane_id: None,
             preview_url: None,
             chat: false,
+            cwd: None,
+            branch: None,
         });
         assert!(stand.contains("\"chat\":false"), "script={stand}");
+        // 非 lane pane は cwd/branch を持たない（chip 非表示）。
+        assert!(stand.contains("\"cwd\":null"), "script={stand}");
     }
 
     /// showLane は 2 引数 (address, isChat) で呼ばれる — JS 側 signature との contract。

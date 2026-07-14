@@ -97,6 +97,11 @@ import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
 import { installConsole } from "./console";
 import { installChatView, CHATVIEW_CSS } from "./chatview";
+import {
+	mountEchoesHeader,
+	ECHOES_HEADER_CSS,
+	type EchoesHeaderApi,
+} from "./EchoesHeader";
 import { renderDevices as renderBastetDevices } from "./bastet";
 import {
 	handleMessage as handleCanvasMessage,
@@ -178,6 +183,12 @@ interface SetActivePaneInfo {
 	kind?: string | null;
 	pane_id?: string | null;
 	preview_url?: string | null;
+	/** doc 33: chat lane (Act II) フラグ（Rust push_active_view 由来）。 */
+	chat?: boolean;
+	// Echoes 共通ヘッダ用 lane 文脈（setActivePane 相乗り、creo memo `vp-pane-common-header`）
+	lane_name?: string | null;
+	cwd?: string | null;
+	branch?: string | null;
 }
 
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
@@ -186,6 +197,10 @@ let activeLaneAddress: string | null = null;
 /** New Session ボタンの armed 状態を解除する hook（ボタン生成時に代入）。lane 切替で
  *  「✨ New Session?」表示が残ると、別 lane を見ながら「もう一押しで実行」と誤読させる。 */
 let disarmNewSession: (() => void) | null = null;
+
+/** Echoes 共通ヘッダ（pane-host 上端 strip）。mount は vpConsole install 後（下方）、
+ *  setActivePane bridge が lane 文脈を届ける。null = mount 点不在（graceful skip）。 */
+let echoesHeader: EchoesHeaderApi | null = null;
 
 /**
  * LaneAddress::Display 形を canvas-handler が使う flat lane_name に翻訳する。
@@ -234,6 +249,8 @@ const installSetActivePaneBridge = (): void => {
 		// Frame Engine に Scene を発火
 		if (!info || !info.kind || info.kind === "empty") {
 			frameEngine.applyScene("empty");
+			// lane 無し = Echoes 共通ヘッダも空へ（chips は presence-driven）。
+			echoesHeader?.setLane(null);
 			return;
 		}
 		// kind=terminal: Lane 切替判定 + 保存済 Scene の restore + show-subscriber 付替
@@ -251,6 +268,15 @@ const installSetActivePaneBridge = (): void => {
 			// 別 lane を見ながら armed ラベルが残ると誤読を招く）。
 			if (activeLaneAddress !== newLane) disarmNewSession?.();
 			activeLaneAddress = newLane;
+			// Echoes 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
+			// PP 等を眺めている間も直前の lane 文脈が載り続ける）。
+			echoesHeader?.setLane({
+				addr: newLane,
+				name: info.lane_name ?? null,
+				cwd: info.cwd ?? null,
+				branch: info.branch ?? null,
+				chat: !!info.chat,
+			});
 			// wiremsg Stage 2: canvas (PP body) の供給は Rust 側 spawn_canvas_subscription が
 			// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
 			// 保存済 Scene を restore、 初訪問 Lane は lead-focus を default にする
@@ -404,6 +430,21 @@ chatStyle.textContent = CHATVIEW_CSS;
 document.head.appendChild(chatStyle);
 const chatHost = document.getElementById("console-chat-host");
 const chatView = chatHost ? installChatView(chatHost, vpConsole) : null;
+
+// ===== Echoes 共通ヘッダ（creo memo `vp-pane-common-header`）=====
+// pane-host 上端の #echoes-header（main_area.rs が mount 点だけ提供）に strip を mount。
+// Act I/II のどちらを表示していても同一ヘッダが載り続ける（lane の Echoes に帰属）。
+const headerStyle = document.createElement("style");
+headerStyle.textContent = ECHOES_HEADER_CSS;
+document.head.appendChild(headerStyle);
+const echoesHeaderHost = document.getElementById("echoes-header");
+if (echoesHeaderHost) {
+	echoesHeader = mountEchoesHeader(echoesHeaderHost, vpConsole);
+} else {
+	console.warn(
+		"[vp-bundle] #echoes-header が見つかりません — 共通ヘッダ mount をスキップ",
+	);
+}
 
 // 現在 active な lane（toggle が console_set_mode を送る宛先）。
 let consoleActiveLane: string | null = null;
@@ -576,12 +617,16 @@ if (paneTerminal) {
 		ipc?.postMessage(JSON.stringify({ t: "console:new_session", lane }));
 	});
 
-	// 右上の操作群コンテナ（位置は container が持ち、子は static で並ぶ — CHATVIEW_CSS）。
+	// 操作群コンテナ。Echoes 共通ヘッダの操作エリア（#echoes-header-actions、EchoesHeader が
+	// 描く安定 div）へ集約する。ヘッダ不在（bundle 半壊等）時は旧位置 = pane-terminal 右上
+	// floating に fallback（CHATVIEW_CSS の絶対配置が生きる）。
 	const actions = document.createElement("div");
 	actions.className = "echoes-console-actions";
 	actions.appendChild(newSession);
 	actions.appendChild(toggle);
-	paneTerminal.appendChild(actions);
+	const actionsHost =
+		document.getElementById("echoes-header-actions") ?? paneTerminal;
+	actionsHost.appendChild(actions);
 }
 
 // ===== Bastet 🧲 device 一覧 render API =====
