@@ -45,5 +45,6 @@ pub mod settings;
 pub mod shell_detect;
 pub mod terminal;
 pub mod tray;
+pub mod update_flow;
 pub mod web_assets;
 // ws_terminal: Phase 2.x-d で削除 (per-Lane browser-native WebSocket に移行、 Rust 中継経路は不要)

@@ -128,6 +128,13 @@ pub struct ActivitySnapshot {
     /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
     #[serde(default)]
     pub presence: std::collections::HashMap<String, String>,
+    /// in-app update: 新しい release が GitHub にあるか（`/api/health` の `update_available`）。
+    /// sidebar World widget の「更新する」ボタンの表示 gate。旧 daemon は false。
+    #[serde(default)]
+    pub update_available: bool,
+    /// 最新 release version（ボタン label「更新する ⤴ vX.Y.Z」用、未取得は None）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub latest_version: Option<String>,
 }
 
 /// Sidebar 全体の state (sidebar webview に渡す)

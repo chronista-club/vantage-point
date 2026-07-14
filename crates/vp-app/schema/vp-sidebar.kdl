@@ -106,5 +106,12 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
             field "message_id" type="string"
         }
+        // in-app update: sidebar の「更新する」ボタン click。 Rust 側で macOS ネイティブ
+        // 確認ダイアログ (rfd) を出し、 OK なら self-update (brew / vp update) →
+        // `vp daemon restart` → GUI relaunch を実行する (update_flow.rs)。
+        // version = 適用予定の latest version (ダイアログ文言用)。
+        request "update:apply" {
+            field "version" type="string"
+        }
     }
 }

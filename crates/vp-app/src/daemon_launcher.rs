@@ -42,7 +42,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const LAUNCH_AGENT_LABEL: &str = "club.chronista.vantage-point.daemon";
 
 /// `vp` バイナリの場所を特定
-fn locate_vp_binary() -> PathBuf {
+///
+/// in-app update フロー（`update_flow.rs`）も `vp update` / `vp daemon restart` の
+/// 呼び出しに再利用するため crate 内公開。
+pub(crate) fn locate_vp_binary() -> PathBuf {
     if let Ok(explicit) = std::env::var("VP_BINARY") {
         return PathBuf::from(explicit);
     }

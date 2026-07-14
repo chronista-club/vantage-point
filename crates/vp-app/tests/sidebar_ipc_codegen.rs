@@ -114,6 +114,9 @@ fn regenerates_sidebar_ipc_bindings() {
         "stands:fetch",
         "stand:select",
         "project:clone:pickFolder",
+        // in-app update: sidebar footer の「更新する」ボタン。schema 編集で codegen から
+        // 落ちると button → Rust dispatch が silently 壊れるので regression net を張る。
+        "update:apply",
     ] {
         assert!(rust_file.contains(wire), "Rust に wire 名 {wire} が無い");
         assert!(ts_file.contains(wire), "TS に wire 名 {wire} が無い");

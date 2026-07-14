@@ -43,4 +43,13 @@ hub_worlds: Array<HubWorld>,
  * |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
  * で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
  */
-presence: { [key in string]?: string }, };
+presence: { [key in string]?: string }, 
+/**
+ * in-app update: 新しい release が GitHub にあるか（`/api/health` の `update_available`）。
+ * sidebar World widget の「更新する」ボタンの表示 gate。旧 daemon は false。
+ */
+update_available: boolean, 
+/**
+ * 最新 release version（ボタン label「更新する ⤴ vX.Y.Z」用、未取得は None）。
+ */
+latest_version?: string | null, };
