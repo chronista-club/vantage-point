@@ -3025,9 +3025,23 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
-                if let Some(addr) = &sidebar_state.active_lane_address {
-                    let is_chat = lane_is_chat(&sidebar_state, addr);
-                    lane_js::show_lane(&webview, Some(addr), is_chat);
+                if let Some(addr) = sidebar_state.active_lane_address.clone() {
+                    let is_chat = lane_is_chat(&sidebar_state, &addr);
+                    lane_js::show_lane(&webview, Some(&addr), is_chat);
+                    // 起動 race で silent drop されるのは ensureLane だけではない。 auto-select の
+                    // activate_lane が撃つ setActivePane / vpConsole.setMode も同じ窓で落ちるが、
+                    // この 2 つは JS 側の「active lane」(= Act toggle の宛先) を埋める唯一の経路。
+                    // showLane だけ再発行しても JS の active lane は null のままなので、 Act II 押下が
+                    // "active lane 不明" で早期 return し「Act II に移行できない」になる (lane を手で
+                    // 選び直すと activate_lane が再走して直る、が user から見れば不可解)。 catch-up は
+                    // 3 つとも再発行して JS 側 state を確定させる。 いずれも冪等。
+                    push_active_view(&webview, &sidebar_state);
+                    let script = format!(
+                        "window.vpConsole && window.vpConsole.setMode({}, {})",
+                        serde_json::to_string(&addr).unwrap_or_else(|_| "\"\"".into()),
+                        if is_chat { "\"chat\"" } else { "\"tui\"" },
+                    );
+                    let _ = webview.evaluate_script(&script);
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
             }
