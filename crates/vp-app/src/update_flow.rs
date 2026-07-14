@@ -22,9 +22,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use crate::daemon_launcher::locate_vp_binary;
+
+/// 更新フローが実行中かのガード。「更新する」CTA の連打で破壊的フローが二重に
+/// 走るのを防ぐ（rfd ダイアログ表示中の追加 click 対策）。フロー完了 / キャンセル /
+/// spawn 失敗で false に戻す（relaunch 成功時はプロセスごと終了するので戻さなくてよい）。
+static UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// self-update の配送チャネル。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,10 +111,21 @@ fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
 ///
 /// `version` は検知済みの latest version（ダイアログ文言用）。
 pub fn spawn_update_flow(version: String) {
+    // 二重起動ガード: 既にフローが走っていれば無視（CTA 連打 / ダイアログ表示中の再 click 対策）。
+    if UPDATE_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        tracing::info!("in-app update: 既に更新フロー実行中のため click を無視");
+        return;
+    }
     let spawned = thread::Builder::new()
         .name("update-flow".into())
-        .spawn(move || run_update_flow(version));
+        .spawn(move || {
+            run_update_flow(version);
+            // フローが return した = キャンセル / 失敗。再度更新可能にする
+            // （成功時は relaunch_and_exit がプロセスごと終了するのでここには来ない）。
+            UPDATE_IN_FLIGHT.store(false, Ordering::SeqCst);
+        });
     if let Err(e) = spawned {
+        UPDATE_IN_FLIGHT.store(false, Ordering::SeqCst);
         tracing::warn!("in-app update: flow スレッド起動失敗: {}", e);
     }
 }
@@ -169,7 +186,15 @@ fn run_step(label: &str, program: &Path, args: &[String]) -> bool {
         program.display(),
         args
     );
-    match Command::new(program).args(args).status() {
+    // GUI (.app) を Finder / Dock / launchd 経由で起動するとプロセスの PATH が最小集合
+    // (/usr/bin:/bin:...) になり、brew (/opt/homebrew/bin) 等の user-installed tool を
+    // 見つけられず spawn が失敗する (#498/#501)。daemon_launcher.rs の spawn 同様、
+    // augmented PATH を注入して brew / vp を確実に解決する。
+    match Command::new(program)
+        .args(args)
+        .env("PATH", vp_paths::spawn_env::augmented_spawn_path())
+        .status()
+    {
         Ok(s) if s.success() => {
             tracing::info!("in-app update step [{}]: 成功", label);
             true
