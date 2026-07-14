@@ -364,7 +364,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-connector.conn-conductor::after{width:9px;height:9px;margin-top:-4.5px;
   left:6.5px;right:auto;border-radius:2px;transform:rotate(45deg);
   background:var(--lg-cyan-dim,#1C6C7C);}
-.vp-lane-row{position:relative;display:flex;flex-wrap:nowrap;align-items:center;
+/* flex-wrap:wrap = cwd (地) を 2 行目へ折り返すため。 multi-line flex では align-items /
+   align-self が flex line 単位で効くので、 1 行目の内部整列 (icon/title の縦位置、 connector の
+   tap/node が title 中央を指すこと) は不変。 title は min-width:0 で縮むので意図せぬ折返しは起きない。 */
+.vp-lane-row{position:relative;display:flex;flex-wrap:wrap;align-items:center;
   gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:var(--sb-text-hint,12px);cursor:pointer;
   border-radius:8px;transition:background .1s ease;}
 .vp-lane-row:hover{background:#ffffff06;}
@@ -388,6 +391,16 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-title.is-fallback{color:var(--lg-mute,#5C7A85);}
 .vp-lane-row.inactive .vp-lane-title{color:var(--lg-mute,#5C7A85);}
 .vp-lane-row.active .vp-lane-title{color:var(--lg-hot,#EAFBFF);}
+/* 地 (ground): lane の cwd。 図 (title / state) の後ろに沈める層。 mute-2 / micro / mono =
+   git meta と同じ最も引っ込んだ層で、 光らせない (光 = 注意は needs-you の専有)。
+   indent は connector slot + icon + gap 分 = title の左端に揃える。 */
+.vp-lane-cwd{flex:0 0 100%;box-sizing:border-box;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;
+  padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
+  font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);}
+/* active 行だけ僅かに持ち上げる (可読性)。 glow は足さない — 地は地のまま。 */
+.vp-lane-row.active .vp-lane-cwd{color:var(--lg-mute,#5C7A85);}
 /* state 文字 (working / needs you) — 右端、 mono micro uppercase。 quiet pass (019f5100):
    muted 一色、 needs-you だけ magenta。 idle は文字ごと出さない (stateLabel が null)。 */
 .vp-lane-state{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);

@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { LaneInfo } from "../generated/LaneInfo";
-import { isLaneAlive, laneConnector } from "./lane";
+import { isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
 
 /** 最小の LaneInfo。 テストが着目する field だけ上書きする。 */
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
@@ -102,5 +102,34 @@ describe("laneConnector (FSM 投影)", () => {
 		expect(
 			laneConnector(performer({ flow_state: null, pid: null }), false),
 		).toBe("conn-dead");
+	});
+});
+
+describe("laneCwdLabel — 絶対 path は project が持ち、 lane は差分だけを名乗る", () => {
+	const proj = "/Users/makoto/repos/vantage-point";
+
+	it("conductor (cwd = project root) は空 = 語ることが無いので黙る", () => {
+		expect(laneCwdLabel(proj, proj)).toBe("");
+	});
+
+	it("performer は project root 起点の相対 path", () => {
+		expect(laneCwdLabel(`${proj}/.vp/lanes/act2`, proj)).toBe(".vp/lanes/act2");
+	});
+
+	it("project の外に居る lane は絶対 path を full で出す (= 驚きにはインクを払う)", () => {
+		expect(laneCwdLabel("/Users/makoto/work/other-clone", proj)).toBe(
+			"~/work/other-clone",
+		);
+		// home 推定が効かない形はそのまま (実害なし — tooltip は常に完全な path)。
+		expect(laneCwdLabel("/opt/work/proj", proj)).toBe("/opt/work/proj");
+	});
+
+	it("prefix が途中まで一致するだけの兄弟 dir を誤って相対化しない", () => {
+		// `<proj>-old` は `<proj>/` 配下ではない。 startsWith の境界に `/` を要求する所以。
+		expect(laneCwdLabel(`${proj}-old`, proj)).toBe("~/repos/vantage-point-old");
+	});
+
+	it("cwd が空なら空 (防御)", () => {
+		expect(laneCwdLabel("", proj)).toBe("");
 	});
 });

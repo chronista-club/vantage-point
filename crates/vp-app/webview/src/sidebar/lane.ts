@@ -88,6 +88,27 @@ export function laneLabel(lane: LaneInfo): string {
 }
 
 /**
+ * lane の cwd を「地 (ground)」表示用のラベルに畳む（純粋）。
+ *
+ * メンタルモデル: **絶対 path は project が持つ** (`~/repos/proj-dir`)。 lane はそこからの
+ * **差分だけ**を名乗る。 こうすると絶対 path が世界に一度しか現れず、 冗長性が構造的にゼロになる。
+ *
+ * - conductor (cwd = project root) → `""` = **語ることが無いので黙る** (呼び手は行ごと出さない)
+ * - performer (project 配下) → `".vp/lanes/x"` 等の相対 path
+ * - project の外に居る lane (別所の clone 等) → 差分で表せない = **驚き**なので ~ 短縮した
+ *   絶対 path を full で出す (home 推定は mac `/Users/<u>/` / Linux `/home/<u>/`。 外しても
+ *   絶対 path がそのまま出るだけで実害は無い — tooltip は常に完全な path)。
+ */
+export function laneCwdLabel(cwd: string, projectPath: string): string {
+	if (!cwd) return "";
+	if (cwd === projectPath) return "";
+	if (projectPath && cwd.startsWith(`${projectPath}/`)) {
+		return cwd.slice(projectPath.length + 1);
+	}
+	return cwd.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~");
+}
+
+/**
  * Lane address を Display 形 (`<project>/conductor` / `<project>/performer/<name>`) に変換。
  * Rust `LaneAddressWire::key()` と完全一致させる (active selection 比較に使うため)。
  */
