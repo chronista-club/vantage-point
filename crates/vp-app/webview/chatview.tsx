@@ -10,7 +10,18 @@
  */
 
 import { render } from 'solid-js/web'
-import { createSignal, createEffect, onMount, onCleanup, For, Show, type Accessor } from 'solid-js'
+import {
+  createSignal,
+  createMemo,
+  createEffect,
+  onMount,
+  onCleanup,
+  For,
+  Show,
+  Switch,
+  Match,
+  type Accessor,
+} from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
 import type { EchoesEvent, PlanEntry, QuestionSpec, VpConsole } from './console'
@@ -35,6 +46,68 @@ type ChatItem =
       permission?: { toolName: string; input: unknown }
       decision?: 'allow' | 'deny'
     }
+
+/** tool アイテム（accordion 集約の対象）。 */
+export type ToolItem = Extract<ChatItem, { kind: 'tool' }>
+
+/**
+ * 連続同名 tool の run における、ある位置の役割。
+ * - `single`: run 長 1 → 従来どおり 1 行（ToolRow）
+ * - `head`: run 長 ≥2 の先頭 → run 全体を 1 行の accordion（ToolGroupRow）に畳む
+ * - `member`: run 長 ≥2 の 2 件目以降 → 先頭 group に吸収されるので描画しない（null）
+ */
+export type ToolRunRole =
+  | { role: 'single' }
+  | { role: 'head'; run: ToolItem[] }
+  | { role: 'member' }
+
+/**
+ * items[idx]（tool 前提）が属する「連続同名 tool run」での役割を返す純粋関数。
+ *
+ * ねらい: Agent 等が連続で回ったとき N 行を占有せず「🔧 Agent ×N」の 1 行に畳む。
+ * reducer（foldInto）は一切触らず描画時のみ集約するので、transcript replay や孤児
+ * tool_call_update 処理の不変条件（§C2「描画正しさの中核」）に影響しない。
+ *
+ * foldInto は append-only（tool は push、状態変化は in-place 変異）なので、既存 item の
+ * index・run 所属は不変で、run は末尾にだけ伸びる。呼び出し側が items/index を reactive に
+ * 読むことで、stream 追記に追従して single→head へ昇格する。
+ */
+export function classifyToolRun(items: ChatItem[], idx: number): ToolRunRole {
+  const it = items[idx]
+  if (!it || it.kind !== 'tool') return { role: 'single' } // 防御（呼ばれない前提）
+  const name = it.name
+  // run 先頭を左へ探索
+  let start = idx
+  while (start - 1 >= 0) {
+    const p = items[start - 1]
+    if (p.kind !== 'tool' || p.name !== name) break
+    start--
+  }
+  // run 終端を右へ探索
+  let end = idx
+  while (end + 1 < items.length) {
+    const n = items[end + 1]
+    if (n.kind !== 'tool' || n.name !== name) break
+    end++
+  }
+  if (end - start + 1 < 2) return { role: 'single' }
+  if (idx === start) return { role: 'head', run: items.slice(start, end + 1) as ToolItem[] }
+  return { role: 'member' }
+}
+
+/**
+ * ToolGroupRow header の集約 status を導く純粋関数（テスト可能）。
+ *
+ * 「エンジン状態を偽らない」方針の実装点: 1 件でも未 done なら running=true（走行中）を返し、
+ * その間は完了数 `{done}/{count}` を label にする。run 内の 1 件が error で終わっても、他が
+ * in-flight なら error/✓ には落とさない（deriveStatus / stall 表示と同じ価値観）。全 tool が
+ * settle して初めて、error があれば `error`、無ければ `✓` を返す。
+ */
+export function toolGroupStatus(tools: ToolItem[]): { running: boolean; label: string } {
+  const doneCount = tools.filter((t) => t.done).length
+  if (doneCount < tools.length) return { running: true, label: `${doneCount}/${tools.length}` }
+  return { running: false, label: tools.some((t) => t.error) ? 'error' : '✓' }
+}
 
 type ChatState = {
   header: { model?: string; sessionId?: string } | null
@@ -349,6 +422,46 @@ function ToolRow(props: { name: string; done: boolean; error: boolean }) {
       <span class="echoes-tool-status">
         {props.error ? 'error' : props.done ? '✓' : '実行中…'}
       </span>
+    </div>
+  )
+}
+
+/**
+ * 連続同名 tool run（Agent ×N 等）を 1 行に畳む accordion。ThinkingBlock と同じ開閉 UI。
+ * 既定は畳んだ状態: header が「🔧 {name} ×{count} {status}」で進捗を要約する。in-flight 中は
+ * spinner + 完了数「{done}/{count}」を出し（畳んだままでも何本終わったかが分かる）、全 tool が
+ * 終わると ✓（1 件でも error なら error）に変わる。展開で個別 ToolRow を並べる。
+ * props.tools は reactive accessor（run は末尾に伸び、各 tool の done/error も後から変異する）。
+ */
+function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
+  const [open, setOpen] = createSignal(false)
+  const count = () => props.tools().length
+  const status = () => toolGroupStatus(props.tools())
+  const anyError = () => props.tools().some((t) => t.error)
+  return (
+    <div
+      class="echoes-toolgroup"
+      classList={{ done: !status().running && !anyError(), error: !status().running && anyError() }}
+    >
+      <button class="echoes-toolgroup-toggle" onClick={() => setOpen(!open())}>
+        <span class="echoes-thinking-caret" classList={{ open: open() }}>
+          ▸
+        </span>
+        <Show when={status().running}>
+          <span class="echoes-tool-spinner" />
+        </Show>
+        <span class="echoes-tool-icon">🔧</span>
+        <span class="echoes-tool-name">{props.name}</span>
+        <span class="echoes-toolgroup-count">×{count()}</span>
+        <span class="echoes-tool-status">{status().label}</span>
+      </button>
+      <Show when={open()}>
+        <div class="echoes-toolgroup-body">
+          <For each={props.tools()}>
+            {(t) => <ToolRow name={t.name} done={t.done} error={t.error} />}
+          </For>
+        </div>
+      </Show>
     </div>
   )
 }
@@ -906,7 +1019,23 @@ function ChatView() {
                   />
                 )
               if (item.kind === 'tool') {
-                return <ToolRow name={item.name} done={item.done} error={item.error} />
+                // 連続同名 tool run を畳む。head=accordion / member=非描画 / single=従来 1 行。
+                // items/index を reactive に読むので stream 追記で single→head へ昇格する。
+                const role = createMemo(() => classifyToolRun(state()!.items, index()))
+                return (
+                  <Switch>
+                    <Match when={role().role === 'member'}>{null}</Match>
+                    <Match when={role().role === 'head'}>
+                      <ToolGroupRow
+                        name={item.name}
+                        tools={() => (role() as { role: 'head'; run: ToolItem[] }).run}
+                      />
+                    </Match>
+                    <Match when={true}>
+                      <ToolRow name={item.name} done={item.done} error={item.error} />
+                    </Match>
+                  </Switch>
+                )
               }
               if (item.kind === 'prompt') {
                 if (!item.permission) return <PromptCard item={item} onAnswer={answerPrompt} />
@@ -1063,6 +1192,18 @@ export const CHATVIEW_CSS = `
 .echoes-tool.done { color: var(--color-text-tertiary,#616b80); } .echoes-tool.error { color:#f0a3a3; }
 .echoes-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
 .echoes-tool-status { margin-left:auto; font-size:11px; }
+/* ToolGroupRow: 連続同名 tool（Agent ×N 等）を畳む accordion。畳んだ header は ToolRow と同じ枠で 1 行。 */
+.echoes-toolgroup { align-self:flex-start; font-size:12px; animation: echoes-fade .18s ease-out; }
+.echoes-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
+  font-size:12px; color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
+  border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
+.echoes-toolgroup.done .echoes-toolgroup-toggle { color: var(--color-text-tertiary,#616b80); }
+.echoes-toolgroup.error .echoes-toolgroup-toggle { color:#f0a3a3; }
+.echoes-toolgroup-count { font-family: var(--vp-font-mono),var(--typography-family-mono);
+  color: var(--color-text-tertiary,#8b93a7); font-size:11px; }
+/* 展開部: 個別 ToolRow を段付きで縦に並べる（thinking-body と同じ左罫線の入れ子表現）。 */
+.echoes-toolgroup-body { display:flex; flex-direction:column; gap:5px; margin:5px 0 0 16px;
+  padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
 .echoes-cursor { width:7px; height:15px; background: var(--color-accent,#3b82f6); border-radius:1px;
   animation: echoes-blink 1s step-start infinite; align-self:flex-start; }
 /* PromptCard（doc 35 §4）: HITL 質問。engine が人を待っている合図として左寄せカードで settle。 */
