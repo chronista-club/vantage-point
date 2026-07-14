@@ -417,6 +417,7 @@ fn binary_candidates(name: &str) -> Vec<String> {
 ///   - `vp app install` が焼く shortcut は `SetIconLocation(target, 0)` で target の exe から
 ///     icon を引くため、 shim を指すと Start Menu が generic icon になる (= icon 対応が無に帰す)
 ///   - `vp app start` も wrapper プロセスが 1 枚余計に挟まるだけで得が無い
+///
 /// PATH 上の shim を飛ばしても、 実体は同じ PATH の後段 (`~/.cargo/bin` 等) か vp の隣で拾える。
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
