@@ -63,6 +63,13 @@ pub struct HealthResponse {
     /// daemon-canonical（doc 27 §3.2 / Model Q）。World mode のみ Some、SP mode では None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processes: Option<Vec<crate::capability::ProcessHealthInfo>>,
+    /// in-app update: 新しい release が GitHub にあるか。World mode の定期チェック task
+    /// （起動時 + 24h 毎）が温めた cache 由来で、本 handler は network を発行しない。
+    /// vp-app sidebar が「更新する」ボタンの表示 gate に使う。SP mode / 未チェックは false。
+    pub update_available: bool,
+    /// 最新 release version（cache 未取得なら omit）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
 }
 
 // L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
@@ -225,6 +232,12 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         })
         .collect();
 
+    // in-app update: 定期チェック task が温めた cache を読むだけ（network なし）。
+    let (update_available, latest_version) = match state.update.as_ref() {
+        Some(update) => update.read().await.cached_update_status(),
+        None => (false, None),
+    };
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -236,6 +249,8 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         hub: state.hub_status.get().as_str(),
         hub_worlds,
         processes,
+        update_available,
+        latest_version,
     })
 }
 
@@ -418,6 +433,17 @@ mod tests {
                 .map(Vec::len),
             Some(0),
             "hub_worlds field 必須 (SP/test mode は空配列)"
+        );
+        // in-app update: test AppState は update capability 不在（None）= 常に false。
+        // cache 未チェック時も false なので、field の常時 serialize を regression net にする。
+        assert_eq!(
+            body.get("update_available").and_then(|v| v.as_bool()),
+            Some(false),
+            "update_available field 必須 (SP/test mode は false)"
+        );
+        assert!(
+            body.get("latest_version").is_none(),
+            "latest_version は cache 未取得時 omit"
         );
     }
 }

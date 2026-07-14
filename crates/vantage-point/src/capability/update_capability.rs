@@ -231,6 +231,21 @@ impl UpdateCapability {
         CURRENT_VERSION
     }
 
+    /// 直近チェック結果の cache を読む（HTTP は発行しない）。
+    ///
+    /// `/api/health` のような高頻度 endpoint から呼ばれる前提で、 network を伴う
+    /// `check_update()` とは分離している。 cache は World mode の定期チェック task
+    /// （起動時 + 24h 毎）が `check_update()` で温める。 未チェックなら `(false, None)`。
+    pub fn cached_update_status(&self) -> (bool, Option<String>) {
+        match &self.cached_release {
+            Some(release) => (
+                is_newer_version(&release.version, CURRENT_VERSION),
+                Some(release.version.clone()),
+            ),
+            None => (false, None),
+        }
+    }
+
     /// 更新をチェック
     pub async fn check_update(&mut self) -> CapabilityResult<UpdateCheckResult> {
         // キャッシュが5分以内なら再利用
@@ -1138,6 +1153,37 @@ mod tests {
         let cap = UpdateCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
         assert_eq!(cap.current_version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn test_cached_update_status() {
+        let mut cap = UpdateCapability::new();
+
+        // 未チェック（cache 空）= 更新なし扱い
+        assert_eq!(cap.cached_update_status(), (false, None));
+
+        // cache に「現在より新しい」release が入っている → 更新あり
+        let release = |version: &str| ReleaseInfo {
+            version: version.to_string(),
+            tag_name: format!("v{}", version),
+            name: None,
+            body: None,
+            published_at: None,
+            html_url: String::new(),
+            assets: vec![],
+        };
+        cap.cached_release = Some(release("999.0.0"));
+        assert_eq!(
+            cap.cached_update_status(),
+            (true, Some("999.0.0".to_string()))
+        );
+
+        // cache が現在と同じ version → 更新なし（latest_version は返す）
+        cap.cached_release = Some(release(CURRENT_VERSION));
+        assert_eq!(
+            cap.cached_update_status(),
+            (false, Some(CURRENT_VERSION.to_string()))
+        );
     }
 
     #[test]
