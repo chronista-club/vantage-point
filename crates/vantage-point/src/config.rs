@@ -108,6 +108,16 @@ pub struct Config {
     #[kdl(child, name = "default-stand", unwrap_arg)]
     pub default_stand: Option<String>,
 
+    /// performer lane 追加時の既定 claude model alias（`--model` 未指定時に engine_model へ記録）。
+    ///
+    /// 未設定なら Opus（`default_lane_model_or_opus()` 経由）。mcp / cli / sidebar(GUI) の
+    /// 全 performer 追加経路が共有し、Act I(TUI console) / Act II(chat engine) 両方に効く
+    /// （model は per-lane 1 file の単一真実源、[`crate::lane::engine_model`]）。
+    /// 例: config.kdl に `default-lane-model "claude-sonnet-5"` で opus 以外へ変更可。
+    #[serde(default)]
+    #[kdl(child, name = "default-lane-model", unwrap_arg)]
+    pub default_lane_model: Option<String>,
+
     /// chronista-hub の Unison surface addr（federation opt-in、例: "hub.chronista.club:12879"）。
     ///
     /// 未設定 = federation off（machine-local 動作）。env `CHRONISTA_HUB_ADDR` が設定されて
@@ -312,6 +322,17 @@ impl Config {
     /// fallback "hd" → "echoes" (HD → Echoes rename の一環)。
     pub fn default_stand_or_echoes(&self) -> &str {
         self.default_stand.as_deref().unwrap_or("echoes")
+    }
+
+    /// performer 追加時の既定 model alias（config 未指定 or 形式外なら Opus 4.8 fallback）。
+    ///
+    /// 形式外の値は record 時に弾かれ lane 作成を壊すため、ここで is_valid_model を通し
+    /// 不正なら opus へ degrade する（config typo で lane が作れなくなる事故を防ぐ）。
+    pub fn default_lane_model_or_opus(&self) -> &str {
+        self.default_lane_model
+            .as_deref()
+            .filter(|m| crate::lane::engine_model::is_valid_model(m))
+            .unwrap_or("claude-opus-4-8")
     }
 
     /// Resolve project directory from various sources
@@ -653,6 +674,22 @@ startup {
         assert!(config.hub_addr.is_none());
         // default-port node 不在 → KDL field default は 0 (load の post-process で 33000)
         assert_eq!(config.default_port, 0);
+        // default-lane-model node 不在 → None（getter で Opus fallback）
+        assert!(config.default_lane_model.is_none());
+        assert_eq!(config.default_lane_model_or_opus(), "claude-opus-4-8");
+    }
+
+    #[test]
+    fn test_default_lane_model_kdl_parses() {
+        let kdl = r#"
+default-lane-model "claude-sonnet-5"
+"#;
+        let config: Config = club_kdl::from_str(kdl).expect("default-lane-model parse");
+        assert_eq!(
+            config.default_lane_model.as_deref(),
+            Some("claude-sonnet-5")
+        );
+        assert_eq!(config.default_lane_model_or_opus(), "claude-sonnet-5");
     }
 
     /// VP-189: section を 1 つも持たない空 config.kdl でも parse できる
@@ -676,6 +713,25 @@ startup {
         config.apply_load_defaults();
         assert_eq!(config.default_port, 33000);
         assert_eq!(config.startup.max_concurrent_lane_spawn, 1);
+    }
+
+    #[test]
+    fn test_default_lane_model_falls_back_to_opus() {
+        // 未設定 → Opus 4.8
+        let cfg = Config::default();
+        assert_eq!(cfg.default_lane_model_or_opus(), "claude-opus-4-8");
+        // 明示設定はそのまま採用
+        let cfg = Config {
+            default_lane_model: Some("claude-sonnet-5".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(cfg.default_lane_model_or_opus(), "claude-sonnet-5");
+        // 形式外の値は record を壊すため opus へ degrade（config typo で lane 作成が死なない）
+        let cfg = Config {
+            default_lane_model: Some("opus; rm -rf /".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(cfg.default_lane_model_or_opus(), "claude-opus-4-8");
     }
 
     /// VP-189: 既に有効な値が入っていれば apply_load_defaults は上書きしない
