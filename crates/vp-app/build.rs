@@ -12,14 +12,17 @@
 //! (Windows 対応で mac build を退行させない)。
 
 fn main() {
-    // build.rs 内の `cfg!(windows)` は **host** を指してしまうので、 target を見る。
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os != "windows" {
-        return;
-    }
-
+    // target 判定は cfg block の **中** で行う。 外に出すと非 windows では後続が cfg で消えて
+    // `return;` が関数末尾になり、 clippy::needless_return が出る (Windows host の clippy では
+    // 原理的に踏めず、 mac CI でだけ落ちる)。
     #[cfg(windows)]
     {
+        // build.rs 内の `cfg!(windows)` は **host** を指してしまうので、 target を見る。
+        let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        if target_os != "windows" {
+            return;
+        }
+
         println!("cargo:rerun-if-changed=assets/icon.ico");
 
         let mut res = winresource::WindowsResource::new();
