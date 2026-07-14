@@ -65,6 +65,11 @@ pub struct ActivePaneInfo<'a> {
     /// (`performer_status.branch` 由来、「安価に取れる場合のみ」)。
     /// conductor / 取得不能時は None (chip 非表示)。
     pub branch: Option<&'a str>,
+    /// Echoes 共通ヘッダの lane 名 chip 用: `LaneInfo.name`（表示名）。
+    /// 現状 server 側は常に None のため JS 側は addr 由来の短縮名に fallback するが、
+    /// 将来 name が populate された時にヘッダだけ古い表示に取り残されないよう
+    /// cwd / branch と同じ経路で供給しておく（JS 側 entry.tsx は受け取り済み）。
+    pub lane_name: Option<&'a str>,
 }
 
 /// `window.setActivePane(info)` を呼ぶ JS スニペットを生成
@@ -1420,6 +1425,7 @@ mod tests {
             chat: true,
             cwd: None,
             branch: None,
+            lane_name: None,
         });
         assert!(script.contains("\"chat\":true"), "script={script}");
         assert!(script.contains("\"pane_id\":\"vp/conductor\""));
@@ -1435,6 +1441,7 @@ mod tests {
             chat: false,
             cwd: Some("/Users/mako/repos/vp/.vp/lanes/x"),
             branch: Some("mako/x"),
+            lane_name: Some("x"),
         });
         assert!(tui.contains("\"chat\":false"), "script={tui}");
         // cwd / branch chip の供給が setActivePane 経由で JS に届くこと（header の情報源）。
@@ -1451,6 +1458,7 @@ mod tests {
             chat: false,
             cwd: None,
             branch: None,
+            lane_name: None,
         });
         assert!(stand.contains("\"chat\":false"), "script={stand}");
         // 非 lane pane は cwd/branch を持たない（chip 非表示）。
