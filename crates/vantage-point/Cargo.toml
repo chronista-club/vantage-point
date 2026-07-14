@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # `--no-default-features` で gui + midi を外す。
 default = ["gui", "midi"]
 gui = ["dep:tao", "dep:muda"]
-midi = ["dep:midir", "dep:midistage-core"]
+midi = ["dep:midir", "dep:midistage-profiles"]
 
 [dependencies]
 # Async runtime
@@ -25,8 +25,8 @@ async-trait = { workspace = true }
 # Path / zone 解決 (XDG SSOT、 vp-app と共有。 Stage 3 で config.rs から抽出)
 vp-paths = { path = "../vp-paths" }
 
-# MIDI プロトコル + 純粋計算 (DeviceProfile / DeviceInput / palette、 I/O なし)
-midistage-core = { path = "../midistage-core", optional = true }
+# MIDI ランタイム制御プロトコル + 純粋計算 (DeviceProfile / DeviceInput / palette、 I/O なし)
+midistage-profiles = { path = "../midistage-profiles", optional = true }
 
 # Web server
 axum = { workspace = true, features = ["ws"] }

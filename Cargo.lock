@@ -4543,7 +4543,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "midistage-core"
+name = "midistage-profiles"
 version = "0.47.0"
 dependencies = [
  "serde",
@@ -9217,7 +9217,7 @@ dependencies = [
  "image",
  "libc",
  "midir",
- "midistage-core",
+ "midistage-profiles",
  "muda",
  "notify",
  "objc2",

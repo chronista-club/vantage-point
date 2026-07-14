@@ -1,12 +1,12 @@
 [package]
-name = "midistage-core"
+name = "midistage-profiles"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MIDI コントロールサーフェスのプロトコルと純粋計算（DeviceProfile / DeviceInput / palette）。I/O は含まない"
+description = "MIDI コントロールサーフェスのランタイム制御プロトコル純粋計算（DeviceProfile / DeviceInput / palette）。I/O なし。transport 基盤は midistage リポジトリの midistage-core"
 
 [dependencies]
 serde = { workspace = true }
