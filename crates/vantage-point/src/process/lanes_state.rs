@@ -334,6 +334,34 @@ pub struct LaneInfo {
     pub flow_state: Option<crate::flow::FlowState>,
 }
 
+impl LaneInfo {
+    /// doc 37: active engine の session id を state file から lazy read して埋める
+    /// （Echoes 共通ヘッダの session chip 用。表示専用の別契約 — [`Self::cc_session_id`] は
+    /// claude resume 用でここでは触らない）。engine 対応表は `EngineKind` が SSOT。
+    ///
+    /// ⚠️ **lanes が World へ流れる供給点すべてで呼ぶこと**: ①`build_lanes_snapshot`
+    /// （ask 経路 = MCP list_lanes / lanes_list）②uplink の agent_card（register payload）
+    /// ③uplink の LaneDiff push（lanes/add|update）。供給が複数経路あるのは #683 と同じ地形で、
+    /// 1 箇所だけ enrich すると「ask には出るが registry（= vp-app）には出ない」に化ける
+    /// （2026-07-16 の Act I session chip 不点灯の根因）。1 lane 1 file read で軽微。
+    pub fn refresh_engine_session_id(&mut self) {
+        let lane_label = crate::process::stand_spawner::lane_label(&self.address);
+        self.engine_session_id = match crate::echoes::EngineKind::from_stand(&self.stand) {
+            Some(crate::echoes::EngineKind::Claude) => {
+                crate::lane::cc_session::last(&self.address.project, lane_label)
+            }
+            Some(crate::echoes::EngineKind::Cursor) => {
+                crate::lane::cursor_session::last(&self.address.project, lane_label)
+            }
+            Some(crate::echoes::EngineKind::Codex) => {
+                crate::lane::codex_session::last(&self.address.project, lane_label)
+            }
+            // agy は id 供給源なし（doc 37 §7.5）、shell / 未知 stand は engine なし。
+            Some(crate::echoes::EngineKind::Agy) | None => None,
+        };
+    }
+}
+
 /// Lane Pool — Conductor/Performer registry
 ///
 /// memory rule: Lane scope は HD/TH 専用。Project scope の Stand は別 module。
