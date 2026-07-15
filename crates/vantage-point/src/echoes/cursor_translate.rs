@@ -30,13 +30,14 @@
 use serde::Deserialize;
 
 use super::event::EchoesEvent;
+use super::turn_host::TurnTranslator;
 
 /// 素テキスト buffer の上限（壊れた cursor の暴走出力で無限成長させない防御）。
 const PLAIN_TEXT_CAP: usize = 8192;
 
 /// 1 cursor turn の stdout stream を通す翻訳器（turn ごとに 1 個、可変状態を持つ）。
 #[derive(Debug, Default)]
-pub(crate) struct CursorTranslator {
+pub struct CursorTranslator {
     /// `system/init` で観測した session_id（= chatId）。result に session_id が無い版の補完用。
     session_id: Option<String>,
     /// この turn で MessageChunk を 1 つでも出したか（result 安全網の発火条件）。
@@ -50,15 +51,12 @@ pub(crate) struct CursorTranslator {
     plain_text: String,
 }
 
-impl CursorTranslator {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
+/// 機構（[`super::turn_host::TurnHost`]）との接続面。
+impl TurnTranslator for CursorTranslator {
     /// cursor stream-json の 1 行を食わせ、0 個以上の [`EchoesEvent`] を得る。
     ///
     /// JSON でない行・未知 type は握り潰す（未知 type は空、素テキストは buffer へ退避）。
-    pub(crate) fn ingest(&mut self, line: &str) -> Vec<EchoesEvent> {
+    fn ingest(&mut self, line: &str) -> Vec<EchoesEvent> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Vec::new();
@@ -80,18 +78,24 @@ impl CursorTranslator {
     }
 
     /// 正常終端（`result`）を観測したか。false = プロセスが応答なく落ちた（未ログイン等）。
-    pub(crate) fn saw_result(&self) -> bool {
+    fn saw_result(&self) -> bool {
         self.saw_result
     }
 
     /// assistant/tool の実イベントを 1 つでも出したか（host の self-heal 判定用）。
-    pub(crate) fn produced_content(&self) -> bool {
+    fn produced_content(&self) -> bool {
         self.produced_content
     }
 
     /// JSON でなかった行の蓄積（未ログインエラー本文など）。
-    pub(crate) fn plain_text_tail(&self) -> String {
+    fn plain_text_tail(&self) -> String {
         self.plain_text.clone()
+    }
+}
+
+impl CursorTranslator {
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
     fn translate(&mut self, raw: RawLine) -> Vec<EchoesEvent> {

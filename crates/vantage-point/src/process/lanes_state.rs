@@ -359,113 +359,10 @@ pub struct LanePool {
     chat_engines: HashMap<LaneAddress, ChatEngineSlot>,
 }
 
-/// chat engine の 1 スロット（host と、その EchoesEvent を topic に流す pump）。
-///
-/// drop = engine 停止（host teardown + pump abort）。
-struct ChatEngineSlot {
-    host: ChatHost,
-    pump: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for ChatEngineSlot {
-    fn drop(&mut self) {
-        // engine 停止（cursor は turn task を abort、echoes は Child kill_on_drop に委ねる）。
-        self.host.stop();
-        // pump は broadcast Closed で自然終了するが、即時性のため明示 abort する。
-        self.pump.abort();
-    }
-}
-
-/// Act II の chat engine host（engine ごとに turn 駆動が違う enum、Pre-MVP は trait 抽象を作らない）。
-///
-/// - [`ChatHost::Echoes`]（claude）: 常駐 stream-json host（stdin 連投、1 プロセスが会話を保持）。
-/// - [`ChatHost::Cursor`]（cursor-agent）: turn-scoped host（`--input-format` 不在のため turn ごと spawn）。
-///
-/// GUI 語彙 [`crate::echoes::EchoesEvent`] は両者共通なので、pump / topic 配線・chatview は engine
-/// 非依存のまま。委譲メソッドは EchoesAgentHost と同じ外形を保つ（呼び出し側 = 各 *_chat メソッドは
-/// 無改修）。
-enum ChatHost {
-    Echoes(crate::echoes::EchoesAgentHost),
-    Cursor(crate::echoes::CursorAgentHost),
-}
-
-impl ChatHost {
-    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<crate::echoes::EchoesEvent> {
-        match self {
-            ChatHost::Echoes(h) => h.subscribe(),
-            ChatHost::Cursor(h) => h.subscribe(),
-        }
-    }
-
-    fn in_flight(&self) -> crate::echoes::InFlight {
-        match self {
-            ChatHost::Echoes(h) => h.in_flight(),
-            ChatHost::Cursor(h) => h.in_flight(),
-        }
-    }
-
-    fn commit_seq(&self) -> u64 {
-        match self {
-            ChatHost::Echoes(h) => h.commit_seq(),
-            ChatHost::Cursor(h) => h.commit_seq(),
-        }
-    }
-
-    fn pid(&self) -> Option<u32> {
-        match self {
-            ChatHost::Echoes(h) => h.pid(),
-            ChatHost::Cursor(h) => h.pid(),
-        }
-    }
-
-    async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
-        match self {
-            ChatHost::Echoes(h) => h.submit(prompt).await,
-            ChatHost::Cursor(h) => h.submit(prompt).await,
-        }
-    }
-
-    async fn interrupt(&self) -> anyhow::Result<()> {
-        match self {
-            ChatHost::Echoes(h) => h.interrupt().await,
-            ChatHost::Cursor(h) => h.interrupt().await,
-        }
-    }
-
-    /// 明示 teardown（ChatEngineSlot Drop から呼ぶ）。cursor は turn task abort、echoes は
-    /// Child kill_on_drop に委ねる（host drop 時に停止）。
-    fn stop(&mut self) {
-        match self {
-            // EchoesAgentHost の Child は kill_on_drop(true) なので host drop で停止する。
-            ChatHost::Echoes(_) => {}
-            ChatHost::Cursor(h) => h.stop(),
-        }
-    }
-
-    /// 逆方向 permission への回答（cursor は control channel を持たない → Err）。
-    async fn respond_permission(
-        &self,
-        request_id: &str,
-        decision: crate::echoes::PermissionDecision,
-    ) -> anyhow::Result<()> {
-        match self {
-            ChatHost::Echoes(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Cursor(_) => {
-                anyhow::bail!("cursor エンジンは対話承認/permission mode を持ちません")
-            }
-        }
-    }
-
-    /// permission mode の動的切替（cursor は非対応 → Err）。
-    async fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
-        match self {
-            ChatHost::Echoes(h) => h.set_permission_mode(mode).await,
-            ChatHost::Cursor(_) => {
-                anyhow::bail!("cursor エンジンは対話承認/permission mode を持ちません")
-            }
-        }
-    }
-}
+// chat engine の所有型（ChatEngineSlot / ChatHost）と engine 軸の語彙（EngineKind）は
+// `crate::echoes::engine` に移設した（doc 37 — chat スタックを echoes module に閉じ、
+// 他プロジェクトへ切り出せる形にする）。LanePool は所有と排他の「法」だけを担う。
+use crate::echoes::{ChatEngineSlot, ChatHost, EngineKind};
 
 impl std::fmt::Debug for LanePool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -736,13 +633,16 @@ impl LanePool {
                 crate::lane::cc_session::clear(&addr.project, &lane_label).map_err(|e| {
                     anyhow::anyhow!("fresh restart: cc_session の破棄に失敗（addr={addr}）: {e}")
                 })?;
-                // cursor lane（Act II）は chatId を cursor_session 側に持つ。engine 非依存に両方
-                // 消すことで「New Session」が cursor でも本当に fresh になる（echoes lane では
-                // 記録不在 = no-op なので巻き添えなし）。
+                // cursor / codex lane（Act II）は session を各 engine の state file に持つ。
+                // engine 非依存に全 store を消すことで「New Session」がどの engine でも本当に
+                // fresh になる（他 engine の lane では記録不在 = no-op なので巻き添えなし）。
                 crate::lane::cursor_session::clear(&addr.project, &lane_label).map_err(|e| {
                     anyhow::anyhow!(
                         "fresh restart: cursor_session の破棄に失敗（addr={addr}）: {e}"
                     )
+                })?;
+                crate::lane::codex_session::clear(&addr.project, &lane_label).map_err(|e| {
+                    anyhow::anyhow!("fresh restart: codex_session の破棄に失敗（addr={addr}）: {e}")
                 })?;
             }
             self.chat_engines.remove(addr);
@@ -943,12 +843,14 @@ impl LanePool {
         if info.console_mode == mode {
             return Ok(());
         }
-        // Chat（Act II）は headless host を持つ engine の lane のみ。echoes（claude 常駐 host）と
-        // cursor（turn-scoped host）が対象。それ以外の stand（shell 等）は host が無いので拒否する
-        // （= 未対応 engine を Chat に切替えて誤 spawn するのを型ではなくここで塞ぐ）。
-        if mode == ConsoleMode::Chat && info.stand != "echoes" && info.stand != "cursor" {
+        // Chat（Act II）は headless host を持つ engine の lane のみ（能力表明は EngineKind に
+        // 一元化 — agy は Act I のみ、shell 等は engine なし。doc 37 §7.5「セル単位 readiness」）。
+        // 未対応 engine を Chat に切替えて誤 spawn するのを型ではなくここで塞ぐ。
+        if mode == ConsoleMode::Chat
+            && !EngineKind::from_stand(&info.stand).is_some_and(EngineKind::chat_capable)
+        {
             anyhow::bail!(
-                "console mode Chat は stand=echoes|cursor の lane のみ（addr={}, stand={}）",
+                "console mode Chat は Act II host を持つ engine の lane のみ（addr={}, stand={}）",
                 addr,
                 info.stand
             );
@@ -1024,25 +926,39 @@ impl LanePool {
         }
 
         let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-        // engine ごとに host を組む（Pre-MVP: trait 抽象を作らず stand で match）。
-        let host = match info.stand.as_str() {
-            "cursor" => {
+        // engine ごとに host を組む（対応表は EngineKind が SSOT。旧実装は default arm が
+        // 「未知 stand → 黙って claude host」に落ちていた — ここで明示 bail に変えた）。
+        let host = match EngineKind::from_stand(&info.stand) {
+            Some(EngineKind::Cursor) => {
                 // cursor: turn-scoped host（spawn 自体は exec-free = ensure を軽く保つ）。chatId は
                 // Act I（console）と共有の state file から解決する（II ⇄ I の会話継承）。
-                // engine_model は claude alias 前提の state なので読まない（cursor の model は
-                // cursor-agent 側で選択、doc `cursor-engine.md`）。
-                let chat_id = crate::lane::cursor_session::last(&addr.project, &lane_label);
+                // engine_model は読まない（model_switchable=false、cursor の model は
+                // cursor-agent 側で選択 — doc `cursor-engine.md`）。
+                let session_id = crate::lane::cursor_session::last(&addr.project, &lane_label);
                 ChatHost::Cursor(crate::echoes::CursorAgentHost::spawn(
-                    crate::echoes::CursorHostConfig {
+                    crate::echoes::TurnHostConfig {
                         cwd: info.cwd.clone(),
                         project: addr.project.clone(),
                         lane: lane_label.clone(),
-                        chat_id,
+                        session_id,
                     },
                 ))
             }
-            _ => {
-                // echoes（claude）: 従来どおり常駐 stream-json host。
+            Some(EngineKind::Codex) => {
+                // codex: turn-scoped host（cursor と同機構 = TurnHost）。thread id は Act I と
+                // 共有の state file から解決（II ⇄ I の会話継承、record-from-init が書き手）。
+                let session_id = crate::lane::codex_session::last(&addr.project, &lane_label);
+                ChatHost::Codex(crate::echoes::CodexAgentHost::spawn(
+                    crate::echoes::TurnHostConfig {
+                        cwd: info.cwd.clone(),
+                        project: addr.project.clone(),
+                        lane: lane_label.clone(),
+                        session_id,
+                    },
+                ))
+            }
+            Some(EngineKind::Claude) => {
+                // claude: 常駐 stream-json host。
                 // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
                 // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
                 let resume = crate::lane::cc_session::last(&addr.project, &lane_label)
@@ -1051,7 +967,7 @@ impl LanePool {
                 // 切替（console_set_model）は record → engine 入替で行われ、resume と組むことで
                 // 会話コンテキストを保ったままモデルだけ替わる。
                 let model = crate::lane::engine_model::last(&addr.project, &lane_label);
-                ChatHost::Echoes(crate::echoes::EchoesAgentHost::spawn(
+                ChatHost::Claude(crate::echoes::EchoesAgentHost::spawn(
                     crate::echoes::EchoesHostConfig {
                         cwd: info.cwd.clone(),
                         project: addr.project.clone(),
@@ -1061,6 +977,15 @@ impl LanePool {
                         claude_cli_path: None,
                     },
                 )?)
+            }
+            Some(EngineKind::Agy) | None => {
+                // mode=Chat ガード（set_console_mode）が上流で塞ぐので通常到達しない。
+                // belt-and-suspenders（永続 file の直接編集等で mode だけ chat になった場合）。
+                anyhow::bail!(
+                    "stand '{}' は Act II chat host を持ちません（addr={}）",
+                    info.stand,
+                    addr
+                );
             }
         };
         let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(
