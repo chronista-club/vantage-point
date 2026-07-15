@@ -170,7 +170,7 @@ pub struct CreateLaneReq {
     pub base: Option<String>,
     /// lane の claude model alias (co-evolution #1、例: 'opus' / 'sonnet' / 'claude-fable-5')。
     /// spawn 前に `engine_model` へ永続し、Act I spawn / respawn / Act II engine が共有する。
-    /// 省略時は claude default（`--model` を渡さない）。
+    /// 省略時は config の `default-lane-model`（未設定なら Opus）にフォールバックして record する。
     #[serde(default)]
     pub model: Option<String>,
 }
@@ -351,10 +351,17 @@ pub(crate) async fn create_performer_orchestrated(
     // `--model` として読み、 respawn（SP restart）や Act II engine も同じ file を共有する。
     // 検証は関数冒頭 (reserve 前) で済んでいるので、ここは永続のみ。 IO 失敗は best-effort warn
     // （claude default に degrade するだけで lane 作成は続行）。
-    if let Some(model) = req.model.as_ref().filter(|m| !m.trim().is_empty()) {
-        let model = model.trim();
+    //
+    // 明示 model が無ければ config の `default-lane-model`（未設定なら Opus）を既定に record する
+    // ＝ performer 追加時の既定 model。CLI (persist_lane_model) と同じ既定規則を共有し、Act I/II
+    // 両方に効く（model は per-lane 単一真実源）。
+    {
+        let model = crate::lane::engine_model::resolve_default(
+            req.model.as_deref(),
+            config.default_lane_model_or_opus(),
+        );
         let lane_label = crate::process::stand_spawner::lane_label(&addr);
-        if let Err(e) = crate::lane::engine_model::record(&addr.project, lane_label, model) {
+        if let Err(e) = crate::lane::engine_model::record(&addr.project, lane_label, &model) {
             tracing::warn!(
                 "engine_model 永続失敗（claude default で spawn）: addr={} model={} err={}",
                 addr,

@@ -516,14 +516,24 @@ fn clear_lane_state_files(repo_root: &Path, lane: &str) {
 ///
 /// project key は `clear_lane_state_files` / SP `create_performer_orchestrated` と同一
 /// derivation (repo_root basename) — CLI で書いた model を SP spawn 経路が読めるようにする。
-/// None は no-op (= claude default)。 不正な model 名は Err で早期に弾く (worktree は作成済だが
-/// spawn 前に失敗を返す方が silent degrade より良い)。
+/// 明示 `--model` が無ければ config の `default-lane-model`（未設定なら Opus）にフォールバックして
+/// record する（内部 helper `persist_lane_model_in` は従来通り None=no-op、既定解決はこの wrapper が担う）。
+/// 不正な model 名は Err で早期に弾く (worktree は作成済だが spawn 前に失敗を返す方が silent degrade より良い)。
 ///
 /// `repo_root` は [`config::find_repo_root`] 由来で **常に main worktree root** に正規化される
 /// (lane worktree の中から呼んでも SP 読み手の `addr.project` = main root basename と一致する。
 /// 旧: worktree 内実行で project key mismatch → model が silent 無視。project key 正規化で解消)。
 fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
-    persist_lane_model_in(&crate::config::vp_state_dir(), repo_root, lane, model)
+    // 明示 `--model` が無ければ config の `default-lane-model`（未設定なら Opus）を既定にする。
+    // mcp / sidebar 経路（create_performer_orchestrated）と同じ既定規則を CLI にも効かせる。
+    let cfg = crate::config::Config::load().unwrap_or_default();
+    let effective = super::engine_model::resolve_default(model, cfg.default_lane_model_or_opus());
+    persist_lane_model_in(
+        &crate::config::vp_state_dir(),
+        repo_root,
+        lane,
+        Some(&effective),
+    )
 }
 
 /// state base dir 注入版 (テスト用)。
