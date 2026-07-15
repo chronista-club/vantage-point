@@ -614,6 +614,9 @@ async fn handle_echoes_demand_start(
     }
 
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+    // cursor lane は cc_session を持たない（chatId は cursor_session 側）ため必ずこの no_session path を
+    // 通る = transcript replay は非対応（空 chat で attach、UI は破綻しない）。会話は cursor host が
+    // live event を流すことで進む。
     let Some(session_id) = crate::lane::cc_session::last(&addr.project, &lane_label) else {
         // 初回 (まだ会話が無い) lane。 空会話に収束させるため ReplayStart だけ送る。
         // ReplayStart / ReplayEnd は対で送る（session 無し = 生成中 turn も無い）。
@@ -1030,6 +1033,13 @@ async fn handle_console_set_model(
         let info = pool
             .get(&addr)
             .ok_or_else(|| format!("console_set_model: Lane not found: {lane}"))?;
+        if info.stand == "cursor" {
+            // cursor の model は cursor-agent 側（TUI の `/model`）で選ぶ。engine_model（claude alias
+            // 前提の state）は cursor には注入しないため、VP からの切替は受けない。
+            return Err(format!(
+                "cursor エンジンの model は cursor-agent 側で選択します（lane={lane}）"
+            ));
+        }
         if info.stand != "echoes" {
             return Err(format!(
                 "console_set_model は stand=echoes の lane のみ（lane={lane}, stand={}）",
