@@ -157,10 +157,14 @@ pub enum AppEvent {
     TerminalResize { lane: String, cols: u16, rows: u16 },
     /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
     /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
-    /// event loop が `window.vpConsole.handleEvent(lane, event)` で当該 lane の Console pane に渡す。
+    /// event loop が `window.vpConsole.handleEvent(lane, event, session)` で当該 lane の Console pane に渡す。
+    /// doc 38 Phase 2: `session` = 発生元 session の VP 採番 key（1 Lane = N session）。topic の
+    /// `ProcessMessage::EchoesEvent::session`（serde default=1）由来。session は lane 名に埋めず
+    /// 常に別 field で運ぶ（doc 38 落とし穴①）。
     EchoesEvent {
         lane: String,
         event: serde_json::Value,
+        session: u32,
     },
     /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で SP へ。
@@ -199,6 +203,30 @@ pub enum AppEvent {
     /// Act II モデル切替要求（ChatView の model picker）。 event loop が
     /// `console_set_model` で SP に forward。 `model` None = claude default に戻す。
     ConsoleSetModel { lane: String, model: Option<String> },
+    /// doc 38 Phase 2: session tab strip の一覧取得要求（chat attach / 表示時）。
+    /// event loop が World process-proxy ask `echoes_session_list` → `EchoesSessionList` で push back。
+    EchoesSessionsFetch { lane: String },
+    /// doc 38 Phase 2: chat header「+」からの新 session 作成（`stand` 省略 = lane の stand）。
+    /// ask `echoes_session_create`（focus は送らない = backend 既定 true）→ 続けて一覧を再取得して
+    /// push back（作成と一覧更新を 1 task で直列に）。
+    EchoesSessionCreate { lane: String, stand: Option<String> },
+    /// doc 38 Phase 2: session tab click による focused 切替。ask `echoes_session_focus` →
+    /// 一覧再取得 → `echoes_demand_start`（新 focused の transcript replay を発火）。
+    EchoesSessionFocus { lane: String, session: u32 },
+    /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
+    /// ask `stands_list` → `EchoesStands` で push back。
+    EchoesStandsFetch { lane: String },
+    /// doc 38 Phase 2: `echoes_session_list` の結果を webview の tab strip へ push back する内部 event
+    /// （async task → main thread の evaluate_script 橋渡し。`ConsoleModeApplied` と同型）。
+    EchoesSessionList {
+        lane: String,
+        payload: serde_json::Value,
+    },
+    /// doc 38 Phase 2: `stands_list` の結果を「+」menu へ push back する内部 event。
+    EchoesStands {
+        lane: String,
+        payload: serde_json::Value,
+    },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -325,6 +353,45 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::ConsoleSetModel {
                     lane: lane.to_string(),
                     model,
+                });
+            }
+        }
+        // doc 38 Phase 2: session tab strip。lane は常に別 field で運び、session を lane 名に
+        // 埋めない（doc 38 落とし穴①）。一覧取得 / 作成 / focused 切替 / stands 取得。
+        Some("echoes:sessions_fetch") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::EchoesSessionsFetch {
+                    lane: lane.to_string(),
+                });
+            }
+        }
+        Some("echoes:session_create") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                // stand 省略 = lane の stand（backend 既定）。
+                let stand = parsed
+                    .get("stand")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let _ = proxy.send_event(AppEvent::EchoesSessionCreate {
+                    lane: lane.to_string(),
+                    stand,
+                });
+            }
+        }
+        Some("echoes:session_focus") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let session = parsed.get("session").and_then(|v| v.as_u64());
+            if let (Some(lane), Some(session)) = (lane, session) {
+                let _ = proxy.send_event(AppEvent::EchoesSessionFocus {
+                    lane: lane.to_string(),
+                    session: session as u32,
+                });
+            }
+        }
+        Some("echoes:stands_fetch") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::EchoesStandsFetch {
+                    lane: lane.to_string(),
                 });
             }
         }

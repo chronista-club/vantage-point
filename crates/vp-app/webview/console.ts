@@ -81,8 +81,72 @@ export type EchoesEvent =
    *  GUI は PromptCard で allow/deny を描き、echoes:respond {request_id, behavior} で戻す。 */
   | { kind: 'permission_request'; request_id: string; tool_name: string; input: unknown }
 
-/** ChatView（C2）が lane ごとに登録する renderer。 */
-export type ConsoleRenderer = (event: EchoesEvent) => void
+/** ChatView（C2）が lane ごとに登録する renderer。
+ *  doc 38 Phase 2: 第 2 引数 session = EchoesEvent envelope 由来の VP 採番 key（1 Lane = N session）。
+ *  renderer 側は `session !== focusedOf(lane)` を fold しないことで背景 session の混入を防ぐ。 */
+export type ConsoleRenderer = (event: EchoesEvent, session: number) => void
+
+// ---------------------------------------------------------------------------
+// doc 38 Phase 2 — per-lane session registry（1 Lane = N session）
+//
+// SP（echoes_session_list）が唯一の真実源。ここはそれを描くための薄い view cache で、
+// tab strip の描画基準（focused）と chatview の event filter が参照する。純関数群は document
+// 非依存 = vitest でそのままテストできる（session routing の要）。
+// ---------------------------------------------------------------------------
+
+/** echoes_session_list の 1 要素（SP `ChatSessionInfo` の手書き mirror）。 */
+export type EchoesSession = {
+  /** VP 採番のローカル key（<lane>#<n> の n）。 */
+  key: number
+  /** engine 種別（session chip / tab の prefix 導出用）。 */
+  stand: string
+  /** engine の会話 id（cc_session 等。Draft = null、doc 38 §1.1）。 */
+  engine_session_id: string | null
+  /** chat host が現在生きているか（in-memory slot の有無）。 */
+  live: boolean
+  focused: boolean
+}
+
+/** echoes_session_list の生 payload（Rust `handle_echoes_session_list` の返り値 mirror）。 */
+export type EchoesSessionListPayload = {
+  lane?: string
+  /** focused session key。session が無い lane では null。 */
+  focused?: number | null
+  sessions?: EchoesSession[]
+}
+
+/** stands_list の生 payload（`{stands:[{name, description}]}`）。 */
+export type EchoesStandsPayload = {
+  stands?: unknown[]
+}
+
+type LaneSessions = { focused: number; sessions: EchoesSession[] }
+
+const laneSessions = new Map<string, LaneSessions>()
+
+/** envelope の session を正規化する（未指定 = 1）。doc 38 §5.3 の後方互換:
+ *  session を持たない旧 SP / 単一 session lane は focused = key 1 に解決する。純粋 = テスト可能。 */
+export function normalizeSession(session?: number): number {
+  return session ?? 1
+}
+
+/** SP の echoes_session_list payload を per-lane cache に取り込む（純粋 = document 非依存 = テスト可能）。 */
+export function noteSessionList(lane: string, focused: number, sessions: EchoesSession[]): void {
+  laneSessions.set(lane, { focused, sessions })
+}
+
+/** tab click の楽観的 focus 切替（chatview の filter を round-trip を待たず即切り替える）。
+ *  SP の echoes_session_list が後で authoritative 値で上書きする。純粋 = テスト可能。 */
+export function noteFocus(lane: string, session: number): void {
+  const cur = laneSessions.get(lane)
+  if (cur) cur.focused = session
+  else laneSessions.set(lane, { focused: session, sessions: [] })
+}
+
+/** lane の focused session key（未知 = 1）。chatview の event filter / tab 強調の基準。 */
+export function focusedOf(lane: string): number {
+  return laneSessions.get(lane)?.focused ?? 1
+}
 
 // ---------------------------------------------------------------------------
 // Echoes 共通ヘッダ用の per-lane summary（creo memo `vp-pane-common-header`）
@@ -146,8 +210,12 @@ export function foldHeaderState(h: EchoesHeaderState, event: EchoesEvent): boole
  *  SP 側 cc_session なので、ここは直近ウィンドウで足りる）。 */
 const BUFFER_CAP = 1000
 
+/** ring buffer の 1 要素。doc 38 Phase 2: どの session の event かを envelope として保持し、
+ *  attach 時の replay で renderer に session を渡せるようにする。 */
+type BufferedEvent = { event: EchoesEvent; session: number }
+
 type LaneConsole = {
-  buffer: EchoesEvent[]
+  buffer: BufferedEvent[]
   mode: ConsoleMode
   renderer: ConsoleRenderer | null
   /** Echoes 共通ヘッダ用 summary（session_init / turn_completed / error の畳み込み）。 */
@@ -170,7 +238,8 @@ function laneOf(lane: string): LaneConsole {
 // ---------------------------------------------------------------------------
 
 export type VpConsole = {
-  handleEvent(lane: string, event: EchoesEvent): void
+  /** doc 38 Phase 2: session = envelope 由来の VP 採番 key（未指定 = focused = 1、旧 SP 互換）。 */
+  handleEvent(lane: string, event: EchoesEvent, session?: number): void
   setMode(lane: string, mode: ConsoleMode): void
   getMode(lane: string): ConsoleMode
   /** ChatView (C2) が mount 時に登録。既存 buffer を replay してから live 配信に接続する。 */
@@ -183,16 +252,28 @@ export type VpConsole = {
   /** ChatView の permission mode optimistic 切替をヘッダにも同期する（engine は即時 event を
    *  返さないため。respawn 時は session_init.permission_mode の真値が上書きする）。 */
   notePermissionMode(lane: string, mode: string): void
+  /** doc 38 Phase 2: SP の echoes_session_list を per-lane cache に取り込み、tab strip へ
+   *  'vp:echoes-sessions' CustomEvent を発火する（focused も併せて更新）。 */
+  handleSessionList(lane: string, payload: EchoesSessionListPayload): void
+  /** doc 38 Phase 2: stands_list を「+」menu へ 'vp:echoes-stands' CustomEvent で中継する。 */
+  handleStands(lane: string, payload: EchoesStandsPayload): void
+  /** doc 38 Phase 2: lane の focused session key（未知 = 1）。chatview の event filter が参照。 */
+  focusedOf(lane: string): number
 }
 
 export function installConsole(): VpConsole {
   const api: VpConsole = {
-    handleEvent(lane, event) {
+    handleEvent(lane, event, session) {
+      const s = normalizeSession(session)
       const entry = laneOf(lane)
-      // replay 開始 = 過去会話の再送。 buffer も捨てて張り直す（ChatView 未 mount のまま
-      // 2 回 replay された場合に、 後で attach した renderer が二重の会話を畳むのを防ぐ）。
-      if (event.kind === 'replay_start') entry.buffer.length = 0
-      entry.buffer.push(event)
+      // replay 開始 = 該当 session の過去会話再送。doc 38 Phase 2: replay は session 単位なので、
+      // その session の buffer 分だけ捨てる（他 session の buffer を巻き込まない）。ChatView 未
+      // mount のまま 2 回 replay された場合に後着 renderer が二重の会話を畳むのを防ぐ。N=1 では
+      // 全消去と等価（旧挙動）。
+      if (event.kind === 'replay_start') {
+        entry.buffer = entry.buffer.filter((b) => b.session !== s)
+      }
+      entry.buffer.push({ event, session: s })
       if (entry.buffer.length > BUFFER_CAP) {
         entry.buffer.splice(0, entry.buffer.length - BUFFER_CAP)
       }
@@ -204,6 +285,8 @@ export function installConsole(): VpConsole {
         )
       }
       // Echoes 共通ヘッダ summary。変化した時だけ通知（chunk 系では飛ばない）。
+      // NB(doc 38): header は lane 単位の presence-driven 表示で、session ごとの scoping は
+      // Phase 3 以降の磨き。今は全 session を跨いで畳み、N=1 の既存挙動を保つ。
       if (foldHeaderState(entry.header, event)) {
         document.dispatchEvent(
           new CustomEvent('vp:echoes-header', { detail: { lane } }),
@@ -211,7 +294,7 @@ export function installConsole(): VpConsole {
       }
       if (entry.renderer) {
         try {
-          entry.renderer(event)
+          entry.renderer(event, s)
         } catch (e) {
           console.warn('[vpConsole] renderer error', lane, e)
         }
@@ -231,9 +314,10 @@ export function installConsole(): VpConsole {
       const entry = laneOf(lane)
       entry.renderer = renderer
       // mount 前に届いた分を replay（subscribe→submit 順と合わせ、取りこぼしゼロ）。
-      for (const ev of entry.buffer) {
+      // doc 38 Phase 2: 各 buffered event の session を renderer に渡す（filter が効く）。
+      for (const b of entry.buffer) {
         try {
-          renderer(ev)
+          renderer(b.event, b.session)
         } catch (e) {
           console.warn('[vpConsole] replay error', lane, e)
           break
@@ -244,7 +328,7 @@ export function installConsole(): VpConsole {
       laneOf(lane).renderer = null
     },
     peek(lane, n = 20) {
-      return laneOf(lane).buffer.slice(-n)
+      return laneOf(lane).buffer.slice(-n).map((b) => b.event)
     },
     headerState(lane) {
       return { ...laneOf(lane).header }
@@ -257,6 +341,26 @@ export function installConsole(): VpConsole {
         new CustomEvent('vp:echoes-header', { detail: { lane } }),
       )
     },
+    handleSessionList(lane, payload) {
+      const focused = normalizeSession(
+        typeof payload?.focused === 'number' ? payload.focused : undefined,
+      )
+      const sessions = Array.isArray(payload?.sessions) ? payload!.sessions! : []
+      noteSessionList(lane, focused, sessions)
+      // tab strip（chatview）へ。'vp:console-ready'（:201 相当）と同じ CustomEvent bus パターン。
+      document.dispatchEvent(
+        new CustomEvent('vp:echoes-sessions', { detail: { lane, focused, sessions } }),
+      )
+    },
+    handleStands(lane, payload) {
+      const stands = Array.isArray(payload?.stands) ? payload!.stands! : []
+      document.dispatchEvent(
+        new CustomEvent('vp:echoes-stands', { detail: { lane, stands } }),
+      )
+    },
+    // 純関数 focusedOf をそのまま公開（laneSessions cache を参照。property 名は method binding を
+    // 作らないので module-level の focusedOf を指す — 自己再帰にはならない）。
+    focusedOf,
   }
   ;(window as unknown as { vpConsole: VpConsole }).vpConsole = api
   return api
