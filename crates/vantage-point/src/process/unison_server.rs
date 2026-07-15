@@ -16,7 +16,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::state::AppState;
-use crate::protocol::ProcessMessage;
+use crate::protocol::{BoardItem, Content, ProcessMessage};
 
 /// QUIC ポートのオフセット（HTTP ポートからの差分）
 /// TCP (HTTP) と UDP (QUIC) は OS レベルで独立 → 同一ポートで共存可能
@@ -59,6 +59,251 @@ fn handle_process_message(
     // 現在は Hub broadcast のみで Canvas に配信。
 
     Ok(serde_json::json!({"status": "ok"}))
+}
+
+// =============================================================================
+// board モデル (2026-07-15): PP Canvas を scope 別の永続 board にする server-authoritative 実装
+//
+// board = show した item の scope 別永続リスト（SP が唯一の truth を持つ）。 mcp__show 着信で SP が
+// item を生成し DB に durable append、 更新後 board を BoardUpdated（retained topic
+// `.../state/board/{scope}/{lane}`）で broadcast する。 webview はそれを購読して board を置換する view
+// （旧 Show 揮発 stack / webview self-save は廃止）。 lane board は lane ごと、 proj board は project 共有
+// （lane_name=''）。 vp board（全体）は cross-project 共有で World store が要るため Phase 2。
+// =============================================================================
+
+/// board の DB pane_id（webview の PP_PANE_ID と一致）。
+const BOARD_PANE_ID: &str = "paisley-park";
+/// board の item 上限（永続なので揮発 stack の 10 より大きく取る）。
+const BOARD_CAPACITY: usize = 50;
+
+/// board のキーを決める。 返り値 = (board_scope, lane_name, broadcast_lane)。
+/// - proj board: lane を無視して project 共有（lane_name=''、 broadcast_lane=None）。
+/// - lane board: lane を conductor(空)/performer(名) に正規化。
+fn board_key(scope: Option<&str>, lane: Option<&str>) -> (String, String, Option<String>) {
+    if scope == Some("proj") {
+        return ("proj".to_string(), String::new(), None);
+    }
+    // lane 正規化: None/""/"conductor" → '' (conductor)。
+    let lane_name = lane
+        .filter(|s| !s.is_empty() && *s != "conductor")
+        .unwrap_or("")
+        .to_string();
+    let broadcast_lane = if lane_name.is_empty() {
+        None
+    } else {
+        Some(lane_name.clone())
+    };
+    ("lane".to_string(), lane_name, broadcast_lane)
+}
+
+/// protocol::Content を board item の (contentType, content) に変換する。
+/// url / image は Phase 1 board 未対応（webview 側も未対応）なので None（= skip）。
+fn content_to_parts(content: &Content) -> Option<(&'static str, String)> {
+    match content {
+        Content::Markdown(s) => Some(("markdown", s.clone())),
+        Content::Html(s) => Some(("html", s.clone())),
+        Content::Log(s) => Some(("text", s.clone())),
+        Content::Url(_) | Content::ImageBase64 { .. } => None,
+    }
+}
+
+/// board record の stack から items（Vec<BoardItem>）と cursor（Option<String>）を取り出す。
+fn extract_stack(rec: Option<&serde_json::Value>) -> (Vec<BoardItem>, Option<String>) {
+    let Some(rec) = rec else {
+        return (Vec::new(), None);
+    };
+    let stack = rec.get("stack");
+    let items = stack
+        .and_then(|s| s.get("items"))
+        .and_then(|v| serde_json::from_value::<Vec<BoardItem>>(v.clone()).ok())
+        .unwrap_or_default();
+    let cursor = stack
+        .and_then(|s| s.get("cursor"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (items, cursor)
+}
+
+/// 指定 board を DB から読んで BoardUpdated で broadcast する（retained 更新 + live 配信）。
+async fn broadcast_board(
+    state: &AppState,
+    board_scope: &str,
+    lane_name: &str,
+    broadcast_lane: Option<String>,
+) -> Result<(), String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Ok(());
+    };
+    let rec = vpdb
+        .load_board(&state.project_dir, board_scope, lane_name, BOARD_PANE_ID)
+        .await
+        .map_err(|e| format!("board load: {}", e))?;
+    let (items, cursor) = extract_stack(rec.as_ref());
+    state.hub.broadcast(ProcessMessage::BoardUpdated {
+        scope: board_scope.to_string(),
+        lane: broadcast_lane,
+        items,
+        cursor,
+    });
+    Ok(())
+}
+
+/// mcp__show / mcp__clear を board（SP truth）に反映する。
+///
+/// show: item を生成 → DB append（durable）→ 更新後 board を BoardUpdated で broadcast。
+/// clear: DB clear → 空 board を broadcast。
+async fn handle_canvas_command(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("canvas_command: vpdb 未初期化".to_string());
+    };
+    let msg: ProcessMessage = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
+    match msg {
+        ProcessMessage::Show {
+            content,
+            title,
+            lane,
+            scope,
+            ..
+        } => {
+            let Some((content_type, content_str)) = content_to_parts(&content) else {
+                // url / image は Phase 1 board 未対応。 durable も broadcast もしない。
+                return Ok(
+                    serde_json::json!({"status": "skipped", "reason": "unsupported content"}),
+                );
+            };
+            let (board_scope, lane_name, bc_lane) = board_key(scope.as_deref(), lane.as_deref());
+            let item = serde_json::json!({
+                "id": uuid::Uuid::new_v4().to_string(),
+                "content": content_str,
+                "contentType": content_type,
+                "title": title,
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            });
+            vpdb.append_board_item(
+                &state.project_dir,
+                &board_scope,
+                &lane_name,
+                BOARD_PANE_ID,
+                &item,
+                BOARD_CAPACITY,
+            )
+            .await
+            .map_err(|e| format!("board append: {}", e))?;
+            broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+            Ok(serde_json::json!({"status": "ok"}))
+        }
+        ProcessMessage::Clear { lane, scope, .. } => {
+            let (board_scope, lane_name, bc_lane) = board_key(scope.as_deref(), lane.as_deref());
+            vpdb.clear_board(&state.project_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+                .await
+                .map_err(|e| format!("board clear: {}", e))?;
+            broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+            Ok(serde_json::json!({"status": "ok"}))
+        }
+        _ => Err("canvas_command: show/clear 以外のメッセージ".to_string()),
+    }
+}
+
+/// webview からの board item 削除（thumbnail ✕）。 DB から消して更新後 board を broadcast。
+async fn handle_board_delete_item(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("board_delete_item: vpdb 未初期化".to_string());
+    };
+    let item_id = payload
+        .get("item_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("board_delete_item: item_id 必須")?
+        .to_string();
+    let (board_scope, lane_name, bc_lane) = board_key(
+        payload.get("scope").and_then(|v| v.as_str()),
+        payload.get("lane").and_then(|v| v.as_str()),
+    );
+    vpdb.delete_board_item(
+        &state.project_dir,
+        &board_scope,
+        &lane_name,
+        BOARD_PANE_ID,
+        &item_id,
+    )
+    .await
+    .map_err(|e| format!("board delete: {}", e))?;
+    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// webview からの board clear（Clear ボタン）。 = mcp clear と同じ結果。
+async fn handle_board_clear(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("board_clear: vpdb 未初期化".to_string());
+    };
+    let (board_scope, lane_name, bc_lane) = board_key(
+        payload.get("scope").and_then(|v| v.as_str()),
+        payload.get("lane").and_then(|v| v.as_str()),
+    );
+    vpdb.clear_board(&state.project_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+        .await
+        .map_err(|e| format!("board clear: {}", e))?;
+    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// SP 起動時に DB の全 board を retained topic に seed する。
+///
+/// webview が canvas channel を購読した瞬間、 retained BoardUpdated として全 board が初期配信される
+/// （別 load 経路が不要）。 空 board / 別 pane_id の row は skip。
+pub async fn seed_boards(state: &AppState) {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return;
+    };
+    let rows = match vpdb.list_pane_contents(&state.project_dir).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("board seed: pane_contents list 失敗: {}", e);
+            return;
+        }
+    };
+    let mut seeded = 0usize;
+    for rec in rows {
+        if rec.get("pane_id").and_then(|v| v.as_str()) != Some(BOARD_PANE_ID) {
+            continue;
+        }
+        let (items, cursor) = extract_stack(Some(&rec));
+        if items.is_empty() {
+            continue;
+        }
+        let scope = rec
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("lane")
+            .to_string();
+        let lane_name = rec.get("lane_name").and_then(|v| v.as_str()).unwrap_or("");
+        let bc_lane = if lane_name.is_empty() {
+            None
+        } else {
+            Some(lane_name.to_string())
+        };
+        state.hub.broadcast(ProcessMessage::BoardUpdated {
+            scope,
+            lane: bc_lane,
+            items,
+            cursor,
+        });
+        seeded += 1;
+    }
+    if seeded > 0 {
+        tracing::info!("board seed: {} board を retained に投入", seeded);
+    }
 }
 
 /// watch_file メソッドのハンドラー
@@ -888,87 +1133,6 @@ async fn handle_terminal_resize(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "cols": cols, "rows": rows}))
 }
 
-/// F6 (doc 27 §3.4.5/§6): PP Canvas state save。 旧 SP HTTP `POST /api/pp/state` を
-/// process-proxy ask に移管（surface→SP 直結 HTTP を撤去、 World 経由の ask に統一）。
-/// logic は旧 `pp_state_save_handler` から移設（HTTP route は削除）。
-async fn handle_pp_state_save(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
-        return Err("pp_state_save: vpdb 未初期化".to_string());
-    };
-    let pane_id = payload
-        .get("pane_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or("pp_state_save: pane_id 必須")?
-        .to_string();
-    let content_type = payload
-        .get("content_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("markdown")
-        .to_string();
-    let content = payload
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let title = payload
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    // lane: null/空/"conductor" は None(=lane IS NULL) に正規化（load 側と key 一致）。
-    let lane = payload
-        .get("lane")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty() && *s != "conductor")
-        .map(|s| s.to_string());
-    let stack = payload.get("stack").filter(|v| !v.is_null()).cloned();
-    let ui_state = payload.get("ui_state").filter(|v| !v.is_null()).cloned();
-    vpdb.upsert_pp_state(
-        &state.project_dir,
-        lane.as_deref(),
-        &pane_id,
-        &content_type,
-        &content,
-        title.as_deref(),
-        stack.as_ref(),
-        ui_state.as_ref(),
-    )
-    .await
-    .map_err(|e| format!("pp_state upsert 失敗: {}", e))?;
-    Ok(serde_json::json!({"status": "saved"}))
-}
-
-/// F6: PP Canvas state load。 旧 SP HTTP `GET /api/pp/state` を process-proxy ask に移管。
-async fn handle_pp_state_load(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
-        return Err("pp_state_load: vpdb 未初期化".to_string());
-    };
-    let pane_id = payload
-        .get("pane_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("paisley-park")
-        .to_string();
-    let lane = payload
-        .get("lane")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty() && *s != "conductor")
-        .map(|s| s.to_string());
-    match vpdb
-        .load_pp_state(&state.project_dir, lane.as_deref(), &pane_id)
-        .await
-    {
-        Ok(Some(rec)) => Ok(serde_json::json!({"status": "ok", "record": rec})),
-        Ok(None) => Ok(serde_json::json!({"status": "empty"})),
-        Err(e) => Err(format!("pp_state load 失敗: {}", e)),
-    }
-}
-
 /// F6② (doc 27 §3.4.5/§6): Lane delete。 旧 SP HTTP `DELETE /api/lanes` を process-proxy ask に
 /// 移管（surface→SP 直結 HTTP を撤去、 World 経由の ask に統一）。 logic は旧 `delete_handler`
 /// から移設し、 core の `delete_lane_orchestrated` を再利用（HTTP route + handler は削除）。
@@ -1056,7 +1220,10 @@ pub(crate) async fn dispatch_process_method(
         // switch_lane も generic broadcast 経路に乗せる（B1: 遠隔 active Lane 制御）。
         // hub → topic `process/paisley-park/event/switch-lane`（一時コマンド=非
         // retained）→ canvas channel → vp-app が受信して active Lane を切り替える。
-        "show" | "clear" | "toggle_pane" | "split_pane" | "close_pane" | "switch_lane" => {
+        // board モデル (2026-07-15): show/clear は SP-authoritative な board 経路へ。
+        // item を DB に durable append し、 更新後 board を BoardUpdated(retained) で broadcast する。
+        "show" | "clear" => handle_canvas_command(state, payload).await,
+        "toggle_pane" | "split_pane" | "close_pane" | "switch_lane" => {
             handle_process_message(state, payload)
         }
         "watch_file" => handle_watch_file(state, payload).await,
@@ -1085,9 +1252,10 @@ pub(crate) async fn dispatch_process_method(
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
         "lane_capture" => handle_lane_capture(state, payload).await,
         "terminal_resize" => handle_terminal_resize(state, payload).await,
-        // F6: PP Canvas state (旧 SP HTTP /api/pp/state を process-proxy ask に移管)
-        "pp_state_save" => handle_pp_state_save(state, payload).await,
-        "pp_state_load" => handle_pp_state_load(state, payload).await,
+        // board モデル (2026-07-15): webview からの board mutate（thumbnail ✕ / Clear ボタン）。
+        // 旧 pp_state_save/load は撤去（board は SP truth、 webview は BoardUpdated 購読 + mutate へ）。
+        "board_delete_item" => handle_board_delete_item(state, payload).await,
+        "board_clear" => handle_board_clear(state, payload).await,
         // lanes portless: Lane create/list (旧 SP HTTP POST/GET /api/lanes を process-proxy ask に移管)
         "lane_create" => handle_lane_create(state, payload).await,
         "lanes_list" => handle_lanes_list(state).await,

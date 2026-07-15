@@ -6,6 +6,23 @@
 //! private item を参照可）。
 use super::*;
 
+/// board scope の検証（board モデル 2026-07-15）: None/"lane"→None(=lane 既定)、
+/// "proj"→Some("proj")、 "vp"/その他→fail-closed。 "vp"(全体 board) は cross-project 共有で
+/// World store が要り Phase 2 未実装のため、 silent に lane 降格せず明示エラーで弾く。
+fn validate_board_scope(scope: Option<&str>) -> Result<Option<String>, McpError> {
+    match scope {
+        None | Some("lane") => Ok(None),
+        Some("proj") => Ok(Some("proj".to_string())),
+        Some(other) => Err(McpError::invalid_params(
+            format!(
+                "未対応の board scope: '{}'。 'lane'(既定) か 'proj' を指定してください（'vp' は未実装）",
+                other
+            ),
+            None,
+        )),
+    }
+}
+
 /// Parameters for the show tool
 ///
 /// ## doc 19 PP Canvas Stack Model (2026-05-27)
@@ -37,6 +54,12 @@ pub struct ShowParams {
     /// Pane title (for tab display)
     #[schemars(description = "Title for the pane tab. If not provided, the pane_id is used.")]
     pub title: Option<String>,
+
+    /// board scope（board モデル）: どの board に貼るか。
+    #[schemars(
+        description = "Board to pin this content to: 'lane' (default; the current lane's board) or 'proj' (the project-wide board shared across all lanes)."
+    )]
+    pub scope: Option<String>,
 }
 
 /// Parameters for the clear tool
@@ -45,6 +68,12 @@ pub struct ClearParams {
     /// Pane ID to clear
     #[schemars(description = "Pane ID to clear (default: 'main')")]
     pub pane_id: Option<String>,
+
+    /// board scope to clear
+    #[schemars(
+        description = "Board to clear: 'lane' (default) or 'proj' (the project-wide board)."
+    )]
+    pub scope: Option<String>,
 }
 
 /// Parameters for the capture_canvas tool
@@ -102,6 +131,8 @@ impl VantageMcp {
         // doc 19 PP Canvas Stack Model: append は spec から omit。 protocol layer の
         // ProcessMessage::Show.append は keep (= wire 互換)、 値は false 固定で送る。
         // WebView 側 canvas-handler が stack model で新 item として push する。
+        // board scope: "vp" は Phase 2 未実装なので fail-closed（silent lane 降格を避ける）。
+        let scope = validate_board_scope(params.scope.as_deref())?;
         let msg = ProcessMessage::Show {
             pane_id: pane_id.clone(),
             content,
@@ -110,6 +141,7 @@ impl VantageMcp {
             // per-lane PP: この MCP が属する Lane（cwd 由来、conductor/performer 語彙）を stamp。
             // topic の lane segment になり、retained を lane 別に分離する。
             lane: Some(SelfLane::detect().lane_name),
+            scope,
         };
 
         self.process_call("show", &msg).await?;
@@ -127,9 +159,11 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
 
+        let scope = validate_board_scope(params.scope.as_deref())?;
         let msg = ProcessMessage::Clear {
             pane_id: pane_id.clone(),
             lane: Some(SelfLane::detect().lane_name),
+            scope,
         };
         self.process_call("clear", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(

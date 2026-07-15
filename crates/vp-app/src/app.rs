@@ -143,8 +143,8 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "debug"
                 | "osc:notification"
                 | "slot:rect"
-                | "pp:state:save"
-                | "pp:state:load"
+                | "board:delete"
+                | "board:clear"
                 | "console"
                 | "open-url"
                 | "echoes:submit"
@@ -179,8 +179,9 @@ fn spawn_menu_event_pump(rt_handle: &tokio::runtime::Handle, proxy: EventLoopPro
 ///
 /// active_lane_address (`<project>/conductor` or `<project>/performer/<name>`) から、 対応する
 /// project_path を引く。 World process-proxy は SP port 不問・project_path を path_key に正規化して
-/// routing するので、 ask 系 (pp:state) は port でなく path で引く。 解決失敗 (lane 未選択 / SP 未起動)
-/// なら `None`。 caller: `PpStateSaveRequest` / `PpStateLoadRequest` の process-proxy ask。
+/// routing するので、 ask 系 (board mutate / lane ops) は port でなく path で引く。 解決失敗
+/// (lane 未選択 / SP 未起動) なら `None`。 caller: `BoardMutate`（board_delete_item / board_clear）の
+/// process-proxy ask。
 pub(crate) fn resolve_active_project_path(state: &crate::pane::SidebarState) -> Option<String> {
     let active = state.active_lane_address.as_deref()?;
     for proc in &state.processes {
@@ -3518,82 +3519,29 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
             }
-            Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
-                // F6: WebView の save IPC を World process-proxy ask (pp_state_save) で SP に forward。
-                // 旧 SP HTTP 直結を撤去。 active project 解決失敗は silent skip (空 canvas の debounce save)。
+            Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
+                // board モデル (2026-07-15): WebView の board mutate（thumbnail ✕ / Clear ボタン）を
+                // World process-proxy ask で active project の SP に forward する。 SP が DB を更新して
+                // BoardUpdated(retained) を broadcast し、 canvas channel 経由で webview の board が
+                // 更新される（webview は truth を持たず SP の反映を待つ view）。 active project 解決
+                // 失敗は silent skip。
                 let Some(path) = resolve_active_project_path(&sidebar_state) else {
-                    tracing::debug!("pp:state:save skip — active project 解決失敗 (lane 未選択 or SP 未起動)");
+                    tracing::debug!("board mutate skip — active project 解決失敗");
                     return;
                 };
                 rt_handle.spawn(async move {
                     match world_process_request(
                         crate::client::default_world_port(),
                         &path,
-                        "pp_state_save",
+                        &method,
                         body,
                     )
                     .await
                     {
-                        Ok(_) => tracing::debug!("pp:state:save → World OK"),
-                        Err(e) => tracing::warn!("pp:state:save 失敗: {}", e),
+                        Ok(_) => tracing::debug!("board mutate ({}) → World OK", method),
+                        Err(e) => tracing::warn!("board mutate ({}) 失敗: {}", method, e),
                     }
                 });
-            }
-            Event::UserEvent(AppEvent::PpStateLoadRequest { lane, pane_id }) => {
-                // F6: WebView の load IPC を World process-proxy ask (pp_state_load) で SP に forward。
-                // 結果 record を AppEvent::PpStateLoaded で event loop に戻し、 次の arm で WebView に push。
-                let Some(path) = resolve_active_project_path(&sidebar_state) else {
-                    tracing::debug!("pp:state:load skip — active project 解決失敗");
-                    return;
-                };
-                let load_proxy = async_action_proxy.clone();
-                rt_handle.spawn(async move {
-                    let mut payload = serde_json::json!({ "pane_id": pane_id });
-                    if let Some(name) = lane {
-                        payload["lane"] = serde_json::Value::String(name);
-                    }
-                    let record = match world_process_request(
-                        crate::client::default_world_port(),
-                        &path,
-                        "pp_state_load",
-                        payload,
-                    )
-                    .await
-                    {
-                        // SP は {status:ok, record} | {status:empty} を返す。 record だけ抜く。
-                        Ok(v) => v.get("record").filter(|r| !r.is_null()).cloned(),
-                        Err(e) => {
-                            tracing::warn!("pp:state:load 失敗: {}", e);
-                            None
-                        }
-                    };
-                    let _ = load_proxy.send_event(AppEvent::PpStateLoaded { record });
-                });
-            }
-            Event::UserEvent(AppEvent::PpStateLoaded { record }) => {
-                // pp-content-persist: SP から取った PP state を WebView に push back する。
-                // record は pane_contents の 1 行 (stack/ui_state 等を含む) か None (= 未保存)。
-                // WebView 側は `pp:state:loaded` を canvas-handler.handleMessage で受けて
-                // applyPersistedState を呼ぶ。 SurrealDB row の `stack` field のみ取り出して渡す。
-                let stack = record.as_ref().and_then(|r| r.get("stack").cloned());
-                let payload = serde_json::json!({
-                    "type": "pp:state:loaded",
-                    "stack": stack,
-                });
-                match serde_json::to_string(&payload) {
-                    Ok(json) => {
-                        let script = format!(
-                            "window.vpCanvas && window.vpCanvas.handleMessage({})",
-                            json
-                        );
-                        if let Err(e) = webview.evaluate_script(&script) {
-                            tracing::warn!("pp:state:loaded inject 失敗: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("pp:state:loaded serialize 失敗: {}", e);
-                    }
-                }
             }
             Event::UserEvent(AppEvent::ProjectsError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());

@@ -371,6 +371,7 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
         title: config.title.clone(),
         // file watch 出力は conductor（lead）Canvas 向け
         lane: None,
+        scope: None,
     });
 
     // 3. notify ウォッチャーを起動（sync → async ブリッジ）
@@ -484,6 +485,7 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
                         append: true,
                         title: None,
                         lane: None,
+                        scope: None,
                     });
                 }
                 Err(e) => {
