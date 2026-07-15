@@ -70,6 +70,14 @@ pub struct ActivePaneInfo<'a> {
     /// 将来 name が populate された時にヘッダだけ古い表示に取り残されないよう
     /// cwd / branch と同じ経路で供給しておく（JS 側 entry.tsx は受け取り済み）。
     pub lane_name: Option<&'a str>,
+    /// Echoes 共通ヘッダの session chip 用: active engine の session id
+    /// （`LaneInfo.engine_session_id` 由来）。Act I は EchoesEvent が流れないため
+    /// event 経路では供給されず、この setActivePane 相乗りが唯一の供給路になる
+    /// （Act II では event 由来の真値が上書きする — EchoesHeader 側で OR merge）。
+    pub session_id: Option<&'a str>,
+    /// Echoes 共通ヘッダの chip prefix 用: lane の stand（= engine 種別、"echoes" / "cursor" /
+    /// "codex" / "agy"）。session chip の engine 別 prefix 導出に使う。
+    pub stand: Option<&'a str>,
 }
 
 /// `window.setActivePane(info)` を呼ぶ JS スニペットを生成
@@ -1426,6 +1434,8 @@ mod tests {
             cwd: None,
             branch: None,
             lane_name: None,
+            session_id: None,
+            stand: None,
         });
         assert!(script.contains("\"chat\":true"), "script={script}");
         assert!(script.contains("\"pane_id\":\"vp/conductor\""));
@@ -1442,6 +1452,8 @@ mod tests {
             cwd: Some("/Users/mako/repos/vp/.vp/lanes/x"),
             branch: Some("mako/x"),
             lane_name: Some("x"),
+            session_id: Some("0196-abcd-ef01"),
+            stand: Some("echoes"),
         });
         assert!(tui.contains("\"chat\":false"), "script={tui}");
         // cwd / branch chip の供給が setActivePane 経由で JS に届くこと（header の情報源）。
@@ -1450,6 +1462,14 @@ mod tests {
             "script={tui}"
         );
         assert!(tui.contains("\"branch\":\"mako/x\""), "script={tui}");
+        // Act I の session chip 供給路（engine_session_id 相乗り + engine 種別）。
+        // Act I は EchoesEvent が流れないため、この経路が欠けると chip が出ない
+        //（bug mem_1Cd3icsvKiGsQ8TtX8t1FR の再発防止）。
+        assert!(
+            tui.contains("\"session_id\":\"0196-abcd-ef01\""),
+            "script={tui}"
+        );
+        assert!(tui.contains("\"stand\":\"echoes\""), "script={tui}");
 
         let stand = build_set_active_pane_script(&ActivePaneInfo {
             kind: Some("bastet"),
@@ -1459,6 +1479,8 @@ mod tests {
             cwd: None,
             branch: None,
             lane_name: None,
+            session_id: None,
+            stand: None,
         });
         assert!(stand.contains("\"chat\":false"), "script={stand}");
         // 非 lane pane は cwd/branch を持たない（chip 非表示）。

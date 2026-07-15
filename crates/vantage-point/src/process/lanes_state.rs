@@ -307,8 +307,18 @@ pub struct LaneInfo {
     /// state file (`lane::cc_session`、 書き手は SessionStart hook) を lazy read する
     /// (`performer_status` と同じ前例)。 echoes の `--resume` 再利用と R3-c の
     /// `--bg` session 管理の土台。
+    ///
+    /// ⚠️ **claude 専用の契約**: delivery_actor（channel D）が `claude -p --resume <id>` に
+    /// 使うため、他 engine の id を入れてはならない。表示用の engine 横断 id は
+    /// [`Self::engine_session_id`]（別契約）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cc_session_id: Option<String>,
+    /// doc 37: この lane の **active engine の** session id（claude=cc_session / cursor=chatId /
+    /// codex=thread id。agy / shell は None）。Echoes 共通ヘッダの session chip 用（表示専用 —
+    /// resume に使うのは各 engine の state file / `cc_session_id` 側）。snapshot 時に
+    /// `EngineKind` で分岐して lazy read。serde default + skip で wire 後方互換。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_session_id: Option<String>,
     /// doc 33: Console のエンジンモード（Tui = PtySlot+claude TUI / Chat = EchoesAgentHost）。
     /// serde default = Tui で wire 後方互換。永続 SSOT は `lane::console_mode`（state file）、
     /// 本 field はその registry cache。vp-app は本 field で Dead-lane respawn 判定を gate する
@@ -463,6 +473,7 @@ impl LanePool {
             // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         pool.lanes.insert(addr, info);
@@ -1147,6 +1158,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
     }
@@ -1375,6 +1387,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         let diff: LaneDiff = Diff::Add {
@@ -1427,6 +1440,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         let event = SystemEvent::Lane(Diff::Add {

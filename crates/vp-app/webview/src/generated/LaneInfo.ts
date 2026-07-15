@@ -28,6 +28,11 @@ stand: string, created_at: string, pid: number | null, cwd: string,
  */
 performer_status: PerformerStatusWire | null, 
 /**
+ * doc 37: active engine の session id（claude=cc_session / cursor=chatId / codex=thread id、
+ * agy/shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
+ */
+engine_session_id: string | null, 
+/**
  * doc 33: Console のエンジンモード（"tui" | "chat"）。default = "tui"（wire 後方互換）。
  * chat lane は engine-less（pid=None）が正常形なので、Dead-lane auto-respawn を
  * 本 field で gate する（#683 再演防止）。

@@ -190,6 +190,10 @@ interface SetActivePaneInfo {
 	lane_name?: string | null;
 	cwd?: string | null;
 	branch?: string | null;
+	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
+	session_id?: string | null;
+	/** lane の stand（= engine 種別、chip prefix 導出用: "echoes" / "cursor" / "codex" / "agy"）。 */
+	stand?: string | null;
 }
 
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
@@ -277,6 +281,8 @@ const installSetActivePaneBridge = (): void => {
 				cwd: info.cwd ?? null,
 				branch: info.branch ?? null,
 				chat: !!info.chat,
+				sessionId: info.session_id ?? null,
+				stand: info.stand ?? null,
 			});
 			// wiremsg Stage 2: canvas (PP body) の供給は Rust 側 spawn_canvas_subscription が
 			// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
