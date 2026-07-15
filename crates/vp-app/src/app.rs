@@ -981,17 +981,24 @@ async fn run_echoes_session(
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                // ProcessMessage::EchoesEvent { lane, event } の生 JSON。 event (EchoesEvent) を
-                // 抜いて lane_key 付きで JS に渡す (lane は subscription で確定済)。
-                if let Some(event) = payload.get("event")
-                    && proxy
+                // ProcessMessage::EchoesEvent { lane, session, event } の生 JSON。 event と
+                // session を抜いて lane_key 付きで JS に渡す (lane は subscription で確定済)。
+                // doc 38 Phase 2: session を落とさず通す（旧 sender / N=1 では default 1）。
+                if let Some(event) = payload.get("event") {
+                    let session = payload
+                        .get("session")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as u32;
+                    if proxy
                         .send_event(AppEvent::EchoesEvent {
                             lane: lane_key.to_string(),
                             event: event.clone(),
+                            session,
                         })
                         .is_err()
-                {
-                    return Ok(SubscriptionOutcome::AppClosing);
+                    {
+                        return Ok(SubscriptionOutcome::AppClosing);
+                    }
                 }
             }
             cmd = cmd_rx.recv() => {
@@ -3264,11 +3271,18 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             // Echoes Act II (doc 32): SP から受信した構造化イベントを当該 lane の Console pane に渡す。
-            Event::UserEvent(AppEvent::EchoesEvent { lane, event }) => {
+            Event::UserEvent(AppEvent::EchoesEvent {
+                lane,
+                event,
+                session,
+            }) => {
+                // doc 38 Phase 2: 第 3 引数 session（VP 採番 key）を渡す。console.ts が focused
+                // 判定に使い、chatview が背景 session の stream を焦点会話へ混ぜないよう filter する。
                 let script = format!(
-                    "window.vpConsole && window.vpConsole.handleEvent({}, {})",
+                    "window.vpConsole && window.vpConsole.handleEvent({}, {}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
                     serde_json::to_string(&event).unwrap_or_else(|_| "null".into()),
+                    session,
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
                     tracing::warn!("vpConsole.handleEvent 失敗 (lane={}): {}", lane, e);
@@ -3485,7 +3499,30 @@ pub fn run() -> anyhow::Result<()> {
                     {
                         Ok(_) => {
                             tracing::info!("console:new_session ok: lane={lane}");
-                            let _ = proxy.send_event(AppEvent::ConsoleSessionRenewed { lane });
+                            // doc 38 Phase 2: fresh で registry は N=1（key 1 focused）に戻る。tab strip
+                            // 反映を兼ねて、先に一覧を取り直して focusedOf を authoritative(=1) に更新
+                            // してから replay_start を送る。逆順だと chatview の session filter が旧
+                            // focused のままで replay_start(session 既定 1) を落とし、会話が clear されない。
+                            match world_process_request(
+                                crate::client::default_world_port(),
+                                &path,
+                                "echoes_session_list",
+                                serde_json::json!({ "lane": &lane }),
+                            )
+                            .await
+                            {
+                                Ok(payload) => {
+                                    let _ = proxy.send_event(AppEvent::EchoesSessionList {
+                                        lane: lane.clone(),
+                                        payload,
+                                    });
+                                }
+                                Err(e) => tracing::warn!(
+                                    "echoes_session_list（new_session 後）失敗 (lane={lane}): {e}"
+                                ),
+                            }
+                            let _ =
+                                proxy.send_event(AppEvent::ConsoleSessionRenewed { lane });
                         }
                         Err(e) => tracing::warn!("console:new_session 失敗 (lane={lane}): {e}"),
                     }
@@ -3525,6 +3562,176 @@ pub fn run() -> anyhow::Result<()> {
                         Err(e) => tracing::warn!("console:set_model 失敗 (lane={lane}): {e}"),
                     }
                 });
+            }
+            // doc 38 Phase 2: session tab strip の一覧取得。ask echoes_session_list → 結果を
+            // EchoesSessionList で push back（vpConsole.handleSessionList が tab strip を描く）。
+            // project は対象 lane 自身から逆引き（#705 の active-lane レース教訓）。
+            Event::UserEvent(AppEvent::EchoesSessionsFetch { lane }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:sessions_fetch skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                rt_handle.spawn(async move {
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "echoes_session_list",
+                        serde_json::json!({ "lane": &lane }),
+                    )
+                    .await
+                    {
+                        Ok(payload) => {
+                            let _ = proxy.send_event(AppEvent::EchoesSessionList { lane, payload });
+                        }
+                        Err(e) => tracing::warn!("echoes_session_list 失敗 (lane={lane}): {e}"),
+                    }
+                });
+            }
+            // doc 38 Phase 2: 「+」からの新 session 作成。focus は送らない = backend 既定 true。
+            // 作成後に一覧を取り直して tab strip に新 session を即反映（1 task で直列）。
+            Event::UserEvent(AppEvent::EchoesSessionCreate { lane, stand }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:session_create skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                rt_handle.spawn(async move {
+                    let mut create = serde_json::json!({ "lane": &lane });
+                    if let Some(s) = &stand {
+                        create["stand"] = serde_json::Value::String(s.clone());
+                    }
+                    if let Err(e) = world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "echoes_session_create",
+                        create,
+                    )
+                    .await
+                    {
+                        tracing::warn!("echoes_session_create 失敗 (lane={lane}): {e}");
+                        return;
+                    }
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "echoes_session_list",
+                        serde_json::json!({ "lane": &lane }),
+                    )
+                    .await
+                    {
+                        Ok(payload) => {
+                            let _ = proxy.send_event(AppEvent::EchoesSessionList { lane, payload });
+                        }
+                        Err(e) => {
+                            tracing::warn!("echoes_session_list（create 後）失敗 (lane={lane}): {e}")
+                        }
+                    }
+                });
+            }
+            // doc 38 Phase 2: session tab click による focused 切替。focus → 一覧再取得 →
+            // demand_start（新 focused の transcript replay 発火）の順で直列に。
+            Event::UserEvent(AppEvent::EchoesSessionFocus { lane, session }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:session_focus skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                rt_handle.spawn(async move {
+                    if let Err(e) = world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "echoes_session_focus",
+                        serde_json::json!({ "lane": &lane, "session": session }),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "echoes_session_focus 失敗 (lane={lane} session={session}): {e}"
+                        );
+                        return;
+                    }
+                    // 一覧を取り直して tab strip の focused を authoritative に確定させる。
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "echoes_session_list",
+                        serde_json::json!({ "lane": &lane }),
+                    )
+                    .await
+                    {
+                        Ok(payload) => {
+                            let _ = proxy.send_event(AppEvent::EchoesSessionList {
+                                lane: lane.clone(),
+                                payload,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("echoes_session_list（focus 後）失敗 (lane={lane}): {e}")
+                        }
+                    }
+                    // 新 focused の transcript replay を発火（session 省略 = focused に解決）。
+                    // 応答は使わない（replay は topic 経由で ReplayStart として届く）。エラーは warn のみ。
+                    if let Err(e) = world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "echoes_demand_start",
+                        serde_json::json!({ "lane": &lane }),
+                    )
+                    .await
+                    {
+                        tracing::warn!("echoes_demand_start（focus 後）失敗 (lane={lane}): {e}");
+                    }
+                });
+            }
+            // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
+            // 既存 + Add Performer と同じ stands_list を再利用（doc 38 §3 の作成 UX）。
+            Event::UserEvent(AppEvent::EchoesStandsFetch { lane }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:stands_fetch skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                rt_handle.spawn(async move {
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "stands_list",
+                        serde_json::json!({}),
+                    )
+                    .await
+                    {
+                        Ok(payload) => {
+                            let _ = proxy.send_event(AppEvent::EchoesStands { lane, payload });
+                        }
+                        Err(e) => {
+                            tracing::warn!("echoes:stands_fetch の stands_list 失敗 (lane={lane}): {e}")
+                        }
+                    }
+                });
+            }
+            // doc 38 Phase 2: echoes_session_list の結果を tab strip へ push back。
+            // vpConsole.handleSessionList が per-lane に取り込み 'vp:echoes-sessions' を発火する。
+            Event::UserEvent(AppEvent::EchoesSessionList { lane, payload }) => {
+                let script = format!(
+                    "window.vpConsole && window.vpConsole.handleSessionList({}, {})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(&payload).unwrap_or_else(|_| "null".into()),
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("vpConsole.handleSessionList 失敗 (lane={lane}): {e}");
+                }
+            }
+            // doc 38 Phase 2: stands_list の結果を「+」menu へ push back。
+            Event::UserEvent(AppEvent::EchoesStands { lane, payload }) => {
+                let script = format!(
+                    "window.vpConsole && window.vpConsole.handleStands({}, {})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(&payload).unwrap_or_else(|_| "null".into()),
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("vpConsole.handleStands 失敗 (lane={lane}): {e}");
+                }
             }
             Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
                 // board モデル (2026-07-15): WebView の board mutate（thumbnail ✕ / Clear ボタン）を

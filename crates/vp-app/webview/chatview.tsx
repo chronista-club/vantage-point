@@ -24,7 +24,11 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
-import type { EchoesEvent, PlanEntry, QuestionSpec, VpConsole } from './console'
+import type { EchoesEvent, EchoesSession, PlanEntry, QuestionSpec, VpConsole } from './console'
+// doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
+// （SP が真実源、ここは view）。session chip の prefix 規則は EchoesHeader を SSOT として再利用。
+import { focusedOf, noteFocus } from './console'
+import { sessionChipPrefix } from './EchoesHeader'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（EchoesEvent を UI 単位に畳む）
@@ -277,8 +281,13 @@ function sealLastAssistant(s: ChatState): void {
   if (last && last.kind === 'assistant') last.sealed = true
 }
 
-/** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。 */
-function foldEvent(lane: string, ev: EchoesEvent): void {
+/** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。
+ *  doc 38 Phase 2（本改修の要）: session が現在の focused でなければ fold しない — 背景 session の
+ *  stream を focused の会話に混ぜない。session は console.ts で正規化済み（未指定 = focused = 1、
+ *  旧 SP 互換）なので単純比較で足りる。focus 切替後の会話表示は demand_start → ReplayStart が
+ *  filter を通って fold の clear→再構築で担う（切替時の明示クリアは不要）。 */
+function foldEvent(lane: string, ev: EchoesEvent, session: number): void {
+  if (session !== focusedOf(lane)) return
   laneChat(lane).set(produce((s) => foldInto(s, ev)))
   laneChat(lane).set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
@@ -761,6 +770,82 @@ function ChatView() {
     return `context ${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} tokens`
   }
 
+  // --- doc 38 Phase 2: session tab strip（仮置き UI）--------------------------------------------
+  // SP（echoes_session_list）が真実源。ここは vp:echoes-sessions / vp:echoes-stands を描くだけの
+  // 薄い view で state を持たない（表示場所は dogfood で変わる前提）。focused の真値は console.ts の
+  // registry（focusedOf）で、tab click は楽観更新 + RPC round-trip 後に authoritative 値で上書きされる。
+  type LaneSessionsView = { focused: number; sessions: EchoesSession[] }
+  const [sessionViews, setSessionViews] = createSignal<Record<string, LaneSessionsView>>({})
+  // 「+」の engine 選択 menu（stands_list の結果）。開いている lane のみ表示。
+  type StandOption = { name: string; description?: string }
+  const [standsMenu, setStandsMenu] = createSignal<{ lane: string; stands: StandOption[] } | null>(
+    null,
+  )
+
+  onMount(() => {
+    const onSessions = (e: Event): void => {
+      const d = (
+        e as CustomEvent<{ lane: string; focused: number; sessions: EchoesSession[] }>
+      ).detail
+      if (!d?.lane) return
+      setSessionViews((prev) => ({
+        ...prev,
+        [d.lane]: { focused: d.focused, sessions: d.sessions },
+      }))
+    }
+    const onStands = (e: Event): void => {
+      const d = (e as CustomEvent<{ lane: string; stands: StandOption[] }>).detail
+      if (!d?.lane) return
+      setStandsMenu({ lane: d.lane, stands: d.stands })
+    }
+    document.addEventListener('vp:echoes-sessions', onSessions)
+    document.addEventListener('vp:echoes-stands', onStands)
+    onCleanup(() => {
+      document.removeEventListener('vp:echoes-sessions', onSessions)
+      document.removeEventListener('vp:echoes-stands', onStands)
+    })
+  })
+
+  const currentSessions = (): LaneSessionsView | null => {
+    const l = activeLane()
+    return l ? (sessionViews()[l] ?? null) : null
+  }
+
+  const focusSession = (session: number): void => {
+    const lane = activeLane()
+    if (!lane) return
+    if (session === (currentSessions()?.focused ?? 1)) return // 既に focused なら no-op
+    // 楽観的に local focused を更新: console.ts registry（filter が即切り替わる）+ tab 強調の両方。
+    // demand_start → ReplayStart が届いて fold が会話を clear→再構築する（明示クリア不要）。
+    noteFocus(lane, session)
+    setSessionViews((prev) => {
+      const cur = prev[lane] ?? { focused: session, sessions: [] }
+      return { ...prev, [lane]: { ...cur, focused: session } }
+    })
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_focus', lane, session }))
+  }
+
+  const toggleAddMenu = (): void => {
+    const lane = activeLane()
+    if (!lane) return
+    if (standsMenu()?.lane === lane) {
+      setStandsMenu(null) // 開いていれば閉じる（トグル）
+      return
+    }
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:stands_fetch', lane }))
+  }
+
+  const createSession = (stand: string): void => {
+    const lane = activeLane()
+    if (!lane) return
+    setStandsMenu(null)
+    // focus は送らない = backend 既定 true（作った session にそのまま話しかける UX、doc 38 §3）。
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_create', lane, stand }))
+  }
+
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
   // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
@@ -970,6 +1055,61 @@ function ChatView() {
         when={state()}
         fallback={<div class="echoes-empty">Console (Act II) — lane 未選択</div>}
       >
+        {/* doc 38 Phase 2: session tab strip。1 本でも「+」の置き場として常時表示（仮置き UI）。 */}
+        <div class="echoes-tabs">
+          <For each={currentSessions()?.sessions ?? []}>
+            {(sess) => (
+              <button
+                type="button"
+                class="echoes-tab"
+                classList={{ active: sess.key === (currentSessions()?.focused ?? 1) }}
+                onClick={() => focusSession(sess.key)}
+                title={`${sessionChipPrefix(sess.stand)} session #${sess.key}${
+                  sess.engine_session_id ? ` · ${sess.engine_session_id.slice(0, 8)}` : ''
+                }`}
+              >
+                {/* live（engine が生きている session）だけ小さな dot を出す。 */}
+                <Show when={sess.live}>
+                  <span class="echoes-tab-dot" />
+                </Show>
+                <span class="echoes-tab-label">
+                  {sessionChipPrefix(sess.stand)}#{sess.key}
+                </span>
+              </button>
+            )}
+          </For>
+          <div class="echoes-tab-add-wrap">
+            <button
+              type="button"
+              class="echoes-tab-add"
+              classList={{ open: standsMenu()?.lane === activeLane() }}
+              onClick={toggleAddMenu}
+              title="engine を選んで session を追加"
+            >
+              +
+            </button>
+            {/* stands_list の結果で埋める簡素な dropdown（doc 38: UI は state を持たない仮置き）。 */}
+            <Show when={standsMenu() && standsMenu()!.lane === activeLane()}>
+              <div class="echoes-tab-menu">
+                <For each={standsMenu()!.stands}>
+                  {(st) => (
+                    <button
+                      type="button"
+                      class="echoes-tab-menuitem"
+                      onClick={() => createSession(st.name)}
+                      title={st.description}
+                    >
+                      {st.name}
+                    </button>
+                  )}
+                </For>
+                <Show when={standsMenu()!.stands.length === 0}>
+                  <div class="echoes-tab-menu-empty">engine なし</div>
+                </Show>
+              </div>
+            </Show>
+          </div>
+        </div>
         <div class="echoes-header">
           <span class="echoes-header-label">model</span>
           <select
@@ -1272,6 +1412,33 @@ export const CHATVIEW_CSS = `
 .echoes-console-actions .echoes-act-toggle { position:static; }
 /* New Session の armed 状態（2 クリック確認の 1 段目）: 誤爆防止の視覚合図。 */
 .echoes-new-session.armed { color: var(--color-accent,#e2b96f); border-color: var(--color-accent,#e2b96f); opacity:1; }
+/* doc 38 Phase 2: session tab strip（仮置き）。header の直上・コンパクト・既存トーン準拠。 */
+.echoes-tabs { display:flex; align-items:center; gap:6px; padding:5px 12px 0; flex-wrap:wrap;
+  background: var(--color-bg-elevated,#13161c); }
+.echoes-tab { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; font-size:11px;
+  border-radius:8px 8px 0 0; cursor:pointer; border:1px solid var(--color-border,#2a3040);
+  border-bottom:none; background: var(--color-bg,#0f1115); color: var(--color-text-tertiary,#8b93a7);
+  font-family: var(--vp-font-mono),var(--typography-family-mono); }
+.echoes-tab:hover { color: var(--color-text-secondary,#a8b0c0); }
+.echoes-tab.active { background: var(--color-bg-elevated,#16191f); color: var(--color-text,#e6e9ef);
+  border-color: var(--color-accent,#3b82f6); }
+.echoes-tab-dot { width:6px; height:6px; border-radius:50%; flex:none; background: var(--color-success,#6fe2a8); }
+.echoes-tab-label { line-height:1.5; }
+.echoes-tab-add-wrap { position:relative; }
+.echoes-tab-add { padding:3px 9px; font-size:13px; line-height:1; cursor:pointer; border-radius:8px;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
+  color: var(--color-text-tertiary,#8b93a7); }
+.echoes-tab-add:hover, .echoes-tab-add.open { color: var(--color-text,#e6e9ef); border-color: var(--color-accent,#3b82f6); }
+/* engine 選択 dropdown（簡素）。tab の下に浮かせる。 */
+.echoes-tab-menu { position:absolute; z-index:20; top:calc(100% + 4px); left:0; min-width:120px;
+  display:flex; flex-direction:column; padding:4px; border-radius:8px;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
+  box-shadow:0 6px 18px rgba(0,0,0,.35); }
+.echoes-tab-menuitem { text-align:left; padding:6px 10px; font-size:12px; border:none; cursor:pointer;
+  border-radius:6px; background:transparent; color: var(--color-text-secondary,#a8b0c0);
+  font-family: var(--vp-font-mono),var(--typography-family-mono); }
+.echoes-tab-menuitem:hover { background: var(--color-bg,#0f1115); color: var(--color-text,#e6e9ef); }
+.echoes-tab-menu-empty { padding:6px 10px; font-size:11px; color: var(--color-text-tertiary,#616b80); }
 .echoes-header { display:flex; align-items:center; gap:8px; padding:7px 14px;
   border-bottom:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#13161c); }
 .echoes-header-label { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
@@ -1332,9 +1499,13 @@ export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatV
       if (!attached.has(lane)) {
         attached.add(lane)
         laneChat(lane) // store を先に用意（replay が流し込む）
-        vpConsole.attachRenderer(lane, (ev) => foldEvent(lane, ev))
+        // doc 38 Phase 2: renderer は session も受け取り、foldEvent が focused 以外を弾く。
+        vpConsole.attachRenderer(lane, (ev, session) => foldEvent(lane, ev, session))
       }
       setActiveLane(lane)
+      // doc 38 Phase 2: attach 時に session 一覧を取得して tab strip を埋める（focused も確定）。
+      const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+      ipc?.postMessage(JSON.stringify({ t: 'echoes:sessions_fetch', lane }))
     },
   }
 }
