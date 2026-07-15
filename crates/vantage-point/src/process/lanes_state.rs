@@ -343,18 +343,31 @@ impl LaneInfo {
     /// （ask 経路 = MCP list_lanes / lanes_list）②uplink の agent_card（register payload）
     /// ③uplink の LaneDiff push（lanes/add|update）。供給が複数経路あるのは #683 と同じ地形で、
     /// 1 箇所だけ enrich すると「ask には出るが registry（= vp-app）には出ない」に化ける
-    /// （2026-07-16 の Act I session chip 不点灯の根因）。1 lane 1 file read で軽微。
+    /// （2026-07-16 の Act I session chip 不点灯の根因）。1 lane 2 file read
+    /// （session registry + session store、いずれも数百 byte）で軽微。
     pub fn refresh_engine_session_id(&mut self) {
         let lane_label = crate::process::stand_spawner::lane_label(&self.address);
-        self.engine_session_id = match crate::echoes::EngineKind::from_stand(&self.stand) {
+        // doc 38: chip は focused session の会話 id を映す。registry file 不在（N=1 特殊
+        // ケース）は focused=1 = 素の lane label に解決され、従来と同一の読み先になる。
+        // stand も focused session のもの（session は lane と異なる engine を持ち得る）。
+        let reg =
+            crate::lane::session_registry::load(&self.address.project, lane_label, &self.stand);
+        let stand = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == reg.focused)
+            .map(|s| s.stand.as_str())
+            .unwrap_or(&self.stand);
+        let label = crate::lane::session_registry::session_label(lane_label, reg.focused);
+        self.engine_session_id = match crate::echoes::EngineKind::from_stand(stand) {
             Some(crate::echoes::EngineKind::Claude) => {
-                crate::lane::cc_session::last(&self.address.project, lane_label)
+                crate::lane::cc_session::last(&self.address.project, &label)
             }
             Some(crate::echoes::EngineKind::Cursor) => {
-                crate::lane::cursor_session::last(&self.address.project, lane_label)
+                crate::lane::cursor_session::last(&self.address.project, &label)
             }
             Some(crate::echoes::EngineKind::Codex) => {
-                crate::lane::codex_session::last(&self.address.project, lane_label)
+                crate::lane::codex_session::last(&self.address.project, &label)
             }
             // agy は id 供給源なし（doc 37 §7.5）、shell / 未知 stand は engine なし。
             Some(crate::echoes::EngineKind::Agy) | None => None,
@@ -389,18 +402,53 @@ pub struct LanePool {
     /// 内部可変性で持つので `deliver_nudge` は `pool.read()` のまま get-or-insert できる。
     /// map は lane 数ぶんだけ増える（bounded、lane teardown での GC は未実装だが実害小）。
     nudge_locks: std::sync::Mutex<HashMap<LaneAddress, std::sync::Arc<tokio::sync::Mutex<()>>>>,
-    /// doc 33: Act II の chat engine スロット（EchoesAgentHost + pump）。
+    /// doc 33 → doc 38: Act II の chat engine スロット（host + pump）。
     ///
-    /// **エンジン排他の法**: 1 lane につき `pty_slots` xor `chat_engines` のどちらか高々 1 つ。
-    /// 排他は [`Self::set_console_mode`] / [`Self::ensure_chat_engine`] が保証する
-    /// （chat spawn は mode=Chat 時のみ、mode 切替は旧エンジンを必ず落としてから）。
-    chat_engines: HashMap<LaneAddress, ChatEngineSlot>,
+    /// key は (lane, session_key) の 2 段 map（doc 38 — 1 Lane = N session。session_key は
+    /// VP 採番、registry の SSOT は [`crate::lane::session_registry`] = disk）。
+    ///
+    /// **エンジン排他の法**（doc 38 §2 で session 粒度に改定）:
+    /// - **session 内は 1 会話 1 エンジン**: 同一 session に 2 つの host は立たない
+    ///   （inner map の key 一意性 + [`Self::ensure_chat_engine`] の存在 check が保証）
+    /// - **focused session は床（PtySlot）と排他**: `pty_slots` xor focused の chat slot
+    ///   （mode 切替が旧エンジンを必ず落としてから遷移する — 従来の法の focused への限定）
+    /// - **非 focused session は床と独立**（doc 38 §2「lane 内の session 同士は独立」。
+    ///   console_mode ガードは focused にのみ適用 — doc 38 落とし穴③）
+    chat_engines: HashMap<LaneAddress, HashMap<SessionKey, ChatEngineSlot>>,
 }
 
 // chat engine の所有型（ChatEngineSlot / ChatHost）と engine 軸の語彙（EngineKind）は
 // `crate::echoes::engine` に移設した（doc 37 — chat スタックを echoes module に閉じ、
 // 他プロジェクトへ切り出せる形にする）。LanePool は所有と排他の「法」だけを担う。
 use crate::echoes::{ChatEngineSlot, ChatHost, EngineKind};
+// session 層の語彙（doc 38）。registry は disk が SSOT（LanePool は cache を持たない —
+// 「状態の供給を 1 系統に」の原則。読みは毎回 registry file、書きは registry module 経由）。
+use crate::lane::session_registry::{self, SessionKey};
+
+/// [`LanePool::resolve_chat_session`] の解決結果 — session key と、その engine（stand）・
+/// focused かどうか。ガード分岐（focused のみ console_mode ガード）と host 構築に使う。
+#[derive(Debug, Clone)]
+pub struct ResolvedSession {
+    /// 解決された session key（`None` 指定は focused に解決済み）。
+    pub key: SessionKey,
+    /// session の engine 種別（stand 名）。lane の stand でなく **session の** stand。
+    pub stand: String,
+    /// この session が現在 focused か。
+    pub focused: bool,
+}
+
+/// [`LanePool::list_chat_sessions`] の 1 要素 — registry（永続）+ runtime（engine 生死）+
+/// 会話 id（engine store）を突き合わせた GUI 向け view。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChatSessionInfo {
+    pub key: SessionKey,
+    pub stand: String,
+    /// engine の会話 id（cc_session 等の store から。Draft = None、doc 38 §1.1）。
+    pub engine_session_id: Option<String>,
+    /// chat host が現在生きているか（in-memory slot の有無）。
+    pub live: bool,
+    pub focused: bool,
+}
 
 impl std::fmt::Debug for LanePool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -669,21 +717,42 @@ impl LanePool {
             // 副作用なしの再試行になる。
             if fresh {
                 let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-                crate::lane::cc_session::clear(&addr.project, &lane_label).map_err(|e| {
-                    anyhow::anyhow!("fresh restart: cc_session の破棄に失敗（addr={addr}）: {e}")
-                })?;
-                // cursor / codex lane（Act II）は session を各 engine の state file に持つ。
-                // engine 非依存に全 store を消すことで「New Session」がどの engine でも本当に
-                // fresh になる（他 engine の lane では記録不在 = no-op なので巻き添えなし）。
-                crate::lane::cursor_session::clear(&addr.project, &lane_label).map_err(|e| {
+                // doc 38 落とし穴②: fresh の clear 対象は **registry 上の全 session**。
+                // focused（や旧来の #1）だけ消すと、副 session の会話 id が残って
+                // 「New Session なのに resume される」嘘になる（「fresh が副を知らない」の再演）。
+                let reg = session_registry::load(&addr.project, &lane_label, &stand);
+                for s in &reg.sessions {
+                    let label = session_registry::session_label(&lane_label, s.key);
+                    // cursor / codex は session を各 engine の state file に持つ。engine 非依存に
+                    // 全 store を消すことで「New Session」がどの engine でも本当に fresh になる
+                    // （記録不在の store は no-op なので巻き添えなし）。
+                    crate::lane::cc_session::clear(&addr.project, &label).map_err(|e| {
+                        anyhow::anyhow!(
+                            "fresh restart: cc_session の破棄に失敗（addr={addr}, session={}）: {e}",
+                            s.key
+                        )
+                    })?;
+                    crate::lane::cursor_session::clear(&addr.project, &label).map_err(|e| {
+                        anyhow::anyhow!(
+                            "fresh restart: cursor_session の破棄に失敗（addr={addr}, session={}）: {e}",
+                            s.key
+                        )
+                    })?;
+                    crate::lane::codex_session::clear(&addr.project, &label).map_err(|e| {
+                        anyhow::anyhow!(
+                            "fresh restart: codex_session の破棄に失敗（addr={addr}, session={}）: {e}",
+                            s.key
+                        )
+                    })?;
+                }
+                // registry 自体も既定形（N=1）へ戻す — fresh 後の lane は「素の 1 session」。
+                session_registry::clear(&addr.project, &lane_label).map_err(|e| {
                     anyhow::anyhow!(
-                        "fresh restart: cursor_session の破棄に失敗（addr={addr}）: {e}"
+                        "fresh restart: session registry の破棄に失敗（addr={addr}）: {e}"
                     )
                 })?;
-                crate::lane::codex_session::clear(&addr.project, &lane_label).map_err(|e| {
-                    anyhow::anyhow!("fresh restart: codex_session の破棄に失敗（addr={addr}）: {e}")
-                })?;
             }
+            // lane 単位の restart は全 session の engine を落とす（lazy respawn が resume で継ぐ）。
             self.chat_engines.remove(addr);
             if let Some(info) = self.lanes.get_mut(addr) {
                 info.pid = None;
@@ -843,21 +912,153 @@ impl LanePool {
         self.lanes.get(addr).map(|i| i.console_mode)
     }
 
+    /// session 指定を解決する（doc 38）: `None` = focused（省略時後方互換）、`Some(k)` は
+    /// registry 上の実在を検証。戻り値は key + session の engine（stand）+ focused か。
+    ///
+    /// registry は disk が SSOT（毎回 file read）。submit 等の per-message 経路も通るが、
+    /// 数百 byte の 1 file read で、既存の session_store 読み（cc_session::last 等）と同規模 —
+    /// in-memory cache で供給が 2 系統に割れるリスクの方が大きい（doc 38 §5 原則）。
+    /// lane/session 数が増えて実測で問題になったら spawn_blocking 化 / cache を再検討する。
+    pub fn resolve_chat_session(
+        &self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+    ) -> anyhow::Result<ResolvedSession> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        let reg = session_registry::load(&addr.project, lane_label, &info.stand);
+        let key = session.unwrap_or(reg.focused);
+        let entry = reg.sessions.iter().find(|s| s.key == key).ok_or_else(|| {
+            anyhow::anyhow!("session が存在しません（addr={addr}, session={key}）")
+        })?;
+        Ok(ResolvedSession {
+            key,
+            stand: entry.stand.clone(),
+            focused: key == reg.focused,
+        })
+    }
+
+    /// lane の session 一覧（registry + engine 生死 + 会話 id の突き合わせ view、doc 38）。
+    pub fn list_chat_sessions(&self, addr: &LaneAddress) -> anyhow::Result<Vec<ChatSessionInfo>> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        let reg = session_registry::load(&addr.project, lane_label, &info.stand);
+        let live = self.chat_engines.get(addr);
+        Ok(reg
+            .sessions
+            .iter()
+            .map(|s| {
+                let label = session_registry::session_label(lane_label, s.key);
+                // 会話 id は session の engine の store から（Draft = None、doc 38 §1.1）。
+                let engine_session_id = match EngineKind::from_stand(&s.stand) {
+                    Some(EngineKind::Claude) => {
+                        crate::lane::cc_session::last(&addr.project, &label)
+                    }
+                    Some(EngineKind::Cursor) => {
+                        crate::lane::cursor_session::last(&addr.project, &label)
+                    }
+                    Some(EngineKind::Codex) => {
+                        crate::lane::codex_session::last(&addr.project, &label)
+                    }
+                    Some(EngineKind::Agy) | None => None,
+                };
+                ChatSessionInfo {
+                    key: s.key,
+                    stand: s.stand.clone(),
+                    engine_session_id,
+                    live: live.is_some_and(|m| m.contains_key(&s.key)),
+                    focused: s.key == reg.focused,
+                }
+            })
+            .collect())
+    }
+
+    /// session を追加する（doc 38 Phase 2 の「+」の backend。`stand=None` は lane の stand）。
+    /// engine は spawn しない（Draft のまま。focused eager は Phase 3、submit で lazy spawn）。
+    pub fn create_chat_session(
+        &mut self,
+        addr: &LaneAddress,
+        stand: Option<&str>,
+        focus: bool,
+    ) -> anyhow::Result<SessionKey> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let stand = stand.unwrap_or(&info.stand);
+        // 対応表は EngineKind が SSOT — 未知 stand の session は engine を一生持てないので入口で弾く。
+        if EngineKind::from_stand(stand).is_none() {
+            anyhow::bail!("未知の stand です（addr={addr}, stand={stand}）");
+        }
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        let key = session_registry::create(&addr.project, lane_label, &info.stand, stand, focus)
+            .map_err(|e| anyhow::anyhow!("session 作成に失敗（addr={addr}）: {e}"))?;
+        tracing::info!(
+            "chat session create: addr={addr} session={key} stand={stand} focus={focus}"
+        );
+        Ok(key)
+    }
+
+    /// focused session を切り替える（registry 永続のみ。床への注入・eager spawn は Phase 3）。
+    pub fn focus_chat_session(
+        &mut self,
+        addr: &LaneAddress,
+        key: SessionKey,
+    ) -> anyhow::Result<()> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let is_chat = info.console_mode == crate::lane::console_mode::ConsoleMode::Chat;
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        session_registry::focus(&addr.project, lane_label, &info.stand, key)
+            .map_err(|e| anyhow::anyhow!("session focus に失敗（addr={addr}）: {e}"))?;
+        // LaneInfo.pid は「focused session の代表値」— chat mode では切替に追随させる
+        // （新 focused の engine が未 spawn なら None = chat-idle の正常形）。
+        // Tui mode の pid は床（PTY）のものなので触らない。
+        if is_chat {
+            let pid = self
+                .chat_engines
+                .get(addr)
+                .and_then(|m| m.get(&key))
+                .and_then(|slot| slot.host.pid());
+            if let Some(info) = self.lanes.get_mut(addr) {
+                info.pid = pid;
+            }
+        }
+        tracing::info!("chat session focus: addr={addr} session={key}");
+        Ok(())
+    }
+
     /// chat engine の in-flight tail（disk にまだ載っていない増分 + commit 世代）。
     ///
     /// engine 未起動（chat-idle / Act I）は None = 継ぐものが無い。
     /// transcript replay がこれを後ろに継いで「生成中の message」まで復元する
-    /// （[`crate::echoes::host`] の module doc）。
-    pub fn chat_in_flight(&self, addr: &LaneAddress) -> Option<crate::echoes::InFlight> {
+    /// （[`crate::echoes::host`] の module doc）。`session=None` は focused。
+    pub fn chat_in_flight(
+        &self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+    ) -> Option<crate::echoes::InFlight> {
+        let resolved = self.resolve_chat_session(addr, session).ok()?;
         self.chat_engines
-            .get(addr)
+            .get(addr)?
+            .get(&resolved.key)
             .map(|slot| slot.host.in_flight())
     }
 
-    /// chat engine の commit 世代のみ（transcript 読み後の検算用）。
-    pub fn chat_commit_seq(&self, addr: &LaneAddress) -> Option<u64> {
+    /// chat engine の commit 世代のみ（transcript 読み後の検算用）。`session=None` は focused。
+    pub fn chat_commit_seq(&self, addr: &LaneAddress, session: Option<SessionKey>) -> Option<u64> {
+        let resolved = self.resolve_chat_session(addr, session).ok()?;
         self.chat_engines
-            .get(addr)
+            .get(addr)?
+            .get(&resolved.key)
             .map(|slot| slot.host.commit_seq())
     }
 
@@ -914,8 +1115,17 @@ impl LanePool {
                 Ok(())
             }
             ConsoleMode::Tui => {
-                // chat engine 停止（Drop = kill_on_drop + pump abort）。
-                self.chat_engines.remove(addr);
+                // focused session の chat engine 停止（Drop = kill_on_drop + pump abort）。
+                // doc 38 §2: 床（Act I）と排他なのは focused session だけ。非 focused の
+                // session は床と独立に生き続ける（lane 内の session 同士は独立）。
+                // N=1（registry file 不在）では focused=1 = 唯一の slot なので従来と同一挙動。
+                let focused = session_registry::focused(&addr.project, &lane_label);
+                if let Some(slots) = self.chat_engines.get_mut(addr) {
+                    slots.remove(&focused);
+                    if slots.is_empty() {
+                        self.chat_engines.remove(addr);
+                    }
+                }
                 if let Err(e) = crate::lane::console_mode::record(&addr.project, &lane_label, mode)
                 {
                     tracing::warn!("console_mode 永続失敗（addr={addr}）: {e}");
@@ -931,54 +1141,70 @@ impl LanePool {
         }
     }
 
-    /// chat engine を確保する（無ければ spawn + pump 起動）。
+    /// chat engine を確保する（無ければ spawn + pump 起動）。`session=None` は focused。
     ///
-    /// **法の番人**: mode=Chat 以外では拒否（= PtySlot が生きたまま headless を立てる経路を
-    /// 型ではなくここで一元的に塞ぐ）。pty_slots 残存は不変条件違反として明示 Err。
+    /// **法の番人**（doc 38 で session 粒度に改定）:
+    /// - **focused session**: mode=Chat 以外では拒否（= PtySlot が生きたまま同一会話に headless を
+    ///   立てる経路を型ではなくここで一元的に塞ぐ）。pty_slots 残存は不変条件違反として明示 Err
+    /// - **非 focused session**: 床（Act I）と独立なので console_mode ガードを適用しない
+    ///   （doc 38 落とし穴③ — ガードの流用は「Tui 中は副 session が動けない」という
+    ///   意図しない制約の混入になる）。session 内の 1 会話 1 エンジンは存在 check が保証
     pub fn ensure_chat_engine(
         &mut self,
         addr: &LaneAddress,
+        session: Option<SessionKey>,
         topic_router: &std::sync::Arc<crate::process::topic_router::TopicRouter>,
     ) -> anyhow::Result<()> {
         use crate::lane::console_mode::ConsoleMode;
+        let resolved = self.resolve_chat_session(addr, session)?;
         let info = self
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        if info.console_mode != ConsoleMode::Chat {
-            // 呼び元は echoes_submit / echoes_nudge の両方（doc 34 channel E）— method 名は
-            // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
-            anyhow::bail!(
-                "chat engine には console mode=chat が必要（addr={}、現在 {:?}。console_set_mode で切替）",
-                addr,
-                info.console_mode
-            );
+        if resolved.focused {
+            if info.console_mode != ConsoleMode::Chat {
+                // 呼び元は echoes_submit / echoes_nudge の両方（doc 34 channel E）— method 名は
+                // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
+                anyhow::bail!(
+                    "chat engine には console mode=chat が必要（addr={}、現在 {:?}。console_set_mode で切替）",
+                    addr,
+                    info.console_mode
+                );
+            }
+            if self.pty_slots.contains_key(addr) {
+                anyhow::bail!(
+                    "不変条件違反: mode=chat なのに PtySlot が残存（addr={}）",
+                    addr
+                );
+            }
         }
-        if self.pty_slots.contains_key(addr) {
-            anyhow::bail!(
-                "不変条件違反: mode=chat なのに PtySlot が残存（addr={}）",
-                addr
-            );
-        }
-        if self.chat_engines.contains_key(addr) {
+        if self
+            .chat_engines
+            .get(addr)
+            .is_some_and(|m| m.contains_key(&resolved.key))
+        {
             return Ok(());
         }
 
         let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-        // engine ごとに host を組む（対応表は EngineKind が SSOT。旧実装は default arm が
-        // 「未知 stand → 黙って claude host」に落ちていた — ここで明示 bail に変えた）。
-        let host = match EngineKind::from_stand(&info.stand) {
+        // session の store label（doc 38: session #1 = 素の lane 名で既存 file 互換、#2 以降は
+        // `<lane>#<n>`）。host の config.lane にもこれを渡す = record-from-init が同じ per-session
+        // slot に会話 id を書き戻す（session_store の key 拡張はこの 1 点で全 engine に効く）。
+        let label = session_registry::session_label(&lane_label, resolved.key);
+        // engine ごとに host を組む（対応表は EngineKind が SSOT。engine は **session の** stand —
+        // lane と異なる engine の session を持てる、doc 38 §1）。
+        let host = match EngineKind::from_stand(&resolved.stand) {
             Some(EngineKind::Cursor) => {
                 // cursor: turn-scoped host（spawn 自体は exec-free = ensure を軽く保つ）。chatId は
                 // Act I（console）と共有の state file から解決する（II ⇄ I の会話継承）。
                 // engine_model は読まない（model_switchable=false、cursor の model は
                 // cursor-agent 側で選択 — doc `cursor-engine.md`）。
-                let session_id = crate::lane::cursor_session::last(&addr.project, &lane_label);
+                let session_id = crate::lane::cursor_session::last(&addr.project, &label);
                 ChatHost::Cursor(crate::echoes::CursorAgentHost::spawn(
                     crate::echoes::TurnHostConfig {
                         cwd: info.cwd.clone(),
                         project: addr.project.clone(),
-                        lane: lane_label.clone(),
+                        lane: label.clone(),
                         session_id,
                     },
                 ))
@@ -986,12 +1212,12 @@ impl LanePool {
             Some(EngineKind::Codex) => {
                 // codex: turn-scoped host（cursor と同機構 = TurnHost）。thread id は Act I と
                 // 共有の state file から解決（II ⇄ I の会話継承、record-from-init が書き手）。
-                let session_id = crate::lane::codex_session::last(&addr.project, &lane_label);
+                let session_id = crate::lane::codex_session::last(&addr.project, &label);
                 ChatHost::Codex(crate::echoes::CodexAgentHost::spawn(
                     crate::echoes::TurnHostConfig {
                         cwd: info.cwd.clone(),
                         project: addr.project.clone(),
-                        lane: lane_label.clone(),
+                        lane: label.clone(),
                         session_id,
                     },
                 ))
@@ -1000,17 +1226,18 @@ impl LanePool {
                 // claude: 常駐 stream-json host。
                 // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
                 // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
-                let resume = crate::lane::cc_session::last(&addr.project, &lane_label)
+                let resume = crate::lane::cc_session::last(&addr.project, &label)
                     .filter(|id| crate::lane::cc_session::transcript_exists(id));
                 // Act II モデル切替: lane に永続された model を `--model` に渡す（未記録 = claude default）。
                 // 切替（console_set_model）は record → engine 入替で行われ、resume と組むことで
-                // 会話コンテキストを保ったままモデルだけ替わる。
+                // 会話コンテキストを保ったままモデルだけ替わる。model は lane 単位（session 間で
+                // 共有 — per-session 化は dogfood 後に判断）。
                 let model = crate::lane::engine_model::last(&addr.project, &lane_label);
                 ChatHost::Claude(crate::echoes::EchoesAgentHost::spawn(
                     crate::echoes::EchoesHostConfig {
                         cwd: info.cwd.clone(),
                         project: addr.project.clone(),
-                        lane: lane_label.clone(),
+                        lane: label.clone(),
                         resume_session_id: resume,
                         model,
                         claude_cli_path: None,
@@ -1018,48 +1245,80 @@ impl LanePool {
                 )?)
             }
             Some(EngineKind::Agy) | None => {
-                // mode=Chat ガード（set_console_mode）が上流で塞ぐので通常到達しない。
-                // belt-and-suspenders（永続 file の直接編集等で mode だけ chat になった場合）。
+                // focused は mode=Chat ガード（set_console_mode）が上流で塞ぐので通常到達しない
+                // （belt-and-suspenders）。非 focused session はここが唯一の防壁。
                 anyhow::bail!(
-                    "stand '{}' は Act II chat host を持ちません（addr={}）",
-                    info.stand,
-                    addr
+                    "stand '{}' は Act II chat host を持ちません（addr={}, session={}）",
+                    resolved.stand,
+                    addr,
+                    resolved.key
                 );
             }
         };
         let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(
             addr.to_string(),
+            resolved.key,
             host.subscribe(),
             topic_router.clone(),
         );
         let pid = host.pid();
-        if let Some(info) = self.lanes.get_mut(addr) {
+        // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
+        // spawn は lane 表示を動かさない — sidebar の pid は focused の会話のもの）。
+        if resolved.focused
+            && let Some(info) = self.lanes.get_mut(addr)
+        {
             info.pid = pid;
             info.state = LaneState::Running;
         }
         self.chat_engines
-            .insert(addr.clone(), ChatEngineSlot { host, pump });
-        tracing::info!("chat engine start: addr={addr} pid={pid:?}");
+            .entry(addr.clone())
+            .or_default()
+            .insert(resolved.key, ChatEngineSlot { host, pump });
+        tracing::info!(
+            "chat engine start: addr={addr} session={} pid={pid:?}",
+            resolved.key
+        );
         Ok(())
     }
 
-    /// chat engine に prompt を投入する（`&self` — read lock 下で呼べる）。
-    pub async fn submit_chat(&self, addr: &LaneAddress, prompt: &str) -> anyhow::Result<()> {
-        let slot = self
-            .chat_engines
+    /// 当該 session の chat slot を引く（`session=None` は focused。不在は Err）。
+    /// submit / interrupt / respond / set_permission_mode の共通核。
+    fn chat_slot(
+        &self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+    ) -> anyhow::Result<&ChatEngineSlot> {
+        let resolved = self.resolve_chat_session(addr, session)?;
+        self.chat_engines
             .get(addr)
-            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
-        slot.host.submit(prompt).await
+            .and_then(|m| m.get(&resolved.key))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "chat engine 未起動（addr={}, session={}）",
+                    addr,
+                    resolved.key
+                )
+            })
+    }
+
+    /// chat engine に prompt を投入する（`&self` — read lock 下で呼べる）。`session=None` は focused。
+    pub async fn submit_chat(
+        &self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+        prompt: &str,
+    ) -> anyhow::Result<()> {
+        self.chat_slot(addr, session)?.host.submit(prompt).await
     }
 
     /// doc 35 §5: 実行中 turn を中断する（stop ボタン / Esc）。submit_chat と同型（read lock 下で
     /// 呼べる — host が stdin Mutex で直列化）。engine 不在は Err（走行中 turn が無ければ何もしない）。
-    pub async fn interrupt_chat(&self, addr: &LaneAddress) -> anyhow::Result<()> {
-        let slot = self
-            .chat_engines
-            .get(addr)
-            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
-        slot.host.interrupt().await
+    pub async fn interrupt_chat(
+        &self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+    ) -> anyhow::Result<()> {
+        self.chat_slot(addr, session)?.host.interrupt().await
     }
 
     /// doc 35 §2.5 / PR3: permission mode を動的に切替える（承認モードへ opt-in / 素通しへ戻す）。
@@ -1067,13 +1326,13 @@ impl LanePool {
     pub async fn set_permission_mode_chat(
         &self,
         addr: &LaneAddress,
+        session: Option<SessionKey>,
         mode: &str,
     ) -> anyhow::Result<()> {
-        let slot = self
-            .chat_engines
-            .get(addr)
-            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）", addr))?;
-        slot.host.set_permission_mode(mode).await
+        self.chat_slot(addr, session)?
+            .host
+            .set_permission_mode(mode)
+            .await
     }
 
     /// chat engine の逆方向 `can_use_tool`（[`crate::echoes::EchoesEvent::Question`]）へ回答する
@@ -1084,20 +1343,35 @@ impl LanePool {
     pub async fn respond_permission_chat(
         &self,
         addr: &LaneAddress,
+        session: Option<SessionKey>,
         request_id: &str,
         decision: crate::echoes::PermissionDecision,
     ) -> anyhow::Result<()> {
-        let slot = self
-            .chat_engines
-            .get(addr)
-            .ok_or_else(|| anyhow::anyhow!("chat engine 未起動（addr={}）— 応答先が無い", addr))?;
-        slot.host.respond_permission(request_id, decision).await
+        self.chat_slot(addr, session)
+            .map_err(|e| anyhow::anyhow!("{e} — 応答先が無い"))?
+            .host
+            .respond_permission(request_id, decision)
+            .await
     }
 
-    /// chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
-    pub fn drop_chat_engine(&mut self, addr: &LaneAddress) -> bool {
-        let dropped = self.chat_engines.remove(addr).is_some();
-        if dropped && let Some(info) = self.lanes.get_mut(addr) {
+    /// 当該 session の chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
+    /// `session=None` は focused。他 session の engine は巻き添えにしない（doc 38 §2「独立」）。
+    pub fn drop_chat_engine(&mut self, addr: &LaneAddress, session: Option<SessionKey>) -> bool {
+        let Ok(resolved) = self.resolve_chat_session(addr, session) else {
+            return false;
+        };
+        let Some(slots) = self.chat_engines.get_mut(addr) else {
+            return false;
+        };
+        let dropped = slots.remove(&resolved.key).is_some();
+        if slots.is_empty() {
+            self.chat_engines.remove(addr);
+        }
+        // pid は focused session の代表値なので、focused を落とした時だけ下ろす。
+        if dropped
+            && resolved.focused
+            && let Some(info) = self.lanes.get_mut(addr)
+        {
             info.pid = None;
         }
         dropped
@@ -1170,11 +1444,15 @@ pub async fn deliver_nudge(
 mod tests {
     use super::*;
 
-    /// chat mode の lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は
-    /// 早期 return するので spawn 不要）。
-    fn insert_chat_lane(pool: &mut LanePool, addr: &LaneAddress) {
+    /// lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は早期 return する
+    /// ので spawn 不要）。mode を注入できる（doc 38: focused / 非 focused でガードが割れる）。
+    fn insert_lane(
+        pool: &mut LanePool,
+        addr: &LaneAddress,
+        mode: crate::lane::console_mode::ConsoleMode,
+    ) {
         pool.insert(LaneInfo {
-            console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+            console_mode: mode,
             id: Default::default(),
             address: addr.clone(),
             kind: LaneKind::Conductor,
@@ -1189,6 +1467,11 @@ mod tests {
             engine_session_id: None,
             flow_state: None,
         });
+    }
+
+    /// chat mode の lane を pool に置く（従来 helper の互換形）。
+    fn insert_chat_lane(pool: &mut LanePool, addr: &LaneAddress) {
+        insert_lane(pool, addr, crate::lane::console_mode::ConsoleMode::Chat);
     }
 
     /// doc 33: chat lane の restart は `fresh` で意味が割れる。
@@ -1228,6 +1511,145 @@ mod tests {
         let info = pool.get(&addr).expect("lane");
         assert_eq!(info.pid, None);
         assert_eq!(info.state, LaneState::Running);
+    }
+
+    /// doc 38 落とし穴②: fresh restart は registry 上の**全 session**の会話 id を消し、
+    /// registry も既定形（N=1）へ戻す。focused（や旧来の #1）だけ消すと副 session が
+    /// resume され「New Session なのに前の会話が出る」嘘になる — その再演をここで塞ぐ。
+    #[test]
+    fn chat_fresh_restart_clears_all_sessions_and_registry() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+
+        // session #2（codex）を追加し、#1 / #2 の両方に会話 id を記録する。
+        let k2 = pool
+            .create_chat_session(&addr, Some("codex"), false)
+            .expect("create session");
+        assert_eq!(k2, 2);
+        crate::lane::cc_session::record("vp", "conductor", "cc-id-1").expect("record #1");
+        crate::lane::codex_session::record("vp", "conductor#2", "0199-codex-id")
+            .expect("record #2");
+
+        pool.restart_lane(&addr, true).expect("fresh chat restart");
+
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor"),
+            None,
+            "session #1 の会話 id が消える"
+        );
+        assert_eq!(
+            crate::lane::codex_session::last("vp", "conductor#2"),
+            None,
+            "副 session (#2) の会話 id も消える — fresh は全 session を知る"
+        );
+        let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
+        assert_eq!(reg.sessions.len(), 1, "registry は既定形（N=1）へ戻る");
+        assert_eq!(reg.focused, 1);
+    }
+
+    /// doc 38 落とし穴③: console_mode ガードは focused session にのみ適用される。
+    /// - focused の ensure は Tui mode で「mode=chat が必要」で弾かれる（従来どおり）
+    /// - 非 focused の ensure は mode ガードを**通過**し、engine 能力（agy = Act II host なし）
+    ///   まで到達して弾かれる = ガードが session 経路に流用されていない証跡
+    #[tokio::test]
+    async fn console_mode_guard_applies_only_to_focused_session() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::conductor("vp");
+        let mut pool = LanePool::new();
+        insert_lane(
+            &mut pool,
+            &addr,
+            crate::lane::console_mode::ConsoleMode::Tui,
+        );
+        let router = std::sync::Arc::new(crate::process::topic_router::TopicRouter::new());
+
+        // 非 focused の agy session を作る（focused は #1 のまま）。
+        let k = pool
+            .create_chat_session(&addr, Some("agy"), false)
+            .expect("create agy session");
+
+        // focused（#1、省略時）は mode ガードで弾かれる。
+        let err = pool
+            .ensure_chat_engine(&addr, None, &router)
+            .expect_err("Tui mode の focused ensure は Err");
+        assert!(
+            err.to_string().contains("console mode=chat が必要"),
+            "focused は mode ガード: {err}"
+        );
+
+        // 非 focused は mode ガードを通過し、engine 能力の防壁で弾かれる。
+        let err = pool
+            .ensure_chat_engine(&addr, Some(k), &router)
+            .expect_err("agy session の ensure は Err");
+        assert!(
+            err.to_string().contains("Act II chat host を持ちません"),
+            "非 focused は mode ガードを通過して能力防壁に到達する: {err}"
+        );
+    }
+
+    /// session 解決の基本則: 省略 = focused、実在しない key は Err、未知 stand の create は Err。
+    /// registry file 不在（N=1 特殊ケース）でも focused=1 に解決される。
+    #[test]
+    fn resolve_chat_session_defaults_and_validates() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+
+        // registry file 不在 = N=1 特殊ケース（focused=1、stand は lane の stand）。
+        let r = pool.resolve_chat_session(&addr, None).expect("resolve");
+        assert_eq!((r.key, r.stand.as_str(), r.focused), (1, "echoes", true));
+
+        // 実在しない session key は Err（黙って focused に落とさない）。
+        assert!(pool.resolve_chat_session(&addr, Some(9)).is_err());
+
+        // 未知 stand の session は作れない（engine を一生持てない）。
+        assert!(
+            pool.create_chat_session(&addr, Some("nonsense"), true)
+                .is_err()
+        );
+
+        // create(focus=true) で focused が移り、省略解決も追随する。
+        let k = pool
+            .create_chat_session(&addr, Some("codex"), true)
+            .expect("create");
+        let r = pool.resolve_chat_session(&addr, None).expect("resolve");
+        assert_eq!((r.key, r.stand.as_str(), r.focused), (k, "codex", true));
+        // 旧 #1 は非 focused として引き続き解決できる。
+        let r1 = pool
+            .resolve_chat_session(&addr, Some(1))
+            .expect("resolve #1");
+        assert!(!r1.focused);
+        assert_eq!(r1.stand, "echoes");
+    }
+
+    /// list_chat_sessions は registry + 会話 id（engine store）+ focused を突き合わせる。
+    /// session label（#1 = 素の lane 名 / #2 = `<lane>#2`）で読むことをここで固定する。
+    #[test]
+    fn list_chat_sessions_joins_registry_and_stores() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+
+        pool.create_chat_session(&addr, Some("codex"), false)
+            .expect("create");
+        crate::lane::cc_session::record("vp", "conductor", "cc-id-1").expect("record");
+
+        let sessions = pool.list_chat_sessions(&addr).expect("list");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].key, 1);
+        assert_eq!(sessions[0].engine_session_id.as_deref(), Some("cc-id-1"));
+        assert!(sessions[0].focused);
+        assert!(!sessions[0].live, "engine 未 spawn は live=false");
+        assert_eq!(sessions[1].key, 2);
+        assert_eq!(sessions[1].stand, "codex");
+        assert_eq!(
+            sessions[1].engine_session_id, None,
+            "Draft session は会話 id を持たない（doc 38 §1.1）"
+        );
     }
 
     #[test]

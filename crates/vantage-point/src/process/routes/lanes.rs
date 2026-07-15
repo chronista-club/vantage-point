@@ -749,7 +749,7 @@ pub async fn restart_lane_orchestrated(
                 });
                 if is_chat {
                     let mut pool = state.lane_pool.write().await;
-                    if let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router) {
+                    if let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router) {
                         tracing::warn!(
                             "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
                         );

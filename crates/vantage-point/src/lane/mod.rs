@@ -28,5 +28,7 @@ pub mod cursor_session;
 pub mod engine_model;
 /// lane 単位の 位置独立 安定 id 永続化 (I1、 doc 24 §7、 address→id を disk に load_or_create)
 pub mod lane_id;
+/// lane 単位の Echoes session registry 永続（doc 38 — 1 Lane = N session、key/stand/focused）
+pub mod session_registry;
 /// engine session id 永続の共通機構（cc/cursor/codex_session の共通核、doc 37）
 pub(crate) mod session_store;

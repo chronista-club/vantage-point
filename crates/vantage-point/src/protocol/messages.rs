@@ -213,6 +213,12 @@ pub enum ProcessMessage {
     /// LaneTerminalOutput（Act I の生 PTY）とは別系統の per-lane ephemeral stream。
     EchoesEvent {
         lane: String,
+        /// doc 38: 発生元 session の VP 採番 key（1 Lane = N session）。additive field —
+        /// 旧 sender 由来の message は default の 1（= N=1 特殊ケースの唯一 session）に解決。
+        /// ⚠️ session を lane 名に埋めない（doc 38 落とし穴① — topic key は lane のまま、
+        /// session は本 field で運ぶ）。
+        #[serde(default = "default_session_key")]
+        session: u32,
         event: crate::echoes::EchoesEvent,
     },
     /// トレースログエントリ（debug.log ファイルからの配信）
@@ -241,6 +247,12 @@ pub enum ProcessMessage {
     /// subscriber は subscribe 即値 + 変化で push を受ける。
     /// 設計: creo-memories `mem_1CbA198fsHJsoKpu2jDUCv`（wiremsg restructure）。
     LanesSnapshot { lanes: Vec<LaneInfo> },
+}
+
+/// [`ProcessMessage::EchoesEvent::session`] の serde default（doc 38 の N=1 特殊ケース =
+/// 唯一 session の key 1。session field を持たない旧 sender との後方互換）。
+fn default_session_key() -> u32 {
+    1
 }
 
 /// Session information for UI
