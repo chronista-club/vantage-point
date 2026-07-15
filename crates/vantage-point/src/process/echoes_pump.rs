@@ -18,15 +18,19 @@ use crate::echoes::EchoesEvent;
 use crate::process::topic_router::TopicRouter;
 use crate::protocol::ProcessMessage;
 
-/// 1 Lane の EchoesAgentHost output broadcast を購読し、`EchoesEvent` topic に流す pump を spawn。
+/// 1 session の chat host output broadcast を購読し、`EchoesEvent` topic に流す pump を spawn。
 ///
 /// - `lane`: LaneAddress の Display 形（`"vp/conductor"` 等）。topic key 化は `TopicRouter` が担う。
-/// - `rx`: `EchoesAgentHost::subscribe()` で得た EchoesEvent の broadcast receiver。
+///   ⚠️ session key を lane 名に埋めない（doc 38 落とし穴① — topic は per-lane のまま、
+///   session は message の別 field で運ぶ）。
+/// - `session`: 発生元 session の VP 採番 key（doc 38。N=1 特殊ケースは 1）。
+/// - `rx`: chat host の `subscribe()` で得た EchoesEvent の broadcast receiver。
 /// - `topic_router`: SP の topic_router。
 ///
 /// Host drop（broadcast Closed）で pump は自然終了する。lag 時は drop を warn して継続。
 pub fn spawn_lane_echoes_pump(
     lane: String,
+    session: crate::lane::session_registry::SessionKey,
     mut rx: broadcast::Receiver<EchoesEvent>,
     topic_router: Arc<TopicRouter>,
 ) -> JoinHandle<()> {
@@ -37,15 +41,18 @@ pub fn spawn_lane_echoes_pump(
                     topic_router
                         .route(ProcessMessage::EchoesEvent {
                             lane: lane.clone(),
+                            session,
                             event,
                         })
                         .await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("lane echoes pump lagged: {n} events dropped (lane={lane})");
+                    tracing::warn!(
+                        "lane echoes pump lagged: {n} events dropped (lane={lane}#{session})"
+                    );
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    tracing::debug!("lane echoes pump 終了 (host dropped, lane={lane})");
+                    tracing::debug!("lane echoes pump 終了 (host dropped, lane={lane}#{session})");
                     break;
                 }
             }
@@ -70,7 +77,7 @@ mod tests {
             .subscribe("process/echoes/data/vp~conductor/event")
             .await;
 
-        let _h = spawn_lane_echoes_pump("vp/conductor".to_string(), rx, router.clone());
+        let _h = spawn_lane_echoes_pump("vp/conductor".to_string(), 2, rx, router.clone());
 
         tx.send(EchoesEvent::MessageChunk {
             text: "hello".to_string(),
@@ -81,10 +88,16 @@ mod tests {
             .await
             .expect("timeout")
             .expect("recv");
+        // doc 38 落とし穴①: session が topic key（lane 部分）に混入しないこと。
         assert_eq!(topic, "process/echoes/data/vp~conductor/event");
         match msg {
-            ProcessMessage::EchoesEvent { lane, event } => {
+            ProcessMessage::EchoesEvent {
+                lane,
+                session,
+                event,
+            } => {
                 assert_eq!(lane, "vp/conductor");
+                assert_eq!(session, 2, "session は message の別 field で運ぶ");
                 assert_eq!(
                     event,
                     EchoesEvent::MessageChunk {
