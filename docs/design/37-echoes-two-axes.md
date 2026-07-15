@@ -21,7 +21,7 @@ Echoes は「コーディングアシスタント」という能力の namespace
 | 層 | 意味 | コードの正体 | 束縛 |
 |----|------|-------------|------|
 | **Echoes 💬** | 能力 / namespace | `stand="echoes"`（+ engine 種別） | — |
-| **engine 軸** | どの頭脳か（claude / cursor / codex …） | `ChatHost { Echoes, Cursor, … }`（`lanes_state.rs`）/ `cc_session` \| `cursor_session` | **session 束縛・永続** |
+| **engine 軸** | どの頭脳か（claude / cursor / codex …） | `EngineKind` + `ChatHost { Claude, Cursor, Codex }`（`echoes/engine.rs`）/ `cc_session` \| `cursor_session` \| `codex_session` | **session 束縛・永続** |
 | **Act(surface) 軸** | どう視るか（Act I 端末 / Act II chat / Act III 将来 canvas） | `ConsoleMode { Tui, Chat }`（`lane/console_mode.rs`） | **view・切替可能** |
 
 - **「Act」はコード識別子ではない**。コードにあるのは `ConsoleMode`（surface）と `ChatHost`（engine）の 2 enum だけ。`Act I/II` は doc と会話の中にしか無い mental model ラベルなので、**意味の再割り当てはコスト 0**（リネームも migration も発生しない）。この doc はその「意味」を確定するだけ。

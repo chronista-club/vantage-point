@@ -35,35 +35,38 @@ pub struct StandInfo {
     pub description: String,
 }
 
-/// built-in stand 一覧（stand は Rust-native）。
+/// built-in stand 一覧（engine 群 + shell）。
+///
+/// engine 軸は [`crate::echoes::EngineKind`] が SSOT（doc 37）— **ここに engine を手書きで
+/// 足さない**。新 engine は `EngineKind::ALL` に足せば dropdown に自動で載る（cursor 追加時に
+/// この静的 vec が取り残されて「GUI から作れない engine」が生まれた同型ミスの再発防止、
+/// moody 指摘 2026-07-15）。engine を持たない `"shell"`（床のみ）だけをここで足す。
 pub fn list_stands() -> Vec<StandInfo> {
-    vec![
-        StandInfo {
-            name: "echoes".to_string(),
-            description: "VP Stand: Echoes 💬 — login shell の床 + Claude CLI 自動起動".to_string(),
-        },
-        StandInfo {
-            name: "cursor".to_string(),
-            description: "VP Stand: Cursor Agent 🖱️ — login shell の床 + cursor-agent 自動起動"
-                .to_string(),
-        },
-        StandInfo {
-            name: "shell".to_string(),
-            description: "VP Stand: bare login shell 🤚 — 床のみ（旧 TheHand）".to_string(),
-        },
-    ]
+    let mut stands: Vec<StandInfo> = crate::echoes::EngineKind::ALL
+        .iter()
+        .map(|k| StandInfo {
+            name: k.stand_name().to_string(),
+            description: k.description().to_string(),
+        })
+        .collect();
+    stands.push(StandInfo {
+        name: "shell".to_string(),
+        description: "VP Stand: bare login shell 🤚 — 床のみ（旧 TheHand）".to_string(),
+    });
+    stands
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// built-in stand が返り、 name が POST /api/lanes の `stand` field にそのまま使える形式。
+    /// built-in stand が返り、 name が lane_create の `stand` field にそのまま使える形式。
+    /// engine 群は EngineKind::ALL 由来（= 新 engine を足すとこの assert も自然に伸びる）。
     #[test]
     fn list_stands_returns_builtin() {
         let stands = list_stands();
         let names: Vec<&str> = stands.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["echoes", "cursor", "shell"]);
+        assert_eq!(names, vec!["echoes", "cursor", "codex", "agy", "shell"]);
         assert!(stands.iter().all(|s| !s.description.is_empty()));
     }
 }

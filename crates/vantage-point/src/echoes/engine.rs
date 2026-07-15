@@ -34,6 +34,13 @@ pub enum EngineKind {
 }
 
 impl EngineKind {
+    /// 全 engine の列挙（`list_stands` 等の導出元）。
+    ///
+    /// 新 engine は [`Self::from_stand`] / [`Self::stand_name`] と併せてここにも足す —
+    /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
+    /// コンパイル時 match 網羅性 + テストで検知する。
+    pub const ALL: [EngineKind; 4] = [Self::Claude, Self::Cursor, Self::Codex, Self::Agy];
+
     /// stand 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
     pub fn from_stand(stand: &str) -> Option<Self> {
         match stand {
@@ -42,6 +49,28 @@ impl EngineKind {
             "codex" => Some(Self::Codex),
             "agy" => Some(Self::Agy),
             _ => None,
+        }
+    }
+
+    /// canonical な stand 名（[`Self::from_stand`] の逆写像。旧名 `"hd"` は含まない）。
+    pub fn stand_name(self) -> &'static str {
+        match self {
+            Self::Claude => "echoes",
+            Self::Cursor => "cursor",
+            Self::Codex => "codex",
+            Self::Agy => "agy",
+        }
+    }
+
+    /// GUI（sidebar `+ Add Performer` dropdown 等）向けの表示説明。
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Claude => "VP Stand: Echoes 💬 — login shell の床 + Claude CLI 自動起動",
+            Self::Cursor => "VP Stand: Cursor Agent 🖱️ — login shell の床 + cursor-agent 自動起動",
+            Self::Codex => "VP Stand: Codex 🧮 — login shell の床 + codex (OpenAI) 自動起動",
+            Self::Agy => {
+                "VP Stand: Antigravity 🚀 — login shell の床 + agy 自動起動（console のみ、Act II 非対応）"
+            }
         }
     }
 
@@ -179,6 +208,19 @@ impl ChatHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ALL ⇄ from_stand ⇄ stand_name の roundtrip（片側だけ足した engine を検知する防壁）。
+    #[test]
+    fn all_engines_roundtrip_through_stand_name() {
+        for k in EngineKind::ALL {
+            assert_eq!(
+                EngineKind::from_stand(k.stand_name()),
+                Some(k),
+                "stand_name → from_stand が roundtrip しない: {k:?}"
+            );
+            assert!(!k.description().is_empty());
+        }
+    }
 
     /// stand 名 → engine 対応表の固定（drift 検知）。
     #[test]

@@ -140,7 +140,10 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         }
         // doc 37: Echoes 共通ヘッダの session chip 用に、active engine の session id を全 lane で
         // lazy read（表示専用の別契約 — cc_session_id は claude resume 用のまま触らない）。
-        // 1 lane 1 file read で cc_session と同オーダー、engine 対応表は EngineKind が SSOT。
+        // ⚠️ 上の cc_session と違い conductor 限定を**意図的に外している**（header は performer
+        // lane でも出す = 消費者が変わった）。QUIC 5s tick 経路で lane 数 × 1 file read の同期 I/O
+        // が増えるが、通常運用（〜十数 lane）では無害。lane 数が桁で増える運用になったら
+        // spawn_blocking 化 / active lane 限定 read が最適化余地（moody 参考指摘 2026-07-15）。
         lane.engine_session_id = match crate::echoes::EngineKind::from_stand(&lane.stand) {
             Some(crate::echoes::EngineKind::Claude) => {
                 crate::lane::cc_session::last(&lane.address.project, lane_label)
