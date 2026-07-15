@@ -27,6 +27,7 @@ export function emptyState(): SidebarState {
 			hub: "",
 			hub_worlds: [],
 			presence: {},
+			update_available: false,
 		},
 		lanes_by_project: {},
 		unread_notifications: {},
