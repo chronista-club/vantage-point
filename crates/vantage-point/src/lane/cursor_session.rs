@@ -115,7 +115,9 @@ pub fn last(project: &str, lane: &str) -> Option<String> {
 /// 1. 現在の PATH で `which cursor-agent` が当たればそれ
 /// 2. `$HOME/.local/bin/cursor-agent`（well-known install 先）が実在すればそれ
 /// 3. どちらも無ければ素の `"cursor-agent"`（PATH に委ねる）
-fn cursor_cli_path() -> String {
+///
+/// Act II（[`crate::echoes::cursor_host`]）の turn spawn も同じ解決を使うため crate 内公開。
+pub(crate) fn cursor_cli_path() -> String {
     if let Ok(output) = std::process::Command::new("which")
         .arg("cursor-agent")
         .output()

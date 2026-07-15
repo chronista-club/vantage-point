@@ -11,14 +11,20 @@
 //! - [`translate`]: claude stream-json → [`EchoesEvent`] 翻訳層（live）
 //! - [`transcript`]: claude session transcript(jsonl) → [`EchoesEvent`] 翻訳層（replay-on-attach）
 //! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で常駐駆動
+//! - [`cursor_translate`]: cursor-agent stream-json → [`EchoesEvent`] 翻訳層（cursor engine 用）
+//! - [`cursor_host`]: [`CursorAgentHost`] — cursor-agent を lane 単位で turn-scoped 駆動
 //!
-//! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。
+//! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。GUI 語彙 [`EchoesEvent`] は
+//! engine 非依存なので、cursor は翻訳層 + host を足すだけで乗る（chatview / topic 配線は無改修）。
 
+pub mod cursor_host;
+pub mod cursor_translate;
 pub mod event;
 pub mod host;
 pub mod transcript;
 pub mod translate;
 
+pub use cursor_host::{CursorAgentHost, CursorHostConfig};
 pub use event::{EchoesEvent, PlanEntry, QuestionOption, QuestionSpec};
 pub use host::{EchoesAgentHost, EchoesHostConfig, InFlight, PermissionDecision};
 pub use translate::EchoesTranslator;
