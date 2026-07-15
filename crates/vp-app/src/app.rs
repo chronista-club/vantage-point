@@ -1482,6 +1482,8 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             cwd: None,
             branch: None,
             lane_name: None,
+            session_id: None,
+            stand: None,
         }
     } else if let Some(addr) = state.active_lane_address.as_deref() {
         // Echoes 共通ヘッダ用: active lane の LaneInfo から cwd / branch を引く。cwd は
@@ -1506,6 +1508,9 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             // 現状 LaneInfo.name は常に None（JS は addr 短縮名に fallback）だが、
             // 将来 populate された時にヘッダが取り残されないよう cwd/branch と同経路で供給。
             lane_name: lane.and_then(|l| l.name.as_deref()),
+            // Act I の session chip はこの相乗りが唯一の供給路（Act II は event が上書き）。
+            session_id: lane.and_then(|l| l.engine_session_id.as_deref()),
+            stand: lane.map(|l| l.stand.as_str()).filter(|st| !st.is_empty()),
         }
     } else {
         ActivePaneInfo {
@@ -1516,6 +1521,8 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             cwd: None,
             branch: None,
             lane_name: None,
+            session_id: None,
+            stand: None,
         }
     };
     let script = main_area::build_set_active_pane_script(&info);

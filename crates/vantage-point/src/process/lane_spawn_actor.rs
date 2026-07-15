@@ -299,6 +299,7 @@ async fn handle_cmd(
             cwd,
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         let mut pool_write = pool.write().await;
@@ -406,6 +407,7 @@ async fn handle_cmd(
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         performer_status: None,
         cc_session_id: None,
+        engine_session_id: None,
         flow_state: None,
     };
     let mut pool_write = pool.write().await;
@@ -547,6 +549,7 @@ mod tests {
             cwd: "/nonexistent".to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
 

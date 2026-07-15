@@ -31,7 +31,7 @@ pub struct AddPerformerParams {
     pub branch: Option<String>,
     /// Optional Lane Stand. Defaults to "echoes".
     #[schemars(
-        description = "Lane Stand 種類: 'echoes' (default、 Claude CLI) or 'shell' (shell)。"
+        description = "Lane Stand 種類 (engine): 'echoes' (default、 claude) / 'cursor' (cursor-agent) / 'codex' (OpenAI Codex CLI) / 'agy' (Antigravity CLI、 console のみ) / 'shell'。"
     )]
     pub stand: Option<String>,
     /// Optional base ref for the worktree fork point (co-evolution #2).
@@ -99,7 +99,9 @@ pub struct FlowHandoffParams {
     pub branch: Option<String>,
 
     /// Optional Lane Stand (default: "echoes")
-    #[schemars(description = "Lane Stand: 'echoes' (default、 Claude CLI) or 'shell'。")]
+    #[schemars(
+        description = "Lane Stand (engine): 'echoes' (default、 claude) / 'cursor' / 'codex' / 'agy' (console のみ) / 'shell'。"
+    )]
     #[serde(default)]
     pub stand: Option<String>,
 

@@ -1033,18 +1033,22 @@ async fn handle_console_set_model(
         let info = pool
             .get(&addr)
             .ok_or_else(|| format!("console_set_model: Lane not found: {lane}"))?;
-        if info.stand == "cursor" {
-            // cursor の model は cursor-agent 側（TUI の `/model`）で選ぶ。engine_model（claude alias
-            // 前提の state）は cursor には注入しないため、VP からの切替は受けない。
-            return Err(format!(
-                "cursor エンジンの model は cursor-agent 側で選択します（lane={lane}）"
-            ));
-        }
-        if info.stand != "echoes" {
-            return Err(format!(
-                "console_set_model は stand=echoes の lane のみ（lane={lane}, stand={}）",
-                info.stand
-            ));
+        // model 切替の可否は EngineKind の能力表明に一元化（engine_model は claude alias 前提の
+        // state。cursor は TUI の `/model`、codex は `-m` を持つが v1 スコープ外 — doc 37 §7）。
+        match crate::echoes::EngineKind::from_stand(&info.stand) {
+            Some(k) if k.model_switchable() => {}
+            Some(_) => {
+                return Err(format!(
+                    "{} エンジンの model は engine 側で選択します（lane={lane}）",
+                    info.stand
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, stand={}）",
+                    info.stand
+                ));
+            }
         }
         let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
         match &model {
@@ -2017,6 +2021,7 @@ mod tests {
                 cwd: cwd.clone(),
                 performer_status: None,
                 cc_session_id: None,
+                engine_session_id: None,
                 flow_state: None,
             });
             pool.insert_pty_slot(addr.clone(), slot, rx);
@@ -2228,6 +2233,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
         addr

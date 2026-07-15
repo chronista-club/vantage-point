@@ -117,6 +117,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             cwd: entry.path,
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
     }
@@ -130,15 +131,32 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             }
         }
         // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)。
-        // 消費者 (echoes --resume) は conductor のみなので populate も限定し、
-        // QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
+        // 消費者 (echoes --resume / delivery_actor channel D) は conductor のみなので populate も
+        // 限定し、 QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
         // policy 化 (設計メモ「fresh / resume が制限でなく policy になる」) の際に広げる。
+        let lane_label = crate::process::stand_spawner::lane_label(&lane.address);
         if matches!(lane.kind, LaneKind::Conductor) {
-            lane.cc_session_id = crate::lane::cc_session::last(
-                &lane.address.project,
-                crate::process::stand_spawner::lane_label(&lane.address),
-            );
+            lane.cc_session_id = crate::lane::cc_session::last(&lane.address.project, lane_label);
         }
+        // doc 37: Echoes 共通ヘッダの session chip 用に、active engine の session id を全 lane で
+        // lazy read（表示専用の別契約 — cc_session_id は claude resume 用のまま触らない）。
+        // ⚠️ 上の cc_session と違い conductor 限定を**意図的に外している**（header は performer
+        // lane でも出す = 消費者が変わった）。QUIC 5s tick 経路で lane 数 × 1 file read の同期 I/O
+        // が増えるが、通常運用（〜十数 lane）では無害。lane 数が桁で増える運用になったら
+        // spawn_blocking 化 / active lane 限定 read が最適化余地（moody 参考指摘 2026-07-15）。
+        lane.engine_session_id = match crate::echoes::EngineKind::from_stand(&lane.stand) {
+            Some(crate::echoes::EngineKind::Claude) => {
+                crate::lane::cc_session::last(&lane.address.project, lane_label)
+            }
+            Some(crate::echoes::EngineKind::Cursor) => {
+                crate::lane::cursor_session::last(&lane.address.project, lane_label)
+            }
+            Some(crate::echoes::EngineKind::Codex) => {
+                crate::lane::codex_session::last(&lane.address.project, lane_label)
+            }
+            // agy は id 供給源なし（doc 37 §7.5）、shell / 未知 stand は engine なし。
+            Some(crate::echoes::EngineKind::Agy) | None => None,
+        };
     }
 
     lanes
@@ -274,6 +292,7 @@ pub(crate) async fn create_performer_orchestrated(
             cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
     }
@@ -474,6 +493,7 @@ pub(crate) async fn create_performer_orchestrated(
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
         cc_session_id: None,
+        engine_session_id: None,
         flow_state: None,
     };
 
@@ -970,6 +990,7 @@ mod core_tests {
                 cwd: String::new(),
                 performer_status: None,
                 cc_session_id: None,
+                engine_session_id: None,
                 flow_state: None,
             });
         }

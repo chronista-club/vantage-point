@@ -10,6 +10,7 @@ import {
   middleEllipsis,
   laneShortName,
   permModeLabel,
+  sessionChipPrefix,
 } from './EchoesHeader'
 import { foldHeaderState, type EchoesHeaderState } from './console'
 import type { EchoesEvent } from './console'
@@ -117,5 +118,22 @@ describe('foldHeaderState — session summary の畳み込み（変化検知）'
     const chunk: EchoesEvent = { kind: 'message_chunk', text: 'hi' }
     expect(foldHeaderState(h, chunk)).toBe(false)
     expect(h.sessionId).toBe('sid-1')
+  })
+})
+
+describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）', () => {
+  it('claude（echoes / 旧名 hd）は歴史的な cc を維持する', () => {
+    expect(sessionChipPrefix('echoes')).toBe('cc')
+    expect(sessionChipPrefix('hd')).toBe('cc')
+  })
+  it('cursor / codex / agy は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
+    expect(sessionChipPrefix('cursor')).toBe('cur')
+    expect(sessionChipPrefix('codex')).toBe('cdx')
+    expect(sessionChipPrefix('agy')).toBe('agy')
+  })
+  it('未知 / 欠落 stand は中立の sid（chip は出せるが engine は主張しない）', () => {
+    expect(sessionChipPrefix('shell')).toBe('sid')
+    expect(sessionChipPrefix(null)).toBe('sid')
+    expect(sessionChipPrefix(undefined)).toBe('sid')
   })
 })

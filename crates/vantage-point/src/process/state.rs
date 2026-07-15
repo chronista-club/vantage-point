@@ -461,6 +461,7 @@ mod lane_resolve_tests {
             cwd: "/tmp/work".to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         }
     }
