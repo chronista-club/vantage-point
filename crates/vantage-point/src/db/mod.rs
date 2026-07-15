@@ -875,6 +875,178 @@ impl VpDb {
         Ok(records.pop())
     }
 
+    // =========================================================================
+    // board モデル (2026-07-15): scope 別 Canvas board の CRUD
+    //
+    // board = PP Canvas に show した item の scope 別永続リスト（SP が唯一の truth を持つ）。
+    // stack = { items: [...新→古], cursor: <id|NONE> } を pane_contents.stack に保存する。
+    // キーは (project_path, scope, lane_name, pane_id)。 lane board は lane_name で lane ごとに
+    // 分離、 proj board は lane_name='' (project 共有)。
+    // =========================================================================
+
+    /// board に item を atomic に head-push する（= mcp__show 着信 1 件）。
+    ///
+    /// - item を items の先頭に追加し（新→古）、 `capacity` を超えた末尾（最古）を切り、
+    ///   cursor を新 item に更新する。
+    /// - RMW を避け ON DUPLICATE KEY UPDATE 内の array 関数で atomic に行う
+    ///   （人/agent が連続 show した際の read-modify-write race を排除）。
+    /// - `item` は webview の CanvasItem 形（camelCase: id/content/contentType/title/createdAt）。
+    ///   top-level content/content_type/title は「現在 main で見せる item の reflection」(seek fallback)。
+    pub async fn append_board_item(
+        &self,
+        project_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+        item: &serde_json::Value,
+        capacity: usize,
+    ) -> Result<()> {
+        let item_id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let content = item
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let content_type = item
+            .get("contentType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown")
+            .to_string();
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        self.db
+            .query(
+                "INSERT INTO pane_contents {
+                    project_path: $project_path,
+                    scope: $scope,
+                    lane_name: $lane_name,
+                    pane_id: $pane_id,
+                    content_type: $content_type,
+                    content: $content,
+                    title: $title,
+                    stack: { items: [$item], cursor: $item_id },
+                    updated_at: time::now()
+                } ON DUPLICATE KEY UPDATE
+                    stack = {
+                        items: array::slice(array::prepend(stack.items ?? [], $item), 0, $cap),
+                        cursor: $item_id
+                    },
+                    content_type = $input.content_type,
+                    content = $input.content,
+                    title = $input.title,
+                    updated_at = time::now()",
+            )
+            .bind(("project_path", project_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane_name", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("content_type", content_type))
+            .bind(("content", content))
+            .bind(("title", title))
+            .bind(("item", item.clone()))
+            .bind(("item_id", item_id))
+            .bind(("cap", capacity as i64))
+            .await
+            .map_err(|e| anyhow::anyhow!("board append 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board append エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// board から item を 1 件削除する（= thumbnail ✕）。 cursor が削除対象を指していたら
+    /// 削除後の先頭（最新）に fallback、 空なら NONE。
+    pub async fn delete_board_item(
+        &self,
+        project_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+        item_id: &str,
+    ) -> Result<()> {
+        // SET 内の右辺は「更新前の stack」で評価されるため、 cursor 判定と items 更新は整合する。
+        self.db
+            .query(
+                "UPDATE pane_contents SET
+                    stack.cursor = IF stack.cursor = $item_id
+                        THEN array::filter(stack.items ?? [], |$it| $it.id != $item_id)[0].id
+                        ELSE stack.cursor END,
+                    stack.items = array::filter(stack.items ?? [], |$it| $it.id != $item_id),
+                    updated_at = time::now()
+                 WHERE project_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id",
+            )
+            .bind(("path", project_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("item_id", item_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board delete 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board delete エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// board を空にする（= mcp__clear / Clear ボタン）。
+    pub async fn clear_board(
+        &self,
+        project_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE pane_contents SET
+                    stack = { items: [], cursor: NONE },
+                    content = '', title = NONE,
+                    updated_at = time::now()
+                 WHERE project_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id",
+            )
+            .bind(("path", project_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board clear 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board clear エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 特定 (project_path, scope, lane_name, pane_id) の board を 1 件取得。 不在なら Ok(None)。
+    pub async fn load_board(
+        &self,
+        project_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM pane_contents
+                 WHERE project_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id
+                 LIMIT 1",
+            )
+            .bind(("path", project_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board load 失敗: {}", e))?;
+        let mut records: Vec<serde_json::Value> = result.take(0)?;
+        Ok(records.pop())
+    }
+
     /// プロジェクトの全ペイン状態を取得
     pub async fn list_pane_contents(&self, project_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
@@ -1083,10 +1255,18 @@ DEFINE FIELD IF NOT EXISTS content_type ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS content ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS title ON pane_contents TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS lane_name ON pane_contents TYPE string DEFAULT '';
+-- board モデル (2026-07-15): scope 軸を追加し (project_path, scope, lane_name, pane_id) で board を
+--   分離する。 scope='lane' が lane board (lane_name で lane ごとに独立)、 'proj' が project 共有 board
+--   (lane_name='')。 旧 record (scope 不在) は DEFAULT 'lane' で self-heal され、 既存 lane/conductor
+--   board を現挙動のまま保存する。 将来 'vp'(全体 board) は cross-project 共有のため World DB 側に
+--   置く (SP DB は project ごとに独立=surrealkv LOCK 分離のため)。 この SP-local table は lane/proj のみ。
+DEFINE FIELD IF NOT EXISTS scope ON pane_contents TYPE string DEFAULT 'lane';
 DEFINE FIELD IF NOT EXISTS stack ON pane_contents TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS ui_state ON pane_contents TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS updated_at ON pane_contents TYPE datetime DEFAULT time::now();
-DEFINE INDEX IF NOT EXISTS idx_pane_lane ON pane_contents COLUMNS project_path, lane_name, pane_id UNIQUE;
+-- 旧 UNIQUE (project_path, lane_name, pane_id) を破棄し scope を含む新 index に置換。
+REMOVE INDEX IF EXISTS idx_pane_lane ON pane_contents;
+DEFINE INDEX IF NOT EXISTS idx_pane_scope ON pane_contents COLUMNS project_path, scope, lane_name, pane_id UNIQUE;
 
 -- Stand ステータス
 DEFINE TABLE IF NOT EXISTS stand_status SCHEMAFULL;
@@ -1878,6 +2058,127 @@ mod tests {
             .await
             .unwrap();
         assert!(v.is_none());
+    }
+
+    // ===== board モデル (2026-07-15): scope 別 board CRUD の SurrealQL 検証 =====
+
+    fn mk_item(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "content": id, "contentType": "markdown",
+            "createdAt": "2026-07-15T00:00:00Z"
+        })
+    }
+
+    /// append は item を head-push し（新→古）、 cursor を新 item に更新、 capacity で最古を落とす。
+    #[tokio::test]
+    async fn test_board_append_head_push_cursor_and_cap() {
+        let db = make_test_db().await;
+        for id in ["a", "b", "c"] {
+            db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item(id), 2)
+                .await
+                .unwrap();
+        }
+        let rec = db
+            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .await
+            .unwrap()
+            .expect("board 不在");
+        // head-push: 最新 c が先頭、 cap=2 で最古 a が落ちる → [c, b]
+        assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 2);
+        assert_eq!(rec["stack"]["items"][0]["id"], "c");
+        assert_eq!(rec["stack"]["items"][1]["id"], "b");
+        assert_eq!(rec["stack"]["cursor"], "c");
+    }
+
+    /// delete: cursor が削除対象なら削除後の先頭に fallback、 非 cursor 削除は cursor 不変。
+    #[tokio::test]
+    async fn test_board_delete_item_cursor_fallback() {
+        let db = make_test_db().await;
+        for id in ["a", "b", "c"] {
+            db.append_board_item(
+                "/repos/vp",
+                "lane",
+                "wing",
+                "paisley-park",
+                &mk_item(id),
+                10,
+            )
+            .await
+            .unwrap();
+        }
+        // items=[c,b,a], cursor=c。 c を削除 → items=[b,a], cursor=b（先頭 fallback）。
+        db.delete_board_item("/repos/vp", "lane", "wing", "paisley-park", "c")
+            .await
+            .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "wing", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        let items = rec["stack"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], "b");
+        assert_eq!(rec["stack"]["cursor"], "b");
+
+        // items=[b,a], cursor=b。 a（非 cursor）削除 → cursor=b 不変。
+        db.delete_board_item("/repos/vp", "lane", "wing", "paisley-park", "a")
+            .await
+            .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "wing", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rec["stack"]["cursor"], "b",
+            "非 cursor 削除で cursor は不変"
+        );
+        assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 1);
+    }
+
+    /// clear は board を空にする。
+    #[tokio::test]
+    async fn test_board_clear() {
+        let db = make_test_db().await;
+        db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item("a"), 10)
+            .await
+            .unwrap();
+        db.clear_board("/repos/vp", "proj", "", "paisley-park")
+            .await
+            .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 0);
+        assert!(rec["stack"]["cursor"].is_null());
+    }
+
+    /// lane board と proj board は同 project でも独立（scope 軸で分離）。
+    #[tokio::test]
+    async fn test_board_scope_isolation() {
+        let db = make_test_db().await;
+        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("L"), 10)
+            .await
+            .unwrap();
+        db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item("P"), 10)
+            .await
+            .unwrap();
+        let lane = db
+            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        let proj = db
+            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(lane["stack"]["items"][0]["id"], "L");
+        assert_eq!(proj["stack"]["items"][0]["id"], "P");
+        // lane/proj は別 row
+        assert_eq!(db.list_pane_contents("/repos/vp").await.unwrap().len(), 2);
     }
 
     /// title が None → NULL で保存・復元できる

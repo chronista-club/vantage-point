@@ -106,9 +106,10 @@ import { renderDevices as renderBastetDevices } from "./bastet";
 import {
 	handleMessage as handleCanvasMessage,
 	setActiveLaneName,
-	requestPersistedState,
+	clearActiveBoard,
 } from "./canvas-handler";
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from "./HistoryStrip";
+import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 
 console.info("[vp-bundle] imports resolved");
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
@@ -282,12 +283,11 @@ const installSetActivePaneBridge = (): void => {
 			// 保存済 Scene を restore、 初訪問 Lane は lead-focus を default にする
 			const target = laneScenes.get(newLane) ?? "lead-focus";
 			frameEngine.applyScene(target);
-			// pp-content-persist: lane 切替時に canvas-handler の lane scope を更新 + Rust に load 要求。
-			// load 結果は `pp:state:loaded` IPC が vpCanvas.handleMessage に push してくる。
+			// board モデル: lane 切替時に active lane を更新する。 lane board は canvas channel で既に
+			// retained 受信済みなので、 setActiveLaneName で表示 board を切り替えるだけでよい（別 load 不要）。
 			// LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
 			const laneName = laneNameFromAddress(newLane);
 			setActiveLaneName(laneName);
-			requestPersistedState(laneName);
 			return;
 		}
 		// kind != terminal (PP/GE/HP/canvas/preview click 等): fixed-Pane focus、 Lane state は更新しない
@@ -321,6 +321,11 @@ const installSetActivePaneBridge = (): void => {
 const historyStripStyle = document.createElement("style");
 historyStripStyle.textContent = HISTORY_STRIP_CSS;
 document.head.appendChild(historyStripStyle);
+
+// Act II 再同期コーナーローダー: CSS を head 注入（mount は applyDefaultScene で）。
+const resyncLoaderStyle = document.createElement("style");
+resyncLoaderStyle.textContent = RESYNC_LOADER_CSS;
+document.head.appendChild(resyncLoaderStyle);
 
 // PP Canvas font — font zero-start (2026-07-11): 旧 ルイカ等幅 (TLT-RuikaMono-02、
 // 2026-06-01 の console look 意匠) の font-family 注入を撤去。 PP の書体は main_area.rs 側の
@@ -359,6 +364,8 @@ const applyDefaultScene = (): void => {
 	);
 	// doc 19: PP body 下の history strip を SolidJS で mount。
 	mountHistoryStrip();
+	// Act II 再同期コーナーローダーを body 直下に mount（active lane の replaying に追従）。
+	mountResyncLoader();
 };
 if (document.readyState === "loading") {
 	document.addEventListener("DOMContentLoaded", applyDefaultScene, {
@@ -660,7 +667,7 @@ document.addEventListener(
 				// する semantic。 `clearPP()` 直叩きだと canvasState (items / cursor) が残り、
 				// strip は表示されたまま main だけ空になる非対称が起きる (= team-b review で発覚)。
 				// canvas-handler の `handleMessage({type:'clear'})` 経路で stack 含めて全 reset する。
-				handleCanvasMessage({ type: "clear", pane_id: "main" });
+				clearActiveBoard();
 			} else {
 				console.warn("[vp-bundle] clear: unknown target", dataTarget);
 			}

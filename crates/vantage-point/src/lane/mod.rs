@@ -20,6 +20,8 @@ pub mod cc_session;
 pub mod commands;
 pub mod config;
 pub mod console_mode;
+/// lane 単位の Cursor chat id 永続化（cursor stand の Act I `--resume` の土台）
+pub mod cursor_session;
 /// lane 単位の chat engine model 永続化 (Act II モデル切替、 `--model` の SSOT)
 pub mod engine_model;
 /// lane 単位の 位置独立 安定 id 永続化 (I1、 doc 24 §7、 address→id を disk に load_or_create)

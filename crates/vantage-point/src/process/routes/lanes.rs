@@ -170,7 +170,7 @@ pub struct CreateLaneReq {
     pub base: Option<String>,
     /// lane の claude model alias (co-evolution #1、例: 'opus' / 'sonnet' / 'claude-fable-5')。
     /// spawn 前に `engine_model` へ永続し、Act I spawn / respawn / Act II engine が共有する。
-    /// 省略時は claude default（`--model` を渡さない）。
+    /// 省略時は config の `default-lane-model`（未設定なら Opus）にフォールバックして record する。
     #[serde(default)]
     pub model: Option<String>,
 }
@@ -351,10 +351,17 @@ pub(crate) async fn create_performer_orchestrated(
     // `--model` として読み、 respawn（SP restart）や Act II engine も同じ file を共有する。
     // 検証は関数冒頭 (reserve 前) で済んでいるので、ここは永続のみ。 IO 失敗は best-effort warn
     // （claude default に degrade するだけで lane 作成は続行）。
-    if let Some(model) = req.model.as_ref().filter(|m| !m.trim().is_empty()) {
-        let model = model.trim();
+    //
+    // 明示 model が無ければ config の `default-lane-model`（未設定なら Opus）を既定に record する
+    // ＝ performer 追加時の既定 model。CLI (persist_lane_model) と同じ既定規則を共有し、Act I/II
+    // 両方に効く（model は per-lane 単一真実源）。
+    {
+        let model = crate::lane::engine_model::resolve_default(
+            req.model.as_deref(),
+            config.default_lane_model_or_opus(),
+        );
         let lane_label = crate::process::stand_spawner::lane_label(&addr);
-        if let Err(e) = crate::lane::engine_model::record(&addr.project, lane_label, model) {
+        if let Err(e) = crate::lane::engine_model::record(&addr.project, lane_label, &model) {
             tracing::warn!(
                 "engine_model 永続失敗（claude default で spawn）: addr={} model={} err={}",
                 addr,
@@ -368,13 +375,18 @@ pub(crate) async fn create_performer_orchestrated(
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の lane clone と同じ pattern。
     // tmux decoupling PR2: 床 (login shell) + claude 注入の Rust-native spawn (design §13)。
-    let cmd = crate::process::stand_spawner::build_stand_command(
-        &stand,
-        &addr,
-        std::path::Path::new(&cwd),
-        false,
-    );
+    // build_stand_command も closure 内で呼ぶ: cursor stand は chatId 未採番時に create-chat を
+    // blocking exec する（最大 10s）ため、 async worker 上では実行しない（lane_spawn_actor と同形）。
+    let stand_for_spawn = stand.clone();
+    let addr_for_spawn = addr.clone();
+    let cwd_for_spawn = cwd.clone();
     let spawn_join = tokio::task::spawn_blocking(move || {
+        let cmd = crate::process::stand_spawner::build_stand_command(
+            &stand_for_spawn,
+            &addr_for_spawn,
+            std::path::Path::new(&cwd_for_spawn),
+            false,
+        );
         crate::process::stand_spawner::spawn_stand(&cmd, 120, 48)
     })
     .await;

@@ -843,6 +843,12 @@ impl LanePool {
         if info.console_mode == mode {
             return Ok(());
         }
+        // cursor エンジンは Act I (console) 専用。 Act II (Chat) の headless host（EchoesAgentHost）は
+        // claude stream-json 前提のため、 cursor lane を Chat に切り替えると claude が誤 spawn される。
+        // 下の echoes-only whitelist でも弾かれるが、 cursor 固有の明示メッセージで理由を伝える。
+        if mode == ConsoleMode::Chat && info.stand == "cursor" {
+            anyhow::bail!("cursor エンジンは Act I (console) のみ対応です（addr={addr}）");
+        }
         if mode == ConsoleMode::Chat && info.stand != "echoes" {
             anyhow::bail!(
                 "console mode Chat は stand=echoes の lane のみ（addr={}, stand={}）",

@@ -104,6 +104,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 title,
                 // CLI 実行 cwd の Lane を stamp（performer lane dir からならその PP に届く）
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
+                scope: None,
             };
             world_process_request_blocking(
                 crate::cli::world_port(),
@@ -122,6 +123,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             let msg = ProcessMessage::Clear {
                 pane_id: pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
+                scope: None,
             };
             world_process_request_blocking(
                 crate::cli::world_port(),

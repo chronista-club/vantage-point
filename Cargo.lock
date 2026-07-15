@@ -4543,6 +4543,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "midistage-profiles"
+version = "0.48.0"
+dependencies = [
+ "serde",
+ "sha1",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9187,7 +9195,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vantage-point"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -9209,6 +9217,7 @@ dependencies = [
  "image",
  "libc",
  "midir",
+ "midistage-profiles",
  "muda",
  "notify",
  "objc2",
@@ -9228,7 +9237,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha1",
  "sha2 0.11.0",
  "socket2",
  "surrealdb",
@@ -9281,7 +9289,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vp-app"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -9327,7 +9335,7 @@ dependencies = [
 
 [[package]]
 name = "vp-cli"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -9344,7 +9352,7 @@ dependencies = [
 
 [[package]]
 name = "vp-nexus"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -9368,7 +9376,7 @@ dependencies = [
 
 [[package]]
 name = "vp-paths"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "dirs",
  "tracing",

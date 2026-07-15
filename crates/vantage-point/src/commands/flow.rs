@@ -44,7 +44,7 @@ pub enum FlowCommands {
         #[arg(long)]
         base: Option<String>,
         /// worker の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。task 難度に
-        /// 合わせて指定。省略時は claude default
+        /// 合わせて指定。省略時は config の default-lane-model（既定 Opus）
         #[arg(long)]
         model: Option<String>,
         /// 実行モード: 'hitl' (default、 nudge 後応答期待) / 'auto' (nudge 後放置)

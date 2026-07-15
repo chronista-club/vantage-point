@@ -160,6 +160,7 @@ mod tests {
             append: false,
             title: None,
             lane: None,
+            scope: None,
         };
         hub.broadcast(msg);
 

@@ -30,6 +30,17 @@ pub fn is_valid_model(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
 }
 
+/// 明示 model（Some=優先）と既定（config knob）から、engine_model に記録する実効 model を返す。
+/// 空白 / 未指定は `fallback`（= `Config::default_lane_model_or_opus()`）へ落とす。
+/// performer 追加の全経路（mcp / cli / sidebar）が共有する解決規則。純粋 = テスト可能。
+pub fn resolve_default(explicit: Option<&str>, fallback: &str) -> String {
+    explicit
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
 /// file 名に使えない文字を潰す（console_mode / cc_session と同一規則）。
 fn sanitize(part: &str) -> String {
     part.chars()
@@ -124,6 +135,31 @@ mod tests {
         assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
         // 未記録の clear は no-op
         clear_in(tmp.path(), "vp", "conductor").expect("未記録の clear は Ok");
+    }
+
+    #[test]
+    fn resolve_default_prefers_explicit_then_falls_back() {
+        // 明示指定が最優先
+        assert_eq!(
+            resolve_default(Some("claude-sonnet-5"), "claude-opus-4-8"),
+            "claude-sonnet-5"
+        );
+        // 未指定は fallback（= config knob / opus）
+        assert_eq!(resolve_default(None, "claude-opus-4-8"), "claude-opus-4-8");
+        // 空白 / 空文字は fallback（picker の '' や whitespace を default 扱い）
+        assert_eq!(
+            resolve_default(Some("   "), "claude-opus-4-8"),
+            "claude-opus-4-8"
+        );
+        assert_eq!(
+            resolve_default(Some(""), "claude-opus-4-8"),
+            "claude-opus-4-8"
+        );
+        // 明示の前後空白は trim される
+        assert_eq!(
+            resolve_default(Some(" claude-fable-5 "), "claude-opus-4-8"),
+            "claude-fable-5"
+        );
     }
 
     #[test]

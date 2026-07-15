@@ -1,6 +1,20 @@
 import { describe, it, expect } from 'vitest'
-import { foldInto, emptyChatState, linkOpenPayload, deriveStatus, canDequeuePending } from './chatview'
+import {
+  foldInto,
+  emptyChatState,
+  linkOpenPayload,
+  deriveStatus,
+  canDequeuePending,
+  classifyToolRun,
+  toolGroupStatus,
+} from './chatview'
 import type { EchoesEvent } from './console'
+
+/** tool ChatItem を手軽に組む helper（classifyToolRun のテスト用）。 */
+let toolSeq = 0
+function tool(name: string, done = true, error = false) {
+  return { kind: 'tool' as const, id: `${name}-${toolSeq++}`, name, done, error }
+}
 
 /** EchoesEvent 列を空 state に順に畳んで結果を返す helper。 */
 function fold(events: EchoesEvent[]) {
@@ -46,6 +60,17 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
   it('thought_chunk で streaming が立つ（thinking も active turn = shimmer 判定用）', () => {
     const s = fold([{ kind: 'thought_chunk', text: '考え' }])
     expect(s.streaming).toBe(true)
+  })
+
+  it('replay_start で replaying=true、replay_end で false（再同期ローダーの trigger）', () => {
+    // 初期は false
+    expect(emptyChatState().replaying).toBe(false)
+    // replay_start → 再同期中
+    const mid = fold([{ kind: 'replay_start' }])
+    expect(mid.replaying).toBe(true)
+    // replay_start→replay_end で戻る
+    const done = fold([{ kind: 'replay_start' }, { kind: 'replay_end', in_flight: false }])
+    expect(done.replaying).toBe(false)
   })
 
   it('tool_call → tool_call_update が id 一致で done 化する', () => {
@@ -452,5 +477,106 @@ describe('linkOpenPayload — chat リンクの OS ブラウザ起動 一次弾�
 
   it('空 href は null', () => {
     expect(linkOpenPayload('')).toBeNull()
+  })
+})
+
+describe('classifyToolRun — 連続同名 tool の accordion 集約 (描画時のみ・reducer 非依存)', () => {
+  it('単発 tool は single（畳まない）', () => {
+    const items = [tool('Bash')]
+    expect(classifyToolRun(items, 0)).toEqual({ role: 'single' })
+  })
+
+  it('連続同名 2 件: 先頭が head で run 全体を持ち、2 件目が member', () => {
+    const a = tool('Agent')
+    const b = tool('Agent')
+    const items = [a, b]
+    const head = classifyToolRun(items, 0)
+    expect(head.role).toBe('head')
+    expect(head.role === 'head' && head.run).toEqual([a, b])
+    expect(classifyToolRun(items, 1)).toEqual({ role: 'member' })
+  })
+
+  it('連続同名 4 件（Agent ×4）: head 1 + member 3', () => {
+    const items = [tool('Agent'), tool('Agent'), tool('Agent'), tool('Agent')]
+    expect(classifyToolRun(items, 0).role).toBe('head')
+    expect(classifyToolRun(items, 1)).toEqual({ role: 'member' })
+    expect(classifyToolRun(items, 2)).toEqual({ role: 'member' })
+    expect(classifyToolRun(items, 3)).toEqual({ role: 'member' })
+    const head = classifyToolRun(items, 0)
+    expect(head.role === 'head' && head.run.length).toBe(4)
+  })
+
+  it('異なる名前は run を分断する（Bash / Agent×2 / Bash）', () => {
+    const items = [tool('Bash'), tool('Agent'), tool('Agent'), tool('Bash')]
+    expect(classifyToolRun(items, 0)).toEqual({ role: 'single' }) // 先頭 Bash 単発
+    expect(classifyToolRun(items, 1).role).toBe('head') // Agent run 先頭
+    expect(classifyToolRun(items, 2)).toEqual({ role: 'member' }) // Agent run 2件目
+    expect(classifyToolRun(items, 3)).toEqual({ role: 'single' }) // 末尾 Bash 単発
+  })
+
+  it('非 tool（assistant 等）が run を分断する', () => {
+    const items = [
+      tool('Agent'),
+      { kind: 'assistant' as const, text: '間の応答' },
+      tool('Agent'),
+    ]
+    // 前後の Agent は間に非 tool が挟まるので各々 single
+    expect(classifyToolRun(items, 0)).toEqual({ role: 'single' })
+    expect(classifyToolRun(items, 2)).toEqual({ role: 'single' })
+  })
+
+  it('append-only で single→head へ昇格する（stream 追記の再現）', () => {
+    // Agent 1 件時点は single
+    const one = [tool('Agent')]
+    expect(classifyToolRun(one, 0)).toEqual({ role: 'single' })
+    // 同名がもう 1 件 push されると先頭は head へ（描画側は reactive に再評価）
+    const two = [...one, tool('Agent')]
+    expect(classifyToolRun(two, 0).role).toBe('head')
+  })
+
+  it('run は末尾でも成立（末尾で走行中の Agent×2）', () => {
+    const items = [
+      { kind: 'assistant' as const, text: 'やります' },
+      tool('Agent', true),
+      tool('Agent', false), // 走行中
+    ]
+    expect(classifyToolRun(items, 1).role).toBe('head')
+    expect(classifyToolRun(items, 2)).toEqual({ role: 'member' })
+  })
+})
+
+describe('toolGroupStatus — accordion header の集約 status（エンジン状態を偽らない）', () => {
+  it('全 tool done・error 無し → ✓', () => {
+    expect(toolGroupStatus([tool('Agent', true), tool('Agent', true)])).toEqual({
+      running: false,
+      label: '✓',
+    })
+  })
+
+  it('全 tool settle・1 件 error → error', () => {
+    expect(toolGroupStatus([tool('Agent', true, true), tool('Agent', true)])).toEqual({
+      running: false,
+      label: 'error',
+    })
+  })
+
+  it('走行中は完了数 {done}/{count} を返す（畳んだままでも進捗が見える）', () => {
+    expect(toolGroupStatus([tool('Agent', true), tool('Agent', false), tool('Agent', false)])).toEqual(
+      { running: true, label: '1/3' },
+    )
+  })
+
+  it('1 件 error で終わっても他が in-flight なら running を偽らない（moody-blues #2 の反例）', () => {
+    // [done+error, 走行中, 走行中] → error/✓ に落とさず「1/3 実行中」を維持する
+    const s = toolGroupStatus([tool('Agent', true, true), tool('Agent', false), tool('Agent', false)])
+    expect(s.running).toBe(true)
+    expect(s.label).toBe('1/3')
+  })
+
+  it('1 件も done でない開始直後 → 0/N running', () => {
+    expect(toolGroupStatus([tool('Agent', false), tool('Agent', false)])).toEqual({
+      running: true,
+      label: '0/2',
+    })
   })
 })

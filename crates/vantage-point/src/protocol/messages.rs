@@ -57,6 +57,22 @@ pub struct HistoryMessage {
     pub timestamp: u64,
 }
 
+/// board（PP Canvas の scope 別永続リスト）の 1 item（board モデル 2026-07-15）。
+///
+/// SP が id を一元発行し（webview は自前生成しない）、 [`ProcessMessage::BoardUpdated`] の
+/// snapshot で配信される。 JSON は webview の CanvasItem と揃える（camelCase:
+/// id / content / contentType / title / createdAt）ので DB stack にもそのまま載る。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardItem {
+    pub id: String,
+    pub content: String,
+    pub content_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub created_at: String,
+}
+
 /// Message from Process to browser (WebSocket)
 ///
 /// Process: AI Agent server that wields capabilities on behalf of the user.
@@ -76,6 +92,10 @@ pub enum ProcessMessage {
         /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を conductor 扱い）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
+        /// board scope（board モデル 2026-07-15）: `"lane"`(default) | `"proj"`。
+        /// show した item をどの board に貼るか。 `None` = lane で後方互換。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
     },
     /// Clear a pane
     Clear {
@@ -83,6 +103,26 @@ pub enum ProcessMessage {
         /// 属する Lane（`None` = conductor）。[`ProcessMessage::Show`] の lane と同義。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
+        /// clear 対象の board scope（`None` = lane）。[`ProcessMessage::Show`] の scope と同義。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
+    /// board（PP Canvas の scope 別永続リスト）の snapshot（board モデル 2026-07-15）。
+    ///
+    /// SP が唯一の truth を持ち、 item 追加/削除/clear のたびに更新後 snapshot を broadcast する。
+    /// topic `process/paisley-park/state/board/{scope}/{lane}`（category=state で retained）に載り、
+    /// 再接続 / board 切替時の初期配信を retained が兼ねる。 webview はこれを受けて board を置換する view。
+    BoardUpdated {
+        /// board scope: `"lane"` | `"proj"`。
+        scope: String,
+        /// lane board のときの lane（conductor/performer）。 proj board は `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<String>,
+        /// items（新→古）。
+        items: Vec<BoardItem>,
+        /// cursor（現在 main に出す item の id）。 view の初期 cursor に使う。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
     },
     /// Split a pane
     Split {
@@ -481,6 +521,7 @@ mod tests {
             append: false,
             title: Some("設計書".to_string()),
             lane: None,
+            scope: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"show""#));
@@ -496,6 +537,7 @@ mod tests {
             append: false,
             title: None,
             lane: None,
+            scope: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("title"));
