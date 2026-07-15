@@ -32,3 +32,5 @@ pub mod lane_id;
 pub mod session_registry;
 /// engine session id 永続の共通機構（cc/cursor/codex_session の共通核、doc 37）
 pub(crate) mod session_store;
+/// lane 単位の stand（engine 種別）永続（SP 再起動またぎ、mem_1Cd4M7i5Enp3HHMLVYayRe）
+pub mod stand_store;

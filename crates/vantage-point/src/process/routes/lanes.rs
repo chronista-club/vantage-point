@@ -490,6 +490,20 @@ pub(crate) async fn create_performer_orchestrated(
         pool.insert(info.clone());
     }
 
+    // per-lane stand 永続（mem_1Cd4M7i5Enp3HHMLVYayRe）: SP 再起動後の boot bootstrap が
+    // この記録を読んで同じ stand で respawn する（従来は全 performer が default_stand に
+    // 倒れていた）。全 create 入口（GUI watcher / MCP / CLI）が本関数を通る choke point。
+    // ⚠️ 位置は**実 insert 確定後**（moody 指摘）: dedup reject / clone・spawn 失敗の rollback
+    // 経路で record すると、既存 lane の永続 stand を「作れなかった create」が上書きし得る +
+    // 失敗系テストが実 state dir に file を残す。lane が pool に実在化した時だけ記録する
+    // （Dead 登録も disk に lane が実在 = 次回 boot respawn の対象なので記録する）。
+    // 失敗は warn のみ（記録欠落は「再起動後 default に戻る」従来挙動に退化するだけ）。
+    if let Err(e) = crate::lane::stand_store::record(&project_id, &req.name, &stand) {
+        tracing::warn!(
+            "lane stand の永続に失敗（再起動後は default に fallback）: addr={addr} stand={stand}: {e}"
+        );
+    }
+
     // wiremsg Stage 0: Lane 追加を SystemEvent::Lane(Diff::Add) で発火する。
     // これを購読する producer (server.rs) が LanePool 全 snapshot を retained topic
     // (`process/star-platinum/state/lanes`) に republish し、vp-app の "lanes" 購読へ
