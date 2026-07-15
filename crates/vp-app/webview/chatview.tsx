@@ -126,6 +126,9 @@ type ChatState = {
   lastEvent: string | null
   /** status 同期: 最後にイベントを受けた時刻 ms（foldEvent で Date.now。hang 検出の時間軸）。 */
   lastEventAt: number | null
+  /** transcript replay（attach/reconnect 時の過去会話再送）進行中か。replay_start→true /
+   *  replay_end→false。コーナーの再同期ローディングアニメ（resync-loader）の可視条件。 */
+  replaying: boolean
 }
 
 type LaneChat = {
@@ -173,8 +176,10 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       s.plan = []
       s.streaming = false
       s.cost = null
+      s.replaying = true // 再同期ローディング表示 ON（replay_end で OFF）
       break
     case 'replay_end':
+      s.replaying = false // 再同期完了 → ローディング表示 OFF
       // replay 終端で streaming の真値を確定する。replay は過去の assistant 発話も message_chunk で
       // 送るため fold で streaming が立つが、replay 列は turn_completed を運ばない。生成中 turn が
       // 無ければここで下ろさないと、engine が idle でも「応答中」が永久に残り、turn 完了契機の処理
@@ -238,6 +243,7 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     case 'error':
       s.streaming = false
+      s.replaying = false // replay window 中に error が割り込んでも再同期ローダーを固着させない（streaming と同じ防御）
       sealLastAssistant(s) // error バブルを前 turn と分ける（§5.1）
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
@@ -321,7 +327,14 @@ export function emptyChatState(): ChatState {
     pending: null,
     lastEvent: null,
     lastEventAt: null,
+    replaying: false,
   }
+}
+
+/** active lane が transcript replay（再同期）中か。resync-loader の可視条件（reactive）。 */
+export function activeLaneReplaying(): boolean {
+  const l = activeLane()
+  return l ? laneChat(l).state.replaying : false
 }
 
 // ---------------------------------------------------------------------------

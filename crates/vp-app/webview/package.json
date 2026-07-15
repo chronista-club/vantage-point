@@ -14,13 +14,16 @@
   "dependencies": {
     "@chronista-club/creoui-editor-host": "file:../../../../creoui/packages/editor-host",
     "@chronista-club/unison-client": "file:../../../../club-unison/clients/typescript",
+    "animejs": "^4.5.0",
     "creoui-icons-web": "file:../../../../creoui/packages/icons-web",
     "iconify-icon": "^3.0.2",
     "marked": "^18.0.3",
     "mermaid": "^11.6.0",
-    "solid-js": "^1.9.0"
+    "solid-js": "^1.9.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
+    "@types/three": "^0.185.1",
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.6.0",
     "typescript": "^5.9.0",
