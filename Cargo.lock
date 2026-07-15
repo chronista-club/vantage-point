@@ -4543,6 +4543,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "midistage-profiles"
+version = "0.47.0"
+dependencies = [
+ "serde",
+ "sha1",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9209,6 +9217,7 @@ dependencies = [
  "image",
  "libc",
  "midir",
+ "midistage-profiles",
  "muda",
  "notify",
  "objc2",
@@ -9228,7 +9237,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha1",
  "sha2 0.11.0",
  "socket2",
  "surrealdb",
