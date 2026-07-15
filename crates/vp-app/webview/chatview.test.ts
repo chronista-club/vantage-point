@@ -62,6 +62,17 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(s.streaming).toBe(true)
   })
 
+  it('replay_start で replaying=true、replay_end で false（再同期ローダーの trigger）', () => {
+    // 初期は false
+    expect(emptyChatState().replaying).toBe(false)
+    // replay_start → 再同期中
+    const mid = fold([{ kind: 'replay_start' }])
+    expect(mid.replaying).toBe(true)
+    // replay_start→replay_end で戻る
+    const done = fold([{ kind: 'replay_start' }, { kind: 'replay_end', in_flight: false }])
+    expect(done.replaying).toBe(false)
+  })
+
   it('tool_call → tool_call_update が id 一致で done 化する', () => {
     const s = fold([
       { kind: 'tool_call', id: 'tu-1', name: 'Bash', input: { command: 'ls' } },

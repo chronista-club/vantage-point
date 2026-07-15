@@ -109,6 +109,7 @@ import {
 	requestPersistedState,
 } from "./canvas-handler";
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from "./HistoryStrip";
+import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 
 console.info("[vp-bundle] imports resolved");
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
@@ -322,6 +323,11 @@ const historyStripStyle = document.createElement("style");
 historyStripStyle.textContent = HISTORY_STRIP_CSS;
 document.head.appendChild(historyStripStyle);
 
+// Act II 再同期コーナーローダー: CSS を head 注入（mount は applyDefaultScene で）。
+const resyncLoaderStyle = document.createElement("style");
+resyncLoaderStyle.textContent = RESYNC_LOADER_CSS;
+document.head.appendChild(resyncLoaderStyle);
+
 // PP Canvas font — font zero-start (2026-07-11): 旧 ルイカ等幅 (TLT-RuikaMono-02、
 // 2026-06-01 の console look 意匠) の font-family 注入を撤去。 PP の書体は main_area.rs 側の
 // principal token (本文 = --vp-font-sans / code = --typography-family-mono) に従う。
@@ -359,6 +365,8 @@ const applyDefaultScene = (): void => {
 	);
 	// doc 19: PP body 下の history strip を SolidJS で mount。
 	mountHistoryStrip();
+	// Act II 再同期コーナーローダーを body 直下に mount（active lane の replaying に追従）。
+	mountResyncLoader();
 };
 if (document.readyState === "loading") {
 	document.addEventListener("DOMContentLoaded", applyDefaultScene, {
