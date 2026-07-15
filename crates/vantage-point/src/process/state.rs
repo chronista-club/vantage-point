@@ -312,6 +312,7 @@ impl AppState {
                     append: false,
                     title,
                     lane: None,
+                    scope: None,
                 },
             );
             count += 1;

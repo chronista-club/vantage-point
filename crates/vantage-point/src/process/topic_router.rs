@@ -153,6 +153,17 @@ impl TopicRouter {
                     pane_id
                 )
             }
+            // board モデル (2026-07-15): scope 別 board の snapshot。 category=state(seg2) で
+            // retained され、 再接続/board 切替時の初期配信を兼ねる。 topic は
+            // `.../state/board/{scope}/{lane}` で scope×lane ごとに retained を分離する
+            // (lane board は lane で分離、 proj board は lane=conductor に正規化)。
+            ProcessMessage::BoardUpdated { scope, lane, .. } => {
+                format!(
+                    "process/paisley-park/state/board/{}/{}",
+                    scope,
+                    Self::lane_seg(lane)
+                )
+            }
             // === Heaven's Door（AI Agent 能力）===
             ProcessMessage::ChatChunk { .. } => "process/heavens-door/event/text-chunk".to_string(),
             ProcessMessage::ChatMessage { .. } => {
@@ -392,6 +403,7 @@ mod tests {
             append: false,
             title: None,
             lane: None,
+            scope: None,
         }
     }
 
@@ -403,6 +415,7 @@ mod tests {
             append: false,
             title: None,
             lane: Some(lane.to_string()),
+            scope: None,
         }
     }
 
@@ -442,6 +455,7 @@ mod tests {
         let msg = ProcessMessage::Clear {
             pane_id: "side".to_string(),
             lane: None,
+            scope: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
         assert_eq!(topic, "process/paisley-park/command/clear/conductor/side");

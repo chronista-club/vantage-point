@@ -136,21 +136,15 @@ pub enum AppEvent {
     /// daemon "world-device" Unison channel から受信した `DeviceEvent` の生 JSON。
     /// Phase 1 handler は tracing で log。 Phase 2 で Bastet pane / sidebar に反映予定。
     DeviceEvent { payload: serde_json::Value },
-    /// pp-content-persist: WebView (canvas-handler.ts) からの PP state save IPC。
-    /// active project の SP `POST /api/pp/state` に reqwest で forward する。
-    /// body は IPC payload の生 JSON (= lane / pane_id / stack / ui_state 等を含む)。
-    PpStateSaveRequest { body: serde_json::Value },
-    /// pp-content-persist: WebView からの PP state load IPC。
-    /// active project の SP `GET /api/pp/state?lane=&pane_id=` を叩き、
-    /// 結果を `pp:state:loaded` として WebView に push back する。
-    PpStateLoadRequest {
-        lane: Option<String>,
-        pane_id: String,
+    /// board モデル (2026-07-15): WebView からの board mutate（thumbnail ✕ / Clear ボタン）。
+    /// `method` = "board_delete_item" | "board_clear"、 `body` は IPC payload の生 JSON
+    /// (scope / lane / item_id 等)。 active project の SP に World process-proxy ask で forward し、
+    /// SP が DB 更新 → BoardUpdated(retained) broadcast → canvas channel で webview に反映する。
+    /// board は SP が truth を持つため、 webview 側の save/load 経路（旧 PpState*）は撤去した。
+    BoardMutate {
+        method: String,
+        body: serde_json::Value,
     },
-    /// pp-content-persist: SP から load した結果を WebView に注入する event。
-    /// `record` は SP response の record (= pane_contents の 1 行 JSON) か null (= empty)。
-    /// app.rs event loop が `window.vpCanvas.handleMessage({type:'pp:state:loaded',...})` で push。
-    PpStateLoaded { record: Option<serde_json::Value> },
     /// terminal S4 (doc 27 §4.1): per-lane terminal session が World canvas channel から受信した
     /// PTY 出力 1 chunk。 `data` は base64 (LaneTerminalOutput.data)。 event loop が
     /// `window.vpTerminal.handleOutput(lane, data)` で当該 lane の xterm に inject する。
@@ -436,26 +430,19 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        Some("pp:state:save") => {
-            // pp-content-persist: WebView (canvas-handler.ts) からの PP state save IPC を
-            // event loop に流す。 実 forward (= reqwest で SP に POST) は app.rs 内で行う。
-            let _ = proxy.send_event(AppEvent::PpStateSaveRequest {
+        Some("board:delete") => {
+            // board モデル: thumbnail ✕。 SP の board_delete_item に forward（app.rs で World ask）。
+            let _ = proxy.send_event(AppEvent::BoardMutate {
+                method: "board_delete_item".to_string(),
                 body: parsed.clone(),
             });
         }
-        Some("pp:state:load") => {
-            // pp-content-persist: WebView からの PP state load IPC。
-            let lane = parsed
-                .get("lane")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let pane_id = parsed
-                .get("pane_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("paisley-park")
-                .to_string();
-            let _ = proxy.send_event(AppEvent::PpStateLoadRequest { lane, pane_id });
+        Some("board:clear") => {
+            // board モデル: Clear ボタン。 SP の board_clear に forward。
+            let _ = proxy.send_event(AppEvent::BoardMutate {
+                method: "board_clear".to_string(),
+                body: parsed.clone(),
+            });
         }
         // console bridge: webview の console.* を vp-app log (app.kdl.log) に転送する。
         // agent が DevTools を開かず log Read で webview console を観測する経路。

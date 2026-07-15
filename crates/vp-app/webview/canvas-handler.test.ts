@@ -1,11 +1,9 @@
 /**
- * canvas-handler.ts の unit tests
+ * canvas-handler.ts の unit tests（board モデル 2026-07-15）
  *
- * doc 19 PP Canvas Stack Model の ring buffer / cursor / delete / subscribe API を
- * Small Test (unit) として検証する。
- *
- * DOM 依存 (pp.ts の renderPP / clearPP) は vi.mock でモック。
- * module-local singleton state は _resetForTest() で各テスト前にリセットする。
+ * board = SP truth のミラー view。 SP からの BoardUpdated 受信で board を置換し、
+ * scope 切替 / lane 別保持 / cursor(local) / delete・clear(IPC 依頼) を検証する。
+ * DOM 依存 (pp.ts renderPP/clearPP) は vi.mock でモック。 IPC (window.ipc) もモック。
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,232 +15,167 @@ vi.mock('./pp', () => ({
 }))
 
 import {
-  MAX_ITEMS,
   _resetForTest,
+  clearActiveBoard,
   deleteItem,
+  getActiveBoard,
   getCanvasState,
   handleMessage,
+  setActiveBoard,
   setActiveLaneName,
   setCursor,
   subscribeCanvasState,
+  type BoardScope,
   type CanvasItem,
 } from './canvas-handler'
 
-// テスト用の最小限 ShowMessage を組み立てるヘルパ
-function makeShowMsg(title: string, content: string = '## body') {
-  return { type: 'show' as const, pane_id: 'main', content: { markdown: content }, title }
+// SP からの BoardUpdated message を組み立てるヘルパ。
+function boardUpdated(
+  scope: BoardScope,
+  lane: string | null,
+  items: Array<{ id: string; title?: string; content?: string; contentType?: string }>,
+  cursor: string | null = items[0]?.id ?? null,
+) {
+  return {
+    type: 'board_updated' as const,
+    scope,
+    lane,
+    items: items.map((i) => ({
+      id: i.id,
+      content: i.content ?? i.id,
+      contentType: (i.contentType ?? 'markdown') as CanvasItem['contentType'],
+      title: i.title,
+      createdAt: '2026-07-15T00:00:00Z',
+    })),
+    cursor,
+  }
 }
 
+// window.ipc モック（board:delete / board:clear の送信検証用）。
+let ipcSpy: ReturnType<typeof vi.fn>
 beforeEach(() => {
   _resetForTest()
   vi.clearAllMocks()
+  ipcSpy = vi.fn()
+  ;(globalThis as unknown as { ipc: { postMessage: typeof ipcSpy } }).ipc = { postMessage: ipcSpy }
 })
 
 // ============================================================================
-// dispatchShow — ring buffer push
+// BoardUpdated 受信（SP truth のミラー）
 // ============================================================================
 
-describe('dispatchShow (handleMessage type=show)', () => {
-  it('正常系: 1 件 push で items に 1 件、cursor が新 item を指す', () => {
-    handleMessage(makeShowMsg('first'))
-    const { items, cursor } = getCanvasState()
+describe('BoardUpdated 受信', () => {
+  it('lane board（active=conductor）を受けて items/cursor が反映される', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'a', title: 'A' }]))
+    const { items, cursor, activeScope } = getCanvasState()
+    expect(activeScope).toBe('lane')
     expect(items).toHaveLength(1)
-    expect(items[0].title).toBe('first')
-    expect(cursor).toBe(items[0].id)
+    expect(items[0].title).toBe('A')
+    expect(cursor).toBe('a')
   })
 
-  it('正常系: 2 件 push で items の先頭が最新', () => {
-    handleMessage(makeShowMsg('first'))
-    handleMessage(makeShowMsg('second'))
-    const { items, cursor } = getCanvasState()
-    expect(items).toHaveLength(2)
-    expect(items[0].title).toBe('second')
-    expect(cursor).toBe(items[0].id)
-  })
-
-  it('ring buffer: 11 件目 push で tail drop — items は MAX_ITEMS 件', () => {
-    for (let i = 0; i < MAX_ITEMS + 1; i++) {
-      handleMessage(makeShowMsg(`item-${i}`))
-    }
-    const { items } = getCanvasState()
-    expect(items).toHaveLength(MAX_ITEMS)
-    // 先頭は最新 (item-10)、末尾は 2 番目 (item-1) — item-0 が drop される
-    expect(items[0].title).toBe('item-10')
-    expect(items[MAX_ITEMS - 1].title).toBe('item-1')
-  })
-
-  it('ring buffer: MAX_ITEMS ちょうどでは drop されない', () => {
-    for (let i = 0; i < MAX_ITEMS; i++) {
-      handleMessage(makeShowMsg(`item-${i}`))
-    }
-    expect(getCanvasState().items).toHaveLength(MAX_ITEMS)
-  })
-
-  it('html content が items に入る', () => {
-    handleMessage({ type: 'show', pane_id: 'main', content: { html: '<b>bold</b>' } })
-    const { items } = getCanvasState()
-    expect(items[0].contentType).toBe('html')
-    expect(items[0].content).toBe('<b>bold</b>')
-  })
-
-  it('log content が items に入る', () => {
-    handleMessage({ type: 'show', pane_id: 'main', content: { log: 'line1\nline2' } })
-    const { items } = getCanvasState()
-    expect(items[0].contentType).toBe('text')
-  })
-
-  it('サポート外 content variant (url のみ等) は items に追加しない', () => {
-    handleMessage({ type: 'show', pane_id: 'main', content: { url: 'https://example.com' } })
-    expect(getCanvasState().items).toHaveLength(0)
-  })
-
-  it('doc 19: append field が付いていても silent ignore される (backward compat)', () => {
-    // 旧クライアントが append: true を送ってきても現在のモデルでは無視
-    handleMessage({
-      type: 'show',
-      pane_id: 'main',
-      content: { markdown: 'hello' },
-      append: true,
-    } as Parameters<typeof handleMessage>[0])
-    expect(getCanvasState().items).toHaveLength(1)
+  it('items は SP の順序（新→古）そのまま反映される', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'c' }, { id: 'b' }, { id: 'a' }], 'c'))
+    expect(getCanvasState().items.map((i) => i.id)).toEqual(['c', 'b', 'a'])
   })
 })
 
 // ============================================================================
-// per-lane PP filter (handleMessage の lane scope)
+// board 切替（scope）
 // ============================================================================
 
-describe('per-lane PP filter', () => {
-  it('active=conductor: lane 無し show は通る（conductor 同士）', () => {
-    setActiveLaneName(null) // null = conductor/lead
-    handleMessage(makeShowMsg('a'))
-    expect(getCanvasState().items).toHaveLength(1)
+describe('board 切替（scope）', () => {
+  it('proj board は setActiveBoard("proj") で見える。 lane board とは独立', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'L' }]))
+    handleMessage(boardUpdated('proj', null, [{ id: 'P' }]))
+    // 既定は lane
+    expect(getCanvasState().items[0].id).toBe('L')
+    setActiveBoard('proj')
+    expect(getActiveBoard()).toBe('proj')
+    expect(getCanvasState().items[0].id).toBe('P')
+    setActiveBoard('lane')
+    expect(getCanvasState().items[0].id).toBe('L')
   })
+})
 
-  it('active=conductor: 別 performer lane の show は drop される', () => {
+// ============================================================================
+// lane board の lane 別保持
+// ============================================================================
+
+describe('lane board の lane 別保持', () => {
+  it('複数 lane の board を保持し、 active lane のものを表示する（切替後も残る）', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'cond' }])) // conductor
+    handleMessage(boardUpdated('lane', 'feat-api', [{ id: 'perf' }])) // performer
+    // active=conductor
+    expect(getCanvasState().items[0].id).toBe('cond')
+    // performer に切替
+    setActiveLaneName('feat-api')
+    expect(getCanvasState().items[0].id).toBe('perf')
+    // conductor に戻すと board が残っている（retained を捨てない）
     setActiveLaneName(null)
-    handleMessage({ ...makeShowMsg('x'), lane: 'feat-api' })
-    expect(getCanvasState().items).toHaveLength(0)
+    expect(getCanvasState().items[0].id).toBe('cond')
+  })
+})
+
+// ============================================================================
+// setCursor（view local）
+// ============================================================================
+
+describe('setCursor（view local）', () => {
+  it('存在する id に cursor が動く', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'b' }, { id: 'a' }], 'b'))
+    setCursor('a')
+    expect(getCanvasState().cursor).toBe('a')
   })
 
-  it('active=performer: 一致する lane の show だけ通る', () => {
+  it('存在しない id は no-op（warn）', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    setCursor('ghost')
+    expect(getCanvasState().cursor).toBe('a')
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+})
+
+// ============================================================================
+// delete / clear は SP に IPC 依頼（webview は truth を持たない）
+// ============================================================================
+
+describe('delete / clear は SP に IPC 依頼', () => {
+  it('deleteItem は board:delete を active scope/lane で送る', () => {
+    handleMessage(boardUpdated('lane', 'feat-api', [{ id: 'x' }]))
     setActiveLaneName('feat-api')
-    handleMessage({ ...makeShowMsg('mine'), lane: 'feat-api' })
-    handleMessage({ ...makeShowMsg('other'), lane: 'sub' })
-    handleMessage(makeShowMsg('conductor-msg')) // lane 無し = conductor → drop
-    const { items } = getCanvasState()
-    expect(items).toHaveLength(1)
-    expect(items[0].title).toBe('mine')
+    deleteItem('x')
+    expect(ipcSpy).toHaveBeenCalledTimes(1)
+    const payload = JSON.parse(ipcSpy.mock.calls[0][0] as string)
+    expect(payload).toMatchObject({
+      t: 'board:delete',
+      scope: 'lane',
+      lane: 'feat-api',
+      item_id: 'x',
+    })
   })
 
-  it('active=performer: 別 lane の clear は無視される', () => {
-    setActiveLaneName('feat-api')
-    handleMessage({ ...makeShowMsg('keep'), lane: 'feat-api' })
-    handleMessage({ type: 'clear', pane_id: 'main', lane: 'sub' } as Parameters<
-      typeof handleMessage
-    >[0])
-    // 別 lane の clear なので items は消えない
+  it('conductor lane の delete は lane=null', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'x' }]))
+    deleteItem('x')
+    const payload = JSON.parse(ipcSpy.mock.calls[0][0] as string)
+    expect(payload.lane).toBeNull()
+  })
+
+  it('proj board の clearActiveBoard は board:clear scope=proj lane=null', () => {
+    setActiveBoard('proj')
+    clearActiveBoard()
+    const payload = JSON.parse(ipcSpy.mock.calls[0][0] as string)
+    expect(payload).toMatchObject({ t: 'board:clear', scope: 'proj', lane: null })
+  })
+
+  it('deleteItem は local state を変えない（SP truth の反映を待つ）', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'x' }]))
+    deleteItem('x')
+    // BoardUpdated が来るまで items は残る
     expect(getCanvasState().items).toHaveLength(1)
-  })
-})
-
-// ============================================================================
-// handleMessage type=clear
-// ============================================================================
-
-describe('handleMessage type=clear', () => {
-  it('clear で items と cursor が全 reset される', () => {
-    handleMessage(makeShowMsg('one'))
-    handleMessage(makeShowMsg('two'))
-    handleMessage({ type: 'clear', pane_id: 'main' })
-    const { items, cursor } = getCanvasState()
-    expect(items).toHaveLength(0)
-    expect(cursor).toBeNull()
-  })
-})
-
-// ============================================================================
-// setCursor
-// ============================================================================
-
-describe('setCursor', () => {
-  it('正常系: 存在する id に cursor が移動する', () => {
-    handleMessage(makeShowMsg('new'))
-    handleMessage(makeShowMsg('old'))
-    const { items } = getCanvasState()
-    const oldId = items[1].id // items[1] = 古い方 (= "old")
-    setCursor(oldId)
-    expect(getCanvasState().cursor).toBe(oldId)
-  })
-
-  it('異常系: 存在しない id を渡した場合は cursor が変わらない (warn + no-op)', () => {
-    handleMessage(makeShowMsg('item'))
-    const before = getCanvasState().cursor
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    setCursor('non-existent-id')
-    expect(getCanvasState().cursor).toBe(before)
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('setCursor'), 'non-existent-id')
-    warnSpy.mockRestore()
-  })
-})
-
-// ============================================================================
-// deleteItem — cursor fallback (doc 19 §4.1: 右隣 → 左隣 → null)
-// ============================================================================
-
-describe('deleteItem cursor fallback', () => {
-  it('cursor item 削除: 右隣が存在する場合、右隣に cursor が移動する', () => {
-    // push: C → B → A (items = [A, B, C] → 逆順 unshift)
-    handleMessage(makeShowMsg('C'))
-    handleMessage(makeShowMsg('B'))
-    handleMessage(makeShowMsg('A'))
-    const { items } = getCanvasState()
-    // items = [A(0), B(1), C(2)]
-    setCursor(items[1].id) // cursor = B (index 1)
-    const rightNeighborId = items[2].id // C は B の右隣 (index 2)
-    deleteItem(items[1].id) // B を削除
-    expect(getCanvasState().cursor).toBe(rightNeighborId)
-  })
-
-  it('cursor item 削除: 右隣なし・左隣あり の場合、左隣に cursor が移動する', () => {
-    handleMessage(makeShowMsg('B'))
-    handleMessage(makeShowMsg('A'))
-    const { items } = getCanvasState()
-    // items = [A(0), B(1)]
-    setCursor(items[1].id) // cursor = B (index 1, 末尾)
-    const leftNeighborId = items[0].id // A
-    deleteItem(items[1].id)
-    expect(getCanvasState().cursor).toBe(leftNeighborId)
-  })
-
-  it('cursor item 削除: items が 1 件だけの場合、cursor が null になる', () => {
-    handleMessage(makeShowMsg('only'))
-    const { items } = getCanvasState()
-    deleteItem(items[0].id)
-    expect(getCanvasState().cursor).toBeNull()
-    expect(getCanvasState().items).toHaveLength(0)
-  })
-
-  it('非 cursor item 削除: cursor は変わらない', () => {
-    handleMessage(makeShowMsg('B'))
-    handleMessage(makeShowMsg('A'))
-    const { items } = getCanvasState()
-    const cursorId = items[0].id // A
-    setCursor(cursorId)
-    deleteItem(items[1].id) // B を削除 (cursor でない)
-    expect(getCanvasState().cursor).toBe(cursorId)
-    expect(getCanvasState().items).toHaveLength(1)
-  })
-
-  it('異常系: 存在しない id を渡した場合は no-op (warn のみ)', () => {
-    handleMessage(makeShowMsg('item'))
-    const before = getCanvasState()
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    deleteItem('ghost-id')
-    expect(getCanvasState().items).toHaveLength(1)
-    expect(getCanvasState().cursor).toBe(before.cursor)
-    expect(warnSpy).toHaveBeenCalled()
-    warnSpy.mockRestore()
   })
 })
 
@@ -251,46 +184,25 @@ describe('deleteItem cursor fallback', () => {
 // ============================================================================
 
 describe('subscribeCanvasState', () => {
-  it('push 時に listener が呼ばれる', () => {
+  it('BoardUpdated で listener が呼ばれる', () => {
     const listener = vi.fn()
     subscribeCanvasState(listener)
-    handleMessage(makeShowMsg('event'))
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
     expect(listener).toHaveBeenCalledTimes(1)
   })
 
-  it('unsubscribe 後は listener が呼ばれない', () => {
+  it('unsubscribe 後は呼ばれない', () => {
     const listener = vi.fn()
     const unsub = subscribeCanvasState(listener)
     unsub()
-    handleMessage(makeShowMsg('after-unsub'))
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
     expect(listener).not.toHaveBeenCalled()
   })
 
-  it('複数 listener が独立して動作する', () => {
-    const a = vi.fn()
-    const b = vi.fn()
-    subscribeCanvasState(a)
-    subscribeCanvasState(b)
-    handleMessage(makeShowMsg('x'))
-    expect(a).toHaveBeenCalledTimes(1)
-    expect(b).toHaveBeenCalledTimes(1)
-  })
-
-  it('setCursor でも listener が呼ばれる', () => {
-    handleMessage(makeShowMsg('item'))
-    const { items } = getCanvasState()
+  it('setActiveBoard 切替でも呼ばれる', () => {
     const listener = vi.fn()
     subscribeCanvasState(listener)
-    setCursor(items[0].id)
-    expect(listener).toHaveBeenCalledTimes(1)
-  })
-
-  it('deleteItem でも listener が呼ばれる', () => {
-    handleMessage(makeShowMsg('item'))
-    const { items } = getCanvasState()
-    const listener = vi.fn()
-    subscribeCanvasState(listener)
-    deleteItem(items[0].id)
+    setActiveBoard('proj')
     expect(listener).toHaveBeenCalledTimes(1)
   })
 })
@@ -299,14 +211,13 @@ describe('subscribeCanvasState', () => {
 // getCanvasState の immutability
 // ============================================================================
 
-describe('getCanvasState', () => {
-  it('返却された items を変更しても internal state に影響しない (shallow copy)', () => {
-    handleMessage(makeShowMsg('item'))
-    const snapshot = getCanvasState()
-    // snapshot.items.push は slice() コピーなので internal を変えない
-    ;(snapshot.items as CanvasItem[]).push({
-      id: 'injected',
-      content: 'x',
+describe('getCanvasState immutability', () => {
+  it('返却 items を変更しても internal state に影響しない (shallow copy)', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
+    const snap = getCanvasState()
+    ;(snap.items as CanvasItem[]).push({
+      id: 'x',
+      content: '',
       contentType: 'markdown',
       createdAt: '',
     })

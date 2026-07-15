@@ -23,8 +23,8 @@ pub mod vantage;
 pub use acp::AcpMessage;
 
 pub use messages::{
-    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, Content, DebugMode,
-    HistoryMessage, ProcessMessage, SessionInfo, SplitDirection,
+    BoardItem, BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, Content,
+    DebugMode, HistoryMessage, ProcessMessage, SessionInfo, SplitDirection,
 };
 
 pub use vantage::{CapabilityStateInfo, MidiEventType, SynergyTypeInfo, VantageEvent};

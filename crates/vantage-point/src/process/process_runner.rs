@@ -255,6 +255,7 @@ pub async fn process_run_eval(
         title: Some(params.command.clone()),
         // process runner 出力は conductor（lead）Canvas 向け
         lane: None,
+        scope: None,
     });
 
     Ok(RunResult {
@@ -454,6 +455,7 @@ async fn stream_output(
                     append: true,
                     title: None,
                     lane: None,
+                    scope: None,
                 });
                 return;
             }
@@ -497,6 +499,7 @@ async fn stream_output(
                             append: true,
                             title: None,
                             lane: None,
+                            scope: None,
                         });
                     }
                     None => {
@@ -515,6 +518,7 @@ async fn stream_output(
                             append: true,
                             title: None,
                             lane: None,
+                            scope: None,
                         });
                         return;
                     }
