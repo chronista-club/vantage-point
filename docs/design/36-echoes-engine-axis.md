@@ -89,20 +89,52 @@ Act I/II の列構造は不変で各ベンダーが両セルを埋める。curso
 - **ライフサイクル**: 副 host は on-demand spawn（主 lane 作成時には立てない）/ 明示 close で drop。
   lane 削除で主・副とも teardown。
 
-### Phase 0 — dogfood slice（最小で「動かす」）
+### Phase 0 — dogfood slice（最小で「動かす」、code-explorer マップ 2026-07-15 反映）
 
-「主 claude lane の Act II に、cursor 副コンソールを 1 枚開けて会話できる」までを最小スライスとする:
+「主 claude lane の Act II を左右 split し、右に cursor 副コンソールを 1 枚開けて会話できる」までを
+最小スライスとする。核心は **副 = `chat_engines` と並列の `sub_chat_engines` map**（`LaneInfo` には
+持たせない — 既存 `chat_engines` が LanePool 側の別 map である慣習に忠実）。
 
-1. LanePool entry に `sub_host: Option<ChatHost>` を追加、副 spawn/close の dispatch（MCP or IPC）。
-2. 副 cursor_session / 副 topic（sub-key 空間）。
-3. webview: 主 ChatView の隣に副 ChatView を mount（副 topic 購読）、開閉トグル。
-4. 送信は副 topic 経由で副 host の submit へ。
+**Rust（vantage-point）**
+1. `process/lanes_state.rs`: `LanePool` に `sub_chat_engines: HashMap<LaneAddress, ChatEngineSlot>` を
+   追加。`ensure_sub_chat_engine`（**`ChatHost::Cursor` 固定**、`console_mode==Chat` ガードは持ち込まない
+   — 副は別 surface）/ `submit_sub_chat` / `interrupt_sub_chat` / `drop_sub_chat_engine` を既存メソッドの
+   副版として新設。`remove()` の teardown 列に `sub_chat_engines.remove(addr)` を 1 行追加（全削除経路が
+   ここに収束）。
+2. `lane/cursor_session.rs`: 無改修。副の chatId は `lane` 引数に `"<lane_label>#sub"` を渡すだけで
+   別 state file（`cursor_sessions/<project>__<lane>#sub`）になる（`#` は sanitize 対象外で安全）。
+3. `process/unison_server.rs`: `echoes_sub_open` / `echoes_sub_submit` / `echoes_sub_close` /
+   `echoes_sub_interrupt` を `handle_echoes_*`（770-948）と同型で新設、dispatch table に登録。
+4. topic 分離: 副 EchoesEvent を主と区別できる経路に流す（`process/echoes-sub/data/{lane}/event` 新
+   capability か `ProcessMessage::EchoesEvent{…, sub:bool}`）。`echoes_pump` は無改修で流用可。
 
-HITL / permission / replay は cursor 側が元々非対応（cursor-engine.md）なので Phase 0 対象外。
-主・副の会話は独立（chatId 別）で開始する。
+**webview（+ vp-app Rust）**
+5. `chatview.tsx`: `ChatView` を `lane: Accessor<string|null>` prop 対応に一般化（既定は現 `activeLane`）。
+   `foldInto`/`laneChat`/`foldEvent`・描画資産（ToolGroupRow/resync-loader 等）は lane 引数を取る純関数
+   群なので**無改修で再利用**。`installSubChatView` を追加。
+6. `main_area.rs` + `entry.tsx`: `#console-chat-host` を split の器にし `#console-chat-main`（左 60%）/
+   `#console-chat-sub`（右 40%、既定 hidden）を増設。主 = `installChatView`、副 = `installSubChatView`。
+7. `vp-app/src/app.rs` + `terminal.rs`: 副 session（topic 用 key と RPC `lane` 用 key を**別引数**で持つ）を
+   新設。`echoes:sub_submit` 等の IPC を配線。
+
+HITL / permission / replay は cursor 非対応（cursor-engine.md）なので副では対象外。主・副の会話は独立
+（chatId 別）で開始。**推奨順 = 1→3(RPC 単体まで) → 7(session 分離) → 5→6(見た目)**。
 
 ## 6. 未解決・リスク
 
+- **⚠️ 最重要の落とし穴: `#sub` を wire 越しの `lane` に埋めるな**。`LanePool::parse_address`
+  （`lanes_state.rs`）は `"vp/performer/foo#sub"` を `LaneAddress::performer("vp","foo#sub")` として
+  **パース自体は成功**させるが、実在登録（name=`"foo"`）と `Eq`/`Hash` 不一致 → `chat_engines.get()` が
+  必ず外れ "Lane not found" で落ちる。しかも console.ts / vp-app の `echoes_sessions` は文字列 key で
+  何でも受けるため**「webview では動いて見えて SP だけ壊れる」**発見しにくい形になる。
+  → **SP への RPC は常に unmangled な `lane`** を送り、副である識別は method 名（`echoes_sub_*`）or
+  別 field（`sub:bool`）で表現。`#sub` の埋め込みは「webview ローカル Map key」と「Rust の
+  `cursor_session`/`console_mode` state-file key（`lane_label`）」の 2 箇所だけに閉じる。
+- **副に console_mode ガードを持ち込むな**: `set_console_mode` の Chat 許可（`stand ∈ {echoes,cursor}`）は
+  主エンジンの Act I/II 切替専用。`ensure_chat_engine` を副に流用すると「主が Tui のとき副も開けない」
+  意図しない制約を生む → 専用 `ensure_sub_chat_engine` を新設しガードを持ち込まない。
+- **restart（New Session）は副を知らない**: `restart_lane` の fresh 分岐は主の cc_session/cursor_session/
+  chat_engines のみ clear。副の state file・`sub_chat_engines` は残る（stale 副 chatId）。Phase 0 は見送り可。
 - **per-lane stand 非永続**（cursor-engine.md 制約）: 副 host の engine 種別も SP 再起動で失われる。
   副の永続をどこまでやるかは Phase 0 スコープ外（まず in-memory で dogfood）。
 - **アドレス sub-key の正規化**: `normalize_path_key` / lane_label / wire address 等が sub-key を
