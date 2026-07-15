@@ -2095,9 +2095,16 @@ mod tests {
     async fn test_board_delete_item_cursor_fallback() {
         let db = make_test_db().await;
         for id in ["a", "b", "c"] {
-            db.append_board_item("/repos/vp", "lane", "wing", "paisley-park", &mk_item(id), 10)
-                .await
-                .unwrap();
+            db.append_board_item(
+                "/repos/vp",
+                "lane",
+                "wing",
+                "paisley-park",
+                &mk_item(id),
+                10,
+            )
+            .await
+            .unwrap();
         }
         // items=[c,b,a], cursor=c。 c を削除 → items=[b,a], cursor=b（先頭 fallback）。
         db.delete_board_item("/repos/vp", "lane", "wing", "paisley-park", "c")
@@ -2122,7 +2129,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(rec["stack"]["cursor"], "b", "非 cursor 削除で cursor は不変");
+        assert_eq!(
+            rec["stack"]["cursor"], "b",
+            "非 cursor 削除で cursor は不変"
+        );
         assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 1);
     }
 

@@ -159,8 +159,8 @@ async fn handle_canvas_command(
     let Some(vpdb) = state.vpdb.as_ref() else {
         return Err("canvas_command: vpdb 未初期化".to_string());
     };
-    let msg: ProcessMessage = serde_json::from_value(payload)
-        .map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
+    let msg: ProcessMessage =
+        serde_json::from_value(payload).map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
     match msg {
         ProcessMessage::Show {
             content,
