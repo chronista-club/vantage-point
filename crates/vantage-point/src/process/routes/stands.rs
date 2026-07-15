@@ -35,12 +35,17 @@ pub struct StandInfo {
     pub description: String,
 }
 
-/// built-in stand 一覧（tmux decoupling PR2: stand は Rust-native の 2 種のみ）。
+/// built-in stand 一覧（stand は Rust-native）。
 pub fn list_stands() -> Vec<StandInfo> {
     vec![
         StandInfo {
             name: "echoes".to_string(),
             description: "VP Stand: Echoes 💬 — login shell の床 + Claude CLI 自動起動".to_string(),
+        },
+        StandInfo {
+            name: "cursor".to_string(),
+            description: "VP Stand: Cursor Agent 🖱️ — login shell の床 + cursor-agent 自動起動"
+                .to_string(),
         },
         StandInfo {
             name: "shell".to_string(),
@@ -53,12 +58,12 @@ pub fn list_stands() -> Vec<StandInfo> {
 mod tests {
     use super::*;
 
-    /// built-in 2 stand が返り、 name が POST /api/lanes の `stand` field にそのまま使える形式。
+    /// built-in stand が返り、 name が POST /api/lanes の `stand` field にそのまま使える形式。
     #[test]
-    fn list_stands_returns_builtin_two() {
+    fn list_stands_returns_builtin() {
         let stands = list_stands();
         let names: Vec<&str> = stands.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["echoes", "shell"]);
+        assert_eq!(names, vec!["echoes", "cursor", "shell"]);
         assert!(stands.iter().all(|s| !s.description.is_empty()));
     }
 }
