@@ -7,6 +7,9 @@ import {
   canDequeuePending,
   classifyToolRun,
   toolGroupStatus,
+  chatCapableStands,
+  canCloseSession,
+  type StandOption,
 } from './chatview'
 import type { EchoesEvent } from './console'
 
@@ -578,5 +581,56 @@ describe('toolGroupStatus — accordion header の集約 status（エンジン�
       running: true,
       label: '0/2',
     })
+  })
+})
+
+describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Phase 3）', () => {
+  const stands = (xs: StandOption[]): StandOption[] => xs
+
+  it('chat_capable === true は表示する', () => {
+    const out = chatCapableStands(stands([{ name: 'echoes', chat_capable: true }]))
+    expect(out.map((s) => s.name)).toEqual(['echoes'])
+  })
+
+  it('chat_capable === false は隠す（agy / shell の dead-end tab を出さない）', () => {
+    const out = chatCapableStands(
+      stands([
+        { name: 'echoes', chat_capable: true },
+        { name: 'codex', chat_capable: true },
+        { name: 'agy', chat_capable: false },
+        { name: 'shell', chat_capable: false },
+      ]),
+    )
+    expect(out.map((s) => s.name)).toEqual(['echoes', 'codex'])
+  })
+
+  it('後方互換: chat_capable undefined（旧 SP は field を送らない）は表示する', () => {
+    const out = chatCapableStands(
+      stands([{ name: 'echoes' }, { name: 'codex', chat_capable: undefined }]),
+    )
+    expect(out.map((s) => s.name)).toEqual(['echoes', 'codex'])
+  })
+
+  it('false だけが除外され、true / undefined は残る（混在）', () => {
+    const out = chatCapableStands(
+      stands([
+        { name: 'a' }, // undefined → 表示
+        { name: 'b', chat_capable: true }, // 表示
+        { name: 'c', chat_capable: false }, // 隠す
+      ]),
+    )
+    expect(out.map((s) => s.name)).toEqual(['a', 'b'])
+  })
+})
+
+describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3）', () => {
+  it('1 本以下では × を出さない（最後の 1 本は backend も Err で拒否）', () => {
+    expect(canCloseSession(0)).toBe(false)
+    expect(canCloseSession(1)).toBe(false)
+  })
+
+  it('2 本以上で × を出す', () => {
+    expect(canCloseSession(2)).toBe(true)
+    expect(canCloseSession(5)).toBe(true)
   })
 })

@@ -1,24 +1,45 @@
-//! Echoes Act II — 構造化会話 GUI のバックエンド（SP 側）
+//! Echoes 💬 — コーディングアシスタント Stand（engine 軸 × Act(surface) 軸の直交格子）
 //!
-//! 現行 Echoes（Act I）は claude TUI の ANSI バイト列を xterm.js へ転送するだけ。
-//! Act II は engine（claude）を headless stream-json で常駐駆動し、構造化イベント
-//! [`EchoesEvent`] へ翻訳して vp-app（GUI）へ配信する。
+//! doc 37: Echoes は「コーディングアシスタント」という能力の namespace。その中に
+//! - **engine 軸**（どの頭脳か: claude / cursor / codex / agy …）= session に束縛される identity
+//! - **Act(surface) 軸**（どう視るか: Act I 端末 / Act II chat GUI）= 切替可能な view
 //!
-//! 設計 SSOT: `docs/design/32-echoes-act2-gui.md`。
+//! の直交 2 軸がある。本 module は Act II のバックエンド（SP 側）+ engine 軸の語彙を持つ。
+//! Act I は raw PTY（`process::stand_spawner` の床 + CLI 注入）で、本 module を通らない。
 //!
-//! ## モジュール構成（PR1 時点）
-//! - [`event`]: GUI 語彙 [`EchoesEvent`]（engine 非依存）
-//! - [`translate`]: claude stream-json → [`EchoesEvent`] 翻訳層（live）
-//! - [`transcript`]: claude session transcript(jsonl) → [`EchoesEvent`] 翻訳層（replay-on-attach）
-//! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で常駐駆動
+//! 設計 SSOT: `docs/design/37-echoes-two-axes.md`（2 軸）/ `32-echoes-act2-gui.md`（Act II）。
 //!
-//! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。
+//! ## モジュール構成
+//! - [`event`]: GUI 語彙 [`EchoesEvent`]（engine 非依存 — 全 engine をこの共通面に翻訳する）
+//! - [`engine`]: engine 軸の語彙 [`EngineKind`] と chat engine 所有型 [`ChatHost`] / [`ChatEngineSlot`]
+//! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で**常駐**駆動（stream-json stdin 連投）
+//! - [`turn_host`]: [`turn_host::TurnHost`] — 常駐機構を持たない CLI の **turn-scoped** 共通 host
+//! - [`translate`] / [`transcript`]: claude stream / transcript → [`EchoesEvent`] 翻訳層
+//! - [`cursor_translate`] + [`cursor_host`]: cursor-agent（turn-scoped）
+//! - [`codex_translate`] + [`codex_host`]: codex（turn-scoped）
+//! - [`replay_log`]: transcript を持たない engine（cursor/codex）の per-session 会話ログ（disk 永続、
+//!   Act II の replay 源）。claude は transcript が SSOT なので使わない
+//!
+//! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。GUI 語彙 [`EchoesEvent`] は
+//! engine 非依存なので、新 engine は「翻訳器 + [`turn_host::TurnEngine`] 実装（または常駐 host）」を
+//! 足すだけで乗る（chatview / topic 配線は無改修）。
 
+pub mod codex_host;
+pub mod codex_translate;
+pub mod cursor_host;
+pub mod cursor_translate;
+pub mod engine;
 pub mod event;
 pub mod host;
+pub mod replay_log;
 pub mod transcript;
 pub mod translate;
+pub mod turn_host;
 
+pub use codex_host::CodexAgentHost;
+pub use cursor_host::CursorAgentHost;
+pub use engine::{ChatEngineSlot, ChatHost, EngineKind};
 pub use event::{EchoesEvent, PlanEntry, QuestionOption, QuestionSpec};
 pub use host::{EchoesAgentHost, EchoesHostConfig, InFlight, PermissionDecision};
 pub use translate::EchoesTranslator;
+pub use turn_host::TurnHostConfig;

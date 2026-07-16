@@ -311,11 +311,17 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             // send が Err を返すのは receiver drop 後のみ (= actor task 終了後。 startup 時点では
             // 起き得ないが防御的に warn)。 投入順序は Semaphore gate が並列度を制御するため保証不要。
             for entry in &performers {
+                // per-lane stand 永続 (mem_1Cd4M7i5Enp3HHMLVYayRe): create 時に記録された stand で
+                // respawn する。記録不在 (旧 lane / 手動 `vp lane new`) は従来どおり default。
+                // これが無いと codex/cursor performer が SP 再起動で echoes に化ける
+                // (cursor-engine.md の既知制約の根治)。
+                let stand = crate::lane::stand_store::last(&performers_project_id, &entry.name)
+                    .unwrap_or_else(|| default_stand.clone());
                 let cmd = super::lane_cmd::LaneCmd::SpawnLane {
                     project_id: performers_project_id.clone(),
                     name: entry.name.clone(),
                     cwd: entry.path.clone(),
-                    stand: default_stand.clone(),
+                    stand,
                 };
                 if lane_spawn_tx.send(cmd).is_err() {
                     tracing::warn!(

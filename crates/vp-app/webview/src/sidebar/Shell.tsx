@@ -452,6 +452,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-meta,11px);
   box-sizing:border-box;}
 .vp-add-performer-input:focus{outline:none;border-color:var(--sb-conn-auto,#22E0FF);}
+.vp-add-performer-stand{cursor:pointer;appearance:none;-webkit-appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--lg-hot,#EAFBFF) 50%),
+    linear-gradient(135deg,var(--lg-hot,#EAFBFF) 50%,transparent 50%);
+  background-position:calc(100% - 12px) center,calc(100% - 8px) center;
+  background-size:4px 4px,4px 4px;background-repeat:no-repeat;padding-right:22px;}
 .vp-add-performer-actions{display:flex;justify-content:flex-end;gap:6px;}
 .vp-add-performer-actions button{padding:3px 10px;
   border:1px solid var(--lg-hairline,#12222b);background:transparent;

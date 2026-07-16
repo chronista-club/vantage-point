@@ -262,12 +262,20 @@ pub(crate) fn spawn_world_uplink(
                             event_result = event_rx.recv() => {
                                 use crate::process::lanes_state::{Diff, SystemEvent};
                                 match event_result {
-                                    Ok(SystemEvent::Lane(diff)) => {
+                                    Ok(SystemEvent::Lane(mut diff)) => {
                                         let method = match &diff {
                                             Diff::Add { .. } => "lanes/add",
                                             Diff::Remove { .. } => "lanes/remove",
                                             Diff::Update { .. } => "lanes/update",
                                         };
+                                        // doc 37: diff payload は World lane_registry をそのまま
+                                        // replace するため、ここでも engine_session_id を enrich
+                                        // する（供給 3 点の 1 つ。LanePool 生 LaneInfo は None）。
+                                        if let Diff::Add { payload } | Diff::Update { payload } =
+                                            &mut diff
+                                        {
+                                            payload.refresh_engine_session_id();
+                                        }
                                         if registry
                                             .request::<serde_json::Value, serde_json::Value>(method, &serde_json::to_value(&diff).unwrap_or_default())
                                             .await
@@ -378,7 +386,13 @@ async fn build_agent_card(
     port: u16,
     pid: u32,
 ) -> serde_json::Value {
-    let lanes = state.lane_pool.read().await.list();
+    let mut lanes = state.lane_pool.read().await.list();
+    // doc 37: register payload の lanes は World lane_registry の初期値になる（= vp-app が受ける
+    // lanes の源流）。LanePool 生の LaneInfo は engine_session_id を持たないため、供給点で enrich
+    // する（供給 3 点の 1 つ — `LaneInfo::refresh_engine_session_id` の ⚠️ 参照）。
+    for lane in lanes.iter_mut() {
+        lane.refresh_engine_session_id();
+    }
     // tmux decoupling PR2: 旧 "tmux_session" field は退役 (lane identity は lanes[].address)。
     serde_json::json!({
         "project_name": project_name,

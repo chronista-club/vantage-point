@@ -520,11 +520,13 @@ mod tests {
         // category(seg2)=data なので 非 retained（ephemeral stream、terminal と同じ規則）。
         let msg = ProcessMessage::EchoesEvent {
             lane: "vp/performer/foo".to_string(),
+            session: 2,
             event: crate::echoes::EchoesEvent::MessageChunk {
                 text: "hi".to_string(),
             },
         };
         let topic = TopicRouter::message_to_topic(&msg);
+        // doc 38 落とし穴①: session は topic key に混入しない（per-lane topic のまま）。
         assert_eq!(topic, "process/echoes/data/vp~performer~foo/event");
         assert!(!TopicPath::parse(&topic).is_retained());
     }

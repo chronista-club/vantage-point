@@ -959,6 +959,7 @@ impl ProcessManagerCapability {
             cwd: performer_dir.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         self.lane_registry
@@ -2466,14 +2467,35 @@ impl ProcessManagerCapability {
                 continue;
             };
 
+            // daemon-canonical create（GUI「+ Add Performer」）の stand を descriptor から引き継ぐ
+            // （bug mem_1Cd4M7i5Enp3HHMLVYayRe）: create_lane は stand 込みの descriptor を
+            // lane_registry に保存済みだが、旧実装の watcher はそれを読まず payload に stand を
+            // 積まなかったため、SP 側で default_stand（= echoes）に倒れていた =「codex を選んでも
+            // claude で spawn」の根因。descriptor 不在（手動 `vp lane new` 等 = watcher だけが
+            // 検知した dir）は従来どおり None → SP 側 default に委ねる。
+            let descriptor_stand = {
+                let world_read = world.read().await;
+                let lr = world_read.lane_registry.read().await;
+                let key = normalize_path_key(std::path::Path::new(&project_path));
+                lr.get(&key).and_then(|lanes| {
+                    lanes
+                        .iter()
+                        .find(|l| l.name.as_deref() == Some(performer_name.as_str()))
+                        .map(|l| l.stand.clone())
+                })
+            };
+
             // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
             // `lane_create` に移管 (World 内 loopback、 surface 群と uniform な transport)。 payload は
             // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_performer_in skip)。
-            let payload = serde_json::json!({
+            let mut payload = serde_json::json!({
                 "kind": "performer",
                 "name": performer_name,
                 "cwd": path.to_string_lossy(),
             });
+            if let Some(stand) = descriptor_stand {
+                payload["stand"] = serde_json::Value::String(stand);
+            }
             tracing::info!(
                 "lane watcher: dir created → lane_create 発火 (project={}, performer={}, sp_port={})",
                 project_name,
@@ -3148,6 +3170,7 @@ mod tests {
             cwd: cwd.to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         let conductor = mk(
@@ -3219,6 +3242,7 @@ mod tests {
             cwd: tmp.join(".vp/lanes/foo").to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         cap.lane_registry_ref()
@@ -3354,6 +3378,7 @@ mod tests {
             cwd: cwd.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         };
         cap.lane_registry_ref().write().await.insert(

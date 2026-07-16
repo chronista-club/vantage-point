@@ -117,6 +117,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             cwd: entry.path,
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
     }
@@ -130,15 +131,20 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             }
         }
         // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)。
-        // 消費者 (echoes --resume) は conductor のみなので populate も限定し、
-        // QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
+        // 消費者 (echoes --resume / delivery_actor channel D) は conductor のみなので populate も
+        // 限定し、 QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
         // policy 化 (設計メモ「fresh / resume が制限でなく policy になる」) の際に広げる。
+        let lane_label = crate::process::stand_spawner::lane_label(&lane.address);
         if matches!(lane.kind, LaneKind::Conductor) {
-            lane.cc_session_id = crate::lane::cc_session::last(
-                &lane.address.project,
-                crate::process::stand_spawner::lane_label(&lane.address),
-            );
+            lane.cc_session_id = crate::lane::cc_session::last(&lane.address.project, lane_label);
         }
+        // doc 37: Echoes 共通ヘッダの session chip 用（全 lane、実装は LaneInfo 側メソッド —
+        // uplink の agent_card / LaneDiff push と共有）。上の cc_session と違い conductor 限定を
+        // **意図的に外している**（header は performer lane でも出す = 消費者が変わった）。
+        // QUIC 5s tick 経路で lane 数 × 1 file read の同期 I/O が増えるが、通常運用（〜十数 lane）
+        // では無害。桁で増える運用になったら spawn_blocking 化 / active lane 限定 read が最適化余地
+        //（moody 参考指摘 2026-07-15）。
+        lane.refresh_engine_session_id();
     }
 
     lanes
@@ -274,6 +280,7 @@ pub(crate) async fn create_performer_orchestrated(
             cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
     }
@@ -474,12 +481,27 @@ pub(crate) async fn create_performer_orchestrated(
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
         cc_session_id: None,
+        engine_session_id: None,
         flow_state: None,
     };
 
     {
         let mut pool = state.lane_pool.write().await;
         pool.insert(info.clone());
+    }
+
+    // per-lane stand 永続（mem_1Cd4M7i5Enp3HHMLVYayRe）: SP 再起動後の boot bootstrap が
+    // この記録を読んで同じ stand で respawn する（従来は全 performer が default_stand に
+    // 倒れていた）。全 create 入口（GUI watcher / MCP / CLI）が本関数を通る choke point。
+    // ⚠️ 位置は**実 insert 確定後**（moody 指摘）: dedup reject / clone・spawn 失敗の rollback
+    // 経路で record すると、既存 lane の永続 stand を「作れなかった create」が上書きし得る +
+    // 失敗系テストが実 state dir に file を残す。lane が pool に実在化した時だけ記録する
+    // （Dead 登録も disk に lane が実在 = 次回 boot respawn の対象なので記録する）。
+    // 失敗は warn のみ（記録欠落は「再起動後 default に戻る」従来挙動に退化するだけ）。
+    if let Err(e) = crate::lane::stand_store::record(&project_id, &req.name, &stand) {
+        tracing::warn!(
+            "lane stand の永続に失敗（再起動後は default に fallback）: addr={addr} stand={stand}: {e}"
+        );
     }
 
     // wiremsg Stage 0: Lane 追加を SystemEvent::Lane(Diff::Add) で発火する。
@@ -741,7 +763,7 @@ pub async fn restart_lane_orchestrated(
                 });
                 if is_chat {
                     let mut pool = state.lane_pool.write().await;
-                    if let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router) {
+                    if let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router) {
                         tracing::warn!(
                             "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
                         );
@@ -970,6 +992,7 @@ mod core_tests {
                 cwd: String::new(),
                 performer_status: None,
                 cc_session_id: None,
+                engine_session_id: None,
                 flow_state: None,
             });
         }

@@ -600,36 +600,77 @@ async fn handle_echoes_demand_start(
     if lane.is_empty() {
         return Err("echoes_demand_start: lane 未指定".to_string());
     }
+    let session = payload_session_key("echoes_demand_start", &payload)?;
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(&lane) else {
         return Err(format!("echoes_demand_start: lane パース失敗: {lane}"));
     };
 
     // chat lane 以外は replay しない（Act I の履歴は PtySlot の terminal replay が担う）。
-    let is_chat = {
+    // lane 不在も console_mode=None → not_chat で graceful に返す（従来挙動の温存）。
+    // session の解決（None = focused、doc 38 — replay は session 単位）は chat 確定後。
+    let resolved = {
         let pool = state.lane_pool.read().await;
-        pool.console_mode(&addr) == Some(crate::lane::console_mode::ConsoleMode::Chat)
+        if pool.console_mode(&addr) != Some(crate::lane::console_mode::ConsoleMode::Chat) {
+            return Ok(serde_json::json!({"status": "not_chat", "lane": lane}));
+        }
+        pool.resolve_chat_session(&addr, session)
+            .map_err(|e| format!("echoes_demand_start: {e}"))?
     };
-    if !is_chat {
-        return Ok(serde_json::json!({"status": "not_chat", "lane": lane}));
+
+    // doc 38 Phase 3（focused eager）: attach = 会話を見に来た合図。当該 session の engine を
+    // ここで eager に resume spawn する（doc 33 C1 の lazy「submit まで engine-less」からの転換 —
+    // SP 再起動後も uplink 再接続 → demand 再発火でこの経路に入るため「前回状態キープ」が成立）。
+    // ensure は冪等（既起動なら no-op）。失敗しても replay は続行し、engine は次 submit の
+    // self-heal で再試行される。agy / shell 等 Act II host を持たない session は skip
+    //（能力表 = EngineKind が SSOT。bail を warn で騒がせない）。
+    if crate::echoes::EngineKind::from_stand(&resolved.stand)
+        .is_some_and(crate::echoes::EngineKind::chat_capable)
+        && let Err(e) =
+            state
+                .lane_pool
+                .write()
+                .await
+                .ensure_chat_engine(&addr, session, &state.topic_router)
+    {
+        tracing::warn!("echoes_demand_start: eager engine spawn 失敗（submit で再試行）: {e}");
     }
 
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
-    let Some(session_id) = crate::lane::cc_session::last(&addr.project, &lane_label) else {
-        // 初回 (まだ会話が無い) lane。 空会話に収束させるため ReplayStart だけ送る。
-        // ReplayStart / ReplayEnd は対で送る（session 無し = 生成中 turn も無い）。
-        route_echoes(
-            state,
-            &lane,
-            vec![
-                crate::echoes::EchoesEvent::ReplayStart,
-                crate::echoes::EchoesEvent::ReplayEnd { in_flight: false },
-            ],
-        )
-        .await;
-        return Ok(serde_json::json!({"status": "no_session", "lane": lane}));
+    let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
+    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。cursor / codex /
+    // agy session は cc_session を持たないため必ずこの no_session path を通る。
+    let Some(session_id) = crate::lane::cc_session::last(&addr.project, &label) else {
+        // transcript を持たない engine（cursor/codex）は、SP が pump tap で per-session に記録した
+        // replay log を replay 源にする（engine 非依存 replay log）。それ以外（claude で会話未開始 /
+        // agy 等）は log を読まず空 chat に収束させる。
+        let buffered = if matches!(
+            crate::echoes::EngineKind::from_stand(&resolved.stand),
+            Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+        ) {
+            crate::echoes::replay_log::load(&addr.project, &label)
+        } else {
+            Vec::new()
+        };
+        // ReplayStart で GUI を clear → buffered を fold → ReplayEnd で streaming を下ろす。
+        // log が空なら従来と同じ「ReplayStart + ReplayEnd」= 空 chat（後方互換）。turn-scoped host
+        // は attach 時点で生成中 turn を持たないため in_flight=false。
+        let count = buffered.len();
+        let mut events = Vec::with_capacity(count + 2);
+        events.push(crate::echoes::EchoesEvent::ReplayStart);
+        events.extend(buffered);
+        events.push(crate::echoes::EchoesEvent::ReplayEnd { in_flight: false });
+        route_echoes(state, &lane, resolved.key, events).await;
+        tracing::info!(
+            "echoes replay-log: {count} events を配送 (lane={lane}, session={})",
+            resolved.key
+        );
+        return Ok(serde_json::json!({
+            "status": "no_session", "lane": lane, "session": resolved.key, "events": count
+        }));
     };
 
-    let (mut events, tail_len) = replay_with_in_flight(state, &addr, &session_id).await?;
+    let (mut events, tail_len) =
+        replay_with_in_flight(state, &addr, resolved.key, &session_id).await?;
     // replay 終端で streaming の真値を宣言する。 replay は過去の assistant 発話も MessageChunk で
     // 送るため GUI 側で streaming が立つが、 replay 列は TurnCompleted を運ばない。 生成中 turn が
     // 無ければ（tail_len == 0）ここで下ろさないと、 engine が idle でも「応答中」が永久に残り、
@@ -639,12 +680,14 @@ async fn handle_echoes_demand_start(
     });
 
     let count = events.len();
-    route_echoes(state, &lane, events).await;
+    route_echoes(state, &lane, resolved.key, events).await;
     tracing::info!(
-        "echoes transcript replay: {count} events を配送 (lane={lane}, in-flight tail={tail_len})"
+        "echoes transcript replay: {count} events を配送 (lane={lane}, session={}, in-flight tail={tail_len})",
+        resolved.key
     );
     Ok(serde_json::json!({
-        "status": "replayed", "lane": lane, "events": count, "in_flight": tail_len
+        "status": "replayed", "lane": lane, "session": resolved.key,
+        "events": count, "in_flight": tail_len
     }))
 }
 
@@ -654,6 +697,7 @@ async fn handle_echoes_demand_start(
 async fn replay_with_in_flight(
     state: &AppState,
     addr: &crate::process::lanes_state::LaneAddress,
+    session: crate::lane::session_registry::SessionKey,
     session_id: &str,
 ) -> Result<(Vec<crate::echoes::EchoesEvent>, usize), String> {
     /// commit が挟まったときの読み直し回数。 commit 間隔（数百 ms 〜 秒）に対し transcript 読みは
@@ -663,7 +707,11 @@ async fn replay_with_in_flight(
     for _ in 0..MAX_ATTEMPTS {
         // 先に tail を取る。 「tail → transcript」の順なら、 間に commit が挟まっても
         // transcript 側が新しい = 情報の欠落は起きない（二重化は seq 検算で弾く）。
-        let before = state.lane_pool.read().await.chat_in_flight(addr);
+        let before = state
+            .lane_pool
+            .read()
+            .await
+            .chat_in_flight(addr, Some(session));
 
         // disk read + 翻訳は同期 I/O（数 MB / 数千行）。 tokio worker を塞がないよう隔離する。
         let sid = session_id.to_string();
@@ -672,7 +720,11 @@ async fn replay_with_in_flight(
                 .await
                 .map_err(|e| format!("echoes_demand_start: transcript 変換 join 失敗: {e}"))?;
 
-        let after_seq = state.lane_pool.read().await.chat_commit_seq(addr);
+        let after_seq = state
+            .lane_pool
+            .read()
+            .await
+            .chat_commit_seq(addr, Some(session));
         let Some(in_flight) = before else {
             // engine 未起動（chat-idle / 再起動直後）= 継ぐ tail が無い。 transcript がすべて。
             return Ok((events, 0));
@@ -715,15 +767,41 @@ async fn handle_echoes_demand_stop(
 }
 
 /// EchoesEvent 列を per-lane echoes topic に順に route する（echoes_pump と同じ経路）。
-async fn route_echoes(state: &AppState, lane: &str, events: Vec<crate::echoes::EchoesEvent>) {
+/// `session` は発生元 session の key（doc 38 — topic は per-lane のまま、session は field で運ぶ）。
+async fn route_echoes(
+    state: &AppState,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+    events: Vec<crate::echoes::EchoesEvent>,
+) {
     for event in events {
         state
             .topic_router
             .route(crate::protocol::ProcessMessage::EchoesEvent {
                 lane: lane.to_string(),
+                session,
                 event,
             })
             .await;
+    }
+}
+
+/// payload の additive な session key（doc 38。省略 / null = None = focused に解決される）。
+/// 型不正・0 は Err — 黙って focused に落とすと「指定したつもりの session と別の会話に届く」
+/// 誤配送になるため、明示エラーで返す。
+fn payload_session_key(
+    ctx: &str,
+    payload: &serde_json::Value,
+) -> Result<Option<crate::lane::session_registry::SessionKey>, String> {
+    match payload.get("session") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => {
+            let n = v
+                .as_u64()
+                .filter(|n| (1..=u64::from(u32::MAX)).contains(n))
+                .ok_or_else(|| format!("{ctx}: session が不正（1 以上の整数）: {v}"))?;
+            Ok(Some(n as u32))
+        }
     }
 }
 
@@ -776,8 +854,55 @@ async fn handle_echoes_submit(
     if prompt.is_empty() {
         return Err("echoes_submit: prompt 未指定".to_string());
     }
-    ensure_and_submit_chat(state, "echoes_submit", lane, prompt).await?;
+    let session = payload_session_key("echoes_submit", &payload)?;
+    ensure_and_submit_chat(state, "echoes_submit", lane, session, prompt).await?;
+    // user 発話は pump に流れない（GUI が optimistic bubble を出す設計）ので、transcript を持たない
+    // engine の session は replay 源に user turn が残らない。submit 成功後にここで記録する。
+    // ⚠️ nudge（下）では書かない — claude の transcript replay が origin.kind=="human" で VP 注入を
+    // 間引くのと同じ規律。harness 注入（wire delivery / delegation）は会話として再生しない対称性。
+    record_user_message_if_transcriptless(state, lane, session, prompt).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// transcript を持たない engine（cursor/codex）の session に、user 発話を replay log へ記録する。
+///
+/// claude は transcript が SSOT なので記録しない（二重化回避）。engine 解決に失敗しても submit は
+/// 既に成立済みなので warn に留める（配送と replay 記録は独立系統）。tap（pump）が assistant 側を
+/// 書くのと対になり、replay で user ⇄ assistant のターンが揃う。
+async fn record_user_message_if_transcriptless(
+    state: &AppState,
+    lane: &str,
+    session: Option<crate::lane::session_registry::SessionKey>,
+    prompt: &str,
+) {
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return;
+    };
+    let resolved = {
+        let pool = state.lane_pool.read().await;
+        pool.resolve_chat_session(&addr, session)
+    };
+    let Ok(resolved) = resolved else {
+        return;
+    };
+    // 記録対象は transcript を持たない engine のみ（tap と同じ Cursor|Codex 判定）。
+    if !matches!(
+        crate::echoes::EngineKind::from_stand(&resolved.stand),
+        Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+    ) {
+        return;
+    }
+    let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+    let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
+    let event = crate::echoes::EchoesEvent::UserMessage {
+        text: prompt.to_string(),
+    };
+    if let Err(e) = crate::echoes::replay_log::append(&addr.project, &label, &event) {
+        tracing::warn!(
+            "echoes replay-log: user 発話の記録に失敗（lane={lane}, session={}）: {e}",
+            resolved.key
+        );
+    }
 }
 
 /// channel E（doc 34 §3）: wire delivery / delegation reconcile からの engine 直接注入。
@@ -797,7 +922,8 @@ async fn handle_echoes_nudge(
     if text.is_empty() {
         return Err("echoes_nudge: text 未指定".to_string());
     }
-    ensure_and_submit_chat(state, "echoes_nudge", lane, text).await?;
+    // wire delivery は lane 宛（session の概念を持たない）= 常に focused へ注入。
+    ensure_and_submit_chat(state, "echoes_nudge", lane, None, text).await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
@@ -837,13 +963,14 @@ async fn handle_echoes_respond(
         }
     };
 
+    let session = payload_session_key("echoes_respond", &payload)?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("echoes_respond: lane パース失敗: {lane}"))?;
     state
         .lane_pool
         .read()
         .await
-        .respond_permission_chat(&addr, request_id, decision)
+        .respond_permission_chat(&addr, session, request_id, decision)
         .await
         .map_err(|e| format!("echoes_respond: {e}"))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
@@ -859,13 +986,14 @@ async fn handle_echoes_interrupt(
     if lane.is_empty() {
         return Err("echoes_interrupt: lane 未指定".to_string());
     }
+    let session = payload_session_key("echoes_interrupt", &payload)?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("echoes_interrupt: lane パース失敗: {lane}"))?;
     state
         .lane_pool
         .read()
         .await
-        .interrupt_chat(&addr)
+        .interrupt_chat(&addr, session)
         .await
         .map_err(|e| format!("echoes_interrupt: {e}"))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
@@ -884,16 +1012,119 @@ async fn handle_echoes_set_permission_mode(
     if mode.is_empty() {
         return Err("echoes_set_permission_mode: mode 未指定".to_string());
     }
+    let session = payload_session_key("echoes_set_permission_mode", &payload)?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("echoes_set_permission_mode: lane パース失敗: {lane}"))?;
     state
         .lane_pool
         .read()
         .await
-        .set_permission_mode_chat(&addr, mode)
+        .set_permission_mode_chat(&addr, session, mode)
         .await
         .map_err(|e| format!("echoes_set_permission_mode: {e}"))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// doc 38: lane の session 一覧（registry + engine 生死 + 会話 id の view）。
+/// `{lane}` → `{lane, focused, sessions: [{key, stand, engine_session_id?, live, focused}]}`。
+/// Phase 2 の tab strip はこれを描くだけ（UI は state を持たない）。
+async fn handle_echoes_session_list(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_list: lane 未指定".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_list: lane パース失敗: {lane}"))?;
+    let sessions = state
+        .lane_pool
+        .read()
+        .await
+        .list_chat_sessions(&addr)
+        .map_err(|e| format!("echoes_session_list: {e}"))?;
+    let focused = sessions.iter().find(|s| s.focused).map(|s| s.key);
+    Ok(serde_json::json!({"lane": lane, "focused": focused, "sessions": sessions}))
+}
+
+/// doc 38: session を追加する（Phase 2 の chat header「+」の backend）。
+/// `{lane, stand?, focus?}` → `{lane, session}`。stand 省略 = lane の stand、focus 省略 = true
+/// （「+」で作った session にそのまま話しかける UX が既定）。engine は spawn しない（Draft）。
+async fn handle_echoes_session_create(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_create: lane 未指定".to_string());
+    }
+    let stand = payload.get("stand").and_then(|v| v.as_str());
+    let focus = payload
+        .get("focus")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_create: lane パース失敗: {lane}"))?;
+    let key = state
+        .lane_pool
+        .write()
+        .await
+        .create_chat_session(&addr, stand, focus)
+        .map_err(|e| format!("echoes_session_create: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
+}
+
+/// doc 38: focused session の切替。`{lane, session}`。registry 永続のみ（床への注入 /
+/// eager resume spawn は Phase 3 の attach 状態機械で束ねて実装）。
+async fn handle_echoes_session_focus(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_focus: lane 未指定".to_string());
+    }
+    let session = payload_session_key("echoes_session_focus", &payload)?
+        .ok_or_else(|| "echoes_session_focus: session 未指定".to_string())?;
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_focus: lane パース失敗: {lane}"))?;
+    {
+        let mut pool = state.lane_pool.write().await;
+        pool.focus_chat_session(&addr, session)
+            .map_err(|e| format!("echoes_session_focus: {e}"))?;
+        // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
+        // eager に resume spawn する（切替後の初 submit を待たない）。mode=Tui（registry のみの
+        // 切替 = 正当）/ agy session（Act II host なし）等は debug で飲む — 切替自体は成功。
+        if let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router) {
+            tracing::debug!("echoes_session_focus: eager spawn せず（{e}）");
+        }
+    }
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
+}
+
+/// doc 38 Phase 3: session を取り除く（tab を閉じる）。`{lane, session}` →
+/// `{lane, session, focused}`（focused = 除去後の focus 先。GUI は list 再取得で追随）。
+/// 最後の 1 本は LanePool（registry）が拒否 — lane を素に戻すのは fresh restart の役目。
+async fn handle_echoes_session_remove(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_remove: lane 未指定".to_string());
+    }
+    let session = payload_session_key("echoes_session_remove", &payload)?
+        .ok_or_else(|| "echoes_session_remove: session 未指定".to_string())?;
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_remove: lane パース失敗: {lane}"))?;
+    let focused = state
+        .lane_pool
+        .write()
+        .await
+        .remove_chat_session(&addr, session)
+        .map_err(|e| format!("echoes_session_remove: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
 }
 
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
@@ -904,17 +1135,18 @@ async fn ensure_and_submit_chat(
     state: &AppState,
     ctx: &str,
     lane: &str,
+    session: Option<crate::lane::session_registry::SessionKey>,
     prompt: &str,
 ) -> Result<(), String> {
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("{ctx}: lane パース失敗: {lane}"))?;
 
-    // ensure（mode ガード + lazy spawn は LanePool = 法の番人が行う）。
+    // ensure（mode ガード + lazy spawn は LanePool = 法の番人が行う）。session=None は focused。
     state
         .lane_pool
         .write()
         .await
-        .ensure_chat_engine(&addr, &state.topic_router)
+        .ensure_chat_engine(&addr, session, &state.topic_router)
         .map_err(|e| format!("{ctx}: {e}"))?;
 
     // submit（read lock — 他 lane の操作をブロックしない）。
@@ -922,22 +1154,22 @@ async fn ensure_and_submit_chat(
         .lane_pool
         .read()
         .await
-        .submit_chat(&addr, prompt)
+        .submit_chat(&addr, session, prompt)
         .await;
     if let Err(e) = submit_result {
-        // self-heal: engine が死んでいた場合は落として 1 回だけ張り直す。
+        // self-heal: engine が死んでいた場合は当該 session だけ落として 1 回だけ張り直す。
         tracing::warn!("{ctx} 失敗 → engine 再起動して retry: {e}");
         {
             let mut pool = state.lane_pool.write().await;
-            pool.drop_chat_engine(&addr);
-            pool.ensure_chat_engine(&addr, &state.topic_router)
+            pool.drop_chat_engine(&addr, session);
+            pool.ensure_chat_engine(&addr, session, &state.topic_router)
                 .map_err(|e| format!("{ctx}: engine 再起動失敗: {e}"))?;
         }
         state
             .lane_pool
             .read()
             .await
-            .submit_chat(&addr, prompt)
+            .submit_chat(&addr, session, prompt)
             .await
             .map_err(|e| format!("{ctx} 失敗（retry 後）: {e}"))?;
     }
@@ -970,7 +1202,7 @@ async fn handle_console_set_mode(
         // 早く出す = 引き継ぎ progress を切替時に集約）。失敗しても mode 切替自体は成功扱いにし、
         // engine は次の submit で self-heal 再試行される（切替 UX を engine エラーで巻き戻さない）。
         if mode == crate::lane::console_mode::ConsoleMode::Chat
-            && let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router)
+            && let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router)
         {
             tracing::warn!(
                 "console_set_mode: eager chat engine spawn 失敗（submit で再試行）: {e}"
@@ -1030,11 +1262,22 @@ async fn handle_console_set_model(
         let info = pool
             .get(&addr)
             .ok_or_else(|| format!("console_set_model: Lane not found: {lane}"))?;
-        if info.stand != "echoes" {
-            return Err(format!(
-                "console_set_model は stand=echoes の lane のみ（lane={lane}, stand={}）",
-                info.stand
-            ));
+        // model 切替の可否は EngineKind の能力表明に一元化（engine_model は claude alias 前提の
+        // state。cursor は TUI の `/model`、codex は `-m` を持つが v1 スコープ外 — doc 37 §7）。
+        match crate::echoes::EngineKind::from_stand(&info.stand) {
+            Some(k) if k.model_switchable() => {}
+            Some(_) => {
+                return Err(format!(
+                    "{} エンジンの model は engine 側で選択します（lane={lane}）",
+                    info.stand
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, stand={}）",
+                    info.stand
+                ));
+            }
         }
         let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
         match &model {
@@ -1044,8 +1287,9 @@ async fn handle_console_set_model(
         .map_err(|e| format!("console_set_model: model 永続失敗: {e}"))?;
         // 稼働中 engine の入替（drop → resume 付き eager 再 spawn）。spawn 失敗しても
         // 記録は成功済みなので mode 切替と同様に成功扱い — 次 submit で self-heal される。
-        if pool.drop_chat_engine(&addr)
-            && let Err(e) = pool.ensure_chat_engine(&addr, &state.topic_router)
+        // model は lane 単位（focused session の engine を入替。他 session は次 spawn から適用）。
+        if pool.drop_chat_engine(&addr, None)
+            && let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router)
         {
             tracing::warn!("console_set_model: engine 再 spawn 失敗（submit で再試行）: {e}");
         }
@@ -1245,6 +1489,13 @@ pub(crate) async fn dispatch_process_method(
         "echoes_interrupt" => handle_echoes_interrupt(state, payload).await,
         // doc 35 §2.5 / PR3: permission mode の動的切替（承認 opt-in）。
         "echoes_set_permission_mode" => handle_echoes_set_permission_mode(state, payload).await,
+        // doc 38 (1 Lane = N session): session registry の list / create / focus。
+        // Phase 2 の tab strip はこの 3 本 + 既存 RPC の additive session param だけで成立する。
+        "echoes_session_list" => handle_echoes_session_list(state, payload).await,
+        "echoes_session_create" => handle_echoes_session_create(state, payload).await,
+        "echoes_session_focus" => handle_echoes_session_focus(state, payload).await,
+        // doc 38 Phase 3: tab を閉じる（session remove）。
+        "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
@@ -1945,6 +2196,79 @@ mod tests {
         assert!(res.is_err(), "engine 不在への respond は Err: {res:?}");
     }
 
+    /// doc 38: session param（additive）の入口検証。省略/null は OK（focused に解決）、
+    /// 型不正・0 は Err — 黙って focused に落とすと誤配送になる。
+    #[test]
+    fn payload_session_key_validates_additive_param() {
+        use super::payload_session_key;
+        // 省略 / null = None（後方互換の要）。
+        assert_eq!(payload_session_key("t", &serde_json::json!({})), Ok(None));
+        assert_eq!(
+            payload_session_key("t", &serde_json::json!({"session": null})),
+            Ok(None)
+        );
+        assert_eq!(
+            payload_session_key("t", &serde_json::json!({"session": 2})),
+            Ok(Some(2))
+        );
+        // 0 / 負数 / 文字列 / 小数は Err。
+        for bad in [
+            serde_json::json!({"session": 0}),
+            serde_json::json!({"session": -1}),
+            serde_json::json!({"session": "2"}),
+            serde_json::json!({"session": 1.5}),
+        ] {
+            assert!(
+                payload_session_key("t", &bad).is_err(),
+                "不正な session は Err: {bad}"
+            );
+        }
+    }
+
+    /// doc 38: session registry RPC 3 本の error 経路（lane 未指定 / parse 失敗 / lane 不在 /
+    /// session 未指定）。happy path は LanePool 側のテスト（lanes_state）が持つ。
+    #[tokio::test]
+    async fn echoes_session_rpc_dispatch_error_paths() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        for method in [
+            "echoes_session_list",
+            "echoes_session_create",
+            "echoes_session_focus",
+            "echoes_session_remove",
+        ] {
+            // lane 未指定
+            let res = dispatch_process_method(&state, method, serde_json::json!({})).await;
+            assert!(res.is_err(), "{method}: lane 未指定は Err: {res:?}");
+            // parse 失敗
+            let res = dispatch_process_method(
+                &state,
+                method,
+                serde_json::json!({ "lane": "%3", "session": 1 }),
+            )
+            .await;
+            assert!(res.is_err(), "{method}: parse 不能 lane は Err: {res:?}");
+            // lane 不在（pool 空）
+            let res = dispatch_process_method(
+                &state,
+                method,
+                serde_json::json!({ "lane": "vp/conductor", "session": 1 }),
+            )
+            .await;
+            assert!(res.is_err(), "{method}: 不在 lane は Err: {res:?}");
+        }
+        // focus は session 必須。
+        let res = dispatch_process_method(
+            &state,
+            "echoes_session_focus",
+            serde_json::json!({ "lane": "vp/conductor" }),
+        )
+        .await;
+        assert!(res.is_err(), "session 未指定の focus は Err: {res:?}");
+    }
+
     /// tmux decoupling PR2: lane_capture dispatch の error 経路 3 種。
     #[tokio::test]
     async fn lane_capture_dispatch_error_paths() {
@@ -2007,6 +2331,7 @@ mod tests {
                 cwd: cwd.clone(),
                 performer_status: None,
                 cc_session_id: None,
+                engine_session_id: None,
                 flow_state: None,
             });
             pool.insert_pty_slot(addr.clone(), slot, rx);
@@ -2218,6 +2543,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            engine_session_id: None,
             flow_state: None,
         });
         addr
@@ -2284,6 +2610,88 @@ mod tests {
             err.contains("console_set_mode") || err.contains("mode"),
             "切替を促すメッセージ: {err}"
         );
+    }
+
+    /// engine 非依存 replay log: codex session に会話を仕込むと、demand_start が replay_log を
+    /// 読み `ReplayStart → 記録 events → ReplayEnd` を配送する（transcript を持たない engine の
+    /// replay 源）。codex host の spawn は exec-free なので claude / codex CLI は不要。
+    #[tokio::test]
+    async fn echoes_demand_start_replays_buffered_log_for_codex_session() {
+        use super::dispatch_process_method;
+        use crate::echoes::EchoesEvent;
+        use crate::lane::console_mode::ConsoleMode;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use std::time::Duration;
+
+        // replay_log / session_registry は vp_state_dir() を読む → tempdir に隔離。
+        let _state_guard = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let addr = insert_test_lane(&state, "vptest-replaylog", ConsoleMode::Chat).await;
+
+        // focused な codex session #2 を作る（session=None がこれに解決される）。
+        let k2 = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("codex"), true)
+            .expect("create codex session");
+        assert_eq!(k2, 2);
+
+        // #2 の replay 源に会話を仕込む（session label = "conductor#2"）。
+        for ev in [
+            EchoesEvent::MessageChunk {
+                text: "codex says hi".to_string(),
+            },
+            EchoesEvent::TurnCompleted {
+                session_id: "s".to_string(),
+                cost_usd: None,
+                context_tokens: None,
+                context_window: None,
+            },
+        ] {
+            crate::echoes::replay_log::append("vptest-replaylog", "conductor#2", &ev)
+                .expect("replay log append");
+        }
+
+        // echoes topic を購読（非 retained なので dispatch 前に張る）。
+        let topic = "process/echoes/data/vptest-replaylog~conductor/event";
+        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+
+        let res = dispatch_process_method(
+            &state,
+            "echoes_demand_start",
+            serde_json::json!({ "lane": "vptest-replaylog/conductor" }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(res["status"], "no_session");
+        assert_eq!(res["events"], 2, "仕込んだ 2 event が replay される");
+
+        // 配送列: ReplayStart → MessageChunk → TurnCompleted → ReplayEnd。
+        let mut got = Vec::new();
+        for _ in 0..4 {
+            let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
+                .await
+                .expect("replay event timeout")
+                .expect("topic closed");
+            match msg {
+                ProcessMessage::EchoesEvent { session, event, .. } => {
+                    assert_eq!(session, 2, "session field で #2 を運ぶ");
+                    got.push(event);
+                }
+                other => panic!("想定外の message: {other:?}"),
+            }
+        }
+        assert_eq!(got[0], EchoesEvent::ReplayStart);
+        assert_eq!(
+            got[1],
+            EchoesEvent::MessageChunk {
+                text: "codex says hi".to_string()
+            }
+        );
+        assert!(matches!(got[2], EchoesEvent::TurnCompleted { .. }));
+        assert_eq!(got[3], EchoesEvent::ReplayEnd { in_flight: false });
     }
 
     /// console_set_mode の入力検証（claude 不要。engine-less lane の tui→chat 遷移も確認）。

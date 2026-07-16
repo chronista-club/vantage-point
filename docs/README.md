@@ -28,6 +28,7 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 | [setup.md](./guide/setup.md) | 環境構築 + Prerequisites |
 | [release.md](./guide/release.md) | リリースフロー |
 | [testing.md](./guide/testing.md) | テスト戦略 |
+| [stand-smoke-matrix.md](./guide/stand-smoke-matrix.md) | Stand（engine）横断の実機スモーク行列 — 能力表 + 観測ログ |
 
 > 開発フロー（ブランチ戦略・コミット規約）は chronista-style `codeflow` スキルに準拠。
 

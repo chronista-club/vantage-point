@@ -572,6 +572,9 @@ fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
     if let Err(e) = super::engine_model::clear_in(base, project, lane) {
         eprintln!("⚠ engine_model state の破棄に失敗 (file 残置): lane={lane} err={e}");
     }
+    if let Err(e) = super::stand_store::clear_in(base, project, lane) {
+        eprintln!("⚠ lane stand state の破棄に失敗 (file 残置): lane={lane} err={e}");
+    }
 }
 
 /// `.vp/lanes/` の [`fs::DirEntry`] が **実 performer lane** かを判定する (dep symlink を除外)。

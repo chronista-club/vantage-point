@@ -55,6 +55,27 @@ export function permModeLabel(mode: string): string {
   return mode === 'bypassPermissions' ? 'bypass' : mode
 }
 
+/**
+ * session chip の engine 別 prefix（doc 37: engine = session 束縛の identity なので、
+ * chip 自体が「どの engine の session か」を兼ねる）。
+ * claude は歴史的な `cc`（Claude Code）を維持、未知 engine は中立の `sid`。
+ */
+export function sessionChipPrefix(stand: string | null | undefined): string {
+  switch (stand) {
+    case 'echoes':
+    case 'hd':
+      return 'cc'
+    case 'cursor':
+      return 'cur'
+    case 'codex':
+      return 'cdx'
+    case 'agy':
+      return 'agy'
+    default:
+      return 'sid'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // component
 // ---------------------------------------------------------------------------
@@ -68,6 +89,12 @@ export type HeaderLaneCtx = {
   branch: string | null
   /** console_mode == "chat"（Act の初期値。以降は vp:console-mode で追従） */
   chat: boolean
+  /** active engine の session id（LaneInfo.engine_session_id 由来）。
+   *  Act I は EchoesEvent が流れないため、この供給路が無いと chip が出ない
+   *  （bug mem_1Cd3icsvKiGsQ8TtX8t1FR）。Act II では event 由来の真値が優先される。 */
+  sessionId: string | null
+  /** lane の stand（= engine 種別）。session chip の prefix 導出用。 */
+  stand: string | null
 }
 
 export type EchoesHeaderApi = {
@@ -146,16 +173,21 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                 ⎇ {c().branch}
               </span>
             </Show>
-            <Show when={summary().sessionId}>
-              <button
-                type="button"
-                class="eh-chip eh-session"
-                classList={{ copied: copiedKey() === 'sid' }}
-                title={`cc session ${summary().sessionId}（click で copy）`}
-                onClick={() => copy('sid', summary().sessionId!)}
-              >
-                cc:{summary().sessionId!.slice(0, 8)}
-              </button>
+            {/* session chip: Act II は event 由来（summary）が真値、Act I は setActivePane
+                相乗りの engine_session_id（ctx）が唯一の供給路 — OR merge で両 Act に出す。
+                prefix は engine 別（cc/cur/cdx、doc 37: chip が engine indicator を兼ねる）。 */}
+            <Show when={summary().sessionId ?? c().sessionId}>
+              {(sid) => (
+                <button
+                  type="button"
+                  class="eh-chip eh-session"
+                  classList={{ copied: copiedKey() === 'sid' }}
+                  title={`${sessionChipPrefix(c().stand)} session ${sid()}（click で copy）`}
+                  onClick={() => copy('sid', sid())}
+                >
+                  {sessionChipPrefix(c().stand)}:{sid().slice(0, 8)}
+                </button>
+              )}
             </Show>
             <Show when={summary().permissionMode}>
               <span class="eh-chip eh-perm" title="permission mode">

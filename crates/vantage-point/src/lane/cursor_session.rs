@@ -13,33 +13,21 @@
 //! - **書き手**: `ensure_chat_id`（Act I spawn 時に create-chat を exec して採番・記録）
 //! - **読み手**: `ensure_chat_id`（既存 id あれば exec せず再利用）/ `build_stand_command`
 //! - 置き場: `vp_state_dir()/cursor_sessions/<project>__<lane>`（1 lane 1 file 1 行 = chatId）
+//! - 共通機構（record / last / clear + 検証防壁）は [`super::session_store`] に委譲。
+//!   本 module に残るのは cursor 固有部（create-chat 採番）のみ
 //!
 //! **fail-open 原則**: create-chat の失敗（cursor-agent 不在 / timeout / 出力不正）は全て
 //! `None` に倒す。 素の `cursor-agent` 起動（新規チャット）に落ちるだけで lane は必ず成立する。
 
 use std::path::{Path, PathBuf};
 
-/// file 名に使えない文字を潰す（`cc_session::sanitize` と同一規則）。
-/// separator (`/` `\`) と `.` を `-` に置換 — `__` 結合後も単一 path segment なので
-/// join での traversal は元々起きないが、 `..` を残さない方が読み手に安全性が自明。
-fn sanitize(part: &str) -> String {
-    part.chars()
-        .map(|c| {
-            if c == '/' || c == '\\' || c == '.' {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect()
-}
+use super::session_store::SessionStore;
 
 /// chat id の正規形（英数 + ハイフン + アンダースコア、 非空）。
 ///
 /// `--resume '<id>'` の single-quote 埋め込みが shell injection にならないための防壁。
-/// claude 版（`cc_session::is_valid_session_id`）は `-` のみ許容だが、 cursor の chatId 形式は
-/// 未知なので `_` も許容する（`[A-Za-z0-9_-]`）。 書き込み・読み出しの両側で同じ検証を使い、
-/// state file が常に正規形であることを保証する。
+/// claude 版（`cc_session`）は `-` のみ許容だが、 cursor の chatId 形式は未知なので `_` も
+/// 許容する（`[A-Za-z0-9_-]`）。
 pub(crate) fn is_valid_chat_id(id: &str) -> bool {
     !id.is_empty()
         && id
@@ -47,49 +35,26 @@ pub(crate) fn is_valid_chat_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+const STORE: SessionStore = SessionStore::new("cursor_sessions", is_valid_chat_id);
+
 /// state base dir 配下の chat file path（純関数、 テスト用に base 注入）
 pub fn chat_file_in(base: &Path, project: &str, lane: &str) -> PathBuf {
-    base.join("cursor_sessions")
-        .join(format!("{}__{}", sanitize(project), sanitize(lane)))
+    STORE.file_in(base, project, lane)
 }
 
-/// chat id を記録する（上書き、 1 行）。
-///
-/// 形式外（空 / injection 形）は**書かずに** Ok を返す — 既存の正常な記録を壊れた値で
-/// 上書きしない（silent 退化防止、 `cc_session` と同方針）。
+/// chat id を記録する（上書き、 1 行）。 形式外は**書かずに** Ok（session_store の共通原則）。
 pub fn record_in(base: &Path, project: &str, lane: &str, chat_id: &str) -> std::io::Result<()> {
-    if !is_valid_chat_id(chat_id) {
-        return Ok(());
-    }
-    let path = chat_file_in(base, project, lane);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, chat_id)
+    STORE.record_in(base, project, lane, chat_id)
 }
 
-/// 最後に記録された chat id を返す。
-///
-/// 無い / 空 / 形式外（`[A-Za-z0-9_-]` 以外を含む）は None — 壊れた file を `--resume` に
-/// 渡さない + single-quote 埋め込みを quote 安全にする。
+/// 最後に記録された chat id を返す（無い / 形式外は None）。
 pub fn last_in(base: &Path, project: &str, lane: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(chat_file_in(base, project, lane)).ok()?;
-    let trimmed = raw.trim();
-    if !is_valid_chat_id(trimmed) {
-        return None;
-    }
-    Some(trimmed.to_string())
+    STORE.last_in(base, project, lane)
 }
 
-/// 記録を消す（未記録なら no-op）。
-///
-/// 「素の新規チャットを張る」（= fresh）の意味を state 側で表現する手段。 消した後は
-/// `last` が None になるので、 次の非 fresh spawn で `ensure_chat_id` が新しい chatId を採番する。
+/// 記録を消す（未記録なら no-op）。fresh の state 側表現（次の非 fresh spawn で採番し直す）。
 pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(chat_file_in(base, project, lane)) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        r => r,
-    }
+    STORE.clear_in(base, project, lane)
 }
 
 /// 本番 base（vp_state_dir）での record
@@ -107,34 +72,15 @@ pub fn last(project: &str, lane: &str) -> Option<String> {
     last_in(&crate::config::vp_state_dir(), project, lane)
 }
 
-/// cursor-agent の実行パスを解決する（`agent::get_claude_cli_path` と同じ問題への対処）。
+/// cursor-agent の実行パスを解決する（launchd の細い PATH 対策、`session_store::resolve_cli` 委譲）。
 ///
-/// daemon は launchd 起動だと PATH が細く、 Rust から exec する create-chat は login shell を
-/// 経由しない（床の login shell 注入は Act I の `cursor-agent` 起動だけに効く）。 明示解決で
-/// 確実に見つける:
-/// 1. 現在の PATH で `which cursor-agent` が当たればそれ
-/// 2. `$HOME/.local/bin/cursor-agent`（well-known install 先）が実在すればそれ
-/// 3. どちらも無ければ素の `"cursor-agent"`（PATH に委ねる）
-fn cursor_cli_path() -> String {
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("cursor-agent")
-        .output()
-        && output.status.success()
-        && let Ok(path) = String::from_utf8(output.stdout)
-    {
-        let path = path.trim();
-        if !path.is_empty() {
-            return path.to_string();
-        }
-    }
-
+/// Act II（[`crate::echoes::cursor_host`]）の turn spawn も同じ解決を使うため crate 内公開。
+pub(crate) fn cursor_cli_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    let well_known = format!("{}/.local/bin/cursor-agent", home);
-    if std::path::Path::new(&well_known).exists() {
-        return well_known;
-    }
-
-    "cursor-agent".to_string()
+    super::session_store::resolve_cli(
+        "cursor-agent",
+        &[PathBuf::from(format!("{home}/.local/bin/cursor-agent"))],
+    )
 }
 
 /// `cursor-agent create-chat` の実行に許す最大時間。 超過は kill して None に倒す（fail-open）。
@@ -258,15 +204,15 @@ pub fn ensure_chat_id(project: &str, lane: &str, project_dir: &Path) -> Option<S
 mod tests {
     use super::*;
 
+    /// dir 名が cursor_sessions であること（共通機構との結線 smoke。record/last/clear の
+    /// 共通挙動そのものは session_store のテストが持つ）。
     #[test]
-    fn file_name_sanitizes_project_and_lane() {
+    fn file_lives_under_cursor_sessions() {
         let p = chat_file_in(Path::new("/base"), "creo.memories", "conductor");
         assert_eq!(
             p,
             Path::new("/base/cursor_sessions/creo-memories__conductor")
         );
-        let p = chat_file_in(Path::new("/base"), "a/b", "../evil");
-        assert_eq!(p, Path::new("/base/cursor_sessions/a-b__---evil"));
     }
 
     #[test]
@@ -279,70 +225,6 @@ mod tests {
         assert!(!is_valid_chat_id("bad id"));
         assert!(!is_valid_chat_id("a'; rm -rf /"));
         assert!(!is_valid_chat_id("has.dot"));
-    }
-
-    #[test]
-    fn record_rejects_invalid_chat_id() {
-        // 形式外は書かない — 既存の正常な記録を壊れた値で上書きしない。
-        let tmp = tempfile::tempdir().expect("tempdir");
-        record_in(tmp.path(), "vp", "conductor", "good_id-1").expect("record");
-        record_in(tmp.path(), "vp", "conductor", "").expect("空は no-op");
-        record_in(tmp.path(), "vp", "conductor", "bad id'; rm").expect("形式外は no-op");
-        assert_eq!(
-            last_in(tmp.path(), "vp", "conductor").as_deref(),
-            Some("good_id-1"),
-            "正常な記録が保持される"
-        );
-    }
-
-    #[test]
-    fn clear_removes_record_and_is_idempotent() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        record_in(tmp.path(), "vp", "conductor", "old-id").expect("record");
-        clear_in(tmp.path(), "vp", "conductor").expect("clear");
-        assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
-        // 未記録 lane の clear は no-op。
-        clear_in(tmp.path(), "vp", "conductor").expect("未記録の clear は Ok");
-        // 他 lane の記録は巻き添えにしない。
-        record_in(tmp.path(), "vp", "performer-a", "keep-id").expect("record");
-        clear_in(tmp.path(), "vp", "conductor").expect("clear");
-        assert_eq!(
-            last_in(tmp.path(), "vp", "performer-a").as_deref(),
-            Some("keep-id")
-        );
-    }
-
-    #[test]
-    fn record_and_last_roundtrip() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        record_in(tmp.path(), "vp", "conductor", "0196_chat-id").expect("record");
-        assert_eq!(
-            last_in(tmp.path(), "vp", "conductor").as_deref(),
-            Some("0196_chat-id")
-        );
-        assert_eq!(last_in(tmp.path(), "vp", "w1"), None);
-        // 上書き（最新が勝つ）。
-        record_in(tmp.path(), "vp", "conductor", "newer_id").expect("record 2");
-        assert_eq!(
-            last_in(tmp.path(), "vp", "conductor").as_deref(),
-            Some("newer_id")
-        );
-    }
-
-    #[test]
-    fn last_rejects_garbage() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("cursor_sessions");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("vp__conductor"), "  \n").unwrap();
-        assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
-        std::fs::write(dir.join("vp__conductor"), "abc'; rm -rf /'").unwrap();
-        assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
-        std::fs::write(dir.join("vp__conductor"), "0196_abc\n").unwrap();
-        assert_eq!(
-            last_in(tmp.path(), "vp", "conductor").as_deref(),
-            Some("0196_abc")
-        );
     }
 
     /// 既存 id があれば `ensure_chat_id_in` は create-chat を **exec せず**再利用する

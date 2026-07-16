@@ -13,13 +13,17 @@
 //! - claude 終了後は床の login shell prompt に自然に戻る（旧 `; exec $SHELL -l` chain 不要）
 //! - `--resume` 失敗 → fresh claude の fallback は shell の `||` が担う
 //!
-//! ## エンジン別 stand
+//! ## エンジン別 stand（対応表の SSOT は [`crate::echoes::EngineKind`]、doc 37）
 //!
-//! `stand_name` で注入する Act3 を切り替える。 claude と cursor-agent は CLI surface が酷似
-//! （TUI 起動 / ID 指名 resume / 事前 create-chat）なので、 同じ Act1-layered 構造に載る:
-//! - `"echoes"`: claude（[`claude_command`]、 cc_session `--resume` + wire hook + model alias）
-//! - `"cursor"`: cursor-agent（[`cursor_command`]、 cursor_session `--resume`、 hook/model は無し）
-//! - resume id は spawn 前に Rust が `lane::cc_session` を直読み
+//! `stand_name` で注入する Act3 を切り替える。各 engine CLI は「TUI 起動 / ID 指名 resume」の
+//! surface が揃っているため、同じ Act1-layered 構造に載る:
+//! - `"echoes"`（claude）: [`claude_command`]、 cc_session `--resume` + wire hook + model alias
+//! - `"cursor"`: [`cursor_command`]、 cursor_session `--resume`（事前 create-chat 採番）
+//! - `"codex"`: [`codex_command`]、 codex_session `resume`（採番は Act II の record-from-init のみ
+//!   — codex に create-chat 相当が無いため、Act I 単独ではまず素の `codex` で開始する）
+//! - `"agy"`: 素の `agy`（v1 は fresh-only — agy は id 先取り手段も record-from-init 経路
+//!   （Act II）も無く、`--continue` は cwd 非スコープの「最新」でクロス lane 誤爆リスク。doc 37 §7.5）
+//! - resume id は spawn 前に Rust が各 `lane::*_session` を直読み
 //!   （旧: bash が `vp lane last-session` を子→親 CLI 呼び出し = 層の逆転、解消）
 //!
 //! ## VP_* 環境変数
@@ -264,6 +268,27 @@ fn cursor_command(resume_id: Option<&str>) -> String {
     }
 }
 
+/// Act3（codex stand）: codex 起動 command line を組み立てる。
+///
+/// codex の TUI resume は `codex resume '<id>'`（id は UUID の指名 — `--last` は claude
+/// `--continue` と同型の「最新」曖昧性があるため使わない、doc 37 §7）。id の供給源は
+/// Act II（[`crate::echoes::codex_host`] の record-from-init）だけ — codex には cursor の
+/// create-chat 相当（id 先取り）が無いため、Act I 単独ではまず素の `codex` で始まり、
+/// Act II を一度でも通ると以後は resume で継がれる。
+///
+/// - `Some(id)`（`codex_session::is_valid_thread_id` 検証済）: `codex resume '<id>' || codex`
+///   （thread 消失時は素の codex に fallback、 shell の `||` が native 処理）
+/// - `None`: `codex`（新規会話）
+///
+/// wire hook / model 注入はしない（hook 機構は claude 専用。model は codex 側で選択 —
+/// `EngineKind::model_switchable` 参照）。
+fn codex_command(resume_id: Option<&str>) -> String {
+    match resume_id.filter(|id| crate::lane::codex_session::is_valid_thread_id(id)) {
+        Some(id) => format!("codex resume '{}' || codex", id),
+        None => "codex".to_string(),
+    }
+}
+
 /// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
 /// - `"echoes"`（+ 旧名 `"hd"`）: 床 + claude 注入（`fresh` / cc_session により resume 分岐）
@@ -315,8 +340,9 @@ pub fn build_stand_command(
 
     let (program, args) = login_shell();
 
-    let initial_input = match stand_name {
-        "echoes" | "hd" => {
+    // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
+    let initial_input = match crate::echoes::EngineKind::from_stand(stand_name) {
+        Some(crate::echoes::EngineKind::Claude) => {
             // resume id は lane 単位の state file（書き手 = global SessionStart hook）を直読み。
             let resume_id = crate::lane::cc_session::last(&addr.project, lane_label(addr));
             // model は lane 単位の state file（`engine_model`、Act I/II 共有）を直読み。
@@ -326,7 +352,7 @@ pub fn build_stand_command(
             let cmd = claude_command(addr.kind, fresh, resume_id.as_deref(), model.as_deref());
             Some(format!("{}\r", cmd))
         }
-        "cursor" => {
+        Some(crate::echoes::EngineKind::Cursor) => {
             if fresh {
                 // fresh（"New Session"）は新規チャット。 create-chat は exec せず素の cursor-agent を
                 // 起動する（fresh path を exec-free に保つ = 決定的、 テストで固定できる）。 記録済の
@@ -345,12 +371,27 @@ pub fn build_stand_command(
                 Some(format!("{}\r", cursor_command(id.as_deref())))
             }
         }
-        "shell" => None,
-        other => {
+        Some(crate::echoes::EngineKind::Codex) => {
+            if fresh {
+                // fresh は記録破棄 + 素の codex（cursor と同じ exec-free path。次の id 採番は
+                // Act II の record-from-init に委ねる — codex に create-chat 相当が無いため）。
+                let _ = crate::lane::codex_session::clear(&addr.project, lane_label(addr));
+                Some("codex\r".to_string())
+            } else {
+                let id = crate::lane::codex_session::last(&addr.project, lane_label(addr));
+                Some(format!("{}\r", codex_command(id.as_deref())))
+            }
+        }
+        Some(crate::echoes::EngineKind::Agy) => {
+            // agy は v1 fresh-only（resume の id 供給源が無い、module doc / doc 37 §7.5）。
+            Some("agy\r".to_string())
+        }
+        None if stand_name == "shell" => None,
+        None => {
             // "tmux"（PR2 で退役）や未知 stand の DB descriptor を床 shell で受ける。
             tracing::warn!(
                 "unknown/legacy stand '{}' — 床の login shell で起動します (addr={})",
-                other,
+                stand_name,
                 addr
             );
             None
