@@ -744,6 +744,16 @@ impl LanePool {
                             s.key
                         )
                     })?;
+                    // transcript を持たない engine（cursor/codex）の replay 源も同時に破棄。
+                    // 会話 id（上の各 store）だけ消して replay log を残すと「New Session なのに
+                    // 前の会話が replay される」嘘になる（doc 38 落とし穴②「fresh が副を知らない」
+                    // と同型 — fresh は全 session の全 store を知る）。
+                    crate::echoes::replay_log::clear(&addr.project, &label).map_err(|e| {
+                        anyhow::anyhow!(
+                            "fresh restart: replay log の破棄に失敗（addr={addr}, session={}）: {e}",
+                            s.key
+                        )
+                    })?;
                 }
                 // registry 自体も既定形（N=1）へ戻す — fresh 後の lane は「素の 1 session」。
                 session_registry::clear(&addr.project, &lane_label).map_err(|e| {
@@ -1081,6 +1091,12 @@ impl LanePool {
                 "codex_session",
                 crate::lane::codex_session::clear(&addr.project, &label),
             ),
+            // transcript を持たない engine の replay 源も破棄（cc_session と同じ理由: session #1 の
+            // label = 素の lane 名は Act I 床の resume も読むため、残すと閉じた会話が蘇る）。
+            (
+                "replay_log",
+                crate::echoes::replay_log::clear(&addr.project, &label),
+            ),
         ] {
             if let Err(e) = res {
                 tracing::warn!(
@@ -1321,11 +1337,25 @@ impl LanePool {
                 );
             }
         };
+        // replay-log tap: transcript を持たない engine（cursor/codex）の session にだけ付ける。
+        // claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を per-session
+        // に disk 記録し、demand_start の no_session path がそれを replay 源にする（doc — engine
+        // 非依存 replay log）。
+        let replay_tap = match EngineKind::from_stand(&resolved.stand) {
+            Some(EngineKind::Cursor | EngineKind::Codex) => {
+                Some(crate::echoes::replay_log::ReplayLogTap {
+                    project: addr.project.clone(),
+                    label: label.clone(),
+                })
+            }
+            _ => None,
+        };
         let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(
             addr.to_string(),
             resolved.key,
             host.subscribe(),
             topic_router.clone(),
+            replay_tap,
         );
         let pid = host.pid();
         // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
@@ -1597,6 +1627,15 @@ mod tests {
         crate::lane::cc_session::record("vp", "conductor", "cc-id-1").expect("record #1");
         crate::lane::codex_session::record("vp", "conductor#2", "0199-codex-id")
             .expect("record #2");
+        // 副 session（codex）の replay 源にも会話を仕込む — fresh はこれも捨てるべき。
+        crate::echoes::replay_log::append(
+            "vp",
+            "conductor#2",
+            &crate::echoes::EchoesEvent::MessageChunk {
+                text: "old codex reply".to_string(),
+            },
+        )
+        .expect("replay log append #2");
 
         pool.restart_lane(&addr, true).expect("fresh chat restart");
 
@@ -1609,6 +1648,10 @@ mod tests {
             crate::lane::codex_session::last("vp", "conductor#2"),
             None,
             "副 session (#2) の会話 id も消える — fresh は全 session を知る"
+        );
+        assert!(
+            crate::echoes::replay_log::load("vp", "conductor#2").is_empty(),
+            "副 session (#2) の replay 源も消える（残すと New Session なのに前会話が replay される）"
         );
         let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
         assert_eq!(reg.sessions.len(), 1, "registry は既定形（N=1）へ戻る");
@@ -1707,6 +1750,15 @@ mod tests {
         crate::lane::cc_session::record("vp", "conductor", "cc-id-1").expect("record #1");
         crate::lane::codex_session::record("vp", "conductor#2", "0199-codex-id")
             .expect("record #2");
+        // #2（codex）の replay 源にも会話を仕込む — close で消えるべき。
+        crate::echoes::replay_log::append(
+            "vp",
+            "conductor#2",
+            &crate::echoes::EchoesEvent::MessageChunk {
+                text: "codex reply".to_string(),
+            },
+        )
+        .expect("replay log append #2");
 
         // focused(#2) を remove → focus は #1 へ、#2 の会話 id は消える
         let focused = pool.remove_chat_session(&addr, k2).expect("remove #2");
@@ -1715,6 +1767,10 @@ mod tests {
             crate::lane::codex_session::last("vp", "conductor#2"),
             None,
             "閉じた session の会話 id は破棄される"
+        );
+        assert!(
+            crate::echoes::replay_log::load("vp", "conductor#2").is_empty(),
+            "閉じた session の replay 源も破棄される（床で会話が蘇る嘘を防ぐ）"
         );
         assert_eq!(
             crate::lane::cc_session::last("vp", "conductor").as_deref(),

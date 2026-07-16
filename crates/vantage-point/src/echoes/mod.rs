@@ -17,6 +17,8 @@
 //! - [`translate`] / [`transcript`]: claude stream / transcript → [`EchoesEvent`] 翻訳層
 //! - [`cursor_translate`] + [`cursor_host`]: cursor-agent（turn-scoped）
 //! - [`codex_translate`] + [`codex_host`]: codex（turn-scoped）
+//! - [`replay_log`]: transcript を持たない engine（cursor/codex）の per-session 会話ログ（disk 永続、
+//!   Act II の replay 源）。claude は transcript が SSOT なので使わない
 //!
 //! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。GUI 語彙 [`EchoesEvent`] は
 //! engine 非依存なので、新 engine は「翻訳器 + [`turn_host::TurnEngine`] 実装（または常駐 host）」を
@@ -29,6 +31,7 @@ pub mod cursor_translate;
 pub mod engine;
 pub mod event;
 pub mod host;
+pub mod replay_log;
 pub mod transcript;
 pub mod translate;
 pub mod turn_host;
