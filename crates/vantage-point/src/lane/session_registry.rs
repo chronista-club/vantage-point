@@ -175,6 +175,46 @@ pub fn focus_in(
     save_in(base, project, lane, &reg)
 }
 
+/// session を 1 本取り除く（doc 38 Phase 3 — tab を閉じる）。
+///
+/// - 実在しない key は Err（黙って成功にしない）
+/// - **最後の 1 本は取り除けない**（registry の非空不変条件。lane を素に戻したいなら
+///   fresh restart = registry clear が正道）
+/// - focused を取り除いた場合は残りの先頭へ focus を移す（決定的な fallback）
+/// - 取り除いた key は再利用されない（`next` は据え置き = 採番の単調性維持）
+///
+/// 戻り値 = 取り除き後の focused key（caller が engine drop / 表示更新に使う）。
+pub fn remove_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    key: SessionKey,
+) -> std::io::Result<SessionKey> {
+    let mut reg = load_in(base, project, lane, default_stand);
+    if !reg.sessions.iter().any(|s| s.key == key) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("session が存在しません（project={project}, lane={lane}, session={key}）"),
+        ));
+    }
+    if reg.sessions.len() == 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "最後の session は取り除けません（project={project}, lane={lane}。fresh restart で素に戻せます）"
+            ),
+        ));
+    }
+    reg.sessions.retain(|s| s.key != key);
+    if reg.focused == key {
+        // 決定的 fallback: 残りの先頭（生成順で最も古い session）。
+        reg.focused = reg.sessions[0].key;
+    }
+    save_in(base, project, lane, &reg)?;
+    Ok(reg.focused)
+}
+
 /// focused key だけを軽量に読む（file 不在 / 破損は 1 = N=1 特殊ケース）。
 /// `LaneInfo::refresh_engine_session_id` のような enrich 経路用（default stand 不要）。
 pub fn focused_in(base: &Path, project: &str, lane: &str) -> SessionKey {
@@ -232,6 +272,22 @@ pub fn focus(
     key: SessionKey,
 ) -> std::io::Result<()> {
     focus_in(
+        &crate::config::vp_state_dir(),
+        project,
+        lane,
+        default_stand,
+        key,
+    )
+}
+
+/// 本番 base での remove。
+pub fn remove(
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    key: SessionKey,
+) -> std::io::Result<SessionKey> {
+    remove_in(
         &crate::config::vp_state_dir(),
         project,
         lane,
@@ -339,6 +395,38 @@ mod tests {
         .unwrap();
         let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
         assert_eq!(reg.sessions.len(), 1, "key 重複の file は既定形に解決");
+    }
+
+    /// remove: 実在検証 / 最後の 1 本は拒否 / focused fallback は残りの先頭 / key 再利用なし。
+    #[test]
+    fn remove_validates_and_moves_focus_deterministically() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // #2(codex, focused) / #3(cursor) を追加 → #1/#2/#3
+        create_in(tmp.path(), "vp", "conductor", "echoes", "codex", true).expect("create #2");
+        create_in(tmp.path(), "vp", "conductor", "echoes", "cursor", false).expect("create #3");
+
+        // 不在 key は Err
+        assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 9).is_err());
+
+        // focused(#2) を remove → focus は残りの先頭(#1) へ
+        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("remove #2");
+        assert_eq!(focused, 1, "focused の remove は残り先頭へ fallback");
+        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        assert_eq!(
+            reg.sessions.iter().map(|s| s.key).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(reg.next, 4, "採番は据え置き（key 再利用なし）");
+
+        // 非 focused(#3) を remove → focus は不変
+        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 3).expect("remove #3");
+        assert_eq!(focused, 1);
+
+        // 最後の 1 本は取り除けない（fresh restart が正道）
+        assert!(
+            remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
+            "最後の session の remove は Err"
+        );
     }
 
     /// clear = fresh reset。file が消えて既定形に戻り、採番も 1 からやり直し。冪等。

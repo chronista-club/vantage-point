@@ -153,6 +153,58 @@ function laneChat(lane: string): LaneChat {
   return lc
 }
 
+// ---------------------------------------------------------------------------
+// doc 38 §4.3 — 再同期ローダー（resync-loader）の固着防止
+//
+// `replaying` は replay_start→true / replay_end→false で駆動するが、replay_end が来ない経路
+// （Act I lane / error 中断 / engine 途絶）では立ちっぱなしになれる。表示を「focused session の
+// attach 状態機械」に束縛する:
+//  ① lane/Act/tab 切替で必ず解除（clearReplaying を各遷移点で呼ぶ）
+//  ② replay_start ごとに watchdog を張り、REPLAY_WATCHDOG_MS 無応答なら強制解除 + warn（安全網）
+//  ③ session filter との整合は foldEvent の `session !== focusedOf` で担保済（background session の
+//     replay は fold されない = replaying を立てない）。
+// ---------------------------------------------------------------------------
+
+/** replay_end が来ない時に replaying を強制解除するまでの猶予 ms（安全網）。 */
+const REPLAY_WATCHDOG_MS = 10_000
+const replayWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** 張ってある watchdog を取り消す（replay_end / error / 明示解除の時）。 */
+function clearReplayWatchdog(lane: string): void {
+  const t = replayWatchdogs.get(lane)
+  if (t !== undefined) {
+    clearTimeout(t)
+    replayWatchdogs.delete(lane)
+  }
+}
+
+/** replay_start を受けた時に watchdog を張り直す（REPLAY_WATCHDOG_MS 後に強制解除）。 */
+function armReplayWatchdog(lane: string): void {
+  clearReplayWatchdog(lane)
+  replayWatchdogs.set(
+    lane,
+    setTimeout(() => {
+      replayWatchdogs.delete(lane)
+      const lc = laneChats.get(lane)
+      if (lc && lc.state.replaying) {
+        // replay_end 未達 = 固着。強制解除して warn（console IPC 経由で Rust log にも載る）。
+        console.warn(
+          `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane})`,
+        )
+        lc.set('replaying', false)
+      }
+    }, REPLAY_WATCHDOG_MS),
+  )
+}
+
+/** 指定 lane の再同期表示を明示的に下ろす（lane/Act/tab 切替で呼ぶ）。watchdog も取り消す。
+ *  cache 未作成の lane は no-op（空 entry を作らない）。 */
+function clearReplaying(lane: string): void {
+  clearReplayWatchdog(lane)
+  const lc = laneChats.get(lane)
+  if (lc && lc.state.replaying) lc.set('replaying', false)
+}
+
 /**
  * EchoesEvent を ChatState に畳み込む純粋 mutation（reducer 本体）。
  *
@@ -290,6 +342,10 @@ function foldEvent(lane: string, ev: EchoesEvent, session: number): void {
   if (session !== focusedOf(lane)) return
   laneChat(lane).set(produce((s) => foldInto(s, ev)))
   laneChat(lane).set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
+  // doc 38 §4.3: replay window の watchdog を張り替える。replay_start で arm、replay_end / error で
+  // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
+  if (ev.kind === 'replay_start') armReplayWatchdog(lane)
+  else if (ev.kind === 'replay_end' || ev.kind === 'error') clearReplayWatchdog(lane)
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
   if (ev.kind === 'turn_completed' || ev.kind === 'error') flushPending(lane)
@@ -344,6 +400,28 @@ export function emptyChatState(): ChatState {
 export function activeLaneReplaying(): boolean {
   const l = activeLane()
   return l ? laneChat(l).state.replaying : false
+}
+
+// ---------------------------------------------------------------------------
+// doc 38 Phase 3 — session tab strip の純粋ロジック（document 非依存 = vitest 対象）
+// ---------------------------------------------------------------------------
+
+/** 「+」menu / session tab の engine 選択肢（stands_list の 1 entry の view mirror）。 */
+export type StandOption = { name: string; description?: string; chat_capable?: boolean }
+
+/** doc 38 §4 / Phase 3: chat_capable な stand だけを「+」menu に残す（純粋 = テスト可能）。
+ *  agy / shell（chat host を持たない）は「作れるが submit がエラーになるだけの dead-end tab」に
+ *  なるため除外する（bikeboy dogfood で実発生）。
+ *  ⚠️ 後方互換: 旧 SP は chat_capable field を送らない → undefined は「表示する」側に倒す
+ *  （chat_capable === false の時だけ隠す = 従来挙動を壊さない）。 */
+export function chatCapableStands(stands: StandOption[]): StandOption[] {
+  return stands.filter((s) => s.chat_capable !== false)
+}
+
+/** doc 38 Phase 3: session tab の × を出してよいか（2 本以上でのみ close 可）。純粋 = テスト可能。
+ *  1 本の時は隠す — backend も最後の 1 本は Err で拒否する（lane を素に戻すのは fresh restart の役目）。 */
+export function canCloseSession(sessionCount: number): boolean {
+  return sessionCount >= 2
 }
 
 // ---------------------------------------------------------------------------
@@ -776,8 +854,8 @@ function ChatView() {
   // registry（focusedOf）で、tab click は楽観更新 + RPC round-trip 後に authoritative 値で上書きされる。
   type LaneSessionsView = { focused: number; sessions: EchoesSession[] }
   const [sessionViews, setSessionViews] = createSignal<Record<string, LaneSessionsView>>({})
-  // 「+」の engine 選択 menu（stands_list の結果）。開いている lane のみ表示。
-  type StandOption = { name: string; description?: string }
+  // 「+」の engine 選択 menu（stands_list の結果）。開いている lane のみ表示。StandOption は
+  // module-level（doc 38 Phase 3: chat_capable filter を純関数化してテスト可能にした）。
   const [standsMenu, setStandsMenu] = createSignal<{ lane: string; stands: StandOption[] } | null>(
     null,
   )
@@ -815,6 +893,9 @@ function ChatView() {
     const lane = activeLane()
     if (!lane) return
     if (session === (currentSessions()?.focused ?? 1)) return // 既に focused なら no-op
+    // doc 38 §4.3: tab 切替で再同期ローダーを必ず一度下ろす（旧 focused の replay_end を取りこぼして
+    // いても固着させない）。直後の demand_start → ReplayStart が本当に必要なら立て直す。
+    clearReplaying(lane)
     // 楽観的に local focused を更新: console.ts registry（filter が即切り替わる）+ tab 強調の両方。
     // demand_start → ReplayStart が届いて fold が会話を clear→再構築する（明示クリア不要）。
     noteFocus(lane, session)
@@ -824,6 +905,16 @@ function ChatView() {
     })
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:session_focus', lane, session }))
+  }
+
+  // doc 38 Phase 3: session tab の × で session を閉じる。backend（echoes_session_remove）が
+  // registry から除去 → 除去後の focus 先を返し、app.rs が list 再取得 + demand_start で新 focused の
+  // 会話を replay する。最後の 1 本は backend が Err で拒否（× は 2 本以上でしか出さない = 多重防御）。
+  const removeSession = (session: number): void => {
+    const lane = activeLane()
+    if (!lane) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_remove', lane, session }))
   }
 
   const toggleAddMenu = (): void => {
@@ -1075,6 +1166,23 @@ function ChatView() {
                 <span class="echoes-tab-label">
                   {sessionChipPrefix(sess.stand)}#{sess.key}
                 </span>
+                {/* doc 38 Phase 3: × で session close。2 本以上でのみ表示（1 本 = 素に戻すのは fresh
+                    restart の役目、backend も最後の 1 本は Err）。tab は <button> なので × は span で
+                    描き、stopPropagation で focus click に伝播させない。 */}
+                <Show when={canCloseSession(currentSessions()?.sessions.length ?? 0)}>
+                  <span
+                    class="echoes-tab-close"
+                    role="button"
+                    aria-label={`session #${sess.key} を閉じる`}
+                    title="この session を閉じる"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removeSession(sess.key)
+                    }}
+                  >
+                    ×
+                  </span>
+                </Show>
               </button>
             )}
           </For>
@@ -1088,10 +1196,11 @@ function ChatView() {
             >
               +
             </button>
-            {/* stands_list の結果で埋める簡素な dropdown（doc 38: UI は state を持たない仮置き）。 */}
+            {/* stands_list の結果で埋める簡素な dropdown（doc 38: UI は state を持たない仮置き）。
+                doc 38 Phase 3: chat_capable な engine だけに絞る（agy / shell の dead-end tab を出さない）。 */}
             <Show when={standsMenu() && standsMenu()!.lane === activeLane()}>
               <div class="echoes-tab-menu">
-                <For each={standsMenu()!.stands}>
+                <For each={chatCapableStands(standsMenu()!.stands)}>
                   {(st) => (
                     <button
                       type="button"
@@ -1103,7 +1212,7 @@ function ChatView() {
                     </button>
                   )}
                 </For>
-                <Show when={standsMenu()!.stands.length === 0}>
+                <Show when={chatCapableStands(standsMenu()!.stands).length === 0}>
                   <div class="echoes-tab-menu-empty">engine なし</div>
                 </Show>
               </div>
@@ -1424,6 +1533,12 @@ export const CHATVIEW_CSS = `
   border-color: var(--color-accent,#3b82f6); }
 .echoes-tab-dot { width:6px; height:6px; border-radius:50%; flex:none; background: var(--color-success,#6fe2a8); }
 .echoes-tab-label { line-height:1.5; }
+/* doc 38 Phase 3: session tab の close（×）。既定は淡く、hover / tab active で目立たせる。 */
+.echoes-tab-close { flex:none; margin-left:2px; padding:0 3px; line-height:1; border-radius:4px;
+  font-size:13px; color: var(--color-text-tertiary,#616b80); opacity:.55; cursor:pointer; }
+.echoes-tab-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
+  background: var(--color-bg,#0f1115); }
+.echoes-tab.active .echoes-tab-close { opacity:.8; }
 .echoes-tab-add-wrap { position:relative; }
 .echoes-tab-add { padding:3px 9px; font-size:13px; line-height:1; cursor:pointer; border-radius:8px;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
@@ -1489,6 +1604,8 @@ export const CHATVIEW_CSS = `
 export type ChatViewApi = {
   /** lane を active にして表示（初出なら vpConsole renderer を attach）。 */
   showLane(lane: string): void
+  /** doc 38 §4.3: 指定 lane の再同期ローダーを明示的に下ろす（Act I 切替時に entry.tsx が呼ぶ）。 */
+  clearReplaying(lane: string): void
 }
 
 export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatViewApi {
@@ -1502,10 +1619,16 @@ export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatV
         // doc 38 Phase 2: renderer は session も受け取り、foldEvent が focused 以外を弾く。
         vpConsole.attachRenderer(lane, (ev, session) => foldEvent(lane, ev, session))
       }
+      // doc 38 §4.3: 離れる lane の再同期ローダーを掃除する（replay_end 取りこぼしで stuck した
+      // まま戻って来ても固着させない）。新 lane が本当に再同期するなら attach / demand の
+      // replay_start が立て直す。
+      const prev = activeLane()
+      if (prev && prev !== lane) clearReplaying(prev)
       setActiveLane(lane)
       // doc 38 Phase 2: attach 時に session 一覧を取得して tab strip を埋める（focused も確定）。
       const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
       ipc?.postMessage(JSON.stringify({ t: 'echoes:sessions_fetch', lane }))
     },
+    clearReplaying,
   }
 }

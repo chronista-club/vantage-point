@@ -157,6 +157,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "echoes:sessions_fetch"
                 | "echoes:session_create"
                 | "echoes:session_focus"
+                // doc 38 Phase 3: session tab の × による close（allowlist 漏れは sidebar IPC へ
+                // 流れて silent drop = 「×無反応」regression。tests でも固定）。
+                | "echoes:session_remove"
                 | "echoes:stands_fetch"
                 | "console:set_mode"
                 | "console:new_session"
@@ -169,15 +172,17 @@ fn is_main_ipc_tag(body: &str) -> bool {
 mod ipc_tag_tests {
     use super::is_main_ipc_tag;
 
-    /// doc 38 Phase 2 の 4 tag が main webview IPC として dispatch されること。
+    /// doc 38 Phase 2/3 の session tab tag が main webview IPC として dispatch されること。
     /// terminal.rs の match arm と本 allowlist は**両方**更新が要る（片側更新だと
-    /// sidebar IPC に落ちて silent drop — 2026-07-16 の「+」無反応 regression の固定）。
+    /// sidebar IPC に落ちて silent drop — 2026-07-16 の「+」無反応 regression の固定。
+    /// Phase 3 の `echoes:session_remove` も同じ理由で allowlist に載せた）。
     #[test]
     fn session_tab_tags_route_to_main_ipc() {
         for t in [
             "echoes:sessions_fetch",
             "echoes:session_create",
             "echoes:session_focus",
+            "echoes:session_remove",
             "echoes:stands_fetch",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/conductor"}}"#);
@@ -1478,6 +1483,77 @@ fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
         .find(|l| l.address.key() == address)
         .map(|l| l.console_mode == "chat")
         .unwrap_or(false)
+}
+
+/// doc 38 §4.2: `echoes_session_list` payload（`{focused, sessions:[{key, stand, focused, ...}]}`）
+/// から focused session の stand を引く。New Session の chat 分岐で「現 focused と同じ engine の
+/// 新 Draft を作る」ために使う。`focused` フラグ優先 → `focused` key 一致 → 先頭 の順で解決し、
+/// 取れなければ None（backend が lane 既定 stand を使うため送らなくてよい）。純粋 = テスト可能。
+fn focused_session_stand(payload: &serde_json::Value) -> Option<String> {
+    let sessions = payload.get("sessions").and_then(|v| v.as_array())?;
+    let focused_key = payload.get("focused").and_then(|v| v.as_u64());
+    sessions
+        .iter()
+        .find(|s| s.get("focused").and_then(|v| v.as_bool()) == Some(true))
+        .or_else(|| {
+            focused_key.and_then(|k| {
+                sessions
+                    .iter()
+                    .find(|s| s.get("key").and_then(|v| v.as_u64()) == Some(k))
+            })
+        })
+        .or_else(|| sessions.first())
+        .and_then(|s| s.get("stand").and_then(|v| v.as_str()).map(str::to_string))
+}
+
+#[cfg(test)]
+mod focused_session_stand_tests {
+    use super::focused_session_stand;
+
+    /// focused フラグ付き session の stand を引く（doc 38 §4.2 New Session の chat 分岐）。
+    #[test]
+    fn picks_stand_of_focused_flagged_session() {
+        let payload = serde_json::json!({
+            "focused": 2,
+            "sessions": [
+                {"key": 1, "stand": "echoes", "focused": false},
+                {"key": 2, "stand": "codex", "focused": true},
+            ]
+        });
+        assert_eq!(focused_session_stand(&payload).as_deref(), Some("codex"));
+    }
+
+    /// focused フラグが無ければ `focused` key と一致する session に落ちる。
+    #[test]
+    fn falls_back_to_focused_key() {
+        let payload = serde_json::json!({
+            "focused": 3,
+            "sessions": [
+                {"key": 1, "stand": "echoes"},
+                {"key": 3, "stand": "cursor"},
+            ]
+        });
+        assert_eq!(focused_session_stand(&payload).as_deref(), Some("cursor"));
+    }
+
+    /// どちらも決まらなければ先頭 session の stand（安全側 = とにかく作れる）。
+    #[test]
+    fn falls_back_to_first_session() {
+        let payload = serde_json::json!({
+            "sessions": [{"key": 1, "stand": "echoes"}, {"key": 2, "stand": "codex"}]
+        });
+        assert_eq!(focused_session_stand(&payload).as_deref(), Some("echoes"));
+    }
+
+    /// sessions が空 / 欠落なら None（backend の lane 既定 stand に委ねる）。
+    #[test]
+    fn returns_none_when_no_sessions() {
+        assert_eq!(focused_session_stand(&serde_json::json!({})), None);
+        assert_eq!(
+            focused_session_stand(&serde_json::json!({"sessions": []})),
+            None
+        );
+    }
 }
 
 /// Act II: active になった chat lane を echoes topic に attach する（`terminal_sessions` の対）。
@@ -3510,9 +3586,11 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 }
             }
-            // 新セッション開始（New Session ボタン）: lane_restart(fresh=true) で SP に forward。
-            // fresh = cc_session 破棄 + Act I は素の claude respawn / Act II は engine drop →
-            // restart_lane_orchestrated が eager 再 spawn（新 session_init が即届く）。
+            // 新セッション開始（✨ New ボタン）。doc 38 §4.2 で chat / tui に分岐する:
+            //  - chat lane: fresh restart を呼ばず「新 Draft session を作って focus」。旧会話はタブに
+            //    残る（タブモデルの自然形 = 前回状態キープの延長）。lane を素に戻す（全 session 破棄）
+            //    のは sidebar の従来経路が担う。
+            //  - tui lane: 従来どおり lane_restart(fresh=true)（cc_session 破棄 + 素の claude respawn）。
             Event::UserEvent(AppEvent::ConsoleNewSession { lane }) => {
                 // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
                 // active lane が変わり得るため resolve_active_project_path は使わない）。
@@ -3521,46 +3599,109 @@ pub fn run() -> anyhow::Result<()> {
                     return;
                 };
                 let proxy = async_action_proxy.clone();
-                rt_handle.spawn(async move {
-                    let payload = serde_json::json!({ "address": &lane, "fresh": true });
-                    match world_process_request(
-                        crate::client::default_world_port(),
-                        &path,
-                        "lane_restart",
-                        payload,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            tracing::info!("console:new_session ok: lane={lane}");
-                            // doc 38 Phase 2: fresh で registry は N=1（key 1 focused）に戻る。tab strip
-                            // 反映を兼ねて、先に一覧を取り直して focusedOf を authoritative(=1) に更新
-                            // してから replay_start を送る。逆順だと chatview の session filter が旧
-                            // focused のままで replay_start(session 既定 1) を落とし、会話が clear されない。
-                            match world_process_request(
-                                crate::client::default_world_port(),
-                                &path,
-                                "echoes_session_list",
-                                serde_json::json!({ "lane": &lane }),
-                            )
-                            .await
-                            {
-                                Ok(payload) => {
-                                    let _ = proxy.send_event(AppEvent::EchoesSessionList {
-                                        lane: lane.clone(),
-                                        payload,
-                                    });
-                                }
-                                Err(e) => tracing::warn!(
-                                    "echoes_session_list（new_session 後）失敗 (lane={lane}): {e}"
-                                ),
+                let port = crate::client::default_world_port();
+                if lane_is_chat(&sidebar_state, &lane) {
+                    // doc 38 §4.2: chat lane は「新 Draft session を作って focus」。
+                    rt_handle.spawn(async move {
+                        // 1. 現 focused の stand を引く（新 session を同じ engine で作る）。取れない時は
+                        //    stand 省略 = backend が lane の既定 stand を使う。
+                        let stand = match world_process_request(
+                            port,
+                            &path,
+                            "echoes_session_list",
+                            serde_json::json!({ "lane": &lane }),
+                        )
+                        .await
+                        {
+                            Ok(payload) => focused_session_stand(&payload),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "echoes_session_list（new_session 前）失敗 (lane={lane}): {e}"
+                                );
+                                None
                             }
-                            let _ =
-                                proxy.send_event(AppEvent::ConsoleSessionRenewed { lane });
+                        };
+                        // 2. 新 Draft session を作って focus（focus は明示 true）。
+                        let mut create = serde_json::json!({ "lane": &lane, "focus": true });
+                        if let Some(s) = &stand {
+                            create["stand"] = serde_json::Value::String(s.clone());
                         }
-                        Err(e) => tracing::warn!("console:new_session 失敗 (lane={lane}): {e}"),
-                    }
-                });
+                        if let Err(e) =
+                            world_process_request(port, &path, "echoes_session_create", create).await
+                        {
+                            tracing::warn!("console:new_session（chat）session_create 失敗 (lane={lane}): {e}");
+                            return;
+                        }
+                        tracing::info!("console:new_session ok（chat, new draft）: lane={lane}");
+                        // 3. 一覧を取り直して tab strip + focusedOf を authoritative（新 draft）に更新。
+                        //    demand_start より先に送る — 逆順だと session filter が旧 focused のまま
+                        //    replay_start を落として会話が clear されない（focus 切替と同じ順序規律）。
+                        match world_process_request(
+                            port,
+                            &path,
+                            "echoes_session_list",
+                            serde_json::json!({ "lane": &lane }),
+                        )
+                        .await
+                        {
+                            Ok(payload) => {
+                                let _ = proxy.send_event(AppEvent::EchoesSessionList {
+                                    lane: lane.clone(),
+                                    payload,
+                                });
+                            }
+                            Err(e) => tracing::warn!(
+                                "echoes_session_list（new_session 後）失敗 (lane={lane}): {e}"
+                            ),
+                        }
+                        // 4. demand_start で新 focused（Draft）の replay を発火。no_session path でも
+                        //    ReplayStart/End が届いて会話がクリアされる（doc 38 §4.2）。
+                        if let Err(e) = world_process_request(
+                            port,
+                            &path,
+                            "echoes_demand_start",
+                            serde_json::json!({ "lane": &lane }),
+                        )
+                        .await
+                        {
+                            tracing::warn!("echoes_demand_start（new_session 後）失敗 (lane={lane}): {e}");
+                        }
+                    });
+                } else {
+                    // tui lane は従来どおり fresh restart（変更なし）。
+                    rt_handle.spawn(async move {
+                        let payload = serde_json::json!({ "address": &lane, "fresh": true });
+                        match world_process_request(port, &path, "lane_restart", payload).await {
+                            Ok(_) => {
+                                tracing::info!("console:new_session ok（tui, fresh）: lane={lane}");
+                                // doc 38 Phase 2: fresh で registry は N=1（key 1 focused）に戻る。tab strip
+                                // 反映を兼ねて、先に一覧を取り直して focusedOf を authoritative(=1) に更新
+                                // してから replay_start を送る。逆順だと chatview の session filter が旧
+                                // focused のままで replay_start(session 既定 1) を落とし、会話が clear されない。
+                                match world_process_request(
+                                    port,
+                                    &path,
+                                    "echoes_session_list",
+                                    serde_json::json!({ "lane": &lane }),
+                                )
+                                .await
+                                {
+                                    Ok(payload) => {
+                                        let _ = proxy.send_event(AppEvent::EchoesSessionList {
+                                            lane: lane.clone(),
+                                            payload,
+                                        });
+                                    }
+                                    Err(e) => tracing::warn!(
+                                        "echoes_session_list（new_session 後）失敗 (lane={lane}): {e}"
+                                    ),
+                                }
+                                let _ = proxy.send_event(AppEvent::ConsoleSessionRenewed { lane });
+                            }
+                            Err(e) => tracing::warn!("console:new_session 失敗 (lane={lane}): {e}"),
+                        }
+                    });
+                }
             }
             // fresh restart 成功 → ChatView の会話表示をクリアする。replay_start は foldInto が
             // 「会話 clear + header 保持」で畳む既存意味論（chatview.tsx）— 新 engine の
@@ -3715,6 +3856,63 @@ pub fn run() -> anyhow::Result<()> {
                     .await
                     {
                         tracing::warn!("echoes_demand_start（focus 後）失敗 (lane={lane}): {e}");
+                    }
+                });
+            }
+            // doc 38 Phase 3: session tab の × による close。remove → 一覧再取得 →
+            // demand_start（除去後の新 focused の会話を replay）の順で直列に（focus 切替と同型）。
+            // 最後の 1 本は backend が Err で拒否する（GUI も × は 2 本以上でしか出さない = 多重防御）。
+            Event::UserEvent(AppEvent::EchoesSessionRemove { lane, session }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:session_remove skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                let port = crate::client::default_world_port();
+                rt_handle.spawn(async move {
+                    if let Err(e) = world_process_request(
+                        port,
+                        &path,
+                        "echoes_session_remove",
+                        serde_json::json!({ "lane": &lane, "session": session }),
+                    )
+                    .await
+                    {
+                        // 最後の 1 本の拒否含む（Err）— 一覧はそのまま（GUI は変化なし）。
+                        tracing::warn!(
+                            "echoes_session_remove 失敗 (lane={lane} session={session}): {e}"
+                        );
+                        return;
+                    }
+                    // 除去後の一覧を取り直して tab strip の focused を authoritative に確定させる。
+                    match world_process_request(
+                        port,
+                        &path,
+                        "echoes_session_list",
+                        serde_json::json!({ "lane": &lane }),
+                    )
+                    .await
+                    {
+                        Ok(payload) => {
+                            let _ = proxy.send_event(AppEvent::EchoesSessionList {
+                                lane: lane.clone(),
+                                payload,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("echoes_session_list（remove 後）失敗 (lane={lane}): {e}")
+                        }
+                    }
+                    // 除去後の新 focused の transcript replay を発火（session 省略 = focused に解決）。
+                    if let Err(e) = world_process_request(
+                        port,
+                        &path,
+                        "echoes_demand_start",
+                        serde_json::json!({ "lane": &lane }),
+                    )
+                    .await
+                    {
+                        tracing::warn!("echoes_demand_start（remove 後）失敗 (lane={lane}): {e}");
                     }
                 });
             }

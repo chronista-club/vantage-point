@@ -33,6 +33,11 @@ pub struct StandInfo {
     pub name: String,
     /// 表示用の説明
     pub description: String,
+    /// Act II（chat GUI）の host を持つか（doc 38 Phase 3、additive field）。
+    /// chat 系 UI（session tab の「+」menu）はこれで agy / shell を除外する —
+    /// dogfood で「作れるが submit がエラーになるだけの dead-end tab」が実発生したため。
+    /// sidebar の Add Performer（lane 作成）は全 stand が正当なので filter しない。
+    pub chat_capable: bool,
 }
 
 /// built-in stand 一覧（engine 群 + shell）。
@@ -47,11 +52,13 @@ pub fn list_stands() -> Vec<StandInfo> {
         .map(|k| StandInfo {
             name: k.stand_name().to_string(),
             description: k.description().to_string(),
+            chat_capable: k.chat_capable(),
         })
         .collect();
     stands.push(StandInfo {
         name: "shell".to_string(),
         description: "VP Stand: bare login shell 🤚 — 床のみ（旧 TheHand）".to_string(),
+        chat_capable: false,
     });
     stands
 }
@@ -68,5 +75,18 @@ mod tests {
         let names: Vec<&str> = stands.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["echoes", "cursor", "codex", "agy", "shell"]);
         assert!(stands.iter().all(|s| !s.description.is_empty()));
+    }
+
+    /// doc 38 Phase 3: chat_capable が EngineKind の能力表と一致し、shell は false。
+    /// 「+」menu の filter がこの flag を信頼する（GUI に engine 対応表を複製しない）。
+    #[test]
+    fn chat_capable_follows_engine_capability_table() {
+        let stands = list_stands();
+        let cap = |name: &str| stands.iter().find(|s| s.name == name).unwrap().chat_capable;
+        assert!(cap("echoes"));
+        assert!(cap("cursor"));
+        assert!(cap("codex"));
+        assert!(!cap("agy"), "agy は Act I のみ（doc 37 §7.5）");
+        assert!(!cap("shell"), "shell は engine なし（床のみ）");
     }
 }
