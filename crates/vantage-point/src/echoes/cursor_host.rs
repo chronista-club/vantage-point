@@ -8,7 +8,7 @@
 //! ## コマンド形（doc `cursor-engine.md` §Act II）
 //!
 //! ```text
-//! cursor-agent -p "<prompt>" --output-format stream-json --stream-partial-output --trust [--resume '<chatId>']
+//! cursor-agent -p "<prompt>" --output-format stream-json --stream-partial-output --trust --force [--resume '<chatId>']
 //! ```
 //!
 //! - prompt は positional 値（`Command::arg` 渡し = shell 非経由なので injection 安全）
@@ -18,6 +18,16 @@
 //!   即死する（2026-07-16 dogfood、bikeboy で実発生）。lane の cwd は user 自身が VP に登録した
 //!   workspace なので自動 trust は claude（bypassPermissions）/ codex（full bypass）の姿勢と整合。
 //!   Act I（TUI 床）は対話 prompt が出るため付けない = user 判断のまま
+//! - `--force`（= `--yolo`）: tool 承認 gate の一括開放。headless（`-p`）は `permissionMode:
+//!   default` 固定で承認 prompt を出せないため、**非 allowlist の Shell / File deletion / MCP
+//!   tool call が全て auto-block される**（2026-07-16 P0 切り分けで実証。scratch repo で
+//!   baseline = `--trust` のみだと `{"rejected":{"reason":"File deletion rejected"}}` /
+//!   `{"rejected":{"reason":"User rejected MCP: vp-*"}}` = 人間不在なのに "User rejected" と
+//!   誤表示される auto-block。`--force` で flip して success 到達を確認。詳細と flag 別差分表は
+//!   `docs/guide/stand-smoke-matrix.md` の 2026-07-16 §2）。これで cursor Act II が claude
+//!   （bypassPermissions）/ codex（full bypass）と tool 権限で parity になる。
+//!   ⚠️ 権限拡大: deny リストが空なら実質「全許可」。Act I（TUI 床）は対話承認が効くため付けない。
+//!   `--approve-mcps` は server 承認レベルで per-call には効かない（実測で無効）ため付けない。
 //! - record-from-init: `system/init` の session_id（= chatId）を `cursor_session` に永続。
 //!   Act I（console 床）と同じ state file なので II ⇄ I の会話が `--resume` で継がれる
 
@@ -44,7 +54,11 @@ impl TurnEngine for CursorEngine {
             .arg("--stream-partial-output")
             // headless は trust prompt を出せない — 初見 workspace で即死するため自動 trust
             // （module doc の ⚠️ 参照。Act I の TUI は対話 prompt に委ねるので付けない）。
-            .arg("--trust");
+            .arg("--trust")
+            // headless は permissionMode=default 固定で承認 prompt を出せない — 非 allowlist の
+            // Shell / File deletion / MCP call が全て auto-block される（module doc の ⚠️ 参照）。
+            // claude/codex と同じ bypass 姿勢に揃える。Act I の TUI は対話承認が効くので付けない。
+            .arg("--force");
         if let Some(id) = resume {
             cmd.arg("--resume").arg(id);
         }
@@ -89,7 +103,8 @@ mod tests {
                 "--output-format",
                 "stream-json",
                 "--stream-partial-output",
-                "--trust"
+                "--trust",
+                "--force"
             ]
         );
 
@@ -108,6 +123,7 @@ mod tests {
                 "stream-json",
                 "--stream-partial-output",
                 "--trust",
+                "--force",
                 "--resume",
                 "chat_42"
             ]

@@ -76,7 +76,7 @@ cursor-agent には claude の `--input-format stream-json`（常駐 stdin 連�
 spawn** する:
 
 ```
-cursor-agent -p "<prompt>" [--resume '<chatId>'] --output-format stream-json --stream-partial-output --trust
+cursor-agent -p "<prompt>" [--resume '<chatId>'] --output-format stream-json --stream-partial-output --trust --force
 ```
 
 prompt は positional arg（`Command::arg` 渡し = shell 非経由なので injection 安全）。`--resume` は
@@ -88,6 +88,15 @@ chatId 未記録時は付けない。`CursorAgentHost::spawn` は**プロセス�
 即死する。lane の cwd は user 自身が VP に登録した workspace なので、自動 trust は claude
 （bypassPermissions）/ codex（full bypass）と同じ姿勢。Act I（TUI 床）は対話 prompt が出るため
 付けない = user 判断のまま。
+
+`--force`（= `--yolo`）は tool 承認 gate の一括開放（2026-07-16 P0 切り分けで追加）: headless は
+`system/init` の `permissionMode` が `default` 固定で承認 prompt を出せず、**非 allowlist の Shell /
+File deletion / MCP tool call が全て auto-block される**（実測。baseline = `--trust` のみで
+`{"rejected":{"reason":"File deletion rejected"}}` / `{"rejected":{"reason":"User rejected MCP:
+vp-*"}}` が返る — 人間不在なのに "User rejected" と誤表示される auto-block）。`--force` で success
+到達を確認。`--approve-mcps` は server 承認レベルで per-call には効かない（実測で無効）。詳細と flag 別
+差分表は `docs/guide/stand-smoke-matrix.md` の 2026-07-16 §2。⚠️ 権限拡大（deny 空なら実質全許可）。
+Act I（TUI 床）は対話承認が効くため付けない。
 
 ### イベント翻訳表（`cursor_translate`）
 
