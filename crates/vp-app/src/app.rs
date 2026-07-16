@@ -151,11 +151,45 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "echoes:respond"
                 | "echoes:interrupt"
                 | "echoes:set_permission_mode"
+                // doc 38 Phase 2: session tab strip の 4 tag。terminal.rs に match arm を
+                // 足すだけでは届かない — この allowlist に無い tag は sidebar IPC に流れて
+                // 「unknown variant」で捨てられる（2026-07-16 dogfood で「+」無反応の根因）。
+                | "echoes:sessions_fetch"
+                | "echoes:session_create"
+                | "echoes:session_focus"
+                | "echoes:stands_fetch"
                 | "console:set_mode"
                 | "console:new_session"
                 | "console:set_model"
         )
     )
+}
+
+#[cfg(test)]
+mod ipc_tag_tests {
+    use super::is_main_ipc_tag;
+
+    /// doc 38 Phase 2 の 4 tag が main webview IPC として dispatch されること。
+    /// terminal.rs の match arm と本 allowlist は**両方**更新が要る（片側更新だと
+    /// sidebar IPC に落ちて silent drop — 2026-07-16 の「+」無反応 regression の固定）。
+    #[test]
+    fn session_tab_tags_route_to_main_ipc() {
+        for t in [
+            "echoes:sessions_fetch",
+            "echoes:session_create",
+            "echoes:session_focus",
+            "echoes:stands_fetch",
+        ] {
+            let msg = format!(r#"{{"t":"{t}","lane":"vp/conductor"}}"#);
+            assert!(
+                is_main_ipc_tag(&msg),
+                "{t} は main IPC に振り分けられるべき（sidebar に流すと unknown variant で drop）"
+            );
+        }
+        // sidebar 系 tag は従来どおり main に取られない（disjoint の維持）。
+        assert!(!is_main_ipc_tag(r#"{"t":"lane:select","lane":"x"}"#));
+        assert!(!is_main_ipc_tag(r#"{"t":"stands:fetch","path":"x"}"#));
+    }
 }
 
 /// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に
