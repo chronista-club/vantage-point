@@ -42,8 +42,8 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 | Act II (GUI chat) | ✅ | ✅ | ✅ | ❌ | ❓ | ❌ |
 | session 指名 resume | ✅ cc_session | ✅ chatId | ✅ thread | — | ❓ | — |
 | model 切替 (console_set_model) | ✅ | ❌（TUI 内） | ❓ | ❌ | ❓ | — |
-| MCP `CallMcpTool` (vp) | ✅ 想定 | ❓ 観測中 | ❓ | ❓ | ❓ | — |
-| Shell tool | ✅ 想定 | ❓ 観測中 | ❓ | ❓ | ❓ | n/a |
+| MCP `CallMcpTool` (vp) | ✅ 想定 | ✅ II=`--force`要 | ❓ | ❓ | ❓ | — |
+| Shell tool | ✅ 想定 | ✅ II=`--force`要 | ❓ | ❓ | ❓ | n/a |
 | wire_send/recv | ✅ | ❓ | ❓ | ❓ | ❓ | — |
 | SP restart 後 stand 保持 | ✅ | ✅ 要確認 | ✅ 要確認 | ✅ | ❓ | ✅ |
 
@@ -136,6 +136,71 @@ stand 内の agent に次を投げ、結果を下表に転記する（コピペ�
 1. VP Cursor 経由だと tool/MCP 承認がデスクトップ Cursor と別経路で、全部 User rejected に正規化されている
 2. Shell/Delete がポリシーで先に落ち、MCP だけ承認待ちに見えるが実際は即 reject
 3. 「ready」はプロセス接続のみで、lane の permission bridge は未配線
+
+### 2026-07-16 §2 — P0 切り分け（cursor Act II headless の承認経路を実測で確定）
+
+> creo todo `mem_1Cd5ByZDv3hZmDNdoJh4nL` / lane `p0-approval`。cursor-agent `2026.07.09-a3815c0`。
+> 手法: scratch repo（`/tmp/p0-cursor-probe`、git init 済）で `cursor-agent -p … --output-format
+> stream-json --trust` に承認系 flag を差し替えて差分を取得。**§1（bikeboy）の 4 観測を baseline
+> （現行 Act II command = `-p … --trust`）で文字列レベルまで完全再現**した = bikeboy の観測は Act I
+> ではなく **Act II（headless / stream-json）経路**だった（tool 拒否が `{"rejected":{"reason":…}}`
+> という stream-json 構造で出るのが動かぬ証拠）。
+
+**根本原因（1 つ）**: headless `-p` は `system/init` が `"permissionMode":"default"` 固定で、承認
+prompt を対話で出せない。よって `default` mode で承認を要する tool は**全て auto-block**される:
+
+- readonly（Read / Grep / Glob）: 承認不要 → **OK**
+- trusted workspace の edit / write: auto-approve → **OK**
+- 非 allowlist の **Shell** / **File deletion** / **MCP tool call**: 承認要 → prompt 不可 → **auto-block**
+
+**flag 別 差分表**（scratch repo・同一 prompt で実測）
+
+| 操作 | baseline（`--trust`） | `--trust --approve-mcps` | `--trust --force` |
+|------|:---:|:---:|:---:|
+| Shell `echo`（allowlist 済） | ✅ 実行 | ✅ | ✅ |
+| Shell `date +%s`（非 allowlist） | ❌ `{"rejected":{"reason":"","isReadonly":false}}` | ❌ 同左 | ✅ stdout 取得 |
+| File write（edit） | ✅ success | ✅ | ✅ |
+| File **delete** | ❌ `{"rejected":{"reason":"File deletion rejected"}}` | ❌ 同左 | ✅ deleted |
+| `GetMcpTools(vp)` | ✅ `serverStatus:ready` | ✅ | ✅ |
+| `CallMcpTool vp/list_lanes` | ❌ `{"rejected":{"reason":"User rejected MCP: vp-list_lanes"}}` | ❌ **同左（無効）** | ✅ server 到達（→ `-32603 SP未接続` = scratch が VP 未登録なだけの正常応答） |
+
+**項目ごとの判定**
+
+| # | §1 観測 | 原因 | 判定 | 対応 |
+|---|---------|------|:---:|------|
+| 1 | Shell 常時 Rejected | headless default mode は非 allowlist を auto-block。`echo`/`vp` 等 allowlist は通る | **(a)** | `--force` |
+| 2 | Write OK / Delete NG の非対称 | write は trusted で auto-approve、delete は高リスクで承認要 → headless で auto-block | **(a)** | `--force` |
+| 3 | GetMcpTools=ready なのに Call 全 "User rejected" | per-call 承認 gate の auto-block。**`--approve-mcps` は server 承認レベルで per-call に効かない**、`--force` で開放。`ready` は server 接続の真実であって嘘ではない（= VP バグではない） | **(a)** | `--force` |
+| 4 | FetchMcpResource(vp) `-32601` | vp MCP は `ServerCapabilities::builder().enable_tools()` のみ宣言（`mcp.rs:1009`）で **resources 非提供** → `resources/read` に `-32601 Method not found` を返すのが JSON-RPC 上正しい。cursor は無罪 | **(c)/spec（VP 側）** | 記録のみ（resources を出す予定が無い限り不対応が正） |
+
+**DoD:「User rejected」と auto-block の区別**: headless では**全て auto-block**であり、真の user
+rejection は存在しない（人間が居ないのに `--force` で flip する事実が証明）。判別法 = `reason` が空 or
+`"File deletion rejected"` のような定型文なら auto-block。MCP の `"User rejected MCP: …"` は文言が
+**誤解を招く**が実体は同じ auto-block（cursor-agent 側の表示バグ寄り、VP からは変えられない）。
+
+**適用した fix**: `crates/vantage-point/src/echoes/cursor_host.rs` の Act II command に `--force` を
+追加（`--trust` の次）。これで cursor Act II が claude（bypassPermissions）/ codex（full bypass）と
+tool 権限で parity。⚠️ 権限拡大（deny 空なら実質全許可）。Act I（TUI 床）は対話承認が効くため**未付与**
+（§1 の観測は Act II 経路と判明したので Act I の即 Reject は未確認 = 別途 live dogfood 事項）。
+
+**副産物（記録のみ）**
+
+- **creo-memories MCP auth の Desktop 依存**（§1 観測 10）: creo-memories は OAuth 必須の HTTP MCP
+  （`~/.cursor/mcp.json` で `url: https://mcp.creo-memories.in/`）。cursor-agent CLI は
+  `Interactive MCP authentication is only available in the Cursor desktop IDE` を返し、CLI 単体で
+  認証できない = **判定 (c)**（cursor-agent CLI の仕様制限、VP から対処不能）。回避は Desktop Cursor で
+  事前認証 or API-key 系 MCP。
+- **判定 (b) は無し**: 今回の 4 観測はいずれも VP 基板の未配線ではなく cursor-agent の flag/仕様で説明が
+  付いた。VP の承認 bridge（doc 35 HITL）一般化は本 P0 では不要。ただし Act II を `--force` で全許可に
+  倒したので、将来「cursor の tool を GUI で個別承認したい」となったら C4（control protocol）で
+  can_use_tool 相当を cursor stream に橋渡しする実装が別途要る（推奨アプローチ = §下記）。
+
+**承認 bridge 一般化（判定 (b) 相当、今回は実装しない）の推奨アプローチ**: cursor の
+`tool_call{subtype:started}` を interrupt して VP GUI に承認を問い、応答で continue/deny する双方向
+制御が要る。cursor-agent CLI は headless で per-call 承認の外部注入口を持たない（`--approve-mcps` は
+server 一括のみ）ため、claude の can_use_tool（doc 35）と同型の bridge は cursor では**現状不可能**
+＝ C4 で cursor 側 control protocol の対応状況を先に調査してから。それまでは `--force`（全許可）が唯一
+現実的な parity 手段。
 
 ## stand 追加時の Definition of Done（短い）
 
