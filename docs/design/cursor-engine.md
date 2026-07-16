@@ -76,12 +76,18 @@ cursor-agent には claude の `--input-format stream-json`（常駐 stdin 連�
 spawn** する:
 
 ```
-cursor-agent -p "<prompt>" [--resume '<chatId>'] --output-format stream-json --stream-partial-output
+cursor-agent -p "<prompt>" [--resume '<chatId>'] --output-format stream-json --stream-partial-output --trust
 ```
 
 prompt は positional arg（`Command::arg` 渡し = shell 非経由なので injection 安全）。`--resume` は
 chatId 未記録時は付けない。`CursorAgentHost::spawn` は**プロセスを起動しない**（channel と状態を
 用意するだけ = `ensure_chat_engine` を exec-free に保つ）。実プロセスは初回 submit で立つ。
+
+`--trust` は workspace trust の自動付与（2026-07-16 dogfood で追加）: headless は trust prompt を
+対話で出せず、cursor-agent 初見の workspace では `Workspace Trust Required` の stderr を残して
+即死する。lane の cwd は user 自身が VP に登録した workspace なので、自動 trust は claude
+（bypassPermissions）/ codex（full bypass）と同じ姿勢。Act I（TUI 床）は対話 prompt が出るため
+付けない = user 判断のまま。
 
 ### イベント翻訳表（`cursor_translate`）
 
