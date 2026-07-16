@@ -638,22 +638,35 @@ async fn handle_echoes_demand_start(
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
     // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。cursor / codex /
-    // agy session は cc_session を持たないため必ずこの no_session path を通る = 空 chat で attach、
-    // UI は破綻しない。会話は各 host が live event を流すことで進む。
+    // agy session は cc_session を持たないため必ずこの no_session path を通る。
     let Some(session_id) = crate::lane::cc_session::last(&addr.project, &label) else {
-        // 初回 (まだ会話が無い) session。 空会話に収束させるため ReplayStart だけ送る。
-        // ReplayStart / ReplayEnd は対で送る（会話 id 無し = 生成中 turn も無い）。
-        route_echoes(
-            state,
-            &lane,
-            resolved.key,
-            vec![
-                crate::echoes::EchoesEvent::ReplayStart,
-                crate::echoes::EchoesEvent::ReplayEnd { in_flight: false },
-            ],
-        )
-        .await;
-        return Ok(serde_json::json!({"status": "no_session", "lane": lane}));
+        // transcript を持たない engine（cursor/codex）は、SP が pump tap で per-session に記録した
+        // replay log を replay 源にする（engine 非依存 replay log）。それ以外（claude で会話未開始 /
+        // agy 等）は log を読まず空 chat に収束させる。
+        let buffered = if matches!(
+            crate::echoes::EngineKind::from_stand(&resolved.stand),
+            Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+        ) {
+            crate::echoes::replay_log::load(&addr.project, &label)
+        } else {
+            Vec::new()
+        };
+        // ReplayStart で GUI を clear → buffered を fold → ReplayEnd で streaming を下ろす。
+        // log が空なら従来と同じ「ReplayStart + ReplayEnd」= 空 chat（後方互換）。turn-scoped host
+        // は attach 時点で生成中 turn を持たないため in_flight=false。
+        let count = buffered.len();
+        let mut events = Vec::with_capacity(count + 2);
+        events.push(crate::echoes::EchoesEvent::ReplayStart);
+        events.extend(buffered);
+        events.push(crate::echoes::EchoesEvent::ReplayEnd { in_flight: false });
+        route_echoes(state, &lane, resolved.key, events).await;
+        tracing::info!(
+            "echoes replay-log: {count} events を配送 (lane={lane}, session={})",
+            resolved.key
+        );
+        return Ok(serde_json::json!({
+            "status": "no_session", "lane": lane, "session": resolved.key, "events": count
+        }));
     };
 
     let (mut events, tail_len) =
@@ -843,7 +856,53 @@ async fn handle_echoes_submit(
     }
     let session = payload_session_key("echoes_submit", &payload)?;
     ensure_and_submit_chat(state, "echoes_submit", lane, session, prompt).await?;
+    // user 発話は pump に流れない（GUI が optimistic bubble を出す設計）ので、transcript を持たない
+    // engine の session は replay 源に user turn が残らない。submit 成功後にここで記録する。
+    // ⚠️ nudge（下）では書かない — claude の transcript replay が origin.kind=="human" で VP 注入を
+    // 間引くのと同じ規律。harness 注入（wire delivery / delegation）は会話として再生しない対称性。
+    record_user_message_if_transcriptless(state, lane, session, prompt).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
+}
+
+/// transcript を持たない engine（cursor/codex）の session に、user 発話を replay log へ記録する。
+///
+/// claude は transcript が SSOT なので記録しない（二重化回避）。engine 解決に失敗しても submit は
+/// 既に成立済みなので warn に留める（配送と replay 記録は独立系統）。tap（pump）が assistant 側を
+/// 書くのと対になり、replay で user ⇄ assistant のターンが揃う。
+async fn record_user_message_if_transcriptless(
+    state: &AppState,
+    lane: &str,
+    session: Option<crate::lane::session_registry::SessionKey>,
+    prompt: &str,
+) {
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return;
+    };
+    let resolved = {
+        let pool = state.lane_pool.read().await;
+        pool.resolve_chat_session(&addr, session)
+    };
+    let Ok(resolved) = resolved else {
+        return;
+    };
+    // 記録対象は transcript を持たない engine のみ（tap と同じ Cursor|Codex 判定）。
+    if !matches!(
+        crate::echoes::EngineKind::from_stand(&resolved.stand),
+        Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+    ) {
+        return;
+    }
+    let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+    let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
+    let event = crate::echoes::EchoesEvent::UserMessage {
+        text: prompt.to_string(),
+    };
+    if let Err(e) = crate::echoes::replay_log::append(&addr.project, &label, &event) {
+        tracing::warn!(
+            "echoes replay-log: user 発話の記録に失敗（lane={lane}, session={}）: {e}",
+            resolved.key
+        );
+    }
 }
 
 /// channel E（doc 34 §3）: wire delivery / delegation reconcile からの engine 直接注入。
@@ -2551,6 +2610,88 @@ mod tests {
             err.contains("console_set_mode") || err.contains("mode"),
             "切替を促すメッセージ: {err}"
         );
+    }
+
+    /// engine 非依存 replay log: codex session に会話を仕込むと、demand_start が replay_log を
+    /// 読み `ReplayStart → 記録 events → ReplayEnd` を配送する（transcript を持たない engine の
+    /// replay 源）。codex host の spawn は exec-free なので claude / codex CLI は不要。
+    #[tokio::test]
+    async fn echoes_demand_start_replays_buffered_log_for_codex_session() {
+        use super::dispatch_process_method;
+        use crate::echoes::EchoesEvent;
+        use crate::lane::console_mode::ConsoleMode;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use std::time::Duration;
+
+        // replay_log / session_registry は vp_state_dir() を読む → tempdir に隔離。
+        let _state_guard = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let addr = insert_test_lane(&state, "vptest-replaylog", ConsoleMode::Chat).await;
+
+        // focused な codex session #2 を作る（session=None がこれに解決される）。
+        let k2 = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("codex"), true)
+            .expect("create codex session");
+        assert_eq!(k2, 2);
+
+        // #2 の replay 源に会話を仕込む（session label = "conductor#2"）。
+        for ev in [
+            EchoesEvent::MessageChunk {
+                text: "codex says hi".to_string(),
+            },
+            EchoesEvent::TurnCompleted {
+                session_id: "s".to_string(),
+                cost_usd: None,
+                context_tokens: None,
+                context_window: None,
+            },
+        ] {
+            crate::echoes::replay_log::append("vptest-replaylog", "conductor#2", &ev)
+                .expect("replay log append");
+        }
+
+        // echoes topic を購読（非 retained なので dispatch 前に張る）。
+        let topic = "process/echoes/data/vptest-replaylog~conductor/event";
+        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+
+        let res = dispatch_process_method(
+            &state,
+            "echoes_demand_start",
+            serde_json::json!({ "lane": "vptest-replaylog/conductor" }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(res["status"], "no_session");
+        assert_eq!(res["events"], 2, "仕込んだ 2 event が replay される");
+
+        // 配送列: ReplayStart → MessageChunk → TurnCompleted → ReplayEnd。
+        let mut got = Vec::new();
+        for _ in 0..4 {
+            let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
+                .await
+                .expect("replay event timeout")
+                .expect("topic closed");
+            match msg {
+                ProcessMessage::EchoesEvent { session, event, .. } => {
+                    assert_eq!(session, 2, "session field で #2 を運ぶ");
+                    got.push(event);
+                }
+                other => panic!("想定外の message: {other:?}"),
+            }
+        }
+        assert_eq!(got[0], EchoesEvent::ReplayStart);
+        assert_eq!(
+            got[1],
+            EchoesEvent::MessageChunk {
+                text: "codex says hi".to_string()
+            }
+        );
+        assert!(matches!(got[2], EchoesEvent::TurnCompleted { .. }));
+        assert_eq!(got[3], EchoesEvent::ReplayEnd { in_flight: false });
     }
 
     /// console_set_mode の入力検証（claude 不要。engine-less lane の tui→chat 遷移も確認）。
