@@ -1036,6 +1036,72 @@ impl LanePool {
         Ok(())
     }
 
+    /// session を取り除く（doc 38 Phase 3 — tab を閉じる）。戻り値 = 新 focused key。
+    ///
+    /// - registry から除去（最後の 1 本は registry 側が拒否 — lane を素に戻すのは fresh restart）
+    /// - 当該 session の engine slot を drop（走行中 turn は落ちる = 会話をやめる意思表示）
+    /// - per-session の会話 id を全 engine store から破棄（key は再利用されないため残しても
+    ///   概ね無害だが、session #1 の label = 素の lane 名は Act I 床の resume が読むため、
+    ///   消さないと「閉じた会話が床で蘇る」嘘になる）。破棄失敗は warn（remove 自体は成立）
+    /// - focused を取り除いた場合の focus 移動は registry が決める（残りの先頭）。
+    ///   LaneInfo.pid は focused 代表値の規律で追随（[`Self::focus_chat_session`] と同じ）
+    pub fn remove_chat_session(
+        &mut self,
+        addr: &LaneAddress,
+        key: SessionKey,
+    ) -> anyhow::Result<SessionKey> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let is_chat = info.console_mode == crate::lane::console_mode::ConsoleMode::Chat;
+        let stand = info.stand.clone();
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+        let new_focused = session_registry::remove(&addr.project, &lane_label, &stand, key)
+            .map_err(|e| {
+                anyhow::anyhow!("session remove に失敗（addr={addr}, session={key}）: {e}")
+            })?;
+        if let Some(slots) = self.chat_engines.get_mut(addr) {
+            slots.remove(&key);
+            if slots.is_empty() {
+                self.chat_engines.remove(addr);
+            }
+        }
+        let label = session_registry::session_label(&lane_label, key);
+        for (store, res) in [
+            (
+                "cc_session",
+                crate::lane::cc_session::clear(&addr.project, &label),
+            ),
+            (
+                "cursor_session",
+                crate::lane::cursor_session::clear(&addr.project, &label),
+            ),
+            (
+                "codex_session",
+                crate::lane::codex_session::clear(&addr.project, &label),
+            ),
+        ] {
+            if let Err(e) = res {
+                tracing::warn!(
+                    "session remove: {store} の破棄に失敗（addr={addr}, session={key}）: {e}"
+                );
+            }
+        }
+        if is_chat {
+            let pid = self
+                .chat_engines
+                .get(addr)
+                .and_then(|m| m.get(&new_focused))
+                .and_then(|slot| slot.host.pid());
+            if let Some(info) = self.lanes.get_mut(addr) {
+                info.pid = pid;
+            }
+        }
+        tracing::info!("chat session remove: addr={addr} session={key} → focused={new_focused}");
+        Ok(new_focused)
+    }
+
     /// chat engine の in-flight tail（disk にまだ載っていない増分 + commit 世代）。
     ///
     /// engine 未起動（chat-idle / Act I）は None = 継ぐものが無い。
@@ -1623,6 +1689,41 @@ mod tests {
             .expect("resolve #1");
         assert!(!r1.focused);
         assert_eq!(r1.stand, "echoes");
+    }
+
+    /// doc 38 Phase 3: session remove — engine slot drop + 会話 id 破棄 + focused fallback。
+    /// tab を閉じたのに床（Act I）で会話が蘇る嘘（session #1 の bare label）をここで固定する。
+    #[test]
+    fn remove_chat_session_drops_slot_and_conversation_ids() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+
+        // #2(codex) を focused で追加し、両 session に会話 id を記録
+        let k2 = pool
+            .create_chat_session(&addr, Some("codex"), true)
+            .expect("create #2");
+        crate::lane::cc_session::record("vp", "conductor", "cc-id-1").expect("record #1");
+        crate::lane::codex_session::record("vp", "conductor#2", "0199-codex-id")
+            .expect("record #2");
+
+        // focused(#2) を remove → focus は #1 へ、#2 の会話 id は消える
+        let focused = pool.remove_chat_session(&addr, k2).expect("remove #2");
+        assert_eq!(focused, 1);
+        assert_eq!(
+            crate::lane::codex_session::last("vp", "conductor#2"),
+            None,
+            "閉じた session の会話 id は破棄される"
+        );
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor").as_deref(),
+            Some("cc-id-1"),
+            "残る session (#1) の会話 id は無傷"
+        );
+
+        // 最後の 1 本は取り除けない（fresh restart が正道）
+        assert!(pool.remove_chat_session(&addr, 1).is_err());
     }
 
     /// list_chat_sessions は registry + 会話 id（engine store）+ focused を突き合わせる。

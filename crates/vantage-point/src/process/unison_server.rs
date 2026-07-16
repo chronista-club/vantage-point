@@ -617,6 +617,24 @@ async fn handle_echoes_demand_start(
             .map_err(|e| format!("echoes_demand_start: {e}"))?
     };
 
+    // doc 38 Phase 3（focused eager）: attach = 会話を見に来た合図。当該 session の engine を
+    // ここで eager に resume spawn する（doc 33 C1 の lazy「submit まで engine-less」からの転換 —
+    // SP 再起動後も uplink 再接続 → demand 再発火でこの経路に入るため「前回状態キープ」が成立）。
+    // ensure は冪等（既起動なら no-op）。失敗しても replay は続行し、engine は次 submit の
+    // self-heal で再試行される。agy / shell 等 Act II host を持たない session は skip
+    //（能力表 = EngineKind が SSOT。bail を warn で騒がせない）。
+    if crate::echoes::EngineKind::from_stand(&resolved.stand)
+        .is_some_and(crate::echoes::EngineKind::chat_capable)
+        && let Err(e) =
+            state
+                .lane_pool
+                .write()
+                .await
+                .ensure_chat_engine(&addr, session, &state.topic_router)
+    {
+        tracing::warn!("echoes_demand_start: eager engine spawn 失敗（submit で再試行）: {e}");
+    }
+
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
     // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。cursor / codex /
@@ -1012,13 +1030,42 @@ async fn handle_echoes_session_focus(
         .ok_or_else(|| "echoes_session_focus: session 未指定".to_string())?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("echoes_session_focus: lane パース失敗: {lane}"))?;
-    state
+    {
+        let mut pool = state.lane_pool.write().await;
+        pool.focus_chat_session(&addr, session)
+            .map_err(|e| format!("echoes_session_focus: {e}"))?;
+        // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
+        // eager に resume spawn する（切替後の初 submit を待たない）。mode=Tui（registry のみの
+        // 切替 = 正当）/ agy session（Act II host なし）等は debug で飲む — 切替自体は成功。
+        if let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router) {
+            tracing::debug!("echoes_session_focus: eager spawn せず（{e}）");
+        }
+    }
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
+}
+
+/// doc 38 Phase 3: session を取り除く（tab を閉じる）。`{lane, session}` →
+/// `{lane, session, focused}`（focused = 除去後の focus 先。GUI は list 再取得で追随）。
+/// 最後の 1 本は LanePool（registry）が拒否 — lane を素に戻すのは fresh restart の役目。
+async fn handle_echoes_session_remove(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_remove: lane 未指定".to_string());
+    }
+    let session = payload_session_key("echoes_session_remove", &payload)?
+        .ok_or_else(|| "echoes_session_remove: session 未指定".to_string())?;
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_remove: lane パース失敗: {lane}"))?;
+    let focused = state
         .lane_pool
         .write()
         .await
-        .focus_chat_session(&addr, session)
-        .map_err(|e| format!("echoes_session_focus: {e}"))?;
-    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
+        .remove_chat_session(&addr, session)
+        .map_err(|e| format!("echoes_session_remove: {e}"))?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
 }
 
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
@@ -1388,6 +1435,8 @@ pub(crate) async fn dispatch_process_method(
         "echoes_session_list" => handle_echoes_session_list(state, payload).await,
         "echoes_session_create" => handle_echoes_session_create(state, payload).await,
         "echoes_session_focus" => handle_echoes_session_focus(state, payload).await,
+        // doc 38 Phase 3: tab を閉じる（session remove）。
+        "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
@@ -2129,6 +2178,7 @@ mod tests {
             "echoes_session_list",
             "echoes_session_create",
             "echoes_session_focus",
+            "echoes_session_remove",
         ] {
             // lane 未指定
             let res = dispatch_process_method(&state, method, serde_json::json!({})).await;

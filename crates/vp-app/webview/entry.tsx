@@ -474,6 +474,10 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	} else {
 		chatHost?.classList.remove("active");
 		laneHost?.classList.remove("console-hidden");
+		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
+		// resync-loader は activeLane の replaying を読むだけで Act を知らないため、chat→tui で
+		// stuck した replaying が Act I 表示の上に居座るのを防ぐ。
+		chatView?.clearReplaying(lane);
 	}
 };
 

@@ -213,6 +213,11 @@ pub enum AppEvent {
     /// doc 38 Phase 2: session tab click による focused 切替。ask `echoes_session_focus` →
     /// 一覧再取得 → `echoes_demand_start`（新 focused の transcript replay を発火）。
     EchoesSessionFocus { lane: String, session: u32 },
+    /// doc 38 Phase 3: session tab の × による close。ask `echoes_session_remove` →
+    /// 一覧再取得 → `echoes_demand_start`（除去後の新 focused の会話を replay）。最後の 1 本は
+    /// backend が Err で拒否（GUI も × は 2 本以上でしか出さない）。session は lane 名に埋めず
+    /// 常に別 field で運ぶ（doc 38 落とし穴①）。
+    EchoesSessionRemove { lane: String, session: u32 },
     /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
     /// ask `stands_list` → `EchoesStands` で push back。
     EchoesStandsFetch { lane: String },
@@ -383,6 +388,17 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             let session = parsed.get("session").and_then(|v| v.as_u64());
             if let (Some(lane), Some(session)) = (lane, session) {
                 let _ = proxy.send_event(AppEvent::EchoesSessionFocus {
+                    lane: lane.to_string(),
+                    session: session as u32,
+                });
+            }
+        }
+        // doc 38 Phase 3: session tab の × による close。lane + session 必須。
+        Some("echoes:session_remove") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let session = parsed.get("session").and_then(|v| v.as_u64());
+            if let (Some(lane), Some(session)) = (lane, session) {
+                let _ = proxy.send_event(AppEvent::EchoesSessionRemove {
                     lane: lane.to_string(),
                     session: session as u32,
                 });
