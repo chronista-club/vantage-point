@@ -8,11 +8,16 @@
 //! ## コマンド形（doc `cursor-engine.md` §Act II）
 //!
 //! ```text
-//! cursor-agent -p "<prompt>" --output-format stream-json --stream-partial-output [--resume '<chatId>']
+//! cursor-agent -p "<prompt>" --output-format stream-json --stream-partial-output --trust [--resume '<chatId>']
 //! ```
 //!
 //! - prompt は positional 値（`Command::arg` 渡し = shell 非経由なので injection 安全）
 //! - `--stream-partial-output` の delta 判定は翻訳器側（cursor_translate の module doc）
+//! - `--trust`: workspace trust の自動付与。headless（`-p`）は trust prompt を対話で出せず、
+//!   cursor-agent 初見の workspace（新 lane / 未使用 repo）では "Workspace Trust Required" で
+//!   即死する（2026-07-16 dogfood、bikeboy で実発生）。lane の cwd は user 自身が VP に登録した
+//!   workspace なので自動 trust は claude（bypassPermissions）/ codex（full bypass）の姿勢と整合。
+//!   Act I（TUI 床）は対話 prompt が出るため付けない = user 判断のまま
 //! - record-from-init: `system/init` の session_id（= chatId）を `cursor_session` に永続。
 //!   Act I（console 床）と同じ state file なので II ⇄ I の会話が `--resume` で継がれる
 
@@ -36,7 +41,10 @@ impl TurnEngine for CursorEngine {
             .arg(prompt)
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--stream-partial-output");
+            .arg("--stream-partial-output")
+            // headless は trust prompt を出せない — 初見 workspace で即死するため自動 trust
+            // （module doc の ⚠️ 参照。Act I の TUI は対話 prompt に委ねるので付けない）。
+            .arg("--trust");
         if let Some(id) = resume {
             cmd.arg("--resume").arg(id);
         }
@@ -80,7 +88,8 @@ mod tests {
                 "hello",
                 "--output-format",
                 "stream-json",
-                "--stream-partial-output"
+                "--stream-partial-output",
+                "--trust"
             ]
         );
 
@@ -98,6 +107,7 @@ mod tests {
                 "--output-format",
                 "stream-json",
                 "--stream-partial-output",
+                "--trust",
                 "--resume",
                 "chat_42"
             ]
