@@ -114,7 +114,7 @@ boot 時の捕捉経路が存在しない。mako 決定（2026-07-18）:「Act�
 | 2 | Act II タブ（`list_chat_sessions`） | entry ごとに engine store dispatch | entry の `conversation` を直読み |
 | 3 | chat spawn（`ensure_chat_engine` 3 arm） | label で store 読み | resolve 済み entry の `conversation`（claude は `transcript_exists` filter 維持 — doc 33 C2） |
 | 4 | 床 spawn（`build_stand_command` 3 arm） | root label で store 読み | root entry の `conversation`（同 filter） |
-| 5 | channel D（delivery_actor `--resume`） | `LaneInfo.cc_session_id`（population は snapshot/uplink 系 lazy read） | 変更なしで正しくなる — `cc_session_id` の導出元が sessions[root]（stand==echoes）になるため |
+| 5 | channel D（delivery_actor `--resume`） | `LaneInfo.cc_session_id` — ただし **uplink push 経路（agent_card / LaneDiff）は一度も populate しておらず実質常に None**（= channel D の resume は de-facto OFF だった。f286fc8 の「refresh は cc_session_id を触らない」設計と snapshot 限定 enrich の組み合わせ） | `cc_session_id` の導出元が sessions[root]（stand==echoes、全 lane）になり **resume が実質初めて ON になる**。headless `claude -p` は `\|\| claude` fallback を持たないため、配信時に `transcript_exists` pre-flight を追加（他 resume 経路と同じ防壁 — moody 指摘、PR-1 で対処済み）。conductor 限定だった旧 populate は撤廃 = performer too（R3-b の「resume policy 化の際に広げる」の実現） |
 | 6 | transcript replay（`transcript_path`） | id を受けて `~/.claude/projects` 走査 | 変更なし（id の出所が registry になるだけ） |
 
 供給 4 点の「呼び忘れるな ⚠️」契約は、enrich が「registry 1 read + clone」に縮むことで

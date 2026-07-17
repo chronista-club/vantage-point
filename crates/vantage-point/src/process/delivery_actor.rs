@@ -436,7 +436,16 @@ async fn pulse(
                                 {
                                     let count = bg_ledger.get(&key).map(|r| r.count).unwrap_or(0);
                                     let prompt = bg_dispatch_prompt(&msg.id);
-                                    let args = build_bg_args(t.cc_session_id.as_deref(), &prompt);
+                                    // transcript_exists pre-flight（doc 40 §5 / moody 指摘）:
+                                    // headless `claude -p --resume` は `|| claude` fallback を
+                                    // 持たないため、stale/phantom id を渡すと配信が黙って失敗
+                                    // し続ける。他の resume 経路（床 spawn / chat spawn）と同じ
+                                    // filter で fresh headless に倒す。配信時のみ実行 = 常時
+                                    // tick 経路に fs walk を持ち込まない。
+                                    let resume = t.cc_session_id.as_deref().filter(|id| {
+                                        crate::lane::cc_session::transcript_exists(id)
+                                    });
+                                    let args = build_bg_args(resume, &prompt);
                                     spawn_bg_dispatch(
                                         t.cwd.clone(),
                                         project,
@@ -449,7 +458,7 @@ async fn pulse(
                                         msg.id,
                                         agent,
                                         t.cwd,
-                                        t.cc_session_id.is_some(),
+                                        resume.is_some(),
                                         count + 1
                                     );
                                     bg_ledger.insert(
