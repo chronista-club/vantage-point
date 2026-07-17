@@ -347,14 +347,22 @@ pub fn build_stand_command(
 
     let (program, args) = login_shell();
 
+    // doc 39 P1: 床に化身するのは root session（lane の人格）。resume id / 会話 id の store は
+    // root session の label を読む（registry file 不在 = root=1 = 素の lane 名に解決され、
+    // 従来と同一の読み先 = N=1 完全互換）。engine_model は lane 単位（Act I/II 共有）のまま。
+    let store_label = crate::lane::session_registry::session_label(
+        lane_label(addr),
+        crate::lane::session_registry::root(&addr.project, lane_label(addr)),
+    );
+
     // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
     let initial_input = match crate::echoes::EngineKind::from_stand(stand_name) {
         Some(crate::echoes::EngineKind::Claude) => {
-            // resume id は lane 単位の state file（書き手 = UserPromptSubmit hook）を直読み。
+            // resume id は root session の state file（書き手 = UserPromptSubmit hook）を直読み。
             // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
             // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒すと
             // conductor は `--continue` に落ち、cwd 最新の実会話を拾える（F2/F3 根治）。
-            let resume_id = crate::lane::cc_session::last(&addr.project, lane_label(addr))
+            let resume_id = crate::lane::cc_session::last(&addr.project, &store_label)
                 .filter(|id| crate::lane::cc_session::transcript_exists(id));
             // model は lane 単位の state file（`engine_model`、Act I/II 共有）を直読み。
             // 未記録 = None = claude default（co-evolution #1）。 respawn（SP restart）でも
@@ -368,7 +376,7 @@ pub fn build_stand_command(
                 // fresh（"New Session"）は新規チャット。 create-chat は exec せず素の cursor-agent を
                 // 起動する（fresh path を exec-free に保つ = 決定的、 テストで固定できる）。 記録済の
                 // 旧 chatId は clear して次回の非 fresh spawn で採番し直す。
-                let _ = crate::lane::cursor_session::clear(&addr.project, lane_label(addr));
+                let _ = crate::lane::cursor_session::clear(&addr.project, &store_label);
                 Some("cursor-agent\r".to_string())
             } else {
                 // 非 fresh: chatId を確保（既存あれば再利用、 無ければ create-chat で採番）して
@@ -376,7 +384,7 @@ pub fn build_stand_command(
                 // cursor-agent 起動になる（fail-open、 `cursor_session` doc 参照）。
                 let id = crate::lane::cursor_session::ensure_chat_id(
                     &addr.project,
-                    lane_label(addr),
+                    &store_label,
                     project_dir,
                 );
                 Some(format!("{}\r", cursor_command(id.as_deref())))
@@ -386,10 +394,10 @@ pub fn build_stand_command(
             if fresh {
                 // fresh は記録破棄 + 素の codex（cursor と同じ exec-free path。次の id 採番は
                 // Act II の record-from-init に委ねる — codex に create-chat 相当が無いため）。
-                let _ = crate::lane::codex_session::clear(&addr.project, lane_label(addr));
+                let _ = crate::lane::codex_session::clear(&addr.project, &store_label);
                 Some("codex\r".to_string())
             } else {
-                let id = crate::lane::codex_session::last(&addr.project, lane_label(addr));
+                let id = crate::lane::codex_session::last(&addr.project, &store_label);
                 Some(format!("{}\r", codex_command(id.as_deref())))
             }
         }

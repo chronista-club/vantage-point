@@ -11,13 +11,16 @@
 //! - **disk = 唯一の真実源**（doc 38 §5 原則「供給を 1 系統に」）。in-memory cache は持たない。
 //!   registry の読み書きは全て本 module 経由（`LanePool` も RPC もここを読む）
 //! - 置き場: `vp_state_dir()/echoes_sessions/<project>__<lane>.json`（1 lane 1 file）
-//! - **file 不在 = N=1 の特殊ケース**: 「lane の stand で session #1 のみ・focused=1」に
-//!   解決される。既存 install は registry file を持たないが従来どおり動く（既存動作不変の要）
+//! - **file 不在 = N=1 の特殊ケース**: 「lane の stand で session #1 のみ・focused=1・root=1」
+//!   に解決される。既存 install は registry file を持たないが従来どおり動く（既存動作不変の要）
 //! - **session #1 の store label は素の lane 名**（[`session_label`]）。既存の
 //!   `cc_sessions/<project>__<lane>` file がそのまま session #1 の会話 id になる =
 //!   Act I（床の hook 書き込み）とも無改修で整合する
 //! - 会話 id 自体は本 registry に**持たない**（[`super::session_store`] が SSOT のまま）。
-//!   registry が持つのは key / engine 種別（stand）/ focused だけ
+//!   registry が持つのは key / engine 種別（stand）/ focused / root だけ
+//! - **root = lane の器に化身する session**（doc 39 — 座と化身）: 床 spawn / wire 配送
+//!   （channel D・E）/ Act I chip はすべて root に解決される。doc 38 の「床は session #1 を
+//!   既定で化身」は root=1 の特殊ケースに一般化された（#1 の特別性を撤廃）
 
 use std::path::{Path, PathBuf};
 
@@ -37,15 +40,27 @@ pub struct SessionEntry {
     pub stand: String,
 }
 
-/// lane の session 一覧 + focused（disk に JSON でそのまま永続される形）。
+/// lane の session 一覧 + focused + root（disk に JSON でそのまま永続される形）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRegistry {
     /// 現在 focus されている session の key（常に `sessions` 内に実在する）。
     pub focused: SessionKey,
+    /// doc 39: lane の器（Act I=床 / Act II=headless）に化身し、wire mailbox
+    /// `agent@<lane>` を名乗る session の key（常に `sessions` 内に実在する）。
+    /// 床 spawn / wire 配送（channel D・E）/ Act I chip の読み先はすべてここに解決される。
+    /// serde default = 1 で file/wire 後方互換（root field 無し = 従来の「#1 が床に化身」を
+    /// root=1 として読む — doc 38 Phase 1 の focused と同じ手筋）。
+    #[serde(default = "default_root")]
+    pub root: SessionKey,
     /// 次に採番する key（単調増加。fresh reset まで再利用しない）。
     pub next: SessionKey,
     /// session 一覧（生成順）。空にはならない（最低 1 本）。
     pub sessions: Vec<SessionEntry>,
+}
+
+/// serde default: root field を持たない既存 file / wire を「#1 が root」として読む。
+fn default_root() -> SessionKey {
+    1
 }
 
 impl SessionRegistry {
@@ -53,6 +68,7 @@ impl SessionRegistry {
     fn single(default_stand: &str) -> Self {
         Self {
             focused: 1,
+            root: 1,
             next: 2,
             sessions: vec![SessionEntry {
                 key: 1,
@@ -61,8 +77,9 @@ impl SessionRegistry {
         }
     }
 
-    /// 不変条件の検証: 非空・key は 1 以上で重複なし・focused 実在・next は最大 key より大きい。
-    /// 手編集や部分破損で崩れた file を「壊れた state で動き続ける」より default に戻す方が安全。
+    /// 不変条件の検証: 非空・key は 1 以上で重複なし・focused / root 実在・next は最大 key より
+    /// 大きい。手編集や部分破損で崩れた file を「壊れた state で動き続ける」より default に
+    /// 戻す方が安全。
     fn is_valid(&self) -> bool {
         !self.sessions.is_empty()
             && self.sessions.iter().all(|s| s.key >= 1)
@@ -72,6 +89,7 @@ impl SessionRegistry {
                 .enumerate()
                 .all(|(i, s)| !self.sessions[..i].iter().any(|t| t.key == s.key))
             && self.sessions.iter().any(|s| s.key == self.focused)
+            && self.sessions.iter().any(|s| s.key == self.root)
             && self.sessions.iter().all(|s| s.key < self.next)
     }
 }
@@ -178,7 +196,9 @@ pub fn focus_in(
 /// session を 1 本取り除く（doc 38 Phase 3 — tab を閉じる）。
 ///
 /// - 実在しない key は Err（黙って成功にしない）
-/// - **最後の 1 本は取り除けない**（registry の非空不変条件。lane を素に戻したいなら
+/// - **root は取り除けない**（doc 39 §6。doc 38 の「最後の 1 本は取り除けない」と
+///   「⚠️ #1 close は Act I 床 resume を断つ」を包含する一般形 — root は常に実在するので
+///   最後の 1 本 = root。root を移してから取り除く。lane を素に戻したいなら
 ///   fresh restart = registry clear が正道）
 /// - focused を取り除いた場合は残りの先頭へ focus を移す（決定的な fallback）
 /// - 取り除いた key は再利用されない（`next` は据え置き = 採番の単調性維持）
@@ -198,11 +218,11 @@ pub fn remove_in(
             format!("session が存在しません（project={project}, lane={lane}, session={key}）"),
         ));
     }
-    if reg.sessions.len() == 1 {
+    if key == reg.root {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
-                "最後の session は取り除けません（project={project}, lane={lane}。fresh restart で素に戻せます）"
+                "root session は取り除けません（project={project}, lane={lane}, session={key}。root を移すか fresh restart で素に戻せます）"
             ),
         ));
     }
@@ -223,6 +243,18 @@ pub fn focused_in(base: &Path, project: &str, lane: &str) -> SessionKey {
     };
     match serde_json::from_str::<SessionRegistry>(&raw) {
         Ok(reg) if reg.is_valid() => reg.focused,
+        _ => 1,
+    }
+}
+
+/// root key だけを軽量に読む（file 不在 / 破損は 1 = N=1 特殊ケース）。
+/// 床 spawn（`stand_spawner`）/ channel D enrich のような「registry 全体は要らない」経路用。
+pub fn root_in(base: &Path, project: &str, lane: &str) -> SessionKey {
+    let Ok(raw) = std::fs::read_to_string(registry_file_in(base, project, lane)) else {
+        return 1;
+    };
+    match serde_json::from_str::<SessionRegistry>(&raw) {
+        Ok(reg) if reg.is_valid() => reg.root,
         _ => 1,
     }
 }
@@ -301,6 +333,11 @@ pub fn focused(project: &str, lane: &str) -> SessionKey {
     focused_in(&crate::config::vp_state_dir(), project, lane)
 }
 
+/// 本番 base での root。
+pub fn root(project: &str, lane: &str) -> SessionKey {
+    root_in(&crate::config::vp_state_dir(), project, lane)
+}
+
 /// 本番 base での clear。
 pub fn clear(project: &str, lane: &str) -> std::io::Result<()> {
     clear_in(&crate::config::vp_state_dir(), project, lane)
@@ -310,7 +347,7 @@ pub fn clear(project: &str, lane: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    /// file 不在 = N=1 の特殊ケース（lane の stand で session #1・focused=1）。
+    /// file 不在 = N=1 の特殊ケース（lane の stand で session #1・focused=1・root=1）。
     /// 既存 install が registry file 無しで従来どおり動くことの根拠。
     #[test]
     fn load_without_file_resolves_to_single_default() {
@@ -320,6 +357,7 @@ mod tests {
             reg,
             SessionRegistry {
                 focused: 1,
+                root: 1,
                 next: 2,
                 sessions: vec![SessionEntry {
                     key: 1,
@@ -328,6 +366,25 @@ mod tests {
             }
         );
         assert_eq!(focused_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
+    }
+
+    /// doc 39 P1 の後方互換の核: root field を持たない既存 file は root=1 として読める
+    /// （serde default）。既存 install の registry を壊さず root を導入できる根拠。
+    #[test]
+    fn registry_without_root_field_reads_as_root_1() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("echoes_sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("vp__conductor.json"),
+            r#"{"focused":2,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":2,"stand":"codex"}]}"#,
+        )
+        .unwrap();
+        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        assert_eq!(reg.root, 1, "root 無し file は root=1（従来の #1 化身）");
+        assert_eq!(reg.focused, 2, "focused は file の値を維持");
+        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
     }
 
     /// create → 採番 2・focus 追随 → roundtrip 永続。focus=false は focused を据え置く。
@@ -395,9 +452,20 @@ mod tests {
         .unwrap();
         let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
         assert_eq!(reg.sessions.len(), 1, "key 重複の file は既定形に解決");
+
+        // root が不在 key（不変条件違反）
+        std::fs::write(
+            &file,
+            r#"{"focused":1,"root":9,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":2,"stand":"codex"}]}"#,
+        )
+        .unwrap();
+        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        assert_eq!(reg.root, 1, "root 不在の file は既定形に解決");
+        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
     }
 
-    /// remove: 実在検証 / 最後の 1 本は拒否 / focused fallback は残りの先頭 / key 再利用なし。
+    /// remove: 実在検証 / root は拒否（doc 39 §6 — 最後の 1 本の拒否を包含）/
+    /// focused fallback は残りの先頭 / key 再利用なし。
     #[test]
     fn remove_validates_and_moves_focus_deterministically() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -407,6 +475,13 @@ mod tests {
 
         // 不在 key は Err
         assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 9).is_err());
+
+        // root(#1) は N>1 でも取り除けない（doc 38 の「⚠️ #1 close は Act I 床 resume を断つ」
+        // footgun を構造で塞ぐ — doc 39 §2）
+        assert!(
+            remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
+            "root session の remove は Err"
+        );
 
         // focused(#2) を remove → focus は残りの先頭(#1) へ
         let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("remove #2");
@@ -422,7 +497,7 @@ mod tests {
         let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 3).expect("remove #3");
         assert_eq!(focused, 1);
 
-        // 最後の 1 本は取り除けない（fresh restart が正道）
+        // 最後の 1 本 = root なので取り除けない（fresh restart が正道）
         assert!(
             remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
             "最後の session の remove は Err"

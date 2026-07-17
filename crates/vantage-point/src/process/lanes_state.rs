@@ -303,14 +303,16 @@ pub struct LaneInfo {
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub performer_status: Option<crate::lane::commands::PerformerStatus>,
-    /// R3-b: この lane の最後の CC session id。 registry には保存せず `/api/lanes` 応答時に
-    /// state file (`lane::cc_session`、 書き手は SessionStart hook) を lazy read する
-    /// (`performer_status` と同じ前例)。 echoes の `--resume` 再利用と R3-c の
-    /// `--bg` session 管理の土台。
+    /// R3-b → doc 39 §3-1: この lane の **root session** の CC session id（wire 配送は常に
+    /// root = lane の人格に解決する）。 registry には保存せず `/api/lanes` 応答時に root
+    /// session の state file (`lane::cc_session`、 書き手は SessionStart/UserPromptSubmit hook)
+    /// を lazy read する (`performer_status` と同じ前例)。 echoes の `--resume` 再利用と
+    /// R3-c の `--bg` session 管理の土台。
     ///
     /// ⚠️ **claude 専用の契約**: delivery_actor（channel D）が `claude -p --resume <id>` に
-    /// 使うため、他 engine の id を入れてはならない。表示用の engine 横断 id は
-    /// [`Self::engine_session_id`]（別契約）。
+    /// 使うため、他 engine の id を入れてはならない（root が非 claude session の場合、その
+    /// label の cc_session store には書き手がいないため自然に None になる）。表示用の
+    /// engine 横断 id は [`Self::engine_session_id`]（別契約）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cc_session_id: Option<String>,
     /// doc 37: この lane の **active engine の** session id（claude=cc_session / cursor=chatId /
@@ -347,18 +349,20 @@ impl LaneInfo {
     /// （session registry + session store、いずれも数百 byte）で軽微。
     pub fn refresh_engine_session_id(&mut self) {
         let lane_label = crate::process::stand_spawner::lane_label(&self.address);
-        // doc 38: chip は focused session の会話 id を映す。registry file 不在（N=1 特殊
-        // ケース）は focused=1 = 素の lane label に解決され、従来と同一の読み先になる。
-        // stand も focused session のもの（session は lane と異なる engine を持ち得る）。
+        // doc 39 P1: chip は root session（lane の人格 — 床に化身し mailbox を名乗る session）の
+        // 会話 id を映す（Act I は「lane の人格」を見る場所、doc 39 §4。Act II のタブ表示は
+        // per-session 値 = #796 の syncHeaderSessionId が担う）。registry file 不在（N=1 特殊
+        // ケース）は root=1 = 素の lane label に解決され、従来と同一の読み先になる。
+        // stand も root session のもの（session は lane と異なる engine を持ち得る）。
         let reg =
             crate::lane::session_registry::load(&self.address.project, lane_label, &self.stand);
         let stand = reg
             .sessions
             .iter()
-            .find(|s| s.key == reg.focused)
+            .find(|s| s.key == reg.root)
             .map(|s| s.stand.as_str())
             .unwrap_or(&self.stand);
-        let label = crate::lane::session_registry::session_label(lane_label, reg.focused);
+        let label = crate::lane::session_registry::session_label(lane_label, reg.root);
         self.engine_session_id = match crate::echoes::EngineKind::from_stand(stand) {
             Some(crate::echoes::EngineKind::Claude) => {
                 crate::lane::cc_session::last(&self.address.project, &label)
