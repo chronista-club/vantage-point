@@ -48,8 +48,10 @@ use crate::daemon::pty_slot::PtySlot;
 /// UserPromptSubmit で未読 wire を additionalContext 通知、 daemon 不在時は silent 成功
 /// （fail-open）。 JSON に single quote が無いため `'…'` 埋め込みで安全に quote できる。
 ///
-/// NOTE: SessionStart（session_id 記録、R3-b）は global settings（~/.claude/settings.json）の
-/// hook に移管済み（inline だと手動起動 session の id を取りこぼすため）。
+/// NOTE: cc_session の記録は本 hook の **UserPromptSubmit** が担う —「実際に会話が発生した
+/// session だけがポインタを動かす」不変条件（解剖 memory `cc-session-pointer-self-destruction`）。
+/// 旧 SessionStart 記録（R3-b → global settings 移管）は、resume 失敗 `||` fallback で立った
+/// 発話ゼロの fresh session までが id を記録し、復帰先ポインタを自壊させた。
 const WIRE_HOOKS: &str = r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}"#;
 
 /// Stand spawn 用 command（program + args + env + cwd + 初期入力）
@@ -207,11 +209,12 @@ fn is_safe_session_id(id: &str) -> bool {
 /// `--resume '<id>'` はこの罠を構造的に回避する（設計 mem_1CbXZyCiqrdgteGhRFDaHW / R3-b）。
 ///
 /// - fresh（"New Conductor Session"）: 素の claude（resume/continue 回避）
-/// - conductor + id あり: `--resume '<id>' || fresh`（session 消失時は fresh に fallback）
-/// - conductor + id なし（初回/移行直後）: `--continue || fresh`（従来 chain 維持 —
-///   一度 session が立てば hook が id を記録し、 以後は --resume 側に乗る）
-/// - performer + id あり: `--resume '<id>' || fresh`（tmux 撤去で SP restart = claude 再起動に
-///   なったため、 performer も会話継続を resume で担う。 id 指名なので dashboard 罠は踏まない）
+/// - conductor + id あり: `--resume '<id>' || resume-failed || fresh`（session 消失時は
+///   失敗を記録してから fresh に fallback — 無音 fallback がポインタ自壊の証拠を消していた F4 対策）
+/// - conductor + id なし（初回/移行直後）: `--continue || resume-failed || fresh`（従来 chain 維持 —
+///   一度会話が発生すれば UserPromptSubmit hook が id を記録し、 以後は --resume 側に乗る）
+/// - performer + id あり: `--resume '<id>' || resume-failed || fresh`（tmux 撤去で SP restart =
+///   claude 再起動になったため、 performer も会話継続を resume で担う。 id 指名なので dashboard 罠は踏まない）
 /// - performer + id なし: fresh（`--continue` は dashboard 罠のため使わない）
 ///
 /// `model`（co-evolution #1）: lane 単位の model alias（`engine_model` 由来）。 Some のとき
@@ -233,13 +236,17 @@ fn claude_command(
     if fresh {
         return fresh_cmd;
     }
+    // `|| vp lane resume-failed '<x>' ||` の 3 連 chain: resume-failed は「記録して常に
+    // exit 1」の中継専用コマンドで、失敗を伝播させて次の fresh fallback へ繋ぐ。
+    // shell group `{ …; }` を使わないのは fish 互換のため（床は user の login shell）。
+    // vp が PATH に無くても command-not-found = 非ゼロで chain は進む（fail-open）。
     match (kind, resume_id.filter(|id| is_safe_session_id(id))) {
         (_, Some(id)) => format!(
-            "claude {}--resume '{}' --settings '{}' || {}",
-            model_flag, id, WIRE_HOOKS, fresh_cmd
+            "claude {}--resume '{}' --settings '{}' || vp lane resume-failed '{}' || {}",
+            model_flag, id, WIRE_HOOKS, id, fresh_cmd
         ),
         (LaneKind::Conductor, None) => format!(
-            "claude {}--continue --settings '{}' || {}",
+            "claude {}--continue --settings '{}' || vp lane resume-failed 'continue' || {}",
             model_flag, WIRE_HOOKS, fresh_cmd
         ),
         (LaneKind::Performer, None) => fresh_cmd,
@@ -343,8 +350,12 @@ pub fn build_stand_command(
     // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
     let initial_input = match crate::echoes::EngineKind::from_stand(stand_name) {
         Some(crate::echoes::EngineKind::Claude) => {
-            // resume id は lane 単位の state file（書き手 = global SessionStart hook）を直読み。
-            let resume_id = crate::lane::cc_session::last(&addr.project, lane_label(addr));
+            // resume id は lane 単位の state file（書き手 = UserPromptSubmit hook）を直読み。
+            // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
+            // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒すと
+            // conductor は `--continue` に落ち、cwd 最新の実会話を拾える（F2/F3 根治）。
+            let resume_id = crate::lane::cc_session::last(&addr.project, lane_label(addr))
+                .filter(|id| crate::lane::cc_session::transcript_exists(id));
             // model は lane 単位の state file（`engine_model`、Act I/II 共有）を直読み。
             // 未記録 = None = claude default（co-evolution #1）。 respawn（SP restart）でも
             // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
@@ -492,17 +503,29 @@ mod tests {
         let fresh = claude_command(LaneKind::Conductor, true, Some("abc-123"), None);
         assert!(!fresh.contains("--resume") && !fresh.contains("--continue"));
 
-        // conductor + id → --resume '<id>' || fresh
+        // conductor + id → --resume '<id>' || resume-failed || fresh
         let resume = claude_command(LaneKind::Conductor, false, Some("abc-123"), None);
         assert!(resume.contains("--resume 'abc-123'"), "{resume}");
         assert!(
             resume.contains("||"),
             "session 消失時の fresh fallback: {resume}"
         );
+        // F4 観測装置: fallback 進入は無音にしない（解剖 memory cc-session-pointer-self-destruction）
+        assert!(
+            resume.contains("vp lane resume-failed 'abc-123'"),
+            "resume 失敗の観測中継が chain に入る: {resume}"
+        );
 
-        // conductor + id なし → --continue || fresh（初回/移行直後の従来 chain）
+        // conductor + id なし → --continue || resume-failed || fresh（初回/移行直後の従来 chain）
         let cont = claude_command(LaneKind::Conductor, false, None, None);
         assert!(cont.contains("--continue"), "{cont}");
+        assert!(
+            cont.contains("vp lane resume-failed 'continue'"),
+            "--continue 失敗も観測する: {cont}"
+        );
+
+        // fresh は失敗するものが無い = 観測中継も入らない
+        assert!(!fresh.contains("resume-failed"), "{fresh}");
 
         // performer + id → --resume（SP restart 後の会話継続、 dashboard 罠は id 指名で回避）
         let perf = claude_command(LaneKind::Performer, false, Some("abc-123"), None);
