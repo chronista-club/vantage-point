@@ -181,6 +181,18 @@ impl EchoesAgentHost {
             .arg("--include-partial-messages")
             .arg("--verbose");
 
+        // subagent（Agent tool が回した子）の発話を stream に載せる（claude 2.1.211+）。
+        // 無いと Act II で Agent 行は「実行中…→✓」の黒箱になり、子が何を考え何をしたかが
+        // 一切見えない（VP は subagent を多用する開発フローなので損失が大きい）。
+        //
+        // 出てくる形（実測 2026-07-17、claude 2.1.212）:
+        //   - 行 top-level に `parent_tool_use_id` が付き、値は親の `Agent` tool_use の id と一致
+        //   - 担い手は **assistant スナップショット行のみ**（parent 付きの `stream_event` は 0 本 =
+        //     delta では来ない）→ 翻訳は EchoesTranslator 側で snapshot から取り出す
+        // 翻訳器が parent 付き行を親から隔離する前提の flag（孤児 ToolCallUpdate / 誤 commit 境界 /
+        // 親の発話への混入を防ぐ）。 translate.rs の RawLine 分岐と対で読むこと。
+        cmd.arg("--forward-subagent-text");
+
         // Act I（TUI）が bypassPermissions で全ツール素通しなのに Act II を揃える（doc 33 §9、
         // user 要件 2026-07-09「act I レベルにここも合わせよう」）。bypassPermissions で TUI と
         // 同じ体験にする（通常 tool は素通し）。
