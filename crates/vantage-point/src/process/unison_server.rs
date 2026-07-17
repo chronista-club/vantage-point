@@ -1162,8 +1162,9 @@ async fn handle_echoes_session_new_root(
         .prepare_new_root_session(&addr)
         .map_err(|e| format!("echoes_session_new_root: {e}"))?;
     // registry は新 root へ切替済み（原子的な 1 save）。以降の床張り替えが失敗しても registry は
-    // 先行して整合 — 次の respawn / restart が新 root（bare でなく resume 経路だが record 無し =
-    // 実質素の起動）で立ち直る。Err は spawn 失敗として caller に返す。
+    // 先行して整合 — 次の respawn / restart（Resume 経路）でも未発話の非 #1 root は
+    // build_stand_command が bare に倒すため（--continue 混入防止）、新 root の新品として
+    // 立ち直る。Err は spawn 失敗として caller に返す。
     super::routes::lanes::restart_lane_orchestrated(
         state,
         addr,
