@@ -922,8 +922,17 @@ async fn handle_echoes_nudge(
     if text.is_empty() {
         return Err("echoes_nudge: text 未指定".to_string());
     }
-    // wire delivery は lane 宛（session の概念を持たない）= 常に focused へ注入。
-    ensure_and_submit_chat(state, "echoes_nudge", lane, None, text).await?;
+    // doc 39 §3-1: wire 配送は常に **root**（lane の人格）に解決する。lane 宛の nudge を
+    // focused に注入すると「Act II で別タブを見ている」だけで配送先が変わる誤配送になる
+    // （N=1 では root=focused=1 で従来と同一挙動）。lane パース失敗は session=None のまま
+    // ensure_and_submit_chat 側の同じパースが報告する（エラー文言の一元化）。
+    let session = crate::process::lanes_state::LanePool::parse_address(lane).map(|addr| {
+        crate::lane::session_registry::root(
+            &addr.project,
+            crate::process::stand_spawner::lane_label(&addr),
+        )
+    });
+    ensure_and_submit_chat(state, "echoes_nudge", lane, session, text).await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 

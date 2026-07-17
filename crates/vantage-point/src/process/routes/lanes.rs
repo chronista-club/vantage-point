@@ -130,13 +130,19 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
             }
         }
-        // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)。
+        // R3-b → doc 39 §3-1: CC session id は **root session**（lane の人格）の store を
+        // lazy read (書き手は SessionStart/UserPromptSubmit hook)。wire 配送（channel D）は
+        // 常に root に解決する — registry file 不在 = root=1 = 素の lane label で従来と同一。
         // 消費者 (echoes --resume / delivery_actor channel D) は conductor のみなので populate も
         // 限定し、 QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
         // policy 化 (設計メモ「fresh / resume が制限でなく policy になる」) の際に広げる。
         let lane_label = crate::process::stand_spawner::lane_label(&lane.address);
         if matches!(lane.kind, LaneKind::Conductor) {
-            lane.cc_session_id = crate::lane::cc_session::last(&lane.address.project, lane_label);
+            let root = crate::lane::session_registry::root(&lane.address.project, lane_label);
+            lane.cc_session_id = crate::lane::cc_session::last(
+                &lane.address.project,
+                &crate::lane::session_registry::session_label(lane_label, root),
+            );
         }
         // doc 37: Echoes 共通ヘッダの session chip 用（全 lane、実装は LaneInfo 側メソッド —
         // uplink の agent_card / LaneDiff push と共有）。上の cc_session と違い conductor 限定を
