@@ -185,8 +185,12 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
 | — | claude | stream-json 常駐（出荷済） | 基準器 |
 | **1** | codex | **app-server 常駐** | mako「turn じゃない方で」確定。thread/turn API（steer/fork 含む）をソース確認済 |
 | **2** | grok | **ACP 常駐**（新規 engine） | xai-org/grok-build ソース確認: ACP がネイティブ中核（TUI 自身が ACP client）、`xai-acp-lib` に session/new・prompt + load 機構。VP に `protocol/acp.rs` の下地あり。旧「ACP 不採用」は claude 専用統合の判断であり、grok では ACP こそが専用統合 |
-| **3** | cursor | **turn-scoped 維持 = Composer 2.5 枠** | Composer は Cursor 専有（公開 API 無し）で、使う唯一の路が cursor-agent = turn-scoped（CLI 実物で `composer-2.5` / `-fast` を確認）。「常駐で Composer」は現状不可能 — CLI が入力 stream / ACP を積んだら昇格再評価。P4 に「turn 固定費 vs Composer 速度」の実測を含める |
-| — | agy | **非対応（オミット）** | 会話 id 供給なし・常駐路なし。engine 対応表から除外（コード撤去は follow-up） |
+| — | cursor | **非対応（オミット）** | Composer 2.5 は魅力（`composer-2.5` / `-fast` を CLI 実物確認）だが、cursor-agent に入力 stream が無く turn-scoped しか組めない = 常駐一枚岩の方針に反する。**CLI が入力 stream / ACP を積んだら Composer 枠として再検討**（将来素材） |
+| — | agy | **非対応（オミット）** | 会話 id 供給なし・常駐路なし |
 
-codex app-server と grok ACP は共に「常駐 JSON-RPC over stdio + typed protocol」— TurnHost に
-対する常駐系の共通ホスト骨格（RpcHost 相当）を 1 度作れば両方に効く。
+**帰結 — 対応 engine は常駐型のみ（claude / codex / grok）の一枚岩**:
+- codex app-server と grok ACP は共に「常駐 JSON-RPC over stdio + typed protocol」— 常駐系の
+  共通ホスト骨格（RpcHost 相当）を 1 度作れば両方に効く
+- codex の app-server 移行が完了した時点で **TurnHost 系（turn_host / cursor_host /
+  codex_host / cursor_translate / codex_translate）は全 engine から不要になり丸ごと撤去できる**
+  （pre-MVP 方針: 中間状態・dead code を残さない）。cursor/agy のコード撤去はこれに束ねる
