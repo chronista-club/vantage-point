@@ -429,6 +429,21 @@ use crate::echoes::{ChatEngineSlot, ChatHost, EngineKind};
 // 「状態の供給を 1 系統に」の原則。読みは毎回 registry file、書きは registry module 経由）。
 use crate::lane::session_registry::{self, SessionKey};
 
+/// [`LanePool::restart_lane`] の床（engine）張り替えモード（doc 39 P2 — 旧 `fresh: bool` の昇格）。
+///
+/// 「素の engine で起動する」（spawn command の resume 回避）と「store を破棄する」は独立の軸。
+/// 旧 bool は両者を束ねていたため、「新 root で bare 起動したいが store は無傷にしたい」
+/// （Act I の ✨ New）が表現できなかった。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RespawnMode {
+    /// 会話を継ぐ（root session の store から resume）。旧 `fresh=false`。
+    Resume,
+    /// lane を素に戻す（全 session store + registry 破棄）。旧 `fresh=true` = sidebar の Reset lane。
+    Reset,
+    /// 素の engine で張り替え、store は破棄しない（doc 39 §4 Act I New — root 張り替え用）。
+    Bare,
+}
+
 /// [`LanePool::resolve_chat_session`] の解決結果 — session key と、その engine（stand）・
 /// focused かどうか。ガード分岐（focused のみ console_mode ガード）と host 構築に使う。
 #[derive(Debug, Clone)]
@@ -452,6 +467,9 @@ pub struct ChatSessionInfo {
     /// chat host が現在生きているか（in-memory slot の有無）。
     pub live: bool,
     pub focused: bool,
+    /// doc 39: この session が lane の root（床に化身し mailbox を名乗る）か。
+    /// GUI は root タブの × を隠す（backend の「root は remove 不可」の UI 反映）。
+    pub root: bool,
 }
 
 impl std::fmt::Debug for LanePool {
@@ -736,10 +754,16 @@ impl LanePool {
     }
 
     /// spawn 失敗時は LaneInfo.state を Dead にして error を返す (caller の責任で UI 通知)。
-    /// `fresh=true` は resume/continue を回避して素の `claude` を起動させる
-    /// (sidebar "New Conductor Session")。 false は従来の restart
-    /// (`--resume <cc_session_id>` で会話を継ぐ — tmux decoupling 後の継続性はこれが担う)。
-    pub fn restart_lane(&mut self, addr: &LaneAddress, fresh: bool) -> anyhow::Result<()> {
+    ///
+    /// `mode` は床（engine）の張り替え方（doc 39 P2 で 旧 `fresh: bool` から昇格 —
+    /// 「素の engine で起動する」と「store を破棄する」は独立の軸で、New root は前者だけが要る）:
+    /// - [`RespawnMode::Resume`]: 従来の restart（root session の store から `--resume` で会話を
+    ///   継ぐ — tmux decoupling 後の継続性はこれが担う）
+    /// - [`RespawnMode::Reset`]: lane を素に戻す（全 session store + registry 破棄 = 旧 fresh。
+    ///   sidebar の Reset lane）
+    /// - [`RespawnMode::Bare`]: 素の engine で張り替え、store は破棄しない（doc 39 §4 Act I の
+    ///   ✨ New — 新 root は記録ゼロなので bare 起動が正、旧 session の会話は無傷でタブに残る）
+    pub fn restart_lane(&mut self, addr: &LaneAddress, mode: RespawnMode) -> anyhow::Result<()> {
         let info = self
             .lanes
             .get(addr)
@@ -747,7 +771,7 @@ impl LanePool {
         let cwd = info.cwd.clone();
         let stand = info.stand.clone();
 
-        // fresh=true は「lane を素に戻す」= resume の矢印（全 session の engine store）を破棄する。
+        // Reset は「lane を素に戻す」= resume の矢印（全 session の engine store）を破棄する。
         // ⚠️ 破壊（engine drop / PtySlot kill）より先に fresh の前提を満たす。消せなければ
         // resume が残り fresh でなくなるので黙って成功にできないが、先に破壊してから bail
         // すると「死んだのに pid/state は旧値」の不整合が残る。この順序なら chat は
@@ -759,7 +783,7 @@ impl LanePool {
         // spawn command から --resume を落とすだけで pointer file が残った — restart 直後の
         // Diff::Update push が旧 id を運び、session chip が旧 id を映し続ける
         // （2026-07-17 解剖 / moody-blues 指摘の根治で mode 非依存に統一）。
-        if fresh {
+        if mode == RespawnMode::Reset {
             Self::clear_fresh_lane_state(addr, &stand)?;
         }
 
@@ -779,7 +803,7 @@ impl LanePool {
                 info.state = LaneState::Running;
             }
             tracing::info!(
-                "Lane restart (chat mode): engine drop、次 submit で再 spawn: {addr} fresh={fresh}"
+                "Lane restart (chat mode): engine drop、次 submit で再 spawn: {addr} mode={mode:?}"
             );
             return Ok(());
         }
@@ -792,12 +816,14 @@ impl LanePool {
         self.term_attaches.remove(addr);
         let _ = self.pty_slots.remove(addr);
 
-        // step 2: 同 stand で respawn (fresh は builder に直接渡す — 旧 VP_FRESH env の後継)。
+        // step 2: 同 stand で respawn (bare 判定は builder に直接渡す — 旧 VP_FRESH env の後継)。
+        // Reset / Bare とも「素の engine で起動」（resume/continue 回避）。差は store 破棄の有無
+        // だけで、それは上の clear_fresh_lane_state 分岐が既に処理済み。
         let cmd = crate::process::stand_spawner::build_stand_command(
             &stand,
             addr,
             std::path::Path::new(&cwd),
-            fresh,
+            mode != RespawnMode::Resume,
         );
         match crate::process::stand_spawner::spawn_stand(&cmd, 120, 48) {
             Ok((slot, term_rx)) => {
@@ -994,6 +1020,7 @@ impl LanePool {
                     engine_session_id,
                     live: live.is_some_and(|m| m.contains_key(&s.key)),
                     focused: s.key == reg.focused,
+                    root: s.key == reg.root,
                 }
             })
             .collect())
@@ -1021,6 +1048,42 @@ impl LanePool {
             .map_err(|e| anyhow::anyhow!("session 作成に失敗（addr={addr}）: {e}"))?;
         tracing::info!(
             "chat session create: addr={addr} session={key} stand={stand} focus={focus}"
+        );
+        Ok(key)
+    }
+
+    /// doc 39 §4: Act I の ✨ New の registry 部 — 新 session（現 root の stand を引き継ぐ）を
+    /// 作り、root と focused を同時にそれへ向ける。床の張り替え（respawn）は caller が
+    /// [`restart_lane_orchestrated`](crate::process::routes::lanes::restart_lane_orchestrated) を
+    /// [`RespawnMode::Bare`] で呼ぶ（spawn の orchestration = retry / pump 付替 / Diff push は
+    /// restart 経路に一元化 — 第 2 の spawn 経路を作らない）。
+    ///
+    /// mode=Tui 限定: chat lane（Act II）の New は既存の `create_chat_session`（新 Draft タブ）が
+    /// 担う — 「今いる Act に出す」の分岐は vp-app が行い、backend は各動詞の整合だけ守る。
+    pub fn prepare_new_root_session(&mut self, addr: &LaneAddress) -> anyhow::Result<SessionKey> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        if info.console_mode != crate::lane::console_mode::ConsoleMode::Tui {
+            anyhow::bail!(
+                "echoes_session_new_root は Act I（mode=tui）専用です（addr={addr}。chat lane の New は echoes_session_create）"
+            );
+        }
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        // 新 session の engine は現 root の stand を引き継ぐ（doc 39 §1「engine は現 session を
+        // 引き継ぎ」— lane の stand でなく root の stand。N=1 では両者は一致する）。
+        let reg = session_registry::load(&addr.project, lane_label, &info.stand);
+        let stand = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == reg.root)
+            .map(|s| s.stand.clone())
+            .unwrap_or_else(|| info.stand.clone());
+        let key = session_registry::create_root(&addr.project, lane_label, &info.stand, &stand)
+            .map_err(|e| anyhow::anyhow!("root session 作成に失敗（addr={addr}）: {e}"))?;
+        tracing::info!(
+            "new root session: addr={addr} session={key} stand={stand}（旧 root はタブに残存）"
         );
         Ok(key)
     }
@@ -1228,7 +1291,7 @@ impl LanePool {
                 // PTY respawn は restart_lane を再利用（--resume は build_stand_command が
                 // cc_session から拾う = 会話継続）。
                 tracing::info!("console mode → tui（headless 停止、PTY respawn）: {addr}");
-                self.restart_lane(addr, false)
+                self.restart_lane(addr, RespawnMode::Resume)
             }
         }
     }
@@ -1580,11 +1643,12 @@ mod tests {
         insert_lane(pool, addr, crate::lane::console_mode::ConsoleMode::Chat);
     }
 
-    /// doc 33: chat lane の restart は `fresh` で意味が割れる。
-    /// - fresh=false → cc_session を残す（次 spawn が `--resume` で会話を継ぐ）
-    /// - fresh=true  → cc_session を捨てる（素の新規 session + replay も前会話を映さない）
+    /// doc 33 → doc 39 P2: chat lane の restart は `RespawnMode` で意味が割れる。
+    /// - Resume → cc_session を残す（次 spawn が `--resume` で会話を継ぐ）
+    /// - Bare   → cc_session を残す（素の engine で張り替えるが store は無傷 — 新 root 用）
+    /// - Reset  → cc_session を捨てる（素の新規 session + replay も前会話を映さない）
     ///
-    /// engine は lazy spawn なので「fresh に立て直す対象」がその場に無く、意図は state
+    /// engine は lazy spawn なので「立て直す対象」がその場に無く、意図は state
     /// (cc_session の有無) でしか運べない。 その 1 点をここで固定する。
     #[test]
     fn chat_restart_clears_cc_session_only_when_fresh() {
@@ -1596,21 +1660,32 @@ mod tests {
         let mut pool = LanePool::new();
         insert_chat_lane(&mut pool, &addr);
 
-        // fresh=false: 会話を継ぐので記録は残る
+        // Resume: 会話を継ぐので記録は残る
         crate::lane::cc_session::record("vp", "conductor", "old-session-id").expect("record");
-        pool.restart_lane(&addr, false).expect("chat restart");
+        pool.restart_lane(&addr, RespawnMode::Resume)
+            .expect("chat restart");
         assert_eq!(
             crate::lane::cc_session::last("vp", "conductor").as_deref(),
             Some("old-session-id"),
-            "fresh でない restart は resume の矢印を保つ"
+            "Resume restart は resume の矢印を保つ"
         );
 
-        // fresh=true: 素の新規 session にするため記録を捨てる
-        pool.restart_lane(&addr, true).expect("fresh chat restart");
+        // Bare（doc 39 P2）: 素の engine で張り替えるが store は破棄しない
+        pool.restart_lane(&addr, RespawnMode::Bare)
+            .expect("bare chat restart");
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor").as_deref(),
+            Some("old-session-id"),
+            "Bare restart は store を無傷に保つ（新 root 用 — 旧会話をタブに残す）"
+        );
+
+        // Reset: 素の新規 session にするため記録を捨てる
+        pool.restart_lane(&addr, RespawnMode::Reset)
+            .expect("reset chat restart");
         assert_eq!(
             crate::lane::cc_session::last("vp", "conductor"),
             None,
-            "fresh restart は resume の矢印を捨てる"
+            "Reset restart は resume の矢印を捨てる"
         );
 
         // chat 分岐は PTY を立てない = engine-less (pid=None) のまま Running が正常形
@@ -1665,7 +1740,8 @@ mod tests {
         )
         .expect("replay log append #2");
 
-        pool.restart_lane(&addr, true).expect("fresh chat restart");
+        pool.restart_lane(&addr, RespawnMode::Reset)
+            .expect("reset chat restart");
 
         assert_eq!(
             crate::lane::cc_session::last("vp", "conductor"),

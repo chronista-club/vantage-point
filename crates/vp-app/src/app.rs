@@ -3668,11 +3668,12 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 }
             }
-            // 新セッション開始（✨ New ボタン）。doc 38 §4.2 で chat / tui に分岐する:
-            //  - chat lane: fresh restart を呼ばず「新 Draft session を作って focus」。旧会話はタブに
-            //    残る（タブモデルの自然形 = 前回状態キープの延長）。lane を素に戻す（全 session 破棄）
-            //    のは sidebar の従来経路が担う。
-            //  - tui lane: 従来どおり lane_restart(fresh=true)（cc_session 破棄 + 素の claude respawn）。
+            // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Act に出す」で分岐する:
+            //  - chat lane（Act II）: 「新 Draft session を作って focus」。旧会話はタブに残る
+            //    （タブモデルの自然形 = 前回状態キープの延長）。
+            //  - tui lane（Act I）: echoes_session_new_root = 新 session を作って root を向け、床を
+            //    素の engine で張り替える（非破壊 — 旧 root の会話はタブに残存）。旧 fresh restart
+            //    （全 session 破棄）は sidebar の Reset lane に退避した。
             Event::UserEvent(AppEvent::ConsoleNewSession { lane }) => {
                 // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
                 // active lane が変わり得るため resolve_active_project_path は使わない）。
@@ -3750,16 +3751,20 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 } else {
-                    // tui lane は従来どおり fresh restart（変更なし）。
+                    // tui lane（Act I）: doc 39 §4 — 新 session + root 張り替え + 床 bare respawn。
                     rt_handle.spawn(async move {
-                        let payload = serde_json::json!({ "address": &lane, "fresh": true });
-                        match world_process_request(port, &path, "lane_restart", payload).await {
+                        let payload = serde_json::json!({ "lane": &lane });
+                        match world_process_request(port, &path, "echoes_session_new_root", payload)
+                            .await
+                        {
                             Ok(_) => {
-                                tracing::info!("console:new_session ok（tui, fresh）: lane={lane}");
-                                // doc 38 Phase 2: fresh で registry は N=1（key 1 focused）に戻る。tab strip
-                                // 反映を兼ねて、先に一覧を取り直して focusedOf を authoritative(=1) に更新
-                                // してから replay_start を送る。逆順だと chatview の session filter が旧
-                                // focused のままで replay_start(session 既定 1) を落とし、会話が clear されない。
+                                tracing::info!(
+                                    "console:new_session ok（tui, new root）: lane={lane}"
+                                );
+                                // 新 root が focused になった registry を取り直して tab strip +
+                                // focusedOf を authoritative に更新してから replay_start を送る。
+                                // 逆順だと chatview の session filter が旧 focused のままで
+                                // replay_start を落とし、会話が clear されない（doc 38 Phase 2 の規律）。
                                 match world_process_request(
                                     port,
                                     &path,

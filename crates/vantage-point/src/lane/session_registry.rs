@@ -174,6 +174,30 @@ pub fn create_in(
     Ok(key)
 }
 
+/// 新 session を作り、root と focused を同時にそれへ向ける（doc 39 §4 — Act I の ✨ New =
+/// Root 切替「✨ 新 ID から」の shorthand）。1 回の save で書くため、器（床）と mailbox の
+/// 化身がズレる中間 state は disk に存在しない（doc 39 §0「原子的」の registry 側担保）。
+/// 旧 root の session は一覧に残る（非破壊 — store も registry entry も触らない）。
+pub fn create_root_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    stand: &str,
+) -> std::io::Result<SessionKey> {
+    let mut reg = load_in(base, project, lane, default_stand);
+    let key = reg.next;
+    reg.next += 1;
+    reg.sessions.push(SessionEntry {
+        key,
+        stand: stand.to_string(),
+    });
+    reg.focused = key;
+    reg.root = key;
+    save_in(base, project, lane, &reg)?;
+    Ok(key)
+}
+
 /// focused を切り替える。実在しない key は Err（黙って据え置くと「切替えたつもり」の誤配送になる）。
 pub fn focus_in(
     base: &Path,
@@ -293,6 +317,22 @@ pub fn create(
         default_stand,
         stand,
         focus,
+    )
+}
+
+/// 本番 base での create_root。
+pub fn create_root(
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    stand: &str,
+) -> std::io::Result<SessionKey> {
+    create_root_in(
+        &crate::config::vp_state_dir(),
+        project,
+        lane,
+        default_stand,
+        stand,
     )
 }
 
@@ -502,6 +542,27 @@ mod tests {
             remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
             "最後の session の remove は Err"
         );
+    }
+
+    /// create_root: 新 session に root + focused が同時に移り、旧 root は一覧に残る（doc 39 §4
+    /// Act I New = 非破壊）。旧 root（#1）は非 root になったので remove 可能になる。
+    #[test]
+    fn create_root_moves_root_and_focus_atomically() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let k2 = create_root_in(tmp.path(), "vp", "conductor", "echoes", "echoes")
+            .expect("create_root #2");
+        assert_eq!(k2, 2);
+        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        assert_eq!(reg.root, 2, "root は新 session へ");
+        assert_eq!(reg.focused, 2, "focused も新 session へ（追加して focus）");
+        assert_eq!(reg.sessions.len(), 2, "旧 root(#1) は一覧に残る（非破壊）");
+        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 2);
+
+        // 旧 root(#1) は非 root になったので閉じられる（doc 39 §2 — #1 の特別性撤廃）
+        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 1).expect("remove #1");
+        assert_eq!(focused, 2);
+        // 新 root(#2) は取り除けない
+        assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 2).is_err());
     }
 
     /// clear = fresh reset。file が消えて既定形に戻り、採番も 1 からやり直し。冪等。

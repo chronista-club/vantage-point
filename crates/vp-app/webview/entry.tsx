@@ -199,10 +199,6 @@ interface SetActivePaneInfo {
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
 let activeLaneAddress: string | null = null;
 
-/** New Session ボタンの armed 状態を解除する hook（ボタン生成時に代入）。lane 切替で
- *  「✨ New Session?」表示が残ると、別 lane を見ながら「もう一押しで実行」と誤読させる。 */
-let disarmNewSession: (() => void) | null = null;
-
 /** Echoes 共通ヘッダ（pane-host 上端 strip）。mount は vpConsole install 後（下方）、
  *  setActivePane bridge が lane 文脈を届ける。null = mount 点不在（graceful skip）。 */
 let echoesHeader: EchoesHeaderApi | null = null;
@@ -269,9 +265,6 @@ const installSetActivePaneBridge = (): void => {
 					laneScenes.set(activeLaneAddress, currentScene);
 				}
 			}
-			// lane が変わったら New Session の armed 表示を落とす（実行はされないが、
-			// 別 lane を見ながら armed ラベルが残ると誤読を招く）。
-			if (activeLaneAddress !== newLane) disarmNewSession?.();
 			activeLaneAddress = newLane;
 			// Echoes 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
 			// PP 等を眺めている間も直前の lane 文脈が載り続ける）。
@@ -590,25 +583,15 @@ if (paneTerminal) {
 		);
 	});
 
-	// New Session ボタン: 旧「/exit → 手打ち claude」の置き換え。lane_restart(fresh=true) を
-	// 撃つ = cc_session 破棄 + Act I は素の claude respawn / Act II は engine 入れ替え。
-	// wry では window.confirm が既定 false を返すため、誤爆防止は 2 クリック armed 方式
-	// （1 回目で「New Session?」表示、3s 放置 or lane が変わったら解除、2 回目で実行）。
+	// New Session ボタン（doc 39 §4）: 「今いる Act に出す」非破壊の New。
+	//  - Act I（tui lane）: 新 session + root 張り替え + 床 bare respawn（旧会話はタブに残存）
+	//  - Act II（chat lane）: 新 Draft タブ + focus（従来どおり）
+	// 分岐は Rust（ConsoleNewSession の lane_is_chat）が行う。旧実装の 2 クリック armed 防爆は
+	// New が破壊的（fresh restart = 全会話破棄）だった時代の名残 — 非破壊化で不要になり撤去し、
+	// 全会話破棄は sidebar の Reset Lane（2-click 確認付き context menu）へ退避した。
 	const newSession = document.createElement("button");
 	newSession.className = "echoes-act-toggle echoes-new-session";
-	const NEW_LABEL = "✨ New";
-	newSession.textContent = NEW_LABEL;
-	let armedLane: string | null = null;
-	let armedTimer: number | undefined;
-	const disarm = (): void => {
-		armedLane = null;
-		if (armedTimer) clearTimeout(armedTimer);
-		armedTimer = undefined;
-		newSession.classList.remove("armed");
-		newSession.textContent = NEW_LABEL;
-	};
-	// lane 切替（setActivePane bridge）からも解除できるよう hook を公開する。
-	disarmNewSession = disarm;
+	newSession.textContent = "✨ New";
 	newSession.addEventListener("click", () => {
 		if (handoffPending) return;
 		const lane = activeLaneAddress ?? consoleActiveLane;
@@ -618,16 +601,6 @@ if (paneTerminal) {
 			);
 			return;
 		}
-		if (armedLane !== lane) {
-			// 1 段目（or 別 lane で armed のまま）: この lane で arm し直す。
-			disarm();
-			armedLane = lane;
-			newSession.classList.add("armed");
-			newSession.textContent = "✨ New Session?";
-			armedTimer = window.setTimeout(disarm, 3000);
-			return;
-		}
-		disarm();
 		const ipc = (
 			window as unknown as { ipc?: { postMessage(m: string): void } }
 		).ipc;

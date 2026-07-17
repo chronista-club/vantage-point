@@ -105,6 +105,10 @@ export type EchoesSession = {
   /** chat host が現在生きているか（in-memory slot の有無）。 */
   live: boolean
   focused: boolean
+  /** doc 39: この session が lane の root（床に化身し mailbox を名乗る）か。
+   *  root タブは × を隠す（backend の「root は remove 不可」の UI 反映）。
+   *  旧 SP は送らない → undefined（後方互換は canCloseSession 側が吸収）。 */
+  root?: boolean
 }
 
 /** echoes_session_list の生 payload（Rust `handle_echoes_session_list` の返り値 mirror）。 */
