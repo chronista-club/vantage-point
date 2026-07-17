@@ -271,7 +271,7 @@ enum LaneCommands {
     ///
     /// project / lane は flag 優先、 無ければ VP_PROJECT / VP_LANE env から導出。
     /// 未記録 / env 不足なら何も出力せず exit 0 (caller は空文字で fallback 判定)。
-    /// id の書き手は SessionStart hook (`vp wire hook-check`)。
+    /// id の書き手は UserPromptSubmit hook (`vp wire hook-check`)。
     LastSession {
         /// project 名 (省略時 VP_PROJECT env)
         #[arg(long)]
@@ -279,6 +279,15 @@ enum LaneCommands {
         /// lane label: conductor / performer 名 (省略時 VP_LANE env)
         #[arg(long)]
         lane: Option<String>,
+    },
+    /// resume 失敗の観測記録 (`||` chain 中継専用 — 記録して常に exit 1)
+    ///
+    /// Act I type-ahead `claude --resume 'X' … || vp lane resume-failed 'X' || claude …` から
+    /// 呼ばれる。project / lane は VP_PROJECT / VP_LANE env から導出。記録に失敗しても exit 1
+    /// (chain の fresh fallback を止めない)。手動実行は想定しない。
+    ResumeFailed {
+        /// 失敗した resume 対象 (session id or 'continue')
+        attempted: String,
     },
     /// lane console の現在画面を読む (tmux decoupling: 旧 `vp tmux capture` の後継)
     ///
@@ -737,6 +746,17 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
                 println!("{id}");
             }
             Ok(())
+        }
+        LaneCommands::ResumeFailed { attempted } => {
+            // 記録して常に exit 1 = `||` chain の中継。この行は床の scrollback に残り、
+            // 「無音で fresh になった」を user からも見えるようにする（観測装置 F4）。
+            let project = std::env::var("VP_PROJECT").unwrap_or_else(|_| "-".into());
+            let lane = std::env::var("VP_LANE").unwrap_or_else(|_| "-".into());
+            let _ = vantage_point::lane::resume_failure::append(&project, &lane, &attempted);
+            eprintln!(
+                "[vp] resume 失敗: '{attempted}' を継げませんでした — fresh session に fallback します (log: resume_failures.log)"
+            );
+            std::process::exit(1);
         }
         LaneCommands::Capture { lane } => {
             let config = Config::load().unwrap_or_default();
