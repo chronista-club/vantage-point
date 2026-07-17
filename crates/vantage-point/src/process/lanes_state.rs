@@ -1360,17 +1360,16 @@ impl LanePool {
                 ))
             }
             Some(EngineKind::Codex) => {
-                // codex: turn-scoped host（cursor と同機構 = TurnHost）。thread id は registry の
-                // 会話 id（doc 40 §5 — Act I と共有、record-from-init が書き手）。
-                let session_id = resolved.conversation.clone();
+                // codex: 常駐 RpcHost（`codex app-server` JSONL JSON-RPC、doc 41）。thread id は
+                // registry の会話 id（doc 40 §5 — Act I と共有。書き戻しは host が registry 直結）。
                 ChatHost::Codex(crate::echoes::CodexAgentHost::spawn(
-                    crate::echoes::TurnHostConfig {
+                    crate::echoes::CodexRpcHostConfig {
                         cwd: info.cwd.clone(),
                         project: addr.project.clone(),
                         lane: label.clone(),
-                        session_id,
+                        thread_id: resolved.conversation.clone(),
                     },
-                ))
+                )?)
             }
             Some(EngineKind::Claude) => {
                 // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
