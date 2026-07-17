@@ -615,7 +615,23 @@ async fn hook_check() -> Result<()> {
             .and_then(|v| v.get("session_id").and_then(|s| s.as_str()))
         && let (Some(p), Some(l)) = (project.as_deref(), lane.as_deref())
     {
-        let _ = crate::lane::cc_session::record(p, l, sid);
+        // 供給 push 根治（session chip 凍結、2026-07-17）: pointer が実際に動いた時だけ
+        // World（wire channel `lane/session-changed`）経由で SP に変化を通知する。SP が
+        // Diff::Update を push し、vp-app の header が lane 切替なしで新 id に追従する。
+        // record が冪等 no-op の毎ターンは通知しない（既存 wire link への無駄打ち回避）。
+        // 通知は表示系のベストエフォート — 失敗しても record 済の真値は ask 経路（lanes_list
+        // の lazy read）で常に読めるので fail-open で握る。record 前に読む（後だと常に一致）。
+        let changed = crate::lane::cc_session::last(p, l).as_deref() != Some(sid);
+        if crate::lane::cc_session::record(p, l, sid).is_ok() && changed {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                crate::process::world_wire::call(
+                    "/api/lane/session-changed",
+                    serde_json::json!({ "project": p, "lane": l }),
+                ),
+            )
+            .await;
+        }
     }
 
     let Some(agent) = wire_address_from_env(project.as_deref(), lane.as_deref()) else {

@@ -1507,6 +1507,41 @@ fn focused_session_stand(payload: &serde_json::Value) -> Option<String> {
 }
 
 #[cfg(test)]
+mod header_lane_fields_changed_tests {
+    use super::header_lane_fields_changed;
+    use crate::client::LaneInfo;
+
+    /// 最小 LaneInfo（全 field serde default）に engine_session_id だけ与える。
+    fn lane(engine_session_id: Option<&str>) -> LaneInfo {
+        serde_json::from_value(serde_json::json!({
+            "address": {"kind": "conductor", "project": "vp"},
+            "engine_session_id": engine_session_id,
+        }))
+        .expect("LaneInfo deserialize")
+    }
+
+    /// 供給 push 根治: session chip の供給源（engine_session_id）の変化と消灯を検知する。
+    #[test]
+    fn detects_engine_session_id_change() {
+        assert!(header_lane_fields_changed(
+            &lane(Some("old")),
+            &lane(Some("new"))
+        ));
+        assert!(header_lane_fields_changed(&lane(Some("old")), &lane(None)));
+    }
+
+    /// 変化なしは false（LanesLoaded は高頻度 loop event — setActivePane を無駄打ちしない）。
+    #[test]
+    fn unchanged_is_false() {
+        assert!(!header_lane_fields_changed(
+            &lane(Some("same")),
+            &lane(Some("same"))
+        ));
+        assert!(!header_lane_fields_changed(&lane(None), &lane(None)));
+    }
+}
+
+#[cfg(test)]
 mod focused_session_stand_tests {
     use super::focused_session_stand;
 
@@ -1646,6 +1681,30 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     if let Err(e) = main_view.evaluate_script(&script) {
         tracing::warn!("main setActivePane 失敗: {}", e);
     }
+}
+
+/// LanesLoaded の snapshot 差し替えで、active lane の Echoes ヘッダに載る field が変わったか。
+///
+/// `push_active_view` 再発行の gate（供給 push 根治）。LanesLoaded は loop event で頻発する
+/// ため毎回撃つと setActivePane が noise になる — header が実際に読む field（session chip /
+/// cwd / branch / lane 名 / stand / Act 初期値）に変化がある時だけ true を返す。
+fn header_lane_fields_changed(
+    prev: &crate::client::LaneInfo,
+    next: &crate::client::LaneInfo,
+) -> bool {
+    prev.engine_session_id != next.engine_session_id
+        || prev.cwd != next.cwd
+        || prev.stand != next.stand
+        || prev.name != next.name
+        || prev.console_mode != next.console_mode
+        || prev
+            .performer_status
+            .as_ref()
+            .and_then(|p| p.branch.as_deref())
+            != next
+                .performer_status
+                .as_ref()
+                .and_then(|p| p.branch.as_deref())
 }
 
 /// Lane address (Display 形 `"<project>/conductor"` 等) から所属 project path を逆引きする。
@@ -3114,6 +3173,24 @@ pub fn run() -> anyhow::Result<()> {
                     // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
                     sidebar_state.lane_inboxes.remove(addr);
                 }
+                // 供給 push 根治（session chip 凍結、2026-07-17）: この snapshot で active lane の
+                // header 相当 field（engine_session_id 等）が変わったかを差し替え前に判定して
+                // おく。従来は cache 更新のみで setActivePane を撃ち直さず、lane を選び直すまで
+                // Echoes ヘッダが旧値で凍結した。LanesLoaded は高頻度 loop event なので、
+                // 変化時のみ（下の push）に絞る。
+                let active_header_refresh = sidebar_state
+                    .active_lane_address
+                    .as_deref()
+                    .and_then(|addr| {
+                        let prev = sidebar_state
+                            .lanes_by_project
+                            .get(&path_key)?
+                            .iter()
+                            .find(|l| l.address.key() == addr)?;
+                        let next = lanes.iter().find(|l| l.address.key() == addr)?;
+                        Some(header_lane_fields_changed(prev, next))
+                    })
+                    .unwrap_or(false);
                 sidebar_state.lanes_by_project.insert(process_path, lanes);
                 // 購読フェーズを "ready" に (= snapshot を 1 度でも受けた)。 stalled から復帰した場合も
                 // ここで解消。 absent(初期 loading) / stalled と区別して hintFor が lane 0本 を
@@ -3168,6 +3245,11 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 } else {
                     push_sidebar_state(&webview, &sidebar_state);
+                }
+                // 供給 push 根治: active lane の header field が変わった snapshot でだけ
+                // setActivePane を再発行（webview の EchoesHeader ctx 層が新値に追従する）。
+                if active_header_refresh {
+                    push_active_view(&webview, &sidebar_state);
                 }
                 // Act II: active chat lane を echoes topic に attach（→ demand → transcript replay）。
                 // LanesLoaded は lane snapshot 到着のたび走るので、 起動直後の session 復元
