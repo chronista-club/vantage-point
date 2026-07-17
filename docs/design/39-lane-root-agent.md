@@ -130,6 +130,11 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
 床での発話は新 root の store に記録される。PR #798 の変化 push（`lane/session-changed` →
 `Diff::Update`）もそのまま root の chip 更新に乗る — 本 doc は #795/#798 の上に素直に積める。
 
+> ⚠️ **2026-07-18 dogfood で不成立と判明**: hook の書き込み鍵は env `VP_LANE`（素の lane
+> label）のままで root の session label（`conductor#2`）に追従しない — root≥2 の lane では
+> 書き手と読み手のラベルが乖離し、chip 恒久空白 + 床 resume の `--continue` 劣化を起こす
+> （doc 40 §1 に解剖）。root-cause fix = 会話 id の SSOT を registry に統合する doc 40 PR-1。
+
 ## 4. Act I / Act II での見え方 — New は「今いる Act に出す」
 
 - **Act I**: 床 = root。header chip は root session の会話 id（`refresh_engine_session_id` の
@@ -147,12 +152,25 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
   Act I の New は床の現 agent を kill する（会話は resume 可能なタブとして残るので**非破壊**）。
   床が実行中 turn の最中なら中断になる点だけ留意 — 防爆を足すかは dogfood で判断（仮: 不要）
 
+### 4-1. Session ID の表示は「発行時点で即・engine/Act 問わず」（mako 2026-07-18 dogfood 決定）
+
+**不変条件**: header chip は「今その lane が抱える **live session id**」を、**session id が発行された瞬間**に映す。発話（初回 UserPromptSubmit）を待たない。engine（cc / codex / cursor）も Act（I / II）も問わない共通ルール。koan =「なるべく正しい session id を、常に出す」。
+
+- 現状の点灯は #795 の UserPromptSubmit hook（発話契機）に相乗りしており、Act I の生 TUI は
+  boot 時の捕捉経路を持たない（2026-07-18 実機で確認: New root 03:18 → 記録は初回発話 03:23）
+- **実現機構は doc 40 に一本化**（会話 id の SSOT を session registry に統合し、SessionStart で
+  eager 報告 + F1/F2 guard を SP の policy 1 箇所に移設）。同解剖で「hook の書き込みラベルが
+  root に追従しない」実バグ 2 段（chip 恒久空白 / 床 resume の `--continue` 劣化）も確定し、
+  本節の遅延問題と同根で doc 40 が root-cause fix する
+- **読み先は §4 のまま**（Act I = root / Act II = focused）。本節は「いつ映すか（発話 → 発行）」だけを前倒しする差分で、「何を映すか」は不変。
+
 ## 5. Phase 分割
 
 | Phase | 内容 | 備考 |
 |-------|------|------|
 | **P1** | registry に `root` 追加（default 1）+ 床 spawn / wire 3 経路 / chip enrich の読み先を root に統一 | 挙動は N=1 で完全互換（中間状態を作らない） |
 | **P2** | ✨ New の意味論統一(Act 不問で session 追加 + Act II 切替、armed 撤去) + Reset lane を sidebar へ退避 | 旧 tui fresh 経路は Reset に移る |
+| **P2.5** | 会話 id SSOT 統合（registry 一枚岩 + 書き手漏斗 + eager 表示 + ラベル乖離バグ根治） | **doc 40 に昇格**（表示層だけの patch では §3-4 ⚠️ のバグが残るため構造ごと） |
 | **P3** | Root 切替 picker（リスト + 「✨ 新 ID から」+ wire 引き継ぎ警告） | UI 表示場所は dogfood で決める |
 | **P4** | engine gating（cursor / codex の床 resume 可否を実測して picker に反映） | doc 37 の engine 実測系譜 |
 
@@ -165,6 +183,11 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
   ない」に拡張。root を移してから削除）
 - **#798 との関係**: 本 doc は #798（session id 変化の push 経路）と #795（pointer 記録の
   UserPromptSubmit 化）を前提に積む。root 切替時も `emit_lane_update` を撃てば chip が追従する
+- **表示 eager 化と F1/F2 guard の両立**（§4-1 → doc 40 §6）: 「UserPromptSubmit のみ記録」は
+  F1/F2（resume 失敗 `|| claude` fallback の幻 session が pointer 上書き）を潰す**鈍器**だった。
+  doc 40 は SP の policy 1 箇所に置き換える — SessionStart は「既存 conversation の transcript が
+  実在する時だけ据え置き」の精密 guard 付きで記録可（New root の fresh 発番 / resume 成功
+  no-op は即記録 = chip が boot で点く）。旧鈍器を無条件 SessionStart 記録に戻すのは依然禁止
 - **将来素材 — 会話の分岐**: claude には `--fork-session`（resume 時に旧 id を汚さず新 session id を
   切る）が公式にある（2026-07-17 検証で確認）。「既存会話から分岐して root にする」を作る時は
   これが土台になる（本 doc の scope 外、P4 以降の素材として記録のみ）
