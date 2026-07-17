@@ -38,7 +38,17 @@ type ChatItem =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
-  | { kind: 'tool'; id: string; name: string; done: boolean; error: boolean }
+  // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
+  // ToolCallUpdate{content} を送っているので、view が保持するだけで詳細が開ける。
+  | {
+      kind: 'tool'
+      id: string
+      name: string
+      done: boolean
+      error: boolean
+      input?: unknown
+      result?: string
+    }
   // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
   | {
       kind: 'prompt'
@@ -269,7 +279,14 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     }
     case 'tool_call':
-      s.items.push({ kind: 'tool', id: ev.id, name: ev.name, done: false, error: false })
+      s.items.push({
+        kind: 'tool',
+        id: ev.id,
+        name: ev.name,
+        done: false,
+        error: false,
+        input: ev.input,
+      })
       break
     case 'tool_call_update': {
       const t = s.items.find((i) => i.kind === 'tool' && i.id === ev.tool_use_id) as
@@ -278,6 +295,8 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       if (t) {
         t.done = true
         t.error = ev.is_error ?? false
+        // 結果本文を保持。in-place 変異なので、開いたままの詳細にライブで流れ込む。
+        t.result = ev.content
       } else {
         // 結び先の無い update。backend 側で「replay 列に孤児は現れない」を不変条件にした
         // （transcript の切り詰めが ToolCall/Update のペアを割らない、in-flight tail は
@@ -513,15 +532,104 @@ function ThinkingBlock(props: { text: string; active: () => boolean }) {
   )
 }
 
-function ToolRow(props: { name: string; done: boolean; error: boolean }) {
+/** tool 詳細（input/result）を DOM に流し込む上限。超過分は「省略」を明示する。 */
+const TOOL_DETAIL_MAX = 4000
+
+/**
+ * tool の input を表示用テキストへ整形する純関数。
+ *
+ * input は tool ごとに形が違う生 JSON（Bash なら `{command,description}`）なので素直に
+ * pretty JSON にする。空（`{}` / `[]` / null / undefined / 空文字）は「詳細なし」= null。
+ * 呼び出し側はこれを見て caret を出すかを決める（開いても空、を作らないため）。
+ */
+export function formatToolInput(input: unknown): string | null {
+  if (input === undefined || input === null) return null
+  if (typeof input === 'string') return input.length > 0 ? input : null
+  try {
+    const s = JSON.stringify(input, null, 2)
+    if (!s || s === '{}' || s === '[]') return null
+    return s
+  } catch {
+    // 循環参照など JSON 化できない入力でも落とさない（詳細は best-effort）。
+    return String(input)
+  }
+}
+
+/** tool の result を表示用テキストへ。空文字は「詳細なし」= null。 */
+export function formatToolResult(result: string | undefined): string | null {
+  if (result === undefined || result === null) return null
+  return result.length > 0 ? result : null
+}
+
+/**
+ * 巨大 detail の clamp（純関数）。省略した文字数を返すので、UI は「黙って切った」ように
+ * 見せずに済む（no silent truncation — 切ったなら切ったと言う）。
+ */
+export function clampToolDetail(
+  text: string,
+  max = TOOL_DETAIL_MAX,
+): { text: string; omitted: number } {
+  if (text.length <= max) return { text, omitted: 0 }
+  return { text: text.slice(0, max), omitted: text.length - max }
+}
+
+/** tool detail の 1 節（input / result）。長文は clamp し、省略数を明示する。 */
+function ToolDetail(props: { label: string; text: string }) {
+  const clamped = createMemo(() => clampToolDetail(props.text))
+  return (
+    <div class="echoes-tool-detail">
+      <div class="echoes-tool-detail-label">{props.label}</div>
+      <pre class="echoes-tool-detail-body">{clamped().text}</pre>
+      <Show when={clamped().omitted > 0}>
+        <div class="echoes-tool-detail-omitted">…{clamped().omitted} 文字省略</div>
+      </Show>
+    </div>
+  )
+}
+
+/**
+ * tool 1 件の行。詳細（input/result）があれば開閉できる accordion になる。
+ *
+ * 単発（single）でも group（ToolGroupRow）の中の 1 件でも同じ形 — 「まとめて見る」と
+ * 「個別に掘る」を両立させる要。詳細が無い tool は caret を出さず従来どおりの 1 行。
+ * result は tool_call_update で後から in-place に入るので、開いたままでも流れ込む。
+ */
+function ToolRow(props: {
+  name: string
+  done: boolean
+  error: boolean
+  input?: unknown
+  result?: string
+}) {
+  const [open, setOpen] = createSignal(false)
+  const inputText = createMemo(() => formatToolInput(props.input))
+  const resultText = createMemo(() => formatToolResult(props.result))
+  const hasDetail = createMemo(() => inputText() !== null || resultText() !== null)
   return (
     <div class="echoes-tool" classList={{ done: props.done, error: props.error }}>
-      <span class="echoes-tool-spinner" />
-      <span class="echoes-tool-icon">🔧</span>
-      <span class="echoes-tool-name">{props.name}</span>
-      <span class="echoes-tool-status">
-        {props.error ? 'error' : props.done ? '✓' : '実行中…'}
-      </span>
+      <button
+        class="echoes-tool-head"
+        classList={{ clickable: hasDetail() }}
+        onClick={() => hasDetail() && setOpen(!open())}
+      >
+        <Show when={hasDetail()}>
+          <span class="echoes-thinking-caret" classList={{ open: open() }}>
+            ▸
+          </span>
+        </Show>
+        <span class="echoes-tool-spinner" />
+        <span class="echoes-tool-icon">🔧</span>
+        <span class="echoes-tool-name">{props.name}</span>
+        <span class="echoes-tool-status">
+          {props.error ? 'error' : props.done ? '✓' : '実行中…'}
+        </span>
+      </button>
+      <Show when={open() && hasDetail()}>
+        <div class="echoes-tool-body">
+          <Show when={inputText()}>{(t) => <ToolDetail label="input" text={t()} />}</Show>
+          <Show when={resultText()}>{(t) => <ToolDetail label="result" text={t()} />}</Show>
+        </div>
+      </Show>
     </div>
   )
 }
@@ -558,7 +666,15 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
       <Show when={open()}>
         <div class="echoes-toolgroup-body">
           <For each={props.tools()}>
-            {(t) => <ToolRow name={t.name} done={t.done} error={t.error} />}
+            {(t) => (
+              <ToolRow
+                name={t.name}
+                done={t.done}
+                error={t.error}
+                input={t.input}
+                result={t.result}
+              />
+            )}
           </For>
         </div>
       </Show>
@@ -1294,7 +1410,13 @@ function ChatView() {
                       />
                     </Match>
                     <Match when={true}>
-                      <ToolRow name={item.name} done={item.done} error={item.error} />
+                      <ToolRow
+                        name={item.name}
+                        done={item.done}
+                        error={item.error}
+                        input={item.input}
+                        result={item.result}
+                      />
                     </Match>
                   </Switch>
                 )
@@ -1445,15 +1567,30 @@ export const CHATVIEW_CSS = `
   animation: echoes-shimmer 1.5s linear infinite; }
 .echoes-thinking-body { margin:4px 0 0 16px; padding:8px 12px; border-left:2px solid var(--color-border,#2a3040);
   color: var(--color-text-secondary,#a8b0c0); white-space:pre-wrap; font-size:12px; line-height:1.55; }
-.echoes-tool { align-self:flex-start; display:flex; align-items:center; gap:8px; font-size:12px;
+/* ToolRow: tool 1 件。container / head(pill 1 行) / body(詳細) の 3 層は toolgroup と同型。 */
+.echoes-tool { align-self:flex-start; font-size:12px; animation: echoes-fade .18s ease-out; }
+.echoes-tool-head { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+  font-family:inherit; font-size:12px;
   color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
-  border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; animation: echoes-fade .18s ease-out; }
+  border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
+/* 詳細を持つ tool だけ押せる（持たない行は見た目そのまま・無反応）。 */
+.echoes-tool-head.clickable { cursor:pointer; }
 .echoes-tool-spinner { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--color-accent,#3b82f6);
   border-top-color: transparent; animation: echoes-spin .7s linear infinite; }
 .echoes-tool.done .echoes-tool-spinner, .echoes-tool.error .echoes-tool-spinner { display:none; }
-.echoes-tool.done { color: var(--color-text-tertiary,#616b80); } .echoes-tool.error { color:#f0a3a3; }
+.echoes-tool.done .echoes-tool-head { color: var(--color-text-tertiary,#616b80); }
+.echoes-tool.error .echoes-tool-head { color:#f0a3a3; }
 .echoes-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
 .echoes-tool-status { margin-left:auto; font-size:11px; }
+/* 展開部: thinking-body と同じ左罫線の入れ子表現で input / result を積む。 */
+.echoes-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
+  padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
+.echoes-tool-detail-label { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+  color: var(--color-text-tertiary,#616b80); margin-bottom:2px; }
+.echoes-tool-detail-body { margin:0; max-height:260px; overflow:auto; white-space:pre-wrap;
+  word-break:break-word; font-family: var(--vp-font-mono),var(--typography-family-mono);
+  font-size:11px; line-height:1.5; color: var(--color-text-secondary,#a8b0c0); }
+.echoes-tool-detail-omitted { font-size:10px; color: var(--color-text-tertiary,#616b80); margin-top:2px; }
 /* ToolGroupRow: 連続同名 tool（Agent ×N 等）を畳む accordion。畳んだ header は ToolRow と同じ枠で 1 行。 */
 .echoes-toolgroup { align-self:flex-start; font-size:12px; animation: echoes-fade .18s ease-out; }
 .echoes-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
