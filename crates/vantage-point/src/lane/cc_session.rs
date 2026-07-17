@@ -2,20 +2,17 @@
 //!
 //! `claude --continue` は「cwd の最新 session」を拾うため、 background session が
 //! 居ると Agent View dashboard を開いて send-keys が詰まる (CC 2.1 罠)。
-//! 特定 session を `--resume <id>` で指名すれば構造的に回避できる — その id を
-//! lane 単位で保持するのが本 module。
+//! 特定 session を `--resume <id>` で指名すれば構造的に回避できる。
 //!
-//! - **書き手**: `vp wire hook-check` (**UserPromptSubmit** で自 session_id を記録 —
-//!   「user が実際に話しかけた session だけがポインタを動かす」不変条件)。
-//!   旧 SessionStart 記録は resume 失敗 `||` fallback の幻 session (発話ゼロ・
-//!   transcript 無し) までがポインタを上書きし復帰先を自壊させた (F1/F2、
-//!   解剖 memory `cc-session-pointer-self-destruction`)。 Act II chat engine は
-//!   `SessionInit` write-back で記録する (submit 起点 = 実会話のみ、 [`clear_in`] doc 参照)
-//! - **読み手**: `vp lane last-session` (echoes task が spawn 時に呼ぶ) /
-//!   GET /api/lanes の lazy populate (可視化、 performer_status と同じ前例)
+//! ⚠️ **doc 40 で会話 id の SSOT は [`super::session_registry`]（`SessionEntry.conversation`）
+//! に統合された**。本 store は移行 bridge（registry load 時の read-only backfill）としてだけ
+//! 読まれ、新規の書き手は居ない（旧書き手 = hook 直書きは「root の label に追従しない」
+//! ラベル乖離バグの発生源だった — doc 40 §1-1。hook は SP への報告者に降格済み）。
+//! **PR-2 で record / last / clear の store 役は退役**し、本 module に残るのは claude 固有部
+//! （[`transcript_path`] / [`transcript_exists`] / [`is_valid_session_id`]）のみになる。
+//!
 //! - 置き場: `vp_state_dir()/cc_sessions/<project>__<lane>` (1 lane 1 file 1 行)
-//! - 共通機構（record / last / clear + 検証防壁）は [`super::session_store`] に委譲。
-//!   本 module に残るのは claude 固有部（transcript 探索）のみ
+//! - 共通機構（record / last / clear + 検証防壁）は [`super::session_store`] に委譲
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +20,8 @@ use super::session_store::SessionStore;
 
 /// session id の正規形 (英数+ハイフン、 非空)。 書き込み・読み出しの両側で同じ検証を
 /// 使い、 state file が常に正規形であることを保証する (moody 指摘 #1)。
-fn is_valid_session_id(id: &str) -> bool {
+/// doc 40: registry の write 側 dispatch（`session_registry::is_valid_conversation`）も使う。
+pub fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 

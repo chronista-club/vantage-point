@@ -93,7 +93,7 @@ boot 時の捕捉経路が存在しない。mako 決定（2026-07-18）:「Act�
 |--------|------|-----------|
 | Act I 床の claude（hook） | `cc_session::record(VP_LANE)` を hook が直書き ← バグ① | hook は `/api/lane/session-changed` に **`session_id` + `event` を載せて報告のみ**。World が SP へ forward、SP が root を解決して §6 policy で registry に書く |
 | Act II claude host（SessionInit） | `cc_session::record(session label)` | SP 内から `set_conversation(key)` — host は自 label を持つので `parse_session_label` で key 逆引き |
-| cursor create-chat 事前採番 / codex record-from-init | 各 store に record | 同上（SP 内 `set_conversation(key)`） |
+| cursor create-chat 事前採番 / codex record-from-init | 各 store に record | **PR-1 では据え置き**（mako 2026-07-18: cursor はオミット予定（doc 39 §7）、codex は TurnHost ごと RpcHost 移行で書き直すため、退役予定の host に再配管しない）。読みは backfill bridge が registry に繋ぐので一貫。新 RpcHost / AcpHost は registry 直結（`set_conversation`）で書く |
 
 - **検証は write 側で dispatch**: entry.stand の engine validator（cc = 英数ハイフン / cursor =
   `is_valid_chat_id` / codex = `is_valid_thread_id`）を通らない id は書かない（`--resume '<id>'`
@@ -149,7 +149,7 @@ boot 時の捕捉経路が存在しない。mako 決定（2026-07-18）:「Act�
 
 | PR | 内容 | 状態 |
 |----|------|------|
-| **PR-1（本体）** | §3 データモデル + §4 漏斗 + §5 reader 一斉切替 + §6 policy + backfill。バグ①② root-cause fix + eager chip がこの 1 本で立つ | 本 doc 起草時点で着手前 |
+| **PR-1（本体）** | §3 データモデル + §4 漏斗（claude のみ — cursor/codex は bridge 据え置き、§4 表参照）+ §5 reader 一斉切替 + §6 policy + backfill + registry save の atomic rename 化 + 変異の process 内 mutex 直列化。バグ①② root-cause fix + eager chip がこの 1 本で立つ | 実装中（2026-07-18） |
 | **PR-2（純化）** | legacy store の record/last/clear 退役（validator / CLI path / transcript helper は各 module に残置）+ backfill 撤去 + lane GC が registry を clear + `LanePool` in-memory authoritative 化（file は persistence に降格 — doc 38 §5「in-memory cache は持たない」原則は、書き手が SP 1 点に漏斗された後は安全に緩和できる。前提 = CLI 直書き箇所の audit）+ vp-app タブを `LaneInfo.sessions` 消費に寄せ `list_chat_sessions` RPC 統合 | soak 後 |
 | **PR-3（env 剪定）** | §8 の VP_SESSION / VP_CWD 退役（statusline 等 user 側消費の確認が前提） | 独立 follow-up |
 

@@ -410,10 +410,20 @@ fn user_message_json(text: &str) -> String {
     .to_string()
 }
 
-/// SessionInit で観測した session id を cc_session に記録する（resume の SSOT）。
+/// SessionInit で観測した session id を session registry に記録する（doc 40 §4 — 会話 id の
+/// SSOT は registry）。`lane` は host config の session label（`conductor` / `conductor#2`）
+/// なので registry の (lane, key) へ逆引きして書く。headless spawn に `|| claude` fallback は
+/// 無い（doc 33 C2 pre-flight 済み）ため guard 不要の無条件 authoritative 書き込み。
 fn record_session(project: &str, lane: &str, session_id: &str) {
-    if let Err(e) = crate::lane::cc_session::record(project, lane, session_id) {
-        tracing::warn!("cc_session 記録失敗（project={project}, lane={lane}）: {e}");
+    let (lane_label, key) = crate::lane::session_registry::parse_session_label(lane);
+    if let Err(e) = crate::lane::session_registry::set_conversation(
+        project,
+        lane_label,
+        "echoes",
+        key,
+        Some(session_id),
+    ) {
+        tracing::warn!("会話 id の registry 記録失敗（project={project}, lane={lane}）: {e}");
     }
 }
 

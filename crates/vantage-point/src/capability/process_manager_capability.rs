@@ -959,6 +959,7 @@ impl ProcessManagerCapability {
             cwd: performer_dir.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         };
@@ -3170,6 +3171,7 @@ mod tests {
             cwd: cwd.to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         };
@@ -3242,6 +3244,7 @@ mod tests {
             cwd: tmp.join(".vp/lanes/foo").to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         };
@@ -3378,6 +3381,7 @@ mod tests {
             cwd: cwd.to_string_lossy().into_owned(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         };

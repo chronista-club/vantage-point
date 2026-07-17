@@ -117,6 +117,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             cwd: entry.path,
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });
@@ -130,24 +131,11 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
             }
         }
-        // R3-b → doc 39 §3-1: CC session id は **root session**（lane の人格）の store を
-        // lazy read (書き手は SessionStart/UserPromptSubmit hook)。wire 配送（channel D）は
-        // 常に root に解決する — registry file 不在 = root=1 = 素の lane label で従来と同一。
-        // 消費者 (echoes --resume / delivery_actor channel D) は conductor のみなので populate も
-        // 限定し、 QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
-        // policy 化 (設計メモ「fresh / resume が制限でなく policy になる」) の際に広げる。
-        let lane_label = crate::process::stand_spawner::lane_label(&lane.address);
-        if matches!(lane.kind, LaneKind::Conductor) {
-            let root = crate::lane::session_registry::root(&lane.address.project, lane_label);
-            lane.cc_session_id = crate::lane::cc_session::last(
-                &lane.address.project,
-                &crate::lane::session_registry::session_label(lane_label, root),
-            );
-        }
-        // doc 37: Echoes 共通ヘッダの session chip 用（全 lane、実装は LaneInfo 側メソッド —
-        // uplink の agent_card / LaneDiff push と共有）。上の cc_session と違い conductor 限定を
-        // **意図的に外している**（header は performer lane でも出す = 消費者が変わった）。
-        // QUIC 5s tick 経路で lane 数 × 1 file read の同期 I/O が増えるが、通常運用（〜十数 lane）
+        // doc 40 §5: chip（engine_session_id）/ channel D（cc_session_id）/ sessions を
+        // registry 1 read で enrich する（LaneInfo 側メソッドに一本化 — 旧「conductor 限定の
+        // cc_session 個別 enrich」は本 method に畳んだ。uplink の agent_card / LaneDiff push と
+        // 同一実装になり、供給点ごとの実装差（#683 地形）が消えた）。
+        // QUIC 5s tick 経路で lane 数 × registry 1 file read の同期 I/O。通常運用（〜十数 lane）
         // では無害。桁で増える運用になったら spawn_blocking 化 / active lane 限定 read が最適化余地
         //（moody 参考指摘 2026-07-15）。
         lane.refresh_engine_session_id();
@@ -286,6 +274,7 @@ pub(crate) async fn create_performer_orchestrated(
             cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });
@@ -487,6 +476,7 @@ pub(crate) async fn create_performer_orchestrated(
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
         cc_session_id: None,
+        sessions: None,
         engine_session_id: None,
         flow_state: None,
     };
@@ -1031,6 +1021,7 @@ mod core_tests {
                 cwd: String::new(),
                 performer_status: None,
                 cc_session_id: None,
+                sessions: None,
                 engine_session_id: None,
                 flow_state: None,
             });
