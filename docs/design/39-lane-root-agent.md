@@ -194,3 +194,15 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
 - codex の app-server 移行が完了した時点で **TurnHost 系（turn_host / cursor_host /
   codex_host / cursor_translate / codex_translate）は全 engine から不要になり丸ごと撤去できる**
   （pre-MVP 方針: 中間状態・dead code を残さない）。cursor/agy のコード撤去はこれに束ねる
+
+### 7-1. Local LLM の裏打ち（2026-07-18 Web 調査、全て一次資料確認済み）
+
+常駐 3 経路すべてが local model で裏打ち可能。統合コスト順:
+
+| route | 手段 | VP 側コスト |
+|---|---|---|
+| **A1** | claude engine × **LM Studio の Anthropic 互換 `/v1/messages`**（0.4.1+ ネイティブ、proxy 不要）。`ANTHROPIC_BASE_URL=http://localhost:1234` + `ANTHROPIC_AUTH_TOKEN=lmstudio` — **両ベンダー公式手順**（lmstudio.ai/blog/claudecode / code.claude.com/docs/en/llm-gateway-connect） | spawn_env に env 2 個 |
+| **A2** | codex × `--oss` / `oss_provider = "lmstudio"`（公式 first-class、`/v1/responses` を叩く。repo の `lmstudio` crate が疎通確認 + model 自動 DL/load を担う） | config.toml 1 行。⚠️ app-server × oss の組合せのみ未文書化 → 統合時に実測 |
+| **B** | **OpenCode**（anomalyco/opencode、活発）を AcpHost に挿す — `opencode acp`（stdio ACP）+ LM Studio/Ollama/llama.cpp の公式 provider 対応。grok 統合の副産物として新 binary 追加のみで local 常駐 engine が増える | AcpHost 完成後ほぼゼロ |
+| C | VP 純正 engine（SP 内 agent loop、tool runtime が本体）。α: tool 無し chat → β: read-only tool → γ: 編集系。provider の口を modality 非依存に切る（音系/姿勢推定の種 = creo mem_1Cd7rpDkgeNDTW5nX1qcu6） | 大（長期候補） |
+| — | **Bionic**（LM Studio 純正 agent GUI、2026-07-16 preview）は API/CLI/ACP surface 未公開で現状口なし — server surface が生えたら再評価の watch | — |
