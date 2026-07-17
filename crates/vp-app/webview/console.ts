@@ -148,6 +148,23 @@ export function focusedOf(lane: string): number {
   return laneSessions.get(lane)?.focused ?? 1
 }
 
+/** focused session の engine_session_id を共通ヘッダの chip に同期する（変化時 true —
+ *  caller はその時だけ 'vp:echoes-header' を dispatch する）。
+ *
+ *  D1（解剖 memory `cc-session-pointer-self-destruction` / F5）: chip は従来 session_init /
+ *  turn_completed でしか動かず、新 Draft を focus しても旧 session の id が chip に残り続けた
+ *  （「New しても id が変わらない」— 実体は新品なのに表示だけが嘘をつく）。
+ *  Draft（engine_session_id = null）は chip を消し、初回 submit の session_init が新 id を灯す。 */
+export function syncHeaderSessionId(lane: string): boolean {
+  const cur = laneSessions.get(lane)
+  if (!cur) return false
+  const sid = cur.sessions.find((s) => s.key === cur.focused)?.engine_session_id ?? undefined
+  const h = laneOf(lane).header
+  if (h.sessionId === sid) return false
+  h.sessionId = sid
+  return true
+}
+
 // ---------------------------------------------------------------------------
 // Echoes 共通ヘッダ用の per-lane summary（creo memo `vp-pane-common-header`）
 // ---------------------------------------------------------------------------
@@ -347,6 +364,13 @@ export function installConsole(): VpConsole {
       )
       const sessions = Array.isArray(payload?.sessions) ? payload!.sessions! : []
       noteSessionList(lane, focused, sessions)
+      // D1: chip を focused session の真値に追従させる（draft = null → chip 消灯、
+      //  syncHeaderSessionId の doc 参照）。list が authoritative な同期点。
+      if (syncHeaderSessionId(lane)) {
+        document.dispatchEvent(
+          new CustomEvent('vp:echoes-header', { detail: { lane } }),
+        )
+      }
       // tab strip（chatview）へ。'vp:console-ready'（:201 相当）と同じ CustomEvent bus パターン。
       document.dispatchEvent(
         new CustomEvent('vp:echoes-sessions', { detail: { lane, focused, sessions } }),

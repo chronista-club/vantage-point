@@ -5,10 +5,12 @@
 //! 特定 session を `--resume <id>` で指名すれば構造的に回避できる — その id を
 //! lane 単位で保持するのが本 module。
 //!
-//! - **書き手**: `vp wire hook-check` (SessionStart で自 session_id を記録)。
-//!   spawn 時に旧 session は `agents --json` に出ない (死んでいる) ため、
-//!   生きているうちに hook で自己申告させる — 収穫経路を Phase A poll から
-//!   変更した理由 (設計メモからの実装修正、 R3-b PR 参照)
+//! - **書き手**: `vp wire hook-check` (**UserPromptSubmit** で自 session_id を記録 —
+//!   「user が実際に話しかけた session だけがポインタを動かす」不変条件)。
+//!   旧 SessionStart 記録は resume 失敗 `||` fallback の幻 session (発話ゼロ・
+//!   transcript 無し) までがポインタを上書きし復帰先を自壊させた (F1/F2、
+//!   解剖 memory `cc-session-pointer-self-destruction`)。 Act II chat engine は
+//!   `SessionInit` write-back で記録する (submit 起点 = 実会話のみ、 [`clear_in`] doc 参照)
 //! - **読み手**: `vp lane last-session` (echoes task が spawn 時に呼ぶ) /
 //!   GET /api/lanes の lazy populate (可視化、 performer_status と同じ前例)
 //! - 置き場: `vp_state_dir()/cc_sessions/<project>__<lane>` (1 lane 1 file 1 行)
