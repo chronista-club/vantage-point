@@ -1344,21 +1344,6 @@ impl LanePool {
         // engine ごとに host を組む（対応表は EngineKind が SSOT。engine は **session の** stand —
         // lane と異なる engine の session を持てる、doc 38 §1）。
         let host = match EngineKind::from_stand(&resolved.stand) {
-            Some(EngineKind::Cursor) => {
-                // cursor: turn-scoped host（spawn 自体は exec-free = ensure を軽く保つ）。chatId は
-                // registry の会話 id（doc 40 §5 — Act I と共有、backfill bridge が旧 store も拾う）。
-                // engine_model は読まない（model_switchable=false、cursor の model は
-                // cursor-agent 側で選択 — doc `cursor-engine.md`）。
-                let session_id = resolved.conversation.clone();
-                ChatHost::Cursor(crate::echoes::CursorAgentHost::spawn(
-                    crate::echoes::TurnHostConfig {
-                        cwd: info.cwd.clone(),
-                        project: addr.project.clone(),
-                        lane: label.clone(),
-                        session_id,
-                    },
-                ))
-            }
             Some(EngineKind::Codex) => {
                 // codex: 常駐 RpcHost（`codex app-server` JSONL JSON-RPC、doc 41）。thread id は
                 // registry の会話 id（doc 40 §5 — Act I と共有。書き戻しは host が registry 直結）。
@@ -1395,9 +1380,10 @@ impl LanePool {
                     },
                 )?)
             }
-            Some(EngineKind::Agy) | None => {
-                // focused は mode=Chat ガード（set_console_mode）が上流で塞ぐので通常到達しない
-                // （belt-and-suspenders）。非 focused session はここが唯一の防壁。
+            Some(EngineKind::Cursor | EngineKind::Agy) | None => {
+                // cursor は Act II オミット（doc 39 §7、step 4 で TurnHost 系撤去。Act I の床は
+                // 現役）。focused は mode=Chat ガード（set_console_mode）が上流で塞ぐので通常
+                // 到達しない（belt-and-suspenders）。非 focused session はここが唯一の防壁。
                 anyhow::bail!(
                     "stand '{}' は Act II chat host を持ちません（addr={}, session={}）",
                     resolved.stand,
@@ -1406,17 +1392,15 @@ impl LanePool {
                 );
             }
         };
-        // replay-log tap: transcript を持たない engine（cursor/codex）の session にだけ付ける。
+        // replay-log tap: transcript を持たない engine（codex）の session にだけ付ける。
         // claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を per-session
         // に disk 記録し、demand_start の no_session path がそれを replay 源にする（doc — engine
         // 非依存 replay log）。
         let replay_tap = match EngineKind::from_stand(&resolved.stand) {
-            Some(EngineKind::Cursor | EngineKind::Codex) => {
-                Some(crate::echoes::replay_log::ReplayLogTap {
-                    project: addr.project.clone(),
-                    label: label.clone(),
-                })
-            }
+            Some(EngineKind::Codex) => Some(crate::echoes::replay_log::ReplayLogTap {
+                project: addr.project.clone(),
+                label: label.clone(),
+            }),
             _ => None,
         };
         let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(

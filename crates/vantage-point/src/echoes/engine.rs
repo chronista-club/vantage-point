@@ -11,7 +11,6 @@
 use tokio::task::JoinHandle;
 
 use super::codex_host::CodexAgentHost;
-use super::cursor_host::CursorAgentHost;
 use super::event::EchoesEvent;
 use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
 
@@ -24,9 +23,11 @@ use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
 pub enum EngineKind {
     /// stand=`"echoes"`（+ 旧名 `"hd"`）— claude。常駐 stream-json host（Act II）+ claude TUI（Act I）。
     Claude,
-    /// stand=`"cursor"` — cursor-agent。turn-scoped host（Act II）+ cursor-agent TUI（Act I）。
+    /// stand=`"cursor"` — cursor-agent。**Act I のみ**（Act II はオミット: Composer 2.5 の CLI
+    /// 進化待ちで再検討 — doc 39 §7。旧 TurnHost は step 4 で撤去済み）。
     Cursor,
-    /// stand=`"codex"` — OpenAI Codex CLI。turn-scoped host（Act II）+ codex TUI（Act I）。
+    /// stand=`"codex"` — OpenAI Codex CLI。常駐 RpcHost（Act II、`codex app-server` — doc 41）
+    /// + codex TUI（Act I）。
     Codex,
     /// stand=`"agy"` — Google Antigravity CLI（Gemini CLI 後継）。**Act I のみ**
     /// （v1.1.2 に構造化出力が無く Act II 翻訳層が作れない、doc 37 §7.5）。
@@ -66,7 +67,9 @@ impl EngineKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Claude => "VP Stand: Echoes 💬 — login shell の床 + Claude CLI 自動起動",
-            Self::Cursor => "VP Stand: Cursor Agent 🖱️ — login shell の床 + cursor-agent 自動起動",
+            Self::Cursor => {
+                "VP Stand: Cursor Agent 🖱️ — login shell の床 + cursor-agent 自動起動（console のみ、Act II 非対応）"
+            }
             Self::Codex => "VP Stand: Codex 🧮 — login shell の床 + codex (OpenAI) 自動起動",
             Self::Agy => {
                 "VP Stand: Antigravity 🚀 — login shell の床 + agy 自動起動（console のみ、Act II 非対応）"
@@ -75,8 +78,11 @@ impl EngineKind {
     }
 
     /// Act II（chat GUI）の host を持つか = console mode Chat を許すか。
+    ///
+    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex。grok=ACP は AcpHost 実装後に追加）。
+    /// cursor は Act II オミット（step 4 で TurnHost 系ごと撤去）、agy は翻訳層が作れない。
     pub fn chat_capable(self) -> bool {
-        !matches!(self, Self::Agy)
+        matches!(self, Self::Claude | Self::Codex)
     }
 
     /// VP からの model 切替（`engine_model` 永続 + `--model` 注入）を受けるか。
@@ -98,7 +104,7 @@ pub struct ChatEngineSlot {
 
 impl Drop for ChatEngineSlot {
     fn drop(&mut self) {
-        // engine 停止（turn-scoped は turn task を abort、claude は Child kill_on_drop に委ねる）。
+        // engine 停止（codex は app-server kill、claude は Child kill_on_drop に委ねる）。
         self.host.stop();
         // pump は broadcast Closed で自然終了するが、即時性のため明示 abort する。
         self.pump.abort();
@@ -108,15 +114,13 @@ impl Drop for ChatEngineSlot {
 /// Act II の chat engine host（engine ごとに turn 駆動が違う enum、Pre-MVP は dyn 抽象を作らない）。
 ///
 /// - [`ChatHost::Claude`]: 常駐 stream-json host（stdin 連投、1 プロセスが会話を保持）。
-/// - [`ChatHost::Cursor`] / [`ChatHost::Codex`]: turn-scoped host（[`super::turn_host::TurnHost`]、
-///   turn ごと spawn）。
+/// - [`ChatHost::Codex`]: 常駐 JSONL JSON-RPC host（`codex app-server`、doc 41）。
 ///
 /// GUI 語彙 [`EchoesEvent`] は全 engine 共通なので、pump / topic 配線・chatview は engine
 /// 非依存のまま。variant 名は engine 名（doc 37 の語彙: Echoes = namespace、claude = engine —
 /// 旧 `Echoes` variant の二重意味をここで清算）。
 pub enum ChatHost {
     Claude(EchoesAgentHost),
-    Cursor(CursorAgentHost),
     Codex(CodexAgentHost),
 }
 
@@ -124,7 +128,6 @@ impl ChatHost {
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<EchoesEvent> {
         match self {
             ChatHost::Claude(h) => h.subscribe(),
-            ChatHost::Cursor(h) => h.subscribe(),
             ChatHost::Codex(h) => h.subscribe(),
         }
     }
@@ -132,7 +135,6 @@ impl ChatHost {
     pub fn in_flight(&self) -> InFlight {
         match self {
             ChatHost::Claude(h) => h.in_flight(),
-            ChatHost::Cursor(h) => h.in_flight(),
             ChatHost::Codex(h) => h.in_flight(),
         }
     }
@@ -140,7 +142,6 @@ impl ChatHost {
     pub fn commit_seq(&self) -> u64 {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),
-            ChatHost::Cursor(h) => h.commit_seq(),
             ChatHost::Codex(h) => h.commit_seq(),
         }
     }
@@ -148,7 +149,6 @@ impl ChatHost {
     pub fn pid(&self) -> Option<u32> {
         match self {
             ChatHost::Claude(h) => h.pid(),
-            ChatHost::Cursor(h) => h.pid(),
             ChatHost::Codex(h) => h.pid(),
         }
     }
@@ -156,7 +156,6 @@ impl ChatHost {
     pub async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.submit(prompt).await,
-            ChatHost::Cursor(h) => h.submit(prompt).await,
             ChatHost::Codex(h) => h.submit(prompt).await,
         }
     }
@@ -164,7 +163,6 @@ impl ChatHost {
     pub async fn interrupt(&self) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.interrupt().await,
-            ChatHost::Cursor(h) => h.interrupt().await,
             ChatHost::Codex(h) => h.interrupt().await,
         }
     }
@@ -175,7 +173,6 @@ impl ChatHost {
         match self {
             // EchoesAgentHost の Child は kill_on_drop(true) なので host drop で停止する。
             ChatHost::Claude(_) => {}
-            ChatHost::Cursor(h) => h.stop(),
             ChatHost::Codex(h) => h.stop(),
         }
     }
@@ -188,7 +185,7 @@ impl ChatHost {
     ) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Cursor(_) | ChatHost::Codex(_) => {
+            ChatHost::Codex(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -198,7 +195,7 @@ impl ChatHost {
     pub async fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.set_permission_mode(mode).await,
-            ChatHost::Cursor(_) | ChatHost::Codex(_) => {
+            ChatHost::Codex(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -239,7 +236,10 @@ mod tests {
     #[test]
     fn capability_table() {
         assert!(EngineKind::Claude.chat_capable());
-        assert!(EngineKind::Cursor.chat_capable());
+        assert!(
+            !EngineKind::Cursor.chat_capable(),
+            "cursor は Act II オミット（doc 39 §7 / step 4）"
+        );
         assert!(EngineKind::Codex.chat_capable());
         assert!(
             !EngineKind::Agy.chat_capable(),

@@ -94,13 +94,24 @@ app-server は 1 接続で複数 thread を多重化できるが、**採らな�
   共有なので II⇄I 継続は自動整合（backfill bridge は PR-2 までの過渡）
 - `codex_session` store: RpcHost は書かない（registry 直結）。store の退役は doc 40 PR-2 に合流
 
-## 3. --oss / LM Studio 裏打ち（step 3 の残実測、doc 39 §7-1 の続き）
+## 3. --oss / LM Studio 裏打ち（PR-B 実測、2026-07-18 **PASS**）
 
-`thread/start` は `model` / `modelProvider` を受ける（schema 確認済み）。ローカル LLM
-（LM Studio / ollama）を model_provider 設定（`-c model_providers.*` / config.toml）経由で
-app-server に通せるかは**未実測** — RpcHost 実装後に同じ de-risk script の派生で測る
-（純正 local engine 構想 [[doc39]] §7-1 の入力になる）。v1 実装は model 指定なし
-（codex 側 default）で出荷し、model/provider 注入は実測後に配線する。
+実測完了（de-risk script 派生、codex-cli 0.144.5 × LM Studio × qwen2.5-coder-14b）:
+
+- **`lmstudio` は codex の built-in provider**（`model-provider-info` ソース確認: port 1234 /
+  `WireApi::Responses` 固定 — 旧 `chat` wire は撤去済み）。config.toml への追記は**不要**で、
+  `thread/start` に `model: "qwen/qwen2.5-coder-14b"` + `modelProvider: "lmstudio"` を渡すだけで
+  local LLM に thread が張れる。同型の built-in に `ollama`（port 11434）
+- **LM Studio 側の前提 2 つ**: ①server 起動（`lms server start`）+ model load 済み
+  ②**context length 32k+ で load**（`lms load <model> --context-length 32768`）。既定 4096 では
+  codex の initial prompt が溢れ「tokens to keep > context length」で Reconnecting 1/5〜5/5 ループ
+  になる（実測で踏んだ→32k で解消）。LM Studio の `/v1/responses`（Responses API）実働も確認済み
+- 実測結果: turn 完走 33.2s（14B / M-series）、`account/rateLimits/updated` は planType null =
+  無課金経路。会話品質・agent loop（tool 呼び出し）の実力は未評価（今回は疎通のみ）
+
+**配線の scope 確定**: protocol の通り道は開通済み。`CodexRpcHostConfig` に model/provider を
+足すのは数行だが、**供給源**（per-lane engine_model か per-session か / GUI picker）は
+dev path step 7（local LLM 正式化）の設計判断 — ここでは予約しない（pre-MVP: 実感してから作る）。
 
 ## 4. 段階
 

@@ -13,35 +13,31 @@
 //! - [`event`]: GUI 語彙 [`EchoesEvent`]（engine 非依存 — 全 engine をこの共通面に翻訳する）
 //! - [`engine`]: engine 軸の語彙 [`EngineKind`] と chat engine 所有型 [`ChatHost`] / [`ChatEngineSlot`]
 //! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で**常駐**駆動（stream-json stdin 連投）
-//! - [`turn_host`]: [`turn_host::TurnHost`] — 常駐機構を持たない CLI の **turn-scoped** 共通 host
-//!   （残る客は cursor のみ — doc 39 §7 で cursor オミット確定後に系ごと撤去）
+//! - [`codex_rpc_translate`] + [`codex_host`]: codex — **常駐 RpcHost**（`codex app-server`
+//!   JSONL JSON-RPC、doc 41）
 //! - [`translate`] / [`transcript`]: claude stream / transcript → [`EchoesEvent`] 翻訳層
-//! - [`cursor_translate`] + [`cursor_host`]: cursor-agent（turn-scoped）
-//! - [`codex_rpc_translate`] + [`codex_host`]: codex（**常駐 RpcHost** = `codex app-server`
-//!   JSONL JSON-RPC、doc 41。旧 turn-scoped の codex_translate は撤去済み）
-//! - [`replay_log`]: transcript を持たない engine（cursor/codex）の per-session 会話ログ（disk 永続、
+//! - [`replay_log`]: transcript を持たない engine（codex）の per-session 会話ログ（disk 永続、
 //!   Act II の replay 源）。claude は transcript が SSOT なので使わない
 //!
+//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex。grok=ACP は AcpHost で追加予定）。
+//! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み —
+//! cursor は Act I（床）のみ、Act II はオミット（Composer 2.5 の CLI 進化待ちで再検討）。
+//!
 //! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。GUI 語彙 [`EchoesEvent`] は
-//! engine 非依存なので、新 engine は「翻訳器 + host（常駐 RpcHost / turn-scoped）」を
-//! 足すだけで乗る（chatview / topic 配線は無改修）。
+//! engine 非依存なので、新 engine は「翻訳器 + 常駐 host」を足すだけで乗る
+//! （chatview / topic 配線は無改修）。
 
 pub mod codex_host;
 pub mod codex_rpc_translate;
-pub mod cursor_host;
-pub mod cursor_translate;
 pub mod engine;
 pub mod event;
 pub mod host;
 pub mod replay_log;
 pub mod transcript;
 pub mod translate;
-pub mod turn_host;
 
 pub use codex_host::{CodexAgentHost, CodexRpcHostConfig};
-pub use cursor_host::CursorAgentHost;
 pub use engine::{ChatEngineSlot, ChatHost, EngineKind};
 pub use event::{EchoesEvent, PlanEntry, QuestionOption, QuestionSpec};
 pub use host::{EchoesAgentHost, EchoesHostConfig, InFlight, PermissionDecision};
 pub use translate::EchoesTranslator;
-pub use turn_host::TurnHostConfig;

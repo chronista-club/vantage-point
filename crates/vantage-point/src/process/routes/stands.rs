@@ -84,7 +84,10 @@ mod tests {
         let stands = list_stands();
         let cap = |name: &str| stands.iter().find(|s| s.name == name).unwrap().chat_capable;
         assert!(cap("echoes"));
-        assert!(cap("cursor"));
+        assert!(
+            !cap("cursor"),
+            "cursor は Act II オミット（doc 39 §7 / step 4）"
+        );
         assert!(cap("codex"));
         assert!(!cap("agy"), "agy は Act I のみ（doc 37 §7.5）");
         assert!(!cap("shell"), "shell は engine なし（床のみ）");
