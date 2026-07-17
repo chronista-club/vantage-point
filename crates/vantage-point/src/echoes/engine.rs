@@ -167,7 +167,7 @@ impl ChatHost {
         }
     }
 
-    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。turn-scoped は turn task abort、
+    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex は app-server kill、
     /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。
     pub fn stop(&mut self) {
         match self {

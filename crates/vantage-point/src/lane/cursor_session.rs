@@ -74,8 +74,9 @@ pub fn last(project: &str, lane: &str) -> Option<String> {
 
 /// cursor-agent の実行パスを解決する（launchd の細い PATH 対策、`session_store::resolve_cli` 委譲）。
 ///
-/// Act II（[`crate::echoes::cursor_host`]）の turn spawn も同じ解決を使うため crate 内公開。
-pub(crate) fn cursor_cli_path() -> String {
+/// 呼び手は Act I の create-chat（[`run_create_chat`]）のみ（旧 Act II cursor_host は
+/// step 4 で撤去済み — crate 内公開の理由が消えたため private 化）。
+fn cursor_cli_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     super::session_store::resolve_cli(
         "cursor-agent",
