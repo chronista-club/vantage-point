@@ -168,3 +168,9 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
 - **将来素材 — 会話の分岐**: claude には `--fork-session`（resume 時に旧 id を汚さず新 session id を
   切る）が公式にある（2026-07-17 検証で確認）。「既存会話から分岐して root にする」を作る時は
   これが土台になる（本 doc の scope 外、P4 以降の素材として記録のみ）
+- **codex の turn-scoped は VP 側の現状であって CLI の限界ではない**（2026-07-18 openai/codex
+  ソース確認）: `codex app-server` は常駐 + JSON-RPC の会話 API を持つ — `thread/start・resume・
+  fork` / `turn/start・steer（実行中 turn への注入、claude に無い）・interrupt`
+  （`app-server-protocol/src/protocol/common.rs`）。常駐化の正攻法は app-server 統合
+  （follow-up 起票済 mem_1Cd5Msoj）。cursor は `--input-format` 相当が無く（出力のみ
+  stream-json）、turn-scoped が CLI 側の制約 — TurnHost は cursor/agy 用として残る
