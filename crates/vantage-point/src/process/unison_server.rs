@@ -1427,6 +1427,30 @@ async fn handle_lane_restart(
     super::routes::lanes::restart_lane_orchestrated(state, addr, fresh).await
 }
 
+/// 供給 push 根治（session chip 凍結、2026-07-17）: engine session pointer の変化通知。
+///
+/// pointer（cc_sessions 等の state file）の書き手は claude の UserPromptSubmit hook で、
+/// SP プロセスの外にいる — SP は file を「読みに行った時だけ」変化を知る（ask 経路は正しく、
+/// push 経路に変化イベントが存在しなかった）。hook → World "wire" channel
+/// (`lane/session-changed`) → 本 method で SP に届き、SP が focused session 規則で真値を
+/// re-enrich して `Diff::Update` を emit する（World は routing のみ、真実源は SP のまま）。
+async fn handle_lane_session_changed(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_session_changed: lane 必須".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("lane_session_changed: invalid lane address: {lane}"))?;
+    if state.lane_pool.read().await.get(&addr).is_none() {
+        return Err(format!("lane_session_changed: lane が存在しません: {lane}"));
+    }
+    super::routes::lanes::emit_lane_update(state, &addr).await;
+    Ok(serde_json::json!({ "status": "ok", "lane": lane }))
+}
+
 /// lanes portless (doc 27 §3.4.5): Lane create。 旧 SP HTTP `POST /api/lanes` を process-proxy ask に
 /// 移管。 core の `create_performer_orchestrated` (lane clone + PtySlot spawn) を呼ぶ薄い adapter。
 /// payload は `CreateLaneReq` 互換 JSON (kind/name/stand?/cwd?/branch?/base?)。 成功は LaneInfo JSON、
@@ -1514,6 +1538,8 @@ pub(crate) async fn dispatch_process_method(
         "lane_delete" => handle_lane_delete(state, payload).await,
         // F6③: Lane restart (旧 SP HTTP POST /api/lanes/restart を process-proxy ask に移管)
         "lane_restart" => handle_lane_restart(state, payload).await,
+        // 供給 push 根治: hook → World 経由の session pointer 変化通知（Diff::Update push の起点）
+        "lane_session_changed" => handle_lane_session_changed(state, payload).await,
         // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
         "stands_list" => handle_stands_list().await,
         // L0 finale: SP graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、
@@ -2408,6 +2434,82 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "存在しない lane の restart は Err");
+    }
+
+    /// 供給 push 根治: 存在しない lane の session 変化通知は Err（黙って成功にしない）。
+    #[tokio::test]
+    async fn lane_session_changed_unknown_lane_errs() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({ "lane": "vp/performer/ghost" }),
+        )
+        .await;
+        assert!(res.is_err(), "存在しない lane の session 変化通知は Err");
+    }
+
+    /// 供給 push 根治: `lane_session_changed` が `Diff::Update` を emit し、payload の
+    /// engine_session_id が state file の現値（focused session 規則の re-enrich）を映す。
+    /// これが World lane_registry / vp-app header を追従させる push の起点になる。
+    #[tokio::test]
+    async fn lane_session_changed_emits_enriched_lane_update() {
+        use super::dispatch_process_method;
+        use crate::process::lanes_state::{
+            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
+        };
+        use crate::process::state::build_test_app_state;
+
+        // refresh_engine_session_id は vp_state_dir() を読む — tempdir guard で隔離。
+        let state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
+            name: None,
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-17T00:00:00Z".to_string(),
+            pid: Some(1),
+            cwd: state_dir.path().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            engine_session_id: None,
+            flow_state: None,
+        });
+        // hook 相当の pointer 書込（記録契機 UserPromptSubmit の後の状態）。
+        crate::lane::cc_session::record("vp", "conductor", "sid-new").expect("record");
+
+        let mut rx = state.system_event_tx.subscribe();
+        let res = dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({ "lane": "vp/conductor" }),
+        )
+        .await
+        .expect("lane_session_changed ok");
+        assert_eq!(res["status"], "ok");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Diff::Update が 1s 以内に届く")
+            .expect("broadcast recv");
+        match event {
+            SystemEvent::Lane(Diff::Update { payload }) => {
+                assert_eq!(payload.address, LaneAddress::conductor("vp"));
+                assert_eq!(
+                    payload.engine_session_id.as_deref(),
+                    Some("sid-new"),
+                    "emit 時に state file の現値で re-enrich される"
+                );
+            }
+            other => panic!("expected Diff::Update, got: {other:?}"),
+        }
     }
 
     /// F6④: stands_list dispatch — process-proxy ask が `{stands:[...]}` 形で返る。

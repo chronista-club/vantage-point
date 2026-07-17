@@ -702,6 +702,34 @@ pub async fn delete_lane_orchestrated(
 const RESTART_MAX_ATTEMPTS: u32 = 3;
 const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 attempt 1→2: 500ms
 
+/// lane の現況を `SystemEvent::Lane(Diff::Update)` として World へ push する。
+///
+/// 供給 push 根治（session chip 凍結、2026-07-17 解剖）: `Diff::Update` は従来、受信側
+/// （uplink / World registry / vp-app）だけ実装されて **emitter が repo に存在しなかった**。
+/// そのため restart や session pointer の変化が World lane_registry に届かず、vp-app の
+/// header（session chip 等）が SP 登録時の enrich 値で凍結していた。
+/// lane を in-place mutate した後（restart 等）と `lane_session_changed`（hook 通知）から呼ぶ。
+///
+/// engine_session_id は focused session 規則（`refresh_engine_session_id`）でここで確定させる
+/// （uplink 側 enrich は同じ lazy read の冪等な保険）。lane 不在（削除 race）と購読者ゼロ
+/// （boot 直後）は正常系なので no-op / warn に留める。
+pub(crate) async fn emit_lane_update(state: &Arc<AppState>, addr: &LaneAddress) {
+    let Some(mut info) = state.lane_pool.read().await.get(addr).cloned() else {
+        return;
+    };
+    info.refresh_engine_session_id();
+    if let Err(e) = state
+        .system_event_tx
+        .send(SystemEvent::Lane(Diff::Update { payload: info }))
+    {
+        tracing::warn!(
+            "SystemEvent::Lane(Diff::Update) broadcast failed: addr={} err={}",
+            addr,
+            e
+        );
+    }
+}
+
 /// VP-131 / F6③ (doc 27 §3.4.5/§6): Lane restart の透過 retry orchestration を関数化
 /// (`delete_lane_orchestrated` と対称)。 旧 `restart_handler` (HTTP) の retry loop を移植し、
 /// process-proxy ask `lane_restart` が呼ぶ core logic に。 SP route + handler は撤去。
@@ -775,6 +803,11 @@ pub async fn restart_lane_orchestrated(
                     pid,
                     attempt + 1
                 );
+                // 供給 push 根治: restart は pid / engine_session_id（fresh は pointer 破棄）を
+                // 変える in-place mutation なのに従来 Diff を emit しておらず、World registry が
+                // 凍結していた。fresh 直後は enrich=None が届いて chip が消灯し、初回発話の
+                // hook 通知（lane_session_changed）が新 id を灯す、という一連の流れの起点。
+                emit_lane_update(state, &addr).await;
                 return Ok(serde_json::json!({
                     "restarted": addr.to_string(),
                     "pid": pid,

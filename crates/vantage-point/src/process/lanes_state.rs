@@ -688,6 +688,49 @@ impl LanePool {
     /// attach し直す ─ pool の write lock を保持してる間は WS の read が queue され、
     /// release 後に新しい broadcast channel + scrollback を subscribe する。
     ///
+    /// fresh restart の state 破棄（「lane を素に戻す」の実体、console_mode 非依存）。
+    ///
+    /// doc 38 落とし穴②「fresh が副を知らない」の再演防止で、対象は **registry 上の全 session**:
+    /// - 各 engine の session store（cc / cursor / codex = resume の矢印。記録不在は no-op）
+    /// - replay log（transcript を持たない engine の replay 源。残すと「New Session なのに
+    ///   前の会話が replay される」嘘になる）
+    /// - session registry 自体（既定形 N=1 へ — fresh 後の lane は「素の 1 session」）
+    fn clear_fresh_lane_state(addr: &LaneAddress, default_stand: &str) -> anyhow::Result<()> {
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+        let reg = session_registry::load(&addr.project, &lane_label, default_stand);
+        for s in &reg.sessions {
+            let label = session_registry::session_label(&lane_label, s.key);
+            crate::lane::cc_session::clear(&addr.project, &label).map_err(|e| {
+                anyhow::anyhow!(
+                    "fresh restart: cc_session の破棄に失敗（addr={addr}, session={}）: {e}",
+                    s.key
+                )
+            })?;
+            crate::lane::cursor_session::clear(&addr.project, &label).map_err(|e| {
+                anyhow::anyhow!(
+                    "fresh restart: cursor_session の破棄に失敗（addr={addr}, session={}）: {e}",
+                    s.key
+                )
+            })?;
+            crate::lane::codex_session::clear(&addr.project, &label).map_err(|e| {
+                anyhow::anyhow!(
+                    "fresh restart: codex_session の破棄に失敗（addr={addr}, session={}）: {e}",
+                    s.key
+                )
+            })?;
+            crate::echoes::replay_log::clear(&addr.project, &label).map_err(|e| {
+                anyhow::anyhow!(
+                    "fresh restart: replay log の破棄に失敗（addr={addr}, session={}）: {e}",
+                    s.key
+                )
+            })?;
+        }
+        session_registry::clear(&addr.project, &lane_label).map_err(|e| {
+            anyhow::anyhow!("fresh restart: session registry の破棄に失敗（addr={addr}）: {e}")
+        })?;
+        Ok(())
+    }
+
     /// spawn 失敗時は LaneInfo.state を Dead にして error を返す (caller の責任で UI 通知)。
     /// `fresh=true` は resume/continue を回避して素の `claude` を起動させる
     /// (sidebar "New Conductor Session")。 false は従来の restart
@@ -700,68 +743,31 @@ impl LanePool {
         let cwd = info.cwd.clone();
         let stand = info.stand.clone();
 
+        // fresh=true は「lane を素に戻す」= resume の矢印（全 session の engine store）を破棄する。
+        // ⚠️ 破壊（engine drop / PtySlot kill）より先に fresh の前提を満たす。消せなければ
+        // resume が残り fresh でなくなるので黙って成功にできないが、先に破壊してから bail
+        // すると「死んだのに pid/state は旧値」の不整合が残る。この順序なら chat は
+        // 「失敗したら何も遷移していない」を不変条件にでき、orchestrator の透過 retry が
+        // 副作用なしの再試行になる。tui は spawn がその後失敗し得るが「素に戻したが立たず
+        // Dead」で fresh の意図（旧会話を捨てる）と矛盾しない。
+        //
+        // 旧実装はこの破棄が chat 分岐の中にだけあり、tui lane の New Session（fresh）は
+        // spawn command から --resume を落とすだけで pointer file が残った — restart 直後の
+        // Diff::Update push が旧 id を運び、session chip が旧 id を映し続ける
+        // （2026-07-17 解剖 / moody-blues 指摘の根治で mode 非依存に統一）。
+        if fresh {
+            Self::clear_fresh_lane_state(addr, &stand)?;
+        }
+
         // doc 33: chat mode の lane の restart = chat engine の入れ替え（PTY は立てない）。
         // engine を drop するだけで、次の echoes_submit が新 engine を lazy spawn する。
-        //
-        // fresh=true は cc_session の記録を消して表現する。 engine は lazy spawn なので
-        // 「今 fresh に立て直す」対象が存在せず、 意図は次回 spawn まで state で運ぶしかない:
+        // fresh の意図は上の store 破棄が state で運ぶ（engine は lazy spawn なので
+        // 「今 fresh に立て直す」対象が存在しない）:
         // - `ensure_chat_engine` の `cc_session::last` が None → --resume 無しで spawn
         //   → `EchoesAgentHost` が SessionInit で新 id を書き戻す（SSOT 復旧）
         // - transcript replay-on-attach も参照先を失う → 前の会話を映さない
         //   （消さないと「New Session なのに前の会話が出る」嘘になる）
         if info.console_mode == crate::lane::console_mode::ConsoleMode::Chat {
-            // ⚠️ 破壊 (engine drop) より先に fresh の前提を満たす。 消せなければ resume が残り
-            // fresh でなくなるので黙って成功にできないが、 engine を先に落としてから bail すると
-            // 「engine は死んだのに pid/state は旧値」 の不整合が残る。 順序を逆にすることで
-            // 「失敗したら何も遷移していない」 を不変条件にでき、 orchestrator の透過 retry も
-            // 副作用なしの再試行になる。
-            if fresh {
-                let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-                // doc 38 落とし穴②: fresh の clear 対象は **registry 上の全 session**。
-                // focused（や旧来の #1）だけ消すと、副 session の会話 id が残って
-                // 「New Session なのに resume される」嘘になる（「fresh が副を知らない」の再演）。
-                let reg = session_registry::load(&addr.project, &lane_label, &stand);
-                for s in &reg.sessions {
-                    let label = session_registry::session_label(&lane_label, s.key);
-                    // cursor / codex は session を各 engine の state file に持つ。engine 非依存に
-                    // 全 store を消すことで「New Session」がどの engine でも本当に fresh になる
-                    // （記録不在の store は no-op なので巻き添えなし）。
-                    crate::lane::cc_session::clear(&addr.project, &label).map_err(|e| {
-                        anyhow::anyhow!(
-                            "fresh restart: cc_session の破棄に失敗（addr={addr}, session={}）: {e}",
-                            s.key
-                        )
-                    })?;
-                    crate::lane::cursor_session::clear(&addr.project, &label).map_err(|e| {
-                        anyhow::anyhow!(
-                            "fresh restart: cursor_session の破棄に失敗（addr={addr}, session={}）: {e}",
-                            s.key
-                        )
-                    })?;
-                    crate::lane::codex_session::clear(&addr.project, &label).map_err(|e| {
-                        anyhow::anyhow!(
-                            "fresh restart: codex_session の破棄に失敗（addr={addr}, session={}）: {e}",
-                            s.key
-                        )
-                    })?;
-                    // transcript を持たない engine（cursor/codex）の replay 源も同時に破棄。
-                    // 会話 id（上の各 store）だけ消して replay log を残すと「New Session なのに
-                    // 前の会話が replay される」嘘になる（doc 38 落とし穴②「fresh が副を知らない」
-                    // と同型 — fresh は全 session の全 store を知る）。
-                    crate::echoes::replay_log::clear(&addr.project, &label).map_err(|e| {
-                        anyhow::anyhow!(
-                            "fresh restart: replay log の破棄に失敗（addr={addr}, session={}）: {e}",
-                            s.key
-                        )
-                    })?;
-                }
-                // registry 自体も既定形（N=1）へ戻す — fresh 後の lane は「素の 1 session」。
-                session_registry::clear(&addr.project, &lane_label).map_err(|e| {
-                    anyhow::anyhow!(
-                        "fresh restart: session registry の破棄に失敗（addr={addr}）: {e}"
-                    )
-                })?;
-            }
             // lane 単位の restart は全 session の engine を落とす（lazy respawn が resume で継ぐ）。
             self.chat_engines.remove(addr);
             if let Some(info) = self.lanes.get_mut(addr) {
@@ -1607,6 +1613,24 @@ mod tests {
         let info = pool.get(&addr).expect("lane");
         assert_eq!(info.pid, None);
         assert_eq!(info.state, LaneState::Running);
+    }
+
+    /// moody-blues 指摘の根治（2026-07-17）: fresh の store 破棄は console_mode に依らない。
+    /// 旧実装は chat 分岐内にだけあり、tui lane の New Session は spawn command から
+    /// --resume を落とすだけで pointer file が残った — restart 直後の Diff::Update push が
+    /// 旧 id を運び、session chip が旧 id を映し続けた。破棄の実体（`clear_fresh_lane_state`）
+    /// を直接固定する（tui 分岐の restart_lane 全体は実 PTY spawn を伴うため unit test 対象外）。
+    #[test]
+    fn fresh_clear_wipes_stores_regardless_of_console_mode() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        crate::lane::cc_session::record("vp", "conductor", "old-id").expect("record");
+        LanePool::clear_fresh_lane_state(&addr, "echoes").expect("clear");
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor"),
+            None,
+            "mode に依らず fresh 破棄で pointer が消える"
+        );
     }
 
     /// doc 38 落とし穴②: fresh restart は registry 上の**全 session**の会話 id を消し、
