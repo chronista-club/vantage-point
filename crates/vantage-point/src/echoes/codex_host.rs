@@ -88,6 +88,14 @@ struct RpcState {
     pending: HashMap<i64, ReqKind>,
     /// 明示 stop 中か（reader loop 終端の途絶 Error を抑止）。
     stopping: bool,
+    /// app-server 途絶（stdout close / stdin 書込失敗）を観測したか。true の submit は
+    /// **Err を返す** — `ensure_and_submit_chat` の自己修復（engine drop → 再 ensure →
+    /// 同一 message retry）に修復を委ねる（moody 指摘 #1: 常駐化で新たに背負った
+    /// プロセス死亡時の責務。旧 TurnHost は turn ごと spawn なのでこの問題自体が無かった）。
+    dead: bool,
+    /// stderr の末尾数行（途絶 Error の診断材料 — 未ログイン / CLI 不整合の原因を
+    /// user に見せる。moody 指摘 #2: 旧 TurnHost の stderr 合成の常駐版）。
+    stderr_tail: VecDeque<String>,
 }
 
 impl RpcState {
@@ -112,16 +120,26 @@ struct RpcInner {
 }
 
 impl RpcInner {
-    /// JSONL 1 行を書く（失敗は途絶扱い — reader 側の close 検知に収束させるため log のみ）。
-    async fn write_line(&self, line: &str) {
+    /// JSONL 1 行を書く。失敗 = 途絶（Err を返す — submit 経路は自己修復に繋ぐため
+    /// 握り潰さない。reader task 内の呼び出しは log のみで握る = stdout close 検知に収束）。
+    async fn write_line(&self, line: &str) -> std::io::Result<()> {
         let mut guard = self.stdin.lock().await;
-        if let Some(stdin) = guard.as_mut() {
-            let mut buf = line.as_bytes().to_vec();
-            buf.push(b'\n');
-            if let Err(e) = stdin.write_all(&buf).await {
-                tracing::warn!("codex app-server stdin write 失敗（途絶疑い）: {e}");
-            }
-            let _ = stdin.flush().await;
+        let Some(stdin) = guard.as_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "stdin が閉じています",
+            ));
+        };
+        let mut buf = line.as_bytes().to_vec();
+        buf.push(b'\n');
+        stdin.write_all(&buf).await?;
+        stdin.flush().await
+    }
+
+    /// reader task 内からの write（失敗は log のみ — 途絶は stdout close 検知に収束させる）。
+    async fn write_line_logged(&self, line: &str) {
+        if let Err(e) = self.write_line(line).await {
+            tracing::warn!("codex app-server stdin write 失敗（途絶疑い）: {e}");
         }
     }
 
@@ -194,7 +212,7 @@ impl RpcInner {
             }
         };
         if let Some(line) = line {
-            self.write_line(&line).await;
+            self.write_line_logged(&line).await;
         }
     }
 }
@@ -217,7 +235,7 @@ impl CodexAgentHost {
             .current_dir(&config.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = cmd
             .spawn()
@@ -227,6 +245,7 @@ impl CodexAgentHost {
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("codex app-server の stdout が取れません"))?;
+        let stderr = child.stderr.take();
         let child_pid = child.id();
 
         let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
@@ -246,9 +265,30 @@ impl CodexAgentHost {
                 next_id: 0,
                 pending: HashMap::new(),
                 stopping: false,
+                dead: false,
+                stderr_tail: VecDeque::new(),
             }),
             child: Mutex::new(Some(child)),
         });
+        // stderr drain（moody 指摘 #2）: 未ログイン / CLI 不整合の原因を log + 末尾保持して
+        // 途絶 Error の診断材料にする（旧 TurnHost の stderr 合成の常駐版）。
+        if let Some(stderr) = stderr {
+            let drain = inner.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    tracing::warn!("codex app-server stderr: {line}");
+                    let mut st = drain.state.lock().expect("rpc state lock");
+                    if st.stderr_tail.len() >= 5 {
+                        st.stderr_tail.pop_front();
+                    }
+                    st.stderr_tail.push_back(line);
+                }
+            });
+        }
         let resume_target = config.thread_id;
         tracing::info!(
             "CodexAgentHost spawn（常駐 app-server、project={}, lane={}, resume={:?}, pid={:?}）",
@@ -291,9 +331,18 @@ impl CodexAgentHost {
     }
 
     /// ユーザープロンプトを投入する（idle なら即 turn/start、それ以外は queue）。
+    ///
+    /// **途絶時は Err を返す**（moody 指摘 #1）: `ensure_and_submit_chat` の自己修復
+    /// （engine drop → 再 ensure → 同一 message retry）は submit の Err を条件に発火する。
+    /// 新 host は registry の conversation から `thread/resume` するため、復旧後も会話文脈は
+    /// 継がれる（= 途絶 Error の「次の送信で自動復旧」を実現する配線。旧 TurnHost は
+    /// turn ごと spawn でこの責務自体が無かった — 常駐化で新たに背負った責務）。
     pub async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
         let line = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
+            if st.dead {
+                anyhow::bail!("codex app-server が終了しています（engine 再起動で復旧）");
+            }
             if st.turn_active || st.thread_id.is_none() {
                 st.queue.push_back(prompt.to_string());
                 tracing::debug!(
@@ -313,8 +362,14 @@ impl CodexAgentHost {
                 Some(build_turn_start(id, &thread_id, prompt))
             }
         };
-        if let Some(line) = line {
-            self.inner.write_line(&line).await;
+        if let Some(line) = line
+            && let Err(e) = self.inner.write_line(&line).await
+        {
+            let mut st = self.inner.state.lock().expect("rpc state lock");
+            st.dead = true;
+            st.turn_active = false;
+            st.turn_id = None;
+            anyhow::bail!("codex app-server への送信に失敗（途絶）: {e}");
         }
         Ok(())
     }
@@ -332,11 +387,15 @@ impl CodexAgentHost {
                     let id = st.alloc(ReqKind::TurnInterrupt);
                     Some(build_turn_interrupt(id, &thread_id, &turn_id))
                 }
+                // turn_active && turn_id 未着（turn/start 直後の短い窓）は queue clear のみ —
+                // turn/started 到着後の再操作で止められる（moody #3 の窓、実害は小）。
                 _ => None,
             }
         };
         if let Some(line) = line {
-            self.inner.write_line(&line).await;
+            // interrupt の書込失敗は lenient（途絶なら turn はもう走っていない — 途絶検知と
+            // submit 側 Err が復旧を担う）。
+            self.inner.write_line_logged(&line).await;
         }
         Ok(())
     }
@@ -454,7 +513,7 @@ async fn run_reader(
         let id = st.alloc(ReqKind::Initialize);
         build_initialize(id)
     };
-    inner.write_line(&init_line).await;
+    inner.write_line_logged(&init_line).await;
 
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -470,7 +529,7 @@ async fn run_reader(
                 "id": id,
                 "error": { "code": -32601, "message": "not supported by VP CodexRpcHost" }
             });
-            inner.write_line(&resp.to_string()).await;
+            inner.write_line_logged(&resp.to_string()).await;
             continue;
         }
         // response（id のみ）
@@ -525,16 +584,36 @@ async fn run_reader(
         }
     }
 
-    // stdout close = 途絶（常駐の規律、#692 と同じ）。明示 stop では出さない。
-    let stopping = inner.state.lock().expect("rpc state lock").stopping;
+    // stdout close = 途絶（常駐の規律、#692 と同じ）。dead を立てて以後の submit を Err に
+    // 倒す = `ensure_and_submit_chat` の自己修復（drop → 再 ensure → retry）が発火する
+    // （moody #1 の配線）。明示 stop では Error を出さない。
+    let (stopping, stderr_tail) = {
+        let mut st = inner.state.lock().expect("rpc state lock");
+        st.dead = true;
+        st.turn_active = false;
+        st.turn_id = None;
+        (
+            st.stopping,
+            st.stderr_tail
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
     if !stopping {
         tracing::warn!(
             "codex app-server 途絶（project={}, lane={}）",
             inner.project,
             inner.lane
         );
+        let detail = if stderr_tail.is_empty() {
+            String::new()
+        } else {
+            format!("\n{stderr_tail}")
+        };
         inner.emit(EchoesEvent::Error {
-            message: "codex app-server が終了しました。次の送信で再起動されます。".into(),
+            message: format!("codex app-server が終了しました。次の送信で自動復旧します。{detail}"),
         });
     }
 }
@@ -561,7 +640,7 @@ async fn handle_response(
                 });
                 return;
             }
-            inner.write_line(&build_initialized()).await;
+            inner.write_line_logged(&build_initialized()).await;
             let line = {
                 let mut st = inner.state.lock().expect("rpc state lock");
                 match resume_target {
@@ -575,7 +654,7 @@ async fn handle_response(
                     }
                 }
             };
-            inner.write_line(&line).await;
+            inner.write_line_logged(&line).await;
         }
         ReqKind::ThreadResume => {
             if let Some(err) = error {
@@ -592,7 +671,7 @@ async fn handle_response(
                     let id = st.alloc(ReqKind::ThreadStart);
                     build_thread_start(id, &inner.cwd)
                 };
-                inner.write_line(&line).await;
+                inner.write_line_logged(&line).await;
                 return;
             }
             if let Some(tid) = msg.pointer("/result/thread/id").and_then(|v| v.as_str()) {
@@ -756,6 +835,36 @@ mod tests {
             Some(session_id.as_str()),
             "thread id が registry に記録される"
         );
+
+        // phase 2（moody #3 → 実測に昇格）: turn/interrupt の実機行使。
+        // 長い turn を開始 → 最初の増分を観測してから interrupt → turn/completed で
+        // streaming が畳まれる（turn_active が下りて次の turn が受け付けられる）ことを確認。
+        host.submit("Count from 1 to 500 slowly, one number per line. Do not stop early.")
+            .await
+            .expect("submit long turn");
+        let deadline2 = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let ev = tokio::time::timeout_at(deadline2, rx.recv())
+                .await
+                .expect("60s 以内に turn が走り出す")
+                .expect("recv");
+            match ev {
+                EchoesEvent::MessageChunk { .. } | EchoesEvent::ThoughtChunk { .. } => break,
+                EchoesEvent::Error { message } => panic!("engine error: {message}"),
+                _ => {}
+            }
+        }
+        host.interrupt().await.expect("interrupt");
+        let deadline3 = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let ev = tokio::time::timeout_at(deadline3, rx.recv())
+                .await
+                .expect("interrupt 後 30s 以内に turn/completed が来る（doc 41 §2-2）")
+                .expect("recv");
+            if matches!(ev, EchoesEvent::TurnCompleted { .. }) {
+                break;
+            }
+        }
         host.stop();
     }
 }
