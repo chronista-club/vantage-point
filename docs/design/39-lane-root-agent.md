@@ -173,4 +173,20 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
   fork` / `turn/start・steer（実行中 turn への注入、claude に無い）・interrupt`
   （`app-server-protocol/src/protocol/common.rs`）。常駐化の正攻法は app-server 統合
   （follow-up 起票済 mem_1Cd5Msoj）。cursor は `--input-format` 相当が無く（出力のみ
-  stream-json）、turn-scoped が CLI 側の制約 — TurnHost は cursor/agy 用として残る
+  stream-json）、turn-scoped が CLI 側の制約 — TurnHost は cursor 用として残る
+
+## 7. Engine 常駐統合の優先度（2026-07-18 mako 決定）
+
+「いつでも入出力できる常駐型の方が VP のオーケストレーション（wire nudge 即注入 / interrupt
+即時性 / turn 固定費 / HITL control 面）に合う」を軸に再整理した確定順:
+
+| 優先 | engine | 方式 | 根拠・条件 |
+|---|---|---|---|
+| — | claude | stream-json 常駐（出荷済） | 基準器 |
+| **1** | codex | **app-server 常駐** | mako「turn じゃない方で」確定。thread/turn API（steer/fork 含む）をソース確認済 |
+| **2** | grok | **ACP 常駐**（新規 engine） | xai-org/grok-build ソース確認: ACP がネイティブ中核（TUI 自身が ACP client）、`xai-acp-lib` に session/new・prompt + load 機構。VP に `protocol/acp.rs` の下地あり。旧「ACP 不採用」は claude 専用統合の判断であり、grok では ACP こそが専用統合 |
+| **3** | cursor | **turn-scoped 維持 = Composer 2.5 枠** | Composer は Cursor 専有（公開 API 無し）で、使う唯一の路が cursor-agent = turn-scoped（CLI 実物で `composer-2.5` / `-fast` を確認）。「常駐で Composer」は現状不可能 — CLI が入力 stream / ACP を積んだら昇格再評価。P4 に「turn 固定費 vs Composer 速度」の実測を含める |
+| — | agy | **非対応（オミット）** | 会話 id 供給なし・常駐路なし。engine 対応表から除外（コード撤去は follow-up） |
+
+codex app-server と grok ACP は共に「常駐 JSON-RPC over stdio + typed protocol」— TurnHost に
+対する常駐系の共通ホスト骨格（RpcHost 相当）を 1 度作れば両方に効く。
