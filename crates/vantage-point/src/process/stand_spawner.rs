@@ -350,10 +350,8 @@ pub fn build_stand_command(
     // doc 39 P1: 床に化身するのは root session（lane の人格）。resume id / 会話 id の store は
     // root session の label を読む（registry file 不在 = root=1 = 素の lane 名に解決され、
     // 従来と同一の読み先 = N=1 完全互換）。engine_model は lane 単位（Act I/II 共有）のまま。
-    let store_label = crate::lane::session_registry::session_label(
-        lane_label(addr),
-        crate::lane::session_registry::root(&addr.project, lane_label(addr)),
-    );
+    let root = crate::lane::session_registry::root(&addr.project, lane_label(addr));
+    let store_label = crate::lane::session_registry::session_label(lane_label(addr), root);
 
     // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
     let initial_input = match crate::echoes::EngineKind::from_stand(stand_name) {
@@ -368,7 +366,14 @@ pub fn build_stand_command(
             // 未記録 = None = claude default（co-evolution #1）。 respawn（SP restart）でも
             // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
             let model = crate::lane::engine_model::last(&addr.project, lane_label(addr));
-            let cmd = claude_command(addr.kind, fresh, resume_id.as_deref(), model.as_deref());
+            // doc 39 P2: `--continue` fallback（conductor + id なし）は **session #1 専用**の
+            // 互換層 — registry 導入前の既存 cwd 会話を拾うためのもの。root が #2 以降で
+            // record 無し = VP が作った未発話の新品 session なので、`--continue`（cwd 最新
+            // 拾い）に落とすと**別 session（旧 root 等）の会話を新 root に混入**させる。
+            // bare に倒して「新 ID から」を守る（moody 指摘: Bare spawn 失敗後の Resume
+            // 復帰経路がこの罠を踏んでいた）。
+            let bare = fresh || (root >= 2 && resume_id.is_none());
+            let cmd = claude_command(addr.kind, bare, resume_id.as_deref(), model.as_deref());
             Some(format!("{}\r", cmd))
         }
         Some(crate::echoes::EngineKind::Cursor) => {
@@ -478,6 +483,26 @@ mod tests {
             "lane cwd が mise trust に含まれるはず: {:?}",
             env.get("MISE_TRUSTED_CONFIG_PATHS")
         );
+    }
+
+    /// doc 39 P2: 未発話の非 #1 root（VP が作った新品 session）は `--continue` に落とさない。
+    /// conductor + id なしの `--continue` fallback は session #1 専用の互換層 — 非 #1 root で
+    /// 踏むと cwd 最新拾いが旧 root の会話を新 root に混入させる（moody 指摘の Bare 失敗後
+    /// Resume 復帰経路）。bare 起動に倒すことを固定する。
+    #[test]
+    fn unspoken_non_first_root_spawns_bare_not_continue() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        // root を #2（新品、record 無し）へ — Act I ✨ New 直後の registry 状態。
+        crate::lane::session_registry::create_root("vp", "conductor", "echoes", "echoes")
+            .expect("create_root");
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let input = cmd.initial_input.expect("echoes は initial_input あり");
+        assert!(
+            !input.contains("--continue") && !input.contains("--resume"),
+            "未発話の非 #1 root は bare 起動（--continue/--resume なし）: {input}"
+        );
+        assert!(input.starts_with("claude"), "claude 起動 command: {input}");
     }
 
     /// echoes は claude を initial_input で注入（wire hook 同梱）。

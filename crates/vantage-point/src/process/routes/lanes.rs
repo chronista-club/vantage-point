@@ -750,7 +750,7 @@ pub(crate) async fn emit_lane_update(state: &Arc<AppState>, addr: &LaneAddress) 
 pub async fn restart_lane_orchestrated(
     state: &Arc<AppState>,
     addr: LaneAddress,
-    fresh: bool,
+    mode: crate::process::lanes_state::RespawnMode,
 ) -> Result<serde_json::Value, String> {
     // VP-131: 透過 retry with exponential backoff。 各 attempt 間で write lock を release して
     // 他 handler を blocking しない設計、 tokio::time::sleep で async wait。
@@ -758,7 +758,7 @@ pub async fn restart_lane_orchestrated(
     for attempt in 0..RESTART_MAX_ATTEMPTS {
         let result = {
             let mut pool = state.lane_pool.write().await;
-            pool.restart_lane(&addr, fresh)
+            pool.restart_lane(&addr, mode)
         };
 
         match result {

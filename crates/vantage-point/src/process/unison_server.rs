@@ -1114,7 +1114,8 @@ async fn handle_echoes_session_focus(
 
 /// doc 38 Phase 3: session を取り除く（tab を閉じる）。`{lane, session}` →
 /// `{lane, session, focused}`（focused = 除去後の focus 先。GUI は list 再取得で追随）。
-/// 最後の 1 本は LanePool（registry）が拒否 — lane を素に戻すのは fresh restart の役目。
+/// root は registry が拒否（doc 39 §6 — 最後の 1 本の拒否を包含。GUI も root タブの × を
+/// 隠す = 多重防御）。lane を素に戻すのは Reset lane（fresh restart）の役目。
 async fn handle_echoes_session_remove(
     state: &AppState,
     payload: serde_json::Value,
@@ -1134,6 +1135,43 @@ async fn handle_echoes_session_remove(
         .remove_chat_session(&addr, session)
         .map_err(|e| format!("echoes_session_remove: {e}"))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
+}
+
+/// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向け、床を素の engine で
+/// 張り替える（= Root 切替「✨ 新 ID から」の shorthand。旧 root の会話はタブに残存 = 非破壊）。
+/// `{lane}` → `{lane, session}`。mode=Tui 限定（chat lane の New は echoes_session_create —
+/// 「今いる Act に出す」の分岐は vp-app が担う）。床の spawn は restart 経路
+///（retry / pump 付替 / Diff push 込み）を [`RespawnMode::Bare`] で再利用する — 第 2 の
+/// spawn 経路を作らない。
+///
+/// [`RespawnMode::Bare`]: crate::process::lanes_state::RespawnMode::Bare
+async fn handle_echoes_session_new_root(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_new_root: lane 未指定".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_new_root: lane パース失敗: {lane}"))?;
+    let key = state
+        .lane_pool
+        .write()
+        .await
+        .prepare_new_root_session(&addr)
+        .map_err(|e| format!("echoes_session_new_root: {e}"))?;
+    // registry は新 root へ切替済み（原子的な 1 save）。以降の床張り替えが失敗しても registry は
+    // 先行して整合 — 次の respawn / restart（Resume 経路）でも未発話の非 #1 root は
+    // build_stand_command が bare に倒すため（--continue 混入防止）、新 root の新品として
+    // 立ち直る。Err は spawn 失敗として caller に返す。
+    super::routes::lanes::restart_lane_orchestrated(
+        state,
+        addr,
+        crate::process::lanes_state::RespawnMode::Bare,
+    )
+    .await?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
@@ -1426,14 +1464,21 @@ async fn handle_lane_restart(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or("lane_restart: address 必須")?;
-    // fresh default=false (旧 RestartLaneQuery の #[serde(default)] と一致)。
+    // fresh default=false (旧 RestartLaneQuery の #[serde(default)] と一致)。wire は bool のまま
+    // （fresh=true = Reset lane / false = 会話を継ぐ）— Bare は wire に出さない（New root 専用の
+    // 内部 mode で、echoes_session_new_root だけが使う）。
     let fresh = payload
         .get("fresh")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let mode = if fresh {
+        crate::process::lanes_state::RespawnMode::Reset
+    } else {
+        crate::process::lanes_state::RespawnMode::Resume
+    };
     let addr = crate::process::lanes_state::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
-    super::routes::lanes::restart_lane_orchestrated(state, addr, fresh).await
+    super::routes::lanes::restart_lane_orchestrated(state, addr, mode).await
 }
 
 /// 供給 push 根治（session chip 凍結、2026-07-17）: engine session pointer の変化通知。
@@ -1526,6 +1571,8 @@ pub(crate) async fn dispatch_process_method(
         // Phase 2 の tab strip はこの 3 本 + 既存 RPC の additive session param だけで成立する。
         "echoes_session_list" => handle_echoes_session_list(state, payload).await,
         "echoes_session_create" => handle_echoes_session_create(state, payload).await,
+        // doc 39 §4: Act I の ✨ New（新 session + root 張り替え + 床 bare respawn、非破壊）
+        "echoes_session_new_root" => handle_echoes_session_new_root(state, payload).await,
         "echoes_session_focus" => handle_echoes_session_focus(state, payload).await,
         // doc 38 Phase 3: tab を閉じる（session remove）。
         "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,

@@ -623,14 +623,24 @@ describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Pha
   })
 })
 
-describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3）', () => {
+describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3 → doc 39）', () => {
   it('1 本以下では × を出さない（最後の 1 本は backend も Err で拒否）', () => {
     expect(canCloseSession(0)).toBe(false)
     expect(canCloseSession(1)).toBe(false)
   })
 
-  it('2 本以上で × を出す', () => {
+  it('2 本以上の非 root タブで × を出す', () => {
     expect(canCloseSession(2)).toBe(true)
     expect(canCloseSession(5)).toBe(true)
+    expect(canCloseSession(2, false)).toBe(true)
+  })
+
+  it('root タブは本数に依らず隠す（backend の「root は remove 不可」の UI 反映 — doc 39 §6）', () => {
+    expect(canCloseSession(2, true)).toBe(false)
+    expect(canCloseSession(5, true)).toBe(false)
+  })
+
+  it('旧 SP（root field なし = undefined）は従来挙動（本数のみ）に倒す', () => {
+    expect(canCloseSession(2, undefined)).toBe(true)
   })
 })

@@ -418,10 +418,13 @@ export function chatCapableStands(stands: StandOption[]): StandOption[] {
   return stands.filter((s) => s.chat_capable !== false)
 }
 
-/** doc 38 Phase 3: session tab の × を出してよいか（2 本以上でのみ close 可）。純粋 = テスト可能。
- *  1 本の時は隠す — backend も最後の 1 本は Err で拒否する（lane を素に戻すのは fresh restart の役目）。 */
-export function canCloseSession(sessionCount: number): boolean {
-  return sessionCount >= 2
+/** doc 38 Phase 3 → doc 39: session tab の × を出してよいか。純粋 = テスト可能。
+ *  - 2 本以上でのみ close 可（1 本 = 素に戻すのは Reset lane の役目）
+ *  - root タブは隠す（backend も root の remove を Err で拒否する — doc 39 §6。隠さないと
+ *    「クリックしたのに閉じない」無言 no-op になる）。旧 SP は root を送らない（undefined）→
+ *    従来挙動（本数のみ）に倒す。 */
+export function canCloseSession(sessionCount: number, isRoot?: boolean): boolean {
+  return sessionCount >= 2 && isRoot !== true
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,10 +1174,16 @@ function ChatView() {
                 <span class="echoes-tab-label">
                   {sessionChipPrefix(sess.stand)}#{sess.key}
                 </span>
-                {/* doc 38 Phase 3: × で session close。2 本以上でのみ表示（1 本 = 素に戻すのは fresh
-                    restart の役目、backend も最後の 1 本は Err）。tab は <button> なので × は span で
-                    描き、stopPropagation で focus click に伝播させない。 */}
-                <Show when={canCloseSession(currentSessions()?.sessions.length ?? 0)}>
+                {/* doc 38 Phase 3 → doc 39: × で session close。root タブと 1 本きりの時は隠す
+                    （backend も root / 最後の 1 本の remove を Err で拒否 = 多重防御。素に戻すのは
+                    sidebar の Reset Lane）。tab は <button> なので × は span で描き、
+                    stopPropagation で focus click に伝播させない。 */}
+                <Show
+                  when={canCloseSession(
+                    currentSessions()?.sessions.length ?? 0,
+                    sess.root,
+                  )}
+                >
                   <span
                     class="echoes-tab-close"
                     role="button"
@@ -1524,8 +1533,6 @@ export const CHATVIEW_CSS = `
 /* console 右上の操作群（New Session + Act toggle）。container が位置を持ち、子は並ぶだけ。 */
 .echoes-console-actions { position:absolute; top:8px; right:12px; z-index:10; display:flex; gap:8px; }
 .echoes-console-actions .echoes-act-toggle { position:static; }
-/* New Session の armed 状態（2 クリック確認の 1 段目）: 誤爆防止の視覚合図。 */
-.echoes-new-session.armed { color: var(--color-accent,#e2b96f); border-color: var(--color-accent,#e2b96f); opacity:1; }
 /* doc 38 Phase 2: session tab strip（仮置き）。header の直上・コンパクト・既存トーン準拠。 */
 .echoes-tabs { display:flex; align-items:center; gap:6px; padding:5px 12px 0; flex-wrap:wrap;
   background: var(--color-bg-elevated,#13161c); }
