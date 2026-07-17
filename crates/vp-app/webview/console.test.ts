@@ -19,6 +19,7 @@ import {
   noteSessionList,
   noteFocus,
   focusedOf,
+  syncHeaderSessionId,
 } from './console'
 
 // --- 最小 DOM stub -----------------------------------------------------------------------------
@@ -145,5 +146,64 @@ describe('handleStands — vp:echoes-stands で中継', () => {
     expect(detail).not.toBeNull()
     expect(detail!.lane).toBe('proj/lane-h')
     expect(detail!.stands).toHaveLength(2)
+  })
+})
+
+describe('syncHeaderSessionId — chip は focused session の真値に追従（D1）', () => {
+  it('draft (engine_session_id=null) を focus すると sessionId が消える', () => {
+    const con = installConsole()
+    // 旧 session の session_init で chip が付いた状態を作る
+    con.handleEvent(
+      'proj/lane-sync-a',
+      { kind: 'session_init', session_id: 'old-id' },
+      1,
+    )
+    expect(con.headerState('proj/lane-sync-a').sessionId).toBe('old-id')
+    // 新 draft (key 2, id なし) を focus した list が届く
+    noteSessionList('proj/lane-sync-a', 2, [
+      { key: 1, stand: 'echoes', engine_session_id: 'old-id', live: true, focused: false },
+      { key: 2, stand: 'echoes', engine_session_id: null, live: false, focused: true },
+    ])
+    expect(syncHeaderSessionId('proj/lane-sync-a')).toBe(true)
+    expect(con.headerState('proj/lane-sync-a').sessionId).toBeUndefined()
+  })
+
+  it('id 持ち session への切替は chip がその id になる（変化なしなら false）', () => {
+    const con = installConsole()
+    noteSessionList('proj/lane-sync-b', 3, [
+      { key: 1, stand: 'echoes', engine_session_id: 'aaa', live: false, focused: false },
+      { key: 3, stand: 'codex', engine_session_id: 'ccc', live: true, focused: true },
+    ])
+    expect(syncHeaderSessionId('proj/lane-sync-b')).toBe(true)
+    expect(con.headerState('proj/lane-sync-b').sessionId).toBe('ccc')
+    // 同じ値への再同期は変化なし
+    expect(syncHeaderSessionId('proj/lane-sync-b')).toBe(false)
+  })
+
+  it('handleSessionList 経由で自動同期され vp:echoes-header が飛ぶ', () => {
+    const con = installConsole()
+    con.handleEvent(
+      'proj/lane-sync-c',
+      { kind: 'session_init', session_id: 'stale-id' },
+      1,
+    )
+    let headerFired = 0
+    document.addEventListener('vp:echoes-header', () => {
+      headerFired += 1
+    })
+    con.handleSessionList('proj/lane-sync-c', {
+      lane: 'proj/lane-sync-c',
+      focused: 2,
+      sessions: [
+        { key: 1, stand: 'echoes', engine_session_id: 'stale-id', live: true, focused: false },
+        { key: 2, stand: 'echoes', engine_session_id: null, live: false, focused: true },
+      ],
+    })
+    expect(con.headerState('proj/lane-sync-c').sessionId).toBeUndefined()
+    expect(headerFired).toBe(1)
+  })
+
+  it('未知 lane は no-op（false）', () => {
+    expect(syncHeaderSessionId('proj/lane-sync-unknown')).toBe(false)
   })
 })

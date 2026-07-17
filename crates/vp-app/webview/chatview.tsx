@@ -27,7 +27,7 @@ import { marked } from 'marked'
 import type { EchoesEvent, EchoesSession, PlanEntry, QuestionSpec, VpConsole } from './console'
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
 // （SP が真実源、ここは view）。session chip の prefix 規則は EchoesHeader を SSOT として再利用。
-import { focusedOf, noteFocus } from './console'
+import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './EchoesHeader'
 
 // ---------------------------------------------------------------------------
@@ -899,6 +899,11 @@ function ChatView() {
     // 楽観的に local focused を更新: console.ts registry（filter が即切り替わる）+ tab 強調の両方。
     // demand_start → ReplayStart が届いて fold が会話を clear→再構築する（明示クリア不要）。
     noteFocus(lane, session)
+    // D1: 既存 session 間の tab 切替でも chip を即追従させる（authoritative は後続の
+    // echoes_session_list → handleSessionList 側の sync が上書き）。
+    if (syncHeaderSessionId(lane)) {
+      document.dispatchEvent(new CustomEvent('vp:echoes-header', { detail: { lane } }))
+    }
     setSessionViews((prev) => {
       const cur = prev[lane] ?? { focused: session, sessions: [] }
       return { ...prev, [lane]: { ...cur, focused: session } }
