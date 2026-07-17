@@ -48,11 +48,12 @@ use crate::daemon::pty_slot::PtySlot;
 /// UserPromptSubmit で未読 wire を additionalContext 通知、 daemon 不在時は silent 成功
 /// （fail-open）。 JSON に single quote が無いため `'…'` 埋め込みで安全に quote できる。
 ///
-/// NOTE: cc_session の記録は本 hook の **UserPromptSubmit** が担う —「実際に会話が発生した
-/// session だけがポインタを動かす」不変条件（解剖 memory `cc-session-pointer-self-destruction`）。
-/// 旧 SessionStart 記録（R3-b → global settings 移管）は、resume 失敗 `||` fallback で立った
-/// 発話ゼロの fresh session までが id を記録し、復帰先ポインタを自壊させた。
-const WIRE_HOOKS: &str = r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}"#;
+/// NOTE（doc 40 §4/§6）: hook は会話 id の**報告者** — SessionStart = Issued（発行時点の
+/// eager 表示）/ UserPromptSubmit = Spoken（authoritative）を SP へ送るだけで、記録判断
+/// （root 解決 + F1/F2 guard = 「resume 失敗 `||` fallback の幻 session が健在な旧会話を
+/// 上書きしない」）は SP の `session_registry::record_root_conversation` 1 箇所が持つ。
+/// 旧「UserPromptSubmit のみ記録」（#795）はこの guard を hook 側の鈍器で担っていた名残。
+const WIRE_HOOKS: &str = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}"#;
 
 /// Stand spawn 用 command（program + args + env + cwd + 初期入力）
 #[derive(Debug, Clone)]
@@ -347,20 +348,30 @@ pub fn build_stand_command(
 
     let (program, args) = login_shell();
 
-    // doc 39 P1: 床に化身するのは root session（lane の人格）。resume id / 会話 id の store は
-    // root session の label を読む（registry file 不在 = root=1 = 素の lane 名に解決され、
-    // 従来と同一の読み先 = N=1 完全互換）。engine_model は lane 単位（Act I/II 共有）のまま。
-    let root = crate::lane::session_registry::root(&addr.project, lane_label(addr));
+    // doc 39 P1 → doc 40: 床に化身するのは root session（lane の人格）。resume id / 会話 id は
+    // **session registry の root entry**（SSOT、doc 40 §5 — 旧 store は load 内の backfill
+    // bridge が拾う）。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
+    // engine_model は lane 単位（Act I/II 共有）のまま。
+    let reg = crate::lane::session_registry::load(&addr.project, lane_label(addr), stand_name);
+    let root = reg.root;
+    let root_conversation = reg
+        .sessions
+        .iter()
+        .find(|s| s.key == root)
+        .and_then(|s| s.conversation.clone());
+    // cursor / codex の fresh clear と cursor の create-chat 採番（writer 側）は旧 store の
+    // まま（doc 40 §4 scope: 書き手漏斗は claude のみ。cursor はオミット予定（doc 39 §7）、
+    // codex は RpcHost 移行（TurnHost 撤去）で registry 直結に書き直す — bridge が読みを繋ぐ）。
     let store_label = crate::lane::session_registry::session_label(lane_label(addr), root);
 
     // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
     let initial_input = match crate::echoes::EngineKind::from_stand(stand_name) {
         Some(crate::echoes::EngineKind::Claude) => {
-            // resume id は root session の state file（書き手 = UserPromptSubmit hook）を直読み。
             // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
             // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒すと
             // conductor は `--continue` に落ち、cwd 最新の実会話を拾える（F2/F3 根治）。
-            let resume_id = crate::lane::cc_session::last(&addr.project, &store_label)
+            let resume_id = root_conversation
+                .clone()
                 .filter(|id| crate::lane::cc_session::transcript_exists(id));
             // model は lane 単位の state file（`engine_model`、Act I/II 共有）を直読み。
             // 未記録 = None = claude default（co-evolution #1）。 respawn（SP restart）でも
@@ -402,8 +413,8 @@ pub fn build_stand_command(
                 let _ = crate::lane::codex_session::clear(&addr.project, &store_label);
                 Some("codex\r".to_string())
             } else {
-                let id = crate::lane::codex_session::last(&addr.project, &store_label);
-                Some(format!("{}\r", codex_command(id.as_deref())))
+                // thread id は registry の root 会話 id（doc 40 §5 — bridge が旧 store も拾う）。
+                Some(format!("{}\r", codex_command(root_conversation.as_deref())))
             }
         }
         Some(crate::echoes::EngineKind::Agy) => {
@@ -591,7 +602,7 @@ mod tests {
         let fresh = claude_command(LaneKind::Performer, true, None, Some("sonnet"));
         assert_eq!(
             fresh,
-            "claude --model sonnet --settings '{\"hooks\":{\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"vp wire hook-check\"}]}]}}'",
+            format!("claude --model sonnet --settings '{WIRE_HOOKS}'"),
             "fresh は --model 付き単一 claude: {fresh}"
         );
 
@@ -633,6 +644,10 @@ mod tests {
         assert!(
             parsed.pointer("/hooks/UserPromptSubmit").is_some(),
             "UserPromptSubmit hook を含む: {parsed}"
+        );
+        assert!(
+            parsed.pointer("/hooks/SessionStart").is_some(),
+            "SessionStart hook（doc 40 Issued 報告 = 発行時点の eager 表示）を含む: {parsed}"
         );
         assert!(
             !WIRE_HOOKS.contains('\''),

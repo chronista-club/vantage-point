@@ -1498,8 +1498,41 @@ async fn handle_lane_session_changed(
     }
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("lane_session_changed: invalid lane address: {lane}"))?;
-    if state.lane_pool.read().await.get(&addr).is_none() {
+    let Some(stand) = state
+        .lane_pool
+        .read()
+        .await
+        .get(&addr)
+        .map(|l| l.stand.clone())
+    else {
         return Err(format!("lane_session_changed: lane が存在しません: {lane}"));
+    };
+    // doc 40 §4/§6: hook の会話報告（session_id + event）を root session に適用する —
+    // policy（root 解決 + F1/F2 guard）の唯一の実装点は record_root_conversation。
+    // session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」（従来互換、enrich だけ行う）。
+    if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
+        use crate::lane::session_registry::ConversationReport;
+        let report = match payload.get("event").and_then(|v| v.as_str()) {
+            Some("issued") => ConversationReport::Issued,
+            _ => ConversationReport::Spoken,
+        };
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        match crate::lane::session_registry::record_root_conversation(
+            &addr.project,
+            lane_label,
+            &stand,
+            sid,
+            report,
+        ) {
+            Ok(outcome) => {
+                tracing::info!(
+                    "conversation report: addr={addr} report={report:?} outcome={outcome:?}"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("conversation report 適用失敗: addr={addr} err={e}");
+            }
+        }
     }
     super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({ "status": "ok", "lane": lane }))
@@ -2413,6 +2446,7 @@ mod tests {
                 cwd: cwd.clone(),
                 performer_status: None,
                 cc_session_id: None,
+                sessions: None,
                 engine_session_id: None,
                 flow_state: None,
             });
@@ -2535,6 +2569,7 @@ mod tests {
             cwd: state_dir.path().to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });
@@ -2563,6 +2598,89 @@ mod tests {
                     Some("sid-new"),
                     "emit 時に state file の現値で re-enrich される"
                 );
+            }
+            other => panic!("expected Diff::Update, got: {other:?}"),
+        }
+    }
+
+    /// doc 40 §4/§6: hook の会話報告（session_id + event 付き payload）が root session の
+    /// registry に記録され（旧 store への直書きは発生しない = 漏斗一本化）、Diff::Update が
+    /// 新 id と sessions snapshot を運ぶ。eager（issued）でも fresh な root には即記録される
+    /// = 「発行時点で chip が点く」の配線検証。
+    #[tokio::test]
+    async fn lane_session_changed_records_conversation_report_into_registry() {
+        use super::dispatch_process_method;
+        use crate::process::lanes_state::{
+            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
+        };
+        use crate::process::state::build_test_app_state;
+
+        let state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
+            name: None,
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-18T00:00:00Z".to_string(),
+            pid: Some(1),
+            cwd: state_dir.path().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            flow_state: None,
+        });
+
+        let mut rx = state.system_event_tx.subscribe();
+        dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane": "vp/conductor",
+                "session_id": "sid-issued",
+                "event": "issued",
+            }),
+        )
+        .await
+        .expect("lane_session_changed ok");
+
+        // registry（SSOT）に記録され、旧 store には書かれない
+        let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
+        let root_conv = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == reg.root)
+            .and_then(|s| s.conversation.as_deref().map(str::to_string));
+        assert_eq!(
+            root_conv.as_deref(),
+            Some("sid-issued"),
+            "issued 報告が fresh root に即記録される（発行時点点灯の核）"
+        );
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor"),
+            None,
+            "旧 store への直書きは無い（書き手は registry に漏斗化）"
+        );
+
+        // Diff::Update が新 id + sessions snapshot を運ぶ
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Diff::Update が 1s 以内に届く")
+            .expect("broadcast recv");
+        match event {
+            SystemEvent::Lane(Diff::Update { payload }) => {
+                assert_eq!(payload.engine_session_id.as_deref(), Some("sid-issued"));
+                assert_eq!(
+                    payload.cc_session_id.as_deref(),
+                    Some("sid-issued"),
+                    "root=claude なので channel D 契約（cc_session_id）にも同値が載る"
+                );
+                let sessions = payload.sessions.expect("sessions snapshot が同梱される");
+                assert_eq!(sessions.root, 1);
             }
             other => panic!("expected Diff::Update, got: {other:?}"),
         }
@@ -2701,6 +2819,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });

@@ -317,10 +317,17 @@ pub struct LaneInfo {
     pub cc_session_id: Option<String>,
     /// doc 37: この lane の **active engine の** session id（claude=cc_session / cursor=chatId /
     /// codex=thread id。agy / shell は None）。Echoes 共通ヘッダの session chip 用（表示専用 —
-    /// resume に使うのは各 engine の state file / `cc_session_id` 側）。snapshot 時に
-    /// `EngineKind` で分岐して lazy read。serde default + skip で wire 後方互換。
+    /// resume に使うのは registry の会話 id / `cc_session_id` 側）。doc 40: 供給は registry
+    /// （root session の conversation）に一本化。serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_session_id: Option<String>,
+    /// doc 40 §3: lane の session 構造（registry snapshot — focused / root /
+    /// sessions[{key, stand, conversation}]）。LaneInfo を「lane の完全な descriptor」に
+    /// する一歩（cwd は既在、sessions が最後の外付けだった）— chip とタブの供給を同一
+    /// snapshot に揃える土台。populate は [`Self::refresh_engine_session_id`]（enrich 供給点）。
+    /// serde default + skip で wire 後方互換。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<crate::lane::session_registry::SessionRegistry>,
     /// doc 33: Console のエンジンモード（Tui = PtySlot+claude TUI / Chat = EchoesAgentHost）。
     /// serde default = Tui で wire 後方互換。永続 SSOT は `lane::console_mode`（state file）、
     /// 本 field はその registry cache。vp-app は本 field で Dead-lane respawn 判定を gate する
@@ -349,33 +356,28 @@ impl LaneInfo {
     /// （session registry + session store、いずれも数百 byte）で軽微。
     pub fn refresh_engine_session_id(&mut self) {
         let lane_label = crate::process::stand_spawner::lane_label(&self.address);
-        // doc 39 P1: chip は root session（lane の人格 — 床に化身し mailbox を名乗る session）の
-        // 会話 id を映す（Act I は「lane の人格」を見る場所、doc 39 §4。Act II のタブ表示は
-        // per-session 値 = #796 の syncHeaderSessionId が担う）。registry file 不在（N=1 特殊
-        // ケース）は root=1 = 素の lane label に解決され、従来と同一の読み先になる。
-        // stand も root session のもの（session は lane と異なる engine を持ち得る）。
+        // doc 40 §5: 会話 id の SSOT = session registry を 1 回 load し、
+        // - `engine_session_id`（chip）= root session の conversation（doc 39 P1: chip は
+        //   lane の人格を映す。Act II のタブ表示は per-session 値 = #796 が担う）
+        // - `cc_session_id`（channel D の claude 専用契約）= root が claude の時だけ同値
+        //   （他 engine の id を混ぜない — 旧 field doc の不変条件を維持。旧実装の
+        //   build_lanes_snapshot 個別 enrich は本 method に畳んだ = 供給点の実装差解消）
+        // - `sessions` = registry snapshot 丸ごと（LaneInfo descriptor 完成、doc 40 §3）
+        // registry file 不在（N=1 特殊ケース）は root=1 で従来と同一の読み先になる。
+        // 旧 engine 別 store の 3-way dispatch は load 内の backfill bridge に移った。
         let reg =
             crate::lane::session_registry::load(&self.address.project, lane_label, &self.stand);
-        let stand = reg
-            .sessions
-            .iter()
-            .find(|s| s.key == reg.root)
-            .map(|s| s.stand.as_str())
-            .unwrap_or(&self.stand);
-        let label = crate::lane::session_registry::session_label(lane_label, reg.root);
-        self.engine_session_id = match crate::echoes::EngineKind::from_stand(stand) {
-            Some(crate::echoes::EngineKind::Claude) => {
-                crate::lane::cc_session::last(&self.address.project, &label)
-            }
-            Some(crate::echoes::EngineKind::Cursor) => {
-                crate::lane::cursor_session::last(&self.address.project, &label)
-            }
-            Some(crate::echoes::EngineKind::Codex) => {
-                crate::lane::codex_session::last(&self.address.project, &label)
-            }
-            // agy は id 供給源なし（doc 37 §7.5）、shell / 未知 stand は engine なし。
-            Some(crate::echoes::EngineKind::Agy) | None => None,
-        };
+        let root = reg.sessions.iter().find(|s| s.key == reg.root);
+        self.engine_session_id = root.and_then(|s| s.conversation.clone());
+        self.cc_session_id = root
+            .filter(|s| {
+                matches!(
+                    crate::echoes::EngineKind::from_stand(&s.stand),
+                    Some(crate::echoes::EngineKind::Claude)
+                )
+            })
+            .and_then(|s| s.conversation.clone());
+        self.sessions = Some(reg);
     }
 }
 
@@ -454,6 +456,9 @@ pub struct ResolvedSession {
     pub stand: String,
     /// この session が現在 focused か。
     pub focused: bool,
+    /// session の会話 id（doc 40: registry が SSOT — resolve 時の registry load から同梱。
+    /// host 構築の resume 解決が別 store を読み直さないための持ち回り）。
+    pub conversation: Option<String>,
 }
 
 /// [`LanePool::list_chat_sessions`] の 1 要素 — registry（永続）+ runtime（engine 生死）+
@@ -571,6 +576,7 @@ impl LanePool {
             // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         };
@@ -984,6 +990,7 @@ impl LanePool {
             key,
             stand: entry.stand.clone(),
             focused: key == reg.focused,
+            conversation: entry.conversation.clone(),
         })
     }
 
@@ -1000,24 +1007,12 @@ impl LanePool {
             .sessions
             .iter()
             .map(|s| {
-                let label = session_registry::session_label(lane_label, s.key);
-                // 会話 id は session の engine の store から（Draft = None、doc 38 §1.1）。
-                let engine_session_id = match EngineKind::from_stand(&s.stand) {
-                    Some(EngineKind::Claude) => {
-                        crate::lane::cc_session::last(&addr.project, &label)
-                    }
-                    Some(EngineKind::Cursor) => {
-                        crate::lane::cursor_session::last(&addr.project, &label)
-                    }
-                    Some(EngineKind::Codex) => {
-                        crate::lane::codex_session::last(&addr.project, &label)
-                    }
-                    Some(EngineKind::Agy) | None => None,
-                };
                 ChatSessionInfo {
                     key: s.key,
                     stand: s.stand.clone(),
-                    engine_session_id,
+                    // 会話 id は registry が SSOT（doc 40 §5 — 旧 3-way store dispatch は
+                    // load 時の backfill bridge に畳まれた。Draft = None、doc 38 §1.1）。
+                    engine_session_id: s.conversation.clone(),
                     live: live.is_some_and(|m| m.contains_key(&s.key)),
                     focused: s.key == reg.focused,
                     root: s.key == reg.root,
@@ -1351,10 +1346,10 @@ impl LanePool {
         let host = match EngineKind::from_stand(&resolved.stand) {
             Some(EngineKind::Cursor) => {
                 // cursor: turn-scoped host（spawn 自体は exec-free = ensure を軽く保つ）。chatId は
-                // Act I（console）と共有の state file から解決する（II ⇄ I の会話継承）。
+                // registry の会話 id（doc 40 §5 — Act I と共有、backfill bridge が旧 store も拾う）。
                 // engine_model は読まない（model_switchable=false、cursor の model は
                 // cursor-agent 側で選択 — doc `cursor-engine.md`）。
-                let session_id = crate::lane::cursor_session::last(&addr.project, &label);
+                let session_id = resolved.conversation.clone();
                 ChatHost::Cursor(crate::echoes::CursorAgentHost::spawn(
                     crate::echoes::TurnHostConfig {
                         cwd: info.cwd.clone(),
@@ -1365,9 +1360,9 @@ impl LanePool {
                 ))
             }
             Some(EngineKind::Codex) => {
-                // codex: turn-scoped host（cursor と同機構 = TurnHost）。thread id は Act I と
-                // 共有の state file から解決（II ⇄ I の会話継承、record-from-init が書き手）。
-                let session_id = crate::lane::codex_session::last(&addr.project, &label);
+                // codex: turn-scoped host（cursor と同機構 = TurnHost）。thread id は registry の
+                // 会話 id（doc 40 §5 — Act I と共有、record-from-init が書き手）。
+                let session_id = resolved.conversation.clone();
                 ChatHost::Codex(crate::echoes::CodexAgentHost::spawn(
                     crate::echoes::TurnHostConfig {
                         cwd: info.cwd.clone(),
@@ -1378,10 +1373,12 @@ impl LanePool {
                 ))
             }
             Some(EngineKind::Claude) => {
-                // claude: 常駐 stream-json host。
+                // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
                 // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
                 // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
-                let resume = crate::lane::cc_session::last(&addr.project, &label)
+                let resume = resolved
+                    .conversation
+                    .clone()
                     .filter(|id| crate::lane::cc_session::transcript_exists(id));
                 // Act II モデル切替: lane に永続された model を `--model` に渡す（未記録 = claude default）。
                 // 切替（console_set_model）は record → engine 入替で行われ、resume と組むことで
@@ -1633,6 +1630,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });
@@ -2098,6 +2096,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         };
@@ -2151,6 +2150,7 @@ mod tests {
             cwd: "/tmp".to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         };
