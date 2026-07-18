@@ -15,11 +15,12 @@
 //! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で**常駐**駆動（stream-json stdin 連投）
 //! - [`codex_rpc_translate`] + [`codex_host`]: codex — **常駐 RpcHost**（`codex app-server`
 //!   JSONL JSON-RPC、doc 41）
+//! - [`acp_translate`] + [`acp_host`]: grok — **常駐 AcpAgentHost**（`grok agent stdio` = ACP、doc 42）
 //! - [`translate`] / [`transcript`]: claude stream / transcript → [`EchoesEvent`] 翻訳層
-//! - [`replay_log`]: transcript を持たない engine（codex）の per-session 会話ログ（disk 永続、
+//! - [`replay_log`]: transcript を持たない engine（codex / grok）の per-session 会話ログ（disk 永続、
 //!   Act II の replay 源）。claude は transcript が SSOT なので使わない
 //!
-//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex。grok=ACP は AcpHost で追加予定）。
+//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok — doc 41・42）。
 //! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み —
 //! cursor は Act I（床）のみ、Act II はオミット（Composer 2.5 の CLI 進化待ちで再検討）。
 //!
@@ -27,6 +28,8 @@
 //! engine 非依存なので、新 engine は「翻訳器 + 常駐 host」を足すだけで乗る
 //! （chatview / topic 配線は無改修）。
 
+pub mod acp_host;
+pub mod acp_translate;
 pub mod codex_host;
 pub mod codex_rpc_translate;
 pub mod engine;
@@ -36,6 +39,7 @@ pub mod replay_log;
 pub mod transcript;
 pub mod translate;
 
+pub use acp_host::{AcpAgentHost, AcpHostConfig};
 pub use codex_host::{CodexAgentHost, CodexRpcHostConfig};
 pub use engine::{ChatEngineSlot, ChatHost, EngineKind};
 pub use event::{EchoesEvent, PlanEntry, QuestionOption, QuestionSpec};

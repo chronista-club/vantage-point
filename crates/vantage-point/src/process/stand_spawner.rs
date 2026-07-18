@@ -297,6 +297,18 @@ fn codex_command(resume_id: Option<&str>) -> String {
     }
 }
 
+/// grok の Act I 起動 command（doc 42 — TUI は `-r '<id>'` で ACP sessionId を指名 resume）。
+///
+/// - `Some(id)`（英数+ハイフン検証済 = `--resume '<id>'` injection 防壁）: `grok -r '<id>' || grok`
+///   （session 消失時は素の grok に fallback、shell の `||` が native 処理）
+/// - `None`: `grok`（新規会話）
+fn grok_command(resume_id: Option<&str>) -> String {
+    match resume_id.filter(|id| is_safe_session_id(id)) {
+        Some(id) => format!("grok -r '{}' || grok", id),
+        None => "grok".to_string(),
+    }
+}
+
 /// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
 /// - `"echoes"`（+ 旧名 `"hd"`）: 床 + claude 注入（`fresh` / cc_session により resume 分岐）
@@ -415,6 +427,16 @@ pub fn build_stand_command(
             } else {
                 // thread id は registry の root 会話 id（doc 40 §5 — bridge が旧 store も拾う）。
                 Some(format!("{}\r", codex_command(root_conversation.as_deref())))
+            }
+        }
+        Some(crate::echoes::EngineKind::Grok) => {
+            if fresh {
+                // fresh は素の grok（registry-native なので clear すべき旧 store も無い —
+                // 会話 id は registry 側の semantics（New root 等）が既に処理済み）。
+                Some("grok\r".to_string())
+            } else {
+                // sessionId は registry の root 会話 id（doc 42 — TUI は `-r '<id>'` 指名 resume）。
+                Some(format!("{}\r", grok_command(root_conversation.as_deref())))
             }
         }
         Some(crate::echoes::EngineKind::Agy) => {

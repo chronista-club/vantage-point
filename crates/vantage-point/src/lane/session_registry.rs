@@ -153,6 +153,11 @@ fn is_valid_conversation(stand: &str, id: &str) -> bool {
         Some(EngineKind::Claude) => super::cc_session::is_valid_session_id(id),
         Some(EngineKind::Cursor) => super::cursor_session::is_valid_chat_id(id),
         Some(EngineKind::Codex) => super::codex_session::is_valid_thread_id(id),
+        // grok = ACP sessionId（UUID v7 形 — 英数+ハイフン、doc 42 §1。registry-native なので
+        // engine 別 store module を持たない = 検証だけここに置く）。
+        Some(EngineKind::Grok) => {
+            !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        }
         Some(EngineKind::Agy) | None => false,
     }
 }
@@ -192,7 +197,8 @@ fn backfill_legacy_conversations(
             Some(EngineKind::Claude) => super::cc_session::last_in(base, project, &label),
             Some(EngineKind::Cursor) => super::cursor_session::last_in(base, project, &label),
             Some(EngineKind::Codex) => super::codex_session::last_in(base, project, &label),
-            Some(EngineKind::Agy) | None => None,
+            // grok は registry-native（旧 store が存在しない — bridge の対象外）。
+            Some(EngineKind::Grok) | Some(EngineKind::Agy) | None => None,
         };
     }
 }
@@ -453,7 +459,8 @@ pub fn set_conversation_in(
             Some(EngineKind::Claude) => super::cc_session::clear_in(base, project, &label),
             Some(EngineKind::Cursor) => super::cursor_session::clear_in(base, project, &label),
             Some(EngineKind::Codex) => super::codex_session::clear_in(base, project, &label),
-            Some(EngineKind::Agy) | None => Ok(()),
+            // grok は registry-native（legacy store が無い = 蘇生源も無い）。
+            Some(EngineKind::Grok) | Some(EngineKind::Agy) | None => Ok(()),
         };
     }
     let new = conversation.map(str::to_string);
