@@ -256,8 +256,9 @@ impl AcpInner {
     }
 }
 
-/// lane 単位の常駐 grok host（Act II、doc 42）。ACP 標準なので program 差し替えで
-/// opencode 等にも流用可能（doc 42 §5 — 現状は grok 固定）。
+/// lane 単位の常駐 ACP host（Act II、doc 42・43）。grok / opencode の 2 engine を
+/// [`AcpEngine`] パラメータ（cli_path / spawn_args / name）で共有する — host ロジックは
+/// engine 非依存。
 pub struct AcpAgentHost {
     inner: Arc<AcpInner>,
     reader: Option<JoinHandle<()>>,
