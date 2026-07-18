@@ -12,7 +12,6 @@ use super::capabilities::ProcessCapabilities;
 use super::hub::Hub;
 use super::process_runner::ProcessRegistry;
 use super::pty::PtyManager;
-use super::session::SessionManager;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
@@ -27,9 +26,9 @@ pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 /// Application state
 pub(crate) struct AppState {
     pub hub: Hub,
-    /// Session manager for multiple Claude sessions
-    pub sessions: Arc<RwLock<SessionManager>>,
     /// Cancellation token for current chat request
+    // 要確認（audit 2026-07-18、先行実装の可能性）: 旧 chat request cancellation の残置。read されない。
+    #[allow(dead_code)]
     pub cancel_token: Arc<RwLock<CancellationToken>>,
     /// Debug display mode
     pub debug_mode: DebugMode,
@@ -70,6 +69,8 @@ pub(crate) struct AppState {
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
+    // 要確認（audit 2026-07-18、先行実装の可能性）: レガシー PtyManager。構築されるが read されない。
+    #[allow(dead_code)]
     pub pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
     /// Processの待ち受けポート番号
     pub port: u16,
@@ -114,6 +115,8 @@ pub(crate) struct AppState {
     pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
     /// Project scope の Stand pool (PP / GE / HP) — Phase A4-2b minimum、skeleton
     /// 関連 memory: 「多 scope architecture」rule (2026-04-27、 PR-pre2/PR-β-2 で supersede 予定)
+    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton pool。read されない。
+    #[allow(dead_code)]
     pub project_stands: Arc<RwLock<super::project_stands_state::ProjectStandsPool>>,
     /// World 階層 Stand container (LSCM、 PR-α series / VP-109)。
     ///
@@ -232,6 +235,8 @@ impl AppState {
     }
 
     /// Send debug info only in detail mode
+    // CLAUDE.md documented debug API（デバッグモード §）。mako 2026-07-18 温存決定。
+    #[allow(dead_code)]
     pub fn send_debug_detail(&self, category: &str, message: &str, data: serde_json::Value) {
         if self.debug_mode == DebugMode::Detail {
             self.hub.broadcast(ProcessMessage::DebugInfo {
@@ -245,6 +250,8 @@ impl AppState {
     }
 
     /// Send AG-UI event to connected clients (REQ-AGUI-040)
+    // 要確認（audit 2026-07-18、先行実装の可能性）: AG-UI protocol の先行 API（REQ-AGUI-040）。未 call。
+    #[allow(dead_code)]
     pub fn send_agui_event(&self, event: AgUiEvent) {
         self.hub.broadcast(ProcessMessage::AgUi { event });
     }
@@ -404,7 +411,6 @@ pub(crate) async fn build_test_app_state(
 
     Arc::new(AppState {
         hub: Hub::new(),
-        sessions: Arc::new(RwLock::new(SessionManager::new())),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode: DebugMode::None,
         shutdown_token: CancellationToken::new(),

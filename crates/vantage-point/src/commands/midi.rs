@@ -792,17 +792,6 @@ pub(crate) enum LaneNav {
     Direct(usize),
 }
 
-impl LaneNav {
-    /// ログ表示用グリフ。
-    fn glyph(self) -> &'static str {
-        match self {
-            LaneNav::PagePrev => "◄",
-            LaneNav::PageNext => "►",
-            LaneNav::Direct(_) => "●",
-        }
-    }
-}
-
 /// ROTO button index → LaneNav の解決。
 ///
 /// MIX モードの track button 0-7 (CC20-27) = LCD 直下の物理ボタン → 現ページ内 Direct select。

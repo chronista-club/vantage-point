@@ -5,8 +5,6 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
-
 use axum::{Json, extract::State, response::IntoResponse};
 
 use super::super::state::AppState;
@@ -330,45 +328,10 @@ pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
     Json(serde_json::json!({"status": "shutting_down"}))
 }
 
-// ===== tmux ペイン操作ハンドラー =====
-
-/// tmux split パラメータ
-#[derive(Deserialize)]
-pub struct TmuxSplitParams {
-    #[serde(default = "default_true")]
-    pub horizontal: bool,
-    pub command: Option<String>,
-    /// コンテンツ種別: "shell" (The Hand), "canvas" (PP), "agent" (HD)
-    pub content_type: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-/// content_type からコマンドを解決する
-pub fn resolve_content_command(
-    content_type: Option<&str>,
-    command: Option<String>,
-) -> Option<String> {
-    // command が直接指定されていればそちらを優先（後方互換）
-    if command.is_some() {
-        return command;
-    }
-    match content_type {
-        // PR-pre2 (VP-118): "hd" → "echoes" rename。 旧 "hd" は legacy session 互換のため
-        // 一時的に維持、 PR-β-4 cleanup で削除予定。
-        Some("agent") | Some("hd") | Some("echoes") | Some("ec") => Some("claude".to_string()),
-        Some("canvas") | Some("pp") => None, // TODO: PP ビュー起動コマンド（将来実装）
-        Some("shell") | Some("th") | None => None, // デフォルトシェル
-        Some(_) => None,
-    }
-}
-
 // L0 portless Group B/C: tmux split/close/capture/list/send-keys/resolve-pane の HTTP handler は
 // 全て CLI/flow を process-proxy ask (`tmux_*` dispatch) に移管し撤去 (send-keys/resolve-pane は
-// lanes portless で flow.rs(try_nudge) が dispatch 化したのが最後)。 `resolve_content_command` は
-// QUIC `handle_tmux_split` と共有のため keep。 `/api/tmux/agent-meta` は consumer ゼロで dead 撤去済。
+// lanes portless で flow.rs(try_nudge) が dispatch 化したのが最後)。 `/api/tmux/agent-meta` は
+// consumer ゼロで dead 撤去済。
 
 // L0 portless Group B-3: Ruby VM HTTP handler (eval/run/stop/list) は唯一の consumer だった MCP を
 // process-proxy ask (`unison_server::handle_ruby_*`、 同じ `process_runner::ruby_*` core) に移管し撤去。

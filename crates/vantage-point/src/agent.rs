@@ -325,11 +325,15 @@ enum ClaudeMessage {
     },
     Assistant {
         message: AssistantMessage,
+        // serde parse field: Claude CLI stream-json の wire 契約。read されないが deserialize 契約として保持。
+        #[allow(dead_code)]
         session_id: String,
     },
     Result {
         #[serde(default)]
         result: Option<String>,
+        // serde parse field: Claude CLI stream-json の wire 契約。read されないが deserialize 契約として保持。
+        #[allow(dead_code)]
         session_id: String,
         #[serde(default)]
         is_error: bool,
@@ -388,10 +392,14 @@ enum ContentBlock {
         text: String,
     },
     ToolUse {
+        // serde parse field: Claude CLI stream-json の wire 契約。read されないが deserialize 契約として保持。
+        #[allow(dead_code)]
         id: String,
         name: String,
     },
     ToolResult {
+        // serde parse field: Claude CLI stream-json の wire 契約。read されないが deserialize 契約として保持。
+        #[allow(dead_code)]
         tool_use_id: String,
     },
     #[serde(other)]
@@ -856,10 +864,6 @@ struct UserInputResultMessage {
 enum UserInputResultPayload {
     /// 確認ダイアログへの応答
     Confirmation { confirmed: bool },
-    /// テキスト入力への応答
-    Text { value: String },
-    /// 選択への応答
-    Selection { selected: Vec<String> },
 }
 
 impl UserInputResultMessage {
@@ -869,28 +873,6 @@ impl UserInputResultMessage {
             msg_type: "user_input_result".to_string(),
             request_id: request_id.to_string(),
             result: UserInputResultPayload::Confirmation { confirmed },
-        }
-    }
-
-    /// テキスト入力応答を作成
-    #[allow(dead_code)]
-    fn text(request_id: &str, value: &str) -> Self {
-        Self {
-            msg_type: "user_input_result".to_string(),
-            request_id: request_id.to_string(),
-            result: UserInputResultPayload::Text {
-                value: value.to_string(),
-            },
-        }
-    }
-
-    /// 選択応答を作成
-    #[allow(dead_code)]
-    fn selection(request_id: &str, selected: Vec<String>) -> Self {
-        Self {
-            msg_type: "user_input_result".to_string(),
-            request_id: request_id.to_string(),
-            result: UserInputResultPayload::Selection { selected },
         }
     }
 }

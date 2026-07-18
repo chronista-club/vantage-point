@@ -47,6 +47,8 @@ use crate::justice::JusticeStand;
 /// PR-δ-2 (VP-136) で **`registry: LaneStandRegistry` 経由 N Stand host** に統一。
 /// Echoes / The Hand は mise task PtySlot 経由なので本 struct には host しない
 /// (`LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)。
+// 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Stand-host skeleton。現状 field は未 read。
+#[allow(dead_code)]
 pub struct LaneCapabilities {
     /// Lane の identity (Conductor / Performer、 project 名 + name)
     pub address: LaneAddress,
@@ -102,6 +104,8 @@ impl LaneCapabilitiesPool {
     }
 
     /// entry 数を返す (debug / metrics / test 用)。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Stand-host skeleton の registry helper。
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.entries.len()
     }
@@ -117,6 +121,8 @@ impl LaneCapabilitiesPool {
     }
 
     /// PR-β-2 (VP-120): Lane destroy 時に entry を削除 (cascade lifecycle)。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Stand-host skeleton の registry helper。
+    #[allow(dead_code)]
     pub fn remove_lane(&mut self, address: &LaneAddress) -> Option<Arc<LaneCapabilities>> {
         self.entries.remove(address)
     }

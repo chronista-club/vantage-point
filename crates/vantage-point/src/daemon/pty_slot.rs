@@ -149,8 +149,6 @@ pub struct PtySlot {
     /// (= あるバイトは「snapshot に含まれる」か「subscribe 後の rx に届く」の排他二択。
     /// 取りこぼしも二重配送も構造的に起きない)。 spawn 時に disk seed で初期化されうる。
     replay: Arc<Mutex<VecDeque<u8>>>,
-    /// replay の書き込み世代カウンタ (reader が append ごとに bump)。 flush task の dirty 判定用。
-    replay_seq: Arc<AtomicU64>,
     /// replay の disk 永続 path (Some = 永続あり)。 Drop 時の final flush で使う。
     replay_path: Option<PathBuf>,
     /// replay 定期 flush task のハンドル (Drop で abort)。 runtime 不在 / 永続なしなら None。
@@ -298,7 +296,6 @@ impl PtySlot {
                 shell_cmd: shell_cmd.to_string(),
                 output_tx,
                 replay,
-                replay_seq,
                 replay_path,
                 flush_handle,
                 _reader_handle: reader_handle,

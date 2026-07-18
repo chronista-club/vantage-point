@@ -70,30 +70,6 @@ impl ProtocolCapability {
         *guard = session_id;
     }
 
-    /// CapabilityEventをプロトコルメッセージに変換して送信
-    async fn process_event(&self, event: CapabilityEvent) {
-        let run_id = self.run_id.read().await.clone().unwrap_or_default();
-        let session_id = self.session_id.read().await.clone().unwrap_or_default();
-
-        // AG-UIに変換
-        if let Some(agui_event) = event.to_agui(&run_id) {
-            let msg = ProtocolMessage::agui(agui_event);
-            let _ = self.protocol_tx.send(msg);
-        }
-
-        // ACPに変換
-        if let Some(acp_msg) = event.to_acp(&session_id) {
-            let msg = ProtocolMessage::acp(acp_msg);
-            let _ = self.protocol_tx.send(msg);
-        }
-
-        // Vantage独自イベントとして送信
-        if let Some(vantage_event) = Self::to_vantage(&event) {
-            let msg = ProtocolMessage::vantage(vantage_event);
-            let _ = self.protocol_tx.send(msg);
-        }
-    }
-
     /// CapabilityEventをVantageEventに変換
     fn to_vantage(event: &CapabilityEvent) -> Option<VantageEvent> {
         match event.event_type.as_str() {
