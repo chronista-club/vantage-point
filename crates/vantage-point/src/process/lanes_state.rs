@@ -1083,6 +1083,58 @@ impl LanePool {
         Ok(key)
     }
 
+    /// doc 39 P3: Root 切替 picker の registry 部 — root（と focused）を既存 session へ
+    /// 向け替える。床の張り替え（対象 session の store で resume）は caller が
+    /// [`restart_lane_orchestrated`](crate::process::routes::lanes::restart_lane_orchestrated) を
+    /// [`RespawnMode::Resume`] で呼ぶ（`prepare_new_root_session` と同じ「第 2 の spawn 経路を
+    /// 作らない」規律）。mode=Tui 限定も同様。
+    pub fn prepare_switch_root_session(
+        &mut self,
+        addr: &LaneAddress,
+        key: SessionKey,
+    ) -> anyhow::Result<()> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        if info.console_mode != crate::lane::console_mode::ConsoleMode::Tui {
+            anyhow::bail!(
+                "echoes_session_switch_root は Act I（mode=tui）専用です（addr={addr}。chat lane の切替は echoes_session_focus）"
+            );
+        }
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        // P3 ガード: 床の respawn（restart_lane → build_stand_command）は lane の stand で
+        // engine を決めるため、engine 違いの session を root にすると「選んだ会話と別 engine の
+        // 新品」が無言で立つ（moody 指摘 2026-07-18）。respawn を root session の stand に
+        // 追従させる一般解は P4（engine gating の実測）で行い、P3 は同 engine のみ許可する。
+        let reg = session_registry::load(&addr.project, lane_label, &info.stand);
+        let entry = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == key)
+            .ok_or_else(|| anyhow::anyhow!("session が存在しません（addr={addr}, session={key}）"))?;
+        let same_engine = match (
+            crate::echoes::EngineKind::from_stand(&entry.stand),
+            crate::echoes::EngineKind::from_stand(&info.stand),
+        ) {
+            // 既知 engine 同士は EngineKind で比較（"hd"/"echoes" の旧名差を吸収）
+            (Some(a), Some(b)) => a == b,
+            // 未知 stand は raw 文字列一致のみ許可
+            _ => entry.stand == info.stand,
+        };
+        if !same_engine {
+            anyhow::bail!(
+                "engine が異なる session への root 切替は未対応です（addr={addr}, session={key}: {} 床 に {} session。doc 39 P4 で解禁予定）",
+                info.stand,
+                entry.stand
+            );
+        }
+        session_registry::set_root(&addr.project, lane_label, &info.stand, key)
+            .map_err(|e| anyhow::anyhow!("root 切替に失敗（addr={addr}, session={key}）: {e}"))?;
+        tracing::info!("switch root session: addr={addr} session={key}（旧 root はタブに残存）");
+        Ok(())
+    }
+
     /// focused session を切り替える（registry 永続のみ。床への注入・eager spawn は Phase 3）。
     pub fn focus_chat_session(
         &mut self,
@@ -1906,6 +1958,39 @@ mod tests {
             sessions[1].engine_session_id, None,
             "Draft session は会話 id を持たない（doc 38 §1.1）"
         );
+    }
+
+    /// doc 39 P3: Root 切替は Tui 限定 + 同 engine 限定（cross-engine は respawn が lane 固定
+    /// stand で立つため P4 まで拒否 — moody 2026-07-18。"hd"/"echoes" の旧名差は同 engine 扱い）。
+    #[test]
+    fn switch_root_validates_mode_engine_and_moves_root() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        let mut pool = LanePool::new();
+        insert_lane(&mut pool, &addr, crate::lane::console_mode::ConsoleMode::Tui);
+
+        // 同 engine（旧名 "hd" = claude）の #2 → 切替 OK、root/focused が動く
+        session_registry::create("vp", "conductor", "echoes", "hd", false).expect("create #2");
+        pool.prepare_switch_root_session(&addr, 2)
+            .expect("同 engine（旧名差）への切替は通る");
+        let reg = session_registry::load("vp", "conductor", "echoes");
+        assert_eq!(reg.root, 2);
+        assert_eq!(reg.focused, 2);
+
+        // engine 違い（codex）の #3 → Err（P4 まで拒否）
+        session_registry::create("vp", "conductor", "echoes", "codex", false).expect("create #3");
+        let err = pool
+            .prepare_switch_root_session(&addr, 3)
+            .expect_err("cross-engine は拒否");
+        assert!(err.to_string().contains("engine が異なる"), "err={err}");
+
+        // 不在 key → Err
+        assert!(pool.prepare_switch_root_session(&addr, 99).is_err());
+
+        // chat lane は Tui gate で Err
+        let chat = LaneAddress::performer("vp", "chatty");
+        insert_chat_lane(&mut pool, &chat);
+        assert!(pool.prepare_switch_root_session(&chat, 1).is_err());
     }
 
     #[test]

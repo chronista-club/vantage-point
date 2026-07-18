@@ -163,6 +163,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "echoes:stands_fetch"
                 | "console:set_mode"
                 | "console:new_session"
+                // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
+                // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
+                | "console:switch_root"
                 | "console:set_model"
         )
     )
@@ -184,6 +187,8 @@ mod ipc_tag_tests {
             "echoes:session_focus",
             "echoes:session_remove",
             "echoes:stands_fetch",
+            // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
+            "console:switch_root",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/conductor"}}"#);
             assert!(
@@ -3789,6 +3794,68 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 }
+            }
+            // doc 39 P3: Root 切替 picker — 既存 session へ root を向け替え（床 = Resume respawn）。
+            // 後続は new_root（ConsoleSessionRenewed = clear）と違い echoes_demand_start:
+            // 対象 session には既存の会話があるため、clear でなく transcript replay で追従させる
+            //（echoes_session_focus chain と同じ規律）。
+            Event::UserEvent(AppEvent::ConsoleSwitchRoot { lane, session }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!(
+                        "console:switch_root skip — lane の project 解決失敗 (lane={lane})"
+                    );
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                let port = crate::client::default_world_port();
+                rt_handle.spawn(async move {
+                    let payload = serde_json::json!({ "lane": &lane, "session": session });
+                    match world_process_request(port, &path, "echoes_session_switch_root", payload)
+                        .await
+                    {
+                        Ok(_) => {
+                            tracing::info!(
+                                "console:switch_root ok: lane={lane} session={session}"
+                            );
+                            // 切替後 registry を取り直して tab strip / picker を authoritative に
+                            // 更新してから replay を要求する（逆順だと session filter が旧 focused の
+                            // ままで replay を落とす — doc 38 Phase 2 の規律）。
+                            match world_process_request(
+                                port,
+                                &path,
+                                "echoes_session_list",
+                                serde_json::json!({ "lane": &lane }),
+                            )
+                            .await
+                            {
+                                Ok(payload) => {
+                                    let _ = proxy.send_event(AppEvent::EchoesSessionList {
+                                        lane: lane.clone(),
+                                        payload,
+                                    });
+                                }
+                                Err(e) => tracing::warn!(
+                                    "echoes_session_list（switch_root 後）失敗 (lane={lane}): {e}"
+                                ),
+                            }
+                            if let Err(e) = world_process_request(
+                                port,
+                                &path,
+                                "echoes_demand_start",
+                                serde_json::json!({ "lane": &lane }),
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "echoes_demand_start（switch_root 後）失敗 (lane={lane}): {e}"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("console:switch_root 失敗 (lane={lane} session={session}): {e}")
+                        }
+                    }
+                });
             }
             // fresh restart 成功 → ChatView の会話表示をクリアする。replay_start は foldInto が
             // 「会話 clear + header 保持」で畳む既存意味論（chatview.tsx）— 新 engine の

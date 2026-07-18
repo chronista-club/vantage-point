@@ -301,6 +301,30 @@ pub fn focus_in(
     save_in(base, project, lane, &reg)
 }
 
+/// root を既存 session へ向け替える（doc 39 P3 — Root 切替 picker）。実在しない key は
+/// Err（黙って据え置くと「切替えたつもり」の床が旧 root のまま化身する誤配送になる）。
+/// focused も同じ session へ動かす（`create_root_in` と同じ「器に注意が追従する」意味論、
+/// 1 save 原子）。旧 root の会話はリストに残る（非破壊）。
+pub fn set_root_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    key: SessionKey,
+) -> std::io::Result<()> {
+    let _guard = mutation_guard();
+    let mut reg = load_in(base, project, lane, default_stand);
+    if !reg.sessions.iter().any(|s| s.key == key) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("session が存在しません（project={project}, lane={lane}, session={key}）"),
+        ));
+    }
+    reg.focused = key;
+    reg.root = key;
+    save_in(base, project, lane, &reg)
+}
+
 /// session を 1 本取り除く（doc 38 Phase 3 — tab を閉じる）。
 ///
 /// - 実在しない key は Err（黙って成功にしない）
@@ -565,6 +589,22 @@ pub fn focus(
     )
 }
 
+/// 本番 base での set_root。
+pub fn set_root(
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    key: SessionKey,
+) -> std::io::Result<()> {
+    set_root_in(
+        &crate::config::vp_state_dir(),
+        project,
+        lane,
+        default_stand,
+        key,
+    )
+}
+
 /// 本番 base での remove。
 pub fn remove(
     project: &str,
@@ -815,6 +855,24 @@ mod tests {
         assert_eq!(focused, 2);
         // 新 root(#2) は取り除けない
         assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 2).is_err());
+    }
+
+    /// set_root: 既存 session へ root + focused が同時に移る（doc 39 P3 Root 切替 = 非破壊）。
+    /// 不在 key は Err。切替後、旧 root は非 root になり remove 可能。
+    #[test]
+    fn set_root_switches_to_existing_session() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // #2 を作って root にする（#1 は残存）→ 既存の #1 へ切り戻す
+        create_root_in(tmp.path(), "vp", "conductor", "echoes", "codex").expect("create_root #2");
+        set_root_in(tmp.path(), "vp", "conductor", "echoes", 1).expect("set_root #1");
+        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        assert_eq!(reg.root, 1, "root は既存 #1 へ");
+        assert_eq!(reg.focused, 1, "focused も追従（create_root と同じ意味論）");
+        assert_eq!(reg.sessions.len(), 2, "非破壊 — 両 session が一覧に残る");
+        // 旧 root(#2) は非 root になったので閉じられる
+        remove_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("remove #2");
+        // 不在 key への切替は Err（黙って据え置かない）
+        assert!(set_root_in(tmp.path(), "vp", "conductor", "echoes", 99).is_err());
     }
 
     /// clear = fresh reset。file が消えて既定形に戻り、採番も 1 からやり直し。冪等。
