@@ -3,8 +3,8 @@
 //! ## なぜ要るか（dogfood で発見した穴）
 //!
 //! Act II の会話復元（replay-on-attach）は claude では transcript(jsonl) を SSOT に再生する。
-//! だが cursor / codex は transcript を持たない（codex の rollout は形式移行中で直 parse は危険、
-//! cursor の store.db は非公開）。結果、これらの engine では demand_start の no_session path で
+//! だが codex / grok は transcript を持たない（codex の rollout は形式移行中で直 parse は危険、
+//! grok は ACP で会話 store を公開しない）。結果、これらの engine では demand_start の no_session path で
 //! `ReplayStart` の冪等 clear だけが走り、**復元材料が無い**（lane 切替で会話が消える）。
 //!
 //! そこで **SP が配信した EchoesEvent を per-session に disk 記録**し、transcript を持たない
@@ -17,7 +17,7 @@
 //!   `<lane>#<n>`）で、他 store（cc_sessions / echoes_sessions）と file 名規約が揃う
 //! - **1 行 1 event の JSONL**（[`EchoesEvent`] を serde でそのまま）。壊れた行は読み時に skip
 //!   （session_store の「壊れた値を渡さない」原則。partial 末尾行 = クラッシュ時の書きかけも黙って落とす）
-//! - **claude は書かない**: transcript が SSOT なので二重化しない（tap は cursor/codex のみ Some）
+//! - **claude は書かない**: transcript が SSOT なので二重化しない（tap は codex/grok のみ Some）
 //! - 上限は turn 境界でのみ制御（[`truncate_if_needed_in`]、末尾側の完全な行を残して先頭から捨てる）
 //! - 書き手 = `process::echoes_pump` の tap / user 発話は `process::unison_server` の submit 成功後。
 //!   破棄は fresh restart / session remove で他 store と同じ場所に配線（`process::lanes_state`）
@@ -35,7 +35,7 @@ pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// pump tap の宛先（transcript を持たない engine の replay 源への書き手）。
 ///
 /// `label` は session の store label（[`crate::lane::session_registry::session_label`] の結果 =
-/// #1 は素の lane 名、#2 以降 `<lane>#<n>`）。tap は cursor / codex の session にのみ付く
+/// #1 は素の lane 名、#2 以降 `<lane>#<n>`）。tap は codex / grok の session にのみ付く
 /// （claude は None — module doc「claude は書かない」）。
 #[derive(Debug, Clone)]
 pub struct ReplayLogTap {
