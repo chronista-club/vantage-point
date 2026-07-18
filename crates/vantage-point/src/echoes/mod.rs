@@ -1,7 +1,7 @@
 //! Echoes 💬 — コーディングアシスタント Stand（engine 軸 × Act(surface) 軸の直交格子）
 //!
 //! doc 37: Echoes は「コーディングアシスタント」という能力の namespace。その中に
-//! - **engine 軸**（どの頭脳か: claude / cursor / codex / agy …）= session に束縛される identity
+//! - **engine 軸**（どの頭脳か: claude / codex / grok …）= session に束縛される identity
 //! - **Act(surface) 軸**（どう視るか: Act I 端末 / Act II chat GUI）= 切替可能な view
 //!
 //! の直交 2 軸がある。本 module は Act II のバックエンド（SP 側）+ engine 軸の語彙を持つ。
@@ -21,8 +21,9 @@
 //!   Act II の replay 源）。claude は transcript が SSOT なので使わない
 //!
 //! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok — doc 41・42）。
-//! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み —
-//! cursor は Act I（床）のみ、Act II はオミット（Composer 2.5 の CLI 進化待ちで再検討）。
+//! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み、
+//! cursor / agy は sweep 6.5 で stand ごと完全撤去（再導入時は新規実装 — 旧実装は
+//! git history #773/#776。Composer の CLI 進化待ちの再検討方針は doc 39 §7）。
 //!
 //! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。GUI 語彙 [`EchoesEvent`] は
 //! engine 非依存なので、新 engine は「翻訳器 + 常駐 host」を足すだけで乗る

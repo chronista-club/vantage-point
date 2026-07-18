@@ -258,8 +258,8 @@ pub struct LaneInfo {
     /// Phase 5-D: Performer Lane のみ有効、 git workspace の状態 snapshot。
     #[serde(default)]
     pub performer_status: Option<PerformerStatusWire>,
-    /// doc 37: active engine の session id（claude=cc_session / cursor=chatId / codex=thread id、
-    /// agy/shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
+    /// doc 37: active engine の session id（claude=cc_session / codex=thread id / grok=ACP sessionId、
+    /// shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
     #[serde(default)]
     pub engine_session_id: Option<String>,
     /// doc 33: Console のエンジンモード（"tui" | "chat"）。default = "tui"（wire 後方互換）。

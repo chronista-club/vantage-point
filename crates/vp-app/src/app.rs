@@ -1570,10 +1570,10 @@ mod focused_session_stand_tests {
             "focused": 3,
             "sessions": [
                 {"key": 1, "stand": "echoes"},
-                {"key": 3, "stand": "cursor"},
+                {"key": 3, "stand": "grok"},
             ]
         });
-        assert_eq!(focused_session_stand(&payload).as_deref(), Some("cursor"));
+        assert_eq!(focused_session_stand(&payload).as_deref(), Some("grok"));
     }
 
     /// どちらも決まらなければ先頭 session の stand（安全側 = とにかく作れる）。

@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(p, Path::new("/base/cc_sessions/a-b__---evil"));
     }
 
-    /// claude 版の検証規則: 英数 + ハイフンのみ（`_` は不可 — cursor 版と異なる点）。
+    /// claude 版の検証規則: 英数 + ハイフンのみ（`_` は不可）。
     #[test]
     fn session_id_validation_rejects_underscore_and_injection() {
         let tmp = tempfile::tempdir().expect("tempdir");

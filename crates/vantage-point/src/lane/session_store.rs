@@ -1,10 +1,10 @@
-//! engine session id 永続の共通機構（cc_session / cursor_session / codex_session の共通核）
+//! engine session id 永続の共通機構（cc_session / codex_session の共通核）
 //!
 //! engine が増えるたびに「state file への record / last / clear + injection 防壁」が
-//! 複製されていた（claude → cursor で 2 枚目）。差分は **dir 名と id 検証関数の 2 点だけ**
+//! 複製されていた（claude → codex で 2 枚目）。差分は **dir 名と id 検証関数の 2 点だけ**
 //! なので、それをパラメータ化した [`SessionStore`] に畳む。各 engine module
-//! （`cc_session` / `cursor_session` / `codex_session`）は自分の `STORE` 定数と検証関数、
-//! engine 固有の操作（claude の transcript 探索、cursor の create-chat 採番）だけを持つ。
+//! （`cc_session` / `codex_session`）は自分の `STORE` 定数と検証関数、
+//! engine 固有の操作（claude の transcript 探索）だけを持つ。
 //!
 //! 共通の設計原則（全 engine で不変、doc 37 §1「engine = session 束縛」の物理面）:
 //! - **書き読み両側で同じ検証**: state file は常に正規形（壊れた値を `--resume` に渡さない
@@ -88,8 +88,8 @@ pub(crate) fn sanitize(part: &str) -> String {
 
 /// CLI 実行パスの明示解決（launchd 起動 daemon の細い PATH 対策、`agent::get_claude_cli_path` と同根）。
 ///
-/// daemon は launchd 起動だと PATH が細く、Rust から直接 exec する経路（Act II turn spawn /
-/// cursor create-chat）は login shell を経由しない（床の login shell 注入は Act I にだけ効く）。
+/// daemon は launchd 起動だと PATH が細く、Rust から直接 exec する経路（codex app-server の
+/// 常駐 spawn 等）は login shell を経由しない（床の login shell 注入は Act I にだけ効く）。
 ///
 /// 1. 現在の PATH で `which <name>` が当たればそれ
 /// 2. `well_known`（インストール先の定番）に実在するものがあればそれ

@@ -58,21 +58,18 @@ export function permModeLabel(mode: string): string {
 /**
  * session chip の engine 別 prefix（doc 37: engine = session 束縛の identity なので、
  * chip 自体が「どの engine の session か」を兼ねる）。
- * claude は歴史的な `cc`（Claude Code）を維持、未知 engine は中立の `sid`。
+ * claude は歴史的な `cc`（Claude Code）を維持、未知 engine（撤去済み cursor / agy 含む）は
+ * 中立の `sid`。
  */
 export function sessionChipPrefix(stand: string | null | undefined): string {
   switch (stand) {
     case 'echoes':
     case 'hd':
       return 'cc'
-    case 'cursor':
-      return 'cur'
     case 'codex':
       return 'cdx'
     case 'grok':
       return 'grok'
-    case 'agy':
-      return 'agy'
     default:
       return 'sid'
   }
