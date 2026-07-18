@@ -6,7 +6,7 @@
  * DOM 依存 (pp.ts renderPP/clearPP) は vi.mock でモック。 IPC (window.ipc) もモック。
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // pp.ts の DOM 操作をモック (JSDOM 不要)
 vi.mock('./pp', () => ({
@@ -33,7 +33,13 @@ import {
 function boardUpdated(
   scope: BoardScope,
   lane: string | null,
-  items: Array<{ id: string; title?: string; content?: string; contentType?: string }>,
+  items: Array<{
+    id: string
+    title?: string
+    content?: string
+    contentType?: string
+    createdAt?: string
+  }>,
   cursor: string | null = items[0]?.id ?? null,
 ) {
   return {
@@ -45,7 +51,8 @@ function boardUpdated(
       content: i.content ?? i.id,
       contentType: (i.contentType ?? 'markdown') as CanvasItem['contentType'],
       title: i.title,
-      createdAt: '2026-07-15T00:00:00Z',
+      // 既定は過去時刻 = retained replay 相当。 live 新着を作るときだけ明示指定する。
+      createdAt: i.createdAt ?? '2026-07-15T00:00:00Z',
     })),
     cursor,
   }
@@ -222,5 +229,55 @@ describe('getCanvasState immutability', () => {
       createdAt: '',
     })
     expect(getCanvasState().items).toHaveLength(1)
+  })
+})
+
+// ============================================================================
+// pp-overlay auto-open（live/replay 区別）
+// ============================================================================
+
+/** FrameEngine の最小 fake。 PP 可視状態を返し、 applyScene 呼び出しを観測する。 */
+function installFrameSpy(ppVisible = false) {
+  const applyScene = vi.fn()
+  ;(globalThis as unknown as { vpFrame?: unknown }).vpFrame = {
+    getCurrentSceneId: () => 'console',
+    getScene: () => ({
+      panes: { pp: ppVisible ? { state: 'active', opacity: 1 } : { state: 'hidden', opacity: 0 } },
+    }),
+    applyScene,
+  }
+  return applyScene
+}
+
+describe('pp-overlay auto-open（live/replay 区別）', () => {
+  afterEach(() => {
+    delete (globalThis as unknown as { vpFrame?: unknown }).vpFrame
+  })
+
+  it('起動時の retained replay（過去 createdAt）では auto-open しない', () => {
+    const applyScene = installFrameSpy()
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }, { id: 'b' }]))
+    expect(applyScene).not.toHaveBeenCalled()
+  })
+
+  it('live 新着（起動後 createdAt の未知 item）で pp-overlay が開く', () => {
+    const applyScene = installFrameSpy()
+    handleMessage(boardUpdated('lane', null, [{ id: 'fresh', createdAt: new Date().toISOString() }]))
+    expect(applyScene).toHaveBeenCalledWith('pp-overlay')
+  })
+
+  it('既知 item の再配信（SP re-seed 相当）は createdAt が新しくても auto-open しない', () => {
+    const applyScene = installFrameSpy()
+    const fresh = new Date().toISOString()
+    handleMessage(boardUpdated('lane', null, [{ id: 'x', createdAt: fresh }]))
+    applyScene.mockClear()
+    handleMessage(boardUpdated('lane', null, [{ id: 'x', createdAt: fresh }]))
+    expect(applyScene).not.toHaveBeenCalled()
+  })
+
+  it('PP が既に見えている scene では live 新着でも applyScene しない', () => {
+    const applyScene = installFrameSpy(true)
+    handleMessage(boardUpdated('lane', null, [{ id: 'y', createdAt: new Date().toISOString() }]))
+    expect(applyScene).not.toHaveBeenCalled()
   })
 })
