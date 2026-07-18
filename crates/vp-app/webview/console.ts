@@ -64,6 +64,17 @@ export type EchoesEvent =
   | { kind: 'thought_chunk'; text: string }
   | { kind: 'tool_call'; id: string; name: string; input: unknown }
   | { kind: 'tool_call_update'; tool_use_id: string; content: string; is_error?: boolean }
+  /**
+   * subagent（Agent tool が回した子）の発話。engine が --forward-subagent-text 付きの時だけ来る。
+   * parent_tool_use_id は親の tool_call.id と一致するので、GUI は該当 tool 行の中に入れ子で描く。
+   * ⚠️ delta ではなく「block 1 個ぶんの完成テキスト」（subagent は snapshot でしか流れてこない）。
+   */
+  | {
+      kind: 'subagent_message'
+      parent_tool_use_id: string
+      role: 'prompt' | 'thinking' | 'text'
+      text: string
+    }
   | { kind: 'plan'; entries: PlanEntry[] }
   /** context_tokens/window = Act I statusline 相当の context ゲージ（省略時 GUI は前値を保つ）。 */
   | {

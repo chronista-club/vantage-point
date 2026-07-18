@@ -40,6 +40,7 @@ type ChatItem =
   | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
   // ToolCallUpdate{content} を送っているので、view が保持するだけで詳細が開ける。
+  // subagent は Agent tool が回した子の発話（--forward-subagent-text 有効時のみ）。
   | {
       kind: 'tool'
       id: string
@@ -48,6 +49,7 @@ type ChatItem =
       error: boolean
       input?: unknown
       result?: string
+      subagent?: SubagentEntry[]
     }
   // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
   | {
@@ -60,6 +62,14 @@ type ChatItem =
       permission?: { toolName: string; input: unknown }
       decision?: 'allow' | 'deny'
     }
+
+/**
+ * subagent（Agent tool の子）の発話 1 節。
+ *
+ * engine は親子を 1 本の stream に混ぜて流し、`parent_tool_use_id` だけが両者を分ける。
+ * ここでは親の tool item にぶら下げて保持する = 「誰の発話か」を構造で保証する。
+ */
+export type SubagentEntry = { role: 'prompt' | 'thinking' | 'text'; text: string }
 
 /** tool アイテム（accordion 集約の対象）。 */
 export type ToolItem = Extract<ChatItem, { kind: 'tool' }>
@@ -303,6 +313,24 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
         // ToolCall を二重に持たない）。ここに来たら配送順序のバグなので、黙って捨てず残す。
         console.warn('[chatview] 孤児 tool_call_update（結び先の tool_call が無い）', ev.tool_use_id)
       }
+      break
+    }
+    case 'subagent_message': {
+      // 親 tool（Agent）にぶら下げる。親の発話列には決して混ぜない。
+      const t = s.items.find((i) => i.kind === 'tool' && i.id === ev.parent_tool_use_id) as
+        | Extract<ChatItem, { kind: 'tool' }>
+        | undefined
+      if (!t) {
+        // 親が居ない = backend の隔離漏れ or replay 切り詰めで親が落ちた。孤児 tool_call_update と
+        // 同じく、既存 item を壊さず捨てる（最終防衛線）。
+        console.warn('[chatview] 親 tool の無い subagent_message', ev.parent_tool_use_id)
+        break
+      }
+      const list = (t.subagent ??= [])
+      const last = list[list.length - 1]
+      // 連続同 role は 1 節に畳む（thinking が細切れに見えない）。delta ではないので改行で継ぐ。
+      if (last && last.role === ev.role) last.text += `\n${ev.text}`
+      else list.push({ role: ev.role, text: ev.text })
       break
     }
     case 'plan':
@@ -590,8 +618,31 @@ function ToolDetail(props: { label: string; text: string }) {
   )
 }
 
+/** subagent（Agent の子）の発話列。role ごとにラベルを付けて縦に積む。 */
+function SubagentBlock(props: { entries: SubagentEntry[] }) {
+  return (
+    <div class="echoes-tool-detail">
+      <div class="echoes-tool-detail-label">subagent</div>
+      <For each={props.entries}>
+        {(e) => {
+          const clamped = createMemo(() => clampToolDetail(e.text))
+          return (
+            <div class="echoes-subagent-entry" classList={{ [e.role]: true }}>
+              <span class="echoes-subagent-role">{e.role}</span>
+              <pre class="echoes-tool-detail-body">{clamped().text}</pre>
+              <Show when={clamped().omitted > 0}>
+                <div class="echoes-tool-detail-omitted">…{clamped().omitted} 文字省略</div>
+              </Show>
+            </div>
+          )
+        }}
+      </For>
+    </div>
+  )
+}
+
 /**
- * tool 1 件の行。詳細（input/result）があれば開閉できる accordion になる。
+ * tool 1 件の行。詳細（input/result/subagent）があれば開閉できる accordion になる。
  *
  * 単発（single）でも group（ToolGroupRow）の中の 1 件でも同じ形 — 「まとめて見る」と
  * 「個別に掘る」を両立させる要。詳細が無い tool は caret を出さず従来どおりの 1 行。
@@ -603,11 +654,15 @@ function ToolRow(props: {
   error: boolean
   input?: unknown
   result?: string
+  subagent?: SubagentEntry[]
 }) {
   const [open, setOpen] = createSignal(false)
   const inputText = createMemo(() => formatToolInput(props.input))
   const resultText = createMemo(() => formatToolResult(props.result))
-  const hasDetail = createMemo(() => inputText() !== null || resultText() !== null)
+  const subagent = createMemo(() => props.subagent ?? [])
+  const hasDetail = createMemo(
+    () => inputText() !== null || resultText() !== null || subagent().length > 0,
+  )
   return (
     <div class="echoes-tool" classList={{ done: props.done, error: props.error }}>
       <button
@@ -630,6 +685,10 @@ function ToolRow(props: {
       <Show when={open() && hasDetail()}>
         <div class="echoes-tool-body">
           <Show when={inputText()}>{(t) => <ToolDetail label="input" text={t()} />}</Show>
+          {/* subagent は Agent 行の中に入れ子で置く = 「誰の発話か」を構造で示す。 */}
+          <Show when={subagent().length > 0}>
+            <SubagentBlock entries={subagent()} />
+          </Show>
           <Show when={resultText()}>{(t) => <ToolDetail label="result" text={t()} />}</Show>
         </div>
       </Show>
@@ -676,6 +735,7 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
                 error={t.error}
                 input={t.input}
                 result={t.result}
+                subagent={t.subagent}
               />
             )}
           </For>
@@ -1430,6 +1490,7 @@ function ChatView() {
                         error={item.error}
                         input={item.input}
                         result={item.result}
+                        subagent={item.subagent}
                       />
                     </Match>
                   </Switch>
@@ -1605,6 +1666,13 @@ export const CHATVIEW_CSS = `
   word-break:break-word; font-family: var(--vp-font-mono),var(--typography-family-mono);
   font-size:11px; line-height:1.5; color: var(--color-text-secondary,#a8b0c0); }
 .echoes-tool-detail-omitted { font-size:10px; color: var(--color-text-tertiary,#616b80); margin-top:2px; }
+/* subagent の発話: role でラベル分け。thinking は親の thinking と同じ「控えめ」の質感に寄せる。 */
+.echoes-subagent-entry { margin-top:4px; }
+.echoes-subagent-role { font-size:9px; letter-spacing:.06em; text-transform:uppercase;
+  color: var(--color-text-tertiary,#616b80); border:1px solid var(--color-border,#2a3040);
+  border-radius:4px; padding:0 4px; }
+.echoes-subagent-entry.thinking .echoes-tool-detail-body { color: var(--color-text-tertiary,#616b80); font-style:italic; }
+.echoes-subagent-entry.prompt .echoes-tool-detail-body { color: var(--color-text-tertiary,#8b93a7); }
 /* ToolGroupRow: 連続同名 tool（Agent ×N 等）を畳む accordion。畳んだ header は ToolRow と同じ枠で 1 行。 */
 .echoes-toolgroup { align-self:flex-start; font-size:12px; animation: echoes-fade .18s ease-out; }
 .echoes-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;

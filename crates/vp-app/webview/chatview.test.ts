@@ -656,6 +656,93 @@ describe('tool 詳細の保持 — accordion の個別展開の表示源（reduc
   })
 })
 
+describe('subagent_message — Agent の子の発話を親と取り違えない（--forward-subagent-text）', () => {
+  /** 親が Agent を呼び、子が thinking→text を返す最小の実 turn。 */
+  const withSubagent = (): EchoesEvent[] => [
+    { kind: 'message_chunk', text: '子に投げます' },
+    { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: { prompt: '6x7 は?', subagent_type: 'general-purpose' } },
+    { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'prompt', text: '6x7 は?' },
+    { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'thinking', text: '掛け算する' },
+    { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'text', text: '42' },
+    { kind: 'tool_call_update', tool_use_id: 'toolu_1', content: '42' },
+    { kind: 'message_chunk', text: '答えは 42 です' },
+  ]
+
+  it('subagent の発話は親 tool にぶら下がる（item は増えない）', () => {
+    const s = fold(withSubagent())
+    // assistant / tool の 2 種だけ。subagent 用の独立 item は生えない
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'tool', 'assistant'])
+    const t = s.items[1]
+    expect(t.kind === 'tool' && t.subagent).toEqual([
+      { role: 'prompt', text: '6x7 は?' },
+      { role: 'thinking', text: '掛け算する' },
+      { role: 'text', text: '42' },
+    ])
+  })
+
+  it('★ subagent の発話が親の吹き出しに混ざらない（親が言っていないことを言わせない）', () => {
+    const s = fold(withSubagent())
+    const assistants = s.items.filter((i) => i.kind === 'assistant')
+    const texts = assistants.map((a) => (a.kind === 'assistant' ? a.text : ''))
+    // 親の発話は 2 つとも自分の言葉だけ。子の "42" / "掛け算する" は入らない
+    expect(texts).toEqual(['子に投げます', '答えは 42 です'])
+    expect(texts.join('')).not.toContain('掛け算する')
+  })
+
+  it('★ subagent の prompt が user 発話として描かれない', () => {
+    const s = fold(withSubagent())
+    // 子への指示は user bubble を作らない（人間が打ったように見せない）
+    expect(s.items.some((i) => i.kind === 'user')).toBe(false)
+  })
+
+  it('連続する同 role は 1 節に畳む（thinking が細切れにならない）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: {} },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'thinking', text: 'まず' },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'thinking', text: 'つぎに' },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'text', text: '答え' },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.subagent).toEqual([
+      { role: 'thinking', text: 'まず\nつぎに' },
+      { role: 'text', text: '答え' },
+    ])
+  })
+
+  it('親 tool の無い subagent_message は既存 item を壊さない（孤児の最終防衛線）', () => {
+    const s = fold([
+      { kind: 'message_chunk', text: '本文' },
+      { kind: 'subagent_message', parent_tool_use_id: 'ghost', role: 'text', text: '迷子' },
+    ])
+    expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
+  })
+
+  it('並行した複数 Agent の発話が互いに混ざらない（parent id で分かれる）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'a', name: 'Agent', input: {} },
+      { kind: 'tool_call', id: 'b', name: 'Agent', input: {} },
+      { kind: 'subagent_message', parent_tool_use_id: 'b', role: 'text', text: 'B の答え' },
+      { kind: 'subagent_message', parent_tool_use_id: 'a', role: 'text', text: 'A の答え' },
+    ])
+    const tools = s.items.filter((i) => i.kind === 'tool')
+    expect(tools.map((t) => (t.kind === 'tool' ? t.subagent?.[0]?.text : null))).toEqual([
+      'A の答え',
+      'B の答え',
+    ])
+  })
+
+  it('subagent があれば tool は「詳細あり」扱いになる（caret が出る条件）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: {} }, // input 空 = それ単体では詳細なし
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'text', text: '42' },
+    ])
+    const t = s.items[0]
+    // input は {} で formatToolInput→null だが、subagent があるので開ける
+    expect(t.kind === 'tool' && formatToolInput(t.input)).toBeNull()
+    expect(t.kind === 'tool' && (t.subagent?.length ?? 0) > 0).toBe(true)
+  })
+})
+
 describe('formatToolInput / formatToolResult — 詳細の表示整形（純関数）', () => {
   it('object は pretty JSON になる', () => {
     expect(formatToolInput({ command: 'ls' })).toBe('{\n  "command": "ls"\n}')

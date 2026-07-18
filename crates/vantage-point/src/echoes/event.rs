@@ -84,6 +84,25 @@ pub enum EchoesEvent {
         is_error: bool,
     },
 
+    /// subagent（`Agent` tool が回した子）の発話。engine に `--forward-subagent-text` を
+    /// 付けた時だけ流れる。
+    ///
+    /// `parent_tool_use_id` は親の [`EchoesEvent::ToolCall`] の `id` と一致する（実測: 値は
+    /// `Agent` tool_use の id）ので、GUI は該当 tool 行の中に入れ子で描ける = 「誰の発話か」を
+    /// 取り違えない。
+    ///
+    /// ⚠️ 親の本文と違い **delta では来ない**（実測: `stream_event` は 1 本残らず parent 無し）。
+    /// subagent の担い手は assistant スナップショット行だけなので、本 variant は「content block
+    /// 1 個ぶんの完成テキスト」を運ぶ。`*Chunk` を名乗らないのはそのため（増分ではない = 到着時に
+    /// 一括で現れる。engine の挙動を名前で偽らない）。
+    SubagentMessage {
+        /// 親の [`EchoesEvent::ToolCall`] の `id`。
+        parent_tool_use_id: String,
+        /// 発話の種別。
+        role: SubagentRole,
+        text: String,
+    },
+
     /// plan（TodoWrite の input から導出）。plan ウィジェット用。
     Plan { entries: Vec<PlanEntry> },
 
@@ -135,6 +154,20 @@ pub enum EchoesEvent {
         /// tool の原 input（GUI が要約表示、allow 時は verbatim echo）。
         input: serde_json::Value,
     },
+}
+
+/// [`EchoesEvent::SubagentMessage`] の発話種別。
+///
+/// engine の 1 本の stream に親子が混在するため、GUI が「誰が何を言ったか」を復元するのに要る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentRole {
+    /// subagent に与えられた指示（親の `Agent` tool input の `prompt` と同内容）。
+    Prompt,
+    /// subagent の思考。
+    Thinking,
+    /// subagent の出力本文。
+    Text,
 }
 
 /// plan の 1 項目（TodoWrite の todo に対応）。
