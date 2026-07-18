@@ -42,6 +42,28 @@ def swap_epilogue(restart_daemon)
   VP.log "#{VP.icon(:ok)} swapped & launched#{suffix}"
 end
 
+# brew cask 管理下の .app を dev build で上書きした事実と、 戻し方を **実行時に** 明示する (macOS)。
+#
+# なぜ runtime に出す要があるか (2026-07-17 dogfood で踏んだ):
+#   Homebrew は **version 文字列でしか upgrade を判定しない**。 swap した dev build は作業ツリーの
+#   version をそのまま名乗るので、 直後に `brew upgrade --cask vantage-point` を叩いても Caskroom
+#   metadata の version と tap の version が一致し **no-op** になる。 dev build が居座り続ける。
+#   しかも Caskroom が持つのは実体コピーではなく /Applications への **symlink** なので、 brew から
+#   見て「自分が入れた成果物」の中身がそのまま dev build に化けており、 差分を検知する術が無い。
+#   → 黙っていると「release 版のつもりで dev build を使い続ける」 **サイレント事故**になる
+#     (実際 upgrade が効かず uninstall する羽目になった)。
+#   戻し方 (`brew reinstall --cask`) は元々この file の comment にだけ書かれていて、 それを最も
+#   必要とする「swap した直後の人」 には一言も届いていなかった。 出口を必ず添える。
+def brew_restore_hint(app_path)
+  # cask 管理下でなければ (直 build 派 / .dmg 手動配置) 何も言わない。 brew は許容であって依存ではない。
+  return unless VP.try("brew", "list", "--cask", "vantage-point", out: File::NULL, err: File::NULL)
+
+  VP.log "#{VP.icon(:warn)} #{app_path} は dev build に置き換わった (brew は release のままと認識 → upgrade は no-op)"
+  VP.log "#{VP.icon(:info)} 公式 release に戻す: brew reinstall --cask vantage-point"
+  VP.log "#{VP.icon(:info)} 今どちらか判別: spctl -a -t exec -vvv #{app_path}"
+  VP.log "  'Notarized Developer ID' = 公式 release / 'Developer ID' = dev build (swap 済)"
+end
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Windows: ~/.cargo/bin/{vp,vp-app}.exe を差し替える
 # ══════════════════════════════════════════════════════════════════════════════
@@ -189,7 +211,8 @@ def swap_macos(restart_daemon)
   sleep 2
 
   # ── 3. 差し替え (ditto = 署名と xattr を保つ。 cp -r は署名を壊す) ──
-  # installed は brew cask 管理下。 壊しても `brew reinstall --cask vantage-point` で戻せる。
+  # installed は brew cask 管理下。 壊しても `brew reinstall --cask vantage-point` で戻せる
+  # (この出口は brew_restore_hint が実行時にも出す — comment だけでは踏む人に届かない)。
   VP.log "#{VP.icon(:arrow)} swapping #{installed}"
   FileUtils.rm_rf(installed)
   VP.sh "ditto '#{built}' '#{installed}'"
@@ -201,6 +224,7 @@ def swap_macos(restart_daemon)
   # ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
   VP.sh "open '#{installed}'"
   swap_epilogue(restart_daemon)
+  brew_restore_hint(installed)
 end
 
 # daemon + SP を新 binary に載せ替える (macOS)。
