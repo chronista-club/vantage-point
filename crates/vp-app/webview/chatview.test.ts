@@ -7,6 +7,9 @@ import {
   canDequeuePending,
   classifyToolRun,
   toolGroupStatus,
+  formatToolInput,
+  formatToolResult,
+  clampToolDetail,
   chatCapableStands,
   canCloseSession,
   type StandOption,
@@ -81,7 +84,17 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
       { kind: 'tool_call', id: 'tu-1', name: 'Bash', input: { command: 'ls' } },
       { kind: 'tool_call_update', tool_use_id: 'tu-1', content: 'file.txt' },
     ])
-    expect(s.items).toEqual([{ kind: 'tool', id: 'tu-1', name: 'Bash', done: true, error: false }])
+    expect(s.items).toEqual([
+      {
+        kind: 'tool',
+        id: 'tu-1',
+        name: 'Bash',
+        done: true,
+        error: false,
+        input: { command: 'ls' },
+        result: 'file.txt',
+      },
+    ])
   })
 
   it('tool_call_update の is_error が error flag に載る', () => {
@@ -98,7 +111,14 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
       { kind: 'tool_call', id: 'tu-1', name: 'Read', input: {} },
       { kind: 'tool_call_update', tool_use_id: 'other', content: 'x' },
     ])
-    expect(s.items[0]).toEqual({ kind: 'tool', id: 'tu-1', name: 'Read', done: false, error: false })
+    expect(s.items[0]).toEqual({
+      kind: 'tool',
+      id: 'tu-1',
+      name: 'Read',
+      done: false,
+      error: false,
+      input: {},
+    })
   })
 
   it('plan は毎回 replace（累積しない）', () => {
@@ -294,7 +314,7 @@ describe('transcript replay — Act II replay-on-attach', () => {
     const s = fold(replay)
     expect(s.items).toEqual([
       { kind: 'user', text: '直して' },
-      { kind: 'tool', id: 't1', name: 'Edit', done: true, error: false },
+      { kind: 'tool', id: 't1', name: 'Edit', done: true, error: false, input: {}, result: 'ok' },
       { kind: 'assistant', text: '直しました' },
     ])
   })
@@ -438,7 +458,15 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
     ])
     foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' })
 
-    expect(s.items[1]).toEqual({ kind: 'tool', id: 't1', name: 'Edit', done: true, error: false })
+    expect(s.items[1]).toEqual({
+      kind: 'tool',
+      id: 't1',
+      name: 'Edit',
+      done: true,
+      error: false,
+      input: {},
+      result: 'ok',
+    })
   })
 
   it('孤児 tool_call_update は既存 item を壊さない（backend 不変条件の最終防衛線）', () => {
@@ -581,6 +609,95 @@ describe('toolGroupStatus — accordion header の集約 status（エンジン�
       running: true,
       label: '0/2',
     })
+  })
+})
+
+describe('tool 詳細の保持 — accordion の個別展開の表示源（reducer 契約）', () => {
+  it('tool_call の input を捨てずに保持する（詳細を開くために要る）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: { command: 'ls -la', description: '一覧' } },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.input).toEqual({ command: 'ls -la', description: '一覧' })
+  })
+
+  it('tool_call_update の content を result として保持する', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: { command: 'ls' } },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'a.txt\nb.txt' },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.result).toBe('a.txt\nb.txt')
+  })
+
+  it('error の結果本文も保持する（失敗理由を個別に開いて読める）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: { command: 'nope' } },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'command not found', is_error: true },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.error).toBe(true)
+    expect(t.kind === 'tool' && t.result).toBe('command not found')
+  })
+
+  it('連続同名 tool でも各件が別々の input/result を持つ（group を開いて個別に掘れる）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'a', name: 'Bash', input: { command: 'one' } },
+      { kind: 'tool_call_update', tool_use_id: 'a', content: 'r1' },
+      { kind: 'tool_call', id: 'b', name: 'Bash', input: { command: 'two' } },
+      { kind: 'tool_call_update', tool_use_id: 'b', content: 'r2' },
+    ])
+    const tools = s.items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    expect(tools.map((t) => (t.kind === 'tool' ? t.result : null))).toEqual(['r1', 'r2'])
+    // group 集約（描画時）とは独立に、各件の詳細が残っている
+    expect(classifyToolRun(s.items, 0).role).toBe('head')
+    expect(classifyToolRun(s.items, 1)).toEqual({ role: 'member' })
+  })
+})
+
+describe('formatToolInput / formatToolResult — 詳細の表示整形（純関数）', () => {
+  it('object は pretty JSON になる', () => {
+    expect(formatToolInput({ command: 'ls' })).toBe('{\n  "command": "ls"\n}')
+  })
+
+  it('string はそのまま通す', () => {
+    expect(formatToolInput('raw text')).toBe('raw text')
+  })
+
+  it('空 input（{} / [] / 空文字 / null / undefined）は詳細なし = null', () => {
+    // 「開いても空」を作らないための判定 — caret を出すかがこれで決まる
+    expect(formatToolInput({})).toBeNull()
+    expect(formatToolInput([])).toBeNull()
+    expect(formatToolInput('')).toBeNull()
+    expect(formatToolInput(null)).toBeNull()
+    expect(formatToolInput(undefined)).toBeNull()
+  })
+
+  it('JSON 化できない入力でも落ちない（循環参照）', () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    expect(() => formatToolInput(cyclic)).not.toThrow()
+  })
+
+  it('result は空文字/undefined が null、中身があればそのまま', () => {
+    expect(formatToolResult(undefined)).toBeNull()
+    expect(formatToolResult('')).toBeNull()
+    expect(formatToolResult('done')).toBe('done')
+  })
+})
+
+describe('clampToolDetail — 巨大 detail の honest clamp（黙って切らない）', () => {
+  it('上限以下はそのまま・省略 0', () => {
+    expect(clampToolDetail('short', 10)).toEqual({ text: 'short', omitted: 0 })
+  })
+
+  it('ちょうど上限もそのまま', () => {
+    expect(clampToolDetail('12345', 5)).toEqual({ text: '12345', omitted: 0 })
+  })
+
+  it('超過は切り詰め、省略した文字数を返す（UI が「…N 文字省略」を出せる）', () => {
+    expect(clampToolDetail('abcdefghij', 4)).toEqual({ text: 'abcd', omitted: 6 })
   })
 })
 
