@@ -10,6 +10,7 @@
 
 use tokio::task::JoinHandle;
 
+use super::acp_host::AcpAgentHost;
 use super::codex_host::CodexAgentHost;
 use super::event::EchoesEvent;
 use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
@@ -32,6 +33,9 @@ pub enum EngineKind {
     /// stand=`"agy"` — Google Antigravity CLI（Gemini CLI 後継）。**Act I のみ**
     /// （v1.1.2 に構造化出力が無く Act II 翻訳層が作れない、doc 37 §7.5）。
     Agy,
+    /// stand=`"grok"` — xAI Grok CLI。常駐 AcpAgentHost（Act II、`grok agent stdio` = ACP —
+    /// doc 42）+ grok TUI（Act I、`-r` resume）。
+    Grok,
 }
 
 impl EngineKind {
@@ -40,7 +44,13 @@ impl EngineKind {
     /// 新 engine は [`Self::from_stand`] / [`Self::stand_name`] と併せてここにも足す —
     /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
     /// コンパイル時 match 網羅性 + テストで検知する。
-    pub const ALL: [EngineKind; 4] = [Self::Claude, Self::Cursor, Self::Codex, Self::Agy];
+    pub const ALL: [EngineKind; 5] = [
+        Self::Claude,
+        Self::Cursor,
+        Self::Codex,
+        Self::Agy,
+        Self::Grok,
+    ];
 
     /// stand 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
     pub fn from_stand(stand: &str) -> Option<Self> {
@@ -49,6 +59,7 @@ impl EngineKind {
             "cursor" => Some(Self::Cursor),
             "codex" => Some(Self::Codex),
             "agy" => Some(Self::Agy),
+            "grok" => Some(Self::Grok),
             _ => None,
         }
     }
@@ -60,6 +71,7 @@ impl EngineKind {
             Self::Cursor => "cursor",
             Self::Codex => "codex",
             Self::Agy => "agy",
+            Self::Grok => "grok",
         }
     }
 
@@ -74,15 +86,16 @@ impl EngineKind {
             Self::Agy => {
                 "VP Stand: Antigravity 🚀 — login shell の床 + agy 自動起動（console のみ、Act II 非対応）"
             }
+            Self::Grok => "VP Stand: Grok ⚡ — login shell の床 + grok (xAI) 自動起動",
         }
     }
 
     /// Act II（chat GUI）の host を持つか = console mode Chat を許すか。
     ///
-    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex。grok=ACP は AcpHost 実装後に追加）。
+    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok — doc 41・42）。
     /// cursor は Act II オミット（step 4 で TurnHost 系ごと撤去）、agy は翻訳層が作れない。
     pub fn chat_capable(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex)
+        matches!(self, Self::Claude | Self::Codex | Self::Grok)
     }
 
     /// VP からの model 切替（`engine_model` 永続 + `--model` 注入）を受けるか。
@@ -115,6 +128,7 @@ impl Drop for ChatEngineSlot {
 ///
 /// - [`ChatHost::Claude`]: 常駐 stream-json host（stdin 連投、1 プロセスが会話を保持）。
 /// - [`ChatHost::Codex`]: 常駐 JSONL JSON-RPC host（`codex app-server`、doc 41）。
+/// - [`ChatHost::Grok`]: 常駐 ACP host（`grok agent stdio`、doc 42）。
 ///
 /// GUI 語彙 [`EchoesEvent`] は全 engine 共通なので、pump / topic 配線・chatview は engine
 /// 非依存のまま。variant 名は engine 名（doc 37 の語彙: Echoes = namespace、claude = engine —
@@ -122,6 +136,7 @@ impl Drop for ChatEngineSlot {
 pub enum ChatHost {
     Claude(EchoesAgentHost),
     Codex(CodexAgentHost),
+    Grok(AcpAgentHost),
 }
 
 impl ChatHost {
@@ -129,6 +144,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.subscribe(),
             ChatHost::Codex(h) => h.subscribe(),
+            ChatHost::Grok(h) => h.subscribe(),
         }
     }
 
@@ -136,6 +152,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.in_flight(),
             ChatHost::Codex(h) => h.in_flight(),
+            ChatHost::Grok(h) => h.in_flight(),
         }
     }
 
@@ -143,6 +160,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),
             ChatHost::Codex(h) => h.commit_seq(),
+            ChatHost::Grok(h) => h.commit_seq(),
         }
     }
 
@@ -150,6 +168,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.pid(),
             ChatHost::Codex(h) => h.pid(),
+            ChatHost::Grok(h) => h.pid(),
         }
     }
 
@@ -157,6 +176,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.submit(prompt).await,
             ChatHost::Codex(h) => h.submit(prompt).await,
+            ChatHost::Grok(h) => h.submit(prompt).await,
         }
     }
 
@@ -164,6 +184,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.interrupt().await,
             ChatHost::Codex(h) => h.interrupt().await,
+            ChatHost::Grok(h) => h.interrupt().await,
         }
     }
 
@@ -174,6 +195,7 @@ impl ChatHost {
             // EchoesAgentHost の Child は kill_on_drop(true) なので host drop で停止する。
             ChatHost::Claude(_) => {}
             ChatHost::Codex(h) => h.stop(),
+            ChatHost::Grok(h) => h.stop(),
         }
     }
 
@@ -185,7 +207,7 @@ impl ChatHost {
     ) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Codex(_) => {
+            ChatHost::Codex(_) | ChatHost::Grok(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -195,7 +217,7 @@ impl ChatHost {
     pub async fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.set_permission_mode(mode).await,
-            ChatHost::Codex(_) => {
+            ChatHost::Codex(_) | ChatHost::Grok(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -241,6 +263,7 @@ mod tests {
             "cursor は Act II オミット（doc 39 §7 / step 4）"
         );
         assert!(EngineKind::Codex.chat_capable());
+        assert!(EngineKind::Grok.chat_capable());
         assert!(
             !EngineKind::Agy.chat_capable(),
             "agy は Act I のみ（doc 37 §7.5）"
@@ -248,6 +271,7 @@ mod tests {
 
         assert!(EngineKind::Claude.model_switchable());
         assert!(!EngineKind::Cursor.model_switchable());
+        assert!(!EngineKind::Grok.model_switchable());
         assert!(!EngineKind::Codex.model_switchable());
         assert!(!EngineKind::Agy.model_switchable());
     }

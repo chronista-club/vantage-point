@@ -73,7 +73,10 @@ mod tests {
     fn list_stands_returns_builtin() {
         let stands = list_stands();
         let names: Vec<&str> = stands.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["echoes", "cursor", "codex", "agy", "shell"]);
+        assert_eq!(
+            names,
+            vec!["echoes", "cursor", "codex", "agy", "grok", "shell"]
+        );
         assert!(stands.iter().all(|s| !s.description.is_empty()));
     }
 
@@ -90,6 +93,7 @@ mod tests {
         );
         assert!(cap("codex"));
         assert!(!cap("agy"), "agy は Act I のみ（doc 37 §7.5）");
+        assert!(cap("grok"), "grok は常駐 AcpAgentHost（doc 42）");
         assert!(!cap("shell"), "shell は engine なし（床のみ）");
     }
 }

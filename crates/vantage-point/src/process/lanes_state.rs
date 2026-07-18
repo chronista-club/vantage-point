@@ -1356,6 +1356,18 @@ impl LanePool {
                     },
                 )?)
             }
+            Some(EngineKind::Grok) => {
+                // grok: 常駐 AcpAgentHost（`grok agent stdio` = ACP、doc 42）。sessionId は
+                // registry の会話 id（registry-native — 旧 store なし）。
+                ChatHost::Grok(crate::echoes::AcpAgentHost::spawn(
+                    crate::echoes::AcpHostConfig {
+                        cwd: info.cwd.clone(),
+                        project: addr.project.clone(),
+                        lane: label.clone(),
+                        session_id: resolved.conversation.clone(),
+                    },
+                )?)
+            }
             Some(EngineKind::Claude) => {
                 // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
                 // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
@@ -1397,10 +1409,12 @@ impl LanePool {
         // に disk 記録し、demand_start の no_session path がそれを replay 源にする（doc — engine
         // 非依存 replay log）。
         let replay_tap = match EngineKind::from_stand(&resolved.stand) {
-            Some(EngineKind::Codex) => Some(crate::echoes::replay_log::ReplayLogTap {
-                project: addr.project.clone(),
-                label: label.clone(),
-            }),
+            Some(EngineKind::Codex | EngineKind::Grok) => {
+                Some(crate::echoes::replay_log::ReplayLogTap {
+                    project: addr.project.clone(),
+                    label: label.clone(),
+                })
+            }
             _ => None,
         };
         let pump = crate::process::echoes_pump::spawn_lane_echoes_pump(
