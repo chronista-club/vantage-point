@@ -19,8 +19,8 @@
  */
 
 import { render } from 'solid-js/web'
-import { createSignal, Show } from 'solid-js'
-import type { VpConsole, EchoesHeaderState } from './console'
+import { createSignal, For, Show } from 'solid-js'
+import type { VpConsole, EchoesHeaderState, EchoesSession } from './console'
 
 // ---------------------------------------------------------------------------
 // 純関数（vitest 対象）
@@ -69,11 +69,34 @@ export function sessionChipPrefix(stand: string | null | undefined): string {
       return 'cur'
     case 'codex':
       return 'cdx'
+    case 'grok':
+      return 'grok'
     case 'agy':
       return 'agy'
     default:
       return 'sid'
   }
+}
+
+/** Root 切替 picker の 1 行（doc 39 P3）。 */
+export type RootPickerItem = {
+  key: number
+  /** `cc:3d91933b` 形。会話 id が未発行（Draft / 未発話）の session は `cc:新品`。 */
+  label: string
+  isRoot: boolean
+}
+
+/**
+ * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 — Root 切替 picker）。
+ * 並びは SP の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。engine gating（P4）
+ * までは全 session を列挙する。
+ */
+export function rootPickerItems(sessions: EchoesSession[]): RootPickerItem[] {
+  return sessions.map((s) => ({
+    key: s.key,
+    label: `${sessionChipPrefix(s.stand)}:${s.engine_session_id ? s.engine_session_id.slice(0, 8) : '新品'}`,
+    isRoot: s.root === true,
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -130,10 +153,60 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     copiedTimer = window.setTimeout(() => setCopiedKey(null), 900)
   }
 
+  // doc 39 P3: Root 切替 picker（Act I の chip click で開く dropdown）。
+  // sessions は 'vp:echoes-sessions'（handleSessionList の既存 bus）から受ける — 新配信路は作らない。
+  const [pickerOpen, setPickerOpen] = createSignal(false)
+  const [pickerPos, setPickerPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [sessions, setSessions] = createSignal<EchoesSession[]>([])
+
+  const sendIpc = (payload: Record<string, unknown>): void => {
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(JSON.stringify(payload))
+  }
+
+  /** chip click（Act I）: picker を開き、一覧を SP から取り直す（開くたび authoritative）。 */
+  const openPicker = (chip: HTMLElement): void => {
+    const lane = ctx()?.addr
+    if (!lane) return
+    const rect = chip.getBoundingClientRect()
+    setPickerPos({ x: rect.left, y: rect.bottom + 4 })
+    setPickerOpen(true)
+    sendIpc({ t: 'echoes:sessions_fetch', lane })
+  }
+
+  /** picker 行 click: 既存 session へ root を向け替え（backend が床を Resume respawn）。 */
+  const switchRoot = (key: number): void => {
+    const lane = ctx()?.addr
+    setPickerOpen(false)
+    if (!lane) return
+    sendIpc({ t: 'console:switch_root', lane, session: key })
+  }
+
+  /** 「✨ 新 ID から」: 既存の New（Act I = new_root）に委譲する。 */
+  const newRoot = (): void => {
+    const lane = ctx()?.addr
+    setPickerOpen(false)
+    if (!lane) return
+    sendIpc({ t: 'console:new_session', lane })
+  }
+
+  // 外側 click で閉じる（picker / chip の内側は除外 — chip click は toggle が担う）。
+  document.addEventListener('click', (ev) => {
+    if (!pickerOpen()) return
+    const target = ev.target as HTMLElement | null
+    if (target?.closest('.eh-root-picker, .eh-session')) return
+    setPickerOpen(false)
+  })
+
   // Act 切替追従（vpConsole.setMode → CustomEvent。表示中 lane 以外は無視）。
   document.addEventListener('vp:console-mode', (e) => {
     const d = (e as CustomEvent<{ lane: string; mode: 'tui' | 'chat' }>).detail
     if (d?.lane && d.lane === ctx()?.addr) setMode(d.mode)
+  })
+  // session 一覧追従（handleSessionList の既存 bus。picker が閉じていても cache しておく）。
+  document.addEventListener('vp:echoes-sessions', (e) => {
+    const d = (e as CustomEvent<{ lane: string; sessions?: EchoesSession[] }>).detail
+    if (d?.lane && d.lane === ctx()?.addr) setSessions(d.sessions ?? [])
   })
   // session summary 追従（console.ts の畳み込みが変化した時だけ飛ぶ低頻度 event）。
   document.addEventListener('vp:echoes-header', (e) => {
@@ -175,19 +248,89 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
             </Show>
             {/* session chip: Act II は event 由来（summary）が真値、Act I は setActivePane
                 相乗りの engine_session_id（ctx）が唯一の供給路 — OR merge で両 Act に出す。
-                prefix は engine 別（cc/cur/cdx、doc 37: chip が engine indicator を兼ねる）。 */}
+                prefix は engine 別（cc/cur/cdx、doc 37: chip が engine indicator を兼ねる）。
+                click は Act で分岐（doc 39 P3、2026-07-18 mako 決定「表示器 = 操作器」）:
+                Act I = Root 切替 picker を開く（copy は picker 内の行へ移設）/ Act II = 従来 copy
+                （session 選択は tab strip が担うため picker は出さない。backend の Tui gate とも一致）。 */}
             <Show when={summary().sessionId ?? c().sessionId}>
               {(sid) => (
                 <button
                   type="button"
                   class="eh-chip eh-session"
                   classList={{ copied: copiedKey() === 'sid' }}
-                  title={`${sessionChipPrefix(c().stand)} session ${sid()}（click で copy）`}
-                  onClick={() => copy('sid', sid())}
+                  title={
+                    mode() === 'tui'
+                      ? `${sessionChipPrefix(c().stand)} session ${sid()}（click で Root 切替）`
+                      : `${sessionChipPrefix(c().stand)} session ${sid()}（click で copy）`
+                  }
+                  onClick={(ev) => {
+                    if (mode() !== 'tui') {
+                      copy('sid', sid())
+                    } else if (pickerOpen()) {
+                      setPickerOpen(false)
+                    } else {
+                      openPicker(ev.currentTarget as HTMLElement)
+                    }
+                  }}
                 >
                   {sessionChipPrefix(c().stand)}:{sid().slice(0, 8)}
+                  <Show when={mode() === 'tui'}>
+                    <span class="eh-session-caret">▾</span>
+                  </Show>
                 </button>
               )}
+            </Show>
+            {/* doc 39 P3: Root 切替 picker。ヘッダ strip は overflow:hidden なので
+                position:fixed で clipping の外に出す（開いた時点の chip 位置に固定）。 */}
+            <Show when={pickerOpen()}>
+              <div
+                class="eh-root-picker"
+                style={{ left: `${pickerPos().x}px`, top: `${pickerPos().y}px` }}
+              >
+                <div class="eh-rp-title">Root agent</div>
+                <For
+                  each={rootPickerItems(sessions())}
+                  fallback={<div class="eh-rp-empty">読み込み中…</div>}
+                >
+                  {(item) => (
+                    <button
+                      type="button"
+                      class="eh-rp-row"
+                      classList={{ 'eh-rp-root': item.isRoot }}
+                      title={
+                        item.isRoot
+                          ? '今の床（root）'
+                          : `この session を root にする（床を resume で張り替え）`
+                      }
+                      onClick={() => (item.isRoot ? setPickerOpen(false) : switchRoot(item.key))}
+                    >
+                      {item.isRoot ? '●' : '○'} {item.label}
+                      <span class="eh-rp-key">#{item.key}</span>
+                      <Show when={item.isRoot}>
+                        <span class="eh-rp-now">今の床</span>
+                      </Show>
+                    </button>
+                  )}
+                </For>
+                <div class="eh-rp-divider" />
+                <button type="button" class="eh-rp-row" onClick={newRoot}>
+                  ✨ 新 ID から（素の engine）
+                </button>
+                <Show when={summary().sessionId ?? c().sessionId}>
+                  {(sid) => (
+                    <button
+                      type="button"
+                      class="eh-rp-row"
+                      onClick={() => {
+                        copy('sid', sid())
+                        setPickerOpen(false)
+                      }}
+                    >
+                      ⧉ 今の id を copy
+                    </button>
+                  )}
+                </Show>
+              </div>
             </Show>
             <Show when={summary().permissionMode}>
               <span class="eh-chip eh-perm" title="permission mode">
@@ -229,6 +372,9 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
       setCtx(next)
       setMode(next?.chat ? 'chat' : 'tui')
       setSummary(next ? vpConsole.headerState(next.addr) : {})
+      // lane が替わったら picker は閉じ、一覧も捨てる（別 lane の session を誤表示しない）。
+      setPickerOpen(false)
+      setSessions([])
       // strip の開閉（World A の DOM に触れる唯一の接点）: lane 文脈がある時だけ
       // #pane-terminal に .echoes-header-active を付け、main_area.rs の --echoes-header-h を
       // 0→30px にして strip を開く。無い時は高さ 0 = xterm/chat が全面（regression なし）。
@@ -271,4 +417,21 @@ export const ECHOES_HEADER_CSS = `
 #echoes-header .eh-legacy-actions{ display:flex; gap:8px; }
 /* 移設された既存 Act toggle / New Session（CHATVIEW_CSS は絶対配置で定義）を strip 内 flow に戻す。 */
 #echoes-header .echoes-console-actions{ position:static; top:auto; right:auto; }
+/* doc 39 P3: Root 切替 picker。strip の overflow:hidden を position:fixed で脱出する。 */
+#echoes-header .eh-session-caret{ opacity:.6; margin-left:2px; }
+#echoes-header .eh-root-picker{ position:fixed; z-index:1000; min-width:230px; padding:4px;
+  background:var(--color-surface-surface); border:1px solid var(--color-surface-border-subtle);
+  border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); -webkit-app-region:no-drag;
+  font-family:var(--vp-font-sans),var(--typography-family-sans); }
+#echoes-header .eh-rp-title{ padding:4px 8px 2px; color:var(--color-text-secondary); font-size:10.5px; }
+#echoes-header .eh-rp-row{ display:flex; align-items:center; gap:6px; width:100%; text-align:left;
+  padding:5px 8px; border:0; border-radius:6px; background:transparent; cursor:pointer;
+  color:var(--color-text-primary);
+  font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; line-height:1.6; }
+#echoes-header .eh-rp-row:hover{ background:var(--color-surface-bg-emphasis); }
+#echoes-header .eh-rp-key{ color:var(--color-text-secondary); }
+#echoes-header .eh-rp-row.eh-rp-root{ color:var(--color-brand-primary); }
+#echoes-header .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
+#echoes-header .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
+#echoes-header .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
 `

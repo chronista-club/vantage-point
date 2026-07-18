@@ -57,7 +57,8 @@ wire 人格の交代が**原子的に**起き、器と mailbox の化身がズ�
 | └ 特例「✨ 新 ID から」 | 新品 session を作って root に向ける（= 旧 Replace / fresh 相当） | 非破壊 | 同上 |
 | **Reset lane** | 全 session store + registry 破棄（現 `clear_fresh_lane_state`） | 破壊的 | sidebar の奥 + 確認。日常フローから退避 |
 
-Root 切替の picker（表示場所は仮置き）:
+Root 切替の picker（表示場所 = **ヘッダの cc chip クリック**、2026-07-18 dogfood 後に mako 決定。
+chip は既に root session の表示器なので、クリックで dropdown を開く = 表示器と操作器の一致）:
 
 ```
 ┌ Root agent ──────────────────┐
@@ -171,7 +172,7 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
 | **P1** | registry に `root` 追加（default 1）+ 床 spawn / wire 3 経路 / chip enrich の読み先を root に統一 | 挙動は N=1 で完全互換（中間状態を作らない） |
 | **P2** | ✨ New の意味論統一(Act 不問で session 追加 + Act II 切替、armed 撤去) + Reset lane を sidebar へ退避 | 旧 tui fresh 経路は Reset に移る |
 | **P2.5** | 会話 id SSOT 統合（registry 一枚岩 + 書き手漏斗 + eager 表示 + ラベル乖離バグ根治） | **doc 40 に昇格**（表示層だけの patch では §3-4 ⚠️ のバグが残るため構造ごと） |
-| **P3** | Root 切替 picker（リスト + 「✨ 新 ID から」+ wire 引き継ぎ警告） | UI 表示場所は dogfood で決める |
+| **P3** | Root 切替 picker（リスト + 「✨ 新 ID から」+ wire 引き継ぎ警告） | 表示場所 = ヘッダ chip click（2026-07-18 決定、§1） |
 | **P4** | engine gating（cursor / codex の床 resume 可否を実測して picker に反映） | doc 37 の engine 実測系譜 |
 
 ## 6. 既知の考慮点

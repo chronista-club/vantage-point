@@ -11,6 +11,7 @@ import {
   laneShortName,
   permModeLabel,
   sessionChipPrefix,
+  rootPickerItems,
 } from './EchoesHeader'
 import { foldHeaderState, type EchoesHeaderState } from './console'
 import type { EchoesEvent } from './console'
@@ -126,14 +127,41 @@ describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）',
     expect(sessionChipPrefix('echoes')).toBe('cc')
     expect(sessionChipPrefix('hd')).toBe('cc')
   })
-  it('cursor / codex / agy は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
+  it('cursor / codex / grok / agy は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
     expect(sessionChipPrefix('cursor')).toBe('cur')
     expect(sessionChipPrefix('codex')).toBe('cdx')
+    expect(sessionChipPrefix('grok')).toBe('grok')
     expect(sessionChipPrefix('agy')).toBe('agy')
   })
   it('未知 / 欠落 stand は中立の sid（chip は出せるが engine は主張しない）', () => {
     expect(sessionChipPrefix('shell')).toBe('sid')
     expect(sessionChipPrefix(null)).toBe('sid')
     expect(sessionChipPrefix(undefined)).toBe('sid')
+  })
+})
+
+describe('rootPickerItems — Root 切替 picker の行導出（doc 39 P3）', () => {
+  it('engine prefix + 会話 id 先頭 8 桁で行を作り、root flag と登録順を保つ', () => {
+    const items = rootPickerItems([
+      {
+        key: 1,
+        stand: 'echoes',
+        engine_session_id: '3d91933b-aaaa-bbbb',
+        live: true,
+        focused: false,
+        root: true,
+      },
+      { key: 2, stand: 'codex', engine_session_id: '0199a2ffee', live: false, focused: true },
+    ])
+    expect(items).toEqual([
+      { key: 1, label: 'cc:3d91933b', isRoot: true },
+      { key: 2, label: 'cdx:0199a2ff', isRoot: false },
+    ])
+  })
+  it('会話 id 未発行（Draft / 未発話）は「新品」、root 欠落（旧 SP）は非 root 扱い', () => {
+    const items = rootPickerItems([
+      { key: 3, stand: 'grok', engine_session_id: null, live: false, focused: false },
+    ])
+    expect(items).toEqual([{ key: 3, label: 'grok:新品', isRoot: false }])
   })
 })

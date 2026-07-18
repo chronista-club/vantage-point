@@ -1083,6 +1083,32 @@ impl LanePool {
         Ok(key)
     }
 
+    /// doc 39 P3: Root 切替 picker の registry 部 — root（と focused）を既存 session へ
+    /// 向け替える。床の張り替え（対象 session の store で resume）は caller が
+    /// [`restart_lane_orchestrated`](crate::process::routes::lanes::restart_lane_orchestrated) を
+    /// [`RespawnMode::Resume`] で呼ぶ（`prepare_new_root_session` と同じ「第 2 の spawn 経路を
+    /// 作らない」規律）。mode=Tui 限定も同様。
+    pub fn prepare_switch_root_session(
+        &mut self,
+        addr: &LaneAddress,
+        key: SessionKey,
+    ) -> anyhow::Result<()> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        if info.console_mode != crate::lane::console_mode::ConsoleMode::Tui {
+            anyhow::bail!(
+                "echoes_session_switch_root は Act I（mode=tui）専用です（addr={addr}。chat lane の切替は echoes_session_focus）"
+            );
+        }
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        session_registry::set_root(&addr.project, lane_label, &info.stand, key)
+            .map_err(|e| anyhow::anyhow!("root 切替に失敗（addr={addr}, session={key}）: {e}"))?;
+        tracing::info!("switch root session: addr={addr} session={key}（旧 root はタブに残存）");
+        Ok(())
+    }
+
     /// focused session を切り替える（registry 永続のみ。床への注入・eager spawn は Phase 3）。
     pub fn focus_chat_session(
         &mut self,

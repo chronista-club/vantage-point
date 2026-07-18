@@ -1174,6 +1174,44 @@ async fn handle_echoes_session_new_root(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
+/// doc 39 P3: Root 切替 picker — root を既存 session へ向け替え、床をその session の store で
+/// resume 張り替えする（`{lane, session}` → `{lane, session}`）。旧 root の会話はタブに残存 =
+/// 非破壊。mode=Tui 限定。new_root（Bare = 素の engine）との違いは respawn が
+/// [`RespawnMode::Resume`]（対象 session の会話に床が化身する）である点のみ。
+///
+/// [`RespawnMode::Resume`]: crate::process::lanes_state::RespawnMode::Resume
+async fn handle_echoes_session_switch_root(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_switch_root: lane 未指定".to_string());
+    }
+    let key = payload
+        .get("session")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "echoes_session_switch_root: session 未指定".to_string())?
+        as crate::lane::session_registry::SessionKey;
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_switch_root: lane パース失敗: {lane}"))?;
+    state
+        .lane_pool
+        .write()
+        .await
+        .prepare_switch_root_session(&addr, key)
+        .map_err(|e| format!("echoes_session_switch_root: {e}"))?;
+    // registry は切替済み（1 save 原子）。床張り替えが失敗しても registry は先行して整合 —
+    // 次の respawn / restart（Resume 経路）で同じ root に立ち直る。
+    super::routes::lanes::restart_lane_orchestrated(
+        state,
+        addr,
+        crate::process::lanes_state::RespawnMode::Resume,
+    )
+    .await?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
+}
+
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
 ///
 /// `echoes_submit`（GUI 入力）と `echoes_nudge`（channel E）が共用する。`ctx` はエラー文言の
@@ -1606,6 +1644,8 @@ pub(crate) async fn dispatch_process_method(
         "echoes_session_create" => handle_echoes_session_create(state, payload).await,
         // doc 39 §4: Act I の ✨ New（新 session + root 張り替え + 床 bare respawn、非破壊）
         "echoes_session_new_root" => handle_echoes_session_new_root(state, payload).await,
+        // doc 39 P3: Root 切替 picker（既存 session へ root を向け替え + Resume 床張り替え）
+        "echoes_session_switch_root" => handle_echoes_session_switch_root(state, payload).await,
         "echoes_session_focus" => handle_echoes_session_focus(state, payload).await,
         // doc 38 Phase 3: tab を閉じる（session remove）。
         "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,
