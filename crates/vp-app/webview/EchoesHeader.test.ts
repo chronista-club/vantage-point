@@ -127,9 +127,10 @@ describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）',
     expect(sessionChipPrefix('echoes')).toBe('cc')
     expect(sessionChipPrefix('hd')).toBe('cc')
   })
-  it('codex / grok は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
+  it('codex / grok / opencode は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
     expect(sessionChipPrefix('codex')).toBe('cdx')
     expect(sessionChipPrefix('grok')).toBe('grok')
+    expect(sessionChipPrefix('opencode')).toBe('oc')
   })
   it('撤去済み engine（cursor / agy）と未知 / 欠落 stand は中立の sid（graceful degradation）', () => {
     // sweep 6.5: cursor / agy は engine として撤去。disk / wire に残る旧 stand 文字列は sid に倒れる。

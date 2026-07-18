@@ -70,6 +70,8 @@ export function sessionChipPrefix(stand: string | null | undefined): string {
       return 'cdx'
     case 'grok':
       return 'grok'
+    case 'opencode':
+      return 'oc'
     default:
       return 'sid'
   }
@@ -254,7 +256,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
             </Show>
             {/* session chip: Act II は event 由来（summary）が真値、Act I は setActivePane
                 相乗りの engine_session_id（ctx）が唯一の供給路 — OR merge で両 Act に出す。
-                prefix は engine 別（cc/cur/cdx、doc 37: chip が engine indicator を兼ねる）。
+                prefix は engine 別（cc/cdx/grok/oc、doc 37: chip が engine indicator を兼ねる）。
                 click は Act で分岐（doc 39 P3、2026-07-18 mako 決定「表示器 = 操作器」）:
                 Act I = Root 切替 picker を開く（copy は picker 内の行へ移設）/ Act II = 従来 copy
                 （session 選択は tab strip が担うため picker は出さない。backend の Tui gate とも一致）。 */}

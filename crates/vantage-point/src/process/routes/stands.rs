@@ -73,7 +73,7 @@ mod tests {
     fn list_stands_returns_builtin() {
         let stands = list_stands();
         let names: Vec<&str> = stands.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["echoes", "codex", "grok", "shell"]);
+        assert_eq!(names, vec!["echoes", "codex", "grok", "opencode", "shell"]);
         assert!(stands.iter().all(|s| !s.description.is_empty()));
     }
 
@@ -86,6 +86,10 @@ mod tests {
         assert!(cap("echoes"));
         assert!(cap("codex"));
         assert!(cap("grok"), "grok は常駐 AcpAgentHost（doc 42）");
+        assert!(
+            cap("opencode"),
+            "opencode は grok と同じ常駐 AcpAgentHost（doc 43）"
+        );
         assert!(!cap("shell"), "shell は engine なし（床のみ）");
     }
 }

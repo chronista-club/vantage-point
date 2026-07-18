@@ -21,6 +21,8 @@
 //! - `"codex"`: [`codex_command`]、 codex_session `resume`（採番は Act II の record-from-init のみ
 //!   — codex に create-chat 相当が無いため、Act I 単独ではまず素の `codex` で開始する）
 //! - `"grok"`: [`grok_command`]、registry の会話 id を `-r '<id>'` で指名 resume（doc 42）
+//! - `"opencode"`: [`opencode_command`]、registry の会話 id を `-s '<id>'` で指名 resume（doc 43。
+//!   model は opencode config が SSOT — VP は注入しない）
 //! - resume id は spawn 前に Rust が各 `lane::*_session`（または registry）を直読み
 //!   （旧: bash が `vp lane last-session` を子→親 CLI 呼び出し = 層の逆転、解消）
 //!
@@ -285,10 +287,34 @@ fn grok_command(resume_id: Option<&str>) -> String {
     }
 }
 
+/// opencode session id（`ses_` prefix + 英数字）として安全な形式か。
+///
+/// opencode の ACP sessionId は `ses_…`（実測 `ses_089ead04bffe5oIJcQTHwwTZo8`、doc 43 §1）で
+/// underscore を含むため [`is_safe_session_id`]（英数 + ハイフン）では弾かれる。underscore は
+/// prefix のみ・残りは英数字なので `-s '<id>'` の single-quote 埋め込みでも injection にならない。
+fn is_safe_opencode_session_id(id: &str) -> bool {
+    id.strip_prefix("ses_")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// opencode の Act I 起動 command（doc 43 §4 — TUI は `-s '<id>'` で ACP sessionId を指名 resume）。
+///
+/// - `Some(id)`（[`is_safe_opencode_session_id`] 検証済 = injection 防壁）: `opencode -s '<id>' || opencode`
+///   （session 消失時は素の opencode に fallback、shell の `||` が native 処理）
+/// - `None`: `opencode`（新規会話）
+///
+/// model / provider は opencode config が SSOT（VP は `-m` 等を注入しない、doc 43 §3）。
+fn opencode_command(resume_id: Option<&str>) -> String {
+    match resume_id.filter(|id| is_safe_opencode_session_id(id)) {
+        Some(id) => format!("opencode -s '{}' || opencode", id),
+        None => "opencode".to_string(),
+    }
+}
+
 /// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
 /// - `"echoes"`（+ 旧名 `"hd"`）: 床 + claude 注入（`fresh` / cc_session により resume 分岐）
-/// - `"codex"` / `"grok"`: 床 + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
+/// - `"codex"` / `"grok"` / `"opencode"`: 床 + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
 /// - `"shell"`: 床のみ
 /// - `"tmux"`（退役 stand）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: 床のみ + warn
 ///   （DB descriptor の legacy 値を graceful 吸収）
@@ -394,6 +420,18 @@ pub fn build_stand_command(
             } else {
                 // sessionId は registry の root 会話 id（doc 42 — TUI は `-r '<id>'` 指名 resume）。
                 Some(format!("{}\r", grok_command(root_conversation.as_deref())))
+            }
+        }
+        Some(crate::echoes::EngineKind::OpenCode) => {
+            if fresh {
+                // fresh は素の opencode（grok と同じ registry-native — clear すべき旧 store も無い）。
+                Some("opencode\r".to_string())
+            } else {
+                // sessionId は registry の root 会話 id（doc 43 — TUI は `-s '<id>'` 指名 resume）。
+                Some(format!(
+                    "{}\r",
+                    opencode_command(root_conversation.as_deref())
+                ))
             }
         }
         None if stand_name == "shell" => None,
@@ -642,6 +680,49 @@ mod tests {
             !input.contains("--resume") && !input.contains("--continue"),
             "fresh は素の claude: {input}"
         );
+    }
+
+    /// opencode の Act I 起動（doc 43 §4）: id 有りは `-s '<id>' || opencode` 指名 resume、
+    /// id 無しは素の opencode。injection 形 / grok 形（underscore 無し）の id は resume に採らない。
+    #[test]
+    fn opencode_command_variants() {
+        // 実測形式（ses_ prefix + 英数字）→ `-s '<id>'` 指名 + fallback
+        let resume = opencode_command(Some("ses_089ead04bffe5oIJcQTHwwTZo8"));
+        assert_eq!(
+            resume, "opencode -s 'ses_089ead04bffe5oIJcQTHwwTZo8' || opencode",
+            "id 有りは指名 resume + 素の opencode fallback: {resume}"
+        );
+        // id 無し → 素の opencode（新規会話）
+        assert_eq!(opencode_command(None), "opencode");
+        // injection 形 / prefix 欠落は resume に採らない（is_safe_opencode_session_id 防壁）
+        for bad in ["ses_bad'; rm", "089ead04", "ses_", ""] {
+            let cmd = opencode_command(Some(bad));
+            assert_eq!(cmd, "opencode", "不正 id '{bad}' は素の opencode: {cmd}");
+        }
+        assert!(is_safe_opencode_session_id(
+            "ses_089ead04bffe5oIJcQTHwwTZo8"
+        ));
+        assert!(!is_safe_opencode_session_id("089ead04"), "ses_ prefix 必須");
+    }
+
+    /// build_stand_command（opencode stand）: fresh は素の opencode、非 fresh は registry の
+    /// 会話 id 有無で resume 分岐。model flag は注入しない（opencode config が SSOT、doc 43 §3）。
+    #[test]
+    fn build_stand_command_opencode_arm() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        // 会話 id 未記録 → 素の opencode（新規会話）。model / provider flag は無い。
+        let cmd = build_stand_command("opencode", &addr, Path::new("/tmp"), false);
+        let input = cmd.initial_input.expect("opencode は initial_input あり");
+        assert!(input.starts_with("opencode"), "opencode 起動: {input}");
+        assert!(
+            !input.contains("-m ") && !input.contains("--model"),
+            "model は opencode config 管理（VP は注入しない）: {input}"
+        );
+        assert!(input.ends_with('\r'), "Enter (CR) で submit: {input:?}");
+        // fresh も素の opencode（registry-native なので clear 対象の旧 store が無い）。
+        let fresh = build_stand_command("opencode", &addr, Path::new("/tmp"), true);
+        assert_eq!(fresh.initial_input.as_deref(), Some("opencode\r"));
     }
 
     /// 撤去済み stand（`"cursor"` — sweep 6.5）の DB descriptor は床の login shell で graceful に

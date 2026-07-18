@@ -1,6 +1,7 @@
 //! ACP `session/update` → [`EchoesEvent`] 翻訳（doc 42 §3）
 //!
-//! [`super::acp_host::AcpAgentHost`]（grok 常駐 ACP host）の update 層翻訳。lifecycle
+//! [`super::acp_host::AcpAgentHost`]（grok / opencode の常駐 ACP host — ACP は engine 非依存な
+//! ので本翻訳器も両 engine 共有、doc 43）の update 層翻訳。lifecycle
 //! （SessionInit / TurnCompleted / Error / permission 自動応答）は host 側が扱い、本 module は
 //! **`session/update` notification の update object だけ**を純翻訳する（data / calculations 分離）。
 //!
