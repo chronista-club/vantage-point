@@ -4,8 +4,8 @@
 //!
 //! performer の stand は従来 in-memory（LanePool の LaneInfo.stand）にしか無く、SP 再起動後の
 //! boot bootstrap（server.rs）は disk scan した全 performer を config の `default_stand`
-//! （= echoes）で spawn していた。cursor-engine.md の既知制約「performer の stand は SP 再起動を
-//! またいで永続しない」の実体で、GUI「+ Add Performer」の stand 落ちと同根。
+//! （= echoes）で spawn していた。「performer の stand は SP 再起動をまたいで永続しない」の
+//! 既知制約の実体で、GUI「+ Add Performer」の stand 落ちと同根。
 //!
 //! ## 設計（console_mode / session_store と同じ per-lane state file パターン）
 //!
@@ -23,7 +23,8 @@ use std::path::Path;
 use super::session_store::SessionStore;
 
 /// stand 名の正規形（英数 + ハイフン + アンダースコア、非空）。
-/// 既知 stand（echoes/cursor/codex/agy/shell/hd）は全て通る。壊れた file を spawn に渡さない防壁。
+/// 現行 stand（echoes/codex/grok/shell/hd）+ 撤去済み engine の legacy 文字列（cursor/agy 等）も
+/// 自由文字列として全て通る（EngineKind allowlist に縛られない）。壊れた file を spawn に渡さない防壁。
 fn is_valid_stand(stand: &str) -> bool {
     !stand.is_empty()
         && stand
@@ -78,18 +79,16 @@ mod tests {
             Some("codex")
         );
         // 上書き（GUI で作り直した時は新しい stand が勝つ）
-        record_in(tmp.path(), "vp", "feat-x", "cursor").expect("record 2");
-        assert_eq!(
-            last_in(tmp.path(), "vp", "feat-x").as_deref(),
-            Some("cursor")
-        );
+        record_in(tmp.path(), "vp", "feat-x", "grok").expect("record 2");
+        assert_eq!(last_in(tmp.path(), "vp", "feat-x").as_deref(), Some("grok"));
     }
 
-    /// 形式検証: 既知 stand は全て通り、injection 形は書き読み両側で弾かれる。
+    /// 形式検証: 現行 stand + 撤去済み engine の legacy 文字列は全て通り（graceful degradation —
+    /// stand は EngineKind allowlist に縛られない自由文字列）、injection 形は書き読み両側で弾かれる。
     #[test]
     fn validation_accepts_known_stands_and_rejects_garbage() {
-        for s in ["echoes", "cursor", "codex", "agy", "shell", "hd"] {
-            assert!(is_valid_stand(s), "既知 stand は通る: {s}");
+        for s in ["echoes", "codex", "grok", "shell", "hd", "cursor", "agy"] {
+            assert!(is_valid_stand(s), "現行/legacy stand は通る: {s}");
         }
         let tmp = tempfile::tempdir().expect("tempdir");
         record_in(tmp.path(), "vp", "w1", "good-stand").expect("record");
@@ -106,10 +105,10 @@ mod tests {
     fn clear_is_idempotent_and_scoped() {
         let tmp = tempfile::tempdir().expect("tempdir");
         record_in(tmp.path(), "vp", "a", "codex").expect("record");
-        record_in(tmp.path(), "vp", "b", "cursor").expect("record");
+        record_in(tmp.path(), "vp", "b", "grok").expect("record");
         clear_in(tmp.path(), "vp", "a").expect("clear");
         clear_in(tmp.path(), "vp", "a").expect("二重 clear は no-op");
         assert_eq!(last_in(tmp.path(), "vp", "a"), None);
-        assert_eq!(last_in(tmp.path(), "vp", "b").as_deref(), Some("cursor"));
+        assert_eq!(last_in(tmp.path(), "vp", "b").as_deref(), Some("grok"));
     }
 }

@@ -872,6 +872,65 @@ async fn handle_wire_channel(
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    // 供給 push 根治（session chip 凍結、2026-07-17）: claude UserPromptSubmit hook が
+    // cc_session pointer を動かした時の変化通知。SP は portless で hook は World しか
+    // 知らないため、ここで project 名 → path_key を lane_registry から逆引きし、当該 SP の
+    // control channel に `lane_session_changed` を forward する。SP が真値を re-enrich して
+    // `Diff::Update` を push → 本 daemon の "lanes/update" 受信 → registry replace +
+    // lanes snapshot 再 push、という既存経路に乗る（World は routing のみ、真実源は SP）。
+    // SP 不在 / 未接続は Err（hook 側は fail-open で握る）。
+    if method == "lane/session-changed" {
+        let project = payload
+            .get("project")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "lane/session-changed: 'project' (project 名) required".to_string())?;
+        let label = payload
+            .get("lane")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "lane/session-changed: 'lane' (lane label) required".to_string())?;
+        let lr = state
+            .lane_registry
+            .as_ref()
+            .ok_or_else(|| "lane registry not initialized".to_string())?;
+        let path_key = {
+            let registry = lr.read().await;
+            registry
+                .iter()
+                .find(|(_k, lanes)| lanes.iter().any(|l| l.address.project == project))
+                .map(|(k, _)| k.clone())
+        }
+        .ok_or_else(|| {
+            format!("lane/session-changed: project '{project}' の SP が registry に無い")
+        })?;
+        // hook env の VP_LANE は label（"conductor" / performer 名）。SP method は表示形を取る。
+        let display = if label == "conductor" || label == "lead" {
+            format!("{project}/conductor")
+        } else {
+            format!("{project}/performer/{label}")
+        };
+        // doc 40 §4: hook の会話報告（session_id + event）を SP へ透過する。無い場合は従来の
+        // 「変化通知のみ」（re-enrich + push）として振る舞う = 新旧 binary 混在に安全。
+        let mut fwd = serde_json::json!({ "lane": display });
+        if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
+            fwd["session_id"] = sid.into();
+        }
+        if let Some(ev) = payload.get("event").and_then(|v| v.as_str()) {
+            fwd["event"] = ev.into();
+        }
+        let resp = forward_to_sp_control(
+            &state.control_channels,
+            &path_key,
+            "lane_session_changed",
+            &fwd,
+        )
+        .await;
+        if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+            return Err(err.to_string());
+        }
+        return Ok(resp);
+    }
     if let Some(sub) = method.strip_prefix("wire/") {
         // flow ③: federation 送信。宛先 world が remote なら relay 経由で送る（ローカル store は使わない）。
         // payload = `{world: <宛先 world handle>, from, to, body, reply_to?}`。SSOT 原則で hub と話すのは

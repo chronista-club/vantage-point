@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::event::{EchoesEvent, PlanEntry};
+use super::event::{EchoesEvent, PlanEntry, SubagentRole};
 
 /// 1 engine プロセスの stream を通す翻訳器（プロセスごとに 1 個、可変状態を持つ）。
 #[derive(Debug, Default)]
@@ -115,11 +115,30 @@ impl EchoesTranslator {
             RawLine::StreamEvent { event } => Ingested::events(self.on_stream_event(event)),
             // user(tool_result) / assistant(全文スナップショット) はどちらも transcript の 1 行に
             // 対応する = ここまでが disk に載った合図。 assistant の中身は delta の累積なので捨てる。
-            RawLine::User { message } => Ingested {
+            // subagent 由来（parent 付き）は親から隔離する。 親の handler に流すと 3 つ壊れる:
+            //   1. tool_result が親の ToolCallUpdate になり、親の item 列に結び先が無く孤児化する
+            //   2. commit 境界を誤って立て、in-flight tail の切り出しがズレる（「応答中の永久居座り」
+            //      と同じ層の事故）
+            //   3. 本文が親の発話として描かれる（親が言っていないことを言ったことになる）
+            RawLine::User {
+                message,
+                parent_tool_use_id: Some(parent),
+            } => Ingested::events(subagent_user_events(&parent, message)),
+            RawLine::User {
+                message,
+                parent_tool_use_id: None,
+            } => Ingested {
                 events: on_user(message),
                 commits_transcript: true,
             },
-            RawLine::Assistant { message } => {
+            RawLine::Assistant {
+                message,
+                parent_tool_use_id: Some(parent),
+            } => Ingested::events(subagent_assistant_events(&parent, message)),
+            RawLine::Assistant {
+                message,
+                parent_tool_use_id: None,
+            } => {
                 // 本文は delta の累積なので描画しないが、`message.usage` だけ context ゲージの
                 // 分子として退避する（usage はこの行にしか載らない一次情報。cc-status が
                 // transcript から掘るのと同じ値）。assistant 行自体は transcript に 1 行 flush
@@ -279,6 +298,50 @@ impl EchoesTranslator {
 // user message（tool_result）の変換（状態不要 = 自由関数）
 // =============================================================================
 
+/// subagent の assistant スナップショットから発話を取り出す。
+///
+/// 親と違い delta が来ないので、このスナップショットが唯一の担い手（module doc の「本文は捨てる」
+/// は**親の行に限った話**）。`usage` も親の context ゲージではないので退避しない。
+fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<EchoesEvent> {
+    message
+        .content
+        .into_iter()
+        .filter_map(|block| {
+            let (role, text) = match block {
+                RawAssistantContent::Text { text } => (SubagentRole::Text, text),
+                RawAssistantContent::Thinking { thinking } => (SubagentRole::Thinking, thinking),
+                RawAssistantContent::Other => return None,
+            };
+            (!text.is_empty()).then(|| EchoesEvent::SubagentMessage {
+                parent_tool_use_id: parent.to_string(),
+                role,
+                text,
+            })
+        })
+        .collect()
+}
+
+/// subagent の user 行 = 与えられた指示。
+///
+/// ⚠️ ここに来る `tool_result` は **subagent 自身が回した tool** のもので、親の tool 列には
+/// 結び先が無い。 親の [`on_user`] に流すと孤児 `ToolCallUpdate` を撃つので、text 以外は捨てる。
+fn subagent_user_events(parent: &str, message: RawUserMessage) -> Vec<EchoesEvent> {
+    message
+        .content
+        .into_iter()
+        .filter_map(|block| match block {
+            RawUserContent::Text { text } if !text.is_empty() => {
+                Some(EchoesEvent::SubagentMessage {
+                    parent_tool_use_id: parent.to_string(),
+                    role: SubagentRole::Prompt,
+                    text,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn on_user(message: RawUserMessage) -> Vec<EchoesEvent> {
     message
         .content
@@ -293,7 +356,9 @@ fn on_user(message: RawUserMessage) -> Vec<EchoesEvent> {
                 content: tool_result_text(&content),
                 is_error,
             }),
-            RawUserContent::Other => None,
+            // 親の user 行に text block は来ない（実測: tool_result のみ）が、来ても捨てる。
+            // 従来 text は `Other` に吸われて捨てられていたので、挙動を変えないのが正。
+            RawUserContent::Text { .. } | RawUserContent::Other => None,
         })
         .collect()
 }
@@ -350,6 +415,9 @@ enum RawLine {
     },
     User {
         message: RawUserMessage,
+        /// 非 None = subagent 由来（`--forward-subagent-text` 有効時のみ現れる）。
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
     },
     /// assistant 全文スナップショット。 中身は delta の累積なので描画しないが 2 つの役割を持つ:
     /// (1) **transcript に 1 行 flush された合図**として commit 境界に使う（module doc 参照）、
@@ -358,6 +426,10 @@ enum RawLine {
     Assistant {
         #[serde(default)]
         message: RawAssistantMessage,
+        /// 非 None = subagent 由来。 この行が subagent 発話の**唯一の**担い手になる
+        /// （実測: parent 付きの `stream_event` は存在しない = delta で来ない）。
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
     },
     Result(RawResult),
     /// rate_limit_event / 未知 type を全て吸収。
@@ -371,6 +443,26 @@ enum RawLine {
 struct RawAssistantMessage {
     #[serde(default)]
     usage: Option<RawUsage>,
+    /// subagent 行でのみ読む（親の本文は delta 経由なのでこの field は使わない）。
+    #[serde(default)]
+    content: Vec<RawAssistantContent>,
+}
+
+/// assistant snapshot の content block。 subagent 発話の取り出しにのみ使う。
+/// thinking の本文 field は `text` ではなく `thinking`（実測）。
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RawAssistantContent {
+    Text {
+        #[serde(default)]
+        text: String,
+    },
+    Thinking {
+        #[serde(default)]
+        thinking: String,
+    },
+    #[serde(other)]
+    Other,
 }
 
 /// API usage block のうち context 計算に要る 3 field（現在の prompt 占有量）。
@@ -471,6 +563,11 @@ struct RawUserMessage {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RawUserContent {
+    /// subagent 行でのみ現れる（親の user 行は tool_result のみ）。
+    Text {
+        #[serde(default)]
+        text: String,
+    },
     ToolResult {
         tool_use_id: String,
         /// string または block 配列。
@@ -512,6 +609,88 @@ struct RawModelUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// subagent の assistant 行（実測形）から SubagentMessage を取り出す。
+    ///
+    /// 実測 2026-07-17 (claude 2.1.212): parent 付き行は top-level に `parent_tool_use_id` を持ち、
+    /// thinking の本文 field は `text` ではなく `thinking`。
+    #[test]
+    fn subagent_assistant_becomes_subagent_message() {
+        let mut t = EchoesTranslator::new();
+        let think = r#"{"type":"assistant","parent_tool_use_id":"toolu_1","subagent_type":"general-purpose","message":{"role":"assistant","content":[{"type":"thinking","thinking":"掛け算する","signature":"x"}]}}"#;
+        let text = r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"role":"assistant","content":[{"type":"text","text":"42"}]}}"#;
+        assert_eq!(
+            t.ingest(think).events,
+            vec![EchoesEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_1".into(),
+                role: SubagentRole::Thinking,
+                text: "掛け算する".into(),
+            }]
+        );
+        assert_eq!(
+            t.ingest(text).events,
+            vec![EchoesEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_1".into(),
+                role: SubagentRole::Text,
+                text: "42".into(),
+            }]
+        );
+    }
+
+    /// ★ subagent 行は commit 境界を立てない。
+    ///
+    /// 立ててしまうと「親の本文が disk に載った」と誤認し、host が in-flight tail を切る位置を
+    /// 誤る（= 「応答中の永久居座り」と同じ層の事故）。 親の行だけが transcript の 1 行に対応する。
+    #[test]
+    fn subagent_line_does_not_commit_transcript() {
+        let mut t = EchoesTranslator::new();
+        let sub = r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"role":"assistant","content":[{"type":"text","text":"42"}]}}"#;
+        assert!(!t.ingest(sub).commits_transcript);
+        // 親の assistant 行は従来どおり commit 境界を立てる（退行していない）。
+        let parent = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"本文"}]}}"#;
+        assert!(t.ingest(parent).commits_transcript);
+    }
+
+    /// subagent へ与えられた指示は Prompt として運ぶ（user 発話にはしない）。
+    #[test]
+    fn subagent_user_text_becomes_prompt() {
+        let mut t = EchoesTranslator::new();
+        let line = r#"{"type":"user","parent_tool_use_id":"toolu_1","task_description":"calc","message":{"role":"user","content":[{"type":"text","text":"6x7 は?"}]}}"#;
+        assert_eq!(
+            t.ingest(line).events,
+            vec![EchoesEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_1".into(),
+                role: SubagentRole::Prompt,
+                text: "6x7 は?".into(),
+            }]
+        );
+    }
+
+    /// ★ subagent 自身が回した tool の結果を、親の ToolCallUpdate にしない。
+    ///
+    /// 親の item 列には結び先が無いので、流すと孤児 update を撃つ（GUI が warning を出す経路）。
+    #[test]
+    fn subagent_tool_result_does_not_touch_parent_tools() {
+        let mut t = EchoesTranslator::new();
+        let line = r#"{"type":"user","parent_tool_use_id":"toolu_1","message":{"role":"user","content":[{"tool_use_id":"child-tool","type":"tool_result","content":"ok","is_error":false}]}}"#;
+        let got = t.ingest(line);
+        assert!(
+            got.events.is_empty(),
+            "子の tool_result は親へ流さない: {:?}",
+            got.events
+        );
+        assert!(!got.commits_transcript);
+    }
+
+    /// 親の user(tool_result) は従来どおり ToolCallUpdate になる（退行していない）。
+    #[test]
+    fn parent_user_tool_result_still_updates() {
+        let mut t = EchoesTranslator::new();
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-1","type":"tool_result","content":"ok","is_error":false}]}}"#;
+        let got = t.ingest(line);
+        assert_eq!(got.events.len(), 1);
+        assert!(got.commits_transcript);
+    }
 
     /// 実測の init 行から SessionInit を取り出せる。
     #[test]

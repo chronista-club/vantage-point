@@ -569,14 +569,18 @@ fn delegation_thread_markdown(delegations: &[serde_json::Value]) -> String {
 /// 会話を邪魔しないことが最優先。 TheWorld "wire" channel 直叩き (qualified address を自前導出
 /// するので SP proxy 不要 = 自 SP が落ちていても未読通知は出る)。 hook は会話を block しない
 /// よう各 call を 2s で bound する (`world_wire::call` の 40s outer とは別の短い実効上限)。
-/// cc_session ポインタを動かしてよい hook event か。
+/// hook event → 会話報告の契機（doc 40 §6 の wire 表現。None = 報告対象外の event）。
 ///
-/// **UserPromptSubmit のみ真** = 「user が実際に話しかけた session だけが継ぐべき会話」。
-/// 旧実装の SessionStart 記録は、resume 失敗 `||` fallback で立った fresh session
-/// （発話ゼロ・transcript 無し）までがポインタを上書きし、健在な旧会話への復帰経路を
-/// 自壊させた（F1 clobber / F2 幻ポインタ、解剖 memory `cc-session-pointer-self-destruction`）。
-fn should_record_cc_session(event_name: &str) -> bool {
-    event_name == "UserPromptSubmit"
+/// hook は**報告者**であり記録判断を持たない — root 解決と F1/F2 guard（resume 失敗
+/// `|| claude` fallback の幻 session が健在な旧会話を上書きしない、解剖 memory
+/// `cc-session-pointer-self-destruction`）は SP 側 `record_root_conversation` の 1 箇所。
+/// 旧 `should_record_cc_session`（UserPromptSubmit のみ記録 = #795 の鈍器）の後継。
+fn conversation_report_kind(event_name: &str) -> Option<&'static str> {
+    match event_name {
+        "SessionStart" => Some("issued"),
+        "UserPromptSubmit" => Some("spoken"),
+        _ => None,
+    }
 }
 
 async fn hook_check() -> Result<()> {
@@ -605,17 +609,42 @@ async fn hook_check() -> Result<()> {
     let project = std::env::var("VP_PROJECT").ok();
     let lane = std::env::var("VP_LANE").ok();
 
-    // R3-b改 (F1/F2 根治): session_id の記録契機は **UserPromptSubmit** — 「user が実際に
-    // 話しかけた session だけがポインタを動かす」不変条件 (should_record_cc_session の doc /
-    // 解剖 memory `cc-session-pointer-self-destruction`)。 wire 通知とは独立の lane 管理だが、
-    // 全 VP spawn session に注入済みの本 hook に相乗りする (プロセス追加ゼロ)。 失敗は無視 (fail-open)。
-    if should_record_cc_session(&event_name)
+    // doc 40 §4: hook は会話 id の**報告者** — (project, lane, session_id, 契機) を World 経由で
+    // SP へ送るだけ。root がどの session かの解決と記録判断（F1/F2 guard 込みの policy）は
+    // SP 側 `session_registry::record_root_conversation` の 1 箇所が持つ。旧実装の
+    // `cc_session::record(VP_LANE)` 直書きは root の session label に追従せず、root≥2 で
+    // 書き手/読み手のラベル乖離バグを起こした（doc 40 §1-1 の根治でここから file 書きを撤去）。
+    // 失敗は無視（fail-open — 毎 turn 再報告されるので次の発話で self-heal する、doc 40 §9）。
+    if let Some(report) = conversation_report_kind(&event_name)
         && let Some(sid) = parsed
             .as_ref()
             .and_then(|v| v.get("session_id").and_then(|s| s.as_str()))
         && let (Some(p), Some(l)) = (project.as_deref(), lane.as_deref())
     {
-        let _ = crate::lane::cc_session::record(p, l, sid);
+        // 送信前の no-op 判定（read-only load）: root の会話 id が既に同値なら送らない
+        // （毎ターンの無駄打ち回避 — 旧 `changed` 判定の後継。判定できない時は送って
+        // SP 側の no-op に任せる）。
+        let reg = crate::lane::session_registry::load(p, l, "echoes");
+        let root_conv = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == reg.root)
+            .and_then(|s| s.conversation.as_deref());
+        if root_conv != Some(sid) {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                crate::process::world_wire::call(
+                    "/api/lane/session-changed",
+                    serde_json::json!({
+                        "project": p,
+                        "lane": l,
+                        "session_id": sid,
+                        "event": report,
+                    }),
+                ),
+            )
+            .await;
+        }
     }
 
     let Some(agent) = wire_address_from_env(project.as_deref(), lane.as_deref()) else {
@@ -751,15 +780,16 @@ mod tests {
         cmd: WireCommands,
     }
 
-    /// cc_session の記録契機は UserPromptSubmit だけ（F1/F2 根治）。
-    /// SessionStart で記録すると resume 失敗 fallback の幻 session がポインタを上書きする —
-    /// この退行をここで塞ぐ（解剖 memory `cc-session-pointer-self-destruction`）。
+    /// 会話報告の契機写像（doc 40 §6）: SessionStart = issued（eager 表示）/
+    /// UserPromptSubmit = spoken（authoritative）/ その他は報告しない。
+    /// F1/F2 の記録判断は SP 側 policy に移った（hook 側は判断を持たない）が、
+    /// 「Stop 等の無関係 event で報告しない」ことはここで塞ぐ。
     #[test]
-    fn cc_session_records_only_on_user_prompt_submit() {
-        assert!(should_record_cc_session("UserPromptSubmit"));
-        assert!(!should_record_cc_session("SessionStart"));
-        assert!(!should_record_cc_session("Stop"));
-        assert!(!should_record_cc_session(""));
+    fn conversation_report_kind_maps_events_to_doc40_semantics() {
+        assert_eq!(conversation_report_kind("SessionStart"), Some("issued"));
+        assert_eq!(conversation_report_kind("UserPromptSubmit"), Some("spoken"));
+        assert_eq!(conversation_report_kind("Stop"), None);
+        assert_eq!(conversation_report_kind(""), None);
     }
 
     #[test]

@@ -181,6 +181,18 @@ impl EchoesAgentHost {
             .arg("--include-partial-messages")
             .arg("--verbose");
 
+        // subagent（Agent tool が回した子）の発話を stream に載せる（claude 2.1.211+）。
+        // 無いと Act II で Agent 行は「実行中…→✓」の黒箱になり、子が何を考え何をしたかが
+        // 一切見えない（VP は subagent を多用する開発フローなので損失が大きい）。
+        //
+        // 出てくる形（実測 2026-07-17、claude 2.1.212）:
+        //   - 行 top-level に `parent_tool_use_id` が付き、値は親の `Agent` tool_use の id と一致
+        //   - 担い手は **assistant スナップショット行のみ**（parent 付きの `stream_event` は 0 本 =
+        //     delta では来ない）→ 翻訳は EchoesTranslator 側で snapshot から取り出す
+        // 翻訳器が parent 付き行を親から隔離する前提の flag（孤児 ToolCallUpdate / 誤 commit 境界 /
+        // 親の発話への混入を防ぐ）。 translate.rs の RawLine 分岐と対で読むこと。
+        cmd.arg("--forward-subagent-text");
+
         // Act I（TUI）が bypassPermissions で全ツール素通しなのに Act II を揃える（doc 33 §9、
         // user 要件 2026-07-09「act I レベルにここも合わせよう」）。bypassPermissions で TUI と
         // 同じ体験にする（通常 tool は素通し）。
@@ -410,10 +422,20 @@ fn user_message_json(text: &str) -> String {
     .to_string()
 }
 
-/// SessionInit で観測した session id を cc_session に記録する（resume の SSOT）。
+/// SessionInit で観測した session id を session registry に記録する（doc 40 §4 — 会話 id の
+/// SSOT は registry）。`lane` は host config の session label（`conductor` / `conductor#2`）
+/// なので registry の (lane, key) へ逆引きして書く。headless spawn に `|| claude` fallback は
+/// 無い（doc 33 C2 pre-flight 済み）ため guard 不要の無条件 authoritative 書き込み。
 fn record_session(project: &str, lane: &str, session_id: &str) {
-    if let Err(e) = crate::lane::cc_session::record(project, lane, session_id) {
-        tracing::warn!("cc_session 記録失敗（project={project}, lane={lane}）: {e}");
+    let (lane_label, key) = crate::lane::session_registry::parse_session_label(lane);
+    if let Err(e) = crate::lane::session_registry::set_conversation(
+        project,
+        lane_label,
+        "echoes",
+        key,
+        Some(session_id),
+    ) {
+        tracing::warn!("会話 id の registry 記録失敗（project={project}, lane={lane}）: {e}");
     }
 }
 

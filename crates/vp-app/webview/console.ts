@@ -64,6 +64,17 @@ export type EchoesEvent =
   | { kind: 'thought_chunk'; text: string }
   | { kind: 'tool_call'; id: string; name: string; input: unknown }
   | { kind: 'tool_call_update'; tool_use_id: string; content: string; is_error?: boolean }
+  /**
+   * subagent（Agent tool が回した子）の発話。engine が --forward-subagent-text 付きの時だけ来る。
+   * parent_tool_use_id は親の tool_call.id と一致するので、GUI は該当 tool 行の中に入れ子で描く。
+   * ⚠️ delta ではなく「block 1 個ぶんの完成テキスト」（subagent は snapshot でしか流れてこない）。
+   */
+  | {
+      kind: 'subagent_message'
+      parent_tool_use_id: string
+      role: 'prompt' | 'thinking' | 'text'
+      text: string
+    }
   | { kind: 'plan'; entries: PlanEntry[] }
   /** context_tokens/window = Act I statusline 相当の context ゲージ（省略時 GUI は前値を保つ）。 */
   | {
@@ -105,6 +116,10 @@ export type EchoesSession = {
   /** chat host が現在生きているか（in-memory slot の有無）。 */
   live: boolean
   focused: boolean
+  /** doc 39: この session が lane の root（床に化身し mailbox を名乗る）か。
+   *  root タブは × を隠す（backend の「root は remove 不可」の UI 反映）。
+   *  旧 SP は送らない → undefined（後方互換は canCloseSession 側が吸収）。 */
+  root?: boolean
 }
 
 /** echoes_session_list の生 payload（Rust `handle_echoes_session_list` の返り値 mirror）。 */

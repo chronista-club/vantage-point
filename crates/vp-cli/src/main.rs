@@ -735,15 +735,22 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         }
         LaneCommands::Switch { name } => switch_lane_via_quic(&name),
         LaneCommands::LastSession { project, lane } => {
-            // R3-b: echoes task (spawn 時) から env 経由で呼ばれる主経路。
-            // 未記録 / env 不足は「出力なし exit 0」 — caller の `[ -n "$RESUME_ID" ]`
-            // 判定で従来 (--continue) に fallback させる。
+            // R3-b → doc 40: 会話 id の SSOT は session registry（root session の conversation）。
+            // 旧 cc_session store 直読みは漏斗化で更新されなくなったため registry 経由に切替
+            // （load 内の backfill bridge が旧 store も拾う）。未記録 / env 不足は
+            // 「出力なし exit 0」 — caller の `[ -n "$RESUME_ID" ]` 判定で fallback させる。
             let project = project.or_else(|| std::env::var("VP_PROJECT").ok());
             let lane = lane.or_else(|| std::env::var("VP_LANE").ok());
-            if let (Some(p), Some(l)) = (project, lane)
-                && let Some(id) = vantage_point::lane::cc_session::last(&p, &l)
-            {
-                println!("{id}");
+            if let (Some(p), Some(l)) = (project, lane) {
+                let reg = vantage_point::lane::session_registry::load(&p, &l, "echoes");
+                if let Some(id) = reg
+                    .sessions
+                    .iter()
+                    .find(|s| s.key == reg.root)
+                    .and_then(|s| s.conversation.as_deref())
+                {
+                    println!("{id}");
+                }
             }
             Ok(())
         }

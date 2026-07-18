@@ -90,6 +90,8 @@ pub trait LaneStandHost: Any + Send + Sync + 'static {
     /// `Arc<dyn LaneStandHost>::as_any()` 経由で `&dyn Any` を取得し `downcast_ref::<T>()` する。
     /// trait 自体に `Any` 制約があるが、 `&dyn LaneStandHost` から `&dyn Any` への自動 cast は
     /// Rust の trait object 制約により不可、 explicit な変換 method が必要 (`Any` 慣用句)。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: get_typed downcast 経路が未活性。
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -107,6 +109,9 @@ pub struct LaneStandRegistry {
     stands: HashMap<&'static str, Arc<dyn LaneStandHost>>,
 }
 
+// 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-ε Stand-host registry の skeleton API
+// （count/get/get_typed/remove は未活性、new/insert は LaneCapabilities::new で活性）。
+#[allow(dead_code)]
 impl LaneStandRegistry {
     /// 空の Registry を構築。
     pub fn new() -> Self {

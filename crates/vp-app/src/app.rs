@@ -163,6 +163,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "echoes:stands_fetch"
                 | "console:set_mode"
                 | "console:new_session"
+                // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
+                // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
+                | "console:switch_root"
                 | "console:set_model"
         )
     )
@@ -184,6 +187,8 @@ mod ipc_tag_tests {
             "echoes:session_focus",
             "echoes:session_remove",
             "echoes:stands_fetch",
+            // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
+            "console:switch_root",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/conductor"}}"#);
             assert!(
@@ -1507,6 +1512,41 @@ fn focused_session_stand(payload: &serde_json::Value) -> Option<String> {
 }
 
 #[cfg(test)]
+mod header_lane_fields_changed_tests {
+    use super::header_lane_fields_changed;
+    use crate::client::LaneInfo;
+
+    /// 最小 LaneInfo（全 field serde default）に engine_session_id だけ与える。
+    fn lane(engine_session_id: Option<&str>) -> LaneInfo {
+        serde_json::from_value(serde_json::json!({
+            "address": {"kind": "conductor", "project": "vp"},
+            "engine_session_id": engine_session_id,
+        }))
+        .expect("LaneInfo deserialize")
+    }
+
+    /// 供給 push 根治: session chip の供給源（engine_session_id）の変化と消灯を検知する。
+    #[test]
+    fn detects_engine_session_id_change() {
+        assert!(header_lane_fields_changed(
+            &lane(Some("old")),
+            &lane(Some("new"))
+        ));
+        assert!(header_lane_fields_changed(&lane(Some("old")), &lane(None)));
+    }
+
+    /// 変化なしは false（LanesLoaded は高頻度 loop event — setActivePane を無駄打ちしない）。
+    #[test]
+    fn unchanged_is_false() {
+        assert!(!header_lane_fields_changed(
+            &lane(Some("same")),
+            &lane(Some("same"))
+        ));
+        assert!(!header_lane_fields_changed(&lane(None), &lane(None)));
+    }
+}
+
+#[cfg(test)]
 mod focused_session_stand_tests {
     use super::focused_session_stand;
 
@@ -1530,10 +1570,10 @@ mod focused_session_stand_tests {
             "focused": 3,
             "sessions": [
                 {"key": 1, "stand": "echoes"},
-                {"key": 3, "stand": "cursor"},
+                {"key": 3, "stand": "grok"},
             ]
         });
-        assert_eq!(focused_session_stand(&payload).as_deref(), Some("cursor"));
+        assert_eq!(focused_session_stand(&payload).as_deref(), Some("grok"));
     }
 
     /// どちらも決まらなければ先頭 session の stand（安全側 = とにかく作れる）。
@@ -1646,6 +1686,30 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     if let Err(e) = main_view.evaluate_script(&script) {
         tracing::warn!("main setActivePane 失敗: {}", e);
     }
+}
+
+/// LanesLoaded の snapshot 差し替えで、active lane の Echoes ヘッダに載る field が変わったか。
+///
+/// `push_active_view` 再発行の gate（供給 push 根治）。LanesLoaded は loop event で頻発する
+/// ため毎回撃つと setActivePane が noise になる — header が実際に読む field（session chip /
+/// cwd / branch / lane 名 / stand / Act 初期値）に変化がある時だけ true を返す。
+fn header_lane_fields_changed(
+    prev: &crate::client::LaneInfo,
+    next: &crate::client::LaneInfo,
+) -> bool {
+    prev.engine_session_id != next.engine_session_id
+        || prev.cwd != next.cwd
+        || prev.stand != next.stand
+        || prev.name != next.name
+        || prev.console_mode != next.console_mode
+        || prev
+            .performer_status
+            .as_ref()
+            .and_then(|p| p.branch.as_deref())
+            != next
+                .performer_status
+                .as_ref()
+                .and_then(|p| p.branch.as_deref())
 }
 
 /// Lane address (Display 形 `"<project>/conductor"` 等) から所属 project path を逆引きする。
@@ -2518,11 +2582,7 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
-    // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
-    // - VP_TERMINAL_MODE=local: 明示 opt-out で in-proc portable-pty
-    // - それ以外 (default): TheWorld daemon の /ws/terminal 経由
-    //   localhost URL かつ daemon が down なら `vp` binary を auto-spawn して待つ。
-    //   spawn 失敗 or timeout なら local portable-pty にフォールバック (黙って落ちない)。
+    // Terminal backend: TheWorld daemon を auto-launch (down なら `vp` binary を spawn)。
     let proxy = event_loop.create_proxy();
     // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
     // Lane が出現するまで main area は empty placeholder ("No Lane selected") のみ。
@@ -3114,6 +3174,24 @@ pub fn run() -> anyhow::Result<()> {
                     // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
                     sidebar_state.lane_inboxes.remove(addr);
                 }
+                // 供給 push 根治（session chip 凍結、2026-07-17）: この snapshot で active lane の
+                // header 相当 field（engine_session_id 等）が変わったかを差し替え前に判定して
+                // おく。従来は cache 更新のみで setActivePane を撃ち直さず、lane を選び直すまで
+                // Echoes ヘッダが旧値で凍結した。LanesLoaded は高頻度 loop event なので、
+                // 変化時のみ（下の push）に絞る。
+                let active_header_refresh = sidebar_state
+                    .active_lane_address
+                    .as_deref()
+                    .and_then(|addr| {
+                        let prev = sidebar_state
+                            .lanes_by_project
+                            .get(&path_key)?
+                            .iter()
+                            .find(|l| l.address.key() == addr)?;
+                        let next = lanes.iter().find(|l| l.address.key() == addr)?;
+                        Some(header_lane_fields_changed(prev, next))
+                    })
+                    .unwrap_or(false);
                 sidebar_state.lanes_by_project.insert(process_path, lanes);
                 // 購読フェーズを "ready" に (= snapshot を 1 度でも受けた)。 stalled から復帰した場合も
                 // ここで解消。 absent(初期 loading) / stalled と区別して hintFor が lane 0本 を
@@ -3168,6 +3246,11 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 } else {
                     push_sidebar_state(&webview, &sidebar_state);
+                }
+                // 供給 push 根治: active lane の header field が変わった snapshot でだけ
+                // setActivePane を再発行（webview の EchoesHeader ctx 層が新値に追従する）。
+                if active_header_refresh {
+                    push_active_view(&webview, &sidebar_state);
                 }
                 // Act II: active chat lane を echoes topic に attach（→ demand → transcript replay）。
                 // LanesLoaded は lane snapshot 到着のたび走るので、 起動直後の session 復元
@@ -3586,11 +3669,12 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 }
             }
-            // 新セッション開始（✨ New ボタン）。doc 38 §4.2 で chat / tui に分岐する:
-            //  - chat lane: fresh restart を呼ばず「新 Draft session を作って focus」。旧会話はタブに
-            //    残る（タブモデルの自然形 = 前回状態キープの延長）。lane を素に戻す（全 session 破棄）
-            //    のは sidebar の従来経路が担う。
-            //  - tui lane: 従来どおり lane_restart(fresh=true)（cc_session 破棄 + 素の claude respawn）。
+            // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Act に出す」で分岐する:
+            //  - chat lane（Act II）: 「新 Draft session を作って focus」。旧会話はタブに残る
+            //    （タブモデルの自然形 = 前回状態キープの延長）。
+            //  - tui lane（Act I）: echoes_session_new_root = 新 session を作って root を向け、床を
+            //    素の engine で張り替える（非破壊 — 旧 root の会話はタブに残存）。旧 fresh restart
+            //    （全 session 破棄）は sidebar の Reset lane に退避した。
             Event::UserEvent(AppEvent::ConsoleNewSession { lane }) => {
                 // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
                 // active lane が変わり得るため resolve_active_project_path は使わない）。
@@ -3668,16 +3752,20 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 } else {
-                    // tui lane は従来どおり fresh restart（変更なし）。
+                    // tui lane（Act I）: doc 39 §4 — 新 session + root 張り替え + 床 bare respawn。
                     rt_handle.spawn(async move {
-                        let payload = serde_json::json!({ "address": &lane, "fresh": true });
-                        match world_process_request(port, &path, "lane_restart", payload).await {
+                        let payload = serde_json::json!({ "lane": &lane });
+                        match world_process_request(port, &path, "echoes_session_new_root", payload)
+                            .await
+                        {
                             Ok(_) => {
-                                tracing::info!("console:new_session ok（tui, fresh）: lane={lane}");
-                                // doc 38 Phase 2: fresh で registry は N=1（key 1 focused）に戻る。tab strip
-                                // 反映を兼ねて、先に一覧を取り直して focusedOf を authoritative(=1) に更新
-                                // してから replay_start を送る。逆順だと chatview の session filter が旧
-                                // focused のままで replay_start(session 既定 1) を落とし、会話が clear されない。
+                                tracing::info!(
+                                    "console:new_session ok（tui, new root）: lane={lane}"
+                                );
+                                // 新 root が focused になった registry を取り直して tab strip +
+                                // focusedOf を authoritative に更新してから replay_start を送る。
+                                // 逆順だと chatview の session filter が旧 focused のままで
+                                // replay_start を落とし、会話が clear されない（doc 38 Phase 2 の規律）。
                                 match world_process_request(
                                     port,
                                     &path,
@@ -3702,6 +3790,68 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 }
+            }
+            // doc 39 P3: Root 切替 picker — 既存 session へ root を向け替え（床 = Resume respawn）。
+            // 後続は new_root（ConsoleSessionRenewed = clear）と違い echoes_demand_start:
+            // 対象 session には既存の会話があるため、clear でなく transcript replay で追従させる
+            //（echoes_session_focus chain と同じ規律）。
+            Event::UserEvent(AppEvent::ConsoleSwitchRoot { lane, session }) => {
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!(
+                        "console:switch_root skip — lane の project 解決失敗 (lane={lane})"
+                    );
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                let port = crate::client::default_world_port();
+                rt_handle.spawn(async move {
+                    let payload = serde_json::json!({ "lane": &lane, "session": session });
+                    match world_process_request(port, &path, "echoes_session_switch_root", payload)
+                        .await
+                    {
+                        Ok(_) => {
+                            tracing::info!(
+                                "console:switch_root ok: lane={lane} session={session}"
+                            );
+                            // 切替後 registry を取り直して tab strip / picker を authoritative に
+                            // 更新してから replay を要求する（逆順だと session filter が旧 focused の
+                            // ままで replay を落とす — doc 38 Phase 2 の規律）。
+                            match world_process_request(
+                                port,
+                                &path,
+                                "echoes_session_list",
+                                serde_json::json!({ "lane": &lane }),
+                            )
+                            .await
+                            {
+                                Ok(payload) => {
+                                    let _ = proxy.send_event(AppEvent::EchoesSessionList {
+                                        lane: lane.clone(),
+                                        payload,
+                                    });
+                                }
+                                Err(e) => tracing::warn!(
+                                    "echoes_session_list（switch_root 後）失敗 (lane={lane}): {e}"
+                                ),
+                            }
+                            if let Err(e) = world_process_request(
+                                port,
+                                &path,
+                                "echoes_demand_start",
+                                serde_json::json!({ "lane": &lane }),
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "echoes_demand_start（switch_root 後）失敗 (lane={lane}): {e}"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("console:switch_root 失敗 (lane={lane} session={session}): {e}")
+                        }
+                    }
+                });
             }
             // fresh restart 成功 → ChatView の会話表示をクリアする。replay_start は foldInto が
             // 「会話 clear + header 保持」で畳む既存意味論（chatview.tsx）— 新 engine の

@@ -46,15 +46,6 @@ struct WorldProcessEntry {
     project_path: String,
 }
 
-/// Health API のレスポンス
-#[derive(Debug, serde::Deserialize)]
-struct HealthResponse {
-    pid: u32,
-    project_dir: String,
-    #[serde(default)]
-    terminal_token: Option<String>,
-}
-
 /// HTTP クライアントを生成（短タイムアウト）
 fn build_client(timeout_ms: u64) -> reqwest::Client {
     reqwest::Client::builder()

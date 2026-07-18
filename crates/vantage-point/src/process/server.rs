@@ -17,7 +17,6 @@ use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
 use super::routes::{health, update, world};
-use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
@@ -44,13 +43,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
-
-    // Create session manager with state restoration
-    let sessions = SessionManager::with_config(port, project_dir.clone());
-    tracing::info!(
-        "Session manager initialized with {} sessions",
-        sessions.session_count()
-    );
 
     // Initialize Capability system
     let capabilities = Arc::new(ProcessCapabilities::new(cap_config).await);
@@ -153,7 +145,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
 
     let state = Arc::new(AppState {
         hub,
-        sessions: Arc::new(RwLock::new(sessions)),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
         shutdown_token: shutdown_token.clone(),
@@ -313,8 +304,8 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
             for entry in &performers {
                 // per-lane stand 永続 (mem_1Cd4M7i5Enp3HHMLVYayRe): create 時に記録された stand で
                 // respawn する。記録不在 (旧 lane / 手動 `vp lane new`) は従来どおり default。
-                // これが無いと codex/cursor performer が SP 再起動で echoes に化ける
-                // (cursor-engine.md の既知制約の根治)。
+                // これが無いと非 echoes performer (codex/grok) が SP 再起動で echoes に化ける
+                // (stand 非永続の既知バグの根治)。
                 let stand = crate::lane::stand_store::last(&performers_project_id, &entry.name)
                     .unwrap_or_else(|| default_stand.clone());
                 let cmd = super::lane_cmd::LaneCmd::SpawnLane {
@@ -630,7 +621,6 @@ pub async fn run_world(
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
-        sessions: Arc::new(RwLock::new(SessionManager::new())),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),

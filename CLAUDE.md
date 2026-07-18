@@ -170,6 +170,7 @@ VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も�
 
 > **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / SP / GUI を三点セットで立て直す要があり、素の `~/.cargo/bin/vp-app` は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
 > ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / SP は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= SP の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
+> ⚠️ **swap 後は brew と現実が乖離する**: `app:swap` は brew cask 管理下の `.app` を dev build で上書きするが、Caskroom のメタデータは触らない。しかも swap した dev build は作業ツリーの version をそのまま名乗るため、**`brew upgrade --cask vantage-point` は version 一致で no-op になり dev build が居座り続ける**（Caskroom が持つのは実体コピーではなく `/Applications` への symlink なので brew は中身の差分を検知できない）。公式 release に戻すのは **`brew reinstall --cask vantage-point`**（`upgrade` では戻らない）。今どちらが入っているかは `spctl -a -t exec -vvv /Applications/VantagePoint.app` で判別できる（`Notarized Developer ID` = 公式 release / `Developer ID` = swap 済の dev build）。
 
 ## 設定・ポート
 

@@ -200,6 +200,10 @@ pub enum AppEvent {
     /// lane_restart(fresh=true) 成功後、WebView の会話表示をクリアする内部 event
     /// (ConsoleModeApplied と同じ async → main thread 橋渡し)。
     ConsoleSessionRenewed { lane: String },
+    /// doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）からの root 向け替え要求。
+    /// event loop が `echoes_session_switch_root` で SP に forward（床は対象 session の
+    /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
+    ConsoleSwitchRoot { lane: String, session: u64 },
     /// Act II モデル切替要求（ChatView の model picker）。 event loop が
     /// `console_set_model` で SP に forward。 `model` None = claude default に戻す。
     ConsoleSetModel { lane: String, model: Option<String> },
@@ -344,6 +348,18 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::ConsoleNewSession {
                     lane: lane.to_string(),
+                });
+            }
+        }
+        // doc 39 P3: Root 切替（ヘッダ chip dropdown）。 lane / session 必須。
+        Some("console:switch_root") => {
+            if let (Some(lane), Some(session)) = (
+                parsed.get("lane").and_then(|v| v.as_str()),
+                parsed.get("session").and_then(|v| v.as_u64()),
+            ) {
+                let _ = proxy.send_event(AppEvent::ConsoleSwitchRoot {
+                    lane: lane.to_string(),
+                    session,
                 });
             }
         }

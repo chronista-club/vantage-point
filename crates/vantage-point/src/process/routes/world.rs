@@ -511,7 +511,9 @@ pub struct RegisterRequest {
     pub port: u16,
     pub project_dir: String,
     pub pid: u32,
+    // serde parse field: SP/Swift agent 自己登録の wire 契約。read されないが deserialize 契約として保持。
     #[serde(default)]
+    #[allow(dead_code)]
     pub terminal_token: Option<String>,
 }
 

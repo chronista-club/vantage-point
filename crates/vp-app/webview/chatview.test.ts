@@ -7,6 +7,9 @@ import {
   canDequeuePending,
   classifyToolRun,
   toolGroupStatus,
+  formatToolInput,
+  formatToolResult,
+  clampToolDetail,
   chatCapableStands,
   canCloseSession,
   type StandOption,
@@ -81,7 +84,17 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
       { kind: 'tool_call', id: 'tu-1', name: 'Bash', input: { command: 'ls' } },
       { kind: 'tool_call_update', tool_use_id: 'tu-1', content: 'file.txt' },
     ])
-    expect(s.items).toEqual([{ kind: 'tool', id: 'tu-1', name: 'Bash', done: true, error: false }])
+    expect(s.items).toEqual([
+      {
+        kind: 'tool',
+        id: 'tu-1',
+        name: 'Bash',
+        done: true,
+        error: false,
+        input: { command: 'ls' },
+        result: 'file.txt',
+      },
+    ])
   })
 
   it('tool_call_update の is_error が error flag に載る', () => {
@@ -98,7 +111,14 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
       { kind: 'tool_call', id: 'tu-1', name: 'Read', input: {} },
       { kind: 'tool_call_update', tool_use_id: 'other', content: 'x' },
     ])
-    expect(s.items[0]).toEqual({ kind: 'tool', id: 'tu-1', name: 'Read', done: false, error: false })
+    expect(s.items[0]).toEqual({
+      kind: 'tool',
+      id: 'tu-1',
+      name: 'Read',
+      done: false,
+      error: false,
+      input: {},
+    })
   })
 
   it('plan は毎回 replace（累積しない）', () => {
@@ -294,7 +314,7 @@ describe('transcript replay — Act II replay-on-attach', () => {
     const s = fold(replay)
     expect(s.items).toEqual([
       { kind: 'user', text: '直して' },
-      { kind: 'tool', id: 't1', name: 'Edit', done: true, error: false },
+      { kind: 'tool', id: 't1', name: 'Edit', done: true, error: false, input: {}, result: 'ok' },
       { kind: 'assistant', text: '直しました' },
     ])
   })
@@ -438,7 +458,15 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
     ])
     foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' })
 
-    expect(s.items[1]).toEqual({ kind: 'tool', id: 't1', name: 'Edit', done: true, error: false })
+    expect(s.items[1]).toEqual({
+      kind: 'tool',
+      id: 't1',
+      name: 'Edit',
+      done: true,
+      error: false,
+      input: {},
+      result: 'ok',
+    })
   })
 
   it('孤児 tool_call_update は既存 item を壊さない（backend 不変条件の最終防衛線）', () => {
@@ -584,6 +612,182 @@ describe('toolGroupStatus — accordion header の集約 status（エンジン�
   })
 })
 
+describe('tool 詳細の保持 — accordion の個別展開の表示源（reducer 契約）', () => {
+  it('tool_call の input を捨てずに保持する（詳細を開くために要る）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: { command: 'ls -la', description: '一覧' } },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.input).toEqual({ command: 'ls -la', description: '一覧' })
+  })
+
+  it('tool_call_update の content を result として保持する', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: { command: 'ls' } },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'a.txt\nb.txt' },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.result).toBe('a.txt\nb.txt')
+  })
+
+  it('error の結果本文も保持する（失敗理由を個別に開いて読める）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: { command: 'nope' } },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'command not found', is_error: true },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.error).toBe(true)
+    expect(t.kind === 'tool' && t.result).toBe('command not found')
+  })
+
+  it('連続同名 tool でも各件が別々の input/result を持つ（group を開いて個別に掘れる）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'a', name: 'Bash', input: { command: 'one' } },
+      { kind: 'tool_call_update', tool_use_id: 'a', content: 'r1' },
+      { kind: 'tool_call', id: 'b', name: 'Bash', input: { command: 'two' } },
+      { kind: 'tool_call_update', tool_use_id: 'b', content: 'r2' },
+    ])
+    const tools = s.items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    expect(tools.map((t) => (t.kind === 'tool' ? t.result : null))).toEqual(['r1', 'r2'])
+    // group 集約（描画時）とは独立に、各件の詳細が残っている
+    expect(classifyToolRun(s.items, 0).role).toBe('head')
+    expect(classifyToolRun(s.items, 1)).toEqual({ role: 'member' })
+  })
+})
+
+describe('subagent_message — Agent の子の発話を親と取り違えない（--forward-subagent-text）', () => {
+  /** 親が Agent を呼び、子が thinking→text を返す最小の実 turn。 */
+  const withSubagent = (): EchoesEvent[] => [
+    { kind: 'message_chunk', text: '子に投げます' },
+    { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: { prompt: '6x7 は?', subagent_type: 'general-purpose' } },
+    { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'prompt', text: '6x7 は?' },
+    { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'thinking', text: '掛け算する' },
+    { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'text', text: '42' },
+    { kind: 'tool_call_update', tool_use_id: 'toolu_1', content: '42' },
+    { kind: 'message_chunk', text: '答えは 42 です' },
+  ]
+
+  it('subagent の発話は親 tool にぶら下がる（item は増えない）', () => {
+    const s = fold(withSubagent())
+    // assistant / tool の 2 種だけ。subagent 用の独立 item は生えない
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'tool', 'assistant'])
+    const t = s.items[1]
+    expect(t.kind === 'tool' && t.subagent).toEqual([
+      { role: 'prompt', text: '6x7 は?' },
+      { role: 'thinking', text: '掛け算する' },
+      { role: 'text', text: '42' },
+    ])
+  })
+
+  it('★ subagent の発話が親の吹き出しに混ざらない（親が言っていないことを言わせない）', () => {
+    const s = fold(withSubagent())
+    const assistants = s.items.filter((i) => i.kind === 'assistant')
+    const texts = assistants.map((a) => (a.kind === 'assistant' ? a.text : ''))
+    // 親の発話は 2 つとも自分の言葉だけ。子の "42" / "掛け算する" は入らない
+    expect(texts).toEqual(['子に投げます', '答えは 42 です'])
+    expect(texts.join('')).not.toContain('掛け算する')
+  })
+
+  it('★ subagent の prompt が user 発話として描かれない', () => {
+    const s = fold(withSubagent())
+    // 子への指示は user bubble を作らない（人間が打ったように見せない）
+    expect(s.items.some((i) => i.kind === 'user')).toBe(false)
+  })
+
+  it('連続する同 role は 1 節に畳む（thinking が細切れにならない）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: {} },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'thinking', text: 'まず' },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'thinking', text: 'つぎに' },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'text', text: '答え' },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.subagent).toEqual([
+      { role: 'thinking', text: 'まず\nつぎに' },
+      { role: 'text', text: '答え' },
+    ])
+  })
+
+  it('親 tool の無い subagent_message は既存 item を壊さない（孤児の最終防衛線）', () => {
+    const s = fold([
+      { kind: 'message_chunk', text: '本文' },
+      { kind: 'subagent_message', parent_tool_use_id: 'ghost', role: 'text', text: '迷子' },
+    ])
+    expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
+  })
+
+  it('並行した複数 Agent の発話が互いに混ざらない（parent id で分かれる）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'a', name: 'Agent', input: {} },
+      { kind: 'tool_call', id: 'b', name: 'Agent', input: {} },
+      { kind: 'subagent_message', parent_tool_use_id: 'b', role: 'text', text: 'B の答え' },
+      { kind: 'subagent_message', parent_tool_use_id: 'a', role: 'text', text: 'A の答え' },
+    ])
+    const tools = s.items.filter((i) => i.kind === 'tool')
+    expect(tools.map((t) => (t.kind === 'tool' ? t.subagent?.[0]?.text : null))).toEqual([
+      'A の答え',
+      'B の答え',
+    ])
+  })
+
+  it('subagent があれば tool は「詳細あり」扱いになる（caret が出る条件）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: {} }, // input 空 = それ単体では詳細なし
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'text', text: '42' },
+    ])
+    const t = s.items[0]
+    // input は {} で formatToolInput→null だが、subagent があるので開ける
+    expect(t.kind === 'tool' && formatToolInput(t.input)).toBeNull()
+    expect(t.kind === 'tool' && (t.subagent?.length ?? 0) > 0).toBe(true)
+  })
+})
+
+describe('formatToolInput / formatToolResult — 詳細の表示整形（純関数）', () => {
+  it('object は pretty JSON になる', () => {
+    expect(formatToolInput({ command: 'ls' })).toBe('{\n  "command": "ls"\n}')
+  })
+
+  it('string はそのまま通す', () => {
+    expect(formatToolInput('raw text')).toBe('raw text')
+  })
+
+  it('空 input（{} / [] / 空文字 / null / undefined）は詳細なし = null', () => {
+    // 「開いても空」を作らないための判定 — caret を出すかがこれで決まる
+    expect(formatToolInput({})).toBeNull()
+    expect(formatToolInput([])).toBeNull()
+    expect(formatToolInput('')).toBeNull()
+    expect(formatToolInput(null)).toBeNull()
+    expect(formatToolInput(undefined)).toBeNull()
+  })
+
+  it('JSON 化できない入力でも落ちない（循環参照）', () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    expect(() => formatToolInput(cyclic)).not.toThrow()
+  })
+
+  it('result は空文字/undefined が null、中身があればそのまま', () => {
+    expect(formatToolResult(undefined)).toBeNull()
+    expect(formatToolResult('')).toBeNull()
+    expect(formatToolResult('done')).toBe('done')
+  })
+})
+
+describe('clampToolDetail — 巨大 detail の honest clamp（黙って切らない）', () => {
+  it('上限以下はそのまま・省略 0', () => {
+    expect(clampToolDetail('short', 10)).toEqual({ text: 'short', omitted: 0 })
+  })
+
+  it('ちょうど上限もそのまま', () => {
+    expect(clampToolDetail('12345', 5)).toEqual({ text: '12345', omitted: 0 })
+  })
+
+  it('超過は切り詰め、省略した文字数を返す（UI が「…N 文字省略」を出せる）', () => {
+    expect(clampToolDetail('abcdefghij', 4)).toEqual({ text: 'abcd', omitted: 6 })
+  })
+})
+
 describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Phase 3）', () => {
   const stands = (xs: StandOption[]): StandOption[] => xs
 
@@ -592,12 +796,11 @@ describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Pha
     expect(out.map((s) => s.name)).toEqual(['echoes'])
   })
 
-  it('chat_capable === false は隠す（agy / shell の dead-end tab を出さない）', () => {
+  it('chat_capable === false は隠す（shell の dead-end tab を出さない）', () => {
     const out = chatCapableStands(
       stands([
         { name: 'echoes', chat_capable: true },
         { name: 'codex', chat_capable: true },
-        { name: 'agy', chat_capable: false },
         { name: 'shell', chat_capable: false },
       ]),
     )
@@ -623,14 +826,24 @@ describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Pha
   })
 })
 
-describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3）', () => {
+describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3 → doc 39）', () => {
   it('1 本以下では × を出さない（最後の 1 本は backend も Err で拒否）', () => {
     expect(canCloseSession(0)).toBe(false)
     expect(canCloseSession(1)).toBe(false)
   })
 
-  it('2 本以上で × を出す', () => {
+  it('2 本以上の非 root タブで × を出す', () => {
     expect(canCloseSession(2)).toBe(true)
     expect(canCloseSession(5)).toBe(true)
+    expect(canCloseSession(2, false)).toBe(true)
+  })
+
+  it('root タブは本数に依らず隠す（backend の「root は remove 不可」の UI 反映 — doc 39 §6）', () => {
+    expect(canCloseSession(2, true)).toBe(false)
+    expect(canCloseSession(5, true)).toBe(false)
+  })
+
+  it('旧 SP（root field なし = undefined）は従来挙動（本数のみ）に倒す', () => {
+    expect(canCloseSession(2, undefined)).toBe(true)
   })
 })

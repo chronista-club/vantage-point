@@ -1,11 +1,11 @@
-//! lane ごとの Codex thread id 永続化（`cc_session` / `cursor_session` の codex 版）
+//! lane ごとの Codex thread id 永続化（`cc_session` の codex 版）
 //!
 //! codex（OpenAI Codex CLI）の会話単位は **thread**（id は UUID）。
 //! - `codex` = 対話 TUI 起動 / `codex resume '<id>'` = TUI の指名 resume
 //! - `codex exec --json` = headless 1 turn（`thread.started` が thread_id を stream に載せる）
 //! - `codex exec resume '<id>' --json` = headless の指名 resume
 //!
-//! cursor と違い **id 先取り手段（create-chat 相当）が無い**ため、採番は常に
+//! **id 先取り手段（create-chat 相当）が無い**ため、採番は常に
 //! record-from-init（Act II turn の `thread.started` を [`crate::echoes::codex_host`] が
 //! 書き戻す）に依る。Act I（TUI 床）は同じ state file を読んで `codex resume '<id>'` で継ぐ
 //! （= Act I ⇄ II の会話共有、doc 37 §7）。`--last`（最新 picker）は claude `--continue` の

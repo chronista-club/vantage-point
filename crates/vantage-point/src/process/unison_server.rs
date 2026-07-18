@@ -22,9 +22,6 @@ use crate::protocol::{BoardItem, Content, ProcessMessage};
 /// TCP (HTTP) と UDP (QUIC) は OS レベルで独立 → 同一ポートで共存可能
 pub const QUIC_PORT_OFFSET: u16 = 0;
 
-/// recv_raw の最大フレームサイズ（64 KiB）
-const MAX_RAW_FRAME_SIZE: usize = 64 * 1024;
-
 /// UnwatchFile リクエストのペイロード
 #[derive(Debug, Serialize, Deserialize)]
 struct UnwatchFileRequest {
@@ -621,7 +618,7 @@ async fn handle_echoes_demand_start(
     // ここで eager に resume spawn する（doc 33 C1 の lazy「submit まで engine-less」からの転換 —
     // SP 再起動後も uplink 再接続 → demand 再発火でこの経路に入るため「前回状態キープ」が成立）。
     // ensure は冪等（既起動なら no-op）。失敗しても replay は続行し、engine は次 submit の
-    // self-heal で再試行される。agy / shell 等 Act II host を持たない session は skip
+    // self-heal で再試行される。shell / legacy stand 等 Act II host を持たない session は skip
     //（能力表 = EngineKind が SSOT。bail を warn で騒がせない）。
     if crate::echoes::EngineKind::from_stand(&resolved.stand)
         .is_some_and(crate::echoes::EngineKind::chat_capable)
@@ -637,15 +634,20 @@ async fn handle_echoes_demand_start(
 
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
-    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。cursor / codex /
-    // agy session は cc_session を持たないため必ずこの no_session path を通る。
+    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。codex / grok /
+    // opencode session は cc_session を持たないため必ずこの no_session path を通る。
     let Some(session_id) = crate::lane::cc_session::last(&addr.project, &label) else {
-        // transcript を持たない engine（cursor/codex）は、SP が pump tap で per-session に記録した
-        // replay log を replay 源にする（engine 非依存 replay log）。それ以外（claude で会話未開始 /
-        // agy 等）は log を読まず空 chat に収束させる。
+        // transcript を持たない engine（codex / grok / opencode）は、SP が pump tap で per-session に
+        // 記録した replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
+        // replay_tap と同じ Codex|Grok|OpenCode）。それ以外（claude で会話未開始 等）は log を読まず
+        // 空 chat に収束させる。
         let buffered = if matches!(
             crate::echoes::EngineKind::from_stand(&resolved.stand),
-            Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+            Some(
+                crate::echoes::EngineKind::Codex
+                    | crate::echoes::EngineKind::Grok
+                    | crate::echoes::EngineKind::OpenCode
+            )
         ) {
             crate::echoes::replay_log::load(&addr.project, &label)
         } else {
@@ -864,7 +866,7 @@ async fn handle_echoes_submit(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// transcript を持たない engine（cursor/codex）の session に、user 発話を replay log へ記録する。
+/// transcript を持たない engine（codex / grok / opencode）の session に、user 発話を replay log へ記録する。
 ///
 /// claude は transcript が SSOT なので記録しない（二重化回避）。engine 解決に失敗しても submit は
 /// 既に成立済みなので warn に留める（配送と replay 記録は独立系統）。tap（pump）が assistant 側を
@@ -885,10 +887,14 @@ async fn record_user_message_if_transcriptless(
     let Ok(resolved) = resolved else {
         return;
     };
-    // 記録対象は transcript を持たない engine のみ（tap と同じ Cursor|Codex 判定）。
+    // 記録対象は transcript を持たない engine のみ（tap と同じ Codex|Grok|OpenCode 判定）。
     if !matches!(
         crate::echoes::EngineKind::from_stand(&resolved.stand),
-        Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+        Some(
+            crate::echoes::EngineKind::Codex
+                | crate::echoes::EngineKind::Grok
+                | crate::echoes::EngineKind::OpenCode
+        )
     ) {
         return;
     }
@@ -922,8 +928,17 @@ async fn handle_echoes_nudge(
     if text.is_empty() {
         return Err("echoes_nudge: text 未指定".to_string());
     }
-    // wire delivery は lane 宛（session の概念を持たない）= 常に focused へ注入。
-    ensure_and_submit_chat(state, "echoes_nudge", lane, None, text).await?;
+    // doc 39 §3-1: wire 配送は常に **root**（lane の人格）に解決する。lane 宛の nudge を
+    // focused に注入すると「Act II で別タブを見ている」だけで配送先が変わる誤配送になる
+    // （N=1 では root=focused=1 で従来と同一挙動）。lane パース失敗は session=None のまま
+    // ensure_and_submit_chat 側の同じパースが報告する（エラー文言の一元化）。
+    let session = crate::process::lanes_state::LanePool::parse_address(lane).map(|addr| {
+        crate::lane::session_registry::root(
+            &addr.project,
+            crate::process::stand_spawner::lane_label(&addr),
+        )
+    });
+    ensure_and_submit_chat(state, "echoes_nudge", lane, session, text).await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
@@ -1095,7 +1110,7 @@ async fn handle_echoes_session_focus(
             .map_err(|e| format!("echoes_session_focus: {e}"))?;
         // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
         // eager に resume spawn する（切替後の初 submit を待たない）。mode=Tui（registry のみの
-        // 切替 = 正当）/ agy session（Act II host なし）等は debug で飲む — 切替自体は成功。
+        // 切替 = 正当）/ shell・legacy stand session（Act II host なし）等は debug で飲む — 切替自体は成功。
         if let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router) {
             tracing::debug!("echoes_session_focus: eager spawn せず（{e}）");
         }
@@ -1105,7 +1120,8 @@ async fn handle_echoes_session_focus(
 
 /// doc 38 Phase 3: session を取り除く（tab を閉じる）。`{lane, session}` →
 /// `{lane, session, focused}`（focused = 除去後の focus 先。GUI は list 再取得で追随）。
-/// 最後の 1 本は LanePool（registry）が拒否 — lane を素に戻すのは fresh restart の役目。
+/// root は registry が拒否（doc 39 §6 — 最後の 1 本の拒否を包含。GUI も root タブの × を
+/// 隠す = 多重防御）。lane を素に戻すのは Reset lane（fresh restart）の役目。
 async fn handle_echoes_session_remove(
     state: &AppState,
     payload: serde_json::Value,
@@ -1125,6 +1141,81 @@ async fn handle_echoes_session_remove(
         .remove_chat_session(&addr, session)
         .map_err(|e| format!("echoes_session_remove: {e}"))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
+}
+
+/// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向け、床を素の engine で
+/// 張り替える（= Root 切替「✨ 新 ID から」の shorthand。旧 root の会話はタブに残存 = 非破壊）。
+/// `{lane}` → `{lane, session}`。mode=Tui 限定（chat lane の New は echoes_session_create —
+/// 「今いる Act に出す」の分岐は vp-app が担う）。床の spawn は restart 経路
+///（retry / pump 付替 / Diff push 込み）を [`RespawnMode::Bare`] で再利用する — 第 2 の
+/// spawn 経路を作らない。
+///
+/// [`RespawnMode::Bare`]: crate::process::lanes_state::RespawnMode::Bare
+async fn handle_echoes_session_new_root(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_new_root: lane 未指定".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_new_root: lane パース失敗: {lane}"))?;
+    let key = state
+        .lane_pool
+        .write()
+        .await
+        .prepare_new_root_session(&addr)
+        .map_err(|e| format!("echoes_session_new_root: {e}"))?;
+    // registry は新 root へ切替済み（原子的な 1 save）。以降の床張り替えが失敗しても registry は
+    // 先行して整合 — 次の respawn / restart（Resume 経路）でも未発話の非 #1 root は
+    // build_stand_command が bare に倒すため（--continue 混入防止）、新 root の新品として
+    // 立ち直る。Err は spawn 失敗として caller に返す。
+    super::routes::lanes::restart_lane_orchestrated(
+        state,
+        addr,
+        crate::process::lanes_state::RespawnMode::Bare,
+    )
+    .await?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
+}
+
+/// doc 39 P3: Root 切替 picker — root を既存 session へ向け替え、床をその session の store で
+/// resume 張り替えする（`{lane, session}` → `{lane, session}`）。旧 root の会話はタブに残存 =
+/// 非破壊。mode=Tui 限定。new_root（Bare = 素の engine）との違いは respawn が
+/// [`RespawnMode::Resume`]（対象 session の会話に床が化身する）である点のみ。
+///
+/// [`RespawnMode::Resume`]: crate::process::lanes_state::RespawnMode::Resume
+async fn handle_echoes_session_switch_root(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("echoes_session_switch_root: lane 未指定".to_string());
+    }
+    let key = payload
+        .get("session")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "echoes_session_switch_root: session 未指定".to_string())?
+        as crate::lane::session_registry::SessionKey;
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("echoes_session_switch_root: lane パース失敗: {lane}"))?;
+    state
+        .lane_pool
+        .write()
+        .await
+        .prepare_switch_root_session(&addr, key)
+        .map_err(|e| format!("echoes_session_switch_root: {e}"))?;
+    // registry は切替済み（1 save 原子）。床張り替えが失敗しても registry は先行して整合 —
+    // 次の respawn / restart（Resume 経路）で同じ root に立ち直る。
+    super::routes::lanes::restart_lane_orchestrated(
+        state,
+        addr,
+        crate::process::lanes_state::RespawnMode::Resume,
+    )
+    .await?;
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
 /// ensure（mode ガード + lazy spawn）→ submit（+ engine 死亡時 1 回の self-heal retry）の共通核。
@@ -1417,14 +1508,78 @@ async fn handle_lane_restart(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or("lane_restart: address 必須")?;
-    // fresh default=false (旧 RestartLaneQuery の #[serde(default)] と一致)。
+    // fresh default=false (旧 RestartLaneQuery の #[serde(default)] と一致)。wire は bool のまま
+    // （fresh=true = Reset lane / false = 会話を継ぐ）— Bare は wire に出さない（New root 専用の
+    // 内部 mode で、echoes_session_new_root だけが使う）。
     let fresh = payload
         .get("fresh")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let mode = if fresh {
+        crate::process::lanes_state::RespawnMode::Reset
+    } else {
+        crate::process::lanes_state::RespawnMode::Resume
+    };
     let addr = crate::process::lanes_state::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
-    super::routes::lanes::restart_lane_orchestrated(state, addr, fresh).await
+    super::routes::lanes::restart_lane_orchestrated(state, addr, mode).await
+}
+
+/// 供給 push 根治（session chip 凍結、2026-07-17）: engine session pointer の変化通知。
+///
+/// pointer（cc_sessions 等の state file）の書き手は claude の UserPromptSubmit hook で、
+/// SP プロセスの外にいる — SP は file を「読みに行った時だけ」変化を知る（ask 経路は正しく、
+/// push 経路に変化イベントが存在しなかった）。hook → World "wire" channel
+/// (`lane/session-changed`) → 本 method で SP に届き、SP が focused session 規則で真値を
+/// re-enrich して `Diff::Update` を emit する（World は routing のみ、真実源は SP のまま）。
+async fn handle_lane_session_changed(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_session_changed: lane 必須".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("lane_session_changed: invalid lane address: {lane}"))?;
+    let Some(stand) = state
+        .lane_pool
+        .read()
+        .await
+        .get(&addr)
+        .map(|l| l.stand.clone())
+    else {
+        return Err(format!("lane_session_changed: lane が存在しません: {lane}"));
+    };
+    // doc 40 §4/§6: hook の会話報告（session_id + event）を root session に適用する —
+    // policy（root 解決 + F1/F2 guard）の唯一の実装点は record_root_conversation。
+    // session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」（従来互換、enrich だけ行う）。
+    if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
+        use crate::lane::session_registry::ConversationReport;
+        let report = match payload.get("event").and_then(|v| v.as_str()) {
+            Some("issued") => ConversationReport::Issued,
+            _ => ConversationReport::Spoken,
+        };
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        match crate::lane::session_registry::record_root_conversation(
+            &addr.project,
+            lane_label,
+            &stand,
+            sid,
+            report,
+        ) {
+            Ok(outcome) => {
+                tracing::info!(
+                    "conversation report: addr={addr} report={report:?} outcome={outcome:?}"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("conversation report 適用失敗: addr={addr} err={e}");
+            }
+        }
+    }
+    super::routes::lanes::emit_lane_update(state, &addr).await;
+    Ok(serde_json::json!({ "status": "ok", "lane": lane }))
 }
 
 /// lanes portless (doc 27 §3.4.5): Lane create。 旧 SP HTTP `POST /api/lanes` を process-proxy ask に
@@ -1493,6 +1648,10 @@ pub(crate) async fn dispatch_process_method(
         // Phase 2 の tab strip はこの 3 本 + 既存 RPC の additive session param だけで成立する。
         "echoes_session_list" => handle_echoes_session_list(state, payload).await,
         "echoes_session_create" => handle_echoes_session_create(state, payload).await,
+        // doc 39 §4: Act I の ✨ New（新 session + root 張り替え + 床 bare respawn、非破壊）
+        "echoes_session_new_root" => handle_echoes_session_new_root(state, payload).await,
+        // doc 39 P3: Root 切替 picker（既存 session へ root を向け替え + Resume 床張り替え）
+        "echoes_session_switch_root" => handle_echoes_session_switch_root(state, payload).await,
         "echoes_session_focus" => handle_echoes_session_focus(state, payload).await,
         // doc 38 Phase 3: tab を閉じる（session remove）。
         "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,
@@ -1514,6 +1673,8 @@ pub(crate) async fn dispatch_process_method(
         "lane_delete" => handle_lane_delete(state, payload).await,
         // F6③: Lane restart (旧 SP HTTP POST /api/lanes/restart を process-proxy ask に移管)
         "lane_restart" => handle_lane_restart(state, payload).await,
+        // 供給 push 根治: hook → World 経由の session pointer 変化通知（Diff::Update push の起点）
+        "lane_session_changed" => handle_lane_session_changed(state, payload).await,
         // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
         "stands_list" => handle_stands_list().await,
         // L0 finale: SP graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、
@@ -2331,6 +2492,7 @@ mod tests {
                 cwd: cwd.clone(),
                 performer_status: None,
                 cc_session_id: None,
+                sessions: None,
                 engine_session_id: None,
                 flow_state: None,
             });
@@ -2408,6 +2570,166 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "存在しない lane の restart は Err");
+    }
+
+    /// 供給 push 根治: 存在しない lane の session 変化通知は Err（黙って成功にしない）。
+    #[tokio::test]
+    async fn lane_session_changed_unknown_lane_errs() {
+        use super::dispatch_process_method;
+        use crate::process::state::build_test_app_state;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({ "lane": "vp/performer/ghost" }),
+        )
+        .await;
+        assert!(res.is_err(), "存在しない lane の session 変化通知は Err");
+    }
+
+    /// 供給 push 根治: `lane_session_changed` が `Diff::Update` を emit し、payload の
+    /// engine_session_id が state file の現値（focused session 規則の re-enrich）を映す。
+    /// これが World lane_registry / vp-app header を追従させる push の起点になる。
+    #[tokio::test]
+    async fn lane_session_changed_emits_enriched_lane_update() {
+        use super::dispatch_process_method;
+        use crate::process::lanes_state::{
+            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
+        };
+        use crate::process::state::build_test_app_state;
+
+        // refresh_engine_session_id は vp_state_dir() を読む — tempdir guard で隔離。
+        let state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
+            name: None,
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-17T00:00:00Z".to_string(),
+            pid: Some(1),
+            cwd: state_dir.path().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            flow_state: None,
+        });
+        // hook 相当の pointer 書込（記録契機 UserPromptSubmit の後の状態）。
+        crate::lane::cc_session::record("vp", "conductor", "sid-new").expect("record");
+
+        let mut rx = state.system_event_tx.subscribe();
+        let res = dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({ "lane": "vp/conductor" }),
+        )
+        .await
+        .expect("lane_session_changed ok");
+        assert_eq!(res["status"], "ok");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Diff::Update が 1s 以内に届く")
+            .expect("broadcast recv");
+        match event {
+            SystemEvent::Lane(Diff::Update { payload }) => {
+                assert_eq!(payload.address, LaneAddress::conductor("vp"));
+                assert_eq!(
+                    payload.engine_session_id.as_deref(),
+                    Some("sid-new"),
+                    "emit 時に state file の現値で re-enrich される"
+                );
+            }
+            other => panic!("expected Diff::Update, got: {other:?}"),
+        }
+    }
+
+    /// doc 40 §4/§6: hook の会話報告（session_id + event 付き payload）が root session の
+    /// registry に記録され（旧 store への直書きは発生しない = 漏斗一本化）、Diff::Update が
+    /// 新 id と sessions snapshot を運ぶ。eager（issued）でも fresh な root には即記録される
+    /// = 「発行時点で chip が点く」の配線検証。
+    #[tokio::test]
+    async fn lane_session_changed_records_conversation_report_into_registry() {
+        use super::dispatch_process_method;
+        use crate::process::lanes_state::{
+            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
+        };
+        use crate::process::state::build_test_app_state;
+
+        let state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
+            name: None,
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-18T00:00:00Z".to_string(),
+            pid: Some(1),
+            cwd: state_dir.path().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            flow_state: None,
+        });
+
+        let mut rx = state.system_event_tx.subscribe();
+        dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane": "vp/conductor",
+                "session_id": "sid-issued",
+                "event": "issued",
+            }),
+        )
+        .await
+        .expect("lane_session_changed ok");
+
+        // registry（SSOT）に記録され、旧 store には書かれない
+        let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
+        let root_conv = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == reg.root)
+            .and_then(|s| s.conversation.as_deref().map(str::to_string));
+        assert_eq!(
+            root_conv.as_deref(),
+            Some("sid-issued"),
+            "issued 報告が fresh root に即記録される（発行時点点灯の核）"
+        );
+        assert_eq!(
+            crate::lane::cc_session::last("vp", "conductor"),
+            None,
+            "旧 store への直書きは無い（書き手は registry に漏斗化）"
+        );
+
+        // Diff::Update が新 id + sessions snapshot を運ぶ
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Diff::Update が 1s 以内に届く")
+            .expect("broadcast recv");
+        match event {
+            SystemEvent::Lane(Diff::Update { payload }) => {
+                assert_eq!(payload.engine_session_id.as_deref(), Some("sid-issued"));
+                assert_eq!(
+                    payload.cc_session_id.as_deref(),
+                    Some("sid-issued"),
+                    "root=claude なので channel D 契約（cc_session_id）にも同値が載る"
+                );
+                let sessions = payload.sessions.expect("sessions snapshot が同梱される");
+                assert_eq!(sessions.root, 1);
+            }
+            other => panic!("expected Diff::Update, got: {other:?}"),
+        }
     }
 
     /// F6④: stands_list dispatch — process-proxy ask が `{stands:[...]}` 形で返る。
@@ -2543,6 +2865,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });

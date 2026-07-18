@@ -117,6 +117,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             cwd: entry.path,
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });
@@ -130,18 +131,11 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
             }
         }
-        // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)。
-        // 消費者 (echoes --resume / delivery_actor channel D) は conductor のみなので populate も
-        // 限定し、 QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
-        // policy 化 (設計メモ「fresh / resume が制限でなく policy になる」) の際に広げる。
-        let lane_label = crate::process::stand_spawner::lane_label(&lane.address);
-        if matches!(lane.kind, LaneKind::Conductor) {
-            lane.cc_session_id = crate::lane::cc_session::last(&lane.address.project, lane_label);
-        }
-        // doc 37: Echoes 共通ヘッダの session chip 用（全 lane、実装は LaneInfo 側メソッド —
-        // uplink の agent_card / LaneDiff push と共有）。上の cc_session と違い conductor 限定を
-        // **意図的に外している**（header は performer lane でも出す = 消費者が変わった）。
-        // QUIC 5s tick 経路で lane 数 × 1 file read の同期 I/O が増えるが、通常運用（〜十数 lane）
+        // doc 40 §5: chip（engine_session_id）/ channel D（cc_session_id）/ sessions を
+        // registry 1 read で enrich する（LaneInfo 側メソッドに一本化 — 旧「conductor 限定の
+        // cc_session 個別 enrich」は本 method に畳んだ。uplink の agent_card / LaneDiff push と
+        // 同一実装になり、供給点ごとの実装差（#683 地形）が消えた）。
+        // QUIC 5s tick 経路で lane 数 × registry 1 file read の同期 I/O。通常運用（〜十数 lane）
         // では無害。桁で増える運用になったら spawn_blocking 化 / active lane 限定 read が最適化余地
         //（moody 参考指摘 2026-07-15）。
         lane.refresh_engine_session_id();
@@ -280,6 +274,7 @@ pub(crate) async fn create_performer_orchestrated(
             cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
             performer_status: None,
             cc_session_id: None,
+            sessions: None,
             engine_session_id: None,
             flow_state: None,
         });
@@ -382,8 +377,8 @@ pub(crate) async fn create_performer_orchestrated(
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の lane clone と同じ pattern。
     // tmux decoupling PR2: 床 (login shell) + claude 注入の Rust-native spawn (design §13)。
-    // build_stand_command も closure 内で呼ぶ: cursor stand は chatId 未採番時に create-chat を
-    // blocking exec する（最大 10s）ため、 async worker 上では実行しない（lane_spawn_actor と同形）。
+    // build_stand_command も closure 内で呼ぶ（state file 直読みの同期 I/O を async worker から
+    // 外す。PtySlot::spawn 自体が openpty + syscall でブロッキングなので同形）。
     let stand_for_spawn = stand.clone();
     let addr_for_spawn = addr.clone();
     let cwd_for_spawn = cwd.clone();
@@ -481,6 +476,7 @@ pub(crate) async fn create_performer_orchestrated(
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
         cc_session_id: None,
+        sessions: None,
         engine_session_id: None,
         flow_state: None,
     };
@@ -702,6 +698,34 @@ pub async fn delete_lane_orchestrated(
 const RESTART_MAX_ATTEMPTS: u32 = 3;
 const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 attempt 1→2: 500ms
 
+/// lane の現況を `SystemEvent::Lane(Diff::Update)` として World へ push する。
+///
+/// 供給 push 根治（session chip 凍結、2026-07-17 解剖）: `Diff::Update` は従来、受信側
+/// （uplink / World registry / vp-app）だけ実装されて **emitter が repo に存在しなかった**。
+/// そのため restart や session pointer の変化が World lane_registry に届かず、vp-app の
+/// header（session chip 等）が SP 登録時の enrich 値で凍結していた。
+/// lane を in-place mutate した後（restart 等）と `lane_session_changed`（hook 通知）から呼ぶ。
+///
+/// engine_session_id は focused session 規則（`refresh_engine_session_id`）でここで確定させる
+/// （uplink 側 enrich は同じ lazy read の冪等な保険）。lane 不在（削除 race）と購読者ゼロ
+/// （boot 直後）は正常系なので no-op / warn に留める。
+pub(crate) async fn emit_lane_update(state: &Arc<AppState>, addr: &LaneAddress) {
+    let Some(mut info) = state.lane_pool.read().await.get(addr).cloned() else {
+        return;
+    };
+    info.refresh_engine_session_id();
+    if let Err(e) = state
+        .system_event_tx
+        .send(SystemEvent::Lane(Diff::Update { payload: info }))
+    {
+        tracing::warn!(
+            "SystemEvent::Lane(Diff::Update) broadcast failed: addr={} err={}",
+            addr,
+            e
+        );
+    }
+}
+
 /// VP-131 / F6③ (doc 27 §3.4.5/§6): Lane restart の透過 retry orchestration を関数化
 /// (`delete_lane_orchestrated` と対称)。 旧 `restart_handler` (HTTP) の retry loop を移植し、
 /// process-proxy ask `lane_restart` が呼ぶ core logic に。 SP route + handler は撤去。
@@ -716,7 +740,7 @@ const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 atte
 pub async fn restart_lane_orchestrated(
     state: &Arc<AppState>,
     addr: LaneAddress,
-    fresh: bool,
+    mode: crate::process::lanes_state::RespawnMode,
 ) -> Result<serde_json::Value, String> {
     // VP-131: 透過 retry with exponential backoff。 各 attempt 間で write lock を release して
     // 他 handler を blocking しない設計、 tokio::time::sleep で async wait。
@@ -724,7 +748,7 @@ pub async fn restart_lane_orchestrated(
     for attempt in 0..RESTART_MAX_ATTEMPTS {
         let result = {
             let mut pool = state.lane_pool.write().await;
-            pool.restart_lane(&addr, fresh)
+            pool.restart_lane(&addr, mode)
         };
 
         match result {
@@ -775,6 +799,11 @@ pub async fn restart_lane_orchestrated(
                     pid,
                     attempt + 1
                 );
+                // 供給 push 根治: restart は pid / engine_session_id（fresh は pointer 破棄）を
+                // 変える in-place mutation なのに従来 Diff を emit しておらず、World registry が
+                // 凍結していた。fresh 直後は enrich=None が届いて chip が消灯し、初回発話の
+                // hook 通知（lane_session_changed）が新 id を灯す、という一連の流れの起点。
+                emit_lane_update(state, &addr).await;
                 return Ok(serde_json::json!({
                     "restarted": addr.to_string(),
                     "pid": pid,
@@ -992,6 +1021,7 @@ mod core_tests {
                 cwd: String::new(),
                 performer_status: None,
                 cc_session_id: None,
+                sessions: None,
                 engine_session_id: None,
                 flow_state: None,
             });

@@ -233,10 +233,25 @@ export function clearActiveBoard(): void {
 // Rust 注入口
 // ============================================================================
 
+/** bundle load 時刻。 これより前に生まれた item は「既読 backlog」扱い。 */
+const BOOT_TS = Date.now()
+
+/**
+ * board 更新に「webview 起動後に生まれた未知 item」= live 新着が含まれるか。
+ * retained replay（subscribe 直後の再配信）も daemon 再起動後の SP re-seed も、
+ * 中身は既存 item（createdAt が BOOT_TS より古い）の再配信なのでここで false になる —
+ * board 化(#771)で失われた旧 show / pp:state:loaded の live/replay 区別の再導入。
+ * createdAt が parse 不能(NaN)な item は fresh 扱いしない（board / badge には載るので
+ * 静かな側に倒す）。
+ */
+function hasFreshArrival(items: CanvasItem[], prevIds: Set<string>): boolean {
+  return items.some((i) => !prevIds.has(i.id) && Date.parse(i.createdAt) >= BOOT_TS)
+}
+
 function applyBoardUpdated(msg: BoardUpdatedMessage): void {
   const laneKey = msg.lane ?? 'conductor'
   const prev = msg.scope === 'proj' ? canvasState.proj : canvasState.laneBoards[laneKey]
-  const prevLen = prev?.items.length ?? 0
+  const prevIds = new Set((prev?.items ?? []).map((i) => i.id))
   const board: Board = {
     items: Array.isArray(msg.items) ? msg.items : [],
     cursor: msg.cursor ?? null,
@@ -246,10 +261,11 @@ function applyBoardUpdated(msg: BoardUpdatedMessage): void {
   } else {
     canvasState.laneBoards[laneKey] = board
   }
-  // 表示中の board が更新されたときだけ main を再描画。 item が増えたら PP を軽く開く。
+  // 表示中の board が更新されたときだけ main を再描画。 live 新着のときだけ PP を軽く開く
+  // （起動時の retained replay で毎回 PP が開いてしまう regression の根治）。
   if (isActiveView(msg.scope, msg.lane)) {
     renderCurrentMain()
-    if (board.items.length > prevLen) {
+    if (hasFreshArrival(board.items, prevIds)) {
       maybeAutoOpenPP()
     }
   }

@@ -124,22 +124,23 @@ export function LaneRow(props: {
 						address: addr(),
 					}),
 			});
-			// conductor のみ "New Conductor Session" (fresh=true): resume/continue を回避して
-			// 素の claude を起動 = /exit → 再 claude の手間を 1 click に畳む。 performer の
-			// restart は echoes 側が既に fresh 起動なので、 この項目は conductor 限定。
-			if (!performer) {
-				items.push({
-					label: "New Conductor Session",
-					icon: "ph:plus",
-					onSelect: () =>
-						sendIpc({
-							t: "lane:restart",
-							path: props.projectPath,
-							address: addr(),
-							fresh: true,
-						}),
-				});
-			}
+			// doc 39 §1: Reset Lane (fresh=true) — 全 session store + registry 破棄の破壊的動詞。
+			// 旧 "New Conductor Session"。日常の「新しい会話を始める」はヘッダの ✨ New（非破壊 =
+			// Act I は root 張り替え / Act II は新 Draft タブ）に移り、こちらは「lane を素に戻す」
+			// 最終手段として sidebar の奥 + 2-click 確認に退避した。
+			items.push({
+				label: "Reset Lane",
+				icon: "ph:trash",
+				danger: true,
+				confirm: { label: "もう一度クリックで全会話破棄", icon: "ph:check" },
+				onSelect: () =>
+					sendIpc({
+						t: "lane:restart",
+						path: props.projectPath,
+						address: addr(),
+						fresh: true,
+					}),
+			});
 		} else {
 			// Dead Lane (pid:null): 明示 respawn。 左 click の on-demand respawn と同じ lane:restart を
 			// menu からも撃てるようにする (会話を継ぐ = fresh 無し)。

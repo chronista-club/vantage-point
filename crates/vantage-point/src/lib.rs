@@ -3,9 +3,6 @@
 //! CLI バイナリ (`vp`) や外部クレートから利用される
 //! Process サーバー、MCP、Daemon 等のコアロジックを提供する。
 
-// 開発中のスキャフォールドコードが多いため一時的に抑制
-#![allow(dead_code)]
-
 pub mod agent;
 pub mod agui;
 #[cfg(feature = "midi")]
