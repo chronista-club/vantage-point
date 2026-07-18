@@ -22,9 +22,6 @@ use crate::protocol::{BoardItem, Content, ProcessMessage};
 /// TCP (HTTP) と UDP (QUIC) は OS レベルで独立 → 同一ポートで共存可能
 pub const QUIC_PORT_OFFSET: u16 = 0;
 
-/// recv_raw の最大フレームサイズ（64 KiB）
-const MAX_RAW_FRAME_SIZE: usize = 64 * 1024;
-
 /// UnwatchFile リクエストのペイロード
 #[derive(Debug, Serialize, Deserialize)]
 struct UnwatchFileRequest {

@@ -655,6 +655,8 @@ impl LanePool {
         self.lanes.remove(addr)
     }
 
+    // 要確認（audit 2026-07-18、先行実装の可能性）: LanePool の debug/metrics helper。
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.lanes.len()
     }
@@ -890,6 +892,8 @@ impl LanePool {
     /// memory rule (mem_1CaTpCQH8iLJ2PasRcPjHv): Lane = Session Process。
     /// Phase 2 で vp-app が WS で attach する際、 既存 PtySlot に subscribe して
     /// 同じ PTY を複数 client が共有できる (broadcast channel ベース)。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase 2 WS attach 用の先行 API。
+    #[allow(dead_code)]
     pub fn subscribe_output(
         &self,
         addr: &LaneAddress,

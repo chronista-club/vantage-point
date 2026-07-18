@@ -261,146 +261,6 @@ impl VantageMcp {
         }
     }
 
-    /// Process に HTTP POST でメッセージを送信
-    ///
-    /// `endpoint` は `/api/show` 等の API パス。
-    /// `body` は JSON シリアライズ可能なペイロード。
-    ///
-    /// 接続失敗時は Process ポートを再解決してリトライする（lazy reconnect）。
-    async fn http_post(
-        &self,
-        endpoint: &str,
-        body: &impl Serialize,
-    ) -> Result<serde_json::Value, McpError> {
-        use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
-
-        let tid = new_trace_id();
-        let start = std::time::Instant::now();
-        let url = format!("{}{}", self.process_url.lock().await, endpoint);
-
-        write_trace(
-            &TraceEntry::new("mcp", &tid, "request", "INFO", format!("POST {}", endpoint))
-                .with_data(serde_json::to_value(body).unwrap_or_default()),
-        );
-
-        let resp = match self
-            .client
-            .post(&url)
-            .json(body)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) if e.is_connect() => {
-                // 接続失敗 → ポートを再解決してリトライ
-                let new_url = self.try_reconnect(endpoint).await;
-                if let Some(retry_url) = new_url {
-                    write_trace(&TraceEntry::new(
-                        "mcp",
-                        &tid,
-                        "reconnect",
-                        "INFO",
-                        format!("Process 再検出: {}", retry_url),
-                    ));
-                    self.client
-                        .post(&retry_url)
-                        .json(body)
-                        .timeout(Duration::from_secs(10))
-                        .send()
-                        .await
-                        .map_err(|e2| {
-                            McpError::internal_error(
-                                format!("Process 通信失敗 ({}): {}. Is vp running?", endpoint, e2),
-                                None,
-                            )
-                        })?
-                } else if let Some(auto_url) = self.auto_start_process(endpoint).await {
-                    // running.json にも見つからない → Process を自動起動
-                    write_trace(&TraceEntry::new(
-                        "mcp",
-                        &tid,
-                        "auto_start",
-                        "INFO",
-                        format!("Process 自動起動後リトライ: {}", auto_url),
-                    ));
-                    self.client
-                        .post(&auto_url)
-                        .json(body)
-                        .timeout(Duration::from_secs(10))
-                        .send()
-                        .await
-                        .map_err(|e2| {
-                            McpError::internal_error(
-                                format!("Process 通信失敗 ({}): {}. Process auto-start succeeded but request failed.", endpoint, e2),
-                                None,
-                            )
-                        })?
-                } else {
-                    write_trace(&TraceEntry::new(
-                        "mcp",
-                        &tid,
-                        "error",
-                        "ERROR",
-                        format!("POST {} 失敗（自動起動も失敗）: {}", endpoint, e),
-                    ));
-                    return Err(McpError::internal_error(
-                        format!(
-                            "Process 通信失敗 ({}): {}. Auto-start failed. Run `vp sp start` manually.",
-                            endpoint, e
-                        ),
-                        None,
-                    ));
-                }
-            }
-            Err(e) => {
-                write_trace(&TraceEntry::new(
-                    "mcp",
-                    &tid,
-                    "error",
-                    "ERROR",
-                    format!("POST {} 失敗: {}", endpoint, e),
-                ));
-                return Err(McpError::internal_error(
-                    format!("Process 通信失敗 ({}): {}. Is vp running?", endpoint, e),
-                    None,
-                ));
-            }
-        };
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            write_trace(&TraceEntry::new(
-                "mcp",
-                &tid,
-                "error",
-                "ERROR",
-                format!("POST {} HTTP {}", endpoint, status),
-            ));
-            return Err(McpError::internal_error(
-                format!("Process returned HTTP {}: {}", status, endpoint),
-                None,
-            ));
-        }
-
-        let json: serde_json::Value = resp.json().await.map_err(|e| {
-            McpError::internal_error(format!("レスポンスのパースに失敗: {}", e), None)
-        })?;
-
-        write_trace(
-            &TraceEntry::new(
-                "mcp",
-                &tid,
-                "response",
-                "INFO",
-                format!("POST {} OK", endpoint),
-            )
-            .with_elapsed(start.elapsed().as_millis() as u64),
-        );
-
-        Ok(json)
-    }
-
     /// Unison QUIC チャネルを取得（lazy 接続）
     ///
     /// チャネルが未接続または切断済みの場合、新規接続して返す。
@@ -419,7 +279,7 @@ impl VantageMcp {
         // L0 SP-portless: SP 直結 (process_port) ではなく World :32000 の "process-proxy"
         // channel に繋ぐ。 World が project_path から SP の "control" channel を逆引きして
         // process method を forward する (reverse-routing)。 World は常駐 daemon で port は
-        // 固定なので、 旧来の stale-port self-heal (rediscover_process_port) は不要。
+        // 固定なので、 旧来の stale-port self-heal は不要。
         let client = connect_quic(&quic_addr(crate::cli::world_port())).await?;
         // unison 内部の request timeout は default 30s。 outer timeout (wire_recv 等で
         // server_timeout + buffer = 最大 35s) より長く取らないと unison 側が先に発火するので
@@ -594,121 +454,8 @@ impl VantageMcp {
         Ok(resp)
     }
 
-    /// discovery で Process port を引き直し、 startup 時の値と違えば `process_port` /
-    /// `process_url` を更新して新 port を返す。 変わらなければ `None`。
-    ///
-    /// startup 時の [`resolve_process_port`] は discovery 一時障害 / SP 未起動の
-    /// タイミングだと 33000 fallback を掴む。 接続失敗時にこれを呼んで self-heal する。
-    /// 注: `process_channel` は touch しない — channel lock を保持する
-    /// [`Self::get_quic_channel`] からも呼ばれるため (deadlock 回避)。 channel の
-    /// 張り直しは呼び出し側の責務。
-    async fn rediscover_process_port(&self) -> Option<u16> {
-        let info = crate::discovery::find_for_cwd().await?;
-        let mut port_guard = self.process_port.lock().await;
-        if *port_guard == info.port {
-            return None;
-        }
-        *port_guard = info.port;
-        *self.process_url.lock().await = format!("http://[::1]:{}", info.port);
-        Some(info.port)
-    }
-
-    /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す。
-    ///
-    /// HTTP 経路の接続失敗時に呼ばれる。 port 解決は [`Self::rediscover_process_port`]
-    /// に集約。 port が変わった時のみ QUIC チャネルもリセットしてリトライ URL を返す。
-    async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
-        let new_port = self.rediscover_process_port().await?;
-        // ポートが変わったので QUIC チャネルもリセット
-        *self.process_channel.lock().await = None;
-        Some(format!("http://[::1]:{}{}", new_port, endpoint))
-    }
-
     // tmux decoupling PR1-2: `resolve_pane`（label/pane_id → tmux pane 解決 helper）は退役。
     // lane の宛先解決は lane address 直（`lane_nudge` / `lane_capture`）に一本化。
-
-    /// Process が見つからない場合に自動起動する
-    ///
-    /// `vp sp start` をバックグラウンドで spawn し、
-    /// health check ポーリングで起動完了を待つ。
-    /// 成功したら `process_url` を更新し、新しい URL を返す。
-    async fn auto_start_process(&self, endpoint: &str) -> Option<String> {
-        use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
-
-        let tid = new_trace_id();
-        let cwd = std::env::current_dir().ok()?;
-        let cwd_str = cwd.display().to_string();
-
-        write_trace(&TraceEntry::new(
-            "mcp",
-            &tid,
-            "auto_start",
-            "INFO",
-            format!("Process 自動起動: project_dir={}", cwd_str),
-        ));
-
-        // vp sp start をデタッチ実行
-        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
-        let spawn_result = std::process::Command::new(&vp_bin)
-            .args(["sp", "start", "-C", &cwd_str])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-
-        if let Err(e) = spawn_result {
-            write_trace(&TraceEntry::new(
-                "mcp",
-                &tid,
-                "auto_start",
-                "ERROR",
-                format!("vp sp start spawn 失敗: {}", e),
-            ));
-            return None;
-        }
-
-        // running.json からポートを取得し、health check で起動完了を確認
-        // 最大 5 秒（200ms × 25回）
-        let poll_interval = Duration::from_millis(200);
-        let max_attempts = 25;
-
-        for _ in 0..max_attempts {
-            tokio::time::sleep(poll_interval).await;
-
-            // L0 finale: 稼働中 SP を World registry から検索 (find_for_cwd = query_world)。
-            // SP の readiness = registry 登録済 (= Some) で確定。 旧 SP `/api/health` probe は
-            // HTTP listener 撤去で不可、 QUIC 自己登録自体が起動完了の signal。
-            let process_info = match crate::discovery::find_for_cwd().await {
-                Some(info) => info,
-                None => continue,
-            };
-
-            // 起動完了 — process_url / process_port を更新、QUIC チャネルもリセット
-            let new_base = format!("http://[::1]:{}", process_info.port);
-            *self.process_url.lock().await = new_base.clone();
-            *self.process_port.lock().await = process_info.port;
-            *self.process_channel.lock().await = None;
-
-            write_trace(&TraceEntry::new(
-                "mcp",
-                &tid,
-                "auto_start",
-                "INFO",
-                format!("Process 自動起動成功: port={}", process_info.port),
-            ));
-            return Some(format!("{}{}", new_base, endpoint));
-        }
-
-        write_trace(&TraceEntry::new(
-            "mcp",
-            &tid,
-            "auto_start",
-            "ERROR",
-            "Process 自動起動タイムアウト（5秒）".to_string(),
-        ));
-
-        None
-    }
 
     /// Process に QUIC で ProcessMessage を送信（show/clear/toggle_pane/close_pane）
     async fn process_call(
@@ -1026,10 +773,8 @@ fn performer_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -
 /// Process ポートを解決（MCP 通信先の決定）
 ///
 /// VP-165 (doc 17 決定A): **discovery（= TheWorld、reconciliation の真実源）で live port を
-/// 引くのを最優先**にする。`VP_PROCESS_PORT` env は tmux セッション作成時の snapshot で、
-/// port reshuffle（config の project リスト変更）に追従しない → stale を踏むと別 project の
-/// SP に msg を投げ、その SP の `local_project` で `from` が汚染される（VP-165 dogfood 症状 (1)）。
-/// env は discovery 一時障害時の fallback に格下げ。
+/// 引くのを最優先**にする。stale port を踏むと別 project の SP に msg を投げ、その SP の
+/// `local_project` で `from` が汚染される（VP-165 dogfood 症状 (1)）。
 ///
 /// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
@@ -1038,8 +783,7 @@ fn performer_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -
 ///      config から引いて `find_by_project`。performer の cwd は登録 project path 配下でないので
 ///      `find_for_cwd` は効かない
 ///    - conductor context → `find_for_cwd`（cwd 一致 or 配下の running SP）
-/// 3. `VP_PROCESS_PORT` env（discovery 障害 / parent SP 未起動 時の fast path、reshuffle 後は古い可能性）
-/// 4. デフォルトポート 33000
+/// 3. デフォルトポート 33000
 async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     // 1. 明示的なポート指定
     if let Some(port) = explicit_port {
@@ -1068,14 +812,7 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
         }
     }
 
-    // 3. VP_PROCESS_PORT env（fallback、reshuffle 後は古い可能性あり）
-    if let Ok(env_port) = std::env::var("VP_PROCESS_PORT")
-        && let Ok(port) = env_port.parse::<u16>()
-    {
-        return port;
-    }
-
-    // 4. フォールバック
+    // 3. フォールバック
     33000
 }
 

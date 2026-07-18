@@ -5,7 +5,6 @@
 //! `state` および `command` カテゴリのトピックが retained 対象。
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use crate::protocol::ProcessMessage;
 
@@ -16,8 +15,6 @@ use super::topic::TopicPattern;
 struct RetainedEntry {
     /// 保持しているメッセージ
     message: ProcessMessage,
-    /// 保存時刻
-    stored_at: Instant,
 }
 
 /// Topic ごとに最新メッセージを保持するストア
@@ -36,13 +33,8 @@ impl RetainedStore {
 
     /// メッセージを保存（同じトピックは上書き）
     pub fn set(&mut self, topic: &str, msg: ProcessMessage) {
-        self.store.insert(
-            topic.to_string(),
-            RetainedEntry {
-                message: msg,
-                stored_at: Instant::now(),
-            },
-        );
+        self.store
+            .insert(topic.to_string(), RetainedEntry { message: msg });
     }
 
     /// トピックに保存されたメッセージを取得

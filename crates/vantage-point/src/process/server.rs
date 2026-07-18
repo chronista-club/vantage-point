@@ -17,7 +17,6 @@ use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
 use super::routes::{health, update, world};
-use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
@@ -44,13 +43,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
-
-    // Create session manager with state restoration
-    let sessions = SessionManager::with_config(port, project_dir.clone());
-    tracing::info!(
-        "Session manager initialized with {} sessions",
-        sessions.session_count()
-    );
 
     // Initialize Capability system
     let capabilities = Arc::new(ProcessCapabilities::new(cap_config).await);
@@ -153,7 +145,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
 
     let state = Arc::new(AppState {
         hub,
-        sessions: Arc::new(RwLock::new(sessions)),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
         shutdown_token: shutdown_token.clone(),
@@ -630,7 +621,6 @@ pub async fn run_world(
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
-        sessions: Arc::new(RwLock::new(SessionManager::new())),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),

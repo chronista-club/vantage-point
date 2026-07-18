@@ -2582,11 +2582,7 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
-    // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
-    // - VP_TERMINAL_MODE=local: 明示 opt-out で in-proc portable-pty
-    // - それ以外 (default): TheWorld daemon の /ws/terminal 経由
-    //   localhost URL かつ daemon が down なら `vp` binary を auto-spawn して待つ。
-    //   spawn 失敗 or timeout なら local portable-pty にフォールバック (黙って落ちない)。
+    // Terminal backend: TheWorld daemon を auto-launch (down なら `vp` binary を spawn)。
     let proxy = event_loop.create_proxy();
     // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
     // Lane が出現するまで main area は empty placeholder ("No Lane selected") のみ。

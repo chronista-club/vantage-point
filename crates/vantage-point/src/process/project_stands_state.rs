@@ -63,6 +63,8 @@ pub struct PaisleyParkState {
 /// - PR-δ-2 (本 PR / VP-136) — PP impl + LaneCapabilities 統合
 /// - doc 13 §9 boundary invariant 「N Stand を host できる generic interface」 への path
 pub struct PaisleyParkStand {
+    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton（module doc 参照）。
+    #[allow(dead_code)]
     state: RwLock<PaisleyParkState>,
 }
 
@@ -75,6 +77,8 @@ impl PaisleyParkStand {
     }
 
     /// internal `RwLock<PaisleyParkState>` への参照 (caller が Read/Write する)。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton（module doc 参照）。
+    #[allow(dead_code)]
     pub fn state(&self) -> &RwLock<PaisleyParkState> {
         &self.state
     }
@@ -116,6 +120,8 @@ pub struct GoldExperienceState {
 /// PR-γ で Lane 移管予定 (完了後に本 pool 自体が削除可能になる)。
 #[derive(Debug, Default)]
 pub struct ProjectStandsPool {
+    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton（module doc 参照）。
+    #[allow(dead_code)]
     pub gold_experience: GoldExperienceState,
 }
 
