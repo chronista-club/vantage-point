@@ -24,15 +24,9 @@ use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
 pub enum EngineKind {
     /// stand=`"echoes"`（+ 旧名 `"hd"`）— claude。常駐 stream-json host（Act II）+ claude TUI（Act I）。
     Claude,
-    /// stand=`"cursor"` — cursor-agent。**Act I のみ**（Act II はオミット: Composer 2.5 の CLI
-    /// 進化待ちで再検討 — doc 39 §7。旧 TurnHost は step 4 で撤去済み）。
-    Cursor,
     /// stand=`"codex"` — OpenAI Codex CLI。常駐 RpcHost（Act II、`codex app-server` — doc 41）
     /// + codex TUI（Act I）。
     Codex,
-    /// stand=`"agy"` — Google Antigravity CLI（Gemini CLI 後継）。**Act I のみ**
-    /// （v1.1.2 に構造化出力が無く Act II 翻訳層が作れない、doc 37 §7.5）。
-    Agy,
     /// stand=`"grok"` — xAI Grok CLI。常駐 AcpAgentHost（Act II、`grok agent stdio` = ACP —
     /// doc 42）+ grok TUI（Act I、`-r` resume）。
     Grok,
@@ -44,21 +38,16 @@ impl EngineKind {
     /// 新 engine は [`Self::from_stand`] / [`Self::stand_name`] と併せてここにも足す —
     /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
     /// コンパイル時 match 網羅性 + テストで検知する。
-    pub const ALL: [EngineKind; 5] = [
-        Self::Claude,
-        Self::Cursor,
-        Self::Codex,
-        Self::Agy,
-        Self::Grok,
-    ];
+    pub const ALL: [EngineKind; 3] = [Self::Claude, Self::Codex, Self::Grok];
 
     /// stand 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
+    ///
+    /// 撤去済み engine（`"cursor"` / `"agy"` — sweep 6.5、doc 39 §7）は `None` に倒れる。
+    /// disk / wire に残る旧 stand 文字列は床（login shell）のみで graceful に受ける。
     pub fn from_stand(stand: &str) -> Option<Self> {
         match stand {
             "echoes" | "hd" => Some(Self::Claude),
-            "cursor" => Some(Self::Cursor),
             "codex" => Some(Self::Codex),
-            "agy" => Some(Self::Agy),
             "grok" => Some(Self::Grok),
             _ => None,
         }
@@ -68,9 +57,7 @@ impl EngineKind {
     pub fn stand_name(self) -> &'static str {
         match self {
             Self::Claude => "echoes",
-            Self::Cursor => "cursor",
             Self::Codex => "codex",
-            Self::Agy => "agy",
             Self::Grok => "grok",
         }
     }
@@ -79,29 +66,23 @@ impl EngineKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Claude => "VP Stand: Echoes 💬 — login shell の床 + Claude CLI 自動起動",
-            Self::Cursor => {
-                "VP Stand: Cursor Agent 🖱️ — login shell の床 + cursor-agent 自動起動（console のみ、Act II 非対応）"
-            }
             Self::Codex => "VP Stand: Codex 🧮 — login shell の床 + codex (OpenAI) 自動起動",
-            Self::Agy => {
-                "VP Stand: Antigravity 🚀 — login shell の床 + agy 自動起動（console のみ、Act II 非対応）"
-            }
             Self::Grok => "VP Stand: Grok ⚡ — login shell の床 + grok (xAI) 自動起動",
         }
     }
 
     /// Act II（chat GUI）の host を持つか = console mode Chat を許すか。
     ///
-    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok — doc 41・42）。
-    /// cursor は Act II オミット（step 4 で TurnHost 系ごと撤去）、agy は翻訳層が作れない。
+    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok — doc 41・42）。全 engine が
+    /// chat 対応だが、engine を持たない stand（shell / 未知）は host を持たない。
     pub fn chat_capable(self) -> bool {
         matches!(self, Self::Claude | Self::Codex | Self::Grok)
     }
 
     /// VP からの model 切替（`engine_model` 永続 + `--model` 注入）を受けるか。
     ///
-    /// cursor / codex は CLI 側に model 選択があるため VP からは切替えない（cursor は TUI の
-    /// `/model`、codex は `-m` を持つが v1 スコープ外 — doc 37 §7）。
+    /// codex は CLI 側に model 選択があるため VP からは切替えない（`-m` を持つが v1 スコープ外
+    /// — doc 37 §7）。grok も同様に VP からは切替えない。
     pub fn model_switchable(self) -> bool {
         matches!(self, Self::Claude)
     }
@@ -246,33 +227,30 @@ mod tests {
     fn from_stand_maps_all_known_stands() {
         assert_eq!(EngineKind::from_stand("echoes"), Some(EngineKind::Claude));
         assert_eq!(EngineKind::from_stand("hd"), Some(EngineKind::Claude));
-        assert_eq!(EngineKind::from_stand("cursor"), Some(EngineKind::Cursor));
         assert_eq!(EngineKind::from_stand("codex"), Some(EngineKind::Codex));
-        assert_eq!(EngineKind::from_stand("agy"), Some(EngineKind::Agy));
+        assert_eq!(EngineKind::from_stand("grok"), Some(EngineKind::Grok));
         assert_eq!(EngineKind::from_stand("shell"), None);
         assert_eq!(EngineKind::from_stand("tmux"), None, "退役 stand は床のみ");
         assert_eq!(EngineKind::from_stand(""), None);
     }
 
-    /// 能力表: chat = agy 以外、model 切替 = claude のみ。
+    /// graceful degradation: 撤去済み engine（cursor / agy — sweep 6.5）の旧 stand 文字列は
+    /// `None` に倒れる（disk / wire に残っても床のみで受け、chat 不可・中立 chip）。
+    #[test]
+    fn removed_engines_degrade_to_none() {
+        assert_eq!(EngineKind::from_stand("cursor"), None, "cursor は撤去済み");
+        assert_eq!(EngineKind::from_stand("agy"), None, "agy は撤去済み");
+    }
+
+    /// 能力表: 全 engine が chat 対応、model 切替 = claude のみ。
     #[test]
     fn capability_table() {
         assert!(EngineKind::Claude.chat_capable());
-        assert!(
-            !EngineKind::Cursor.chat_capable(),
-            "cursor は Act II オミット（doc 39 §7 / step 4）"
-        );
         assert!(EngineKind::Codex.chat_capable());
         assert!(EngineKind::Grok.chat_capable());
-        assert!(
-            !EngineKind::Agy.chat_capable(),
-            "agy は Act I のみ（doc 37 §7.5）"
-        );
 
         assert!(EngineKind::Claude.model_switchable());
-        assert!(!EngineKind::Cursor.model_switchable());
         assert!(!EngineKind::Grok.model_switchable());
         assert!(!EngineKind::Codex.model_switchable());
-        assert!(!EngineKind::Agy.model_switchable());
     }
 }

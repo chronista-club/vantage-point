@@ -377,8 +377,8 @@ pub(crate) async fn create_performer_orchestrated(
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の lane clone と同じ pattern。
     // tmux decoupling PR2: 床 (login shell) + claude 注入の Rust-native spawn (design §13)。
-    // build_stand_command も closure 内で呼ぶ: cursor stand は chatId 未採番時に create-chat を
-    // blocking exec する（最大 10s）ため、 async worker 上では実行しない（lane_spawn_actor と同形）。
+    // build_stand_command も closure 内で呼ぶ（state file 直読みの同期 I/O を async worker から
+    // 外す。PtySlot::spawn 自体が openpty + syscall でブロッキングなので同形）。
     let stand_for_spawn = stand.clone();
     let addr_for_spawn = addr.clone();
     let cwd_for_spawn = cwd.clone();

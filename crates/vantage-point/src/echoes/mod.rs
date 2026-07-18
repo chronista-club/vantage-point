@@ -1,7 +1,7 @@
 //! Echoes 💬 — コーディングアシスタント Stand（engine 軸 × Act(surface) 軸の直交格子）
 //!
 //! doc 37: Echoes は「コーディングアシスタント」という能力の namespace。その中に
-//! - **engine 軸**（どの頭脳か: claude / cursor / codex / agy …）= session に束縛される identity
+//! - **engine 軸**（どの頭脳か: claude / codex / grok …）= session に束縛される identity
 //! - **Act(surface) 軸**（どう視るか: Act I 端末 / Act II chat GUI）= 切替可能な view
 //!
 //! の直交 2 軸がある。本 module は Act II のバックエンド（SP 側）+ engine 軸の語彙を持つ。

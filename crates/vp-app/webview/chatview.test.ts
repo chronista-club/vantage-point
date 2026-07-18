@@ -592,12 +592,11 @@ describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Pha
     expect(out.map((s) => s.name)).toEqual(['echoes'])
   })
 
-  it('chat_capable === false は隠す（agy / shell の dead-end tab を出さない）', () => {
+  it('chat_capable === false は隠す（shell の dead-end tab を出さない）', () => {
     const out = chatCapableStands(
       stands([
         { name: 'echoes', chat_capable: true },
         { name: 'codex', chat_capable: true },
-        { name: 'agy', chat_capable: false },
         { name: 'shell', chat_capable: false },
       ]),
     )

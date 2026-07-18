@@ -36,9 +36,9 @@ pub type SessionKey = u32;
 pub struct SessionEntry {
     /// VP 採番のローカル key。
     pub key: SessionKey,
-    /// engine 種別（stand 名: "echoes" / "cursor" / "codex" / "agy"）。
+    /// engine 種別（stand 名: "echoes" / "codex" / "grok"。legacy/未知値は床のみで graceful 吸収）。
     pub stand: String,
-    /// engine の会話 id（claude = session uuid / cursor = chatId / codex = thread id）。
+    /// engine の会話 id（claude = session uuid / codex = thread id / grok = ACP sessionId）。
     /// **doc 40 §2: ここが SSOT**（旧 engine 別 session_store から統合）。None = Draft
     /// （まだ engine が id を発番していない、doc 38 §1.1）。serde default + skip で
     /// file/wire 後方互換（conversation 無し = 旧 file はそのまま読める）。
@@ -151,14 +151,14 @@ fn is_valid_conversation(stand: &str, id: &str) -> bool {
     use crate::echoes::EngineKind;
     match EngineKind::from_stand(stand) {
         Some(EngineKind::Claude) => super::cc_session::is_valid_session_id(id),
-        Some(EngineKind::Cursor) => super::cursor_session::is_valid_chat_id(id),
         Some(EngineKind::Codex) => super::codex_session::is_valid_thread_id(id),
         // grok = ACP sessionId（UUID v7 形 — 英数+ハイフン、doc 42 §1。registry-native なので
         // engine 別 store module を持たない = 検証だけここに置く）。
         Some(EngineKind::Grok) => {
             !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         }
-        Some(EngineKind::Agy) | None => false,
+        // engine を持たない stand（shell / 未知 / 撤去済み cursor・agy）は会話 id を持たない。
+        None => false,
     }
 }
 
@@ -195,10 +195,10 @@ fn backfill_legacy_conversations(
         let label = session_label(lane, entry.key);
         entry.conversation = match EngineKind::from_stand(&entry.stand) {
             Some(EngineKind::Claude) => super::cc_session::last_in(base, project, &label),
-            Some(EngineKind::Cursor) => super::cursor_session::last_in(base, project, &label),
             Some(EngineKind::Codex) => super::codex_session::last_in(base, project, &label),
-            // grok は registry-native（旧 store が存在しない — bridge の対象外）。
-            Some(EngineKind::Grok) | Some(EngineKind::Agy) | None => None,
+            // grok は registry-native（旧 store が存在しない — bridge の対象外）。engine を
+            // 持たない stand（shell / 撤去済み cursor・agy）も bridge 元が無い。
+            Some(EngineKind::Grok) | None => None,
         };
     }
 }
@@ -481,10 +481,10 @@ pub fn set_conversation_in(
         let label = session_label(lane, key);
         let _ = match EngineKind::from_stand(&entry.stand) {
             Some(EngineKind::Claude) => super::cc_session::clear_in(base, project, &label),
-            Some(EngineKind::Cursor) => super::cursor_session::clear_in(base, project, &label),
             Some(EngineKind::Codex) => super::codex_session::clear_in(base, project, &label),
-            // grok は registry-native（legacy store が無い = 蘇生源も無い）。
-            Some(EngineKind::Grok) | Some(EngineKind::Agy) | None => Ok(()),
+            // grok は registry-native（legacy store が無い = 蘇生源も無い）。engine を持たない
+            // stand（shell / 撤去済み cursor・agy）も同様。
+            Some(EngineKind::Grok) | None => Ok(()),
         };
     }
     let new = conversation.map(str::to_string);

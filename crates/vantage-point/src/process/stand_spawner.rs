@@ -18,12 +18,10 @@
 //! `stand_name` で注入する Act3 を切り替える。各 engine CLI は「TUI 起動 / ID 指名 resume」の
 //! surface が揃っているため、同じ Act1-layered 構造に載る:
 //! - `"echoes"`（claude）: [`claude_command`]、 cc_session `--resume` + wire hook + model alias
-//! - `"cursor"`: [`cursor_command`]、 cursor_session `--resume`（事前 create-chat 採番）
 //! - `"codex"`: [`codex_command`]、 codex_session `resume`（採番は Act II の record-from-init のみ
 //!   — codex に create-chat 相当が無いため、Act I 単独ではまず素の `codex` で開始する）
-//! - `"agy"`: 素の `agy`（v1 は fresh-only — agy は id 先取り手段も record-from-init 経路
-//!   （Act II）も無く、`--continue` は cwd 非スコープの「最新」でクロス lane 誤爆リスク。doc 37 §7.5）
-//! - resume id は spawn 前に Rust が各 `lane::*_session` を直読み
+//! - `"grok"`: [`grok_command`]、registry の会話 id を `-r '<id>'` で指名 resume（doc 42）
+//! - resume id は spawn 前に Rust が各 `lane::*_session`（または registry）を直読み
 //!   （旧: bash が `vp lane last-session` を子→親 CLI 呼び出し = 層の逆転、解消）
 //!
 //! ## VP_* 環境変数
@@ -254,28 +252,6 @@ fn claude_command(
     }
 }
 
-/// Act3（cursor stand）: cursor-agent 起動 command line を組み立てる。
-///
-/// cursor-agent は claude と CLI surface が酷似する。 claude の `--continue`（「cwd の最新」を
-/// 拾う dashboard 罠、 上記 [`claude_command`] 参照）と同型のリスクを避けるため、 cursor でも
-/// latest resume（`--continue` / 引数なし `resume`）は使わず、 `cursor_session::ensure_chat_id`
-/// が create-chat で先取りした chatId を `--resume '<id>'` で指名する。
-///
-/// - `Some(id)`（`cursor_session::is_valid_chat_id` 検証済）: `cursor-agent --resume '<id>' ||
-///   cursor-agent`（chatId 消失時は素の cursor-agent に fallback、 shell の `||` が native 処理）
-/// - `None`: `cursor-agent`（新規チャット）
-///
-/// **model 注入はしない**（v1）: `engine_model` は claude alias 前提の state で、 cursor の model は
-/// cursor-agent TUI 内の `/model` で選ぶ。 claude 経路（[`claude_command`]）とは意図的に別系統。
-///
-/// wire hook（`--settings '{WIRE_HOOKS}'`）も注入しない: cursor に相当する hook 機構が無いため。
-fn cursor_command(resume_id: Option<&str>) -> String {
-    match resume_id.filter(|id| crate::lane::cursor_session::is_valid_chat_id(id)) {
-        Some(id) => format!("cursor-agent --resume '{}' || cursor-agent", id),
-        None => "cursor-agent".to_string(),
-    }
-}
-
 /// Act3（codex stand）: codex 起動 command line を組み立てる。
 ///
 /// codex の TUI resume は `codex resume '<id>'`（id は UUID の指名 — `--last` は claude
@@ -312,9 +288,10 @@ fn grok_command(resume_id: Option<&str>) -> String {
 /// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
 /// - `"echoes"`（+ 旧名 `"hd"`）: 床 + claude 注入（`fresh` / cc_session により resume 分岐）
-/// - `"cursor"`: 床 + cursor-agent 注入（`fresh` / cursor_session により resume 分岐）
+/// - `"codex"` / `"grok"`: 床 + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
 /// - `"shell"`: 床のみ
-/// - `"tmux"`（退役 stand）/ 未知名: 床のみ + warn（DB descriptor の legacy 値を graceful 吸収）
+/// - `"tmux"`（退役 stand）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: 床のみ + warn
+///   （DB descriptor の legacy 値を graceful 吸収）
 ///
 /// `fresh=true` は resume/continue を回避して素の claude を起動する
 /// （sidebar "New Conductor Session"。 旧 `VP_FRESH=1` env の spawn パラメータ化）。
@@ -371,8 +348,7 @@ pub fn build_stand_command(
         .iter()
         .find(|s| s.key == root)
         .and_then(|s| s.conversation.clone());
-    // cursor / codex の fresh clear と cursor の create-chat 採番（writer 側）は旧 store の
-    // まま（doc 40 §4 scope: 書き手漏斗は claude のみ。cursor はオミット予定（doc 39 §7）、
+    // codex の fresh clear は旧 store のまま（doc 40 §4 scope: 書き手漏斗は claude のみ。
     // codex は RpcHost 移行（TurnHost 撤去）で registry 直結に書き直す — bridge が読みを繋ぐ）。
     let store_label = crate::lane::session_registry::session_label(lane_label(addr), root);
 
@@ -399,25 +375,6 @@ pub fn build_stand_command(
             let cmd = claude_command(addr.kind, bare, resume_id.as_deref(), model.as_deref());
             Some(format!("{}\r", cmd))
         }
-        Some(crate::echoes::EngineKind::Cursor) => {
-            if fresh {
-                // fresh（"New Session"）は新規チャット。 create-chat は exec せず素の cursor-agent を
-                // 起動する（fresh path を exec-free に保つ = 決定的、 テストで固定できる）。 記録済の
-                // 旧 chatId は clear して次回の非 fresh spawn で採番し直す。
-                let _ = crate::lane::cursor_session::clear(&addr.project, &store_label);
-                Some("cursor-agent\r".to_string())
-            } else {
-                // 非 fresh: chatId を確保（既存あれば再利用、 無ければ create-chat で採番）して
-                // `--resume '<id>'` で指名 resume する。 exec 失敗は None に倒れ、 素の
-                // cursor-agent 起動になる（fail-open、 `cursor_session` doc 参照）。
-                let id = crate::lane::cursor_session::ensure_chat_id(
-                    &addr.project,
-                    &store_label,
-                    project_dir,
-                );
-                Some(format!("{}\r", cursor_command(id.as_deref())))
-            }
-        }
         Some(crate::echoes::EngineKind::Codex) => {
             if fresh {
                 // fresh は記録破棄 + 素の codex（cursor と同じ exec-free path。次の id 採番は
@@ -439,13 +396,10 @@ pub fn build_stand_command(
                 Some(format!("{}\r", grok_command(root_conversation.as_deref())))
             }
         }
-        Some(crate::echoes::EngineKind::Agy) => {
-            // agy は v1 fresh-only（resume の id 供給源が無い、module doc / doc 37 §7.5）。
-            Some("agy\r".to_string())
-        }
         None if stand_name == "shell" => None,
         None => {
-            // "tmux"（PR2 で退役）や未知 stand の DB descriptor を床 shell で受ける。
+            // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 stand の
+            // DB descriptor を床 shell で受ける（graceful degradation）。
             tracing::warn!(
                 "unknown/legacy stand '{}' — 床の login shell で起動します (addr={})",
                 stand_name,
@@ -690,53 +644,22 @@ mod tests {
         );
     }
 
-    /// cursor_command の分岐: id あり → `--resume '<id>' || cursor-agent`、 なし → 素の cursor-agent。
+    /// 撤去済み stand（`"cursor"` — sweep 6.5）の DB descriptor は床の login shell で graceful に
+    /// 受ける（engine 注入なし = `initial_input` は None、warn ログのみ）。
     #[test]
-    fn cursor_command_variants() {
-        // id あり → 指名 resume + `||` fallback。
-        let resume = cursor_command(Some("chat_abc-123"));
-        assert_eq!(
-            resume,
-            "cursor-agent --resume 'chat_abc-123' || cursor-agent"
-        );
-
-        // id なし → 素の cursor-agent（新規チャット）。
-        let fresh = cursor_command(None);
-        assert_eq!(fresh, "cursor-agent");
-
-        // model / wire hook は注入しない（v1 スコープ、 claude 経路とは別系統）。
-        assert!(!resume.contains("--model") && !resume.contains("--settings"));
-        assert!(!fresh.contains("--model") && !fresh.contains("--settings"));
-    }
-
-    /// 不正な chatId（quote 破り / 空 / 空白）は resume に採用されず素の cursor-agent に倒れる。
-    #[test]
-    fn cursor_command_rejects_unsafe_chat_ids() {
-        for bad in ["", "a'b", "x;rm -rf /", "id with space", "has.dot"] {
-            let cmd = cursor_command(Some(bad));
-            assert_eq!(
-                cmd, "cursor-agent",
-                "不正 chatId '{bad}' は resume に使わず素の cursor-agent: {cmd}"
-            );
-        }
-    }
-
-    /// build_stand_command("cursor", …, fresh=true) は床 login shell + `cursor-agent\r`
-    /// の initial_input を返す（決定的 — create-chat の exec を経由しない）。
-    #[test]
-    fn cursor_fresh_injects_bare_cursor_agent() {
+    fn removed_stand_falls_back_to_bare_floor() {
         let addr = LaneAddress::conductor("vp");
-        let cmd = build_stand_command("cursor", &addr, Path::new("/tmp"), true);
+        let cmd = build_stand_command("cursor", &addr, Path::new("/tmp"), false);
         #[cfg(not(windows))]
         assert!(
             cmd.args.contains(&"-l".to_string()),
             "床は login shell (-l)、 got: {:?}",
             cmd.args
         );
-        assert_eq!(
-            cmd.initial_input.as_deref(),
-            Some("cursor-agent\r"),
-            "fresh は素の cursor-agent を Enter 付きで注入（exec なし）"
+        assert!(
+            cmd.initial_input.is_none(),
+            "撤去済み stand は engine を注入せず床のみ、 got: {:?}",
+            cmd.initial_input
         );
     }
 }

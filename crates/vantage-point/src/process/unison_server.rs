@@ -621,7 +621,7 @@ async fn handle_echoes_demand_start(
     // ここで eager に resume spawn する（doc 33 C1 の lazy「submit まで engine-less」からの転換 —
     // SP 再起動後も uplink 再接続 → demand 再発火でこの経路に入るため「前回状態キープ」が成立）。
     // ensure は冪等（既起動なら no-op）。失敗しても replay は続行し、engine は次 submit の
-    // self-heal で再試行される。agy / shell 等 Act II host を持たない session は skip
+    // self-heal で再試行される。shell / legacy stand 等 Act II host を持たない session は skip
     //（能力表 = EngineKind が SSOT。bail を warn で騒がせない）。
     if crate::echoes::EngineKind::from_stand(&resolved.stand)
         .is_some_and(crate::echoes::EngineKind::chat_capable)
@@ -637,15 +637,16 @@ async fn handle_echoes_demand_start(
 
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
-    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。cursor / codex /
-    // agy session は cc_session を持たないため必ずこの no_session path を通る。
+    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。codex / grok
+    // session は cc_session を持たないため必ずこの no_session path を通る。
     let Some(session_id) = crate::lane::cc_session::last(&addr.project, &label) else {
-        // transcript を持たない engine（cursor/codex）は、SP が pump tap で per-session に記録した
-        // replay log を replay 源にする（engine 非依存 replay log）。それ以外（claude で会話未開始 /
-        // agy 等）は log を読まず空 chat に収束させる。
+        // transcript を持たない engine（codex / grok）は、SP が pump tap で per-session に記録した
+        // replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
+        // replay_tap と同じ Codex|Grok）。それ以外（claude で会話未開始 等）は log を読まず
+        // 空 chat に収束させる。
         let buffered = if matches!(
             crate::echoes::EngineKind::from_stand(&resolved.stand),
-            Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+            Some(crate::echoes::EngineKind::Codex | crate::echoes::EngineKind::Grok)
         ) {
             crate::echoes::replay_log::load(&addr.project, &label)
         } else {
@@ -885,10 +886,10 @@ async fn record_user_message_if_transcriptless(
     let Ok(resolved) = resolved else {
         return;
     };
-    // 記録対象は transcript を持たない engine のみ（tap と同じ Cursor|Codex 判定）。
+    // 記録対象は transcript を持たない engine のみ（tap と同じ Codex|Grok 判定）。
     if !matches!(
         crate::echoes::EngineKind::from_stand(&resolved.stand),
-        Some(crate::echoes::EngineKind::Cursor | crate::echoes::EngineKind::Codex)
+        Some(crate::echoes::EngineKind::Codex | crate::echoes::EngineKind::Grok)
     ) {
         return;
     }
@@ -1104,7 +1105,7 @@ async fn handle_echoes_session_focus(
             .map_err(|e| format!("echoes_session_focus: {e}"))?;
         // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
         // eager に resume spawn する（切替後の初 submit を待たない）。mode=Tui（registry のみの
-        // 切替 = 正当）/ agy session（Act II host なし）等は debug で飲む — 切替自体は成功。
+        // 切替 = 正当）/ shell・legacy stand session（Act II host なし）等は debug で飲む — 切替自体は成功。
         if let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router) {
             tracing::debug!("echoes_session_focus: eager spawn せず（{e}）");
         }

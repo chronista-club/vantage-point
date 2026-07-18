@@ -410,7 +410,7 @@ export function activeLaneReplaying(): boolean {
 export type StandOption = { name: string; description?: string; chat_capable?: boolean }
 
 /** doc 38 §4 / Phase 3: chat_capable な stand だけを「+」menu に残す（純粋 = テスト可能）。
- *  agy / shell（chat host を持たない）は「作れるが submit がエラーになるだけの dead-end tab」に
+ *  shell（chat host を持たない）は「作れるが submit がエラーになるだけの dead-end tab」に
  *  なるため除外する（bikeboy dogfood で実発生）。
  *  ⚠️ 後方互換: 旧 SP は chat_capable field を送らない → undefined は「表示する」側に倒す
  *  （chat_capable === false の時だけ隠す = 従来挙動を壊さない）。 */
@@ -1211,7 +1211,7 @@ function ChatView() {
               +
             </button>
             {/* stands_list の結果で埋める簡素な dropdown（doc 38: UI は state を持たない仮置き）。
-                doc 38 Phase 3: chat_capable な engine だけに絞る（agy / shell の dead-end tab を出さない）。 */}
+                doc 38 Phase 3: chat_capable な engine だけに絞る（shell の dead-end tab を出さない）。 */}
             <Show when={standsMenu() && standsMenu()!.lane === activeLane()}>
               <div class="echoes-tab-menu">
                 <For each={chatCapableStands(standsMenu()!.stands)}>

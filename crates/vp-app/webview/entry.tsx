@@ -192,7 +192,7 @@ interface SetActivePaneInfo {
 	branch?: string | null;
 	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
 	session_id?: string | null;
-	/** lane の stand（= engine 種別、chip prefix 導出用: "echoes" / "cursor" / "codex" / "agy"）。 */
+	/** lane の stand（= engine 種別、chip prefix 導出用: "echoes" / "codex" / "grok"）。 */
 	stand?: string | null;
 }
 

@@ -315,8 +315,8 @@ pub struct LaneInfo {
     /// engine 横断 id は [`Self::engine_session_id`]（別契約）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cc_session_id: Option<String>,
-    /// doc 37: この lane の **active engine の** session id（claude=cc_session / cursor=chatId /
-    /// codex=thread id。agy / shell は None）。Echoes 共通ヘッダの session chip 用（表示専用 —
+    /// doc 37: この lane の **active engine の** session id（claude=cc_session / codex=thread id /
+    /// grok=ACP sessionId。shell は None）。Echoes 共通ヘッダの session chip 用（表示専用 —
     /// resume に使うのは registry の会話 id / `cc_session_id` 側）。doc 40: 供給は registry
     /// （root session の conversation）に一本化。serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -734,12 +734,6 @@ impl LanePool {
                     s.key
                 )
             })?;
-            crate::lane::cursor_session::clear(&addr.project, &label).map_err(|e| {
-                anyhow::anyhow!(
-                    "fresh restart: cursor_session の破棄に失敗（addr={addr}, session={}）: {e}",
-                    s.key
-                )
-            })?;
             crate::lane::codex_session::clear(&addr.project, &label).map_err(|e| {
                 anyhow::anyhow!(
                     "fresh restart: codex_session の破棄に失敗（addr={addr}, session={}）: {e}",
@@ -1108,11 +1102,9 @@ impl LanePool {
         // 新品」が無言で立つ（moody 指摘 2026-07-18）。respawn を root session の stand に
         // 追従させる一般解は P4（engine gating の実測）で行い、P3 は同 engine のみ許可する。
         let reg = session_registry::load(&addr.project, lane_label, &info.stand);
-        let entry = reg
-            .sessions
-            .iter()
-            .find(|s| s.key == key)
-            .ok_or_else(|| anyhow::anyhow!("session が存在しません（addr={addr}, session={key}）"))?;
+        let entry = reg.sessions.iter().find(|s| s.key == key).ok_or_else(|| {
+            anyhow::anyhow!("session が存在しません（addr={addr}, session={key}）")
+        })?;
         let same_engine = match (
             crate::echoes::EngineKind::from_stand(&entry.stand),
             crate::echoes::EngineKind::from_stand(&info.stand),
@@ -1204,10 +1196,6 @@ impl LanePool {
                 crate::lane::cc_session::clear(&addr.project, &label),
             ),
             (
-                "cursor_session",
-                crate::lane::cursor_session::clear(&addr.project, &label),
-            ),
-            (
                 "codex_session",
                 crate::lane::codex_session::clear(&addr.project, &label),
             ),
@@ -1286,8 +1274,8 @@ impl LanePool {
             return Ok(());
         }
         // Chat（Act II）は headless host を持つ engine の lane のみ（能力表明は EngineKind に
-        // 一元化 — agy は Act I のみ、shell 等は engine なし。doc 37 §7.5「セル単位 readiness」）。
-        // 未対応 engine を Chat に切替えて誤 spawn するのを型ではなくここで塞ぐ。
+        // 一元化 — shell 等は engine なし、legacy/未知 stand も chat 不可）。
+        // 未対応 stand を Chat に切替えて誤 spawn するのを型ではなくここで塞ぐ。
         if mode == ConsoleMode::Chat
             && !EngineKind::from_stand(&info.stand).is_some_and(EngineKind::chat_capable)
         {
@@ -1444,10 +1432,10 @@ impl LanePool {
                     },
                 )?)
             }
-            Some(EngineKind::Cursor | EngineKind::Agy) | None => {
-                // cursor は Act II オミット（doc 39 §7、step 4 で TurnHost 系撤去。Act I の床は
-                // 現役）。focused は mode=Chat ガード（set_console_mode）が上流で塞ぐので通常
-                // 到達しない（belt-and-suspenders）。非 focused session はここが唯一の防壁。
+            None => {
+                // engine を持たない stand（shell / 撤去済み cursor・agy / 未知）。focused は
+                // mode=Chat ガード（set_console_mode）が上流で塞ぐので通常到達しない
+                // （belt-and-suspenders）。非 focused session はここが唯一の防壁。
                 anyhow::bail!(
                     "stand '{}' は Act II chat host を持ちません（addr={}, session={}）",
                     resolved.stand,
@@ -1811,8 +1799,14 @@ mod tests {
 
     /// doc 38 落とし穴③: console_mode ガードは focused session にのみ適用される。
     /// - focused の ensure は Tui mode で「mode=chat が必要」で弾かれる（従来どおり）
-    /// - 非 focused の ensure は mode ガードを**通過**し、engine 能力（agy = Act II host なし）
-    ///   まで到達して弾かれる = ガードが session 経路に流用されていない証跡
+    /// - 非 focused の ensure は mode ガードを**通過**し、engine 能力の防壁まで到達して弾かれる
+    ///   = ガードが session 経路に流用されていない証跡
+    ///
+    /// sweep 6.5 以降、現行 engine（claude/codex/grok）は全て chat 対応なので、能力防壁
+    /// （`None` arm = "Act II chat host を持ちません"）に到達させるには engine を持たない
+    /// legacy/未知 stand が要る。ここでは撤去済み "cursor" の legacy session を registry へ
+    /// 直接注入する（`create_chat_session` は未知 stand を入口で弾くため直書き。legacy stand の
+    /// graceful degradation = 床のみ・chat 不可、の証跡も兼ねる）。
     #[tokio::test]
     async fn console_mode_guard_applies_only_to_focused_session() {
         let _state = crate::test_env::state_dir_async().await;
@@ -1825,10 +1819,17 @@ mod tests {
         );
         let router = std::sync::Arc::new(crate::process::topic_router::TopicRouter::new());
 
-        // 非 focused の agy session を作る（focused は #1 のまま）。
-        let k = pool
-            .create_chat_session(&addr, Some("agy"), false)
-            .expect("create agy session");
+        // 非 focused の legacy stand（撤去済み "cursor"）session を registry に直接注入する
+        // （focused は #1=echoes のまま）。
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        let k = crate::lane::session_registry::create(
+            &addr.project,
+            lane_label,
+            "echoes",
+            "cursor",
+            false,
+        )
+        .expect("create legacy session");
 
         // focused（#1、省略時）は mode ガードで弾かれる。
         let err = pool
@@ -1839,10 +1840,10 @@ mod tests {
             "focused は mode ガード: {err}"
         );
 
-        // 非 focused は mode ガードを通過し、engine 能力の防壁で弾かれる。
+        // 非 focused は mode ガードを通過し、engine 能力の防壁で弾かれる（legacy stand = host なし）。
         let err = pool
             .ensure_chat_engine(&addr, Some(k), &router)
-            .expect_err("agy session の ensure は Err");
+            .expect_err("legacy stand session の ensure は Err");
         assert!(
             err.to_string().contains("Act II chat host を持ちません"),
             "非 focused は mode ガードを通過して能力防壁に到達する: {err}"
@@ -1967,7 +1968,11 @@ mod tests {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         let mut pool = LanePool::new();
-        insert_lane(&mut pool, &addr, crate::lane::console_mode::ConsoleMode::Tui);
+        insert_lane(
+            &mut pool,
+            &addr,
+            crate::lane::console_mode::ConsoleMode::Tui,
+        );
 
         // 同 engine（旧名 "hd" = claude）の #2 → 切替 OK、root/focused が動く
         session_registry::create("vp", "conductor", "echoes", "hd", false).expect("create #2");
