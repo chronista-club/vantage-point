@@ -634,16 +634,20 @@ async fn handle_echoes_demand_start(
 
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
-    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。codex / grok
-    // session は cc_session を持たないため必ずこの no_session path を通る。
+    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。codex / grok /
+    // opencode session は cc_session を持たないため必ずこの no_session path を通る。
     let Some(session_id) = crate::lane::cc_session::last(&addr.project, &label) else {
-        // transcript を持たない engine（codex / grok）は、SP が pump tap で per-session に記録した
-        // replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
-        // replay_tap と同じ Codex|Grok）。それ以外（claude で会話未開始 等）は log を読まず
+        // transcript を持たない engine（codex / grok / opencode）は、SP が pump tap で per-session に
+        // 記録した replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
+        // replay_tap と同じ Codex|Grok|OpenCode）。それ以外（claude で会話未開始 等）は log を読まず
         // 空 chat に収束させる。
         let buffered = if matches!(
             crate::echoes::EngineKind::from_stand(&resolved.stand),
-            Some(crate::echoes::EngineKind::Codex | crate::echoes::EngineKind::Grok)
+            Some(
+                crate::echoes::EngineKind::Codex
+                    | crate::echoes::EngineKind::Grok
+                    | crate::echoes::EngineKind::OpenCode
+            )
         ) {
             crate::echoes::replay_log::load(&addr.project, &label)
         } else {
@@ -862,7 +866,7 @@ async fn handle_echoes_submit(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// transcript を持たない engine（cursor/codex）の session に、user 発話を replay log へ記録する。
+/// transcript を持たない engine（codex / grok / opencode）の session に、user 発話を replay log へ記録する。
 ///
 /// claude は transcript が SSOT なので記録しない（二重化回避）。engine 解決に失敗しても submit は
 /// 既に成立済みなので warn に留める（配送と replay 記録は独立系統）。tap（pump）が assistant 側を
@@ -883,10 +887,14 @@ async fn record_user_message_if_transcriptless(
     let Ok(resolved) = resolved else {
         return;
     };
-    // 記録対象は transcript を持たない engine のみ（tap と同じ Codex|Grok 判定）。
+    // 記録対象は transcript を持たない engine のみ（tap と同じ Codex|Grok|OpenCode 判定）。
     if !matches!(
         crate::echoes::EngineKind::from_stand(&resolved.stand),
-        Some(crate::echoes::EngineKind::Codex | crate::echoes::EngineKind::Grok)
+        Some(
+            crate::echoes::EngineKind::Codex
+                | crate::echoes::EngineKind::Grok
+                | crate::echoes::EngineKind::OpenCode
+        )
     ) {
         return;
     }

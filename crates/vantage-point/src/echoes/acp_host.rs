@@ -1,8 +1,10 @@
-//! AcpAgentHost — grok を lane 単位で**常駐**駆動する ACP host（Act II engine host、doc 42）
+//! AcpAgentHost — ACP engine（grok / opencode）を lane 単位で**常駐**駆動する host（Act II、doc 42・43）
 //!
-//! `grok agent stdio` は **ACP（Agent Client Protocol、protocolVersion 1）**を実装している
-//! （doc 42 §1 実測）。本 host は [`super::codex_host::CodexAgentHost`]（RpcHost）と同型の
-//! per-session 常駐で、wire 差分だけが異なる:
+//! `grok agent stdio`（doc 42）と `opencode acp`（doc 43）はどちらも **ACP（Agent Client
+//! Protocol、protocolVersion 1）**を実装しており（各 doc §1 実測）、wire が同一なので本 host が
+//! そのまま 2 engine を駆動する。engine 別に変わるのは spawn command と名乗り（registry / ログ /
+//! エラー文言）だけで、[`AcpEngine`] に集約する。host のロジックは engine 非依存で、
+//! [`super::codex_host::CodexAgentHost`]（RpcHost）と同型の per-session 常駐:
 //!
 //! - JSONL だが **`jsonrpc: "2.0"` field を含む**標準 JSON-RPC（codex は省略形）
 //! - 会話確立 = `session/new` | `session/load`（load error → new へ self-heal）
@@ -10,13 +12,13 @@
 //!   turn/completed notification と違い response 駆動）
 //! - 中断 = `session/cancel` **notification**（応答なし — prompt response が cancelled で畳む）
 //! - **`session/request_permission`（server→client request）を host が自動 allow**
-//!   （claude bypassPermissions / codex approvalPolicy=never と同じ Act I/II parity。
-//!   spawn flag `--always-approve` と二段防御）
+//!   （claude bypassPermissions / codex approvalPolicy=never と同じ Act I/II parity。grok は
+//!   spawn flag `--always-approve` と二段防御、opencode は自動 allow の一段のみ — doc 43 §6）
 //! - `session/load` の replay 列（過去会話の session/update）は**翻訳しない** — VP 自前の
 //!   replay_log 経由 replay と二重になるため、load 完了まで translator を繋がない（doc 42 §3）
 //!
-//! 会話 id（ACP sessionId）は registry 直結（doc 40 §4）— grok に旧 store は存在しない
-//! （**registry-native 第一号** = backfill bridge の対象外という正しい欠如）。
+//! 会話 id（ACP sessionId）は registry 直結（doc 40 §4）— grok / opencode に旧 store は存在しない
+//! （**registry-native** = backfill bridge の対象外という正しい欠如）。
 //! 途絶の自己修復配線（dead flag → submit Err → ensure_and_submit_chat の drop→再ensure→retry）と
 //! stderr 診断は PR #802 の moody 教訓を最初から実装。
 
@@ -33,18 +35,65 @@ use super::acp_translate::AcpTranslator;
 use super::event::EchoesEvent;
 use super::host::InFlight;
 
-/// grok CLI の実行パス解決（PATH → `~/.grok/bin/grok` → 素の名前）。
-fn grok_cli_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    crate::lane::session_store::resolve_cli(
-        "grok",
-        &[std::path::PathBuf::from(home).join(".grok/bin/grok")],
-    )
+/// AcpAgentHost が駆動する ACP engine の種別（spawn command + 名乗りの差分だけを持つ）。
+///
+/// host のロジック（session/new|load self-heal / prompt-response turn / session/cancel /
+/// request_permission 自動 allow / dead flag 自己修復 / stderr 診断 / load replay 列破棄）は
+/// engine 非依存。engine 別に変わるのは「どの CLI をどう起動するか」と「registry / ログ /
+/// エラー文言の名乗り」だけなので、その差分をここに集約する（doc 43 §2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpEngine {
+    /// `grok agent stdio --always-approve`（xAI Grok CLI、doc 42）。CLI パス = PATH → `~/.grok/bin/grok`。
+    Grok,
+    /// `opencode acp`（opencode、doc 43）。CLI パス = PATH → `/opt/homebrew/bin/opencode`（brew）。
+    /// approve 相当 flag は無い（request_permission 自動 allow の一段のみ）。model / provider は
+    /// opencode config が SSOT で、VP は spawn に env も flag も注入しない（doc 43 §3）。
+    OpenCode,
+}
+
+impl AcpEngine {
+    /// registry / ログ / エラー文言の名乗り（[`super::EngineKind::stand_name`] と一致）。
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Grok => "grok",
+            Self::OpenCode => "opencode",
+        }
+    }
+
+    /// CLI 実行パスの解決（launchd 起動 daemon の細い PATH 対策 — `session_store::resolve_cli`）。
+    fn cli_path(self) -> String {
+        match self {
+            Self::Grok => {
+                let home = std::env::var("HOME").unwrap_or_default();
+                crate::lane::session_store::resolve_cli(
+                    "grok",
+                    &[std::path::PathBuf::from(home).join(".grok/bin/grok")],
+                )
+            }
+            Self::OpenCode => crate::lane::session_store::resolve_cli(
+                "opencode",
+                &[std::path::PathBuf::from("/opt/homebrew/bin/opencode")],
+            ),
+        }
+    }
+
+    /// spawn 時の固定引数（cwd / stdio piping は spawn 側で付ける）。
+    fn spawn_args(self) -> &'static [&'static str] {
+        match self {
+            // grok: agent サブコマンド + `--always-approve`（permission 二段防御、doc 42）。
+            Self::Grok => &["agent", "--always-approve", "stdio"],
+            // opencode: `acp` サブコマンドのみ（flag / env / config 注入なし — model は opencode
+            //  config が SSOT、doc 43 §3）。
+            Self::OpenCode => &["acp"],
+        }
+    }
 }
 
 /// AcpAgentHost の起動設定。
 #[derive(Debug, Clone)]
 pub struct AcpHostConfig {
+    /// 駆動する ACP engine（spawn command + 名乗りの差分）。
+    pub engine: AcpEngine,
     /// 会話の作業ディレクトリ（lane の project dir）。
     pub cwd: String,
     /// registry 書き込みキー（project 名）。
@@ -97,6 +146,7 @@ impl AcpState {
 }
 
 struct AcpInner {
+    engine: AcpEngine,
     event_tx: broadcast::Sender<EchoesEvent>,
     project: String,
     lane: String,
@@ -125,7 +175,10 @@ impl AcpInner {
     /// reader task 内からの write（失敗は log のみ — 途絶は stdout close 検知に収束）。
     async fn write_line_logged(&self, line: &str) {
         if let Err(e) = self.write_line(line).await {
-            tracing::warn!("grok acp stdin write 失敗（途絶疑い）: {e}");
+            tracing::warn!(
+                "{} acp stdin write 失敗（途絶疑い）: {e}",
+                self.engine.name()
+            );
         }
     }
 
@@ -155,17 +208,18 @@ impl AcpInner {
             st.session_id = Some(session_id.to_string());
             st.loading = false;
         }
-        // doc 40 §4: registry 直結（grok は registry-native — 旧 store が最初から無い）。
+        // doc 40 §4: registry 直結（grok / opencode は registry-native — 旧 store が最初から無い）。
         let (lane_label, key) = crate::lane::session_registry::parse_session_label(&self.lane);
         if let Err(e) = crate::lane::session_registry::set_conversation(
             &self.project,
             lane_label,
-            "grok",
+            self.engine.name(),
             key,
             Some(session_id),
         ) {
             tracing::warn!(
-                "grok sessionId の registry 記録失敗（project={}, lane={}）: {e}",
+                "{} sessionId の registry 記録失敗（project={}, lane={}）: {e}",
+                self.engine.name(),
                 self.project,
                 self.lane
             );
@@ -202,21 +256,22 @@ impl AcpInner {
     }
 }
 
-/// lane 単位の常駐 grok host（Act II、doc 42）。ACP 標準なので program 差し替えで
-/// opencode 等にも流用可能（doc 42 §5 — 現状は grok 固定）。
+/// lane 単位の常駐 ACP host（Act II、doc 42・43）。grok / opencode の 2 engine を
+/// [`AcpEngine`] パラメータ（cli_path / spawn_args / name）で共有する — host ロジックは
+/// engine 非依存。
 pub struct AcpAgentHost {
     inner: Arc<AcpInner>,
     reader: Option<JoinHandle<()>>,
 }
 
 impl AcpAgentHost {
-    /// `grok agent --always-approve stdio` を起動し、handshake（initialize →
-    /// session/load|new）を開始する。完了前の submit は queue に積まれ自動送出される。
+    /// engine の ACP プロセス（grok = `grok agent --always-approve stdio` / opencode =
+    /// `opencode acp`）を起動し、handshake（initialize → session/load|new）を開始する。
+    /// 完了前の submit は queue に積まれ自動送出される。
     pub fn spawn(config: AcpHostConfig) -> anyhow::Result<Self> {
-        let mut cmd = tokio::process::Command::new(grok_cli_path());
-        cmd.arg("agent")
-            .arg("--always-approve")
-            .arg("stdio")
+        let engine = config.engine;
+        let mut cmd = tokio::process::Command::new(engine.cli_path());
+        cmd.args(engine.spawn_args())
             .current_dir(&config.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -224,17 +279,18 @@ impl AcpAgentHost {
             .kill_on_drop(true);
         let mut child = cmd
             .spawn()
-            .map_err(|e| anyhow::anyhow!("grok agent stdio の起動に失敗: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("{} の起動に失敗: {e}", engine.name()))?;
         let stdin = child.stdin.take();
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| anyhow::anyhow!("grok agent stdio の stdout が取れません"))?;
+            .ok_or_else(|| anyhow::anyhow!("{} の stdout が取れません", engine.name()))?;
         let stderr = child.stderr.take();
         let child_pid = child.id();
 
         let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
         let inner = Arc::new(AcpInner {
+            engine,
             event_tx,
             project: config.project,
             lane: config.lane,
@@ -263,7 +319,7 @@ impl AcpAgentHost {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    tracing::warn!("grok agent stderr: {line}");
+                    tracing::warn!("{} stderr: {line}", drain.engine.name());
                     let mut st = drain.state.lock().expect("acp state lock");
                     if st.stderr_tail.len() >= 5 {
                         st.stderr_tail.pop_front();
@@ -274,7 +330,8 @@ impl AcpAgentHost {
         }
         let resume_target = config.session_id;
         tracing::info!(
-            "AcpAgentHost spawn（常駐 grok agent stdio、project={}, lane={}, resume={:?}, pid={:?}）",
+            "AcpAgentHost spawn（常駐 {} ACP、project={}, lane={}, resume={:?}, pid={:?}）",
+            engine.name(),
             inner.project,
             inner.lane,
             resume_target.as_deref().unwrap_or("new"),
@@ -319,7 +376,10 @@ impl AcpAgentHost {
         let line = {
             let mut st = self.inner.state.lock().expect("acp state lock");
             if st.dead {
-                anyhow::bail!("grok agent が終了しています（engine 再起動で復旧）");
+                anyhow::bail!(
+                    "{} が終了しています（engine 再起動で復旧）",
+                    self.inner.engine.name()
+                );
             }
             if st.turn_active || st.session_id.is_none() {
                 st.queue.push_back(prompt.to_string());
@@ -337,7 +397,7 @@ impl AcpAgentHost {
             let mut st = self.inner.state.lock().expect("acp state lock");
             st.dead = true;
             st.turn_active = false;
-            anyhow::bail!("grok agent への送信に失敗（途絶）: {e}");
+            anyhow::bail!("{} への送信に失敗（途絶）: {e}", self.inner.engine.name());
         }
         Ok(())
     }
@@ -501,7 +561,8 @@ async fn run_reader(
         {
             let params = msg.get("params").cloned().unwrap_or_default();
             if method == "session/request_permission" {
-                // --always-approve と二段防御（flag で来なくなるかは未実測 — doc 42 §6）。
+                // 自動 allow（bypass parity）。grok は `--always-approve` と二段防御、opencode は
+                // この一段のみ（flag で来なくなるかは未実測 — doc 42 §6 / doc 43 §6）。
                 inner
                     .write_line_logged(&build_permission_allow(id, &params))
                     .await;
@@ -552,7 +613,8 @@ async fn run_reader(
     };
     if !stopping {
         tracing::warn!(
-            "grok agent 途絶（project={}, lane={}）",
+            "{} 途絶（project={}, lane={}）",
+            inner.engine.name(),
             inner.project,
             inner.lane
         );
@@ -562,7 +624,10 @@ async fn run_reader(
             format!("\n{stderr_tail}")
         };
         inner.emit(EchoesEvent::Error {
-            message: format!("grok agent が終了しました。次の送信で自動復旧します。{detail}"),
+            message: format!(
+                "{} が終了しました。次の送信で自動復旧します。{detail}",
+                inner.engine.name()
+            ),
         });
     }
 }
@@ -585,7 +650,11 @@ async fn handle_response(
         ReqKind::Initialize => {
             if let Some(err) = error {
                 inner.emit(EchoesEvent::Error {
-                    message: format!("grok agent initialize 失敗: {}", error_message(err)),
+                    message: format!(
+                        "{} initialize 失敗: {}",
+                        inner.engine.name(),
+                        error_message(err)
+                    ),
                 });
                 return;
             }
@@ -609,7 +678,8 @@ async fn handle_response(
             if let Some(err) = error {
                 // load 空振り → new へ self-heal（新 sessionId が registry を上書き）。
                 tracing::warn!(
-                    "grok session/load 失敗 → session/new へ self-heal（project={}, lane={}）: {}",
+                    "{} session/load 失敗 → session/new へ self-heal（project={}, lane={}）: {}",
+                    inner.engine.name(),
                     inner.project,
                     inner.lane,
                     error_message(err)
@@ -631,7 +701,11 @@ async fn handle_response(
         ReqKind::SessionNew => {
             if let Some(err) = error {
                 inner.emit(EchoesEvent::Error {
-                    message: format!("grok session/new 失敗: {}", error_message(err)),
+                    message: format!(
+                        "{} session/new 失敗: {}",
+                        inner.engine.name(),
+                        error_message(err)
+                    ),
                 });
                 return;
             }
@@ -648,7 +722,7 @@ async fn handle_response(
             };
             if let Some(err) = error {
                 inner.emit(EchoesEvent::Error {
-                    message: format!("grok turn 失敗: {}", error_message(err)),
+                    message: format!("{} turn 失敗: {}", inner.engine.name(), error_message(err)),
                 });
             }
             inner.emit(EchoesEvent::TurnCompleted {
@@ -743,6 +817,35 @@ mod tests {
         }
     }
 
+    /// engine パラメタ化（doc 43 §2）: spawn 引数と名乗りが engine 別に切り替わる。
+    /// grok = `agent --always-approve stdio`（permission 二段防御）、opencode = `acp` のみ
+    /// （flag 注入なし — model は opencode config が SSOT）。名乗りは registry / ログ / エラー
+    /// 文言に載る stand 名（EngineKind::stand_name と一致）。
+    #[test]
+    fn acp_engine_spawn_args_and_name_are_engine_specific() {
+        assert_eq!(
+            AcpEngine::Grok.spawn_args(),
+            &["agent", "--always-approve", "stdio"],
+            "grok は agent サブコマンド + 二段防御 flag"
+        );
+        assert_eq!(
+            AcpEngine::OpenCode.spawn_args(),
+            &["acp"],
+            "opencode は acp サブコマンドのみ（flag なし — doc 43 §3）"
+        );
+        assert_eq!(AcpEngine::Grok.name(), "grok");
+        assert_eq!(AcpEngine::OpenCode.name(), "opencode");
+        // stand 名（EngineKind）と registry / ログの名乗り（AcpEngine）が一致する不変条件。
+        assert_eq!(
+            AcpEngine::Grok.name(),
+            super::super::EngineKind::Grok.stand_name()
+        );
+        assert_eq!(
+            AcpEngine::OpenCode.name(),
+            super::super::EngineKind::OpenCode.stand_name()
+        );
+    }
+
     /// 実機 E2E: 本物の `grok agent stdio` と handshake → session/new → prompt →
     /// TurnCompleted + registry 書き戻しまで。CI では走らない（grok CLI + auth +
     /// トークン消費）— ローカルで `cargo test -p vantage-point --lib e2e_real_grok -- --ignored`。
@@ -752,6 +855,7 @@ mod tests {
         let _state = crate::test_env::state_dir_async().await;
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut host = AcpAgentHost::spawn(AcpHostConfig {
+            engine: AcpEngine::Grok,
             cwd: tmp.path().to_string_lossy().into_owned(),
             project: "vptest-acp".into(),
             lane: "conductor".into(),

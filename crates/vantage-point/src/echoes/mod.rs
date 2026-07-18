@@ -1,7 +1,7 @@
 //! Echoes 💬 — コーディングアシスタント Stand（engine 軸 × Act(surface) 軸の直交格子）
 //!
 //! doc 37: Echoes は「コーディングアシスタント」という能力の namespace。その中に
-//! - **engine 軸**（どの頭脳か: claude / codex / grok …）= session に束縛される identity
+//! - **engine 軸**（どの頭脳か: claude / codex / grok / opencode …）= session に束縛される identity
 //! - **Act(surface) 軸**（どう視るか: Act I 端末 / Act II chat GUI）= 切替可能な view
 //!
 //! の直交 2 軸がある。本 module は Act II のバックエンド（SP 側）+ engine 軸の語彙を持つ。
@@ -15,12 +15,13 @@
 //! - [`host`]: [`EchoesAgentHost`] — headless claude を lane 単位で**常駐**駆動（stream-json stdin 連投）
 //! - [`codex_rpc_translate`] + [`codex_host`]: codex — **常駐 RpcHost**（`codex app-server`
 //!   JSONL JSON-RPC、doc 41）
-//! - [`acp_translate`] + [`acp_host`]: grok — **常駐 AcpAgentHost**（`grok agent stdio` = ACP、doc 42）
+//! - [`acp_translate`] + [`acp_host`]: grok / opencode — **常駐 AcpAgentHost**（`grok agent stdio`
+//!   = ACP、doc 42 / `opencode acp` = 同 ACP、doc 43。engine 差分は [`AcpEngine`] に集約）
 //! - [`translate`] / [`transcript`]: claude stream / transcript → [`EchoesEvent`] 翻訳層
-//! - [`replay_log`]: transcript を持たない engine（codex / grok）の per-session 会話ログ（disk 永続、
-//!   Act II の replay 源）。claude は transcript が SSOT なので使わない
+//! - [`replay_log`]: transcript を持たない engine（codex / grok / opencode）の per-session 会話ログ
+//!   （disk 永続、Act II の replay 源）。claude は transcript が SSOT なので使わない
 //!
-//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok — doc 41・42）。
+//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok / opencode — doc 41・42・43）。
 //! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み、
 //! cursor / agy は sweep 6.5 で stand ごと完全撤去（再導入時は新規実装 — 旧実装は
 //! git history #773/#776。Composer の CLI 進化待ちの再検討方針は doc 39 §7）。
@@ -40,7 +41,7 @@ pub mod replay_log;
 pub mod transcript;
 pub mod translate;
 
-pub use acp_host::{AcpAgentHost, AcpHostConfig};
+pub use acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
 pub use codex_host::{CodexAgentHost, CodexRpcHostConfig};
 pub use engine::{ChatEngineSlot, ChatHost, EngineKind};
 pub use event::{EchoesEvent, PlanEntry, QuestionOption, QuestionSpec};

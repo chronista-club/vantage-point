@@ -30,6 +30,10 @@ pub enum EngineKind {
     /// stand=`"grok"` — xAI Grok CLI。常駐 AcpAgentHost（Act II、`grok agent stdio` = ACP —
     /// doc 42）+ grok TUI（Act I、`-r` resume）。
     Grok,
+    /// stand=`"opencode"` — opencode。常駐 AcpAgentHost（Act II、`opencode acp` = grok と同 ACP —
+    /// doc 43）+ opencode TUI（Act I、`-s <id>` resume）。model / provider は opencode config が
+    /// SSOT（local LLM 等 — VP は注入しない、doc 43 §3）。
+    OpenCode,
 }
 
 impl EngineKind {
@@ -38,7 +42,7 @@ impl EngineKind {
     /// 新 engine は [`Self::from_stand`] / [`Self::stand_name`] と併せてここにも足す —
     /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
     /// コンパイル時 match 網羅性 + テストで検知する。
-    pub const ALL: [EngineKind; 3] = [Self::Claude, Self::Codex, Self::Grok];
+    pub const ALL: [EngineKind; 4] = [Self::Claude, Self::Codex, Self::Grok, Self::OpenCode];
 
     /// stand 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
     ///
@@ -49,6 +53,7 @@ impl EngineKind {
             "echoes" | "hd" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
             "grok" => Some(Self::Grok),
+            "opencode" => Some(Self::OpenCode),
             _ => None,
         }
     }
@@ -59,6 +64,7 @@ impl EngineKind {
             Self::Claude => "echoes",
             Self::Codex => "codex",
             Self::Grok => "grok",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -68,21 +74,28 @@ impl EngineKind {
             Self::Claude => "VP Stand: Echoes 💬 — login shell の床 + Claude CLI 自動起動",
             Self::Codex => "VP Stand: Codex 🧮 — login shell の床 + codex (OpenAI) 自動起動",
             Self::Grok => "VP Stand: Grok ⚡ — login shell の床 + grok (xAI) 自動起動",
+            Self::OpenCode => {
+                "VP Stand: OpenCode 🧩 — login shell の床 + opencode 自動起動（model は opencode config）"
+            }
         }
     }
 
     /// Act II（chat GUI）の host を持つか = console mode Chat を許すか。
     ///
-    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok — doc 41・42）。全 engine が
-    /// chat 対応だが、engine を持たない stand（shell / 未知）は host を持たない。
+    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok / opencode — doc 41・42・43）。
+    /// 全 engine が chat 対応だが、engine を持たない stand（shell / 未知）は host を持たない。
     pub fn chat_capable(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex | Self::Grok)
+        matches!(
+            self,
+            Self::Claude | Self::Codex | Self::Grok | Self::OpenCode
+        )
     }
 
     /// VP からの model 切替（`engine_model` 永続 + `--model` 注入）を受けるか。
     ///
     /// codex は CLI 側に model 選択があるため VP からは切替えない（`-m` を持つが v1 スコープ外
-    /// — doc 37 §7）。grok も同様に VP からは切替えない。
+    /// — doc 37 §7）。grok も同様。opencode は model / provider を opencode config が管理するため
+    /// VP からは注入しない（doc 43 §3 — 二重管理で SSOT が割れるのを避ける）。
     pub fn model_switchable(self) -> bool {
         matches!(self, Self::Claude)
     }
@@ -110,6 +123,8 @@ impl Drop for ChatEngineSlot {
 /// - [`ChatHost::Claude`]: 常駐 stream-json host（stdin 連投、1 プロセスが会話を保持）。
 /// - [`ChatHost::Codex`]: 常駐 JSONL JSON-RPC host（`codex app-server`、doc 41）。
 /// - [`ChatHost::Grok`]: 常駐 ACP host（`grok agent stdio`、doc 42）。
+/// - [`ChatHost::OpenCode`]: 常駐 ACP host（`opencode acp`、doc 43。grok と同じ AcpAgentHost で、
+///   [`AcpEngine`] パラメタだけが違う）。
 ///
 /// GUI 語彙 [`EchoesEvent`] は全 engine 共通なので、pump / topic 配線・chatview は engine
 /// 非依存のまま。variant 名は engine 名（doc 37 の語彙: Echoes = namespace、claude = engine —
@@ -118,6 +133,7 @@ pub enum ChatHost {
     Claude(EchoesAgentHost),
     Codex(CodexAgentHost),
     Grok(AcpAgentHost),
+    OpenCode(AcpAgentHost),
 }
 
 impl ChatHost {
@@ -125,7 +141,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.subscribe(),
             ChatHost::Codex(h) => h.subscribe(),
-            ChatHost::Grok(h) => h.subscribe(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.subscribe(),
         }
     }
 
@@ -133,7 +149,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.in_flight(),
             ChatHost::Codex(h) => h.in_flight(),
-            ChatHost::Grok(h) => h.in_flight(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.in_flight(),
         }
     }
 
@@ -141,7 +157,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),
             ChatHost::Codex(h) => h.commit_seq(),
-            ChatHost::Grok(h) => h.commit_seq(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.commit_seq(),
         }
     }
 
@@ -149,7 +165,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.pid(),
             ChatHost::Codex(h) => h.pid(),
-            ChatHost::Grok(h) => h.pid(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.pid(),
         }
     }
 
@@ -157,7 +173,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.submit(prompt).await,
             ChatHost::Codex(h) => h.submit(prompt).await,
-            ChatHost::Grok(h) => h.submit(prompt).await,
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.submit(prompt).await,
         }
     }
 
@@ -165,18 +181,18 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.interrupt().await,
             ChatHost::Codex(h) => h.interrupt().await,
-            ChatHost::Grok(h) => h.interrupt().await,
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.interrupt().await,
         }
     }
 
-    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex は app-server kill、
+    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / grok / opencode は host kill、
     /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。
     pub fn stop(&mut self) {
         match self {
             // EchoesAgentHost の Child は kill_on_drop(true) なので host drop で停止する。
             ChatHost::Claude(_) => {}
             ChatHost::Codex(h) => h.stop(),
-            ChatHost::Grok(h) => h.stop(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.stop(),
         }
     }
 
@@ -188,7 +204,7 @@ impl ChatHost {
     ) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Codex(_) | ChatHost::Grok(_) => {
+            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -198,7 +214,7 @@ impl ChatHost {
     pub async fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.set_permission_mode(mode).await,
-            ChatHost::Codex(_) | ChatHost::Grok(_) => {
+            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -229,6 +245,10 @@ mod tests {
         assert_eq!(EngineKind::from_stand("hd"), Some(EngineKind::Claude));
         assert_eq!(EngineKind::from_stand("codex"), Some(EngineKind::Codex));
         assert_eq!(EngineKind::from_stand("grok"), Some(EngineKind::Grok));
+        assert_eq!(
+            EngineKind::from_stand("opencode"),
+            Some(EngineKind::OpenCode)
+        );
         assert_eq!(EngineKind::from_stand("shell"), None);
         assert_eq!(EngineKind::from_stand("tmux"), None, "退役 stand は床のみ");
         assert_eq!(EngineKind::from_stand(""), None);
@@ -248,9 +268,12 @@ mod tests {
         assert!(EngineKind::Claude.chat_capable());
         assert!(EngineKind::Codex.chat_capable());
         assert!(EngineKind::Grok.chat_capable());
+        assert!(EngineKind::OpenCode.chat_capable());
 
         assert!(EngineKind::Claude.model_switchable());
         assert!(!EngineKind::Grok.model_switchable());
         assert!(!EngineKind::Codex.model_switchable());
+        // opencode の model は opencode config が SSOT（VP は注入しない、doc 43 §3）。
+        assert!(!EngineKind::OpenCode.model_switchable());
     }
 }

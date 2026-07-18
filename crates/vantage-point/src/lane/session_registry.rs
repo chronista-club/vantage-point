@@ -36,9 +36,9 @@ pub type SessionKey = u32;
 pub struct SessionEntry {
     /// VP 採番のローカル key。
     pub key: SessionKey,
-    /// engine 種別（stand 名: "echoes" / "codex" / "grok"。legacy/未知値は床のみで graceful 吸収）。
+    /// engine 種別（stand 名: "echoes" / "codex" / "grok" / "opencode"。legacy/未知値は床のみで graceful 吸収）。
     pub stand: String,
-    /// engine の会話 id（claude = session uuid / codex = thread id / grok = ACP sessionId）。
+    /// engine の会話 id（claude = session uuid / codex = thread id / grok・opencode = ACP sessionId）。
     /// **doc 40 §2: ここが SSOT**（旧 engine 別 session_store から統合）。None = Draft
     /// （まだ engine が id を発番していない、doc 38 §1.1）。serde default + skip で
     /// file/wire 後方互換（conversation 無し = 旧 file はそのまま読める）。
@@ -157,6 +157,12 @@ fn is_valid_conversation(stand: &str, id: &str) -> bool {
         Some(EngineKind::Grok) => {
             !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         }
+        // opencode = ACP sessionId（`ses_` prefix + 英数字。実測 `ses_089ead04bffe5oIJcQTHwwTZo8`、
+        // doc 43 §1。grok 同様 registry-native なので検証だけここに置く。underscore は prefix のみ
+        // で残りは英数字 = single-quote 埋め込みでも injection にならない）。
+        Some(EngineKind::OpenCode) => id.strip_prefix("ses_").is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())
+        }),
         // engine を持たない stand（shell / 未知 / 撤去済み cursor・agy）は会話 id を持たない。
         None => false,
     }
@@ -196,9 +202,9 @@ fn backfill_legacy_conversations(
         entry.conversation = match EngineKind::from_stand(&entry.stand) {
             Some(EngineKind::Claude) => super::cc_session::last_in(base, project, &label),
             Some(EngineKind::Codex) => super::codex_session::last_in(base, project, &label),
-            // grok は registry-native（旧 store が存在しない — bridge の対象外）。engine を
-            // 持たない stand（shell / 撤去済み cursor・agy）も bridge 元が無い。
-            Some(EngineKind::Grok) | None => None,
+            // grok / opencode は registry-native（旧 store が存在しない — bridge の対象外）。
+            // engine を持たない stand（shell / 撤去済み cursor・agy）も bridge 元が無い。
+            Some(EngineKind::Grok | EngineKind::OpenCode) | None => None,
         };
     }
 }
@@ -482,9 +488,9 @@ pub fn set_conversation_in(
         let _ = match EngineKind::from_stand(&entry.stand) {
             Some(EngineKind::Claude) => super::cc_session::clear_in(base, project, &label),
             Some(EngineKind::Codex) => super::codex_session::clear_in(base, project, &label),
-            // grok は registry-native（legacy store が無い = 蘇生源も無い）。engine を持たない
-            // stand（shell / 撤去済み cursor・agy）も同様。
-            Some(EngineKind::Grok) | None => Ok(()),
+            // grok / opencode は registry-native（legacy store が無い = 蘇生源も無い）。engine を
+            // 持たない stand（shell / 撤去済み cursor・agy）も同様。
+            Some(EngineKind::Grok | EngineKind::OpenCode) | None => Ok(()),
         };
     }
     let new = conversation.map(str::to_string);
@@ -993,6 +999,33 @@ mod tests {
             set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 99, Some("id-x")).is_err(),
             "不在 key は Err"
         );
+    }
+
+    /// is_valid_conversation の engine 別形式（doc 43 §6: opencode = `ses_` prefix + 英数字）。
+    #[test]
+    fn is_valid_conversation_per_engine_form() {
+        // opencode: 実測形式（doc 43 §1）は valid、prefix 欠落 / 空 rest / injection 形は reject。
+        assert!(is_valid_conversation(
+            "opencode",
+            "ses_089ead04bffe5oIJcQTHwwTZo8"
+        ));
+        assert!(
+            !is_valid_conversation("opencode", "089ead04"),
+            "ses_ prefix 必須"
+        );
+        assert!(
+            !is_valid_conversation("opencode", "ses_"),
+            "rest が空は不可"
+        );
+        assert!(
+            !is_valid_conversation("opencode", "ses_bad'; rm"),
+            "quote 破りは reject（single-quote 埋め込み防壁）"
+        );
+        // grok は英数 + ハイフン（opencode の underscore 付き id は grok では不可 = 別ルール）。
+        assert!(is_valid_conversation("grok", "0199a2ff-eeee-7abc"));
+        assert!(!is_valid_conversation("grok", "ses_089ead04"));
+        // engine を持たない stand（shell / 撤去済み）は会話 id を持たない。
+        assert!(!is_valid_conversation("shell", "ses_089ead04"));
     }
 
     /// set_conversation(None) = clear は legacy store も消す（bridge 蘇生防止、doc 40 §9）。

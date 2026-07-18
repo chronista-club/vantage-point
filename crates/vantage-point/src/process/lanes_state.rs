@@ -1405,6 +1405,20 @@ impl LanePool {
                 // registry の会話 id（registry-native — 旧 store なし）。
                 ChatHost::Grok(crate::echoes::AcpAgentHost::spawn(
                     crate::echoes::AcpHostConfig {
+                        engine: crate::echoes::AcpEngine::Grok,
+                        cwd: info.cwd.clone(),
+                        project: addr.project.clone(),
+                        lane: label.clone(),
+                        session_id: resolved.conversation.clone(),
+                    },
+                )?)
+            }
+            Some(EngineKind::OpenCode) => {
+                // opencode: grok と同じ常駐 AcpAgentHost（`opencode acp` = 同 ACP、doc 43）。
+                // engine パラメタだけが違う。sessionId は registry の会話 id（registry-native）。
+                ChatHost::OpenCode(crate::echoes::AcpAgentHost::spawn(
+                    crate::echoes::AcpHostConfig {
+                        engine: crate::echoes::AcpEngine::OpenCode,
                         cwd: info.cwd.clone(),
                         project: addr.project.clone(),
                         lane: label.clone(),
@@ -1448,12 +1462,13 @@ impl LanePool {
                 );
             }
         };
-        // replay-log tap: transcript を持たない engine（codex / grok）の session にだけ付ける。
-        // claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を per-session
-        // に disk 記録し、demand_start の no_session path がそれを replay 源にする（doc — engine
-        // 非依存 replay log）。
+        // replay-log tap: transcript を持たない engine（codex / grok / opencode）の session にだけ
+        // 付ける。claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を
+        // per-session に disk 記録し、demand_start の no_session path がそれを replay 源にする
+        // （doc — engine 非依存 replay log）。⚠️ この判定は unison_server の reader / writer と
+        // replay_log.rs の doc と 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）。
         let replay_tap = match EngineKind::from_stand(&resolved.stand) {
-            Some(EngineKind::Codex | EngineKind::Grok) => {
+            Some(EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode) => {
                 Some(crate::echoes::replay_log::ReplayLogTap {
                     project: addr.project.clone(),
                     label: label.clone(),
