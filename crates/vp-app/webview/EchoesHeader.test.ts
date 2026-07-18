@@ -154,14 +154,24 @@ describe('rootPickerItems — Root 切替 picker の行導出（doc 39 P3）', (
       { key: 2, stand: 'codex', engine_session_id: '0199a2ffee', live: false, focused: true },
     ])
     expect(items).toEqual([
-      { key: 1, label: 'cc:3d91933b', isRoot: true },
-      { key: 2, label: 'cdx:0199a2ff', isRoot: false },
+      { key: 1, label: 'cc:3d91933b', isRoot: true, disabled: false },
+      { key: 2, label: 'cdx:0199a2ff', isRoot: false, disabled: false },
     ])
   })
   it('会話 id 未発行（Draft / 未発話）は「新品」、root 欠落（旧 SP）は非 root 扱い', () => {
     const items = rootPickerItems([
       { key: 3, stand: 'grok', engine_session_id: null, live: false, focused: false },
     ])
-    expect(items).toEqual([{ key: 3, label: 'grok:新品', isRoot: false }])
+    expect(items).toEqual([{ key: 3, label: 'grok:新品', isRoot: false, disabled: false }])
+  })
+  it('laneStand 指定時、engine 違いは disabled（旧名 hd/echoes は同 engine 扱い）', () => {
+    const items = rootPickerItems(
+      [
+        { key: 1, stand: 'hd', engine_session_id: 'aaaa1111', live: true, focused: true, root: true },
+        { key: 2, stand: 'codex', engine_session_id: 'bbbb2222', live: false, focused: false },
+      ],
+      'echoes',
+    )
+    expect(items.map((i) => i.disabled)).toEqual([false, true])
   })
 })

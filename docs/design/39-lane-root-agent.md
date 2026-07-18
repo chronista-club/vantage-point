@@ -173,7 +173,7 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
 | **P2** | ✨ New の意味論統一(Act 不問で session 追加 + Act II 切替、armed 撤去) + Reset lane を sidebar へ退避 | 旧 tui fresh 経路は Reset に移る |
 | **P2.5** | 会話 id SSOT 統合（registry 一枚岩 + 書き手漏斗 + eager 表示 + ラベル乖離バグ根治） | **doc 40 に昇格**（表示層だけの patch では §3-4 ⚠️ のバグが残るため構造ごと） |
 | **P3** | Root 切替 picker（リスト + 「✨ 新 ID から」+ wire 引き継ぎ警告） | 表示場所 = ヘッダ chip click（2026-07-18 決定、§1） |
-| **P4** | engine gating（cursor / codex の床 resume 可否を実測して picker に反映） | doc 37 の engine 実測系譜 |
+| **P4** | engine gating（床 resume 可否を実測して picker に反映）+ **respawn の stand を root session に追従させる**（現状 `restart_lane` は lane 固定 stand で spawn するため、P3 は同 engine のみ許可のガードで回避 — moody 指摘 2026-07-18） | doc 37 の engine 実測系譜 |
 
 ## 6. 既知の考慮点
 

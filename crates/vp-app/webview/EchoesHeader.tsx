@@ -84,18 +84,27 @@ export type RootPickerItem = {
   /** `cc:3d91933b` 形。会話 id が未発行（Draft / 未発話）の session は `cc:新品`。 */
   label: string
   isRoot: boolean
+  /** engine が lane と異なる = P3 では切替不可（P4 の engine gating で解禁予定）。 */
+  disabled: boolean
 }
 
 /**
  * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 — Root 切替 picker）。
- * 並びは SP の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。engine gating（P4）
- * までは全 session を列挙する。
+ * 並びは SP の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙し、
+ * engine 違いは disabled にする（backend の同 engine ガードと二重防御 — respawn が lane 固定
+ * stand で立つため、engine 違いを選ぶと別 engine の新品が無言で立つ。P4 で解禁予定）。
+ * 比較は chip prefix 単位（"hd"/"echoes" の旧名差を同 engine として吸収する粗い同値。
+ * 真のガードは backend 側）。laneStand 不明（null）は disabled にしない。
  */
-export function rootPickerItems(sessions: EchoesSession[]): RootPickerItem[] {
+export function rootPickerItems(
+  sessions: EchoesSession[],
+  laneStand?: string | null,
+): RootPickerItem[] {
   return sessions.map((s) => ({
     key: s.key,
     label: `${sessionChipPrefix(s.stand)}:${s.engine_session_id ? s.engine_session_id.slice(0, 8) : '新品'}`,
     isRoot: s.root === true,
+    disabled: laneStand != null && sessionChipPrefix(s.stand) !== sessionChipPrefix(laneStand),
   }))
 }
 
@@ -289,20 +298,26 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
               >
                 <div class="eh-rp-title">Root agent</div>
                 <For
-                  each={rootPickerItems(sessions())}
+                  each={rootPickerItems(sessions(), c().stand)}
                   fallback={<div class="eh-rp-empty">読み込み中…</div>}
                 >
                   {(item) => (
                     <button
                       type="button"
                       class="eh-rp-row"
-                      classList={{ 'eh-rp-root': item.isRoot }}
+                      classList={{ 'eh-rp-root': item.isRoot, 'eh-rp-disabled': item.disabled }}
                       title={
                         item.isRoot
                           ? '今の床（root）'
-                          : `この session を root にする（床を resume で張り替え）`
+                          : item.disabled
+                            ? 'engine が異なるため切替不可（P4 で解禁予定）'
+                            : 'この session を root にする（床を resume で張り替え）'
                       }
-                      onClick={() => (item.isRoot ? setPickerOpen(false) : switchRoot(item.key))}
+                      onClick={() => {
+                        if (item.disabled) return
+                        if (item.isRoot) setPickerOpen(false)
+                        else switchRoot(item.key)
+                      }}
                     >
                       {item.isRoot ? '●' : '○'} {item.label}
                       <span class="eh-rp-key">#{item.key}</span>
@@ -431,6 +446,8 @@ export const ECHOES_HEADER_CSS = `
 #echoes-header .eh-rp-row:hover{ background:var(--color-surface-bg-emphasis); }
 #echoes-header .eh-rp-key{ color:var(--color-text-secondary); }
 #echoes-header .eh-rp-row.eh-rp-root{ color:var(--color-brand-primary); }
+#echoes-header .eh-rp-row.eh-rp-disabled{ opacity:.45; cursor:default; }
+#echoes-header .eh-rp-row.eh-rp-disabled:hover{ background:transparent; }
 #echoes-header .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
 #echoes-header .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
 #echoes-header .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
