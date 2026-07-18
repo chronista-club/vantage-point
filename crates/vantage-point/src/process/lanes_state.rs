@@ -1404,7 +1404,7 @@ impl LanePool {
                 );
             }
         };
-        // replay-log tap: transcript を持たない engine（codex）の session にだけ付ける。
+        // replay-log tap: transcript を持たない engine（codex / grok）の session にだけ付ける。
         // claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を per-session
         // に disk 記録し、demand_start の no_session path がそれを replay 源にする（doc — engine
         // 非依存 replay log）。
