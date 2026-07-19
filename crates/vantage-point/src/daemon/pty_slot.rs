@@ -189,7 +189,7 @@ impl PtySlot {
         for arg in args {
             cmd.arg(arg);
         }
-        // doc 11 (PR-B): mise task 経由の起動で VP_CWD / VP_SESSION 等を子プロセスに渡す。
+        // doc 11 (PR-B): 起動 command が要求する env（VP_PROJECT / VP_LANE 等）を子プロセスに渡す。
         for (key, value) in env {
             cmd.env(key, value);
         }

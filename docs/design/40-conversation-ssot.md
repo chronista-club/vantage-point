@@ -163,8 +163,8 @@ lane 子プロセスへ注入される 6 種（stand_spawner L316-345）:
 | `VP_PROJECT` / `VP_LANE` | **残す** | hook 報告と wire address 導出の identity channel（本 doc 後、VP_LANE は store 鍵の役を失い wire 専用に単純化） |
 | `VP_PROFILE` | **残す** | dev/brew namespace 分離（#643） |
 | `MISE_TRUSTED_CONFIG_PATHS` | **残す** | mise trust footgun 抑止（PR2 実機検証、env-only で依存境界維持） |
-| `VP_SESSION` | **剪定候補** | repo 内に読み手ゼロ（書き手のみ）。「statusline 等の表示用」コメントのみ — user 側 statusline 設定の消費確認後に退役 |
-| `VP_CWD` | **剪定候補** | 同上（repo 内読み手ゼロ。delivery_actor も注入するが消費者不明） |
+| `VP_SESSION` | **退役済み（2026-07-19 PR-3）** | repo 内読み手ゼロ + user statusline（~/.claude/statusline/）に VP_ 参照ゼロを確認して注入撤去 |
+| `VP_CWD` | **退役済み（2026-07-19 PR-3）** | 同上（stand_spawner / delivery_actor の注入を撤去） |
 
 repo 全体では VP_* が 31 種。残りは各 component の config knob / dev override
 （VP_WORLD_URL / VP_OIDC_* / VP_SHELL / VP_TERM_TRACE 等）で本 doc の scope 外。
