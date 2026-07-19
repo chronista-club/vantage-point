@@ -92,25 +92,54 @@ describe('foldHeaderState — session summary の畳み込み（変化検知）'
     expect(foldHeaderState(h, sessionInit())).toBe(false)
   })
 
-  it('error は engineError を立て、true', () => {
+  it('error（本物の異常）は engineError を立て、true', () => {
     const h: EchoesHeaderState = { sessionId: 'sid-1' }
-    const err: EchoesEvent = { kind: 'error', message: 'エンジンとの接続が途絶しました' }
+    const err: EchoesEvent = { kind: 'error', message: 'engine turn error' }
     expect(foldHeaderState(h, err)).toBe(true)
-    expect(h.engineError).toBe('エンジンとの接続が途絶しました')
+    expect(h.engineError).toBe('engine turn error')
   })
 
   it('error 後の session_init は engineError を clear（engine 復帰）', () => {
     const h: EchoesHeaderState = {}
-    foldHeaderState(h, { kind: 'error', message: '途絶' })
+    foldHeaderState(h, { kind: 'error', message: 'engine turn error' })
     expect(foldHeaderState(h, sessionInit({ session_id: 'sid-2' }))).toBe(true)
     expect(h.engineError).toBeUndefined()
     expect(h.sessionId).toBe('sid-2')
   })
 
   it('turn_completed は生存証拠として engineError を clear', () => {
-    const h: EchoesHeaderState = { sessionId: 'sid-1', engineError: '途絶' }
+    const h: EchoesHeaderState = { sessionId: 'sid-1', engineError: 'engine turn error' }
     const done: EchoesEvent = { kind: 'turn_completed', session_id: 'sid-1' }
     expect(foldHeaderState(h, done)).toBe(true)
+    expect(h.engineError).toBeUndefined()
+  })
+
+  it('engine_exited（途絶 = 回復可能）は engineDormant を立て、engineError とは排他', () => {
+    const h: EchoesHeaderState = { sessionId: 'sid-1' }
+    const exited: EchoesEvent = { kind: 'engine_exited', message: 'エンジンが休眠しました' }
+    expect(foldHeaderState(h, exited)).toBe(true)
+    expect(h.engineDormant).toBe('エンジンが休眠しました')
+    expect(h.engineError).toBeUndefined()
+  })
+
+  it('engine_exited 後の session_init は engineDormant を clear（engine 復活）', () => {
+    const h: EchoesHeaderState = {}
+    foldHeaderState(h, { kind: 'engine_exited', message: '休眠' })
+    expect(foldHeaderState(h, sessionInit({ session_id: 'sid-2' }))).toBe(true)
+    expect(h.engineDormant).toBeUndefined()
+  })
+
+  it('turn_completed は engineDormant も clear（生存証拠）', () => {
+    const h: EchoesHeaderState = { sessionId: 'sid-1', engineDormant: '休眠' }
+    const done: EchoesEvent = { kind: 'turn_completed', session_id: 'sid-1' }
+    expect(foldHeaderState(h, done)).toBe(true)
+    expect(h.engineDormant).toBeUndefined()
+  })
+
+  it('error → engine_exited は engineError を消して engineDormant へ（休眠が上書き）', () => {
+    const h: EchoesHeaderState = { engineError: 'engine turn error' }
+    expect(foldHeaderState(h, { kind: 'engine_exited', message: '休眠' })).toBe(true)
+    expect(h.engineDormant).toBe('休眠')
     expect(h.engineError).toBeUndefined()
   })
 

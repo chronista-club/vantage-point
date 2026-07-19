@@ -124,8 +124,17 @@ pub enum EchoesEvent {
         context_window: Option<u64>,
     },
 
-    /// engine / 翻訳層のエラー。
+    /// engine / 翻訳層のエラー（turn の失敗・翻訳失敗など「本物の異常」）。
+    /// GUI は ⚠ engine（警告）として出す。
     Error { message: String },
+
+    /// engine プロセスの終了（stdout close = 途絶）。**異常ではなく回復可能な休眠**。
+    ///
+    /// Act II の engine は demand-driven（見ている間だけ常駐）なので、SP / daemon 再起動や
+    /// idle teardown で普通に終了する。次の submit / reconnect demand で自動復活するため、
+    /// [`Self::Error`] とは別語彙にして GUI が「💤 休眠（送信で起動）」と穏当に出せるようにする
+    /// （`⚠ engine` は turn crash 等の本物の異常だけに残す）。host.rs #692 の後続として分離。
+    EngineExited { message: String },
 
     /// clarifying question（AskUserQuestion の逆方向 `can_use_tool` 横取り、doc 35 PR1）。
     ///

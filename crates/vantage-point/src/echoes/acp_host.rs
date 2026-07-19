@@ -191,7 +191,8 @@ impl AcpInner {
                 }
                 EchoesEvent::SessionInit { .. }
                 | EchoesEvent::TurnCompleted { .. }
-                | EchoesEvent::Error { .. } => {
+                | EchoesEvent::Error { .. }
+                | EchoesEvent::EngineExited { .. } => {
                     st.in_flight.tail.clear();
                     st.in_flight.seq = st.in_flight.seq.wrapping_add(1);
                 }
@@ -623,9 +624,9 @@ async fn run_reader(
         } else {
             format!("\n{stderr_tail}")
         };
-        inner.emit(EchoesEvent::Error {
+        inner.emit(EchoesEvent::EngineExited {
             message: format!(
-                "{} が終了しました。次の送信で自動復旧します。{detail}",
+                "{} が休眠しました。次の送信で再開します。{detail}",
                 inner.engine.name()
             ),
         });

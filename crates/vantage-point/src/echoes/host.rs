@@ -103,7 +103,8 @@ fn fold_in_flight(f: &mut InFlight, out: &super::translate::Ingested) {
         match event {
             EchoesEvent::SessionInit { .. }
             | EchoesEvent::TurnCompleted { .. }
-            | EchoesEvent::Error { .. } => f.reset(),
+            | EchoesEvent::Error { .. }
+            | EchoesEvent::EngineExited { .. } => f.reset(),
             e if is_uncommitted_chunk(e) => f.tail.push(e.clone()),
             _ => {}
         }
@@ -157,6 +158,81 @@ pub struct EchoesAgentHost {
     pending_permissions: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }
 
+/// claude CLI が `--forward-subagent-text`（2.1.211+）を受理するか。
+///
+/// 未対応の版に渡すと `error: unknown option` で **spawn 即死**し、Act II engine が
+/// 一切起動しなくなる（respawn しても即死のループ = 「送信しても復活しない」。
+/// 2026-07-19 に claude 2.1.205 環境で実発生）。
+///
+/// probe 形は `-p --forward-subagent-text` + stdin 即 EOF（2.1.205 実測）:
+/// - 未対応: argv パースで `error: unknown option` を stderr に出して即終了
+/// - 対応: パース通過後「Input must be provided」で即終了（interactive 化せず API も呼ばれない）
+/// - `--help` / `--version` 併用は unknown option が黙殺され exit 0 になるため使えない。
+///   exit code は両形とも 1 なので **stderr の unknown option 文言**で判定する。
+///
+/// probe は SP プロセスごとに 1 回だけ（OnceLock。claude path の変更は SP 再起動で再評価）。
+/// probe 失敗は「付けない」に倒す（fail-open: subagent 発話が出ない機能退化 >> engine 全死）。
+fn supports_forward_subagent_text(claude_path: &str) -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let supported = probe_forward_subagent_text(claude_path);
+        if !supported {
+            tracing::warn!(
+                "claude CLI が --forward-subagent-text 未対応（2.1.211 未満）— \
+                 フラグ無しで起動します（Act II に subagent 発話は出ません。claude update で解消）"
+            );
+        }
+        supported
+    })
+}
+
+/// probe 本体（[`supports_forward_subagent_text`] の実装）。
+///
+/// 呼び出し経路は `ensure_chat_engine` = LanePool の **project 全体 write lock 保持下**なので、
+/// 子プロセスを無期限に待つと probe hang = 当該 project の全 lane 操作が凍る（spawn 即死より
+/// 悪い障害モード）。`try_wait` polling に期限を張り、超過は kill して未対応扱いに倒す
+/// （fail-open: 実測の probe は ~1s、期限は起動遅延マシンの余裕込み）。
+fn probe_forward_subagent_text(claude_path: &str) -> bool {
+    const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+    let Ok(mut child) = std::process::Command::new(claude_path)
+        .args(["-p", "--forward-subagent-text"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return false; // claude 不在等 — 実 spawn 側が同じ失敗を anyhow で報告する
+    };
+    let deadline = std::time::Instant::now() + PROBE_DEADLINE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                tracing::warn!(
+                    "claude probe が {PROBE_DEADLINE:?} 以内に終了せず — kill して未対応扱い"
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => {
+                let _ = child.kill();
+                return false;
+            }
+        }
+    }
+    // stderr は終了後に読む（エラーは 1 行だけなので pipe buffer 詰まりの懸念なし）。
+    // 未対応版のみ `error: unknown option` を出す — exit code は既知/未知どちらも非 0 で
+    // 判定に使えない（2.1.205 実測。probe doc の経緯参照）。
+    let mut stderr = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        use std::io::Read;
+        let _ = s.read_to_string(&mut stderr);
+    }
+    !stderr.contains("unknown option")
+}
+
 impl EchoesAgentHost {
     /// headless claude を spawn し、stdout ポンプを起動する。
     ///
@@ -191,7 +267,11 @@ impl EchoesAgentHost {
         //     delta では来ない）→ 翻訳は EchoesTranslator 側で snapshot から取り出す
         // 翻訳器が parent 付き行を親から隔離する前提の flag（孤児 ToolCallUpdate / 誤 commit 境界 /
         // 親の発話への混入を防ぐ）。 translate.rs の RawLine 分岐と対で読むこと。
-        cmd.arg("--forward-subagent-text");
+        // ⚠️ 2.1.211 未満は unknown option で spawn 即死するため、受理可否を probe して出し分ける
+        // （probe 詳細と実障害の経緯は supports_forward_subagent_text の doc）。
+        if supports_forward_subagent_text(&claude_path) {
+            cmd.arg("--forward-subagent-text");
+        }
 
         // Act I（TUI）が bypassPermissions で全ツール素通しなのに Act II を揃える（doc 33 §9、
         // user 要件 2026-07-09「act I レベルにここも合わせよう」）。bypassPermissions で TUI と
@@ -301,9 +381,8 @@ impl EchoesAgentHost {
             // engine が死んだ = tail の続きも pending 質問への応答先ももう無い。 掃除する。
             pump_in_flight.lock().expect("in_flight lock").reset();
             pump_pending.lock().expect("pending lock").clear();
-            let _ = tx.send(EchoesEvent::Error {
-                message: "エンジンとの接続が途絶しました（メッセージ送信で再起動します）"
-                    .to_string(),
+            let _ = tx.send(EchoesEvent::EngineExited {
+                message: "エンジンが休眠しました（メッセージ送信で再開します）".to_string(),
             });
         });
 
