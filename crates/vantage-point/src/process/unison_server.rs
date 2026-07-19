@@ -2494,6 +2494,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
+                engine_stand: None,
                 flow_state: None,
             });
             pool.insert_pty_slot(addr.clone(), slot, rx);
@@ -2617,6 +2618,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
         // hook 相当の pointer 書込（記録契機 UserPromptSubmit の後の状態）。
@@ -2678,6 +2680,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
 
@@ -2867,6 +2870,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
         addr

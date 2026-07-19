@@ -75,8 +75,10 @@ pub struct ActivePaneInfo<'a> {
     /// event 経路では供給されず、この setActivePane 相乗りが唯一の供給路になる
     /// （Act II では event 由来の真値が上書きする — EchoesHeader 側で OR merge）。
     pub session_id: Option<&'a str>,
-    /// Echoes 共通ヘッダの chip prefix 用: lane の stand（= engine 種別、"echoes" / "codex" /
-    /// "grok"）。session chip の engine 別 prefix 導出に使う。
+    /// Echoes 共通ヘッダの chip prefix 用: **root session の stand**（= 床に載る engine 種別、
+    /// "echoes" / "codex" / "grok" 等）。session chip の engine 別 prefix 導出に使う。doc 39 P4-C:
+    /// 供給値は `LaneInfo.engine_stand`（root の engine）優先で、無ければ lane 固定 `stand` に
+    /// fallback（push_active_view が解決済み — cross-engine root で chip prefix が正しく点く）。
     pub stand: Option<&'a str>,
 }
 

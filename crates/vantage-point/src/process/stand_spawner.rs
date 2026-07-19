@@ -369,17 +369,22 @@ pub fn build_stand_command(
     // engine_model は lane 単位（Act I/II 共有）のまま。
     let reg = crate::lane::session_registry::load(&addr.project, lane_label(addr), stand_name);
     let root = reg.root;
-    let root_conversation = reg
-        .sessions
-        .iter()
-        .find(|s| s.key == root)
-        .and_then(|s| s.conversation.clone());
+    let root_entry = reg.sessions.iter().find(|s| s.key == root);
+    let root_conversation = root_entry.and_then(|s| s.conversation.clone());
+    // doc 39 P4-A: 床に載る engine は **root session の stand** が決める（lane 作成時固定の
+    // `stand_name` ではない）。cross-engine の Root 切替（picker）で root を別 engine の session に
+    // 向けると、respawn する床もその engine で立つ。spawn 全経路（boot / respawn / restart）が
+    // この 1 箇所を通るため、engine 追従の修正点はここ一つで足りる。root entry 不在 / registry
+    // 破損は N=1 の既定形に解決済み（entry は必ず在る）だが、防御的に `stand_name` へ fallback。
+    let effective_stand = root_entry.map(|s| s.stand.as_str()).unwrap_or(stand_name);
     // codex の fresh clear は旧 store のまま（doc 40 §4 scope: 書き手漏斗は claude のみ。
     // codex は RpcHost 移行（TurnHost 撤去）で registry 直結に書き直す — bridge が読みを繋ぐ）。
     let store_label = crate::lane::session_registry::session_label(lane_label(addr), root);
 
     // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
-    let initial_input = match crate::echoes::EngineKind::from_stand(stand_name) {
+    // 選択鍵は effective_stand（= root session の engine、doc 39 P4-A）— lane 固定の stand_name
+    // でなく root の stand で arm を選ぶことが cross-engine root 解禁の核。
+    let initial_input = match crate::echoes::EngineKind::from_stand(effective_stand) {
         Some(crate::echoes::EngineKind::Claude) => {
             // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
             // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒すと
@@ -434,12 +439,14 @@ pub fn build_stand_command(
                 ))
             }
         }
-        None if stand_name == "shell" => None,
+        None if effective_stand == "shell" => None,
         None => {
             // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 stand の
-            // DB descriptor を床 shell で受ける（graceful degradation）。
+            // DB descriptor を床 shell で受ける（graceful degradation）。effective_stand は
+            // root session の stand（cross-engine root で lane 固定 stand と食い違い得る）。
             tracing::warn!(
-                "unknown/legacy stand '{}' — 床の login shell で起動します (addr={})",
+                "unknown/legacy stand '{}' (lane stand '{}') — 床の login shell で起動します (addr={})",
+                effective_stand,
                 stand_name,
                 addr
             );
@@ -740,6 +747,41 @@ mod tests {
         assert!(
             cmd.initial_input.is_none(),
             "撤去済み stand は engine を注入せず床のみ、 got: {:?}",
+            cmd.initial_input
+        );
+    }
+
+    /// doc 39 P4-A: 床の engine は lane 固定 stand でなく **root session の stand** で決まる。
+    /// lane stand=echoes でも root を codex session に向けたら床は codex が立つ（cross-engine の
+    /// Root 切替後の respawn 追従）。effective_stand の解決が engine arm 選択に効くことを固定する。
+    #[test]
+    fn build_stand_command_follows_root_session_engine() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        // lane stand=echoes だが root(#2) を codex に向ける（picker の cross-engine 切替後の registry）。
+        crate::lane::session_registry::create_root("vp", "conductor", "echoes", "codex")
+            .expect("create_root codex");
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let input = cmd.initial_input.expect("codex root は initial_input あり");
+        assert!(
+            input.starts_with("codex") && !input.contains("claude"),
+            "root が codex なら床は codex 起動（lane stand=echoes に引きずられない）: {input}"
+        );
+    }
+
+    /// doc 39 P4-A: root entry の stand が legacy / 撤去済み engine（cursor 等）なら、lane stand が
+    /// echoes でも床 shell に graceful fallback する（engine 注入なし = initial_input は None）。
+    #[test]
+    fn build_stand_command_root_legacy_stand_falls_back_to_floor() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::conductor("vp");
+        // lane stand=echoes だが root(#2) を撤去済み "cursor" に向ける（disk に残る legacy 値の再現）。
+        crate::lane::session_registry::create_root("vp", "conductor", "echoes", "cursor")
+            .expect("create_root cursor");
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        assert!(
+            cmd.initial_input.is_none(),
+            "未知 root stand は engine を注入せず床のみ、 got: {:?}",
             cmd.initial_input
         );
     }

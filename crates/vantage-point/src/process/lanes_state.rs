@@ -321,6 +321,13 @@ pub struct LaneInfo {
     /// （root session の conversation）に一本化。serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_session_id: Option<String>,
+    /// doc 39 P4-C: この lane の **root session の stand**（= 床に載る engine 種別）。Act I の
+    /// session chip prefix の供給源（`stand` は lane 作成時固定なので cross-engine root では床の
+    /// engine と食い違う — chip が旧 engine の prefix で点く）。`engine_session_id` と同じ
+    /// [`Self::refresh_engine_session_id`] で populate。root entry 不在は None = vp-app 側が従来の
+    /// lane `stand` に fallback。serde default + skip で wire 後方互換。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_stand: Option<String>,
     /// doc 40 §3: lane の session 構造（registry snapshot — focused / root /
     /// sessions[{key, stand, conversation}]）。LaneInfo を「lane の完全な descriptor」に
     /// する一歩（cwd は既在、sessions が最後の外付けだった）— chip とタブの供給を同一
@@ -369,6 +376,9 @@ impl LaneInfo {
             crate::lane::session_registry::load(&self.address.project, lane_label, &self.stand);
         let root = reg.sessions.iter().find(|s| s.key == reg.root);
         self.engine_session_id = root.and_then(|s| s.conversation.clone());
+        // doc 39 P4-C: chip prefix は root session の stand（= 床の engine）で決める。lane 固定の
+        // `self.stand` は cross-engine root で床と食い違うため、root entry の stand を別 field で運ぶ。
+        self.engine_stand = root.map(|s| s.stand.clone());
         self.cc_session_id = root
             .filter(|s| {
                 matches!(
@@ -578,6 +588,7 @@ impl LanePool {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         };
         pool.lanes.insert(addr, info);
@@ -1101,27 +1112,18 @@ impl LanePool {
             );
         }
         let lane_label = crate::process::stand_spawner::lane_label(addr);
-        // P3 ガード: 床の respawn（restart_lane → build_stand_command）は lane の stand で
-        // engine を決めるため、engine 違いの session を root にすると「選んだ会話と別 engine の
-        // 新品」が無言で立つ（moody 指摘 2026-07-18）。respawn を root session の stand に
-        // 追従させる一般解は P4（engine gating の実測）で行い、P3 は同 engine のみ許可する。
+        // doc 39 P4-B: 床の respawn（restart_lane → build_stand_command）は root session の stand で
+        // engine を決めるようになった（P4-A）ため、cross-engine の Root 切替は安全になった（選んだ
+        // 会話の engine がそのまま床に立つ）。P3 の同 engine ガードは解き、**未知 / 撤去済み stand**
+        // （legacy cursor 等 = `EngineKind::from_stand` が None）のみ拒否する — それらは床 shell に
+        // 落ちて engine が立たず resume も効かない = 選んだ会話に戻れない誤配送になるため。
         let reg = session_registry::load(&addr.project, lane_label, &info.stand);
         let entry = reg.sessions.iter().find(|s| s.key == key).ok_or_else(|| {
             anyhow::anyhow!("session が存在しません（addr={addr}, session={key}）")
         })?;
-        let same_engine = match (
-            crate::echoes::EngineKind::from_stand(&entry.stand),
-            crate::echoes::EngineKind::from_stand(&info.stand),
-        ) {
-            // 既知 engine 同士は EngineKind で比較（"hd"/"echoes" の旧名差を吸収）
-            (Some(a), Some(b)) => a == b,
-            // 未知 stand は raw 文字列一致のみ許可
-            _ => entry.stand == info.stand,
-        };
-        if !same_engine {
+        if crate::echoes::EngineKind::from_stand(&entry.stand).is_none() {
             anyhow::bail!(
-                "engine が異なる session への root 切替は未対応です（addr={addr}, session={key}: {} 床 に {} session。doc 39 P4 で解禁予定）",
-                info.stand,
+                "engine が未知の session への root 切替は未対応です（addr={addr}, session={key}: stand={} は床 shell のみで engine を持たない）",
                 entry.stand
             );
         }
@@ -1688,6 +1690,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
     }
@@ -1980,8 +1983,9 @@ mod tests {
         );
     }
 
-    /// doc 39 P3: Root 切替は Tui 限定 + 同 engine 限定（cross-engine は respawn が lane 固定
-    /// stand で立つため P4 まで拒否 — moody 2026-07-18。"hd"/"echoes" の旧名差は同 engine 扱い）。
+    /// doc 39 P4-B: Root 切替は Tui 限定 + **既知 engine 限定**（cross-engine は respawn が root
+    /// stand に追従する P4-A で安全になり解禁。未知 / 撤去済み stand は床 shell に落ちるため拒否の
+    /// まま。"hd"/"echoes" の旧名差は同 engine 扱い）。
     #[test]
     fn switch_root_validates_mode_engine_and_moves_root() {
         let _state = crate::test_env::state_dir();
@@ -2001,12 +2005,20 @@ mod tests {
         assert_eq!(reg.root, 2);
         assert_eq!(reg.focused, 2);
 
-        // engine 違い（codex）の #3 → Err（P4 まで拒否）
+        // cross-engine（codex）の #3 → P4 で解禁（通る、root/focused が動く）
         session_registry::create("vp", "conductor", "echoes", "codex", false).expect("create #3");
+        pool.prepare_switch_root_session(&addr, 3)
+            .expect("cross-engine（codex）への切替は P4 で通る");
+        let reg = session_registry::load("vp", "conductor", "echoes");
+        assert_eq!(reg.root, 3, "root は codex session #3 へ");
+        assert_eq!(reg.focused, 3);
+
+        // 未知 / 撤去済み stand（cursor）の #4 → Err（床 shell に落ちるため拒否のまま）
+        session_registry::create("vp", "conductor", "echoes", "cursor", false).expect("create #4");
         let err = pool
-            .prepare_switch_root_session(&addr, 3)
-            .expect_err("cross-engine は拒否");
-        assert!(err.to_string().contains("engine が異なる"), "err={err}");
+            .prepare_switch_root_session(&addr, 4)
+            .expect_err("未知 engine は拒否");
+        assert!(err.to_string().contains("engine が未知"), "err={err}");
 
         // 不在 key → Err
         assert!(pool.prepare_switch_root_session(&addr, 99).is_err());
@@ -2204,6 +2216,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         };
         let diff: LaneDiff = Diff::Add {
@@ -2258,6 +2271,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         };
         let event = SystemEvent::Lane(Diff::Add {

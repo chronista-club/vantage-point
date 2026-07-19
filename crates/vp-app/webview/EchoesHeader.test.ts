@@ -142,7 +142,7 @@ describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）',
   })
 })
 
-describe('rootPickerItems — Root 切替 picker の行導出（doc 39 P3）', () => {
+describe('rootPickerItems — Root 切替 picker の行導出（doc 39 P3 → P4）', () => {
   it('engine prefix + 会話 id 先頭 8 桁で行を作り、root flag と登録順を保つ', () => {
     const items = rootPickerItems([
       {
@@ -166,14 +166,13 @@ describe('rootPickerItems — Root 切替 picker の行導出（doc 39 P3）', (
     ])
     expect(items).toEqual([{ key: 3, label: 'grok:新品', isRoot: false, disabled: false }])
   })
-  it('laneStand 指定時、engine 違いは disabled（旧名 hd/echoes は同 engine 扱い）', () => {
-    const items = rootPickerItems(
-      [
-        { key: 1, stand: 'hd', engine_session_id: 'aaaa1111', live: true, focused: true, root: true },
-        { key: 2, stand: 'codex', engine_session_id: 'bbbb2222', live: false, focused: false },
-      ],
-      'echoes',
-    )
-    expect(items.map((i) => i.disabled)).toEqual([false, true])
+  it('cross-engine 行は enabled、未知 engine（撤去済み cursor）行だけ disabled（doc 39 P4）', () => {
+    const items = rootPickerItems([
+      { key: 1, stand: 'hd', engine_session_id: 'aaaa1111', live: true, focused: true, root: true },
+      { key: 2, stand: 'codex', engine_session_id: 'bbbb2222', live: false, focused: false },
+      { key: 3, stand: 'cursor', engine_session_id: null, live: false, focused: false },
+    ])
+    // cross-engine（codex）は P4 で解禁 = enabled、legacy/撤去済み stand（cursor → prefix sid）のみ disabled。
+    expect(items.map((i) => i.disabled)).toEqual([false, false, true])
   })
 })

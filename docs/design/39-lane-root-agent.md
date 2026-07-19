@@ -173,7 +173,33 @@ UserPromptSubmit hook（#795）は「実際に会話した session」の store �
 | **P2** | ✨ New の意味論統一(Act 不問で session 追加 + Act II 切替、armed 撤去) + Reset lane を sidebar へ退避 | 旧 tui fresh 経路は Reset に移る |
 | **P2.5** | 会話 id SSOT 統合（registry 一枚岩 + 書き手漏斗 + eager 表示 + ラベル乖離バグ根治） | **doc 40 に昇格**（表示層だけの patch では §3-4 ⚠️ のバグが残るため構造ごと） |
 | **P3** | Root 切替 picker（リスト + 「✨ 新 ID から」+ wire 引き継ぎ警告） | 表示場所 = ヘッダ chip click（2026-07-18 決定、§1） |
-| **P4** | engine gating（床 resume 可否を実測して picker に反映）+ **respawn の stand を root session に追従させる**（現状 `restart_lane` は lane 固定 stand で spawn するため、P3 は同 engine のみ許可のガードで回避 — moody 指摘 2026-07-18） | doc 37 の engine 実測系譜 |
+| **P4** | **respawn の stand を root session に追従** + picker の cross-engine 解禁（§5-1、2026-07-19 設計確定） | 「床 resume 可否の実測」は不要化 — 4 engine とも各 step で resume arm 出荷済み |
+
+### 5-1. P4 設計 — 床の engine は root session の stand が決める（2026-07-19）
+
+P3 時点の穴（moody 指摘）: `build_stand_command` の engine arm 選択が引数 `stand_name`
+（= `info.stand`、lane 作成時固定）で行われ、root entry の stand を見ない。cross-engine の
+root 切替を許すと「選んだ会話と別 engine の新品」が無言で立つため、P3 は同 engine ガードで
+封じていた。P4 でこれを根治し、ガードを解く:
+
+- **A. respawn 追従**: `build_stand_command` は registry を既に load している —
+  **root entry の stand を effective stand として engine arm を選ぶ**（entry 不在 /
+  from_stand 不能は従来どおり `stand_name` に fallback → 床 shell の graceful degradation）。
+  spawn 全経路（boot / respawn / restart）がこの 1 箇所を通るため、修正点は一つ。
+- **B. ガード緩和**: `prepare_switch_root_session` の同 engine 判定を「**既知 engine
+  （`EngineKind::from_stand` が Some）なら許可**」へ。未知 / 撤去済み stand（legacy cursor 等）
+  のみ Err のまま。
+- **C. chip の追従**: Act I chip の prefix 供給源は `LaneInfo.stand`（lane 固定）だった —
+  `LaneInfo.engine_stand`（= root entry の stand、`engine_session_id` と同じ
+  `refresh_engine_session_id` で populate）を新設し、setActivePane → HeaderLaneCtx の
+  stand をこれに切替（無ければ従来の lane stand）。
+- **D. picker 解禁**: `rootPickerItems` の disabled を「engine が未知（prefix `sid`）のみ」へ。
+  engine 違いの session は行の prefix（cc/cdx/grok/oc）で見分けた上で切替可能になる。
+- **床 resume 可否の「実測 gating」は不要になった**: claude `--resume` / codex thread id /
+  grok `-r` / opencode `-s` の resume arm は各 step（P1・doc 41〜43）で出荷・dogfood 済み。
+- **wire は無変更で安全**: `cc_session_id` は root が claude の時だけ Some（doc 40 の不変条件）
+  — 非 claude root への channel D は既存の非 claude lane と同じ経路（nudge）に落ちる。
+- Act II は per-session engine（`resolve_chat_session`）で既に cross-engine — P4 は床側の一般化のみ。
 
 ## 6. 既知の考慮点
 

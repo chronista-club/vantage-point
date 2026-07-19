@@ -1545,6 +1545,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
+                engine_stand: None,
                 flow_state: None,
             }
         };

@@ -77,33 +77,30 @@ export function sessionChipPrefix(stand: string | null | undefined): string {
   }
 }
 
-/** Root 切替 picker の 1 行（doc 39 P3）。 */
+/** Root 切替 picker の 1 行（doc 39 P3 → P4）。 */
 export type RootPickerItem = {
   key: number
   /** `cc:3d91933b` 形。会話 id が未発行（Draft / 未発話）の session は `cc:新品`。 */
   label: string
   isRoot: boolean
-  /** engine が lane と異なる = P3 では切替不可（P4 の engine gating で解禁予定）。 */
+  /** engine が未知（chip prefix が `sid` = 撤去済み / legacy stand）= 切替不可。 */
   disabled: boolean
 }
 
 /**
- * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 — Root 切替 picker）。
- * 並びは SP の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙し、
- * engine 違いは disabled にする（backend の同 engine ガードと二重防御 — respawn が lane 固定
- * stand で立つため、engine 違いを選ぶと別 engine の新品が無言で立つ。P4 で解禁予定）。
- * 比較は chip prefix 単位（"hd"/"echoes" の旧名差を同 engine として吸収する粗い同値。
- * 真のガードは backend 側）。laneStand 不明（null）は disabled にしない。
+ * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 → P4 — Root 切替 picker）。
+ * 並びは SP の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙する。
+ * doc 39 P4: 床の respawn が root session の stand で engine を決めるようになった（P4-A）ため、
+ * cross-engine の Root 切替が解禁された。disabled にするのは **engine が未知**（chip prefix が
+ * `sid` = 撤去済み cursor/agy や legacy stand — 床 shell に落ちて resume が効かない）行のみ。
+ * backend の `prepare_switch_root_session`（未知 engine を Err）と二重防御。
  */
-export function rootPickerItems(
-  sessions: EchoesSession[],
-  laneStand?: string | null,
-): RootPickerItem[] {
+export function rootPickerItems(sessions: EchoesSession[]): RootPickerItem[] {
   return sessions.map((s) => ({
     key: s.key,
     label: `${sessionChipPrefix(s.stand)}:${s.engine_session_id ? s.engine_session_id.slice(0, 8) : '新品'}`,
     isRoot: s.root === true,
-    disabled: laneStand != null && sessionChipPrefix(s.stand) !== sessionChipPrefix(laneStand),
+    disabled: sessionChipPrefix(s.stand) === 'sid',
   }))
 }
 
@@ -124,7 +121,9 @@ export type HeaderLaneCtx = {
    *  Act I は EchoesEvent が流れないため、この供給路が無いと chip が出ない
    *  （bug mem_1Cd3icsvKiGsQ8TtX8t1FR）。Act II では event 由来の真値が優先される。 */
   sessionId: string | null
-  /** lane の stand（= engine 種別）。session chip の prefix 導出用。 */
+  /** root session の stand（= 床に載る engine 種別）。session chip の prefix 導出用。
+   *  doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決した値
+   *  （cross-engine root でも chip が床の engine を映す。無ければ lane 固定 stand）。 */
   stand: string | null
 }
 
@@ -297,7 +296,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
               >
                 <div class="eh-rp-title">Root agent</div>
                 <For
-                  each={rootPickerItems(sessions(), c().stand)}
+                  each={rootPickerItems(sessions())}
                   fallback={<div class="eh-rp-empty">読み込み中…</div>}
                 >
                   {(item) => (
@@ -309,7 +308,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                         item.isRoot
                           ? '今の床（root）'
                           : item.disabled
-                            ? 'engine が異なるため切替不可（P4 で解禁予定）'
+                            ? 'engine が未知のため切替不可'
                             : 'この session を root にする（床を resume で張り替え）'
                       }
                       onClick={() => {

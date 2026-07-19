@@ -262,6 +262,11 @@ pub struct LaneInfo {
     /// shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
     #[serde(default)]
     pub engine_session_id: Option<String>,
+    /// doc 39 P4: root session の stand（= 床に載る engine 種別）。Act I の session chip prefix は
+    /// これを優先し（cross-engine root で床の engine を正しく映す）、無ければ `stand`（lane 固定）に
+    /// fallback。旧 SP からは欠落 = None。
+    #[serde(default)]
+    pub engine_stand: Option<String>,
     /// doc 33: Console のエンジンモード（"tui" | "chat"）。default = "tui"（wire 後方互換）。
     /// chat lane は engine-less（pid=None）が正常形なので、Dead-lane auto-respawn を
     /// 本 field で gate する（#683 再演防止）。
