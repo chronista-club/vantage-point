@@ -166,10 +166,14 @@ cargo clippy --workspace --all-targets    # Lint
 # dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
 mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動
 VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も効かせる（lane が全部落ちる）
+
+# webview bundle は生成物（commit しない、2026-07-19 転換 — docs/guide/webview.md が SSOT）
+mise run app:bundle                        # bun install --frozen-lockfile + bun run build（swap / release は内部で自動実行）
 ```
 
 > **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / SP / GUI を三点セットで立て直す要があり、素の `~/.cargo/bin/vp-app` は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
 > ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / SP は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= SP の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
+> webview（tsx/ts）変更は swap が内部で `app:bundle` を回すので手動 `bun run build` / `touch main_area.rs` は不要（旧儀式は build.rs の rerun-if-changed で根治）。webview 依存は npm semver pin（`file:` sibling 依存と bundle commit は 2026-07-19 に廃止）。creoui / club-unison の同時開発は `bun link`（docs/guide/webview.md）。
 > ⚠️ **swap 後は brew と現実が乖離する**: `app:swap` は brew cask 管理下の `.app` を dev build で上書きするが、Caskroom のメタデータは触らない。しかも swap した dev build は作業ツリーの version をそのまま名乗るため、**`brew upgrade --cask vantage-point` は version 一致で no-op になり dev build が居座り続ける**（Caskroom が持つのは実体コピーではなく `/Applications` への symlink なので brew は中身の差分を検知できない）。公式 release に戻すのは **`brew reinstall --cask vantage-point`**（`upgrade` では戻らない）。今どちらが入っているかは `spctl -a -t exec -vvv /Applications/VantagePoint.app` で判別できる（`Notarized Developer ID` = 公式 release / `Developer ID` = swap 済の dev build）。
 
 ## 設定・ポート

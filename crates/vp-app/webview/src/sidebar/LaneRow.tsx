@@ -8,7 +8,7 @@
  * ContextMenu に集約 (VP-204 PR-1)。
  */
 import { Show } from "solid-js";
-import { CreoIcon } from "creoui-icons-web";
+import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { PerformerStatusWire } from "../generated/PerformerStatusWire";
 import { sidebar } from "./store";

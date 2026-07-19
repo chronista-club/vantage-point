@@ -44,6 +44,10 @@ VP.log "#{VP.icon(:rocket)} release:mac #{tag}#{DRY ? '  (DRY: notarize/publish 
 if ENV["VP_RELEASE_SKIP_BUILD"] == "1"
   VP.log "#{VP.icon(:info)} VP_RELEASE_SKIP_BUILD=1 — cargo build を skip (既存 binary 前提)"
 else
+  # webview bundle は gitignore の生成物 (2026-07-19 に commit 運用を廃止)。 cargo build の
+  # 前段で毎回生成する — app:swap も本 task の DRY 経路を共有するので、 dogfood と release の
+  # bundle が同じ手順で作られる (stale bundle が ship される footgun の根治)。
+  VP.sh "mise run app:bundle"
   VP.sh "cargo build --release --target #{TARGET} -p vp-app -p vp-cli"
 end
 rel = "target/#{TARGET}/release"

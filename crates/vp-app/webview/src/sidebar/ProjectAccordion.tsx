@@ -16,7 +16,7 @@ import {
 	onCleanup,
 	onMount,
 } from "solid-js";
-import { CreoIcon } from "creoui-icons-web";
+import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { ProjectPaneState } from "../generated/ProjectPaneState";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";

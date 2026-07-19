@@ -16,8 +16,8 @@
 
 import { For, createSignal, onCleanup, onMount } from 'solid-js'
 import { render } from 'solid-js/web'
-import { CreoIcon } from 'creoui-icons-web'
-import type { IconName } from 'creoui-icons-web'
+import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
+import type { IconName } from '@chronista-club/creo-ui-icons-web'
 import {
   deleteItem,
   getCanvasState,

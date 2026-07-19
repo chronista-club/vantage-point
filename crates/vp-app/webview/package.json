@@ -1,7 +1,7 @@
 {
   "name": "vp-app-webview",
   "version": "0.0.1",
-  "description": "vp-app WebView 用 JS bundle (SolidJS + @chronista-club/creoui-editor-host)",
+  "description": "vp-app WebView 用 JS bundle (SolidJS + @chronista-club/creo-ui-editor-host)",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,10 +12,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chronista-club/creoui-editor-host": "file:../../../../creoui/packages/editor-host",
-    "@chronista-club/unison-client": "file:../../../../club-unison/clients/typescript",
+    "@chronista-club/creo-ui-editor-host": "^0.6.0",
+    "@chronista-club/creo-ui-icons-web": "^0.0.1",
+    "@chronista-club/unison-client": "^1.2.0",
     "animejs": "^4.5.0",
-    "creoui-icons-web": "file:../../../../creoui/packages/icons-web",
     "iconify-icon": "^3.0.2",
     "marked": "^18.0.3",
     "mermaid": "^11.6.0",

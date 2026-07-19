@@ -4,7 +4,7 @@
  * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `STAND_GLYPH` / `standDisplayName` /
  * `laneLabel` / `laneAddressKey` を SolidJS sidebar 用に port したもの。
  */
-import type { IconName } from "creoui-icons-web";
+import type { IconName } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 
 /**

@@ -6,7 +6,7 @@
  * `ActivitySnapshot` (Rust が 5s 周期で push) を消費する。
  */
 import { For, Show, createSignal, onCleanup } from "solid-js";
-import { CreoIcon } from "creoui-icons-web";
+import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { standDisplayName, standIcon } from "./lane";
