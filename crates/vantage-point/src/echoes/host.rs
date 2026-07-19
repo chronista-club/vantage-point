@@ -103,7 +103,8 @@ fn fold_in_flight(f: &mut InFlight, out: &super::translate::Ingested) {
         match event {
             EchoesEvent::SessionInit { .. }
             | EchoesEvent::TurnCompleted { .. }
-            | EchoesEvent::Error { .. } => f.reset(),
+            | EchoesEvent::Error { .. }
+            | EchoesEvent::EngineExited { .. } => f.reset(),
             e if is_uncommitted_chunk(e) => f.tail.push(e.clone()),
             _ => {}
         }
@@ -301,9 +302,8 @@ impl EchoesAgentHost {
             // engine が死んだ = tail の続きも pending 質問への応答先ももう無い。 掃除する。
             pump_in_flight.lock().expect("in_flight lock").reset();
             pump_pending.lock().expect("pending lock").clear();
-            let _ = tx.send(EchoesEvent::Error {
-                message: "エンジンとの接続が途絶しました（メッセージ送信で再起動します）"
-                    .to_string(),
+            let _ = tx.send(EchoesEvent::EngineExited {
+                message: "エンジンが休眠しました（メッセージ送信で再開します）".to_string(),
             });
         });
 

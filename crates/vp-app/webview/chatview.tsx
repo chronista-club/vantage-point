@@ -350,6 +350,13 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       sealLastAssistant(s) // error バブルを前 turn と分ける（§5.1）
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
+    case 'engine_exited':
+      // engine の休眠（途絶 = 回復可能）。error と違い会話バブルは足さない（休眠は会話本文ではなく
+      // ヘッダの 💤 休眠 / status で出す）。streaming / replaying は下ろす（error と同じ防御）。
+      s.streaming = false
+      s.replaying = false
+      sealLastAssistant(s) // 復活後の chunk と前 turn を融合させない（§5.1）
+      break
     case 'question':
       // engine が turn を pause して選択を待つ（HITL）。カーソル点滅（streaming）は止める。
       // 回答すると turn が継続し、後続 message_chunk が streaming を立て直す。
@@ -392,7 +399,8 @@ function foldEvent(lane: string, ev: EchoesEvent, session: number): void {
   // doc 38 §4.3: replay window の watchdog を張り替える。replay_start で arm、replay_end / error で
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
   if (ev.kind === 'replay_start') armReplayWatchdog(lane)
-  else if (ev.kind === 'replay_end' || ev.kind === 'error') clearReplayWatchdog(lane)
+  else if (ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited')
+    clearReplayWatchdog(lane) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
   if (ev.kind === 'turn_completed' || ev.kind === 'error') flushPending(lane)
@@ -513,8 +521,10 @@ export function deriveStatus(s: ChatState | null, nowMs = 0): EchoesStatus {
     if (last?.kind === 'tool' && !last.done) return { ...base, kind: 'tool', label: '実行中', detail: last.name, stalled }
     return { ...base, kind: 'streaming', label: '応答中…', stalled }
   }
-  // engine 途絶（host.rs の接続途絶 Error 相乗り）は idle だが「途絶」と出す。
-  if (lastEvent === 'error') return { ...base, kind: 'error', label: '途絶/エラー', stalled: false }
+  // engine の休眠（途絶 = 回復可能）は idle 扱いで「💤 休眠」と穏当に出す（error とは別）。
+  if (lastEvent === 'engine_exited') return { ...base, kind: 'idle', label: '💤 休眠', stalled: false }
+  // 本物の engine 異常（turn crash / 翻訳失敗）は「エラー」と正直に出す。
+  if (lastEvent === 'error') return { ...base, kind: 'error', label: 'エラー', stalled: false }
   return { ...base, kind: 'idle', label: '待機中', stalled: false }
 }
 
