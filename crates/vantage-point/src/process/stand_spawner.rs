@@ -377,9 +377,6 @@ pub fn build_stand_command(
     // この 1 箇所を通るため、engine 追従の修正点はここ一つで足りる。root entry 不在 / registry
     // 破損は N=1 の既定形に解決済み（entry は必ず在る）だが、防御的に `stand_name` へ fallback。
     let effective_stand = root_entry.map(|s| s.stand.as_str()).unwrap_or(stand_name);
-    // codex の fresh clear は旧 store のまま（doc 40 §4 scope: 書き手漏斗は claude のみ。
-    // codex は RpcHost 移行（TurnHost 撤去）で registry 直結に書き直す — bridge が読みを繋ぐ）。
-    let store_label = crate::lane::session_registry::session_label(lane_label(addr), root);
 
     // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
     // 選択鍵は effective_stand（= root session の engine、doc 39 P4-A）— lane 固定の stand_name
@@ -408,12 +405,12 @@ pub fn build_stand_command(
         }
         Some(crate::echoes::EngineKind::Codex) => {
             if fresh {
-                // fresh は記録破棄 + 素の codex（cursor と同じ exec-free path。次の id 採番は
-                // Act II の record-from-init に委ねる — codex に create-chat 相当が無いため）。
-                let _ = crate::lane::codex_session::clear(&addr.project, &store_label);
+                // fresh は素の codex（registry-native — 会話 id は registry の SSOT で、fresh の
+                // registry clear が既に処理済み。doc 40 PR-2 で旧 codex_sessions store は退役）。
+                // 次の id 採番は Act II の record-from-init（RpcHost）が registry に書き戻す。
                 Some("codex\r".to_string())
             } else {
-                // thread id は registry の root 会話 id（doc 40 §5 — bridge が旧 store も拾う）。
+                // thread id は registry の root 会話 id（doc 40 §5）。
                 Some(format!("{}\r", codex_command(root_conversation.as_deref())))
             }
         }
@@ -475,6 +472,11 @@ mod tests {
     /// 床は login shell、 cwd は project dir（旧 install-root ダンスの廃止を固定）。
     #[test]
     fn build_stand_command_floor_is_login_shell_at_project_dir() {
+        // build_stand_command は registry を読む（doc 39 P4-A: 床の engine は root session の
+        // stand に追従）。実 vp_state_dir の conductor registry を拾わないよう tempdir に隔離する
+        // （sibling の build_stand_command テスト群と同じ規律 — 未隔離だと実 registry の root=echoes を
+        // 拾い「shell なのに claude を注入」になって間欠 fail する）。
+        let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("shell", &addr, Path::new("/work/vp"), false);
         assert_eq!(
@@ -493,6 +495,8 @@ mod tests {
     /// VP_* env が注入されること（VP_SESSION は lane display 形 = tmux 名は廃止）。
     #[test]
     fn build_stand_command_injects_vp_env() {
+        // build_stand_command は registry を読む — 実 vp_state_dir を拾わないよう隔離（sibling 規律）。
+        let _state = crate::test_env::state_dir();
         let addr = LaneAddress::performer("vantage-point", "sub");
         let cmd = build_stand_command("echoes", &addr, Path::new("/work/vp"), false);
 
@@ -551,6 +555,10 @@ mod tests {
     /// 退役 stand ("tmux") / 未知 stand は床 shell に graceful 吸収。
     #[test]
     fn legacy_and_unknown_stands_fall_back_to_floor() {
+        // build_stand_command は registry を読む（doc 39 P4-A: 床 engine は root stand 追従）。
+        // 実 vp_state_dir の conductor registry（root=echoes）を拾うと未知 stand でも claude 注入に
+        // なるため、tempdir に隔離して「未知 stand → 床のみ」の意図を検証する（sibling 規律）。
+        let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         for stand in ["tmux", "opus-xhigh"] {
             let cmd = build_stand_command(stand, &addr, Path::new("/tmp"), false);
@@ -736,6 +744,8 @@ mod tests {
     /// 受ける（engine 注入なし = `initial_input` は None、warn ログのみ）。
     #[test]
     fn removed_stand_falls_back_to_bare_floor() {
+        // build_stand_command は registry を読む — 実 conductor registry を拾わないよう隔離（sibling 規律）。
+        let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("cursor", &addr, Path::new("/tmp"), false);
         #[cfg(not(windows))]

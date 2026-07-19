@@ -559,7 +559,7 @@ pub enum DeleteLaneError {
 /// 1. **architecture rule check**: Conductor は削除拒否 (`DeleteLaneError::ConductorCannotBeDeleted`)
 /// 2. **Phase 1 (in-memory authoritative mutation)**: `LanePool::remove` で LaneInfo + PtySlot を
 ///    drop (PtySlot::Drop で child kill + wait)
-/// 3. **Phase 2a (state file GC)**: `console_mode::clear` + `cc_session::clear` で lane 単位
+/// 3. **Phase 2a (state file GC)**: `console_mode::clear` + `session_registry::clear` で lane 単位
 ///    state file を削除 (best-effort。 残すと同名 lane 再作成時に旧 mode / 旧 session が蘇る)
 /// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_performer_in` で workspace
 ///    dir 削除 (best-effort、 既存挙動踏襲)
@@ -611,11 +611,12 @@ pub async fn delete_lane_orchestrated(
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
     // 子なので Phase 1 の remove (= PtySlot drop) で完全停止する（第 2 の生存木は無い）。
 
-    // Phase 2a: lane 単位 state file の GC (best-effort)。 console_mode / cc_session は
-    // lane 削除後に file が残ると、 同名 lane を作り直した時に旧 mode / 旧 session が
+    // Phase 2a: lane 単位 state file の GC (best-effort)。 console_mode / session registry は
+    // lane 削除後に file が残ると、 同名 lane を作り直した時に旧 mode / 旧 session（会話 id）が
     // 蘇る (ghost file の state leak)。 lane lifecycle の終端であるここで両方消す。
     // cleanup flag には従わない — workspace dir と違い state file は lane が消えた時点で
-    // 意味を失う (残す価値がない)。
+    // 意味を失う (残す価値がない)。doc 40 PR-2: 会話 id の SSOT は session registry
+    // （旧 cc/codex_sessions store は退役）なので、registry file を消す（旧 doc L182 の穴を塞ぐ）。
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     if let Err(e) = crate::lane::console_mode::clear(&addr.project, &lane_label) {
         tracing::warn!(
@@ -624,9 +625,9 @@ pub async fn delete_lane_orchestrated(
             e
         );
     }
-    if let Err(e) = crate::lane::cc_session::clear(&addr.project, &lane_label) {
+    if let Err(e) = crate::lane::session_registry::clear(&addr.project, &lane_label) {
         tracing::warn!(
-            "lane delete: cc_session state の破棄に失敗 (file 残置): addr={} err={}",
+            "lane delete: session registry state の破棄に失敗 (file 残置): addr={} err={}",
             addr,
             e
         );

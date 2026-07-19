@@ -566,8 +566,11 @@ fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
     if let Err(e) = super::console_mode::clear_in(base, project, lane) {
         eprintln!("⚠ console_mode state の破棄に失敗 (file 残置): lane={lane} err={e}");
     }
-    if let Err(e) = super::cc_session::clear_in(base, project, lane) {
-        eprintln!("⚠ cc_session state の破棄に失敗 (file 残置): lane={lane} err={e}");
+    // doc 40 PR-2: 会話 id の SSOT は session registry（旧 cc/codex_sessions store は退役）。
+    // lane 削除の終端で registry file ごと消す（残すと同名 lane 再作成時に旧 session /
+    // 旧会話 id が蘇る）。
+    if let Err(e) = super::session_registry::clear_in(base, project, lane) {
+        eprintln!("⚠ session registry state の破棄に失敗 (file 残置): lane={lane} err={e}");
     }
     if let Err(e) = super::engine_model::clear_in(base, project, lane) {
         eprintln!("⚠ engine_model state の破棄に失敗 (file 残置): lane={lane} err={e}");
@@ -1374,12 +1377,26 @@ mod tests {
             crate::lane::console_mode::ConsoleMode::Chat,
         )
         .expect("record mode");
-        crate::lane::cc_session::record_in(base, "vp", "feat", "sess-1").expect("record session");
+        // doc 40 PR-2: 会話 id は session registry が SSOT。GC が registry file を消すことを固定する。
+        crate::lane::session_registry::set_conversation_in(
+            base,
+            "vp",
+            "feat",
+            "echoes",
+            1,
+            Some("sess-1"),
+        )
+        .expect("record session conversation");
 
         clear_lane_state_files_in(base, &repo_root, "feat");
 
         assert_eq!(crate::lane::console_mode::last_in(base, "vp", "feat"), None);
-        assert_eq!(crate::lane::cc_session::last_in(base, "vp", "feat"), None);
+        assert_eq!(
+            crate::lane::session_registry::load_in(base, "vp", "feat", "echoes").sessions[0]
+                .conversation,
+            None,
+            "registry file が消え、既定形（会話 id なし）に戻る"
+        );
         // 未記録 lane / 二重呼び出しでも panic しない (best-effort 冪等)
         clear_lane_state_files_in(base, &repo_root, "feat");
     }
