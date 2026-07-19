@@ -403,7 +403,14 @@ function foldEvent(lane: string, ev: EchoesEvent, session: number): void {
     clearReplayWatchdog(lane) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
-  if (ev.kind === 'turn_completed' || ev.kind === 'error') flushPending(lane)
+  if (isTurnClosingEvent(ev.kind)) flushPending(lane)
+}
+
+/** turn が閉じた（= pending flush を発火してよい）event か（doc 35 §5.1、vitest 対象）。
+ *  engine_exited も含む（旧 error 相乗り時代の自己修復経路の継承）: pending の submit が
+ *  engine respawn のトリガになる = 「メッセージ送信で再開」が type-ahead でも成立する。 */
+export function isTurnClosingEvent(kind: EchoesEvent['kind']): boolean {
+  return kind === 'turn_completed' || kind === 'error' || kind === 'engine_exited'
 }
 
 /** doc 35 §5.1: buffer した type-ahead を engine に流す（対象は引数 lane = turn を閉じた lane）。 */

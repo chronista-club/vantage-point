@@ -175,14 +175,7 @@ pub struct EchoesAgentHost {
 fn supports_forward_subagent_text(claude_path: &str) -> bool {
     static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SUPPORTED.get_or_init(|| {
-        let supported = std::process::Command::new(claude_path)
-            .args(["-p", "--forward-subagent-text"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map(|o| !String::from_utf8_lossy(&o.stderr).contains("unknown option"))
-            .unwrap_or(false);
+        let supported = probe_forward_subagent_text(claude_path);
         if !supported {
             tracing::warn!(
                 "claude CLI が --forward-subagent-text 未対応（2.1.211 未満）— \
@@ -191,6 +184,53 @@ fn supports_forward_subagent_text(claude_path: &str) -> bool {
         }
         supported
     })
+}
+
+/// probe 本体（[`supports_forward_subagent_text`] の実装）。
+///
+/// 呼び出し経路は `ensure_chat_engine` = LanePool の **project 全体 write lock 保持下**なので、
+/// 子プロセスを無期限に待つと probe hang = 当該 project の全 lane 操作が凍る（spawn 即死より
+/// 悪い障害モード）。`try_wait` polling に期限を張り、超過は kill して未対応扱いに倒す
+/// （fail-open: 実測の probe は ~1s、期限は起動遅延マシンの余裕込み）。
+fn probe_forward_subagent_text(claude_path: &str) -> bool {
+    const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+    let Ok(mut child) = std::process::Command::new(claude_path)
+        .args(["-p", "--forward-subagent-text"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return false; // claude 不在等 — 実 spawn 側が同じ失敗を anyhow で報告する
+    };
+    let deadline = std::time::Instant::now() + PROBE_DEADLINE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                tracing::warn!(
+                    "claude probe が {PROBE_DEADLINE:?} 以内に終了せず — kill して未対応扱い"
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => {
+                let _ = child.kill();
+                return false;
+            }
+        }
+    }
+    // stderr は終了後に読む（エラーは 1 行だけなので pipe buffer 詰まりの懸念なし）。
+    // 未対応版のみ `error: unknown option` を出す — exit code は既知/未知どちらも非 0 で
+    // 判定に使えない（2.1.205 実測。probe doc の経緯参照）。
+    let mut stderr = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        use std::io::Read;
+        let _ = s.read_to_string(&mut stderr);
+    }
+    !stderr.contains("unknown option")
 }
 
 impl EchoesAgentHost {

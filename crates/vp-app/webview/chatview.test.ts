@@ -5,6 +5,7 @@ import {
   linkOpenPayload,
   deriveStatus,
   canDequeuePending,
+  isTurnClosingEvent,
   classifyToolRun,
   toolGroupStatus,
   formatToolInput,
@@ -172,9 +173,25 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     const stalled = fold([{ kind: 'message_chunk', text: 'hi' }])
     stalled.lastEventAt = 1000
     expect(deriveStatus(stalled, 1000 + 9000)).toMatchObject({ kind: 'streaming', stalled: true })
-    // 途絶(error)は待機ではなく途絶として出す
+    // 本物の異常(error)は待機ではなくエラーとして出す
     const errored = fold([{ kind: 'error', message: 'x' }])
-    expect(deriveStatus(errored)).toMatchObject({ kind: 'error' })
+    expect(deriveStatus(errored)).toMatchObject({ kind: 'error', label: 'エラー' })
+    // engine の休眠(engine_exited)は異常ではない = idle 扱いで「💤 休眠」と穏当に出す
+    const dormant = fold([{ kind: 'engine_exited', message: '休眠' }])
+    expect(deriveStatus(dormant)).toMatchObject({ kind: 'idle', label: '💤 休眠' })
+  })
+
+  it('isTurnClosingEvent: pending flush の発火契機（doc 35 §5.1 + engine_exited の自己修復継承）', () => {
+    // turn を閉じる 3 種 = flush してよい（engine_exited は pending 送信が respawn トリガを兼ねる）
+    expect(isTurnClosingEvent('turn_completed')).toBe(true)
+    expect(isTurnClosingEvent('error')).toBe(true)
+    expect(isTurnClosingEvent('engine_exited')).toBe(true)
+    // turn 継続中 / 特殊 window では流さない（順序が壊れる — foldEvent のコメント参照）
+    expect(isTurnClosingEvent('message_chunk')).toBe(false)
+    expect(isTurnClosingEvent('replay_start')).toBe(false)
+    expect(isTurnClosingEvent('replay_end')).toBe(false)
+    expect(isTurnClosingEvent('question')).toBe(false)
+    expect(isTurnClosingEvent('permission_request')).toBe(false)
   })
 
   it('canDequeuePending: 送信待ちを入力欄へ戻せる条件（composer が空 かつ pending あり）', () => {
