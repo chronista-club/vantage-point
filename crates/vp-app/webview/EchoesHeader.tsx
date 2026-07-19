@@ -350,10 +350,16 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                 {permModeLabel(summary().permissionMode!)}
               </span>
             </Show>
-            {/* engine 途絶は Act II 表示時のみ（Act I は engine-less が正常形なので出さない）。 */}
+            {/* engine 状態は Act II 表示時のみ（Act I は engine-less が正常形なので出さない）。
+                本物の異常（⚠ engine）と回復可能な休眠（💤 休眠）を分けて出す。error 優先。 */}
             <Show when={mode() === 'chat' && summary().engineError}>
               <span class="eh-chip eh-engine-down" title={summary().engineError}>
                 ⚠ engine
+              </span>
+            </Show>
+            <Show when={mode() === 'chat' && !summary().engineError && summary().engineDormant}>
+              <span class="eh-chip eh-engine-dormant" title={summary().engineDormant}>
+                💤 休眠
               </span>
             </Show>
           </>
@@ -423,6 +429,8 @@ export const ECHOES_HEADER_CSS = `
 #echoes-header .eh-cwd, #echoes-header .eh-session{
   font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; }
 #echoes-header .eh-engine-down{ color:#f0a3a3; border-color:rgba(240,163,163,.4); }
+/* 休眠は異常ではないので muted（警告色にしない）。送信で起きることを title で伝える。 */
+#echoes-header .eh-engine-dormant{ color:var(--color-text-tertiary); border-color:var(--color-border-subtle); opacity:.75; }
 #echoes-header .eh-stop{ color:#f0a3a3; }
 #echoes-header .eh-spacer{ flex:1; min-width:8px; }
 #echoes-header .eh-actions{ display:flex; align-items:center; gap:8px; -webkit-app-region:no-drag; }

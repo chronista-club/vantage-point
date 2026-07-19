@@ -85,6 +85,9 @@ export type EchoesEvent =
       context_window?: number
     }
   | { kind: 'error'; message: string }
+  /** engine プロセスの終了（途絶）= 回復可能な休眠。error（本物の異常）と別語彙で、
+   *  GUI は「💤 休眠（送信で起動）」と穏当に出す。次の submit / reconnect demand で復活する。 */
+  | { kind: 'engine_exited'; message: string }
   /** clarifying question（AskUserQuestion の can_use_tool 横取り、doc 35 PR1）。
    *  GUI は PromptCard で選択肢を描き、回答を echoes:respond {request_id, answers} で戻す。 */
   | { kind: 'question'; request_id: string; questions: QuestionSpec[] }
@@ -194,9 +197,12 @@ export type EchoesHeaderState = {
   sessionId?: string
   model?: string
   permissionMode?: string
-  /** 直近の engine 途絶/エラー（v0.35.2 の Error broadcast 受け皿）。
+  /** 直近の engine 異常（turn crash / 翻訳失敗など「本物の error」）。⚠ engine（警告）で出す。
    *  session_init（engine 復帰）/ turn_completed（生存証拠）で clear。 */
   engineError?: string
+  /** engine プロセスの休眠（途絶 = 回復可能）。💤 休眠 で穏当に出す。error とは排他
+   *  （engine_exited は clean exit なので engineError を消す）。session_init / turn_completed で clear。 */
+  engineDormant?: string
 }
 
 /**
@@ -211,22 +217,37 @@ export function foldHeaderState(h: EchoesHeaderState, event: EchoesEvent): boole
         h.sessionId !== event.session_id ||
         (event.model !== undefined && h.model !== event.model) ||
         (event.permission_mode !== undefined && h.permissionMode !== event.permission_mode) ||
-        h.engineError !== undefined
+        h.engineError !== undefined ||
+        h.engineDormant !== undefined
       h.sessionId = event.session_id
       if (event.model !== undefined) h.model = event.model
       if (event.permission_mode !== undefined) h.permissionMode = event.permission_mode
+      // engine 復帰 = error / 休眠 の両方を下ろす。
       h.engineError = undefined
+      h.engineDormant = undefined
       return changed
     }
     case 'turn_completed': {
-      const changed = h.sessionId !== event.session_id || h.engineError !== undefined
+      const changed =
+        h.sessionId !== event.session_id || h.engineError !== undefined || h.engineDormant !== undefined
       h.sessionId = event.session_id
+      // 生存証拠 = error / 休眠 の両方を下ろす。
       h.engineError = undefined
+      h.engineDormant = undefined
       return changed
     }
     case 'error': {
-      const changed = h.engineError !== event.message
+      // 本物の異常 → engineError。休眠表示とは排他。
+      const changed = h.engineError !== event.message || h.engineDormant !== undefined
       h.engineError = event.message
+      h.engineDormant = undefined
+      return changed
+    }
+    case 'engine_exited': {
+      // 途絶 = 回復可能な休眠 → engineDormant。clean exit なので engineError は消す。
+      const changed = h.engineDormant !== event.message || h.engineError !== undefined
+      h.engineDormant = event.message
+      h.engineError = undefined
       return changed
     }
     default:
