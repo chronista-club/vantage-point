@@ -51,45 +51,9 @@ pub fn serve(
 ) -> Response<Cow<'static, [u8]>> {
     let uri = request.uri().to_string();
 
-    // ── dev HMR: VP_WEBVIEW_DEV=<assets dir> なら *.bundle.js を disk から fresh read。
-    // 焼き込み (include_bytes!) を bypass するので、 `bun run dev` (esbuild watch) で
-    // bundle を更新 → WebView reload するだけで反映され、 cargo build が不要になる。
-    // miss / read 失敗時は下の baked asset に fallback (= prod と同じ挙動)。
-    //
-    // ⚠️ 制約 (WebView 統合 step 3a 以降): 現行 `MAIN_AREA_HTML` は editor-host / sidebar の両 bundle を
-    // include_str! で **inline** しているため、browser は `*.bundle.js` URL を request せず、この
-    // disk-read path は発火しない。よって inline bundle の HMR は効かず、webview TS 変更は
-    // `bun run build` + cargo 再ビルドが要る。bundle を外部 `<script src>` 化するか index.html を
-    // runtime 構築する形に戻せば復活できる (将来検討)。
-    if let Ok(dir) = std::env::var("VP_WEBVIEW_DEV")
-        && let Some(path) = uri.split("://").nth(1)
-        && path.ends_with(".bundle.js")
-    {
-        let fname = path.rsplit('/').next().unwrap_or(path);
-        let disk = std::path::Path::new(&dir).join(fname);
-        match std::fs::read(&disk) {
-            Ok(bytes) => {
-                tracing::info!(
-                    target: "vp_app::asset",
-                    %uri, disk = %disk.display(), bytes = bytes.len(),
-                    "DEV disk-read (VP_WEBVIEW_DEV)"
-                );
-                return Response::builder()
-                    .status(200)
-                    .header("Content-Type", "application/javascript; charset=utf-8")
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Cache-Control", "no-store")
-                    .body(Cow::Owned(bytes))
-                    .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])));
-            }
-            Err(e) => tracing::warn!(
-                target: "vp_app::asset",
-                %uri, disk = %disk.display(), error = %e,
-                "DEV disk-read 失敗 → baked に fallback"
-            ),
-        }
-    }
-
+    // 注: 旧 `VP_WEBVIEW_DEV` (bundle.js の disk-read HMR) は撤去した。現行 `MAIN_AREA_HTML` は
+    // 各 bundle を include_str! で inline するため browser が `*.bundle.js` URL を request せず、
+    // 分岐は発火しない dead branch だった。復活手順（bundle の外部 `<script src>` 化）は git history。
     match lookup_asset(&uri, extra) {
         Some((bytes, content_type)) => {
             tracing::info!(

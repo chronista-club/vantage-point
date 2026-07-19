@@ -611,34 +611,14 @@ pub async fn delete_lane_orchestrated(
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
     // 子なので Phase 1 の remove (= PtySlot drop) で完全停止する（第 2 の生存木は無い）。
 
-    // Phase 2a: lane 単位 state file の GC (best-effort)。 console_mode / session registry は
-    // lane 削除後に file が残ると、 同名 lane を作り直した時に旧 mode / 旧 session（会話 id）が
-    // 蘇る (ghost file の state leak)。 lane lifecycle の終端であるここで両方消す。
-    // cleanup flag には従わない — workspace dir と違い state file は lane が消えた時点で
-    // 意味を失う (残す価値がない)。doc 40 PR-2: 会話 id の SSOT は session registry
-    // （旧 cc/codex_sessions store は退役）なので、registry file を消す（旧 doc L182 の穴を塞ぐ）。
+    // Phase 2a: lane-scoped state file の一元 GC (best-effort)。lane 削除後に file が残ると、
+    // 同名 lane を作り直した時に旧 mode / 旧 session（会話 id）/ 旧 replay 等が蘇る
+    // (ghost file の state leak)。cleanup flag には従わない — workspace dir と違い state file は
+    // lane が消えた時点で意味を失う (残す価値がない)。破棄リストは CLI 側 (`remove_performer`)
+    // と共有する `clear_lane_state` に一元化 (2 経路が別リストを持って片方に漏れる ghost leak を
+    // 構造的に断つ — replay_log / terminal_replay / lane_id はここが従来欠落していた)。
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
-    if let Err(e) = crate::lane::console_mode::clear(&addr.project, &lane_label) {
-        tracing::warn!(
-            "lane delete: console_mode state の破棄に失敗 (file 残置): addr={} err={}",
-            addr,
-            e
-        );
-    }
-    if let Err(e) = crate::lane::session_registry::clear(&addr.project, &lane_label) {
-        tracing::warn!(
-            "lane delete: session registry state の破棄に失敗 (file 残置): addr={} err={}",
-            addr,
-            e
-        );
-    }
-    if let Err(e) = crate::lane::engine_model::clear(&addr.project, &lane_label) {
-        tracing::warn!(
-            "lane delete: engine_model state の破棄に失敗 (file 残置): addr={} err={}",
-            addr,
-            e
-        );
-    }
+    crate::lane::commands::clear_lane_state(&addr.project, &lane_label);
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。

@@ -46,24 +46,44 @@ const REPLAY_CAP: usize = 256 * 1024;
 /// を拾えないため、 別の定期 task で seq 変化時のみ書く。
 const REPLAY_FLUSH_INTERVAL: Duration = Duration::from_secs(3);
 
+/// replay file 名の sanitize (console_mode / cc_session と同一規則: `/` `\` `.` → `-`)。
+fn sanitize_replay(part: &str) -> String {
+    part.chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | '.') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// state base dir 注入版の replay file path (純関数、 テスト / lane state GC 用)。
+pub fn replay_file_path_in(base: &Path, project: &str, lane: &str) -> PathBuf {
+    base.join("terminal_replay").join(format!(
+        "{}__{}",
+        sanitize_replay(project),
+        sanitize_replay(lane)
+    ))
+}
+
 /// lane の replay 永続 file path。 `<project>__<lane>` (console_mode と同一命名規則)。
 ///
 /// `project` / `lane` は LaneAddress 由来 (`lane` は "conductor" / performer 名)。
 pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
-    fn sanitize(part: &str) -> String {
-        part.chars()
-            .map(|c| {
-                if matches!(c, '/' | '\\' | '.') {
-                    '-'
-                } else {
-                    c
-                }
-            })
-            .collect()
+    replay_file_path_in(&crate::config::vp_state_dir(), project, lane)
+}
+
+/// lane 削除時に replay file を消す (不在は no-op、 best-effort)。base 注入版。
+///
+/// lane-scoped state の一元 GC ([`crate::lane::commands::clear_lane_state_in`]) が呼ぶ。
+/// 残すと同名 lane 再作成時に旧画面の scrollback が seed されて蘇る (ghost replay)。
+pub fn clear_replay_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(replay_file_path_in(base, project, lane)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
     }
-    crate::config::vp_state_dir()
-        .join("terminal_replay")
-        .join(format!("{}__{}", sanitize(project), sanitize(lane)))
 }
 
 /// replay buffer を atomic (`.tmp` → rename) に disk へ書く。 親 dir は都度 ensure。

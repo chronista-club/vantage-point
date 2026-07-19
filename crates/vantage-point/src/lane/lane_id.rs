@@ -74,6 +74,18 @@ pub fn load_or_create(project: &str, lane: &str) -> LaneId {
     load_or_create_in(&crate::config::vp_state_dir(), project, lane)
 }
 
+/// lane 削除時に id file を消す (不在は no-op、 best-effort)。base 注入版。
+///
+/// lane-scoped state の一元 GC ([`crate::lane::commands::clear_lane_state_in`]) が呼ぶ。
+/// 残すと同名 lane を作り直した時に旧 lane の安定 id が復元され、 別物のはずの新 lane が
+/// 旧 identity を名乗る (position-independent id の目的に反する ghost leak)。
+pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(id_file_in(base, project, lane)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
