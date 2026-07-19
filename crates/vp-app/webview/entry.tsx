@@ -1,12 +1,12 @@
 /**
  * vp-app WebView 用 entry point.
  *
- * SolidJS + @chronista-club/creoui-editor-host を bundle して、main WebView の `<div id="editor-root">`
+ * SolidJS + @chronista-club/creo-ui-editor-host を bundle して、main WebView の `<div id="editor-root">`
  * に EditorLayer を mount する。
  *
- * 起動: Ctrl+Shift+E で Editor Mode が toggle される (@chronista-club/creoui-editor-host の default keybind)。
+ * 起動: Ctrl+Shift+E で Editor Mode が toggle される (@chronista-club/creo-ui-editor-host の default keybind)。
  *
- * 主要 features (@chronista-club/creoui-editor-host から継承):
+ * 主要 features (@chronista-club/creo-ui-editor-host から継承):
  * - DOM auto-discover: 既知の CSS 変数 (--typography-family-mono など) を自動 bind
  * - DevTools Console REPL: window.creoEditor.slider(...) 等で field 動的追加
  * - URL shareable state: #creo=... で URL 1 本で共有
@@ -89,7 +89,7 @@ import {
 	cssVarNumberTarget,
 	cssVarTarget,
 	number,
-} from "@chronista-club/creoui-editor-host";
+} from "@chronista-club/creo-ui-editor-host";
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";

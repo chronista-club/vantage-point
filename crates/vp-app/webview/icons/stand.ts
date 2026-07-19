@@ -1,11 +1,11 @@
-// VP Stand glyph mapping (creoui-icons-web の VP-domain alias)。
+// VP Stand glyph mapping (@chronista-club/creo-ui-icons-web の VP-domain alias)。
 //
 // Stand 概念翻訳辞書も兼ねる: 各 JoJo Stand → Phosphor icon の対応。
 // state-driven: default = regular, active = fill, disabled = thin weight。
 //
 // 参考 memory: ~/.claude/projects/.../memory/feedback_creo_ui_icon_dual_axis.md
 
-import type { IconName } from 'creoui-icons-web'
+import type { IconName } from '@chronista-club/creo-ui-icons-web'
 
 // PR-pre2 (VP-118): heavens_door → echoes rename。
 // emoji 📖 → 💬、 icon 'ph:book-open' → 'ph:chat-circle' (prompt/response 対話型)。

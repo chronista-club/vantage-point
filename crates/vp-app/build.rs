@@ -12,6 +12,24 @@
 //! (Windows 対応で mac build を退行させない)。
 
 fn main() {
+    // webview bundle の存在ガード + 変更検知（全 OS 共通、2026-07-19）。
+    //
+    // assets/*.bundle.js は gitignore の生成物（bundle commit 運用は廃止 — 依存を npm 化した
+    // ことで「commit で pin する」必要が消えた）。include_str!（main_area.rs）が不在時に出す
+    // 不可解なコンパイルエラーの前に、生成手順を案内して fail する。
+    // rerun-if-changed は「bundle を作り直したのに cargo が embed を取りこぼす」旧 footgun
+    // （touch main_area.rs の儀式）の根治。
+    for bundle in ["assets/editor-host.bundle.js", "assets/sidebar.bundle.js"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(bundle);
+        assert!(
+            path.exists(),
+            "webview bundle が未生成です: {bundle}\n\
+             先に `mise run app:bundle`（または crates/vp-app/webview で \
+             `bun install --frozen-lockfile && bun run build`）を実行してください。"
+        );
+        println!("cargo:rerun-if-changed={bundle}");
+    }
+
     // target 判定は cfg block の **中** で行う。 外に出すと非 windows では後続が cfg で消えて
     // `return;` が関数末尾になり、 clippy::needless_return が出る (Windows host の clippy では
     // 原理的に踏めず、 mac CI でだけ落ちる)。

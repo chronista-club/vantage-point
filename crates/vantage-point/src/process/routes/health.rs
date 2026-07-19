@@ -317,7 +317,7 @@ pub async fn canvas_layout_save_handler(
 // core (`state.file_watchers`) は QUIC dispatch が同じく呼ぶので維持。
 
 // 旧 GET /wasm/{filename} (vp-mdast-wasm 配信 endpoint) は 2026-05-25 削除。
-// frontend (vp-app webview) は `marked` (npm) + `@chronista-club/creoui-editor-host`
+// frontend (vp-app webview) は `marked` (npm) + `@chronista-club/creo-ui-editor-host`
 // に markdown rendering を移行済で、 vp_mdast_wasm 関連 asset は dead 化していた。
 // vp-mdast / vp-mdast-wasm crate + web/wasm/ asset (482KB) と共に撤去。
 

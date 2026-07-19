@@ -1,0 +1,3 @@
+# webview bundle は生成物 (mise run app:bundle / bun run build)。2026-07-19 に commit 運用を廃止 —
+# 依存の npm 化 (semver pin + bun.lock) で「commit で内容を pin する」必要が消えた。
+*.bundle.js

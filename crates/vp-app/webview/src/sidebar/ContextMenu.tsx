@@ -9,8 +9,8 @@
  * 本 module 内の module-level signal で singleton 管理する。
  */
 import { For, Show, createSignal } from 'solid-js'
-import { CreoIcon } from 'creoui-icons-web'
-import type { IconName } from 'creoui-icons-web'
+import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
+import type { IconName } from '@chronista-club/creo-ui-icons-web'
 
 /** context menu の 1 項目。 */
 export type ContextMenuItem = {
