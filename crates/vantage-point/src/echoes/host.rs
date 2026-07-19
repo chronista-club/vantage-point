@@ -158,6 +158,41 @@ pub struct EchoesAgentHost {
     pending_permissions: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }
 
+/// claude CLI が `--forward-subagent-text`（2.1.211+）を受理するか。
+///
+/// 未対応の版に渡すと `error: unknown option` で **spawn 即死**し、Act II engine が
+/// 一切起動しなくなる（respawn しても即死のループ = 「送信しても復活しない」。
+/// 2026-07-19 に claude 2.1.205 環境で実発生）。
+///
+/// probe 形は `-p --forward-subagent-text` + stdin 即 EOF（2.1.205 実測）:
+/// - 未対応: argv パースで `error: unknown option` を stderr に出して即終了
+/// - 対応: パース通過後「Input must be provided」で即終了（interactive 化せず API も呼ばれない）
+/// - `--help` / `--version` 併用は unknown option が黙殺され exit 0 になるため使えない。
+///   exit code は両形とも 1 なので **stderr の unknown option 文言**で判定する。
+///
+/// probe は SP プロセスごとに 1 回だけ（OnceLock。claude path の変更は SP 再起動で再評価）。
+/// probe 失敗は「付けない」に倒す（fail-open: subagent 発話が出ない機能退化 >> engine 全死）。
+fn supports_forward_subagent_text(claude_path: &str) -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let supported = std::process::Command::new(claude_path)
+            .args(["-p", "--forward-subagent-text"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map(|o| !String::from_utf8_lossy(&o.stderr).contains("unknown option"))
+            .unwrap_or(false);
+        if !supported {
+            tracing::warn!(
+                "claude CLI が --forward-subagent-text 未対応（2.1.211 未満）— \
+                 フラグ無しで起動します（Act II に subagent 発話は出ません。claude update で解消）"
+            );
+        }
+        supported
+    })
+}
+
 impl EchoesAgentHost {
     /// headless claude を spawn し、stdout ポンプを起動する。
     ///
@@ -192,7 +227,11 @@ impl EchoesAgentHost {
         //     delta では来ない）→ 翻訳は EchoesTranslator 側で snapshot から取り出す
         // 翻訳器が parent 付き行を親から隔離する前提の flag（孤児 ToolCallUpdate / 誤 commit 境界 /
         // 親の発話への混入を防ぐ）。 translate.rs の RawLine 分岐と対で読むこと。
-        cmd.arg("--forward-subagent-text");
+        // ⚠️ 2.1.211 未満は unknown option で spawn 即死するため、受理可否を probe して出し分ける
+        // （probe 詳細と実障害の経緯は supports_forward_subagent_text の doc）。
+        if supports_forward_subagent_text(&claude_path) {
+            cmd.arg("--forward-subagent-text");
+        }
 
         // Act I（TUI）が bypassPermissions で全ツール素通しなのに Act II を揃える（doc 33 §9、
         // user 要件 2026-07-09「act I レベルにここも合わせよう」）。bypassPermissions で TUI と
