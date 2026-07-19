@@ -1667,7 +1667,11 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             lane_name: lane.and_then(|l| l.name.as_deref()),
             // Act I の session chip はこの相乗りが唯一の供給路（Act II は event が上書き）。
             session_id: lane.and_then(|l| l.engine_session_id.as_deref()),
-            stand: lane.map(|l| l.stand.as_str()).filter(|st| !st.is_empty()),
+            // doc 39 P4-C: chip prefix は root session の engine（engine_stand）を優先する
+            // （cross-engine root で床の engine を正しく映す）。無ければ lane 固定の stand に fallback。
+            stand: lane
+                .map(|l| l.engine_stand.as_deref().unwrap_or(l.stand.as_str()))
+                .filter(|st| !st.is_empty()),
         }
     } else {
         ActivePaneInfo {
@@ -1700,6 +1704,9 @@ fn header_lane_fields_changed(
     prev.engine_session_id != next.engine_session_id
         || prev.cwd != next.cwd
         || prev.stand != next.stand
+        // doc 39 P4-C: chip prefix は engine_stand（root session の engine）で決まるため、
+        // その変化（cross-engine root 切替）でも header を再 push する。
+        || prev.engine_stand != next.engine_stand
         || prev.name != next.name
         || prev.console_mode != next.console_mode
         || prev
@@ -2460,16 +2467,9 @@ pub fn run() -> anyhow::Result<()> {
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session_state より前に確定する。
-    // 新 env `VP_APP_INSTANCE` (= "0", "1", ...) が primary、 旧 `VP_APP_SECONDARY="1"`
-    // は backward compat で `VP_APP_INSTANCE="1"` 相当に map。 未設定 / "0" = primary。
+    // `VP_APP_INSTANCE` (= "0", "1", ...) が instance 番号。 未設定 / "0" = primary。
     let instance_index: usize = std::env::var("VP_APP_INSTANCE")
         .ok()
-        .or_else(|| {
-            std::env::var("VP_APP_SECONDARY")
-                .ok()
-                .filter(|v| v == "1")
-                .map(|_| "1".to_string())
-        })
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
     let is_primary = instance_index == 0;
@@ -2551,8 +2551,8 @@ pub fn run() -> anyhow::Result<()> {
     // instance は復活しない ─ per-instance file 分離 + open flag 管理によって、 共有 1 file
     // 時代の「close しても slot が残り再 spawn される」 bug を根治した。
     //
-    // 子は `VP_APP_INSTANCE=<idx>` で自分の file を read (旧 `VP_APP_SECONDARY=1` も
-    // backward compat で渡す)。 spawn 失敗は warn して continue (= primary 起動は阻害しない)。
+    // 子は `VP_APP_INSTANCE=<idx>` で自分の file を read する。
+    // spawn 失敗は warn して continue (= primary 起動は阻害しない)。
     if is_primary {
         let to_spawn = SessionState::open_secondary_indices();
         if !to_spawn.is_empty() {
@@ -2561,7 +2561,6 @@ pub fn run() -> anyhow::Result<()> {
                     for idx in to_spawn {
                         match std::process::Command::new(&exe)
                             .env("VP_APP_INSTANCE", idx.to_string())
-                            .env("VP_APP_SECONDARY", "1")
                             .spawn()
                         {
                             Ok(child) => tracing::info!(
@@ -3112,11 +3111,10 @@ pub fn run() -> anyhow::Result<()> {
                 // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
                 // 「初回起動 → Conductor Lane が main area に出る」UX を Lane SSOT で保つ。
                 //
-                // 例外: `VP_APP_SECONDARY=1` (Cmd+N で spawn された secondary instance) の場合は
+                // 例外: secondary instance (Cmd+N で spawn = `instance_index != 0`) の場合は
                 // auto-select を skip。 元 vp-app が既に同 lane の terminal WS を持ってる事が多く、
                 // 衝突して両方の console が壊れるため。 Secondary は user が手動 lane 選択する前提。
-                let is_secondary =
-                    std::env::var("VP_APP_SECONDARY").map(|v| v == "1").unwrap_or(false);
+                let is_secondary = instance_index != 0;
                 // session 復元優先: pending_session_active_lane が今回の lanes に含まれれば、
                 // auto-select-first より先にそれを採用 (vp-app 再起動時に直前 active を維持)。
                 let session_match: Option<String> = pending_session_active_lane
@@ -4778,10 +4776,10 @@ pub fn run() -> anyhow::Result<()> {
                     // TheWorld daemon (port 32000) は process 横断 shared なので projects 一覧は同期。
                     //
                     // instance index を明示採番する (= 旧 bug 修正)。 採番しないと子は
-                    // `VP_APP_SECONDARY=1` の backward-compat map で全員 instance 1 に落ち、
-                    // `session.1.json` を共有して per-window state (active_lane / geometry) を
-                    // 互いに clobber していた。 採番直後に open=true で予約 save しておくと、
-                    // 連打 (= 複数 Cmd+N) でも次の採番が同 index を避ける (= race 防止)。
+                    // 全員 instance 0 相当に落ち、 `session.0.json` を共有して per-window state
+                    // (active_lane / geometry) を互いに clobber していた。 採番直後に open=true で
+                    // 予約 save しておくと、 連打 (= 複数 Cmd+N) でも次の採番が同 index を避ける
+                    // (= race 防止)。
                     let new_idx = SessionState::next_free_secondary_index();
                     let mut reserved = SessionState::load(new_idx);
                     reserved.set_open(true);
@@ -4793,7 +4791,6 @@ pub fn run() -> anyhow::Result<()> {
                                 // が衝突して両方の terminal WS が壊れるのを防ぐ。
                                 // 起動後 user が手動で lane 選択するまで main_area は empty。
                                 .env("VP_APP_INSTANCE", new_idx.to_string())
-                                .env("VP_APP_SECONDARY", "1")
                                 .spawn()
                             {
                                 Ok(child) => {

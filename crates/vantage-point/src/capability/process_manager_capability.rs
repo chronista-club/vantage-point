@@ -961,6 +961,7 @@ impl ProcessManagerCapability {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         };
         self.lane_registry
@@ -3173,6 +3174,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         };
         let conductor = mk(
@@ -3246,6 +3248,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         };
         cap.lane_registry_ref()
@@ -3383,6 +3386,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         };
         cap.lane_registry_ref().write().await.insert(

@@ -150,8 +150,9 @@ boot 時の捕捉経路が存在しない。mako 決定（2026-07-18）:「Act�
 | PR | 内容 | 状態 |
 |----|------|------|
 | **PR-1（本体）** | §3 データモデル + §4 漏斗（claude のみ — cursor/codex は bridge 据え置き、§4 表参照）+ §5 reader 一斉切替 + §6 policy + backfill + registry save の atomic rename 化 + 変異の process 内 mutex 直列化。バグ①② root-cause fix + eager chip がこの 1 本で立つ | 実装中（2026-07-18） |
-| **PR-2（純化）** | legacy store の record/last/clear 退役（validator / CLI path / transcript helper は各 module に残置）+ backfill 撤去 + lane GC が registry を clear + `LanePool` in-memory authoritative 化（file は persistence に降格 — doc 38 §5「in-memory cache は持たない」原則は、書き手が SP 1 点に漏斗された後は安全に緩和できる。前提 = CLI 直書き箇所の audit）+ vp-app タブを `LaneInfo.sessions` 消費に寄せ `list_chat_sessions` RPC 統合 | soak 後 |
-| **PR-3（env 剪定）** | §8 の VP_SESSION / VP_CWD 退役（statusline 等 user 側消費の確認が前提） | 独立 follow-up |
+| **PR-2（純化）** | legacy store の record/last/clear 退役（validator / CLI path / transcript helper は各 module に残置）+ backfill 撤去 + lane GC が registry を clear + reader 統一（`echoes_demand_start` の replay 源を registry へ） | **着地済み（2026-07-19）**。前提の「soak」は構造欠陥だった（load は save しないため休眠 lane は永遠に backfill 依存のまま）— 代わりに **one-shot migration**（backfill 同一意味論の使い捨て script = `.vp-scratch/migrate-cc-sessions-doc40-pr2.ts`、充填 49 / backfill 依存ゼロ化）を実施してから撤去。⚠️ **他マシンへこの binary を deploy する前に同 script の実行が必要** |
+| PR-2 の defer 分 | ①`LanePool` in-memory authoritative 化 — audit の結果 **SP 外の disk reader が実在**（`vp wire hook-check` / `vp lane` statusline が別 process から registry を直読み）し、disk を非 truth に降格できない ②vp-app タブの `LaneInfo.sessions` 消費 + `list_chat_sessions` RPC 統合 — `ChatSessionInfo.live`（in-memory engine 生死）が registry snapshot に無く、session mutation が `Diff::Update` を emit しない | ①reader の再設計（RPC 化 or 契約変更）②live 供給 + mutation Diff emission の設計、が各前提。別 PR |
+| **PR-3（env 剪定）** | §8 の VP_SESSION / VP_CWD 退役 | **前提クリア（2026-07-19）**: user statusline（`~/.claude/statusline/`）に VP_ 参照ゼロを grep 確認 |
 
 ## 8. 付録 — VP_* env 棚卸し（2026-07-18 audit）
 
@@ -162,8 +163,8 @@ lane 子プロセスへ注入される 6 種（stand_spawner L316-345）:
 | `VP_PROJECT` / `VP_LANE` | **残す** | hook 報告と wire address 導出の identity channel（本 doc 後、VP_LANE は store 鍵の役を失い wire 専用に単純化） |
 | `VP_PROFILE` | **残す** | dev/brew namespace 分離（#643） |
 | `MISE_TRUSTED_CONFIG_PATHS` | **残す** | mise trust footgun 抑止（PR2 実機検証、env-only で依存境界維持） |
-| `VP_SESSION` | **剪定候補** | repo 内に読み手ゼロ（書き手のみ）。「statusline 等の表示用」コメントのみ — user 側 statusline 設定の消費確認後に退役 |
-| `VP_CWD` | **剪定候補** | 同上（repo 内読み手ゼロ。delivery_actor も注入するが消費者不明） |
+| `VP_SESSION` | **退役済み（2026-07-19 PR-3）** | repo 内読み手ゼロ + user statusline（~/.claude/statusline/）に VP_ 参照ゼロを確認して注入撤去 |
+| `VP_CWD` | **退役済み（2026-07-19 PR-3）** | 同上（stand_spawner / delivery_actor の注入を撤去） |
 
 repo 全体では VP_* が 31 種。残りは各 component の config knob / dev override
 （VP_WORLD_URL / VP_OIDC_* / VP_SHELL / VP_TERM_TRACE 等）で本 doc の scope 外。

@@ -77,7 +77,7 @@ pub fn last_in(base: &Path, project: &str, lane: &str) -> Option<ConsoleMode> {
 
 /// 記録を消す（未記録なら no-op）。
 ///
-/// lane 削除時の state GC 用（[`super::cc_session::clear_in`] と同型）。消さないと
+/// lane 削除時の state GC 用（[`super::session_registry::clear_in`] と同型）。消さないと
 /// 同名 lane を作り直した時に旧 mode が蘇る（ghost file の state leak）。
 pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
     match std::fs::remove_file(mode_file_in(base, project, lane)) {

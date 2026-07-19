@@ -192,7 +192,9 @@ interface SetActivePaneInfo {
 	branch?: string | null;
 	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
 	session_id?: string | null;
-	/** lane の stand（= engine 種別、chip prefix 導出用: "echoes" / "codex" / "grok"）。 */
+	/** root session の stand（= 床に載る engine 種別、chip prefix 導出用: "echoes" / "codex" /
+	 *  "grok" 等）。doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決
+	 *  済み（cross-engine root でも chip prefix が床の engine を映す）。無ければ lane 固定 stand。 */
 	stand?: string | null;
 }
 

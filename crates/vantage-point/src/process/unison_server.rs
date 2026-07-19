@@ -634,9 +634,16 @@ async fn handle_echoes_demand_start(
 
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
-    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。codex / grok /
-    // opencode session は cc_session を持たないため必ずこの no_session path を通る。
-    let Some(session_id) = crate::lane::cc_session::last(&addr.project, &label) else {
+    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。会話 id は
+    // registry が SSOT（doc 40 §5 reader #6 — resolve 時の registry load から持ち回った
+    // `resolved.conversation`。旧 cc_session store 直読みは PR-2 で退役）。codex / grok /
+    // opencode session は claude transcript を持たないため None に倒し、必ず下の no_session
+    // path（replay_log）を通す。
+    let session_id = match crate::echoes::EngineKind::from_stand(&resolved.stand) {
+        Some(crate::echoes::EngineKind::Claude) => resolved.conversation.clone(),
+        _ => None,
+    };
+    let Some(session_id) = session_id else {
         // transcript を持たない engine（codex / grok / opencode）は、SP が pump tap で per-session に
         // 記録した replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
         // replay_tap と同じ Codex|Grok|OpenCode）。それ以外（claude で会話未開始 等）は log を読まず
@@ -1353,24 +1360,34 @@ async fn handle_console_set_model(
         let info = pool
             .get(&addr)
             .ok_or_else(|| format!("console_set_model: Lane not found: {lane}"))?;
+        // doc 39 P4-A: 床に載る engine は lane 作成時固定の `info.stand` ではなく **root session の
+        // stand**（cross-engine root 切替 #812 で lane stand と食い違う）。model 切替の可否も
+        // 床の engine で判定しないと、picker で root を claude に向けても「lane stand は codex
+        // だから不可」の誤判定が出る。stand_spawner の床 spawn（`build_stand_command`）と同じ
+        // root-stand 解決に揃える（root entry 不在 = registry 破損は N=1 既定形で info.stand へ fallback）。
+        let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
+        let reg = crate::lane::session_registry::load(&addr.project, &lane_label, &info.stand);
+        let effective_stand = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == reg.root)
+            .map(|s| s.stand.clone())
+            .unwrap_or_else(|| info.stand.clone());
         // model 切替の可否は EngineKind の能力表明に一元化（engine_model は claude alias 前提の
-        // state。cursor は TUI の `/model`、codex は `-m` を持つが v1 スコープ外 — doc 37 §7）。
-        match crate::echoes::EngineKind::from_stand(&info.stand) {
+        // state。他 engine は engine 側 UI（TUI `/model` 等）で選ぶ — doc 37 §7）。
+        match crate::echoes::EngineKind::from_stand(&effective_stand) {
             Some(k) if k.model_switchable() => {}
             Some(_) => {
                 return Err(format!(
-                    "{} エンジンの model は engine 側で選択します（lane={lane}）",
-                    info.stand
+                    "{effective_stand} エンジンの model は engine 側で選択します（lane={lane}）"
                 ));
             }
             None => {
                 return Err(format!(
-                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, stand={}）",
-                    info.stand
+                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, stand={effective_stand}）"
                 ));
             }
         }
-        let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
         match &model {
             Some(m) => crate::lane::engine_model::record(&addr.project, &lane_label, m),
             None => crate::lane::engine_model::clear(&addr.project, &lane_label),
@@ -1428,12 +1445,25 @@ async fn handle_lane_capture(
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("lane_capture: lane パース失敗: {}", lane));
     };
-    let content = state
-        .lane_pool
-        .read()
-        .await
-        .capture_lane(&addr)
-        .ok_or_else(|| format!("lane_capture: lane 不在 or console 未配線: {}", lane))?;
+    let pool = state.lane_pool.read().await;
+    let content = match pool.capture_lane(&addr) {
+        Some(c) => c,
+        None => {
+            // capture 不能の理由を 3 分岐して UX 混乱を減らす（dogfood 2026-07-19: chat mode lane で
+            // 一律「lane 不在 or console 未配線」に混乱した）。chat mode lane は term_attach 無しが
+            // 正常なので、pool に実在して console_mode==Chat なら「Act I に切り替えよ」と案内する。
+            let msg = match pool.get(&addr) {
+                Some(info) if info.console_mode == crate::lane::console_mode::ConsoleMode::Chat => {
+                    format!(
+                        "lane_capture: chat mode の lane に console はありません（Act I に切り替えると capture できます）: {lane}"
+                    )
+                }
+                Some(_) => format!("lane_capture: console 未配線: {lane}"),
+                None => format!("lane_capture: lane 不在: {lane}"),
+            };
+            return Err(msg);
+        }
+    };
     Ok(serde_json::json!({"status": "ok", "lane": lane, "content": content}))
 }
 
@@ -2430,10 +2460,12 @@ mod tests {
         assert!(res.is_err(), "session 未指定の focus は Err: {res:?}");
     }
 
-    /// tmux decoupling PR2: lane_capture dispatch の error 経路 3 種。
+    /// tmux decoupling PR2 → capture error 明確化（2026-07-19）: lane_capture dispatch の error 経路。
+    /// 未指定 / parse 不能 / pool 不在（lane 不在）/ chat mode lane（console 無しが正常）を分岐して返す。
     #[tokio::test]
     async fn lane_capture_dispatch_error_paths() {
         use super::dispatch_process_method;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
@@ -2446,15 +2478,134 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "parse 不能 lane は Err: {res:?}");
+
+        // pool に実在しない lane = 「lane 不在」。
         let res = dispatch_process_method(
             &state,
             "lane_capture",
             serde_json::json!({ "lane": "vp/conductor" }),
         )
         .await;
+        let err = res.expect_err("pool 不在 lane の capture は Err");
         assert!(
-            res.is_err(),
-            "console 未配線 lane の capture は Err: {res:?}"
+            err.contains("lane 不在"),
+            "pool 不在は『lane 不在』を返す: {err}"
+        );
+
+        // pool に実在するが console_mode==Chat の lane = 「chat mode の lane に console はありません」。
+        // chat lane は term_attach を持たないので capture_lane は None だが、これは正常状態。
+        let addr = LaneAddress::performer("vp", "chat-x");
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+                id: Default::default(),
+                address: addr.clone(),
+                kind: LaneKind::Performer,
+                name: Some("chat-x".to_string()),
+                state: LaneState::Running,
+                stand: "echoes".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: std::env::temp_dir().to_string_lossy().to_string(),
+                performer_status: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                engine_stand: None,
+                flow_state: None,
+            });
+        }
+        let res = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": addr.to_string() }),
+        )
+        .await;
+        let err = res.expect_err("chat mode lane の capture は Err");
+        assert!(
+            err.contains("chat mode"),
+            "chat mode lane は専用メッセージを返す: {err}"
+        );
+    }
+
+    /// doc 39 P4-A: console_set_model の可否判定は lane 固定 stand ではなく **root session の
+    /// stand**（床の engine）で決まる。cross-engine root（#812）で lane stand と食い違っても、
+    /// picker で床に立てた engine の能力に追従することを両方向で固定する。
+    #[tokio::test]
+    async fn console_set_model_gates_on_root_session_stand() {
+        use super::dispatch_process_method;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        // session_registry / engine_model は vp_state_dir() を読む → tempdir に隔離。
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+
+        // console_mode=Chat の performer LaneInfo を組む（Chat なので drop/ensure engine は走らない）。
+        let build = |name: &str, stand: &str| LaneInfo {
+            console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+            id: Default::default(),
+            address: LaneAddress::performer("vp", name),
+            kind: LaneKind::Performer,
+            name: Some(name.to_string()),
+            state: LaneState::Running,
+            stand: stand.to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            pid: None,
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        };
+
+        // ケース①: lane 固定 stand=codex（非対応）だが root session を echoes（claude）に向けた lane。
+        // → root stand で判定するので model 切替は **成功**する。
+        crate::lane::session_registry::create_root("vp", "root-claude", "codex", "echoes")
+            .expect("root を echoes session に");
+        state
+            .lane_pool
+            .write()
+            .await
+            .insert(build("root-claude", "codex"));
+        let res = dispatch_process_method(
+            &state,
+            "console_set_model",
+            serde_json::json!({ "lane": LaneAddress::performer("vp", "root-claude").to_string(), "model": "sonnet" }),
+        )
+        .await;
+        assert!(
+            res.is_ok(),
+            "root が claude session なら lane stand=codex でも切替可: {res:?}"
+        );
+        assert_eq!(
+            crate::lane::engine_model::last("vp", "root-claude").as_deref(),
+            Some("sonnet"),
+            "model が engine_model に永続される"
+        );
+
+        // ケース②: lane 固定 stand=echoes（対応）だが root session を codex に向けた lane。
+        // → root stand で判定するので model 切替は **拒否**される（lane stand に引きずられない）。
+        crate::lane::session_registry::create_root("vp", "root-codex", "echoes", "codex")
+            .expect("root を codex session に");
+        state
+            .lane_pool
+            .write()
+            .await
+            .insert(build("root-codex", "echoes"));
+        let res = dispatch_process_method(
+            &state,
+            "console_set_model",
+            serde_json::json!({ "lane": LaneAddress::performer("vp", "root-codex").to_string(), "model": "sonnet" }),
+        )
+        .await;
+        let err = res.expect_err("root が codex session なら lane stand=echoes でも拒否");
+        assert!(
+            err.contains("codex"),
+            "拒否メッセージは root の engine(codex)を指す: {err}"
         );
     }
 
@@ -2494,6 +2645,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
+                engine_stand: None,
                 flow_state: None,
             });
             pool.insert_pty_slot(addr.clone(), slot, rx);
@@ -2617,10 +2769,18 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
-        // hook 相当の pointer 書込（記録契機 UserPromptSubmit の後の状態）。
-        crate::lane::cc_session::record("vp", "conductor", "sid-new").expect("record");
+        // hook 相当の会話 id 記録（記録契機 UserPromptSubmit の後の状態）。doc 40: SSOT は registry。
+        crate::lane::session_registry::set_conversation(
+            "vp",
+            "conductor",
+            "echoes",
+            1,
+            Some("sid-new"),
+        )
+        .expect("record conversation");
 
         let mut rx = state.system_event_tx.subscribe();
         let res = dispatch_process_method(
@@ -2678,6 +2838,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
 
@@ -2704,12 +2865,8 @@ mod tests {
         assert_eq!(
             root_conv.as_deref(),
             Some("sid-issued"),
-            "issued 報告が fresh root に即記録される（発行時点点灯の核）"
-        );
-        assert_eq!(
-            crate::lane::cc_session::last("vp", "conductor"),
-            None,
-            "旧 store への直書きは無い（書き手は registry に漏斗化）"
+            "issued 報告が fresh root に即記録される（発行時点点灯の核。書き手は registry に漏斗化 —\
+             doc 40 PR-2 で旧 store への直書き経路そのものが撤去済み）"
         );
 
         // Diff::Update が新 id + sessions snapshot を運ぶ
@@ -2867,6 +3024,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
         addr
@@ -3075,7 +3233,7 @@ mod tests {
 
         let state = build_test_app_state(None).await;
         // doc 33: submit には mode=chat の lane が pool に要る。
-        // project 名はテスト固有にする — 実在 project だと cc_session::last が本物の
+        // project 名はテスト固有にする — 実在 project だと registry の会話 id が本物の
         // session id を返し、temp cwd との不整合で resume が失敗する。
         insert_test_lane(&state, "vptest-c1-rt", ConsoleMode::Chat).await;
         // echoes data は非 retained なので submit 前に subscribe。
