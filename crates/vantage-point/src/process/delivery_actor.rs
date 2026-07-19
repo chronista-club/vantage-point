@@ -649,6 +649,7 @@ mod tests {
             performer_status: None,
             cc_session_id: None,
             engine_session_id: None,
+            engine_stand: None,
             sessions: None,
             flow_state: None,
         }

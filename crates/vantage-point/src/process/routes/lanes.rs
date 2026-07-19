@@ -119,6 +119,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
     }
@@ -276,6 +277,7 @@ pub(crate) async fn create_performer_orchestrated(
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
+            engine_stand: None,
             flow_state: None,
         });
     }
@@ -478,6 +480,7 @@ pub(crate) async fn create_performer_orchestrated(
         cc_session_id: None,
         sessions: None,
         engine_session_id: None,
+        engine_stand: None,
         flow_state: None,
     };
 
@@ -1023,6 +1026,7 @@ mod core_tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
+                engine_stand: None,
                 flow_state: None,
             });
         }

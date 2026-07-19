@@ -1667,7 +1667,11 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             lane_name: lane.and_then(|l| l.name.as_deref()),
             // Act I の session chip はこの相乗りが唯一の供給路（Act II は event が上書き）。
             session_id: lane.and_then(|l| l.engine_session_id.as_deref()),
-            stand: lane.map(|l| l.stand.as_str()).filter(|st| !st.is_empty()),
+            // doc 39 P4-C: chip prefix は root session の engine（engine_stand）を優先する
+            // （cross-engine root で床の engine を正しく映す）。無ければ lane 固定の stand に fallback。
+            stand: lane
+                .map(|l| l.engine_stand.as_deref().unwrap_or(l.stand.as_str()))
+                .filter(|st| !st.is_empty()),
         }
     } else {
         ActivePaneInfo {
@@ -1700,6 +1704,9 @@ fn header_lane_fields_changed(
     prev.engine_session_id != next.engine_session_id
         || prev.cwd != next.cwd
         || prev.stand != next.stand
+        // doc 39 P4-C: chip prefix は engine_stand（root session の engine）で決まるため、
+        // その変化（cross-engine root 切替）でも header を再 push する。
+        || prev.engine_stand != next.engine_stand
         || prev.name != next.name
         || prev.console_mode != next.console_mode
         || prev
