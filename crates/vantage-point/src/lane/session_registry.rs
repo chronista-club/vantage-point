@@ -14,8 +14,10 @@
 //! - **file 不在 = N=1 の特殊ケース**: 「lane の stand で session #1 のみ・focused=1・root=1」
 //!   に解決される。既存 install は registry file を持たないが従来どおり動く（既存動作不変の要）
 //! - **会話 id は本 registry が SSOT**（doc 40 §2。旧 engine 別 session_store のラベル鍵は
-//!   書き手/読み手の乖離バグを産んだ — doc 40 §1-1）。旧 store は [`load_in`] の read-only
-//!   backfill（移行 bridge、doc 40 §3）としてだけ読まれ、PR-2 で退役する
+//!   書き手/読み手の乖離バグを産んだ — doc 40 §1-1）。旧 store（cc/codex_sessions）と移行
+//!   bridge（backfill）は doc 40 PR-2 で退役済み — one-shot migration で全 lane の会話 id を
+//!   registry へ移設した後、legacy store の record/last/clear は撤去された（`cc_session` /
+//!   `codex_session` に残るのは validator / transcript helper / CLI path 解決のみ）
 //! - **書き込みの直列化**: 変異（create / focus / remove / set_conversation 系）は process 内
 //!   mutex で直列化する（doc 40 §4 — 複数 field JSON の並行 load-modify-save は update を失う）
 //! - **root = lane の器に化身する session**（doc 39 — 座と化身）: 床 spawn / wire 配送
@@ -171,7 +173,9 @@ fn is_valid_conversation(stand: &str, id: &str) -> bool {
 /// registry を読む。file 不在 / 破損 / 不変条件違反は N=1 の既定形に解決（Err にしない —
 /// 読めない registry で lane 全体を止めるより、既定形で動き続ける方が復旧可能性が高い）。
 pub fn load_in(base: &Path, project: &str, lane: &str, default_stand: &str) -> SessionRegistry {
-    let mut reg = match std::fs::read_to_string(registry_file_in(base, project, lane)) {
+    // doc 40 PR-2: 会話 id は registry が唯一の SSOT（旧 engine 別 store からの backfill bridge は
+    // 撤去済み — one-shot migration で移設済みのため read-only 補完は不要）。
+    match std::fs::read_to_string(registry_file_in(base, project, lane)) {
         Ok(raw) => match serde_json::from_str::<SessionRegistry>(&raw) {
             Ok(reg) if reg.is_valid() => reg,
             _ => {
@@ -182,30 +186,6 @@ pub fn load_in(base: &Path, project: &str, lane: &str, default_stand: &str) -> S
             }
         },
         Err(_) => SessionRegistry::single(default_stand),
-    };
-    backfill_legacy_conversations(base, project, lane, &mut reg);
-    reg
-}
-
-/// doc 40 §3 の移行 bridge: conversation 未統合の entry を旧 engine 別 store（cc/cursor/
-/// codex_sessions）から read-only 補完する。registry への固定は次の save が自然に行う
-/// （本関数は file を書かない）。**PR-2（legacy store 退役）で本関数ごと撤去する。**
-fn backfill_legacy_conversations(
-    base: &Path,
-    project: &str,
-    lane: &str,
-    reg: &mut SessionRegistry,
-) {
-    use crate::echoes::EngineKind;
-    for entry in reg.sessions.iter_mut().filter(|e| e.conversation.is_none()) {
-        let label = session_label(lane, entry.key);
-        entry.conversation = match EngineKind::from_stand(&entry.stand) {
-            Some(EngineKind::Claude) => super::cc_session::last_in(base, project, &label),
-            Some(EngineKind::Codex) => super::codex_session::last_in(base, project, &label),
-            // grok / opencode は registry-native（旧 store が存在しない — bridge の対象外）。
-            // engine を持たない stand（shell / 撤去済み cursor・agy）も bridge 元が無い。
-            Some(EngineKind::Grok | EngineKind::OpenCode) | None => None,
-        };
     }
 }
 
@@ -454,8 +434,8 @@ pub fn record_root_conversation_in(
 /// - 実在しない key は Err（黙って捨てると「記録したつもり」の幻 resume になる）
 /// - 形式外 id は**書かずに** Ok(false)（旧 session_store の共通原則を引き継ぐ）
 /// - 変化なしは save しない。戻り値 = 「disk が変わったか」（caller の Diff::Update 判定用）
-/// - `None`（clear）は旧 engine store も併せて消す — 残すと次 load の backfill が閉じた会話を
-///   蘇らせる（doc 40 §9。bridge 撤去 = PR-2 で本処理ごと消える）
+/// - `None`（clear）は entry.conversation を None に落とすだけ（doc 40 PR-2 で backfill bridge が
+///   撤去されたため、旧 engine store の併せ消し = 蘇生防止は不要になった）
 pub fn set_conversation_in(
     base: &Path,
     project: &str,
@@ -480,18 +460,6 @@ pub fn set_conversation_in(
             entry.stand
         );
         return Ok(false);
-    }
-    if conversation.is_none() {
-        // bridge 整合: legacy store を残すと backfill が復活させる（上記 doc）。
-        use crate::echoes::EngineKind;
-        let label = session_label(lane, key);
-        let _ = match EngineKind::from_stand(&entry.stand) {
-            Some(EngineKind::Claude) => super::cc_session::clear_in(base, project, &label),
-            Some(EngineKind::Codex) => super::codex_session::clear_in(base, project, &label),
-            // grok / opencode は registry-native（legacy store が無い = 蘇生源も無い）。engine を
-            // 持たない stand（shell / 撤去済み cursor・agy）も同様。
-            Some(EngineKind::Grok | EngineKind::OpenCode) | None => Ok(()),
-        };
     }
     let new = conversation.map(str::to_string);
     if entry.conversation == new {
@@ -905,58 +873,6 @@ mod tests {
         assert_eq!(sanitize("conductor#2"), "conductor#2", "# は sanitize 安全");
     }
 
-    /// doc 40 §3 bridge: conversation 未統合 entry は旧 engine store から stand 別に backfill
-    /// される（entry ごとに正しい label で読む = doc 40 §1-1 のラベル乖離バグが構造的に不可能な
-    /// 読み方）。registry に既にある conversation は store より優先（SSOT は registry）。
-    #[test]
-    fn load_backfills_legacy_conversations_per_entry_stand() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // registry: #1 echoes（conversation なし）/ #2 codex（conversation なし）/
-        // #3 echoes（registry native の conversation あり）
-        let dir = tmp.path().join("echoes_sessions");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("vp__conductor.json"),
-            r#"{"focused":1,"root":1,"next":4,"sessions":[
-                {"key":1,"stand":"echoes"},
-                {"key":2,"stand":"codex"},
-                {"key":3,"stand":"echoes","conversation":"native-id"}]}"#,
-        )
-        .unwrap();
-        // legacy store: #1 は素の lane 名、#2 は `conductor#2`、#3 は stale な store 値
-        crate::lane::cc_session::record_in(tmp.path(), "vp", "conductor", "cc-legacy-1")
-            .expect("record cc #1");
-        crate::lane::codex_session::record_in(
-            tmp.path(),
-            "vp",
-            "conductor#2",
-            "01998888-2222-7333-8444-555566667777",
-        )
-        .expect("record codex #2");
-        crate::lane::cc_session::record_in(tmp.path(), "vp", "conductor#3", "stale-store-id")
-            .expect("record cc #3");
-
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
-        assert_eq!(
-            reg.sessions[0].conversation.as_deref(),
-            Some("cc-legacy-1"),
-            "#1 は cc store（素の lane 名）から backfill"
-        );
-        assert_eq!(
-            reg.sessions[1].conversation.as_deref(),
-            Some("01998888-2222-7333-8444-555566667777"),
-            "#2 は codex store（conductor#2）から backfill"
-        );
-        assert_eq!(
-            reg.sessions[2].conversation.as_deref(),
-            Some("native-id"),
-            "registry native の conversation が store より優先（SSOT）"
-        );
-        // file 不在（single fallback）でも #1 の backfill は効く（既存 install の移行の核）
-        let reg = load_in(tmp.path(), "vp", "other-lane", "echoes");
-        assert_eq!(reg.sessions[0].conversation, None, "store も無ければ None");
-    }
-
     /// set_conversation: roundtrip 永続 / 変化なしは no-op / 不在 key は Err / 形式外は書かず。
     #[test]
     fn set_conversation_roundtrips_validates_and_rejects_unknown_key() {
@@ -1028,29 +944,32 @@ mod tests {
         assert!(!is_valid_conversation("shell", "ses_089ead04"));
     }
 
-    /// set_conversation(None) = clear は legacy store も消す（bridge 蘇生防止、doc 40 §9）。
+    /// set_conversation(None) = clear は entry.conversation を None に落とす（doc 40 PR-2 —
+    /// backfill bridge 撤去後は「次 load での蘇生」が構造的に起こらないため、registry の
+    /// conversation を None にするだけで閉じた会話が復活しない）。
     #[test]
-    fn clear_conversation_also_clears_legacy_store_no_resurrection() {
+    fn clear_conversation_resets_entry_to_none() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        // legacy store に会話 id → backfill で registry に見えている状態を作る
-        crate::lane::cc_session::record_in(tmp.path(), "vp", "conductor", "cc-old").expect("rec");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
-        assert_eq!(reg.sessions[0].conversation.as_deref(), Some("cc-old"));
+        // registry に会話 id を記録した状態を作る
+        assert!(
+            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 1, Some("cc-old"))
+                .expect("set")
+        );
+        assert_eq!(
+            load_in(tmp.path(), "vp", "conductor", "echoes").sessions[0]
+                .conversation
+                .as_deref(),
+            Some("cc-old")
+        );
 
-        // save して registry に固定してから clear
-        save_in(tmp.path(), "vp", "conductor", &reg).expect("save");
+        // clear → conversation が None に落ち、再 load でも蘇らない
         assert!(
             set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 1, None).expect("clear")
         );
         assert_eq!(
             load_in(tmp.path(), "vp", "conductor", "echoes").sessions[0].conversation,
             None,
-            "clear 後に backfill が旧 store から蘇生させない（store も消えている）"
-        );
-        assert_eq!(
-            crate::lane::cc_session::last_in(tmp.path(), "vp", "conductor"),
-            None,
-            "legacy store 側も消えている"
+            "clear 後は conversation が None（backfill 蘇生源は存在しない）"
         );
     }
 

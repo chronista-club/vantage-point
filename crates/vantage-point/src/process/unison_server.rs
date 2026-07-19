@@ -634,9 +634,16 @@ async fn handle_echoes_demand_start(
 
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
-    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。codex / grok /
-    // opencode session は cc_session を持たないため必ずこの no_session path を通る。
-    let Some(session_id) = crate::lane::cc_session::last(&addr.project, &label) else {
+    // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。会話 id は
+    // registry が SSOT（doc 40 §5 reader #6 — resolve 時の registry load から持ち回った
+    // `resolved.conversation`。旧 cc_session store 直読みは PR-2 で退役）。codex / grok /
+    // opencode session は claude transcript を持たないため None に倒し、必ず下の no_session
+    // path（replay_log）を通す。
+    let session_id = match crate::echoes::EngineKind::from_stand(&resolved.stand) {
+        Some(crate::echoes::EngineKind::Claude) => resolved.conversation.clone(),
+        _ => None,
+    };
+    let Some(session_id) = session_id else {
         // transcript を持たない engine（codex / grok / opencode）は、SP が pump tap で per-session に
         // 記録した replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
         // replay_tap と同じ Codex|Grok|OpenCode）。それ以外（claude で会話未開始 等）は log を読まず
@@ -2621,8 +2628,15 @@ mod tests {
             engine_stand: None,
             flow_state: None,
         });
-        // hook 相当の pointer 書込（記録契機 UserPromptSubmit の後の状態）。
-        crate::lane::cc_session::record("vp", "conductor", "sid-new").expect("record");
+        // hook 相当の会話 id 記録（記録契機 UserPromptSubmit の後の状態）。doc 40: SSOT は registry。
+        crate::lane::session_registry::set_conversation(
+            "vp",
+            "conductor",
+            "echoes",
+            1,
+            Some("sid-new"),
+        )
+        .expect("record conversation");
 
         let mut rx = state.system_event_tx.subscribe();
         let res = dispatch_process_method(
@@ -2707,12 +2721,8 @@ mod tests {
         assert_eq!(
             root_conv.as_deref(),
             Some("sid-issued"),
-            "issued 報告が fresh root に即記録される（発行時点点灯の核）"
-        );
-        assert_eq!(
-            crate::lane::cc_session::last("vp", "conductor"),
-            None,
-            "旧 store への直書きは無い（書き手は registry に漏斗化）"
+            "issued 報告が fresh root に即記録される（発行時点点灯の核。書き手は registry に漏斗化 —\
+             doc 40 PR-2 で旧 store への直書き経路そのものが撤去済み）"
         );
 
         // Diff::Update が新 id + sessions snapshot を運ぶ
@@ -3079,7 +3089,7 @@ mod tests {
 
         let state = build_test_app_state(None).await;
         // doc 33: submit には mode=chat の lane が pool に要る。
-        // project 名はテスト固有にする — 実在 project だと cc_session::last が本物の
+        // project 名はテスト固有にする — 実在 project だと registry の会話 id が本物の
         // session id を返し、temp cwd との不整合で resume が失敗する。
         insert_test_lane(&state, "vptest-c1-rt", ConsoleMode::Chat).await;
         // echoes data は非 retained なので submit 前に subscribe。
