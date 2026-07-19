@@ -28,9 +28,6 @@
 //!
 //! ## VP_* 環境変数
 //!
-//! - `VP_CWD`     : project directory
-//! - `VP_SESSION` : lane 論理 identity（= `LaneAddress` の Display 形。旧 tmux session 名は
-//!                  tmux の「`/` 禁止」制約由来の sanitize 形だった — tmux 撤去で不要に）
 //! - `VP_PROJECT` : `addr.project`
 //! - `VP_LANE`    : lane label（`conductor` / performer 名 / `unnamed`）
 //! - `VP_PROFILE` : dev/brew namespace（設定時のみ）
@@ -329,10 +326,9 @@ pub fn build_stand_command(
 ) -> StandCommand {
     let project_cwd = project_dir.to_string_lossy().to_string();
 
+    // doc 40 PR-3: VP_CWD / VP_SESSION は退役（repo 内読み手ゼロ + user statusline 消費なしを
+    // 確認済み、doc 40 §8）。identity env は wire/hook が読む VP_PROJECT / VP_LANE の 2 本。
     let mut env = vec![
-        ("VP_CWD".into(), project_cwd.clone()),
-        // VP_SESSION = lane の論理 identity（LaneAddress Display 形）。 statusline 等の表示用。
-        ("VP_SESSION".into(), addr.to_string()),
         ("VP_PROJECT".into(), addr.project.clone()),
         ("VP_LANE".into(), lane_label(addr).into()),
     ];
@@ -492,7 +488,7 @@ mod tests {
         );
     }
 
-    /// VP_* env が注入されること（VP_SESSION は lane display 形 = tmux 名は廃止）。
+    /// VP_* env が注入されること（doc 40 PR-3: VP_CWD / VP_SESSION は退役 — 注入されないことも固定）。
     #[test]
     fn build_stand_command_injects_vp_env() {
         // build_stand_command は registry を読む — 実 vp_state_dir を拾わないよう隔離（sibling 規律）。
@@ -501,11 +497,9 @@ mod tests {
         let cmd = build_stand_command("echoes", &addr, Path::new("/work/vp"), false);
 
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
-        assert_eq!(env.get("VP_CWD").map(String::as_str), Some("/work/vp"));
-        assert_eq!(
-            env.get("VP_SESSION").map(String::as_str),
-            Some("vantage-point/performer/sub"),
-            "VP_SESSION = LaneAddress Display 形"
+        assert!(
+            !env.contains_key("VP_CWD") && !env.contains_key("VP_SESSION"),
+            "退役済み env は注入しない（doc 40 PR-3）"
         );
         assert_eq!(
             env.get("VP_PROJECT").map(String::as_str),

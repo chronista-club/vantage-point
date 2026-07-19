@@ -446,13 +446,7 @@ async fn pulse(
                                         crate::lane::cc_session::transcript_exists(id)
                                     });
                                     let args = build_bg_args(resume, &prompt);
-                                    spawn_bg_dispatch(
-                                        t.cwd.clone(),
-                                        project,
-                                        lane_label,
-                                        t.lane_display.clone(),
-                                        args,
-                                    );
+                                    spawn_bg_dispatch(t.cwd.clone(), project, lane_label, args);
                                     tracing::info!(
                                         "wire delivery: bg dispatch 起動 (msg={}, agent={}, cwd={}, resume={}, count={})",
                                         msg.id,
@@ -537,7 +531,7 @@ async fn pulse(
 
 /// R3-c: headless `claude -p [--resume <id>] "<prompt>"` を detached 起動する。
 ///
-/// lane と同じ identity env (`VP_CWD/VP_PROJECT/VP_LANE/VP_SESSION`) を渡し、
+/// lane と同じ identity env (`VP_PROJECT/VP_LANE` — doc 40 PR-3 で VP_CWD/VP_SESSION は退役) を渡し、
 /// 当該 lane の wire address で wire_recv/wire_ack できるようにする (MCP server は
 /// project/user settings から解決され、 interactive lane と同経路)。
 ///
@@ -547,21 +541,13 @@ async fn pulse(
 /// 注意 (TheWorld shutdown): in-flight の claude 子プロセスは runtime abort で孤立し得るが、
 /// その場合 wire_ack が届かず pending が残るため、 次回起動の pulse で再 dispatch される
 /// (idempotent に収束)。 重複処理は wire_ack の冪等性で吸収される。
-fn spawn_bg_dispatch(
-    cwd: String,
-    project: String,
-    lane: String,
-    session: String,
-    args: Vec<String>,
-) {
+fn spawn_bg_dispatch(cwd: String, project: String, lane: String, args: Vec<String>) {
     tokio::spawn(async move {
         let mut cmd = tokio::process::Command::new("claude");
         cmd.args(&args)
             .current_dir(&cwd)
-            .env("VP_CWD", &cwd)
             .env("VP_PROJECT", &project)
             .env("VP_LANE", &lane)
-            .env("VP_SESSION", &session)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
