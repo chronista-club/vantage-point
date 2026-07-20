@@ -847,16 +847,10 @@ pub async fn run_world(
         // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
         // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
         // 同 channel 経由。
-        // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
-        // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
-        .route(
-            "/api/world/processes/register",
-            post(world::world_register_process),
-        )
-        .route(
-            "/api/world/processes/unregister",
-            post(world::world_unregister_process),
-        )
+        // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
+        // project は World 自身が起こすので外から登録される概念が無く、残しておくと
+        // 外部由来の port/pid で running_processes を書ける穴になる（起動していない
+        // project を稼働中に見せられる）。稼働状態の唯一の writer は start/stop_process。
         // VP-165 PR-6: slot ベース SP port resolver (decision C 完成、TheWorld を port authority に)
         .route("/api/world/port_for", get(world::world_port_for))
         // Update API routes (vp CLI)
