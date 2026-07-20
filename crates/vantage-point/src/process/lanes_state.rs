@@ -223,9 +223,12 @@ impl fmt::Display for LaneAddress {
 /// - `I` = identifier 型 (削除時のみ必要、 例: `LaneAddress`)
 /// - `P` = payload 型 (add/update 時の full state、 例: `LaneInfo`)
 ///
-/// SP の caller で event 発生 → AppState の broadcast channel に publish →
-/// `spawn_world_uplink` の subscriber が QUIC registry channel で TheWorld に push、
-/// 各 cache を realtime sync する primitive。
+/// caller で event 発生 → AppState の broadcast channel に publish → subscriber が
+/// World 側 cache を realtime sync する primitive。
+///
+/// doc 44 P1 (fold-in): subscriber は旧「SP の QUIC registry push」から、project 自身の
+/// lanes publish task（`process/server.rs` の `publish_lanes`）に替わった。同一プロセスに
+/// なったので push は World の集約 view への map 書き込みに退化している。
 ///
 /// wire format: internally tagged JSON
 /// ```json
@@ -255,8 +258,9 @@ pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
 /// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。
 ///
 /// caller (lane_spawn_actor / routes/* / lifecycle monitor / restart_lane 等) が
-/// `state.system_event_tx.send(SystemEvent::*)` で publish、
-/// `spawn_world_uplink` subscriber が QUIC registry channel 経由で TheWorld に流す。
+/// `state.system_event_tx.send(SystemEvent::*)` で publish、project の lanes publish task
+/// (`publish_lanes`) が受けて World の集約 view を更新する（doc 44 P1 fold-in で
+/// 旧 QUIC registry push から置き換わった）。
 ///
 /// scope ごとに variant 分け、 内部に該当 Diff を内包。 将来 Pane / Stand 等は
 /// variant 追加で扱える central event bus pattern (Erlang event manager 風)。

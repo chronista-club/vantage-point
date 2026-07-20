@@ -198,7 +198,6 @@ pub struct ProcessManagerCapability {
     /// 設定
     config: Option<Config>,
     /// vpバイナリパス
-    vp_binary_path: Option<PathBuf>,
     /// SurrealDB クライアント（Some なら DB に二重書き込み）
     vpdb: Option<crate::db::SharedVpDb>,
     /// doc 44 P1 (fold-in): project を World 内で起動・保持する registry（World mode のみ Some）。
@@ -247,7 +246,6 @@ impl ProcessManagerCapability {
             previously_running: Arc::new(RwLock::new(HashMap::new())),
             lane_registry: Arc::new(RwLock::new(HashMap::new())),
             config: None,
-            vp_binary_path: None,
             vpdb: None,
             project_runtimes: None,
             active_lanes: Arc::new(RwLock::new(HashMap::new())),
@@ -581,42 +579,6 @@ impl ProcessManagerCapability {
                 CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
             })
         }
-    }
-
-    /// vpバイナリを検索
-    fn find_vp_binary() -> Option<PathBuf> {
-        // 1. current_exe()（最も確実）
-        if let Ok(exe) = std::env::current_exe()
-            && exe.exists()
-        {
-            return Some(exe);
-        }
-
-        // 2. ~/.cargo/bin/vp
-        if let Some(home) = dirs::home_dir() {
-            let cargo_path = home.join(".cargo/bin/vp");
-            if cargo_path.exists() {
-                return Some(cargo_path);
-            }
-        }
-
-        // 3. /usr/local/bin/vp
-        let usr_local = PathBuf::from("/usr/local/bin/vp");
-        if usr_local.exists() {
-            return Some(usr_local);
-        }
-
-        // 4. PATH経由
-        if let Ok(output) = std::process::Command::new("which").arg("vp").output()
-            && output.status.success()
-        {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
-        }
-
-        None
     }
 
     /// プロジェクト名から正規化パスキーを解決
@@ -1706,59 +1668,23 @@ impl ProcessManagerCapability {
     ///
     /// daemon restart 後に working set を復元する (VP-207)。 TheWorld 起動時に
     /// バックグラウンドタスクとして 1 回だけ spawn される。
-    /// 1. registry 静穏待ち — 旧 SP の QUIC heal 再登録が落ち着くまで待つ (下記)
-    /// 2. `refresh_process_status` で PID liveness / project 状態を同期
-    /// 3. `enabled == true` かつ未稼働の project を収集
-    /// 4. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
+    /// 1. `refresh_process_status` で PID liveness / project 状態を同期
+    /// 2. `enabled == true` かつ未稼働の project を収集
+    /// 3. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
     ///
-    /// 検出漏れがあっても `vp sp start` 側の collision check が bail するので
-    /// 二重起動は安全。 lock 規律は `run_health_monitor` を踏襲する。
+    /// 二重起動は `ProjectRuntimes` の map キー一意性が構造的に防ぐ。
+    /// lock 規律は `run_health_monitor` を踏襲する。
     pub async fn autostart_enabled_projects(world: Arc<RwLock<Self>>) {
-        // respawn-leak 根治 (a): daemon boot 直後は Push-only registry が空で、 旧 SP の
-        // QUIC heal 再接続 (exp backoff 1s→60s cap、 gentle 再起動の実測は boot 後 7〜12s)
-        // が届くまで旧 SP が見えない盲目期間がある。 旧実装の固定 5s 待機ではこの期間に
-        // 「稼働なし」と誤判定して重複 spawn していた (実測: 4 project × 2 世代 = SP 8 本)。
+        // doc 44 P1 (fold-in): 旧「registry 静穏待ち」(最大 60s) を撤去した。
         //
-        // → 「登録の静穏待ち」: registry のキー集合が QUIET_WINDOW の間変化しなくなる
-        // まで待つ (安全弁として上限 MAX_WAIT)。 fresh boot (旧 SP なし) は空のまま安定
-        // するので QUIET_WINDOW 経過で先へ進む。 backoff が cap 付近まで伸びた straggler
-        // の再登録は取りこぼしうるが、 その場合の重複 spawn は SP 側の db LOCK 生存
-        // holder 検出 (根治 c、 process/server.rs) が起動中止させるので収束する。
-        const QUIET_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
-        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
-        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
-        let wait_start = std::time::Instant::now();
-        let mut last_change = std::time::Instant::now();
-        let mut prev_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-        loop {
-            let keys: std::collections::HashSet<String> = {
-                let w = world.read().await;
-                let running = w.running_processes.read().await;
-                running.keys().cloned().collect()
-            };
-            if keys != prev_keys {
-                prev_keys = keys;
-                last_change = std::time::Instant::now();
-            }
-            if last_change.elapsed() >= QUIET_WINDOW {
-                break;
-            }
-            if wait_start.elapsed() >= MAX_WAIT {
-                tracing::info!(
-                    "autostart: registry 静穏待ち上限 {}s 到達、現状 ({} SP 登録済) で判定に進む",
-                    MAX_WAIT.as_secs(),
-                    prev_keys.len()
-                );
-                break;
-            }
-            tokio::time::sleep(POLL).await;
-        }
-        tracing::info!(
-            "autostart: registry 静穏 ({} SP 登録済、boot 後 {:.1}s)",
-            prev_keys.len(),
-            wait_start.elapsed().as_secs_f32()
-        );
-
+        // あの待ちの目的は「gentle daemon restart を生き延びた旧 SP の QUIC heal 再登録が
+        // 届くまで待ち、稼働中の SP を重複 spawn しない」ことだった。fold-in で project が
+        // World 内に入り、daemon 停止を生き延びる SP が存在しなくなったため、registry は
+        // boot 時に**常に空**で安定する = 待つ理由そのものが消滅した。
+        //
+        // 残したままだと毎回きっかり QUIET_WINDOW(20s) 空回りしてから project を起こすことに
+        // なり、daemon 再起動のたびに 20 秒の無駄が乗る（dogfood で最も踏む経路）。
+        // 二重起動の防御は `ProjectRuntimes` の map キー一意性が引き継いでいる。
         // PID liveness / project 状態を同期（read ガードは即解放）。
         {
             let w = world.read().await;
@@ -2363,11 +2289,10 @@ impl Capability for ProcessManagerCapability {
 
         self.state = CapabilityState::Initializing;
 
-        // vpバイナリを検索
-        self.vp_binary_path = Self::find_vp_binary();
-        if self.vp_binary_path.is_none() {
-            tracing::warn!("vp binary not found in PATH");
-        }
+        // doc 44 P1 (fold-in): vp binary の所在探索は撤去。project を子プロセスとして
+        // spawn しなくなったため、起動に binary path は要らない。残しておくと daemon 起動の
+        // たびに無駄な FS stat + `which` の subprocess が走り、しかも今は無意味な
+        // 「vp binary not found in PATH」警告で読み手の調査コストを誘発する。
 
         // 設定を読み込み
         if let Err(e) = self.load_config().await {

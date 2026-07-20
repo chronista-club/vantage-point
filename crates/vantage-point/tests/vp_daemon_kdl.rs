@@ -21,13 +21,18 @@ use unison::network::{ProtocolCache, SchemaRegistry};
 const VP_DAEMON_KDL: &str = include_str!("../schema/vp-daemon.kdl");
 
 /// daemon が register_channel する全 channel 名。
-/// SSOT: server.rs の `register_channel("<name>", ...)` 群（2026-07 時点で 12 本）。
+/// SSOT: server.rs の `register_channel("<name>", ...)` 群。
+///
+/// doc 44 P1 (fold-in) で `"control"` channel handler を削除した際、この const だけが
+/// 取り残された（下の `channels_are_subset_of_daemon_registered` は KDL → const の
+/// 片方向しか見ないため、実装から channel が消えても green のままだった）。
+/// 現在は [`daemon_channels_const_matches_source`] が source と突き合わせるので、
+/// server.rs 側の増減はテスト失敗として現れる。
 const DAEMON_CHANNELS: &[&str] = &[
     "world-process",
     "lanes",
     "canvas-ingest",
     "canvas",
-    "control",
     "process-proxy",
     "world-device",
     "device",
@@ -36,6 +41,30 @@ const DAEMON_CHANNELS: &[&str] = &[
     "world-control",
     "wire",
 ];
+
+/// daemon server の実ソース。`DAEMON_CHANNELS` の突き合わせ相手。
+const DAEMON_SERVER_RS: &str = include_str!("../src/daemon/server.rs");
+
+/// `DAEMON_CHANNELS` を source から抽出した実態と突き合わせる。
+///
+/// この const は手動同期で、以前は「実装から channel が消えても誰も気付けない」
+/// 状態だった（fold-in で `"control"` を削除した時に実際に取り残された）。
+/// source を直接読むことで drift を双方向に検出する。
+#[test]
+fn daemon_channels_const_matches_source() {
+    let found: std::collections::BTreeSet<&str> = DAEMON_SERVER_RS
+        .split(r#"register_channel(""#)
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    let declared: std::collections::BTreeSet<&str> = DAEMON_CHANNELS.iter().copied().collect();
+
+    assert_eq!(
+        found, declared,
+        "DAEMON_CHANNELS が server.rs の register_channel 実態とずれている\
+         （channel を増減したら本 const も更新すること）"
+    );
+}
 
 fn registry() -> SchemaRegistry {
     SchemaRegistry::from_kdl(VP_DAEMON_KDL)

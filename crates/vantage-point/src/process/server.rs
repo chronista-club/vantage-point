@@ -232,8 +232,9 @@ pub(crate) async fn start_project(
         ))),
         // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
         // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
-        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + spawn_world_uplink subscribe
-        // で SP → TheWorld push 経路。 将来 Pane / Stand 等の event も同 bus に variant 追加で乗る。
+        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + `publish_lanes` subscribe で
+        // World の集約 view を更新する経路。 将来 Pane / Stand 等の event も同 bus に variant
+        // 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
         // PR-α-1 (VP-111): SP モードでは WorldCapabilities を持たない (World mode 専用)
@@ -366,20 +367,16 @@ pub(crate) async fn start_project(
         }
     }
 
-    // L0 finale (doc 27 §3.4.5): SP HTTP listener + QUIC listen 全廃 = SP 完全 portless (outbound-only)。
-    // 旧 SP HTTP route / SP QUIC listen channel は全て World process-proxy reverse-routing に移管済:
-    // - reconciliation (旧 /api/health port-scan) → Push-only registry (QUIC register/disconnect)
-    // - MCP / lanes / tmux / ruby / canvas / wire 等 process 操作 → World process-proxy ask
-    //   (World → SP control channel → run_control_driver → dispatch_process_method)
-    // - stop_process の graceful shutdown も World process-proxy "shutdown" 経由
-    // よって SP は listen を一切持たず、 registry / canvas-ingest / control の outbound stream のみ
-    // (spawn_world_uplink)。 health/shutdown handler は run_world (World :32000) が使うため
-    // routes/health.rs に残置。
-
-    // SP-portless (doc 27 §3.4.5 / rebuild Epic L0 finale): SP は QUIC listen を持たない。
-    // 全 process 操作は World :32000 → SP control channel の reverse-routing
-    // (spawn_world_uplink の control stream → run_control_driver → dispatch_process_method) で
-    // serve する。listen server (start_unison_server) は撤去済 = SP は outbound-only。
+    // doc 44 P1 (fold-in): project は listener も outbound 接続も持たない。
+    //
+    // 経緯: L0 finale (doc 27 §3.4.5) で SP は HTTP/QUIC listen を全廃し、World からの操作は
+    // 「World → SP control channel の reverse-routing」で serve していた。fold-in はその
+    // control channel ごと不要にした — project は World と同一プロセスなので、process 操作は
+    // `ProjectRuntimes::dispatch` → `dispatch_process_method` の**直呼び**になる。
+    //
+    // 旧経路を構成していた `spawn_world_uplink` / `run_control_driver` / "control" channel は
+    // いずれも撤去済（残っていた 451 行は `run()` を外した時点で孤児化してコンパイラが検出した）。
+    // health/shutdown handler は run_world (World) が使うため routes/health.rs に残置。
 
     // デバッグモード時のみトレースログ監視を起動
     if debug_mode != DebugMode::None {

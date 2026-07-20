@@ -83,13 +83,16 @@ pub struct DaemonState {
     #[allow(clippy::type_complexity)]
     pub canvas_routers:
         Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
-    /// L0 SP-portless (control slice): project ごとの SP "control" channel handle。
+    /// project ごとの実行状態 registry（旧「SP control channel handle」の後継）。
     ///
-    /// 各 SP が起動時に "control" channel で World に outbound 接続し (`spawn_world_uplink`)、
-    /// World はその `UnisonChannel` を path_key で保持する。 "process-proxy" channel 経由で来た
-    /// 外部 client (MCP/CLI) の process 操作を、 この handle を**逆用** (`request()`) して当該 SP に
-    /// forward する (= World→SP reverse-routing)。 UnisonChannel は双方向対称なので、 SP が QUIC
-    /// client でありながら本接続上で RPC server として振る舞える。 SP 切断で除去 (= reverse 不能)。
+    /// doc 44 P1 (fold-in) 以前: 各 SP が起動時に "control" channel で World に outbound 接続し、
+    /// World はその `UnisonChannel` を path_key で保持していた。"process-proxy" 経由で来た外部
+    /// client (MCP/CLI) の process 操作は、この handle を**逆用**して当該 SP に forward していた
+    /// (= World→SP reverse-routing)。SP 切断で handle を除去 = reverse 不能、という寿命だった。
+    ///
+    /// fold-in 後: project は World と同一プロセスの `Arc<AppState>` なので、forward ではなく
+    /// `ProjectRuntimes::dispatch` → `dispatch_process_method` の直呼びになる。「切断」という
+    /// 状態が存在せず、map に居るか居ないかだけになった。
     pub(crate) control_channels: ControlChannels,
     /// projects 操作の権威 (= CLI → World 直接 Unison "world-control" channel の data plane)。
     ///
@@ -1393,9 +1396,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "canvas-ingest" Channel（L0 SP-portless canvas slice — SP → World の canvas push 受け口）
     // =========================================================================
-    // 各 SP の canvas pusher (`discovery::spawn_world_uplink`) が paisley-park topic の
-    // ProcessMessage を push する。 World は project ごとの TopicRouter に `route()` して
-    // retained 保持 + 購読者 (= "canvas" channel 経由の vp-app) へ配信する。
+    // doc 44 P1 (fold-in) 以前は、各 SP の canvas pusher (`discovery::spawn_world_uplink`) が
+    // paisley-park topic の ProcessMessage をこの channel に push していた。fold-in 後は
+    // project の TopicRouter を World が直接購読するため、この受け口に来る push は無い
+    // （`canvas_router_for` が project 起動時に実 router へ差し替える）。channel 自体は
+    // 外部からの ingest 口として残置。
     //
     // プロトコル: SP が open_channel("canvas-ingest") → request("subscribe", {project_path}) →
     //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。

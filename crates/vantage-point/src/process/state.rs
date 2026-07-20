@@ -101,7 +101,8 @@ pub(crate) struct AppState {
     /// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。
     /// caller (lane_spawn_actor / routes/lanes / restart_lane / lifecycle monitor) が
     /// `state.system_event_tx.send(SystemEvent::Lane(LaneDiff::*))` 等で publish、
-    /// `spawn_world_uplink` subscriber が QUIC registry channel で TheWorld に push する経路。
+    /// project の lanes publish task (`publish_lanes`) が subscribe して World の集約 view を
+    /// 更新する経路（doc 44 P1 fold-in で旧 `spawn_world_uplink` の QUIC push から置換）。
     /// 将来 Pane / Stand / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
     pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
     /// World 階層 Stand container (LSCM、 PR-α series / VP-109)。
