@@ -178,7 +178,19 @@ P1 露払いで実装済）。これは fold-in の有無に関わらず価値�
 World が N handle を抱く案は「project の runtime 実体」を復活させるので D2 と矛盾する。
 `LaneAddress` が project を持つ以上、**table に project 次元を足す**のが canonical。
 
-- ⚠️ **要検証**: `db/sp_*/` の実内容（`pane_contents` 等）と、移行なしで捨てて良いか。
+- ✅ **検証済（2026-07-20 実測）: `db/sp_*` は捨ててよい**。合計 1.4 GB あるが、
+  各 db は `wal/` 単一ファイルが全量で `sstables`/`vlog` は 0 バイト（**一度も compaction
+  されていない**）。WAL の中身は 3 db で調べて **`!nd`（SurrealDB の node = cluster
+  membership key）が 1 件 127 B ちょうどで占有率 ~100%**。実アプリデータは
+  `stand_status` 1,055 / `pane_contents` 56 / `wire_messages` 50 件と桁違いに少なく、
+  移行すべき実体は KB オーダーしかない。詳細 = creo `mem_1CdDAJuuCfsP1iY2ZutHp9`。
+- **fold-in の未計上の実利**: db 24 個 → 1 個で node 書き込みストリームも 24 → 1 になり、
+  この churn が **24 分の 1** に落ちる（月 ~1.4 GB → ~60 MB）。ただし compaction が
+  走らない限り成長自体は続くので**緩和であって根治ではない**（別途 surrealkv の
+  compaction 設定を調べる — P1 の範囲外）。
+- **孤児 db 246 MB**（projects.kdl に対応 project が無い 9 個。`sp_creoui` = creo-ui
+  リネームの残骸等）は誰も掃除していない。`vp sync` は ghost project を消すが db は残す。
+  判定基準が明快なので **D3「Project Host の第一の振る舞い＝見送り」の実例第 2 号**。
 - 副次: この LOCK は「重複 SP 検出」も兼ねていた（生存 holder 検出で起動中止）。
   fold-in 後は World の `:32000` bind + `daemon.pid` が単一性を保証するので**代替不要**。
 
