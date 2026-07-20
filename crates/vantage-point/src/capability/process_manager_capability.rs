@@ -3192,4 +3192,49 @@ mod tests {
         let procs = cap.list_running_processes().await;
         assert!(procs.is_empty());
     }
+
+    /// 回帰固定: `stop_process` は配線された `process_lifecycle_tx` に Remove を流す。
+    ///
+    /// この broadcast の生産者は fold-in で SP が消えた際に一度ゼロになり（`vp daemon
+    /// processes --watch` と event log が永久沈黙）、`start_process` / `stop_process` に
+    /// 配線し直して根治した。その配線は「静かに失われる」種類の障害なので、emit を単体で
+    /// 固定して同型再発を CI で捕まえる。start 側（Add）は隣で同じ `if let Some(ref tx)`
+    /// パターンを共有するため、field / setter が壊れれば本テストも落ちる。
+    #[tokio::test]
+    async fn stop_process_emits_lifecycle_remove() {
+        use crate::daemon::protocol::ProcessLifecycleEvent;
+
+        let cap = make_test_cap();
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        // Sender を差し込む前に subscribe を作らないと、send 時に receiver 不在で取りこぼす。
+        {
+            let mut c = cap;
+            c.set_process_lifecycle_tx(tx);
+
+            // stop_process の前提: projects に name→key、running_processes に live entry。
+            // project_runtimes は未設定でも stop は tolerate する（registry の後始末のみ実施）。
+            c.projects_ref().write().await.insert(
+                "/tmp/proj-x".to_string(),
+                test_project("proj-x", Some(33000)),
+            );
+            c.running_processes_ref().write().await.insert(
+                "/tmp/proj-x".to_string(),
+                RunningProcess {
+                    project_name: "proj-x".to_string(),
+                    port: 33000,
+                    pid: 4242,
+                    project_path: "/tmp/proj-x".into(),
+                },
+            );
+
+            c.stop_process("proj-x").await.expect("stop_process");
+        }
+
+        match rx.try_recv() {
+            Ok(ProcessLifecycleEvent::Remove { project_path }) => {
+                assert_eq!(project_path, "/tmp/proj-x");
+            }
+            other => panic!("Remove イベントが流れるべき: {other:?}"),
+        }
+    }
 }
