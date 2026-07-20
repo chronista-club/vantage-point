@@ -141,14 +141,24 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
                 )
             })?;
 
-        let processes = client.processes_list().await.unwrap_or_default();
+        // processes 取得の失敗は「project ゼロ」と意味が違う（daemon 障害 / registry stream
+        // 不通）。握り潰すと 14 project 稼働中でも「project なし」と誤誘導するため、明示的に
+        // エラーとして上げる。lanes は失敗しても LANES 列を `-` に degrade できる（下参照）。
+        let processes = client.processes_list().await.map_err(|e| {
+            anyhow::anyhow!("稼働 project の取得に失敗しました（daemon に届いていない可能性）: {e}")
+        })?;
         if processes.is_empty() {
             println!("No running projects found.");
             return Ok(());
         }
-        let lane_counts = crate::discovery::count_lanes_by_project_entries(
-            &client.lanes_list().await.unwrap_or_default(),
-        );
+        // lanes は取れなくても project 一覧は出す。失敗時は空集計 → 各行 LANES=`-`。
+        let lane_counts = match client.lanes_list().await {
+            Ok(lanes) => crate::discovery::count_lanes_by_project_entries(&lanes),
+            Err(e) => {
+                eprintln!("⚠ lane 一覧の取得に失敗（LANES は - で表示）: {e}");
+                Default::default()
+            }
+        };
         let instances: Vec<String> = processes
             .iter()
             .filter_map(|p| {

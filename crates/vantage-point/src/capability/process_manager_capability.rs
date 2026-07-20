@@ -203,6 +203,14 @@ pub struct ProcessManagerCapability {
     /// doc 44 P1 (fold-in): project を World 内で起動・保持する registry（World mode のみ Some）。
     /// 旧構成で `vp sp start` を spawn していた箇所が、この registry への `start()` に置き換わる。
     project_runtimes: Option<Arc<crate::process::project_registry::ProjectRuntimes>>,
+    /// process lifecycle event の broadcast Sender（World mode のみ Some、DaemonState と共有）。
+    ///
+    /// doc 44 P1 (fold-in): 旧構成では SP の register/unregister を受けた registry channel
+    /// handler がここに Add/Remove を流していた。SP が消えたため、in-process の起動元である
+    /// `start_process` / `stop_process` が daemon-canonical な生産者として引き継ぐ。
+    /// これが無いと `vp daemon processes --watch` と event log の process.up/down が永久沈黙する。
+    process_lifecycle_tx:
+        Option<tokio::sync::broadcast::Sender<crate::daemon::protocol::ProcessLifecycleEvent>>,
     /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
     /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
     active_lanes: Arc<RwLock<HashMap<String, String>>>,
@@ -248,6 +256,7 @@ impl ProcessManagerCapability {
             config: None,
             vpdb: None,
             project_runtimes: None,
+            process_lifecycle_tx: None,
             active_lanes: Arc::new(RwLock::new(HashMap::new())),
             process_presence: Arc::new(RwLock::new(HashMap::new())),
             spawn_semaphore: Arc::new(Semaphore::new(spawn_cap())),
@@ -264,6 +273,17 @@ impl ProcessManagerCapability {
         runtimes: Arc<crate::process::project_registry::ProjectRuntimes>,
     ) {
         self.project_runtimes = Some(runtimes);
+    }
+
+    /// process lifecycle broadcast の Sender を差し込む（World mode のみ）。
+    ///
+    /// DaemonState と同一 Sender を共有し、`start_process` / `stop_process` が
+    /// Add / Remove を流す。未設定なら emit は no-op（SP 単体起動 / test）。
+    pub(crate) fn set_process_lifecycle_tx(
+        &mut self,
+        tx: tokio::sync::broadcast::Sender<crate::daemon::protocol::ProcessLifecycleEvent>,
+    ) {
+        self.process_lifecycle_tx = Some(tx);
     }
 
     pub fn set_vpdb(&mut self, vpdb: crate::db::SharedVpDb) {
@@ -1367,6 +1387,18 @@ impl ProcessManagerCapability {
             tracing::warn!("DB process 登録失敗: {}", e);
         }
 
+        // doc 44 P1 (fold-in): lifecycle event を broadcast する（旧 registry handler の
+        // register→Add の後継）。`vp daemon processes --watch` と event log の process.up が
+        // これを購読する。receiver 不在（購読者ゼロ）は Err になるが無害なので握り潰す。
+        if let Some(ref tx) = self.process_lifecycle_tx {
+            let _ = tx.send(crate::daemon::protocol::ProcessLifecycleEvent::Add {
+                project_path: key.clone(),
+                project_name: project_name.to_string(),
+                port: running_process.port,
+                pid: running_process.pid,
+            });
+        }
+
         tracing::info!(
             project = project_name,
             port = running_process.port,
@@ -1445,6 +1477,13 @@ impl ProcessManagerCapability {
             && let Err(e) = db.delete_process(&key).await
         {
             tracing::warn!("DB process 削除失敗: {}", e);
+        }
+
+        // doc 44 P1 (fold-in): lifecycle Remove を broadcast（旧 unregister→Remove の後継）。
+        if let Some(ref tx) = self.process_lifecycle_tx {
+            let _ = tx.send(crate::daemon::protocol::ProcessLifecycleEvent::Remove {
+                project_path: key.clone(),
+            });
         }
 
         tracing::info!(project = project_name, "Process stopped");

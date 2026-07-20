@@ -46,13 +46,18 @@ protocol "vp-daemon" version="0.2.0" {
     }
 
     // world-control channel: World 権威の control plane（CLI → World 直接 Unison）。
-    // handler: server.rs register_channel("world-control", ...)（match method: projects/list /
-    // projects/add / projects/remove / projects/rename / projects/reorder / hub/discover / ping）。
-    // ここでは read-safe な hub/discover のみ記述する。projects/* は mutation なので記述しない。
+    // handler: server.rs handle_world_control（match method: projects/* + lanes/list + hub/discover + ping）。
+    // ここには read-safe な request だけ記述する（hub/discover / lanes/list）。projects/* mutation は
+    // 手で叩くと projects.kdl 状態を壊すため記述しない（unison-mcp に露出させない）。
     channel "world-control" from="client" lifetime="persistent" {
         request "hub/discover" description="chronista-hub registry に登録された world 一覧を返す federation discovery。TheWorld が credential 付きで hub の worlds.Discover を叩く（SSOT: hub と話すのは TheWorld のみ）。各 entry の connected (bool) は hub との常駐接続が今生きているかの liveness — false は registry に居るが relay は offline を返す (stale / 切断中)。hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）ならエラーを返す。引数なし。" {
             returns "WorldList" {
                 field "worlds" type="json" required=#true description="world の配列。各要素は { wld_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
+            }
+        }
+        request "lanes/list" description="全 project 横断の lane 一覧を返す read-only 照会。各 lane は project / kind (conductor|performer) / stand / state (spawning|running|exiting|dead) を持つ。`vp ps` の LANES / STATUS 列や外部 agent の俯瞰に使う。project 単位の詳細操作は process-proxy 経由。引数なし。" {
+            returns "LaneList" {
+                field "lanes" type="json" required=#true description="LaneInfo の配列。各要素は { address: { project, kind, name? }, state, stand, ... }。"
             }
         }
     }

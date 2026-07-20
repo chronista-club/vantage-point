@@ -80,6 +80,12 @@ pub struct LaneCounts {
 /// 各要素の想定 shape: `{"address": {"project": "<name>", ...}, "state": "running", ...}`。
 /// 期待しない形（key 欠落 / 型違い）は**その lane を黙って飛ばす** — `vp ps` は表示系なので、
 /// 1 件の形崩れで一覧全体を落とすより数え漏らす方が害が小さい。
+///
+/// ⚠️ 既知の制限: 集計キーは project **名**（`LaneAddress.project`）。これは lane 起動時に
+/// 一度だけ解決されて凍結されるため、稼働中に `vp projects rename` すると `vp ps` 側の
+/// 新名と一致せず、その project だけ LANES が `-`（idle 扱い）に落ちる。実害は表示のみで、
+/// 該当 project を再起動すれば名前が再解決されて解消する。根治するなら join を path ベースに
+/// する（`processes_list` は既に path を持つ）が、そこは transport 統一（doc 45）の範囲。
 pub fn count_lanes_by_project_entries(
     lanes: &[serde_json::Value],
 ) -> std::collections::HashMap<String, LaneCounts> {

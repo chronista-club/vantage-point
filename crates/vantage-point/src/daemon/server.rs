@@ -1163,8 +1163,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     //   - `subscribe` : push stream、 register/unregister/disconnect の lifecycle event を
     //                   `send_event("event", ProcessLifecycleEvent)` で client に realtime push
     //
-    // 経路: SP register/heartbeat (QUIC Push) → registry channel → process_lifecycle_tx broadcast
+    // 経路: start_process / stop_process (in-process 起動元) → process_lifecycle_tx broadcast
     //       → 本 channel の subscribe handler → client (vp-app / 別 World / 将来 hub gateway)。
+    //   doc 44 P1 (fold-in) 以前は「SP register/heartbeat (QUIC Push) → registry channel」が
+    //   生産者だったが、SP 消滅で in-process の start/stop_process が daemon-canonical に引き継いだ。
     //
     // SSOT 規約: Unison-first。 既存 HTTP /api/health の stands field は legacy fallback として
     // 温存するが、 新規 control plane の主経路は本 channel に集約。
