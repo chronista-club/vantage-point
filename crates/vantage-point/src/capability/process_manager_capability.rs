@@ -203,6 +203,14 @@ pub struct ProcessManagerCapability {
     /// doc 44 P1 (fold-in): project を World 内で起動・保持する registry（World mode のみ Some）。
     /// 旧構成で `vp sp start` を spawn していた箇所が、この registry への `start()` に置き換わる。
     project_runtimes: Option<Arc<crate::process::project_registry::ProjectRuntimes>>,
+    /// process lifecycle event の broadcast Sender（World mode のみ Some、DaemonState と共有）。
+    ///
+    /// doc 44 P1 (fold-in): 旧構成では SP の register/unregister を受けた registry channel
+    /// handler がここに Add/Remove を流していた。SP が消えたため、in-process の起動元である
+    /// `start_process` / `stop_process` が daemon-canonical な生産者として引き継ぐ。
+    /// これが無いと `vp daemon processes --watch` と event log の process.up/down が永久沈黙する。
+    process_lifecycle_tx:
+        Option<tokio::sync::broadcast::Sender<crate::daemon::protocol::ProcessLifecycleEvent>>,
     /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
     /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
     active_lanes: Arc<RwLock<HashMap<String, String>>>,
@@ -248,6 +256,7 @@ impl ProcessManagerCapability {
             config: None,
             vpdb: None,
             project_runtimes: None,
+            process_lifecycle_tx: None,
             active_lanes: Arc::new(RwLock::new(HashMap::new())),
             process_presence: Arc::new(RwLock::new(HashMap::new())),
             spawn_semaphore: Arc::new(Semaphore::new(spawn_cap())),
@@ -264,6 +273,17 @@ impl ProcessManagerCapability {
         runtimes: Arc<crate::process::project_registry::ProjectRuntimes>,
     ) {
         self.project_runtimes = Some(runtimes);
+    }
+
+    /// process lifecycle broadcast の Sender を差し込む（World mode のみ）。
+    ///
+    /// DaemonState と同一 Sender を共有し、`start_process` / `stop_process` が
+    /// Add / Remove を流す。未設定なら emit は no-op（SP 単体起動 / test）。
+    pub(crate) fn set_process_lifecycle_tx(
+        &mut self,
+        tx: tokio::sync::broadcast::Sender<crate::daemon::protocol::ProcessLifecycleEvent>,
+    ) {
+        self.process_lifecycle_tx = Some(tx);
     }
 
     pub fn set_vpdb(&mut self, vpdb: crate::db::SharedVpDb) {
@@ -1367,6 +1387,18 @@ impl ProcessManagerCapability {
             tracing::warn!("DB process 登録失敗: {}", e);
         }
 
+        // doc 44 P1 (fold-in): lifecycle event を broadcast する（旧 registry handler の
+        // register→Add の後継）。`vp daemon processes --watch` と event log の process.up が
+        // これを購読する。receiver 不在（購読者ゼロ）は Err になるが無害なので握り潰す。
+        if let Some(ref tx) = self.process_lifecycle_tx {
+            let _ = tx.send(crate::daemon::protocol::ProcessLifecycleEvent::Add {
+                project_path: key.clone(),
+                project_name: project_name.to_string(),
+                port: running_process.port,
+                pid: running_process.pid,
+            });
+        }
+
         tracing::info!(
             project = project_name,
             port = running_process.port,
@@ -1447,6 +1479,13 @@ impl ProcessManagerCapability {
             tracing::warn!("DB process 削除失敗: {}", e);
         }
 
+        // doc 44 P1 (fold-in): lifecycle Remove を broadcast（旧 unregister→Remove の後継）。
+        if let Some(ref tx) = self.process_lifecycle_tx {
+            let _ = tx.send(crate::daemon::protocol::ProcessLifecycleEvent::Remove {
+                project_path: key.clone(),
+            });
+        }
+
         tracing::info!(project = project_name, "Process stopped");
 
         Ok(())
@@ -1508,89 +1547,6 @@ impl ProcessManagerCapability {
             .map_err(|e| CapabilityError::Other(format!("Failed to open PointView: {}", e)))?;
 
         Ok(())
-    }
-
-    /// 外部 Process の自己登録（Process 起動時に呼ばれる）
-    pub async fn register_external_process(&self, port: u16, project_dir: &str, pid: u32) {
-        let key = normalize_path_key(std::path::Path::new(project_dir));
-        let name = {
-            let projects = self.projects.read().await;
-            projects.get(&key).map(|p| p.name.clone())
-        }
-        .unwrap_or_else(|| {
-            std::path::Path::new(project_dir)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string()
-        });
-
-        let process = RunningProcess {
-            project_name: name.clone(),
-            port,
-            pid,
-            project_path: project_dir.into(),
-        };
-
-        // プロジェクト状態を更新
-        {
-            let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(&key) {
-                p.process_status = ProcessStatus::Running;
-            }
-        }
-
-        let mut procs = self.running_processes.write().await;
-        procs.insert(key.clone(), process.clone());
-
-        // DB に書き込み（正規化パスで保存）
-        if let Some(ref db) = self.vpdb
-            && let Err(e) = db.upsert_process(&key, &name, port, pid, "running").await
-        {
-            tracing::warn!("DB process 登録失敗: {}", e);
-        }
-
-        tracing::info!(
-            "Process 登録: port={}, dir={}, key={}",
-            port,
-            project_dir,
-            key
-        );
-    }
-
-    /// 外部 Process の登録解除（Process 停止時に呼ばれる）
-    pub async fn unregister_external_process(&self, port: u16) {
-        // Read-then-Act: まず read でキーを特定 → 解放 → 個別に write
-        let key = {
-            let procs = self.running_processes.read().await;
-            procs
-                .iter()
-                .find(|(_, p)| p.port == port)
-                .map(|(k, _)| k.clone())
-        };
-
-        if let Some(key) = key {
-            // projects → running_processes の順で write（他の箇所と統一）
-            {
-                let mut projects = self.projects.write().await;
-                if let Some(p) = projects.get_mut(&key) {
-                    p.process_status = ProcessStatus::Stopped;
-                }
-            }
-            {
-                let mut procs = self.running_processes.write().await;
-                procs.remove(&key);
-            }
-
-            // DB から削除（正規化パスで削除）
-            if let Some(ref db) = self.vpdb
-                && let Err(e) = db.delete_process(&key).await
-            {
-                tracing::warn!("DB process 登録解除失敗: {}", e);
-            }
-
-            tracing::info!("Process 登録解除: port={}, key={}", port, key);
-        }
     }
 
     /// 全 Process の状態を更新（PID liveness check + ポートスキャン Reconciliation）
@@ -3235,5 +3191,50 @@ mod tests {
         let cap = make_test_cap();
         let procs = cap.list_running_processes().await;
         assert!(procs.is_empty());
+    }
+
+    /// 回帰固定: `stop_process` は配線された `process_lifecycle_tx` に Remove を流す。
+    ///
+    /// この broadcast の生産者は fold-in で SP が消えた際に一度ゼロになり（`vp daemon
+    /// processes --watch` と event log が永久沈黙）、`start_process` / `stop_process` に
+    /// 配線し直して根治した。その配線は「静かに失われる」種類の障害なので、emit を単体で
+    /// 固定して同型再発を CI で捕まえる。start 側（Add）は隣で同じ `if let Some(ref tx)`
+    /// パターンを共有するため、field / setter が壊れれば本テストも落ちる。
+    #[tokio::test]
+    async fn stop_process_emits_lifecycle_remove() {
+        use crate::daemon::protocol::ProcessLifecycleEvent;
+
+        let cap = make_test_cap();
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        // Sender を差し込む前に subscribe を作らないと、send 時に receiver 不在で取りこぼす。
+        {
+            let mut c = cap;
+            c.set_process_lifecycle_tx(tx);
+
+            // stop_process の前提: projects に name→key、running_processes に live entry。
+            // project_runtimes は未設定でも stop は tolerate する（registry の後始末のみ実施）。
+            c.projects_ref().write().await.insert(
+                "/tmp/proj-x".to_string(),
+                test_project("proj-x", Some(33000)),
+            );
+            c.running_processes_ref().write().await.insert(
+                "/tmp/proj-x".to_string(),
+                RunningProcess {
+                    project_name: "proj-x".to_string(),
+                    port: 33000,
+                    pid: 4242,
+                    project_path: "/tmp/proj-x".into(),
+                },
+            );
+
+            c.stop_process("proj-x").await.expect("stop_process");
+        }
+
+        match rx.try_recv() {
+            Ok(ProcessLifecycleEvent::Remove { project_path }) => {
+                assert_eq!(project_path, "/tmp/proj-x");
+            }
+            other => panic!("Remove イベントが流れるべき: {other:?}"),
+        }
     }
 }
