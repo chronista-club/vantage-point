@@ -22,8 +22,20 @@ use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
-/// Run the Process server
-pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
+/// project 1 件分の実行状態を in-process で起動する（旧 SP プロセスの中身）。
+///
+/// doc 44 P1 (fold-in): 旧 `run()` から **uplink と終端 block を除いた部分**を切り出したもの。
+/// SP プロセスとして動く間は [`run`] が本関数を呼んで uplink を張り、World 一枚化後は
+/// World が project ごとに本関数を直接呼んで `Arc<AppState>` を map に抱える。
+///
+/// 返る時点で lane bootstrap / lifecycle monitor / lanes snapshot publish まで起動済み。
+/// 停止は `shutdown_token` を cancel して [`shutdown_project`] を呼ぶ。
+pub(crate) async fn start_project(
+    port: u16,
+    debug_mode: DebugMode,
+    cap_config: CapabilityConfig,
+    shutdown_token: CancellationToken,
+) -> Result<Arc<AppState>> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
@@ -38,10 +50,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
 
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
-
-    // Shutdown signal
-    let shutdown_token = CancellationToken::new();
-    let shutdown_token_clone = shutdown_token.clone();
 
     // Initialize Capability system
     let capabilities = Arc::new(ProcessCapabilities::new(cap_config).await);
@@ -346,13 +354,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         });
     }
 
-    // F1a (doc 27 §3.4.4): SP → TheWorld の outbound を 1 connection に集約した uplink。
-    // registry (自己登録 + heartbeat + lane diff push) / canvas-ingest (paisley-park /
-    // terminal topic push) / control (World reverse-routing 受け) の 3 channel を 1 共有
-    // QUIC connection 上の別 stream として張る (旧: 3 別 connection)。 依存は全て AppState
-    // から引くため引数は (state, shutdown) のみ。 切断時に TheWorld が即時除去 (HTTP 登録不要)。
-    crate::discovery::spawn_world_uplink(state.clone(), shutdown_token.clone());
-
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
     // `process/star-platinum/state/lanes`（category=state → RetainedStore で保持）へ流す。
@@ -421,32 +422,53 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
-    // Clone for shutdown
-    let capabilities_for_shutdown = state.capabilities.clone();
-    let file_watchers_for_shutdown = state.file_watchers.clone();
+    Ok(state)
+}
 
-    // SP-portless: SP は listen を持たず、 run() は shutdown_token で block する。 process 操作は
-    // spawn_world_uplink の control stream (reverse-routing) で process 生存中 serve され続ける。
-    // World process-proxy `shutdown` / SIGTERM 経由で shutdown_token が cancel されると cleanup へ進む。
-    shutdown_token_clone.cancelled().await;
-    tracing::info!("Graceful shutdown initiated (outbound-only SP)");
-
-    // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
-    // （spawn_world_uplink の shutdown handler が unregister を送信済み）
-
+/// [`start_project`] で起動した project の後始末（file watcher 停止 + capability shutdown）。
+///
+/// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
+/// 本関数は token では止まらないリソースの解放を担当する）。
+pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
     // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
 
     // ファイル監視を全停止
-    file_watchers_for_shutdown.lock().await.stop_all();
+    state.file_watchers.lock().await.stop_all();
 
-    // (tmux decoupling PR2: lane は PtySlot の子 — SP 停止で完全に落ちる)
+    // (tmux decoupling PR2: lane は PtySlot の子 — 親が落ちれば完全に落ちる)
 
-    // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");
-    if let Err(e) = capabilities_for_shutdown.shutdown().await {
+    if let Err(e) = state.capabilities.shutdown().await {
         tracing::warn!("Error during capability shutdown: {}", e);
     }
+}
+
+/// Run the Process server（SP プロセスとしての実行）
+///
+/// doc 44 P1 (fold-in) の過渡形: 中身は [`start_project`] に切り出され、本関数は
+/// 「project を起こす → World への uplink を張る → shutdown を待つ」という
+/// **SP プロセス固有の外殻**だけを担う。fold-in 完了時にこの外殻ごと退役する。
+pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
+    let shutdown_token = CancellationToken::new();
+    let state = start_project(port, debug_mode, cap_config, shutdown_token.clone()).await?;
+
+    // F1a (doc 27 §3.4.4): SP → TheWorld の outbound を 1 connection に集約した uplink。
+    // registry (自己登録 + heartbeat + lane diff push) / canvas-ingest (paisley-park /
+    // terminal topic push) / control (World reverse-routing 受け) の 3 channel を 1 共有
+    // QUIC connection 上の別 stream として張る (旧: 3 別 connection)。 依存は全て AppState
+    // から引くため引数は (state, shutdown) のみ。 切断時に TheWorld が即時除去 (HTTP 登録不要)。
+    crate::discovery::spawn_world_uplink(state.clone(), shutdown_token.clone());
+
+    // SP-portless: SP は listen を持たず、 run() は shutdown_token で block する。 process 操作は
+    // spawn_world_uplink の control stream (reverse-routing) で process 生存中 serve され続ける。
+    // World process-proxy `shutdown` / SIGTERM 経由で shutdown_token が cancel されると cleanup へ進む。
+    shutdown_token.cancelled().await;
+    tracing::info!("Graceful shutdown initiated (outbound-only SP)");
+
+    // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
+    // （spawn_world_uplink の shutdown handler が unregister を送信済み）
+    shutdown_project(&state).await;
 
     tracing::info!("Server stopped");
     Ok(())
