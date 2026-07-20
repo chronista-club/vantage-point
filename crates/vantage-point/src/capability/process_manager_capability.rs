@@ -31,7 +31,6 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::process::Command;
 use tokio::sync::{RwLock, Semaphore};
 
 /// PID が生存しているか確認（crossplat）
@@ -178,23 +177,6 @@ fn config_projects_to_entries(config: &Config) -> Vec<crate::projects_file::Proj
         .collect()
 }
 
-/// VP-165 PR-5b / L0 finale: `start_process` 内 `wait_for_health` の判定結果。
-/// L0 finale で判定源を `/api/health` HTTP → QUIC registry (`running_processes`) に変更。
-#[derive(Debug)]
-enum HealthCheckResult {
-    /// QUIC registry に `expected_key` が当該 `port` で登録された → 当該 project の SP が立った。
-    /// payload は registry に登録された entry そのもの (= SP 自己登録が真実源)。 spawn した
-    /// 子とは**別の既存 SP** が登録するケースがある (子は db LOCK 生存 holder 検出で自殺)
-    /// ため、 daemon 側の子 pid ではなくこの entry を採用する。
-    Ours(RunningProcess),
-    /// registry に別 project が同 `port` で登録済 (reverse-lookup) → 外部衝突 (auto-reassign trigger)
-    WrongProject(String),
-    /// timeout かつ port が TCP listening = 非 VP プロセス占有 (auto-reassign trigger)
-    Occupied,
-    /// timeout かつ port も応答せず = SP crashed or never started
-    Timeout,
-}
-
 /// Conductor Capability
 #[derive(Clone)]
 pub struct ProcessManagerCapability {
@@ -216,9 +198,11 @@ pub struct ProcessManagerCapability {
     /// 設定
     config: Option<Config>,
     /// vpバイナリパス
-    vp_binary_path: Option<PathBuf>,
     /// SurrealDB クライアント（Some なら DB に二重書き込み）
     vpdb: Option<crate::db::SharedVpDb>,
+    /// doc 44 P1 (fold-in): project を World 内で起動・保持する registry（World mode のみ Some）。
+    /// 旧構成で `vp sp start` を spawn していた箇所が、この registry への `start()` に置き換わる。
+    project_runtimes: Option<Arc<crate::process::project_registry::ProjectRuntimes>>,
     /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
     /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
     active_lanes: Arc<RwLock<HashMap<String, String>>>,
@@ -262,8 +246,8 @@ impl ProcessManagerCapability {
             previously_running: Arc::new(RwLock::new(HashMap::new())),
             lane_registry: Arc::new(RwLock::new(HashMap::new())),
             config: None,
-            vp_binary_path: None,
             vpdb: None,
+            project_runtimes: None,
             active_lanes: Arc::new(RwLock::new(HashMap::new())),
             process_presence: Arc::new(RwLock::new(HashMap::new())),
             spawn_semaphore: Arc::new(Semaphore::new(spawn_cap())),
@@ -271,6 +255,17 @@ impl ProcessManagerCapability {
     }
 
     /// SurrealDB クライアントを設定
+    /// doc 44 P1 (fold-in): project を in-process 起動するための registry を差し込む。
+    ///
+    /// World mode でのみ設定される。未設定のまま `start_process` を呼ぶと Err になる
+    /// （旧構成で `vp` binary が見つからない場合と同じ「起動手段が無い」状態）。
+    pub(crate) fn set_project_runtimes(
+        &mut self,
+        runtimes: Arc<crate::process::project_registry::ProjectRuntimes>,
+    ) {
+        self.project_runtimes = Some(runtimes);
+    }
+
     pub fn set_vpdb(&mut self, vpdb: crate::db::SharedVpDb) {
         self.vpdb = Some(vpdb);
     }
@@ -584,42 +579,6 @@ impl ProcessManagerCapability {
                 CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
             })
         }
-    }
-
-    /// vpバイナリを検索
-    fn find_vp_binary() -> Option<PathBuf> {
-        // 1. current_exe()（最も確実）
-        if let Ok(exe) = std::env::current_exe()
-            && exe.exists()
-        {
-            return Some(exe);
-        }
-
-        // 2. ~/.cargo/bin/vp
-        if let Some(home) = dirs::home_dir() {
-            let cargo_path = home.join(".cargo/bin/vp");
-            if cargo_path.exists() {
-                return Some(cargo_path);
-            }
-        }
-
-        // 3. /usr/local/bin/vp
-        let usr_local = PathBuf::from("/usr/local/bin/vp");
-        if usr_local.exists() {
-            return Some(usr_local);
-        }
-
-        // 4. PATH経由
-        if let Ok(output) = std::process::Command::new("which").arg("vp").output()
-            && output.status.success()
-        {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
-        }
-
-        None
     }
 
     /// プロジェクト名から正規化パスキーを解決
@@ -1238,10 +1197,6 @@ impl ProcessManagerCapability {
     }
 
     pub async fn start_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
-        let vp_path = self.vp_binary_path.clone().ok_or_else(|| {
-            CapabilityError::InitializationFailed("vp binary not found".to_string())
-        })?;
-
         // 名前→パスキー解決（見つからなければ config を再読み込みして再試行）
         let key = match self.resolve_key_by_name(project_name).await {
             Some(k) => k,
@@ -1335,123 +1290,38 @@ impl ProcessManagerCapability {
         // TheWorld が `wait_for_process_port` で range scan で discover、 だった。 PR-5b で
         // TheWorld が port を明示所有する形に整理。
         let project_path_str = project.path.to_string_lossy().to_string();
-        let max_attempts = 2; // 初回 + auto-reassign 後 1 回
-        let mut attempt = 0;
-        let running_process = loop {
-            attempt += 1;
-
-            // port 解決 (slot ベース、 新規割当なら config 永続)。 失敗時は find_available_port に fallback
-            let port = match crate::resolve::sp_port_for_project(project_name) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(
-                        "VP-165: sp_port_for_project('{}') 失敗: {} → find_available_port にフォールバック",
-                        project_name,
-                        e
-                    );
-                    crate::resolve::find_available_port().ok_or_else(|| {
-                        CapabilityError::Other(format!(
-                            "VP-165: port 解決失敗かつ空き port もなし ({})",
-                            e
-                        ))
-                    })?
-                }
-            };
-
-            // vp sp start を子プロセスとして実行 (-p で port 明示)
-            let mut cmd = Command::new(&vp_path);
-            cmd.args([
-                "sp",
-                "start",
-                "-C",
-                &project_path_str,
-                "-p",
-                &port.to_string(),
-            ]);
-            cmd.current_dir(&project.path);
-            // GUI/launchd 起動の最小 PATH が SP → mise → claude へ伝播するのを spawn 最上流で断つ。
-            cmd.env("PATH", crate::spawn_env::augmented_spawn_path());
-            // Windows: SP は background server。 親 (daemon) が console を持たない (DETACHED) ため、
-            // console subsystem の vp.exe を素で spawn すると Windows が新規 console を割り当てて
-            // 黒い console 窓が出てしまう。 CREATE_NO_WINDOW で window 無しの background 実行にする。
-            #[cfg(windows)]
-            {
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
-            let child = cmd
-                .spawn()
-                .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
-            let spawned_pid = child.id().unwrap_or(0);
-
-            // health 確認 (port 既知なので range scan 不要)
-            let health = self
-                .wait_for_health(
-                    port,
-                    &project.path,
-                    std::time::Duration::from_millis(800),
-                    std::time::Duration::from_millis(500),
-                    std::time::Duration::from_secs(10),
-                )
-                .await;
-
-            match health {
-                HealthCheckResult::Ours(registered) => {
-                    // respawn-leak 根治: registry の登録 entry (Push) が真実源。 spawn した子と
-                    // は別の既存 SP が登録するケース (子は db LOCK 生存 holder 検出で自殺) で
-                    // 子 pid を採用すると、 dead pid が registry を汚染 → PID liveness の ghost
-                    // 除去で「生存 SP が registry から恒久欠落」する gap になっていた (実測:
-                    // 2026-07-02 検証中に nexus で発生)。
-                    if registered.pid != spawned_pid {
-                        tracing::info!(
-                            "start_process: spawn した子 (pid={}) ではなく既存 SP (pid={}) が登録 → registry entry を採用 (project='{}')",
-                            spawned_pid,
-                            registered.pid,
-                            project_name
-                        );
-                    }
-                    break registered;
-                }
-                HealthCheckResult::WrongProject(actual) => {
-                    if attempt >= max_attempts {
-                        return Err(CapabilityError::Other(format!(
-                            "VP-165: port {} は別 project SP ({}) が占有、 auto-reassign 後も解消せず",
-                            port, actual
-                        )));
-                    }
-                    let new_port = self.auto_reassign_slot(project_name, port).await?;
-                    tracing::info!(
-                        "VP-165 retry: project '{}' を新 port {} で再 spawn",
-                        project_name,
-                        new_port
-                    );
-                    // child は port bind に失敗してすぐ exit するはず。 念のため kill は
-                    // しない (vp sp start 側の collision check が bail で抜ける)。
-                    continue;
-                }
-                HealthCheckResult::Occupied => {
-                    if attempt >= max_attempts {
-                        return Err(CapabilityError::Other(format!(
-                            "VP-165: port {} が外部 process に占有、 auto-reassign 後も解消せず",
-                            port
-                        )));
-                    }
-                    let new_port = self.auto_reassign_slot(project_name, port).await?;
-                    tracing::info!(
-                        "VP-165 retry: project '{}' を新 port {} で再 spawn (旧 {} は外部占有)",
-                        project_name,
-                        new_port,
-                        port
-                    );
-                    continue;
-                }
-                HealthCheckResult::Timeout => {
-                    return Err(CapabilityError::Other(format!(
-                        "VP-165: SP startup timeout (port={}, project='{}')",
-                        port, project_name
-                    )));
-                }
-            }
+        // doc 44 P1 (fold-in): 旧実装は `vp sp start -C <path> -p <port>` を子プロセスとして
+        // spawn し、QUIC registry への自己登録を `wait_for_health` で待ち、port が他 project に
+        // 取られていれば `auto_reassign_slot` して 1 回だけ retry する、という多段の段取りだった。
+        //
+        // project が World 内の `Arc<AppState>` になった今、これは単なる関数呼び出しになる。
+        // 旧段取りの構成要素はいずれも概念ごと不要になった:
+        //   - port 解決      … bind しないので割り当てる対象が無い
+        //   - health 待ち    … 起動の成否は Result で同期的に返る
+        //   - 衝突 retry     … 衝突する port が存在しない
+        //   - 重複 spawn 検出 … registry map のキー一意性が構造的に防ぐ
+        //     （旧: registry dedup + spawn Semaphore + per-project DB LOCK の 3 重掛け）
+        let runtimes = self.project_runtimes.clone().ok_or_else(|| {
+            CapabilityError::Other(
+                "project runtimes 未設定 — World mode 以外では project を起動できない".to_string(),
+            )
+        })?;
+        let started = runtimes
+            .start(&project_path_str, crate::protocol::DebugMode::None)
+            .await
+            .map_err(|e| {
+                CapabilityError::Other(format!("project 起動失敗 ({}): {}", project_name, e))
+            })?;
+        if !started {
+            tracing::info!("project は既に起動済み → skip (project={})", project_name);
+        }
+        // port / pid は SP プロセスの遺産。 project は World と同一プロセスで動くので
+        // pid は World 自身、 port は不在を表す 0 を入れる（表示の意味論整理は doc 44 P3）。
+        let running_process = RunningProcess {
+            project_name: project_name.to_string(),
+            port: 0,
+            pid: std::process::id(),
+            project_path: project.path.clone(),
         };
 
         // 状態を更新
@@ -1462,9 +1332,25 @@ impl ProcessManagerCapability {
             }
         }
 
-        // running_processes への daemon 側 insert は撤去 (Pull 時代の遺物)。
-        // wait_for_health が Ours を返した時点で SP の QUIC 自己登録が entry を書いており、
-        // daemon 側の子 pid で上書きすると Push-canonical を壊す (上記 gap の root cause)。
+        // doc 44 P1 (fold-in): daemon 側 insert を復活させる。
+        //
+        // #648 でこの insert を撤去したのは「SP の QUIC 自己登録が entry を書くので、
+        // daemon 側の子 pid で上書きすると Push-canonical を壊す」ためだった。fold-in で
+        // SP が消え、自己登録しに来る者が居なくなったため、この前提そのものが失効した。
+        // 撤去したまま放置すると registry は**永久に空**になり、`vp ps` / `/api/world/processes`
+        // が空を返し、`stop_process` は自身の gate に阻まれて project を停止できなくなる。
+        //
+        // in-process 起動が成功した瞬間が権威ある lifecycle event なので、書き手はここが正
+        // （= presence 設計が元から掲げていた daemon-canonical に戻る）。
+        {
+            let mut procs = self.running_processes.write().await;
+            procs.insert(key.clone(), running_process.clone());
+        }
+        // presence も同様に SP の register だけが Connected にしていた。in-process の
+        // project は「起動していれば接続している」以外の状態を取り得ないため、
+        // 起動成功 = Connected で確定する（旧: registry handler の register→Connected）。
+        self.set_presence(&key, ProcessPresenceState::Connected)
+            .await;
 
         // DB に書き込み（正規化パスで保存、 pid/port は registry entry の真実を使う）
         if let Some(ref db) = self.vpdb
@@ -1505,7 +1391,7 @@ impl ProcessManagerCapability {
             procs.get(&key).cloned()
         };
 
-        let running = running.ok_or_else(|| {
+        let _running = running.ok_or_else(|| {
             CapabilityError::Other(format!("No running Process for project: {}", project_name))
         })?;
 
@@ -1517,23 +1403,23 @@ impl ProcessManagerCapability {
             }
         }
 
-        // SP-portless: graceful shutdown を World process-proxy "shutdown" 経由で (World 内 loopback、
-        // reverse-routing → SP control channel → dispatch_process_method "shutdown")。 best-effort:
-        // 失敗/無応答でも registry からは remove する (SP は shutdown_token cancel で graceful 停止、
-        // 即 control channel を畳むため応答が返らない事もある)。 cli/restart-all と uniform な transport。
-        if let Err(e) = crate::commands::process_client::world_process_request(
-            crate::cli::world_port(),
-            &running.project_path.to_string_lossy(),
-            "shutdown",
-            serde_json::json!({}),
-        )
-        .await
-        {
+        // doc 44 P1 (fold-in): 旧実装は World process-proxy の "shutdown" method を loopback で
+        // 撃ち、reverse-route で SP に届けて自死させていた。SP は shutdown_token cancel 直後に
+        // control channel を畳むため応答が返らないことがあり、best-effort 扱いにせざるを得な
+        // かった（「止まったかどうか確かめられない」）。
+        //
+        // in-process になった今は registry から直接停止でき、完了も同期的に確認できる。
+        if let Some(runtimes) = self.project_runtimes.as_ref() {
+            if !runtimes.stop(&key).await {
+                tracing::info!(
+                    "停止対象の project は既に不在 (project={}) — registry の後始末のみ実施",
+                    project_name
+                );
+            }
+        } else {
             tracing::warn!(
-                "process-proxy shutdown 無応答/失敗 '{}' (port={}): {} — best-effort、 registry からは remove",
-                project_name,
-                running.port,
-                e
+                "project runtimes 未設定のため停止をスキップ (project={}) — registry からは remove",
+                project_name
             );
         }
 
@@ -1548,6 +1434,11 @@ impl ProcessManagerCapability {
             let mut procs = self.running_processes.write().await;
             procs.remove(&key);
         }
+        // doc 44 P1 (fold-in): presence も対称に落とす（旧: SP 切断を registry handler が
+        // 検知して Disconnected にしていた）。in-process では「停止した = 登録が無い」なので
+        // Disconnected（居るが繋がらない）ではなく Unregistered が正。
+        self.set_presence(&key, ProcessPresenceState::Unregistered)
+            .await;
 
         // DB から削除（正規化パスで削除）
         if let Some(ref db) = self.vpdb
@@ -1702,177 +1593,6 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// L0 finale (Push-only): spawn した SP の **QUIC 自己登録**を待って launch を確認する。
-    ///
-    /// 旧版は `/api/health` を poll して `project_dir` 一致を見ていたが、 SP は起動時に World へ
-    /// QUIC で自己登録する (`discovery::spawn_world_uplink` → registry channel `register`)。 World は
-    /// それを `running_processes`（path_key → RunningProcess）に同期 insert する (daemon/server.rs)。
-    /// よって HTTP probe 不要で、 共有 `running_processes` registry を poll すれば足りる:
-    /// - expected_path が `port` で登録 → `Ours`
-    /// - 別 project が同 `port` を占有 (registry reverse-lookup) → `WrongProject` (auto-reassign trigger)
-    /// - timeout かつ port 占有 (TcpStream) → `Occupied`（非 VP / 未登録 process）/ 応答無し → `Timeout`
-    ///
-    /// - `initial_delay` ~800ms: SP が boot + QUIC uplink 接続するまでの最低時間
-    /// - `poll_interval` ~500ms: retry 間隔
-    /// - `total_timeout` ~10s: 諦めるまでの total
-    async fn wait_for_health(
-        &self,
-        port: u16,
-        expected_path: &std::path::Path,
-        initial_delay: std::time::Duration,
-        poll_interval: std::time::Duration,
-        total_timeout: std::time::Duration,
-    ) -> HealthCheckResult {
-        let start = std::time::Instant::now();
-        tokio::time::sleep(initial_delay).await;
-        let expected_key = normalize_path_key(expected_path);
-
-        loop {
-            {
-                let procs = self.running_processes.read().await;
-                // 自分が当該 port で登録されたか
-                if let Some(p) = procs.get(&expected_key)
-                    && p.port == port
-                {
-                    tracing::info!(
-                        "SP startup registered in {}ms (port={}, project_path={})",
-                        start.elapsed().as_millis(),
-                        port,
-                        expected_path.display()
-                    );
-                    return HealthCheckResult::Ours(p.clone());
-                }
-                // 別 project が同 port を占有 (registry reverse-lookup)
-                if let Some((other_key, _)) = procs
-                    .iter()
-                    .find(|(k, v)| v.port == port && *k != &expected_key)
-                {
-                    tracing::warn!(
-                        "Registry 衝突: port={} expected={} actual={} ({}ms 経過)",
-                        port,
-                        expected_key,
-                        other_key,
-                        start.elapsed().as_millis()
-                    );
-                    return HealthCheckResult::WrongProject(other_key.clone());
-                }
-            }
-            if start.elapsed() >= total_timeout {
-                // timeout: 何かが port を握ってるか (Occupied) / 誰も応答しないか (Timeout)
-                let occupied = std::net::TcpStream::connect_timeout(
-                    &format!("[::1]:{}", port).parse().unwrap(),
-                    std::time::Duration::from_millis(200),
-                )
-                .is_ok();
-                tracing::warn!(
-                    "SP startup registration timeout after {}ms (port={}, occupied={})",
-                    start.elapsed().as_millis(),
-                    port,
-                    occupied
-                );
-                return if occupied {
-                    HealthCheckResult::Occupied
-                } else {
-                    HealthCheckResult::Timeout
-                };
-            }
-            tokio::time::sleep(poll_interval).await;
-        }
-    }
-
-    /// VP-165 PR-5b: 外部衝突時の slot 自動再割当 (1 回きり、 config 永続)
-    ///
-    /// `wait_for_health` が `WrongProject` / `Occupied` を返した時に呼ぶ。
-    /// 旧 slot を解放 → 「現 slot でなく、他 project に未割当で、port が listening でない」
-    /// slot を探して force-assign → config save。これで「外部衝突という実イベントに対して、
-    /// その 1 project だけ 1 回きり別 slot に退避 + 永続」が実現する (config 編集による
-    /// cascading shift とは別物 = bounded migration)。
-    ///
-    /// 25 slot 全部塞がってる極端な場合は Err で、 caller (`start_process`) が retry を諦める。
-    async fn auto_reassign_slot(
-        &self,
-        project_name: &str,
-        occupied_port: u16,
-    ) -> CapabilityResult<u16> {
-        let mut config = Config::load().map_err(|e| {
-            CapabilityError::Other(format!("VP-165 reassign: config load 失敗: {}", e))
-        })?;
-
-        let layout = config.port_layout();
-        let max_projects = layout.max_projects;
-        let used = config.used_slots();
-        let current_slot = config.resolve_slot_by_name(project_name);
-
-        // 候補: 現 slot でない & 他 project に未割当 & port が listening でない
-        let new_slot = (0..max_projects).find(|s| {
-            Some(*s) != current_slot
-                && !used.contains(s)
-                && std::net::TcpStream::connect_timeout(
-                    &format!("[::1]:{}", crate::cli::PORT_RANGE_START + s)
-                        .parse()
-                        .unwrap(),
-                    std::time::Duration::from_millis(100),
-                )
-                .is_err()
-        });
-
-        let new_slot = new_slot.ok_or_else(|| {
-            CapabilityError::Other(format!(
-                "VP-165 auto-reassign: 空き slot なし (max_projects={}, occupied port={})",
-                max_projects, occupied_port
-            ))
-        })?;
-
-        // 旧 slot を解放してから新 slot を force-assign (ensure_slot は preferred が used 中だと
-        // err なので、 unassign → ensure の順)
-        if current_slot.is_some() {
-            let _ = config.unassign_slot(project_name);
-        }
-        config
-            .ensure_slot(project_name, Some(new_slot))
-            .map_err(|e| {
-                CapabilityError::Other(format!(
-                    "VP-165 reassign: slot {} assign 失敗: {}",
-                    new_slot, e
-                ))
-            })?;
-        // PR-C: slot を真実源 (db/world) に永続化する。 config (= projects.kdl ロード) で計算した
-        // new_slot を in-memory projects に反映し、 persist_projects で DB + kdl ミラーに書く。
-        // これで auto-reassign の slot 退避が DB をバイパスせず一本化される (= 旧 persist_projects_kdl
-        // 直書きは DB と乖離していた)。
-        if let Some(key) = self.resolve_key_by_name(project_name).await {
-            {
-                let mut projects = self.projects.write().await;
-                if let Some(p) = projects.get_mut(&key) {
-                    p.slot = Some(new_slot);
-                }
-            }
-            self.persist_projects().await.map_err(|e| {
-                CapabilityError::Other(format!("VP-165 reassign: slot 永続化失敗: {}", e))
-            })?;
-        } else {
-            // in-memory 未登録 (= 稀: reload 前の race 等)。 PR-D: DB 真実源化後は kdl 退避しても
-            // load_config が DB 優先で読まないため無意味。 slot 永続化をスキップ (port は正しい、
-            // 次回 SP register / reconcile で整合する)。
-            tracing::warn!(
-                "VP-165 reassign: project '{}' が in-memory 未登録、 slot {} の永続化をスキップ (port は正しい)",
-                project_name,
-                new_slot
-            );
-        }
-
-        let new_port = crate::cli::PORT_RANGE_START + new_slot;
-        tracing::warn!(
-            "VP-165 auto-reassign: project '{}' slot {:?} → {}, port {} → {} (config 永続化済み)",
-            project_name,
-            current_slot,
-            new_slot,
-            occupied_port,
-            new_port
-        );
-        Ok(new_port)
-    }
-
     /// 全 Process の状態を更新（PID liveness check + ポートスキャン Reconciliation）
     ///
     /// 1. PID liveness check: 登録済み Process のゴースト除去
@@ -1948,59 +1668,23 @@ impl ProcessManagerCapability {
     ///
     /// daemon restart 後に working set を復元する (VP-207)。 TheWorld 起動時に
     /// バックグラウンドタスクとして 1 回だけ spawn される。
-    /// 1. registry 静穏待ち — 旧 SP の QUIC heal 再登録が落ち着くまで待つ (下記)
-    /// 2. `refresh_process_status` で PID liveness / project 状態を同期
-    /// 3. `enabled == true` かつ未稼働の project を収集
-    /// 4. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
+    /// 1. `refresh_process_status` で PID liveness / project 状態を同期
+    /// 2. `enabled == true` かつ未稼働の project を収集
+    /// 3. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
     ///
-    /// 検出漏れがあっても `vp sp start` 側の collision check が bail するので
-    /// 二重起動は安全。 lock 規律は `run_health_monitor` を踏襲する。
+    /// 二重起動は `ProjectRuntimes` の map キー一意性が構造的に防ぐ。
+    /// lock 規律は `run_health_monitor` を踏襲する。
     pub async fn autostart_enabled_projects(world: Arc<RwLock<Self>>) {
-        // respawn-leak 根治 (a): daemon boot 直後は Push-only registry が空で、 旧 SP の
-        // QUIC heal 再接続 (exp backoff 1s→60s cap、 gentle 再起動の実測は boot 後 7〜12s)
-        // が届くまで旧 SP が見えない盲目期間がある。 旧実装の固定 5s 待機ではこの期間に
-        // 「稼働なし」と誤判定して重複 spawn していた (実測: 4 project × 2 世代 = SP 8 本)。
+        // doc 44 P1 (fold-in): 旧「registry 静穏待ち」(最大 60s) を撤去した。
         //
-        // → 「登録の静穏待ち」: registry のキー集合が QUIET_WINDOW の間変化しなくなる
-        // まで待つ (安全弁として上限 MAX_WAIT)。 fresh boot (旧 SP なし) は空のまま安定
-        // するので QUIET_WINDOW 経過で先へ進む。 backoff が cap 付近まで伸びた straggler
-        // の再登録は取りこぼしうるが、 その場合の重複 spawn は SP 側の db LOCK 生存
-        // holder 検出 (根治 c、 process/server.rs) が起動中止させるので収束する。
-        const QUIET_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
-        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
-        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
-        let wait_start = std::time::Instant::now();
-        let mut last_change = std::time::Instant::now();
-        let mut prev_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-        loop {
-            let keys: std::collections::HashSet<String> = {
-                let w = world.read().await;
-                let running = w.running_processes.read().await;
-                running.keys().cloned().collect()
-            };
-            if keys != prev_keys {
-                prev_keys = keys;
-                last_change = std::time::Instant::now();
-            }
-            if last_change.elapsed() >= QUIET_WINDOW {
-                break;
-            }
-            if wait_start.elapsed() >= MAX_WAIT {
-                tracing::info!(
-                    "autostart: registry 静穏待ち上限 {}s 到達、現状 ({} SP 登録済) で判定に進む",
-                    MAX_WAIT.as_secs(),
-                    prev_keys.len()
-                );
-                break;
-            }
-            tokio::time::sleep(POLL).await;
-        }
-        tracing::info!(
-            "autostart: registry 静穏 ({} SP 登録済、boot 後 {:.1}s)",
-            prev_keys.len(),
-            wait_start.elapsed().as_secs_f32()
-        );
-
+        // あの待ちの目的は「gentle daemon restart を生き延びた旧 SP の QUIC heal 再登録が
+        // 届くまで待ち、稼働中の SP を重複 spawn しない」ことだった。fold-in で project が
+        // World 内に入り、daemon 停止を生き延びる SP が存在しなくなったため、registry は
+        // boot 時に**常に空**で安定する = 待つ理由そのものが消滅した。
+        //
+        // 残したままだと毎回きっかり QUIET_WINDOW(20s) 空回りしてから project を起こすことに
+        // なり、daemon 再起動のたびに 20 秒の無駄が乗る（dogfood で最も踏む経路）。
+        // 二重起動の防御は `ProjectRuntimes` の map キー一意性が引き継いでいる。
         // PID liveness / project 状態を同期（read ガードは即解放）。
         {
             let w = world.read().await;
@@ -2605,11 +2289,10 @@ impl Capability for ProcessManagerCapability {
 
         self.state = CapabilityState::Initializing;
 
-        // vpバイナリを検索
-        self.vp_binary_path = Self::find_vp_binary();
-        if self.vp_binary_path.is_none() {
-            tracing::warn!("vp binary not found in PATH");
-        }
+        // doc 44 P1 (fold-in): vp binary の所在探索は撤去。project を子プロセスとして
+        // spawn しなくなったため、起動に binary path は要らない。残しておくと daemon 起動の
+        // たびに無駄な FS stat + `which` の subprocess が走り、しかも今は無意味な
+        // 「vp binary not found in PATH」警告で読み手の調査コストを誘発する。
 
         // 設定を読み込み
         if let Err(e) = self.load_config().await {

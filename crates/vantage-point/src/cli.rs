@@ -178,14 +178,17 @@ pub fn open_by_target(target: Option<&str>, config: &crate::config::Config) -> R
             }
         }
         ResolvedTarget::Configured { name, .. } => {
+            // doc 44 P1 (fold-in): `vp sp start` は退役したので `vp projects start` を案内する。
             println!(
-                "\u{2717} '{}' is not running. Use `vp sp start` first.",
-                name
+                "\u{2717} '{}' is not running. Use `vp projects start {}` first.",
+                name, name
             );
         }
         ResolvedTarget::Cwd { .. } => {
             println!("\u{2717} No running Process found for current directory.");
-            println!("  Use `vp sp start` to start a new SP server.");
+            println!(
+                "  Use `vp projects start <name>` to start it (`vp projects list` で名前を確認)."
+            );
         }
     }
 

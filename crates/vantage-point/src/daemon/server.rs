@@ -21,7 +21,12 @@ use crate::capability::{ProcessPresenceState, RunningProcess};
 /// daemon server の process-proxy / registry handler が populate し、 canvas/terminal_write の
 /// reverse-routing に使う。 tmux decoupling PR1: World-side の nudge loop（delivery_actor /
 /// delegation reconcile）も同一 map を引いて `lane_nudge` を所有 SP に forward する（SSOT はここ）。
-pub(crate) type ControlChannels = Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>;
+/// doc 44 P1 (fold-in): 旧 SP control channel registry (`path_key` → QUIC channel) の後継。
+///
+/// SP プロセスが消えたので「どう話すか」は QUIC channel ではなく **World 内の
+/// `Arc<AppState>` を引くこと**になった。型名は呼び出し側の意味 (= project へ話す口) を
+/// 保つため据え置き、指す先だけを差し替えている。
+pub(crate) type ControlChannels = Arc<crate::process::project_registry::ProjectRuntimes>;
 
 /// Daemon の共有状態
 pub struct DaemonState {
@@ -78,14 +83,17 @@ pub struct DaemonState {
     #[allow(clippy::type_complexity)]
     pub canvas_routers:
         Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
-    /// L0 SP-portless (control slice): project ごとの SP "control" channel handle。
+    /// project ごとの実行状態 registry（旧「SP control channel handle」の後継）。
     ///
-    /// 各 SP が起動時に "control" channel で World に outbound 接続し (`spawn_world_uplink`)、
-    /// World はその `UnisonChannel` を path_key で保持する。 "process-proxy" channel 経由で来た
-    /// 外部 client (MCP/CLI) の process 操作を、 この handle を**逆用** (`request()`) して当該 SP に
-    /// forward する (= World→SP reverse-routing)。 UnisonChannel は双方向対称なので、 SP が QUIC
-    /// client でありながら本接続上で RPC server として振る舞える。 SP 切断で除去 (= reverse 不能)。
-    pub control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    /// doc 44 P1 (fold-in) 以前: 各 SP が起動時に "control" channel で World に outbound 接続し、
+    /// World はその `UnisonChannel` を path_key で保持していた。"process-proxy" 経由で来た外部
+    /// client (MCP/CLI) の process 操作は、この handle を**逆用**して当該 SP に forward していた
+    /// (= World→SP reverse-routing)。SP 切断で handle を除去 = reverse 不能、という寿命だった。
+    ///
+    /// fold-in 後: project は World と同一プロセスの `Arc<AppState>` なので、forward ではなく
+    /// `ProjectRuntimes::dispatch` → `dispatch_process_method` の直呼びになる。「切断」という
+    /// 状態が存在せず、map に居るか居ないかだけになった。
+    pub(crate) control_channels: ControlChannels,
     /// projects 操作の権威 (= CLI → World 直接 Unison "world-control" channel の data plane)。
     ///
     /// HTTP `routes/world.rs` と同一の `ProcessManagerCapability` 実体を Arc 共有し、
@@ -147,7 +155,7 @@ impl Default for DaemonState {
             process_lifecycle_tx,
             lane_change_tx,
             canvas_routers: Arc::new(RwLock::new(HashMap::new())),
-            control_channels: Arc::new(RwLock::new(HashMap::new())),
+            control_channels: Arc::new(crate::process::project_registry::ProjectRuntimes::new()),
             world_cap: None,
             vpdb: None,
             bastet_event_bus: None,
@@ -203,10 +211,7 @@ impl DaemonState {
     /// World-side の nudge loop（delivery_actor / delegation reconcile）も同一 map を引いて
     /// `lane_nudge` を所有 SP に forward するため、 `run_world` が hoist した同一 Arc を
     /// DaemonState と両 loop の双方に注入する（別々に `new()` すると map が分裂して forward 不能）。
-    pub fn with_control_channels(
-        mut self,
-        control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
-    ) -> Self {
+    pub(crate) fn with_control_channels(mut self, control_channels: ControlChannels) -> Self {
         self.control_channels = control_channels;
         self
     }
@@ -353,6 +358,39 @@ async fn handle_world_control(
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "reordered", "count": paths.len()}))
+        }
+        // doc 44 P1 (fold-in): 単一 project の lifecycle 制御。旧 `vp sp start/stop` の後継で、
+        // 名詞を「SP（プロセス）」から「project」へ移した（D2: project はプロセスではなく
+        // World が抱える map のエントリ）。旧 `vp sp start` は project を World の外で
+        // 二重に走らせる口だったが、本 RPC は World 内の registry を操作するため
+        // 二重起動が原理的に表現できない（既に居れば `start` は no-op になる）。
+        "projects/start" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let proc = world_cap
+                .read()
+                .await
+                .start_process(name)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({
+                "status": "started",
+                "name": proc.project_name,
+                "path": proc.project_path.to_string_lossy(),
+            }))
+        }
+        "projects/stop" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .stop_process(name)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "stopped", "name": name}))
         }
         // chronista-hub federation: hub registry に居る world 一覧を取得する。
         // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
@@ -671,10 +709,41 @@ async fn notify_lane_change_for_projects(state: &DaemonState, projects: &[String
 #[allow(clippy::type_complexity)]
 async fn canvas_router_for(
     canvas_routers: &Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
-    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: &ControlChannels,
     path_key: &str,
 ) -> Arc<crate::process::topic_router::TopicRouter> {
-    // fast path: 既存 router を read lock で取得
+    // doc 44 P1 (fold-in): project が起動していれば **その AppState の router が唯一の正**。
+    // pump が route する先と surface が購読する先を同一にするため、cache に別 router が
+    // 載っていたら差し替える（project 起動前に surface が subscribe して placeholder が
+    // 作られていた場合の是正。placeholder には元々データが流れないので失うものは無い）。
+    if let Some(state) = control_channels.get(path_key).await {
+        let live = state.topic_router.clone();
+        {
+            let routers = canvas_routers.read().await;
+            if let Some(existing) = routers.get(path_key)
+                && Arc::ptr_eq(existing, &live)
+            {
+                return live;
+            }
+        }
+        let mut routers = canvas_routers.write().await;
+        // race recheck（他 task が先に差し替えていたらそれを使う）
+        if let Some(existing) = routers.get(path_key)
+            && Arc::ptr_eq(existing, &live)
+        {
+            return live;
+        }
+        tracing::info!(
+            "canvas router を project の実 router に結線 (key={})",
+            path_key
+        );
+        register_terminal_demand(&live, control_channels.clone(), path_key.to_string());
+        register_echoes_demand(&live, control_channels.clone(), path_key.to_string());
+        routers.insert(path_key.to_string(), live.clone());
+        return live;
+    }
+
+    // fast path: 既存 router を read lock で取得（project 未起動時の placeholder 経路）
     if let Some(router) = canvas_routers.read().await.get(path_key) {
         return router.clone();
     }
@@ -684,6 +753,7 @@ async fn canvas_router_for(
     if let Some(router) = routers.get(path_key) {
         return router.clone();
     }
+    // project 未起動時の placeholder。 起動後に上のブロックが実 router へ差し替える。
     let router = Arc::new(crate::process::topic_router::TopicRouter::new());
     register_terminal_demand(&router, control_channels.clone(), path_key.to_string());
     // Act II: chat lane の transcript replay-on-attach（terminal と対称）。
@@ -698,7 +768,7 @@ async fn canvas_router_for(
 /// 当該 SP に control reverse-route で撃つ（Act I: PtySlot の replay + live pump 起動）。
 fn register_terminal_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
-    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: ControlChannels,
     path_key: String,
 ) {
     register_lane_demand(
@@ -718,7 +788,7 @@ fn register_terminal_demand(
 /// （非 retained topic なので、 これが無いと app 再起動後の ChatView が空になる）。
 fn register_echoes_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
-    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: ControlChannels,
     path_key: String,
 ) {
     register_lane_demand(
@@ -738,7 +808,7 @@ fn register_echoes_demand(
 /// 呼ばれるため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
 fn register_lane_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
-    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: ControlChannels,
     path_key: String,
     pattern: &str,
     start_method: &'static str,
@@ -754,35 +824,26 @@ fn register_lane_demand(
         let method = if active { start_method } else { stop_method };
         let control_channels = control_channels.clone();
         let path_key = path_key.clone();
+        // doc 44 P1 (fold-in): 旧実装は SP の control channel を逆引きして request を
+        // 撃っていた。 channel 不在（SP 起動前に surface が subscribe した等）は無言で
+        // 捨てられ、 救済は `refire_active_demands` 頼み — この取りこぼしが #817 の
+        // 「Act II が復活しない」の根本原因 1 だった。
+        //
+        // 同一プロセスになった今、 demand は当該 project の dispatch を直接叩く。
+        // 「購読が立った時点で project が居るか」だけが条件になり、 channel 接続状態と
+        // 購読状態が別々に揺れることによるレースが構造的に消える。
         tokio::spawn(async move {
-            let sp_ch = control_channels.read().await.get(&path_key).cloned();
-            match sp_ch {
-                Some(ch) => {
-                    if let Err(e) = ch
-                        .request::<serde_json::Value, serde_json::Value>(
-                            method,
-                            &serde_json::json!({ "lane": lane }),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            "lane demand reverse-route 失敗 ({} lane={}): {}",
-                            method,
-                            lane,
-                            e
-                        );
-                    }
-                }
-                None => {
-                    // SP control channel 未接続 (SP 起動前に surface が subscribe した等)。
-                    // SP 接続時に `refire_active_demands` が撃ち直す (S2 polish)。
-                    tracing::debug!(
-                        "lane demand: SP control channel 不在 (key={}, lane={}, {})",
-                        path_key,
-                        lane,
-                        method
-                    );
-                }
+            let resp = control_channels
+                .dispatch(&path_key, method, &serde_json::json!({ "lane": lane }))
+                .await;
+            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    "lane demand dispatch 失敗 (key={}, lane={}, {}): {}",
+                    path_key,
+                    lane,
+                    method,
+                    err
+                );
             }
         });
     });
@@ -838,26 +899,17 @@ async fn recv_subscribe_handshake_with_pattern(
 /// (S3 terminal_write/terminal_resize) が共有する。 SP 未接続 / forward 失敗は error JSON で
 /// 返し、 caller が `send_response` でそのまま client に relay する。
 pub(crate) async fn forward_to_sp_control(
-    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    runtimes: &ControlChannels,
     path_key: &str,
     method: &str,
     payload: &serde_json::Value,
 ) -> serde_json::Value {
-    let sp_ch = control_channels.read().await.get(path_key).cloned();
-    match sp_ch {
-        Some(sp_ch) => match sp_ch
-            .request::<serde_json::Value, serde_json::Value>(method, payload)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => serde_json::json!({
-                "error": format!("SP forward 失敗 (key={}): {}", path_key, e)
-            }),
-        },
-        None => serde_json::json!({
-            "error": format!("SP 未接続 (key={})", path_key)
-        }),
-    }
+    // doc 44 P1 (fold-in): 旧実装は path_key で SP の QUIC control channel を逆引きし
+    // request を投げていた。SP プロセスが World に畳み込まれた今、同じ dispatch
+    // (`dispatch_process_method`) を **同一プロセス内で直接呼ぶ**。
+    // これで reverse-route の取りこぼし (SP 未接続の無言破棄 / refire の空振りレース /
+    // start・stop の到着順非保証) というバグクラスが発生源ごと消える。
+    runtimes.dispatch(path_key, method, payload).await
 }
 
 /// L0 portless B-4 (wire-unison): "wire" channel の method dispatch。
@@ -1344,9 +1396,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "canvas-ingest" Channel（L0 SP-portless canvas slice — SP → World の canvas push 受け口）
     // =========================================================================
-    // 各 SP の canvas pusher (`discovery::spawn_world_uplink`) が paisley-park topic の
-    // ProcessMessage を push する。 World は project ごとの TopicRouter に `route()` して
-    // retained 保持 + 購読者 (= "canvas" channel 経由の vp-app) へ配信する。
+    // doc 44 P1 (fold-in) 以前は、各 SP の canvas pusher (`discovery::spawn_world_uplink`) が
+    // paisley-park topic の ProcessMessage をこの channel に push していた。fold-in 後は
+    // project の TopicRouter を World が直接購読するため、この受け口に来る push は無い
+    // （`canvas_router_for` が project 起動時に実 router へ差し替える）。channel 自体は
+    // 外部からの ingest 口として残置。
     //
     // プロトコル: SP が open_channel("canvas-ingest") → request("subscribe", {project_path}) →
     //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。
@@ -1485,73 +1539,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // "control" Channel（L0 SP-portless control slice — SP の reverse-routing 受け口を登録）
+    // "control" Channel — doc 44 P1 (fold-in) で退役
     // =========================================================================
-    // 各 SP が "control" channel で World に outbound 接続する (`spawn_world_uplink`)。
-    // World は handshake {project_path} 後にその UnisonChannel を control_channels[path_key] に
-    // 保持し、 "process-proxy" channel から逆用 (request) して SP に process 操作を forward する。
-    // 本 handler 自体は channel を保持して接続維持を監視するだけ (request を撃つのは process-proxy)。
-    {
-        let control_channels = state.control_channels.clone();
-        let canvas_routers = state.canvas_routers.clone();
-        server
-            .register_channel("control", {
-                move |_ctx, stream| {
-                    let control_channels = control_channels.clone();
-                    let canvas_routers = canvas_routers.clone();
-                    async move {
-                        let channel = Arc::new(UnisonChannel::new(stream));
-                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
-                            return Ok(());
-                        };
-                        control_channels
-                            .write()
-                            .await
-                            .insert(path_key.clone(), channel.clone());
-                        tracing::info!("Control: SP 登録 (key={})", path_key);
-
-                        // S2 polish: SP (再)接続 catch-up。 SP 起動前に surface が terminal topic を
-                        // subscribe して demand_start を撃った場合、 control channel 不在で reverse-route
-                        // が捨てられている。 SP 登録直後に当該 project の active demand を撃ち直し、
-                        // 取りこぼした pump start を補填する (= SP restart で terminal が暗転しない)。
-                        if let Some(router) = canvas_routers.read().await.get(&path_key) {
-                            router.refire_active_demands();
-                        }
-
-                        // 切断検知まで待つ。 World は本 channel に request を撃つだけで SP は
-                        // event/request を送らないため、 recv() は切断時のみ Err で返る
-                        // (= reverse request の Response は pending 経由で解決され、 ここには来ない)。
-                        loop {
-                            if channel.recv().await.is_err() {
-                                break;
-                            }
-                        }
-                        // 「自分が現行 entry の時のみ」remove する (Arc::ptr_eq guard)。
-                        // 高速再接続 / 重複 SP で新接続の insert が先行した場合、 旧接続の
-                        // 切断 handler が新 live channel を clobber すると nudge / process-proxy
-                        // が「SP 未接続」で静かに全滅し次の再接続まで自己回復しない
-                        // (PR2 review B1 — nudge が本 map に依存するようになったため障害面が拡大)。
-                        {
-                            let mut map = control_channels.write().await;
-                            match map.get(&path_key) {
-                                Some(current) if Arc::ptr_eq(current, &channel) => {
-                                    map.remove(&path_key);
-                                    tracing::info!("Control: SP 除去 (key={})", path_key);
-                                }
-                                _ => {
-                                    tracing::info!(
-                                        "Control: 旧接続の切断を skip — 新接続が登録済み (key={})",
-                                        path_key
-                                    );
-                                }
-                            }
-                        }
-                        Ok(())
-                    }
-                }
-            })
-            .await;
-    }
+    // 旧: 各 SP が outbound で "control" channel を張り、World が UnisonChannel を
+    // control_channels[path_key] に保持して process 操作を reverse-route していた。
+    // SP プロセスが World に畳み込まれたため channel 自体が不要になり、同じ dispatch を
+    // `ProjectRuntimes::dispatch` が in-process で直接呼ぶ。
+    // これに伴い「SP 未接続で無言破棄」「refire_active_demands の空振りレース」
+    // 「高速再接続で旧 handler が新 channel を clobber」の 3 バグクラスが消滅した。
 
     // =========================================================================
     // "process-proxy" Channel（L0 SP-portless control slice — 外部 client → World → SP reverse）

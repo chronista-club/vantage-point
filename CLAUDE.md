@@ -112,20 +112,21 @@ vp projects            # 登録 project 管理（add/remove/rename/enable/disabl
 vp sync                # projects.kdl を現実と同期（ghost project 除去）
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
-vp restart-all         # 全 Process + TheWorld を一括再起動
+vp restart-all         # TheWorld を再起動（= 全 project 再起動。fold-in 後は daemon restart と等価）
+                       # ⚠️ 復元されるのは「enabled な project」で「再起動前に動いていた project」ではない。
+                       #    停止を永続させたいなら vp projects disable（stop だけでは再起動で生き返る）。
 
-# TheWorld（Daemon）/ SP
+# TheWorld（Daemon）/ Project
 vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
 vp daemon restart [--if-running]  # ownership-agnostic 再起動（実 port holder を停止 → LaunchAgent 優先で起動。--if-running = 不在なら no-op、brew cask postflight 用）
 vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
-vp sp start [-d simple|detail]  # SP サーバー起動（デバッグモードはここ）
-vp sp stop|status
-# ⚠️ daemon 再起動の 2 つの stop（lane の中から検証/dogfood する時に超重要）:
-#   - `vp daemon stop` = gentle（daemon のみ停止。SP は温存 → SP の子である lane claude も生き残る）。
-#   - `mr daemon` / `daemon:stop` = cascade nuke（daemon + SP 全停止 = lane claude も落ちる）→ lane 内で回すと自分を殺す。
-#   lane の中から実機確認する時は必ず gentle 側。cascade は full reset 専用。
-#   tmux decoupling 後: lane claude は SP の PtySlot の子。SP が落ちても会話は cc_session の
-#   `--resume` で次回 spawn 時に継がれる（「プロセスは死ぬがコンテキストは蘇る」）。
+vp projects start|stop <name>  # 単一 project の起動/停止（doc 44 P1 fold-in で `vp sp` から移設）
+# ⚠️⚠️ doc 44 P1 (fold-in) で daemon 停止の意味論が変わった:
+#   project は World プロセス内の Arc<AppState> になったため、**daemon を止めると
+#   全 project が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
+#   止めて SP は温存）」は SP が別プロセスだった時代の挙動で、fold-in 後は成立しない。
+#   → lane の中から daemon を再起動すると自分が死ぬ。実機検証は VP の外（kitty 等）で行うこと。
+#   会話は cc_session の `--resume` で次回 spawn 時に継がれる（「プロセスは死ぬがコンテキストは蘇る」）。
 
 # App（GUI）
 vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
@@ -151,7 +152,7 @@ vp midi xtouch demo|wave  # X-Touch (MCU) 実機 smoke / フェーダー wave
 vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ / handshake 観察
 ```
 
-> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
+> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` / `vp sp` は**存在しない**（旧体系。start/stop は `vp projects` / `vp daemon` / `vp app` に分散。`vp sp` は doc 44 P1 fold-in で退役 — project がプロセスでなくなったため）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
 > ⚠️ `vp hd` / `vp tmux` / `vp directmsg` も**存在しない**（tmux decoupling PR1-2 で退役。console の read/write は `vp lane capture` / `vp lane nudge`）。**VP は tmux に依存しない**（lane = SP の PtySlot が claude を直接ホスト、design doc `docs/design/tmux-decoupling.md`）。
 
 ## 開発コマンド
@@ -254,9 +255,9 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 
 | モード | 用途 | 起動方法 |
 |--------|------|----------|
-| `none` | 本番運用 | `vp sp start` |
-| `simple` | 基本的なイベントログ | `vp sp start -d simple` |
-| `detail` | 詳細なデータ・タイミング | `vp sp start -d detail` |
+| `none` | 本番運用 | `vp daemon start` |
+| `simple` | 基本的なイベントログ | （doc 44 §5.4: World の runtime 可変 state へ移設予定） |
+| `detail` | 詳細なデータ・タイミング | （同上） |
 
 ### ログ出力
 
@@ -272,7 +273,7 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 
 ### 問題調査フロー
 
-1. `vp sp start -d detail` で起動
+1. daemon を debug mode で起動（doc 44 §5.4 で `vp daemon debug <mode>` へ移設予定）
 2. WebUIデバッグパネル（右パネル）でログ確認
 3. ブラウザコンソールで `Received:` ログ確認
 4. 必要に応じてログ追加 → 再ビルド

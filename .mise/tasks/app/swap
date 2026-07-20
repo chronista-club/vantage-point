@@ -240,28 +240,19 @@ end
 #   2. LaunchAgent は KeepAlive=true。 素の kill では launchd が即蘇生するため「停止」は成立しない。
 #      **`launchctl kickstart -k`** (kill して plist の ProgramArguments から再 exec) が正道。
 #      plist は /opt/homebrew/bin/vp を指すので、 .app 差し替え後なら新 binary で起き直る。
-#   3. SP は setsid で daemon から分離されており **daemon 再起動では死なない** → 明示 kill が要る。
-#      `pkill -f PATTERN` を shell 越しに撃つと pkill 自身を走らせている shell の cmdline にも
-#      パターンが載って親を巻き添えにするため、 VP.sp_pids (shell 非経由 pgrep) + 明示 kill にする。
+#   3. doc 44 P1 (fold-in) 以前は「SP は setsid で daemon から分離されており daemon 再起動では
+#      死なない」ため SP の明示 kill が要った。fold-in で project が World プロセス内に入り、
+#      **daemon の再起動がそのまま全 project の再起動**になったので、この前段は撤去した
+#      (pgrep 'vp sp start' は永久に 0 件マッチ = 空振りするだけだった)。
 def restart_daemon_macos
-  VP.log "#{VP.icon(:warn)} restarting daemon — lane の claude も落ちる (--resume で復帰)"
+  VP.log "#{VP.icon(:warn)} restarting daemon — 全 project と lane の claude も落ちる (--resume で復帰)"
 
-  # ── SP を落とす (新 binary で spawn し直させる) ──
-  pids = VP.sp_pids
-  if pids.empty?
-    VP.log "running SP: なし"
-  else
-    VP.log "#{VP.icon(:stop)} killing #{pids.size} SP: #{pids.join(', ')}"
-    pids.each { |pid| Process.kill("TERM", pid) rescue nil }
-    sleep 2
-    VP.sp_pids.each { |pid| Process.kill("KILL", pid) rescue nil } # 生き残りに止め
-  end
-
-  # 祖先 SP (= 自分を載せている SP) は原理的に殺せない (pgrep が除外する / 殺せば自分が死ぬ)。
-  # 黙って取りこぼすと「反映したつもり」になるので正直に警告する。
-  if (mine = VP.ancestor_sp_pid)
-    VP.log "#{VP.icon(:warn)} 自分を載せている SP (PID #{mine}) は落とせない — この lane だけ旧 binary のまま。" \
-           " 完全反映は VP 外の terminal から実行するか、 その lane を後で再起動すること"
+  # VP の lane の中から実行すると、daemon 再起動で自分自身が落ちる (fold-in 後は
+  # project = daemon の一部なので逃げ場がない)。黙って落ちると「反映したつもり」で
+  # 終わるため事前に警告する。
+  if ENV["VP_LANE"]
+    VP.log "#{VP.icon(:warn)} VP の lane の中から実行しています — この再起動で自分も落ちます。" \
+           " 完全反映は VP 外の terminal (kitty 等) から実行してください"
   end
 
   # ── daemon を再起動 ──

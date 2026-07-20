@@ -1,102 +1,41 @@
 //! `vp restart-all` コマンドの実行ロジック
 //!
-//! TheWorld + 全 SP を一括再起動する。主に新バイナリへの切り替え時に使用。
-//! claude は SP の PtySlot の子なので、SP 停止 = lane 停止（tmux decoupling PR2）。
+//! doc 44 P1 (fold-in): project が World プロセス内の `Arc<AppState>` になったため、
+//! 「全 Process + TheWorld の一括再起動」は **daemon の再起動 1 手**に collapse する。
+//! 停止側は World の graceful shutdown が抱えている project を全部畳み、起動側は
+//! autostart が enabled な project を順に起こす。
+//!
+//! 旧実装は「稼働 SP を World registry から列挙 → 1 本ずつ API 停止 → daemon 停止 →
+//! daemon 起動 → 1 本ずつ detached spawn」という多段の段取りだったが、
+//! 対象である SP プロセスが存在しなくなったため段取りごと不要になった。
+//!
+//! # ⚠️ 復元の権威が変わった（意味論の転換）
+//!
+//! 旧: **その時点で running だったもの**を記憶して戻す（実体ベース）
+//! 新: 起動時 autostart が **`enabled` な project** を起こす（設定ベース）
+//!
+//! 実挙動が変わる組み合わせが 2 つある:
+//!
+//! - `enabled=false` だが手動で起動していた project は、**再起動後に戻らない**
+//!   （`vp projects start` は enabled を見ないので、この状態は作れる）
+//! - `enabled=true` だが手動で `vp projects stop` していた project は、
+//!   **勝手に生き返る**
+//!
+//! これは `vp daemon restart` と同じ挙動に揃った、とも言える（fold-in 後は
+//! project が daemon の中にいる以上、daemon の再起動は必ず autostart を通る）。
+//! 「今動いているもの」ではなく「動かすつもりのもの」を権威にする整理で、
+//! 停止を永続させたいなら `vp projects disable` を使う。
 
 use anyhow::Result;
 
-use crate::cli::stop_process;
-use crate::daemon::process as daemon;
-use crate::discovery;
-
 /// `vp restart-all` を実行
+///
+/// 実体は `vp daemon restart` と同じ ownership-agnostic な再起動
+/// （実 port holder を停止 → LaunchAgent 優先で起動）。 別名を残しているのは
+/// 「新バイナリへ切り替える」という用途の入口として定着しているため。
 pub fn execute() -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-
-    // 1. 稼働中の全 Process を取得（再起動対象を記憶）
-    let processes = discovery::list_blocking();
-    if processes.is_empty() {
-        println!("稼働中の Process はありません");
-    } else {
-        println!("🔄 {} 個の Process を停止中...", processes.len());
-    }
-
-    // 2. 全 SP を API 経由で停止
-    rt.block_on(async {
-        for proc in &processes {
-            let name = project_name(&proc.project_dir);
-            print!("  ⏹ {} (port {})... ", name, proc.port);
-            match stop_process(proc.port).await {
-                Ok(()) => println!("ok"),
-                Err(e) => println!("error: {}", e),
-            }
-        }
-    });
-
-    // 3. TheWorld を停止
-    // (tmux decoupling PR2: 旧 step 3 の tmux session kill は退役 — lane は SP の子で停止済)
-    if let Some(pid) = daemon::is_daemon_running() {
-        print!("  ⏹ TheWorld (pid {})... ", pid);
-        match daemon::stop_daemon(pid) {
-            Ok(()) => println!("ok"),
-            Err(e) => println!("error: {}", e),
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-
+    super::daemon::restart(false)?;
     println!();
-
-    // 5. TheWorld を再起動
-    println!("🚀 TheWorld を起動中...");
-    if let Err(e) = daemon::ensure_daemon_running(crate::cli::world_port()) {
-        eprintln!("✗ TheWorld 起動失敗: {}", e);
-        return Err(e);
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    println!("  ✓ TheWorld ready (port {})", crate::cli::world_port());
-
-    // 6. 全 SP を再起動
-    if !processes.is_empty() {
-        println!("🚀 {} 個の SP を再起動中...", processes.len());
-    }
-
-    for proc in &processes {
-        let name = project_name(&proc.project_dir);
-        print!("  ▶ {}... ", name);
-        if let Err(e) = crate::commands::sp::spawn_sp_detached(&proc.project_dir, None) {
-            eprintln!("⚠️  SP 起動失敗 ({}): {}", name, e);
-        } else {
-            println!("ok");
-        }
-    }
-
-    if !processes.is_empty() {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    }
-
-    println!();
-    println!("✅ 全体再起動完了");
-    println!();
-    println!("HD セッションは `vp hd start` で個別に再作成してください。");
-
-    // 最終状態を表示
-    let final_processes = discovery::list_blocking();
-    if !final_processes.is_empty() {
-        println!();
-        for proc in &final_processes {
-            let name = project_name(&proc.project_dir);
-            println!("  ✓ {} (port {})", name, proc.port);
-        }
-    }
-
+    println!("project は autostart で順次立ち上がります（`vp ps` で確認）");
     Ok(())
-}
-
-/// project_dir からプロジェクト名を抽出
-fn project_name(project_dir: &str) -> String {
-    project_dir
-        .rsplit('/')
-        .next()
-        .unwrap_or(project_dir)
-        .to_string()
 }

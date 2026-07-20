@@ -30,6 +30,7 @@ pub(crate) mod lane_stand;
 pub(crate) mod lanes_state;
 pub mod process_runner;
 /// Project scope の Stand pool (PP / GE / HP)
+pub(crate) mod project_registry;
 pub(crate) mod project_stands_state;
 pub(crate) mod retained;
 // L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
@@ -46,4 +47,6 @@ pub(crate) mod unison_server;
 pub(crate) mod world_wire;
 
 pub use capabilities::CapabilityConfig;
-pub use server::{run, run_world};
+// doc 44 P1 (fold-in): `run`（SP プロセスとしての実行）は退役。project は World の
+// `run_world` が in-process で起こす（`ProjectRuntimes::start` → `start_project`）。
+pub use server::run_world;

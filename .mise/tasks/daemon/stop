@@ -1,62 +1,36 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="TheWorld daemon + 裏で動く SP プロセスを一括停止 (旧 nuke 相当)"
+#MISE description="TheWorld daemon を停止 (= 全 project + lane も停止。旧 cascade nuke 相当)"
 #
-# 2026-05-30 daemon→world 改名。 cascade teardown (World + SP) を担う world group の一員。
-# 2-phase cascade kill: [1/2] SP プロセス (TERM→KILL、 PtySlot Drop で lane claude も落ちる) → [2/2] daemon stop。
-# tmux decoupling PR2: 旧 [2/3] tmux session kill phase は退役 (lane は SP の子 = SP kill で完全停止)。
-# 移行 note: 旧 binary 世代の orphan tmux session が残っている場合は `tmux -L vp kill-server` で手動掃除。
+# 2026-05-30 daemon→world 改名。
+# tmux decoupling PR2: 旧 tmux session kill phase は退役 (lane は PtySlot の子)。
+# doc 44 P1 (fold-in): 旧 2-phase cascade ([1/2] SP を TERM→KILL → [2/2] daemon stop) の
+#   前段を撤去した。project が World プロセス内の Arc<AppState> になり、**独立した SP
+#   プロセスが存在しなくなった**ため、pgrep 'vp sp start' は永久に 0 件マッチで、
+#   phase [1/2] は「エラーも出さず何もしない」空振りになっていた。
+#   現在は `vp daemon stop` 自体が World の graceful shutdown で全 project を畳むので、
+#   cascade は daemon stop 一手で成立する。
+#
+# ⚠️ fold-in 後は「gentle な停止」(daemon だけ止めて project は温存) が原理的に存在しない。
+#    このタスクは必ず全 lane の claude を落とす。VP の lane の中から回すと自分が死ぬ。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 vp = VP.cargo_bin("vp")
 
-# SP プロセスの PID 群。 VP_PROFILE 分離 (tmux decoupling 後の footgun 対策): dev で
-# `daemon:stop` を回しても brew SP (VP_PROFILE 未設定) を巻き込まないよう、 各 SP の env を
-# `ps eww` で読み、 現プロファイル (ENV["VP_PROFILE"]、 nil=brew) と一致するものだけ対象にする。
-# tmux 撤去で SP kill = lane claude kill になったため、 profile を跨いだ誤爆の被害が大きい。
-def sp_pids
-  want = ENV["VP_PROFILE"] # nil = brew namespace
-  `pgrep -f 'vp sp start'`.split.map(&:to_i).select do |pid|
-    got = `ps eww -p #{pid} 2>/dev/null`[/\bVP_PROFILE=(\S+)/, 1] # nil if unset
-    got == want
-  end
-end
-# 個別 signal (既に消えた PID の ESRCH は握り潰す = bash の `|| true`)。
-def signal_all(sig, pids) = pids.each { Process.kill(sig, it) rescue nil }
+VP.log "#{VP.icon(:bomb)} TheWorld daemon 停止 (profile=#{ENV['VP_PROFILE'] || 'brew'}、 全 project + lane も停止)…"
 
-VP.log "#{VP.icon(:bomb)} Vantage Point daemon + 関連プロセス停止 (cascade kill)…"
-
-# ── [1/2] SP プロセスを kill (現プロファイルのみ) ─────────────────────────
-warn "#{VP.icon(:sync)} [1/2] SP プロセス検出 (profile=#{ENV['VP_PROFILE'] || 'brew'})…"
-pids = sp_pids
-if pids.empty?
-  warn "   #{VP.icon(:info)} 実行中の SP プロセスはありません"
-else
-  warn "   #{VP.icon(:note)} 検出した SP: #{pids.join(' ')}"
-  system("ps", "-p", pids.join(","), "-o", "pid,etime,start,command")
-  warn "   #{VP.icon(:stop)} SIGTERM 送信 (graceful → PtySlot Drop = child claude も kill)…"
-  signal_all("TERM", pids)
-  sleep 2
-  remaining = sp_pids
-  unless remaining.empty?
-    warn "   #{VP.icon(:warn)} 残存に SIGKILL: #{remaining.join(' ')}"
-    signal_all("KILL", remaining)
-    sleep 1
-  end
-  warn "   #{VP.icon(:ok)} SP kill 完了"
+if ENV["VP_LANE"]
+  warn "   #{VP.icon(:warn)} VP の lane の中から実行しています — この停止で自分自身も落ちます"
+  warn "      会話は cc_session の --resume で次回 spawn 時に継がれます"
 end
 
-# ── [2/2] TheWorld daemon を停止 ──────────────────────────────────────────
-warn "#{VP.icon(:sync)} [2/2] TheWorld daemon 停止…"
 if File.executable?(vp)
   if system(vp, "daemon", "stop", out: File::NULL, err: File::NULL)
-    warn "   #{VP.icon(:ok)} daemon stop 完了"
+    VP.log "#{VP.icon(:ok)} daemon stop 完了。 再起動: mise run app"
   else
-    warn "   #{VP.icon(:info)} daemon は既に停止しているか、 reach 不能"
+    VP.log "#{VP.icon(:info)} daemon は既に停止しているか、 reach 不能"
   end
 else
   warn "   #{VP.icon(:warn)} vp binary 不在 (#{vp}) — daemon stop スキップ"
   warn "      build 済なら `mise run daemon:build` 後に再実行してください"
 end
-
-VP.log "#{VP.icon(:ok)} daemon + 関連プロセス停止完了。 再起動: mise run app"

@@ -313,6 +313,23 @@ impl WorldControlClient {
         Ok(())
     }
 
+    /// project を起動する (旧 `vp sp start` の後継)。
+    ///
+    /// doc 44 P1 (fold-in): project は World プロセス内の `Arc<AppState>` なので、
+    /// 「起動」は子プロセス spawn ではなく World の registry への登録を意味する。
+    /// 既に起動済みなら World 側で no-op になる (二重起動は map のキー一意性が防ぐ)。
+    pub async fn projects_start(&self, name: &str) -> Result<serde_json::Value> {
+        self.call("projects/start", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    /// project を停止する (旧 `vp sp stop` の後継)。
+    pub async fn projects_stop(&self, name: &str) -> Result<()> {
+        self.call("projects/stop", serde_json::json!({ "name": name }))
+            .await?;
+        Ok(())
+    }
+
     /// chronista-hub registry の world 一覧を取得する（TheWorld 経由で `worlds.Discover` を proxy）。
     ///
     /// SSOT 原則: CLI は hub に直接接続せず、TheWorld の `hub/discover` RPC を叩く。
