@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use tokio::sync::RwLock;
@@ -51,6 +52,21 @@ pub(crate) struct ProjectRuntimes {
     /// project 自身の publish task が引き継ぐ（[`start`] が本 Arc を渡す）。
     /// `None` は「World 以外の文脈」= test / SP 単体起動で、その場合 view は存在しない。
     world_lanes: Option<super::server::WorldLaneView>,
+    /// shutdown 開始後に新規登録を受け付けないための門。
+    ///
+    /// [`shutdown_all`](Self::shutdown_all) は map を drain して停止するが、drain の**後**に
+    /// 進行中の [`start`](Self::start) が insert を完了させると、その project の spawn 済 task と
+    /// SurrealDB handle が「World stopped」ログの後も生き残る（= プロセスが終了できない）。
+    ///
+    /// 起動の入口は複数あり、いずれも World の shutdown 手続きの射程外で走る:
+    ///   - `autostart_enabled_projects`（spawn した JoinHandle を保持していない）
+    ///   - `projects/start` RPC（unison が接続ごとに独立 task で handler を回すため、
+    ///     accept loop を abort しても既存接続の in-flight handler には波及しない）
+    ///
+    /// task の abort では解決できない: `start_project` の await 途中で future を drop すると、
+    /// その時点で既に spawn 済みの内部 task が孤児として残り、防ぎたい状態そのものになる。
+    /// よって「進行中の起動は完走させ、登録直前に自己回収させる」設計を取る。
+    closing: AtomicBool,
 }
 
 impl ProjectRuntimes {
@@ -66,6 +82,7 @@ impl ProjectRuntimes {
         Self {
             inner: RwLock::new(HashMap::new()),
             world_lanes: Some(world_lanes),
+            closing: AtomicBool::new(false),
         }
     }
 
@@ -74,8 +91,16 @@ impl ProjectRuntimes {
     /// 既に起動済みなら **no-op で `Ok(false)`**（旧 `start_process` の dedup 相当。
     /// プロセスが無くなったので「重複 spawn」は map への二重 insert として自然に防げる）。
     /// 新規起動できたら `Ok(true)`。
+    ///
+    /// shutdown 開始後は `Err` を返す（[`closing`](Self::closing) 参照）。`Ok(false)` に
+    /// しないのは、caller の `start_process` が「false = 既に起動済み」と解釈して
+    /// `running_processes` / presence に **動いていない project を登録してしまう**ため。
     pub async fn start(&self, project_dir: &str, debug_mode: DebugMode) -> Result<bool> {
         let key = crate::capability::normalize_path_key(std::path::Path::new(project_dir));
+
+        if self.closing.load(Ordering::Acquire) {
+            anyhow::bail!("World が shutdown 中のため project を起動しない (key={key})");
+        }
 
         // 二重起動の早期棄却。 起動には時間がかかるので、まず read lock だけで判定する。
         if self.inner.read().await.contains_key(&key) {
@@ -104,6 +129,16 @@ impl ProjectRuntimes {
             super::server::shutdown_project(&state).await;
             return Ok(false);
         }
+        // 起動している間に shutdown が始まっていたら、ここで自己回収する。
+        // `shutdown_all` は closing を立ててから drain するので、この recheck を write lock 内で
+        // 行うことで「drain の後に insert が滑り込む」窓が閉じる（漏れると当該 project の
+        // task と db handle が残り、プロセスが終了できなくなる）。
+        if self.closing.load(Ordering::Acquire) {
+            drop(guard);
+            shutdown.cancel();
+            super::server::shutdown_project(&state).await;
+            anyhow::bail!("起動中に World の shutdown が始まったため巻き戻した (key={key})");
+        }
         guard.insert(key, ProjectRuntime { state, shutdown });
         Ok(true)
     }
@@ -130,6 +165,9 @@ impl ProjectRuntimes {
     /// project db の LOCK を握り続ける。次に起動した daemon はその LOCK を見て
     /// 「重複 spawn」と誤検出し、**全 project の起動に失敗する**（実機で観測済み）。
     pub async fn shutdown_all(&self) -> usize {
+        // drain より先に受付を閉じる。この順序が要点で、逆にすると「drain 済みの map へ
+        // 進行中の start が insert を完了させる」窓が残る（= 畳んだはずの project が生き残る）。
+        self.closing.store(true, Ordering::Release);
         // 先に map を空にしてから停止する（停止の await 中に別 caller が同じ project を
         // 掴んで二重に畳むのを防ぐ。`stop()` の remove-then-shutdown と同じ順序）。
         let drained: Vec<(String, ProjectRuntime)> = {
@@ -211,5 +249,30 @@ mod tests {
     async fn empty_registry_resolves_nothing() {
         let runtimes = ProjectRuntimes::new();
         assert!(runtimes.get("/anything").await.is_none());
+    }
+
+    /// shutdown 後の `start` は登録せず Err を返す。
+    ///
+    /// 回帰固定: ここが `Ok(false)` だと caller の `start_process` が「既に起動済み」と
+    /// 解釈して running_processes / presence に動いていない project を載せる。また
+    /// `shutdown_all` の drain 後に insert が滑り込むと、その project の task と db handle が
+    /// 残ってプロセスが終了できなくなる（World shutdown の 82 分ハングの再現経路）。
+    #[tokio::test]
+    async fn start_after_shutdown_is_rejected() {
+        let runtimes = ProjectRuntimes::new();
+        assert_eq!(runtimes.shutdown_all().await, 0);
+
+        let err = runtimes
+            .start("/tmp/proj-after-shutdown", DebugMode::None)
+            .await
+            .expect_err("shutdown 後の start は Err であること");
+        assert!(
+            err.to_string().contains("shutdown"),
+            "shutdown 中である旨が伝わるエラーであること: {err}"
+        );
+        assert!(
+            runtimes.get("/tmp/proj-after-shutdown").await.is_none(),
+            "拒否した project は登録されないこと"
+        );
     }
 }
