@@ -99,6 +99,8 @@ fn request_names_match_daemon_methods() {
         "projects/remove",
         "projects/rename",
         "projects/reorder",
+        "projects/start",
+        "projects/stop",
         "hub/discover",
         "ping",
     ];

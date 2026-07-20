@@ -80,10 +80,6 @@ enum Commands {
         command: Option<commands::daemon::DaemonCommands>,
     },
 
-    /// SP サーバー管理（HTTP/QUIC サーバーのライフサイクル）
-    #[command(subcommand)]
-    Sp(commands::sp::SpCommands),
-
     /// wire accumulation messaging — `watch` (long-poll subscribe) / `send` / `watch-supervised` を提供。
     /// Claude Code Monitor の subscription source として使う想定 (wiremsg R5-2)。
     #[command(subcommand)]
@@ -373,7 +369,9 @@ fn main() -> Result<()> {
             });
             commands::daemon::execute(cmd)
         }
-        Commands::Sp(cmd) => commands::sp::execute(cmd, &config),
+        // doc 44 P1 (fold-in): `vp sp` は退役。project は World プロセス内の
+        // `Arc<AppState>` になり、外から起動する概念が消えた。lifecycle 操作は
+        // `vp projects start|stop`（名詞を SP から project へ移した）。
         // tmux decoupling PR2: `vp hd` / `vp tmux` は退役。 lane の console 操作は
         // `vp lane capture` / `vp lane nudge` (lane 語彙の後継)。
         #[cfg(feature = "midi")]

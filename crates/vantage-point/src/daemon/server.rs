@@ -356,6 +356,39 @@ async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "reordered", "count": paths.len()}))
         }
+        // doc 44 P1 (fold-in): 単一 project の lifecycle 制御。旧 `vp sp start/stop` の後継で、
+        // 名詞を「SP（プロセス）」から「project」へ移した（D2: project はプロセスではなく
+        // World が抱える map のエントリ）。旧 `vp sp start` は project を World の外で
+        // 二重に走らせる口だったが、本 RPC は World 内の registry を操作するため
+        // 二重起動が原理的に表現できない（既に居れば `start` は no-op になる）。
+        "projects/start" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let proc = world_cap
+                .read()
+                .await
+                .start_process(name)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({
+                "status": "started",
+                "name": proc.project_name,
+                "path": proc.project_path.to_string_lossy(),
+            }))
+        }
+        "projects/stop" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .stop_process(name)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "stopped", "name": name}))
+        }
         // chronista-hub federation: hub registry に居る world 一覧を取得する。
         // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
         // (= 直接 hub に接続しない)。hub addr（env > config.kdl）未設定なら federation 無効を返す。

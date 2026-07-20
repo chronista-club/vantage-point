@@ -294,7 +294,7 @@ fn try_kickstart_launch_agent() -> bool {
 /// 3. macOS で LaunchAgent load 済みなら `launchctl kickstart`（-k なし）で即起こす / それ以外は
 ///    detached spawn（`ensure_daemon_running` = SP auto-spawn と同じ既存経路）
 /// 4. health ping で起動確認し、起動した daemon の version を表示
-fn restart(if_running: bool) -> Result<()> {
+pub(crate) fn restart(if_running: bool) -> Result<()> {
     let port = crate::cli::world_port();
 
     let holder = fetch_health(port);

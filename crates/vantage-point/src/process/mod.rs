@@ -47,4 +47,6 @@ pub(crate) mod unison_server;
 pub(crate) mod world_wire;
 
 pub use capabilities::CapabilityConfig;
-pub use server::{run, run_world};
+// doc 44 P1 (fold-in): `run`（SP プロセスとしての実行）は退役。project は World の
+// `run_world` が in-process で起こす（`ProjectRuntimes::start` → `start_project`）。
+pub use server::run_world;

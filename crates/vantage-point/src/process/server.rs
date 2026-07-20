@@ -482,38 +482,6 @@ pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
     }
 }
 
-/// Run the Process server（SP プロセスとしての実行）
-///
-/// doc 44 P1 (fold-in) の過渡形: 中身は [`start_project`] に切り出され、本関数は
-/// 「project を起こす → World への uplink を張る → shutdown を待つ」という
-/// **SP プロセス固有の外殻**だけを担う。fold-in 完了時にこの外殻ごと退役する。
-pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
-    let shutdown_token = CancellationToken::new();
-    // SP プロセス経路では World の lane view は別プロセスにあるため `None`。
-    // 更新は下の uplink（QUIC "lanes" push）が従来どおり担う。
-    let state = start_project(port, debug_mode, cap_config, shutdown_token.clone(), None).await?;
-
-    // F1a (doc 27 §3.4.4): SP → TheWorld の outbound を 1 connection に集約した uplink。
-    // registry (自己登録 + heartbeat + lane diff push) / canvas-ingest (paisley-park /
-    // terminal topic push) / control (World reverse-routing 受け) の 3 channel を 1 共有
-    // QUIC connection 上の別 stream として張る (旧: 3 別 connection)。 依存は全て AppState
-    // から引くため引数は (state, shutdown) のみ。 切断時に TheWorld が即時除去 (HTTP 登録不要)。
-    crate::discovery::spawn_world_uplink(state.clone(), shutdown_token.clone());
-
-    // SP-portless: SP は listen を持たず、 run() は shutdown_token で block する。 process 操作は
-    // spawn_world_uplink の control stream (reverse-routing) で process 生存中 serve され続ける。
-    // World process-proxy `shutdown` / SIGTERM 経由で shutdown_token が cancel されると cleanup へ進む。
-    shutdown_token.cancelled().await;
-    tracing::info!("Graceful shutdown initiated (outbound-only SP)");
-
-    // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
-    // （spawn_world_uplink の shutdown handler が unregister を送信済み）
-    shutdown_project(&state).await;
-
-    tracing::info!("Server stopped");
-    Ok(())
-}
-
 /// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
 /// Daemon（PTY管理 QUIC サーバー）も統合して起動する
