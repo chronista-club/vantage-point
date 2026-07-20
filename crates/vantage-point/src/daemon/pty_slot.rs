@@ -2,7 +2,8 @@
 //!
 //! portable-pty で PTY を作成し、master fd からの出力を
 //! broadcast channel 経由で配信する。
-//! 既存の `process/pty.rs` の PtySession を基に、Daemon用に再設計。
+//! 旧 `process/pty.rs` の PtySession を基に Daemon 用に再設計したもの（前身は本 slot が
+//! 全面的に置き換えたため doc 44 P1 の露払いで削除済 — lane の PTY はここが唯一の実体）。
 //! base64エンコードはしない（IPC層の責務）。
 //!
 //! terminal S4 (doc 27 §4.1): PTY 出力は broadcast → per-lane terminal pump →

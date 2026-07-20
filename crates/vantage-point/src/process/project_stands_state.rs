@@ -1,33 +1,25 @@
-//! Project scope の Stand pool — GE の registry (PP は Lane 移管済、 HP→Bastet 🧲 は World 移管で本 pool から除去)
+//! Paisley Park 🧭 の Lane Stand 実体（`PaisleyParkState` + `LaneStandHost` wrapper）。
 //!
-//! 関連 memory:
-//! - 「多 scope architecture + protocol/msg 連携」rule (2026-04-27 確定) は
-//!   doc 12 LSCM (VP-109 / 2026-05-04) で **明示的に supersede** された。
-//!   現 LSCM の Layer container は World/Project/Lane の 3 kind で、 各 Stand 種は
-//!   doc 12 §9 catalog の「保持 layer pattern」 列で居住可能 Layer が定められる。
-//! - PR-β-2 (VP-120 / 2026-05-04): **PP を Project → Lane に物理移管**、 本 struct から
-//!   `paisley_park` field を削除。 PR-γ (planned) で GE も Lane 移管予定、 完了後に
-//!   ProjectStandsPool 自体が空 (= 削除可能) になる予想。
-//! - PR-δ-2 (VP-136 / 2026-05-06): PP を **`LaneStandHost` trait impl 化** (PaisleyParkStand)、
-//!   `LaneCapabilities` の hardcoded field から `LaneStandRegistry` 経由 host に置換。
-//!   doc 13 §9 boundary invariant 「N Stand を host できる generic interface」 を実現。
+//! ## Project scope pool は消滅した（doc 44 P1 露払い、2026-07-20）
 //!
-//! ## 現状 (PR-δ-2 後)
-//!
-//! Project scope に残る Stand:
-//! - GE 🌿 Gold Experience — Code Runner (1 / project、 PR-γ で Lane 移管予定)
+//! 本 module は元々 Project scope の Stand pool (`ProjectStandsPool`) を提供していたが、
+//! Stand は順次 Lane scope へ移管され、最後まで残っていた GE 🌿 の skeleton
+//! (`GoldExperienceState`) も **一度も read されないまま**残置されていた。
+//! doc 44 P1 で `AppState.project_stands` を除去した結果 pool は到達不能になったため、
+//! pool・GE skeleton とも削除した（PR-γ の「GE を Lane 移管したら pool が空になる」
+//! という見通しに、pool 側から先に到達した形）。
 //!
 //! 旧 HP 🍇 Hermit Purple (External Control) は PR-α で World 移管 + epic v3.1 で
-//! Bastet 🧲 (World device registry) / Justice 🌫️ (Lane device I/O) に再編。
-//! 死蔵していた HermitPurpleState skeleton は E2-0 で削除済。
+//! Bastet 🧲 (World device registry) / Justice 🌫️ (Lane device I/O) に再編済。
 //!
-//! Lane 移管完了済:
-//! - PP 🧭 Paisley Park — `LaneCapabilities.registry` で host (PR-δ-2)、
-//!   wrapper struct = `PaisleyParkStand` (LaneStandHost trait impl)
+//! ## 現在ここが提供するもの
 //!
-//! Phase A4-2b の skeleton という位置付けは継続、 各 state は最小実装。
-//! 実 Stand 操作 (Ruby eval / MIDI 制御) は既存 routes/handler 経由で動いており、
-//! ここはそれらを Project scope の概念として位置付けるための data model。
+//! - `PaisleyParkState` — Canvas content の data model (content + content_type)
+//! - `PaisleyParkStand` — それを `LaneStandHost` trait に適合させる wrapper。
+//!   `LaneCapabilities.registry` が Lane あたり 1 instance を host する (PR-δ-2 / VP-136)。
+//!
+//! 関連: doc 12 LSCM (VP-109) — Layer container は World/Project/Lane の 3 kind、
+//! 各 Stand の居住可能 Layer は doc 12 §9 catalog の「保持 layer pattern」列が定める。
 
 use std::any::Any;
 
@@ -100,46 +92,21 @@ impl LaneStandHost for PaisleyParkStand {
     }
 }
 
-/// GE (Gold Experience) — Code Runner state (1 / project)
-///
-/// 既存の Ruby eval / process_runner 関連はここの state を読み書きする想定 (gradual migration)。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GoldExperienceState {
-    /// 直近の eval 結果 (簡素化、A4-2b では skeleton)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_eval: Option<String>,
-}
-
-/// Project scope の Stand pool (GE を集約、 PP は Lane 移管済、 HP→Bastet は World 移管)
-///
-/// PR-β-2 (VP-120): `paisley_park` field を **削除**、 PP は `LaneCapabilities.registry`
-/// (PR-δ-2 / VP-136 で `LaneStandRegistry` 経由 host に進化、 wrapper struct =
-/// `PaisleyParkStand`) で Lane あたり独立 instance に物理移管。 epic v3.1 E2-0 で旧
-/// `hermit_purple` field (HermitPurpleState skeleton) も削除 (External Control は
-/// World/Bastet 🧲 + Lane/Justice 🌫️ へ再編)。 残る GE は Project あたり 1 instance、
-/// PR-γ で Lane 移管予定 (完了後に本 pool 自体が削除可能になる)。
-#[derive(Debug, Default)]
-pub struct ProjectStandsPool {
-    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton（module doc 参照）。
-    #[allow(dead_code)]
-    pub gold_experience: GoldExperienceState,
-}
-
-impl ProjectStandsPool {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn project_stands_pool_default_empty() {
-        // PR-β-2 (VP-120): paisley_park は LaneCapabilities に物理移管、 本 pool では確認不要。
-        // epic v3.1 E2-0: hermit_purple skeleton 削除済 (External Control は World/Bastet + Lane/Justice へ)
-        let pool = ProjectStandsPool::new();
-        assert!(pool.gold_experience.last_eval.is_none());
+    fn paisley_park_stand_reports_its_kind() {
+        let stand = PaisleyParkStand::new();
+        assert_eq!(stand.stand_kind(), "paisley_park");
+    }
+
+    #[test]
+    fn paisley_park_stand_starts_empty() {
+        let stand = PaisleyParkStand::new();
+        let state = stand.state().blocking_read();
+        assert!(state.content.is_none());
+        assert!(state.content_type.is_none());
     }
 }

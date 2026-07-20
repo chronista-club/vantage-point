@@ -260,6 +260,11 @@ pub fn parse_debug_env() -> Option<DebugMode> {
 /// `tui_mode` が true の場合、ログ出力を stderr ではなくファイルにリダイレクト。
 /// TUI (ratatui) の alternate screen にサーバーログが漏れるのを防ぐ。
 pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
+    // panic を log に載せる hook。 subscriber より先に install してよい (hook が発火するのは
+    // 実行時 = subscriber 設置後)。 tokio task 内 panic が無言で機能を殺す既存問題への
+    // 最小の対処 — cf. `crate::panic_hook` の module doc。
+    crate::panic_hook::install();
+
     // daemon ログローテーション設定。 vp-app 側の `log_init::LOG_MAX_BYTES` /
     // `LOG_KEEP_FILES` と同値に保つこと (2 crate に依存関係が無いため定数を物理共有できず、
     // 各 crate に複製している。 恒久的には vp-paths へ寄せる候補 = Observability Phase B)。

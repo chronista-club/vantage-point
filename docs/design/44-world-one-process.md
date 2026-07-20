@@ -1,6 +1,7 @@
 # doc 44 — World 一枚化と Project Host（SP の転生・slot 語彙・conductor の再定義）
 
-> **status**: 方向確定（2026-07-20 の dogfood 議論。実装未着手 — 本 doc は議論の凍結）
+> **status**: 方向確定 + **P1 実装設計確定**（2026-07-20）。P0 語彙 ✅出荷（#820）、
+> P1 は露払い着手。§1–§4 = dogfood 議論の凍結、**§5 = 実コード調査に基づく P1 実装設計**。
 > **発端**: v0.52.1 hotfix（#817）で戦った reverse-route 取りこぼし・demand hook レースが
 > **World↔SP のプロセス分割が生む分散システム問題**だと確定したこと。および「Act I でタブが
 > 出ない」「床が分かりにくい」という dogfood 指摘の掘り下げが、SP の存在理由まで届いた。
@@ -126,10 +127,93 @@ hub federation 層が既に持っている。生産管理板（Host）を各工�
 
 ## 4. 開いている問い（触って見える「次の景色」の候補）
 
-- P1 の panic 封じ込め: 一枚化した World 内で 1 project の障害をどう局所化するか
-  （task 境界 / catch_unwind / health monitor の粒度）。
-- DB handle: per-project vpdb を World がどう束ねるか（namespace vs multi-handle）。
-- `vp ps` の意味論: SP プロセス一覧 → 「active lane を持つ project 一覧」へ。
-- デバッグモード（`vp sp start -d`）の新しい家。
+> §4 の前 4 項は **2026-07-20 の実コード調査で決着**した（§5 参照）。残りは P3 以降の問い。
+
+- ~~P1 の panic 封じ込め~~ → §5.1 で決着（**現状の隔壁は幻**、P1 のブロッカーではない）
+- ~~DB handle~~ → §5.2 で決着（単一 handle + project 列、要検証 1 点）
+- ~~`vp ps` の意味論~~ → §5.3 で決着
+- ~~デバッグモードの新しい家~~ → §5.4 で決着（**現状すでに到達不能**だった）
 - hub federation は World レベルなので原理的に無関係 — 実装時に要確認のみ。
 - Host の帳簿の永続化先（surrealkv）と、creo-memories との棲み分け。
+
+## 5. P1 実装設計（2026-07-20 の実コード調査で確定）
+
+### 5.0 調査で判った 3 つの構造的事実
+
+1. **World と SP は既に同じ `AppState` 型を共有**している（`process/state.rs`）。mode 差は
+   フィールドを `Some`/`None` で出し分けているだけ。fold-in は「2 つのプログラムの合体」
+   ではなく **既に 1 つの型にある分岐を畳む**作業。
+   フィールド内訳 = per-project 14 / global 12 / dead 4（dead は P1 露払いで削除済）。
+2. **縫い目は 2 行**。World から SP へ入る経路は `daemon/server.rs:1466`（canvas 上り）と
+   `:1589`（process-proxy）に収束し、SP 側は `dispatch_process_method` の単一 `match`
+   （60 method）で受ける。ここを直接呼び出しに差し替えると、**7,600 行が「書き換え対象」
+   ではなく「孤児」になる**。
+3. **`LaneAddress { project, kind, name }` が既に project を key に含む**ため、N 個の
+   LanePool を 1 枚に merge してもキー衝突が起きない。D2 の「World が LanePool 一枚で抱く」は
+   既存データ構造が既にその形をしている。
+
+### 5.1 panic 封じ込め — 現状の隔壁は幻
+
+実測: `catch_unwind` 0 件 / panic hook 0 件 / `panic = "abort"` 未設定 /
+`tokio::spawn` 100 箇所超に対し `JoinError::is_panic()` の観測 **0**。
+
+| 障害の型 | SP プロセス境界は守るか |
+|---|---|
+| tokio task の panic | **守らない**（unwind で task だけが黙って死ぬ。SP の有無と無関係） |
+| `PtySlot` の std Mutex poisoning | **守らない**（Err 化されて lane 単位の恒久故障） |
+| deadlock | ✅ 守る |
+| OOM / stack overflow / abort | ✅ 守る |
+
+つまり fold-in の実質的な後退は **deadlock と資源枯渇の 2 つだけ**。前者に対しては
+`LanePool` が既に「`read()` のまま mutate して長い await 中に write lock を握らない」
+規律で設計されている（`submit_chat` / `deliver_nudge` 等）。
+
+**結論**: P1 に `catch_unwind` 足場は作らない。代わりに順序を逆にして、
+**隔壁を外す前に「何が落ちているか」を見えるようにする**（panic hook = `src/panic_hook.rs`、
+P1 露払いで実装済）。これは fold-in の有無に関わらず価値がある。
+
+### 5.2 DB handle — 単一 `db/world/` + project 列
+
+現状 namespace は `vp`/`vp` **固定**で、分離は**ディレクトリ**（`db/world/` と `db/sp_{slug}/`）。
+World が N handle を抱く案は「project の runtime 実体」を復活させるので D2 と矛盾する。
+`LaneAddress` が project を持つ以上、**table に project 次元を足す**のが canonical。
+
+- ⚠️ **要検証**: `db/sp_*/` の実内容（`pane_contents` 等）と、移行なしで捨てて良いか。
+- 副次: この LOCK は「重複 SP 検出」も兼ねていた（生存 holder 検出で起動中止）。
+  fold-in 後は World の `:32000` bind + `daemon.pid` が単一性を保証するので**代替不要**。
+
+### 5.3 `vp ps` — PORT / PID 列が無意味化
+
+`PROJECT / LANES(数) / STATUS(active|idle) / ← cwd` へ。detail は既存の `vp lane` が持つ。
+
+### 5.4 debug mode — そもそも今日到達不能だった
+
+- World が spawn する SP に **`-d` は渡されない**（`-C` と `-p` のみ）→ 手動 foreground 起動専用
+- `send_debug_detail` は**呼び出し元ゼロ**
+- `-d` は tracing レベルを変えない（それは `VANTAGE_DEBUG`）
+
+**結論**: 新居を探すのではなく **World の runtime 可変 state にして `vp daemon debug <mode>`
+で切り替える**（`DebugModeChanged` は protocol に既存）。launchd 常駐下でも効き、
+この機能が初めて実際に使えるようになる。
+
+### 5.5 PR 分割
+
+| PR | 内容 | 規模 | リスク |
+|---|---|---|---|
+| **1. 露払い** | panic 可視化 + **P1 が抱えて運ぶ羽目になる死コード**の除去（`AppState` の dead field 3 本 / 孤児化した `process/pty.rs`） | 小 | ほぼ 0（挙動不変） |
+| **2. fold-in 本体** | `AppState` の per-project 化 → World が LanePool 所有 → dispatch 直結 → SP spawn 停止 → uplink/registry/control 撤去 | 大（〜2,000 行） | 中 |
+| **3. 遺物撤去** | `vp sp` / port slot API / `PORT_RANGE` / health monitor / presence 意味論 / `vp ps` / `restart-all` / debug の新居 | 中 | 小 |
+| **4. DB 統合** | `db/sp_*` → `db/world/` の project 列化 | 小〜中 | 要検証 |
+
+**線引き**: PR1 は「P1 が抱えて運ぶもの」だけを落とす。「P1 が丸ごと消すもの」
+（`vp sp` の内部死コード等）は磨かない — 捨てる作業になるため。
+
+PR2 は分割したくなるが、「World と SP のどちらが LanePool を持つか」は**半分だけ出荷できない**
+性質なので、中間状態を作らない方針（pre-MVP）に従って一息に切る。
+
+### 5.6 検証戦略 — dev profile で完全並列
+
+`VP_PROFILE=dev`（World :32100 / `~/.local/share/vp-dev/`）で fold-in 版 daemon を立てれば、
+**release daemon(:32000) の lane を一切落とさずに実機確認できる**。#643 の namespace 分離が
+そのまま P1 の検証装置になる。これにより P1 最大の運用リスク（「daemon 再起動 = 全 lane 死」）が
+dogfood 中は発生しない。

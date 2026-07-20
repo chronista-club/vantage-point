@@ -15,7 +15,6 @@ use tower_http::cors::CorsLayer;
 
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
-use super::pty::PtyManager;
 use super::routes::{health, update, world};
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -145,7 +144,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
 
     let state = Arc::new(AppState {
         hub,
-        cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
@@ -161,7 +159,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_worlds: crate::daemon::hub_client::HubWorldsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
-        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
@@ -196,9 +193,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         // で SP → TheWorld push 経路。 将来 Pane / Stand 等の event も同 bus に variant 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
-        project_stands: Arc::new(RwLock::new(
-            super::project_stands_state::ProjectStandsPool::new(),
-        )),
         // PR-α-1 (VP-111): SP モードでは WorldCapabilities を持たない (World mode 専用)
         world_capabilities: None,
         // PR-β-1 (VP-119): SP モードで LaneCapabilities pool 受け皿を Some で初期化。
@@ -621,7 +615,6 @@ pub async fn run_world(
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
-        cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),
@@ -641,7 +634,6 @@ pub async fn run_world(
         world: Some(world_cap.clone()),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
-        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "WORLD_DISABLED".to_string(),
@@ -662,9 +654,6 @@ pub async fn run_world(
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
         // Phase 2 (Step E): system event central bus
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        project_stands: Arc::new(RwLock::new(
-            super::project_stands_state::ProjectStandsPool::new(),
-        )),
         // PR-α-1 (VP-111): World 階層 Stand container (LSCM doc 12 §3 / §9)
         world_capabilities: Some(world_capabilities),
         // PR-β-1 (VP-119): World mode では LaneCapabilities を持たない (Lane scope は SP per project)
