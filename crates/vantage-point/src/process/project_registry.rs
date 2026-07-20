@@ -44,11 +44,29 @@ pub(crate) struct ProjectRuntime {
 #[derive(Default)]
 pub(crate) struct ProjectRuntimes {
     inner: RwLock<HashMap<String, ProjectRuntime>>,
+    /// World の lane 集約 view（`ProcessManagerCapability::lane_registry` と同一 Arc）。
+    ///
+    /// doc 44 P1 (fold-in): 旧構成では SP が QUIC "lanes" channel で World へ register
+    /// snapshot を push し、この view を最新化していた。SP が消えた今、更新役は
+    /// project 自身の publish task が引き継ぐ（[`start`] が本 Arc を渡す）。
+    /// `None` は「World 以外の文脈」= test / SP 単体起動で、その場合 view は存在しない。
+    world_lanes: Option<super::server::WorldLaneView>,
 }
 
 impl ProjectRuntimes {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// World の lane 集約 view を結線した registry を作る。
+    ///
+    /// World bootstrap 専用。これを渡さないと project を起こしても World の view が
+    /// 更新されず、`vp ps` / sidebar / `/api/world/lanes` が boot 時の db 値で固まる。
+    pub fn with_lane_view(world_lanes: super::server::WorldLaneView) -> Self {
+        Self {
+            inner: RwLock::new(HashMap::new()),
+            world_lanes: Some(world_lanes),
+        }
     }
 
     /// project を in-process で起動して登録する。
@@ -69,8 +87,14 @@ impl ProjectRuntimes {
             project_dir: project_dir.to_string(),
         };
         // port はもう bind されない（SP-portless の遺産）。fold-in で概念ごと消えるため 0 を渡す。
-        let state =
-            super::server::start_project(0, debug_mode, cap_config, shutdown.clone()).await?;
+        let state = super::server::start_project(
+            0,
+            debug_mode,
+            cap_config,
+            shutdown.clone(),
+            self.world_lanes.clone(),
+        )
+        .await?;
 
         // 起動中に別 caller が同 project を起こしていた場合はこちらを捨てる（後勝ちにしない）。
         let mut guard = self.inner.write().await;

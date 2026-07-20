@@ -22,11 +22,45 @@ use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
+/// World が持つ「project path_key → lane 一覧」集約 view の共有参照。
+///
+/// doc 44 P1 (fold-in): 旧構成では SP が QUIC "lanes" channel 越しにこの view へ
+/// register snapshot を push していた。同一プロセスになった今、その push は
+/// **map への書き込み**に退化する（[`publish_lanes`]）。
+pub(crate) type WorldLaneView =
+    Arc<RwLock<std::collections::HashMap<String, Vec<super::lanes_state::LaneInfo>>>>;
+
+/// LanePool の現 snapshot を「World の集約 view」と「project の hub」の両方へ配る。
+///
+/// doc 44 P1 (fold-in): lanes が World へ流れる供給点は 3 つ（起動時 seed / 5s periodic /
+/// `SystemEvent::Lane`）あり、`lanes_state.rs` の規約どおり**全供給点で同じ enrich を通す**
+/// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、SP の uplink が QUIC で World の
+/// `lane_registry` へ中継していた。fold-in で中継が消えたため、World 側 view の更新を
+/// ここに並置する — これを怠ると World の view が boot 時の db 値で固まり、
+/// `/api/world/lanes` が実在しない lane（過去 pid）を配り続ける。
+async fn publish_lanes(
+    state: &Arc<AppState>,
+    hub: &Hub,
+    world_lanes: &Option<WorldLaneView>,
+    path_key: &str,
+) {
+    let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    if let Some(view) = world_lanes {
+        view.write()
+            .await
+            .insert(path_key.to_string(), lanes.clone());
+    }
+    hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot { lanes });
+}
+
 /// project 1 件分の実行状態を in-process で起動する（旧 SP プロセスの中身）。
 ///
 /// doc 44 P1 (fold-in): 旧 `run()` から **uplink と終端 block を除いた部分**を切り出したもの。
 /// SP プロセスとして動く間は [`run`] が本関数を呼んで uplink を張り、World 一枚化後は
 /// World が project ごとに本関数を直接呼んで `Arc<AppState>` を map に抱える。
+///
+/// `world_lanes` は World の lane 集約 view（SP プロセスとして動く場合は `None`）。
+/// 旧 SP uplink の代わりに、本関数が起こす publish task が直接ここへ書き込む。
 ///
 /// 返る時点で lane bootstrap / lifecycle monitor / lanes snapshot publish まで起動済み。
 /// 停止は `shutdown_token` を cancel して [`shutdown_project`] を呼ぶ。
@@ -35,6 +69,7 @@ pub(crate) async fn start_project(
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
     shutdown_token: CancellationToken,
+    world_lanes: Option<WorldLaneView>,
 ) -> Result<Arc<AppState>> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
@@ -364,13 +399,22 @@ pub(crate) async fn start_project(
         let state_for_pub = state.clone();
         let hub = state.hub.clone();
         let shutdown = shutdown_token.clone();
+        // doc 44 P1 (fold-in): 3 つの供給点はいずれも `publish_lanes` を通す
+        // （World の集約 view 更新と hub broadcast が常に対で起きることを型で担保する）。
+        let world_lanes_for_pub = world_lanes.clone();
+        let path_key_for_pub =
+            crate::capability::normalize_path_key(std::path::Path::new(&project_dir));
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
         // （Conductor Lane は既に pre-populate 済）。
         // project-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Performer
         // も含める (= HTTP /api/lanes と同一 logic、 sidebar QUIC 経路でも Inactive 表示)。
-        hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot {
-            lanes: super::routes::lanes::build_lanes_snapshot(&state_for_pub).await,
-        });
+        publish_lanes(
+            &state_for_pub,
+            &hub,
+            &world_lanes_for_pub,
+            &path_key_for_pub,
+        )
+        .await;
         // board モデル (2026-07-15): DB の全 board を起動直後に retained topic へ seed する。
         // webview が canvas channel を購読した瞬間、 BoardUpdated(retained) で全 board が初期配信される
         // （SP 再起動を越えて board が復元される。 別 load 経路は不要）。
@@ -388,22 +432,16 @@ pub(crate) async fn start_project(
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
                     _ = periodic.tick() => {
-                        let lanes = super::routes::lanes::build_lanes_snapshot(
-                            &state_for_pub,
+                        publish_lanes(
+                            &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
                         ).await;
-                        hub.broadcast(
-                            crate::protocol::ProcessMessage::LanesSnapshot { lanes },
-                        );
                     }
                     ev = sys_rx.recv() => match ev {
                         // Lane lifecycle 変化 / lag → 現 snapshot を全量 publish（idempotent）
                         Ok(SystemEvent::Lane(_)) | Err(RecvError::Lagged(_)) => {
-                            let lanes = super::routes::lanes::build_lanes_snapshot(
-                                &state_for_pub,
+                            publish_lanes(
+                                &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
                             ).await;
-                            hub.broadcast(
-                                crate::protocol::ProcessMessage::LanesSnapshot { lanes },
-                            );
                         }
                         Err(RecvError::Closed) => break,
                     },
@@ -451,7 +489,9 @@ pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
 /// **SP プロセス固有の外殻**だけを担う。fold-in 完了時にこの外殻ごと退役する。
 pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
     let shutdown_token = CancellationToken::new();
-    let state = start_project(port, debug_mode, cap_config, shutdown_token.clone()).await?;
+    // SP プロセス経路では World の lane view は別プロセスにあるため `None`。
+    // 更新は下の uplink（QUIC "lanes" push）が従来どおり担う。
+    let state = start_project(port, debug_mode, cap_config, shutdown_token.clone(), None).await?;
 
     // F1a (doc 27 §3.4.4): SP → TheWorld の outbound を 1 connection に集約した uplink。
     // registry (自己登録 + heartbeat + lane diff push) / canvas-ingest (paisley-park /
@@ -728,8 +768,13 @@ pub async fn run_world(
     // `Arc<AppState>` として直接抱え、 forward ではなく in-process dispatch で操作する。
     // ここで作った 1 つを 3 者 (daemon_state + delivery loop + delegation reconcile loop) に
     // 配るのは旧構成と同じ (別々に new() すると map が分裂して到達不能になる)。
+    // doc 44 P1 (fold-in): World の lane 集約 view を registry に結線する。旧構成では
+    // SP の QUIC uplink がこの view を最新化していたので、結線を落とすと project は
+    // 動くのに World からは boot 時の db 値しか見えない（= 過去 pid の ghost lane 配信）。
     let control_channels: crate::daemon::server::ControlChannels =
-        std::sync::Arc::new(super::project_registry::ProjectRuntimes::new());
+        std::sync::Arc::new(super::project_registry::ProjectRuntimes::with_lane_view(
+            world_cap.read().await.lane_registry_ref(),
+        ));
 
     // ProcessManagerCapability に registry を差し込む（`start_process` が in-process 起動に使う）。
     world_cap
@@ -1325,4 +1370,45 @@ fn spawn_lane_lifecycle_monitor(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// doc 44 P1 (fold-in) 回帰固定: lanes の供給点は World の集約 view を必ず更新する。
+    ///
+    /// この不変条件は旧構成では **SP の QUIC uplink が担うプロセス跨ぎの約束**だったため
+    /// 単体テストの射程外にあり、fold-in で uplink を落とした際に誰にも気付かれずに
+    /// 失われた（実機で `/api/world/lanes` が boot 時 db 値のまま固まり、存在しない
+    /// 過去 pid の lane を配り続けた）。関数呼び出しになった今はここで固定できる。
+    #[tokio::test]
+    async fn publish_lanes_updates_world_view() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+        let view: WorldLaneView = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let key = "/tmp/proj-publish-lanes";
+
+        publish_lanes(&state, &hub, &Some(view.clone()), key).await;
+
+        // lane 数が 0 でも **entry 自体は入る**ことが要点。空 Vec の insert が
+        // 「この project にはもう lane が無い」を表明し、boot 時に db から載った
+        // stale 行を上書きして消す役割を持つ。
+        assert!(
+            view.read().await.contains_key(key),
+            "publish 後、World view に当該 project の entry が存在すること"
+        );
+    }
+
+    /// World view 不在（= SP プロセス経路 / test）でも publish は成立する。
+    ///
+    /// `run()` 経路は uplink が World へ中継するので view を持たない。ここが panic すると
+    /// fold-in 完了前の SP 単体起動が壊れる。
+    #[tokio::test]
+    async fn publish_lanes_without_world_view_is_noop() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+
+        publish_lanes(&state, &hub, &None, "/tmp/proj-no-view").await;
+    }
 }

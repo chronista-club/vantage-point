@@ -1370,9 +1370,25 @@ impl ProcessManagerCapability {
             }
         }
 
-        // running_processes への daemon 側 insert は撤去 (Pull 時代の遺物)。
-        // wait_for_health が Ours を返した時点で SP の QUIC 自己登録が entry を書いており、
-        // daemon 側の子 pid で上書きすると Push-canonical を壊す (上記 gap の root cause)。
+        // doc 44 P1 (fold-in): daemon 側 insert を復活させる。
+        //
+        // #648 でこの insert を撤去したのは「SP の QUIC 自己登録が entry を書くので、
+        // daemon 側の子 pid で上書きすると Push-canonical を壊す」ためだった。fold-in で
+        // SP が消え、自己登録しに来る者が居なくなったため、この前提そのものが失効した。
+        // 撤去したまま放置すると registry は**永久に空**になり、`vp ps` / `/api/world/processes`
+        // が空を返し、`stop_process` は自身の gate に阻まれて project を停止できなくなる。
+        //
+        // in-process 起動が成功した瞬間が権威ある lifecycle event なので、書き手はここが正
+        // （= presence 設計が元から掲げていた daemon-canonical に戻る）。
+        {
+            let mut procs = self.running_processes.write().await;
+            procs.insert(key.clone(), running_process.clone());
+        }
+        // presence も同様に SP の register だけが Connected にしていた。in-process の
+        // project は「起動していれば接続している」以外の状態を取り得ないため、
+        // 起動成功 = Connected で確定する（旧: registry handler の register→Connected）。
+        self.set_presence(&key, ProcessPresenceState::Connected)
+            .await;
 
         // DB に書き込み（正規化パスで保存、 pid/port は registry entry の真実を使う）
         if let Some(ref db) = self.vpdb
@@ -1456,6 +1472,11 @@ impl ProcessManagerCapability {
             let mut procs = self.running_processes.write().await;
             procs.remove(&key);
         }
+        // doc 44 P1 (fold-in): presence も対称に落とす（旧: SP 切断を registry handler が
+        // 検知して Disconnected にしていた）。in-process では「停止した = 登録が無い」なので
+        // Disconnected（居るが繋がらない）ではなく Unregistered が正。
+        self.set_presence(&key, ProcessPresenceState::Unregistered)
+            .await;
 
         // DB から削除（正規化パスで削除）
         if let Some(ref db) = self.vpdb
