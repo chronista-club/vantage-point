@@ -31,10 +31,6 @@ use super::state::AppState;
 use crate::protocol::DebugMode;
 
 /// project 1 件分の実行状態と、その停止スイッチ。
-// 未結線（doc 44 P1 fold-in の建材）: 次 commit で World の `start_process` /
-// `forward_to_sp_control` を本 registry に載せ替えると同時に本 allow を外す。
-// CI は `clippy -D warnings` なので、それまでの間だけ明示的に黙らせる。
-#[allow(dead_code)]
 pub(crate) struct ProjectRuntime {
     pub state: Arc<AppState>,
     /// cancel すると当該 project の spawn 済 task 群（lane monitor / snapshot publish 等）が止まる。
@@ -46,12 +42,10 @@ pub(crate) struct ProjectRuntime {
 /// key は [`normalize_path_key`](crate::capability::normalize_path_key) 正規化済パス
 /// （旧 `running_processes` / `lane_registry` / `control_channels` と同じ規約）。
 #[derive(Default)]
-#[allow(dead_code)] // 未結線（上記 `ProjectRuntime` と同じ理由）
 pub(crate) struct ProjectRuntimes {
     inner: RwLock<HashMap<String, ProjectRuntime>>,
 }
 
-#[allow(dead_code)] // 未結線（上記 `ProjectRuntime` と同じ理由）
 impl ProjectRuntimes {
     pub fn new() -> Self {
         Self::default()
@@ -109,11 +103,6 @@ impl ProjectRuntimes {
             .map(|r| r.state.clone())
     }
 
-    /// 稼働中 project の path_key 一覧。
-    pub async fn keys(&self) -> Vec<String> {
-        self.inner.read().await.keys().cloned().collect()
-    }
-
     /// 当該 project の [`dispatch_process_method`] を **直接呼ぶ**。
     ///
     /// 旧 `forward_to_sp_control`（World → QUIC control channel → SP）の後継。
@@ -168,9 +157,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_registry_has_no_keys() {
+    async fn empty_registry_resolves_nothing() {
         let runtimes = ProjectRuntimes::new();
-        assert!(runtimes.keys().await.is_empty());
         assert!(runtimes.get("/anything").await.is_none());
     }
 }

@@ -723,8 +723,19 @@ pub async fn run_world(
     // daemon_state) がこの map を populate し、 World-side の nudge loop (delivery / reconcile) が
     // 同一 Arc を引いて `lane_nudge` を所有 SP に forward する。 別々に new() すると map が分裂して
     // forward 不能になるため、 ここで作った 1 つを 3 者 (daemon_state + 両 loop) に配る。
+    // doc 44 P1 (fold-in): 旧「SP control channel registry」を per-project 実行状態の
+    // registry に置き換える。 SP プロセスが無くなったので、 World は project を
+    // `Arc<AppState>` として直接抱え、 forward ではなく in-process dispatch で操作する。
+    // ここで作った 1 つを 3 者 (daemon_state + delivery loop + delegation reconcile loop) に
+    // 配るのは旧構成と同じ (別々に new() すると map が分裂して到達不能になる)。
     let control_channels: crate::daemon::server::ControlChannels =
-        std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+        std::sync::Arc::new(super::project_registry::ProjectRuntimes::new());
+
+    // ProcessManagerCapability に registry を差し込む（`start_process` が in-process 起動に使う）。
+    world_cap
+        .write()
+        .await
+        .set_project_runtimes(control_channels.clone());
 
     // R2-b: wire delivery loop (未 ack command の nudge + 再掲示) を spawn。
     // store 未構築 (DB 接続失敗) なら skip — wire 自体が動かないため delivery も不要。
