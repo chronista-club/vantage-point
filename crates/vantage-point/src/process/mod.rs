@@ -31,7 +31,6 @@ pub(crate) mod lanes_state;
 pub mod process_runner;
 /// Project scope の Stand pool (PP / GE / HP)
 pub(crate) mod project_stands_state;
-pub mod pty;
 pub(crate) mod retained;
 // L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
 // `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
