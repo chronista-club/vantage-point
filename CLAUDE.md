@@ -106,7 +106,7 @@ vantage-point/
 
 ```bash
 # Core
-vp ps                  # 稼働中インスタンス一覧（TheWorld registry に問い合わせ）
+vp ps                  # 稼働中 project 一覧（PROJECT / LANES 数 / STATUS active|idle）。詳細は vp lane list
 vp config              # 設定と登録プロジェクト表示
 vp projects            # 登録 project 管理（add/remove/rename/enable/disable/reorder/list）
 vp sync                # projects.kdl を現実と同期（ghost project 除去）

@@ -113,34 +113,78 @@ pub fn world_port() -> u16 {
     vp_paths::default_world_port()
 }
 
-/// 稼働中インスタンスをプロジェクト名ベースで一覧表示する。
+/// 稼働中 project を一覧表示する（`vp ps`）。
 ///
-/// L0 finale: SP は HTTP listener を持たないため真実源は World registry (`discovery::list` =
-/// World :32000 が QUIC 自己登録から維持する稼働 SP 一覧)。 旧 TCP port-scan (`scan_instances`) は撤去。
+/// 真実源は World registry（`discovery::list` = World :32000 が維持する稼働 project 一覧）。
+///
+/// # 列の意味論（doc 44 §5.3）
+///
+/// fold-in で **PORT / PID 列は情報量を失った** — project は World と同一プロセスなので
+/// pid は全行 World 自身、port は listen しないので常に 0 になる。どちらも
+/// 「project = プロセス」という前提の上にあった表示で、その前提を fold-in が消した。
+///
+/// 代わりに project 間の実体的な差である **LANES（何本のラインを抱えているか）** と
+/// **STATUS（そのうち動いているものがあるか = active / idle）** を出す。
+/// lane 個別の詳細（kind / stand / pid / state）は `vp lane` が持つ。
 pub fn list_instances(config: &crate::config::Config) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let instances = crate::discovery::list().await;
-        if instances.is_empty() {
-            println!("No running vp instances found.");
+        // control plane は Unison に寄せる方針（KDL schema + drift テスト + MCP tool 合成が
+        // 付いてくる）。processes / lanes とも 1 接続の別 stream で引く。
+        let client = crate::daemon::client::WorldControlClient::connect(world_port(), 3)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "World daemon (port {}) に接続できません。 `vp daemon start` で起動してください: {}",
+                    world_port(),
+                    e
+                )
+            })?;
+
+        let processes = client.processes_list().await.unwrap_or_default();
+        if processes.is_empty() {
+            println!("No running projects found.");
             return Ok(());
         }
+        let lane_counts = crate::discovery::count_lanes_by_project_entries(
+            &client.lanes_list().await.unwrap_or_default(),
+        );
+        let instances: Vec<String> = processes
+            .iter()
+            .filter_map(|p| {
+                p.get("project_path")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
 
         let cwd = std::env::current_dir()
             .ok()
             .and_then(|p| dunce::canonicalize(&p).ok())
             .map(|p| p.display().to_string());
 
-        println!();
-        println!("  {:<18} {:<7} {:<7} STATUS", "PROJECT", "PORT", "PID");
-        println!("  {:<18} {:<7} {:<7} ──────", "───────", "────", "───");
+        // project 名は長さの幅が大きい（`claude-plugin-chronista-style` = 29 文字）ので、
+        // 固定幅だと溢れて LANES 列がずれる。実データから列幅を決める。
+        let names: Vec<String> = instances
+            .iter()
+            .map(|path| crate::resolve::project_name_from_path(path, config))
+            .collect();
+        let w = names
+            .iter()
+            .map(|n| n.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max("PROJECT".len());
 
-        for inst in &instances {
-            let name = crate::resolve::project_name_from_path(&inst.project_dir, config);
+        println!();
+        println!("  {:<w$} {:>5}  STATUS", "PROJECT", "LANES");
+        println!("  {:<w$} {:>5}  ──────", "─".repeat(w), "─────");
+
+        for (inst, name) in instances.iter().zip(&names) {
             let is_cwd = if let Some(cwd_str) = &cwd {
-                let canonical_proj = dunce::canonicalize(&inst.project_dir)
+                let canonical_proj = dunce::canonicalize(inst)
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| inst.project_dir.clone());
+                    .unwrap_or_else(|_| inst.clone());
                 // separator は OS 依存 (Windows は `\`)。 `/` 決め打ちだと Windows で
                 // 子ディレクトリからの `← cwd` マーカーが出ない。
                 let prefix = format!("{}{}", canonical_proj, std::path::MAIN_SEPARATOR);
@@ -149,13 +193,17 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
                 false
             };
             let marker = if is_cwd { "  ← cwd" } else { "" };
-            println!(
-                "  {:<18} {:<7} {:<7} running{}",
-                name, inst.port, inst.pid, marker
-            );
+            // World に問い合わせできなかった場合は lane 数不明として `-` を出す
+            // （project 一覧そのものは出せるべきなので、lane 取得失敗で表を潰さない）。
+            let (lanes, status) = match lane_counts.get(name) {
+                Some(c) if c.running > 0 => (c.total.to_string(), "active"),
+                Some(c) => (c.total.to_string(), "idle"),
+                None => ("-".to_string(), "idle"),
+            };
+            println!("  {:<w$} {:>5}  {}{}", name, lanes, status, marker);
         }
         println!();
-        println!("Use: vp open <project-name>");
+        println!("詳細: vp lane list");
         Ok(())
     })
 }

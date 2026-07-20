@@ -1,15 +1,16 @@
 //! プロセス発見モジュール
 //!
-//! TheWorld API（port 32000）を単一の真実源として稼働中 Process を発見する。
-//! SP は QUIC "registry" チャネルで自己登録し、切断時に即時除去される。
+//! TheWorld API（port 32000）を単一の真実源として稼働中 project を発見する。
 //!
 //! ## データフロー
 //!
 //! ```text
-//! SP 起動 → QUIC "registry" チャネルで TheWorld に自己登録
+//! project 起動（World が in-process で起こす）→ World の registry に登録
 //! 問い合わせ → TheWorld HTTP API (port 32000) → 返却
-//! SP 停止/切断 → TheWorld が即時除去
 //! ```
+//!
+//! doc 44 P1 (fold-in) 以前は「SP が QUIC registry で自己登録し、切断で即時除去」
+//! だったが、project が World と同一プロセスになり自己登録も切断も無くなった。
 
 use crate::cli::{PORT_RANGE_END, PORT_RANGE_START, world_port};
 use crate::config::Config;
@@ -50,12 +51,54 @@ fn build_client(timeout_ms: u64) -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// 全稼働中 Process を取得
+/// 全稼働中 project を取得
 ///
-/// TheWorld API (port 32000) に問い合わせ。
-/// SP は QUIC registry チャネルで自己登録するため、TheWorld が単一の真実源。
+/// TheWorld API (port 32000) に問い合わせ。project を起こすのは World 自身なので
+/// World の registry が単一の真実源（doc 44 P1 fold-in 以前は SP の QUIC 自己登録が source）。
+///
+/// 返る `ProcessInfo` の `port` は常に 0、`pid` は World 自身のもの — どちらも
+/// SP プロセス時代の遺構で、意味を持つのは `project_dir` だけ（doc 44 §5.3）。
 pub async fn list() -> Vec<ProcessInfo> {
     query_world().await.unwrap_or_default()
+}
+
+/// project 1 件が抱える lane の集計。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LaneCounts {
+    /// 登録されている lane 総数（PTY を持たない chat mode の lane も含む）。
+    pub total: usize,
+    /// `LaneState::Running` の lane 数。
+    pub running: usize,
+}
+
+/// lane 一覧（`world-control.lanes/list` の返り値）を project 名ごとに集計する（純関数）。
+///
+/// doc 44 §5.3: fold-in で `vp ps` の PORT / PID 列が無意味化した（project は World と
+/// 同一プロセスなので pid は全行 World 自身、port は不在の 0）。代わりに project の実体的な
+/// 差である「何本のラインを抱え、そのうち動いているものがあるか」を出すための集計。
+///
+/// 各要素の想定 shape: `{"address": {"project": "<name>", ...}, "state": "running", ...}`。
+/// 期待しない形（key 欠落 / 型違い）は**その lane を黙って飛ばす** — `vp ps` は表示系なので、
+/// 1 件の形崩れで一覧全体を落とすより数え漏らす方が害が小さい。
+pub fn count_lanes_by_project_entries(
+    lanes: &[serde_json::Value],
+) -> std::collections::HashMap<String, LaneCounts> {
+    let mut out: std::collections::HashMap<String, LaneCounts> = std::collections::HashMap::new();
+    for lane in lanes {
+        let Some(project) = lane
+            .get("address")
+            .and_then(|a| a.get("project"))
+            .and_then(|p| p.as_str())
+        else {
+            continue;
+        };
+        let entry = out.entry(project.to_string()).or_default();
+        entry.total += 1;
+        if lane.get("state").and_then(|s| s.as_str()) == Some("running") {
+            entry.running += 1;
+        }
+    }
+    out
 }
 
 /// プロジェクトディレクトリから Process を検索
@@ -181,4 +224,55 @@ fn make_runtime() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .expect("Failed to create tokio runtime")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// project ごとに total / running を数える（doc 44 §5.3 の LANES / STATUS 列の土台）。
+    #[test]
+    fn counts_lanes_per_project_by_state() {
+        let lanes = vec![
+            serde_json::json!({"address": {"project": "alpha", "kind": "conductor"}, "state": "running"}),
+            serde_json::json!({"address": {"project": "alpha", "kind": "performer"}, "state": "dead"}),
+            serde_json::json!({"address": {"project": "beta",  "kind": "conductor"}, "state": "running"}),
+        ];
+        let counts = count_lanes_by_project_entries(&lanes);
+
+        let alpha = counts.get("alpha").expect("alpha");
+        assert_eq!(
+            (alpha.total, alpha.running),
+            (2, 1),
+            "dead は total にのみ数える"
+        );
+        let beta = counts.get("beta").expect("beta");
+        assert_eq!((beta.total, beta.running), (1, 1));
+        assert!(
+            !counts.contains_key("gamma"),
+            "居ない project は entry を作らない"
+        );
+    }
+
+    /// 形が崩れた lane は飛ばし、健全な lane の集計は保つ。
+    ///
+    /// `vp ps` は表示系なので、1 件の形崩れで一覧全体を落とすより数え漏らす方が害が小さい。
+    #[test]
+    fn skips_malformed_lanes_without_dropping_the_rest() {
+        let lanes = vec![
+            serde_json::json!({"address": {"project": "alpha"}, "state": "running"}),
+            serde_json::json!({"address": {}}), // project 欠落
+            serde_json::json!({"state": "running"}), // address 欠落
+            serde_json::json!({"address": {"project": 42}}), // project が文字列でない
+        ];
+        let counts = count_lanes_by_project_entries(&lanes);
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts["alpha"].total, 1);
+    }
+
+    /// 空入力でも panic せず空 map を返す。
+    #[test]
+    fn missing_or_empty_lanes_is_empty_map() {
+        assert!(count_lanes_by_project_entries(&[]).is_empty());
+    }
 }

@@ -13,7 +13,8 @@
 //!      （method レベル drift 検出 = 文字列一致しない request は dead tool になる）
 //!
 //! SSOT: crates/vantage-point/src/daemon/server.rs の register_channel(...) と各 match method。
-//! server.rs を変えたら本テストの const も同期する（method レベルは手動同期の gate）。
+//! channel 名と world-control の method は source から抽出して突き合わせる（自動）。
+//! registry / events の method だけは小さく安定なので手動 const（コメント参照）。
 
 use unison::network::{ProtocolCache, SchemaRegistry};
 
@@ -109,44 +110,58 @@ fn starter_channels_present() {
 ///    （wire の msg.method と文字列一致しない request は届かない = dead な synthesized tool）
 #[test]
 fn request_names_match_daemon_methods() {
-    // SSOT: server.rs registry handler の match method（register/unregister/heartbeat/list/lanes/*）。
-    const REGISTRY_METHODS: &[&str] = &[
-        "register",
-        "unregister",
-        "heartbeat",
-        "list",
-        "lanes/add",
-        "lanes/remove",
-        "lanes/update",
-    ];
+    // SSOT: server.rs registry handler の match method。
+    // doc 44 P1 (fold-in): SP 向けの register / unregister / heartbeat / lanes/* は撤去し、
+    // read-only の `list` だけ残した（自己登録しに来る SP が存在しない）。この const を
+    // 実態に合わせないと、消えた method を KDL に書き足しても本テストが素通りして
+    // dead tool が出荷される（= 撤去で const だけ取り残される drift、`"control"` と同じ轍）。
+    const REGISTRY_METHODS: &[&str] = &["list"];
     // SSOT: server.rs events handler の match method（emit/query）。
     const EVENTS_METHODS: &[&str] = &["emit", "query"];
-    // SSOT: server.rs world-control dispatch の match method（projects/* + hub/discover + ping）。
-    const WORLD_CONTROL_METHODS: &[&str] = &[
-        "projects/list",
-        "projects/add",
-        "projects/remove",
-        "projects/rename",
-        "projects/reorder",
-        "projects/start",
-        "projects/stop",
-        "hub/discover",
-        "ping",
-    ];
+    // world-control は最も method が増減する handler なので、手動 const ではなく
+    // source（`handle_world_control` の match arm）から抽出して突き合わせる。
+    // これで「method を消したのに const が取り残される」drift（registry で実際に起きた）が
+    // world-control では構造的に起きない。
+    let world_control_methods = extract_world_control_methods();
 
     let reg = registry();
     assert_requests_subset(&reg, "registry", REGISTRY_METHODS);
     assert_requests_subset(&reg, "events", EVENTS_METHODS);
-    assert_requests_subset(&reg, "world-control", WORLD_CONTROL_METHODS);
+    assert_requests_subset(&reg, "world-control", &world_control_methods);
 }
 
-fn assert_requests_subset(reg: &SchemaRegistry, channel: &str, methods: &[&str]) {
+/// `handle_world_control` の `"method" =>` arm を source から抽出する。
+///
+/// 独立関数なので「関数開始 → 列 0 の `}` で終端」で body を切り出せる。method arm は
+/// `"xxx" => {` の形で一意（内部の match arm は `Ok(_)` / `Err(_)` で文字列リテラルではない）。
+fn extract_world_control_methods() -> Vec<String> {
+    let start = DAEMON_SERVER_RS
+        .find("async fn handle_world_control")
+        .expect("handle_world_control が server.rs に無い");
+    let body = &DAEMON_SERVER_RS[start..];
+    // 関数終端 = 次に現れる列 0 の閉じ括弧。
+    let end = body.find("\n}\n").map(|e| e + 2).unwrap_or(body.len());
+    body[..end]
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim_start();
+            let rest = t.strip_prefix('"')?;
+            let (name, after) = rest.split_once('"')?;
+            after
+                .trim_start()
+                .starts_with("=>")
+                .then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn assert_requests_subset<S: AsRef<str>>(reg: &SchemaRegistry, channel: &str, methods: &[S]) {
     let ch = reg
         .channel(channel)
         .unwrap_or_else(|| panic!("channel '{channel}' が KDL に無い"));
     for req in &ch.requests {
         assert!(
-            methods.contains(&req.name.as_str()),
+            methods.iter().any(|m| m.as_ref() == req.name),
             "channel '{channel}' の request '{}' が daemon の match method 集合に無い（method 文字列一致していない = dead tool）",
             req.name
         );
