@@ -841,7 +841,6 @@ pub async fn run_world(
             "/api/world/processes/{project_name}/pointview",
             post(world::world_open_pointview),
         )
-        .route("/api/world/refresh", post(world::world_refresh))
         // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
         // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
         // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
@@ -1093,11 +1092,11 @@ pub async fn run_world(
         );
     }
 
-    // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
-    let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(
-        world_cap.clone(),
-        shutdown_token.clone(),
-    ));
+    // doc 44 P1 (fold-in): health monitor は退役。旧構成では「別プロセスの SP が crash して
+    // registry から消える」のを PID liveness で検知し respawn していたが、project が World 内の
+    // Arc<AppState> になり、pid が全 project 共通で World 自身になったため、監視対象
+    // （死にうる project プロセス）が存在しなくなった。lane の engine（claude/codex）の死は
+    // 別途 lane lifecycle monitor が見る。
 
     // 起動時設定の復帰: enabled な project の SP を自動起動（VP-207）。
     // daemon restart 後に working set を復元する。1 回限りの startup タスク。
@@ -1229,7 +1228,6 @@ pub async fn run_world(
         .await?;
 
     // クリーンアップ
-    health_monitor.abort();
     daemon_handle.abort();
 
     // Shutdown capabilities

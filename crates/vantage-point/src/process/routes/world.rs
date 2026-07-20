@@ -508,27 +508,9 @@ pub async fn world_sync_projects(State(state): State<Arc<AppState>>) -> impl Int
 // doc 44 P1 (fold-in): world_register_process / world_unregister_process は撤去。
 // project は World 自身が起こすため「外から自己登録される」経路が存在しない。
 
-/// POST /api/world/refresh - Refresh process status
-pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-
-    let world = world.read().await;
-    match world.refresh_process_status().await {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "refreshed"})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
-}
+// doc 44 P1 (fold-in): POST /api/world/refresh (world_refresh) は撤去。
+// 呼び出し元はゼロで、中身の `refresh_process_status`（PID liveness）が
+// fold-in で無意味化したため（pid が全 project 共通の World 自身）。
 
 /// POST /api/world/projects/reload — projects.kdl を再読み込みして in-memory に反映
 ///

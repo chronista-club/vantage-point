@@ -1,8 +1,16 @@
 # 15. SP auto-spawn triggers (= 自動復帰経路の audit)
 
-> **Status**: Stage C (= doc-only audit、 既存挙動への変更なし)
-> **Linear**: `VP-155`
-> **Stage B 候補**: 同 issue (= `SpDesiredState` enum + `SpSupervisor` actor 化、 VP-154 epic 完結後)
+> **⚠️ Status: 大部分が historical（doc 44 P1 fold-in で前提が崩れた、2026-07-21）**
+>
+> 本 doc は「SP = 別プロセス」を前提に、それが crash して registry から消えた時の
+> auto-respawn 経路を audit したもの。fold-in で project が World 内の `Arc<AppState>` に
+> なり、**別プロセスとして crash しうる SP が消滅**したため、§3.1 の主役 `run_health_monitor`
+> は退役した（監視対象＝死にうる project プロセスが存在しない。lane の engine の死は別途
+> lane lifecycle monitor が見る）。以下の crash recovery / 2-strike / desired-state 記述は
+> fold-in 前の挙動として読むこと。auto-spawn の生き残りは boot 時の `autostart_enabled_projects`
+> のみ（enabled な project を起こす）。
+>
+> **旧 Status**: Stage C (= doc-only audit、 既存挙動への変更なし) / **Linear**: `VP-155`
 
 ---
 
@@ -52,6 +60,11 @@ sequenceDiagram
 
 ## 2. caller mapping
 
+> ⚠️ **historical**: 下表の行番号・trigger は fold-in 前のもの。**crash recovery 行は
+> 退役済**（health monitor 撤去）。`world_*` HTTP trigger も doc 45 で Unison へ移行予定。
+> 現存する auto トリガは boot の `autostart_enabled_projects` のみ。行番号は当時の値で、
+> 現在の該当行は別コードを指す（鵜呑みにしない）。
+
 実 spawn point (= `vp sp start -C <path>` 子プロセス起動の本体) は **既に 1 箇所** = `ProcessManagerCapability::start_process`。 散らばっているのは「いつ start_process を呼ぶか」 の判断 (= **trigger**) ロジック。
 
 | trigger | 場所 | 動機 | 頻度 |
@@ -69,7 +82,11 @@ sequenceDiagram
 
 ## 3. 各 trigger 詳細
 
-### 3.1 crash recovery (= run_health_monitor)
+### 3.1 crash recovery (= run_health_monitor) 【退役】
+
+> ⚠️ **本節は historical**: `run_health_monitor` は doc 44 P1 fold-in で退役した
+> （2026-07-21）。fold-in 後 project の pid は全て World 自身になり PID liveness が常時 true、
+> crash 検知が発火不能になったため。以下は fold-in 前の動作の記録。
 
 `run_health_monitor` は **TheWorld 起動時** に bg task で spawn (= `process/server.rs:1032`)。 30 秒間隔で:
 
@@ -108,7 +125,12 @@ sequenceDiagram
 
 ---
 
-## 5. Stage B 移行時の rewire 候補
+## 5. Stage B 移行時の rewire 候補 【obsolete】
+
+> ⚠️ **本節は実行不能な旧計画**: `SpDesiredState` supervisor 案は `run_health_monitor` の
+> 2-strike ロジックを配線し直す前提だったが、その monitor は fold-in で退役した（§3.1）。
+> fold-in 後は「desired=Running を supervisor が維持する」対象（別プロセスの SP）が存在せず、
+> project は World 内の map エントリでしかない。以下は歴史的記録として残す。
 
 Stage B (= `SpDesiredState` enum 化) で以下を整理:
 
