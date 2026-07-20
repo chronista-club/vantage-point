@@ -49,6 +49,17 @@ pub struct EchoesTranslator {
     /// init の model id。`result.modelUsage` が複数 entry（subagent が別 model を使った turn）
     /// のとき、本 session の entry を突き合わせるために保持する。
     session_model: Option<String>,
+    /// 現 turn で `content_block_delta`（本文の streaming 供給）を 1 度でも観測したか。
+    ///
+    /// **slash command 等の synthetic turn を拾うための不変条件**（2026-07-20 実測）:
+    /// 通常 turn は `delta*` → `assistant`(累積 snapshot) → `result` と流れるので snapshot の
+    /// 本文は重複＝破棄でよい。だが CLI 内で完結する turn（`/model` `/context` 等の slash、
+    /// API 往復ゼロ・`model: "<synthetic>"`）は **delta を 1 つも出さず assistant snapshot だけで
+    /// 本文を運ぶ**ため、破棄すると GUI が完全な無音になる（Act II で slash を打つと 30 分待っても
+    /// 何も出ない、の真因）。「delta 未観測なら snapshot が唯一の一次情報」で拾う — engine 側の
+    /// `<synthetic>` という実装詳細に結合しない判定にする。
+    /// turn 終端（`result`）で false に戻す。
+    saw_text_delta: bool,
 }
 
 /// [`EchoesTranslator::ingest`] の結果 — 「この行が生んだ event」と「この行が disk に commit したか」。
@@ -139,7 +150,7 @@ impl EchoesTranslator {
                 message,
                 parent_tool_use_id: None,
             } => {
-                // 本文は delta の累積なので描画しないが、`message.usage` だけ context ゲージの
+                // 本文は delta の累積なので通常は描画しないが、`message.usage` だけ context ゲージの
                 // 分子として退避する（usage はこの行にしか載らない一次情報。cc-status が
                 // transcript から掘るのと同じ値）。assistant 行自体は transcript に 1 行 flush
                 // された合図なので commit 境界を立てる。
@@ -148,8 +159,16 @@ impl EchoesTranslator {
                         u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens,
                     );
                 }
+                // ⚠️ 例外 = delta 未観測（[`Self::saw_text_delta`]）: CLI 内で完結する synthetic turn
+                // （slash command 等）は delta を出さないので、この snapshot が本文の唯一の担い手。
+                // 破棄すると GUI が無音になる。subagent 行（delta が来ない）と同じ理屈で拾う。
+                let events = if self.saw_text_delta {
+                    Vec::new()
+                } else {
+                    snapshot_text_events(message.content)
+                };
                 Ingested {
-                    events: Vec::new(),
+                    events,
                     commits_transcript: true,
                 }
             }
@@ -214,7 +233,11 @@ impl EchoesTranslator {
 
     fn on_delta(&mut self, index: u64, delta: RawDelta) -> Vec<EchoesEvent> {
         match delta {
-            RawDelta::TextDelta { text } => vec![EchoesEvent::MessageChunk { text }],
+            RawDelta::TextDelta { text } => {
+                // 本文が streaming で供給された = 後続の assistant snapshot は重複（[`Self::saw_text_delta`]）。
+                self.saw_text_delta = true;
+                vec![EchoesEvent::MessageChunk { text }]
+            }
             RawDelta::ThinkingDelta { thinking } => {
                 vec![EchoesEvent::ThoughtChunk { text: thinking }]
             }
@@ -253,7 +276,9 @@ impl EchoesTranslator {
         }
     }
 
-    fn on_result(&self, res: RawResult) -> EchoesEvent {
+    fn on_result(&mut self, res: RawResult) -> EchoesEvent {
+        // turn 終端 — 次 turn のために delta 観測フラグを戻す（[`Self::saw_text_delta`]）。
+        self.saw_text_delta = false;
         if res.is_error {
             EchoesEvent::Error {
                 message: res
@@ -302,6 +327,23 @@ impl EchoesTranslator {
 ///
 /// 親と違い delta が来ないので、このスナップショットが唯一の担い手（module doc の「本文は捨てる」
 /// は**親の行に限った話**）。`usage` も親の context ゲージではないので退避しない。
+/// assistant snapshot の content を本文 event に写す（delta 未観測 turn 専用 — [`EchoesTranslator::saw_text_delta`]）。
+///
+/// slash command 等の synthetic turn は delta を出さないため、この snapshot が本文の唯一の
+/// 一次情報になる。thinking block は Act II で暗号化復元不可の前例（doc 39）と揃えて出さず、
+/// text だけを [`EchoesEvent::MessageChunk`] に写す（chatview は chunk を assistant バブルに畳む）。
+fn snapshot_text_events(content: Vec<RawAssistantContent>) -> Vec<EchoesEvent> {
+    content
+        .into_iter()
+        .filter_map(|block| match block {
+            RawAssistantContent::Text { text } if !text.is_empty() => {
+                Some(EchoesEvent::MessageChunk { text })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<EchoesEvent> {
     message
         .content
@@ -637,6 +679,57 @@ mod tests {
         );
     }
 
+    /// ★ synthetic turn（slash command）の本文を落とさない。
+    ///
+    /// 実測 2026-07-20 (claude 2.1.215): `/model opus` 等 CLI 内で完結する turn は
+    /// `init → assistant(model:"<synthetic>", 本文入り) → result` と流れ、**delta を 1 つも出さない**。
+    /// assistant snapshot を「delta の累積＝重複」として捨てると GUI が完全な無音になる
+    /// （Act II で slash を打って 30 分待っても何も出ない、の真因）。
+    #[test]
+    fn synthetic_turn_without_delta_surfaces_snapshot_text() {
+        let mut t = EchoesTranslator::new();
+        let synth = r#"{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"Set model to Opus 4.8 for this session only"}]}}"#;
+        assert_eq!(
+            t.ingest(synth).events,
+            vec![EchoesEvent::MessageChunk {
+                text: "Set model to Opus 4.8 for this session only".into(),
+            }]
+        );
+    }
+
+    /// ★ 通常 turn では snapshot を拾わない（delta との二重描画を防ぐ）。
+    ///
+    /// delta で本文が流れた後の assistant snapshot は累積の重複なので、従来どおり破棄する。
+    /// turn 終端（result）で観測フラグが戻り、次の synthetic turn は再び拾えることも併せて固める。
+    #[test]
+    fn streamed_turn_discards_snapshot_then_next_synthetic_turn_recovers() {
+        let mut t = EchoesTranslator::new();
+        let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"やあ"}}}"#;
+        assert_eq!(
+            t.ingest(delta).events,
+            vec![EchoesEvent::MessageChunk {
+                text: "やあ".into()
+            }]
+        );
+        // delta 済み = snapshot は重複なので捨てる（二重描画しない）。
+        let snapshot = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"やあ"}]}}"#;
+        assert_eq!(t.ingest(snapshot).events, Vec::new());
+        // turn 終端でフラグが戻る。
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"session_id":"s1"}"#;
+        assert!(matches!(
+            t.ingest(result).events.as_slice(),
+            [EchoesEvent::TurnCompleted { .. }]
+        ));
+        // 次 turn が synthetic なら再び snapshot を拾える。
+        let synth = r#"{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"/context の結果"}]}}"#;
+        assert_eq!(
+            t.ingest(synth).events,
+            vec![EchoesEvent::MessageChunk {
+                text: "/context の結果".into(),
+            }]
+        );
+    }
+
     /// ★ subagent 行は commit 境界を立てない。
     ///
     /// 立ててしまうと「親の本文が disk に載った」と誤認し、host が in-flight tail を切る位置を
@@ -853,10 +946,15 @@ mod tests {
         }
     }
 
-    /// ノイズ行（hook / status / rate_limit / assistant スナップショット）は無視。
+    /// ノイズ行（hook / status / rate_limit / delta 済みの assistant スナップショット）は無視。
     #[test]
     fn ignores_noise_lines() {
         let mut t = EchoesTranslator::new();
+        // 本文を delta で供給済みにしておく — この文脈でのみ assistant snapshot は重複＝ノイズ。
+        // delta 未観測の snapshot は本文の唯一の担い手なので拾う（synthetic turn、別テストで固める）。
+        t.ingest(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"snapshot"}}}"#,
+        );
         for line in [
             r#"{"type":"system","subtype":"hook_started"}"#,
             r#"{"type":"system","subtype":"status"}"#,
@@ -874,6 +972,11 @@ mod tests {
     #[test]
     fn only_message_lines_commit_transcript() {
         let mut t = EchoesTranslator::new();
+        // 通常 turn の形を作る（本文は delta で供給済み）。この前提でのみ snapshot は重複＝破棄になる
+        // — delta 未観測の synthetic turn では拾う（synthetic_turn_without_delta_surfaces_snapshot_text）。
+        t.ingest(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"本文"}}}"#,
+        );
         let snapshot = t.ingest(
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"本文"}]},"session_id":"s"}"#,
         );
