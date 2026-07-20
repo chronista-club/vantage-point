@@ -7,7 +7,7 @@
 //!
 //! - 置き場: `vp_state_dir()/log/resume_failures.log`（append-only、1 行 1 事象）
 //! - 呼び手: `vp lane resume-failed <attempted>`（記録して**常に exit 1** = `||` chain の中継専用。
-//!   shell group `{ …; }` を使わないのは fish 互換のため — 床は user の login shell）
+//!   shell group `{ …; }` を使わないのは fish 互換のため — slot の shell は user の login shell）
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

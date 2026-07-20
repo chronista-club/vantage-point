@@ -192,9 +192,9 @@ interface SetActivePaneInfo {
 	branch?: string | null;
 	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
 	session_id?: string | null;
-	/** root session の stand（= 床に載る engine 種別、chip prefix 導出用: "echoes" / "codex" /
+	/** root session の stand（= slot に載る engine 種別、chip prefix 導出用: "echoes" / "codex" /
 	 *  "grok" 等）。doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決
-	 *  済み（cross-engine root でも chip prefix が床の engine を映す）。無ければ lane 固定 stand。 */
+	 *  済み（cross-engine root でも chip prefix が slot の engine を映す）。無ければ lane 固定 stand。 */
 	stand?: string | null;
 }
 
@@ -586,7 +586,7 @@ if (paneTerminal) {
 	});
 
 	// New Session ボタン（doc 39 §4）: 「今いる Act に出す」非破壊の New。
-	//  - Act I（tui lane）: 新 session + root 張り替え + 床 bare respawn（旧会話はタブに残存）
+	//  - Act I（tui lane）: 新 session + root 張り替え + slot の bare respawn（旧会話はタブに残存）
 	//  - Act II（chat lane）: 新 Draft タブ + focus（従来どおり）
 	// 分岐は Rust（ConsoleNewSession の lane_is_chat）が行う。旧実装の 2 クリック armed 防爆は
 	// New が破壊的（fresh restart = 全会話破棄）だった時代の名残 — 非破壊化で不要になり撤去し、

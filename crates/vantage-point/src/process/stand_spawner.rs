@@ -3,14 +3,14 @@
 //! ## 構造（design doc §13: Act1-layered）
 //!
 //! ```text
-//! PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「床」（self-healing）
+//! PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「shell 層」（self-healing）
 //!    ↓ initial_input（spawn 後に PTY へ type-ahead 注入）
 //!    claude --resume 'ID' … || claude …        ← Act3（|| fallback は shell が native 処理）
 //! ```
 //!
 //! 旧構造（PtySlot → bash script → tmux new-session → claude）の bash/mise/tmux 層は全廃。
 //! - env 注入は PtySlot spawn の 1 箇所（TERM/LANG/PATH は `spawn_env`、 VP_* はここで構築）
-//! - claude 終了後は床の login shell prompt に自然に戻る（旧 `; exec $SHELL -l` chain 不要）
+//! - claude 終了後は slot の login shell prompt に自然に戻る（旧 `; exec $SHELL -l` chain 不要）
 //! - `--resume` 失敗 → fresh claude の fallback は shell の `||` が担う
 //!
 //! ## エンジン別 stand（対応表の SSOT は [`crate::echoes::EngineKind`]、doc 37）
@@ -60,7 +60,7 @@ pub struct StandCommand {
     /// spawn 後に PTY へ type-ahead 注入する初期入力（= Act3 の claude 起動 command line）。
     ///
     /// PTY line discipline が入力をバッファするため、 shell の rc 読込完了を待たずに書いてよい
-    /// （shell が読み始めた時点で消費される）。 None = 床の shell のみ（Act1 で止まる）。
+    /// （shell が読み始めた時点で消費される）。 None = slot の shell のみ（Act1 で止まる）。
     pub initial_input: Option<String>,
     /// PtySlot spawn に渡す環境変数（VP_* identity）。 TERM/LANG/PATH は PtySlot 側の
     /// `spawn_env` が注入する（ここでは持たない — 注入点を 1 箇所に保つ）。
@@ -74,14 +74,14 @@ pub struct StandCommand {
     pub replay_path: Option<std::path::PathBuf>,
 }
 
-/// 早期 exit 検知の wait 時間 (ms)。 床の login shell がこの窓内に死ぬ = 環境異常
+/// 早期 exit 検知の wait 時間 (ms)。 slot の login shell がこの窓内に死ぬ = 環境異常
 /// （shell 不在 / PTY 失敗等）。 死因は PTY 出力の tail を添えて bail する。
-/// initial_input の書込みもこの窓の後（= 床の生存確認後）に行う。
+/// initial_input の書込みもこの窓の後（= shell の生存確認後）に行う。
 const EARLY_EXIT_CHECK_MS: u64 = 800;
 
-/// `StandCommand` を spawn し、 床の生存確認後に initial_input を注入する。
+/// `StandCommand` を spawn し、 shell の生存確認後に initial_input を注入する。
 ///
-/// 床（login shell）が `EARLY_EXIT_CHECK_MS` 以内に死んだら、 PTY 出力の末尾を添えて
+/// shell（login shell）が `EARLY_EXIT_CHECK_MS` 以内に死んだら、 PTY 出力の末尾を添えて
 /// bail する（死因の握り潰し防止 — console blackout 調査の教訓）。
 pub fn spawn_stand(
     cmd: &StandCommand,
@@ -98,12 +98,12 @@ pub fn spawn_stand(
         cmd.replay_path.clone(),
     )?;
 
-    // 床が早期 exit するか peek（rc 読込より短い可能性はあるが、 type-ahead は line discipline
+    // shell が早期 exit するか peek（rc 読込より短い可能性はあるが、 type-ahead は line discipline
     // がバッファするので「注入が早すぎて落ちる」ことはない — ここは純粋に死活確認）。
     std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
 
     if !slot.is_alive() {
-        // 死因究明ログ（要所）: 早期 exit した床が PTY に書いた stderr/stdout を drain して
+        // 死因究明ログ（要所）: 早期 exit した shell が PTY に書いた stderr/stdout を drain して
         // bail message に載せる。 無いと「800ms 以内に死んだ」事実しか残らない。
         let tail = drain_pty_tail(&mut rx);
         anyhow::bail!(
@@ -121,9 +121,9 @@ pub fn spawn_stand(
     if let Some(input) = cmd.initial_input.as_deref()
         && let Err(e) = slot.write(input.as_bytes())
     {
-        // 床は生きているので lane 自体は成立させる（user が手打ちで claude を起動できる）。
+        // shell は生きているので lane 自体は成立させる（user が手打ちで claude を起動できる）。
         tracing::warn!(
-            "initial_input write failed (床の shell は生存): err={} program={} input_len={}",
+            "initial_input write failed (shell は生存): err={} program={} input_len={}",
             e,
             cmd.program,
             input.len()
@@ -132,7 +132,7 @@ pub fn spawn_stand(
     Ok((slot, rx))
 }
 
-/// 早期 exit した床の死因究明用に、 PTY broadcast channel に buffer された直近出力を
+/// 早期 exit した shell の死因究明用に、 PTY broadcast channel に buffer された直近出力を
 /// drain して文字列化する（最大 ~4KB）。 non-blocking（`try_recv`）。
 fn drain_pty_tail(rx: &mut broadcast::Receiver<Vec<u8>>) -> String {
     let mut buf: Vec<u8> = Vec::new();
@@ -154,11 +154,11 @@ pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
     }
 }
 
-/// 床になる login shell を (program, args) で解決する。
+/// slot の shell になる login shell を (program, args) で解決する。
 ///
 /// - **Unix**: `$SHELL` を尊重（SP が launchd 起動だと SHELL env 不在のことがある →
 ///   `/bin/zsh` → `/bin/bash` → `/bin/sh` の順で実在 shell に fallback）。 `-l` で
-///   login shell 化し、 mise / volta / nvm 等の PATH を rc 経由で取り込む（Act1 = env の床）。
+///   login shell 化し、 mise / volta / nvm 等の PATH を rc 経由で取り込む（Act1 = env の shell 層）。
 /// - **Windows**: git-bash（`vp_paths::shell::find_git_bash`）。 不在時は標準 install path を
 ///   program に据えて ENOENT を明示化する（Git for Windows が前提依存）。
 #[cfg(not(windows))]
@@ -183,7 +183,7 @@ fn login_shell() -> (String, Vec<String>) {
         Some(bash) => bash.to_string_lossy().into_owned(),
         None => {
             tracing::error!(
-                "git-bash (Git for Windows) が見つかりません。 lane の床 shell を起動できません。 \
+                "git-bash (Git for Windows) が見つかりません。 lane の slot の shell を起動できません。 \
                  `winget install Git.Git` で導入してください。"
             );
             r"C:\Program Files\Git\bin\bash.exe".to_string()
@@ -236,7 +236,7 @@ fn claude_command(
     }
     // `|| vp lane resume-failed '<x>' ||` の 3 連 chain: resume-failed は「記録して常に
     // exit 1」の中継専用コマンドで、失敗を伝播させて次の fresh fallback へ繋ぐ。
-    // shell group `{ …; }` を使わないのは fish 互換のため（床は user の login shell）。
+    // shell group `{ …; }` を使わないのは fish 互換のため（slot の shell は user の login shell）。
     // vp が PATH に無くても command-not-found = 非ゼロで chain は進む（fail-open）。
     match (kind, resume_id.filter(|id| is_safe_session_id(id))) {
         (_, Some(id)) => format!(
@@ -310,10 +310,10 @@ fn opencode_command(resume_id: Option<&str>) -> String {
 
 /// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
-/// - `"echoes"`（+ 旧名 `"hd"`）: 床 + claude 注入（`fresh` / cc_session により resume 分岐）
-/// - `"codex"` / `"grok"` / `"opencode"`: 床 + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
-/// - `"shell"`: 床のみ
-/// - `"tmux"`（退役 stand）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: 床のみ + warn
+/// - `"echoes"`（+ 旧名 `"hd"`）: slot + claude 注入（`fresh` / cc_session により resume 分岐）
+/// - `"codex"` / `"grok"` / `"opencode"`: slot + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
+/// - `"shell"`: shell のみ
+/// - `"tmux"`（退役 stand）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: shell のみ + warn
 ///   （DB descriptor の legacy 値を graceful 吸収）
 ///
 /// `fresh=true` は resume/continue を回避して素の claude を起動する
@@ -339,8 +339,8 @@ pub fn build_stand_command(
     }
 
     // mise trust footgun 回避（env-only、 mise は exec しない = 依存境界維持、 PR2 実機検証で発見）:
-    // 床 = login shell 化により、 user rc の mise activate が新 worktree (`.vp/lanes/*`) の
-    // 未 trust config に interactive prompt（"Trust them?"）を出して床を塞ぎ、 initial_input
+    // slot の shell = login shell 化により、 user rc の mise activate が新 worktree (`.vp/lanes/*`) の
+    // 未 trust config に interactive prompt（"Trust them?"）を出して shell への入力を塞ぎ、 initial_input
     // （claude 起動 command）がダイアログに食われる。 lane cwd を MISE_TRUSTED_CONFIG_PATHS に
     // 足して抑止する（worktree の mise config は repo root と同一内容 = 信頼済みと同義）。
     // mise 不在環境では読まれない無害な env。 既存値には platform separator で追記。
@@ -359,7 +359,7 @@ pub fn build_stand_command(
 
     let (program, args) = login_shell();
 
-    // doc 39 P1 → doc 40: 床に化身するのは root session（lane の人格）。resume id / 会話 id は
+    // doc 39 P1 → doc 40: slot に化身するのは root session（lane の人格）。resume id / 会話 id は
     // **session registry の root entry**（SSOT、doc 40 §5 — 旧 store は load 内の backfill
     // bridge が拾う）。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
     // engine_model は lane 単位（Act I/II 共有）のまま。
@@ -367,9 +367,9 @@ pub fn build_stand_command(
     let root = reg.root;
     let root_entry = reg.sessions.iter().find(|s| s.key == root);
     let root_conversation = root_entry.and_then(|s| s.conversation.clone());
-    // doc 39 P4-A: 床に載る engine は **root session の stand** が決める（lane 作成時固定の
+    // doc 39 P4-A: slot に載る engine は **root session の stand** が決める（lane 作成時固定の
     // `stand_name` ではない）。cross-engine の Root 切替（picker）で root を別 engine の session に
-    // 向けると、respawn する床もその engine で立つ。spawn 全経路（boot / respawn / restart）が
+    // 向けると、respawn する slot もその engine で立つ。spawn 全経路（boot / respawn / restart）が
     // この 1 箇所を通るため、engine 追従の修正点はここ一つで足りる。root entry 不在 / registry
     // 破損は N=1 の既定形に解決済み（entry は必ず在る）だが、防御的に `stand_name` へ fallback。
     let effective_stand = root_entry.map(|s| s.stand.as_str()).unwrap_or(stand_name);
@@ -435,10 +435,10 @@ pub fn build_stand_command(
         None if effective_stand == "shell" => None,
         None => {
             // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 stand の
-            // DB descriptor を床 shell で受ける（graceful degradation）。effective_stand は
+            // DB descriptor を shell 層で受ける（graceful degradation）。effective_stand は
             // root session の stand（cross-engine root で lane 固定 stand と食い違い得る）。
             tracing::warn!(
-                "unknown/legacy stand '{}' (lane stand '{}') — 床の login shell で起動します (addr={})",
+                "unknown/legacy stand '{}' (lane stand '{}') — slot の login shell で起動します (addr={})",
                 effective_stand,
                 stand_name,
                 addr
@@ -465,10 +465,10 @@ pub fn build_stand_command(
 mod tests {
     use super::*;
 
-    /// 床は login shell、 cwd は project dir（旧 install-root ダンスの廃止を固定）。
+    /// slot の shell は login shell、 cwd は project dir（旧 install-root ダンスの廃止を固定）。
     #[test]
     fn build_stand_command_floor_is_login_shell_at_project_dir() {
-        // build_stand_command は registry を読む（doc 39 P4-A: 床の engine は root session の
+        // build_stand_command は registry を読む（doc 39 P4-A: slot の engine は root session の
         // stand に追従）。実 vp_state_dir の conductor registry を拾わないよう tempdir に隔離する
         // （sibling の build_stand_command テスト群と同じ規律 — 未隔離だと実 registry の root=echoes を
         // 拾い「shell なのに claude を注入」になって間欠 fail する）。
@@ -479,11 +479,11 @@ mod tests {
             cmd.cwd, "/work/vp",
             "cwd は project dir 直（install root ではない）"
         );
-        assert!(cmd.initial_input.is_none(), "shell stand は床のみ");
+        assert!(cmd.initial_input.is_none(), "shell stand は shell のみ");
         #[cfg(not(windows))]
         assert!(
             cmd.args.contains(&"-l".to_string()),
-            "床は login shell (-l)、 got: {:?}",
+            "slot の shell は login shell (-l)、 got: {:?}",
             cmd.args
         );
     }
@@ -546,19 +546,19 @@ mod tests {
         assert!(input.ends_with('\r'), "Enter (CR) で submit: {input:?}");
     }
 
-    /// 退役 stand ("tmux") / 未知 stand は床 shell に graceful 吸収。
+    /// 退役 stand ("tmux") / 未知 stand は shell 層に graceful 吸収。
     #[test]
     fn legacy_and_unknown_stands_fall_back_to_floor() {
-        // build_stand_command は registry を読む（doc 39 P4-A: 床 engine は root stand 追従）。
+        // build_stand_command は registry を読む（doc 39 P4-A: slot の engine は root stand 追従）。
         // 実 vp_state_dir の conductor registry（root=echoes）を拾うと未知 stand でも claude 注入に
-        // なるため、tempdir に隔離して「未知 stand → 床のみ」の意図を検証する（sibling 規律）。
+        // なるため、tempdir に隔離して「未知 stand → shell のみ」の意図を検証する（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         for stand in ["tmux", "opus-xhigh"] {
             let cmd = build_stand_command(stand, &addr, Path::new("/tmp"), false);
             assert!(
                 cmd.initial_input.is_none(),
-                "{stand} は床のみ（initial_input なし）"
+                "{stand} は shell のみ（initial_input なし）"
             );
         }
     }
@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(fresh.initial_input.as_deref(), Some("opencode\r"));
     }
 
-    /// 撤去済み stand（`"cursor"` — sweep 6.5）の DB descriptor は床の login shell で graceful に
+    /// 撤去済み stand（`"cursor"` — sweep 6.5）の DB descriptor は slot の login shell で graceful に
     /// 受ける（engine 注入なし = `initial_input` は None、warn ログのみ）。
     #[test]
     fn removed_stand_falls_back_to_bare_floor() {
@@ -745,18 +745,18 @@ mod tests {
         #[cfg(not(windows))]
         assert!(
             cmd.args.contains(&"-l".to_string()),
-            "床は login shell (-l)、 got: {:?}",
+            "slot の shell は login shell (-l)、 got: {:?}",
             cmd.args
         );
         assert!(
             cmd.initial_input.is_none(),
-            "撤去済み stand は engine を注入せず床のみ、 got: {:?}",
+            "撤去済み stand は engine を注入せず shell のみ、 got: {:?}",
             cmd.initial_input
         );
     }
 
-    /// doc 39 P4-A: 床の engine は lane 固定 stand でなく **root session の stand** で決まる。
-    /// lane stand=echoes でも root を codex session に向けたら床は codex が立つ（cross-engine の
+    /// doc 39 P4-A: slot の engine は lane 固定 stand でなく **root session の stand** で決まる。
+    /// lane stand=echoes でも root を codex session に向けたら slot は codex が立つ（cross-engine の
     /// Root 切替後の respawn 追従）。effective_stand の解決が engine arm 選択に効くことを固定する。
     #[test]
     fn build_stand_command_follows_root_session_engine() {
@@ -769,12 +769,12 @@ mod tests {
         let input = cmd.initial_input.expect("codex root は initial_input あり");
         assert!(
             input.starts_with("codex") && !input.contains("claude"),
-            "root が codex なら床は codex 起動（lane stand=echoes に引きずられない）: {input}"
+            "root が codex なら slot は codex 起動（lane stand=echoes に引きずられない）: {input}"
         );
     }
 
     /// doc 39 P4-A: root entry の stand が legacy / 撤去済み engine（cursor 等）なら、lane stand が
-    /// echoes でも床 shell に graceful fallback する（engine 注入なし = initial_input は None）。
+    /// echoes でも shell 層に graceful fallback する（engine 注入なし = initial_input は None）。
     #[test]
     fn build_stand_command_root_legacy_stand_falls_back_to_floor() {
         let _state = crate::test_env::state_dir();
@@ -785,7 +785,7 @@ mod tests {
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
         assert!(
             cmd.initial_input.is_none(),
-            "未知 root stand は engine を注入せず床のみ、 got: {:?}",
+            "未知 root stand は engine を注入せず shell のみ、 got: {:?}",
             cmd.initial_input
         );
     }

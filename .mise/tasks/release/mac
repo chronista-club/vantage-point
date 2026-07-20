@@ -69,7 +69,7 @@ FileUtils.cp(File.join(rel, "vp"),     File.join(macos, "vp"))
 # tmux decoupling PR2 (v0.29.0): 旧「stand init_script (.mise/tasks/vp/stand) を .app に bundle」
 # は退役。 stand spawn は Rust-native (`stand_spawner::build_stand_command` が login shell + claude
 # を直接組む) になり、 script 層 / install_root 解決 / mise が product から消えたため、 end-user の
-# .app に同梱する script は無い (床 shell + claude さえ在れば lane が立つ)。
+# .app に同梱する script は無い (slot の shell + claude さえ在れば lane が立つ)。
 
 icon_src = "crates/vp-app/assets/icon.icns"
 has_icon = File.exist?(icon_src)

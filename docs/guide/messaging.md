@@ -47,7 +47,7 @@ world_wire::call  ── QUIC "wire" channel ──▶  TheWorld daemon :32000
 
 1. **wire store は TheWorld（:32000）に中央化**されている。SP も CLI も MCP も、`world_wire::call` の QUIC "wire" channel 経由で中央 store を読み書きする（`world_wire.rs` module doc）。**TheWorld 停止 = wire 停止**（設計決定 D1-c で許容済）。
 2. **flow_state は store しない**。performer の状態は wire 活動から毎回 derive され、World が vp-app へ snapshot を送る直前にだけ付与される。
-3. **federation（cross-PC）は direct → relay の 2 段**。到達できれば direct（QUIC connect race）、届かなければ hub relay という「常に生きている床」に降格する。
+3. **federation（cross-PC）は direct → relay の 2 段**。到達できれば direct（QUIC connect race）、届かなければ hub relay という「常に生きている最下段」に降格する。
 
 ---
 
@@ -257,7 +257,7 @@ vp wire send --world <handle> --to <logical addr> --body "..."
 `federate_wire_send`（`hub_client.rs:631`）が handle → entry（wld_id + endpoints）を解決し、2 段で配送する:
 
 1. **Stage 1: direct**（`dialer.rs`）。`connect_race`（Happy Eyeballs v2 staggered race）で endpoints を並行に叩く。パラメータ: `stagger` 250ms / `relay_handicap` 500ms / `overall_deadline` 1500ms（`federation_race_cfg`、全候補が blackhole でも relay への追加遅延を 1.5s で有界化）。SNI は wld_id。成功なら `via=direct`。
-2. **Stage 2: relay floor**（`hub_client.rs:656`）。direct 全滅は**エラーではなく ladder の一段**として扱い、hub relay に降格する。hub は source→target を **opaque に dumb forward**（中身を見ない）する「常に生きている床（universal floor）」。target 側は `run_hub_federation` 常駐が relay inbound を受け、ローカル中央 wire store に inject する（遠方 relay を「ローカル送信」に畳む）。`via=relay`。
+2. **Stage 2: relay floor**（`hub_client.rs:656`）。direct 全滅は**エラーではなく ladder の一段**として扱い、hub relay に降格する。hub は source→target を **opaque に dumb forward**（中身を見ない）する「常に生きている最下段（universal floor）」。target 側は `run_hub_federation` 常駐が relay inbound を受け、ローカル中央 wire store に inject する（遠方 relay を「ローカル送信」に畳む）。`via=relay`。
 
 - **現状の実挙動**: remote の TheWorld は dev cert のため、非 loopback 宛は System trust で **fast-fail → relay floor に落ちる**（= 正しい degradation）。mesh cert（内部 keypair）が入ると direct が勝ち始める、と実装コメントに明記（`dialer.rs` module doc）。
 - kill-switch `VP_FEDERATION_DIRECT=0|false|off` で direct を無効化できる（relay floor は常に生きているので degrade するだけ）。

@@ -237,7 +237,7 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 | **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
 | **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
 
-> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が login shell の床に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
+> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が Act I slot（login shell）に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
 
 ### Stream-JSON 入力フォーマット
 

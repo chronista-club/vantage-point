@@ -585,7 +585,7 @@ pub(crate) fn clear_lane_state(project: &str, lane: &str) {
 ///
 /// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 7 種):
 /// console_mode / session_registry (会話 id の SSOT) / engine_model / stand (engine 種別) /
-/// echoes_replay (session label 単位) / terminal_replay (床 scrollback) / lane_id (安定 id)。
+/// echoes_replay (session label 単位) / terminal_replay (slot の scrollback) / lane_id (安定 id)。
 ///
 /// best-effort: 個々の失敗は warn して残置し、他の破棄は続行する (1 file の fs error で
 /// 残り 6 種の GC を落とさない)。冪等 = 未記録 / 二重呼び出しは全て no-op。
@@ -621,7 +621,7 @@ fn clear_lane_state_in(base: &Path, project: &str, lane: &str) {
     if let Err(e) = super::stand_store::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: stand の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ⑥ terminal_replay (床 scrollback の replay seed)
+    // ⑥ terminal_replay (slot の scrollback の replay seed)
     if let Err(e) = crate::daemon::pty_slot::clear_replay_in(base, project, lane) {
         tracing::warn!("lane state GC: terminal replay の破棄に失敗 (残置): lane={lane} err={e}");
     }

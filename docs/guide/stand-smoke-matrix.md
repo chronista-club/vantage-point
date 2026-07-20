@@ -17,7 +17,7 @@ Lane engine（stand）は増える一方:
 | `codex` | OpenAI Codex CLI | |
 | `agy` | Antigravity CLI | Act I のみ（chat 非対応） |
 | `xai` | （追加予定 / 追加済） | 行列に行を足す |
-| `shell` | 素 shell | engine なし（床のみ） |
+| `shell` | 素 shell | engine なし（shell のみ） |
 
 unit test の `EngineKind::ALL` roundtrip は **名前対応の防壁**にはなるが、
 **実 console での tool 権限・MCP・PTY・session resume** は実機でしか壊れない。
@@ -38,7 +38,7 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 
 | 能力 | echoes | cursor | codex | agy | xai | shell |
 |------|:------:|:------:|:-----:|:---:|:---:|:-----:|
-| Act I (TUI console) | ✅ | ✅ | ✅ | ✅ | ❓ | ✅（床） |
+| Act I (TUI console) | ✅ | ✅ | ✅ | ✅ | ❓ | ✅（shell） |
 | Act II (GUI chat) | ✅ | ✅ | ✅ | ❌ | ❓ | ❌ |
 | session 指名 resume | ✅ cc_session | ✅ chatId | ✅ thread | — | ❓ | — |
 | model 切替 (console_set_model) | ✅ | ❌（TUI 内） | ❓ | ❌ | ❓ | — |
@@ -58,7 +58,7 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 - [ ] `add_performer(stand="<name>")` または GUI「+」で lane が立つ
 - [ ] sidebar に正しい stand 名 / icon が出る
 - [ ] Act I console に prompt / TUI が出る（login 待ちならその旨が分かる）
-- [ ] 未知 stand / CLI 不在時に **床だけ残って死なない**（fail-open）
+- [ ] 未知 stand / CLI 不在時に **shell だけ残って死なない**（fail-open）
 
 ### 対話
 
@@ -180,7 +180,7 @@ rejection は存在しない（人間が居ないのに `--force` で flip す�
 
 **適用した fix**: `crates/vantage-point/src/echoes/cursor_host.rs` の Act II command に `--force` を
 追加（`--trust` の次）。これで cursor Act II が claude（bypassPermissions）/ codex（full bypass）と
-tool 権限で parity。⚠️ 権限拡大（deny 空なら実質全許可）。Act I（TUI 床）は対話承認が効くため**未付与**
+tool 権限で parity。⚠️ 権限拡大（deny 空なら実質全許可）。Act I（TUI slot）は対話承認が効くため**未付与**
 （§1 の観測は Act II 経路と判明したので Act I の即 Reject は未確認 = 別途 live dogfood 事項）。
 
 **副産物（記録のみ）**
