@@ -118,6 +118,33 @@ impl ProjectRuntimes {
         true
     }
 
+    /// 登録済 project を**すべて**停止する（World の graceful shutdown 用）。戻り値は停止数。
+    ///
+    /// doc 44 P1 (fold-in): 旧構成では project = 別プロセス (SP) だったため、daemon が
+    /// 落ちても project は生き残るのが**設計上の正**だった（`vp daemon stop` の gentle 挙動）。
+    /// project が World 内の `Arc<AppState>` になった今、この前提は反転する — project は
+    /// World の tokio task と SurrealDB handle でしかないので、**World が畳まなければ
+    /// 誰も畳まない**。
+    ///
+    /// これを怠ると World は listener を閉じて「停止」を名乗るのにプロセスが終了できず、
+    /// project db の LOCK を握り続ける。次に起動した daemon はその LOCK を見て
+    /// 「重複 spawn」と誤検出し、**全 project の起動に失敗する**（実機で観測済み）。
+    pub async fn shutdown_all(&self) -> usize {
+        // 先に map を空にしてから停止する（停止の await 中に別 caller が同じ project を
+        // 掴んで二重に畳むのを防ぐ。`stop()` の remove-then-shutdown と同じ順序）。
+        let drained: Vec<(String, ProjectRuntime)> = {
+            let mut guard = self.inner.write().await;
+            guard.drain().collect()
+        };
+        let count = drained.len();
+        for (key, rt) in drained {
+            rt.shutdown.cancel();
+            super::server::shutdown_project(&rt.state).await;
+            tracing::info!("project 停止 (key={})", key);
+        }
+        count
+    }
+
     /// 登録済 project の `AppState` を引く。
     pub async fn get(&self, path_key: &str) -> Option<Arc<AppState>> {
         self.inner

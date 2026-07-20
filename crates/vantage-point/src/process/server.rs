@@ -1266,6 +1266,13 @@ pub async fn run_world(
 
     // Shutdown capabilities
     tracing::info!("Shutting down World...");
+    // doc 44 P1 (fold-in): capability を畳む前に、World が抱える project を全部停止する。
+    // 旧構成では project = 別プロセスで daemon 停止後も生き残るのが正だったため、この
+    // 後始末はどこにも無かった。in-process 化でその責務が World に移っている。
+    let stopped_projects = control_channels.shutdown_all().await;
+    if stopped_projects > 0 {
+        tracing::info!("World shutdown: {} project を停止", stopped_projects);
+    }
     // Bastet ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
     #[cfg(feature = "midi")]
     if let Some(bastet) = bastet_for_shutdown.as_ref() {
