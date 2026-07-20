@@ -113,6 +113,8 @@ vp sync                # projects.kdl を現実と同期（ghost project 除去�
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
 vp restart-all         # TheWorld を再起動（= 全 project 再起動。fold-in 後は daemon restart と等価）
+                       # ⚠️ 復元されるのは「enabled な project」で「再起動前に動いていた project」ではない。
+                       #    停止を永続させたいなら vp projects disable（stop だけでは再起動で生き返る）。
 
 # TheWorld（Daemon）/ Project
 vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
