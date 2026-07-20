@@ -90,9 +90,9 @@ export type RootPickerItem = {
 /**
  * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 → P4 — Root 切替 picker）。
  * 並びは SP の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙する。
- * doc 39 P4: 床の respawn が root session の stand で engine を決めるようになった（P4-A）ため、
+ * doc 39 P4: slot の respawn が root session の stand で engine を決めるようになった（P4-A）ため、
  * cross-engine の Root 切替が解禁された。disabled にするのは **engine が未知**（chip prefix が
- * `sid` = 撤去済み cursor/agy や legacy stand — 床 shell に落ちて resume が効かない）行のみ。
+ * `sid` = 撤去済み cursor/agy や legacy stand — shell 層に落ちて resume が効かない）行のみ。
  * backend の `prepare_switch_root_session`（未知 engine を Err）と二重防御。
  */
 export function rootPickerItems(sessions: EchoesSession[]): RootPickerItem[] {
@@ -121,9 +121,9 @@ export type HeaderLaneCtx = {
    *  Act I は EchoesEvent が流れないため、この供給路が無いと chip が出ない
    *  （bug mem_1Cd3icsvKiGsQ8TtX8t1FR）。Act II では event 由来の真値が優先される。 */
   sessionId: string | null
-  /** root session の stand（= 床に載る engine 種別）。session chip の prefix 導出用。
+  /** root session の stand（= slot に載る engine 種別）。session chip の prefix 導出用。
    *  doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決した値
-   *  （cross-engine root でも chip が床の engine を映す。無ければ lane 固定 stand）。 */
+   *  （cross-engine root でも chip が slot の engine を映す。無ければ lane 固定 stand）。 */
   stand: string | null
 }
 
@@ -181,7 +181,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     sendIpc({ t: 'echoes:sessions_fetch', lane })
   }
 
-  /** picker 行 click: 既存 session へ root を向け替え（backend が床を Resume respawn）。 */
+  /** picker 行 click: 既存 session へ root を向け替え（backend が slot を Resume respawn）。 */
   const switchRoot = (key: number): void => {
     const lane = ctx()?.addr
     setPickerOpen(false)
@@ -306,10 +306,10 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                       classList={{ 'eh-rp-root': item.isRoot, 'eh-rp-disabled': item.disabled }}
                       title={
                         item.isRoot
-                          ? '今の床（root）'
+                          ? '今の slot（root）'
                           : item.disabled
                             ? 'engine が未知のため切替不可'
-                            : 'この session を root にする（床を resume で張り替え）'
+                            : 'この session を root にする（slot を resume で張り替え）'
                       }
                       onClick={() => {
                         if (item.disabled) return
@@ -320,7 +320,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                       {item.isRoot ? '●' : '○'} {item.label}
                       <span class="eh-rp-key">#{item.key}</span>
                       <Show when={item.isRoot}>
-                        <span class="eh-rp-now">今の床</span>
+                        <span class="eh-rp-now">今の slot</span>
                       </Show>
                     </button>
                   )}

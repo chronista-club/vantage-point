@@ -241,7 +241,7 @@ pub struct ProcessManagerCapability {
 ///
 /// Workflow の concurrency cap `min(16, cores − 2)` と同発想の `k = 2` (daemon 本体 +
 /// 余裕分を空ける)。`available_parallelism()` は std (依存追加不要)。1〜2 core 機では
-/// `saturating_sub(2) = 0` になるため `.max(1)` で床を保証 — `Semaphore::new(0)` は
+/// `saturating_sub(2) = 0` になるため `.max(1)` で下限を保証 — `Semaphore::new(0)` は
 /// 永久 block する地雷 (lane_spawn_actor が踏んだ前例)。
 fn spawn_cap() -> usize {
     std::thread::available_parallelism()

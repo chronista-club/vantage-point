@@ -37,7 +37,7 @@ pub(crate) mod retained;
 // `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
 pub(crate) mod routes;
 mod server;
-/// StandSpawner — Stand 名 → 床 (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
+/// StandSpawner — Stand 名 → slot (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
 pub(crate) mod stand_spawner;
 pub(crate) mod state;
 pub(crate) mod terminal_pump;

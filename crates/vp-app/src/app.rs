@@ -1708,7 +1708,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             // Act I の session chip はこの相乗りが唯一の供給路（Act II は event が上書き）。
             session_id: lane.and_then(|l| l.engine_session_id.as_deref()),
             // doc 39 P4-C: chip prefix は root session の engine（engine_stand）を優先する
-            // （cross-engine root で床の engine を正しく映す）。無ければ lane 固定の stand に fallback。
+            // （cross-engine root で slot の engine を正しく映す）。無ければ lane 固定の stand に fallback。
             stand: lane
                 .map(|l| l.engine_stand.as_deref().unwrap_or(l.stand.as_str()))
                 .filter(|st| !st.is_empty()),
@@ -3710,7 +3710,7 @@ pub fn run() -> anyhow::Result<()> {
             // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Act に出す」で分岐する:
             //  - chat lane（Act II）: 「新 Draft session を作って focus」。旧会話はタブに残る
             //    （タブモデルの自然形 = 前回状態キープの延長）。
-            //  - tui lane（Act I）: echoes_session_new_root = 新 session を作って root を向け、床を
+            //  - tui lane（Act I）: echoes_session_new_root = 新 session を作って root を向け、slot を
             //    素の engine で張り替える（非破壊 — 旧 root の会話はタブに残存）。旧 fresh restart
             //    （全 session 破棄）は sidebar の Reset lane に退避した。
             Event::UserEvent(AppEvent::ConsoleNewSession { lane }) => {
@@ -3790,7 +3790,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 } else {
-                    // tui lane（Act I）: doc 39 §4 — 新 session + root 張り替え + 床 bare respawn。
+                    // tui lane（Act I）: doc 39 §4 — 新 session + root 張り替え + slot の bare respawn。
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "lane": &lane });
                         match world_process_request(port, &path, "echoes_session_new_root", payload)
@@ -3829,7 +3829,7 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
             }
-            // doc 39 P3: Root 切替 picker — 既存 session へ root を向け替え（床 = Resume respawn）。
+            // doc 39 P3: Root 切替 picker — 既存 session へ root を向け替え（slot = Resume respawn）。
             // 後続は new_root（ConsoleSessionRenewed = clear）と違い echoes_demand_start:
             // 対象 session には既存の会話があるため、clear でなく transcript replay で追従させる
             //（echoes_session_focus chain と同じ規律）。

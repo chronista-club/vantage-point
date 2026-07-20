@@ -45,7 +45,7 @@ pub struct StandInfo {
 /// engine 軸は [`crate::echoes::EngineKind`] が SSOT（doc 37）— **ここに engine を手書きで
 /// 足さない**。新 engine は `EngineKind::ALL` に足せば dropdown に自動で載る（cursor 追加時に
 /// この静的 vec が取り残されて「GUI から作れない engine」が生まれた同型ミスの再発防止、
-/// moody 指摘 2026-07-15）。engine を持たない `"shell"`（床のみ）だけをここで足す。
+/// moody 指摘 2026-07-15）。engine を持たない `"shell"`（shell のみ）だけをここで足す。
 pub fn list_stands() -> Vec<StandInfo> {
     let mut stands: Vec<StandInfo> = crate::echoes::EngineKind::ALL
         .iter()
@@ -57,7 +57,7 @@ pub fn list_stands() -> Vec<StandInfo> {
         .collect();
     stands.push(StandInfo {
         name: "shell".to_string(),
-        description: "VP Stand: bare login shell 🤚 — 床のみ（旧 TheHand）".to_string(),
+        description: "VP Stand: bare login shell 🤚 — shell のみ（旧 TheHand）".to_string(),
         chat_capable: false,
     });
     stands
@@ -90,6 +90,6 @@ mod tests {
             cap("opencode"),
             "opencode は grok と同じ常駐 AcpAgentHost（doc 43）"
         );
-        assert!(!cap("shell"), "shell は engine なし（床のみ）");
+        assert!(!cap("shell"), "shell は engine なし（shell のみ）");
     }
 }

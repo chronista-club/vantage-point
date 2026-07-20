@@ -755,7 +755,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             Ok(())
         }
         LaneCommands::ResumeFailed { attempted } => {
-            // 記録して常に exit 1 = `||` chain の中継。この行は床の scrollback に残り、
+            // 記録して常に exit 1 = `||` chain の中継。この行は slot の scrollback に残り、
             // 「無音で fresh になった」を user からも見えるようにする（観測装置 F4）。
             let project = std::env::var("VP_PROJECT").unwrap_or_else(|_| "-".into());
             let lane = std::env::var("VP_LANE").unwrap_or_else(|_| "-".into());

@@ -201,7 +201,7 @@ pub enum AppEvent {
     /// (ConsoleModeApplied と同じ async → main thread 橋渡し)。
     ConsoleSessionRenewed { lane: String },
     /// doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）からの root 向け替え要求。
-    /// event loop が `echoes_session_switch_root` で SP に forward（床は対象 session の
+    /// event loop が `echoes_session_switch_root` で SP に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
     ConsoleSwitchRoot { lane: String, session: u64 },
     /// Act II モデル切替要求（ChatView の model picker）。 event loop が
