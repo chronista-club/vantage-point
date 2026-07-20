@@ -33,11 +33,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
 
-/// PID が生存しているか確認（crossplat）
-fn is_pid_alive(pid: u32) -> bool {
-    crate::platform::process_alive(pid)
-}
-
 /// プロジェクト情報
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectInfo {
@@ -96,26 +91,25 @@ pub struct RunningProcess {
     pub project_path: PathBuf,
 }
 
-/// SP（Project Process）の presence 状態（World daemon-canonical、vp-app sidebar の ●◐○ 表示用）。
+/// project の presence 状態（World daemon-canonical、vp-app sidebar の ●◐○ 表示用）。
 ///
-/// federation の [`HubFederationState`](crate::daemon::hub_client::HubFederationState) と同型の
-/// prior art を SP presence に流用したもの。World の registry channel handler が SP の
-/// register / unregister / QUIC 切断を観測して遷移させ、`run_health_monitor` の respawn 着手が
-/// `Connecting` を立てる。`/api/health` の `processes[].presence` で vp-app に expose される。
+/// `/api/health` の `processes[].presence` で vp-app に expose される。
 ///
-/// 設計（federation は単一接続のスカラーを `AtomicU8` で持つが、presence は SP ごとの
-/// キー付きコレクション）: 書き込みは常に map を手にした registry handler / health_monitor が行い、
-/// map ロック外で個別ハンドルを長期保持する holder はいない。よって per-entry `Arc<AtomicU8>` は
-/// 不要で、`RwLock<HashMap<String, ProcessPresenceState>>`（Copy enum 値）で単純化する（doc 27 §3.2）。
+/// ⚠️ doc 44 P1 (fold-in) 後の実態: production で set されるのは `Connected`（`start_process`）と
+/// `Unregistered`（`stop_process`）の**2 値のみ**。`Connecting`（respawn 着手中）と
+/// `Disconnected`（QUIC 切断）は、別プロセスの SP が register/heartbeat していた時代の状態で、
+/// その生産者（registry handler は #824、health monitor は本 PR）が消えたため到達不能になった。
+/// fold-in 後の project は「World の中に居る（=起動済）か、居ないか」の二値しか取り得ない。
+/// enum の 2 値への縮約と vp-app 描画の追従は presence 意味論の follow-up（doc 44 §5.5 PR3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessPresenceState {
-    /// 未登録（projects には在るが SP がまだ register していない / graceful unregister 済）。
+    /// 未登録（projects には在るが未起動 / 停止済）。fold-in 後は「World の外」を表す。
     Unregistered,
-    /// 再起動 in-flight（health_monitor が crash を検知 → `start_process` 着手、register 待ち）。
+    /// 到達不能（fold-in で生産者消滅）。旧: 再起動 in-flight（respawn 着手、register 待ち）。
     Connecting,
-    /// SP が register 済み + QUIC registry 接続が生存。
+    /// 起動済み（`start_process` 成功）。fold-in 後は「World の中に居る」を表す。
     Connected,
-    /// QUIC 切断を検知（crash / network、health_monitor の respawn 待ち）。
+    /// 到達不能（fold-in で生産者消滅）。旧: QUIC 切断を検知（crash / network）。
     Disconnected,
 }
 
@@ -188,8 +182,6 @@ pub struct ProcessManagerCapability {
     project_order: Arc<RwLock<Vec<String>>>,
     /// 稼働中Process一覧（キー: 正規化パス）— インメモリキャッシュ
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
-    /// 前回のヘルスチェックで稼働中だった Process（クラッシュ検知用）
-    previously_running: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// Phase 1b: 各 Project の Lane registry（キー: 正規化パス）—
     /// SP が register payload に lanes を載せて push、 disconnect で全 Lane drop。
     /// agent (Echoes on Claude CLI) が `GET /api/lanes` で resolve するための cache。
@@ -214,10 +206,10 @@ pub struct ProcessManagerCapability {
     /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
     /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
     active_lanes: Arc<RwLock<HashMap<String, String>>>,
-    /// L1 lifecycle (Phase C): SP の接続 presence (キー: 正規化パス)。daemon-canonical (doc 27 §3.2)。
-    /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected、
-    /// `run_health_monitor` の respawn 着手が Connecting を立てる。`/api/health` の `processes[]` で expose。
-    /// DaemonState と Arc 共有 (`process_presence_ref`) し、registry handler 側からも書ける。
+    /// L1 lifecycle (Phase C): project の presence (キー: 正規化パス)。daemon-canonical (doc 27 §3.2)。
+    /// doc 44 P1 (fold-in): `start_process`→Connected / `stop_process`→Unregistered の 2 値のみ
+    /// set される（旧 registry handler / health monitor の Connecting / Disconnected は到達不能）。
+    /// DaemonState と Arc 共有 (`process_presence_ref`)。
     process_presence: Arc<RwLock<HashMap<String, ProcessPresenceState>>>,
     /// PR3: SP spawn の同時実行数 cap (= CPU コアベースの平滑化)。
     ///
@@ -251,7 +243,6 @@ impl ProcessManagerCapability {
             projects: Arc::new(RwLock::new(HashMap::new())),
             project_order: Arc::new(RwLock::new(Vec::new())),
             running_processes: Arc::new(RwLock::new(HashMap::new())),
-            previously_running: Arc::new(RwLock::new(HashMap::new())),
             lane_registry: Arc::new(RwLock::new(HashMap::new())),
             config: None,
             vpdb: None,
@@ -316,7 +307,7 @@ impl ProcessManagerCapability {
         self.process_presence.clone()
     }
 
-    /// L1 lifecycle: 1 project の presence を更新する（health_monitor の respawn 着手等）。
+    /// L1 lifecycle: 1 project の presence を更新する（`start_process` / `stop_process`）。
     pub async fn set_presence(&self, path_key: &str, state: ProcessPresenceState) {
         self.process_presence
             .write()
@@ -1196,14 +1187,11 @@ impl ProcessManagerCapability {
 
     /// L0 finale (Push-only): 指定 path の live SP を `running_processes` registry から引く。
     ///
-    /// `start_process` の重複 spawn 防止 dedup check。 旧版 (VP-133) は `/api/health` の port range
-    /// scan で「registry が誤って空でも ports が ground-truth」を狙ったが、 Push-only では:
-    /// - registry は QUIC register/disconnect で維持される canonical な真実源
-    /// - 一時的 blip (registry 空) は SP uplink reconnect (heartbeat 15s + backoff) で復帰
-    /// - respawn は `run_health_monitor` の **2 連続 miss = 60s debounce** が待つ → 15s reconnect が
-    ///   先に効くので「registry 空だが SP 生存」での重複 spawn (VP-133) は構造的に起きない
-    ///
-    /// よって port scan dedup は不要になり、 registry 直引きで足りる。
+    /// `start_process` の重複 spawn 防止 dedup check。
+    /// doc 44 P1 (fold-in): project が World 内の map エントリになり、重複起動は
+    /// `ProjectRuntimes` のキー一意性が構造的に防ぐ。本 check は running_processes を直引きする
+    /// 補助（旧 VP-133 の port scan dedup / SP uplink reconnect / health monitor respawn の
+    /// 段取りはいずれも SP プロセス前提で、fold-in で不要になった）。
     async fn find_running_sp_at_path(
         &self,
         project_path: &std::path::Path,
@@ -1491,14 +1479,12 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// Phase 5-C: SP を restart する。 stop → 短い grace period → start を atomic に chain。
+    /// project を restart する。 stop → 短い grace period → start を atomic に chain。
     /// stop が「No running Process」 なら start のみ実行 (= ensure-running 的な挙動)。
     ///
-    /// ⚠️ 旧 SP の graceful shutdown が db LOCK の retry 予算 (~7s、 db/mod.rs) を超えて
-    /// flock を保持し続けた場合、 新 SP は重複 spawn 検出 (`DbLockHeldByLiveHolder`) で
-    /// 起動中止し、 本関数は一時的に Err を返しうる。 その場合は `run_health_monitor` の
-    /// crash 検知 (~60s debounce) が respawn して自己修復する想定 (= silent な DB なし
-    /// 並走より、 abort → 健全 respawn の方が最終状態が正しい)。
+    /// doc 44 P1 (fold-in): in-process 化で stop/start は同期的に確定するため、旧 SP 時代の
+    /// 「db LOCK 保持で重複 spawn 検出 → health monitor の crash 検知が respawn で自己修復」
+    /// という非同期の自己修復経路は不要になった（health monitor 自体も退役）。
     pub async fn restart_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
         // stop が失敗しても start を試みる (= dead な project でも restart で起こす UX)
         match self.stop_process(project_name).await {
@@ -1549,87 +1535,15 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// 全 Process の状態を更新（PID liveness check + ポートスキャン Reconciliation）
-    ///
-    /// 1. PID liveness check: 登録済み Process のゴースト除去
-    /// 2. ポートスキャン Reconciliation: 未登録 SP の自動追加
-    ///
-    /// Push（QUIC 自己登録）が主パス、Pull（ポートスキャン）が安全網。
-    /// どちらかが壊れてももう一方がカバーし、システムが正常状態に収束する。
-    pub async fn refresh_process_status(&self) -> CapabilityResult<()> {
-        let mut dead_names: Vec<String> = Vec::new();
-
-        // ── Phase 1: PID liveness check（ゴースト除去）──
-        {
-            let procs = self.running_processes.read().await;
-            for (name, proc) in procs.iter() {
-                if proc.pid > 0 && !is_pid_alive(proc.pid) {
-                    dead_names.push(name.clone());
-                }
-            }
-        }
-
-        if !dead_names.is_empty() {
-            let mut procs = self.running_processes.write().await;
-            for name in &dead_names {
-                if let Some(removed) = procs.remove(name) {
-                    tracing::info!(
-                        "Reconcile: PID {} 死亡 → '{}' 除去 (port={})",
-                        removed.pid,
-                        name,
-                        removed.port
-                    );
-                    // DB からも削除
-                    if let Some(ref db) = self.vpdb
-                        && let Err(e) = db.delete_process(name).await
-                    {
-                        tracing::warn!("DB process 削除失敗 (PID死亡): {}", e);
-                    }
-                }
-            }
-        }
-
-        // ── Phase 2: 撤去 (L0 finale, Push-only) ──
-        //
-        // 旧 Phase 2 は `PORT_RANGE` を `/api/health` で port-scan し、 未登録 SP の auto-register と
-        // ゴースト(同パス複数 port)の `/api/shutdown` kill を行う Pull 経路だった。 Push-only では
-        // QUIC registry が canonical:
-        // - 未登録 SP の発見 → SP の QUIC 自己登録 (registry channel `register`) が即 insert
-        // - 切断検出 → registry channel の disconnect が即 remove
-        // - ゴースト(重複 spawn) → 1 project = 1 SP を `start_process` の registry dedup +
-        //   `run_health_monitor` の 2 連続 miss=60s debounce (> SP reconnect 15s) で構造的に防ぐ
-        // よって HTTP port-scan reconciliation は冗長 → 撤去 (Phase 1 PID liveness + Phase 3 sync は残す)。
-
-        // ── Phase 3: プロジェクト状態を最終同期 ──
-        // running_processes と projects は同じパスキーなので直接比較可能
-        let running_keys: std::collections::HashSet<String> = {
-            let running = self.running_processes.read().await;
-            running.keys().cloned().collect()
-        };
-        {
-            let mut projects = self.projects.write().await;
-            for (key, info) in projects.iter_mut() {
-                info.process_status = if running_keys.contains(key) {
-                    ProcessStatus::Running
-                } else {
-                    ProcessStatus::Stopped
-                };
-            }
-        }
-
-        Ok(())
-    }
-
     /// 起動時設定の復帰: TheWorld 起動時に `enabled` な project の SP を自動起動する。
     ///
     /// daemon restart 後に working set を復元する (VP-207)。 TheWorld 起動時に
     /// バックグラウンドタスクとして 1 回だけ spawn される。
-    /// 1. `refresh_process_status` で PID liveness / project 状態を同期
-    /// 2. `enabled == true` かつ未稼働の project を収集
-    /// 3. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
+    /// 1. `enabled == true` かつ未稼働の project を収集
+    /// 2. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
     ///
     /// 二重起動は `ProjectRuntimes` の map キー一意性が構造的に防ぐ。
-    /// lock 規律は `run_health_monitor` を踏襲する。
+    /// lock 規律: `start_process`（内部で sleep する）を呼ぶ前に read ガードを clone して解放する。
     pub async fn autostart_enabled_projects(world: Arc<RwLock<Self>>) {
         // doc 44 P1 (fold-in): 旧「registry 静穏待ち」(最大 60s) を撤去した。
         //
@@ -1641,13 +1555,10 @@ impl ProcessManagerCapability {
         // 残したままだと毎回きっかり QUIET_WINDOW(20s) 空回りしてから project を起こすことに
         // なり、daemon 再起動のたびに 20 秒の無駄が乗る（dogfood で最も踏む経路）。
         // 二重起動の防御は `ProjectRuntimes` の map キー一意性が引き継いでいる。
-        // PID liveness / project 状態を同期（read ガードは即解放）。
-        {
-            let w = world.read().await;
-            if let Err(e) = w.refresh_process_status().await {
-                tracing::warn!("autostart: 初期同期失敗: {}", e);
-            }
-        }
+        //
+        // doc 44 P1 (fold-in): 旧実装はここで `refresh_process_status`（PID liveness）を
+        // 呼んでいたが、boot 時点で running_processes は空なので no-op だった上、fold-in で
+        // pid が全 project 共通の World 自身になり liveness check 自体が無意味化したため撤去。
 
         // enabled かつ未稼働の project 名を収集。
         let targets: Vec<String> = {
@@ -1672,8 +1583,7 @@ impl ProcessManagerCapability {
             targets
         );
 
-        // start_process は内部で sleep + ポートスキャンするため、read ガードを
-        // 保持せず clone した cap で呼ぶ（run_health_monitor と同じ規律）。
+        // start_process は内部で sleep するため、read ガードを保持せず clone した cap で呼ぶ。
         for name in &targets {
             let world_cap = {
                 let w = world.read().await;
@@ -1685,135 +1595,6 @@ impl ProcessManagerCapability {
             }
             // burst を避けて少しずらす。
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        }
-    }
-
-    /// ヘルスモニター: 定期的に PID 生存確認 + クラッシュ検知 + 自動再起動
-    ///
-    /// TheWorld 起動時にバックグラウンドタスクとして spawn される。
-    /// 30秒間隔で以下を実行:
-    /// 1. PID liveness check（QUIC 切断漏れのゴースト除去）
-    /// 2. 前回稼働中だった Process が消えていたらクラッシュ検知 → 自動再起動
-    pub async fn run_health_monitor(
-        world: Arc<RwLock<Self>>,
-        shutdown_token: tokio_util::sync::CancellationToken,
-    ) {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        // 最初の tick は即座に発火するのでスキップ
-        interval.tick().await;
-
-        // クラッシュ検知用: 連続して不在のカウント（1回の失敗では再起動しない）
-        let mut missing_count: HashMap<String, u32> = HashMap::new();
-
-        tracing::info!("Health monitor 起動（30秒間隔）");
-
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {},
-                _ = shutdown_token.cancelled() => {
-                    tracing::info!("Health monitor 停止");
-                    return;
-                }
-            }
-
-            // ── 読み取りフェーズ（ロックを短時間で解放）──
-            let (current, restart_targets) = {
-                let world = world.read().await;
-
-                // 1. PID liveness check（QUIC 切断漏れのゴースト除去）
-                if let Err(e) = world.refresh_process_status().await {
-                    tracing::warn!("Health check: 状態更新失敗: {}", e);
-                    continue;
-                }
-
-                // 2. クラッシュ検知判定
-                let current = world.running_processes.read().await.clone();
-                let previous = world.previously_running.read().await.clone();
-
-                // 復帰した Process のカウントをリセット
-                for name in current.keys() {
-                    missing_count.remove(name);
-                }
-
-                // (path_key, project_name, port) — start_process には project_name を渡す
-                let mut targets: Vec<(String, String, u16)> = Vec::new();
-                for (path_key, prev_proc) in &previous {
-                    if !current.contains_key(path_key) {
-                        let count = missing_count.entry(path_key.clone()).or_insert(0);
-                        *count += 1;
-
-                        if *count < 2 {
-                            tracing::debug!(
-                                "Health check: Process '{}' が不在（{}/2回目、次回再確認）",
-                                prev_proc.project_name,
-                                count
-                            );
-                            continue;
-                        }
-
-                        tracing::warn!(
-                            "Health check: Process '{}' (port {}) がクラッシュを検知（2回連続不在）",
-                            prev_proc.project_name,
-                            prev_proc.port
-                        );
-                        targets.push((
-                            path_key.clone(),
-                            prev_proc.project_name.clone(),
-                            prev_proc.port,
-                        ));
-                    }
-                }
-
-                (current, targets)
-            };
-            // ── ここで world の read ガードが解放される ──
-
-            // previously_running を更新（read ガード外で write ロック取得）
-            {
-                let world = world.read().await;
-                *world.previously_running.write().await = current.clone();
-            }
-
-            // ── 書き込みフェーズ（再起動が必要な場合のみ）──
-            // start_process は内部でスリープ + ポートスキャンがあるため、
-            // read ガードを長時間保持しないよう clone して解放する
-            for (path_key, project_name, _port) in &restart_targets {
-                tracing::info!("Health check: Process '{}' を自動再起動中...", project_name);
-                let world_cap = {
-                    let w = world.read().await;
-                    w.clone()
-                };
-                // L1 lifecycle: respawn 着手 = presence を Connecting に。SP が register し直すと
-                // registry handler が Connected に上書きする (= vp-app sidebar が ◐→● 遷移を見れる)。
-                world_cap
-                    .set_presence(path_key, ProcessPresenceState::Connecting)
-                    .await;
-                match world_cap.start_process(project_name).await {
-                    Ok(new_proc) => {
-                        tracing::info!(
-                            "Health check: Process '{}' 再起動成功 (port {})",
-                            project_name,
-                            new_proc.port
-                        );
-                        missing_count.remove(path_key);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Health check: Process '{}' 再起動失敗: {}",
-                            project_name,
-                            e
-                        );
-                        // L1 lifecycle: 起動不可 (path 削除 / binary 不在 等) は Connecting に
-                        // 固定せず Disconnected に戻す。固定すると sidebar が永久に ◐ を表示して
-                        // 「実は死んでいる」状態を ○ で示せない (毎 tick respawn 試行は継続する)。
-                        world_cap
-                            .set_presence(path_key, ProcessPresenceState::Disconnected)
-                            .await;
-                    }
-                }
-            }
-
-            let _ = &current; // current のライフタイムを明示（コンパイラ最適化防止用ではなく意図表示）
         }
     }
 
@@ -2255,10 +2036,8 @@ impl Capability for ProcessManagerCapability {
             tracing::warn!("Failed to load config: {}", e);
         }
 
-        // 初期状態チェック（PID liveness — SP は QUIC registry で自己登録する）
-        if let Err(e) = self.refresh_process_status().await {
-            tracing::warn!("Failed to refresh process status: {}", e);
-        }
+        // doc 44 P1 (fold-in): 旧「初期状態チェック（PID liveness）」は撤去。boot 時点で
+        // running_processes は空で、fold-in 後は pid が World 自身になり liveness が無意味。
 
         self.state = CapabilityState::Idle;
 
@@ -2656,8 +2435,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_presence_overwrites_connecting_to_disconnected() {
-        // respawn 失敗時の rollback (Connecting → Disconnected) が効くこと。
-        // これが効かないと sidebar が永久 ◐ 固定で「実は死んでいる」を ○ で示せない。
+        // set_presence の上書き機構 + as_str マッピングを固定する。
+        // Connecting / Disconnected は fold-in 後は production 到達不能だが enum 値としては
+        // 有効で、全 variant の presence_snapshot 経由の文字列化を押さえる意味で残す。
         let cap = make_test_cap();
         cap.projects_ref()
             .write()
