@@ -30,6 +30,7 @@ pub(crate) mod lane_stand;
 pub(crate) mod lanes_state;
 pub mod process_runner;
 /// Project scope の Stand pool (PP / GE / HP)
+pub(crate) mod project_registry;
 pub(crate) mod project_stands_state;
 pub(crate) mod retained;
 // L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
