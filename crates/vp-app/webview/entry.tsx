@@ -96,6 +96,8 @@ import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
 import { installConsole } from "./console";
+// doc 46 P1: lane 内 tiling（Pane の並び / 縮小 / focus）。
+import { PaneShell } from "./pane-shell";
 import { installChatView, CHATVIEW_CSS } from "./chatview";
 import {
 	mountEchoesHeader,
@@ -456,19 +458,60 @@ if (echoesHeaderHost) {
 
 // 現在 active な lane（toggle が console_set_mode を送る宛先）。
 let consoleActiveLane: string | null = null;
+// 現在 active な lane の Act（toggle の label / 次の宛先を決める）。
+//
+// ⚠️ **CSS class から読まない。** 旧実装は `#console-chat-host` の `.active` を
+// 「chat 表示中か」の判定に流用していたが、doc 46 P1 で `.active` は「Pane として
+// 描画対象か」に意味が変わり、両 Pane が常に並ぶので mode の指標にならなくなった。
+// 見た目の class と状態を兼務させると、片方の意味を変えた時にもう片方が静かに壊れる。
+let consoleActiveMode: "tui" | "chat" = "tui";
 
-// mode に応じて lane-host(xterm, World A) と console-chat(World B) を排他表示する。
-// ⚠️ World A の xterm ロジックには触れず、host コンテナの .active class だけ toggle する。
+// doc 46 P1: Pane shell。lane の表示領域を「Act I か Act II」の排他から tiling へ。
+// ⚠️ Pane の**中身**（xterm / ChatView）には触れず、host 要素の class だけを操る。
+const paneTabs = document.getElementById("pane-tabs");
+const paneFrame = document.getElementById("pane-terminal");
+const paneShell =
+	paneTabs && paneFrame
+		? new PaneShell(
+				(id: string) => document.getElementById(id),
+				paneTabs,
+				paneFrame,
+			)
+		: null;
+if (paneShell && paneFrame) {
+	// 要件 1: 既定で左右に並べる。順は「操る（console）→ 視る（chat）」。
+	paneShell.dock({ id: "lane-host", label: "Console" });
+	paneShell.dock({ id: "console-chat-host", label: "Chat" });
+	// 要件 3: click で focus が移る。Pane の中身の click は素通しさせたいので capture で拾う。
+	paneFrame.addEventListener(
+		"click",
+		(e) => {
+			const host = (e.target as HTMLElement | null)?.closest(
+				"#lane-host, #console-chat-host",
+			);
+			if (host?.id) paneShell.focus(host.id);
+		},
+		true,
+	);
+}
+
+// mode に応じて chat Pane を開き、focus を移す。
+//
+// doc 46 §1.4: Act は将来 Pane の kind に畳まれる（lane の mode ではなくなる）が、
+// P1 では既存の `console_mode` を**初期 Pane 構成 + focus 先**に写して残置する。
+// いきなり撤去すると Act 切替の全経路（doc 33 / doc 38 の資産）が同時に壊れるため。
+//
+// 旧実装との差: 片方を `display:none` で**隠す**のをやめ、両方を並べたまま focus だけ移す。
 const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	consoleActiveLane = lane;
-	const laneHost = document.getElementById("lane-host");
+	consoleActiveMode = mode;
+	// chat Pane は常に描画対象にしておく（並んでいるので「表示中の Act」に関係なく見える）。
+	chatHost?.classList.add("active");
 	if (mode === "chat") {
-		chatHost?.classList.add("active");
-		laneHost?.classList.add("console-hidden");
+		paneShell?.focus("console-chat-host");
 		chatView?.showLane(lane);
 	} else {
-		chatHost?.classList.remove("active");
-		laneHost?.classList.remove("console-hidden");
+		paneShell?.focus("lane-host");
 		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
 		// resync-loader は activeLane の replaying を読むだけで Act を知らないため、chat→tui で
 		// stuck した replaying が Act I 表示の上に居座るのを防ぐ。
@@ -557,8 +600,7 @@ if (paneTerminal) {
 	toggle.className = "echoes-act-toggle";
 	toggle.textContent = "💬 Act II";
 	const syncLabel = (): void => {
-		const chatOn = chatHost?.classList.contains("active");
-		toggle.textContent = chatOn ? "⌨ Act I" : "💬 Act II";
+		toggle.textContent = consoleActiveMode === "chat" ? "⌨ Act I" : "💬 Act II";
 	};
 	document.addEventListener("vp:console-mode", syncLabel);
 	toggle.addEventListener("click", () => {
@@ -573,8 +615,7 @@ if (paneTerminal) {
 			);
 			return;
 		}
-		const chatOn = chatHost?.classList.contains("active");
-		const next: "tui" | "chat" = chatOn ? "tui" : "chat";
+		const next: "tui" | "chat" = consoleActiveMode === "chat" ? "tui" : "chat";
 		// 押下で即 progress を出す（round-trip 前に反応 = 待ち時間を可視化）。
 		beginHandoff(lane, next);
 		const ipc = (
