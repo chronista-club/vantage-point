@@ -61,6 +61,51 @@ pub fn db_data_dir_for_world() -> PathBuf {
     db_root().join("world")
 }
 
+/// 旧 per-project DB ディレクトリ (`db/sp_{slug}/`) を回収する（doc 44 P1 の後始末）。
+/// 戻り値は削除した dir 数。
+///
+/// fold-in（#823）で SP プロセスが消え、project 次元は table の `project_path` 列が持つように
+/// なったため、`db/sp_*` は **1 バイトも読まれない残骸**になった。だが撤去されたのは
+/// 「開くコード」だけで、既に disk にある dir はそのまま残っていた（実機で 23 dir / 約 1.2 GB）。
+///
+/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の PP board
+/// (`pane_contents`) が引き継がれないことだけで、これは fold-in の破壊的変更として
+/// 既に出荷・周知されている（board は空から始まる）。
+///
+/// - `world` は名前で除外する（prefix `sp_` の dir だけを対象にする）
+/// - best-effort: 個々の削除失敗は warn して残置し、他は続行する
+/// - 冪等: 残骸が無ければ 0 を返すだけ
+pub fn reclaim_legacy_project_dbs_in(root: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("sp_") {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed += 1,
+            Err(err) => {
+                tracing::warn!("旧 project DB の回収に失敗（残置）: {} err={err}", name);
+            }
+        }
+    }
+    removed
+}
+
+/// 本番 root での [`reclaim_legacy_project_dbs_in`]（World boot から 1 回）。
+pub fn reclaim_legacy_project_dbs() -> usize {
+    reclaim_legacy_project_dbs_in(&db_root())
+}
+
 /// VP のデータベースクライアント
 ///
 /// `Surreal<Any>` を使うことで embedded (surrealkv) と kv-mem (テスト) の両方に対応。
@@ -1611,6 +1656,38 @@ DEFINE INDEX IF NOT EXISTS delegations_state_idx ON delegations FIELDS state;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 旧 per-project DB の回収: `sp_*` だけを消し、`world` と無関係な dir / file は残す。
+    /// 冪等（2 回目は 0）。掃除は「消えたか」でなく「**残っていないか**」で検証する。
+    #[test]
+    fn reclaim_legacy_project_dbs_removes_only_sp_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        for d in ["world", "sp_vp", "sp_nexus", "backups"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // 中身のある dir も丸ごと消える（remove_dir_all）
+        std::fs::write(root.join("sp_vp").join("00000.sst"), b"data").unwrap();
+        // dir でない `sp_` 始まりの file は対象外
+        std::fs::write(root.join("sp_not_a_dir"), b"x").unwrap();
+
+        assert_eq!(reclaim_legacy_project_dbs_in(root), 2);
+
+        assert!(root.join("world").exists(), "world は残る");
+        assert!(root.join("backups").exists(), "無関係な dir は残る");
+        assert!(root.join("sp_not_a_dir").exists(), "file は対象外");
+        assert!(!root.join("sp_vp").exists(), "sp_ dir は中身ごと消える");
+        assert!(!root.join("sp_nexus").exists());
+        // 残っていないことの確認（列挙して sp_ dir が 0）
+        let leftovers: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy().starts_with("sp_"))
+            .collect();
+        assert!(leftovers.is_empty(), "sp_ dir が残っていない");
+
+        assert_eq!(reclaim_legacy_project_dbs_in(root), 0, "冪等");
+    }
 
     /// テスト用ヘルパー: kv-mem VpDb をスキーマ付きで作成
     async fn make_test_db() -> VpDb {
