@@ -275,12 +275,11 @@ async fn handle_cmd(
     );
     let started = Instant::now();
 
-    // doc 33 §2: 永続 console_mode を boot で honor（conductor の with_conductor と同じ規律）。
+    // doc 47 §4: root session の act を boot で honor（conductor の with_conductor と同じ規律）。
     // chat の lane に PTY を立てない — 立てると echoes_submit がもう 1 本の engine を呼び、
     // 同一 cc_session に 2 エンジン（PTY claude + EchoesAgentHost）が発生する。
-    let console_mode = crate::lane::console_mode::last(&addr.project, &name)
-        .unwrap_or(crate::lane::console_mode::ConsoleMode::Tui);
-    if console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+    let console_mode = crate::lane::session_registry::root_act(&addr.project, &name);
+    if console_mode == crate::lane::session_registry::SessionAct::Chat {
         // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
         // pid=None + state=Running は chat lane の正常形（vp-app は console_mode で
         // respawn 判定を gate する — doc 33 §3）。
@@ -586,14 +585,19 @@ mod tests {
     /// 呼んで 1 会話 2 エンジンになる (conductor `with_conductor` と同じ規律を performer に適用)。
     #[tokio::test]
     async fn chat_mode_performer_boots_engine_less() {
-        use crate::lane::console_mode::ConsoleMode;
-        // console_mode::last / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
+        use crate::lane::session_registry::SessionAct;
+        // session_registry / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
         // crate 唯一のロック下で tempdir に向け、 guard の drop で復元する。
         let state = crate::test_env::state_dir_async().await;
 
-        // performer "proj"/"chat-perf" を chat mode で永続化
-        crate::lane::console_mode::record("proj", "chat-perf", ConsoleMode::Chat)
-            .expect("record chat mode");
+        // performer "proj"/"chat-perf" の **root session の act** を Chat で永続化（doc 47 §4）
+        crate::lane::session_registry::set_root_act(
+            "proj",
+            "chat-perf",
+            "echoes",
+            SessionAct::Chat,
+        )
+        .expect("record chat act");
 
         let pool = Arc::new(RwLock::new(LanePool::new()));
         let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
@@ -625,7 +629,7 @@ mod tests {
             .expect("chat performer が登録されるはず");
         assert_eq!(
             info.console_mode,
-            ConsoleMode::Chat,
+            SessionAct::Chat,
             "永続 chat mode が honor される"
         );
         assert_eq!(

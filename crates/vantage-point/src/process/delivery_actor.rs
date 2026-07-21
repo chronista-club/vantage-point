@@ -43,7 +43,7 @@ use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 // tmux decoupling PR1: nudge の forward 先解決に使う SP control channel registry（SSOT は daemon）。
 use crate::daemon::server::ControlChannels;
 // channel E (doc 34): console_mode が forward method (lane_nudge / echoes_nudge) を分ける。
-use crate::lane::console_mode::ConsoleMode;
+use crate::lane::session_registry::SessionAct;
 use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
 /// 配信 pulse の定期 tick (Notify wake の取りこぼし安全網)
@@ -137,7 +137,7 @@ pub(crate) struct NudgeTarget {
     /// R3-c の `claude -p --resume <id>` headless 再開に使う（None なら fresh headless）
     pub cc_session_id: Option<String>,
     /// lane の console engine 種別（doc 33 の排他スロット）。forward method の分水嶺（doc 34 §3）。
-    pub console_mode: ConsoleMode,
+    pub console_mode: SessionAct,
 }
 
 impl NudgeTarget {
@@ -148,8 +148,8 @@ impl NudgeTarget {
     /// payload は両 method とも `{lane, text}` で共通。
     pub(crate) fn nudge_method(&self) -> &'static str {
         match self.console_mode {
-            ConsoleMode::Chat => "echoes_nudge",
-            ConsoleMode::Tui => "lane_nudge",
+            SessionAct::Chat => "echoes_nudge",
+            SessionAct::Tui => "lane_nudge",
         }
     }
 }
@@ -423,7 +423,7 @@ async fn pulse(
             // （Busy が無い、doc 34 Step 0 spike ①実測）ため常時 deliverable — PTY / CC-activity
             // の意味論は Tui 専用。channel D を踏ませないこと自体が、同一 session 二重 --resume
             // （conductor）/ fresh headless 文脈喪失（performer）の構造的排除でもある（doc 34 §2-3）。
-            if t.console_mode == ConsoleMode::Tui {
+            if t.console_mode == SessionAct::Tui {
                 match recipient_readiness(true, act_view) {
                     Readiness::Ready => {}
                     // busy: 待つ (台帳は進めない — idle 遷移を次 pulse で拾う)。
@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(t.lane_display, "vp/conductor", "lane_nudge の宛先");
         assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
-        assert_eq!(t.console_mode, ConsoleMode::Tui, "default は Tui");
+        assert_eq!(t.console_mode, SessionAct::Tui, "default は Tui");
         // 別 lane 宛は None (offline 扱い = pending 保持)
         assert_eq!(pick_nudge_target(&lanes, "other/conductor"), None);
     }
@@ -673,12 +673,12 @@ mod tests {
     #[test]
     fn nudge_method_follows_console_mode() {
         let mut lane = test_lane(LaneState::Running);
-        lane.console_mode = ConsoleMode::Chat;
+        lane.console_mode = SessionAct::Chat;
         let t = pick_nudge_target(&registry(lane), "vp/conductor")
             .expect("chat lane も Running なら target");
         assert_eq!(
             t.console_mode,
-            ConsoleMode::Chat,
+            SessionAct::Chat,
             "LaneInfo の console_mode が伝播する"
         );
         assert_eq!(t.nudge_method(), "echoes_nudge", "Chat は engine 直接注入");

@@ -583,12 +583,12 @@ pub(crate) fn clear_lane_state(project: &str, lane: &str) {
 /// (CLI = repo_root basename、 SP = `addr.project` + `lane_label(addr)`)。両者は SP 書き手の
 /// key derivation と一致する (既存 2 経路が既にこの前提で動いていた)。
 ///
-/// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 7 種):
-/// console_mode / session_registry (会話 id の SSOT) / engine_model / stand (engine 種別) /
+/// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 6 種):
+/// session_registry (会話 id と Act の SSOT) / engine_model / stand (engine 種別) /
 /// echoes_replay (session label 単位) / terminal_replay (slot の scrollback) / lane_id (安定 id)。
 ///
 /// best-effort: 個々の失敗は warn して残置し、他の破棄は続行する (1 file の fs error で
-/// 残り 6 種の GC を落とさない)。冪等 = 未記録 / 二重呼び出しは全て no-op。
+/// 残り 5 種の GC を落とさない)。冪等 = 未記録 / 二重呼び出しは全て no-op。
 fn clear_lane_state_in(base: &Path, project: &str, lane: &str) {
     // ① echoes_replay は **session label 単位** (`<lane>` + `<lane>#<n>`)。registry を消す前に
     //    全 session を列挙して各 label の replay log を消す (残すと transcript を持たない engine の
@@ -605,27 +605,24 @@ fn clear_lane_state_in(base: &Path, project: &str, lane: &str) {
             );
         }
     }
-    // ② console_mode (Act I/II のエンジンモード)
-    if let Err(e) = super::console_mode::clear_in(base, project, lane) {
-        tracing::warn!("lane state GC: console_mode の破棄に失敗 (残置): lane={lane} err={e}");
-    }
-    // ③ session_registry (会話 id の SSOT — 残すと旧 session / 旧会話 id が蘇る)。①の列挙後に消す。
+    // ② session_registry (会話 id と Act の SSOT — 残すと旧 session / 旧会話 id / 旧 Act が蘇る)。
+    //    ①の列挙後に消す。
     if let Err(e) = super::session_registry::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: session registry の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ④ engine_model (Act II の model 選択)
+    // ③ engine_model (Act II の model 選択)
     if let Err(e) = super::engine_model::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: engine_model の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ⑤ stand (engine 種別 — SP 再起動またぎの spawn stand)
+    // ④ stand (engine 種別 — SP 再起動またぎの spawn stand)
     if let Err(e) = super::stand_store::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: stand の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ⑥ terminal_replay (slot の scrollback の replay seed)
+    // ⑤ terminal_replay (slot の scrollback の replay seed)
     if let Err(e) = crate::daemon::pty_slot::clear_replay_in(base, project, lane) {
         tracing::warn!("lane state GC: terminal replay の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ⑦ lane_id (位置独立 安定 id)
+    // ⑥ lane_id (位置独立 安定 id)
     if let Err(e) = super::lane_id::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: lane_id の破棄に失敗 (残置): lane={lane} err={e}");
     }
@@ -1450,13 +1447,16 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let repo_root = tmp.path().join("parent").join("vp");
-        crate::lane::console_mode::record_in(
+        // doc 47 §4: Act も session registry（root の act）に入った。GC が registry file ごと
+        // 消すので、Act の記録も一緒に終端する。
+        crate::lane::session_registry::set_root_act_in(
             base,
             "vp",
             "feat",
-            crate::lane::console_mode::ConsoleMode::Chat,
+            "echoes",
+            crate::lane::session_registry::SessionAct::Chat,
         )
-        .expect("record mode");
+        .expect("record act");
         // doc 40 PR-2: 会話 id は session registry が SSOT。GC が registry file を消すことを固定する。
         crate::lane::session_registry::set_conversation_in(
             base,
@@ -1470,7 +1470,11 @@ mod tests {
 
         clear_lane_state_files_in(base, &repo_root, "feat");
 
-        assert_eq!(crate::lane::console_mode::last_in(base, "vp", "feat"), None);
+        assert_eq!(
+            crate::lane::session_registry::root_act_in(base, "vp", "feat"),
+            crate::lane::session_registry::SessionAct::Tui,
+            "registry file が消え、Act も既定（Tui）に戻る"
+        );
         assert_eq!(
             crate::lane::session_registry::load_in(base, "vp", "feat", "echoes").sessions[0]
                 .conversation,
@@ -1481,44 +1485,60 @@ mod tests {
         clear_lane_state_files_in(base, &repo_root, "feat");
     }
 
-    /// 一元 GC の凍結: lane 削除後、当該 lane の **全 7 種**の lane-scoped state file が消える。
+    /// 一元 GC の凍結: lane 削除後、当該 lane の **全 6 種**の lane-scoped state file が消える。
     /// replay_log は session label 単位 (#1 + #2) で消し、 他 lane の state は巻き添えにしない。
     /// 従来 SP 経路から漏れていた replay_log / terminal_replay / lane_id の欠落再発を防ぐ回帰。
+    ///
+    /// doc 47 §4 で console_mode file は退役し、Act は registry の中（root の act）に入った —
+    /// 破棄対象が 7 種から 6 種に減ったのは leak が増えたのではなく、state が 1 つ畳まれたため。
     #[test]
-    fn clear_lane_state_removes_all_seven_state_files_and_is_scoped() {
+    fn clear_lane_state_removes_all_six_state_files_and_is_scoped() {
         use crate::daemon::pty_slot;
         use crate::echoes::{EchoesEvent, replay_log};
-        use crate::lane::{console_mode, engine_model, lane_id, session_registry, stand_store};
+        use crate::lane::{engine_model, lane_id, session_registry, stand_store};
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
 
         // 対象 lane (vp/feat) と巻き添え確認用の別 lane (vp/other) に同じ state 群を積む helper。
         let seed = |lane: &str| {
-            // ① console_mode
-            console_mode::record_in(base, "vp", lane, console_mode::ConsoleMode::Chat)
-                .expect("console_mode");
-            // ②③ session_registry: #2 session を足して root 会話 id を記録 (label 列挙の対象を作る)
+            // ① session_registry: Act(root) + 会話 id + #2 session (label 列挙の対象を作る)
+            session_registry::set_root_act_in(
+                base,
+                "vp",
+                lane,
+                "echoes",
+                session_registry::SessionAct::Chat,
+            )
+            .expect("registry act");
             session_registry::set_conversation_in(base, "vp", lane, "echoes", 1, Some("sess-1"))
                 .expect("registry #1");
-            session_registry::create_in(base, "vp", lane, "echoes", "codex", true)
-                .expect("registry #2");
-            // ④ engine_model
+            session_registry::create_in(
+                base,
+                "vp",
+                lane,
+                "echoes",
+                "codex",
+                session_registry::SessionAct::Chat,
+                true,
+            )
+            .expect("registry #2");
+            // ② engine_model
             engine_model::record_in(base, "vp", lane, "sonnet").expect("engine_model");
-            // ⑤ stand
+            // ③ stand
             stand_store::record_in(base, "vp", lane, "codex").expect("stand");
-            // ⑥ echoes_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
+            // ④ echoes_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
             let ev = EchoesEvent::MessageChunk {
                 text: "hi".to_string(),
             };
             replay_log::append_in(base, "vp", lane, &ev).expect("replay #1");
             let label2 = session_registry::session_label(lane, 2);
             replay_log::append_in(base, "vp", &label2, &ev).expect("replay #2");
-            // ⑦ terminal_replay: writer は flush task 経由なので path に直書きで模擬
+            // ⑤ terminal_replay: writer は flush task 経由なので path に直書きで模擬
             let rp = pty_slot::replay_file_path_in(base, "vp", lane);
             std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
             std::fs::write(&rp, b"scrollback").unwrap();
-            // ⑧ lane_id
+            // ⑥ lane_id
             lane_id::load_or_create_in(base, "vp", lane);
         };
         seed("feat");
@@ -1526,43 +1546,43 @@ mod tests {
 
         clear_lane_state_in(base, "vp", "feat");
 
-        // 対象 lane: 全 7 種が消えている。
-        assert_eq!(
-            console_mode::last_in(base, "vp", "feat"),
-            None,
-            "①console_mode"
-        );
+        // 対象 lane: 全 6 種が消えている。
         let reg = session_registry::load_in(base, "vp", "feat", "echoes");
-        assert_eq!(reg.sessions.len(), 1, "②③registry が既定形 N=1 に戻る");
-        assert_eq!(reg.sessions[0].conversation, None, "③会話 id も消える");
+        assert_eq!(reg.sessions.len(), 1, "①registry が既定形 N=1 に戻る");
+        assert_eq!(reg.sessions[0].conversation, None, "①会話 id も消える");
+        assert_eq!(
+            session_registry::root_act_in(base, "vp", "feat"),
+            session_registry::SessionAct::Tui,
+            "①Act も既定 (Tui) に戻る"
+        );
         assert_eq!(
             engine_model::last_in(base, "vp", "feat"),
             None,
-            "④engine_model"
+            "②engine_model"
         );
-        assert_eq!(stand_store::last_in(base, "vp", "feat"), None, "⑤stand");
+        assert_eq!(stand_store::last_in(base, "vp", "feat"), None, "③stand");
         assert!(
             replay_log::load_in(base, "vp", "feat").is_empty(),
-            "⑥replay_log #1"
+            "④replay_log #1"
         );
         assert!(
             replay_log::load_in(base, "vp", "feat#2").is_empty(),
-            "⑥replay_log #2 (label 単位で消える)"
+            "④replay_log #2 (label 単位で消える)"
         );
         assert!(
             !pty_slot::replay_file_path_in(base, "vp", "feat").exists(),
-            "⑦terminal_replay"
+            "⑤terminal_replay"
         );
         assert!(
             !lane_id::id_file_in(base, "vp", "feat").exists(),
-            "⑧lane_id"
+            "⑥lane_id"
         );
 
         // 別 lane (vp/other) は巻き添えにならない (scoped)。
         assert_eq!(
-            console_mode::last_in(base, "vp", "other"),
-            Some(console_mode::ConsoleMode::Chat),
-            "別 lane の console_mode は残る"
+            session_registry::root_act_in(base, "vp", "other"),
+            session_registry::SessionAct::Chat,
+            "別 lane の Act は残る"
         );
         assert_eq!(
             stand_store::last_in(base, "vp", "other").as_deref(),

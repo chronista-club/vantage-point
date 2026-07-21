@@ -184,7 +184,41 @@ focus）は per-lane**」という分割。DOM host は app 共有のままで�
 `console_mode`（per-lane 永続 / `console:set_mode` / `#console-switching` overlay /
 `vp:console-mode` bus）が残っている。doc 46 §1.4 では **Act = Pane の kind** になるはず。
 
-並列表示の今、「lane の Act」は既に意味が薄い（両方見えている）。撤去は doc 46 P4。
+### 棚卸しで判明: `console_mode` は 3 仕事を兼ねていた
+
+当初「並列表示の今、lane の Act は意味が薄い（両方見えている）」と書いたが、
+**それは ① にしか当てはまらなかった**。
+
+| # | 仕事 | 実体 |
+|---|---|---|
+| ① | 表示の排他選択 | doc 46 が Pane kind に移す想定の分。ここだけ意味が薄い |
+| ② | **boot 時の PTY spawn 可否** | chat lane は engine-less（`pid=None` + `Running`）で登録。PTY を立てると `echoes_submit` が 2 本目の engine を呼び **1 会話 2 エンジン**になる |
+| ③ | **wire nudge の配送分岐** | `lane_nudge`（PtySlot 直書き）vs `echoes_nudge`（engine 注入）。さらに Tui の時だけ readiness / channel D を適用 |
+
+②③ は現役だった。素直に撤去すると「全 lane で PTY が立って 1 会話 2 エンジン」または
+「wire が届かない」という**無音の壊れ方**をする。
+
+> 「1 辺が 2 仕事をしている罠」の実例（しかも 3 仕事）。§1 の 2 系統並存と同じで、
+> **消す前に、その辺が運んでいる仕事を数える**。
+
+### ✅ 決定と着地: Act は **session の属性**へ（lane → session）
+
+doc 46 §1.5「session ↔ Pane は 1:1」に従い、`SessionEntry.act` に移設した。
+②③ は **root session（器に化身する session、doc 39）の act** で決まる —
+slot は lane に 1 枚、mailbox `agent@<lane>` を名乗るのも root だから、既存の
+`root` 概念にそのまま乗る。
+
+- **client 所有（Pane の kind）にはしない**。「PTY を立てるか」は**実体**の話で、
+  見え方に決めさせると doc 47 §0 の projection が逆流する。
+  `LaneInfo.console_mode` は wire 互換のまま残るが、意味は **root act の投影**に変わった
+- 旧 `console_modes/` state file は退役。boot で root act へ畳む one-shot migration 付き
+  （Tui は既定なので書かずに捨てる = migration が state を増やさない）
+- lane state GC の破棄対象が 7 種 → 6 種に減った（leak ではなく state が 1 つ畳まれた）
+
+**残り（client 側、UI フェーズではなくこの後の小 PR）**: `console:set_mode` /
+`#console-switching` overlay / `vp:console-mode` bus / `LaneInfo.console_mode` の退役。
+`+ New` の Act 指定が **client の RPC 分岐に溶けていて server に届いていない**のも同じ PR で直す
+（`echoes_session_create` = Chat / `echoes_session_new_root` = Tui と暗黙に対応していた）。
 
 ## 5. 「New」が 3 箇所ある
 
