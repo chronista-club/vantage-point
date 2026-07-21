@@ -367,12 +367,17 @@ pub struct LaneInfo {
     /// serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<crate::lane::session_registry::SessionRegistry>,
-    /// doc 33: Console のエンジンモード（Tui = PtySlot+claude TUI / Chat = EchoesAgentHost）。
-    /// serde default = Tui で wire 後方互換。永続 SSOT は `lane::console_mode`（state file）、
-    /// 本 field はその registry cache。vp-app は本 field で Dead-lane respawn 判定を gate する
-    /// （chat lane の engine-less は正常状態 — #683 再演防止）。
+    /// lane の Console Act（Tui = PtySlot + engine TUI / Chat = headless engine host）。
+    ///
+    /// **doc 47 §4 で意味が変わった**: 永続 SSOT は `lane::console_mode` の state file ではなく
+    /// **root session の `act`**（`session_registry`）。本 field はその**投影**で、
+    /// 「lane の器（slot / mailbox `agent@<lane>`）に化身している session がどちらの Act か」を
+    /// 意味する。serde default = Tui で wire 後方互換。
+    ///
+    /// vp-app は本 field で Dead-lane respawn 判定を gate する（chat lane の engine-less は
+    /// 正常状態 — #683 再演防止）。client を Pane kind へ移す PR で本 field は退役する。
     #[serde(default)]
-    pub console_mode: crate::lane::console_mode::ConsoleMode,
+    pub console_mode: SessionAct,
     /// FSM 投影 (2026-07-11): dev-flow FSM (`flow::derive_flow_state`) の現在 state。
     /// **TheWorld が vp-app への snapshot 送信時に enrich する derive 値** — SP / lane_registry /
     /// db では常に `None` (derive できるものは store しない原則)。 source は wire store
@@ -471,7 +476,7 @@ pub struct LanePool {
 use crate::echoes::{ChatEngineSlot, ChatHost, EngineKind};
 // session 層の語彙（doc 38）。registry は disk が SSOT（LanePool は cache を持たない —
 // 「状態の供給を 1 系統に」の原則。読みは毎回 registry file、書きは registry module 経由）。
-use crate::lane::session_registry::{self, SessionKey};
+use crate::lane::session_registry::{self, SessionAct, SessionKey};
 
 /// [`LanePool::restart_lane`] の slot（engine）張り替えモード（doc 39 P2 — 旧 `fresh: bool` の昇格）。
 ///
@@ -550,12 +555,11 @@ impl LanePool {
         // PR-pre2 (VP-118): "hd" → "echoes" rename。 mise task `vp:stand:echoes` (旧 hd)。
         let stand_name = "echoes";
 
-        // doc 33 §2: 永続 console_mode を boot で honor。chat の lane に PTY を立てない
+        // doc 47 §4: root session の act を boot で honor。chat の lane に PTY を立てない
         // （立てると echoes_submit がもう 1 本の engine を呼び、1 会話 2 エンジンになる）。
-        let console_mode = crate::lane::console_mode::last(&project_id, "conductor")
-            .unwrap_or(crate::lane::console_mode::ConsoleMode::Tui);
+        let console_mode = session_registry::root_act(&project_id, "conductor");
 
-        let (state, pid) = if console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+        let (state, pid) = if console_mode == SessionAct::Chat {
             // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
             // pid=None + state=Running は chat lane の正常形（vp-app は console_mode で
             // respawn 判定を gate する — doc 33 §3）。
@@ -827,7 +831,7 @@ impl LanePool {
         //   → `EchoesAgentHost` が SessionInit で新 id を registry に書き戻す（SSOT 復旧）
         // - transcript replay-on-attach も参照先を失う → 前の会話を映さない
         //   （消さないと「New Session なのに前の会話が出る」嘘になる）
-        if info.console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+        if info.console_mode == SessionAct::Chat {
             // lane 単位の restart は全 session の engine を落とす（lazy respawn が resume で継ぐ）。
             self.chat_engines.remove(addr);
             if let Some(info) = self.lanes.get_mut(addr) {
@@ -990,10 +994,7 @@ impl LanePool {
     // =========================================================================
 
     /// lane の console mode（registry cache）。lane 不在は None。
-    pub fn console_mode(
-        &self,
-        addr: &LaneAddress,
-    ) -> Option<crate::lane::console_mode::ConsoleMode> {
+    pub fn console_mode(&self, addr: &LaneAddress) -> Option<SessionAct> {
         self.lanes.get(addr).map(|i| i.console_mode)
     }
 
@@ -1073,8 +1074,16 @@ impl LanePool {
             anyhow::bail!("未知の stand です（addr={addr}, stand={stand}）");
         }
         let lane_label = crate::process::stand_spawner::lane_label(addr);
-        let key = session_registry::create(&addr.project, lane_label, &info.stand, stand, focus)
-            .map_err(|e| anyhow::anyhow!("session 作成に失敗（addr={addr}）: {e}"))?;
+        // doc 47 §4: chat session の Act は Chat（root は動かさないので slot に化身しない）。
+        let key = session_registry::create(
+            &addr.project,
+            lane_label,
+            &info.stand,
+            stand,
+            SessionAct::Chat,
+            focus,
+        )
+        .map_err(|e| anyhow::anyhow!("session 作成に失敗（addr={addr}）: {e}"))?;
         tracing::info!(
             "chat session create: addr={addr} session={key} stand={stand} focus={focus}"
         );
@@ -1100,7 +1109,7 @@ impl LanePool {
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        if info.console_mode != crate::lane::console_mode::ConsoleMode::Tui {
+        if info.console_mode != SessionAct::Tui {
             anyhow::bail!(
                 "echoes_session_new_root は Act I（mode=tui）専用です（addr={addr}。chat lane の New は echoes_session_create）"
             );
@@ -1119,8 +1128,15 @@ impl LanePool {
                 .map(|s| s.stand.clone())
                 .unwrap_or_else(|| info.stand.clone()),
         };
-        let key = session_registry::create_root(&addr.project, lane_label, &info.stand, &stand)
-            .map_err(|e| anyhow::anyhow!("root session 作成に失敗（addr={addr}）: {e}"))?;
+        // doc 47 §4: root session の Act は Tui（この動詞が Act I 専用なのは上の guard のとおり）。
+        let key = session_registry::create_root(
+            &addr.project,
+            lane_label,
+            &info.stand,
+            &stand,
+            SessionAct::Tui,
+        )
+        .map_err(|e| anyhow::anyhow!("root session 作成に失敗（addr={addr}）: {e}"))?;
         tracing::info!(
             "new root session: addr={addr} session={key} stand={stand}（旧 root はタブに残存）"
         );
@@ -1141,7 +1157,7 @@ impl LanePool {
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        if info.console_mode != crate::lane::console_mode::ConsoleMode::Tui {
+        if info.console_mode != SessionAct::Tui {
             anyhow::bail!(
                 "echoes_session_switch_root は Act I（mode=tui）専用です（addr={addr}。chat lane の切替は echoes_session_focus）"
             );
@@ -1178,7 +1194,7 @@ impl LanePool {
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        let is_chat = info.console_mode == crate::lane::console_mode::ConsoleMode::Chat;
+        let is_chat = info.console_mode == SessionAct::Chat;
         let lane_label = crate::process::stand_spawner::lane_label(addr);
         session_registry::focus(&addr.project, lane_label, &info.stand, key)
             .map_err(|e| anyhow::anyhow!("session focus に失敗（addr={addr}）: {e}"))?;
@@ -1218,7 +1234,7 @@ impl LanePool {
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        let is_chat = info.console_mode == crate::lane::console_mode::ConsoleMode::Chat;
+        let is_chat = info.console_mode == SessionAct::Chat;
         let stand = info.stand.clone();
         let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
         let new_focused = session_registry::remove(&addr.project, &lane_label, &stand, key)
@@ -1287,12 +1303,7 @@ impl LanePool {
     ///   （`restart_lane` 再利用 = cc_session `--resume` で文脈継承）
     ///
     /// 同一 mode への切替は no-op。Chat が許されるのは stand="echoes" の lane のみ。
-    pub fn set_console_mode(
-        &mut self,
-        addr: &LaneAddress,
-        mode: crate::lane::console_mode::ConsoleMode,
-    ) -> anyhow::Result<()> {
-        use crate::lane::console_mode::ConsoleMode;
+    pub fn set_console_mode(&mut self, addr: &LaneAddress, mode: SessionAct) -> anyhow::Result<()> {
         let info = self
             .lanes
             .get(addr)
@@ -1303,7 +1314,7 @@ impl LanePool {
         // Chat（Act II）は headless host を持つ engine の lane のみ（能力表明は EngineKind に
         // 一元化 — shell 等は engine なし、legacy/未知 stand も chat 不可）。
         // 未対応 stand を Chat に切替えて誤 spawn するのを型ではなくここで塞ぐ。
-        if mode == ConsoleMode::Chat
+        if mode == SessionAct::Chat
             && !EngineKind::from_stand(&info.stand).is_some_and(EngineKind::chat_capable)
         {
             anyhow::bail!(
@@ -1313,25 +1324,28 @@ impl LanePool {
             );
         }
         let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+        // doc 47 §4: 永続先は root session の act（registry file 不在時の既定形に使う stand）。
+        let default_stand = info.stand.clone();
 
         match mode {
-            ConsoleMode::Chat => {
+            SessionAct::Chat => {
                 // TUI engine 停止（PtySlot Drop = child kill + wait、restart_lane step1 と同順序）。
                 self.term_attaches.remove(addr);
                 let _ = self.pty_slots.remove(addr);
-                if let Err(e) = crate::lane::console_mode::record(&addr.project, &lane_label, mode)
+                if let Err(e) =
+                    session_registry::set_root_act(&addr.project, &lane_label, &default_stand, mode)
                 {
-                    tracing::warn!("console_mode 永続失敗（addr={addr}）: {e}");
+                    tracing::warn!("root session act の永続失敗（addr={addr}）: {e}");
                 }
                 if let Some(info) = self.lanes.get_mut(addr) {
-                    info.console_mode = ConsoleMode::Chat;
+                    info.console_mode = SessionAct::Chat;
                     info.pid = None;
                     info.state = LaneState::Running; // chat-idle は正常形（doc 33 §3）
                 }
                 tracing::info!("console mode → chat（TUI 停止、engine は submit で lazy）: {addr}");
                 Ok(())
             }
-            ConsoleMode::Tui => {
+            SessionAct::Tui => {
                 // focused session の chat engine 停止（Drop = kill_on_drop + pump abort）。
                 // doc 38 §2: slot（Act I）と排他なのは focused session だけ。非 focused の
                 // session は slot と独立に生き続ける（lane 内の session 同士は独立）。
@@ -1343,12 +1357,13 @@ impl LanePool {
                         self.chat_engines.remove(addr);
                     }
                 }
-                if let Err(e) = crate::lane::console_mode::record(&addr.project, &lane_label, mode)
+                if let Err(e) =
+                    session_registry::set_root_act(&addr.project, &lane_label, &default_stand, mode)
                 {
-                    tracing::warn!("console_mode 永続失敗（addr={addr}）: {e}");
+                    tracing::warn!("root session act の永続失敗（addr={addr}）: {e}");
                 }
                 if let Some(info) = self.lanes.get_mut(addr) {
-                    info.console_mode = ConsoleMode::Tui;
+                    info.console_mode = SessionAct::Tui;
                 }
                 // PTY respawn は restart_lane を再利用（--resume は build_stand_command が
                 // cc_session から拾う = 会話継続）。
@@ -1372,14 +1387,13 @@ impl LanePool {
         session: Option<SessionKey>,
         topic_router: &std::sync::Arc<crate::process::topic_router::TopicRouter>,
     ) -> anyhow::Result<()> {
-        use crate::lane::console_mode::ConsoleMode;
         let resolved = self.resolve_chat_session(addr, session)?;
         let info = self
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
         if resolved.focused {
-            if info.console_mode != ConsoleMode::Chat {
+            if info.console_mode != SessionAct::Chat {
                 // 呼び元は echoes_submit / echoes_nudge の両方（doc 34 channel E）— method 名は
                 // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
                 anyhow::bail!(
@@ -1691,11 +1705,7 @@ mod tests {
 
     /// lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は早期 return する
     /// ので spawn 不要）。mode を注入できる（doc 38: focused / 非 focused でガードが割れる）。
-    fn insert_lane(
-        pool: &mut LanePool,
-        addr: &LaneAddress,
-        mode: crate::lane::console_mode::ConsoleMode,
-    ) {
+    fn insert_lane(pool: &mut LanePool, addr: &LaneAddress, mode: SessionAct) {
         pool.insert(LaneInfo {
             console_mode: mode,
             id: Default::default(),
@@ -1716,7 +1726,7 @@ mod tests {
 
     /// chat mode の lane を pool に置く（従来 helper の互換形）。
     fn insert_chat_lane(pool: &mut LanePool, addr: &LaneAddress) {
-        insert_lane(pool, addr, crate::lane::console_mode::ConsoleMode::Chat);
+        insert_lane(pool, addr, SessionAct::Chat);
     }
 
     /// doc 33 → doc 39 P2: chat lane の restart は `RespawnMode` で意味が割れる。
@@ -1878,11 +1888,7 @@ mod tests {
         let _state = crate::test_env::state_dir_async().await;
         let addr = LaneAddress::conductor("vp");
         let mut pool = LanePool::new();
-        insert_lane(
-            &mut pool,
-            &addr,
-            crate::lane::console_mode::ConsoleMode::Tui,
-        );
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
         let router = std::sync::Arc::new(crate::process::topic_router::TopicRouter::new());
 
         // 非 focused の legacy stand（撤去済み "cursor"）session を registry に直接注入する
@@ -1893,6 +1899,7 @@ mod tests {
             lane_label,
             "echoes",
             "cursor",
+            SessionAct::Chat,
             false,
         )
         .expect("create legacy session");
@@ -2057,14 +2064,11 @@ mod tests {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         let mut pool = LanePool::new();
-        insert_lane(
-            &mut pool,
-            &addr,
-            crate::lane::console_mode::ConsoleMode::Tui,
-        );
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
 
         // 同 engine（旧名 "hd" = claude）の #2 → 切替 OK、root/focused が動く
-        session_registry::create("vp", "conductor", "echoes", "hd", false).expect("create #2");
+        session_registry::create("vp", "conductor", "echoes", "hd", SessionAct::Chat, false)
+            .expect("create #2");
         pool.prepare_switch_root_session(&addr, 2)
             .expect("同 engine（旧名差）への切替は通る");
         let reg = session_registry::load("vp", "conductor", "echoes");
@@ -2072,7 +2076,15 @@ mod tests {
         assert_eq!(reg.focused, 2);
 
         // cross-engine（codex）の #3 → P4 で解禁（通る、root/focused が動く）
-        session_registry::create("vp", "conductor", "echoes", "codex", false).expect("create #3");
+        session_registry::create(
+            "vp",
+            "conductor",
+            "echoes",
+            "codex",
+            SessionAct::Chat,
+            false,
+        )
+        .expect("create #3");
         pool.prepare_switch_root_session(&addr, 3)
             .expect("cross-engine（codex）への切替は P4 で通る");
         let reg = session_registry::load("vp", "conductor", "echoes");
@@ -2080,7 +2092,15 @@ mod tests {
         assert_eq!(reg.focused, 3);
 
         // 未知 / 撤去済み stand（cursor）の #4 → Err（shell 層に落ちるため拒否のまま）
-        session_registry::create("vp", "conductor", "echoes", "cursor", false).expect("create #4");
+        session_registry::create(
+            "vp",
+            "conductor",
+            "echoes",
+            "cursor",
+            SessionAct::Chat,
+            false,
+        )
+        .expect("create #4");
         let err = pool
             .prepare_switch_root_session(&addr, 4)
             .expect_err("未知 engine は拒否");

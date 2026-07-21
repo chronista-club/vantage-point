@@ -540,8 +540,14 @@ mod tests {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         // root を #2（新品、record 無し）へ — Act I ✨ New 直後の registry 状態。
-        crate::lane::session_registry::create_root("vp", "conductor", "echoes", "echoes")
-            .expect("create_root");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "conductor",
+            "echoes",
+            "echoes",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("create_root");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(
@@ -779,8 +785,14 @@ mod tests {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         // lane stand=echoes だが root(#2) を codex に向ける（picker の cross-engine 切替後の registry）。
-        crate::lane::session_registry::create_root("vp", "conductor", "echoes", "codex")
-            .expect("create_root codex");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "conductor",
+            "echoes",
+            "codex",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("create_root codex");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
         let input = cmd.initial_input.expect("codex root は initial_input あり");
         assert!(
@@ -796,8 +808,14 @@ mod tests {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::conductor("vp");
         // lane stand=echoes だが root(#2) を撤去済み "cursor" に向ける（disk に残る legacy 値の再現）。
-        crate::lane::session_registry::create_root("vp", "conductor", "echoes", "cursor")
-            .expect("create_root cursor");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "conductor",
+            "echoes",
+            "cursor",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("create_root cursor");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
         assert!(
             cmd.initial_input.is_none(),

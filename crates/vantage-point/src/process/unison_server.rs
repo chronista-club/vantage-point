@@ -607,7 +607,7 @@ async fn handle_echoes_demand_start(
     // session の解決（None = focused、doc 38 — replay は session 単位）は chat 確定後。
     let resolved = {
         let pool = state.lane_pool.read().await;
-        if pool.console_mode(&addr) != Some(crate::lane::console_mode::ConsoleMode::Chat) {
+        if pool.console_mode(&addr) != Some(crate::lane::session_registry::SessionAct::Chat) {
             return Ok(serde_json::json!({"status": "not_chat", "lane": lane}));
         }
         pool.resolve_chat_session(&addr, session)
@@ -1287,7 +1287,7 @@ async fn handle_console_set_mode(
         return Err("console_set_mode: lane 未指定".to_string());
     }
     let mode_str = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
-    let mode = crate::lane::console_mode::ConsoleMode::parse(mode_str)
+    let mode = crate::lane::session_registry::SessionAct::parse(mode_str)
         .ok_or_else(|| format!("console_set_mode: mode 不正: {mode_str:?}（tui|chat）"))?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("console_set_mode: lane パース失敗: {lane}"))?;
@@ -1299,7 +1299,7 @@ async fn handle_console_set_mode(
         // doc 33 §9: chat へは engine を eager spawn（切替時に resume を開始 → session_init を
         // 早く出す = 引き継ぎ progress を切替時に集約）。失敗しても mode 切替自体は成功扱いにし、
         // engine は次の submit で self-heal 再試行される（切替 UX を engine エラーで巻き戻さない）。
-        if mode == crate::lane::console_mode::ConsoleMode::Chat
+        if mode == crate::lane::session_registry::SessionAct::Chat
             && let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router)
         {
             tracing::warn!(
@@ -1317,7 +1317,7 @@ async fn handle_console_set_mode(
     // subscribe が demand 0→1 を撃ってこの pump が張られる。terminal topic は非 retained なので、
     // どちらの経路でも購読者不在の間に流れた PTY 出力は復元されない。
     // 上の write lock は block を抜けて drop 済（respawn_terminal_pump は内部で read lock を取る）。
-    if mode == crate::lane::console_mode::ConsoleMode::Tui
+    if mode == crate::lane::session_registry::SessionAct::Tui
         && !respawn_terminal_pump(state, lane).await
     {
         tracing::warn!(
@@ -1453,7 +1453,9 @@ async fn handle_lane_capture(
             // 一律「lane 不在 or console 未配線」に混乱した）。chat mode lane は term_attach 無しが
             // 正常なので、pool に実在して console_mode==Chat なら「Act I に切り替えよ」と案内する。
             let msg = match pool.get(&addr) {
-                Some(info) if info.console_mode == crate::lane::console_mode::ConsoleMode::Chat => {
+                Some(info)
+                    if info.console_mode == crate::lane::session_registry::SessionAct::Chat =>
+                {
                     format!(
                         "lane_capture: chat mode の lane に console はありません（Act I に切り替えると capture できます）: {lane}"
                     )
@@ -2582,7 +2584,7 @@ mod tests {
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
-                console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+                console_mode: crate::lane::session_registry::SessionAct::Chat,
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
@@ -2626,7 +2628,7 @@ mod tests {
 
         // console_mode=Chat の performer LaneInfo を組む（Chat なので drop/ensure engine は走らない）。
         let build = |name: &str, stand: &str| LaneInfo {
-            console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+            console_mode: crate::lane::session_registry::SessionAct::Chat,
             id: Default::default(),
             address: LaneAddress::performer("vp", name),
             state: LaneState::Running,
@@ -2644,8 +2646,14 @@ mod tests {
 
         // ケース①: lane 固定 stand=codex（非対応）だが root session を echoes（claude）に向けた lane。
         // → root stand で判定するので model 切替は **成功**する。
-        crate::lane::session_registry::create_root("vp", "root-claude", "codex", "echoes")
-            .expect("root を echoes session に");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "root-claude",
+            "codex",
+            "echoes",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("root を echoes session に");
         state
             .lane_pool
             .write()
@@ -2669,8 +2677,14 @@ mod tests {
 
         // ケース②: lane 固定 stand=echoes（対応）だが root session を codex に向けた lane。
         // → root stand で判定するので model 切替は **拒否**される（lane stand に引きずられない）。
-        crate::lane::session_registry::create_root("vp", "root-codex", "echoes", "codex")
-            .expect("root を codex session に");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "root-codex",
+            "echoes",
+            "codex",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("root を codex session に");
         state
             .lane_pool
             .write()
@@ -3092,7 +3106,7 @@ mod tests {
     async fn insert_test_lane(
         state: &crate::process::state::AppState,
         project: &str,
-        mode: crate::lane::console_mode::ConsoleMode,
+        mode: crate::lane::session_registry::SessionAct,
     ) -> crate::process::lanes_state::LaneAddress {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         let addr = LaneAddress::conductor(project);
@@ -3160,11 +3174,11 @@ mod tests {
     #[tokio::test]
     async fn echoes_submit_rejected_in_tui_mode() {
         use super::dispatch_process_method;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
-        insert_test_lane(&state, "vptest-c1-tui", ConsoleMode::Tui).await;
+        insert_test_lane(&state, "vptest-c1-tui", SessionAct::Tui).await;
         let err = dispatch_process_method(
             &state,
             "echoes_submit",
@@ -3185,7 +3199,7 @@ mod tests {
     async fn echoes_demand_start_replays_buffered_log_for_codex_session() {
         use super::dispatch_process_method;
         use crate::echoes::EchoesEvent;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
         use crate::protocol::ProcessMessage;
         use std::time::Duration;
@@ -3193,7 +3207,7 @@ mod tests {
         // replay_log / session_registry は vp_state_dir() を読む → tempdir に隔離。
         let _state_guard = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
-        let addr = insert_test_lane(&state, "vptest-replaylog", ConsoleMode::Chat).await;
+        let addr = insert_test_lane(&state, "vptest-replaylog", SessionAct::Chat).await;
 
         // focused な codex session #2 を作る（session=None がこれに解決される）。
         let k2 = state
@@ -3264,7 +3278,7 @@ mod tests {
     #[tokio::test]
     async fn console_set_mode_validates_and_transitions() {
         use super::dispatch_process_method;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
@@ -3280,7 +3294,7 @@ mod tests {
             "mode 不正は Err"
         );
         // engine-less の tui lane → chat へ遷移（PTY 不在でも成立、registry が更新される）
-        let addr = insert_test_lane(&state, "vptest-c1-sm", ConsoleMode::Tui).await;
+        let addr = insert_test_lane(&state, "vptest-c1-sm", SessionAct::Tui).await;
         let res = dispatch_process_method(
             &state,
             "console_set_mode",
@@ -3291,7 +3305,7 @@ mod tests {
         assert_eq!(res["mode"], "chat");
         assert_eq!(
             state.lane_pool.read().await.console_mode(&addr),
-            Some(ConsoleMode::Chat)
+            Some(SessionAct::Chat)
         );
         // 同一 mode への再切替は no-op Ok
         dispatch_process_method(
@@ -3311,7 +3325,7 @@ mod tests {
     async fn echoes_submit_roundtrip() {
         use super::dispatch_process_method;
         use crate::echoes::EchoesEvent;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
         use crate::protocol::ProcessMessage;
         use std::time::Duration;
@@ -3320,7 +3334,7 @@ mod tests {
         // doc 33: submit には mode=chat の lane が pool に要る。
         // project 名はテスト固有にする — 実在 project だと registry の会話 id が本物の
         // session id を返し、temp cwd との不整合で resume が失敗する。
-        insert_test_lane(&state, "vptest-c1-rt", ConsoleMode::Chat).await;
+        insert_test_lane(&state, "vptest-c1-rt", SessionAct::Chat).await;
         // echoes data は非 retained なので submit 前に subscribe。
         let (_id, mut srx) = state
             .topic_router

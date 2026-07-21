@@ -128,11 +128,10 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
         }
         lanes.push(LaneInfo {
-            // doc 33 §2: 永続 console_mode (state file) を honor。 Default (=Tui) で埋めると
-            // SP 再起動直後の boot 窓で chat lane が "tui" として snapshot に載り、 その窓で
+            // doc 47 §4: root session の act を honor。 Default (=Tui) で埋めると
+            // 再起動直後の boot 窓で chat lane が "tui" として snapshot に載り、 その窓で
             // vp-app が active lane を復元すると Act II の lane が xterm で開いてしまう。
-            console_mode: crate::lane::console_mode::last(&project, &entry.name)
-                .unwrap_or_default(),
+            console_mode: crate::lane::session_registry::root_act(&project, &entry.name),
             id: crate::lane::lane_id::load_or_create(&project, &entry.name),
             address,
             state: crate::process::lanes_state::LaneState::Spawning,
@@ -800,7 +799,7 @@ pub async fn restart_lane_orchestrated(
                 // （resume の開始も早い）。失敗しても restart 自体は成功扱い、次 submit の
                 // self-heal で再試行される。
                 let is_chat = state.lane_pool.read().await.get(&addr).is_some_and(|i| {
-                    i.console_mode == crate::lane::console_mode::ConsoleMode::Chat
+                    i.console_mode == crate::lane::session_registry::SessionAct::Chat
                 });
                 if is_chat {
                     let mut pool = state.lane_pool.write().await;

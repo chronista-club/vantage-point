@@ -1108,6 +1108,11 @@ async fn handle_wire_channel(
 /// world-process / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
+    // doc 47 §4: 旧 `console_modes/` を root session の act へ畳む one-shot migration。
+    // lane を spawn する前に済ませる — 畳む前に boot すると chat lane が Tui として立ち上がり、
+    // その lane で 1 会話 2 エンジンになる（この移設が塞ごうとしている当のもの）。
+    crate::lane::session_registry::migrate_console_modes();
+
     // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
     let addr = format!("[::]:{}", port);
     let server =
