@@ -281,6 +281,15 @@ impl ProcessManagerCapability {
         self.vpdb = Some(vpdb);
     }
 
+    /// db/world への参照（Project Host の帳簿を World の control 面から触るため）。
+    ///
+    /// 帳簿 (`host_origin` / `host_lane_order` / `host_farewell`) は surrealkv の OS 排他
+    /// ロックで World が専有するので、CLI からは World 経由でしか読み書きできない
+    /// (doc 44 §8.4)。`None` = DB 未接続（CLI / test 初期）。
+    pub fn vpdb(&self) -> Option<&crate::db::SharedVpDb> {
+        self.vpdb.as_ref()
+    }
+
     /// running_processes の共有参照を取得（DaemonState と共有するため）
     pub fn running_processes_ref(&self) -> Arc<RwLock<HashMap<String, RunningProcess>>> {
         self.running_processes.clone()
@@ -799,6 +808,11 @@ impl ProcessManagerCapability {
             // doc 44 §12: lane の並び順も同じ namespace の帳簿なので一緒に畳む。
             if let Err(e) = db.delete_lane_order_for_project(&key).await {
                 tracing::warn!("host_lane_order の db/world 削除に失敗: {}", e);
+            }
+            // doc 44 §7.5: 見送りの履歴 / 滞留も同じ namespace の帳簿。project を倒したら
+            // 一緒に畳む (残すと同 path で再登録した時、無関係な過去の見送りが出てくる)。
+            if let Err(e) = db.delete_farewell_entries_for_project(&key).await {
+                tracing::warn!("host_farewell の db/world 削除に失敗: {}", e);
             }
         }
         // L1 lifecycle: connection presence も namespace と共に回収 (active_lanes と対称、

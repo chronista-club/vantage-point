@@ -539,6 +539,57 @@ pub(crate) async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "active_lane set", "path": path, "address": address}))
         }
+        // doc 44 §7.5: Project Host の帳簿（見送りの記録）を CLI から触る 3 面。
+        //
+        // 帳簿は db/world にあり surrealkv の OS 排他ロックで World が専有するので、
+        // `vp lane cleanup` / `vp lane history` は直接読み書きできない（§8.4 と同じ理由）。
+        //
+        // ⚠️ **名前 → id の解決はここでしない**。CLI が観測と一緒に `lane_id` を送る。
+        // 見送りの対象には「World が一度も見たことのない lane」（disk にだけ在る worktree）が
+        // 含まれ、World の registry から引くとそれらが黙って記録から落ちるため — 落ちるのは
+        // まさに放置されて溜まった lane なので、追いたいものだけが追えなくなる。
+        // id の SSOT は lane_ids state file で、両プロセスが同じ derivation で引く。
+        "host/farewell_observe" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let observations: Vec<crate::host::ledger::FarewellObservation> =
+                serde_json::from_value(payload["observations"].clone())
+                    .map_err(|e| format!("observations が不正: {e}"))?;
+            let db = world_cap.read().await.vpdb().cloned();
+            let now = chrono::Utc::now().to_rfc3339();
+            let pending = crate::host::ledger::record_farewell_observations(
+                db.as_ref(),
+                path,
+                &observations,
+                &now,
+            )
+            .await;
+            Ok(serde_json::json!({ "pending": pending }))
+        }
+        "host/farewell_reclaimed" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let lanes: Vec<crate::host::ledger::FarewellObservation> =
+                serde_json::from_value(payload["lanes"].clone())
+                    .map_err(|e| format!("lanes が不正: {e}"))?;
+            let db = world_cap.read().await.vpdb().cloned();
+            let now = chrono::Utc::now().to_rfc3339();
+            let recorded =
+                crate::host::ledger::record_farewell_reclaimed(db.as_ref(), path, &lanes, &now)
+                    .await;
+            Ok(serde_json::json!({ "recorded": recorded }))
+        }
+        "host/farewell_log" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let limit = payload["limit"].as_u64().unwrap_or(0) as usize;
+            let db = world_cap.read().await.vpdb().cloned();
+            let entries = crate::host::ledger::farewell_history(db.as_ref(), path, limit).await;
+            Ok(serde_json::json!({ "entries": entries }))
+        }
         // chronista-hub federation: hub registry に居る world 一覧を取得する。
         // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
         // (= 直接 hub に接続しない)。hub addr（env > config.kdl）未設定なら federation 無効を返す。

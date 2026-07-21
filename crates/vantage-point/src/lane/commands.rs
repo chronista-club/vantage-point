@@ -556,13 +556,35 @@ fn persist_lane_model_in(
         .map_err(|e| format!("model 永続に失敗: {e}"))
 }
 
-/// state base dir 注入版 (テスト用)。project key を repo basename から導き、一元 GC に委譲。
-fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
-    let project = repo_root
+/// lane-scoped state file の project key（= repo_root の basename）。
+///
+/// SP 書き手の derivation（`addr.project`）と一致する前提で 2 経路が動いている
+/// （`clear_lane_state_in` の doc 参照）。**同じ derivation を要る場所が増えたので関数に畳んだ**
+/// — 各 call site が個別に basename を取ると 1 箇所ズレた時に無音で別 key を触る
+/// （lane_id は帳簿の key なので、ズレると履歴が別 lane のものになる）。
+fn lane_state_project_key(repo_root: &Path) -> &str {
+    repo_root
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
-    clear_lane_state_in(base, project, lane);
+        .unwrap_or("unknown")
+}
+
+/// state base dir 注入版 (テスト用)。project key を repo basename から導き、一元 GC に委譲。
+fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
+    clear_lane_state_in(base, lane_state_project_key(repo_root), lane);
+}
+
+/// lane の安定 id を引く（Project Host の帳簿の key、doc 44 §8.2）。
+///
+/// SSOT は `lane_ids/<project>__<lane>` state file で、World 側の `LaneInfo.id` も
+/// 同じ関数（[`super::lane_id::load_or_create`]）から来る = **同じ lane なら同じ id**。
+/// だから CLI 側で解決した id をそのまま帳簿に送れる。
+///
+/// ⚠️ **lane を消す前に**引くこと。`clear_lane_state_files` が id file ごと消すので、
+/// 削除後に引くと別の id が生える（= 見送りの記録が「知らない lane」になる）。
+/// 逆に言うと、同名 lane を作り直すと必ず別 id になるので**前の履歴と混ざらない**。
+fn lane_stable_id(repo_root: &Path, lane: &str) -> String {
+    super::lane_id::load_or_create(lane_state_project_key(repo_root), lane).to_string()
 }
 
 /// 本番 base での lane-scoped state 一元 GC (SP `delete_lane_orchestrated` から呼ぶ)。
@@ -909,6 +931,56 @@ fn liveness_for_cleanup(repo_root: &Path) -> crate::host::liveness::Liveness {
     }
 }
 
+/// 見送りの帳簿（World が持つ）への読み書き（doc 44 §7.5）。
+///
+/// trait にしているのは **「稼働状況が不明で保留した時に帳簿へ 1 文字も書かない」を
+/// テストで固定する**ため。実装が直接 RPC を撃つ形だと、書かなかったことを検証できない
+/// （事実が無い状態を履歴に残さない、が要件）。
+pub(crate) trait FarewellLedger {
+    /// 判定を記録し、**反映後の滞留一覧**を返す（World 不達なら空 = 注記を諦めて続行）。
+    fn observe(
+        &mut self,
+        repo_root: &Path,
+        observations: &[crate::host::ledger::FarewellObservation],
+    ) -> Vec<crate::host::ledger::FarewellEntry>;
+
+    /// 実際に見送った lane を記録する（終端 event）。
+    fn reclaimed(&mut self, repo_root: &Path, entries: &[crate::host::ledger::FarewellObservation]);
+}
+
+/// 本番の帳簿 — World の world-control channel 越しに読み書きする。
+///
+/// 帳簿は db/world にあり surrealkv の OS 排他ロックで World が専有するので、CLI からは
+/// この経路しかない（doc 44 §8.4）。**失敗しても見送りは止めない**（best-effort）— 記録は
+/// 判断材料であって、それが取れないことは lane を消してよいかの判断を変えない。
+struct WorldFarewellLedger;
+
+impl FarewellLedger for WorldFarewellLedger {
+    fn observe(
+        &mut self,
+        repo_root: &Path,
+        observations: &[crate::host::ledger::FarewellObservation],
+    ) -> Vec<crate::host::ledger::FarewellEntry> {
+        let Some(path) = repo_root.to_str() else {
+            return Vec::new();
+        };
+        crate::world_client::farewell_observe_blocking(path, observations).unwrap_or_default()
+    }
+
+    fn reclaimed(
+        &mut self,
+        repo_root: &Path,
+        entries: &[crate::host::ledger::FarewellObservation],
+    ) {
+        let Some(path) = repo_root.to_str() else {
+            return;
+        };
+        if crate::world_client::farewell_reclaimed_blocking(path, entries).is_none() {
+            eprintln!("[vp] 見送りを帳簿に記録できませんでした（削除自体は完了しています）");
+        }
+    }
+}
+
 /// 見送りの実行結果（何が起きたかをテストから見るための戻り値）。
 ///
 /// 出力は eprintln なので、戻り値が無いと「保留した」と「1 件も対象が無かった」を
@@ -944,13 +1016,22 @@ pub(crate) enum CleanupOutcome {
 ///
 /// doc 44 §7.5: 判定に要る事実（開発起点 / 稼働中 lane）は本関数が World から集めて渡す。
 /// **稼働状況が確認できない場合は判定に進まず保留する**（[`cleanup_performers_with`]）。
+/// 判定と実行は Project Host の帳簿に記録され、`AskHuman` の滞留として出力に戻ってくる。
 pub fn cleanup_performers(force: bool) -> Result<(), String> {
     let Ok(repo_root) = config::find_repo_root() else {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());
     };
     let liveness = liveness_for_cleanup(&repo_root);
-    cleanup_performers_with(&repo_root, force, &liveness, origin_for_cleanup).map(|_| ())
+    cleanup_performers_with(
+        &mut std::io::stderr(),
+        &repo_root,
+        force,
+        &liveness,
+        origin_for_cleanup,
+        &mut WorldFarewellLedger,
+    )
+    .map(|_| ())
 }
 
 /// [`cleanup_performers`] の本体（World から取る事実は注入、I/O 境界を外に出した形）。
@@ -960,11 +1041,18 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
 ///
 /// `resolve_origin` が値ではなく関数なのは**順序が意味を持つ**から: 稼働状況が不明なら
 /// 保留して抜けるので、その先の起点照会（World への 2 度目の ask）まで行ってはいけない。
+/// `ledger` も同じ理由で注入する — 保留したなら**帳簿にも触らない**（事実が無い状態を
+/// 履歴に残さない）ことを、spy でテストから見る。
+///
+/// `out` を注入するのは、滞留の注記が**実際に出力に出ること**をテストで見るため。
+/// 帳簿への書き込みだけをテストすると「読み手のない書き込み」に戻る（doc 44 §8.5）。
 fn cleanup_performers_with(
+    out: &mut dyn std::io::Write,
     repo_root: &Path,
     force: bool,
     liveness: &crate::host::liveness::Liveness,
     resolve_origin: impl FnOnce(&Path) -> String,
+    ledger: &mut dyn FarewellLedger,
 ) -> Result<CleanupOutcome, String> {
     use crate::host::farewell::FarewellVerdict;
 
@@ -979,9 +1067,13 @@ fn cleanup_performers_with(
     let running = match liveness.lanes_for_survey() {
         Ok(lanes) => lanes,
         Err(reason) => {
-            eprintln!("稼働状況を確認できないため見送りを保留しました（1 件も削除していません）。");
-            eprintln!("  理由: {reason}");
-            eprintln!(
+            let _ = writeln!(
+                out,
+                "稼働状況を確認できないため見送りを保留しました（1 件も削除していません）。"
+            );
+            let _ = writeln!(out, "  理由: {reason}");
+            let _ = writeln!(
+                out,
                 "  World を起動してから再実行してください（`vp daemon status` / `vp daemon start`）。"
             );
             return Ok(CleanupOutcome::Held);
@@ -991,47 +1083,82 @@ fn cleanup_performers_with(
     let origin = resolve_origin(repo_root);
     let reports = crate::host::farewell::survey_project(repo_root, running, &origin);
     if reports.is_empty() {
-        eprintln!("クリーンアップ対象はありません。");
+        let _ = writeln!(out, "クリーンアップ対象はありません。");
         return Ok(CleanupOutcome::Nothing);
     }
 
-    let mut to_remove: Vec<&crate::host::farewell::FarewellReport> = Vec::new();
+    // 帳簿の key（安定 id）は **lane を消す前に**解決する — 削除すると id の state file が
+    // 消えるため、後から引くと別 id が生えて記録が「知らない lane」になる。
+    let observations: Vec<crate::host::ledger::FarewellObservation> = reports
+        .iter()
+        .map(|r| crate::host::ledger::FarewellObservation {
+            lane_id: lane_stable_id(repo_root, &r.facts.name),
+            lane_name: r.facts.name.clone(),
+            verdict: r.verdict.clone(),
+        })
+        .collect();
+    // 判定を帳簿に反映し、反映後の滞留（何回目 / 初回いつ）を受け取る。
+    // key は id なので、rename されていても同じ滞留に繋がる。
+    let pending: std::collections::HashMap<String, crate::host::ledger::FarewellEntry> = ledger
+        .observe(repo_root, &observations)
+        .into_iter()
+        .map(|e| (e.lane_id.clone(), e))
+        .collect();
+
+    let mut to_remove: Vec<(
+        &crate::host::farewell::FarewellReport,
+        &crate::host::ledger::FarewellObservation,
+    )> = Vec::new();
     let mut ask_human = 0usize;
-    for r in &reports {
+    for (r, obs) in reports.iter().zip(observations.iter()) {
         match &r.verdict {
             FarewellVerdict::Reclaim { reason } => {
-                eprintln!("  削除可能: {} ({})", r.facts.name, reason);
-                to_remove.push(r);
+                let _ = writeln!(out, "  削除可能: {} ({})", r.facts.name, reason);
+                to_remove.push((r, obs));
             }
             FarewellVerdict::AskHuman { reason } => {
-                eprintln!("  ⚠️ 要判断: {} ({})", r.facts.name, reason);
+                // 滞留の注記は帳簿から。lane 名は survey が持つ**生きた名前**を出す
+                // （帳簿の名前は記録時点のスナップショットなので、rename 後は古い）。
+                let note = pending
+                    .get(&obs.lane_id)
+                    .and_then(crate::host::ledger::stagnation_note)
+                    .map(|n| format!(" — {n}"))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "  ⚠️ 要判断: {} ({reason}){note}", r.facts.name);
                 ask_human += 1;
             }
             FarewellVerdict::Keep { reason } => {
-                eprintln!("  保持: {} ({})", r.facts.name, reason);
+                let _ = writeln!(out, "  保持: {} ({})", r.facts.name, reason);
             }
         }
     }
 
     if to_remove.is_empty() {
-        eprintln!("\n自動で削除できる performer はありません。");
+        let _ = writeln!(out, "\n自動で削除できる performer はありません。");
         if ask_human > 0 {
-            eprintln!("{ask_human} 件は事実だけで判断できないため、人の確認が要ります。");
+            let _ = writeln!(
+                out,
+                "{ask_human} 件は事実だけで判断できないため、人の確認が要ります。"
+            );
         }
         return Ok(CleanupOutcome::Surveyed { reclaimable: 0 });
     }
 
     if !force {
-        eprintln!("\n実際に削除するには `vp lane cleanup --force` を実行してください。");
+        let _ = writeln!(
+            out,
+            "\n実際に削除するには `vp lane cleanup --force` を実行してください。"
+        );
         if ask_human > 0 {
-            eprintln!("（⚠️ の {ask_human} 件は --force でも削除しません）");
+            let _ = writeln!(out, "（⚠️ の {ask_human} 件は --force でも削除しません）");
         }
         return Ok(CleanupOutcome::Surveyed {
             reclaimable: to_remove.len(),
         });
     }
 
-    for r in &to_remove {
+    let mut reclaimed: Vec<crate::host::ledger::FarewellObservation> = Vec::new();
+    for (r, obs) in &to_remove {
         let path = config::project_lanes_dir(repo_root).join(&r.facts.name);
         remove_performer_workspace(repo_root, &path)?;
         clear_lane_state_files(repo_root, &r.facts.name);
@@ -1045,16 +1172,45 @@ fn cleanup_performers_with(
         if let Some(b) = r.facts.branch.as_deref() {
             let _ = run_git_in(repo_root, &["branch", "-d", b]);
         }
-        eprintln!("  削除: {}", r.facts.name);
+        let _ = writeln!(out, "  削除: {}", r.facts.name);
+        reclaimed.push((*obs).clone());
     }
 
-    eprintln!("{} パフォーマーを削除しました。", to_remove.len());
+    // 「いつ何を見送ったか」は消した後では survey で復元できない = 帳簿に残す唯一の事実。
+    // 削除の**後**に記録するのは、判定ではなく**実行**を書いているから（実行に失敗した
+    // lane を「見送った」と書かない — 失敗は上で `?` 抜けする）。
+    ledger.reclaimed(repo_root, &reclaimed);
+
+    let _ = writeln!(out, "{} パフォーマーを削除しました。", to_remove.len());
     if ask_human > 0 {
-        eprintln!("⚠️ {ask_human} 件は人の確認待ちのため残しました。");
+        let _ = writeln!(out, "⚠️ {ask_human} 件は人の確認待ちのため残しました。");
     }
     Ok(CleanupOutcome::Removed {
         count: to_remove.len(),
     })
+}
+
+/// `vp lane history` — Project Host の帳簿（見送りの記録）を読む（doc 44 §7.5）。
+///
+/// board UI を待たずに帳簿の**読み手**を用意するための面。書いた事実に読み手が無いと、
+/// `LaneId` が 2 年間そうだったように「誰も見ない書き込み」になる（doc 44 §8.2）。
+pub fn show_farewell_history(limit: usize) -> Result<(), String> {
+    let repo_root = config::find_repo_root().map_err(|_| "git repo の中で実行してください")?;
+    let path = repo_root
+        .to_str()
+        .ok_or_else(|| "repo path に invalid UTF-8".to_string())?;
+    let entries = crate::world_client::farewell_log_blocking(path, limit).ok_or_else(|| {
+        "帳簿は World が専有しているため、daemon 稼働中のみ読めます（`vp daemon start`）"
+            .to_string()
+    })?;
+    if entries.is_empty() {
+        eprintln!("見送りの記録はまだありません（`vp lane cleanup` を走らせると記録されます）。");
+        return Ok(());
+    }
+    for entry in &entries {
+        println!("{}", crate::host::ledger::format_history_line(entry));
+    }
+    Ok(())
 }
 
 /// `status_performers` 内の 1 performer 行表示 helper
@@ -1530,6 +1686,10 @@ mod tests {
     ///
     /// 保留が**無条件ではない**ことも同時に見る（Known なら判定まで進む）。片方だけだと
     /// 「常に保留」= 見送り機能が死んだ状態も緑になる。
+    ///
+    /// doc 44 §7.5（帳簿）: **保留したら帳簿にも 1 文字も書かない**ことを同時に固定する。
+    /// 事実が無い状態（稼働状況を確認できていない）を履歴に残すと、後から見た人が
+    /// 「その日は判断待ちが 0 件だった」と読んでしまう。
     #[test]
     fn cleanup_holds_when_liveness_is_unknown() {
         use crate::host::liveness::Liveness;
@@ -1554,28 +1714,181 @@ mod tests {
 
         // 起点照会は World を叩くので注入する（保留経路では呼ばれないこと自体も要件）。
         let origin = |_: &Path| crate::process::lanes_state::ROOT_LANE_NAME.to_string();
+        let mut ledger = SpyLedger::default();
+        let mut out = Vec::new();
 
         // 不明 + --force でも保留（判定にも進まない）
         let held = cleanup_performers_with(
+            &mut out,
             &root,
             true,
             &Liveness::Unknown("World 不達".to_string()),
             |_| panic!("保留するなら起点照会まで進んではいけない"),
+            &mut ledger,
         )
         .expect("保留は Err ではない");
         assert_eq!(held, CleanupOutcome::Held);
         assert!(lane_dir.exists(), "保留中に lane を消してはいけない");
+        assert!(
+            ledger.observed.is_empty() && ledger.reclaimed.is_empty(),
+            "保留したら帳簿に書かない（事実が無い状態を履歴に残さない）: {ledger:?}"
+        );
 
         // 稼働 lane 0 件は「答え」なので判定に進む（保留は無条件ではない）
-        let surveyed = cleanup_performers_with(&root, false, &Liveness::Known(Vec::new()), origin)
-            .expect("判定は Err ではない");
+        let surveyed = cleanup_performers_with(
+            &mut out,
+            &root,
+            false,
+            &Liveness::Known(Vec::new()),
+            origin,
+            &mut ledger,
+        )
+        .expect("判定は Err ではない");
         assert!(
             !matches!(surveyed, CleanupOutcome::Held),
             "0 件は不明ではない: {surveyed:?}"
         );
         assert!(lane_dir.exists(), "dry-run では消えない");
+        assert_eq!(
+            ledger.observed.len(),
+            1,
+            "判定まで進んだら観測は帳簿へ送られる（= 保留の 0 件が『書けない』ではないことの裏取り）"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 帳簿の spy（World を立てずに「何を書いたか / 書かなかったか」を見る）。
+    #[derive(Debug, Default)]
+    struct SpyLedger {
+        observed: Vec<Vec<crate::host::ledger::FarewellObservation>>,
+        reclaimed: Vec<Vec<crate::host::ledger::FarewellObservation>>,
+        /// `observe` が返す滞留（World が持っている体の帳簿）
+        pending: Vec<crate::host::ledger::FarewellEntry>,
+    }
+
+    impl FarewellLedger for SpyLedger {
+        fn observe(
+            &mut self,
+            _repo_root: &Path,
+            observations: &[crate::host::ledger::FarewellObservation],
+        ) -> Vec<crate::host::ledger::FarewellEntry> {
+            self.observed.push(observations.to_vec());
+            self.pending.clone()
+        }
+
+        fn reclaimed(
+            &mut self,
+            _repo_root: &Path,
+            entries: &[crate::host::ledger::FarewellObservation],
+        ) {
+            self.reclaimed.push(entries.to_vec());
+        }
+    }
+
+    /// 回帰固定（doc 44 §7.5）: **滞留が `vp lane cleanup` の出力に実際に出る**。
+    ///
+    /// 帳簿は「書いたら読まれる」ことまで含めて 1 本。書き込みだけをテストすると、
+    /// `LaneId` が 2 年間そうだったように**読み手のない書き込み**になる（§8.2）。
+    /// ここでは要判断の lane に対し、帳簿が返した滞留が行に載ることを見る。
+    ///
+    /// 表示する lane 名は survey が持つ**生きた名前**で、帳簿の（記録時点の）名前ではない
+    /// ことも同時に固定する — 帳簿の名前を出すと rename 後に古い名前が現在の一覧に出る。
+    #[test]
+    fn cleanup_output_carries_stagnation_from_ledger() {
+        use crate::host::liveness::Liveness;
+
+        let _state = crate::test_env::state_dir(); // lane_id state file を tempdir に隔離
+
+        let root = std::env::temp_dir().join(format!("vp-cleanup-stag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lane_dir = config::project_lanes_dir(&root).join("w1");
+        std::fs::create_dir_all(&lane_dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&lane_dir)
+                .output()
+                .expect("git 実行");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(lane_dir.join("a.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        // 未コミットの変更 = AskHuman（滞留の対象）
+        std::fs::write(lane_dir.join("a.txt"), "two").unwrap();
+
+        // 帳簿は id で引く。CLI と同じ derivation で id を作って spy に積む。
+        let lane_id = lane_stable_id(&root, "w1");
+        let mut ledger = SpyLedger {
+            pending: vec![crate::host::ledger::FarewellEntry {
+                lane_id: lane_id.clone(),
+                lane_name: "古い名前".to_string(),
+                kind: crate::host::ledger::FarewellKind::Pending,
+                reason: "未コミットの変更".to_string(),
+                streak: 3,
+                first_seen_at: "2026-07-15T00:00:00+00:00".to_string(),
+                last_seen_at: "2026-07-21T00:00:00+00:00".to_string(),
+                ongoing: true,
+            }],
+            ..Default::default()
+        };
+
+        let mut out = Vec::new();
+        cleanup_performers_with(
+            &mut out,
+            &root,
+            false,
+            &Liveness::Known(Vec::new()),
+            |_| crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
+            &mut ledger,
+        )
+        .expect("判定は Err ではない");
+
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(text.contains("⚠️ 要判断: w1"), "要判断行が出る: {text}");
+        assert!(
+            text.contains("3 回連続、初回 2026-07-15"),
+            "帳簿の滞留が出力に出る（読み手が効いている）: {text}"
+        );
+        assert!(
+            !text.contains("古い名前"),
+            "表示名は survey の生きた名前（帳簿のスナップショットではない）: {text}"
+        );
+
+        // 観測は帳簿へ送られ、key は安定 id（名前ではない）
+        let sent = ledger.observed.first().expect("観測が送られる");
+        let w1 = sent
+            .iter()
+            .find(|o| o.lane_name == "w1")
+            .expect("w1 の観測");
+        assert_eq!(w1.lane_id, lane_id, "帳簿の key は安定 id");
+        assert!(!w1.lane_id.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回帰固定: **同名 lane を作り直すと安定 id が変わる**（帳簿が混ざらない仕組みの土台）。
+    ///
+    /// `clear_lane_state_in` が `lane_ids` file を消すので、作り直した lane は新しい id を
+    /// 名乗る。これが崩れると、見送った lane の履歴を同名の新 lane が引き継ぐ
+    /// （= 作ったばかりの lane が「3 回連続で判断待ち」と表示される）。
+    #[test]
+    fn recreated_lane_gets_a_fresh_stable_id() {
+        let _state = crate::test_env::state_dir();
+        let root = std::env::temp_dir().join(format!("vp-cleanup-freshid-{}", std::process::id()));
+
+        let first = lane_stable_id(&root, "w1");
+        assert_eq!(lane_stable_id(&root, "w1"), first, "同じ lane は同じ id");
+
+        clear_lane_state_files(&root, "w1"); // = 見送り（lane 削除）の後始末
+        let second = lane_stable_id(&root, "w1");
+        assert_ne!(
+            first, second,
+            "同名で作り直した lane は別 id（前の履歴と混ざらない）"
+        );
     }
 
     #[test]

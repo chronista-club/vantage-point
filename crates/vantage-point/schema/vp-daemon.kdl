@@ -73,6 +73,13 @@ protocol "vp-daemon" version="0.2.0" {
                 field "lanes" type="json" required=#true description="LaneInfo の配列。各要素は { address: { project, name }, state, stand, ... }。"
             }
         }
+        request "host/farewell_log" description="Project Host の帳簿から見送りの記録を新しい順に返す read-only 照会（doc 44 §7.5）。kind='reclaimed' が「いつ何を見送ったか」、kind='pending' が「人の判断待ちがいつから何回続いているか」。lane_name は記録時点のスナップショット（key は lane_id なので rename でも履歴は動かない）。" {
+            field "path" type="string" required=#true description="対象 project の path（内部で正規化して照合する）。"
+            field "limit" type="int" description="返す件数の上限。0 / 省略は無制限。"
+            returns "FarewellLog" {
+                field "entries" type="json" required=#true description="記録の配列（last_seen_at の降順）。各要素は { lane_id, lane_name, kind: reclaimed|pending, reason, streak, first_seen_at, last_seen_at, ongoing }。streak は同じ判定が連続した回数（実行回数であって日数ではない）。"
+            }
+        }
     }
 
     // events channel: daemon の event log（doc 27 §5-3。process.up / process.down を baseline に蓄積、

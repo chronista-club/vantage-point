@@ -25,7 +25,14 @@
 //! 「推測しない」原則には反しない。ただし **dangling は隠さず事実として返す**
 //! （[`OriginSource::Dangling`]）— 黙って既定に戻ると、指定したはずの起点が
 //! いつの間にか動いていたことに気付けない。
+//!
+//! ## 第二の住人 — 見送りの記録（§7.5 / §8.5）
+//!
+//! [`FarewellEntry`] が「いつ何を見送ったか」と「`AskHuman` がどれだけ滞留しているか」を持つ。
+//! こちらも key は `LaneId` で、**記録時点の lane 名をスナップショット**で並べて持つ
+//! （履歴は rename で動いてはいけない / 同名 lane の再作成と混ざってはいけない）。
 
+use crate::host::farewell::FarewellVerdict;
 use crate::process::lanes_state::ROOT_LANE_NAME;
 
 /// 起点の解決に要る lane の最小情報（id と表示名の対）。
@@ -132,6 +139,198 @@ pub fn apply_lane_order<T>(
     }
     // 安定 sort なので、同じ rank（= どちらも未指定）は元の並びが保たれる。
     lanes.sort_by_key(|l| order.get(&id_of(l)).copied().unwrap_or(i64::MAX));
+}
+
+// =============================================================================
+// data + calculations — 見送りの記録（doc 44 §7.5「帳簿の永続化」）
+// =============================================================================
+
+/// 帳簿に載る見送りの記録の**種類**。
+///
+/// 2 つしか無いのは、帳簿に書くのが「計算で復元できない事実」だけだから（§8.5 の規律）:
+///
+/// - `Reclaimed` = lane を消した。**消した後は survey で復元できない**
+/// - `Pending` = 人の判断待ちが**いつから何回続いているか**。今この瞬間が `AskHuman` かは
+///   `survey_project` が都度計算できるが、「いつから」「何回目」は観測の履歴なので計算できない
+///
+/// `Keep` と「判定だけの `Reclaim`」を書かないのは同じ理由 — どちらも次の survey で同じ答えが
+/// 出る（= 復元できる）。書けば行が増えるだけで新しい事実は増えない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FarewellKind {
+    /// 人の判断待ち（`AskHuman` の滞留）。連続する限り 1 行に畳んで回数を数える
+    Pending,
+    /// 実際に見送った（lane は消えている）
+    Reclaimed,
+}
+
+impl FarewellKind {
+    /// DB / wire に載る文字列。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FarewellKind::Pending => "pending",
+            FarewellKind::Reclaimed => "reclaimed",
+        }
+    }
+
+    /// 文字列から戻す（未知の値は `None` — 帳簿の行が読めなくても他の行は読める）。
+    pub fn from_label(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(FarewellKind::Pending),
+            "reclaimed" => Some(FarewellKind::Reclaimed),
+            _ => None,
+        }
+    }
+}
+
+/// 帳簿の 1 行（見送りの履歴 / `AskHuman` の滞留）。
+///
+/// # なぜ名前を**スナップショット**で持つのか
+///
+/// key は [`lane_id`](Self::lane_id) なので、rename しても行は動かない（§8.2）。だが
+/// 履歴の表示に「今の名前」を引くと、**過去の記録が rename で書き換わって見える**
+/// （「old-feat を見送った」が「new-feat を見送った」になる）。しかも lane を見送った後は
+/// 引く先が消えているので引けない。だから記録時点の名前をその場で凍結する。
+///
+/// 逆に `vp lane cleanup` の**現在の行**は survey が持つ生きた名前を表示する — 帳簿から
+/// 取るのは回数と初回時刻だけ。こうすると凍結名が現在の表示に漏れない。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FarewellEntry {
+    /// 帳簿の key（記録時点の lane の安定 id）
+    pub lane_id: String,
+    /// 記録時点の lane 名（表示専用のスナップショット、後から書き換えない）
+    pub lane_name: String,
+    pub kind: FarewellKind,
+    /// 直近に観測した判定理由
+    pub reason: String,
+    /// 同じ判定が**連続した回数**（1 = 初回）。
+    ///
+    /// ⚠️ これは「日数」ではなく「survey を回した回数」。`vp lane cleanup` を連打すれば
+    /// 増える。だから [`first_seen_at`](Self::first_seen_at) を必ず添えて表示する
+    /// （回数だけを見せると滞留の長さを誤読させる）。
+    pub streak: u32,
+    /// 連続の**初回**を観測した時刻（RFC3339 / UTC）
+    pub first_seen_at: String,
+    /// 直近に観測した時刻（RFC3339 / UTC）
+    pub last_seen_at: String,
+    /// 滞留が継続中か（`Pending` だけが true になりうる。`Reclaimed` は常に終端）
+    pub ongoing: bool,
+}
+
+/// 1 lane 分の見送り判定の観測（CLI → World の RPC payload でもある）。
+///
+/// `verdict` は [`FarewellVerdict`] をそのまま flatten するので、wire 上は
+/// `{"lane_id":..,"lane_name":..,"verdict":"ask_human","reason":".."}` になる
+/// （`FarewellReport` と同じ形）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FarewellObservation {
+    /// 帳簿の key。**lane を消す前に**解決しておくこと（消すと id の state file も消える）
+    pub lane_id: String,
+    /// 記録時点の lane 名
+    pub lane_name: String,
+    #[serde(flatten)]
+    pub verdict: FarewellVerdict,
+}
+
+/// 観測 1 件を帳簿にどう反映するか（[`fold_farewell_observation`] の出力）。
+///
+/// DB 操作を直接返さず「何をすべきか」だけを返すので、**時刻を注入して全分岐を
+/// テストで固定**できる（Host の層 1 = calculations）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FarewellWrite {
+    /// 何も書かない（記録対象でない判定 + 継続中の滞留も無い）。
+    ///
+    /// **これが多数派**であることが書き込み量の設計そのもの — 安定した lane
+    /// （起点 / 稼働中 / 未 merge の作業中）は survey のたびに 0 write で通り過ぎる
+    Nothing,
+    /// 継続中の滞留を閉じる（判定が `AskHuman` から外れた = 人の判断が済んだ）
+    Close,
+    /// 滞留を新しく起こす（streak = 1、first_seen_at = now）
+    Open { at: String },
+    /// 継続中の滞留を伸ばす（streak を 1 増やし、last_seen_at = now）
+    Extend { streak: u32, at: String },
+}
+
+/// 観測を帳簿にどう反映するかを決める **純関数**（Host の層 1）。
+///
+/// # 「同じ判定の連続は 1 行に畳む」理由
+///
+/// `vp lane cleanup` は何度でも走る。観測のたびに行を足すと、**放置された lane ほど
+/// 帳簿を太らせる**（滞留を追いたいのに、滞留が帳簿を壊す）。連続を 1 行に畳めば
+/// 行数は「判定が変わった回数」に比例し、走らせた回数には比例しない。
+///
+/// 畳んでも失う事実は無い: 連続の間は判定も理由もほぼ同じで、意味があるのは
+/// **いつから続いているか（`first_seen_at`）と何回目か（`streak`）**だけ。
+///
+/// # 判定が変わったら閉じる
+///
+/// `AskHuman` 以外（`Keep` / `Reclaim`）が来たら滞留は解消したので閉じる。閉じずに
+/// 放置すると、後でまた `AskHuman` になった時に**連続していない観測が 1 本の滞留に
+/// 見える**（「3 週間放置」が実は「1 回 → 解決 → 2 週後にまた 1 回」だったことになる）。
+pub fn fold_farewell_observation(
+    open: Option<&FarewellEntry>,
+    verdict: &FarewellVerdict,
+    now: &str,
+) -> FarewellWrite {
+    let pending = matches!(verdict, FarewellVerdict::AskHuman { .. });
+    match (open, pending) {
+        (None, false) => FarewellWrite::Nothing,
+        (None, true) => FarewellWrite::Open {
+            at: now.to_string(),
+        },
+        (Some(_), false) => FarewellWrite::Close,
+        (Some(entry), true) => FarewellWrite::Extend {
+            streak: entry.streak.saturating_add(1),
+            at: now.to_string(),
+        },
+    }
+}
+
+/// 滞留の表示文（`3 回連続、初回 2026-07-15`）。初回の観測（streak = 1）は `None`。
+///
+/// 1 回目に注記を付けないのは、**滞留していない行に注記が付くと信号が薄まる**ため。
+/// `vp lane cleanup` の要判断行は毎回全部出るので、「積み残されているもの」だけが
+/// 目に付く形にする。
+///
+/// 日付は保存された RFC3339 の日付部分をそのまま出す（UTC）。local に変換しないのは、
+/// 変換すると表示が実行環境の TZ に依存してテストで固定できなくなるため。滞留の粒度は
+/// 日単位で足りるので、日付境界の 1 日ずれは許容する。
+pub fn stagnation_note(entry: &FarewellEntry) -> Option<String> {
+    if entry.streak < 2 {
+        return None;
+    }
+    let day = entry
+        .first_seen_at
+        .get(..10)
+        .unwrap_or(&entry.first_seen_at);
+    Some(format!("{} 回連続、初回 {}", entry.streak, day))
+}
+
+/// 帳簿 1 行の表示（`vp lane history` の 1 行）。
+///
+/// 純関数にしてあるのは、**読み手が実際に何を出すか**をテストで固定するため
+/// （帳簿の書き込みだけをテストすると「読み手のない書き込み」に戻る）。
+pub fn format_history_line(entry: &FarewellEntry) -> String {
+    let day = entry.last_seen_at.get(..10).unwrap_or(&entry.last_seen_at);
+    match entry.kind {
+        FarewellKind::Reclaimed => {
+            format!("{day}  🧹 見送り  {}  {}", entry.lane_name, entry.reason)
+        }
+        FarewellKind::Pending => {
+            let state = if entry.ongoing {
+                "⚠️ 判断待ち"
+            } else {
+                "✓ 解消済"
+            };
+            let note = stagnation_note(entry)
+                .map(|n| format!("（{n}）"))
+                .unwrap_or_default();
+            format!(
+                "{day}  {state}  {}{note}  {}",
+                entry.lane_name, entry.reason
+            )
+        }
+    }
 }
 
 // =============================================================================
@@ -256,6 +455,141 @@ pub async fn set_origin(
     db.upsert_host_origin(&row_key(project_path), id)
         .await
         .map_err(|e| format!("帳簿: 起点の永続に失敗: {e}"))
+}
+
+/// 見送り判定を帳簿に反映し、**反映後の滞留一覧**を返す（doc 44 §7.5）。
+///
+/// `now` を引数で受けるのは記録時刻をテストで固定するため（本番は呼び出し側が実時刻を渡す）。
+///
+/// # 書かない条件
+///
+/// - `vpdb` が無い（test fixture / 未接続）→ 何もしない。帳簿が無いだけで見送りを止めない
+/// - `lane_id` が空 → その lane は**飛ばす**。key を持たない行を作ると、後から
+///   「どの lane の履歴か」を復元できない（空 id は `lane_id_of` でも弾いている）
+///
+/// なお **「稼働状況が不明」で保留した時に書かない**ことは、呼び出し側の順序で保証する
+/// （保留は survey に進まない = 観測が 1 件も無い）。事実が無い状態を履歴に残さない。
+pub async fn record_farewell_observations(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    observations: &[FarewellObservation],
+    now: &str,
+) -> Vec<FarewellEntry> {
+    let Some(db) = vpdb else { return Vec::new() };
+    let key = row_key(project_path);
+    for obs in observations {
+        if obs.lane_id.is_empty() {
+            tracing::warn!(
+                "帳簿: lane '{}' は安定 id を持たないので見送りの記録を飛ばす",
+                obs.lane_name
+            );
+            continue;
+        }
+        let open = match db.get_open_farewell(&key, &obs.lane_id).await {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!("帳簿: 滞留の読み出しに失敗（記録を飛ばす）: {}", e);
+                continue;
+            }
+        };
+        let write = fold_farewell_observation(open.as_ref(), &obs.verdict, now);
+        let result = match write {
+            FarewellWrite::Nothing => Ok(()),
+            FarewellWrite::Close => db.close_open_farewell(&key, &obs.lane_id).await,
+            FarewellWrite::Open { at } => {
+                db.create_farewell_entry(
+                    &key,
+                    &FarewellEntry {
+                        lane_id: obs.lane_id.clone(),
+                        lane_name: obs.lane_name.clone(),
+                        kind: FarewellKind::Pending,
+                        reason: obs.verdict.reason().to_string(),
+                        streak: 1,
+                        first_seen_at: at.clone(),
+                        last_seen_at: at,
+                        ongoing: true,
+                    },
+                )
+                .await
+            }
+            FarewellWrite::Extend { streak, at } => {
+                db.extend_open_farewell(&key, &obs.lane_id, streak, obs.verdict.reason(), &at)
+                    .await
+            }
+        };
+        if let Err(e) = result {
+            tracing::warn!("帳簿: 見送り判定の記録に失敗（続行）: {}", e);
+        }
+    }
+    match db.list_open_farewells(&key).await {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::warn!("帳簿: 滞留一覧の読み出しに失敗: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+/// 実際に見送った lane を帳簿に記録する（終端 event、doc 44 §7.5）。
+///
+/// 判定（`Reclaim`）ではなく**実行**を書くのがここ。判定は次の survey で同じ答えが出る =
+/// 復元できるが、消した lane は復元できない。戻り値は記録できた件数。
+pub async fn record_farewell_reclaimed(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    entries: &[FarewellObservation],
+    now: &str,
+) -> usize {
+    let Some(db) = vpdb else { return 0 };
+    let key = row_key(project_path);
+    let mut written = 0usize;
+    for obs in entries {
+        if obs.lane_id.is_empty() {
+            tracing::warn!(
+                "帳簿: lane '{}' は安定 id を持たないので見送りの記録を飛ばす",
+                obs.lane_name
+            );
+            continue;
+        }
+        // 見送った lane に滞留が残っていたら閉じる（消えた lane が判断待ちのまま残らない）。
+        if let Err(e) = db.close_open_farewell(&key, &obs.lane_id).await {
+            tracing::warn!("帳簿: 滞留の終端に失敗（続行）: {}", e);
+        }
+        let entry = FarewellEntry {
+            lane_id: obs.lane_id.clone(),
+            lane_name: obs.lane_name.clone(),
+            kind: FarewellKind::Reclaimed,
+            reason: obs.verdict.reason().to_string(),
+            streak: 1,
+            first_seen_at: now.to_string(),
+            last_seen_at: now.to_string(),
+            ongoing: false,
+        };
+        match db.create_farewell_entry(&key, &entry).await {
+            Ok(()) => written += 1,
+            Err(e) => tracing::warn!("帳簿: 見送りの記録に失敗（続行）: {}", e),
+        }
+    }
+    written
+}
+
+/// 帳簿の見送り記録を新しい順に読む（`vp lane history` の供給元）。
+pub async fn farewell_history(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    limit: usize,
+) -> Vec<FarewellEntry> {
+    let Some(db) = vpdb else { return Vec::new() };
+    match db
+        .list_farewell_entries(&row_key(project_path), limit)
+        .await
+    {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::warn!("帳簿: 見送り履歴の読み出しに失敗: {}", e);
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -552,5 +886,386 @@ mod tests {
         let id = lane_id_of("foo", &lanes).expect("id");
         let origin = resolve_origin_name(Some(id), &lanes);
         assert_eq!(origin.name, "foo");
+    }
+
+    // =========================================================================
+    // 見送りの記録（doc 44 §7.5）
+    // =========================================================================
+
+    fn ask(reason: &str) -> FarewellVerdict {
+        FarewellVerdict::AskHuman {
+            reason: reason.to_string(),
+        }
+    }
+
+    fn observation(id: &str, name: &str, verdict: FarewellVerdict) -> FarewellObservation {
+        FarewellObservation {
+            lane_id: id.to_string(),
+            lane_name: name.to_string(),
+            verdict,
+        }
+    }
+
+    fn pending_entry(streak: u32, first: &str) -> FarewellEntry {
+        FarewellEntry {
+            lane_id: "id-1".to_string(),
+            lane_name: "foo".to_string(),
+            kind: FarewellKind::Pending,
+            reason: "未コミットの変更".to_string(),
+            streak,
+            first_seen_at: first.to_string(),
+            last_seen_at: first.to_string(),
+            ongoing: true,
+        }
+    }
+
+    async fn mem_db() -> crate::db::SharedVpDb {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+        db
+    }
+
+    /// 記録対象でない判定は**何も書かない**。ここが書き込み量の設計そのもの。
+    ///
+    /// 安定した lane（起点 / 稼働中 / 作業中）は survey のたびに 0 write で通り過ぎる。
+    /// ここが `Open` を返すようになると、`vp lane cleanup` を回すたびに全 lane 分の行が
+    /// 増えて帳簿が実行回数に比例して太る。
+    #[test]
+    fn stable_verdicts_write_nothing() {
+        for verdict in [
+            FarewellVerdict::Keep {
+                reason: "稼働中".to_string(),
+            },
+            FarewellVerdict::Reclaim {
+                reason: "merge 済み".to_string(),
+            },
+        ] {
+            assert_eq!(
+                fold_farewell_observation(None, &verdict, "2026-07-15T00:00:00+00:00"),
+                FarewellWrite::Nothing,
+                "滞留していない lane は 1 度も書かない: {verdict:?}"
+            );
+        }
+    }
+
+    /// `AskHuman` の連続は**行を増やさず回数を増やす**（1 行に畳む）。
+    #[test]
+    fn consecutive_ask_human_folds_into_streak() {
+        let first = fold_farewell_observation(None, &ask("dirty"), "2026-07-15T00:00:00+00:00");
+        assert_eq!(
+            first,
+            FarewellWrite::Open {
+                at: "2026-07-15T00:00:00+00:00".to_string()
+            }
+        );
+
+        let open = pending_entry(1, "2026-07-15T00:00:00+00:00");
+        assert_eq!(
+            fold_farewell_observation(Some(&open), &ask("dirty"), "2026-07-16T00:00:00+00:00"),
+            FarewellWrite::Extend {
+                streak: 2,
+                at: "2026-07-16T00:00:00+00:00".to_string()
+            },
+            "2 回目は新しい行ではなく既存の滞留を伸ばす"
+        );
+    }
+
+    /// 判定が滞留から外れたら**閉じる**。
+    ///
+    /// 閉じないと、後でまた `AskHuman` になった時に連続していない観測が 1 本の滞留に
+    /// 見える（「3 週間放置」が実は「1 回 → 解決 → 2 週後にまた 1 回」だったことになる）。
+    #[test]
+    fn resolved_pending_is_closed_not_extended() {
+        let open = pending_entry(3, "2026-07-15T00:00:00+00:00");
+        assert_eq!(
+            fold_farewell_observation(
+                Some(&open),
+                &FarewellVerdict::Keep {
+                    reason: "未 merge の commit".to_string()
+                },
+                "2026-07-20T00:00:00+00:00"
+            ),
+            FarewellWrite::Close
+        );
+    }
+
+    /// 滞留の注記は 2 回目から出る（1 回目は滞留ではない）。
+    #[test]
+    fn stagnation_note_starts_at_second_observation() {
+        assert_eq!(
+            stagnation_note(&pending_entry(1, "2026-07-15T00:00:00+00:00")),
+            None,
+            "初回に注記を付けると要判断行が全部注記だらけになって信号が薄まる"
+        );
+        assert_eq!(
+            stagnation_note(&pending_entry(3, "2026-07-15T09:00:00+00:00")).as_deref(),
+            Some("3 回連続、初回 2026-07-15"),
+            "回数だけでなく初回時刻を必ず添える（回数は実行回数なので連打で膨らむ）"
+        );
+    }
+
+    /// 帳簿の round-trip: 判定 → 記録 → 滞留として読み戻る。
+    ///
+    /// **時刻を注入**して固定値で検証する（記録時点の実時刻は本番の呼び出し側が渡す）。
+    #[tokio::test]
+    async fn observations_accumulate_stagnation() {
+        let db = mem_db().await;
+        let obs = vec![observation("id-1", "foo", ask("未コミットの変更が 1 件"))];
+
+        let pending =
+            record_farewell_observations(Some(&db), "/tmp/proj", &obs, "2026-07-15T00:00:00+00:00")
+                .await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].streak, 1);
+        assert_eq!(pending[0].first_seen_at, "2026-07-15T00:00:00+00:00");
+
+        let pending =
+            record_farewell_observations(Some(&db), "/tmp/proj", &obs, "2026-07-16T00:00:00+00:00")
+                .await;
+        assert_eq!(pending.len(), 1, "行は増えない（連続は 1 行に畳む）");
+        assert_eq!(pending[0].streak, 2);
+        assert_eq!(
+            pending[0].first_seen_at, "2026-07-15T00:00:00+00:00",
+            "初回時刻は動かない"
+        );
+        assert_eq!(pending[0].last_seen_at, "2026-07-16T00:00:00+00:00");
+
+        // 判定が変われば滞留は解消 = 一覧から消える（行は履歴として残る）
+        let keep = vec![observation(
+            "id-1",
+            "foo",
+            FarewellVerdict::Keep {
+                reason: "未 merge の commit が 2 件ある".to_string(),
+            },
+        )];
+        let pending = record_farewell_observations(
+            Some(&db),
+            "/tmp/proj",
+            &keep,
+            "2026-07-17T00:00:00+00:00",
+        )
+        .await;
+        assert!(pending.is_empty(), "解消した滞留は滞留一覧に出ない");
+        let history = farewell_history(Some(&db), "/tmp/proj", 0).await;
+        assert_eq!(history.len(), 1, "行は履歴として残る");
+        assert!(!history[0].ongoing);
+        assert_eq!(history[0].streak, 2);
+
+        // 再発は**新しい滞留**として起票される（前の 2 回と繋がらない）
+        let pending =
+            record_farewell_observations(Some(&db), "/tmp/proj", &obs, "2026-07-20T00:00:00+00:00")
+                .await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].streak, 1, "解消を挟んだら連続ではない");
+        assert_eq!(pending[0].first_seen_at, "2026-07-20T00:00:00+00:00");
+    }
+
+    /// 回帰固定: **rename しても履歴が動かない**（key が id である意味）。
+    ///
+    /// 同じ id を別名で観測した時に:
+    /// - 滞留は**繋がる**（key が名前なら別 lane 扱いで streak が 1 に戻る）
+    /// - 既存行の `lane_name` は**記録時点のまま**（更新すると過去の記録が rename で
+    ///   書き換わり、「old-feat を見送った」が「new-feat を見送った」になる）
+    #[tokio::test]
+    async fn rename_keeps_history_in_place() {
+        let db = mem_db().await;
+        record_farewell_observations(
+            Some(&db),
+            "/tmp/proj",
+            &[observation("id-1", "old-name", ask("未コミットの変更"))],
+            "2026-07-15T00:00:00+00:00",
+        )
+        .await;
+
+        // rename 後の観測（id は同じ、名前だけ変わる）
+        let pending = record_farewell_observations(
+            Some(&db),
+            "/tmp/proj",
+            &[observation("id-1", "new-name", ask("未コミットの変更"))],
+            "2026-07-16T00:00:00+00:00",
+        )
+        .await;
+
+        assert_eq!(pending.len(), 1, "rename しても行は分裂しない");
+        assert_eq!(pending[0].streak, 2, "滞留は id で繋がる");
+        assert_eq!(
+            pending[0].lane_name, "old-name",
+            "名前は記録時点のスナップショット（履歴は rename で動かない）"
+        );
+    }
+
+    /// 回帰固定: **同名 lane を作り直しても前の履歴と混ざらない**。
+    ///
+    /// lane を消すと `lane_ids` state file も消える（`clear_lane_state_in`）ので、同名で
+    /// 作り直した lane は必ず別 id になる。帳簿が名前 key だと、前の lane の滞留 3 回を
+    /// 新しい lane が引き継いでしまう（= 作ったばかりの lane が「3 回放置されている」）。
+    #[tokio::test]
+    async fn recreated_lane_does_not_inherit_history() {
+        let db = mem_db().await;
+        for now in [
+            "2026-07-15T00:00:00+00:00",
+            "2026-07-16T00:00:00+00:00",
+            "2026-07-17T00:00:00+00:00",
+        ] {
+            record_farewell_observations(
+                Some(&db),
+                "/tmp/proj",
+                &[observation("id-old", "foo", ask("未コミットの変更"))],
+                now,
+            )
+            .await;
+        }
+        // 旧 lane を見送る（= 削除）。以後この id は二度と現れない。
+        record_farewell_reclaimed(
+            Some(&db),
+            "/tmp/proj",
+            &[observation(
+                "id-old",
+                "foo",
+                FarewellVerdict::Reclaim {
+                    reason: "merge 済みで作業残なし".to_string(),
+                },
+            )],
+            "2026-07-18T00:00:00+00:00",
+        )
+        .await;
+
+        // 同じ名前で作り直し（新しい安定 id）
+        let pending = record_farewell_observations(
+            Some(&db),
+            "/tmp/proj",
+            &[observation("id-new", "foo", ask("未コミットの変更"))],
+            "2026-07-19T00:00:00+00:00",
+        )
+        .await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].lane_id, "id-new");
+        assert_eq!(
+            pending[0].streak, 1,
+            "作り直した lane は前の滞留を引き継がない"
+        );
+
+        // 旧 lane の記録は履歴として残り、見送りが終端している
+        let history = farewell_history(Some(&db), "/tmp/proj", 0).await;
+        let reclaimed: Vec<_> = history
+            .iter()
+            .filter(|e| e.kind == FarewellKind::Reclaimed)
+            .collect();
+        assert_eq!(reclaimed.len(), 1, "見送りは 1 件記録されている");
+        assert_eq!(reclaimed[0].lane_id, "id-old");
+        assert!(
+            history
+                .iter()
+                .all(|e| e.kind != FarewellKind::Pending || !e.ongoing || e.lane_id == "id-new"),
+            "旧 lane の滞留は見送りで閉じている: {history:?}"
+        );
+    }
+
+    /// 安定 id を持たない lane（空 id）は記録しない。
+    ///
+    /// key の無い行を作ると「どの lane の履歴か」を後から復元できない
+    /// （起点ポインタが空 id を弾くのと同じ規律）。
+    #[tokio::test]
+    async fn lane_without_stable_id_is_not_recorded() {
+        let db = mem_db().await;
+        let pending = record_farewell_observations(
+            Some(&db),
+            "/tmp/proj",
+            &[observation("", "legacy", ask("未コミットの変更"))],
+            "2026-07-15T00:00:00+00:00",
+        )
+        .await;
+        assert!(pending.is_empty());
+        assert!(farewell_history(Some(&db), "/tmp/proj", 0).await.is_empty());
+    }
+
+    /// 帳簿の行も `row_key` に乗る（書き手と読み手の path の形が違っても同じ project）。
+    ///
+    /// 起点 / 並び順で固定したのと同じ回帰。ズレると `vp lane cleanup` が書いた滞留を
+    /// `vp lane history` が読めない（症状は「記録が消えた」だけで error は出ない）。
+    #[tokio::test]
+    async fn farewell_rows_share_the_normalized_row_key() {
+        let db = mem_db().await;
+        let dir = std::env::temp_dir().join(format!("vp-ledger-farewell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical = dir.to_string_lossy().to_string();
+        let quirky = format!("{canonical}/.");
+
+        record_farewell_observations(
+            Some(&db),
+            &quirky,
+            &[observation("id-1", "foo", ask("未コミットの変更"))],
+            "2026-07-15T00:00:00+00:00",
+        )
+        .await;
+        let history = farewell_history(Some(&db), &canonical, 0).await;
+        assert_eq!(history.len(), 1, "path の形が違っても同じ行を読む");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DB 不在（test fixture / 未接続）でも落ちない — 帳簿が無いだけで見送りは止めない。
+    #[tokio::test]
+    async fn missing_db_is_a_noop() {
+        let obs = [observation("id-1", "foo", ask("dirty"))];
+        assert!(
+            record_farewell_observations(None, "/tmp/proj", &obs, "2026-07-15")
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            record_farewell_reclaimed(None, "/tmp/proj", &obs, "2026-07-15").await,
+            0
+        );
+        assert!(farewell_history(None, "/tmp/proj", 0).await.is_empty());
+    }
+
+    /// 履歴の表示（`vp lane history` の 1 行）。読み手が何を出すかを固定する。
+    #[test]
+    fn history_line_shows_kind_and_snapshot_name() {
+        let reclaimed = FarewellEntry {
+            lane_id: "id-1".to_string(),
+            lane_name: "old-feat".to_string(),
+            kind: FarewellKind::Reclaimed,
+            reason: "merge 済みで作業残なし".to_string(),
+            streak: 1,
+            first_seen_at: "2026-07-18T03:00:00+00:00".to_string(),
+            last_seen_at: "2026-07-18T03:00:00+00:00".to_string(),
+            ongoing: false,
+        };
+        let line = format_history_line(&reclaimed);
+        assert!(line.starts_with("2026-07-18"), "日付が先頭: {line}");
+        assert!(line.contains("見送り"), "種別が出る: {line}");
+        assert!(
+            line.contains("old-feat"),
+            "記録時点の名前が出る（今の名前ではない）: {line}"
+        );
+
+        let mut pending = pending_entry(3, "2026-07-15T00:00:00+00:00");
+        pending.last_seen_at = "2026-07-21T00:00:00+00:00".to_string();
+        let line = format_history_line(&pending);
+        assert!(line.contains("判断待ち"), "{line}");
+        assert!(line.contains("3 回連続、初回 2026-07-15"), "{line}");
+    }
+
+    /// `FarewellObservation` は wire に載るので serde 形を固定する。
+    ///
+    /// `verdict` は flatten なので `{"verdict":"ask_human","reason":".."}` の形。
+    /// ここがズレると CLI の観測が World で `serde_json::from_value` に落ちて、
+    /// **記録だけが黙って止まる**（cleanup 自体は動くので気付けない）。
+    #[test]
+    fn observation_serde_shape() {
+        let obs = observation("id-1", "foo", ask("未コミットの変更が 1 件"));
+        let json = serde_json::to_value(&obs).unwrap();
+        assert_eq!(json["lane_id"], "id-1");
+        assert_eq!(json["lane_name"], "foo");
+        assert_eq!(json["verdict"], "ask_human");
+        assert_eq!(json["reason"], "未コミットの変更が 1 件");
+        assert_eq!(
+            serde_json::from_value::<FarewellObservation>(json).unwrap(),
+            obs,
+            "往復する（World 側で観測を読み戻せる）"
+        );
     }
 }

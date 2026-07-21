@@ -491,6 +491,58 @@ impl WorldControlClient {
     ///
     /// SSOT 原則: CLI は hub に直接接続せず、TheWorld の `hub/discover` RPC を叩く。
     /// `CHRONISTA_HUB_ADDR` 未設定時は World 側が federation 無効エラーを返す。
+    /// 見送り判定を Project Host の帳簿に記録し、**反映後の滞留一覧**を受け取る
+    /// （doc 44 §7.5）。
+    ///
+    /// 帳簿は db/world にあり World が専有するので CLI からは直接書けない（§8.4）。
+    /// 記録と読み出しを 1 往復にまとめてあるのは、`vp lane cleanup` が判定を表示する
+    /// その場で「何回目 / 初回いつ」を添えるため（別 RPC にすると表示のたびに 2 往復になる）。
+    pub async fn farewell_observe(
+        &self,
+        project_path: &str,
+        observations: &[crate::host::ledger::FarewellObservation],
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let resp = self
+            .call(
+                "host/farewell_observe",
+                serde_json::json!({ "path": project_path, "observations": observations }),
+            )
+            .await?;
+        let pending = resp.get("pending").cloned().unwrap_or_default();
+        serde_json::from_value(pending).context("host/farewell_observe レスポンスのパースに失敗")
+    }
+
+    /// 実際に見送った lane を帳簿に記録する（終端 event、doc 44 §7.5）。返り値は記録件数。
+    pub async fn farewell_reclaimed(
+        &self,
+        project_path: &str,
+        lanes: &[crate::host::ledger::FarewellObservation],
+    ) -> Result<usize> {
+        let resp = self
+            .call(
+                "host/farewell_reclaimed",
+                serde_json::json!({ "path": project_path, "lanes": lanes }),
+            )
+            .await?;
+        Ok(resp.get("recorded").and_then(|r| r.as_u64()).unwrap_or(0) as usize)
+    }
+
+    /// 帳簿の見送り記録を新しい順に読む（`vp lane history`）。`limit` 0 = 無制限。
+    pub async fn farewell_log(
+        &self,
+        project_path: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let resp = self
+            .call(
+                "host/farewell_log",
+                serde_json::json!({ "path": project_path, "limit": limit }),
+            )
+            .await?;
+        let entries = resp.get("entries").cloned().unwrap_or_default();
+        serde_json::from_value(entries).context("host/farewell_log レスポンスのパースに失敗")
+    }
+
     pub async fn hub_discover(&self) -> Result<Vec<serde_json::Value>> {
         let resp = self.call("hub/discover", serde_json::json!({})).await?;
         // 新 daemon は `{ "worlds": [...] }` (channel 慣習 + vp-daemon.kdl の returns と一致)、
