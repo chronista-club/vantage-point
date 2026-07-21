@@ -606,6 +606,10 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	// Act が決めるのは **focus だけ**で、どちらの Pane も中身は常に現 lane を映す。
 	chatHost?.classList.add("active");
 	chatView?.showLane(lane);
+	// doc 47 §3: Pane 構成は **lane ごと**。DOM host は app 共有なので、lane が
+	// 変わったら新 lane の layout を DOM へ写し直す（これが無いと「どの lane に
+	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
+	paneShell?.setLane(lane);
 	if (mode === "chat") {
 		paneShell?.focus("console-chat-host");
 	} else {

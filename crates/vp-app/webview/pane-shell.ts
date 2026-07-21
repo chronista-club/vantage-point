@@ -155,6 +155,59 @@ export function newPaneChoices(
   return out
 }
 
+/**
+ * lane ごとの [`PaneLayout`] を束ねる（doc 47 §3、純粋 = DOM を知らない）。
+ *
+ * Pane の**顔ぶれ**（template）は lane によらず共通で、**構成**（並び / 縮小 / focus）が
+ * lane ごとに独立する。DOM host は app 共有なので、lane を切り替えたら
+ * この class から新 lane の構成を引いて DOM に写し直す。
+ *
+ * doc 46 P1 は layout を app に 1 つしか持たず、実機で「どの lane に移動しても
+ * 常に 2 Pane」として観測された。**client 所有と決めたことと、何単位で持つかは別の決定**
+ * （doc 47 §0）。
+ */
+export class LaneLayouts {
+  private readonly layouts = new Map<string, PaneLayout>()
+  private readonly template: PaneRef[] = []
+  private lane: string | null = null
+
+  /** Pane を登録する。**全 lane に効く**（顔ぶれは lane によらない）。 */
+  dock(pane: PaneRef): void {
+    const i = this.template.findIndex((p) => p.id === pane.id)
+    if (i >= 0) this.template[i] = pane
+    else this.template.push(pane)
+    for (const l of this.layouts.values()) l.dock(pane)
+  }
+
+  /** 表示 lane を切り替える。戻り値は実際に変わったか。 */
+  setLane(lane: string): boolean {
+    if (this.lane === lane) return false
+    this.lane = lane
+    return true
+  }
+
+  /**
+   * 表示中 lane の layout。
+   *
+   * lane 未設定でも**空でない layout** を返す（template を蒔く）。null を返して
+   * 呼び手に分岐させると、lane 切替の窓で render が飛んで class が前 lane のまま残る。
+   */
+  current(): PaneLayout {
+    if (this.lane == null) return this.seed(new PaneLayout())
+    let l = this.layouts.get(this.lane)
+    if (!l) {
+      l = this.seed(new PaneLayout())
+      this.layouts.set(this.lane, l)
+    }
+    return l
+  }
+
+  private seed(l: PaneLayout): PaneLayout {
+    for (const p of this.template) l.dock(p)
+    return l
+  }
+}
+
 export const CLASS_MINIMIZED = 'pane-minimized'
 export const CLASS_FOCUSED = 'pane-focused'
 /** タブエリアの開閉（chip がある時だけ開く = 空なら従来の見た目）。 */
@@ -167,7 +220,7 @@ export const CLASS_TABS_ACTIVE = 'pane-tabs-active'
  * Pane 数が数枚である前提で、差分計算のバグより作り直しの単純さを取る。
  */
 export class PaneShell {
-  readonly layout = new PaneLayout()
+  private readonly lanes = new LaneLayouts()
 
   constructor(
     /** Pane host 要素の解決（id → 要素）。テストから差し替え可能にするため関数で受ける。 */
@@ -177,8 +230,18 @@ export class PaneShell {
     private readonly frame: HTMLElement,
   ) {}
 
+  /** 表示中 lane の layout（読み取り用）。 */
+  get layout(): PaneLayout {
+    return this.lanes.current()
+  }
+
+  /** 表示 lane を切り替え、新 lane の構成を DOM へ写し直す（doc 47 §3）。 */
+  setLane(lane: string): void {
+    if (this.lanes.setLane(lane)) this.render()
+  }
+
   dock(pane: PaneRef): void {
-    this.layout.dock(pane)
+    this.lanes.dock(pane)
     this.render()
   }
 
@@ -198,19 +261,20 @@ export class PaneShell {
   }
 
   render(): void {
-    for (const p of this.layout.all()) {
+    const layout = this.layout
+    for (const p of layout.all()) {
       const el = this.hostOf(p.id)
       if (!el) continue
-      el.classList.toggle(CLASS_MINIMIZED, this.layout.isMinimized(p.id))
-      el.classList.toggle(CLASS_FOCUSED, this.layout.focused() === p.id)
+      el.classList.toggle(CLASS_MINIMIZED, layout.isMinimized(p.id))
+      el.classList.toggle(CLASS_FOCUSED, layout.focused() === p.id)
     }
     // タブエリアは **全 Pane のスイッチャー**。畳んだものだけ並べると
     // 「並んでいる Pane を畳む」入口が UI に無くなる（要件 2 の片道しか通らない）。
     // docked は `.docked` を付けて「今出ている」ことを示し、click で往復する。
-    const min = this.layout.minimizedPanes()
+    const min = layout.minimizedPanes()
     this.tabs.replaceChildren()
-    for (const p of this.layout.all()) {
-      const isMin = this.layout.isMinimized(p.id)
+    for (const p of layout.all()) {
+      const isMin = layout.isMinimized(p.id)
       const chip = document.createElement('button')
       chip.type = 'button'
       chip.className = isMin ? 'pane-tab' : 'pane-tab docked'
