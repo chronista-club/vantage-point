@@ -308,11 +308,13 @@ window 経由の一時フラグで凌いだ（#838）。他の bus（`vp:echoes-
 | 1 体から始まり増える | `SessionRegistry::single()` → `create` | 一致 |
 | 代表役がいる | `root`（doc 39「器に化身する session」） | **役割が位置の名前で暗黙表現** |
 | PP も同居 | `LaneCapabilitiesPool` が lane ごとに PP を持つ（VP-120） | **session とは別 pool に住んでいる** |
-| N 体の Echoes | session は N 体 | **端末を持てるのは root 1 体だけ** → P5 |
+| N 体の Echoes | session は N 体 | ~~**端末を持てるのは root 1 体だけ**~~ → ✅ P5 (`#854`) で解消 |
 
 > 3 行目が §1 の実体版: 同じ「lane の住人」なのに `chat_engines`（session ごと）/
-> `pty_slots`（lane ごと）/ `LaneCapabilitiesPool`（lane ごと）の **3 つの別々の入れ物**に
+> ~~`pty_slots`（lane ごと）~~ / `LaneCapabilitiesPool`（lane ごと）の **3 つの別々の入れ物**に
 > 分かれている。
+> → P5 で `pty_slots` は session ごとになり、`chat_engines` と**同じ形**に揃った。
+> 残る不揃いは `LaneCapabilitiesPool`（PP が lane ごと = 住人になっていない）1 つ。
 
 ### ✅ 決定: `conductor` → `root` に改名（全面）
 
@@ -347,12 +349,22 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
 1. ✅ **doc 46 P4 — Act を lane から session へ**（#848）= 本 doc §4。
    撤去ではなく移設だった（3 仕事）。残件は UI フェーズへ送った
 2. ✅ **§6 — 共有 bus の相関 id**（#850。`#838` の window フラグ凌ぎを根治）
-3. **doc 46 P5 — `pty_slots` を `(lane, session)` へ re-key**（内部の本丸）
+3. ✅ **doc 46 P5 — `pty_slots` を `(lane, session)` へ re-key**（内部の本丸、`#854`）
    - 実測: 参照 27 箇所中 **25 が `lanes_state.rs` に閉じている**（private field + method 越し）。
      doc 46 §3 の「lane key を前提にした全経路」より**カプセル化されていた**
+     → 着地も同じで、触った経路は 12（内 8 / 外 4）。外に出たのは引数追加だけ
    - 重いのは経路数ではなく**不変条件の意味論**: 「1 lane = 高々 1 エンジン
      （`pty_slots` xor `chat_engines`）」が「**1 session = 高々 1 エンジン**」に変わる。
      これは型ではなく規律で守られている
+     → 着地: 法は `pty_slots[addr][key]` xor `chat_engines[addr][key]` の
+     **同じ入れ子の高さでの検査**になった（旧実装は lane 全体を focused の時だけ見る近似）
+   - 条件②（読み手）は `vp lane capture --session` / `vp lane slots` / `vp lane nudge --session` /
+     `lanes_list` の `slots` で満たした。条件③（`LaneLayouts.dock()`）は**発火しなかった** —
+     P5 が増やすのは slot であって session ではないので chip 集合は不変（webview 無改修）
+   - 判明: **非 root slot の producer は別レイヤ待ち**。wire identity が lane 単位（`VP_LANE`）で、
+     hook の `record_root_conversation` が root entry に書くため、同じ lane に 2 本目の claude を
+     立てると root の会話 id を上書きする。動線は「hook / wire の session 粒度化」の後
+     （詳細は doc 46 §3 の着地メモ）
 4. **doc 44 P3 / doc 45** — Project Host の帳簿、transport の Unison 統一
 
 ### UI フェーズ（Epic の最後、一気に）

@@ -514,7 +514,9 @@ pub(crate) async fn respawn_terminal_pump(state: &AppState, lane: &str) -> bool 
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return false;
     };
-    let attached = state.lane_pool.read().await.attach_output(&addr);
+    // doc 46 P5: pump が張るのは lane の代表 slot（session=None = root）。
+    // 非 root slot の GUI 配線は UI フェーズ（LayoutEngine）で pane ごとに張る。
+    let attached = state.lane_pool.read().await.attach_output(&addr, None);
     let Some((replay, rx)) = attached else {
         tracing::debug!("respawn_terminal_pump: Lane に PtySlot 無 (lane={})", lane);
         return false;
@@ -795,9 +797,15 @@ async fn route_echoes(
     }
 }
 
-/// payload の additive な session key（doc 38。省略 / null = None = focused に解決される）。
-/// 型不正・0 は Err — 黙って focused に落とすと「指定したつもりの session と別の会話に届く」
+/// payload の additive な session key（doc 38 / doc 46 P5）。省略 / null = `None`。
+///
+/// 型不正・0 は Err — 黙って既定に落とすと「指定したつもりの session と別の会話に届く」
 /// 誤配送になるため、明示エラーで返す。
+///
+/// ⚠️ **`None` の解決先は経路で違う**（型が同じなので取り違えやすい）:
+/// - chat 系（`echoes_*`）= **focused**（[`LanePool::resolve_chat_session`]）
+/// - slot 系（`terminal_*` / `lane_capture` / `lane_nudge`）= **root**
+///   （[`LanePool::slot_session`] — slot は lane の設備で、代表は root。doc 39「座と化身」）
 fn payload_session_key(
     ctx: &str,
     payload: &serde_json::Value,
@@ -818,7 +826,7 @@ fn payload_session_key(
 ///
 /// surface (vp-app) → World canvas channel (upstream request) → SP control → 本 dispatch。
 /// `data` は base64 (出力 pump の encoding と対称、 任意バイトを JSON で運ぶため)。 decode して
-/// 当該 Lane の PtySlot に書き込む。
+/// 当該 slot の PtySlot に書き込む (`session` 省略 = root、doc 46 P5)。
 async fn handle_terminal_write(
     state: &AppState,
     payload: serde_json::Value,
@@ -840,7 +848,11 @@ async fn handle_terminal_write(
         .lane_pool
         .read()
         .await
-        .write_to_lane(&addr, &bytes)
+        .write_to_lane(
+            &addr,
+            payload_session_key("terminal_write", &payload)?,
+            &bytes,
+        )
         .map_err(|e| format!("terminal_write 失敗: {}", e))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
@@ -1424,10 +1436,41 @@ async fn handle_lane_nudge(
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("lane_nudge: lane パース失敗: {}", lane));
     };
-    crate::process::lanes_state::deliver_nudge(&state.lane_pool, &addr, text)
+    // doc 46 P5: `session` 省略 = root（mailbox を名乗る住人）。明示指定で同居する別 slot に届く。
+    let session = payload_session_key("lane_nudge", &payload)?;
+    crate::process::lanes_state::deliver_nudge(&state.lane_pool, &addr, session, text)
         .await
         .map_err(|e| format!("lane_nudge 失敗: {}", e))?;
-    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
+}
+
+/// doc 46 P5: lane が持つ **PTY slot の一覧**（session / pid / 生死 / root か / attach 有無）。
+///
+/// slot は lane に 1 枚ではなく session ごとになった。表示は当面ミニマム（1 枚ずつ）なので、
+/// **UI を通さずに枚数と中身を読む口**をここに置く（doc 47 §7 成立条件② — 「読み手のない
+/// 書き込み」を作らない）。CLI `vp lane slots` がこの method を ask する。
+async fn handle_lane_slots(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_slots: lane 未指定".to_string());
+    }
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("lane_slots: lane パース失敗: {}", lane));
+    };
+    let pool = state.lane_pool.read().await;
+    if pool.get(&addr).is_none() {
+        return Err(format!("lane_slots: lane 不在: {lane}"));
+    }
+    let slots = pool.slot_inventory(&addr);
+    Ok(serde_json::json!({
+        "status": "ok",
+        "lane": lane,
+        "count": slots.len(),
+        "slots": slots,
+    }))
 }
 
 /// tmux decoupling: lane console capture。 lane の Term grid（TermAttach）を text で返す。
@@ -1445,14 +1488,24 @@ async fn handle_lane_capture(
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("lane_capture: lane パース失敗: {}", lane));
     };
+    // doc 46 P5: `session` 省略 = root（lane の代表 slot）。明示指定で同居する別 slot を読む。
+    let session = payload_session_key("lane_capture", &payload)?;
     let pool = state.lane_pool.read().await;
-    let content = match pool.capture_lane(&addr) {
+    let content = match pool.capture_lane(&addr, session) {
         Some(c) => c,
         None => {
-            // capture 不能の理由を 3 分岐して UX 混乱を減らす（dogfood 2026-07-19: chat mode lane で
+            // capture 不能の理由を分岐して UX 混乱を減らす（dogfood 2026-07-19: chat mode lane で
             // 一律「lane 不在 or console 未配線」に混乱した）。chat mode lane は term_attach 無しが
             // 正常なので、pool に実在して console_mode==Chat なら「Act I に切り替えよ」と案内する。
+            // doc 46 P5: slot が複数枚になったので「その lane には何枚あるか」も添える
+            // （--session の指し先が無い時に、存在する session key が判る）。
+            let available = pool.slot_sessions(&addr);
             let msg = match pool.get(&addr) {
+                Some(_) if session.is_some_and(|k| !available.contains(&k)) => format!(
+                    "lane_capture: 指定 session に console はありません（session={}, この lane の slot: {:?}）: {lane}",
+                    session.unwrap_or(0),
+                    available
+                ),
                 Some(info)
                     if info.console_mode == crate::lane::session_registry::SessionAct::Chat =>
                 {
@@ -1466,7 +1519,13 @@ async fn handle_lane_capture(
             return Err(msg);
         }
     };
-    Ok(serde_json::json!({"status": "ok", "lane": lane, "content": content}))
+    Ok(serde_json::json!({
+        "status": "ok",
+        "lane": lane,
+        "session": session,
+        "slots": pool.slot_sessions(&addr),
+        "content": content,
+    }))
 }
 
 /// S3: terminal resize。 PtySlot (+ TermAttach grid) を cols×rows に同期する。
@@ -1495,7 +1554,12 @@ async fn handle_terminal_resize(
         .lane_pool
         .read()
         .await
-        .resize_lane(&addr, cols, rows)
+        .resize_lane(
+            &addr,
+            payload_session_key("terminal_resize", &payload)?,
+            cols,
+            rows,
+        )
         .map_err(|e| format!("terminal_resize 失敗: {}", e))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "cols": cols, "rows": rows}))
 }
@@ -1712,6 +1776,24 @@ async fn handle_lane_order_set(
 /// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
 async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
     let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    // doc 46 P5: slot は lane に 1 枚ではなく session ごとになった。`vp lane ls --detail` から
+    // 枚数が見えるよう、lane ごとの slot session key を snapshot に添える（LaneInfo 自体には
+    // 足さない — descriptor は帳簿の永続形で、slot は in-memory な runtime 事実だから。
+    // 混ぜると「再起動で復元されるべき値」に見えてしまう）。
+    let pool = state.lane_pool.read().await;
+    let lanes: Vec<serde_json::Value> = lanes
+        .iter()
+        .map(|lane| {
+            let mut v = serde_json::to_value(lane).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "slots".to_string(),
+                    serde_json::json!(pool.slot_sessions(&lane.address)),
+                );
+            }
+            v
+        })
+        .collect();
     Ok(serde_json::json!({ "lanes": lanes }))
 }
 
@@ -1773,6 +1855,8 @@ pub(crate) async fn dispatch_process_method(
         "lane_nudge" => handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
         "lane_capture" => handle_lane_capture(state, payload).await,
+        // doc 46 P5: lane が持つ PTY slot の一覧（UI を通さない slot 枚数の読み手）
+        "lane_slots" => handle_lane_slots(state, payload).await,
         "terminal_resize" => handle_terminal_resize(state, payload).await,
         // board モデル (2026-07-15): webview からの board mutate（thumbnail ✕ / Clear ボタン）。
         // 旧 pp_state_save/load は撤去（board は SP truth、 webview は BoardUpdated 購読 + mutate へ）。
@@ -2082,7 +2166,7 @@ mod tests {
                 .lane_pool
                 .write()
                 .await
-                .insert_pty_slot(addr.clone(), slot, rx);
+                .insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // surface 相当: SP topic_router に per-lane terminal topic を購読。
@@ -2168,7 +2252,7 @@ mod tests {
                 .lane_pool
                 .write()
                 .await
-                .insert_pty_slot(addr.clone(), slot, rx);
+                .insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // PTY 出力を write 前に購読 (echo を取りこぼさない)。
@@ -2176,7 +2260,7 @@ mod tests {
             .lane_pool
             .read()
             .await
-            .subscribe_output(&addr)
+            .subscribe_output(&addr, None)
             .expect("subscribe_output");
 
         // シェル初期化待ち。
@@ -2276,7 +2360,7 @@ mod tests {
                 .lane_pool
                 .write()
                 .await
-                .insert_pty_slot(addr.clone(), slot, rx);
+                .insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // マーカーを PTY に出力させる (echo)。 この出力は「過去」= replay buffer に溜まる。
@@ -2290,7 +2374,8 @@ mod tests {
         };
         {
             let pool = state.lane_pool.write().await;
-            pool.write_to_lane(&addr, &echo_cmd).expect("write to PTY");
+            pool.write_to_lane(&addr, None, &echo_cmd)
+                .expect("write to PTY");
         }
 
         // マーカーが replay buffer に確実に入るまで待つ (PtySlot が echo を読み終える猶予)。
@@ -2613,6 +2698,110 @@ mod tests {
         );
     }
 
+    /// doc 46 P5: slot が (lane, session) key になったので、**UI を通さずに枚数と中身を読む口**を
+    /// 用意した（doc 47 §7 成立条件② — 「読み手のない書き込み」を作らない）。
+    /// `lane_slots` の一覧と、`lane_capture --session` の指し先不在エラーを固定する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lane_slots_lists_every_session_slot() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        // slot_inventory は root を registry から解決する → tempdir に隔離。
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+
+        let addr = LaneAddress::root("vp");
+        let res = dispatch_process_method(
+            &state,
+            "lane_slots",
+            serde_json::json!({ "lane": addr.to_string() }),
+        )
+        .await;
+        assert!(
+            res.expect_err("pool 不在 lane は Err")
+                .contains("lane 不在"),
+            "pool に居ない lane は『lane 不在』"
+        );
+
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                console_mode: crate::lane::session_registry::SessionAct::Tui,
+                id: Default::default(),
+                address: addr.clone(),
+                state: LaneState::Running,
+                stand: "shell".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: cwd.clone(),
+                performer_status: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                engine_stand: None,
+                flow_state: None,
+            });
+            for key in [1u32, 2] {
+                let (slot, rx) = PtySlot::spawn(
+                    &cwd,
+                    "/bin/sh",
+                    &["-c".to_string(), "cat".to_string()],
+                    &[],
+                    80,
+                    24,
+                    None,
+                )
+                .expect("PTY spawn");
+                pool.insert_pty_slot(addr.clone(), Some(key), slot, rx);
+            }
+        }
+
+        let res = dispatch_process_method(
+            &state,
+            "lane_slots",
+            serde_json::json!({ "lane": addr.to_string() }),
+        )
+        .await
+        .expect("lane_slots");
+        assert_eq!(res["count"], 2, "同居する slot の枚数が読める: {res}");
+        assert_eq!(res["slots"][0]["session"], 1);
+        assert_eq!(
+            res["slots"][0]["root"], true,
+            "#1 が root（registry 既定形）"
+        );
+        assert_eq!(res["slots"][1]["session"], 2);
+        assert_eq!(res["slots"][1]["root"], false);
+
+        // capture は session 指定で slot を選べる。応答に slots を添えるので、
+        // 「今どれを読んだか」「他に何枚あるか」が CLI から判る。
+        let res = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": addr.to_string(), "session": 2 }),
+        )
+        .await
+        .expect("capture #2");
+        assert_eq!(res["session"], 2);
+        assert_eq!(res["slots"], serde_json::json!([1, 2]));
+
+        // 指し先が無い session は、存在する slot を添えて Err（探し方が判るエラー）。
+        let err = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": addr.to_string(), "session": 9 }),
+        )
+        .await
+        .expect_err("不在 session の capture は Err");
+        assert!(
+            err.contains("この lane の slot") && err.contains("[1, 2]"),
+            "存在する slot を案内する: {err}"
+        );
+    }
+
     /// doc 39 P4-A: console_set_model の可否判定は lane 固定 stand ではなく **root session の
     /// stand**（slot の engine）で決まる。cross-engine root（#812）で lane stand と食い違っても、
     /// picker で slot に立てた engine の能力に追従することを両方向で固定する。
@@ -2740,7 +2929,7 @@ mod tests {
                 engine_stand: None,
                 flow_state: None,
             });
-            pool.insert_pty_slot(addr.clone(), slot, rx);
+            pool.insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // cleanup=false: test lane に実 workspace dir はないので Phase 2b (fs rm) をスキップ。
@@ -2759,7 +2948,7 @@ mod tests {
                 .lane_pool
                 .read()
                 .await
-                .subscribe_output(&addr)
+                .subscribe_output(&addr, None)
                 .is_none(),
             "lane_delete 後も PtySlot が pool に残っている"
         );

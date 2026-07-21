@@ -438,7 +438,8 @@ pub(crate) async fn create_performer_orchestrated(
             let pid = slot.pid();
             let mut pool = state.lane_pool.write().await;
             // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Conductor 経路と統一)
-            pool.insert_pty_slot(addr.clone(), slot, term_rx);
+            // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
+            pool.insert_pty_slot(addr.clone(), None, slot, term_rx);
             tracing::info!(
                 "Performer Lane spawned: addr={} stand={} cwd={} pid={}",
                 addr,

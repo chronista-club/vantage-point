@@ -138,8 +138,10 @@ vp shot                # vp-app window の screenshot を PNG 保存
 vp lane                # performer Lane 管理（Stone Free 🧵）
 vp flow handoff|progress  # Conductor × Performer orchestration
 vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は TheWorld :32000 に中央化。hook-check は claude hook 実体、R2-c）
-vp lane capture <lane> # lane console の現在画面を読む（旧 vp tmux capture の後継、tmux 非依存）
-vp lane nudge <lane> <text>  # lane の claude に text+Enter を注入（旧 vp tmux send-keys / directmsg の後継）
+vp lane capture <lane> [--session N]  # lane console の現在画面を読む（旧 vp tmux capture の後継、tmux 非依存）
+vp lane slots <lane>   # lane が持つ console slot 一覧（doc 46 P5 — slot は session ごと）
+vp lane nudge <lane> <text> [--session N]  # lane の claude に text+Enter を注入（旧 vp tmux send-keys / directmsg の後継）
+# ⚠️ `--session` 省略は **root**（lane の代表 slot）。chat 系 API の session 省略が focused なのと既定が違う
 
 # その他
 vp port                # deterministic port layout の計算・表示
