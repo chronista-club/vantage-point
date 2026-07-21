@@ -384,7 +384,7 @@ async fn thread(message_id: &str) -> Result<()> {
 fn wire_address_from_env(project: Option<&str>, lane: Option<&str>) -> Option<String> {
     let project = project.filter(|s| !s.is_empty())?;
     let lane = lane.filter(|s| !s.is_empty())?;
-    if lane == "conductor" {
+    if lane == crate::process::lanes_state::CONDUCTOR_LANE_NAME {
         Some(format!("agent@{project}"))
     } else {
         Some(format!("agent@{project}/{lane}"))

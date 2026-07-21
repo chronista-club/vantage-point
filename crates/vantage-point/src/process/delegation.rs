@@ -104,7 +104,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
     match rest.split_once('/') {
         // 既に lane form（conductor / performer/... / 旧 lead / wing）なら素通し。
         Some((_, tail))
-            if tail == "conductor"
+            if tail == crate::process::lanes_state::CONDUCTOR_LANE_NAME
                 || tail == "lead"
                 || tail.starts_with("performer/")
                 || tail.starts_with("wing/") =>

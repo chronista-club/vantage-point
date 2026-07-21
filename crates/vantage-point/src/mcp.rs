@@ -120,7 +120,7 @@ impl SelfLane {
     pub fn detect() -> Self {
         // identity 解決不能な conductor (cwd/config 取得失敗) → None で fail-closed
         let conductor_unresolved = || SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string(),
             performer_parent: None,
             conductor_project: None,
         };
@@ -146,7 +146,7 @@ impl SelfLane {
         // conductor: 自 project 名を config-only で解決 (未登録 cwd は None = fail-closed)。
         // cwd は上で取得済みのものを正規化して渡す (二重取得を避ける)。
         SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string(),
             performer_parent: None,
             conductor_project: crate::resolve::match_project_name_for_path(
                 &crate::config::Config::normalize_path(&cwd),
@@ -553,7 +553,7 @@ impl VantageMcp {
                             let msg_lane = v
                                 .get("lane")
                                 .and_then(|l| l.as_str())
-                                .unwrap_or("conductor");
+                                .unwrap_or(crate::process::lanes_state::CONDUCTOR_LANE_NAME);
                             if msg_lane != self_lane {
                                 continue;
                             }
@@ -974,7 +974,7 @@ mod tests {
         // wiremsg identity SSOT: conductor は解決済 project で "agent@<project>"、
         // performer は "agent@<parent>/<name>"。project 未解決の conductor は fail-closed (Err)。
         let conductor = SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string(),
             performer_parent: None,
             conductor_project: Some("vantage-point".to_string()),
         };
@@ -992,7 +992,7 @@ mod tests {
 
         // 未登録 cwd の conductor (project 未解決) → fail-closed
         let unresolved = SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string(),
             performer_parent: None,
             conductor_project: None,
         };
@@ -1106,7 +1106,7 @@ mod tests {
 
         // conductor context → None（performer_parent が無い）
         let conductor = SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string(),
             performer_parent: None,
             conductor_project: None,
         };

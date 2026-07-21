@@ -80,9 +80,9 @@ fn board_key(scope: Option<&str>, lane: Option<&str>) -> (String, String, Option
     if scope == Some("proj") {
         return ("proj".to_string(), String::new(), None);
     }
-    // lane 正規化: None/""/"conductor" → '' (conductor)。
+    // lane 正規化: None/""/予約名 → '' (開発起点 lane)。
     let lane_name = lane
-        .filter(|s| !s.is_empty() && *s != "conductor")
+        .filter(|s| !s.is_empty() && *s != crate::process::lanes_state::CONDUCTOR_LANE_NAME)
         .unwrap_or("")
         .to_string();
     let broadcast_lane = if lane_name.is_empty() {
