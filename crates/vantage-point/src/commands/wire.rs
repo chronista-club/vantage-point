@@ -384,7 +384,7 @@ async fn thread(message_id: &str) -> Result<()> {
 fn wire_address_from_env(project: Option<&str>, lane: Option<&str>) -> Option<String> {
     let project = project.filter(|s| !s.is_empty())?;
     let lane = lane.filter(|s| !s.is_empty())?;
-    if lane == crate::process::lanes_state::CONDUCTOR_LANE_NAME {
+    if lane == crate::process::lanes_state::ROOT_LANE_NAME {
         Some(format!("agent@{project}"))
     } else {
         Some(format!("agent@{project}/{lane}"))
@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn hook_address_from_env_values() {
         assert_eq!(
-            wire_address_from_env(Some("vp"), Some("conductor")).as_deref(),
+            wire_address_from_env(Some("vp"), Some("root")).as_deref(),
             Some("agent@vp")
         );
         assert_eq!(
@@ -925,9 +925,9 @@ mod tests {
             Some("agent@vp/w1")
         );
         // env 不足 = VP 外で起動された claude → None (fail-open)
-        assert_eq!(wire_address_from_env(None, Some("conductor")), None);
+        assert_eq!(wire_address_from_env(None, Some("root")), None);
         assert_eq!(wire_address_from_env(Some("vp"), None), None);
-        assert_eq!(wire_address_from_env(Some(""), Some("conductor")), None);
+        assert_eq!(wire_address_from_env(Some(""), Some("root")), None);
     }
 
     /// R2-c: 未読ありのときだけ hookSpecificOutput JSON を作る

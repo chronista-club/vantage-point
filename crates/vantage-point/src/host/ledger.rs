@@ -26,7 +26,7 @@
 //! （[`OriginSource::Dangling`]）— 黙って既定に戻ると、指定したはずの起点が
 //! いつの間にか動いていたことに気付けない。
 
-use crate::process::lanes_state::CONDUCTOR_LANE_NAME;
+use crate::process::lanes_state::ROOT_LANE_NAME;
 
 /// 起点の解決に要る lane の最小情報（id と表示名の対）。
 ///
@@ -72,7 +72,7 @@ impl Origin {
     /// 予約名に落ちた既定の起点。
     fn default_origin(source: OriginSource) -> Self {
         Self {
-            name: CONDUCTOR_LANE_NAME.to_string(),
+            name: ROOT_LANE_NAME.to_string(),
             source,
         }
     }
@@ -264,7 +264,7 @@ mod tests {
 
     fn lanes() -> Vec<LaneRef> {
         vec![
-            LaneRef::new("id-conductor", CONDUCTOR_LANE_NAME),
+            LaneRef::new("id-root", ROOT_LANE_NAME),
             LaneRef::new("id-foo", "foo"),
         ]
     }
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn no_pointer_falls_back_to_reserved_name() {
         let origin = resolve_origin_name(None, &lanes());
-        assert_eq!(origin.name, CONDUCTOR_LANE_NAME);
+        assert_eq!(origin.name, ROOT_LANE_NAME);
         assert_eq!(origin.source, OriginSource::Default);
     }
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn dangling_pointer_falls_back_but_is_reported() {
         let origin = resolve_origin_name(Some("id-gone"), &lanes());
-        assert_eq!(origin.name, CONDUCTOR_LANE_NAME);
+        assert_eq!(origin.name, ROOT_LANE_NAME);
         assert_eq!(
             origin.source,
             OriginSource::Dangling {
@@ -341,7 +341,7 @@ mod tests {
 
         // conductor + performer の 2 本。performer を起点にできることが D4 の本体なので、
         // **答えが分岐する形**で組む（1 本だけだと全ケース同じ答えになり判別力ゼロ）。
-        let mut lanes = LanePool::with_conductor("proj", "/tmp/proj").list();
+        let mut lanes = LanePool::with_root("proj", "/tmp/proj").list();
         let mut performer = lanes[0].clone();
         performer.address = crate::process::lanes_state::LaneAddress::new("proj", "feat-x");
         performer.id = crate::process::lanes_state::LaneId::generate();
@@ -351,7 +351,7 @@ mod tests {
         // 未設定 = 予約名（既定）
         assert_eq!(
             origin_name_for_lanes(Some(&db), "/tmp/proj", &lanes).await,
-            CONDUCTOR_LANE_NAME
+            ROOT_LANE_NAME
         );
 
         // 帳簿が performer を指せば起点が動く（= 予約名ではなくなる）
@@ -368,13 +368,13 @@ mod tests {
         db.upsert_host_origin("/tmp/proj", "id-gone").await.unwrap();
         assert_eq!(
             origin_name_for_lanes(Some(&db), "/tmp/proj", &lanes).await,
-            CONDUCTOR_LANE_NAME
+            ROOT_LANE_NAME
         );
 
         // DB 不在（test fixture / 未接続）でも既定を返して publish を止めない
         assert_eq!(
             origin_name_for_lanes(None, "/tmp/proj", &lanes).await,
-            CONDUCTOR_LANE_NAME
+            ROOT_LANE_NAME
         );
     }
 
@@ -438,11 +438,11 @@ mod tests {
     /// 帳簿が空なら**何もしない**（既定順 = 開発起点が先頭 → created_at を壊さない）。
     #[test]
     fn apply_lane_order_is_noop_when_ledger_is_empty() {
-        let mut lanes = vec!["conductor", "b", "a"];
+        let mut lanes = vec!["root", "b", "a"];
         apply_lane_order(&mut lanes, &Default::default(), |l| l.to_string());
         assert_eq!(
             lanes,
-            vec!["conductor", "b", "a"],
+            vec!["root", "b", "a"],
             "未指定 project の並びは既定のまま"
         );
     }
@@ -540,7 +540,7 @@ mod tests {
 
         let dangling = resolve_origin_name(Some("id-gone"), &lanes());
         let json = serde_json::to_value(&dangling).unwrap();
-        assert_eq!(json["name"], CONDUCTOR_LANE_NAME);
+        assert_eq!(json["name"], ROOT_LANE_NAME);
         assert_eq!(json["source"]["kind"], "dangling");
         assert_eq!(json["source"]["lane_id"], "id-gone");
     }

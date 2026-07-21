@@ -1395,7 +1395,7 @@ mod tests {
                     "kind": "lanes-reply",
                     "request_id": request_id,
                     "lanes": [
-                        { "address": "agent@nostos", "kind": "conductor", "state": "running" },
+                        { "address": "agent@nostos", "kind": "root", "state": "running" },
                         { "address": "agent@nostos/wing-a", "kind": "performer", "state": "running" },
                     ],
                 });

@@ -126,7 +126,7 @@ pub(crate) struct AppState {
     /// SP は当該 Lane の PtySlot output を購読する pump を spawn して本 map に保持する
     /// (`process/terminal/data/{lane}/out` topic に route)。 `terminal_demand_stop {lane}` で
     /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
-    /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
+    /// key は LaneAddress の Display 形 (`"<project>/root"` 等)。
     pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// Agent 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。
     ///
@@ -142,7 +142,7 @@ impl AppState {
     // (TmuxActor 遅延初期化 + LaneAddress ⇄ tmux session 名の翻訳層) は退役。
     // lane の解決は `resolve_lane_address`、 console I/O は PtySlot (deliver_nudge / lane_capture)。
 
-    /// lane address 文字列（`<project>/conductor` / `<project>/performer/<name>`）を、
+    /// lane address 文字列（`<project>/root` / `<project>/performer/<name>`）を、
     /// Running な lane の [`LaneAddress`](super::lanes_state::LaneAddress) に解決する。
     ///
     /// nudge の宛先を `LaneAddress` で返し、
@@ -253,7 +253,7 @@ impl AppState {
                 .get("title")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let topic = format!("process/paisley-park/command/show/conductor/{}", pane_id);
+            let topic = format!("process/paisley-park/command/show/root/{}", pane_id);
             store.set(
                 &topic,
                 ProcessMessage::Show {
@@ -415,10 +415,7 @@ mod lane_resolve_tests {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
-            pool.insert(running_lane(
-                LaneAddress::conductor("vantage-point"),
-                "echoes",
-            ));
+            pool.insert(running_lane(LaneAddress::root("vantage-point"), "echoes"));
             pool.insert(running_lane(
                 LaneAddress::performer("vantage-point", "hub-unison-client"),
                 "echoes",
@@ -426,8 +423,8 @@ mod lane_resolve_tests {
         }
 
         assert_eq!(
-            state.resolve_lane_address("vantage-point/conductor").await,
-            Some(LaneAddress::conductor("vantage-point"))
+            state.resolve_lane_address("vantage-point/root").await,
+            Some(LaneAddress::root("vantage-point"))
         );
         assert_eq!(
             state
@@ -451,10 +448,10 @@ mod lane_resolve_tests {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
-            let mut info = running_lane(LaneAddress::conductor("vp"), "echoes");
+            let mut info = running_lane(LaneAddress::root("vp"), "echoes");
             info.state = LaneState::Dead;
             pool.insert(info);
         }
-        assert_eq!(state.resolve_lane_address("vp/conductor").await, None);
+        assert_eq!(state.resolve_lane_address("vp/root").await, None);
     }
 }

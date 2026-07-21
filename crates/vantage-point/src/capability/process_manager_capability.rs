@@ -831,7 +831,7 @@ impl ProcessManagerCapability {
         // conductor は cwd = repo root (= user の repo そのもの) なので **絶対に消さない**、 performer のみ。
         let performer_names: Vec<String> = removed_lanes
             .iter()
-            .filter(|l| !l.address.is_conductor())
+            .filter(|l| !l.address.is_root())
             .map(|l| l.address.name.clone())
             .collect();
         if !performer_names.is_empty() {
@@ -2570,7 +2570,7 @@ mod tests {
             engine_stand: None,
             flow_state: None,
         };
-        let conductor = mk(LaneAddress::conductor("bdestroy"), &project_path);
+        let conductor = mk(LaneAddress::root("bdestroy"), &project_path);
         let performer = mk(
             LaneAddress::performer("bdestroy", "foo"),
             &performer_dir.to_string_lossy(),
@@ -2590,7 +2590,7 @@ mod tests {
         );
         assert!(
             tmp.exists(),
-            "conductor = repo root は絶対に消さない (user の repo)"
+            "root = repo root は絶対に消さない (user の repo)"
         );
         // descriptor も lane_registry から畳まれている。
         assert!(
@@ -2696,7 +2696,7 @@ mod tests {
             .expect("daemon create_lane 成功");
 
         // descriptor が daemon-canonical truth として返る。
-        assert!(!info.address.is_conductor());
+        assert!(!info.address.is_root());
         assert_eq!(info.address.name, "foo");
         // doc 44 P2: address 表示形は `<project>/<name>`（旧 `<project>/performer/<name>`）
         assert_eq!(info.address.to_string(), "bcreate/foo");
@@ -2738,7 +2738,7 @@ mod tests {
     ///
     /// 旧実装は入口で空文字しか見ておらず、予約名は奥の `new_performer_in` が clone 段階で
     /// 初めて弾いていた。だが intent-first bracket は provision より **前に** descriptor を
-    /// 永続するので、拒否されるべき入力が `<project>/conductor` 行を上書き（①）し、
+    /// 永続するので、拒否されるべき入力が `<project>/root` 行を上書き（①）し、
     /// rollback がそれを削除（③）する — **本物の開発起点 descriptor が消える**。
     ///
     /// 通常は in-memory の dup check が先に弾いて発火しないが、dup check は validation では
@@ -2760,19 +2760,19 @@ mod tests {
 
         // 本物の開発起点 descriptor を db に置く（= 破壊対象）。
         let conductor =
-            crate::process::lanes_state::LanePool::with_conductor("reserved", project_path.clone());
+            crate::process::lanes_state::LanePool::with_root("reserved", project_path.clone());
         let conductor_info = conductor
             .list()
             .into_iter()
             .next()
-            .expect("conductor descriptor");
+            .expect("root descriptor");
         db.upsert_lane(&key, &conductor_info).await.unwrap();
         let addr_str = conductor_info.address.to_string();
-        assert_eq!(addr_str, "reserved/conductor");
+        assert_eq!(addr_str, "reserved/root");
 
         // dup check の masking は効かない状況（lane_registry は空）。
         let err = cap
-            .create_lane(&project_path, "conductor", "test/x", "echoes")
+            .create_lane(&project_path, "root", "test/x", "echoes")
             .await
             .expect_err("予約名は Err");
         assert!(

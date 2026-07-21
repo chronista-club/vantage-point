@@ -1474,7 +1474,7 @@ mod tests {
     fn active_pane_script_carries_chat_flag_for_act2_lane() {
         let script = build_set_active_pane_script(&ActivePaneInfo {
             kind: Some("terminal"),
-            pane_id: Some("vp/conductor"),
+            pane_id: Some("vp/root"),
             preview_url: None,
             chat: true,
             cwd: None,
@@ -1484,7 +1484,7 @@ mod tests {
             stand: None,
         });
         assert!(script.contains("\"chat\":true"), "script={script}");
-        assert!(script.contains("\"pane_id\":\"vp/conductor\""));
+        assert!(script.contains("\"pane_id\":\"vp/root\""));
     }
 
     /// Act I (tui) lane と非 terminal kind は `chat: false`（従来の xterm 判定に従う）。

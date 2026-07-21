@@ -138,7 +138,7 @@ impl VantageMcp {
             content,
             append: false,
             title: params.title,
-            // per-lane PP: この MCP が属する Lane（cwd 由来、conductor/performer 語彙）を stamp。
+            // per-lane PP: この MCP が属する Lane（cwd 由来、root/performer 語彙）を stamp。
             // topic の lane segment になり、retained を lane 別に分離する。
             lane: Some(SelfLane::detect().lane_name),
             scope,

@@ -172,8 +172,7 @@ fn setup_performer(
             // silent に無視せず明示 error (co-evolution #2 は worktree が対象)。
             if base.is_some_and(|b| !b.trim().is_empty()) {
                 return Err(
-                    "--base は isolation=worktree のみ対応 (clone は conductor HEAD の複製)"
-                        .to_string(),
+                    "--base は isolation=worktree のみ対応 (clone は root HEAD の複製)".to_string(),
                 );
             }
             provision_clone(repo_root, &performer_dir, branch)?
@@ -879,7 +878,7 @@ pub fn status_performers() -> Result<(), String> {
 /// 消しうる**。実害の確率は低い（起点が merged かつ clean かつ停止中である必要がある）が、
 /// 「確認できなかった」という事実は人に見せる（Host は推測しない）。
 fn origin_for_cleanup(repo_root: &Path) -> String {
-    let reserved = crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string();
+    let reserved = crate::process::lanes_state::ROOT_LANE_NAME.to_string();
     let Some(project_path) = repo_root.to_str() else {
         return reserved;
     };
@@ -2341,7 +2340,7 @@ mod tests {
             .current_dir(&bare)
             .output()
             .unwrap();
-        let conductor = base.join("conductor");
+        let conductor = base.join("root");
         Cmd::new("git")
             .args(["clone", bare.to_str().unwrap(), conductor.to_str().unwrap()])
             .output()

@@ -316,7 +316,7 @@ impl Config {
     /// Default Stand 名 (config 未指定なら "echoes" fallback)。
     ///
     /// `mise run vp:stand:{name}` の `name` 部分。 lane 作成時 (sidebar UI / HTTP API /
-    /// LanePool::with_conductor 等) で stand 指定が無い場合の選択値。
+    /// LanePool::with_root 等) で stand 指定が無い場合の選択値。
     ///
     /// PR-pre2 (VP-118): rename `default_stand_or_hd` → `default_stand_or_echoes`、
     /// fallback "hd" → "echoes" (HD → Echoes rename の一環)。

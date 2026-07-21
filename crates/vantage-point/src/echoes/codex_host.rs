@@ -800,7 +800,7 @@ mod tests {
         let mut host = CodexAgentHost::spawn(CodexRpcHostConfig {
             cwd: tmp.path().to_string_lossy().into_owned(),
             project: "vptest-rpc".into(),
-            lane: "conductor".into(),
+            lane: "root".into(),
             thread_id: None,
         })
         .expect("spawn codex app-server");
@@ -830,7 +830,7 @@ mod tests {
         assert!(!session_id.is_empty(), "SessionInit（thread id）を観測");
         assert!(text.contains("pong-rpc"), "answer: {text}");
         // registry 直結の書き戻し（doc 40 §4）も実機で確認
-        let reg = crate::lane::session_registry::load("vptest-rpc", "conductor", "codex");
+        let reg = crate::lane::session_registry::load("vptest-rpc", "root", "codex");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some(session_id.as_str()),

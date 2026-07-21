@@ -22,7 +22,7 @@ use crate::protocol::ProcessMessage;
 
 /// 1 session の chat host output broadcast を購読し、`EchoesEvent` topic に流す pump を spawn。
 ///
-/// - `lane`: LaneAddress の Display 形（`"vp/conductor"` 等）。topic key 化は `TopicRouter` が担う。
+/// - `lane`: LaneAddress の Display 形（`"vp/root"` 等）。topic key 化は `TopicRouter` が担う。
 ///   ⚠️ session key を lane 名に埋めない（doc 38 落とし穴① — topic は per-lane のまま、
 ///   session は message の別 field で運ぶ）。
 /// - `session`: 発生元 session の VP 採番 key（doc 38。N=1 特殊ケースは 1）。
@@ -182,12 +182,10 @@ mod tests {
         let (tx, rx) = broadcast::channel::<EchoesEvent>(16);
 
         // echoes data は非 retained なので route 前に subscribe が要る。
-        let (_id, mut srx) = router
-            .subscribe("process/echoes/data/vp~conductor/event")
-            .await;
+        let (_id, mut srx) = router.subscribe("process/echoes/data/vp~root/event").await;
 
         // claude 相当 = tap なし（transcript が SSOT）。
-        let _h = spawn_lane_echoes_pump("vp/conductor".to_string(), 2, rx, router.clone(), None);
+        let _h = spawn_lane_echoes_pump("vp/root".to_string(), 2, rx, router.clone(), None);
 
         tx.send(EchoesEvent::MessageChunk {
             text: "hello".to_string(),
@@ -199,14 +197,14 @@ mod tests {
             .expect("timeout")
             .expect("recv");
         // doc 38 落とし穴①: session が topic key（lane 部分）に混入しないこと。
-        assert_eq!(topic, "process/echoes/data/vp~conductor/event");
+        assert_eq!(topic, "process/echoes/data/vp~root/event");
         match msg {
             ProcessMessage::EchoesEvent {
                 lane,
                 session,
                 event,
             } => {
-                assert_eq!(lane, "vp/conductor");
+                assert_eq!(lane, "vp/root");
                 assert_eq!(session, 2, "session は message の別 field で運ぶ");
                 assert_eq!(
                     event,
@@ -227,7 +225,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tap = ReplayLogTap {
             project: "vp".to_string(),
-            label: "conductor#2".to_string(),
+            label: "root#2".to_string(),
         };
         let mut pending = String::new();
 
@@ -243,7 +241,7 @@ mod tests {
             );
         }
         assert!(
-            replay_log::load_in(tmp.path(), "vp", "conductor#2").is_empty(),
+            replay_log::load_in(tmp.path(), "vp", "root#2").is_empty(),
             "chunk はまだ flush されていない"
         );
 
@@ -271,7 +269,7 @@ mod tests {
             },
         );
 
-        let events = replay_log::load_in(tmp.path(), "vp", "conductor#2");
+        let events = replay_log::load_in(tmp.path(), "vp", "root#2");
         assert_eq!(
             events,
             vec![
@@ -301,7 +299,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tap = ReplayLogTap {
             project: "vp".to_string(),
-            label: "conductor".to_string(),
+            label: "root".to_string(),
         };
         let mut pending = String::new();
 
@@ -332,14 +330,14 @@ mod tests {
             },
         );
         assert!(
-            replay_log::load_in(tmp.path(), "vp", "conductor").is_empty(),
+            replay_log::load_in(tmp.path(), "vp", "root").is_empty(),
             "記録対象が来るまで何も書かれない"
         );
 
         // 明示 flush で貯めた本文だけが 1 本残る（thinking / error は残らない）。
         flush_pending(tmp.path(), &tap, &mut pending);
         assert_eq!(
-            replay_log::load_in(tmp.path(), "vp", "conductor"),
+            replay_log::load_in(tmp.path(), "vp", "root"),
             vec![EchoesEvent::MessageChunk {
                 text: "keep".to_string()
             }],

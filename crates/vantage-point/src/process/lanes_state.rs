@@ -26,7 +26,7 @@
 //!
 //! ## Phase A4-2b スコープ
 //!
-//! `LanePool::with_conductor` で Conductor Lane 1 つ pre-populate。
+//! `LanePool::with_root` で Conductor Lane 1 つ pre-populate。
 //! Performer create / destroy / Stand 切替は A4-4 / A5 で実装。
 
 use std::collections::HashMap;
@@ -82,7 +82,7 @@ impl fmt::Display for LaneId {
 // doc 44 P2: `LaneKind`（Conductor / Performer）は撤去。
 //
 // D4「lane 自身は役割状態を持たない」— lane は全て対等になり、開発起点は
-// [`CONDUCTOR_LANE_NAME`] の予約名（将来は Host が持つポインタ）で表される。
+// [`ROOT_LANE_NAME`] の予約名（将来は Host が持つポインタ）で表される。
 // 旧 kind の唯一の実質は「conductor は project に 1 本・worktree を持たない」だが、
 // それは **名前の一意性**（1 project に同名 lane は 1 本）で既に表現されている。
 
@@ -159,17 +159,17 @@ impl LaneLifecycle {
 /// lane 側に「自分は conductor だ」という状態はなく、この名前を持つ lane が
 /// たまたま開発起点である、という関係に退化した（P3 で Host のポインタに移る）。
 ///
-/// この名前は `LaneAddress` の Display 形が旧 conductor と一致する（`<project>/conductor`）
+/// この名前は `LaneAddress` の Display 形が旧 conductor と一致する（`<project>/root`）
 /// ように選んである — 既存の永続 address / wire を無傷で引き継ぐため。
 ///
 /// **定義は `vp-paths` が唯一**（2026-07-21）。vp-app が同名定数を独自に持っていて
 /// 「同値でなければ address が食い違う」をコメントの約束で担保していたため、
 /// 定義ごと共有 crate へ畳んだ。ここは re-export。
-pub use vp_paths::CONDUCTOR_LANE_NAME;
+pub use vp_paths::ROOT_LANE_NAME;
 
 /// Lane の address — Pool key
 ///
-/// 表示形 (`Display` 実装): `"<project>/<name>"`  例: `"vp/conductor"` / `"vp/foo"`
+/// 表示形 (`Display` 実装): `"<project>/<name>"`  例: `"vp/root"` / `"vp/foo"`
 ///
 /// doc 44 P2（フラット化）: 旧 `{ project, kind, name: Option<String> }` の 3-tuple から
 /// **`{ project, name }` の 2-tuple** になった。旧構造は conductor だけ `name: None` という
@@ -177,16 +177,16 @@ pub use vp_paths::CONDUCTOR_LANE_NAME;
 ///
 /// ⚠️ performer の表示形が `<project>/performer/<name>` → `<project>/<name>` に変わる。
 /// DB / session.json に残る旧形は [`LanePool::parse_address`] が受理して新形に正規化する
-/// （lead/wing → conductor/performer の rename 時と同じ手当て）。
+/// （lead/wing → root/performer の rename 時と同じ手当て）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LaneAddress {
     pub project: String,
-    /// lane 名（人間可読、例: "foo"）。開発起点は [`CONDUCTOR_LANE_NAME`]。
+    /// lane 名（人間可読、例: "foo"）。開発起点は [`ROOT_LANE_NAME`]。
     ///
     /// `default` は P2 以前に永続した descriptor を読むための互換。旧 `LaneAddress` は
     /// conductor だけ `name` を持たず（`skip_serializing_if` で省略）、DB の `lane.descriptor`
     /// にその形で入っている。既定値を予約名にすると、旧 conductor レコードは name 欠落 →
-    /// `"conductor"`、旧 performer は `name: "foo"` がそのまま読める（余分な `kind` は
+    /// `"root"`、旧 performer は `name: "foo"` がそのまま読める（余分な `kind` は
     /// unknown field として無視される）ので、**custom Deserialize なしで旧形が全部読める**。
     #[serde(default = "default_lane_name")]
     pub name: String,
@@ -194,7 +194,7 @@ pub struct LaneAddress {
 
 /// [`LaneAddress::name`] の serde 既定値（P2 以前の永続 descriptor 互換、上記参照）。
 fn default_lane_name() -> String {
-    CONDUCTOR_LANE_NAME.to_string()
+    ROOT_LANE_NAME.to_string()
 }
 
 impl LaneAddress {
@@ -206,9 +206,9 @@ impl LaneAddress {
         }
     }
 
-    /// 開発起点 lane（予約名 [`CONDUCTOR_LANE_NAME`]）を構築する。
-    pub fn conductor(project: impl Into<String>) -> Self {
-        Self::new(project, CONDUCTOR_LANE_NAME)
+    /// 開発起点 lane（予約名 [`ROOT_LANE_NAME`]）を構築する。
+    pub fn root(project: impl Into<String>) -> Self {
+        Self::new(project, ROOT_LANE_NAME)
     }
 
     /// 名前付き lane を構築する（旧 performer）。
@@ -220,8 +220,8 @@ impl LaneAddress {
     }
 
     /// 開発起点 lane か（= 予約名を持つか）。
-    pub fn is_conductor(&self) -> bool {
-        self.name == CONDUCTOR_LANE_NAME
+    pub fn is_root(&self) -> bool {
+        self.name == ROOT_LANE_NAME
     }
 
     // `tmux_session_name` / `tmux_session_prefix` (Phase 1a の deterministic tmux 名導出) は
@@ -448,7 +448,7 @@ pub struct LanePool {
     /// AppState が `Arc<RwLock<LanePool>>` で thread-shared に必要
     pty_slots: HashMap<LaneAddress, std::sync::Mutex<crate::daemon::pty_slot::PtySlot>>,
     /// Stage 1 (ADR-0001): 各 Lane の Rust 側 alacritty Term<T> attach。
-    /// pty_slots と lifecycle 同期: with_conductor で spawn、 remove で drop abort。
+    /// pty_slots と lifecycle 同期: with_root で spawn、 remove で drop abort。
     /// task は spawn_blocking で 1 Lane = 1 task、 broadcast::Receiver を消費。
     /// MVP: Conductor Lane のみ attach。 Performer spawn 経路 (insert_pty_slot) は別 PR で配線予定。
     term_attaches: HashMap<LaneAddress, crate::terminal::term_attach::TermAttach>,
@@ -548,20 +548,20 @@ impl LanePool {
     /// **A5-2**: stand_spawner で command 構築 → PtySlot::spawn で実 process 起動。
     /// spawn 失敗時は graceful degrade (state=Dead、 pty_slots に entry なし) で
     /// SP 自体の起動継続性を担保。
-    pub fn with_conductor(project_id: impl Into<String>, cwd: impl Into<String>) -> Self {
+    pub fn with_root(project_id: impl Into<String>, cwd: impl Into<String>) -> Self {
         let project_id = project_id.into();
         let cwd = cwd.into();
         let mut pool = Self::new();
-        let addr = LaneAddress::conductor(&project_id);
+        let addr = LaneAddress::root(&project_id);
         // doc 11 PR-B: default stand は "echoes" 固定 (config.default_stand での per-user 化は
-        // 後続 PR、 LanePool::with_conductor は config を持たないため)。
+        // 後続 PR、 LanePool::with_root は config を持たないため)。
         // user 設定がある場合の経路は HTTP API / lane_spawn_actor 経由で stand を明示指定する。
         // PR-pre2 (VP-118): "hd" → "echoes" rename。 mise task `vp:stand:echoes` (旧 hd)。
         let stand_name = "echoes";
 
         // doc 47 §4: root session の act を boot で honor。chat の lane に PTY を立てない
         // （立てると echoes_submit がもう 1 本の engine を呼び、1 会話 2 エンジンになる）。
-        let console_mode = session_registry::root_act(&project_id, "conductor");
+        let console_mode = session_registry::root_act(&project_id, "root");
 
         let (state, pid) = if console_mode == SessionAct::Chat {
             // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
@@ -613,8 +613,8 @@ impl LanePool {
 
         let info = LaneInfo {
             console_mode,
-            // I1: conductor の安定 id を address (project, "conductor") で load_or_create
-            id: crate::lane::lane_id::load_or_create(&project_id, "conductor"),
+            // I1: conductor の安定 id を address (project, "root") で load_or_create
+            id: crate::lane::lane_id::load_or_create(&project_id, "root"),
             address: addr.clone(),
             state,
             stand: stand_name.to_string(),
@@ -651,7 +651,7 @@ impl LanePool {
             use std::cmp::Ordering;
             // doc 44 P2: 旧 kind 比較の後継。開発起点（予約名）を先頭に置く要件は
             // 表示順の話であって lane の役割分岐ではないので、名前の判定で足りる。
-            match (a.address.is_conductor(), b.address.is_conductor()) {
+            match (a.address.is_root(), b.address.is_root()) {
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
                 _ => a
@@ -899,19 +899,19 @@ impl LanePool {
         }
     }
 
-    /// Display 形 (`"<project>/conductor"` / `"<project>/performer/<name>"`) をパースして LaneAddress を作る。
+    /// Display 形 (`"<project>/root"` / `"<project>/performer/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
         let parts: Vec<&str> = s.splitn(3, '/').collect();
         match parts.as_slice() {
             // 旧 "lead" は開発起点の旧名 (conductor rename 前の session.json / wire address 互換)。
-            [project, "lead"] if !project.is_empty() => Some(LaneAddress::conductor(*project)),
+            [project, "lead"] if !project.is_empty() => Some(LaneAddress::root(*project)),
             // canonical: "<project>/<name>" (doc 44 P2 フラット化後)
             [project, name] if !project.is_empty() && !name.is_empty() => {
                 Some(LaneAddress::new(*project, *name))
             }
             // 旧 3 分節形 "<project>/performer/<name>" (P2 以前の永続 address / wire) を
-            // 新形に正規化して受理する。lead/wing → conductor/performer の rename 時と同じ手当て
+            // 新形に正規化して受理する。lead/wing → root/performer の rename 時と同じ手当て
             // で、DB (`lane` / `lane_lifecycle` の address 列) と session.json を無傷で引き継ぐ。
             [project, "performer" | "wing", name] if !project.is_empty() && !name.is_empty() => {
                 Some(LaneAddress::new(*project, *name))
@@ -991,10 +991,22 @@ impl LanePool {
     }
 
     // =========================================================================
-    // doc 33: Console engine slot（Act I/II 排他）
+    // Console engine slot
     //
-    // 法: 1 lane = 高々 1 エンジン（pty_slots xor chat_engines）= 1 cc_session。
+    // **法: 1 session = 高々 1 エンジン**（0 = Draft / 1 = PTY か headless の一方）。
+    // 禁止したいのは同一 session に PTY と headless が同居する状態 — 会話 id は 1 つなのに
+    // 書き手が 2 本になる（= 1 会話 2 エンジン）。
+    //
+    // lane は N session を持つ（doc 38）。ただし `pty_slots` は lane に 1 本しかないので、
+    // 現状 Act I になれるのは root session だけ（doc 39）。これは lane の性質ではなく
+    // **slot の枚数**が作っている制約で、doc 46 P5（`pty_slots` を `(lane, session)` へ
+    // re-key）で解ける。
+    //
     // 排他は set_console_mode / ensure_chat_engine のみが engine を作る・壊すことで保証。
+    //
+    // ⚠️ 旧記述「1 lane = 高々 1 エンジン（pty_slots xor chat_engines）= 1 cc_session」は
+    // doc 33（Act I/II 排他）時代のもので、`chat_engines` が session ごとの map になった
+    // doc 38 の時点で**既に事実と違っていた**。型は正しく、この「法」の宣言だけが古かった。
     // =========================================================================
 
     /// lane の console mode（registry cache）。lane 不在は None。
@@ -1746,13 +1758,13 @@ mod tests {
         // tempdir に向け、 guard の drop で復元する。
         let _state = crate::test_env::state_dir();
 
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
         insert_chat_lane(&mut pool, &addr);
 
         // root(#1) の会話 id を記録（doc 40: SSOT は registry）。
         let root_conv = || {
-            crate::lane::session_registry::load("vp", "conductor", "echoes")
+            crate::lane::session_registry::load("vp", "root", "echoes")
                 .sessions
                 .iter()
                 .find(|s| s.key == 1)
@@ -1760,7 +1772,7 @@ mod tests {
         };
         crate::lane::session_registry::set_conversation(
             "vp",
-            "conductor",
+            "root",
             "echoes",
             1,
             Some("old-session-id"),
@@ -1804,19 +1816,12 @@ mod tests {
     #[test]
     fn fresh_clear_wipes_stores_regardless_of_console_mode() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
-        crate::lane::session_registry::set_conversation(
-            "vp",
-            "conductor",
-            "echoes",
-            1,
-            Some("old-id"),
-        )
-        .expect("record conversation");
+        let addr = LaneAddress::root("vp");
+        crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("old-id"))
+            .expect("record conversation");
         LanePool::clear_fresh_lane_state(&addr, "echoes").expect("clear");
         assert_eq!(
-            crate::lane::session_registry::load("vp", "conductor", "echoes").sessions[0]
-                .conversation,
+            crate::lane::session_registry::load("vp", "root", "echoes").sessions[0].conversation,
             None,
             "mode に依らず fresh 破棄で会話 id（registry）が消える"
         );
@@ -1828,7 +1833,7 @@ mod tests {
     #[test]
     fn chat_fresh_restart_clears_all_sessions_and_registry() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
         insert_chat_lane(&mut pool, &addr);
 
@@ -1837,17 +1842,11 @@ mod tests {
             .create_chat_session(&addr, Some("codex"), false)
             .expect("create session");
         assert_eq!(k2, 2);
+        crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("cc-id-1"))
+            .expect("record #1");
         crate::lane::session_registry::set_conversation(
             "vp",
-            "conductor",
-            "echoes",
-            1,
-            Some("cc-id-1"),
-        )
-        .expect("record #1");
-        crate::lane::session_registry::set_conversation(
-            "vp",
-            "conductor",
+            "root",
             "echoes",
             2,
             Some("0199-codex-id"),
@@ -1856,7 +1855,7 @@ mod tests {
         // 副 session（codex）の replay 源にも会話を仕込む — fresh はこれも捨てるべき。
         crate::echoes::replay_log::append(
             "vp",
-            "conductor#2",
+            "root#2",
             &crate::echoes::EchoesEvent::MessageChunk {
                 text: "old codex reply".to_string(),
             },
@@ -1867,11 +1866,11 @@ mod tests {
             .expect("reset chat restart");
 
         assert!(
-            crate::echoes::replay_log::load("vp", "conductor#2").is_empty(),
+            crate::echoes::replay_log::load("vp", "root#2").is_empty(),
             "副 session (#2) の replay 源も消える（残すと New Session なのに前会話が replay される）"
         );
         // registry ごと既定形（N=1）へ戻る = 全 session の会話 id が道連れに消える（doc 40 SSOT）。
-        let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
         assert_eq!(reg.sessions.len(), 1, "registry は既定形（N=1）へ戻る");
         assert_eq!(reg.focused, 1);
         assert_eq!(reg.sessions[0].conversation, None, "#1 の会話 id も消える");
@@ -1890,7 +1889,7 @@ mod tests {
     #[tokio::test]
     async fn console_mode_guard_applies_only_to_focused_session() {
         let _state = crate::test_env::state_dir_async().await;
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
         insert_lane(&mut pool, &addr, SessionAct::Tui);
         let router = std::sync::Arc::new(crate::process::topic_router::TopicRouter::new());
@@ -1932,7 +1931,7 @@ mod tests {
     #[test]
     fn resolve_chat_session_defaults_and_validates() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
         insert_chat_lane(&mut pool, &addr);
 
@@ -1968,7 +1967,7 @@ mod tests {
     #[test]
     fn remove_chat_session_drops_slot_and_conversation_ids() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
         insert_chat_lane(&mut pool, &addr);
 
@@ -1976,17 +1975,11 @@ mod tests {
         let k2 = pool
             .create_chat_session(&addr, Some("codex"), true)
             .expect("create #2");
+        crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("cc-id-1"))
+            .expect("record #1");
         crate::lane::session_registry::set_conversation(
             "vp",
-            "conductor",
-            "echoes",
-            1,
-            Some("cc-id-1"),
-        )
-        .expect("record #1");
-        crate::lane::session_registry::set_conversation(
-            "vp",
-            "conductor",
+            "root",
             "echoes",
             2,
             Some("0199-codex-id"),
@@ -1995,7 +1988,7 @@ mod tests {
         // #2（codex）の replay 源にも会話を仕込む — close で消えるべき。
         crate::echoes::replay_log::append(
             "vp",
-            "conductor#2",
+            "root#2",
             &crate::echoes::EchoesEvent::MessageChunk {
                 text: "codex reply".to_string(),
             },
@@ -2005,13 +1998,13 @@ mod tests {
         // focused(#2) を remove → focus は #1 へ、#2 の会話 id は registry entry ごと消える
         let focused = pool.remove_chat_session(&addr, k2).expect("remove #2");
         assert_eq!(focused, 1);
-        let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
         assert!(
             reg.sessions.iter().all(|s| s.key != 2),
             "閉じた session (#2) は registry から消える = 会話 id も道連れ（doc 40 SSOT）"
         );
         assert!(
-            crate::echoes::replay_log::load("vp", "conductor#2").is_empty(),
+            crate::echoes::replay_log::load("vp", "root#2").is_empty(),
             "閉じた session の replay 源も破棄される（slot で会話が蘇る嘘を防ぐ）"
         );
         assert_eq!(
@@ -2031,20 +2024,14 @@ mod tests {
     #[test]
     fn list_chat_sessions_joins_registry_and_conversations() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
         insert_chat_lane(&mut pool, &addr);
 
         pool.create_chat_session(&addr, Some("codex"), false)
             .expect("create");
-        crate::lane::session_registry::set_conversation(
-            "vp",
-            "conductor",
-            "echoes",
-            1,
-            Some("cc-id-1"),
-        )
-        .expect("record");
+        crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("cc-id-1"))
+            .expect("record");
 
         let sessions = pool.list_chat_sessions(&addr).expect("list");
         assert_eq!(sessions.len(), 2);
@@ -2066,45 +2053,31 @@ mod tests {
     #[test]
     fn switch_root_validates_mode_engine_and_moves_root() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
         insert_lane(&mut pool, &addr, SessionAct::Tui);
 
         // 同 engine（旧名 "hd" = claude）の #2 → 切替 OK、root/focused が動く
-        session_registry::create("vp", "conductor", "echoes", "hd", SessionAct::Chat, false)
+        session_registry::create("vp", "root", "echoes", "hd", SessionAct::Chat, false)
             .expect("create #2");
         pool.prepare_switch_root_session(&addr, 2)
             .expect("同 engine（旧名差）への切替は通る");
-        let reg = session_registry::load("vp", "conductor", "echoes");
+        let reg = session_registry::load("vp", "root", "echoes");
         assert_eq!(reg.root, 2);
         assert_eq!(reg.focused, 2);
 
         // cross-engine（codex）の #3 → P4 で解禁（通る、root/focused が動く）
-        session_registry::create(
-            "vp",
-            "conductor",
-            "echoes",
-            "codex",
-            SessionAct::Chat,
-            false,
-        )
-        .expect("create #3");
+        session_registry::create("vp", "root", "echoes", "codex", SessionAct::Chat, false)
+            .expect("create #3");
         pool.prepare_switch_root_session(&addr, 3)
             .expect("cross-engine（codex）への切替は P4 で通る");
-        let reg = session_registry::load("vp", "conductor", "echoes");
+        let reg = session_registry::load("vp", "root", "echoes");
         assert_eq!(reg.root, 3, "root は codex session #3 へ");
         assert_eq!(reg.focused, 3);
 
         // 未知 / 撤去済み stand（cursor）の #4 → Err（shell 層に落ちるため拒否のまま）
-        session_registry::create(
-            "vp",
-            "conductor",
-            "echoes",
-            "cursor",
-            SessionAct::Chat,
-            false,
-        )
-        .expect("create #4");
+        session_registry::create("vp", "root", "echoes", "cursor", SessionAct::Chat, false)
+            .expect("create #4");
         let err = pool
             .prepare_switch_root_session(&addr, 4)
             .expect_err("未知 engine は拒否");
@@ -2122,7 +2095,7 @@ mod tests {
     #[test]
     fn lane_address_display_is_flat() {
         // doc 44 P2: 表示形は `<project>/<name>` 一本。開発起点は予約名なので旧形と一致する。
-        assert_eq!(LaneAddress::conductor("vp").to_string(), "vp/conductor");
+        assert_eq!(LaneAddress::root("vp").to_string(), "vp/root");
         assert_eq!(LaneAddress::performer("vp", "foo").to_string(), "vp/foo");
     }
 
@@ -2131,8 +2104,8 @@ mod tests {
     #[test]
     fn nudge_lock_is_stable_per_lane_and_distinct_across_lanes() {
         let pool = LanePool::new();
-        let a = LaneAddress::conductor("proj-a");
-        let b = LaneAddress::conductor("proj-b");
+        let a = LaneAddress::root("proj-a");
+        let b = LaneAddress::root("proj-b");
 
         let a1 = pool.nudge_lock_handle(&a).unwrap();
         let a2 = pool.nudge_lock_handle(&a).unwrap();
@@ -2156,7 +2129,7 @@ mod tests {
     #[tokio::test]
     async fn nudge_lock_serializes_same_lane() {
         let pool = LanePool::new();
-        let addr = LaneAddress::conductor("proj");
+        let addr = LaneAddress::root("proj");
         let lock = pool.nudge_lock_handle(&addr).unwrap();
 
         // 1 本目が critical section を保持中は、同 lane の 2 本目 (try_lock) は取れない。
@@ -2175,13 +2148,13 @@ mod tests {
 
     #[tokio::test]
     async fn lane_pool_with_conductor_pre_populates_one_lane() {
-        // Phase 1: LanePool::with_conductor は内部で PtySlot::spawn → tokio::task::spawn_blocking する。
+        // Phase 1: LanePool::with_root は内部で PtySlot::spawn → tokio::task::spawn_blocking する。
         // 純 sync test だと runtime が無くて panic するので #[tokio::test] にする。
-        let pool = LanePool::with_conductor("vp", "/tmp");
+        let pool = LanePool::with_root("vp", "/tmp");
         assert_eq!(pool.count(), 1);
         let lanes = pool.list();
         assert_eq!(lanes.len(), 1);
-        assert!(lanes[0].address.is_conductor());
+        assert!(lanes[0].address.is_root());
         assert_eq!(lanes[0].stand, "echoes"); // default は "echoes" (PR-pre2 で "hd" → "echoes" rename)
     }
 
@@ -2191,15 +2164,15 @@ mod tests {
     fn legacy_lane_address_deserializes() {
         // 旧 conductor: name 省略 + kind field あり → 予約名に落ちる
         let conductor: LaneAddress =
-            serde_json::from_str(r#"{"project":"vp","kind":"conductor"}"#).unwrap();
-        assert_eq!(conductor, LaneAddress::conductor("vp"));
-        assert!(conductor.is_conductor());
+            serde_json::from_str(r#"{"project":"vp","kind":"root"}"#).unwrap();
+        assert_eq!(conductor, LaneAddress::root("vp"));
+        assert!(conductor.is_root());
 
         // 旧 performer: name あり + kind field は unknown として無視される
         let performer: LaneAddress =
             serde_json::from_str(r#"{"project":"vp","kind":"performer","name":"foo"}"#).unwrap();
         assert_eq!(performer, LaneAddress::new("vp", "foo"));
-        assert!(!performer.is_conductor());
+        assert!(!performer.is_root());
 
         // 新形（kind なし）
         let flat: LaneAddress = serde_json::from_str(r#"{"project":"vp","name":"bar"}"#).unwrap();
@@ -2220,7 +2193,7 @@ mod tests {
         // 旧 conductor 名 "lead" も予約名に寄る
         assert_eq!(
             LanePool::parse_address("vp/lead").unwrap(),
-            LaneAddress::conductor("vp")
+            LaneAddress::root("vp")
         );
         // 新形はそのまま
         assert_eq!(
@@ -2254,15 +2227,15 @@ mod tests {
 
     #[test]
     fn parse_address_conductor_and_performer() {
-        let conductor = LanePool::parse_address("vp/conductor").unwrap();
-        assert_eq!(conductor, LaneAddress::conductor("vp"));
+        let conductor = LanePool::parse_address("vp/root").unwrap();
+        assert_eq!(conductor, LaneAddress::root("vp"));
 
         let performer = LanePool::parse_address("vp/performer/foo").unwrap();
         assert_eq!(performer, LaneAddress::performer("vp", "foo"));
 
         // CJK / kebab-case project name も通る
-        let conductor2 = LanePool::parse_address("vantage-point/conductor").unwrap();
-        assert_eq!(conductor2, LaneAddress::conductor("vantage-point"));
+        let conductor2 = LanePool::parse_address("vantage-point/root").unwrap();
+        assert_eq!(conductor2, LaneAddress::root("vantage-point"));
 
         // doc 44 P2: `vp/foo` は「未知 kind」ではなく **name が foo の lane** になった。
         assert_eq!(
@@ -2272,17 +2245,17 @@ mod tests {
 
         // 不正
         assert!(LanePool::parse_address("vp").is_none()); // / 無し
-        assert!(LanePool::parse_address("/conductor").is_none()); // project 空
+        assert!(LanePool::parse_address("/root").is_none()); // project 空
         assert!(LanePool::parse_address("vp/").is_none()); // name 空
         assert!(LanePool::parse_address("vp/performer/").is_none()); // 旧形の name 空
         // 旧 "worker" token は受理しない（3 分節の互換は performer/wing のみ）
         assert!(LanePool::parse_address("vp/worker/foo").is_none());
 
-        // 後方互換: conductor/performer rename 前の "lead"/"wing" address も受理する
+        // 後方互換: root/performer rename 前の "lead"/"wing" address も受理する
         // (既存 session.json の active lane / 既存 wire address を orphan にしないため)
         assert_eq!(
             LanePool::parse_address("vp/lead").unwrap(),
-            LaneAddress::conductor("vp")
+            LaneAddress::root("vp")
         );
         assert_eq!(
             LanePool::parse_address("vp/wing/bar").unwrap(),
@@ -2295,16 +2268,16 @@ mod tests {
     #[test]
     fn lane_info_decodes_legacy_payload_with_tmux_field() {
         let legacy = r#"{
-            "address": {"project": "vp", "kind": "conductor"},
-            "kind": "conductor",
+            "address": {"project": "vp", "kind": "root"},
+            "kind": "root",
             "state": "running",
             "stand": "echoes",
             "created_at": "2026-05-01T00:00:00Z",
             "cwd": "/tmp",
-            "tmux": [{"stand": "echoes", "session": "vp-vp-conductor-echoes", "mode": "tmux"}]
+            "tmux": [{"stand": "echoes", "session": "vp-vp-root-echoes", "mode": "tmux"}]
         }"#;
         let info: LaneInfo = serde_json::from_str(legacy).expect("legacy payload decodes");
-        assert_eq!(info.address, LaneAddress::conductor("vp"));
+        assert_eq!(info.address, LaneAddress::root("vp"));
     }
 
     // ========================================================================
@@ -2370,7 +2343,7 @@ mod tests {
         let info = LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
-            address: LaneAddress::conductor("vp"),
+            address: LaneAddress::root("vp"),
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),

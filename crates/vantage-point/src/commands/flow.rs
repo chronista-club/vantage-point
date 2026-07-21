@@ -253,7 +253,7 @@ async fn handoff(
 /// World process-proxy ask `lane_nudge` の 1 発に置換。 lane address を直接渡し、 SP 側の
 /// `write_nudge` が PtySlot に literal text + Enter を書く (pane 解決の中間層が消える)。
 async fn try_nudge(project_path: &str, lane_address: &str) -> String {
-    let nudge_text = "conductor から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n";
+    let nudge_text = "root から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n";
     match world_process_request(
         crate::cli::world_port(),
         project_path,
@@ -331,15 +331,15 @@ async fn progress(format: &str) -> Result<()> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let label = if kind == "conductor" {
-            "conductor".to_string()
+        let label = if kind == "root" {
+            "root".to_string()
         } else {
             lane.get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unnamed")
                 .to_string()
         };
-        let agent_addr = if kind == "conductor" {
+        let agent_addr = if kind == "root" {
             format!("agent@{}", project)
         } else {
             format!("agent@{}/{}", project, label)
@@ -356,7 +356,7 @@ async fn progress(format: &str) -> Result<()> {
             Err(_) => 0,
         };
 
-        if kind == "conductor" {
+        if kind == "root" {
             conductor_unread = unread_total;
             continue;
         }
@@ -422,7 +422,7 @@ async fn progress(format: &str) -> Result<()> {
 
     let result = serde_json::json!({
         "project": project,
-        "conductor": {
+        "root": {
             "address": format!("agent@{}", project),
             "unread_wire_count": conductor_unread,
         },
@@ -441,7 +441,7 @@ async fn progress(format: &str) -> Result<()> {
 fn print_table(view: &serde_json::Value) {
     let project = view.get("project").and_then(|v| v.as_str()).unwrap_or("?");
     let conductor_unread = view
-        .pointer("/conductor/unread_wire_count")
+        .pointer("/root/unread_wire_count")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     println!("Project: {}", project);
@@ -542,7 +542,7 @@ mod tests {
         // smoke: panic しないことだけ確認 (stdout は捕捉しない、 simple coverage)
         let v = serde_json::json!({
             "project": "demo",
-            "conductor": { "address": "agent@demo", "unread_wire_count": 0 },
+            "root": { "address": "agent@demo", "unread_wire_count": 0 },
             "performers": [{
                 "name": "feat-a",
                 "address": "agent@demo/feat-a",
@@ -560,7 +560,7 @@ mod tests {
                 "unread_wire_count": 3,
                 "flow_state": "hitl_pending",
                 "control_surrender": false,
-                "state_reason": "performer posted question, awaiting conductor reply",
+                "state_reason": "performer posted question, awaiting root reply",
                 "last_state_transition_at": 1_000_000_000_000_i64,
             }, {
                 // awaiting_user: serde 経由の label 変換 + needs-you 先頭 sort の経路を踏む

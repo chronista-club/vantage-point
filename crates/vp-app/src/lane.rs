@@ -9,7 +9,7 @@
 //!
 //! ## 表示形 (人間可読)
 //!
-//! - Conductor: `"vantage-point/conductor"`
+//! - Conductor: `"vantage-point/root"`
 //! - Performer: `"vantage-point/performer/foo"`
 
 use std::fmt;
@@ -26,15 +26,15 @@ use ts_rs::TS;
 /// **定義は `vp-paths` が唯一**（2026-07-21）。以前は server 側と別々に `const` を持ち、
 /// 「同値でなければ address が食い違う」をコメントの約束で担保していた — wire は文字列
 /// なので値がズレてもコンパイラは黙る。定義を共有 crate に畳んで構造的に不可能にした。
-pub use vp_paths::CONDUCTOR_LANE_NAME;
+pub use vp_paths::ROOT_LANE_NAME;
 
 /// Lane の address — Pool key として使う 2-tuple
 ///
-/// 表示形 (`Display` 実装): `"<project>/<name>"`  例: `"vantage-point/conductor"` / `"vantage-point/foo"`
+/// 表示形 (`Display` 実装): `"<project>/<name>"`  例: `"vantage-point/root"` / `"vantage-point/foo"`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LaneAddress {
     pub project: String,
-    /// lane 名（人間可読）。開発起点は [`CONDUCTOR_LANE_NAME`]。
+    /// lane 名（人間可読）。開発起点は [`ROOT_LANE_NAME`]。
     pub name: String,
 }
 
@@ -48,8 +48,8 @@ impl LaneAddress {
     }
 
     /// 開発起点 Lane を構築（予約名）
-    pub fn conductor(project: impl Into<String>) -> Self {
-        Self::new(project, CONDUCTOR_LANE_NAME)
+    pub fn root(project: impl Into<String>) -> Self {
+        Self::new(project, ROOT_LANE_NAME)
     }
 
     /// 名前付き Lane を構築（旧 performer）
@@ -58,8 +58,8 @@ impl LaneAddress {
     }
 
     /// 開発起点 lane か（= 予約名を持つか）
-    pub fn is_conductor(&self) -> bool {
-        self.name == CONDUCTOR_LANE_NAME
+    pub fn is_root(&self) -> bool {
+        self.name == ROOT_LANE_NAME
     }
 }
 
@@ -73,7 +73,7 @@ impl fmt::Display for LaneAddress {
 ///
 /// `LaneAddress` (domain enum-based) と区別する役割:
 /// - **`LaneAddressWire`** = JSON 入口、 `kind` を String のまま保持 (vantage-point 側の
-///   "conductor"/"performer"/将来の任意値 をそのまま deserialize 受け)
+///   "root"/"performer"/将来の任意値 をそのまま deserialize 受け)
 /// - **`LaneAddress`** = domain 型、 `LaneKind` enum で型安全な分岐
 ///
 /// 比較・Display には:
@@ -90,7 +90,7 @@ impl fmt::Display for LaneAddress {
 pub struct LaneAddressWire {
     #[serde(default)]
     pub project: String,
-    /// lane 名。開発起点は [`CONDUCTOR_LANE_NAME`]。
+    /// lane 名。開発起点は [`ROOT_LANE_NAME`]。
     ///
     /// doc 44 P2: `kind` を廃し `name` 必須に。`default` は P2 以前の payload / 永続 state
     /// 互換で、旧 conductor は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
@@ -101,7 +101,7 @@ pub struct LaneAddressWire {
 
 /// [`LaneAddressWire::name`] の serde 既定値（P2 以前の payload 互換）。
 fn default_lane_name() -> String {
-    CONDUCTOR_LANE_NAME.to_string()
+    ROOT_LANE_NAME.to_string()
 }
 
 impl LaneAddressWire {
@@ -110,7 +110,7 @@ impl LaneAddressWire {
     /// 旧 `app.rs::lane_address_key` を吸収。 JS 側 `laneAddressKey()` と完全に一致させる
     /// (active 比較に使うため、 byte-for-byte 同一が要件)。
     ///
-    /// doc 44 P2 以前は kind に応じて 2 形（`<project>/conductor` と
+    /// doc 44 P2 以前は kind に応じて 2 形（`<project>/root` と
     /// `<project>/performer/<name>`）を出し分けており、`LaneAddress::Display` との
     /// 微妙な差（unknown kind の扱い）も抱えていた。フラット化で両者は同一の 1 形に畳まれ、
     /// この method と `LaneAddress::from(&wire).to_string()` は常に同じ文字列を返す。
@@ -143,14 +143,14 @@ mod tests {
 
     #[test]
     fn lane_address_display() {
-        let conductor = LaneAddress::conductor("vantage-point");
-        assert_eq!(conductor.to_string(), "vantage-point/conductor");
-        assert!(conductor.is_conductor());
+        let conductor = LaneAddress::root("vantage-point");
+        assert_eq!(conductor.to_string(), "vantage-point/root");
+        assert!(conductor.is_root());
 
         let performer = LaneAddress::performer("vantage-point", "foo");
         // doc 44 P2: フラット化後の表示形は `<project>/<name>`
         assert_eq!(performer.to_string(), "vantage-point/foo");
-        assert!(!performer.is_conductor());
+        assert!(!performer.is_root());
     }
 
     #[test]
@@ -170,9 +170,9 @@ mod tests {
     fn lane_address_wire_key_is_flat() {
         let conductor = LaneAddressWire {
             project: "vantage-point".into(),
-            name: "conductor".into(),
+            name: "root".into(),
         };
-        assert_eq!(conductor.key(), "vantage-point/conductor");
+        assert_eq!(conductor.key(), "vantage-point/root");
 
         let named = LaneAddressWire {
             project: "vp".into(),
@@ -187,7 +187,7 @@ mod tests {
     /// `Display` は unknown kind を Conductor に collapse）。フラット化でこの差は消えた。
     #[test]
     fn wire_key_and_domain_display_agree() {
-        for name in ["conductor", "foo", "feat-x"] {
+        for name in ["root", "foo", "feat-x"] {
             let w = LaneAddressWire {
                 project: "vp".into(),
                 name: name.into(),
@@ -205,16 +205,15 @@ mod tests {
         let addr = LaneAddress::from(&w);
         assert_eq!(addr.project, "vp");
         assert_eq!(addr.name, "foo");
-        assert!(!addr.is_conductor());
+        assert!(!addr.is_root());
     }
 
     /// P2 以前の payload（`name` を持たない conductor）が予約名に落ちること。
     #[test]
     fn legacy_wire_without_name_defaults_to_conductor() {
-        let w: LaneAddressWire =
-            serde_json::from_str(r#"{"project":"vp","kind":"conductor"}"#).unwrap();
-        assert_eq!(w.name, CONDUCTOR_LANE_NAME);
-        assert_eq!(w.key(), "vp/conductor");
+        let w: LaneAddressWire = serde_json::from_str(r#"{"project":"vp","kind":"root"}"#).unwrap();
+        assert_eq!(w.name, ROOT_LANE_NAME);
+        assert_eq!(w.key(), "vp/root");
 
         // 旧 performer payload は name をそのまま引き継ぐ（`kind` は unknown field として無視）
         let p: LaneAddressWire =

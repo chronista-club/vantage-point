@@ -82,7 +82,7 @@ fn board_key(scope: Option<&str>, lane: Option<&str>) -> (String, String, Option
     }
     // lane 正規化: None/""/予約名 → '' (開発起点 lane)。
     let lane_name = lane
-        .filter(|s| !s.is_empty() && *s != crate::process::lanes_state::CONDUCTOR_LANE_NAME)
+        .filter(|s| !s.is_empty() && *s != crate::process::lanes_state::ROOT_LANE_NAME)
         .unwrap_or("")
         .to_string();
     let broadcast_lane = if lane_name.is_empty() {
@@ -2071,8 +2071,8 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::conductor("vp");
-        let lane = addr.to_string(); // "vp/conductor"
+        let addr = LaneAddress::root("vp");
+        let lane = addr.to_string(); // "vp/root"
 
         // 実 PtySlot を attach (subscribe_output が Some を返す前提を作る)。
         {
@@ -2136,7 +2136,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "terminal_demand_start",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await
         .expect("demand_start");
@@ -2158,7 +2158,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let lane = addr.to_string();
 
         {
@@ -2354,7 +2354,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "terminal_write",
-            serde_json::json!({ "lane": "vp/conductor", "data": data }),
+            serde_json::json!({ "lane": "vp/root", "data": data }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への write は Err");
@@ -2384,7 +2384,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "lane_nudge",
-            serde_json::json!({ "lane": "vp/conductor", "text": "x" }),
+            serde_json::json!({ "lane": "vp/root", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への nudge は Err: {res:?}");
@@ -2408,7 +2408,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_nudge",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         assert!(res.is_err(), "text 未指定は Err: {res:?}");
@@ -2424,7 +2424,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_nudge",
-            serde_json::json!({ "lane": "vp/conductor", "text": "x" }),
+            serde_json::json!({ "lane": "vp/root", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "不在 lane への nudge は Err: {res:?}");
@@ -2451,7 +2451,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_respond",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         assert!(res.is_err(), "request_id 未指定は Err: {res:?}");
@@ -2467,7 +2467,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_respond",
-            serde_json::json!({ "lane": "vp/conductor", "request_id": "r1", "answers": {} }),
+            serde_json::json!({ "lane": "vp/root", "request_id": "r1", "answers": {} }),
         )
         .await;
         assert!(res.is_err(), "engine 不在への respond は Err: {res:?}");
@@ -2531,7 +2531,7 @@ mod tests {
             let res = dispatch_process_method(
                 &state,
                 method,
-                serde_json::json!({ "lane": "vp/conductor", "session": 1 }),
+                serde_json::json!({ "lane": "vp/root", "session": 1 }),
             )
             .await;
             assert!(res.is_err(), "{method}: 不在 lane は Err: {res:?}");
@@ -2540,7 +2540,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_session_focus",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         assert!(res.is_err(), "session 未指定の focus は Err: {res:?}");
@@ -2569,7 +2569,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "lane_capture",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         let err = res.expect_err("pool 不在 lane の capture は Err");
@@ -2789,7 +2789,7 @@ mod tests {
         let err = dispatch_process_method(
             &state,
             "lane_delete",
-            serde_json::json!({ "address": "vp/conductor" }),
+            serde_json::json!({ "address": "vp/root" }),
         )
         .await
         .expect_err("Conductor の delete は Err");
@@ -2847,7 +2847,7 @@ mod tests {
         state.lane_pool.write().await.insert(LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
-            address: LaneAddress::conductor("vp"),
+            address: LaneAddress::root("vp"),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-17T00:00:00Z".to_string(),
@@ -2861,20 +2861,14 @@ mod tests {
             flow_state: None,
         });
         // hook 相当の会話 id 記録（記録契機 UserPromptSubmit の後の状態）。doc 40: SSOT は registry。
-        crate::lane::session_registry::set_conversation(
-            "vp",
-            "conductor",
-            "echoes",
-            1,
-            Some("sid-new"),
-        )
-        .expect("record conversation");
+        crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("sid-new"))
+            .expect("record conversation");
 
         let mut rx = state.system_event_tx.subscribe();
         let res = dispatch_process_method(
             &state,
             "lane_session_changed",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await
         .expect("lane_session_changed ok");
@@ -2886,7 +2880,7 @@ mod tests {
             .expect("broadcast recv");
         match event {
             SystemEvent::Lane(Diff::Update { payload }) => {
-                assert_eq!(payload.address, LaneAddress::conductor("vp"));
+                assert_eq!(payload.address, LaneAddress::root("vp"));
                 assert_eq!(
                     payload.engine_session_id.as_deref(),
                     Some("sid-new"),
@@ -2912,7 +2906,7 @@ mod tests {
         state.lane_pool.write().await.insert(LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
-            address: LaneAddress::conductor("vp"),
+            address: LaneAddress::root("vp"),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-18T00:00:00Z".to_string(),
@@ -2931,7 +2925,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/conductor",
+                "lane": "vp/root",
                 "session_id": "sid-issued",
                 "event": "issued",
             }),
@@ -2940,7 +2934,7 @@ mod tests {
         .expect("lane_session_changed ok");
 
         // registry（SSOT）に記録され、旧 store には書かれない
-        let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
         let root_conv = reg
             .sessions
             .iter()
@@ -3022,15 +3016,14 @@ mod tests {
         let err = dispatch_process_method(
             &state,
             "lane_create",
-            serde_json::json!({ "name": crate::process::lanes_state::CONDUCTOR_LANE_NAME }),
+            serde_json::json!({ "name": crate::process::lanes_state::ROOT_LANE_NAME }),
         )
         .await
         .expect_err("予約名は Err");
         // doc 44 §9: 判定は `validate_performer_name` に一本化された（両経路で同じ gate）。
         // message は同関数のものになるので、予約名を名指ししていることだけを見る。
         assert!(
-            err.contains(crate::process::lanes_state::CONDUCTOR_LANE_NAME)
-                && err.contains("reserved"),
+            err.contains(crate::process::lanes_state::ROOT_LANE_NAME) && err.contains("reserved"),
             "error は予約名である旨を含む: {err}"
         );
 
@@ -3109,7 +3102,7 @@ mod tests {
         mode: crate::lane::session_registry::SessionAct,
     ) -> crate::process::lanes_state::LaneAddress {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
-        let addr = LaneAddress::conductor(project);
+        let addr = LaneAddress::root(project);
         state.lane_pool.write().await.insert(LaneInfo {
             console_mode: mode,
             id: Default::default(),
@@ -3150,7 +3143,7 @@ mod tests {
             dispatch_process_method(
                 &state,
                 "echoes_submit",
-                serde_json::json!({ "lane": "vp/conductor" })
+                serde_json::json!({ "lane": "vp/root" })
             )
             .await
             .is_err(),
@@ -3161,7 +3154,7 @@ mod tests {
             dispatch_process_method(
                 &state,
                 "echoes_submit",
-                serde_json::json!({ "lane": "vp/conductor", "prompt": "hi" })
+                serde_json::json!({ "lane": "vp/root", "prompt": "hi" })
             )
             .await
             .is_err(),
@@ -3182,7 +3175,7 @@ mod tests {
         let err = dispatch_process_method(
             &state,
             "echoes_submit",
-            serde_json::json!({ "lane": "vptest-c1-tui/conductor", "prompt": "hi" }),
+            serde_json::json!({ "lane": "vptest-c1-tui/root", "prompt": "hi" }),
         )
         .await
         .expect_err("tui mode は Err");
@@ -3218,7 +3211,7 @@ mod tests {
             .expect("create codex session");
         assert_eq!(k2, 2);
 
-        // #2 の replay 源に会話を仕込む（session label = "conductor#2"）。
+        // #2 の replay 源に会話を仕込む（session label = "root#2"）。
         for ev in [
             EchoesEvent::MessageChunk {
                 text: "codex says hi".to_string(),
@@ -3230,18 +3223,18 @@ mod tests {
                 context_window: None,
             },
         ] {
-            crate::echoes::replay_log::append("vptest-replaylog", "conductor#2", &ev)
+            crate::echoes::replay_log::append("vptest-replaylog", "root#2", &ev)
                 .expect("replay log append");
         }
 
         // echoes topic を購読（非 retained なので dispatch 前に張る）。
-        let topic = "process/echoes/data/vptest-replaylog~conductor/event";
+        let topic = "process/echoes/data/vptest-replaylog~root/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         let res = dispatch_process_method(
             &state,
             "echoes_demand_start",
-            serde_json::json!({ "lane": "vptest-replaylog/conductor" }),
+            serde_json::json!({ "lane": "vptest-replaylog/root" }),
         )
         .await
         .expect("demand_start");
@@ -3287,7 +3280,7 @@ mod tests {
             dispatch_process_method(
                 &state,
                 "console_set_mode",
-                serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "gui" })
+                serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "gui" })
             )
             .await
             .is_err(),
@@ -3298,7 +3291,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "console_set_mode",
-            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+            serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "chat" }),
         )
         .await
         .expect("tui→chat ok");
@@ -3311,7 +3304,7 @@ mod tests {
         dispatch_process_method(
             &state,
             "console_set_mode",
-            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+            serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "chat" }),
         )
         .await
         .expect("chat→chat no-op ok");
@@ -3338,13 +3331,13 @@ mod tests {
         // echoes data は非 retained なので submit 前に subscribe。
         let (_id, mut srx) = state
             .topic_router
-            .subscribe("process/echoes/data/vptest-c1-rt~conductor/event")
+            .subscribe("process/echoes/data/vptest-c1-rt~root/event")
             .await;
 
         dispatch_process_method(
             &state,
             "echoes_submit",
-            serde_json::json!({ "lane": "vptest-c1-rt/conductor", "prompt": "Reply with exactly: PONG" }),
+            serde_json::json!({ "lane": "vptest-c1-rt/root", "prompt": "Reply with exactly: PONG" }),
         )
         .await
         .expect("echoes_submit ok");

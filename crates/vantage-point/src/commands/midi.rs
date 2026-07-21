@@ -715,7 +715,7 @@ pub(crate) struct RotoLane {
     /// switch_lane 送信先 project path（World process-proxy handshake の stable identifier）。
     /// L0 portless: SP port 直結は撤去、World が path_key に正規化して当該 SP へ forward する。
     pub(crate) project_path: String,
-    /// switch_lane payload の lane token（"conductor" or performer 名）
+    /// switch_lane payload の lane token（"root" or performer 名）
     pub(crate) token: String,
     /// LCD 表示用の compact ラベル（≤13 文字、project + lane）
     pub(crate) label: String,
@@ -758,8 +758,8 @@ pub(crate) fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
             let Some(kind) = lane.get("kind").and_then(|k| k.as_str()) else {
                 continue;
             };
-            let token = if kind == "conductor" {
-                "conductor".to_string()
+            let token = if kind == "root" {
+                "root".to_string()
             } else {
                 match lane
                     .get("address")
@@ -1137,8 +1137,8 @@ mod tests {
     #[test]
     fn compact_label_fits_lcd() {
         // 長い project 名 → 8 文字に truncate、token → 4 文字
-        let label = compact_lane_label("vantage-point", "conductor");
-        assert_eq!(label, "vantage-:cond");
+        let label = compact_lane_label("vantage-point", "root");
+        assert_eq!(label, "vantage-:root");
         assert!(label.chars().count() <= 13);
         // 短い名前はそのまま
         assert_eq!(compact_lane_label("vp", "alpha"), "vp:alph");
@@ -1156,7 +1156,7 @@ mod tests {
                     "project_path": "/repos/zeta-proj",
                     "port": 33001,
                     "lanes": [
-                        { "kind": "conductor" },
+                        { "kind": "root" },
                         { "kind": "performer", "address": { "name": "beta" } },
                         { "kind": "performer", "address": { "name": "alpha" } },
                     ]
@@ -1165,7 +1165,7 @@ mod tests {
                     "project_name": "aaa-proj",
                     "project_path": "/repos/aaa-proj",
                     "port": 33000,
-                    "lanes": [ { "kind": "conductor" } ]
+                    "lanes": [ { "kind": "root" } ]
                 },
             ]
         });
@@ -1176,10 +1176,10 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "/repos/zeta-proj:conductor",
+                "/repos/zeta-proj:root",
                 "/repos/zeta-proj:beta",
                 "/repos/zeta-proj:alpha",
-                "/repos/aaa-proj:conductor",
+                "/repos/aaa-proj:root",
             ]
         );
         // project_path が switch_lane の World process-proxy handshake 先として保持される

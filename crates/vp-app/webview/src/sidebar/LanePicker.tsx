@@ -24,7 +24,7 @@ import { laneAddressKey, laneLabel } from "./lane";
 
 interface PickerEntry {
 	kind: "lane" | "project";
-	/** lane なら `LaneAddressWire.key()` (例: `vantage-point/conductor`)、 project なら path */
+	/** lane なら `LaneAddressWire.key()` (例: `vantage-point/root`)、 project なら path */
 	id: string;
 	/** 表示 label (`project / Lane label` 等) */
 	label: string;

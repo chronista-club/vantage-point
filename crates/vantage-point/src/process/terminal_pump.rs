@@ -45,7 +45,7 @@ const REPLAY_CLEAR_PREFIX: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 
 /// 1 Lane の PtySlot output broadcast を購読し、 `LaneTerminalOutput` topic に流す pump を spawn。
 ///
-/// - `lane`: LaneAddress の Display 形 (`"vp/conductor"` / `"vp/performer/foo"`)。 vp-app が
+/// - `lane`: LaneAddress の Display 形 (`"vp/root"` / `"vp/performer/foo"`)。 vp-app が
 ///   `/ws/terminal?lane=` に渡していた値と一致させ、 topic key 化は `TopicRouter` が担う。
 /// - `replay`: attach 時に先頭配送する直近出力 snapshot。 rx と原子的に取得したもの
 ///   (`LanePool::attach_output`) を渡せば byte 順序が保たれる (欠落・重複なし)。
@@ -122,12 +122,9 @@ mod tests {
         let (tx, rx) = broadcast::channel::<Vec<u8>>(16);
 
         // 先に subscriber を張る (terminal data は非 retained なので route 前に subscribe が要る)。
-        let (_id, mut srx) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
+        let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
 
-        let _h =
-            spawn_lane_terminal_pump("vp/conductor".to_string(), Vec::new(), rx, router.clone());
+        let _h = spawn_lane_terminal_pump("vp/root".to_string(), Vec::new(), rx, router.clone());
 
         tx.send(b"hello".to_vec()).expect("send");
 
@@ -135,10 +132,10 @@ mod tests {
             .await
             .expect("timeout")
             .expect("recv");
-        assert_eq!(topic, "process/terminal/data/vp~conductor/out");
+        assert_eq!(topic, "process/terminal/data/vp~root/out");
         match msg {
             ProcessMessage::LaneTerminalOutput { lane, data } => {
-                assert_eq!(lane, "vp/conductor");
+                assert_eq!(lane, "vp/root");
                 let decoded = base64::engine::general_purpose::STANDARD
                     .decode(data)
                     .expect("base64");
@@ -153,14 +150,12 @@ mod tests {
     async fn test_pump_replays_before_live() {
         let router = Arc::new(TopicRouter::new());
         let (tx, rx) = broadcast::channel::<Vec<u8>>(16);
-        let (_id, mut srx) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
+        let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
 
         // live 出力を先に queue しても、 replay が先頭に来る。
         tx.send(b"live".to_vec()).expect("send live");
         let _h = spawn_lane_terminal_pump(
-            "vp/conductor".to_string(),
+            "vp/root".to_string(),
             b"replayed-screen".to_vec(),
             rx,
             router.clone(),
@@ -193,11 +188,9 @@ mod tests {
     async fn test_pump_replay_starts_with_clear_prefix() {
         let router = Arc::new(TopicRouter::new());
         let (_tx, rx) = broadcast::channel::<Vec<u8>>(16);
-        let (_id, mut srx) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
+        let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
         let _h = spawn_lane_terminal_pump(
-            "vp/conductor".to_string(),
+            "vp/root".to_string(),
             b"screen".to_vec(),
             rx,
             router.clone(),
@@ -225,20 +218,14 @@ mod tests {
     async fn test_pump_replay_chunked() {
         let router = Arc::new(TopicRouter::new());
         let (_tx, rx) = broadcast::channel::<Vec<u8>>(16);
-        let (_id, mut srx) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
+        let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
 
         // 1.5 chunk 分の replay → 2 message に分割される
         let replay: Vec<u8> = (0..(REPLAY_CHUNK + REPLAY_CHUNK / 2))
             .map(|i| (i % 251) as u8)
             .collect();
-        let _h = spawn_lane_terminal_pump(
-            "vp/conductor".to_string(),
-            replay.clone(),
-            rx,
-            router.clone(),
-        );
+        let _h =
+            spawn_lane_terminal_pump("vp/root".to_string(), replay.clone(), rx, router.clone());
 
         let mut reassembled = Vec::new();
         for _ in 0..2 {
@@ -265,11 +252,8 @@ mod tests {
     async fn test_pump_skips_empty() {
         let router = Arc::new(TopicRouter::new());
         let (tx, rx) = broadcast::channel::<Vec<u8>>(16);
-        let (_id, mut srx) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
-        let _h =
-            spawn_lane_terminal_pump("vp/conductor".to_string(), Vec::new(), rx, router.clone());
+        let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
+        let _h = spawn_lane_terminal_pump("vp/root".to_string(), Vec::new(), rx, router.clone());
 
         tx.send(Vec::new()).expect("send empty");
         tx.send(b"x".to_vec()).expect("send x");

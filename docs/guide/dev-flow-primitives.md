@@ -75,7 +75,7 @@ mcp__vantage-point__flow_progress {}
 // →
 {
   "project": "vantage-point",
-  "conductor": {
+  "root": {
     "address": "agent@vantage-point",
     "unread_wire_count": 2,
     "unread_by_thread": { "019e...": 1, "019f...": 1 }

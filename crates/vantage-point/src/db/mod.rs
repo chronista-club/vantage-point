@@ -966,7 +966,7 @@ impl VpDb {
     /// PP Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
     ///
     /// - `lane_name`: None なら conductor (= 内部で `''` sentinel)、 Some(name) なら performer。 UNIQUE INDEX は
-    ///   (project_path, lane_name, pane_id) のため conductor/performer は別 record として独立。
+    ///   (project_path, lane_name, pane_id) のため root/performer は別 record として独立。
     /// - `stack`: Canvas Stack (= items + cursor + capacity)。 None なら未保存。
     /// - `ui_state`: visibility/collapsed/サイズ等。 None なら未保存。
     /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
@@ -1469,7 +1469,7 @@ DEFINE FIELD IF NOT EXISTS title ON pane_contents TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS lane_name ON pane_contents TYPE string DEFAULT '';
 -- board モデル (2026-07-15): scope 軸を追加し (project_path, scope, lane_name, pane_id) で board を
 --   分離する。 scope='lane' が lane board (lane_name で lane ごとに独立)、 'proj' が project 共有 board
---   (lane_name='')。 旧 record (scope 不在) は DEFAULT 'lane' で self-heal され、 既存 lane/conductor
+--   (lane_name='')。 旧 record (scope 不在) は DEFAULT 'lane' で self-heal され、 既存 lane/root
 --   board を現挙動のまま保存する。 現状の scope は lane/proj の 2 つ。
 --   (doc 44 P1 PR4 まで「将来の 'vp'(全体 board) は別 DB 行き」と書かれていたが、 db 単一化で
 --    その制約は消えた — 全体 board を足すなら project_path を跨ぐ scope 値を 1 つ増やすだけで済む。)
@@ -1639,7 +1639,7 @@ mod tests {
                      lifecycle: 'ready', updated_at: time::now()
                  };
                  CREATE lane_lifecycle CONTENT {
-                     project_path: '/repos/vp', address: 'vp/conductor',
+                     project_path: '/repos/vp', address: 'vp/root',
                      lifecycle: 'ready', updated_at: time::now()
                  };",
             )
@@ -1662,7 +1662,7 @@ mod tests {
             "旧形が残ってはならない（孤児化する）: {addrs:?}"
         );
         assert!(
-            addrs.contains(&"vp/conductor"),
+            addrs.contains(&"vp/root"),
             "元から新形と一致する行は触られない: {addrs:?}"
         );
     }
@@ -1782,9 +1782,7 @@ mod tests {
         assert!(db.list_active_lanes().await.unwrap().is_empty());
 
         // project ごとに upsert
-        db.upsert_active_lane("/repos/vp", "vp/conductor")
-            .await
-            .unwrap();
+        db.upsert_active_lane("/repos/vp", "vp/root").await.unwrap();
         db.upsert_active_lane("/repos/nexus", "nexus/performer/foo")
             .await
             .unwrap();
@@ -1798,7 +1796,7 @@ mod tests {
                     "/repos/nexus".to_string(),
                     "nexus/performer/foo".to_string()
                 ),
-                ("/repos/vp".to_string(), "vp/conductor".to_string()),
+                ("/repos/vp".to_string(), "vp/root".to_string()),
             ]
         );
 
@@ -1848,11 +1846,11 @@ mod tests {
         };
 
         // 2 project に lane を入れる
-        db.upsert_lane("/repos/vp", &mk("vp", "conductor"))
+        db.upsert_lane("/repos/vp", &mk("vp", "root"))
             .await
             .unwrap();
         db.upsert_lane("/repos/vp", &mk("vp", "foo")).await.unwrap();
-        db.upsert_lane("/repos/nexus", &mk("nexus", "conductor"))
+        db.upsert_lane("/repos/nexus", &mk("nexus", "root"))
             .await
             .unwrap();
 
@@ -1862,13 +1860,13 @@ mod tests {
         // descriptor が round-trip する (address / stand)
         let vp_conductor = rows
             .iter()
-            .find(|(p, l)| p == "/repos/vp" && l.address.is_conductor())
-            .expect("vp conductor が読める");
-        assert_eq!(vp_conductor.1.address.to_string(), "vp/conductor");
+            .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
+            .expect("vp root が読める");
+        assert_eq!(vp_conductor.1.address.to_string(), "vp/root");
         assert_eq!(vp_conductor.1.stand, "echoes");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
-        db.upsert_lane("/repos/vp", &mk("vp", "conductor"))
+        db.upsert_lane("/repos/vp", &mk("vp", "root"))
             .await
             .unwrap();
         assert_eq!(
@@ -1903,8 +1901,8 @@ mod tests {
             "snapshot で /repos/vp は 2 lane に全置換"
         );
         assert!(
-            vp_lanes.iter().all(|(_, l)| !l.address.is_conductor()),
-            "snapshot 後は conductor が消え performer のみ"
+            vp_lanes.iter().all(|(_, l)| !l.address.is_root()),
+            "snapshot 後は root が消え performer のみ"
         );
 
         // §4.6 含有=所有=寿命: project remove 時の回収 (delete_lanes_for_project)。
@@ -2177,7 +2175,7 @@ mod tests {
         let db = make_test_db().await;
 
         let conductor_stack = serde_json::json!({
-            "items": [{"id":"i1","content":"# conductor\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
+            "items": [{"id":"i1","content":"# root\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
             "cursor": "i1",
             "capacity": 10
         });
@@ -2194,7 +2192,7 @@ mod tests {
             None,
             "paisley-park",
             "markdown",
-            "# conductor\n",
+            "# root\n",
             None,
             Some(&conductor_stack),
             Some(&ui),
@@ -2219,10 +2217,10 @@ mod tests {
             .load_pp_state("/repos/vp", None, "paisley-park")
             .await
             .unwrap()
-            .expect("conductor record 不在");
+            .expect("root record 不在");
         assert_eq!(
             conductor["lane_name"], "",
-            "conductor は lane_name='' sentinel (= None)"
+            "root は lane_name='' sentinel (= None)"
         );
         assert_eq!(conductor["stack"]["cursor"], "i1");
 
@@ -2237,7 +2235,7 @@ mod tests {
 
         // list_pane_contents は両方見える (project scope)
         let all = db.list_pane_contents("/repos/vp").await.unwrap();
-        assert_eq!(all.len(), 2, "conductor + performer で 2 record");
+        assert_eq!(all.len(), 2, "root + performer で 2 record");
     }
 
     /// upsert_pp_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)

@@ -1,12 +1,12 @@
 //! `vp lane capture` / `vp lane nudge` — lane console の read/write CLI（tmux decoupling PR2）
 //!
 //! 旧 `vp tmux capture` / `vp tmux send-keys` / `vp directmsg` の native 後継。
-//! lane address（`<project>/conductor` / `<project>/performer/<name>`）を唯一の宛先語彙とし、
+//! lane address（`<project>/root` / `<project>/performer/<name>`）を唯一の宛先語彙とし、
 //! World process-proxy ask（`lane_capture` / `lane_nudge`）経由で SP の PtySlot に到達する
 //! （tmux session 名 / pane id の第 2 名前空間は廃止）。
 //!
 //! ```bash
-//! vp lane capture vantage-point/conductor          # console の現在画面を読む
+//! vp lane capture vantage-point/root          # console の現在画面を読む
 //! vp lane nudge vantage-point/performer/sub "続けて"  # text + Enter を注入
 //! ```
 
@@ -25,7 +25,7 @@ fn project_path_for_lane(lane: &str, config: &Config) -> Result<String> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "lane address が不正: '{}' — '<project>/conductor' か '<project>/performer/<name>' を指定",
+                "lane address が不正: '{}' — '<project>/root' か '<project>/performer/<name>' を指定",
                 lane
             )
         })?;

@@ -71,7 +71,7 @@ pub fn replay_file_path_in(base: &Path, project: &str, lane: &str) -> PathBuf {
 
 /// lane の replay 永続 file path。 `<project>__<lane>` (console_mode と同一命名規則)。
 ///
-/// `project` / `lane` は LaneAddress 由来 (`lane` は "conductor" / performer 名)。
+/// `project` / `lane` は LaneAddress 由来 (`lane` は "root" / performer 名)。
 pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
     replay_file_path_in(&crate::config::vp_state_dir(), project, lane)
 }
@@ -595,7 +595,7 @@ mod tests {
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("terminal_replay").join("proj__conductor");
+        let path = tmp.path().join("terminal_replay").join("proj__root");
 
         // --- 1 本目: 出力を出して disk flush を待つ ---
         let marker = "VP_PERSIST_MARKER";
