@@ -7,6 +7,52 @@
 >
 > 本 doc は「何が割れているか」の**目録**。個々の解き方は着手時に別 doc / section で決める。
 
+## 0. 組織原理 — projection の境界を 1 本引く（mako 2026-07-21）
+
+> 「内部モデルと view は疎結合なんだよね？ daemon での Lane の状態の projection というか。」
+
+**半分そうで、半分そうなっていない。** 以下の 6 件は、突き詰めると**この 1 本の線が
+引かれていない**ことの各所での現れ。
+
+### 投影になっている（server 所有）
+
+lane の**実体**は daemon-canonical な一方向の投影:
+
+```
+daemon (真実源) ──LanesSnapshot──▶ vp-app SidebarState ──▶ webview
+   lane descriptor / origin / ord / lifecycle
+```
+
+doc 44 §10.3 / §12.4 で origin と並び順の**楽観更新を避けた**のはこれを守るため
+（「帳簿が真実源、view は投影」）。doc 24 §10 Phase 2 の「lane descriptor は
+daemon-canonical durable truth」も同じ線。
+
+### 投影になっていない（client 所有）
+
+**「見え方」は webview のローカル state**:
+
+| state | 持ち主 |
+|---|---|
+| `PaneLayout`（並び / 縮小 / focus） | webview in-memory（doc 46 §4.2 で意図的に） |
+| Frame Engine の Scene / per-lane Scene 記憶 | webview の `Map` |
+| `consoleActiveMode` | webview |
+
+### 境界を跨いでいる（両方にある）
+
+**`console_mode`（Act）だけが daemon 永続 + webview 複製**。しかも doc 46 §1.4 で
+Act は「Pane の kind」= 見え方に移る予定なので、**今まさに移動中**の状態にある。
+
+### だから何を決めるか
+
+1. **server 所有 / client 所有の線をどこに引くか**（実体 = server、見え方 = client、で良いか）
+2. client 所有のものを**何単位で持つか**（app / project / lane / session）
+3. client 所有のものを**永続するか**（するなら誰が持つか — session.json か DB か）
+
+> **所有者を決めることと、scope を決めることは別の決定**。`PaneLayout` を client 所有に
+> したのは正しかったが、**scope を lane に紐付けなかった**（app 1 つのまま）ため、
+> 実機で「どの lane に移動しても常に 2 Pane」として出た（§3）。
+> 一緒に決めた気になっていた。
+
 ## 1. レイアウト系が 2 つ並存している（最大）
 
 | | 何 | 対象 |
