@@ -452,3 +452,9 @@ fast-forward で取り込み済）」と**断定できる範囲だけ**を言う
 - **稼働中 lane の保護** — `survey_project` の `running` は CLI 経路では空。
   daemon 経由の surface（LanePool を持つ層）から呼べば埋まる
 - **lane 作成の 2 経路統合**（§6.5）と、そこに紐づく descriptor 破壊疑い
+- **git primitive の置き場所** — 第一スライスでは `lane::commands` の git 関数 5 本を
+  `pub(crate)` に上げて Host から直接使った（`run_git_in` / `count_changes` /
+  `is_branch_merged` / `is_branch_squash_merged` / `get_branch`）。依存の向きとしては
+  Host → lane の plumbing で逆転している。今は 1 箇所なので実害は無いが、
+  **後続の振る舞い（迎え入れ / 場の維持 / 交通整理）がそれぞれ独立に同じ手を伸ばす**と
+  肥大化する。2 つ目が伸びた時点で共有 git primitive module への切り出しを検討する
