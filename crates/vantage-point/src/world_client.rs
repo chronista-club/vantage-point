@@ -2,7 +2,7 @@
 //!
 //! PR-D (control plane 一元化): CLI の projects.kdl 直書きを daemon 経由に移管する。
 //! `reqwest::blocking` を**専用 OS thread**で実行することで、 async context (tokio runtime 内、
-//! 例: World daemon の axum handler `world_port_for` や `start_process`) から呼ばれても
+//! 例: World daemon の axum handler `world_sync_projects` や `start_process`) から呼ばれても
 //! nested runtime panic (= `reqwest::blocking` が内部で runtime を作る際、 async context だと
 //! 「Cannot block the current thread from within an asynchronous context」で落ちる) を回避する。
 //! 新規 OS thread は tokio context 外なので安全。 sync context (CLI) からは単に別 thread で実行
@@ -34,38 +34,6 @@ fn client() -> Option<reqwest::blocking::Client> {
 
 fn url(path: &str) -> String {
     format!("http://[::1]:{}{}", world_port(), path)
-}
-
-/// project の slot を daemon (db/world) に永続化通知する。
-///
-/// 成功 true、 daemon 不在 / エラーは false (best-effort、 caller は warn して継続)。
-pub fn notify_world_set_slot(path: &str, slot: u16) -> bool {
-    let path = path.to_string();
-    in_dedicated_thread(move || {
-        let Some(c) = client() else {
-            return false;
-        };
-        c.post(url("/api/world/projects/set_slot"))
-            .json(&serde_json::json!({ "path": path, "slot": slot }))
-            .send()
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
-    })
-}
-
-/// project の slot を daemon で解除する。 成功 true、 daemon 不在 / エラーは false。
-pub fn notify_world_unassign_slot(path: &str) -> bool {
-    let path = path.to_string();
-    in_dedicated_thread(move || {
-        let Some(c) = client() else {
-            return false;
-        };
-        c.post(url("/api/world/projects/unassign_slot"))
-            .json(&serde_json::json!({ "path": path }))
-            .send()
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
-    })
 }
 
 /// ghost project 除去を daemon に依頼する。

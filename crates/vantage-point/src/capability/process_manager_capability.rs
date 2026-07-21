@@ -1110,47 +1110,6 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// project の slot を設定 (+ 永続化)。
-    ///
-    /// PR-D (control plane 一元化): CLI の slot 永続化 (旧 `Config::persist_projects_kdl` 直書き)
-    /// を daemon 経由に移管するための受け皿。 vpdb=Some なら persist_projects 経由で db/world に書く。
-    pub async fn set_project_slot(&self, path: &str, slot: u16) -> CapabilityResult<()> {
-        let key = normalize_path_key(&PathBuf::from(path));
-        {
-            let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(&key) {
-                p.slot = Some(slot);
-            } else {
-                return Err(CapabilityError::Other(format!(
-                    "Project not found: {}",
-                    path
-                )));
-            }
-        }
-        self.persist_projects().await?;
-        tracing::info!("Project slot={}: {}", slot, path);
-        Ok(())
-    }
-
-    /// project の slot を解除 (+ 永続化)。 PR-D: `vp port slot unassign` の daemon 委譲。
-    pub async fn unset_project_slot(&self, path: &str) -> CapabilityResult<()> {
-        let key = normalize_path_key(&PathBuf::from(path));
-        {
-            let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(&key) {
-                p.slot = None;
-            } else {
-                return Err(CapabilityError::Other(format!(
-                    "Project not found: {}",
-                    path
-                )));
-            }
-        }
-        self.persist_projects().await?;
-        tracing::info!("Project slot 解除: {}", path);
-        Ok(())
-    }
-
     /// projects を現実と同期 (PR-D: CLI の `ProjectsFile::sync` を daemon 経由に移管)。
     ///
     /// dir が実在しない ghost project を除去する (running process を持つものは安全側で残す)。
@@ -2837,33 +2796,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&parent);
-    }
-
-    // --- PR-D: slot / sync の daemon 委譲受け皿 ---
-
-    #[tokio::test]
-    async fn test_set_and_unset_project_slot() {
-        let cap = make_test_cap();
-        let dir = std::env::temp_dir();
-        let path = dir.to_string_lossy().to_string();
-        cap.add_project("slot-test", &path).await.unwrap();
-
-        // set
-        cap.set_project_slot(&path, 7).await.unwrap();
-        let projects = cap.list_projects().await;
-        assert_eq!(projects[0].slot, Some(7), "slot が設定される");
-
-        // unset
-        cap.unset_project_slot(&path).await.unwrap();
-        let projects = cap.list_projects().await;
-        assert_eq!(projects[0].slot, None, "slot が解除される");
-    }
-
-    #[tokio::test]
-    async fn test_set_project_slot_not_found() {
-        let cap = make_test_cap();
-        let result = cap.set_project_slot("/nonexistent", 1).await;
-        assert!(result.is_err(), "未登録 project の slot 設定は Err");
     }
 
     #[tokio::test]

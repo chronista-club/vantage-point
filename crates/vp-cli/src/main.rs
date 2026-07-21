@@ -112,10 +112,6 @@ enum Commands {
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
 
-    /// Port Layout — deterministic 透過的固定 port の計算・表示
-    #[command(subcommand)]
-    Port(commands::port::PortCommands),
-
     /// 登録 project 管理 — World daemon に直接 Unison RPC (add/remove/rename/enable/disable/reorder/list)
     #[command(subcommand)]
     Projects(commands::projects::ProjectsCommands),
@@ -379,7 +375,6 @@ fn main() -> Result<()> {
         Commands::Db(cmd) => commands::db::execute(cmd),
 
         Commands::Lane(cmd) => execute_lane(cmd),
-        Commands::Port(cmd) => commands::port::execute(cmd),
         Commands::Projects(cmd) => {
             // projects 操作は World daemon に直接 Unison RPC (async)。 auth/wire/flow と同じ
             // per-command Runtime で block_on する。

@@ -425,61 +425,6 @@ pub async fn world_create_lane(
     }
 }
 
-/// slot 設定リクエスト (PR-D: CLI の slot 永続化を daemon 経由に)
-#[derive(serde::Deserialize)]
-pub struct SetSlotRequest {
-    pub path: String,
-    pub slot: u16,
-}
-
-/// POST /api/world/projects/set_slot - project の slot を設定 (db/world に永続化)
-pub async fn world_set_slot(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<SetSlotRequest>,
-) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-    let world = world.read().await;
-    match world.set_project_slot(&req.path, req.slot).await {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "path": req.path, "slot": req.slot})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
-}
-
-/// POST /api/world/projects/unassign_slot - project の slot を解除
-pub async fn world_unassign_slot(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<RemoveProjectRequest>,
-) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-    let world = world.read().await;
-    match world.unset_project_slot(&req.path).await {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "unassigned", "path": req.path})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
-}
-
 /// POST /api/world/projects/sync - ghost project 除去 (db/world に永続化)。
 ///
 /// かつては body の `start_dir` で起点 dir を自動登録もしていたが、 削除済 project を
@@ -621,53 +566,6 @@ pub async fn world_list_lanes(
             "lanes": lanes,
         })),
     )
-}
-
-// =============================================================================
-// VP-165 PR-6: /api/world/port_for — slot ベース SP port resolver (decision C 完成)
-// =============================================================================
-
-/// VP-165 PR-6: query param for `/api/world/port_for`
-#[derive(serde::Deserialize)]
-pub struct PortForQuery {
-    /// Project name (config の `projects[].name` に一致するもの)
-    pub project: String,
-}
-
-/// GET /api/world/port_for?project=<name> — project 名から SP port を解決
-///
-/// `Config::resolve_sp_port` 経由で `port` 明示 override → `ensure_slot` (未割当なら
-/// 次の空き slot を割当 + config 永続) → `PORT_RANGE_START + slot` を返す。slot は config
-/// 永続なので、project リスト変更でも既存 project の port は不変。
-///
-/// 用途:
-/// - `vp sp start` を `-p` 無しで叩いた時に TheWorld に聞く（cross-process port authority）
-/// - UI / 外部 script が「project X の SP port は？」を local config を読まずに問い合わせる
-/// - `start_process` (in-process) は `crate::resolve::sp_port_for_project` を直接呼ぶ
-///   （HTTP roundtrip 不要）
-///
-/// project が config に未登録なら 404。
-pub async fn world_port_for(
-    axum::extract::Query(query): axum::extract::Query<PortForQuery>,
-) -> impl IntoResponse {
-    match crate::resolve::sp_port_for_project(&query.project) {
-        Ok(port) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({
-                "project": query.project,
-                "port": port,
-            })),
-        )
-            .into_response(),
-        Err(e) => (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("port_for failed: {}", e),
-                "project": query.project,
-            })),
-        )
-            .into_response(),
-    }
 }
 
 #[cfg(test)]
