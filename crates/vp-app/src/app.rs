@@ -46,6 +46,7 @@ use crate::project_dialog::{
 use crate::session_state::SessionState;
 use crate::settings::Settings;
 use crate::terminal::{self, AppEvent};
+use crate::world_control::WorldControl;
 
 /// Sidebar の固定幅 (LogicalPixel)。
 /// WebView 統合 (step 3a) 後は HTML 側 CSS (#sidebar-root width:280px) が司るため Rust 側は未使用
@@ -264,9 +265,9 @@ pub(crate) fn merge_ports_from_running(
 /// `list_processes` 側のみエラーなら空 map 扱い (= port は config 値のまま) で degrade、
 /// `list_projects` 側エラーは bubble up する。
 pub(crate) async fn fetch_projects_with_ports(
-    client: &TheWorldClient,
+    control: &WorldControl,
 ) -> anyhow::Result<Vec<ProjectInfo>> {
-    let (proj_res, run_res) = tokio::join!(client.list_projects(), client.list_processes());
+    let (proj_res, run_res) = tokio::join!(control.list_projects(), control.list_processes());
     let mut projects = proj_res?;
     match run_res {
         Ok(runs) => merge_ports_from_running(&mut projects, &runs),
@@ -284,10 +285,20 @@ pub(crate) async fn fetch_projects_with_ports(
 /// `port` と `state` を解決した状態で `ProjectsLoaded` event に乗せる。
 ///
 /// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_subscription(...) }` が動く経路完成。
-fn spawn_processes_fetch(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
+///
+/// doc 45 段 3: transport は HTTP から Unison (`world-control` / `registry`) に移った。
+/// 初回だけ `BOOT_CONTROL_WAIT` で待つ (daemon の auto-launch と競合するため)。
+fn spawn_processes_fetch(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    conn: SharedWorldConn,
+) {
     rt_handle.spawn(async move {
-        let client = TheWorldClient::default();
-        match fetch_projects_with_ports(&client).await {
+        let result = match conn.control_within(BOOT_CONTROL_WAIT).await {
+            Ok(control) => fetch_projects_with_ports(&control).await,
+            Err(e) => Err(e),
+        };
+        match result {
             Ok(processes) => {
                 // polling 毎回発火するため log omit (= loop noise)。
                 let _ = proxy.send_event(AppEvent::ProjectsLoaded(processes));
@@ -319,9 +330,23 @@ enum SubscriptionOutcome {
 /// 旧構成は session ごと (lanes / canvas は project ごと、 terminal は lane ごと) に別 QUIC
 /// connection を張り、 QUIC の多重化を使えていなかった (§3.4.4 負債)。 これを 1 connection に畳む。
 #[derive(Clone)]
-struct SharedWorldConn {
+pub(crate) struct SharedWorldConn {
     current: tokio::sync::watch::Receiver<Option<std::sync::Arc<unison::ProtocolClient>>>,
 }
+
+/// control RPC を打つ前に共有 connection の確立を待つ既定の上限 (user 操作 / 定期 poll)。
+///
+/// 旧 HTTP client は daemon が down なら即 connection refused で返っていたので、
+/// 「待たずに諦める」方が近い挙動になる。長くすると offline 時に poll が詰まる。
+const CONTROL_WAIT: Duration = Duration::from_secs(5);
+
+/// 起動直後の初回 fetch だけ待ちを伸ばす。
+///
+/// app 起動 → `spawn_world_conn_manager` → `ensure_daemon_ready` (daemon の auto-launch) の順で
+/// 走るため、初回は「daemon がまだ listen していない」時間帯に必ずぶつかる。ここで諦めると
+/// sidebar が空のまま居座る (activity poller の再 fetch trigger は「値が変化したら」なので、
+/// 0 件のまま安定してしまうと二度と発火しない)。
+const BOOT_CONTROL_WAIT: Duration = Duration::from_secs(30);
 
 impl SharedWorldConn {
     /// 共有 connection が確立する (current = Some) まで待ち、 その client を返す。
@@ -336,6 +361,27 @@ impl SharedWorldConn {
                 return None;
             }
         }
+    }
+
+    /// control plane RPC (`world-control` / `registry`) 用の client を得る (doc 45 段 3)。
+    ///
+    /// 共有 connection が未確立なら `wait` まで待つ。 待っても来なければ Err —
+    /// caller は旧 HTTP 失敗時と同じく warn して degrade する。
+    pub(crate) async fn control_within(
+        &self,
+        wait: Duration,
+    ) -> anyhow::Result<crate::world_control::WorldControl> {
+        let mut conn = self.clone();
+        match tokio::time::timeout(wait, conn.wait_client()).await {
+            Ok(Some(client)) => Ok(crate::world_control::WorldControl::new(client)),
+            Ok(None) => anyhow::bail!("app 終了中 (world conn manager 停止)"),
+            Err(_) => anyhow::bail!("World QUIC 未接続 (daemon 未起動?)"),
+        }
+    }
+
+    /// [`Self::control_within`] の既定待ち時間版。
+    pub(crate) async fn control(&self) -> anyhow::Result<crate::world_control::WorldControl> {
+        self.control_within(CONTROL_WAIT).await
     }
 }
 
@@ -1351,10 +1397,14 @@ fn spawn_sp_start(
     proxy: EventLoopProxy<AppEvent>,
     project_name: String,
     project_path: String,
+    conn: SharedWorldConn,
 ) {
     rt_handle.spawn(async move {
-        let client = TheWorldClient::default();
-        match client.start_process(&project_name).await {
+        let started = match conn.control().await {
+            Ok(control) => control.start_process(&project_name).await,
+            Err(e) => Err(e),
+        };
+        match started {
             Ok(()) => {
                 tracing::info!(
                     "SP auto-spawn 要求成功: project={} path={}",
@@ -1382,25 +1432,31 @@ fn spawn_sp_start(
 
 /// VP-95: Activity widget の定期更新。
 ///
-/// 5 秒間隔で `/api/health` + `/api/world/projects` + `/api/world/processes` を
+/// 5 秒間隔で `/api/health` (HTTP) + `projects/list` + `registry.list` (Unison) を
 /// fetch し、`AppEvent::ActivityUpdate` として main thread に push する。
 /// daemon 未起動時は world_online=false で穏やかに通る。
 ///
 /// VP-100 follow-up (B1 / MB1 / PH#7): daemon が **後発で online 復帰** した時、
-/// `world_online: false → true` の遷移を検知して `/api/world/projects` を
+/// `world_online: false → true` の遷移を検知して project 一覧を
 /// 再 fetch し `AppEvent::ProjectsLoaded` を再送する。これにより sidebar
 /// projects accordion が永遠に空のまま、という UX バグを防ぐ。
 /// 起動初回 (`prev_online == None`) では `spawn_processes_fetch` 側が担当するので
 /// 二重 fetch を避けるため transition 検知をスキップする。
-fn spawn_activity_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
+fn spawn_activity_poller(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    conn: SharedWorldConn,
+) {
     rt_handle.spawn(async move {
-        let client = TheWorldClient::default();
+        let health = TheWorldClient::default();
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut prev_online: Option<bool> = None;
         let mut prev_running: Option<usize> = None;
         loop {
             tick.tick().await;
-            let snap = collect_activity(&client).await;
+            // control client は tick ごとに取り直す (= 再接続後の新 client に自然に乗る)。
+            let control = conn.control().await.ok();
+            let snap = collect_activity(&health, control.as_ref()).await;
             let became_online = matches!(prev_online, Some(false)) && snap.world_online;
             let running_changed = prev_running.is_some_and(|p| p != snap.running_process_count);
             prev_online = Some(snap.world_online);
@@ -1418,7 +1474,8 @@ fn spawn_activity_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopPro
             // どちらも port join 経由で ProjectsLoaded 再送 → sidebar state badge 更新
             if (became_online || running_changed)
                 && snap.world_online
-                && let Ok(projects) = fetch_projects_with_ports(&client).await
+                && let Some(control) = control.as_ref()
+                && let Ok(projects) = fetch_projects_with_ports(control).await
             {
                 // polling tick で再 fetch → ProjectsLoaded を送るが、 log は omit
                 // (= loop で noise)。 失敗時のみ warn にして残す。
@@ -1480,11 +1537,18 @@ fn spawn_lane_inbox_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopP
     });
 }
 
-/// `/api/health` + `/api/world/projects` + `/api/world/processes` を集約して
-/// `ActivitySnapshot` を組み立てる。各 endpoint 失敗時は default で穏当に通す。
-async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
+/// `/api/health` (HTTP) + `projects/list` + `registry.list` (Unison) を集約して
+/// `ActivitySnapshot` を組み立てる。各面の失敗時は default で穏当に通す。
+///
+/// doc 45 段 3 で control 面だけ Unison に移り、health は HTTP に残った (§2)。
+/// `control` が `None` = 共有 QUIC connection が未確立で、この時 world_online は
+/// HTTP health だけで決まる (= daemon は生きているが QUIC がまだ、を正しく表せる)。
+async fn collect_activity(
+    health: &TheWorldClient,
+    control: Option<&WorldControl>,
+) -> ActivitySnapshot {
     let mut snap = ActivitySnapshot::default();
-    if let Ok(h) = client.world_health().await {
+    if let Ok(h) = health.world_health().await {
         snap.world_online = !h.status.is_empty();
         if !h.version.is_empty() {
             snap.world_version = Some(h.version);
@@ -1505,11 +1569,13 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
             .map(|p| (p.path, p.presence))
             .collect();
     }
-    if let Ok(projects) = client.list_projects().await {
-        snap.project_count = projects.len();
-    }
-    if let Ok(procs) = client.list_processes().await {
-        snap.running_process_count = procs.len();
+    if let Some(control) = control {
+        if let Ok(projects) = control.list_projects().await {
+            snap.project_count = projects.len();
+        }
+        if let Ok(procs) = control.list_processes().await {
+            snap.running_process_count = procs.len();
+        }
     }
     snap
 }
@@ -2728,9 +2794,9 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     // TheWorld から project list を非同期 fetch (起動初回)
-    spawn_processes_fetch(&rt_handle, event_loop.create_proxy());
+    spawn_processes_fetch(&rt_handle, event_loop.create_proxy(), world_conn.clone());
     // VP-95: Activity widget の定期更新 (5s 間隔)
-    spawn_activity_poller(&rt_handle, event_loop.create_proxy());
+    spawn_activity_poller(&rt_handle, event_loop.create_proxy(), world_conn.clone());
     // VP-143: cc session display name (custom-title) の 5s 周期 resolve
     spawn_session_title_poller(&rt_handle, event_loop.create_proxy());
     // VP-147 PR-P2-3: per-Lane mailbox inbox 状況の 5s 周期 resolve (sidebar message icon 用 signal)
@@ -2992,11 +3058,15 @@ pub fn run() -> anyhow::Result<()> {
                     && let Some(path) = resolve_project_path_for_lane(&sidebar_state, &address)
                 {
                     // 重複報告抑止: 報告する lane を記録してから spawn。 同 lane への
-                    // 連続 focus event は上の guard で弾かれ、 Client 構築は lane 切替時のみ。
+                    // 連続 focus event は上の guard で弾かれ、 RPC は lane 切替時のみ。
                     last_focus_reported_lane = Some(address.clone());
+                    let conn = world_conn.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
-                        if let Err(e) = client.set_active_lane(path, address).await {
+                        let result = match conn.control().await {
+                            Ok(control) => control.set_active_lane(path, address).await,
+                            Err(e) => Err(e),
+                        };
+                        if let Err(e) = result {
                             tracing::warn!("focus→set_active_lane failed: {}", e);
                         }
                     });
@@ -4427,7 +4497,12 @@ pub fn run() -> anyhow::Result<()> {
                         Some("process:add") => {
                             let initial_dir =
                                 resolve_default_project_root(&settings, &sidebar_state);
-                            spawn_add_project_picker(async_action_proxy.clone(), initial_dir);
+                            spawn_add_project_picker(
+                                async_action_proxy.clone(),
+                                initial_dir,
+                                rt_handle.clone(),
+                                world_conn.clone(),
+                            );
                             return;
                         }
                         Some("process:clone") => {
@@ -4452,6 +4527,8 @@ pub fn run() -> anyhow::Result<()> {
                                 url,
                                 default_root,
                                 target_override,
+                                rt_handle.clone(),
+                                world_conn.clone(),
                             );
                             return;
                         }
@@ -4503,7 +4580,13 @@ pub fn run() -> anyhow::Result<()> {
                             name,
                             path
                         );
-                        spawn_sp_start(&rt_handle, async_action_proxy.clone(), name, path);
+                        spawn_sp_start(
+                            &rt_handle,
+                            async_action_proxy.clone(),
+                            name,
+                            path,
+                            world_conn.clone(),
+                        );
                     } else {
                         tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
                     }
@@ -4524,10 +4607,19 @@ pub fn run() -> anyhow::Result<()> {
                 // 無いので必ず `rt_handle.spawn` を使う。
                 if let Some(project_name) = outcome.restart_process_request {
                     let proxy = async_action_proxy.clone();
+                    let conn = world_conn.clone();
                     rt_handle.spawn(async move {
-                        // TheWorld port は profile 依存 (brew=32000 / dev=32100、 client::default_world_port() と同期)
-                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
-                        match client.restart_process(&project_name).await {
+                        // doc 45 段 3: 旧 `POST /api/world/processes/{name}/restart` を
+                        // Unison `world-control.projects/restart` に差し替え。 接続先は共有
+                        // QUIC connection (port 解決は conn manager が持つ)。
+                        let control = match conn.control().await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!("restart_process: {}", e);
+                                return;
+                            }
+                        };
+                        match control.restart_process(&project_name).await {
                             Ok(()) => {
                                 tracing::info!("restart_process OK: {}", project_name);
                                 // 完了 → projects 再 fetch → sidebar state badge 更新。
@@ -4535,7 +4627,7 @@ pub fn run() -> anyhow::Result<()> {
                                 // で送る。 list_projects() だけだと restart 直後に全 project の
                                 // port が None で潰れ、 後続 LanesLoaded で ensureLane が
                                 // 全件 skip され conductor terminal が消失する。
-                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
                                     let _ =
                                         proxy.send_event(AppEvent::ProjectsLoaded(projects));
                                 }
@@ -4553,15 +4645,22 @@ pub fn run() -> anyhow::Result<()> {
                 // Process stop 要求 (project context menu の Stop project から)。
                 if let Some(project_name) = outcome.stop_process_request {
                     let proxy = async_action_proxy.clone();
+                    let conn = world_conn.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
-                        match client.stop_process(&project_name).await {
+                        let control = match conn.control().await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!("stop_process: {}", e);
+                                return;
+                            }
+                        };
+                        match control.stop_process(&project_name).await {
                             Ok(()) => {
                                 tracing::info!("stop_process OK: {}", project_name);
                                 // 完了 → projects 再 fetch → 停止 state を sidebar に反映。
                                 // restart と同じく `fetch_projects_with_ports` 経由で
                                 // 他 project の runtime port を保つ。
-                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
                                     let _ =
                                         proxy.send_event(AppEvent::ProjectsLoaded(projects));
                                 }
@@ -4582,11 +4681,18 @@ pub fn run() -> anyhow::Result<()> {
                 // (restart_process が capability 内でやっているのと同じ順序)。
                 if let Some((project_name, project_path)) = outcome.delete_project_request {
                     let proxy = async_action_proxy.clone();
+                    let conn = world_conn.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
+                        let control = match conn.control().await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!("delete_project: {}", e);
+                                return;
+                            }
+                        };
                         // stop は best-effort: SP が未起動 (= 停止中) なら
                         // 「No running Process」 エラーが返るが、 続行して remove する。
-                        match client.stop_process(&project_name).await {
+                        match control.stop_process(&project_name).await {
                             Ok(()) => {
                                 tracing::info!("delete: stop_process OK: {}", project_name);
                                 // shutdown 伝播 + port release を待つ grace period
@@ -4601,13 +4707,13 @@ pub fn run() -> anyhow::Result<()> {
                                 );
                             }
                         }
-                        match client.remove_project(&project_path).await {
+                        match control.remove_project(&project_path).await {
                             Ok(()) => {
                                 tracing::info!("remove_project OK: {}", project_path);
                                 // 完了 → projects 再 fetch → sidebar から除去。
                                 // 削除対象以外の project の runtime port を保つため
                                 // `fetch_projects_with_ports` 経由で送る。
-                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
                                     let _ =
                                         proxy.send_event(AppEvent::ProjectsLoaded(projects));
                                 }
@@ -4627,13 +4733,20 @@ pub fn run() -> anyhow::Result<()> {
                 // ProjectsLoaded で currents_order が canonical 順に reconcile される。
                 if let Some(order) = outcome.reorder_request {
                     let proxy = async_action_proxy.clone();
+                    let conn = world_conn.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
-                        match client.reorder_projects(order).await {
+                        let control = match conn.control().await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!("reorder_projects: {}", e);
+                                return;
+                            }
+                        };
+                        match control.reorder_projects(order).await {
                             Ok(()) => {
                                 tracing::info!("reorder_projects OK");
                                 // 完了 → projects 再 fetch → canonical 順で sidebar reconcile。
-                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
                                     let _ =
                                         proxy.send_event(AppEvent::ProjectsLoaded(projects));
                                 }
@@ -4646,9 +4759,13 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // Model Q: active lane を daemon canonical に永続 (fire-and-forget、 optimistic 適用済)。
                 if let Some((project_path, address)) = outcome.set_active_lane_request {
+                    let conn = world_conn.clone();
                     rt_handle.spawn(async move {
-                        let client = crate::client::TheWorldClient::new(crate::client::default_world_port());
-                        if let Err(e) = client.set_active_lane(project_path, address).await {
+                        let result = match conn.control().await {
+                            Ok(control) => control.set_active_lane(project_path, address).await,
+                            Err(e) => Err(e),
+                        };
+                        if let Err(e) = result {
                             tracing::warn!("set_active_lane failed: {}", e);
                         }
                     });
@@ -4806,9 +4923,22 @@ pub fn run() -> anyhow::Result<()> {
                     let branch_clone = branch.clone();
                     let stand_clone = stand.clone();
                     let path_clone = project_path.clone();
+                    let conn = world_conn.clone();
                     rt_handle.spawn(async move {
-                        let client = TheWorldClient::new(crate::client::default_world_port());
-                        match client
+                        let control = match conn.control().await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let msg = e.to_string();
+                                tracing::warn!("create_performer_lane: {}", msg);
+                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                    project_path: path_clone,
+                                    name: name_clone,
+                                    error: Some(msg),
+                                });
+                                return;
+                            }
+                        };
+                        match control
                             .create_performer_lane(
                                 &path_clone,
                                 &name_clone,
@@ -4835,8 +4965,9 @@ pub fn run() -> anyhow::Result<()> {
                             }
                             Err(e) => {
                                 // R5: 失敗通知を sidebar に push back (form 下に inline error 表示)。
-                                // daemon からは "create_performer_lane HTTP <code>: <body>" 形式で
-                                // 返ってくるので、 そのまま流す (UI 側で trim)。
+                                // doc 45 段 3 以降は Unison の error 慣習 (VP-163) に従い
+                                // "world-control.lanes/create: <World 側の理由>" が返る
+                                // (旧 HTTP の "... HTTP 500: {json}" より読める)。 そのまま流す。
                                 let msg = format!("{}", e);
                                 tracing::warn!(
                                     "create_performer_lane failed: project={} name={}: {}",
