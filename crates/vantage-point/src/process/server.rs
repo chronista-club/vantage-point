@@ -20,7 +20,6 @@ use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
-use crate::protocol::DebugMode;
 
 /// World が持つ「project path_key → lane 一覧」集約 view の共有参照。
 ///
@@ -66,7 +65,6 @@ async fn publish_lanes(
 /// 停止は `shutdown_token` を cancel して [`shutdown_project`] を呼ぶ。
 pub(crate) async fn start_project(
     port: u16,
-    debug_mode: DebugMode,
     cap_config: CapabilityConfig,
     shutdown_token: CancellationToken,
     world_lanes: Option<WorldLaneView>,
@@ -187,7 +185,6 @@ pub(crate) async fn start_project(
 
     let state = Arc::new(AppState {
         hub,
-        debug_mode,
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
         project_dir: project_dir.clone(),
@@ -377,14 +374,6 @@ pub(crate) async fn start_project(
     // 旧経路を構成していた `spawn_world_uplink` / `run_control_driver` / "control" channel は
     // いずれも撤去済（残っていた 451 行は `run()` を外した時点で孤児化してコンパイラが検出した）。
     // health/shutdown handler は run_world (World) が使うため routes/health.rs に残置。
-
-    // デバッグモード時のみトレースログ監視を起動
-    if debug_mode != DebugMode::None {
-        let hub_for_log = state.hub.clone();
-        tokio::spawn(async move {
-            crate::trace_log::watch_and_broadcast(hub_for_log).await;
-        });
-    }
 
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
@@ -642,7 +631,6 @@ pub async fn run_world(
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
-        debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),
         hub_worlds: hub_worlds.clone(),
@@ -810,11 +798,6 @@ pub async fn run_world(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
-        .route("/api/world/projects/set_slot", post(world::world_set_slot))
-        .route(
-            "/api/world/projects/unassign_slot",
-            post(world::world_unassign_slot),
-        )
         .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
         .route(
@@ -850,8 +833,9 @@ pub async fn run_world(
         // project は World 自身が起こすので外から登録される概念が無く、残しておくと
         // 外部由来の port/pid で running_processes を書ける穴になる（起動していない
         // project を稼働中に見せられる）。稼働状態の唯一の writer は start/stop_process。
-        // VP-165 PR-6: slot ベース SP port resolver (decision C 完成、TheWorld を port authority に)
-        .route("/api/world/port_for", get(world::world_port_for))
+        // doc 44 P1 (fold-in): slot ベース port resolver (`/api/world/port_for`) と
+        // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
+        // project は portless（port=0）になり、slot が解決する listen port が存在しない。
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))

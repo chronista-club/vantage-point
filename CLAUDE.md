@@ -251,32 +251,30 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 - **コメントは日本語で記述する**
 - data / calculations / actions を明確に分離
 
-## デバッグモード
+## デバッグ / ログ
 
-| モード | 用途 | 起動方法 |
-|--------|------|----------|
-| `none` | 本番運用 | `vp daemon start` |
-| `simple` | 基本的なイベントログ | （doc 44 §5.4: World の runtime 可変 state へ移設予定） |
-| `detail` | 詳細なデータ・タイミング | （同上） |
+> ⚠️ 旧「デバッグモード」（`-d simple|detail` + `send_debug` + WebUI 右パネル）は
+> doc 44 P1 fold-in で撤去（§5.4）。生産側（`send_debug`）は fold-in で常に無効化され、
+> 消費側（WebUI デバッグパネル）は旧 localhost browser UI ごと撤去済で、end-to-end で
+> dead だった。現在のログ手段は下記の 2 本。
 
-### ログ出力
+### tracing ログ詳細度（`VANTAGE_DEBUG`）
 
-```rust
-// Simple
-state.send_debug("category", "メッセージ", None);
+| 値 | tracing レベル | 用途 |
+|----|---------------|------|
+| （未設定 / `none`） | warn 相当（default EnvFilter） | 本番運用 |
+| `simple` | `vantage_point=info` | 基本ログ |
+| `detail` | `vantage_point=debug` | 詳細ログ |
 
-// Detail
-state.send_debug_detail("category", "メッセージ", serde_json::json!({"key": "value"}));
-```
-
-カテゴリ: `connection`, `pty`, `permission`, `agent`, `timing`, `tool`
+`VP_LOG=debug|info|warn|error` が設定されていれば `VANTAGE_DEBUG` より優先。
+（`cli::parse_debug_env` → `init_tracing`）
 
 ### 問題調査フロー
 
-1. daemon を debug mode で起動（doc 44 §5.4 で `vp daemon debug <mode>` へ移設予定）
-2. WebUIデバッグパネル（右パネル）でログ確認
-3. ブラウザコンソールで `Received:` ログ確認
-4. 必要に応じてログ追加 → 再ビルド
+1. `VANTAGE_DEBUG=detail` で daemon を起動（or `VP_LOG=debug`）
+2. daemon ログ（`~/.local/state/vp/log/daemon.kdl.log`、dev は `vp-dev`）を tail
+3. lane console は `vp lane capture <lane>` で読む
+4. 必要に応じて `tracing::debug!` を追加 → 再ビルド
 
 ## MCP ツール補足
 

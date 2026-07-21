@@ -198,15 +198,29 @@ World が N handle を抱く案は「project の runtime 実体」を復活さ�
 
 `PROJECT / LANES(数) / STATUS(active|idle) / ← cwd` へ。detail は既存の `vp lane` が持つ。
 
-### 5.4 debug mode — そもそも今日到達不能だった
+### 5.4 debug mode — 撤去で決着（2026-07-21）
 
-- World が spawn する SP に **`-d` は渡されない**（`-C` と `-p` のみ）→ 手動 foreground 起動専用
-- `send_debug_detail` は**呼び出し元ゼロ**
-- `-d` は tracing レベルを変えない（それは `VANTAGE_DEBUG`）
+当初は「runtime toggle にして初めて使えるようにする」方針だったが、**実装時に消費側も
+消えていたことが判明**したため撤去に切り替えた。
 
-**結論**: 新居を探すのではなく **World の runtime 可変 state にして `vp daemon debug <mode>`
-で切り替える**（`DebugModeChanged` は protocol に既存）。launchd 常駐下でも効き、
-この機能が初めて実際に使えるようになる。
+到達不能の実測（生産側）:
+- World が spawn する SP に **`-d` は渡されない**（fold-in で `vp sp` ごと退役、#824）
+- `debug_mode` は fold-in 後 常に `None`（`ProjectRuntimes::start` が None 固定）
+- `send_debug` は `if None return` で必ず早期 return、`send_debug_detail` は呼び出し元ゼロ
+- `DebugModeChanged` は生産者ゼロ
+
+**消費側も無い**（これが方針転換の決め手）:
+- `DebugInfo` を表示していた **WebUI デバッグパネルは旧 localhost browser UI ごと撤去済**
+- native vp-app / Swift agent とも `process/debug/*` を購読していない
+
+runtime toggle を作っても出力先が無いため、`DebugMode`（debug パネル用途）/ `DebugInfo` /
+`DebugModeChanged` / `DebugModeArg` / `send_debug` / `send_debug_detail` / `TraceLog` +
+`watch_and_broadcast` を撤去した。
+
+**残したもの**: `VANTAGE_DEBUG=none|simple|detail` による **tracing レベル選択**は生きた別機構
+（`cli::parse_debug_env` → `init_tracing`、log verbosity）。`DebugMode` enum はこの用途だけ
+cli.rs にローカル化して温存。ファイルベースの trace log（`init_log_file` / `write_trace`）も
+温存（broadcast bridge の `watch_and_broadcast` だけ孤児として撤去）。
 
 ### 5.5 PR 分割
 
