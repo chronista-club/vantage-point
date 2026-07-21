@@ -371,7 +371,37 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
      採番して console を 1 枚立てる。法の番人が両向き揃った: chat 側 `ensure_chat_engine` /
      slot 側 `open_slot_for_session`）。**UI（Pane として並べる）は UI フェーズのまま**、
      wire mailbox は lane 粒度のまま = どちらも意図的な据え置き
-4. **doc 44 P3 / doc 45** — Project Host の帳簿、transport の Unison 統一
+4. ✅ **doc 44 P3 / doc 45** — Project Host の帳簿、transport の Unison 統一
+   - ✅ **稼働中 lane の保護**（#855）— `judge_farewell` の guard は最初から正しかったが、
+     CLI が `survey_project(.., &[], ..)` と**常に空配列**を渡していて**一度も発火していなかった**。
+     判定ではなく**供給の穴**。daemon 不達は `Liveness::Unknown` で型に固定し、
+     「不明」と「稼働 0 件」を同一視しない（`--force` でも通さない）
+   - ✅ **見送りの帳簿**（#859）— `host_farewell` table（key = `lane_id` + 記録時点の名前
+     スナップショット）。**「計算で復元できない事実」だけ**記録し、同じ判定の連続は
+     `streak` + `first_seen_at` に畳む（観測ごとに行を足すと、放置された lane ほど帳簿を
+     太らせる = 滞留を追う表が滞留で壊れる）
+     - ⚠️ doc 44 §8.5 は消費者を board UI としていたため**そのままでは UI フェーズまで
+       読み手ゼロ**だった。**最初の読者を `vp lane cleanup` の滞留表示に変更**
+       （`— 3 回連続、初回 2026-07-15`）。`vp lane history` も追加
+   - ✅ **doc 45 段 1+2**（#858）— `world-control` に RPC 8 本を新設し CLI を Unison へ。
+     `/api/world/{port_for,refresh}` は**精査したら 0 本**（fold-in で撤去済、コメントだけ残存）
+   - ✅ **doc 45 段 3**（#861）— vp-app の REST client **12 method → 1**（`/api/health` のみ）。
+     server 側の RPC 追加はゼロ（#858 で足りた）
+   - ✅ **presence 2 値縮約**（#862、doc 44 §5.5 PR3）— `Connecting` / `Disconnected` は
+     fold-in で生産者が消えて**テストの中でしか作られていなかった**。しかも
+     「全 variant を網羅する」テストが**死んだ variant を生かす役**をしていた
+   - **doc 45 段 4（HTTP route 撤去）/ 段 5（`apple/` port scan）**が残り
+
+> **今日（2026-07-21〜22）の内部フェーズで繰り返し出た形**（次に同型を探す時の索引）:
+>
+> | 形 | 実例 |
+> |---|---|
+> | 読み手のない書き込み | `LaneId` 2 年 / `protocol/acp.rs` の購読者ゼロ層 / P5 の slot（読み手を同 PR で作って回避） |
+> | **書き手のいない読み手** | presence の死んだ variant（テストが唯一の書き手） |
+> | **供給の穴で guard が never-fire** | 見送りの `running`（判定は正しいのに空配列） |
+> | 型を変えてもコンパイラが黙る | ROTO の `kind` 直読み / 予約名の直書き 10 箇所 |
+> | 経路は消したが残骸が残る | `db/sp_*` 1.2 GB / `console_modes/` |
+> | doc の見立てが実装とズレる | 「Act は意味が薄い」（実は 3 仕事）/ 「滞留は復元可能」（復元できるのは現在値だけ） |
 
 ### UI フェーズ（Epic の最後、一気に）
 
@@ -400,3 +430,41 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
 
 > UI の一気改修は **§1 が決着してから**。レイアウト系が 2 つある状態で見た目を
 > 揃えても、どちらの規約に揃えたのかが後から判らなくなる。
+
+## 8. dogfood 手順（内部フェーズ → UI フェーズの境目で 1 回）
+
+内部フェーズは「表示ミニマムのまま実機を触らない」方針で進めたため、**変更が実機 state に
+効くのは次の daemon 起動時**。しかも **3 つの migration が同時に走る**ので、
+1 回の再起動で全部確認できる。
+
+### 起動ログで見る 3 行
+
+```
+旧 project DB を回収: N dir                                ← #853（実機 23 dir / 約 1.2 GB）
+予約 lane 名 migration: state file N 件を root へ改名       ← #852（実機 6 dir / 107 file）
+console_mode → session act migration: N lane を畳んだ       ← #848（実機 15 file）
+```
+
+いずれも**冪等**で、衝突時（新名が既存）は**上書きしない**。2 回目以降は 0 件になる。
+
+> ⚠️ 順序が効く: 予約名 migration は **lane spawn より前**に走る（先に boot すると新名で
+> 空 state を作り、旧名の会話 id が「衝突時は上書きしない」規則で永久に取り残される）。
+
+### 挙動の確認（migration の後）
+
+| 確認 | コマンド / 見るところ |
+|---|---|
+| 予約名が `root` になった | `vp lane list` に `root` が出る。`~/.local/state/vp/*/` に `__conductor` が残っていない |
+| Act が session に移った | chat lane が再起動後も chat のまま復活する（PTY が立たない） |
+| **端末の複数枚化** | `vp lane slot-new <lane>` → `vp lane slots <lane>` に **2 枚**出る |
+| session 指定 | `vp lane capture <lane> --session 2` が 2 枚目を読む |
+| 見送りの滞留 | `vp lane cleanup` の要判断行に `— N 回連続、初回 …` が付く |
+| 稼働 lane の保護 | daemon を止めて `vp lane cleanup` → **保留**して 1 件も消さない |
+| transport | `vp config` / `vp daemon status` / `vp ps` が Unison 経由で従来どおり出る |
+
+### 注意
+
+- **daemon 再起動は lane を全部落とす**（fold-in 後は project = World 内 `Arc<AppState>`）。
+  会話は `cc_session` の `--resume` で復帰するが、**VP の中から再起動すると自分が死ぬ** —
+  実機検証は VP の外（kitty 等）で行う
+- `db/sp_*` の回収は**戻せない**（doc 44 §5.2 で破棄と検証済。旧 PP board は引き継がれない）
