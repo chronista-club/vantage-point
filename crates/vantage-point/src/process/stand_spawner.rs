@@ -333,11 +333,43 @@ fn opencode_command(resume_id: Option<&str>) -> String {
 ///
 /// `fresh=true` は resume/continue を回避して素の claude を起動する
 /// （sidebar "New Conductor Session"。 旧 `VP_FRESH=1` env の spawn パラメータ化）。
+///
+/// **この形は root session の slot 専用**（既存の boot / respawn / restart 経路）。非 root
+/// session に slot を立てる producer（doc 46 P5）は
+/// [`build_stand_command_for_session`] に session key を渡すこと。
 pub fn build_stand_command(
     stand_name: &str,
     addr: &LaneAddress,
     project_dir: &Path,
     fresh: bool,
+) -> StandCommand {
+    build_stand_command_for_session(stand_name, addr, project_dir, fresh, None)
+}
+
+/// [`build_stand_command`] の session 明示版（doc 46 P5 — slot は lane に 1 枚ではなく
+/// session ごと）。`session` = **この slot が化身する session**（`None` = root）。
+///
+/// この 1 引数が決めるのは 4 つで、いずれも「root の値」ではなく**その session の値**である
+/// ことが producer の正しさの核（root 決め打ちだと 2 本目の claude が root の会話を乗っ取る）:
+///
+/// | 決まるもの | 由来 |
+/// |---|---|
+/// | `VP_SESSION_KEY` | この session の key（hook がこれを名乗り、SP は報告 session に会話 id を書く、doc 40 §4-1） |
+/// | engine（Act3 の arm） | この session の entry の `stand` |
+/// | resume id | この session の entry の `conversation` |
+/// | replay 永続 | **root の slot だけ** disk へ（後述） |
+///
+/// replay（`replay_path`）を root 限定にしているのは、file が lane 単位の 1 本しかないため。
+/// 非 root slot に同じ file を渡すと 2 本の console が同じ replay を上書きし合い、しかも
+/// 非 root slot は SP 再起動で復元されない（boot が立てるのは root だけ）ので **読み手のいない
+/// 書き込み**になる。lane GC（`clear_lane_state_files_in`）が知っている file も lane 単位の
+/// 1 本だけなので、per-session file を足すと消し漏れ（orphan）が生まれる。
+pub fn build_stand_command_for_session(
+    stand_name: &str,
+    addr: &LaneAddress,
+    project_dir: &Path,
+    fresh: bool,
+    session: Option<crate::lane::session_registry::SessionKey>,
 ) -> StandCommand {
     let project_cwd = project_dir.to_string_lossy().to_string();
 
@@ -375,38 +407,36 @@ pub fn build_stand_command(
 
     let (program, args) = login_shell();
 
-    // doc 39 P1 → doc 40: slot に化身するのは root session（lane の人格）。resume id / 会話 id は
-    // **session registry の root entry**（SSOT、doc 40 §5 — 旧 store は load 内の backfill
-    // bridge が拾う）。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
+    // doc 39 P1 → doc 40: resume id / 会話 id は **session registry の entry**（SSOT、doc 40 §5）。
+    // 既定（`session=None`）で化身するのは root session（lane の人格）で、doc 46 P5 の producer
+    // だけが非 root を名指しする。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
     // engine_model は lane 単位（Act I/II 共有）のまま。
     let reg = crate::lane::session_registry::load(&addr.project, lane_label(addr), stand_name);
-    let root = reg.root;
-    let root_entry = reg.sessions.iter().find(|s| s.key == root);
-    let root_conversation = root_entry.and_then(|s| s.conversation.clone());
+    // この slot が化身する session（`None` = root = 従来の全経路）。
+    let key = session.unwrap_or(reg.root);
+    let entry = reg.sessions.iter().find(|s| s.key == key);
+    let conversation = entry.and_then(|s| s.conversation.clone());
     // doc 40 §4 / doc 46 P5: この slot が化身する session を子プロセスへ名乗らせる。
     // hook（`vp wire hook-check`）はこの値を報告に載せ、SP は**報告された session** に
     // 会話 id を書く（root 固定だと、同じ lane の 2 本目の claude が root の会話を上書きして
     // `--resume` が同居人の会話に化ける — doc 46 §3 の producer blocker）。
-    // 現状 slot を立てる経路（boot / respawn / restart）はすべて root なので値は常に root だが、
-    // **注入する値は「slot が化身する session」であって root ではない** — 非 root slot の
-    // producer が入る時に変わるのはこの 1 行の右辺だけ。
-    env.push(("VP_SESSION_KEY".into(), root.to_string()));
-    // doc 39 P4-A: slot に載る engine は **root session の stand** が決める（lane 作成時固定の
+    env.push(("VP_SESSION_KEY".into(), key.to_string()));
+    // doc 39 P4-A: slot に載る engine は **その session の stand** が決める（lane 作成時固定の
     // `stand_name` ではない）。cross-engine の Root 切替（picker）で root を別 engine の session に
-    // 向けると、respawn する slot もその engine で立つ。spawn 全経路（boot / respawn / restart）が
-    // この 1 箇所を通るため、engine 追従の修正点はここ一つで足りる。root entry 不在 / registry
-    // 破損は N=1 の既定形に解決済み（entry は必ず在る）だが、防御的に `stand_name` へ fallback。
-    let effective_stand = root_entry.map(|s| s.stand.as_str()).unwrap_or(stand_name);
+    // 向けると、respawn する slot もその engine で立つ。spawn 全経路（boot / respawn / restart /
+    // doc 46 P5 の producer）が この 1 箇所を通るため、engine 追従の修正点はここ一つで足りる。
+    // entry 不在（registry 破損 / 指定 key が実在しない）は防御的に `stand_name` へ fallback。
+    let effective_stand = entry.map(|s| s.stand.as_str()).unwrap_or(stand_name);
 
     // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
-    // 選択鍵は effective_stand（= root session の engine、doc 39 P4-A）— lane 固定の stand_name
-    // でなく root の stand で arm を選ぶことが cross-engine root 解禁の核。
+    // 選択鍵は effective_stand（= その session の engine、doc 39 P4-A）— lane 固定の stand_name
+    // でなく session の stand で arm を選ぶことが cross-engine root 解禁の核。
     let initial_input = match crate::echoes::EngineKind::from_stand(effective_stand) {
         Some(crate::echoes::EngineKind::Claude) => {
             // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
             // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒すと
             // conductor は `--continue` に落ち、cwd 最新の実会話を拾える（F2/F3 根治）。
-            let resume_id = root_conversation
+            let resume_id = conversation
                 .clone()
                 .filter(|id| crate::lane::cc_session::transcript_exists(id));
             // model は lane 単位の state file（`engine_model`、Act I/II 共有）を直読み。
@@ -414,12 +444,12 @@ pub fn build_stand_command(
             // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
             let model = crate::lane::engine_model::last(&addr.project, lane_label(addr));
             // doc 39 P2: `--continue` fallback（conductor + id なし）は **session #1 専用**の
-            // 互換層 — registry 導入前の既存 cwd 会話を拾うためのもの。root が #2 以降で
-            // record 無し = VP が作った未発話の新品 session なので、`--continue`（cwd 最新
-            // 拾い）に落とすと**別 session（旧 root 等）の会話を新 root に混入**させる。
-            // bare に倒して「新 ID から」を守る（moody 指摘: Bare spawn 失敗後の Resume
-            // 復帰経路がこの罠を踏んでいた）。
-            let bare = fresh || (root >= 2 && resume_id.is_none());
+            // 互換層 — registry 導入前の既存 cwd 会話を拾うためのもの。#2 以降の session が
+            // record 無し = VP が作った未発話の新品なので、`--continue`（cwd 最新拾い）に
+            // 落とすと**別 session（旧 root / 同居人）の会話を混入**させる。bare に倒して
+            // 「新 ID から」を守る（moody 指摘: Bare spawn 失敗後の Resume 復帰経路がこの罠を
+            // 踏んでいた。doc 46 P5 の producer が立てる新 session も同じ理由でここに乗る）。
+            let bare = fresh || (key >= 2 && resume_id.is_none());
             let cmd = claude_command(addr.is_root(), bare, resume_id.as_deref(), model.as_deref());
             Some(format!("{}\r", cmd))
         }
@@ -430,8 +460,8 @@ pub fn build_stand_command(
                 // 次の id 採番は Act II の record-from-init（RpcHost）が registry に書き戻す。
                 Some("codex\r".to_string())
             } else {
-                // thread id は registry の root 会話 id（doc 40 §5）。
-                Some(format!("{}\r", codex_command(root_conversation.as_deref())))
+                // thread id は registry のこの session の会話 id（doc 40 §5）。
+                Some(format!("{}\r", codex_command(conversation.as_deref())))
             }
         }
         Some(crate::echoes::EngineKind::Grok) => {
@@ -440,8 +470,8 @@ pub fn build_stand_command(
                 // 会話 id は registry 側の semantics（New root 等）が既に処理済み）。
                 Some("grok\r".to_string())
             } else {
-                // sessionId は registry の root 会話 id（doc 42 — TUI は `-r '<id>'` 指名 resume）。
-                Some(format!("{}\r", grok_command(root_conversation.as_deref())))
+                // sessionId は registry のこの session の会話 id（doc 42 — TUI は `-r '<id>'` 指名 resume）。
+                Some(format!("{}\r", grok_command(conversation.as_deref())))
             }
         }
         Some(crate::echoes::EngineKind::OpenCode) => {
@@ -449,11 +479,8 @@ pub fn build_stand_command(
                 // fresh は素の opencode（grok と同じ registry-native — clear すべき旧 store も無い）。
                 Some("opencode\r".to_string())
             } else {
-                // sessionId は registry の root 会話 id（doc 43 — TUI は `-s '<id>'` 指名 resume）。
-                Some(format!(
-                    "{}\r",
-                    opencode_command(root_conversation.as_deref())
-                ))
+                // sessionId は registry のこの session の会話 id（doc 43 — TUI は `-s '<id>'` 指名 resume）。
+                Some(format!("{}\r", opencode_command(conversation.as_deref())))
             }
         }
         None if effective_stand == "shell" => None,
@@ -478,10 +505,10 @@ pub fn build_stand_command(
         env,
         cwd: project_cwd,
         // console replay の disk 永続 path（lane 単位）。 SP 再起動をまたぐ画面復元に使う。
-        replay_path: Some(crate::daemon::pty_slot::replay_file_path(
-            &addr.project,
-            lane_label(addr),
-        )),
+        // **root slot だけ**が持つ（理由は関数 doc の表の下）。非 root slot は None =
+        // seed も flush もしない（同じ file を 2 本で奪い合わない / 消し漏れを作らない）。
+        replay_path: (key == reg.root)
+            .then(|| crate::daemon::pty_slot::replay_file_path(&addr.project, lane_label(addr))),
     }
 }
 
@@ -566,6 +593,90 @@ mod tests {
             env.get("VP_SESSION_KEY").map(String::as_str),
             Some("2"),
             "root を移したら slot が名乗る session も移る"
+        );
+    }
+
+    /// doc 46 P5 producer の核: 指名した session の **entry がすべてを決める**（root ではない）。
+    ///
+    /// root(#1) = echoes（会話 id 付き）の lane で、同居人 #2（codex）の slot を組むと:
+    /// - `VP_SESSION_KEY` は **2**（hook がこれを名乗る → 会話 id は #2 に記録され、root の
+    ///   `--resume` が同居人の会話に化けない = doc 46 §3 の producer blocker の解）
+    /// - engine は **codex**（root の claude に引きずられない）
+    /// - resume は **#2 の会話 id**（root の id を継がない）
+    /// - replay の disk 永続は **root だけ**（lane 単位の 1 file を 2 本で奪い合わせない）
+    #[test]
+    fn slot_command_follows_the_named_session_not_root() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::root("vp");
+        // root(#1) = echoes に会話 id を持たせる（混入したら判るよう別 id）。
+        crate::lane::session_registry::set_conversation(
+            "vp",
+            "root",
+            "echoes",
+            1,
+            Some("11111111-1111-1111-1111-111111111111"),
+        )
+        .expect("root の会話 id");
+        // 同居人 #2 = codex（producer が採番するのと同じ形: Act=Tui / 非 focus）。
+        let key = crate::lane::session_registry::create(
+            "vp",
+            "root",
+            "echoes",
+            "codex",
+            crate::lane::session_registry::SessionAct::Tui,
+            false,
+        )
+        .expect("create #2");
+        crate::lane::session_registry::set_conversation(
+            "vp",
+            "root",
+            "echoes",
+            key,
+            Some("01999999-9999-7999-8999-999999999999"),
+        )
+        .expect("#2 の会話 id");
+
+        let cmd =
+            build_stand_command_for_session("echoes", &addr, Path::new("/tmp"), false, Some(key));
+        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
+        assert_eq!(
+            env.get("VP_SESSION_KEY").map(String::as_str),
+            Some("2"),
+            "slot は自分の session を名乗る（root 決め打ちではない）"
+        );
+        let input = cmd.initial_input.expect("codex は initial_input あり");
+        assert!(
+            input.starts_with("codex") && !input.contains("claude"),
+            "engine は #2 の stand（root の claude ではない）: {input}"
+        );
+        assert!(
+            input.contains("01999999-9999-7999-8999-999999999999")
+                && !input.contains("11111111-1111-1111-1111-111111111111"),
+            "resume は #2 の会話 id（root の id を継がない）: {input}"
+        );
+        assert!(
+            cmd.replay_path.is_none(),
+            "非 root slot は replay を disk に持たない: {:?}",
+            cmd.replay_path
+        );
+
+        // 同じ lane の root 版（session 省略）は従来どおり #1 / claude / replay あり。
+        let root_cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let root_env: std::collections::HashMap<_, _> = root_cmd.env.iter().cloned().collect();
+        assert_eq!(
+            root_env.get("VP_SESSION_KEY").map(String::as_str),
+            Some("1")
+        );
+        assert!(
+            root_cmd
+                .initial_input
+                .as_deref()
+                .is_some_and(|i| i.starts_with("claude")),
+            "root は claude のまま（同居人の engine に引きずられない）"
+        );
+        assert!(
+            root_cmd.replay_path.is_some(),
+            "root slot は従来どおり replay を disk に永続する"
         );
     }
 

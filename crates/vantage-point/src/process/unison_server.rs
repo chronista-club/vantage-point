@@ -1477,6 +1477,43 @@ async fn handle_lane_slots(
     }))
 }
 
+/// doc 46 P5 **producer**: 新しい console（slot）を 1 枚立てる。
+/// `{lane, stand?}` → `{status, lane, session, pid, count}`。
+///
+/// - 常に **新しい session** を採番してそこに slot を立てる（doc 46 §1.5「Pane は必ず新しい
+///   session id で始まる」= session ↔ Pane 1:1）。既存 session の open は持たない
+/// - `stand` 省略 = 現 root の engine を引き継ぐ（doc 46 P2 の「Engine を選んで新コンソール」の
+///   Act I 版。`echoes_session_create` は Act=Chat 固定なのでそちらでは作れない）
+/// - **root / focused は動かさない** — mailbox も pid も Dead 判定も root のまま（doc 40 §4-1）
+///
+/// GUI 配線（pump）は張らない。表示はミニマム据え置き（doc 47 §7）なので、立てた console を
+/// 読み書きするのは `vp lane slots` / `vp lane capture --session` / `vp lane nudge --session`。
+async fn handle_lane_slot_new(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_slot_new: lane 未指定".to_string());
+    }
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("lane_slot_new: lane パース失敗: {}", lane));
+    };
+    let stand = payload.get("stand").and_then(|v| v.as_str());
+    let mut pool = state.lane_pool.write().await;
+    let (session, pid) = pool
+        .open_new_slot(&addr, stand)
+        .map_err(|e| format!("lane_slot_new: {e}"))?;
+    let count = pool.slot_sessions(&addr).len();
+    Ok(serde_json::json!({
+        "status": "ok",
+        "lane": lane,
+        "session": session,
+        "pid": pid,
+        "count": count,
+    }))
+}
+
 /// tmux decoupling: lane console capture。 lane の Term grid（TermAttach）を text で返す。
 ///
 /// 旧 `tmux capture-pane`（`handle_tmux_capture`）の native 代替 — conductor が performer の
@@ -1877,6 +1914,8 @@ pub(crate) async fn dispatch_process_method(
         "lane_capture" => handle_lane_capture(state, payload).await,
         // doc 46 P5: lane が持つ PTY slot の一覧（UI を通さない slot 枚数の読み手）
         "lane_slots" => handle_lane_slots(state, payload).await,
+        // doc 46 P5 producer: 新 session を採番して console を 1 枚立てる（`lane_slots` の書き手）
+        "lane_slot_new" => handle_lane_slot_new(state, payload).await,
         "terminal_resize" => handle_terminal_resize(state, payload).await,
         // board モデル (2026-07-15): webview からの board mutate（thumbnail ✕ / Clear ボタン）。
         // 旧 pp_state_save/load は撤去（board は SP truth、 webview は BoardUpdated 購読 + mutate へ）。
@@ -2820,6 +2859,100 @@ mod tests {
             err.contains("この lane の slot") && err.contains("[1, 2]"),
             "存在する slot を案内する: {err}"
         );
+    }
+
+    /// doc 46 P5 producer の end-to-end（RPC → CLI が見る形）: `lane_slot_new` で立てた console が
+    /// `lane_slots` に **2 枚目として出る**こと。#854 が用意した容量に production の書き手が
+    /// 付いたことの証跡（「読み手のない書き込み」の逆 — 読み手は先にあり、書き手が来た）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lane_slot_new_adds_a_console_visible_in_lane_slots() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        // session registry / slot_inventory の root 解決は vp_state_dir() を読む → tempdir に隔離。
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let addr = LaneAddress::root("vp");
+        let lane = addr.to_string();
+
+        // lane 不在は Err（他の lane_* dispatch と同じ入口検査）。
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({ "lane": "%3" }),
+            serde_json::json!({ "lane": lane.clone() }),
+        ] {
+            let res = dispatch_process_method(&state, "lane_slot_new", payload.clone()).await;
+            assert!(res.is_err(), "入口検査: {payload} は Err: {res:?}");
+        }
+
+        // stand="shell" の lane（console に engine を注入しない）+ 既存の root slot。
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                console_mode: crate::lane::session_registry::SessionAct::Tui,
+                id: Default::default(),
+                address: addr.clone(),
+                state: LaneState::Running,
+                stand: "shell".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: cwd.clone(),
+                performer_status: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                engine_stand: None,
+                flow_state: None,
+            });
+            let (slot, rx) = PtySlot::spawn(
+                &cwd,
+                "/bin/sh",
+                &["-c".to_string(), "cat".to_string()],
+                &[],
+                80,
+                24,
+                None,
+            )
+            .expect("PTY spawn");
+            pool.insert_pty_slot(addr.clone(), Some(1), slot, rx);
+        }
+
+        // stand 省略 = 現 root の engine を引き継ぐ（registry 不在 = lane stand の "shell"）。
+        let res = dispatch_process_method(
+            &state,
+            "lane_slot_new",
+            serde_json::json!({ "lane": lane.clone() }),
+        )
+        .await
+        .expect("lane_slot_new");
+        assert_eq!(res["session"], 2, "新 session を採番して立てる: {res}");
+        assert_eq!(res["count"], 2, "この lane の console は 2 枚に: {res}");
+
+        let res = dispatch_process_method(
+            &state,
+            "lane_slots",
+            serde_json::json!({ "lane": lane.clone() }),
+        )
+        .await
+        .expect("lane_slots");
+        assert_eq!(res["count"], 2, "`vp lane slots` に 2 枚出る: {res}");
+        assert_eq!(res["slots"][1]["session"], 2);
+        assert_eq!(res["slots"][1]["root"], false, "同居人であって代表ではない");
+        assert_eq!(res["slots"][1]["alive"], true);
+
+        // 立てた console は `vp lane capture --session 2` で読める（UI を通さない読み手）。
+        let res = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": lane, "session": 2 }),
+        )
+        .await
+        .expect("capture #2");
+        assert_eq!(res["session"], 2);
     }
 
     /// doc 39 P4-A: console_set_model の可否判定は lane 固定 stand ではなく **root session の

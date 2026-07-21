@@ -366,8 +366,11 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
      2 本目の claude を立てると root の会話 id を上書きする
      → ✅ **会話 id の記録は session 粒度になった**（2026-07-22。`VP_SESSION_KEY` で hook が
      自分の session を名乗り、SP は報告された session に書く。設計 = doc 40 §4-1、
-     着地メモ = doc 46 §3）。producer 本体（UI / CLI）は次のスライス。
-     wire mailbox は lane 粒度のまま = 意図的な据え置き
+     着地メモ = doc 46 §3）
+     → ✅ **producer も着地**（2026-07-22。`lane_slot_new` / `vp lane slot-new` = 新 session を
+     採番して console を 1 枚立てる。法の番人が両向き揃った: chat 側 `ensure_chat_engine` /
+     slot 側 `open_slot_for_session`）。**UI（Pane として並べる）は UI フェーズのまま**、
+     wire mailbox は lane 粒度のまま = どちらも意図的な据え置き
 4. **doc 44 P3 / doc 45** — Project Host の帳簿、transport の Unison 統一
 
 ### UI フェーズ（Epic の最後、一気に）
