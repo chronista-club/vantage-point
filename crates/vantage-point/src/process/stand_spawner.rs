@@ -242,8 +242,13 @@ fn claude_command(
     // doc 44 P2: 旧 `LaneKind` 分岐を `is_conductor`（予約名判定）に置換。挙動は不変。
     // この分岐が残るのは cwd の性質差に根拠がある — 開発起点 lane は repo root に居るので
     // `--continue`（最新セッションを継ぐ）が自分の会話に当たるが、worktree の lane で同じことを
-    // すると他 lane のセッションを掴む（dashboard 罠）。P3 で Host がポインタを持てば、
-    // ここは「起点 lane か？」を Host に問う形になる。
+    // すると他 lane のセッションを掴む（dashboard 罠）。
+    //
+    // ⚠️ §6.6 の「P3 で Host がポインタを持てば『起点 lane か？』を Host に問う形になる」は
+    // **doc §8.1 で撤回済**。ここが訊いているのは「cwd が repo root か」（物理）であって
+    // 「開発起点か」（意図）ではない。D4 で起点は worktree lane にも移せるようになったので、
+    // 帳簿のポインタに繋ぐと**上で警告している dashboard 罠がそのまま発火する**。
+    // 置き換えるなら `has_ground` 相当（cwd の性質）を訊く形へ。
     match (is_conductor, resume_id.filter(|id| is_safe_session_id(id))) {
         (_, Some(id)) => format!(
             "claude {}--resume '{}' --settings '{}' || vp lane resume-failed '{}' || {}",

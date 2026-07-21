@@ -480,6 +480,66 @@ impl VpDb {
     }
 
     // =========================================================================
+    // Project Host 帳簿①: 開発起点ポインタ (doc 44 D4)。
+    //
+    // active_lane (注視) と形は同じ 1-project-1-row だが意味が違う (D5 が分けた
+    // 「注視の切替」と「起点の再指定」)。値が **lane_id** なのは rename 耐性のため。
+    // =========================================================================
+
+    /// 開発起点ポインタを upsert する (project_path → lane_id)。
+    pub async fn upsert_host_origin(&self, project_path: &str, lane_id: &str) -> Result<()> {
+        self.db
+            .query(
+                "INSERT INTO host_origin {
+                    project_path: $project_path,
+                    lane_id: $lane_id,
+                    updated_at: time::now()
+                } ON DUPLICATE KEY UPDATE
+                    lane_id = $input.lane_id,
+                    updated_at = time::now()",
+            )
+            .bind(("project_path", project_path.to_string()))
+            .bind(("lane_id", lane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_origin upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_origin upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 開発起点ポインタを引く。
+    ///
+    /// `None` は「未指定」= 予約名フォールバック（[`crate::host::ledger::resolve_origin_name`]）。
+    /// 指す lane が既に消えている場合も呼び出し側の解決で予約名に落ちるので、ここでは
+    /// 実在検証をしない（DB は lane の生死を知らない）。
+    pub async fn get_host_origin(&self, project_path: &str) -> Result<Option<String>> {
+        let mut result = self
+            .db
+            .query("SELECT lane_id FROM host_origin WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_origin 取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows
+            .first()
+            .and_then(|v| v.get("lane_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()))
+    }
+
+    /// 開発起点ポインタを削除する (project remove 時の回収、`delete_active_lane` と対)。
+    pub async fn delete_host_origin(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM host_origin WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_origin 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_origin 削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    // =========================================================================
     // Lane descriptor (doc 24 §10 Phase 2: LanePool authority 反転 SP→daemon)。
     // SP push の cache だった lane_registry を daemon-canonical な durable truth に。
     // SP disconnect では drop せず、 daemon 再起動は db から re-animate する (§3.3 / §4.1)。
@@ -1276,6 +1336,23 @@ DEFINE FIELD IF NOT EXISTS lifecycle ON lane_lifecycle TYPE string;
 DEFINE FIELD IF NOT EXISTS updated_at ON lane_lifecycle TYPE datetime;
 DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS project_path, address UNIQUE;
 
+-- Project Host の帳簿①: 開発起点ポインタ (doc 44 D4 / §8)。
+-- 「この project の開発の起点はどの lane か」を Host が 1 本だけ持つ。
+--
+-- ⚠️ active_lane (注視) とは別物 — D5 が明示的に分けている:
+--   active_lane = 今どの lane を見ているか (presence、click ごとに動く)
+--   host_origin = 開発の起点はどこか       (intent、明示的に指定した時だけ動く)
+--
+-- key が address 文字列ではなく **lane_id (UUID)** なのは、将来 lane 名を変えられるように
+-- するため。名前は表示のための自然キーで、rename で動く。ポインタが指すのは lane そのもの
+-- なので surrogate key で持つ (doc 44 §8.2)。行が無い / 指す lane が実在しない場合は
+-- 予約名 `conductor` にフォールバックする (= 従来挙動、`ledger::resolve_origin_name`)。
+DEFINE TABLE IF NOT EXISTS host_origin SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON host_origin TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_id ON host_origin TYPE string;
+DEFINE FIELD IF NOT EXISTS updated_at ON host_origin TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS project_path UNIQUE;
+
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
 -- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
@@ -1565,6 +1642,56 @@ mod tests {
         // 2 回目以降は同じ id を復元する (= singleton、 再起動越え安定の核)。
         let second = db.load_or_create_world_id().await.unwrap();
         assert_eq!(first, second, "wld_id は singleton で安定して復元される");
+    }
+
+    /// doc 44 D4: 開発起点ポインタの round-trip（upsert → get → 上書き → 削除）。
+    ///
+    /// **削除まで見る**のは、`remove_project` が project namespace を倒す時にこの行を
+    /// 回収する契約だから（§4.6 含有=所有=寿命）。残ると同 path で再登録した時に旧 lane の
+    /// UUID を指す孤児ポインタが復活し、起点が `Dangling` に落ちる。
+    #[tokio::test]
+    async fn test_host_origin_round_trip() {
+        let db = make_test_db().await;
+
+        // 未設定は None = 予約名フォールバック（`ledger::resolve_origin_name` が受ける形）
+        assert!(db.get_host_origin("/repos/vp").await.unwrap().is_none());
+
+        db.upsert_host_origin("/repos/vp", "id-alpha")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_host_origin("/repos/vp").await.unwrap().as_deref(),
+            Some("id-alpha")
+        );
+
+        // project ごとに独立（1 project 1 ポインタ）
+        db.upsert_host_origin("/repos/nexus", "id-beta")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_host_origin("/repos/vp").await.unwrap().as_deref(),
+            Some("id-alpha"),
+            "他 project の指定に引きずられない"
+        );
+
+        // 起点の移動は行の上書き（増えない）
+        db.upsert_host_origin("/repos/vp", "id-gamma")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_host_origin("/repos/vp").await.unwrap().as_deref(),
+            Some("id-gamma"),
+            "UNIQUE index により上書きされる"
+        );
+
+        // project 回収でポインタも消える
+        db.delete_host_origin("/repos/vp").await.unwrap();
+        assert!(db.get_host_origin("/repos/vp").await.unwrap().is_none());
+        assert_eq!(
+            db.get_host_origin("/repos/nexus").await.unwrap().as_deref(),
+            Some("id-beta"),
+            "削除は project scope に閉じる"
+        );
     }
 
     #[tokio::test]

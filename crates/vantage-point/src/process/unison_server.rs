@@ -1626,6 +1626,50 @@ async fn handle_lane_create(
     serde_json::to_value(&info).map_err(|e| format!("lane_create: LaneInfo serialize 失敗: {}", e))
 }
 
+/// 帳簿が起点を解決するための lane 一覧（id と表示名の対だけ）。
+///
+/// `LaneInfo` 全体ではなく [`crate::host::ledger::LaneRef`] に落とすのは、帳簿が lane の
+/// 中身に依存しないため（`host::farewell` が git を知らないのと同じ切り方）。
+async fn ledger_lane_refs(state: &Arc<AppState>) -> Vec<crate::host::ledger::LaneRef> {
+    state
+        .lane_pool
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|l| crate::host::ledger::LaneRef::new(l.id.to_string(), l.address.name))
+        .collect()
+}
+
+/// doc 44 D4: 帳簿から開発起点を読む。応答は [`crate::host::ledger::Origin`] の JSON。
+///
+/// 未設定 / dangling でも error にせず、**どう決まったか**を `source` で返す
+/// （起点が読めないだけで呼び出し側が止まる方が困る）。
+async fn handle_lane_origin_get(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
+    let lanes = ledger_lane_refs(state).await;
+    let origin = crate::host::ledger::origin(state.vpdb.as_ref(), &state.project_dir, &lanes).await;
+    serde_json::to_value(&origin).map_err(|e| format!("lane_origin_get: serialize 失敗: {e}"))
+}
+
+/// doc 44 D4: 開発起点を設定する。payload = `{ "lane": "<lane 名>" }`。
+///
+/// 人が打つのは名前、帳簿に入るのは `lane_id` — 変換は
+/// [`crate::host::ledger::set_origin`] が境界で 1 回だけ行う。
+/// D5 の通り **何も動かさない**（cwd も active lane も変えない、ポインタの書き換えだけ）。
+async fn handle_lane_origin_set(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_origin_set: lane 必須".to_string());
+    }
+    let lanes = ledger_lane_refs(state).await;
+    crate::host::ledger::set_origin(state.vpdb.as_ref(), &state.project_dir, lane, &lanes).await?;
+    let origin = crate::host::ledger::origin(state.vpdb.as_ref(), &state.project_dir, &lanes).await;
+    serde_json::to_value(&origin).map_err(|e| format!("lane_origin_set: serialize 失敗: {e}"))
+}
+
 /// lanes portless (doc 27 §3.4.5): Lane list。 旧 SP HTTP `GET /api/lanes` を process-proxy ask に
 /// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
 async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
@@ -1705,6 +1749,9 @@ pub(crate) async fn dispatch_process_method(
         "lane_restart" => handle_lane_restart(state, payload).await,
         // 供給 push 根治: hook → World 経由の session pointer 変化通知（Diff::Update push の起点）
         "lane_session_changed" => handle_lane_session_changed(state, payload).await,
+        // doc 44 D4: Project Host の帳簿 — 開発起点ポインタの読み書き
+        "lane_origin_get" => handle_lane_origin_get(state).await,
+        "lane_origin_set" => handle_lane_origin_set(state, payload).await,
         // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
         "stands_list" => handle_stands_list().await,
         // L0 finale: SP graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、

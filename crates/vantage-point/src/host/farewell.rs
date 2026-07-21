@@ -57,8 +57,12 @@ impl MergedState {
 pub struct LaneFacts {
     /// lane 名（`LaneAddress.name`）
     pub name: String,
-    /// 開発起点 lane か（doc 44 P2 の予約名判定の結果）
-    pub is_conductor: bool,
+    /// 開発起点 lane か（doc 44 D4 — Host の帳簿が持つポインタが指す lane）。
+    ///
+    /// P3 初版は「予約名 `conductor` か」で判定していた。D4 で起点が **project の指定**に
+    /// なり任意の lane へ移せるようになったため、判定材料は名前ではなく
+    /// [`crate::host::ledger`] が解決した起点名との一致になる。
+    pub is_origin: bool,
     /// ground（worktree ディレクトリ）が実在するか
     pub has_ground: bool,
     /// 未コミットの変更ファイル数（`git status --short` の行数）
@@ -136,7 +140,7 @@ impl FarewellVerdict {
 ///    ただし remote に branch があるなら人間へ — こちらが知らない履歴が push 済みでありうる
 /// 7. 残りは仕事が生きているので保持
 pub fn judge_farewell(facts: &LaneFacts) -> FarewellVerdict {
-    if facts.is_conductor {
+    if facts.is_origin {
         return FarewellVerdict::Keep {
             reason: "開発起点 lane は project lifetime に紐づく".to_string(),
         };
@@ -221,7 +225,7 @@ fn integration_label(facts: &LaneFacts) -> String {
 pub fn collect_facts(
     repo_root: &std::path::Path,
     lane_name: &str,
-    is_conductor: bool,
+    is_origin: bool,
     is_running: bool,
     default_branch: &str,
 ) -> LaneFacts {
@@ -234,7 +238,7 @@ pub fn collect_facts(
         // （ここで Keep を返したくなるが、それは判定なので calculations の仕事）。
         return LaneFacts {
             name: lane_name.to_string(),
-            is_conductor,
+            is_origin,
             has_ground: false,
             dirty_count: 0,
             own_commits: 0,
@@ -265,7 +269,7 @@ pub fn collect_facts(
     let branch = crate::lane::commands::get_branch(&ground);
     LaneFacts {
         name: lane_name.to_string(),
-        is_conductor,
+        is_origin,
         has_ground: true,
         dirty_count: crate::lane::commands::count_changes(&ground),
         own_commits: count_own_commits(&ground, default_branch),
@@ -283,10 +287,19 @@ pub fn collect_facts(
 /// `running` は「今動いている lane 名」— 呼び出し側（LanePool を持つ層）が渡す。
 /// Host は lane の生死を git からは知れないため、ここだけ外から供給される。
 ///
+/// `origin` は帳簿が解決した**開発起点 lane 名**（[`crate::host::ledger::resolve_origin_name`]）。
+/// D4 で起点が予約名から project の指定になったため、外から供給される事実になった。
+/// **worktree を持つ lane も起点になりうる**ので、この供給を怠ると起点を見送りうる
+/// （P3 初版は予約名を直接見ており、起点が動かせない前提に依存していた）。
+///
 /// **実行はしない。** 判定を並べて返すだけで、実際に消すかは呼び出し側（人間の承認 or
 /// 明示コマンド）が決める。D3 の「決定的判定 → 帳簿 → エスカレーション」のうち、
 /// 本関数は判定の集約にあたる。
-pub fn survey_project(repo_root: &std::path::Path, running: &[String]) -> Vec<FarewellReport> {
+pub fn survey_project(
+    repo_root: &std::path::Path,
+    running: &[String],
+    origin: &str,
+) -> Vec<FarewellReport> {
     let default_branch = crate::lane::commands::resolve_default_branch(repo_root)
         .unwrap_or_else(|| "main".to_string());
 
@@ -296,9 +309,7 @@ pub fn survey_project(repo_root: &std::path::Path, running: &[String]) -> Vec<Fa
             let facts = collect_facts(
                 repo_root,
                 &entry.name,
-                // 開発起点は performer 一覧に出ない（ground を持たない）が、
-                // 予約名の lane が紛れ込んでも判定が守るように渡しておく。
-                entry.name == crate::process::lanes_state::CONDUCTOR_LANE_NAME,
+                entry.name == origin,
                 running.iter().any(|r| r == &entry.name),
                 &default_branch,
             );
@@ -361,7 +372,7 @@ mod tests {
     fn reclaimable() -> LaneFacts {
         LaneFacts {
             name: "feat-x".to_string(),
-            is_conductor: false,
+            is_origin: false,
             has_ground: true,
             dirty_count: 0,
             own_commits: 3,
@@ -454,10 +465,14 @@ mod tests {
         );
     }
 
+    /// 開発起点は見送り条件を全て満たしていても消さない。
+    ///
+    /// D4 で起点は予約名から**帳簿のポインタ**になったので、この分岐が守るのは
+    /// 「`conductor` という名前の lane」ではなく「今起点に指定されている lane」。
     #[test]
-    fn conductor_is_never_reclaimed() {
+    fn origin_lane_is_never_reclaimed() {
         let conductor = LaneFacts {
-            is_conductor: true,
+            is_origin: true,
             // 見送り条件を全て満たしていても消さない
             merged: MergedState::Ancestry,
             dirty_count: 0,
@@ -605,6 +620,73 @@ mod tests {
             judge_farewell(&facts),
             FarewellVerdict::AskHuman { .. }
         ));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回帰固定: **起点が worktree lane に移っていたら見送らない**（doc 44 D4）。
+    ///
+    /// P3 初版の `survey_project` は予約名 `conductor` を直接見ていた。起点が動かせない
+    /// 前提に依存しており、D4 でポインタが入ると **移動済みの起点を掃除対象に入れうる**。
+    ///
+    /// ここで固定するのは「`origin` 引数が判定まで届くこと」— 純関数側のテスト
+    /// （[`origin_lane_is_never_reclaimed`]）だけだと、`survey_project` が実際にその事実を
+    /// 供給しているかは分からない（P3 の `branch -d` never-fire と同じ穴の作り方）。
+    /// 同じ lane に対し `origin` だけを変えて、**判定理由が変わること**まで見る。
+    #[test]
+    fn survey_marks_pointed_lane_as_origin() {
+        let root = std::env::temp_dir().join(format!("vp-farewell-origin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lane_dir = crate::lane::config::project_lanes_dir(&root).join("w1");
+        std::fs::create_dir_all(&lane_dir).unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&lane_dir)
+                .output()
+                .expect("git 実行");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(lane_dir.join("a.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+
+        let find = |reports: Vec<FarewellReport>| {
+            reports
+                .into_iter()
+                .find(|r| r.facts.name == "w1")
+                .expect("w1 が一覧に出る")
+        };
+
+        // 起点が別 lane（予約名）なら、w1 はただの performer として判定される
+        let as_normal = find(survey_project(
+            &root,
+            &[],
+            crate::process::lanes_state::CONDUCTOR_LANE_NAME,
+        ));
+        assert!(!as_normal.facts.is_origin, "起点ではない");
+        assert!(
+            !as_normal.verdict.reason().contains("開発起点"),
+            "起点以外の理由で判定される: {}",
+            as_normal.verdict.reason()
+        );
+
+        // 帳簿が w1 を指していれば、同じ lane が起点として保持される
+        let as_origin = find(survey_project(&root, &[], "w1"));
+        assert!(as_origin.facts.is_origin, "帳簿のポインタが事実として届く");
+        assert!(
+            matches!(as_origin.verdict, FarewellVerdict::Keep { .. }),
+            "起点は保持: {:?}",
+            as_origin.verdict
+        );
+        assert!(
+            as_origin.verdict.reason().contains("開発起点"),
+            "起点であることが判定理由になる: {}",
+            as_origin.verdict.reason()
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

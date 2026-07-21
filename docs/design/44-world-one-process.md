@@ -458,3 +458,72 @@ fast-forward で取り込み済）」と**断定できる範囲だけ**を言う
   Host → lane の plumbing で逆転している。今は 1 箇所なので実害は無いが、
   **後続の振る舞い（迎え入れ / 場の維持 / 交通整理）がそれぞれ独立に同じ手を伸ばす**と
   肥大化する。2 つ目が伸びた時点で共有 git primitive module への切り出しを検討する
+
+## 8. 帳簿の第一形 — 開発起点ポインタ（D4、2026-07-21）
+
+> **実装済**。D4「conductor = Host が持つポインタ」を、判定 → 経路 → surface → 消費で
+> 縦に 1 本通した（P3 の見送りと同じ形）。
+
+### 8.1 §6.6 の予告は誤りだった — `is_conductor` は 2 つの問いを兼ねていた
+
+§6.6 は「P3 で Host がポインタを持てば、`stand_spawner::claude_command` は
+『起点 lane か？』を Host に問う形になる」と予告した。**これは実装できない。**
+
+同じ箇所のコメントが理由を書いている:
+
+> `--continue`（最新セッションを継ぐ）が自分の会話に当たるのは開発起点 lane が repo root に
+> 居るから。worktree の lane で同じことをすると他 lane のセッションを掴む（dashboard 罠）。
+
+つまり `claude_command` が訊いているのは **「この lane の cwd は repo root か？」（物理）**で
+あって、**「開発起点か？」（意図）**ではない。今は起点 = 予約名 = repo root が一致しているので
+同じ答えになるだけで、D5 が起点を worktree lane へ移せるようにした瞬間に分岐する。
+予告通り Host ポインタへ繋ぐと、**そのコメントが警告している dashboard 罠が発火する**。
+
+→ `claude_command` の分岐は cwd の性質（`has_ground` 相当）を訊く形が正しい。本 PR では
+挙動不変で残し、ポインタとは繋がない（§8.5）。
+
+> 1 つの述語が偶然 3 つの性質（repo root / 予約名 / 開発起点）を同時に満たしていると、
+> どれを訊いているのか静的には判別できない。**答えが分岐するケースを作って初めて見える**。
+
+### 8.2 key は名前ではなく `LaneId`
+
+帳簿が持つのは `project_path → lane_id`（`host_origin` table）。address 文字列にしない理由:
+
+- ポインタが指すのは lane **そのもの**であって「今その名前で呼ばれているもの」ではない
+- 将来 lane を rename できるようにすると、名前 key のポインタは書き換えが要る
+- §6.3 の教訓（address 文字列を key にした列は起動時 migration が要る）を繰り返さない
+
+`LaneId`（UUID v7、doc 24 §7 の I1）は 2 年間 **生成・永続されながら誰にも読まれていなかった**
+（`LaneInfo.id` に載って wire も流れていたが、pool key も DB 列も address 文字列のまま）。
+strangler の「id を持つが id で引かない」中間状態が止まっていたもので、帳簿がその**最初の読者**になる。
+
+名前 ↔ id の変換は **境界で 1 回だけ**行う: 人が打つのは名前（`vp lane origin <name>`）、
+帳簿に入るのは id（`ledger::lane_id_of` が書き側、`ledger::resolve_origin_name` が読み側）。
+
+### 8.3 フォールバックは 3 値で返す
+
+ポインタが無い / 指す lane が実在しない場合は予約名 `conductor` に落ちる。ただし
+**どう決まったかを隠さない**（`OriginSource::{Default, Pinned, Dangling}`）。
+
+`Dangling` を潰して `Default` に畳まないのは、指定したはずの起点が消えた時に人が気付けなく
+なるため。§7.4 の「判定は正しくても添える事実が嘘」と同じ規律 — Host は人の判断材料を作る
+立場なので、区別できるものを畳まない。
+
+### 8.4 CLI から帳簿を読む経路
+
+帳簿は DB（`db/world/`）にあり、surrealkv の OS 排他ロックで **World が専有**する。
+CLI（`vp lane cleanup` / `vp lane origin`）は直接読めないので、`switch_lane_via_quic` と同じ
+World process-proxy ask（`lane_origin_get` / `lane_origin_set`）を通す。
+
+World 不在なら予約名にフォールバックし、**その旨を告げてから続行**する。黙って落とすと
+移動済みの起点 lane を見送りうる（実害の確率は低いが、確認できなかった事実は人に見せる）。
+
+### 8.5 このスライスに入れなかったもの（判断は済ませてある）
+
+| 項目 | 判断 | なぜ今やらないか |
+|---|---|---|
+| lane の並び順 `ord` | 帳簿に **id key** で持つ。`lane` table には置かない（`upsert_lane` が DELETE+CREATE で消すため — `lane_lifecycle` を別 table にしたのと同じ理由） | 消費者が P4 の reorder UI しかない。**読み手のない書き込みを作らない**（§8.2 の `LaneId` がまさにその状態だった） |
+| 見送りの履歴 | 帳簿に **id key + 記録時点の名前スナップショット**（履歴は rename で動いてはいけない / 同名 lane の再作成と衝突してはいけない） | 消費者が board UI。かつ書き手が CLI 側なので §8.4 の経路整理が要る |
+| `AskHuman` の滞留 | **持たない** | `survey_project` が都度計算できる。帳簿には「計算で復元できない事実」だけを書く（見送りは lane を消すので復元不能、滞留は lane が残るので復元可能） |
+| lane の rename | state file 5 系統（`lane_ids` / `echoes_sessions` / `console_mode` / `replay_log` / `cc_session`）の key を id 化してから | それらの名前 key は `load_in(base, project, lane)` の**内側に閉じている** = カプセル化された負債で、放置しても修正箇所が増えない。address 文字列（§6.4）が viral だったのとは性質が違う |
+| `claude_command` の分岐 | `has_ground` 相当（cwd が repo root か）を訊く形へ | §8.1。挙動変更なので構造変更と混ぜない（§6.6 と同じ分割） |
