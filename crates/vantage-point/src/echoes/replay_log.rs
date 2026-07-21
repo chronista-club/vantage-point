@@ -186,24 +186,24 @@ mod tests {
     #[test]
     fn append_and_load_roundtrip_preserves_order() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        append_in(tmp.path(), "vp", "conductor", &chunk("hello ")).expect("append 1");
-        append_in(tmp.path(), "vp", "conductor", &chunk("world")).expect("append 2");
-        append_in(tmp.path(), "vp", "conductor", &turn()).expect("append 3");
+        append_in(tmp.path(), "vp", "root", &chunk("hello ")).expect("append 1");
+        append_in(tmp.path(), "vp", "root", &chunk("world")).expect("append 2");
+        append_in(tmp.path(), "vp", "root", &turn()).expect("append 3");
 
-        let events = load_in(tmp.path(), "vp", "conductor");
+        let events = load_in(tmp.path(), "vp", "root");
         assert_eq!(events, vec![chunk("hello "), chunk("world"), turn()]);
 
         // 別 label は独立（混ざらない）。
-        assert!(load_in(tmp.path(), "vp", "conductor#2").is_empty());
+        assert!(load_in(tmp.path(), "vp", "root#2").is_empty());
     }
 
     /// 壊れた行は skip し、読める行だけ返す（partial 末尾行も落ちる）。
     #[test]
     fn load_skips_corrupt_lines() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        append_in(tmp.path(), "vp", "conductor", &chunk("good1")).expect("append");
+        append_in(tmp.path(), "vp", "root", &chunk("good1")).expect("append");
         // 生 file に壊れた行を挟み込む。
-        let path = log_file_in(tmp.path(), "vp", "conductor");
+        let path = log_file_in(tmp.path(), "vp", "root");
         {
             let mut f = std::fs::OpenOptions::new()
                 .append(true)
@@ -216,7 +216,7 @@ mod tests {
             f.write_all(b"{\"kind\":\"message_chunk\",\"text\":\"par")
                 .expect("write partial");
         }
-        let events = load_in(tmp.path(), "vp", "conductor");
+        let events = load_in(tmp.path(), "vp", "root");
         assert_eq!(
             events,
             vec![chunk("good1"), chunk("good2")],
@@ -228,11 +228,11 @@ mod tests {
     #[test]
     fn clear_removes_and_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        append_in(tmp.path(), "vp", "conductor", &chunk("x")).expect("append");
-        clear_in(tmp.path(), "vp", "conductor").expect("clear");
-        assert!(load_in(tmp.path(), "vp", "conductor").is_empty());
+        append_in(tmp.path(), "vp", "root", &chunk("x")).expect("append");
+        clear_in(tmp.path(), "vp", "root").expect("clear");
+        assert!(load_in(tmp.path(), "vp", "root").is_empty());
         // 未記録の clear は no-op。
-        clear_in(tmp.path(), "vp", "conductor").expect("二重 clear は Ok");
+        clear_in(tmp.path(), "vp", "root").expect("二重 clear は Ok");
     }
 
     /// truncate: 上限超で末尾側の完全な行を残し、先頭から行境界で捨てる。
@@ -241,19 +241,13 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         // 各行 ~40 byte。10 本書いて上限を 100 byte にすると末尾の数本だけ残る。
         for i in 0..10 {
-            append_in(
-                tmp.path(),
-                "vp",
-                "conductor",
-                &chunk(&format!("msg-{i:02}")),
-            )
-            .expect("append");
+            append_in(tmp.path(), "vp", "root", &chunk(&format!("msg-{i:02}"))).expect("append");
         }
-        let before = load_in(tmp.path(), "vp", "conductor");
+        let before = load_in(tmp.path(), "vp", "root");
         assert_eq!(before.len(), 10);
 
-        truncate_if_needed_in(tmp.path(), "vp", "conductor", 100).expect("truncate");
-        let after = load_in(tmp.path(), "vp", "conductor");
+        truncate_if_needed_in(tmp.path(), "vp", "root", 100).expect("truncate");
+        let after = load_in(tmp.path(), "vp", "root");
 
         // 上限超で減っており、かつ全行が完全にパースできる（= 行境界で切れている）。
         assert!(after.len() < before.len(), "上限超過で古い行が捨てられる");
@@ -261,13 +255,13 @@ mod tests {
         // 残ったのは末尾側（最新）— 最後の event が保持される。
         assert_eq!(after.last(), Some(&chunk("msg-09")));
         // file 全体が max_bytes 以内。
-        let path = log_file_in(tmp.path(), "vp", "conductor");
+        let path = log_file_in(tmp.path(), "vp", "root");
         assert!(std::fs::metadata(&path).expect("meta").len() <= 100);
 
         // 上限以内なら no-op（減らない）。
         let n = after.len();
-        truncate_if_needed_in(tmp.path(), "vp", "conductor", 100).expect("truncate again");
-        assert_eq!(load_in(tmp.path(), "vp", "conductor").len(), n);
+        truncate_if_needed_in(tmp.path(), "vp", "root", 100).expect("truncate again");
+        assert_eq!(load_in(tmp.path(), "vp", "root").len(), n);
         // 不在 file の truncate も Ok。
         truncate_if_needed_in(tmp.path(), "vp", "absent", 100).expect("不在は no-op");
     }
@@ -276,10 +270,10 @@ mod tests {
     #[test]
     fn truncate_keeps_last_line_even_if_over_limit() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        append_in(tmp.path(), "vp", "conductor", &chunk("old")).expect("append old");
-        append_in(tmp.path(), "vp", "conductor", &chunk(&"z".repeat(500))).expect("append big");
-        truncate_if_needed_in(tmp.path(), "vp", "conductor", 100).expect("truncate");
-        let after = load_in(tmp.path(), "vp", "conductor");
+        append_in(tmp.path(), "vp", "root", &chunk("old")).expect("append old");
+        append_in(tmp.path(), "vp", "root", &chunk(&"z".repeat(500))).expect("append big");
+        truncate_if_needed_in(tmp.path(), "vp", "root", 100).expect("truncate");
+        let after = load_in(tmp.path(), "vp", "root");
         assert_eq!(after.len(), 1, "最新の 1 行だけ残る");
         assert_eq!(after[0], chunk(&"z".repeat(500)));
     }
@@ -287,10 +281,10 @@ mod tests {
     /// file 名は project / label を sanitize（`.` `/` → `-`、`#` は保持）した規約。
     #[test]
     fn file_name_sanitizes_and_lives_under_echoes_replay() {
-        let p = log_file_in(Path::new("/base"), "creo.memories", "conductor#2");
+        let p = log_file_in(Path::new("/base"), "creo.memories", "root#2");
         assert_eq!(
             p,
-            Path::new("/base/echoes_replay/creo-memories__conductor#2.jsonl")
+            Path::new("/base/echoes_replay/creo-memories__root#2.jsonl")
         );
         let p = log_file_in(Path::new("/base"), "a/b", "../evil");
         assert_eq!(p, Path::new("/base/echoes_replay/a-b__---evil.jsonl"));

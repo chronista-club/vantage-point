@@ -124,8 +124,8 @@ mod tests {
 
     #[test]
     fn file_name_sanitizes_project_and_lane() {
-        let p = STORE.file_in(Path::new("/base"), "creo.memories", "conductor");
-        assert_eq!(p, Path::new("/base/test_sessions/creo-memories__conductor"));
+        let p = STORE.file_in(Path::new("/base"), "creo.memories", "root");
+        assert_eq!(p, Path::new("/base/test_sessions/creo-memories__root"));
         let p = STORE.file_in(Path::new("/base"), "a/b", "../evil");
         assert_eq!(p, Path::new("/base/test_sessions/a-b__---evil"));
     }
@@ -135,16 +135,16 @@ mod tests {
         // 形式外は書かない — 既存の正常な記録を壊れた値で上書きしない。
         let tmp = tempfile::tempdir().expect("tempdir");
         STORE
-            .record_in(tmp.path(), "vp", "conductor", "good-id")
+            .record_in(tmp.path(), "vp", "root", "good-id")
             .expect("record");
         STORE
-            .record_in(tmp.path(), "vp", "conductor", "")
+            .record_in(tmp.path(), "vp", "root", "")
             .expect("空は no-op");
         STORE
-            .record_in(tmp.path(), "vp", "conductor", "bad id'; rm")
+            .record_in(tmp.path(), "vp", "root", "bad id'; rm")
             .expect("形式外は no-op");
         assert_eq!(
-            STORE.last_in(tmp.path(), "vp", "conductor").as_deref(),
+            STORE.last_in(tmp.path(), "vp", "root").as_deref(),
             Some("good-id"),
             "正常な記録が保持される"
         );
@@ -154,23 +154,19 @@ mod tests {
     fn clear_removes_record_and_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
         STORE
-            .record_in(tmp.path(), "vp", "conductor", "old-id")
+            .record_in(tmp.path(), "vp", "root", "old-id")
             .expect("record");
-        STORE
-            .clear_in(tmp.path(), "vp", "conductor")
-            .expect("clear");
-        assert_eq!(STORE.last_in(tmp.path(), "vp", "conductor"), None);
+        STORE.clear_in(tmp.path(), "vp", "root").expect("clear");
+        assert_eq!(STORE.last_in(tmp.path(), "vp", "root"), None);
         // 未記録 lane の clear は no-op（二重 fresh を Err にしない）。
         STORE
-            .clear_in(tmp.path(), "vp", "conductor")
+            .clear_in(tmp.path(), "vp", "root")
             .expect("未記録の clear は Ok");
         // 他 lane の記録は巻き添えにしない。
         STORE
             .record_in(tmp.path(), "vp", "performer-a", "keep-id")
             .expect("record");
-        STORE
-            .clear_in(tmp.path(), "vp", "conductor")
-            .expect("clear");
+        STORE.clear_in(tmp.path(), "vp", "root").expect("clear");
         assert_eq!(
             STORE.last_in(tmp.path(), "vp", "performer-a").as_deref(),
             Some("keep-id")
@@ -181,19 +177,19 @@ mod tests {
     fn record_and_last_roundtrip() {
         let tmp = tempfile::tempdir().expect("tempdir");
         STORE
-            .record_in(tmp.path(), "vp", "conductor", "0196-id")
+            .record_in(tmp.path(), "vp", "root", "0196-id")
             .expect("record");
         assert_eq!(
-            STORE.last_in(tmp.path(), "vp", "conductor").as_deref(),
+            STORE.last_in(tmp.path(), "vp", "root").as_deref(),
             Some("0196-id")
         );
         assert_eq!(STORE.last_in(tmp.path(), "vp", "w1"), None);
         // 上書き（最新が勝つ）。
         STORE
-            .record_in(tmp.path(), "vp", "conductor", "newer-id")
+            .record_in(tmp.path(), "vp", "root", "newer-id")
             .expect("record 2");
         assert_eq!(
-            STORE.last_in(tmp.path(), "vp", "conductor").as_deref(),
+            STORE.last_in(tmp.path(), "vp", "root").as_deref(),
             Some("newer-id")
         );
     }
@@ -203,13 +199,13 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("test_sessions");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("vp__conductor"), "  \n").unwrap();
-        assert_eq!(STORE.last_in(tmp.path(), "vp", "conductor"), None);
-        std::fs::write(dir.join("vp__conductor"), "abc'; rm -rf /'").unwrap();
-        assert_eq!(STORE.last_in(tmp.path(), "vp", "conductor"), None);
-        std::fs::write(dir.join("vp__conductor"), "0196-abc\n").unwrap();
+        std::fs::write(dir.join("vp__root"), "  \n").unwrap();
+        assert_eq!(STORE.last_in(tmp.path(), "vp", "root"), None);
+        std::fs::write(dir.join("vp__root"), "abc'; rm -rf /'").unwrap();
+        assert_eq!(STORE.last_in(tmp.path(), "vp", "root"), None);
+        std::fs::write(dir.join("vp__root"), "0196-abc\n").unwrap();
         assert_eq!(
-            STORE.last_in(tmp.path(), "vp", "conductor").as_deref(),
+            STORE.last_in(tmp.path(), "vp", "root").as_deref(),
             Some("0196-abc")
         );
     }

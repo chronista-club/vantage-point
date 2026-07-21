@@ -56,10 +56,10 @@ export function standDisplayName(stand: string): string {
 /**
  * 開発起点 lane の予約名 (doc 44 D4)。
  *
- * Rust 側 `CONDUCTOR_LANE_NAME` と同値でなければ address が食い違う
+ * Rust 側 `ROOT_LANE_NAME` と同値でなければ address が食い違う
  * (`laneAddressKey()` は byte-for-byte 一致が要件)。
  */
-const CONDUCTOR_LANE_NAME = "conductor";
+const ROOT_LANE_NAME = "root";
 
 /**
  * Lane が開発起点でない (旧 Performer) か。
@@ -68,7 +68,7 @@ const CONDUCTOR_LANE_NAME = "conductor";
  * ので、判定は名前の比較になった。
  */
 export function isPerformerLane(lane: LaneInfo): boolean {
-	return lane.address.name !== CONDUCTOR_LANE_NAME;
+	return lane.address.name !== ROOT_LANE_NAME;
 }
 
 /**
@@ -115,7 +115,7 @@ export function laneCwdLabel(cwd: string, projectPath: string): string {
 }
 
 /**
- * Lane address を Display 形 (`<project>/conductor` / `<project>/performer/<name>`) に変換。
+ * Lane address を Display 形 (`<project>/root` / `<project>/performer/<name>`) に変換。
  * Rust `LaneAddressWire::key()` と完全一致させる (active selection 比較に使うため)。
  */
 export function laneAddressKey(lane: LaneInfo): string {
@@ -150,7 +150,7 @@ export function laneAddressKey(lane: LaneInfo): string {
  */
 export function laneConnector(lane: LaneInfo, awaitingInput: boolean): string {
 	if (!isPerformerLane(lane)) {
-		return "conn-conductor"; // conductor は幹 = spine の頭
+		return "conn-root"; // conductor は幹 = spine の頭
 	}
 	const fs = lane.flow_state;
 	if (fs === "awaiting_user") return "conn-hitl"; // ユーザ本人待ち = needs-you

@@ -55,7 +55,7 @@ protocol "vp-daemon" version="0.2.0" {
                 field "worlds" type="json" required=#true description="world の配列。各要素は { wld_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
             }
         }
-        request "lanes/list" description="全 project 横断の lane 一覧を返す read-only 照会。各 lane は project / kind (conductor|performer) / stand / state (spawning|running|exiting|dead) を持つ。`vp ps` の LANES / STATUS 列や外部 agent の俯瞰に使う。project 単位の詳細操作は process-proxy 経由。引数なし。" {
+        request "lanes/list" description="全 project 横断の lane 一覧を返す read-only 照会。各 lane は project / kind (root|performer) / stand / state (spawning|running|exiting|dead) を持つ。`vp ps` の LANES / STATUS 列や外部 agent の俯瞰に使う。project 単位の詳細操作は process-proxy 経由。引数なし。" {
             returns "LaneList" {
                 field "lanes" type="json" required=#true description="LaneInfo の配列。各要素は { address: { project, kind, name? }, state, stand, ... }。"
             }

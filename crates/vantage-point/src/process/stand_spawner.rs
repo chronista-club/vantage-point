@@ -148,7 +148,7 @@ fn drain_pty_tail(rx: &mut broadcast::Receiver<Vec<u8>>) -> String {
 /// LaneAddress の lane label を導出する。
 ///
 /// doc 44 P2（フラット化）で `name` が全 lane 必須になったため、そのまま返すだけになった。
-/// 旧実装は kind で 3 分岐していた（Conductor → "conductor" / Performer(name) → name /
+/// 旧実装は kind で 3 分岐していた（Conductor → "root" / Performer(name) → name /
 /// Performer(None) → "unnamed"）— 最後の枝は型が許した表現不能な状態の穴埋めで、
 /// フラット化で**表現できなくなった**（`name: String` は常に在る）。
 pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
@@ -221,7 +221,7 @@ fn is_safe_session_id(id: &str) -> bool {
 /// <alias>` を注入する。 alias は `engine_model::is_valid_model` が `[A-Za-z0-9._-]`（先頭 `-`
 /// 不可）を保証済みなので、 shell metachar / 空白を含まず unquoted 埋め込みで injection 安全。
 fn claude_command(
-    is_conductor: bool,
+    is_root: bool,
     fresh: bool,
     resume_id: Option<&str>,
     model: Option<&str>,
@@ -239,7 +239,7 @@ fn claude_command(
     // exit 1」の中継専用コマンドで、失敗を伝播させて次の fresh fallback へ繋ぐ。
     // shell group `{ …; }` を使わないのは fish 互換のため（slot の shell は user の login shell）。
     // vp が PATH に無くても command-not-found = 非ゼロで chain は進む（fail-open）。
-    // doc 44 P2: 旧 `LaneKind` 分岐を `is_conductor`（予約名判定）に置換。挙動は不変。
+    // doc 44 P2: 旧 `LaneKind` 分岐を `is_root`（予約名判定）に置換。挙動は不変。
     // この分岐が残るのは cwd の性質差に根拠がある — 開発起点 lane は repo root に居るので
     // `--continue`（最新セッションを継ぐ）が自分の会話に当たるが、worktree の lane で同じことを
     // すると他 lane のセッションを掴む（dashboard 罠）。
@@ -249,7 +249,7 @@ fn claude_command(
     // 「開発起点か」（意図）ではない。D4 で起点は worktree lane にも移せるようになったので、
     // 帳簿のポインタに繋ぐと**上で警告している dashboard 罠がそのまま発火する**。
     // 置き換えるなら `has_ground` 相当（cwd の性質）を訊く形へ。
-    match (is_conductor, resume_id.filter(|id| is_safe_session_id(id))) {
+    match (is_root, resume_id.filter(|id| is_safe_session_id(id))) {
         (_, Some(id)) => format!(
             "claude {}--resume '{}' --settings '{}' || vp lane resume-failed '{}' || {}",
             model_flag, id, WIRE_HOOKS, id, fresh_cmd
@@ -407,12 +407,7 @@ pub fn build_stand_command(
             // bare に倒して「新 ID から」を守る（moody 指摘: Bare spawn 失敗後の Resume
             // 復帰経路がこの罠を踏んでいた）。
             let bare = fresh || (root >= 2 && resume_id.is_none());
-            let cmd = claude_command(
-                addr.is_conductor(),
-                bare,
-                resume_id.as_deref(),
-                model.as_deref(),
-            );
+            let cmd = claude_command(addr.is_root(), bare, resume_id.as_deref(), model.as_deref());
             Some(format!("{}\r", cmd))
         }
         Some(crate::echoes::EngineKind::Codex) => {
@@ -489,7 +484,7 @@ mod tests {
         // （sibling の build_stand_command テスト群と同じ規律 — 未隔離だと実 registry の root=echoes を
         // 拾い「shell なのに claude を注入」になって間欠 fail する）。
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let cmd = build_stand_command("shell", &addr, Path::new("/work/vp"), false);
         assert_eq!(
             cmd.cwd, "/work/vp",
@@ -538,11 +533,11 @@ mod tests {
     #[test]
     fn unspoken_non_first_root_spawns_bare_not_continue() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         // root を #2（新品、record 無し）へ — Act I ✨ New 直後の registry 状態。
         crate::lane::session_registry::create_root(
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "echoes",
             crate::lane::session_registry::SessionAct::Tui,
@@ -575,7 +570,7 @@ mod tests {
         // 実 vp_state_dir の conductor registry（root=echoes）を拾うと未知 stand でも claude 注入に
         // なるため、tempdir に隔離して「未知 stand → shell のみ」の意図を検証する（sibling 規律）。
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         for stand in ["tmux", "opus-xhigh"] {
             let cmd = build_stand_command(stand, &addr, Path::new("/tmp"), false);
             assert!(
@@ -704,7 +699,7 @@ mod tests {
     /// （sidebar "New Conductor Session" の契約。 実行環境の cc_session state に依存しない）。
     #[test]
     fn fresh_true_never_resumes_via_builder() {
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), true);
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(
@@ -741,7 +736,7 @@ mod tests {
     #[test]
     fn build_stand_command_opencode_arm() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         // 会話 id 未記録 → 素の opencode（新規会話）。model / provider flag は無い。
         let cmd = build_stand_command("opencode", &addr, Path::new("/tmp"), false);
         let input = cmd.initial_input.expect("opencode は initial_input あり");
@@ -762,7 +757,7 @@ mod tests {
     fn removed_stand_falls_back_to_bare_floor() {
         // build_stand_command は registry を読む — 実 conductor registry を拾わないよう隔離（sibling 規律）。
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let cmd = build_stand_command("cursor", &addr, Path::new("/tmp"), false);
         #[cfg(not(windows))]
         assert!(
@@ -783,11 +778,11 @@ mod tests {
     #[test]
     fn build_stand_command_follows_root_session_engine() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         // lane stand=echoes だが root(#2) を codex に向ける（picker の cross-engine 切替後の registry）。
         crate::lane::session_registry::create_root(
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "codex",
             crate::lane::session_registry::SessionAct::Tui,
@@ -806,11 +801,11 @@ mod tests {
     #[test]
     fn build_stand_command_root_legacy_stand_falls_back_to_floor() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         // lane stand=echoes だが root(#2) を撤去済み "cursor" に向ける（disk に残る legacy 値の再現）。
         crate::lane::session_registry::create_root(
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "cursor",
             crate::lane::session_registry::SessionAct::Tui,

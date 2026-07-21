@@ -286,6 +286,46 @@ window 経由の一時フラグで凌いだ（#838）。他の bus（`vp:echoes-
 （`nextRequestId` / `isMyResponse` は bus 非依存に作ってあるので、往復させる field を
 足すだけで済む）。
 
+## 6.5 lane の中の景色が変わった（mako 2026-07-21）
+
+> 「プロダクトの成長と dogfood から、昔と今とは見えてる景色違ってきていて、今は、各 Lane に
+> いろいろな機能を持った機能が、同居して連携して、その中でも conductor 等々 役割が
+> 割り当てられるものがあるって感じ。」
+> 「1 Lane の中に、N 体の Echoes、PP が同居してる感じ？」
+> 「Lane の root Echoes から始まり、それがどんどん必要に応じて拡張していく」
+
+### モデル
+
+- **lane = 場**。中身は 1 本の会話ではなく、**複数の住人が同居して連携する**
+- **住人 = session**（engine を 0 or 1 持つ。0 = Draft）
+- **役割は住人の属性**。lane に付くのではない
+- lane は **root 1 体から始まり**、必要に応じて住人が増える
+
+### 実装との対応（半分は既にそうなっていた）
+
+| 景色 | 現状 | 差 |
+|---|---|---|
+| 1 体から始まり増える | `SessionRegistry::single()` → `create` | 一致 |
+| 代表役がいる | `root`（doc 39「器に化身する session」） | **役割が位置の名前で暗黙表現** |
+| PP も同居 | `LaneCapabilitiesPool` が lane ごとに PP を持つ（VP-120） | **session とは別 pool に住んでいる** |
+| N 体の Echoes | session は N 体 | **端末を持てるのは root 1 体だけ** → P5 |
+
+> 3 行目が §1 の実体版: 同じ「lane の住人」なのに `chat_engines`（session ごと）/
+> `pty_slots`（lane ごと）/ `LaneCapabilitiesPool`（lane ごと）の **3 つの別々の入れ物**に
+> 分かれている。
+
+### ✅ 決定: `conductor` → `root` に改名（全面）
+
+「conductor（指揮者）」は**振る舞い**の名前なので階層ごとに意味がズレる
+（project の起点 lane / lane の中の代表）。「root（根）」は**位置**の名前なので、
+どの階層でも同じ関係を指せる — lane の root session も、project の root lane も
+「その階層の代表・起点」で一貫する。
+
+- 実装: #851（露払い = 定義を `vp-paths` に 1 本化 + 直書きを定数経由に）→ 本 PR（値の変更）
+- **旧「1 lane = 高々 1 エンジン（`pty_slots` xor `chat_engines`）= 1 cc_session」は
+  doc 33 時代の記述で、doc 38 の時点で既に事実と違っていた**（`chat_engines` は
+  session ごとの map）。現行の法は「**1 session = 高々 1 エンジン**」
+
 ## 7. 着手順 — Epic 全体（2026-07-21 確定）
 
 **内部を仕上げるまで表示はミニマム据え置き、UI は最後に一気に**（冒頭の方針）。

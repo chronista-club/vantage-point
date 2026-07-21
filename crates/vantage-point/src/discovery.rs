@@ -210,9 +210,9 @@ mod tests {
     #[test]
     fn counts_lanes_per_project_by_state() {
         let lanes = vec![
-            serde_json::json!({"address": {"project": "alpha", "kind": "conductor"}, "state": "running"}),
+            serde_json::json!({"address": {"project": "alpha", "kind": "root"}, "state": "running"}),
             serde_json::json!({"address": {"project": "alpha", "kind": "performer"}, "state": "dead"}),
-            serde_json::json!({"address": {"project": "beta",  "kind": "conductor"}, "state": "running"}),
+            serde_json::json!({"address": {"project": "beta",  "kind": "root"}, "state": "running"}),
         ];
         let counts = count_lanes_by_project_entries(&lanes);
 

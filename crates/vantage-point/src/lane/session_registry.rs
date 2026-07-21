@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn load_without_file_resolves_to_single_default() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(
             reg,
             SessionRegistry {
@@ -857,8 +857,8 @@ mod tests {
                 }],
             }
         );
-        assert_eq!(focused_in(tmp.path(), "vp", "conductor"), 1);
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(focused_in(tmp.path(), "vp", "root"), 1);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 1);
     }
 
     /// doc 39 P1 の後方互換の核: root field を持たない既存 file は root=1 として読める
@@ -869,14 +869,14 @@ mod tests {
         let dir = tmp.path().join("echoes_sessions");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("vp__conductor.json"),
+            dir.join("vp__root.json"),
             r#"{"focused":2,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":2,"stand":"codex"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 1, "root 無し file は root=1（従来の #1 化身）");
         assert_eq!(reg.focused, 2, "focused は file の値を維持");
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 1);
     }
 
     /// create → 採番 2・focus 追随 → roundtrip 永続。focus=false は focused を据え置く。
@@ -886,7 +886,7 @@ mod tests {
         let k2 = create_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "codex",
             SessionAct::Chat,
@@ -894,7 +894,7 @@ mod tests {
         )
         .expect("create");
         assert_eq!(k2, 2);
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.focused, 2, "focus=true は新 session に focus が移る");
         assert_eq!(reg.sessions.len(), 2);
         assert_eq!(reg.sessions[0].stand, "echoes", "session #1 は lane stand");
@@ -903,7 +903,7 @@ mod tests {
         let k3 = create_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "echoes",
             SessionAct::Chat,
@@ -911,7 +911,7 @@ mod tests {
         )
         .expect("create");
         assert_eq!(k3, 3);
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.focused, 2, "focus=false は focused を動かさない");
         assert_eq!(reg.next, 4);
     }
@@ -923,17 +923,17 @@ mod tests {
         create_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "codex",
             SessionAct::Chat,
             false,
         )
         .expect("create");
-        focus_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("実在 key への focus");
-        assert_eq!(focused_in(tmp.path(), "vp", "conductor"), 2);
+        focus_in(tmp.path(), "vp", "root", "echoes", 2).expect("実在 key への focus");
+        assert_eq!(focused_in(tmp.path(), "vp", "root"), 2);
         assert!(
-            focus_in(tmp.path(), "vp", "conductor", "echoes", 99).is_err(),
+            focus_in(tmp.path(), "vp", "root", "echoes", 99).is_err(),
             "不在 key への focus は Err"
         );
     }
@@ -944,11 +944,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("echoes_sessions");
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("vp__conductor.json");
+        let file = dir.join("vp__root.json");
 
         // 非 JSON
         std::fs::write(&file, "not json").unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions.len(), 1);
         assert_eq!(reg.focused, 1);
 
@@ -958,9 +958,9 @@ mod tests {
             r#"{"focused":9,"next":3,"sessions":[{"key":1,"stand":"echoes"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.focused, 1, "focused 不在の file は既定形に解決");
-        assert_eq!(focused_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(focused_in(tmp.path(), "vp", "root"), 1);
 
         // key 重複（不変条件違反）
         std::fs::write(
@@ -968,7 +968,7 @@ mod tests {
             r#"{"focused":1,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":1,"stand":"codex"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions.len(), 1, "key 重複の file は既定形に解決");
 
         // root が不在 key（不変条件違反）
@@ -977,9 +977,9 @@ mod tests {
             r#"{"focused":1,"root":9,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":2,"stand":"codex"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 1, "root 不在の file は既定形に解決");
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 1);
     }
 
     /// remove: 実在検証 / root は拒否（doc 39 §6 — 最後の 1 本の拒否を包含）/
@@ -991,7 +991,7 @@ mod tests {
         create_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "codex",
             SessionAct::Chat,
@@ -1001,7 +1001,7 @@ mod tests {
         create_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "cursor",
             SessionAct::Chat,
@@ -1010,19 +1010,19 @@ mod tests {
         .expect("create #3");
 
         // 不在 key は Err
-        assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 9).is_err());
+        assert!(remove_in(tmp.path(), "vp", "root", "echoes", 9).is_err());
 
         // root(#1) は N>1 でも取り除けない（doc 38 の「⚠️ #1 close は Act I slot resume を断つ」
         // footgun を構造で塞ぐ — doc 39 §2）
         assert!(
-            remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
+            remove_in(tmp.path(), "vp", "root", "echoes", 1).is_err(),
             "root session の remove は Err"
         );
 
         // focused(#2) を remove → focus は残りの先頭(#1) へ
-        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("remove #2");
+        let focused = remove_in(tmp.path(), "vp", "root", "echoes", 2).expect("remove #2");
         assert_eq!(focused, 1, "focused の remove は残り先頭へ fallback");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(
             reg.sessions.iter().map(|s| s.key).collect::<Vec<_>>(),
             vec![1, 3]
@@ -1030,12 +1030,12 @@ mod tests {
         assert_eq!(reg.next, 4, "採番は据え置き（key 再利用なし）");
 
         // 非 focused(#3) を remove → focus は不変
-        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 3).expect("remove #3");
+        let focused = remove_in(tmp.path(), "vp", "root", "echoes", 3).expect("remove #3");
         assert_eq!(focused, 1);
 
         // 最後の 1 本 = root なので取り除けない（fresh restart が正道）
         assert!(
-            remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
+            remove_in(tmp.path(), "vp", "root", "echoes", 1).is_err(),
             "最後の session の remove は Err"
         );
     }
@@ -1048,24 +1048,24 @@ mod tests {
         let k2 = create_root_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "echoes",
             SessionAct::Tui,
         )
         .expect("create_root #2");
         assert_eq!(k2, 2);
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 2, "root は新 session へ");
         assert_eq!(reg.focused, 2, "focused も新 session へ（追加して focus）");
         assert_eq!(reg.sessions.len(), 2, "旧 root(#1) は一覧に残る（非破壊）");
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 2);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 2);
 
         // 旧 root(#1) は非 root になったので閉じられる（doc 39 §2 — #1 の特別性撤廃）
-        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 1).expect("remove #1");
+        let focused = remove_in(tmp.path(), "vp", "root", "echoes", 1).expect("remove #1");
         assert_eq!(focused, 2);
         // 新 root(#2) は取り除けない
-        assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 2).is_err());
+        assert!(remove_in(tmp.path(), "vp", "root", "echoes", 2).is_err());
     }
 
     /// set_root: 既存 session へ root + focused が同時に移る（doc 39 P3 Root 切替 = 非破壊）。
@@ -1074,24 +1074,17 @@ mod tests {
     fn set_root_switches_to_existing_session() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // #2 を作って root にする（#1 は残存）→ 既存の #1 へ切り戻す
-        create_root_in(
-            tmp.path(),
-            "vp",
-            "conductor",
-            "echoes",
-            "codex",
-            SessionAct::Tui,
-        )
-        .expect("create_root #2");
-        set_root_in(tmp.path(), "vp", "conductor", "echoes", 1).expect("set_root #1");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        create_root_in(tmp.path(), "vp", "root", "echoes", "codex", SessionAct::Tui)
+            .expect("create_root #2");
+        set_root_in(tmp.path(), "vp", "root", "echoes", 1).expect("set_root #1");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 1, "root は既存 #1 へ");
         assert_eq!(reg.focused, 1, "focused も追従（create_root と同じ意味論）");
         assert_eq!(reg.sessions.len(), 2, "非破壊 — 両 session が一覧に残る");
         // 旧 root(#2) は非 root になったので閉じられる
-        remove_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("remove #2");
+        remove_in(tmp.path(), "vp", "root", "echoes", 2).expect("remove #2");
         // 不在 key への切替は Err（黙って据え置かない）
-        assert!(set_root_in(tmp.path(), "vp", "conductor", "echoes", 99).is_err());
+        assert!(set_root_in(tmp.path(), "vp", "root", "echoes", 99).is_err());
     }
 
     /// clear = fresh reset。file が消えて既定形に戻り、採番も 1 からやり直し。冪等。
@@ -1101,19 +1094,19 @@ mod tests {
         create_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "codex",
             SessionAct::Chat,
             true,
         )
         .expect("create");
-        clear_in(tmp.path(), "vp", "conductor").expect("clear");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        clear_in(tmp.path(), "vp", "root").expect("clear");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions.len(), 1);
         assert_eq!(reg.next, 2, "fresh 後は採番もやり直し");
         // 未記録の clear は no-op（session_store と同じ原則）
-        clear_in(tmp.path(), "vp", "conductor").expect("二重 clear は Ok");
+        clear_in(tmp.path(), "vp", "root").expect("二重 clear は Ok");
     }
 
     /// session label: key 1 = 素の lane 名（既存 file 互換）、key 2+ = `<lane>#<n>`。
@@ -1121,10 +1114,10 @@ mod tests {
     /// （doc 36 実証の固定化）。
     #[test]
     fn session_label_is_bare_for_key1_and_hash_suffixed_after() {
-        assert_eq!(session_label("conductor", 1), "conductor");
-        assert_eq!(session_label("conductor", 2), "conductor#2");
+        assert_eq!(session_label("root", 1), "root");
+        assert_eq!(session_label("root", 2), "root#2");
         assert_eq!(session_label("feat-x", 10), "feat-x#10");
-        assert_eq!(sanitize("conductor#2"), "conductor#2", "# は sanitize 安全");
+        assert_eq!(sanitize("root#2"), "root#2", "# は sanitize 安全");
     }
 
     /// set_conversation: roundtrip 永続 / 変化なしは no-op / 不在 key は Err / 形式外は書かず。
@@ -1134,7 +1127,7 @@ mod tests {
         create_in(
             tmp.path(),
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "echoes",
             SessionAct::Chat,
@@ -1143,39 +1136,32 @@ mod tests {
         .expect("create #2");
 
         assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 2, Some("id-alpha"))
+            set_conversation_in(tmp.path(), "vp", "root", "echoes", 2, Some("id-alpha"))
                 .expect("set"),
             "初回 set は disk 変化あり"
         );
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions[1].conversation.as_deref(), Some("id-alpha"));
 
         assert!(
-            !set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 2, Some("id-alpha"))
+            !set_conversation_in(tmp.path(), "vp", "root", "echoes", 2, Some("id-alpha"))
                 .expect("same"),
             "同値 set は no-op（Diff::Update 不要の合図）"
         );
         assert!(
-            !set_conversation_in(
-                tmp.path(),
-                "vp",
-                "conductor",
-                "echoes",
-                2,
-                Some("bad id'; rm")
-            )
-            .expect("invalid"),
+            !set_conversation_in(tmp.path(), "vp", "root", "echoes", 2, Some("bad id'; rm"))
+                .expect("invalid"),
             "形式外 id は書かずに Ok(false)"
         );
         assert_eq!(
-            load_in(tmp.path(), "vp", "conductor", "echoes").sessions[1]
+            load_in(tmp.path(), "vp", "root", "echoes").sessions[1]
                 .conversation
                 .as_deref(),
             Some("id-alpha"),
             "形式外 set 後も既存値が守られる"
         );
         assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 99, Some("id-x")).is_err(),
+            set_conversation_in(tmp.path(), "vp", "root", "echoes", 99, Some("id-x")).is_err(),
             "不在 key は Err"
         );
     }
@@ -1215,22 +1201,20 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         // registry に会話 id を記録した状態を作る
         assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 1, Some("cc-old"))
+            set_conversation_in(tmp.path(), "vp", "root", "echoes", 1, Some("cc-old"))
                 .expect("set")
         );
         assert_eq!(
-            load_in(tmp.path(), "vp", "conductor", "echoes").sessions[0]
+            load_in(tmp.path(), "vp", "root", "echoes").sessions[0]
                 .conversation
                 .as_deref(),
             Some("cc-old")
         );
 
         // clear → conversation が None に落ち、再 load でも蘇らない
-        assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 1, None).expect("clear")
-        );
+        assert!(set_conversation_in(tmp.path(), "vp", "root", "echoes", 1, None).expect("clear"));
         assert_eq!(
-            load_in(tmp.path(), "vp", "conductor", "echoes").sessions[0].conversation,
+            load_in(tmp.path(), "vp", "root", "echoes").sessions[0].conversation,
             None,
             "clear 後は conversation が None（backfill 蘇生源は存在しない）"
         );
@@ -1241,19 +1225,13 @@ mod tests {
     fn record_root_policies_follow_doc40_table() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let rec = |sid: &str, report: ConversationReport, transcript: bool| {
-            record_root_conversation_in(
-                tmp.path(),
-                "vp",
-                "conductor",
-                "echoes",
-                sid,
-                report,
-                |_| transcript,
-            )
+            record_root_conversation_in(tmp.path(), "vp", "root", "echoes", sid, report, |_| {
+                transcript
+            })
             .expect("record_root")
         };
         let conv = || {
-            let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+            let reg = load_in(tmp.path(), "vp", "root", "echoes");
             let root = reg.root;
             reg.sessions
                 .iter()
@@ -1303,15 +1281,8 @@ mod tests {
         assert_eq!(conv().as_deref(), Some("id-c"));
 
         // root が非 claude → 無視（claude hook の id を他 engine の session に混ぜない）
-        create_root_in(
-            tmp.path(),
-            "vp",
-            "conductor",
-            "echoes",
-            "codex",
-            SessionAct::Tui,
-        )
-        .expect("root=codex");
+        create_root_in(tmp.path(), "vp", "root", "echoes", "codex", SessionAct::Tui)
+            .expect("root=codex");
         assert_eq!(
             rec("id-d", ConversationReport::Spoken, false),
             RootRecordOutcome::IgnoredNonClaude
@@ -1321,16 +1292,16 @@ mod tests {
     /// parse_session_label は session_label の逆関数（+ 非数値 suffix は key 1 に倒す）。
     #[test]
     fn parse_session_label_inverts_session_label() {
-        assert_eq!(parse_session_label("conductor"), ("conductor", 1));
-        assert_eq!(parse_session_label("conductor#2"), ("conductor", 2));
+        assert_eq!(parse_session_label("root"), ("root", 1));
+        assert_eq!(parse_session_label("root#2"), ("root", 2));
         assert_eq!(parse_session_label("feat-x#10"), ("feat-x", 10));
         assert_eq!(
             parse_session_label("a#b"),
             ("a#b", 1),
             "非数値 suffix は素の名前"
         );
-        assert_eq!(parse_session_label("conductor#1"), ("conductor", 1));
-        for (label, key) in [("conductor", 1u32), ("conductor", 2), ("feat-x", 10)] {
+        assert_eq!(parse_session_label("root#1"), ("root", 1));
+        for (label, key) in [("root", 1u32), ("root", 2), ("feat-x", 10)] {
             let l = session_label(label, key);
             assert_eq!(parse_session_label(&l), (label, key), "roundtrip: {l}");
         }
@@ -1339,10 +1310,10 @@ mod tests {
     /// registry file 名も sanitize が効く（session_store と同じ規則）。
     #[test]
     fn registry_file_sanitizes_project_and_lane() {
-        let p = registry_file_in(Path::new("/base"), "creo.memories", "conductor");
+        let p = registry_file_in(Path::new("/base"), "creo.memories", "root");
         assert_eq!(
             p,
-            Path::new("/base/echoes_sessions/creo-memories__conductor.json")
+            Path::new("/base/echoes_sessions/creo-memories__root.json")
         );
         let p = registry_file_in(Path::new("/base"), "a/b", "../evil");
         assert_eq!(p, Path::new("/base/echoes_sessions/a-b__---evil.json"));
@@ -1357,15 +1328,15 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         // 未記録は Tui（file 不在 = 従来の既定）
-        assert_eq!(root_act_in(base, "vp", "conductor"), SessionAct::Tui);
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Tui);
 
         assert!(
-            set_root_act_in(base, "vp", "conductor", "echoes", SessionAct::Chat).expect("set"),
+            set_root_act_in(base, "vp", "root", "echoes", SessionAct::Chat).expect("set"),
             "変化したので true"
         );
-        assert_eq!(root_act_in(base, "vp", "conductor"), SessionAct::Chat);
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Chat);
         assert!(
-            !set_root_act_in(base, "vp", "conductor", "echoes", SessionAct::Chat).expect("set 2"),
+            !set_root_act_in(base, "vp", "root", "echoes", SessionAct::Chat).expect("set 2"),
             "同値は no-op（false）"
         );
 
@@ -1373,16 +1344,16 @@ mod tests {
         let k2 = create_in(
             base,
             "vp",
-            "conductor",
+            "root",
             "echoes",
             "echoes",
             SessionAct::Tui,
             false,
         )
         .expect("create #2");
-        set_root_in(base, "vp", "conductor", "echoes", k2).expect("set_root");
+        set_root_in(base, "vp", "root", "echoes", k2).expect("set_root");
         assert_eq!(
-            root_act_in(base, "vp", "conductor"),
+            root_act_in(base, "vp", "root"),
             SessionAct::Tui,
             "act は lane ではなく root session に付く"
         );
@@ -1393,15 +1364,15 @@ mod tests {
     fn legacy_registry_without_act_reads_as_tui() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
-        let path = registry_file_in(base, "vp", "conductor");
+        let path = registry_file_in(base, "vp", "root");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
             r#"{"focused":1,"root":1,"next":2,"sessions":[{"key":1,"stand":"echoes"}]}"#,
         )
         .unwrap();
-        assert_eq!(root_act_in(base, "vp", "conductor"), SessionAct::Tui);
-        let reg = load_in(base, "vp", "conductor", "echoes");
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Tui);
+        let reg = load_in(base, "vp", "root", "echoes");
         assert_eq!(reg.sessions[0].act, SessionAct::Tui);
     }
 
@@ -1413,13 +1384,13 @@ mod tests {
         let base = tmp.path();
         let dir = base.join("console_modes");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("vp__conductor"), "chat").unwrap();
+        std::fs::write(dir.join("vp__root"), "chat").unwrap();
         std::fs::write(dir.join("vp__feat"), "tui").unwrap();
         std::fs::write(dir.join("vp__broken"), "gui").unwrap(); // 未知値は捨てる
 
         assert_eq!(migrate_console_modes_in(base), 1, "畳んだのは chat の 1 件");
 
-        assert_eq!(root_act_in(base, "vp", "conductor"), SessionAct::Chat);
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Chat);
         assert_eq!(root_act_in(base, "vp", "feat"), SessionAct::Tui);
         assert!(
             !registry_file_in(base, "vp", "feat").exists(),
@@ -1440,15 +1411,12 @@ mod tests {
         let base = tmp.path();
         let dir = base.join("console_modes");
         std::fs::create_dir_all(&dir).unwrap();
-        // 実 project 名は "creo.memories" — legacy file 名は sanitize 済みの "creo-memories__conductor"
-        std::fs::write(dir.join("creo-memories__conductor"), "chat").unwrap();
+        // 実 project 名は "creo.memories" — legacy file 名は sanitize 済みの "creo-memories__root"
+        std::fs::write(dir.join("creo-memories__root"), "chat").unwrap();
 
         assert_eq!(migrate_console_modes_in(base), 1);
 
         // 素の project 名で引いても Chat が読める（= 同じ file に着地した）
-        assert_eq!(
-            root_act_in(base, "creo.memories", "conductor"),
-            SessionAct::Chat
-        );
+        assert_eq!(root_act_in(base, "creo.memories", "root"), SessionAct::Chat);
     }
 }

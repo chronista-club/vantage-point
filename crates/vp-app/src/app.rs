@@ -190,7 +190,7 @@ mod ipc_tag_tests {
             // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
             "console:switch_root",
         ] {
-            let msg = format!(r#"{{"t":"{t}","lane":"vp/conductor"}}"#);
+            let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
                 is_main_ipc_tag(&msg),
                 "{t} は main IPC に振り分けられるべき（sidebar に流すと unknown variant で drop）"
@@ -221,7 +221,7 @@ fn spawn_menu_event_pump(rt_handle: &tokio::runtime::Handle, proxy: EventLoopPro
 
 /// F6 (doc 27 §3.4): active_lane_address から対応する project_path を引く。
 ///
-/// active_lane_address (`<project>/conductor` or `<project>/performer/<name>`) から、 対応する
+/// active_lane_address (`<project>/root` or `<project>/performer/<name>`) から、 対応する
 /// project_path を引く。 World process-proxy は SP port 不問・project_path を path_key に正規化して
 /// routing するので、 ask 系 (board mutate / lane ops) は port でなく path で引く。 解決失敗
 /// (lane 未選択 / SP 未起動) なら `None`。 caller: `BoardMutate`（board_delete_item / board_clear）の
@@ -772,7 +772,7 @@ struct LaneTerminal {
 
 /// terminal S4: lane の terminal を World "canvas" channel に乗せる per-lane session を spawn。
 ///
-/// `lane_key` = `<project>/conductor` 等 (`LaneAddressWire::key()`)。 World :32000 の "canvas"
+/// `lane_key` = `<project>/root` 等 (`LaneAddressWire::key()`)。 World :32000 の "canvas"
 /// channel に `pattern: process/terminal/data/{lane_key}/out` で subscribe → World demand 発火 →
 /// SP pump start。 受信した PTY 出力は `AppEvent::TerminalOutput` で event loop に流し、 cmd_rx
 /// 経由の write/resize は同 channel の上り request で SP に forward する (S3 bidirectional)。
@@ -1289,7 +1289,7 @@ mod lane_js {
 
     /// JS string literal にする (Phase review fix #3 と同設計: serde_json::to_string で
     /// 全 UTF-8 + null byte + surrogate を JSON spec で escape、 JS の valid string literal に)。
-    /// Lane address は通常 ASCII safe (`<project>/conductor`) だが、 一貫性と future-proof のため統一。
+    /// Lane address は通常 ASCII safe (`<project>/root`) だが、 一貫性と future-proof のため統一。
     fn js_str(s: &str) -> String {
         serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
     }
@@ -1566,7 +1566,7 @@ mod header_lane_fields_changed_tests {
     /// 最小 LaneInfo（全 field serde default）に engine_session_id だけ与える。
     fn lane(engine_session_id: Option<&str>) -> LaneInfo {
         serde_json::from_value(serde_json::json!({
-            "address": {"kind": "conductor", "project": "vp"},
+            "address": {"kind": "root", "project": "vp"},
             "engine_session_id": engine_session_id,
         }))
         .expect("LaneInfo deserialize")
@@ -1607,7 +1607,7 @@ mod lane_key_wire_agent_tests {
     fn maps_flat_lane_key_to_agent_address() {
         // 開発起点は lane 部分を省いた形が canonical
         assert_eq!(
-            lane_key_to_wire_agent("vp/conductor").as_deref(),
+            lane_key_to_wire_agent("vp/root").as_deref(),
             Some("agent@vp")
         );
         // それ以外は `<project>/<name>`
@@ -1620,7 +1620,7 @@ mod lane_key_wire_agent_tests {
     /// `LaneAddressWire::key()` が吐いた形をそのまま食えること（実際の供給元との結線）。
     #[test]
     fn accepts_key_produced_by_wire_type() {
-        for (name, expected) in [("conductor", "agent@vp"), ("feat-api", "agent@vp/feat-api")] {
+        for (name, expected) in [("root", "agent@vp"), ("feat-api", "agent@vp/feat-api")] {
             let wire = LaneAddressWire {
                 project: "vp".into(),
                 name: name.into(),
@@ -1639,7 +1639,7 @@ mod lane_key_wire_agent_tests {
     #[test]
     fn rejects_malformed_keys() {
         assert_eq!(lane_key_to_wire_agent("vp"), None); // 区切り無し
-        assert_eq!(lane_key_to_wire_agent("/conductor"), None); // project 空
+        assert_eq!(lane_key_to_wire_agent("/root"), None); // project 空
         assert_eq!(lane_key_to_wire_agent("vp/"), None); // name 空
         assert_eq!(lane_key_to_wire_agent("vp/<unnamed>"), None); // spawning placeholder
         // 旧 3 分節形は新形では不正（正規化は server 側 parse_address の担当）
@@ -1821,7 +1821,7 @@ fn header_lane_fields_changed(
                 .and_then(|p| p.branch.as_deref())
 }
 
-/// Lane address (Display 形 `"<project>/conductor"` 等) から所属 project path を逆引きする。
+/// Lane address (Display 形 `"<project>/root"` 等) から所属 project path を逆引きする。
 ///
 /// `lanes_by_project` (= project_path → LaneInfo list) を走査し、 `address.key()` が一致する
 /// lane を持つ project の path を返す。 `lane:select` 経路 (= JS から path を受け取る) の鏡像で、
@@ -2439,7 +2439,7 @@ fn lane_key_to_wire_agent(address: &str) -> Option<String> {
     if project.is_empty() || name.is_empty() || name.contains('/') {
         return None;
     }
-    if name == crate::lane::CONDUCTOR_LANE_NAME {
+    if name == crate::lane::ROOT_LANE_NAME {
         // 開発起点は lane 部分を省略した形が canonical（`agent@<project>`）。
         return Some(format!("agent@{project}"));
     }
@@ -3501,9 +3501,9 @@ pub fn run() -> anyhow::Result<()> {
                     ) {
                         // token → lane address (`<project>/<予約名>` or `<project>/performer/<name>`)
                         let address = if token.is_empty()
-                            || token == crate::lane::CONDUCTOR_LANE_NAME
+                            || token == crate::lane::ROOT_LANE_NAME
                         {
-                            format!("{}/{}", project, crate::lane::CONDUCTOR_LANE_NAME)
+                            format!("{}/{}", project, crate::lane::ROOT_LANE_NAME)
                         } else {
                             format!("{}/performer/{}", project, token)
                         };
@@ -3565,10 +3565,10 @@ pub fn run() -> anyhow::Result<()> {
                     let token = message
                         .get("lane")
                         .and_then(|l| l.as_str())
-                        .unwrap_or(crate::lane::CONDUCTOR_LANE_NAME);
+                        .unwrap_or(crate::lane::ROOT_LANE_NAME);
                     // token → lane address（switch_lane と同じ変換）。
-                    let address = if token.is_empty() || token == crate::lane::CONDUCTOR_LANE_NAME {
-                        format!("{}/{}", project, crate::lane::CONDUCTOR_LANE_NAME)
+                    let address = if token.is_empty() || token == crate::lane::ROOT_LANE_NAME {
+                        format!("{}/{}", project, crate::lane::ROOT_LANE_NAME)
                     } else {
                         format!("{}/performer/{}", project, token)
                     };

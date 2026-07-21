@@ -285,7 +285,7 @@ enum LaneCommands {
     ///
     /// SP の per-lane Term grid (TermAttach) を render して返す。tmux 不要。
     Capture {
-        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
         lane: String,
     },
     /// この project の開発起点 lane を表示 / 設定する (doc 44 D4、Project Host の帳簿)
@@ -299,7 +299,7 @@ enum LaneCommands {
     },
     /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
     Nudge {
-        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
         lane: String,
         /// 注入するテキスト (Enter は自動付与、submit 意味論は SP 側 deliver_nudge)
         text: String,
@@ -821,7 +821,7 @@ fn list_performers_detail() -> Result<()> {
 /// その lane を active 化する（lane-within-project の per-project 切替）。
 /// MCP 側も `process_call("switch_lane", …)`（mcp.rs、process-proxy 経由）で同 dispatch に着地。
 fn switch_lane_via_quic(name: &str) -> Result<()> {
-    // lane token = "conductor" (lead) or performer 名。server / vp-app 側で実在 lane と照合
+    // lane token = "root" (lead) or performer 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
     let trimmed = name.trim();
     if trimmed.is_empty() {

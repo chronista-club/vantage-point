@@ -637,7 +637,7 @@ async fn enrich_lanes_flow_state(
     project_name: &str,
 ) {
     for lane in lanes.iter_mut() {
-        if lane.address.is_conductor() {
+        if lane.address.is_root() {
             continue;
         }
         let agent_addr = format!("agent@{}/{}", project_name, lane.address.name);
@@ -990,9 +990,9 @@ async fn handle_wire_channel(
         .ok_or_else(|| {
             format!("lane/session-changed: project '{project}' の SP が registry に無い")
         })?;
-        // hook env の VP_LANE は label（"conductor" / performer 名）。SP method は表示形を取る。
-        let display = if label == "conductor" || label == "lead" {
-            format!("{project}/conductor")
+        // hook env の VP_LANE は label（"root" / performer 名）。SP method は表示形を取る。
+        let display = if label == "root" || label == "lead" {
+            format!("{project}/root")
         } else {
             format!("{project}/performer/{label}")
         };
@@ -1108,6 +1108,14 @@ async fn handle_wire_channel(
 /// world-process / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
+    // 予約 lane 名の改名（`conductor` → `root`、2026-07-21）に伴う state file の付け替え。
+    // lane を spawn する前に済ませる — 先に boot すると新名で空の state を作ってしまい、
+    // 旧名の会話 id / 安定 id が「衝突時は上書きしない」規則で永久に取り残される。
+    let renamed = vp_paths::migrate_root_lane_state_files(&crate::config::vp_state_dir());
+    if renamed > 0 {
+        tracing::info!("予約 lane 名 migration: state file {renamed} 件を root へ改名");
+    }
+
     // doc 47 §4: 旧 `console_modes/` を root session の act へ畳む one-shot migration。
     // lane を spawn する前に済ませる — 畳む前に boot すると chat lane が Tui として立ち上がり、
     // その lane で 1 会話 2 エンジンになる（この移設が塞ごうとしている当のもの）。

@@ -50,8 +50,8 @@ mod tests {
     #[test]
     fn append_writes_one_line_per_event() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        append_in(tmp.path(), "vp", "conductor", "abc-123").expect("append 1");
-        append_in(tmp.path(), "vp", "conductor", "continue").expect("append 2");
+        append_in(tmp.path(), "vp", "root", "abc-123").expect("append 1");
+        append_in(tmp.path(), "vp", "root", "continue").expect("append 2");
         let body = std::fs::read_to_string(log_path_in(tmp.path())).expect("read");
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2, "1 事象 1 行: {body}");

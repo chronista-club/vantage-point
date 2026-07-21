@@ -80,7 +80,7 @@ pub struct FlowStateDerivation {
     /// `true` = conductor が control 手放して performer 自走中 (= Working or Completed かつ 最終 actor が performer/none)
     /// `false` = conductor reply 待ち or interaction 進行中
     pub control_surrender: bool,
-    /// なぜその state か (= human readable)。 e.g. `"conductor task wmsg, performer not yet replied"`
+    /// なぜその state か (= human readable)。 e.g. `"root task wmsg, performer not yet replied"`
     pub state_reason: String,
     /// 最終 state 遷移時刻 (epoch ms)。 wire activity が無い場合 `None`。
     /// 厳密な「transition 時刻」ではなく、 latest wire の created_at を proxy として返す
@@ -223,7 +223,7 @@ pub fn derive_flow_state(
         // performer → conductor の question = HITL 待ち (= control performer → conductor に戻る)
         (MsgDirection::FromPerformer, "question", _, _) => (
             FlowState::HitlPending,
-            "performer posted question, awaiting conductor reply".to_string(),
+            "performer posted question, awaiting root reply".to_string(),
         ),
         // performer → conductor の complete = 完了
         (MsgDirection::FromPerformer, "complete", _, _) => (
@@ -233,13 +233,13 @@ pub fn derive_flow_state(
         // conductor → performer の task = 作業中 (= 初手 handoff、 まだ performer 着手)
         (MsgDirection::FromConductor, "task", _, _) => (
             FlowState::Working,
-            "conductor sent task, performer not yet replied".to_string(),
+            "root sent task, performer not yet replied".to_string(),
         ),
         // conductor → performer 指示後 dirty 残り commit 無し = 行き詰まり
         (MsgDirection::FromConductor, _, true, false) => (
             FlowState::Stuck,
             format!(
-                "conductor {} but performer has dirty changes and no commit",
+                "root {} but performer has dirty changes and no commit",
                 if kind.is_empty() { "msg" } else { kind }
             ),
         ),
@@ -251,7 +251,7 @@ pub fn derive_flow_state(
         // conductor → performer の approve / modify / clarify = 作業継続指示
         (MsgDirection::FromConductor, "approve" | "modify" | "clarify", _, _) => (
             FlowState::Working,
-            format!("conductor replied {kind}, performer resumes"),
+            format!("root replied {kind}, performer resumes"),
         ),
         // 上記いずれにも当たらない = Working を default (= conductor spec の `_ => Working`)
         _ => (
@@ -318,7 +318,7 @@ mod tests {
         // conductor → performer 指示直後 = control はまだ performer に渡っていない (= reply 必要)
         assert!(
             !d.control_surrender,
-            "conductor task 直後は performer 側 ack 待ち、 control 未 surrender"
+            "root task 直後は performer 側 ack 待ち、 control 未 surrender"
         );
     }
 
@@ -332,7 +332,7 @@ mod tests {
             None,
         );
         assert_eq!(d.state, FlowState::HitlPending);
-        assert!(!d.control_surrender, "HitlPending は conductor 介入待ち");
+        assert!(!d.control_surrender, "HitlPending は root 介入待ち");
     }
 
     #[test]
@@ -393,7 +393,7 @@ mod tests {
             );
             assert_eq!(d.state, FlowState::Working, "kind={k}");
             // conductor → performer reply 直後 = performer 着手前 → control 未 surrender
-            assert!(!d.control_surrender, "conductor reply 直後: {k}");
+            assert!(!d.control_surrender, "root reply 直後: {k}");
         }
     }
 

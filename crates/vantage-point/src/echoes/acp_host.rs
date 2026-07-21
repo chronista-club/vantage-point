@@ -859,7 +859,7 @@ mod tests {
             engine: AcpEngine::Grok,
             cwd: tmp.path().to_string_lossy().into_owned(),
             project: "vptest-acp".into(),
-            lane: "conductor".into(),
+            lane: "root".into(),
             session_id: None,
         })
         .expect("spawn grok agent stdio");
@@ -888,7 +888,7 @@ mod tests {
         }
         assert!(!session_id.is_empty(), "SessionInit（ACP sessionId）を観測");
         assert!(text.contains("pong-acp"), "answer: {text}");
-        let reg = crate::lane::session_registry::load("vptest-acp", "conductor", "grok");
+        let reg = crate::lane::session_registry::load("vptest-acp", "root", "grok");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some(session_id.as_str()),

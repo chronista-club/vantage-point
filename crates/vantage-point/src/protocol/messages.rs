@@ -74,7 +74,7 @@ pub enum ProcessMessage {
         /// ペインのタイトル（タブ表示用）
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
-        /// このメッセージが属する Lane（per-lane PP scope、conductor/performer 語彙）。
+        /// このメッセージが属する Lane（per-lane PP scope、root/performer 語彙）。
         /// `None` = conductor（lead）。topic の lane segment になり、retained を lane 別に分離する。
         /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を conductor 扱い）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,7 +102,7 @@ pub enum ProcessMessage {
     BoardUpdated {
         /// board scope: `"lane"` | `"proj"`。
         scope: String,
-        /// lane board のときの lane（conductor/performer）。 proj board は `None`。
+        /// lane board のときの lane（root/performer）。 proj board は `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
         /// items（新→古）。
@@ -197,7 +197,7 @@ pub enum ProcessMessage {
     },
     /// Canvas Lane 切り替え指示
     SwitchLane {
-        /// active 化する lane token: "conductor"（lead）or performer 名（例: "feat-api"）。
+        /// active 化する lane token: "root"（lead）or performer 名（例: "feat-api"）。
         /// 現 project 内の lane-within-project 切替（B1 で project 切替意味論から変更）。
         lane: String,
     },

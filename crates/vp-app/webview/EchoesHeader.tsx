@@ -41,11 +41,11 @@ export function middleEllipsis(s: string, maxLen = 42): string {
 
 /**
  * LaneAddress::Display 形から表示用短名を導く。
- * `<project>/conductor` → "conductor"、`<project>/performer/<name>` → name。
+ * `<project>/root` → "root"、`<project>/performer/<name>` → name。
  * legacy `lead` / `wing` も受理（entry.tsx laneNameFromAddress と同じ語彙）。
  */
 export function laneShortName(addr: string): string {
-  if (addr.endsWith('/conductor') || addr.endsWith('/lead')) return 'conductor'
+  if (addr.endsWith('/root') || addr.endsWith('/lead')) return 'conductor'
   const m = addr.match(/\/(?:performer|wing)\/(.+)$/)
   return m?.[1] ?? addr
 }

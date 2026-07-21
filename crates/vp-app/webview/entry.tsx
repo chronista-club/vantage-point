@@ -219,8 +219,8 @@ let echoesHeader: EchoesHeaderApi | null = null;
  * LaneAddress::Display 形を canvas-handler が使う flat lane_name に翻訳する。
  * `null` = conductor（lead）、`string` = performer 名。
  *
- * D2 統一: 語彙は conductor/performer。rename 途上のため legacy `lead`/`wing` も受理する:
- * - `<project>/conductor` / `<project>/lead` → `null`（conductor/lead）
+ * D2 統一: 語彙は root/performer。rename 途上のため legacy `lead`/`wing` も受理する:
+ * - `<project>/root` / `<project>/lead` → `null`（root/lead）
  * - `<project>/performer/<name>` / `<project>/wing/<name>` → `<name>`（performer）
  *
  * この値は (a) pp-content-persist の SurrealDB record key、(b) per-lane PP の
@@ -228,7 +228,7 @@ let echoesHeader: EchoesHeaderApi | null = null;
  */
 function laneNameFromAddress(addr: string | null): string | null {
 	if (!addr) return null;
-	if (addr.endsWith("/conductor") || addr.endsWith("/lead")) return null;
+	if (addr.endsWith("/root") || addr.endsWith("/lead")) return null;
 	const m = addr.match(/\/(?:performer|wing)\/(.+)$/);
 	if (m) return m[1] ?? null;
 	return null;
@@ -439,7 +439,7 @@ console.info("[vp-bundle] vpFrame attached to window — bundle init complete");
 // window.vpConsole を公開（EchoesEvent の per-lane ring buffer + ChatView renderer 接続点）。
 // Rust event loop が `window.vpConsole.handleEvent(lane, event)` で EchoesEvent を届け、
 // `window.vpConsole.setMode(lane, mode)` でエンジンモードを通知する。
-// DevTools 検分: window.vpConsole.peek("<project>/conductor")
+// DevTools 検分: window.vpConsole.peek("<project>/root")
 const vpConsole = installConsole();
 
 // ChatView (C2): #console-chat-host に SolidJS ChatView を mount。scoped CSS を注入。

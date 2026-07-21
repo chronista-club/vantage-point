@@ -251,7 +251,7 @@ pub(crate) async fn start_project(
         // lane performers を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
-        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_conductor(
+        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_root(
             project_name_for_remote.clone(),
             project_dir.clone(),
         ))),
@@ -274,21 +274,21 @@ pub(crate) async fn start_project(
         delegation_store: None,
     });
 
-    // Phase review fix #2: LanePool::with_conductor は内部で PtySlot::spawn (openpty + spawn_command)
+    // Phase review fix #2: LanePool::with_root は内部で PtySlot::spawn (openpty + spawn_command)
     // で OS syscall ブロッキング → spawn_blocking で tokio worker thread (= tokio runtime の OS thread) を保護。
     // でも... AppState 既に構築済なので restructure したいけど不可。 代替:
-    // with_conductor 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
+    // with_root 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
     // 結果的に SP 起動時 1 回だけの呼び出しなので影響は軽微。 review 指摘は記録、 現実装維持。
     // (`create_handler` 側の spawn_blocking 化は完了済 = lanes.rs の方が頻繁に呼ばれる重要 path)
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
 
-    // PR-β-2 (VP-120): Conductor Lane の LaneCapabilities entry を populate (LanePool::with_conductor と同期)。
+    // PR-β-2 (VP-120): Conductor Lane の LaneCapabilities entry を populate (LanePool::with_root と同期)。
     // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Conductor Lane の独立 PaisleyParkState を host。
     // doc 13 §6 自動 spawn rule = Lane 起動時に PP 同時 spawn (default) を default で実現。
     if let Some(lc_pool) = state.lane_capabilities.as_ref() {
-        let conductor_addr = super::lanes_state::LaneAddress::conductor(&project_name_for_remote);
+        let conductor_addr = super::lanes_state::LaneAddress::root(&project_name_for_remote);
         let default_stand = crate::config::Config::load()
             .unwrap_or_default()
             .default_stand_or_echoes()
@@ -1503,7 +1503,7 @@ mod tests {
             .unwrap()
         };
 
-        assert!(notifier.notify_if_changed(key, snapshot("conductor")));
+        assert!(notifier.notify_if_changed(key, snapshot("root")));
         assert!(rx.try_recv().is_ok());
         assert!(
             notifier.notify_if_changed(key, snapshot("feat-x")),

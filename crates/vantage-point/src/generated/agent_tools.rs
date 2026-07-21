@@ -58,7 +58,7 @@ pub struct WireAckParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DelegateParams {
     #[schemars(
-        description = "The doer lane to delegate to, as an agent address (e.g. 'agent@vantage-point/feat-api' for a performer, or 'agent@vantage-point' for the conductor). The doer is woken (tmux) with the task and instructed to report back via complete()."
+        description = "The doer lane to delegate to, as an agent address (e.g. 'agent@vantage-point/feat-api' for a performer, or 'agent@vantage-point' for the root). The doer is woken (tmux) with the task and instructed to report back via complete()."
     )]
     pub doer: String,
     #[schemars(

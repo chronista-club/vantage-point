@@ -665,7 +665,7 @@ mod tests {
         let as_normal = find(survey_project(
             &root,
             &[],
-            crate::process::lanes_state::CONDUCTOR_LANE_NAME,
+            crate::process::lanes_state::ROOT_LANE_NAME,
         ));
         assert!(!as_normal.facts.is_origin, "起点ではない");
         assert!(

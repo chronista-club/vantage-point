@@ -12,3 +12,6 @@ description = "VP の config / data / state path 解決 (XDG Base Directory 準�
 # 軽量依存のみ (vp-app に重量 crate を持ち込まないための独立 crate)。
 dirs = "6"
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

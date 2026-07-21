@@ -93,10 +93,10 @@ impl TopicRouter {
     }
 
     /// lane segment の正規化: `None` = conductor（lead）。
-    /// per-lane PP topic の lane 部に使う（conductor/performer 語彙）。
+    /// per-lane PP topic の lane 部に使う（root/performer 語彙）。
     fn lane_seg(lane: &Option<String>) -> &str {
         lane.as_deref()
-            .unwrap_or(crate::process::lanes_state::CONDUCTOR_LANE_NAME)
+            .unwrap_or(crate::process::lanes_state::ROOT_LANE_NAME)
     }
 
     /// lane address（`vp/performer/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
@@ -117,7 +117,7 @@ impl TopicRouter {
             // === Paisley Park（Canvas 表示能力）===
             // lane segment を verb の後に挿入: `.../command/{verb}/{lane}/{pane_id}`。
             // category(seg2)=command は不変なので is_retained は維持され、retained store は
-            // lane 別に分離される（conductor/main と performer-foo/main が別 topic）。
+            // lane 別に分離される（root/main と performer-foo/main が別 topic）。
             // lane=None は conductor（lead）に正規化。
             ProcessMessage::Show { pane_id, lane, .. } => {
                 format!(
@@ -424,7 +424,7 @@ mod tests {
         // lane=None は conductor に正規化され lane segment に入る
         let msg = make_show("main", "# Hello");
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/command/show/conductor/main");
+        assert_eq!(topic, "process/paisley-park/command/show/root/main");
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
             scope: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/command/clear/conductor/side");
+        assert_eq!(topic, "process/paisley-park/command/clear/root/side");
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
     fn test_lane_terminal_topics_are_per_lane() {
         // 別 lane は別 topic（subscriber 数 = lane 別 demand の前提、 S2 で効く）。
         let a = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
-            lane: "vp/conductor".to_string(),
+            lane: "vp/root".to_string(),
             data: String::new(),
         });
         let b = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
@@ -582,7 +582,7 @@ mod tests {
         router.route(show).await;
 
         let retained = router.retained.read().await;
-        let msg = retained.get("process/paisley-park/command/show/conductor/main");
+        let msg = retained.get("process/paisley-park/command/show/root/main");
         assert!(msg.is_some());
     }
 
@@ -781,12 +781,8 @@ mod tests {
         }
 
         // 同一 lane topic に 2 subscriber: start は 0→1 の 1 回だけ。
-        let (id1, _rx1) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
-        let (id2, _rx2) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
+        let (id1, _rx1) = router.subscribe("process/terminal/data/vp~root/out").await;
+        let (id2, _rx2) = router.subscribe("process/terminal/data/vp~root/out").await;
         assert_eq!(starts.load(Ordering::Relaxed), 1, "start は 0→1 の 1 回");
         assert_eq!(stops.load(Ordering::Relaxed), 0);
 
@@ -813,16 +809,14 @@ mod tests {
             });
         }
 
-        let (_a, _ra) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
+        let (_a, _ra) = router.subscribe("process/terminal/data/vp~root/out").await;
         let (_b, _rb) = router
             .subscribe("process/terminal/data/vp~performer~foo/out")
             .await;
 
         let log = started.lock().unwrap();
         assert_eq!(log.len(), 2, "lane ごとに独立して start");
-        assert!(log.contains(&"process/terminal/data/vp~conductor/out".to_string()));
+        assert!(log.contains(&"process/terminal/data/vp~root/out".to_string()));
         assert!(log.contains(&"process/terminal/data/vp~performer~foo/out".to_string()));
     }
 
@@ -865,9 +859,7 @@ mod tests {
                 }
             });
         }
-        let (id, _rx) = router
-            .subscribe("process/terminal/data/vp~conductor/out")
-            .await;
+        let (id, _rx) = router.subscribe("process/terminal/data/vp~root/out").await;
         assert_eq!(starts.load(Ordering::Relaxed), 1, "初回 0→1 start");
 
         // SP 再接続相当: active な demand を撃ち直す → 再発火 (count は不変)。

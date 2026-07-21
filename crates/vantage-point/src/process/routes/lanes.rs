@@ -150,7 +150,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
 
     // 既存 Performer の git status を populate
     for lane in lanes.iter_mut() {
-        if !lane.address.is_conductor() {
+        if !lane.address.is_root() {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
@@ -609,7 +609,7 @@ pub async fn delete_lane_orchestrated(
     cleanup: bool,
 ) -> Result<DeletedLaneInfo, DeleteLaneError> {
     // architecture rule: 開発起点 lane は project lifetime 紐付きのため削除不可
-    if addr.is_conductor() {
+    if addr.is_root() {
         return Err(DeleteLaneError::ConductorCannotBeDeleted);
     }
 
@@ -1021,12 +1021,11 @@ mod core_tests {
     #[tokio::test]
     async fn create_rejects_reserved_conductor_name() {
         let state = crate::process::state::build_test_app_state(None).await;
-        let err = create_performer_orchestrated(&state, req("conductor"))
+        let err = create_performer_orchestrated(&state, req("root"))
             .await
             .expect_err("予約名は Err");
         assert!(
-            err.contains(crate::process::lanes_state::CONDUCTOR_LANE_NAME)
-                && err.contains("reserved"),
+            err.contains(crate::process::lanes_state::ROOT_LANE_NAME) && err.contains("reserved"),
             "error message が予約名である旨を伝える: {}",
             err
         );

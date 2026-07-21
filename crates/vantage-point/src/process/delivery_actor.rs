@@ -97,7 +97,7 @@ fn decide_nudge(
 /// wire agent address → lane address の Display 形 (純関数)
 ///
 /// nudge 可能なのは agent (lane 宛) のみ:
-/// - `agent@<project>` → `<project>/conductor`（lane 名省略 = 開発起点）
+/// - `agent@<project>` → `<project>/root`（lane 名省略 = 開発起点）
 /// - `agent@<project>/<name>` → `<project>/<name>`
 /// - それ以外 (notify@ / lane-spawn@ / vp-cli 等) → None (nudge 対象外)
 ///
@@ -113,7 +113,7 @@ pub(crate) fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
         return None;
     }
     match rest.split_once('/') {
-        None => Some(LaneAddress::conductor(rest).to_string()),
+        None => Some(LaneAddress::root(rest).to_string()),
         Some((project, name)) if !project.is_empty() && !name.is_empty() => {
             Some(LaneAddress::new(project, name).to_string())
         }
@@ -230,7 +230,7 @@ fn nudge_text(message_id: &str, renudge_count: u32) -> String {
 /// wire agent address → headless dispatch 用の (VP_PROJECT, VP_LANE) (純関数、 R3-c)
 ///
 /// spawn する claude に lane と同じ identity env を渡すための導出。
-/// - `agent@<project>` → (project, "conductor")
+/// - `agent@<project>` → (project, "root")
 /// - `agent@<project>/<name>` → (project, name)  ※ VP_LANE は performer 名
 /// - それ以外 → None
 fn lane_identity_from_agent(addr: &str) -> Option<(String, String)> {
@@ -241,7 +241,7 @@ fn lane_identity_from_agent(addr: &str) -> Option<(String, String)> {
     match rest.split_once('/') {
         None => Some((
             rest.to_string(),
-            crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string(),
+            crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
         )),
         Some((project, name)) if !project.is_empty() && !name.is_empty() => {
             Some((project.to_string(), name.to_string()))
@@ -627,14 +627,14 @@ mod tests {
         );
     }
 
-    /// pick_nudge_target 用の test lane (vp/conductor)。 tmux decoupling PR1 で nudge は
+    /// pick_nudge_target 用の test lane (vp/root)。 tmux decoupling PR1 で nudge は
     /// tmux 状態を読まなくなったため tmux entry は空でよい。
     fn test_lane(state: LaneState) -> LaneInfo {
         use crate::process::lanes_state::LaneAddress;
         LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
-            address: LaneAddress::conductor("vp"),
+            address: LaneAddress::root("vp"),
             state,
             stand: "echoes".to_string(),
             created_at: "2026-06-11T00:00:00Z".to_string(),
@@ -658,17 +658,17 @@ mod tests {
     #[test]
     fn pick_running_lane_returns_target() {
         let lanes = registry(test_lane(LaneState::Running));
-        let t = pick_nudge_target(&lanes, "vp/conductor").expect("nudge 可能");
+        let t = pick_nudge_target(&lanes, "vp/root").expect("nudge 可能");
         assert_eq!(
             t.path_key, "/repo/vp",
             "forward 先 SP の control channel key"
         );
-        assert_eq!(t.lane_display, "vp/conductor", "lane_nudge の宛先");
+        assert_eq!(t.lane_display, "vp/root", "lane_nudge の宛先");
         assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
         assert_eq!(t.console_mode, SessionAct::Tui, "default は Tui");
         // 別 lane 宛は None (offline 扱い = pending 保持)
-        assert_eq!(pick_nudge_target(&lanes, "other/conductor"), None);
+        assert_eq!(pick_nudge_target(&lanes, "other/root"), None);
     }
 
     /// channel E (doc 34 §3): console_mode が forward method を分ける。
@@ -677,7 +677,7 @@ mod tests {
     fn nudge_method_follows_console_mode() {
         let mut lane = test_lane(LaneState::Running);
         lane.console_mode = SessionAct::Chat;
-        let t = pick_nudge_target(&registry(lane), "vp/conductor")
+        let t = pick_nudge_target(&registry(lane), "vp/root")
             .expect("chat lane も Running なら target");
         assert_eq!(
             t.console_mode,
@@ -686,7 +686,7 @@ mod tests {
         );
         assert_eq!(t.nudge_method(), "echoes_nudge", "Chat は engine 直接注入");
 
-        let t = pick_nudge_target(&registry(test_lane(LaneState::Running)), "vp/conductor")
+        let t = pick_nudge_target(&registry(test_lane(LaneState::Running)), "vp/root")
             .expect("tui lane");
         assert_eq!(
             t.nudge_method(),
@@ -701,10 +701,10 @@ mod tests {
     fn pick_nudges_running_regardless_of_tmux_and_skips_dead() {
         // tmux entry 無し (旧 PtySlotFallback 相当) でも Running なら nudge 可能
         let running = registry(test_lane(LaneState::Running));
-        assert!(pick_nudge_target(&running, "vp/conductor").is_some());
+        assert!(pick_nudge_target(&running, "vp/root").is_some());
 
         let dead = registry(test_lane(LaneState::Dead));
-        assert_eq!(pick_nudge_target(&dead, "vp/conductor"), None);
+        assert_eq!(pick_nudge_target(&dead, "vp/root"), None);
     }
 
     /// R3-a: activity 供給ありの policy table — idle/waiting → Ready、busy → Busy、不在 → Offline
@@ -744,7 +744,7 @@ mod tests {
     fn agent_address_maps_to_lane_display() {
         assert_eq!(
             wire_agent_to_lane_display("agent@vp").as_deref(),
-            Some("vp/conductor")
+            Some("vp/root")
         );
         // doc 44 P2: フラット化で `<project>/<name>` になった
         assert_eq!(
@@ -790,7 +790,7 @@ mod tests {
     fn lane_identity_maps_project_and_lane() {
         assert_eq!(
             lane_identity_from_agent("agent@vp"),
-            Some(("vp".to_string(), "conductor".to_string()))
+            Some(("vp".to_string(), "root".to_string()))
         );
         assert_eq!(
             lane_identity_from_agent("agent@vp/w1"),

@@ -486,7 +486,7 @@ pub async fn world_reload_projects(State(state): State<Arc<AppState>>) -> impl I
 pub struct LanesQuery {
     /// Project name filter (LaneAddress.project)
     pub project: Option<String>,
-    /// Lane name filter — Conductor は "conductor"、 Performer は name (例: "sub")
+    /// Lane name filter — Conductor は "root"、 Performer は name (例: "sub")
     pub lane: Option<String>,
     /// Stand kind filter — "echoes" or "shell"
     pub stand: Option<String>,
@@ -500,7 +500,7 @@ pub struct LanesQuery {
 ///
 /// query parameter:
 /// - `project=<name>`: 特定 project のみ
-/// - `lane=<name>`: 特定 Lane のみ ("conductor" or performer name)
+/// - `lane=<name>`: 特定 Lane のみ ("root" or performer name)
 /// - `stand=<echoes|shell>`: 特定 Stand のみ (LaneInfo.stand に match)
 ///
 /// disconnect された SP の Lane は registry から消えるので、 response = Currents 限定。
@@ -530,8 +530,8 @@ pub async fn world_list_lanes(
                 .is_none_or(|p| l.address.project == p)
         })
         .filter(|l| {
-            // doc 44 P2: 旧 kind 分岐（conductor は "conductor"、performer は name と照合）は
-            // フラット化で name 一本の比較に畳まれた（開発起点の name が予約名 "conductor"）。
+            // doc 44 P2: 旧 kind 分岐（conductor は "root"、performer は name と照合）は
+            // フラット化で name 一本の比較に畳まれた（開発起点の name が予約名 "root"）。
             query.lane.as_deref().is_none_or(|n| l.address.name == n)
         })
         .filter(|l| {
@@ -546,7 +546,7 @@ pub async fn world_list_lanes(
         use std::cmp::Ordering;
         a.address.project.cmp(&b.address.project).then_with(|| {
             // doc 44 P2: 開発起点を先頭に置く表示順（旧 kind 比較の後継、`LanePool::list` と同型）
-            match (a.address.is_conductor(), b.address.is_conductor()) {
+            match (a.address.is_root(), b.address.is_root()) {
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
                 _ => a.created_at.cmp(&b.created_at),

@@ -275,7 +275,7 @@ async fn handle_cmd(
     );
     let started = Instant::now();
 
-    // doc 47 §4: root session の act を boot で honor（conductor の with_conductor と同じ規律）。
+    // doc 47 §4: root session の act を boot で honor（conductor の with_root と同じ規律）。
     // chat の lane に PTY を立てない — 立てると echoes_submit がもう 1 本の engine を呼び、
     // 同一 cc_session に 2 エンジン（PTY claude + EchoesAgentHost）が発生する。
     let console_mode = crate::lane::session_registry::root_act(&addr.project, &name);
@@ -582,7 +582,7 @@ mod tests {
     ///
     /// これが「Act II の performer lane を再起動しても chat のまま復活する」の中核。
     /// 壊れると chat performer が boot で PTY を立て、 echoes_submit が 2 本目 engine を
-    /// 呼んで 1 会話 2 エンジンになる (conductor `with_conductor` と同じ規律を performer に適用)。
+    /// 呼んで 1 会話 2 エンジンになる (conductor `with_root` と同じ規律を performer に適用)。
     #[tokio::test]
     async fn chat_mode_performer_boots_engine_less() {
         use crate::lane::session_registry::SessionAct;
