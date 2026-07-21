@@ -65,6 +65,12 @@ pub struct LaneFacts {
     pub dirty_count: usize,
     /// 既定 branch から見た独自 commit 数（= この lane で積んだ仕事の量）
     pub own_commits: u32,
+    /// lane の branch 名（detached HEAD なら `None`）。
+    ///
+    /// 判定には使わないが、**見送りの実行**（共有 `.git` からの `git branch -d`）に要る。
+    /// 実行時に引き直せないため事実として持つ — worktree を消した後では `git` を回す
+    /// cwd が消えており取得不能になる（P3 初版はこれで `branch -d` が never-fire だった）。
+    pub branch: Option<String>,
     /// 既定 branch への取り込み状態
     pub merged: MergedState,
     /// remote に同名 branch が在るか（push 済みの仕事が失われないかの判断材料）
@@ -232,6 +238,7 @@ pub fn collect_facts(
             has_ground: false,
             dirty_count: 0,
             own_commits: 0,
+            branch: None,
             merged: MergedState::NotMerged,
             has_remote_branch: false,
             is_running,
@@ -240,7 +247,12 @@ pub fn collect_facts(
 
     // remote の取り込み状況を最新化してから判定材料を集める（fetch 失敗は無視 —
     // オフラインでも「ローカルに見える範囲の事実」で判定できる方が良い）。
-    let _ = crate::lane::commands::run_git_in(&ground, &["fetch", "--quiet"]);
+    //
+    // `--prune` が要る: 素の fetch は **消えた remote branch の tracking ref を残す**ため、
+    // GitHub 側で merge 後に head branch が自動削除されていても
+    // `refs/remotes/origin/<branch>` が stale に生き残り、`has_remote_branch` が誤って
+    // true になる（= 存在しない「push 済みの履歴」を理由に AskHuman へ過剰に倒れる）。
+    let _ = crate::lane::commands::run_git_in(&ground, &["fetch", "--quiet", "--prune"]);
 
     let merged = if crate::lane::commands::is_branch_merged(&ground, default_branch) {
         MergedState::Ancestry
@@ -257,10 +269,11 @@ pub fn collect_facts(
         has_ground: true,
         dirty_count: crate::lane::commands::count_changes(&ground),
         own_commits: count_own_commits(&ground, default_branch),
-        merged,
         has_remote_branch: branch
             .as_deref()
             .is_some_and(|b| has_remote_branch(&ground, b)),
+        branch,
+        merged,
         is_running,
     }
 }
@@ -325,8 +338,10 @@ fn count_own_commits(ground: &std::path::Path, default_branch: &str) -> u32 {
 
 /// remote に同名 branch が在るか（`origin/<branch>` ref の存在で見る）。
 ///
-/// `git ls-remote` は network を叩くので使わない — `collect_facts` 冒頭の `fetch` で
-/// remote-tracking ref は最新化済みという前提に乗る（オフラインでも動く）。
+/// `git ls-remote` は network を叩くので使わない — `collect_facts` 冒頭の
+/// `fetch --prune` で remote-tracking ref が最新化済み（**削除も反映済み**）という前提に乗る。
+/// prune 無しだと消えた branch の ref が残り、この関数が stale な true を返す。
+/// fetch 自体が失敗した場合（オフライン等）は最後に成功した fetch 時点の事実になる。
 fn has_remote_branch(ground: &std::path::Path, branch: &str) -> bool {
     let refname = format!("refs/remotes/origin/{branch}");
     std::process::Command::new("git")
@@ -350,6 +365,7 @@ mod tests {
             has_ground: true,
             dirty_count: 0,
             own_commits: 3,
+            branch: Some("feat-x".to_string()),
             merged: MergedState::Ancestry,
             has_remote_branch: true,
             is_running: false,
@@ -580,11 +596,63 @@ mod tests {
         assert!(facts.has_ground, "ground が見つかる");
         assert_eq!(facts.dirty_count, 1, "未コミット変更 1 件を拾う");
         assert!(!facts.has_remote_branch, "remote は無い");
+        assert!(
+            facts.branch.is_some(),
+            "branch 名は facts に載る（見送り実行時に引き直せないため）"
+        );
         // dirty は merged より優先されるので人間へ回る
         assert!(matches!(
             judge_farewell(&facts),
             FarewellVerdict::AskHuman { .. }
         ));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回帰固定: **worktree を消した後に branch 名は引けない**。
+    ///
+    /// だから `LaneFacts.branch` を削除前に捕捉して持ち回る。P3 初版はこれを持たず、
+    /// 削除ループ内で `get_branch(&path)` を呼び直していたため、`git` の cwd が既に
+    /// 存在せず `output()` が Err → 常に None → **`git branch -d` が一度も実行されない**
+    /// （merge 済 branch が共有 `.git` に溜まり続ける）状態だった。
+    ///
+    /// ここでは「消えた dir に対する `get_branch` は None」という前提そのものを固定する。
+    /// これが崩れる（= 引けるようになる）ことは無いが、崩れたら設計の前提が変わる。
+    #[test]
+    fn branch_cannot_be_read_after_ground_is_removed() {
+        let root = std::env::temp_dir().join(format!("vp-farewell-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lane_dir = crate::lane::config::project_lanes_dir(&root).join("w1");
+        std::fs::create_dir_all(&lane_dir).unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&lane_dir)
+                .output()
+                .expect("git 実行");
+        };
+        git(&["init", "-q", "-b", "feat-gone"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(lane_dir.join("a.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+
+        // 削除**前**なら引ける = facts に載せられる
+        let facts = collect_facts(&root, "w1", false, false, "main");
+        assert_eq!(
+            facts.branch.as_deref(),
+            Some("feat-gone"),
+            "削除前は branch を引ける"
+        );
+
+        // ground を消すと引けなくなる（`git` の cwd が無い）
+        std::fs::remove_dir_all(&lane_dir).unwrap();
+        assert!(
+            crate::lane::commands::get_branch(&lane_dir).is_none(),
+            "消えた dir からは branch を引けない — だから facts に持つ"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

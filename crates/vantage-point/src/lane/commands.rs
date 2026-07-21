@@ -928,8 +928,13 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
         clear_lane_state_files(&repo_root, &r.facts.name);
         // worktree: merged branch を共有 .git から `-d` で安全に掃除 (設計 E)。
         // clone: branch は独立 .git 内なので親 repo では no-op (失敗は握り潰す)。
-        if let Some(b) = get_branch(&path) {
-            let _ = run_git_in(&repo_root, &["branch", "-d", &b]);
+        //
+        // ⚠️ branch 名は **facts（削除前に収集済）から取る**。ここで `get_branch(&path)` を
+        // 呼び直してはいけない — `remove_performer_workspace` は worktree ディレクトリごと
+        // 消すため cwd が存在せず、`git` の起動自体が Err になって常に None に落ちる
+        // （P3 初版がこれで `branch -d` を never-fire にしていた）。
+        if let Some(b) = r.facts.branch.as_deref() {
+            let _ = run_git_in(&repo_root, &["branch", "-d", b]);
         }
         eprintln!("  削除: {}", r.facts.name);
     }

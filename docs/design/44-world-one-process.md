@@ -425,7 +425,15 @@ LLM にしない」がこの構成に出ている。
 - lane の作業が **fast-forward merge** で取り込まれ、既定 branch が追いついた
 
 どちらも `HEAD == origin/<default>` になり、`is_branch_merged` は「fresh は消さない」
-安全弁として ancestry 判定より前に `false` を返す。**git のこの情報だけでは区別できない**。
+安全弁として ancestry 判定より前に `false` を返す。**ローカル git の ancestry 情報だけでは
+区別できない**。
+
+ただし全く区別不能なわけではない: `is_branch_squash_merged` が `gh pr list --head <branch>
+--state merged` で PR メタデータを引くため、**gh が使えて同名 branch の merged PR が実在すれば**
+fast-forward merge も `merged` 側に倒る（`HEAD == headRefOid` なので ancestor 判定が自明に真）。
+つまり本当に区別できないのは **gh 不在 / 未認証 / PR を経ていない repo** の場合で、
+実機検証がその条件（GitHub 連携のない使い捨て repo）に当たっていた。
+日常の `mako/{slug}` → PR フローではこの曖昧さの多くは解消される。
 
 初版はこれを知らずに `MergedState` をそのまま理由文に出しており、実機で
 **merge 済みの lane に「取り込み状態: 未 merge」と表示**されて露見した。判定自体は
