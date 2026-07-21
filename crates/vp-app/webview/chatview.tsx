@@ -1070,6 +1070,14 @@ function ChatView() {
     const onStands = (e: Event): void => {
       const d = (e as CustomEvent<{ lane: string; stands: StandOption[] }>).detail
       if (!d?.lane) return
+      // doc 46 P2: `vp:echoes-stands` は要求元タグを持たない共有 bus。Pane の
+      // 「+ New」が要求した応答でこちらの menu まで開くと、2 つの menu が同時に出る。
+      // 印が立っていたら 1 回だけ読み捨てる。
+      const w = window as unknown as { vpPaneNewPending?: boolean }
+      if (w.vpPaneNewPending) {
+        w.vpPaneNewPending = false
+        return
+      }
       setStandsMenu({ lane: d.lane, stands: d.stands })
     }
     document.addEventListener('vp:echoes-sessions', onSessions)

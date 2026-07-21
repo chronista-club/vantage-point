@@ -6,7 +6,7 @@
  * （chatview.tsx の「document 非依存 = vitest 対象」と同じ線引き）。
  */
 import { describe, expect, it } from 'vitest'
-import { PaneLayout } from './pane-shell'
+import { PaneLayout, newPaneChoices } from './pane-shell'
 
 const TERM = 'lane-host'
 const CHAT = 'console-chat-host'
@@ -136,5 +136,34 @@ describe('PaneLayout', () => {
     expect(l.all()).toHaveLength(2)
     expect(l.minimizedPanes()).toHaveLength(0)
     expect(l.all().find((p) => p.id === CHAT)?.label).toBe('Chat (codex)')
+  })
+})
+
+describe('newPaneChoices（doc 46 P2 要件 4: Engine × Act）', () => {
+  it('chat 非対応 engine は Act II を出さない（行き止まりを作らない）', () => {
+    const choices = newPaneChoices([
+      { name: 'echoes', label: 'Claude', chat_capable: true },
+      { name: 'shell', label: 'Shell', chat_capable: false },
+    ])
+    expect(choices).toEqual([
+      { engine: 'echoes', engineLabel: 'Claude', act: 'tui' },
+      { engine: 'echoes', engineLabel: 'Claude', act: 'chat' },
+      // shell は chat host を持たないので tui だけ
+      { engine: 'shell', engineLabel: 'Shell', act: 'tui' },
+    ])
+  })
+
+  it('label 未設定なら stand 名をそのまま出す', () => {
+    const choices = newPaneChoices([{ name: 'codex', chat_capable: true }])
+    expect(choices.map((c) => c.engineLabel)).toEqual(['codex', 'codex'])
+  })
+
+  it('name が空の entry は捨てる（送っても解決できない）', () => {
+    expect(newPaneChoices([{ name: '', chat_capable: true }])).toEqual([])
+  })
+
+  it('chat_capable 未指定は非対応扱い（不明なら行き止まりを作らない側に倒す）', () => {
+    const choices = newPaneChoices([{ name: 'unknown' }])
+    expect(choices.map((c) => c.act)).toEqual(['tui'])
   })
 })

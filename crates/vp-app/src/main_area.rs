@@ -193,8 +193,9 @@ body{overflow:hidden;}
 /* doc 46 P1: Pane shell。header 下・タブエリア上の領域を flex row で分け合う。
    子 Pane (#lane-host / #console-chat-host) は **中身を変えず** 位置づけだけ
    「全面 absolute」→「flex child」に変わる。 */
-#pane-terminal{--pane-tabs-h:0px;}
-#pane-terminal.pane-tabs-active{--pane-tabs-h:26px;}
+/* タブエリアは「+ New」を常に載せるので高さは固定。.pane-tabs-active は
+   「畳まれた Pane が 1 つ以上ある」= 区切り線を出すかどうかにだけ効く。 */
+#pane-terminal{--pane-tabs-h:26px;}
 #lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
   bottom:var(--pane-tabs-h);display:flex;flex-direction:row;align-items:stretch;gap:1px;
   background:var(--color-border,#2a3040);}
@@ -212,7 +213,20 @@ body{overflow:hidden;}
 #pane-tabs{position:absolute;left:0;right:0;bottom:0;height:var(--pane-tabs-h);
   display:flex;align-items:center;gap:4px;padding:0 6px;overflow-x:auto;overflow-y:hidden;
   background:var(--color-bg,#0f1115);border-top:1px solid var(--color-border,#2a3040);}
-#pane-tabs:empty{border-top:none;}
+#pane-terminal:not(.pane-tabs-active) #pane-tabs{border-top:none;}
+/* 「+ New」は chip と区別する（畳まれた Pane ではなく作成の入口）。 */
+.pane-tab.pane-new{border-style:dashed;}
+/* Engine × Act の選択メニュー（doc 46 P2 要件 4）。タブエリアの上に出す。 */
+.pane-new-menu{position:fixed;z-index:9999;min-width:180px;padding:4px;
+  border:1px solid var(--color-border,#2a3040);border-radius:6px;
+  background:var(--color-bg-elevated,#161a22);box-shadow:0 6px 20px #0008;
+  display:flex;flex-direction:column;gap:1px;}
+.pane-new-item{appearance:none;border:none;background:transparent;text-align:left;
+  padding:5px 8px;border-radius:4px;cursor:pointer;font-size:12px;
+  font-family:var(--vp-font-sans),var(--typography-family-sans);
+  color:var(--color-text-secondary,#a8b0c0);white-space:nowrap;}
+.pane-new-item:hover{background:var(--color-bg-hover,#1e242e);color:var(--color-text,#e6e9ef);}
+.pane-new-empty{padding:5px 8px;font-size:12px;color:var(--color-text-tertiary,#6b7280);}
 .pane-tab{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;
   height:18px;padding:0 8px;border-radius:9px;cursor:pointer;
   border:1px solid var(--color-border,#2a3040);background:transparent;

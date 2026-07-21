@@ -125,6 +125,36 @@ export class PaneLayout {
   }
 }
 
+/** 新 Pane の選択肢 1 つ（doc 46 P2 要件 4: Engine × Act）。 */
+export type NewPaneChoice = {
+  /** stand 名（`echoes` / `codex` / `grok` …）。 */
+  engine: string
+  /** 表示名（engine の人間可読名）。 */
+  engineLabel: string
+  act: 'tui' | 'chat'
+}
+
+/**
+ * Engine × Act の総当たりを作る（doc 46 P2 要件 4、純関数）。
+ *
+ * `chatCapable` が false の engine は **Act II（chat）を出さない** — chat host を持たない
+ * engine で chat Pane を作ると「作れるが submit がエラーになるだけ」の行き止まりになる
+ * （doc 38 Phase 3 が tab の「+」で同じ判断をしている）。Act I（tui）は login shell に
+ * 流し込むだけなのでどの engine でも成立する。
+ */
+export function newPaneChoices(
+  stands: readonly { name: string; label?: string; chat_capable?: boolean }[],
+): NewPaneChoice[] {
+  const out: NewPaneChoice[] = []
+  for (const s of stands) {
+    if (!s.name) continue
+    const engineLabel = s.label && s.label.length > 0 ? s.label : s.name
+    out.push({ engine: s.name, engineLabel, act: 'tui' })
+    if (s.chat_capable) out.push({ engine: s.name, engineLabel, act: 'chat' })
+  }
+  return out
+}
+
 export const CLASS_MINIMIZED = 'pane-minimized'
 export const CLASS_FOCUSED = 'pane-focused'
 /** タブエリアの開閉（chip がある時だけ開く = 空なら従来の見た目）。 */

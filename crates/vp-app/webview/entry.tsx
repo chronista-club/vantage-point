@@ -97,7 +97,9 @@ import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
 import { installConsole } from "./console";
 // doc 46 P1: lane 内 tiling（Pane の並び / 縮小 / focus）。
-import { PaneShell } from "./pane-shell";
+import { PaneShell, newPaneChoices } from "./pane-shell";
+// `vp:echoes-stands` bus が運ぶ stand entry（chatview の StandOption と同形）。
+type PaneStand = { name: string; label?: string; chat_capable?: boolean };
 import { installChatView, CHATVIEW_CSS } from "./chatview";
 import {
 	mountEchoesHeader,
@@ -478,10 +480,101 @@ const paneShell =
 				paneFrame,
 			)
 		: null;
-if (paneShell && paneFrame) {
+if (paneShell && paneFrame && paneTabs) {
+	const tabsEl: HTMLElement = paneTabs;
 	// 要件 1: 既定で左右に並べる。順は「操る（console）→ 視る（chat）」。
 	paneShell.dock({ id: "lane-host", label: "Console" });
 	paneShell.dock({ id: "console-chat-host", label: "Chat" });
+	// doc 46 P2 要件 4/5: 「+ New」= Engine × Act を選んで**新しい session** を作る。
+	// 一覧は既存の `vp:echoes-stands` bus（stands_list の結果）から受ける — 新配信路は作らない。
+	const newBtn = document.createElement("button");
+	newBtn.type = "button";
+	newBtn.className = "pane-tab pane-new";
+	newBtn.textContent = "+ New";
+	newBtn.title = "Engine と Act を選んで新しいコンソールを作る";
+	let paneMenu: HTMLElement | null = null;
+	const closePaneMenu = (): void => {
+		paneMenu?.remove();
+		paneMenu = null;
+	};
+	const openPaneMenu = (stands: PaneStand[]): void => {
+		closePaneMenu();
+		const lane = activeLaneAddress ?? consoleActiveLane;
+		if (!lane) return;
+		const menu = document.createElement("div");
+		menu.className = "pane-new-menu";
+		const choices = newPaneChoices(stands);
+		if (choices.length === 0) {
+			const empty = document.createElement("div");
+			empty.className = "pane-new-empty";
+			empty.textContent = "engine なし";
+			menu.appendChild(empty);
+		}
+		for (const c of choices) {
+			const item = document.createElement("button");
+			item.type = "button";
+			item.className = "pane-new-item";
+			// Act は「Console（Act I）」「Chat（Act II）」で見せる — 内部語（tui/chat）は出さない。
+			item.textContent = `${c.engineLabel} · ${c.act === "chat" ? "Chat" : "Console"}`;
+			item.addEventListener("click", () => {
+				closePaneMenu();
+				// 要件 5: backend が新しい session id を発行し、lane の cwd から始める。
+				const ipc = (
+					window as unknown as { ipc?: { postMessage(m: string): void } }
+				).ipc;
+				ipc?.postMessage(
+					JSON.stringify({
+						t: "console:new_session",
+						lane,
+						engine: c.engine,
+						act: c.act,
+					}),
+				);
+			});
+			menu.appendChild(item);
+		}
+		const rect = newBtn.getBoundingClientRect();
+		menu.style.left = `${rect.left}px`;
+		menu.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+		document.body.appendChild(menu);
+		paneMenu = menu;
+	};
+	// stands の一覧は非同期で返るので、click で要求 → 応答で menu を開く。
+	let paneMenuPending = false;
+	document.addEventListener("vp:echoes-stands", (e) => {
+		if (!paneMenuPending) return;
+		paneMenuPending = false;
+		const d = (e as CustomEvent<{ lane: string; stands?: PaneStand[] }>).detail;
+		openPaneMenu(d?.stands ?? []);
+	});
+	newBtn.addEventListener("click", (ev) => {
+		// ⚠️ 無条件に止めない（#836 / #837 の教訓）。document の click は
+		// EchoesHeader の root picker を閉じる経路でもあるので、こちらが握り潰すと
+		// picker が開いたまま 2 つの浮動メニューが並ぶ。開いている時だけ止める。
+		if (paneMenu) {
+			ev.stopPropagation();
+			closePaneMenu();
+			return;
+		}
+		const lane = activeLaneAddress ?? consoleActiveLane;
+		if (!lane) return;
+		paneMenuPending = true;
+		// `vp:echoes-stands` は要求元タグを持たない共有 bus で、chatview も購読して
+		// 自分の「+」menu を開く。こちらの要求で向こうが開かないよう印を立てる
+		// （chatview 側が 1 回だけ読んで下ろす）。
+		(window as unknown as { vpPaneNewPending?: boolean }).vpPaneNewPending = true;
+		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } })
+			.ipc;
+		ipc?.postMessage(JSON.stringify({ t: "echoes:stands_fetch", lane }));
+	});
+	document.addEventListener("click", () => closePaneMenu());
+	tabsEl.appendChild(newBtn);
+	// PaneShell.render は tabs を作り直すので、「+ New」は毎回付け直す。
+	const paneObserver = new MutationObserver(() => {
+		if (!tabsEl.contains(newBtn)) tabsEl.appendChild(newBtn);
+	});
+	paneObserver.observe(tabsEl, { childList: true });
+
 	// 要件 3: click で focus が移る。Pane の中身の click は素通しさせたいので capture で拾う。
 	paneFrame.addEventListener(
 		"click",
