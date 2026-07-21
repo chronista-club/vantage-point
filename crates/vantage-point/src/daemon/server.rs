@@ -1108,6 +1108,13 @@ async fn handle_wire_channel(
 /// world-process / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
+    // doc 44 P1 の後始末: fold-in で読まれなくなった旧 per-project DB (`db/sp_*`) を回収する。
+    // 撤去されたのは「開くコード」だけで、disk 上の残骸はそのままだった（実機 23 dir / 約 1.2 GB）。
+    let reclaimed = crate::db::reclaim_legacy_project_dbs();
+    if reclaimed > 0 {
+        tracing::info!("旧 project DB を回収: {reclaimed} dir（doc 44 §5.2 で破棄と確認済み）");
+    }
+
     // 予約 lane 名の改名（`conductor` → `root`、2026-07-21）に伴う state file の付け替え。
     // lane を spawn する前に済ませる — 先に boot すると新名で空の state を作ってしまい、
     // 旧名の会話 id / 安定 id が「衝突時は上書きしない」規則で永久に取り残される。
