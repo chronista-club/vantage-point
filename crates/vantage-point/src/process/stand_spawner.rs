@@ -37,7 +37,7 @@ use std::path::Path;
 use anyhow::Result;
 use tokio::sync::broadcast;
 
-use super::lanes_state::{LaneAddress, LaneKind};
+use super::lanes_state::LaneAddress;
 use crate::daemon::pty_slot::PtySlot;
 
 /// wiremsg R2-c（チャネル B、決定 D2）: wire 未読通知 hook を VP が spawn 時に注入する。
@@ -145,13 +145,14 @@ fn drain_pty_tail(rx: &mut broadcast::Receiver<Vec<u8>>) -> String {
     String::from_utf8_lossy(&buf).trim().to_string()
 }
 
-/// LaneAddress の lane label を導出 (Conductor → "conductor"、 Performer(name) → name、 Performer(None) → "unnamed")
+/// LaneAddress の lane label を導出する。
+///
+/// doc 44 P2（フラット化）で `name` が全 lane 必須になったため、そのまま返すだけになった。
+/// 旧実装は kind で 3 分岐していた（Conductor → "conductor" / Performer(name) → name /
+/// Performer(None) → "unnamed"）— 最後の枝は型が許した表現不能な状態の穴埋めで、
+/// フラット化で**表現できなくなった**（`name: String` は常に在る）。
 pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
-    match (&addr.kind, addr.name.as_deref()) {
-        (LaneKind::Conductor, _) => "conductor",
-        (LaneKind::Performer, Some(n)) => n,
-        (LaneKind::Performer, None) => "unnamed",
-    }
+    &addr.name
 }
 
 /// slot の shell になる login shell を (program, args) で解決する。
@@ -220,7 +221,7 @@ fn is_safe_session_id(id: &str) -> bool {
 /// <alias>` を注入する。 alias は `engine_model::is_valid_model` が `[A-Za-z0-9._-]`（先頭 `-`
 /// 不可）を保証済みなので、 shell metachar / 空白を含まず unquoted 埋め込みで injection 安全。
 fn claude_command(
-    kind: LaneKind,
+    is_conductor: bool,
     fresh: bool,
     resume_id: Option<&str>,
     model: Option<&str>,
@@ -238,16 +239,21 @@ fn claude_command(
     // exit 1」の中継専用コマンドで、失敗を伝播させて次の fresh fallback へ繋ぐ。
     // shell group `{ …; }` を使わないのは fish 互換のため（slot の shell は user の login shell）。
     // vp が PATH に無くても command-not-found = 非ゼロで chain は進む（fail-open）。
-    match (kind, resume_id.filter(|id| is_safe_session_id(id))) {
+    // doc 44 P2: 旧 `LaneKind` 分岐を `is_conductor`（予約名判定）に置換。挙動は不変。
+    // この分岐が残るのは cwd の性質差に根拠がある — 開発起点 lane は repo root に居るので
+    // `--continue`（最新セッションを継ぐ）が自分の会話に当たるが、worktree の lane で同じことを
+    // すると他 lane のセッションを掴む（dashboard 罠）。P3 で Host がポインタを持てば、
+    // ここは「起点 lane か？」を Host に問う形になる。
+    match (is_conductor, resume_id.filter(|id| is_safe_session_id(id))) {
         (_, Some(id)) => format!(
             "claude {}--resume '{}' --settings '{}' || vp lane resume-failed '{}' || {}",
             model_flag, id, WIRE_HOOKS, id, fresh_cmd
         ),
-        (LaneKind::Conductor, None) => format!(
+        (true, None) => format!(
             "claude {}--continue --settings '{}' || vp lane resume-failed 'continue' || {}",
             model_flag, WIRE_HOOKS, fresh_cmd
         ),
-        (LaneKind::Performer, None) => fresh_cmd,
+        (false, None) => fresh_cmd,
     }
 }
 
@@ -396,7 +402,12 @@ pub fn build_stand_command(
             // bare に倒して「新 ID から」を守る（moody 指摘: Bare spawn 失敗後の Resume
             // 復帰経路がこの罠を踏んでいた）。
             let bare = fresh || (root >= 2 && resume_id.is_none());
-            let cmd = claude_command(addr.kind, bare, resume_id.as_deref(), model.as_deref());
+            let cmd = claude_command(
+                addr.is_conductor(),
+                bare,
+                resume_id.as_deref(),
+                model.as_deref(),
+            );
             Some(format!("{}\r", cmd))
         }
         Some(crate::echoes::EngineKind::Codex) => {
@@ -567,11 +578,11 @@ mod tests {
     #[test]
     fn claude_command_variants() {
         // fresh は resume/continue を含まない
-        let fresh = claude_command(LaneKind::Conductor, true, Some("abc-123"), None);
+        let fresh = claude_command(true, true, Some("abc-123"), None);
         assert!(!fresh.contains("--resume") && !fresh.contains("--continue"));
 
         // conductor + id → --resume '<id>' || resume-failed || fresh
-        let resume = claude_command(LaneKind::Conductor, false, Some("abc-123"), None);
+        let resume = claude_command(true, false, Some("abc-123"), None);
         assert!(resume.contains("--resume 'abc-123'"), "{resume}");
         assert!(
             resume.contains("||"),
@@ -584,7 +595,7 @@ mod tests {
         );
 
         // conductor + id なし → --continue || resume-failed || fresh（初回/移行直後の従来 chain）
-        let cont = claude_command(LaneKind::Conductor, false, None, None);
+        let cont = claude_command(true, false, None, None);
         assert!(cont.contains("--continue"), "{cont}");
         assert!(
             cont.contains("vp lane resume-failed 'continue'"),
@@ -595,11 +606,11 @@ mod tests {
         assert!(!fresh.contains("resume-failed"), "{fresh}");
 
         // performer + id → --resume（SP restart 後の会話継続、 dashboard 罠は id 指名で回避）
-        let perf = claude_command(LaneKind::Performer, false, Some("abc-123"), None);
+        let perf = claude_command(false, false, Some("abc-123"), None);
         assert!(perf.contains("--resume 'abc-123'"), "{perf}");
 
         // performer + id なし → fresh（--continue は dashboard 罠のため使わない）
-        let perf_fresh = claude_command(LaneKind::Performer, false, None, None);
+        let perf_fresh = claude_command(false, false, None, None);
         assert!(
             !perf_fresh.contains("--continue") && !perf_fresh.contains("--resume"),
             "{perf_fresh}"
@@ -610,7 +621,7 @@ mod tests {
     #[test]
     fn unsafe_session_ids_are_rejected() {
         for bad in ["", "a'b", "x;rm -rf /", "id with space"] {
-            let cmd = claude_command(LaneKind::Conductor, false, Some(bad), None);
+            let cmd = claude_command(true, false, Some(bad), None);
             assert!(
                 !cmd.contains("--resume"),
                 "不正 id '{bad}' は resume に使わない: {cmd}"
@@ -622,7 +633,7 @@ mod tests {
     #[test]
     fn model_flag_injected_into_all_claude_invocations() {
         // fresh: 単一 claude に --model
-        let fresh = claude_command(LaneKind::Performer, true, None, Some("sonnet"));
+        let fresh = claude_command(false, true, None, Some("sonnet"));
         assert_eq!(
             fresh,
             format!("claude --model sonnet --settings '{WIRE_HOOKS}'"),
@@ -630,7 +641,7 @@ mod tests {
         );
 
         // resume: 主 claude と `||` fallback 先の fresh、 両方に --model が乗る
-        let resume = claude_command(LaneKind::Performer, false, Some("abc-123"), Some("opus"));
+        let resume = claude_command(false, false, Some("abc-123"), Some("opus"));
         assert_eq!(
             resume.matches("--model opus").count(),
             2,
@@ -642,7 +653,7 @@ mod tests {
         );
 
         // continue: 主 claude と fallback fresh の両方
-        let cont = claude_command(LaneKind::Conductor, false, None, Some("claude-fable-5"));
+        let cont = claude_command(true, false, None, Some("claude-fable-5"));
         assert_eq!(cont.matches("--model claude-fable-5").count(), 2, "{cont}");
     }
 
@@ -650,7 +661,7 @@ mod tests {
     #[test]
     fn unsafe_models_are_rejected() {
         for bad in ["", "opus --dangerously", "a;rm -rf /", "-x", "mo del"] {
-            let cmd = claude_command(LaneKind::Performer, true, None, Some(bad));
+            let cmd = claude_command(false, true, None, Some(bad));
             assert!(
                 !cmd.contains("--model"),
                 "不正 model '{bad}' は --model に使わない: {cmd}"

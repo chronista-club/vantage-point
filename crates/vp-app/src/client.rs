@@ -238,11 +238,9 @@ struct ProcessesResponse {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct LaneInfo {
     pub address: LaneAddressWire,
-    /// "conductor" | "performer"
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub name: Option<String>,
+    // doc 44 P2: `kind` / `name` を撤去（server 側 `lanes_state::LaneInfo` と対）。
+    // どちらも `address` が持つ情報の複製で、真実源が 2 つある状態だった。
+    // lane 名は `address.name` が唯一の在処、開発起点は予約名で表される。
     /// "spawning" | "running" | "exiting" | "dead"
     #[serde(default)]
     pub state: String,

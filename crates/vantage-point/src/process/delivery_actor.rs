@@ -620,13 +620,11 @@ mod tests {
     /// pick_nudge_target 用の test lane (vp/conductor)。 tmux decoupling PR1 で nudge は
     /// tmux 状態を読まなくなったため tmux entry は空でよい。
     fn test_lane(state: LaneState) -> LaneInfo {
-        use crate::process::lanes_state::{LaneAddress, LaneKind};
+        use crate::process::lanes_state::LaneAddress;
         LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
             state,
             stand: "echoes".to_string(),
             created_at: "2026-06-11T00:00:00Z".to_string(),

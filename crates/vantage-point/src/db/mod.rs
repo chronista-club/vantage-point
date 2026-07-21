@@ -221,7 +221,66 @@ impl VpDb {
             .check()
             .map_err(|e| anyhow::anyhow!("スキーマ定義エラー: {}", e))?;
         tracing::info!("SurrealDB スキーマ定義完了");
+        self.normalize_legacy_lane_addresses().await;
         Ok(())
+    }
+
+    /// doc 44 P2: `lane` / `lane_lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
+    ///
+    /// フラット化で address の表示形が `<project>/performer/<name>` → `<project>/<name>` に
+    /// 変わった。descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
+    /// **address を文字列 key として持つ列は吸収できない** — 旧形の行が残ると
+    /// upsert（DELETE+CREATE の WHERE が新形で当たらない）が重複行を作り、
+    /// lifecycle は照合できず孤児になる。
+    ///
+    /// 失敗しても起動は続ける（best-effort）。正規化できなかった行は旧形のまま残るだけで、
+    /// 次回起動で再試行される。
+    async fn normalize_legacy_lane_addresses(&self) {
+        for table in ["lane", "lane_lifecycle"] {
+            match self.normalize_lane_addresses_in(table).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("doc 44 P2: {} の旧形 address を {} 件正規化", table, n),
+                Err(e) => {
+                    tracing::warn!("{} の address 正規化に失敗（旧形のまま継続）: {}", table, e)
+                }
+            }
+        }
+    }
+
+    /// 1 テーブル分の address 正規化。戻り値は書き換えた行数。
+    async fn normalize_lane_addresses_in(&self, table: &str) -> Result<usize> {
+        let mut result = self
+            .db
+            .query(format!("SELECT meta::id(id) AS rid, address FROM {table}"))
+            .await?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+
+        let mut fixed = 0;
+        for row in rows {
+            let (Some(rid), Some(old)) = (
+                row.get("rid").and_then(|v| v.as_str()),
+                row.get("address").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            // parse_address は旧 3 分節形を受理して新形に正規化する。
+            let Some(new) = crate::process::lanes_state::LanePool::parse_address(old)
+                .map(|a| a.to_string())
+                .filter(|new| new != old)
+            else {
+                continue;
+            };
+            self.db
+                .query(format!(
+                    "UPDATE type::record('{table}', $rid) SET address = $addr"
+                ))
+                .bind(("rid", rid.to_string()))
+                .bind(("addr", new))
+                .await?
+                .check()?;
+            fixed += 1;
+        }
+        Ok(fixed)
     }
 
     /// ヘルスチェック（DB に接続できているか確認）
@@ -1388,6 +1447,54 @@ mod tests {
         db
     }
 
+    /// doc 44 P2: 旧形の address 文字列（`<project>/performer/<name>`）が起動時に新形へ
+    /// 正規化されること。
+    ///
+    /// これを怠ると実害が出る: `lane` は upsert（DELETE+CREATE）の WHERE が新形で当たらず
+    /// **旧形の行が残って重複**し、`lane_lifecycle` は照合できず**孤児**になる。
+    /// descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
+    /// address を文字列 key として持つ列はそれでは救えない。
+    #[tokio::test]
+    async fn legacy_address_strings_are_normalized_on_schema_define() {
+        let db = VpDb::connect_mem().await.unwrap();
+        db.define_schema().await.unwrap();
+
+        // 旧形の行を直に流し込む（P2 以前の永続状態を再現）
+        db.inner()
+            .query(
+                "CREATE lane_lifecycle CONTENT {
+                     project_path: '/repos/vp', address: 'vp/performer/foo',
+                     lifecycle: 'ready', updated_at: time::now()
+                 };
+                 CREATE lane_lifecycle CONTENT {
+                     project_path: '/repos/vp', address: 'vp/conductor',
+                     lifecycle: 'ready', updated_at: time::now()
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        // define_schema が正規化を走らせる（冪等なので 2 度目も安全）
+        db.define_schema().await.unwrap();
+
+        let rows = db.list_lane_lifecycles().await.unwrap();
+        let addrs: Vec<&str> = rows.iter().map(|(_, a, _)| a.as_str()).collect();
+        assert!(
+            addrs.contains(&"vp/foo"),
+            "旧形 vp/performer/foo は vp/foo に正規化されるべき: {addrs:?}"
+        );
+        assert!(
+            !addrs.contains(&"vp/performer/foo"),
+            "旧形が残ってはならない（孤児化する）: {addrs:?}"
+        );
+        assert!(
+            addrs.contains(&"vp/conductor"),
+            "元から新形と一致する行は触られない: {addrs:?}"
+        );
+    }
+
     /// doc 44 P1 PR4: DB ディレクトリは `vp_data_dir()/db/world` の**単一**であること。
     ///
     /// 旧テストは「World と SP の dir が分離されていること」を固定していた（VP-182 の
@@ -1493,7 +1600,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lane_upsert_list_and_delete() {
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         // doc 24 §10 Phase 2: lane descriptor の daemon-canonical durable round-trip。
         let db = make_test_db().await;
 
@@ -1501,39 +1608,29 @@ mod tests {
         assert!(db.list_lanes().await.unwrap().is_empty());
 
         // テスト用 LaneInfo builder (live 値 pid は埋めるが、 検証は descriptor 中心)。
-        let mk = |project: &str, kind: LaneKind, name: Option<&str>| {
-            let address = match kind {
-                LaneKind::Conductor => LaneAddress::conductor(project),
-                LaneKind::Performer => LaneAddress::performer(project, name.unwrap()),
-            };
-            LaneInfo {
-                console_mode: Default::default(),
-                id: Default::default(),
-                address,
-                kind,
-                name: name.map(|s| s.to_string()),
-                state: LaneState::Running,
-                stand: "echoes".to_string(),
-                created_at: "2026-06-20T00:00:00Z".to_string(),
-                pid: Some(1234),
-                cwd: "/tmp".to_string(),
-                performer_status: None,
-                cc_session_id: None,
-                sessions: None,
-                engine_session_id: None,
-                engine_stand: None,
-                flow_state: None,
-            }
+        let mk = |project: &str, name: &str| LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::new(project, name),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-06-20T00:00:00Z".to_string(),
+            pid: Some(1234),
+            cwd: "/tmp".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
         };
 
         // 2 project に lane を入れる
-        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Conductor, None))
+        db.upsert_lane("/repos/vp", &mk("vp", "conductor"))
             .await
             .unwrap();
-        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Performer, Some("foo")))
-            .await
-            .unwrap();
-        db.upsert_lane("/repos/nexus", &mk("nexus", LaneKind::Conductor, None))
+        db.upsert_lane("/repos/vp", &mk("vp", "foo")).await.unwrap();
+        db.upsert_lane("/repos/nexus", &mk("nexus", "conductor"))
             .await
             .unwrap();
 
@@ -1543,13 +1640,13 @@ mod tests {
         // descriptor が round-trip する (address / stand)
         let vp_conductor = rows
             .iter()
-            .find(|(p, l)| p == "/repos/vp" && l.kind == LaneKind::Conductor)
+            .find(|(p, l)| p == "/repos/vp" && l.address.is_conductor())
             .expect("vp conductor が読める");
         assert_eq!(vp_conductor.1.address.to_string(), "vp/conductor");
         assert_eq!(vp_conductor.1.stand, "echoes");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
-        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Conductor, None))
+        db.upsert_lane("/repos/vp", &mk("vp", "conductor"))
             .await
             .unwrap();
         assert_eq!(
@@ -1559,28 +1656,18 @@ mod tests {
         );
 
         // 単一 lane の削除 (Diff::Remove)
-        db.delete_lane("/repos/vp", "vp/performer/foo")
-            .await
-            .unwrap();
+        db.delete_lane("/repos/vp", "vp/foo").await.unwrap();
         let rows = db.list_lanes().await.unwrap();
         assert_eq!(rows.len(), 2);
         assert!(
-            !rows
-                .iter()
-                .any(|(_, l)| l.address.to_string() == "vp/performer/foo"),
+            !rows.iter().any(|(_, l)| l.address.to_string() == "vp/foo"),
             "削除した lane は消える"
         );
 
         // snapshot 全置換 (register snapshot): /repos/vp を performer 2 つに置換
-        db.replace_lanes_for_project(
-            "/repos/vp",
-            &[
-                mk("vp", LaneKind::Performer, Some("a")),
-                mk("vp", LaneKind::Performer, Some("b")),
-            ],
-        )
-        .await
-        .unwrap();
+        db.replace_lanes_for_project("/repos/vp", &[mk("vp", "a"), mk("vp", "b")])
+            .await
+            .unwrap();
         let vp_lanes: Vec<_> = db
             .list_lanes()
             .await
@@ -1594,7 +1681,7 @@ mod tests {
             "snapshot で /repos/vp は 2 lane に全置換"
         );
         assert!(
-            vp_lanes.iter().all(|(_, l)| l.kind == LaneKind::Performer),
+            vp_lanes.iter().all(|(_, l)| !l.address.is_conductor()),
             "snapshot 後は conductor が消え performer のみ"
         );
 
@@ -1611,7 +1698,7 @@ mod tests {
         let db = make_test_db().await;
         assert!(db.list_lane_lifecycles().await.unwrap().is_empty());
 
-        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/foo", "provisioning")
+        db.upsert_lane_lifecycle("/repos/vp", "vp/foo", "provisioning")
             .await
             .unwrap();
         db.upsert_lane_lifecycle("/repos/vp", "vp/performer/bar", "ready")
@@ -1623,19 +1710,19 @@ mod tests {
         assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 3);
 
         // 同 (project, address) の upsert は置換 (複合 UNIQUE)。
-        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/foo", "ready")
+        db.upsert_lane_lifecycle("/repos/vp", "vp/foo", "ready")
             .await
             .unwrap();
         let rows = db.list_lane_lifecycles().await.unwrap();
         assert_eq!(rows.len(), 3, "同 address は置換、 件数は増えない");
         assert!(
             rows.iter()
-                .any(|(p, a, lc)| p == "/repos/vp" && a == "vp/performer/foo" && lc == "ready"),
+                .any(|(p, a, lc)| p == "/repos/vp" && a == "vp/foo" && lc == "ready"),
             "provisioning → ready に置換される"
         );
 
         // 単一削除。
-        db.delete_lane_lifecycle("/repos/vp", "vp/performer/foo")
+        db.delete_lane_lifecycle("/repos/vp", "vp/foo")
             .await
             .unwrap();
         assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 2);

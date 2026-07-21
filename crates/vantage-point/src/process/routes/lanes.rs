@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent};
+use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
 use super::super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
@@ -108,8 +108,6 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 .unwrap_or_default(),
             id: crate::lane::lane_id::load_or_create(&project, &entry.name),
             address,
-            kind: LaneKind::Performer,
-            name: Some(entry.name.clone()),
             state: crate::process::lanes_state::LaneState::Spawning,
             stand: default_stand.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -126,7 +124,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
 
     // 既存 Performer の git status を populate
     for lane in lanes.iter_mut() {
-        if matches!(lane.kind, LaneKind::Performer) {
+        if !lane.address.is_conductor() {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
@@ -266,8 +264,6 @@ pub(crate) async fn create_performer_orchestrated(
             console_mode: Default::default(),
             id: crate::lane::lane_id::load_or_create(&addr.project, &req.name),
             address: addr.clone(),
-            kind: LaneKind::Performer,
-            name: Some(req.name.clone()),
             state: LaneState::Spawning,
             stand: stand.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -468,8 +464,6 @@ pub(crate) async fn create_performer_orchestrated(
         console_mode: Default::default(),
         id: lane_id,
         address: addr.clone(),
-        kind: LaneKind::Performer,
-        name: Some(req.name.clone()),
         state: lane_state,
         stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -579,8 +573,8 @@ pub async fn delete_lane_orchestrated(
     addr: LaneAddress,
     cleanup: bool,
 ) -> Result<DeletedLaneInfo, DeleteLaneError> {
-    // architecture rule: Conductor Lane は project lifetime 紐付きのため削除不可
-    if matches!(addr.kind, LaneKind::Conductor) {
+    // architecture rule: 開発起点 lane は project lifetime 紐付きのため削除不可
+    if addr.is_conductor() {
         return Err(DeleteLaneError::ConductorCannotBeDeleted);
     }
 
@@ -624,7 +618,10 @@ pub async fn delete_lane_orchestrated(
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
     // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
-    let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
+    // doc 44 P2: 旧 `if let Some(name) = info.address.name` は name が Option だった時代の形。
+    // フラット化で常に在るため、開発起点でないこと（= 上で弾き済）だけが条件になった。
+    let cleanup_status = if cleanup {
+        let name = info.address.name.clone();
         // project-local lane refactor PR 1: remove_performer_in は repo_root: &Path を受け取る。
         // sidebar delete trigger は dual-read で project-local + legacy global 両 path 対応。
         let repo_root = std::path::PathBuf::from(&state.project_dir);
@@ -996,8 +993,6 @@ mod core_tests {
                 console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
-                kind: LaneKind::Performer,
-                name: Some("dup".to_string()),
                 state: LaneState::Spawning,
                 stand: "echoes".to_string(),
                 created_at: "2026-07-13T00:00:00Z".to_string(),

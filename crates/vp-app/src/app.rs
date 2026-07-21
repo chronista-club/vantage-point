@@ -1702,9 +1702,10 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             branch: lane
                 .and_then(|l| l.performer_status.as_ref())
                 .and_then(|p| p.branch.as_deref()),
-            // 現状 LaneInfo.name は常に None（JS は addr 短縮名に fallback）だが、
-            // 将来 populate された時にヘッダが取り残されないよう cwd/branch と同経路で供給。
-            lane_name: lane.and_then(|l| l.name.as_deref()),
+            // doc 44 P2: 旧 `LaneInfo.name` は複製 field で **常に None** だった（JS は addr
+            // 短縮名に fallback していた）。フラット化で `address.name` が唯一の在処になり、
+            // 常に実体を持つのでヘッダにそのまま供給できる。
+            lane_name: lane.map(|l| l.address.name.as_str()),
             // Act I の session chip はこの相乗りが唯一の供給路（Act II は event が上書き）。
             session_id: lane.and_then(|l| l.engine_session_id.as_deref()),
             // doc 39 P4-C: chip prefix は root session の engine（engine_stand）を優先する
@@ -1747,7 +1748,7 @@ fn header_lane_fields_changed(
         // doc 39 P4-C: chip prefix は engine_stand（root session の engine）で決まるため、
         // その変化（cross-engine root 切替）でも header を再 push する。
         || prev.engine_stand != next.engine_stand
-        || prev.name != next.name
+        || prev.address.name != next.address.name
         || prev.console_mode != next.console_mode
         || prev
             .performer_status

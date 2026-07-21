@@ -618,13 +618,10 @@ async fn enrich_lanes_flow_state(
     project_name: &str,
 ) {
     for lane in lanes.iter_mut() {
-        if !matches!(lane.kind, crate::process::lanes_state::LaneKind::Performer) {
+        if lane.address.is_conductor() {
             continue;
         }
-        let Some(name) = lane.address.name.as_deref() else {
-            continue;
-        };
-        let agent_addr = format!("agent@{}/{}", project_name, name);
+        let agent_addr = format!("agent@{}/{}", project_name, lane.address.name);
         let latest = store
             .latest_msg_for_agent(&agent_addr)
             .await

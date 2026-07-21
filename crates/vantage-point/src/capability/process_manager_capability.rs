@@ -819,8 +819,8 @@ impl ProcessManagerCapability {
         // conductor は cwd = repo root (= user の repo そのもの) なので **絶対に消さない**、 performer のみ。
         let performer_names: Vec<String> = removed_lanes
             .iter()
-            .filter(|l| l.kind == crate::process::lanes_state::LaneKind::Performer)
-            .filter_map(|l| l.name.clone())
+            .filter(|l| !l.address.is_conductor())
+            .map(|l| l.address.name.clone())
             .collect();
         if !performer_names.is_empty() {
             // repo_root は key (= normalize_path_key の出力) から再構築する。 add_project 時と
@@ -877,9 +877,7 @@ impl ProcessManagerCapability {
         branch: &str,
         stand: &str,
     ) -> CapabilityResult<crate::process::lanes_state::LaneInfo> {
-        use crate::process::lanes_state::{
-            LaneAddress, LaneInfo, LaneKind, LaneLifecycle, LaneState,
-        };
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneLifecycle, LaneState};
 
         let name = name.trim();
         if name.is_empty() {
@@ -920,8 +918,6 @@ impl ProcessManagerCapability {
             console_mode: Default::default(),
             id: crate::lane::lane_id::load_or_create(&project_id, name),
             address: addr.clone(),
-            kind: LaneKind::Performer,
-            name: Some(name.to_string()),
             state: LaneState::Spawning, // process liveness: PtySlot pending (= lifecycle と別軸)
             stand: stand.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -1859,7 +1855,7 @@ impl ProcessManagerCapability {
                 lr.get(&key).and_then(|lanes| {
                     lanes
                         .iter()
-                        .find(|l| l.name.as_deref() == Some(performer_name.as_str()))
+                        .find(|l| l.address.name == *performer_name)
                         .map(|l| l.stand.clone())
                 })
             };
@@ -2515,7 +2511,7 @@ mod tests {
         // doc 24 §5.3 / B-destroy: project remove で performer worktree(ground) は daemon が
         // reclaim、 conductor(=repo root = user の repo) は絶対に消さない、 を検証する。
         // git なしの plain dir で実行 (remove_performer_workspace は .git 無しなら fs 削除に落ちる)。
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
         let cap = make_test_cap();
         // 一意な temp project root (再実行に備え事前掃除)。
@@ -2534,12 +2530,10 @@ mod tests {
 
         // lane_registry に conductor + performer descriptor を投入 (daemon-canonical truth)。
         let key = normalize_path_key(&PathBuf::from(&project_path));
-        let mk = |addr: LaneAddress, kind: LaneKind, name: Option<&str>, cwd: &str| LaneInfo {
+        let mk = |addr: LaneAddress, cwd: &str| LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
             address: addr,
-            kind,
-            name: name.map(|s| s.to_string()),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-06-20T00:00:00Z".to_string(),
@@ -2552,16 +2546,9 @@ mod tests {
             engine_stand: None,
             flow_state: None,
         };
-        let conductor = mk(
-            LaneAddress::conductor("bdestroy"),
-            LaneKind::Conductor,
-            None,
-            &project_path,
-        );
+        let conductor = mk(LaneAddress::conductor("bdestroy"), &project_path);
         let performer = mk(
             LaneAddress::performer("bdestroy", "foo"),
-            LaneKind::Performer,
-            Some("foo"),
             &performer_dir.to_string_lossy(),
         );
         cap.lane_registry_ref()
@@ -2596,7 +2583,7 @@ mod tests {
         // sync (= `vp sp start` が起動時に撃つ) を回しても復活しないことを焼き付ける。 旧挙動では
         // sync_projects(Some(dir)) が起点 dir を無条件再登録し、 生きた performer で project SP が
         // 死にきれず後で sp start → 復活する経路があった (mem_1CcuRsC9pF3fiZptwmdgTS)。
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
         let cap = make_test_cap();
         let tmp = std::env::temp_dir().join(format!("vp-test-sync-revive-{}", std::process::id()));
@@ -2612,8 +2599,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::performer("hasperf", "foo"),
-            kind: LaneKind::Performer,
-            name: Some("foo".to_string()),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-11T00:00:00Z".to_string(),
@@ -2653,7 +2638,6 @@ mod tests {
     async fn test_create_lane_provisions_worktree_and_owns_descriptor() {
         // doc 24 §10 Phase 2 B-create: daemon が performer lane を create し、 worktree(ground)
         // を provision して descriptor を daemon-canonical truth として所有する end-to-end 検証。
-        use crate::process::lanes_state::LaneKind;
 
         let cap = make_test_cap();
         // address の project 部分は path basename から取る (create_handler と一貫) ため、
@@ -2688,9 +2672,10 @@ mod tests {
             .expect("daemon create_lane 成功");
 
         // descriptor が daemon-canonical truth として返る。
-        assert_eq!(info.kind, LaneKind::Performer);
-        assert_eq!(info.name.as_deref(), Some("foo"));
-        assert_eq!(info.address.to_string(), "bcreate/performer/foo");
+        assert!(!info.address.is_conductor());
+        assert_eq!(info.address.name, "foo");
+        // doc 44 P2: address 表示形は `<project>/<name>`（旧 `<project>/performer/<name>`）
+        assert_eq!(info.address.to_string(), "bcreate/foo");
         assert_eq!(info.stand, "echoes");
 
         // §5.3: daemon が worktree(ground) を provision する。
@@ -2728,7 +2713,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_lanes_heals_lifecycle_by_ground() {
         // doc 24 §4.6 boot reconcile heal: provisioning+ground在→ready / ready+ground無→dead。
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
         let mut cap = make_test_cap();
         let db = std::sync::Arc::new({
@@ -2750,8 +2735,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::performer("proj", name),
-            kind: LaneKind::Performer,
-            name: Some(name.to_string()),
             state: LaneState::Spawning,
             stand: "echoes".to_string(),
             created_at: "2026-06-20T00:00:00Z".to_string(),
@@ -2769,10 +2752,10 @@ mod tests {
             vec![mk("alive", &alive_dir), mk("gone", &gone_dir)],
         );
         // alive=provisioning (ground 在り→ready 期待)、 gone=ready (ground 無→dead 期待)。
-        db.upsert_lane_lifecycle(key, "proj/performer/alive", "provisioning")
+        db.upsert_lane_lifecycle(key, "proj/alive", "provisioning")
             .await
             .unwrap();
-        db.upsert_lane_lifecycle(key, "proj/performer/gone", "ready")
+        db.upsert_lane_lifecycle(key, "proj/gone", "ready")
             .await
             .unwrap();
 
@@ -2785,12 +2768,12 @@ mod tests {
                 .map(|(_, _, lc)| lc.clone())
         };
         assert_eq!(
-            get("proj/performer/alive").as_deref(),
+            get("proj/alive").as_deref(),
             Some("ready"),
             "provisioning + ground 在り → ready (provision 完了)"
         );
         assert_eq!(
-            get("proj/performer/gone").as_deref(),
+            get("proj/gone").as_deref(),
             Some("dead"),
             "ready + ground 外部削除 → dead (user の rm 尊重)"
         );

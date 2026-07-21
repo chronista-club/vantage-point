@@ -12,10 +12,6 @@ import type { PerformerStatusWire } from "./PerformerStatusWire";
  */
 export type LaneInfo = { address: LaneAddressWire, 
 /**
- * "conductor" | "performer"
- */
-kind: string, name: string | null, 
-/**
  * "spawning" | "running" | "exiting" | "dead"
  */
 state: string, 

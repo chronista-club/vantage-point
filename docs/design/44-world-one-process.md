@@ -265,3 +265,55 @@ PR2 は分割したくなるが、「World と SP のどちらが LanePool を�
 **release daemon(:32000) の lane を一切落とさずに実機確認できる**。#643 の namespace 分離が
 そのまま P1 の検証装置になる。これにより P1 最大の運用リスク（「daemon 再起動 = 全 lane 死」）が
 dogfood 中は発生しない。
+
+## 6. P2 実装設計 — `LaneAddress` フラット化（2026-07-21）
+
+> §2 の P2 のうち**構造部分（フラット化）を実装した**。conductor ポインタ導入（Host の帳簿）は
+> P3 と一体なので分離した。
+
+### 6.1 何をしたか
+
+`LaneAddress { project, kind: LaneKind, name: Option<String> }` → **`{ project, name: String }`**。
+
+旧構造は **conductor だけ `name: None`** という非対称を抱えており、これが「lane が役割を自意識する」
+構造の物理形だった（D4）。フラット化でこの非対称が消え、開発起点は**予約名**
+`CONDUCTOR_LANE_NAME = "conductor"` を持つ lane、という関係に退化した。
+
+| 変更 | 内容 |
+|---|---|
+| `LaneKind` | 撤去（server / vp-app の両方） |
+| `LaneAddress` | `{ project, name }` の 2-tuple。`::conductor()` / `::performer()` は**構築 API として維持**（呼び出し 100 箇所超が無傷） |
+| `LaneInfo.kind` / `.name` | 撤去 — どちらも `address` が持つ情報の複製で、真実源が 2 つあった。vp-app 側の `LaneInfo.name` は**常に None** で実質死んでいた |
+| Display / `key()` | `<project>/<name>` の 1 形。旧 `Wire::key()` と `LaneAddress::Display` の微妙な挙動差（unknown kind の扱い）も消滅 |
+| webview | `isPerformerLane()` は `address.name !== "conductor"` の名前判定に |
+
+### 6.2 予約名を `"conductor"` にした理由
+
+**永続 address を無傷で引き継ぐため。** 開発起点の Display 形が `<project>/conductor` のまま変わらず、
+DB / session.json / wire に残る conductor の address がそのまま一致する。
+（変わるのは performer 側 `<project>/performer/<name>` → `<project>/<name>` だけ。）
+
+D4 の「lane 自身は役割状態を持たない」に対しては、**型から役割分岐が消えた**ことで達成と見なす。
+名前に "conductor" が残るのは D4 が「conductor は残る（開発起点として欲しい）」と言っているのと整合する。
+
+### 6.3 永続データの手当て — 2 系統ある
+
+address は **2 つの形**で永続しており、両方に手当てが要った（片方だけだと静かに壊れる）。
+
+| 形 | 在処 | 手当て |
+|---|---|---|
+| **object** | `lane.descriptor`（`LaneInfo` を丸ごと FLEXIBLE 保存） | `LaneAddress::name` に `#[serde(default)]` = 予約名。旧 conductor は name 欠落 → 既定値、旧 performer は `name: "foo"` がそのまま読める。余分な `kind` は unknown field として無視 → **custom Deserialize 不要** |
+| **文字列 key** | `lane.address` / `lane_lifecycle.address` 列 | `define_schema()` が起動時に旧形を新形へ UPDATE（冪等、best-effort）。放置すると upsert（DELETE+CREATE）の WHERE が当たらず**重複行**、lifecycle は照合できず**孤児**になる |
+
+文字列 key 側は**テストが落ちて初めて気づいた**（reconcile が ready→dead、db の件数が 2→3）。
+serde default で descriptor が読めるようになったので「互換は済んだ」と錯覚しやすいが、
+**object と文字列 key は別の経路**で、前者の手当ては後者を救わない。
+
+### 6.4 残した振る舞い分岐
+
+`stand_spawner::claude_command` の「開発起点なら `--continue`、それ以外は fresh」は**挙動不変で残した**
+（`LaneKind` 判定 → `is_conductor()` 判定に置換）。cwd の性質差に根拠がある実在の差で、
+repo root なら `--continue` が自分の会話に当たるが、worktree で同じことをすると他 lane の
+セッションを掴む（dashboard 罠）。P3 で Host がポインタを持てば「起点 lane か？」の問い合わせになる。
+
+構造変更（P2）と挙動変更を同じ PR に混ぜると回帰の切り分けが効かなくなるため、分けた。

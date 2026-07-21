@@ -88,7 +88,7 @@ use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 
 use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
-use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
+use super::lanes_state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, SystemEvent};
 
 /// Lane spawn Service (= in-process channel から `LaneCmd::SpawnLane` を recv、
 /// 並列度 N で gate しつつ Lane を spawn する infra actor)。
@@ -290,8 +290,6 @@ async fn handle_cmd(
             console_mode,
             id: lane_id,
             address: addr.clone(),
-            kind: LaneKind::Performer,
-            name: Some(name),
             state: LaneState::Running,
             stand: stand.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -399,8 +397,6 @@ async fn handle_cmd(
         console_mode,
         id: lane_id,
         address: addr.clone(),
-        kind: LaneKind::Performer,
-        name: Some(name),
         state,
         stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -544,8 +540,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: addr,
-            kind: LaneKind::Performer,
-            name: Some("already-there".to_string()),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
