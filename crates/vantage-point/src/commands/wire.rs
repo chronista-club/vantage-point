@@ -391,6 +391,24 @@ fn wire_address_from_env(project: Option<&str>, lane: Option<&str>) -> Option<St
     }
 }
 
+/// `VP_SESSION_KEY` env（spawn 時に `stand_spawner` が注入）から「自分がどの session か」を
+/// 復元する（純関数、doc 40 §4）。
+///
+/// **None = 不明**であって root ではない。ここで `unwrap_or(1)` に倒すと「名乗らなかった」と
+/// 「root を名乗った」が混ざり、実在しない session の報告を root に落とす事故（session 粒度化で
+/// 消したかったもの）を検知できなくなる。root への fallback は SP 側 policy
+/// （`ReportTarget::Unspecified`）が 1 箇所で引き受ける。
+///
+/// - env 不在 / 空 = 旧 binary で spawn 済の slot / VP 外で起動された claude → None
+/// - 非数値 / 0 = 壊れた値 → None（黙って 1 に丸めない）
+fn session_key_from_env(raw: Option<&str>) -> Option<crate::lane::session_registry::SessionKey> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .parse::<crate::lane::session_registry::SessionKey>()
+        .ok()
+        .filter(|k| *k >= 1)
+}
+
 /// 未読件数から hookSpecificOutput JSON を作る (純関数、 R2-c)。 未読 0 は None (出力なし)。
 fn build_hook_output(
     event_name: &str,
@@ -571,9 +589,9 @@ fn delegation_thread_markdown(delegations: &[serde_json::Value]) -> String {
 /// よう各 call を 2s で bound する (`world_wire::call` の 40s outer とは別の短い実効上限)。
 /// hook event → 会話報告の契機（doc 40 §6 の wire 表現。None = 報告対象外の event）。
 ///
-/// hook は**報告者**であり記録判断を持たない — root 解決と F1/F2 guard（resume 失敗
+/// hook は**報告者**であり記録判断を持たない — 宛先 session の解決と F1/F2 guard（resume 失敗
 /// `|| claude` fallback の幻 session が健在な旧会話を上書きしない、解剖 memory
-/// `cc-session-pointer-self-destruction`）は SP 側 `record_root_conversation` の 1 箇所。
+/// `cc-session-pointer-self-destruction`）は SP 側 `record_conversation` の 1 箇所。
 /// 旧 `should_record_cc_session`（UserPromptSubmit のみ記録 = #795 の鈍器）の後継。
 fn conversation_report_kind(event_name: &str) -> Option<&'static str> {
     match event_name {
@@ -608,10 +626,13 @@ async fn hook_check() -> Result<()> {
 
     let project = std::env::var("VP_PROJECT").ok();
     let lane = std::env::var("VP_LANE").ok();
+    // doc 40 §4 / doc 46 P5: 自分がどの session の claude かを名乗る（None = 不明。root では
+    // ないので、ここで root に丸めない — 判断は SP 側 policy に 1 本化する）。
+    let session_key = session_key_from_env(std::env::var("VP_SESSION_KEY").ok().as_deref());
 
-    // doc 40 §4: hook は会話 id の**報告者** — (project, lane, session_id, 契機) を World 経由で
-    // SP へ送るだけ。root がどの session かの解決と記録判断（F1/F2 guard 込みの policy）は
-    // SP 側 `session_registry::record_root_conversation` の 1 箇所が持つ。旧実装の
+    // doc 40 §4: hook は会話 id の**報告者** — (project, lane, session, session_id, 契機) を
+    // World 経由で SP へ送るだけ。宛先 session の解決と記録判断（F1/F2 guard 込みの policy）は
+    // SP 側 `session_registry::record_conversation` の 1 箇所が持つ。旧実装の
     // `cc_session::record(VP_LANE)` 直書きは root の session label に追従せず、root≥2 で
     // 書き手/読み手のラベル乖離バグを起こした（doc 40 §1-1 の根治でここから file 書きを撤去）。
     // 失敗は無視（fail-open — 毎 turn 再報告されるので次の発話で self-heal する、doc 40 §9）。
@@ -621,27 +642,32 @@ async fn hook_check() -> Result<()> {
             .and_then(|v| v.get("session_id").and_then(|s| s.as_str()))
         && let (Some(p), Some(l)) = (project.as_deref(), lane.as_deref())
     {
-        // 送信前の no-op 判定（read-only load）: root の会話 id が既に同値なら送らない
-        // （毎ターンの無駄打ち回避 — 旧 `changed` 判定の後継。判定できない時は送って
-        // SP 側の no-op に任せる）。
+        // 送信前の no-op 判定（read-only load）: **自分が名乗る session** の会話 id が既に
+        // 同値なら送らない（毎ターンの無駄打ち回避 — 旧 `changed` 判定の後継。判定できない
+        // 時は送って SP 側の no-op に任せる）。名乗らない場合の比較先は root = SP 側
+        // `ReportTarget::Unspecified` の着地先と揃える（ここがズレると「送らないのに
+        // 記録もされない」無音の穴になる）。
         let reg = crate::lane::session_registry::load(p, l, "echoes");
-        let root_conv = reg
+        let target_key = session_key.unwrap_or(reg.root);
+        let target_conv = reg
             .sessions
             .iter()
-            .find(|s| s.key == reg.root)
+            .find(|s| s.key == target_key)
             .and_then(|s| s.conversation.as_deref());
-        if root_conv != Some(sid) {
+        if target_conv != Some(sid) {
+            let mut payload = serde_json::json!({
+                "project": p,
+                "lane": l,
+                "session_id": sid,
+                "event": report,
+            });
+            // 名乗れる時だけ載せる（field 不在 = 不明 = SP 側で root 宛の後方互換扱い）。
+            if let Some(key) = session_key {
+                payload["session"] = key.into();
+            }
             let _ = tokio::time::timeout(
                 Duration::from_secs(2),
-                crate::process::world_wire::call(
-                    "/api/lane/session-changed",
-                    serde_json::json!({
-                        "project": p,
-                        "lane": l,
-                        "session_id": sid,
-                        "event": report,
-                    }),
-                ),
+                crate::process::world_wire::call("/api/lane/session-changed", payload),
             )
             .await;
         }
@@ -928,6 +954,27 @@ mod tests {
         assert_eq!(wire_address_from_env(None, Some("root")), None);
         assert_eq!(wire_address_from_env(Some("vp"), None), None);
         assert_eq!(wire_address_from_env(Some(""), Some("root")), None);
+    }
+
+    /// doc 40 §4: hook は `VP_SESSION_KEY` で自分の session を名乗る。**「不明」を root に
+    /// 丸めない**ことを固定する — env 不在 / 壊れた値は `None`（= 報告に session field を
+    /// 載せない）であって `Some(1)`（= root を名乗った）ではない。両者を混ぜると、実在しない
+    /// session の報告が root の会話 id を壊す経路が復活する。
+    #[test]
+    fn session_key_env_distinguishes_unknown_from_root() {
+        assert_eq!(session_key_from_env(Some("1")), Some(1));
+        assert_eq!(session_key_from_env(Some("2")), Some(2));
+        assert_eq!(session_key_from_env(Some(" 3 ")), Some(3), "前後空白は許容");
+        // 不明（root ではない）
+        assert_eq!(
+            session_key_from_env(None),
+            None,
+            "env 不在 = 旧 slot / VP 外"
+        );
+        assert_eq!(session_key_from_env(Some("")), None);
+        assert_eq!(session_key_from_env(Some("root")), None, "非数値は丸めない");
+        assert_eq!(session_key_from_env(Some("0")), None, "0 は不正な key");
+        assert_eq!(session_key_from_env(Some("-1")), None);
     }
 
     /// R2-c: 未読ありのときだけ hookSpecificOutput JSON を作る

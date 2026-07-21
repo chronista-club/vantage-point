@@ -996,14 +996,19 @@ async fn handle_wire_channel(
         } else {
             format!("{project}/performer/{label}")
         };
-        // doc 40 §4: hook の会話報告（session_id + event）を SP へ透過する。無い場合は従来の
-        // 「変化通知のみ」（re-enrich + push）として振る舞う = 新旧 binary 混在に安全。
+        // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を SP へ
+        // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
+        // 新旧 binary 混在に安全。`session` 不在も同様で、SP 側が root 宛の後方互換に倒す
+        // （World は routing のみ — ここで欠けた値を補完しない）。
         let mut fwd = serde_json::json!({ "lane": display });
         if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
             fwd["session_id"] = sid.into();
         }
         if let Some(ev) = payload.get("event").and_then(|v| v.as_str()) {
             fwd["event"] = ev.into();
+        }
+        if let Some(session) = payload.get("session").and_then(|v| v.as_u64()) {
+            fwd["session"] = session.into();
         }
         let resp = forward_to_sp_control(
             &state.control_channels,

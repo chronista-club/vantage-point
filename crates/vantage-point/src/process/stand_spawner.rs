@@ -28,9 +28,12 @@
 //!
 //! ## VP_* 環境変数
 //!
-//! - `VP_PROJECT` : `addr.project`
-//! - `VP_LANE`    : lane label（`conductor` / performer 名 / `unnamed`）
-//! - `VP_PROFILE` : dev/brew namespace（設定時のみ）
+//! - `VP_PROJECT`     : `addr.project`
+//! - `VP_LANE`        : lane label（`conductor` / performer 名 / `unnamed`）
+//! - `VP_SESSION_KEY` : この slot が化身する session の key（doc 40 §4 — hook が「自分が
+//!                      どの session か」を名乗るための identity。旧 `VP_SESSION`
+//!                      （= lane display 形、doc 40 PR-3 で退役）とは**別物**なので名前も分けた）
+//! - `VP_PROFILE`     : dev/brew namespace（設定時のみ）
 
 use std::path::Path;
 
@@ -47,8 +50,9 @@ use crate::daemon::pty_slot::PtySlot;
 ///
 /// NOTE（doc 40 §4/§6）: hook は会話 id の**報告者** — SessionStart = Issued（発行時点の
 /// eager 表示）/ UserPromptSubmit = Spoken（authoritative）を SP へ送るだけで、記録判断
-/// （root 解決 + F1/F2 guard = 「resume 失敗 `||` fallback の幻 session が健在な旧会話を
-/// 上書きしない」）は SP の `session_registry::record_root_conversation` 1 箇所が持つ。
+/// （報告 session の解決 + F1/F2 guard = 「resume 失敗 `||` fallback の幻 session が健在な
+/// 旧会話を上書きしない」）は SP の `session_registry::record_conversation` 1 箇所が持つ。
+/// hook が名乗る session は spawn 時に注入する `VP_SESSION_KEY`（下の env 表）。
 /// 旧「UserPromptSubmit のみ記録」（#795）はこの guard を hook 側の鈍器で担っていた名残。
 const WIRE_HOOKS: &str = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}"#;
 
@@ -338,7 +342,8 @@ pub fn build_stand_command(
     let project_cwd = project_dir.to_string_lossy().to_string();
 
     // doc 40 PR-3: VP_CWD / VP_SESSION は退役（repo 内読み手ゼロ + user statusline 消費なしを
-    // 確認済み、doc 40 §8）。identity env は wire/hook が読む VP_PROJECT / VP_LANE の 2 本。
+    // 確認済み、doc 40 §8）。identity env は wire/hook が読む VP_PROJECT / VP_LANE +
+    // session を名乗る VP_SESSION_KEY（registry load 後に push、doc 40 §4）。
     let mut env = vec![
         ("VP_PROJECT".into(), addr.project.clone()),
         ("VP_LANE".into(), lane_label(addr).into()),
@@ -378,6 +383,14 @@ pub fn build_stand_command(
     let root = reg.root;
     let root_entry = reg.sessions.iter().find(|s| s.key == root);
     let root_conversation = root_entry.and_then(|s| s.conversation.clone());
+    // doc 40 §4 / doc 46 P5: この slot が化身する session を子プロセスへ名乗らせる。
+    // hook（`vp wire hook-check`）はこの値を報告に載せ、SP は**報告された session** に
+    // 会話 id を書く（root 固定だと、同じ lane の 2 本目の claude が root の会話を上書きして
+    // `--resume` が同居人の会話に化ける — doc 46 §3 の producer blocker）。
+    // 現状 slot を立てる経路（boot / respawn / restart）はすべて root なので値は常に root だが、
+    // **注入する値は「slot が化身する session」であって root ではない** — 非 root slot の
+    // producer が入る時に変わるのはこの 1 行の右辺だけ。
+    env.push(("VP_SESSION_KEY".into(), root.to_string()));
     // doc 39 P4-A: slot に載る engine は **root session の stand** が決める（lane 作成時固定の
     // `stand_name` ではない）。cross-engine の Root 切替（picker）で root を別 engine の session に
     // 向けると、respawn する slot もその engine で立つ。spawn 全経路（boot / respawn / restart）が
@@ -517,12 +530,42 @@ mod tests {
             Some("vantage-point")
         );
         assert_eq!(env.get("VP_LANE").map(String::as_str), Some("sub"));
+        // doc 40 §4: slot が化身する session を名乗る env（registry 不在 = root=1）。
+        assert_eq!(
+            env.get("VP_SESSION_KEY").map(String::as_str),
+            Some("1"),
+            "hook が「自分がどの session か」を名乗るための identity"
+        );
         // mise trust footgun 回避: lane cwd が MISE_TRUSTED_CONFIG_PATHS に含まれる
         assert!(
             env.get("MISE_TRUSTED_CONFIG_PATHS")
                 .is_some_and(|v| v.contains("/work/vp")),
             "lane cwd が mise trust に含まれるはず: {:?}",
             env.get("MISE_TRUSTED_CONFIG_PATHS")
+        );
+    }
+
+    /// `VP_SESSION_KEY` は「slot が化身する session」に追従する（lane 固定の 1 ではない）。
+    /// root を #2 に移した lane で spawn すると、その claude の hook は #2 を名乗る
+    /// = 会話 id が #2 に記録される（doc 40 §4 / doc 46 P5）。
+    #[test]
+    fn session_key_env_follows_the_root_session() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::root("vp");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("create_root #2");
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
+        assert_eq!(
+            env.get("VP_SESSION_KEY").map(String::as_str),
+            Some("2"),
+            "root を移したら slot が名乗る session も移る"
         );
     }
 

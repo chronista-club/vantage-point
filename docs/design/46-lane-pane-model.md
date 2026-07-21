@@ -176,8 +176,27 @@ P5 が外したのは *slot の枚数*の制約だけで、**producer**（非 ro
 > 同じ lane で 2 本目の claude を立てると、その session id が **root の会話 id を上書き**し、
 > root の resume が同居人の会話に化ける（`vp lane resume-failed` の記録先も同様）。
 
-つまり producer には「hook / wire の identity を session 粒度にする」（doc 39/40 の続き）が
-先に要る。P5 の型と読み手は先に置いたので、そちらが済めば動線を足すだけで繋がる。
+##### ✅ blocker は外れた（2026-07-22 — 会話 id の記録が session 粒度に）
+
+上の引用のうち **会話 id の部分は解消**した（設計は doc 40 §4-1 が SSOT）:
+
+- spawn（`stand_spawner`）が **`VP_SESSION_KEY`** = slot が化身する session の key を注入
+- hook（`vp wire hook-check`）はそれを読んで報告に `session` を載せる。読めなければ**載せない**
+  （「不明」を root に丸めない — 丸めると実在しない session の報告が root を壊す経路が残る）
+- SP の `record_conversation` は **報告された session** に書く。§6 policy（F1/F2 guard）は不変
+- 名乗らない報告（旧 slot / VP 外起動 / channel D の headless claude）は従来どおり root 宛
+
+> ⚠️ `VP_SESSION` は**復活させていない** — 旧 `VP_SESSION` は lane の論理 identity（`vp/root`、
+> 元は tmux session 名）で、必要なのは session 採番 key（`1`/`2`）。意味が別なので名前も分けた
+> （doc 40 §8）。
+
+**残る宿題**（producer を足すときに決める）:
+
+- **wire mailbox は lane 粒度のまま** — `agent@<lane>` を名乗るのは root。同居人は
+  「読み書きできる console」であって「mailbox を持つ住人」ではない（doc 40 §4-1 の scope 外）
+- `vp lane resume-failed` の記録先も lane 単位のまま（`resume_failures.log` は観測 log で
+  resume pointer ではないため、会話が化ける事故は起こさない）
+- 非 root slot を立てる UI / CLI 本体（P5 の型 + 読み手は既に在る）
 
 > ⚠️ doc 47 §7 条件③（`LaneLayouts.dock()` が全 lane に効く問題）は **P5 では発火しなかった**。
 > P5 が増やすのは slot であって session ではなく、chip の集合は `sessions`（registry）由来の
