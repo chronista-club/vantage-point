@@ -106,7 +106,10 @@ fresh に始める。既存 session の再表示ではない。
 P1 と P2 の順が逆でないのは、**作る前に置き場が要る**から。P1 の時点では
 既存 lane の Act を初期 Pane 構成に写して並べる（新規作成は既存の「+」のまま）。
 
-## 3. P3 が重い理由（先に測っておく）
+## 3. P5（端末の複数枚化）が重い理由（先に測っておく）
+
+> 訂正（2026-07-21）: 見出しは phase 振り直し前の「P3」のままだった。本節が測っているのは
+> **P5（`pty_slots` re-key）**。canvas の P3 は §6 で別途訂正済み。
 
 `pty_slots` の key を変えると、**lane key を前提にした全経路**が影響を受ける:
 spawn / pump / `lane_capture` / `deliver_nudge` / Dead 検出 / zombie reap。
@@ -191,3 +194,8 @@ Scene 定義 / keybindings（Cmd+Shift+N の layout 切替）/ per-lane Scene �
 
 Phase 表の順序も見直す価値がある — **P4（`console_mode` 撤去）を先に**やると
 「Act = Pane の kind」が完成し、P3 の設計判断（1）の材料が増える。
+
+> **決着（2026-07-21）**: 順序は **doc 47 §7 が SSOT**（Epic 全体を 1 本に並べたもの）。
+> P4 → P5 を内部フェーズで先に済ませ、**P3 を含む UI は最後**。
+> しかも設計判断（1）は「Scene と tiling の関係」ではなく、
+> **GUI LayoutEngine を作り直してそこに載せる**という形で解く（doc 47 §1）。

@@ -6,6 +6,10 @@
 > 内部の不整合の投影**だった。UI を先に整えても、下が割れていれば同じ形で再発する。
 >
 > 本 doc は「何が割れているか」の**目録**。個々の解き方は着手時に別 doc / section で決める。
+>
+> **Epic としての進め方（mako、2026-07-21 確定）**: lane 等の**内部実装をきっちり仕上げる**まで、
+> 表示は**ミニマム・シンプルのまま据え置く**（`minimizeOthers` で 1 枚ずつ、`04364fe0`）。
+> UI は Epic の**最後に一気に**整える。順序と条件は §7。
 
 ## 0. 組織原理 — projection の境界を 1 本引く（mako 2026-07-21）
 
@@ -63,9 +67,22 @@ Act は「Pane の kind」= 見え方に移る予定なので、**今まさに�
 `#pane-terminal` は **外から Frame Engine に配置され、内では自前 tiling をする**という
 二重構造になっている。doc 46 P3（canvas を Pane に）が止まったのはこれが理由（#839 / doc 46 §6）。
 
-### 決定: **doc 46 の Pane を FrameEngine に畳む**（mako 2026-07-21）
+### 決定: **Epic の最後に GUI LayoutEngine を作り、シンプル表示をそこに当てはめる**
 
-ただし **畳む前に再設計する**（そのまま移植しない）。
+> 改訂（mako 2026-07-21 夜）: 当初は「doc 46 の Pane を FrameEngine に**畳む**」としたが、
+> **どちらかというと、ちゃんとした GUI の LayoutEngine を最後にしっかり作って、
+> シンプルな表示をそこに当てはめていきたい**。
+
+向きは「A を B に移植する」ではなく、**設計し直した LayoutEngine 1 つで両方を置き換える**。
+FrameEngine は**母体であり前例**（語彙は既に広い、下記）だが、それを温存するために
+doc 46 側を歪めることはしない。
+
+**帰結（内部フェーズ中の規律）**:
+
+- 現行の layout 2 系統（FrameEngine / `PaneLayout`）に**追加投資しない** — 凍結して
+  「1 枚ずつ + タブ chip」のまま運ぶ。直すのは**壊れた時だけ**、最小で
+- 表示がミニマムであること自体が、**LayoutEngine の最初の受け手が小さい**という
+  設計上の利点になる（当てはめる対象が 1 構成なので、engine の初回検証が軽い）
 
 #### 判断材料 — 既に同じものを 2 つ作っていた
 
@@ -83,9 +100,11 @@ export interface PaneTransform { x, y, w, h, z, opacity, state }
 - 層の切り方まで同型（`PaneLayout`/`PaneShell` と `FrameEngine`/`renderer`）
 - しかも `maximized` がある = **既存の方が語彙が広い**
 
-→ doc 46 の `PaneLayout` は**知らずに作った 2 個目**。畳む向きは「doc 46 → FrameEngine」。
+→ doc 46 の `PaneLayout` は**知らずに作った 2 個目**。新 LayoutEngine の語彙は
+FrameEngine 側（`normal` / `minimized` / `maximized` / `hidden` + 比率 transform）を
+**下限**として始める — せっかく広い方を捨てて狭い方に揃えない。
 
-#### 再設計で決めること
+#### LayoutEngine の設計で決めること
 
 FrameEngine は現状 **lane を知らない**。pane は boot 時に固定 6 個
 （`echoes` `pp` `ge` `hp` `preview` `empty`）を register するだけで、
@@ -95,19 +114,28 @@ doc 46 が要求する「lane ごとの構成」「同種の Pane を N 枚」�
    - a) FrameEngine が lane を知る（Scene を lane ごとに持つ）
    - b) lane ごとに FrameEngine インスタンスを持つ（engine 自体は lane を知らないまま）
    - c) Scene id に lane を混ぜる（`lane:<addr>/focus-echoes` 等）
-2. **Pane の動的増減** — 現状 boot 時 register の固定集合。session を作るたび Pane が増える
-   doc 46 の要求と合わない
+2. **Pane の動的増減** — 現状 boot 時 register の固定集合（`FRAME_PANE_IDS`）。
+   session を作るたび Pane が増える doc 46 の要求と合わない。
+   ⚠️ **P5 で現行実装が先に壊れる** — §3 で着地した `LaneLayouts.dock()` は
+   「顔ぶれは lane 共通 = 全 lane に効く」前提なので、session ごとに Pane（chip）が
+   増えると **lane A の chip が lane B にも生える**。
+   → **本設計は LayoutEngine に持ち越し**、P5 では現行実装に「chip 集合も per-lane」
+   の**最小修正**だけ入れて凌ぐ（凍結の例外 = 壊れた時だけ直す）
 3. **タブエリア（minimized の置き場）を誰が描くか** — `PaneState.minimized` は既にあるので、
    renderer が「minimized な pane を dock に出す」を担えば doc 46 の `pane-tab` は不要になる
 4. **`pp` / `ge` / `hp` / `preview` の帰属** — これらは lane 横断の Stand pane。
    lane スコープを入れた時、どこに属するか（app 直下 / 各 lane に写像 / project スコープ）
-5. **§2（語彙）の統一** — 畳んだ時点で「Pane」は FrameEngine の pane 1 つに揃う。
+5. **§2（語彙）の統一** — LayoutEngine が立った時点で「Pane」は 1 語に揃う。
    PP の `pane_contents` は別語（`board` 等）へ寄せるか、そのまま残すか
+6. **最初に当てはめる表示は「1 枚ずつ + タブ chip」** — 内部フェーズ中の
+   ミニマム表示がそのまま LayoutEngine の**最初の Scene**になる。
+   tiling（左右並列）はその次の Scene で足す
 
-> **そのまま移植しない理由**: doc 46 の `PaneLayout` は「左右に並べる」という
-> **特殊形に最適化した API**（`dockedIds` / `moveFocus` が列挙順に依存）。
-> FrameEngine の比率 transform に載せると、この API は自然に消える。
-> 移植すると 2 つの語彙が混ざったまま残る。
+> **どちらも移植しない理由**: doc 46 の `PaneLayout` は「左右に並べる」という
+> **特殊形に最適化した API**（`dockedIds` / `moveFocus` が列挙順に依存）で、
+> 比率 transform に載せれば自然に消える。一方 FrameEngine は lane を知らず、
+> pane 集合が boot 時固定。**どちらを土台にしても片方の歪みが残る**ので、
+> 語彙は FrameEngine を下限に取りつつ、engine 自体は設計し直す。
 
 ## 2. 「Pane」が 3 つの意味を持っている
 
@@ -129,9 +157,23 @@ doc 46 §1.1 で衝突は注記したが、**見積もりには反映できて�
 → 実機で「どの lane に移動しても常に 2 Pane 開いている」として観測された。
 doc 46 は「**lane の中を** tiling にする」設計なので、Pane 構成は per-lane であるべき。
 
-**決めること**: どの層を per-lane にするか。
+**決めたこと**: どの層を per-lane にするか。
 - **A**: `PaneLayout` を `Map<lane, PaneLayout>` に（DOM は共有のまま）— 小〜中
 - **B**: Pane 自体を lane ごとに生成（chat も `.lane-pane` と同じ形に）— 大、P5 と一緒
+
+### ✅ 着地: **A**（`44c119af`、2026-07-21）
+
+`pane-shell.ts` の `LaneLayouts` = 「**顔ぶれ（template）は lane 共通 / 構成（並び・縮小・
+focus）は per-lane**」という分割。DOM host は app 共有のままで、lane 切替時に新 lane の
+構成を DOM へ写し直す（`PaneShell.setLane`）。
+
+さらに `04364fe0` で**既定の見せ方**を「1 枚ずつ」に戻したので、症状は二重に解消済み。
+
+> ⚠️ **A の前提は P5 で崩れる**。`LaneLayouts.dock()` は「全 lane に効く」= 顔ぶれが
+> lane によらないことに依存している。doc 46 P5 で session ごとに Pane が増えると、
+> session は lane ごとに違うのに全 lane へ生えてしまう。
+> **B は捨てたのではなく、LayoutEngine の設計に持ち越した**（§1 / §7 の条件 ③）。
+> P5 では現行実装に最小修正（chip 集合も per-lane）だけ入れる。
 
 > 既存 host を「中身に触らず包む」方針は安全だったが、**その host が持っていた寿命
 > （app 全体）も一緒に引き継いだ**。包む時は「何を触らないか」だけでなく
@@ -163,13 +205,53 @@ window 経由の一時フラグで凌いだ（#838）。他の bus（`vp:echoes-
 
 **決めること**: request/response の相関 id を持つか、bus を分けるか。
 
-## 7. 着手順の案
+## 7. 着手順 — Epic 全体（2026-07-21 確定）
 
-1. **§3（寿命）** — 実機で見えている不具合の直因。A なら小さく、すぐ効く
-2. **§4（Act 撤去）** — §1 の判断材料が増える（Pane の kind が確定する）
-3. **§1 + §2（レイアウトと語彙）** — 最大。ここが決まると P3（canvas）が動く
-4. **§6（bus）** — 独立、いつでも
-5. **§5（New の統合）** — UI 一気改修の一部として最後に
+**内部を仕上げるまで表示はミニマム据え置き、UI は最後に一気に**（冒頭の方針）。
+doc 44 / 46 / 47 を 1 本の順序に並べたもの。
+
+### 現在地
+
+| | 状態 |
+|---|---|
+| doc 44 P1（World fold-in） | ✅ `#823` |
+| doc 44 P2（`LaneAddress` フラット化） | ✅ `949ac6f4` / `#830` |
+| doc 46 P1 / P2（Pane shell / Engine × Act） | ✅ `#837` / `#838` |
+| §3（Pane 構成を per-lane に） | ✅ `44c119af` |
+| 表示のミニマム化（`minimizeOthers`） | ✅ `04364fe0` |
+
+### 内部フェーズ（表示はミニマム固定のまま）
+
+1. **doc 46 P4 — `console_mode` 撤去**（26 ファイル、server 中心）
+   = 本 doc §4。Act が Pane の kind に確定し、§1 の判断材料が増える
+2. **§6 — 共有 bus の相関 id**（独立・小。`#838` の window フラグ凌ぎを根治）
+3. **doc 46 P5 — `pty_slots` を `(lane, session)` へ re-key**（内部の本丸）
+4. **doc 44 P3 / doc 45** — Project Host の帳簿、transport の Unison 統一
+
+### UI フェーズ（Epic の最後、一気に）
+
+5. **§1 + §2 — GUI LayoutEngine を設計して作る + 語彙統一**
+   → できたら**まず今のミニマム表示（1 枚ずつ + chip）をそこに当てはめる**。
+   それが通ってから tiling を Scene として足し、`minimizeOthers` を外す
+6. **doc 46 P3**（canvas を Pane に）/ **§5**（New の統合）/
+   **doc 44 P4**（タブ header 昇格・sidebar 起点 UI）/ **doc 46 P6**（layout 永続）
+
+### この順序が成立する条件
+
+1. **P4（`console_mode` 撤去）は UI 決着を待たなくてよい** — 撤去がやるのは
+   「lane は Act を持たない」という **server 側の事実を作ること**だけで、受け皿
+   （kind = `term` / `chat`）は既に client 側にある。UI をミニマムに保ったまま進む
+2. ⚠️ **P5 は「読み手のない書き込み」になりやすい** — UI をミニマムに保ったまま
+   複数 slot を作ると消費側がゼロになる（`LaneId` が 2 年間 生成・永続されながら
+   誰にも読まれなかったのと同型）。**UI 以外の読み手を同じ PR に入れる**こと —
+   `vp lane capture` の session 指定 / タブ chip の枚数 / `vp ps` の slot 数。
+   > 「UI は最後」という方針は、放置すると構造的にこの罠を再生産する
+3. ⚠️ **P5 で現行 layout が先に壊れる** — `LaneLayouts.dock()` が全 lane に効くため、
+   session ごとに chip が増えると lane を跨いで生える。**本設計は LayoutEngine に
+   持ち越し**、P5 では「chip 集合も per-lane」の最小修正だけ入れる（§1 の設計項目 2）
+4. **layout 2 系統は凍結** — 内部フェーズ中、FrameEngine にも `PaneLayout` にも
+   機能を足さない。足すと LayoutEngine で捨てる分が増えるうえ、
+   「どちらの規約で書いたか」が後から判らなくなる
 
 > UI の一気改修は **§1 が決着してから**。レイアウト系が 2 つある状態で見た目を
 > 揃えても、どちらの規約に揃えたのかが後から判らなくなる。
