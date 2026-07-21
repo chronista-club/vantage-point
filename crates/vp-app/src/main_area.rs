@@ -233,6 +233,8 @@ body{overflow:hidden;}
   color:var(--color-text-secondary,#a8b0c0);font-size:11px;
   font-family:var(--vp-font-sans),var(--typography-family-sans);white-space:nowrap;}
 .pane-tab:hover{color:var(--color-text,#e6e9ef);border-color:var(--sb-conn-auto,#22E0FF);}
+/* docked = 今並んでいる Pane。click で畳む。畳まれた chip（枠だけ）と区別する。 */
+.pane-tab.docked{background:var(--color-bg-hover,#1e242e);color:var(--color-text,#e6e9ef);}
 /* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
    header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
 #console-switching{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;z-index:20;

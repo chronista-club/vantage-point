@@ -204,15 +204,19 @@ export class PaneShell {
       el.classList.toggle(CLASS_MINIMIZED, this.layout.isMinimized(p.id))
       el.classList.toggle(CLASS_FOCUSED, this.layout.focused() === p.id)
     }
+    // タブエリアは **全 Pane のスイッチャー**。畳んだものだけ並べると
+    // 「並んでいる Pane を畳む」入口が UI に無くなる（要件 2 の片道しか通らない）。
+    // docked は `.docked` を付けて「今出ている」ことを示し、click で往復する。
     const min = this.layout.minimizedPanes()
     this.tabs.replaceChildren()
-    for (const p of min) {
+    for (const p of this.layout.all()) {
+      const isMin = this.layout.isMinimized(p.id)
       const chip = document.createElement('button')
       chip.type = 'button'
-      chip.className = 'pane-tab'
+      chip.className = isMin ? 'pane-tab' : 'pane-tab docked'
       chip.dataset.paneId = p.id
       chip.textContent = p.label
-      chip.title = `${p.label} を開く`
+      chip.title = isMin ? `${p.label} を開く` : `${p.label} を畳む`
       chip.addEventListener('click', () => this.toggle(p.id))
       this.tabs.appendChild(chip)
     }
