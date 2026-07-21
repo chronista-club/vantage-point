@@ -755,20 +755,21 @@ pub(crate) fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
             continue;
         };
         for lane in lanes {
-            let Some(kind) = lane.get("kind").and_then(|k| k.as_str()) else {
+            // doc 44 P2 のフラット化で `LaneKind` は撤去され、lane は `address.name` の
+            // **1 本**で表される（開発起点は予約名 = `ROOT_LANE_NAME`）。
+            //
+            // ⚠️ 旧実装は `lane.get("kind")` を必須にしており、field が消えた後は
+            // **全 lane が `continue` で捨てられて ROTO の cross-project 一覧が恒久的に空**
+            // だった。emitter（`build_world_lanes`）は `LaneInfo` をそのまま serialize するので、
+            // 型から field が消えても parser 側はコンパイラに怒られない
+            // （「型フラット化の文字列取り残し」— JSON 直読みはコンパイラが黙る）。
+            let Some(token) = lane
+                .get("address")
+                .and_then(|a| a.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+            else {
                 continue;
-            };
-            let token = if kind == "root" {
-                "root".to_string()
-            } else {
-                match lane
-                    .get("address")
-                    .and_then(|a| a.get("name"))
-                    .and_then(|n| n.as_str())
-                {
-                    Some(name) => name.to_string(),
-                    None => continue,
-                }
             };
             out.push(RotoLane {
                 label: compact_lane_label(project, &token),
@@ -1156,16 +1157,16 @@ mod tests {
                     "project_path": "/repos/zeta-proj",
                     "port": 33001,
                     "lanes": [
-                        { "kind": "root" },
-                        { "kind": "performer", "address": { "name": "beta" } },
-                        { "kind": "performer", "address": { "name": "alpha" } },
+                        { "address": { "project": "zeta-proj", "name": "root" } },
+                        { "address": { "project": "zeta-proj", "name": "beta" } },
+                        { "address": { "project": "zeta-proj", "name": "alpha" } },
                     ]
                 },
                 {
                     "project_name": "aaa-proj",
                     "project_path": "/repos/aaa-proj",
                     "port": 33000,
-                    "lanes": [ { "kind": "root" } ]
+                    "lanes": [ { "address": { "project": "aaa-proj", "name": "root" } } ]
                 },
             ]
         });
@@ -1186,6 +1187,53 @@ mod tests {
         assert_eq!(lanes[0].project_path, "/repos/zeta-proj");
         assert_eq!(lanes[3].project_path, "/repos/aaa-proj");
         assert_eq!(lanes[1].token, "beta");
+    }
+
+    /// **emitter ↔ parser の往復**を固定する。
+    ///
+    /// `build_world_lanes` は `LaneInfo` を**そのまま** serialize するので、fixture を手で
+    /// 書くと型の変化に追随しない。実際に `LaneInfo` を serde で JSON 化して食わせることで、
+    /// 「型から field が消えたのに parser が読み続ける」ズレを次からはテストが落とす。
+    ///
+    /// 回帰の由来: doc 44 P2 で `LaneKind` を撤去した際、本 parser の `lane.get("kind")` が
+    /// 取り残され、**全 lane が捨てられて ROTO の一覧が恒久的に空**になっていた。
+    /// JSON 直読みはコンパイラが黙るので、この往復が唯一の検出口。
+    #[test]
+    fn parse_world_lanes_reads_the_real_lane_info_shape() {
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+
+        let make = |name: &str| LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::new("vp", name),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-22T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/repos/vp".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        };
+        let v = serde_json::json!({
+            "projects": [{
+                "project_name": "vp",
+                "project_path": "/repos/vp",
+                "port": 33000,
+                "lanes": [make(crate::process::lanes_state::ROOT_LANE_NAME), make("feat-x")],
+            }]
+        });
+
+        let lanes = parse_world_lanes(&v);
+        assert_eq!(
+            lanes.iter().map(|l| l.token.as_str()).collect::<Vec<_>>(),
+            vec!["root", "feat-x"],
+            "実 LaneInfo の形から token を引けている（空に落ちない）"
+        );
+        assert_eq!(lanes[0].key, "/repos/vp:root");
     }
 
     /// projects 不在 / 空でも panic せず空 Vec。
