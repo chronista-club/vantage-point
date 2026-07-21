@@ -752,3 +752,76 @@ ground dir の birthtime（無ければ mtime）に変えて決定的にした�
 - `notifier_wakes_when_only_origin_changes` — 指紋の取り方（origin だけの変化も拾う）
 
 いずれも**起床通知を外すと赤くなる**ことを実証済み。
+
+## 12. lane の並び順（P4 後半、2026-07-21）
+
+> **実装済**。§8.5 で「帳簿に id key で持つ / 実装は消費者と同じスライスで」と決めていたものを、
+> sidebar の D&D と一緒に通した。
+
+### 12.1 なぜ `lane` table に置けないか
+
+`upsert_lane` は DELETE+CREATE なので、project 由来の descriptor push が来るたび
+同じ行に載せた `ord` が消える。`lane_lifecycle` を別 table にしたのと**同じ理由**で、
+「Host の intent」と「lane が報告する state」は table を分ける。
+
+key は `host_origin` と同じく **`lane_id`**。並び順は lane そのものに付く指定なので、
+表示名が変わっても動いてはいけない（§8.2）。
+
+### 12.2 未指定は「末尾」
+
+指定のある lane が ord 昇順で先、無い lane は**元の並びのまま**後ろ（安定 sort）。
+
+- **新しく作られた lane が既存の並びに割り込まない** — 割り込むと「並べ替えたのに
+  勝手に崩れた」に見える
+- **帳簿が何も言っていない範囲では既定の意味論を壊さない** — `LanePool::list()` の
+  「開発起点が先頭 → created_at」がそのまま残る
+
+### 12.3 適用は `build_lanes_snapshot` の 1 箇所
+
+`lanes_list`（CLI / GUI の直接問い合わせ）も QUIC snapshot も同じ関数を通るので、
+**見る場所で順番が違う**ことが起きない。供給点ごとに sort を書くとそこが割れる。
+
+### 12.4 楽観更新をしない — project の並べ替えとは違う
+
+既存の `commitProjectReorder` は楽観更新する（Rust が re-push しない設計だったため）。
+lane の並べ替えは**しない**:
+
+- 並び順の真実源は Host の帳簿。楽観更新すると保存失敗時に UI だけが嘘をつく（§10.3 と同じ規律）
+- §11 で push の起床が直ったので、保存 → `SystemEvent::LanesReordered` → publish →
+  snapshot が即座に戻る
+
+### 12.5 `SystemEvent::LanesReordered` を足した理由
+
+並び替えでは**個々の lane は何も変わらない**ので `Lane(Diff::*)` では表せない
+（`Diff` は per-lane の差分で、偽の Add/Update を流すと購読側が実在しない変化に反応する）。
+並びは snapshot 全体の性質なので独立 variant にした。
+
+### 12.6 D&D の伝播 — `drop` はポインタ直下で発火する
+
+`LaneRow` は project accordion（`<details>`、こちらも draggable）の内側にある。
+初版は `onDrop` の冒頭で無条件に `stopPropagation()` していて、**project を drag して
+lane 行の上で離すと drop が消える**回帰を作っていた（team-b が検出）。
+
+HTML5 DnD の `drop` は**ポインタ直下の要素**で発火し、祖先が `dragover` で
+`preventDefault()` していても発火先は変わらない。つまり lane を drag していなくても
+`LaneRow.onDrop` には来るので、**ガードが真の時だけ止める**必要がある
+（同ファイルの `onDragOver` は最初からその順序だった = 隣接するハンドラで規律が割れていた）。
+
+### 12.7 部分解決は許すが全滅は拒む
+
+`set_lane_order` は解決できなかった名前を落として続行し、**1 つも解決できなければ Err**。
+一覧と帳簿の間には常に時間差がある（送信中に lane が消える等）ので 1 件の不一致で
+並べ替え全体を失敗させる意味は無い。逆に全滅は呼び手の指定が丸ごと間違っているので、
+黙って空の並びを書かない。
+
+### 12.8 手順の訂正 — clippy は `-D warnings` で回す
+
+本スライスで `SystemEvent` に variant を足した結果 `clippy::large_enum_variant` が発火し、
+**CI（`cargo clippy --workspace --all-targets -- -D warnings`）だけが落ちる**状態になった。
+素の `cargo clippy` は warning のみで exit 0 なので気付けない。
+
+`/release` skill にも「doc と同じ厳格ゲート（`-W` ではない）」と明記されている。
+以降のスライスはローカルでも `-D warnings` を付ける。
+
+（対処は `#[allow(clippy::large_enum_variant)]`。本 enum は broadcast channel を流れるだけで
+滞留せず最悪 22KB、対して `Lane(Diff::*)` の構築点は複数あり Box 化は割に合わない。）

@@ -527,6 +527,69 @@ impl VpDb {
             .map(|s| s.to_string()))
     }
 
+    /// lane の並び順を project 単位で**全置換**する（doc 44 D5）。
+    ///
+    /// 並び順は集合なので replace 型（`replace_lanes` と同じ考え方）。差分 upsert にすると
+    /// 「並びから外れた lane の古い ord」が残り、次に現れた時に意図しない位置に挿さる。
+    pub async fn replace_lane_order(&self, project_path: &str, order: &[String]) -> Result<()> {
+        self.db
+            .query("DELETE host_lane_order WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 並び順の削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane 並び順の削除エラー: {}", e))?;
+        for (i, lane_id) in order.iter().enumerate() {
+            self.db
+                .query(
+                    "CREATE host_lane_order SET
+                        project_path = $p, lane_id = $id, ord = $ord, updated_at = time::now()",
+                )
+                .bind(("p", project_path.to_string()))
+                .bind(("id", lane_id.clone()))
+                .bind(("ord", i as i64))
+                .await
+                .map_err(|e| anyhow::anyhow!("lane 並び順の永続失敗: {}", e))?
+                .check()
+                .map_err(|e| anyhow::anyhow!("lane 並び順の永続エラー: {}", e))?;
+        }
+        Ok(())
+    }
+
+    /// lane の並び順を引く（`lane_id` → `ord`）。未指定 project は空。
+    pub async fn list_lane_order(
+        &self,
+        project_path: &str,
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        let mut result = self
+            .db
+            .query("SELECT lane_id, ord FROM host_lane_order WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 並び順の取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| {
+                let id = v.get("lane_id")?.as_str()?.to_string();
+                let ord = v.get("ord")?.as_i64()?;
+                Some((id, ord))
+            })
+            .collect())
+    }
+
+    /// lane の並び順を project ごと回収する（`delete_host_origin` と対、§4.6 含有=所有=寿命）。
+    pub async fn delete_lane_order_for_project(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE host_lane_order WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 並び順の全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane 並び順の全削除エラー: {}", e))?;
+        Ok(())
+    }
+
     /// 開発起点ポインタを削除する (project remove 時の回収、`delete_active_lane` と対)。
     pub async fn delete_host_origin(&self, project_path: &str) -> Result<()> {
         self.db
@@ -1352,6 +1415,22 @@ DEFINE FIELD IF NOT EXISTS project_path ON host_origin TYPE string;
 DEFINE FIELD IF NOT EXISTS lane_id ON host_origin TYPE string;
 DEFINE FIELD IF NOT EXISTS updated_at ON host_origin TYPE datetime;
 DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS project_path UNIQUE;
+
+-- Project Host の帳簿②: lane の並び順 (doc 44 D5 / §12)。
+--
+-- ⚠️ `lane` table には置けない — `upsert_lane` が DELETE+CREATE なので、SP/project 由来の
+-- descriptor push が来るたびに ord が消える。`lane_lifecycle` を別 table にしたのと同じ理由で、
+-- 「Host の intent」と「lane が報告する state」は table を分ける。
+--
+-- key は `host_origin` と同じく **lane_id (UUID)**。並び順は lane そのものに付く指定なので、
+-- 表示名が変わっても動いてはいけない (doc 44 §8.2)。
+-- 行が無い lane は「未指定」= 既定順 (開発起点が先頭 → created_at) の末尾に付く。
+DEFINE TABLE IF NOT EXISTS host_lane_order SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON host_lane_order TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_id ON host_lane_order TYPE string;
+DEFINE FIELD IF NOT EXISTS ord ON host_lane_order TYPE int;
+DEFINE FIELD IF NOT EXISTS updated_at ON host_lane_order TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_host_lane_order ON host_lane_order COLUMNS project_path, lane_id UNIQUE;
 
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。

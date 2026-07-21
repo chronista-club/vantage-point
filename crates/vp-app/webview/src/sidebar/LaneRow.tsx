@@ -15,6 +15,15 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
+	clearLaneDrag,
+	commitLaneReorder,
+	dragLane,
+	laneDropMark,
+	setDragLane,
+	setLaneDropMark,
+	type DropPos,
+} from "./dnd";
+import {
 	isLaneAlive,
 	isPerformerLane,
 	laneAddressKey,
@@ -109,6 +118,75 @@ export function LaneRow(props: {
 		sendIpc({ t: "lane:select", path: props.projectPath, address: addr() });
 	};
 
+	// ── 並べ替え D&D (doc 44 §12) ────────────────────────────────────────
+	// project accordion の D&D と同じ「行の上半分 = 手前 / 下半分 = 後ろ」規約。
+	// 落とせるのは **同じ project の lane 同士**だけ (帳簿は project ごとに 1 本)。
+	const isDragging = () => dragLane()?.address === addr();
+	const dropBefore = () => {
+		const m = laneDropMark();
+		return m?.address === addr() && m.pos === "before";
+	};
+	const dropAfter = () => {
+		const m = laneDropMark();
+		return m?.address === addr() && m.pos === "after";
+	};
+
+	const onDragStart = (e: DragEvent) => {
+		setDragLane({ path: props.projectPath, address: addr() });
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = "move";
+			// Firefox は dataTransfer に何か入れないと drag が始まらない。
+			e.dataTransfer.setData("text/plain", addr());
+		}
+		// project accordion の dragstart を巻き込まない (lane 行から掴んだら lane の
+		// 並べ替え。 ProjectAccordion 側も summary 由来しか通さない guard を持つ)。
+		e.stopPropagation();
+	};
+
+	const onDragOver = (e: DragEvent & { currentTarget: HTMLElement }) => {
+		const dragged = dragLane();
+		// 自分自身 / 別 project / ドラッグ中でない → drop を許可しない。
+		if (
+			dragged == null ||
+			dragged.address === addr() ||
+			dragged.path !== props.projectPath
+		) {
+			return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+		const rect = e.currentTarget.getBoundingClientRect();
+		const pos: DropPos =
+			e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+		const cur = laneDropMark();
+		if (cur == null || cur.address !== addr() || cur.pos !== pos) {
+			setLaneDropMark({ address: addr(), pos });
+		}
+	};
+
+	// ⚠️ ガードが真の時**だけ** preventDefault / stopPropagation する（onDragOver と同じ順序）。
+	// 無条件に止めると、**project を drag して lane 行の上で離した時**に drop がここで
+	// 消える: HTML5 DnD の drop はポインタ直下の要素（= lane 行）で発火し、祖先の
+	// `<details>` が dragover で preventDefault していても発火先は変わらない。
+	// つまり lane drag 中でなくても onDrop はここに来るので、素通しさせないと
+	// `ProjectAccordion.onDrop` に届かず project の並べ替えが無音で失われる。
+	const onDrop = (e: DragEvent) => {
+		const dragged = dragLane();
+		const mark = laneDropMark();
+		if (
+			dragged != null &&
+			mark != null &&
+			dragged.address !== addr() &&
+			dragged.path === props.projectPath
+		) {
+			e.preventDefault();
+			e.stopPropagation();
+			commitLaneReorder(props.projectPath, dragged.address, addr(), mark.pos);
+		}
+		clearLaneDrag();
+	};
+
 	// 右クリック → context menu。 Lane 操作は ContextMenu に一本化 (VP-204 PR-1 で
 	// inline hover ボタンを撤去)。 操作対象が無い Lane (inactive Conductor — project 削除は
 	// PR-2) は items 空 → openContextMenu が no-op。
@@ -200,9 +278,17 @@ export function LaneRow(props: {
 				active: isActive(),
 				inactive: isInactive(),
 				performer: isPerformer(),
+				dragging: isDragging(),
+				"drop-before": dropBefore(),
+				"drop-after": dropAfter(),
 			}}
+			draggable="true"
 			onClick={onSelect}
 			onContextMenu={onContextMenu}
+			onDragStart={onDragStart}
+			onDragOver={onDragOver}
+			onDrop={onDrop}
+			onDragEnd={clearLaneDrag}
 		>
 			{/* ⓪ tree connector (CSS 描画、 線種で control surrender FSM を表現。
 			    脱 TUI hybrid 2026-07: glyph → pseudo-element、 描画は SHELL_CSS 参照) */}

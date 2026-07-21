@@ -167,6 +167,12 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         lane.refresh_engine_session_id();
     }
 
+    // doc 44 §12: 帳簿の並び順を最後に適用する（既定順 = 開発起点が先頭 → created_at の上に
+    // 被せる）。ここが全経路の choke point なので、`lanes_list` も QUIC snapshot も
+    // **同じ並び**になる（供給点ごとに sort が散ると「見る場所で順番が違う」が起きる）。
+    crate::host::ledger::sort_lanes_by_ledger(state.vpdb.as_ref(), &state.project_dir, &mut lanes)
+        .await;
+
     lanes
 }
 

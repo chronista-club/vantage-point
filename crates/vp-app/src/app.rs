@@ -2115,6 +2115,8 @@ struct SidebarIpcOutcome {
     /// doc 44 D4: 開発起点の再指定要求 (project_path, lane address)。
     /// 実体は Host の帳簿のポインタ更新だけで、lane は何も動かない (D5)。
     set_origin_request: Option<(String, String)>,
+    /// doc 44 §12: lane の並び順の保存要求 (project_path, lane address の表示順)。
+    reorder_lanes_request: Option<(String, Vec<String>)>,
     /// Phase 5-C: Process restart 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
     restart_process_request: Option<String>,
@@ -2244,6 +2246,14 @@ fn handle_sidebar_ipc(
             // （帳簿が真実源 — 楽観更新すると失敗時に UI だけ嘘をつく）。
             if !m.path.is_empty() && !m.address.is_empty() {
                 out.set_origin_request = Some((m.path, m.address));
+            }
+        }
+        IpcEnvelope::LaneReorder(m) => {
+            // doc 44 §12: sidebar の DnD で並び替えた結果を帳簿に保存する。
+            // 起点と同じく **楽観更新しない** — 反映は次の lanes snapshot（server が
+            // 帳簿の順で並べる）で戻る。#835 で push の起床が直ったので即座に届く。
+            if !m.path.is_empty() && !m.order.is_empty() {
+                out.reorder_lanes_request = Some((m.path, m.order));
             }
         }
         IpcEnvelope::LaneAddPerformer(m) => {
@@ -4716,6 +4726,43 @@ pub fn run() -> anyhow::Result<()> {
                                 "lane_origin_set failed: project={} lane={}: {}",
                                 project_path,
                                 lane_name,
+                                e
+                            ),
+                        }
+                    });
+                }
+                // doc 44 §12: lane の並び順を帳簿に保存する（sidebar の DnD）。
+                // address 列を lane 名の列に畳んでから投げる（帳簿は lane 名で受け、
+                // 境界で lane_id に解決する — 起点と同じ規律）。
+                if let Some((project_path, order)) = outcome.reorder_lanes_request {
+                    rt_handle.spawn(async move {
+                        let names: Vec<String> = order
+                            .iter()
+                            .filter_map(|a| a.rsplit('/').next())
+                            .filter(|n| !n.is_empty())
+                            .map(|n| n.to_string())
+                            .collect();
+                        if names.is_empty() {
+                            tracing::warn!("lane_order_set: address 列から lane 名を取れない");
+                            return;
+                        }
+                        let payload = serde_json::json!({ "order": names });
+                        match world_process_request(
+                            crate::client::default_world_port(),
+                            &project_path,
+                            "lane_order_set",
+                            payload,
+                        )
+                        .await
+                        {
+                            Ok(_) => tracing::info!(
+                                "lane の並び順を保存: project={} count={}",
+                                project_path,
+                                names.len()
+                            ),
+                            Err(e) => tracing::warn!(
+                                "lane_order_set failed: project={}: {}",
+                                project_path,
                                 e
                             ),
                         }

@@ -61,6 +61,12 @@ pub struct LaneSetOrigin {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneReorder {
+    pub path: String,
+    pub order: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneAddPerformer {
     pub path: String,
     pub name: String,
@@ -140,6 +146,8 @@ pub enum IpcEnvelope {
     LaneRestart(LaneRestart),
     #[serde(rename = "lane:set_origin")]
     LaneSetOrigin(LaneSetOrigin),
+    #[serde(rename = "lane:reorder")]
+    LaneReorder(LaneReorder),
     #[serde(rename = "lane:add_performer")]
     LaneAddPerformer(LaneAddPerformer),
     #[serde(rename = "stands:fetch")]

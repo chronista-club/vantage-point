@@ -85,6 +85,54 @@ export function moveInOrder(
  *
  * 解決順は全 Project を含む (タブ分割は撤去済、 Shell は 1 リストで全 project を表示)。
  */
+/**
+ * ドラッグ中の Lane。 null = ドラッグなし。
+ *
+ * project の drag state と分けるのは、並べ替えの単位が違うため (project 間の
+ * 並べ替えと lane 間の並べ替えは互いに drop 先になれない)。 `path` を持つのは
+ * **同じ project 内でしか落とせない**ことを drop 側で判定するため。
+ */
+export const [dragLane, setDragLane] = createSignal<{
+  path: string
+  address: string
+} | null>(null)
+
+/** lane の drop 先 `{ address, pos }`。 null = 有効な drop 先の上にいない。 */
+export const [laneDropMark, setLaneDropMark] = createSignal<{
+  address: string
+  pos: DropPos
+} | null>(null)
+
+/** lane drag 関連 signal を初期状態に戻す (dragend / drop 後に呼ぶ)。 */
+export function clearLaneDrag(): void {
+  setDragLane(null)
+  setLaneDropMark(null)
+}
+
+/**
+ * lane の drop を確定する action (doc 44 §12)。
+ *
+ * 現在の表示順 (= server が帳簿の順で並べた `lanes_by_project`) を起点に
+ * `moveInOrder` で並べ替え、`lane:reorder` IPC で **帳簿へ保存する**。
+ *
+ * ⚠️ project の並べ替え (`commitProjectReorder`) と違い **楽観更新しない**。
+ * 並び順の真実源は Host の帳簿で、楽観更新すると保存に失敗した時に UI だけが
+ * 嘘をつく (開発起点 star と同じ規律、doc 44 §10.3)。反映は次の lanes snapshot で
+ * 戻る — #835 で push の起床が直ったので即座に届く。
+ */
+export function commitLaneReorder(
+  projectPath: string,
+  dragged: string,
+  target: string,
+  pos: DropPos,
+): void {
+  const lanes = sidebar.lanes_by_project?.[projectPath]
+  if (!lanes || lanes.length === 0) return
+  const current = lanes.map((l) => `${l.address.project}/${l.address.name}`)
+  const order = moveInOrder(current, dragged, target, pos)
+  sendIpc({ t: 'lane:reorder', path: projectPath, order })
+}
+
 export function commitProjectReorder(dragged: string, target: string, pos: DropPos): void {
   const resolved = resolveProjectOrder(sidebar.processes, sidebar.currents_order)
   const order = moveInOrder(

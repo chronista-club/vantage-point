@@ -67,6 +67,12 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "address" type="string"
         }
+        // doc 44 §12: lane の並び順を帳簿に保存する (sidebar の DnD)。
+        // order = lane address の配列 (表示順)。server 側で lane 名 → lane_id に解決される。
+        request "lane:reorder" {
+            field "path" type="string"
+            field "order" type="array<string>"
+        }
         // Performer Lane 作成要求 (branch / stand は optional)
         request "lane:add_performer" {
             field "path" type="string"

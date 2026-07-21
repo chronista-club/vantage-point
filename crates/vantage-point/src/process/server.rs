@@ -456,8 +456,11 @@ pub(crate) async fn start_project(
                         ).await;
                     }
                     ev = sys_rx.recv() => match ev {
-                        // Lane lifecycle 変化 / lag → 現 snapshot を全量 publish（idempotent）
-                        Ok(SystemEvent::Lane(_)) | Err(RecvError::Lagged(_)) => {
+                        // Lane lifecycle 変化 / 並び替え / lag → 現 snapshot を全量 publish（idempotent）。
+                        // 並び替え（doc 44 §12）は per-lane の diff を持たないが snapshot の
+                        // 並びが変わるので、同じ全量 publish で届く。
+                        Ok(SystemEvent::Lane(_) | SystemEvent::LanesReordered)
+                        | Err(RecvError::Lagged(_)) => {
                             publish_lanes(
                                 &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
                                 &mut notifier,

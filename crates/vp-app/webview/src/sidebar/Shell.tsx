@@ -390,6 +390,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-origin{display:inline-flex;flex:0 0 auto;margin-right:4px;
   color:var(--lg-mute,#5C7A85);}
 .vp-lane-row.inactive .vp-lane-origin{opacity:0.55;}
+/* Lane D&D 並べ替え (doc 44 §12) — project 側 (.vp-proj) と同じ語彙で揃える:
+   dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線。
+   落とせるのは同じ project の lane 同士だけ (帳簿は project ごとに 1 本)。 */
+.vp-lane-row.dragging{opacity:.4;}
+.vp-lane-row.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#22E0FF);}
+.vp-lane-row.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#22E0FF);}
 /* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */
 .vp-lane-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 18%);}
