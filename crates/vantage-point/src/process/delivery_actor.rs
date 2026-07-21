@@ -44,7 +44,7 @@ use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 use crate::daemon::server::ControlChannels;
 // channel E (doc 34): console_mode が forward method (lane_nudge / echoes_nudge) を分ける。
 use crate::lane::console_mode::ConsoleMode;
-use crate::process::lanes_state::{LaneInfo, LaneState};
+use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
 /// 配信 pulse の定期 tick (Notify wake の取りこぼし安全網)
 const TICK: Duration = Duration::from_secs(30);
@@ -96,19 +96,26 @@ fn decide_nudge(
 
 /// wire agent address → lane address の Display 形 (純関数)
 ///
-/// nudge 可能なのは agent (conductor / performer) のみ:
-/// - `agent@<project>` → `<project>/conductor`
-/// - `agent@<project>/<name>` → `<project>/performer/<name>`
+/// nudge 可能なのは agent (lane 宛) のみ:
+/// - `agent@<project>` → `<project>/conductor`（lane 名省略 = 開発起点）
+/// - `agent@<project>/<name>` → `<project>/<name>`
 /// - それ以外 (notify@ / lane-spawn@ / vp-cli 等) → None (nudge 対象外)
+///
+/// ⚠️ 戻り値は [`pick_nudge_target`] が `LaneAddress::to_string()` と**生の完全一致**で
+/// 照合する（間に `parse_address` を挟まない唯一の経路）。したがって
+/// [`LaneAddress`](crate::process::lanes_state::LaneAddress) の Display 形と
+/// **byte-for-byte 同じ形を組み立てる責任がここにある**。
+/// doc 44 P2 のフラット化ではこの直書きが取り残され、performer 宛 nudge が恒久的に
+/// 不一致になる回帰を生んだ（conductor は形が変わらないため無症状で気付きにくい）。
 pub(crate) fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
     let rest = addr.strip_prefix("agent@")?;
     if rest.is_empty() {
         return None;
     }
     match rest.split_once('/') {
-        None => Some(format!("{}/conductor", rest)),
+        None => Some(LaneAddress::conductor(rest).to_string()),
         Some((project, name)) if !project.is_empty() && !name.is_empty() => {
-            Some(format!("{}/performer/{}", project, name))
+            Some(LaneAddress::new(project, name).to_string())
         }
         Some(_) => None,
     }
@@ -736,14 +743,43 @@ mod tests {
             wire_agent_to_lane_display("agent@vp").as_deref(),
             Some("vp/conductor")
         );
+        // doc 44 P2: フラット化で `<project>/<name>` になった
         assert_eq!(
             wire_agent_to_lane_display("agent@vp/w1").as_deref(),
-            Some("vp/performer/w1")
+            Some("vp/w1")
         );
         assert_eq!(wire_agent_to_lane_display("notify@vp"), None);
         assert_eq!(wire_agent_to_lane_display("vp-cli"), None);
         assert_eq!(wire_agent_to_lane_display("agent@"), None);
         assert_eq!(wire_agent_to_lane_display("agent@vp/"), None);
+    }
+
+    /// 回帰固定: **wire agent address → nudge 先 lane** の解決が performer でも成立すること。
+    ///
+    /// `wire_agent_to_lane_display` は lane address を**文字列で組み立てる**唯一の経路で、
+    /// その結果を `pick_nudge_target` が `LaneAddress::to_string()` と**生の完全一致**で
+    /// 照合する（間に `parse_address` を挟まない）。doc 44 P2 のフラット化で前者が旧形
+    /// （`<project>/performer/<name>`）のまま取り残され、performer 宛 wire nudge が恒久的に
+    /// 「lane 不在」となって永久リトライに落ちる回帰を出した。
+    ///
+    /// このテストが無かったのは、2 関数を**個別には**テストしていた一方で、
+    /// `pick_nudge_target` 側の fixture が conductor lane 固定だったため
+    /// （conductor は形が変わらないので回帰が無症状になる）。両者を繋いで検証する。
+    #[test]
+    fn agent_address_resolves_to_performer_nudge_target() {
+        let performer = LaneInfo {
+            address: LaneAddress::performer("vp", "w1"),
+            pid: Some(4242),
+            ..test_lane(LaneState::Running)
+        };
+        let lanes = vec![("/repos/vp".to_string(), performer)];
+
+        let display =
+            wire_agent_to_lane_display("agent@vp/w1").expect("agent アドレスは解決される");
+        let target = pick_nudge_target(&lanes, &display)
+            .expect("performer lane が nudge 先として見つかること（回帰: 旧形との不一致で None）");
+        assert_eq!(target.path_key, "/repos/vp");
+        assert_eq!(target.lane_display, "vp/w1");
     }
 
     /// R3-c: agent address → headless dispatch 用の (VP_PROJECT, VP_LANE)

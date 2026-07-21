@@ -309,7 +309,32 @@ address は **2 つの形**で永続しており、両方に手当てが要っ�
 serde default で descriptor が読めるようになったので「互換は済んだ」と錯覚しやすいが、
 **object と文字列 key は別の経路**で、前者の手当ては後者を救わない。
 
-### 6.4 残した振る舞い分岐
+migration は**行単位で失敗を閉じ込める**（1 行の UPDATE 失敗＝典型は旧形と新形が同一 lane を
+指す UNIQUE 衝突 — で関数を抜けると、同じ SELECT に載った残り全行が巻き添えで未処理になり、
+衝突源が在る限り再起動のたびに同じ巻き添えが起き続ける）。
+
+### 6.4 取り残しやすいのは「型を経由しない文字列」
+
+フラット化の取り残しは **`LaneAddress` 型を使っている箇所**では起きない（コンパイラが止める）。
+危ないのは **address を文字列で直に組み立てている箇所**で、実際に 1 件やらかした:
+
+`delivery_actor::wire_agent_to_lane_display` は `format!("{}/performer/{}", …)` で lane address を
+組み立て、その結果を `pick_nudge_target` が `LaneAddress::to_string()` と**生の完全一致**で照合する
+（間に `parse_address` を挟まない唯一の経路）。旧形のまま取り残された結果、**performer 宛の
+wire nudge が恒久的に「lane 不在」となり永久リトライに落ちる**回帰になった。
+
+見つけにくい条件が 3 つ重なっていた:
+- **conductor は形が変わらない**ので無症状（開発起点だけ使っていると気づかない）
+- 2 つの関数を**個別には**テストしていたが、`pick_nudge_target` の fixture が conductor 固定で、
+  **両者を performer で繋ぐテストが無かった** → `test --workspace` は緑のまま
+- 他の全経路（`resolve_lane_address` / `handle_lane_nudge` / `handle_lane_delete` 等）は
+  `parse_address` を通るので旧形を吸収してしまい、**この 1 箇所だけが地雷化**した
+
+対処は `LaneAddress::new(project, name).to_string()` を経由する形に変えて、直書きをやめた
+（Display 形が将来また変わっても自動追随する）。**「文字列直書きは無傷なのではなく、
+受信側の正規化に依存して無傷」**という区別が要る — 依存が無い経路が事故る。
+
+### 6.5 残した振る舞い分岐
 
 `stand_spawner::claude_command` の「開発起点なら `--continue`、それ以外は fresh」は**挙動不変で残した**
 （`LaneKind` 判定 → `is_conductor()` 判定に置換）。cwd の性質差に根拠がある実在の差で、

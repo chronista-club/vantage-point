@@ -270,15 +270,31 @@ impl VpDb {
             else {
                 continue;
             };
-            self.db
+            // 1 行の失敗で他行を巻き込まない。典型的な失敗は
+            // `(project_path, address)` の UNIQUE 衝突（旧形と新形が同じ lane を指して
+            // 両方残っているケース）で、これは当該行だけの問題。`?` で抜けると同じ
+            // SELECT に載った**残り全行**の正規化が飛び、次回起動でも衝突源が在る限り
+            // 毎回巻き添えになる（= 恒久的に旧形が残る）。
+            let updated = self
+                .db
                 .query(format!(
                     "UPDATE type::record('{table}', $rid) SET address = $addr"
                 ))
                 .bind(("rid", rid.to_string()))
-                .bind(("addr", new))
-                .await?
-                .check()?;
-            fixed += 1;
+                .bind(("addr", new.clone()))
+                .await
+                .and_then(|mut r| r.take::<Vec<serde_json::Value>>(0));
+            match updated {
+                Ok(_) => fixed += 1,
+                Err(e) => tracing::warn!(
+                    "{}:{} の address 正規化に失敗（この行のみ旧形のまま継続、{} → {}）: {}",
+                    table,
+                    rid,
+                    old,
+                    new,
+                    e
+                ),
+            }
         }
         Ok(fixed)
     }
