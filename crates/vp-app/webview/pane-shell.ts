@@ -230,6 +230,21 @@ export class PaneShell {
     private readonly frame: HTMLElement,
   ) {}
 
+  /**
+   * 指定 Pane だけを残して他を畳む（view を「1 枚ずつ」に倒す、mako 2026-07-21）。
+   *
+   * 内部モデルは tiling のまま。**既定の見せ方**だけを従来に寄せるための入口で、
+   * user が chip を押せば並列表示に戻せる（機能を消さない）。
+   * doc 47 §1 の決着後、この呼び出しを外せば既定が tiling に戻る。
+   */
+  minimizeOthers(keep: string): void {
+    const layout = this.layout
+    for (const p of layout.all()) {
+      if (p.id !== keep) layout.minimize(p.id)
+    }
+    this.render()
+  }
+
   /** 表示中 lane の layout（読み取り用）。 */
   get layout(): PaneLayout {
     return this.lanes.current()

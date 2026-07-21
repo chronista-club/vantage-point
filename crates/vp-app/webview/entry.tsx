@@ -610,10 +610,20 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	// 変わったら新 lane の layout を DOM へ写し直す（これが無いと「どの lane に
 	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
 	paneShell?.setLane(lane);
+	// ⚠️ 表示は **1 枚ずつ**（mako 2026-07-21）。内部モデル（doc 47）を整えるまで
+	// view は「現状維持・シンプル・ミニマム」に倒す方針。
+	//
+	// tiling の内部（`LaneLayouts` / `PaneLayout`）はそのまま残し、**既定の見せ方**だけを
+	// 従来の「Act I か Act II」に戻す。畳んだ側はタブ chip に残るので、`+ New` も
+	// 手動での並列表示も失われない（機能を消さずに既定だけを寄せる）。
+	//
+	// doc 47 §1 の決着（doc 46 の Pane を FrameEngine に畳む）後、既定を tiling に戻す。
 	if (mode === "chat") {
 		paneShell?.focus("console-chat-host");
+		paneShell?.minimizeOthers("console-chat-host");
 	} else {
 		paneShell?.focus("lane-host");
+		paneShell?.minimizeOthers("lane-host");
 		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
 		// resync-loader は activeLane の replaying を読むだけで Act を知らないため、chat→tui で
 		// stuck した replaying が Act I 表示の上に居座るのを防ぐ。
