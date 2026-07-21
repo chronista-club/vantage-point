@@ -792,10 +792,14 @@ impl ProcessManagerCapability {
         // doc 44 D4 / §4.6: Project Host の帳簿 (開発起点ポインタ) も namespace と共に回収する。
         // 残すと同 path で project を再登録した時、旧 lane の UUID を指す孤児ポインタが復活し、
         // 起点が `Dangling` に落ちる (= 指定した覚えのない「指定が失われました」表示)。
-        if let Some(db) = &self.vpdb
-            && let Err(e) = db.delete_host_origin(&key).await
-        {
-            tracing::warn!("host_origin の db/world 削除に失敗: {}", e);
+        if let Some(db) = &self.vpdb {
+            if let Err(e) = db.delete_host_origin(&key).await {
+                tracing::warn!("host_origin の db/world 削除に失敗: {}", e);
+            }
+            // doc 44 §12: lane の並び順も同じ namespace の帳簿なので一緒に畳む。
+            if let Err(e) = db.delete_lane_order_for_project(&key).await {
+                tracing::warn!("host_lane_order の db/world 削除に失敗: {}", e);
+            }
         }
         // L1 lifecycle: connection presence も namespace と共に回収 (active_lanes と対称、
         // DB 永続を持たない in-memory only field なので map remove のみ)。

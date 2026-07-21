@@ -1670,6 +1670,37 @@ async fn handle_lane_origin_set(
     serde_json::to_value(&origin).map_err(|e| format!("lane_origin_set: serialize 失敗: {e}"))
 }
 
+/// doc 44 §12: lane の並び順を帳簿に保存する。payload = `{ "order": ["<lane 名>", ...] }`。
+///
+/// 起点と同じく、人が触るのは名前で帳簿に入るのは `lane_id`。保存後の反映は
+/// 次の lanes snapshot に載って戻る（`build_lanes_snapshot` が帳簿の順で並べる）。
+async fn handle_lane_order_set(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let order: Vec<String> = payload
+        .get("order")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if order.is_empty() {
+        return Err("lane_order_set: order 必須".to_string());
+    }
+    let lanes = ledger_lane_refs(state).await;
+    crate::host::ledger::set_lane_order(state.vpdb.as_ref(), &state.project_dir, &order, &lanes)
+        .await?;
+    // 並び順が変わった = snapshot が変わるので、publish して vp-app を起こす
+    // （doc 44 §11 の指紋は lanes の並びも含むため、次の publish で必ず届く）。
+    let _ = state
+        .system_event_tx
+        .send(crate::process::lanes_state::SystemEvent::LanesReordered);
+    Ok(serde_json::json!({ "status": "ok", "count": order.len() }))
+}
+
 /// lanes portless (doc 27 §3.4.5): Lane list。 旧 SP HTTP `GET /api/lanes` を process-proxy ask に
 /// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
 async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
@@ -1752,6 +1783,7 @@ pub(crate) async fn dispatch_process_method(
         // doc 44 D4: Project Host の帳簿 — 開発起点ポインタの読み書き
         "lane_origin_get" => handle_lane_origin_get(state).await,
         "lane_origin_set" => handle_lane_origin_set(state, payload).await,
+        "lane_order_set" => handle_lane_order_set(state, payload).await,
         // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
         "stands_list" => handle_stands_list().await,
         // L0 finale: SP graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、

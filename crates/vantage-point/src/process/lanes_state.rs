@@ -285,9 +285,20 @@ pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "scope")]
+// `Lane(LaneDiff)` は 352 byte、`LanesReordered` は 0 byte で size 差が出る。
+// Box 化はしない: 本 enum は broadcast channel (容量 64) を流れるだけで滞留せず、
+// 最悪でも 22KB。対して `SystemEvent::Lane(Diff::*)` の構築点は複数あり、
+// Box 化はそこ全部に `Box::new` を撒く割に得るものが無い。
+#[allow(clippy::large_enum_variant)]
 pub enum SystemEvent {
     /// Lane lifecycle diff (Phase 2 Step E)
     Lane(LaneDiff),
+    /// 帳簿の並び順が変わった（doc 44 §12）。
+    ///
+    /// **個々の lane は何も変わっていない**ので `Lane(Diff::*)` では表せない
+    /// （Diff は per-lane の差分で、偽の Add/Update を流すと購読側が実在しない
+    /// 変化に反応する）。並びは snapshot 全体の性質なので独立 variant にする。
+    LanesReordered,
     // 将来 variant 追加候補:
     //   Pane(Diff<PaneId, PaneInfo>),       // Phase 7 (Pane Revival)
     //   Stand(Diff<StandKind, StandInfo>),  // 各 Stand の lifecycle

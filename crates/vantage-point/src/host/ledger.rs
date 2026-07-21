@@ -112,6 +112,28 @@ pub fn lane_id_of<'a>(name: &str, lanes: &'a [LaneRef]) -> Option<&'a str> {
         .filter(|id| !id.is_empty())
 }
 
+/// 帳簿の並び順を lane 列に適用する **純関数**（doc 44 §12）。
+///
+/// `order` は `lane_id` → `ord`。**指定のある lane が先**（ord 昇順）、指定の無い lane は
+/// その後ろに**元の並びのまま**続く。
+///
+/// 「未指定は末尾」にするのは、新しく作られた lane が既存の並びに割り込まないため。
+/// 割り込むと「並べ替えたのに勝手に崩れた」に見える。
+///
+/// 元の並び（`LanePool::list()` の 開発起点が先頭 → created_at）を保つのは、
+/// **帳簿が何も言っていない範囲では既定の意味論を壊さない**ため。
+pub fn apply_lane_order<T>(
+    lanes: &mut [T],
+    order: &std::collections::HashMap<String, i64>,
+    id_of: impl Fn(&T) -> String,
+) {
+    if order.is_empty() {
+        return;
+    }
+    // 安定 sort なので、同じ rank（= どちらも未指定）は元の並びが保たれる。
+    lanes.sort_by_key(|l| order.get(&id_of(l)).copied().unwrap_or(i64::MAX));
+}
+
 // =============================================================================
 // actions — 帳簿の永続（DB）。判定は上の純関数が済ませている
 // =============================================================================
@@ -171,6 +193,51 @@ pub async fn origin_name_for_lanes(
         .map(|l| LaneRef::new(l.id.to_string(), l.address.name.clone()))
         .collect();
     origin(vpdb, project_path, &refs).await.name
+}
+
+/// 帳簿の並び順を lane 列に適用する（snapshot publisher / `lanes_list` 用）。
+///
+/// DB が無い / 読めない場合は**並べ替えない**（既定順のまま）。並び順が読めないだけで
+/// lane 一覧が出なくなる方が困る。
+pub async fn sort_lanes_by_ledger(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    lanes: &mut [crate::process::lanes_state::LaneInfo],
+) {
+    let Some(db) = vpdb else { return };
+    let order = match db.list_lane_order(&row_key(project_path)).await {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("帳簿: lane 並び順の読み出しに失敗（既定順で継続）: {}", e);
+            return;
+        }
+    };
+    apply_lane_order(lanes, &order, |l| l.id.to_string());
+}
+
+/// lane の並び順を設定する（名前列で受けて id 列で書く）。
+///
+/// 起点と同じく境界で 1 回だけ名前 → id に変換する。実在しない名前は**黙って落とす**
+/// のではなく、解決できた分だけを書く — 一覧と帳簿の間には常に時間差があり
+/// （送信中に lane が消える等）、1 つの不一致で並べ替え全体を失敗させる意味が無い。
+/// ただし 1 つも解決できなければ Err（呼び手の指定が丸ごと間違っている）。
+pub async fn set_lane_order(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    lane_names: &[String],
+    lanes: &[LaneRef],
+) -> Result<(), String> {
+    let db = vpdb.ok_or_else(|| "帳簿: DB 未接続のため並び順を保存できません".to_string())?;
+    let ids: Vec<String> = lane_names
+        .iter()
+        .filter_map(|n| lane_id_of(n, lanes).map(|id| id.to_string()))
+        .collect();
+    if ids.is_empty() {
+        return Err("帳簿: 並び順に解決できる lane がありません".to_string());
+    }
+    db.replace_lane_order(&row_key(project_path), &ids)
+        .await
+        .map_err(|e| format!("帳簿: 並び順の永続に失敗: {e}"))
 }
 
 /// 起点を設定する（名前で受けて id で書く）。
@@ -348,6 +415,119 @@ mod tests {
         assert_eq!(origin.source, OriginSource::Pinned);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 並び順の適用（doc 44 §12）— 指定のある lane が先、無い lane は**元の並びのまま後ろ**。
+    #[test]
+    fn apply_lane_order_puts_unspecified_last_in_original_order() {
+        let mut lanes = vec!["a", "b", "c", "d"];
+        let order: std::collections::HashMap<String, i64> =
+            [("c".to_string(), 0), ("a".to_string(), 1)]
+                .into_iter()
+                .collect();
+
+        apply_lane_order(&mut lanes, &order, |l| l.to_string());
+
+        assert_eq!(
+            lanes,
+            vec!["c", "a", "b", "d"],
+            "指定順が先、未指定は元の相対順（b→d）のまま後ろ"
+        );
+    }
+
+    /// 帳簿が空なら**何もしない**（既定順 = 開発起点が先頭 → created_at を壊さない）。
+    #[test]
+    fn apply_lane_order_is_noop_when_ledger_is_empty() {
+        let mut lanes = vec!["conductor", "b", "a"];
+        apply_lane_order(&mut lanes, &Default::default(), |l| l.to_string());
+        assert_eq!(
+            lanes,
+            vec!["conductor", "b", "a"],
+            "未指定 project の並びは既定のまま"
+        );
+    }
+
+    /// 新しく作られた lane が既存の並びに**割り込まない**。
+    ///
+    /// 割り込むと「並べ替えたのに勝手に崩れた」に見える。未指定 = 末尾が要件。
+    #[test]
+    fn new_lane_does_not_cut_into_existing_order() {
+        let mut lanes = vec!["fresh", "a", "b"];
+        let order: std::collections::HashMap<String, i64> =
+            [("a".to_string(), 0), ("b".to_string(), 1)]
+                .into_iter()
+                .collect();
+
+        apply_lane_order(&mut lanes, &order, |l| l.to_string());
+
+        assert_eq!(lanes, vec!["a", "b", "fresh"], "新 lane は末尾に付く");
+    }
+
+    /// 並び順の round-trip（write → read）。**path の形が違っても同じ行**を触る
+    /// （起点と同じ `row_key` に乗っているかの固定）。
+    #[tokio::test]
+    async fn lane_order_round_trip_across_path_shapes() {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+
+        let dir = std::env::temp_dir().join(format!("vp-ledger-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical = dir.to_string_lossy().to_string();
+        let quirky = format!("{canonical}/.");
+
+        let lanes = vec![
+            LaneRef::new("id-a", "a"),
+            LaneRef::new("id-b", "b"),
+            LaneRef::new("id-c", "c"),
+        ];
+
+        set_lane_order(
+            Some(&db),
+            &quirky,
+            &["c".to_string(), "a".to_string()],
+            &lanes,
+        )
+        .await
+        .expect("並び順の保存");
+
+        let mut names = vec!["a", "b", "c"];
+        let order = db.list_lane_order(&row_key(&canonical)).await.unwrap();
+        assert_eq!(order.len(), 2, "解決できた 2 件だけが入る: {order:?}");
+        apply_lane_order(&mut names, &order, |n| format!("id-{n}"));
+        assert_eq!(names, vec!["c", "a", "b"], "保存した順で並ぶ");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 実在しない名前は落として続行するが、**1 つも解決できなければ Err**。
+    ///
+    /// 一覧と帳簿の間には常に時間差がある（送信中に lane が消える等）ので、
+    /// 1 件の不一致で並べ替え全体を失敗させる意味は無い。逆に全滅なら
+    /// 呼び手の指定が丸ごと間違っているので黙って空を書かない。
+    #[tokio::test]
+    async fn set_lane_order_rejects_when_nothing_resolves() {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+        let lanes = vec![LaneRef::new("id-a", "a")];
+
+        assert!(
+            set_lane_order(Some(&db), "/tmp/x", &["ghost".to_string()], &lanes)
+                .await
+                .is_err(),
+            "全滅なら Err"
+        );
+        assert!(
+            set_lane_order(
+                Some(&db),
+                "/tmp/x",
+                &["ghost".to_string(), "a".to_string()],
+                &lanes
+            )
+            .await
+            .is_ok(),
+            "一部でも解決すれば保存する"
+        );
     }
 
     /// `Origin` は unison 応答としてそのまま wire に載るので serde 形を固定する。
