@@ -95,7 +95,13 @@ import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
-import { installConsole } from "./console";
+import {
+	installConsole,
+	nextRequestId,
+	isMyResponse,
+	type BusRequestId,
+	type EchoesStandsDetail,
+} from "./console";
 // doc 46 P1: lane 内 tiling（Pane の並び / 縮小 / focus）。
 import { PaneShell, newPaneChoices } from "./pane-shell";
 // `vp:echoes-stands` bus が運ぶ stand entry（chatview の StandOption と同形）。
@@ -540,11 +546,14 @@ if (paneShell && paneFrame && paneTabs) {
 		paneMenu = menu;
 	};
 	// stands の一覧は非同期で返るので、click で要求 → 応答で menu を開く。
-	let paneMenuPending = false;
+	// doc 47 §6: `vp:echoes-stands` は共有 bus。要求ごとに相関 id を採番し、
+	// **自分の要求への応答だけ**を拾う（chat の「+」の要求では開かない）。
+	// 副次: 連打しても最新 id 以外の応答は捨てられる。
+	let paneMenuReq: BusRequestId | null = null;
 	document.addEventListener("vp:echoes-stands", (e) => {
-		if (!paneMenuPending) return;
-		paneMenuPending = false;
-		const d = (e as CustomEvent<{ lane: string; stands?: PaneStand[] }>).detail;
+		const d = (e as CustomEvent<EchoesStandsDetail<PaneStand>>).detail;
+		if (!isMyResponse(paneMenuReq, d?.req)) return;
+		paneMenuReq = null;
 		openPaneMenu(d?.stands ?? []);
 	});
 	newBtn.addEventListener("click", (ev) => {
@@ -558,14 +567,13 @@ if (paneShell && paneFrame && paneTabs) {
 		}
 		const lane = activeLaneAddress ?? consoleActiveLane;
 		if (!lane) return;
-		paneMenuPending = true;
-		// `vp:echoes-stands` は要求元タグを持たない共有 bus で、chatview も購読して
-		// 自分の「+」menu を開く。こちらの要求で向こうが開かないよう印を立てる
-		// （chatview 側が 1 回だけ読んで下ろす）。
-		(window as unknown as { vpPaneNewPending?: boolean }).vpPaneNewPending = true;
+		// 要求元タグ = 相関 id。応答（handleStands → bus）まで往復する。
+		paneMenuReq = nextRequestId("pane-new");
 		const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } })
 			.ipc;
-		ipc?.postMessage(JSON.stringify({ t: "echoes:stands_fetch", lane }));
+		ipc?.postMessage(
+			JSON.stringify({ t: "echoes:stands_fetch", lane, req: paneMenuReq }),
+		);
 	});
 	document.addEventListener("click", () => closePaneMenu());
 	tabsEl.appendChild(newBtn);

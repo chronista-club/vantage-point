@@ -252,6 +252,40 @@ window 経由の一時フラグで凌いだ（#838）。他の bus（`vp:echoes-
 
 **決めること**: request/response の相関 id を持つか、bus を分けるか。
 
+### ✅ 決定と着地: **相関 id**（`vp:echoes-stands`、2026-07-21）
+
+要求時に採番した id を **webview → Rust IPC → `stands_list` → `handleStands` → bus** と
+往復させ、購読側は **自分が出した要求の id と一致した時だけ**反応する。
+
+**bus 分離を採らなかった理由** — どちらの案でも「要求元の札を Rust 経由で往復させる」
+必要は同じで、差は札を *data* に持つか *event 名* に持つかだけ。名前に持たせると
+**発火元（`console.ts` = 投影側）が購読側 UI の顔ぶれを列挙する**ことになり、
+§0 の「実体 → 見え方」の向きが逆流する。id なら発火元は要求元を知らないままでいられ、
+購読側が増えても発火元は不変。副次として **stale 応答**（連打で先行要求が遅れて着く）も
+同じ仕掛けで落ちる — bus 分離では落ちない。
+
+| 層 | 実体 |
+|---|---|
+| 採番 / 照合 | `console.ts` の `nextRequestId(scope)` / `isMyResponse(pending, req)`（SSOT） |
+| 要求 | IPC `echoes:stands_fetch` に `req` field を追加（省略可） |
+| 往復 | `AppEvent::EchoesStandsFetch` → `EchoesStands` が `Option<String>` で持ち回る（Rust は中身を解釈しない不透明な札） |
+| 応答 | `vp:echoes-stands` の detail に `req`（要求外の発火は `null`） |
+| 購読 | `entry.tsx`（`pane-new`）/ `chatview.tsx`（`chat-add`）が自分の id と照合 |
+
+- **`window.vpPaneNewPending` の凌ぎは撤去**（`entry.tsx` で立て `chatview.tsx` が 1 回だけ
+  読み捨てていた暗黙の握手）。要求元が 3 つ目に増えても成立しなかった形を、
+  「要求した側だけが応答を拾う」規約に置き換えた
+- ⚠️ `isMyResponse` を素の `===` にしない — 要求していない購読側（`pending = null`）に
+  `req` 無しの応答（`null`）が来ると一致してしまう。**要求していない側は常に false** が規約
+- テストは `console.test.ts`（「**別の要求元の応答では発火しない**」を両向き + 両方要求中 +
+  stale + `req` 無しの 5 ケースで固定）
+
+**スコープ**: 今回は `vp:echoes-stands` のみ。**`vp:echoes-sessions` も同型**
+（要求元タグ無しの broadcast）だが、現状 購読側が chatview の tab strip 1 つで
+混線が顕在化していないため据え置き。2 つ目の購読側が生えた時点で同じ仕掛けを当てる
+（`nextRequestId` / `isMyResponse` は bus 非依存に作ってあるので、往復させる field を
+足すだけで済む）。
+
 ## 7. 着手順 — Epic 全体（2026-07-21 確定）
 
 **内部を仕上げるまで表示はミニマム据え置き、UI は最後に一気に**（冒頭の方針）。
@@ -266,12 +300,13 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
 | doc 46 P1 / P2（Pane shell / Engine × Act） | ✅ `#837` / `#838` |
 | §3（Pane 構成を per-lane に） | ✅ `44c119af` |
 | 表示のミニマム化（`minimizeOthers`） | ✅ `04364fe0` |
+| §6（共有 bus の相関 id / `vp:echoes-stands`） | ✅ 下記 §6 |
 
 ### 内部フェーズ（表示はミニマム固定のまま）
 
 1. ✅ **doc 46 P4 — Act を lane から session へ**（#848）= 本 doc §4。
    撤去ではなく移設だった（3 仕事）。残件は UI フェーズへ送った
-2. **§6 — 共有 bus の相関 id**（独立・小。`#838` の window フラグ凌ぎを根治）
+2. ✅ **§6 — 共有 bus の相関 id**（#850。`#838` の window フラグ凌ぎを根治）
 3. **doc 46 P5 — `pty_slots` を `(lane, session)` へ re-key**（内部の本丸）
    - 実測: 参照 27 箇所中 **25 が `lanes_state.rs` に閉じている**（private field + method 越し）。
      doc 46 §3 の「lane key を前提にした全経路」より**カプセル化されていた**

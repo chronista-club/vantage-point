@@ -239,7 +239,10 @@ pub enum AppEvent {
     EchoesSessionRemove { lane: String, session: u32 },
     /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
     /// ask `stands_list` → `EchoesStands` で push back。
-    EchoesStandsFetch { lane: String },
+    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:echoes-stands` は複数の「+」menu が
+    /// 購読する共有 bus なので、要求元をそのまま往復させて応答側で振り分けさせる
+    /// （Rust は中身を解釈しない不透明な札）。
+    EchoesStandsFetch { lane: String, req: Option<String> },
     /// doc 38 Phase 2: `echoes_session_list` の結果を webview の tab strip へ push back する内部 event
     /// （async task → main thread の evaluate_script 橋渡し。`ConsoleModeApplied` と同型）。
     EchoesSessionList {
@@ -247,9 +250,11 @@ pub enum AppEvent {
         payload: serde_json::Value,
     },
     /// doc 38 Phase 2: `stands_list` の結果を「+」menu へ push back する内部 event。
+    /// doc 47 §6: `req` は `EchoesStandsFetch` から持ち回った相関 id（そのまま JS へ返す）。
     EchoesStands {
         lane: String,
         payload: serde_json::Value,
+        req: Option<String>,
     },
 }
 
@@ -450,8 +455,14 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         }
         Some("echoes:stands_fetch") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                // doc 47 §6: 要求元の相関 id（省略可 = 応答を誰も拾わない）。
+                let req = parsed
+                    .get("req")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
                 let _ = proxy.send_event(AppEvent::EchoesStandsFetch {
                     lane: lane.to_string(),
+                    req,
                 });
             }
         }

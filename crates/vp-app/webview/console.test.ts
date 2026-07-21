@@ -6,6 +6,10 @@
  *  - handleSessionList の CustomEvent 中継（cache 取り込み + 'vp:echoes-sessions' 発火）
  *  - focusedOf の既定（未知 lane = 1）
  *
+ * 加えて doc 47 §6（共有 bus の相関 id）: 'vp:echoes-stands' は複数の「+」menu が購読する
+ * broadcast なので、**別の要求元の応答では発火しない**ことを固定する。
+ *
+ *
  * 純関数（normalizeSession / noteSessionList / noteFocus / focusedOf）は document 非依存。
  * CustomEvent を伴う facade メソッドは最小の DOM stub（document + window + CustomEvent）を
  * globalThis に据えて検証する（vitest = node env のため native DOM が無い）。
@@ -20,6 +24,10 @@ import {
   noteFocus,
   focusedOf,
   syncHeaderSessionId,
+  nextRequestId,
+  isMyResponse,
+  type BusRequestId,
+  type EchoesStandsDetail,
 } from './console'
 
 // --- 最小 DOM stub -----------------------------------------------------------------------------
@@ -146,6 +154,116 @@ describe('handleStands — vp:echoes-stands で中継', () => {
     expect(detail).not.toBeNull()
     expect(detail!.lane).toBe('proj/lane-h')
     expect(detail!.stands).toHaveLength(2)
+  })
+  it('req を detail に載せる（要求元タグの往復）', () => {
+    const con = installConsole()
+    let detail: EchoesStandsDetail | null = null
+    document.addEventListener('vp:echoes-stands', (e) => {
+      detail = (e as CustomEvent).detail
+    })
+    con.handleStands('proj/lane-h2', { stands: [] }, 'pane-new#7')
+    expect(detail!.req).toBe('pane-new#7')
+  })
+  it('req 省略時は null（要求外の発火 = 誰も拾わない）', () => {
+    const con = installConsole()
+    let detail: EchoesStandsDetail | null = null
+    document.addEventListener('vp:echoes-stands', (e) => {
+      detail = (e as CustomEvent).detail
+    })
+    con.handleStands('proj/lane-h3', { stands: [] })
+    expect(detail!.req).toBeNull()
+  })
+})
+
+// --- doc 47 §6: 共有 bus の相関 id ---------------------------------------------------------------
+describe('nextRequestId / isMyResponse — 共有 bus の要求元タグ', () => {
+  it('採番は scope prefix 付きで毎回異なる', () => {
+    const a = nextRequestId('pane-new')
+    const b = nextRequestId('pane-new')
+    expect(a.startsWith('pane-new#')).toBe(true)
+    expect(a).not.toBe(b)
+  })
+  it('scope が違えば当然一致しない', () => {
+    expect(nextRequestId('pane-new')).not.toBe(nextRequestId('chat-add'))
+  })
+  it('自分の id と一致した時だけ true', () => {
+    expect(isMyResponse('pane-new#1', 'pane-new#1')).toBe(true)
+    expect(isMyResponse('pane-new#1', 'chat-add#2')).toBe(false)
+  })
+  it('要求していない購読側（pending=null）は req 無し応答でも反応しない', () => {
+    // 素の `===` にすると null === null で一致してしまう罠を固定する。
+    expect(isMyResponse(null, null)).toBe(false)
+    expect(isMyResponse(null, undefined)).toBe(false)
+    expect(isMyResponse(null, 'pane-new#1')).toBe(false)
+  })
+})
+
+describe('vp:echoes-stands — 別の要求元の応答では発火しない（#838 の凌ぎの根治）', () => {
+  /** 「+」menu 相当の購読側。要求を出し、自分の応答でだけ open する。 */
+  function subscriber(scope: string) {
+    const opened: unknown[][] = []
+    let pending: BusRequestId | null = null
+    document.addEventListener('vp:echoes-stands', (e) => {
+      const d = (e as CustomEvent<EchoesStandsDetail>).detail
+      if (!isMyResponse(pending, d?.req)) return
+      pending = null
+      opened.push(d.stands)
+    })
+    return {
+      opened,
+      request(): BusRequestId {
+        pending = nextRequestId(scope)
+        return pending
+      },
+    }
+  }
+
+  it('Pane の「+ New」の応答で chat の「+」menu は開かない', () => {
+    const con = installConsole()
+    const paneNew = subscriber('pane-new')
+    const chatAdd = subscriber('chat-add')
+    const req = paneNew.request() // 要求したのは Pane 側だけ
+    con.handleStands('proj/lane-req-a', { stands: [{ name: 'echoes' }] }, req)
+    expect(paneNew.opened).toHaveLength(1)
+    expect(chatAdd.opened).toHaveLength(0)
+  })
+
+  it('chat の「+」の応答で Pane の「+ New」menu は開かない（逆向きも）', () => {
+    const con = installConsole()
+    const paneNew = subscriber('pane-new')
+    const chatAdd = subscriber('chat-add')
+    const req = chatAdd.request()
+    con.handleStands('proj/lane-req-b', { stands: [{ name: 'codex' }] }, req)
+    expect(chatAdd.opened).toHaveLength(1)
+    expect(paneNew.opened).toHaveLength(0)
+  })
+
+  it('両方が要求中でも、応答は id が一致した側だけに届く', () => {
+    const con = installConsole()
+    const paneNew = subscriber('pane-new')
+    const chatAdd = subscriber('chat-add')
+    paneNew.request()
+    const chatReq = chatAdd.request()
+    con.handleStands('proj/lane-req-c', { stands: [] }, chatReq)
+    expect(chatAdd.opened).toHaveLength(1)
+    expect(paneNew.opened).toHaveLength(0) // 要求中でも他人の応答では開かない
+  })
+
+  it('同じ要求元でも古い id の応答は捨てる（連打の遅延応答）', () => {
+    const con = installConsole()
+    const paneNew = subscriber('pane-new')
+    const stale = paneNew.request()
+    paneNew.request() // 2 回目の click で pending が更新される
+    con.handleStands('proj/lane-req-d', { stands: [] }, stale)
+    expect(paneNew.opened).toHaveLength(0)
+  })
+
+  it('req 無しの応答はどの購読側も拾わない', () => {
+    const con = installConsole()
+    const paneNew = subscriber('pane-new')
+    paneNew.request()
+    con.handleStands('proj/lane-req-e', { stands: [] })
+    expect(paneNew.opened).toHaveLength(0)
   })
 })
 

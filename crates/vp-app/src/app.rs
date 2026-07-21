@@ -4225,7 +4225,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
             // 既存 + Add Performer と同じ stands_list を再利用（doc 38 §3 の作成 UX）。
-            Event::UserEvent(AppEvent::EchoesStandsFetch { lane }) => {
+            Event::UserEvent(AppEvent::EchoesStandsFetch { lane, req }) => {
                 let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
                     tracing::warn!("echoes:stands_fetch skip — lane の project 解決失敗 (lane={lane})");
                     return;
@@ -4241,7 +4241,9 @@ pub fn run() -> anyhow::Result<()> {
                     .await
                     {
                         Ok(payload) => {
-                            let _ = proxy.send_event(AppEvent::EchoesStands { lane, payload });
+                            // doc 47 §6: 要求元の相関 id をそのまま応答へ載せ替える。
+                            let _ =
+                                proxy.send_event(AppEvent::EchoesStands { lane, payload, req });
                         }
                         Err(e) => {
                             tracing::warn!("echoes:stands_fetch の stands_list 失敗 (lane={lane}): {e}")
@@ -4262,11 +4264,13 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             // doc 38 Phase 2: stands_list の結果を「+」menu へ push back。
-            Event::UserEvent(AppEvent::EchoesStands { lane, payload }) => {
+            // doc 47 §6: 第 3 引数 = 要求元の相関 id。共有 bus の購読側はこれで振り分ける。
+            Event::UserEvent(AppEvent::EchoesStands { lane, payload, req }) => {
                 let script = format!(
-                    "window.vpConsole && window.vpConsole.handleStands({}, {})",
+                    "window.vpConsole && window.vpConsole.handleStands({}, {}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
                     serde_json::to_string(&payload).unwrap_or_else(|_| "null".into()),
+                    serde_json::to_string(&req).unwrap_or_else(|_| "null".into()),
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
                     tracing::warn!("vpConsole.handleStands 失敗 (lane={lane}): {e}");
