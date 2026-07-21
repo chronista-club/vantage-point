@@ -201,7 +201,17 @@ pub enum AppEvent {
     /// 新セッション開始要求（console の New Session ボタン）。 event loop が
     /// `lane_restart` (fresh=true) で SP に forward — cc_session 破棄 = `/exit` → 手打ち
     /// `claude` の置き換え。 Act I/II 両対応（restart_lane が mode で分岐）。
-    ConsoleNewSession { lane: String },
+    ConsoleNewSession {
+        lane: String,
+        /// doc 46 P2 要件 4: どの engine で作るか（stand 名。`None` = 現 focused を継承）。
+        engine: Option<String>,
+        /// doc 46 P2 要件 4: どの Act で作るか（`"tui"` / `"chat"`。`None` = lane の現 Act）。
+        ///
+        /// doc 46 §1.4 の途中経過: Act は最終的に Pane の kind になるが、P2 時点では
+        /// まだ lane の mode が残っている。**明示指定を受け取れるようにする**のが
+        /// この field の役割で、指定が無ければ従来どおり lane の Act を継ぐ。
+        act: Option<String>,
+    },
     /// lane_restart(fresh=true) 成功後、WebView の会話表示をクリアする内部 event
     /// (ConsoleModeApplied と同じ async → main thread 橋渡し)。
     ConsoleSessionRenewed { lane: String },
@@ -351,8 +361,21 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         // 新セッション開始（console の New Session ボタン）。 lane 必須。
         Some("console:new_session") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                // doc 46 P2 要件 4: engine / act は **任意**。省略時は従来の継承挙動
+                // （現 focused の engine / lane の Act）。空文字は未指定に畳む —
+                // menu の「既定」項目が空文字を送っても継承にしたい。
+                let opt = |k: &str| {
+                    parsed
+                        .get(k)
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                };
                 let _ = proxy.send_event(AppEvent::ConsoleNewSession {
                     lane: lane.to_string(),
+                    engine: opt("engine"),
+                    act: opt("act"),
                 });
             }
         }

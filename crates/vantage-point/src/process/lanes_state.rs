@@ -1085,7 +1085,13 @@ impl LanePool {
     ///
     /// mode=Tui 限定: chat lane（Act II）の New は既存の `create_chat_session`（新 Draft タブ）が
     /// 担う — 「今いる Act に出す」の分岐は vp-app が行い、backend は各動詞の整合だけ守る。
-    pub fn prepare_new_root_session(&mut self, addr: &LaneAddress) -> anyhow::Result<SessionKey> {
+    /// `stand_override` は doc 46 P2 要件 4（Engine を選んで新コンソールを作る）。
+    /// `None` なら従来どおり**現 root の engine を引き継ぐ**（doc 39 §1）。
+    pub fn prepare_new_root_session(
+        &mut self,
+        addr: &LaneAddress,
+        stand_override: Option<&str>,
+    ) -> anyhow::Result<SessionKey> {
         let info = self
             .lanes
             .get(addr)
@@ -1099,12 +1105,16 @@ impl LanePool {
         // 新 session の engine は現 root の stand を引き継ぐ（doc 39 §1「engine は現 session を
         // 引き継ぎ」— lane の stand でなく root の stand。N=1 では両者は一致する）。
         let reg = session_registry::load(&addr.project, lane_label, &info.stand);
-        let stand = reg
-            .sessions
-            .iter()
-            .find(|s| s.key == reg.root)
-            .map(|s| s.stand.clone())
-            .unwrap_or_else(|| info.stand.clone());
+        // doc 46 P2: 明示指定があればそれを使う。無い時だけ現 root を引き継ぐ。
+        let stand = match stand_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => s.to_string(),
+            None => reg
+                .sessions
+                .iter()
+                .find(|s| s.key == reg.root)
+                .map(|s| s.stand.clone())
+                .unwrap_or_else(|| info.stand.clone()),
+        };
         let key = session_registry::create_root(&addr.project, lane_label, &info.stand, &stand)
             .map_err(|e| anyhow::anyhow!("root session 作成に失敗（addr={addr}）: {e}"))?;
         tracing::info!(

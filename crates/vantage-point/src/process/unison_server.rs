@@ -1172,7 +1172,7 @@ async fn handle_echoes_session_new_root(
         .lane_pool
         .write()
         .await
-        .prepare_new_root_session(&addr)
+        .prepare_new_root_session(&addr, payload.get("stand").and_then(|v| v.as_str()))
         .map_err(|e| format!("echoes_session_new_root: {e}"))?;
     // registry は新 root へ切替済み（原子的な 1 save）。以降の slot 張り替えが失敗しても registry は
     // 先行して整合 — 次の respawn / restart（Resume 経路）でも未発話の非 #1 root は

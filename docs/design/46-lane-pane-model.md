@@ -134,3 +134,31 @@ P1 は **in-memory（webview 側）**。永続は P4。
 理由: 並べ方は「今この瞬間の作業の形」で、lane や project より寿命が短い。
 先に永続すると「復元されるべきか」の判断（lane を切り替えたら？ 再起動したら？）が
 実際に触る前に決まってしまう。dogfood してから決める。
+
+## 5. P2 実装メモ — Engine × Act で新コンソール（2026-07-21）
+
+### 5.1 既存 IPC を拡張し、新設しない
+
+`console:new_session` は元々 **lane の Act と現 focused の engine を継承**していた
+（doc 39 §4「New は今いる Act に出す」）。要件 4 はこれを**明示選択**にする話なので、
+新 IPC を足さず `engine` / `act` を **optional** で受けるよう拡張した。
+
+- 省略時は従来どおり継承 → 既存の呼び手（header の ✨ New 等）は無改造
+- 明示指定があれば `echoes_session_list` の往復ごと省ける（engine を引く必要が無い）
+- 未知の `act` は**継承に倒す** — 「指定したのに黙って別の Act で作られた」より
+  「指定が効かなかった」方が気付きやすい
+
+### 5.2 chat 非対応 engine に Act II を出さない
+
+`newPaneChoices` は `chat_capable` が false の engine から chat の選択肢を落とす。
+出すと「作れるが submit がエラーになるだけ」の行き止まり Pane になる
+（doc 38 Phase 3 が tab の「+」で同じ判断をしている）。
+`chat_capable` 未指定も非対応扱い — **不明なら行き止まりを作らない側**に倒す。
+
+Act I（tui）は login shell に流し込むだけなのでどの engine でも成立する。
+
+### 5.3 タブエリアは常時表示に変えた
+
+「+ New」を常に載せるので `--pane-tabs-h` は 26px 固定。`.pane-tabs-active` は
+「畳まれた Pane が 1 つ以上ある」= **区切り線を出すかどうか**にだけ効く形へ意味を絞った
+（class を無意味に残すと[読み手のない書き込み]と同じ形になる）。

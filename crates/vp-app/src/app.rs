@@ -3815,7 +3815,7 @@ pub fn run() -> anyhow::Result<()> {
             //  - tui lane（Act I）: echoes_session_new_root = 新 session を作って root を向け、slot を
             //    素の engine で張り替える（非破壊 — 旧 root の会話はタブに残存）。旧 fresh restart
             //    （全 session 破棄）は sidebar の Reset lane に退避した。
-            Event::UserEvent(AppEvent::ConsoleNewSession { lane }) => {
+            Event::UserEvent(AppEvent::ConsoleNewSession { lane, engine, act }) => {
                 // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
                 // active lane が変わり得るため resolve_active_project_path は使わない）。
                 let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
@@ -3824,26 +3824,38 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 let proxy = async_action_proxy.clone();
                 let port = crate::client::default_world_port();
-                if lane_is_chat(&sidebar_state, &lane) {
+                // doc 46 P2 要件 4: Act は**明示指定を優先**し、無ければ lane の現 Act を継ぐ。
+                // 未知の値（typo 等）は継承に倒す — 「指定したのに黙って別の Act で作られた」より
+                // 「指定が効かなかった」方が気付きやすい。
+                let want_chat = match act.as_deref() {
+                    Some("chat") => true,
+                    Some("tui") => false,
+                    _ => lane_is_chat(&sidebar_state, &lane),
+                };
+                if want_chat {
                     // doc 38 §4.2: chat lane は「新 Draft session を作って focus」。
                     rt_handle.spawn(async move {
-                        // 1. 現 focused の stand を引く（新 session を同じ engine で作る）。取れない時は
-                        //    stand 省略 = backend が lane の既定 stand を使う。
-                        let stand = match world_process_request(
-                            port,
-                            &path,
-                            "echoes_session_list",
-                            serde_json::json!({ "lane": &lane }),
-                        )
-                        .await
-                        {
-                            Ok(payload) => focused_session_stand(&payload),
-                            Err(e) => {
-                                tracing::warn!(
-                                    "echoes_session_list（new_session 前）失敗 (lane={lane}): {e}"
-                                );
-                                None
-                            }
+                        // 1. engine を決める。doc 46 P2 要件 4 の**明示指定があればそれを使い**、
+                        //    無い時だけ現 focused を継ぐ（従来挙動）。指定がある場合は
+                        //    session_list の往復ごと省ける。
+                        let stand = match engine {
+                            Some(e) => Some(e),
+                            None => match world_process_request(
+                                port,
+                                &path,
+                                "echoes_session_list",
+                                serde_json::json!({ "lane": &lane }),
+                            )
+                            .await
+                            {
+                                Ok(payload) => focused_session_stand(&payload),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "echoes_session_list（new_session 前）失敗 (lane={lane}): {e}"
+                                    );
+                                    None
+                                }
+                            },
                         };
                         // 2. 新 Draft session を作って focus（focus は明示 true）。
                         let mut create = serde_json::json!({ "lane": &lane, "focus": true });
@@ -3894,7 +3906,12 @@ pub fn run() -> anyhow::Result<()> {
                 } else {
                     // tui lane（Act I）: doc 39 §4 — 新 session + root 張り替え + slot の bare respawn。
                     rt_handle.spawn(async move {
-                        let payload = serde_json::json!({ "lane": &lane });
+                        // doc 46 P2 要件 4: Act I でも engine の明示指定を backend まで通す
+                        // （無ければ backend が現 root の engine を引き継ぐ = 従来挙動）。
+                        let mut payload = serde_json::json!({ "lane": &lane });
+                        if let Some(e) = &engine {
+                            payload["stand"] = serde_json::Value::String(e.clone());
+                        }
                         match world_process_request(port, &path, "echoes_session_new_root", payload)
                             .await
                         {
