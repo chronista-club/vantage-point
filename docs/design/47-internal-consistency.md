@@ -63,10 +63,51 @@ Act は「Pane の kind」= 見え方に移る予定なので、**今まさに�
 `#pane-terminal` は **外から Frame Engine に配置され、内では自前 tiling をする**という
 二重構造になっている。doc 46 P3（canvas を Pane に）が止まったのはこれが理由（#839 / doc 46 §6）。
 
-**決めること**: Scene と tiling の関係。3 択ある。
-1. Scene が上位（Pane 構成は Scene の中に閉じる）
-2. tiling が上位（Scene を tiling に置き換える = Frame Engine 退役）
-3. 併存を続ける（境界を明文化して、どちらが何を決めるか固定する）
+### 決定: **doc 46 の Pane を FrameEngine に畳む**（mako 2026-07-21）
+
+ただし **畳む前に再設計する**（そのまま移植しない）。
+
+#### 判断材料 — 既に同じものを 2 つ作っていた
+
+FrameEngine は **VP 自前**（`frame-engine.ts`、VP-140、creo-ui 由来ではなく外部依存ゼロ）。
+中を読むと doc 46 で作ったものと**同じ概念・同じ層構造**を既に持っている:
+
+```ts
+export type PaneState = 'normal' | 'minimized' | 'maximized' | 'hidden'
+export interface PaneTransform { x, y, w, h, z, opacity, state }
+// 冒頭: 「純 data / 純 calculation / 純 action、DOM 反映は外部 renderer が担う」
+```
+
+- **minimized 状態**を既に持つ（doc 46 の `PaneLayout` と同義）
+- **比率 transform** で配置（flex tiling の上位互換 — 左右分割は特殊形）
+- 層の切り方まで同型（`PaneLayout`/`PaneShell` と `FrameEngine`/`renderer`）
+- しかも `maximized` がある = **既存の方が語彙が広い**
+
+→ doc 46 の `PaneLayout` は**知らずに作った 2 個目**。畳む向きは「doc 46 → FrameEngine」。
+
+#### 再設計で決めること
+
+FrameEngine は現状 **lane を知らない**。pane は boot 時に固定 6 個
+（`echoes` `pp` `ge` `hp` `preview` `empty`）を register するだけで、
+doc 46 が要求する「lane ごとの構成」「同種の Pane を N 枚」を表せない。
+
+1. **lane スコープをどう入れるか**
+   - a) FrameEngine が lane を知る（Scene を lane ごとに持つ）
+   - b) lane ごとに FrameEngine インスタンスを持つ（engine 自体は lane を知らないまま）
+   - c) Scene id に lane を混ぜる（`lane:<addr>/focus-echoes` 等）
+2. **Pane の動的増減** — 現状 boot 時 register の固定集合。session を作るたび Pane が増える
+   doc 46 の要求と合わない
+3. **タブエリア（minimized の置き場）を誰が描くか** — `PaneState.minimized` は既にあるので、
+   renderer が「minimized な pane を dock に出す」を担えば doc 46 の `pane-tab` は不要になる
+4. **`pp` / `ge` / `hp` / `preview` の帰属** — これらは lane 横断の Stand pane。
+   lane スコープを入れた時、どこに属するか（app 直下 / 各 lane に写像 / project スコープ）
+5. **§2（語彙）の統一** — 畳んだ時点で「Pane」は FrameEngine の pane 1 つに揃う。
+   PP の `pane_contents` は別語（`board` 等）へ寄せるか、そのまま残すか
+
+> **そのまま移植しない理由**: doc 46 の `PaneLayout` は「左右に並べる」という
+> **特殊形に最適化した API**（`dockedIds` / `moveFocus` が列挙順に依存）。
+> FrameEngine の比率 transform に載せると、この API は自然に消える。
+> 移植すると 2 つの語彙が混ざったまま残る。
 
 ## 2. 「Pane」が 3 つの意味を持っている
 
