@@ -13,8 +13,7 @@ import { isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { kind: "conductor", project: "vp" },
-		kind: "conductor",
+		address: { project: "vp", name: "conductor" },
 		state: "running",
 		stand: "echoes",
 		created_at: "2026-07-10T00:00:00Z",
@@ -49,9 +48,7 @@ describe("isLaneAlive", () => {
 /** performer の最小 LaneInfo (laneConnector 用)。 */
 function performer(over: Partial<LaneInfo> = {}): LaneInfo {
 	return lane({
-		kind: "performer",
-		address: { kind: "performer", project: "vp", name: "feat" },
-		name: "feat",
+		address: { project: "vp", name: "feat" },
 		...over,
 	} as Partial<LaneInfo>);
 }

@@ -16,6 +16,31 @@ pub struct SwitchLaneParams {
     pub lane: String,
 }
 
+/// lane JSON（`lanes_list` の要素）から lane 名を取り出す。
+///
+/// doc 44 P2: 名前の在処は `address.name` **のみ**（旧 `LaneInfo.kind` / 複製 `name` は撤去）。
+/// MCP は JSON を直に触るため型変更がコンパイル時に伝わらない — 旧 field を読んでいた箇所は
+/// 全て None に落ちて `"unknown"` / `"unnamed"` を返す壊れ方をしていた（doc 44 §6.4 の同型）。
+fn lane_name_of(lane: &serde_json::Value) -> String {
+    lane.get("address")
+        .and_then(|a| a.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// lane JSON を旧 `kind` 語彙（`"conductor"` / `"performer"`）に射影する。
+///
+/// MCP tool の `kind` param は client との契約なので語彙は据え置き、判定だけ名前ベースにした
+/// （開発起点は予約名 `conductor`、それ以外が旧 performer）。
+fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
+    if lane_name_of(lane) == crate::process::lanes_state::CONDUCTOR_LANE_NAME {
+        "conductor"
+    } else {
+        "performer"
+    }
+}
+
 /// Parameters for the add_performer tool (R5: lane clone + Performer Lane spawn).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AddPerformerParams {
@@ -193,10 +218,7 @@ impl VantageMcp {
                 None,
             ));
         }
-        let mut body = serde_json::json!({
-            "kind": "performer",
-            "name": params.name,
-        });
+        let mut body = serde_json::json!({ "name": params.name });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             body["branch"] = serde_json::Value::String(b.clone());
         }
@@ -225,10 +247,11 @@ impl VantageMcp {
                 parsed.get("address").and_then(|a| {
                     let proj = a.get("project")?.as_str()?;
                     let nm = a.get("name")?.as_str()?;
-                    Some(format!("{}/performer/{}", proj, nm))
+                    // doc 44 P2: address 表示形は `<project>/<name>`
+                    Some(format!("{}/{}", proj, nm))
                 })
             })
-            .unwrap_or_else(|| format!("performer/{}", params.name));
+            .unwrap_or_else(|| params.name.clone());
         let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Performer Lane created: {}\n  cwd: {}", addr, cwd),
@@ -355,8 +378,12 @@ impl VantageMcp {
         let mut lanes_out: Vec<serde_json::Value> = Vec::new();
         for mut lane in lanes_in.into_iter() {
             // kind / state filter
+            //
+            // doc 44 P2: lane に種別 field は無くなったため、判定は**名前**で行う
+            // （開発起点は予約名 "conductor"、それ以外が旧 performer）。
+            // tool の param 名 `kind` は MCP client との契約なので語彙は据え置き。
             if let Some(k) = &params.kind
-                && lane.get("kind").and_then(|v| v.as_str()) != Some(k.as_str())
+                && lane_kind_label(&lane) != k.as_str()
             {
                 continue;
             }
@@ -375,15 +402,8 @@ impl VantageMcp {
             // JoJo 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
             // wire syntax は `<stand-id>@<project>/<lane>` (conductor は `/lane` 省略可)。
             // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
-            let lane_label = match lane.get("kind").and_then(|v| v.as_str()) {
-                Some("conductor") => "conductor".to_string(),
-                Some("performer") => lane
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unnamed")
-                    .to_string(),
-                _ => "unknown".to_string(),
-            };
+            // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。
+            let lane_label = lane_name_of(&lane);
             // conductor は `agent@<project>` (lane 省略 = conductor)、performer は `agent@<project>/<name>`
             let lane_suffix = if lane_label == "conductor" {
                 String::new()
@@ -462,10 +482,7 @@ impl VantageMcp {
         // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を撤去。 lane clone は
         // 数 sec ~ 数 10 sec かかるので outer timeout 60s。 server Err は quic_call_with_timeout が
         // McpError に変換 (= 旧 HTTP 非 2xx → McpError と等価)。
-        let mut create_body = serde_json::json!({
-            "kind": "performer",
-            "name": params.name,
-        });
+        let mut create_body = serde_json::json!({ "name": params.name });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["branch"] = serde_json::Value::String(b.clone());
         }
@@ -635,19 +652,9 @@ impl VantageMcp {
         let mut conductor_unread: u64 = 0;
         let mut conductor_unread_by_thread = serde_json::Value::Object(Default::default());
         for lane in lanes_in {
-            let kind = lane
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let lane_label = if kind == "conductor" {
-                "conductor".to_string()
-            } else {
-                lane.get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unnamed")
-                    .to_string()
-            };
+            // doc 44 P2: 名前の在処は `address.name` のみ、開発起点は予約名で判る。
+            let lane_label = lane_name_of(&lane);
+            let kind = lane_kind_label(&lane);
             let agent_addr = if kind == "conductor" {
                 format!("agent@{}", project)
             } else {
@@ -729,7 +736,7 @@ impl VantageMcp {
 
             performers.push(serde_json::json!({
                 "name": lane_label,
-                "address": format!("agent@{}/{}", project, lane.get("name").and_then(|v| v.as_str()).unwrap_or("")),
+                "address": format!("agent@{}/{}", project, lane_label),
                 "state": state,
                 "stand": stand,
                 "cwd": cwd,

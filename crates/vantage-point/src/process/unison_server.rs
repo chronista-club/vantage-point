@@ -2180,7 +2180,7 @@ mod tests {
         // performer lane (conductor とは別 topic key になる)
         let addr = LaneAddress::performer("vp", "feat-replay");
         let lane = addr.to_string();
-        assert_eq!(lane, "vp/performer/feat-replay");
+        assert_eq!(lane, "vp/feat-replay"); // doc 44 P2: フラット化後の表示形
 
         // 実 PtySlot を performer address で登録
         {
@@ -2465,7 +2465,7 @@ mod tests {
     #[tokio::test]
     async fn lane_capture_dispatch_error_paths() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
@@ -2501,8 +2501,6 @@ mod tests {
                 console_mode: crate::lane::console_mode::ConsoleMode::Chat,
                 id: Default::default(),
                 address: addr.clone(),
-                kind: LaneKind::Performer,
-                name: Some("chat-x".to_string()),
                 state: LaneState::Running,
                 stand: "echoes".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2535,7 +2533,7 @@ mod tests {
     #[tokio::test]
     async fn console_set_model_gates_on_root_session_stand() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::process::state::build_test_app_state;
 
         // session_registry / engine_model は vp_state_dir() を読む → tempdir に隔離。
@@ -2547,8 +2545,6 @@ mod tests {
             console_mode: crate::lane::console_mode::ConsoleMode::Chat,
             id: Default::default(),
             address: LaneAddress::performer("vp", name),
-            kind: LaneKind::Performer,
-            name: Some(name.to_string()),
             state: LaneState::Running,
             stand: stand.to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2616,7 +2612,7 @@ mod tests {
     async fn lane_delete_removes_performer_and_idempotent() {
         use super::dispatch_process_method;
         use crate::daemon::pty_slot::PtySlot;
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
@@ -2634,8 +2630,6 @@ mod tests {
                 console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
-                kind: LaneKind::Performer,
-                name: Some("chore".to_string()),
                 state: LaneState::Running,
                 stand: "echoes".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2746,9 +2740,7 @@ mod tests {
     #[tokio::test]
     async fn lane_session_changed_emits_enriched_lane_update() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{
-            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
-        };
+        use crate::process::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::process::state::build_test_app_state;
 
         // refresh_engine_session_id は vp_state_dir() を読む — tempdir guard で隔離。
@@ -2758,8 +2750,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-17T00:00:00Z".to_string(),
@@ -2816,9 +2806,7 @@ mod tests {
     #[tokio::test]
     async fn lane_session_changed_records_conversation_report_into_registry() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{
-            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
-        };
+        use crate::process::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::process::state::build_test_app_state;
 
         let state_dir = crate::test_env::state_dir_async().await;
@@ -2827,8 +2815,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-18T00:00:00Z".to_string(),
@@ -2924,10 +2910,13 @@ mod tests {
         );
     }
 
-    /// lanes portless: `lane_create` dispatch arm が validation error (kind != performer) を
-    /// unison error frame (= Err) として返す (core の create_performer_orchestrated に到達している証)。
+    /// lanes portless: `lane_create` dispatch arm が validation error を unison error frame
+    /// (= Err) として返す (core の `create_performer_orchestrated` に到達している証)。
+    ///
+    /// doc 44 P2: 旧版は `kind != "performer"` を叩いていたが、`kind` は撤去された
+    /// （lane に種別が無くなり指定の余地が消えた）。後継の validation = 開発起点の予約名拒否。
     #[tokio::test]
-    async fn lane_create_rejects_non_performer() {
+    async fn lane_create_rejects_reserved_name() {
         use super::dispatch_process_method;
         use crate::process::state::build_test_app_state;
 
@@ -2935,13 +2924,27 @@ mod tests {
         let err = dispatch_process_method(
             &state,
             "lane_create",
-            serde_json::json!({ "kind": "worker", "name": "x" }),
+            serde_json::json!({ "name": crate::process::lanes_state::CONDUCTOR_LANE_NAME }),
         )
         .await
-        .expect_err("kind='worker' は Err");
+        .expect_err("予約名は Err");
         assert!(
-            err.contains("kind must be 'performer'"),
-            "error は kind 制約を含む: {err}"
+            err.contains("予約名"),
+            "error は予約名である旨を含む: {err}"
+        );
+
+        // 旧 client が送る `kind` は unknown field として無視され、name だけで通ること
+        // （name が空なら別の validation で弾かれる = kind に依存しない）
+        let err = dispatch_process_method(
+            &state,
+            "lane_create",
+            serde_json::json!({ "kind": "performer", "name": "  " }),
+        )
+        .await
+        .expect_err("空 name は Err");
+        assert!(
+            err.contains("name is required"),
+            "name 制約で弾かれる: {err}"
         );
     }
 
@@ -3007,14 +3010,12 @@ mod tests {
         project: &str,
         mode: crate::lane::console_mode::ConsoleMode,
     ) -> crate::process::lanes_state::LaneAddress {
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         let addr = LaneAddress::conductor(project);
         state.lane_pool.write().await.insert(LaneInfo {
             console_mode: mode,
             id: Default::default(),
             address: addr.clone(),
-            kind: LaneKind::Conductor,
-            name: None,
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),

@@ -20,6 +20,10 @@
  */
 export type LaneAddressWire = { project: string, 
 /**
- * "conductor" | "performer"
+ * lane 名。開発起点は [`CONDUCTOR_LANE_NAME`]。
+ *
+ * doc 44 P2: `kind` を廃し `name` 必須に。`default` は P2 以前の payload / 永続 state
+ * 互換で、旧 conductor は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
+ * の serde default と同じ手当て）。
  */
-kind: string, name: string | null, };
+name: string, };

@@ -265,3 +265,115 @@ PR2 は分割したくなるが、「World と SP のどちらが LanePool を�
 **release daemon(:32000) の lane を一切落とさずに実機確認できる**。#643 の namespace 分離が
 そのまま P1 の検証装置になる。これにより P1 最大の運用リスク（「daemon 再起動 = 全 lane 死」）が
 dogfood 中は発生しない。
+
+## 6. P2 実装設計 — `LaneAddress` フラット化（2026-07-21）
+
+> §2 の P2 のうち**構造部分（フラット化）を実装した**。conductor ポインタ導入（Host の帳簿）は
+> P3 と一体なので分離した。
+
+### 6.1 何をしたか
+
+`LaneAddress { project, kind: LaneKind, name: Option<String> }` → **`{ project, name: String }`**。
+
+旧構造は **conductor だけ `name: None`** という非対称を抱えており、これが「lane が役割を自意識する」
+構造の物理形だった（D4）。フラット化でこの非対称が消え、開発起点は**予約名**
+`CONDUCTOR_LANE_NAME = "conductor"` を持つ lane、という関係に退化した。
+
+| 変更 | 内容 |
+|---|---|
+| `LaneKind` | 撤去（server / vp-app の両方） |
+| `LaneAddress` | `{ project, name }` の 2-tuple。`::conductor()` / `::performer()` は**構築 API として維持**（呼び出し 100 箇所超が無傷） |
+| `LaneInfo.kind` / `.name` | 撤去 — どちらも `address` が持つ情報の複製で、真実源が 2 つあった。vp-app 側の `LaneInfo.name` は**常に None** で実質死んでいた |
+| Display / `key()` | `<project>/<name>` の 1 形。旧 `Wire::key()` と `LaneAddress::Display` の微妙な挙動差（unknown kind の扱い）も消滅 |
+| webview | `isPerformerLane()` は `address.name !== "conductor"` の名前判定に |
+
+### 6.2 予約名を `"conductor"` にした理由
+
+**永続 address を無傷で引き継ぐため。** 開発起点の Display 形が `<project>/conductor` のまま変わらず、
+DB / session.json / wire に残る conductor の address がそのまま一致する。
+（変わるのは performer 側 `<project>/performer/<name>` → `<project>/<name>` だけ。）
+
+D4 の「lane 自身は役割状態を持たない」に対しては、**型から役割分岐が消えた**ことで達成と見なす。
+名前に "conductor" が残るのは D4 が「conductor は残る（開発起点として欲しい）」と言っているのと整合する。
+
+### 6.3 永続データの手当て — 2 系統ある
+
+address は **2 つの形**で永続しており、両方に手当てが要った（片方だけだと静かに壊れる）。
+
+| 形 | 在処 | 手当て |
+|---|---|---|
+| **object** | `lane.descriptor`（`LaneInfo` を丸ごと FLEXIBLE 保存） | `LaneAddress::name` に `#[serde(default)]` = 予約名。旧 conductor は name 欠落 → 既定値、旧 performer は `name: "foo"` がそのまま読める。余分な `kind` は unknown field として無視 → **custom Deserialize 不要** |
+| **文字列 key** | `lane.address` / `lane_lifecycle.address` 列 | `define_schema()` が起動時に旧形を新形へ UPDATE（冪等、best-effort）。放置すると upsert（DELETE+CREATE）の WHERE が当たらず**重複行**、lifecycle は照合できず**孤児**になる |
+
+文字列 key 側は**テストが落ちて初めて気づいた**（reconcile が ready→dead、db の件数が 2→3）。
+serde default で descriptor が読めるようになったので「互換は済んだ」と錯覚しやすいが、
+**object と文字列 key は別の経路**で、前者の手当ては後者を救わない。
+
+migration は**行単位で失敗を閉じ込める**（1 行の UPDATE 失敗＝典型は旧形と新形が同一 lane を
+指す UNIQUE 衝突 — で関数を抜けると、同じ SELECT に載った残り全行が巻き添えで未処理になり、
+衝突源が在る限り再起動のたびに同じ巻き添えが起き続ける）。
+
+### 6.4 取り残しやすいのは「型を経由しない文字列」
+
+フラット化の取り残しは **`LaneAddress` 型を使っている箇所**では起きない（コンパイラが止める）。
+危ないのは **address を文字列で直に組み立てている箇所**で、実際に 1 件やらかした:
+
+`delivery_actor::wire_agent_to_lane_display` は `format!("{}/performer/{}", …)` で lane address を
+組み立て、その結果を `pick_nudge_target` が `LaneAddress::to_string()` と**生の完全一致**で照合する
+（間に `parse_address` を挟まない唯一の経路）。旧形のまま取り残された結果、**performer 宛の
+wire nudge が恒久的に「lane 不在」となり永久リトライに落ちる**回帰になった。
+
+見つけにくい条件が 3 つ重なっていた:
+- **conductor は形が変わらない**ので無症状（開発起点だけ使っていると気づかない）
+- 2 つの関数を**個別には**テストしていたが、`pick_nudge_target` の fixture が conductor 固定で、
+  **両者を performer で繋ぐテストが無かった** → `test --workspace` は緑のまま
+- 他の全経路（`resolve_lane_address` / `handle_lane_nudge` / `handle_lane_delete` 等）は
+  `parse_address` を通るので旧形を吸収してしまい、**この 1 箇所だけが地雷化**した
+
+対処は `LaneAddress::new(project, name).to_string()` を経由する形に変えて、直書きをやめた
+（Display 形が将来また変わっても自動追随する）。**「文字列直書きは無傷なのではなく、
+受信側の正規化に依存して無傷」**という区別が要る — 依存が無い経路が事故る。
+
+この 1 件をきっかけに同型を洗ったところ、**さらに 3 群**見つかった（全て型を経由しない箇所）:
+
+| 箇所 | 症状 |
+|---|---|
+| `app.rs::lane_key_to_wire_agent` | `wire_agent_to_lane_display` の**逆写像**。3 分節前提の `split_once` で新形が常に `None` → performer の wire inbox が GUI から開けない。**対の関数なので片方だけ直すと非対称に壊れる**（往復テストを追加） |
+| `mcp/lane.rs` の 3 箇所 | `lane.get("kind")` / `lane.get("name")` を JSON 直読み。撤去した field なので全て None に落ち、lane 名が `"unknown"` / `"unnamed"` になる（`list_lanes` / `flow_progress` の表示と wire address が壊れる） |
+| `CreateLaneReq.kind` | wire 入力 field として残存。「lane に種別は無い」と矛盾する残骸だったので撤去し、validation は**予約名の拒否**に置換（旧 `kind != "performer"` の意図の後継） |
+
+**教訓**: 型を消しても「型を経由しない参照」は残る。フラット化のような改修では
+`grep` の対象を型名だけでなく **field 名・文字列リテラル・JSON key** まで広げる必要がある。
+
+なお MCP の 2 件は「取り残し」ではなく**既に発生していた実害**だった（P2 本体 commit の時点で
+`list_lanes` の kind フィルタが常に空配列を返し、`flow_progress` は全 lane が `"unnamed"`、
+performer の agent address が `agent@<project>/` という壊れた文字列になっていた）。
+**独立した 2 回のレビューでも初回では捕まらなかった** — JSON 直読みはそれだけ視界に入りにくい。
+
+### 6.5 lane 作成の経路が 2 本ある（P2 で顕在化、doc 44 の外）
+
+予約名ガードの実機確認で判った構造。lane 作成には**別実装の経路が 2 本**ある:
+
+| 経路 | 実装 | 予約名の扱い |
+|---|---|---|
+| unison `lane_create` | `routes/lanes.rs::create_performer_orchestrated` | P2 で追加した予約名ガードが効く |
+| `POST /api/world/lanes` | `capability::ProcessManagerCapability::create_lane` | **到達しない**。奥の `lane::config::validate_performer_name`（VP-166 の既存ガード）が clone 段階で結果的に弾く |
+
+同じ validation が経路によって効いたり効かなかったりする — P1 が消した「経路ごとの差」の親戚で、
+P3 以降で lane 作成を Host に寄せる際の統合対象。
+
+> ⚠️ **follow-up（doc 44 とは独立の pre-existing バグ疑い）**: `ProcessManagerCapability::create_lane` は
+> ①`db.upsert_lane`（DELETE+CREATE）→ ②clone で `validate_performer_name` が reject → ③rollback が
+> `db.delete_lane` という順で走る。`name="conductor"` を投げると **①で本物の conductor descriptor 行を
+> 上書きし、③で消す**経路が静的に読み取れる（= 失敗したはずの操作がデータを壊す）。VP-166 起源で
+> P2 の変更対象外のため本 PR では触らない。再現手順は使い捨て project に
+> `POST /api/world/lanes {"name":"conductor"}` を直接投げ、conductor descriptor の生存を確認する。
+
+### 6.6 残した振る舞い分岐
+
+`stand_spawner::claude_command` の「開発起点なら `--continue`、それ以外は fresh」は**挙動不変で残した**
+（`LaneKind` 判定 → `is_conductor()` 判定に置換）。cwd の性質差に根拠がある実在の差で、
+repo root なら `--continue` が自分の会話に当たるが、worktree で同じことをすると他 lane の
+セッションを掴む（dashboard 罠）。P3 で Host がポインタを持てば「起点 lane か？」の問い合わせになる。
+
+構造変更（P2）と挙動変更を同じ PR に混ぜると回帰の切り分けが効かなくなるため、分けた。

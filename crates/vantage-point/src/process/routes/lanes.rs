@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent};
+use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
 use super::super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
@@ -108,8 +108,6 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 .unwrap_or_default(),
             id: crate::lane::lane_id::load_or_create(&project, &entry.name),
             address,
-            kind: LaneKind::Performer,
-            name: Some(entry.name.clone()),
             state: crate::process::lanes_state::LaneState::Spawning,
             stand: default_stand.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -126,7 +124,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
 
     // 既存 Performer の git status を populate
     for lane in lanes.iter_mut() {
-        if matches!(lane.kind, LaneKind::Performer) {
+        if !lane.address.is_conductor() {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
@@ -151,9 +149,10 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
 /// として `dispatch_process_method` が serde で deserialize する。
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
-    /// "performer" を受付。 Conductor は project ごと固定。
-    pub kind: String,
-    /// Performer name (人間可読、 LaneAddress.name に入る)
+    // doc 44 P2: `kind` を撤去。lane に種別は無く、作成できるのは名前付き lane だけ
+    // （開発起点は project 起動時に予約名で自動生成される）ため、指定する余地が無い。
+    // 旧 client が `kind: "performer"` を送っても unknown field として無視される。
+    /// lane 名 (人間可読、 `LaneAddress.name` に入る)
     pub name: String,
     /// LaneStand: "echoes" (default) or "shell"
     #[serde(default)]
@@ -200,12 +199,20 @@ pub(crate) async fn create_performer_orchestrated(
     state: &Arc<AppState>,
     req: CreateLaneReq,
 ) -> Result<LaneInfo, String> {
-    // 入力 validation。 "performer" のみ受付 (Conductor は project ごと固定で create 不可)。
-    if req.kind != "performer" {
-        return Err("kind must be 'performer' (Conductor is fixed per project)".to_string());
-    }
+    // 入力 validation。
     if req.name.trim().is_empty() {
         return Err("name is required".to_string());
+    }
+    // doc 44 P2: 開発起点の予約名は使えない。旧 `kind != "performer"` ガードの後継で、
+    // 「conductor は project ごと固定で create 不可」という意図は変わらない。
+    //
+    // 明示的に弾かないと、既存 conductor lane との address 重複として
+    // 「Lane {addr} already exists」で拒否される（結果は安全だが理由がミスリード）。
+    if req.name.trim() == crate::process::lanes_state::CONDUCTOR_LANE_NAME {
+        return Err(format!(
+            "'{}' は開発起点 lane の予約名です (project ごとに自動生成されるため create 不可)",
+            crate::process::lanes_state::CONDUCTOR_LANE_NAME
+        ));
     }
     // model 名の検証は reserve / clone より**前**に置く (bad input で reservation も disk dir も
     // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続 (engine_model::record)
@@ -266,8 +273,6 @@ pub(crate) async fn create_performer_orchestrated(
             console_mode: Default::default(),
             id: crate::lane::lane_id::load_or_create(&addr.project, &req.name),
             address: addr.clone(),
-            kind: LaneKind::Performer,
-            name: Some(req.name.clone()),
             state: LaneState::Spawning,
             stand: stand.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -468,8 +473,6 @@ pub(crate) async fn create_performer_orchestrated(
         console_mode: Default::default(),
         id: lane_id,
         address: addr.clone(),
-        kind: LaneKind::Performer,
-        name: Some(req.name.clone()),
         state: lane_state,
         stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -579,8 +582,8 @@ pub async fn delete_lane_orchestrated(
     addr: LaneAddress,
     cleanup: bool,
 ) -> Result<DeletedLaneInfo, DeleteLaneError> {
-    // architecture rule: Conductor Lane は project lifetime 紐付きのため削除不可
-    if matches!(addr.kind, LaneKind::Conductor) {
+    // architecture rule: 開発起点 lane は project lifetime 紐付きのため削除不可
+    if addr.is_conductor() {
         return Err(DeleteLaneError::ConductorCannotBeDeleted);
     }
 
@@ -624,7 +627,10 @@ pub async fn delete_lane_orchestrated(
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
     // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
-    let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
+    // doc 44 P2: 旧 `if let Some(name) = info.address.name` は name が Option だった時代の形。
+    // フラット化で常に在るため、開発起点でないこと（= 上で弾き済）だけが条件になった。
+    let cleanup_status = if cleanup {
+        let name = info.address.name.clone();
         // project-local lane refactor PR 1: remove_performer_in は repo_root: &Path を受け取る。
         // sidebar delete trigger は dual-read で project-local + legacy global 両 path 対応。
         let repo_root = std::path::PathBuf::from(&state.project_dir);
@@ -920,9 +926,8 @@ mod core_tests {
     use super::*;
 
     /// テスト用の最小 `CreateLaneReq` builder（validation だけ叩く時に使う）。
-    fn req(kind: &str, name: &str) -> CreateLaneReq {
+    fn req(name: &str) -> CreateLaneReq {
         CreateLaneReq {
-            kind: kind.to_string(),
             name: name.to_string(),
             stand: None,
             cwd: None,
@@ -949,17 +954,20 @@ mod core_tests {
         );
     }
 
-    /// Worker → Performer rename 完結: `kind="worker"` は早期 Err を返す。
-    /// 旧版は `req.kind != "performer" && req.kind != "worker"` で "worker" を許容していた。
+    /// doc 44 P2: 開発起点の予約名 `conductor` では lane を作れない。
+    ///
+    /// 旧 `kind != "performer"` ガードの後継。明示的に弾かないと既存 conductor lane との
+    /// address 重複として「already exists」で拒否され、理由がミスリードになる
+    /// （結果は安全なので "たまたま安全" に頼らないための固定）。
     #[tokio::test]
-    async fn create_rejects_worker_kind() {
+    async fn create_rejects_reserved_conductor_name() {
         let state = crate::process::state::build_test_app_state(None).await;
-        let err = create_performer_orchestrated(&state, req("worker", "test-performer"))
+        let err = create_performer_orchestrated(&state, req("conductor"))
             .await
-            .expect_err("kind='worker' は Err (legacy alias 一掃済)");
+            .expect_err("予約名は Err");
         assert!(
-            err.contains("kind must be 'performer'"),
-            "error message に kind 制約を含む: {}",
+            err.contains("予約名"),
+            "error message が予約名である旨を伝える: {}",
             err
         );
     }
@@ -968,7 +976,7 @@ mod core_tests {
     #[tokio::test]
     async fn create_rejects_empty_name() {
         let state = crate::process::state::build_test_app_state(None).await;
-        let err = create_performer_orchestrated(&state, req("performer", "   "))
+        let err = create_performer_orchestrated(&state, req("   "))
             .await
             .expect_err("name 空白のみは Err");
         assert!(
@@ -996,8 +1004,6 @@ mod core_tests {
                 console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
-                kind: LaneKind::Performer,
-                name: Some("dup".to_string()),
                 state: LaneState::Spawning,
                 stand: "echoes".to_string(),
                 created_at: "2026-07-13T00:00:00Z".to_string(),
@@ -1011,7 +1017,7 @@ mod core_tests {
                 flow_state: None,
             });
         }
-        let err = create_performer_orchestrated(&state, req("performer", "dup"))
+        let err = create_performer_orchestrated(&state, req("dup"))
             .await
             .expect_err("Spawning reservation 中の同 addr create は Err");
         assert!(
@@ -1038,7 +1044,7 @@ mod core_tests {
     async fn reservation_removed_after_failed_create() {
         let state = crate::process::state::build_test_app_state(None).await;
         let addr = LaneAddress::performer("unknown", "fail");
-        let res = create_performer_orchestrated(&state, req("performer", "fail")).await;
+        let res = create_performer_orchestrated(&state, req("fail")).await;
         assert!(
             res.is_err(),
             "project_dir 不在での clone は失敗する: {res:?}"

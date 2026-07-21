@@ -79,31 +79,12 @@ impl fmt::Display for LaneId {
     }
 }
 
-/// Lane の種別 (memory rule: HD/TH を起動する Lane だけ)
-///
-/// **互換注意 (conductor/performer rename 2026-06-07)**: serde は新名 `"conductor"`/
-/// `"performer"` のみ受理する。旧名 `"lead"`/`"wing"` の後方互換受理は
-/// [`LanePool::parse_address`] (address string path) と vp-app の `From<&LaneAddressWire>`
-/// (wire IPC path) に**限定**される (LanePool は in-memory only で JSON 永続化しないため
-/// この型直接の deserialize 経路は無い)。将来この型を JSON 永続化する経路を新設する場合は
-/// `#[serde(alias = "lead")]` 等を追加すること。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LaneKind {
-    /// 1 / project (固定)、LaneStand = HD or TH
-    Conductor,
-    /// 0..n / project (可変、lane cloned worktree)、LaneStand = HD or TH。
-    Performer,
-}
-
-impl fmt::Display for LaneKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LaneKind::Conductor => write!(f, "conductor"),
-            LaneKind::Performer => write!(f, "performer"),
-        }
-    }
-}
+// doc 44 P2: `LaneKind`（Conductor / Performer）は撤去。
+//
+// D4「lane 自身は役割状態を持たない」— lane は全て対等になり、開発起点は
+// [`CONDUCTOR_LANE_NAME`] の予約名（将来は Host が持つポインタ）で表される。
+// 旧 kind の唯一の実質は「conductor は project に 1 本・worktree を持たない」だが、
+// それは **名前の一意性**（1 project に同名 lane は 1 本）で既に表現されている。
 
 // `LaneStand` enum は doc 11 (PR-B) で削除。 stand 識別子は `String` に統一
 // (例: "echoes" / "shell")。 tmux decoupling PR2 で stand script 層 (mise task) も廃止され、
@@ -172,49 +153,81 @@ impl LaneLifecycle {
     }
 }
 
+/// 開発起点 lane の予約名（doc 44 D4）。
+///
+/// 旧 `LaneKind::Conductor` の後継だが、**役割ではなく名前**である点が違う。
+/// lane 側に「自分は conductor だ」という状態はなく、この名前を持つ lane が
+/// たまたま開発起点である、という関係に退化した（P3 で Host のポインタに移る）。
+///
+/// この名前は `LaneAddress` の Display 形が旧 conductor と一致する（`<project>/conductor`）
+/// ように選んである — 既存の永続 address / wire を無傷で引き継ぐため。
+pub const CONDUCTOR_LANE_NAME: &str = "conductor";
+
 /// Lane の address — Pool key
 ///
-/// 表示形 (`Display` 実装):
-/// - Conductor: `"<project>/conductor"`         例: `"vp/conductor"`
-/// - Performer: `"<project>/performer/<name>"`  例: `"vp/performer/foo"`
+/// 表示形 (`Display` 実装): `"<project>/<name>"`  例: `"vp/conductor"` / `"vp/foo"`
+///
+/// doc 44 P2（フラット化）: 旧 `{ project, kind, name: Option<String> }` の 3-tuple から
+/// **`{ project, name }` の 2-tuple** になった。旧構造は conductor だけ `name: None` という
+/// 非対称を抱えており、それが「lane が役割を自意識する」構造の物理形だった（D4）。
+///
+/// ⚠️ performer の表示形が `<project>/performer/<name>` → `<project>/<name>` に変わる。
+/// DB / session.json に残る旧形は [`LanePool::parse_address`] が受理して新形に正規化する
+/// （lead/wing → conductor/performer の rename 時と同じ手当て）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LaneAddress {
     pub project: String,
-    pub kind: LaneKind,
-    /// Performer のみ Some (人間可読、例: "foo")。Conductor は None。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    /// lane 名（人間可読、例: "foo"）。開発起点は [`CONDUCTOR_LANE_NAME`]。
+    ///
+    /// `default` は P2 以前に永続した descriptor を読むための互換。旧 `LaneAddress` は
+    /// conductor だけ `name` を持たず（`skip_serializing_if` で省略）、DB の `lane.descriptor`
+    /// にその形で入っている。既定値を予約名にすると、旧 conductor レコードは name 欠落 →
+    /// `"conductor"`、旧 performer は `name: "foo"` がそのまま読める（余分な `kind` は
+    /// unknown field として無視される）ので、**custom Deserialize なしで旧形が全部読める**。
+    #[serde(default = "default_lane_name")]
+    pub name: String,
+}
+
+/// [`LaneAddress::name`] の serde 既定値（P2 以前の永続 descriptor 互換、上記参照）。
+fn default_lane_name() -> String {
+    CONDUCTOR_LANE_NAME.to_string()
 }
 
 impl LaneAddress {
-    pub fn conductor(project: impl Into<String>) -> Self {
+    /// 任意の lane を構築する（フラット化後の canonical な構築子）。
+    pub fn new(project: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             project: project.into(),
-            kind: LaneKind::Conductor,
-            name: None,
+            name: name.into(),
         }
     }
 
+    /// 開発起点 lane（予約名 [`CONDUCTOR_LANE_NAME`]）を構築する。
+    pub fn conductor(project: impl Into<String>) -> Self {
+        Self::new(project, CONDUCTOR_LANE_NAME)
+    }
+
+    /// 名前付き lane を構築する（旧 performer）。
+    ///
+    /// 旧 API 名を残しているのは呼び出し 100 箇所超の互換のため。フラット化後は
+    /// [`Self::new`] と完全に同義で、「performer という種別」はもう存在しない。
     pub fn performer(project: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            project: project.into(),
-            kind: LaneKind::Performer,
-            name: Some(name.into()),
-        }
+        Self::new(project, name)
+    }
+
+    /// 開発起点 lane か（= 予約名を持つか）。
+    pub fn is_conductor(&self) -> bool {
+        self.name == CONDUCTOR_LANE_NAME
     }
 
     // `tmux_session_name` / `tmux_session_prefix` (Phase 1a の deterministic tmux 名導出) は
-    // tmux decoupling PR2 で退役。 lane の identity は Display 形 (`<project>/conductor` 等)
+    // tmux decoupling PR2 で退役。 lane の identity は Display 形 (`<project>/<name>`)
     // ただ一つ (design doc §13.2 — sanitize 形は tmux の「`/` 禁止」制約由来だった)。
 }
 
 impl fmt::Display for LaneAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (&self.kind, &self.name) {
-            (LaneKind::Conductor, _) => write!(f, "{}/conductor", self.project),
-            (LaneKind::Performer, Some(n)) => write!(f, "{}/performer/{}", self.project, n),
-            (LaneKind::Performer, None) => write!(f, "{}/performer/<unnamed>", self.project),
-        }
+        write!(f, "{}/{}", self.project, self.name)
     }
 }
 
@@ -291,9 +304,9 @@ pub struct LaneInfo {
     #[serde(default, skip_serializing_if = "LaneId::is_empty")]
     pub id: LaneId,
     pub address: LaneAddress,
-    pub kind: LaneKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    // doc 44 P2: `kind` / `name` を撤去。どちらも `address` が持つ情報の複製で、
+    // 真実源が 2 つある状態だった（`address.kind` / `address.name` と同値）。
+    // kind は概念ごと消え、name は `address.name` が唯一の在処になる。
     pub state: LaneState,
     /// Stand 名 (例: "hd" / "shell" / "tmux"、 doc 11 PR-B で String に変更)
     pub stand: String,
@@ -580,8 +593,6 @@ impl LanePool {
             // I1: conductor の安定 id を address (project, "conductor") で load_or_create
             id: crate::lane::lane_id::load_or_create(&project_id, "conductor"),
             address: addr.clone(),
-            kind: LaneKind::Conductor,
-            name: None,
             state,
             stand: stand_name.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -615,15 +626,15 @@ impl LanePool {
         let mut v: Vec<LaneInfo> = self.lanes.values().cloned().collect();
         v.sort_by(|a, b| {
             use std::cmp::Ordering;
-            match (a.kind, b.kind) {
-                (LaneKind::Conductor, LaneKind::Performer) => Ordering::Less,
-                (LaneKind::Performer, LaneKind::Conductor) => Ordering::Greater,
-                _ => a.created_at.cmp(&b.created_at).then_with(|| {
-                    a.name
-                        .as_deref()
-                        .unwrap_or("")
-                        .cmp(b.name.as_deref().unwrap_or(""))
-                }),
+            // doc 44 P2: 旧 kind 比較の後継。開発起点（予約名）を先頭に置く要件は
+            // 表示順の話であって lane の役割分岐ではないので、名前の判定で足りる。
+            match (a.address.is_conductor(), b.address.is_conductor()) {
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                _ => a
+                    .created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.address.name.cmp(&b.address.name)),
             }
         });
         v
@@ -870,12 +881,17 @@ impl LanePool {
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
         let parts: Vec<&str> = s.splitn(3, '/').collect();
         match parts.as_slice() {
-            // 旧 "lead"/"wing" も受理 (conductor/performer rename 前の session.json / wire address 互換)
-            [project, "conductor" | "lead"] if !project.is_empty() => {
-                Some(LaneAddress::conductor(*project))
+            // 旧 "lead" は開発起点の旧名 (conductor rename 前の session.json / wire address 互換)。
+            [project, "lead"] if !project.is_empty() => Some(LaneAddress::conductor(*project)),
+            // canonical: "<project>/<name>" (doc 44 P2 フラット化後)
+            [project, name] if !project.is_empty() && !name.is_empty() => {
+                Some(LaneAddress::new(*project, *name))
             }
+            // 旧 3 分節形 "<project>/performer/<name>" (P2 以前の永続 address / wire) を
+            // 新形に正規化して受理する。lead/wing → conductor/performer の rename 時と同じ手当て
+            // で、DB (`lane` / `lane_lifecycle` の address 列) と session.json を無傷で引き継ぐ。
             [project, "performer" | "wing", name] if !project.is_empty() && !name.is_empty() => {
-                Some(LaneAddress::performer(*project, *name))
+                Some(LaneAddress::new(*project, *name))
             }
             _ => None,
         }
@@ -1659,8 +1675,6 @@ mod tests {
             console_mode: mode,
             id: Default::default(),
             address: addr.clone(),
-            kind: LaneKind::Conductor,
-            name: None,
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-10T00:00:00Z".to_string(),
@@ -2057,12 +2071,10 @@ mod tests {
     }
 
     #[test]
-    fn lane_address_display_conductor_and_performer() {
+    fn lane_address_display_is_flat() {
+        // doc 44 P2: 表示形は `<project>/<name>` 一本。開発起点は予約名なので旧形と一致する。
         assert_eq!(LaneAddress::conductor("vp").to_string(), "vp/conductor");
-        assert_eq!(
-            LaneAddress::performer("vp", "foo").to_string(),
-            "vp/performer/foo"
-        );
+        assert_eq!(LaneAddress::performer("vp", "foo").to_string(), "vp/foo");
     }
 
     // deliver_nudge の並行 interleave 防止 (#674 race) の要は「同一 lane が同じ lock を共有し、
@@ -2120,32 +2132,51 @@ mod tests {
         assert_eq!(pool.count(), 1);
         let lanes = pool.list();
         assert_eq!(lanes.len(), 1);
-        assert_eq!(lanes[0].kind, LaneKind::Conductor);
+        assert!(lanes[0].address.is_conductor());
         assert_eq!(lanes[0].stand, "echoes"); // default は "echoes" (PR-pre2 で "hd" → "echoes" rename)
     }
 
+    /// doc 44 P2: 旧 `LaneKind` の serde テスト 2 本（snake_case / "worker" 拒否）は型ごと撤去。
+    /// 代わりに固定すべきは「**P2 以前に永続した descriptor が読めること**」になった。
     #[test]
-    fn lane_kind_serde_snake_case() {
-        assert_eq!(
-            serde_json::to_string(&LaneKind::Conductor).unwrap(),
-            "\"conductor\""
-        );
-        assert_eq!(
-            serde_json::to_string(&LaneKind::Performer).unwrap(),
-            "\"performer\""
-        );
+    fn legacy_lane_address_deserializes() {
+        // 旧 conductor: name 省略 + kind field あり → 予約名に落ちる
+        let conductor: LaneAddress =
+            serde_json::from_str(r#"{"project":"vp","kind":"conductor"}"#).unwrap();
+        assert_eq!(conductor, LaneAddress::conductor("vp"));
+        assert!(conductor.is_conductor());
+
+        // 旧 performer: name あり + kind field は unknown として無視される
+        let performer: LaneAddress =
+            serde_json::from_str(r#"{"project":"vp","kind":"performer","name":"foo"}"#).unwrap();
+        assert_eq!(performer, LaneAddress::new("vp", "foo"));
+        assert!(!performer.is_conductor());
+
+        // 新形（kind なし）
+        let flat: LaneAddress = serde_json::from_str(r#"{"project":"vp","name":"bar"}"#).unwrap();
+        assert_eq!(flat, LaneAddress::new("vp", "bar"));
     }
 
+    /// 旧 3 分節 address 文字列（`<project>/performer/<name>`）が新形に正規化されること。
     #[test]
-    fn lane_kind_serde_worker_rejected() {
-        // Worker → Performer rename 完結後: legacy `"worker"` は serde alias から外れた。
-        // `#[serde(alias = "worker")]` 削除の回帰ガード。
-        // "worker" が LaneKind として deserialize されると旧 SP wire から届いた
-        // stale payload を黙って受理してしまう — それを防ぐ。
-        let result: Result<LaneKind, _> = serde_json::from_str("\"worker\"");
-        assert!(
-            result.is_err(),
-            "\"worker\" は LaneKind として受理されてはならない (alias 削除済)"
+    fn legacy_address_string_normalizes() {
+        assert_eq!(
+            LanePool::parse_address("vp/performer/foo").unwrap(),
+            LaneAddress::new("vp", "foo")
+        );
+        assert_eq!(
+            LanePool::parse_address("vp/wing/foo").unwrap(),
+            LaneAddress::new("vp", "foo")
+        );
+        // 旧 conductor 名 "lead" も予約名に寄る
+        assert_eq!(
+            LanePool::parse_address("vp/lead").unwrap(),
+            LaneAddress::conductor("vp")
+        );
+        // 新形はそのまま
+        assert_eq!(
+            LanePool::parse_address("vp/foo").unwrap(),
+            LaneAddress::new("vp", "foo")
         );
     }
 
@@ -2184,12 +2215,18 @@ mod tests {
         let conductor2 = LanePool::parse_address("vantage-point/conductor").unwrap();
         assert_eq!(conductor2, LaneAddress::conductor("vantage-point"));
 
+        // doc 44 P2: `vp/foo` は「未知 kind」ではなく **name が foo の lane** になった。
+        assert_eq!(
+            LanePool::parse_address("vp/foo").unwrap(),
+            LaneAddress::new("vp", "foo")
+        );
+
         // 不正
         assert!(LanePool::parse_address("vp").is_none()); // / 無し
         assert!(LanePool::parse_address("/conductor").is_none()); // project 空
-        assert!(LanePool::parse_address("vp/foo").is_none()); // 未知 kind
-        assert!(LanePool::parse_address("vp/performer/").is_none()); // performer name 空
-        // 旧 "worker" token は受理しない
+        assert!(LanePool::parse_address("vp/").is_none()); // name 空
+        assert!(LanePool::parse_address("vp/performer/").is_none()); // 旧形の name 空
+        // 旧 "worker" token は受理しない（3 分節の互換は performer/wing のみ）
         assert!(LanePool::parse_address("vp/worker/foo").is_none());
 
         // 後方互換: conductor/performer rename 前の "lead"/"wing" address も受理する
@@ -2232,8 +2269,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::performer("vp", "sub"),
-            kind: LaneKind::Performer,
-            name: Some("sub".to_string()),
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),
@@ -2287,8 +2322,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),

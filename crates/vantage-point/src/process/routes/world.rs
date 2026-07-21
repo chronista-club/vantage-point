@@ -508,8 +508,6 @@ pub async fn world_list_lanes(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<LanesQuery>,
 ) -> impl IntoResponse {
-    use crate::process::lanes_state::LaneKind;
-
     let Some(world) = &state.world else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -532,13 +530,9 @@ pub async fn world_list_lanes(
                 .is_none_or(|p| l.address.project == p)
         })
         .filter(|l| {
-            query.lane.as_deref().is_none_or(|n| {
-                match (&l.address.kind, l.address.name.as_deref()) {
-                    (LaneKind::Conductor, _) => n == "conductor",
-                    (LaneKind::Performer, Some(name)) => name == n,
-                    (LaneKind::Performer, None) => false,
-                }
-            })
+            // doc 44 P2: 旧 kind 分岐（conductor は "conductor"、performer は name と照合）は
+            // フラット化で name 一本の比較に畳まれた（開発起点の name が予約名 "conductor"）。
+            query.lane.as_deref().is_none_or(|n| l.address.name == n)
         })
         .filter(|l| {
             // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較 (wire 上は新 stand 名のみ accept)。
@@ -551,9 +545,10 @@ pub async fn world_list_lanes(
     lanes.sort_by(|a, b| {
         use std::cmp::Ordering;
         a.address.project.cmp(&b.address.project).then_with(|| {
-            match (a.address.kind, b.address.kind) {
-                (LaneKind::Conductor, LaneKind::Performer) => Ordering::Less,
-                (LaneKind::Performer, LaneKind::Conductor) => Ordering::Greater,
+            // doc 44 P2: 開発起点を先頭に置く表示順（旧 kind 比較の後継、`LanePool::list` と同型）
+            match (a.address.is_conductor(), b.address.is_conductor()) {
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
                 _ => a.created_at.cmp(&b.created_at),
             }
         })

@@ -395,8 +395,6 @@ mod lane_resolve_tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: addr.clone(),
-            kind: addr.kind,
-            name: addr.name.clone(),
             state: LaneState::Running,
             stand: stand.to_string(),
             created_at: "2026-06-16T00:00:00Z".to_string(),
