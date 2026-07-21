@@ -576,6 +576,7 @@ async fn send_lanes_snapshot(
     path_key: &str,
     wiremsg_store: &Option<crate::capability::WiremsgStore>,
     running_processes: &Option<Arc<RwLock<HashMap<String, RunningProcess>>>>,
+    vpdb: &Option<crate::db::SharedVpDb>,
 ) -> Result<(), NetworkError> {
     let mut lanes = lane_registry
         .read()
@@ -600,7 +601,14 @@ async fn send_lanes_snapshot(
             enrich_lanes_flow_state(&mut lanes, store, &project_name).await;
         }
     }
-    let snapshot = crate::protocol::ProcessMessage::LanesSnapshot { lanes };
+    // doc 44 D4: 開発起点を帳簿から解決して添える。project runtime 側の publish
+    // (`process::server::publish_lanes`) と**同じ解決**を通す — 片方だけだと受け手が
+    // 接続経路によって起点の有無で flicker する。
+    let origin = crate::host::ledger::origin_name_for_lanes(vpdb.as_ref(), path_key, &lanes).await;
+    let snapshot = crate::protocol::ProcessMessage::LanesSnapshot {
+        lanes,
+        origin: Some(origin),
+    };
     let json = serde_json::to_value(&snapshot).unwrap_or_default();
     channel.send_event("snapshot", &json).await
 }
@@ -1344,6 +1352,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         // FSM 投影: snapshot 送信時の flow_state enrich に使う (store 不在 = enrich skip)。
         let wiremsg_store = state.wiremsg_store.clone();
         let running_processes = state.running_processes.clone();
+        // doc 44 D4: snapshot に添える開発起点は帳簿 (db) が真実源。
+        let vpdb = state.vpdb.clone();
         server
             .register_channel("lanes", {
                 move |_ctx, stream| {
@@ -1351,6 +1361,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     let lane_change_tx = lane_change_tx.clone();
                     let wiremsg_store = wiremsg_store.clone();
                     let running_processes = running_processes.clone();
+                    let vpdb = vpdb.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
 
@@ -1366,7 +1377,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let mut rx = lane_change_tx.subscribe();
 
                         // 初期 snapshot 配信
-                        if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
+                        if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes, &vpdb)
                             .await
                             .is_err()
                         {
@@ -1380,7 +1391,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     if changed_key != path_key {
                                         continue; // 別 project の変更は無視
                                     }
-                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes, &vpdb)
                                         .await
                                         .is_err()
                                     {
@@ -1393,7 +1404,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         "lanes channel subscribe lagged: {} events dropped (resync)",
                                         n
                                     );
-                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes, &vpdb)
                                         .await
                                         .is_err()
                                     {

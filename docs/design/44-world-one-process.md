@@ -584,3 +584,93 @@ World 不在なら予約名にフォールバックし、**その旨を告げて
 clone + PtySlot spawn、`create_lane` は daemon 側 worktree provision のみ）はまだ別物で、
 D3 の「迎え入れ」を Host に実装する時に寄せる。gate が 1 本になったので、その時に
 「どちらが正か」を決めるだけで済む。
+
+## 10. P4 第一スライス — 開発起点を GUI から見る / 動かす（D5、2026-07-21）
+
+> **実装済**。§8 で作った帳簿のポインタを、sidebar の star と context menu に繋いだ。
+> D5 の「起点再指定は sidebar の lane メニュー（Host のポインタ更新のみ。何も動かない）」。
+
+### 10.1 起点は `LaneInfo` ではなく snapshot に添える
+
+`ProcessMessage::LanesSnapshot` に `origin: Option<String>`（lane 名）を足した。
+`LaneInfo` に持たせない理由: `LaneInfo` は `lane.descriptor` として **DB に永続される**ので、
+起点を入れると帳簿と二重の真実源になり、片方が stale になる。起点は lane の属性ではなく
+project の指定（D4）なので、project 単位の snapshot に 1 本添えるのが正しい層。
+
+### 10.2 `None` は「無い」ではなく「判らない」
+
+publish 経路は 2 本ある（project runtime の live push と、World が vp-app 接続時に配る
+retained snapshot）。**片方だけ解決すると受け手が起点の有無で flicker する**ので、
+解決は `ledger::origin_name_for_lanes` 1 本に畳み、両方が通る。
+
+その上で `origin: None`（旧 server / 欠落）は **受け手が前回値を保つ**。既定値に落とすと、
+起点を指定済の project で star が明滅する。
+
+### 10.3 楽観更新をしない
+
+IPC handler は `sidebar_state` を先読み更新せず、次の snapshot の `origin` を待つ。
+帳簿が真実源なので、楽観更新すると失敗時に UI だけが嘘をつく。
+
+### 10.4 帳簿の row key は module 境界で正規化する
+
+**実装中に見つけた不整合**: `ProjectRuntimes::start` は map key に `normalize_path_key`
+（canonicalize 済）を使う一方、`CapabilityConfig.project_dir` には**生のパス**を渡す。
+そのため帳簿に触る 4 経路で渡ってくる path の形が揃っていない:
+
+| 経路 | 渡す path |
+|---|---|
+| `process::server::publish_lanes` / unison handler | `state.project_dir`（生） |
+| `daemon::server::send_lanes_snapshot` | `path_key`（正規化済） |
+
+ズレると**書き手と読み手が別の行を触り、起点を指定しても snapshot に載らない**。
+症状は「設定が効かない」だけで error も log も出ない — 完全に無音で失敗する。
+
+慣習は call site 側で正規化だが、**帳簿は書き手が 1 module に閉じた新設 table なので、
+正規化を `ledger::row_key` に畳んで構造的に一致させた**。経路 4 本のうち 1 つ忘れたら
+無音で行が割れる形を、そもそも作らない。
+
+> 本番では両 path が偶然一致していれば動く。§9.1 と同じ「masking されているだけ」の形で、
+> テスト（`write_and_read_agree_across_path_shapes`）で固定した。
+
+### 10.5 icon は Phosphor モノクロ
+
+star は `ph:star-fill`（表示）/ `ph:star`（menu）。sidebar は既に emoji ゼロで Phosphor に
+統一済み（`LanePicker` の「脱 TUI: 📁/◉ の text glyph を CreoIcon に置換」）。
+
+配置は stand icon の直後 = 「この lane が**何か**」を修飾する層（右端の state / badge は
+「今**どうなっているか**」で層が違う）。色は `--lg-mute` で**光らせない** — 起点は状態では
+なく属性なので、目立たせると常時鳴る警告になる（光 = needs-you の専有）。
+
+### 10.6 未解決 — vp-app への push 起床経路（実機確認が要る）
+
+**本スライスのバグではなく、P1 fold-in の副作用の疑い。** team-b レビュー（#834）が指摘。
+
+vp-app は World daemon の `"lanes"` channel を購読する。初回 snapshot 送信後の**再 push は
+`lane_change_tx` 駆動のみ**（`daemon/server.rs` の push loop）で、その `send` は
+リポジトリ全体で **1 箇所** — wire `send`/`ack` 後の `notify_lane_change_for_projects` だけ。
+
+一方 `handle_lane_origin_set` は帳簿を書くだけで、`lane_change_tx` にも `SystemEvent` にも
+触れない。project 側の `publish_lanes`（5s tick + `SystemEvent::Lane`）は
+`world_lanes`（= daemon の `lane_registry` **そのもの**）を更新するが、
+**daemon 側 push loop を起こす手段を持たない**（`AppState` に `lane_change_tx` が無い）。
+
+この辺は元々「SP 自己登録（`register`/`lanes-diff`）→ `lane_registry` + `lane_change_tx`」が
+担っていた。fold-in の置き換えコメントは `running_processes` / `lane_registry` /
+`process_presence` の移管を挙げるが、**`lane_change_tx` の発火はその列に無い**。
+
+観測と矛盾する点があり、静的読みだけでは決まらない: vp-app 側は `LanesLoaded` を
+「project × frequency でループする systematic event」と書いており、push が高頻度である
+前提に見える。wire 活動（hook が prompt ごとに撃つ）が十分頻繁で masking しているのか、
+別の push 経路があるのかは**実機で見ないと判別できない**。
+
+> 推測で直さない: `publish_lanes` から起床を撃つと **5s × project 数**の全 snapshot push に
+> なる。それが意図的に避けられている設計なのか単なる配線漏れなのかは、実機の挙動を見て
+> から決める（§9.1 の「masking されているだけ」を今度は逆方向に踏まないため）。
+
+**次に実機を触る時の最優先確認**: 「開発起点にする」クリック後、star が即動くか /
+次の wire 活動まで固まるか。固まるなら影響は origin だけでなく lane 作成・削除・死活の
+反映にも及ぶので、doc 44 の独立 task として起票する。
+
+### 10.7 残り
+
+タブ strip の header 昇格（D5 前半）と lane の並び順（`ord`、§8.5 で key の判断のみ済）は未着手。

@@ -61,6 +61,12 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
             field "fresh" type="bool" optional=#true
         }
+        // doc 44 D4: この lane を project の開発起点にする (Host の帳簿のポインタ更新)。
+        // D5 の通り **何も動かさない** — cwd も active lane も engine も変わらない。
+        request "lane:set_origin" {
+            field "path" type="string"
+            field "address" type="string"
+        }
         // Performer Lane 作成要求 (branch / stand は optional)
         request "lane:add_performer" {
             field "path" type="string"

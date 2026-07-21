@@ -116,6 +116,24 @@ pub fn lane_id_of<'a>(name: &str, lanes: &'a [LaneRef]) -> Option<&'a str> {
 // actions — 帳簿の永続（DB）。判定は上の純関数が済ませている
 // =============================================================================
 
+/// 帳簿の row key を作る（**project path の正規化はここに畳む**）。
+///
+/// 呼び手によって渡ってくる path が違うため:
+///
+/// - `AppState.project_dir` — `ProjectRuntimes::start` が受け取った**生のパス**
+/// - `path_key` — `normalize_path_key`（canonicalize 済、symlink 解決後）
+///
+/// `ProjectRuntimes` は map key に正規化を使いつつ `CapabilityConfig` には生を渡すので、
+/// 両者は一致するとは限らない（macOS の `/tmp` → `/private/tmp` 等）。ズレると
+/// **書き手と読み手が別の行を触り、起点を指定しても snapshot に載らない**。
+///
+/// 慣習では call site 側で正規化するが、帳簿は経路が 4 本（publish 2 / get / set）あり、
+/// 1 つ忘れると無症状で行が割れる。**書き手が 1 module しか無い新設 table なので、
+/// 正規化をここに閉じて構造的に一致させる。**
+fn row_key(project_path: &str) -> String {
+    crate::capability::normalize_path_key(std::path::Path::new(project_path))
+}
+
 /// 帳簿から起点を読む。
 ///
 /// DB が無い（`vpdb: None` の test fixture 等）/ 読めない場合は既定に落ちる —
@@ -126,7 +144,7 @@ pub async fn origin(
     lanes: &[LaneRef],
 ) -> Origin {
     let pointer = match vpdb {
-        Some(db) => match db.get_host_origin(project_path).await {
+        Some(db) => match db.get_host_origin(&row_key(project_path)).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("帳簿: 起点ポインタの読み出しに失敗（既定に落とす）: {}", e);
@@ -136,6 +154,23 @@ pub async fn origin(
         None => None,
     };
     resolve_origin_name(pointer.as_deref(), lanes)
+}
+
+/// `LaneInfo` の並びから起点を解決する（snapshot publisher 用の薄い adapter）。
+///
+/// `LanesSnapshot` を publish する経路が 2 本ある（project runtime の live push と、
+/// World が vp-app 接続時に配る retained snapshot）ので、両方が同じ解決を通るように
+/// ここに畳む。**片方だけ解決すると受け手が起点の有無で flicker する。**
+pub async fn origin_name_for_lanes(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    lanes: &[crate::process::lanes_state::LaneInfo],
+) -> String {
+    let refs: Vec<LaneRef> = lanes
+        .iter()
+        .map(|l| LaneRef::new(l.id.to_string(), l.address.name.clone()))
+        .collect();
+    origin(vpdb, project_path, &refs).await.name
 }
 
 /// 起点を設定する（名前で受けて id で書く）。
@@ -151,7 +186,7 @@ pub async fn set_origin(
     let id = lane_id_of(lane_name, lanes).ok_or_else(|| {
         format!("帳簿: lane '{lane_name}' が見つからない（または安定 id を持たない）")
     })?;
-    db.upsert_host_origin(project_path, id)
+    db.upsert_host_origin(&row_key(project_path), id)
         .await
         .map_err(|e| format!("帳簿: 起点の永続に失敗: {e}"))
 }
@@ -223,6 +258,96 @@ mod tests {
     fn lane_without_stable_id_cannot_become_origin() {
         let lanes = vec![LaneRef::new("", "legacy")];
         assert_eq!(lane_id_of("legacy", &lanes), None);
+    }
+
+    /// snapshot publisher が使う adapter が、DB 越しでも純関数と同じ答えを出すこと。
+    ///
+    /// publish 経路は 2 本（project runtime の live push と World の retained snapshot）で、
+    /// **両方が同じ解決を通らないと受け手が起点の有無で flicker する**。だから解決を
+    /// [`origin_name_for_lanes`] 1 本に畳んでいる。ここではその 1 本を固定する。
+    #[tokio::test]
+    async fn origin_name_for_lanes_resolves_through_db() {
+        use crate::process::lanes_state::LanePool;
+
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+
+        // conductor + performer の 2 本。performer を起点にできることが D4 の本体なので、
+        // **答えが分岐する形**で組む（1 本だけだと全ケース同じ答えになり判別力ゼロ）。
+        let mut lanes = LanePool::with_conductor("proj", "/tmp/proj").list();
+        let mut performer = lanes[0].clone();
+        performer.address = crate::process::lanes_state::LaneAddress::new("proj", "feat-x");
+        performer.id = crate::process::lanes_state::LaneId::generate();
+        let performer_id = performer.id.to_string();
+        lanes.push(performer);
+
+        // 未設定 = 予約名（既定）
+        assert_eq!(
+            origin_name_for_lanes(Some(&db), "/tmp/proj", &lanes).await,
+            CONDUCTOR_LANE_NAME
+        );
+
+        // 帳簿が performer を指せば起点が動く（= 予約名ではなくなる）
+        db.upsert_host_origin("/tmp/proj", &performer_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            origin_name_for_lanes(Some(&db), "/tmp/proj", &lanes).await,
+            "feat-x",
+            "帳簿のポインタが publish される起点を決める"
+        );
+
+        // 指す先が居なければ既定に戻る（publish は止めない = 起点不明で snapshot を欠かさない）
+        db.upsert_host_origin("/tmp/proj", "id-gone").await.unwrap();
+        assert_eq!(
+            origin_name_for_lanes(Some(&db), "/tmp/proj", &lanes).await,
+            CONDUCTOR_LANE_NAME
+        );
+
+        // DB 不在（test fixture / 未接続）でも既定を返して publish を止めない
+        assert_eq!(
+            origin_name_for_lanes(None, "/tmp/proj", &lanes).await,
+            CONDUCTOR_LANE_NAME
+        );
+    }
+
+    /// 回帰固定: **書き手と読み手が別の形の path を渡しても同じ行を触る**。
+    ///
+    /// 帳簿に触る経路は 4 本あり、渡ってくる path の形が揃っていない:
+    /// `AppState.project_dir`（`ProjectRuntimes::start` が受け取った生のパス）と
+    /// `path_key`（`normalize_path_key` = canonicalize 済）。`ProjectRuntimes` は map key に
+    /// 正規化を使いつつ `CapabilityConfig` には生を渡すので、両者は一致するとは限らない。
+    ///
+    /// ズレると **起点を指定しても snapshot に載らない**（書いた行と読む行が違う）。
+    /// 症状は「設定が効かない」だけで error も log も出ないため、テストで固定する。
+    #[tokio::test]
+    async fn write_and_read_agree_across_path_shapes() {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+
+        // 実在 dir を作る（canonicalize は未実在 path では入力を素通しするため）。
+        let dir = std::env::temp_dir().join(format!("vp-ledger-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical = dir.to_string_lossy().to_string();
+        // 同じ dir を指すが文字列としては別物（末尾 `/.`）。
+        let quirky = format!("{canonical}/.");
+        assert_ne!(canonical, quirky, "文字列としては異なる前提");
+
+        let lanes = vec![LaneRef::new("id-foo", "foo")];
+
+        // 生のパスで書き、正規化済みのパスで読む（= 実際の write / read 経路の組み合わせ）。
+        set_origin(Some(&db), &quirky, "foo", &lanes)
+            .await
+            .expect("起点の設定");
+        let origin = origin(Some(&db), &canonical, &lanes).await;
+        assert_eq!(
+            origin.name, "foo",
+            "path の形が違っても同じ行を読む: {origin:?}"
+        );
+        assert_eq!(origin.source, OriginSource::Pinned);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `Origin` は unison 応答としてそのまま wire に載るので serde 形を固定する。
