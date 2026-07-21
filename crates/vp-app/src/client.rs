@@ -211,7 +211,7 @@ pub struct WorldHealthInfo {
 pub struct SpPresence {
     #[serde(default)]
     pub path: String,
-    /// `"unregistered"` | `"connecting"` | `"connected"` | `"disconnected"`。
+    /// `"unregistered"` | `"connected"`（2 値、doc 44 §5.5 PR3）。
     #[serde(default)]
     pub presence: String,
 }

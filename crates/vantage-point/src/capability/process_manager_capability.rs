@@ -101,26 +101,35 @@ pub struct RunningProcess {
 /// その生産者（registry handler は #824、health monitor は本 PR）が消えたため到達不能になった。
 /// fold-in 後の project は「World の中に居る（=起動済）か、居ないか」の二値しか取り得ない。
 /// enum の 2 値への縮約と vp-app 描画の追従は presence 意味論の follow-up（doc 44 §5.5 PR3）。
+/// **2 値**（doc 44 §5.5 PR3 の follow-up、2026-07-22 着地）。fold-in 後の project は
+/// 「World の中に居る」か「居ない」かしか取り得ない。
+///
+/// 旧 4 値のうち `Connecting`（再起動 in-flight）/ `Disconnected`（QUIC 切断検知）は
+/// **別プロセスの SP が register / heartbeat していた時代の状態**で、その生産者
+/// （registry handler は #824、health monitor は #829）が消えて到達不能になっていた。
+/// 本番コードで生成されるのは `Connected` / `Unregistered` の 2 つだけで、
+/// 残り 2 値は**テストの中でしか作られていなかった**（= 型に居るだけの死んだ状態）。
+///
+/// > 到達不能な variant を型に残すと、読み手は「起こり得る」と読んで分岐を書き続ける。
+/// > 消える経路は型からも消す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessPresenceState {
-    /// 未登録（projects には在るが未起動 / 停止済）。fold-in 後は「World の外」を表す。
+    /// 未登録（projects には在るが未起動 / 停止済）= **World の外**。
     Unregistered,
-    /// 到達不能（fold-in で生産者消滅）。旧: 再起動 in-flight（respawn 着手、register 待ち）。
-    Connecting,
-    /// 起動済み（`start_process` 成功）。fold-in 後は「World の中に居る」を表す。
+    /// 起動済み（`start_process` 成功）= **World の中に居る**。
     Connected,
-    /// 到達不能（fold-in で生産者消滅）。旧: QUIC 切断を検知（crash / network）。
-    Disconnected,
 }
 
 impl ProcessPresenceState {
-    /// `/api/health` の `processes[].presence` 値（vp-app が ●◐○ 描画に使う）。
+    /// `/api/health` の `processes[].presence` 値（vp-app が ●○ 描画に使う）。
+    ///
+    /// client 側（`ProjectAccordion.tsx`）は元から `=== "connected"` の 1 本でしか見ておらず、
+    /// それ以外は dim に落としていた。つまり **描画は既に 2 値として振る舞っていた** —
+    /// 本縮約で server の型が実態に追いついた形。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Unregistered => "unregistered",
-            Self::Connecting => "connecting",
             Self::Connected => "connected",
-            Self::Disconnected => "disconnected",
         }
     }
 }
@@ -2352,9 +2361,7 @@ mod tests {
     fn test_process_presence_state_as_str() {
         // /api/health の processes[].presence にそのまま載る文字列のロック (vp-app 描画契約)。
         assert_eq!(ProcessPresenceState::Unregistered.as_str(), "unregistered");
-        assert_eq!(ProcessPresenceState::Connecting.as_str(), "connecting");
         assert_eq!(ProcessPresenceState::Connected.as_str(), "connected");
-        assert_eq!(ProcessPresenceState::Disconnected.as_str(), "disconnected");
     }
 
     #[tokio::test]
@@ -2387,8 +2394,8 @@ mod tests {
         }
         cap.set_presence("/tmp/proj-a", ProcessPresenceState::Connected)
             .await;
-        // proj-b は切断済 (live 不在だが project は残る = Model Q)。
-        cap.set_presence("/tmp/proj-b", ProcessPresenceState::Disconnected)
+        // proj-b は未登録 (live 不在だが project は残る = Model Q)。
+        cap.set_presence("/tmp/proj-b", ProcessPresenceState::Unregistered)
             .await;
 
         let snap = cap.presence_snapshot().await;
@@ -2403,8 +2410,8 @@ mod tests {
         assert_eq!(snap[0].port, Some(33000));
         assert_eq!(snap[0].pid, Some(4242));
 
-        // proj-b: Disconnected + live 値は None (project としては sidebar に残る)。
-        assert_eq!(snap[1].presence, "disconnected");
+        // proj-b: Unregistered + live 値は None (project としては sidebar に残る = Model Q)。
+        assert_eq!(snap[1].presence, "unregistered");
         assert_eq!(snap[1].port, None);
         assert_eq!(snap[1].pid, None);
     }
@@ -2424,21 +2431,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_presence_overwrites_connecting_to_disconnected() {
-        // set_presence の上書き機構 + as_str マッピングを固定する。
-        // Connecting / Disconnected は fold-in 後は production 到達不能だが enum 値としては
-        // 有効で、全 variant の presence_snapshot 経由の文字列化を押さえる意味で残す。
+    async fn test_set_presence_overwrites_previous_value() {
+        // set_presence の**上書き機構**と、presence_snapshot 経由の文字列化を固定する。
+        //
+        // 旧名は `..._connecting_to_disconnected` で、コメントに「production 到達不能だが
+        // enum 値としては有効なので全 variant を押さえる意味で残す」と書かれていた。
+        // つまり**死んだ variant を生かすためにテストが存在していた**（2 値縮約で解消）。
+        // 検証対象は元から「後の set_presence が前を上書きすること」なので、生きた 2 値で見る。
         let cap = make_test_cap();
         cap.projects_ref()
             .write()
             .await
             .insert("/tmp/proj-r".to_string(), test_project("proj-r", None));
-        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Connecting)
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Connected)
             .await;
-        assert_eq!(cap.presence_snapshot().await[0].presence, "connecting");
-        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Disconnected)
+        assert_eq!(cap.presence_snapshot().await[0].presence, "connected");
+        cap.set_presence("/tmp/proj-r", ProcessPresenceState::Unregistered)
             .await;
-        assert_eq!(cap.presence_snapshot().await[0].presence, "disconnected");
+        assert_eq!(cap.presence_snapshot().await[0].presence, "unregistered");
     }
 
     #[tokio::test]

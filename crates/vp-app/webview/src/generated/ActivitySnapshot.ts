@@ -39,7 +39,7 @@ hub: string,
  */
 hub_worlds: Array<HubWorld>, 
 /**
- * L1 lifecycle: SP presence map（project path → `"connected"`|`"connecting"`|`"disconnected"`
+ * L1 lifecycle: SP presence map（project path → `"connected"`|`"unregistered"`
  * |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
  * で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
  */
