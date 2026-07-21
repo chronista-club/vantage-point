@@ -283,8 +283,21 @@ enum LaneCommands {
     },
     /// lane console の現在画面を読む (tmux decoupling: 旧 `vp tmux capture` の後継)
     ///
-    /// SP の per-lane Term grid (TermAttach) を render して返す。tmux 不要。
+    /// SP の slot ごとの Term grid (TermAttach) を render して返す。tmux 不要。
+    /// doc 46 P5: slot は lane に 1 枚ではなく session ごと。`--session` で同居する別の
+    /// console を読む (省略時は root = lane の代表)。枚数は `vp lane slots` で判る。
     Capture {
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
+        lane: String,
+        /// 読む slot の session key (省略時 root)
+        #[arg(long)]
+        session: Option<u32>,
+    },
+    /// lane が持つ console slot の一覧を表示 (doc 46 P5 — slot は session ごと)
+    ///
+    /// SP の in-memory な slot 実体を読む (session key / pid / 生死 / root か)。
+    /// 「今この lane に端末が何枚あるか」を UI を通さずに確認する口。
+    Slots {
         /// lane address ("<project>/root" / "<project>/performer/<name>")
         lane: String,
     },
@@ -303,6 +316,9 @@ enum LaneCommands {
         lane: String,
         /// 注入するテキスト (Enter は自動付与、submit 意味論は SP 側 deliver_nudge)
         text: String,
+        /// 送り先 slot の session key (省略時 root = mailbox を名乗る住人、doc 39)
+        #[arg(long)]
+        session: Option<u32>,
     },
 }
 
@@ -767,14 +783,22 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             );
             std::process::exit(1);
         }
-        LaneCommands::Capture { lane } => {
+        LaneCommands::Capture { lane, session } => {
             let config = Config::load().unwrap_or_default();
-            commands::lane_ctl::capture(&lane, &config)
+            commands::lane_ctl::capture(&lane, session, &config)
+        }
+        LaneCommands::Slots { lane } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::slots(&lane, &config)
         }
         LaneCommands::Origin { name } => lane_origin(name.as_deref()),
-        LaneCommands::Nudge { lane, text } => {
+        LaneCommands::Nudge {
+            lane,
+            text,
+            session,
+        } => {
             let config = Config::load().unwrap_or_default();
-            commands::lane_ctl::nudge(&lane, &text, &config)
+            commands::lane_ctl::nudge(&lane, session, &text, &config)
         }
     }
 }

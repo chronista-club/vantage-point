@@ -7,8 +7,17 @@
 //!
 //! ```bash
 //! vp lane capture vantage-point/root          # console の現在画面を読む
+//! vp lane capture vantage-point/root --session 2  # 同居する 2 枚目の console を読む
+//! vp lane slots vantage-point/root            # この lane の slot 一覧（枚数 / pid / root か）
 //! vp lane nudge vantage-point/performer/sub "続けて"  # text + Enter を注入
 //! ```
+//!
+//! ## doc 46 P5 — slot は lane に 1 枚ではなく session ごと
+//!
+//! `pty_slots` が `(lane, session)` key になり、1 つの lane に複数の console が同居できる。
+//! `--session` 省略時は **root**（lane の代表 = mailbox `agent@<lane>` を名乗る住人、doc 39）で、
+//! 従来の挙動と完全に同じ。表示（vp-app）は当面ミニマム（1 枚ずつ）なので、
+//! **枚数と中身をここ（CLI）から読める**ようにしてある（doc 47 §7 成立条件②）。
 
 use anyhow::{Result, bail};
 
@@ -32,15 +41,30 @@ fn project_path_for_lane(lane: &str, config: &Config) -> Result<String> {
     resolve_project_path_from_target(Some(project), config)
 }
 
-/// lane console の現在画面（Term grid render）を stdout に出す。
-pub fn capture(lane: &str, config: &Config) -> Result<()> {
+/// slot console の現在画面（Term grid render）を stdout に出す。`session=None` は root。
+pub fn capture(lane: &str, session: Option<u32>, config: &Config) -> Result<()> {
     let path = project_path_for_lane(lane, config)?;
     let resp = world_process_request_blocking(
         crate::cli::world_port(),
         &path,
         "lane_capture",
-        serde_json::json!({ "lane": lane }),
+        serde_json::json!({ "lane": lane, "session": session }),
     )?;
+    // slot が 2 枚以上ある lane では「今どれを読んだか」が判らないと誤読するので、
+    // 明示指定時 / 複数枚時だけ 1 行の見出しを stderr に出す（stdout は grid のみ = pipe 安全）。
+    let slots: Vec<u64> = resp
+        .get("slots")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(serde_json::Value::as_u64).collect())
+        .unwrap_or_default();
+    if session.is_some() || slots.len() > 1 {
+        eprintln!(
+            "[vp lane capture] {lane} session={} (slots: {slots:?})",
+            session
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "root".into())
+        );
+    }
     match resp.get("content").and_then(|v| v.as_str()) {
         Some(content) => {
             println!("{}", content);
@@ -50,15 +74,59 @@ pub fn capture(lane: &str, config: &Config) -> Result<()> {
     }
 }
 
-/// lane の claude / shell に text + Enter を注入する（submit 意味論は SP 側 `deliver_nudge`）。
-pub fn nudge(lane: &str, text: &str, config: &Config) -> Result<()> {
+/// lane が持つ console slot の一覧を表示する（doc 46 P5 — slot は session ごと）。
+///
+/// 表示（vp-app）を通さずに「今この lane に端末が何枚あるか」を読む口。
+pub fn slots(lane: &str, config: &Config) -> Result<()> {
+    let path = project_path_for_lane(lane, config)?;
+    let resp = world_process_request_blocking(
+        crate::cli::world_port(),
+        &path,
+        "lane_slots",
+        serde_json::json!({ "lane": lane }),
+    )?;
+    let slots = resp
+        .get("slots")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    println!("{lane}: {} slot", slots.len());
+    if slots.is_empty() {
+        println!("  (console 未配線 — chat mode の lane / spawn 失敗した lane は 0 枚が正常)");
+        return Ok(());
+    }
+    println!(
+        "  {:>7}  {:>7}  {:<6}  {:<5}  ATTACHED",
+        "SESSION", "PID", "STATE", "ROOT"
+    );
+    for s in &slots {
+        let get_u64 = |k: &str| s.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let get_bool = |k: &str| s.get(k).and_then(serde_json::Value::as_bool) == Some(true);
+        println!(
+            "  {:>7}  {:>7}  {:<6}  {:<5}  {}",
+            get_u64("session"),
+            get_u64("pid"),
+            if get_bool("alive") { "alive" } else { "dead" },
+            if get_bool("root") { "root" } else { "-" },
+            if get_bool("attached") { "yes" } else { "no" },
+        );
+    }
+    Ok(())
+}
+
+/// slot の claude / shell に text + Enter を注入する（submit 意味論は SP 側 `deliver_nudge`）。
+/// `session=None` は root（wire mailbox `agent@<lane>` を名乗る住人、doc 39）。
+pub fn nudge(lane: &str, session: Option<u32>, text: &str, config: &Config) -> Result<()> {
     let path = project_path_for_lane(lane, config)?;
     world_process_request_blocking(
         crate::cli::world_port(),
         &path,
         "lane_nudge",
-        serde_json::json!({ "lane": lane, "text": text }),
+        serde_json::json!({ "lane": lane, "text": text, "session": session }),
     )?;
-    println!("[vp lane nudge] sent → {}", lane);
+    match session {
+        Some(s) => println!("[vp lane nudge] sent → {lane} (session={s})"),
+        None => println!("[vp lane nudge] sent → {lane}"),
+    }
     Ok(())
 }

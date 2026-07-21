@@ -99,8 +99,8 @@ fresh に始める。既存 session の再表示ではない。
 | **P1** | Pane shell（並列 / 縮小・復元 / focus 視認・移動）+ `term` `chat` を載せる | 無し |
 | **P2** | 新 Pane 作成 UI（**Engine × Act** を選ぶ、要件 4）+ 新 session 発行（要件 5） | 小 |
 | **P3** | `canvas` を Pane に寄せる | 無し（既存 board を mount するだけ） |
-| **P4** | `console_mode`（per-lane Act）の撤去 — §1.4 の移行完了 | 中 |
-| **P5** | 端末の複数枚化（`pty_slots` を `(lane, session)` へ re-key） | **大** |
+| **P4** | `console_mode`（per-lane Act）の撤去 — §1.4 の移行完了 | 中 ✅ `#848`（撤去でなく **session への移設**だった） |
+| **P5** | 端末の複数枚化（`pty_slots` を `(lane, session)` へ re-key） | **大** ✅ `#853`（§3 に着地メモ） |
 | **P6** | `file` kind / layout 永続 | 小 |
 
 P1 と P2 の順が逆でないのは、**作る前に置き場が要る**から。P1 の時点では
@@ -115,6 +115,73 @@ P1 と P2 の順が逆でないのは、**作る前に置き場が要る**から
 spawn / pump / `lane_capture` / `deliver_nudge` / Dead 検出 / zombie reap。
 doc 44 §11 で見たとおり、この層は「1 つの辺が 2 つの仕事をしている」箇所が残っており、
 key 変更は同型の見落としを生みやすい。**P1/P2 を出してから単独で扱う。**
+
+### 着地（2026-07-21、`#853`）
+
+型は `chat_engines` と同型の 2 段 map に揃えた（タプル key ではなく入れ子 —
+「1 session = 高々 1 エンジン」を**同じ入れ子の高さで**検査できるため）:
+
+```rust
+pty_slots:     HashMap<LaneAddress, HashMap<SessionKey, Mutex<PtySlot>>>,
+term_attaches: HashMap<LaneAddress, HashMap<SessionKey, TermAttach>>,
+```
+
+**触った経路は 12**（`lanes_state.rs` 内 8 + 外 4）。事前の見立て（「全経路が影響」）より
+軽かったのは doc 47 §7 の実測どおりで、`pty_slots` が private field + method 越しに
+**カプセル化されていた**から。外に出たのは呼び出し側の引数追加だけで、key の形は漏れていない。
+
+#### 効いた設計判断
+
+1. **`session: Option<SessionKey>` の既定は root**（focused ではない）。slot は lane の設備で、
+   その代表は root（doc 39「座と化身」）。chat 系の `None` = focused と**意図的に違う**ので、
+   両者を受ける `payload_session_key` の doc に既定の違いを明記した
+   （型が同じ `Option<SessionKey>` なので、ここだけが取り違えを止める）
+2. **`term_attaches` は `pty_slots` の双子** — insert / drop を `insert_pty_slot` /
+   `drop_slot` の 2 関数に閉じ、対で動かす以外の書き方をできなくした。
+   test も「書いた slot の grid にだけ文字が乗る」で対を固定している
+   （片方だけ re-key してもコンパイルは通るため、型では守れない）
+3. **不変条件が精密になった**（この PR の価値の半分）。旧: 「focused の時だけ lane 全体の
+   `pty_slots` 有無を見る」→ 新: 「**当該 session の** slot 有無を全 session で見る」。
+   旧実装は lane に 1 枚だった時代の近似で、2 枚目が立つ今は両方向に嘘をつく
+   （他 session の slot を理由に拒否する / 自分の slot があるのに非 focused だから通す）
+
+#### lifecycle の意味論（決めたこと）
+
+| 動詞 | 対象 | 根拠 |
+|---|---|---|
+| `remove(addr)` | **全 session** の slot | lane ごと消えるので同居人も道連れ |
+| `detect_and_mark_dead` | **root slot の死だけ** lane を Dead に | lane の代表は root。非 root の死はその slot を畳むだけで lane は Running（同居人が 1 人倒れて場を閉じるのは嘘） |
+| `restart_lane`（Resume / Bare） | **root slot だけ**張り替え | step 2 の `build_stand_command` が root entry で engine / resume を決めるのと同じ主語 |
+| `restart_lane`（Reset） | **全 slot** | registry を N=1 に戻す = 非 root session が registry から消えるので、slot を残すと orphan（存在しない session の端末）になる |
+| `set_console_mode(Chat)` | **root slot だけ** | `console_mode` は root session の act（doc 47 §4）。chat engine 側で「focused だけ落とす」のと同じ非対称性の裏返し |
+
+#### 読み手（UI 以外、doc 47 §7 成立条件②）
+
+表示はミニマム据え置きなので、**UI を通さずに slot を読む口**を同じ PR に入れた:
+
+- `vp lane capture <lane> --session <N>` — 同居する別 console を読む（省略時 root）
+- `vp lane slots <lane>` — slot 一覧（session / pid / 生死 / root か / attach 有無）。ask は `lane_slots`
+- `vp lane nudge <lane> <text> --session <N>` — 同居人に書く（省略時 root = mailbox の主）
+- `lanes_list`（= `vp lane ls --detail`）の各 lane に `slots: [key…]` を添えた
+  （`LaneInfo` 本体には足さない — descriptor は帳簿の永続形、slot は in-memory な runtime 事実。
+  混ぜると「再起動で復元されるべき値」に見える）
+
+#### 残した宿題 — **非 root slot を production で立てる動線はまだ無い**
+
+P5 が外したのは *slot の枚数*の制約だけで、**producer**（非 root session に PTY を立てる経路）は
+入れていない。理由は調査で見つかった別レイヤの blocker:
+
+> lane の wire identity は **lane 単位**（`VP_LANE`）で、SessionStart hook が呼ぶ
+> `session_registry::record_root_conversation` は **root entry** に会話 id を書く。
+> 同じ lane で 2 本目の claude を立てると、その session id が **root の会話 id を上書き**し、
+> root の resume が同居人の会話に化ける（`vp lane resume-failed` の記録先も同様）。
+
+つまり producer には「hook / wire の identity を session 粒度にする」（doc 39/40 の続き）が
+先に要る。P5 の型と読み手は先に置いたので、そちらが済めば動線を足すだけで繋がる。
+
+> ⚠️ doc 47 §7 条件③（`LaneLayouts.dock()` が全 lane に効く問題）は **P5 では発火しなかった**。
+> P5 が増やすのは slot であって session ではなく、chip の集合は `sessions`（registry）由来の
+> ままだから。webview は 1 行も触っていない。
 
 ## 4. 実装メモ
 

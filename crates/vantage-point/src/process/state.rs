@@ -181,7 +181,8 @@ impl AppState {
         let Some(lane_addr) = self.resolve_lane_address(&query).await else {
             return false;
         };
-        match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, text).await {
+        // session=None = root（wire mailbox `agent@<lane>` を名乗るのは root、doc 39/46 P5）。
+        match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, None, text).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(

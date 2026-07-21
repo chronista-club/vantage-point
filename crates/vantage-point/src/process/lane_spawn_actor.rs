@@ -420,7 +420,8 @@ async fn handle_cmd(
     }
     if let Some((slot, term_rx)) = slot_rx_opt {
         // Stage 1 (ADR-0001): TermAttach も同時に spawn (race フリー、 Conductor 経路と統一)
-        pool_write.insert_pty_slot(addr.clone(), slot, term_rx);
+        // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
+        pool_write.insert_pty_slot(addr.clone(), None, slot, term_rx);
     }
     pool_write.insert(info.clone());
     drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
@@ -639,7 +640,7 @@ mod tests {
         );
         assert_eq!(info.pid, None, "chat lane は engine-less (PTY を立てない)");
         assert!(
-            pool_read.subscribe_output(&addr).is_none(),
+            pool_read.subscribe_output(&addr, None).is_none(),
             "chat lane に PtySlot は存在しないはず"
         );
         drop(pool_read);
