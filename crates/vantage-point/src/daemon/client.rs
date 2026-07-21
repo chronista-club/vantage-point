@@ -415,8 +415,9 @@ impl WorldControlClient {
 
     /// filter 付きの lane 一覧（`project` / `lane` / `stand`、いずれも省略可 = 無フィルタ）。
     ///
-    /// 並びは project 名昇順 → 同 project 内は開発起点 (root) 先 → created_at 昇順で、
-    /// HTTP `GET /api/world/lanes` と同一（実装は `routes::world::collect_lanes` を共有）。
+    /// 並びは project 名昇順 → 同 project 内は開発起点 (root) 先 → created_at 昇順
+    /// （実装は `routes::world::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/world/lanes` を
+    /// 撤去し、この面が lane 一覧の唯一の入口になった）。
     pub async fn lanes_list_filtered(
         &self,
         project: Option<&str>,

@@ -256,61 +256,13 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
 // (`show`/`toggle_pane`/`split_pane`/`close_pane` → `handle_process_message`) に移管し撤去。
 // いずれも `state.hub.broadcast(ProcessMessage)` するだけで、 QUIC dispatch が同じ broadcast を行う。
 
-/// POST /api/canvas/switch_lane - Canvas Lane 切り替え
-///
-/// canvas_senders 経由で接続中の全 Canvas WS クライアントに直接送信。
-pub async fn canvas_switch_lane_handler(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    let lane = body
-        .get("lane")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    if lane.is_empty() {
-        return Json(serde_json::json!({"status": "error", "message": "lane is required"}));
-    }
-    let msg = serde_json::json!({"type": "switch_lane", "lane": lane});
-    let mut senders = state.canvas_senders.lock().await;
-    let mut sent = 0;
-    // 送信失敗（切断済み）のチャネルを除去
-    senders.retain(|tx| !tx.is_closed());
-    for tx in senders.iter() {
-        if tx.send(msg.clone()).await.is_ok() {
-            sent += 1;
-        }
-    }
-    tracing::info!(
-        "switch_lane({}): sent to {}/{} canvas client(s)",
-        lane,
-        sent,
-        senders.len()
-    );
-    Json(serde_json::json!({"status": "ok", "lane": lane, "clients": sent}))
-}
-
-/// GET /api/canvas/layout - Canvas レイアウト状態を復元
-pub async fn canvas_layout_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.load_canvas_layout().await {
-        Some(layout) => Json(serde_json::json!({"status": "ok", "layout": layout})),
-        None => Json(serde_json::json!({"status": "empty"})),
-    }
-}
-
-/// POST /api/canvas/layout - Canvas レイアウト状態を保存
-///
-/// フロントエンドから Lane/Tab/Pane の構造を JSON で受け取り、pane_contents (SurrealDB) に保存。
-///
-/// pane 内容自体は webview が `/api/pp/state` で逐次保存するので、 ここは layout のみ。
-/// (旧 Whitesnake `persist_pane_contents` の conductor snapshot は冗長だったため退役)
-pub async fn canvas_layout_save_handler(
-    State(state): State<Arc<AppState>>,
-    Json(layout): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    state.save_canvas_layout(&layout).await;
-    Json(serde_json::json!({"status": "saved"}))
-}
+// doc 45 段 4: `/api/canvas/switch_lane` `/api/canvas/layout` の handler は撤去。
+// switch_lane の宛先 `AppState.canvas_senders` は**どこからも populate されない**
+// （旧 localhost browser Canvas の WS 撤去で書き手が消えた）ので、常に 0 client に
+// 送っていた。layout の `load/save_canvas_layout` も呼び出し元がこの 2 handler だけで、
+// end-to-end で dead だった（doc 45 §3.1）。Unison に移すと「読み手のいない書き込み」を
+// 新設することになるので、移設先ではなく撤去に置いた。
+// CLI / MCP の `switch_lane` は process-proxy 経由の別経路で、この route を通らない。
 
 // L0 portless Group B: file watch/unwatch HTTP handler は CLI を process-proxy ask
 // (`watch_file`/`unwatch_file` → `handle_watch_file`/`handle_unwatch_file`) に移管し撤去。
@@ -347,8 +299,37 @@ mod tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use tower::ServiceExt;
+
+    /// doc 45 §2: `/api/shutdown` は HTTP に残す 2 本のうちの 1 本（緊急停止は最も単純な
+    /// 経路であるべき）。handler が生きていて `shutdown_token` を実際に cancel することを固定する
+    /// —— 撤去の巻き添えで落ちると、Unison が wedge した時に止める手段ごと失う。
+    #[tokio::test]
+    async fn shutdown_handler_cancels_shutdown_token() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let token = state.shutdown_token.clone();
+        assert!(!token.is_cancelled(), "前提: まだ cancel されていない");
+
+        let app = Router::new()
+            .route("/api/shutdown", post(shutdown_handler))
+            .with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/shutdown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            token.is_cancelled(),
+            "POST /api/shutdown は shutdown_token を cancel する"
+        );
+    }
 
     #[tokio::test]
     async fn health_handler_returns_200_with_stands_field() {

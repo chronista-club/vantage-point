@@ -1,18 +1,17 @@
 # doc 45 — control plane transport の Unison 統一（HTTP route の棚卸し）
 
-> **status**: 段 1 + 段 2 + 段 3 着地（2026-07-22）／段 4-5 未着手。doc 44 P1（fold-in）の dogfood 中に
+> **status**: 段 1〜段 4 着地（2026-07-22）／段 5 は次送り（§5.4）。doc 44 P1（fold-in）の dogfood 中に
 > 「HTTP と Unison が二重化したままでは」という mako の指摘で顕在化した。
 > **doc 44 とは独立**（fold-in の後始末ではなく transport 層の設計判断）。
 >
-> ⚠️ 段 3 まで済んだ現在は **同じ操作に HTTP と Unison の 2 経路がある中間状態**。これは
-> 意図した設計で（§5 の順序 = 新面が動くことを確かめてから旧面を落とす）、HTTP route の
-> 撤去は段 4 で行う。実装は共有関数に畳んであるので、2 経路が別々の答えを返すことはない。
-> **HTTP 側は既に消費者ゼロ**（CLI = 段 2 / vp-app = 段 3 で移設済、`/api/health` は除く）。
+> ✅ 段 4 で **control plane の HTTP route は全廃**。同じ操作に 2 経路がある中間状態は解消し、
+> projects CRUD / lifecycle / lanes を触れる面は Unison `world-control` だけになった。
+> HTTP に残るのは `/api/health` `/api/shutdown`（§2 の設計判断）＋ `/api/update/*`（後回し）。
 
 ## 0. 一言で
 
 **World の control plane を Unison(QUIC) に寄せ、HTTP は `/api/health` と `/api/shutdown`
-の 2 本だけ残す。** 28 route → 2 route。
+の 2 本だけ残す。** 28 route → 2 route（+ `/api/update/*` 7 本は churn が低いので後回し）。
 
 ## 1. なぜ寄せるか
 
@@ -90,9 +89,10 @@ fold-in（doc 44）が nightly に落ち着いてから着手。route 群ごと�
 1. ✅ `world-control` に不足 RPC を出す（server + client + KDL + drift テスト）
 2. ✅ CLI の HTTP 呼び出しを Unison に差し替え（`vp ps` は `f1dea10` で完了済み）
 3. ✅ vp-app の `client.rs` を Unison に差し替え（`app.rs` の既存 Unison 経路と統合）
-4. HTTP route を撤去（`/api/health` `/api/shutdown` を除く。`/api/canvas/*` は §3.1 によりここ）
-5. `apple/` の InstanceScanner は既に機能停止（SP-portless 以降 port scan が常に空）
+4. ✅ HTTP route を撤去（`/api/health` `/api/shutdown` を除く。`/api/canvas/*` は §3.1 によりここ）
+5. ⏸ `apple/` の InstanceScanner は既に機能停止（SP-portless 以降 port scan が常に空）
    なので、health 単発 probe だけ残して port scan は撤去（UI 判断とセット）
+   → **次送り**（Swift のビルド確認手段が今この repo で成立しないため、§5.4）
 
 各段階で「HTTP を消す前に Unison 経路が実機で動く」ことを確認してから旧経路を落とす
 （doc 44 で確立した「新面が動く → 旧面撤去」の順序）。
@@ -179,3 +179,99 @@ async 部分は `Handle::spawn` で shared runtime に渡す形に変えた（bl
 （HTTP route は derive Serialize）。同じ map の写し方が 2 実装ある状態だったので、
 `registry_process_snapshot()` に括り出して `serde_json::to_value` 1 本にした。
 field を足した時に片方だけ古いまま、が構造的に起きなくなる。
+
+### 5.3 段 4 の着地 — HTTP route の撤去（2026-07-22）
+
+**撤去した 18 route**（`crates/vantage-point/src/process/server.rs` の Router から登録ごと削除）:
+
+| route | method | 移設先 | 消してよい根拠 |
+|---|---|---|---|
+| `/api/world/projects` | GET | `world-control.projects/list` | repo 内の呼び出し元ゼロ（CLI = 段 2、vp-app = 段 3） |
+| `/api/world/projects` | POST | `world-control.projects/add` | 同上 |
+| `/api/world/projects/reorder` | POST | `world-control.projects/reorder` | 同上 |
+| `/api/world/projects/update` | POST | `world-control.projects/update` | 同上 |
+| `/api/world/projects/remove` | POST | `world-control.projects/remove` | 同上 |
+| `/api/world/projects/reload` | POST | `world-control.projects/reload` | 同上 |
+| `/api/world/projects/sync` | POST | `world-control.projects/sync` | 同上 |
+| `/api/world/processes` | GET | `registry.list` | 同上 |
+| `/api/world/lanes` | GET | `world-control.lanes/list` | 同上 |
+| `/api/world/lanes` | POST | `world-control.lanes/create` | 同上 |
+| `/api/world/lanes/active` | POST | `world-control.lanes/set_active` | 同上 |
+| `/api/world/processes/{name}/start` | POST | `world-control.projects/start` | 同上 |
+| `/api/world/processes/{name}/stop` | POST | `world-control.projects/stop` | 同上 |
+| `/api/world/processes/{name}/restart` | POST | `world-control.projects/restart` | 同上 |
+| `/api/world/processes/{name}/pointview` | POST | `world-control.projects/pointview` | 同上 |
+| `/api/canvas/switch_lane` | POST | **移設せず撤去** | §3.1: 宛先 `canvas_senders` に書き手がおらず end-to-end で dead |
+| `/api/canvas/layout` | GET | **移設せず撤去** | §3.1: `load_canvas_layout` の呼び出し元がこの handler だけ |
+| `/api/canvas/layout` | POST | **移設せず撤去** | §3.1: `save_canvas_layout` の呼び出し元がこの handler だけ |
+
+**残した route と理由**:
+
+| route | 理由 |
+|---|---|
+| `/api/health` `/api/shutdown` | §2。**VP 外に消費者がいる**（`.mise/tasks/app/swap` の Ruby / `apple/VantagePointAgent` の Swift）ことに加え、health は「他が壊れている時に動いてほしい」probe なので Unison 層が wedge した時に診断手段ごと失わないための**意図的に鈍い外殻**。shutdown も同じ（緊急停止は最も単純な経路であるべき） |
+| `/api/update/*`（7 本） | §3 のとおり後回し（self-update は churn が低い）。段 4 のスコープ外 |
+
+**「消してよい証拠」の取り方**: repo 内 grep で呼び出し元ゼロを確かめるだけでは足りない
+（HTTP は文字列で叩けるので、**repo 外の消費者**が grep に映らない）。`.mise/tasks`（Ruby）/
+`apple/`（Swift）/ webview（TS）を横断して `/api/` を数え、`/api/health` `/api/shutdown` 以外に
+外部消費者がいないことを確認した上で落とした。`/api/health` が残る理由がまさにこれ。
+
+**「残っていないか」の確認**: 撤去 PR の危険は 2 方向ある —— (a) 残すべきものを巻き添えで落とす、
+(b) 消したつもりが登録／handler の片方だけ残る。方向ごとに別の網を張った:
+
+- **route 登録**: Router 構築を `build_world_router()` に切り出し、`world_router_keeps_health_and_shutdown`
+  / `world_router_drops_removed_control_routes` / `world_router_keeps_update_routes` が実際に
+  oneshot して 200 / 404 を突き合わせる。**登録表そのものがテストされる**ようになった。
+- **handler の残骸**: `cargo clippy --workspace --all-targets -- -D warnings`。route を落とすと
+  handler は「誰も呼ばない `pub(crate)` 関数」になるので dead_code が拾う。これで
+  `save_canvas_layout` / `load_canvas_layout` が dead になったことも発覚し、同 PR で撤去した
+  （`CANVAS_LAYOUT_PANE_ID` は残す — 過去に書かれた reserved row を `restore_panes` が
+  pane 一覧から除外し続ける必要があるため）。
+- **stale な doc 参照**: 撤去した path 文字列を repo 全体に grep し直し、現在形で書かれた
+  コメント（`caller が /api/world/processes/{name}/restart を呼ぶ` 等）を Unison method 名に直した。
+
+**parity テストの行き先**: 段 2 / 段 3 では「新面が旧面と同じ答えを返す」を HTTP との突き合わせで
+担保していたが、段 4 で突き合わせる相手が消える。**parity が守っていた中身（合成 update の意味論 /
+lanes の filter+sort / reorder の並び / snapshot の写し方）は Unison 入口に対して期待値を直接
+書き直した** —— 旧面が消えたからといって期待値まで消すと、移行で守ったものが黙って外れる。
+
+**残った尻尾（本 PR のスコープ外）**:
+
+- `AppState.canvas_senders` は書き手ゼロのまま残る。読み手が `/api/health` の
+  `stands.paisley_park.clients`（常に 0）にまだ 1 つあり、消すと health の応答形が変わるため。
+  health を触らない方針とセットで据え置く。
+- `ProcessManagerCapability::open_pointview` は project の port に `POST /api/canvas/open` を
+  投げるが、**この route は Router に存在したことがない**（かつ portless で port=0）。
+  `projects/pointview` は Unison 面として生きているので、中身の作り直しは別 task。
+
+### 5.4 段 5（`apple/` の port scan 撤去）を次送りにした理由（2026-07-22）
+
+**先に別の壊れが挟まっているため、今は検証しながら直せない。**
+
+`apple/VantagePointAgent/project.yml` は Swift client を sibling repo の
+`../../../club-unison/clients/swift` に local path 依存で引いている。club-unison は
+**`Package.swift` を repo root へ移した**（club-unison #82 — SPM の url+version 配布は
+「repo root の manifest」を要求するため）。VP 側の path は `clients/swift` を指したままなので、
+`xcodegen generate` は通るが `xcodebuild` が
+
+```
+the package manifest at '.../club-unison/clients/swift/Package.swift' cannot be accessed
+```
+
+で package 解決に失敗する。**doc 45 とは無関係の pre-existing な依存 drift**で、段 5 に着手する前に
+「path を repo root に向ける」か「#82 で可能になった remote url+version 依存に切り替える」かの
+判断が要る（判断そのものが別 PR の粒度）。
+
+ビルドが通らない状態で Swift を編集すると、**壊した所と元から壊れていた所が区別できない**。
+`InstanceScanner` の port scan は SP-portless 以降ずっと空を返しているだけで（= 無害な no-op、
+menu が常に「稼働中 Process: 0」と出る）、急いで消す理由もない。段 5 は次の PR に送る。
+
+段 5 でやること（変わらず）:
+
+- `InstanceControl.scan()` の port range probe（33000-33015 を 16 並列）を撤去。
+  portless 以降 project は listen しないので、この scan は原理的に常に空。
+- health 単発 probe は残す。稼働中 project 一覧が要るなら、World の `/api/health` が返す
+  `processes[]`（presence 一覧）が既にその答えを持っている。
+- menu の「稼働中 Process: N」/「停止」ボタンをどうするかは UI 判断とセット
+  （per-project stop は Unison `world-control.projects/stop` が正面）。

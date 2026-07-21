@@ -2165,7 +2165,7 @@ struct SidebarIpcOutcome {
     sp_spawn_request: Option<(String, String)>,
     /// Phase 3-A: Performer Lane 作成要求 `(project_path, name, branch, stand)`。
     /// doc 24 §10 B-create: caller が daemon (:32000) の `create_performer_lane`
-    /// (`POST /api/world/lanes`) を呼ぶ (SP port 解決は不要)。
+    /// (Unison `world-control.lanes/create`) を呼ぶ (SP port 解決は不要)。
     /// `stand` は doc 11 PR-C で追加 (None なら daemon-side default)。
     add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
     /// doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
@@ -2184,14 +2184,14 @@ struct SidebarIpcOutcome {
     /// doc 44 §12: lane の並び順の保存要求 (project_path, lane address の表示順)。
     reorder_lanes_request: Option<(String, Vec<String>)>,
     /// Phase 5-C: Process restart 要求 `(project_name)`。
-    /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
+    /// caller が TheWorld の Unison `world-control.projects/restart` を呼ぶ。
     restart_process_request: Option<String>,
     /// Process stop 要求 `(project_name)`。
-    /// caller が TheWorld の `/api/world/processes/{name}/stop` を呼ぶ。
+    /// caller が TheWorld の Unison `world-control.projects/stop` を呼ぶ。
     /// project は registered のまま (停止しても sidebar リストに残り ▶ 起動が出る)。
     stop_process_request: Option<String>,
     /// Project delete 要求 `(project_name, project_path)`。
-    /// caller が SP を stop してから `/api/world/projects/remove` を呼ぶ。
+    /// caller が project を stop してから Unison `world-control.projects/remove` を呼ぶ。
     /// `project_name` は stop 用、 `project_path` は remove 用 (registry key)。
     delete_project_request: Option<(String, String)>,
     /// Phase 1 (doc 24): project 並び替えを daemon に永続化する要求 (path の順序列)。

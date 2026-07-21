@@ -277,50 +277,11 @@ impl AppState {
         }
     }
 
-    /// Canvas レイアウト状態を pane_contents の reserved row に保存する。
-    ///
-    /// 旧 Whitesnake 退役 → SurrealDB 一本化。 layout は lane 非依存の単一 row
-    /// (lane=conductor, pane_id=[`CANVAS_LAYOUT_PANE_ID`]、 pane 一覧には現れない reserved key)。
-    pub async fn save_canvas_layout(&self, layout: &serde_json::Value) {
-        let Some(vpdb) = self.vpdb.as_ref() else {
-            return;
-        };
-        let content = serde_json::to_string(layout).unwrap_or_else(|_| "{}".to_string());
-        if let Err(e) = vpdb
-            .upsert_pp_state(
-                &self.project_dir,
-                None,
-                CANVAS_LAYOUT_PANE_ID,
-                "canvas-layout",
-                &content,
-                None,
-                None,
-                None,
-            )
-            .await
-        {
-            tracing::warn!("canvas layout 保存に失敗: {}", e);
-        }
-    }
-
-    /// Canvas レイアウト状態を pane_contents の reserved row から復元する。
-    pub async fn load_canvas_layout(&self) -> Option<serde_json::Value> {
-        let vpdb = self.vpdb.as_ref()?;
-        match vpdb
-            .load_pp_state(&self.project_dir, None, CANVAS_LAYOUT_PANE_ID)
-            .await
-        {
-            Ok(Some(row)) => row
-                .get("content")
-                .and_then(|c| c.as_str())
-                .and_then(|s| serde_json::from_str(s).ok()),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!("canvas layout 読み出しに失敗: {}", e);
-                None
-            }
-        }
-    }
+    // doc 45 段 4: `save_canvas_layout` / `load_canvas_layout` は撤去。
+    // 呼び出し元は `/api/canvas/layout` の 2 handler だけで、その route ごと落ちたため
+    // 読み手も書き手も居なくなった（doc 45 §3.1 — end-to-end で dead）。
+    // [`CANVAS_LAYOUT_PANE_ID`] 自体は残す: 過去に書かれた reserved row が db に残っており、
+    // `restore_panes` が pane 一覧から除外し続ける必要がある。
 }
 
 // --- VP-13 sub-scope E: Medium 層 route test 用 fixture ---
