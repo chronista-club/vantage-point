@@ -218,9 +218,7 @@ impl VantageMcp {
                 None,
             ));
         }
-        let mut body = serde_json::json!({
-                        "name": params.name,
-        });
+        let mut body = serde_json::json!({ "name": params.name });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             body["branch"] = serde_json::Value::String(b.clone());
         }
@@ -484,9 +482,7 @@ impl VantageMcp {
         // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を撤去。 lane clone は
         // 数 sec ~ 数 10 sec かかるので outer timeout 60s。 server Err は quic_call_with_timeout が
         // McpError に変換 (= 旧 HTTP 非 2xx → McpError と等価)。
-        let mut create_body = serde_json::json!({
-                        "name": params.name,
-        });
+        let mut create_body = serde_json::json!({ "name": params.name });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["branch"] = serde_json::Value::String(b.clone());
         }

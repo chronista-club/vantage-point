@@ -345,7 +345,31 @@ wire nudge が恒久的に「lane 不在」となり永久リトライに落ち�
 **教訓**: 型を消しても「型を経由しない参照」は残る。フラット化のような改修では
 `grep` の対象を型名だけでなく **field 名・文字列リテラル・JSON key** まで広げる必要がある。
 
-### 6.5 残した振る舞い分岐
+なお MCP の 2 件は「取り残し」ではなく**既に発生していた実害**だった（P2 本体 commit の時点で
+`list_lanes` の kind フィルタが常に空配列を返し、`flow_progress` は全 lane が `"unnamed"`、
+performer の agent address が `agent@<project>/` という壊れた文字列になっていた）。
+**独立した 2 回のレビューでも初回では捕まらなかった** — JSON 直読みはそれだけ視界に入りにくい。
+
+### 6.5 lane 作成の経路が 2 本ある（P2 で顕在化、doc 44 の外）
+
+予約名ガードの実機確認で判った構造。lane 作成には**別実装の経路が 2 本**ある:
+
+| 経路 | 実装 | 予約名の扱い |
+|---|---|---|
+| unison `lane_create` | `routes/lanes.rs::create_performer_orchestrated` | P2 で追加した予約名ガードが効く |
+| `POST /api/world/lanes` | `capability::ProcessManagerCapability::create_lane` | **到達しない**。奥の `lane::config::validate_performer_name`（VP-166 の既存ガード）が clone 段階で結果的に弾く |
+
+同じ validation が経路によって効いたり効かなかったりする — P1 が消した「経路ごとの差」の親戚で、
+P3 以降で lane 作成を Host に寄せる際の統合対象。
+
+> ⚠️ **follow-up（doc 44 とは独立の pre-existing バグ疑い）**: `ProcessManagerCapability::create_lane` は
+> ①`db.upsert_lane`（DELETE+CREATE）→ ②clone で `validate_performer_name` が reject → ③rollback が
+> `db.delete_lane` という順で走る。`name="conductor"` を投げると **①で本物の conductor descriptor 行を
+> 上書きし、③で消す**経路が静的に読み取れる（= 失敗したはずの操作がデータを壊す）。VP-166 起源で
+> P2 の変更対象外のため本 PR では触らない。再現手順は使い捨て project に
+> `POST /api/world/lanes {"name":"conductor"}` を直接投げ、conductor descriptor の生存を確認する。
+
+### 6.6 残した振る舞い分岐
 
 `stand_spawner::claude_command` の「開発起点なら `--continue`、それ以外は fresh」は**挙動不変で残した**
 （`LaneKind` 判定 → `is_conductor()` 判定に置換）。cwd の性質差に根拠がある実在の差で、
