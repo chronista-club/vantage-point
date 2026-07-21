@@ -691,6 +691,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 回帰固定: **稼働中 lane の事実が判定まで届く**（doc 44 §7.5）。
+    ///
+    /// `running_lane_is_kept`（純関数側）だけでは「`running` 引数が実際に供給されて
+    /// 判定に効いているか」は分からない。P3 第一スライスでは CLI 経路が常に空配列を渡しており、
+    /// judge の guard は**一度も発火していなかった** — 純関数テストは緑のまま、実運用でだけ
+    /// 稼働中 lane が「削除可能」に出る形だった（`branch -d` never-fire と同じ穴の作り方）。
+    ///
+    /// 同じ lane に対し `running` だけを変えて、**判定と理由が変わること**まで見る。
+    #[test]
+    fn survey_keeps_running_lane() {
+        let root = std::env::temp_dir().join(format!("vp-farewell-running-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lane_dir = crate::lane::config::project_lanes_dir(&root).join("w1");
+        std::fs::create_dir_all(&lane_dir).unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&lane_dir)
+                .output()
+                .expect("git 実行");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(lane_dir.join("a.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+
+        let find = |reports: Vec<FarewellReport>| {
+            reports
+                .into_iter()
+                .find(|r| r.facts.name == "w1")
+                .expect("w1 が一覧に出る")
+        };
+
+        // 稼働中として供給されれば「稼働中」を理由に保持される
+        let running = find(survey_project(
+            &root,
+            &["w1".to_string()],
+            crate::process::lanes_state::ROOT_LANE_NAME,
+        ));
+        assert!(running.facts.is_running, "稼働の事実が facts まで届く");
+        assert!(
+            matches!(running.verdict, FarewellVerdict::Keep { .. }),
+            "稼働中は保持: {:?}",
+            running.verdict
+        );
+        assert!(
+            running.verdict.reason().contains("稼働中"),
+            "稼働中であることが判定理由になる: {}",
+            running.verdict.reason()
+        );
+
+        // 供給されなければ同じ lane が稼働中扱いされない（= 引数が効いていることの裏取り）
+        let stopped = find(survey_project(
+            &root,
+            &[],
+            crate::process::lanes_state::ROOT_LANE_NAME,
+        ));
+        assert!(!stopped.facts.is_running);
+        assert!(
+            !stopped.verdict.reason().contains("稼働中"),
+            "停止中は別の理由で判定される: {}",
+            stopped.verdict.reason()
+        );
+
+        // 別 lane の名前は効かない（部分一致や取り違えの防止）
+        let other = find(survey_project(
+            &root,
+            &["w2".to_string()],
+            crate::process::lanes_state::ROOT_LANE_NAME,
+        ));
+        assert!(!other.facts.is_running, "他 lane の稼働は w1 に波及しない");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// 回帰固定: **worktree を消した後に branch 名は引けない**。
     ///
     /// だから `LaneFacts.branch` を削除前に捕捉して持ち回る。P3 初版はこれを持たず、

@@ -852,22 +852,6 @@ pub fn status_performers() -> Result<(), String> {
     Ok(())
 }
 
-/// Remove performers whose branch is merged into the repo's default branch
-/// (cwd の `<repo>/.vp/lanes/` 対象)。
-///
-/// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
-/// co-evolution #3: default branch を `resolve_default_branch` (origin/HEAD) で解決し、
-/// squash merge も検出する (旧: `origin/main` ハードコード + ancestry only)。
-/// doc 44 P3: 判定は **Project Host に移管**した（`host::farewell`）。
-///
-/// 本関数は Host の判定を人間に見せて実行する薄い surface になった。旧実装は
-/// 収集・判定・分類を 1 関数（`classify_performer_for_cleanup`）に混ぜており:
-/// - git subprocess を内部で呼ぶためテストできなかった
-/// - 判定が 2 値（削除 / 保持）で「事実だけで決まらないもの」を表現できず、
-///   **merged なら未コミット変更を見ずに削除候補**へ入れていた（= Host は推測しない、の違反）
-///
-/// Host 版は 3 値（reclaim / keep / ask_human）で、判定は I/O ゼロの純関数
-/// （[`crate::host::farewell::judge_farewell`]）に分離済み。
 /// 見送り判定に渡す開発起点 lane 名を決める（doc 44 D4）。
 ///
 /// 帳簿は World が持つ（DB は surrealkv の OS 排他ロックで World 専有）ので、CLI からは
@@ -899,21 +883,116 @@ fn origin_for_cleanup(repo_root: &Path) -> String {
     }
 }
 
-pub fn cleanup_performers(force: bool) -> Result<(), String> {
-    use crate::host::farewell::FarewellVerdict;
+/// 見送り判定に渡す「今動いている lane」を World に問い合わせる（doc 44 §7.5）。
+///
+/// lane の生死は git からは知れないので、[`crate::host::farewell`] は外からの供給に頼る。
+/// CLI は World の "world-process" channel に `list_all_lanes` を ask し、応答から
+/// **この project の分だけ**を [`crate::host::liveness::running_lanes_in`] で取り出す。
+///
+/// なぜ process-proxy (`lanes_list`) ではないか: あちらは対象 project の SP が World に
+/// 登録されていないと逆引きに失敗して error になり、「project が動いていない（= 稼働 lane 0）」と
+/// 「World に訊けなかった（= 不明）」が区別できない。cross-project 一覧なら前者は**答え**として返る。
+///
+/// 失敗は [`Liveness::Unknown`] で返し、**空リストには畳まない** — それが P3 第一スライスで
+/// guard を never-fire にしていた形そのもの。
+fn liveness_for_cleanup(repo_root: &Path) -> crate::host::liveness::Liveness {
+    use crate::host::liveness::Liveness;
+    let Some(project_path) = repo_root.to_str() else {
+        return Liveness::Unknown("repo path に invalid UTF-8".to_string());
+    };
+    match crate::commands::process_client::world_lanes_snapshot_blocking(crate::cli::world_port()) {
+        Ok(snapshot) => Liveness::Known(crate::host::liveness::running_lanes_in(
+            &snapshot,
+            Path::new(project_path),
+        )),
+        Err(e) => Liveness::Unknown(e.to_string()),
+    }
+}
 
+/// 見送りの実行結果（何が起きたかをテストから見るための戻り値）。
+///
+/// 出力は eprintln なので、戻り値が無いと「保留した」と「1 件も対象が無かった」を
+/// テストで区別できない（= 保留の regression が静かに入る）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CleanupOutcome {
+    /// 稼働状況を確認できず**保留**（判定も削除も行っていない）
+    Held,
+    /// 判定対象が無かった
+    Nothing,
+    /// 判定のみ（`--force` 無し、または削除可能 0 件）
+    Surveyed { reclaimable: usize },
+    /// 実際に見送った
+    Removed { count: usize },
+}
+
+/// Remove performers whose branch is merged into the repo's default branch
+/// (cwd の `<repo>/.vp/lanes/` 対象)。
+///
+/// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
+/// co-evolution #3: default branch を `resolve_default_branch` (origin/HEAD) で解決し、
+/// squash merge も検出する (旧: `origin/main` ハードコード + ancestry only)。
+/// doc 44 P3: 判定は **Project Host に移管**した（`host::farewell`）。
+///
+/// 本関数は Host の判定を人間に見せて実行する薄い surface になった。旧実装は
+/// 収集・判定・分類を 1 関数（`classify_performer_for_cleanup`）に混ぜており:
+/// - git subprocess を内部で呼ぶためテストできなかった
+/// - 判定が 2 値（削除 / 保持）で「事実だけで決まらないもの」を表現できず、
+///   **merged なら未コミット変更を見ずに削除候補**へ入れていた（= Host は推測しない、の違反）
+///
+/// Host 版は 3 値（reclaim / keep / ask_human）で、判定は I/O ゼロの純関数
+/// （[`crate::host::farewell::judge_farewell`]）に分離済み。
+///
+/// doc 44 §7.5: 判定に要る事実（開発起点 / 稼働中 lane）は本関数が World から集めて渡す。
+/// **稼働状況が確認できない場合は判定に進まず保留する**（[`cleanup_performers_with`]）。
+pub fn cleanup_performers(force: bool) -> Result<(), String> {
     let Ok(repo_root) = config::find_repo_root() else {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());
     };
+    let liveness = liveness_for_cleanup(&repo_root);
+    cleanup_performers_with(&repo_root, force, &liveness, origin_for_cleanup).map(|_| ())
+}
 
-    // CLI 経路は lane の生死を知らない（daemon に問い合わせない）ので running は空。
-    // 稼働中 lane を保護したい場合は daemon 経由の surface から呼ぶ（P3 後続）。
-    let origin = origin_for_cleanup(&repo_root);
-    let reports = crate::host::farewell::survey_project(&repo_root, &[], &origin);
+/// [`cleanup_performers`] の本体（World から取る事実は注入、I/O 境界を外に出した形）。
+///
+/// `liveness` を引数で受けるのは、**「稼働状況が不明なら見送らない」をテストで固定する**ため
+/// （World を立てずに `Unknown` を注入できる）。
+///
+/// `resolve_origin` が値ではなく関数なのは**順序が意味を持つ**から: 稼働状況が不明なら
+/// 保留して抜けるので、その先の起点照会（World への 2 度目の ask）まで行ってはいけない。
+fn cleanup_performers_with(
+    repo_root: &Path,
+    force: bool,
+    liveness: &crate::host::liveness::Liveness,
+    resolve_origin: impl FnOnce(&Path) -> String,
+) -> Result<CleanupOutcome, String> {
+    use crate::host::farewell::FarewellVerdict;
+
+    // 稼働状況が確認できないなら**判定にすら進まない**。
+    //
+    // 不明 = 「稼働 lane が無い」ではないので、空として扱うと daemon が落ちている時にだけ
+    // 稼働中 lane の保護が消える（一番危ない条件で guard が外れる形）。判定を出して
+    // 「削除可能」と表示するのも嘘になりうるので、survey ごと止めて人に告げる。
+    //
+    // `--force` でも通さない: `--force` は「判定結果を実行する」意思表示であって
+    // 「事実が無くてよい」ではない（1 flag に 2 仕事を兼ねさせない）。
+    let running = match liveness.lanes_for_survey() {
+        Ok(lanes) => lanes,
+        Err(reason) => {
+            eprintln!("稼働状況を確認できないため見送りを保留しました（1 件も削除していません）。");
+            eprintln!("  理由: {reason}");
+            eprintln!(
+                "  World を起動してから再実行してください（`vp daemon status` / `vp daemon start`）。"
+            );
+            return Ok(CleanupOutcome::Held);
+        }
+    };
+
+    let origin = resolve_origin(repo_root);
+    let reports = crate::host::farewell::survey_project(repo_root, running, &origin);
     if reports.is_empty() {
         eprintln!("クリーンアップ対象はありません。");
-        return Ok(());
+        return Ok(CleanupOutcome::Nothing);
     }
 
     let mut to_remove: Vec<&crate::host::farewell::FarewellReport> = Vec::new();
@@ -939,7 +1018,7 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
         if ask_human > 0 {
             eprintln!("{ask_human} 件は事実だけで判断できないため、人の確認が要ります。");
         }
-        return Ok(());
+        return Ok(CleanupOutcome::Surveyed { reclaimable: 0 });
     }
 
     if !force {
@@ -947,13 +1026,15 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
         if ask_human > 0 {
             eprintln!("（⚠️ の {ask_human} 件は --force でも削除しません）");
         }
-        return Ok(());
+        return Ok(CleanupOutcome::Surveyed {
+            reclaimable: to_remove.len(),
+        });
     }
 
     for r in &to_remove {
-        let path = config::project_lanes_dir(&repo_root).join(&r.facts.name);
-        remove_performer_workspace(&repo_root, &path)?;
-        clear_lane_state_files(&repo_root, &r.facts.name);
+        let path = config::project_lanes_dir(repo_root).join(&r.facts.name);
+        remove_performer_workspace(repo_root, &path)?;
+        clear_lane_state_files(repo_root, &r.facts.name);
         // worktree: merged branch を共有 .git から `-d` で安全に掃除 (設計 E)。
         // clone: branch は独立 .git 内なので親 repo では no-op (失敗は握り潰す)。
         //
@@ -962,7 +1043,7 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
         // 消すため cwd が存在せず、`git` の起動自体が Err になって常に None に落ちる
         // （P3 初版がこれで `branch -d` を never-fire にしていた）。
         if let Some(b) = r.facts.branch.as_deref() {
-            let _ = run_git_in(&repo_root, &["branch", "-d", b]);
+            let _ = run_git_in(repo_root, &["branch", "-d", b]);
         }
         eprintln!("  削除: {}", r.facts.name);
     }
@@ -971,7 +1052,9 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
     if ask_human > 0 {
         eprintln!("⚠️ {ask_human} 件は人の確認待ちのため残しました。");
     }
-    Ok(())
+    Ok(CleanupOutcome::Removed {
+        count: to_remove.len(),
+    })
 }
 
 /// `status_performers` 内の 1 performer 行表示 helper
@@ -1438,6 +1521,62 @@ fn get_ahead_behind_counts(dir: &Path) -> (u32, u32, bool) {
 mod tests {
     use super::*;
     use std::process::Command as Cmd;
+
+    /// 回帰固定（doc 44 §7.5）: **稼働状況が確認できないときは 1 件も見送らない**。
+    ///
+    /// 「不明」を空リストに畳むと、World が落ちている時にだけ稼働中 lane の保護が消える
+    /// （= 一番危ない条件で guard が外れる）。`--force` でも通さない — `--force` は
+    /// 「判定結果を実行する」意思であって「事実が無くてよい」ではない。
+    ///
+    /// 保留が**無条件ではない**ことも同時に見る（Known なら判定まで進む）。片方だけだと
+    /// 「常に保留」= 見送り機能が死んだ状態も緑になる。
+    #[test]
+    fn cleanup_holds_when_liveness_is_unknown() {
+        use crate::host::liveness::Liveness;
+
+        let root = std::env::temp_dir().join(format!("vp-cleanup-hold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lane_dir = config::project_lanes_dir(&root).join("w1");
+        std::fs::create_dir_all(&lane_dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&lane_dir)
+                .output()
+                .expect("git 実行");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(lane_dir.join("a.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+
+        // 起点照会は World を叩くので注入する（保留経路では呼ばれないこと自体も要件）。
+        let origin = |_: &Path| crate::process::lanes_state::ROOT_LANE_NAME.to_string();
+
+        // 不明 + --force でも保留（判定にも進まない）
+        let held = cleanup_performers_with(
+            &root,
+            true,
+            &Liveness::Unknown("World 不達".to_string()),
+            |_| panic!("保留するなら起点照会まで進んではいけない"),
+        )
+        .expect("保留は Err ではない");
+        assert_eq!(held, CleanupOutcome::Held);
+        assert!(lane_dir.exists(), "保留中に lane を消してはいけない");
+
+        // 稼働 lane 0 件は「答え」なので判定に進む（保留は無条件ではない）
+        let surveyed = cleanup_performers_with(&root, false, &Liveness::Known(Vec::new()), origin)
+            .expect("判定は Err ではない");
+        assert!(
+            !matches!(surveyed, CleanupOutcome::Held),
+            "0 件は不明ではない: {surveyed:?}"
+        );
+        assert!(lane_dir.exists(), "dry-run では消えない");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn clear_lane_state_files_uses_repo_basename_key() {

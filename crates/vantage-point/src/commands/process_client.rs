@@ -1,8 +1,9 @@
-//! Process クライアント（CLI 用、 World process-proxy ask 経由）
+//! Process クライアント（CLI 用、 World ask 経由）
 //!
 //! L0 portless: 旧 `ProcessClient` (SP HTTP 直結) は撤去。 CLI は World :32000 の process-proxy ask
 //! で SP を操作する。
 //! - `world_process_request` / `_blocking`: World process-proxy ask の core (async / sync 版)。
+//! - `world_lanes_snapshot_blocking`: World "world-process" channel の cross-project lane 一覧。
 //! - `resolve_project_path_from_target`: target → project_path 解決。
 
 use anyhow::{Result, bail};
@@ -57,15 +58,7 @@ pub async fn world_process_request_with_timeout(
 
     // connect → handshake → ask 全体を timeout で bound (caller 指定、 既定 35s)。
     let work = async {
-        let transport = unison::network::quic::QuicClient::builder()
-            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
-            .build()
-            .map_err(|e| anyhow::anyhow!("QUIC client build failed: {}", e))?;
-        let client = unison::ProtocolClient::new(transport);
-        client
-            .connect(&addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("QUIC connect {} 失敗: {}", addr, e))?;
+        let client = connect_world(&addr).await?;
         let channel = client
             .open_channel("process-proxy")
             .await
@@ -98,6 +91,69 @@ pub async fn world_process_request_with_timeout(
             timeout
         ),
     }
+}
+
+/// World (`[::1]:<port>`) への QUIC 接続を張る。 channel open は呼び出し側の役目。
+///
+/// 戻り値の `ProtocolClient` は **channel を生かすために保持し続ける**こと
+/// (drop すると connection ごと閉じる)。
+async fn connect_world(addr: &str) -> Result<unison::ProtocolClient> {
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| anyhow::anyhow!("QUIC client build failed: {}", e))?;
+    let client = unison::ProtocolClient::new(transport);
+    client
+        .connect(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("QUIC connect {} 失敗: {}", addr, e))?;
+    Ok(client)
+}
+
+/// World "world-process" channel の `list_all_lanes` を 1 回 ask する (CLI 用 blocking)。
+///
+/// 応答は `{"projects":[{"project_name":..,"project_path":..,"lanes":[LaneInfo]}]}`
+/// (`daemon::server::build_world_lanes`)。 project ごとに束ねた **cross-project の lane 一覧**で、
+/// process-proxy (`lanes_list`) と違い **対象 project の SP が起動していなくても答えが返る**のが要点:
+/// 「その project は registry に居ない」= 稼働 lane 0 件、という**答え**が得られる
+/// (process-proxy だと control channel 逆引き失敗 = error になり、「不明」と区別が付かない)。
+///
+/// timeout が既定 35s ではなく 10s なのは、これが**判定の前提**を取る ask だからで、
+/// 取れなければ見送りを保留して人に告げる (待たせるより早く「不明」と言う方が良い)。
+/// 同 channel の handler は handshake 不要 (subscribe しない one-shot request)。
+pub fn world_lanes_snapshot_blocking(world_port: u16) -> Result<serde_json::Value> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let addr = format!("[::1]:{}", world_port);
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| anyhow::anyhow!("tokio runtime build failed: {}", e))?;
+    rt.block_on(async {
+        let work = async {
+            // client は channel を生かすため ask 完了まで保持する。
+            let client = connect_world(&addr).await?;
+            let channel = client
+                .open_channel("world-process")
+                .await
+                .map_err(|e| anyhow::anyhow!("open world-process channel 失敗: {}", e))?;
+            let resp: serde_json::Value = channel
+                .request::<serde_json::Value, serde_json::Value>(
+                    "list_all_lanes",
+                    &serde_json::json!({}),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("world-process list_all_lanes 失敗: {}", e))?;
+            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                bail!("World world-process error (list_all_lanes): {}", err);
+            }
+            Ok::<serde_json::Value, anyhow::Error>(resp)
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(10), work).await {
+            Ok(result) => result,
+            Err(_) => bail!(
+                "World ({}) world-process.list_all_lanes が 10 秒以内に応答しませんでした",
+                addr
+            ),
+        }
+    })
 }
 
 /// 同期版 (CLI 用入口)。 専用 runtime で `world_process_request` を block_on する。

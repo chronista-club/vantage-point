@@ -449,9 +449,57 @@ fast-forward で取り込み済）」と**断定できる範囲だけ**を言う
 - **帳簿の永続化** — 現状は都度計算（git subprocess、lane 数十なら許容）。
   「いつ何を見送ったか」の記録と、`AskHuman` の滞留を追える形は未実装
 - **conductor ポインタ**（D4 の残り）— 帳簿ができた時点でその最初のエントリとして載せる
-- **稼働中 lane の保護** — `survey_project` の `running` は CLI 経路では空。
-  daemon 経由の surface（LanePool を持つ層）から呼べば埋まる
+- ~~**稼働中 lane の保護**~~ → 下の「✅ 着地」。予告は「daemon 経由の surface（LanePool を
+  持つ層）から呼べば埋まる」だったが、**CLI から World に訊く**形に落ちた（`vp lane cleanup`
+  自体が surface なので、供給のために別 surface を待つ必要はなかった）
 - **lane 作成の 2 経路統合**（§6.5）と、そこに紐づく descriptor 破壊疑い
+
+### ✅ 着地: 稼働中 lane の保護（2026-07-21）
+
+`judge_farewell` の稼働 guard（`running_lane_is_kept`）は**一度も発火していなかった**。
+判定は最初から正しく、`LaneFacts.is_running` も持っていたが、CLI 経路
+（`vp lane cleanup`）が `survey_project(&repo_root, &[], &origin)` と**常に空配列**を
+渡しており、事実が届いていなかった。純関数テストは緑のまま、実運用でだけ稼働中 lane が
+「削除可能」に出る形（§7.3 の `branch -d` never-fire と同じ穴の作り方）。
+
+**供給経路**: World の "world-process" channel に `list_all_lanes` を ask し、
+`host::liveness::running_lanes_in`（純関数）で **この project の分**だけを取り出して渡す。
+
+決めたことと理由:
+
+| 決めたこと | 理由 |
+|---|---|
+| process-proxy (`lanes_list`) ではなく **cross-project の `list_all_lanes`** | process-proxy は対象 project が World に登録されていないと逆引き失敗 = error になり、「project が動いていない（稼働 0）」と「World に訊けなかった（不明）」が区別できない。cross-project 一覧なら前者は**答え**として返る |
+| 稼働の判定は `state`（`running` / `exiting`）で見る。**pid は見ない** | Act II（chat）の lane は `pid: None` + `state: running` が正常形。pid で見ると chat lane を停止中と誤認して見送る |
+| `spawning` は稼働に**数えない** | `build_lanes_snapshot` が disk 上の intended performer を `Spawning(pid=null)` で merge する（#683）。稼働に数えると World が上がっている限り全 lane が保護され、見送りが恒久的に無効化される（守り過ぎも無音の失敗） |
+| lane 名は `address.name` から読む | `LaneInfo.kind` は P2 で消えた。`kind` を条件にすると全 lane が落ちる（既存 `parse_world_lanes` はこの形のまま残っており、ROTO の cross-project 一覧は空になっているはず — 別件） |
+
+#### 不明は「無い」に畳まない
+
+World に訊けなかった場合、**削除を実行せず「稼働状況を確認できないため見送りを保留」と
+告げて抜ける**（判定にも進まない）。`Liveness::{Known, Unknown}` の 2 値で型に固定し、
+`Unknown` からは稼働 lane 名を**取り出せない**ようにした（`lanes_for_survey()` が `None`）。
+
+- 畳むと「**daemon が落ちている時だけ**稼働中 lane が削除可能に見える」= 一番危ない条件で
+  guard が消える。今回のバグ（`&[]` 直書き）と同じ機序を型で塞ぐ
+- 判定だけ出して「削除可能」と表示するのも嘘になりうるので、survey ごと止める
+- **`--force` でも通さない**。`--force` は「判定結果を実行する」意思表示であって
+  「事実が無くてよい」ではない（1 flag に 2 仕事を兼ねさせない、§8.1 の同型）
+- 起点照会（§8.4）は保留判定の**後**に置く。保留するなら World に 2 度目の ask をしない
+
+> §8.3 の 3 値フォールバックと同じ規律。Host は人の判断材料を作る立場なので、
+> **区別できるものを畳まない**。ただし今回は「告げて続行」ではなく「告げて止める」—
+> 起点は間違えても保持側に倒れるが、稼働は間違えると**動いている lane を消す**ため。
+
+#### テストが固定していること
+
+- `farewell::survey_keeps_running_lane` — `running` 引数が判定まで届き、**同じ lane で
+  供給の有無だけを変えると verdict と理由が変わる**（純関数テストだけでは供給の穴を検出できない）
+- `liveness` の純関数群 — 稼働状態の線引き（`spawning` / `dead` を含めない）、
+  project 越境の除外、壊れた応答での非 panic、`Unknown` が空リストに化けないこと
+- `lane::commands::cleanup_holds_when_liveness_is_unknown` — `Unknown` + `--force` でも
+  `Held` で 1 件も消さず、**起点照会にも進まない**。同時に `Known(空)` では判定へ進むことも
+  見て「常に保留（= 見送り機能が死んだ状態）」が緑にならないようにする
 - **git primitive の置き場所** — 第一スライスでは `lane::commands` の git 関数 5 本を
   `pub(crate)` に上げて Host から直接使った（`run_git_in` / `count_changes` /
   `is_branch_merged` / `is_branch_squash_merged` / `get_branch`）。依存の向きとしては

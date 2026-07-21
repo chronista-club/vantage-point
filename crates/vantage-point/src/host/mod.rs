@@ -28,6 +28,9 @@
 //! | 見送り（merged 残骸の掃除） | [`farewell`] |
 //! | 帳簿（進行の SSOT） | [`ledger`] — 開発起点ポインタ（D4）まで |
 //! | 迎え入れ / 場の維持 / 交通整理 | 未着手（conductor + 運用規約が担当中） |
+//!
+//! [`liveness`] は振る舞いではなく、見送りに要る**事実**（lane の生死）の形と読み方。
 
 pub mod farewell;
 pub mod ledger;
+pub mod liveness;
