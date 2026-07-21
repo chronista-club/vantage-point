@@ -313,12 +313,17 @@ pub fn validate_performer_name(name: &str) -> Result<(), String> {
             "invalid performer name: '{name}'. Must start with an alphanumeric character."
         ));
     }
-    // VP-166: `conductor` は conductor lane の予約名 (mailbox box key `<stand>#conductor` と衝突するため)。
-    // performer 名として使えない。設計: docs/design/16-performer-lane-mailbox-recv.md
-    if name == "conductor" {
-        return Err(
-            "invalid performer name: 'conductor' is reserved for the conductor lane. Pick another name.".into(),
-        );
+    // VP-166: 開発起点 lane の予約名は performer 名として使えない
+    // (mailbox box key `<stand>#conductor` と衝突するため)。
+    // 設計: docs/design/16-performer-lane-mailbox-recv.md
+    //
+    // doc 44 P2 以降、予約名の真実源は `CONDUCTOR_LANE_NAME` 定数。文字列直書きだと
+    // 予約名を変えた時にここだけ古い値で残る (§6.4「型を経由しない文字列」の同型)。
+    if name == crate::process::lanes_state::CONDUCTOR_LANE_NAME {
+        return Err(format!(
+            "invalid performer name: '{}' is reserved for the origin lane (project ごとに自動生成されるため create 不可). Pick another name.",
+            crate::process::lanes_state::CONDUCTOR_LANE_NAME
+        ));
     }
     Ok(())
 }

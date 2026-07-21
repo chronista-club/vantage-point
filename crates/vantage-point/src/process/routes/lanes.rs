@@ -200,20 +200,14 @@ pub(crate) async fn create_performer_orchestrated(
     req: CreateLaneReq,
 ) -> Result<LaneInfo, String> {
     // 入力 validation。
-    if req.name.trim().is_empty() {
-        return Err("name is required".to_string());
-    }
-    // doc 44 P2: 開発起点の予約名は使えない。旧 `kind != "performer"` ガードの後継で、
-    // 「conductor は project ごと固定で create 不可」という意図は変わらない。
     //
-    // 明示的に弾かないと、既存 conductor lane との address 重複として
-    // 「Lane {addr} already exists」で拒否される（結果は安全だが理由がミスリード）。
-    if req.name.trim() == crate::process::lanes_state::CONDUCTOR_LANE_NAME {
-        return Err(format!(
-            "'{}' は開発起点 lane の予約名です (project ごとに自動生成されるため create 不可)",
-            crate::process::lanes_state::CONDUCTOR_LANE_NAME
-        ));
-    }
+    // doc 44 §9: 名前の gate は **`validate_performer_name` 1 本**（空文字 / 文字 allowlist /
+    // 先頭文字 / 予約名）。P2 はここに予約名チェックを直書きで足したが、同じ意図の判定が
+    // 奥の `new_performer_in` にもあり、**経路ごとに効く範囲が違う**状態だった（§6.5）。
+    //
+    // 入口で全部弾くと、reserve も disk dir も db 行も作らずに済む（下の model 検証を
+    // reserve より前に置いているのと同じ理由 — bad input で副作用を残さない）。
+    crate::lane::config::validate_performer_name(req.name.trim())?;
     // model 名の検証は reserve / clone より**前**に置く (bad input で reservation も disk dir も
     // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続 (engine_model::record)
     // は addr が要るので clone 後まで遅らせる。
@@ -959,6 +953,9 @@ mod core_tests {
     /// 旧 `kind != "performer"` ガードの後継。明示的に弾かないと既存 conductor lane との
     /// address 重複として「already exists」で拒否され、理由がミスリードになる
     /// （結果は安全なので "たまたま安全" に頼らないための固定）。
+    ///
+    /// doc 44 §9: 判定は `validate_performer_name` に一本化された（両経路で同じ gate）。
+    /// message は同関数のものになるので、**予約名を名指ししていること**だけを見る。
     #[tokio::test]
     async fn create_rejects_reserved_conductor_name() {
         let state = crate::process::state::build_test_app_state(None).await;
@@ -966,7 +963,8 @@ mod core_tests {
             .await
             .expect_err("予約名は Err");
         assert!(
-            err.contains("予約名"),
+            err.contains(crate::process::lanes_state::CONDUCTOR_LANE_NAME)
+                && err.contains("reserved"),
             "error message が予約名である旨を伝える: {}",
             err
         );
@@ -980,10 +978,29 @@ mod core_tests {
             .await
             .expect_err("name 空白のみは Err");
         assert!(
-            err.contains("name is required"),
+            err.contains("empty"),
             "error message に name 必須を含む: {}",
             err
         );
+    }
+
+    /// doc 44 §9: 入口の gate は予約名だけでなく **文字 allowlist** も見る。
+    ///
+    /// 旧実装はここで空文字と予約名しか見ておらず、`../` や `;` は奥の
+    /// `new_performer_in` が clone 段階で初めて弾いていた（= 経路によって効く範囲が違う、§6.5）。
+    /// 入口に寄せたので、reserve も disk dir も作らずに拒否される。
+    #[tokio::test]
+    async fn create_rejects_unsafe_name_at_the_door() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        for bad in ["../etc/passwd", "foo bar", "foo;rm", ".hidden", "-leading"] {
+            let err = create_performer_orchestrated(&state, req(bad))
+                .await
+                .expect_err("不正な名前は Err");
+            assert!(
+                err.contains("invalid performer name"),
+                "入口の gate が弾く ({bad}): {err}"
+            );
+        }
     }
 
     /// 二重 dispatch race の根治 (bug memory mem_1Ccyoa6PuE9z5yKuqxuDWr): 同 addr の

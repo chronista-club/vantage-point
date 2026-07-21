@@ -887,12 +887,24 @@ impl ProcessManagerCapability {
     ) -> CapabilityResult<crate::process::lanes_state::LaneInfo> {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneLifecycle, LaneState};
 
+        // doc 44 §9: **永続より先に**入口で名前を検証する（両経路で同じ gate）。
+        //
+        // 旧実装はここで空文字だけを見ており、それ以外（予約名 / 不正文字）は奥の
+        // `new_performer_in` → `validate_performer_name` が clone 段階で初めて弾いていた。
+        // だが下の intent-first bracket は **provision より前に descriptor を永続する**ので、
+        // 拒否されるべき入力が db の `lane` 行に触れてしまう:
+        //
+        //   ① upsert_lane（DELETE+CREATE）で `<project>/<name>` 行を書く
+        //   ② clone が validate で失敗
+        //   ③ rollback の delete_lane が `<project>/<name>` 行を消す
+        //
+        // `name = conductor` ならこの ①③ が**本物の開発起点 descriptor を上書きして消す**。
+        // 通常は下の dup check（in-memory `lane_registry`）が先に弾くので発火しないが、
+        // dup check は validation ではなく、その cache は db と乖離しうる
+        // （boot load 失敗 / SP snapshot 上書き — 前例 [performer console teardown]）。
+        // **masking に頼らず、拒否は永続の手前で完結させる。**
         let name = name.trim();
-        if name.is_empty() {
-            return Err(CapabilityError::Other(
-                "performer name is required".to_string(),
-            ));
-        }
+        crate::lane::config::validate_performer_name(name).map_err(CapabilityError::Other)?;
         let repo_root = PathBuf::from(project_path);
         let project_id = repo_root
             .file_name()
@@ -2714,6 +2726,66 @@ mod tests {
             dup.unwrap_err().to_string().contains("already exists"),
             "重複 create は already exists で弾く"
         );
+
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// 回帰固定（doc 44 §9）: **拒否される名前の create は db の lane 行に一切触れない**。
+    ///
+    /// 旧実装は入口で空文字しか見ておらず、予約名は奥の `new_performer_in` が clone 段階で
+    /// 初めて弾いていた。だが intent-first bracket は provision より **前に** descriptor を
+    /// 永続するので、拒否されるべき入力が `<project>/conductor` 行を上書き（①）し、
+    /// rollback がそれを削除（③）する — **本物の開発起点 descriptor が消える**。
+    ///
+    /// 通常は in-memory の dup check が先に弾いて発火しないが、dup check は validation では
+    /// なく、その cache は db と乖離しうる（boot load 失敗 / SP snapshot 上書き）。
+    /// **ここでは意図的に registry を空のままにして masking を外し**、db 行の生存を直接見る。
+    #[tokio::test]
+    async fn test_create_lane_rejects_reserved_name_without_touching_db() {
+        let mut cap = make_test_cap();
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+        cap.set_vpdb(db.clone());
+
+        let parent = std::env::temp_dir().join(format!("vp-test-reserved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let tmp = parent.join("reserved");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let project_path = tmp.to_string_lossy().to_string();
+        let key = normalize_path_key(&PathBuf::from(&project_path));
+
+        // 本物の開発起点 descriptor を db に置く（= 破壊対象）。
+        let conductor =
+            crate::process::lanes_state::LanePool::with_conductor("reserved", project_path.clone());
+        let conductor_info = conductor
+            .list()
+            .into_iter()
+            .next()
+            .expect("conductor descriptor");
+        db.upsert_lane(&key, &conductor_info).await.unwrap();
+        let addr_str = conductor_info.address.to_string();
+        assert_eq!(addr_str, "reserved/conductor");
+
+        // dup check の masking は効かない状況（lane_registry は空）。
+        let err = cap
+            .create_lane(&project_path, "conductor", "test/x", "echoes")
+            .await
+            .expect_err("予約名は Err");
+        assert!(
+            err.to_string().contains("reserved"),
+            "入口の gate が理由を伝える: {err}"
+        );
+
+        // ① も ③ も起きていない = 開発起点 descriptor は無傷。
+        let rows = db.list_lanes().await.unwrap();
+        let survivor = rows
+            .iter()
+            .find(|(p, i)| p == &key && i.address.to_string() == addr_str);
+        assert!(
+            survivor.is_some(),
+            "拒否された create は開発起点 descriptor を消してはならない: {rows:?}"
+        );
+        assert_eq!(rows.len(), 1, "余計な行も作らない: {rows:?}");
 
         let _ = std::fs::remove_dir_all(&parent);
     }
