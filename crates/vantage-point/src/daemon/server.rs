@@ -220,6 +220,17 @@ impl DaemonState {
     ///
     /// registry channel handler がこの db に SP push を永続して daemon-canonical 化する。
     /// capability の boot load (`load_config`) と同一の db を指す (= 書いた truth を起動時に読む)。
+    /// vp-app への lanes push を起こす通知路を**外から**差し替える（doc 44 §11）。
+    ///
+    /// 既定では [`new`](Self::new) が内部で作るが、fold-in 後は **project 側の
+    /// `publish_lanes` が生産者**になるため、World が先に channel を作って
+    /// `ProjectRuntimes` と DaemonState の両方へ配る必要がある。
+    /// `process_lifecycle_tx` を capability と共有しているのと同じ構図。
+    pub fn with_lane_change_tx(mut self, tx: tokio::sync::broadcast::Sender<String>) -> Self {
+        self.lane_change_tx = tx;
+        self
+    }
+
     pub fn with_vpdb(mut self, vpdb: crate::db::SharedVpDb) -> Self {
         self.vpdb = Some(vpdb);
         self

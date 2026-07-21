@@ -39,6 +39,30 @@ use super::super::state::AppState;
 // VP は user 1 人 + lane performer のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
 
+/// disk-only performer（pool 未登録）の `created_at` を **決定的に**求める。
+///
+/// 旧実装は `chrono::Utc::now()` を焼いていた。表示上はほぼ無害だが、
+/// [`super::super::server::publish_lanes`] の指紋（doc 44 §11.3）が呼ぶたびに変わり、
+/// **「変わった時だけ vp-app を起こす」が無効化される** — 該当 project では
+/// 5s tick がそのまま push 源に戻り、修正の意味が消える。
+///
+/// ground dir の birthtime（無ければ mtime）を使う。決定的であることが要件で、
+/// 「その lane がいつ作られたか」という意味にも合う。
+///
+/// 残余リスク: birthtime 非対応 FS では mtime に落ちるため、dir 直下のファイル増減で
+/// 値が動きうる。その場合の劣化は「未 spawn performer が居る project で push が増える」
+/// = 本修正**前**の挙動に戻るだけで、それ以上悪くはならない。
+fn ground_created_at(path: &str) -> String {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return String::new();
+    };
+    meta.created()
+        .or_else(|_| meta.modified())
+        .ok()
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+        .unwrap_or_default()
+}
+
 /// SP の全 Lane snapshot を build する (LanePool 由来のみ、 disk-only は乗せない)。
 ///
 /// World process-proxy ask `lanes_list` と QUIC `lanes_snapshot` 両 publish 経路で **同一 logic**
@@ -90,6 +114,9 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         .unwrap_or_default()
         .default_stand_or_echoes()
         .to_string();
+    // ⚠️ この placeholder の field は **publish ごとに変わってはいけない**（doc 44 §11.3）。
+    // `publish_lanes` は snapshot の指紋で「変わった時だけ vp-app を起こす」ので、ここに
+    // 呼ぶたび変わる値を焼くと 5s tick がそのまま push 源に戻り、修正が無効化される。
     for entry in
         crate::lane::commands::list_performers_for_repo(std::path::Path::new(&state.project_dir))
     {
@@ -110,7 +137,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             address,
             state: crate::process::lanes_state::LaneState::Spawning,
             stand: default_stand.clone(),
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: ground_created_at(&entry.path),
             pid: None,
             cwd: entry.path,
             performer_status: None,
@@ -946,6 +973,36 @@ mod core_tests {
             lanes.is_empty(),
             "LanePool 空 + performer worktree 不在なら snapshot は空 (merge は intended performer 限定)"
         );
+    }
+
+    /// 回帰固定（doc 44 §11.3）: **disk-only performer の `created_at` は呼ぶたびに変わらない**。
+    ///
+    /// 旧実装は `chrono::Utc::now()` を焼いており、`publish_lanes` の指紋が毎回変わって
+    /// 「変わった時だけ vp-app を起こす」が無効化されていた（= その project では 5s tick が
+    /// そのまま push 源に戻り、修正の意味が消える）。
+    ///
+    /// 統合経路（`build_lanes_snapshot` 越し）で固定できないのは `build_test_app_state` が
+    /// `project_dir` を空で固定しており performer merge に到達しないため（既存 test の
+    /// コメントも同じ制約を挙げている）。非決定性の実体はこの関数なので、ここで直接押さえる。
+    #[test]
+    fn ground_created_at_is_stable_across_calls() {
+        let dir = std::env::temp_dir().join(format!("vp-ground-ts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_string_lossy().to_string();
+
+        let first = ground_created_at(&path);
+        let second = ground_created_at(&path);
+        assert!(!first.is_empty(), "実在 dir では値が取れる");
+        assert_eq!(
+            first, second,
+            "呼ぶたびに変わってはいけない（指紋が汚れる）"
+        );
+
+        // 不在 path は panic せず空文字（snapshot 生成を止めない）
+        assert!(ground_created_at("/nonexistent/vp-ground-ts").is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// doc 44 P2: 開発起点の予約名 `conductor` では lane を作れない。
