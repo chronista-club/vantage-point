@@ -1863,8 +1863,8 @@ impl ProcessManagerCapability {
             // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
             // `lane_create` に移管 (World 内 loopback、 surface 群と uniform な transport)。 payload は
             // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_performer_in skip)。
+            // doc 44 P2: `kind` は撤去（lane に種別が無くなり、指定する余地が消えた）。
             let mut payload = serde_json::json!({
-                "kind": "performer",
                 "name": performer_name,
                 "cwd": path.to_string_lossy(),
             });

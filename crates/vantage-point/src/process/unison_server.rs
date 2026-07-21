@@ -2910,10 +2910,13 @@ mod tests {
         );
     }
 
-    /// lanes portless: `lane_create` dispatch arm が validation error (kind != performer) を
-    /// unison error frame (= Err) として返す (core の create_performer_orchestrated に到達している証)。
+    /// lanes portless: `lane_create` dispatch arm が validation error を unison error frame
+    /// (= Err) として返す (core の `create_performer_orchestrated` に到達している証)。
+    ///
+    /// doc 44 P2: 旧版は `kind != "performer"` を叩いていたが、`kind` は撤去された
+    /// （lane に種別が無くなり指定の余地が消えた）。後継の validation = 開発起点の予約名拒否。
     #[tokio::test]
-    async fn lane_create_rejects_non_performer() {
+    async fn lane_create_rejects_reserved_name() {
         use super::dispatch_process_method;
         use crate::process::state::build_test_app_state;
 
@@ -2921,13 +2924,27 @@ mod tests {
         let err = dispatch_process_method(
             &state,
             "lane_create",
-            serde_json::json!({ "kind": "worker", "name": "x" }),
+            serde_json::json!({ "name": crate::process::lanes_state::CONDUCTOR_LANE_NAME }),
         )
         .await
-        .expect_err("kind='worker' は Err");
+        .expect_err("予約名は Err");
         assert!(
-            err.contains("kind must be 'performer'"),
-            "error は kind 制約を含む: {err}"
+            err.contains("予約名"),
+            "error は予約名である旨を含む: {err}"
+        );
+
+        // 旧 client が送る `kind` は unknown field として無視され、name だけで通ること
+        // （name が空なら別の validation で弾かれる = kind に依存しない）
+        let err = dispatch_process_method(
+            &state,
+            "lane_create",
+            serde_json::json!({ "kind": "performer", "name": "  " }),
+        )
+        .await
+        .expect_err("空 name は Err");
+        assert!(
+            err.contains("name is required"),
+            "name 制約で弾かれる: {err}"
         );
     }
 

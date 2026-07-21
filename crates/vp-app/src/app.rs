@@ -1587,6 +1587,60 @@ mod header_lane_fields_changed_tests {
 }
 
 #[cfg(test)]
+mod lane_key_wire_agent_tests {
+    use super::lane_key_to_wire_agent;
+    use crate::lane::{LaneAddress, LaneAddressWire};
+
+    /// doc 44 P2: lane key (`<project>/<name>`) → wire agent address。
+    ///
+    /// この関数は `delivery_actor::wire_agent_to_lane_display` の**逆写像**で、両者は
+    /// 文字列を直に組み立てる（型を経由しない）ため、片方だけ形が変わると非対称に壊れる。
+    /// フラット化では実際に両方が旧 3 分節形のまま取り残されていた。
+    #[test]
+    fn maps_flat_lane_key_to_agent_address() {
+        // 開発起点は lane 部分を省いた形が canonical
+        assert_eq!(
+            lane_key_to_wire_agent("vp/conductor").as_deref(),
+            Some("agent@vp")
+        );
+        // それ以外は `<project>/<name>`
+        assert_eq!(
+            lane_key_to_wire_agent("vp/feat-api").as_deref(),
+            Some("agent@vp/feat-api")
+        );
+    }
+
+    /// `LaneAddressWire::key()` が吐いた形をそのまま食えること（実際の供給元との結線）。
+    #[test]
+    fn accepts_key_produced_by_wire_type() {
+        for (name, expected) in [("conductor", "agent@vp"), ("feat-api", "agent@vp/feat-api")] {
+            let wire = LaneAddressWire {
+                project: "vp".into(),
+                name: name.into(),
+            };
+            assert_eq!(
+                lane_key_to_wire_agent(&wire.key()).as_deref(),
+                Some(expected),
+                "key()={} が変換できること",
+                wire.key()
+            );
+            // domain 型の Display も同じ形（P2 で両者は一致する）
+            assert_eq!(wire.key(), LaneAddress::new("vp", name).to_string());
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_keys() {
+        assert_eq!(lane_key_to_wire_agent("vp"), None); // 区切り無し
+        assert_eq!(lane_key_to_wire_agent("/conductor"), None); // project 空
+        assert_eq!(lane_key_to_wire_agent("vp/"), None); // name 空
+        assert_eq!(lane_key_to_wire_agent("vp/<unnamed>"), None); // spawning placeholder
+        // 旧 3 分節形は新形では不正（正規化は server 側 parse_address の担当）
+        assert_eq!(lane_key_to_wire_agent("vp/performer/foo"), None);
+    }
+}
+
+#[cfg(test)]
 mod focused_session_stand_tests {
     use super::focused_session_stand;
 
@@ -2342,24 +2396,30 @@ fn handle_sidebar_ipc(
     out
 }
 
-/// sidebar の lane address key (`P/conductor` / `P/performer/N`) → wire agent address。
+/// sidebar の lane address key (`<project>/<name>`) → wire agent address。
 ///
 /// `LaneAddressWire::key()` の逆写像 (delivery_actor の `wire_agent_to_lane_display` と対)。
-/// 未知 kind (magic 等) は wire address を持たないので `None`。
+///
+/// doc 44 P2: フラット化で key が 2 分節 (`<project>/<name>`) になった。旧実装は
+/// `<project>/performer/<name>` の 3 分節を前提に `split_once` していたため、新形では
+/// 常に `None` に落ちて **performer lane の wire inbox が GUI から開けなくなる**
+/// （§6.4 と同型の「型を経由しない文字列」の取り残し。しかも対になる
+/// `wire_agent_to_lane_display` の**逆方向**なので、片方だけ直すと非対称に壊れる）。
 fn lane_key_to_wire_agent(address: &str) -> Option<String> {
-    let (project, rest) = address.split_once('/')?;
-    if project.is_empty() {
+    let (project, name) = address.split_once('/')?;
+    if project.is_empty() || name.is_empty() || name.contains('/') {
         return None;
     }
-    match rest.split_once('/') {
-        None if rest == "conductor" => Some(format!("agent@{project}")),
-        // "<unnamed>" は spawning 中(name 未確定)の placeholder(`LaneAddressWire::key()`)で
-        // 実在の wire agent ではない — 偽 address で空 inbox を開かないよう除外する。
-        Some(("performer", name)) if !name.is_empty() && name != "<unnamed>" => {
-            Some(format!("agent@{project}/{name}"))
-        }
-        _ => None,
+    if name == crate::lane::CONDUCTOR_LANE_NAME {
+        // 開発起点は lane 部分を省略した形が canonical（`agent@<project>`）。
+        return Some(format!("agent@{project}"));
     }
+    // "<unnamed>" は spawning 中(name 未確定)の placeholder で実在の wire agent ではない
+    // — 偽 address で空 inbox を開かないよう除外する。
+    if name == "<unnamed>" {
+        return None;
+    }
+    Some(format!("agent@{project}/{name}"))
 }
 
 /// Wire inbox (doc 34 §4 V1): World "wire" channel に read-only request を投げて

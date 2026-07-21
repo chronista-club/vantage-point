@@ -334,6 +334,17 @@ wire nudge が恒久的に「lane 不在」となり永久リトライに落ち�
 （Display 形が将来また変わっても自動追随する）。**「文字列直書きは無傷なのではなく、
 受信側の正規化に依存して無傷」**という区別が要る — 依存が無い経路が事故る。
 
+この 1 件をきっかけに同型を洗ったところ、**さらに 3 群**見つかった（全て型を経由しない箇所）:
+
+| 箇所 | 症状 |
+|---|---|
+| `app.rs::lane_key_to_wire_agent` | `wire_agent_to_lane_display` の**逆写像**。3 分節前提の `split_once` で新形が常に `None` → performer の wire inbox が GUI から開けない。**対の関数なので片方だけ直すと非対称に壊れる**（往復テストを追加） |
+| `mcp/lane.rs` の 3 箇所 | `lane.get("kind")` / `lane.get("name")` を JSON 直読み。撤去した field なので全て None に落ち、lane 名が `"unknown"` / `"unnamed"` になる（`list_lanes` / `flow_progress` の表示と wire address が壊れる） |
+| `CreateLaneReq.kind` | wire 入力 field として残存。「lane に種別は無い」と矛盾する残骸だったので撤去し、validation は**予約名の拒否**に置換（旧 `kind != "performer"` の意図の後継） |
+
+**教訓**: 型を消しても「型を経由しない参照」は残る。フラット化のような改修では
+`grep` の対象を型名だけでなく **field 名・文字列リテラル・JSON key** まで広げる必要がある。
+
 ### 6.5 残した振る舞い分岐
 
 `stand_spawner::claude_command` の「開発起点なら `--continue`、それ以外は fresh」は**挙動不変で残した**
