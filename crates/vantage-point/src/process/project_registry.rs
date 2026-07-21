@@ -57,6 +57,13 @@ pub(crate) struct ProjectRuntimes {
     /// surrealkv LOCK 衝突回避）。fold-in で同一プロセスになったため handle を共有し、
     /// project 次元は table の `project_path` 列が持つ。`None` は DB なし（test / 接続失敗）。
     world_db: Option<crate::db::SharedVpDb>,
+    /// doc 44 §11: project の publish が vp-app への push を起こすための通知路。
+    ///
+    /// fold-in 前は SP の QUIC uplink（register / lanes-diff）が World の `lane_registry` を
+    /// 更新しつつ `lane_change_tx` も撃っていた。fold-in で **view の更新だけが
+    /// `publish_lanes` へ移管され、起床通知が移管されなかった**ため、vp-app の sidebar は
+    /// wire 活動がある間しか新鮮でなくなっていた。この Arc がその辺を戻す。
+    lane_change_tx: Option<tokio::sync::broadcast::Sender<String>>,
     /// shutdown 開始後に新規登録を受け付けないための門。
     ///
     /// [`shutdown_all`](Self::shutdown_all) は map を drain して停止するが、drain の**後**に
@@ -89,11 +96,13 @@ impl ProjectRuntimes {
     pub fn for_world(
         world_lanes: super::server::WorldLaneView,
         vpdb: Option<crate::db::SharedVpDb>,
+        lane_change_tx: tokio::sync::broadcast::Sender<String>,
     ) -> Self {
         Self {
             inner: RwLock::new(HashMap::new()),
             world_lanes: Some(world_lanes),
             world_db: vpdb,
+            lane_change_tx: Some(lane_change_tx),
             closing: AtomicBool::new(false),
         }
     }
@@ -130,6 +139,7 @@ impl ProjectRuntimes {
             shutdown.clone(),
             self.world_lanes.clone(),
             self.world_db.clone(),
+            self.lane_change_tx.clone(),
         )
         .await?;
 

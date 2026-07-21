@@ -674,3 +674,81 @@ vp-app は World daemon の `"lanes"` channel を購読する。初回 snapshot 
 ### 10.7 残り
 
 タブ strip の header 昇格（D5 前半）と lane の並び順（`ord`、§8.5 で key の判断のみ済）は未着手。
+
+## 11. lanes push の起床経路を fold-in 後に再配線する（2026-07-21）
+
+> **§10.6 の未解決を決着**。実機を待たずに静的に確定できたので直した。
+> P4 のバグではなく **P1 fold-in の副作用**。
+
+### 11.1 何が落ちていたか
+
+vp-app は World daemon の `"lanes"` channel を購読し、初回 snapshot 以降の**再 push は
+`lane_change_tx` 駆動のみ**。その `send` はリポジトリ全体で **1 箇所**（wire `send`/`ack` 後の
+`notify_lane_change_for_projects`）しか無かった。
+
+fold-in 前は SP の QUIC uplink（`register` / `lanes-diff`）が
+
+1. World の `lane_registry`（= 集約 view）を更新し
+2. 同時に `lane_change_tx` を撃つ
+
+の**2 つを一緒に**やっていた。fold-in で uplink が消えた際、**1 だけが `publish_lanes` へ
+移管され、2 が移管されなかった**。
+
+結果: vp-app の sidebar は **wire 活動がある間しか新鮮でない**。wire hook は prompt 送信ごとに
+撃つので「作業中は更新される / idle だと固まる」となり、**sidebar を見るのは作業中だけ**
+なので気付かれなかった（§9.1 と同じ masking）。
+
+固まる対象は lane 追加・削除・死活（dim）・git meta・開発起点 star・並び順すべて。
+
+> **同型の前例がある**: `process_lifecycle_tx` も同じ「旧 registry handler が担っていた経路」で、
+> fold-in 中に「生産者ゼロで永久沈黙する」として発見・再配線済（`server.rs` にコメントが残る）。
+> 1 つの辺が 2 つの仕事をしていると、片方を移管した時にもう片方が静かに落ちる。
+
+### 11.2 静的に確定できた根拠
+
+実機を待たなかったのは、push 経路が閉じていることを読み切れたため:
+
+- `lane_change_tx.send` は 1 箇所（grep で全数確認）
+- daemon の push loop は `rx.recv()` のみで駆動（periodic な再送は無い）
+- vp-app の heartbeat は**失敗時にしか**再接続しない（15s ping は liveness 確認だけで、
+  成功しても再購読しない）→ 「たまたま再接続で新しい snapshot が来る」救済も無い
+
+### 11.3 直し方 — 指紋で「変わった時だけ」起こす
+
+`publish_lanes` に `LaneChangeNotifier` を持たせ、**内容が前回と変わった時だけ**通知する。
+
+素直に毎回撃つと、供給点の 1 つが **5s periodic tick**（disk-only performer の safety net）
+なので *5s × project 数* の全 snapshot push になる。指紋は
+**vp-app に届く値そのもの**（`lanes` + `origin`）から取る — 一部だけにすると
+「見えている値が変わったのに起こさない」穴ができる（例: `lanes` だけを見ると
+D4 の起点変更で star が動かない）。
+
+channel は DaemonState より**先に**作って `ProjectRuntimes` と両方へ配る。生産者が
+project 側・消費者が daemon 側なので、DaemonState 任せだと生産者に渡す手段が無い
+（`process_lifecycle_tx` を capability と共有しているのと同じ構図）。
+
+### 11.4 指紋の純度 — 非決定な値を混ぜない
+
+指紋方式は「snapshot に**呼ぶたび変わる値**が混ざっていたら無効化される」という前提に立つ。
+team-b レビューが実際に 1 件見つけた: `build_lanes_snapshot` の self-heal merge
+（pool 未登録の disk-only performer を placeholder として載せる）が
+`created_at: chrono::Utc::now()` を焼いていた。
+
+これが発火する間は指紋が毎回変わり、**その project だけ 5s tick がそのまま push 源に戻る**。
+発火条件は ①project 起動直後の boot window（spawn 完了まで）と
+②`delete_performer(cleanup=false)` の残置 dir（手動掃除するまで恒久的）。
+
+ground dir の birthtime（無ければ mtime）に変えて決定的にした。placeholder の
+`created_at` が publish ごとに動くこと自体が元々おかしく、**指紋を導入したことで
+初めてその不整合が「効く」ようになった**という関係。
+
+> 指紋・ハッシュ・差分検出を入れる時は、**入力に非決定な値が無いか**を必ず棚卸しする。
+> 混ざっていても機能は壊れず「効かなくなる」だけなので、テストも実機も静かに通る。
+
+### 11.5 テスト
+
+- `publish_lanes_wakes_vp_app_push_loop` — 起こすこと
+- `publish_lanes_does_not_wake_on_unchanged_snapshot` — 5s tick が push 源にならないこと
+- `notifier_wakes_when_only_origin_changes` — 指紋の取り方（origin だけの変化も拾う）
+
+いずれも**起床通知を外すと赤くなる**ことを実証済み。

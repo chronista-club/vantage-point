@@ -37,11 +37,45 @@ pub(crate) type WorldLaneView =
 /// `lane_registry` へ中継していた。fold-in で中継が消えたため、World 側 view の更新を
 /// ここに並置する — これを怠ると World の view が boot 時の db 値で固まり、
 /// `/api/world/lanes` が実在しない lane（過去 pid）を配り続ける。
+/// vp-app への push を起こす通知路（World daemon の `lane_change_tx`）と、
+/// 前回 publish した内容の指紋。
+///
+/// doc 44 §11: fold-in で切れた「更新したら起こす」辺を戻すために publish 側が持つ。
+/// 指紋は **同じ内容で起こさない**ため（5s tick がそのまま 5s ごとの全 snapshot push に
+/// なるのを防ぐ）。
+pub(crate) struct LaneChangeNotifier {
+    tx: Option<tokio::sync::broadcast::Sender<String>>,
+    last: Option<String>,
+}
+
+impl LaneChangeNotifier {
+    pub(crate) fn new(tx: Option<tokio::sync::broadcast::Sender<String>>) -> Self {
+        Self { tx, last: None }
+    }
+
+    /// 内容が前回と変わっていれば起床通知を撃つ。戻り値は撃ったかどうか（test 用）。
+    ///
+    /// 指紋は「vp-app に届く値そのもの」（lanes + origin）から取る。ここを snapshot の
+    /// 一部だけにすると、**見えている値が変わったのに起こさない**穴ができる。
+    fn notify_if_changed(&mut self, path_key: &str, fingerprint: String) -> bool {
+        if self.last.as_deref() == Some(fingerprint.as_str()) {
+            return false;
+        }
+        self.last = Some(fingerprint);
+        match &self.tx {
+            // receiver 不在（vp-app 未接続）の SendError は無害
+            Some(tx) => tx.send(path_key.to_string()).is_ok(),
+            None => false,
+        }
+    }
+}
+
 async fn publish_lanes(
     state: &Arc<AppState>,
     hub: &Hub,
     world_lanes: &Option<WorldLaneView>,
     path_key: &str,
+    notifier: &mut LaneChangeNotifier,
 ) {
     let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
     if let Some(view) = world_lanes {
@@ -54,10 +88,17 @@ async fn publish_lanes(
     let origin =
         crate::host::ledger::origin_name_for_lanes(state.vpdb.as_ref(), &state.project_dir, &lanes)
             .await;
-    hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot {
+    let msg = crate::protocol::ProcessMessage::LanesSnapshot {
         lanes,
         origin: Some(origin),
-    });
+    };
+    // doc 44 §11: World daemon の "lanes" channel は `lane_change_tx` でしか再 push しない。
+    // fold-in 前は SP の uplink（register / lanes-diff）がこの辺を担っていたが、
+    // 中継が消えた際に **view の更新だけ移管され、起床通知が移管されなかった**。
+    // 結果 vp-app の sidebar は wire 活動（hook）がある間しか新鮮でなかった。
+    let fingerprint = serde_json::to_string(&msg).unwrap_or_default();
+    notifier.notify_if_changed(path_key, fingerprint);
+    hub.broadcast(msg);
 }
 
 /// project 1 件分の実行状態を in-process で起動する（旧 SP プロセスの中身）。
@@ -81,6 +122,9 @@ pub(crate) async fn start_project(
     shutdown_token: CancellationToken,
     world_lanes: Option<WorldLaneView>,
     vpdb: Option<crate::db::SharedVpDb>,
+    // doc 44 §11: vp-app への push を起こす通知路（World daemon の `lane_change_tx`）。
+    // `None` は World 以外の文脈（test / 単体起動）で、その場合 push 先が居ない。
+    lane_change_tx: Option<tokio::sync::broadcast::Sender<String>>,
 ) -> Result<Arc<AppState>> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
@@ -374,6 +418,9 @@ pub(crate) async fn start_project(
         let world_lanes_for_pub = world_lanes.clone();
         let path_key_for_pub =
             crate::capability::normalize_path_key(std::path::Path::new(&project_dir));
+        // doc 44 §11: 供給点は 3 つとも同じ notifier を通す（指紋が 1 本でないと
+        // 「別の供給点が publish した直後は起こさない」等の取りこぼしが出る）。
+        let mut notifier = LaneChangeNotifier::new(lane_change_tx);
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
         // （Conductor Lane は既に pre-populate 済）。
         // project-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Performer
@@ -383,6 +430,7 @@ pub(crate) async fn start_project(
             &hub,
             &world_lanes_for_pub,
             &path_key_for_pub,
+            &mut notifier,
         )
         .await;
         // board モデル (2026-07-15): DB の全 board を起動直後に retained topic へ seed する。
@@ -404,6 +452,7 @@ pub(crate) async fn start_project(
                     _ = periodic.tick() => {
                         publish_lanes(
                             &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
+                            &mut notifier,
                         ).await;
                     }
                     ev = sys_rx.recv() => match ev {
@@ -411,6 +460,7 @@ pub(crate) async fn start_project(
                         Ok(SystemEvent::Lane(_)) | Err(RecvError::Lagged(_)) => {
                             publish_lanes(
                                 &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
+                                &mut notifier,
                             ).await;
                         }
                         Err(RecvError::Closed) => break,
@@ -711,10 +761,18 @@ pub async fn run_world(
     // 動くのに World からは boot 時の db 値しか見えない（= 過去 pid の ghost lane 配信）。
     // doc 44 P1 PR4 (DB 統合): db handle も同時に配る。project は自分では db を開かず、
     // World が開いたこの 1 本を共有する（project 次元は table の project_path 列が持つ）。
+    // doc 44 §11: vp-app の "lanes" push を起こす通知路。DaemonState より**先に**作って
+    // 両方へ配る — 生産者は project 側の `publish_lanes`、消費者は daemon の push loop で、
+    // DaemonState 任せにすると生産者に渡す手段が無い（`process_lifecycle_tx` を capability と
+    // 共有しているのと同じ構図）。
+    let (lane_change_tx, _) = tokio::sync::broadcast::channel::<String>(64);
     let control_channels: crate::daemon::server::ControlChannels =
         std::sync::Arc::new(super::project_registry::ProjectRuntimes::for_world(
             world_cap.read().await.lane_registry_ref(),
             vpdb.clone(),
+            // fold-in で落ちた「view を更新したら vp-app を起こす」辺を戻す。view
+            // (`lane_registry`) の更新と通知が同じ経路に載る（旧 SP uplink と同じ組）。
+            lane_change_tx.clone(),
         ));
 
     // ProcessManagerCapability に registry を差し込む（`start_process` が in-process 起動に使う）。
@@ -877,7 +935,10 @@ pub async fn run_world(
         .with_world_cap(world_cap.clone())
         // tmux decoupling PR1: 上で hoist した control channel map を daemon server と共有する
         // (daemon が SP 接続で populate → nudge loop がここから forward 先を引く)。
-        .with_control_channels(control_channels.clone());
+        .with_control_channels(control_channels.clone())
+        // doc 44 §11: project 側の publish が撃つのと**同一の** channel を daemon の
+        // push loop に購読させる（別々に作ると生産者ゼロで永久沈黙する）。
+        .with_lane_change_tx(lane_change_tx.clone());
     // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
     if let Some(ref db) = vpdb {
         daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
@@ -1334,7 +1395,14 @@ mod tests {
         let view: WorldLaneView = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let key = "/tmp/proj-publish-lanes";
 
-        publish_lanes(&state, &hub, &Some(view.clone()), key).await;
+        publish_lanes(
+            &state,
+            &hub,
+            &Some(view.clone()),
+            key,
+            &mut LaneChangeNotifier::new(None),
+        )
+        .await;
 
         // lane 数が 0 でも **entry 自体は入る**ことが要点。空 Vec の insert が
         // 「この project にはもう lane が無い」を表明し、boot 時に db から載った
@@ -1354,6 +1422,90 @@ mod tests {
         let state = crate::process::state::build_test_app_state(None).await;
         let hub = state.hub.clone();
 
-        publish_lanes(&state, &hub, &None, "/tmp/proj-no-view").await;
+        publish_lanes(
+            &state,
+            &hub,
+            &None,
+            "/tmp/proj-no-view",
+            &mut LaneChangeNotifier::new(None),
+        )
+        .await;
+    }
+
+    /// doc 44 §11 回帰固定: **publish が vp-app への push を起こす**。
+    ///
+    /// fold-in で SP の uplink（register / lanes-diff）が消えた際、World の集約 view の
+    /// 更新は `publish_lanes` へ移管されたが、**同じ uplink が担っていた `lane_change_tx`
+    /// の発火は移管されなかった**。結果、daemon の "lanes" push loop を起こすのは
+    /// wire send/ack だけになり、vp-app の sidebar は「何か打っている間だけ新鮮」
+    /// という状態になっていた（idle 中は lane 追加・死活・git meta が固まる）。
+    ///
+    /// `process_lifecycle_tx` が同じ形の抜けを起こしていた前例がある（そちらは
+    /// 「生産者ゼロで永久沈黙」として fold-in 中に発見・再配線済）。
+    #[tokio::test]
+    async fn publish_lanes_wakes_vp_app_push_loop() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+        let key = "/tmp/proj-wakeup";
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
+        let mut notifier = LaneChangeNotifier::new(Some(tx));
+
+        publish_lanes(&state, &hub, &None, key, &mut notifier).await;
+        assert_eq!(
+            rx.try_recv().ok().as_deref(),
+            Some(key),
+            "初回 publish は push loop を起こす"
+        );
+    }
+
+    /// 5s tick が**そのまま 5s ごとの全 snapshot push にならない**こと。
+    ///
+    /// 供給点の 1 つは 5s periodic tick（disk-only performer の safety net）で、
+    /// 内容が変わっていなくても回る。ここで毎回起こすと project 数ぶんの全 snapshot が
+    /// 定期的に流れる。指紋で「変わった時だけ」に絞る。
+    #[tokio::test]
+    async fn publish_lanes_does_not_wake_on_unchanged_snapshot() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+        let key = "/tmp/proj-unchanged";
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
+        let mut notifier = LaneChangeNotifier::new(Some(tx));
+
+        publish_lanes(&state, &hub, &None, key, &mut notifier).await;
+        assert!(rx.try_recv().is_ok(), "初回は起こす");
+
+        publish_lanes(&state, &hub, &None, key, &mut notifier).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "内容が同じなら起こさない（5s tick が push 源にならない）"
+        );
+    }
+
+    /// 指紋は「vp-app に届く値そのもの」から取る = **見えている値が変われば必ず起こす**。
+    ///
+    /// lanes だけを指紋にすると、起点（`origin`）だけが変わった時に起こさない穴ができる
+    /// （= D4 の「開発起点にする」を押しても star が動かない）。
+    #[tokio::test]
+    async fn notifier_wakes_when_only_origin_changes() {
+        let key = "/tmp/proj-origin-only";
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
+        let mut notifier = LaneChangeNotifier::new(Some(tx));
+
+        // lanes は同一で origin だけ違う 2 つの snapshot を直接与える。
+        let snapshot = |origin: &str| {
+            serde_json::to_string(&crate::protocol::ProcessMessage::LanesSnapshot {
+                lanes: vec![],
+                origin: Some(origin.to_string()),
+            })
+            .unwrap()
+        };
+
+        assert!(notifier.notify_if_changed(key, snapshot("conductor")));
+        assert!(rx.try_recv().is_ok());
+        assert!(
+            notifier.notify_if_changed(key, snapshot("feat-x")),
+            "origin だけの変化でも起こす"
+        );
+        assert!(rx.try_recv().is_ok());
     }
 }
