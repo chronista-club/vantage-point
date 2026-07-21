@@ -377,3 +377,84 @@ repo root なら `--continue` が自分の会話に当たるが、worktree で�
 セッションを掴む（dashboard 罠）。P3 で Host がポインタを持てば「起点 lane か？」の問い合わせになる。
 
 構造変更（P2）と挙動変更を同じ PR に混ぜると回帰の切り分けが効かなくなるため、分けた。
+
+## 7. P3 実装設計 — Project Host の第一の振る舞い「見送り」（2026-07-21）
+
+> **第一スライス実装済**。判定 → 表示 → 実行を縦に 1 本通した。帳簿の永続化と
+> conductor ポインタは後続スライス。
+
+### 7.1 Host が実体として現れた
+
+`crates/vantage-point/src/host/` を新設。D3 の「project の面倒を見る決定的な執事」が
+初めてコード上の家を持った。第一の住人は [`host::farewell`]（見送り）。
+
+### 7.2 3 層の物理化
+
+D3 の 3 層モデルを、CLAUDE.md の data / calculations / actions 分離にそのまま対応させた:
+
+| 層 | 実装 | 性質 |
+|---|---|---|
+| data | `LaneFacts` | 判定に要る事実だけ。git も DB も知らない |
+| **層 1: 決定的判定** | `judge_farewell` | **純関数**。I/O ゼロで全分岐をテスト可能 |
+| actions | `collect_facts` | git subprocess で事実を集めるだけ。判定しない |
+| 集約 | `survey_project` | project の全 lane を判定して並べる（実行はしない） |
+| **層 3: 人間へ** | `FarewellVerdict::AskHuman` | 事実だけで決まらないものを積む |
+
+層 2（LLM への発注）は**無い**。見送りは決定的に決まるため — D3 の「Host は決定論。
+LLM にしない」がこの構成に出ている。
+
+### 7.3 旧実装が抱えていた欠陥（Host に移して解けたもの）
+
+`lane::commands::classify_performer_for_cleanup`（撤去）は収集・判定・分類が 1 関数に
+混ざっており:
+
+1. **テスト不能** — `run_git_in(fetch)` を内部で呼ぶため、判定だけを試せない
+2. **判定が 2 値**（削除 / 保持）— 「事実だけで決まらない」を表現できない
+3. **`merged` なら未コミット変更を見ずに削除候補**へ入れていた
+   （= 取り込み済み branch 上に残った作業を黙って捨てうる。**Host は推測しない**の違反）
+
+3 が実質。Host 版は **dirty を merged より先に見て `AskHuman` に回す**。
+実機検証（fast-forward merge した dirty な lane）で、旧なら「削除可能」だったものが
+「⚠️ 要判断」になり、`--force` でも残ることを確認した。
+
+### 7.4 実機検証が炙り出した「区別できない 2 状態」
+
+`MergedState::NotMerged` は 2 つの状態を畳んでいる:
+
+- lane を作ったばかりで何もしていない（fresh）
+- lane の作業が **fast-forward merge** で取り込まれ、既定 branch が追いついた
+
+どちらも `HEAD == origin/<default>` になり、`is_branch_merged` は「fresh は消さない」
+安全弁として ancestry 判定より前に `false` を返す。**ローカル git の ancestry 情報だけでは
+区別できない**。
+
+ただし全く区別不能なわけではない: `is_branch_squash_merged` が `gh pr list --head <branch>
+--state merged` で PR メタデータを引くため、**gh が使えて同名 branch の merged PR が実在すれば**
+fast-forward merge も `merged` 側に倒る（`HEAD == headRefOid` なので ancestor 判定が自明に真）。
+つまり本当に区別できないのは **gh 不在 / 未認証 / PR を経ていない repo** の場合で、
+実機検証がその条件（GitHub 連携のない使い捨て repo）に当たっていた。
+日常の `mako/{slug}` → PR フローではこの曖昧さの多くは解消される。
+
+初版はこれを知らずに `MergedState` をそのまま理由文に出しており、実機で
+**merge 済みの lane に「取り込み状態: 未 merge」と表示**されて露見した。判定自体は
+正しかったが理由が嘘だった。`integration_label` で「既定 branch と同位置（未着手 or
+fast-forward で取り込み済）」と**断定できる範囲だけ**を言うように直した
+（facts-over-narrative）。
+
+> 判定は正しくても**添える事実が嘘**ということが起きる。Host は人間の判断材料を作る
+> 立場なので、理由文の精度は判定の精度と同格に扱う。
+
+### 7.5 後続スライス
+
+- **帳簿の永続化** — 現状は都度計算（git subprocess、lane 数十なら許容）。
+  「いつ何を見送ったか」の記録と、`AskHuman` の滞留を追える形は未実装
+- **conductor ポインタ**（D4 の残り）— 帳簿ができた時点でその最初のエントリとして載せる
+- **稼働中 lane の保護** — `survey_project` の `running` は CLI 経路では空。
+  daemon 経由の surface（LanePool を持つ層）から呼べば埋まる
+- **lane 作成の 2 経路統合**（§6.5）と、そこに紐づく descriptor 破壊疑い
+- **git primitive の置き場所** — 第一スライスでは `lane::commands` の git 関数 5 本を
+  `pub(crate)` に上げて Host から直接使った（`run_git_in` / `count_changes` /
+  `is_branch_merged` / `is_branch_squash_merged` / `get_branch`）。依存の向きとしては
+  Host → lane の plumbing で逆転している。今は 1 箇所なので実害は無いが、
+  **後続の振る舞い（迎え入れ / 場の維持 / 交通整理）がそれぞれ独立に同じ手を伸ばす**と
+  肥大化する。2 つ目が伸びた時点で共有 git primitive module への切り出しを検討する
