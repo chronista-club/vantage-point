@@ -98,8 +98,8 @@ pub struct HubWorld {
 
 /// Activity widget の payload
 ///
-/// 5-10 秒間隔で Rust 側が `/api/health` + `/api/world/projects` +
-/// `/api/world/processes` を fetch して更新、sidebar に push する。
+/// 5-10 秒間隔で Rust 側が `/api/health` (HTTP) + `projects/list` +
+/// `registry.list` (Unison、doc 45 段 3) を fetch して更新、sidebar に push する。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct ActivitySnapshot {
@@ -113,7 +113,7 @@ pub struct ActivitySnapshot {
     pub world_started_at: Option<String>,
     /// 登録プロジェクト数
     pub project_count: usize,
-    /// 稼働中 process 数 (`/api/world/processes`)
+    /// 稼働中 process 数 (`registry.list`)
     pub running_process_count: usize,
     /// chronista-hub federation 接続状態（`/api/health` の `hub`、World 横に表示）。
     /// `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。

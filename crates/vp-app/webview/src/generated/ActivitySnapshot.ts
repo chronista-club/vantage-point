@@ -4,8 +4,8 @@ import type { HubWorld } from "./HubWorld";
 /**
  * Activity widget の payload
  *
- * 5-10 秒間隔で Rust 側が `/api/health` + `/api/world/projects` +
- * `/api/world/processes` を fetch して更新、sidebar に push する。
+ * 5-10 秒間隔で Rust 側が `/api/health` (HTTP) + `projects/list` +
+ * `registry.list` (Unison、doc 45 段 3) を fetch して更新、sidebar に push する。
  */
 export type ActivitySnapshot = { 
 /**
@@ -25,7 +25,7 @@ world_started_at?: string | null,
  */
 project_count: number, 
 /**
- * 稼働中 process 数 (`/api/world/processes`)
+ * 稼働中 process 数 (`registry.list`)
  */
 running_process_count: number, 
 /**

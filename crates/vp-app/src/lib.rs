@@ -5,7 +5,8 @@
 //!
 //! ## モジュール
 //! - `app`: EventLoop + window lifecycle
-//! - `client`: TheWorld daemon HTTP クライアント
+//! - `client`: TheWorld daemon の HTTP health (`/api/health`) + wire 型
+//! - `world_control`: TheWorld control plane クライアント (Unison、doc 45 段 3)
 //! - `menu`: muda メニューバー
 //! - `tray`: tray-icon 常駐アイコン
 //!
@@ -47,4 +48,6 @@ pub mod terminal;
 pub mod tray;
 pub mod update_flow;
 pub mod web_assets;
+/// TheWorld control plane クライアント (Unison `world-control` / `registry`)。 doc 45 段 3。
+pub mod world_control;
 // ws_terminal: Phase 2.x-d で削除 (per-Lane browser-native WebSocket に移行、 Rust 中継経路は不要)
