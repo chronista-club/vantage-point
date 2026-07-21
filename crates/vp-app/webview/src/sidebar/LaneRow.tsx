@@ -94,6 +94,11 @@ export function LaneRow(props: {
 	// 地 (ground): cwd を project root 起点の差分に畳む。 絶対 path は project が持つので
 	// lane は offset だけを名乗る。 conductor は差分ゼロ = "" → 行ごと出さない。
 	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.projectPath);
+	// doc 44 D4: 開発起点 lane か。真実源は Project Host の帳簿で、lanes snapshot の
+	// `origin` として届く (= lane 自身は役割を持たない、P2 のフラット化)。
+	// 未着 (起動直後 / 旧 server) は undefined → star を出さない。憶測で既定を描かない。
+	const isOrigin = () =>
+		sidebar.origin_by_project?.[props.projectPath] === props.lane.address.name;
 
 	// row click → main area を当該 Lane に切り替え。 Dead Lane (pid:null) も select を通す:
 	// activate_lane 側の maybe_respawn_dead_lane が on-demand で respawn し、 PtySlot 生成後に
@@ -155,6 +160,21 @@ export function LaneRow(props: {
 					}),
 			});
 		}
+		// doc 44 D4/D5: 開発起点の再指定。**何も動かない** (cwd も active lane も engine も
+		// そのまま) ので確認は挟まない — 取り消しは別 lane を指すだけ。
+		// 既に起点の lane には出さない (押しても何も起きない項目を並べない)。
+		if (!isOrigin()) {
+			items.push({
+				label: "開発起点にする",
+				icon: "ph:star",
+				onSelect: () =>
+					sendIpc({
+						t: "lane:set_origin",
+						path: props.projectPath,
+						address: addr(),
+					}),
+			});
+		}
 		if (performer) {
 			// delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認。
 			items.push({
@@ -196,6 +216,15 @@ export function LaneRow(props: {
 			<Show when={icon()}>
 				<span class="vp-lane-icon" title={standDisplayName(props.lane.stand)}>
 					<CreoIcon name={icon()!} size={14} />
+				</span>
+			</Show>
+			{/* 開発起点マーカー (doc 44 D4)。stand icon の直後 = 「この lane が何か」を
+			    修飾する層に置く (右端の state / badge は「今どうなっているか」で層が違う)。
+			    stand icon より 1 段小さく、光らせない — 起点は状態ではなく属性なので
+			    注意を引かない (光 = needs-you の専有、Shell.tsx の階層規約)。 */}
+			<Show when={isOrigin()}>
+				<span class="vp-lane-origin" title="この project の開発起点">
+					<CreoIcon name="ph:star-fill" size={11} />
 				</span>
 			</Show>
 			{/* session title を stand icon の右へ (= 旧 2 段目を 1 行目に昇格)。

@@ -384,6 +384,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* Conductor / Performer の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
+/* 開発起点マーカー (doc 44 D4)。stand icon と title の間に置く「属性」の層。
+   mute 色 = git meta / cwd と同じ最も引っ込んだ階層で、光らせない
+   (光 = needs-you の専有)。起点は常時真なので、目立たせると常に鳴る警告になる。 */
+.vp-lane-origin{display:inline-flex;flex:0 0 auto;margin-right:4px;
+  color:var(--lg-mute,#5C7A85);}
+.vp-lane-row.inactive .vp-lane-origin{opacity:0.55;}
 /* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */
 .vp-lane-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 18%);}

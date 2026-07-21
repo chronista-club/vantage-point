@@ -49,7 +49,15 @@ async fn publish_lanes(
             .await
             .insert(path_key.to_string(), lanes.clone());
     }
-    hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot { lanes });
+    // doc 44 D4: 開発起点を帳簿から解決して snapshot に添える（lane の属性ではなく
+    // project の指定なので `LaneInfo` には入れない）。
+    let origin =
+        crate::host::ledger::origin_name_for_lanes(state.vpdb.as_ref(), &state.project_dir, &lanes)
+            .await;
+    hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot {
+        lanes,
+        origin: Some(origin),
+    });
 }
 
 /// project 1 件分の実行状態を in-process で起動する（旧 SP プロセスの中身）。

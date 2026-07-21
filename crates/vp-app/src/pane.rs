@@ -160,6 +160,20 @@ pub struct SidebarState {
     /// app 全体で 1 つだけ。 `lane:select` IPC で更新される。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
+    /// doc 44 D4: project_path → **開発起点 lane 名**（Project Host の帳簿が解決した値）。
+    ///
+    /// `active_lane_address`（注視 = 今見ている lane）とは**別物**。D5 が明示的に分けており、
+    /// 注視は click ごとに動くが起点は明示指定した時だけ動く。sidebar は起点 lane 行に
+    /// star icon を出し、context menu から再指定できる。
+    ///
+    /// 値は lane **名**（address ではない）— 起点は project ごとに 1 本なので
+    /// `<project>` 部分は key 側の path と冗長になる。
+    ///
+    /// ⚠️ `skip_serializing` にしてはいけない: この struct は webview への push payload
+    /// でもあるので、skip すると Rust 側だけ更新されて sidebar に永久に届かない。
+    /// 空の時だけ省く（`session_titles` 等と同じ扱い）。
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub origin_by_project: std::collections::HashMap<String, String>,
     /// Phase 5-A: 現在 active な Project-scope Stand kind
     /// (`"paisley_park"` / `"gold_experience"` / `"bastet"`)。
     /// `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。

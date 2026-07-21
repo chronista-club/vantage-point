@@ -48,6 +48,11 @@ pub enum AppEvent {
     LanesLoaded {
         process_path: String,
         lanes: Vec<crate::client::LaneInfo>,
+        /// doc 44 D4: この project の開発起点 lane 名（Host の帳簿が解決した値）。
+        ///
+        /// `None` = snapshot に載っていなかった（旧 server / 解決不能）。受け手は
+        /// **前回値を保つ** — 既定値に落とすと、起点を指定済の project で ⭐ が明滅する。
+        origin: Option<String>,
     },
     /// Phase A4-3b: Lane fetch 失敗 (SP 未起動 / 接続失敗)
     LanesError {

@@ -626,6 +626,12 @@ async fn lanes_session_after_open(
                     continue;
                 }
             };
+        // doc 44 D4: 開発起点 lane 名（publisher が帳簿から解決して添える）。
+        // 欠落 = 旧 server / 解決不能 → None のまま送り、受け手が前回値を保つ。
+        let origin = payload
+            .get("origin")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         // 初回 snapshot を受けたら deadline 解除 (以降は変化 push を無期限に待つ = steady-state)。
         first_snapshot_deadline = None;
         // LanesLoaded push (= retained snapshot + delta) は project × frequency で
@@ -634,6 +640,7 @@ async fn lanes_session_after_open(
             .send_event(AppEvent::LanesLoaded {
                 process_path: process_path.to_string(),
                 lanes,
+                origin,
             })
             .is_err()
         {
@@ -2105,6 +2112,9 @@ struct SidebarIpcOutcome {
     /// caller が SP port を解決して `client.restart_lane` を呼ぶ。
     /// fresh=true は "New Conductor Session" (resume/continue 回避の fresh 起動)。
     restart_lane_request: Option<(String, String, bool)>,
+    /// doc 44 D4: 開発起点の再指定要求 (project_path, lane address)。
+    /// 実体は Host の帳簿のポインタ更新だけで、lane は何も動かない (D5)。
+    set_origin_request: Option<(String, String)>,
     /// Phase 5-C: Process restart 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
     restart_process_request: Option<String>,
@@ -2225,6 +2235,15 @@ fn handle_sidebar_ipc(
             // WS が onclose → reconnect で新 PtySlot に attach し直す (PR #218)。
             if !m.path.is_empty() && !m.address.is_empty() {
                 out.restart_lane_request = Some((m.path, m.address, m.fresh.unwrap_or(false)));
+            }
+        }
+        IpcEnvelope::LaneSetOrigin(m) => {
+            // doc 44 D4: この lane を project の開発起点にする。caller (event loop) が
+            // World process-proxy ask (`lane_origin_set`) を撃つ。結果は次の lanes snapshot に
+            // `origin` として載って戻ってくるので、ここで sidebar_state を先読み更新しない
+            // （帳簿が真実源 — 楽観更新すると失敗時に UI だけ嘘をつく）。
+            if !m.path.is_empty() && !m.address.is_empty() {
+                out.set_origin_request = Some((m.path, m.address));
             }
         }
         IpcEnvelope::LaneAddPerformer(m) => {
@@ -3207,7 +3226,16 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::LanesLoaded {
                 process_path,
                 lanes,
+                origin,
             }) => {
+                // doc 44 D4: 開発起点を反映する。**`None` は上書きしない** — snapshot に
+                // 起点が載っていなかっただけで「起点が無い」ではないので、前回値を保つ
+                // （既定値に落とすと ⭐ が明滅する）。
+                if let Some(origin) = origin {
+                    sidebar_state
+                        .origin_by_project
+                        .insert(process_path.clone(), origin);
+                }
                 // ループする event なので log omit (= LanesLoaded push と pair で noise 源)。
                 // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
                 // 「初回起動 → Conductor Lane が main area に出る」UX を Lane SSOT で保つ。
@@ -4655,6 +4683,41 @@ pub fn run() -> anyhow::Result<()> {
                                     e
                                 );
                             }
+                        }
+                    });
+                }
+                // doc 44 D4/D5: 開発起点の再指定 (sidebar lane 行の context menu から)。
+                // Host の帳簿のポインタを書き換えるだけ — cwd も active lane も engine も動かない。
+                // 反映は次の lanes snapshot の `origin` で戻る（楽観更新しない = 帳簿が真実源）。
+                if let Some((project_path, address)) = outcome.set_origin_request {
+                    rt_handle.spawn(async move {
+                        // 帳簿は lane **名**で受ける（起点は project ごとに 1 本なので
+                        // address の `<project>` 部分は冗長）。address からは末尾を取る。
+                        let lane_name = address.rsplit('/').next().unwrap_or("").to_string();
+                        if lane_name.is_empty() {
+                            tracing::warn!("lane_origin_set: address から lane 名を取れない: {address}");
+                            return;
+                        }
+                        let payload = serde_json::json!({ "lane": lane_name });
+                        match world_process_request(
+                            crate::client::default_world_port(),
+                            &project_path,
+                            "lane_origin_set",
+                            payload,
+                        )
+                        .await
+                        {
+                            Ok(_) => tracing::info!(
+                                "開発起点を変更: project={} lane={}",
+                                project_path,
+                                lane_name
+                            ),
+                            Err(e) => tracing::warn!(
+                                "lane_origin_set failed: project={} lane={}: {}",
+                                project_path,
+                                lane_name,
+                                e
+                            ),
                         }
                     });
                 }
