@@ -51,6 +51,12 @@ pub(crate) struct ProjectRuntimes {
     /// project 自身の publish task が引き継ぐ（[`start`] が本 Arc を渡す）。
     /// `None` は「World 以外の文脈」= test / SP 単体起動で、その場合 view は存在しない。
     world_lanes: Option<super::server::WorldLaneView>,
+    /// World が開いた唯一の SurrealDB handle（doc 44 P1 PR4 = DB 統合）。
+    ///
+    /// 旧構成では project ごとに `db/sp_{slug}/` を開いていた（VP-182: 別プロセス間の
+    /// surrealkv LOCK 衝突回避）。fold-in で同一プロセスになったため handle を共有し、
+    /// project 次元は table の `project_path` 列が持つ。`None` は DB なし（test / 接続失敗）。
+    world_db: Option<crate::db::SharedVpDb>,
     /// shutdown 開始後に新規登録を受け付けないための門。
     ///
     /// [`shutdown_all`](Self::shutdown_all) は map を drain して停止するが、drain の**後**に
@@ -73,14 +79,21 @@ impl ProjectRuntimes {
         Self::default()
     }
 
-    /// World の lane 集約 view を結線した registry を作る。
+    /// World の資源（lane 集約 view + DB handle）を結線した registry を作る。
     ///
-    /// World bootstrap 専用。これを渡さないと project を起こしても World の view が
-    /// 更新されず、`vp ps` / sidebar / `/api/world/lanes` が boot 時の db 値で固まる。
-    pub fn with_lane_view(world_lanes: super::server::WorldLaneView) -> Self {
+    /// World bootstrap 専用。
+    /// - `world_lanes` を渡さないと project を起こしても World の view が更新されず、
+    ///   `vp ps` / sidebar / `/api/world/lanes` が boot 時の db 値で固まる。
+    /// - `vpdb` を渡さないと project は DB なしで走り、PP board / stand status が
+    ///   永続しない（doc 44 P1 PR4 以前は project が自分で db を開いていた）。
+    pub fn for_world(
+        world_lanes: super::server::WorldLaneView,
+        vpdb: Option<crate::db::SharedVpDb>,
+    ) -> Self {
         Self {
             inner: RwLock::new(HashMap::new()),
             world_lanes: Some(world_lanes),
+            world_db: vpdb,
             closing: AtomicBool::new(false),
         }
     }
@@ -111,9 +124,14 @@ impl ProjectRuntimes {
             project_dir: project_dir.to_string(),
         };
         // port はもう bind されない（SP-portless の遺産）。fold-in で概念ごと消えるため 0 を渡す。
-        let state =
-            super::server::start_project(0, cap_config, shutdown.clone(), self.world_lanes.clone())
-                .await?;
+        let state = super::server::start_project(
+            0,
+            cap_config,
+            shutdown.clone(),
+            self.world_lanes.clone(),
+            self.world_db.clone(),
+        )
+        .await?;
 
         // 起動中に別 caller が同 project を起こしていた場合はこちらを捨てる（後勝ちにしない）。
         let mut guard = self.inner.write().await;
@@ -155,9 +173,12 @@ impl ProjectRuntimes {
     /// World の tokio task と SurrealDB handle でしかないので、**World が畳まなければ
     /// 誰も畳まない**。
     ///
-    /// これを怠ると World は listener を閉じて「停止」を名乗るのにプロセスが終了できず、
-    /// project db の LOCK を握り続ける。次に起動した daemon はその LOCK を見て
-    /// 「重複 spawn」と誤検出し、**全 project の起動に失敗する**（実機で観測済み）。
+    /// これを怠ると World は listener を閉じて「停止」を名乗るのにプロセスが終了できない。
+    /// PR4（DB 統合）以前はこれが db の LOCK 保持として表面化し、次に起動した daemon が
+    /// その LOCK を「重複 spawn」と誤検出して**全 project の起動に失敗**していた
+    /// （実機で観測済み）。db が単一化された今、残留プロセスは `db/world/` の LOCK と
+    /// :32000 の bind を握るので、次の daemon は起動そのものが弾かれる（= 失敗が早期化した
+    /// だけで、畳み残しが致命的である点は変わらない）。
     pub async fn shutdown_all(&self) -> usize {
         // drain より先に受付を閉じる。この順序が要点で、逆にすると「drain 済みの map へ
         // 進行中の start が insert を完了させる」窓が残る（= 畳んだはずの project が生き残る）。
