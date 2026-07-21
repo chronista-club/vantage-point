@@ -21,7 +21,7 @@ lane の表示領域を「Act I **か** Act II」の排他から、**N 枚の Pa
 |---|---|---|
 | `term` | Act I の xterm（lane の PtySlot） | 無し（既存 `#lane-host` を pane 化） |
 | `chat` | Act II の会話 view（session 単位） | 無し（既存 `#console-chat-host` を pane 化） |
-| `canvas` | PP board / Canvas | 既存 pane 概念があるので寄せるだけ |
+| `canvas` | PP board / Canvas | **中**（見積もり訂正、§6） |
 | `file` | file view / editor | 後続 |
 
 ⚠️ **語の衝突**: VP には既に PP Canvas の「pane」がある（`pane_contents` table /
@@ -162,3 +162,32 @@ Act I（tui）は login shell に流し込むだけなのでどの engine でも
 「+ New」を常に載せるので `--pane-tabs-h` は 26px 固定。`.pane-tabs-active` は
 「畳まれた Pane が 1 つ以上ある」= **区切り線を出すかどうか**にだけ効く形へ意味を絞った
 （class を無意味に残すと[読み手のない書き込み]と同じ形になる）。
+
+## 6. P3（canvas）の見積もり訂正（2026-07-21）
+
+§1.1 は「canvas は既に pane 概念があるので**寄せるだけ**」としていたが、**誤り**。
+
+`#pane-paisley-park` は `#pane-terminal` の**兄弟にあたるトップレベル pane** で、
+**Frame Engine（3D Scene システム）が transform で配置している**:
+
+```ts
+const FRAME_PANE_IDS = ["echoes", "pp", "ge", "hp", "preview", "empty"]
+generateAllFocusScenes(FOCUSABLE_PANE_IDS)  // pp を含む全 focus scene
+```
+
+P3 は「PP を Frame Engine の Scene 管理から外し、lane の flex row に入れる」ことになる。
+Scene 定義 / keybindings（Cmd+Shift+N の layout 切替）/ per-lane Scene 記憶が
+すべて `pp` を参照しており、**P1/P2（既存 host に class を付けるだけ）とは質が違う**。
+
+> **「既に pane と呼ばれている」ことと「同じ tiling に載せられる」ことは別。**
+> §1.1 で語の衝突（PP の pane と本 doc の Pane）を注記していたのに、
+> **見積もりの方には反映できていなかった** — 語の衝突は工数見積もりにも効く。
+
+### 着手前に決めること
+
+1. Frame Engine の Scene と lane 内 tiling の**関係**（Scene が Pane 構成を決めるのか、
+   tiling が Scene の下に入るのか、Scene 自体を tiling に置き換えるのか）
+2. GE / HP / preview も同じ扱いにするのか（`pp` だけ特別扱いすると語彙が割れる）
+
+Phase 表の順序も見直す価値がある — **P4（`console_mode` 撤去）を先に**やると
+「Act = Pane の kind」が完成し、P3 の設計判断（1）の材料が増える。
