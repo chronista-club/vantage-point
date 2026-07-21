@@ -6,7 +6,7 @@
  * （chatview.tsx の「document 非依存 = vitest 対象」と同じ線引き）。
  */
 import { describe, expect, it } from 'vitest'
-import { PaneLayout, newPaneChoices } from './pane-shell'
+import { LaneLayouts, PaneLayout, newPaneChoices } from './pane-shell'
 
 const TERM = 'lane-host'
 const CHAT = 'console-chat-host'
@@ -165,5 +165,51 @@ describe('newPaneChoices（doc 46 P2 要件 4: Engine × Act）', () => {
   it('chat_capable 未指定は非対応扱い（不明なら行き止まりを作らない側に倒す）', () => {
     const choices = newPaneChoices([{ name: 'unknown' }])
     expect(choices.map((c) => c.act)).toEqual(['tui'])
+  })
+})
+
+describe('LaneLayouts（doc 47 §3: 構成は lane ごと）', () => {
+  function lanes(): LaneLayouts {
+    const l = new LaneLayouts()
+    l.dock({ id: TERM, label: 'Console' })
+    l.dock({ id: CHAT, label: 'Chat' })
+    return l
+  }
+
+  it('lane ごとに独立した構成を持つ', () => {
+    const l = lanes()
+    l.setLane('proj/a')
+    l.current().toggle(CHAT) // a では chat を畳む
+    expect(l.current().dockedIds()).toEqual([TERM])
+
+    l.setLane('proj/b')
+    // b は触っていないので既定（全部並ぶ）— app に 1 つだと a の構成が漏れる
+    expect(l.current().dockedIds()).toEqual([TERM, CHAT])
+
+    l.setLane('proj/a')
+    // a に戻ると畳んだ構成が復元される
+    expect(l.current().dockedIds()).toEqual([TERM])
+  })
+
+  it('後から dock した Pane は既存 lane にも入る（顔ぶれは lane によらない）', () => {
+    const l = lanes()
+    l.setLane('proj/a')
+    l.current() // a の layout を実体化
+    l.dock({ id: 'canvas', label: 'Canvas' })
+    expect(l.current().dockedIds()).toEqual([TERM, CHAT, 'canvas'])
+
+    l.setLane('proj/b')
+    // 新 lane にも蒔かれる
+    expect(l.current().dockedIds()).toEqual([TERM, CHAT, 'canvas'])
+  })
+
+  it('lane 未設定でも layout は空でない（切替の窓で render が飛ばない）', () => {
+    expect(lanes().current().dockedIds()).toEqual([TERM, CHAT])
+  })
+
+  it('同じ lane への setLane は変化なしを返す（無駄な再描画を防ぐ）', () => {
+    const l = lanes()
+    expect(l.setLane('proj/a')).toBe(true)
+    expect(l.setLane('proj/a')).toBe(false)
   })
 })
