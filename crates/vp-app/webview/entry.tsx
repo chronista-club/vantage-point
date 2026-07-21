@@ -599,10 +599,15 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	consoleActiveLane = lane;
 	consoleActiveMode = mode;
 	// chat Pane は常に描画対象にしておく（並んでいるので「表示中の Act」に関係なく見える）。
+	//
+	// ⚠️ `showLane` も**必ず**呼ぶ。「表示するか」（`.active`）だけを常時化して
+	// 「何を表示するか」（`showLane`）を chat 分岐に残すと、Act I の lane では
+	// chat Pane が並んでいるのに中身が空のままになる（P1 の取りこぼし）。
+	// Act が決めるのは **focus だけ**で、どちらの Pane も中身は常に現 lane を映す。
 	chatHost?.classList.add("active");
+	chatView?.showLane(lane);
 	if (mode === "chat") {
 		paneShell?.focus("console-chat-host");
-		chatView?.showLane(lane);
 	} else {
 		paneShell?.focus("lane-host");
 		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
