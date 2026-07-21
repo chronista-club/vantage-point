@@ -862,65 +862,82 @@ pub fn status_performers() -> Result<(), String> {
 /// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
 /// co-evolution #3: default branch を `resolve_default_branch` (origin/HEAD) で解決し、
 /// squash merge も検出する (旧: `origin/main` ハードコード + ancestry only)。
+/// doc 44 P3: 判定は **Project Host に移管**した（`host::farewell`）。
+///
+/// 本関数は Host の判定を人間に見せて実行する薄い surface になった。旧実装は
+/// 収集・判定・分類を 1 関数（`classify_performer_for_cleanup`）に混ぜており:
+/// - git subprocess を内部で呼ぶためテストできなかった
+/// - 判定が 2 値（削除 / 保持）で「事実だけで決まらないもの」を表現できず、
+///   **merged なら未コミット変更を見ずに削除候補**へ入れていた（= Host は推測しない、の違反）
+///
+/// Host 版は 3 値（reclaim / keep / ask_human）で、判定は I/O ゼロの純関数
+/// （[`crate::host::farewell::judge_farewell`]）に分離済み。
 pub fn cleanup_performers(force: bool) -> Result<(), String> {
+    use crate::host::farewell::FarewellVerdict;
+
     let Ok(repo_root) = config::find_repo_root() else {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());
     };
-    let pl_dir = config::project_lanes_dir(&repo_root);
 
-    // default branch を 1 回だけ解決 (per-performer の gh 呼び出しを避ける)。 nightly 等の
-    // 非 main trunk を尊重。 解決不能なら "main" fallback (resolve_default_branch 内で probe 済)。
-    let default_branch = resolve_default_branch(&repo_root).unwrap_or_else(|| "main".to_string());
-
-    // (name, path, branch)。 branch は worktree cleanup 時の `git branch -d` 用。
-    let mut to_remove: Vec<(String, std::path::PathBuf, Option<String>)> = Vec::new();
-    let mut kept: Vec<(String, String)> = Vec::new();
-
-    if pl_dir.exists()
-        && let Ok(entries) = fs::read_dir(&pl_dir)
-    {
-        for entry in entries.flatten() {
-            classify_performer_for_cleanup(entry, &default_branch, &mut to_remove, &mut kept);
-        }
-    }
-
-    if to_remove.is_empty() && kept.is_empty() {
+    // CLI 経路は lane の生死を知らない（daemon に問い合わせない）ので running は空。
+    // 稼働中 lane を保護したい場合は daemon 経由の surface から呼ぶ（P3 後続）。
+    let reports = crate::host::farewell::survey_project(&repo_root, &[]);
+    if reports.is_empty() {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());
     }
+
+    let mut to_remove: Vec<&crate::host::farewell::FarewellReport> = Vec::new();
+    let mut ask_human = 0usize;
+    for r in &reports {
+        match &r.verdict {
+            FarewellVerdict::Reclaim { reason } => {
+                eprintln!("  削除可能: {} ({})", r.facts.name, reason);
+                to_remove.push(r);
+            }
+            FarewellVerdict::AskHuman { reason } => {
+                eprintln!("  ⚠️ 要判断: {} ({})", r.facts.name, reason);
+                ask_human += 1;
+            }
+            FarewellVerdict::Keep { reason } => {
+                eprintln!("  保持: {} ({})", r.facts.name, reason);
+            }
+        }
+    }
+
     if to_remove.is_empty() {
-        eprintln!("クリーンアップ対象はありません。");
-        for (name, reason) in &kept {
-            eprintln!("  保持: {name} ({reason})");
+        eprintln!("\n自動で削除できる performer はありません。");
+        if ask_human > 0 {
+            eprintln!("{ask_human} 件は事実だけで判断できないため、人の確認が要ります。");
         }
         return Ok(());
-    }
-
-    for (name, _, _) in &to_remove {
-        eprintln!("  削除可能: {name} (マージ済み)");
-    }
-    for (name, reason) in &kept {
-        eprintln!("  保持: {name} ({reason})");
     }
 
     if !force {
         eprintln!("\n実際に削除するには `vp lane cleanup --force` を実行してください。");
+        if ask_human > 0 {
+            eprintln!("（⚠️ の {ask_human} 件は --force でも削除しません）");
+        }
         return Ok(());
     }
 
-    for (name, path, branch) in &to_remove {
-        remove_performer_workspace(&repo_root, path)?;
-        clear_lane_state_files(&repo_root, name);
+    for r in &to_remove {
+        let path = config::project_lanes_dir(&repo_root).join(&r.facts.name);
+        remove_performer_workspace(&repo_root, &path)?;
+        clear_lane_state_files(&repo_root, &r.facts.name);
         // worktree: merged branch を共有 .git から `-d` で安全に掃除 (設計 E)。
         // clone: branch は独立 .git 内なので親 repo では no-op (失敗は握り潰す)。
-        if let Some(b) = branch {
-            let _ = run_git_in(&repo_root, &["branch", "-d", b]);
+        if let Some(b) = get_branch(&path) {
+            let _ = run_git_in(&repo_root, &["branch", "-d", &b]);
         }
-        eprintln!("  削除: {name}");
+        eprintln!("  削除: {}", r.facts.name);
     }
 
     eprintln!("{} パフォーマーを削除しました。", to_remove.len());
+    if ask_human > 0 {
+        eprintln!("⚠️ {ask_human} 件は人の確認待ちのため残しました。");
+    }
     Ok(())
 }
 
@@ -938,40 +955,15 @@ fn print_performer_status_row(path: &Path, name: &str) {
     println!("{name}\t{branch}\t{changes_str}\t{ahead_behind}\t{last_commit}");
 }
 
-/// `cleanup_performers` 内の 1 performer 分類 helper
-///
-/// merged 判定は ancestry ([`is_branch_merged`]) → squash/rebase ([`is_branch_squash_merged`]) の
-/// 2 段。 後者は gh PR state を引くため cleanup (明示・低頻度) 経路のみで行う (co-evolution #3)。
-fn classify_performer_for_cleanup(
-    entry: fs::DirEntry,
-    default_branch: &str,
-    to_remove: &mut Vec<(String, std::path::PathBuf, Option<String>)>,
-    kept: &mut Vec<(String, String)>,
-) {
-    // dep symlink を除外 (branch が origin/HEAD に merged 済みに見え「削除可能」誤判定される)。
-    if !is_performer_entry(&entry) {
-        return;
-    }
-    let path = entry.path();
-    // `.git` は clone なら dir / worktree なら file。 `exists()` は両方 true。
-    if !path.join(".git").exists() {
-        return;
-    }
-    let name = entry.file_name().to_string_lossy().to_string();
-    let _ = run_git_in(&path, &["fetch", "--quiet"]);
-    if is_branch_merged(&path, default_branch) || is_branch_squash_merged(&path, default_branch) {
-        let branch = get_branch(&path);
-        to_remove.push((name, path, branch));
-    } else {
-        let changes = count_changes(&path);
-        let reason = if changes > 0 {
-            format!("アクティブ ({changes} files changed)")
-        } else {
-            "未マージ".to_string()
-        };
-        kept.push((name, reason));
-    }
-}
+// doc 44 P3: `classify_performer_for_cleanup` は撤去（Project Host に移管）。
+//
+// 収集（git subprocess）・判定・分類が 1 関数に混ざっており、テスト不能かつ判定が 2 値だった。
+// 後継は `host::farewell` の 3 層構成:
+//   collect_facts（actions） → judge_farewell（純関数・全分岐テスト済） → survey_project（集約）
+//
+// 旧実装が抱えていた実質的な欠陥: **merged なら未コミット変更を見ずに削除候補**へ入れていた
+// （= 取り込み済み branch 上に残った作業を黙って捨てうる）。Host 版は dirty を merged より
+// 先に見て `AskHuman` に回す。
 
 /// `<repo>/.vp/lanes/<name>` の performer dir を返す。 dir 不在なら None。
 ///
@@ -1105,7 +1097,7 @@ fn run_git(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn run_git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
+pub(crate) fn run_git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -1118,7 +1110,7 @@ fn run_git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn count_changes(dir: &std::path::Path) -> usize {
+pub(crate) fn count_changes(dir: &std::path::Path) -> usize {
     let output = Command::new("git")
         .args(["status", "--short"])
         .current_dir(dir)
@@ -1184,7 +1176,7 @@ fn get_last_commit(dir: &std::path::Path) -> String {
 /// `default_branch`: repo の default branch 名 (`resolve_default_branch` 由来、 例 "nightly")。
 /// 旧実装の `origin/main`/`origin/master` ハードコードを廃し、 nightly 等の非 main trunk に対応
 /// (co-evolution #3)。 origin/<default> が解決不能なら keep 安全側 (false)。
-fn is_branch_merged(performer_dir: &std::path::Path, default_branch: &str) -> bool {
+pub(crate) fn is_branch_merged(performer_dir: &std::path::Path, default_branch: &str) -> bool {
     let remote_ref = format!("origin/{default_branch}");
     let remote_sha = git_rev_parse(performer_dir, &remote_ref);
     if remote_sha.is_none() {
@@ -1211,7 +1203,7 @@ fn is_branch_merged(performer_dir: &std::path::Path, default_branch: &str) -> bo
 ///      rebase merge / 単一 commit squash を拾う (複数 commit squash は組合せ patch-id が個別と
 ///      一致せず取りこぼすため gh が主、 cherry は gh 不在 / headRefOid 照合不能時の補助)。 cherry も
 ///      内容ベースなので、 名前一致だけの誤判定は起きない。
-fn is_branch_squash_merged(performer_dir: &Path, default_branch: &str) -> bool {
+pub(crate) fn is_branch_squash_merged(performer_dir: &Path, default_branch: &str) -> bool {
     if let Some(branch) = get_branch(performer_dir)
         && let Some(head_oid) = gh_merged_pr_head_oid(performer_dir, &branch)
         && head_contained_in_merged_commit(performer_dir, &head_oid) == Some(true)
@@ -1321,7 +1313,7 @@ fn git_rev_parse(dir: &std::path::Path, rev: &str) -> Option<String> {
     }
 }
 
-fn get_branch(dir: &std::path::Path) -> Option<String> {
+pub(crate) fn get_branch(dir: &std::path::Path) -> Option<String> {
     let output = Command::new("git")
         .args(["branch", "--show-current"])
         .current_dir(dir)
