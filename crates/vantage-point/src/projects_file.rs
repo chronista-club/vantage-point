@@ -206,8 +206,9 @@ fn prune_ghosts_with<F: Fn(&str) -> bool>(pf: &mut ProjectsFile, dir_exists: F) 
 /// 稼働中の daemon (TheWorld) に projects.kdl の reload を通知する (best-effort)。
 ///
 /// VP-189: `ProjectsFile::sync` が projects.kdl を書き換えても、 既に稼働している
-/// daemon は in-memory projects を保持したままで乖離する。 `POST /api/world/projects/reload`
-/// を叩いて daemon に projects.kdl を読み直させる。
+/// daemon は in-memory projects を保持したままで乖離する。 daemon に projects.kdl を
+/// 読み直させる (doc 45 段 2 で `POST /api/world/projects/reload` から Unison
+/// `world-control.projects/reload` に差し替え、意味論は同じ best-effort)。
 ///
 /// daemon が動いていなければ黙って無視する (= 次回 daemon 起動時の `load_config` で
 /// projects.kdl が読まれるため取りこぼしにならない)。 テスト環境では no-op。
@@ -217,17 +218,7 @@ fn notify_daemon_reload() {}
 /// 稼働中の daemon (TheWorld) に projects.kdl の reload を通知する (best-effort)。
 #[cfg(not(test))]
 fn notify_daemon_reload() {
-    let url = format!(
-        "http://[::1]:{}/api/world/projects/reload",
-        crate::cli::world_port()
-    );
-    if let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-    {
-        // best-effort: daemon 不在・エラーは無視 (projects.kdl 自体は更新済)。
-        let _ = client.post(&url).send();
-    }
+    crate::world_client::notify_world_reload();
 }
 
 /// [`ProjectsFile::sync`] の結果サマリ。

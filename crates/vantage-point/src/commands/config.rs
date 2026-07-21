@@ -57,59 +57,22 @@ pub fn execute(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// TheWorld API からプロジェクト一覧を取得
+/// TheWorld からプロジェクト一覧を取得（Unison `world-control.projects/list`）
+///
+/// doc 45 段 2: 旧 `GET /api/world/projects` から差し替え。daemon 不在は None で、
+/// caller が projects.kdl フォールバックに落とす（従来どおり）。
 fn fetch_projects_from_theworld() -> Option<Vec<(String, String)>> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .ok()?;
-
-    let url = format!(
-        "http://[::1]:{}/api/world/projects",
-        crate::cli::world_port()
-    );
-    let resp = client.get(&url).send().ok()?;
-    let json: serde_json::Value = resp.json().ok()?;
-
-    let projects = json.get("projects")?.as_array()?;
-    Some(
-        projects
-            .iter()
-            .filter_map(|p| {
-                let name = p.get("name")?.as_str()?.to_string();
-                let path = p.get("path")?.as_str()?.to_string();
-                Some((name, path))
-            })
-            .collect(),
-    )
+    crate::world_client::list_projects_blocking()
 }
 
-/// TheWorld API から稼働中プロセスのパス一覧を取得
+/// TheWorld から稼働中プロセスのパス一覧を取得（Unison `registry.list`）
+///
+/// doc 45 段 2: 旧 `GET /api/world/processes` から差し替え。daemon 不在は空 Vec
+/// （= 全 project が「停止」表示。表示系なので落とさない）。
 fn fetch_running_processes() -> Vec<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .unwrap_or_default();
-
-    let url = format!(
-        "http://[::1]:{}/api/world/processes",
-        crate::cli::world_port()
-    );
-    let resp = match client.get(&url).send() {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
-    let json: serde_json::Value = match resp.json() {
-        Ok(j) => j,
-        Err(_) => return vec![],
-    };
-
-    json.get("processes")
-        .and_then(|p| p.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|p| p.get("project_path")?.as_str().map(String::from))
-                .collect()
-        })
+    crate::world_client::list_processes_blocking()
         .unwrap_or_default()
+        .iter()
+        .filter_map(|p| p.get("project_path")?.as_str().map(String::from))
+        .collect()
 }

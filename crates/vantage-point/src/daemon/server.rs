@@ -289,7 +289,21 @@ impl DaemonState {
 /// project_order 管理ロジックは共有される (= 二重実装を避ける)。 戻り値は成功時 result JSON、
 /// 失敗時は `Err(String)`。 caller は Unison の慣習 (VP-163) に従い success frame に
 /// `{"error": ...}` を詰めて返す (= Unison は専用 error frame を持たない)。
-async fn handle_world_control(
+///
+/// ## doc 45 段 1 — HTTP にしか無かった面をここへ出す
+///
+/// control plane を Unison に寄せる（HTTP は `/api/health` `/api/shutdown` の 2 本だけ残す）
+/// ため、`routes/world.rs` にしか無かった操作を method として追加した:
+/// `projects/update` `projects/reload` `projects/sync` `projects/restart` `projects/pointview`
+/// `lanes/create` `lanes/set_active`、および `lanes/list` の filter/sort parity。
+///
+/// route 層の orchestration は `routes::world` の `pub(crate)` 関数に括り出して共有する
+/// （`apply_project_update` / `collect_lanes` / `resolve_create_lane_args`）。**入口は 2 つでも
+/// 実装は 1 つ**という不変条件が、移行の正しさ（新旧が同じ答えを返す）を構造的に担保する。
+///
+/// `pub(crate)` なのは同 crate の parity テストから直接叩くため（Unison 経路を実際に張らずに
+/// HTTP handler と答えを突き合わせる）。
+pub(crate) async fn handle_world_control(
     world_cap: &Arc<RwLock<crate::capability::ProcessManagerCapability>>,
     method: &str,
     payload: serde_json::Value,
@@ -359,6 +373,39 @@ async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "ok", "path": path, "enabled": enabled}))
         }
+        // doc 45 段 1: HTTP `POST /api/world/projects/update` の Unison 版。
+        // rename と set_enabled をまとめて適用する部分更新（vp-app の編集 dialog が使う形）。
+        // 個別の `projects/rename` / `projects/set_enabled` と実体は同じで、こちらは
+        // 「1 往復で両方直す」ための合成入口（HTTP と同じ `apply_project_update` を共有）。
+        "projects/update" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let name = payload["name"].as_str();
+            let enabled = payload["enabled"].as_bool();
+            let cap = world_cap.read().await;
+            crate::process::routes::world::apply_project_update(&cap, path, name, enabled).await?;
+            Ok(serde_json::json!({"status": "updated", "path": path}))
+        }
+        // doc 45 段 1: HTTP `POST /api/world/projects/sync` の Unison 版。
+        // projects.kdl / db から ghost project（dir が実在しない登録）を除去する。
+        // `vp sync` / `vp app start` が叩く（daemon 不在時は CLI 側が kdl 直操作に落ちる）。
+        "projects/sync" => {
+            let outcome = world_cap
+                .read()
+                .await
+                .sync_projects()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "removed": outcome.removed }))
+        }
+        // doc 45 段 1: HTTP `POST /api/world/projects/reload` の Unison 版。
+        // projects.kdl を読み直して in-memory projects に反映する（VP-189）。
+        // CLI が projects.kdl を書き換えた後に稼働 daemon の乖離を解消する best-effort 通知。
+        "projects/reload" => {
+            world_cap.read().await.reload_config().await;
+            Ok(serde_json::json!({"status": "reloaded"}))
+        }
         "projects/reorder" => {
             let paths: Vec<String> = serde_json::from_value(payload["paths"].clone())
                 .map_err(|e| format!("paths is required (string array): {}", e))?;
@@ -403,23 +450,94 @@ async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "stopped", "name": name}))
         }
+        // doc 45 段 1: HTTP `POST /api/world/processes/{name}/restart` の Unison 版。
+        // stop + start を World 側で atomically に繋ぐ（MCP の `restart` tool が唯一の消費者）。
+        //
+        // 内部に grace sleep + 起動確認が入るので、HTTP handler と同じく **read guard を
+        // 保持したまま await しない**（capability を clone してから解放する）。ここを guard 越しに
+        // すると restart 中の数秒、他の world-control / HTTP リクエストが全部待たされる。
+        "projects/restart" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let cap = {
+                let guard = world_cap.read().await;
+                guard.clone()
+            };
+            let proc = cap.restart_process(name).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(&proc).map_err(|e| e.to_string())
+        }
+        // doc 45 段 1: HTTP `POST /api/world/processes/{name}/pointview` の Unison 版。
+        // project の PointView を開く（未起動なら内部で start_process する）。
+        // restart と同じ理由で capability を clone してから await する。
+        "projects/pointview" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let cap = {
+                let guard = world_cap.read().await;
+                guard.clone()
+            };
+            cap.open_pointview(name).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "opened", "name": name}))
+        }
         // 全 project 横断の lane 一覧（read-only）。
         //
         // 従来この面は HTTP `GET /api/world/lanes` にしか無く、CLI は Unison で繋いだ後に
         // わざわざ HTTP を叩く必要があった。control plane は Unison に寄せる方針（KDL schema +
         // drift テスト + MCP tool 合成が付いてくる）なので、read 面をここに置く。
         // project 単位の詳細は process-proxy の `lanes_list` が持つ。
+        //
+        // doc 45 段 1: HTTP 版の query filter (project / lane / stand) と表示順を取り込んだ。
+        // ここが素の flatten のままだと、CLI を Unison に移した瞬間に一覧の並びが静かに変わる。
+        // filter/sort は `routes::world::collect_lanes` を HTTP と共有する。
         "lanes/list" => {
-            let registry = world_cap.read().await.lane_registry_ref();
-            let lanes: Vec<serde_json::Value> = registry
+            let query: crate::process::routes::world::LanesQuery =
+                serde_json::from_value(payload).unwrap_or_default();
+            let cap = world_cap.read().await;
+            let lanes = crate::process::routes::world::collect_lanes(&cap, &query).await;
+            Ok(serde_json::json!({ "count": lanes.len(), "lanes": lanes }))
+        }
+        // doc 45 段 1: HTTP `POST /api/world/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
+        // performer lane の descriptor を daemon-canonical truth として作る。
+        // branch / stand の省略時 default は HTTP と同じ `resolve_create_lane_args` で導出する。
+        "lanes/create" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let (branch, stand) = crate::process::routes::world::resolve_create_lane_args(
+                path,
+                name,
+                payload["branch"].as_str(),
+                payload["stand"].as_str(),
+            );
+            let info = world_cap
                 .read()
                 .await
-                .values()
-                .flatten()
-                .map(|l| serde_json::to_value(l).unwrap_or(serde_json::Value::Null))
-                .filter(|v| !v.is_null())
-                .collect();
-            Ok(serde_json::json!({ "lanes": lanes }))
+                .create_lane(path, name, &branch, &stand)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(&info).map_err(|e| e.to_string())
+        }
+        // doc 45 段 1: HTTP `POST /api/world/lanes/active` の Unison 版。
+        // project の active lane (presence、Model Q) を daemon-canonical に設定する。
+        "lanes/set_active" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let address = payload["address"]
+                .as_str()
+                .ok_or_else(|| "address is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .set_active_lane(path, address)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "active_lane set", "path": path, "address": address}))
         }
         // chronista-hub federation: hub registry に居る world 一覧を取得する。
         // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
@@ -2303,6 +2421,347 @@ mod tests {
         let cap = new_world_cap();
         let r = handle_world_control(&cap, "projects/bogus", serde_json::json!({})).await;
         assert!(r.is_err(), "未知 method は Err");
+    }
+
+    // =====================================================================
+    // doc 45 段 2 — 新旧 parity（world-control RPC と HTTP route が同じ答えを返す）
+    //
+    // CLI の transport を HTTP から Unison に差し替える移行の正しさは、
+    // 「新面が旧面と同じ答えを出す」で担保する。本 PR では旧 HTTP route を
+    // **残したまま** CLI だけ移すので（doc 45 §5 の意図した中間状態）、
+    // 両方を同一の ProcessManagerCapability に向けて叩いて突き合わせられる。
+    //
+    // 実装レベルでは `routes::world` の共有関数（apply_project_update /
+    // collect_lanes / resolve_create_lane_args）で 1 実装に畳んであるので、
+    // ここが落ちるときは「入口ごとに分岐が生えた」ことを意味する。
+    // =====================================================================
+
+    /// HTTP route を 1 本だけ載せた Router に oneshot して JSON body を取る。
+    async fn http_json(
+        app: axum::Router,
+        req: axum::http::Request<axum::body::Body>,
+    ) -> serde_json::Value {
+        use tower::ServiceExt;
+        let resp = app.oneshot(req).await.expect("oneshot");
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("JSON body")
+    }
+
+    fn get_req(uri: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .expect("request")
+    }
+
+    fn post_req(uri: &str, body: serde_json::Value) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("request")
+    }
+
+    /// `projects/list` が HTTP `GET /api/world/projects` の `projects` と一致する。
+    #[tokio::test]
+    async fn world_control_projects_list_matches_http() {
+        use crate::process::routes::world::world_list_projects;
+
+        let cap = new_world_cap();
+        let path = std::env::temp_dir().to_string_lossy().to_string();
+        handle_world_control(
+            &cap,
+            "projects/add",
+            serde_json::json!({"name": "parity-list", "path": path}),
+        )
+        .await
+        .expect("add ok");
+
+        let unison = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+            .await
+            .expect("list ok");
+
+        let state = crate::process::state::build_test_app_state(Some(cap.clone())).await;
+        let app = axum::Router::new()
+            .route(
+                "/api/world/projects",
+                axum::routing::get(world_list_projects),
+            )
+            .with_state(state);
+        let http = http_json(app, get_req("/api/world/projects")).await;
+
+        assert_eq!(
+            http["projects"], unison,
+            "projects/list（Unison）と GET /api/world/projects が同じ project 一覧を返すこと"
+        );
+    }
+
+    /// `projects/update` が HTTP `POST /api/world/projects/update` と同じ状態遷移を起こす。
+    ///
+    /// 2 つの独立した capability を同一の初期状態から出発させ、片方を Unison で、
+    /// もう片方を HTTP で更新して、結果の project 一覧が一致することを見る。
+    #[tokio::test]
+    async fn world_control_projects_update_matches_http() {
+        use crate::process::routes::world::world_update_project;
+
+        let path = std::env::temp_dir().to_string_lossy().to_string();
+
+        // 同一の初期状態を 2 つ用意する。
+        let via_unison = new_world_cap();
+        let via_http = new_world_cap();
+        for cap in [&via_unison, &via_http] {
+            handle_world_control(
+                cap,
+                "projects/add",
+                serde_json::json!({"name": "parity-update", "path": path}),
+            )
+            .await
+            .expect("add ok");
+        }
+
+        // Unison 側: rename + disable を 1 往復で適用。
+        handle_world_control(
+            &via_unison,
+            "projects/update",
+            serde_json::json!({"path": path, "name": "renamed", "enabled": false}),
+        )
+        .await
+        .expect("update ok");
+
+        // HTTP 側: 同じ内容を旧 route で適用。
+        let state = crate::process::state::build_test_app_state(Some(via_http.clone())).await;
+        let app = axum::Router::new()
+            .route(
+                "/api/world/projects/update",
+                axum::routing::post(world_update_project),
+            )
+            .with_state(state);
+        http_json(
+            app,
+            post_req(
+                "/api/world/projects/update",
+                serde_json::json!({"path": path, "name": "renamed", "enabled": false}),
+            ),
+        )
+        .await;
+
+        // 結果の一覧を Unison の read 面で突き合わせる（read 面の parity は別テストで固定済）。
+        let after_unison =
+            handle_world_control(&via_unison, "projects/list", serde_json::json!({}))
+                .await
+                .expect("list ok");
+        let after_http = handle_world_control(&via_http, "projects/list", serde_json::json!({}))
+            .await
+            .expect("list ok");
+
+        assert_eq!(
+            after_unison, after_http,
+            "projects/update（Unison）と POST /api/world/projects/update が同じ状態遷移を起こすこと"
+        );
+        assert_eq!(after_unison[0]["name"], "renamed", "rename が効いている");
+        assert_eq!(after_unison[0]["enabled"], false, "disable が効いている");
+
+        // HTTP 版と同じく「何も指定しない update」は Err（黙って成功にしない）。
+        let empty = handle_world_control(
+            &via_unison,
+            "projects/update",
+            serde_json::json!({"path": path}),
+        )
+        .await;
+        assert_eq!(
+            empty.unwrap_err(),
+            "No fields to update",
+            "field 無し update のエラー文言も HTTP と同一"
+        );
+
+        // HTTP route 側も同じ文言を返す（両入口が `apply_project_update` を共有している証跡）。
+        let state = crate::process::state::build_test_app_state(Some(via_http.clone())).await;
+        let app = axum::Router::new()
+            .route(
+                "/api/world/projects/update",
+                axum::routing::post(world_update_project),
+            )
+            .with_state(state);
+        let http_empty = http_json(
+            app,
+            post_req(
+                "/api/world/projects/update",
+                serde_json::json!({"path": path}),
+            ),
+        )
+        .await;
+        assert_eq!(http_empty["error"], "No fields to update");
+    }
+
+    /// `lanes/list` が HTTP `GET /api/world/lanes` と同じ `{count, lanes}` を返す。
+    ///
+    /// 移行前の Unison 版は素の flatten で `count` も filter も並び順も持っていなかったので、
+    /// ここが parity の要。**空 registry では 3 者の差が出ない**（filter も sort も無仕事に
+    /// なる）ので、複数 project × 複数 lane を実際に積んでから突き合わせる。
+    #[tokio::test]
+    async fn world_control_lanes_list_matches_http() {
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::routes::world::world_list_lanes;
+
+        let cap = new_world_cap();
+
+        // registry を直接埋める（SP 経由の push を模す）。project 名 / created_at / stand を
+        // わざと逆順・混在で入れて、sort と filter が実際に仕事をする状態を作る。
+        let mk = |project: &str, name: &str, created_at: &str, stand: &str| LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::new(project, name),
+            state: LaneState::Running,
+            stand: stand.to_string(),
+            created_at: created_at.to_string(),
+            pid: Some(4321),
+            cwd: "/tmp".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        };
+        {
+            let registry = cap.read().await.lane_registry_ref();
+            let mut registry = registry.write().await;
+            registry.insert(
+                "/repos/zeta".to_string(),
+                vec![
+                    mk("zeta", "later", "2026-07-02T00:00:00Z", "shell"),
+                    mk("zeta", "root", "2026-07-03T00:00:00Z", "echoes"),
+                    mk("zeta", "earlier", "2026-07-01T00:00:00Z", "echoes"),
+                ],
+            );
+            registry.insert(
+                "/repos/alpha".to_string(),
+                vec![mk("alpha", "root", "2026-07-01T00:00:00Z", "echoes")],
+            );
+        }
+
+        let state = crate::process::state::build_test_app_state(Some(cap.clone())).await;
+
+        for (uri, payload) in [
+            ("/api/world/lanes", serde_json::json!({})),
+            (
+                "/api/world/lanes?project=zeta",
+                serde_json::json!({"project": "zeta"}),
+            ),
+            (
+                "/api/world/lanes?stand=echoes",
+                serde_json::json!({"stand": "echoes"}),
+            ),
+            (
+                "/api/world/lanes?lane=root",
+                serde_json::json!({"lane": "root"}),
+            ),
+            (
+                "/api/world/lanes?project=nonexistent",
+                serde_json::json!({"project": "nonexistent"}),
+            ),
+        ] {
+            let app = axum::Router::new()
+                .route("/api/world/lanes", axum::routing::get(world_list_lanes))
+                .with_state(state.clone());
+            let http = http_json(app, get_req(uri)).await;
+            let unison = handle_world_control(&cap, "lanes/list", payload)
+                .await
+                .expect("lanes/list ok");
+
+            assert_eq!(
+                http, unison,
+                "lanes/list（Unison）と {uri} が同じ {{count, lanes}} を返すこと"
+            );
+        }
+
+        // parity だけだと「両方同時に壊れた」を見逃すので、期待する並びも直接固定する。
+        // project 名昇順 → 同 project 内は開発起点 (root) 先 → created_at 昇順。
+        let all = handle_world_control(&cap, "lanes/list", serde_json::json!({}))
+            .await
+            .expect("lanes/list ok");
+        let names: Vec<&str> = all["lanes"]
+            .as_array()
+            .expect("lanes は配列")
+            .iter()
+            .map(|l| l["address"]["name"].as_str().unwrap_or("?"))
+            .collect();
+        assert_eq!(all["count"], 4);
+        assert_eq!(names, ["root", "root", "earlier", "later"]);
+    }
+
+    /// `projects/sync` が HTTP `POST /api/world/projects/sync` と同じ `{removed}` を返す。
+    #[tokio::test]
+    async fn world_control_projects_sync_matches_http() {
+        use crate::process::routes::world::world_sync_projects;
+
+        let cap = new_world_cap();
+        let unison = handle_world_control(&cap, "projects/sync", serde_json::json!({}))
+            .await
+            .expect("sync ok");
+
+        let state = crate::process::state::build_test_app_state(Some(cap.clone())).await;
+        let app = axum::Router::new()
+            .route(
+                "/api/world/projects/sync",
+                axum::routing::post(world_sync_projects),
+            )
+            .with_state(state);
+        let http = http_json(
+            app,
+            post_req("/api/world/projects/sync", serde_json::json!({})),
+        )
+        .await;
+
+        assert_eq!(
+            http, unison,
+            "projects/sync（Unison）と POST /api/world/projects/sync が同じ形を返すこと"
+        );
+        assert_eq!(unison["removed"], serde_json::json!([]), "ghost 無しなら空");
+    }
+
+    /// mutation 系 RPC の必須 field 欠落は Err（World の状態を触る前に弾く）。
+    #[tokio::test]
+    async fn world_control_new_methods_require_their_fields() {
+        let cap = new_world_cap();
+        for (method, payload) in [
+            ("projects/update", serde_json::json!({})),
+            ("projects/restart", serde_json::json!({})),
+            ("projects/pointview", serde_json::json!({})),
+            ("lanes/create", serde_json::json!({"path": "/tmp"})),
+            ("lanes/set_active", serde_json::json!({"path": "/tmp"})),
+        ] {
+            assert!(
+                handle_world_control(&cap, method, payload).await.is_err(),
+                "{method} は必須 field 欠落を Err にする"
+            );
+        }
+    }
+
+    /// lane 作成の default 導出は入口によらず同じ（HTTP route と共有の calc）。
+    #[test]
+    fn create_lane_defaults_are_shared_with_http() {
+        use crate::process::routes::world::resolve_create_lane_args;
+
+        let (branch, stand) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
+        assert!(
+            branch.ends_with("/sub"),
+            "branch 未指定なら `<user>/<name>` を derive する: {branch}"
+        );
+        assert!(
+            !stand.is_empty(),
+            "stand 未指定でも default が入る: {stand}"
+        );
+
+        // 明示指定はそのまま通る。空白のみの branch は未指定と同じ扱い（HTTP と同じ意味論）。
+        let (branch, stand) =
+            resolve_create_lane_args("/tmp/parity", "sub", Some("feat/x"), Some("shell"));
+        assert_eq!((branch.as_str(), stand.as_str()), ("feat/x", "shell"));
+        let (branch, _) = resolve_create_lane_args("/tmp/parity", "sub", Some("   "), None);
+        assert!(branch.ends_with("/sub"), "空白 branch は derive に落ちる");
     }
 
     #[tokio::test]

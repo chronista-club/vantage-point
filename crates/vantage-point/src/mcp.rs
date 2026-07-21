@@ -610,28 +610,27 @@ impl VantageMcp {
                 .to_string(),
         };
 
-        let url = format!(
-            "http://[::1]:{}/api/world/processes/{}/restart",
-            crate::cli::world_port(),
-            project_name
-        );
-        let resp = self
-            .client
-            .post(&url)
-            .timeout(Duration::from_secs(45))
-            .send()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(format!("World restart に到達できません: {}", e), None)
-            })?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(McpError::internal_error(
-                format!("World restart {}: {}", status, body),
-                None,
-            ));
-        }
+        // doc 45 段 2: 旧 `POST /api/world/processes/{name}/restart` を Unison
+        // `world-control.projects/restart` に差し替え。restart は内部に grace sleep +
+        // 起動確認を含むので、旧 HTTP の 45s timeout に相当する外側 timeout をここで掛ける
+        // (Unison client 側に per-request timeout が無いため)。
+        let client = tokio::time::timeout(
+            Duration::from_secs(45),
+            crate::daemon::client::WorldControlClient::connect(crate::cli::world_port(), 3),
+        )
+        .await
+        .map_err(|_| McpError::internal_error("World restart 接続 timeout (45s)", None))?
+        .map_err(|e| {
+            McpError::internal_error(format!("World restart に到達できません: {}", e), None)
+        })?;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(45),
+            client.projects_restart(&project_name),
+        )
+        .await
+        .map_err(|_| McpError::internal_error("World restart timeout (45s)", None))?
+        .map_err(|e| McpError::internal_error(format!("World restart 失敗: {}", e), None))?;
 
         // QUIC チャネルをリセットして再接続を強制（新 SP に張り直す）
         *self.process_channel.lock().await = None;
@@ -639,7 +638,7 @@ impl VantageMcp {
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
                 "Process '{}' を World restart で再起動: {}",
-                project_name, body
+                project_name, result
             ),
         )]))
     }

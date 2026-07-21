@@ -11,6 +11,8 @@
 //!   3. starter channel（registry / events）が KDL に存在する
 //!   4. registry / events の request 名 ⊆ daemon handler の match method 集合
 //!      （method レベル drift 検出 = 文字列一致しない request は dead tool になる）
+//!   5. world-control の全 method は「KDL に記述」か「意図的な omission」のどちらかに属する
+//!      （doc 45 段 1 で追加。4 の逆方向 = 記述漏れの検出）
 //!
 //! SSOT: crates/vantage-point/src/daemon/server.rs の register_channel(...) と各 match method。
 //! channel 名と world-control の method は source から抽出して突き合わせる（自動）。
@@ -128,6 +130,84 @@ fn request_names_match_daemon_methods() {
     assert_requests_subset(&reg, "registry", REGISTRY_METHODS);
     assert_requests_subset(&reg, "events", EVENTS_METHODS);
     assert_requests_subset(&reg, "world-control", &world_control_methods);
+}
+
+/// KDL に**意図的に記述しない** world-control method。
+///
+/// 方針（vp-daemon.kdl の channel コメントと対）: world-control に描くのは read-safe な
+/// request だけ。mutation は手で叩くと projects.kdl / lane descriptor の状態を壊すので
+/// unison-mcp の合成 tool に露出させない。`ping` は liveness probe（意味のある観測面ではない）。
+///
+/// この const の存在意義は「omission を明示的な決定にする」こと。テスト 4 は
+/// KDL → source の片方向しか見ないため、handler に method を足しても KDL に書き忘れれば
+/// 素通りする（= 露出させるか否かを誰も判断しないまま出荷される）。下の
+/// [`world_control_methods_are_described_or_explicitly_omitted`] が逆方向を塞ぐ。
+const WORLD_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
+    // projects mutation（projects.kdl / db の状態を壊しうる）
+    "projects/list",
+    "projects/add",
+    "projects/remove",
+    "projects/rename",
+    "projects/set_enabled",
+    "projects/reorder",
+    "projects/start",
+    "projects/stop",
+    "projects/update",
+    "projects/sync",
+    "projects/reload",
+    "projects/restart",
+    "projects/pointview",
+    // lane mutation（descriptor は daemon-canonical truth なので手動注入させない）
+    "lanes/create",
+    "lanes/set_active",
+    // liveness probe（surface の共有 connection 用、観測面ではない）
+    "ping",
+];
+
+/// 5. world-control の全 method は「KDL に記述」か「[`WORLD_CONTROL_OMITTED_BY_DESIGN`]」の
+///    どちらかに属する。
+///
+/// テスト 4（KDL ⊆ source）は dead tool を防ぐが、逆に **source に増えた method を KDL に
+/// 書き忘れる**方は検出しない。それ自体は壊れないものの、「agent に露出させるか」を
+/// 誰も判断しないまま面が増える状態になる（doc 45 §1 の利得は「Unison に乗せた面が
+/// そのまま agent の面になる」ことなので、無意識の非露出は利得の取りこぼし）。
+/// 新 method を足したら KDL に書くか、omission list に理由付きで足すかを選ぶこと。
+#[test]
+fn world_control_methods_are_described_or_explicitly_omitted() {
+    let reg = registry();
+    let described: std::collections::BTreeSet<&str> = reg
+        .channel("world-control")
+        .expect("world-control が KDL に無い")
+        .requests
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+
+    for method in extract_world_control_methods() {
+        assert!(
+            described.contains(method.as_str())
+                || WORLD_CONTROL_OMITTED_BY_DESIGN.contains(&method.as_str()),
+            "world-control.{method} が KDL にも omission list にも無い\
+             （露出させるなら schema/vp-daemon.kdl に request を足す、\
+             露出させないなら WORLD_CONTROL_OMITTED_BY_DESIGN に理由付きで足す）"
+        );
+    }
+}
+
+/// omission list が実装から取り残されていないこと（撤去した method が list に残らない）。
+///
+/// `DAEMON_CHANNELS` で実際に起きた「実装から消えたのに const だけ残る」drift の同型。
+#[test]
+fn omitted_methods_still_exist_in_source() {
+    let found: std::collections::BTreeSet<String> =
+        extract_world_control_methods().into_iter().collect();
+    for omitted in WORLD_CONTROL_OMITTED_BY_DESIGN {
+        assert!(
+            found.contains(*omitted),
+            "WORLD_CONTROL_OMITTED_BY_DESIGN の '{omitted}' が handle_world_control に無い\
+             （method を撤去したら本 const からも消すこと）"
+        );
+    }
 }
 
 /// `handle_world_control` の `"method" =>` arm を source から抽出する。

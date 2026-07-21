@@ -564,21 +564,23 @@ fn status() -> Result<()> {
                 }
             }
             // Process 一覧
-            if let Ok(resp) = reqwest::blocking::get(format!(
-                "http://[::1]:{}/api/world/processes",
-                crate::cli::world_port()
-            )) && let Ok(json) = resp.json::<serde_json::Value>()
-                && let Some(processes) = json.as_array()
-            {
+            //
+            // doc 45 段 2: 旧 `GET /api/world/processes` から Unison `registry.list` に差し替え。
+            // ⚠️ 旧経路はこの行を**一度も表示していなかった**: response は
+            // `{"processes": [...]}` なのに `json.as_array()` で受けていて、常に None に
+            // 落ちて丸ごと skip されていた（transport 移行のついでに直る類の取りこぼし）。
+            if let Some(processes) = crate::world_client::list_processes_blocking() {
                 println!("  Processes: {}", processes.len());
-                for p in processes {
+                for p in &processes {
                     let name = p
                         .get("project_name")
                         .and_then(|v| v.as_str())
                         .unwrap_or("?");
-                    let port = p.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let pid = p.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
-                    println!("    - {} (port:{}, pid:{})", name, port, pid);
+                    let path = p
+                        .get("project_path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    println!("    - {} ({})", name, path);
                 }
             }
         }

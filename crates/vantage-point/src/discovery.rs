@@ -1,19 +1,22 @@
 //! プロセス発見モジュール
 //!
-//! TheWorld API（port 32000）を単一の真実源として稼働中 project を発見する。
+//! TheWorld（port 32000）を単一の真実源として稼働中 project を発見する。
 //!
 //! ## データフロー
 //!
 //! ```text
 //! project 起動（World が in-process で起こす）→ World の registry に登録
-//! 問い合わせ → TheWorld HTTP API (port 32000) → 返却
+//! 問い合わせ → TheWorld Unison `registry.list` (QUIC :32000) → 返却
 //! ```
 //!
 //! doc 44 P1 (fold-in) 以前は「SP が QUIC registry で自己登録し、切断で即時除去」
 //! だったが、project が World と同一プロセスになり自己登録も切断も無くなった。
+//!
+//! doc 45 段 2: 問い合わせ transport を `GET /api/world/processes` から Unison
+//! `registry.list` に差し替えた（`vp ps` が既に使っている面と同じ 1 本に寄せる）。
 
-use crate::cli::world_port;
 use crate::config::Config;
+use crate::daemon::client::WorldControlClient;
 
 /// 発見された Process の情報
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,31 +32,19 @@ pub struct ProcessInfo {
     pub terminal_token: Option<String>,
 }
 
-/// TheWorld API のレスポンス
-#[derive(Debug, serde::Deserialize)]
-struct WorldProcessesResponse {
-    processes: Vec<WorldProcessEntry>,
-}
-
-/// TheWorld が返す Process エントリ
+/// TheWorld `registry.list` が返す Process エントリ
 #[derive(Debug, serde::Deserialize)]
 struct WorldProcessEntry {
+    #[serde(default)]
     port: u16,
+    #[serde(default)]
     pid: u32,
     project_path: String,
 }
 
-/// HTTP クライアントを生成（短タイムアウト）
-fn build_client(timeout_ms: u64) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(timeout_ms))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
-
 /// 全稼働中 project を取得
 ///
-/// TheWorld API (port 32000) に問い合わせ。project を起こすのは World 自身なので
+/// TheWorld (port 32000) に問い合わせ。project を起こすのは World 自身なので
 /// World の registry が単一の真実源（doc 44 P1 fold-in 以前は SP の QUIC 自己登録が source）。
 ///
 /// 返る `ProcessInfo` の `port` は常に 0、`pid` は World 自身のもの — どちらも
@@ -132,21 +123,20 @@ pub async fn find_for_cwd() -> Option<ProcessInfo> {
         .max_by_key(|p| p.project_dir.len())
 }
 
-/// TheWorld API に問い合わせ
+/// TheWorld に問い合わせ（Unison `registry.list`）
+///
+/// daemon 不在 / 接続失敗は None（caller の `list()` が空 Vec に落とす）。
+/// retry=1 は「daemon が居ないことを素早く確定させたい」ため（旧 HTTP の 1s timeout 相当）。
 async fn query_world() -> Option<Vec<ProcessInfo>> {
-    let client = build_client(1000);
-    let url = format!("http://[::1]:{}/api/world/processes", world_port());
-
-    let resp = client.get(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let body = resp.json::<WorldProcessesResponse>().await.ok()?;
+    let client = WorldControlClient::connect(crate::cli::world_port(), 1)
+        .await
+        .ok()?;
+    let processes = client.processes_list().await.ok()?;
 
     Some(
-        body.processes
+        processes
             .into_iter()
+            .filter_map(|v| serde_json::from_value::<WorldProcessEntry>(v).ok())
             .map(|p| ProcessInfo {
                 port: p.port,
                 pid: p.pid,

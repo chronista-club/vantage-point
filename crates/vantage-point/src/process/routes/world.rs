@@ -1,13 +1,23 @@
 //! World API ルートハンドラー — TheWorld (Process Manager) REST API
 //!
 //! プロジェクト CRUD・Process 起動・停止・監視を担当する。
+//!
+//! ## doc 45（transport 統一）— 入口は 2 つ、実装は 1 つ
+//!
+//! control plane は Unison (`world-control` channel) に寄せる途中で、同じ操作に HTTP route と
+//! Unison RPC の 2 入口が一時的に並ぶ（doc 45 §5 の中間状態）。route 層にしか無かった
+//! orchestration（update の rename+enabled 合成 / lane の filter+sort / create の default 導出）は
+//! [`apply_project_update`] / [`collect_lanes`] / [`resolve_create_lane_args`] に括り出してあり、
+//! **両入口が同じ関数を呼ぶ**。入口が増えても答えが分岐しないのが要点で、これが
+//! 「新面が旧面と同じ答えを出す」ことの構造的な担保になる（テストは daemon/server.rs の
+//! `world_control_http_parity` 群）。
 
 use std::sync::Arc;
 
 use axum::{Json, extract::State, response::IntoResponse};
 
 use super::super::state::AppState;
-use crate::capability::{ProjectInfo, RunningProcess};
+use crate::capability::{ProcessManagerCapability, ProjectInfo, RunningProcess};
 
 /// World projects response
 #[derive(serde::Serialize)]
@@ -211,7 +221,46 @@ pub struct UpdateProjectRequest {
     pub enabled: Option<bool>,
 }
 
-/// POST /api/world/projects/update - プロジェクト名を変更
+/// project の部分更新（rename / enabled）を適用する — HTTP と Unison `projects/update` の共有実体。
+///
+/// `name` / `enabled` はどちらも任意で、指定されたものだけを順に適用する。
+/// **どちらも未指定なら `Err("No fields to update")`** — 「何も指定しない update」は
+/// 呼び出し側のバグなので黙って成功にしない（HTTP の 400 と同じ意味論）。
+///
+/// doc 45: この合成ロジックは元々 route handler の中にしか無く、Unison に同じ面を出すと
+/// 二重実装になるところだった（doc 45 §1「同じ情報に 3 実装」と同型の罠）。
+pub(crate) async fn apply_project_update(
+    world: &ProcessManagerCapability,
+    path: &str,
+    name: Option<&str>,
+    enabled: Option<bool>,
+) -> Result<(), String> {
+    let mut updated = false;
+
+    if let Some(new_name) = name {
+        world
+            .rename_project(path, new_name)
+            .await
+            .map_err(|e| e.to_string())?;
+        updated = true;
+    }
+
+    if let Some(enabled) = enabled {
+        world
+            .set_project_enabled(path, enabled)
+            .await
+            .map_err(|e| e.to_string())?;
+        updated = true;
+    }
+
+    if updated {
+        Ok(())
+    } else {
+        Err("No fields to update".to_string())
+    }
+}
+
+/// POST /api/world/projects/update - プロジェクト名 / enabled を変更
 pub async fn world_update_project(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateProjectRequest>,
@@ -224,42 +273,15 @@ pub async fn world_update_project(
     };
 
     let world = world.read().await;
-    let mut updated = false;
-
-    if let Some(new_name) = &req.name {
-        match world.rename_project(&req.path, new_name).await {
-            Ok(()) => updated = true,
-            Err(e) => {
-                return (
-                    axum::http::StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": e.to_string()})),
-                );
-            }
-        }
-    }
-
-    if let Some(enabled) = req.enabled {
-        match world.set_project_enabled(&req.path, enabled).await {
-            Ok(()) => updated = true,
-            Err(e) => {
-                return (
-                    axum::http::StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": e.to_string()})),
-                );
-            }
-        }
-    }
-
-    if updated {
-        (
+    match apply_project_update(&world, &req.path, req.name.as_deref(), req.enabled).await {
+        Ok(()) => (
             axum::http::StatusCode::OK,
             Json(serde_json::json!({"status": "updated", "path": req.path})),
-        )
-    } else {
-        (
+        ),
+        Err(e) => (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "No fields to update"})),
-        )
+            Json(serde_json::json!({"error": e})),
+        ),
     }
 }
 
@@ -372,6 +394,32 @@ pub struct CreateLaneRequest {
     pub stand: Option<String>,
 }
 
+/// lane 作成の省略時 default を導出する (= calc) — HTTP と Unison `lanes/create` の共有実体。
+///
+/// SP create_handler と parity: branch 未指定 → `<user>/<name>` derive、
+/// stand 未指定 → config の `default_stand` → `echoes`。返り値は `(branch, stand)`。
+///
+/// doc 45: default 導出が入口ごとに分かれていると「HTTP で作った lane と Unison で作った lane で
+/// branch 名が違う」が起こりうる。入口が増える前に 1 関数に畳んでおく。
+pub(crate) fn resolve_create_lane_args(
+    path: &str,
+    name: &str,
+    branch: Option<&str>,
+    stand: Option<&str>,
+) -> (String, String) {
+    let repo_root = std::path::PathBuf::from(path);
+    let branch = branch
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| super::lanes::derive_default_branch(&repo_root, name));
+    let stand = stand.map(|s| s.to_string()).unwrap_or_else(|| {
+        crate::config::Config::load()
+            .map(|c| c.default_stand_or_echoes().to_string())
+            .unwrap_or_else(|_| "echoes".to_string())
+    });
+    (branch, stand)
+}
+
 /// POST /api/world/lanes - daemon が performer lane を create する (§5.3 ground provision +
 /// descriptor を daemon-canonical truth として所有)。 PtySlot spawn は lane_watcher 経由で SP が行う。
 pub async fn world_create_lane(
@@ -385,20 +433,12 @@ pub async fn world_create_lane(
         );
     };
 
-    // branch / stand の default 導出 (= calc) は route の責務。 SP create_handler と parity:
-    // branch 未指定 → `<user>/<name>` derive、 stand 未指定 → config の default_stand → echoes。
-    let repo_root = std::path::PathBuf::from(&req.path);
-    let branch = req
-        .branch
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| super::lanes::derive_default_branch(&repo_root, &req.name));
-    let stand = req.stand.clone().unwrap_or_else(|| {
-        crate::config::Config::load()
-            .map(|c| c.default_stand_or_echoes().to_string())
-            .unwrap_or_else(|_| "echoes".to_string())
-    });
+    let (branch, stand) = resolve_create_lane_args(
+        &req.path,
+        &req.name,
+        req.branch.as_deref(),
+        req.stand.as_deref(),
+    );
 
     let world = world.read().await;
     match world
@@ -482,7 +522,10 @@ pub async fn world_reload_projects(State(state): State<Arc<AppState>>) -> impl I
 // =============================================================================
 
 /// Phase 1c: Lane filter query
-#[derive(serde::Deserialize)]
+///
+/// HTTP は query string (`?project=&lane=&stand=`)、Unison `lanes/list` は同名の payload field
+/// から作る。どちらも全 field 省略可 = 無フィルタ。
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 pub struct LanesQuery {
     /// Project name filter (LaneAddress.project)
     pub project: Option<String>,
@@ -490,6 +533,57 @@ pub struct LanesQuery {
     pub lane: Option<String>,
     /// Stand kind filter — "echoes" or "shell"
     pub stand: Option<String>,
+}
+
+/// lane registry を filter + sort して返す — HTTP と Unison `lanes/list` の共有実体。
+///
+/// 順序: project 名昇順 → 同 project 内は開発起点 (root) 先 → 続いて Performer (created_at 昇順)。
+///
+/// doc 45: 従来 filter/sort は HTTP handler の中だけにあり、Unison 側 (`lanes/list`) は
+/// 素の flatten を返していた。**同じ名前の面が違う答えを返す**状態で、CLI を Unison に
+/// 移すと `vp ps` の並びが静かに変わる類の罠。移設の前に 1 実装へ畳む。
+pub(crate) async fn collect_lanes(
+    world: &ProcessManagerCapability,
+    query: &LanesQuery,
+) -> Vec<crate::process::lanes_state::LaneInfo> {
+    let lane_registry = world.lane_registry_ref();
+    let registry = lane_registry.read().await;
+
+    // 全 project の Lane を flatten + filter (project / lane / stand)
+    let mut lanes: Vec<crate::process::lanes_state::LaneInfo> = registry
+        .values()
+        .flatten()
+        .filter(|l| {
+            query
+                .project
+                .as_deref()
+                .is_none_or(|p| l.address.project == p)
+        })
+        .filter(|l| {
+            // doc 44 P2: 旧 kind 分岐（conductor は "root"、performer は name と照合）は
+            // フラット化で name 一本の比較に畳まれた（開発起点の name が予約名 "root"）。
+            query.lane.as_deref().is_none_or(|n| l.address.name == n)
+        })
+        .filter(|l| {
+            // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較 (wire 上は新 stand 名のみ accept)。
+            query.stand.as_deref().is_none_or(|s| l.stand == s)
+        })
+        .cloned()
+        .collect();
+
+    lanes.sort_by(|a, b| {
+        use std::cmp::Ordering;
+        a.address.project.cmp(&b.address.project).then_with(|| {
+            // doc 44 P2: 開発起点を先頭に置く表示順（旧 kind 比較の後継、`LanePool::list` と同型）
+            match (a.address.is_root(), b.address.is_root()) {
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                _ => a.created_at.cmp(&b.created_at),
+            }
+        })
+    });
+
+    lanes
 }
 
 /// GET /api/world/lanes — Phase 1c: Currents の Lane → tmux session resolver
@@ -516,43 +610,7 @@ pub async fn world_list_lanes(
     };
 
     let world_cap = world.read().await;
-    let lane_registry = world_cap.lane_registry_ref();
-    let registry = lane_registry.read().await;
-
-    // 全 project の Lane を flatten + filter (project / lane / stand)
-    let mut lanes: Vec<crate::process::lanes_state::LaneInfo> = registry
-        .values()
-        .flatten()
-        .filter(|l| {
-            query
-                .project
-                .as_deref()
-                .is_none_or(|p| l.address.project == p)
-        })
-        .filter(|l| {
-            // doc 44 P2: 旧 kind 分岐（conductor は "root"、performer は name と照合）は
-            // フラット化で name 一本の比較に畳まれた（開発起点の name が予約名 "root"）。
-            query.lane.as_deref().is_none_or(|n| l.address.name == n)
-        })
-        .filter(|l| {
-            // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較 (wire 上は新 stand 名のみ accept)。
-            query.stand.as_deref().is_none_or(|s| l.stand == s)
-        })
-        .cloned()
-        .collect();
-
-    // 順序: project 名昇順 → 同 project 内は Conductor 先 → 続いて Performer (created_at 昇順)
-    lanes.sort_by(|a, b| {
-        use std::cmp::Ordering;
-        a.address.project.cmp(&b.address.project).then_with(|| {
-            // doc 44 P2: 開発起点を先頭に置く表示順（旧 kind 比較の後継、`LanePool::list` と同型）
-            match (a.address.is_root(), b.address.is_root()) {
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                _ => a.created_at.cmp(&b.created_at),
-            }
-        })
-    });
+    let lanes = collect_lanes(&world_cap, &query).await;
 
     (
         axum::http::StatusCode::OK,
