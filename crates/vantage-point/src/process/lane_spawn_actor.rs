@@ -338,7 +338,7 @@ async fn handle_cmd(
     let addr_for_blocking = addr.clone();
     let stand_for_blocking = stand.clone();
     let result = tokio::task::spawn_blocking(move || {
-        // tmux decoupling PR2: 床 + claude 注入の Rust-native spawn (adopt は退役、 §13.3)。
+        // tmux decoupling PR2: slot + claude 注入の Rust-native spawn (adopt は退役、 §13.3)。
         let cmd_built = super::stand_spawner::build_stand_command(
             &stand_for_blocking,
             &addr_for_blocking,

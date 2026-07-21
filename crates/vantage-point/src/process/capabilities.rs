@@ -123,8 +123,11 @@ impl ProcessCapabilities {
                     event = subscription.recv() => {
                         match event {
                             Some(event) => {
-                                let process_msg = capability_event_to_process_message(&event);
-                                let _ = hub_sender.send(process_msg);
+                                if let Some(process_msg) =
+                                    capability_event_to_process_message(&event)
+                                {
+                                    let _ = hub_sender.send(process_msg);
+                                }
                             }
                             None => break,
                         }
@@ -141,7 +144,7 @@ impl ProcessCapabilities {
 /// EventBus は MIDI event を受け取らない。 旧 `t if t.starts_with("midi.")` 分岐は不要なので削除。
 fn capability_event_to_process_message(
     event: &crate::capability::CapabilityEvent,
-) -> crate::protocol::ProcessMessage {
+) -> Option<crate::protocol::ProcessMessage> {
     use crate::protocol::ProcessMessage;
 
     match event.event_type.as_str() {
@@ -153,50 +156,32 @@ fn capability_event_to_process_message(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            ProcessMessage::ChatChunk {
+            Some(ProcessMessage::ChatChunk {
                 content,
                 done: false,
-            }
+            })
         }
 
-        "agent.done" => ProcessMessage::ChatChunk {
+        "agent.done" => Some(ProcessMessage::ChatChunk {
             content: String::new(),
             done: true,
-        },
+        }),
 
+        // doc 44 P1 (fold-in): 旧 debug mode 撤去。agent.error / capability.* / その他は
+        // 以前 DebugInfo に変換して hub へ流していたが、その出力先（旧 WebUI デバッグパネル）は
+        // localhost browser UI ごと撤去済で購読者ゼロだった。error は tracing に残し、
+        // 残りは message 化せず握り潰す（bridge が None を skip する）。
         "agent.error" => {
             let error = event
                 .payload
                 .get("error")
                 .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
-            ProcessMessage::DebugInfo {
-                level: crate::protocol::DebugMode::Simple,
-                category: "error".to_string(),
-                message: error,
-                data: Some(event.payload.clone()),
-                tags: vec!["agent".to_string(), "error".to_string()],
-            }
+                .unwrap_or("Unknown error");
+            tracing::warn!("agent error: {error}");
+            None
         }
 
-        // Capability 状態変更
-        "capability.initialized" | "capability.state_changed" => ProcessMessage::DebugInfo {
-            level: crate::protocol::DebugMode::Simple,
-            category: "capability".to_string(),
-            message: format!("{}: {}", event.source, event.event_type),
-            data: Some(event.payload.clone()),
-            tags: vec!["capability".to_string(), "state".to_string()],
-        },
-
-        // その他のイベント
-        _ => ProcessMessage::DebugInfo {
-            level: crate::protocol::DebugMode::Detail,
-            category: "event".to_string(),
-            message: event.event_type.clone(),
-            data: Some(event.payload.clone()),
-            tags: vec!["event".to_string()],
-        },
+        _ => None,
     }
 }
 

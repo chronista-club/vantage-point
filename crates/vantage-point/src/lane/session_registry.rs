@@ -3,7 +3,7 @@
 //! doc 38 §1 の 3 層分離の「session 層」を担う:
 //!
 //! ```text
-//! 床（Act I の PTY）= lane の設備（1 枚）。本 module の管轄外
+//! slot（Act I の PTY）= lane の設備（1 枚）。本 module の管轄外
 //! session          = 会話の実体。identity は VP 採番のローカル key（1, 2, …）← ここ
 //! 会話 id          = session の Option 属性（`SessionEntry.conversation`）← doc 40 でここに統合
 //! ```
@@ -20,8 +20,8 @@
 //!   `codex_session` に残るのは validator / transcript helper / CLI path 解決のみ）
 //! - **書き込みの直列化**: 変異（create / focus / remove / set_conversation 系）は process 内
 //!   mutex で直列化する（doc 40 §4 — 複数 field JSON の並行 load-modify-save は update を失う）
-//! - **root = lane の器に化身する session**（doc 39 — 座と化身）: 床 spawn / wire 配送
-//!   （channel D・E）/ Act I chip はすべて root に解決される。doc 38 の「床は session #1 を
+//! - **root = lane の器に化身する session**（doc 39 — 座と化身）: slot spawn / wire 配送
+//!   （channel D・E）/ Act I chip はすべて root に解決される。doc 38 の「slot は session #1 を
 //!   既定で化身」は root=1 の特殊ケースに一般化された（#1 の特別性を撤廃）
 
 use std::path::{Path, PathBuf};
@@ -38,7 +38,7 @@ pub type SessionKey = u32;
 pub struct SessionEntry {
     /// VP 採番のローカル key。
     pub key: SessionKey,
-    /// engine 種別（stand 名: "echoes" / "codex" / "grok" / "opencode"。legacy/未知値は床のみで graceful 吸収）。
+    /// engine 種別（stand 名: "echoes" / "codex" / "grok" / "opencode"。legacy/未知値は shell のみで graceful 吸収）。
     pub stand: String,
     /// engine の会話 id（claude = session uuid / codex = thread id / grok・opencode = ACP sessionId）。
     /// **doc 40 §2: ここが SSOT**（旧 engine 別 session_store から統合）。None = Draft
@@ -53,10 +53,10 @@ pub struct SessionEntry {
 pub struct SessionRegistry {
     /// 現在 focus されている session の key（常に `sessions` 内に実在する）。
     pub focused: SessionKey,
-    /// doc 39: lane の器（Act I=床 / Act II=headless）に化身し、wire mailbox
+    /// doc 39: lane の器（Act I=slot / Act II=headless）に化身し、wire mailbox
     /// `agent@<lane>` を名乗る session の key（常に `sessions` 内に実在する）。
-    /// 床 spawn / wire 配送（channel D・E）/ Act I chip の読み先はすべてここに解決される。
-    /// serde default = 1 で file/wire 後方互換（root field 無し = 従来の「#1 が床に化身」を
+    /// slot spawn / wire 配送（channel D・E）/ Act I chip の読み先はすべてここに解決される。
+    /// serde default = 1 で file/wire 後方互換（root field 無し = 従来の「#1 が slot に化身」を
     /// root=1 として読む — doc 38 Phase 1 の focused と同じ手筋）。
     #[serde(default = "default_root")]
     pub root: SessionKey,
@@ -106,7 +106,7 @@ impl SessionRegistry {
 /// session の store label（各 engine session_store / host の記録キー）。
 ///
 /// - **key 1 = 素の lane 名**: 既存 file（`cc_sessions/<project>__<lane>`）との後方互換 +
-///   Act I（床）の hook 書き込み先と一致（doc 38 の「床は session #1 を既定で化身」）
+///   Act I（slot）の hook 書き込み先と一致（doc 38 の「slot は session #1 を既定で化身」）
 /// - key 2 以降 = `<lane>#<n>`（doc 36 実証: `#` は [`sanitize`] で置換されない = file 名安全）
 pub fn session_label(lane_label: &str, key: SessionKey) -> String {
     if key <= 1 {
@@ -242,7 +242,7 @@ pub fn create_in(
 }
 
 /// 新 session を作り、root と focused を同時にそれへ向ける（doc 39 §4 — Act I の ✨ New =
-/// Root 切替「✨ 新 ID から」の shorthand）。1 回の save で書くため、器（床）と mailbox の
+/// Root 切替「✨ 新 ID から」の shorthand）。1 回の save で書くため、器（slot）と mailbox の
 /// 化身がズレる中間 state は disk に存在しない（doc 39 §0「原子的」の registry 側担保）。
 /// 旧 root の session は一覧に残る（非破壊 — store も registry entry も触らない）。
 pub fn create_root_in(
@@ -288,7 +288,7 @@ pub fn focus_in(
 }
 
 /// root を既存 session へ向け替える（doc 39 P3 — Root 切替 picker）。実在しない key は
-/// Err（黙って据え置くと「切替えたつもり」の床が旧 root のまま化身する誤配送になる）。
+/// Err（黙って据え置くと「切替えたつもり」の slot が旧 root のまま化身する誤配送になる）。
 /// focused も同じ session へ動かす（`create_root_in` と同じ「器に注意が追従する」意味論、
 /// 1 save 原子）。旧 root の会話はリストに残る（非破壊）。
 pub fn set_root_in(
@@ -315,7 +315,7 @@ pub fn set_root_in(
 ///
 /// - 実在しない key は Err（黙って成功にしない）
 /// - **root は取り除けない**（doc 39 §6。doc 38 の「最後の 1 本は取り除けない」と
-///   「⚠️ #1 close は Act I 床 resume を断つ」を包含する一般形 — root は常に実在するので
+///   「⚠️ #1 close は Act I slot resume を断つ」を包含する一般形 — root は常に実在するので
 ///   最後の 1 本 = root。root を移してから取り除く。lane を素に戻したいなら
 ///   fresh restart = registry clear が正道）
 /// - focused を取り除いた場合は残りの先頭へ focus を移す（決定的な fallback）
@@ -382,7 +382,7 @@ pub enum RootRecordOutcome {
     RejectedInvalid,
 }
 
-/// Act I 床（claude hook）の会話報告を root session に適用する — doc 40 §6 policy の
+/// Act I slot（claude hook）の会話報告を root session に適用する — doc 40 §6 policy の
 /// **唯一の実装点**。旧「UserPromptSubmit のみ記録」（#795 の鈍器）の置換。
 ///
 /// `transcript_exists` は注入する（テストが実 `~/.claude` に依存しないため。本番 wrapper
@@ -483,7 +483,7 @@ pub fn focused_in(base: &Path, project: &str, lane: &str) -> SessionKey {
 }
 
 /// root key だけを軽量に読む（file 不在 / 破損は 1 = N=1 特殊ケース）。
-/// 床 spawn（`stand_spawner`）/ channel D enrich のような「registry 全体は要らない」経路用。
+/// slot spawn（`stand_spawner`）/ channel D enrich のような「registry 全体は要らない」経路用。
 pub fn root_in(base: &Path, project: &str, lane: &str) -> SessionKey {
     let Ok(raw) = std::fs::read_to_string(registry_file_in(base, project, lane)) else {
         return 1;
@@ -782,7 +782,7 @@ mod tests {
         // 不在 key は Err
         assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 9).is_err());
 
-        // root(#1) は N>1 でも取り除けない（doc 38 の「⚠️ #1 close は Act I 床 resume を断つ」
+        // root(#1) は N>1 でも取り除けない（doc 38 の「⚠️ #1 close は Act I slot resume を断つ」
         // footgun を構造で塞ぐ — doc 39 §2）
         assert!(
             remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),

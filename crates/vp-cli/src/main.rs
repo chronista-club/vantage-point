@@ -80,10 +80,6 @@ enum Commands {
         command: Option<commands::daemon::DaemonCommands>,
     },
 
-    /// SP サーバー管理（HTTP/QUIC サーバーのライフサイクル）
-    #[command(subcommand)]
-    Sp(commands::sp::SpCommands),
-
     /// wire accumulation messaging — `watch` (long-poll subscribe) / `send` / `watch-supervised` を提供。
     /// Claude Code Monitor の subscription source として使う想定 (wiremsg R5-2)。
     #[command(subcommand)]
@@ -115,10 +111,6 @@ enum Commands {
     /// Stone Free 🧵 — performer Lane 管理（旧 vp ws、Phase 1 で統合）
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
-
-    /// Port Layout — deterministic 透過的固定 port の計算・表示
-    #[command(subcommand)]
-    Port(commands::port::PortCommands),
 
     /// 登録 project 管理 — World daemon に直接 Unison RPC (add/remove/rename/enable/disable/reorder/list)
     #[command(subcommand)]
@@ -373,7 +365,9 @@ fn main() -> Result<()> {
             });
             commands::daemon::execute(cmd)
         }
-        Commands::Sp(cmd) => commands::sp::execute(cmd, &config),
+        // doc 44 P1 (fold-in): `vp sp` は退役。project は World プロセス内の
+        // `Arc<AppState>` になり、外から起動する概念が消えた。lifecycle 操作は
+        // `vp projects start|stop`（名詞を SP から project へ移した）。
         // tmux decoupling PR2: `vp hd` / `vp tmux` は退役。 lane の console 操作は
         // `vp lane capture` / `vp lane nudge` (lane 語彙の後継)。
         #[cfg(feature = "midi")]
@@ -381,7 +375,6 @@ fn main() -> Result<()> {
         Commands::Db(cmd) => commands::db::execute(cmd),
 
         Commands::Lane(cmd) => execute_lane(cmd),
-        Commands::Port(cmd) => commands::port::execute(cmd),
         Commands::Projects(cmd) => {
             // projects 操作は World daemon に直接 Unison RPC (async)。 auth/wire/flow と同じ
             // per-command Runtime で block_on する。
@@ -755,7 +748,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             Ok(())
         }
         LaneCommands::ResumeFailed { attempted } => {
-            // 記録して常に exit 1 = `||` chain の中継。この行は床の scrollback に残り、
+            // 記録して常に exit 1 = `||` chain の中継。この行は slot の scrollback に残り、
             // 「無音で fresh になった」を user からも見えるようにする（観測装置 F4）。
             let project = std::env::var("VP_PROJECT").unwrap_or_else(|_| "-".into());
             let lane = std::env::var("VP_LANE").unwrap_or_else(|_| "-".into());

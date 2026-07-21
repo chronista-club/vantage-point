@@ -4,9 +4,10 @@
 //! 一緒に上がる (別 daemon は不要)。ここでは主に path 確認・初期化・スキーマ
 //! 適用に絞った utility を提供する。
 //!
-//! VP-182: DB ディレクトリが World (`db/world/`) と per-SP (`db/sp_{slug}/`) に
-//! 分離されたため、 本コマンドは **World DB** を対象とする。 per-SP DB の確認が
-//! 必要になった場合は `--project <slug>` option を別途追加する (= 別 issue)。
+//! doc 44 P1 PR4 (DB 統合): DB は `db/world/` の**単一**になった。旧構成の
+//! per-SP DB (`db/sp_{slug}/`) は VP-182 の LOCK 衝突回避で分かれていたが、
+//! fold-in で SP プロセスが消えて分離理由が失効したため、project 次元は
+//! table の `project_path` 列が持つ形に統合された。
 
 use anyhow::Result;
 use clap::Subcommand;

@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="webview bundle を生成 (bun install --frozen-lockfile + bun run build)。 release:mac / app:swap の前段"
+#
+# 旧運用 (2026-07-19 廃止): assets/*.bundle.js を commit し、 feature PR ごとに手で
+# `bun run build` して積む。 忘れると stale bundle が ship される footgun だった
+# (v0.52.1 リリース時に実発生 — #817 が bundle を積み忘れ、 release 直前に人力発見)。
+#
+# 新運用: bundle は gitignore の生成物。 本 task がビルドプロセスの一部として毎回生成する。
+# 依存は npm semver pin (@chronista-club/creo-ui-editor-host / creo-ui-icons-web /
+# unison-client) + bun.lock — file: sibling 依存は撤去済みなので生成は環境非依存で再現的。
+# bundle 変更の再 embed は crates/vp-app/build.rs の rerun-if-changed が保証する
+# (旧「touch main_area.rs」の儀式は不要になった)。
+#
+# creoui / club-unison を同時開発する日は bun link で file 参照に戻せる
+# (docs/guide/webview.md の dev loop 手順を参照)。
+
+ROOT = File.expand_path("../../..", __dir__)
+WEBVIEW = File.join(ROOT, "crates", "vp-app", "webview")
+
+def run!(cmd)
+  puts "\e[36m󰅂\e[0m $ (webview) #{cmd}"
+  system(cmd, chdir: WEBVIEW) or abort("app:bundle 失敗: #{cmd}")
+end
+
+# frozen-lockfile: lock と package.json の乖離は「lock 更新し忘れ」なので fail が正。
+run!("bun install --frozen-lockfile")
+run!("bun run build")
+
+puts "\e[36m󰅂\e[0m 󰗠 webview bundle 生成完了 (assets/*.bundle.js)"

@@ -11,13 +11,12 @@ use tokio_util::sync::CancellationToken;
 use super::capabilities::ProcessCapabilities;
 use super::hub::Hub;
 use super::process_runner::ProcessRegistry;
-use super::pty::PtyManager;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{ActorRegistry, ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
-use crate::protocol::{Content, DebugMode, ProcessMessage};
+use crate::protocol::{Content, ProcessMessage};
 
 /// PP の overall canvas layout を pane_contents に畳む際の reserved pane_id。
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
@@ -26,12 +25,6 @@ pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 /// Application state
 pub(crate) struct AppState {
     pub hub: Hub,
-    /// Cancellation token for current chat request
-    // 要確認（audit 2026-07-18、先行実装の可能性）: 旧 chat request cancellation の残置。read されない。
-    #[allow(dead_code)]
-    pub cancel_token: Arc<RwLock<CancellationToken>>,
-    /// Debug display mode
-    pub debug_mode: DebugMode,
     /// Shutdown signal token
     pub shutdown_token: CancellationToken,
     /// Project directory for Claude agent
@@ -68,10 +61,6 @@ pub(crate) struct AppState {
     pub hub_worlds: crate::daemon::hub_client::HubWorldsCache,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
-    /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
-    // 要確認（audit 2026-07-18、先行実装の可能性）: レガシー PtyManager。構築されるが read されない。
-    #[allow(dead_code)]
-    pub pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
     /// Processの待ち受けポート番号
     pub port: u16,
     /// ファイル監視マネージャー
@@ -110,14 +99,10 @@ pub(crate) struct AppState {
     /// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。
     /// caller (lane_spawn_actor / routes/lanes / restart_lane / lifecycle monitor) が
     /// `state.system_event_tx.send(SystemEvent::Lane(LaneDiff::*))` 等で publish、
-    /// `spawn_world_uplink` subscriber が QUIC registry channel で TheWorld に push する経路。
+    /// project の lanes publish task (`publish_lanes`) が subscribe して World の集約 view を
+    /// 更新する経路（doc 44 P1 fold-in で旧 `spawn_world_uplink` の QUIC push から置換）。
     /// 将来 Pane / Stand / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
     pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
-    /// Project scope の Stand pool (PP / GE / HP) — Phase A4-2b minimum、skeleton
-    /// 関連 memory: 「多 scope architecture」rule (2026-04-27、 PR-pre2/PR-β-2 で supersede 予定)
-    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton pool。read されない。
-    #[allow(dead_code)]
-    pub project_stands: Arc<RwLock<super::project_stands_state::ProjectStandsPool>>,
     /// World 階層 Stand container (LSCM、 PR-α series / VP-109)。
     ///
     /// World mode (`run_world`) でのみ Some、 SP mode (`run`) では None。
@@ -204,48 +189,6 @@ impl AppState {
                 );
                 false
             }
-        }
-    }
-
-    /// Send debug info to connected clients
-    pub fn send_debug(&self, category: &str, message: &str, data: Option<serde_json::Value>) {
-        if self.debug_mode == DebugMode::None {
-            return;
-        }
-
-        // For simple mode, skip detail-level messages
-        if self.debug_mode == DebugMode::Simple && data.is_some() {
-            // Still send but without detailed data
-            self.hub.broadcast(ProcessMessage::DebugInfo {
-                level: DebugMode::Simple,
-                category: category.to_string(),
-                message: message.to_string(),
-                data: None,
-                tags: vec![],
-            });
-        } else {
-            self.hub.broadcast(ProcessMessage::DebugInfo {
-                level: self.debug_mode,
-                category: category.to_string(),
-                message: message.to_string(),
-                data,
-                tags: vec![],
-            });
-        }
-    }
-
-    /// Send debug info only in detail mode
-    // CLAUDE.md documented debug API（デバッグモード §）。mako 2026-07-18 温存決定。
-    #[allow(dead_code)]
-    pub fn send_debug_detail(&self, category: &str, message: &str, data: serde_json::Value) {
-        if self.debug_mode == DebugMode::Detail {
-            self.hub.broadcast(ProcessMessage::DebugInfo {
-                level: DebugMode::Detail,
-                category: category.to_string(),
-                message: message.to_string(),
-                data: Some(data),
-                tags: vec![],
-            });
         }
     }
 
@@ -398,9 +341,7 @@ pub(crate) async fn build_test_app_state(
     use super::capabilities::CapabilityConfig;
     use super::lane_capabilities::LaneCapabilitiesPool;
     use super::lanes_state::LanePool;
-    use super::project_stands_state::ProjectStandsPool;
     use crate::capability::WireNotifier;
-    use crate::protocol::DebugMode;
 
     let capabilities = Arc::new(
         ProcessCapabilities::new(CapabilityConfig {
@@ -411,8 +352,6 @@ pub(crate) async fn build_test_app_state(
 
     Arc::new(AppState {
         hub: Hub::new(),
-        cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
-        debug_mode: DebugMode::None,
         shutdown_token: CancellationToken::new(),
         project_dir: String::new(),
         project_name: String::new(),
@@ -423,7 +362,6 @@ pub(crate) async fn build_test_app_state(
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_worlds: crate::daemon::hub_client::HubWorldsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
-        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "test".to_string(),
@@ -437,7 +375,6 @@ pub(crate) async fn build_test_app_state(
         delivery_notify: Arc::new(tokio::sync::Notify::new()),
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        project_stands: Arc::new(RwLock::new(ProjectStandsPool::new())),
         world_capabilities: None,
         lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),

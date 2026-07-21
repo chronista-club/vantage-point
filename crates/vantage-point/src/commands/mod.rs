@@ -14,14 +14,11 @@ pub mod lane_ctl;
 #[cfg(feature = "midi")]
 pub mod midi;
 pub mod pane;
-pub mod port;
 pub mod process_client;
 pub mod projects;
-pub mod restart;
 pub mod restart_all;
 #[cfg(feature = "midi")]
 pub mod roto_control;
-pub mod sp;
 pub mod sync;
 pub mod update;
 pub mod wire;

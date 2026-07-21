@@ -1,12 +1,12 @@
 /**
  * vp-app WebView 用 entry point.
  *
- * SolidJS + @chronista-club/creoui-editor-host を bundle して、main WebView の `<div id="editor-root">`
+ * SolidJS + @chronista-club/creo-ui-editor-host を bundle して、main WebView の `<div id="editor-root">`
  * に EditorLayer を mount する。
  *
- * 起動: Ctrl+Shift+E で Editor Mode が toggle される (@chronista-club/creoui-editor-host の default keybind)。
+ * 起動: Ctrl+Shift+E で Editor Mode が toggle される (@chronista-club/creo-ui-editor-host の default keybind)。
  *
- * 主要 features (@chronista-club/creoui-editor-host から継承):
+ * 主要 features (@chronista-club/creo-ui-editor-host から継承):
  * - DOM auto-discover: 既知の CSS 変数 (--typography-family-mono など) を自動 bind
  * - DevTools Console REPL: window.creoEditor.slider(...) 等で field 動的追加
  * - URL shareable state: #creo=... で URL 1 本で共有
@@ -89,7 +89,7 @@ import {
 	cssVarNumberTarget,
 	cssVarTarget,
 	number,
-} from "@chronista-club/creoui-editor-host";
+} from "@chronista-club/creo-ui-editor-host";
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
@@ -192,9 +192,9 @@ interface SetActivePaneInfo {
 	branch?: string | null;
 	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
 	session_id?: string | null;
-	/** root session の stand（= 床に載る engine 種別、chip prefix 導出用: "echoes" / "codex" /
+	/** root session の stand（= slot に載る engine 種別、chip prefix 導出用: "echoes" / "codex" /
 	 *  "grok" 等）。doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決
-	 *  済み（cross-engine root でも chip prefix が床の engine を映す）。無ければ lane 固定 stand。 */
+	 *  済み（cross-engine root でも chip prefix が slot の engine を映す）。無ければ lane 固定 stand。 */
 	stand?: string | null;
 }
 
@@ -586,7 +586,7 @@ if (paneTerminal) {
 	});
 
 	// New Session ボタン（doc 39 §4）: 「今いる Act に出す」非破壊の New。
-	//  - Act I（tui lane）: 新 session + root 張り替え + 床 bare respawn（旧会話はタブに残存）
+	//  - Act I（tui lane）: 新 session + root 張り替え + slot の bare respawn（旧会話はタブに残存）
 	//  - Act II（chat lane）: 新 Draft タブ + focus（従来どおり）
 	// 分岐は Rust（ConsoleNewSession の lane_is_chat）が行う。旧実装の 2 クリック armed 防爆は
 	// New が破壊的（fresh restart = 全会話破棄）だった時代の名残 — 非破壊化で不要になり撤去し、

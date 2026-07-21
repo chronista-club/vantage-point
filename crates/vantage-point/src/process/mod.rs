@@ -30,14 +30,14 @@ pub(crate) mod lane_stand;
 pub(crate) mod lanes_state;
 pub mod process_runner;
 /// Project scope の Stand pool (PP / GE / HP)
+pub(crate) mod project_registry;
 pub(crate) mod project_stands_state;
-pub mod pty;
 pub(crate) mod retained;
 // L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
 // `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
 pub(crate) mod routes;
 mod server;
-/// StandSpawner — Stand 名 → 床 (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
+/// StandSpawner — Stand 名 → slot (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
 pub(crate) mod stand_spawner;
 pub(crate) mod state;
 pub(crate) mod terminal_pump;
@@ -47,4 +47,6 @@ pub(crate) mod unison_server;
 pub(crate) mod world_wire;
 
 pub use capabilities::CapabilityConfig;
-pub use server::{run, run_world};
+// doc 44 P1 (fold-in): `run`（SP プロセスとしての実行）は退役。project は World の
+// `run_world` が in-process で起こす（`ProjectRuntimes::start` → `start_project`）。
+pub use server::run_world;

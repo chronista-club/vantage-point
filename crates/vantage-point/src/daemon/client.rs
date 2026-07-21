@@ -212,6 +212,12 @@ impl DaemonClient {
 /// one-shot CLI の projects 操作はそれらが不要なので world-control のみ open する。
 pub struct WorldControlClient {
     ch: UnisonChannel,
+    /// 稼働 project の read-only 照会用（`registry.list`）。
+    ///
+    /// 同一 QUIC connection 上の別 stream として open する（Unison の multiplex）。
+    /// processes 一覧のために別接続を張らずに済ませるための同居で、古い daemon で
+    /// channel 不在なら `None`（呼び出し時に error 化）。
+    registry_ch: Option<UnisonChannel>,
     #[allow(dead_code)]
     addr: String,
 }
@@ -232,7 +238,13 @@ impl WorldControlClient {
                     let ch = client.open_channel("world-control").await.map_err(|e| {
                         anyhow::anyhow!("world-control チャネルオープン失敗: {}", e)
                     })?;
-                    return Ok(Self { ch, addr });
+                    // registry は best-effort（古い daemon で不在なら None）。
+                    let registry_ch = client.open_channel("registry").await.ok();
+                    return Ok(Self {
+                        ch,
+                        registry_ch,
+                        addr,
+                    });
                 }
                 Err(_) if attempt < retries - 1 => {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -311,6 +323,55 @@ impl WorldControlClient {
         self.call("projects/reorder", serde_json::json!({ "paths": paths }))
             .await?;
         Ok(())
+    }
+
+    /// project を起動する (旧 `vp sp start` の後継)。
+    ///
+    /// doc 44 P1 (fold-in): project は World プロセス内の `Arc<AppState>` なので、
+    /// 「起動」は子プロセス spawn ではなく World の registry への登録を意味する。
+    /// 既に起動済みなら World 側で no-op になる (二重起動は map のキー一意性が防ぐ)。
+    pub async fn projects_start(&self, name: &str) -> Result<serde_json::Value> {
+        self.call("projects/start", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    /// project を停止する (旧 `vp sp stop` の後継)。
+    pub async fn projects_stop(&self, name: &str) -> Result<()> {
+        self.call("projects/stop", serde_json::json!({ "name": name }))
+            .await?;
+        Ok(())
+    }
+
+    /// 全 project 横断の lane 一覧（`vp ps` の LANES / STATUS 列の source）。
+    ///
+    /// 返るのは `LaneInfo` の JSON 配列。個別 lane の詳細操作は process-proxy 経由。
+    pub async fn lanes_list(&self) -> Result<Vec<serde_json::Value>> {
+        let resp = self.call("lanes/list", serde_json::json!({})).await?;
+        Ok(resp
+            .get("lanes")
+            .and_then(|l| l.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// 稼働中 project の snapshot（`registry.list`）。
+    ///
+    /// 各要素は `{project_name, port, pid, project_path}`。fold-in 後は port=0 /
+    /// pid=World 自身なので、意味を持つのは name と path（doc 44 §5.3）。
+    pub async fn processes_list(&self) -> Result<Vec<serde_json::Value>> {
+        let ch = self
+            .registry_ch
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("registry チャネル不在 (daemon バイナリが古い)"))?;
+        let resp = ch
+            .request::<serde_json::Value, serde_json::Value>("list", &serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("registry.list 失敗: {}", e))?;
+        Ok(resp
+            .get("processes")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default())
     }
 
     /// chronista-hub registry の world 一覧を取得する（TheWorld 経由で `worlds.Discover` を proxy）。

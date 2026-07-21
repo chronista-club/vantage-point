@@ -3,9 +3,6 @@
 //! インスタンス管理、デバッグ設定、ユーティリティ関数を提供する。
 
 use anyhow::Result;
-use clap::ValueEnum;
-
-use crate::protocol::DebugMode;
 
 /// World daemon (:32000) の `/api/health` レスポンス parser。
 ///
@@ -21,89 +18,6 @@ pub struct HealthResponse {
     pub project_dir: Option<String>,
 }
 
-/// 指定 port の SP を停止する (registry PID + World process-proxy graceful shutdown + force_kill)。
-///
-/// SP-portless: PID は World registry (`discovery::list`) から引き、 graceful は World :32000
-/// process-proxy "shutdown" (`world_process_request`、 reverse-routing で SP control channel に届く)
-/// で送る。 timeout で force_kill にフォールバック。 `restart-all` / `stop_by_target` が共有。
-pub async fn stop_process(port: u16) -> Result<()> {
-    let info = crate::discovery::list()
-        .await
-        .into_iter()
-        .find(|p| p.port == port);
-    let Some(info) = info else {
-        println!("✗ port {} に稼働 SP が registry に居ません", port);
-        return Ok(());
-    };
-    let pid = info.pid;
-
-    println!("Stopping vp (PID: {})...", pid);
-
-    // SP-portless: graceful shutdown を World :32000 process-proxy "shutdown" 経由で送る
-    // (best-effort)。SP は QUIC listen を持たないため、World が reverse-routing (control
-    // channel) で SP に "shutdown" を届ける。無応答でも下の force_kill fallback で確実に停止する。
-    let _ = crate::commands::process_client::world_process_request(
-        world_port(),
-        &info.project_dir,
-        "shutdown",
-        serde_json::json!({}),
-    )
-    .await;
-
-    // graceful 完了を待ち、 timeout で force_kill にフォールバック
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(10);
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        if !is_process_running(pid) {
-            println!("✓ vp stopped gracefully");
-            return Ok(());
-        }
-        if start.elapsed() > timeout {
-            println!("⚠ Graceful shutdown timed out, forcing kill...");
-            force_kill(pid);
-            println!("✓ vp force killed");
-            return Ok(());
-        }
-    }
-}
-
-/// Check if a process is still running
-#[cfg(unix)]
-pub fn is_process_running(pid: u32) -> bool {
-    use std::process::Command;
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-pub fn is_process_running(_pid: u32) -> bool {
-    false
-}
-
-/// Force kill a process
-#[cfg(unix)]
-pub fn force_kill(pid: u32) {
-    use std::process::Command;
-    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-}
-
-#[cfg(not(unix))]
-pub fn force_kill(_pid: u32) {}
-
-/// Default port range to scan for instances.
-///
-/// VP-133 (2026-05-06) で 33010 → 33024 に拡張 (= 25 ports、 上限 max)。 旧 11 ports
-/// では同時開発 project が増えると枯渇 + start_process の port allocator が「searching for
-/// available port」 で別 port 選択 → multi-port spawn を誘発するリスクが上昇していた。
-/// 25 まで拡張で実用 project 数 (~10-15) に対し十分な margin を確保、 reconcile dedup と
-/// 組合せて安定運用へ。
-pub const PORT_RANGE_START: u16 = 33000;
-pub const PORT_RANGE_END: u16 = 33024;
-
 /// TheWorld（Daemon 統合）のデフォルトポート。
 ///
 /// VP_PROFILE 分離 (dev/brew 混在根治): brew=32000 / dev=32100。 SP portless なので実 listener は
@@ -113,34 +27,88 @@ pub fn world_port() -> u16 {
     vp_paths::default_world_port()
 }
 
-/// 稼働中インスタンスをプロジェクト名ベースで一覧表示する。
+/// 稼働中 project を一覧表示する（`vp ps`）。
 ///
-/// L0 finale: SP は HTTP listener を持たないため真実源は World registry (`discovery::list` =
-/// World :32000 が QUIC 自己登録から維持する稼働 SP 一覧)。 旧 TCP port-scan (`scan_instances`) は撤去。
+/// 真実源は World registry（`discovery::list` = World :32000 が維持する稼働 project 一覧）。
+///
+/// # 列の意味論（doc 44 §5.3）
+///
+/// fold-in で **PORT / PID 列は情報量を失った** — project は World と同一プロセスなので
+/// pid は全行 World 自身、port は listen しないので常に 0 になる。どちらも
+/// 「project = プロセス」という前提の上にあった表示で、その前提を fold-in が消した。
+///
+/// 代わりに project 間の実体的な差である **LANES（何本のラインを抱えているか）** と
+/// **STATUS（そのうち動いているものがあるか = active / idle）** を出す。
+/// lane 個別の詳細（kind / stand / pid / state）は `vp lane` が持つ。
 pub fn list_instances(config: &crate::config::Config) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let instances = crate::discovery::list().await;
-        if instances.is_empty() {
-            println!("No running vp instances found.");
+        // control plane は Unison に寄せる方針（KDL schema + drift テスト + MCP tool 合成が
+        // 付いてくる）。processes / lanes とも 1 接続の別 stream で引く。
+        let client = crate::daemon::client::WorldControlClient::connect(world_port(), 3)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "World daemon (port {}) に接続できません。 `vp daemon start` で起動してください: {}",
+                    world_port(),
+                    e
+                )
+            })?;
+
+        // processes 取得の失敗は「project ゼロ」と意味が違う（daemon 障害 / registry stream
+        // 不通）。握り潰すと 14 project 稼働中でも「project なし」と誤誘導するため、明示的に
+        // エラーとして上げる。lanes は失敗しても LANES 列を `-` に degrade できる（下参照）。
+        let processes = client.processes_list().await.map_err(|e| {
+            anyhow::anyhow!("稼働 project の取得に失敗しました（daemon に届いていない可能性）: {e}")
+        })?;
+        if processes.is_empty() {
+            println!("No running projects found.");
             return Ok(());
         }
+        // lanes は取れなくても project 一覧は出す。失敗時は空集計 → 各行 LANES=`-`。
+        let lane_counts = match client.lanes_list().await {
+            Ok(lanes) => crate::discovery::count_lanes_by_project_entries(&lanes),
+            Err(e) => {
+                eprintln!("⚠ lane 一覧の取得に失敗（LANES は - で表示）: {e}");
+                Default::default()
+            }
+        };
+        let instances: Vec<String> = processes
+            .iter()
+            .filter_map(|p| {
+                p.get("project_path")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
 
         let cwd = std::env::current_dir()
             .ok()
             .and_then(|p| dunce::canonicalize(&p).ok())
             .map(|p| p.display().to_string());
 
-        println!();
-        println!("  {:<18} {:<7} {:<7} STATUS", "PROJECT", "PORT", "PID");
-        println!("  {:<18} {:<7} {:<7} ──────", "───────", "────", "───");
+        // project 名は長さの幅が大きい（`claude-plugin-chronista-style` = 29 文字）ので、
+        // 固定幅だと溢れて LANES 列がずれる。実データから列幅を決める。
+        let names: Vec<String> = instances
+            .iter()
+            .map(|path| crate::resolve::project_name_from_path(path, config))
+            .collect();
+        let w = names
+            .iter()
+            .map(|n| n.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max("PROJECT".len());
 
-        for inst in &instances {
-            let name = crate::resolve::project_name_from_path(&inst.project_dir, config);
+        println!();
+        println!("  {:<w$} {:>5}  STATUS", "PROJECT", "LANES");
+        println!("  {:<w$} {:>5}  ──────", "─".repeat(w), "─────");
+
+        for (inst, name) in instances.iter().zip(&names) {
             let is_cwd = if let Some(cwd_str) = &cwd {
-                let canonical_proj = dunce::canonicalize(&inst.project_dir)
+                let canonical_proj = dunce::canonicalize(inst)
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| inst.project_dir.clone());
+                    .unwrap_or_else(|_| inst.clone());
                 // separator は OS 依存 (Windows は `\`)。 `/` 決め打ちだと Windows で
                 // 子ディレクトリからの `← cwd` マーカーが出ない。
                 let prefix = format!("{}{}", canonical_proj, std::path::MAIN_SEPARATOR);
@@ -149,92 +117,34 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
                 false
             };
             let marker = if is_cwd { "  ← cwd" } else { "" };
-            println!(
-                "  {:<18} {:<7} {:<7} running{}",
-                name, inst.port, inst.pid, marker
-            );
+            // World に問い合わせできなかった場合は lane 数不明として `-` を出す
+            // （project 一覧そのものは出せるべきなので、lane 取得失敗で表を潰さない）。
+            let (lanes, status) = match lane_counts.get(name) {
+                Some(c) if c.running > 0 => (c.total.to_string(), "active"),
+                Some(c) => (c.total.to_string(), "idle"),
+                None => ("-".to_string(), "idle"),
+            };
+            println!("  {:<w$} {:>5}  {}{}", name, lanes, status, marker);
         }
         println!();
-        println!("Use: vp open <project-name>");
+        println!("詳細: vp lane list");
         Ok(())
     })
 }
 
-/// ターゲット指定で WebUI を開く
-pub fn open_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
-    use crate::resolve::{self, ResolvedTarget};
-
-    let resolved = resolve::resolve_target(target, config)?;
-
-    match resolved {
-        ResolvedTarget::Running { port, name, .. } => {
-            let url = format!("http://localhost:{}", port);
-            println!("Opening {} ({})...", name, url);
-
-            if let Err(e) = open::that(&url) {
-                println!("\u{2717} Failed to open browser: {}", e);
-            } else {
-                println!("\u{2713} Opened in browser");
-            }
-        }
-        ResolvedTarget::Configured { name, .. } => {
-            println!(
-                "\u{2717} '{}' is not running. Use `vp sp start` first.",
-                name
-            );
-        }
-        ResolvedTarget::Cwd { .. } => {
-            println!("\u{2717} No running Process found for current directory.");
-            println!("  Use `vp sp start` to start a new SP server.");
-        }
-    }
-
-    Ok(())
-}
-
-/// ターゲット指定で Process を停止
-pub fn stop_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
-    use crate::resolve::{self, ResolvedTarget};
-
-    let resolved = resolve::resolve_target(target, config)?;
-
-    match resolved {
-        ResolvedTarget::Running { port, name, .. } => {
-            println!("Stopping: {} (port {})", name, port);
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(stop_process(port))
-        }
-        ResolvedTarget::Configured { name, .. } => {
-            println!("\u{2717} '{}' is not running.", name);
-            Ok(())
-        }
-        ResolvedTarget::Cwd { .. } => {
-            println!("\u{2717} No running Process found for current directory.");
-            Ok(())
-        }
-    }
-}
-
-/// CLIデバッグモード
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub enum DebugModeArg {
-    /// デバッグ情報なし
+/// tracing verbosity レベル（`VANTAGE_DEBUG=none|simple|detail` 用）。
+///
+/// doc 44 P1 (fold-in): 旧 `protocol::DebugMode` は「-d デバッグパネル」と「VANTAGE_DEBUG
+/// ログ詳細度」の 2 用途を兼ねていた。前者（DebugInfo broadcast / 旧 WebUI パネル）は
+/// end-to-end で dead だったため撤去し、生きている後者（tracing レベル選択）だけを
+/// ここへローカル化した。none→warn / simple→info / detail→debug に対応する。
+/// wire には乗らないので serde 不要。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugMode {
     #[default]
     None,
-    /// 簡易デバッグ（セッションID、タイミング）
     Simple,
-    /// 詳細デバッグ（JSON全体、全イベント）
     Detail,
-}
-
-impl From<DebugModeArg> for DebugMode {
-    fn from(arg: DebugModeArg) -> Self {
-        match arg {
-            DebugModeArg::None => DebugMode::None,
-            DebugModeArg::Simple => DebugMode::Simple,
-            DebugModeArg::Detail => DebugMode::Detail,
-        }
-    }
 }
 
 /// Parse debug mode from environment variable
@@ -260,6 +170,11 @@ pub fn parse_debug_env() -> Option<DebugMode> {
 /// `tui_mode` が true の場合、ログ出力を stderr ではなくファイルにリダイレクト。
 /// TUI (ratatui) の alternate screen にサーバーログが漏れるのを防ぐ。
 pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
+    // panic を log に載せる hook。 subscriber より先に install してよい (hook が発火するのは
+    // 実行時 = subscriber 設置後)。 tokio task 内 panic が無言で機能を殺す既存問題への
+    // 最小の対処 — cf. `crate::panic_hook` の module doc。
+    crate::panic_hook::install();
+
     // daemon ログローテーション設定。 vp-app 側の `log_init::LOG_MAX_BYTES` /
     // `LOG_KEEP_FILES` と同値に保つこと (2 crate に依存関係が無いため定数を物理共有できず、
     // 各 crate に複製している。 恒久的には vp-paths へ寄せる候補 = Observability Phase B)。

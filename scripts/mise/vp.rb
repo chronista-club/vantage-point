@@ -102,39 +102,11 @@ module VP
 
   # 走っている SP の PID 一覧。
   #
-  # shell を経由せず引数配列で pgrep を回す: `pkill -f PATTERN` を shell 越しに撃つと
-  # **pkill を走らせている shell 自身の cmdline にパターンが載る**ため親 shell を巻き添えにする
-  # （古典的 footgun）。 配列形なら shell が挟まらない。
-  #
-  # ⚠️ pgrep は **呼び出し元の祖先を除外**する（自殺防止）。 よって VP の lane の中から呼ぶと
-  # 「自分を載せている SP」だけは返らない（2026-07-14 実測）。 それは安全機構だが、
-  # 「全 SP を落としたつもり」の取りこぼしにもなるので、 呼び手は [`ancestor_sp_pid`] で
-  # 取りこぼしを検出して警告すること。
-  def sp_pids
-    IO.popen(["pgrep", "-f", "vp sp start"], &:read).split.map(&:to_i)
-  rescue Errno::ENOENT
-    []
-  end
-
-  # 自分を載せている SP の PID（VP の lane の中から実行された場合）。 居なければ nil。
-  # 祖先を辿って `vp sp start` を探す（pgrep では取れないため ps で親を辿る）。
-  def ancestor_sp_pid
-    return nil if windows?
-
-    pid = Process.pid
-    8.times do
-      ppid = IO.popen(["ps", "-p", pid.to_s, "-o", "ppid="], &:read).strip.to_i
-      break if ppid <= 1
-
-      cmd = IO.popen(["ps", "-p", ppid.to_s, "-o", "command="], &:read).strip
-      return ppid if cmd.include?("vp sp start")
-
-      pid = ppid
-    end
-    nil
-  rescue StandardError
-    nil
-  end
+  # doc 44 P1 (fold-in): `sp_pids` / `ancestor_sp_pid` は撤去した。
+  # project が World プロセス内の Arc<AppState> になり、独立した SP プロセスが
+  # 存在しなくなったため、`pgrep -f 'vp sp start'` は永久に 0 件マッチだった
+  # (= 呼び手が「SP は居ない」と誤認する silent no-op)。
+  # 「自分が VP の lane の中にいるか」を知りたい場合は ENV["VP_LANE"] を見ること。
 
   # VP の log 出力先 (daemon:start が書き、 logs が tail する共通 dir)。
   # XDG_STATE_HOME → ~/.local/state を基底に vp/log。 VP_LOG_DIR で上書き可。

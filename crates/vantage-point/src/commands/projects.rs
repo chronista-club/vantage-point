@@ -36,6 +36,19 @@ pub enum ProjectsCommands {
     Disable { path: String },
     /// 並び順を変更 (path を順に列挙)
     Reorder { paths: Vec<String> },
+    /// project を起動する (旧 `vp sp start`)
+    ///
+    /// doc 44 P1 (fold-in): project は World プロセス内で動くため、これは子プロセスの
+    /// spawn ではなく World の registry への登録。既に起動済みなら no-op。
+    Start {
+        /// project 名 (`vp projects list` の名前)
+        name: String,
+    },
+    /// project を停止する (旧 `vp sp stop`)
+    Stop {
+        /// project 名
+        name: String,
+    },
 }
 
 /// `vp projects` のエントリポイント。 async (Unison client は async) なので
@@ -106,6 +119,17 @@ pub async fn execute(cmd: ProjectsCommands) -> Result<()> {
         ProjectsCommands::Reorder { paths } => {
             client.projects_reorder(&paths).await?;
             println!("並び替え: {} 件", paths.len());
+            Ok(())
+        }
+        ProjectsCommands::Start { name } => {
+            let resp = client.projects_start(&name).await?;
+            let path = resp.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("起動: {} ({})", name, path);
+            Ok(())
+        }
+        ProjectsCommands::Stop { name } => {
+            client.projects_stop(&name).await?;
+            println!("停止: {}", name);
             Ok(())
         }
     }

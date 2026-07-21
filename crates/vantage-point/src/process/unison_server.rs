@@ -1097,7 +1097,7 @@ async fn handle_echoes_session_create(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
-/// doc 38: focused session の切替。`{lane, session}`。registry 永続のみ（床への注入 /
+/// doc 38: focused session の切替。`{lane, session}`。registry 永続のみ（slot への注入 /
 /// eager resume spawn は Phase 3 の attach 状態機械で束ねて実装）。
 async fn handle_echoes_session_focus(
     state: &AppState,
@@ -1150,10 +1150,10 @@ async fn handle_echoes_session_remove(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
 }
 
-/// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向け、床を素の engine で
+/// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向け、slot を素の engine で
 /// 張り替える（= Root 切替「✨ 新 ID から」の shorthand。旧 root の会話はタブに残存 = 非破壊）。
 /// `{lane}` → `{lane, session}`。mode=Tui 限定（chat lane の New は echoes_session_create —
-/// 「今いる Act に出す」の分岐は vp-app が担う）。床の spawn は restart 経路
+/// 「今いる Act に出す」の分岐は vp-app が担う）。slot の spawn は restart 経路
 ///（retry / pump 付替 / Diff push 込み）を [`RespawnMode::Bare`] で再利用する — 第 2 の
 /// spawn 経路を作らない。
 ///
@@ -1174,7 +1174,7 @@ async fn handle_echoes_session_new_root(
         .await
         .prepare_new_root_session(&addr)
         .map_err(|e| format!("echoes_session_new_root: {e}"))?;
-    // registry は新 root へ切替済み（原子的な 1 save）。以降の床張り替えが失敗しても registry は
+    // registry は新 root へ切替済み（原子的な 1 save）。以降の slot 張り替えが失敗しても registry は
     // 先行して整合 — 次の respawn / restart（Resume 経路）でも未発話の非 #1 root は
     // build_stand_command が bare に倒すため（--continue 混入防止）、新 root の新品として
     // 立ち直る。Err は spawn 失敗として caller に返す。
@@ -1187,10 +1187,10 @@ async fn handle_echoes_session_new_root(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
-/// doc 39 P3: Root 切替 picker — root を既存 session へ向け替え、床をその session の store で
+/// doc 39 P3: Root 切替 picker — root を既存 session へ向け替え、slot をその session の store で
 /// resume 張り替えする（`{lane, session}` → `{lane, session}`）。旧 root の会話はタブに残存 =
 /// 非破壊。mode=Tui 限定。new_root（Bare = 素の engine）との違いは respawn が
-/// [`RespawnMode::Resume`]（対象 session の会話に床が化身する）である点のみ。
+/// [`RespawnMode::Resume`]（対象 session の会話に slot が化身する）である点のみ。
 ///
 /// [`RespawnMode::Resume`]: crate::process::lanes_state::RespawnMode::Resume
 async fn handle_echoes_session_switch_root(
@@ -1214,7 +1214,7 @@ async fn handle_echoes_session_switch_root(
         .await
         .prepare_switch_root_session(&addr, key)
         .map_err(|e| format!("echoes_session_switch_root: {e}"))?;
-    // registry は切替済み（1 save 原子）。床張り替えが失敗しても registry は先行して整合 —
+    // registry は切替済み（1 save 原子）。slot 張り替えが失敗しても registry は先行して整合 —
     // 次の respawn / restart（Resume 経路）で同じ root に立ち直る。
     super::routes::lanes::restart_lane_orchestrated(
         state,
@@ -1360,10 +1360,10 @@ async fn handle_console_set_model(
         let info = pool
             .get(&addr)
             .ok_or_else(|| format!("console_set_model: Lane not found: {lane}"))?;
-        // doc 39 P4-A: 床に載る engine は lane 作成時固定の `info.stand` ではなく **root session の
+        // doc 39 P4-A: slot に載る engine は lane 作成時固定の `info.stand` ではなく **root session の
         // stand**（cross-engine root 切替 #812 で lane stand と食い違う）。model 切替の可否も
-        // 床の engine で判定しないと、picker で root を claude に向けても「lane stand は codex
-        // だから不可」の誤判定が出る。stand_spawner の床 spawn（`build_stand_command`）と同じ
+        // slot の engine で判定しないと、picker で root を claude に向けても「lane stand は codex
+        // だから不可」の誤判定が出る。stand_spawner の slot spawn（`build_stand_command`）と同じ
         // root-stand 解決に揃える（root entry 不在 = registry 破損は N=1 既定形で info.stand へ fallback）。
         let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
         let reg = crate::lane::session_registry::load(&addr.project, &lane_label, &info.stand);
@@ -1678,9 +1678,9 @@ pub(crate) async fn dispatch_process_method(
         // Phase 2 の tab strip はこの 3 本 + 既存 RPC の additive session param だけで成立する。
         "echoes_session_list" => handle_echoes_session_list(state, payload).await,
         "echoes_session_create" => handle_echoes_session_create(state, payload).await,
-        // doc 39 §4: Act I の ✨ New（新 session + root 張り替え + 床 bare respawn、非破壊）
+        // doc 39 §4: Act I の ✨ New（新 session + root 張り替え + slot の bare respawn、非破壊）
         "echoes_session_new_root" => handle_echoes_session_new_root(state, payload).await,
-        // doc 39 P3: Root 切替 picker（既存 session へ root を向け替え + Resume 床張り替え）
+        // doc 39 P3: Root 切替 picker（既存 session へ root を向け替え + Resume slot 張り替え）
         "echoes_session_switch_root" => handle_echoes_session_switch_root(state, payload).await,
         "echoes_session_focus" => handle_echoes_session_focus(state, payload).await,
         // doc 38 Phase 3: tab を閉じる（session remove）。
@@ -2530,8 +2530,8 @@ mod tests {
     }
 
     /// doc 39 P4-A: console_set_model の可否判定は lane 固定 stand ではなく **root session の
-    /// stand**（床の engine）で決まる。cross-engine root（#812）で lane stand と食い違っても、
-    /// picker で床に立てた engine の能力に追従することを両方向で固定する。
+    /// stand**（slot の engine）で決まる。cross-engine root（#812）で lane stand と食い違っても、
+    /// picker で slot に立てた engine の能力に追従することを両方向で固定する。
     #[tokio::test]
     async fn console_set_model_gates_on_root_session_stand() {
         use super::dispatch_process_method;

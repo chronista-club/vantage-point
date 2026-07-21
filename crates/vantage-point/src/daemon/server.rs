@@ -21,7 +21,12 @@ use crate::capability::{ProcessPresenceState, RunningProcess};
 /// daemon server の process-proxy / registry handler が populate し、 canvas/terminal_write の
 /// reverse-routing に使う。 tmux decoupling PR1: World-side の nudge loop（delivery_actor /
 /// delegation reconcile）も同一 map を引いて `lane_nudge` を所有 SP に forward する（SSOT はここ）。
-pub(crate) type ControlChannels = Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>;
+/// doc 44 P1 (fold-in): 旧 SP control channel registry (`path_key` → QUIC channel) の後継。
+///
+/// SP プロセスが消えたので「どう話すか」は QUIC channel ではなく **World 内の
+/// `Arc<AppState>` を引くこと**になった。型名は呼び出し側の意味 (= project へ話す口) を
+/// 保つため据え置き、指す先だけを差し替えている。
+pub(crate) type ControlChannels = Arc<crate::process::project_registry::ProjectRuntimes>;
 
 /// Daemon の共有状態
 pub struct DaemonState {
@@ -78,14 +83,17 @@ pub struct DaemonState {
     #[allow(clippy::type_complexity)]
     pub canvas_routers:
         Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
-    /// L0 SP-portless (control slice): project ごとの SP "control" channel handle。
+    /// project ごとの実行状態 registry（旧「SP control channel handle」の後継）。
     ///
-    /// 各 SP が起動時に "control" channel で World に outbound 接続し (`spawn_world_uplink`)、
-    /// World はその `UnisonChannel` を path_key で保持する。 "process-proxy" channel 経由で来た
-    /// 外部 client (MCP/CLI) の process 操作を、 この handle を**逆用** (`request()`) して当該 SP に
-    /// forward する (= World→SP reverse-routing)。 UnisonChannel は双方向対称なので、 SP が QUIC
-    /// client でありながら本接続上で RPC server として振る舞える。 SP 切断で除去 (= reverse 不能)。
-    pub control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    /// doc 44 P1 (fold-in) 以前: 各 SP が起動時に "control" channel で World に outbound 接続し、
+    /// World はその `UnisonChannel` を path_key で保持していた。"process-proxy" 経由で来た外部
+    /// client (MCP/CLI) の process 操作は、この handle を**逆用**して当該 SP に forward していた
+    /// (= World→SP reverse-routing)。SP 切断で handle を除去 = reverse 不能、という寿命だった。
+    ///
+    /// fold-in 後: project は World と同一プロセスの `Arc<AppState>` なので、forward ではなく
+    /// `ProjectRuntimes::dispatch` → `dispatch_process_method` の直呼びになる。「切断」という
+    /// 状態が存在せず、map に居るか居ないかだけになった。
+    pub(crate) control_channels: ControlChannels,
     /// projects 操作の権威 (= CLI → World 直接 Unison "world-control" channel の data plane)。
     ///
     /// HTTP `routes/world.rs` と同一の `ProcessManagerCapability` 実体を Arc 共有し、
@@ -147,7 +155,7 @@ impl Default for DaemonState {
             process_lifecycle_tx,
             lane_change_tx,
             canvas_routers: Arc::new(RwLock::new(HashMap::new())),
-            control_channels: Arc::new(RwLock::new(HashMap::new())),
+            control_channels: Arc::new(crate::process::project_registry::ProjectRuntimes::new()),
             world_cap: None,
             vpdb: None,
             bastet_event_bus: None,
@@ -203,10 +211,7 @@ impl DaemonState {
     /// World-side の nudge loop（delivery_actor / delegation reconcile）も同一 map を引いて
     /// `lane_nudge` を所有 SP に forward するため、 `run_world` が hoist した同一 Arc を
     /// DaemonState と両 loop の双方に注入する（別々に `new()` すると map が分裂して forward 不能）。
-    pub fn with_control_channels(
-        mut self,
-        control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
-    ) -> Self {
+    pub(crate) fn with_control_channels(mut self, control_channels: ControlChannels) -> Self {
         self.control_channels = control_channels;
         self
     }
@@ -353,6 +358,57 @@ async fn handle_world_control(
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "reordered", "count": paths.len()}))
+        }
+        // doc 44 P1 (fold-in): 単一 project の lifecycle 制御。旧 `vp sp start/stop` の後継で、
+        // 名詞を「SP（プロセス）」から「project」へ移した（D2: project はプロセスではなく
+        // World が抱える map のエントリ）。旧 `vp sp start` は project を World の外で
+        // 二重に走らせる口だったが、本 RPC は World 内の registry を操作するため
+        // 二重起動が原理的に表現できない（既に居れば `start` は no-op になる）。
+        "projects/start" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let proc = world_cap
+                .read()
+                .await
+                .start_process(name)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({
+                "status": "started",
+                "name": proc.project_name,
+                "path": proc.project_path.to_string_lossy(),
+            }))
+        }
+        "projects/stop" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .stop_process(name)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "stopped", "name": name}))
+        }
+        // 全 project 横断の lane 一覧（read-only）。
+        //
+        // 従来この面は HTTP `GET /api/world/lanes` にしか無く、CLI は Unison で繋いだ後に
+        // わざわざ HTTP を叩く必要があった。control plane は Unison に寄せる方針（KDL schema +
+        // drift テスト + MCP tool 合成が付いてくる）なので、read 面をここに置く。
+        // project 単位の詳細は process-proxy の `lanes_list` が持つ。
+        "lanes/list" => {
+            let registry = world_cap.read().await.lane_registry_ref();
+            let lanes: Vec<serde_json::Value> = registry
+                .read()
+                .await
+                .values()
+                .flatten()
+                .map(|l| serde_json::to_value(l).unwrap_or(serde_json::Value::Null))
+                .filter(|v| !v.is_null())
+                .collect();
+            Ok(serde_json::json!({ "lanes": lanes }))
         }
         // chronista-hub federation: hub registry に居る world 一覧を取得する。
         // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
@@ -671,10 +727,41 @@ async fn notify_lane_change_for_projects(state: &DaemonState, projects: &[String
 #[allow(clippy::type_complexity)]
 async fn canvas_router_for(
     canvas_routers: &Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
-    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: &ControlChannels,
     path_key: &str,
 ) -> Arc<crate::process::topic_router::TopicRouter> {
-    // fast path: 既存 router を read lock で取得
+    // doc 44 P1 (fold-in): project が起動していれば **その AppState の router が唯一の正**。
+    // pump が route する先と surface が購読する先を同一にするため、cache に別 router が
+    // 載っていたら差し替える（project 起動前に surface が subscribe して placeholder が
+    // 作られていた場合の是正。placeholder には元々データが流れないので失うものは無い）。
+    if let Some(state) = control_channels.get(path_key).await {
+        let live = state.topic_router.clone();
+        {
+            let routers = canvas_routers.read().await;
+            if let Some(existing) = routers.get(path_key)
+                && Arc::ptr_eq(existing, &live)
+            {
+                return live;
+            }
+        }
+        let mut routers = canvas_routers.write().await;
+        // race recheck（他 task が先に差し替えていたらそれを使う）
+        if let Some(existing) = routers.get(path_key)
+            && Arc::ptr_eq(existing, &live)
+        {
+            return live;
+        }
+        tracing::info!(
+            "canvas router を project の実 router に結線 (key={})",
+            path_key
+        );
+        register_terminal_demand(&live, control_channels.clone(), path_key.to_string());
+        register_echoes_demand(&live, control_channels.clone(), path_key.to_string());
+        routers.insert(path_key.to_string(), live.clone());
+        return live;
+    }
+
+    // fast path: 既存 router を read lock で取得（project 未起動時の placeholder 経路）
     if let Some(router) = canvas_routers.read().await.get(path_key) {
         return router.clone();
     }
@@ -684,6 +771,7 @@ async fn canvas_router_for(
     if let Some(router) = routers.get(path_key) {
         return router.clone();
     }
+    // project 未起動時の placeholder。 起動後に上のブロックが実 router へ差し替える。
     let router = Arc::new(crate::process::topic_router::TopicRouter::new());
     register_terminal_demand(&router, control_channels.clone(), path_key.to_string());
     // Act II: chat lane の transcript replay-on-attach（terminal と対称）。
@@ -698,7 +786,7 @@ async fn canvas_router_for(
 /// 当該 SP に control reverse-route で撃つ（Act I: PtySlot の replay + live pump 起動）。
 fn register_terminal_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
-    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: ControlChannels,
     path_key: String,
 ) {
     register_lane_demand(
@@ -718,7 +806,7 @@ fn register_terminal_demand(
 /// （非 retained topic なので、 これが無いと app 再起動後の ChatView が空になる）。
 fn register_echoes_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
-    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: ControlChannels,
     path_key: String,
 ) {
     register_lane_demand(
@@ -738,7 +826,7 @@ fn register_echoes_demand(
 /// 呼ばれるため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
 fn register_lane_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
-    control_channels: Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    control_channels: ControlChannels,
     path_key: String,
     pattern: &str,
     start_method: &'static str,
@@ -754,35 +842,26 @@ fn register_lane_demand(
         let method = if active { start_method } else { stop_method };
         let control_channels = control_channels.clone();
         let path_key = path_key.clone();
+        // doc 44 P1 (fold-in): 旧実装は SP の control channel を逆引きして request を
+        // 撃っていた。 channel 不在（SP 起動前に surface が subscribe した等）は無言で
+        // 捨てられ、 救済は `refire_active_demands` 頼み — この取りこぼしが #817 の
+        // 「Act II が復活しない」の根本原因 1 だった。
+        //
+        // 同一プロセスになった今、 demand は当該 project の dispatch を直接叩く。
+        // 「購読が立った時点で project が居るか」だけが条件になり、 channel 接続状態と
+        // 購読状態が別々に揺れることによるレースが構造的に消える。
         tokio::spawn(async move {
-            let sp_ch = control_channels.read().await.get(&path_key).cloned();
-            match sp_ch {
-                Some(ch) => {
-                    if let Err(e) = ch
-                        .request::<serde_json::Value, serde_json::Value>(
-                            method,
-                            &serde_json::json!({ "lane": lane }),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            "lane demand reverse-route 失敗 ({} lane={}): {}",
-                            method,
-                            lane,
-                            e
-                        );
-                    }
-                }
-                None => {
-                    // SP control channel 未接続 (SP 起動前に surface が subscribe した等)。
-                    // SP 接続時に `refire_active_demands` が撃ち直す (S2 polish)。
-                    tracing::debug!(
-                        "lane demand: SP control channel 不在 (key={}, lane={}, {})",
-                        path_key,
-                        lane,
-                        method
-                    );
-                }
+            let resp = control_channels
+                .dispatch(&path_key, method, &serde_json::json!({ "lane": lane }))
+                .await;
+            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                tracing::warn!(
+                    "lane demand dispatch 失敗 (key={}, lane={}, {}): {}",
+                    path_key,
+                    lane,
+                    method,
+                    err
+                );
             }
         });
     });
@@ -838,26 +917,17 @@ async fn recv_subscribe_handshake_with_pattern(
 /// (S3 terminal_write/terminal_resize) が共有する。 SP 未接続 / forward 失敗は error JSON で
 /// 返し、 caller が `send_response` でそのまま client に relay する。
 pub(crate) async fn forward_to_sp_control(
-    control_channels: &Arc<RwLock<HashMap<String, Arc<UnisonChannel>>>>,
+    runtimes: &ControlChannels,
     path_key: &str,
     method: &str,
     payload: &serde_json::Value,
 ) -> serde_json::Value {
-    let sp_ch = control_channels.read().await.get(path_key).cloned();
-    match sp_ch {
-        Some(sp_ch) => match sp_ch
-            .request::<serde_json::Value, serde_json::Value>(method, payload)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => serde_json::json!({
-                "error": format!("SP forward 失敗 (key={}): {}", path_key, e)
-            }),
-        },
-        None => serde_json::json!({
-            "error": format!("SP 未接続 (key={})", path_key)
-        }),
-    }
+    // doc 44 P1 (fold-in): 旧実装は path_key で SP の QUIC control channel を逆引きし
+    // request を投げていた。SP プロセスが World に畳み込まれた今、同じ dispatch
+    // (`dispatch_process_method`) を **同一プロセス内で直接呼ぶ**。
+    // これで reverse-route の取りこぼし (SP 未接続の無言破棄 / refire の空振りレース /
+    // start・stop の到着順非保証) というバグクラスが発生源ごと消える。
+    runtimes.dispatch(path_key, method, payload).await
 }
 
 /// L0 portless B-4 (wire-unison): "wire" channel の method dispatch。
@@ -1093,8 +1163,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     //   - `subscribe` : push stream、 register/unregister/disconnect の lifecycle event を
     //                   `send_event("event", ProcessLifecycleEvent)` で client に realtime push
     //
-    // 経路: SP register/heartbeat (QUIC Push) → registry channel → process_lifecycle_tx broadcast
+    // 経路: start_process / stop_process (in-process 起動元) → process_lifecycle_tx broadcast
     //       → 本 channel の subscribe handler → client (vp-app / 別 World / 将来 hub gateway)。
+    //   doc 44 P1 (fold-in) 以前は「SP register/heartbeat (QUIC Push) → registry channel」が
+    //   生産者だったが、SP 消滅で in-process の start/stop_process が daemon-canonical に引き継いだ。
     //
     // SSOT 規約: Unison-first。 既存 HTTP /api/health の stands field は legacy fallback として
     // 温存するが、 新規 control plane の主経路は本 channel に集約。
@@ -1344,9 +1416,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "canvas-ingest" Channel（L0 SP-portless canvas slice — SP → World の canvas push 受け口）
     // =========================================================================
-    // 各 SP の canvas pusher (`discovery::spawn_world_uplink`) が paisley-park topic の
-    // ProcessMessage を push する。 World は project ごとの TopicRouter に `route()` して
-    // retained 保持 + 購読者 (= "canvas" channel 経由の vp-app) へ配信する。
+    // doc 44 P1 (fold-in) 以前は、各 SP の canvas pusher (`discovery::spawn_world_uplink`) が
+    // paisley-park topic の ProcessMessage をこの channel に push していた。fold-in 後は
+    // project の TopicRouter を World が直接購読するため、この受け口に来る push は無い
+    // （`canvas_router_for` が project 起動時に実 router へ差し替える）。channel 自体は
+    // 外部からの ingest 口として残置。
     //
     // プロトコル: SP が open_channel("canvas-ingest") → request("subscribe", {project_path}) →
     //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。
@@ -1485,73 +1559,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // "control" Channel（L0 SP-portless control slice — SP の reverse-routing 受け口を登録）
+    // "control" Channel — doc 44 P1 (fold-in) で退役
     // =========================================================================
-    // 各 SP が "control" channel で World に outbound 接続する (`spawn_world_uplink`)。
-    // World は handshake {project_path} 後にその UnisonChannel を control_channels[path_key] に
-    // 保持し、 "process-proxy" channel から逆用 (request) して SP に process 操作を forward する。
-    // 本 handler 自体は channel を保持して接続維持を監視するだけ (request を撃つのは process-proxy)。
-    {
-        let control_channels = state.control_channels.clone();
-        let canvas_routers = state.canvas_routers.clone();
-        server
-            .register_channel("control", {
-                move |_ctx, stream| {
-                    let control_channels = control_channels.clone();
-                    let canvas_routers = canvas_routers.clone();
-                    async move {
-                        let channel = Arc::new(UnisonChannel::new(stream));
-                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
-                            return Ok(());
-                        };
-                        control_channels
-                            .write()
-                            .await
-                            .insert(path_key.clone(), channel.clone());
-                        tracing::info!("Control: SP 登録 (key={})", path_key);
-
-                        // S2 polish: SP (再)接続 catch-up。 SP 起動前に surface が terminal topic を
-                        // subscribe して demand_start を撃った場合、 control channel 不在で reverse-route
-                        // が捨てられている。 SP 登録直後に当該 project の active demand を撃ち直し、
-                        // 取りこぼした pump start を補填する (= SP restart で terminal が暗転しない)。
-                        if let Some(router) = canvas_routers.read().await.get(&path_key) {
-                            router.refire_active_demands();
-                        }
-
-                        // 切断検知まで待つ。 World は本 channel に request を撃つだけで SP は
-                        // event/request を送らないため、 recv() は切断時のみ Err で返る
-                        // (= reverse request の Response は pending 経由で解決され、 ここには来ない)。
-                        loop {
-                            if channel.recv().await.is_err() {
-                                break;
-                            }
-                        }
-                        // 「自分が現行 entry の時のみ」remove する (Arc::ptr_eq guard)。
-                        // 高速再接続 / 重複 SP で新接続の insert が先行した場合、 旧接続の
-                        // 切断 handler が新 live channel を clobber すると nudge / process-proxy
-                        // が「SP 未接続」で静かに全滅し次の再接続まで自己回復しない
-                        // (PR2 review B1 — nudge が本 map に依存するようになったため障害面が拡大)。
-                        {
-                            let mut map = control_channels.write().await;
-                            match map.get(&path_key) {
-                                Some(current) if Arc::ptr_eq(current, &channel) => {
-                                    map.remove(&path_key);
-                                    tracing::info!("Control: SP 除去 (key={})", path_key);
-                                }
-                                _ => {
-                                    tracing::info!(
-                                        "Control: 旧接続の切断を skip — 新接続が登録済み (key={})",
-                                        path_key
-                                    );
-                                }
-                            }
-                        }
-                        Ok(())
-                    }
-                }
-            })
-            .await;
-    }
+    // 旧: 各 SP が outbound で "control" channel を張り、World が UnisonChannel を
+    // control_channels[path_key] に保持して process 操作を reverse-route していた。
+    // SP プロセスが World に畳み込まれたため channel 自体が不要になり、同じ dispatch を
+    // `ProjectRuntimes::dispatch` が in-process で直接呼ぶ。
+    // これに伴い「SP 未接続で無言破棄」「refire_active_demands の空振りレース」
+    // 「高速再接続で旧 handler が新 channel を clobber」の 3 バグクラスが消滅した。
 
     // =========================================================================
     // "process-proxy" Channel（L0 SP-portless control slice — 外部 client → World → SP reverse）
@@ -1749,36 +1764,30 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // Registry Channel（SP 自己登録 — QUIC 永続接続による即時登録・即時死亡検出）
+    // Registry Channel（稼働 project の read-only 照会）
     // =========================================================================
+    //
+    // doc 44 P1 (fold-in) 以前は「SP 自己登録 — QUIC 永続接続による即時登録・即時死亡検出」
+    // の control plane で、register / unregister / heartbeat / lanes/* を受けて World 側の
+    // running_processes / lane_registry / process_presence を維持していた。
+    //
+    // fold-in で project が World プロセス内に入り、自己登録しに来る SP が消滅した。
+    // 上記 state の維持は起動元（`start_process` / `publish_lanes`）が直接行う daemon-canonical
+    // に移ったため、SP 向け method 群と切断時の後始末は撤去した。
+    //
+    // channel 自体は `list`（`vp ps` 相当を MCP / 外部 client から引く read-only 面。
+    // schema/vp-daemon.kdl に記述あり）のために残す。
     if let Some(ref running_processes) = state.running_processes {
         let running_processes = running_processes.clone();
-        let projects = state.projects.clone();
-        // Phase 1b: lane_registry も capture (register payload の lanes を cache する)
-        let lane_registry = state.lane_registry.clone();
-        // L1 lifecycle: SP presence (register→Connected / unregister→Unregistered / 切断→Disconnected)
-        let process_presence = state.process_presence.clone();
-        // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (daemon-canonical 化)。
-        let vpdb = state.vpdb.clone();
-        // VP-154 PR-2: lifecycle event を broadcast する Sender (= "world-process" subscriber へ)
-        let process_lifecycle_tx = state.process_lifecycle_tx.clone();
-        // L0 SP-portless (lanes slice): lane_registry mutate 後に project path_key を流す Sender
-        // (= per-project "lanes" channel subscriber へ realtime 再 push を促す)。
-        let lane_change_tx = state.lane_change_tx.clone();
         server
             .register_channel("registry", {
                 move |_ctx, stream| {
+                    // doc 44 P1 (fold-in): SP 向けの register / unregister / heartbeat /
+                    // lanes/* は撤去した（自己登録しに来る SP プロセスが存在しない）。
+                    // 残るのは read-only の `list` だけなので、依存も running_processes 1 本。
                     let running_processes = running_processes.clone();
-                    let projects = projects.clone();
-                    let lane_registry = lane_registry.clone();
-                    let process_presence = process_presence.clone();
-                    let vpdb = vpdb.clone();
-                    let process_lifecycle_tx = process_lifecycle_tx.clone();
-                    let lane_change_tx = lane_change_tx.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
-                        let mut registered_name: Option<String> = None;
-                        let mut _registered_project_dir: Option<String> = None;
 
                         loop {
                             let msg = match channel.recv().await {
@@ -1790,212 +1799,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 continue;
                             }
 
-                            let payload = msg.payload_as_value().unwrap_or_default();
                             let method = msg.method.clone();
                             let request_id = msg.id;
 
                             match method.as_str() {
-                                "register" => {
-                                    let project_name = payload["project_name"]
-                                        .as_str()
-                                        .unwrap_or("unknown")
-                                        .to_string();
-                                    let port =
-                                        payload["port"].as_u64().unwrap_or(0) as u16;
-                                    let pid =
-                                        payload["pid"].as_u64().unwrap_or(0) as u32;
-                                    let project_dir = payload["project_dir"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string();
-
-                                    // tmux decoupling PR2: 旧 register payload の "tmux_session" は
-                                    // 無視する (旧 binary の SP が送ってきても互換維持で読み飛ばす)。
-                                    let process = RunningProcess {
-                                        project_name: project_name.clone(),
-                                        port,
-                                        pid,
-                                        project_path: project_dir.clone().into(),
-                                    };
-
-                                    // パスキーで一意識別
-                                    let path_key = crate::capability::normalize_path_key(
-                                        std::path::Path::new(&project_dir),
-                                    );
-
-                                    registered_name = Some(path_key.clone());
-                                    _registered_project_dir = Some(project_dir.clone());
-
-                                    // ロック順序統一: projects → running_processes
-                                    // プロジェクト状態を Running に更新
-                                    if let Some(ref projects) = projects {
-                                        let mut projs = projects.write().await;
-                                        if let Some(p) = projs.get_mut(&path_key) {
-                                            p.process_status =
-                                                crate::capability::ProcessStatus::Running;
-                                        }
-                                    }
-
-                                    // running_processes に挿入（projects の後）
-                                    running_processes
-                                        .write()
-                                        .await
-                                        .insert(path_key.clone(), process);
-
-                                    // L1 lifecycle: SP register = presence Connected。
-                                    if let Some(ref pp) = process_presence {
-                                        pp.write().await.insert(
-                                            path_key.clone(),
-                                            ProcessPresenceState::Connected,
-                                        );
-                                    }
-
-                                    // lanes payload を lane_registry + db に snapshot 反映。
-                                    //
-                                    // doc 24 §10 Phase 2 (team-b review #1): lanes フィールド
-                                    // **不在 (null)** は「lanes を知らない古 SP」を意味するので
-                                    // **何もしない** (db の boot-loaded descriptor を保持 = §4.1
-                                    // 喪失ゼロ)。 旧 cache 時代は不在を空 Vec 扱いで wipe していたが、
-                                    // durable truth 化した今 wipe すると永続 descriptor を破壊する。
-                                    // 明示的な空配列 `[]` は「lane を持たない」意思表示なので replace する。
-                                    if let Some(ref lr) = lane_registry {
-                                        let lanes_value = &payload["lanes"];
-                                        if lanes_value.is_null() {
-                                            tracing::debug!(
-                                                "Registry: SP '{}' lanes フィールドなし (古 SP 互換、 db descriptor を保持)",
-                                                project_name
-                                            );
-                                        } else {
-                                            let lanes: Vec<
-                                                crate::process::lanes_state::LaneInfo,
-                                            > = serde_json::from_value(lanes_value.clone())
-                                                .unwrap_or_default();
-                                            let lane_count = lanes.len();
-                                            lr.write().await.insert(path_key.clone(), lanes.clone());
-                                            // doc 24 §10 Phase 2: snapshot を db に durable 永続
-                                            // (project 単位 replace = SP reconnect 時の reconcile)。
-                                            // lock は上の insert で解放済 (db await 中は保持しない)。
-                                            if let Some(ref db) = vpdb
-                                                && let Err(e) = db
-                                                    .replace_lanes_for_project(&path_key, &lanes)
-                                                    .await
-                                            {
-                                                tracing::warn!(
-                                                    "lane snapshot の db 永続に失敗 (in-memory は反映済): {}",
-                                                    e
-                                                );
-                                            }
-                                            tracing::debug!(
-                                                "Registry: SP '{}' lanes 登録 ({} entries)",
-                                                project_name,
-                                                lane_count
-                                            );
-                                        }
-                                    }
-
-                                    tracing::info!(
-                                        "Registry: SP '{}' 登録 (port={}, pid={}, key={})",
-                                        project_name,
-                                        port,
-                                        pid,
-                                        path_key
-                                    );
-
-                                    // VP-154 PR-2: lifecycle event を broadcast (= "world-process"
-                                    // subscriber に push)。 receiver 不在は OK (= 誰も subscribe して
-                                    // ない時は send が SendError を返すが無視)。
-                                    let _ = process_lifecycle_tx.send(ProcessLifecycleEvent::Add {
-                                        project_path: path_key.clone(),
-                                        project_name: project_name.clone(),
-                                        port,
-                                        pid,
-                                    });
-
-                                    // L0 lanes slice: register は lanes snapshot を載せる (= SP 起動
-                                    // 直後の初期 lane 集合)。 per-project "lanes" channel の subscriber に
-                                    // 再 push を促す (lanes 不在の register でも空→空で無害)。
-                                    let _ = lane_change_tx.send(path_key.clone());
-
-                                    if channel
-                                        .send_response(
-                                            request_id,
-                                            "register",
-                                            &serde_json::json!({"status": "ok"}),
-                                        )
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                "unregister" => {
-                                    if let Some(ref path_key) = registered_name {
-                                        // ロック順序統一: projects → running_processes
-                                        // スコープブロックで projects ロックを先に解放
-                                        if let Some(ref projects) = projects {
-                                            let mut projs = projects.write().await;
-                                            if let Some(p) = projs.get_mut(path_key) {
-                                                p.process_status =
-                                                    crate::capability::ProcessStatus::Stopped;
-                                            }
-                                        } // ← projects ロック解放
-                                        {
-                                            running_processes.write().await.remove(path_key);
-                                        }
-                                        // L1 lifecycle: graceful unregister = presence Unregistered
-                                        // (project は残るので sidebar には ○ として残り続ける)。
-                                        if let Some(ref pp) = process_presence {
-                                            pp.write().await.insert(
-                                                path_key.clone(),
-                                                ProcessPresenceState::Unregistered,
-                                            );
-                                        }
-                                        // doc 24 §10 Phase 2 (authority 反転): graceful unregister
-                                        // (SP shutdown) でも lane_registry を **drop しない**。
-                                        // descriptor は durable truth で、 app quit = 喪失ゼロ (§4.1)。
-                                        // descriptor の回収は project remove (= namespace ごと倒す)
-                                        // のみが行う (capability::remove_project)。
-
-                                        tracing::info!(
-                                            "Registry: SP 登録解除 (key={})",
-                                            path_key
-                                        );
-
-                                        // VP-154 PR-2: 明示 unregister 経由の lifecycle event。
-                                        // 切断検知 (= channel 切断による Drop パス) も別途 publish が
-                                        // 必要 (= 後続の disconnect handler で対応)。
-                                        let _ = process_lifecycle_tx.send(
-                                            ProcessLifecycleEvent::Remove {
-                                                project_path: path_key.clone(),
-                                            },
-                                        );
-                                    } else {
-                                        tracing::debug!(
-                                            "Registry: unregister 受信したが未登録"
-                                        );
-                                    }
-                                    let _ = channel
-                                        .send_response(
-                                            request_id,
-                                            "unregister",
-                                            &serde_json::json!({"status": "ok"}),
-                                        )
-                                        .await;
-                                    break; // チャネル終了
-                                }
-                                "heartbeat" => {
-                                    if channel
-                                        .send_response(
-                                            request_id,
-                                            "heartbeat",
-                                            &serde_json::json!({"status": "ok"}),
-                                        )
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
                                 "list" => {
                                     let procs = running_processes.read().await;
                                     let list: Vec<_> = procs
@@ -2021,168 +1828,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         break;
                                     }
                                 }
-                                "lanes/add" => {
-                                    // Phase 2 (Step E): SP push の Diff::Add 反映 (Performer spawn 完了 等)。
-                                    // payload["payload"] が LaneInfo serde 結果。
-                                    if let Some(ref lr) = lane_registry
-                                        && let Some(ref path_key) = registered_name
-                                        && let Ok(lane) = serde_json::from_value::<
-                                            crate::process::lanes_state::LaneInfo,
-                                        >(payload["payload"].clone())
-                                    {
-                                        {
-                                            let mut registry = lr.write().await;
-                                            let entry =
-                                                registry.entry(path_key.clone()).or_default();
-                                            // address 重複なら replace、 無ければ push (race 防御)
-                                            if let Some(idx) =
-                                                entry.iter().position(|l| l.address == lane.address)
-                                            {
-                                                entry[idx] = lane.clone();
-                                            } else {
-                                                entry.push(lane.clone());
-                                            }
-                                        } // ← lane_registry lock 解放 (db await 前)
-                                        // doc 24 §10 Phase 2: descriptor を db に durable 永続。
-                                        if let Some(ref db) = vpdb
-                                            && let Err(e) = db.upsert_lane(path_key, &lane).await
-                                        {
-                                            tracing::warn!(
-                                                "lanes/add の db 永続に失敗 (in-memory は反映済): {}",
-                                                e
-                                            );
-                                        }
-                                        tracing::debug!(
-                                            "Registry: lanes/add 反映 (key={})",
-                                            path_key
-                                        );
-                                        // L0 lanes slice: 当該 project の lane snapshot を再 push。
-                                        let _ = lane_change_tx.send(path_key.clone());
-                                    }
-                                    if channel
-                                        .send_response(
-                                            request_id,
-                                            "lanes/add",
-                                            &serde_json::json!({"status": "ok"}),
-                                        )
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                "lanes/remove" => {
-                                    // Phase 2 (Step E): SP push の Diff::Remove 反映 (Performer delete 等)。
-                                    // payload["id"] が LaneAddress serde 結果。
-                                    if let Some(ref lr) = lane_registry
-                                        && let Some(ref path_key) = registered_name
-                                        && let Ok(addr) = serde_json::from_value::<
-                                            crate::process::lanes_state::LaneAddress,
-                                        >(payload["id"].clone())
-                                    {
-                                        {
-                                            let mut registry = lr.write().await;
-                                            if let Some(entry) = registry.get_mut(path_key) {
-                                                entry.retain(|l| l.address != addr);
-                                            }
-                                        } // ← lane_registry lock 解放 (db await 前)
-                                        // doc 24 §10 Phase 2: descriptor を db からも回収。
-                                        if let Some(ref db) = vpdb
-                                            && let Err(e) = db
-                                                .delete_lane(path_key, &addr.to_string())
-                                                .await
-                                        {
-                                            tracing::warn!(
-                                                "lanes/remove の db 永続に失敗 (in-memory は反映済): {}",
-                                                e
-                                            );
-                                        }
-                                        tracing::debug!(
-                                            "Registry: lanes/remove 反映 (key={}, addr={})",
-                                            path_key,
-                                            addr
-                                        );
-                                        // L0 lanes slice: 当該 project の lane snapshot を再 push。
-                                        let _ = lane_change_tx.send(path_key.clone());
-                                    }
-                                    if channel
-                                        .send_response(
-                                            request_id,
-                                            "lanes/remove",
-                                            &serde_json::json!({"status": "ok"}),
-                                        )
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                "lanes/update" => {
-                                    // Phase 2 (Step E): SP push の Diff::Update 反映 (state 変更 / restart 完了 等)。
-                                    // payload["payload"] が LaneInfo serde 結果。 同 address の entry を replace。
-                                    if let Some(ref lr) = lane_registry
-                                        && let Some(ref path_key) = registered_name
-                                        && let Ok(lane) = serde_json::from_value::<
-                                            crate::process::lanes_state::LaneInfo,
-                                        >(payload["payload"].clone())
-                                    {
-                                        // 既存 entry がある時だけ replace (defensive)。 db 永続も
-                                        // in-memory に合わせ applied 時のみ (= 両者の真実を一致させる)。
-                                        let mut applied = false;
-                                        {
-                                            let mut registry = lr.write().await;
-                                            if let Some(entry) = registry.get_mut(path_key)
-                                                && let Some(idx) = entry
-                                                    .iter()
-                                                    .position(|l| l.address == lane.address)
-                                            {
-                                                entry[idx] = lane.clone();
-                                                applied = true;
-                                            }
-                                        } // ← lane_registry lock 解放 (db await 前)
-                                        // team-b review #2: applied=false は「register 前の
-                                        // update」等の SP protocol 違反 or in-memory/db divergence を
-                                        // 示す異常状態。 正常経路では起きないので warn で可視化する
-                                        // (無音で握り潰すと divergence を追えない)。
-                                        if !applied {
-                                            tracing::warn!(
-                                                "lanes/update: in-memory に対象 lane なし (SP protocol 違反? key={}, addr={})",
-                                                path_key,
-                                                lane.address
-                                            );
-                                        }
-                                        // doc 24 §10 Phase 2: descriptor を db に durable 永続。
-                                        if applied
-                                            && let Some(ref db) = vpdb
-                                            && let Err(e) = db.upsert_lane(path_key, &lane).await
-                                        {
-                                            tracing::warn!(
-                                                "lanes/update の db 永続に失敗 (in-memory は反映済): {}",
-                                                e
-                                            );
-                                        }
-                                        tracing::debug!(
-                                            "Registry: lanes/update 反映 (key={})",
-                                            path_key
-                                        );
-                                        // L0 lanes slice: 実際に replace された時のみ snapshot を再 push
-                                        // (applied=false は no-op なので無駄打ちを避ける)。
-                                        if applied {
-                                            let _ = lane_change_tx.send(path_key.clone());
-                                        }
-                                    }
-                                    if channel
-                                        .send_response(
-                                            request_id,
-                                            "lanes/update",
-                                            &serde_json::json!({"status": "ok"}),
-                                        )
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
                                 _ => {
                                     let _ = channel
                                         .send_response(
@@ -2197,61 +1842,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             }
                         }
 
-                        // 切断時に自動除去（unregister なしで切断された場合）
-                        // ロック順序統一: projects → running_processes
-                        if let Some(name) = registered_name {
-                            // プロジェクト状態を Stopped に更新（projects 先）
-                            if let Some(ref projects) = projects {
-                                let mut projs = projects.write().await;
-                                if let Some(p) = projs.get_mut(&name) {
-                                    p.process_status =
-                                        crate::capability::ProcessStatus::Stopped;
-                                }
-                            }
-
-                            // running_processes から除去（projects の後）
-                            let removed = {
-                                let mut procs = running_processes.write().await;
-                                procs.remove(&name).is_some()
-                            };
-
-                            // doc 24 §10 Phase 2 (authority 反転の核心): SP 切断では lane_registry を
-                            // **drop しない**。 descriptor は daemon-canonical な durable truth に
-                            // なったので、 SP quit/crash を越えて生き残る (§4.1 app quit = 喪失ゼロ)。
-                            // 失われるのは live engagement (SP の PtySlot/PTY) だけで、 descriptor は
-                            // 残り、 SP reconnect で register snapshot が最新を上書きする (reconcile)。
-                            // 旧挙動「disconnect = 全 Lane drop」(Phase 1b の cache 前提) はここで撤回。
-                            // NOTE: live 値 (pid/state) の cold 化 (= §4.6 boot reconcile heal) は
-                            // 後続 increment。 現状は last-known descriptor をそのまま保持する。
-
-                            if removed {
-                                tracing::info!(
-                                    "Registry: SP 切断 → 自動除去 (key={})",
-                                    name
-                                );
-
-                                // L1 lifecycle: QUIC 切断検知 = presence Disconnected。
-                                // `removed == true` は「graceful unregister していない」(entry が
-                                // 残ったまま切断) の signal なので、 graceful 経路 (= 上で
-                                // Unregistered 済) を上書きしない。health_monitor が 2 連続 miss で
-                                // respawn 着手すると Connecting に遷移する。
-                                if let Some(ref pp) = process_presence {
-                                    pp.write().await.insert(
-                                        name.clone(),
-                                        ProcessPresenceState::Disconnected,
-                                    );
-                                }
-
-                                // VP-154 PR-2: 切断由来の lifecycle remove event。 明示
-                                // unregister と異なり、 ここは QUIC 切断検出 (= D10 Push パスの
-                                // 即時死亡検出) を世界に伝える経路。
-                                let _ = process_lifecycle_tx.send(
-                                    ProcessLifecycleEvent::Remove {
-                                        project_path: name.clone(),
-                                    },
-                                );
-                            }
-                        }
+                        // doc 44 P1 (fold-in): SP 切断時の自動除去は撤去した。
+                        // `registered_name` を立てる `register` が無くなったため到達不能で、
+                        // かつ project の生存は World 自身の `ProjectRuntimes` が持つ
+                        // （切断という状態が存在しない = map に居るか居ないか）。
 
                         Ok(())
                     }

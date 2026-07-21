@@ -439,7 +439,7 @@ async fn pulse(
                                     // transcript_exists pre-flight（doc 40 §5 / moody 指摘）:
                                     // headless `claude -p --resume` は `|| claude` fallback を
                                     // 持たないため、stale/phantom id を渡すと配信が黙って失敗
-                                    // し続ける。他の resume 経路（床 spawn / chat spawn）と同じ
+                                    // し続ける。他の resume 経路（slot spawn / chat spawn）と同じ
                                     // filter で fresh headless に倒す。配信時のみ実行 = 常時
                                     // tick 経路に fs walk を持ち込まない。
                                     let resume = t.cc_session_id.as_deref().filter(|id| {

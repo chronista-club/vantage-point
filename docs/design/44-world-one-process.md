@@ -1,0 +1,267 @@
+# doc 44 — World 一枚化と Project Host（SP の転生・slot 語彙・conductor の再定義）
+
+> **status**: 方向確定 + **P1 実装設計確定**（2026-07-20）。P0 語彙 ✅出荷（#820）、
+> P1 は露払い着手。§1–§4 = dogfood 議論の凍結、**§5 = 実コード調査に基づく P1 実装設計**。
+> **発端**: v0.52.1 hotfix（#817）で戦った reverse-route 取りこぼし・demand hook レースが
+> **World↔SP のプロセス分割が生む分散システム問題**だと確定したこと。および「Act I でタブが
+> 出ない」「床が分かりにくい」という dogfood 指摘の掘り下げが、SP の存在理由まで届いた。
+> mako × conductor（Fable 5 / Opus 4.8）の対話で 5 決定に収束。
+
+## 0. 一言で
+
+**World を唯一の常駐プロセスにし（SP fold-in）、project は認知境界（住所）に退化させる。**
+SP の名は「project の状態と進行に責任を持つ決定的な執事 = Project Host」として転生し、
+conductor は「開発起点」を指すポインタに再定義される。lane から役割の状態機械が消える。
+
+## 1. 決定事項（5 件）
+
+### D1. 語彙: 「床」→「slot」
+
+- コード識別子（`PtySlot` / `ChatEngineSlot`）が既に持つ **slot** を公用語に昇格。
+  doc 語彙をコードに寄せる（memory「Naming: Stand vs code」の層分け方針に整合）。
+- 旧「床に落ちる」=「**Act I slot は engine が抜けると shell 層が露出する**」と構造で言う。
+  Act II slot が空くと「💤 休眠」（#817 で導入済みの語彙）— 両 Act が対称に語れる。
+- 「床」は識別子に不在（コメント 155 + docs 78 の散文のみ）。置換は機械的、リネーム波及なし。
+
+### D2. SP の廃止 — World fold-in・フラット化
+
+- **判断根拠**: console の deploy 生存性は `--resume` + disk replay（v0.37/38）で十分
+  （mako 判断 2026-07-20。「プロセスは死ぬがコンテキストは蘇る」が tmux decoupling 以降実証済み）。
+  プロセス分離が買っていた実益（PTY master fd の daemon 跨ぎ生存）は、この時点で税に見合わない。
+- **形は「フラット化」**（ProjectHost actor 案は棄却）: World が LanePool 一枚で slot を直接抱き、
+  key は既存の `LaneAddress`（project/lane）。**project は registry エントリ + cwd + grouping +
+  address prefix のみ** — 実行時実体としての project は消滅する。
+  「project という認知境界は欲しいが、それは runtime container なしで抽出できる」（mako）。
+- **消えるもの**: World↔SP 配管 ≈7,600 行（uplink 自己登録 / control reverse-route /
+  demand hook の QUIC 往復 / snapshot reconcile — #817 のバグクラスの発生源ごと）、
+  `vp sp start|stop`、SP port slot（33000–33024、portless 化で論理 ID だけだったものが完全退役）、
+  spine 三段 → **二段（daemon / window）**。
+- GUI は既に :32000 のみを見る（portless 化の遺産）ため、surface 側はほぼ無傷。
+- 表示層: Star Platinum ⭐ は project ビューの顔として stands.rs に残せる
+  （The World と Star Platinum は原作でも同型スタンド — 吸収は lore 整合）。
+
+### D3. Project Host = 決定的 actor + 3 層エスカレーション
+
+旧 SP は "Project Host" を名乗るプロセス宿主で、project そのものを host していなかった。
+新 Project Host は **project の状態・進行・交通整理に一人称の責任を持つ決定的サービス**。
+
+**振る舞いインベントリ**（家の主人のメタファー）:
+
+| 振る舞い | 具体 | 現状の担い手 |
+|---|---|---|
+| 迎え入れ | lane 作成時の base 保証（fetch 済み nightly から切る） | conductor の注意 + 規約 |
+| 場の維持 | nightly 前進の通知 / 同一ファイル複数 lane 編集の衝突警告 | **不在**（mtime 事故の根因） |
+| 交通整理 | commit / PR / merge の順序調停、ship gate | conductor + 運用規約 |
+| 見送り | merge 後の残骸掃除（branch / worktree / lane state） | 手作業 |
+| 帳簿 | flow_progress / handoff の SSOT、release までの距離 | creo memory + conductor の記憶 |
+
+**アーキテクチャ原則: Host は決定論。LLM にしない。**
+conductor の既知事故 2 件（wire ack 遅延の二重配送 / conductor session 固定化）は
+「帳簿と受付を LLM セッションに置いた」ことの帰結であり、LLM Host は同じ問題を再生産する。
+
+3 層モデル:
+1. **決定的判定**（Host 内・純関数 = calculations、テスト可能）: merged? 衝突? base 古い?
+2. **LLM への発注**（Host が呼ぶ stateless one-shot、既存 OneShot `ClaudeAgent` が道具）:
+   進捗サマリ文章化・brief 下書き等の言語タスク
+3. **人間へのエスカレーション**（帳簿に積んで注視中の session / GUI へ）: 事実だけで決まらない案件
+
+Host は**推測しない**。2026-07-20 の lane 掃除（19 本中 18 本を機械判定、1 本のみ人間へ）が
+この分業の実演であり、その判定基準（PR MERGED? 独自 commit 0? リモート有無?）が
+第一号 calculations の仕様草稿になる。
+
+**第一の振る舞い = 「見送り」（merged 残骸の自動掃除）**: 判定基準が言語化済み・失敗の被害が
+小さい・毎週確実に価値が出る。「場の維持」（衝突警告）は lane 並列運用の再開後に第二号。
+
+### D4. conductor = 開発起点（Host が持つポインタ）
+
+- conductor は残る（mako: 「開発起点として欲しい」）が、**lane の自意識から project の指定へ**:
+  Host の帳簿が「開発起点はこの lane」というポインタを 1 本持つ。lane 自身は役割状態を持たない。
+- conductor の機械業務（帳簿 / ack / gate / 掃除）は **Host へ漸次移管** — 移管 1 件ごとに
+  conductor が軽くなり、最後に残る「議論・判断・発火・人間の定位置」が新定義になる。
+- lane の振る舞い分岐は消滅（wire の受付は Host なので全 lane 対等）。
+  `LaneAddress` の `conductor` / `performer/…` は `project/lane-name` にフラット化する
+  （起点 lane の予約名 or ポインタで表現 — 詳細は実装時）。
+- オーケストラ比喩の修正でもある: 現実の指揮者は舞台進行や譜面管理をしない（それは事務局 =
+  Host の仕事）。指揮者は解釈とキュー出し = **意図の供給**。
+
+### D5. session タブ = 注視の切替のみ。起点再指定は sidebar
+
+- タブ strip（現 ChatView 内の「仮置き UI」）を **header 層（両 Act 共通）に昇格**。
+  クリック = その session に注視を移すだけ（surface は今の Act のまま）。
+  Act I slot の root 切替は既存 root picker の担当のまま。
+- **開発起点の再指定はタブに載せない**: タブは lane 内（全 session 同一 cwd）、起点指定は
+  lane 間（cwd が違う）— レベルが違う。起点再指定は **sidebar の lane メニュー**
+  （「この lane を開発起点に ⭐」= Host のポインタ更新のみ。何も動かず cwd も変わらない）。
+- cwd 拘束のある操作（release cut は main checkout 等）は**起点ではなく操作に付く制約**で、
+  D3 の Host が正しい場所で実行する。ポインタがどこを向いていても混ざらない。
+
+## 2. 実装順序の素案（各 Phase = 独立に出荷可能）
+
+> pre-MVP 方針: 中間状態を残さず、旧経路は即撤去。ただし fold-in は巨大なので PR は分割する。
+
+- **P0（語彙・随時）**: 床 → slot の散文置換（コメント 155 + docs 78、機械的）。
+  D1 だけで独立に出せる。
+- **P1（本丸）**: SP fold-in。World が LanePool を in-process 所有し、SP プロセス spawn を廃止。
+  uplink / control / canvas-ingest channel → 関数呼び出し・in-process channel に置換、
+  reverse-route / refire / snapshot reconcile を撤去。`vp sp` 退役。
+- **P2**: `LaneAddress` フラット化 + conductor ポインタ導入（D4 の構造部分）。
+- **P3**: Project Host 第一の振る舞い「見送り」+ 帳簿の最小形（D3）。
+  以降、conductor の機械業務を 1 つずつ Host へ（それぞれ小 PR）。
+- **P4**: タブ header 昇格 + sidebar 起点指定 UI（D5）。
+  ※ P1 完了後は demand 往復が消えて純 UI 問題になるため、P1 の後に置く。
+
+## 3. 北極星 — コードの大生産工場と工場グラフ（mako、2026-07-20）
+
+> VP は開発エディタだけど、私的には CreoApps 含めて、**コードの大生産工場かつ工場グラフ**だから、
+> そこへ向けて、今後も進んでいくと思う。
+
+本 doc の決定はこの北極星の言葉で読み直せる（mapping は 2026-07-20 に一往復して確定）:
+**project = 工場、Project Host = 生産管理（工場長ではなく管理板 — 決定論）、
+lane / slot = 生産ライン、conductor = 起点に立つ人間の意図**。
+そして「**工場グラフ**」= 工場（project）をノード、供給線をエッジとするグラフ。
+2026-07-19 の creo-ui #86 → npm publish → VP #819 はまさに工場間サプライチェーンの実演で、
+そこで踏んだ「npm の最新 ≠ repo HEAD」は供給線の同期問題だった。Host の帳簿・交通整理は、
+いずれ**工場を跨ぐ版**（供給元が進んだら下流に bump を知らせる等）へ拡張される — その配管は
+hub federation 層が既に持っている。生産管理板（Host）を各工場に先に立てておくことは、
+工場グラフを流れる情報（進行・供給・衝突）の読み書き口を先に作っておくことでもある。
+
+## 4. 開いている問い（触って見える「次の景色」の候補）
+
+> §4 の前 4 項は **2026-07-20 の実コード調査で決着**した（§5 参照）。残りは P3 以降の問い。
+
+- ~~P1 の panic 封じ込め~~ → §5.1 で決着（**現状の隔壁は幻**、P1 のブロッカーではない）
+- ~~DB handle~~ → §5.2 で決着（単一 handle + project 列、要検証 1 点）
+- ~~`vp ps` の意味論~~ → §5.3 で決着
+- ~~デバッグモードの新しい家~~ → §5.4 で決着（**現状すでに到達不能**だった）
+- hub federation は World レベルなので原理的に無関係 — 実装時に要確認のみ。
+- Host の帳簿の永続化先（surrealkv）と、creo-memories との棲み分け。
+
+## 5. P1 実装設計（2026-07-20 の実コード調査で確定）
+
+### 5.0 調査で判った 3 つの構造的事実
+
+1. **World と SP は既に同じ `AppState` 型を共有**している（`process/state.rs`）。mode 差は
+   フィールドを `Some`/`None` で出し分けているだけ。fold-in は「2 つのプログラムの合体」
+   ではなく **既に 1 つの型にある分岐を畳む**作業。
+   フィールド内訳 = per-project 14 / global 12 / dead 4（dead は P1 露払いで削除済）。
+2. **縫い目は 2 行**。World から SP へ入る経路は `daemon/server.rs:1466`（canvas 上り）と
+   `:1589`（process-proxy）に収束し、SP 側は `dispatch_process_method` の単一 `match`
+   （60 method）で受ける。ここを直接呼び出しに差し替えると、**7,600 行が「書き換え対象」
+   ではなく「孤児」になる**。
+3. **`LaneAddress { project, kind, name }` が既に project を key に含む**ため、N 個の
+   LanePool を 1 枚に merge してもキー衝突が起きない。D2 の「World が LanePool 一枚で抱く」は
+   既存データ構造が既にその形をしている。
+
+### 5.1 panic 封じ込め — 現状の隔壁は幻
+
+実測: `catch_unwind` 0 件 / panic hook 0 件 / `panic = "abort"` 未設定 /
+`tokio::spawn` 100 箇所超に対し `JoinError::is_panic()` の観測 **0**。
+
+| 障害の型 | SP プロセス境界は守るか |
+|---|---|
+| tokio task の panic | **守らない**（unwind で task だけが黙って死ぬ。SP の有無と無関係） |
+| `PtySlot` の std Mutex poisoning | **守らない**（Err 化されて lane 単位の恒久故障） |
+| deadlock | ✅ 守る |
+| OOM / stack overflow / abort | ✅ 守る |
+
+つまり fold-in の実質的な後退は **deadlock と資源枯渇の 2 つだけ**。前者に対しては
+`LanePool` が既に「`read()` のまま mutate して長い await 中に write lock を握らない」
+規律で設計されている（`submit_chat` / `deliver_nudge` 等）。
+
+**結論**: P1 に `catch_unwind` 足場は作らない。代わりに順序を逆にして、
+**隔壁を外す前に「何が落ちているか」を見えるようにする**（panic hook = `src/panic_hook.rs`、
+P1 露払いで実装済）。これは fold-in の有無に関わらず価値がある。
+
+### 5.2 DB handle — 単一 `db/world/` + project 列
+
+> **実装済（PR4、2026-07-21）**。以下は設計時の記述で、末尾に実装結果を追記した。
+
+現状 namespace は `vp`/`vp` **固定**で、分離は**ディレクトリ**（`db/world/` と `db/sp_{slug}/`）。
+World が N handle を抱く案は「project の runtime 実体」を復活させるので D2 と矛盾する。
+`LaneAddress` が project を持つ以上、**table に project 次元を足す**のが canonical。
+
+- ✅ **検証済（2026-07-20 実測）: `db/sp_*` は捨ててよい**。合計 1.4 GB あるが、
+  各 db は `wal/` 単一ファイルが全量で `sstables`/`vlog` は 0 バイト（**一度も compaction
+  されていない**）。WAL の中身は 3 db で調べて **`!nd`（SurrealDB の node = cluster
+  membership key）が 1 件 127 B ちょうどで占有率 ~100%**。実アプリデータは
+  `stand_status` 1,055 / `pane_contents` 56 / `wire_messages` 50 件と桁違いに少なく、
+  移行すべき実体は KB オーダーしかない。詳細 = creo `mem_1CdDAJuuCfsP1iY2ZutHp9`。
+- **fold-in の未計上の実利**: db 24 個 → 1 個で node 書き込みストリームも 24 → 1 になり、
+  この churn が **24 分の 1** に落ちる（月 ~1.4 GB → ~60 MB）。ただし compaction が
+  走らない限り成長自体は続くので**緩和であって根治ではない**（別途 surrealkv の
+  compaction 設定を調べる — P1 の範囲外）。
+- **孤児 db 246 MB**（projects.kdl に対応 project が無い 9 個。`sp_creoui` = creo-ui
+  リネームの残骸等）は誰も掃除していない。`vp sync` は ghost project を消すが db は残す。
+  判定基準が明快なので **D3「Project Host の第一の振る舞い＝見送り」の実例第 2 号**。
+- 副次: この LOCK は「重複 SP 検出」も兼ねていた（生存 holder 検出で起動中止）。
+  fold-in 後は World の `:32000` bind + `daemon.pid` が単一性を保証するので**代替不要**。
+
+#### 実装結果（PR4）
+
+想定より小さく終わった。理由は **schema が最初から `project_path` 列を持っていた**こと
+（旧「SP 固有テーブル」= `pane_contents` / `stand_status` / `prompts` も全て所有し、クエリも
+全て `WHERE project_path = $path` で絞っていた）。1 DB = 1 project の時代は事実上冗長だった列が、
+そのまま canonical な project 次元になった。**schema 変更・データ移行ともに不要**で、
+変更は「handle を 1 本に寄せる」だけになった。
+
+| 変更 | 内容 |
+|---|---|
+| `start_project` | per-project connect を撤去し、World が開いた handle を引数で受ける |
+| `ProjectRuntimes` | `world_db` field を持ち、`for_world()`（旧 `with_lane_view`）で lane view と同時に結線 |
+| `db_data_dir_for_project` | 撤去（呼び出し元は `start_project` の 1 箇所のみだった） |
+| `DbLockHeldByLiveHolder` | 撤去。「LOCK 保持 = 重複 SP」の判定は `ProjectRuntimes` の map 二重 insert 防止が引き継ぐ |
+| `resolve::project_slug` / `fnv1a_64` | 撤去。**slug の用途は `db/sp_{slug}/` の命名だけだった**ため production 呼び出し元が 0 になった |
+
+**旧 `db/sp_*` は削除も移行もしていない**（合計 1.4 GB がその場に残る）。判定基準が明快な
+掃除対象なので D3「Project Host の第一の振る舞い＝見送り」の担当に送る（§5.2 の孤児 db 246 MB と同じ扱い）。
+実害として、旧 db に入っていた **PP board（`pane_contents`）は引き継がれない**（実測 56 件）。
+
+### 5.3 `vp ps` — PORT / PID 列が無意味化
+
+`PROJECT / LANES(数) / STATUS(active|idle) / ← cwd` へ。detail は既存の `vp lane` が持つ。
+
+### 5.4 debug mode — 撤去で決着（2026-07-21）
+
+当初は「runtime toggle にして初めて使えるようにする」方針だったが、**実装時に消費側も
+消えていたことが判明**したため撤去に切り替えた。
+
+到達不能の実測（生産側）:
+- World が spawn する SP に **`-d` は渡されない**（fold-in で `vp sp` ごと退役、#824）
+- `debug_mode` は fold-in 後 常に `None`（`ProjectRuntimes::start` が None 固定）
+- `send_debug` は `if None return` で必ず早期 return、`send_debug_detail` は呼び出し元ゼロ
+- `DebugModeChanged` は生産者ゼロ
+
+**消費側も無い**（これが方針転換の決め手）:
+- `DebugInfo` を表示していた **WebUI デバッグパネルは旧 localhost browser UI ごと撤去済**
+- native vp-app / Swift agent とも `process/debug/*` を購読していない
+
+runtime toggle を作っても出力先が無いため、`DebugMode`（debug パネル用途）/ `DebugInfo` /
+`DebugModeChanged` / `DebugModeArg` / `send_debug` / `send_debug_detail` / `TraceLog` +
+`watch_and_broadcast` を撤去した。
+
+**残したもの**: `VANTAGE_DEBUG=none|simple|detail` による **tracing レベル選択**は生きた別機構
+（`cli::parse_debug_env` → `init_tracing`、log verbosity）。`DebugMode` enum はこの用途だけ
+cli.rs にローカル化して温存。ファイルベースの trace log（`init_log_file` / `write_trace`）も
+温存（broadcast bridge の `watch_and_broadcast` だけ孤児として撤去）。
+
+### 5.5 PR 分割
+
+| PR | 内容 | 規模 | リスク |
+|---|---|---|---|
+| **1. 露払い** | panic 可視化 + **P1 が抱えて運ぶ羽目になる死コード**の除去（`AppState` の dead field 3 本 / 孤児化した `process/pty.rs`） | 小 | ほぼ 0（挙動不変） |
+| **2. fold-in 本体** | `AppState` の per-project 化 → World が LanePool 所有 → dispatch 直結 → SP spawn 停止 → uplink/registry/control 撤去 | 大（〜2,000 行） | 中 |
+| **3. 遺物撤去** | `vp sp` / port slot API / `PORT_RANGE` / health monitor / presence 意味論 / `vp ps` / `restart-all` / debug の新居 | 中 | 小 |
+| **4. DB 統合** ✅ | `db/sp_*` → `db/world/` の project 列化 | 小（schema は既に project 列を持っていた） | 小（§5.2 実装結果） |
+
+**線引き**: PR1 は「P1 が抱えて運ぶもの」だけを落とす。「P1 が丸ごと消すもの」
+（`vp sp` の内部死コード等）は磨かない — 捨てる作業になるため。
+
+PR2 は分割したくなるが、「World と SP のどちらが LanePool を持つか」は**半分だけ出荷できない**
+性質なので、中間状態を作らない方針（pre-MVP）に従って一息に切る。
+
+### 5.6 検証戦略 — dev profile で完全並列
+
+`VP_PROFILE=dev`（World :32100 / `~/.local/share/vp-dev/`）で fold-in 版 daemon を立てれば、
+**release daemon(:32000) の lane を一切落とさずに実機確認できる**。#643 の namespace 分離が
+そのまま P1 の検証装置になる。これにより P1 最大の運用リスク（「daemon 再起動 = 全 lane 死」）が
+dogfood 中は発生しない。

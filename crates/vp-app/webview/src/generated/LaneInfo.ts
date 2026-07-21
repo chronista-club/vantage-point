@@ -33,8 +33,8 @@ performer_status: PerformerStatusWire | null,
  */
 engine_session_id: string | null, 
 /**
- * doc 39 P4: root session の stand（= 床に載る engine 種別）。Act I の session chip prefix は
- * これを優先し（cross-engine root で床の engine を正しく映す）、無ければ `stand`（lane 固定）に
+ * doc 39 P4: root session の stand（= slot に載る engine 種別）。Act I の session chip prefix は
+ * これを優先し（cross-engine root で slot の engine を正しく映す）、無ければ `stand`（lane 固定）に
  * fallback。旧 SP からは欠落 = None。
  */
 engine_stand: string | null, 

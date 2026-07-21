@@ -19,7 +19,7 @@ use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
 ///
 /// - stand は DB / wire を流れる自由文字列（入口 allowlist なし）なので、engine 判定は必ず
 ///   [`EngineKind::from_stand`] を通す — 対応表をここ 1 箇所に閉じる。
-/// - `None` = engine を持たない stand（`"shell"` / 退役 `"tmux"` / 未知名）。床（login shell）のみ。
+/// - `None` = engine を持たない stand（`"shell"` / 退役 `"tmux"` / 未知名）。shell（login shell）のみ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
     /// stand=`"echoes"`（+ 旧名 `"hd"`）— claude。常駐 stream-json host（Act II）+ claude TUI（Act I）。
@@ -47,7 +47,7 @@ impl EngineKind {
     /// stand 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
     ///
     /// 撤去済み engine（`"cursor"` / `"agy"` — sweep 6.5、doc 39 §7）は `None` に倒れる。
-    /// disk / wire に残る旧 stand 文字列は床（login shell）のみで graceful に受ける。
+    /// disk / wire に残る旧 stand 文字列は shell（login shell）のみで graceful に受ける。
     pub fn from_stand(stand: &str) -> Option<Self> {
         match stand {
             "echoes" | "hd" => Some(Self::Claude),
@@ -71,11 +71,13 @@ impl EngineKind {
     /// GUI（sidebar `+ Add Performer` dropdown 等）向けの表示説明。
     pub fn description(self) -> &'static str {
         match self {
-            Self::Claude => "VP Stand: Echoes 💬 — login shell の床 + Claude CLI 自動起動",
-            Self::Codex => "VP Stand: Codex 🧮 — login shell の床 + codex (OpenAI) 自動起動",
-            Self::Grok => "VP Stand: Grok ⚡ — login shell の床 + grok (xAI) 自動起動",
+            Self::Claude => "VP Stand: Echoes 💬 — Act I slot（login shell）+ Claude CLI 自動起動",
+            Self::Codex => {
+                "VP Stand: Codex 🧮 — Act I slot（login shell）+ codex (OpenAI) 自動起動"
+            }
+            Self::Grok => "VP Stand: Grok ⚡ — Act I slot（login shell）+ grok (xAI) 自動起動",
             Self::OpenCode => {
-                "VP Stand: OpenCode 🧩 — login shell の床 + opencode 自動起動（model は opencode config）"
+                "VP Stand: OpenCode 🧩 — Act I slot（login shell）+ opencode 自動起動（model は opencode config）"
             }
         }
     }
@@ -250,12 +252,16 @@ mod tests {
             Some(EngineKind::OpenCode)
         );
         assert_eq!(EngineKind::from_stand("shell"), None);
-        assert_eq!(EngineKind::from_stand("tmux"), None, "退役 stand は床のみ");
+        assert_eq!(
+            EngineKind::from_stand("tmux"),
+            None,
+            "退役 stand は shell のみ"
+        );
         assert_eq!(EngineKind::from_stand(""), None);
     }
 
     /// graceful degradation: 撤去済み engine（cursor / agy — sweep 6.5）の旧 stand 文字列は
-    /// `None` に倒れる（disk / wire に残っても床のみで受け、chat 不可・中立 chip）。
+    /// `None` に倒れる（disk / wire に残っても shell のみで受け、chat 不可・中立 chip）。
     #[test]
     fn removed_engines_degrade_to_none() {
         assert_eq!(EngineKind::from_stand("cursor"), None, "cursor は撤去済み");

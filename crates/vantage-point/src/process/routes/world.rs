@@ -425,61 +425,6 @@ pub async fn world_create_lane(
     }
 }
 
-/// slot 設定リクエスト (PR-D: CLI の slot 永続化を daemon 経由に)
-#[derive(serde::Deserialize)]
-pub struct SetSlotRequest {
-    pub path: String,
-    pub slot: u16,
-}
-
-/// POST /api/world/projects/set_slot - project の slot を設定 (db/world に永続化)
-pub async fn world_set_slot(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<SetSlotRequest>,
-) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-    let world = world.read().await;
-    match world.set_project_slot(&req.path, req.slot).await {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "path": req.path, "slot": req.slot})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
-}
-
-/// POST /api/world/projects/unassign_slot - project の slot を解除
-pub async fn world_unassign_slot(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<RemoveProjectRequest>,
-) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-    let world = world.read().await;
-    match world.unset_project_slot(&req.path).await {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "unassigned", "path": req.path})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
-}
-
 /// POST /api/world/projects/sync - ghost project 除去 (db/world に永続化)。
 ///
 /// かつては body の `start_dir` で起点 dir を自動登録もしていたが、 削除済 project を
@@ -505,89 +450,12 @@ pub async fn world_sync_projects(State(state): State<Arc<AppState>>) -> impl Int
     }
 }
 
-/// Process 自己登録リクエスト
-#[derive(serde::Deserialize)]
-pub struct RegisterRequest {
-    pub port: u16,
-    pub project_dir: String,
-    pub pid: u32,
-    // serde parse field: SP/Swift agent 自己登録の wire 契約。read されないが deserialize 契約として保持。
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub terminal_token: Option<String>,
-}
+// doc 44 P1 (fold-in): world_register_process / world_unregister_process は撤去。
+// project は World 自身が起こすため「外から自己登録される」経路が存在しない。
 
-/// POST /api/world/processes/register - Process が自己登録
-pub async fn world_register_process(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<RegisterRequest>,
-) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-
-    let world = world.read().await;
-    world
-        .register_external_process(req.port, &req.project_dir, req.pid)
-        .await;
-
-    (
-        axum::http::StatusCode::OK,
-        Json(serde_json::json!({"status": "registered", "port": req.port})),
-    )
-}
-
-/// Process 登録解除リクエスト
-#[derive(serde::Deserialize)]
-pub struct UnregisterRequest {
-    pub port: u16,
-}
-
-/// POST /api/world/processes/unregister - Process が自己登録解除
-pub async fn world_unregister_process(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<UnregisterRequest>,
-) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-
-    let world = world.read().await;
-    world.unregister_external_process(req.port).await;
-
-    (
-        axum::http::StatusCode::OK,
-        Json(serde_json::json!({"status": "unregistered", "port": req.port})),
-    )
-}
-
-/// POST /api/world/refresh - Refresh process status
-pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let Some(world) = &state.world else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "World not available"})),
-        );
-    };
-
-    let world = world.read().await;
-    match world.refresh_process_status().await {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "refreshed"})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
-}
+// doc 44 P1 (fold-in): POST /api/world/refresh (world_refresh) は撤去。
+// 呼び出し元はゼロで、中身の `refresh_process_status`（PID liveness）が
+// fold-in で無意味化したため（pid が全 project 共通の World 自身）。
 
 /// POST /api/world/projects/reload — projects.kdl を再読み込みして in-memory に反映
 ///
@@ -698,53 +566,6 @@ pub async fn world_list_lanes(
             "lanes": lanes,
         })),
     )
-}
-
-// =============================================================================
-// VP-165 PR-6: /api/world/port_for — slot ベース SP port resolver (decision C 完成)
-// =============================================================================
-
-/// VP-165 PR-6: query param for `/api/world/port_for`
-#[derive(serde::Deserialize)]
-pub struct PortForQuery {
-    /// Project name (config の `projects[].name` に一致するもの)
-    pub project: String,
-}
-
-/// GET /api/world/port_for?project=<name> — project 名から SP port を解決
-///
-/// `Config::resolve_sp_port` 経由で `port` 明示 override → `ensure_slot` (未割当なら
-/// 次の空き slot を割当 + config 永続) → `PORT_RANGE_START + slot` を返す。slot は config
-/// 永続なので、project リスト変更でも既存 project の port は不変。
-///
-/// 用途:
-/// - `vp sp start` を `-p` 無しで叩いた時に TheWorld に聞く（cross-process port authority）
-/// - UI / 外部 script が「project X の SP port は？」を local config を読まずに問い合わせる
-/// - `start_process` (in-process) は `crate::resolve::sp_port_for_project` を直接呼ぶ
-///   （HTTP roundtrip 不要）
-///
-/// project が config に未登録なら 404。
-pub async fn world_port_for(
-    axum::extract::Query(query): axum::extract::Query<PortForQuery>,
-) -> impl IntoResponse {
-    match crate::resolve::sp_port_for_project(&query.project) {
-        Ok(port) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({
-                "project": query.project,
-                "port": port,
-            })),
-        )
-            .into_response(),
-        Err(e) => (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("port_for failed: {}", e),
-                "project": query.project,
-            })),
-        )
-            .into_response(),
-    }
 }
 
 #[cfg(test)]

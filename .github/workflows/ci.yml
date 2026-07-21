@@ -53,6 +53,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # webview bundle は gitignore の生成物 (2026-07-19 に commit 運用を廃止)。
+      # vp-app の include_str! (main_area.rs) が要求するため cargo の前に生成する
+      # (ローカルの正は `mise run app:bundle` — CI に mise が無いので同内容を直接実行)。
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build webview bundle
+        working-directory: crates/vp-app/webview
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -93,6 +106,17 @@ jobs:
         uses: dtolnay/rust-toolchain@1.96 # = .mise.toml [tools].rust (基本 stable 追随、 minor pin・patch float)
 
       - uses: Swatinem/rust-cache@v2
+
+      # webview bundle は gitignore の生成物 — vp-app の include_str! が要求 (check job と同様)。
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build webview bundle
+        working-directory: crates/vp-app/webview
+        run: |
+          bun install --frozen-lockfile
+          bun run build
 
       - name: Cargo check
         run: cargo check --workspace --all-targets

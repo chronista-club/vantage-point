@@ -106,26 +106,27 @@ vantage-point/
 
 ```bash
 # Core
-vp ps                  # 稼働中インスタンス一覧（TheWorld registry に問い合わせ）
+vp ps                  # 稼働中 project 一覧（PROJECT / LANES 数 / STATUS active|idle）。詳細は vp lane list
 vp config              # 設定と登録プロジェクト表示
 vp projects            # 登録 project 管理（add/remove/rename/enable/disable/reorder/list）
 vp sync                # projects.kdl を現実と同期（ghost project 除去）
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
-vp restart-all         # 全 Process + TheWorld を一括再起動
+vp restart-all         # TheWorld を再起動（= 全 project 再起動。fold-in 後は daemon restart と等価）
+                       # ⚠️ 復元されるのは「enabled な project」で「再起動前に動いていた project」ではない。
+                       #    停止を永続させたいなら vp projects disable（stop だけでは再起動で生き返る）。
 
-# TheWorld（Daemon）/ SP
+# TheWorld（Daemon）/ Project
 vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
 vp daemon restart [--if-running]  # ownership-agnostic 再起動（実 port holder を停止 → LaunchAgent 優先で起動。--if-running = 不在なら no-op、brew cask postflight 用）
 vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
-vp sp start [-d simple|detail]  # SP サーバー起動（デバッグモードはここ）
-vp sp stop|status
-# ⚠️ daemon 再起動の 2 つの stop（lane の中から検証/dogfood する時に超重要）:
-#   - `vp daemon stop` = gentle（daemon のみ停止。SP は温存 → SP の子である lane claude も生き残る）。
-#   - `mr daemon` / `daemon:stop` = cascade nuke（daemon + SP 全停止 = lane claude も落ちる）→ lane 内で回すと自分を殺す。
-#   lane の中から実機確認する時は必ず gentle 側。cascade は full reset 専用。
-#   tmux decoupling 後: lane claude は SP の PtySlot の子。SP が落ちても会話は cc_session の
-#   `--resume` で次回 spawn 時に継がれる（「プロセスは死ぬがコンテキストは蘇る」）。
+vp projects start|stop <name>  # 単一 project の起動/停止（doc 44 P1 fold-in で `vp sp` から移設）
+# ⚠️⚠️ doc 44 P1 (fold-in) で daemon 停止の意味論が変わった:
+#   project は World プロセス内の Arc<AppState> になったため、**daemon を止めると
+#   全 project が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
+#   止めて SP は温存）」は SP が別プロセスだった時代の挙動で、fold-in 後は成立しない。
+#   → lane の中から daemon を再起動すると自分が死ぬ。実機検証は VP の外（kitty 等）で行うこと。
+#   会話は cc_session の `--resume` で次回 spawn 時に継がれる（「プロセスは死ぬがコンテキストは蘇る」）。
 
 # App（GUI）
 vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
@@ -151,7 +152,7 @@ vp midi xtouch demo|wave  # X-Touch (MCU) 実機 smoke / フェーダー wave
 vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ / handshake 観察
 ```
 
-> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
+> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` / `vp sp` は**存在しない**（旧体系。start/stop は `vp projects` / `vp daemon` / `vp app` に分散。`vp sp` は doc 44 P1 fold-in で退役 — project がプロセスでなくなったため）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
 > ⚠️ `vp hd` / `vp tmux` / `vp directmsg` も**存在しない**（tmux decoupling PR1-2 で退役。console の read/write は `vp lane capture` / `vp lane nudge`）。**VP は tmux に依存しない**（lane = SP の PtySlot が claude を直接ホスト、design doc `docs/design/tmux-decoupling.md`）。
 
 ## 開発コマンド
@@ -166,10 +167,14 @@ cargo clippy --workspace --all-targets    # Lint
 # dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
 mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動
 VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も効かせる（lane が全部落ちる）
+
+# webview bundle は生成物（commit しない、2026-07-19 転換 — docs/guide/webview.md が SSOT）
+mise run app:bundle                        # bun install --frozen-lockfile + bun run build（swap / release は内部で自動実行）
 ```
 
 > **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / SP / GUI を三点セットで立て直す要があり、素の `~/.cargo/bin/vp-app` は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
 > ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / SP は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= SP の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
+> webview（tsx/ts）変更は swap が内部で `app:bundle` を回すので手動 `bun run build` / `touch main_area.rs` は不要（旧儀式は build.rs の rerun-if-changed で根治）。webview 依存は npm semver pin（`file:` sibling 依存と bundle commit は 2026-07-19 に廃止）。creoui / club-unison の同時開発は `bun link`（docs/guide/webview.md）。
 > ⚠️ **swap 後は brew と現実が乖離する**: `app:swap` は brew cask 管理下の `.app` を dev build で上書きするが、Caskroom のメタデータは触らない。しかも swap した dev build は作業ツリーの version をそのまま名乗るため、**`brew upgrade --cask vantage-point` は version 一致で no-op になり dev build が居座り続ける**（Caskroom が持つのは実体コピーではなく `/Applications` への symlink なので brew は中身の差分を検知できない）。公式 release に戻すのは **`brew reinstall --cask vantage-point`**（`upgrade` では戻らない）。今どちらが入っているかは `spctl -a -t exec -vvv /Applications/VantagePoint.app` で判別できる（`Notarized Developer ID` = 公式 release / `Developer ID` = swap 済の dev build）。
 
 ## 設定・ポート
@@ -233,7 +238,7 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 | **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
 | **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
 
-> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が login shell の床に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
+> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が Act I slot（login shell）に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
 
 ### Stream-JSON 入力フォーマット
 
@@ -246,32 +251,30 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 - **コメントは日本語で記述する**
 - data / calculations / actions を明確に分離
 
-## デバッグモード
+## デバッグ / ログ
 
-| モード | 用途 | 起動方法 |
-|--------|------|----------|
-| `none` | 本番運用 | `vp sp start` |
-| `simple` | 基本的なイベントログ | `vp sp start -d simple` |
-| `detail` | 詳細なデータ・タイミング | `vp sp start -d detail` |
+> ⚠️ 旧「デバッグモード」（`-d simple|detail` + `send_debug` + WebUI 右パネル）は
+> doc 44 P1 fold-in で撤去（§5.4）。生産側（`send_debug`）は fold-in で常に無効化され、
+> 消費側（WebUI デバッグパネル）は旧 localhost browser UI ごと撤去済で、end-to-end で
+> dead だった。現在のログ手段は下記の 2 本。
 
-### ログ出力
+### tracing ログ詳細度（`VANTAGE_DEBUG`）
 
-```rust
-// Simple
-state.send_debug("category", "メッセージ", None);
+| 値 | tracing レベル | 用途 |
+|----|---------------|------|
+| （未設定 / `none`） | warn 相当（default EnvFilter） | 本番運用 |
+| `simple` | `vantage_point=info` | 基本ログ |
+| `detail` | `vantage_point=debug` | 詳細ログ |
 
-// Detail
-state.send_debug_detail("category", "メッセージ", serde_json::json!({"key": "value"}));
-```
-
-カテゴリ: `connection`, `pty`, `permission`, `agent`, `timing`, `tool`
+`VP_LOG=debug|info|warn|error` が設定されていれば `VANTAGE_DEBUG` より優先。
+（`cli::parse_debug_env` → `init_tracing`）
 
 ### 問題調査フロー
 
-1. `vp sp start -d detail` で起動
-2. WebUIデバッグパネル（右パネル）でログ確認
-3. ブラウザコンソールで `Received:` ログ確認
-4. 必要に応じてログ追加 → 再ビルド
+1. `VANTAGE_DEBUG=detail` で daemon を起動（or `VP_LOG=debug`）
+2. daemon ログ（`~/.local/state/vp/log/daemon.kdl.log`、dev は `vp-dev`）を tail
+3. lane console は `vp lane capture <lane>` で読む
+4. 必要に応じて `tracing::debug!` を追加 → 再ビルド
 
 ## MCP ツール補足
 
@@ -353,7 +356,7 @@ MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯�
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (12459 symbols, 27517 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point** (13299 symbols, 29761 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

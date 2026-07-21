@@ -15,7 +15,7 @@
  *   World widget 本体は後続 increment。
  */
 import { For, Show, createEffect, createMemo } from "solid-js";
-import { CreoIcon } from "creoui-icons-web";
+import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { resolveProjectOrder } from "./dnd";

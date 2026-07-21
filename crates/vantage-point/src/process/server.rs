@@ -15,16 +15,65 @@ use tower_http::cors::CorsLayer;
 
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
-use super::pty::PtyManager;
 use super::routes::{health, update, world};
 use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
-use crate::protocol::DebugMode;
 
-/// Run the Process server
-pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
+/// World が持つ「project path_key → lane 一覧」集約 view の共有参照。
+///
+/// doc 44 P1 (fold-in): 旧構成では SP が QUIC "lanes" channel 越しにこの view へ
+/// register snapshot を push していた。同一プロセスになった今、その push は
+/// **map への書き込み**に退化する（[`publish_lanes`]）。
+pub(crate) type WorldLaneView =
+    Arc<RwLock<std::collections::HashMap<String, Vec<super::lanes_state::LaneInfo>>>>;
+
+/// LanePool の現 snapshot を「World の集約 view」と「project の hub」の両方へ配る。
+///
+/// doc 44 P1 (fold-in): lanes が World へ流れる供給点は 3 つ（起動時 seed / 5s periodic /
+/// `SystemEvent::Lane`）あり、`lanes_state.rs` の規約どおり**全供給点で同じ enrich を通す**
+/// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、SP の uplink が QUIC で World の
+/// `lane_registry` へ中継していた。fold-in で中継が消えたため、World 側 view の更新を
+/// ここに並置する — これを怠ると World の view が boot 時の db 値で固まり、
+/// `/api/world/lanes` が実在しない lane（過去 pid）を配り続ける。
+async fn publish_lanes(
+    state: &Arc<AppState>,
+    hub: &Hub,
+    world_lanes: &Option<WorldLaneView>,
+    path_key: &str,
+) {
+    let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    if let Some(view) = world_lanes {
+        view.write()
+            .await
+            .insert(path_key.to_string(), lanes.clone());
+    }
+    hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot { lanes });
+}
+
+/// project 1 件分の実行状態を in-process で起動する（旧 SP プロセスの中身）。
+///
+/// doc 44 P1 (fold-in): 旧 `run()` から **uplink と終端 block を除いた部分**を切り出したもの。
+/// SP プロセスとして動く間は [`run`] が本関数を呼んで uplink を張り、World 一枚化後は
+/// World が project ごとに本関数を直接呼んで `Arc<AppState>` を map に抱える。
+///
+/// `world_lanes` は World の lane 集約 view（SP プロセスとして動く場合は `None`）。
+/// 旧 SP uplink の代わりに、本関数が起こす publish task が直接ここへ書き込む。
+///
+/// `vpdb` は World が開いた**唯一の DB handle**（doc 44 P1 PR4）。旧構成では本関数が
+/// project ごとに `db/sp_{slug}/` を開いていたが、同一プロセスになった今は handle を
+/// 共有する。`None` は「DB なしで継続」（World の接続が失敗した場合）。
+///
+/// 返る時点で lane bootstrap / lifecycle monitor / lanes snapshot publish まで起動済み。
+/// 停止は `shutdown_token` を cancel して [`shutdown_project`] を呼ぶ。
+pub(crate) async fn start_project(
+    port: u16,
+    cap_config: CapabilityConfig,
+    shutdown_token: CancellationToken,
+    world_lanes: Option<WorldLaneView>,
+    vpdb: Option<crate::db::SharedVpDb>,
+) -> Result<Arc<AppState>> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
@@ -39,10 +88,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
 
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
-
-    // Shutdown signal
-    let shutdown_token = CancellationToken::new();
-    let shutdown_token_clone = shutdown_token.clone();
 
     // Initialize Capability system
     let capabilities = Arc::new(ProcessCapabilities::new(cap_config).await);
@@ -92,50 +137,21 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         });
     }
 
-    // SurrealDB (embedded) に接続
-    // VP-182: SP は project slug 別の独立 DB ディレクトリ (`db/sp_{slug}/`) を使う。
-    // 旧実装は World と同一 `db/` を共有していたため surrealkv の OS 排他ロックで
-    // 衝突し、 SP 側が `vpdb = None` に陥って msgbox_store が初期化されない regression
-    // が発生していた (VP-179 で msg routing が WhitesnakeStore 単一経路化した結果顕在化)。
-    // ディレクトリ分離で LOCK 衝突を構造的に解消。 接続失敗時の DB なし fallback は
-    // 保険として残す。
-    let vpdb: Option<crate::db::SharedVpDb> = {
-        let slug = crate::resolve::project_slug(&project_dir, &config_for_init);
-        let data_dir = crate::db::db_data_dir_for_project(&slug);
-        match crate::db::VpDb::connect_embedded(&data_dir).await {
-            Ok(db) => {
-                if let Err(e) = db.define_schema().await {
-                    tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
-                    None
-                } else {
-                    tracing::info!("SP: SurrealDB 接続成功 (embedded: {})", data_dir.display());
-                    Some(std::sync::Arc::new(db))
-                }
-            }
-            Err(e) => {
-                // respawn-leak 根治 (c): per-project db (`db/sp_{slug}/`) の LOCK を生存
-                // holder が保持し続けている = 同 project の SP が既に稼働中。 旧挙動の
-                // 「DB なしで継続」だと重複 SP が silent に並走して事故を増幅していた
-                // (実測: daemon 再起動 race で 4 project × 2 世代 = SP 8 本)。 重複 spawn
-                // と判断して起動を中止する。 先行 SP は QUIC heal 再接続で registry に
-                // 自力復帰するので、 daemon 側の後始末は不要。
-                if e.downcast_ref::<crate::db::DbLockHeldByLiveHolder>()
-                    .is_some()
-                {
-                    tracing::error!(
-                        "SP: project db の LOCK を既存 SP が保持 → 重複 spawn と判断して起動中止: {}",
-                        e
-                    );
-                    return Err(anyhow::anyhow!(
-                        "重複 spawn 検出: project db の LOCK を既存 SP が保持しています \
-                         (この project の SP は既に稼働中)"
-                    ));
-                }
-                tracing::warn!("SP: SurrealDB 未接続、DB なしで継続: {}", e);
-                None
-            }
-        }
-    };
+    // SurrealDB — World が開いた唯一の handle をそのまま使う（doc 44 P1 PR4）。
+    //
+    // 旧構成では本関数が project ごとに `db/sp_{slug}/` を開いていた。ディレクトリ分離は
+    // VP-182 の対処で、別プロセスの World と SP が同一 db を open すると surrealkv の OS 排他
+    // ロックで 2 番目が失敗するためだった。fold-in で SP プロセスが消えた今、この分離は
+    // 不要になっただけでなく害がある — project ごとに db handle を持つと「project の runtime
+    // 実体」が復活し、doc 44 D2（project は認知境界に退化する）と矛盾する。
+    //
+    // project 次元は table の `project_path` 列が持つ（SP 固有 table も元から全て持っており、
+    // クエリも全て `WHERE project_path = $path` で絞っている）ので、handle 共有で意味論は変わらない。
+    // スキーマ定義は World 側の接続時に済んでいるため、ここでは行わない。
+    //
+    // 旧経路が担っていた「LOCK 保持 = 同 project の SP が既に稼働中 → 重複 spawn 中止」は
+    // `ProjectRuntimes` の map への二重 insert 防止が引き継いだ（プロセスが無いので、
+    // 重複は HashMap のキー衝突として表現される）。
 
     // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= lane-spawn)
     // を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
@@ -145,8 +161,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
 
     let state = Arc::new(AppState {
         hub,
-        cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
-        debug_mode,
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
         project_dir: project_dir.clone(),
@@ -161,7 +175,6 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_worlds: crate::daemon::hub_client::HubWorldsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
-        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
@@ -192,13 +205,11 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         ))),
         // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
         // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
-        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + spawn_world_uplink subscribe
-        // で SP → TheWorld push 経路。 将来 Pane / Stand 等の event も同 bus に variant 追加で乗る。
+        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + `publish_lanes` subscribe で
+        // World の集約 view を更新する経路。 将来 Pane / Stand 等の event も同 bus に variant
+        // 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
-        project_stands: Arc::new(RwLock::new(
-            super::project_stands_state::ProjectStandsPool::new(),
-        )),
         // PR-α-1 (VP-111): SP モードでは WorldCapabilities を持たない (World mode 専用)
         world_capabilities: None,
         // PR-β-1 (VP-119): SP モードで LaneCapabilities pool 受け皿を Some で初期化。
@@ -329,35 +340,16 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         }
     }
 
-    // L0 finale (doc 27 §3.4.5): SP HTTP listener + QUIC listen 全廃 = SP 完全 portless (outbound-only)。
-    // 旧 SP HTTP route / SP QUIC listen channel は全て World process-proxy reverse-routing に移管済:
-    // - reconciliation (旧 /api/health port-scan) → Push-only registry (QUIC register/disconnect)
-    // - MCP / lanes / tmux / ruby / canvas / wire 等 process 操作 → World process-proxy ask
-    //   (World → SP control channel → run_control_driver → dispatch_process_method)
-    // - stop_process の graceful shutdown も World process-proxy "shutdown" 経由
-    // よって SP は listen を一切持たず、 registry / canvas-ingest / control の outbound stream のみ
-    // (spawn_world_uplink)。 health/shutdown handler は run_world (World :32000) が使うため
-    // routes/health.rs に残置。
-
-    // SP-portless (doc 27 §3.4.5 / rebuild Epic L0 finale): SP は QUIC listen を持たない。
-    // 全 process 操作は World :32000 → SP control channel の reverse-routing
-    // (spawn_world_uplink の control stream → run_control_driver → dispatch_process_method) で
-    // serve する。listen server (start_unison_server) は撤去済 = SP は outbound-only。
-
-    // デバッグモード時のみトレースログ監視を起動
-    if debug_mode != DebugMode::None {
-        let hub_for_log = state.hub.clone();
-        tokio::spawn(async move {
-            crate::trace_log::watch_and_broadcast(hub_for_log).await;
-        });
-    }
-
-    // F1a (doc 27 §3.4.4): SP → TheWorld の outbound を 1 connection に集約した uplink。
-    // registry (自己登録 + heartbeat + lane diff push) / canvas-ingest (paisley-park /
-    // terminal topic push) / control (World reverse-routing 受け) の 3 channel を 1 共有
-    // QUIC connection 上の別 stream として張る (旧: 3 別 connection)。 依存は全て AppState
-    // から引くため引数は (state, shutdown) のみ。 切断時に TheWorld が即時除去 (HTTP 登録不要)。
-    crate::discovery::spawn_world_uplink(state.clone(), shutdown_token.clone());
+    // doc 44 P1 (fold-in): project は listener も outbound 接続も持たない。
+    //
+    // 経緯: L0 finale (doc 27 §3.4.5) で SP は HTTP/QUIC listen を全廃し、World からの操作は
+    // 「World → SP control channel の reverse-routing」で serve していた。fold-in はその
+    // control channel ごと不要にした — project は World と同一プロセスなので、process 操作は
+    // `ProjectRuntimes::dispatch` → `dispatch_process_method` の**直呼び**になる。
+    //
+    // 旧経路を構成していた `spawn_world_uplink` / `run_control_driver` / "control" channel は
+    // いずれも撤去済（残っていた 451 行は `run()` を外した時点で孤児化してコンパイラが検出した）。
+    // health/shutdown handler は run_world (World) が使うため routes/health.rs に残置。
 
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
@@ -369,13 +361,22 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
         let state_for_pub = state.clone();
         let hub = state.hub.clone();
         let shutdown = shutdown_token.clone();
+        // doc 44 P1 (fold-in): 3 つの供給点はいずれも `publish_lanes` を通す
+        // （World の集約 view 更新と hub broadcast が常に対で起きることを型で担保する）。
+        let world_lanes_for_pub = world_lanes.clone();
+        let path_key_for_pub =
+            crate::capability::normalize_path_key(std::path::Path::new(&project_dir));
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
         // （Conductor Lane は既に pre-populate 済）。
         // project-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Performer
         // も含める (= HTTP /api/lanes と同一 logic、 sidebar QUIC 経路でも Inactive 表示)。
-        hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot {
-            lanes: super::routes::lanes::build_lanes_snapshot(&state_for_pub).await,
-        });
+        publish_lanes(
+            &state_for_pub,
+            &hub,
+            &world_lanes_for_pub,
+            &path_key_for_pub,
+        )
+        .await;
         // board モデル (2026-07-15): DB の全 board を起動直後に retained topic へ seed する。
         // webview が canvas channel を購読した瞬間、 BoardUpdated(retained) で全 board が初期配信される
         // （SP 再起動を越えて board が復元される。 別 load 経路は不要）。
@@ -393,22 +394,16 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
                     _ = periodic.tick() => {
-                        let lanes = super::routes::lanes::build_lanes_snapshot(
-                            &state_for_pub,
+                        publish_lanes(
+                            &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
                         ).await;
-                        hub.broadcast(
-                            crate::protocol::ProcessMessage::LanesSnapshot { lanes },
-                        );
                     }
                     ev = sys_rx.recv() => match ev {
                         // Lane lifecycle 変化 / lag → 現 snapshot を全量 publish（idempotent）
                         Ok(SystemEvent::Lane(_)) | Err(RecvError::Lagged(_)) => {
-                            let lanes = super::routes::lanes::build_lanes_snapshot(
-                                &state_for_pub,
+                            publish_lanes(
+                                &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
                             ).await;
-                            hub.broadcast(
-                                crate::protocol::ProcessMessage::LanesSnapshot { lanes },
-                            );
                         }
                         Err(RecvError::Closed) => break,
                     },
@@ -427,35 +422,26 @@ pub async fn run(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig)
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
-    // Clone for shutdown
-    let capabilities_for_shutdown = state.capabilities.clone();
-    let file_watchers_for_shutdown = state.file_watchers.clone();
+    Ok(state)
+}
 
-    // SP-portless: SP は listen を持たず、 run() は shutdown_token で block する。 process 操作は
-    // spawn_world_uplink の control stream (reverse-routing) で process 生存中 serve され続ける。
-    // World process-proxy `shutdown` / SIGTERM 経由で shutdown_token が cancel されると cleanup へ進む。
-    shutdown_token_clone.cancelled().await;
-    tracing::info!("Graceful shutdown initiated (outbound-only SP)");
-
-    // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
-    // （spawn_world_uplink の shutdown handler が unregister を送信済み）
-
+/// [`start_project`] で起動した project の後始末（file watcher 停止 + capability shutdown）。
+///
+/// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
+/// 本関数は token では止まらないリソースの解放を担当する）。
+pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
     // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
 
     // ファイル監視を全停止
-    file_watchers_for_shutdown.lock().await.stop_all();
+    state.file_watchers.lock().await.stop_all();
 
-    // (tmux decoupling PR2: lane は PtySlot の子 — SP 停止で完全に落ちる)
+    // (tmux decoupling PR2: lane は PtySlot の子 — 親が落ちれば完全に落ちる)
 
-    // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");
-    if let Err(e) = capabilities_for_shutdown.shutdown().await {
+    if let Err(e) = state.capabilities.shutdown().await {
         tracing::warn!("Error during capability shutdown: {}", e);
     }
-
-    tracing::info!("Server stopped");
-    Ok(())
 }
 
 /// WorldモードでProcessサーバーを起動
@@ -497,8 +483,9 @@ pub async fn run_world(
 
     // SurrealDB (embedded) に接続してスキーマ定義
     // surrealkv backend で in-process DB を開く。外部 `surreal` バイナリ不要。
-    // VP-182: World は `db/world/` 専用ディレクトリを使う (= SP の `db/sp_{slug}/` と
-    // 分離、 surrealkv OS 排他ロックの衝突を回避)。
+    // doc 44 P1 PR4 (DB 統合): ここで開く `db/world/` が**唯一の DB**で、全 project が
+    // この handle を共有する（`ProjectRuntimes::for_world` 経由で配る）。旧 VP-182 の
+    // per-SP 分離 (`db/sp_{slug}/`) は撤去済 — project 次元は table の project_path 列が持つ。
     let vpdb: Option<crate::db::SharedVpDb> = {
         let data_dir = crate::db::db_data_dir_for_world();
         match crate::db::VpDb::connect_embedded(&data_dir).await {
@@ -621,8 +608,6 @@ pub async fn run_world(
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
-        cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
-        debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),
         hub_worlds: hub_worlds.clone(),
@@ -641,7 +626,6 @@ pub async fn run_world(
         world: Some(world_cap.clone()),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
-        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "WORLD_DISABLED".to_string(),
@@ -662,9 +646,6 @@ pub async fn run_world(
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
         // Phase 2 (Step E): system event central bus
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        project_stands: Arc::new(RwLock::new(
-            super::project_stands_state::ProjectStandsPool::new(),
-        )),
         // PR-α-1 (VP-111): World 階層 Stand container (LSCM doc 12 §3 / §9)
         world_capabilities: Some(world_capabilities),
         // PR-β-1 (VP-119): World mode では LaneCapabilities を持たない (Lane scope は SP per project)
@@ -712,8 +693,27 @@ pub async fn run_world(
     // daemon_state) がこの map を populate し、 World-side の nudge loop (delivery / reconcile) が
     // 同一 Arc を引いて `lane_nudge` を所有 SP に forward する。 別々に new() すると map が分裂して
     // forward 不能になるため、 ここで作った 1 つを 3 者 (daemon_state + 両 loop) に配る。
+    // doc 44 P1 (fold-in): 旧「SP control channel registry」を per-project 実行状態の
+    // registry に置き換える。 SP プロセスが無くなったので、 World は project を
+    // `Arc<AppState>` として直接抱え、 forward ではなく in-process dispatch で操作する。
+    // ここで作った 1 つを 3 者 (daemon_state + delivery loop + delegation reconcile loop) に
+    // 配るのは旧構成と同じ (別々に new() すると map が分裂して到達不能になる)。
+    // doc 44 P1 (fold-in): World の lane 集約 view を registry に結線する。旧構成では
+    // SP の QUIC uplink がこの view を最新化していたので、結線を落とすと project は
+    // 動くのに World からは boot 時の db 値しか見えない（= 過去 pid の ghost lane 配信）。
+    // doc 44 P1 PR4 (DB 統合): db handle も同時に配る。project は自分では db を開かず、
+    // World が開いたこの 1 本を共有する（project 次元は table の project_path 列が持つ）。
     let control_channels: crate::daemon::server::ControlChannels =
-        std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+        std::sync::Arc::new(super::project_registry::ProjectRuntimes::for_world(
+            world_cap.read().await.lane_registry_ref(),
+            vpdb.clone(),
+        ));
+
+    // ProcessManagerCapability に registry を差し込む（`start_process` が in-process 起動に使う）。
+    world_cap
+        .write()
+        .await
+        .set_project_runtimes(control_channels.clone());
 
     // R2-b: wire delivery loop (未 ack command の nudge + 再掲示) を spawn。
     // store 未構築 (DB 接続失敗) なら skip — wire 自体が動かないため delivery も不要。
@@ -778,11 +778,6 @@ pub async fn run_world(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
-        .route("/api/world/projects/set_slot", post(world::world_set_slot))
-        .route(
-            "/api/world/projects/unassign_slot",
-            post(world::world_unassign_slot),
-        )
         .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
         .route(
@@ -809,24 +804,18 @@ pub async fn run_world(
             "/api/world/processes/{project_name}/pointview",
             post(world::world_open_pointview),
         )
-        .route("/api/world/refresh", post(world::world_refresh))
         // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
         // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
         // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
         // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
         // 同 channel 経由。
-        // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
-        // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
-        .route(
-            "/api/world/processes/register",
-            post(world::world_register_process),
-        )
-        .route(
-            "/api/world/processes/unregister",
-            post(world::world_unregister_process),
-        )
-        // VP-165 PR-6: slot ベース SP port resolver (decision C 完成、TheWorld を port authority に)
-        .route("/api/world/port_for", get(world::world_port_for))
+        // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
+        // project は World 自身が起こすので外から登録される概念が無く、残しておくと
+        // 外部由来の port/pid で running_processes を書ける穴になる（起動していない
+        // project を稼働中に見せられる）。稼働状態の唯一の writer は start/stop_process。
+        // doc 44 P1 (fold-in): slot ベース port resolver (`/api/world/port_for`) と
+        // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
+        // project は portless（port=0）になり、slot が解決する listen port が存在しない。
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
@@ -903,6 +892,15 @@ pub async fn run_world(
         // M2 / doc 26 §2: device channel (agent → daemon) が registry を更新するため registry 本体も共有。
         daemon_state_builder = daemon_state_builder.with_bastet(bastet.clone());
     }
+    // doc 44 P1 (fold-in): capability の start_process / stop_process が lifecycle event を
+    // 流せるよう、DaemonState と**同一の** broadcast Sender を共有する（clone しても同じ
+    // channel を指す）。これが無いと `vp daemon processes --watch` / event log の
+    // process.up/down が生産者ゼロで永久沈黙する（旧 registry handler が担っていた経路）。
+    world_cap
+        .write()
+        .await
+        .set_process_lifecycle_tx(daemon_state_builder.process_lifecycle_tx.clone());
+
     let daemon_state = std::sync::Arc::new(daemon_state_builder);
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
@@ -1058,11 +1056,11 @@ pub async fn run_world(
         );
     }
 
-    // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
-    let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(
-        world_cap.clone(),
-        shutdown_token.clone(),
-    ));
+    // doc 44 P1 (fold-in): health monitor は退役。旧構成では「別プロセスの SP が crash して
+    // registry から消える」のを PID liveness で検知し respawn していたが、project が World 内の
+    // Arc<AppState> になり、pid が全 project 共通で World 自身になったため、監視対象
+    // （死にうる project プロセス）が存在しなくなった。lane の engine（claude/codex）の死は
+    // 別途 lane lifecycle monitor が見る。
 
     // 起動時設定の復帰: enabled な project の SP を自動起動（VP-207）。
     // daemon restart 後に working set を復元する。1 回限りの startup タスク。
@@ -1194,11 +1192,17 @@ pub async fn run_world(
         .await?;
 
     // クリーンアップ
-    health_monitor.abort();
     daemon_handle.abort();
 
     // Shutdown capabilities
     tracing::info!("Shutting down World...");
+    // doc 44 P1 (fold-in): capability を畳む前に、World が抱える project を全部停止する。
+    // 旧構成では project = 別プロセスで daemon 停止後も生き残るのが正だったため、この
+    // 後始末はどこにも無かった。in-process 化でその責務が World に移っている。
+    let stopped_projects = control_channels.shutdown_all().await;
+    if stopped_projects > 0 {
+        tracing::info!("World shutdown: {} project を停止", stopped_projects);
+    }
     // Bastet ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
     #[cfg(feature = "midi")]
     if let Some(bastet) = bastet_for_shutdown.as_ref() {
@@ -1303,4 +1307,45 @@ fn spawn_lane_lifecycle_monitor(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// doc 44 P1 (fold-in) 回帰固定: lanes の供給点は World の集約 view を必ず更新する。
+    ///
+    /// この不変条件は旧構成では **SP の QUIC uplink が担うプロセス跨ぎの約束**だったため
+    /// 単体テストの射程外にあり、fold-in で uplink を落とした際に誰にも気付かれずに
+    /// 失われた（実機で `/api/world/lanes` が boot 時 db 値のまま固まり、存在しない
+    /// 過去 pid の lane を配り続けた）。関数呼び出しになった今はここで固定できる。
+    #[tokio::test]
+    async fn publish_lanes_updates_world_view() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+        let view: WorldLaneView = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let key = "/tmp/proj-publish-lanes";
+
+        publish_lanes(&state, &hub, &Some(view.clone()), key).await;
+
+        // lane 数が 0 でも **entry 自体は入る**ことが要点。空 Vec の insert が
+        // 「この project にはもう lane が無い」を表明し、boot 時に db から載った
+        // stale 行を上書きして消す役割を持つ。
+        assert!(
+            view.read().await.contains_key(key),
+            "publish 後、World view に当該 project の entry が存在すること"
+        );
+    }
+
+    /// World view 不在（= SP プロセス経路 / test）でも publish は成立する。
+    ///
+    /// `run()` 経路は uplink が World へ中継するので view を持たない。ここが panic すると
+    /// fold-in 完了前の SP 単体起動が壊れる。
+    #[tokio::test]
+    async fn publish_lanes_without_world_view_is_noop() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+
+        publish_lanes(&state, &hub, &None, "/tmp/proj-no-view").await;
+    }
 }
