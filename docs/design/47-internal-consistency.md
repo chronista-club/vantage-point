@@ -215,10 +215,23 @@ slot は lane に 1 枚、mailbox `agent@<lane>` を名乗るのも root だか�
   （Tui は既定なので書かずに捨てる = migration が state を増やさない）
 - lane state GC の破棄対象が 7 種 → 6 種に減った（leak ではなく state が 1 つ畳まれた）
 
-**残り（client 側、UI フェーズではなくこの後の小 PR）**: `console:set_mode` /
-`#console-switching` overlay / `vp:console-mode` bus / `LaneInfo.console_mode` の退役。
-`+ New` の Act 指定が **client の RPC 分岐に溶けていて server に届いていない**のも同じ PR で直す
-（`echoes_session_create` = Chat / `echoes_session_new_root` = Tui と暗黙に対応していた）。
+### 残りは UI フェーズ（訂正 2026-07-21）
+
+当初「client 側の退役はこの後の小 PR」と書いたが、**§4 の内部部分は上の移設で完了している**。
+残りは全部 §7 の UI フェーズに属する:
+
+| 残件 | なぜ UI フェーズか |
+|---|---|
+| `console:set_mode` / `#console-switching` overlay / `vp:console-mode` bus | Act 切替 **UI** の話。タブ chip が既に同じ切替を提供しており、どちらに寄せるかは LayoutEngine の設計と一緒に決まる |
+| `LaneInfo.console_mode` の退役 | client が Pane kind を持って初めて落とせる |
+
+`+ New` の Act 指定は「client の RPC 分岐に溶けている」が、**移設後は結果が正しい** —
+`echoes_session_create` は必ず `SessionAct::Chat`、`echoes_session_new_root` は必ず `Tui` を
+記録するので、どちらの RPC を選んだかと記録される act は一致する。明示化は cleanup であって
+バグ修正ではないため、UI フェーズで Pane kind を通す時にまとめる。
+
+> **作らなくていい仕事を作らない**。「溶けている」と「間違っている」は別。
+> 溶けたままでも結果が正しいなら、直す価値は語彙の統一（§2）と同時にしか生まれない。
 
 ## 5. 「New」が 3 箇所ある
 
@@ -291,10 +304,15 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
 
 ### 内部フェーズ（表示はミニマム固定のまま）
 
-1. **doc 46 P4 — `console_mode` 撤去**（26 ファイル、server 中心）
-   = 本 doc §4。Act が Pane の kind に確定し、§1 の判断材料が増える
-2. ✅ **§6 — 共有 bus の相関 id**（独立・小。`#838` の window フラグ凌ぎを根治）
+1. ✅ **doc 46 P4 — Act を lane から session へ**（#848）= 本 doc §4。
+   撤去ではなく移設だった（3 仕事）。残件は UI フェーズへ送った
+2. ✅ **§6 — 共有 bus の相関 id**（#850。`#838` の window フラグ凌ぎを根治）
 3. **doc 46 P5 — `pty_slots` を `(lane, session)` へ re-key**（内部の本丸）
+   - 実測: 参照 27 箇所中 **25 が `lanes_state.rs` に閉じている**（private field + method 越し）。
+     doc 46 §3 の「lane key を前提にした全経路」より**カプセル化されていた**
+   - 重いのは経路数ではなく**不変条件の意味論**: 「1 lane = 高々 1 エンジン
+     （`pty_slots` xor `chat_engines`）」が「**1 session = 高々 1 エンジン**」に変わる。
+     これは型ではなく規律で守られている
 4. **doc 44 P3 / doc 45** — Project Host の帳簿、transport の Unison 統一
 
 ### UI フェーズ（Epic の最後、一気に）
