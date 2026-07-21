@@ -3779,11 +3779,14 @@ pub fn run() -> anyhow::Result<()> {
                 if let Err(e) = webview.evaluate_script(&script) {
                     tracing::warn!("vpConsole.setMode 失敗 (lane={}): {}", lane, e);
                 }
-                // Act I 復帰は xterm container を active 化しないと見えない（applyConsoleMode の
-                // tui 分岐は laneHost の console-hidden を外すだけ = chat で生まれた lane の
-                // container は非 active のまま）。showLane は active 化に加えて rAF 2 段で
-                // fit / sendResize / focus まで行う。⚠️ setMode より後に呼ぶこと — console-hidden
-                // が残ったままだと clientWidth=0 で fit が見送られ 80×24 に固定される。
+                // Act I 復帰は xterm container を active 化しないと見えない（`.lane-pane.active`
+                // は per-lane の切替で、chat で生まれた lane の container は非 active のまま）。
+                // showLane は active 化に加えて rAF 2 段で fit / sendResize / focus まで行う。
+                // ⚠️ setMode より後に呼ぶこと — container が非 active のままだと clientWidth=0 で
+                // fit が見送られ 80×24 に固定される。
+                //
+                // doc 46 P1: 旧記述にあった `.console-hidden`（Act II 表示中に lane-host を
+                // display:none で隠す機構）は撤去済。両 Pane は常に並び、Act は focus で表す。
                 if is_tui {
                     // SP 応答待ちの間に別 lane へ移っていたら表示は奪わない。mode は上で手元
                     // snapshot に反映済みなので、戻った時の activate_lane が正しい mode で開く。

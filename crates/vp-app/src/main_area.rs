@@ -190,16 +190,35 @@ body{overflow:hidden;}
 #pane-terminal.echoes-header-active{--echoes-header-h:30px;}
 #echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
   overflow:hidden;z-index:2;}
-/* Phase 2.5: per-Lane instance container. lane-host が pane-terminal の header 下領域を埋め、
-   各 .lane-pane が absolute で重なる。 active のみ display:block。 */
-#lane-host{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;}
+/* doc 46 P1: Pane shell。header 下・タブエリア上の領域を flex row で分け合う。
+   子 Pane (#lane-host / #console-chat-host) は **中身を変えず** 位置づけだけ
+   「全面 absolute」→「flex child」に変わる。 */
+#pane-terminal{--pane-tabs-h:0px;}
+#pane-terminal.pane-tabs-active{--pane-tabs-h:26px;}
+#lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
+  bottom:var(--pane-tabs-h);display:flex;flex-direction:row;align-items:stretch;gap:1px;
+  background:var(--color-border,#2a3040);}
+/* Pane 共通: flex で等分、min-width:0 が無いと中身 (xterm) が縮まず溢れる。 */
+#lane-panes > *{flex:1 1 0;min-width:0;position:relative;background:var(--color-bg,#0f1115);}
+/* 縮小された Pane は列から外れる (タブエリアに chip が出る)。 */
+#lane-panes > .pane-minimized{display:none;}
+/* 要件 3: フォーカスが**視認できる**。内側 ring なので幅を食わず、隣との 1px gap と干渉しない。 */
+#lane-panes > .pane-focused{box-shadow:inset 0 0 0 1px var(--sb-conn-auto,#22E0FF);}
+/* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
-/* doc 33 C2: Echoes Act II (Console GUI) mount 点。default 非表示、mode=chat で .active。
-   lane-host(xterm) と排他 — chat 表示中は lane-host を .console-hidden で隠す。 */
-#console-chat-host{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;}
-#console-chat-host.active{display:block;}
-#lane-host.console-hidden{display:none;}
+/* doc 46 P1 要件 2: タブエリア。縮小された Pane の chip 置き場。
+   空なら高さ 0 (--pane-tabs-h) = 従来の見た目のまま。 */
+#pane-tabs{position:absolute;left:0;right:0;bottom:0;height:var(--pane-tabs-h);
+  display:flex;align-items:center;gap:4px;padding:0 6px;overflow-x:auto;overflow-y:hidden;
+  background:var(--color-bg,#0f1115);border-top:1px solid var(--color-border,#2a3040);}
+#pane-tabs:empty{border-top:none;}
+.pane-tab{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;
+  height:18px;padding:0 8px;border-radius:9px;cursor:pointer;
+  border:1px solid var(--color-border,#2a3040);background:transparent;
+  color:var(--color-text-secondary,#a8b0c0);font-size:11px;
+  font-family:var(--vp-font-sans),var(--typography-family-sans);white-space:nowrap;}
+.pane-tab:hover{color:var(--color-text,#e6e9ef);border-color:var(--sb-conn-auto,#22E0FF);}
 /* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
    header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
 #console-switching{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
@@ -376,11 +395,20 @@ body{overflow:hidden;}
          EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
          Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
     <div id="echoes-header"></div>
-    <div id="lane-host"></div>
-    <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
-         ChatView がここに render する。default hidden — console_mode=chat の時だけ .active で表示
-         (lane-host xterm と排他表示、entry.tsx の vp:console-mode listener が toggle)。 -->
-    <div id="console-chat-host"></div>
+    <!-- doc 46 P1: Pane shell。lane の表示領域を「Act I か Act II」の排他から
+         **N 枚の Pane を並べる tiling** に変える器。子 (#lane-host / #console-chat-host) は
+         中身を一切変えず、位置づけだけ「全面 absolute」→「flex child」に変わる。
+         縮小 (minimize) された Pane は #pane-tabs に chip として畳まれる。 -->
+    <div id="lane-panes">
+      <div id="lane-host"></div>
+      <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
+           ChatView がここに render する。doc 46 P1 で lane-host との**排他をやめ**、
+           既定で左右に並ぶ (要件 1)。片方だけ見たい時は他方を minimize する。 -->
+      <div id="console-chat-host"></div>
+    </div>
+    <!-- doc 46 P1 要件 2: 縮小された Pane の置き場 (タブエリア)。chip を 1 クリックで
+         Pane に戻す。空の時は高さ 0 = 従来の見た目を壊さない。 -->
+    <div id="pane-tabs"></div>
     <!-- doc 33 §9: Act I⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
     <div id="console-switching">
