@@ -1314,12 +1314,9 @@ impl ProcessManagerCapability {
                 "project runtimes 未設定 — World mode 以外では project を起動できない".to_string(),
             )
         })?;
-        let started = runtimes
-            .start(&project_path_str, crate::protocol::DebugMode::None)
-            .await
-            .map_err(|e| {
-                CapabilityError::Other(format!("project 起動失敗 ({}): {}", project_name, e))
-            })?;
+        let started = runtimes.start(&project_path_str).await.map_err(|e| {
+            CapabilityError::Other(format!("project 起動失敗 ({}): {}", project_name, e))
+        })?;
         if !started {
             tracing::info!("project は既に起動済み → skip (project={})", project_name);
         }

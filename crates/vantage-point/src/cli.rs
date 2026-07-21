@@ -3,9 +3,6 @@
 //! インスタンス管理、デバッグ設定、ユーティリティ関数を提供する。
 
 use anyhow::Result;
-use clap::ValueEnum;
-
-use crate::protocol::DebugMode;
 
 /// World daemon (:32000) の `/api/health` レスポンス parser。
 ///
@@ -276,26 +273,19 @@ pub fn stop_by_target(target: Option<&str>, config: &crate::config::Config) -> R
     }
 }
 
-/// CLIデバッグモード
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub enum DebugModeArg {
-    /// デバッグ情報なし
+/// tracing verbosity レベル（`VANTAGE_DEBUG=none|simple|detail` 用）。
+///
+/// doc 44 P1 (fold-in): 旧 `protocol::DebugMode` は「-d デバッグパネル」と「VANTAGE_DEBUG
+/// ログ詳細度」の 2 用途を兼ねていた。前者（DebugInfo broadcast / 旧 WebUI パネル）は
+/// end-to-end で dead だったため撤去し、生きている後者（tracing レベル選択）だけを
+/// ここへローカル化した。none→warn / simple→info / detail→debug に対応する。
+/// wire には乗らないので serde 不要。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugMode {
     #[default]
     None,
-    /// 簡易デバッグ（セッションID、タイミング）
     Simple,
-    /// 詳細デバッグ（JSON全体、全イベント）
     Detail,
-}
-
-impl From<DebugModeArg> for DebugMode {
-    fn from(arg: DebugModeArg) -> Self {
-        match arg {
-            DebugModeArg::None => DebugMode::None,
-            DebugModeArg::Simple => DebugMode::Simple,
-            DebugModeArg::Detail => DebugMode::Detail,
-        }
-    }
 }
 
 /// Parse debug mode from environment variable

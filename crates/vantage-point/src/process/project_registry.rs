@@ -29,7 +29,6 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use super::state::AppState;
-use crate::protocol::DebugMode;
 
 /// project 1 件分の実行状態と、その停止スイッチ。
 pub(crate) struct ProjectRuntime {
@@ -95,7 +94,7 @@ impl ProjectRuntimes {
     /// shutdown 開始後は `Err` を返す（[`closing`](Self::closing) 参照）。`Ok(false)` に
     /// しないのは、caller の `start_process` が「false = 既に起動済み」と解釈して
     /// `running_processes` / presence に **動いていない project を登録してしまう**ため。
-    pub async fn start(&self, project_dir: &str, debug_mode: DebugMode) -> Result<bool> {
+    pub async fn start(&self, project_dir: &str) -> Result<bool> {
         let key = crate::capability::normalize_path_key(std::path::Path::new(project_dir));
 
         if self.closing.load(Ordering::Acquire) {
@@ -112,14 +111,9 @@ impl ProjectRuntimes {
             project_dir: project_dir.to_string(),
         };
         // port はもう bind されない（SP-portless の遺産）。fold-in で概念ごと消えるため 0 を渡す。
-        let state = super::server::start_project(
-            0,
-            debug_mode,
-            cap_config,
-            shutdown.clone(),
-            self.world_lanes.clone(),
-        )
-        .await?;
+        let state =
+            super::server::start_project(0, cap_config, shutdown.clone(), self.world_lanes.clone())
+                .await?;
 
         // 起動中に別 caller が同 project を起こしていた場合はこちらを捨てる（後勝ちにしない）。
         let mut guard = self.inner.write().await;
@@ -263,7 +257,7 @@ mod tests {
         assert_eq!(runtimes.shutdown_all().await, 0);
 
         let err = runtimes
-            .start("/tmp/proj-after-shutdown", DebugMode::None)
+            .start("/tmp/proj-after-shutdown")
             .await
             .expect_err("shutdown 後の start は Err であること");
         assert!(

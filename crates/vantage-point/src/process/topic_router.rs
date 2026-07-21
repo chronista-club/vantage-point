@@ -214,11 +214,6 @@ impl TopicRouter {
                 )
             }
 
-            // === Debug（デバッグ情報）===
-            ProcessMessage::DebugInfo { .. } => "process/debug/log".to_string(),
-            ProcessMessage::DebugModeChanged { .. } => "process/debug/state/mode".to_string(),
-            ProcessMessage::TraceLog { .. } => "process/debug/trace".to_string(),
-
             // === Star Platinum（Process 管理）===
             ProcessMessage::Ping => "process/star-platinum/event/ping".to_string(),
             // switch_lane は一時コマンド（active Lane 切替）であり state ではない。
@@ -555,19 +550,6 @@ mod tests {
         let topic = TopicRouter::message_to_topic(&msg);
         assert_eq!(topic, "process/star-platinum/state/lanes");
         assert!(TopicPath::parse(&topic).is_retained());
-    }
-
-    #[test]
-    fn test_message_to_topic_debug_info() {
-        let msg = ProcessMessage::DebugInfo {
-            level: crate::protocol::DebugMode::Simple,
-            category: "test".to_string(),
-            message: "hello".to_string(),
-            data: None,
-            tags: vec![],
-        };
-        let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/debug/log");
     }
 
     // =========================================================================

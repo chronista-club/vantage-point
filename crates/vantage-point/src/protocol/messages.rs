@@ -5,19 +5,6 @@ use serde::{Deserialize, Serialize};
 use crate::agui::AgUiEvent;
 use crate::process::lanes_state::LaneInfo;
 
-/// Debug display mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DebugMode {
-    /// No debug information
-    #[default]
-    None,
-    /// Simple debug info (session ID, timing)
-    Simple,
-    /// Detailed debug info (full JSON, all events)
-    Detail,
-}
-
 /// Content types that can be displayed in the viewer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -156,19 +143,6 @@ pub enum ProcessMessage {
     ChatMessage { message: ChatMessage },
     /// Chat streaming chunk (for real-time display)
     ChatChunk { content: String, done: bool },
-    /// Debug information
-    DebugInfo {
-        level: DebugMode,
-        category: String,
-        message: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        data: Option<serde_json::Value>,
-        /// 複数タグによるフィルタリング用（例: ["pty", "permission", "broadcast"]）
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        tags: Vec<String>,
-    },
-    /// Notify debug mode change
-    DebugModeChanged { mode: DebugMode },
     /// Session list response
     SessionList {
         sessions: Vec<SessionInfo>,
@@ -220,19 +194,6 @@ pub enum ProcessMessage {
         #[serde(default = "default_session_key")]
         session: u32,
         event: crate::echoes::EchoesEvent,
-    },
-    /// トレースログエントリ（debug.log ファイルからの配信）
-    TraceLog {
-        ts: String,
-        process: String,
-        trace_id: String,
-        step: String,
-        level: String,
-        msg: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        data: Option<serde_json::Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        elapsed_ms: Option<u64>,
     },
     /// Canvas Lane 切り替え指示
     SwitchLane {
@@ -487,20 +448,6 @@ pub enum ComponentAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_debug_mode_default() {
-        assert_eq!(DebugMode::default(), DebugMode::None);
-    }
-
-    #[test]
-    fn test_debug_mode_from_str() {
-        let simple: DebugMode = serde_json::from_str(r#""simple""#).unwrap();
-        assert_eq!(simple, DebugMode::Simple);
-
-        let detail: DebugMode = serde_json::from_str(r#""detail""#).unwrap();
-        assert_eq!(detail, DebugMode::Detail);
-    }
 
     #[test]
     fn test_process_message_serialization() {

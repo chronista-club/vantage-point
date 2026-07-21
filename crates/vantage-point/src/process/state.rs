@@ -16,7 +16,7 @@ use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{ActorRegistry, ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
-use crate::protocol::{Content, DebugMode, ProcessMessage};
+use crate::protocol::{Content, ProcessMessage};
 
 /// PP の overall canvas layout を pane_contents に畳む際の reserved pane_id。
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
@@ -25,8 +25,6 @@ pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 /// Application state
 pub(crate) struct AppState {
     pub hub: Hub,
-    /// Debug display mode
-    pub debug_mode: DebugMode,
     /// Shutdown signal token
     pub shutdown_token: CancellationToken,
     /// Project directory for Claude agent
@@ -194,48 +192,6 @@ impl AppState {
         }
     }
 
-    /// Send debug info to connected clients
-    pub fn send_debug(&self, category: &str, message: &str, data: Option<serde_json::Value>) {
-        if self.debug_mode == DebugMode::None {
-            return;
-        }
-
-        // For simple mode, skip detail-level messages
-        if self.debug_mode == DebugMode::Simple && data.is_some() {
-            // Still send but without detailed data
-            self.hub.broadcast(ProcessMessage::DebugInfo {
-                level: DebugMode::Simple,
-                category: category.to_string(),
-                message: message.to_string(),
-                data: None,
-                tags: vec![],
-            });
-        } else {
-            self.hub.broadcast(ProcessMessage::DebugInfo {
-                level: self.debug_mode,
-                category: category.to_string(),
-                message: message.to_string(),
-                data,
-                tags: vec![],
-            });
-        }
-    }
-
-    /// Send debug info only in detail mode
-    // CLAUDE.md documented debug API（デバッグモード §）。mako 2026-07-18 温存決定。
-    #[allow(dead_code)]
-    pub fn send_debug_detail(&self, category: &str, message: &str, data: serde_json::Value) {
-        if self.debug_mode == DebugMode::Detail {
-            self.hub.broadcast(ProcessMessage::DebugInfo {
-                level: DebugMode::Detail,
-                category: category.to_string(),
-                message: message.to_string(),
-                data: Some(data),
-                tags: vec![],
-            });
-        }
-    }
-
     /// Send AG-UI event to connected clients (REQ-AGUI-040)
     // 要確認（audit 2026-07-18、先行実装の可能性）: AG-UI protocol の先行 API（REQ-AGUI-040）。未 call。
     #[allow(dead_code)]
@@ -386,7 +342,6 @@ pub(crate) async fn build_test_app_state(
     use super::lane_capabilities::LaneCapabilitiesPool;
     use super::lanes_state::LanePool;
     use crate::capability::WireNotifier;
-    use crate::protocol::DebugMode;
 
     let capabilities = Arc::new(
         ProcessCapabilities::new(CapabilityConfig {
@@ -397,7 +352,6 @@ pub(crate) async fn build_test_app_state(
 
     Arc::new(AppState {
         hub: Hub::new(),
-        debug_mode: DebugMode::None,
         shutdown_token: CancellationToken::new(),
         project_dir: String::new(),
         project_name: String::new(),

@@ -203,11 +203,7 @@ pub(crate) async fn handle_delegate(
     let woke = state.nudge_lane(&doer, &prompt).await;
     mark_delivered(&id, woke).await;
 
-    state.send_debug(
-        "agent",
-        &format!("delegate {id}: {requester} → {doer} (woke={woke})"),
-        None,
-    );
+    tracing::debug!("delegate {id}: {requester} → {doer} (woke={woke})");
 
     Ok(serde_json::json!({ "id": id, "state": "active", "woke": woke }))
 }
@@ -251,11 +247,7 @@ pub(crate) async fn handle_complete(
     let woke = state.nudge_lane(&requester, &prompt).await;
     mark_delivered(&id, woke).await;
 
-    state.send_debug(
-        "agent",
-        &format!("complete {id}: {state_str} → wake {requester} (woke={woke})"),
-        None,
-    );
+    tracing::debug!("complete {id}: {state_str} → wake {requester} (woke={woke})");
 
     Ok(serde_json::json!({ "id": id, "state": state_str, "woke": woke }))
 }
@@ -293,11 +285,7 @@ pub(crate) async fn handle_respond(
     let woke = state.nudge_lane(&doer, &prompt).await;
     mark_delivered(&id, woke).await;
 
-    state.send_debug(
-        "agent",
-        &format!("respond {id}: → wake {doer} (woke={woke})"),
-        None,
-    );
+    tracing::debug!("respond {id}: → wake {doer} (woke={woke})");
 
     Ok(serde_json::json!({ "id": id, "state": "active", "woke": woke }))
 }
