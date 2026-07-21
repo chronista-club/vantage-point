@@ -15,7 +15,7 @@ use tower_http::cors::CorsLayer;
 
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
-use super::routes::{health, update, world};
+use super::routes::{health, update};
 use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
@@ -36,7 +36,7 @@ pub(crate) type WorldLaneView =
 /// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、SP の uplink が QUIC で World の
 /// `lane_registry` へ中継していた。fold-in で中継が消えたため、World 側 view の更新を
 /// ここに並置する — これを怠ると World の view が boot 時の db 値で固まり、
-/// `/api/world/lanes` が実在しない lane（過去 pid）を配り続ける。
+/// Unison `lanes/list` が実在しない lane（過去 pid）を配り続ける。
 /// vp-app への push を起こす通知路（World daemon の `lane_change_tx`）と、
 /// 前回 publish した内容の指紋。
 ///
@@ -505,6 +505,61 @@ pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
     }
 }
 
+/// TheWorld の HTTP router を組む（= 残っている HTTP 面の全て）。
+///
+/// ## doc 45 段 4 — control plane の HTTP route は撤去済み
+///
+/// control plane（projects CRUD / lifecycle / lanes / canvas）は Unison "world-control" channel
+/// に一本化した（doc 45 §3、消費者は段 2 で CLI・段 3 で vp-app が移設済み）。ここに残るのは:
+///
+/// - `/api/health` `/api/shutdown` — **意図的に鈍い外殻**（doc 45 §2）。health は
+///   「他が壊れている時に動いてほしい」probe で、Unison 層が wedge した時に診断手段ごと
+///   失わないよう HTTP に置く。`.mise/tasks/app/swap`（Ruby）と `apple/VantagePointAgent`
+///   （Swift）という **VP 外の消費者**もいて、彼らに Unison client を持たせる理由がない。
+/// - `/api/update/*` — self-update（doc 45 §3 で「churn が低いので後回しでよい」と判断）。
+///
+/// `run_world` から関数として切り出してあるのは、**route 登録そのものをテストで固定する**ため
+/// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
+fn build_world_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/api/health", get(health::health_handler))
+        .route("/api/shutdown", post(health::shutdown_handler))
+        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
+        // doc 45 段 4: `/api/canvas/{switch_lane,layout}` は撤去。宛先の `canvas_senders` を
+        // populate する書き手が旧 localhost browser Canvas の WS 撤去で消えており、
+        // end-to-end で dead だった（doc 45 §3.1 — 移設ではなく撤去が正解の例）。
+        // doc 45 段 4: `/api/world/*`（projects CRUD / processes lifecycle / lanes）は撤去。
+        // 同じ操作は Unison "world-control" channel が持ち、実装は
+        // `routes::world` の共有関数（apply_project_update / collect_lanes /
+        // resolve_create_lane_args）に畳んであるので面が減っても振る舞いは変わらない。
+        // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
+        // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
+        // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
+        // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
+        // 同 channel 経由。
+        // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
+        // project は World 自身が起こすので外から登録される概念が無く、残しておくと
+        // 外部由来の port/pid で running_processes を書ける穴になる（起動していない
+        // project を稼働中に見せられる）。稼働状態の唯一の writer は start/stop_process。
+        // doc 44 P1 (fold-in): slot ベース port resolver (`/api/world/port_for`) と
+        // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
+        // project は portless（port=0）になり、slot が解決する listen port が存在しない。
+        // Update API routes (vp CLI)
+        .route("/api/update/check", get(update::update_check))
+        .route("/api/update/apply", post(update::update_apply))
+        .route("/api/update/rollback", post(update::update_rollback))
+        .route("/api/update/restart", post(update::update_restart))
+        // Update API routes (VantagePoint.app)
+        .route("/api/update/mac/check", get(update::update_mac_check))
+        .route("/api/update/mac/apply", post(update::update_mac_apply))
+        .route(
+            "/api/update/mac/rollback",
+            post(update::update_mac_rollback),
+        )
+        .layer(CorsLayer::permissive())
+        .with_state(state)
+}
+
 /// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
 /// Daemon（PTY管理 QUIC サーバー）も統合して起動する
@@ -813,94 +868,9 @@ pub async fn run_world(
         );
     }
 
-    let app = Router::new()
-        .route("/api/health", get(health::health_handler))
-        .route("/api/shutdown", post(health::shutdown_handler))
-        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
-        // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
-        .route(
-            "/api/canvas/switch_lane",
-            post(health::canvas_switch_lane_handler),
-        )
-        .route(
-            "/api/canvas/layout",
-            get(health::canvas_layout_get_handler).post(health::canvas_layout_save_handler),
-        )
-        // World API routes
-        .route(
-            "/api/world/projects",
-            get(world::world_list_projects).post(world::world_add_project),
-        )
-        .route(
-            "/api/world/projects/reorder",
-            post(world::world_reorder_projects),
-        )
-        .route(
-            "/api/world/projects/update",
-            post(world::world_update_project),
-        )
-        .route(
-            "/api/world/projects/remove",
-            post(world::world_remove_project),
-        )
-        .route(
-            "/api/world/projects/reload",
-            post(world::world_reload_projects),
-        )
-        .route("/api/world/projects/sync", post(world::world_sync_projects))
-        .route("/api/world/processes", get(world::world_list_processes))
-        .route(
-            "/api/world/lanes",
-            get(world::world_list_lanes).post(world::world_create_lane),
-        )
-        .route(
-            "/api/world/lanes/active",
-            post(world::world_set_active_lane),
-        )
-        .route(
-            "/api/world/processes/{project_name}/start",
-            post(world::world_start_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/stop",
-            post(world::world_stop_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/restart",
-            post(world::world_restart_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/pointview",
-            post(world::world_open_pointview),
-        )
-        // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
-        // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
-        // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
-        // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
-        // 同 channel 経由。
-        // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
-        // project は World 自身が起こすので外から登録される概念が無く、残しておくと
-        // 外部由来の port/pid で running_processes を書ける穴になる（起動していない
-        // project を稼働中に見せられる）。稼働状態の唯一の writer は start/stop_process。
-        // doc 44 P1 (fold-in): slot ベース port resolver (`/api/world/port_for`) と
-        // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
-        // project は portless（port=0）になり、slot が解決する listen port が存在しない。
-        // Update API routes (vp CLI)
-        .route("/api/update/check", get(update::update_check))
-        .route("/api/update/apply", post(update::update_apply))
-        .route("/api/update/rollback", post(update::update_rollback))
-        .route("/api/update/restart", post(update::update_restart))
-        // Update API routes (VantagePoint.app)
-        .route("/api/update/mac/check", get(update::update_mac_check))
-        .route("/api/update/mac/apply", post(update::update_mac_apply))
-        .route(
-            "/api/update/mac/rollback",
-            post(update::update_mac_rollback),
-        )
-        .layer(CorsLayer::permissive())
-        // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
-        // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
-        .with_state(state.clone());
+    // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
+    // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
+    let app = build_world_router(state.clone());
 
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
     //  SP からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
@@ -1389,7 +1359,7 @@ mod tests {
     ///
     /// この不変条件は旧構成では **SP の QUIC uplink が担うプロセス跨ぎの約束**だったため
     /// 単体テストの射程外にあり、fold-in で uplink を落とした際に誰にも気付かれずに
-    /// 失われた（実機で `/api/world/lanes` が boot 時 db 値のまま固まり、存在しない
+    /// 失われた（実機で lane 一覧が boot 時 db 値のまま固まり、存在しない
     /// 過去 pid の lane を配り続けた）。関数呼び出しになった今はここで固定できる。
     #[tokio::test]
     async fn publish_lanes_updates_world_view() {
@@ -1510,5 +1480,104 @@ mod tests {
             "origin だけの変化でも起こす"
         );
         assert!(rx.try_recv().is_ok());
+    }
+
+    // =====================================================================
+    // doc 45 段 4 — HTTP 面の route 登録そのものを固定する
+    //
+    // 撤去 PR の危険は 2 方向ある: (a) 残すべきものを巻き添えで落とす、
+    // (b) 消したつもりの route が登録に残る。route 表は「登録」と「handler」が
+    // 別ファイルにあるので、片方だけ消しても静的には気付けない。
+    // `build_world_router` を組んで実際に叩き、両方向を 1 箇所で見る。
+    // =====================================================================
+
+    async fn route_status(uri: &str, method: &str) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+        let state = crate::process::state::build_test_app_state(None).await;
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .expect("request");
+        build_world_router(state)
+            .oneshot(req)
+            .await
+            .expect("oneshot")
+            .status()
+    }
+
+    /// doc 45 §2 で HTTP に残すと決めた 2 本が、撤去の巻き添えで消えていないこと。
+    ///
+    /// health は「他が壊れている時に動いてほしい」probe（`.mise/tasks/app/swap` の Ruby と
+    /// `apple/VantagePointAgent` の Swift という **VP 外の消費者**も居る）、shutdown は
+    /// 緊急停止。両方同時に失うと診断手段と止める手段が同時に消える。
+    #[tokio::test]
+    async fn world_router_keeps_health_and_shutdown() {
+        assert_eq!(
+            route_status("/api/health", "GET").await,
+            axum::http::StatusCode::OK,
+            "GET /api/health は HTTP に残す（doc 45 §2）"
+        );
+        assert_eq!(
+            route_status("/api/shutdown", "POST").await,
+            axum::http::StatusCode::OK,
+            "POST /api/shutdown は HTTP に残す（doc 45 §2）"
+        );
+    }
+
+    /// 段 4 で撤去した control plane route が **登録にも残っていない**こと。
+    ///
+    /// handler を消しても route 登録が残っていれば compile エラーになるが、逆
+    /// （登録だけ消して handler が残る）は dead code 警告でしか気付けない。ここは
+    /// 「外から見て面が消えている」を直接確かめる側。
+    #[tokio::test]
+    async fn world_router_drops_removed_control_routes() {
+        for (uri, method) in [
+            ("/api/world/projects", "GET"),
+            ("/api/world/projects", "POST"),
+            ("/api/world/projects/reorder", "POST"),
+            ("/api/world/projects/update", "POST"),
+            ("/api/world/projects/remove", "POST"),
+            ("/api/world/projects/reload", "POST"),
+            ("/api/world/projects/sync", "POST"),
+            ("/api/world/processes", "GET"),
+            ("/api/world/lanes", "GET"),
+            ("/api/world/lanes", "POST"),
+            ("/api/world/lanes/active", "POST"),
+            ("/api/world/processes/vp/start", "POST"),
+            ("/api/world/processes/vp/stop", "POST"),
+            ("/api/world/processes/vp/restart", "POST"),
+            ("/api/world/processes/vp/pointview", "POST"),
+            ("/api/canvas/switch_lane", "POST"),
+            ("/api/canvas/layout", "GET"),
+            ("/api/canvas/layout", "POST"),
+        ] {
+            assert_eq!(
+                route_status(uri, method).await,
+                axum::http::StatusCode::NOT_FOUND,
+                "{method} {uri} は Unison world-control に移設済み（doc 45 段 4）"
+            );
+        }
+    }
+
+    /// `/api/update/*` は段 4 のスコープ外（doc 45 §3「churn が低いので後回しでよい」）。
+    /// 「ついでに消えた」を検出する側の網。
+    #[tokio::test]
+    async fn world_router_keeps_update_routes() {
+        for (uri, method) in [
+            ("/api/update/check", "GET"),
+            ("/api/update/apply", "POST"),
+            ("/api/update/rollback", "POST"),
+            ("/api/update/restart", "POST"),
+            ("/api/update/mac/check", "GET"),
+            ("/api/update/mac/apply", "POST"),
+            ("/api/update/mac/rollback", "POST"),
+        ] {
+            assert_ne!(
+                route_status(uri, method).await,
+                axum::http::StatusCode::NOT_FOUND,
+                "{method} {uri} は段 4 のスコープ外（route は残す）"
+            );
+        }
     }
 }

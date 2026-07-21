@@ -1344,7 +1344,7 @@ impl ProcessManagerCapability {
         // #648 でこの insert を撤去したのは「SP の QUIC 自己登録が entry を書くので、
         // daemon 側の子 pid で上書きすると Push-canonical を壊す」ためだった。fold-in で
         // SP が消え、自己登録しに来る者が居なくなったため、この前提そのものが失効した。
-        // 撤去したまま放置すると registry は**永久に空**になり、`vp ps` / `/api/world/processes`
+        // 撤去したまま放置すると registry は**永久に空**になり、`vp ps` / Unison `registry.list`
         // が空を返し、`stop_process` は自身の gate に阻まれて project を停止できなくなる。
         //
         // in-process 起動が成功した瞬間が権威ある lifecycle event なので、書き手はここが正

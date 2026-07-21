@@ -861,7 +861,8 @@ pub async fn restart_lane_orchestrated(
 /// 例: user="Mako", name="sub" → `mako/sub`
 ///
 /// branch 未指定時の create で使う。 doc 24 §10 B-create で daemon 側 create
-/// (`routes/world.rs` の `world_create_lane`) からも sibling 呼びするため `pub(crate)`。
+/// (`routes/world.rs` の `resolve_create_lane_args` = Unison `lanes/create` の実体) からも
+/// sibling 呼びするため `pub(crate)`。
 pub(crate) fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
     let prefix = std::process::Command::new("git")
         .arg("-C")
