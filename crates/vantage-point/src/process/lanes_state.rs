@@ -740,6 +740,11 @@ impl LanePool {
     /// `session=None` は root（[`Self::slot_session`]）。boot / restart / performer spawn の
     /// 既存経路はすべて lane の代表 slot を立てるので `None` を渡す。
     ///
+    /// ⚠️ **ここは配線であって門番ではない**（法の check は持たない — 既存 entry があれば
+    /// 黙って replace する）。非 root session に slot を立てる入口は
+    /// [`Self::open_slot_for_session`] で、法（1 session = 高々 1 エンジン）の check は
+    /// そちらに置いてある。
+    ///
     /// Stage 1 (ADR-0001): TermAttach も同期 spawn する。 `term_rx` は spawn_stand の
     /// 戻り値 (= broadcast::channel 作成と同時の initial_rx)、 reader_task が start する前に
     /// subscribe 済 = race フリー。 既存 entry があれば HashMap::insert で replace、
@@ -1200,11 +1205,12 @@ impl LanePool {
     // これで法は型と同じ高さで検査できる: `pty_slots[addr][key]` と `chat_engines[addr][key]`
     // の**同一 key に両方が居ないこと**（= 1 session に書き手が 2 本にならない）。
     //
-    // 排他は set_console_mode / ensure_chat_engine のみが engine を作る・壊すことで保証。
-    // slot 側の入口は insert_pty_slot 1 つで、現状の呼び手（boot / restart / performer spawn）は
-    // すべて root を立てる = mode ガードを通った後なので法は保たれる。**非 root slot を立てる
-    // 動線を足す時は、その入口に「同 session に chat engine が居ないこと」の check を置くこと**
-    // （逆方向は ensure_chat_engine が既に持っている）。
+    // 排他は set_console_mode / ensure_chat_engine（chat engine 側）と
+    // [`LanePool::open_slot_for_session`]（slot 側）の 3 箇所だけが engine を作ることで保証。
+    // `insert_pty_slot` 自体は「配線」であって門番ではない（boot / restart / performer spawn の
+    // root 経路は mode ガードを通った後に呼ぶ）。**非 root slot を立てる入口は
+    // `open_slot_for_session` 1 つ**で、そこに「同 session に chat engine が居ないこと」の
+    // check を置いた（逆方向は ensure_chat_engine が持つ = 両向きが揃った）。
     //
     // ⚠️ 旧記述「1 lane = 高々 1 エンジン（pty_slots xor chat_engines）= 1 cc_session」は
     // doc 33（Act I/II 排他）時代のもので、`chat_engines` が session ごとの map になった
@@ -1214,6 +1220,161 @@ impl LanePool {
     /// lane の console mode（registry cache）。lane 不在は None。
     pub fn console_mode(&self, addr: &LaneAddress) -> Option<SessionAct> {
         self.lanes.get(addr).map(|i| i.console_mode)
+    }
+
+    /// doc 46 P5 **producer**: 新しい console を 1 枚立てる（非 root session に slot を立てる
+    /// production 経路）。戻り値 = 採番した session key と slot の pid。
+    ///
+    /// ## なぜ「session の採番」と一体なのか（doc 46 §1.5）
+    ///
+    /// Pane（console 1 枚）と session は **1:1** で、**Pane は必ず新しい session id で始まる**。
+    /// 「既存の会話をもう 1 枚開く」はしない（どちらが真かが曖昧になる）ので、この動詞は
+    /// 「session 採番 → その session に slot」を 1 つにしている。Act=Chat 固定の
+    /// [`Self::create_chat_session`] の Act I 版に当たる。
+    ///
+    /// ## 決めごと
+    ///
+    /// - Act は **Tui**（console だから）。lane の `console_mode`（= root session の act）は
+    ///   **見ない** — Act は session の属性（doc 46 §1.4、P4 で移設済）なので、chat な lane にも
+    ///   console を 1 枚足せる
+    /// - **focused は動かさない**（`focus=false`）。focused は chat 系動詞（submit / interrupt）の
+    ///   既定の宛先で、そこを PTY を持つ session に向けると次の submit が法（1 session = 高々 1
+    ///   エンジン）で拒否される。console の注視は Pane 側の話（doc 46 §1.6 = client 所有）
+    /// - engine は **明示 > root からの引き継ぎ**（[`Self::prepare_new_root_session`] と同じ規律）
+    /// - **root は動かさない** — mailbox `agent@<lane>` / pid / Dead 判定の代表は root のまま
+    ///   （doc 40 §4-1 の据え置き。同居人は「読み書きできる console」であって mailbox の主ではない）
+    pub fn open_new_slot(
+        &mut self,
+        addr: &LaneAddress,
+        stand_override: Option<&str>,
+    ) -> anyhow::Result<(SessionKey, u32)> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let lane_stand = info.stand.clone();
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+        let reg = session_registry::load(&addr.project, &lane_label, &lane_stand);
+        // engine: 明示指定 > 現 root の stand（doc 46 P2 要件 4 と同じ選び方）。
+        let stand = match stand_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => s.to_string(),
+            None => reg
+                .sessions
+                .iter()
+                .find(|s| s.key == reg.root)
+                .map(|s| s.stand.clone())
+                .unwrap_or_else(|| lane_stand.clone()),
+        };
+        // 未知 stand は入口で弾く。`build_stand_command` は未知名を shell 層へ graceful に
+        // 落とすので、通すと「engine が起動しない console」が黙って生まれる（行き止まりの
+        // Pane を作らない = doc 46 §5.2 と同じ判断）。`"shell"` は engine 無しが意図なので通す。
+        if EngineKind::from_stand(&stand).is_none() && stand != "shell" {
+            anyhow::bail!(
+                "engine が未知の stand では console を立てられません（addr={addr}, stand={stand}）。\
+                 engine を明示指定してください（echoes / codex / grok / opencode / shell）"
+            );
+        }
+        // doc 47 §4: console なので Act は Tui。focus は動かさない（上の決めごと）。
+        let key = session_registry::create(
+            &addr.project,
+            &lane_label,
+            &lane_stand,
+            &stand,
+            SessionAct::Tui,
+            false,
+        )
+        .map_err(|e| anyhow::anyhow!("session 作成に失敗（addr={addr}）: {e}"))?;
+
+        match self.open_slot_for_session(addr, key) {
+            Ok(pid) => {
+                tracing::info!(
+                    "console slot open: addr={addr} session={key} stand={stand} pid={pid}"
+                );
+                Ok((key, pid))
+            }
+            Err(e) => {
+                // 採番した session は **誰も指していない**（root でも focused でもない）ので、
+                // slot が立たなければ存在価値がない。registry を元に戻してから失敗を返す
+                // = 「失敗したら何も遷移していない」（`prepare_new_root_session` は root を
+                // 動かすので registry 先行が正だが、こちらは逆 — 主体の違いで判断が分かれる）。
+                if let Err(cleanup) =
+                    session_registry::remove(&addr.project, &lane_label, &lane_stand, key)
+                {
+                    tracing::warn!(
+                        "console slot open 失敗後の session 巻き戻しに失敗（Draft が残る）: addr={addr} session={key}: {cleanup}"
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// 1 つの session に console slot を立てる核（[`Self::open_new_slot`] の spawn 部）。
+    ///
+    /// **法の番人（slot 側）**: 「1 session = 高々 1 エンジン」の逆向き check をここに置く
+    /// （chat engine 側は [`Self::ensure_chat_engine`]）。将来「畳んだ Pane の console を
+    /// 開き直す」導線が来ても、slot を立てる経路はここ 1 本に通すこと。
+    ///
+    /// 拒否するもの:
+    /// 1. registry に居ない session — 実在しない住人の端末を作らない
+    /// 2. Act=Chat の session — その session は headless engine の器（両方は持てない）
+    /// 3. 同 session に **chat engine** が居る — 1 会話 2 エンジン（法の直接違反）
+    /// 4. 同 session に **既に slot** が居る — `insert_pty_slot` は黙って replace = 走行中の
+    ///    console を無言で殺すので、入口で断る（張り替えたいなら restart 経路）
+    fn open_slot_for_session(
+        &mut self,
+        addr: &LaneAddress,
+        key: SessionKey,
+    ) -> anyhow::Result<u32> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let cwd = info.cwd.clone();
+        let lane_stand = info.stand.clone();
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+
+        let reg = session_registry::load(&addr.project, &lane_label, &lane_stand);
+        let entry = reg.sessions.iter().find(|s| s.key == key).ok_or_else(|| {
+            anyhow::anyhow!("session が存在しません（addr={addr}, session={key}）")
+        })?;
+        if entry.act == SessionAct::Chat {
+            anyhow::bail!(
+                "Act II（chat）の session には console を立てられません（addr={addr}, session={key}）"
+            );
+        }
+        if self
+            .chat_engines
+            .get(addr)
+            .is_some_and(|m| m.contains_key(&key))
+        {
+            anyhow::bail!(
+                "不変条件違反: 同一 session に PTY slot（Act I）と chat engine（Act II）は同居できません（addr={addr}, session={key}）"
+            );
+        }
+        if self
+            .pty_slots
+            .get(addr)
+            .is_some_and(|m| m.contains_key(&key))
+        {
+            anyhow::bail!(
+                "その session には既に console があります（addr={addr}, session={key}。張り替えは restart）"
+            );
+        }
+
+        // engine / resume id / VP_SESSION_KEY は **この session** の entry から決まる
+        // （root 決め打ちにしない = doc 46 §3 の producer blocker の解）。
+        let cmd = crate::process::stand_spawner::build_stand_command_for_session(
+            &lane_stand,
+            addr,
+            std::path::Path::new(&cwd),
+            false,
+            Some(key),
+        );
+        let (slot, term_rx) = crate::process::stand_spawner::spawn_stand(&cmd, 120, 48)?;
+        let pid = slot.pid();
+        self.insert_pty_slot(addr.clone(), Some(key), slot, term_rx);
+        Ok(pid)
     }
 
     /// session 指定を解決する（doc 38）: `None` = focused（省略時後方互換）、`Some(k)` は
@@ -2930,6 +3091,210 @@ mod tests {
         assert!(
             pool.capture_lane(&addr, Some(2)).is_some(),
             "双子（TermAttach）も #2 のぶんは残る"
+        );
+    }
+
+    /// テスト用の「偽 chat engine」を当該 session に据える（法の番人・逆向きの検証用）。
+    ///
+    /// 要るのは `chat_engines[addr][key]` に entry が居るという**事実だけ**なので、claude の
+    /// 代わりに `/bin/cat` を spawn する（引数を解さず即終了するが、map に居ることは変わらない）。
+    /// 本物の engine を要求すると claude CLI 必須のテストになり CI で回せない。
+    ///
+    /// ⚠️ `EchoesAgentHost::spawn` は claude path で `--forward-subagent-text` 対応を probe し
+    /// **プロセス内 OnceLock に cache** する。cat は「illegal/unrecognized option」を吐く =
+    /// 判定文言（"unknown option"）を含まないので cache 値は本物 claude と同じ `true` に落ちる
+    /// （= 同一 test binary の `--ignored` 実機テストを歪めない）。
+    #[cfg(unix)]
+    fn insert_fake_chat_engine(pool: &mut LanePool, addr: &LaneAddress, key: SessionKey) {
+        let host = crate::echoes::EchoesAgentHost::spawn(crate::echoes::EchoesHostConfig {
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            project: addr.project.clone(),
+            lane: "fake-engine".to_string(),
+            resume_session_id: None,
+            model: None,
+            claude_cli_path: Some("/bin/cat".to_string()),
+        })
+        .expect("偽 engine の spawn");
+        pool.chat_engines.entry(addr.clone()).or_default().insert(
+            key,
+            crate::echoes::ChatEngineSlot {
+                host: crate::echoes::ChatHost::Claude(host),
+                pump: tokio::spawn(async {}),
+            },
+        );
+    }
+
+    /// **P5 producer の本体**（doc 46 §3 の宿題）: 非 root session に console を 1 枚立てる。
+    ///
+    /// 見るのは「2 枚目が `vp lane slots`（= `slot_inventory`）に出るか」と、
+    /// **lane の代表（root）が 1 mm も動いていないか**の 2 点。後者が崩れると
+    /// mailbox / pid / Dead 判定の主語が同居人に移る（doc 40 §4-1 の据え置き事項）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_new_slot_adds_a_second_console_without_moving_root() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
+
+        // 既存の root slot（boot 経路が立てたもの相当）。
+        let (slot, rx) = spawn_test_slot("cat");
+        pool.insert_pty_slot(addr.clone(), Some(1), slot, rx);
+        let root_pid = pool.slot_inventory(&addr)[0].pid;
+
+        // producer: engine を明示して 1 枚追加（"shell" = claude を注入しない console）。
+        let (key, pid) = pool
+            .open_new_slot(&addr, Some("shell"))
+            .expect("console slot が立つ");
+        assert_eq!(
+            key, 2,
+            "新しい session が採番される（既存の再利用ではない）"
+        );
+
+        let inv = pool.slot_inventory(&addr);
+        assert_eq!(inv.len(), 2, "`vp lane slots` に 2 枚出る: {inv:?}");
+        assert_eq!(inv[1].session, 2);
+        assert_eq!(inv[1].pid, pid, "戻り値の pid が一覧の pid と一致する");
+        assert!(inv[1].alive, "立てた console は生きている");
+        assert!(
+            inv[1].attached,
+            "双子（TermAttach）も張られている = capture できる"
+        );
+        assert!(!inv[1].root, "同居人であって lane の代表ではない");
+        assert_eq!(inv[0].pid, root_pid, "root slot は張り替えられていない");
+        assert!(
+            pool.capture_lane(&addr, Some(2)).is_some(),
+            "`vp lane capture --session 2` で読める"
+        );
+
+        // registry: 新 session は Act=Tui の同居人。root / focused は動かない。
+        let reg = session_registry::load("vp", "root", "echoes");
+        assert_eq!(reg.root, 1, "root は動かない（mailbox の主は root のまま）");
+        assert_eq!(
+            reg.focused, 1,
+            "focused も動かない（chat 動詞の宛先を奪わない）"
+        );
+        let entry = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == key)
+            .expect("registry に新 session");
+        assert_eq!(entry.act, SessionAct::Tui, "console なので Act I");
+        assert_eq!(entry.stand, "shell", "明示した engine で立つ");
+        assert_eq!(
+            pool.get(&addr).expect("lane").state,
+            LaneState::Running,
+            "lane の state は代表（root）のもの — 同居人の追加で動かない"
+        );
+    }
+
+    /// **法の番人・逆向き**（doc 46 P5 の宿題の中核）: chat engine が居る session に slot は
+    /// 立てられない。`ensure_chat_engine` が持つ「slot が居たら chat を拒否」の鏡像で、
+    /// 両向き揃って初めて「1 session = 高々 1 エンジン」が法として閉じる。
+    ///
+    /// 併せて slot 側の入口が断る残り 3 つ（Act=Chat の session / 既に console がある session /
+    /// registry に居ない session）も同じ場所で固定する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_slot_refuses_when_the_session_already_has_an_engine() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
+
+        // #2: Act=Tui の同居人 session（producer が作るのと同じ形）に chat engine を据える。
+        let k2 = session_registry::create("vp", "root", "echoes", "shell", SessionAct::Tui, false)
+            .expect("create #2");
+        insert_fake_chat_engine(&mut pool, &addr, k2);
+        let err = pool
+            .open_slot_for_session(&addr, k2)
+            .expect_err("engine が居る session に console は立てられない");
+        assert!(
+            err.to_string().contains("同居できません"),
+            "法（1 session = 高々 1 エンジン）で断る: {err}"
+        );
+
+        // #3: Act=Chat の session（headless engine の器）にも立てない。
+        let k3 =
+            session_registry::create("vp", "root", "echoes", "echoes", SessionAct::Chat, false)
+                .expect("create #3");
+        let err = pool
+            .open_slot_for_session(&addr, k3)
+            .expect_err("Act II の session に console は立てられない");
+        assert!(err.to_string().contains("Act II"), "Act で断る: {err}");
+
+        // 既に console がある session は無言で殺さず断る（insert_pty_slot は replace するため）。
+        let (slot, rx) = spawn_test_slot("cat");
+        pool.insert_pty_slot(addr.clone(), Some(1), slot, rx);
+        let err = pool
+            .open_slot_for_session(&addr, 1)
+            .expect_err("走行中 console の上書きは断る");
+        assert!(
+            err.to_string().contains("既に console"),
+            "既存 slot を守る: {err}"
+        );
+
+        // registry に居ない session の端末は作らない。
+        let err = pool
+            .open_slot_for_session(&addr, 99)
+            .expect_err("実在しない session の console は作らない");
+        assert!(
+            err.to_string().contains("session が存在しません"),
+            "実在チェック: {err}"
+        );
+    }
+
+    /// 入口が弾くもの（`open_new_slot` 側）と、spawn 失敗時の巻き戻し。
+    ///
+    /// 採番した session は root でも focused でもない = **誰も指していない**ので、slot が
+    /// 立たなければ registry に残す理由がない（残すと「console の無い幽霊タブ」になる）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_new_slot_rejects_unknown_engine_and_rolls_back_failed_spawn() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
+
+        // 未知 engine は入口で断る（通すと shell 層に落ちて「engine の無い console」が黙って建つ）。
+        let err = pool
+            .open_new_slot(&addr, Some("opus-xhigh"))
+            .expect_err("未知 stand は拒否");
+        assert!(
+            err.to_string().contains("engine が未知"),
+            "行き止まりの console を作らない: {err}"
+        );
+        assert_eq!(
+            session_registry::load("vp", "root", "echoes")
+                .sessions
+                .len(),
+            1,
+            "弾いた入力で session を採番しない"
+        );
+
+        // slot が立たなかった時の巻き戻し。実 spawn の失敗（shell 不在 / PTY 枯渇）は環境依存で
+        // test から再現できないので、**同じ失敗経路**（`open_slot_for_session` の Err）を入口
+        // guard で作る: 次に採番される key(#2) に orphan slot を置いておくと「既に console」で断られる。
+        let (orphan, rx) = spawn_test_slot("cat");
+        pool.insert_pty_slot(addr.clone(), Some(2), orphan, rx);
+        let err = pool
+            .open_new_slot(&addr, Some("shell"))
+            .expect_err("slot が立たなければ Err");
+        assert!(
+            err.to_string().contains("既に console"),
+            "失敗理由がそのまま返る: {err}"
+        );
+        assert_eq!(
+            session_registry::load("vp", "root", "echoes")
+                .sessions
+                .len(),
+            1,
+            "失敗したら何も遷移していない（幽霊 session を残さない）"
+        );
+        assert_eq!(
+            pool.slot_sessions(&addr),
+            vec![2],
+            "既存 slot（この test では orphan）は無傷 — 巻き戻しは registry 側だけ"
         );
     }
 

@@ -9,6 +9,7 @@
 //! vp lane capture vantage-point/root          # console の現在画面を読む
 //! vp lane capture vantage-point/root --session 2  # 同居する 2 枚目の console を読む
 //! vp lane slots vantage-point/root            # この lane の slot 一覧（枚数 / pid / root か）
+//! vp lane slot-new vantage-point/root         # console をもう 1 枚立てる（新 session）
 //! vp lane nudge vantage-point/performer/sub "続けて"  # text + Enter を注入
 //! ```
 //!
@@ -111,6 +112,30 @@ pub fn slots(lane: &str, config: &Config) -> Result<()> {
             if get_bool("attached") { "yes" } else { "no" },
         );
     }
+    Ok(())
+}
+
+/// 新しい console（slot）を 1 枚立てる（doc 46 P5 producer）。
+///
+/// 立つのは **新しい session**（doc 46 §1.5「Pane は必ず新しい session id で始まる」）。
+/// root（= lane の代表 / mailbox の主）は動かないので、既存 console はそのまま。
+pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> {
+    let path = project_path_for_lane(lane, config)?;
+    let resp = world_process_request_blocking(
+        crate::cli::world_port(),
+        &path,
+        "lane_slot_new",
+        serde_json::json!({ "lane": lane, "stand": stand }),
+    )?;
+    let get_u64 = |k: &str| resp.get(k).and_then(serde_json::Value::as_u64);
+    let (Some(session), Some(pid)) = (get_u64("session"), get_u64("pid")) else {
+        bail!("lane_slot_new 応答が不正です: {}", resp);
+    };
+    println!(
+        "[vp lane slot-new] {lane}: session={session} pid={pid}（この lane の console {} 枚）",
+        get_u64("count").unwrap_or(0)
+    );
+    println!("  読む: vp lane capture {lane} --session {session}");
     Ok(())
 }
 

@@ -313,6 +313,18 @@ enum LaneCommands {
         /// lane address ("<project>/root" / "<project>/performer/<name>")
         lane: String,
     },
+    /// lane に console (slot) をもう 1 枚立てる (doc 46 P5 — 非 root session の producer)
+    ///
+    /// **新しい session を採番**してそこに console を立てる (doc 46 §1.5「Pane は必ず新しい
+    /// session id で始まる」= session ↔ Pane は 1:1)。root (lane の代表 / mailbox の主) は
+    /// 動かないので、既存の console はそのまま生き続ける。読むのは `vp lane capture --session`。
+    SlotNew {
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
+        lane: String,
+        /// engine (stand 名: echoes / codex / grok / opencode / shell。省略時は現 root の engine)
+        #[arg(long)]
+        stand: Option<String>,
+    },
     /// この project の開発起点 lane を表示 / 設定する (doc 44 D4、Project Host の帳簿)
     ///
     /// 引数なしで現在の起点を表示。lane 名を渡すとその lane を起点に指定する。
@@ -805,6 +817,10 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         LaneCommands::Slots { lane } => {
             let config = Config::load().unwrap_or_default();
             commands::lane_ctl::slots(&lane, &config)
+        }
+        LaneCommands::SlotNew { lane, stand } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::slot_new(&lane, stand.as_deref(), &config)
         }
         LaneCommands::Origin { name } => lane_origin(name.as_deref()),
         LaneCommands::Nudge {

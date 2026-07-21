@@ -100,7 +100,7 @@ fresh に始める。既存 session の再表示ではない。
 | **P2** | 新 Pane 作成 UI（**Engine × Act** を選ぶ、要件 4）+ 新 session 発行（要件 5） | 小 |
 | **P3** | `canvas` を Pane に寄せる | 無し（既存 board を mount するだけ） |
 | **P4** | `console_mode`（per-lane Act）の撤去 — §1.4 の移行完了 | 中 ✅ `#848`（撤去でなく **session への移設**だった） |
-| **P5** | 端末の複数枚化（`pty_slots` を `(lane, session)` へ re-key） | **大** ✅ `#854`（§3 に着地メモ） |
+| **P5** | 端末の複数枚化（`pty_slots` を `(lane, session)` へ re-key + producer） | **大** ✅ `#854`（容量）+ producer（§3 に着地メモ） |
 | **P6** | `file` kind / layout 永続 | 小 |
 
 P1 と P2 の順が逆でないのは、**作る前に置き場が要る**から。P1 の時点では
@@ -166,10 +166,13 @@ term_attaches: HashMap<LaneAddress, HashMap<SessionKey, TermAttach>>,
   （`LaneInfo` 本体には足さない — descriptor は帳簿の永続形、slot は in-memory な runtime 事実。
   混ぜると「再起動で復元されるべき値」に見える）
 
-#### 残した宿題 — **非 root slot を production で立てる動線はまだ無い**
+> **読み手が先、書き手が後**という順序になった（`LaneId` の轍の逆）。producer（下記）が
+> 入って初めて、これらの読み手に 2 枚目が実際に映る。
 
-P5 が外したのは *slot の枚数*の制約だけで、**producer**（非 root session に PTY を立てる経路）は
-入れていない。理由は調査で見つかった別レイヤの blocker:
+#### 宿題だった producer — ✅ 着地（2026-07-22）
+
+`#854` が外したのは *slot の枚数*の制約だけで、**producer**（非 root session に PTY を立てる
+経路）は入っていなかった。理由は調査で見つかった別レイヤの blocker:
 
 > lane の wire identity は **lane 単位**（`VP_LANE`）で、SessionStart hook が呼ぶ
 > `session_registry::record_root_conversation` は **root entry** に会話 id を書く。
@@ -190,13 +193,52 @@ P5 が外したのは *slot の枚数*の制約だけで、**producer**（非 ro
 > 元は tmux session 名）で、必要なのは session 採番 key（`1`/`2`）。意味が別なので名前も分けた
 > （doc 40 §8）。
 
-**残る宿題**（producer を足すときに決める）:
+##### ✅ producer 本体（`lane_slot_new` / `vp lane slot-new`）
+
+入口は **1 本**で、**session の採番と slot の spawn を分けない**:
+
+```
+vp lane slot-new <lane> [--stand <engine>]   → ask `lane_slot_new` → LanePool::open_new_slot
+```
+
+| 決めたこと | 理由 |
+|---|---|
+| 常に**新しい session を採番**する（既存 session を開く口は持たない） | §1.5「Pane は必ず新しい session id で始まる」= session ↔ Pane 1:1。「新規作成」と「既存を開く」を 1 操作に混ぜない |
+| Act は **Tui** 固定。lane の `console_mode` は**見ない** | Act は session の属性（§1.4、P4 で移設済）。chat な lane にも console を 1 枚足せる。`echoes_session_create`（Act=Chat 固定）の Act I 版に当たる |
+| **root も focused も動かさない** | root = mailbox / pid / Dead 判定の代表（doc 40 §4-1 の据え置き）。focused は chat 動詞の宛先で、PTY を持つ session に向けると次の submit が法で拒否される |
+| engine は **明示 > root からの引き継ぎ**、未知 stand は入口で Err | 未知名は `build_stand_command` が shell 層へ graceful に落とすので、通すと「engine が起動しない console」が黙って建つ（§5.2 と同じ「行き止まりを作らない」判断） |
+| **GUI 配線（pump）は張らない** | 表示はミニマム据え置き（doc 47 §7）。読み書きは `vp lane slots` / `capture --session` / `nudge --session` |
+
+**法の番人が両向きに揃った**（P5 の価値の残り半分）:
+
+| 向き | 置き場 | 断る条件 |
+|---|---|---|
+| chat engine を作る側 | `ensure_chat_engine` | その session に **slot** が居る（`#854`） |
+| slot を立てる側 | `open_slot_for_session`（producer の核） | その session に **chat engine** が居る / session が Act=Chat / 既に console がある / registry に居ない |
+
+`insert_pty_slot` は**配線であって門番ではない**（既存 entry を黙って replace する）ので、
+check は「slot を立てる入口」1 本に置いた。将来「畳んだ Pane の console を開き直す」導線が
+来ても、この核を通す限り法は保たれる。
+
+`VP_SESSION_KEY` / engine / resume id は **`build_stand_command_for_session(…, Some(key))`** が
+その session の entry から決める（`build_stand_command` は `None` = root を渡す薄い wrapper に
+なった）。root 決め打ちだと 2 本目の claude が root の会話 id を上書きし、`--resume` が
+同居人の会話に化ける — 上の blocker がそのまま再発する。
+
+> 非 root slot の **replay は disk に永続しない**（`replay_path: None`）。replay file は lane 単位に
+> 1 本しかなく、2 枚で奪い合う / lane GC が知らない file が増える / そもそも SP 再起動で
+> 非 root slot は復元されない（boot が立てるのは root だけ）ため、書いても読み手がいない。
+
+**残す宿題**:
 
 - **wire mailbox は lane 粒度のまま** — `agent@<lane>` を名乗るのは root。同居人は
   「読み書きできる console」であって「mailbox を持つ住人」ではない（doc 40 §4-1 の scope 外）
 - `vp lane resume-failed` の記録先も lane 単位のまま（`resume_failures.log` は観測 log で
   resume pointer ではないため、会話が化ける事故は起こさない）
-- 非 root slot を立てる UI / CLI 本体（P5 の型 + 読み手は既に在る）
+- **UI**（Pane として並べる / 立てる導線）は Epic 最後の UI フェーズ（doc 47 §7）。
+  非 root slot の pump も同時に張る（現状 `respawn_terminal_pump` は root 固定）
+- 非 root slot は **SP 再起動で復元されない**（boot が立てるのは root だけ）。layout 永続（P6）で
+  「どの session に console があったか」を持つなら、その時に決める
 
 > ⚠️ doc 47 §7 条件③（`LaneLayouts.dock()` が全 lane に効く問題）は **P5 では発火しなかった**。
 > P5 が増やすのは slot であって session ではなく、chip の集合は `sessions`（registry）由来の
