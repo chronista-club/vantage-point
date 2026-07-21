@@ -61,6 +61,10 @@ async fn publish_lanes(
 /// `world_lanes` は World の lane 集約 view（SP プロセスとして動く場合は `None`）。
 /// 旧 SP uplink の代わりに、本関数が起こす publish task が直接ここへ書き込む。
 ///
+/// `vpdb` は World が開いた**唯一の DB handle**（doc 44 P1 PR4）。旧構成では本関数が
+/// project ごとに `db/sp_{slug}/` を開いていたが、同一プロセスになった今は handle を
+/// 共有する。`None` は「DB なしで継続」（World の接続が失敗した場合）。
+///
 /// 返る時点で lane bootstrap / lifecycle monitor / lanes snapshot publish まで起動済み。
 /// 停止は `shutdown_token` を cancel して [`shutdown_project`] を呼ぶ。
 pub(crate) async fn start_project(
@@ -68,6 +72,7 @@ pub(crate) async fn start_project(
     cap_config: CapabilityConfig,
     shutdown_token: CancellationToken,
     world_lanes: Option<WorldLaneView>,
+    vpdb: Option<crate::db::SharedVpDb>,
 ) -> Result<Arc<AppState>> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
@@ -132,50 +137,21 @@ pub(crate) async fn start_project(
         });
     }
 
-    // SurrealDB (embedded) に接続
-    // VP-182: SP は project slug 別の独立 DB ディレクトリ (`db/sp_{slug}/`) を使う。
-    // 旧実装は World と同一 `db/` を共有していたため surrealkv の OS 排他ロックで
-    // 衝突し、 SP 側が `vpdb = None` に陥って msgbox_store が初期化されない regression
-    // が発生していた (VP-179 で msg routing が WhitesnakeStore 単一経路化した結果顕在化)。
-    // ディレクトリ分離で LOCK 衝突を構造的に解消。 接続失敗時の DB なし fallback は
-    // 保険として残す。
-    let vpdb: Option<crate::db::SharedVpDb> = {
-        let slug = crate::resolve::project_slug(&project_dir, &config_for_init);
-        let data_dir = crate::db::db_data_dir_for_project(&slug);
-        match crate::db::VpDb::connect_embedded(&data_dir).await {
-            Ok(db) => {
-                if let Err(e) = db.define_schema().await {
-                    tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
-                    None
-                } else {
-                    tracing::info!("SP: SurrealDB 接続成功 (embedded: {})", data_dir.display());
-                    Some(std::sync::Arc::new(db))
-                }
-            }
-            Err(e) => {
-                // respawn-leak 根治 (c): per-project db (`db/sp_{slug}/`) の LOCK を生存
-                // holder が保持し続けている = 同 project の SP が既に稼働中。 旧挙動の
-                // 「DB なしで継続」だと重複 SP が silent に並走して事故を増幅していた
-                // (実測: daemon 再起動 race で 4 project × 2 世代 = SP 8 本)。 重複 spawn
-                // と判断して起動を中止する。 先行 SP は QUIC heal 再接続で registry に
-                // 自力復帰するので、 daemon 側の後始末は不要。
-                if e.downcast_ref::<crate::db::DbLockHeldByLiveHolder>()
-                    .is_some()
-                {
-                    tracing::error!(
-                        "SP: project db の LOCK を既存 SP が保持 → 重複 spawn と判断して起動中止: {}",
-                        e
-                    );
-                    return Err(anyhow::anyhow!(
-                        "重複 spawn 検出: project db の LOCK を既存 SP が保持しています \
-                         (この project の SP は既に稼働中)"
-                    ));
-                }
-                tracing::warn!("SP: SurrealDB 未接続、DB なしで継続: {}", e);
-                None
-            }
-        }
-    };
+    // SurrealDB — World が開いた唯一の handle をそのまま使う（doc 44 P1 PR4）。
+    //
+    // 旧構成では本関数が project ごとに `db/sp_{slug}/` を開いていた。ディレクトリ分離は
+    // VP-182 の対処で、別プロセスの World と SP が同一 db を open すると surrealkv の OS 排他
+    // ロックで 2 番目が失敗するためだった。fold-in で SP プロセスが消えた今、この分離は
+    // 不要になっただけでなく害がある — project ごとに db handle を持つと「project の runtime
+    // 実体」が復活し、doc 44 D2（project は認知境界に退化する）と矛盾する。
+    //
+    // project 次元は table の `project_path` 列が持つ（SP 固有 table も元から全て持っており、
+    // クエリも全て `WHERE project_path = $path` で絞っている）ので、handle 共有で意味論は変わらない。
+    // スキーマ定義は World 側の接続時に済んでいるため、ここでは行わない。
+    //
+    // 旧経路が担っていた「LOCK 保持 = 同 project の SP が既に稼働中 → 重複 spawn 中止」は
+    // `ProjectRuntimes` の map への二重 insert 防止が引き継いだ（プロセスが無いので、
+    // 重複は HashMap のキー衝突として表現される）。
 
     // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= lane-spawn)
     // を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
@@ -507,8 +483,9 @@ pub async fn run_world(
 
     // SurrealDB (embedded) に接続してスキーマ定義
     // surrealkv backend で in-process DB を開く。外部 `surreal` バイナリ不要。
-    // VP-182: World は `db/world/` 専用ディレクトリを使う (= SP の `db/sp_{slug}/` と
-    // 分離、 surrealkv OS 排他ロックの衝突を回避)。
+    // doc 44 P1 PR4 (DB 統合): ここで開く `db/world/` が**唯一の DB**で、全 project が
+    // この handle を共有する（`ProjectRuntimes::for_world` 経由で配る）。旧 VP-182 の
+    // per-SP 分離 (`db/sp_{slug}/`) は撤去済 — project 次元は table の project_path 列が持つ。
     let vpdb: Option<crate::db::SharedVpDb> = {
         let data_dir = crate::db::db_data_dir_for_world();
         match crate::db::VpDb::connect_embedded(&data_dir).await {
@@ -724,9 +701,12 @@ pub async fn run_world(
     // doc 44 P1 (fold-in): World の lane 集約 view を registry に結線する。旧構成では
     // SP の QUIC uplink がこの view を最新化していたので、結線を落とすと project は
     // 動くのに World からは boot 時の db 値しか見えない（= 過去 pid の ghost lane 配信）。
+    // doc 44 P1 PR4 (DB 統合): db handle も同時に配る。project は自分では db を開かず、
+    // World が開いたこの 1 本を共有する（project 次元は table の project_path 列が持つ）。
     let control_channels: crate::daemon::server::ControlChannels =
-        std::sync::Arc::new(super::project_registry::ProjectRuntimes::with_lane_view(
+        std::sync::Arc::new(super::project_registry::ProjectRuntimes::for_world(
             world_cap.read().await.lane_registry_ref(),
+            vpdb.clone(),
         ));
 
     // ProcessManagerCapability に registry を差し込む（`start_process` が in-process 起動に使う）。

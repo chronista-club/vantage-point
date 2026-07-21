@@ -206,89 +206,17 @@ pub(crate) fn match_project_name_for_path(
         .map(|p| p.name.clone())
 }
 
-/// FNV-1a 64-bit hash。
-///
-/// VP-182: `project_slug` の非 ASCII fallback で使う。 標準 `DefaultHasher` は
-/// 「no stability guarantees on future Rust versions」 (std doc 明記) のため、
-/// Rust バージョン更新で出力が変わると DB ディレクトリ名 (`db/sp_{slug}/`) が
-/// ズレて msgbox 履歴が孤立する。 FNV-1a は仕様固定の決定的アルゴリズムなので
-/// 永続データ key の安定性を保証できる。
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
-    }
-    hash
-}
-
-/// project を Whitesnake のディレクトリ等で使える安定 slug に変換する（VP-165 / doc 17 決定B）。
-///
-/// `project_name_from_path` の結果を `[a-zA-Z0-9_-]` のみに sanitize（それ以外は `_`）。
-/// 安定 alnum 文字が 1 つも残らない場合（= 名前が全部非 ASCII 等）は、正規化パスの
-/// hash を fallback に使う（`h{16進}`）。これで「日本語名のみの project が複数」でも
-/// slug 衝突しない。port と違い reshuffle しないので、永続データの key として安全。
-pub fn project_slug(project_dir: &str, config: &Config) -> String {
-    let name = project_name_from_path(project_dir, config);
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    // 安定 alnum が無い（空 or 全部 '_'/'-'）なら path の hash を fallback に。
-    // VP-182: DefaultHasher は Rust バージョン間で出力不安定のため FNV-1a に変更。
-    if !sanitized.chars().any(|c| c.is_ascii_alphanumeric()) {
-        let normalized = Config::normalize_path(std::path::Path::new(project_dir));
-        format!("h{:016x}", fnv1a_64(normalized.as_bytes()))
-    } else {
-        sanitized
-    }
-}
+// doc 44 P1 PR4 (DB 統合): `project_slug` / `fnv1a_64` を撤去。
+//
+// slug は project 名を **DB ディレクトリ名 `db/sp_{slug}/`** に落とすためだけに存在し
+// （VP-165 / doc 17 決定B。Whitesnake 退役後は db dir が唯一の用途だった）、`fnv1a_64` は
+// その永続 key を Rust バージョン間で安定させるための決定的 hash だった。
+// DB 統合でディレクトリ分離が消え、project 次元が table の `project_path` 列に移った結果、
+// **slug という概念そのものが宙に浮いた**（production の呼び出し元が 0 になった）。
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn project_slug_ascii_name_passthrough() {
-        let cfg = Config::default();
-        assert_eq!(
-            project_slug("/Users/x/repos/vantage-point", &cfg),
-            "vantage-point"
-        );
-        assert_eq!(
-            project_slug("/Users/x/repos/creo_memories", &cfg),
-            "creo_memories"
-        );
-    }
-
-    #[test]
-    fn project_slug_sanitizes_non_alnum() {
-        let cfg = Config::default();
-        // basename "my project!" → '_' 置換
-        assert_eq!(project_slug("/tmp/my project!", &cfg), "my_project_");
-        // ドット等も '_' に
-        assert_eq!(project_slug("/tmp/a.b.c", &cfg), "a_b_c");
-    }
-
-    #[test]
-    fn project_slug_all_non_ascii_falls_back_to_path_hash() {
-        let cfg = Config::default();
-        let s1 = project_slug("/tmp/日本語", &cfg);
-        let s2 = project_slug("/tmp/にほんご", &cfg);
-        // hash fallback: "h" + 16 hex
-        assert!(s1.starts_with('h') && s1.len() == 17, "got {s1}");
-        assert!(s2.starts_with('h') && s2.len() == 17, "got {s2}");
-        // 別 path なら別 slug（衝突しない）
-        assert_ne!(s1, s2);
-        // 同 path は安定
-        assert_eq!(project_slug("/tmp/日本語", &cfg), s1);
-    }
 
     // --- match_project_name_for_path (wiremsg identity SSOT) ---
 

@@ -174,6 +174,8 @@ P1 露払いで実装済）。これは fold-in の有無に関わらず価値�
 
 ### 5.2 DB handle — 単一 `db/world/` + project 列
 
+> **実装済（PR4、2026-07-21）**。以下は設計時の記述で、末尾に実装結果を追記した。
+
 現状 namespace は `vp`/`vp` **固定**で、分離は**ディレクトリ**（`db/world/` と `db/sp_{slug}/`）。
 World が N handle を抱く案は「project の runtime 実体」を復活させるので D2 と矛盾する。
 `LaneAddress` が project を持つ以上、**table に project 次元を足す**のが canonical。
@@ -193,6 +195,26 @@ World が N handle を抱く案は「project の runtime 実体」を復活さ�
   判定基準が明快なので **D3「Project Host の第一の振る舞い＝見送り」の実例第 2 号**。
 - 副次: この LOCK は「重複 SP 検出」も兼ねていた（生存 holder 検出で起動中止）。
   fold-in 後は World の `:32000` bind + `daemon.pid` が単一性を保証するので**代替不要**。
+
+#### 実装結果（PR4）
+
+想定より小さく終わった。理由は **schema が最初から `project_path` 列を持っていた**こと
+（旧「SP 固有テーブル」= `pane_contents` / `stand_status` / `prompts` も全て所有し、クエリも
+全て `WHERE project_path = $path` で絞っていた）。1 DB = 1 project の時代は事実上冗長だった列が、
+そのまま canonical な project 次元になった。**schema 変更・データ移行ともに不要**で、
+変更は「handle を 1 本に寄せる」だけになった。
+
+| 変更 | 内容 |
+|---|---|
+| `start_project` | per-project connect を撤去し、World が開いた handle を引数で受ける |
+| `ProjectRuntimes` | `world_db` field を持ち、`for_world()`（旧 `with_lane_view`）で lane view と同時に結線 |
+| `db_data_dir_for_project` | 撤去（呼び出し元は `start_project` の 1 箇所のみだった） |
+| `DbLockHeldByLiveHolder` | 撤去。「LOCK 保持 = 重複 SP」の判定は `ProjectRuntimes` の map 二重 insert 防止が引き継ぐ |
+| `resolve::project_slug` / `fnv1a_64` | 撤去。**slug の用途は `db/sp_{slug}/` の命名だけだった**ため production 呼び出し元が 0 になった |
+
+**旧 `db/sp_*` は削除も移行もしていない**（合計 1.4 GB がその場に残る）。判定基準が明快な
+掃除対象なので D3「Project Host の第一の振る舞い＝見送り」の担当に送る（§5.2 の孤児 db 246 MB と同じ扱い）。
+実害として、旧 db に入っていた **PP board（`pane_contents`）は引き継がれない**（実測 56 件）。
 
 ### 5.3 `vp ps` — PORT / PID 列が無意味化
 
@@ -229,7 +251,7 @@ cli.rs にローカル化して温存。ファイルベースの trace log（`in
 | **1. 露払い** | panic 可視化 + **P1 が抱えて運ぶ羽目になる死コード**の除去（`AppState` の dead field 3 本 / 孤児化した `process/pty.rs`） | 小 | ほぼ 0（挙動不変） |
 | **2. fold-in 本体** | `AppState` の per-project 化 → World が LanePool 所有 → dispatch 直結 → SP spawn 停止 → uplink/registry/control 撤去 | 大（〜2,000 行） | 中 |
 | **3. 遺物撤去** | `vp sp` / port slot API / `PORT_RANGE` / health monitor / presence 意味論 / `vp ps` / `restart-all` / debug の新居 | 中 | 小 |
-| **4. DB 統合** | `db/sp_*` → `db/world/` の project 列化 | 小〜中 | 要検証 |
+| **4. DB 統合** ✅ | `db/sp_*` → `db/world/` の project 列化 | 小（schema は既に project 列を持っていた） | 小（§5.2 実装結果） |
 
 **線引き**: PR1 は「P1 が抱えて運ぶもの」だけを落とす。「P1 が丸ごと消すもの」
 （`vp sp` の内部死コード等）は磨かない — 捨てる作業になるため。

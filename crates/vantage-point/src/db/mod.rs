@@ -44,24 +44,21 @@ fn db_root() -> PathBuf {
     crate::config::vp_data_dir().join("db")
 }
 
-/// World daemon (TheWorld) 専用の DB ディレクトリ (`vp_data_dir()/db/world`)
+/// VP 唯一の DB ディレクトリ (`vp_data_dir()/db/world`)
 ///
-/// VP-182: surrealkv は OS レベル排他ロック (`try_lock_exclusive`) を持つため、
-/// World と SP が同一ディレクトリを open すると LOCK 衝突で 2 番目が失敗する。
-/// World は `processes` テーブルを保持する専用 DB を `db/world/` に分離。
-/// (VP-188: 旧 `projects` テーブルは projects.kdl に移行済)
+/// doc 44 P1 PR4 (DB 統合): 旧構成では World (`db/world/`) と project (`db/sp_{slug}/`) が
+/// **別ディレクトリ**だった。理由は VP-182 — surrealkv は OS レベル排他ロック
+/// (`try_lock_exclusive`) を持つため、別プロセスの World と SP が同一ディレクトリを
+/// open すると LOCK 衝突で 2 番目が失敗する。
+///
+/// fold-in で SP プロセスが消え、World が全 project を同一プロセス内に抱えるようになった
+/// 時点でこの分離理由は消滅した（同一プロセスからの open は handle 共有で足りる）。
+/// project 次元は**ディレクトリではなく table の `project_path` 列**が持つ
+/// （SP 固有 table も元から全て `project_path` を持っており、クエリも全てそれで絞る）。
+///
+/// 名前が `world` のままなのは、既存の `db/world/` を移行なしでそのまま使い続けるため。
 pub fn db_data_dir_for_world() -> PathBuf {
     db_root().join("world")
-}
-
-/// Project (SP / Star Platinum) 専用の DB ディレクトリ (`vp_data_dir()/db/sp_{slug}`)
-///
-/// VP-182: 各 SP は project slug 別の独立 DB ディレクトリを使う。 doc 19 §4.6 の
-/// 「各 SP は自分の DB に write」 設計をディレクトリ分離で物理化し、 World との
-/// surrealkv LOCK 衝突を構造的に解消する。 cross-process forward は受信側 SP の
-/// DB に書く設計 (doc 19 §4.6) なので per-SP 分離と整合する。
-pub fn db_data_dir_for_project(slug: &str) -> PathBuf {
-    db_root().join(format!("sp_{}", slug))
 }
 
 /// VP のデータベースクライアント
@@ -73,36 +70,6 @@ pub struct VpDb {
 
 /// Arc でラップした VpDb（複数コンポーネントで共有するため）
 pub type SharedVpDb = Arc<VpDb>;
-
-/// respawn-leak 根治 (c): 生存 holder が LOCK を保持したまま backoff retry が尽きたことを
-/// 示す marker error。
-///
-/// per-project db dir (`db/sp_{slug}/`) では「同 project の SP が既に稼働中」を意味する
-/// 決定的シグナル (SP は db を process 生存中ずっと開いたまま = LOCK 保持)。 SP 起動路
-/// (process/server.rs) はこれを downcast で検出し、 「DB なしで継続」の degrade ではなく
-/// 重複 spawn として起動を中止する。
-///
-/// なお World の `db/world/` 接続や `vp db` CLI でも surface しうるが、 そちらは従来通り
-/// degrade / エラー表示のまま (World の重複防止は :32000 の port bind が担保)。 abort に
-/// 使うのは SP 起動路のみ。
-#[derive(Debug)]
-pub struct DbLockHeldByLiveHolder {
-    endpoint: String,
-    attempts: u32,
-    last_err: String,
-}
-
-impl std::fmt::Display for DbLockHeldByLiveHolder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "SurrealDB embedded 接続失敗 ({}): lock 衝突が {} 回 retry 後も解消せず (holder 生存): {}",
-            self.endpoint, self.attempts, self.last_err
-        )
-    }
-}
-
-impl std::error::Error for DbLockHeldByLiveHolder {}
 
 impl VpDb {
     /// ローカルファイルシステム上の surrealkv DB を開いて接続する
@@ -177,12 +144,20 @@ impl VpDb {
             }
         }
         // ここまで来た = 全 attempt で LOCK 衝突が続き、 stale 判定 (clear_stale_lock) も
-        // 毎回 false (= holder 生存)。 caller が重複 spawn 判定に使えるよう typed marker で返す。
-        Err(anyhow::Error::new(DbLockHeldByLiveHolder {
+        // 毎回 false (= holder 生存 = 別プロセスの VP が同じ db を開いている)。
+        //
+        // doc 44 P1 PR4 以前は、これを typed marker (`DbLockHeldByLiveHolder`) で返し SP 起動路が
+        // downcast して「重複 spawn」と判定していた。db が単一化された今、この db を開くのは
+        // World だけで、World の単一性は :32000 の port bind (`bind_dual_stack` は SO_REUSEADDR
+        // のみで SO_REUSEPORT を使わない = 二重 listen 不可) が bind 時点で保証する。
+        // よって本エラーに到達したら異常事態であり、caller が分岐に使う marker は不要になった。
+        // (`daemon.pid` は bind 成功後に書く bookkeeping で、起動排他には関与しない。)
+        Err(anyhow::anyhow!(
+            "SurrealDB embedded 接続失敗 ({}): lock 衝突が {} 回 retry 後も解消せず (holder 生存): {}",
             endpoint,
-            attempts: MAX_ATTEMPTS,
-            last_err: last_err.map(|e| e.to_string()).unwrap_or_default(),
-        }))
+            MAX_ATTEMPTS,
+            last_err.map(|e| e.to_string()).unwrap_or_default()
+        ))
     }
 
     /// LOCK ファイルに live holder が居ない (= 自分で非ブロッキング flock を取得できる) なら
@@ -1166,7 +1141,8 @@ DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path 
 -- home-World identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
 -- daemon が初回起動で 1 度だけ発行し db/world に永続する singleton (固定 record id
 -- world_identity:self、 index 不要)。machine/hostname/endpoint から独立で、 hub の routing
--- key になる。db/world は World 専用 (VP-182) なので SP に触られない daemon-canonical な truth。
+-- key になる。書き手は daemon 起動路のみ (doc 44 P1 PR4 で db は単一化されたが、 本 table を
+-- 触るのは World bootstrap だけなので daemon-canonical な truth であることは変わらない)。
 DEFINE TABLE IF NOT EXISTS world_identity SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS wld_id ON world_identity TYPE string;
 DEFINE FIELD IF NOT EXISTS created_at ON world_identity TYPE datetime DEFAULT time::now();
@@ -1230,7 +1206,12 @@ DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS pro
 -- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
 
 -- =========================================================================
--- SP 固有テーブル（project_path でフィルタ — D11 準拠）
+-- project 固有テーブル（project_path でフィルタ — D11 準拠）
+--
+-- doc 44 P1 PR4 (DB 統合): 旧称「SP 固有テーブル」。SP プロセス時代は per-SP DB
+-- (`db/sp_{slug}/`) に置かれ、1 DB = 1 project だったため project_path 列は事実上
+-- 冗長だった。db 単一化で、この列が唯一の project 次元になる（= 全クエリが
+-- `WHERE project_path = $path` で絞る前提。これを欠くと他 project の行を掴む）。
 -- =========================================================================
 
 -- Canvas ペイン状態（PP Canvas Stack Model 永続化、 doc 19）
@@ -1258,8 +1239,9 @@ DEFINE FIELD IF NOT EXISTS lane_name ON pane_contents TYPE string DEFAULT '';
 -- board モデル (2026-07-15): scope 軸を追加し (project_path, scope, lane_name, pane_id) で board を
 --   分離する。 scope='lane' が lane board (lane_name で lane ごとに独立)、 'proj' が project 共有 board
 --   (lane_name='')。 旧 record (scope 不在) は DEFAULT 'lane' で self-heal され、 既存 lane/conductor
---   board を現挙動のまま保存する。 将来 'vp'(全体 board) は cross-project 共有のため World DB 側に
---   置く (SP DB は project ごとに独立=surrealkv LOCK 分離のため)。 この SP-local table は lane/proj のみ。
+--   board を現挙動のまま保存する。 現状の scope は lane/proj の 2 つ。
+--   (doc 44 P1 PR4 まで「将来の 'vp'(全体 board) は別 DB 行き」と書かれていたが、 db 単一化で
+--    その制約は消えた — 全体 board を足すなら project_path を跨ぐ scope 値を 1 つ増やすだけで済む。)
 DEFINE FIELD IF NOT EXISTS scope ON pane_contents TYPE string DEFAULT 'lane';
 DEFINE FIELD IF NOT EXISTS stack ON pane_contents TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS ui_state ON pane_contents TYPE option<object> FLEXIBLE;
@@ -1406,36 +1388,30 @@ mod tests {
         db
     }
 
+    /// doc 44 P1 PR4: DB ディレクトリは `vp_data_dir()/db/world` の**単一**であること。
+    ///
+    /// 旧テストは「World と SP の dir が分離されていること」を固定していた（VP-182 の
+    /// LOCK 衝突回避）。fold-in で project がプロセスでなくなり handle 共有になったため、
+    /// 固定すべき性質が「分離」から「単一」に反転した。
     #[test]
-    fn test_db_data_dir_world_and_project_separated() {
+    fn test_db_data_dir_is_single_world_dir() {
         let world = db_data_dir_for_world();
-        let proj = db_data_dir_for_project("vantage-point");
 
-        // VP-192: 両方とも vp_data_dir()/db 配下
-        assert!(
-            world.to_string_lossy().contains("db"),
-            "World DB dir に 'db' が含まれていない: {}",
-            world.display()
-        );
+        // VP-192: vp_data_dir()/db 配下
         assert!(
             world.starts_with(crate::config::vp_data_dir()),
-            "World DB dir は vp_data_dir() 配下であるべき: {}",
+            "DB dir は vp_data_dir() 配下であるべき: {}",
             world.display()
         );
-        // VP-182: World と SP の DB ディレクトリは別であること (= surrealkv LOCK 衝突回避)
-        assert_ne!(
-            world, proj,
-            "World と project の DB ディレクトリは分離されているべき"
+        assert!(
+            world.parent().is_some_and(|p| p.ends_with("db")),
+            "DB dir の親は 'db' であるべき: {}",
+            world.display()
         );
         assert!(
             world.ends_with("world"),
-            "World DB dir は 'world' で終わるべき: {}",
+            "DB dir は 'world' で終わるべき: {}",
             world.display()
-        );
-        assert!(
-            proj.ends_with("sp_vantage-point"),
-            "project DB dir は 'sp_<slug>' 形式であるべき: {}",
-            proj.display()
         );
     }
 
