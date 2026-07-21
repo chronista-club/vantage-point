@@ -90,3 +90,40 @@ pub fn list_projects_blocking() -> Option<Vec<(String, String)>> {
 pub fn list_processes_blocking() -> Option<Vec<serde_json::Value>> {
     world_control_blocking(|client| async move { client.processes_list().await })
 }
+
+/// 見送り判定を帳簿に記録し、反映後の滞留一覧を得る（doc 44 §7.5）。
+///
+/// daemon 不在 / RPC 失敗は `None`。呼び出し側（`vp lane cleanup`）は滞留の注記を
+/// 諦めて続行する — **帳簿に書けないことは見送りを止める理由にならない**
+/// （止める理由になるのは稼働状況が不明な時だけ、§7.5「不明は無いに畳まない」）。
+pub fn farewell_observe_blocking(
+    project_path: &str,
+    observations: &[crate::host::ledger::FarewellObservation],
+) -> Option<Vec<crate::host::ledger::FarewellEntry>> {
+    let path = project_path.to_string();
+    let observations = observations.to_vec();
+    world_control_blocking(move |client| async move {
+        client.farewell_observe(&path, &observations).await
+    })
+}
+
+/// 実際に見送った lane を帳簿に記録する（doc 44 §7.5）。記録件数、失敗は `None`。
+pub fn farewell_reclaimed_blocking(
+    project_path: &str,
+    lanes: &[crate::host::ledger::FarewellObservation],
+) -> Option<usize> {
+    let path = project_path.to_string();
+    let lanes = lanes.to_vec();
+    world_control_blocking(
+        move |client| async move { client.farewell_reclaimed(&path, &lanes).await },
+    )
+}
+
+/// 帳簿の見送り記録を新しい順に読む（`vp lane history`）。daemon 不在は `None`。
+pub fn farewell_log_blocking(
+    project_path: &str,
+    limit: usize,
+) -> Option<Vec<crate::host::ledger::FarewellEntry>> {
+    let path = project_path.to_string();
+    world_control_blocking(move |client| async move { client.farewell_log(&path, limit).await })
+}

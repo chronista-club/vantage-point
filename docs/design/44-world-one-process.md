@@ -446,8 +446,9 @@ fast-forward で取り込み済）」と**断定できる範囲だけ**を言う
 
 ### 7.5 後続スライス
 
-- **帳簿の永続化** — 現状は都度計算（git subprocess、lane 数十なら許容）。
-  「いつ何を見送ったか」の記録と、`AskHuman` の滞留を追える形は未実装
+- ~~**帳簿の永続化**~~ → 下の「✅ 着地: 見送りの帳簿」。予告は「いつ何を見送ったか」と
+  「`AskHuman` の滞留」の 2 つで、**両方とも永続が要る**と確定した（§8.5 の初版は滞留を
+  「都度計算で復元できる」として持たない判断だったが、これは誤り — 下記）
 - **conductor ポインタ**（D4 の残り）— 帳簿ができた時点でその最初のエントリとして載せる
 - ~~**稼働中 lane の保護**~~ → 下の「✅ 着地」。予告は「daemon 経由の surface（LanePool を
   持つ層）から呼べば埋まる」だったが、**CLI から World に訊く**形に落ちた（`vp lane cleanup`
@@ -506,6 +507,136 @@ World に訊けなかった場合、**削除を実行せず「稼働状況を確
   Host → lane の plumbing で逆転している。今は 1 箇所なので実害は無いが、
   **後続の振る舞い（迎え入れ / 場の維持 / 交通整理）がそれぞれ独立に同じ手を伸ばす**と
   肥大化する。2 つ目が伸びた時点で共有 git primitive module への切り出しを検討する
+
+### ✅ 着地: 見送りの帳簿（2026-07-22）
+
+`host_farewell` table を新設し、見送りの記録を永続化した。読み手は **board UI ではなく
+`vp lane cleanup` の出力**（+ `vp lane history`）。
+
+#### 最初の読者を board UI にしなかった
+
+§8.5 は「見送りの履歴」の消費者を board UI と書いて先送りしていた。そのまま作ると
+**UI フェーズ（doc 47 §7）まで読み手がゼロ** = §8.2 で自分が挙げた「読み手のない書き込み」
+そのものになる（`LaneId` が 2 年間そうだった）。
+
+`vp lane cleanup` の要判断行に滞留を添える形にすると、**書いた翌回の実行で読まれる**。
+UI を待たずに書き手と読み手が同じ PR で閉じるので、書き込みが本当に要るかが即座に検証される。
+
+```
+  ⚠️ 要判断: feat-x (未コミットの変更が 4 件ある（…）) — 3 回連続、初回 2026-07-15
+```
+
+`vp lane history` は「いつ何を見送ったか」の読み手（`Reclaimed` を消費する側）。
+これを足さないと、履歴だけが読み手ゼロのまま残る — 記録の種類ごとに読み手を用意する。
+
+#### 何を記録するか — 「計算で復元できない事実」だけ、を 2 種に絞った
+
+| 判定 | 帳簿 | なぜ |
+|---|---|---|
+| 実行した見送り（`Reclaimed`） | **書く** | lane を消したので survey では二度と再現できない |
+| `AskHuman` の滞留（`Pending`） | **書く** | 「今 `AskHuman` か」は都度計算できるが、**「いつから」「何回目」は観測の履歴**で計算では出ない |
+| `Keep` / 判定だけの `Reclaim` | **書かない** | 次の survey で同じ答えが出る（= 復元できる）。書いても行が増えるだけ |
+
+> §8.5 の初版は滞留を「lane が残るので復元可能」として**持たない**判断だった。これは
+> 誤りで、復元できるのは**現在の verdict** であって滞留の長さではない。今回訂正した。
+
+#### 連続は 1 行に畳む（streak + first_seen_at）
+
+`vp lane cleanup` は何度でも走る。観測ごとに行を足すと**放置された lane ほど帳簿を太らせる**
+（滞留を追うための表が滞留で壊れる）。同じ判定の連続を 1 行に畳むと、行数は
+**「判定が変わった回数」に比例し、実行回数には比例しない**。
+
+| 状態遷移 | 書き込み |
+|---|---|
+| 記録対象外 → 記録対象外 | **0 write**（安定した lane は survey を素通り = 多数派） |
+| なし → `AskHuman` | 1 CREATE（streak=1、first_seen_at=now） |
+| `AskHuman` → `AskHuman` | 1 UPDATE（streak+1、last_seen_at=now。**名前と初回時刻は不変**） |
+| `AskHuman` → それ以外 | 1 UPDATE（`ongoing=false` で閉じる。行は履歴として残す） |
+
+閉じるのが要点 — 閉じないと、後でまた `AskHuman` になった時に**連続していない観測が
+1 本の滞留に見える**（「3 週間放置」が実は「1 回 → 解決 → 2 週後にまた 1 回」だったことになる）。
+
+⚠️ `streak` は**日数ではなく実行回数**。連打すれば増えるので、表示は必ず `first_seen_at`
+（初回時刻）とセットにする。回数だけを見せると滞留の長さを誤読させる。
+
+#### key は `LaneId`、名前は記録時点のスナップショット
+
+§8.5 が先に決めていた通り。実装で効いた点:
+
+- **名前は書いた後 更新しない**。更新すると過去の記録が rename で書き換わる
+  （「old-feat を見送った」が「new-feat を見送った」になる）。しかも見送った lane は
+  引く先が消えているので、そもそも今の名前を引けない
+- 逆に **`vp lane cleanup` の現在の行は survey が持つ生きた名前**を出し、帳簿からは
+  回数と初回時刻だけを取る。こうすると凍結名が現在の一覧に漏れない
+- 同名 lane の再作成が混ざらないのは `lane_ids` state file の GC が支えている —
+  `clear_lane_state_in` が lane 削除時に id file を消すので、作り直した lane は必ず別 id
+  （名前 key だったら、作ったばかりの lane が「3 回連続で判断待ち」と表示される）
+
+#### 名前 → id を World 側で解決しなかった
+
+帳簿の書き手は CLI（`vp lane cleanup`）だが、**`lane_id` は CLI が解決して RPC に載せる**。
+World の registry から引く形にしなかった理由:
+
+- 見送りの対象には **World が一度も見たことのない lane**（disk にだけ在る worktree）が
+  含まれる。registry 逆引きだとそれらが黙って記録から落ちる — 落ちるのは**まさに放置されて
+  溜まった lane** なので、追いたいものだけが追えなくなる
+- id の SSOT は `lane_ids/<project>__<lane>` state file で、World の `LaneInfo.id` も
+  同じ `lane_id::load_or_create` から来る = **両プロセスが同じ id を得る**
+- 解決の順序が意味を持つ: **lane を消す前に**引かないと、`clear_lane_state_files` が
+  id file を消した後に別 id が生える（記録が「知らない lane」になる）。この順序を握れるのは
+  削除を実行する CLI 側
+
+repo basename から project key を導く derivation は `lane_state_project_key` に畳んだ
+（同じ導出を要る場所が 2 つになったので、1 箇所ズレて無音で別 key を触るのを構造的に防ぐ）。
+
+#### `Unknown`（稼働状況不明）では 1 文字も書かない
+
+保留は survey に進まないので観測が 1 件も生まれず、帳簿への呼び出し自体が起きない。
+**事実が無い状態を履歴に残さない** — 書いてしまうと、後から見た人が「その日は判断待ちが
+0 件だった」と読む（無いのは判断待ちではなく観測）。
+
+これを `cleanup_performers_with` に注入した `FarewellLedger` の spy で固定した。
+`resolve_origin` を関数で注入したのと同じ理由（**順序が意味を持つものは注入して検証する**）。
+
+#### 経路は world-control（#858 の型）
+
+帳簿は `db/world/` にあり surrealkv の OS 排他ロックで World が専有する（§8.4）ので、
+CLI からは World 経由でしか触れない。#858 で確立した world-control の型に倣い
+**server + client + KDL + drift テスト**を揃えた:
+
+| method | 種別 | KDL |
+|---|---|---|
+| `host/farewell_observe` | mutation（判定の記録 + 滞留の返却） | omission（手で叩くと**起きていない見送り**を書ける） |
+| `host/farewell_reclaimed` | mutation（実行の記録） | omission（同上） |
+| `host/farewell_log` | read-safe（履歴の読み出し） | **記述**（agent に露出する観測面） |
+
+`observe` が記録と読み出しを 1 往復にまとめているのは、`vp lane cleanup` が判定を表示する
+その場で「何回目 / 初回いつ」を添えるため（別 RPC にすると表示のたびに 2 往復になる）。
+
+帳簿への書き込み失敗は **見送りを止めない**（best-effort）。止める理由になるのは稼働状況が
+不明な時だけ — 記録は判断材料であって、それが取れないことは lane を消してよいかの判断を
+変えない（1 つの失敗に 2 つの意味を持たせない）。
+
+#### テストが固定していること
+
+- `ledger::stable_verdicts_write_nothing` — 安定した lane は **0 write** で素通りする
+  （ここが崩れると帳簿が実行回数に比例して太る）
+- `ledger::consecutive_ask_human_folds_into_streak` / `resolved_pending_is_closed_not_extended`
+  — 連続の畳み方と閉じ方（時刻は注入して固定値で検証）
+- `ledger::rename_keeps_history_in_place` — **同じ id を別名で観測しても**滞留は繋がり、
+  記録済みの名前は動かない
+- `ledger::recreated_lane_does_not_inherit_history` — 同名 lane を作り直しても前の滞留を
+  引き継がない。`lane::commands::recreated_lane_gets_a_fresh_stable_id` がその土台
+  （lane 削除で id file が消える）を別途固定する
+- `lane::commands::cleanup_output_carries_stagnation_from_ledger` — **滞留が出力に実際に出る**。
+  出力を `&mut dyn Write` で注入して本文を assert する（書き込みだけを見ると読み手のない
+  書き込みに戻る）。表示名が survey 由来（帳簿のスナップショットではない）ことも同時に見る
+- `lane::commands::cleanup_holds_when_liveness_is_unknown` — `Unknown` では帳簿に触らない。
+  同時に `Known(空)` では観測が送られることも見て「常に書かない」が緑にならないようにする
+- `ledger::farewell_rows_share_the_normalized_row_key` — 書き手と読み手で path の形が
+  違っても同じ行（起点 / 並び順と同じ回帰、`row_key` に乗っているか）
+- `ledger::observation_serde_shape` — wire 形の往復。ここがズレると World 側の
+  `from_value` が落ちて**記録だけが黙って止まる**（cleanup 自体は動くので気付けない）
 
 ## 8. 帳簿の第一形 — 開発起点ポインタ（D4、2026-07-21）
 
@@ -571,8 +702,8 @@ World 不在なら予約名にフォールバックし、**その旨を告げて
 | 項目 | 判断 | なぜ今やらないか |
 |---|---|---|
 | lane の並び順 `ord` | 帳簿に **id key** で持つ。`lane` table には置かない（`upsert_lane` が DELETE+CREATE で消すため — `lane_lifecycle` を別 table にしたのと同じ理由） | 消費者が P4 の reorder UI しかない。**読み手のない書き込みを作らない**（§8.2 の `LaneId` がまさにその状態だった） |
-| 見送りの履歴 | 帳簿に **id key + 記録時点の名前スナップショット**（履歴は rename で動いてはいけない / 同名 lane の再作成と衝突してはいけない） | 消費者が board UI。かつ書き手が CLI 側なので §8.4 の経路整理が要る |
-| `AskHuman` の滞留 | **持たない** | `survey_project` が都度計算できる。帳簿には「計算で復元できない事実」だけを書く（見送りは lane を消すので復元不能、滞留は lane が残るので復元可能） |
+| ~~見送りの履歴~~ | 帳簿に **id key + 記録時点の名前スナップショット**（履歴は rename で動いてはいけない / 同名 lane の再作成と衝突してはいけない） | → **§7.5「✅ 着地: 見送りの帳簿」で実装済**（2026-07-22）。判断はこの行のまま通った |
+| ~~`AskHuman` の滞留~~ | ~~**持たない**~~ → **持つ** | → **§7.5 で訂正**。「滞留は lane が残るので復元可能」は誤りで、復元できるのは**現在の verdict** であって「いつから / 何回目」ではない（それは観測の履歴） |
 | lane の rename | state file 5 系統（`lane_ids` / `echoes_sessions` / `console_mode` / `replay_log` / `cc_session`）の key を id 化してから | それらの名前 key は `load_in(base, project, lane)` の**内側に閉じている** = カプセル化された負債で、放置しても修正箇所が増えない。address 文字列（§6.4）が viral だったのとは性質が違う |
 | `claude_command` の分岐 | `has_ground` 相当（cwd が repo root か）を訊く形へ | §8.1。挙動変更なので構造変更と混ぜない（§6.6 と同じ分割） |
 

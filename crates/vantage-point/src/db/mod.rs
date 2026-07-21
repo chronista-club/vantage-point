@@ -635,6 +635,190 @@ impl VpDb {
         Ok(())
     }
 
+    // =========================================================================
+    // Project Host 帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
+    //
+    // 「いつ何を見送ったか」(= lane を消したので survey では復元できない) と
+    // 「AskHuman がいつから何回続いているか」(= 観測の履歴なので計算できない) の 2 つ。
+    // key は host_origin / host_lane_order と同じ **lane_id**。
+    // =========================================================================
+
+    /// DB の 1 行を [`crate::host::ledger::FarewellEntry`] に写す (壊れた行は `None`)。
+    ///
+    /// 1 行の欠損で一覧全体を落とさない (帳簿は best-effort read)。
+    fn farewell_row(v: &serde_json::Value) -> Option<crate::host::ledger::FarewellEntry> {
+        Some(crate::host::ledger::FarewellEntry {
+            lane_id: v.get("lane_id")?.as_str()?.to_string(),
+            lane_name: v
+                .get("lane_name")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            kind: crate::host::ledger::FarewellKind::from_label(v.get("kind")?.as_str()?)?,
+            reason: v
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            streak: v.get("streak").and_then(|s| s.as_u64()).unwrap_or(1) as u32,
+            first_seen_at: v
+                .get("first_seen_at")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            last_seen_at: v
+                .get("last_seen_at")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            ongoing: v.get("ongoing").and_then(|o| o.as_bool()).unwrap_or(false),
+        })
+    }
+
+    /// 継続中の滞留を引く (project × lane に高々 1 行)。
+    pub async fn get_open_farewell(
+        &self,
+        project_path: &str,
+        lane_id: &str,
+    ) -> Result<Option<crate::host::ledger::FarewellEntry>> {
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM host_farewell
+                 WHERE project_path = $p AND lane_id = $id AND ongoing = true LIMIT 1",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", lane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows.first().and_then(Self::farewell_row))
+    }
+
+    /// 帳簿に 1 行足す (滞留の起票 / 見送りの記録)。
+    pub async fn create_farewell_entry(
+        &self,
+        project_path: &str,
+        entry: &crate::host::ledger::FarewellEntry,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "CREATE host_farewell SET
+                    project_path = $p, lane_id = $id, lane_name = $name, kind = $kind,
+                    reason = $reason, streak = $streak,
+                    first_seen_at = $first, last_seen_at = $last, ongoing = $ongoing",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", entry.lane_id.clone()))
+            .bind(("name", entry.lane_name.clone()))
+            .bind(("kind", entry.kind.as_str().to_string()))
+            .bind(("reason", entry.reason.clone()))
+            .bind(("streak", entry.streak as i64))
+            .bind(("first", entry.first_seen_at.clone()))
+            .bind(("last", entry.last_seen_at.clone()))
+            .bind(("ongoing", entry.ongoing))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 追加失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 追加エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 継続中の滞留を伸ばす (連続回数と直近観測時刻の更新)。
+    ///
+    /// `lane_name` は**更新しない** — 記録時点のスナップショットなので rename で動かさない
+    /// (doc 44 §8.5)。`first_seen_at` も同じ理由で不変。
+    pub async fn extend_open_farewell(
+        &self,
+        project_path: &str,
+        lane_id: &str,
+        streak: u32,
+        reason: &str,
+        last_seen_at: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE host_farewell SET streak = $streak, reason = $reason, last_seen_at = $last
+                 WHERE project_path = $p AND lane_id = $id AND ongoing = true",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", lane_id.to_string()))
+            .bind(("streak", streak as i64))
+            .bind(("reason", reason.to_string()))
+            .bind(("last", last_seen_at.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 更新失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 更新エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 継続中の滞留を閉じる (判定が判断待ちから外れた / lane を見送った)。
+    ///
+    /// 行は消さない — 「いつからいつまで判断待ちだったか」は履歴として残す。
+    pub async fn close_open_farewell(&self, project_path: &str, lane_id: &str) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE host_farewell SET ongoing = false
+                 WHERE project_path = $p AND lane_id = $id AND ongoing = true",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", lane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 終端失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 終端エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 継続中の滞留を project 単位で列挙する (`vp lane cleanup` の滞留表示)。
+    pub async fn list_open_farewells(
+        &self,
+        project_path: &str,
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM host_farewell WHERE project_path = $p AND ongoing = true")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 滞留取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows.iter().filter_map(Self::farewell_row).collect())
+    }
+
+    /// 帳簿を新しい順に読む (`vp lane history`)。`limit` 0 は無制限。
+    pub async fn list_farewell_entries(
+        &self,
+        project_path: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM host_farewell WHERE project_path = $p ORDER BY last_seen_at DESC")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 履歴取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        let mut entries: Vec<crate::host::ledger::FarewellEntry> =
+            rows.iter().filter_map(Self::farewell_row).collect();
+        if limit > 0 {
+            entries.truncate(limit);
+        }
+        Ok(entries)
+    }
+
+    /// 見送りの記録を project ごと回収する (`delete_host_origin` と対、§4.6 含有=所有=寿命)。
+    pub async fn delete_farewell_entries_for_project(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE host_farewell WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 全削除エラー: {}", e))?;
+        Ok(())
+    }
+
     /// 開発起点ポインタを削除する (project remove 時の回収、`delete_active_lane` と対)。
     pub async fn delete_host_origin(&self, project_path: &str) -> Result<()> {
         self.db
@@ -1476,6 +1660,38 @@ DEFINE FIELD IF NOT EXISTS lane_id ON host_lane_order TYPE string;
 DEFINE FIELD IF NOT EXISTS ord ON host_lane_order TYPE int;
 DEFINE FIELD IF NOT EXISTS updated_at ON host_lane_order TYPE datetime;
 DEFINE INDEX IF NOT EXISTS idx_host_lane_order ON host_lane_order COLUMNS project_path, lane_id UNIQUE;
+
+-- Project Host の帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
+--
+-- 帳簿に書くのは **計算で復元できない事実だけ** という規律で 2 種類に絞ってある:
+--   kind='reclaimed' = 実際に見送った (lane を消したので survey では二度と再現できない)
+--   kind='pending'   = AskHuman の滞留。「今 AskHuman か」は survey が都度計算できるが、
+--                      「いつから」「何回目」は観測の履歴なので計算では出てこない
+-- Keep と「判定だけの Reclaim」を書かないのは、どちらも次の survey で同じ答えが出るため。
+--
+-- ⚠️ 同じ判定の**連続は 1 行に畳む** (streak + first_seen_at)。観測ごとに行を足すと
+-- `vp lane cleanup` を走らせるほど帳簿が太り、放置された lane ほど重くなる (滞留を追う
+-- ための表が滞留で壊れる)。行数は「判定が変わった回数」に比例し、実行回数には比例しない。
+--
+-- key は host_origin / host_lane_order と同じ **lane_id (UUID)**。lane_name は
+-- **記録時点のスナップショット**で、後から更新しない (履歴が rename で書き換わらない)。
+-- lane 削除時に lane_ids state file も消えるので、同名 lane を作り直すと別 id になり
+-- 前の履歴と混ざらない。
+--
+-- 時刻は datetime ではなく **RFC3339 の string**。記録時刻は純関数に注入してテストで
+-- 固定する事実なので、DB 側の time::now() ではなく呼び出し側が渡す (UTC 表記なので
+-- 文字列の辞書順 = 時系列順)。
+DEFINE TABLE IF NOT EXISTS host_farewell SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_id ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_name ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS kind ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS reason ON host_farewell TYPE string DEFAULT '';
+DEFINE FIELD IF NOT EXISTS streak ON host_farewell TYPE int DEFAULT 1;
+DEFINE FIELD IF NOT EXISTS first_seen_at ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS last_seen_at ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS ongoing ON host_farewell TYPE bool DEFAULT false;
+DEFINE INDEX IF NOT EXISTS idx_host_farewell_lane ON host_farewell COLUMNS project_path, lane_id;
 
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。

@@ -245,10 +245,22 @@ enum LaneCommands {
     /// 全 performer の状態表示
     Status,
     /// branch が default branch (origin/HEAD) に merge 済の performer を削除（squash merge も検出）
+    ///
+    /// 判定は Project Host（`host::farewell`）が 3 値（削除可能 / 保持 / 要判断）で出す。
+    /// 要判断が続いている lane には「何回連続・初回いつ」が付く (doc 44 §7.5 の帳簿)。
     Cleanup {
         /// 確認なしで強制削除
         #[arg(long, short)]
         force: bool,
+    },
+    /// この project の見送りの記録を新しい順に表示する (doc 44 §7.5、Project Host の帳簿)
+    ///
+    /// 「いつ何を見送ったか」と「判断待ちがいつから何回続いているか」。帳簿は World が
+    /// 専有する db/world にあるので daemon 稼働が前提。
+    History {
+        /// 表示件数の上限 (0 = 無制限)
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// 現 project の vp-app の active Lane を切り替える (= mcp__switch_lane の CLI pair、Unison-native)
     ///
@@ -750,6 +762,9 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         LaneCommands::Status => ws::status_performers().map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Cleanup { force } => {
             ws::cleanup_performers(force).map_err(|e| anyhow::anyhow!(e))
+        }
+        LaneCommands::History { limit } => {
+            ws::show_farewell_history(limit).map_err(|e| anyhow::anyhow!(e))
         }
         LaneCommands::Switch { name } => switch_lane_via_quic(&name),
         LaneCommands::LastSession { project, lane } => {

@@ -160,6 +160,11 @@ const WORLD_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
     // lane mutation（descriptor は daemon-canonical truth なので手動注入させない）
     "lanes/create",
     "lanes/set_active",
+    // 帳簿 mutation（doc 44 §7.5）— 見送りの記録は「実際に何が起きたか」の観測なので、
+    // 手で叩けると**起きていない見送り**を履歴に書ける。読み側 host/farewell_log は
+    // read-safe なので KDL に記述済み。
+    "host/farewell_observe",
+    "host/farewell_reclaimed",
     // liveness probe（surface の共有 connection 用、観測面ではない）
     "ping",
 ];
