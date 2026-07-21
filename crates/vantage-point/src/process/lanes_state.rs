@@ -293,12 +293,16 @@ pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
 pub enum SystemEvent {
     /// Lane lifecycle diff (Phase 2 Step E)
     Lane(LaneDiff),
-    /// 帳簿の並び順が変わった（doc 44 §12）。
+    /// 帳簿由来の **snapshot 投影**が変わった（並び順 / 開発起点 …、doc 44 §12）。
     ///
     /// **個々の lane は何も変わっていない**ので `Lane(Diff::*)` では表せない
     /// （Diff は per-lane の差分で、偽の Add/Update を流すと購読側が実在しない
-    /// 変化に反応する）。並びは snapshot 全体の性質なので独立 variant にする。
-    LanesReordered,
+    /// 変化に反応する）。snapshot 全体の性質なので独立 variant にする。
+    ///
+    /// ⚠️ 旧名 `LanesReordered` は「並び替え専用」に読めたため、**同じ性質の
+    /// 起点変更で撃ち忘れ**が起きた（起点が 5s tick まで sidebar に載らなかった）。
+    /// 帳簿が snapshot の見え方を変えたら、種類を問わずこれを撃つ。
+    LanesProjectionChanged,
     // 将来 variant 追加候補:
     //   Pane(Diff<PaneId, PaneInfo>),       // Phase 7 (Pane Revival)
     //   Stand(Diff<StandKind, StandInfo>),  // 各 Stand の lifecycle

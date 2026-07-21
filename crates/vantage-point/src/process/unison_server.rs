@@ -1666,6 +1666,11 @@ async fn handle_lane_origin_set(
     }
     let lanes = ledger_lane_refs(state).await;
     crate::host::ledger::set_origin(state.vpdb.as_ref(), &state.project_dir, lane, &lanes).await?;
+    // 起点は snapshot の `origin` に載るので、投影が変わった = 即 publish する。
+    // これが無いと 5s periodic tick まで sidebar の star が動かず「押しても無反応」に見える。
+    let _ = state
+        .system_event_tx
+        .send(crate::process::lanes_state::SystemEvent::LanesProjectionChanged);
     let origin = crate::host::ledger::origin(state.vpdb.as_ref(), &state.project_dir, &lanes).await;
     serde_json::to_value(&origin).map_err(|e| format!("lane_origin_set: serialize 失敗: {e}"))
 }
@@ -1697,7 +1702,7 @@ async fn handle_lane_order_set(
     // （doc 44 §11 の指紋は lanes の並びも含むため、次の publish で必ず届く）。
     let _ = state
         .system_event_tx
-        .send(crate::process::lanes_state::SystemEvent::LanesReordered);
+        .send(crate::process::lanes_state::SystemEvent::LanesProjectionChanged);
     Ok(serde_json::json!({ "status": "ok", "count": order.len() }))
 }
 
