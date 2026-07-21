@@ -872,6 +872,37 @@ pub fn status_performers() -> Result<(), String> {
 ///
 /// Host 版は 3 値（reclaim / keep / ask_human）で、判定は I/O ゼロの純関数
 /// （[`crate::host::farewell::judge_farewell`]）に分離済み。
+/// 見送り判定に渡す開発起点 lane 名を決める（doc 44 D4）。
+///
+/// 帳簿は World が持つ（DB は surrealkv の OS 排他ロックで World 専有）ので、CLI からは
+/// process-proxy 越しに問い合わせる。World 不在 / 応答不正なら **予約名にフォールバック**し、
+/// その旨を告げる。
+///
+/// なぜ黙って落とさないか: 起点が確認できないまま見送ると、**移動済みの起点 lane を
+/// 消しうる**。実害の確率は低い（起点が merged かつ clean かつ停止中である必要がある）が、
+/// 「確認できなかった」という事実は人に見せる（Host は推測しない）。
+fn origin_for_cleanup(repo_root: &Path) -> String {
+    let reserved = crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string();
+    let Some(project_path) = repo_root.to_str() else {
+        return reserved;
+    };
+    let resp = crate::commands::process_client::world_process_request_blocking(
+        crate::cli::world_port(),
+        project_path,
+        "lane_origin_get",
+        serde_json::json!({}),
+    );
+    match resp.and_then(|v| Ok(serde_json::from_value::<crate::host::ledger::Origin>(v)?)) {
+        Ok(origin) => origin.name,
+        Err(e) => {
+            eprintln!(
+                "[vp] 開発起点を帳簿から確認できませんでした（既定 '{reserved}' として続行）: {e}"
+            );
+            reserved
+        }
+    }
+}
+
 pub fn cleanup_performers(force: bool) -> Result<(), String> {
     use crate::host::farewell::FarewellVerdict;
 
@@ -882,7 +913,8 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
 
     // CLI 経路は lane の生死を知らない（daemon に問い合わせない）ので running は空。
     // 稼働中 lane を保護したい場合は daemon 経由の surface から呼ぶ（P3 後続）。
-    let reports = crate::host::farewell::survey_project(&repo_root, &[]);
+    let origin = origin_for_cleanup(&repo_root);
+    let reports = crate::host::farewell::survey_project(&repo_root, &[], &origin);
     if reports.is_empty() {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());

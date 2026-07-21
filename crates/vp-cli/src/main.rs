@@ -288,6 +288,15 @@ enum LaneCommands {
         /// lane address ("<project>/conductor" / "<project>/performer/<name>")
         lane: String,
     },
+    /// この project の開発起点 lane を表示 / 設定する (doc 44 D4、Project Host の帳簿)
+    ///
+    /// 引数なしで現在の起点を表示。lane 名を渡すとその lane を起点に指定する。
+    /// 指定は **帳簿のポインタ書き換えだけ** — cwd も active lane も engine も動かない (D5)。
+    /// 未指定なら予約名 `conductor` が起点（従来挙動）。daemon (World) 稼働が前提。
+    Origin {
+        /// 起点にする lane 名 (省略時は現在の起点を表示)
+        name: Option<String>,
+    },
     /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
     Nudge {
         /// lane address ("<project>/conductor" / "<project>/performer/<name>")
@@ -762,6 +771,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             let config = Config::load().unwrap_or_default();
             commands::lane_ctl::capture(&lane, &config)
         }
+        LaneCommands::Origin { name } => lane_origin(name.as_deref()),
         LaneCommands::Nudge { lane, text } => {
             let config = Config::load().unwrap_or_default();
             commands::lane_ctl::nudge(&lane, &text, &config)
@@ -853,6 +863,48 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
         "switched active lane to '{}' (project={}, via World process-proxy)",
         trimmed, project_name
     );
+    Ok(())
+}
+
+/// `vp lane origin [<name>]` 実装: Project Host の帳簿にある開発起点ポインタを読む / 書く。
+///
+/// `switch_lane_via_quic` と同じ World process-proxy ask 経路（SP port 解決不要）。
+/// 起点は project 単位の 1 本なので lane address ではなく **lane 名**で受ける。
+///
+/// 表示は「どう決まったか」まで出す（D4 の既定フォールバックと、指した lane が消えた
+/// dangling を区別できないと、指定が失われたことに気付けない）。
+fn lane_origin(name: Option<&str>) -> Result<()> {
+    let repo_root = lane::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("repo root 解決失敗 (project 内で実行してください): {}", e))?;
+    let Some(project_path) = repo_root.to_str() else {
+        anyhow::bail!("repo path contains invalid UTF-8");
+    };
+
+    let (method, payload) = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => ("lane_origin_set", serde_json::json!({ "lane": n })),
+        None => ("lane_origin_get", serde_json::json!({})),
+    };
+
+    let resp = vantage_point::commands::process_client::world_process_request_blocking(
+        cli::world_port(),
+        project_path,
+        method,
+        payload,
+    )
+    .map_err(|e| anyhow::anyhow!("{} 失敗 (World process-proxy): {}", method, e))?;
+
+    let origin: vantage_point::host::ledger::Origin = serde_json::from_value(resp)
+        .map_err(|e| anyhow::anyhow!("{} の応答を解釈できません: {}", method, e))?;
+
+    use vantage_point::host::ledger::OriginSource;
+    match &origin.source {
+        OriginSource::Default => println!("開発起点: {} (既定 — 未指定)", origin.name),
+        OriginSource::Pinned => println!("開発起点: {} (指定済)", origin.name),
+        OriginSource::Dangling { lane_id } => println!(
+            "開発起点: {} (既定に復帰 — 指定されていた lane が見つかりません: id={})",
+            origin.name, lane_id
+        ),
+    }
     Ok(())
 }
 

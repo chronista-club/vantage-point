@@ -1,0 +1,251 @@
+//! 帳簿 — Project Host が project について持つ現在値と履歴（doc 44 D3 / §8）。
+//!
+//! 第一の住人は **開発起点ポインタ**（D4）。「この project の開発の起点はどの lane か」を
+//! Host が 1 本だけ持つ。
+//!
+//! ## なぜ lane 自身に持たせないのか
+//!
+//! P2（フラット化）で `LaneKind` を撤去し、lane は全て対等になった。
+//! 「起点である」は lane の属性ではなく **project 側の指定** なので、帳簿が持つ。
+//! こうすると起点の移動が「ポインタの書き換え 1 回」になり、lane は何も動かない（D5）。
+//!
+//! ## key が名前ではなく id な理由
+//!
+//! ポインタが指すのは lane **そのもの**であって「今その名前で呼ばれているもの」ではない。
+//! 名前は表示のための自然キーで、将来 rename できるようにすると動く。だから帳簿は
+//! [`crate::process::lanes_state::LaneId`]（UUID v7、doc 24 §7 の I1）を key にする。
+//!
+//! 名前 ↔ id の解決は **境界で 1 回だけ**行う: 人が打つのは名前、帳簿に入るのは id
+//! （[`resolve_origin_name`] が読み側、unison `lane_origin_set` が書き側）。
+//!
+//! ## フォールバックの設計
+//!
+//! ポインタが無い / 指す lane が実在しない場合は予約名 `conductor` に落ちる。
+//! これは「推測」ではなく D4 が定めた既定値（conductor は残る）なので、Host の
+//! 「推測しない」原則には反しない。ただし **dangling は隠さず事実として返す**
+//! （[`OriginSource::Dangling`]）— 黙って既定に戻ると、指定したはずの起点が
+//! いつの間にか動いていたことに気付けない。
+
+use crate::process::lanes_state::CONDUCTOR_LANE_NAME;
+
+/// 起点の解決に要る lane の最小情報（id と表示名の対）。
+///
+/// `LaneInfo` 全体を渡さないのは、帳簿が lane の中身に依存しないため
+/// （`host::farewell::LaneFacts` が git も DB も知らないのと同じ切り方）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneRef {
+    pub id: String,
+    pub name: String,
+}
+
+impl LaneRef {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+}
+
+/// 起点がどう決まったか。表示にそのまま出せる粒度で持つ。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OriginSource {
+    /// ポインタ未設定 — 予約名が起点（P2 までの挙動そのもの）
+    Default,
+    /// ポインタが実在 lane を指している
+    Pinned,
+    /// ポインタはあるが指す lane が実在しない（削除された等）— 予約名に戻る。
+    /// 事実として残すのは、指定が失われたことを人に見せるため
+    Dangling { lane_id: String },
+}
+
+/// 起点の解決結果。unison `lane_origin_get` の応答形でもある。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Origin {
+    /// 起点 lane の表示名
+    pub name: String,
+    pub source: OriginSource,
+}
+
+impl Origin {
+    /// 予約名に落ちた既定の起点。
+    fn default_origin(source: OriginSource) -> Self {
+        Self {
+            name: CONDUCTOR_LANE_NAME.to_string(),
+            source,
+        }
+    }
+}
+
+/// 帳簿のポインタと実在 lane から「今の起点」を決める **純関数**（Host の層 1）。
+///
+/// I/O ゼロなので全分岐をテストで固定できる。判定順序:
+///
+/// 1. ポインタが無い → 予約名（既定）
+/// 2. ポインタが実在 lane を指す → その lane
+/// 3. ポインタが指す lane が居ない → 予約名に戻すが、**dangling だったことは残す**
+pub fn resolve_origin_name(pointer: Option<&str>, lanes: &[LaneRef]) -> Origin {
+    let Some(id) = pointer.filter(|s| !s.is_empty()) else {
+        return Origin::default_origin(OriginSource::Default);
+    };
+    match lanes.iter().find(|l| l.id == id) {
+        Some(lane) => Origin {
+            name: lane.name.clone(),
+            source: OriginSource::Pinned,
+        },
+        None => Origin::default_origin(OriginSource::Dangling {
+            lane_id: id.to_string(),
+        }),
+    }
+}
+
+/// 名前から lane の id を引く（書き側の境界変換、純関数）。
+///
+/// 人が打つのは名前なので、帳簿に入れる前にここで id にする。
+/// 見つからなければ `None` — Host は存在しない lane を起点にしない。
+pub fn lane_id_of<'a>(name: &str, lanes: &'a [LaneRef]) -> Option<&'a str> {
+    lanes
+        .iter()
+        .find(|l| l.name == name)
+        .map(|l| l.id.as_str())
+        .filter(|id| !id.is_empty())
+}
+
+// =============================================================================
+// actions — 帳簿の永続（DB）。判定は上の純関数が済ませている
+// =============================================================================
+
+/// 帳簿から起点を読む。
+///
+/// DB が無い（`vpdb: None` の test fixture 等）/ 読めない場合は既定に落ちる —
+/// 起点が読めないだけで project が動かなくなる方が困るため（best-effort）。
+pub async fn origin(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    lanes: &[LaneRef],
+) -> Origin {
+    let pointer = match vpdb {
+        Some(db) => match db.get_host_origin(project_path).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("帳簿: 起点ポインタの読み出しに失敗（既定に落とす）: {}", e);
+                None
+            }
+        },
+        None => None,
+    };
+    resolve_origin_name(pointer.as_deref(), lanes)
+}
+
+/// 起点を設定する（名前で受けて id で書く）。
+///
+/// 名前解決に失敗したら **書かない** — 存在しない lane を指すポインタを自ら作らない。
+pub async fn set_origin(
+    vpdb: Option<&crate::db::SharedVpDb>,
+    project_path: &str,
+    lane_name: &str,
+    lanes: &[LaneRef],
+) -> Result<(), String> {
+    let db = vpdb.ok_or_else(|| "帳簿: DB 未接続のため起点を設定できません".to_string())?;
+    let id = lane_id_of(lane_name, lanes).ok_or_else(|| {
+        format!("帳簿: lane '{lane_name}' が見つからない（または安定 id を持たない）")
+    })?;
+    db.upsert_host_origin(project_path, id)
+        .await
+        .map_err(|e| format!("帳簿: 起点の永続に失敗: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lanes() -> Vec<LaneRef> {
+        vec![
+            LaneRef::new("id-conductor", CONDUCTOR_LANE_NAME),
+            LaneRef::new("id-foo", "foo"),
+        ]
+    }
+
+    /// ポインタ未設定は予約名（= P2 までの挙動）。移行時に何も壊れないことの固定。
+    #[test]
+    fn no_pointer_falls_back_to_reserved_name() {
+        let origin = resolve_origin_name(None, &lanes());
+        assert_eq!(origin.name, CONDUCTOR_LANE_NAME);
+        assert_eq!(origin.source, OriginSource::Default);
+    }
+
+    /// 空文字のポインタは「未設定」と同じ扱い（空 `LaneId` が混入した時の保険）。
+    #[test]
+    fn empty_pointer_is_treated_as_unset() {
+        let origin = resolve_origin_name(Some(""), &lanes());
+        assert_eq!(origin.source, OriginSource::Default);
+    }
+
+    /// ポインタが実在 lane を指せば、予約名でなくてもそれが起点になる。
+    /// これが D4 の本体 — 起点は lane の役割ではなく project の指定。
+    #[test]
+    fn pointer_moves_origin_to_any_lane() {
+        let origin = resolve_origin_name(Some("id-foo"), &lanes());
+        assert_eq!(origin.name, "foo");
+        assert_eq!(origin.source, OriginSource::Pinned);
+    }
+
+    /// 指す先が消えていたら予約名に戻すが、**dangling だった事実は返す**。
+    ///
+    /// 黙って既定に戻すと「起点を指定したはずなのにいつの間にか動いていた」に
+    /// 気付けない。Host は人の判断材料を作る立場なので、事実は落とさない。
+    #[test]
+    fn dangling_pointer_falls_back_but_is_reported() {
+        let origin = resolve_origin_name(Some("id-gone"), &lanes());
+        assert_eq!(origin.name, CONDUCTOR_LANE_NAME);
+        assert_eq!(
+            origin.source,
+            OriginSource::Dangling {
+                lane_id: "id-gone".to_string()
+            }
+        );
+    }
+
+    /// 名前 → id は書き側の境界変換。人は名前を打ち、帳簿には id が入る。
+    #[test]
+    fn lane_id_of_resolves_name_to_surrogate_key() {
+        assert_eq!(lane_id_of("foo", &lanes()), Some("id-foo"));
+        assert_eq!(lane_id_of("missing", &lanes()), None);
+    }
+
+    /// 安定 id を持たない lane（空 `LaneId`）は起点にできない。
+    ///
+    /// `LaneInfo.id` は `#[serde(default)]` で空になりうる（I1 以前の wire payload）。
+    /// 空 id を書くと `resolve_origin_name` 側で「未設定」と区別できなくなるため、
+    /// 書く前に弾く。
+    #[test]
+    fn lane_without_stable_id_cannot_become_origin() {
+        let lanes = vec![LaneRef::new("", "legacy")];
+        assert_eq!(lane_id_of("legacy", &lanes), None);
+    }
+
+    /// `Origin` は unison 応答としてそのまま wire に載るので serde 形を固定する。
+    #[test]
+    fn origin_serde_shape() {
+        let pinned = resolve_origin_name(Some("id-foo"), &lanes());
+        let json = serde_json::to_value(&pinned).unwrap();
+        assert_eq!(json["name"], "foo");
+        assert_eq!(json["source"]["kind"], "pinned");
+
+        let dangling = resolve_origin_name(Some("id-gone"), &lanes());
+        let json = serde_json::to_value(&dangling).unwrap();
+        assert_eq!(json["name"], CONDUCTOR_LANE_NAME);
+        assert_eq!(json["source"]["kind"], "dangling");
+        assert_eq!(json["source"]["lane_id"], "id-gone");
+    }
+
+    /// 名前の重複が無い前提（1 project 内で lane 名は一意）で、id は往復する。
+    #[test]
+    fn name_and_id_round_trip() {
+        let lanes = lanes();
+        let id = lane_id_of("foo", &lanes).expect("id");
+        let origin = resolve_origin_name(Some(id), &lanes);
+        assert_eq!(origin.name, "foo");
+    }
+}
