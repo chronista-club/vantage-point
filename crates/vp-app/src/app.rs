@@ -3499,9 +3499,11 @@ pub fn run() -> anyhow::Result<()> {
                         msg_project,
                         message.get("lane").and_then(|l| l.as_str()),
                     ) {
-                        // token → lane address (`<project>/conductor` or `<project>/performer/<name>`)
-                        let address = if token.is_empty() || token == "conductor" {
-                            format!("{}/conductor", project)
+                        // token → lane address (`<project>/<予約名>` or `<project>/performer/<name>`)
+                        let address = if token.is_empty()
+                            || token == crate::lane::CONDUCTOR_LANE_NAME
+                        {
+                            format!("{}/{}", project, crate::lane::CONDUCTOR_LANE_NAME)
                         } else {
                             format!("{}/performer/{}", project, token)
                         };
@@ -3563,10 +3565,10 @@ pub fn run() -> anyhow::Result<()> {
                     let token = message
                         .get("lane")
                         .and_then(|l| l.as_str())
-                        .unwrap_or("conductor");
+                        .unwrap_or(crate::lane::CONDUCTOR_LANE_NAME);
                     // token → lane address（switch_lane と同じ変換）。
-                    let address = if token.is_empty() || token == "conductor" {
-                        format!("{}/conductor", project)
+                    let address = if token.is_empty() || token == crate::lane::CONDUCTOR_LANE_NAME {
+                        format!("{}/{}", project, crate::lane::CONDUCTOR_LANE_NAME)
                     } else {
                         format!("{}/performer/{}", project, token)
                     };

@@ -95,7 +95,8 @@ impl TopicRouter {
     /// lane segment の正規化: `None` = conductor（lead）。
     /// per-lane PP topic の lane 部に使う（conductor/performer 語彙）。
     fn lane_seg(lane: &Option<String>) -> &str {
-        lane.as_deref().unwrap_or("conductor")
+        lane.as_deref()
+            .unwrap_or(crate::process::lanes_state::CONDUCTOR_LANE_NAME)
     }
 
     /// lane address（`vp/performer/foo` 等、 `/` を含む）を topic segment 安全な 1 token に

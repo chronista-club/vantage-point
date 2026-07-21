@@ -78,6 +78,17 @@ pub fn app_user_model_id() -> &'static str {
     })
 }
 
+/// 開発起点 lane の予約名（doc 44 D4）。
+///
+/// **本 crate が唯一の定義**（2026-07-21 に vantage-point / vp-app の重複定義をここへ畳んだ）。
+/// server（`LaneAddress`）と client（`vp-app` の `LaneAddress`）で値がズレると、wire は
+/// 文字列なのでコンパイラが黙ったまま予約名の解決が食い違う。同期をコメントの約束に
+/// 頼らず、定義を 1 つにして構造的に不可能にする。
+///
+/// 置き場が path crate なのは、この名前が state file 名（`<project>__<lane>`）の一部として
+/// path 生成に入るため。
+pub const CONDUCTOR_LANE_NAME: &str = "conductor";
+
 /// world port の base 値 (brew の TheWorld port)。
 pub const WORLD_PORT_BASE: u16 = 32000;
 
@@ -514,6 +525,17 @@ mod tests {
     #[test]
     fn test_vp_config_dir_ends_with_vp() {
         assert!(vp_config_dir().ends_with("vp"));
+    }
+
+    /// 予約 lane 名の **値そのもの**を凍結する。
+    ///
+    /// この文字列は state file 名（`<project>__<lane>`）・wire address（`agent@<project>`）・
+    /// DB descriptor に焼き付いていて、値を変えると on-disk migration が要る。
+    /// 定義を 1 箇所に畳んだ結果「値を変える = ここ 1 行」になったので、
+    /// **意図せず変わらないよう**テストで釘を打っておく（変える時は migration とセット）。
+    #[test]
+    fn conductor_lane_name_value_is_frozen() {
+        assert_eq!(CONDUCTOR_LANE_NAME, "conductor");
     }
 
     // 注: 以下の profile テストは VP_PROFILE 未設定 (= CI / 通常 test 環境) の default 挙動を

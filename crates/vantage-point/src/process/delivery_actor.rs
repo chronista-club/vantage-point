@@ -239,7 +239,10 @@ fn lane_identity_from_agent(addr: &str) -> Option<(String, String)> {
         return None;
     }
     match rest.split_once('/') {
-        None => Some((rest.to_string(), "conductor".to_string())),
+        None => Some((
+            rest.to_string(),
+            crate::process::lanes_state::CONDUCTOR_LANE_NAME.to_string(),
+        )),
         Some((project, name)) if !project.is_empty() && !name.is_empty() => {
             Some((project.to_string(), name.to_string()))
         }

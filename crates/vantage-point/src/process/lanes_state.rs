@@ -161,7 +161,11 @@ impl LaneLifecycle {
 ///
 /// この名前は `LaneAddress` の Display 形が旧 conductor と一致する（`<project>/conductor`）
 /// ように選んである — 既存の永続 address / wire を無傷で引き継ぐため。
-pub const CONDUCTOR_LANE_NAME: &str = "conductor";
+///
+/// **定義は `vp-paths` が唯一**（2026-07-21）。vp-app が同名定数を独自に持っていて
+/// 「同値でなければ address が食い違う」をコメントの約束で担保していたため、
+/// 定義ごと共有 crate へ畳んだ。ここは re-export。
+pub use vp_paths::CONDUCTOR_LANE_NAME;
 
 /// Lane の address — Pool key
 ///

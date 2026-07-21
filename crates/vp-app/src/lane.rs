@@ -21,9 +21,12 @@ use ts_rs::TS;
 // doc 44 P2: `LaneKind`（Conductor / Performer）は撤去。server 側 `LaneKind` と対の型で、
 // 同じ理由で消える（D4「lane 自身は役割状態を持たない」）。
 
-/// 開発起点 lane の予約名（doc 44 D4）。server 側 `CONDUCTOR_LANE_NAME` と同値でなければ
-/// address が食い違う（wire の byte-for-byte 一致が要件）。
-pub const CONDUCTOR_LANE_NAME: &str = "conductor";
+/// 開発起点 lane の予約名（doc 44 D4）。
+///
+/// **定義は `vp-paths` が唯一**（2026-07-21）。以前は server 側と別々に `const` を持ち、
+/// 「同値でなければ address が食い違う」をコメントの約束で担保していた — wire は文字列
+/// なので値がズレてもコンパイラは黙る。定義を共有 crate に畳んで構造的に不可能にした。
+pub use vp_paths::CONDUCTOR_LANE_NAME;
 
 /// Lane の address — Pool key として使う 2-tuple
 ///
