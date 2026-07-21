@@ -527,3 +527,60 @@ World 不在なら予約名にフォールバックし、**その旨を告げて
 | `AskHuman` の滞留 | **持たない** | `survey_project` が都度計算できる。帳簿には「計算で復元できない事実」だけを書く（見送りは lane を消すので復元不能、滞留は lane が残るので復元可能） |
 | lane の rename | state file 5 系統（`lane_ids` / `echoes_sessions` / `console_mode` / `replay_log` / `cc_session`）の key を id 化してから | それらの名前 key は `load_in(base, project, lane)` の**内側に閉じている** = カプセル化された負債で、放置しても修正箇所が増えない。address 文字列（§6.4）が viral だったのとは性質が違う |
 | `claude_command` の分岐 | `has_ground` 相当（cwd が repo root か）を訊く形へ | §8.1。挙動変更なので構造変更と混ぜない（§6.6 と同じ分割） |
+
+## 9. lane 作成の入口を 1 本にする（§6.5 の統合、2026-07-21）
+
+> **実装済**。§6.5 が挙げた「経路ごとに validation の効く範囲が違う」を、名前 gate の
+> 一本化で解いた。§6.5 の follow-up バグ（descriptor 破壊疑い）は**実在が確定**し、
+> 決定的な回帰テストで固定した。
+
+### 9.1 バグは疑いではなく実在だった（ただし普段は masking されている）
+
+`ProcessManagerCapability::create_lane` に `name = "conductor"` を投げると:
+
+1. `upsert_lane`（DELETE+CREATE）が `<project>/conductor` 行を**上書き**
+2. clone が `validate_performer_name` で失敗
+3. rollback の `delete_lane` が `<project>/conductor` 行を**削除**
+
+= 拒否されるべき request が**本物の開発起点 descriptor を消す**。テストで `list_lanes()` が
+`[]` を返すことを確認済み（`test_create_lane_rejects_reserved_name_without_touching_db` の
+修正前挙動）。
+
+実機で再現しなかったのは、手前の **dup check（in-memory `lane_registry`）が先に弾いていた**
+から。`lane_registry` は daemon boot で db から load されるので、通常は conductor 行が入って
+いて「already exists」で止まる。だが:
+
+- **dup check は validation ではない**（別の関心事で、たまたま同じ入力を弾いていただけ）
+- **その cache は db と乖離しうる** — boot load 失敗（`list_lanes` Err は「空で継続」）や
+  SP snapshot による上書き（前例: `build_lanes_snapshot` が performer を落とした #683）
+
+> 「実機で再現しない」は「バグが無い」ではなく「**別の何かが偶然マスクしている**」の
+> ことがある。マスクしている側が壊れる条件を数えると、実在かどうかが決まる。
+
+### 9.2 本質はガード漏れではなく順序
+
+`create_lane` は doc 24 §4.6 の **intent-first bracket**（crash 耐性のため provision より
+先に descriptor を永続する）で、この設計自体は正しい。問題は validation が bracket の
+**内側**に居たこと。
+
+> intent-first は「意図を先に書く」パターンなので、**意図が不正なら bracket に入る前に
+> 落とす**必要がある。書くのを早めた分だけ、検証も早めないと不正な意図が永続に届く。
+
+### 9.3 gate は `validate_performer_name` 1 本
+
+両経路とも入口で同関数を呼ぶ形に揃えた（空文字 / 文字 allowlist / 先頭文字 / 予約名）。
+
+| | 旧 | 新 |
+|---|---|---|
+| unison `lane_create` | 空文字 + 予約名を直書き。文字 allowlist は奥の clone 頼み | 入口で `validate_performer_name` |
+| HTTP `POST /api/world/lanes` | 空文字のみ。それ以外は奥の clone 頼み（= 永続の後） | 同上、**永続の前** |
+
+副産物: `validate_performer_name` の予約名判定が `"conductor"` 直書きだったのを
+`CONDUCTOR_LANE_NAME` に寄せた（§6.4「型を経由しない文字列」の同型が 1 件残っていた）。
+
+### 9.4 残り — 実装の統合は別スライス
+
+本 PR で揃えたのは**入口の gate** だけ。2 経路の実装自体（`create_performer_orchestrated` は
+clone + PtySlot spawn、`create_lane` は daemon 側 worktree provision のみ）はまだ別物で、
+D3 の「迎え入れ」を Host に実装する時に寄せる。gate が 1 本になったので、その時に
+「どちらが正か」を決めるだけで済む。

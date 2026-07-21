@@ -2975,8 +2975,11 @@ mod tests {
         )
         .await
         .expect_err("予約名は Err");
+        // doc 44 §9: 判定は `validate_performer_name` に一本化された（両経路で同じ gate）。
+        // message は同関数のものになるので、予約名を名指ししていることだけを見る。
         assert!(
-            err.contains("予約名"),
+            err.contains(crate::process::lanes_state::CONDUCTOR_LANE_NAME)
+                && err.contains("reserved"),
             "error は予約名である旨を含む: {err}"
         );
 
@@ -2989,10 +2992,7 @@ mod tests {
         )
         .await
         .expect_err("空 name は Err");
-        assert!(
-            err.contains("name is required"),
-            "name 制約で弾かれる: {err}"
-        );
+        assert!(err.contains("empty"), "name 制約で弾かれる: {err}");
     }
 
     // =========================================================================
