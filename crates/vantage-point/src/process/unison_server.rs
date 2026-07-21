@@ -806,6 +806,10 @@ async fn route_echoes(
 /// - chat 系（`echoes_*`）= **focused**（[`LanePool::resolve_chat_session`]）
 /// - slot 系（`terminal_*` / `lane_capture` / `lane_nudge`）= **root**
 ///   （[`LanePool::slot_session`] — slot は lane の設備で、代表は root。doc 39「座と化身」）
+/// - 会話報告（`lane_session_changed`）= **root だが「不明」として運ぶ**
+///   （[`crate::lane::session_registry::ReportTarget::Unspecified`] — 着地先は root でも、
+///   「名乗らなかった」という事実を registry まで届ける。root に丸めてから渡すと、実在しない
+///   session の報告も root 宛と見分けが付かなくなる。doc 40 §4）
 fn payload_session_key(
     ctx: &str,
     payload: &serde_json::Value,
@@ -1628,6 +1632,10 @@ async fn handle_lane_restart(
 /// push 経路に変化イベントが存在しなかった）。hook → World "wire" channel
 /// (`lane/session-changed`) → 本 method で SP に届き、SP が focused session 規則で真値を
 /// re-enrich して `Diff::Update` を emit する（World は routing のみ、真実源は SP のまま）。
+///
+/// doc 40 §4 / doc 46 P5: payload の `session` は**報告者が名乗った session**。会話 id は
+/// その session に記録される（root 固定ではない）— 同じ lane に複数の console slot が
+/// 同居しても、同居人の報告が root の `--resume` を壊さない。
 async fn handle_lane_session_changed(
     state: &Arc<AppState>,
     payload: serde_json::Value,
@@ -1647,21 +1655,33 @@ async fn handle_lane_session_changed(
     else {
         return Err(format!("lane_session_changed: lane が存在しません: {lane}"));
     };
-    // doc 40 §4/§6: hook の会話報告（session_id + event）を root session に適用する —
-    // policy（root 解決 + F1/F2 guard）の唯一の実装点は record_root_conversation。
-    // session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」（従来互換、enrich だけ行う）。
+    // doc 40 §4/§6: hook の会話報告（session_id + event + 報告者が名乗る session）を
+    // **報告された session** に適用する — policy（宛先解決 + F1/F2 guard）の唯一の実装点は
+    // record_conversation。session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」
+    // （従来互換、enrich だけ行う）。
     if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
-        use crate::lane::session_registry::ConversationReport;
-        let report = match payload.get("event").and_then(|v| v.as_str()) {
-            Some("issued") => ConversationReport::Issued,
-            _ => ConversationReport::Spoken,
+        use crate::lane::session_registry::{ConversationReport, ReportTarget, ReportTrigger};
+        let trigger = match payload.get("event").and_then(|v| v.as_str()) {
+            Some("issued") => ReportTrigger::Issued,
+            _ => ReportTrigger::Spoken,
+        };
+        // `session` 不在 = 報告者が名乗らなかった（VP_SESSION_KEY 無しで spawn 済の slot /
+        // VP 外起動）→ 後方互換で root 宛。**ここで root に丸めない**（Unspecified のまま
+        // 渡す）ことで、実在しない session の報告が root に化けるのを registry 側が拒める。
+        let target = match payload_session_key("lane_session_changed", &payload)? {
+            Some(key) => ReportTarget::Session(key),
+            None => ReportTarget::Unspecified,
+        };
+        let report = ConversationReport {
+            target,
+            conversation: sid,
+            trigger,
         };
         let lane_label = crate::process::stand_spawner::lane_label(&addr);
-        match crate::lane::session_registry::record_root_conversation(
+        match crate::lane::session_registry::record_conversation(
             &addr.project,
             lane_label,
             &stand,
-            sid,
             report,
         ) {
             Ok(outcome) => {
@@ -3154,6 +3174,100 @@ mod tests {
             }
             other => panic!("expected Diff::Update, got: {other:?}"),
         }
+    }
+
+    /// doc 40 §4 / doc 46 P5 の配線: `session` を名乗った報告は**その session** に着地し、
+    /// root の会話 id を上書きしない（同じ lane に console slot が同居できる前提）。
+    /// 実在しない session の報告は root に化けず、何も書かない。
+    #[tokio::test]
+    async fn lane_session_changed_records_into_reported_session() {
+        use super::dispatch_process_method;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        let state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::root("vp"),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-22T00:00:00Z".to_string(),
+            pid: Some(1),
+            cwd: state_dir.path().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        });
+        // root(#1) は発話済み、同居人 #2 が立っている状態。
+        crate::lane::session_registry::set_conversation(
+            "vp",
+            "root",
+            "echoes",
+            1,
+            Some("sid-root"),
+        )
+        .expect("root conversation");
+        let k2 = crate::lane::session_registry::create(
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            crate::lane::session_registry::SessionAct::Tui,
+            false,
+        )
+        .expect("create #2");
+
+        // 同居人（#2）の hook 報告
+        dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane": "vp/root",
+                "session_id": "sid-roommate",
+                "event": "spoken",
+                "session": k2,
+            }),
+        )
+        .await
+        .expect("lane_session_changed ok");
+
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
+        assert_eq!(
+            reg.sessions[0].conversation.as_deref(),
+            Some("sid-root"),
+            "同居人の報告で root の会話 id（= root の --resume 先）が化けない"
+        );
+        assert_eq!(
+            reg.sessions[1].conversation.as_deref(),
+            Some("sid-roommate"),
+            "報告は名乗った session に着地する"
+        );
+
+        // 実在しない session の報告 → root に落ちない（黙って root を潰さない）
+        dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane": "vp/root",
+                "session_id": "sid-ghost",
+                "event": "spoken",
+                "session": 99,
+            }),
+        )
+        .await
+        .expect("lane_session_changed ok（記録はしないが配線は成功）");
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
+        assert_eq!(
+            reg.sessions[0].conversation.as_deref(),
+            Some("sid-root"),
+            "実在しない session の報告は root に化けない"
+        );
+        assert_eq!(reg.sessions.len(), 2, "session は増えない");
     }
 
     /// F6④: stands_list dispatch — process-proxy ask が `{stands:[...]}` 形で返る。

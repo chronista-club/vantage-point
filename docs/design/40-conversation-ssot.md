@@ -91,7 +91,7 @@ boot 時の捕捉経路が存在しない。mako 決定（2026-07-18）:「Act�
 
 | 発生源 | 現状 | 本 doc 後 |
 |--------|------|-----------|
-| Act I 床の claude（hook） | `cc_session::record(VP_LANE)` を hook が直書き ← バグ① | hook は `/api/lane/session-changed` に **`session_id` + `event` を載せて報告のみ**。World が SP へ forward、SP が root を解決して §6 policy で registry に書く |
+| Act I 床の claude（hook） | `cc_session::record(VP_LANE)` を hook が直書き ← バグ① | hook は `/api/lane/session-changed` に **`session_id` + `event` + `session` を載せて報告のみ**。World が SP へ forward、SP が宛先 session を解決して §6 policy で registry に書く |
 | Act II claude host（SessionInit） | `cc_session::record(session label)` | SP 内から `set_conversation(key)` — host は自 label を持つので `parse_session_label` で key 逆引き |
 | cursor create-chat 事前採番 / codex record-from-init | 各 store に record | **PR-1 では据え置き**（mako 2026-07-18: cursor はオミット予定（doc 39 §7）、codex は TurnHost ごと RpcHost 移行で書き直すため、退役予定の host に再配管しない）。読みは backfill bridge が registry に繋ぐので一貫。新 RpcHost / AcpHost は registry 直結（`set_conversation`）で書く |
 
@@ -99,12 +99,48 @@ boot 時の捕捉経路が存在しない。mako 決定（2026-07-18）:「Act�
   `is_valid_chat_id` / codex = `is_valid_thread_id`）を通らない id は書かない（`--resume '<id>'`
   への injection 防壁を store 時代から引き継ぐ。spawn 側の再検証も残す = 深層防御）
 - **SP 内の直列化**: registry の load-modify-save 変異（create / focus / remove /
-  set_conversation / record_root_conversation）は process 内 mutex で直列化する。
+  set_conversation / record_conversation）は process 内 mutex で直列化する。
   store 時代は「1 file 1 値」で last-write-wins が無害だったが、registry は複数 field の
   JSON なので並行 load-modify-save が update を失い得る（既存の create/focus/remove にも
   潜在していた穴を同時に塞ぐ）
-- **daemon forward の payload 拡張**: `lane/session-changed` に `session_id` / `event` を
-  透過（無い場合は従来どおり re-enrich + push のみ = 新旧 binary 混在に安全）
+- **daemon forward の payload 拡張**: `lane/session-changed` に `session_id` / `event` /
+  `session` を透過（無い場合は従来どおり re-enrich + push のみ = 新旧 binary 混在に安全）
+
+### 4-1. 報告の session 粒度化（2026-07-22、doc 46 P5 の続き）
+
+> PR-1 時点の hook は「(project, lane, session_id, 契機)」を報告し、SP は**常に root** に書いていた。
+> `VP_LANE` が二君に仕える問題（§1 の表 #4）は消えたが、**報告者が誰かを名乗れない**という
+> 非対称が残っていた。doc 46 P5（`pty_slots` の `(lane, session)` re-key）で 1 lane に複数の
+> console slot が同居できるようになり、この非対称が producer の blocker になった —
+> 2 本目の claude の SessionStart が root の会話 id を上書きし、root の `--resume` が
+> 同居人の会話に化ける。
+
+**hook が「自分がどの session か」を名乗り、SP は報告された session に書く。**
+
+| 層 | 変更 |
+|---|---|
+| spawn（`stand_spawner`） | identity env に **`VP_SESSION_KEY`** = その slot が化身する session の key を追加（現状 slot を立てる経路は全て root なので値は root。非 root slot の producer が入っても変わるのは注入値だけ） |
+| hook（`vp wire hook-check`） | `VP_SESSION_KEY` を読み、報告 payload に `session` を載せる。**読めない時は field ごと載せない**（`session_key_from_env` は env 不在 / 非数値 / 0 を `None` にする — 「不明」を 1 に丸めない） |
+| World（daemon forward） | `session` を透過するだけ（欠けた値を補完しない = routing のみの原則） |
+| SP（`record_conversation`） | 書き先が **root 固定 → 報告 session**。§6 の policy 表（F1/F2 guard / engine 判定 / 形式検証）は**そのまま**、対象 entry が変わるだけ |
+
+**「不明」と「root」を型で分ける**（`ReportTarget::Unspecified` / `Session(key)`）:
+
+| 報告 | 扱い | 根拠 |
+|---|---|---|
+| `session` 無し（`Unspecified`） | **root に記録**（従来どおり） | `VP_SESSION_KEY` 以前に spawn された slot / VP 外で起動された claude。session 粒度化前は全報告が root 宛だったので、これが後方互換の正解 |
+| `session` = 実在する key | その session に記録 | 本節の目的 |
+| `session` = **実在しない** key | **書かない**（`UnknownSession`） | root に落とすと「名乗れるのに registry とズレている報告者」が root の会話を壊す = 消したかった事故が fallback 経由で蘇る。報告者は毎ターン再報告するので、registry が追い付けば次の報告で着地する |
+
+> ⚠️ `Option<SessionKey>` を早い段階で `unwrap_or(root)` しないこと。丸めた瞬間に上表の
+> 1 行目と 3 行目が見分けられなくなる（着地先はどちらも root なので**テストでも気付けない**）。
+> root への fallback は registry 側 policy の 1 箇所だけが行う。
+
+- **wire mailbox は lane 粒度のまま**（§2 決定 5 不変）。`agent@<lane>` を名乗るのは root で、
+  本節が変えたのは会話 id の記録先だけ。同居人は「読み書きできる console」であって
+  「mailbox を持つ住人」ではない（doc 46 §3 の producer が入る時に再検討する）
+- channel D の headless claude（`delivery_actor::spawn_bg_dispatch`）は `VP_SESSION_KEY` を
+  持たない = `Unspecified` = root 宛。root の会話を `--resume` する経路なので**それが正しい**
 
 ## 5. 読み経路 — 全 reader の一斉切替
 
@@ -129,11 +165,13 @@ boot 時の捕捉経路が存在しない。mako 決定（2026-07-18）:「Act�
 この 1 ケースを潰す鈍器で、安全な 2 ケース（New root の fresh 発番 / resume 成功の no-op）まで
 巻き添えにして表示を遅らせていた。本 doc は鈍器を **SP の精密な policy** に置き換える:
 
-`record_root_conversation(project, lane, session_id, event)` — SP 1 箇所のみ:
+`record_conversation(project, lane, report)` — SP 1 箇所のみ
+（`report` = 宛先 session + 会話 id + 契機。§4-1 で root 固定から報告 session になった。
+下表の「root entry」は「**宛先 session の entry**」と読む — 判定内容は変わっていない）:
 
 | 条件 | SessionStart（eager） | UserPromptSubmit（authoritative） |
 |------|----------------------|----------------------------------|
-| root entry の stand が echoes でない | 無視（claude hook の id を他 engine の session に混ぜない） | 同左 |
+| 宛先 entry の stand が echoes でない | 無視（claude hook の id を他 engine の session に混ぜない） | 同左 |
 | conversation == Some(同 id) | no-op | no-op |
 | conversation == None（New root / fresh） | **記録**（chip が boot で点く） | 記録 |
 | conversation == Some(旧 id) かつ旧 id の transcript **実在** | **据え置き**（`||` fallback の幻 = F1/F2 guard。chip は守った旧 id を映し、次の発話で self-heal） | **記録**（user が実際に話した = commit） |
@@ -161,9 +199,10 @@ lane 子プロセスへ注入される 6 種（stand_spawner L316-345）:
 | env | 判定 | 根拠 |
 |-----|------|------|
 | `VP_PROJECT` / `VP_LANE` | **残す** | hook 報告と wire address 導出の identity channel（本 doc 後、VP_LANE は store 鍵の役を失い wire 専用に単純化） |
+| `VP_SESSION_KEY` | **新設（2026-07-22、§4-1）** | 報告者が「自分がどの session か」を名乗る identity。値は slot が化身する session の key（`1` / `2` …） |
 | `VP_PROFILE` | **残す** | dev/brew namespace 分離（#643） |
 | `MISE_TRUSTED_CONFIG_PATHS` | **残す** | mise trust footgun 抑止（PR2 実機検証、env-only で依存境界維持） |
-| `VP_SESSION` | **退役済み（2026-07-19 PR-3）** | repo 内読み手ゼロ + user statusline（~/.claude/statusline/）に VP_ 参照ゼロを確認して注入撤去 |
+| `VP_SESSION` | **退役済み（2026-07-19 PR-3）— 復活させない** | 退役理由は「読み手ゼロ」（repo 内 + user statusline `~/.claude/statusline/` を grep 確認）。⚠️ **同名で復活させなかったのは意味が別だから** — 旧 `VP_SESSION` は **lane の論理 identity**（`LaneAddress` Display 形 `vp/root`、さらに遡ると tmux session 名）で、§4-1 が要るのは **session の採番 key**（`1` / `2`）。同名再利用は「repo 外に残っている旧読み手（他マシンの dotfile / tmux 時代の script）が `vp/root` を期待して `2` を受け取る」型の無音事故を招く。形が全く違う（path 形 vs 整数）ので壊れ方も静か。名前を分けて `VP_SESSION_KEY` にした |
 | `VP_CWD` | **退役済み（2026-07-19 PR-3）** | 同上（stand_spawner / delivery_actor の注入を撤去） |
 
 repo 全体では VP_* が 31 種。残りは各 component の config knob / dev override

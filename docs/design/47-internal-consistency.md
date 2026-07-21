@@ -361,10 +361,13 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
    - 条件②（読み手）は `vp lane capture --session` / `vp lane slots` / `vp lane nudge --session` /
      `lanes_list` の `slots` で満たした。条件③（`LaneLayouts.dock()`）は**発火しなかった** —
      P5 が増やすのは slot であって session ではないので chip 集合は不変（webview 無改修）
-   - 判明: **非 root slot の producer は別レイヤ待ち**。wire identity が lane 単位（`VP_LANE`）で、
-     hook の `record_root_conversation` が root entry に書くため、同じ lane に 2 本目の claude を
-     立てると root の会話 id を上書きする。動線は「hook / wire の session 粒度化」の後
-     （詳細は doc 46 §3 の着地メモ）
+   - 判明: **非 root slot の producer は別レイヤ待ちだった**。wire identity が lane 単位
+     （`VP_LANE`）で、hook の `record_root_conversation` が root entry に書くため、同じ lane に
+     2 本目の claude を立てると root の会話 id を上書きする
+     → ✅ **会話 id の記録は session 粒度になった**（2026-07-22。`VP_SESSION_KEY` で hook が
+     自分の session を名乗り、SP は報告された session に書く。設計 = doc 40 §4-1、
+     着地メモ = doc 46 §3）。producer 本体（UI / CLI）は次のスライス。
+     wire mailbox は lane 粒度のまま = 意図的な据え置き
 4. **doc 44 P3 / doc 45** — Project Host の帳簿、transport の Unison 統一
 
 ### UI フェーズ（Epic の最後、一気に）
