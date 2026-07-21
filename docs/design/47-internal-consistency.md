@@ -308,7 +308,7 @@ window 経由の一時フラグで凌いだ（#838）。他の bus（`vp:echoes-
 | 1 体から始まり増える | `SessionRegistry::single()` → `create` | 一致 |
 | 代表役がいる | `root`（doc 39「器に化身する session」） | **役割が位置の名前で暗黙表現** |
 | PP も同居 | `LaneCapabilitiesPool` が lane ごとに PP を持つ（VP-120） | **session とは別 pool に住んでいる** |
-| N 体の Echoes | session は N 体 | ~~**端末を持てるのは root 1 体だけ**~~ → ✅ P5 (`#853`) で解消 |
+| N 体の Echoes | session は N 体 | ~~**端末を持てるのは root 1 体だけ**~~ → ✅ P5 (`#854`) で解消 |
 
 > 3 行目が §1 の実体版: 同じ「lane の住人」なのに `chat_engines`（session ごと）/
 > ~~`pty_slots`（lane ごと）~~ / `LaneCapabilitiesPool`（lane ごと）の **3 つの別々の入れ物**に
@@ -349,7 +349,7 @@ doc 44 / 46 / 47 を 1 本の順序に並べたもの。
 1. ✅ **doc 46 P4 — Act を lane から session へ**（#848）= 本 doc §4。
    撤去ではなく移設だった（3 仕事）。残件は UI フェーズへ送った
 2. ✅ **§6 — 共有 bus の相関 id**（#850。`#838` の window フラグ凌ぎを根治）
-3. ✅ **doc 46 P5 — `pty_slots` を `(lane, session)` へ re-key**（内部の本丸、`#853`）
+3. ✅ **doc 46 P5 — `pty_slots` を `(lane, session)` へ re-key**（内部の本丸、`#854`）
    - 実測: 参照 27 箇所中 **25 が `lanes_state.rs` に閉じている**（private field + method 越し）。
      doc 46 §3 の「lane key を前提にした全経路」より**カプセル化されていた**
      → 着地も同じで、触った経路は 12（内 8 / 外 4）。外に出たのは引数追加だけ

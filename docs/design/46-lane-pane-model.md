@@ -100,7 +100,7 @@ fresh に始める。既存 session の再表示ではない。
 | **P2** | 新 Pane 作成 UI（**Engine × Act** を選ぶ、要件 4）+ 新 session 発行（要件 5） | 小 |
 | **P3** | `canvas` を Pane に寄せる | 無し（既存 board を mount するだけ） |
 | **P4** | `console_mode`（per-lane Act）の撤去 — §1.4 の移行完了 | 中 ✅ `#848`（撤去でなく **session への移設**だった） |
-| **P5** | 端末の複数枚化（`pty_slots` を `(lane, session)` へ re-key） | **大** ✅ `#853`（§3 に着地メモ） |
+| **P5** | 端末の複数枚化（`pty_slots` を `(lane, session)` へ re-key） | **大** ✅ `#854`（§3 に着地メモ） |
 | **P6** | `file` kind / layout 永続 | 小 |
 
 P1 と P2 の順が逆でないのは、**作る前に置き場が要る**から。P1 の時点では
@@ -116,7 +116,7 @@ spawn / pump / `lane_capture` / `deliver_nudge` / Dead 検出 / zombie reap。
 doc 44 §11 で見たとおり、この層は「1 つの辺が 2 つの仕事をしている」箇所が残っており、
 key 変更は同型の見落としを生みやすい。**P1/P2 を出してから単独で扱う。**
 
-### 着地（2026-07-21、`#853`）
+### 着地（2026-07-21、`#854`）
 
 型は `chat_engines` と同型の 2 段 map に揃えた（タプル key ではなく入れ子 —
 「1 session = 高々 1 エンジン」を**同じ入れ子の高さで**検査できるため）:
