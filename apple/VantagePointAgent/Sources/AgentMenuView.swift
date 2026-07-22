@@ -30,7 +30,7 @@ struct AgentMenuView: View {
         }
         .padding(12)
         .frame(width: 320)
-        // menu を開くたびに稼働中 SP を再 scan する。
+        // menu を開くたびに稼働中 VP (TheWorld) を再 probe する。
         .task { await model.refreshInstances() }
     }
 
@@ -72,11 +72,12 @@ struct AgentMenuView: View {
         }
     }
 
-    /// M2b: 稼働中 SP の一覧 + 停止操作 (旧 daemon tray の instance submenu に相当)。
+    /// M2b: 稼働中 VP の表示 + 停止操作 (旧 daemon tray の instance submenu に相当)。
+    /// fold-in 後は World の 0/1 件 (doc 45 §5-5 で port scan を撤去)。
     @ViewBuilder
     private var instancesSection: some View {
         HStack {
-            Text("稼働中 Process: \(model.instances.count)")
+            Text("稼働中 VP: \(model.instances.count)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()

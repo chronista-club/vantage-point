@@ -1,6 +1,6 @@
 # doc 45 — control plane transport の Unison 統一（HTTP route の棚卸し）
 
-> **status**: 段 1〜段 4 着地（2026-07-22）／段 5 は次送り（§5.4）。doc 44 P1（fold-in）の dogfood 中に
+> **status**: 段 1〜段 5 すべて着地（2026-07-22、§5.5）。残るは `/api/update/*` 7 本（優先度低）のみ。doc 44 P1（fold-in）の dogfood 中に
 > 「HTTP と Unison が二重化したままでは」という mako の指摘で顕在化した。
 > **doc 44 とは独立**（fold-in の後始末ではなく transport 層の設計判断）。
 >
@@ -90,9 +90,9 @@ fold-in（doc 44）が nightly に落ち着いてから着手。route 群ごと�
 2. ✅ CLI の HTTP 呼び出しを Unison に差し替え（`vp ps` は `f1dea10` で完了済み）
 3. ✅ vp-app の `client.rs` を Unison に差し替え（`app.rs` の既存 Unison 経路と統合）
 4. ✅ HTTP route を撤去（`/api/health` `/api/shutdown` を除く。`/api/canvas/*` は §3.1 によりここ）
-5. ⏸ `apple/` の InstanceScanner は既に機能停止（SP-portless 以降 port scan が常に空）
+5. ✅ `apple/` の InstanceScanner は既に機能停止（SP-portless 以降 port scan が常に空）
    なので、health 単発 probe だけ残して port scan は撤去（UI 判断とセット）
-   → **次送り**（Swift のビルド確認手段が今この repo で成立しないため、§5.4）
+   → **着地**（§5.5。§5.4 の blocker は 1 行の path drift だった）
 
 各段階で「HTTP を消す前に Unison 経路が実機で動く」ことを確認してから旧経路を落とす
 （doc 44 で確立した「新面が動く → 旧面撤去」の順序）。
@@ -275,3 +275,29 @@ menu が常に「稼働中 Process: 0」と出る）、急いで消す理由も�
   `processes[]`（presence 一覧）が既にその答えを持っている。
 - menu の「稼働中 Process: N」/「停止」ボタンをどうするかは UI 判断とセット
   （per-project stop は Unison `world-control.projects/stop` が正面）。
+
+### ✅ 5.5 段 5 着地（2026-07-22）— blocker は 1 行の path drift だった
+
+次送りの理由だった「club-unison の local path 依存が解決不能」は、**upstream が
+`Package.swift` を `clients/swift/` から repo root へ移動した**ことによる 1 行の drift だった。
+`project.yml` の `path: ../../../club-unison/clients/swift` → `../../../club-unison` で解消し、
+`xcodebuild` が **BUILD SUCCEEDED** になることを実測してから段 5 に着手した。
+
+> ⚠️ この drift は **`xcodegen` は通り `xcodebuild` で初めて落ちる**。生成が成功するので
+> 「project 定義は健全」に見えるが、package 解決は build 時まで走らない。
+> 「どの段階まで通ったか」を成功の証拠にしない。
+
+やったこと:
+
+- `InstanceControl.scan()` の port range probe（33000-33015 の 16 並列）を撤去し、
+  **World 単発 probe**（32000）に置換。fold-in 後は 0/1 件
+- `VpInstance.projectName` は World が特定 project に属さないため `"TheWorld"` 固定
+  （旧 SP の health は `project_dir` を持っていたが、World のそれは空）
+- menu の語彙を実態へ（「稼働中 Process: N」→「稼働中 VP: N」、doc コメントの "SP" を一掃）
+- `stop()` に **fold-in 後は全 project / 全 lane が落ちる**旨を明記
+  （旧 SP 時代の「1 project だけ止める」意味論はもう無い）
+
+dev profile（`VP_PROFILE=dev` = 32100）は追わない — この agent は brew 導入の常駐 menu bar で、
+見る相手は常に brew namespace の World。
+
+これで doc 45 は **段 1〜5 すべて着地**。残るは `/api/update/*` 7 本（優先度低）のみ。
