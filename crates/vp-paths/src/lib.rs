@@ -99,10 +99,12 @@ pub const LEGACY_ROOT_LANE_NAME: &str = "conductor";
 /// 旧予約名で書かれた lane-scoped state file を新予約名へ改名する one-shot migration。
 /// 戻り値は改名した file 数。
 ///
-/// state file は全 zone で `<project>__<lane>` 命名なので、dir を問わず
-/// **`__conductor` で終わる（or `__conductor.<ext>` の）file 名**を機械的に付け替えられる。
-/// 個別 dir を列挙しないのは、後から state 種別が増えても取りこぼさないため
+/// state file は全 zone で `<project>__<lane>` 命名なので、dir を問わず lane 部を機械的に
+/// 付け替えられる。個別 dir を列挙しないのは、後から state 種別が増えても取りこぼさないため
 /// （「消えたか」でなく「残っていないか」を構造で担保する）。
+///
+/// **lane 部は session label**（doc 38）なので対象は 4 形:
+/// `<project>__conductor` / `…​.<ext>` / `<project>__conductor#<n>` / `…#<n>.<ext>`。
 ///
 /// 冪等: 改名後は該当 file が無いので 2 回目以降は 0。衝突（新名が既存）時は**触らない**
 /// — 上書きすると新側の会話 id / 安定 id を失う。
@@ -123,17 +125,33 @@ pub fn migrate_root_lane_state_files(base: &std::path::Path) -> usize {
         for f in files.flatten() {
             let name = f.file_name();
             let Some(name) = name.to_str() else { continue };
-            // `<project>__conductor` / `<project>__conductor.json` の両形。
             let (stem, ext) = match name.split_once('.') {
                 Some((s, e)) => (s, Some(e)),
                 None => (name, None),
             };
-            let Some(prefix) = stem.strip_suffix(&legacy_suffix) else {
+            // lane 部は素の lane 名とは限らず、**session label** `<lane>#<n>` も来る
+            // （doc 38 `session_label`: key≥2 は `<lane>#<n>`）。したがって対象は
+            // `<project>__conductor` / `…​.json` / `<project>__conductor#2` / `…#2.jsonl` の 4 形。
+            //
+            // ⚠️ 初版は `strip_suffix("__conductor")` だけを見ており、**`#n` 付きを取りこぼした**
+            // （実機で `cc_sessions/fleetstage__conductor#2` が 1 件残った）。
+            //
+            // `rsplit_once` なのは、project 名自体が `__conductor` で終わる場合
+            // （`x__conductor__conductor`）に lane 部だけを正しく切り出すため。
+            let Some((prefix, rest)) = stem.rsplit_once(&legacy_suffix) else {
                 continue;
             };
+            // 残りは「空（root session）」か「`#<数字>`（非 root session）」のみ許す。
+            // これが無いと `__conductor-old` のような**別 lane** を巻き込む。
+            let is_session_suffix = rest.len() > 1
+                && rest.starts_with('#')
+                && rest[1..].bytes().all(|b| b.is_ascii_digit());
+            if !(rest.is_empty() || is_session_suffix) {
+                continue;
+            }
             let new_name = match ext {
-                Some(e) => format!("{prefix}__{ROOT_LANE_NAME}.{e}"),
-                None => format!("{prefix}__{ROOT_LANE_NAME}"),
+                Some(e) => format!("{prefix}__{ROOT_LANE_NAME}{rest}.{e}"),
+                None => format!("{prefix}__{ROOT_LANE_NAME}{rest}"),
             };
             let to = dir.join(&new_name);
             if to.exists() {
@@ -628,6 +646,54 @@ mod tests {
             std::fs::read_to_string(cc.join("other__root")).unwrap(),
             "already-new",
             "衝突時は新側を上書きしない"
+        );
+
+        assert_eq!(migrate_root_lane_state_files(base), 0, "冪等");
+    }
+
+    /// **session label 形** `<project>__conductor#<n>` も改名対象（初版の取りこぼし回帰）。
+    ///
+    /// state file の lane 部は素の lane 名とは限らず、doc 38 の `session_label` により
+    /// key≥2 は `<lane>#<n>` になる。初版は `strip_suffix("__conductor")` だけを見ていたため
+    /// `#n` 付きを丸ごと落としており、実機で `cc_sessions/fleetstage__conductor#2` が残った。
+    ///
+    /// 併せて「巻き込んではいけないもの」も固定する — `__conductor` で始まるだけの**別 lane**。
+    #[test]
+    fn migrate_covers_session_label_form_without_catching_other_lanes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let cc = base.join("cc_sessions");
+        let replay = base.join("echoes_replay");
+        std::fs::create_dir_all(&cc).unwrap();
+        std::fs::create_dir_all(&replay).unwrap();
+
+        std::fs::write(cc.join("fleetstage__conductor"), "root").unwrap();
+        std::fs::write(cc.join("fleetstage__conductor#2"), "sess2").unwrap();
+        std::fs::write(replay.join("vp__conductor#10.jsonl"), "log").unwrap();
+        // ⚠️ 巻き込んではいけない: 予約名で「始まる」だけの別 lane / 数字でない suffix
+        std::fs::write(cc.join("vp__conductor-old"), "別 lane").unwrap();
+        std::fs::write(cc.join("vp__conductor#x"), "不正 key").unwrap();
+        // project 名自体が予約名で終わる edge（rsplit_once でないと切り出しを誤る）
+        std::fs::write(cc.join("x__conductor__conductor#3"), "nested").unwrap();
+
+        assert_eq!(migrate_root_lane_state_files(base), 4);
+
+        assert!(cc.join("fleetstage__root").exists(), "root は従来どおり");
+        assert!(cc.join("fleetstage__root#2").exists(), "#n 付きも改名");
+        assert!(replay.join("vp__root#10.jsonl").exists(), "#n + 拡張子");
+        assert!(
+            cc.join("x__conductor__root#3").exists(),
+            "project 名が予約名で終わっても lane 部だけを切る"
+        );
+
+        assert!(cc.join("vp__conductor-old").exists(), "別 lane は無傷");
+        assert!(
+            cc.join("vp__conductor#x").exists(),
+            "数字でない suffix は対象外"
+        );
+        assert!(
+            !cc.join("fleetstage__conductor#2").exists(),
+            "旧名は残らない"
         );
 
         assert_eq!(migrate_root_lane_state_files(base), 0, "冪等");
