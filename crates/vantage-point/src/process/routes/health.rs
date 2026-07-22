@@ -146,8 +146,6 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
                             "discovering": discovering,
                         })),
                     )
-                } else if wc.midi.is_some() {
-                    ("active", None)
                 } else {
                     ("disabled", None)
                 }

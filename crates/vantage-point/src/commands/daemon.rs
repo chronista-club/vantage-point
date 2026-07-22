@@ -30,18 +30,8 @@ pub enum DaemonCommands {
         /// 待ち受けポート番号
         #[arg(short, long, default_value_t = crate::cli::world_port())]
         port: u16,
-
-        /// MIDI ポート指定 — usize ならポート index、 文字列ならポート名 pattern (部分一致)。
-        ///
-        /// PR-α-4 (VP-114) で復活: PR-α-2/3 で MidiCapability が World daemon に移管された
-        /// 経路に対する CLI 入口。 未指定なら `MidiConfig::default()` (port_index/pattern 共に
-        /// None = 最初の利用可能 port を auto pick)。 例: `vp daemon start --midi 0` (index 0)、
-        /// `vp daemon start --midi LPD8` (pattern マッチ)。
-        ///
-        /// 旧 `vp start --midi` flag は PR-α-2 で warning + ignored 化済 (本 flag に rewire)。
-        #[cfg(feature = "midi")]
-        #[arg(long)]
-        midi: Option<String>,
+        // 旧 `--midi <arg>` flag は MidiCapability hosting 退役（fleet #877 系）で削除。
+        // device 管理は Bastet 🧲 が担い、単一 port の pick 指定は不要になった。
     },
     /// TheWorld を停止 (idempotent)
     Stop,
@@ -81,9 +71,6 @@ pub enum DaemonCommands {
 /// `vp daemon` (= `vp world`) を実行
 pub fn execute(cmd: DaemonCommands) -> Result<()> {
     match cmd {
-        #[cfg(feature = "midi")]
-        DaemonCommands::Start { port, midi } => start(port, midi),
-        #[cfg(not(feature = "midi"))]
         DaemonCommands::Start { port } => start(port),
         DaemonCommands::Stop => stop(),
         DaemonCommands::Restart { if_running } => restart(if_running),
@@ -95,8 +82,7 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
     }
 }
 
-#[cfg(feature = "midi")]
-fn start(port: u16, midi: Option<String>) -> Result<()> {
+fn start(port: u16) -> Result<()> {
     // 二重起動ガード: 既に TheWorld が稼働中なら讓って正常終了する。
     // これが無いと LaunchAgent(KeepAlive) / vp-app auto-launch / 手動 `vp world` が
     // 既存 daemon を確認せず run_world に突入し、SurrealDB world lock 衝突 → :port bind
@@ -106,49 +92,8 @@ fn start(port: u16, midi: Option<String>) -> Result<()> {
         println!("👑 TheWorld は既に稼働中 (PID: {pid})。二重起動を避けて終了します。");
         return Ok(());
     }
-    let midi_config = midi.as_ref().map(|midi_arg| build_midi_config(midi_arg));
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(crate::process::run_world(port, midi_config))
-}
-
-#[cfg(not(feature = "midi"))]
-fn start(port: u16) -> Result<()> {
-    // 二重起動ガード（midi 版 start と同旨）: 既存 daemon 稼働中なら讓って正常終了。
-    // LaunchAgent(KeepAlive) / vp-app auto-launch / 手動 `vp world` の二重起動 →
-    // world DB lock 衝突 + bind AddrInUse → crash ループを防ぐ (2026-07-09 事故)。
-    if let Some(pid) = process::is_daemon_running() {
-        println!("👑 TheWorld は既に稼働中 (PID: {pid})。二重起動を避けて終了します。");
-        return Ok(());
-    }
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(crate::process::run_world(port))
-}
-
-/// `--midi <arg>` から `MidiConfig` を構築する。
-///
-/// 旧 `vp start --midi` の logic を移植 (PR-α-4 / VP-114):
-/// - default config をベースに、 標準 PAD 3 つ (note 36/37/38) に VP action を bind
-///   (PAD 1 = OpenWebUI、 PAD 2 = CancelChat、 PAD 3 = ResetSession)
-/// - arg を `usize::parse` で試し、 成功なら port_index、 失敗なら port_pattern (部分一致)
-#[cfg(feature = "midi")]
-fn build_midi_config(midi_arg: &str) -> crate::midi::MidiConfig {
-    let mut config = crate::midi::MidiConfig::default();
-    config
-        .note_actions
-        .insert(36, crate::midi::MidiAction::OpenWebUI { port: None });
-    config
-        .note_actions
-        .insert(37, crate::midi::MidiAction::CancelChat { port: None });
-    config
-        .note_actions
-        .insert(38, crate::midi::MidiAction::ResetSession { port: None });
-
-    if let Ok(idx) = midi_arg.parse::<usize>() {
-        config.port_index = Some(idx);
-    } else {
-        config.port_pattern = Some(midi_arg.to_string());
-    }
-    config
 }
 
 fn stop() -> Result<()> {
