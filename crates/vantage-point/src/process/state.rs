@@ -135,6 +135,13 @@ pub(crate) struct AppState {
     /// reconcile loop の駆動源)。SP の `handle_delegate` 等は `world_wire::call("/api/delegation/*")`
     /// でここに proxy する (wake = SP-local nudge は保持、cf. `process/delegation.rs`)。
     pub delegation_store: Option<crate::capability::DelegationStore>,
+    /// doc 48 Phase 2: editor bridge の pending 応答 map (request_id → oneshot)。
+    ///
+    /// `handle_editor_command` が登録して `EditorCommand` を broadcast、GUI からの
+    /// `editor_result` (`handle_editor_result`) が解決する。timeout 時は登録側が
+    /// remove するので、遅延到着した stale 応答は不在 key として無視される (idempotent)。
+    pub editor_pending:
+        Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
 }
 
 impl AppState {
@@ -358,6 +365,7 @@ pub(crate) async fn build_test_app_state_with(
         // test fixture は SP 相当 (World store 無し)。delegation の store test は
         // capability::delegation_store の単体 test が担う。
         delegation_store: None,
+        editor_pending: Default::default(),
     })
 }
 
