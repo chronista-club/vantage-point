@@ -369,6 +369,48 @@ P3 以降で lane 作成を Host に寄せる際の統合対象。
 > P2 の変更対象外のため本 PR では触らない。再現手順は使い捨て project に
 > `POST /api/world/lanes {"name":"conductor"}` を直接投げ、conductor descriptor の生存を確認する。
 
+### ✅ 着地: 実装を 1 本にする（2026-07-22）
+
+§9（名前 gate の一本化）で **入口の validation** は揃えたが、実装自体は 2 本のままだった（§9.4）。
+ここでそれを畳んだ。**残したのは `routes/lanes.rs::create_performer_orchestrated`**、
+`ProcessManagerCapability::create_lane` は「名前 gate → project runtime を引く → core を呼ぶ」
+だけの adapter になった。
+
+**どちらに寄せたか、の根拠**:
+
+| 判断材料 | 内容 |
+|---|---|
+| 分かれていた理由が消えていた | doc 24 §5.3「ground を provision する唯一の主体は daemon」が World 側実装の根拠だったが、**P1 fold-in で daemon = project = 同一プロセス**になった時点で成立しない（両者とも同じ `new_performer_in` を呼んでいた） |
+| 片方は単独で完結しない | World 側は descriptor + worktree だけ作り、PtySlot は lane watcher の loopback（= 結局 core 側）に賭けていた。**「A から spawn を抜いて watcher 経由の遠回りを足したもの」**が World 側だった |
+| 利用者の数 | core 側 = MCP `add_performer` / `flow_handoff` / CLI `vp flow handoff` / lane watcher。World 側 = vp-app の「+ Add Performer」のみ（`daemon::client::lanes_create` は呼び手ゼロ） |
+| 機能の包含関係 | `base` / `model` / explicit `cwd` / stand 永続（`stand_store`）/ `SystemEvent::Lane(Diff::Add)` は core 側だけが持っていた（= World 経由では効かなかった） |
+
+**消える側にしか無かった振る舞いと、その扱い**:
+
+| 振る舞い | 扱い |
+|---|---|
+| **intent-first bracket**（`upsert_lane` + `lane_lifecycle=Provisioning` → 成功で `Ready` / 失敗で削除、doc 24 §4.6） | **core へ移設**。旧構成ではこの永続が GUI 経由の create にしか効かず、MCP / CLI / watcher で作った lane は **descriptor が一度も db に載らなかった**（= boot reconcile の射程外）。移設で全入口に効く |
+| lane watcher が `lane_registry` の descriptor から **stand を引き直す** hop（bug mem_1Cd4M7i5Enp3HHMLVYayRe の対処） | **撤去**。GUI create が自分で spawn するようになり、その lane が watcher に届く時は必ず "already exists" で弾かれる = 引き継ぐ相手が居ない。stand は create request が直接運ぶ |
+| `lane_registry` への即時 push | **落とした（等価な経路がある）**。fold-in 後 `lane_registry` は project の `publish_lanes` が LanePool snapshot で毎回全置換するので、core の `Diff::Add` → publish で ms 単位で収束する（手で push しても次の publish に上書きされるだけ） |
+| 停止中 project でも worktree を作れた | **明示 error に変更**。旧構成では descriptor と worktree だけ残って PtySlot が付かない（= watcher が動いていない）ため、実質「作ったのに動かない lane」だった。vp-app 側も `showAddPerformer = isActiveProject() && !isPaused()` で稼働中限定にしており、UI の契約とも一致する |
+
+**副産物（書き手を増やした対の後始末）**: `delete_lane_orchestrated` が db の descriptor /
+lifecycle を回収するようにした。旧構成にもこの非対称（create が書いて delete が消さない）は
+在ったが、書き手が GUI 経由だけだったため表に出にくかった。全入口が書くようにした以上、
+消し手が無いと削除済 lane の行が溜まって次の boot で ghost になる。
+
+**残った尻尾**:
+
+- `db::replace_lanes_for_project` は呼び手ゼロ（SP register snapshot 反映用の遺物、fold-in で
+  producer が消えた）。`daemon::client::lanes_create` も呼び手ゼロ（doc 45 段 1 で足された
+  client wrapper）。どちらも本統合とは独立の pre-existing で、触っていない
+- lane を **live にする**実装はもう 1 本ある（`lane_spawn_actor` = boot bootstrap の respawn）。
+  ただしそれは「作る」ではなく「起こす」で、worktree provision も descriptor 永続もしない。
+  今回の統合対象（= 作成の動詞）とは別軸
+- **成功系の end-to-end test は書けない**（`create_performer_orchestrated` の成功 = user の
+  login shell を実際に起こす）。bracket の enter/exit は helper 直呼びで、書いた行の回収は
+  spawn を経ない `delete_lane_orchestrated` 経由で固定した
+
 ### 6.6 残した振る舞い分岐
 
 `stand_spawner::claude_command` の「開発起点なら `--continue`、それ以外は fresh」は**挙動不変で残した**
@@ -453,7 +495,10 @@ fast-forward で取り込み済）」と**断定できる範囲だけ**を言う
 - ~~**稼働中 lane の保護**~~ → 下の「✅ 着地」。予告は「daemon 経由の surface（LanePool を
   持つ層）から呼べば埋まる」だったが、**CLI から World に訊く**形に落ちた（`vp lane cleanup`
   自体が surface なので、供給のために別 surface を待つ必要はなかった）
-- **lane 作成の 2 経路統合**（§6.5）と、そこに紐づく descriptor 破壊疑い
+- ~~**lane 作成の 2 経路統合**（§6.5）と、そこに紐づく descriptor 破壊疑い~~ →
+  descriptor 破壊は §9 で解消（実在を確認して回帰テストで固定）、**実装の統合は
+  §6.5「✅ 着地: 実装を 1 本にする」で完了**（2026-07-22）。予告どおり「どちらが正か」を
+  決めるだけで済んだ（core = `create_performer_orchestrated` に寄せ、World 側は adapter 化）
 
 ### ✅ 着地: 稼働中 lane の保護（2026-07-21）
 
@@ -763,6 +808,11 @@ World 不在なら予約名にフォールバックし、**その旨を告げて
 clone + PtySlot spawn、`create_lane` は daemon 側 worktree provision のみ）はまだ別物で、
 D3 の「迎え入れ」を Host に実装する時に寄せる。gate が 1 本になったので、その時に
 「どちらが正か」を決めるだけで済む。
+
+> **→ 完了（2026-07-22）**: §6.5「✅ 着地: 実装を 1 本にする」。予告どおり「どちらが正か」を
+> 決めるだけで済み、core（`create_performer_orchestrated`）に寄せて World 側は adapter 化した。
+> D3 の Host を待たずに畳めたのは、**入口の gate が既に 1 本だったおかげで
+> 「実装の差」だけを見ればよかった**ため。
 
 ## 10. P4 第一スライス — 開発起点を GUI から見る / 動かす（D5、2026-07-21）
 

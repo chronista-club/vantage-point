@@ -516,8 +516,9 @@ pub(crate) async fn handle_world_control(
             Ok(serde_json::json!({ "count": lanes.len(), "lanes": lanes }))
         }
         // doc 45 段 1: HTTP `POST /api/world/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
-        // performer lane の descriptor を daemon-canonical truth として作る。
-        // branch / stand の省略時 default は HTTP と同じ `resolve_create_lane_args` で導出する。
+        // doc 44 §9.4: 実体は project runtime の lane 作成 core（`create_performer_orchestrated`）
+        // 1 本で、`create_lane` はそこへの adapter。ここに残るのは「省略時 default の導出」だけ
+        // （data/calc は route の責務 = `resolve_create_lane_args` を CLI/GUI と共有）。
         "lanes/create" => {
             let path = payload["path"]
                 .as_str()
