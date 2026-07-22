@@ -19,17 +19,19 @@ pub struct LayoutSetParams {
     )]
     pub notation: Option<String>,
 
-    /// pane id → attention raw 値（0 = 非表示）。省略 id は現状維持
+    /// pane id → attention raw 値（0 = 非表示）。省略 id は現状維持。
+    /// 型付き map にするのが重要 — `serde_json::Value` だと schema が型なしになり、
+    /// MCP client が object を JSON 文字列のまま送る（実機で踏んだ regression）
     #[schemars(
         description = "Partial overlay of attention values (pane id -> raw >= 0; 0 hides the pane). Ids not mentioned keep their current value. A value > 0 for an id outside the structure makes it float."
     )]
-    pub attention: Option<serde_json::Value>,
+    pub attention: Option<std::collections::BTreeMap<String, f64>>,
 
     /// 列幅 lock（pane id → 幅 share）。指定すると全置換、省略 = 現状維持
     #[schemars(
         description = "Column width locks (pane id -> width share in (0,1)). When provided, replaces the whole lock map; omit to keep current locks."
     )]
-    pub locks: Option<serde_json::Value>,
+    pub locks: Option<std::collections::BTreeMap<String, f64>>,
 }
 
 /// Parameters for the layout_history tool
@@ -93,5 +95,29 @@ impl VantageMcp {
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             v.to_string(),
         )]))
+    }
+}
+
+#[cfg(test)]
+mod layout_params_schema_tests {
+    /// attention / locks が型付き object として schema に出る回帰を固定する。
+    /// `serde_json::Value` のままだと schema が型なし（any）になり、MCP client が
+    /// object を JSON 文字列で送る → webview guard で `attention["22"] が不正` になる
+    /// （2026-07-23 実機で踏んだ初弾 bug）。
+    #[test]
+    fn set_params_declare_typed_objects() {
+        let schema = serde_json::to_value(schemars::schema_for!(super::LayoutSetParams))
+            .expect("schema serialize");
+        for field in ["attention", "locks"] {
+            let prop = schema["properties"][field].to_string();
+            assert!(
+                prop.contains("object"),
+                "{field} が object 型でない: {prop}"
+            );
+            assert!(
+                prop.contains("number"),
+                "{field} の値が number 型でない: {prop}"
+            );
+        }
     }
 }
