@@ -300,6 +300,21 @@ impl AppState {
 pub(crate) async fn build_test_app_state(
     world: Option<Arc<RwLock<ProcessManagerCapability>>>,
 ) -> Arc<AppState> {
+    build_test_app_state_with("", None, world).await
+}
+
+/// `build_test_app_state` の `project_dir` / `vpdb` を差せる版。
+///
+/// lane 作成の intent-first bracket（descriptor + lifecycle の永続、doc 44 §9.4）のように
+/// **db への書き込みが振る舞いの一部**になっている経路は、vpdb=None の fixture では
+/// 「書けたつもり」を素通りさせてしまう（= guard never-fire と同型の緑）。そこだけ
+/// 実 db（in-memory surrealkv）を差せるようにする。
+#[cfg(test)]
+pub(crate) async fn build_test_app_state_with(
+    project_dir: &str,
+    vpdb: Option<crate::db::SharedVpDb>,
+    world: Option<Arc<RwLock<ProcessManagerCapability>>>,
+) -> Arc<AppState> {
     use super::capabilities::CapabilityConfig;
     use super::lane_capabilities::LaneCapabilitiesPool;
     use super::lanes_state::LanePool;
@@ -307,7 +322,7 @@ pub(crate) async fn build_test_app_state(
 
     let capabilities = Arc::new(
         ProcessCapabilities::new(CapabilityConfig {
-            project_dir: String::new(),
+            project_dir: project_dir.to_string(),
         })
         .await,
     );
@@ -315,7 +330,7 @@ pub(crate) async fn build_test_app_state(
     Arc::new(AppState {
         hub: Hub::new(),
         shutdown_token: CancellationToken::new(),
-        project_dir: String::new(),
+        project_dir: project_dir.to_string(),
         project_name: String::new(),
         capabilities,
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
@@ -331,7 +346,7 @@ pub(crate) async fn build_test_app_state(
         topic_router: Arc::new(TopicRouter::new()),
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        vpdb: None,
+        vpdb,
         wiremsg_store: None,
         wire_notifier: WireNotifier::new(),
         delivery_notify: Arc::new(tokio::sync::Notify::new()),

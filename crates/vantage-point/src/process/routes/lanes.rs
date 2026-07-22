@@ -207,6 +207,118 @@ pub struct CreateLaneReq {
     pub model: Option<String>,
 }
 
+/// World 入口（Unison `world-control.lanes/create`）の引数を [`CreateLaneReq`] に写す (= calc)。
+///
+/// doc 44 §9.4 の統合で、World 側の `ProcessManagerCapability::create_lane` は
+/// **自前の実装を持たず**本 module の [`create_performer_orchestrated`] を呼ぶ薄い adapter に
+/// なった。その境界で唯一発生するのが「(name, branch, stand) → `CreateLaneReq`」の写像で、
+/// ここが黙ってズレると **GUI から作った lane だけ branch / stand が効かない**という
+/// 経路差が復活する。純関数に切り出して往復を test で固定する。
+///
+/// `cwd` / `base` / `model` が None なのは World 入口がそれらを受け取らないため
+/// （= 既定の lane clone に落ちる。旧 `create_lane` と同じ範囲）。
+pub(crate) fn build_create_lane_req(name: &str, branch: &str, stand: &str) -> CreateLaneReq {
+    CreateLaneReq {
+        name: name.to_string(),
+        stand: Some(stand.to_string()),
+        cwd: None,
+        branch: Some(branch.to_string()),
+        base: None,
+        model: None,
+    }
+}
+
+/// lane descriptor / lifecycle を db に永続する時の project key。
+///
+/// `AppState.project_dir` は生パス（`CapabilityConfig` にそのまま入る）だが、db の
+/// `project_path` 列と World の registry key は**正規化済パス**なので、境界で 1 回だけ畳む。
+/// call site に任せると 1 箇所忘れて「boot load では引けない行」が無音で生まれる
+/// （doc 44 §10.4 の帳簿 key と同じ罠）。
+fn lane_db_key(state: &AppState) -> String {
+    crate::capability::normalize_path_key(std::path::Path::new(&state.project_dir))
+}
+
+/// intent-first bracket の enter（doc 24 §4.6 / doc 44 §9.4）: descriptor +
+/// `lifecycle=Provisioning` を **provision（lane clone）より先に**永続する。
+///
+/// crash が provision の途中で起きても「provisioning が残る」ので、boot reconcile が
+/// ground の有無で heal できる。旧 World 側 `create_lane` だけが持っていた振る舞いで、
+/// 統合で全入口（MCP / CLI / watcher / GUI）に効くようになった。
+///
+/// 失敗は warn のみ（db が無い / 書けない時に lane 作成そのものを止めない — 永続の欠落は
+/// 「再起動後に reconcile 対象から漏れる」degrade で、作成自体は成立する）。
+async fn persist_lane_intent(state: &Arc<AppState>, key: &str, info: &LaneInfo) {
+    let Some(db) = &state.vpdb else { return };
+    let addr = info.address.to_string();
+    if let Err(e) = db.upsert_lane(key, info).await {
+        tracing::warn!("lane descriptor の db 永続に失敗 (作成は継続): {}", e);
+    }
+    if let Err(e) = db
+        .upsert_lane_lifecycle(
+            key,
+            &addr,
+            crate::process::lanes_state::LaneLifecycle::Provisioning.as_str(),
+        )
+        .await
+    {
+        tracing::warn!("lane_lifecycle=provisioning の db 永続に失敗: {}", e);
+    }
+}
+
+/// intent-first bracket の exit（成功）: 確定 descriptor で上書きし `lifecycle=Ready` にする。
+///
+/// enter 時点の descriptor は cwd が**予測値**（clone 前なので実 path が無い）なので、
+/// ここで実測値に置き換える。lifecycle は ground（worktree）の生死であって PtySlot の
+/// 生死ではないため、spawn 失敗で `LaneState::Dead` になった lane も ground があるなら
+/// `Ready` を書く（PtySlot は restart で復帰できる = ground は正常）。
+///
+/// ⚠️ **永続する descriptor は process liveness を名乗らない**（`state=Spawning` / `pid=None`
+/// に正規化する）。descriptor は「この lane が在るという意図」の記録で、動いているかどうかは
+/// `LanePool` にしか無い。`Running` のまま焼くと、project が起動していない間 boot load 済の
+/// 行が「稼働中」を主張し、`vp lane cleanup` の稼働 guard（`host::liveness`）が
+/// **永久に見送りを止める**（doc 44 §7.5 が `Spawning` を稼働に数えないのと同じ理由）。
+async fn persist_lane_ready(state: &Arc<AppState>, key: &str, info: &LaneInfo) {
+    let Some(db) = &state.vpdb else { return };
+    let addr = info.address.to_string();
+    let descriptor = LaneInfo {
+        state: LaneState::Spawning,
+        pid: None,
+        ..info.clone()
+    };
+    if let Err(e) = db.upsert_lane(key, &descriptor).await {
+        tracing::warn!("lane descriptor (確定) の db 永続に失敗: {}", e);
+    }
+    if let Err(e) = db
+        .upsert_lane_lifecycle(
+            key,
+            &addr,
+            crate::process::lanes_state::LaneLifecycle::Ready.as_str(),
+        )
+        .await
+    {
+        tracing::warn!("lane_lifecycle=ready の db 永続に失敗: {}", e);
+    }
+}
+
+/// lane descriptor + lifecycle を db から回収する（rollback / delete 共用）。
+async fn discard_lane_rows(state: &Arc<AppState>, key: &str, addr: &LaneAddress) {
+    let Some(db) = &state.vpdb else { return };
+    let addr_str = addr.to_string();
+    let _ = db.delete_lane(key, &addr_str).await;
+    let _ = db.delete_lane_lifecycle(key, &addr_str).await;
+}
+
+/// create 失敗時の後始末を **1 つの動詞**に畳む（pool の reservation + db の intent）。
+///
+/// 失敗経路は 4 本（clone task panic / clone 失敗 / spawn task panic / spawn 失敗 rollback）
+/// あり、そこで落とすものが 2 つある。別々に書くと片方だけ足した経路が必ず生まれ、
+/// 「placeholder が leak してその addr の lane が二度と作れない」か「拒否されたはずの
+/// lane が db に残る」のどちらかが**無音で**起きる（1 辺が 2 仕事をしている罠）。
+async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddress) {
+    state.lane_pool.write().await.remove(addr);
+    discard_lane_rows(state, key, addr).await;
+}
+
 /// Performer Lane create core orchestration (Phase 3-A: lane clone + PtySlot spawn)。
 ///
 /// lanes portless (doc 27 §3.4.5): 旧 `POST /api/lanes` の core を抽出し、 全 trigger
@@ -214,14 +326,22 @@ pub struct CreateLaneReq {
 /// process-proxy ask `lane_create` 経由で共有する core logic に。 `delete_lane_orchestrated` /
 /// `restart_lane_orchestrated` と対称 (SP HTTP route + axum handler は撤去)。
 ///
+/// **doc 44 §9.4 の統合後、lane 作成の実装はこの関数 1 本**。旧 World 側
+/// `ProcessManagerCapability::create_lane`（worktree provision + descriptor 永続のみで
+/// PtySlot は watcher 経由という別実装）は本関数を呼ぶ adapter に畳んだ。
+/// SP がプロセスだった頃の「ground を provision する唯一の主体は daemon」(doc 24 §5.3) は
+/// fold-in で daemon = project = 同一プロセスになった時点で意味を失っており、
+/// 分かれている理由が消えていた。
+///
 /// 流れ:
-/// 1. 入力 validation (kind == "performer"、 name 非空)
-/// 2. cwd 決定:
+/// 1. 入力 validation (name の gate = `validate_performer_name` / model 名)
+/// 2. reserve (LanePool の Spawning placeholder) + **intent-first の descriptor 永続**
+/// 3. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
 ///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で performer dir 作成
 ///    - 両方 None → `<git-user>/<sanitized-name>` を auto-derive して lane clone
-/// 3. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
-/// 4. LanePool に insert (state=Running、 pid 付き)
+/// 4. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
+/// 5. LanePool に insert (state=Running、 pid 付き) + descriptor 確定 / `lifecycle=Ready`
 ///
 /// 戻り値: 成功 `LaneInfo` / 失敗 `String`（旧 HTTP の CONFLICT="already exists" 等 error message
 /// を保持。 unison error frame `{"error":..}` 経由で caller に Err 化される）。
@@ -290,6 +410,8 @@ pub(crate) async fn create_performer_orchestrated(
     // を除去しないと placeholder が leak し、その addr の lane が二度と作れなくなる (別種の regression)。
     // 該当は clone/spawn の失敗系 4 経路 (clone task join panic / clone 実行失敗 / spawn task join
     // panic / spawn 実行失敗 rollback)。bad input (model 名不正) は reserve **前**に弾くので対象外。
+    // 後始末は [`abort_lane_creation`] 1 本に畳んである (db intent と同時に落とす)。
+    let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &req.name);
     {
         let mut pool = state.lane_pool.write().await;
         if pool.get(&addr).is_some() {
@@ -297,7 +419,7 @@ pub(crate) async fn create_performer_orchestrated(
         }
         pool.insert(LaneInfo {
             console_mode: Default::default(),
-            id: crate::lane::lane_id::load_or_create(&addr.project, &req.name),
+            id: lane_id.clone(),
             address: addr.clone(),
             state: LaneState::Spawning,
             stand: stand.clone(),
@@ -312,6 +434,44 @@ pub(crate) async fn create_performer_orchestrated(
             flow_state: None,
         });
     }
+
+    // doc 24 §4.6 intent-first bracket (enter): descriptor + lifecycle=Provisioning を
+    // **provision より先に**永続する。cwd は lane clone の決定的 path
+    // (`<repo>/.vp/lanes/<name>`) なので clone 前に予測でき、explicit cwd ならそれ自体。
+    // 実 path は clone 後に [`persist_lane_ready`] が上書きする。
+    //
+    // doc 44 §9.4 の統合で World 側 `create_lane` から移設した。旧構成ではこの bracket が
+    // GUI 経由の create にしか効かず、MCP / CLI / watcher で作った lane は **descriptor が
+    // 一度も db に載らなかった** (= 経路ごとの差。boot reconcile の射程外だった)。
+    let db_key = lane_db_key(state);
+    let intended_cwd = req.cwd.clone().unwrap_or_else(|| {
+        crate::lane::config::project_lanes_dir(std::path::Path::new(&state.project_dir))
+            .join(&req.name)
+            .to_string_lossy()
+            .into_owned()
+    });
+    persist_lane_intent(
+        state,
+        &db_key,
+        &LaneInfo {
+            console_mode: Default::default(),
+            id: lane_id.clone(),
+            address: addr.clone(),
+            // process liveness: PtySlot は未起動 (= lifecycle と別軸)
+            state: LaneState::Spawning,
+            stand: stand.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            pid: None,
+            cwd: intended_cwd,
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        },
+    )
+    .await;
 
     // Phase 4-X / R5: cwd 決定 ── 優先順位 explicit cwd > lane clone (branch 明示 or auto-derive)。
     //
@@ -353,8 +513,8 @@ pub(crate) async fn create_performer_orchestrated(
         let result = match join {
             Ok(r) => r,
             Err(e) => {
-                // reservation 除去 (clone task panic で早期 return、placeholder leak 防止)。
-                state.lane_pool.write().await.remove(&addr);
+                // 後始末 (clone task panic で早期 return、placeholder / db intent leak 防止)。
+                abort_lane_creation(state, &db_key, &addr).await;
                 return Err(format!("lane task join: {}", e));
             }
         };
@@ -364,9 +524,10 @@ pub(crate) async fn create_performer_orchestrated(
         let path_buf = match result {
             Ok(p) => p,
             Err(e) => {
-                // reservation 除去 (clone 失敗で早期 return)。disk dir は new_performer_in が
-                // 作れなかった or 途中失敗なので、ここで残すのは pool 上の placeholder のみ。
-                state.lane_pool.write().await.remove(&addr);
+                // 後始末 (clone 失敗で早期 return)。disk dir は new_performer_in が
+                // 作れなかった or 途中失敗なので、ここで残るのは pool の placeholder と
+                // db の intent だけ = [`abort_lane_creation`] が両方落とす。
+                abort_lane_creation(state, &db_key, &addr).await;
                 return Err(format!(
                     "lane clone failed (branch={}): {}",
                     branch_for_log, e
@@ -428,8 +589,8 @@ pub(crate) async fn create_performer_orchestrated(
     let spawn_result = match spawn_join {
         Ok(r) => r,
         Err(e) => {
-            // reservation 除去 (spawn task panic で早期 return、placeholder leak 防止)。
-            state.lane_pool.write().await.remove(&addr);
+            // 後始末 (spawn task panic で早期 return、placeholder / db intent leak 防止)。
+            abort_lane_creation(state, &db_key, &addr).await;
             return Err(format!("PtySlot spawn task join: {}", e));
         }
     };
@@ -476,8 +637,9 @@ pub(crate) async fn create_performer_orchestrated(
                         tracing::warn!("rollback: rm task join 失敗 cwd={}: {}", cwd, join_err)
                     }
                 }
-                // reservation 除去 (spawn 失敗 + disk rollback で早期 return)。
-                state.lane_pool.write().await.remove(&addr);
+                // 後始末 (spawn 失敗 + disk rollback で早期 return)。disk dir を消したので
+                // descriptor / lifecycle も残してはいけない (= 存在しない ground を指す行)。
+                abort_lane_creation(state, &db_key, &addr).await;
                 return Err(format!(
                     "Performer Lane spawn failed (rollback executed): {}",
                     e
@@ -493,9 +655,8 @@ pub(crate) async fn create_performer_orchestrated(
         }
     };
 
-    // I1: performer の安定 id を address (project, name) で load_or_create。
-    // 注: 同期 file IO だが cc_session lazy read と同様 数 ms、 spawn_blocking 隔離は省略 (pre-MVP)。
-    let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &req.name);
+    // I1: performer の安定 id は reserve 時に load_or_create 済 (address = project + name で決まる
+    // 決定的な値なので、reservation・intent・確定 descriptor の 3 者で同じものを使う)。
     let info = LaneInfo {
         console_mode: Default::default(),
         id: lane_id,
@@ -518,6 +679,12 @@ pub(crate) async fn create_performer_orchestrated(
         let mut pool = state.lane_pool.write().await;
         pool.insert(info.clone());
     }
+
+    // doc 24 §4.6 intent-first bracket (exit): ground は在るので確定 descriptor + lifecycle=Ready。
+    // spawn 失敗の Dead 登録 (explicit cwd 経路) もここを通る — lifecycle は ground の生死で、
+    // PtySlot の生死は `LaneInfo.state` が持つ別軸だから (dead を書くと boot reconcile が
+    // 実在する worktree を「消えた」扱いにする)。
+    persist_lane_ready(state, &db_key, &info).await;
 
     // per-lane stand 永続（mem_1Cd4M7i5Enp3HHMLVYayRe）: SP 再起動後の boot bootstrap が
     // この記録を読んで同じ stand で respawn する（従来は全 performer が default_stand に
@@ -649,6 +816,15 @@ pub async fn delete_lane_orchestrated(
     // 構造的に断つ — replay_log / terminal_replay / lane_id はここが従来欠落していた)。
     let lane_label = crate::process::stand_spawner::lane_label(&addr).to_string();
     crate::lane::commands::clear_lane_state(&addr.project, &lane_label);
+
+    // Phase 2a': db の descriptor + lifecycle も回収する (best-effort)。
+    //
+    // doc 44 §9.4 の統合で create が **全入口**で descriptor を書くようになった対の後始末。
+    // 書き手だけ増やして消し手を据え置くと、削除した lane の行が db に残り続け、次の boot で
+    // `lane_registry` に ghost として載る (= `reconcile_lanes` が毎回 dead に倒す仕事を増やし、
+    // `remove_project` の worktree reclaim が実在しない lane を掃除しに行く)。
+    // 旧構成でもこの非対称は在ったが、書き手が GUI 経由だけだったため表に出にくかった。
+    discard_lane_rows(state, &lane_db_key(state), &addr).await;
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
@@ -1111,6 +1287,207 @@ mod core_tests {
             pool.get(&addr)
                 .is_some_and(|l| l.state == LaneState::Spawning),
             "placeholder は Spawning のまま (2 個目が上書きしていない)"
+        );
+    }
+
+    /// doc 44 §9.4: World 入口（`world-control.lanes/create`）→ core の引数写像を固定する。
+    ///
+    /// 統合で World 側は自前の実装を捨てて本 module を呼ぶだけになった。残った唯一の
+    /// 変換がここで、黙ってズレると「GUI から作った lane だけ branch / stand が効かない」
+    /// という**経路差が復活する**（統合が壊れる時に最初に壊れる場所）。
+    #[test]
+    fn world_entry_maps_args_into_create_req() {
+        let req = build_create_lane_req("sub", "mako/sub", "codex");
+        assert_eq!(req.name, "sub");
+        assert_eq!(req.branch.as_deref(), Some("mako/sub"));
+        assert_eq!(req.stand.as_deref(), Some("codex"));
+        // World 入口が受け取らない 3 つは None = 既定の lane clone に落ちる（旧 create_lane と同じ範囲）。
+        assert!(req.cwd.is_none(), "World 入口は cwd を受け取らない");
+        assert!(req.base.is_none(), "World 入口は base を受け取らない");
+        assert!(req.model.is_none(), "World 入口は model を受け取らない");
+    }
+
+    /// doc 44 §9.4 の回帰固定: **失敗した create は db に descriptor も lifecycle も残さない**。
+    ///
+    /// intent-first bracket（provision より先に descriptor を永続する）は統合で World 側から
+    /// 本 core に移設した。移設で落としやすいのは enter ではなく **exit（失敗時の rollback）**で、
+    /// 落ちても成功系のテストは緑のまま「拒否された lane の行が db に残る」状態になる。
+    /// vpdb=None の fixture では書き込み自体が no-op で素通りするため、ここは実 db を差す。
+    #[tokio::test]
+    async fn failed_create_leaves_no_lane_rows() {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+
+        // git repo ではない dir を project にする → lane clone (worktree add) が失敗する。
+        let repo = std::env::temp_dir().join(format!("vp-test-rollback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let project_dir = repo.to_string_lossy().to_string();
+
+        let state =
+            crate::process::state::build_test_app_state_with(&project_dir, Some(db.clone()), None)
+                .await;
+
+        let res = create_performer_orchestrated(&state, req("ghost")).await;
+        assert!(
+            res.is_err(),
+            "git repo でない project の clone は失敗する: {res:?}"
+        );
+
+        // ① descriptor が残っていない（= 拒否された lane が boot load で蘇らない）
+        assert!(
+            db.list_lanes().await.unwrap().is_empty(),
+            "失敗した create の descriptor は db に残らない"
+        );
+        // ② lifecycle も残っていない（provisioning のまま残ると boot reconcile が heal 対象にする）
+        assert!(
+            db.list_lane_lifecycles().await.unwrap().is_empty(),
+            "失敗した create の lane_lifecycle は db に残らない"
+        );
+        // ③ worktree も残っていない
+        assert!(
+            !crate::lane::config::project_lanes_dir(&repo)
+                .join("ghost")
+                .exists(),
+            "失敗した create の worktree dir は残らない"
+        );
+        // ④ reservation も残っていない（後始末を 1 関数に畳んだので、db と pool は必ず同時に落ちる）
+        assert!(
+            state.lane_pool.read().await.list().is_empty(),
+            "失敗した create の Spawning placeholder は残らない"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// doc 44 §9.4 の回帰固定（対）: bracket が **書く側**も効いていること。
+    ///
+    /// 上の rollback test は「消えていること」しか見ないので、intent 永続が丸ごと no-op に
+    /// なっていても緑のままになる（消えたのではなく最初から無い、= 掃除の検証で主対象の
+    /// 消滅だけを見る罠）。ここで enter → exit の意味論を直接押さえる。
+    ///
+    /// ⚠️ `create_performer_orchestrated` の**成功系**を通した end-to-end は書けない —
+    /// 成功は PtySlot spawn = user の login shell を実際に起こすことを意味する
+    /// (既存の core test が全て失敗系なのも同じ理由)。書く側の call site 検証は、
+    /// spawn を経ない [`delete_lane_orchestrated`] 側の test（下）が担う。
+    #[tokio::test]
+    async fn lane_intent_bracket_writes_then_clears_rows() {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+        let state = crate::process::state::build_test_app_state_with(
+            "/tmp/vp-intent",
+            Some(db.clone()),
+            None,
+        )
+        .await;
+        let key = lane_db_key(&state);
+        let addr = LaneAddress::performer("vp-intent", "sub");
+
+        let mut info = LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: addr.clone(),
+            state: LaneState::Spawning,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-22T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/tmp/vp-intent/.vp/lanes/sub".to_string(), // clone 前の予測値
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        };
+
+        // enter: provision より先に descriptor と provisioning が載る（crash してもここが残る）。
+        persist_lane_intent(&state, &key, &info).await;
+        let rows = db.list_lanes().await.unwrap();
+        assert_eq!(rows.len(), 1, "descriptor が永続される: {rows:?}");
+        assert_eq!(rows[0].1.address, addr);
+        let lifecycles = db.list_lane_lifecycles().await.unwrap();
+        assert_eq!(lifecycles.len(), 1);
+        assert_eq!(lifecycles[0].2, "provisioning", "enter は provisioning");
+
+        // exit (成功): 確定 cwd で上書きし ready にする（予測値のまま残さない）。
+        info.cwd = "/tmp/vp-intent/.vp/lanes/sub-real".to_string();
+        info.state = LaneState::Running;
+        info.pid = Some(4242);
+        persist_lane_ready(&state, &key, &info).await;
+        let rows = db.list_lanes().await.unwrap();
+        assert_eq!(rows.len(), 1, "行は増えない (upsert): {rows:?}");
+        assert_eq!(rows[0].1.cwd, info.cwd, "確定 cwd で上書きされる");
+        // 永続 descriptor は process liveness を名乗らない（動いているかは LanePool にしか無い）。
+        // ここが Running/pid のまま焼かれると、project 未起動の間 boot load 済の行が「稼働中」を
+        // 主張して `vp lane cleanup` の稼働 guard を恒久的に効かせてしまう。
+        assert_eq!(
+            rows[0].1.state,
+            LaneState::Spawning,
+            "descriptor は稼働を主張しない"
+        );
+        assert!(rows[0].1.pid.is_none(), "descriptor に pid を焼かない");
+        assert_eq!(
+            db.list_lane_lifecycles().await.unwrap()[0].2,
+            "ready",
+            "exit は ready"
+        );
+
+        // exit (失敗) / delete: descriptor も lifecycle も回収する。
+        discard_lane_rows(&state, &key, &addr).await;
+        assert!(
+            db.list_lanes().await.unwrap().is_empty()
+                && db.list_lane_lifecycles().await.unwrap().is_empty(),
+            "回収後は行が残らない"
+        );
+    }
+
+    /// doc 44 §9.4 の対の後始末: **lane を削除したら db の descriptor / lifecycle も消える**。
+    ///
+    /// 統合で create が全入口で descriptor を書くようになった分、消し手が居ないと削除済 lane の
+    /// 行が db に溜まり、次の boot で `lane_registry` に ghost として載る。
+    /// delete は spawn を経ないので、こちらは **実際の call site を通して**固定できる。
+    #[tokio::test]
+    async fn delete_lane_clears_persisted_rows() {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+        let state = crate::process::state::build_test_app_state_with(
+            "/tmp/vp-delete",
+            Some(db.clone()),
+            None,
+        )
+        .await;
+        let addr = LaneAddress::performer("vp-delete", "sub");
+        let info = LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: addr.clone(),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-22T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/tmp/vp-delete/.vp/lanes/sub".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        };
+        state.lane_pool.write().await.insert(info.clone());
+        persist_lane_ready(&state, &lane_db_key(&state), &info).await;
+        assert_eq!(db.list_lanes().await.unwrap().len(), 1, "前提: 行がある");
+
+        delete_lane_orchestrated(&state, addr, false)
+            .await
+            .expect("delete 成功");
+
+        assert!(
+            db.list_lanes().await.unwrap().is_empty(),
+            "lane 削除で descriptor が回収される (ghost 行を残さない)"
+        );
+        assert!(
+            db.list_lane_lifecycles().await.unwrap().is_empty(),
+            "lane 削除で lifecycle も回収される"
         );
     }
 

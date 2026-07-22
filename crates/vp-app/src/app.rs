@@ -4912,10 +4912,12 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
                 // Phase 3-A: Performer Lane 作成要求 (sidebar の + Add Performer から)
-                // doc 24 §10 Phase 2 B-create: create は daemon-canonical (§5.3 ground は daemon が
-                // provision + descriptor 所有)。 SP port 解決は不要 — daemon (:32000) に投げる。
-                // PtySlot は worktree dir 作成を検知した lane_watcher が SP に依頼して spawn する
-                // (= set_active_lane / reorder と同じ daemon-command パターン)。
+                // 投げ先は World (:32000) の `world-control.lanes/create` 1 本 (SP port 解決は不要、
+                // set_active_lane / reorder と同じ daemon-command パターン)。
+                // doc 44 §9.4: World 側はそこで自前の provision をせず project runtime の
+                // lane 作成 core に委譲する — worktree も PtySlot も**この 1 往復で揃う**。
+                // 旧構成は descriptor だけ作って PtySlot を lane_watcher の到達に賭けており、
+                // 「+ で作った lane だけ engine 指定が別経路で伝わる」等の経路差が生じていた。
                 // doc 11 PR-C: stand 指定 を tuple 4 番目に保持 (None なら daemon-side default)。
                 if let Some((project_path, name, branch, stand)) = outcome.add_performer_request {
                     let proxy = async_action_proxy.clone();
@@ -4954,8 +4956,9 @@ pub fn run() -> anyhow::Result<()> {
                                     name_clone,
                                     branch_clone
                                 );
-                                // 新 Lane descriptor は daemon-canonical。 PtySlot spawn 後に
-                                // SP の "lanes" topic snapshot で購読側に push される。
+                                // 応答が返った時点で lane は既に spawn 済（doc 44 §9.4）。
+                                // sidebar への反映は "lanes" topic snapshot の push を待つ
+                                // （楽観更新しない = 真実源は 1 つ、doc 44 §10.3 と同じ規律）。
                                 // R5: 成功通知を sidebar に push back (form を閉じる)
                                 let _ = proxy.send_event(AppEvent::PerformerCreateResult {
                                     project_path: path_clone,
