@@ -985,8 +985,8 @@ function SidebarTokenBinds() {
 	// connector 状態色 = Light Grid の 2 hue: needs-you の magenta / working・current の cyan。
 	// picker で書くと :root inline に concrete 値が入り stylesheet 定義を上書きする (探索用)。
 	const connColors: Array<{ id: string; cssVar: string; value: string }> = [
-		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#FF3DAE" },
-		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#22E0FF" },
+		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#FF4A2D" },
+		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#FFF76B" },
 	];
 	connColors.forEach((t, i) => {
 		bind<string>({
