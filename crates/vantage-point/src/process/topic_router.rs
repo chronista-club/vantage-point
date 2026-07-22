@@ -58,6 +58,15 @@ struct TopicSubscription {
     tx: mpsc::Sender<(String, ProcessMessage)>,
 }
 
+/// project path_key → canvas TopicRouter の共有 map（daemon の canvas 集約 + project 起動の両方が触る）。
+///
+/// get-or-create の両側性: subscribe が先なら placeholder を作り、project 起動が
+/// **後から同じ entry を養子縁組する**（`ProjectRuntimes::start` → `start_project`）。
+/// これが無いと boot 窓（daemon 再起動直後、project spawn 完了前の subscribe）で
+/// placeholder に固定された購読者へ実 router の broadcast が永遠に届かない。
+pub(crate) type CanvasRouters =
+    std::sync::Arc<RwLock<std::collections::HashMap<String, Arc<TopicRouter>>>>;
+
 impl TopicRouter {
     /// 新しいルーターを作成
     pub fn new() -> Self {
