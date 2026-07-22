@@ -92,6 +92,7 @@ import {
 	useEditorHost,
 } from "@chronista-club/creo-ui-editor-host";
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
+import { installGallery } from "./gallery";
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
@@ -1031,3 +1032,7 @@ if (root) {
 		"[vp-app] #editor-root が見つかりません — EditorLayer mount をスキップ",
 	);
 }
+
+// doc 48 Phase 3: Component Gallery mode（#gallery hash / Ctrl+Shift+G）。
+// EditorHostProvider とは独立に生きる（gallery 中も Ctrl+Shift+E / editor_set が効く）。
+installGallery();
