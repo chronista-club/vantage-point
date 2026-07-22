@@ -1,8 +1,9 @@
 //! vp-app webview の `vp-asset://` custom protocol で静的 asset を配信する汎用モジュール。
 //!
 //! webview が自分の HTML を `serve()` の `extra` slice に積んで配信する
-//! (現行は `app.rs` の `MAIN_VIEW_ASSETS` = 統合 HTML `app/index.html` の 1 entry のみ。
-//! JS bundle は `MAIN_AREA_HTML` 内に inline 済なので個別配信しない)。
+//! (現行は `app.rs` の `MAIN_VIEW_ASSETS` = 統合 HTML `app/index.html` + SolidJS bundle 2 本。
+//! bundle は doc 48 Phase 1 で inline → 外部 `<script src>` 化し、`VP_WEBVIEW_DEV` の
+//! disk-read HMR を可能にした)。
 //!
 //! ## 履歴 (2026-05-30 縮小)
 //!
@@ -51,9 +52,24 @@ pub fn serve(
 ) -> Response<Cow<'static, [u8]>> {
     let uri = request.uri().to_string();
 
-    // 注: 旧 `VP_WEBVIEW_DEV` (bundle.js の disk-read HMR) は撤去した。現行 `MAIN_AREA_HTML` は
-    // 各 bundle を include_str! で inline するため browser が `*.bundle.js` URL を request せず、
-    // 分岐は発火しない dead branch だった。復活手順（bundle の外部 `<script src>` 化）は git history。
+    // dev HMR (doc 48 Phase 1): `VP_WEBVIEW_DEV=<assets dir>` の時、`*.bundle.js` request を
+    // disk の fresh bundle で応える。`bun run dev` (esbuild watch) で bundle を更新 →
+    // WebView reload (View → Reload WebView) だけで反映され、cargo build が不要になる。
+    // miss / read 失敗は下の baked asset に fallback (= prod と同じ挙動)。
+    // 旧 #494 実装の復活 — #815 で dead branch として撤去されていたが、bundle の外部
+    // `<script src>` 化 (main_area.rs) で `*.bundle.js` URL が実際に request されるようになった。
+    if let Ok(dir) = std::env::var("VP_WEBVIEW_DEV")
+        && let Some(bytes) = dev_bundle_read(&uri, &dir)
+    {
+        return Response::builder()
+            .status(200)
+            .header("Content-Type", "application/javascript; charset=utf-8")
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Cache-Control", "no-store")
+            .body(Cow::Owned(bytes))
+            .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])));
+    }
+
     match lookup_asset(&uri, extra) {
         Some((bytes, content_type)) => {
             tracing::info!(
@@ -80,6 +96,38 @@ pub fn serve(
     }
 }
 
+/// `VP_WEBVIEW_DEV` disk-read の判定 + 読込 (純 calculation + fs read、env 非依存で単体テスト可)。
+///
+/// `*.bundle.js` request のみ対象。path の最終 filename を `dev_dir` 直下から読む
+/// (bundle は flat に出力される — `webview/build.mjs` の outdir 規約)。
+/// 対象外 / read 失敗は `None` (= caller が baked asset に fallback)。
+fn dev_bundle_read(uri: &str, dev_dir: &str) -> Option<Vec<u8>> {
+    let path = uri.split("://").nth(1)?;
+    if !path.ends_with(".bundle.js") {
+        return None;
+    }
+    let fname = path.rsplit('/').next().unwrap_or(path);
+    let disk = std::path::Path::new(dev_dir).join(fname);
+    match std::fs::read(&disk) {
+        Ok(bytes) => {
+            tracing::info!(
+                target: "vp_app::asset",
+                %uri, disk = %disk.display(), bytes = bytes.len(),
+                "DEV disk-read (VP_WEBVIEW_DEV)"
+            );
+            Some(bytes)
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "vp_app::asset",
+                %uri, disk = %disk.display(), error = %e,
+                "DEV disk-read 失敗 → baked に fallback"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +144,32 @@ mod tests {
         // 未知 path / garbage は None
         assert_eq!(lookup_asset("vp-asset://app/unknown.html", EXTRA), None);
         assert_eq!(lookup_asset("garbage", EXTRA), None);
+    }
+
+    /// dev disk-read: `*.bundle.js` のみ対象、実在 file を読み、miss は None (baked fallback)。
+    #[test]
+    fn dev_bundle_read_reads_bundle_js_only() {
+        let dir = std::env::temp_dir().join(format!("vp-webview-dev-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("editor-host.bundle.js"), b"console.log('dev')").unwrap();
+        let dir_s = dir.to_string_lossy().into_owned();
+
+        // hit: path の最終 filename で dir 直下から読む
+        let hit = dev_bundle_read("vp-asset://app/editor-host.bundle.js", &dir_s);
+        assert_eq!(hit.as_deref(), Some(b"console.log('dev')".as_slice()));
+
+        // 対象外 (bundle.js でない) は fs を見ずに None
+        assert_eq!(dev_bundle_read("vp-asset://app/index.html", &dir_s), None);
+
+        // 対象だが disk に無い → None (= baked fallback、serve は prod 挙動に落ちる)
+        assert_eq!(
+            dev_bundle_read("vp-asset://app/sidebar.bundle.js", &dir_s),
+            None
+        );
+
+        // scheme 無し garbage は None
+        assert_eq!(dev_bundle_read("garbage.bundle.js", &dir_s), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

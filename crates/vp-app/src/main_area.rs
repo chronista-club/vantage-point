@@ -102,6 +102,14 @@ pub struct SlotRect {
     pub h: f64,
 }
 
+/// 統合 HTML から外部 script 化した SolidJS bundle (doc 48 Phase 1)。
+/// `MAIN_VIEW_ASSETS` (app.rs) が `vp-asset://app/*.bundle.js` として baked 配信し、
+/// `VP_WEBVIEW_DEV=<assets dir>` 設定時は `web_assets::serve` の disk-read が優先される
+/// (= cargo build なしの bundle 差替え = HMR)。vendor 静的 JS/CSS は inline のまま
+/// (dev loop で変わるのは bundle だけ)。
+pub const EDITOR_HOST_BUNDLE_JS: &str = include_str!("../assets/editor-host.bundle.js");
+pub const SIDEBAR_BUNDLE_JS: &str = include_str!("../assets/sidebar.bundle.js");
+
 /// Main area の HTML (xterm.js + canvas placeholder + preview iframe + empty state)
 ///
 /// 旧 `terminal::TERMINAL_HTML` を発展させたもの。xterm.js 周りの copy/paste / OSC 52 /
@@ -388,7 +396,8 @@ body{overflow:hidden;}
 </head>
 <body>
 <div id="app-shell">
-<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) の mount 先。inline script で mount。 -->
+<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) の mount 先。bundle は外部 script
+     (sidebar.bundle.js、doc 48 Phase 1 で inline → 外部化) が mount する。 -->
 <div id="sidebar-root"></div>
 <div id="host">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
@@ -574,19 +583,14 @@ body{overflow:hidden;}
 </script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
-     Build: cd crates/vp-app/webview && bun install && bun run build。 -->
-<script>
-"#,
-    include_str!("../assets/editor-host.bundle.js"),
-    r#"
-</script>
-<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) を inline。#sidebar-root に mount。
-     with_html は baseURL=None (null origin) で vp-asset:// custom protocol が使えないため inline 一択。 -->
-<script>
-"#,
-    include_str!("../assets/sidebar.bundle.js"),
-    r#"
-</script>
+     Build: cd crates/vp-app/webview && bun install && bun run build。
+     doc 48 Phase 1: inline をやめ外部 script 化。page は custom protocol で load される
+     (origin = vp-asset://app) ため相対 src が vp-asset://app/*.bundle.js に解決される。
+     旧「with_html は null origin で inline 一択」の制約は with_url 化で失効済。
+     classic script (defer/async なし) は文書順 blocking 実行なので inline 時と実行順は不変。 -->
+<script src="editor-host.bundle.js"></script>
+<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS)。#sidebar-root に mount。 -->
+<script src="sidebar.bundle.js"></script>
 <script>
 // VP-140 inline diagnostic: bundle 失敗時でも script tag 自体は別なので、 こちらが先行 OR 並行 で動く。
 // window.vpBundleStatus に bundle 到達 stage を残す (DevTools console から runtime 検査用)。

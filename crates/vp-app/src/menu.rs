@@ -22,6 +22,10 @@ pub struct MenuIds {
     /// View → "Open Developer Tools" (MenuItem、developer_mode == true の時のみ enabled)
     /// WebView 統合 (step 3a) 後は単一 WebView の devtools を開く (旧 Open Sidebar DevTools は廃止)。
     pub open_devtools: MenuId,
+    /// View → "Reload WebView" (Cmd+R、developer_mode == true の時のみ enabled)
+    /// doc 48 Phase 1: `location.reload()` で統合 WebView を再読込。`VP_WEBVIEW_DEV` の
+    /// disk-read と組で「bun watch → Cmd+R」の HMR loop になる (cargo build 不要)。
+    pub reload_webview: MenuId,
 }
 
 /// メニューバー + 動的に状態更新する item の handle
@@ -29,6 +33,7 @@ pub struct MenuHandles {
     pub menu: Menu,
     pub developer_mode_item: CheckMenuItem,
     pub open_devtools_item: MenuItem,
+    pub reload_webview_item: MenuItem,
     pub ids: MenuIds,
 }
 
@@ -107,6 +112,13 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         initial_dev_mode, // 初期 enabled は dev_mode に従う
         None,
     );
+    // "Reload WebView" (Cmd+R): dev_mode gate は devtools と同じ。disabled の間は
+    // accelerator も発火しないので、一般 user の Cmd+R (terminal 入力等) を奪わない。
+    let reload_webview_item = MenuItem::new(
+        "Reload WebView",
+        initial_dev_mode,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyR)),
+    );
     let view_menu = Submenu::new("View", true);
     view_menu
         .append(&developer_mode_item)
@@ -117,6 +129,9 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     view_menu
         .append(&open_devtools_item)
         .expect("append Open Developer Tools");
+    view_menu
+        .append(&reload_webview_item)
+        .expect("append Reload WebView");
 
     menu.append(&app_menu).expect("append App menu");
     menu.append(&file_menu).expect("append File menu");
@@ -128,12 +143,14 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         open_file: open_file_item.id().clone(),
         developer_mode: developer_mode_item.id().clone(),
         open_devtools: open_devtools_item.id().clone(),
+        reload_webview: reload_webview_item.id().clone(),
     };
 
     MenuHandles {
         menu,
         developer_mode_item,
         open_devtools_item,
+        reload_webview_item,
         ids,
     }
 }
