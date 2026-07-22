@@ -216,6 +216,19 @@ impl DaemonState {
         self
     }
 
+    /// canvas 集約 map を**外から**共有する（boot 窓の根治）。
+    ///
+    /// 既定では [`Default`] が内部で作るが、run_world は `ProjectRuntimes` と同一の map を
+    /// 配る必要がある — project 起動が先行 subscribe の placeholder router を養子縁組する
+    /// ため（別々に `new()` すると map が分裂し、placeholder 購読者が永遠に取り残される）。
+    pub(crate) fn with_canvas_routers(
+        mut self,
+        canvas_routers: crate::process::topic_router::CanvasRouters,
+    ) -> Self {
+        self.canvas_routers = canvas_routers;
+        self
+    }
+
     /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (db/world) を共有する。
     ///
     /// registry channel handler がこの db に SP push を永続して daemon-canonical 化する。
