@@ -1,17 +1,17 @@
 /**
- * Component Gallery mode（doc 48 Phase 3）
+ * Component Gallery mode（doc 48 Phase 3 → doc 49 LE-P2 で pane 化）
  *
- * `#gallery` hash で root を story 一覧に切り替える dev surface。mako（目 + Editor Mode
+ * `#gallery` hash で root を story 表示に切り替える dev surface。mako（目 + Editor Mode
  * slider）と AI agent（MCP editor_set / vp shot）が **同じ component を同時に触る**ための台。
+ * LE-P2 からは story が creo-ui-layout の pane になり、gallery 自体が LayoutEngine の
+ * **最初の VP コンテンツ = primary dogfood**（doc 49 §6 step 3）。
  *
  * 設計判断:
  * - 切替は URL hash（query でなく）: server 無接触で、Reload WebView（Cmd+R）後も
  *   hash が残る = 「tsx 編集 → watch rebuild → Cmd+R」の HMR ループ中 gallery に留まれる。
- * - gallery root は JS が生成し `#app-shell` を hide するだけ — 凍結中の layout 2 系統
- *   （Frame Engine / PaneLayout、doc 47 §1）には一切触れない。pane 化は LayoutEngine
- *   着地後（doc 49 §6）。
- * - story は **HTML 文字列の純 data**。生成（純 calculation）と DOM 反映（action）を
- *   分離し、node 環境の vitest で DOM なしにテストできる形にする。
+ * - 本 module は **純 data + 純 calculation のみ**（vitest node 環境でテスト可能）。
+ *   DOM 反映・Solid mount・keyboard は gallery-panes.tsx（action 層）が担う。
+ * - 凍結中の旧 layout 2 系統（Frame Engine / PaneLayout、doc 47 §1）には一切触れない。
  * - Editor Mode（Ctrl+Shift+E）とは同居: story が参照する CSS var は :root で live に
  *   書かれるので、slider / `editor_set` の変更が gallery 表示に即反映される。
  *
@@ -95,28 +95,16 @@ export function toggleGalleryHash(hash: string): string {
 	return isGalleryHash(hash) ? "" : GALLERY_HASH;
 }
 
-/** gallery 全体の HTML（純 calculation — vitest node 環境でそのまま検証できる） */
-export function renderGalleryHtml(stories: readonly GalleryStory[]): string {
-	const sections = stories
-		.map(
-			(s) => `
-<section class="g-story" data-story-id="${s.id}">
-  <h2 class="g-title">${s.title}</h2>
-  ${s.note ? `<p class="g-note">${s.note}</p>` : ""}
-  <div class="g-body">${s.html}</div>
-</section>`,
-		)
-		.join("");
+/** story 1 枚分の pane 内 HTML（純 calculation — vitest node 環境でそのまま検証できる） */
+export function storyPaneHtml(s: GalleryStory): string {
 	return `
-<header class="g-header">
-  <h1>Component Gallery</h1>
-  <p class="g-note">Ctrl+Shift+G で戻る / Ctrl+Shift+E で Editor Mode / knob は MCP editor_set でも動く</p>
-</header>
-${sections}`;
+<h2 class="g-title">${s.title}</h2>
+${s.note ? `<p class="g-note">${s.note}</p>` : ""}
+<div class="g-body">${s.html}</div>`;
 }
 
 export const GALLERY_CSS = `
-#gallery-root{position:fixed;inset:0;z-index:500;overflow-y:auto;background:var(--color-surface-bg-base);color:var(--color-text-primary);padding:24px 32px;font-family:var(--vp-font-sans),var(--typography-family-sans);}
+#gallery-root{position:fixed;inset:0;z-index:500;display:flex;flex-direction:column;background:var(--color-surface-bg-base);color:var(--color-text-primary);padding:16px 20px;font-family:var(--vp-font-sans),var(--typography-family-sans);}
 /* Editor Mode パネル (#editor-root、z 未指定 = auto) を gallery の不透明 overlay より
    上に明示する。これが無いと gallery 中の Ctrl+Shift+E / editor_set の UI が塗り潰され、
    「slider と gallery を同時に触る」という本義 (doc 48 Phase 3) が死ぬ。
@@ -124,8 +112,11 @@ export const GALLERY_CSS = `
    本 rule は gallery-style ごと注入/除去されるため通常モードには影響しない。 */
 #editor-root{position:relative;z-index:600;}
 #gallery-root .g-header h1{font-size:18px;margin:0 0 4px;}
-#gallery-root .g-note{font-size:11px;opacity:.65;margin:0 0 12px;}
-#gallery-root .g-story{margin:20px 0;padding:16px;border:1px solid var(--color-border-default,rgba(128,128,128,.3));border-radius:8px;}
+#gallery-root .g-note{font-size:11px;opacity:.65;margin:0 0 8px;}
+#gallery-root .g-notation{font-family:var(--vp-font-mono),monospace;opacity:.8;}
+/* pane 化 (LE-P2): stage が残り全高を取り、story は PaneStage の pane host 内に住む */
+#gallery-root .gp-stage{flex:1;position:relative;min-height:0;}
+#gallery-root .gp-pane{width:100%;height:100%;box-sizing:border-box;overflow:auto;padding:12px 16px;border:1px solid var(--color-border-default,rgba(128,128,128,.3));border-radius:8px;background:var(--color-surface-bg-raised,rgba(128,128,128,.06));cursor:pointer;}
 #gallery-root .g-title{font-size:14px;margin:0 0 2px;}
 #gallery-root .g-row{display:flex;align-items:center;gap:16px;margin:10px 0;}
 #gallery-root .g-var{font-family:var(--vp-font-mono),monospace;font-size:11px;opacity:.7;min-width:150px;}
@@ -136,45 +127,4 @@ export const GALLERY_CSS = `
 #gallery-root .g-dash{display:inline-block;width:220px;height:0;}
 `;
 
-// ---------- actions ----------
-
-/** hash に合わせて gallery root の生成/破棄と `#app-shell` の表示を同期する */
-export function syncGalleryDom(): void {
-	const active = isGalleryHash(location.hash);
-	const existing = document.getElementById("gallery-root");
-	const appShell = document.getElementById("app-shell");
-	if (active && !existing) {
-		const style = document.createElement("style");
-		style.id = "gallery-style";
-		style.textContent = GALLERY_CSS;
-		document.head.appendChild(style);
-		const root = document.createElement("div");
-		root.id = "gallery-root";
-		root.innerHTML = renderGalleryHtml(STORIES);
-		document.body.appendChild(root);
-		if (appShell) appShell.style.display = "none";
-	} else if (!active && existing) {
-		existing.remove();
-		document.getElementById("gallery-style")?.remove();
-		if (appShell) appShell.style.display = "";
-	}
-}
-
-/** boot 時に 1 回呼ぶ: hashchange 追従 + Ctrl+Shift+G toggle + 初期同期 */
-export function installGallery(): void {
-	window.addEventListener("hashchange", syncGalleryDom);
-	// capture phase: xterm 等の下位 listener に stopPropagation されても拾えるようにする
-	// (keybindings.ts の Scene hotkey と同じ防御。現行 xterm は Ctrl+Shift+文字 を
-	// cancel しないが、将来の挙動変更に耐える側に倒す)
-	window.addEventListener(
-		"keydown",
-		(e) => {
-			if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && e.code === "KeyG") {
-				e.preventDefault();
-				location.hash = toggleGalleryHash(location.hash);
-			}
-		},
-		true,
-	);
-	syncGalleryDom();
-}
+// actions（DOM 反映 / Solid mount / keyboard）は gallery-panes.tsx へ（LE-P2 で分離）。

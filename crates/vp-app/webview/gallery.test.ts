@@ -1,12 +1,13 @@
 // gallery.ts の純 data / 純 calculation テスト（vitest は node 環境なので DOM action は対象外 —
-// syncGalleryDom / installGallery は実機 dogfood と Cmd+R ループで確認する）。
+// gallery-panes.tsx の syncGalleryDom / installGallery / PaneStage は実機 dogfood と
+// Cmd+R ループで確認する）。
 import { describe, expect, it } from "vitest";
 import {
 	GALLERY_CSS,
 	GALLERY_HASH,
 	STORIES,
 	isGalleryHash,
-	renderGalleryHtml,
+	storyPaneHtml,
 	toggleGalleryHash,
 } from "./gallery";
 
@@ -37,7 +38,7 @@ describe("gallery hash", () => {
 });
 
 describe("story registry", () => {
-	it("id は非空かつ unique（DOM の data-story-id / 将来の hash 下位 path の前提）", () => {
+	it("id は非空かつ unique（pane id / 将来の hash 下位 path の前提）", () => {
 		const ids = STORIES.map((s) => s.id);
 		expect(ids.every((id) => id.length > 0)).toBe(true);
 		expect(new Set(ids).size).toBe(ids.length);
@@ -51,14 +52,25 @@ describe("story registry", () => {
 	});
 });
 
-describe("renderGalleryHtml", () => {
-	it("全 story が section として出力され、案内 header を持つ", () => {
-		const html = renderGalleryHtml(STORIES);
+describe("storyPaneHtml", () => {
+	it("title / note / body を持つ pane 断片を返す（pane 化後の story 中身）", () => {
 		for (const s of STORIES) {
-			expect(html).toContain(`data-story-id="${s.id}"`);
+			const html = storyPaneHtml(s);
 			expect(html).toContain(s.title);
+			expect(html).toContain('class="g-body"');
+			expect(html).toContain(s.html.trim().slice(0, 20));
 		}
-		expect(html).toContain("Component Gallery");
-		expect(html).toContain("Ctrl+Shift+G");
+	});
+
+	it("note 無し story は g-note を出さない", () => {
+		const html = storyPaneHtml({ id: "x", title: "X", html: "<p>x</p>" });
+		expect(html).not.toContain("g-note");
+	});
+});
+
+describe("gallery css — pane 化（LE-P2）", () => {
+	it("stage と pane host の骨格 class を持つ", () => {
+		expect(GALLERY_CSS).toContain(".gp-stage");
+		expect(GALLERY_CSS).toContain(".gp-pane");
 	});
 });
