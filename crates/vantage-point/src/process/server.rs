@@ -564,13 +564,7 @@ fn build_world_router(state: Arc<AppState>) -> Router {
 /// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
 /// Daemon（PTY管理 QUIC サーバー）も統合して起動する
-///
-/// `midi_config` (feature = "midi") は `vp daemon start --midi <arg>` で構築される MidiConfig。
-/// `None` なら `MidiConfig::default()` を使う (PR-α-4 / VP-114 で復活した CLI 経路)。
-pub async fn run_world(
-    port: u16,
-    #[cfg(feature = "midi")] midi_config: Option<crate::midi::MidiConfig>,
-) -> Result<()> {
+pub async fn run_world(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
     use crate::daemon::process;
 
@@ -658,22 +652,18 @@ pub async fn run_world(
     // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
     // WorldCapabilities container の両方に share させる (二重生成は避ける)。
     //
-    // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
-    // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。
-    //
-    // PR-α-4 (VP-114): `vp daemon start --midi <arg>` で構築された MidiConfig を受け取り、
-    // None なら `MidiConfig::default()` (= PR-α-2/3 後の既存挙動と同じ port auto-pick) で fallback。
+    // device 管理は Bastet 🧲 に一本化（feature = "midi" 時は `with_bastet` で host 化）。
+    // 旧 MidiCapability hosting（単一 port の無条件 grab）は退役 — 消費者不在のまま
+    // enumeration 先頭 device（実機で LPD8）を掴み、Bastet listener を沈黙させていた。
     let world_capabilities = {
         #[cfg(feature = "midi")]
         {
-            let resolved_midi_config = midi_config.unwrap_or_default();
             Arc::new(
-                crate::daemon::world_capabilities::WorldCapabilities::with_midi(
+                crate::daemon::world_capabilities::WorldCapabilities::with_bastet(
                     world_cap.clone(),
                     update_cap.clone(),
-                    resolved_midi_config,
                 )
-                .await?,
+                .await,
             )
         }
         #[cfg(not(feature = "midi"))]
