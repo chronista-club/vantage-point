@@ -29,7 +29,7 @@ final class AgentModel: ObservableObject {
     @Published private(set) var status: Status = .connecting
     /// M2: agent が daemon に報告中の device displayName 一覧 (menu 表示用)。
     @Published private(set) var reportedDevices: Set<String> = []
-    /// M2b: 稼働中の SP 一覧 (旧 daemon tray の instance 一覧を menu bar agent に一本化)。
+    /// M2b: 稼働中の VP (TheWorld) — fold-in 後は 0/1 件 (旧: SP ごとに複数)。
     @Published private(set) var instances: [VpInstance] = []
 
     private let client = DaemonClient()
@@ -88,14 +88,14 @@ final class AgentModel: ObservableObject {
         }
     }
 
-    // ─── M2b: 稼働中 SP の一覧・操作 ─────────────────────
+    // ─── M2b: 稼働中 VP の表示・操作 ─────────────────────
 
-    /// 稼働中 SP を再 scan して `instances` を更新する (menu を開いたとき / Refresh から呼ぶ)。
+    /// 稼働中 VP を再 probe して `instances` を更新する (menu を開いたとき / Refresh から呼ぶ)。
     func refreshInstances() async {
         instances = await InstanceControl.scan()
     }
 
-    /// 指定 SP を graceful shutdown し、 一覧を更新する。
+    /// graceful shutdown し、 表示を更新する。⚠️ fold-in 後は全 project / 全 lane が落ちる。
     func stopInstance(port: Int) async {
         await InstanceControl.stop(port: port)
         await refreshInstances()

@@ -4,8 +4,8 @@ import type { HubWorld } from "./HubWorld";
 /**
  * Activity widget の payload
  *
- * 5-10 秒間隔で Rust 側が `/api/health` + `/api/world/projects` +
- * `/api/world/processes` を fetch して更新、sidebar に push する。
+ * 5-10 秒間隔で Rust 側が `/api/health` (HTTP) + `projects/list` +
+ * `registry.list` (Unison、doc 45 段 3) を fetch して更新、sidebar に push する。
  */
 export type ActivitySnapshot = { 
 /**
@@ -25,7 +25,7 @@ world_started_at?: string | null,
  */
 project_count: number, 
 /**
- * 稼働中 process 数 (`/api/world/processes`)
+ * 稼働中 process 数 (`registry.list`)
  */
 running_process_count: number, 
 /**
@@ -39,7 +39,7 @@ hub: string,
  */
 hub_worlds: Array<HubWorld>, 
 /**
- * L1 lifecycle: SP presence map（project path → `"connected"`|`"connecting"`|`"disconnected"`
+ * L1 lifecycle: SP presence map（project path → `"connected"`|`"unregistered"`
  * |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
  * で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
  */

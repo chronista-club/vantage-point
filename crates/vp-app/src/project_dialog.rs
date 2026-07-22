@@ -1,4 +1,4 @@
-//! Project add / clone ダイアログ — native folder picker + git clone + TheWorld API。
+//! Project add / clone ダイアログ — native folder picker + git clone + TheWorld control plane。
 //!
 //! sidebar の「+ Add Project」「+ Clone Repository」操作の裏側。 rfd の folder picker
 //! は blocking なので別スレッドで実行し、 結果を `AppEvent` で main thread に返す。
@@ -7,12 +7,18 @@
 //! project ダイアログ群 (`resolve_default_project_root` / `spawn_add_project_picker` /
 //! `spawn_clone_project` / `spawn_clone_path_picker` / `derive_repo_name`) を本 module に
 //! 切り出した。 挙動は不変 (= 純粋な module 移動、 picker / API / event 送出は同一)。
+//!
+//! doc 45 段 3: daemon 呼び出しを HTTP から Unison (`world-control`) に差し替えた。
+//! これに伴い picker thread 内の使い捨て tokio runtime を廃し、 async 部分は
+//! app の shared runtime (`rt_handle`) に投げる — Unison の共有 QUIC connection は
+//! そこで駆動されているので、 別 runtime から触ってはいけない。
+//! blocking な picker / `git clone` は従来どおり専用 OS thread に残る。
 
 use std::thread;
 
 use tao::event_loop::EventLoopProxy;
 
-use crate::client::TheWorldClient;
+use crate::app::SharedWorldConn;
 use crate::pane::SidebarState;
 use crate::settings::Settings;
 use crate::terminal::AppEvent;
@@ -69,15 +75,17 @@ pub(crate) fn resolve_default_project_root(
 /// VP-100 follow-up: 「+ Add Project」クリック時の native folder picker + API 呼出。
 ///
 /// rfd の picker は blocking なので別スレッドで実行。folder 選択後:
-/// 1. `client.add_project(name, path)` を呼ぶ (TheWorld の `/api/world/projects` POST)
-/// 2. `client.start_process(name)` で SP を起動し、即「稼働中」にする (VP-203)
+/// 1. `control.add_project(name, path)` を呼ぶ (Unison `world-control.projects/add`)
+/// 2. `control.start_process(name)` で project を起動し、即「稼働中」にする (VP-203)
 /// 3. `fetch_projects_with_ports` で runtime port 付きで再取得 → `AppEvent::ProjectsLoaded`
 ///
-/// User キャンセル / API 失敗時は何もしない (sidebar は変化しない)。
+/// User キャンセル / RPC 失敗時は何もしない (sidebar は変化しない)。
 /// `initial_dir` が `Some` なら picker の初期表示ディレクトリに設定。
 pub(crate) fn spawn_add_project_picker(
     proxy: EventLoopProxy<AppEvent>,
     initial_dir: Option<std::path::PathBuf>,
+    rt_handle: tokio::runtime::Handle,
+    conn: SharedWorldConn,
 ) {
     let _ = thread::Builder::new()
         .name("add-project-picker".into())
@@ -100,31 +108,29 @@ pub(crate) fn spawn_add_project_picker(
             let path = folder.to_string_lossy().into_owned();
             tracing::info!("process:add picker → name={} path={}", name, path);
 
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("add-project tokio runtime 作成失敗: {}", e);
+            // picker thread (blocking) から shared runtime に async work を渡す。
+            // `Handle::spawn` は runtime 外の thread からも呼べる。
+            rt_handle.spawn(async move {
+                let control = match conn.control().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("add_project: {}", e);
+                        return;
+                    }
+                };
+                if let Err(e) = control.add_project(&name, &path).await {
+                    tracing::warn!("add_project RPC 失敗: {}", e);
                     return;
                 }
-            };
-            rt.block_on(async move {
-                let client = TheWorldClient::default();
-                if let Err(e) = client.add_project(&name, &path).await {
-                    tracing::warn!("add_project API 失敗: {}", e);
-                    return;
-                }
-                // VP-203: 登録後に SP を起動し即「稼働中」にする。起動に失敗しても
+                // VP-203: 登録後に project を起動し即「稼働中」にする。起動に失敗しても
                 // 登録自体は成功しているので、sidebar 反映 (list_projects) は続行する。
-                if let Err(e) = client.start_process(&name).await {
+                if let Err(e) = control.start_process(&name).await {
                     tracing::warn!("add_project 後の start_process 失敗: {}", e);
                 }
                 tracing::info!("add_project + start_process 完了 → projects 再 fetch");
                 // runtime port を merge する helper 経由で送る (= port を None で潰さない、
                 // restart / stop / delete callback と同じ invariant)。
-                match crate::app::fetch_projects_with_ports(&client).await {
+                match crate::app::fetch_projects_with_ports(&control).await {
                     Ok(projects) => {
                         let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
                     }
@@ -152,6 +158,8 @@ pub(crate) fn spawn_clone_project(
     url: String,
     default_root: Option<std::path::PathBuf>,
     target_override: Option<std::path::PathBuf>,
+    rt_handle: tokio::runtime::Handle,
+    conn: SharedWorldConn,
 ) {
     // Phase 2.x-a: #210 の target_override を取り込み + Phase 1 の `process:` prefix を維持。
     // priority: 1) explicit target_override (picker 選択 path)、 2) default_root + repo 名
@@ -197,25 +205,23 @@ pub(crate) fn spawn_clone_project(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| derive_repo_name(&url));
             let path_str = target.to_string_lossy().into_owned();
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("clone-project tokio runtime 失敗: {}", e);
-                    return;
-                }
-            };
-            rt.block_on(async move {
-                let client = TheWorldClient::default();
-                if let Err(e) = client.add_project(&project_name, &path_str).await {
+            // clone (blocking) 完了後の daemon 呼び出しは shared runtime に渡す
+            // (picker 経路と同じ理由 — 共有 QUIC connection はそこで駆動されている)。
+            rt_handle.spawn(async move {
+                let control = match conn.control().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("clone 後の add_project: {}", e);
+                        return;
+                    }
+                };
+                if let Err(e) = control.add_project(&project_name, &path_str).await {
                     tracing::warn!("clone 後の add_project 失敗: {}", e);
                     return;
                 }
                 tracing::info!("clone + add_project 成功 → projects 再 fetch");
                 // runtime port を merge する helper 経由で送る (= add_project picker 経路と同じ invariant)。
-                match crate::app::fetch_projects_with_ports(&client).await {
+                match crate::app::fetch_projects_with_ports(&control).await {
                     Ok(projects) => {
                         let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
                     }

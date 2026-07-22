@@ -8,7 +8,7 @@
 //! [`crate::process::lanes_state::LaneAddress`])。「id を持つが id で引かない」中間状態
 //! の土台 — 後続 increment で徐々に id へ寄せる。
 //!
-//! - **書き手 / 読み手**: lane spawn 経路 (`LanePool::with_conductor` / `lane_spawn_actor` /
+//! - **書き手 / 読み手**: lane spawn 経路 (`LanePool::with_root` / `lane_spawn_actor` /
 //!   `routes::lanes` の performer create) が [`load_or_create`] を呼ぶ。初回は生成 + 永続、
 //!   2 回目以降 (= 再起動後の同 lane re-spawn) は disk から復元 → **再起動を越えて安定**。
 //! - 置き場: `vp_state_dir()/lane_ids/<project>__<lane>` (1 lane 1 file 1 行)。
@@ -93,16 +93,16 @@ mod tests {
     #[test]
     fn id_file_name_sanitizes_project_and_lane() {
         // cc_session と同じ命名規則 (`.` `/` を `-` に)
-        let p = id_file_in(Path::new("/base"), "creo.memories", "conductor");
-        assert_eq!(p, Path::new("/base/lane_ids/creo-memories__conductor"));
+        let p = id_file_in(Path::new("/base"), "creo.memories", "root");
+        assert_eq!(p, Path::new("/base/lane_ids/creo-memories__root"));
     }
 
     #[test]
     fn load_or_create_is_stable_across_calls() {
         // 同 (project, lane) は 2 回目以降 disk から復元 → 同じ id (= 再起動越え安定の核)
         let tmp = tempfile::tempdir().expect("tempdir");
-        let first = load_or_create_in(tmp.path(), "vp", "conductor");
-        let second = load_or_create_in(tmp.path(), "vp", "conductor");
+        let first = load_or_create_in(tmp.path(), "vp", "root");
+        let second = load_or_create_in(tmp.path(), "vp", "root");
         assert_eq!(first, second, "同 lane は同じ安定 id を返す");
         assert!(!first.is_empty(), "生成された id は非空");
     }
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn load_or_create_distinct_lanes_differ() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let a = load_or_create_in(tmp.path(), "vp", "conductor");
+        let a = load_or_create_in(tmp.path(), "vp", "root");
         let b = load_or_create_in(tmp.path(), "vp", "performer-foo");
         assert_ne!(a, b, "別 lane は別 id");
     }
@@ -121,8 +121,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("lane_ids");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("vp__conductor"), "preset-stable-id").unwrap();
-        let id = load_or_create_in(tmp.path(), "vp", "conductor");
+        std::fs::write(dir.join("vp__root"), "preset-stable-id").unwrap();
+        let id = load_or_create_in(tmp.path(), "vp", "root");
         assert_eq!(id.as_str(), "preset-stable-id");
     }
 }

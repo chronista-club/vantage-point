@@ -31,10 +31,25 @@ activity: ActivitySnapshot,
  */
 lanes_by_project: { [key in string]?: Array<LaneInfo> }, 
 /**
- * 現在 active な Lane の address (Display 形 `"<project>/conductor"` 等)
+ * 現在 active な Lane の address (Display 形 `"<project>/root"` 等)
  * app 全体で 1 つだけ。 `lane:select` IPC で更新される。
  */
 active_lane_address?: string | null, 
+/**
+ * doc 44 D4: project_path → **開発起点 lane 名**（Project Host の帳簿が解決した値）。
+ *
+ * `active_lane_address`（注視 = 今見ている lane）とは**別物**。D5 が明示的に分けており、
+ * 注視は click ごとに動くが起点は明示指定した時だけ動く。sidebar は起点 lane 行に
+ * star icon を出し、context menu から再指定できる。
+ *
+ * 値は lane **名**（address ではない）— 起点は project ごとに 1 本なので
+ * `<project>` 部分は key 側の path と冗長になる。
+ *
+ * ⚠️ `skip_serializing` にしてはいけない: この struct は webview への push payload
+ * でもあるので、skip すると Rust 側だけ更新されて sidebar に永久に届かない。
+ * 空の時だけ省く（`session_titles` 等と同じ扱い）。
+ */
+origin_by_project?: { [key in string]?: string }, 
 /**
  * Phase 5-A: 現在 active な Project-scope Stand kind
  * (`"paisley_park"` / `"gold_experience"` / `"bastet"`)。
@@ -53,7 +68,7 @@ active_stand?: ActiveStand | null,
 currents_order?: Array<string> | null, 
 /**
  * Phase 5-D Sprint C P2.1: per-Lane HD notification unread count。
- * Key: Lane address (Display 形 `"<project>/conductor"` 等)、 Value: 未読 OSC 99 focus event 数。
+ * Key: Lane address (Display 形 `"<project>/root"` 等)、 Value: 未読 OSC 99 focus event 数。
  * `OscNotification` event で increment、 `lane:select` で対応 Lane を 0 reset。
  * disk persist 不要 (session 起動で 0 から)、 skip_serializing で軽量化。
  */
@@ -67,7 +82,7 @@ unread_notifications: { [key in string]?: number },
 awaiting_input: { [key in string]?: boolean }, 
 /**
  * Canvas (Paisley Park) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
- * Key: Lane address (`"<project>/conductor"` 等)、 Value: 現在 active でない lane に
+ * Key: Lane address (`"<project>/root"` 等)、 Value: 現在 active でない lane に
  * show が着いた回数。 `CanvasMessage`(show) で increment、 `lane:select` (activate_lane) で
  * 対応 Lane を 0 reset。 `unread_notifications` (HITL/OSC = 黄 dot) とは**別 sink** =
  * sidebar で Canvas 専用 icon (Phosphor easel) を出し「用事」と「絵が届いた」の語彙を分ける。
@@ -85,7 +100,7 @@ canvas_unread: { [key in string]?: number },
 session_titles?: { [key in string]?: string }, 
 /**
  * VP-147 PR-P2-3: per-Lane の mailbox inbox 状況。
- * Key: Lane address (Display 形 `"<project>/conductor"`)、 Value: [`MessageState`]。
+ * Key: Lane address (Display 形 `"<project>/root"`)、 Value: [`MessageState`]。
  * `spawn_lane_inbox_poller` (5s 間隔) が `AppEvent::ResolveLaneInboxes` を発火、
  * main thread が active Lane に対して MessageState を populate する。
  * JS 側は entry が存在する Lane に `.vp-message-icon` を render (Echoes icon の右隣)。

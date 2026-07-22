@@ -245,10 +245,22 @@ enum LaneCommands {
     /// 全 performer の状態表示
     Status,
     /// branch が default branch (origin/HEAD) に merge 済の performer を削除（squash merge も検出）
+    ///
+    /// 判定は Project Host（`host::farewell`）が 3 値（削除可能 / 保持 / 要判断）で出す。
+    /// 要判断が続いている lane には「何回連続・初回いつ」が付く (doc 44 §7.5 の帳簿)。
     Cleanup {
         /// 確認なしで強制削除
         #[arg(long, short)]
         force: bool,
+    },
+    /// この project の見送りの記録を新しい順に表示する (doc 44 §7.5、Project Host の帳簿)
+    ///
+    /// 「いつ何を見送ったか」と「判断待ちがいつから何回続いているか」。帳簿は World が
+    /// 専有する db/world にあるので daemon 稼働が前提。
+    History {
+        /// 表示件数の上限 (0 = 無制限)
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// 現 project の vp-app の active Lane を切り替える (= mcp__switch_lane の CLI pair、Unison-native)
     ///
@@ -283,17 +295,54 @@ enum LaneCommands {
     },
     /// lane console の現在画面を読む (tmux decoupling: 旧 `vp tmux capture` の後継)
     ///
-    /// SP の per-lane Term grid (TermAttach) を render して返す。tmux 不要。
+    /// SP の slot ごとの Term grid (TermAttach) を render して返す。tmux 不要。
+    /// doc 46 P5: slot は lane に 1 枚ではなく session ごと。`--session` で同居する別の
+    /// console を読む (省略時は root = lane の代表)。枚数は `vp lane slots` で判る。
     Capture {
-        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
         lane: String,
+        /// 読む slot の session key (省略時 root)
+        #[arg(long)]
+        session: Option<u32>,
+    },
+    /// lane が持つ console slot の一覧を表示 (doc 46 P5 — slot は session ごと)
+    ///
+    /// SP の in-memory な slot 実体を読む (session key / pid / 生死 / root か)。
+    /// 「今この lane に端末が何枚あるか」を UI を通さずに確認する口。
+    Slots {
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
+        lane: String,
+    },
+    /// lane に console (slot) をもう 1 枚立てる (doc 46 P5 — 非 root session の producer)
+    ///
+    /// **新しい session を採番**してそこに console を立てる (doc 46 §1.5「Pane は必ず新しい
+    /// session id で始まる」= session ↔ Pane は 1:1)。root (lane の代表 / mailbox の主) は
+    /// 動かないので、既存の console はそのまま生き続ける。読むのは `vp lane capture --session`。
+    SlotNew {
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
+        lane: String,
+        /// engine (stand 名: echoes / codex / grok / opencode / shell。省略時は現 root の engine)
+        #[arg(long)]
+        stand: Option<String>,
+    },
+    /// この project の開発起点 lane を表示 / 設定する (doc 44 D4、Project Host の帳簿)
+    ///
+    /// 引数なしで現在の起点を表示。lane 名を渡すとその lane を起点に指定する。
+    /// 指定は **帳簿のポインタ書き換えだけ** — cwd も active lane も engine も動かない (D5)。
+    /// 未指定なら予約名 `conductor` が起点（従来挙動）。daemon (World) 稼働が前提。
+    Origin {
+        /// 起点にする lane 名 (省略時は現在の起点を表示)
+        name: Option<String>,
     },
     /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
     Nudge {
-        /// lane address ("<project>/conductor" / "<project>/performer/<name>")
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
         lane: String,
         /// 注入するテキスト (Enter は自動付与、submit 意味論は SP 側 deliver_nudge)
         text: String,
+        /// 送り先 slot の session key (省略時 root = mailbox を名乗る住人、doc 39)
+        #[arg(long)]
+        session: Option<u32>,
     },
 }
 
@@ -726,6 +775,9 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         LaneCommands::Cleanup { force } => {
             ws::cleanup_performers(force).map_err(|e| anyhow::anyhow!(e))
         }
+        LaneCommands::History { limit } => {
+            ws::show_farewell_history(limit).map_err(|e| anyhow::anyhow!(e))
+        }
         LaneCommands::Switch { name } => switch_lane_via_quic(&name),
         LaneCommands::LastSession { project, lane } => {
             // R3-b → doc 40: 会話 id の SSOT は session registry（root session の conversation）。
@@ -758,13 +810,26 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             );
             std::process::exit(1);
         }
-        LaneCommands::Capture { lane } => {
+        LaneCommands::Capture { lane, session } => {
             let config = Config::load().unwrap_or_default();
-            commands::lane_ctl::capture(&lane, &config)
+            commands::lane_ctl::capture(&lane, session, &config)
         }
-        LaneCommands::Nudge { lane, text } => {
+        LaneCommands::Slots { lane } => {
             let config = Config::load().unwrap_or_default();
-            commands::lane_ctl::nudge(&lane, &text, &config)
+            commands::lane_ctl::slots(&lane, &config)
+        }
+        LaneCommands::SlotNew { lane, stand } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::slot_new(&lane, stand.as_deref(), &config)
+        }
+        LaneCommands::Origin { name } => lane_origin(name.as_deref()),
+        LaneCommands::Nudge {
+            lane,
+            text,
+            session,
+        } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::nudge(&lane, session, &text, &config)
         }
     }
 }
@@ -811,7 +876,7 @@ fn list_performers_detail() -> Result<()> {
 /// その lane を active 化する（lane-within-project の per-project 切替）。
 /// MCP 側も `process_call("switch_lane", …)`（mcp.rs、process-proxy 経由）で同 dispatch に着地。
 fn switch_lane_via_quic(name: &str) -> Result<()> {
-    // lane token = "conductor" (lead) or performer 名。server / vp-app 側で実在 lane と照合
+    // lane token = "root" (lead) or performer 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -853,6 +918,48 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
         "switched active lane to '{}' (project={}, via World process-proxy)",
         trimmed, project_name
     );
+    Ok(())
+}
+
+/// `vp lane origin [<name>]` 実装: Project Host の帳簿にある開発起点ポインタを読む / 書く。
+///
+/// `switch_lane_via_quic` と同じ World process-proxy ask 経路（SP port 解決不要）。
+/// 起点は project 単位の 1 本なので lane address ではなく **lane 名**で受ける。
+///
+/// 表示は「どう決まったか」まで出す（D4 の既定フォールバックと、指した lane が消えた
+/// dangling を区別できないと、指定が失われたことに気付けない）。
+fn lane_origin(name: Option<&str>) -> Result<()> {
+    let repo_root = lane::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("repo root 解決失敗 (project 内で実行してください): {}", e))?;
+    let Some(project_path) = repo_root.to_str() else {
+        anyhow::bail!("repo path contains invalid UTF-8");
+    };
+
+    let (method, payload) = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => ("lane_origin_set", serde_json::json!({ "lane": n })),
+        None => ("lane_origin_get", serde_json::json!({})),
+    };
+
+    let resp = vantage_point::commands::process_client::world_process_request_blocking(
+        cli::world_port(),
+        project_path,
+        method,
+        payload,
+    )
+    .map_err(|e| anyhow::anyhow!("{} 失敗 (World process-proxy): {}", method, e))?;
+
+    let origin: vantage_point::host::ledger::Origin = serde_json::from_value(resp)
+        .map_err(|e| anyhow::anyhow!("{} の応答を解釈できません: {}", method, e))?;
+
+    use vantage_point::host::ledger::OriginSource;
+    match &origin.source {
+        OriginSource::Default => println!("開発起点: {} (既定 — 未指定)", origin.name),
+        OriginSource::Pinned => println!("開発起点: {} (指定済)", origin.name),
+        OriginSource::Dangling { lane_id } => println!(
+            "開発起点: {} (既定に復帰 — 指定されていた lane が見つかりません: id={})",
+            origin.name, lane_id
+        ),
+    }
     Ok(())
 }
 

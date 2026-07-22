@@ -8,7 +8,7 @@ const PERFORMER_CONFIG_NEW: &str = ".vp/performer-files.kdl";
 /// Performer 設定ファイル (legacy path = `.claude/` 配下、 deprecation period 受理)。
 const PERFORMER_CONFIG_LEGACY: &str = ".claude/performer-files.kdl";
 
-/// conductor/performer rename 前の旧ファイル名 (= `wing-files.kdl`)。既存 repo の
+/// root/performer rename 前の旧ファイル名 (= `wing-files.kdl`)。既存 repo の
 /// 設定を壊さないため legacy fallback として受理する (.vp / .claude 両方)。
 const PERFORMER_CONFIG_LEGACY_WING_VP: &str = ".vp/wing-files.kdl";
 const PERFORMER_CONFIG_LEGACY_WING_CLAUDE: &str = ".claude/wing-files.kdl";
@@ -184,7 +184,7 @@ fn find_performer_config(repo_root: &Path) -> Option<PathBuf> {
         );
         return Some(legacy_path);
     }
-    // conductor/performer rename 前の旧名 (wing-files.kdl) も受理 (.vp → .claude)。
+    // root/performer rename 前の旧名 (wing-files.kdl) も受理 (.vp → .claude)。
     for legacy_wing in [
         PERFORMER_CONFIG_LEGACY_WING_VP,
         PERFORMER_CONFIG_LEGACY_WING_CLAUDE,
@@ -313,12 +313,17 @@ pub fn validate_performer_name(name: &str) -> Result<(), String> {
             "invalid performer name: '{name}'. Must start with an alphanumeric character."
         ));
     }
-    // VP-166: `conductor` は conductor lane の予約名 (mailbox box key `<stand>#conductor` と衝突するため)。
-    // performer 名として使えない。設計: docs/design/16-performer-lane-mailbox-recv.md
-    if name == "conductor" {
-        return Err(
-            "invalid performer name: 'conductor' is reserved for the conductor lane. Pick another name.".into(),
-        );
+    // VP-166: 開発起点 lane の予約名は performer 名として使えない
+    // (mailbox box key `<stand>#conductor` と衝突するため)。
+    // 設計: docs/design/16-performer-lane-mailbox-recv.md
+    //
+    // doc 44 P2 以降、予約名の真実源は `ROOT_LANE_NAME` 定数。文字列直書きだと
+    // 予約名を変えた時にここだけ古い値で残る (§6.4「型を経由しない文字列」の同型)。
+    if name == crate::process::lanes_state::ROOT_LANE_NAME {
+        return Err(format!(
+            "invalid performer name: '{}' is reserved for the origin lane (project ごとに自動生成されるため create 不可). Pick another name.",
+            crate::process::lanes_state::ROOT_LANE_NAME
+        ));
     }
     Ok(())
 }
@@ -381,11 +386,11 @@ mod tests {
     #[test]
     fn conductor_name_rejected() {
         // VP-166: `conductor` は conductor lane の予約名 (mailbox box key `<stand>#conductor` と衝突)
-        assert!(validate_performer_name("conductor").is_err());
+        assert!(validate_performer_name("root").is_err());
         // 部分一致や派生名は OK (= `conductor` 完全一致のみ禁止)
         assert!(validate_performer_name("leader").is_ok());
-        assert!(validate_performer_name("my-conductor").is_ok());
-        assert!(validate_performer_name("conductor-fix").is_ok());
+        assert!(validate_performer_name("my-root").is_ok());
+        assert!(validate_performer_name("root-fix").is_ok());
     }
 
     // --- find_repo_root (worktree 正規化) ---
@@ -526,7 +531,7 @@ mod tests {
 
     #[test]
     fn load_config_falls_back_to_legacy_wing_files() {
-        // 後方互換: conductor/performer rename 前の `wing-files.kdl` を持つ repo を受理する
+        // 後方互換: root/performer rename 前の `wing-files.kdl` を持つ repo を受理する
         // (.vp 優先、 .claude も legacy fallback)
         let tmp = test_dir("legacy-wing-files");
         let _ = fs::create_dir_all(tmp.join(".vp"));

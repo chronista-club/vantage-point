@@ -220,6 +220,17 @@ impl DaemonState {
     ///
     /// registry channel handler がこの db に SP push を永続して daemon-canonical 化する。
     /// capability の boot load (`load_config`) と同一の db を指す (= 書いた truth を起動時に読む)。
+    /// vp-app への lanes push を起こす通知路を**外から**差し替える（doc 44 §11）。
+    ///
+    /// 既定では [`new`](Self::new) が内部で作るが、fold-in 後は **project 側の
+    /// `publish_lanes` が生産者**になるため、World が先に channel を作って
+    /// `ProjectRuntimes` と DaemonState の両方へ配る必要がある。
+    /// `process_lifecycle_tx` を capability と共有しているのと同じ構図。
+    pub fn with_lane_change_tx(mut self, tx: tokio::sync::broadcast::Sender<String>) -> Self {
+        self.lane_change_tx = tx;
+        self
+    }
+
     pub fn with_vpdb(mut self, vpdb: crate::db::SharedVpDb) -> Self {
         self.vpdb = Some(vpdb);
         self
@@ -268,17 +279,48 @@ impl DaemonState {
     }
 }
 
+/// `registry.list` の応答 body（稼働中 project の snapshot）。
+///
+/// ## doc 45 — processes 一覧の唯一の面
+///
+/// 旧 HTTP `GET /api/world/processes` は段 4 で撤去し、稼働中 project を配るのはここだけに
+/// なった（vp-app は段 3、CLI は段 2 で移設済み）。map を JSON にする写し方は手書き object を
+/// やめて `RunningProcess` の Serialize をそのまま使う —— field を足した時に写し漏れる、が
+/// 構造的に起きない。振る舞いテスト: `registry_list_snapshot_carries_name_and_port`。
+pub(crate) async fn registry_process_snapshot(
+    running_processes: &Arc<RwLock<HashMap<String, RunningProcess>>>,
+) -> Vec<serde_json::Value> {
+    let procs = running_processes.read().await;
+    procs
+        .values()
+        .map(|p| serde_json::to_value(p).unwrap_or_default())
+        .collect()
+}
+
 // =========================================================================
 // World Control Channel ハンドラー（projects mutation: CLI → World 直接 Unison）
 // =========================================================================
 
 /// "world-control" channel の method を `ProcessManagerCapability` に dispatch する。
 ///
-/// HTTP `routes/world.rs` と同じ `world_cap` メソッドを呼ぶため、 永続化 (db/world) や
-/// project_order 管理ロジックは共有される (= 二重実装を避ける)。 戻り値は成功時 result JSON、
-/// 失敗時は `Err(String)`。 caller は Unison の慣習 (VP-163) に従い success frame に
-/// `{"error": ...}` を詰めて返す (= Unison は専用 error frame を持たない)。
-async fn handle_world_control(
+/// 戻り値は成功時 result JSON、失敗時は `Err(String)`。 caller は Unison の慣習 (VP-163) に
+/// 従い success frame に `{"error": ...}` を詰めて返す (= Unison は専用 error frame を持たない)。
+///
+/// ## doc 45 — control plane の唯一の入口
+///
+/// 段 1 で `routes/world.rs`（旧 HTTP）にしか無かった操作をここへ出し
+/// （`projects/update` `projects/reload` `projects/sync` `projects/restart` `projects/pointview`
+/// `lanes/create` `lanes/set_active`、および `lanes/list` の filter/sort）、段 2 で CLI・
+/// 段 3 で vp-app を移設、**段 4 で HTTP route を撤去**した。projects CRUD / lifecycle / lanes を
+/// 触れる面は現在ここだけで、HTTP に残るのは `/api/health` `/api/shutdown` の 2 本のみ（§2）。
+///
+/// route 層にしか無かった orchestration は `routes::world` の `pub(crate)` 関数に括り出して
+/// ある（`apply_project_update` / `collect_lanes` / `resolve_create_lane_args`）。段 1 で
+/// 1 実装に畳んであったので、段 4 の撤去は handler の殻を剥がすだけで済んだ。
+///
+/// `pub(crate)` なのは同 crate のテストから直接叩くため（Unison 経路を実際に張らずに
+/// dispatch の振る舞いを固定する）。
+pub(crate) async fn handle_world_control(
     world_cap: &Arc<RwLock<crate::capability::ProcessManagerCapability>>,
     method: &str,
     payload: serde_json::Value,
@@ -348,6 +390,39 @@ async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "ok", "path": path, "enabled": enabled}))
         }
+        // doc 45 段 1: HTTP `POST /api/world/projects/update` の Unison 版。
+        // rename と set_enabled をまとめて適用する部分更新（vp-app の編集 dialog が使う形）。
+        // 個別の `projects/rename` / `projects/set_enabled` と実体は同じで、こちらは
+        // 「1 往復で両方直す」ための合成入口（HTTP と同じ `apply_project_update` を共有）。
+        "projects/update" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let name = payload["name"].as_str();
+            let enabled = payload["enabled"].as_bool();
+            let cap = world_cap.read().await;
+            crate::process::routes::world::apply_project_update(&cap, path, name, enabled).await?;
+            Ok(serde_json::json!({"status": "updated", "path": path}))
+        }
+        // doc 45 段 1: HTTP `POST /api/world/projects/sync` の Unison 版。
+        // projects.kdl / db から ghost project（dir が実在しない登録）を除去する。
+        // `vp sync` / `vp app start` が叩く（daemon 不在時は CLI 側が kdl 直操作に落ちる）。
+        "projects/sync" => {
+            let outcome = world_cap
+                .read()
+                .await
+                .sync_projects()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "removed": outcome.removed }))
+        }
+        // doc 45 段 1: HTTP `POST /api/world/projects/reload` の Unison 版。
+        // projects.kdl を読み直して in-memory projects に反映する（VP-189）。
+        // CLI が projects.kdl を書き換えた後に稼働 daemon の乖離を解消する best-effort 通知。
+        "projects/reload" => {
+            world_cap.read().await.reload_config().await;
+            Ok(serde_json::json!({"status": "reloaded"}))
+        }
         "projects/reorder" => {
             let paths: Vec<String> = serde_json::from_value(payload["paths"].clone())
                 .map_err(|e| format!("paths is required (string array): {}", e))?;
@@ -392,23 +467,146 @@ async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "stopped", "name": name}))
         }
+        // doc 45 段 1: HTTP `POST /api/world/processes/{name}/restart` の Unison 版。
+        // stop + start を World 側で atomically に繋ぐ（MCP の `restart` tool が唯一の消費者）。
+        //
+        // 内部に grace sleep + 起動確認が入るので、HTTP handler と同じく **read guard を
+        // 保持したまま await しない**（capability を clone してから解放する）。ここを guard 越しに
+        // すると restart 中の数秒、他の world-control / HTTP リクエストが全部待たされる。
+        "projects/restart" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let cap = {
+                let guard = world_cap.read().await;
+                guard.clone()
+            };
+            let proc = cap.restart_process(name).await.map_err(|e| e.to_string())?;
+            serde_json::to_value(&proc).map_err(|e| e.to_string())
+        }
+        // doc 45 段 1: HTTP `POST /api/world/processes/{name}/pointview` の Unison 版。
+        // project の PointView を開く（未起動なら内部で start_process する）。
+        // restart と同じ理由で capability を clone してから await する。
+        "projects/pointview" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let cap = {
+                let guard = world_cap.read().await;
+                guard.clone()
+            };
+            cap.open_pointview(name).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "opened", "name": name}))
+        }
         // 全 project 横断の lane 一覧（read-only）。
         //
         // 従来この面は HTTP `GET /api/world/lanes` にしか無く、CLI は Unison で繋いだ後に
         // わざわざ HTTP を叩く必要があった。control plane は Unison に寄せる方針（KDL schema +
         // drift テスト + MCP tool 合成が付いてくる）なので、read 面をここに置く。
         // project 単位の詳細は process-proxy の `lanes_list` が持つ。
+        //
+        // doc 45 段 1: HTTP 版の query filter (project / lane / stand) と表示順を取り込んだ。
+        // ここが素の flatten のままだと、CLI を Unison に移した瞬間に一覧の並びが静かに変わる。
+        // filter/sort は `routes::world::collect_lanes` を HTTP と共有する。
         "lanes/list" => {
-            let registry = world_cap.read().await.lane_registry_ref();
-            let lanes: Vec<serde_json::Value> = registry
+            let query: crate::process::routes::world::LanesQuery =
+                serde_json::from_value(payload).unwrap_or_default();
+            let cap = world_cap.read().await;
+            let lanes = crate::process::routes::world::collect_lanes(&cap, &query).await;
+            Ok(serde_json::json!({ "count": lanes.len(), "lanes": lanes }))
+        }
+        // doc 45 段 1: HTTP `POST /api/world/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
+        // doc 44 §9.4: 実体は project runtime の lane 作成 core（`create_performer_orchestrated`）
+        // 1 本で、`create_lane` はそこへの adapter。ここに残るのは「省略時 default の導出」だけ
+        // （data/calc は route の責務 = `resolve_create_lane_args` を CLI/GUI と共有）。
+        "lanes/create" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let (branch, stand) = crate::process::routes::world::resolve_create_lane_args(
+                path,
+                name,
+                payload["branch"].as_str(),
+                payload["stand"].as_str(),
+            );
+            let info = world_cap
                 .read()
                 .await
-                .values()
-                .flatten()
-                .map(|l| serde_json::to_value(l).unwrap_or(serde_json::Value::Null))
-                .filter(|v| !v.is_null())
-                .collect();
-            Ok(serde_json::json!({ "lanes": lanes }))
+                .create_lane(path, name, &branch, &stand)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(&info).map_err(|e| e.to_string())
+        }
+        // doc 45 段 1: HTTP `POST /api/world/lanes/active` の Unison 版。
+        // project の active lane (presence、Model Q) を daemon-canonical に設定する。
+        "lanes/set_active" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let address = payload["address"]
+                .as_str()
+                .ok_or_else(|| "address is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .set_active_lane(path, address)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "active_lane set", "path": path, "address": address}))
+        }
+        // doc 44 §7.5: Project Host の帳簿（見送りの記録）を CLI から触る 3 面。
+        //
+        // 帳簿は db/world にあり surrealkv の OS 排他ロックで World が専有するので、
+        // `vp lane cleanup` / `vp lane history` は直接読み書きできない（§8.4 と同じ理由）。
+        //
+        // ⚠️ **名前 → id の解決はここでしない**。CLI が観測と一緒に `lane_id` を送る。
+        // 見送りの対象には「World が一度も見たことのない lane」（disk にだけ在る worktree）が
+        // 含まれ、World の registry から引くとそれらが黙って記録から落ちるため — 落ちるのは
+        // まさに放置されて溜まった lane なので、追いたいものだけが追えなくなる。
+        // id の SSOT は lane_ids state file で、両プロセスが同じ derivation で引く。
+        "host/farewell_observe" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let observations: Vec<crate::host::ledger::FarewellObservation> =
+                serde_json::from_value(payload["observations"].clone())
+                    .map_err(|e| format!("observations が不正: {e}"))?;
+            let db = world_cap.read().await.vpdb().cloned();
+            let now = chrono::Utc::now().to_rfc3339();
+            let pending = crate::host::ledger::record_farewell_observations(
+                db.as_ref(),
+                path,
+                &observations,
+                &now,
+            )
+            .await;
+            Ok(serde_json::json!({ "pending": pending }))
+        }
+        "host/farewell_reclaimed" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let lanes: Vec<crate::host::ledger::FarewellObservation> =
+                serde_json::from_value(payload["lanes"].clone())
+                    .map_err(|e| format!("lanes が不正: {e}"))?;
+            let db = world_cap.read().await.vpdb().cloned();
+            let now = chrono::Utc::now().to_rfc3339();
+            let recorded =
+                crate::host::ledger::record_farewell_reclaimed(db.as_ref(), path, &lanes, &now)
+                    .await;
+            Ok(serde_json::json!({ "recorded": recorded }))
+        }
+        "host/farewell_log" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let limit = payload["limit"].as_u64().unwrap_or(0) as usize;
+            let db = world_cap.read().await.vpdb().cloned();
+            let entries = crate::host::ledger::farewell_history(db.as_ref(), path, limit).await;
+            Ok(serde_json::json!({ "entries": entries }))
         }
         // chronista-hub federation: hub registry に居る world 一覧を取得する。
         // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
@@ -576,6 +774,7 @@ async fn send_lanes_snapshot(
     path_key: &str,
     wiremsg_store: &Option<crate::capability::WiremsgStore>,
     running_processes: &Option<Arc<RwLock<HashMap<String, RunningProcess>>>>,
+    vpdb: &Option<crate::db::SharedVpDb>,
 ) -> Result<(), NetworkError> {
     let mut lanes = lane_registry
         .read()
@@ -600,7 +799,14 @@ async fn send_lanes_snapshot(
             enrich_lanes_flow_state(&mut lanes, store, &project_name).await;
         }
     }
-    let snapshot = crate::protocol::ProcessMessage::LanesSnapshot { lanes };
+    // doc 44 D4: 開発起点を帳簿から解決して添える。project runtime 側の publish
+    // (`process::server::publish_lanes`) と**同じ解決**を通す — 片方だけだと受け手が
+    // 接続経路によって起点の有無で flicker する。
+    let origin = crate::host::ledger::origin_name_for_lanes(vpdb.as_ref(), path_key, &lanes).await;
+    let snapshot = crate::protocol::ProcessMessage::LanesSnapshot {
+        lanes,
+        origin: Some(origin),
+    };
     let json = serde_json::to_value(&snapshot).unwrap_or_default();
     channel.send_event("snapshot", &json).await
 }
@@ -618,13 +824,10 @@ async fn enrich_lanes_flow_state(
     project_name: &str,
 ) {
     for lane in lanes.iter_mut() {
-        if !matches!(lane.kind, crate::process::lanes_state::LaneKind::Performer) {
+        if lane.address.is_root() {
             continue;
         }
-        let Some(name) = lane.address.name.as_deref() else {
-            continue;
-        };
-        let agent_addr = format!("agent@{}/{}", project_name, name);
+        let agent_addr = format!("agent@{}/{}", project_name, lane.address.name);
         let latest = store
             .latest_msg_for_agent(&agent_addr)
             .await
@@ -974,20 +1177,25 @@ async fn handle_wire_channel(
         .ok_or_else(|| {
             format!("lane/session-changed: project '{project}' の SP が registry に無い")
         })?;
-        // hook env の VP_LANE は label（"conductor" / performer 名）。SP method は表示形を取る。
-        let display = if label == "conductor" || label == "lead" {
-            format!("{project}/conductor")
+        // hook env の VP_LANE は label（"root" / performer 名）。SP method は表示形を取る。
+        let display = if label == "root" || label == "lead" {
+            format!("{project}/root")
         } else {
             format!("{project}/performer/{label}")
         };
-        // doc 40 §4: hook の会話報告（session_id + event）を SP へ透過する。無い場合は従来の
-        // 「変化通知のみ」（re-enrich + push）として振る舞う = 新旧 binary 混在に安全。
+        // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を SP へ
+        // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
+        // 新旧 binary 混在に安全。`session` 不在も同様で、SP 側が root 宛の後方互換に倒す
+        // （World は routing のみ — ここで欠けた値を補完しない）。
         let mut fwd = serde_json::json!({ "lane": display });
         if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
             fwd["session_id"] = sid.into();
         }
         if let Some(ev) = payload.get("event").and_then(|v| v.as_str()) {
             fwd["event"] = ev.into();
+        }
+        if let Some(session) = payload.get("session").and_then(|v| v.as_u64()) {
+            fwd["session"] = session.into();
         }
         let resp = forward_to_sp_control(
             &state.control_channels,
@@ -1092,6 +1300,26 @@ async fn handle_wire_channel(
 /// world-process / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
+    // doc 44 P1 の後始末: fold-in で読まれなくなった旧 per-project DB (`db/sp_*`) を回収する。
+    // 撤去されたのは「開くコード」だけで、disk 上の残骸はそのままだった（実機 23 dir / 約 1.2 GB）。
+    let reclaimed = crate::db::reclaim_legacy_project_dbs();
+    if reclaimed > 0 {
+        tracing::info!("旧 project DB を回収: {reclaimed} dir（doc 44 §5.2 で破棄と確認済み）");
+    }
+
+    // 予約 lane 名の改名（`conductor` → `root`、2026-07-21）に伴う state file の付け替え。
+    // lane を spawn する前に済ませる — 先に boot すると新名で空の state を作ってしまい、
+    // 旧名の会話 id / 安定 id が「衝突時は上書きしない」規則で永久に取り残される。
+    let renamed = vp_paths::migrate_root_lane_state_files(&crate::config::vp_state_dir());
+    if renamed > 0 {
+        tracing::info!("予約 lane 名 migration: state file {renamed} 件を root へ改名");
+    }
+
+    // doc 47 §4: 旧 `console_modes/` を root session の act へ畳む one-shot migration。
+    // lane を spawn する前に済ませる — 畳む前に boot すると chat lane が Tui として立ち上がり、
+    // その lane で 1 会話 2 エンジンになる（この移設が塞ごうとしている当のもの）。
+    crate::lane::session_registry::migrate_console_modes();
+
     // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
     let addr = format!("[::]:{}", port);
     let server =
@@ -1347,6 +1575,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         // FSM 投影: snapshot 送信時の flow_state enrich に使う (store 不在 = enrich skip)。
         let wiremsg_store = state.wiremsg_store.clone();
         let running_processes = state.running_processes.clone();
+        // doc 44 D4: snapshot に添える開発起点は帳簿 (db) が真実源。
+        let vpdb = state.vpdb.clone();
         server
             .register_channel("lanes", {
                 move |_ctx, stream| {
@@ -1354,6 +1584,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     let lane_change_tx = lane_change_tx.clone();
                     let wiremsg_store = wiremsg_store.clone();
                     let running_processes = running_processes.clone();
+                    let vpdb = vpdb.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
 
@@ -1369,7 +1600,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let mut rx = lane_change_tx.subscribe();
 
                         // 初期 snapshot 配信
-                        if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
+                        if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes, &vpdb)
                             .await
                             .is_err()
                         {
@@ -1383,7 +1614,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     if changed_key != path_key {
                                         continue; // 別 project の変更は無視
                                     }
-                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes, &vpdb)
                                         .await
                                         .is_err()
                                     {
@@ -1396,7 +1627,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         "lanes channel subscribe lagged: {} events dropped (resync)",
                                         n
                                     );
-                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes)
+                                    if send_lanes_snapshot(&channel, &lane_registry, &path_key, &wiremsg_store, &running_processes, &vpdb)
                                         .await
                                         .is_err()
                                     {
@@ -1804,18 +2035,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
 
                             match method.as_str() {
                                 "list" => {
-                                    let procs = running_processes.read().await;
-                                    let list: Vec<_> = procs
-                                        .values()
-                                        .map(|p| {
-                                            serde_json::json!({
-                                                "project_name": p.project_name,
-                                                "port": p.port,
-                                                "pid": p.pid,
-                                                "project_path": p.project_path,
-                                            })
-                                        })
-                                        .collect();
+                                    let list =
+                                        registry_process_snapshot(&running_processes).await;
                                     if channel
                                         .send_response(
                                             request_id,
@@ -2259,6 +2480,268 @@ mod tests {
         let cap = new_world_cap();
         let r = handle_world_control(&cap, "projects/bogus", serde_json::json!({})).await;
         assert!(r.is_err(), "未知 method は Err");
+    }
+
+    // =====================================================================
+    // doc 45 段 4 — HTTP 撤去後の world-control 振る舞い固定
+    //
+    // 段 2 / 段 3 では「新面（Unison）が旧面（HTTP route）と同じ答えを返す」を
+    // 突き合わせで担保していた。段 4 で HTTP route を落としたので、突き合わせる
+    // 相手が消える。**parity テストが担保していた中身（合成 update の意味論 /
+    // lanes の filter+sort / reorder の並び / snapshot の写し方）は Unison 入口に
+    // 対して直接固定し直す** — 旧面が消えたからといって期待値まで消すと、
+    // 移行で守ったものが黙って外れる。
+    //
+    // 実装は `routes::world` の共有関数（apply_project_update / collect_lanes /
+    // resolve_create_lane_args）1 本なので、ここが落ちるのは振る舞いが動いた時。
+    // =====================================================================
+
+    /// `projects/update` が rename + enabled を 1 往復で適用する（旧 HTTP の合成 update）。
+    #[tokio::test]
+    async fn world_control_projects_update_applies_rename_and_enabled() {
+        let path = std::env::temp_dir().to_string_lossy().to_string();
+        let cap = new_world_cap();
+        handle_world_control(
+            &cap,
+            "projects/add",
+            serde_json::json!({"name": "update-target", "path": path}),
+        )
+        .await
+        .expect("add ok");
+
+        handle_world_control(
+            &cap,
+            "projects/update",
+            serde_json::json!({"path": path, "name": "renamed", "enabled": false}),
+        )
+        .await
+        .expect("update ok");
+
+        let after = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+            .await
+            .expect("list ok");
+        assert_eq!(after[0]["name"], "renamed", "rename が効いている");
+        assert_eq!(after[0]["enabled"], false, "disable が効いている");
+
+        // 「何も指定しない update」は Err（黙って成功にしない）。旧 HTTP の 400 と同じ意味論。
+        let empty =
+            handle_world_control(&cap, "projects/update", serde_json::json!({"path": path})).await;
+        assert_eq!(
+            empty.unwrap_err(),
+            "No fields to update",
+            "field 無し update は明示エラー"
+        );
+    }
+
+    /// `lanes/list` の filter（project / lane / stand）と表示順を固定する。
+    ///
+    /// **空 registry では filter も sort も無仕事になる**ので、複数 project × 複数 lane を
+    /// 実際に積んでから確認する。並びは project 名昇順 → 同 project 内は開発起点 (root) 先 →
+    /// 続いて created_at 昇順。
+    #[tokio::test]
+    async fn world_control_lanes_list_filters_and_sorts() {
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+
+        let cap = new_world_cap();
+
+        // registry を直接埋める（project の publish を模す）。project 名 / created_at / stand を
+        // わざと逆順・混在で入れて、sort と filter が実際に仕事をする状態を作る。
+        let mk = |project: &str, name: &str, created_at: &str, stand: &str| LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::new(project, name),
+            state: LaneState::Running,
+            stand: stand.to_string(),
+            created_at: created_at.to_string(),
+            pid: Some(4321),
+            cwd: "/tmp".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        };
+        {
+            let registry = cap.read().await.lane_registry_ref();
+            let mut registry = registry.write().await;
+            registry.insert(
+                "/repos/zeta".to_string(),
+                vec![
+                    mk("zeta", "later", "2026-07-02T00:00:00Z", "shell"),
+                    mk("zeta", "root", "2026-07-03T00:00:00Z", "echoes"),
+                    mk("zeta", "earlier", "2026-07-01T00:00:00Z", "echoes"),
+                ],
+            );
+            registry.insert(
+                "/repos/alpha".to_string(),
+                vec![mk("alpha", "root", "2026-07-01T00:00:00Z", "echoes")],
+            );
+        }
+
+        // (payload, 期待する lane 名の並び)
+        let cases: [(serde_json::Value, Vec<&str>); 5] = [
+            (
+                serde_json::json!({}),
+                // alpha/root → zeta/root（開発起点先）→ earlier → later（created_at 昇順）
+                vec!["root", "root", "earlier", "later"],
+            ),
+            (
+                serde_json::json!({"project": "zeta"}),
+                vec!["root", "earlier", "later"],
+            ),
+            (
+                serde_json::json!({"stand": "echoes"}),
+                vec!["root", "root", "earlier"],
+            ),
+            (serde_json::json!({"lane": "root"}), vec!["root", "root"]),
+            (serde_json::json!({"project": "nonexistent"}), vec![]),
+        ];
+
+        for (payload, expected) in cases {
+            let resp = handle_world_control(&cap, "lanes/list", payload.clone())
+                .await
+                .expect("lanes/list ok");
+            let names: Vec<&str> = resp["lanes"]
+                .as_array()
+                .expect("lanes は配列")
+                .iter()
+                .map(|l| l["address"]["name"].as_str().unwrap_or("?"))
+                .collect();
+            assert_eq!(names, expected, "lanes/list {payload} の filter + 並び");
+            assert_eq!(
+                resp["count"],
+                serde_json::json!(expected.len()),
+                "count は lanes の長さと一致する"
+            );
+        }
+    }
+
+    /// `projects/sync` は ghost 無しなら `{removed: []}` を返す（旧 HTTP と同じ形）。
+    #[tokio::test]
+    async fn world_control_projects_sync_returns_removed_list() {
+        let cap = new_world_cap();
+        let resp = handle_world_control(&cap, "projects/sync", serde_json::json!({}))
+            .await
+            .expect("sync ok");
+        assert_eq!(resp["removed"], serde_json::json!([]), "ghost 無しなら空");
+    }
+
+    /// `registry.list` の snapshot が `RunningProcess` の Serialize をそのまま写すこと。
+    ///
+    /// vp-app の `list_processes`（sidebar の runtime port join + Activity の稼働数）が
+    /// 依存する面。旧 HTTP route と同じ `running_processes` map / 同じ Serialize を通るので、
+    /// ここが割れる時は「JSON への写し方に手が入った」場合に限られる。
+    #[tokio::test]
+    async fn registry_list_snapshot_carries_name_and_port() {
+        let cap = new_world_cap();
+        // capability と registry channel が共有する map に直接置く（start_process は
+        // 実際に project を起こしてしまうので、ここでは snapshot の写し方だけを見る）。
+        let running = cap.read().await.running_processes_ref();
+        running.write().await.insert(
+            "/tmp/snapshot-proc".to_string(),
+            RunningProcess {
+                project_name: "snapshot-proc".to_string(),
+                port: 33000,
+                pid: 4242,
+                project_path: "/tmp/snapshot-proc".into(),
+            },
+        );
+
+        let snapshot = registry_process_snapshot(&running).await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0]["project_name"], "snapshot-proc");
+        assert_eq!(snapshot[0]["port"], 33000);
+        assert_eq!(snapshot[0]["pid"], 4242);
+    }
+
+    /// `projects/reorder` が指定した順に project を並べ替える。
+    ///
+    /// vp-app の sidebar D&D が通る面。`ord` は表示順の canonical なので、
+    /// ここが壊れると「並べ替えたのに戻る」形で表に出る。
+    #[tokio::test]
+    async fn world_control_reorder_orders_projects() {
+        // 実在 dir が 2 つ要る（add_project は path.is_dir() を要求する）。
+        // TempDir なので test 終了時に消える（固定 path にすると再実行で残骸を拾う）。
+        let base = tempfile::tempdir().expect("tempdir");
+        let first = base.path().join("alpha");
+        let second = base.path().join("beta");
+        std::fs::create_dir_all(&first).expect("mkdir alpha");
+        std::fs::create_dir_all(&second).expect("mkdir beta");
+        let first = first.to_string_lossy().to_string();
+        let second = second.to_string_lossy().to_string();
+
+        let cap = new_world_cap();
+        for (name, path) in [("alpha", &first), ("beta", &second)] {
+            handle_world_control(
+                &cap,
+                "projects/add",
+                serde_json::json!({"name": name, "path": path}),
+            )
+            .await
+            .expect("add ok");
+        }
+
+        // 逆順に並べ替える。
+        handle_world_control(
+            &cap,
+            "projects/reorder",
+            serde_json::json!({ "paths": [second, first] }),
+        )
+        .await
+        .expect("reorder ok");
+
+        let list = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+            .await
+            .expect("list ok");
+        let names: Vec<&str> = list
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+        assert_eq!(names, ["beta", "alpha"], "指定した順に並ぶこと");
+    }
+
+    /// mutation 系 RPC の必須 field 欠落は Err（World の状態を触る前に弾く）。
+    #[tokio::test]
+    async fn world_control_new_methods_require_their_fields() {
+        let cap = new_world_cap();
+        for (method, payload) in [
+            ("projects/update", serde_json::json!({})),
+            ("projects/restart", serde_json::json!({})),
+            ("projects/pointview", serde_json::json!({})),
+            ("lanes/create", serde_json::json!({"path": "/tmp"})),
+            ("lanes/set_active", serde_json::json!({"path": "/tmp"})),
+        ] {
+            assert!(
+                handle_world_control(&cap, method, payload).await.is_err(),
+                "{method} は必須 field 欠落を Err にする"
+            );
+        }
+    }
+
+    /// `lanes/create` の省略時 default 導出（旧 HTTP route と共有していた calc）。
+    #[test]
+    fn create_lane_defaults_are_derived() {
+        use crate::process::routes::world::resolve_create_lane_args;
+
+        let (branch, stand) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
+        assert!(
+            branch.ends_with("/sub"),
+            "branch 未指定なら `<user>/<name>` を derive する: {branch}"
+        );
+        assert!(
+            !stand.is_empty(),
+            "stand 未指定でも default が入る: {stand}"
+        );
+
+        // 明示指定はそのまま通る。空白のみの branch は未指定と同じ扱い。
+        let (branch, stand) =
+            resolve_create_lane_args("/tmp/parity", "sub", Some("feat/x"), Some("shell"));
+        assert_eq!((branch.as_str(), stand.as_str()), ("feat/x", "shell"));
+        let (branch, _) = resolve_create_lane_args("/tmp/parity", "sub", Some("   "), None);
+        assert!(branch.ends_with("/sub"), "空白 branch は derive に落ちる");
     }
 
     #[tokio::test]

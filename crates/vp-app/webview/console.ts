@@ -138,6 +138,44 @@ export type EchoesStandsPayload = {
   stands?: unknown[]
 }
 
+// --- doc 47 §6: 共有 bus の相関 id ---------------------------------------------------------------
+// `vp:echoes-stands` は broadcast なので、購読側が複数いると「誰の要求への応答か」が判らない
+// （doc 46 P2 で「+ New」の要求に chat の「+」menu まで反応した混線 = #838）。
+// 要求時に採番した id を round-trip（webview → Rust IPC → stands_list → handleStands）させ、
+// 購読側は **自分が出した要求の id と一致した時だけ** 反応する。
+//
+// bus を要求元ごとに分ける案は採らなかった: 分けても id の round-trip は要るうえ、発火元
+// （console.ts = 投影側）が購読側 UI の顔ぶれを列挙することになり、doc 47 §0 の
+// 「実体 → 見え方」の向きが逆流する。id なら発火元は要求元を知らないままでいられる。
+
+/** 共有 bus の相関 id（`<要求元 scope>#<連番>`）。 */
+export type BusRequestId = string
+
+let busRequestSeq = 0
+
+/** 相関 id を採番する。scope は要求元のラベル（log で読める形にするだけで、照合は完全一致）。 */
+export function nextRequestId(scope: string): BusRequestId {
+  busRequestSeq += 1
+  return `${scope}#${busRequestSeq}`
+}
+
+/** 応答が「自分の要求に対するもの」か。純粋 = テスト可能。
+ *  ⚠️ 素の `===` にしないのは、要求を出していない購読側（pending = null）に req 無しの応答
+ *  （= null）が来た時に一致してしまうため。**要求していない側は常に false** が規約。 */
+export function isMyResponse(
+  pending: BusRequestId | null,
+  req: BusRequestId | null | undefined,
+): boolean {
+  return pending !== null && req === pending
+}
+
+/** `vp:echoes-stands` の detail。req は要求元の相関 id（要求外の発火は null）。 */
+export type EchoesStandsDetail<S = unknown> = {
+  lane: string
+  stands: S[]
+  req: BusRequestId | null
+}
+
 type LaneSessions = { focused: number; sessions: EchoesSession[] }
 
 const laneSessions = new Map<string, LaneSessions>()
@@ -308,8 +346,10 @@ export type VpConsole = {
   /** doc 38 Phase 2: SP の echoes_session_list を per-lane cache に取り込み、tab strip へ
    *  'vp:echoes-sessions' CustomEvent を発火する（focused も併せて更新）。 */
   handleSessionList(lane: string, payload: EchoesSessionListPayload): void
-  /** doc 38 Phase 2: stands_list を「+」menu へ 'vp:echoes-stands' CustomEvent で中継する。 */
-  handleStands(lane: string, payload: EchoesStandsPayload): void
+  /** doc 38 Phase 2: stands_list を「+」menu へ 'vp:echoes-stands' CustomEvent で中継する。
+   *  doc 47 §6: req = 要求元の相関 id（IPC の `req` を Rust が往復させたもの）。購読側は
+   *  自分の id と一致した時だけ反応する。 */
+  handleStands(lane: string, payload: EchoesStandsPayload, req?: BusRequestId | null): void
   /** doc 38 Phase 2: lane の focused session key（未知 = 1）。chatview の event filter が参照。 */
   focusedOf(lane: string): number
 }
@@ -412,11 +452,11 @@ export function installConsole(): VpConsole {
         new CustomEvent('vp:echoes-sessions', { detail: { lane, focused, sessions } }),
       )
     },
-    handleStands(lane, payload) {
+    handleStands(lane, payload, req) {
       const stands = Array.isArray(payload?.stands) ? payload!.stands! : []
-      document.dispatchEvent(
-        new CustomEvent('vp:echoes-stands', { detail: { lane, stands } }),
-      )
+      // doc 47 §6: req をそのまま detail に載せる（発火元は要求元が誰かを解釈しない）。
+      const detail: EchoesStandsDetail = { lane, stands, req: req ?? null }
+      document.dispatchEvent(new CustomEvent('vp:echoes-stands', { detail }))
     },
     // 純関数 focusedOf をそのまま公開（laneSessions cache を参照。property 名は method binding を
     // 作らないので module-level の focusedOf を指す — 自己再帰にはならない）。

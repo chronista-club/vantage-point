@@ -48,6 +48,11 @@ pub enum AppEvent {
     LanesLoaded {
         process_path: String,
         lanes: Vec<crate::client::LaneInfo>,
+        /// doc 44 D4: この project の開発起点 lane 名（Host の帳簿が解決した値）。
+        ///
+        /// `None` = snapshot に載っていなかった（旧 server / 解決不能）。受け手は
+        /// **前回値を保つ** — 既定値に落とすと、起点を指定済の project で ⭐ が明滅する。
+        origin: Option<String>,
     },
     /// Phase A4-3b: Lane fetch 失敗 (SP 未起動 / 接続失敗)
     LanesError {
@@ -196,7 +201,17 @@ pub enum AppEvent {
     /// 新セッション開始要求（console の New Session ボタン）。 event loop が
     /// `lane_restart` (fresh=true) で SP に forward — cc_session 破棄 = `/exit` → 手打ち
     /// `claude` の置き換え。 Act I/II 両対応（restart_lane が mode で分岐）。
-    ConsoleNewSession { lane: String },
+    ConsoleNewSession {
+        lane: String,
+        /// doc 46 P2 要件 4: どの engine で作るか（stand 名。`None` = 現 focused を継承）。
+        engine: Option<String>,
+        /// doc 46 P2 要件 4: どの Act で作るか（`"tui"` / `"chat"`。`None` = lane の現 Act）。
+        ///
+        /// doc 46 §1.4 の途中経過: Act は最終的に Pane の kind になるが、P2 時点では
+        /// まだ lane の mode が残っている。**明示指定を受け取れるようにする**のが
+        /// この field の役割で、指定が無ければ従来どおり lane の Act を継ぐ。
+        act: Option<String>,
+    },
     /// lane_restart(fresh=true) 成功後、WebView の会話表示をクリアする内部 event
     /// (ConsoleModeApplied と同じ async → main thread 橋渡し)。
     ConsoleSessionRenewed { lane: String },
@@ -224,7 +239,10 @@ pub enum AppEvent {
     EchoesSessionRemove { lane: String, session: u32 },
     /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
     /// ask `stands_list` → `EchoesStands` で push back。
-    EchoesStandsFetch { lane: String },
+    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:echoes-stands` は複数の「+」menu が
+    /// 購読する共有 bus なので、要求元をそのまま往復させて応答側で振り分けさせる
+    /// （Rust は中身を解釈しない不透明な札）。
+    EchoesStandsFetch { lane: String, req: Option<String> },
     /// doc 38 Phase 2: `echoes_session_list` の結果を webview の tab strip へ push back する内部 event
     /// （async task → main thread の evaluate_script 橋渡し。`ConsoleModeApplied` と同型）。
     EchoesSessionList {
@@ -232,9 +250,11 @@ pub enum AppEvent {
         payload: serde_json::Value,
     },
     /// doc 38 Phase 2: `stands_list` の結果を「+」menu へ push back する内部 event。
+    /// doc 47 §6: `req` は `EchoesStandsFetch` から持ち回った相関 id（そのまま JS へ返す）。
     EchoesStands {
         lane: String,
         payload: serde_json::Value,
+        req: Option<String>,
     },
 }
 
@@ -346,8 +366,21 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         // 新セッション開始（console の New Session ボタン）。 lane 必須。
         Some("console:new_session") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                // doc 46 P2 要件 4: engine / act は **任意**。省略時は従来の継承挙動
+                // （現 focused の engine / lane の Act）。空文字は未指定に畳む —
+                // menu の「既定」項目が空文字を送っても継承にしたい。
+                let opt = |k: &str| {
+                    parsed
+                        .get(k)
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                };
                 let _ = proxy.send_event(AppEvent::ConsoleNewSession {
                     lane: lane.to_string(),
+                    engine: opt("engine"),
+                    act: opt("act"),
                 });
             }
         }
@@ -422,8 +455,14 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         }
         Some("echoes:stands_fetch") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                // doc 47 §6: 要求元の相関 id（省略可 = 応答を誰も拾わない）。
+                let req = parsed
+                    .get("req")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
                 let _ = proxy.send_event(AppEvent::EchoesStandsFetch {
                     lane: lane.to_string(),
+                    req,
                 });
             }
         }

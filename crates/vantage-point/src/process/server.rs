@@ -15,7 +15,7 @@ use tower_http::cors::CorsLayer;
 
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
-use super::routes::{health, update, world};
+use super::routes::{health, update};
 use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
@@ -36,12 +36,46 @@ pub(crate) type WorldLaneView =
 /// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、SP の uplink が QUIC で World の
 /// `lane_registry` へ中継していた。fold-in で中継が消えたため、World 側 view の更新を
 /// ここに並置する — これを怠ると World の view が boot 時の db 値で固まり、
-/// `/api/world/lanes` が実在しない lane（過去 pid）を配り続ける。
+/// Unison `lanes/list` が実在しない lane（過去 pid）を配り続ける。
+/// vp-app への push を起こす通知路（World daemon の `lane_change_tx`）と、
+/// 前回 publish した内容の指紋。
+///
+/// doc 44 §11: fold-in で切れた「更新したら起こす」辺を戻すために publish 側が持つ。
+/// 指紋は **同じ内容で起こさない**ため（5s tick がそのまま 5s ごとの全 snapshot push に
+/// なるのを防ぐ）。
+pub(crate) struct LaneChangeNotifier {
+    tx: Option<tokio::sync::broadcast::Sender<String>>,
+    last: Option<String>,
+}
+
+impl LaneChangeNotifier {
+    pub(crate) fn new(tx: Option<tokio::sync::broadcast::Sender<String>>) -> Self {
+        Self { tx, last: None }
+    }
+
+    /// 内容が前回と変わっていれば起床通知を撃つ。戻り値は撃ったかどうか（test 用）。
+    ///
+    /// 指紋は「vp-app に届く値そのもの」（lanes + origin）から取る。ここを snapshot の
+    /// 一部だけにすると、**見えている値が変わったのに起こさない**穴ができる。
+    fn notify_if_changed(&mut self, path_key: &str, fingerprint: String) -> bool {
+        if self.last.as_deref() == Some(fingerprint.as_str()) {
+            return false;
+        }
+        self.last = Some(fingerprint);
+        match &self.tx {
+            // receiver 不在（vp-app 未接続）の SendError は無害
+            Some(tx) => tx.send(path_key.to_string()).is_ok(),
+            None => false,
+        }
+    }
+}
+
 async fn publish_lanes(
     state: &Arc<AppState>,
     hub: &Hub,
     world_lanes: &Option<WorldLaneView>,
     path_key: &str,
+    notifier: &mut LaneChangeNotifier,
 ) {
     let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
     if let Some(view) = world_lanes {
@@ -49,7 +83,22 @@ async fn publish_lanes(
             .await
             .insert(path_key.to_string(), lanes.clone());
     }
-    hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot { lanes });
+    // doc 44 D4: 開発起点を帳簿から解決して snapshot に添える（lane の属性ではなく
+    // project の指定なので `LaneInfo` には入れない）。
+    let origin =
+        crate::host::ledger::origin_name_for_lanes(state.vpdb.as_ref(), &state.project_dir, &lanes)
+            .await;
+    let msg = crate::protocol::ProcessMessage::LanesSnapshot {
+        lanes,
+        origin: Some(origin),
+    };
+    // doc 44 §11: World daemon の "lanes" channel は `lane_change_tx` でしか再 push しない。
+    // fold-in 前は SP の uplink（register / lanes-diff）がこの辺を担っていたが、
+    // 中継が消えた際に **view の更新だけ移管され、起床通知が移管されなかった**。
+    // 結果 vp-app の sidebar は wire 活動（hook）がある間しか新鮮でなかった。
+    let fingerprint = serde_json::to_string(&msg).unwrap_or_default();
+    notifier.notify_if_changed(path_key, fingerprint);
+    hub.broadcast(msg);
 }
 
 /// project 1 件分の実行状態を in-process で起動する（旧 SP プロセスの中身）。
@@ -73,6 +122,9 @@ pub(crate) async fn start_project(
     shutdown_token: CancellationToken,
     world_lanes: Option<WorldLaneView>,
     vpdb: Option<crate::db::SharedVpDb>,
+    // doc 44 §11: vp-app への push を起こす通知路（World daemon の `lane_change_tx`）。
+    // `None` は World 以外の文脈（test / 単体起動）で、その場合 push 先が居ない。
+    lane_change_tx: Option<tokio::sync::broadcast::Sender<String>>,
 ) -> Result<Arc<AppState>> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
@@ -199,7 +251,7 @@ pub(crate) async fn start_project(
         // lane performers を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
-        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_conductor(
+        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_root(
             project_name_for_remote.clone(),
             project_dir.clone(),
         ))),
@@ -222,21 +274,21 @@ pub(crate) async fn start_project(
         delegation_store: None,
     });
 
-    // Phase review fix #2: LanePool::with_conductor は内部で PtySlot::spawn (openpty + spawn_command)
+    // Phase review fix #2: LanePool::with_root は内部で PtySlot::spawn (openpty + spawn_command)
     // で OS syscall ブロッキング → spawn_blocking で tokio worker thread (= tokio runtime の OS thread) を保護。
     // でも... AppState 既に構築済なので restructure したいけど不可。 代替:
-    // with_conductor 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
+    // with_root 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
     // 結果的に SP 起動時 1 回だけの呼び出しなので影響は軽微。 review 指摘は記録、 現実装維持。
     // (`create_handler` 側の spawn_blocking 化は完了済 = lanes.rs の方が頻繁に呼ばれる重要 path)
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
 
-    // PR-β-2 (VP-120): Conductor Lane の LaneCapabilities entry を populate (LanePool::with_conductor と同期)。
+    // PR-β-2 (VP-120): Conductor Lane の LaneCapabilities entry を populate (LanePool::with_root と同期)。
     // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Conductor Lane の独立 PaisleyParkState を host。
     // doc 13 §6 自動 spawn rule = Lane 起動時に PP 同時 spawn (default) を default で実現。
     if let Some(lc_pool) = state.lane_capabilities.as_ref() {
-        let conductor_addr = super::lanes_state::LaneAddress::conductor(&project_name_for_remote);
+        let conductor_addr = super::lanes_state::LaneAddress::root(&project_name_for_remote);
         let default_stand = crate::config::Config::load()
             .unwrap_or_default()
             .default_stand_or_echoes()
@@ -366,6 +418,9 @@ pub(crate) async fn start_project(
         let world_lanes_for_pub = world_lanes.clone();
         let path_key_for_pub =
             crate::capability::normalize_path_key(std::path::Path::new(&project_dir));
+        // doc 44 §11: 供給点は 3 つとも同じ notifier を通す（指紋が 1 本でないと
+        // 「別の供給点が publish した直後は起こさない」等の取りこぼしが出る）。
+        let mut notifier = LaneChangeNotifier::new(lane_change_tx);
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
         // （Conductor Lane は既に pre-populate 済）。
         // project-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Performer
@@ -375,6 +430,7 @@ pub(crate) async fn start_project(
             &hub,
             &world_lanes_for_pub,
             &path_key_for_pub,
+            &mut notifier,
         )
         .await;
         // board モデル (2026-07-15): DB の全 board を起動直後に retained topic へ seed する。
@@ -396,13 +452,18 @@ pub(crate) async fn start_project(
                     _ = periodic.tick() => {
                         publish_lanes(
                             &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
+                            &mut notifier,
                         ).await;
                     }
                     ev = sys_rx.recv() => match ev {
-                        // Lane lifecycle 変化 / lag → 現 snapshot を全量 publish（idempotent）
-                        Ok(SystemEvent::Lane(_)) | Err(RecvError::Lagged(_)) => {
+                        // Lane lifecycle 変化 / 並び替え / lag → 現 snapshot を全量 publish（idempotent）。
+                        // 帳簿由来の投影変化（並び順 / 開発起点）は per-lane の diff を持たないが
+                        // snapshot の見え方が変わるので、同じ全量 publish で届く。
+                        Ok(SystemEvent::Lane(_) | SystemEvent::LanesProjectionChanged)
+                        | Err(RecvError::Lagged(_)) => {
                             publish_lanes(
                                 &state_for_pub, &hub, &world_lanes_for_pub, &path_key_for_pub,
+                                &mut notifier,
                             ).await;
                         }
                         Err(RecvError::Closed) => break,
@@ -442,6 +503,61 @@ pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
     if let Err(e) = state.capabilities.shutdown().await {
         tracing::warn!("Error during capability shutdown: {}", e);
     }
+}
+
+/// TheWorld の HTTP router を組む（= 残っている HTTP 面の全て）。
+///
+/// ## doc 45 段 4 — control plane の HTTP route は撤去済み
+///
+/// control plane（projects CRUD / lifecycle / lanes / canvas）は Unison "world-control" channel
+/// に一本化した（doc 45 §3、消費者は段 2 で CLI・段 3 で vp-app が移設済み）。ここに残るのは:
+///
+/// - `/api/health` `/api/shutdown` — **意図的に鈍い外殻**（doc 45 §2）。health は
+///   「他が壊れている時に動いてほしい」probe で、Unison 層が wedge した時に診断手段ごと
+///   失わないよう HTTP に置く。`.mise/tasks/app/swap`（Ruby）と `apple/VantagePointAgent`
+///   （Swift）という **VP 外の消費者**もいて、彼らに Unison client を持たせる理由がない。
+/// - `/api/update/*` — self-update（doc 45 §3 で「churn が低いので後回しでよい」と判断）。
+///
+/// `run_world` から関数として切り出してあるのは、**route 登録そのものをテストで固定する**ため
+/// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
+fn build_world_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/api/health", get(health::health_handler))
+        .route("/api/shutdown", post(health::shutdown_handler))
+        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
+        // doc 45 段 4: `/api/canvas/{switch_lane,layout}` は撤去。宛先の `canvas_senders` を
+        // populate する書き手が旧 localhost browser Canvas の WS 撤去で消えており、
+        // end-to-end で dead だった（doc 45 §3.1 — 移設ではなく撤去が正解の例）。
+        // doc 45 段 4: `/api/world/*`（projects CRUD / processes lifecycle / lanes）は撤去。
+        // 同じ操作は Unison "world-control" channel が持ち、実装は
+        // `routes::world` の共有関数（apply_project_update / collect_lanes /
+        // resolve_create_lane_args）に畳んであるので面が減っても振る舞いは変わらない。
+        // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
+        // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
+        // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
+        // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
+        // 同 channel 経由。
+        // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
+        // project は World 自身が起こすので外から登録される概念が無く、残しておくと
+        // 外部由来の port/pid で running_processes を書ける穴になる（起動していない
+        // project を稼働中に見せられる）。稼働状態の唯一の writer は start/stop_process。
+        // doc 44 P1 (fold-in): slot ベース port resolver (`/api/world/port_for`) と
+        // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
+        // project は portless（port=0）になり、slot が解決する listen port が存在しない。
+        // Update API routes (vp CLI)
+        .route("/api/update/check", get(update::update_check))
+        .route("/api/update/apply", post(update::update_apply))
+        .route("/api/update/rollback", post(update::update_rollback))
+        .route("/api/update/restart", post(update::update_restart))
+        // Update API routes (VantagePoint.app)
+        .route("/api/update/mac/check", get(update::update_mac_check))
+        .route("/api/update/mac/apply", post(update::update_mac_apply))
+        .route(
+            "/api/update/mac/rollback",
+            post(update::update_mac_rollback),
+        )
+        .layer(CorsLayer::permissive())
+        .with_state(state)
 }
 
 /// WorldモードでProcessサーバーを起動
@@ -703,10 +819,18 @@ pub async fn run_world(
     // 動くのに World からは boot 時の db 値しか見えない（= 過去 pid の ghost lane 配信）。
     // doc 44 P1 PR4 (DB 統合): db handle も同時に配る。project は自分では db を開かず、
     // World が開いたこの 1 本を共有する（project 次元は table の project_path 列が持つ）。
+    // doc 44 §11: vp-app の "lanes" push を起こす通知路。DaemonState より**先に**作って
+    // 両方へ配る — 生産者は project 側の `publish_lanes`、消費者は daemon の push loop で、
+    // DaemonState 任せにすると生産者に渡す手段が無い（`process_lifecycle_tx` を capability と
+    // 共有しているのと同じ構図）。
+    let (lane_change_tx, _) = tokio::sync::broadcast::channel::<String>(64);
     let control_channels: crate::daemon::server::ControlChannels =
         std::sync::Arc::new(super::project_registry::ProjectRuntimes::for_world(
             world_cap.read().await.lane_registry_ref(),
             vpdb.clone(),
+            // fold-in で落ちた「view を更新したら vp-app を起こす」辺を戻す。view
+            // (`lane_registry`) の更新と通知が同じ経路に載る（旧 SP uplink と同じ組）。
+            lane_change_tx.clone(),
         ));
 
     // ProcessManagerCapability に registry を差し込む（`start_process` が in-process 起動に使う）。
@@ -744,94 +868,9 @@ pub async fn run_world(
         );
     }
 
-    let app = Router::new()
-        .route("/api/health", get(health::health_handler))
-        .route("/api/shutdown", post(health::shutdown_handler))
-        // L0 portless: `/ws/lanes` (project_feed WS) は consumer 消滅で dead のため撤去。
-        // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
-        .route(
-            "/api/canvas/switch_lane",
-            post(health::canvas_switch_lane_handler),
-        )
-        .route(
-            "/api/canvas/layout",
-            get(health::canvas_layout_get_handler).post(health::canvas_layout_save_handler),
-        )
-        // World API routes
-        .route(
-            "/api/world/projects",
-            get(world::world_list_projects).post(world::world_add_project),
-        )
-        .route(
-            "/api/world/projects/reorder",
-            post(world::world_reorder_projects),
-        )
-        .route(
-            "/api/world/projects/update",
-            post(world::world_update_project),
-        )
-        .route(
-            "/api/world/projects/remove",
-            post(world::world_remove_project),
-        )
-        .route(
-            "/api/world/projects/reload",
-            post(world::world_reload_projects),
-        )
-        .route("/api/world/projects/sync", post(world::world_sync_projects))
-        .route("/api/world/processes", get(world::world_list_processes))
-        .route(
-            "/api/world/lanes",
-            get(world::world_list_lanes).post(world::world_create_lane),
-        )
-        .route(
-            "/api/world/lanes/active",
-            post(world::world_set_active_lane),
-        )
-        .route(
-            "/api/world/processes/{project_name}/start",
-            post(world::world_start_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/stop",
-            post(world::world_stop_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/restart",
-            post(world::world_restart_process),
-        )
-        .route(
-            "/api/world/processes/{project_name}/pointview",
-            post(world::world_open_pointview),
-        )
-        // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
-        // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
-        // `world_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
-        // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
-        // 同 channel 経由。
-        // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
-        // project は World 自身が起こすので外から登録される概念が無く、残しておくと
-        // 外部由来の port/pid で running_processes を書ける穴になる（起動していない
-        // project を稼働中に見せられる）。稼働状態の唯一の writer は start/stop_process。
-        // doc 44 P1 (fold-in): slot ベース port resolver (`/api/world/port_for`) と
-        // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
-        // project は portless（port=0）になり、slot が解決する listen port が存在しない。
-        // Update API routes (vp CLI)
-        .route("/api/update/check", get(update::update_check))
-        .route("/api/update/apply", post(update::update_apply))
-        .route("/api/update/rollback", post(update::update_rollback))
-        .route("/api/update/restart", post(update::update_restart))
-        // Update API routes (VantagePoint.app)
-        .route("/api/update/mac/check", get(update::update_mac_check))
-        .route("/api/update/mac/apply", post(update::update_mac_apply))
-        .route(
-            "/api/update/mac/rollback",
-            post(update::update_mac_rollback),
-        )
-        .layer(CorsLayer::permissive())
-        // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
-        // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
-        .with_state(state.clone());
+    // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
+    // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
+    let app = build_world_router(state.clone());
 
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
     //  SP からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
@@ -869,7 +908,10 @@ pub async fn run_world(
         .with_world_cap(world_cap.clone())
         // tmux decoupling PR1: 上で hoist した control channel map を daemon server と共有する
         // (daemon が SP 接続で populate → nudge loop がここから forward 先を引く)。
-        .with_control_channels(control_channels.clone());
+        .with_control_channels(control_channels.clone())
+        // doc 44 §11: project 側の publish が撃つのと**同一の** channel を daemon の
+        // push loop に購読させる（別々に作ると生産者ゼロで永久沈黙する）。
+        .with_lane_change_tx(lane_change_tx.clone());
     // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
     if let Some(ref db) = vpdb {
         daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
@@ -1317,7 +1359,7 @@ mod tests {
     ///
     /// この不変条件は旧構成では **SP の QUIC uplink が担うプロセス跨ぎの約束**だったため
     /// 単体テストの射程外にあり、fold-in で uplink を落とした際に誰にも気付かれずに
-    /// 失われた（実機で `/api/world/lanes` が boot 時 db 値のまま固まり、存在しない
+    /// 失われた（実機で lane 一覧が boot 時 db 値のまま固まり、存在しない
     /// 過去 pid の lane を配り続けた）。関数呼び出しになった今はここで固定できる。
     #[tokio::test]
     async fn publish_lanes_updates_world_view() {
@@ -1326,7 +1368,14 @@ mod tests {
         let view: WorldLaneView = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let key = "/tmp/proj-publish-lanes";
 
-        publish_lanes(&state, &hub, &Some(view.clone()), key).await;
+        publish_lanes(
+            &state,
+            &hub,
+            &Some(view.clone()),
+            key,
+            &mut LaneChangeNotifier::new(None),
+        )
+        .await;
 
         // lane 数が 0 でも **entry 自体は入る**ことが要点。空 Vec の insert が
         // 「この project にはもう lane が無い」を表明し、boot 時に db から載った
@@ -1346,6 +1395,189 @@ mod tests {
         let state = crate::process::state::build_test_app_state(None).await;
         let hub = state.hub.clone();
 
-        publish_lanes(&state, &hub, &None, "/tmp/proj-no-view").await;
+        publish_lanes(
+            &state,
+            &hub,
+            &None,
+            "/tmp/proj-no-view",
+            &mut LaneChangeNotifier::new(None),
+        )
+        .await;
+    }
+
+    /// doc 44 §11 回帰固定: **publish が vp-app への push を起こす**。
+    ///
+    /// fold-in で SP の uplink（register / lanes-diff）が消えた際、World の集約 view の
+    /// 更新は `publish_lanes` へ移管されたが、**同じ uplink が担っていた `lane_change_tx`
+    /// の発火は移管されなかった**。結果、daemon の "lanes" push loop を起こすのは
+    /// wire send/ack だけになり、vp-app の sidebar は「何か打っている間だけ新鮮」
+    /// という状態になっていた（idle 中は lane 追加・死活・git meta が固まる）。
+    ///
+    /// `process_lifecycle_tx` が同じ形の抜けを起こしていた前例がある（そちらは
+    /// 「生産者ゼロで永久沈黙」として fold-in 中に発見・再配線済）。
+    #[tokio::test]
+    async fn publish_lanes_wakes_vp_app_push_loop() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+        let key = "/tmp/proj-wakeup";
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
+        let mut notifier = LaneChangeNotifier::new(Some(tx));
+
+        publish_lanes(&state, &hub, &None, key, &mut notifier).await;
+        assert_eq!(
+            rx.try_recv().ok().as_deref(),
+            Some(key),
+            "初回 publish は push loop を起こす"
+        );
+    }
+
+    /// 5s tick が**そのまま 5s ごとの全 snapshot push にならない**こと。
+    ///
+    /// 供給点の 1 つは 5s periodic tick（disk-only performer の safety net）で、
+    /// 内容が変わっていなくても回る。ここで毎回起こすと project 数ぶんの全 snapshot が
+    /// 定期的に流れる。指紋で「変わった時だけ」に絞る。
+    #[tokio::test]
+    async fn publish_lanes_does_not_wake_on_unchanged_snapshot() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let hub = state.hub.clone();
+        let key = "/tmp/proj-unchanged";
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
+        let mut notifier = LaneChangeNotifier::new(Some(tx));
+
+        publish_lanes(&state, &hub, &None, key, &mut notifier).await;
+        assert!(rx.try_recv().is_ok(), "初回は起こす");
+
+        publish_lanes(&state, &hub, &None, key, &mut notifier).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "内容が同じなら起こさない（5s tick が push 源にならない）"
+        );
+    }
+
+    /// 指紋は「vp-app に届く値そのもの」から取る = **見えている値が変われば必ず起こす**。
+    ///
+    /// lanes だけを指紋にすると、起点（`origin`）だけが変わった時に起こさない穴ができる
+    /// （= D4 の「開発起点にする」を押しても star が動かない）。
+    #[tokio::test]
+    async fn notifier_wakes_when_only_origin_changes() {
+        let key = "/tmp/proj-origin-only";
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
+        let mut notifier = LaneChangeNotifier::new(Some(tx));
+
+        // lanes は同一で origin だけ違う 2 つの snapshot を直接与える。
+        let snapshot = |origin: &str| {
+            serde_json::to_string(&crate::protocol::ProcessMessage::LanesSnapshot {
+                lanes: vec![],
+                origin: Some(origin.to_string()),
+            })
+            .unwrap()
+        };
+
+        assert!(notifier.notify_if_changed(key, snapshot("root")));
+        assert!(rx.try_recv().is_ok());
+        assert!(
+            notifier.notify_if_changed(key, snapshot("feat-x")),
+            "origin だけの変化でも起こす"
+        );
+        assert!(rx.try_recv().is_ok());
+    }
+
+    // =====================================================================
+    // doc 45 段 4 — HTTP 面の route 登録そのものを固定する
+    //
+    // 撤去 PR の危険は 2 方向ある: (a) 残すべきものを巻き添えで落とす、
+    // (b) 消したつもりの route が登録に残る。route 表は「登録」と「handler」が
+    // 別ファイルにあるので、片方だけ消しても静的には気付けない。
+    // `build_world_router` を組んで実際に叩き、両方向を 1 箇所で見る。
+    // =====================================================================
+
+    async fn route_status(uri: &str, method: &str) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+        let state = crate::process::state::build_test_app_state(None).await;
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .expect("request");
+        build_world_router(state)
+            .oneshot(req)
+            .await
+            .expect("oneshot")
+            .status()
+    }
+
+    /// doc 45 §2 で HTTP に残すと決めた 2 本が、撤去の巻き添えで消えていないこと。
+    ///
+    /// health は「他が壊れている時に動いてほしい」probe（`.mise/tasks/app/swap` の Ruby と
+    /// `apple/VantagePointAgent` の Swift という **VP 外の消費者**も居る）、shutdown は
+    /// 緊急停止。両方同時に失うと診断手段と止める手段が同時に消える。
+    #[tokio::test]
+    async fn world_router_keeps_health_and_shutdown() {
+        assert_eq!(
+            route_status("/api/health", "GET").await,
+            axum::http::StatusCode::OK,
+            "GET /api/health は HTTP に残す（doc 45 §2）"
+        );
+        assert_eq!(
+            route_status("/api/shutdown", "POST").await,
+            axum::http::StatusCode::OK,
+            "POST /api/shutdown は HTTP に残す（doc 45 §2）"
+        );
+    }
+
+    /// 段 4 で撤去した control plane route が **登録にも残っていない**こと。
+    ///
+    /// handler を消しても route 登録が残っていれば compile エラーになるが、逆
+    /// （登録だけ消して handler が残る）は dead code 警告でしか気付けない。ここは
+    /// 「外から見て面が消えている」を直接確かめる側。
+    #[tokio::test]
+    async fn world_router_drops_removed_control_routes() {
+        for (uri, method) in [
+            ("/api/world/projects", "GET"),
+            ("/api/world/projects", "POST"),
+            ("/api/world/projects/reorder", "POST"),
+            ("/api/world/projects/update", "POST"),
+            ("/api/world/projects/remove", "POST"),
+            ("/api/world/projects/reload", "POST"),
+            ("/api/world/projects/sync", "POST"),
+            ("/api/world/processes", "GET"),
+            ("/api/world/lanes", "GET"),
+            ("/api/world/lanes", "POST"),
+            ("/api/world/lanes/active", "POST"),
+            ("/api/world/processes/vp/start", "POST"),
+            ("/api/world/processes/vp/stop", "POST"),
+            ("/api/world/processes/vp/restart", "POST"),
+            ("/api/world/processes/vp/pointview", "POST"),
+            ("/api/canvas/switch_lane", "POST"),
+            ("/api/canvas/layout", "GET"),
+            ("/api/canvas/layout", "POST"),
+        ] {
+            assert_eq!(
+                route_status(uri, method).await,
+                axum::http::StatusCode::NOT_FOUND,
+                "{method} {uri} は Unison world-control に移設済み（doc 45 段 4）"
+            );
+        }
+    }
+
+    /// `/api/update/*` は段 4 のスコープ外（doc 45 §3「churn が低いので後回しでよい」）。
+    /// 「ついでに消えた」を検出する側の網。
+    #[tokio::test]
+    async fn world_router_keeps_update_routes() {
+        for (uri, method) in [
+            ("/api/update/check", "GET"),
+            ("/api/update/apply", "POST"),
+            ("/api/update/rollback", "POST"),
+            ("/api/update/restart", "POST"),
+            ("/api/update/mac/check", "GET"),
+            ("/api/update/mac/apply", "POST"),
+            ("/api/update/mac/rollback", "POST"),
+        ] {
+            assert_ne!(
+                route_status(uri, method).await,
+                axum::http::StatusCode::NOT_FOUND,
+                "{method} {uri} は段 4 のスコープ外（route は残す）"
+            );
+        }
     }
 }

@@ -15,6 +15,15 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
+	clearLaneDrag,
+	commitLaneReorder,
+	dragLane,
+	laneDropMark,
+	setDragLane,
+	setLaneDropMark,
+	type DropPos,
+} from "./dnd";
+import {
 	isLaneAlive,
 	isPerformerLane,
 	laneAddressKey,
@@ -94,6 +103,11 @@ export function LaneRow(props: {
 	// 地 (ground): cwd を project root 起点の差分に畳む。 絶対 path は project が持つので
 	// lane は offset だけを名乗る。 conductor は差分ゼロ = "" → 行ごと出さない。
 	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.projectPath);
+	// doc 44 D4: 開発起点 lane か。真実源は Project Host の帳簿で、lanes snapshot の
+	// `origin` として届く (= lane 自身は役割を持たない、P2 のフラット化)。
+	// 未着 (起動直後 / 旧 server) は undefined → star を出さない。憶測で既定を描かない。
+	const isOrigin = () =>
+		sidebar.origin_by_project?.[props.projectPath] === props.lane.address.name;
 
 	// row click → main area を当該 Lane に切り替え。 Dead Lane (pid:null) も select を通す:
 	// activate_lane 側の maybe_respawn_dead_lane が on-demand で respawn し、 PtySlot 生成後に
@@ -102,6 +116,75 @@ export function LaneRow(props: {
 	// on-demand respawn が入り、 ガードが respawn 経路そのものを握り潰す本末転倒になっていたため撤廃 (BUG#2)。
 	const onSelect = () => {
 		sendIpc({ t: "lane:select", path: props.projectPath, address: addr() });
+	};
+
+	// ── 並べ替え D&D (doc 44 §12) ────────────────────────────────────────
+	// project accordion の D&D と同じ「行の上半分 = 手前 / 下半分 = 後ろ」規約。
+	// 落とせるのは **同じ project の lane 同士**だけ (帳簿は project ごとに 1 本)。
+	const isDragging = () => dragLane()?.address === addr();
+	const dropBefore = () => {
+		const m = laneDropMark();
+		return m?.address === addr() && m.pos === "before";
+	};
+	const dropAfter = () => {
+		const m = laneDropMark();
+		return m?.address === addr() && m.pos === "after";
+	};
+
+	const onDragStart = (e: DragEvent) => {
+		setDragLane({ path: props.projectPath, address: addr() });
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = "move";
+			// Firefox は dataTransfer に何か入れないと drag が始まらない。
+			e.dataTransfer.setData("text/plain", addr());
+		}
+		// project accordion の dragstart を巻き込まない (lane 行から掴んだら lane の
+		// 並べ替え。 ProjectAccordion 側も summary 由来しか通さない guard を持つ)。
+		e.stopPropagation();
+	};
+
+	const onDragOver = (e: DragEvent & { currentTarget: HTMLElement }) => {
+		const dragged = dragLane();
+		// 自分自身 / 別 project / ドラッグ中でない → drop を許可しない。
+		if (
+			dragged == null ||
+			dragged.address === addr() ||
+			dragged.path !== props.projectPath
+		) {
+			return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+		const rect = e.currentTarget.getBoundingClientRect();
+		const pos: DropPos =
+			e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+		const cur = laneDropMark();
+		if (cur == null || cur.address !== addr() || cur.pos !== pos) {
+			setLaneDropMark({ address: addr(), pos });
+		}
+	};
+
+	// ⚠️ ガードが真の時**だけ** preventDefault / stopPropagation する（onDragOver と同じ順序）。
+	// 無条件に止めると、**project を drag して lane 行の上で離した時**に drop がここで
+	// 消える: HTML5 DnD の drop はポインタ直下の要素（= lane 行）で発火し、祖先の
+	// `<details>` が dragover で preventDefault していても発火先は変わらない。
+	// つまり lane drag 中でなくても onDrop はここに来るので、素通しさせないと
+	// `ProjectAccordion.onDrop` に届かず project の並べ替えが無音で失われる。
+	const onDrop = (e: DragEvent) => {
+		const dragged = dragLane();
+		const mark = laneDropMark();
+		if (
+			dragged != null &&
+			mark != null &&
+			dragged.address !== addr() &&
+			dragged.path === props.projectPath
+		) {
+			e.preventDefault();
+			e.stopPropagation();
+			commitLaneReorder(props.projectPath, dragged.address, addr(), mark.pos);
+		}
+		clearLaneDrag();
 	};
 
 	// 右クリック → context menu。 Lane 操作は ContextMenu に一本化 (VP-204 PR-1 で
@@ -155,6 +238,21 @@ export function LaneRow(props: {
 					}),
 			});
 		}
+		// doc 44 D4/D5: 開発起点の再指定。**何も動かない** (cwd も active lane も engine も
+		// そのまま) ので確認は挟まない — 取り消しは別 lane を指すだけ。
+		// 既に起点の lane には出さない (押しても何も起きない項目を並べない)。
+		if (!isOrigin()) {
+			items.push({
+				label: "開発起点にする",
+				icon: "ph:star",
+				onSelect: () =>
+					sendIpc({
+						t: "lane:set_origin",
+						path: props.projectPath,
+						address: addr(),
+					}),
+			});
+		}
 		if (performer) {
 			// delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認。
 			items.push({
@@ -180,9 +278,17 @@ export function LaneRow(props: {
 				active: isActive(),
 				inactive: isInactive(),
 				performer: isPerformer(),
+				dragging: isDragging(),
+				"drop-before": dropBefore(),
+				"drop-after": dropAfter(),
 			}}
+			draggable="true"
 			onClick={onSelect}
 			onContextMenu={onContextMenu}
+			onDragStart={onDragStart}
+			onDragOver={onDragOver}
+			onDrop={onDrop}
+			onDragEnd={clearLaneDrag}
 		>
 			{/* ⓪ tree connector (CSS 描画、 線種で control surrender FSM を表現。
 			    脱 TUI hybrid 2026-07: glyph → pseudo-element、 描画は SHELL_CSS 参照) */}
@@ -196,6 +302,15 @@ export function LaneRow(props: {
 			<Show when={icon()}>
 				<span class="vp-lane-icon" title={standDisplayName(props.lane.stand)}>
 					<CreoIcon name={icon()!} size={14} />
+				</span>
+			</Show>
+			{/* 開発起点マーカー (doc 44 D4)。stand icon の直後 = 「この lane が何か」を
+			    修飾する層に置く (右端の state / badge は「今どうなっているか」で層が違う)。
+			    stand icon より 1 段小さく、光らせない — 起点は状態ではなく属性なので
+			    注意を引かない (光 = needs-you の専有、Shell.tsx の階層規約)。 */}
+			<Show when={isOrigin()}>
+				<span class="vp-lane-origin" title="この project の開発起点">
+					<CreoIcon name="ph:star-fill" size={11} />
 				</span>
 			</Show>
 			{/* session title を stand icon の右へ (= 旧 2 段目を 1 行目に昇格)。

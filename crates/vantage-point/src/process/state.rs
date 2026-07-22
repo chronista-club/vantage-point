@@ -126,7 +126,7 @@ pub(crate) struct AppState {
     /// SP は当該 Lane の PtySlot output を購読する pump を spawn して本 map に保持する
     /// (`process/terminal/data/{lane}/out` topic に route)。 `terminal_demand_stop {lane}` で
     /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
-    /// key は LaneAddress の Display 形 (`"<project>/conductor"` 等)。
+    /// key は LaneAddress の Display 形 (`"<project>/root"` 等)。
     pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// Agent 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。
     ///
@@ -142,7 +142,7 @@ impl AppState {
     // (TmuxActor 遅延初期化 + LaneAddress ⇄ tmux session 名の翻訳層) は退役。
     // lane の解決は `resolve_lane_address`、 console I/O は PtySlot (deliver_nudge / lane_capture)。
 
-    /// lane address 文字列（`<project>/conductor` / `<project>/performer/<name>`）を、
+    /// lane address 文字列（`<project>/root` / `<project>/performer/<name>`）を、
     /// Running な lane の [`LaneAddress`](super::lanes_state::LaneAddress) に解決する。
     ///
     /// nudge の宛先を `LaneAddress` で返し、
@@ -181,7 +181,8 @@ impl AppState {
         let Some(lane_addr) = self.resolve_lane_address(&query).await else {
             return false;
         };
-        match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, text).await {
+        // session=None = root（wire mailbox `agent@<lane>` を名乗るのは root、doc 39/46 P5）。
+        match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, None, text).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(
@@ -253,7 +254,7 @@ impl AppState {
                 .get("title")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let topic = format!("process/paisley-park/command/show/conductor/{}", pane_id);
+            let topic = format!("process/paisley-park/command/show/root/{}", pane_id);
             store.set(
                 &topic,
                 ProcessMessage::Show {
@@ -276,50 +277,11 @@ impl AppState {
         }
     }
 
-    /// Canvas レイアウト状態を pane_contents の reserved row に保存する。
-    ///
-    /// 旧 Whitesnake 退役 → SurrealDB 一本化。 layout は lane 非依存の単一 row
-    /// (lane=conductor, pane_id=[`CANVAS_LAYOUT_PANE_ID`]、 pane 一覧には現れない reserved key)。
-    pub async fn save_canvas_layout(&self, layout: &serde_json::Value) {
-        let Some(vpdb) = self.vpdb.as_ref() else {
-            return;
-        };
-        let content = serde_json::to_string(layout).unwrap_or_else(|_| "{}".to_string());
-        if let Err(e) = vpdb
-            .upsert_pp_state(
-                &self.project_dir,
-                None,
-                CANVAS_LAYOUT_PANE_ID,
-                "canvas-layout",
-                &content,
-                None,
-                None,
-                None,
-            )
-            .await
-        {
-            tracing::warn!("canvas layout 保存に失敗: {}", e);
-        }
-    }
-
-    /// Canvas レイアウト状態を pane_contents の reserved row から復元する。
-    pub async fn load_canvas_layout(&self) -> Option<serde_json::Value> {
-        let vpdb = self.vpdb.as_ref()?;
-        match vpdb
-            .load_pp_state(&self.project_dir, None, CANVAS_LAYOUT_PANE_ID)
-            .await
-        {
-            Ok(Some(row)) => row
-                .get("content")
-                .and_then(|c| c.as_str())
-                .and_then(|s| serde_json::from_str(s).ok()),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!("canvas layout 読み出しに失敗: {}", e);
-                None
-            }
-        }
-    }
+    // doc 45 段 4: `save_canvas_layout` / `load_canvas_layout` は撤去。
+    // 呼び出し元は `/api/canvas/layout` の 2 handler だけで、その route ごと落ちたため
+    // 読み手も書き手も居なくなった（doc 45 §3.1 — end-to-end で dead）。
+    // [`CANVAS_LAYOUT_PANE_ID`] 自体は残す: 過去に書かれた reserved row が db に残っており、
+    // `restore_panes` が pane 一覧から除外し続ける必要がある。
 }
 
 // --- VP-13 sub-scope E: Medium 層 route test 用 fixture ---
@@ -338,6 +300,21 @@ impl AppState {
 pub(crate) async fn build_test_app_state(
     world: Option<Arc<RwLock<ProcessManagerCapability>>>,
 ) -> Arc<AppState> {
+    build_test_app_state_with("", None, world).await
+}
+
+/// `build_test_app_state` の `project_dir` / `vpdb` を差せる版。
+///
+/// lane 作成の intent-first bracket（descriptor + lifecycle の永続、doc 44 §9.4）のように
+/// **db への書き込みが振る舞いの一部**になっている経路は、vpdb=None の fixture では
+/// 「書けたつもり」を素通りさせてしまう（= guard never-fire と同型の緑）。そこだけ
+/// 実 db（in-memory surrealkv）を差せるようにする。
+#[cfg(test)]
+pub(crate) async fn build_test_app_state_with(
+    project_dir: &str,
+    vpdb: Option<crate::db::SharedVpDb>,
+    world: Option<Arc<RwLock<ProcessManagerCapability>>>,
+) -> Arc<AppState> {
     use super::capabilities::CapabilityConfig;
     use super::lane_capabilities::LaneCapabilitiesPool;
     use super::lanes_state::LanePool;
@@ -345,7 +322,7 @@ pub(crate) async fn build_test_app_state(
 
     let capabilities = Arc::new(
         ProcessCapabilities::new(CapabilityConfig {
-            project_dir: String::new(),
+            project_dir: project_dir.to_string(),
         })
         .await,
     );
@@ -353,7 +330,7 @@ pub(crate) async fn build_test_app_state(
     Arc::new(AppState {
         hub: Hub::new(),
         shutdown_token: CancellationToken::new(),
-        project_dir: String::new(),
+        project_dir: project_dir.to_string(),
         project_name: String::new(),
         capabilities,
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
@@ -369,7 +346,7 @@ pub(crate) async fn build_test_app_state(
         topic_router: Arc::new(TopicRouter::new()),
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        vpdb: None,
+        vpdb,
         wiremsg_store: None,
         wire_notifier: WireNotifier::new(),
         delivery_notify: Arc::new(tokio::sync::Notify::new()),
@@ -395,8 +372,6 @@ mod lane_resolve_tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: addr.clone(),
-            kind: addr.kind,
-            name: addr.name.clone(),
             state: LaneState::Running,
             stand: stand.to_string(),
             created_at: "2026-06-16T00:00:00Z".to_string(),
@@ -417,10 +392,7 @@ mod lane_resolve_tests {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
-            pool.insert(running_lane(
-                LaneAddress::conductor("vantage-point"),
-                "echoes",
-            ));
+            pool.insert(running_lane(LaneAddress::root("vantage-point"), "echoes"));
             pool.insert(running_lane(
                 LaneAddress::performer("vantage-point", "hub-unison-client"),
                 "echoes",
@@ -428,8 +400,8 @@ mod lane_resolve_tests {
         }
 
         assert_eq!(
-            state.resolve_lane_address("vantage-point/conductor").await,
-            Some(LaneAddress::conductor("vantage-point"))
+            state.resolve_lane_address("vantage-point/root").await,
+            Some(LaneAddress::root("vantage-point"))
         );
         assert_eq!(
             state
@@ -453,10 +425,10 @@ mod lane_resolve_tests {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
-            let mut info = running_lane(LaneAddress::conductor("vp"), "echoes");
+            let mut info = running_lane(LaneAddress::root("vp"), "echoes");
             info.state = LaneState::Dead;
             pool.insert(info);
         }
-        assert_eq!(state.resolve_lane_address("vp/conductor").await, None);
+        assert_eq!(state.resolve_lane_address("vp/root").await, None);
     }
 }

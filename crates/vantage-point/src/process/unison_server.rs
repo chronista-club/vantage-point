@@ -80,9 +80,9 @@ fn board_key(scope: Option<&str>, lane: Option<&str>) -> (String, String, Option
     if scope == Some("proj") {
         return ("proj".to_string(), String::new(), None);
     }
-    // lane 正規化: None/""/"conductor" → '' (conductor)。
+    // lane 正規化: None/""/予約名 → '' (開発起点 lane)。
     let lane_name = lane
-        .filter(|s| !s.is_empty() && *s != "conductor")
+        .filter(|s| !s.is_empty() && *s != crate::process::lanes_state::ROOT_LANE_NAME)
         .unwrap_or("")
         .to_string();
     let broadcast_lane = if lane_name.is_empty() {
@@ -514,7 +514,9 @@ pub(crate) async fn respawn_terminal_pump(state: &AppState, lane: &str) -> bool 
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return false;
     };
-    let attached = state.lane_pool.read().await.attach_output(&addr);
+    // doc 46 P5: pump が張るのは lane の代表 slot（session=None = root）。
+    // 非 root slot の GUI 配線は UI フェーズ（LayoutEngine）で pane ごとに張る。
+    let attached = state.lane_pool.read().await.attach_output(&addr, None);
     let Some((replay, rx)) = attached else {
         tracing::debug!("respawn_terminal_pump: Lane に PtySlot 無 (lane={})", lane);
         return false;
@@ -607,7 +609,7 @@ async fn handle_echoes_demand_start(
     // session の解決（None = focused、doc 38 — replay は session 単位）は chat 確定後。
     let resolved = {
         let pool = state.lane_pool.read().await;
-        if pool.console_mode(&addr) != Some(crate::lane::console_mode::ConsoleMode::Chat) {
+        if pool.console_mode(&addr) != Some(crate::lane::session_registry::SessionAct::Chat) {
             return Ok(serde_json::json!({"status": "not_chat", "lane": lane}));
         }
         pool.resolve_chat_session(&addr, session)
@@ -795,9 +797,19 @@ async fn route_echoes(
     }
 }
 
-/// payload の additive な session key（doc 38。省略 / null = None = focused に解決される）。
-/// 型不正・0 は Err — 黙って focused に落とすと「指定したつもりの session と別の会話に届く」
+/// payload の additive な session key（doc 38 / doc 46 P5）。省略 / null = `None`。
+///
+/// 型不正・0 は Err — 黙って既定に落とすと「指定したつもりの session と別の会話に届く」
 /// 誤配送になるため、明示エラーで返す。
+///
+/// ⚠️ **`None` の解決先は経路で違う**（型が同じなので取り違えやすい）:
+/// - chat 系（`echoes_*`）= **focused**（[`LanePool::resolve_chat_session`]）
+/// - slot 系（`terminal_*` / `lane_capture` / `lane_nudge`）= **root**
+///   （[`LanePool::slot_session`] — slot は lane の設備で、代表は root。doc 39「座と化身」）
+/// - 会話報告（`lane_session_changed`）= **root だが「不明」として運ぶ**
+///   （[`crate::lane::session_registry::ReportTarget::Unspecified`] — 着地先は root でも、
+///   「名乗らなかった」という事実を registry まで届ける。root に丸めてから渡すと、実在しない
+///   session の報告も root 宛と見分けが付かなくなる。doc 40 §4）
 fn payload_session_key(
     ctx: &str,
     payload: &serde_json::Value,
@@ -818,7 +830,7 @@ fn payload_session_key(
 ///
 /// surface (vp-app) → World canvas channel (upstream request) → SP control → 本 dispatch。
 /// `data` は base64 (出力 pump の encoding と対称、 任意バイトを JSON で運ぶため)。 decode して
-/// 当該 Lane の PtySlot に書き込む。
+/// 当該 slot の PtySlot に書き込む (`session` 省略 = root、doc 46 P5)。
 async fn handle_terminal_write(
     state: &AppState,
     payload: serde_json::Value,
@@ -840,7 +852,11 @@ async fn handle_terminal_write(
         .lane_pool
         .read()
         .await
-        .write_to_lane(&addr, &bytes)
+        .write_to_lane(
+            &addr,
+            payload_session_key("terminal_write", &payload)?,
+            &bytes,
+        )
         .map_err(|e| format!("terminal_write 失敗: {}", e))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
@@ -1172,7 +1188,7 @@ async fn handle_echoes_session_new_root(
         .lane_pool
         .write()
         .await
-        .prepare_new_root_session(&addr)
+        .prepare_new_root_session(&addr, payload.get("stand").and_then(|v| v.as_str()))
         .map_err(|e| format!("echoes_session_new_root: {e}"))?;
     // registry は新 root へ切替済み（原子的な 1 save）。以降の slot 張り替えが失敗しても registry は
     // 先行して整合 — 次の respawn / restart（Resume 経路）でも未発話の非 #1 root は
@@ -1287,7 +1303,7 @@ async fn handle_console_set_mode(
         return Err("console_set_mode: lane 未指定".to_string());
     }
     let mode_str = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
-    let mode = crate::lane::console_mode::ConsoleMode::parse(mode_str)
+    let mode = crate::lane::session_registry::SessionAct::parse(mode_str)
         .ok_or_else(|| format!("console_set_mode: mode 不正: {mode_str:?}（tui|chat）"))?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("console_set_mode: lane パース失敗: {lane}"))?;
@@ -1299,7 +1315,7 @@ async fn handle_console_set_mode(
         // doc 33 §9: chat へは engine を eager spawn（切替時に resume を開始 → session_init を
         // 早く出す = 引き継ぎ progress を切替時に集約）。失敗しても mode 切替自体は成功扱いにし、
         // engine は次の submit で self-heal 再試行される（切替 UX を engine エラーで巻き戻さない）。
-        if mode == crate::lane::console_mode::ConsoleMode::Chat
+        if mode == crate::lane::session_registry::SessionAct::Chat
             && let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router)
         {
             tracing::warn!(
@@ -1317,7 +1333,7 @@ async fn handle_console_set_mode(
     // subscribe が demand 0→1 を撃ってこの pump が張られる。terminal topic は非 retained なので、
     // どちらの経路でも購読者不在の間に流れた PTY 出力は復元されない。
     // 上の write lock は block を抜けて drop 済（respawn_terminal_pump は内部で read lock を取る）。
-    if mode == crate::lane::console_mode::ConsoleMode::Tui
+    if mode == crate::lane::session_registry::SessionAct::Tui
         && !respawn_terminal_pump(state, lane).await
     {
         tracing::warn!(
@@ -1424,10 +1440,78 @@ async fn handle_lane_nudge(
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("lane_nudge: lane パース失敗: {}", lane));
     };
-    crate::process::lanes_state::deliver_nudge(&state.lane_pool, &addr, text)
+    // doc 46 P5: `session` 省略 = root（mailbox を名乗る住人）。明示指定で同居する別 slot に届く。
+    let session = payload_session_key("lane_nudge", &payload)?;
+    crate::process::lanes_state::deliver_nudge(&state.lane_pool, &addr, session, text)
         .await
         .map_err(|e| format!("lane_nudge 失敗: {}", e))?;
-    Ok(serde_json::json!({"status": "ok", "lane": lane}))
+    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
+}
+
+/// doc 46 P5: lane が持つ **PTY slot の一覧**（session / pid / 生死 / root か / attach 有無）。
+///
+/// slot は lane に 1 枚ではなく session ごとになった。表示は当面ミニマム（1 枚ずつ）なので、
+/// **UI を通さずに枚数と中身を読む口**をここに置く（doc 47 §7 成立条件② — 「読み手のない
+/// 書き込み」を作らない）。CLI `vp lane slots` がこの method を ask する。
+async fn handle_lane_slots(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_slots: lane 未指定".to_string());
+    }
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("lane_slots: lane パース失敗: {}", lane));
+    };
+    let pool = state.lane_pool.read().await;
+    if pool.get(&addr).is_none() {
+        return Err(format!("lane_slots: lane 不在: {lane}"));
+    }
+    let slots = pool.slot_inventory(&addr);
+    Ok(serde_json::json!({
+        "status": "ok",
+        "lane": lane,
+        "count": slots.len(),
+        "slots": slots,
+    }))
+}
+
+/// doc 46 P5 **producer**: 新しい console（slot）を 1 枚立てる。
+/// `{lane, stand?}` → `{status, lane, session, pid, count}`。
+///
+/// - 常に **新しい session** を採番してそこに slot を立てる（doc 46 §1.5「Pane は必ず新しい
+///   session id で始まる」= session ↔ Pane 1:1）。既存 session の open は持たない
+/// - `stand` 省略 = 現 root の engine を引き継ぐ（doc 46 P2 の「Engine を選んで新コンソール」の
+///   Act I 版。`echoes_session_create` は Act=Chat 固定なのでそちらでは作れない）
+/// - **root / focused は動かさない** — mailbox も pid も Dead 判定も root のまま（doc 40 §4-1）
+///
+/// GUI 配線（pump）は張らない。表示はミニマム据え置き（doc 47 §7）なので、立てた console を
+/// 読み書きするのは `vp lane slots` / `vp lane capture --session` / `vp lane nudge --session`。
+async fn handle_lane_slot_new(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_slot_new: lane 未指定".to_string());
+    }
+    let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
+        return Err(format!("lane_slot_new: lane パース失敗: {}", lane));
+    };
+    let stand = payload.get("stand").and_then(|v| v.as_str());
+    let mut pool = state.lane_pool.write().await;
+    let (session, pid) = pool
+        .open_new_slot(&addr, stand)
+        .map_err(|e| format!("lane_slot_new: {e}"))?;
+    let count = pool.slot_sessions(&addr).len();
+    Ok(serde_json::json!({
+        "status": "ok",
+        "lane": lane,
+        "session": session,
+        "pid": pid,
+        "count": count,
+    }))
 }
 
 /// tmux decoupling: lane console capture。 lane の Term grid（TermAttach）を text で返す。
@@ -1445,15 +1529,27 @@ async fn handle_lane_capture(
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("lane_capture: lane パース失敗: {}", lane));
     };
+    // doc 46 P5: `session` 省略 = root（lane の代表 slot）。明示指定で同居する別 slot を読む。
+    let session = payload_session_key("lane_capture", &payload)?;
     let pool = state.lane_pool.read().await;
-    let content = match pool.capture_lane(&addr) {
+    let content = match pool.capture_lane(&addr, session) {
         Some(c) => c,
         None => {
-            // capture 不能の理由を 3 分岐して UX 混乱を減らす（dogfood 2026-07-19: chat mode lane で
+            // capture 不能の理由を分岐して UX 混乱を減らす（dogfood 2026-07-19: chat mode lane で
             // 一律「lane 不在 or console 未配線」に混乱した）。chat mode lane は term_attach 無しが
             // 正常なので、pool に実在して console_mode==Chat なら「Act I に切り替えよ」と案内する。
+            // doc 46 P5: slot が複数枚になったので「その lane には何枚あるか」も添える
+            // （--session の指し先が無い時に、存在する session key が判る）。
+            let available = pool.slot_sessions(&addr);
             let msg = match pool.get(&addr) {
-                Some(info) if info.console_mode == crate::lane::console_mode::ConsoleMode::Chat => {
+                Some(_) if session.is_some_and(|k| !available.contains(&k)) => format!(
+                    "lane_capture: 指定 session に console はありません（session={}, この lane の slot: {:?}）: {lane}",
+                    session.unwrap_or(0),
+                    available
+                ),
+                Some(info)
+                    if info.console_mode == crate::lane::session_registry::SessionAct::Chat =>
+                {
                     format!(
                         "lane_capture: chat mode の lane に console はありません（Act I に切り替えると capture できます）: {lane}"
                     )
@@ -1464,7 +1560,13 @@ async fn handle_lane_capture(
             return Err(msg);
         }
     };
-    Ok(serde_json::json!({"status": "ok", "lane": lane, "content": content}))
+    Ok(serde_json::json!({
+        "status": "ok",
+        "lane": lane,
+        "session": session,
+        "slots": pool.slot_sessions(&addr),
+        "content": content,
+    }))
 }
 
 /// S3: terminal resize。 PtySlot (+ TermAttach grid) を cols×rows に同期する。
@@ -1493,7 +1595,12 @@ async fn handle_terminal_resize(
         .lane_pool
         .read()
         .await
-        .resize_lane(&addr, cols, rows)
+        .resize_lane(
+            &addr,
+            payload_session_key("terminal_resize", &payload)?,
+            cols,
+            rows,
+        )
         .map_err(|e| format!("terminal_resize 失敗: {}", e))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "cols": cols, "rows": rows}))
 }
@@ -1562,6 +1669,10 @@ async fn handle_lane_restart(
 /// push 経路に変化イベントが存在しなかった）。hook → World "wire" channel
 /// (`lane/session-changed`) → 本 method で SP に届き、SP が focused session 規則で真値を
 /// re-enrich して `Diff::Update` を emit する（World は routing のみ、真実源は SP のまま）。
+///
+/// doc 40 §4 / doc 46 P5: payload の `session` は**報告者が名乗った session**。会話 id は
+/// その session に記録される（root 固定ではない）— 同じ lane に複数の console slot が
+/// 同居しても、同居人の報告が root の `--resume` を壊さない。
 async fn handle_lane_session_changed(
     state: &Arc<AppState>,
     payload: serde_json::Value,
@@ -1581,21 +1692,33 @@ async fn handle_lane_session_changed(
     else {
         return Err(format!("lane_session_changed: lane が存在しません: {lane}"));
     };
-    // doc 40 §4/§6: hook の会話報告（session_id + event）を root session に適用する —
-    // policy（root 解決 + F1/F2 guard）の唯一の実装点は record_root_conversation。
-    // session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」（従来互換、enrich だけ行う）。
+    // doc 40 §4/§6: hook の会話報告（session_id + event + 報告者が名乗る session）を
+    // **報告された session** に適用する — policy（宛先解決 + F1/F2 guard）の唯一の実装点は
+    // record_conversation。session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」
+    // （従来互換、enrich だけ行う）。
     if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
-        use crate::lane::session_registry::ConversationReport;
-        let report = match payload.get("event").and_then(|v| v.as_str()) {
-            Some("issued") => ConversationReport::Issued,
-            _ => ConversationReport::Spoken,
+        use crate::lane::session_registry::{ConversationReport, ReportTarget, ReportTrigger};
+        let trigger = match payload.get("event").and_then(|v| v.as_str()) {
+            Some("issued") => ReportTrigger::Issued,
+            _ => ReportTrigger::Spoken,
+        };
+        // `session` 不在 = 報告者が名乗らなかった（VP_SESSION_KEY 無しで spawn 済の slot /
+        // VP 外起動）→ 後方互換で root 宛。**ここで root に丸めない**（Unspecified のまま
+        // 渡す）ことで、実在しない session の報告が root に化けるのを registry 側が拒める。
+        let target = match payload_session_key("lane_session_changed", &payload)? {
+            Some(key) => ReportTarget::Session(key),
+            None => ReportTarget::Unspecified,
+        };
+        let report = ConversationReport {
+            target,
+            conversation: sid,
+            trigger,
         };
         let lane_label = crate::process::stand_spawner::lane_label(&addr);
-        match crate::lane::session_registry::record_root_conversation(
+        match crate::lane::session_registry::record_conversation(
             &addr.project,
             lane_label,
             &stand,
-            sid,
             report,
         ) {
             Ok(outcome) => {
@@ -1626,10 +1749,108 @@ async fn handle_lane_create(
     serde_json::to_value(&info).map_err(|e| format!("lane_create: LaneInfo serialize 失敗: {}", e))
 }
 
+/// 帳簿が起点を解決するための lane 一覧（id と表示名の対だけ）。
+///
+/// `LaneInfo` 全体ではなく [`crate::host::ledger::LaneRef`] に落とすのは、帳簿が lane の
+/// 中身に依存しないため（`host::farewell` が git を知らないのと同じ切り方）。
+async fn ledger_lane_refs(state: &Arc<AppState>) -> Vec<crate::host::ledger::LaneRef> {
+    state
+        .lane_pool
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|l| crate::host::ledger::LaneRef::new(l.id.to_string(), l.address.name))
+        .collect()
+}
+
+/// doc 44 D4: 帳簿から開発起点を読む。応答は [`crate::host::ledger::Origin`] の JSON。
+///
+/// 未設定 / dangling でも error にせず、**どう決まったか**を `source` で返す
+/// （起点が読めないだけで呼び出し側が止まる方が困る）。
+async fn handle_lane_origin_get(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
+    let lanes = ledger_lane_refs(state).await;
+    let origin = crate::host::ledger::origin(state.vpdb.as_ref(), &state.project_dir, &lanes).await;
+    serde_json::to_value(&origin).map_err(|e| format!("lane_origin_get: serialize 失敗: {e}"))
+}
+
+/// doc 44 D4: 開発起点を設定する。payload = `{ "lane": "<lane 名>" }`。
+///
+/// 人が打つのは名前、帳簿に入るのは `lane_id` — 変換は
+/// [`crate::host::ledger::set_origin`] が境界で 1 回だけ行う。
+/// D5 の通り **何も動かさない**（cwd も active lane も変えない、ポインタの書き換えだけ）。
+async fn handle_lane_origin_set(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("lane_origin_set: lane 必須".to_string());
+    }
+    let lanes = ledger_lane_refs(state).await;
+    crate::host::ledger::set_origin(state.vpdb.as_ref(), &state.project_dir, lane, &lanes).await?;
+    // 起点は snapshot の `origin` に載るので、投影が変わった = 即 publish する。
+    // これが無いと 5s periodic tick まで sidebar の star が動かず「押しても無反応」に見える。
+    let _ = state
+        .system_event_tx
+        .send(crate::process::lanes_state::SystemEvent::LanesProjectionChanged);
+    let origin = crate::host::ledger::origin(state.vpdb.as_ref(), &state.project_dir, &lanes).await;
+    serde_json::to_value(&origin).map_err(|e| format!("lane_origin_set: serialize 失敗: {e}"))
+}
+
+/// doc 44 §12: lane の並び順を帳簿に保存する。payload = `{ "order": ["<lane 名>", ...] }`。
+///
+/// 起点と同じく、人が触るのは名前で帳簿に入るのは `lane_id`。保存後の反映は
+/// 次の lanes snapshot に載って戻る（`build_lanes_snapshot` が帳簿の順で並べる）。
+async fn handle_lane_order_set(
+    state: &Arc<AppState>,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let order: Vec<String> = payload
+        .get("order")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if order.is_empty() {
+        return Err("lane_order_set: order 必須".to_string());
+    }
+    let lanes = ledger_lane_refs(state).await;
+    crate::host::ledger::set_lane_order(state.vpdb.as_ref(), &state.project_dir, &order, &lanes)
+        .await?;
+    // 並び順が変わった = snapshot が変わるので、publish して vp-app を起こす
+    // （doc 44 §11 の指紋は lanes の並びも含むため、次の publish で必ず届く）。
+    let _ = state
+        .system_event_tx
+        .send(crate::process::lanes_state::SystemEvent::LanesProjectionChanged);
+    Ok(serde_json::json!({ "status": "ok", "count": order.len() }))
+}
+
 /// lanes portless (doc 27 §3.4.5): Lane list。 旧 SP HTTP `GET /api/lanes` を process-proxy ask に
 /// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
 async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
     let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    // doc 46 P5: slot は lane に 1 枚ではなく session ごとになった。`vp lane ls --detail` から
+    // 枚数が見えるよう、lane ごとの slot session key を snapshot に添える（LaneInfo 自体には
+    // 足さない — descriptor は帳簿の永続形で、slot は in-memory な runtime 事実だから。
+    // 混ぜると「再起動で復元されるべき値」に見えてしまう）。
+    let pool = state.lane_pool.read().await;
+    let lanes: Vec<serde_json::Value> = lanes
+        .iter()
+        .map(|lane| {
+            let mut v = serde_json::to_value(lane).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "slots".to_string(),
+                    serde_json::json!(pool.slot_sessions(&lane.address)),
+                );
+            }
+            v
+        })
+        .collect();
     Ok(serde_json::json!({ "lanes": lanes }))
 }
 
@@ -1691,6 +1912,10 @@ pub(crate) async fn dispatch_process_method(
         "lane_nudge" => handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
         "lane_capture" => handle_lane_capture(state, payload).await,
+        // doc 46 P5: lane が持つ PTY slot の一覧（UI を通さない slot 枚数の読み手）
+        "lane_slots" => handle_lane_slots(state, payload).await,
+        // doc 46 P5 producer: 新 session を採番して console を 1 枚立てる（`lane_slots` の書き手）
+        "lane_slot_new" => handle_lane_slot_new(state, payload).await,
         "terminal_resize" => handle_terminal_resize(state, payload).await,
         // board モデル (2026-07-15): webview からの board mutate（thumbnail ✕ / Clear ボタン）。
         // 旧 pp_state_save/load は撤去（board は SP truth、 webview は BoardUpdated 購読 + mutate へ）。
@@ -1705,6 +1930,10 @@ pub(crate) async fn dispatch_process_method(
         "lane_restart" => handle_lane_restart(state, payload).await,
         // 供給 push 根治: hook → World 経由の session pointer 変化通知（Diff::Update push の起点）
         "lane_session_changed" => handle_lane_session_changed(state, payload).await,
+        // doc 44 D4: Project Host の帳簿 — 開発起点ポインタの読み書き
+        "lane_origin_get" => handle_lane_origin_get(state).await,
+        "lane_origin_set" => handle_lane_origin_set(state, payload).await,
+        "lane_order_set" => handle_lane_order_set(state, payload).await,
         // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
         "stands_list" => handle_stands_list().await,
         // L0 finale: SP graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、
@@ -1985,8 +2214,8 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::conductor("vp");
-        let lane = addr.to_string(); // "vp/conductor"
+        let addr = LaneAddress::root("vp");
+        let lane = addr.to_string(); // "vp/root"
 
         // 実 PtySlot を attach (subscribe_output が Some を返す前提を作る)。
         {
@@ -1996,7 +2225,7 @@ mod tests {
                 .lane_pool
                 .write()
                 .await
-                .insert_pty_slot(addr.clone(), slot, rx);
+                .insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // surface 相当: SP topic_router に per-lane terminal topic を購読。
@@ -2050,7 +2279,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "terminal_demand_start",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await
         .expect("demand_start");
@@ -2072,7 +2301,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::conductor("vp");
+        let addr = LaneAddress::root("vp");
         let lane = addr.to_string();
 
         {
@@ -2082,7 +2311,7 @@ mod tests {
                 .lane_pool
                 .write()
                 .await
-                .insert_pty_slot(addr.clone(), slot, rx);
+                .insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // PTY 出力を write 前に購読 (echo を取りこぼさない)。
@@ -2090,7 +2319,7 @@ mod tests {
             .lane_pool
             .read()
             .await
-            .subscribe_output(&addr)
+            .subscribe_output(&addr, None)
             .expect("subscribe_output");
 
         // シェル初期化待ち。
@@ -2180,7 +2409,7 @@ mod tests {
         // performer lane (conductor とは別 topic key になる)
         let addr = LaneAddress::performer("vp", "feat-replay");
         let lane = addr.to_string();
-        assert_eq!(lane, "vp/performer/feat-replay");
+        assert_eq!(lane, "vp/feat-replay"); // doc 44 P2: フラット化後の表示形
 
         // 実 PtySlot を performer address で登録
         {
@@ -2190,7 +2419,7 @@ mod tests {
                 .lane_pool
                 .write()
                 .await
-                .insert_pty_slot(addr.clone(), slot, rx);
+                .insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // マーカーを PTY に出力させる (echo)。 この出力は「過去」= replay buffer に溜まる。
@@ -2204,7 +2433,8 @@ mod tests {
         };
         {
             let pool = state.lane_pool.write().await;
-            pool.write_to_lane(&addr, &echo_cmd).expect("write to PTY");
+            pool.write_to_lane(&addr, None, &echo_cmd)
+                .expect("write to PTY");
         }
 
         // マーカーが replay buffer に確実に入るまで待つ (PtySlot が echo を読み終える猶予)。
@@ -2268,7 +2498,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "terminal_write",
-            serde_json::json!({ "lane": "vp/conductor", "data": data }),
+            serde_json::json!({ "lane": "vp/root", "data": data }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への write は Err");
@@ -2298,7 +2528,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "lane_nudge",
-            serde_json::json!({ "lane": "vp/conductor", "text": "x" }),
+            serde_json::json!({ "lane": "vp/root", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への nudge は Err: {res:?}");
@@ -2322,7 +2552,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_nudge",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         assert!(res.is_err(), "text 未指定は Err: {res:?}");
@@ -2338,7 +2568,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_nudge",
-            serde_json::json!({ "lane": "vp/conductor", "text": "x" }),
+            serde_json::json!({ "lane": "vp/root", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "不在 lane への nudge は Err: {res:?}");
@@ -2365,7 +2595,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_respond",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         assert!(res.is_err(), "request_id 未指定は Err: {res:?}");
@@ -2381,7 +2611,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_respond",
-            serde_json::json!({ "lane": "vp/conductor", "request_id": "r1", "answers": {} }),
+            serde_json::json!({ "lane": "vp/root", "request_id": "r1", "answers": {} }),
         )
         .await;
         assert!(res.is_err(), "engine 不在への respond は Err: {res:?}");
@@ -2445,7 +2675,7 @@ mod tests {
             let res = dispatch_process_method(
                 &state,
                 method,
-                serde_json::json!({ "lane": "vp/conductor", "session": 1 }),
+                serde_json::json!({ "lane": "vp/root", "session": 1 }),
             )
             .await;
             assert!(res.is_err(), "{method}: 不在 lane は Err: {res:?}");
@@ -2454,7 +2684,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "echoes_session_focus",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         assert!(res.is_err(), "session 未指定の focus は Err: {res:?}");
@@ -2465,7 +2695,7 @@ mod tests {
     #[tokio::test]
     async fn lane_capture_dispatch_error_paths() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
@@ -2483,7 +2713,7 @@ mod tests {
         let res = dispatch_process_method(
             &state,
             "lane_capture",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await;
         let err = res.expect_err("pool 不在 lane の capture は Err");
@@ -2498,11 +2728,9 @@ mod tests {
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
-                console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+                console_mode: crate::lane::session_registry::SessionAct::Chat,
                 id: Default::default(),
                 address: addr.clone(),
-                kind: LaneKind::Performer,
-                name: Some("chat-x".to_string()),
                 state: LaneState::Running,
                 stand: "echoes".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2529,13 +2757,211 @@ mod tests {
         );
     }
 
+    /// doc 46 P5: slot が (lane, session) key になったので、**UI を通さずに枚数と中身を読む口**を
+    /// 用意した（doc 47 §7 成立条件② — 「読み手のない書き込み」を作らない）。
+    /// `lane_slots` の一覧と、`lane_capture --session` の指し先不在エラーを固定する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lane_slots_lists_every_session_slot() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        // slot_inventory は root を registry から解決する → tempdir に隔離。
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+
+        let addr = LaneAddress::root("vp");
+        let res = dispatch_process_method(
+            &state,
+            "lane_slots",
+            serde_json::json!({ "lane": addr.to_string() }),
+        )
+        .await;
+        assert!(
+            res.expect_err("pool 不在 lane は Err")
+                .contains("lane 不在"),
+            "pool に居ない lane は『lane 不在』"
+        );
+
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                console_mode: crate::lane::session_registry::SessionAct::Tui,
+                id: Default::default(),
+                address: addr.clone(),
+                state: LaneState::Running,
+                stand: "shell".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: cwd.clone(),
+                performer_status: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                engine_stand: None,
+                flow_state: None,
+            });
+            for key in [1u32, 2] {
+                let (slot, rx) = PtySlot::spawn(
+                    &cwd,
+                    "/bin/sh",
+                    &["-c".to_string(), "cat".to_string()],
+                    &[],
+                    80,
+                    24,
+                    None,
+                )
+                .expect("PTY spawn");
+                pool.insert_pty_slot(addr.clone(), Some(key), slot, rx);
+            }
+        }
+
+        let res = dispatch_process_method(
+            &state,
+            "lane_slots",
+            serde_json::json!({ "lane": addr.to_string() }),
+        )
+        .await
+        .expect("lane_slots");
+        assert_eq!(res["count"], 2, "同居する slot の枚数が読める: {res}");
+        assert_eq!(res["slots"][0]["session"], 1);
+        assert_eq!(
+            res["slots"][0]["root"], true,
+            "#1 が root（registry 既定形）"
+        );
+        assert_eq!(res["slots"][1]["session"], 2);
+        assert_eq!(res["slots"][1]["root"], false);
+
+        // capture は session 指定で slot を選べる。応答に slots を添えるので、
+        // 「今どれを読んだか」「他に何枚あるか」が CLI から判る。
+        let res = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": addr.to_string(), "session": 2 }),
+        )
+        .await
+        .expect("capture #2");
+        assert_eq!(res["session"], 2);
+        assert_eq!(res["slots"], serde_json::json!([1, 2]));
+
+        // 指し先が無い session は、存在する slot を添えて Err（探し方が判るエラー）。
+        let err = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": addr.to_string(), "session": 9 }),
+        )
+        .await
+        .expect_err("不在 session の capture は Err");
+        assert!(
+            err.contains("この lane の slot") && err.contains("[1, 2]"),
+            "存在する slot を案内する: {err}"
+        );
+    }
+
+    /// doc 46 P5 producer の end-to-end（RPC → CLI が見る形）: `lane_slot_new` で立てた console が
+    /// `lane_slots` に **2 枚目として出る**こと。#854 が用意した容量に production の書き手が
+    /// 付いたことの証跡（「読み手のない書き込み」の逆 — 読み手は先にあり、書き手が来た）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lane_slot_new_adds_a_console_visible_in_lane_slots() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        // session registry / slot_inventory の root 解決は vp_state_dir() を読む → tempdir に隔離。
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let addr = LaneAddress::root("vp");
+        let lane = addr.to_string();
+
+        // lane 不在は Err（他の lane_* dispatch と同じ入口検査）。
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({ "lane": "%3" }),
+            serde_json::json!({ "lane": lane.clone() }),
+        ] {
+            let res = dispatch_process_method(&state, "lane_slot_new", payload.clone()).await;
+            assert!(res.is_err(), "入口検査: {payload} は Err: {res:?}");
+        }
+
+        // stand="shell" の lane（console に engine を注入しない）+ 既存の root slot。
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                console_mode: crate::lane::session_registry::SessionAct::Tui,
+                id: Default::default(),
+                address: addr.clone(),
+                state: LaneState::Running,
+                stand: "shell".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: cwd.clone(),
+                performer_status: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                engine_stand: None,
+                flow_state: None,
+            });
+            let (slot, rx) = PtySlot::spawn(
+                &cwd,
+                "/bin/sh",
+                &["-c".to_string(), "cat".to_string()],
+                &[],
+                80,
+                24,
+                None,
+            )
+            .expect("PTY spawn");
+            pool.insert_pty_slot(addr.clone(), Some(1), slot, rx);
+        }
+
+        // stand 省略 = 現 root の engine を引き継ぐ（registry 不在 = lane stand の "shell"）。
+        let res = dispatch_process_method(
+            &state,
+            "lane_slot_new",
+            serde_json::json!({ "lane": lane.clone() }),
+        )
+        .await
+        .expect("lane_slot_new");
+        assert_eq!(res["session"], 2, "新 session を採番して立てる: {res}");
+        assert_eq!(res["count"], 2, "この lane の console は 2 枚に: {res}");
+
+        let res = dispatch_process_method(
+            &state,
+            "lane_slots",
+            serde_json::json!({ "lane": lane.clone() }),
+        )
+        .await
+        .expect("lane_slots");
+        assert_eq!(res["count"], 2, "`vp lane slots` に 2 枚出る: {res}");
+        assert_eq!(res["slots"][1]["session"], 2);
+        assert_eq!(res["slots"][1]["root"], false, "同居人であって代表ではない");
+        assert_eq!(res["slots"][1]["alive"], true);
+
+        // 立てた console は `vp lane capture --session 2` で読める（UI を通さない読み手）。
+        let res = dispatch_process_method(
+            &state,
+            "lane_capture",
+            serde_json::json!({ "lane": lane, "session": 2 }),
+        )
+        .await
+        .expect("capture #2");
+        assert_eq!(res["session"], 2);
+    }
+
     /// doc 39 P4-A: console_set_model の可否判定は lane 固定 stand ではなく **root session の
     /// stand**（slot の engine）で決まる。cross-engine root（#812）で lane stand と食い違っても、
     /// picker で slot に立てた engine の能力に追従することを両方向で固定する。
     #[tokio::test]
     async fn console_set_model_gates_on_root_session_stand() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::process::state::build_test_app_state;
 
         // session_registry / engine_model は vp_state_dir() を読む → tempdir に隔離。
@@ -2544,11 +2970,9 @@ mod tests {
 
         // console_mode=Chat の performer LaneInfo を組む（Chat なので drop/ensure engine は走らない）。
         let build = |name: &str, stand: &str| LaneInfo {
-            console_mode: crate::lane::console_mode::ConsoleMode::Chat,
+            console_mode: crate::lane::session_registry::SessionAct::Chat,
             id: Default::default(),
             address: LaneAddress::performer("vp", name),
-            kind: LaneKind::Performer,
-            name: Some(name.to_string()),
             state: LaneState::Running,
             stand: stand.to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2564,8 +2988,14 @@ mod tests {
 
         // ケース①: lane 固定 stand=codex（非対応）だが root session を echoes（claude）に向けた lane。
         // → root stand で判定するので model 切替は **成功**する。
-        crate::lane::session_registry::create_root("vp", "root-claude", "codex", "echoes")
-            .expect("root を echoes session に");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "root-claude",
+            "codex",
+            "echoes",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("root を echoes session に");
         state
             .lane_pool
             .write()
@@ -2589,8 +3019,14 @@ mod tests {
 
         // ケース②: lane 固定 stand=echoes（対応）だが root session を codex に向けた lane。
         // → root stand で判定するので model 切替は **拒否**される（lane stand に引きずられない）。
-        crate::lane::session_registry::create_root("vp", "root-codex", "echoes", "codex")
-            .expect("root を codex session に");
+        crate::lane::session_registry::create_root(
+            "vp",
+            "root-codex",
+            "echoes",
+            "codex",
+            crate::lane::session_registry::SessionAct::Tui,
+        )
+        .expect("root を codex session に");
         state
             .lane_pool
             .write()
@@ -2616,7 +3052,7 @@ mod tests {
     async fn lane_delete_removes_performer_and_idempotent() {
         use super::dispatch_process_method;
         use crate::daemon::pty_slot::PtySlot;
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
@@ -2634,8 +3070,6 @@ mod tests {
                 console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
-                kind: LaneKind::Performer,
-                name: Some("chore".to_string()),
                 state: LaneState::Running,
                 stand: "echoes".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2648,7 +3082,7 @@ mod tests {
                 engine_stand: None,
                 flow_state: None,
             });
-            pool.insert_pty_slot(addr.clone(), slot, rx);
+            pool.insert_pty_slot(addr.clone(), None, slot, rx);
         }
 
         // cleanup=false: test lane に実 workspace dir はないので Phase 2b (fs rm) をスキップ。
@@ -2667,7 +3101,7 @@ mod tests {
                 .lane_pool
                 .read()
                 .await
-                .subscribe_output(&addr)
+                .subscribe_output(&addr, None)
                 .is_none(),
             "lane_delete 後も PtySlot が pool に残っている"
         );
@@ -2697,7 +3131,7 @@ mod tests {
         let err = dispatch_process_method(
             &state,
             "lane_delete",
-            serde_json::json!({ "address": "vp/conductor" }),
+            serde_json::json!({ "address": "vp/root" }),
         )
         .await
         .expect_err("Conductor の delete は Err");
@@ -2746,9 +3180,7 @@ mod tests {
     #[tokio::test]
     async fn lane_session_changed_emits_enriched_lane_update() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{
-            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
-        };
+        use crate::process::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::process::state::build_test_app_state;
 
         // refresh_engine_session_id は vp_state_dir() を読む — tempdir guard で隔離。
@@ -2757,9 +3189,7 @@ mod tests {
         state.lane_pool.write().await.insert(LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
-            address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
+            address: LaneAddress::root("vp"),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-17T00:00:00Z".to_string(),
@@ -2773,20 +3203,14 @@ mod tests {
             flow_state: None,
         });
         // hook 相当の会話 id 記録（記録契機 UserPromptSubmit の後の状態）。doc 40: SSOT は registry。
-        crate::lane::session_registry::set_conversation(
-            "vp",
-            "conductor",
-            "echoes",
-            1,
-            Some("sid-new"),
-        )
-        .expect("record conversation");
+        crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("sid-new"))
+            .expect("record conversation");
 
         let mut rx = state.system_event_tx.subscribe();
         let res = dispatch_process_method(
             &state,
             "lane_session_changed",
-            serde_json::json!({ "lane": "vp/conductor" }),
+            serde_json::json!({ "lane": "vp/root" }),
         )
         .await
         .expect("lane_session_changed ok");
@@ -2798,7 +3222,7 @@ mod tests {
             .expect("broadcast recv");
         match event {
             SystemEvent::Lane(Diff::Update { payload }) => {
-                assert_eq!(payload.address, LaneAddress::conductor("vp"));
+                assert_eq!(payload.address, LaneAddress::root("vp"));
                 assert_eq!(
                     payload.engine_session_id.as_deref(),
                     Some("sid-new"),
@@ -2816,9 +3240,7 @@ mod tests {
     #[tokio::test]
     async fn lane_session_changed_records_conversation_report_into_registry() {
         use super::dispatch_process_method;
-        use crate::process::lanes_state::{
-            Diff, LaneAddress, LaneInfo, LaneKind, LaneState, SystemEvent,
-        };
+        use crate::process::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::process::state::build_test_app_state;
 
         let state_dir = crate::test_env::state_dir_async().await;
@@ -2826,9 +3248,7 @@ mod tests {
         state.lane_pool.write().await.insert(LaneInfo {
             console_mode: Default::default(),
             id: Default::default(),
-            address: LaneAddress::conductor("vp"),
-            kind: LaneKind::Conductor,
-            name: None,
+            address: LaneAddress::root("vp"),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: "2026-07-18T00:00:00Z".to_string(),
@@ -2847,7 +3267,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/conductor",
+                "lane": "vp/root",
                 "session_id": "sid-issued",
                 "event": "issued",
             }),
@@ -2856,7 +3276,7 @@ mod tests {
         .expect("lane_session_changed ok");
 
         // registry（SSOT）に記録され、旧 store には書かれない
-        let reg = crate::lane::session_registry::load("vp", "conductor", "echoes");
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
         let root_conv = reg
             .sessions
             .iter()
@@ -2887,6 +3307,100 @@ mod tests {
             }
             other => panic!("expected Diff::Update, got: {other:?}"),
         }
+    }
+
+    /// doc 40 §4 / doc 46 P5 の配線: `session` を名乗った報告は**その session** に着地し、
+    /// root の会話 id を上書きしない（同じ lane に console slot が同居できる前提）。
+    /// 実在しない session の報告は root に化けず、何も書かない。
+    #[tokio::test]
+    async fn lane_session_changed_records_into_reported_session() {
+        use super::dispatch_process_method;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        let state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        state.lane_pool.write().await.insert(LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::root("vp"),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-07-22T00:00:00Z".to_string(),
+            pid: Some(1),
+            cwd: state_dir.path().to_string_lossy().to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
+        });
+        // root(#1) は発話済み、同居人 #2 が立っている状態。
+        crate::lane::session_registry::set_conversation(
+            "vp",
+            "root",
+            "echoes",
+            1,
+            Some("sid-root"),
+        )
+        .expect("root conversation");
+        let k2 = crate::lane::session_registry::create(
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            crate::lane::session_registry::SessionAct::Tui,
+            false,
+        )
+        .expect("create #2");
+
+        // 同居人（#2）の hook 報告
+        dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane": "vp/root",
+                "session_id": "sid-roommate",
+                "event": "spoken",
+                "session": k2,
+            }),
+        )
+        .await
+        .expect("lane_session_changed ok");
+
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
+        assert_eq!(
+            reg.sessions[0].conversation.as_deref(),
+            Some("sid-root"),
+            "同居人の報告で root の会話 id（= root の --resume 先）が化けない"
+        );
+        assert_eq!(
+            reg.sessions[1].conversation.as_deref(),
+            Some("sid-roommate"),
+            "報告は名乗った session に着地する"
+        );
+
+        // 実在しない session の報告 → root に落ちない（黙って root を潰さない）
+        dispatch_process_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane": "vp/root",
+                "session_id": "sid-ghost",
+                "event": "spoken",
+                "session": 99,
+            }),
+        )
+        .await
+        .expect("lane_session_changed ok（記録はしないが配線は成功）");
+        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
+        assert_eq!(
+            reg.sessions[0].conversation.as_deref(),
+            Some("sid-root"),
+            "実在しない session の報告は root に化けない"
+        );
+        assert_eq!(reg.sessions.len(), 2, "session は増えない");
     }
 
     /// F6④: stands_list dispatch — process-proxy ask が `{stands:[...]}` 形で返る。
@@ -2924,10 +3438,13 @@ mod tests {
         );
     }
 
-    /// lanes portless: `lane_create` dispatch arm が validation error (kind != performer) を
-    /// unison error frame (= Err) として返す (core の create_performer_orchestrated に到達している証)。
+    /// lanes portless: `lane_create` dispatch arm が validation error を unison error frame
+    /// (= Err) として返す (core の `create_performer_orchestrated` に到達している証)。
+    ///
+    /// doc 44 P2: 旧版は `kind != "performer"` を叩いていたが、`kind` は撤去された
+    /// （lane に種別が無くなり指定の余地が消えた）。後継の validation = 開発起点の予約名拒否。
     #[tokio::test]
-    async fn lane_create_rejects_non_performer() {
+    async fn lane_create_rejects_reserved_name() {
         use super::dispatch_process_method;
         use crate::process::state::build_test_app_state;
 
@@ -2935,14 +3452,27 @@ mod tests {
         let err = dispatch_process_method(
             &state,
             "lane_create",
-            serde_json::json!({ "kind": "worker", "name": "x" }),
+            serde_json::json!({ "name": crate::process::lanes_state::ROOT_LANE_NAME }),
         )
         .await
-        .expect_err("kind='worker' は Err");
+        .expect_err("予約名は Err");
+        // doc 44 §9: 判定は `validate_performer_name` に一本化された（両経路で同じ gate）。
+        // message は同関数のものになるので、予約名を名指ししていることだけを見る。
         assert!(
-            err.contains("kind must be 'performer'"),
-            "error は kind 制約を含む: {err}"
+            err.contains(crate::process::lanes_state::ROOT_LANE_NAME) && err.contains("reserved"),
+            "error は予約名である旨を含む: {err}"
         );
+
+        // 旧 client が送る `kind` は unknown field として無視され、name だけで通ること
+        // （name が空なら別の validation で弾かれる = kind に依存しない）
+        let err = dispatch_process_method(
+            &state,
+            "lane_create",
+            serde_json::json!({ "kind": "performer", "name": "  " }),
+        )
+        .await
+        .expect_err("空 name は Err");
+        assert!(err.contains("empty"), "name 制約で弾かれる: {err}");
     }
 
     // =========================================================================
@@ -3005,16 +3535,14 @@ mod tests {
     async fn insert_test_lane(
         state: &crate::process::state::AppState,
         project: &str,
-        mode: crate::lane::console_mode::ConsoleMode,
+        mode: crate::lane::session_registry::SessionAct,
     ) -> crate::process::lanes_state::LaneAddress {
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
-        let addr = LaneAddress::conductor(project);
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        let addr = LaneAddress::root(project);
         state.lane_pool.write().await.insert(LaneInfo {
             console_mode: mode,
             id: Default::default(),
             address: addr.clone(),
-            kind: LaneKind::Conductor,
-            name: None,
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -3051,7 +3579,7 @@ mod tests {
             dispatch_process_method(
                 &state,
                 "echoes_submit",
-                serde_json::json!({ "lane": "vp/conductor" })
+                serde_json::json!({ "lane": "vp/root" })
             )
             .await
             .is_err(),
@@ -3062,7 +3590,7 @@ mod tests {
             dispatch_process_method(
                 &state,
                 "echoes_submit",
-                serde_json::json!({ "lane": "vp/conductor", "prompt": "hi" })
+                serde_json::json!({ "lane": "vp/root", "prompt": "hi" })
             )
             .await
             .is_err(),
@@ -3075,15 +3603,15 @@ mod tests {
     #[tokio::test]
     async fn echoes_submit_rejected_in_tui_mode() {
         use super::dispatch_process_method;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
-        insert_test_lane(&state, "vptest-c1-tui", ConsoleMode::Tui).await;
+        insert_test_lane(&state, "vptest-c1-tui", SessionAct::Tui).await;
         let err = dispatch_process_method(
             &state,
             "echoes_submit",
-            serde_json::json!({ "lane": "vptest-c1-tui/conductor", "prompt": "hi" }),
+            serde_json::json!({ "lane": "vptest-c1-tui/root", "prompt": "hi" }),
         )
         .await
         .expect_err("tui mode は Err");
@@ -3100,7 +3628,7 @@ mod tests {
     async fn echoes_demand_start_replays_buffered_log_for_codex_session() {
         use super::dispatch_process_method;
         use crate::echoes::EchoesEvent;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
         use crate::protocol::ProcessMessage;
         use std::time::Duration;
@@ -3108,7 +3636,7 @@ mod tests {
         // replay_log / session_registry は vp_state_dir() を読む → tempdir に隔離。
         let _state_guard = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
-        let addr = insert_test_lane(&state, "vptest-replaylog", ConsoleMode::Chat).await;
+        let addr = insert_test_lane(&state, "vptest-replaylog", SessionAct::Chat).await;
 
         // focused な codex session #2 を作る（session=None がこれに解決される）。
         let k2 = state
@@ -3119,7 +3647,7 @@ mod tests {
             .expect("create codex session");
         assert_eq!(k2, 2);
 
-        // #2 の replay 源に会話を仕込む（session label = "conductor#2"）。
+        // #2 の replay 源に会話を仕込む（session label = "root#2"）。
         for ev in [
             EchoesEvent::MessageChunk {
                 text: "codex says hi".to_string(),
@@ -3131,18 +3659,18 @@ mod tests {
                 context_window: None,
             },
         ] {
-            crate::echoes::replay_log::append("vptest-replaylog", "conductor#2", &ev)
+            crate::echoes::replay_log::append("vptest-replaylog", "root#2", &ev)
                 .expect("replay log append");
         }
 
         // echoes topic を購読（非 retained なので dispatch 前に張る）。
-        let topic = "process/echoes/data/vptest-replaylog~conductor/event";
+        let topic = "process/echoes/data/vptest-replaylog~root/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         let res = dispatch_process_method(
             &state,
             "echoes_demand_start",
-            serde_json::json!({ "lane": "vptest-replaylog/conductor" }),
+            serde_json::json!({ "lane": "vptest-replaylog/root" }),
         )
         .await
         .expect("demand_start");
@@ -3179,7 +3707,7 @@ mod tests {
     #[tokio::test]
     async fn console_set_mode_validates_and_transitions() {
         use super::dispatch_process_method;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
@@ -3188,31 +3716,31 @@ mod tests {
             dispatch_process_method(
                 &state,
                 "console_set_mode",
-                serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "gui" })
+                serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "gui" })
             )
             .await
             .is_err(),
             "mode 不正は Err"
         );
         // engine-less の tui lane → chat へ遷移（PTY 不在でも成立、registry が更新される）
-        let addr = insert_test_lane(&state, "vptest-c1-sm", ConsoleMode::Tui).await;
+        let addr = insert_test_lane(&state, "vptest-c1-sm", SessionAct::Tui).await;
         let res = dispatch_process_method(
             &state,
             "console_set_mode",
-            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+            serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "chat" }),
         )
         .await
         .expect("tui→chat ok");
         assert_eq!(res["mode"], "chat");
         assert_eq!(
             state.lane_pool.read().await.console_mode(&addr),
-            Some(ConsoleMode::Chat)
+            Some(SessionAct::Chat)
         );
         // 同一 mode への再切替は no-op Ok
         dispatch_process_method(
             &state,
             "console_set_mode",
-            serde_json::json!({ "lane": "vptest-c1-sm/conductor", "mode": "chat" }),
+            serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "chat" }),
         )
         .await
         .expect("chat→chat no-op ok");
@@ -3226,7 +3754,7 @@ mod tests {
     async fn echoes_submit_roundtrip() {
         use super::dispatch_process_method;
         use crate::echoes::EchoesEvent;
-        use crate::lane::console_mode::ConsoleMode;
+        use crate::lane::session_registry::SessionAct;
         use crate::process::state::build_test_app_state;
         use crate::protocol::ProcessMessage;
         use std::time::Duration;
@@ -3235,17 +3763,17 @@ mod tests {
         // doc 33: submit には mode=chat の lane が pool に要る。
         // project 名はテスト固有にする — 実在 project だと registry の会話 id が本物の
         // session id を返し、temp cwd との不整合で resume が失敗する。
-        insert_test_lane(&state, "vptest-c1-rt", ConsoleMode::Chat).await;
+        insert_test_lane(&state, "vptest-c1-rt", SessionAct::Chat).await;
         // echoes data は非 retained なので submit 前に subscribe。
         let (_id, mut srx) = state
             .topic_router
-            .subscribe("process/echoes/data/vptest-c1-rt~conductor/event")
+            .subscribe("process/echoes/data/vptest-c1-rt~root/event")
             .await;
 
         dispatch_process_method(
             &state,
             "echoes_submit",
-            serde_json::json!({ "lane": "vptest-c1-rt/conductor", "prompt": "Reply with exactly: PONG" }),
+            serde_json::json!({ "lane": "vptest-c1-rt/root", "prompt": "Reply with exactly: PONG" }),
         )
         .await
         .expect("echoes_submit ok");

@@ -24,10 +24,19 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { marked } from 'marked'
-import type { EchoesEvent, EchoesSession, PlanEntry, QuestionSpec, VpConsole } from './console'
+import type {
+  BusRequestId,
+  EchoesEvent,
+  EchoesSession,
+  EchoesStandsDetail,
+  PlanEntry,
+  QuestionSpec,
+  VpConsole,
+} from './console'
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
 // （SP が真実源、ここは view）。session chip の prefix 規則は EchoesHeader を SSOT として再利用。
-import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
+// doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
+import { focusedOf, isMyResponse, nextRequestId, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './EchoesHeader'
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1064,9 @@ function ChatView() {
   const [standsMenu, setStandsMenu] = createSignal<{ lane: string; stands: StandOption[] } | null>(
     null,
   )
+  // doc 47 §6: 共有 bus `vp:echoes-stands` で「自分が出した要求」を識別する相関 id。
+  // 表示に使わない照合用の値なので signal ではなく素の let（再描画を誘発させない）。
+  let standsReq: BusRequestId | null = null
 
   onMount(() => {
     const onSessions = (e: Event): void => {
@@ -1068,8 +1080,13 @@ function ChatView() {
       }))
     }
     const onStands = (e: Event): void => {
-      const d = (e as CustomEvent<{ lane: string; stands: StandOption[] }>).detail
+      const d = (e as CustomEvent<EchoesStandsDetail<StandOption>>).detail
       if (!d?.lane) return
+      // doc 47 §6: `vp:echoes-stands` は共有 bus なので、相関 id で応答を振り分ける。
+      // 自分が出した要求でなければ何もしない（Pane の「+ New」の応答でこちらの menu まで
+      // 開く混線 = #838 の根治。旧 `window.vpPaneNewPending` フラグはこれで撤去）。
+      if (!isMyResponse(standsReq, d.req)) return
+      standsReq = null
       setStandsMenu({ lane: d.lane, stands: d.stands })
     }
     document.addEventListener('vp:echoes-sessions', onSessions)
@@ -1122,11 +1139,13 @@ function ChatView() {
     const lane = activeLane()
     if (!lane) return
     if (standsMenu()?.lane === lane) {
-      setStandsMenu(null) // 開いていれば閉じる（トグル）
+      setStandsMenu(null) // 開いていれば閉じる（トグル。開いている = 応答済 = standsReq は既に null）
       return
     }
+    // doc 47 §6: 要求元タグ = 相関 id。応答（handleStands → bus）まで往復する。
+    standsReq = nextRequestId('chat-add')
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:stands_fetch', lane }))
+    ipc?.postMessage(JSON.stringify({ t: 'echoes:stands_fetch', lane, req: standsReq }))
   }
 
   const createSession = (stand: string): void => {

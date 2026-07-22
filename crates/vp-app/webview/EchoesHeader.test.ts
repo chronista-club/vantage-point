@@ -47,7 +47,7 @@ describe('middleEllipsis — 長い path を頭残し末尾厚めで中略', () 
 
 describe('laneShortName — address から表示短名', () => {
   it('conductor', () => {
-    expect(laneShortName('vantage-point/conductor')).toBe('conductor')
+    expect(laneShortName('vantage-point/root')).toBe('conductor')
   })
   it('performer は name 部分', () => {
     expect(laneShortName('vantage-point/performer/echoes-header')).toBe('echoes-header')

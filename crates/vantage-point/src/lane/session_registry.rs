@@ -23,6 +23,11 @@
 //! - **root = lane の器に化身する session**（doc 39 — 座と化身）: slot spawn / wire 配送
 //!   （channel D・E）/ Act I chip はすべて root に解決される。doc 38 の「slot は session #1 を
 //!   既定で化身」は root=1 の特殊ケースに一般化された（#1 の特別性を撤廃）
+//! - **会話報告は session 粒度**（doc 40 §4 / doc 46 P5）: hook（`vp wire hook-check`）は
+//!   `VP_SESSION_KEY` で「自分がどの session か」を名乗り、[`record_conversation_in`] は
+//!   **報告された session** に書く。root 固定だった時代は、同じ lane で 2 本目の claude を
+//!   立てると root の会話 id が上書きされ `--resume` が同居人の会話に化けた（doc 46 §3 の
+//!   producer blocker）。名乗らない報告（旧 binary / VP 外起動）は従来どおり root 宛
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +38,48 @@ use super::session_store::sanitize;
 /// session の VP 採番ローカル key（1 始まり、lane 内で単調増加・再利用しない）。
 pub type SessionKey = u32;
 
+/// session の Act（doc 46 §1.4 — 旧 `lane::console_mode::ConsoleMode` の移設先）。
+///
+/// **doc 47 §4 の棚卸しで判明**: 旧 `console_mode` は lane の属性でありながら
+/// **3 つの仕事**を兼ねていた —
+/// ① 表示の排他選択 / ② boot 時の PTY spawn 可否 / ③ wire nudge の配送分岐。
+/// 「並列表示の今 Act は意味が薄い」は ① にしか当てはまらず、②③ は現役だった。
+///
+/// doc 46 §1.5「session ↔ Pane は 1:1」に従い Act は **session の属性**になる。
+/// ②③ は **root session（器に化身する session、doc 39）の act** で決まる —
+/// slot は lane に 1 枚、mailbox `agent@<lane>` を名乗るのも root だから。
+///
+/// > client 所有（Pane の kind）にしないのは doc 47 §0 の線を跨ぐため。
+/// > 「PTY を立てるか」は**実体**の話で、見え方に決めさせると projection が逆流する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionAct {
+    /// Act I: PtySlot + engine の TUI（ANSI → xterm）。既定。
+    #[default]
+    Tui,
+    /// Act II: headless engine host → EchoesEvent → ChatView。
+    Chat,
+}
+
+impl SessionAct {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SessionAct::Tui => "tui",
+            SessionAct::Chat => "chat",
+        }
+    }
+
+    /// 1 行 / wire 値からパース。未知値は None（壊れた値を黙って Tui 扱いしない —
+    /// 呼び手が default を選ぶ）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "tui" => Some(SessionAct::Tui),
+            "chat" => Some(SessionAct::Chat),
+            _ => None,
+        }
+    }
+}
+
 /// registry 上の 1 session。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionEntry {
@@ -40,6 +87,10 @@ pub struct SessionEntry {
     pub key: SessionKey,
     /// engine 種別（stand 名: "echoes" / "codex" / "grok" / "opencode"。legacy/未知値は shell のみで graceful 吸収）。
     pub stand: String,
+    /// この session の Act（doc 47 §4 で lane から移設）。serde default = Tui で
+    /// file/wire 後方互換（act 無しの旧 file は従来どおり Act I として読む）。
+    #[serde(default)]
+    pub act: SessionAct,
     /// engine の会話 id（claude = session uuid / codex = thread id / grok・opencode = ACP sessionId）。
     /// **doc 40 §2: ここが SSOT**（旧 engine 別 session_store から統合）。None = Draft
     /// （まだ engine が id を発番していない、doc 38 §1.1）。serde default + skip で
@@ -81,6 +132,7 @@ impl SessionRegistry {
             sessions: vec![SessionEntry {
                 key: 1,
                 stand: default_stand.to_string(),
+                act: SessionAct::Tui,
                 conversation: None,
             }],
         }
@@ -217,12 +269,16 @@ pub fn save_in(
 }
 
 /// session を 1 本追加して key を返す（`focus=true` なら focused も移す）。
+///
+/// `act` は doc 46 P2「Engine × Act を選んで新コンソール」の Act 側。root は動かさないので、
+/// ここで作られる session は器（slot）に化身しない = Act II 用が既定の使い道。
 pub fn create_in(
     base: &Path,
     project: &str,
     lane: &str,
     default_stand: &str,
     stand: &str,
+    act: SessionAct,
     focus: bool,
 ) -> std::io::Result<SessionKey> {
     let _guard = mutation_guard();
@@ -232,6 +288,7 @@ pub fn create_in(
     reg.sessions.push(SessionEntry {
         key,
         stand: stand.to_string(),
+        act,
         conversation: None,
     });
     if focus {
@@ -251,6 +308,7 @@ pub fn create_root_in(
     lane: &str,
     default_stand: &str,
     stand: &str,
+    act: SessionAct,
 ) -> std::io::Result<SessionKey> {
     let _guard = mutation_guard();
     let mut reg = load_in(base, project, lane, default_stand);
@@ -259,6 +317,7 @@ pub fn create_root_in(
     reg.sessions.push(SessionEntry {
         key,
         stand: stand.to_string(),
+        act,
         conversation: None,
     });
     reg.focused = key;
@@ -357,7 +416,7 @@ pub fn remove_in(
 /// 会話報告の契機（doc 40 §6）。CC hook の event 名でなく意味で持つ（engine 常駐統合
 /// （doc 39 §7）で claude 以外の報告者が増えても再利用できる語彙）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConversationReport {
+pub enum ReportTrigger {
     /// id 発行時点の eager 報告（SessionStart）。`|| claude` fallback の幻 session であり得る
     /// ため、健在な既存会話は上書きしない（F1/F2 guard — doc 40 §6 の表）。
     Issued,
@@ -366,64 +425,113 @@ pub enum ConversationReport {
     Spoken,
 }
 
-/// [`record_root_conversation_in`] の結果。caller（SP handler）が log と Diff::Update push の
+/// [`record_conversation_in`] の結果。caller（SP handler）が log と Diff::Update push の
 /// 要否判定に使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RootRecordOutcome {
+pub enum ConversationRecordOutcome {
     /// 記録した（disk 変化あり）。
     Recorded,
     /// 既に同 id（no-op）。
     Unchanged,
     /// F1/F2 guard 発動: 既存会話の transcript が健在なため据え置き（Issued のみ）。
     KeptExisting,
-    /// root session が claude でない（claude hook の id を他 engine の session に混ぜない）。
+    /// 対象 session が claude でない（claude hook の id を他 engine の session に混ぜない）。
     IgnoredNonClaude,
     /// id が形式外（書かず）。
     RejectedInvalid,
+    /// 報告された session が registry に**実在しない**（書かず）。
+    ///
+    /// root に落とさないのが肝（doc 40 §4）。落とすと「自分が誰か分かっているが registry と
+    /// ズレている報告者」の書き込みが root の会話 id を壊す — session 粒度化で塞ぎたかった
+    /// 事故そのものが、fallback 経由で再現してしまう。報告者は毎ターン再報告するので、
+    /// registry が追い付けば次の報告で自然に着地する。
+    UnknownSession,
 }
 
-/// Act I slot（claude hook）の会話報告を root session に適用する — doc 40 §6 policy の
+/// 会話報告の宛先 session（doc 40 §4 — hook は「自分がどの session か」を名乗る）。
+///
+/// **「不明」と「root」を型で区別する**のがこの enum の全存在理由。`Option<SessionKey>` を
+/// 早々に `unwrap_or(root)` すると、以後「報告者が名乗らなかった」と「報告者が root を
+/// 名乗った」が見分けられなくなり、実在しない session の報告を root に落とす事故
+/// （[`ConversationRecordOutcome::UnknownSession`] の説明）を検知できない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportTarget {
+    /// 報告者が session を名乗らなかった（session env を持たない旧 binary / VP 外で起動された
+    /// claude）。**後方互換で root に記録する** — session 粒度化の前は全報告が root 宛だった。
+    Unspecified,
+    /// 報告者が名乗った session。実在しなければ書かない（root に落とさない）。
+    Session(SessionKey),
+}
+
+/// hook が上げる 1 件の会話報告 —「**誰が**・**どの会話 id を**・**どの契機で**」。
+///
+/// 3 つを 1 値にまとめているのは、この 3 つが**常に同じ 1 つの出来事**を指すため
+/// （別々の引数だと、target だけ差し替えて conversation を据え置く、のような
+/// 「あり得ない組み合わせ」を呼び手が作れてしまう）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConversationReport<'a> {
+    /// 宛先 session（`Unspecified` = 報告者が名乗らなかった → root 宛の後方互換）。
+    pub target: ReportTarget,
+    /// engine が発番した会話 id。
+    pub conversation: &'a str,
+    /// 報告の契機（記録 policy の分岐点 — doc 40 §6 の表）。
+    pub trigger: ReportTrigger,
+}
+
+/// slot（claude hook）の会話報告を**報告された session** に適用する — doc 40 §6 policy の
 /// **唯一の実装点**。旧「UserPromptSubmit のみ記録」（#795 の鈍器）の置換。
 ///
+/// policy（F1/F2 guard / engine 判定 / 形式検証）は doc 40 §6 の表そのままで、**書き先だけが
+/// root 固定から報告 session になった**（doc 46 P5 の「1 lane に複数 console slot」を production で
+/// 立てるための前提 — 同じ lane の 2 本目の claude が root の会話 id を上書きしなくなる）。
+///
+/// 直書き（Act II host の record-from-init）は [`set_conversation_in`]。こちらは policy を持たない
+/// authoritative な書き込みで、報告経路とは別物。
+///
 /// `transcript_exists` は注入する（テストが実 `~/.claude` に依存しないため。本番 wrapper
-/// [`record_root_conversation`] が `cc_session::transcript_exists` を渡す）。
-pub fn record_root_conversation_in(
+/// [`record_conversation`] が `cc_session::transcript_exists` を渡す）。
+pub fn record_conversation_in(
     base: &Path,
     project: &str,
     lane: &str,
     default_stand: &str,
-    session_id: &str,
-    report: ConversationReport,
+    report: ConversationReport<'_>,
     transcript_exists: impl Fn(&str) -> bool,
-) -> std::io::Result<RootRecordOutcome> {
+) -> std::io::Result<ConversationRecordOutcome> {
     let _guard = mutation_guard();
     let mut reg = load_in(base, project, lane, default_stand);
-    let root = reg.root;
-    let Some(entry) = reg.sessions.iter_mut().find(|s| s.key == root) else {
-        // is_valid が root 実在を保証するため到達しない（防御的に no-op）
-        return Ok(RootRecordOutcome::Unchanged);
+    let session_id = report.conversation;
+    let key = match report.target {
+        // 名乗らなかった報告は root 宛（session 粒度化前の唯一の宛先 = 後方互換）。
+        ReportTarget::Unspecified => reg.root,
+        ReportTarget::Session(k) => k,
+    };
+    let Some(entry) = reg.sessions.iter_mut().find(|s| s.key == key) else {
+        // Unspecified で来た場合は is_valid が root 実在を保証するため到達しない。
+        // Session(k) の不在はここ = **root に落とさず** UnknownSession で返す。
+        return Ok(ConversationRecordOutcome::UnknownSession);
     };
     if !matches!(
         crate::echoes::EngineKind::from_stand(&entry.stand),
         Some(crate::echoes::EngineKind::Claude)
     ) {
-        return Ok(RootRecordOutcome::IgnoredNonClaude);
+        return Ok(ConversationRecordOutcome::IgnoredNonClaude);
     }
     if !is_valid_conversation(&entry.stand, session_id) {
-        return Ok(RootRecordOutcome::RejectedInvalid);
+        return Ok(ConversationRecordOutcome::RejectedInvalid);
     }
     match &entry.conversation {
-        Some(cur) if cur == session_id => Ok(RootRecordOutcome::Unchanged),
-        Some(cur) if report == ConversationReport::Issued && transcript_exists(cur) => {
+        Some(cur) if cur == session_id => Ok(ConversationRecordOutcome::Unchanged),
+        Some(cur) if report.trigger == ReportTrigger::Issued && transcript_exists(cur) => {
             // resume 失敗 `|| claude` fallback の幻 session が、健在な旧会話への復帰路を
             // 上書きするのを防ぐ（F1 clobber / F2 幻ポインタの再演防止）。次の Spoken で
             // user が幻側に commit したら上書きされる（self-heal）。
-            Ok(RootRecordOutcome::KeptExisting)
+            Ok(ConversationRecordOutcome::KeptExisting)
         }
         _ => {
             entry.conversation = Some(session_id.to_string());
             save_in(base, project, lane, &reg)?;
-            Ok(RootRecordOutcome::Recorded)
+            Ok(ConversationRecordOutcome::Recorded)
         }
     }
 }
@@ -494,6 +602,53 @@ pub fn root_in(base: &Path, project: &str, lane: &str) -> SessionKey {
     }
 }
 
+/// **root session の act** だけを軽量に読む（file 不在 / 破損は Tui = 従来の既定）。
+///
+/// doc 47 §4: 旧 `console_mode::last()` の後継。lane の器（slot / mailbox）に化身するのは
+/// root なので、「PTY を立てるか」「nudge をどちらの method で送るか」は root の act で決まる。
+pub fn root_act_in(base: &Path, project: &str, lane: &str) -> SessionAct {
+    let Ok(raw) = std::fs::read_to_string(registry_file_in(base, project, lane)) else {
+        return SessionAct::Tui;
+    };
+    match serde_json::from_str::<SessionRegistry>(&raw) {
+        Ok(reg) if reg.is_valid() => reg
+            .sessions
+            .iter()
+            .find(|s| s.key == reg.root)
+            .map(|s| s.act)
+            .unwrap_or_default(),
+        _ => SessionAct::Tui,
+    }
+}
+
+/// root session の act を書き替える（doc 47 §4 — 旧 `console_mode::record()` の後継）。
+///
+/// 戻り値は「実際に変わったか」。変化なしで save を走らせない（disk write を減らすためでなく、
+/// 「切替えた」ログが変化と 1:1 になるようにするため）。
+pub fn set_root_act_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    act: SessionAct,
+) -> std::io::Result<bool> {
+    let _guard = mutation_guard();
+    let mut reg = load_in(base, project, lane, default_stand);
+    let root = reg.root;
+    let Some(entry) = reg.sessions.iter_mut().find(|s| s.key == root) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("root session が存在しません（project={project}, lane={lane}, root={root}）"),
+        ));
+    };
+    if entry.act == act {
+        return Ok(false);
+    }
+    entry.act = act;
+    save_in(base, project, lane, &reg)?;
+    Ok(true)
+}
+
 /// registry を捨てる（fresh reset）。file 不在は no-op。
 ///
 /// 「fresh = N=1 の既定形へ戻す」の state 側表現（doc 38 落とし穴②「fresh が副 session を
@@ -519,6 +674,7 @@ pub fn create(
     lane: &str,
     default_stand: &str,
     stand: &str,
+    act: SessionAct,
     focus: bool,
 ) -> std::io::Result<SessionKey> {
     create_in(
@@ -527,6 +683,7 @@ pub fn create(
         lane,
         default_stand,
         stand,
+        act,
         focus,
     )
 }
@@ -537,6 +694,7 @@ pub fn create_root(
     lane: &str,
     default_stand: &str,
     stand: &str,
+    act: SessionAct,
 ) -> std::io::Result<SessionKey> {
     create_root_in(
         &crate::config::vp_state_dir(),
@@ -544,6 +702,28 @@ pub fn create_root(
         lane,
         default_stand,
         stand,
+        act,
+    )
+}
+
+/// 本番 base での root_act（旧 `console_mode::last` の後継）。
+pub fn root_act(project: &str, lane: &str) -> SessionAct {
+    root_act_in(&crate::config::vp_state_dir(), project, lane)
+}
+
+/// 本番 base での set_root_act（旧 `console_mode::record` の後継）。
+pub fn set_root_act(
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    act: SessionAct,
+) -> std::io::Result<bool> {
+    set_root_act_in(
+        &crate::config::vp_state_dir(),
+        project,
+        lane,
+        default_stand,
+        act,
     )
 }
 
@@ -628,24 +808,81 @@ pub fn set_conversation(
     )
 }
 
-/// 本番 base での record_root_conversation（SP の hook 報告 handler から呼ぶ）。
+/// 本番 base での record_conversation（SP の hook 報告 handler から呼ぶ）。
 /// F1/F2 guard の transcript 判定は claude の実 transcript（`cc_session::transcript_exists`）。
-pub fn record_root_conversation(
+pub fn record_conversation(
     project: &str,
     lane: &str,
     default_stand: &str,
-    session_id: &str,
-    report: ConversationReport,
-) -> std::io::Result<RootRecordOutcome> {
-    record_root_conversation_in(
+    report: ConversationReport<'_>,
+) -> std::io::Result<ConversationRecordOutcome> {
+    record_conversation_in(
         &crate::config::vp_state_dir(),
         project,
         lane,
         default_stand,
-        session_id,
         report,
         super::cc_session::transcript_exists,
     )
+}
+
+/// 旧 `console_modes/<project>__<lane>` を **root session の act** へ畳む one-shot migration
+/// （doc 47 §4 — Act の lane → session 移設）。戻り値は畳んだ lane 数。
+///
+/// World boot で 1 回だけ呼ぶ。畳み終えたら legacy file / dir ごと消えるので 2 回目以降は
+/// no-op（`clear_in` と同じ「終端まで進めて痕跡を残さない」規律）。
+///
+/// - `Tui` の記録は**書かずに捨てる** — Tui は既定なので、registry file を持たない lane に
+///   わざわざ file を作る意味がない（migration が state を増やさない）
+/// - file 名は sanitize 済みだが、`registry_file_in` が同じ sanitize を通すので往復は安定
+///   （sanitize は冪等 — `/`・`\`・`.` を `-` に潰すだけ）
+pub fn migrate_console_modes_in(base: &Path) -> usize {
+    let dir = base.join("console_modes");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut migrated = 0usize;
+    for e in entries.flatten() {
+        let path = e.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // `<project>__<lane>`。lane 名に `__` は入り得ないので最初の `__` で割る。
+        let Some((project, lane)) = name.split_once("__") else {
+            continue;
+        };
+        let act = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| SessionAct::parse(&raw));
+        if act == Some(SessionAct::Chat) {
+            // default_stand は lane の stand 記録から引く（無ければ echoes = 従来既定）。
+            let default_stand = super::stand_store::last_in(base, project, lane)
+                .unwrap_or_else(|| "echoes".to_string());
+            match set_root_act_in(base, project, lane, &default_stand, SessionAct::Chat) {
+                Ok(_) => migrated += 1,
+                Err(err) => {
+                    tracing::warn!(
+                        "console_mode migration 失敗（残置）: project={project} lane={lane} err={err}"
+                    );
+                    continue;
+                }
+            }
+        }
+        if let Err(err) = std::fs::remove_file(&path) {
+            tracing::warn!("console_mode migration: legacy file の削除失敗: {err}");
+        }
+    }
+    // 空になった dir を畳む（残っていても無害だが、次回 boot の read_dir を空振りさせない）。
+    let _ = std::fs::remove_dir(&dir);
+    if migrated > 0 {
+        tracing::info!("console_mode → session act migration: {migrated} lane を畳んだ");
+    }
+    migrated
+}
+
+/// 本番 base での console_mode migration（World boot から 1 回）。
+pub fn migrate_console_modes() -> usize {
+    migrate_console_modes_in(&crate::config::vp_state_dir())
 }
 
 #[cfg(test)]
@@ -657,7 +894,7 @@ mod tests {
     #[test]
     fn load_without_file_resolves_to_single_default() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(
             reg,
             SessionRegistry {
@@ -667,12 +904,13 @@ mod tests {
                 sessions: vec![SessionEntry {
                     key: 1,
                     stand: "echoes".to_string(),
+                    act: SessionAct::Tui,
                     conversation: None,
                 }],
             }
         );
-        assert_eq!(focused_in(tmp.path(), "vp", "conductor"), 1);
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(focused_in(tmp.path(), "vp", "root"), 1);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 1);
     }
 
     /// doc 39 P1 の後方互換の核: root field を持たない既存 file は root=1 として読める
@@ -683,32 +921,49 @@ mod tests {
         let dir = tmp.path().join("echoes_sessions");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("vp__conductor.json"),
+            dir.join("vp__root.json"),
             r#"{"focused":2,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":2,"stand":"codex"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 1, "root 無し file は root=1（従来の #1 化身）");
         assert_eq!(reg.focused, 2, "focused は file の値を維持");
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 1);
     }
 
     /// create → 採番 2・focus 追随 → roundtrip 永続。focus=false は focused を据え置く。
     #[test]
     fn create_assigns_monotonic_keys_and_persists() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let k2 = create_in(tmp.path(), "vp", "conductor", "echoes", "codex", true).expect("create");
+        let k2 = create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "codex",
+            SessionAct::Chat,
+            true,
+        )
+        .expect("create");
         assert_eq!(k2, 2);
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.focused, 2, "focus=true は新 session に focus が移る");
         assert_eq!(reg.sessions.len(), 2);
         assert_eq!(reg.sessions[0].stand, "echoes", "session #1 は lane stand");
         assert_eq!(reg.sessions[1].stand, "codex");
 
-        let k3 =
-            create_in(tmp.path(), "vp", "conductor", "echoes", "echoes", false).expect("create");
+        let k3 = create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            SessionAct::Chat,
+            false,
+        )
+        .expect("create");
         assert_eq!(k3, 3);
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.focused, 2, "focus=false は focused を動かさない");
         assert_eq!(reg.next, 4);
     }
@@ -717,11 +972,20 @@ mod tests {
     #[test]
     fn focus_rejects_unknown_key() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        create_in(tmp.path(), "vp", "conductor", "echoes", "codex", false).expect("create");
-        focus_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("実在 key への focus");
-        assert_eq!(focused_in(tmp.path(), "vp", "conductor"), 2);
+        create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "codex",
+            SessionAct::Chat,
+            false,
+        )
+        .expect("create");
+        focus_in(tmp.path(), "vp", "root", "echoes", 2).expect("実在 key への focus");
+        assert_eq!(focused_in(tmp.path(), "vp", "root"), 2);
         assert!(
-            focus_in(tmp.path(), "vp", "conductor", "echoes", 99).is_err(),
+            focus_in(tmp.path(), "vp", "root", "echoes", 99).is_err(),
             "不在 key への focus は Err"
         );
     }
@@ -732,11 +996,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("echoes_sessions");
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("vp__conductor.json");
+        let file = dir.join("vp__root.json");
 
         // 非 JSON
         std::fs::write(&file, "not json").unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions.len(), 1);
         assert_eq!(reg.focused, 1);
 
@@ -746,9 +1010,9 @@ mod tests {
             r#"{"focused":9,"next":3,"sessions":[{"key":1,"stand":"echoes"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.focused, 1, "focused 不在の file は既定形に解決");
-        assert_eq!(focused_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(focused_in(tmp.path(), "vp", "root"), 1);
 
         // key 重複（不変条件違反）
         std::fs::write(
@@ -756,7 +1020,7 @@ mod tests {
             r#"{"focused":1,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":1,"stand":"codex"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions.len(), 1, "key 重複の file は既定形に解決");
 
         // root が不在 key（不変条件違反）
@@ -765,9 +1029,9 @@ mod tests {
             r#"{"focused":1,"root":9,"next":3,"sessions":[{"key":1,"stand":"echoes"},{"key":2,"stand":"codex"}]}"#,
         )
         .unwrap();
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 1, "root 不在の file は既定形に解決");
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 1);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 1);
     }
 
     /// remove: 実在検証 / root は拒否（doc 39 §6 — 最後の 1 本の拒否を包含）/
@@ -776,23 +1040,41 @@ mod tests {
     fn remove_validates_and_moves_focus_deterministically() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // #2(codex, focused) / #3(cursor) を追加 → #1/#2/#3
-        create_in(tmp.path(), "vp", "conductor", "echoes", "codex", true).expect("create #2");
-        create_in(tmp.path(), "vp", "conductor", "echoes", "cursor", false).expect("create #3");
+        create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "codex",
+            SessionAct::Chat,
+            true,
+        )
+        .expect("create #2");
+        create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "cursor",
+            SessionAct::Chat,
+            false,
+        )
+        .expect("create #3");
 
         // 不在 key は Err
-        assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 9).is_err());
+        assert!(remove_in(tmp.path(), "vp", "root", "echoes", 9).is_err());
 
         // root(#1) は N>1 でも取り除けない（doc 38 の「⚠️ #1 close は Act I slot resume を断つ」
         // footgun を構造で塞ぐ — doc 39 §2）
         assert!(
-            remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
+            remove_in(tmp.path(), "vp", "root", "echoes", 1).is_err(),
             "root session の remove は Err"
         );
 
         // focused(#2) を remove → focus は残りの先頭(#1) へ
-        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("remove #2");
+        let focused = remove_in(tmp.path(), "vp", "root", "echoes", 2).expect("remove #2");
         assert_eq!(focused, 1, "focused の remove は残り先頭へ fallback");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(
             reg.sessions.iter().map(|s| s.key).collect::<Vec<_>>(),
             vec![1, 3]
@@ -800,12 +1082,12 @@ mod tests {
         assert_eq!(reg.next, 4, "採番は据え置き（key 再利用なし）");
 
         // 非 focused(#3) を remove → focus は不変
-        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 3).expect("remove #3");
+        let focused = remove_in(tmp.path(), "vp", "root", "echoes", 3).expect("remove #3");
         assert_eq!(focused, 1);
 
         // 最後の 1 本 = root なので取り除けない（fresh restart が正道）
         assert!(
-            remove_in(tmp.path(), "vp", "conductor", "echoes", 1).is_err(),
+            remove_in(tmp.path(), "vp", "root", "echoes", 1).is_err(),
             "最後の session の remove は Err"
         );
     }
@@ -815,20 +1097,27 @@ mod tests {
     #[test]
     fn create_root_moves_root_and_focus_atomically() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let k2 = create_root_in(tmp.path(), "vp", "conductor", "echoes", "echoes")
-            .expect("create_root #2");
+        let k2 = create_root_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            SessionAct::Tui,
+        )
+        .expect("create_root #2");
         assert_eq!(k2, 2);
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 2, "root は新 session へ");
         assert_eq!(reg.focused, 2, "focused も新 session へ（追加して focus）");
         assert_eq!(reg.sessions.len(), 2, "旧 root(#1) は一覧に残る（非破壊）");
-        assert_eq!(root_in(tmp.path(), "vp", "conductor"), 2);
+        assert_eq!(root_in(tmp.path(), "vp", "root"), 2);
 
         // 旧 root(#1) は非 root になったので閉じられる（doc 39 §2 — #1 の特別性撤廃）
-        let focused = remove_in(tmp.path(), "vp", "conductor", "echoes", 1).expect("remove #1");
+        let focused = remove_in(tmp.path(), "vp", "root", "echoes", 1).expect("remove #1");
         assert_eq!(focused, 2);
         // 新 root(#2) は取り除けない
-        assert!(remove_in(tmp.path(), "vp", "conductor", "echoes", 2).is_err());
+        assert!(remove_in(tmp.path(), "vp", "root", "echoes", 2).is_err());
     }
 
     /// set_root: 既存 session へ root + focused が同時に移る（doc 39 P3 Root 切替 = 非破壊）。
@@ -837,29 +1126,39 @@ mod tests {
     fn set_root_switches_to_existing_session() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // #2 を作って root にする（#1 は残存）→ 既存の #1 へ切り戻す
-        create_root_in(tmp.path(), "vp", "conductor", "echoes", "codex").expect("create_root #2");
-        set_root_in(tmp.path(), "vp", "conductor", "echoes", 1).expect("set_root #1");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        create_root_in(tmp.path(), "vp", "root", "echoes", "codex", SessionAct::Tui)
+            .expect("create_root #2");
+        set_root_in(tmp.path(), "vp", "root", "echoes", 1).expect("set_root #1");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.root, 1, "root は既存 #1 へ");
         assert_eq!(reg.focused, 1, "focused も追従（create_root と同じ意味論）");
         assert_eq!(reg.sessions.len(), 2, "非破壊 — 両 session が一覧に残る");
         // 旧 root(#2) は非 root になったので閉じられる
-        remove_in(tmp.path(), "vp", "conductor", "echoes", 2).expect("remove #2");
+        remove_in(tmp.path(), "vp", "root", "echoes", 2).expect("remove #2");
         // 不在 key への切替は Err（黙って据え置かない）
-        assert!(set_root_in(tmp.path(), "vp", "conductor", "echoes", 99).is_err());
+        assert!(set_root_in(tmp.path(), "vp", "root", "echoes", 99).is_err());
     }
 
     /// clear = fresh reset。file が消えて既定形に戻り、採番も 1 からやり直し。冪等。
     #[test]
     fn clear_resets_to_default_and_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        create_in(tmp.path(), "vp", "conductor", "echoes", "codex", true).expect("create");
-        clear_in(tmp.path(), "vp", "conductor").expect("clear");
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "codex",
+            SessionAct::Chat,
+            true,
+        )
+        .expect("create");
+        clear_in(tmp.path(), "vp", "root").expect("clear");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions.len(), 1);
         assert_eq!(reg.next, 2, "fresh 後は採番もやり直し");
         // 未記録の clear は no-op（session_store と同じ原則）
-        clear_in(tmp.path(), "vp", "conductor").expect("二重 clear は Ok");
+        clear_in(tmp.path(), "vp", "root").expect("二重 clear は Ok");
     }
 
     /// session label: key 1 = 素の lane 名（既存 file 互換）、key 2+ = `<lane>#<n>`。
@@ -867,52 +1166,54 @@ mod tests {
     /// （doc 36 実証の固定化）。
     #[test]
     fn session_label_is_bare_for_key1_and_hash_suffixed_after() {
-        assert_eq!(session_label("conductor", 1), "conductor");
-        assert_eq!(session_label("conductor", 2), "conductor#2");
+        assert_eq!(session_label("root", 1), "root");
+        assert_eq!(session_label("root", 2), "root#2");
         assert_eq!(session_label("feat-x", 10), "feat-x#10");
-        assert_eq!(sanitize("conductor#2"), "conductor#2", "# は sanitize 安全");
+        assert_eq!(sanitize("root#2"), "root#2", "# は sanitize 安全");
     }
 
     /// set_conversation: roundtrip 永続 / 変化なしは no-op / 不在 key は Err / 形式外は書かず。
     #[test]
     fn set_conversation_roundtrips_validates_and_rejects_unknown_key() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        create_in(tmp.path(), "vp", "conductor", "echoes", "echoes", true).expect("create #2");
+        create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            SessionAct::Chat,
+            true,
+        )
+        .expect("create #2");
 
         assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 2, Some("id-alpha"))
+            set_conversation_in(tmp.path(), "vp", "root", "echoes", 2, Some("id-alpha"))
                 .expect("set"),
             "初回 set は disk 変化あり"
         );
-        let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+        let reg = load_in(tmp.path(), "vp", "root", "echoes");
         assert_eq!(reg.sessions[1].conversation.as_deref(), Some("id-alpha"));
 
         assert!(
-            !set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 2, Some("id-alpha"))
+            !set_conversation_in(tmp.path(), "vp", "root", "echoes", 2, Some("id-alpha"))
                 .expect("same"),
             "同値 set は no-op（Diff::Update 不要の合図）"
         );
         assert!(
-            !set_conversation_in(
-                tmp.path(),
-                "vp",
-                "conductor",
-                "echoes",
-                2,
-                Some("bad id'; rm")
-            )
-            .expect("invalid"),
+            !set_conversation_in(tmp.path(), "vp", "root", "echoes", 2, Some("bad id'; rm"))
+                .expect("invalid"),
             "形式外 id は書かずに Ok(false)"
         );
         assert_eq!(
-            load_in(tmp.path(), "vp", "conductor", "echoes").sessions[1]
+            load_in(tmp.path(), "vp", "root", "echoes").sessions[1]
                 .conversation
                 .as_deref(),
             Some("id-alpha"),
             "形式外 set 後も既存値が守られる"
         );
         assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 99, Some("id-x")).is_err(),
+            set_conversation_in(tmp.path(), "vp", "root", "echoes", 99, Some("id-x")).is_err(),
             "不在 key は Err"
         );
     }
@@ -952,45 +1253,46 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         // registry に会話 id を記録した状態を作る
         assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 1, Some("cc-old"))
+            set_conversation_in(tmp.path(), "vp", "root", "echoes", 1, Some("cc-old"))
                 .expect("set")
         );
         assert_eq!(
-            load_in(tmp.path(), "vp", "conductor", "echoes").sessions[0]
+            load_in(tmp.path(), "vp", "root", "echoes").sessions[0]
                 .conversation
                 .as_deref(),
             Some("cc-old")
         );
 
         // clear → conversation が None に落ち、再 load でも蘇らない
-        assert!(
-            set_conversation_in(tmp.path(), "vp", "conductor", "echoes", 1, None).expect("clear")
-        );
+        assert!(set_conversation_in(tmp.path(), "vp", "root", "echoes", 1, None).expect("clear"));
         assert_eq!(
-            load_in(tmp.path(), "vp", "conductor", "echoes").sessions[0].conversation,
+            load_in(tmp.path(), "vp", "root", "echoes").sessions[0].conversation,
             None,
             "clear 後は conversation が None（backfill 蘇生源は存在しない）"
         );
     }
 
-    /// doc 40 §6 policy の全 arm（record_root_conversation）。
+    /// doc 40 §6 policy の全 arm（`record_conversation` の Unspecified = 従来の root 宛報告）。
     #[test]
     fn record_root_policies_follow_doc40_table() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let rec = |sid: &str, report: ConversationReport, transcript: bool| {
-            record_root_conversation_in(
+        let rec = |sid: &str, trigger: ReportTrigger, transcript: bool| {
+            record_conversation_in(
                 tmp.path(),
                 "vp",
-                "conductor",
+                "root",
                 "echoes",
-                sid,
-                report,
+                ConversationReport {
+                    target: ReportTarget::Unspecified,
+                    conversation: sid,
+                    trigger,
+                },
                 |_| transcript,
             )
-            .expect("record_root")
+            .expect("record_conversation")
         };
         let conv = || {
-            let reg = load_in(tmp.path(), "vp", "conductor", "echoes");
+            let reg = load_in(tmp.path(), "vp", "root", "echoes");
             let root = reg.root;
             reg.sessions
                 .iter()
@@ -1000,66 +1302,263 @@ mod tests {
 
         // fresh（None）: Issued で即記録 = boot で chip が点く（eager の核）
         assert_eq!(
-            rec("id-a", ConversationReport::Issued, false),
-            RootRecordOutcome::Recorded
+            rec("id-a", ReportTrigger::Issued, false),
+            ConversationRecordOutcome::Recorded
         );
         assert_eq!(conv().as_deref(), Some("id-a"));
 
         // 同 id: no-op
         assert_eq!(
-            rec("id-a", ConversationReport::Issued, true),
-            RootRecordOutcome::Unchanged
+            rec("id-a", ReportTrigger::Issued, true),
+            ConversationRecordOutcome::Unchanged
         );
 
         // 別 id + Issued + 旧 transcript 健在 → 据え置き（F1/F2 guard: `|| claude` fallback の幻）
         assert_eq!(
-            rec("id-phantom", ConversationReport::Issued, true),
-            RootRecordOutcome::KeptExisting
+            rec("id-phantom", ReportTrigger::Issued, true),
+            ConversationRecordOutcome::KeptExisting
         );
         assert_eq!(conv().as_deref(), Some("id-a"), "健在な旧会話が守られる");
 
         // 別 id + Spoken → 無条件で記録（user が commit した会話が勝つ）
         assert_eq!(
-            rec("id-b", ConversationReport::Spoken, true),
-            RootRecordOutcome::Recorded
+            rec("id-b", ReportTrigger::Spoken, true),
+            ConversationRecordOutcome::Recorded
         );
         assert_eq!(conv().as_deref(), Some("id-b"));
 
         // 別 id + Issued + 旧 transcript 消滅 → 記録（幻 pointer 保持より改善）
         assert_eq!(
-            rec("id-c", ConversationReport::Issued, false),
-            RootRecordOutcome::Recorded
+            rec("id-c", ReportTrigger::Issued, false),
+            ConversationRecordOutcome::Recorded
         );
         assert_eq!(conv().as_deref(), Some("id-c"));
 
         // 形式外 id は書かず
         assert_eq!(
-            rec("bad id'; rm", ConversationReport::Spoken, false),
-            RootRecordOutcome::RejectedInvalid
+            rec("bad id'; rm", ReportTrigger::Spoken, false),
+            ConversationRecordOutcome::RejectedInvalid
         );
         assert_eq!(conv().as_deref(), Some("id-c"));
 
         // root が非 claude → 無視（claude hook の id を他 engine の session に混ぜない）
-        create_root_in(tmp.path(), "vp", "conductor", "echoes", "codex").expect("root=codex");
+        create_root_in(tmp.path(), "vp", "root", "echoes", "codex", SessionAct::Tui)
+            .expect("root=codex");
         assert_eq!(
-            rec("id-d", ConversationReport::Spoken, false),
-            RootRecordOutcome::IgnoredNonClaude
+            rec("id-d", ReportTrigger::Spoken, false),
+            ConversationRecordOutcome::IgnoredNonClaude
+        );
+    }
+
+    // ---- doc 40 §4 / doc 46 P5: 会話報告の session 粒度化 ----
+
+    /// **本 PR の核心**: 非 root session の hook 報告は、root の会話 id を上書きしない。
+    ///
+    /// doc 46 §3 が producer の blocker として挙げた事故そのもの — 同じ lane に 2 本目の
+    /// claude が立つと、その SessionStart が root の会話 id を潰し、root の `--resume` が
+    /// 同居人の会話に化ける。report 先を session 粒度にすることで**構造的に起こせなく**なる。
+    #[test]
+    fn non_root_report_does_not_clobber_root_conversation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        // root(#1) は会話 id を持っており（発話済み）、同居人 #2 が新たに立った状況。
+        set_conversation_in(base, "vp", "root", "echoes", 1, Some("root-conv")).expect("root conv");
+        let k2 = create_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            SessionAct::Tui,
+            false,
+        )
+        .expect("create #2");
+        assert_eq!(k2, 2);
+
+        // #2 の claude が自分の会話 id を報告（transcript 健在 = 旧実装なら F1 guard が
+        // 効いて root が守られたように見えるが、Spoken では素通りして root を潰していた）。
+        let outcome = record_conversation_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            ConversationReport {
+                target: ReportTarget::Session(2),
+                conversation: "roommate-conv",
+                trigger: ReportTrigger::Spoken,
+            },
+            |_| true,
+        )
+        .expect("record");
+        assert_eq!(outcome, ConversationRecordOutcome::Recorded);
+
+        let reg = load_in(base, "vp", "root", "echoes");
+        assert_eq!(reg.root, 1, "root は動かない（報告は root を移さない）");
+        assert_eq!(
+            reg.sessions[0].conversation.as_deref(),
+            Some("root-conv"),
+            "root の会話 id は同居人の報告で上書きされない（本 PR の核心）"
+        );
+        assert_eq!(
+            reg.sessions[1].conversation.as_deref(),
+            Some("roommate-conv"),
+            "報告した本人の session に着地する"
+        );
+    }
+
+    /// 実在しない session の報告は**書かない**（root に落とさない）。
+    ///
+    /// 「不明だから root」にすると、session を名乗れる報告者の取り違えが root の会話を壊す —
+    /// session 粒度化で消したかった事故が fallback 経由で蘇る。
+    #[test]
+    fn report_for_unknown_session_is_not_folded_into_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        set_conversation_in(base, "vp", "root", "echoes", 1, Some("root-conv")).expect("root conv");
+
+        let outcome = record_conversation_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            ConversationReport {
+                target: ReportTarget::Session(9),
+                conversation: "ghost-conv",
+                trigger: ReportTrigger::Spoken,
+            },
+            |_| false,
+        )
+        .expect("record");
+        assert_eq!(outcome, ConversationRecordOutcome::UnknownSession);
+
+        let reg = load_in(base, "vp", "root", "echoes");
+        assert_eq!(reg.sessions.len(), 1, "session は増えない");
+        assert_eq!(
+            reg.sessions[0].conversation.as_deref(),
+            Some("root-conv"),
+            "実在しない session の報告は root に化けない"
+        );
+    }
+
+    /// 後方互換: session を名乗らない報告（session env の無い旧 binary / VP 外で起動された
+    /// claude）は従来どおり root に記録される。root が #2 に移っていても root 追従。
+    #[test]
+    fn unspecified_report_still_records_into_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        // root を #2 へ移す（Act I ✨ New 相当）。旧 root(#1) は残る。
+        let k2 = create_root_in(base, "vp", "root", "echoes", "echoes", SessionAct::Tui)
+            .expect("create_root #2");
+        assert_eq!(k2, 2);
+
+        let outcome = record_conversation_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            ConversationReport {
+                target: ReportTarget::Unspecified,
+                conversation: "legacy-conv",
+                trigger: ReportTrigger::Spoken,
+            },
+            |_| false,
+        )
+        .expect("record");
+        assert_eq!(outcome, ConversationRecordOutcome::Recorded);
+
+        let reg = load_in(base, "vp", "root", "echoes");
+        assert_eq!(reg.sessions[0].conversation, None, "旧 root(#1) は無傷");
+        assert_eq!(
+            reg.sessions[1].conversation.as_deref(),
+            Some("legacy-conv"),
+            "名乗らない報告は現 root（#2）へ = session 粒度化前と同じ着地"
+        );
+    }
+
+    /// `ReportTarget::Session(root)` と `Unspecified` は同じ session に着地する
+    /// （= 名乗った root と名乗らなかった報告の**結果**は一致する。区別しているのは
+    /// 「実在しない session を root に落とさない」ためであって、root 宛の意味を変えるためではない）。
+    #[test]
+    fn explicit_root_report_matches_unspecified() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let root = load_in(base, "vp", "root", "echoes").root;
+        let outcome = record_conversation_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            ConversationReport {
+                target: ReportTarget::Session(root),
+                conversation: "explicit-root",
+                trigger: ReportTrigger::Issued,
+            },
+            |_| false,
+        )
+        .expect("record");
+        assert_eq!(outcome, ConversationRecordOutcome::Recorded);
+        assert_eq!(
+            load_in(base, "vp", "root", "echoes").sessions[0]
+                .conversation
+                .as_deref(),
+            Some("explicit-root")
+        );
+    }
+
+    /// F1/F2 guard は session 粒度でも同じ policy で効く（doc 40 §6 の表は書き先が変わっても不変）。
+    #[test]
+    fn f1_f2_guard_applies_per_session() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        create_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            SessionAct::Tui,
+            false,
+        )
+        .expect("create #2");
+        set_conversation_in(base, "vp", "root", "echoes", 2, Some("live-conv")).expect("#2 conv");
+
+        // Issued + 旧 transcript 健在 → 据え置き（`|| claude` fallback の幻から守る）
+        let outcome = record_conversation_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            ConversationReport {
+                target: ReportTarget::Session(2),
+                conversation: "phantom-conv",
+                trigger: ReportTrigger::Issued,
+            },
+            |_| true,
+        )
+        .expect("record");
+        assert_eq!(outcome, ConversationRecordOutcome::KeptExisting);
+        assert_eq!(
+            load_in(base, "vp", "root", "echoes").sessions[1]
+                .conversation
+                .as_deref(),
+            Some("live-conv"),
+            "非 root session でも健在な会話が守られる"
         );
     }
 
     /// parse_session_label は session_label の逆関数（+ 非数値 suffix は key 1 に倒す）。
     #[test]
     fn parse_session_label_inverts_session_label() {
-        assert_eq!(parse_session_label("conductor"), ("conductor", 1));
-        assert_eq!(parse_session_label("conductor#2"), ("conductor", 2));
+        assert_eq!(parse_session_label("root"), ("root", 1));
+        assert_eq!(parse_session_label("root#2"), ("root", 2));
         assert_eq!(parse_session_label("feat-x#10"), ("feat-x", 10));
         assert_eq!(
             parse_session_label("a#b"),
             ("a#b", 1),
             "非数値 suffix は素の名前"
         );
-        assert_eq!(parse_session_label("conductor#1"), ("conductor", 1));
-        for (label, key) in [("conductor", 1u32), ("conductor", 2), ("feat-x", 10)] {
+        assert_eq!(parse_session_label("root#1"), ("root", 1));
+        for (label, key) in [("root", 1u32), ("root", 2), ("feat-x", 10)] {
             let l = session_label(label, key);
             assert_eq!(parse_session_label(&l), (label, key), "roundtrip: {l}");
         }
@@ -1068,12 +1567,113 @@ mod tests {
     /// registry file 名も sanitize が効く（session_store と同じ規則）。
     #[test]
     fn registry_file_sanitizes_project_and_lane() {
-        let p = registry_file_in(Path::new("/base"), "creo.memories", "conductor");
+        let p = registry_file_in(Path::new("/base"), "creo.memories", "root");
         assert_eq!(
             p,
-            Path::new("/base/echoes_sessions/creo-memories__conductor.json")
+            Path::new("/base/echoes_sessions/creo-memories__root.json")
         );
         let p = registry_file_in(Path::new("/base"), "a/b", "../evil");
         assert_eq!(p, Path::new("/base/echoes_sessions/a-b__---evil.json"));
+    }
+
+    // ---- doc 47 §4: Act の lane → session 移設 ----
+
+    /// root の act の往復。**root を向け替えたら act も新 root のものになる**ことまで固定する
+    /// （旧 `console_mode` は lane 単位だったので、この区別が存在しなかった）。
+    #[test]
+    fn root_act_follows_the_root_session() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        // 未記録は Tui（file 不在 = 従来の既定）
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Tui);
+
+        assert!(
+            set_root_act_in(base, "vp", "root", "echoes", SessionAct::Chat).expect("set"),
+            "変化したので true"
+        );
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Chat);
+        assert!(
+            !set_root_act_in(base, "vp", "root", "echoes", SessionAct::Chat).expect("set 2"),
+            "同値は no-op（false）"
+        );
+
+        // #2 を Tui で作って root を移すと、root の act も #2 のものになる。
+        let k2 = create_in(
+            base,
+            "vp",
+            "root",
+            "echoes",
+            "echoes",
+            SessionAct::Tui,
+            false,
+        )
+        .expect("create #2");
+        set_root_in(base, "vp", "root", "echoes", k2).expect("set_root");
+        assert_eq!(
+            root_act_in(base, "vp", "root"),
+            SessionAct::Tui,
+            "act は lane ではなく root session に付く"
+        );
+    }
+
+    /// act 無しの旧 file は Tui として読める（serde default の後方互換）。
+    #[test]
+    fn legacy_registry_without_act_reads_as_tui() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let path = registry_file_in(base, "vp", "root");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"focused":1,"root":1,"next":2,"sessions":[{"key":1,"stand":"echoes"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Tui);
+        let reg = load_in(base, "vp", "root", "echoes");
+        assert_eq!(reg.sessions[0].act, SessionAct::Tui);
+    }
+
+    /// one-shot migration: 旧 `console_modes/` の chat 記録が root の act に畳まれ、
+    /// legacy file / dir ごと消える。Tui は既定なので registry を作らずに捨てる。
+    #[test]
+    fn migrate_console_modes_folds_chat_into_root_act() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let dir = base.join("console_modes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("vp__root"), "chat").unwrap();
+        std::fs::write(dir.join("vp__feat"), "tui").unwrap();
+        std::fs::write(dir.join("vp__broken"), "gui").unwrap(); // 未知値は捨てる
+
+        assert_eq!(migrate_console_modes_in(base), 1, "畳んだのは chat の 1 件");
+
+        assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Chat);
+        assert_eq!(root_act_in(base, "vp", "feat"), SessionAct::Tui);
+        assert!(
+            !registry_file_in(base, "vp", "feat").exists(),
+            "Tui は既定なので registry file を作らない（migration が state を増やさない）"
+        );
+        assert!(!dir.exists(), "legacy dir ごと消える");
+        // 2 回目は no-op（冪等）
+        assert_eq!(migrate_console_modes_in(base), 0);
+    }
+
+    /// migration は legacy **file 名**（sanitize 済み）から project/lane を復元するため、
+    /// 素の project 名に `.` や `/` を含む lane でも同じ registry file に着地する
+    /// （`registry_file_in` が同じ sanitize を通す = 冪等だから成立する）。
+    /// ここがズレると「移行したのに反映されない」= 無音の Act 巻き戻りになる。
+    #[test]
+    fn migration_lands_on_the_same_file_as_the_unsanitized_project() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let dir = base.join("console_modes");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 実 project 名は "creo.memories" — legacy file 名は sanitize 済みの "creo-memories__root"
+        std::fs::write(dir.join("creo-memories__root"), "chat").unwrap();
+
+        assert_eq!(migrate_console_modes_in(base), 1);
+
+        // 素の project 名で引いても Chat が読める（= 同じ file に着地した）
+        assert_eq!(root_act_in(base, "creo.memories", "root"), SessionAct::Chat);
     }
 }

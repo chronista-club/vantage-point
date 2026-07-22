@@ -24,7 +24,7 @@ pub struct ActorRef {
 }
 
 impl ActorRef {
-    /// `echoes@vantage-point/conductor` 形式の v3.1 federated address 文字列を返す。
+    /// `echoes@vantage-point/root` 形式の v3.1 federated address 文字列を返す。
     /// VP-146 で旧 sub-suffix 形式 (`echoes.conductor@vantage-point`) から移行。
     pub fn canonical(&self) -> String {
         format!("{}@{}/{}", self.stand, self.project, self.lane)
@@ -85,7 +85,7 @@ mod tests {
     fn sample_actor() -> ActorRef {
         ActorRef {
             stand: "echoes".into(),
-            lane: "conductor".into(),
+            lane: "root".into(),
             project: "vantage-point".into(),
         }
     }
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn actor_ref_canonical() {
-        assert_eq!(sample_actor().canonical(), "echoes@vantage-point/conductor");
+        assert_eq!(sample_actor().canonical(), "echoes@vantage-point/root");
     }
 
     #[test]

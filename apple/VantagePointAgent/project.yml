@@ -15,11 +15,15 @@ options:
   createIntermediateGroups: true
 
 packages:
-  # club-unison の Swift client SDK。 monorepo の root ではなく clients/swift 配下に
-  # Package.swift があるため remote URL 依存は不可 → sibling repo の local path 依存。
-  # (creoui と同じ sibling 前提。 将来 clients/swift 独立 repo 化 or submodule も選択肢)
+  # club-unison の Swift client SDK（product 名 `UnisonClient`）。sibling repo の local path 依存
+  # (creoui と同じ sibling 前提。 将来 独立 repo 化 or submodule も選択肢)
+  #
+  # ⚠️ 2026-07-22 修正: upstream が `Package.swift` を **repo root へ移動**した
+  # （旧: `clients/swift/Package.swift`）ため、旧 path では
+  # `the package manifest at '.../clients/swift/Package.swift' cannot be accessed` で
+  # xcodebuild が落ちていた。xcodegen は通るので**生成までは成功して build で初めて落ちる**。
   UnisonClient:
-    path: ../../../club-unison/clients/swift
+    path: ../../../club-unison
 
 targets:
   VantagePointAgent:

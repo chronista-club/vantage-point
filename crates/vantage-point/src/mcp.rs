@@ -95,7 +95,7 @@ pub(crate) fn parse_show_payload(v: &serde_json::Value) -> Option<CanvasPane> {
 /// project-local 一本に揃える。
 #[derive(Debug, Clone)]
 pub struct SelfLane {
-    /// `"conductor"` or `"<performer-name>"`（flat 名）
+    /// `"root"` or `"<performer-name>"`（flat 名）
     pub lane_name: String,
     /// performer context のとき `Some(parent project 名)`、conductor context のとき `None`
     pub performer_parent: Option<String>,
@@ -104,7 +104,7 @@ pub struct SelfLane {
     /// = wire op を fail-closed)。performer のときは `performer_parent` が identity を持つので
     /// 未使用 (`None`)。wiremsg identity を「繋いだ SP」依存から「自分」へ移す SSOT
     /// (旧: conductor は bare `"agent"` を送り SP 正規化に依存していた)。
-    pub conductor_project: Option<String>,
+    pub root_project: Option<String>,
 }
 
 impl SelfLane {
@@ -116,13 +116,13 @@ impl SelfLane {
     /// 3. それ以外は conductor。自 project 名を `registered_project_name_for_cwd`
     ///    (config-only / SP 非依存) で解決。登録 project なら `Some(name)` = canonical
     ///    identity、未登録 cwd なら `None` = wire op fail-closed (誤 identity を送らない)。
-    /// 4. cwd / config 取得失敗 → conductor_project=None (fail-closed)
+    /// 4. cwd / config 取得失敗 → root_project=None (fail-closed)
     pub fn detect() -> Self {
         // identity 解決不能な conductor (cwd/config 取得失敗) → None で fail-closed
         let conductor_unresolved = || SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
             performer_parent: None,
-            conductor_project: None,
+            root_project: None,
         };
         let Ok(cwd) = std::env::current_dir() else {
             return conductor_unresolved();
@@ -140,15 +140,15 @@ impl SelfLane {
             return SelfLane {
                 lane_name: performer_name,
                 performer_parent: Some(p.name.clone()),
-                conductor_project: None, // identity は performer_parent が持つ
+                root_project: None, // identity は performer_parent が持つ
             };
         }
         // conductor: 自 project 名を config-only で解決 (未登録 cwd は None = fail-closed)。
         // cwd は上で取得済みのものを正規化して渡す (二重取得を避ける)。
         SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
             performer_parent: None,
-            conductor_project: crate::resolve::match_project_name_for_path(
+            root_project: crate::resolve::match_project_name_for_path(
                 &crate::config::Config::normalize_path(&cwd),
                 &config,
             ),
@@ -171,7 +171,7 @@ impl SelfLane {
     pub fn from_address(&self) -> Result<String, McpError> {
         match &self.performer_parent {
             Some(parent) => Ok(format!("agent@{}/{}", parent, self.lane_name)),
-            None => match &self.conductor_project {
+            None => match &self.root_project {
                 Some(project) => Ok(format!("agent@{}", project)),
                 None => Err(McpError::invalid_params(
                     "wire identity を解決できません: 現在の作業ディレクトリがどの登録 project 配下にもありません。`vp projects add <path>` で登録してから wire を使ってください (誤 identity 送信を防ぐ fail-closed)。".to_string(),
@@ -553,7 +553,7 @@ impl VantageMcp {
                             let msg_lane = v
                                 .get("lane")
                                 .and_then(|l| l.as_str())
-                                .unwrap_or("conductor");
+                                .unwrap_or(crate::process::lanes_state::ROOT_LANE_NAME);
                             if msg_lane != self_lane {
                                 continue;
                             }
@@ -610,28 +610,27 @@ impl VantageMcp {
                 .to_string(),
         };
 
-        let url = format!(
-            "http://[::1]:{}/api/world/processes/{}/restart",
-            crate::cli::world_port(),
-            project_name
-        );
-        let resp = self
-            .client
-            .post(&url)
-            .timeout(Duration::from_secs(45))
-            .send()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(format!("World restart に到達できません: {}", e), None)
-            })?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(McpError::internal_error(
-                format!("World restart {}: {}", status, body),
-                None,
-            ));
-        }
+        // doc 45 段 2: 旧 `POST /api/world/processes/{name}/restart` を Unison
+        // `world-control.projects/restart` に差し替え。restart は内部に grace sleep +
+        // 起動確認を含むので、旧 HTTP の 45s timeout に相当する外側 timeout をここで掛ける
+        // (Unison client 側に per-request timeout が無いため)。
+        let client = tokio::time::timeout(
+            Duration::from_secs(45),
+            crate::daemon::client::WorldControlClient::connect(crate::cli::world_port(), 3),
+        )
+        .await
+        .map_err(|_| McpError::internal_error("World restart 接続 timeout (45s)", None))?
+        .map_err(|e| {
+            McpError::internal_error(format!("World restart に到達できません: {}", e), None)
+        })?;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(45),
+            client.projects_restart(&project_name),
+        )
+        .await
+        .map_err(|_| McpError::internal_error("World restart timeout (45s)", None))?
+        .map_err(|e| McpError::internal_error(format!("World restart 失敗: {}", e), None))?;
 
         // QUIC チャネルをリセットして再接続を強制（新 SP に張り直す）
         *self.process_channel.lock().await = None;
@@ -639,7 +638,7 @@ impl VantageMcp {
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
                 "Process '{}' を World restart で再起動: {}",
-                project_name, body
+                project_name, result
             ),
         )]))
     }
@@ -974,16 +973,16 @@ mod tests {
         // wiremsg identity SSOT: conductor は解決済 project で "agent@<project>"、
         // performer は "agent@<parent>/<name>"。project 未解決の conductor は fail-closed (Err)。
         let conductor = SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
             performer_parent: None,
-            conductor_project: Some("vantage-point".to_string()),
+            root_project: Some("vantage-point".to_string()),
         };
         assert_eq!(conductor.from_address().unwrap(), "agent@vantage-point");
 
         let performer = SelfLane {
             lane_name: "chore".to_string(),
             performer_parent: Some("vantage-point".to_string()),
-            conductor_project: None,
+            root_project: None,
         };
         assert_eq!(
             performer.from_address().unwrap(),
@@ -992,13 +991,13 @@ mod tests {
 
         // 未登録 cwd の conductor (project 未解決) → fail-closed
         let unresolved = SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
             performer_parent: None,
-            conductor_project: None,
+            root_project: None,
         };
         assert!(
             unresolved.from_address().is_err(),
-            "project 未解決 conductor は fail-closed"
+            "project 未解決 root は fail-closed"
         );
     }
 
@@ -1097,7 +1096,7 @@ mod tests {
         let performer = SelfLane {
             lane_name: "chore".to_string(),
             performer_parent: Some("vantage-point".to_string()),
-            conductor_project: None,
+            root_project: None,
         };
         assert_eq!(
             performer_parent_path(&performer, &cfg).as_deref(),
@@ -1106,9 +1105,9 @@ mod tests {
 
         // conductor context → None（performer_parent が無い）
         let conductor = SelfLane {
-            lane_name: "conductor".to_string(),
+            lane_name: crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
             performer_parent: None,
-            conductor_project: None,
+            root_project: None,
         };
         assert_eq!(performer_parent_path(&conductor, &cfg), None);
 
@@ -1116,7 +1115,7 @@ mod tests {
         let unknown = SelfLane {
             lane_name: "x".to_string(),
             performer_parent: Some("not-in-config".to_string()),
-            conductor_project: None,
+            root_project: None,
         };
         assert_eq!(performer_parent_path(&unknown, &cfg), None);
     }

@@ -61,6 +61,18 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
             field "fresh" type="bool" optional=#true
         }
+        // doc 44 D4: この lane を project の開発起点にする (Host の帳簿のポインタ更新)。
+        // D5 の通り **何も動かさない** — cwd も active lane も engine も変わらない。
+        request "lane:set_origin" {
+            field "path" type="string"
+            field "address" type="string"
+        }
+        // doc 44 §12: lane の並び順を帳簿に保存する (sidebar の DnD)。
+        // order = lane address の配列 (表示順)。server 側で lane 名 → lane_id に解決される。
+        request "lane:reorder" {
+            field "path" type="string"
+            field "order" type="array<string>"
+        }
         // Performer Lane 作成要求 (branch / stand は optional)
         request "lane:add_performer" {
             field "path" type="string"

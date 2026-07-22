@@ -135,7 +135,7 @@ pub struct SessionState {
     /// project path → UI state (sidebar accordion 等)
     #[serde(default)]
     pub projects: HashMap<String, ProjectUiState>,
-    /// 直前 active Lane の address (Display 形 `"<project>/conductor"` / `"<project>/performer/<name>"`)。
+    /// 直前 active Lane の address (Display 形 `"<project>/root"` / `"<project>/performer/<name>"`)。
     /// 起動後の最初の LanesLoaded で実在 lane と照合して復元される (mismatch なら無視)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
@@ -407,15 +407,12 @@ mod tests {
     fn round_trip_json() {
         let mut s = SessionState::default();
         s.set_project_expanded("/path/to/proj", true);
-        s.active_lane_address = Some("proj/conductor".into());
+        s.active_lane_address = Some("proj/root".into());
         s.currents_order = Some(vec!["/proj-a".into(), "/proj-b".into()]);
         let json = serde_json::to_string(&s).unwrap();
         let parsed: SessionState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.project_expanded("/path/to/proj"), Some(true));
-        assert_eq!(
-            parsed.active_lane_address.as_deref(),
-            Some("proj/conductor")
-        );
+        assert_eq!(parsed.active_lane_address.as_deref(), Some("proj/root"));
         assert_eq!(
             parsed.currents_order.as_deref(),
             Some(&["/proj-a".to_string(), "/proj-b".to_string()][..])
@@ -435,10 +432,10 @@ mod tests {
     #[test]
     fn deserialize_partial_only_active_lane() {
         // expanded などの一部 field 欠落でも default で埋まる
-        let json = r#"{"active_lane_address":"foo/conductor"}"#;
+        let json = r#"{"active_lane_address":"foo/root"}"#;
         let parsed: SessionState = serde_json::from_str(json).unwrap();
         assert!(parsed.projects.is_empty());
-        assert_eq!(parsed.active_lane_address.as_deref(), Some("foo/conductor"));
+        assert_eq!(parsed.active_lane_address.as_deref(), Some("foo/root"));
     }
 
     #[test]

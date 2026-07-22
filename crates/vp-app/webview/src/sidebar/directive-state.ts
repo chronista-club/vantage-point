@@ -70,5 +70,5 @@ export const [deleteHintLabel, setDeleteHintLabel] = createSignal('')
 
 /** lane number mode hint bar の visible state。 Shell.tsx で render。 */
 export const [laneSelectHintVisible, setLaneSelectHintVisible] = createSignal(false)
-/** lane number mode hint bar に表示する候補 lane の一覧 (= "1. project/conductor  2. project/performer/foo  ...")。 */
+/** lane number mode hint bar に表示する候補 lane の一覧 (= "1. project/root  2. project/performer/foo  ...")。 */
 export const [laneSelectHintLabel, setLaneSelectHintLabel] = createSignal('')

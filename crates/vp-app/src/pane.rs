@@ -17,7 +17,7 @@
 //! ## active selection
 //!
 //! `SidebarState.active_lane_address` で 1 つだけ active な Lane を持つ。
-//! 形式は Lane address の Display 表現 (`"<project>/conductor"` / `"<project>/performer/<name>"`)。
+//! 形式は Lane address の Display 表現 (`"<project>/root"` / `"<project>/performer/<name>"`)。
 
 use serde::{Deserialize, Serialize};
 
@@ -98,8 +98,8 @@ pub struct HubWorld {
 
 /// Activity widget の payload
 ///
-/// 5-10 秒間隔で Rust 側が `/api/health` + `/api/world/projects` +
-/// `/api/world/processes` を fetch して更新、sidebar に push する。
+/// 5-10 秒間隔で Rust 側が `/api/health` (HTTP) + `projects/list` +
+/// `registry.list` (Unison、doc 45 段 3) を fetch して更新、sidebar に push する。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct ActivitySnapshot {
@@ -113,7 +113,7 @@ pub struct ActivitySnapshot {
     pub world_started_at: Option<String>,
     /// 登録プロジェクト数
     pub project_count: usize,
-    /// 稼働中 process 数 (`/api/world/processes`)
+    /// 稼働中 process 数 (`registry.list`)
     pub running_process_count: usize,
     /// chronista-hub federation 接続状態（`/api/health` の `hub`、World 横に表示）。
     /// `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
@@ -123,7 +123,7 @@ pub struct ActivitySnapshot {
     /// Hub 行の下に常時リスト表示する。未接続 / 旧 daemon は空。
     #[serde(default)]
     pub hub_worlds: Vec<HubWorld>,
-    /// L1 lifecycle: SP presence map（project path → `"connected"`|`"connecting"`|`"disconnected"`
+    /// L1 lifecycle: SP presence map（project path → `"connected"`|`"unregistered"`
     /// |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
     /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
     #[serde(default)]
@@ -156,10 +156,24 @@ pub struct SidebarState {
     /// 起動時に再 fetch されるので disk persistence は実質意味薄いが、Serialize は維持
     #[serde(default)]
     pub lanes_by_project: std::collections::HashMap<String, Vec<crate::client::LaneInfo>>,
-    /// 現在 active な Lane の address (Display 形 `"<project>/conductor"` 等)
+    /// 現在 active な Lane の address (Display 形 `"<project>/root"` 等)
     /// app 全体で 1 つだけ。 `lane:select` IPC で更新される。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
+    /// doc 44 D4: project_path → **開発起点 lane 名**（Project Host の帳簿が解決した値）。
+    ///
+    /// `active_lane_address`（注視 = 今見ている lane）とは**別物**。D5 が明示的に分けており、
+    /// 注視は click ごとに動くが起点は明示指定した時だけ動く。sidebar は起点 lane 行に
+    /// star icon を出し、context menu から再指定できる。
+    ///
+    /// 値は lane **名**（address ではない）— 起点は project ごとに 1 本なので
+    /// `<project>` 部分は key 側の path と冗長になる。
+    ///
+    /// ⚠️ `skip_serializing` にしてはいけない: この struct は webview への push payload
+    /// でもあるので、skip すると Rust 側だけ更新されて sidebar に永久に届かない。
+    /// 空の時だけ省く（`session_titles` 等と同じ扱い）。
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub origin_by_project: std::collections::HashMap<String, String>,
     /// Phase 5-A: 現在 active な Project-scope Stand kind
     /// (`"paisley_park"` / `"gold_experience"` / `"bastet"`)。
     /// `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
@@ -175,7 +189,7 @@ pub struct SidebarState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
     /// Phase 5-D Sprint C P2.1: per-Lane HD notification unread count。
-    /// Key: Lane address (Display 形 `"<project>/conductor"` 等)、 Value: 未読 OSC 99 focus event 数。
+    /// Key: Lane address (Display 形 `"<project>/root"` 等)、 Value: 未読 OSC 99 focus event 数。
     /// `OscNotification` event で increment、 `lane:select` で対応 Lane を 0 reset。
     /// disk persist 不要 (session 起動で 0 から)、 skip_serializing で軽量化。
     #[serde(default)]
@@ -187,7 +201,7 @@ pub struct SidebarState {
     #[serde(default)]
     pub awaiting_input: std::collections::HashMap<String, bool>,
     /// Canvas (Paisley Park) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
-    /// Key: Lane address (`"<project>/conductor"` 等)、 Value: 現在 active でない lane に
+    /// Key: Lane address (`"<project>/root"` 等)、 Value: 現在 active でない lane に
     /// show が着いた回数。 `CanvasMessage`(show) で increment、 `lane:select` (activate_lane) で
     /// 対応 Lane を 0 reset。 `unread_notifications` (HITL/OSC = 黄 dot) とは**別 sink** =
     /// sidebar で Canvas 専用 icon (Phosphor easel) を出し「用事」と「絵が届いた」の語彙を分ける。
@@ -203,7 +217,7 @@ pub struct SidebarState {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub session_titles: std::collections::HashMap<String, String>,
     /// VP-147 PR-P2-3: per-Lane の mailbox inbox 状況。
-    /// Key: Lane address (Display 形 `"<project>/conductor"`)、 Value: [`MessageState`]。
+    /// Key: Lane address (Display 形 `"<project>/root"`)、 Value: [`MessageState`]。
     /// `spawn_lane_inbox_poller` (5s 間隔) が `AppEvent::ResolveLaneInboxes` を発火、
     /// main thread が active Lane に対して MessageState を populate する。
     /// JS 側は entry が存在する Lane に `.vp-message-icon` を render (Echoes icon の右隣)。
@@ -328,16 +342,13 @@ mod tests {
         s.processes.push(ProjectPaneState::new("/a", "alpha"));
         s.activity.world_online = true;
         s.activity.project_count = 1;
-        s.active_lane_address = Some("alpha/conductor".into());
+        s.active_lane_address = Some("alpha/root".into());
         let json = serde_json::to_string(&s).unwrap();
         let parsed: SidebarState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.processes.len(), 1);
         assert!(parsed.activity.world_online);
         assert_eq!(parsed.widget, WidgetKind::Activity);
-        assert_eq!(
-            parsed.active_lane_address.as_deref(),
-            Some("alpha/conductor")
-        );
+        assert_eq!(parsed.active_lane_address.as_deref(), Some("alpha/root"));
     }
 
     #[test]

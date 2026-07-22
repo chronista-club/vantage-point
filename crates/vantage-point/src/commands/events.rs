@@ -35,7 +35,7 @@ pub enum EventsAction {
         /// 種別（dotted、例: `build.done` / `test.fail`）。
         #[arg(long)]
         kind: String,
-        /// 発生元（任意、例: `echoes@vantage-point/conductor`）。
+        /// 発生元（任意、例: `echoes@vantage-point/root`）。
         #[arg(long)]
         source: Option<String>,
         /// payload JSON（省略時 null）。

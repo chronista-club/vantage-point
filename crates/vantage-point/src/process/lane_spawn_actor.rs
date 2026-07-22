@@ -88,7 +88,7 @@ use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 
 use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
-use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
+use super::lanes_state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, SystemEvent};
 
 /// Lane spawn Service (= in-process channel から `LaneCmd::SpawnLane` を recv、
 /// 並列度 N で gate しつつ Lane を spawn する infra actor)。
@@ -275,12 +275,11 @@ async fn handle_cmd(
     );
     let started = Instant::now();
 
-    // doc 33 §2: 永続 console_mode を boot で honor（conductor の with_conductor と同じ規律）。
+    // doc 47 §4: root session の act を boot で honor（conductor の with_root と同じ規律）。
     // chat の lane に PTY を立てない — 立てると echoes_submit がもう 1 本の engine を呼び、
     // 同一 cc_session に 2 エンジン（PTY claude + EchoesAgentHost）が発生する。
-    let console_mode = crate::lane::console_mode::last(&addr.project, &name)
-        .unwrap_or(crate::lane::console_mode::ConsoleMode::Tui);
-    if console_mode == crate::lane::console_mode::ConsoleMode::Chat {
+    let console_mode = crate::lane::session_registry::root_act(&addr.project, &name);
+    if console_mode == crate::lane::session_registry::SessionAct::Chat {
         // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
         // pid=None + state=Running は chat lane の正常形（vp-app は console_mode で
         // respawn 判定を gate する — doc 33 §3）。
@@ -290,8 +289,6 @@ async fn handle_cmd(
             console_mode,
             id: lane_id,
             address: addr.clone(),
-            kind: LaneKind::Performer,
-            name: Some(name),
             state: LaneState::Running,
             stand: stand.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -399,8 +396,6 @@ async fn handle_cmd(
         console_mode,
         id: lane_id,
         address: addr.clone(),
-        kind: LaneKind::Performer,
-        name: Some(name),
         state,
         stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -425,7 +420,8 @@ async fn handle_cmd(
     }
     if let Some((slot, term_rx)) = slot_rx_opt {
         // Stage 1 (ADR-0001): TermAttach も同時に spawn (race フリー、 Conductor 経路と統一)
-        pool_write.insert_pty_slot(addr.clone(), slot, term_rx);
+        // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
+        pool_write.insert_pty_slot(addr.clone(), None, slot, term_rx);
     }
     pool_write.insert(info.clone());
     drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
@@ -544,8 +540,6 @@ mod tests {
             console_mode: Default::default(),
             id: Default::default(),
             address: addr,
-            kind: LaneKind::Performer,
-            name: Some("already-there".to_string()),
             state: LaneState::Running,
             stand: "echoes".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -589,17 +583,22 @@ mod tests {
     ///
     /// これが「Act II の performer lane を再起動しても chat のまま復活する」の中核。
     /// 壊れると chat performer が boot で PTY を立て、 echoes_submit が 2 本目 engine を
-    /// 呼んで 1 会話 2 エンジンになる (conductor `with_conductor` と同じ規律を performer に適用)。
+    /// 呼んで 1 会話 2 エンジンになる (conductor `with_root` と同じ規律を performer に適用)。
     #[tokio::test]
     async fn chat_mode_performer_boots_engine_less() {
-        use crate::lane::console_mode::ConsoleMode;
-        // console_mode::last / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
+        use crate::lane::session_registry::SessionAct;
+        // session_registry / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
         // crate 唯一のロック下で tempdir に向け、 guard の drop で復元する。
         let state = crate::test_env::state_dir_async().await;
 
-        // performer "proj"/"chat-perf" を chat mode で永続化
-        crate::lane::console_mode::record("proj", "chat-perf", ConsoleMode::Chat)
-            .expect("record chat mode");
+        // performer "proj"/"chat-perf" の **root session の act** を Chat で永続化（doc 47 §4）
+        crate::lane::session_registry::set_root_act(
+            "proj",
+            "chat-perf",
+            "echoes",
+            SessionAct::Chat,
+        )
+        .expect("record chat act");
 
         let pool = Arc::new(RwLock::new(LanePool::new()));
         let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
@@ -631,7 +630,7 @@ mod tests {
             .expect("chat performer が登録されるはず");
         assert_eq!(
             info.console_mode,
-            ConsoleMode::Chat,
+            SessionAct::Chat,
             "永続 chat mode が honor される"
         );
         assert_eq!(
@@ -641,7 +640,7 @@ mod tests {
         );
         assert_eq!(info.pid, None, "chat lane は engine-less (PTY を立てない)");
         assert!(
-            pool_read.subscribe_output(&addr).is_none(),
+            pool_read.subscribe_output(&addr, None).is_none(),
             "chat lane に PtySlot は存在しないはず"
         );
         drop(pool_read);

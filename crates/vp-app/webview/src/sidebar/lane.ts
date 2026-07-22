@@ -53,14 +53,22 @@ export function standDisplayName(stand: string): string {
 	}
 }
 
-/** Lane kind が Performer か。 */
-function isPerformerKind(kind: string): boolean {
-	return kind === "performer";
-}
+/**
+ * 開発起点 lane の予約名 (doc 44 D4)。
+ *
+ * Rust 側 `ROOT_LANE_NAME` と同値でなければ address が食い違う
+ * (`laneAddressKey()` は byte-for-byte 一致が要件)。
+ */
+const ROOT_LANE_NAME = "root";
 
-/** Lane が Performer か (Conductor との対)。 */
+/**
+ * Lane が開発起点でない (旧 Performer) か。
+ *
+ * doc 44 P2: 旧 `kind` field は撤去された。lane は全て対等で、開発起点は予約名で表される
+ * ので、判定は名前の比較になった。
+ */
 export function isPerformerLane(lane: LaneInfo): boolean {
-	return isPerformerKind(lane.kind) || isPerformerKind(lane.address.kind);
+	return lane.address.name !== ROOT_LANE_NAME;
 }
 
 /**
@@ -77,14 +85,12 @@ export function isLaneAlive(lane: LaneInfo): boolean {
 	return lane.pid != null || lane.console_mode === "chat";
 }
 
-/** Lane の表示ラベル。 Conductor はそのまま、 Performer は `Performer: <name>`。 */
+/** Lane の表示ラベル。 開発起点はラベルなし、 それ以外は lane 名。 */
 export function laneLabel(lane: LaneInfo): string {
-	const kind = lane.kind || lane.address.kind;
-	// 地で判別 (A): Conductor はラベルなし (project folder 直下 + インデントなしで自明)、
-	// Performer は name のみ ("Performer:" prefix を省略、 段下げ + 左罫線で Performer と判別)。
-	if (kind === "conductor") return "";
-	if (isPerformerKind(kind)) return lane.name ?? lane.address.name ?? "?";
-	return kind;
+	// 地で判別 (A): 開発起点はラベルなし (project folder 直下 + インデントなしで自明)、
+	// それ以外は name のみ (段下げ + 左罫線で従属関係を示す)。
+	if (!isPerformerLane(lane)) return "";
+	return lane.address.name;
 }
 
 /**
@@ -109,15 +115,14 @@ export function laneCwdLabel(cwd: string, projectPath: string): string {
 }
 
 /**
- * Lane address を Display 形 (`<project>/conductor` / `<project>/performer/<name>`) に変換。
+ * Lane address を Display 形 (`<project>/root` / `<project>/performer/<name>`) に変換。
  * Rust `LaneAddressWire::key()` と完全一致させる (active selection 比較に使うため)。
  */
 export function laneAddressKey(lane: LaneInfo): string {
+	// doc 44 P2: フラット化で `<project>/<name>` の 1 形になった
+	// (Rust 側 `LaneAddressWire::key()` / `LaneAddress::Display` と byte-for-byte 一致)。
 	const a = lane.address;
-	if (isPerformerKind(a.kind)) {
-		return `${a.project}/performer/${a.name ?? "<unnamed>"}`;
-	}
-	return `${a.project}/${a.kind || "conductor"}`;
+	return `${a.project}/${a.name}`;
 }
 
 /**
@@ -145,7 +150,7 @@ export function laneAddressKey(lane: LaneInfo): string {
  */
 export function laneConnector(lane: LaneInfo, awaitingInput: boolean): string {
 	if (!isPerformerLane(lane)) {
-		return "conn-conductor"; // conductor は幹 = spine の頭
+		return "conn-root"; // conductor は幹 = spine の頭
 	}
 	const fs = lane.flow_state;
 	if (fs === "awaiting_user") return "conn-hitl"; // ユーザ本人待ち = needs-you

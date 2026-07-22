@@ -172,8 +172,7 @@ fn setup_performer(
             // silent に無視せず明示 error (co-evolution #2 は worktree が対象)。
             if base.is_some_and(|b| !b.trim().is_empty()) {
                 return Err(
-                    "--base は isolation=worktree のみ対応 (clone は conductor HEAD の複製)"
-                        .to_string(),
+                    "--base は isolation=worktree のみ対応 (clone は root HEAD の複製)".to_string(),
                 );
             }
             provision_clone(repo_root, &performer_dir, branch)?
@@ -557,13 +556,35 @@ fn persist_lane_model_in(
         .map_err(|e| format!("model 永続に失敗: {e}"))
 }
 
-/// state base dir 注入版 (テスト用)。project key を repo basename から導き、一元 GC に委譲。
-fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
-    let project = repo_root
+/// lane-scoped state file の project key（= repo_root の basename）。
+///
+/// SP 書き手の derivation（`addr.project`）と一致する前提で 2 経路が動いている
+/// （`clear_lane_state_in` の doc 参照）。**同じ derivation を要る場所が増えたので関数に畳んだ**
+/// — 各 call site が個別に basename を取ると 1 箇所ズレた時に無音で別 key を触る
+/// （lane_id は帳簿の key なので、ズレると履歴が別 lane のものになる）。
+fn lane_state_project_key(repo_root: &Path) -> &str {
+    repo_root
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
-    clear_lane_state_in(base, project, lane);
+        .unwrap_or("unknown")
+}
+
+/// state base dir 注入版 (テスト用)。project key を repo basename から導き、一元 GC に委譲。
+fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
+    clear_lane_state_in(base, lane_state_project_key(repo_root), lane);
+}
+
+/// lane の安定 id を引く（Project Host の帳簿の key、doc 44 §8.2）。
+///
+/// SSOT は `lane_ids/<project>__<lane>` state file で、World 側の `LaneInfo.id` も
+/// 同じ関数（[`super::lane_id::load_or_create`]）から来る = **同じ lane なら同じ id**。
+/// だから CLI 側で解決した id をそのまま帳簿に送れる。
+///
+/// ⚠️ **lane を消す前に**引くこと。`clear_lane_state_files` が id file ごと消すので、
+/// 削除後に引くと別の id が生える（= 見送りの記録が「知らない lane」になる）。
+/// 逆に言うと、同名 lane を作り直すと必ず別 id になるので**前の履歴と混ざらない**。
+fn lane_stable_id(repo_root: &Path, lane: &str) -> String {
+    super::lane_id::load_or_create(lane_state_project_key(repo_root), lane).to_string()
 }
 
 /// 本番 base での lane-scoped state 一元 GC (SP `delete_lane_orchestrated` から呼ぶ)。
@@ -583,12 +604,12 @@ pub(crate) fn clear_lane_state(project: &str, lane: &str) {
 /// (CLI = repo_root basename、 SP = `addr.project` + `lane_label(addr)`)。両者は SP 書き手の
 /// key derivation と一致する (既存 2 経路が既にこの前提で動いていた)。
 ///
-/// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 7 種):
-/// console_mode / session_registry (会話 id の SSOT) / engine_model / stand (engine 種別) /
+/// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 6 種):
+/// session_registry (会話 id と Act の SSOT) / engine_model / stand (engine 種別) /
 /// echoes_replay (session label 単位) / terminal_replay (slot の scrollback) / lane_id (安定 id)。
 ///
 /// best-effort: 個々の失敗は warn して残置し、他の破棄は続行する (1 file の fs error で
-/// 残り 6 種の GC を落とさない)。冪等 = 未記録 / 二重呼び出しは全て no-op。
+/// 残り 5 種の GC を落とさない)。冪等 = 未記録 / 二重呼び出しは全て no-op。
 fn clear_lane_state_in(base: &Path, project: &str, lane: &str) {
     // ① echoes_replay は **session label 単位** (`<lane>` + `<lane>#<n>`)。registry を消す前に
     //    全 session を列挙して各 label の replay log を消す (残すと transcript を持たない engine の
@@ -605,27 +626,24 @@ fn clear_lane_state_in(base: &Path, project: &str, lane: &str) {
             );
         }
     }
-    // ② console_mode (Act I/II のエンジンモード)
-    if let Err(e) = super::console_mode::clear_in(base, project, lane) {
-        tracing::warn!("lane state GC: console_mode の破棄に失敗 (残置): lane={lane} err={e}");
-    }
-    // ③ session_registry (会話 id の SSOT — 残すと旧 session / 旧会話 id が蘇る)。①の列挙後に消す。
+    // ② session_registry (会話 id と Act の SSOT — 残すと旧 session / 旧会話 id / 旧 Act が蘇る)。
+    //    ①の列挙後に消す。
     if let Err(e) = super::session_registry::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: session registry の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ④ engine_model (Act II の model 選択)
+    // ③ engine_model (Act II の model 選択)
     if let Err(e) = super::engine_model::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: engine_model の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ⑤ stand (engine 種別 — SP 再起動またぎの spawn stand)
+    // ④ stand (engine 種別 — SP 再起動またぎの spawn stand)
     if let Err(e) = super::stand_store::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: stand の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ⑥ terminal_replay (slot の scrollback の replay seed)
+    // ⑤ terminal_replay (slot の scrollback の replay seed)
     if let Err(e) = crate::daemon::pty_slot::clear_replay_in(base, project, lane) {
         tracing::warn!("lane state GC: terminal replay の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ⑦ lane_id (位置独立 安定 id)
+    // ⑥ lane_id (位置独立 安定 id)
     if let Err(e) = super::lane_id::clear_in(base, project, lane) {
         tracing::warn!("lane state GC: lane_id の破棄に失敗 (残置): lane={lane} err={e}");
     }
@@ -856,71 +874,342 @@ pub fn status_performers() -> Result<(), String> {
     Ok(())
 }
 
+/// 見送り判定に渡す開発起点 lane 名を決める（doc 44 D4）。
+///
+/// 帳簿は World が持つ（DB は surrealkv の OS 排他ロックで World 専有）ので、CLI からは
+/// process-proxy 越しに問い合わせる。World 不在 / 応答不正なら **予約名にフォールバック**し、
+/// その旨を告げる。
+///
+/// なぜ黙って落とさないか: 起点が確認できないまま見送ると、**移動済みの起点 lane を
+/// 消しうる**。実害の確率は低い（起点が merged かつ clean かつ停止中である必要がある）が、
+/// 「確認できなかった」という事実は人に見せる（Host は推測しない）。
+fn origin_for_cleanup(repo_root: &Path) -> String {
+    let reserved = crate::process::lanes_state::ROOT_LANE_NAME.to_string();
+    let Some(project_path) = repo_root.to_str() else {
+        return reserved;
+    };
+    let resp = crate::commands::process_client::world_process_request_blocking(
+        crate::cli::world_port(),
+        project_path,
+        "lane_origin_get",
+        serde_json::json!({}),
+    );
+    match resp.and_then(|v| Ok(serde_json::from_value::<crate::host::ledger::Origin>(v)?)) {
+        Ok(origin) => origin.name,
+        Err(e) => {
+            eprintln!(
+                "[vp] 開発起点を帳簿から確認できませんでした（既定 '{reserved}' として続行）: {e}"
+            );
+            reserved
+        }
+    }
+}
+
+/// 見送り判定に渡す「今動いている lane」を World に問い合わせる（doc 44 §7.5）。
+///
+/// lane の生死は git からは知れないので、[`crate::host::farewell`] は外からの供給に頼る。
+/// CLI は World の "world-process" channel に `list_all_lanes` を ask し、応答から
+/// **この project の分だけ**を [`crate::host::liveness::running_lanes_in`] で取り出す。
+///
+/// なぜ process-proxy (`lanes_list`) ではないか: あちらは対象 project の SP が World に
+/// 登録されていないと逆引きに失敗して error になり、「project が動いていない（= 稼働 lane 0）」と
+/// 「World に訊けなかった（= 不明）」が区別できない。cross-project 一覧なら前者は**答え**として返る。
+///
+/// 失敗は [`Liveness::Unknown`] で返し、**空リストには畳まない** — それが P3 第一スライスで
+/// guard を never-fire にしていた形そのもの。
+fn liveness_for_cleanup(repo_root: &Path) -> crate::host::liveness::Liveness {
+    use crate::host::liveness::Liveness;
+    let Some(project_path) = repo_root.to_str() else {
+        return Liveness::Unknown("repo path に invalid UTF-8".to_string());
+    };
+    match crate::commands::process_client::world_lanes_snapshot_blocking(crate::cli::world_port()) {
+        Ok(snapshot) => Liveness::Known(crate::host::liveness::running_lanes_in(
+            &snapshot,
+            Path::new(project_path),
+        )),
+        Err(e) => Liveness::Unknown(e.to_string()),
+    }
+}
+
+/// 見送りの帳簿（World が持つ）への読み書き（doc 44 §7.5）。
+///
+/// trait にしているのは **「稼働状況が不明で保留した時に帳簿へ 1 文字も書かない」を
+/// テストで固定する**ため。実装が直接 RPC を撃つ形だと、書かなかったことを検証できない
+/// （事実が無い状態を履歴に残さない、が要件）。
+pub(crate) trait FarewellLedger {
+    /// 判定を記録し、**反映後の滞留一覧**を返す（World 不達なら空 = 注記を諦めて続行）。
+    fn observe(
+        &mut self,
+        repo_root: &Path,
+        observations: &[crate::host::ledger::FarewellObservation],
+    ) -> Vec<crate::host::ledger::FarewellEntry>;
+
+    /// 実際に見送った lane を記録する（終端 event）。
+    fn reclaimed(&mut self, repo_root: &Path, entries: &[crate::host::ledger::FarewellObservation]);
+}
+
+/// 本番の帳簿 — World の world-control channel 越しに読み書きする。
+///
+/// 帳簿は db/world にあり surrealkv の OS 排他ロックで World が専有するので、CLI からは
+/// この経路しかない（doc 44 §8.4）。**失敗しても見送りは止めない**（best-effort）— 記録は
+/// 判断材料であって、それが取れないことは lane を消してよいかの判断を変えない。
+struct WorldFarewellLedger;
+
+impl FarewellLedger for WorldFarewellLedger {
+    fn observe(
+        &mut self,
+        repo_root: &Path,
+        observations: &[crate::host::ledger::FarewellObservation],
+    ) -> Vec<crate::host::ledger::FarewellEntry> {
+        let Some(path) = repo_root.to_str() else {
+            return Vec::new();
+        };
+        crate::world_client::farewell_observe_blocking(path, observations).unwrap_or_default()
+    }
+
+    fn reclaimed(
+        &mut self,
+        repo_root: &Path,
+        entries: &[crate::host::ledger::FarewellObservation],
+    ) {
+        let Some(path) = repo_root.to_str() else {
+            return;
+        };
+        if crate::world_client::farewell_reclaimed_blocking(path, entries).is_none() {
+            eprintln!("[vp] 見送りを帳簿に記録できませんでした（削除自体は完了しています）");
+        }
+    }
+}
+
+/// 見送りの実行結果（何が起きたかをテストから見るための戻り値）。
+///
+/// 出力は eprintln なので、戻り値が無いと「保留した」と「1 件も対象が無かった」を
+/// テストで区別できない（= 保留の regression が静かに入る）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CleanupOutcome {
+    /// 稼働状況を確認できず**保留**（判定も削除も行っていない）
+    Held,
+    /// 判定対象が無かった
+    Nothing,
+    /// 判定のみ（`--force` 無し、または削除可能 0 件）
+    Surveyed { reclaimable: usize },
+    /// 実際に見送った
+    Removed { count: usize },
+}
+
 /// Remove performers whose branch is merged into the repo's default branch
 /// (cwd の `<repo>/.vp/lanes/` 対象)。
 ///
 /// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
 /// co-evolution #3: default branch を `resolve_default_branch` (origin/HEAD) で解決し、
 /// squash merge も検出する (旧: `origin/main` ハードコード + ancestry only)。
+/// doc 44 P3: 判定は **Project Host に移管**した（`host::farewell`）。
+///
+/// 本関数は Host の判定を人間に見せて実行する薄い surface になった。旧実装は
+/// 収集・判定・分類を 1 関数（`classify_performer_for_cleanup`）に混ぜており:
+/// - git subprocess を内部で呼ぶためテストできなかった
+/// - 判定が 2 値（削除 / 保持）で「事実だけで決まらないもの」を表現できず、
+///   **merged なら未コミット変更を見ずに削除候補**へ入れていた（= Host は推測しない、の違反）
+///
+/// Host 版は 3 値（reclaim / keep / ask_human）で、判定は I/O ゼロの純関数
+/// （[`crate::host::farewell::judge_farewell`]）に分離済み。
+///
+/// doc 44 §7.5: 判定に要る事実（開発起点 / 稼働中 lane）は本関数が World から集めて渡す。
+/// **稼働状況が確認できない場合は判定に進まず保留する**（[`cleanup_performers_with`]）。
+/// 判定と実行は Project Host の帳簿に記録され、`AskHuman` の滞留として出力に戻ってくる。
 pub fn cleanup_performers(force: bool) -> Result<(), String> {
     let Ok(repo_root) = config::find_repo_root() else {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());
     };
-    let pl_dir = config::project_lanes_dir(&repo_root);
+    let liveness = liveness_for_cleanup(&repo_root);
+    cleanup_performers_with(
+        &mut std::io::stderr(),
+        &repo_root,
+        force,
+        &liveness,
+        origin_for_cleanup,
+        &mut WorldFarewellLedger,
+    )
+    .map(|_| ())
+}
 
-    // default branch を 1 回だけ解決 (per-performer の gh 呼び出しを避ける)。 nightly 等の
-    // 非 main trunk を尊重。 解決不能なら "main" fallback (resolve_default_branch 内で probe 済)。
-    let default_branch = resolve_default_branch(&repo_root).unwrap_or_else(|| "main".to_string());
+/// [`cleanup_performers`] の本体（World から取る事実は注入、I/O 境界を外に出した形）。
+///
+/// `liveness` を引数で受けるのは、**「稼働状況が不明なら見送らない」をテストで固定する**ため
+/// （World を立てずに `Unknown` を注入できる）。
+///
+/// `resolve_origin` が値ではなく関数なのは**順序が意味を持つ**から: 稼働状況が不明なら
+/// 保留して抜けるので、その先の起点照会（World への 2 度目の ask）まで行ってはいけない。
+/// `ledger` も同じ理由で注入する — 保留したなら**帳簿にも触らない**（事実が無い状態を
+/// 履歴に残さない）ことを、spy でテストから見る。
+///
+/// `out` を注入するのは、滞留の注記が**実際に出力に出ること**をテストで見るため。
+/// 帳簿への書き込みだけをテストすると「読み手のない書き込み」に戻る（doc 44 §8.5）。
+fn cleanup_performers_with(
+    out: &mut dyn std::io::Write,
+    repo_root: &Path,
+    force: bool,
+    liveness: &crate::host::liveness::Liveness,
+    resolve_origin: impl FnOnce(&Path) -> String,
+    ledger: &mut dyn FarewellLedger,
+) -> Result<CleanupOutcome, String> {
+    use crate::host::farewell::FarewellVerdict;
 
-    // (name, path, branch)。 branch は worktree cleanup 時の `git branch -d` 用。
-    let mut to_remove: Vec<(String, std::path::PathBuf, Option<String>)> = Vec::new();
-    let mut kept: Vec<(String, String)> = Vec::new();
+    // 稼働状況が確認できないなら**判定にすら進まない**。
+    //
+    // 不明 = 「稼働 lane が無い」ではないので、空として扱うと daemon が落ちている時にだけ
+    // 稼働中 lane の保護が消える（一番危ない条件で guard が外れる形）。判定を出して
+    // 「削除可能」と表示するのも嘘になりうるので、survey ごと止めて人に告げる。
+    //
+    // `--force` でも通さない: `--force` は「判定結果を実行する」意思表示であって
+    // 「事実が無くてよい」ではない（1 flag に 2 仕事を兼ねさせない）。
+    let running = match liveness.lanes_for_survey() {
+        Ok(lanes) => lanes,
+        Err(reason) => {
+            let _ = writeln!(
+                out,
+                "稼働状況を確認できないため見送りを保留しました（1 件も削除していません）。"
+            );
+            let _ = writeln!(out, "  理由: {reason}");
+            let _ = writeln!(
+                out,
+                "  World を起動してから再実行してください（`vp daemon status` / `vp daemon start`）。"
+            );
+            return Ok(CleanupOutcome::Held);
+        }
+    };
 
-    if pl_dir.exists()
-        && let Ok(entries) = fs::read_dir(&pl_dir)
-    {
-        for entry in entries.flatten() {
-            classify_performer_for_cleanup(entry, &default_branch, &mut to_remove, &mut kept);
+    let origin = resolve_origin(repo_root);
+    let reports = crate::host::farewell::survey_project(repo_root, running, &origin);
+    if reports.is_empty() {
+        let _ = writeln!(out, "クリーンアップ対象はありません。");
+        return Ok(CleanupOutcome::Nothing);
+    }
+
+    // 帳簿の key（安定 id）は **lane を消す前に**解決する — 削除すると id の state file が
+    // 消えるため、後から引くと別 id が生えて記録が「知らない lane」になる。
+    let observations: Vec<crate::host::ledger::FarewellObservation> = reports
+        .iter()
+        .map(|r| crate::host::ledger::FarewellObservation {
+            lane_id: lane_stable_id(repo_root, &r.facts.name),
+            lane_name: r.facts.name.clone(),
+            verdict: r.verdict.clone(),
+        })
+        .collect();
+    // 判定を帳簿に反映し、反映後の滞留（何回目 / 初回いつ）を受け取る。
+    // key は id なので、rename されていても同じ滞留に繋がる。
+    let pending: std::collections::HashMap<String, crate::host::ledger::FarewellEntry> = ledger
+        .observe(repo_root, &observations)
+        .into_iter()
+        .map(|e| (e.lane_id.clone(), e))
+        .collect();
+
+    let mut to_remove: Vec<(
+        &crate::host::farewell::FarewellReport,
+        &crate::host::ledger::FarewellObservation,
+    )> = Vec::new();
+    let mut ask_human = 0usize;
+    for (r, obs) in reports.iter().zip(observations.iter()) {
+        match &r.verdict {
+            FarewellVerdict::Reclaim { reason } => {
+                let _ = writeln!(out, "  削除可能: {} ({})", r.facts.name, reason);
+                to_remove.push((r, obs));
+            }
+            FarewellVerdict::AskHuman { reason } => {
+                // 滞留の注記は帳簿から。lane 名は survey が持つ**生きた名前**を出す
+                // （帳簿の名前は記録時点のスナップショットなので、rename 後は古い）。
+                let note = pending
+                    .get(&obs.lane_id)
+                    .and_then(crate::host::ledger::stagnation_note)
+                    .map(|n| format!(" — {n}"))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "  ⚠️ 要判断: {} ({reason}){note}", r.facts.name);
+                ask_human += 1;
+            }
+            FarewellVerdict::Keep { reason } => {
+                let _ = writeln!(out, "  保持: {} ({})", r.facts.name, reason);
+            }
         }
     }
 
-    if to_remove.is_empty() && kept.is_empty() {
-        eprintln!("クリーンアップ対象はありません。");
-        return Ok(());
-    }
     if to_remove.is_empty() {
-        eprintln!("クリーンアップ対象はありません。");
-        for (name, reason) in &kept {
-            eprintln!("  保持: {name} ({reason})");
+        let _ = writeln!(out, "\n自動で削除できる performer はありません。");
+        if ask_human > 0 {
+            let _ = writeln!(
+                out,
+                "{ask_human} 件は事実だけで判断できないため、人の確認が要ります。"
+            );
         }
-        return Ok(());
-    }
-
-    for (name, _, _) in &to_remove {
-        eprintln!("  削除可能: {name} (マージ済み)");
-    }
-    for (name, reason) in &kept {
-        eprintln!("  保持: {name} ({reason})");
+        return Ok(CleanupOutcome::Surveyed { reclaimable: 0 });
     }
 
     if !force {
-        eprintln!("\n実際に削除するには `vp lane cleanup --force` を実行してください。");
-        return Ok(());
+        let _ = writeln!(
+            out,
+            "\n実際に削除するには `vp lane cleanup --force` を実行してください。"
+        );
+        if ask_human > 0 {
+            let _ = writeln!(out, "（⚠️ の {ask_human} 件は --force でも削除しません）");
+        }
+        return Ok(CleanupOutcome::Surveyed {
+            reclaimable: to_remove.len(),
+        });
     }
 
-    for (name, path, branch) in &to_remove {
-        remove_performer_workspace(&repo_root, path)?;
-        clear_lane_state_files(&repo_root, name);
+    let mut reclaimed: Vec<crate::host::ledger::FarewellObservation> = Vec::new();
+    for (r, obs) in &to_remove {
+        let path = config::project_lanes_dir(repo_root).join(&r.facts.name);
+        remove_performer_workspace(repo_root, &path)?;
+        clear_lane_state_files(repo_root, &r.facts.name);
         // worktree: merged branch を共有 .git から `-d` で安全に掃除 (設計 E)。
         // clone: branch は独立 .git 内なので親 repo では no-op (失敗は握り潰す)。
-        if let Some(b) = branch {
-            let _ = run_git_in(&repo_root, &["branch", "-d", b]);
+        //
+        // ⚠️ branch 名は **facts（削除前に収集済）から取る**。ここで `get_branch(&path)` を
+        // 呼び直してはいけない — `remove_performer_workspace` は worktree ディレクトリごと
+        // 消すため cwd が存在せず、`git` の起動自体が Err になって常に None に落ちる
+        // （P3 初版がこれで `branch -d` を never-fire にしていた）。
+        if let Some(b) = r.facts.branch.as_deref() {
+            let _ = run_git_in(repo_root, &["branch", "-d", b]);
         }
-        eprintln!("  削除: {name}");
+        let _ = writeln!(out, "  削除: {}", r.facts.name);
+        reclaimed.push((*obs).clone());
     }
 
-    eprintln!("{} パフォーマーを削除しました。", to_remove.len());
+    // 「いつ何を見送ったか」は消した後では survey で復元できない = 帳簿に残す唯一の事実。
+    // 削除の**後**に記録するのは、判定ではなく**実行**を書いているから（実行に失敗した
+    // lane を「見送った」と書かない — 失敗は上で `?` 抜けする）。
+    ledger.reclaimed(repo_root, &reclaimed);
+
+    let _ = writeln!(out, "{} パフォーマーを削除しました。", to_remove.len());
+    if ask_human > 0 {
+        let _ = writeln!(out, "⚠️ {ask_human} 件は人の確認待ちのため残しました。");
+    }
+    Ok(CleanupOutcome::Removed {
+        count: to_remove.len(),
+    })
+}
+
+/// `vp lane history` — Project Host の帳簿（見送りの記録）を読む（doc 44 §7.5）。
+///
+/// board UI を待たずに帳簿の**読み手**を用意するための面。書いた事実に読み手が無いと、
+/// `LaneId` が 2 年間そうだったように「誰も見ない書き込み」になる（doc 44 §8.2）。
+pub fn show_farewell_history(limit: usize) -> Result<(), String> {
+    let repo_root = config::find_repo_root().map_err(|_| "git repo の中で実行してください")?;
+    let path = repo_root
+        .to_str()
+        .ok_or_else(|| "repo path に invalid UTF-8".to_string())?;
+    let entries = crate::world_client::farewell_log_blocking(path, limit).ok_or_else(|| {
+        "帳簿は World が専有しているため、daemon 稼働中のみ読めます（`vp daemon start`）"
+            .to_string()
+    })?;
+    if entries.is_empty() {
+        eprintln!("見送りの記録はまだありません（`vp lane cleanup` を走らせると記録されます）。");
+        return Ok(());
+    }
+    for entry in &entries {
+        println!("{}", crate::host::ledger::format_history_line(entry));
+    }
     Ok(())
 }
 
@@ -938,40 +1227,15 @@ fn print_performer_status_row(path: &Path, name: &str) {
     println!("{name}\t{branch}\t{changes_str}\t{ahead_behind}\t{last_commit}");
 }
 
-/// `cleanup_performers` 内の 1 performer 分類 helper
-///
-/// merged 判定は ancestry ([`is_branch_merged`]) → squash/rebase ([`is_branch_squash_merged`]) の
-/// 2 段。 後者は gh PR state を引くため cleanup (明示・低頻度) 経路のみで行う (co-evolution #3)。
-fn classify_performer_for_cleanup(
-    entry: fs::DirEntry,
-    default_branch: &str,
-    to_remove: &mut Vec<(String, std::path::PathBuf, Option<String>)>,
-    kept: &mut Vec<(String, String)>,
-) {
-    // dep symlink を除外 (branch が origin/HEAD に merged 済みに見え「削除可能」誤判定される)。
-    if !is_performer_entry(&entry) {
-        return;
-    }
-    let path = entry.path();
-    // `.git` は clone なら dir / worktree なら file。 `exists()` は両方 true。
-    if !path.join(".git").exists() {
-        return;
-    }
-    let name = entry.file_name().to_string_lossy().to_string();
-    let _ = run_git_in(&path, &["fetch", "--quiet"]);
-    if is_branch_merged(&path, default_branch) || is_branch_squash_merged(&path, default_branch) {
-        let branch = get_branch(&path);
-        to_remove.push((name, path, branch));
-    } else {
-        let changes = count_changes(&path);
-        let reason = if changes > 0 {
-            format!("アクティブ ({changes} files changed)")
-        } else {
-            "未マージ".to_string()
-        };
-        kept.push((name, reason));
-    }
-}
+// doc 44 P3: `classify_performer_for_cleanup` は撤去（Project Host に移管）。
+//
+// 収集（git subprocess）・判定・分類が 1 関数に混ざっており、テスト不能かつ判定が 2 値だった。
+// 後継は `host::farewell` の 3 層構成:
+//   collect_facts（actions） → judge_farewell（純関数・全分岐テスト済） → survey_project（集約）
+//
+// 旧実装が抱えていた実質的な欠陥: **merged なら未コミット変更を見ずに削除候補**へ入れていた
+// （= 取り込み済み branch 上に残った作業を黙って捨てうる）。Host 版は dirty を merged より
+// 先に見て `AskHuman` に回す。
 
 /// `<repo>/.vp/lanes/<name>` の performer dir を返す。 dir 不在なら None。
 ///
@@ -1105,7 +1369,7 @@ fn run_git(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn run_git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
+pub(crate) fn run_git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -1118,7 +1382,7 @@ fn run_git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn count_changes(dir: &std::path::Path) -> usize {
+pub(crate) fn count_changes(dir: &std::path::Path) -> usize {
     let output = Command::new("git")
         .args(["status", "--short"])
         .current_dir(dir)
@@ -1184,7 +1448,7 @@ fn get_last_commit(dir: &std::path::Path) -> String {
 /// `default_branch`: repo の default branch 名 (`resolve_default_branch` 由来、 例 "nightly")。
 /// 旧実装の `origin/main`/`origin/master` ハードコードを廃し、 nightly 等の非 main trunk に対応
 /// (co-evolution #3)。 origin/<default> が解決不能なら keep 安全側 (false)。
-fn is_branch_merged(performer_dir: &std::path::Path, default_branch: &str) -> bool {
+pub(crate) fn is_branch_merged(performer_dir: &std::path::Path, default_branch: &str) -> bool {
     let remote_ref = format!("origin/{default_branch}");
     let remote_sha = git_rev_parse(performer_dir, &remote_ref);
     if remote_sha.is_none() {
@@ -1211,7 +1475,7 @@ fn is_branch_merged(performer_dir: &std::path::Path, default_branch: &str) -> bo
 ///      rebase merge / 単一 commit squash を拾う (複数 commit squash は組合せ patch-id が個別と
 ///      一致せず取りこぼすため gh が主、 cherry は gh 不在 / headRefOid 照合不能時の補助)。 cherry も
 ///      内容ベースなので、 名前一致だけの誤判定は起きない。
-fn is_branch_squash_merged(performer_dir: &Path, default_branch: &str) -> bool {
+pub(crate) fn is_branch_squash_merged(performer_dir: &Path, default_branch: &str) -> bool {
     if let Some(branch) = get_branch(performer_dir)
         && let Some(head_oid) = gh_merged_pr_head_oid(performer_dir, &branch)
         && head_contained_in_merged_commit(performer_dir, &head_oid) == Some(true)
@@ -1321,7 +1585,7 @@ fn git_rev_parse(dir: &std::path::Path, rev: &str) -> Option<String> {
     }
 }
 
-fn get_branch(dir: &std::path::Path) -> Option<String> {
+pub(crate) fn get_branch(dir: &std::path::Path) -> Option<String> {
     let output = Command::new("git")
         .args(["branch", "--show-current"])
         .current_dir(dir)
@@ -1414,6 +1678,219 @@ mod tests {
     use super::*;
     use std::process::Command as Cmd;
 
+    /// 回帰固定（doc 44 §7.5）: **稼働状況が確認できないときは 1 件も見送らない**。
+    ///
+    /// 「不明」を空リストに畳むと、World が落ちている時にだけ稼働中 lane の保護が消える
+    /// （= 一番危ない条件で guard が外れる）。`--force` でも通さない — `--force` は
+    /// 「判定結果を実行する」意思であって「事実が無くてよい」ではない。
+    ///
+    /// 保留が**無条件ではない**ことも同時に見る（Known なら判定まで進む）。片方だけだと
+    /// 「常に保留」= 見送り機能が死んだ状態も緑になる。
+    ///
+    /// doc 44 §7.5（帳簿）: **保留したら帳簿にも 1 文字も書かない**ことを同時に固定する。
+    /// 事実が無い状態（稼働状況を確認できていない）を履歴に残すと、後から見た人が
+    /// 「その日は判断待ちが 0 件だった」と読んでしまう。
+    #[test]
+    fn cleanup_holds_when_liveness_is_unknown() {
+        use crate::host::liveness::Liveness;
+
+        let root = std::env::temp_dir().join(format!("vp-cleanup-hold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lane_dir = config::project_lanes_dir(&root).join("w1");
+        std::fs::create_dir_all(&lane_dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&lane_dir)
+                .output()
+                .expect("git 実行");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(lane_dir.join("a.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+
+        // 起点照会は World を叩くので注入する（保留経路では呼ばれないこと自体も要件）。
+        let origin = |_: &Path| crate::process::lanes_state::ROOT_LANE_NAME.to_string();
+        let mut ledger = SpyLedger::default();
+        let mut out = Vec::new();
+
+        // 不明 + --force でも保留（判定にも進まない）
+        let held = cleanup_performers_with(
+            &mut out,
+            &root,
+            true,
+            &Liveness::Unknown("World 不達".to_string()),
+            |_| panic!("保留するなら起点照会まで進んではいけない"),
+            &mut ledger,
+        )
+        .expect("保留は Err ではない");
+        assert_eq!(held, CleanupOutcome::Held);
+        assert!(lane_dir.exists(), "保留中に lane を消してはいけない");
+        assert!(
+            ledger.observed.is_empty() && ledger.reclaimed.is_empty(),
+            "保留したら帳簿に書かない（事実が無い状態を履歴に残さない）: {ledger:?}"
+        );
+
+        // 稼働 lane 0 件は「答え」なので判定に進む（保留は無条件ではない）
+        let surveyed = cleanup_performers_with(
+            &mut out,
+            &root,
+            false,
+            &Liveness::Known(Vec::new()),
+            origin,
+            &mut ledger,
+        )
+        .expect("判定は Err ではない");
+        assert!(
+            !matches!(surveyed, CleanupOutcome::Held),
+            "0 件は不明ではない: {surveyed:?}"
+        );
+        assert!(lane_dir.exists(), "dry-run では消えない");
+        assert_eq!(
+            ledger.observed.len(),
+            1,
+            "判定まで進んだら観測は帳簿へ送られる（= 保留の 0 件が『書けない』ではないことの裏取り）"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 帳簿の spy（World を立てずに「何を書いたか / 書かなかったか」を見る）。
+    #[derive(Debug, Default)]
+    struct SpyLedger {
+        observed: Vec<Vec<crate::host::ledger::FarewellObservation>>,
+        reclaimed: Vec<Vec<crate::host::ledger::FarewellObservation>>,
+        /// `observe` が返す滞留（World が持っている体の帳簿）
+        pending: Vec<crate::host::ledger::FarewellEntry>,
+    }
+
+    impl FarewellLedger for SpyLedger {
+        fn observe(
+            &mut self,
+            _repo_root: &Path,
+            observations: &[crate::host::ledger::FarewellObservation],
+        ) -> Vec<crate::host::ledger::FarewellEntry> {
+            self.observed.push(observations.to_vec());
+            self.pending.clone()
+        }
+
+        fn reclaimed(
+            &mut self,
+            _repo_root: &Path,
+            entries: &[crate::host::ledger::FarewellObservation],
+        ) {
+            self.reclaimed.push(entries.to_vec());
+        }
+    }
+
+    /// 回帰固定（doc 44 §7.5）: **滞留が `vp lane cleanup` の出力に実際に出る**。
+    ///
+    /// 帳簿は「書いたら読まれる」ことまで含めて 1 本。書き込みだけをテストすると、
+    /// `LaneId` が 2 年間そうだったように**読み手のない書き込み**になる（§8.2）。
+    /// ここでは要判断の lane に対し、帳簿が返した滞留が行に載ることを見る。
+    ///
+    /// 表示する lane 名は survey が持つ**生きた名前**で、帳簿の（記録時点の）名前ではない
+    /// ことも同時に固定する — 帳簿の名前を出すと rename 後に古い名前が現在の一覧に出る。
+    #[test]
+    fn cleanup_output_carries_stagnation_from_ledger() {
+        use crate::host::liveness::Liveness;
+
+        let _state = crate::test_env::state_dir(); // lane_id state file を tempdir に隔離
+
+        let root = std::env::temp_dir().join(format!("vp-cleanup-stag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let lane_dir = config::project_lanes_dir(&root).join("w1");
+        std::fs::create_dir_all(&lane_dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&lane_dir)
+                .output()
+                .expect("git 実行");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(lane_dir.join("a.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        // 未コミットの変更 = AskHuman（滞留の対象）
+        std::fs::write(lane_dir.join("a.txt"), "two").unwrap();
+
+        // 帳簿は id で引く。CLI と同じ derivation で id を作って spy に積む。
+        let lane_id = lane_stable_id(&root, "w1");
+        let mut ledger = SpyLedger {
+            pending: vec![crate::host::ledger::FarewellEntry {
+                lane_id: lane_id.clone(),
+                lane_name: "古い名前".to_string(),
+                kind: crate::host::ledger::FarewellKind::Pending,
+                reason: "未コミットの変更".to_string(),
+                streak: 3,
+                first_seen_at: "2026-07-15T00:00:00+00:00".to_string(),
+                last_seen_at: "2026-07-21T00:00:00+00:00".to_string(),
+                ongoing: true,
+            }],
+            ..Default::default()
+        };
+
+        let mut out = Vec::new();
+        cleanup_performers_with(
+            &mut out,
+            &root,
+            false,
+            &Liveness::Known(Vec::new()),
+            |_| crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
+            &mut ledger,
+        )
+        .expect("判定は Err ではない");
+
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(text.contains("⚠️ 要判断: w1"), "要判断行が出る: {text}");
+        assert!(
+            text.contains("3 回連続、初回 2026-07-15"),
+            "帳簿の滞留が出力に出る（読み手が効いている）: {text}"
+        );
+        assert!(
+            !text.contains("古い名前"),
+            "表示名は survey の生きた名前（帳簿のスナップショットではない）: {text}"
+        );
+
+        // 観測は帳簿へ送られ、key は安定 id（名前ではない）
+        let sent = ledger.observed.first().expect("観測が送られる");
+        let w1 = sent
+            .iter()
+            .find(|o| o.lane_name == "w1")
+            .expect("w1 の観測");
+        assert_eq!(w1.lane_id, lane_id, "帳簿の key は安定 id");
+        assert!(!w1.lane_id.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回帰固定: **同名 lane を作り直すと安定 id が変わる**（帳簿が混ざらない仕組みの土台）。
+    ///
+    /// `clear_lane_state_in` が `lane_ids` file を消すので、作り直した lane は新しい id を
+    /// 名乗る。これが崩れると、見送った lane の履歴を同名の新 lane が引き継ぐ
+    /// （= 作ったばかりの lane が「3 回連続で判断待ち」と表示される）。
+    #[test]
+    fn recreated_lane_gets_a_fresh_stable_id() {
+        let _state = crate::test_env::state_dir();
+        let root = std::env::temp_dir().join(format!("vp-cleanup-freshid-{}", std::process::id()));
+
+        let first = lane_stable_id(&root, "w1");
+        assert_eq!(lane_stable_id(&root, "w1"), first, "同じ lane は同じ id");
+
+        clear_lane_state_files(&root, "w1"); // = 見送り（lane 削除）の後始末
+        let second = lane_stable_id(&root, "w1");
+        assert_ne!(
+            first, second,
+            "同名で作り直した lane は別 id（前の履歴と混ざらない）"
+        );
+    }
+
     #[test]
     fn clear_lane_state_files_uses_repo_basename_key() {
         // キー凍結: project = repo_root の basename (SP 書き手の derivation と一致、
@@ -1421,13 +1898,16 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let repo_root = tmp.path().join("parent").join("vp");
-        crate::lane::console_mode::record_in(
+        // doc 47 §4: Act も session registry（root の act）に入った。GC が registry file ごと
+        // 消すので、Act の記録も一緒に終端する。
+        crate::lane::session_registry::set_root_act_in(
             base,
             "vp",
             "feat",
-            crate::lane::console_mode::ConsoleMode::Chat,
+            "echoes",
+            crate::lane::session_registry::SessionAct::Chat,
         )
-        .expect("record mode");
+        .expect("record act");
         // doc 40 PR-2: 会話 id は session registry が SSOT。GC が registry file を消すことを固定する。
         crate::lane::session_registry::set_conversation_in(
             base,
@@ -1441,7 +1921,11 @@ mod tests {
 
         clear_lane_state_files_in(base, &repo_root, "feat");
 
-        assert_eq!(crate::lane::console_mode::last_in(base, "vp", "feat"), None);
+        assert_eq!(
+            crate::lane::session_registry::root_act_in(base, "vp", "feat"),
+            crate::lane::session_registry::SessionAct::Tui,
+            "registry file が消え、Act も既定（Tui）に戻る"
+        );
         assert_eq!(
             crate::lane::session_registry::load_in(base, "vp", "feat", "echoes").sessions[0]
                 .conversation,
@@ -1452,44 +1936,60 @@ mod tests {
         clear_lane_state_files_in(base, &repo_root, "feat");
     }
 
-    /// 一元 GC の凍結: lane 削除後、当該 lane の **全 7 種**の lane-scoped state file が消える。
+    /// 一元 GC の凍結: lane 削除後、当該 lane の **全 6 種**の lane-scoped state file が消える。
     /// replay_log は session label 単位 (#1 + #2) で消し、 他 lane の state は巻き添えにしない。
     /// 従来 SP 経路から漏れていた replay_log / terminal_replay / lane_id の欠落再発を防ぐ回帰。
+    ///
+    /// doc 47 §4 で console_mode file は退役し、Act は registry の中（root の act）に入った —
+    /// 破棄対象が 7 種から 6 種に減ったのは leak が増えたのではなく、state が 1 つ畳まれたため。
     #[test]
-    fn clear_lane_state_removes_all_seven_state_files_and_is_scoped() {
+    fn clear_lane_state_removes_all_six_state_files_and_is_scoped() {
         use crate::daemon::pty_slot;
         use crate::echoes::{EchoesEvent, replay_log};
-        use crate::lane::{console_mode, engine_model, lane_id, session_registry, stand_store};
+        use crate::lane::{engine_model, lane_id, session_registry, stand_store};
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
 
         // 対象 lane (vp/feat) と巻き添え確認用の別 lane (vp/other) に同じ state 群を積む helper。
         let seed = |lane: &str| {
-            // ① console_mode
-            console_mode::record_in(base, "vp", lane, console_mode::ConsoleMode::Chat)
-                .expect("console_mode");
-            // ②③ session_registry: #2 session を足して root 会話 id を記録 (label 列挙の対象を作る)
+            // ① session_registry: Act(root) + 会話 id + #2 session (label 列挙の対象を作る)
+            session_registry::set_root_act_in(
+                base,
+                "vp",
+                lane,
+                "echoes",
+                session_registry::SessionAct::Chat,
+            )
+            .expect("registry act");
             session_registry::set_conversation_in(base, "vp", lane, "echoes", 1, Some("sess-1"))
                 .expect("registry #1");
-            session_registry::create_in(base, "vp", lane, "echoes", "codex", true)
-                .expect("registry #2");
-            // ④ engine_model
+            session_registry::create_in(
+                base,
+                "vp",
+                lane,
+                "echoes",
+                "codex",
+                session_registry::SessionAct::Chat,
+                true,
+            )
+            .expect("registry #2");
+            // ② engine_model
             engine_model::record_in(base, "vp", lane, "sonnet").expect("engine_model");
-            // ⑤ stand
+            // ③ stand
             stand_store::record_in(base, "vp", lane, "codex").expect("stand");
-            // ⑥ echoes_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
+            // ④ echoes_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
             let ev = EchoesEvent::MessageChunk {
                 text: "hi".to_string(),
             };
             replay_log::append_in(base, "vp", lane, &ev).expect("replay #1");
             let label2 = session_registry::session_label(lane, 2);
             replay_log::append_in(base, "vp", &label2, &ev).expect("replay #2");
-            // ⑦ terminal_replay: writer は flush task 経由なので path に直書きで模擬
+            // ⑤ terminal_replay: writer は flush task 経由なので path に直書きで模擬
             let rp = pty_slot::replay_file_path_in(base, "vp", lane);
             std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
             std::fs::write(&rp, b"scrollback").unwrap();
-            // ⑧ lane_id
+            // ⑥ lane_id
             lane_id::load_or_create_in(base, "vp", lane);
         };
         seed("feat");
@@ -1497,43 +1997,43 @@ mod tests {
 
         clear_lane_state_in(base, "vp", "feat");
 
-        // 対象 lane: 全 7 種が消えている。
-        assert_eq!(
-            console_mode::last_in(base, "vp", "feat"),
-            None,
-            "①console_mode"
-        );
+        // 対象 lane: 全 6 種が消えている。
         let reg = session_registry::load_in(base, "vp", "feat", "echoes");
-        assert_eq!(reg.sessions.len(), 1, "②③registry が既定形 N=1 に戻る");
-        assert_eq!(reg.sessions[0].conversation, None, "③会話 id も消える");
+        assert_eq!(reg.sessions.len(), 1, "①registry が既定形 N=1 に戻る");
+        assert_eq!(reg.sessions[0].conversation, None, "①会話 id も消える");
+        assert_eq!(
+            session_registry::root_act_in(base, "vp", "feat"),
+            session_registry::SessionAct::Tui,
+            "①Act も既定 (Tui) に戻る"
+        );
         assert_eq!(
             engine_model::last_in(base, "vp", "feat"),
             None,
-            "④engine_model"
+            "②engine_model"
         );
-        assert_eq!(stand_store::last_in(base, "vp", "feat"), None, "⑤stand");
+        assert_eq!(stand_store::last_in(base, "vp", "feat"), None, "③stand");
         assert!(
             replay_log::load_in(base, "vp", "feat").is_empty(),
-            "⑥replay_log #1"
+            "④replay_log #1"
         );
         assert!(
             replay_log::load_in(base, "vp", "feat#2").is_empty(),
-            "⑥replay_log #2 (label 単位で消える)"
+            "④replay_log #2 (label 単位で消える)"
         );
         assert!(
             !pty_slot::replay_file_path_in(base, "vp", "feat").exists(),
-            "⑦terminal_replay"
+            "⑤terminal_replay"
         );
         assert!(
             !lane_id::id_file_in(base, "vp", "feat").exists(),
-            "⑧lane_id"
+            "⑥lane_id"
         );
 
         // 別 lane (vp/other) は巻き添えにならない (scoped)。
         assert_eq!(
-            console_mode::last_in(base, "vp", "other"),
-            Some(console_mode::ConsoleMode::Chat),
-            "別 lane の console_mode は残る"
+            session_registry::root_act_in(base, "vp", "other"),
+            session_registry::SessionAct::Chat,
+            "別 lane の Act は残る"
         );
         assert_eq!(
             stand_store::last_in(base, "vp", "other").as_deref(),
@@ -2292,7 +2792,7 @@ mod tests {
             .current_dir(&bare)
             .output()
             .unwrap();
-        let conductor = base.join("conductor");
+        let conductor = base.join("root");
         Cmd::new("git")
             .args(["clone", bare.to_str().unwrap(), conductor.to_str().unwrap()])
             .output()

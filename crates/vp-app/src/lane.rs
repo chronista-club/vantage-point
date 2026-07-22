@@ -9,7 +9,7 @@
 //!
 //! ## 表示形 (人間可読)
 //!
-//! - Conductor: `"vantage-point/conductor"`
+//! - Conductor: `"vantage-point/root"`
 //! - Performer: `"vantage-point/performer/foo"`
 
 use std::fmt;
@@ -18,69 +18,54 @@ use std::fmt;
 #[cfg(test)]
 use ts_rs::TS;
 
-/// Lane の種別
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LaneKind {
-    /// Project あたり 1 つ固定
-    Conductor,
-    /// Project あたり n 個 (lane cloned worktree)。
-    Performer,
-}
+// doc 44 P2: `LaneKind`（Conductor / Performer）は撤去。server 側 `LaneKind` と対の型で、
+// 同じ理由で消える（D4「lane 自身は役割状態を持たない」）。
 
-impl fmt::Display for LaneKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LaneKind::Conductor => write!(f, "conductor"),
-            LaneKind::Performer => write!(f, "performer"),
-        }
-    }
-}
-
-/// Lane の address — Pool key として使う 3-tuple
+/// 開発起点 lane の予約名（doc 44 D4）。
 ///
-/// 表示形 (`Display` 実装):
-/// - Conductor: `"<project>/conductor"`         例: `"vantage-point/conductor"`
-/// - Performer: `"<project>/performer/<name>"`  例: `"vantage-point/performer/foo"`
+/// **定義は `vp-paths` が唯一**（2026-07-21）。以前は server 側と別々に `const` を持ち、
+/// 「同値でなければ address が食い違う」をコメントの約束で担保していた — wire は文字列
+/// なので値がズレてもコンパイラは黙る。定義を共有 crate に畳んで構造的に不可能にした。
+pub use vp_paths::ROOT_LANE_NAME;
+
+/// Lane の address — Pool key として使う 2-tuple
+///
+/// 表示形 (`Display` 実装): `"<project>/<name>"`  例: `"vantage-point/root"` / `"vantage-point/foo"`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LaneAddress {
     pub project: String,
-    pub kind: LaneKind,
-    /// Performer の場合のみ Some (人間可読)。Conductor は None。
-    pub name: Option<String>,
+    /// lane 名（人間可読）。開発起点は [`ROOT_LANE_NAME`]。
+    pub name: String,
 }
 
 impl LaneAddress {
-    /// Conductor Lane を構築 (Project あたり 1 つ固定なので name 不要)
-    pub fn conductor(project: impl Into<String>) -> Self {
+    /// 任意の lane を構築する（フラット化後の canonical な構築子）。
+    pub fn new(project: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             project: project.into(),
-            kind: LaneKind::Conductor,
-            name: None,
+            name: name.into(),
         }
     }
 
-    /// Performer Lane を構築 (人間可読 name 必須)
+    /// 開発起点 Lane を構築（予約名）
+    pub fn root(project: impl Into<String>) -> Self {
+        Self::new(project, ROOT_LANE_NAME)
+    }
+
+    /// 名前付き Lane を構築（旧 performer）
     pub fn performer(project: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            project: project.into(),
-            kind: LaneKind::Performer,
-            name: Some(name.into()),
-        }
+        Self::new(project, name)
     }
 
-    /// Conductor 判定
-    pub fn is_conductor(&self) -> bool {
-        matches!(self.kind, LaneKind::Conductor)
+    /// 開発起点 lane か（= 予約名を持つか）
+    pub fn is_root(&self) -> bool {
+        self.name == ROOT_LANE_NAME
     }
 }
 
 impl fmt::Display for LaneAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (&self.kind, &self.name) {
-            (LaneKind::Conductor, _) => write!(f, "{}/conductor", self.project),
-            (LaneKind::Performer, Some(n)) => write!(f, "{}/performer/{}", self.project, n),
-            (LaneKind::Performer, None) => write!(f, "{}/performer/<unnamed>", self.project),
-        }
+        write!(f, "{}/{}", self.project, self.name)
     }
 }
 
@@ -88,7 +73,7 @@ impl fmt::Display for LaneAddress {
 ///
 /// `LaneAddress` (domain enum-based) と区別する役割:
 /// - **`LaneAddressWire`** = JSON 入口、 `kind` を String のまま保持 (vantage-point 側の
-///   "conductor"/"performer"/将来の任意値 をそのまま deserialize 受け)
+///   "root"/"performer"/将来の任意値 をそのまま deserialize 受け)
 /// - **`LaneAddress`** = domain 型、 `LaneKind` enum で型安全な分岐
 ///
 /// 比較・Display には:
@@ -105,49 +90,43 @@ impl fmt::Display for LaneAddress {
 pub struct LaneAddressWire {
     #[serde(default)]
     pub project: String,
-    /// "conductor" | "performer"
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub name: Option<String>,
+    /// lane 名。開発起点は [`ROOT_LANE_NAME`]。
+    ///
+    /// doc 44 P2: `kind` を廃し `name` 必須に。`default` は P2 以前の payload / 永続 state
+    /// 互換で、旧 conductor は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
+    /// の serde default と同じ手当て）。
+    #[serde(default = "default_lane_name")]
+    pub name: String,
+}
+
+/// [`LaneAddressWire::name`] の serde 既定値（P2 以前の payload 互換）。
+fn default_lane_name() -> String {
+    ROOT_LANE_NAME.to_string()
 }
 
 impl LaneAddressWire {
-    /// Display 形 (`<project>/conductor` / `<project>/performer/<name>`) を文字列で返す。
+    /// Display 形 (`<project>/<name>`) を文字列で返す。
     ///
     /// 旧 `app.rs::lane_address_key` を吸収。 JS 側 `laneAddressKey()` と完全に一致させる
     /// (active 比較に使うため、 byte-for-byte 同一が要件)。
     ///
-    /// `LaneAddress::Display` と微妙に挙動が違うことに注意:
-    /// - `Wire::key()` は kind string をそのまま保持 (unknown kind "magic" → `"project/magic"`)
-    /// - `LaneAddress::Display` は LaneKind enum 経由 (unknown kind は From で Conductor に collapse)
-    ///
-    /// JSON wire 互換 (旧 `lane_address_key` と byte-for-byte 同一) を要する場面では本 method、
-    /// 型安全な domain 表現が要る場面では `LaneAddress::from(&wire).to_string()` を使う。
+    /// doc 44 P2 以前は kind に応じて 2 形（`<project>/root` と
+    /// `<project>/performer/<name>`）を出し分けており、`LaneAddress::Display` との
+    /// 微妙な差（unknown kind の扱い）も抱えていた。フラット化で両者は同一の 1 形に畳まれ、
+    /// この method と `LaneAddress::from(&wire).to_string()` は常に同じ文字列を返す。
     pub fn key(&self) -> String {
-        match (self.kind.as_str(), self.name.as_deref()) {
-            ("performer", Some(n)) => format!("{}/performer/{}", self.project, n),
-            ("performer", None) => format!("{}/performer/<unnamed>", self.project),
-            _ => format!("{}/{}", self.project, self.kind),
-        }
+        format!("{}/{}", self.project, self.name)
     }
 }
 
-/// Wire (JSON) 形から domain 形 (enum-based) への変換。
+/// Wire (JSON) 形から domain 形への変換。
 ///
-/// 注意: unknown kind ("magic" 等) は fallback で `LaneKind::Conductor` に collapse される
-/// (= 情報損失)。 raw kind 文字列を保ちたい用途では `LaneAddressWire::key()` を直接使う。
+/// doc 44 P2: kind が消えたため、変換は純粋な field コピーになった（旧実装が抱えていた
+/// 「unknown kind は Conductor に collapse = 情報損失」も同時に消滅）。
 impl From<&LaneAddressWire> for LaneAddress {
     fn from(wire: &LaneAddressWire) -> Self {
-        let kind = match wire.kind.as_str() {
-            // 旧 "wing" も Performer に受理 (conductor/performer rename 前の wire / session 互換)
-            "performer" | "wing" => LaneKind::Performer,
-            // "conductor" / 旧 "lead" / unknown → Conductor に collapse
-            _ => LaneKind::Conductor,
-        };
         Self {
             project: wire.project.clone(),
-            kind,
             name: wire.name.clone(),
         }
     }
@@ -164,18 +143,19 @@ mod tests {
 
     #[test]
     fn lane_address_display() {
-        let conductor = LaneAddress::conductor("vantage-point");
-        assert_eq!(conductor.to_string(), "vantage-point/conductor");
-        assert!(conductor.is_conductor());
+        let conductor = LaneAddress::root("vantage-point");
+        assert_eq!(conductor.to_string(), "vantage-point/root");
+        assert!(conductor.is_root());
 
         let performer = LaneAddress::performer("vantage-point", "foo");
-        assert_eq!(performer.to_string(), "vantage-point/performer/foo");
-        assert!(!performer.is_conductor());
+        // doc 44 P2: フラット化後の表示形は `<project>/<name>`
+        assert_eq!(performer.to_string(), "vantage-point/foo");
+        assert!(!performer.is_root());
     }
 
     #[test]
     fn lane_address_eq_hash() {
-        // 同じ project/kind/name なら同一視 (HashMap key として使えること)
+        // 同じ project/name なら同一視 (HashMap key として使えること)
         let a = LaneAddress::performer("vp", "foo");
         let b = LaneAddress::performer("vp", "foo");
         assert_eq!(a, b);
@@ -184,104 +164,60 @@ mod tests {
         assert_ne!(a, c);
     }
 
-    /// R-0 wire compat: `LaneAddressWire::key()` は旧 `app.rs::lane_address_key` と
-    /// byte-for-byte 同一でなければならない (JS 側 `laneAddressKey()` の active 比較で使うため)。
+    /// R-0 wire compat: `LaneAddressWire::key()` は JS 側 `laneAddressKey()` と
+    /// byte-for-byte 同一でなければならない (active 比較で使うため)。
     #[test]
-    fn lane_address_wire_key_conductor() {
-        let w = LaneAddressWire {
+    fn lane_address_wire_key_is_flat() {
+        let conductor = LaneAddressWire {
             project: "vantage-point".into(),
-            kind: "conductor".into(),
-            name: None,
+            name: "root".into(),
         };
-        assert_eq!(w.key(), "vantage-point/conductor");
+        assert_eq!(conductor.key(), "vantage-point/root");
+
+        let named = LaneAddressWire {
+            project: "vp".into(),
+            name: "foo".into(),
+        };
+        assert_eq!(named.key(), "vp/foo");
+    }
+
+    /// doc 44 P2: `key()` と `LaneAddress::from(&wire).to_string()` が一致すること。
+    ///
+    /// 旧実装では両者が微妙に食い違っていた（`key()` は kind 文字列を素通し、
+    /// `Display` は unknown kind を Conductor に collapse）。フラット化でこの差は消えた。
+    #[test]
+    fn wire_key_and_domain_display_agree() {
+        for name in ["root", "foo", "feat-x"] {
+            let w = LaneAddressWire {
+                project: "vp".into(),
+                name: name.into(),
+            };
+            assert_eq!(w.key(), LaneAddress::from(&w).to_string());
+        }
     }
 
     #[test]
-    fn lane_address_wire_key_performer_named() {
+    fn lane_address_from_wire() {
         let w = LaneAddressWire {
             project: "vp".into(),
-            kind: "performer".into(),
-            name: Some("foo".into()),
-        };
-        assert_eq!(w.key(), "vp/performer/foo");
-    }
-
-    #[test]
-    fn lane_address_wire_key_performer_unnamed() {
-        let w = LaneAddressWire {
-            project: "vp".into(),
-            kind: "performer".into(),
-            name: None,
-        };
-        assert_eq!(w.key(), "vp/performer/<unnamed>");
-    }
-
-    #[test]
-    fn lane_address_wire_key_unknown_kind_passthrough() {
-        // 旧 `lane_address_key` の fallback 挙動: unknown kind は kind string をそのまま使う。
-        // Wire::key() はこれを保持する (Display impl と異なる、 詳細は doc 参照)。
-        let w = LaneAddressWire {
-            project: "vp".into(),
-            kind: "magic".into(),
-            name: None,
-        };
-        assert_eq!(w.key(), "vp/magic");
-    }
-
-    #[test]
-    fn lane_address_from_wire_conductor() {
-        let w = LaneAddressWire {
-            project: "vp".into(),
-            kind: "conductor".into(),
-            name: None,
+            name: "foo".into(),
         };
         let addr = LaneAddress::from(&w);
-        assert_eq!(addr.kind, LaneKind::Conductor);
         assert_eq!(addr.project, "vp");
-        assert!(addr.name.is_none());
+        assert_eq!(addr.name, "foo");
+        assert!(!addr.is_root());
     }
 
+    /// P2 以前の payload（`name` を持たない conductor）が予約名に落ちること。
     #[test]
-    fn lane_address_from_wire_performer() {
-        let w = LaneAddressWire {
-            project: "vp".into(),
-            kind: "performer".into(),
-            name: Some("foo".into()),
-        };
-        let addr = LaneAddress::from(&w);
-        assert_eq!(addr.kind, LaneKind::Performer);
-        assert_eq!(addr.name.as_deref(), Some("foo"));
-    }
+    fn legacy_wire_without_name_defaults_to_conductor() {
+        let w: LaneAddressWire = serde_json::from_str(r#"{"project":"vp","kind":"root"}"#).unwrap();
+        assert_eq!(w.name, ROOT_LANE_NAME);
+        assert_eq!(w.key(), "vp/root");
 
-    #[test]
-    fn lane_address_from_wire_legacy_lead_wing_compat() {
-        // 後方互換: conductor/performer rename 前の "lead"/"wing" wire kind を解決する
-        let lead = LaneAddressWire {
-            project: "vp".into(),
-            kind: "lead".into(),
-            name: None,
-        };
-        assert_eq!(LaneAddress::from(&lead).kind, LaneKind::Conductor);
-        let wing = LaneAddressWire {
-            project: "vp".into(),
-            kind: "wing".into(),
-            name: Some("foo".into()),
-        };
-        let addr = LaneAddress::from(&wing);
-        assert_eq!(addr.kind, LaneKind::Performer);
-        assert_eq!(addr.name.as_deref(), Some("foo"));
-    }
-
-    #[test]
-    fn lane_address_from_wire_unknown_collapses_to_conductor() {
-        // 情報損失の意図的契約: `LaneAddress` enum で表現できない kind は Conductor に折りたたむ。
-        // raw kind 保持が必要なら `Wire::key()` 直接使用。
-        let w = LaneAddressWire {
-            project: "vp".into(),
-            kind: "magic".into(),
-            name: None,
-        };
-        let addr = LaneAddress::from(&w);
-        assert_eq!(addr.kind, LaneKind::Conductor);
+        // 旧 performer payload は name をそのまま引き継ぐ（`kind` は unknown field として無視）
+        let p: LaneAddressWire =
+            serde_json::from_str(r#"{"project":"vp","kind":"performer","name":"foo"}"#).unwrap();
+        assert_eq!(p.key(), "vp/foo");
     }
 }

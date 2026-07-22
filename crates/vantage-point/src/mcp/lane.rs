@@ -11,9 +11,34 @@ use super::*;
 pub struct SwitchLaneParams {
     /// Lane token to activate within the current project
     #[schemars(
-        description = "Lane token to activate in the current project's vp-app: 'conductor' (lead) or a performer name (e.g. 'feat-api')."
+        description = "Lane token to activate in the current project's vp-app: 'root' (lead) or a performer name (e.g. 'feat-api')."
     )]
     pub lane: String,
+}
+
+/// lane JSON（`lanes_list` の要素）から lane 名を取り出す。
+///
+/// doc 44 P2: 名前の在処は `address.name` **のみ**（旧 `LaneInfo.kind` / 複製 `name` は撤去）。
+/// MCP は JSON を直に触るため型変更がコンパイル時に伝わらない — 旧 field を読んでいた箇所は
+/// 全て None に落ちて `"unknown"` / `"unnamed"` を返す壊れ方をしていた（doc 44 §6.4 の同型）。
+fn lane_name_of(lane: &serde_json::Value) -> String {
+    lane.get("address")
+        .and_then(|a| a.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// lane JSON を旧 `kind` 語彙（`"root"` / `"performer"`）に射影する。
+///
+/// MCP tool の `kind` param は client との契約なので語彙は据え置き、判定だけ名前ベースにした
+/// （開発起点は予約名 `conductor`、それ以外が旧 performer）。
+fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
+    if lane_name_of(lane) == crate::process::lanes_state::ROOT_LANE_NAME {
+        "root"
+    } else {
+        "performer"
+    }
 }
 
 /// Parameters for the add_performer tool (R5: lane clone + Performer Lane spawn).
@@ -36,7 +61,7 @@ pub struct AddPerformerParams {
     pub stand: Option<String>,
     /// Optional base ref for the worktree fork point (co-evolution #2).
     #[schemars(
-        description = "worktree の分岐元 ref (省略可)。未 push の local branch も可 (conductor の feature branch 上の未 merge 土台を wing に配れる)。省略時は performer-files.kdl の base-ref → origin/HEAD → main。"
+        description = "worktree の分岐元 ref (省略可)。未 push の local branch も可 (root の feature branch 上の未 merge 土台を wing に配れる)。省略時は performer-files.kdl の base-ref → origin/HEAD → main。"
     )]
     pub base: Option<String>,
     /// Optional claude model alias for this lane (co-evolution #1).
@@ -67,9 +92,7 @@ pub struct DeletePerformerParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListLanesParams {
     /// Lane kind filter.
-    #[schemars(
-        description = "Lane kind フィルタ: 'conductor' or 'performer'。 省略時は両方含む。"
-    )]
+    #[schemars(description = "Lane kind フィルタ: 'root' or 'performer'。 省略時は両方含む。")]
     #[serde(default)]
     pub kind: Option<String>,
 
@@ -157,7 +180,7 @@ pub struct FlowProgressParams {
 impl VantageMcp {
     /// vp-app の active Lane を切り替える（B1: Unison-native、per-project）。
     #[tool(
-        description = "Switch the active lane shown in the vp-app PP Canvas of the CURRENT project. `lane` is a lane token: 'conductor' (lead) or a performer name. Routes over Unison (local SP → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
+        description = "Switch the active lane shown in the vp-app PP Canvas of the CURRENT project. `lane` is a lane token: 'root' (lead) or a performer name. Routes over Unison (local SP → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
     )]
     async fn switch_lane(
         &self,
@@ -193,10 +216,7 @@ impl VantageMcp {
                 None,
             ));
         }
-        let mut body = serde_json::json!({
-            "kind": "performer",
-            "name": params.name,
-        });
+        let mut body = serde_json::json!({ "name": params.name });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             body["branch"] = serde_json::Value::String(b.clone());
         }
@@ -225,10 +245,11 @@ impl VantageMcp {
                 parsed.get("address").and_then(|a| {
                     let proj = a.get("project")?.as_str()?;
                     let nm = a.get("name")?.as_str()?;
-                    Some(format!("{}/performer/{}", proj, nm))
+                    // doc 44 P2: address 表示形は `<project>/<name>`
+                    Some(format!("{}/{}", proj, nm))
                 })
             })
-            .unwrap_or_else(|| format!("performer/{}", params.name));
+            .unwrap_or_else(|| params.name.clone());
         let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Performer Lane created: {}\n  cwd: {}", addr, cwd),
@@ -319,7 +340,7 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for conductor or `agent@vantage-point/chore` for performer 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `bastet@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
+        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `bastet@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
@@ -355,8 +376,12 @@ impl VantageMcp {
         let mut lanes_out: Vec<serde_json::Value> = Vec::new();
         for mut lane in lanes_in.into_iter() {
             // kind / state filter
+            //
+            // doc 44 P2: lane に種別 field は無くなったため、判定は**名前**で行う
+            // （開発起点は予約名 "root"、それ以外が旧 performer）。
+            // tool の param 名 `kind` は MCP client との契約なので語彙は据え置き。
             if let Some(k) = &params.kind
-                && lane.get("kind").and_then(|v| v.as_str()) != Some(k.as_str())
+                && lane_kind_label(&lane) != k.as_str()
             {
                 continue;
             }
@@ -375,17 +400,10 @@ impl VantageMcp {
             // JoJo 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
             // wire syntax は `<stand-id>@<project>/<lane>` (conductor は `/lane` 省略可)。
             // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
-            let lane_label = match lane.get("kind").and_then(|v| v.as_str()) {
-                Some("conductor") => "conductor".to_string(),
-                Some("performer") => lane
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unnamed")
-                    .to_string(),
-                _ => "unknown".to_string(),
-            };
+            // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。
+            let lane_label = lane_name_of(&lane);
             // conductor は `agent@<project>` (lane 省略 = conductor)、performer は `agent@<project>/<name>`
-            let lane_suffix = if lane_label == "conductor" {
+            let lane_suffix = if lane_label == "root" {
                 String::new()
             } else {
                 format!("/{}", lane_label)
@@ -462,10 +480,7 @@ impl VantageMcp {
         // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を撤去。 lane clone は
         // 数 sec ~ 数 10 sec かかるので outer timeout 60s。 server Err は quic_call_with_timeout が
         // McpError に変換 (= 旧 HTTP 非 2xx → McpError と等価)。
-        let mut create_body = serde_json::json!({
-            "kind": "performer",
-            "name": params.name,
-        });
+        let mut create_body = serde_json::json!({ "name": params.name });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["branch"] = serde_json::Value::String(b.clone());
         }
@@ -567,7 +582,7 @@ impl VantageMcp {
         // 全体は失敗扱いにしない (= wire は届いており worker は自走可、 nudge は immediacy 向上目的)。
         let mut nudge_status = if nudge { "skipped" } else { "off" }.to_string();
         if nudge {
-            let nudge_text = "conductor から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n".to_string();
+            let nudge_text = "root から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n".to_string();
             let send = self
                 .quic_call(
                     "lane_nudge",
@@ -599,7 +614,7 @@ impl VantageMcp {
 
     /// flow_progress: parallel work 集約 view (read-only)
     #[tool(
-        description = "Parallel work 集約 view: 現 project の全 Lane (conductor + performers) の performer_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
+        description = "Parallel work 集約 view: 現 project の全 Lane (root + performers) の performer_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
     )]
     async fn flow_progress(
         &self,
@@ -635,20 +650,10 @@ impl VantageMcp {
         let mut conductor_unread: u64 = 0;
         let mut conductor_unread_by_thread = serde_json::Value::Object(Default::default());
         for lane in lanes_in {
-            let kind = lane
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let lane_label = if kind == "conductor" {
-                "conductor".to_string()
-            } else {
-                lane.get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unnamed")
-                    .to_string()
-            };
-            let agent_addr = if kind == "conductor" {
+            // doc 44 P2: 名前の在処は `address.name` のみ、開発起点は予約名で判る。
+            let lane_label = lane_name_of(&lane);
+            let kind = lane_kind_label(&lane);
+            let agent_addr = if kind == "root" {
                 format!("agent@{}", project)
             } else {
                 format!("agent@{}/{}", project, lane_label)
@@ -671,7 +676,7 @@ impl VantageMcp {
                 Err(_) => (0, serde_json::Value::Object(Default::default())),
             };
 
-            if kind == "conductor" {
+            if kind == "root" {
                 conductor_unread = unread_total;
                 conductor_unread_by_thread = by_thread;
                 continue;
@@ -729,7 +734,7 @@ impl VantageMcp {
 
             performers.push(serde_json::json!({
                 "name": lane_label,
-                "address": format!("agent@{}/{}", project, lane.get("name").and_then(|v| v.as_str()).unwrap_or("")),
+                "address": format!("agent@{}/{}", project, lane_label),
                 "state": state,
                 "stand": stand,
                 "cwd": cwd,
@@ -745,7 +750,7 @@ impl VantageMcp {
 
         let result = serde_json::json!({
             "project": project,
-            "conductor": {
+            "root": {
                 "address": format!("agent@{}", project),
                 "unread_wire_count": conductor_unread,
                 "unread_by_thread": conductor_unread_by_thread,

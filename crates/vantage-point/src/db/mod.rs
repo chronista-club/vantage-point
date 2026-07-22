@@ -61,6 +61,51 @@ pub fn db_data_dir_for_world() -> PathBuf {
     db_root().join("world")
 }
 
+/// 旧 per-project DB ディレクトリ (`db/sp_{slug}/`) を回収する（doc 44 P1 の後始末）。
+/// 戻り値は削除した dir 数。
+///
+/// fold-in（#823）で SP プロセスが消え、project 次元は table の `project_path` 列が持つように
+/// なったため、`db/sp_*` は **1 バイトも読まれない残骸**になった。だが撤去されたのは
+/// 「開くコード」だけで、既に disk にある dir はそのまま残っていた（実機で 23 dir / 約 1.2 GB）。
+///
+/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の PP board
+/// (`pane_contents`) が引き継がれないことだけで、これは fold-in の破壊的変更として
+/// 既に出荷・周知されている（board は空から始まる）。
+///
+/// - `world` は名前で除外する（prefix `sp_` の dir だけを対象にする）
+/// - best-effort: 個々の削除失敗は warn して残置し、他は続行する
+/// - 冪等: 残骸が無ければ 0 を返すだけ
+pub fn reclaim_legacy_project_dbs_in(root: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("sp_") {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed += 1,
+            Err(err) => {
+                tracing::warn!("旧 project DB の回収に失敗（残置）: {} err={err}", name);
+            }
+        }
+    }
+    removed
+}
+
+/// 本番 root での [`reclaim_legacy_project_dbs_in`]（World boot から 1 回）。
+pub fn reclaim_legacy_project_dbs() -> usize {
+    reclaim_legacy_project_dbs_in(&db_root())
+}
+
 /// VP のデータベースクライアント
 ///
 /// `Surreal<Any>` を使うことで embedded (surrealkv) と kv-mem (テスト) の両方に対応。
@@ -221,7 +266,82 @@ impl VpDb {
             .check()
             .map_err(|e| anyhow::anyhow!("スキーマ定義エラー: {}", e))?;
         tracing::info!("SurrealDB スキーマ定義完了");
+        self.normalize_legacy_lane_addresses().await;
         Ok(())
+    }
+
+    /// doc 44 P2: `lane` / `lane_lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
+    ///
+    /// フラット化で address の表示形が `<project>/performer/<name>` → `<project>/<name>` に
+    /// 変わった。descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
+    /// **address を文字列 key として持つ列は吸収できない** — 旧形の行が残ると
+    /// upsert（DELETE+CREATE の WHERE が新形で当たらない）が重複行を作り、
+    /// lifecycle は照合できず孤児になる。
+    ///
+    /// 失敗しても起動は続ける（best-effort）。正規化できなかった行は旧形のまま残るだけで、
+    /// 次回起動で再試行される。
+    async fn normalize_legacy_lane_addresses(&self) {
+        for table in ["lane", "lane_lifecycle"] {
+            match self.normalize_lane_addresses_in(table).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("doc 44 P2: {} の旧形 address を {} 件正規化", table, n),
+                Err(e) => {
+                    tracing::warn!("{} の address 正規化に失敗（旧形のまま継続）: {}", table, e)
+                }
+            }
+        }
+    }
+
+    /// 1 テーブル分の address 正規化。戻り値は書き換えた行数。
+    async fn normalize_lane_addresses_in(&self, table: &str) -> Result<usize> {
+        let mut result = self
+            .db
+            .query(format!("SELECT meta::id(id) AS rid, address FROM {table}"))
+            .await?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+
+        let mut fixed = 0;
+        for row in rows {
+            let (Some(rid), Some(old)) = (
+                row.get("rid").and_then(|v| v.as_str()),
+                row.get("address").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            // parse_address は旧 3 分節形を受理して新形に正規化する。
+            let Some(new) = crate::process::lanes_state::LanePool::parse_address(old)
+                .map(|a| a.to_string())
+                .filter(|new| new != old)
+            else {
+                continue;
+            };
+            // 1 行の失敗で他行を巻き込まない。典型的な失敗は
+            // `(project_path, address)` の UNIQUE 衝突（旧形と新形が同じ lane を指して
+            // 両方残っているケース）で、これは当該行だけの問題。`?` で抜けると同じ
+            // SELECT に載った**残り全行**の正規化が飛び、次回起動でも衝突源が在る限り
+            // 毎回巻き添えになる（= 恒久的に旧形が残る）。
+            let updated = self
+                .db
+                .query(format!(
+                    "UPDATE type::record('{table}', $rid) SET address = $addr"
+                ))
+                .bind(("rid", rid.to_string()))
+                .bind(("addr", new.clone()))
+                .await
+                .and_then(|mut r| r.take::<Vec<serde_json::Value>>(0));
+            match updated {
+                Ok(_) => fixed += 1,
+                Err(e) => tracing::warn!(
+                    "{}:{} の address 正規化に失敗（この行のみ旧形のまま継続、{} → {}）: {}",
+                    table,
+                    rid,
+                    old,
+                    new,
+                    e
+                ),
+            }
+        }
+        Ok(fixed)
     }
 
     /// ヘルスチェック（DB に接続できているか確認）
@@ -401,6 +521,313 @@ impl VpDb {
             .map_err(|e| anyhow::anyhow!("active_lane 削除失敗: {}", e))?
             .check()
             .map_err(|e| anyhow::anyhow!("active_lane 削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Project Host 帳簿①: 開発起点ポインタ (doc 44 D4)。
+    //
+    // active_lane (注視) と形は同じ 1-project-1-row だが意味が違う (D5 が分けた
+    // 「注視の切替」と「起点の再指定」)。値が **lane_id** なのは rename 耐性のため。
+    // =========================================================================
+
+    /// 開発起点ポインタを upsert する (project_path → lane_id)。
+    pub async fn upsert_host_origin(&self, project_path: &str, lane_id: &str) -> Result<()> {
+        self.db
+            .query(
+                "INSERT INTO host_origin {
+                    project_path: $project_path,
+                    lane_id: $lane_id,
+                    updated_at: time::now()
+                } ON DUPLICATE KEY UPDATE
+                    lane_id = $input.lane_id,
+                    updated_at = time::now()",
+            )
+            .bind(("project_path", project_path.to_string()))
+            .bind(("lane_id", lane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_origin upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_origin upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 開発起点ポインタを引く。
+    ///
+    /// `None` は「未指定」= 予約名フォールバック（[`crate::host::ledger::resolve_origin_name`]）。
+    /// 指す lane が既に消えている場合も呼び出し側の解決で予約名に落ちるので、ここでは
+    /// 実在検証をしない（DB は lane の生死を知らない）。
+    pub async fn get_host_origin(&self, project_path: &str) -> Result<Option<String>> {
+        let mut result = self
+            .db
+            .query("SELECT lane_id FROM host_origin WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_origin 取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows
+            .first()
+            .and_then(|v| v.get("lane_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()))
+    }
+
+    /// lane の並び順を project 単位で**全置換**する（doc 44 D5）。
+    ///
+    /// 並び順は集合なので replace 型（`replace_lanes` と同じ考え方）。差分 upsert にすると
+    /// 「並びから外れた lane の古い ord」が残り、次に現れた時に意図しない位置に挿さる。
+    pub async fn replace_lane_order(&self, project_path: &str, order: &[String]) -> Result<()> {
+        self.db
+            .query("DELETE host_lane_order WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 並び順の削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane 並び順の削除エラー: {}", e))?;
+        for (i, lane_id) in order.iter().enumerate() {
+            self.db
+                .query(
+                    "CREATE host_lane_order SET
+                        project_path = $p, lane_id = $id, ord = $ord, updated_at = time::now()",
+                )
+                .bind(("p", project_path.to_string()))
+                .bind(("id", lane_id.clone()))
+                .bind(("ord", i as i64))
+                .await
+                .map_err(|e| anyhow::anyhow!("lane 並び順の永続失敗: {}", e))?
+                .check()
+                .map_err(|e| anyhow::anyhow!("lane 並び順の永続エラー: {}", e))?;
+        }
+        Ok(())
+    }
+
+    /// lane の並び順を引く（`lane_id` → `ord`）。未指定 project は空。
+    pub async fn list_lane_order(
+        &self,
+        project_path: &str,
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        let mut result = self
+            .db
+            .query("SELECT lane_id, ord FROM host_lane_order WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 並び順の取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| {
+                let id = v.get("lane_id")?.as_str()?.to_string();
+                let ord = v.get("ord")?.as_i64()?;
+                Some((id, ord))
+            })
+            .collect())
+    }
+
+    /// lane の並び順を project ごと回収する（`delete_host_origin` と対、§4.6 含有=所有=寿命）。
+    pub async fn delete_lane_order_for_project(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE host_lane_order WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("lane 並び順の全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("lane 並び順の全削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Project Host 帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
+    //
+    // 「いつ何を見送ったか」(= lane を消したので survey では復元できない) と
+    // 「AskHuman がいつから何回続いているか」(= 観測の履歴なので計算できない) の 2 つ。
+    // key は host_origin / host_lane_order と同じ **lane_id**。
+    // =========================================================================
+
+    /// DB の 1 行を [`crate::host::ledger::FarewellEntry`] に写す (壊れた行は `None`)。
+    ///
+    /// 1 行の欠損で一覧全体を落とさない (帳簿は best-effort read)。
+    fn farewell_row(v: &serde_json::Value) -> Option<crate::host::ledger::FarewellEntry> {
+        Some(crate::host::ledger::FarewellEntry {
+            lane_id: v.get("lane_id")?.as_str()?.to_string(),
+            lane_name: v
+                .get("lane_name")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            kind: crate::host::ledger::FarewellKind::from_label(v.get("kind")?.as_str()?)?,
+            reason: v
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            streak: v.get("streak").and_then(|s| s.as_u64()).unwrap_or(1) as u32,
+            first_seen_at: v
+                .get("first_seen_at")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            last_seen_at: v
+                .get("last_seen_at")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            ongoing: v.get("ongoing").and_then(|o| o.as_bool()).unwrap_or(false),
+        })
+    }
+
+    /// 継続中の滞留を引く (project × lane に高々 1 行)。
+    pub async fn get_open_farewell(
+        &self,
+        project_path: &str,
+        lane_id: &str,
+    ) -> Result<Option<crate::host::ledger::FarewellEntry>> {
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM host_farewell
+                 WHERE project_path = $p AND lane_id = $id AND ongoing = true LIMIT 1",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", lane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows.first().and_then(Self::farewell_row))
+    }
+
+    /// 帳簿に 1 行足す (滞留の起票 / 見送りの記録)。
+    pub async fn create_farewell_entry(
+        &self,
+        project_path: &str,
+        entry: &crate::host::ledger::FarewellEntry,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "CREATE host_farewell SET
+                    project_path = $p, lane_id = $id, lane_name = $name, kind = $kind,
+                    reason = $reason, streak = $streak,
+                    first_seen_at = $first, last_seen_at = $last, ongoing = $ongoing",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", entry.lane_id.clone()))
+            .bind(("name", entry.lane_name.clone()))
+            .bind(("kind", entry.kind.as_str().to_string()))
+            .bind(("reason", entry.reason.clone()))
+            .bind(("streak", entry.streak as i64))
+            .bind(("first", entry.first_seen_at.clone()))
+            .bind(("last", entry.last_seen_at.clone()))
+            .bind(("ongoing", entry.ongoing))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 追加失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 追加エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 継続中の滞留を伸ばす (連続回数と直近観測時刻の更新)。
+    ///
+    /// `lane_name` は**更新しない** — 記録時点のスナップショットなので rename で動かさない
+    /// (doc 44 §8.5)。`first_seen_at` も同じ理由で不変。
+    pub async fn extend_open_farewell(
+        &self,
+        project_path: &str,
+        lane_id: &str,
+        streak: u32,
+        reason: &str,
+        last_seen_at: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE host_farewell SET streak = $streak, reason = $reason, last_seen_at = $last
+                 WHERE project_path = $p AND lane_id = $id AND ongoing = true",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", lane_id.to_string()))
+            .bind(("streak", streak as i64))
+            .bind(("reason", reason.to_string()))
+            .bind(("last", last_seen_at.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 更新失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 更新エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 継続中の滞留を閉じる (判定が判断待ちから外れた / lane を見送った)。
+    ///
+    /// 行は消さない — 「いつからいつまで判断待ちだったか」は履歴として残す。
+    pub async fn close_open_farewell(&self, project_path: &str, lane_id: &str) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE host_farewell SET ongoing = false
+                 WHERE project_path = $p AND lane_id = $id AND ongoing = true",
+            )
+            .bind(("p", project_path.to_string()))
+            .bind(("id", lane_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 終端失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 終端エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 継続中の滞留を project 単位で列挙する (`vp lane cleanup` の滞留表示)。
+    pub async fn list_open_farewells(
+        &self,
+        project_path: &str,
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM host_farewell WHERE project_path = $p AND ongoing = true")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 滞留取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        Ok(rows.iter().filter_map(Self::farewell_row).collect())
+    }
+
+    /// 帳簿を新しい順に読む (`vp lane history`)。`limit` 0 は無制限。
+    pub async fn list_farewell_entries(
+        &self,
+        project_path: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM host_farewell WHERE project_path = $p ORDER BY last_seen_at DESC")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 履歴取得失敗: {}", e))?;
+        let rows: Vec<serde_json::Value> = result.take(0)?;
+        let mut entries: Vec<crate::host::ledger::FarewellEntry> =
+            rows.iter().filter_map(Self::farewell_row).collect();
+        if limit > 0 {
+            entries.truncate(limit);
+        }
+        Ok(entries)
+    }
+
+    /// 見送りの記録を project ごと回収する (`delete_host_origin` と対、§4.6 含有=所有=寿命)。
+    pub async fn delete_farewell_entries_for_project(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE host_farewell WHERE project_path = $p")
+            .bind(("p", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_farewell 全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_farewell 全削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 開発起点ポインタを削除する (project remove 時の回収、`delete_active_lane` と対)。
+    pub async fn delete_host_origin(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM host_origin WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("host_origin 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("host_origin 削除エラー: {}", e))?;
         Ok(())
     }
 
@@ -768,7 +1195,7 @@ impl VpDb {
     /// PP Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
     ///
     /// - `lane_name`: None なら conductor (= 内部で `''` sentinel)、 Some(name) なら performer。 UNIQUE INDEX は
-    ///   (project_path, lane_name, pane_id) のため conductor/performer は別 record として独立。
+    ///   (project_path, lane_name, pane_id) のため root/performer は別 record として独立。
     /// - `stack`: Canvas Stack (= items + cursor + capacity)。 None なら未保存。
     /// - `ui_state`: visibility/collapsed/サイズ等。 None なら未保存。
     /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
@@ -1201,6 +1628,71 @@ DEFINE FIELD IF NOT EXISTS lifecycle ON lane_lifecycle TYPE string;
 DEFINE FIELD IF NOT EXISTS updated_at ON lane_lifecycle TYPE datetime;
 DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS project_path, address UNIQUE;
 
+-- Project Host の帳簿①: 開発起点ポインタ (doc 44 D4 / §8)。
+-- 「この project の開発の起点はどの lane か」を Host が 1 本だけ持つ。
+--
+-- ⚠️ active_lane (注視) とは別物 — D5 が明示的に分けている:
+--   active_lane = 今どの lane を見ているか (presence、click ごとに動く)
+--   host_origin = 開発の起点はどこか       (intent、明示的に指定した時だけ動く)
+--
+-- key が address 文字列ではなく **lane_id (UUID)** なのは、将来 lane 名を変えられるように
+-- するため。名前は表示のための自然キーで、rename で動く。ポインタが指すのは lane そのもの
+-- なので surrogate key で持つ (doc 44 §8.2)。行が無い / 指す lane が実在しない場合は
+-- 予約名 `conductor` にフォールバックする (= 従来挙動、`ledger::resolve_origin_name`)。
+DEFINE TABLE IF NOT EXISTS host_origin SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON host_origin TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_id ON host_origin TYPE string;
+DEFINE FIELD IF NOT EXISTS updated_at ON host_origin TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS project_path UNIQUE;
+
+-- Project Host の帳簿②: lane の並び順 (doc 44 D5 / §12)。
+--
+-- ⚠️ `lane` table には置けない — `upsert_lane` が DELETE+CREATE なので、SP/project 由来の
+-- descriptor push が来るたびに ord が消える。`lane_lifecycle` を別 table にしたのと同じ理由で、
+-- 「Host の intent」と「lane が報告する state」は table を分ける。
+--
+-- key は `host_origin` と同じく **lane_id (UUID)**。並び順は lane そのものに付く指定なので、
+-- 表示名が変わっても動いてはいけない (doc 44 §8.2)。
+-- 行が無い lane は「未指定」= 既定順 (開発起点が先頭 → created_at) の末尾に付く。
+DEFINE TABLE IF NOT EXISTS host_lane_order SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON host_lane_order TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_id ON host_lane_order TYPE string;
+DEFINE FIELD IF NOT EXISTS ord ON host_lane_order TYPE int;
+DEFINE FIELD IF NOT EXISTS updated_at ON host_lane_order TYPE datetime;
+DEFINE INDEX IF NOT EXISTS idx_host_lane_order ON host_lane_order COLUMNS project_path, lane_id UNIQUE;
+
+-- Project Host の帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
+--
+-- 帳簿に書くのは **計算で復元できない事実だけ** という規律で 2 種類に絞ってある:
+--   kind='reclaimed' = 実際に見送った (lane を消したので survey では二度と再現できない)
+--   kind='pending'   = AskHuman の滞留。「今 AskHuman か」は survey が都度計算できるが、
+--                      「いつから」「何回目」は観測の履歴なので計算では出てこない
+-- Keep と「判定だけの Reclaim」を書かないのは、どちらも次の survey で同じ答えが出るため。
+--
+-- ⚠️ 同じ判定の**連続は 1 行に畳む** (streak + first_seen_at)。観測ごとに行を足すと
+-- `vp lane cleanup` を走らせるほど帳簿が太り、放置された lane ほど重くなる (滞留を追う
+-- ための表が滞留で壊れる)。行数は「判定が変わった回数」に比例し、実行回数には比例しない。
+--
+-- key は host_origin / host_lane_order と同じ **lane_id (UUID)**。lane_name は
+-- **記録時点のスナップショット**で、後から更新しない (履歴が rename で書き換わらない)。
+-- lane 削除時に lane_ids state file も消えるので、同名 lane を作り直すと別 id になり
+-- 前の履歴と混ざらない。
+--
+-- 時刻は datetime ではなく **RFC3339 の string**。記録時刻は純関数に注入してテストで
+-- 固定する事実なので、DB 側の time::now() ではなく呼び出し側が渡す (UTC 表記なので
+-- 文字列の辞書順 = 時系列順)。
+DEFINE TABLE IF NOT EXISTS host_farewell SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project_path ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_id ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS lane_name ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS kind ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS reason ON host_farewell TYPE string DEFAULT '';
+DEFINE FIELD IF NOT EXISTS streak ON host_farewell TYPE int DEFAULT 1;
+DEFINE FIELD IF NOT EXISTS first_seen_at ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS last_seen_at ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS ongoing ON host_farewell TYPE bool DEFAULT false;
+DEFINE INDEX IF NOT EXISTS idx_host_farewell_lane ON host_farewell COLUMNS project_path, lane_id;
+
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
 -- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
@@ -1238,7 +1730,7 @@ DEFINE FIELD IF NOT EXISTS title ON pane_contents TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS lane_name ON pane_contents TYPE string DEFAULT '';
 -- board モデル (2026-07-15): scope 軸を追加し (project_path, scope, lane_name, pane_id) で board を
 --   分離する。 scope='lane' が lane board (lane_name で lane ごとに独立)、 'proj' が project 共有 board
---   (lane_name='')。 旧 record (scope 不在) は DEFAULT 'lane' で self-heal され、 既存 lane/conductor
+--   (lane_name='')。 旧 record (scope 不在) は DEFAULT 'lane' で self-heal され、 既存 lane/root
 --   board を現挙動のまま保存する。 現状の scope は lane/proj の 2 つ。
 --   (doc 44 P1 PR4 まで「将来の 'vp'(全体 board) は別 DB 行き」と書かれていたが、 db 単一化で
 --    その制約は消えた — 全体 board を足すなら project_path を跨ぐ scope 値を 1 つ増やすだけで済む。)
@@ -1381,11 +1873,91 @@ DEFINE INDEX IF NOT EXISTS delegations_state_idx ON delegations FIELDS state;
 mod tests {
     use super::*;
 
+    /// 旧 per-project DB の回収: `sp_*` だけを消し、`world` と無関係な dir / file は残す。
+    /// 冪等（2 回目は 0）。掃除は「消えたか」でなく「**残っていないか**」で検証する。
+    #[test]
+    fn reclaim_legacy_project_dbs_removes_only_sp_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        for d in ["world", "sp_vp", "sp_nexus", "backups"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // 中身のある dir も丸ごと消える（remove_dir_all）
+        std::fs::write(root.join("sp_vp").join("00000.sst"), b"data").unwrap();
+        // dir でない `sp_` 始まりの file は対象外
+        std::fs::write(root.join("sp_not_a_dir"), b"x").unwrap();
+
+        assert_eq!(reclaim_legacy_project_dbs_in(root), 2);
+
+        assert!(root.join("world").exists(), "world は残る");
+        assert!(root.join("backups").exists(), "無関係な dir は残る");
+        assert!(root.join("sp_not_a_dir").exists(), "file は対象外");
+        assert!(!root.join("sp_vp").exists(), "sp_ dir は中身ごと消える");
+        assert!(!root.join("sp_nexus").exists());
+        // 残っていないことの確認（列挙して sp_ dir が 0）
+        let leftovers: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy().starts_with("sp_"))
+            .collect();
+        assert!(leftovers.is_empty(), "sp_ dir が残っていない");
+
+        assert_eq!(reclaim_legacy_project_dbs_in(root), 0, "冪等");
+    }
+
     /// テスト用ヘルパー: kv-mem VpDb をスキーマ付きで作成
     async fn make_test_db() -> VpDb {
         let db = VpDb::connect_mem().await.unwrap();
         db.define_schema().await.unwrap();
         db
+    }
+
+    /// doc 44 P2: 旧形の address 文字列（`<project>/performer/<name>`）が起動時に新形へ
+    /// 正規化されること。
+    ///
+    /// これを怠ると実害が出る: `lane` は upsert（DELETE+CREATE）の WHERE が新形で当たらず
+    /// **旧形の行が残って重複**し、`lane_lifecycle` は照合できず**孤児**になる。
+    /// descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
+    /// address を文字列 key として持つ列はそれでは救えない。
+    #[tokio::test]
+    async fn legacy_address_strings_are_normalized_on_schema_define() {
+        let db = VpDb::connect_mem().await.unwrap();
+        db.define_schema().await.unwrap();
+
+        // 旧形の行を直に流し込む（P2 以前の永続状態を再現）
+        db.inner()
+            .query(
+                "CREATE lane_lifecycle CONTENT {
+                     project_path: '/repos/vp', address: 'vp/performer/foo',
+                     lifecycle: 'ready', updated_at: time::now()
+                 };
+                 CREATE lane_lifecycle CONTENT {
+                     project_path: '/repos/vp', address: 'vp/root',
+                     lifecycle: 'ready', updated_at: time::now()
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        // define_schema が正規化を走らせる（冪等なので 2 度目も安全）
+        db.define_schema().await.unwrap();
+
+        let rows = db.list_lane_lifecycles().await.unwrap();
+        let addrs: Vec<&str> = rows.iter().map(|(_, a, _)| a.as_str()).collect();
+        assert!(
+            addrs.contains(&"vp/foo"),
+            "旧形 vp/performer/foo は vp/foo に正規化されるべき: {addrs:?}"
+        );
+        assert!(
+            !addrs.contains(&"vp/performer/foo"),
+            "旧形が残ってはならない（孤児化する）: {addrs:?}"
+        );
+        assert!(
+            addrs.contains(&"vp/root"),
+            "元から新形と一致する行は触られない: {addrs:?}"
+        );
     }
 
     /// doc 44 P1 PR4: DB ディレクトリは `vp_data_dir()/db/world` の**単一**であること。
@@ -1444,6 +2016,56 @@ mod tests {
         assert_eq!(first, second, "wld_id は singleton で安定して復元される");
     }
 
+    /// doc 44 D4: 開発起点ポインタの round-trip（upsert → get → 上書き → 削除）。
+    ///
+    /// **削除まで見る**のは、`remove_project` が project namespace を倒す時にこの行を
+    /// 回収する契約だから（§4.6 含有=所有=寿命）。残ると同 path で再登録した時に旧 lane の
+    /// UUID を指す孤児ポインタが復活し、起点が `Dangling` に落ちる。
+    #[tokio::test]
+    async fn test_host_origin_round_trip() {
+        let db = make_test_db().await;
+
+        // 未設定は None = 予約名フォールバック（`ledger::resolve_origin_name` が受ける形）
+        assert!(db.get_host_origin("/repos/vp").await.unwrap().is_none());
+
+        db.upsert_host_origin("/repos/vp", "id-alpha")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_host_origin("/repos/vp").await.unwrap().as_deref(),
+            Some("id-alpha")
+        );
+
+        // project ごとに独立（1 project 1 ポインタ）
+        db.upsert_host_origin("/repos/nexus", "id-beta")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_host_origin("/repos/vp").await.unwrap().as_deref(),
+            Some("id-alpha"),
+            "他 project の指定に引きずられない"
+        );
+
+        // 起点の移動は行の上書き（増えない）
+        db.upsert_host_origin("/repos/vp", "id-gamma")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_host_origin("/repos/vp").await.unwrap().as_deref(),
+            Some("id-gamma"),
+            "UNIQUE index により上書きされる"
+        );
+
+        // project 回収でポインタも消える
+        db.delete_host_origin("/repos/vp").await.unwrap();
+        assert!(db.get_host_origin("/repos/vp").await.unwrap().is_none());
+        assert_eq!(
+            db.get_host_origin("/repos/nexus").await.unwrap().as_deref(),
+            Some("id-beta"),
+            "削除は project scope に閉じる"
+        );
+    }
+
     #[tokio::test]
     async fn test_active_lane_upsert_and_list() {
         // Model Q: active lane (presence) の daemon-canonical round-trip。
@@ -1453,9 +2075,7 @@ mod tests {
         assert!(db.list_active_lanes().await.unwrap().is_empty());
 
         // project ごとに upsert
-        db.upsert_active_lane("/repos/vp", "vp/conductor")
-            .await
-            .unwrap();
+        db.upsert_active_lane("/repos/vp", "vp/root").await.unwrap();
         db.upsert_active_lane("/repos/nexus", "nexus/performer/foo")
             .await
             .unwrap();
@@ -1469,7 +2089,7 @@ mod tests {
                     "/repos/nexus".to_string(),
                     "nexus/performer/foo".to_string()
                 ),
-                ("/repos/vp".to_string(), "vp/conductor".to_string()),
+                ("/repos/vp".to_string(), "vp/root".to_string()),
             ]
         );
 
@@ -1493,7 +2113,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lane_upsert_list_and_delete() {
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneState};
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         // doc 24 §10 Phase 2: lane descriptor の daemon-canonical durable round-trip。
         let db = make_test_db().await;
 
@@ -1501,39 +2121,29 @@ mod tests {
         assert!(db.list_lanes().await.unwrap().is_empty());
 
         // テスト用 LaneInfo builder (live 値 pid は埋めるが、 検証は descriptor 中心)。
-        let mk = |project: &str, kind: LaneKind, name: Option<&str>| {
-            let address = match kind {
-                LaneKind::Conductor => LaneAddress::conductor(project),
-                LaneKind::Performer => LaneAddress::performer(project, name.unwrap()),
-            };
-            LaneInfo {
-                console_mode: Default::default(),
-                id: Default::default(),
-                address,
-                kind,
-                name: name.map(|s| s.to_string()),
-                state: LaneState::Running,
-                stand: "echoes".to_string(),
-                created_at: "2026-06-20T00:00:00Z".to_string(),
-                pid: Some(1234),
-                cwd: "/tmp".to_string(),
-                performer_status: None,
-                cc_session_id: None,
-                sessions: None,
-                engine_session_id: None,
-                engine_stand: None,
-                flow_state: None,
-            }
+        let mk = |project: &str, name: &str| LaneInfo {
+            console_mode: Default::default(),
+            id: Default::default(),
+            address: LaneAddress::new(project, name),
+            state: LaneState::Running,
+            stand: "echoes".to_string(),
+            created_at: "2026-06-20T00:00:00Z".to_string(),
+            pid: Some(1234),
+            cwd: "/tmp".to_string(),
+            performer_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            engine_stand: None,
+            flow_state: None,
         };
 
         // 2 project に lane を入れる
-        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Conductor, None))
+        db.upsert_lane("/repos/vp", &mk("vp", "root"))
             .await
             .unwrap();
-        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Performer, Some("foo")))
-            .await
-            .unwrap();
-        db.upsert_lane("/repos/nexus", &mk("nexus", LaneKind::Conductor, None))
+        db.upsert_lane("/repos/vp", &mk("vp", "foo")).await.unwrap();
+        db.upsert_lane("/repos/nexus", &mk("nexus", "root"))
             .await
             .unwrap();
 
@@ -1543,13 +2153,13 @@ mod tests {
         // descriptor が round-trip する (address / stand)
         let vp_conductor = rows
             .iter()
-            .find(|(p, l)| p == "/repos/vp" && l.kind == LaneKind::Conductor)
-            .expect("vp conductor が読める");
-        assert_eq!(vp_conductor.1.address.to_string(), "vp/conductor");
+            .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
+            .expect("vp root が読める");
+        assert_eq!(vp_conductor.1.address.to_string(), "vp/root");
         assert_eq!(vp_conductor.1.stand, "echoes");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
-        db.upsert_lane("/repos/vp", &mk("vp", LaneKind::Conductor, None))
+        db.upsert_lane("/repos/vp", &mk("vp", "root"))
             .await
             .unwrap();
         assert_eq!(
@@ -1559,28 +2169,18 @@ mod tests {
         );
 
         // 単一 lane の削除 (Diff::Remove)
-        db.delete_lane("/repos/vp", "vp/performer/foo")
-            .await
-            .unwrap();
+        db.delete_lane("/repos/vp", "vp/foo").await.unwrap();
         let rows = db.list_lanes().await.unwrap();
         assert_eq!(rows.len(), 2);
         assert!(
-            !rows
-                .iter()
-                .any(|(_, l)| l.address.to_string() == "vp/performer/foo"),
+            !rows.iter().any(|(_, l)| l.address.to_string() == "vp/foo"),
             "削除した lane は消える"
         );
 
         // snapshot 全置換 (register snapshot): /repos/vp を performer 2 つに置換
-        db.replace_lanes_for_project(
-            "/repos/vp",
-            &[
-                mk("vp", LaneKind::Performer, Some("a")),
-                mk("vp", LaneKind::Performer, Some("b")),
-            ],
-        )
-        .await
-        .unwrap();
+        db.replace_lanes_for_project("/repos/vp", &[mk("vp", "a"), mk("vp", "b")])
+            .await
+            .unwrap();
         let vp_lanes: Vec<_> = db
             .list_lanes()
             .await
@@ -1594,8 +2194,8 @@ mod tests {
             "snapshot で /repos/vp は 2 lane に全置換"
         );
         assert!(
-            vp_lanes.iter().all(|(_, l)| l.kind == LaneKind::Performer),
-            "snapshot 後は conductor が消え performer のみ"
+            vp_lanes.iter().all(|(_, l)| !l.address.is_root()),
+            "snapshot 後は root が消え performer のみ"
         );
 
         // §4.6 含有=所有=寿命: project remove 時の回収 (delete_lanes_for_project)。
@@ -1611,7 +2211,7 @@ mod tests {
         let db = make_test_db().await;
         assert!(db.list_lane_lifecycles().await.unwrap().is_empty());
 
-        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/foo", "provisioning")
+        db.upsert_lane_lifecycle("/repos/vp", "vp/foo", "provisioning")
             .await
             .unwrap();
         db.upsert_lane_lifecycle("/repos/vp", "vp/performer/bar", "ready")
@@ -1623,19 +2223,19 @@ mod tests {
         assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 3);
 
         // 同 (project, address) の upsert は置換 (複合 UNIQUE)。
-        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/foo", "ready")
+        db.upsert_lane_lifecycle("/repos/vp", "vp/foo", "ready")
             .await
             .unwrap();
         let rows = db.list_lane_lifecycles().await.unwrap();
         assert_eq!(rows.len(), 3, "同 address は置換、 件数は増えない");
         assert!(
             rows.iter()
-                .any(|(p, a, lc)| p == "/repos/vp" && a == "vp/performer/foo" && lc == "ready"),
+                .any(|(p, a, lc)| p == "/repos/vp" && a == "vp/foo" && lc == "ready"),
             "provisioning → ready に置換される"
         );
 
         // 単一削除。
-        db.delete_lane_lifecycle("/repos/vp", "vp/performer/foo")
+        db.delete_lane_lifecycle("/repos/vp", "vp/foo")
             .await
             .unwrap();
         assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 2);
@@ -1868,7 +2468,7 @@ mod tests {
         let db = make_test_db().await;
 
         let conductor_stack = serde_json::json!({
-            "items": [{"id":"i1","content":"# conductor\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
+            "items": [{"id":"i1","content":"# root\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
             "cursor": "i1",
             "capacity": 10
         });
@@ -1885,7 +2485,7 @@ mod tests {
             None,
             "paisley-park",
             "markdown",
-            "# conductor\n",
+            "# root\n",
             None,
             Some(&conductor_stack),
             Some(&ui),
@@ -1910,10 +2510,10 @@ mod tests {
             .load_pp_state("/repos/vp", None, "paisley-park")
             .await
             .unwrap()
-            .expect("conductor record 不在");
+            .expect("root record 不在");
         assert_eq!(
             conductor["lane_name"], "",
-            "conductor は lane_name='' sentinel (= None)"
+            "root は lane_name='' sentinel (= None)"
         );
         assert_eq!(conductor["stack"]["cursor"], "i1");
 
@@ -1928,7 +2528,7 @@ mod tests {
 
         // list_pane_contents は両方見える (project scope)
         let all = db.list_pane_contents("/repos/vp").await.unwrap();
-        assert_eq!(all.len(), 2, "conductor + performer で 2 record");
+        assert_eq!(all.len(), 2, "root + performer で 2 record");
     }
 
     /// upsert_pp_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)

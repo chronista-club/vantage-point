@@ -24,6 +24,8 @@ pub mod discovery;
 pub mod echoes;
 pub mod file_watcher;
 pub mod flow;
+/// Project Host — project の面倒を見る決定的サービス（doc 44 D3 / §7）
+pub mod host;
 #[cfg(feature = "midi")]
 pub mod justice;
 // lane lib 本体 (vp-cli の bin `vp lane` も `vantage_point::lane` を経由する)

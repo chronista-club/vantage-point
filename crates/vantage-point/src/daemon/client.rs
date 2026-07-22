@@ -342,16 +342,130 @@ impl WorldControlClient {
         Ok(())
     }
 
+    // =====================================================================
+    // doc 45 段 1 — HTTP `/api/world/*` にしか無かった面の Unison client。
+    //
+    // 旧 HTTP route は本 PR ではまだ残っている（撤去は doc 45 §5 の段 4）ので、
+    // 一時的に同じ操作へ 2 経路がある。これは意図した中間状態で、
+    // 「新面が動く → 旧面撤去」の順序（doc 44 で確立）を守るための構成。
+    // =====================================================================
+
+    /// project を部分更新する（`name` / `enabled` の指定されたものだけ適用）。
+    ///
+    /// 両方 None なら World 側が `No fields to update` を返す（= 何も指定しない update は
+    /// 呼び出し側のバグなので黙って成功にしない）。
+    pub async fn projects_update(
+        &self,
+        path: &str,
+        name: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<()> {
+        let mut payload = serde_json::json!({ "path": path });
+        if let Some(name) = name {
+            payload["name"] = serde_json::Value::String(name.to_string());
+        }
+        if let Some(enabled) = enabled {
+            payload["enabled"] = serde_json::Value::Bool(enabled);
+        }
+        self.call("projects/update", payload).await?;
+        Ok(())
+    }
+
+    /// ghost project（dir が実在しない登録）を除去し、除去した project 名を返す。
+    pub async fn projects_sync(&self) -> Result<Vec<String>> {
+        let resp = self.call("projects/sync", serde_json::json!({})).await?;
+        Ok(resp
+            .get("removed")
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// projects.kdl を読み直して daemon の in-memory projects に反映させる。
+    pub async fn projects_reload(&self) -> Result<()> {
+        self.call("projects/reload", serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    /// project を再起動する（World 側で stop + start を繋ぐ）。
+    ///
+    /// 内部に grace sleep + 起動確認が入るため、他の RPC より応答が遅い（数秒オーダー）。
+    pub async fn projects_restart(&self, name: &str) -> Result<serde_json::Value> {
+        self.call("projects/restart", serde_json::json!({ "name": name }))
+            .await
+    }
+
+    /// project の PointView を開く（未起動なら World 側が起動してから開く）。
+    pub async fn projects_pointview(&self, name: &str) -> Result<()> {
+        self.call("projects/pointview", serde_json::json!({ "name": name }))
+            .await?;
+        Ok(())
+    }
+
     /// 全 project 横断の lane 一覧（`vp ps` の LANES / STATUS 列の source）。
     ///
     /// 返るのは `LaneInfo` の JSON 配列。個別 lane の詳細操作は process-proxy 経由。
     pub async fn lanes_list(&self) -> Result<Vec<serde_json::Value>> {
-        let resp = self.call("lanes/list", serde_json::json!({})).await?;
+        self.lanes_list_filtered(None, None, None).await
+    }
+
+    /// filter 付きの lane 一覧（`project` / `lane` / `stand`、いずれも省略可 = 無フィルタ）。
+    ///
+    /// 並びは project 名昇順 → 同 project 内は開発起点 (root) 先 → created_at 昇順
+    /// （実装は `routes::world::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/world/lanes` を
+    /// 撤去し、この面が lane 一覧の唯一の入口になった）。
+    pub async fn lanes_list_filtered(
+        &self,
+        project: Option<&str>,
+        lane: Option<&str>,
+        stand: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut payload = serde_json::json!({});
+        for (key, value) in [("project", project), ("lane", lane), ("stand", stand)] {
+            if let Some(value) = value {
+                payload[key] = serde_json::Value::String(value.to_string());
+            }
+        }
+        let resp = self.call("lanes/list", payload).await?;
         Ok(resp
             .get("lanes")
             .and_then(|l| l.as_array())
             .cloned()
             .unwrap_or_default())
+    }
+
+    /// performer lane を作成する（daemon-canonical な descriptor を作る）。
+    ///
+    /// `branch` / `stand` 省略時は World 側で default を導出する
+    /// （branch = `<user>/<name>`、stand = config の `default_stand` → `echoes`）。
+    pub async fn lanes_create(
+        &self,
+        path: &str,
+        name: &str,
+        branch: Option<&str>,
+        stand: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut payload = serde_json::json!({ "path": path, "name": name });
+        for (key, value) in [("branch", branch), ("stand", stand)] {
+            if let Some(value) = value {
+                payload[key] = serde_json::Value::String(value.to_string());
+            }
+        }
+        self.call("lanes/create", payload).await
+    }
+
+    /// project の active lane (presence、Model Q) を設定する。
+    pub async fn lanes_set_active(&self, path: &str, address: &str) -> Result<()> {
+        self.call(
+            "lanes/set_active",
+            serde_json::json!({ "path": path, "address": address }),
+        )
+        .await?;
+        Ok(())
     }
 
     /// 稼働中 project の snapshot（`registry.list`）。
@@ -378,6 +492,58 @@ impl WorldControlClient {
     ///
     /// SSOT 原則: CLI は hub に直接接続せず、TheWorld の `hub/discover` RPC を叩く。
     /// `CHRONISTA_HUB_ADDR` 未設定時は World 側が federation 無効エラーを返す。
+    /// 見送り判定を Project Host の帳簿に記録し、**反映後の滞留一覧**を受け取る
+    /// （doc 44 §7.5）。
+    ///
+    /// 帳簿は db/world にあり World が専有するので CLI からは直接書けない（§8.4）。
+    /// 記録と読み出しを 1 往復にまとめてあるのは、`vp lane cleanup` が判定を表示する
+    /// その場で「何回目 / 初回いつ」を添えるため（別 RPC にすると表示のたびに 2 往復になる）。
+    pub async fn farewell_observe(
+        &self,
+        project_path: &str,
+        observations: &[crate::host::ledger::FarewellObservation],
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let resp = self
+            .call(
+                "host/farewell_observe",
+                serde_json::json!({ "path": project_path, "observations": observations }),
+            )
+            .await?;
+        let pending = resp.get("pending").cloned().unwrap_or_default();
+        serde_json::from_value(pending).context("host/farewell_observe レスポンスのパースに失敗")
+    }
+
+    /// 実際に見送った lane を帳簿に記録する（終端 event、doc 44 §7.5）。返り値は記録件数。
+    pub async fn farewell_reclaimed(
+        &self,
+        project_path: &str,
+        lanes: &[crate::host::ledger::FarewellObservation],
+    ) -> Result<usize> {
+        let resp = self
+            .call(
+                "host/farewell_reclaimed",
+                serde_json::json!({ "path": project_path, "lanes": lanes }),
+            )
+            .await?;
+        Ok(resp.get("recorded").and_then(|r| r.as_u64()).unwrap_or(0) as usize)
+    }
+
+    /// 帳簿の見送り記録を新しい順に読む（`vp lane history`）。`limit` 0 = 無制限。
+    pub async fn farewell_log(
+        &self,
+        project_path: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
+        let resp = self
+            .call(
+                "host/farewell_log",
+                serde_json::json!({ "path": project_path, "limit": limit }),
+            )
+            .await?;
+        let entries = resp.get("entries").cloned().unwrap_or_default();
+        serde_json::from_value(entries).context("host/farewell_log レスポンスのパースに失敗")
+    }
+
     pub async fn hub_discover(&self) -> Result<Vec<serde_json::Value>> {
         let resp = self.call("hub/discover", serde_json::json!({})).await?;
         // 新 daemon は `{ "worlds": [...] }` (channel 慣習 + vp-daemon.kdl の returns と一致)、

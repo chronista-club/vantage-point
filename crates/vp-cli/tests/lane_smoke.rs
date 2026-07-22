@@ -239,6 +239,102 @@ fn vp_lane_cleanup_dryrun_in_empty_repo() {
         .stderr(predicate::str::contains("クリーンアップ対象はありません"));
 }
 
+/// 回帰固定（doc 44 P3）: `--force` は worktree だけでなく **共有 `.git` の branch も掃除する**。
+///
+/// P3 の Host 移管で `git branch -d` が **一度も実行されない**状態になっていた。
+/// `remove_performer_workspace` が worktree ディレクトリごと消すため、その後に
+/// `get_branch(&path)` を呼ぶと `git` の cwd が無く `output()` が Err → 常に `None` に落ちる。
+/// 修正は branch 名を `LaneFacts` に削除前から持たせること。
+///
+/// **この e2e が要る理由**: 単体テスト（`branch_cannot_be_read_after_ground_is_removed`）は
+/// 「消えた dir から引けない」という**前提**を固定するだけで、`cleanup_performers` が実際に
+/// facts 側を読んでいることは見ていない。将来また `get_branch(&path)` に戻しても単体は通る。
+/// ここは**壊れた経路そのもの**（cleanup --force → 親 repo の branch 一覧）を直接見る。
+#[test]
+fn vp_lane_cleanup_force_removes_merged_branch_from_shared_git() {
+    let repo = setup_minimal_repo();
+    let root = repo.path();
+    let git = |args: &[&str], cwd: &std::path::Path| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .status()
+            .expect("git 実行");
+    };
+
+    // origin を用意（merged 判定は origin/<default> を見るため remote が要る）
+    let origin = tempfile::tempdir().unwrap();
+    git(&["init", "--quiet", "--bare"], origin.path());
+    git(
+        &["remote", "add", "origin", &origin.path().to_string_lossy()],
+        root,
+    );
+    git(&["push", "--quiet", "origin", "main"], root);
+    git(&["remote", "set-head", "origin", "main"], root);
+
+    // lane worktree を作り、そこで 1 commit 積む
+    let lane_dir = root.join(".vp/lanes/done");
+    git(
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "feat-done",
+            &lane_dir.to_string_lossy(),
+        ],
+        root,
+    );
+    fs::write(lane_dir.join("x.txt"), "x\n").unwrap();
+    git(&["add", "."], &lane_dir);
+    git(&["commit", "--quiet", "-m", "work"], &lane_dir);
+
+    // main に取り込んで push（= Host が「見送ってよい」と判定する状態）
+    git(
+        &["merge", "--quiet", "--no-ff", "feat-done", "-m", "m"],
+        root,
+    );
+    git(&["push", "--quiet", "origin", "main"], root);
+    git(&["fetch", "--quiet", "origin"], root);
+
+    let branches_before = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["branch", "--list", "feat-done"])
+            .current_dir(root)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        branches_before.contains("feat-done"),
+        "事前条件: branch が存在する"
+    );
+
+    Command::cargo_bin("vp")
+        .unwrap()
+        .args(["lane", "cleanup", "--force"])
+        .current_dir(root)
+        .assert()
+        .success();
+
+    assert!(!lane_dir.exists(), "worktree dir は消える");
+
+    let branches_after = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["branch", "--list", "feat-done"])
+            .current_dir(root)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        branches_after.trim().is_empty(),
+        "merge 済 branch は共有 .git からも消える（never-fire 回帰の固定）: {branches_after:?}"
+    );
+}
+
 // --- name validation ---
 
 #[test]

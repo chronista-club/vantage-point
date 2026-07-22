@@ -13,8 +13,7 @@ import { isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { kind: "conductor", project: "vp" },
-		kind: "conductor",
+		address: { project: "vp", name: "root" },
 		state: "running",
 		stand: "echoes",
 		created_at: "2026-07-10T00:00:00Z",
@@ -49,16 +48,14 @@ describe("isLaneAlive", () => {
 /** performer の最小 LaneInfo (laneConnector 用)。 */
 function performer(over: Partial<LaneInfo> = {}): LaneInfo {
 	return lane({
-		kind: "performer",
-		address: { kind: "performer", project: "vp", name: "feat" },
-		name: "feat",
+		address: { project: "vp", name: "feat" },
 		...over,
 	} as Partial<LaneInfo>);
 }
 
 describe("laneConnector (FSM 投影)", () => {
-	it("conductor は spine の頭 (state を持たない)", () => {
-		expect(laneConnector(lane(), false)).toBe("conn-conductor");
+	it("root は spine の頭 (state を持たない)", () => {
+		expect(laneConnector(lane(), false)).toBe("conn-root");
 	});
 
 	it("flow_state が一次 source: プロンプト待ちの TUI claude (pid あり + idle) は消える", () => {
@@ -108,7 +105,7 @@ describe("laneConnector (FSM 投影)", () => {
 describe("laneCwdLabel — 絶対 path は project が持ち、 lane は差分だけを名乗る", () => {
 	const proj = "/Users/makoto/repos/vantage-point";
 
-	it("conductor (cwd = project root) は空 = 語ることが無いので黙る", () => {
+	it("root (cwd = project root) は空 = 語ることが無いので黙る", () => {
 		expect(laneCwdLabel(proj, proj)).toBe("");
 	});
 

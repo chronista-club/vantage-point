@@ -113,16 +113,16 @@ mod tests {
     fn record_and_last_roundtrip() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // 未記録は None（= claude default）
-        assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
-        record_in(tmp.path(), "vp", "conductor", "claude-opus-4-8").expect("record");
+        assert_eq!(last_in(tmp.path(), "vp", "root"), None);
+        record_in(tmp.path(), "vp", "root", "claude-opus-4-8").expect("record");
         assert_eq!(
-            last_in(tmp.path(), "vp", "conductor").as_deref(),
+            last_in(tmp.path(), "vp", "root").as_deref(),
             Some("claude-opus-4-8")
         );
         // 上書き（最新が勝つ）
-        record_in(tmp.path(), "vp", "conductor", "claude-fable-5").expect("record 2");
+        record_in(tmp.path(), "vp", "root", "claude-fable-5").expect("record 2");
         assert_eq!(
-            last_in(tmp.path(), "vp", "conductor").as_deref(),
+            last_in(tmp.path(), "vp", "root").as_deref(),
             Some("claude-fable-5")
         );
     }
@@ -130,11 +130,11 @@ mod tests {
     #[test]
     fn clear_returns_to_default_and_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        record_in(tmp.path(), "vp", "conductor", "claude-sonnet-5").expect("record");
-        clear_in(tmp.path(), "vp", "conductor").expect("clear");
-        assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
+        record_in(tmp.path(), "vp", "root", "claude-sonnet-5").expect("record");
+        clear_in(tmp.path(), "vp", "root").expect("clear");
+        assert_eq!(last_in(tmp.path(), "vp", "root"), None);
         // 未記録の clear は no-op
-        clear_in(tmp.path(), "vp", "conductor").expect("未記録の clear は Ok");
+        clear_in(tmp.path(), "vp", "root").expect("未記録の clear は Ok");
     }
 
     #[test]
@@ -166,15 +166,15 @@ mod tests {
     fn rejects_garbage() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // 記録時に弾く（引数 injection 形は file に残さない）
-        assert!(record_in(tmp.path(), "vp", "conductor", "opus --dangerous").is_err());
-        assert!(record_in(tmp.path(), "vp", "conductor", "").is_err());
+        assert!(record_in(tmp.path(), "vp", "root", "opus --dangerous").is_err());
+        assert!(record_in(tmp.path(), "vp", "root", "").is_err());
         // 先頭 `-` = `--model` の値が別 flag として解釈される余地
-        assert!(record_in(tmp.path(), "vp", "conductor", "--resume").is_err());
+        assert!(record_in(tmp.path(), "vp", "root", "--resume").is_err());
         assert!(!is_valid_model("-x"));
         // file が直接壊されていても読み手が弾く
         let dir = tmp.path().join("engine_models");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("vp__conductor"), "op us;rm -rf\n").unwrap();
-        assert_eq!(last_in(tmp.path(), "vp", "conductor"), None);
+        std::fs::write(dir.join("vp__root"), "op us;rm -rf\n").unwrap();
+        assert_eq!(last_in(tmp.path(), "vp", "root"), None);
     }
 }

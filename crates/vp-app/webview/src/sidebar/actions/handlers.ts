@@ -118,12 +118,11 @@ function collectVisibleLanes(): VisibleLane[] {
 		const projectName = proc.path.split("/").pop() ?? proc.path;
 		for (const lane of lanes) {
 			const addr = laneAddressKey(lane);
-			const kind = lane.kind || lane.address.kind;
-			const name = lane.name ?? lane.address.name ?? "";
-			const label =
-				kind === "conductor"
-					? `${projectName} / Conductor`
-					: `${projectName} / Performer: ${name}`;
+			// doc 44 P2: lane の種別は消え、開発起点は予約名で表される。
+			const name = lane.address.name;
+			const label = isPerformerLane(lane)
+				? `${projectName} / ${name}`
+				: `${projectName} / Conductor`;
 			out.push({ path: proc.path, address: addr, label });
 		}
 	}
