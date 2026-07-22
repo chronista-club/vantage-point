@@ -89,6 +89,7 @@ import {
 	cssVarNumberTarget,
 	cssVarTarget,
 	number,
+	useEditorHost,
 } from "@chronista-club/creo-ui-editor-host";
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
@@ -1002,10 +1003,21 @@ function SidebarTokenBinds() {
 	return null;
 }
 
+// doc 48 Phase 2 (editor bridge): MCP → vp-app が評価する JS が provider の外から
+// host に触るための明示 expose。creoEditor console API は localhost hostname heuristic で
+// expose されるため vp-asset:// origin では当てにできない — bridge はこの global 一本に依存する。
+// 読み手: app.rs `editor_bridge_js`（`window.vpEditorHost.mcp` を呼ぶ）。UI は持たない。
+function ExposeEditorHostForBridge() {
+	const host = useEditorHost();
+	(window as unknown as { vpEditorHost?: unknown }).vpEditorHost = host;
+	return null;
+}
+
 function App() {
 	return (
 		<EditorHostProvider>
 			<SidebarTokenBinds />
+			<ExposeEditorHostForBridge />
 			<EditorLayer />
 		</EditorHostProvider>
 	);

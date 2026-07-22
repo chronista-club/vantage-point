@@ -272,6 +272,7 @@ pub(crate) async fn start_project(
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // SP mode は delegation store を持たない (World 中央 store に proxy する)。
         delegation_store: None,
+        editor_pending: Default::default(),
     });
 
     // Phase review fix #2: LanePool::with_root は内部で PtySlot::spawn (openpty + spawn_command)
@@ -770,6 +771,7 @@ pub async fn run_world(
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // 委譲 (delegation) の World 中央 store (doc 28 §6)。World mode のみ Some。
         delegation_store,
+        editor_pending: Default::default(),
     });
 
     // in-app update: GitHub Releases latest の定期チェック（起動時 + 24h 毎）で

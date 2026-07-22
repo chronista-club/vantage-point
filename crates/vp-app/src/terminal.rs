@@ -31,6 +31,16 @@ pub enum AppEvent {
     ActivityUpdate(crate::pane::ActivitySnapshot),
     /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
     SidebarIpc(String),
+    /// doc 48 Phase 2 (editor bridge): World からの `EditorCommand` を webview で評価する。
+    ///
+    /// `js` を main webview で `evaluate_script_with_callback` し、結果 (wry が JSON
+    /// 文字列化した評価値) を `resp` に 1 回送る。sender が mpsc なのは AppEvent の
+    /// Clone derive と両立させるため (oneshot は Clone 不可)。受け手は
+    /// `run_canvas_session` の editor_command intercept (timeout 側が受信を打ち切る)。
+    EditorEval {
+        js: String,
+        resp: tokio::sync::mpsc::UnboundedSender<String>,
+    },
     /// VP-100 γ-light: main area の active pane slot 矩形通知。
     ///
     /// Phase 2 時点では受け取って store するだけ。Phase 4+ で native pane が

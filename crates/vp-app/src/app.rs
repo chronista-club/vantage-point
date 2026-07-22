@@ -799,6 +799,56 @@ async fn run_canvas_session(
                 continue;
             }
         };
+        // doc 48 Phase 2: editor bridge command は canvas-handler (webview) に流さず、
+        // ここで JS 評価を event loop へ依頼し、結果を同一 channel の `editor_result` で
+        // 返す (request-response。channel は subscribe 済なので project 束縛も正しい)。
+        // この await 中は当該 project の canvas event が最大 ~2.5s 待たされるが、editor
+        // 操作は人間スケールの頻度なので許容 (別 task 化は順序/相関の複雑さに見合わない)。
+        if payload.get("type").and_then(|v| v.as_str()) == Some("editor_command") {
+            let request_id = payload
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if request_id.is_empty() {
+                continue;
+            }
+            let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("");
+            let body = match editor_bridge_js(
+                op,
+                payload.get("field_id").and_then(|v| v.as_str()),
+                payload.get("value"),
+            ) {
+                Some(js) => {
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    if proxy
+                        .send_event(AppEvent::EditorEval { js, resp: tx })
+                        .is_err()
+                    {
+                        return Ok(SubscriptionOutcome::AppClosing);
+                    }
+                    // World 側の待ち (3s) より短く切る (VP-163 と同じ向き: 内側が先に諦める)
+                    match tokio::time::timeout(std::time::Duration::from_millis(2500), rx.recv())
+                        .await
+                    {
+                        Ok(Some(raw)) => serde_json::from_str::<serde_json::Value>(&raw)
+                            .unwrap_or(serde_json::Value::String(raw)),
+                        _ => serde_json::json!({"error": "webview 評価 timeout"}),
+                    }
+                }
+                None => serde_json::json!({"error": format!("未知の editor op: {op}")}),
+            };
+            if let Err(e) = channel
+                .request::<serde_json::Value, serde_json::Value>(
+                    "editor_result",
+                    &serde_json::json!({ "request_id": request_id, "payload": body }),
+                )
+                .await
+            {
+                tracing::warn!("editor bridge: editor_result 送信失敗: {}", e);
+            }
+            continue;
+        }
         if proxy
             .send_event(AppEvent::CanvasMessage {
                 process_path: process_path.to_string(),
@@ -809,6 +859,83 @@ async fn run_canvas_session(
             // event loop が閉じた = app 終了。
             return Ok(SubscriptionOutcome::AppClosing);
         }
+    }
+}
+
+/// doc 48 Phase 2: `EditorCommand` op → webview で評価する JS 式 (純 calculation)。
+///
+/// 式は object を返し、wry (`evaluate_script_with_callback`) がそれを JSON 文字列化して
+/// callback に渡す。editor host は webview 側 `ExposeEditorHostForBridge` (entry.tsx) が
+/// `window.vpEditorHost` に明示 expose したものを `mcp` API (editor-mode.md D-10、
+/// listFields / getValue / setValue) 経由で叩く — `creoEditor` console API は localhost
+/// hostname heuristic 依存で vp-asset:// origin では当てにならないため使わない。
+/// host 不在 (bundle 未 mount 等) は `{error}` object を返す JS にして Rust 側は透過。
+/// 未知 op / set の引数欠落は None。
+fn editor_bridge_js(
+    op: &str,
+    field_id: Option<&str>,
+    value: Option<&serde_json::Value>,
+) -> Option<String> {
+    // h = EditorHostMcpApi
+    const PRELUDE: &str = "const h=window.vpEditorHost&&window.vpEditorHost.mcp;if(!h)return{error:\"editor host not available\"};";
+    match op {
+        "fields" => Some(format!(
+            "(()=>{{{PRELUDE}return{{fields:h.listFields().map(f=>({{id:f.id,label:f.label,type:f.type,semantic:f.semantic,group:f.group??null,cssVar:f.cssVar??null,initial:f.initial??null,constraints:f.constraints??null,role:f.role??null}}))}}}})()"
+        )),
+        "values" => Some(format!(
+            "(()=>{{{PRELUDE}return{{values:Object.fromEntries(h.listFields().map(f=>[f.id,h.getValue(f.id)]))}}}})()"
+        )),
+        "set" => {
+            // serde_json::to_string の出力はそのまま JS literal として合法 (JSON ⊂ JS)。
+            // field_id/value の必須検証は World 側 handler 済みだが、欠落は防御的に None。
+            let id = serde_json::to_string(field_id?).ok()?;
+            let value = serde_json::to_string(value?).ok()?;
+            Some(format!(
+                "(()=>{{{PRELUDE}h.setValue({id},{value});return{{ok:true,id:{id}}}}})()"
+            ))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod editor_bridge_js_tests {
+    use super::editor_bridge_js;
+
+    /// fields / values は bridge global (`vpEditorHost.mcp`) を経由する。
+    #[test]
+    fn read_ops_use_bridge_global() {
+        for op in ["fields", "values"] {
+            let js = editor_bridge_js(op, None, None).expect(op);
+            assert!(
+                js.contains("window.vpEditorHost"),
+                "{op}: bridge global 不使用"
+            );
+            assert!(js.contains("listFields"), "{op}: mcp API 不使用");
+        }
+    }
+
+    /// set は id / value を JS literal として埋め込む (quote は escape される)。
+    #[test]
+    fn set_encodes_arguments_as_js_literals() {
+        let js = editor_bridge_js("set", Some("sb.text.base"), Some(&serde_json::json!(13.5)))
+            .expect("set");
+        assert!(js.contains(r#"h.setValue("sb.text.base",13.5)"#), "js={js}");
+
+        let tricky = serde_json::json!("#FF3DAE\"</script>");
+        let js = editor_bridge_js("set", Some("sb.conn.hitl"), Some(&tricky)).expect("set");
+        assert!(
+            js.contains(r##""#FF3DAE\"</script>""##),
+            "escape されていない: {js}"
+        );
+    }
+
+    /// 未知 op / set の引数欠落は None (World 側で {error} 応答に変換される)。
+    #[test]
+    fn unknown_op_and_missing_args_are_none() {
+        assert!(editor_bridge_js("enter", None, None).is_none());
+        assert!(editor_bridge_js("set", None, Some(&serde_json::json!(1))).is_none());
+        assert!(editor_bridge_js("set", Some("id"), None).is_none());
     }
 }
 
@@ -3560,6 +3687,16 @@ pub fn run() -> anyhow::Result<()> {
                 if crate::pane::apply_device_event(&mut sidebar_state.bastet_devices, &payload) {
                     push_sidebar_state(&webview, &sidebar_state);
                     lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
+                }
+            }
+            Event::UserEvent(AppEvent::EditorEval { js, resp }) => {
+                // doc 48 Phase 2: editor bridge の webview 評価。結果 (wry が JSON 文字列化
+                // した評価値) を canvas session 側へ返す。受信側は timeout で打ち切るので
+                // callback が遅れて発火しても送信は無害 (受け手 drop 済なら send Err → 無視)。
+                if let Err(e) = webview.evaluate_script_with_callback(&js, move |result| {
+                    let _ = resp.send(result);
+                }) {
+                    tracing::warn!("editor bridge: evaluate_script 失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::CanvasMessage {
