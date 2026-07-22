@@ -16,12 +16,20 @@
  */
 
 import {
+	type ApplyPolicy,
 	type DominanceDirection,
+	type DriverRun,
 	type Layout,
 	type PaneRef,
+	type ResolvedMap,
+	type TransitionDriver,
 	createLayoutEngine,
+	createTimeDriver,
 	equalize,
+	jumpDriver,
 	moveDominance,
+	proposeLayout,
+	resolve,
 	setShare,
 } from "@chronista-club/creo-ui-layout";
 import { PaneStage, useEngineResolved } from "@chronista-club/creo-ui-layout/solid";
@@ -89,6 +97,7 @@ function GalleryPanes() {
 	};
 
 	const gesture = (fn: (l: Layout) => Layout) => {
+		seizeDrive(); // Touch: 触れた瞬間に奪取（engine.update の seize + driver timer 停止）
 		engine.update(SCOPE, fn);
 		engine.settle(SCOPE, "human");
 	};
@@ -124,7 +133,10 @@ function GalleryPanes() {
 				<PaneStage
 					resolved={resolved()}
 					panes={PANE_REFS}
-					onFloatMove={(id, pos) => engine.moveFloat(SCOPE, id, pos)}
+					onFloatMove={(id, pos) => {
+						seizeDrive(); // float drag も直接操作 = 奪取
+						engine.moveFloat(SCOPE, id, pos);
+					}}
 					renderPane={(pane) => (
 						// biome-ignore lint/security/noDangerouslySetInnerHtml: story は compile-time 定数（gallery.ts）のみ
 						<div
@@ -139,15 +151,33 @@ function GalleryPanes() {
 	);
 }
 
-// ---------- MCP layout bridge（LE-P2 PR2 = LE-15 の webview 側） ----------
+// ---------- MCP layout bridge（LE-P2 PR2 = LE-15 の webview 側、P3 で policy 経由に） ----------
 // 読み手: vp-app app.rs `editor_bridge_js` の layout_* arm（`window.vpLayoutHost.mcp`）。
-// gallery scope は dev surface のため apply policy = auto（LE-16）: set は即適用され、
-// mako は画面で見て承認する — #872 の editor_set と同じ HITL ループ。author="ai" の
-// settle が監査証跡。work lane の hitl 既定（propose 承認）は P4 の per-scope policy で。
+// gallery scope の apply policy = read（LE-16）: set は proposeLayout が受け、time driver
+// （spring）が t を運び切った所で commit(author="ai") が settle 監査を刻む — AI の変更が
+// 「滑らかに現れる」のを mako が画面で見る HITL ループ（#872 の editor_set と同型）。
+// 駆動中に human が触れば seize されて commit は起きない（Touch — 注視の主権は user）。
+// ⚠️ work lane の scope を追加する時は既定を "write"（hitl gate）にすること（P4、Moody 申し送り）。
 
-function sharesOf(): Record<string, number> {
+const APPLY_POLICY: ApplyPolicy = "read";
+
+/** reduced-motion は「jump driver の選択」に落ちる（LE-7）。curve は package 内蔵の臨界減衰 */
+function chooseDriver(): TransitionDriver {
+	const reduced =
+		typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+	return reduced ? jumpDriver : createTimeDriver();
+}
+
+// AI 駆動の遷移は同時に 1 本 — 新しい set / human の直接操作が来たら前の timer は畳む
+let activeDrive: DriverRun | null = null;
+function seizeDrive(): void {
+	activeDrive?.cancel();
+	activeDrive = null;
+}
+
+function sharesFrom(resolvedMap: ResolvedMap): Record<string, number> {
 	const out: Record<string, number> = {};
-	for (const [id, pane] of Object.entries(engine.resolved(SCOPE))) {
+	for (const [id, pane] of Object.entries(resolvedMap)) {
 		out[id] = pane.attention;
 	}
 	return out;
@@ -155,14 +185,24 @@ function sharesOf(): Record<string, number> {
 
 const layoutMcp = {
 	get(): unknown {
-		return layoutSnapshot(SCOPE, engine.current(SCOPE), sharesOf());
+		// 遷移中は commit 前の layout が返る（≈0.35s の eventual consistency — 監査は settle log）
+		return layoutSnapshot(SCOPE, engine.current(SCOPE), sharesFrom(engine.resolved(SCOPE)));
 	},
 	set(spec: unknown): unknown {
 		try {
 			const next = applyLayoutSpec(engine.current(SCOPE), (spec ?? {}) as LayoutSpec);
-			engine.update(SCOPE, () => next);
-			engine.settle(SCOPE, "ai");
-			return layoutSnapshot(SCOPE, engine.current(SCOPE), sharesOf());
+			seizeDrive();
+			const result = proposeLayout(engine, SCOPE, next, {
+				policy: APPLY_POLICY,
+				driver: chooseDriver(),
+			});
+			if (!result.accepted) {
+				return { error: "apply policy = off — 提案は受けられない" };
+			}
+			activeDrive = result.drive ?? null;
+			// 応答は target の姿（spring の完了を MCP 往復で待たせない）。human が途中で
+			// 奪取すれば commit されない — その時の実勢は layout_get / history で読める
+			return layoutSnapshot(SCOPE, next, sharesFrom(resolve(next)));
 		} catch (e) {
 			return { error: e instanceof Error ? e.message : String(e) };
 		}
