@@ -96,7 +96,9 @@ fn initial_developer_mode(settings: &Settings) -> bool {
 pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 
 /// WebView 統合 (step 3a) 後の唯一の webview が `vp-asset://` で配信する asset。
-/// `MAIN_AREA_HTML` (sidebar bundle + editor-host bundle を inline 済) を `app/index.html` で配信。
+/// `MAIN_AREA_HTML` を `app/index.html` で、SolidJS bundle 2 本を外部 script として配信
+/// (doc 48 Phase 1 で inline → `<script src>` 化。`VP_WEBVIEW_DEV` 設定時は
+/// `web_assets::serve` の disk-read が baked より優先され、cargo build なしの HMR になる)。
 ///
 /// ## なぜ with_html ではなく custom protocol か (統合 origin fix)
 /// `with_html` で load した document は **about:blank = 不透明 (opaque) オリジン**になり、
@@ -106,11 +108,23 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 /// 空になっていた。custom protocol で load すれば document origin = `vp-asset://app` の
 /// 実オリジンになり、統合前 (sidebar が `vp-asset://app/sidebar.html` を load していた頃) と
 /// 同じく localStorage が使える。
-const MAIN_VIEW_ASSETS: &[(&str, &[u8], &str)] = &[(
-    "app/index.html",
-    MAIN_AREA_HTML.as_bytes(),
-    "text/html; charset=utf-8",
-)];
+const MAIN_VIEW_ASSETS: &[(&str, &[u8], &str)] = &[
+    (
+        "app/index.html",
+        MAIN_AREA_HTML.as_bytes(),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "app/editor-host.bundle.js",
+        main_area::EDITOR_HOST_BUNDLE_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    ),
+    (
+        "app/sidebar.bundle.js",
+        main_area::SIDEBAR_BUNDLE_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    ),
+];
 
 /// Sidebar + Main area の bounds をウィンドウサイズから計算 (VP-100 Phase 2)
 ///
@@ -2639,6 +2653,7 @@ pub fn run() -> anyhow::Result<()> {
     }
     let dev_mode_item = menu_handles.developer_mode_item;
     let open_devtools_item = menu_handles.open_devtools_item;
+    let reload_webview_item = menu_handles.reload_webview_item;
     let menu_ids = menu_handles.ids;
     let _tray = match crate::tray::build_tray() {
         Ok(t) => Some(t),
@@ -2803,7 +2818,8 @@ pub fn run() -> anyhow::Result<()> {
     spawn_lane_inbox_poller(&rt_handle, event_loop.create_proxy());
 
     // WebView 統合 (step 3a): sidebar + main を 1 WebView (1 DOM, CSS flex) に統合。
-    // sidebar.bundle.js は MAIN_AREA_HTML 内に inline 済 (#sidebar-root に mount)。
+    // sidebar.bundle.js は vp-asset://app/sidebar.bundle.js の外部 script として load される
+    // (doc 48 Phase 1 で inline → 外部化。#sidebar-root に mount)。
     // 旧 2 WebView (cross-WebView IPC bridge で keyboard を 2 往復させていた) を廃し、
     // sidebar↔main の event / state が同一 DOM 内で直接流れる。
     let sidebar_ipc_proxy = event_loop.create_proxy();
@@ -5225,6 +5241,7 @@ pub fn run() -> anyhow::Result<()> {
                     dev_mode = !dev_mode;
                     dev_mode_item.set_checked(dev_mode);
                     open_devtools_item.set_enabled(dev_mode);
+                    reload_webview_item.set_enabled(dev_mode);
                     settings.developer_mode = Some(dev_mode);
                     if let Err(e) = settings.save() {
                         tracing::warn!("Settings 保存失敗: {}", e);
@@ -5248,6 +5265,18 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::info!("DevTools open");
                     } else {
                         tracing::warn!("Open DevTools clicked but dev_mode=false (gated)");
+                    }
+                } else if id == menu_ids.reload_webview {
+                    // doc 48 Phase 1: HMR loop の reload 側。VP_WEBVIEW_DEV 設定時は
+                    // reload で *.bundle.js が disk から fresh に取り直される。
+                    if dev_mode {
+                        if let Err(e) = webview.evaluate_script("location.reload()") {
+                            tracing::warn!("Reload WebView 失敗: {}", e);
+                        } else {
+                            tracing::info!("Reload WebView (location.reload)");
+                        }
+                    } else {
+                        tracing::warn!("Reload WebView clicked but dev_mode=false (gated)");
                     }
                 } else {
                     tracing::debug!("MenuClicked: 未処理の id = {:?}", id);
@@ -5361,7 +5390,8 @@ mod port_merge_tests {
 
 #[cfg(test)]
 mod main_view_asset_tests {
-    //! 統合 WebView (step 3a) の単一 HTML が vp-asset:// で配信でき、sidebar を inline mount すること。
+    //! 統合 WebView (step 3a) の単一 HTML が vp-asset:// で配信でき、SolidJS bundle を
+    //! 外部 script (vp-asset://app/*.bundle.js) として参照・配信できること (doc 48 Phase 1)。
     //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
     use super::*;
 
@@ -5375,16 +5405,41 @@ mod main_view_asset_tests {
         assert_eq!(bytes, MAIN_AREA_HTML.as_bytes());
     }
 
-    /// 統合 HTML が sidebar mount point を持ち、sidebar bundle を inline している。
+    /// 統合 HTML が sidebar mount point を持ち、bundle を外部 script として参照する
+    /// (doc 48 Phase 1: inline → `<script src>` 化。相対 src は page origin
+    /// `vp-asset://app/` により `app/*.bundle.js` に解決される)。
     #[test]
-    fn main_area_html_inlines_sidebar() {
+    fn main_area_html_references_external_bundles() {
         assert!(
             MAIN_AREA_HTML.contains(r#"id="sidebar-root""#),
             "統合 HTML に #sidebar-root mount point がない"
         );
         assert!(
-            MAIN_AREA_HTML.contains("[vp-sidebar] booting"),
-            "統合 HTML が sidebar bundle を inline していない (boot marker 不在)"
+            MAIN_AREA_HTML.contains(r#"<script src="editor-host.bundle.js"></script>"#),
+            "統合 HTML が editor-host bundle を外部 script 参照していない"
         );
+        assert!(
+            MAIN_AREA_HTML.contains(r#"<script src="sidebar.bundle.js"></script>"#),
+            "統合 HTML が sidebar bundle を外部 script 参照していない"
+        );
+    }
+
+    /// 外部化した bundle が `vp-asset://app/*.bundle.js` から配信できる
+    /// (baked 経路 = `VP_WEBVIEW_DEV` 未設定時の prod 挙動)。
+    #[test]
+    fn bundles_servable_via_vp_asset() {
+        for (path, marker) in [
+            ("vp-asset://app/sidebar.bundle.js", "[vp-sidebar] booting"),
+            ("vp-asset://app/editor-host.bundle.js", "EditorHost"),
+        ] {
+            let asset = crate::web_assets::lookup_asset(path, MAIN_VIEW_ASSETS);
+            assert!(asset.is_some(), "{path} not lookupable");
+            let (bytes, ct) = asset.unwrap();
+            assert_eq!(ct, "application/javascript; charset=utf-8");
+            assert!(
+                String::from_utf8_lossy(bytes).contains(marker),
+                "{path} の中身に marker `{marker}` が無い (bundle 生成物が想定と違う)"
+            );
+        }
     }
 }
