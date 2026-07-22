@@ -1,15 +1,28 @@
 // gallery.ts の純 data / 純 calculation テスト（vitest は node 環境なので DOM action は対象外 —
 // gallery-panes.tsx の syncGalleryDom / installGallery / PaneStage は実機 dogfood と
 // Cmd+R ループで確認する）。
+import { type Layout, parseNotation } from "@chronista-club/creo-ui-layout";
 import { describe, expect, it } from "vitest";
 import {
 	GALLERY_CSS,
 	GALLERY_HASH,
 	STORIES,
+	applyLayoutSpec,
 	isGalleryHash,
+	layoutNotation,
+	layoutSnapshot,
 	storyPaneHtml,
+	takeRecent,
 	toggleGalleryHash,
 } from "./gallery";
+
+function layoutOf(
+	notation: string,
+	attention: Record<string, number>,
+	locks?: Record<string, number>,
+): Layout {
+	return { structure: parseNotation(notation).structure, attention, locks };
+}
 
 describe("gallery css", () => {
 	it("Editor Mode パネル (#editor-root) を gallery overlay より上に明示する（同時使用が本義）", () => {
@@ -72,5 +85,79 @@ describe("gallery css — pane 化（LE-P2）", () => {
 	it("stage と pane host の骨格 class を持つ", () => {
 		expect(GALLERY_CSS).toContain(".gp-stage");
 		expect(GALLERY_CSS).toContain(".gp-pane");
+	});
+});
+
+describe("layout bridge — applyLayoutSpec（LE-P2 PR2、純 calculation）", () => {
+	// f は構造非所属 × 正値 = float
+	const base = layoutOf("a | b/c", { a: 0.5, b: 0.3, c: 0.2, f: 0.4 });
+
+	it("notation 省略 = 構造・float 維持で attention を部分 overlay（0 = 非表示も可）", () => {
+		const next = applyLayoutSpec(base, { attention: { a: 0.8, c: 0 } });
+		expect(next.structure).toBe(base.structure);
+		expect(next.attention.a).toBe(0.8);
+		expect(next.attention.c).toBe(0);
+		expect(next.attention.f).toBe(0.4);
+		expect(layoutNotation(next)).toBe("a | b/c ~ f");
+	});
+
+	it("notation 指定は total — 旧 float は落ち、新規 id は可視平均で入る", () => {
+		const next = applyLayoutSpec(base, { notation: "a | nu" });
+		expect(layoutNotation(next)).toBe("a | nu");
+		expect(next.attention.f).toBeUndefined();
+		expect(next.attention.nu).toBeCloseTo((0.5 + 0.3 + 0.2 + 0.4) / 4);
+	});
+
+	it("overlay の新 id に正値 = float として現れる（2×2 の非所属 × >0）", () => {
+		const next = applyLayoutSpec(base, { attention: { board: 0.3 } });
+		expect(layoutNotation(next)).toBe("a | b/c ~ f board");
+	});
+
+	it("全零 guard: 全 pane 非表示になる spec / 空 notation は throw", () => {
+		expect(() => applyLayoutSpec(layoutOf("a", { a: 1 }), { attention: { a: 0 } })).toThrow(
+			/全零/,
+		);
+		expect(() => applyLayoutSpec(base, { notation: "" })).toThrow(/空の layout/);
+	});
+
+	it("locks: null = 維持 / {} = 全消し / 指定 = 全置換", () => {
+		const locked = layoutOf("a | b", { a: 1, b: 1 }, { a: 0.3 });
+		expect(applyLayoutSpec(locked, {}).locks).toEqual({ a: 0.3 });
+		expect(applyLayoutSpec(locked, { locks: null }).locks).toEqual({ a: 0.3 });
+		expect(applyLayoutSpec(locked, { locks: {} }).locks).toBeUndefined();
+		expect(applyLayoutSpec(locked, { locks: { b: 0.4 } }).locks).toEqual({ b: 0.4 });
+	});
+
+	it("不正な overlay 値・記法に使えない新 id は throw（get の直列化を壊さない guard）", () => {
+		expect(() => applyLayoutSpec(base, { attention: { a: Number.NaN } })).toThrow(/不正/);
+		expect(() => applyLayoutSpec(base, { attention: { "ba d": 1 } })).toThrow(/使えない/);
+	});
+});
+
+describe("layout bridge — takeRecent", () => {
+	it("limit 0 は空（slice(-0) = 全件の JS 罠を封じる）", () => {
+		expect(takeRecent([1, 2, 3], 0)).toEqual([]);
+		expect(takeRecent([1, 2, 3], -5)).toEqual([]);
+		expect(takeRecent([1, 2, 3], Number.NaN)).toEqual([]);
+	});
+
+	it("末尾 limit 件（非整数は切り捨て、超過は全件）", () => {
+		expect(takeRecent([1, 2, 3, 4], 2)).toEqual([3, 4]);
+		expect(takeRecent([1, 2, 3, 4], 2.9)).toEqual([3, 4]);
+		expect(takeRecent([1, 2], 10)).toEqual([1, 2]);
+	});
+});
+
+describe("layout bridge — layoutSnapshot", () => {
+	it("scope / notation / attention / locks / shares を持つ", () => {
+		const snap = layoutSnapshot("gallery", layoutOf("a | b", { a: 1, b: 1 }, { a: 0.25 }), {
+			a: 0.5,
+			b: 0.5,
+		});
+		expect(snap.scope).toBe("gallery");
+		expect(snap.notation).toBe("a | b");
+		expect(snap.attention).toEqual({ a: 1, b: 1 });
+		expect(snap.locks).toEqual({ a: 0.25 });
+		expect(snap.shares).toEqual({ a: 0.5, b: 0.5 });
 	});
 });

@@ -1959,6 +1959,11 @@ pub(crate) async fn dispatch_process_method(
         "editor_fields" | "editor_values" | "editor_set" => {
             handle_editor_command(state, method, payload).await
         }
+        // doc 49 LE-P2 PR2: layout bridge (LE-15)。editor bridge と同じ配管を op を変えて共用
+        // (method に editor_ prefix が無いので op = method のまま vp-app に届く)
+        "layout_get" | "layout_set" | "layout_history" => {
+            handle_editor_command(state, method, payload).await
+        }
         "editor_result" => handle_editor_result(state, payload).await,
         "toggle_pane" | "split_pane" | "close_pane" | "switch_lane" => {
             handle_process_message(state, payload)
