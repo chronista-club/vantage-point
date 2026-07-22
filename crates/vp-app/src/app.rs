@@ -878,7 +878,24 @@ fn editor_bridge_js(
 ) -> Option<String> {
     // h = EditorHostMcpApi
     const PRELUDE: &str = "const h=window.vpEditorHost&&window.vpEditorHost.mcp;if(!h)return{error:\"editor host not available\"};";
+    // h = layout bridge（doc 49 LE-P2 PR2。gallery-panes.tsx が window.vpLayoutHost に expose）
+    const LAYOUT_PRELUDE: &str = "const h=window.vpLayoutHost&&window.vpLayoutHost.mcp;if(!h)return{error:\"layout host not available\"};";
     match op {
+        // === layout bridge (LE-15) — editor と同じ配管、別 host global ===
+        "layout_get" => Some(format!("(()=>{{{LAYOUT_PRELUDE}return h.get()}})()")),
+        "layout_set" => {
+            // body(JSON) はそのまま JS literal として合法 (JSON ⊂ JS)。value 欠落は防御的に None
+            let body = serde_json::to_string(value?).ok()?;
+            Some(format!("(()=>{{{LAYOUT_PRELUDE}return h.set({body})}})()"))
+        }
+        "layout_history" => {
+            let body = value
+                .and_then(|v| serde_json::to_string(v).ok())
+                .unwrap_or_else(|| "null".to_string());
+            Some(format!(
+                "(()=>{{{LAYOUT_PRELUDE}return h.history({body})}})()"
+            ))
+        }
         "fields" => Some(format!(
             "(()=>{{{PRELUDE}return{{fields:h.listFields().map(f=>({{id:f.id,label:f.label,type:f.type,semantic:f.semantic,group:f.group??null,cssVar:f.cssVar??null,initial:f.initial??null,constraints:f.constraints??null,role:f.role??null}}))}}}})()"
         )),
@@ -936,6 +953,42 @@ mod editor_bridge_js_tests {
         assert!(editor_bridge_js("enter", None, None).is_none());
         assert!(editor_bridge_js("set", None, Some(&serde_json::json!(1))).is_none());
         assert!(editor_bridge_js("set", Some("id"), None).is_none());
+    }
+
+    /// layout 系 op は layout bridge global (`vpLayoutHost.mcp`) を経由する（LE-P2 PR2）。
+    #[test]
+    fn layout_ops_use_layout_bridge_global() {
+        let get = editor_bridge_js("layout_get", None, None).expect("layout_get");
+        assert!(get.contains("window.vpLayoutHost"), "js={get}");
+        assert!(get.contains("h.get()"), "js={get}");
+        // editor 側の global には触れない（host の取り違え防止）
+        assert!(!get.contains("vpEditorHost"), "js={get}");
+    }
+
+    /// layout_set は body(JSON) を JS literal として埋め込む。value 欠落は None。
+    #[test]
+    fn layout_set_encodes_body_and_requires_value() {
+        let body = serde_json::json!({"notation": "a | b ~ c", "attention": {"a": 0.5}});
+        let js = editor_bridge_js("layout_set", None, Some(&body)).expect("layout_set");
+        assert!(
+            js.contains(r#"h.set({"attention":{"a":0.5},"notation":"a | b ~ c"})"#),
+            "js={js}"
+        );
+        assert!(editor_bridge_js("layout_set", None, None).is_none());
+    }
+
+    /// layout_history は value 省略で null（既定 limit）に落ちる。
+    #[test]
+    fn layout_history_defaults_to_null_body() {
+        let js = editor_bridge_js("layout_history", None, None).expect("layout_history");
+        assert!(js.contains("h.history(null)"), "js={js}");
+        let js = editor_bridge_js(
+            "layout_history",
+            None,
+            Some(&serde_json::json!({"limit": 5})),
+        )
+        .expect("layout_history");
+        assert!(js.contains(r#"h.history({"limit":5})"#), "js={js}");
     }
 }
 

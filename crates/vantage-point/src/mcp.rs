@@ -32,6 +32,7 @@ use agent_tools_generated::{CompleteParams, WireRecvParams, WireSendParams};
 mod canvas;
 mod editor;
 mod lane;
+mod layout;
 
 /// Parameters for the restart tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -241,7 +242,8 @@ impl Clone for VantageMcp {
                 + Self::agent_tool_router()
                 + Self::canvas_router()
                 + Self::editor_router()
-                + Self::lane_router(),
+                + Self::lane_router()
+                + Self::layout_router(),
         }
     }
 }
@@ -260,7 +262,8 @@ impl VantageMcp {
                 + Self::agent_tool_router()
                 + Self::canvas_router()
                 + Self::editor_router()
-                + Self::lane_router(),
+                + Self::lane_router()
+                + Self::layout_router(),
         }
     }
 

@@ -18,6 +18,14 @@
  * 入口: Ctrl+Shift+G（Editor Mode の Ctrl+Shift+E と対）or `location.hash = "#gallery"`。
  */
 
+import {
+	type Layout,
+	formatNotation,
+	isMember,
+	memberIds,
+	parseNotation,
+} from "@chronista-club/creo-ui-layout";
+
 // ---------- data ----------
 
 /** story 1 枚 = id + 表示名 + 静的 HTML（compile-time 定数のみ、外部入力は入れない） */
@@ -127,4 +135,105 @@ export const GALLERY_CSS = `
 #gallery-root .g-dash{display:inline-block;width:220px;height:0;}
 `;
 
-// actions（DOM 反映 / Solid mount / keyboard）は gallery-panes.tsx へ（LE-P2 で分離）。
+// ---------- layout bridge calculations（LE-P2 PR2、LE-15） ----------
+
+/** 記法に使える pane id（gallery-panes / MCP 双方の guard。notation.ts の規約と同一） */
+const LAYOUT_ID_RE = /^[^\s|/~]+$/;
+
+/** 構造非所属で場に居る pane（floating）の id 列 */
+export function floatingIds(layout: Layout): string[] {
+	return Object.keys(layout.attention).filter(
+		(id) => !isMember(layout.structure, id) && (layout.attention[id] ?? 0) > 0,
+	);
+}
+
+/** Layout の記法表現（構造 + float。サイズは含まない = LE-4） */
+export function layoutNotation(layout: Layout): string {
+	return formatNotation(layout.structure, floatingIds(layout));
+}
+
+/** MCP layout_set の入力（全 field 任意 = 部分更新。null は「現状維持」） */
+export interface LayoutSpec {
+	notation?: string | null;
+	attention?: Record<string, number> | null;
+	locks?: Record<string, number> | null;
+}
+
+/** MCP layout_get の snapshot（純 calculation。shares は呼び手が resolve 済みを渡す） */
+export function layoutSnapshot(
+	scope: string,
+	layout: Layout,
+	shares: Record<string, number>,
+): Record<string, unknown> {
+	return {
+		scope,
+		notation: layoutNotation(layout),
+		attention: { ...layout.attention },
+		locks: layout.locks ? { ...layout.locks } : {},
+		shares,
+	};
+}
+
+/**
+ * MCP layout_set の spec → 新 Layout（純 calculation）。
+ * - notation 省略/null = 構造・float 集合は現状維持。指定 = total（旧 float は落ちる）
+ * - attention は部分 overlay（省略 id は現状維持、0 = 非表示。新 id に > 0 = float で現れる）
+ * - locks は null = 維持 / {} = 全消し / 指定 = 全置換
+ * 全 pane 非表示になる spec・不正値・記法に使えない id は Error（呼び手が {error} 化）。
+ */
+export function applyLayoutSpec(current: Layout, spec: LayoutSpec): Layout {
+	const parsed = spec.notation != null ? parseNotation(spec.notation) : null;
+	const structure = parsed ? parsed.structure : current.structure;
+	const floats = parsed ? [...parsed.floats] : floatingIds(current);
+	const overlay = spec.attention ?? {};
+
+	const ids = new Set([...memberIds(structure), ...floats]);
+	for (const [id, v] of Object.entries(overlay)) {
+		// overlay の新 id に正値 = float として現れる（2×2 の非所属 × >0）。
+		// 後で記法に直列化できる id だけを許す（get の formatNotation が壊れない guard）
+		if (v > 0 && !ids.has(id)) {
+			if (!LAYOUT_ID_RE.test(id)) {
+				throw new Error(`layout_set: pane id "${id}" に空白と | / ~ は使えない`);
+			}
+			ids.add(id);
+		}
+	}
+	if (ids.size === 0) {
+		throw new Error("layout_set: 空の layout は拒否（全零 guard）");
+	}
+
+	const visible = Object.values(current.attention).filter((v) => v > 0);
+	const mean = visible.length > 0 ? visible.reduce((s, v) => s + v, 0) / visible.length : 1;
+
+	const attention: Record<string, number> = {};
+	for (const id of ids) {
+		const o = overlay[id];
+		if (o != null) {
+			if (!Number.isFinite(o) || o < 0) {
+				throw new Error(`layout_set: attention["${id}"] が不正な値: ${o}`);
+			}
+			attention[id] = o;
+		} else {
+			const prev = current.attention[id] ?? 0;
+			attention[id] = prev > 0 ? prev : mean;
+		}
+	}
+	if (!Object.values(attention).some((v) => v > 0)) {
+		throw new Error("layout_set: 全 pane 非表示になる spec は拒否（全零 guard）");
+	}
+
+	const locks = spec.locks != null ? spec.locks : current.locks;
+	const cleanLocks = locks && Object.keys(locks).length > 0 ? { ...locks } : undefined;
+	return { structure, attention, locks: cleanLocks };
+}
+
+/**
+ * 末尾 limit 件（純 calculation）。`slice(-0)` が全件になる JS の罠を封じる —
+ * limit 0 以下・非有限は空、非整数は切り捨て（team-b review 反映）。
+ */
+export function takeRecent<T>(items: readonly T[], limit: number): T[] {
+	const take = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+	return take > 0 ? items.slice(-take) : [];
+}
+
+// actions（DOM 反映 / Solid mount / keyboard / MCP bridge expose）は gallery-panes.tsx へ。

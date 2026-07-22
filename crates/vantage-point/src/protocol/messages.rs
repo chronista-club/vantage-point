@@ -75,7 +75,8 @@ pub enum ProcessMessage {
     EditorCommand {
         /// 応答相関 id。GUI は `editor_result` にこの id を載せて返す。
         request_id: String,
-        /// 操作: "fields" | "values" | "set"
+        /// 操作: editor 系 "fields" | "values" | "set"、layout 系（doc 49 LE-P2）
+        /// "layout_get" | "layout_set" | "layout_history"。GUI 評価 RPC の共用配管
         op: String,
         /// op="set" の対象 field id
         #[serde(default, skip_serializing_if = "Option::is_none")]

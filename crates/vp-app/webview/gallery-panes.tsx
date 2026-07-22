@@ -21,15 +21,24 @@ import {
 	type PaneRef,
 	createLayoutEngine,
 	equalize,
-	formatNotation,
-	isMember,
 	moveDominance,
 	setShare,
 } from "@chronista-club/creo-ui-layout";
 import { PaneStage, useEngineResolved } from "@chronista-club/creo-ui-layout/solid";
 import { onCleanup, onMount } from "solid-js";
 import { render } from "solid-js/web";
-import { GALLERY_CSS, STORIES, isGalleryHash, storyPaneHtml, toggleGalleryHash } from "./gallery";
+import {
+	GALLERY_CSS,
+	type LayoutSpec,
+	STORIES,
+	applyLayoutSpec,
+	isGalleryHash,
+	layoutNotation,
+	layoutSnapshot,
+	storyPaneHtml,
+	takeRecent,
+	toggleGalleryHash,
+} from "./gallery";
 
 const SCOPE = "gallery";
 
@@ -76,11 +85,7 @@ function GalleryPanes() {
 	// 現在の記法（構造 + float）— 場の状態が一目で読める dogfood 計器
 	const notation = () => {
 		resolved(); // 購読
-		const l = engine.current(SCOPE);
-		const floats = Object.keys(l.attention).filter(
-			(id) => !isMember(l.structure, id) && (l.attention[id] ?? 0) > 0,
-		);
-		return formatNotation(l.structure, floats);
+		return layoutNotation(engine.current(SCOPE));
 	};
 
 	const gesture = (fn: (l: Layout) => Layout) => {
@@ -133,6 +138,47 @@ function GalleryPanes() {
 		</>
 	);
 }
+
+// ---------- MCP layout bridge（LE-P2 PR2 = LE-15 の webview 側） ----------
+// 読み手: vp-app app.rs `editor_bridge_js` の layout_* arm（`window.vpLayoutHost.mcp`）。
+// gallery scope は dev surface のため apply policy = auto（LE-16）: set は即適用され、
+// mako は画面で見て承認する — #872 の editor_set と同じ HITL ループ。author="ai" の
+// settle が監査証跡。work lane の hitl 既定（propose 承認）は P4 の per-scope policy で。
+
+function sharesOf(): Record<string, number> {
+	const out: Record<string, number> = {};
+	for (const [id, pane] of Object.entries(engine.resolved(SCOPE))) {
+		out[id] = pane.attention;
+	}
+	return out;
+}
+
+const layoutMcp = {
+	get(): unknown {
+		return layoutSnapshot(SCOPE, engine.current(SCOPE), sharesOf());
+	},
+	set(spec: unknown): unknown {
+		try {
+			const next = applyLayoutSpec(engine.current(SCOPE), (spec ?? {}) as LayoutSpec);
+			engine.update(SCOPE, () => next);
+			engine.settle(SCOPE, "ai");
+			return layoutSnapshot(SCOPE, engine.current(SCOPE), sharesOf());
+		} catch (e) {
+			return { error: e instanceof Error ? e.message : String(e) };
+		}
+	},
+	history(opts?: { limit?: number } | null): unknown {
+		const entries = takeRecent(engine.history(SCOPE), opts?.limit ?? 10);
+		return {
+			entries: entries.map((e) => ({
+				author: e.author,
+				at: e.at,
+				notation: layoutNotation(e.layout),
+			})),
+		};
+	},
+};
+(window as unknown as { vpLayoutHost?: unknown }).vpLayoutHost = { mcp: layoutMcp };
 
 // ---------- mount / unmount（旧 syncGalleryDom の後継） ----------
 
