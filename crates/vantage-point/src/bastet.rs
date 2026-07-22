@@ -85,12 +85,17 @@ fn compute_diff(
 /// port name から対応する DeviceInput parser を生成する factory。
 /// 未対応の機材は None（parser なし = input 監視対象外）。
 fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
+    use crate::device_input::lpd8::Lpd8Input;
     use crate::device_input::roto::RotoInput;
+    use crate::device_input::xtouch::XTouchInput;
 
     if port_name.contains("Roto") {
         Some(Box::new(RotoInput::default()))
+    } else if port_name.contains("X-Touch") {
+        Some(Box::new(XTouchInput))
+    } else if port_name.contains("LPD8") {
+        Some(Box::new(Lpd8Input))
     } else {
-        // X-Touch, LPD8 等の入力 parser は Converge で追加
         None
     }
 }
@@ -382,7 +387,13 @@ impl Bastet {
             lane_registry: Some(lane_registry),
             world_cap: Some(world_cap),
         };
-        let bracket = RotoSessionBracket::new(lane_source, QuicSwitchSink::new(), child.clone());
+        let bracket = RotoSessionBracket::new(
+            lane_source,
+            QuicSwitchSink::new(),
+            child.clone(),
+            // knob 系入力を bastet.control_event に流す（fleet 配線 — doc 49 LE-19）
+            Some(Arc::clone(&self.event_bus)),
+        );
         let mut driver = RotoHealDriver {
             shutdown: child,
             backoff: Duration::from_millis(800),
@@ -652,16 +663,18 @@ mod tests {
     // ─── create_device_input factory ──────────────────
 
     #[test]
-    fn factory_creates_roto_parser() {
+    fn factory_creates_fleet_parsers() {
+        // 机上の 3 台（doc 49 LE-19 fleet）: ROTO / X-Touch / LPD8
         assert!(create_device_input("MIDI9 Roto Control").is_some());
         assert!(create_device_input("Roto").is_some());
+        assert!(create_device_input("X-Touch Compact").is_some());
+        assert!(create_device_input("LPD8 mk2").is_some());
     }
 
     #[test]
     fn factory_returns_none_for_unknown() {
-        assert!(create_device_input("X-Touch Compact").is_none());
-        assert!(create_device_input("LPD8 mk2").is_none());
         assert!(create_device_input("Unknown Device").is_none());
+        assert!(create_device_input("KeyStage 61").is_none());
     }
 
     // ─── discovery lifecycle ───────────────────────────

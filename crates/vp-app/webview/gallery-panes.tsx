@@ -23,18 +23,22 @@ import {
 	type PaneRef,
 	type ResolvedMap,
 	type TransitionDriver,
+	cloneLayout,
 	createLayoutEngine,
 	createTimeDriver,
 	equalize,
 	jumpDriver,
+	memberIds,
 	moveDominance,
 	proposeLayout,
 	resolve,
 	setShare,
+	settleRelease,
 } from "@chronista-club/creo-ui-layout";
 import { PaneStage, useEngineResolved } from "@chronista-club/creo-ui-layout/solid";
 import { onCleanup, onMount } from "solid-js";
 import { render } from "solid-js/web";
+import { type FleetOp, type FleetPayload, mapControl } from "./fleet";
 import {
 	GALLERY_CSS,
 	type LayoutSpec,
@@ -219,6 +223,106 @@ const layoutMcp = {
 	},
 };
 (window as unknown as { vpLayoutHost?: unknown }).vpLayoutHost = { mcp: layoutMcp };
+
+// ---------- fleet 配線（LE-19: 机上の 3 台 → gallery の場） ----------
+// 読み手: vp-app app.rs `fleet_dispatch_js`（world-device channel の control_event 転送）。
+// mapping は fleet.ts（純 calculation）、ここは engine への action だけを持つ。
+// ROTO knob = share（VCA — 1 本上げると他が duck する）/ X-Touch fader 1 = t の hand driver /
+// LPD8 pad = Scene slot（tap = apply / 長押し = capture）。
+
+/** LPD8 pad の Scene slot（ephemeral — Reload まで。永続化は需要が出たら settle log 側で） */
+const sceneSlots = new Map<number, Layout>();
+const padPressAt = new Map<number, number>();
+/** pad 押下がこの ms 以上 = capture、未満 = apply */
+const PAD_HOLD_MS = 400;
+/**
+ * 保持中の touch センサー個体（fleet.ts の source key）。物理 touch は knob 8 本 + fader が
+ * 独立なので bool では足りない — settle を刻むのは「最後の 1 本を手放した」時だけ
+ * （team-b review: 単一 bool だと他 knob 保持中の release が中間状態を早期 settle していた）
+ */
+const fleetTouches = new Set<string>();
+let fleetSettleTimer: number | null = null;
+
+/** touch センサーの無い knob（LPD8）向けの settle debounce（OQ-3 の実機初期値: 500ms） */
+function scheduleFleetSettle(): void {
+	if (fleetSettleTimer != null) clearTimeout(fleetSettleTimer);
+	fleetSettleTimer = window.setTimeout(() => {
+		fleetSettleTimer = null;
+		if (fleetTouches.size === 0) engine.settle(SCOPE, "human");
+	}, 500);
+}
+
+function applyFleetOp(op: FleetOp): void {
+	switch (op.op) {
+		case "share": {
+			// knob i ↔ structure 順の member i（mute しても同じ knob で戻せる安定対応）
+			const id = memberIds(engine.current(SCOPE).structure)[op.paneIndex];
+			if (!id) return;
+			seizeDrive();
+			engine.update(SCOPE, (l) => setShare(l, id, op.share));
+			scheduleFleetSettle();
+			return;
+		}
+		case "touch": {
+			if (op.pressed) {
+				fleetTouches.add(op.source);
+				// 触れる = 時間を止める（LE-16 Touch — 駆動中の transition は凍結して観察できる）
+				seizeDrive();
+				return;
+			}
+			fleetTouches.delete(op.source);
+			// 他の指がまだ触れている間は確定しない — settle は最後の 1 本の手放しが刻む
+			if (fleetTouches.size > 0) return;
+			const handle = engine.transition(SCOPE);
+			if (handle) {
+				// 凍結したまま手放した = 近い端点へ spring で着地（§5）
+				activeDrive = settleRelease(handle, chooseDriver());
+			} else {
+				// knob を回していた = 手放しが「形の確定」— touch release が settle を刻む
+				engine.settle(SCOPE, "human");
+			}
+			return;
+		}
+		case "scrub": {
+			const handle = engine.transition(SCOPE);
+			if (!handle) return;
+			seizeDrive(); // human が t を持つ = time driver から fader を奪う
+			handle.scrub(op.t);
+			return;
+		}
+		case "pad": {
+			if (op.pressed) {
+				padPressAt.set(op.slot, performance.now());
+				return;
+			}
+			const pressedAt = padPressAt.get(op.slot);
+			padPressAt.delete(op.slot);
+			const held = pressedAt != null && performance.now() - pressedAt >= PAD_HOLD_MS;
+			if (held) {
+				sceneSlots.set(op.slot, cloneLayout(engine.current(SCOPE)));
+			} else {
+				const layout = sceneSlots.get(op.slot);
+				if (layout) {
+					engine.applyScene(SCOPE, {
+						id: `pad-${op.slot}`,
+						name: `Pad ${op.slot + 1}`,
+						layout,
+					});
+				}
+			}
+			return;
+		}
+	}
+}
+
+(window as unknown as { vpFleet?: unknown }).vpFleet = {
+	dispatch(payload: unknown): void {
+		const p = (payload ?? {}) as FleetPayload;
+		if (!p.port_name || !p.event) return;
+		const op = mapControl(p.port_name, p.event);
+		if (op) applyFleetOp(op);
+	},
+};
 
 // ---------- mount / unmount（旧 syncGalleryDom の後継） ----------
 

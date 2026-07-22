@@ -915,6 +915,48 @@ fn editor_bridge_js(
     }
 }
 
+/// fleet 配線 (doc 49 LE-19): `DeviceEvent` payload → webview の mapping registry へ渡す JS 式。
+///
+/// `control_event` のみ転送する (device_connected 等は sidebar registry の領分)。
+/// editor bridge と違い応答不要の一方向 push なので callback なしの `evaluate_script` で投げる。
+/// 受け手不在 (gallery 未 mount 等) は JS 側の `window.vpFleet` guard が吸収する。
+fn fleet_dispatch_js(payload: &serde_json::Value) -> Option<String> {
+    if payload.get("kind").and_then(|v| v.as_str()) != Some("control_event") {
+        return None;
+    }
+    // serde_json::to_string の出力はそのまま JS literal として合法 (JSON ⊂ JS)
+    let body = serde_json::to_string(payload).ok()?;
+    Some(format!(
+        "(()=>{{const f=window.vpFleet;if(f&&f.dispatch)f.dispatch({body})}})()"
+    ))
+}
+
+#[cfg(test)]
+mod fleet_dispatch_js_tests {
+    use super::fleet_dispatch_js;
+    use serde_json::json;
+
+    #[test]
+    fn control_event_becomes_dispatch_call() {
+        let payload = json!({
+            "kind": "control_event",
+            "port_name": "ROTO-CONTROL",
+            "event": {"type": "knob", "index": 0, "value": 0.5},
+        });
+        let js = fleet_dispatch_js(&payload).expect("control_event は転送される");
+        assert!(js.contains("window.vpFleet"));
+        assert!(js.contains("\"port_name\":\"ROTO-CONTROL\""));
+        assert!(js.contains("\"type\":\"knob\""));
+    }
+
+    #[test]
+    fn non_control_events_are_not_forwarded() {
+        let connected = json!({"kind": "device_connected", "port_name": "LPD8", "has_input": true});
+        assert_eq!(fleet_dispatch_js(&connected), None);
+        assert_eq!(fleet_dispatch_js(&json!({})), None);
+    }
+}
+
 #[cfg(test)]
 mod editor_bridge_js_tests {
     use super::editor_bridge_js;
@@ -3740,6 +3782,13 @@ pub fn run() -> anyhow::Result<()> {
                 if crate::pane::apply_device_event(&mut sidebar_state.bastet_devices, &payload) {
                     push_sidebar_state(&webview, &sidebar_state);
                     lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
+                }
+                // fleet 配線 (doc 49 LE-19): 操作入力 (control_event) は webview の mapping
+                // registry へ fire-and-forget 転送。受け手 (window.vpFleet) は gallery-panes.tsx。
+                if let Some(js) = fleet_dispatch_js(&payload)
+                    && let Err(e) = webview.evaluate_script(&js)
+                {
+                    tracing::warn!("fleet dispatch: evaluate_script 失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::EditorEval { js, resp }) => {

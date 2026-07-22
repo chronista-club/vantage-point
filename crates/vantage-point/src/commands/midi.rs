@@ -864,6 +864,7 @@ fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> 
             &mut switch,
             Some(deadline),
             shutdown,
+            None, // CLI 前景 = EventBus 不在（fleet 配線は daemon 経路のみ）
         )
         .await?;
         drop(world);
