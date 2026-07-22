@@ -125,6 +125,10 @@ impl WorldCapabilities {
         // ROTO 持続制御は discovery とは独立（`start_roto_control`、process/server.rs）なので影響なし。
         let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());
         let bastet = Bastet::new(event_bus);
+        // 起動時に既接続の艦隊（X-Touch / LPD8 等、ROTO は専用 loop）へ input listener を張る。
+        // agent 報告は「以降の抜き差し」担当 — 起動前から挿さっている device は報告が来ない
+        // 環境があるため、1 回の enumeration で確実に拾う（fleet #877 実機の取り残し根治）
+        bastet.attach_fleet_inputs().await;
         tracing::info!("Bastet 🧲 registry ready (hot-plug は Swift agent が報告 / polling 停止)");
         wc.bastet = Some(Arc::new(RwLock::new(bastet)));
 

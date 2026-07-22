@@ -126,6 +126,45 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     result
 }
 
+/// 共有の input listener 管理 map（port displayName → listener task）。
+///
+/// listener の起点は 3 経路（起動時 attach / agent 報告 / polling discovery）あるが、
+/// spawn 判定はこの map を通す 1 本に畳む（[[one-edge-two-jobs]] — polling loop の
+/// local map に閉じていたせいで Model D 移行後に listener が誰からも張られなくなった）。
+type InputListeners = Arc<RwLock<HashMap<String, JoinHandle<()>>>>;
+
+/// parser 対応 device の input listener を冪等に張る。
+///
+/// - ROTO は専用 loop（`start_roto_control`）が input を独占所有するため対象外
+/// - 生存中の listener が既に居れば no-op（二重接続の防止）
+/// - parser 対応 device なのに接続に失敗したら warn（無音の取り残しを作らない）
+async fn ensure_input_listener(
+    listeners: &InputListeners,
+    event_bus: &Arc<EventBus>,
+    port_name: &str,
+) {
+    if port_name.contains("Roto") || create_device_input(port_name).is_none() {
+        return;
+    }
+    let mut map = listeners.write().await;
+    if let Some(handle) = map.get(port_name)
+        && !handle.is_finished()
+    {
+        return;
+    }
+    match spawn_input_listener(port_name, Arc::clone(event_bus)) {
+        Some(handle) => {
+            map.insert(port_name.to_string(), handle);
+        }
+        None => {
+            tracing::warn!(
+                "🧲 input listener 接続失敗（port 不在 or midir error）: {}",
+                port_name
+            );
+        }
+    }
+}
+
 /// 指定 port の MIDI input を listen し、DeviceInput::parse で ControlEvent 化して EventBus に emit する。
 /// parser が未対応 or 接続失敗の場合は None。
 fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<JoinHandle<()>> {
@@ -202,6 +241,8 @@ pub struct Bastet {
     roto_task: Option<JoinHandle<()>>,
     /// ROTO セッションの shutdown 子 token
     roto_cancel: Option<CancellationToken>,
+    /// input listener 管理（起動時 attach / agent 報告 / polling discovery の 3 経路で共有）
+    input_listeners: InputListeners,
 }
 
 impl Bastet {
@@ -215,7 +256,30 @@ impl Bastet {
             cancel_tx: None,
             roto_task: None,
             roto_cancel: None,
+            input_listeners: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// 起動時に既接続の艦隊 device へ input listener を張る（1 回の enumeration、polling なし）。
+    ///
+    /// Model D では hot-plug 検知が Swift agent の報告に移譲されたが、agent 不在 / 未接続の
+    /// 環境では報告が来ず、**daemon 起動前から挿さっている device の input が誰からも
+    /// 張られない**（fleet #877 の実機で顕在化した取り残し）。起動時の 1 回 enumeration で
+    /// 「机上に既にある艦隊」を確実に拾う。以降の抜き差しは agent 報告（`report_device_*`）が
+    /// 同じ `ensure_input_listener` を通して反映する。
+    pub async fn attach_fleet_inputs(&self) {
+        let ports = enumerate_ports();
+        for (name, (has_in, _)) in &ports {
+            if *has_in {
+                ensure_input_listener(&self.input_listeners, &self.event_bus, name).await;
+            }
+        }
+        let count = self.input_listeners.read().await.len();
+        tracing::info!(
+            "🧲 fleet input attach: {} listener(s)（enumeration {} ports）",
+            count,
+            ports.len()
+        );
     }
 
     /// 接続中 device 数
@@ -253,6 +317,7 @@ impl Bastet {
 
         let devices = Arc::clone(&self.devices);
         let event_bus = Arc::clone(&self.event_bus);
+        let input_listeners = Arc::clone(&self.input_listeners);
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
         self.cancel_tx = Some(cancel_tx);
 
@@ -261,9 +326,6 @@ impl Bastet {
                 "Bastet 🧲 discovery started (interval: {}s)",
                 DISCOVERY_INTERVAL.as_secs()
             );
-
-            // device ごとの input listener task を追跡（discovery task ローカル）
-            let mut input_listeners: HashMap<String, JoinHandle<()>> = HashMap::new();
 
             loop {
                 let current = enumerate_ports();
@@ -295,15 +357,10 @@ impl Bastet {
                         }));
                     event_bus.emit(event).await;
 
-                    // input port + parser がある device は input listener を spawn。
-                    // ただし ROTO は Bastet の持続 control loop（start_roto_control）が
-                    // input + keepalive + output を所有するため、discovery の input-only
-                    // listener からは除外する（同一 port への二重接続を回避）。
-                    if *has_in
-                        && !name.contains("Roto")
-                        && let Some(handle) = spawn_input_listener(name, Arc::clone(&event_bus))
-                    {
-                        input_listeners.insert(name.clone(), handle);
+                    // input port がある device は共有 map 経由で listener を冪等 ensure
+                    // （ROTO 除外 / parser 判定 / 二重接続防止は ensure_input_listener が担う）
+                    if *has_in {
+                        ensure_input_listener(&input_listeners, &event_bus, name).await;
                     }
                 }
 
@@ -315,7 +372,7 @@ impl Bastet {
                     event_bus.emit(event).await;
 
                     // input listener も停止
-                    if let Some(handle) = input_listeners.remove(name) {
+                    if let Some(handle) = input_listeners.write().await.remove(name) {
                         handle.abort();
                     }
                 }
@@ -325,10 +382,8 @@ impl Bastet {
 
                 tokio::select! {
                     _ = cancel_rx.recv() => {
-                        // cleanup: 全 input listener を abort
-                        for (_, handle) in input_listeners.drain() {
-                            handle.abort();
-                        }
+                        // listener は Bastet 所有（共有 map）— discovery 停止 ≠ device 消滅
+                        // なのでここでは畳まない（切断報告 / process 終了が寿命を決める）
                         tracing::info!("Bastet 🧲 discovery stopped");
                         break;
                     }
@@ -473,10 +528,20 @@ impl Bastet {
             );
             self.event_bus.emit(event).await;
         }
+        // input listener は is_new と独立に冪等 ensure（再報告 = 再接続の機会。
+        // registry 更新だけで listener を張り忘れる取り残しの再発防止）
+        if has_input {
+            ensure_input_listener(&self.input_listeners, &self.event_bus, port_name).await;
+        }
     }
 
     /// agent からの device 切断報告を registry に反映し、存在した場合のみ EventBus に emit する。
     pub async fn report_device_disconnected(&self, port_name: &str) {
+        // input listener は registry の有無と独立に畳む（起動時 attach は registry に載らない）
+        if let Some(handle) = self.input_listeners.write().await.remove(port_name) {
+            handle.abort();
+            tracing::info!("🧲 input listener aborted (disconnect): {}", port_name);
+        }
         let existed = self.devices.write().await.remove(port_name).is_some();
         if existed {
             tracing::info!("🧲 device disconnected (agent report): {}", port_name);
@@ -675,6 +740,42 @@ mod tests {
     fn factory_returns_none_for_unknown() {
         assert!(create_device_input("Unknown Device").is_none());
         assert!(create_device_input("KeyStage 61").is_none());
+    }
+
+    // ─── ensure_input_listener（3 経路共有の spawn 判定）──────
+
+    #[tokio::test]
+    async fn ensure_skips_non_fleet_and_roto() {
+        let bus = Arc::new(EventBus::new());
+        let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
+        // parser 対象外 device と ROTO（専用 loop 所有）は map に入らない
+        ensure_input_listener(&listeners, &bus, "Unknown Device").await;
+        ensure_input_listener(&listeners, &bus, "Roto-Control").await;
+        assert!(listeners.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_is_graceful_without_real_port() {
+        let bus = Arc::new(EventBus::new());
+        let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
+        // parser 対応 device でも実 port が無ければ warn して no-op（CI = MIDI 無し環境）
+        ensure_input_listener(&listeners, &bus, "LPD8 mk2 (absent)").await;
+        assert!(listeners.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_report_paths_do_not_panic_without_ports() {
+        // agent 報告経路が listener ensure / abort を通っても実機不在で安全に流れる
+        let bus = Arc::new(EventBus::new());
+        let bastet = Bastet::new(bus);
+        bastet
+            .report_device_connected("X-Touch INT", true, true)
+            .await;
+        assert_eq!(bastet.device_count().await, 1);
+        bastet.report_device_disconnected("X-Touch INT").await;
+        assert_eq!(bastet.device_count().await, 0);
+        // 起動時 attach も同様（CI では対象 port が無い前提で走るだけ）
+        bastet.attach_fleet_inputs().await;
     }
 
     // ─── discovery lifecycle ───────────────────────────
