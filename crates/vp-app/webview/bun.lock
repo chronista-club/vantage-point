@@ -7,6 +7,7 @@
       "dependencies": {
         "@chronista-club/creo-ui-editor-host": "^0.6.0",
         "@chronista-club/creo-ui-icons-web": "^0.0.1",
+        "@chronista-club/creo-ui-layout": "^0.2.0",
         "@chronista-club/unison-client": "^1.2.0",
         "animejs": "^4.5.0",
         "iconify-icon": "^3.0.2",
@@ -92,6 +93,8 @@
     "@chronista-club/creo-ui-editor-host": ["@chronista-club/creo-ui-editor-host@0.6.0", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-f+1fsJxkW2mYNlcDTEBvP854oXJdj5rEGLED78b+Cqii0b77FS0zTUt87R/MjX3W1kDt2x30kA7L+eKKqWOHIQ=="],
 
     "@chronista-club/creo-ui-icons-web": ["@chronista-club/creo-ui-icons-web@0.0.1", "", { "peerDependencies": { "iconify-icon": "^3.0.0", "solid-js": "^1.9.0" } }, "sha512-lJ/907gsKsKuzldYFWkq0iN0HQtjDqqMps+zOaNznpmHy7Rk03hE+vIs5WNs2iKn6SS2WN/cEgqKYyEJ2QiC0g=="],
+
+    "@chronista-club/creo-ui-layout": ["@chronista-club/creo-ui-layout@0.2.0", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-IYUSLdjW+yBq4w6H5YQWMC3fuC+fYSZMMTFh3zoleUhfCCmrE7eS+GQKaWcPvoXkw91HccX24T+a4rRbLOLidg=="],
 
     "@chronista-club/unison-client": ["@chronista-club/unison-client@1.2.0", "", { "dependencies": { "@bufbuild/protobuf": "^2.12.0" } }, "sha512-X4wQJpU6w8R5UGgowH3uH1sh6NmygzaYNGH50++LuKgIs3lokAUi3gITqRsW5ZUzVzo3Nzt6lgT3HhQ0dLLmgg=="],
 

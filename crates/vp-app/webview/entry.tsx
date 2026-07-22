@@ -92,7 +92,7 @@ import {
 	useEditorHost,
 } from "@chronista-club/creo-ui-editor-host";
 import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
-import { installGallery } from "./gallery";
+import { installGallery } from "./gallery-panes";
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
 import { attachRenderer } from "./renderer";
 import { attachKeybindings } from "./keybindings";
@@ -1033,6 +1033,6 @@ if (root) {
 	);
 }
 
-// doc 48 Phase 3: Component Gallery mode（#gallery hash / Ctrl+Shift+G）。
+// Component Gallery mode（doc 48 Phase 3 → doc 49 LE-P2 で creo-ui-layout の pane 化）。
 // EditorHostProvider とは独立に生きる（gallery 中も Ctrl+Shift+E / editor_set が効く）。
 installGallery();
