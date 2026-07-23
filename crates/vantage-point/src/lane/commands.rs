@@ -141,12 +141,6 @@ fn setup_performer(
 
     let cfg = config::load_config(repo_root)?;
 
-    // parent repo の .gitignore に .vp/ を追記 (idempotent、 best-effort)。 失敗しても
-    // performer 作成は続行する (= user が手動で .gitignore 編集する fallback path 残す)。
-    if let Err(e) = config::ensure_vp_gitignored(repo_root) {
-        eprintln!("⚠ .gitignore への .vp/ 追記失敗 (続行): {e}");
-    }
-
     let performers_dir = config::project_lanes_dir(repo_root);
     let performer_dir = performers_dir.join(name);
 
@@ -177,6 +171,19 @@ fn setup_performer(
             }
             provision_clone(repo_root, &performer_dir, branch)?
         }
+    }
+
+    // parent repo の .gitignore に .vp/ を追記 (idempotent、 best-effort)。 失敗しても
+    // performer 作成は続行する (= user が手動で .gitignore 編集する fallback path 残す)。
+    //
+    // ⚠️ **provisioning の後に置く**こと。 これは repo を書き換える action なので、
+    // 「lane の実体が実際に建った」= `repo_root` が本物の repo だと git 操作が実証した
+    // 後にだけ走らせる。 入口 (検証前) に置くと、 **失敗する create でも .gitignore を
+    // 書いてしまう**: `project_dir` 未設定で repo_root が process cwd に落ちると、
+    // 無関係な dir に `.vp/` 記載を撒く（VP repo で `cargo test` するたび
+    // `crates/vantage-point/.gitignore` が湧いていた実害。 2026-07-23 に特定）。
+    if let Err(e) = config::ensure_vp_gitignored(repo_root) {
+        eprintln!("⚠ .gitignore への .vp/ 追記失敗 (続行): {e}");
     }
 
     // Symlinks
@@ -3047,5 +3054,30 @@ mod tests {
             "clone + base は worktree のみ対応の error を返すべき: {err}"
         );
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 回帰固定: **失敗する create は `.gitignore` を書かない**。
+    ///
+    /// `ensure_vp_gitignored` は repo を書き換える action なので、 provisioning（= lane の
+    /// 実体が建ち、 `repo_root` が本物の repo だと git 操作が実証する）より**後**に
+    /// 置かねばならない。 入口に置くと、 `project_dir` 未設定で `repo_root` が process cwd に
+    /// 落ちた時に無関係な dir を汚す — VP repo で `cargo test` するたび
+    /// `crates/vantage-point/.gitignore` が湧いていた（2026-07-23 に
+    /// `reservation_removed_after_failed_create` 経由と特定）。
+    ///
+    /// git repo ですらない dir を渡して provisioning を確実に失敗させ、 その dir に
+    /// `.gitignore` が生まれないことを見る。
+    #[test]
+    fn failed_create_does_not_write_gitignore() {
+        let tmp = test_dir("no-gitignore-on-failure");
+        fs::create_dir_all(&tmp).unwrap();
+        // git repo でないので worktree add は必ず失敗する
+        let res = setup_performer("x", "mako/x", &tmp, false, Isolation::Worktree, None);
+        assert!(res.is_err(), "git repo でない dir では create は失敗する");
+        assert!(
+            !tmp.join(".gitignore").exists(),
+            "失敗した create が .gitignore を書いた（action が検証より前に走っている）"
+        );
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
