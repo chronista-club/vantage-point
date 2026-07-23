@@ -598,7 +598,7 @@ window.vpBundleStatus = window.vpBundleStatus || { booted: false, importsResolve
 window.vpBundleProbe = function() {
   return {
     bundleStatus: window.vpBundleStatus,
-    vpFrameDefined: typeof window.vpFrame !== 'undefined',
+    vpAppLayoutDefined: typeof window.vpAppLayout !== 'undefined',
     setActivePaneDefined: typeof window.setActivePane === 'function',
     ensureLaneDefined: typeof window.ensureLane === 'function',
     showLaneDefined: typeof window.showLane === 'function',
