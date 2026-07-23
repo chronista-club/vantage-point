@@ -323,7 +323,14 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   display:flex;
   gap:4px;
   -webkit-app-region:no-drag;
+  /* doc 50 §2: ツール（Clear / ×）は名札に常設しない — 縦軸に乗らない操作は hover で
+     召喚する（mako 決定 2026-07-23 の暫定形。恒久の home は右 edge 構想 = 棚上げ中）。
+     focus-within はキーボード到達性の保険（Tab で入れば見える）。 */
+  opacity:0;
+  transition:opacity .12s ease;
 }
+.pane-header:hover .pane-actions,
+.pane-header:focus-within .pane-actions{opacity:1;}
 .pane-header .pane-action-btn{
   cursor:pointer;
   padding:2px 8px;
