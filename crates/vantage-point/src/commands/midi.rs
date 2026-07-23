@@ -855,6 +855,10 @@ fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> 
         // CLI は self-heal しないので shutdown token は未使用のダミー。
         let shutdown = tokio_util::sync::CancellationToken::new();
 
+        // CLI 前景 = feedback 注入路なし（sender を即 drop した dummy channel で arm を止める）
+        let (_dummy_tx, mut dummy_feedback_rx) =
+            tokio::sync::watch::channel::<Option<Vec<Vec<u8>>>>(None);
+        drop(_dummy_tx);
         let exit = roto_control_loop(
             &mut profile,
             &mut midi_rx,
@@ -864,6 +868,8 @@ fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> 
             &mut switch,
             Some(deadline),
             shutdown,
+            None, // CLI 前景 = EventBus 不在（fleet 配線は daemon 経路のみ）
+            &mut dummy_feedback_rx,
         )
         .await?;
         drop(world);

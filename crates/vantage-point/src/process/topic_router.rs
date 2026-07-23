@@ -58,6 +58,15 @@ struct TopicSubscription {
     tx: mpsc::Sender<(String, ProcessMessage)>,
 }
 
+/// project path_key → canvas TopicRouter の共有 map（daemon の canvas 集約 + project 起動の両方が触る）。
+///
+/// get-or-create の両側性: subscribe が先なら placeholder を作り、project 起動が
+/// **後から同じ entry を養子縁組する**（`ProjectRuntimes::start` → `start_project`）。
+/// これが無いと boot 窓（daemon 再起動直後、project spawn 完了前の subscribe）で
+/// placeholder に固定された購読者へ実 router の broadcast が永遠に届かない。
+pub(crate) type CanvasRouters =
+    std::sync::Arc<RwLock<std::collections::HashMap<String, Arc<TopicRouter>>>>;
+
 impl TopicRouter {
     /// 新しいルーターを作成
     pub fn new() -> Self {
@@ -164,6 +173,12 @@ impl TopicRouter {
                     scope,
                     Self::lane_seg(lane)
                 )
+            }
+            // doc 48 Phase 2: editor bridge command。canvas channel (`paisley-park/#`) に乗せて
+            // vp-app へ届ける。category=event = 非 retained (stale command の再購読 replay を
+            // 構造的に防ぐ — retained にすると再接続のたびに古い editor_set が再実行される)。
+            ProcessMessage::EditorCommand { request_id, .. } => {
+                format!("process/paisley-park/event/editor/{}", request_id)
             }
             // === Heaven's Door（AI Agent 能力）===
             ProcessMessage::ChatChunk { .. } => "process/heavens-door/event/text-chunk".to_string(),
@@ -390,6 +405,27 @@ impl Default for TopicRouter {
 mod tests {
     use super::*;
     use crate::protocol::{Content, ProcessMessage};
+
+    /// doc 48 Phase 2: EditorCommand は canvas channel (`paisley-park/#`) 配下かつ
+    /// **非 retained** (category=event)。retained にすると再購読のたびに stale な
+    /// editor_set が replay される — その回帰を固定するガード。
+    #[test]
+    fn editor_command_topic_is_under_paisley_park_and_not_retained() {
+        let topic = TopicRouter::message_to_topic(&ProcessMessage::EditorCommand {
+            request_id: "r1".to_string(),
+            op: "values".to_string(),
+            field_id: None,
+            value: None,
+        });
+        assert!(
+            topic.starts_with("process/paisley-park/event/editor/"),
+            "topic={topic}"
+        );
+        assert!(
+            !crate::process::topic::TopicPath::parse(&topic).is_retained(),
+            "EditorCommand が retained になっている: {topic}"
+        );
+    }
 
     /// テスト用の Show メッセージを生成
     fn make_show(pane_id: &str, text: &str) -> ProcessMessage {

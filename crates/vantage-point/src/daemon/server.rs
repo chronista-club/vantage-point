@@ -216,6 +216,19 @@ impl DaemonState {
         self
     }
 
+    /// canvas 集約 map を**外から**共有する（boot 窓の根治）。
+    ///
+    /// 既定では [`Default`] が内部で作るが、run_world は `ProjectRuntimes` と同一の map を
+    /// 配る必要がある — project 起動が先行 subscribe の placeholder router を養子縁組する
+    /// ため（別々に `new()` すると map が分裂し、placeholder 購読者が永遠に取り残される）。
+    pub(crate) fn with_canvas_routers(
+        mut self,
+        canvas_routers: crate::process::topic_router::CanvasRouters,
+    ) -> Self {
+        self.canvas_routers = canvas_routers;
+        self
+    }
+
     /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (db/world) を共有する。
     ///
     /// registry channel handler がこの db に SP push を永続して daemon-canonical 化する。
@@ -1868,7 +1881,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     #[cfg(feature = "midi")]
                     let bastet = bastet.clone();
                     async move {
-                        let channel = UnisonChannel::new(stream);
+                        // フィードバック方向（LE-19）で full-duplex 化: 下り（DeviceEvent push）を
+                        // 別 task に分け、main task は上り（webview → 機材の feedback event）専従。
+                        // canvas channel の並行 send/recv と同じ実証済みパターン。
+                        let channel = std::sync::Arc::new(UnisonChannel::new(stream));
                         // 接続即購読: bastet.* を FilteredSubscription で受け、 DeviceEvent に変換して push。
                         // subscriber id は接続ごとにユニーク化する (= 複数 vp-app instance が同時購読
                         // しても EventBus の subscriptions メタデータが last-write-wins で衝突しない。
@@ -1911,29 +1927,61 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 }
                             }
                         }
+                        // 下り push task。
                         // TODO(Phase 2): FilteredSubscription は lag を silent skip する (eventbus.rs:39)。
                         // ControlEvent 高頻度時に lag 警告が出ないため、 必要なら Lagged 警告付きの
                         // 購読に差し替えるか buffer_size を調整する (world-process は lag を warn 可視化)。
-                        while let Some(cap_event) = filtered.recv().await {
-                            let Some(device_event) =
-                                crate::daemon::protocol::DeviceEvent::from_capability_event(
-                                    &cap_event.event_type,
-                                    &cap_event.payload,
-                                )
-                            else {
-                                continue;
-                            };
-                            let payload = match serde_json::to_value(&device_event) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    tracing::warn!("DeviceEvent serialize 失敗: {}", e);
+                        let push_channel = channel.clone();
+                        let pusher = tokio::spawn(async move {
+                            while let Some(cap_event) = filtered.recv().await {
+                                let Some(device_event) =
+                                    crate::daemon::protocol::DeviceEvent::from_capability_event(
+                                        &cap_event.event_type,
+                                        &cap_event.payload,
+                                    )
+                                else {
                                     continue;
+                                };
+                                let payload = match serde_json::to_value(&device_event) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        tracing::warn!("DeviceEvent serialize 失敗: {}", e);
+                                        continue;
+                                    }
+                                };
+                                if push_channel.send_event("event", &payload).await.is_err() {
+                                    break; // client 切断
                                 }
+                            }
+                        });
+
+                        // 上り: vp-app からの `feedback` event（webview の場の状態 → 機材投影）。
+                        // 切断（recv Err）で handler を畳む（pusher も道連れ）。
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(m) => m,
+                                Err(_) => break, // client 切断
                             };
-                            if channel.send_event("event", &payload).await.is_err() {
-                                break; // client 切断
+                            if msg.msg_type != MessageType::Event || msg.method != "feedback" {
+                                continue;
+                            }
+                            #[cfg(feature = "midi")]
+                            if let Some(bastet) = bastet.as_ref() {
+                                let Ok(value) = msg.payload_as_value() else {
+                                    continue;
+                                };
+                                match serde_json::from_value::<
+                                    crate::daemon::protocol::FleetFeedback,
+                                >(value)
+                                {
+                                    Ok(fb) => bastet.read().await.apply_feedback(&fb).await,
+                                    Err(e) => {
+                                        tracing::warn!("fleet feedback decode 失敗: {}", e);
+                                    }
+                                }
                             }
                         }
+                        pusher.abort();
                         Ok(())
                     }
                 }

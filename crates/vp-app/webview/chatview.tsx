@@ -1726,22 +1726,22 @@ export const CHATVIEW_CSS = `
 /* PromptCard（doc 35 §4）: HITL 質問。engine が人を待っている合図として左寄せカードで settle。 */
 .echoes-prompt { align-self:flex-start; max-width:88%; display:flex; flex-direction:column; gap:12px;
   padding:13px 15px; border-radius:12px; background: var(--color-bg-elevated,#16191f);
-  border:1px solid var(--sb-conn-hitl,#FF3DAE); box-shadow:0 0 0 1px color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 78%);
+  border:1px solid var(--sb-conn-hitl,#FF4A2D); box-shadow:0 0 0 1px color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 78%);
   animation: echoes-fade .18s ease-out; }
 .echoes-prompt.answered { border-color: var(--color-border,#2a3040); box-shadow:none; opacity:.9; }
 .echoes-prompt-q { display:flex; flex-direction:column; gap:7px; }
 .echoes-prompt-header { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
-  color: var(--sb-conn-hitl,#FF3DAE); }
+  color: var(--sb-conn-hitl,#FF4A2D); }
 .echoes-prompt-question { font-size:14px; line-height:1.5; color: var(--color-text,#e6e9ef); }
 .echoes-prompt-options { display:flex; flex-wrap:wrap; gap:8px; }
 .echoes-prompt-opt { font-size:12.5px; padding:6px 13px; border-radius:8px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
   color: var(--color-text-secondary,#a8b0c0); transition: border-color .15s ease, background .15s ease, color .15s ease; }
 .echoes-prompt-opt:hover { border-color: var(--color-text-tertiary,#616b80); color: var(--color-text,#e6e9ef); }
-.echoes-prompt-opt.selected { border-color: var(--sb-conn-hitl,#FF3DAE); color: var(--color-text,#e6e9ef);
-  background: color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 86%); }
+.echoes-prompt-opt.selected { border-color: var(--sb-conn-hitl,#FF4A2D); color: var(--color-text,#e6e9ef);
+  background: color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 86%); }
 .echoes-prompt-confirm { align-self:flex-end; padding:7px 16px; font-size:12.5px; border-radius:8px;
-  border:none; cursor:pointer; background: var(--sb-conn-hitl,#FF3DAE); color:#fff; }
+  border:none; cursor:pointer; background: var(--sb-conn-hitl,#FF4A2D); color:#fff; }
 .echoes-prompt-confirm:disabled { opacity:.4; cursor:default; }
 /* 回答済み: 見出し + 選んだ値だけの静かな折りたたみ表示。 */
 .echoes-prompt-answered { display:flex; flex-direction:column; gap:5px; }

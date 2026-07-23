@@ -64,6 +64,14 @@ pub(crate) struct ProjectRuntimes {
     /// `publish_lanes` へ移管され、起床通知が移管されなかった**ため、vp-app の sidebar は
     /// wire 活動がある間しか新鮮でなくなっていた。この Arc がその辺を戻す。
     lane_change_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    /// daemon の canvas 集約 map（[`CanvasRouters`](super::topic_router::CanvasRouters)）。
+    ///
+    /// boot 窓の根治: daemon 再起動直後、vp-app の canvas subscribe が project spawn より
+    /// 先に届くと `canvas_router_for` は placeholder router を作って購読させる。project 起動時に
+    /// この map を引き、**placeholder が居ればそれを自分の `topic_router` として養子縁組**する
+    /// （= 既存購読者ごと実 router になる）。居なければ従来どおり新規作成し、後から来る
+    /// subscribe が live 結線する（get-or-create の両側性）。`None` は World 以外の文脈（test）。
+    canvas_routers: Option<super::topic_router::CanvasRouters>,
     /// shutdown 開始後に新規登録を受け付けないための門。
     ///
     /// [`shutdown_all`](Self::shutdown_all) は map を drain して停止するが、drain の**後**に
@@ -97,12 +105,14 @@ impl ProjectRuntimes {
         world_lanes: super::server::WorldLaneView,
         vpdb: Option<crate::db::SharedVpDb>,
         lane_change_tx: tokio::sync::broadcast::Sender<String>,
+        canvas_routers: super::topic_router::CanvasRouters,
     ) -> Self {
         Self {
             inner: RwLock::new(HashMap::new()),
             world_lanes: Some(world_lanes),
             world_db: vpdb,
             lane_change_tx: Some(lane_change_tx),
+            canvas_routers: Some(canvas_routers),
             closing: AtomicBool::new(false),
         }
     }
@@ -132,6 +142,12 @@ impl ProjectRuntimes {
         let cap_config = super::capabilities::CapabilityConfig {
             project_dir: project_dir.to_string(),
         };
+        // boot 窓の根治: 先行 subscribe が作った placeholder canvas router が居れば
+        // それを project の topic_router として養子縁組する（既存購読者ごと実 router 化）
+        let adopted_router = self.adopted_router_for(&key).await;
+        if adopted_router.is_some() {
+            tracing::info!("canvas placeholder router を養子縁組 (key={})", key);
+        }
         // port はもう bind されない（SP-portless の遺産）。fold-in で概念ごと消えるため 0 を渡す。
         let state = super::server::start_project(
             0,
@@ -140,6 +156,7 @@ impl ProjectRuntimes {
             self.world_lanes.clone(),
             self.world_db.clone(),
             self.lane_change_tx.clone(),
+            adopted_router,
         )
         .await?;
 
@@ -161,8 +178,32 @@ impl ProjectRuntimes {
             super::server::shutdown_project(&state).await;
             anyhow::bail!("起動中に World の shutdown が始まったため巻き戻した (key={key})");
         }
-        guard.insert(key, ProjectRuntime { state, shutdown });
+        let live_router = state.topic_router.clone();
+        let bridge_shutdown = shutdown.clone();
+        guard.insert(key.clone(), ProjectRuntime { state, shutdown });
+        drop(guard);
+
+        // 養子縁組の後追い reconcile: spawn 中（上の adoption check の後）に先行 subscribe が
+        // placeholder を滑り込ませた狭い race の後始末。
+        if let Some(routers) = &self.canvas_routers
+            && bridge_orphan_placeholder(routers, &key, &live_router, bridge_shutdown).await
+        {
+            tracing::info!(
+                "spawn 中に滑り込んだ canvas placeholder へ橋渡し (key={})",
+                key
+            );
+        }
         Ok(true)
+    }
+
+    /// 先行 subscribe が作った placeholder canvas router を引く（養子縁組の lookup）。
+    ///
+    /// key は正規化済パス（[`start`](Self::start) と同一規約 = subscribe handshake の
+    /// `normalize_path_key` とも一致）。`None` = map 不在（test 文脈）or entry 無し。
+    async fn adopted_router_for(&self, key: &str) -> Option<Arc<super::topic_router::TopicRouter>> {
+        let routers = self.canvas_routers.as_ref()?;
+        let map = routers.read().await;
+        map.get(key).cloned()
     }
 
     /// project を停止して登録解除する。停止対象が居なければ `false`。
@@ -244,6 +285,48 @@ impl ProjectRuntimes {
     }
 }
 
+/// spawn 中に滑り込んだ orphan placeholder への橋渡し（戻り値 = 橋を張ったか）。
+///
+/// map の当該 entry が live router と別個体（= adoption check 後に `canvas_router_for` の
+/// slow path が作った placeholder）なら、live の全 topic を orphan へ relay する task を張り、
+/// 取り残された購読者を生かす。map の差し替えと live への demand hook 登録は次の subscribe 時の
+/// `canvas_router_for` live 分岐に任せる（ここで live を先置きすると ptr_eq 早期 return で
+/// hook 登録がスキップされるため、意図的に触らない）。橋は project の shutdown token で畳む。
+///
+/// 既知の残課題（pre-existing）: orphan と live で demand count の実体が分裂する性質は
+/// placeholder 機構自体が持つもので、本橋渡しは配信だけを直す（発生自体は養子縁組が減らす）。
+async fn bridge_orphan_placeholder(
+    routers: &super::topic_router::CanvasRouters,
+    key: &str,
+    live_router: &Arc<super::topic_router::TopicRouter>,
+    shutdown: CancellationToken,
+) -> bool {
+    let orphan = {
+        let map = routers.read().await;
+        map.get(key)
+            .filter(|existing| !Arc::ptr_eq(existing, live_router))
+            .cloned()
+    };
+    let Some(orphan) = orphan else {
+        return false;
+    };
+    let (sub_id, mut rx) = live_router.subscribe("#").await;
+    let live = live_router.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                msg = rx.recv() => {
+                    let Some((_topic, msg)) = msg else { break };
+                    orphan.route(msg).await;
+                }
+            }
+        }
+        live.unsubscribe(sub_id).await;
+    });
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +357,101 @@ mod tests {
     async fn empty_registry_resolves_nothing() {
         let runtimes = ProjectRuntimes::new();
         assert!(runtimes.get("/anything").await.is_none());
+    }
+
+    // ─── boot 窓根治（canvas router 養子縁組 + orphan 橋渡し）───
+
+    /// 養子縁組の lookup: 先行 subscribe の placeholder が**同一 Arc のまま**引けること。
+    /// （ここが clone 等で別個体になると、購読者ごと実 router 化する仕組み全体が壊れる）
+    #[tokio::test]
+    async fn adoption_lookup_returns_shared_placeholder() {
+        use crate::process::topic_router::{CanvasRouters, TopicRouter};
+
+        let canvas_routers: CanvasRouters = Default::default();
+        let placeholder = Arc::new(TopicRouter::new());
+        canvas_routers
+            .write()
+            .await
+            .insert("/tmp/proj-a".to_string(), placeholder.clone());
+
+        let (tx, _) = tokio::sync::broadcast::channel::<String>(4);
+        let runtimes =
+            ProjectRuntimes::for_world(Default::default(), None, tx, canvas_routers.clone());
+
+        let adopted = runtimes
+            .adopted_router_for("/tmp/proj-a")
+            .await
+            .expect("placeholder が引けること");
+        assert!(
+            Arc::ptr_eq(&adopted, &placeholder),
+            "同一 Arc であること（購読者ごと養子縁組できる個体）"
+        );
+        assert!(runtimes.adopted_router_for("/tmp/other").await.is_none());
+        // World 以外の文脈（map なし = ProjectRuntimes::new）は常に None
+        assert!(
+            ProjectRuntimes::new()
+                .adopted_router_for("/tmp/proj-a")
+                .await
+                .is_none()
+        );
+    }
+
+    /// spawn 中に滑り込んだ orphan placeholder への橋渡し: live に route した message が
+    /// orphan の購読者へ relay されること（boot 窓の狭い race の後始末が実際に配信を生かす）。
+    #[tokio::test]
+    async fn orphan_bridge_relays_live_messages() {
+        use crate::process::topic_router::{CanvasRouters, TopicRouter};
+        use crate::protocol::ProcessMessage;
+
+        let canvas_routers: CanvasRouters = Default::default();
+        let orphan = Arc::new(TopicRouter::new());
+        let (_sub, mut orphan_rx) = orphan.subscribe("#").await;
+        canvas_routers
+            .write()
+            .await
+            .insert("/tmp/p".to_string(), orphan.clone());
+
+        let live = Arc::new(TopicRouter::new());
+        let token = CancellationToken::new();
+        assert!(
+            bridge_orphan_placeholder(&canvas_routers, "/tmp/p", &live, token.clone()).await,
+            "別個体の placeholder が居るので橋が張られること"
+        );
+
+        live.route(ProcessMessage::Ping).await;
+        let (topic, _) = tokio::time::timeout(std::time::Duration::from_secs(2), orphan_rx.recv())
+            .await
+            .expect("relay が 2s 以内に届くこと")
+            .expect("channel が生きていること");
+        assert_eq!(topic, "process/star-platinum/event/ping");
+        token.cancel();
+    }
+
+    /// 養子縁組済み（map の entry = live と同一個体）/ entry 不在では橋を張らないこと。
+    /// （不要な relay task は二重配信・leak の芽になるため、張らない側も固定する）
+    #[tokio::test]
+    async fn adopted_or_absent_router_needs_no_bridge() {
+        use crate::process::topic_router::{CanvasRouters, TopicRouter};
+
+        let canvas_routers: CanvasRouters = Default::default();
+        let live = Arc::new(TopicRouter::new());
+        canvas_routers
+            .write()
+            .await
+            .insert("/tmp/p".to_string(), live.clone()); // 養子縁組済み = 同一個体
+        assert!(
+            !bridge_orphan_placeholder(&canvas_routers, "/tmp/p", &live, CancellationToken::new())
+                .await
+        );
+        assert!(
+            !bridge_orphan_placeholder(
+                &canvas_routers,
+                "/tmp/none",
+                &live,
+                CancellationToken::new()
+            )
+            .await
+        );
     }
 
     /// shutdown 後の `start` は登録せず Err を返す。

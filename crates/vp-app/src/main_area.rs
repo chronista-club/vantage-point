@@ -102,6 +102,14 @@ pub struct SlotRect {
     pub h: f64,
 }
 
+/// 統合 HTML から外部 script 化した SolidJS bundle (doc 48 Phase 1)。
+/// `MAIN_VIEW_ASSETS` (app.rs) が `vp-asset://app/*.bundle.js` として baked 配信し、
+/// `VP_WEBVIEW_DEV=<assets dir>` 設定時は `web_assets::serve` の disk-read が優先される
+/// (= cargo build なしの bundle 差替え = HMR)。vendor 静的 JS/CSS は inline のまま
+/// (dev loop で変わるのは bundle だけ)。
+pub const EDITOR_HOST_BUNDLE_JS: &str = include_str!("../assets/editor-host.bundle.js");
+pub const SIDEBAR_BUNDLE_JS: &str = include_str!("../assets/sidebar.bundle.js");
+
 /// Main area の HTML (xterm.js + canvas placeholder + preview iframe + empty state)
 ///
 /// 旧 `terminal::TERMINAL_HTML` を発展させたもの。xterm.js 周りの copy/paste / OSC 52 /
@@ -190,20 +198,20 @@ body{overflow:hidden;}
 #pane-terminal.echoes-header-active{--echoes-header-h:30px;}
 #echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
   overflow:hidden;z-index:2;}
-/* doc 46 P1: Pane shell。header 下・タブエリア上の領域を flex row で分け合う。
-   子 Pane (#lane-host / #console-chat-host) は **中身を変えず** 位置づけだけ
-   「全面 absolute」→「flex child」に変わる。 */
+/* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
+   (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
+   子 Pane (#lane-host / #console-chat-host) は中身を変えず位置づけだけ absolute。
+   inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
+   解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* タブエリアは「+ New」を常に載せるので高さは固定。.pane-tabs-active は
    「畳まれた Pane が 1 つ以上ある」= 区切り線を出すかどうかにだけ効く。 */
 #pane-terminal{--pane-tabs-h:26px;}
 #lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
-  bottom:var(--pane-tabs-h);display:flex;flex-direction:row;align-items:stretch;gap:1px;
-  background:var(--color-border,#2a3040);}
-/* Pane 共通: flex で等分、min-width:0 が無いと中身 (xterm) が縮まず溢れる。 */
-#lane-panes > *{flex:1 1 0;min-width:0;position:relative;background:var(--color-bg,#0f1115);}
-/* 縮小された Pane は列から外れる (タブエリアに chip が出る)。 */
-#lane-panes > .pane-minimized{display:none;}
-/* 要件 3: フォーカスが**視認できる**。内側 ring なので幅を食わず、隣との 1px gap と干渉しない。 */
+  bottom:var(--pane-tabs-h);background:var(--color-border,#2a3040);}
+/* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
+#lane-panes > *{position:absolute;inset:0;background:var(--color-bg,#0f1115);
+  outline:1px solid var(--color-border,#2a3040);outline-offset:-1px;}
+/* 要件 3: フォーカスが**視認できる**。内側 ring なので幅を食わず、区切り線とも干渉しない。 */
 #lane-panes > .pane-focused{box-shadow:inset 0 0 0 1px var(--sb-conn-auto,#22E0FF);}
 /* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
@@ -314,6 +322,12 @@ body{overflow:hidden;}
    PP を浮かせると背後の console が透けて文字が重なり内容が読めない。PP 内容を solid surface に
    載せて読めるようにする (side-review / pp-focus でも有効)。 */
 #pane-paisley-park .pane-body{background:var(--color-surface-bg-base);}
+/* Bastet 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
+   見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
+.bastet-devices{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
+.bastet-device{display:flex;align-items:baseline;gap:10px;}
+.bastet-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
+.bastet-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
 /* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
 .pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
@@ -388,7 +402,8 @@ body{overflow:hidden;}
 </head>
 <body>
 <div id="app-shell">
-<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) の mount 先。inline script で mount。 -->
+<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) の mount 先。bundle は外部 script
+     (sidebar.bundle.js、doc 48 Phase 1 で inline → 外部化) が mount する。 -->
 <div id="sidebar-root"></div>
 <div id="host">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
@@ -411,10 +426,10 @@ body{overflow:hidden;}
          EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
          Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
     <div id="echoes-header"></div>
-    <!-- doc 46 P1: Pane shell。lane の表示領域を「Act I か Act II」の排他から
-         **N 枚の Pane を並べる tiling** に変える器。子 (#lane-host / #console-chat-host) は
-         中身を一切変えず、位置づけだけ「全面 absolute」→「flex child」に変わる。
-         縮小 (minimize) された Pane は #pane-tabs に chip として畳まれる。 -->
+    <!-- doc 46 P1 → doc 49 LE-P4 PR2: lane の表示領域を「Act I か Act II」の排他から
+         **N 枚の Pane を並べる tiling** に変える器。配置は creo-ui-layout の lane scope
+         (lane-panes.ts) が resolved rect を inline で書く。子 (#lane-host /
+         #console-chat-host) の中身は一切変えない。畳まれた Pane は #pane-tabs に chip。 -->
     <div id="lane-panes">
       <div id="lane-host"></div>
       <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
@@ -476,6 +491,7 @@ body{overflow:hidden;}
       </div>
       <div class="pane-actions">
         <button class="pane-action-btn" data-action="clear" data-target="pp" title="Clear PP body content">Clear</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
       </div>
     </div>
     <div class="pane-body">
@@ -498,6 +514,9 @@ body{overflow:hidden;}
         <span class="pane-name">Gold Experience</span>
         <span class="pane-breadcrumb">Code Runner</span>
       </div>
+      <div class="pane-actions">
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+      </div>
     </div>
     <div class="pane-body center">
       <main>
@@ -512,6 +531,9 @@ body{overflow:hidden;}
         <span class="pane-icon">🧲</span>
         <span class="pane-name">Bastet</span>
         <span class="pane-breadcrumb">Device Registry</span>
+      </div>
+      <div class="pane-actions">
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
       </div>
     </div>
     <div class="pane-body">
@@ -574,19 +596,14 @@ body{overflow:hidden;}
 </script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
-     Build: cd crates/vp-app/webview && bun install && bun run build。 -->
-<script>
-"#,
-    include_str!("../assets/editor-host.bundle.js"),
-    r#"
-</script>
-<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) を inline。#sidebar-root に mount。
-     with_html は baseURL=None (null origin) で vp-asset:// custom protocol が使えないため inline 一択。 -->
-<script>
-"#,
-    include_str!("../assets/sidebar.bundle.js"),
-    r#"
-</script>
+     Build: cd crates/vp-app/webview && bun install && bun run build。
+     doc 48 Phase 1: inline をやめ外部 script 化。page は custom protocol で load される
+     (origin = vp-asset://app) ため相対 src が vp-asset://app/*.bundle.js に解決される。
+     旧「with_html は null origin で inline 一択」の制約は with_url 化で失効済。
+     classic script (defer/async なし) は文書順 blocking 実行なので inline 時と実行順は不変。 -->
+<script src="editor-host.bundle.js"></script>
+<!-- WebView 統合 (step 3a): sidebar bundle (SolidJS)。#sidebar-root に mount。 -->
+<script src="sidebar.bundle.js"></script>
 <script>
 // VP-140 inline diagnostic: bundle 失敗時でも script tag 自体は別なので、 こちらが先行 OR 並行 で動く。
 // window.vpBundleStatus に bundle 到達 stage を残す (DevTools console から runtime 検査用)。
@@ -594,7 +611,7 @@ window.vpBundleStatus = window.vpBundleStatus || { booted: false, importsResolve
 window.vpBundleProbe = function() {
   return {
     bundleStatus: window.vpBundleStatus,
-    vpFrameDefined: typeof window.vpFrame !== 'undefined',
+    vpAppLayoutDefined: typeof window.vpAppLayout !== 'undefined',
     setActivePaneDefined: typeof window.setActivePane === 'function',
     ensureLaneDefined: typeof window.ensureLane === 'function',
     showLaneDefined: typeof window.showLane === 'function',

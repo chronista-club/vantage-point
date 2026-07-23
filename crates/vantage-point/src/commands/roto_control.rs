@@ -27,6 +27,8 @@ use tokio_util::sync::CancellationToken;
 
 use nostos::{AsyncBracket, AsyncDriver, Outcome};
 
+use crate::capability::core::CapabilityEvent;
+use crate::capability::eventbus::EventBus;
 use crate::capability::{ProcessManagerCapability, RunningProcess};
 use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
 use crate::device_profile::{DeviceProfile, Rgb, roto::RotoProfile};
@@ -124,6 +126,17 @@ async fn send_paced(conn_out: &mut midir::MidiOutputConnection, msgs: &[Vec<u8>]
 ///
 /// `deadline=Some` で CLI（secs 経過 = Deadline）、`None` で daemon（永続）。
 /// `shutdown` 発火で graceful 停止（Shutdown）。
+/// loop が消費しない入力（Knob / KnobTouch）を EventBus に流す口（doc 49 LE-19 fleet 配線）。
+///
+/// ROTO は Bastet の汎用 input listener（`spawn_input_listener`）から除外され本 loop が
+/// input を独占所有するため、`bastet.control_event` への合流はここから行う。
+/// Button は lane-nav（Justice 経路）の意味を既に持つため流さない（二重配送の回避）。
+/// None = CLI 前景デバッグ（EventBus 不在）。
+pub(crate) struct ControlTap {
+    pub event_bus: Arc<EventBus>,
+    pub port_name: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn roto_control_loop(
     profile: &mut RotoProfile,
@@ -134,6 +147,12 @@ pub(crate) async fn roto_control_loop(
     switch: &mut impl SwitchSink,
     deadline: Option<Instant>,
     shutdown: CancellationToken,
+    control_tap: Option<&ControlTap>,
+    // フィードバック方向（LE-19）: Bastet `apply_feedback` からの motor byte 列注入。
+    // conn_out を loop が独占所有するため、外からの書き込みはこの watch を通る
+    // （latest-wins — 未消費の古い frame は新しい値で置き換わる）。
+    // sender が閉じたら arm を止める（CLI 前景 = dummy channel で即閉）
+    feedback_rx: &mut tokio::sync::watch::Receiver<Option<Vec<Vec<u8>>>>,
 ) -> Result<LoopExit> {
     // active lane の色（シアン）/ 非 active（暗い青灰）
     let color_active = Rgb::new(0, 200, 255);
@@ -143,6 +162,8 @@ pub(crate) async fn roto_control_loop(
     let mut lanes: Vec<RotoLane> = Vec::new();
     // 2 秒間隔で lane を poll（最初の tick は即時 = 初期取得）
     let mut poll = tokio::time::interval(Duration::from_secs(2));
+    // feedback sender が閉じたら arm を止める（閉チャネルの即 None で busy loop しない）
+    let mut feedback_alive = true;
 
     loop {
         tokio::select! {
@@ -187,6 +208,17 @@ pub(crate) async fn roto_control_loop(
                 }
                 // channel message を ControlEvent に → binding 表で nav 解決
                 let Some(event) = input.parse(&bytes) else { continue; };
+                // knob 系は fleet 配線へ（loop は消費しない — 場の操作は webview 側 mapping の領分）
+                if let Some(tap) = control_tap
+                    && matches!(event, ControlEvent::Knob { .. } | ControlEvent::KnobTouch { .. })
+                {
+                    let cap_event = CapabilityEvent::new("bastet.control_event", "bastet")
+                        .with_payload(&serde_json::json!({
+                            "port_name": tap.port_name,
+                            "event": event,
+                        }));
+                    tap.event_bus.emit(cap_event).await;
+                }
                 let ControlEvent::Button { index, pressed: true } = event else {
                     continue;
                 };
@@ -231,6 +263,21 @@ pub(crate) async fn roto_control_loop(
                             tracing::warn!("switch_lane 失敗 (project {}): {}", lane.project_path, e);
                         }
                     }
+                }
+            }
+            // フィードバック方向（LE-19）: Bastet からの motor byte 列を conn_out に流す。
+            // 送信失敗 = ROTO 切断（他の out 送信と同じ扱い）
+            changed = feedback_rx.changed(), if feedback_alive => {
+                match changed {
+                    Ok(()) => {
+                        let msgs = feedback_rx.borrow_and_update().clone();
+                        if let Some(msgs) = msgs
+                            && !send_paced(conn_out, &msgs).await
+                        {
+                            return Ok(LoopExit::Disconnected);
+                        }
+                    }
+                    Err(_) => feedback_alive = false, // sender 閉 = 注入路なし（CLI 前景等）
                 }
             }
             // graceful shutdown（daemon）
@@ -367,6 +414,8 @@ struct RotoActiveInner {
     profile: RotoProfile,
     view: RotoView,
     port_pattern: String,
+    /// open 時に確定した実 port 名（fleet 配線の ControlTap 用。pattern とは別物）
+    port_name: String,
 }
 
 /// ROTO 持続セッションの 1 接続サイクルを表す `AsyncBracket`。
@@ -377,14 +426,26 @@ pub(crate) struct RotoSessionBracket<L: LaneSource, S: SwitchSink> {
     lane_source: Mutex<L>,
     switch_sink: Mutex<S>,
     shutdown: CancellationToken,
+    /// Some = daemon（Bastet）: knob 系入力を `bastet.control_event` に流す（fleet 配線）
+    event_bus: Option<Arc<EventBus>>,
+    /// フィードバック方向（LE-19）: motor byte 列の注入路。reconnect を跨いで再利用する
+    feedback_rx: Mutex<tokio::sync::watch::Receiver<Option<Vec<Vec<u8>>>>>,
 }
 
 impl<L: LaneSource, S: SwitchSink> RotoSessionBracket<L, S> {
-    pub(crate) fn new(lane_source: L, switch_sink: S, shutdown: CancellationToken) -> Self {
+    pub(crate) fn new(
+        lane_source: L,
+        switch_sink: S,
+        shutdown: CancellationToken,
+        event_bus: Option<Arc<EventBus>>,
+        feedback_rx: tokio::sync::watch::Receiver<Option<Vec<Vec<u8>>>>,
+    ) -> Self {
         Self {
             lane_source: Mutex::new(lane_source),
             switch_sink: Mutex::new(switch_sink),
             shutdown,
+            event_bus,
+            feedback_rx: Mutex::new(feedback_rx),
         }
     }
 }
@@ -422,6 +483,7 @@ impl<L: LaneSource, S: SwitchSink> AsyncBracket for RotoSessionBracket<L, S> {
                         profile,
                         view: input.view.clone(),
                         port_pattern: input.port_pattern,
+                        port_name,
                     }),
                 }
             }
@@ -445,6 +507,11 @@ impl<L: LaneSource, S: SwitchSink> AsyncBracket for RotoSessionBracket<L, S> {
 
         let mut ls = self.lane_source.lock().await;
         let mut ss = self.switch_sink.lock().await;
+        let mut feedback_rx = self.feedback_rx.lock().await;
+        let tap = self.event_bus.clone().map(|event_bus| ControlTap {
+            event_bus,
+            port_name: inner.port_name.clone(),
+        });
         let result = roto_control_loop(
             &mut inner.profile,
             &mut inner.midi_rx,
@@ -454,6 +521,8 @@ impl<L: LaneSource, S: SwitchSink> AsyncBracket for RotoSessionBracket<L, S> {
             &mut *ss,
             None, // daemon = 永続（deadline なし）
             self.shutdown.clone(),
+            tap.as_ref(),
+            &mut feedback_rx,
         )
         .await;
         // conn_in/conn_out は inner drop で閉じる（= ROTO graceful 切断）

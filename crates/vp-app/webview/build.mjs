@@ -8,14 +8,16 @@
 //   sidebar.tsx → ../assets/sidebar.bundle.js
 //
 // WebView 統合 (step 3a) 以降は 2 WebView ではなく **単一 WebView**。両 bundle とも
-// `main_area.rs` の `MAIN_AREA_HTML` に include_str! で **inline** されて 1 document で動く。
+// `MAIN_AREA_HTML` から外部 `<script src>` で参照され 1 document で動く (doc 48 Phase 1 で
+// inline → 外部化。prod は `MAIN_VIEW_ASSETS` の baked 配信、dev は disk-read)。
 //
 // mode:
 //   (default)  prod build: minify + 2 bundle を 1 回ずつ build して exit。
 //   --dev      no-minify + inline sourcemap で 1 回 build。
 //   --watch    no-minify + inline sourcemap + esbuild context.watch() で常駐。保存毎に ~0.5s rebuild。
-//              ⚠️ 注: bundle が inline 化されたため `VP_WEBVIEW_DEV` の *.bundle.js disk-read HMR は
-//              現状 効かない (web_assets.rs 参照)。webview TS 変更は build + cargo 再ビルドが要る。
+//              `VP_WEBVIEW_DEV=<assets dir>` で起動した vp-app が *.bundle.js を disk-read するので、
+//              保存 → View メニュー「Reload WebView」(Cmd+R) だけで反映される (cargo build 不要、
+//              手順は docs/guide/webview.md)。
 
 import { build, context } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'

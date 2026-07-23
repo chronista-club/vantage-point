@@ -66,6 +66,25 @@ pub struct BoardItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProcessMessage {
+    /// doc 48 Phase 2: Editor Mode bridge — MCP から GUI (vp-app webview) への editor 操作。
+    ///
+    /// World の `editor_fields` / `editor_values` / `editor_set` handler が request_id を
+    /// 発行して broadcast し、GUI が webview で評価した結果を `editor_result` request で
+    /// 返す (request-response)。topic は category=event (非 retained) — 再購読時に stale な
+    /// command が replay されてはならない。
+    EditorCommand {
+        /// 応答相関 id。GUI は `editor_result` にこの id を載せて返す。
+        request_id: String,
+        /// 操作: editor 系 "fields" | "values" | "set"、layout 系（doc 49 LE-P2）
+        /// "layout_get" | "layout_set" | "layout_history"。GUI 評価 RPC の共用配管
+        op: String,
+        /// op="set" の対象 field id
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field_id: Option<String>,
+        /// op="set" の新しい値
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+    },
     /// Show content in a pane
     Show {
         pane_id: String,

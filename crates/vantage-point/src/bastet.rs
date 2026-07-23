@@ -85,17 +85,39 @@ fn compute_diff(
 /// port name から対応する DeviceInput parser を生成する factory。
 /// 未対応の機材は None（parser なし = input 監視対象外）。
 fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
+    use crate::device_input::lpd8::Lpd8Input;
     use crate::device_input::roto::RotoInput;
+    use crate::device_input::xtouch::XTouchInput;
 
     if port_name.contains("Roto") {
         Some(Box::new(RotoInput::default()))
+    } else if port_name.contains("X-Touch") {
+        Some(Box::new(XTouchInput))
+    } else if port_name.contains("LPD8") {
+        Some(Box::new(Lpd8Input))
     } else {
-        // X-Touch, LPD8 等の入力 parser は Converge で追加
         None
     }
 }
 
 // ─── actions（I/O）────────────────────────────────────────
+
+/// pattern 部分一致で MIDI output port を開く。複数候補は "INT" を含む名を優先
+/// （X-Touch INT = MCU の実 port / EXT = 物理 MIDI passthrough の別）。
+fn open_output(pattern: &str) -> Option<midir::MidiOutputConnection> {
+    let midi_out = midir::MidiOutput::new("vp-bastet-feedback").ok()?;
+    let ports = midi_out.ports();
+    let named: Vec<(String, midir::MidiOutputPort)> = ports
+        .into_iter()
+        .filter_map(|p| midi_out.port_name(&p).ok().map(|n| (n, p)))
+        .filter(|(n, _)| n.contains(pattern))
+        .collect();
+    let (name, port) = named
+        .iter()
+        .find(|(n, _)| n.contains("INT"))
+        .or_else(|| named.first())?;
+    midi_out.connect(port, &format!("vp-feedback-{name}")).ok()
+}
 
 /// midir で input + output の全 port を enumeration し、displayName → (has_input, has_output) の map を返す。
 /// 物理デバイスは同じ displayName で input/output 両方のポートを持つため、名前で merge する。
@@ -119,6 +141,53 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     }
 
     result
+}
+
+/// 共有の input listener 管理 map（port displayName → listener task）。
+///
+/// listener の起点は 3 経路（起動時 attach / agent 報告 / polling discovery）あるが、
+/// spawn 判定はこの map を通す 1 本に畳む（[[one-edge-two-jobs]] — polling loop の
+/// local map に閉じていたせいで Model D 移行後に listener が誰からも張られなくなった）。
+type InputListeners = Arc<RwLock<HashMap<String, JoinHandle<()>>>>;
+
+/// ROTO motor へ注入する byte 列（knob_position の 14bit hi-res CC ペア × N knob）
+pub(crate) type MotorFrames = Vec<Vec<u8>>;
+
+/// motor 注入路の共有 slot（`start_roto_control` が設定、`apply_feedback` が使う）。
+/// watch = 真の latest-wins（mpsc + try_send は満杯時に**新しい方**を落とす drop-newest で
+/// 意味論が逆になる — team-b review。vp-app 側の feedback 経路と同型に揃える）
+type RotoFeedbackTx = Arc<RwLock<Option<tokio::sync::watch::Sender<Option<MotorFrames>>>>>;
+
+/// parser 対応 device の input listener を冪等に張る。
+///
+/// - ROTO は専用 loop（`start_roto_control`）が input を独占所有するため対象外
+/// - 生存中の listener が既に居れば no-op（二重接続の防止）
+/// - parser 対応 device なのに接続に失敗したら warn（無音の取り残しを作らない）
+async fn ensure_input_listener(
+    listeners: &InputListeners,
+    event_bus: &Arc<EventBus>,
+    port_name: &str,
+) {
+    if port_name.contains("Roto") || create_device_input(port_name).is_none() {
+        return;
+    }
+    let mut map = listeners.write().await;
+    if let Some(handle) = map.get(port_name)
+        && !handle.is_finished()
+    {
+        return;
+    }
+    match spawn_input_listener(port_name, Arc::clone(event_bus)) {
+        Some(handle) => {
+            map.insert(port_name.to_string(), handle);
+        }
+        None => {
+            tracing::warn!(
+                "🧲 input listener 接続失敗（port 不在 or midir error）: {}",
+                port_name
+            );
+        }
+    }
 }
 
 /// 指定 port の MIDI input を listen し、DeviceInput::parse で ControlEvent 化して EventBus に emit する。
@@ -197,6 +266,18 @@ pub struct Bastet {
     roto_task: Option<JoinHandle<()>>,
     /// ROTO セッションの shutdown 子 token
     roto_cancel: Option<CancellationToken>,
+    /// input listener 管理（起動時 attach / agent 報告 / polling discovery の 3 経路で共有）
+    input_listeners: InputListeners,
+    /// フィードバック方向（LE-19）の出力接続（port displayName → output conn）。
+    /// 必要時に開き、send 失敗で捨てて次回再接続する（X-Touch / LPD8。ROTO は専用 loop 所有）
+    outputs: Arc<tokio::sync::Mutex<HashMap<String, midir::MidiOutputConnection>>>,
+    /// LPD8 pad LED の shadow（RGB 一括 sysex は全 pad 分を持つため差分計算に要る）
+    lpd8_profile: Arc<tokio::sync::Mutex<crate::device_profile::lpd8::Lpd8Profile>>,
+    /// ROTO motor への注入路（conn_out は roto loop が独占所有するため、byte 列を loop に渡す）。
+    /// `start_roto_control` が設定。buffer 超過は drop（feedback は latest-wins で欠落無害）
+    roto_feedback_tx: RotoFeedbackTx,
+    /// 前回 apply した feedback（section 単位の dedupe — 変わらない sysex を機材に投げない）
+    last_feedback: Arc<tokio::sync::Mutex<crate::daemon::protocol::FleetFeedback>>,
 }
 
 impl Bastet {
@@ -210,7 +291,126 @@ impl Bastet {
             cancel_tx: None,
             roto_task: None,
             roto_cancel: None,
+            input_listeners: Arc::new(RwLock::new(HashMap::new())),
+            outputs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            lpd8_profile: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            roto_feedback_tx: Arc::new(RwLock::new(None)),
+            last_feedback: Arc::new(tokio::sync::Mutex::new(Default::default())),
         }
+    }
+
+    /// フィードバック方向（LE-19）: 場の状態を機材の出力面に写す。
+    ///
+    /// 送り手（webview）が throttle + diff 済みだが、section 単位でもう一段 dedupe する
+    /// （knob だけ動いた frame で pad の RGB 一括 sysex を再送しない）。
+    /// 出力接続は必要時に開き、send 失敗で捨てて次回再接続（hot-unplug 耐性）。
+    pub async fn apply_feedback(&self, fb: &crate::daemon::protocol::FleetFeedback) {
+        let mut last = self.last_feedback.lock().await;
+
+        // ROTO motor: knob byte 列を専用 loop に注入（conn_out は loop が独占所有）。
+        // watch send = 最新値の置き換え（未消費の古い frame は自然に消える = latest-wins）
+        if fb.knobs != last.knobs
+            && !fb.knobs.is_empty()
+            && let Some(tx) = self.roto_feedback_tx.read().await.as_ref()
+        {
+            let msgs: MotorFrames = fb
+                .knobs
+                .iter()
+                .filter(|k| k.index < 8)
+                .flat_map(|k| crate::device_profile::roto::knob_position(k.index, k.value))
+                .collect();
+            let _ = tx.send(Some(msgs));
+        }
+
+        // X-Touch fader 1（index 0）= t の表示。transition 無し（None）は動かさない
+        if fb.fader != last.fader
+            && let Some(t) = fb.fader
+        {
+            let msg = crate::device_profile::xtouch::fader_position(0, t);
+            self.send_output("X-Touch INT", &[msg]).await;
+        }
+
+        // LPD8 pad RGB: Scene slot の filled 状態（filled = 琥珀 / empty = 消灯）
+        if fb.pads != last.pads && !fb.pads.is_empty() {
+            let msgs = {
+                use crate::device_profile::DeviceProfile;
+                let mut profile = self.lpd8_profile.lock().await;
+                let mut msgs: Vec<Vec<u8>> = Vec::new();
+                for pad in fb.pads.iter().filter(|p| p.index < 8) {
+                    let color = if pad.filled {
+                        crate::device_profile::Rgb::new(255, 180, 40)
+                    } else {
+                        crate::device_profile::Rgb::new(0, 0, 0)
+                    };
+                    // project_track は shadow 更新 + LED 一括 sysex を返す — 最後の 1 回分で足りる
+                    msgs = profile.project_track(pad.index, "", color, false);
+                }
+                msgs
+            };
+            self.send_output("LPD8", &msgs).await;
+        }
+
+        *last = fb.clone();
+    }
+
+    /// 出力接続を必要時に開いて送る。send 失敗は接続を捨てる（次回再接続）。
+    /// port は displayName の部分一致（複数候補は "INT" 優先 — X-Touch INT/EXT の別）
+    async fn send_output(&self, pattern: &str, msgs: &[Vec<u8>]) {
+        if msgs.is_empty() {
+            return;
+        }
+        let mut outputs = self.outputs.lock().await;
+        if !outputs.contains_key(pattern) {
+            match open_output(pattern) {
+                Some(conn) => {
+                    outputs.insert(pattern.to_string(), conn);
+                    tracing::info!("🧲 feedback output opened: {}", pattern);
+                }
+                None => {
+                    tracing::debug!("🧲 feedback output 不在: {}", pattern);
+                    return;
+                }
+            }
+        }
+        if let Some(conn) = outputs.get_mut(pattern) {
+            for msg in msgs {
+                if conn.send(msg).is_err() {
+                    tracing::warn!(
+                        "🧲 feedback send 失敗 — 接続を捨てて次回再接続: {}",
+                        pattern
+                    );
+                    outputs.remove(pattern);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// 起動時に既接続の艦隊 device へ input listener を張る（1 回の enumeration、polling なし）。
+    ///
+    /// Model D では hot-plug 検知が Swift agent の報告に移譲されたが、agent 不在 / 未接続の
+    /// 環境では報告が来ず、**daemon 起動前から挿さっている device の input が誰からも
+    /// 張られない**（fleet #877 の実機で顕在化した取り残し）。起動時の 1 回 enumeration で
+    /// 「机上に既にある艦隊」を確実に拾う。以降の抜き差しは agent 報告（`report_device_*`）が
+    /// 同じ `ensure_input_listener` を通して反映する。
+    pub async fn attach_fleet_inputs(&self) {
+        let ports = enumerate_ports();
+        for (name, (has_in, has_out)) in &ports {
+            // agent 報告と**同じ 1 本の辺**（registry 挿入 + 新規 emit + listener ensure）に
+            // 畳む。旧実装は ensure_input_listener 直呼びで listener だけ張り、registry が
+            // 空のまま — polling 停止 + agent 報告 0 件の環境では world-device snapshot が
+            // 常に空で、Bastet pane が「No devices connected」に固定されていた
+            // （discovery の辺の 2 仕事のうち片方だけ移管された取り残し、#878 の同型）
+            self.report_device_connected(name, *has_in, *has_out).await;
+        }
+        let listeners = self.input_listeners.read().await.len();
+        let registered = self.devices.read().await.len();
+        tracing::info!(
+            "🧲 fleet input attach: {} listener(s) / {} device(s) registered（enumeration {} ports）",
+            listeners,
+            registered,
+            ports.len()
+        );
     }
 
     /// 接続中 device 数
@@ -248,6 +448,7 @@ impl Bastet {
 
         let devices = Arc::clone(&self.devices);
         let event_bus = Arc::clone(&self.event_bus);
+        let input_listeners = Arc::clone(&self.input_listeners);
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
         self.cancel_tx = Some(cancel_tx);
 
@@ -256,9 +457,6 @@ impl Bastet {
                 "Bastet 🧲 discovery started (interval: {}s)",
                 DISCOVERY_INTERVAL.as_secs()
             );
-
-            // device ごとの input listener task を追跡（discovery task ローカル）
-            let mut input_listeners: HashMap<String, JoinHandle<()>> = HashMap::new();
 
             loop {
                 let current = enumerate_ports();
@@ -290,15 +488,10 @@ impl Bastet {
                         }));
                     event_bus.emit(event).await;
 
-                    // input port + parser がある device は input listener を spawn。
-                    // ただし ROTO は Bastet の持続 control loop（start_roto_control）が
-                    // input + keepalive + output を所有するため、discovery の input-only
-                    // listener からは除外する（同一 port への二重接続を回避）。
-                    if *has_in
-                        && !name.contains("Roto")
-                        && let Some(handle) = spawn_input_listener(name, Arc::clone(&event_bus))
-                    {
-                        input_listeners.insert(name.clone(), handle);
+                    // input port がある device は共有 map 経由で listener を冪等 ensure
+                    // （ROTO 除外 / parser 判定 / 二重接続防止は ensure_input_listener が担う）
+                    if *has_in {
+                        ensure_input_listener(&input_listeners, &event_bus, name).await;
                     }
                 }
 
@@ -310,7 +503,7 @@ impl Bastet {
                     event_bus.emit(event).await;
 
                     // input listener も停止
-                    if let Some(handle) = input_listeners.remove(name) {
+                    if let Some(handle) = input_listeners.write().await.remove(name) {
                         handle.abort();
                     }
                 }
@@ -320,10 +513,8 @@ impl Bastet {
 
                 tokio::select! {
                     _ = cancel_rx.recv() => {
-                        // cleanup: 全 input listener を abort
-                        for (_, handle) in input_listeners.drain() {
-                            handle.abort();
-                        }
+                        // listener は Bastet 所有（共有 map）— discovery 停止 ≠ device 消滅
+                        // なのでここでは畳まない（切断報告 / process 終了が寿命を決める）
                         tracing::info!("Bastet 🧲 discovery stopped");
                         break;
                     }
@@ -382,7 +573,19 @@ impl Bastet {
             lane_registry: Some(lane_registry),
             world_cap: Some(world_cap),
         };
-        let bracket = RotoSessionBracket::new(lane_source, QuicSwitchSink::new(), child.clone());
+        // フィードバック方向: motor byte 列の注入路（conn_out は loop が独占所有するため）。
+        // watch = latest-wins（apply_feedback の連続送信は最新だけが残る）
+        let (feedback_tx, feedback_rx) = tokio::sync::watch::channel::<Option<MotorFrames>>(None);
+        *self.roto_feedback_tx.write().await = Some(feedback_tx);
+
+        let bracket = RotoSessionBracket::new(
+            lane_source,
+            QuicSwitchSink::new(),
+            child.clone(),
+            // knob 系入力を bastet.control_event に流す（fleet 配線 — doc 49 LE-19）
+            Some(Arc::clone(&self.event_bus)),
+            feedback_rx,
+        );
         let mut driver = RotoHealDriver {
             shutdown: child,
             backoff: Duration::from_millis(800),
@@ -462,10 +665,21 @@ impl Bastet {
             );
             self.event_bus.emit(event).await;
         }
+        // input listener は is_new と独立に冪等 ensure（再報告 = 再接続の機会。
+        // registry 更新だけで listener を張り忘れる取り残しの再発防止）
+        if has_input {
+            ensure_input_listener(&self.input_listeners, &self.event_bus, port_name).await;
+        }
     }
 
     /// agent からの device 切断報告を registry に反映し、存在した場合のみ EventBus に emit する。
     pub async fn report_device_disconnected(&self, port_name: &str) {
+        // input listener は registry の有無と独立に畳む（経路の欠けに対する防御 — 現行は
+        // 起動時 attach も report_device_connected 経由で registry に載る）
+        if let Some(handle) = self.input_listeners.write().await.remove(port_name) {
+            handle.abort();
+            tracing::info!("🧲 input listener aborted (disconnect): {}", port_name);
+        }
         let existed = self.devices.write().await.remove(port_name).is_some();
         if existed {
             tracing::info!("🧲 device disconnected (agent report): {}", port_name);
@@ -652,16 +866,54 @@ mod tests {
     // ─── create_device_input factory ──────────────────
 
     #[test]
-    fn factory_creates_roto_parser() {
+    fn factory_creates_fleet_parsers() {
+        // 机上の 3 台（doc 49 LE-19 fleet）: ROTO / X-Touch / LPD8
         assert!(create_device_input("MIDI9 Roto Control").is_some());
         assert!(create_device_input("Roto").is_some());
+        assert!(create_device_input("X-Touch Compact").is_some());
+        assert!(create_device_input("LPD8 mk2").is_some());
     }
 
     #[test]
     fn factory_returns_none_for_unknown() {
-        assert!(create_device_input("X-Touch Compact").is_none());
-        assert!(create_device_input("LPD8 mk2").is_none());
         assert!(create_device_input("Unknown Device").is_none());
+        assert!(create_device_input("KeyStage 61").is_none());
+    }
+
+    // ─── ensure_input_listener（3 経路共有の spawn 判定）──────
+
+    #[tokio::test]
+    async fn ensure_skips_non_fleet_and_roto() {
+        let bus = Arc::new(EventBus::new());
+        let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
+        // parser 対象外 device と ROTO（専用 loop 所有）は map に入らない
+        ensure_input_listener(&listeners, &bus, "Unknown Device").await;
+        ensure_input_listener(&listeners, &bus, "Roto-Control").await;
+        assert!(listeners.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_is_graceful_without_real_port() {
+        let bus = Arc::new(EventBus::new());
+        let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
+        // parser 対応 device でも実 port が無ければ warn して no-op（CI = MIDI 無し環境）
+        ensure_input_listener(&listeners, &bus, "LPD8 mk2 (absent)").await;
+        assert!(listeners.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_report_paths_do_not_panic_without_ports() {
+        // agent 報告経路が listener ensure / abort を通っても実機不在で安全に流れる
+        let bus = Arc::new(EventBus::new());
+        let bastet = Bastet::new(bus);
+        bastet
+            .report_device_connected("X-Touch INT", true, true)
+            .await;
+        assert_eq!(bastet.device_count().await, 1);
+        bastet.report_device_disconnected("X-Touch INT").await;
+        assert_eq!(bastet.device_count().await, 0);
+        // 起動時 attach も同様（CI では対象 port が無い前提で走るだけ）
+        bastet.attach_fleet_inputs().await;
     }
 
     // ─── discovery lifecycle ───────────────────────────

@@ -125,6 +125,10 @@ pub(crate) async fn start_project(
     // doc 44 §11: vp-app への push を起こす通知路（World daemon の `lane_change_tx`）。
     // `None` は World 以外の文脈（test / 単体起動）で、その場合 push 先が居ない。
     lane_change_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    // boot 窓の根治: 先行 subscribe（daemon の canvas channel）が作った placeholder router。
+    // Some ならそれを本 project の topic_router として採用する（既存購読者ごと実 router 化。
+    // demand hook は placeholder 生成時に登録済みなので二重登録しない）。
+    adopted_router: Option<Arc<TopicRouter>>,
 ) -> Result<Arc<AppState>> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
@@ -162,8 +166,9 @@ pub(crate) async fn start_project(
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
 
-    // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）
-    let topic_router = Arc::new(TopicRouter::new());
+    // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）。
+    // 養子縁組（adopted_router = Some）の場合は購読者付きの placeholder をそのまま使う
+    let topic_router = adopted_router.unwrap_or_else(|| Arc::new(TopicRouter::new()));
     {
         let router_clone = topic_router.clone();
         let mut hub_rx = hub.subscribe();
@@ -272,6 +277,7 @@ pub(crate) async fn start_project(
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // SP mode は delegation store を持たない (World 中央 store に proxy する)。
         delegation_store: None,
+        editor_pending: Default::default(),
     });
 
     // Phase review fix #2: LanePool::with_root は内部で PtySlot::spawn (openpty + spawn_command)
@@ -563,13 +569,7 @@ fn build_world_router(state: Arc<AppState>) -> Router {
 /// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
 /// Daemon（PTY管理 QUIC サーバー）も統合して起動する
-///
-/// `midi_config` (feature = "midi") は `vp daemon start --midi <arg>` で構築される MidiConfig。
-/// `None` なら `MidiConfig::default()` を使う (PR-α-4 / VP-114 で復活した CLI 経路)。
-pub async fn run_world(
-    port: u16,
-    #[cfg(feature = "midi")] midi_config: Option<crate::midi::MidiConfig>,
-) -> Result<()> {
+pub async fn run_world(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
     use crate::daemon::process;
 
@@ -657,22 +657,18 @@ pub async fn run_world(
     // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
     // WorldCapabilities container の両方に share させる (二重生成は避ける)。
     //
-    // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
-    // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。
-    //
-    // PR-α-4 (VP-114): `vp daemon start --midi <arg>` で構築された MidiConfig を受け取り、
-    // None なら `MidiConfig::default()` (= PR-α-2/3 後の既存挙動と同じ port auto-pick) で fallback。
+    // device 管理は Bastet 🧲 に一本化（feature = "midi" 時は `with_bastet` で host 化）。
+    // 旧 MidiCapability hosting（単一 port の無条件 grab）は退役 — 消費者不在のまま
+    // enumeration 先頭 device（実機で LPD8）を掴み、Bastet listener を沈黙させていた。
     let world_capabilities = {
         #[cfg(feature = "midi")]
         {
-            let resolved_midi_config = midi_config.unwrap_or_default();
             Arc::new(
-                crate::daemon::world_capabilities::WorldCapabilities::with_midi(
+                crate::daemon::world_capabilities::WorldCapabilities::with_bastet(
                     world_cap.clone(),
                     update_cap.clone(),
-                    resolved_midi_config,
                 )
-                .await?,
+                .await,
             )
         }
         #[cfg(not(feature = "midi"))]
@@ -770,6 +766,7 @@ pub async fn run_world(
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // 委譲 (delegation) の World 中央 store (doc 28 §6)。World mode のみ Some。
         delegation_store,
+        editor_pending: Default::default(),
     });
 
     // in-app update: GitHub Releases latest の定期チェック（起動時 + 24h 毎）で
@@ -824,6 +821,9 @@ pub async fn run_world(
     // DaemonState 任せにすると生産者に渡す手段が無い（`process_lifecycle_tx` を capability と
     // 共有しているのと同じ構図）。
     let (lane_change_tx, _) = tokio::sync::broadcast::channel::<String>(64);
+    // canvas 集約 map は DaemonState と ProjectRuntimes の**両方より先**に作って共有する
+    // （boot 窓の根治: project 起動が先行 subscribe の placeholder を養子縁組できるように）
+    let canvas_routers: super::topic_router::CanvasRouters = Default::default();
     let control_channels: crate::daemon::server::ControlChannels =
         std::sync::Arc::new(super::project_registry::ProjectRuntimes::for_world(
             world_cap.read().await.lane_registry_ref(),
@@ -831,6 +831,7 @@ pub async fn run_world(
             // fold-in で落ちた「view を更新したら vp-app を起こす」辺を戻す。view
             // (`lane_registry`) の更新と通知が同じ経路に載る（旧 SP uplink と同じ組）。
             lane_change_tx.clone(),
+            canvas_routers.clone(),
         ));
 
     // ProcessManagerCapability に registry を差し込む（`start_process` が in-process 起動に使う）。
@@ -909,6 +910,8 @@ pub async fn run_world(
         // tmux decoupling PR1: 上で hoist した control channel map を daemon server と共有する
         // (daemon が SP 接続で populate → nudge loop がここから forward 先を引く)。
         .with_control_channels(control_channels.clone())
+        // boot 窓の根治: ProjectRuntimes と同一の canvas map を共有（分裂すると養子縁組不能）
+        .with_canvas_routers(canvas_routers.clone())
         // doc 44 §11: project 側の publish が撃つのと**同一の** channel を daemon の
         // push loop に購読させる（別々に作ると生産者ゼロで永久沈黙する）。
         .with_lane_change_tx(lane_change_tx.clone());

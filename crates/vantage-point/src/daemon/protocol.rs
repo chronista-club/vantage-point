@@ -179,6 +179,42 @@ pub struct ReportDeviceRequest {
     pub has_output: bool,
 }
 
+/// doc 49 LE-19 フィードバック方向: webview の場の状態 → 機材への投影指示
+/// (= "world-device" channel の上り `feedback` event payload)。
+///
+/// 送り手 = gallery webview の mapping registry（fleet.ts `computeFeedback`、consumer 供給）。
+/// 受け手 = Bastet `apply_feedback` が各 device の出力 profile に写す:
+/// knobs → ROTO motor（14bit hi-res CC）/ fader → X-Touch fader 1（pitch bend）/
+/// pads → LPD8 RGB（Scene slot の filled 状態）。
+/// 値は正規化 0.0–1.0。頻度は webview 側 throttle + Rust 側 watch（latest-wins）で抑制。
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FleetFeedback {
+    /// knob index（structure 順の member 対応）→ share。touch 保持中の knob は送り手が省く
+    #[serde(default)]
+    pub knobs: Vec<KnobFeedback>,
+    /// 進行中 transition の t。None = transition 無し（fader は動かさない）
+    #[serde(default)]
+    pub fader: Option<f32>,
+    /// Scene slot の占有状態（pad LED の点灯判断）
+    #[serde(default)]
+    pub pads: Vec<PadFeedback>,
+}
+
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KnobFeedback {
+    pub index: u8,
+    pub value: f32,
+}
+
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PadFeedback {
+    pub index: u8,
+    pub filled: bool,
+}
+
 /// VP-154 PR-2: Process snapshot 1 entry (= "world-process" list method の応答 payload)
 ///
 /// 既存 `RunningProcess` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json

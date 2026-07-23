@@ -38,6 +38,30 @@ pin の役割は git blob から npm version + lockfile へ移った。
 ⚠️ 供給 repo の HEAD ≠ npm 最新 になりがち（editor-host で実発生: npm 0.5.3 のまま
 #74/#76 が未 publish だった）。VP へ取り込む前に `npm view <pkg> version` と bump commit を突き合わせる。
 
+## dev loop: HMR（cargo build なしで bundle を差し替える — doc 48 Phase 1）
+
+tsx/ts 変更のたびに `bun run build` + cargo 再ビルド + app:swap を回すのは重い。
+`VP_WEBVIEW_DEV` を設定して vp-app を起動すると、`*.bundle.js` を **disk から fresh read**
+するようになり、bundle 差し替えが reload だけで反映される:
+
+```bash
+# 1. esbuild watch を常駐（保存ごと ~0.5s で bundle 再生成）
+cd ~/repos/vantage-point/crates/vp-app/webview && bun run dev
+
+# 2. vp-app を assets dir 指定で起動（brew/dev どちらの binary でも効く）
+VP_WEBVIEW_DEV=~/repos/vantage-point/crates/vp-app/assets vp app start
+
+# 3. 編集 → 保存 → View メニュー「Reload WebView」(Cmd+R) で反映。cargo build 不要
+```
+
+- Reload WebView は **View → Developer Mode ON の時だけ enabled**（Cmd+R も同 gate。
+  一般 user の Cmd+R を奪わない）。
+- 未設定 / read 失敗時は焼き込み bundle に fallback（= prod 挙動、壊れない）。
+- creo-ui 側を触る日は下の `bun link` と組み合わせる — 供給側 `bun run build` →
+  watch が拾って bundle 再生成 → Cmd+R、で **cross-repo でも cargo 無しの秒ループ**になる。
+- 実装: `web_assets.rs`（disk-read）+ `main_area.rs`（bundle の外部 `<script src>` 化）。
+  #494 の復活（#815 で撤去、外部 script 化で発火するようになった）。
+
 ## dev loop: creo-ui / club-unison を同時開発する日（bun link）
 
 npm 化で失った「隣の repo を直して即反映」は `bun link` で一時的に復元する:

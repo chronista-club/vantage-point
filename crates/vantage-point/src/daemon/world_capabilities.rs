@@ -9,16 +9,15 @@
 //! - **TheWorld 👑** (`ProcessManagerCapability`): VP world process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
 //! - **Whitesnake 🐍** (`Whitesnake`): file-backed persistence wrapper
-//! - **Bastet 🧲** (`Bastet` + 旧 `MidiCapability`): multi-device registry + hot-plug discovery。
-//!   Converge で `Bastet` を並立追加。`with_midi` 経由で discovery 自動開始。
+//! - **Bastet 🧲** (`Bastet`): multi-device registry + 艦隊 input listener（`with_bastet`）
 //!
-//! ## 実装状態 (PR-α 完了後)
+//! ## 実装状態
 //!
 //! - PR-α-1 (VP-111 ✅): struct 新設、 既存 World 階層 instance を集約 view、
 //!   `AppState.world_capabilities` field に Some で注入。
-//! - PR-α-2 (VP-112 ✅): `MidiCapability` を `ProcessCapabilities` から取り外し、 本 struct の
-//!   `midi` field に host。
-//! - PR-α-4 (VP-114): `vp daemon start --midi` flag 追加で MidiConfig CLI 経路復活 (planned)。
+//! - 旧 `MidiCapability` hosting（PR-α-2 の single-device monitor）は退役 — 消費者
+//!   （`ProtocolCapability`）が本番で実体化されず、enumeration 先頭 device（実機で LPD8）を
+//!   無条件 grab して Bastet listener を沈黙させる害だけが残っていたため（fleet dogfood で発覚）。
 //! - 後続 cleanup: AppState 既存 field (`world` / `update` / `whitesnake`)
 //!   と本 struct の重複保持を整理 (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
 //!
@@ -34,8 +33,6 @@ use tokio::sync::RwLock;
 
 #[cfg(feature = "midi")]
 use crate::bastet::Bastet;
-#[cfg(feature = "midi")]
-use crate::capability::MidiCapability;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 
 /// World 階層 Stand container。
@@ -48,12 +45,8 @@ pub struct WorldCapabilities {
     /// Self-update Capability (LSCM Open Question Q-12 catalog 拡張候補)
     pub update: Arc<RwLock<UpdateCapability>>,
 
-    /// 旧 MidiCapability（single-device monitor、Bastet 移行完了まで並立）。
-    #[cfg(feature = "midi")]
-    pub midi: Option<Arc<RwLock<MidiCapability>>>,
-
-    /// Bastet 🧲 — multi-device registry + hot-plug discovery (Converge)。
-    /// `with_midi` で構築すると discovery 自動開始。
+    /// Bastet 🧲 — multi-device registry + 艦隊 input listener。
+    /// `with_bastet` で構築すると起動時 attach（既接続 device の listener）まで済む。
     #[cfg(feature = "midi")]
     pub bastet: Option<Arc<RwLock<Bastet>>>,
 }
@@ -65,7 +58,7 @@ impl WorldCapabilities {
     /// AppState 既存 field (`world` / `update` / `whitesnake`) と本 struct の
     /// 重複保持は意図的 HACK (LSCM A6 share-nothing 整合は β 以降で整理予定)。
     ///
-    /// midi を host したい場合は `with_midi` を使う (feature = "midi")。
+    /// Bastet を host したい場合は `with_bastet` を使う (feature = "midi")。
     pub fn new(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
@@ -74,61 +67,32 @@ impl WorldCapabilities {
             process_manager,
             update,
             #[cfg(feature = "midi")]
-            midi: None,
-            #[cfg(feature = "midi")]
             bastet: None,
         }
     }
 
-    /// MidiCapability を host した状態で構築 (PR-α-2、 feature = "midi")。
+    /// Bastet 🧲 を host した状態で構築（feature = "midi"）。
     ///
-    /// LSCM doc 12 §9 の Bastet 🧲 = World 階層 target を実現。 旧 `ProcessCapabilities.midi`
-    /// (Project 階層) の経路を World daemon (`run_world`) に移管。
-    ///
-    /// 内部で `MidiCapability::with_config` → `initialize` → `start_monitoring` を実行し、
-    /// `midi: Some(...)` 状態で構築する。 監視 start に失敗した場合は warning log して
-    /// graceful degrade (構築自体は成功、 midi 監視タスクなしで継続)。
+    /// hot-plug 検知の authority は macOS menu bar agent（Swift `CoreMIDIWatcher`）で、
+    /// agent が `device` channel で送る `ReportDevice` を `Bastet::report_device_*` が
+    /// registry に反映する（daemon は midir polling を回さない）。起動前から挿さっている
+    /// device は agent 報告が来ない環境があるため、`attach_fleet_inputs` の 1 回
+    /// enumeration で input listener を確実に張る（fleet #877/#878）。
+    /// ROTO 持続制御は独立経路（`start_roto_control`、process/server.rs）。
     #[cfg(feature = "midi")]
-    pub async fn with_midi(
+    pub async fn with_bastet(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
-        midi_config: crate::midi::MidiConfig,
-    ) -> anyhow::Result<Self> {
-        use crate::capability::core::{Capability, CapabilityContext};
-
+    ) -> Self {
         let mut wc = Self::new(process_manager, update);
 
-        // MidiCapability を host (PR-α-2)
-        let mut midi_cap = MidiCapability::with_config(midi_config);
-        let ctx = CapabilityContext::new();
-        midi_cap
-            .initialize(&ctx)
-            .await
-            .map_err(|e| anyhow::anyhow!("MidiCapability initialize failed: {}", e))?;
-
-        // 監視開始 (port_index は config から)
-        let port_index = midi_cap.config().port_index;
-        if let Err(e) = midi_cap.start_monitoring(port_index).await {
-            tracing::warn!(
-                "MidiCapability start_monitoring failed (graceful degrade): {}",
-                e
-            );
-        }
-
-        wc.midi = Some(Arc::new(RwLock::new(midi_cap)));
-
-        // Bastet 🧲 — multi-device registry（M2 / doc 25 Model D 以降）
-        //
-        // hot-plug 検知の authority は macOS menu bar agent（Swift `CoreMIDIWatcher`）へ移譲した。
-        // daemon は midir polling を回さず、agent が `device` channel で送る `ReportDevice` を
-        // `Bastet::report_device_*` で registry に反映する（二重 source を残さない）。
-        // ROTO 持続制御は discovery とは独立（`start_roto_control`、process/server.rs）なので影響なし。
         let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());
         let bastet = Bastet::new(event_bus);
+        bastet.attach_fleet_inputs().await;
         tracing::info!("Bastet 🧲 registry ready (hot-plug は Swift agent が報告 / polling 停止)");
         wc.bastet = Some(Arc::new(RwLock::new(bastet)));
 
-        Ok(wc)
+        wc
     }
 }
 
@@ -148,8 +112,8 @@ mod tests {
 
         #[cfg(feature = "midi")]
         assert!(
-            wc.midi.is_none(),
-            "new() では midi は None (with_midi() を使うと Some)"
+            wc.bastet.is_none(),
+            "new() では bastet は None (with_bastet() を使うと Some)"
         );
     }
 }

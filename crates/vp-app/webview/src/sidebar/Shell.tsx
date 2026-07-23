@@ -180,12 +180,14 @@ export const SHELL_CSS = `
    Light Grid palette (--lg-*, Step 7 = Direction B「Light Grid / TRON origin」再スキン):
    sidebar スコープ専用の静的 palette。 app 全体の paradox-violet テーマは変えない —
    適用は #sidebar-root 以下に封じ込める (定義が :root なのは Editor Mode の書き込み先と
-   揃えるため。 定義自体は inert)。 視覚仕様の SSOT = artifact c203944c (mako 承認済)。 */
+   揃えるため。 定義自体は inert)。 視覚仕様の SSOT = artifact c203944c (mako 承認済)。
+   2026-07-22: conn 2 hue を magenta/cyan → coral/yellow に更新 (doc 48 editor bridge の
+   初回 dogfood で mako × CC が live 調整して確定 — auto=mako picker / hitl=CC editor_set)。 */
 :root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
   --sb-conn-width:2px;--sb-conn-slot:22px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
   --sb-photon-period:1800ms;--sb-glow:6px;
-  --sb-conn-hitl:#FF3DAE;
-  --sb-conn-auto:#22E0FF;
+  --sb-conn-hitl:#FF4A2D;
+  --sb-conn-auto:#FFF76B;
   --lg-void:#05070A;--lg-void-2:#080B11;--lg-panel:#0A0E15;
   --lg-grid:#0E2A33;--lg-hairline:#12222b;
   --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;}
@@ -232,7 +234,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border:none;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
 .vp-sidebar-add:hover{background:#ffffff08;
-  color:var(--sb-conn-auto,#22E0FF);}
+  color:var(--sb-conn-auto,#FFF76B);}
 .vp-sidebar-list{flex:1;overflow-y:auto;padding:0 0 10px;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
@@ -262,9 +264,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj-content::after{content:"";position:absolute;
   left:calc(10.5px + var(--sb-conn-width,2px) / 2 - 4px);top:-4px;
   width:8px;height:8px;border-radius:50%;
-  background:var(--sb-conn-auto,#22E0FF);
+  background:var(--sb-conn-auto,#FFF76B);
   box-shadow:0 0 var(--sb-glow,6px) 2px
-    color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 40%);
+    color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 40%);
   opacity:0;pointer-events:none;}
 .vp-proj-content.photon-fire::after{
   animation:lg-photon var(--sb-photon-period,1800ms) cubic-bezier(.55,0,.5,1)
@@ -293,7 +295,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   color:var(--lg-mute,#5C7A85);font-style:italic;}
 /* 新規追加 project の reveal flash — auto tab-switch と併用して見失わせない
    (Shell の createEffect が対象に .vp-proj-flash を付与)。summary 背景を一瞬 brand 色に。 */
-@keyframes vp-proj-flash{0%{background:#22e0ff14;}
+@keyframes vp-proj-flash{0%{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
   100%{background:transparent;}}
 .vp-proj-flash > .vp-proj-summary{animation:vp-proj-flash 1.3s ease-out;}
 
@@ -303,9 +305,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj-summary{cursor:grab;}
 .vp-proj.dragging{opacity:.4;}
 /* drop marker は cyan。 ground の inset ring (box-shadow 単一 property) を失わないよう併記。 */
-.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#22E0FF),
+.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#FFF76B),
   inset 0 0 0 1px #ffffff08;}
-.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#22E0FF),
+.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#FFF76B),
   inset 0 0 0 1px #ffffff08;}
 
 /* Lane 行 */
@@ -328,13 +330,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
   width:8px;height:8px;margin-top:-4px;border-radius:50%;}
 /* working = solid cyan tap + ベタ塗り小径 node。 quiet pass (019f5100): glow なし —
    cyan が許されるのはこの tap + node だけ、 光量の主張は needs-you に譲る。 */
-.vp-lane-connector.conn-auto::before{background:var(--sb-conn-auto,#22E0FF);}
+.vp-lane-connector.conn-auto::before{background:var(--sb-conn-auto,#FFF76B);}
 .vp-lane-connector.conn-auto::after{width:6px;height:6px;margin-top:-3px;
-  background:var(--sb-conn-auto,#22E0FF);}
+  background:var(--sb-conn-auto,#FFF76B);}
 /* conn-run は FSM 上 dead path (working は conn-auto に集約) — 保険で working と同扱い */
-.vp-lane-connector.conn-run::before{background:var(--sb-conn-auto,#22E0FF);}
+.vp-lane-connector.conn-run::before{background:var(--sb-conn-auto,#FFF76B);}
 .vp-lane-connector.conn-run::after{width:6px;height:6px;margin-top:-3px;
-  background:var(--sb-conn-auto,#22E0FF);}
+  background:var(--sb-conn-auto,#FFF76B);}
 /* idle = ほぼ消える (quiet pass): 極薄の破線 tap + 中空 node。 */
 .vp-lane-connector.conn-dead::before{background-image:repeating-linear-gradient(90deg,
   color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 45%) 0 calc(var(--sb-conn-dash,4px) / 2),
@@ -345,17 +347,17 @@ html,body{margin:0;height:100%;overflow:hidden;}
    pulse は「needs-you に入った瞬間に 1 回だけ」 (one-shot、 常時 pulse 禁止 019f50ff) —
    .conn-hitl が付いた時に animation が 1 度走り、 終わると静的 glow に落ち着く。
    data source は既存 awaiting_input (laneConnector が conn-hitl を導出済) — 配線済み。 */
-.vp-lane-connector.conn-hitl::before{background:var(--sb-conn-hitl,#FF3DAE);}
+.vp-lane-connector.conn-hitl::before{background:var(--sb-conn-hitl,#FF4A2D);}
 .vp-lane-connector.conn-hitl::after{width:9px;height:9px;margin-top:-4.5px;
-  background:var(--sb-conn-hitl,#FF3DAE);border-radius:2px;transform:rotate(45deg);
+  background:var(--sb-conn-hitl,#FF4A2D);border-radius:2px;transform:rotate(45deg);
   box-shadow:0 0 var(--sb-glow,6px) 1px
-    color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 55%);
+    color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 55%);
   animation:lg-hitl var(--sb-conn-flow-beat,.7255s) steps(1,end) var(--sb-hitl-loop,1);}
 @keyframes lg-hitl{
   0%,60%{opacity:1;box-shadow:0 0 calc(var(--sb-glow,6px) * 1.4) 2px
-    color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 40%);}
+    color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 40%);}
   61%,100%{opacity:.55;box-shadow:0 0 calc(var(--sb-glow,6px) * .6) 1px
-    color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 67%);}}
+    color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 67%);}}
 @media (prefers-reduced-motion:reduce){
   .vp-lane-connector.conn-hitl::after{animation:none;}}
 /* root (conductor) = spine の頭。 tap は描かず diamond を頭石として置く。 quiet pass:
@@ -376,7 +378,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* active (= 選択中) lane — 選択表現は faint tint のみ (mako 019f5114: ブラケット/
    ブロック/バー等のアクセント要素はゼロ)。 tint は判別性のため僅かに強め (8%)、
    光り物は増やさない。 「光る」 のは state (photon / node) の仕事。 */
-.vp-lane-row.active{background:#22e0ff14;}
+.vp-lane-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
 /* root session (= conductor、 spine の頭)。 quiet pass (019f5100): cyan wash / glyph glow は
    撤去、 weight 600 だけで静かに立たせる (行 tint と glyph 彩色は光の総量を増やすため落とす)。 */
@@ -394,8 +396,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
    dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線。
    落とせるのは同じ project の lane 同士だけ (帳簿は project ごとに 1 本)。 */
 .vp-lane-row.dragging{opacity:.4;}
-.vp-lane-row.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#22E0FF);}
-.vp-lane-row.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#22E0FF);}
+.vp-lane-row.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#FFF76B);}
+.vp-lane-row.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#FFF76B);}
 /* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */
 .vp-lane-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 18%);}
@@ -419,7 +421,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;
   color:var(--lg-mute-2,#38525b);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .vp-lane-connector.conn-hitl ~ .vp-lane-right .vp-lane-state{
-  color:var(--sb-conn-hitl,#FF3DAE);}
+  color:var(--sb-conn-hitl,#FF4A2D);}
 /* 右端 block: meta / awaiting / files / mailbox を右寄せで横並び。 */
 .vp-lane-right{display:flex;align-items:center;gap:5px;flex:0 0 auto;margin-left:auto;}
 /* files / mailbox は hover 時のみ表示 (= noise 減)。 ただし mailbox unread と
@@ -434,12 +436,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;white-space:nowrap;}
 .vp-lane-meta .ahead{color:var(--lg-cyan-dim,#1C6C7C);}
-.vp-lane-meta .behind{color:color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 30%);}
-.vp-lane-meta .dirty{color:color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 30%);
+.vp-lane-meta .behind{color:color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 30%);}
+.vp-lane-meta .dirty{color:color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 30%);
   font-weight:500;}
 /* awaiting dot — needs-you 言語 (magenta) に従属。 diamond node と同源の信号。 */
 .vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
-  background:var(--sb-conn-hitl,#FF3DAE);flex:0 0 auto;}
+  background:var(--sb-conn-hitl,#FF4A2D);flex:0 0 auto;}
 /* canvas 着信 (D) — PP に絵が届いた info 信号。 needs-you(magenta glow)とは別語彙。
    Light Grid「光=注意」に従い bright(--lg-hot)で目を引くが glow(pulse)は付けない
    (glow は needs-you 専用)。 easel icon は bundled subset 外で不可視だったため pure-CSS の
@@ -454,7 +456,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
 .vp-proj-addperformer:hover,.vp-proj-addperformer.open,.vp-proj-start:hover{
-  background:#ffffff08;color:var(--sb-conn-auto,#22E0FF);}
+  background:#ffffff08;color:var(--sb-conn-auto,#FFF76B);}
 /* Start ▶ も quiet: 定常は muted、 hover 時のみ cyan (interaction feedback)。 */
 .vp-proj-start{color:var(--lg-mute,#5C7A85);}
 .vp-add-performer-form{display:flex;flex-direction:column;gap:5px;
@@ -463,7 +465,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:var(--lg-panel,#0A0E15);color:var(--lg-hot,#EAFBFF);
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-meta,11px);
   box-sizing:border-box;}
-.vp-add-performer-input:focus{outline:none;border-color:var(--sb-conn-auto,#22E0FF);}
+.vp-add-performer-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
 .vp-add-performer-stand{cursor:pointer;appearance:none;-webkit-appearance:none;
   background-image:linear-gradient(45deg,transparent 50%,var(--lg-hot,#EAFBFF) 50%),
     linear-gradient(135deg,var(--lg-hot,#EAFBFF) 50%,transparent 50%);
@@ -476,8 +478,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
   font-size:var(--sb-text-micro,10px);font-family:inherit;transition:background .12s ease,color .12s ease;}
 .vp-add-performer-actions button:hover{background:#ffffff08;
   color:var(--lg-hot,#EAFBFF);}
-.vp-add-performer-actions button.primary{background:#22e0ff14;
-  color:var(--sb-conn-auto,#22E0FF);border-color:#22e0ff2e;}
+.vp-add-performer-actions button.primary{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);
+  color:var(--sb-conn-auto,#FFF76B);border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
 
 /* World widget (sidebar 最下部) — Light Grid foot: mono 面、 muted、 dot は cyan-dim。
    地の一部なので発光させない (online の緑 dot 廃止)。 offline だけ僅かに magenta。 */
@@ -490,7 +492,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-world-summary:hover{color:var(--lg-mute,#5C7A85);}
 .vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--lg-cyan-dim,#1C6C7C);}
-.vp-world-dot.offline{background:color-mix(in srgb,var(--sb-conn-hitl,#FF3DAE),transparent 40%);}
+.vp-world-dot.offline{background:color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 40%);}
 /* L1 lifecycle: project 行の SP presence dot。 Light Grid では project = 地なので発光させない
    (「発光ドット無し」)。 semantics は残しつつ muted 表現に落とす: connected = mute-2 定常、
    connecting = mute pulse、 disconnected = magenta 60% (要注意だけが僅かに彩度を持つ)、
@@ -500,7 +502,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj-presence-dot.connected{background:var(--lg-mute-2,#38525b);opacity:1;}
 .vp-proj-presence-dot.connecting{background:var(--lg-mute,#5C7A85);opacity:1;
   animation:vp-presence-pulse 1.1s ease-in-out infinite;}
-.vp-proj-presence-dot.disconnected{background:var(--sb-conn-hitl,#FF3DAE);opacity:.6;}
+.vp-proj-presence-dot.disconnected{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
 .vp-proj-presence-dot.unregistered{background:var(--lg-mute-2,#38525b);opacity:.4;}
 @keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
 .vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
@@ -521,7 +523,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   padding:1px 0;}
 .vp-hub-world-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
   background:var(--lg-mute-2,#38525b);}
-.vp-hub-world-dot.offline{background:var(--sb-conn-hitl,#FF3DAE);opacity:.6;}
+.vp-hub-world-dot.offline{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
 .vp-hub-world .k{flex:1 1 auto;color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
 .vp-hub-world .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
@@ -531,11 +533,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-world-update{display:flex;align-items:center;gap:8px;margin:2px var(--spacing-sm,10px) 6px;
   padding:6px 10px;cursor:pointer;border-radius:6px;
   font-size:var(--sb-text-hint,12px);font-family:var(--vp-font-mono),var(--typography-family-mono);
-  color:var(--sb-conn-auto,#22E0FF);
-  background:color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 90%);
-  border:1px solid color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 78%);
+  color:var(--sb-conn-auto,#FFF76B);
+  background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 90%);
+  border:1px solid color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 78%);
   user-select:none;}
-.vp-world-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#22E0FF),transparent 82%);}
+.vp-world-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
 .vp-world-update-label{flex:1 1 auto;font-weight:600;}
 .vp-world-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
   font-variant-numeric:tabular-nums;}
@@ -546,8 +548,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
   padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);
   color:var(--lg-mute,#5C7A85);}
 .vp-stand-row:hover{background:#ffffff06;}
-.vp-stand-row.active{background:#22e0ff10;
-  color:var(--sb-conn-auto,#22E0FF);}
+.vp-stand-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);
+  color:var(--sb-conn-auto,#FFF76B);}
 .vp-stand-icon{display:flex;align-items:center;flex:0 0 auto;}
 .vp-stand-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
@@ -587,7 +589,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   transition:background .12s ease,color .12s ease,opacity .12s ease;}
 .vp-lane-row:hover .vp-lane-files-btn{opacity:1;}
 .vp-lane-files-btn:hover{background:#ffffff08;
-  color:var(--sb-conn-auto,#22E0FF);}
+  color:var(--sb-conn-auto,#FFF76B);}
 ${FILE_EXPLORER_CSS}
 ${WIRE_PANEL_CSS}
 ${LANE_PICKER_CSS}

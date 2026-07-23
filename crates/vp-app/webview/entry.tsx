@@ -89,10 +89,18 @@ import {
 	cssVarNumberTarget,
 	cssVarTarget,
 	number,
+	useEditorHost,
 } from "@chronista-club/creo-ui-editor-host";
-import { FrameEngine, type PaneId, type SceneId } from "./frame-engine";
-import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from "./scenes";
-import { attachRenderer } from "./renderer";
+import {
+	applyAppScene,
+	closeAppPaneVisit,
+	installAppPanes,
+	restoreAppStateFor,
+	saveAppStateFor,
+	visitAppPane,
+} from "./app-panes";
+import { layoutEngine } from "./layout-host";
+import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
 import {
@@ -102,8 +110,8 @@ import {
 	type BusRequestId,
 	type EchoesStandsDetail,
 } from "./console";
-// doc 46 P1: lane 内 tiling（Pane の並び / 縮小 / focus）。
-import { PaneShell, newPaneChoices } from "./pane-shell";
+// doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
+import { installLanePanes, newPaneChoices } from "./lane-panes";
 // `vp:echoes-stands` bus が運ぶ stand entry（chatview の StandOption と同形）。
 type PaneStand = { name: string; label?: string; chat_capable?: boolean };
 import { installChatView, CHATVIEW_CSS } from "./chatview";
@@ -125,69 +133,49 @@ console.info("[vp-bundle] imports resolved");
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
 	.vpBundleStatus!.importsResolved = true;
 
-// ===== VP-140 / PR-ε-1: 3D Frame Layout Engine init =====
-// EditorLayer mount より前に Pane / Scene を register しておき、 DOMContentLoaded で
-// default Scene を apply する。 setActivePane bridge も window に登録 (legacy 互換)。
+// ===== doc 49 LE-P4 PR1: app pane 配置を creo-ui-layout の場へ =====
+// 旧 FrameEngine（VP-140 の Scene engine）の後継。preset / DOM 反映は app-panes.ts に
+// 集約され、ここは購読の install と setActivePane bridge（下方）だけを持つ。
 //
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
 //   echoes  → pane-terminal      (Echoes Stand = lane terminal host)
 //   pp      → pane-paisley-park  (Paisley Park 🧭 / Information Router、 PP body = Smart Canvas surface)
 //   ge      → pane-gold-experience (Gold Experience 🌿)
-//   hp      → pane-hermit-purple   (Hermit Purple 🍇)
+//   bs      → pane-bastet         (Bastet 🧲 / device 一覧)
 //   preview → pane-preview        (iframe preview)
 //   empty   → pane-empty          (no selection)
 // 注: 旧 data-pane-id (main_area.rs inline JS が Lane address 等に書き換える native overlay sync 用)
-// と attribute を分離。 同名にすると Lane click で legacy 側が hijack して Frame Engine の Scene lookup が
-// undefined → HIDDEN_TRANSFORM で pane が見えなくなる回帰を起こすため (VP-141 fix)。
-//
-// VP-142 cleanup (PR-ε-4): legacy "canvas" pane 削除。 VP-42 era の placeholder だったが、 PR-ε-3 で
-// PP body (`pane-paisley-park` 内 `<div id="pp-content">`) が Smart Canvas surface を物理化したため
-// vestigial。 doc 13 §10 Q-3 (Smart Canvas 配置) も WebView 主 = PP body で確定済。
-const FRAME_PANE_IDS: PaneId[] = [
-	"echoes",
-	"pp",
-	"ge",
-	"hp",
-	"preview",
-	"empty",
-];
-const FOCUSABLE_PANE_IDS: PaneId[] = ["echoes", "pp", "ge", "hp", "preview"];
+// と attribute を分離。 同名にすると Lane click で legacy 側が hijack して配置 lookup が
+// undefined → 非表示投影で pane が見えなくなる回帰を起こすため (VP-141 fix)。
 
-const frameEngine = new FrameEngine();
-FRAME_PANE_IDS.forEach((id) => frameEngine.registerPane({ id, kind: id }));
-DEFAULT_SCENES.forEach((s) => frameEngine.registerScene(s));
-frameEngine.registerScene(EMPTY_SCENE);
-generateAllFocusScenes(FOCUSABLE_PANE_IDS).forEach((s) =>
-	frameEngine.registerScene(s),
-);
-
-// DOM 反映 + keybindings hook
-attachRenderer(frameEngine, document);
-attachKeybindings(frameEngine, window);
+// DOM 反映（engine 購読）+ keybindings hook
+installAppPanes(document);
+attachKeybindings(window);
 // WebView 統合 (step 3a): 旧 installMainViewDirectiveBridge は削除。
 // sidebar + main が 1 DOM になったため、 directive は sidebar bundle の in-process
 // handler (src/sidebar/keybindings.ts の installDirectiveHandler) が同一 window で
 // 直接捕捉する。 IPC 往復 bridge を残すと 1 回の Cmd hold + key で二重発火する。
 
-// ===== legacy setActivePane bridge + per-Lane Scene state =====
+// ===== legacy setActivePane bridge + per-Lane 配置記憶 =====
 // 既存 main_area.rs JS が定義する window.setActivePane を wrap して、
 // 旧 logic (showLane / preview iframe src 切替 / sendSlotRect) を保ったまま
-// Frame Engine に Scene 切替を発火させる。
+// app-panes に配置切替を発火させる。
 //
-// per-Lane Scene state preservation (VP-141 follow-up):
-// - 各 Lane が独立に「最後にいた Scene」 を覚える Map
-// - kind=terminal Lane 切替時に旧 Lane の Scene を save、 新 Lane の保存済 Scene (or default lead-focus)
-//   を restore する → user が Lane を跨いでも Side Review / PP Overlay 等の layout 選択が記憶される
-// - onSceneChange listener で manual Scene 切替 (Cmd+Shift+N) も active Lane の state に反映
-// - kind != terminal (PP/GE/HP click 等) は Lane を跨がない fixed-Pane focus、 laneScenes は更新しない
-const KIND_TO_PANE: Record<string, PaneId> = {
+// per-Lane 配置の記憶 (VP-141 follow-up の後継):
+// - kind=terminal Lane 切替時に旧 Lane の配置 snapshot を save、 新 Lane の保存済
+//   snapshot (or default lead-focus) を restore する → user が Lane を跨いでも
+//   Side Review / PP Overlay 等の選択 + share 調整の形が記憶される（app-panes.ts 所有）
+// - kind != terminal (PP/GE/Bastet click 等) は Lane を跨がない fixed-Pane focus、 記憶は更新しない
+const KIND_TO_PANE: Record<string, string> = {
 	terminal: "echoes",
 	paisley_park: "pp",
 	gold_experience: "ge",
-	hermit_purple: "hp",
+	bastet: "bs",
 	preview: "preview",
 	empty: "empty",
 	// VP-142 cleanup: legacy "canvas" kind 削除 (Smart Canvas surface = PP body に物理化済)
+	// LE-P4 PR1: 幽霊の hermit_purple → hp（DOM 不在）を落とし、DOM に居た bastet → bs を
+	// 補充（旧体系では unknown kind → empty に落ちて Bastet pane が見えなかった）
 };
 
 interface SetActivePaneInfo {
@@ -233,18 +221,6 @@ function laneNameFromAddress(addr: string | null): string | null {
 	if (m) return m[1] ?? null;
 	return null;
 }
-/** Lane address → 最後にその Lane が table に乗っていた SceneId. */
-const laneScenes = new Map<string, SceneId>();
-
-// onSceneChange で active Lane の Scene state を継続 update。
-// bridge 内で applyScene を呼ぶ場合も含めて全 Scene 切替で fire するが、 同じ値を再 set しても
-// 害なし (idempotent)、 manual hotkey 切替時にも自然に反映される。
-frameEngine.onSceneChange((sceneId) => {
-	if (activeLaneAddress && sceneId !== "empty") {
-		laneScenes.set(activeLaneAddress, sceneId);
-	}
-});
-
 const installSetActivePaneBridge = (): void => {
 	const w = window as unknown as {
 		setActivePane?: (info: SetActivePaneInfo | null) => void;
@@ -256,26 +232,26 @@ const installSetActivePaneBridge = (): void => {
 			try {
 				original(info);
 			} catch (e) {
-				console.warn("[frame-engine] legacy setActivePane error", e);
+				console.warn("[app-panes] legacy setActivePane error", e);
 			}
 		}
-		// Frame Engine に Scene を発火
+		// app-panes に配置を発火
 		if (!info || !info.kind || info.kind === "empty") {
-			frameEngine.applyScene("empty");
+			applyAppScene("empty");
 			// lane 無し = Echoes 共通ヘッダも空へ（chips は presence-driven）。
 			echoesHeader?.setLane(null);
 			return;
 		}
-		// kind=terminal: Lane 切替判定 + 保存済 Scene の restore + show-subscriber 付替
+		// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
 		if (info.kind === "terminal" && info.pane_id) {
 			const newLane = info.pane_id;
-			// Lane が変わった場合、 旧 Lane の現 Scene を save (`onSceneChange` でも save される筈だが
-			// 二重 set は idempotent、 timing race に対する保険として明示)
-			if (activeLaneAddress && activeLaneAddress !== newLane) {
-				const currentScene = frameEngine.getCurrentSceneId();
-				if (currentScene && currentScene !== "empty") {
-					laneScenes.set(activeLaneAddress, currentScene);
-				}
+			// ⚠️ restore は **lane が本当に変わった時だけ**。header refresh（engine_session_id /
+			// branch 変化等）は同一 lane に setActivePane を再送してくるため、無条件 restore だと
+			// hotkey で選んだ配置（save 未経由）が黙って巻き戻る（team-b review #1）。
+			const laneChanged = activeLaneAddress !== newLane;
+			// Lane が変わったら旧 Lane の配置 snapshot を save（empty が主役なら app-panes 側で skip）
+			if (activeLaneAddress && laneChanged) {
+				saveAppStateFor(activeLaneAddress);
 			}
 			activeLaneAddress = newLane;
 			// Echoes 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
@@ -291,9 +267,8 @@ const installSetActivePaneBridge = (): void => {
 			});
 			// wiremsg Stage 2: canvas (PP body) の供給は Rust 側 spawn_canvas_subscription が
 			// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
-			// 保存済 Scene を restore、 初訪問 Lane は lead-focus を default にする
-			const target = laneScenes.get(newLane) ?? "lead-focus";
-			frameEngine.applyScene(target);
+			// 保存済配置を restore、 初訪問 Lane は lead-focus を default にする
+			if (laneChanged) restoreAppStateFor(newLane);
 			// board モデル: lane 切替時に active lane を更新する。 lane board は canvas channel で既に
 			// retained 受信済みなので、 setActiveLaneName で表示 board を切り替えるだけでよい（別 load 不要）。
 			// LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
@@ -301,20 +276,17 @@ const installSetActivePaneBridge = (): void => {
 			setActiveLaneName(laneName);
 			return;
 		}
-		// kind != terminal (PP/GE/HP/canvas/preview click 等): fixed-Pane focus、 Lane state は更新しない
+		// kind != terminal (PP/GE/Bastet/preview click 等): stand pane の**訪問**（一時 view）。
+		// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
 		const paneId = KIND_TO_PANE[info.kind];
 		if (!paneId) {
-			console.warn("[frame-engine] unknown kind for setActivePane:", info.kind);
-			frameEngine.applyScene("empty");
+			console.warn("[app-panes] unknown kind for setActivePane:", info.kind);
+			applyAppScene("empty");
 			return;
 		}
-		frameEngine.applyScene(`${paneId}-focus`);
+		visitAppPane(paneId);
 	};
 };
-
-// DevTools 検査用 (window.vpLaneScenes で per-Lane state を inspect 可能)
-(window as unknown as { vpLaneScenes: Map<string, SceneId> }).vpLaneScenes =
-	laneScenes;
 
 // wiremsg Stage 2: Rust 注入口。Rust 側 spawn_canvas_subscription が active project の
 // canvas ProcessMessage ごとに `window.vpCanvas.handleMessage(msg)` を evaluate_script で呼ぶ。
@@ -366,12 +338,12 @@ document.head.appendChild(ppFontStyle);
 // 起動時 default Scene apply + HistoryStrip mount
 const applyDefaultScene = (): void => {
 	installSetActivePaneBridge();
-	const ok = frameEngine.applyScene("lead-focus");
+	const ok = applyAppScene("lead-focus");
 	const paneCount = document.querySelectorAll("[data-frame-id]").length;
-	// 診断 log: Frame Engine が apply された事実と、 data-frame-id 要素の存在を確認できるようにする。
+	// 診断 log: 配置が apply された事実と、 data-frame-id 要素の存在を確認できるようにする。
 	// user 環境で 「画面が黒い」 等の issue 時に DevTools console で path を即時切り分けできるよう常時出力。
 	console.info(
-		`[frame-engine] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,
+		`[app-panes] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,
 	);
 	// doc 19: PP body 下の history strip を SolidJS で mount。
 	mountHistoryStrip();
@@ -411,11 +383,16 @@ if (document.readyState === "loading") {
 	}
 }
 
-// DevTools 検査用 (window.vpFrame.applyScene('side-review') 等で手動 trigger 可能)
-(window as unknown as { vpFrame: FrameEngine }).vpFrame = frameEngine;
+// DevTools 検査用 (window.vpAppLayout.applyScene('side-review') 等で手動 trigger 可能)
+(window as unknown as { vpAppLayout: unknown }).vpAppLayout = {
+	engine: layoutEngine,
+	applyScene: applyAppScene,
+};
+// vpFrameSet は main_area.rs の boot 診断 field 名（旧 FrameEngine 由来）。意味は
+// 「layout 配線まで bundle init が到達した」— Rust 側 field 名の churn を避けて据え置く。
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
 	.vpBundleStatus!.vpFrameSet = true;
-console.info("[vp-bundle] vpFrame attached to window — bundle init complete");
+console.info("[vp-bundle] vpAppLayout attached to window — bundle init complete");
 
 // ===== VP-141 / PR-ε-2: PP markdown render API =====
 // window.vpPP で PP body の renderPP / clearPP / appendPP を公開。 PR-ε-3 で /ws/show 経由
@@ -474,23 +451,21 @@ let consoleActiveLane: string | null = null;
 // 見た目の class と状態を兼務させると、片方の意味を変えた時にもう片方が静かに壊れる。
 let consoleActiveMode: "tui" | "chat" = "tui";
 
-// doc 46 P1: Pane shell。lane の表示領域を「Act I か Act II」の排他から tiling へ。
-// ⚠️ Pane の**中身**（xterm / ChatView）には触れず、host 要素の class だけを操る。
+// doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担う。
+// ⚠️ Pane の**中身**（xterm / ChatView）には触れず、host 要素の style / class だけを操る。
+// 顔ぶれ（Console → Chat の並び順、要件 1）は lane-panes.ts の LANE_PANE_REFS が SSOT。
 const paneTabs = document.getElementById("pane-tabs");
 const paneFrame = document.getElementById("pane-terminal");
-const paneShell =
+const lanePanes =
 	paneTabs && paneFrame
-		? new PaneShell(
-				(id: string) => document.getElementById(id),
-				paneTabs,
-				paneFrame,
-			)
+		? installLanePanes({
+				hostOf: (id: string) => document.getElementById(id),
+				tabs: paneTabs,
+				frame: paneFrame,
+			})
 		: null;
-if (paneShell && paneFrame && paneTabs) {
+if (lanePanes && paneFrame && paneTabs) {
 	const tabsEl: HTMLElement = paneTabs;
-	// 要件 1: 既定で左右に並べる。順は「操る（console）→ 視る（chat）」。
-	paneShell.dock({ id: "lane-host", label: "Console" });
-	paneShell.dock({ id: "console-chat-host", label: "Chat" });
 	// doc 46 P2 要件 4/5: 「+ New」= Engine × Act を選んで**新しい session** を作る。
 	// 一覧は既存の `vp:echoes-stands` bus（stands_list の結果）から受ける — 新配信路は作らない。
 	const newBtn = document.createElement("button");
@@ -577,7 +552,7 @@ if (paneShell && paneFrame && paneTabs) {
 	});
 	document.addEventListener("click", () => closePaneMenu());
 	tabsEl.appendChild(newBtn);
-	// PaneShell.render は tabs を作り直すので、「+ New」は毎回付け直す。
+	// lane-panes の chip render は tabs を作り直すので、「+ New」は毎回付け直す。
 	const paneObserver = new MutationObserver(() => {
 		if (!tabsEl.contains(newBtn)) tabsEl.appendChild(newBtn);
 	});
@@ -590,19 +565,18 @@ if (paneShell && paneFrame && paneTabs) {
 			const host = (e.target as HTMLElement | null)?.closest(
 				"#lane-host, #console-chat-host",
 			);
-			if (host?.id) paneShell.focus(host.id);
+			if (host?.id) lanePanes.focusPane(host.id);
 		},
 		true,
 	);
 }
 
-// mode に応じて chat Pane を開き、focus を移す。
+// mode に応じて表示 Pane を切り替える（表示は 1 枚ずつ = showOnly、mako 2026-07-21）。
 //
 // doc 46 §1.4: Act は将来 Pane の kind に畳まれる（lane の mode ではなくなる）が、
-// P1 では既存の `console_mode` を**初期 Pane 構成 + focus 先**に写して残置する。
+// 既存の `console_mode` を**表示 Pane + focus 先**に写して残置する。
 // いきなり撤去すると Act 切替の全経路（doc 33 / doc 38 の資産）が同時に壊れるため。
-//
-// 旧実装との差: 片方を `display:none` で**隠す**のをやめ、両方を並べたまま focus だけ移す。
+// 並列表示（tiling）は chip から手動で戻せる — 既定だけを 1 枚ずつに寄せている。
 const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	consoleActiveLane = lane;
 	consoleActiveMode = mode;
@@ -614,24 +588,18 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	// Act が決めるのは **focus だけ**で、どちらの Pane も中身は常に現 lane を映す。
 	chatHost?.classList.add("active");
 	chatView?.showLane(lane);
-	// doc 47 §3: Pane 構成は **lane ごと**。DOM host は app 共有なので、lane が
-	// 変わったら新 lane の layout を DOM へ写し直す（これが無いと「どの lane に
+	// doc 47 §3: Pane 構成は **lane ごと**（= engine の lane scope）。DOM host は app 共有
+	// なので、lane が変わったら新 lane の配置を DOM へ写し直す（これが無いと「どの lane に
 	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
-	paneShell?.setLane(lane);
-	// ⚠️ 表示は **1 枚ずつ**（mako 2026-07-21）。内部モデル（doc 47）を整えるまで
-	// view は「現状維持・シンプル・ミニマム」に倒す方針。
-	//
-	// tiling の内部（`LaneLayouts` / `PaneLayout`）はそのまま残し、**既定の見せ方**だけを
-	// 従来の「Act I か Act II」に戻す。畳んだ側はタブ chip に残るので、`+ New` も
-	// 手動での並列表示も失われない（機能を消さずに既定だけを寄せる）。
-	//
-	// doc 47 §1 の決着（doc 46 の Pane を FrameEngine に畳む）後、既定を tiling に戻す。
+	lanePanes?.setActiveLane(lane);
+	// ⚠️ 表示は **1 枚ずつ**（mako 2026-07-21）。showOnly = solo（旧 minimizeOthers の
+	// attention 版）。畳んだ側はタブ chip に残るので、`+ New` も手動での並列表示も
+	// 失われない（機能を消さずに既定だけを寄せる）。
+	// doc 47 §1 の決着後に既定を tiling へ戻す時は showOnly を focusPane に緩める。
 	if (mode === "chat") {
-		paneShell?.focus("console-chat-host");
-		paneShell?.minimizeOthers("console-chat-host");
+		lanePanes?.showOnly("console-chat-host");
 	} else {
-		paneShell?.focus("lane-host");
-		paneShell?.minimizeOthers("lane-host");
+		lanePanes?.showOnly("lane-host");
 		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
 		// resync-loader は activeLane の replaying を読むだけで Act を知らないため、chat→tui で
 		// stuck した replaying が Act I 表示の上に居座るのを防ぐ。
@@ -794,6 +762,12 @@ if (paneTerminal) {
 ).vpBastet = {
 	renderDevices: renderBastetDevices,
 };
+// boot 窓 catch-up: world-device の接続時 snapshot は bundle ロード前に届いて renderDevices
+// guard で落ちている可能性がある — view の誕生時に一覧を pull する（lanes:ensure-all の同型。
+// 逆順（bundle が先）でも fetch は空を返すだけで、後から届く snapshot の push が埋める）
+(window as unknown as { ipc?: { postMessage(m: string): void } }).ipc?.postMessage(
+	JSON.stringify({ t: "bastet:devices_fetch" }),
+);
 
 // ===== Pane action button delegation =====
 // 各 pane の `[data-action]` button を click delegation で hook。 S2 では Clear のみ実装、
@@ -807,6 +781,12 @@ document.addEventListener(
 		if (!btn) return;
 		const action = btn.dataset.action;
 		const dataTarget = btn.dataset.target;
+		if (action === "close-pane") {
+			// stand pane の ✕ — 訪問を閉じて出発点の配置へ（2026-07-23 dogfood:
+			// 「Bastet が出っ放しで close できない」の根治）
+			closeAppPaneVisit();
+			return;
+		}
 		if (action === "clear") {
 			if (dataTarget === "pp") {
 				// doc 19 PP Canvas Stack Model: clear は items + cursor + DOM の 3 つを全 reset
@@ -983,8 +963,8 @@ function SidebarTokenBinds() {
 	// connector 状態色 = Light Grid の 2 hue: needs-you の magenta / working・current の cyan。
 	// picker で書くと :root inline に concrete 値が入り stylesheet 定義を上書きする (探索用)。
 	const connColors: Array<{ id: string; cssVar: string; value: string }> = [
-		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#FF3DAE" },
-		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#22E0FF" },
+		{ id: "sb.conn.hitl", cssVar: "--sb-conn-hitl", value: "#FF4A2D" },
+		{ id: "sb.conn.auto", cssVar: "--sb-conn-auto", value: "#FFF76B" },
 	];
 	connColors.forEach((t, i) => {
 		bind<string>({
@@ -1002,10 +982,21 @@ function SidebarTokenBinds() {
 	return null;
 }
 
+// doc 48 Phase 2 (editor bridge): MCP → vp-app が評価する JS が provider の外から
+// host に触るための明示 expose。creoEditor console API は localhost hostname heuristic で
+// expose されるため vp-asset:// origin では当てにできない — bridge はこの global 一本に依存する。
+// 読み手: app.rs `editor_bridge_js`（`window.vpEditorHost.mcp` を呼ぶ）。UI は持たない。
+function ExposeEditorHostForBridge() {
+	const host = useEditorHost();
+	(window as unknown as { vpEditorHost?: unknown }).vpEditorHost = host;
+	return null;
+}
+
 function App() {
 	return (
 		<EditorHostProvider>
 			<SidebarTokenBinds />
+			<ExposeEditorHostForBridge />
 			<EditorLayer />
 		</EditorHostProvider>
 	);
@@ -1019,3 +1010,7 @@ if (root) {
 		"[vp-app] #editor-root が見つかりません — EditorLayer mount をスキップ",
 	);
 }
+
+// Component Gallery mode（doc 48 Phase 3 → doc 49 LE-P2 で creo-ui-layout の pane 化）。
+// EditorHostProvider とは独立に生きる（gallery 中も Ctrl+Shift+E / editor_set が効く）。
+installGallery();

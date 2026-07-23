@@ -96,7 +96,9 @@ fn initial_developer_mode(settings: &Settings) -> bool {
 pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 
 /// WebView 統合 (step 3a) 後の唯一の webview が `vp-asset://` で配信する asset。
-/// `MAIN_AREA_HTML` (sidebar bundle + editor-host bundle を inline 済) を `app/index.html` で配信。
+/// `MAIN_AREA_HTML` を `app/index.html` で、SolidJS bundle 2 本を外部 script として配信
+/// (doc 48 Phase 1 で inline → `<script src>` 化。`VP_WEBVIEW_DEV` 設定時は
+/// `web_assets::serve` の disk-read が baked より優先され、cargo build なしの HMR になる)。
 ///
 /// ## なぜ with_html ではなく custom protocol か (統合 origin fix)
 /// `with_html` で load した document は **about:blank = 不透明 (opaque) オリジン**になり、
@@ -106,11 +108,23 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 /// 空になっていた。custom protocol で load すれば document origin = `vp-asset://app` の
 /// 実オリジンになり、統合前 (sidebar が `vp-asset://app/sidebar.html` を load していた頃) と
 /// 同じく localStorage が使える。
-const MAIN_VIEW_ASSETS: &[(&str, &[u8], &str)] = &[(
-    "app/index.html",
-    MAIN_AREA_HTML.as_bytes(),
-    "text/html; charset=utf-8",
-)];
+const MAIN_VIEW_ASSETS: &[(&str, &[u8], &str)] = &[
+    (
+        "app/index.html",
+        MAIN_AREA_HTML.as_bytes(),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "app/editor-host.bundle.js",
+        main_area::EDITOR_HOST_BUNDLE_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    ),
+    (
+        "app/sidebar.bundle.js",
+        main_area::SIDEBAR_BUNDLE_JS.as_bytes(),
+        "application/javascript; charset=utf-8",
+    ),
+];
 
 /// Sidebar + Main area の bounds をウィンドウサイズから計算 (VP-100 Phase 2)
 ///
@@ -168,6 +182,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
                 | "console:switch_root"
                 | "console:set_model"
+                // Bastet pane の device 一覧 catch-up（allowlist 漏れは sidebar IPC へ流れて
+                // silent drop = 「pane が空のまま」regression — session tab 4 tag と同じ罠）
+                | "bastet:devices_fetch"
         )
     )
 }
@@ -190,6 +207,8 @@ mod ipc_tag_tests {
             "echoes:stands_fetch",
             // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
             "console:switch_root",
+            // Bastet pane の device catch-up（boot 窓救済 — lanes:ensure-all の同型）
+            "bastet:devices_fetch",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -785,6 +804,56 @@ async fn run_canvas_session(
                 continue;
             }
         };
+        // doc 48 Phase 2: editor bridge command は canvas-handler (webview) に流さず、
+        // ここで JS 評価を event loop へ依頼し、結果を同一 channel の `editor_result` で
+        // 返す (request-response。channel は subscribe 済なので project 束縛も正しい)。
+        // この await 中は当該 project の canvas event が最大 ~2.5s 待たされるが、editor
+        // 操作は人間スケールの頻度なので許容 (別 task 化は順序/相関の複雑さに見合わない)。
+        if payload.get("type").and_then(|v| v.as_str()) == Some("editor_command") {
+            let request_id = payload
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if request_id.is_empty() {
+                continue;
+            }
+            let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("");
+            let body = match editor_bridge_js(
+                op,
+                payload.get("field_id").and_then(|v| v.as_str()),
+                payload.get("value"),
+            ) {
+                Some(js) => {
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    if proxy
+                        .send_event(AppEvent::EditorEval { js, resp: tx })
+                        .is_err()
+                    {
+                        return Ok(SubscriptionOutcome::AppClosing);
+                    }
+                    // World 側の待ち (3s) より短く切る (VP-163 と同じ向き: 内側が先に諦める)
+                    match tokio::time::timeout(std::time::Duration::from_millis(2500), rx.recv())
+                        .await
+                    {
+                        Ok(Some(raw)) => serde_json::from_str::<serde_json::Value>(&raw)
+                            .unwrap_or(serde_json::Value::String(raw)),
+                        _ => serde_json::json!({"error": "webview 評価 timeout"}),
+                    }
+                }
+                None => serde_json::json!({"error": format!("未知の editor op: {op}")}),
+            };
+            if let Err(e) = channel
+                .request::<serde_json::Value, serde_json::Value>(
+                    "editor_result",
+                    &serde_json::json!({ "request_id": request_id, "payload": body }),
+                )
+                .await
+            {
+                tracing::warn!("editor bridge: editor_result 送信失敗: {}", e);
+            }
+            continue;
+        }
         if proxy
             .send_event(AppEvent::CanvasMessage {
                 process_path: process_path.to_string(),
@@ -795,6 +864,224 @@ async fn run_canvas_session(
             // event loop が閉じた = app 終了。
             return Ok(SubscriptionOutcome::AppClosing);
         }
+    }
+}
+
+/// doc 48 Phase 2: `EditorCommand` op → webview で評価する JS 式 (純 calculation)。
+///
+/// 式は object を返し、wry (`evaluate_script_with_callback`) がそれを JSON 文字列化して
+/// callback に渡す。editor host は webview 側 `ExposeEditorHostForBridge` (entry.tsx) が
+/// `window.vpEditorHost` に明示 expose したものを `mcp` API (editor-mode.md D-10、
+/// listFields / getValue / setValue) 経由で叩く — `creoEditor` console API は localhost
+/// hostname heuristic 依存で vp-asset:// origin では当てにならないため使わない。
+/// host 不在 (bundle 未 mount 等) は `{error}` object を返す JS にして Rust 側は透過。
+/// 未知 op / set の引数欠落は None。
+fn editor_bridge_js(
+    op: &str,
+    field_id: Option<&str>,
+    value: Option<&serde_json::Value>,
+) -> Option<String> {
+    // h = EditorHostMcpApi
+    const PRELUDE: &str = "const h=window.vpEditorHost&&window.vpEditorHost.mcp;if(!h)return{error:\"editor host not available\"};";
+    // h = layout bridge（doc 49 LE-P2 PR2 → P4 PR3: layout-mcp.ts の scope dispatcher が
+    // window.vpLayoutHost を所有。gallery-panes.tsx は 1 scope handler として登録される）
+    const LAYOUT_PRELUDE: &str = "const h=window.vpLayoutHost&&window.vpLayoutHost.mcp;if(!h)return{error:\"layout host not available\"};";
+    match op {
+        // === layout bridge (LE-15) — editor と同じ配管、別 host global ===
+        // LE-P4 PR3: get も body（{scope}）を渡す。value 欠落は null = 既定 scope
+        "layout_get" => {
+            let body = value
+                .and_then(|v| serde_json::to_string(v).ok())
+                .unwrap_or_else(|| "null".to_string());
+            Some(format!("(()=>{{{LAYOUT_PRELUDE}return h.get({body})}})()"))
+        }
+        "layout_set" => {
+            // body(JSON) はそのまま JS literal として合法 (JSON ⊂ JS)。value 欠落は防御的に None
+            let body = serde_json::to_string(value?).ok()?;
+            Some(format!("(()=>{{{LAYOUT_PRELUDE}return h.set({body})}})()"))
+        }
+        "layout_history" => {
+            let body = value
+                .and_then(|v| serde_json::to_string(v).ok())
+                .unwrap_or_else(|| "null".to_string());
+            Some(format!(
+                "(()=>{{{LAYOUT_PRELUDE}return h.history({body})}})()"
+            ))
+        }
+        "fields" => Some(format!(
+            "(()=>{{{PRELUDE}return{{fields:h.listFields().map(f=>({{id:f.id,label:f.label,type:f.type,semantic:f.semantic,group:f.group??null,cssVar:f.cssVar??null,initial:f.initial??null,constraints:f.constraints??null,role:f.role??null}}))}}}})()"
+        )),
+        "values" => Some(format!(
+            "(()=>{{{PRELUDE}return{{values:Object.fromEntries(h.listFields().map(f=>[f.id,h.getValue(f.id)]))}}}})()"
+        )),
+        "set" => {
+            // serde_json::to_string の出力はそのまま JS literal として合法 (JSON ⊂ JS)。
+            // field_id/value の必須検証は World 側 handler 済みだが、欠落は防御的に None。
+            let id = serde_json::to_string(field_id?).ok()?;
+            let value = serde_json::to_string(value?).ok()?;
+            Some(format!(
+                "(()=>{{{PRELUDE}h.setValue({id},{value});return{{ok:true,id:{id}}}}})()"
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// fleet 配線 (doc 49 LE-19): `DeviceEvent` payload → webview の mapping registry へ渡す JS 式。
+///
+/// `control_event` のみ転送する (device_connected 等は sidebar registry の領分)。
+/// editor bridge と違い応答不要の一方向 push なので callback なしの `evaluate_script` で投げる。
+/// 受け手不在 (gallery 未 mount 等) は JS 側の `window.vpFleet` guard が吸収する。
+/// フィードバック方向 (LE-19): webview の ipc body から fleet feedback payload を取り出す。
+///
+/// `{"t":"fleet:feedback","feedback":{...}}` の形のみ Some。tag 不一致 / 形不正は None
+/// (通常の ipc dispatch に流す)。payload の中身の検証は World 側 (serde) が担う。
+fn fleet_feedback_payload(body: &str) -> Option<serde_json::Value> {
+    let v = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    if v.get("t").and_then(|t| t.as_str()) != Some("fleet:feedback") {
+        return None;
+    }
+    v.get("feedback").cloned()
+}
+
+fn fleet_dispatch_js(payload: &serde_json::Value) -> Option<String> {
+    if payload.get("kind").and_then(|v| v.as_str()) != Some("control_event") {
+        return None;
+    }
+    // serde_json::to_string の出力はそのまま JS literal として合法 (JSON ⊂ JS)
+    let body = serde_json::to_string(payload).ok()?;
+    Some(format!(
+        "(()=>{{const f=window.vpFleet;if(f&&f.dispatch)f.dispatch({body})}})()"
+    ))
+}
+
+#[cfg(test)]
+mod fleet_dispatch_js_tests {
+    use super::fleet_dispatch_js;
+    use serde_json::json;
+
+    #[test]
+    fn control_event_becomes_dispatch_call() {
+        let payload = json!({
+            "kind": "control_event",
+            "port_name": "ROTO-CONTROL",
+            "event": {"type": "knob", "index": 0, "value": 0.5},
+        });
+        let js = fleet_dispatch_js(&payload).expect("control_event は転送される");
+        assert!(js.contains("window.vpFleet"));
+        assert!(js.contains("\"port_name\":\"ROTO-CONTROL\""));
+        assert!(js.contains("\"type\":\"knob\""));
+    }
+
+    #[test]
+    fn non_control_events_are_not_forwarded() {
+        let connected = json!({"kind": "device_connected", "port_name": "LPD8", "has_input": true});
+        assert_eq!(fleet_dispatch_js(&connected), None);
+        assert_eq!(fleet_dispatch_js(&json!({})), None);
+    }
+
+    #[test]
+    fn feedback_payload_extracts_only_fleet_tag() {
+        use super::fleet_feedback_payload;
+        let body = r#"{"t":"fleet:feedback","feedback":{"knobs":[{"index":0,"value":0.5}],"fader":null,"pads":[]}}"#;
+        let fb = fleet_feedback_payload(body).expect("fleet:feedback は抽出される");
+        assert_eq!(fb["knobs"][0]["value"], 0.5);
+        // 他 tag / 非 JSON は None（通常の ipc dispatch へ）
+        assert_eq!(
+            fleet_feedback_payload(r#"{"t":"term:write","d":"x"}"#),
+            None
+        );
+        assert_eq!(fleet_feedback_payload("not json"), None);
+    }
+}
+
+#[cfg(test)]
+mod editor_bridge_js_tests {
+    use super::editor_bridge_js;
+
+    /// fields / values は bridge global (`vpEditorHost.mcp`) を経由する。
+    #[test]
+    fn read_ops_use_bridge_global() {
+        for op in ["fields", "values"] {
+            let js = editor_bridge_js(op, None, None).expect(op);
+            assert!(
+                js.contains("window.vpEditorHost"),
+                "{op}: bridge global 不使用"
+            );
+            assert!(js.contains("listFields"), "{op}: mcp API 不使用");
+        }
+    }
+
+    /// set は id / value を JS literal として埋め込む (quote は escape される)。
+    #[test]
+    fn set_encodes_arguments_as_js_literals() {
+        let js = editor_bridge_js("set", Some("sb.text.base"), Some(&serde_json::json!(13.5)))
+            .expect("set");
+        assert!(js.contains(r#"h.setValue("sb.text.base",13.5)"#), "js={js}");
+
+        let tricky = serde_json::json!("#FF3DAE\"</script>");
+        let js = editor_bridge_js("set", Some("sb.conn.hitl"), Some(&tricky)).expect("set");
+        assert!(
+            js.contains(r##""#FF3DAE\"</script>""##),
+            "escape されていない: {js}"
+        );
+    }
+
+    /// 未知 op / set の引数欠落は None (World 側で {error} 応答に変換される)。
+    #[test]
+    fn unknown_op_and_missing_args_are_none() {
+        assert!(editor_bridge_js("enter", None, None).is_none());
+        assert!(editor_bridge_js("set", None, Some(&serde_json::json!(1))).is_none());
+        assert!(editor_bridge_js("set", Some("id"), None).is_none());
+    }
+
+    /// layout 系 op は layout bridge global (`vpLayoutHost.mcp`) を経由する（LE-P2 PR2）。
+    #[test]
+    fn layout_ops_use_layout_bridge_global() {
+        let get = editor_bridge_js("layout_get", None, None).expect("layout_get");
+        assert!(get.contains("window.vpLayoutHost"), "js={get}");
+        // LE-P4 PR3: value 欠落は null = 既定 scope（gallery、後方互換）
+        assert!(get.contains("h.get(null)"), "js={get}");
+        // editor 側の global には触れない（host の取り違え防止）
+        assert!(!get.contains("vpEditorHost"), "js={get}");
+    }
+
+    /// layout_get は scope body（LE-P4 PR3）を JS literal として渡す。
+    #[test]
+    fn layout_get_passes_scope_body() {
+        let js = editor_bridge_js(
+            "layout_get",
+            None,
+            Some(&serde_json::json!({"scope": "app"})),
+        )
+        .expect("layout_get");
+        assert!(js.contains(r#"h.get({"scope":"app"})"#), "js={js}");
+    }
+
+    /// layout_set は body(JSON) を JS literal として埋め込む。value 欠落は None。
+    #[test]
+    fn layout_set_encodes_body_and_requires_value() {
+        let body = serde_json::json!({"notation": "a | b ~ c", "attention": {"a": 0.5}});
+        let js = editor_bridge_js("layout_set", None, Some(&body)).expect("layout_set");
+        assert!(
+            js.contains(r#"h.set({"attention":{"a":0.5},"notation":"a | b ~ c"})"#),
+            "js={js}"
+        );
+        assert!(editor_bridge_js("layout_set", None, None).is_none());
+    }
+
+    /// layout_history は value 省略で null（既定 limit）に落ちる。
+    #[test]
+    fn layout_history_defaults_to_null_body() {
+        let js = editor_bridge_js("layout_history", None, None).expect("layout_history");
+        assert!(js.contains("h.history(null)"), "js={js}");
+        let js = editor_bridge_js(
+            "layout_history",
+            None,
+            Some(&serde_json::json!({"limit": 5})),
+        )
+        .expect("layout_history");
+        assert!(js.contains(r#"h.history({"limit":5})"#), "js={js}");
     }
 }
 
@@ -1247,8 +1534,9 @@ fn spawn_device_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     conn: SharedWorldConn,
+    fleet_rx: tokio::sync::watch::Receiver<serde_json::Value>,
 ) {
-    rt_handle.spawn(device_subscription_loop(proxy, conn));
+    rt_handle.spawn(device_subscription_loop(proxy, conn, fleet_rx));
 }
 
 /// "world-device" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
@@ -1257,7 +1545,11 @@ fn spawn_device_subscription(
 /// 自体は共有 manager が維持するので、 「接続済なのに open_channel が連続失敗」= channel 未提供と
 /// 判断して graceful give-up する (= device 機能なしで app は動く)。 connection-down (Disconnected)
 /// は失敗カウントに含めない (channel は在った)。
-async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: SharedWorldConn) {
+async fn device_subscription_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    mut conn: SharedWorldConn,
+    fleet_rx: tokio::sync::watch::Receiver<serde_json::Value>,
+) {
     const MAX_FAILURES: u32 = 10;
     let mut failures: u32 = 0;
 
@@ -1266,7 +1558,7 @@ async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: Sha
             Some(c) => c,
             None => return, // app 終了
         };
-        match run_device_session(&proxy, &client).await {
+        match run_device_session(&proxy, &client, fleet_rx.clone()).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {
                 // channel は在った (= 接続できた)。 失敗カウントを reset し次 client を待つ。
@@ -1296,20 +1588,44 @@ async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: Sha
 async fn run_device_session(
     proxy: &EventLoopProxy<AppEvent>,
     client: &unison::ProtocolClient,
+    mut fleet_rx: tokio::sync::watch::Receiver<serde_json::Value>,
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
     // F1b: 共有 connection 上に "world-device" stream を開く (旧: 専用 connect)。
-    let channel = client
-        .open_channel("world-device")
-        .await
-        .map_err(|e| format!("open world-device channel: {}", e))?;
+    let channel = std::sync::Arc::new(
+        client
+            .open_channel("world-device")
+            .await
+            .map_err(|e| format!("open world-device channel: {}", e))?,
+    );
     tracing::info!("world-device subscription connected");
 
-    loop {
+    // フィードバック方向 (doc 49 LE-19): webview の場の状態を World へ上り event で送る。
+    // watch = latest-wins (連続更新は自然に coalesce)。session 終了時に abort。
+    // 本関数は rt_handle.spawn 済み task 内で走るため runtime context がある —
+    // 素の tokio::spawn は disallowed (tao main thread 規約) なので Handle::current 経由。
+    let feedback_channel = channel.clone();
+    let feedback_task = tokio::runtime::Handle::current().spawn(async move {
+        while fleet_rx.changed().await.is_ok() {
+            let value = fleet_rx.borrow_and_update().clone();
+            if value.is_null() {
+                continue;
+            }
+            if feedback_channel
+                .send_event("feedback", &value)
+                .await
+                .is_err()
+            {
+                return; // 切断 — session ごと作り直される
+            }
+        }
+    });
+
+    let outcome = loop {
         let msg = match channel.recv().await {
             Ok(m) => m,
-            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+            Err(_) => break Ok(SubscriptionOutcome::Disconnected),
         };
         if msg.msg_type != MessageType::Event || msg.method != "event" {
             continue;
@@ -1323,9 +1639,11 @@ async fn run_device_session(
         };
         if proxy.send_event(AppEvent::DeviceEvent { payload }).is_err() {
             // event loop が閉じた = app 終了。
-            return Ok(SubscriptionOutcome::AppClosing);
+            break Ok(SubscriptionOutcome::AppClosing);
         }
-    }
+    };
+    feedback_task.abort();
+    outcome
 }
 
 /// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
@@ -2639,6 +2957,7 @@ pub fn run() -> anyhow::Result<()> {
     }
     let dev_mode_item = menu_handles.developer_mode_item;
     let open_devtools_item = menu_handles.open_devtools_item;
+    let reload_webview_item = menu_handles.reload_webview_item;
     let menu_ids = menu_handles.ids;
     let _tray = match crate::tray::build_tray() {
         Ok(t) => Some(t),
@@ -2657,9 +2976,20 @@ pub fn run() -> anyhow::Result<()> {
     // event loop closure が move capture するので、 closure 内の spawn は `world_conn.clone()` を渡す。
     let world_conn = spawn_world_conn_manager(&rt_handle, crate::client::default_world_port());
 
+    // フィードバック方向 (doc 49 LE-19): webview の場の状態 → world-device 上り event。
+    // watch = latest-wins (webview が throttle 済みでも Rust 側で自然に coalesce)。
+    // 送り手 = ipc_handler の "fleet:feedback" 分岐 / 受け手 = device session の sender task。
+    let (fleet_feedback_tx, fleet_feedback_rx) =
+        tokio::sync::watch::channel(serde_json::Value::Null);
+
     // Bastet 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
     // canvas/lanes は per-SP だが device は World scope (= daemon singleton) なので起動時 1 回。
-    spawn_device_subscription(&rt_handle, event_loop.create_proxy(), world_conn.clone());
+    spawn_device_subscription(
+        &rt_handle,
+        event_loop.create_proxy(),
+        world_conn.clone(),
+        fleet_feedback_rx,
+    );
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session_state より前に確定する。
@@ -2803,7 +3133,8 @@ pub fn run() -> anyhow::Result<()> {
     spawn_lane_inbox_poller(&rt_handle, event_loop.create_proxy());
 
     // WebView 統合 (step 3a): sidebar + main を 1 WebView (1 DOM, CSS flex) に統合。
-    // sidebar.bundle.js は MAIN_AREA_HTML 内に inline 済 (#sidebar-root に mount)。
+    // sidebar.bundle.js は vp-asset://app/sidebar.bundle.js の外部 script として load される
+    // (doc 48 Phase 1 で inline → 外部化。#sidebar-root に mount)。
     // 旧 2 WebView (cross-WebView IPC bridge で keyboard を 2 往復させていた) を廃し、
     // sidebar↔main の event / state が同一 DOM 内で直接流れる。
     let sidebar_ipc_proxy = event_loop.create_proxy();
@@ -2843,6 +3174,11 @@ pub fn run() -> anyhow::Result<()> {
             // main tag (terminal / pane 系) → terminal、 それ以外 (sidebar IpcEnvelope:
             // project: / lane: 系) → SidebarIpc。 terminal の fall-through に頼らない。
             let body = req.body();
+            // fleet feedback (LE-19) は event loop を経由せず watch へ直行 (高頻度 + 状態量)
+            if let Some(fb) = fleet_feedback_payload(body) {
+                let _ = fleet_feedback_tx.send(fb);
+                return;
+            }
             if is_main_ipc_tag(body) {
                 terminal::handle_ipc_message(body, &ipc_proxy);
             } else {
@@ -3537,6 +3873,13 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
                 }
             }
+            Event::UserEvent(AppEvent::BastetDevicesFetch) => {
+                // boot 窓 catch-up: world-device の接続時 snapshot は bundle ロード前に届き、
+                // renderDevices の `window.vpBastet &&` guard で黙って落ちる（sidebar の
+                // Devices badge は state 再 push で生きるが pane だけ空のまま、2026-07-23
+                // 実機で確認）。view の誕生時に保持済み state から再 render する。
+                lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
+            }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 tracing::debug!("🧲 device event: {}", payload);
                 // Phase 2: device 一覧を registry 更新 → sidebar (Devices badge) + main area
@@ -3544,6 +3887,23 @@ pub fn run() -> anyhow::Result<()> {
                 if crate::pane::apply_device_event(&mut sidebar_state.bastet_devices, &payload) {
                     push_sidebar_state(&webview, &sidebar_state);
                     lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
+                }
+                // fleet 配線 (doc 49 LE-19): 操作入力 (control_event) は webview の mapping
+                // registry へ fire-and-forget 転送。受け手 (window.vpFleet) は gallery-panes.tsx。
+                if let Some(js) = fleet_dispatch_js(&payload)
+                    && let Err(e) = webview.evaluate_script(&js)
+                {
+                    tracing::warn!("fleet dispatch: evaluate_script 失敗: {}", e);
+                }
+            }
+            Event::UserEvent(AppEvent::EditorEval { js, resp }) => {
+                // doc 48 Phase 2: editor bridge の webview 評価。結果 (wry が JSON 文字列化
+                // した評価値) を canvas session 側へ返す。受信側は timeout で打ち切るので
+                // callback が遅れて発火しても送信は無害 (受け手 drop 済なら send Err → 無視)。
+                if let Err(e) = webview.evaluate_script_with_callback(&js, move |result| {
+                    let _ = resp.send(result);
+                }) {
+                    tracing::warn!("editor bridge: evaluate_script 失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::CanvasMessage {
@@ -5225,6 +5585,7 @@ pub fn run() -> anyhow::Result<()> {
                     dev_mode = !dev_mode;
                     dev_mode_item.set_checked(dev_mode);
                     open_devtools_item.set_enabled(dev_mode);
+                    reload_webview_item.set_enabled(dev_mode);
                     settings.developer_mode = Some(dev_mode);
                     if let Err(e) = settings.save() {
                         tracing::warn!("Settings 保存失敗: {}", e);
@@ -5248,6 +5609,18 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::info!("DevTools open");
                     } else {
                         tracing::warn!("Open DevTools clicked but dev_mode=false (gated)");
+                    }
+                } else if id == menu_ids.reload_webview {
+                    // doc 48 Phase 1: HMR loop の reload 側。VP_WEBVIEW_DEV 設定時は
+                    // reload で *.bundle.js が disk から fresh に取り直される。
+                    if dev_mode {
+                        if let Err(e) = webview.evaluate_script("location.reload()") {
+                            tracing::warn!("Reload WebView 失敗: {}", e);
+                        } else {
+                            tracing::info!("Reload WebView (location.reload)");
+                        }
+                    } else {
+                        tracing::warn!("Reload WebView clicked but dev_mode=false (gated)");
                     }
                 } else {
                     tracing::debug!("MenuClicked: 未処理の id = {:?}", id);
@@ -5361,7 +5734,8 @@ mod port_merge_tests {
 
 #[cfg(test)]
 mod main_view_asset_tests {
-    //! 統合 WebView (step 3a) の単一 HTML が vp-asset:// で配信でき、sidebar を inline mount すること。
+    //! 統合 WebView (step 3a) の単一 HTML が vp-asset:// で配信でき、SolidJS bundle を
+    //! 外部 script (vp-asset://app/*.bundle.js) として参照・配信できること (doc 48 Phase 1)。
     //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
     use super::*;
 
@@ -5375,16 +5749,41 @@ mod main_view_asset_tests {
         assert_eq!(bytes, MAIN_AREA_HTML.as_bytes());
     }
 
-    /// 統合 HTML が sidebar mount point を持ち、sidebar bundle を inline している。
+    /// 統合 HTML が sidebar mount point を持ち、bundle を外部 script として参照する
+    /// (doc 48 Phase 1: inline → `<script src>` 化。相対 src は page origin
+    /// `vp-asset://app/` により `app/*.bundle.js` に解決される)。
     #[test]
-    fn main_area_html_inlines_sidebar() {
+    fn main_area_html_references_external_bundles() {
         assert!(
             MAIN_AREA_HTML.contains(r#"id="sidebar-root""#),
             "統合 HTML に #sidebar-root mount point がない"
         );
         assert!(
-            MAIN_AREA_HTML.contains("[vp-sidebar] booting"),
-            "統合 HTML が sidebar bundle を inline していない (boot marker 不在)"
+            MAIN_AREA_HTML.contains(r#"<script src="editor-host.bundle.js"></script>"#),
+            "統合 HTML が editor-host bundle を外部 script 参照していない"
         );
+        assert!(
+            MAIN_AREA_HTML.contains(r#"<script src="sidebar.bundle.js"></script>"#),
+            "統合 HTML が sidebar bundle を外部 script 参照していない"
+        );
+    }
+
+    /// 外部化した bundle が `vp-asset://app/*.bundle.js` から配信できる
+    /// (baked 経路 = `VP_WEBVIEW_DEV` 未設定時の prod 挙動)。
+    #[test]
+    fn bundles_servable_via_vp_asset() {
+        for (path, marker) in [
+            ("vp-asset://app/sidebar.bundle.js", "[vp-sidebar] booting"),
+            ("vp-asset://app/editor-host.bundle.js", "EditorHost"),
+        ] {
+            let asset = crate::web_assets::lookup_asset(path, MAIN_VIEW_ASSETS);
+            assert!(asset.is_some(), "{path} not lookupable");
+            let (bytes, ct) = asset.unwrap();
+            assert_eq!(ct, "application/javascript; charset=utf-8");
+            assert!(
+                String::from_utf8_lossy(bytes).contains(marker),
+                "{path} の中身に marker `{marker}` が無い (bundle 生成物が想定と違う)"
+            );
+        }
     }
 }
