@@ -188,7 +188,12 @@ pub enum AppEvent {
     },
     /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で SP へ。
-    EchoesSubmit { lane: String, prompt: String },
+    EchoesSubmit {
+        lane: String,
+        prompt: String,
+        /// 宛先 session（doc 50 P2）。None = lane の focused（旧 SP / 旧 UI 互換）。
+        session: Option<u32>,
+    },
     /// Echoes Act II HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の echoes
     /// session へ渡し、 canvas channel 上り request `echoes_respond` で SP へ。 `request_id` は
     /// Question event 由来の control_response マッチング用。 allow は `answers`、 deny は
@@ -196,16 +201,27 @@ pub enum AppEvent {
     EchoesRespond {
         lane: String,
         request_id: String,
+        /// 宛先 session（doc 50 P2）。None = focused。
+        session: Option<u32>,
         answers: Option<serde_json::Value>,
         behavior: Option<String>,
         message: Option<String>,
     },
     /// Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
     /// event loop が当該 lane の echoes session へ渡し、`echoes_interrupt` で SP へ。
-    EchoesInterrupt { lane: String },
+    EchoesInterrupt {
+        lane: String,
+        /// 宛先 session（doc 50 P2）。None = focused。
+        session: Option<u32>,
+    },
     /// Echoes Act II HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
     /// echoes session へ渡し、`echoes_set_permission_mode` で SP へ。`mode` = "default"|"bypassPermissions" 等。
-    EchoesSetPermissionMode { lane: String, mode: String },
+    EchoesSetPermissionMode {
+        lane: String,
+        mode: String,
+        /// 宛先 session（doc 50 P2）。None = focused。
+        session: Option<u32>,
+    },
     /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
     /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
     /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
@@ -279,6 +295,16 @@ pub enum AppEvent {
 /// browser native で SP に直接送信するので、 Rust 経路は使わない (silent no-op)。
 /// `ready` も per-Lane instance ごとに発火するが、 Rust 側で flush するものは無い (no-op)。
 /// 残り `copy` / `debug` / `slot:rect` を処理する thin wrapper。
+/// chat 動詞の宛先 session を IPC payload から読む（doc 50 P2、additive）。
+/// 省略 / 型不正は None = lane の focused（SP 側 payload_session_key と同じ後方互換）。
+fn parse_session(parsed: &serde_json::Value) -> Option<u32> {
+    parsed
+        .get("session")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n >= 1)
+}
+
 pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
@@ -324,6 +350,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::EchoesSubmit {
                     lane: lane.to_string(),
                     prompt: prompt.to_string(),
+                    session: parse_session(&parsed),
                 });
             }
         }
@@ -336,6 +363,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::EchoesRespond {
                     lane: lane.to_string(),
                     request_id: request_id.to_string(),
+                    session: parse_session(&parsed),
                     answers: parsed.get("answers").cloned(),
                     behavior: parsed
                         .get("behavior")
@@ -353,6 +381,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::EchoesInterrupt {
                     lane: lane.to_string(),
+                    session: parse_session(&parsed),
                 });
             }
         }
@@ -364,6 +393,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::EchoesSetPermissionMode {
                     lane: lane.to_string(),
                     mode: mode.to_string(),
+                    session: parse_session(&parsed),
                 });
             }
         }

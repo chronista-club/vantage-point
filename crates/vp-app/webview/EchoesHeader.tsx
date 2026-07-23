@@ -90,7 +90,10 @@ export type RootPickerItem = {
   /** `cc:3d91933b` 形。会話 id が未発行（Draft / 未発話）の session は `cc:新品`。 */
   label: string
   isRoot: boolean
-  /** engine が未知（chip prefix が `sid` = 撤去済み / legacy stand）= 切替不可。 */
+  /** 切替不可。実質の理由は「**resume を持たない**」（doc 50 §4.0 — shell 層に落ちる
+   *  session は `--resume` で slot に張り替えられない）。判定は chip prefix `sid`
+   *  （撤去済み / legacy stand）を代理指標にしている — shell が正規の投げる先になる時は
+   *  この代理を「resume capability」の実表現に置き換えること。 */
   disabled: boolean
 }
 
@@ -298,7 +301,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                         item.isRoot
                           ? '今の slot（root）'
                           : item.disabled
-                            ? 'engine が未知のため切替不可'
+                            ? 'この session は resume を持たないため root に切替不可'
                             : 'この session を root にする（slot を resume で張り替え）'
                       }
                       onClick={() => {

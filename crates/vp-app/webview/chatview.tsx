@@ -519,12 +519,9 @@ export function isTurnClosingEvent(kind: EchoesEvent['kind']): boolean {
 }
 
 /** doc 35 §5.1: buffer した type-ahead を engine に流す（対象 = turn を閉じた (lane, session)）。
- *  ⚠️ `echoes:submit` は今のところ session を運ばず SP 側で lane の focused に落ちる
- *  （doc 50 §4.3 #6 = P2 の対象）。したがって background session の pending がここで流れると
- *  **focused 側に送られてしまう** — それを避けるため、focused でない session は flush しない
- *  で pending に留め置く（その session が focused になった時に改めて閉じ event で流れる）。 */
+ *  doc 50 P2: `echoes:submit` が session を運ぶようになったので、background session の
+ *  pending もその session 自身へ安全に流せる（旧 focused guard は撤去）。 */
 function flushPending(lane: string, session: number): void {
-  if (session !== focusedOf(lane)) return
   const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text) return
@@ -535,7 +532,7 @@ function flushPending(lane: string, session: number): void {
     }),
   )
   const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-  ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+  ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, session, prompt: text }))
 }
 
 /**
@@ -1086,8 +1083,9 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
 
 /** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
  *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
- *  ⚠️ P2 まで: chat 動詞（submit / set_model / perm / interrupt）は session を運ばず lane の
- *  focused に落ちる。誤配送を防ぐため、操作系は isFocused の時だけ有効化する。 */
+ *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt）は session を運ぶ = どの pane
+ *  からも打てる。例外は model 切替のみ — SP 側 console_set_model が root slot 単位（engine の
+ *  --resume 込み respawn）のため、focused でだけ有効にしている。 */
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
   const state = (): ChatState => lc.state
@@ -1131,7 +1129,9 @@ function SessionChatView(props: { lane: string; session: number }) {
     //  撤去済み — 同期先ごと消えた）
     lc.set(produce((s) => (s.permissionMode = mode)))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'echoes:set_permission_mode', lane, session: props.session, mode }),
+    )
   }
 
   // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
@@ -1157,9 +1157,6 @@ function SessionChatView(props: { lane: string; session: number }) {
   })
   const statusLine = () => deriveStatus(state(), nowMs())
   const submit = () => {
-    // P2 まで: echoes:submit は lane の focused に落ちる。非 focused pane からの送信は
-    // 別 session への誤配送になるため、入口で弾く（composer 側も disabled にしている）。
-    if (!isFocused()) return
     const lane = props.lane
     const text = draft().trim()
     if (!text) return
@@ -1174,7 +1171,9 @@ function SessionChatView(props: { lane: string; session: number }) {
     // idle: 送信順 = 処理順なので optimistic に即描画して送る
     lc.set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'echoes:submit', lane, session: props.session, prompt: text }),
+    )
   }
 
   // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
@@ -1190,9 +1189,10 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
   const interrupt = () => {
-    if (!isFocused()) return // P2 まで: interrupt も focused に落ちる（誤中断を防ぐ）
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:interrupt', lane: props.lane }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'echoes:interrupt', lane: props.lane, session: props.session }),
+    )
   }
 
   // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で SP に戻す
@@ -1209,7 +1209,11 @@ function SessionChatView(props: { lane: string; session: number }) {
       }),
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, answers }))
+    ipc?.postMessage(
+      JSON.stringify({
+        t: 'echoes:respond', lane, session: props.session, request_id: requestId, answers,
+      }),
+    )
   }
 
   // doc 35 PR3: permission 承認/却下。カードを decision 表示へ折りたたみ、echoes:respond {behavior} で戻す。
@@ -1225,7 +1229,11 @@ function SessionChatView(props: { lane: string; session: number }) {
       }),
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, behavior }))
+    ipc?.postMessage(
+      JSON.stringify({
+        t: 'echoes:respond', lane, session: props.session, request_id: requestId, behavior,
+      }),
+    )
   }
 
   // doc 35 PR4: plan 承認/却下。承認 = ExitPlanMode を allow + mode を default へ戻す（plan mode を
@@ -1367,6 +1375,7 @@ function SessionChatView(props: { lane: string; session: number }) {
           {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
         </Show>
         <Show when={!isFocused()}>
+          {/* focus は「Act toggle の対象 / replay demand の宛先」— 送信はどの pane からも可 */}
           <span class="echoes-session-plate-hint">click で focus</span>
         </Show>
         <span class="echoes-session-plate-spacer" />
@@ -1510,10 +1519,7 @@ function SessionChatView(props: { lane: string; session: number }) {
             ref={inputRef}
             class="echoes-input-box"
             rows={1}
-            disabled={!isFocused()}
-            placeholder={
-              isFocused() ? 'メッセージを入力（⌘Enter で送信）' : 'click で focus してから入力'
-            }
+            placeholder="メッセージを入力（⌘Enter で送信）"
             value={draft()}
             onInput={(e) => {
               setDraft(e.currentTarget.value)
@@ -1530,7 +1536,11 @@ function SessionChatView(props: { lane: string; session: number }) {
             <select
               class="echoes-model-select"
               disabled={state().streaming || !isFocused()}
-              title="model"
+              title={
+                isFocused()
+                  ? 'model'
+                  : 'model 切替は root slot 単位（focus してから）'
+              }
               onChange={(e) => setModel(e.currentTarget.value)}
             >
               <For each={modelChoices()}>
@@ -1543,7 +1553,6 @@ function SessionChatView(props: { lane: string; session: number }) {
             </select>
             <select
               class="echoes-model-select"
-              disabled={!isFocused()}
               title="permission mode"
               onChange={(e) => setPermissionMode(e.currentTarget.value)}
             >
@@ -1566,11 +1575,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                 <CreoIcon name="ph:stop" size={11} /> 停止
               </button>
             </Show>
-            <button
-              class="echoes-send"
-              onClick={submit}
-              disabled={!draft().trim() || !isFocused()}
-            >
+            <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
               <CreoIcon name="ph:paper-plane-right" size={12} /> 送信
             </button>
           </div>

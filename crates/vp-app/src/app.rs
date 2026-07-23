@@ -1256,18 +1256,23 @@ async fn run_terminal_session(
 #[derive(Debug)]
 enum EchoesCmd {
     /// プロンプト投入。 canvas channel 上り request `echoes_submit` で SP に送る。
-    Submit(String),
+    /// session（doc 50 P2）: None = focused（SP 側 payload_session_key の後方互換）。
+    Submit {
+        prompt: String,
+        session: Option<u32>,
+    },
     /// doc 35 PR1: PromptCard 回答。 canvas channel 上り request `echoes_respond` で SP に送る。
     Respond {
         request_id: String,
         answers: Option<serde_json::Value>,
         behavior: Option<String>,
         message: Option<String>,
+        session: Option<u32>,
     },
     /// doc 35 §5 / PR2: 実行中 turn の中断。 canvas channel 上り request `echoes_interrupt` で SP へ。
-    Interrupt,
+    Interrupt { session: Option<u32> },
     /// doc 35 §2.5 / PR3: permission mode 切替。 canvas channel 上り request `echoes_set_permission_mode` で SP へ。
-    SetPermissionMode { mode: String },
+    SetPermissionMode { mode: String, session: Option<u32> },
 }
 
 /// 1 lane の echoes session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
@@ -1427,17 +1432,23 @@ async fn run_echoes_session(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(EchoesCmd::Submit(prompt)) => {
+                    Some(EchoesCmd::Submit { prompt, session }) => {
+                        // session: None は JSON null になり、SP 側 payload_session_key が
+                        // focused に解決する（旧 UI / 旧 SP との後方互換）。
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "echoes_submit",
-                                &serde_json::json!({ "lane": lane_key, "prompt": prompt }),
+                                &serde_json::json!({
+                                    "lane": lane_key, "prompt": prompt, "session": session,
+                                }),
                             )
                             .await;
                     }
-                    Some(EchoesCmd::Respond { request_id, answers, behavior, message }) => {
+                    Some(EchoesCmd::Respond { request_id, answers, behavior, message, session }) => {
                         // allow/deny のどちらの形も同 request に載せる（SP 側が behavior で分岐）。
-                        let mut req = serde_json::json!({ "lane": lane_key, "request_id": request_id });
+                        let mut req = serde_json::json!({
+                            "lane": lane_key, "request_id": request_id, "session": session,
+                        });
                         if let Some(a) = answers {
                             req["answers"] = a;
                         }
@@ -1451,19 +1462,21 @@ async fn run_echoes_session(
                             .request::<serde_json::Value, serde_json::Value>("echoes_respond", &req)
                             .await;
                     }
-                    Some(EchoesCmd::Interrupt) => {
+                    Some(EchoesCmd::Interrupt { session }) => {
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "echoes_interrupt",
-                                &serde_json::json!({ "lane": lane_key }),
+                                &serde_json::json!({ "lane": lane_key, "session": session }),
                             )
                             .await;
                     }
-                    Some(EchoesCmd::SetPermissionMode { mode }) => {
+                    Some(EchoesCmd::SetPermissionMode { mode, session }) => {
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "echoes_set_permission_mode",
-                                &serde_json::json!({ "lane": lane_key, "mode": mode }),
+                                &serde_json::json!({
+                                    "lane": lane_key, "mode": mode, "session": session,
+                                }),
                             )
                             .await;
                     }
@@ -4072,7 +4085,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             // Echoes Act II: EchoesChatPane の submit → 当該 lane の echoes session に渡す。
             // demand-driven: 未起動なら lazy spawn (subscribe → submit の順で取りこぼしなし)。
-            Event::UserEvent(AppEvent::EchoesSubmit { lane, prompt }) => {
+            Event::UserEvent(AppEvent::EchoesSubmit { lane, prompt, session: chat_session }) => {
                 let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
                     // process_path は active project から解決 (echoes pane = active lane 前提)。
                     let process_path =
@@ -4085,11 +4098,20 @@ pub fn run() -> anyhow::Result<()> {
                         lane.clone(),
                     )
                 });
-                let _ = session.cmd_tx.send(EchoesCmd::Submit(prompt));
+                let _ = session
+                    .cmd_tx
+                    .send(EchoesCmd::Submit { prompt, session: chat_session });
             }
             // Echoes Act II HITL (doc 35 PR1): PromptCard の回答 → 当該 lane の echoes session へ。
             // 質問は submit 済み engine 由来なので session は既存のはずだが、防御的に lazy spawn。
-            Event::UserEvent(AppEvent::EchoesRespond { lane, request_id, answers, behavior, message }) => {
+            Event::UserEvent(AppEvent::EchoesRespond {
+                lane,
+                request_id,
+                answers,
+                behavior,
+                message,
+                session: chat_session,
+            }) => {
                 let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
                     let process_path =
                         resolve_active_project_path(&sidebar_state).unwrap_or_default();
@@ -4106,21 +4128,30 @@ pub fn run() -> anyhow::Result<()> {
                     answers,
                     behavior,
                     message,
+                    session: chat_session,
                 });
             }
             // doc 35 §5 / PR2: 実行中 turn の中断を当該 lane の echoes session に渡す。
             // interrupt は走行中 turn 前提なので session が居るはず（lazy spawn しない）。
-            Event::UserEvent(AppEvent::EchoesInterrupt { lane }) => {
+            Event::UserEvent(AppEvent::EchoesInterrupt { lane, session: chat_session }) => {
                 if let Some(session) = echoes_sessions.get(&lane) {
-                    let _ = session.cmd_tx.send(EchoesCmd::Interrupt);
+                    let _ = session
+                        .cmd_tx
+                        .send(EchoesCmd::Interrupt { session: chat_session });
                 } else {
                     tracing::warn!("echoes:interrupt skip — session 未起動 (lane={lane})");
                 }
             }
             // doc 35 §2.5 / PR3: permission mode 切替を当該 lane の echoes session に渡す。
-            Event::UserEvent(AppEvent::EchoesSetPermissionMode { lane, mode }) => {
+            Event::UserEvent(AppEvent::EchoesSetPermissionMode {
+                lane,
+                mode,
+                session: chat_session,
+            }) => {
                 if let Some(session) = echoes_sessions.get(&lane) {
-                    let _ = session.cmd_tx.send(EchoesCmd::SetPermissionMode { mode });
+                    let _ = session
+                        .cmd_tx
+                        .send(EchoesCmd::SetPermissionMode { mode, session: chat_session });
                 } else {
                     tracing::warn!("echoes:set_permission_mode skip — session 未起動 (lane={lane})");
                 }
