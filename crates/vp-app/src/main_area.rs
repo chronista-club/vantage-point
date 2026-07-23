@@ -232,6 +232,9 @@ body{overflow:hidden;}
   display:flex;align-items:center;gap:4px;padding:0 6px;overflow-x:auto;overflow-y:hidden;
   background:var(--color-bg,#0f1115);border-top:1px solid var(--color-border,#2a3040);}
 #pane-terminal:not(.pane-tabs-active) #pane-tabs{border-top:none;}
+/* doc 50 §2「空なら描かない」: lane 未選択（#lane-empty active）なら pane 操作の帯
+   （+ New / Act toggle）も存在しない — 操作対象の lane が無いのに入口だけ残さない。 */
+#pane-terminal:has(#lane-empty.active) #pane-tabs{display:none;}
 /* 「+ New」は chip と区別する（畳まれた Pane ではなく作成の入口）。 */
 .pane-tab.pane-new{border-style:dashed;}
 /* Act toggle（backend の console_mode 切替）。隣の Console/Chat chip は **表示の畳み** で

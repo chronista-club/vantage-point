@@ -1783,6 +1783,7 @@ fn spawn_activity_poller(
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut prev_online: Option<bool> = None;
         let mut prev_running: Option<usize> = None;
+        let mut prev_registered: Option<usize> = None;
         loop {
             tick.tick().await;
             // control client は tick ごとに取り直す (= 再接続後の新 client に自然に乗る)。
@@ -1790,8 +1791,15 @@ fn spawn_activity_poller(
             let snap = collect_activity(&health, control.as_ref()).await;
             let became_online = matches!(prev_online, Some(false)) && snap.world_online;
             let running_changed = prev_running.is_some_and(|p| p != snap.running_process_count);
+            // 登録数の変化（add / remove）。旧 trigger は running 数しか見ておらず、
+            // 「全 project を停止してから remove」の順で操作すると running が 0→0 のまま
+            // 再 fetch が一度も走らず、sidebar が消えた project を表示し続けた
+            // （2026-07-24 実機）。⚠️ 数ベースなので rename / enable-flag だけの変化は
+            // 拾えない — 一覧変化の push 配信は transport 統一（doc 45）に委ねる。
+            let registered_changed = prev_registered.is_some_and(|p| p != snap.project_count);
             prev_online = Some(snap.world_online);
             prev_running = Some(snap.running_process_count);
+            prev_registered = Some(snap.project_count);
             if proxy
                 .send_event(AppEvent::ActivityUpdate(snap.clone()))
                 .is_err()
@@ -1803,7 +1811,7 @@ fn spawn_activity_poller(
             // - daemon online 復帰 (false → true)
             // - running 数変化 (SP 起動 / 停止)
             // どちらも port join 経由で ProjectsLoaded 再送 → sidebar state badge 更新
-            if (became_online || running_changed)
+            if (became_online || running_changed || registered_changed)
                 && snap.world_online
                 && let Some(control) = control.as_ref()
                 && let Ok(projects) = fetch_projects_with_ports(control).await
