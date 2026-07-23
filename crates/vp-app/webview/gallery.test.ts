@@ -113,6 +113,14 @@ describe("layout bridge — applyLayoutSpec（LE-P2 PR2、純 calculation）", (
 		expect(layoutNotation(next)).toBe("a | b/c ~ f board");
 	});
 
+	it("attention 0 の既存 member は overlay 省略で 0 のまま（蘇生させない — app scope 実弾の回帰）", () => {
+		// app scope の常態: 大半の pane が 0。{echoes:1, pp:1} の overlay で他が mean に
+		// 蘇生して 6 分割になった実バグ（2026-07-23、LE-P4 実機答え合わせ初弾）を固定する
+		const app = layoutOf("echoes | pp | ge | bs", { echoes: 1, pp: 0, ge: 0, bs: 0 });
+		const next = applyLayoutSpec(app, { attention: { pp: 1 } });
+		expect(next.attention).toEqual({ echoes: 1, pp: 1, ge: 0, bs: 0 });
+	});
+
 	it("全零 guard: 全 pane 非表示になる spec / 空 notation は throw", () => {
 		expect(() => applyLayoutSpec(layoutOf("a", { a: 1 }), { attention: { a: 0 } })).toThrow(
 			/全零/,

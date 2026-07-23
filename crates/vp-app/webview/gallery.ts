@@ -214,8 +214,13 @@ export function applyLayoutSpec(current: Layout, spec: LayoutSpec): Layout {
 			}
 			attention[id] = o;
 		} else {
-			const prev = current.attention[id] ?? 0;
-			attention[id] = prev > 0 ? prev : mean;
+			// 省略 id は**現状維持**（0 = 意図して非表示、も維持する）。mean で可視化するのは
+			// 「current の場に居ない id」（notation で新規に現れた pane）だけ — 「記法に書いた
+			// pane が見えない」罠の回避。旧実装は `prev > 0 ? prev : mean` で既存の 0 も蘇生
+			// させていた（gallery は全 story 可視が常態で無症状、大半が 0 の app scope が
+			// LE-P4 実弾で即発症した潜在バグ）
+			const prev = current.attention[id];
+			attention[id] = prev != null ? prev : mean;
 		}
 	}
 	if (!Object.values(attention).some((v) => v > 0)) {
