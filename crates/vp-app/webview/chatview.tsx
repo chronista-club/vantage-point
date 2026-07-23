@@ -161,6 +161,11 @@ type ChatState = {
   /** transcript replay（attach/reconnect 時の過去会話再送）進行中か。replay_start→true /
    *  replay_end→false。コーナーの再同期ローディングアニメ（resync-loader）の可視条件。 */
   replaying: boolean
+  /** now-line の契約供給（doc 51 §1 A3b — AI が自分の今を報告する口）。null = 契約報告なし
+   *  = deriveNowLine の機械導出（A3a の保険）が下支えする。turn_completed で消える（「今」は
+   *  turn より長生きしない）。書き手は A3b の `now_line` event（PR2 で配線 — 受け皿を先に置く
+   *  reader-first）。 */
+  nowLine: string | null
 }
 
 type LaneChat = {
@@ -391,6 +396,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     }
     case 'tool_call':
+      // tool 実行も active turn（text を挟まず tool に直行する turn がある — chunk だけを
+      // streaming の契機にすると、その間 status / 灯が「待機中」と嘘をつく。A2 の灯で顕在化）。
+      s.streaming = true
       s.items.push({
         kind: 'tool',
         id: ev.id,
@@ -444,6 +452,7 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       // 欠落 turn（engine が値を運ばない版）では前値を保つ — ゲージが点滅しないように。
       s.contextTokens = ev.context_tokens ?? s.contextTokens
       s.contextWindow = ev.context_window ?? s.contextWindow
+      s.nowLine = null // 契約の「今」は turn より長生きしない（doc 51 §1 A3）
       sealLastAssistant(s) // 次 turn の chunk と融合させない（§5.1）
       break
     case 'error':
@@ -561,6 +570,7 @@ export function emptyChatState(): ChatState {
     lastEvent: null,
     lastEventAt: null,
     replaying: false,
+    nowLine: null,
   }
 }
 
@@ -630,6 +640,58 @@ export function deriveStatus(s: ChatState | null, nowMs = 0): EchoesStatus {
   // 本物の engine 異常（turn crash / 翻訳失敗）は「エラー」と正直に出す。
   if (lastEvent === 'error') return { ...base, kind: 'error', label: 'エラー', stalled: false }
   return { ...base, kind: 'idle', label: '待機中', stalled: false }
+}
+
+/** 灯の 3 状態（doc 51 §1 A2 — 並行性を支える視点の視覚言語）。
+ *  動いている（run = 緑・脈動）/ 待っている（off = 無灯）/ あなたが要る（need = 赤・速い脈動）。 */
+export type SessionLamp = 'run' | 'off' | 'need'
+
+/** EchoesStatus → 灯（純関数）。細かい状態語（thinking / tool / 停滞…）は計器盤（status 行）の
+ *  領分で、灯は「横目で読む」ための 3 値に畳む:
+ *  - need = ボールが人にある（質問 / 承認）+ engine 異常（介入が要る点で同じ側）
+ *  - run  = engine が動いている（streaming / thinking / tool）。stalled は run のまま —
+ *    8s 無イベントは平常でも起きるので灯を赤にせず、嘘の告発は status 行の文字に任せる
+ *  - off  = 待っている（待機中 / 💤 休眠） */
+export function lampOf(status: EchoesStatus): SessionLamp {
+  if (status.kind === 'awaiting' || status.kind === 'error') return 'need'
+  if (status.kind === 'streaming' || status.kind === 'thinking' || status.kind === 'tool') return 'run'
+  return 'off'
+}
+
+/** now-line の 1 行を 1 行らしく整える（先頭行のみ + 長すぎは切る。純関数）。 */
+export function clampNowLine(text: string, maxLen = 60): string {
+  const line = text.split('\n', 1)[0].trim()
+  return line.length <= maxLen ? line : `${line.slice(0, maxLen - 1)}…`
+}
+
+/**
+ * now-line（doc 51 §1 A3 — 名札直下の「今なにを」動的一行。純関数）。
+ *
+ * 優先順（上ほど「今」が濃い）:
+ * 1. 質問 / 承認の要旨 — ボールが人にある時は、AI の自己報告（過去の turn 内作業）より濃い
+ * 2. **契約**（s.nowLine — A3b で AI が自分の今を報告する口。メイン供給）
+ * 3. 機械導出（A3a の保険 — 報告しない engine / turn でも行が死なない下支え）:
+ *    実行中の tool 名 → turn 中の頼まれごと（直近 user prompt の先頭）
+ * 4. null = 待っている pane に「今」は無い — 空なら描かない（doc 50 §2）
+ */
+export function deriveNowLine(s: ChatState | null): string | null {
+  if (!s) return null
+  const waiting = s.items.find((i) => i.kind === 'prompt' && !i.answered) as
+    | Extract<ChatItem, { kind: 'prompt' }>
+    | undefined
+  if (waiting) {
+    if (waiting.permission) return `承認待ち: ${waiting.permission.toolName}`
+    const q = waiting.questions[0]?.question
+    return q ? clampNowLine(q) : '質問待ち'
+  }
+  if (s.nowLine) return clampNowLine(s.nowLine)
+  if (!s.streaming) return null
+  const last = s.items[s.items.length - 1]
+  if (last?.kind === 'tool' && !last.done) return `${last.name} を実行中`
+  const lastUser = [...s.items].reverse().find((i) => i.kind === 'user') as
+    | Extract<ChatItem, { kind: 'user' }>
+    | undefined
+  return lastUser ? clampNowLine(lastUser.text) : null
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,6 +1217,10 @@ function SessionChatView(props: { lane: string; session: number }) {
     onCleanup(() => clearInterval(id))
   })
   const statusLine = () => deriveStatus(state(), nowMs())
+  // 灯 3 状態（doc 51 §1 A2）: status の畳み込み。名札の dot が読む。
+  const lamp = () => lampOf(statusLine())
+  // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
+  const nowLine = () => deriveNowLine(state())
   const submit = () => {
     const lane = props.lane
     const text = draft().trim()
@@ -1367,9 +1433,14 @@ function SessionChatView(props: { lane: string; session: number }) {
           engine 選択付きの新規作成は EchoesHeader（lane の名札）の「+ New」一本
           （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。 */}
       <div class="echoes-session-plate" classList={{ focused: isFocused() }}>
-        <Show when={sessionInfo()?.live}>
-          <span class="echoes-tab-dot" />
-        </Show>
+        {/* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
+            （赤速脈動）。旧「live なら緑点」を置換 — presence でなく活動を灯す（lampOf）。
+            細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。 */}
+        <span
+          class="echoes-lamp"
+          classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
+          title={statusLine().label}
+        />
         <span class="echoes-session-plate-label">{sessionLabel()}</span>
         {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
             これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
@@ -1406,6 +1477,15 @@ function SessionChatView(props: { lane: string; session: number }) {
           </button>
         </Show>
       </div>
+      {/* now-line（doc 51 §1 A3）: 名札（素性・不変）と区別された「今」の帯。名札の直下。
+          供給 = 質問要旨 > 契約（A3b）> 機械導出（A3a 保険）。空なら描かない（doc 50 §2）。 */}
+      <Show when={nowLine()}>
+        {(line) => (
+          <div class="echoes-now-line" title={line()}>
+            {line()}
+          </div>
+        )}
+      </Show>
               <PlanWidget entries={() => state().plan} />
         <div
           class="echoes-stream"
@@ -1786,7 +1866,25 @@ export const CHATVIEW_CSS = `
   background: var(--color-bg,#0f1115); }
 /* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
 .echoes-chat:not(.focused) { opacity:.82; }
-.echoes-tab-dot { width:6px; height:6px; border-radius:50%; flex:none; background: var(--color-success,#6fe2a8); }
+/* 灯 3 状態（doc 51 §1 A2）: 動いている = 緑・脈動 / 待っている = 無灯（地の色の点）/
+   あなたが要る = 赤・速い脈動。脈動の速さが緊急度を運ぶ（mock workbench-v2 の視覚言語）。 */
+.echoes-lamp { width:7px; height:7px; border-radius:50%; flex:none;
+  background: var(--color-border,#2a3040); }
+.echoes-lamp.run { background: var(--color-success,#6fe2a8);
+  animation: echoes-lamp-pulse 1.2s ease-in-out infinite; }
+.echoes-lamp.need { background: var(--color-error,#f0a3a3);
+  animation: echoes-lamp-pulse .7s ease-in-out infinite; }
+@keyframes echoes-lamp-pulse { 50% { opacity:.3; } }
+@media (prefers-reduced-motion: reduce){ .echoes-lamp { animation: none !important; } }
+/* now-line（doc 51 §1 A3）: 名札直下の「今なにを」動的一行。名札（素性）より一段引いた地色で
+   「変わる情報」であることを見せる（mock workbench-v2 の now-line と同じ階調）。 */
+.echoes-now-line { flex:none; padding:2px 10px 2px 8px; font-size:10.5px;
+  color: var(--color-text-tertiary,#8b93a7);
+  font-family: var(--vp-font-sans),var(--typography-family-sans);
+  background: color-mix(in srgb, var(--vp-nameplate-bg,#141622) 55%, var(--color-bg,#0f1115));
+  border-bottom: 1px solid var(--color-border,#2a3040);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.echoes-now-line::before { content:"▸ "; color: var(--color-text-quaternary,#616b80); }
 /* 旧 .echoes-header（model/perm の独立行）は計器盤へ畳んで撤去。select は下段の高さに収まる
    よう一段小さくする（行が status と共用になったため）。 */
 .echoes-model-select { font-size:10.5px; padding:1px 5px; border-radius:6px; outline:none; cursor:pointer;

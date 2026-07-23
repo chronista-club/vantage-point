@@ -13,6 +13,9 @@ import {
   clampToolDetail,
   canCloseSession,
   chatKey,
+  lampOf,
+  deriveNowLine,
+  clampNowLine,
 } from './chatview'
 import type { EchoesEvent } from './console'
 
@@ -178,6 +181,72 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     // engine の休眠(engine_exited)は異常ではない = idle 扱いで「💤 休眠」と穏当に出す
     const dormant = fold([{ kind: 'engine_exited', message: '休眠' }])
     expect(deriveStatus(dormant)).toMatchObject({ kind: 'idle', label: '💤 休眠' })
+  })
+
+  it('lampOf: 灯 3 状態への畳み込み（doc 51 §1 A2 — 横目の視覚言語）', () => {
+    // 動いている = run（streaming / thinking / tool）
+    expect(lampOf(deriveStatus(fold([{ kind: 'message_chunk', text: 'hi' }])))).toBe('run')
+    expect(lampOf(deriveStatus(fold([{ kind: 'thought_chunk', text: '…' }])))).toBe('run')
+    // あなたが要る = need（HITL 質問/承認 + engine 異常 — 介入が要る側）
+    const asking = fold([
+      {
+        kind: 'question',
+        request_id: 'q1',
+        questions: [{ question: 'どっち?', header: 'Q', options: [] }],
+      },
+    ])
+    expect(lampOf(deriveStatus(asking))).toBe('need')
+    expect(lampOf(deriveStatus(fold([{ kind: 'error', message: 'x' }])))).toBe('need')
+    // 待っている = off（待機中 / 💤 休眠）— presence でなく活動の灯
+    expect(lampOf(deriveStatus(emptyChatState()))).toBe('off')
+    expect(lampOf(deriveStatus(fold([{ kind: 'engine_exited', message: '休眠' }])))).toBe('off')
+    // stalled は run のまま（8s 無イベントは平常でも起きる — 嘘の告発は status 行の文字の領分）
+    const stalled = fold([{ kind: 'message_chunk', text: 'hi' }])
+    stalled.lastEventAt = 1000
+    expect(lampOf(deriveStatus(stalled, 1000 + 9000))).toBe('run')
+  })
+
+  it('deriveNowLine: 質問要旨 > 契約 > 機械導出 > null（doc 51 §1 A3）', () => {
+    // 待っている pane に「今」は無い — 空なら描かない
+    expect(deriveNowLine(null)).toBeNull()
+    expect(deriveNowLine(emptyChatState())).toBeNull()
+    // turn 中の頼まれごと（機械導出の最終段 = user prompt 先頭）
+    const working = fold([
+      { kind: 'user_message', text: 'resize の設計を検討して\n詳細は…' },
+      { kind: 'message_chunk', text: '見ています' },
+    ])
+    expect(deriveNowLine(working)).toBe('resize の設計を検討して')
+    // 実行中 tool は頼まれごとより濃い
+    const tooling = fold([
+      { kind: 'user_message', text: '調査して' },
+      { kind: 'tool_call', id: 't1', name: 'Grep', input: {} },
+    ])
+    expect(deriveNowLine(tooling)).toBe('Grep を実行中')
+    // 契約（nowLine — A3b の口）は機械導出より濃い
+    tooling.nowLine = 'panic 箇所を特定中'
+    expect(deriveNowLine(tooling)).toBe('panic 箇所を特定中')
+    // 質問の要旨は契約より濃い（ボールが人にある）
+    const asking = fold([
+      {
+        kind: 'question',
+        request_id: 'q1',
+        questions: [{ question: 'resize はどちらで束ねますか？', header: 'Q', options: [] }],
+      },
+    ])
+    asking.nowLine = '古い自己報告'
+    expect(deriveNowLine(asking)).toBe('resize はどちらで束ねますか？')
+    // turn_completed で契約の「今」は消える
+    const done = fold([{ kind: 'message_chunk', text: 'x' }])
+    done.nowLine = '作業中'
+    foldInto(done, { kind: 'turn_completed', session_id: 's1' })
+    expect(done.nowLine).toBeNull()
+    expect(deriveNowLine(done)).toBeNull()
+  })
+
+  it('clampNowLine: 先頭行のみ + 長すぎは…で切る（1 行らしさの保証）', () => {
+    expect(clampNowLine('一行目\n二行目')).toBe('一行目')
+    expect(clampNowLine(`${'あ'.repeat(70)}`)).toHaveLength(60)
+    expect(clampNowLine(`${'あ'.repeat(70)}`).endsWith('…')).toBe(true)
   })
 
   it('isTurnClosingEvent: pending flush の発火契機（doc 35 §5.1 + engine_exited の自己修復継承）', () => {
