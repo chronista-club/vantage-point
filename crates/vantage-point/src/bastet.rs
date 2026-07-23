@@ -395,15 +395,20 @@ impl Bastet {
     /// 同じ `ensure_input_listener` を通して反映する。
     pub async fn attach_fleet_inputs(&self) {
         let ports = enumerate_ports();
-        for (name, (has_in, _)) in &ports {
-            if *has_in {
-                ensure_input_listener(&self.input_listeners, &self.event_bus, name).await;
-            }
+        for (name, (has_in, has_out)) in &ports {
+            // agent 報告と**同じ 1 本の辺**（registry 挿入 + 新規 emit + listener ensure）に
+            // 畳む。旧実装は ensure_input_listener 直呼びで listener だけ張り、registry が
+            // 空のまま — polling 停止 + agent 報告 0 件の環境では world-device snapshot が
+            // 常に空で、Bastet pane が「No devices connected」に固定されていた
+            // （discovery の辺の 2 仕事のうち片方だけ移管された取り残し、#878 の同型）
+            self.report_device_connected(name, *has_in, *has_out).await;
         }
-        let count = self.input_listeners.read().await.len();
+        let listeners = self.input_listeners.read().await.len();
+        let registered = self.devices.read().await.len();
         tracing::info!(
-            "🧲 fleet input attach: {} listener(s)（enumeration {} ports）",
-            count,
+            "🧲 fleet input attach: {} listener(s) / {} device(s) registered（enumeration {} ports）",
+            listeners,
+            registered,
             ports.len()
         );
     }
@@ -669,7 +674,8 @@ impl Bastet {
 
     /// agent からの device 切断報告を registry に反映し、存在した場合のみ EventBus に emit する。
     pub async fn report_device_disconnected(&self, port_name: &str) {
-        // input listener は registry の有無と独立に畳む（起動時 attach は registry に載らない）
+        // input listener は registry の有無と独立に畳む（経路の欠けに対する防御 — 現行は
+        // 起動時 attach も report_device_connected 経由で registry に載る）
         if let Some(handle) = self.input_listeners.write().await.remove(port_name) {
             handle.abort();
             tracing::info!("🧲 input listener aborted (disconnect): {}", port_name);
