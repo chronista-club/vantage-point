@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { deviceOf, mapControl } from "./fleet";
+import { computeFeedback, deviceOf, mapControl } from "./fleet";
 
 describe("deviceOf", () => {
 	it("port 名の部分一致で 3 台を識別（Bastet の pattern 規約と同一）", () => {
@@ -113,5 +113,52 @@ describe("mapControl — 防御", () => {
 			op: "scrub",
 			t: 1,
 		});
+	});
+});
+
+describe("computeFeedback — 場 → 機材の投影（LE-19 フィードバック方向）", () => {
+	const base = {
+		memberOrder: ["a", "b"] as const,
+		shares: { a: 0.55, b: 0.45 },
+		transitionT: null,
+		filledSlots: new Set<number>(),
+		touched: new Set<string>(),
+	};
+
+	it("knobs = structure 順の member share、pads は 8 slot 全部の占有状態", () => {
+		const fb = computeFeedback({ ...base, filledSlots: new Set([0, 3]) });
+		expect(fb.knobs).toEqual([
+			{ index: 0, value: 0.55 },
+			{ index: 1, value: 0.45 },
+		]);
+		expect(fb.pads).toHaveLength(8);
+		expect(fb.pads[0]).toEqual({ index: 0, filled: true });
+		expect(fb.pads[1]).toEqual({ index: 1, filled: false });
+		expect(fb.pads[3]).toEqual({ index: 3, filled: true });
+		expect(fb.fader).toBeNull();
+	});
+
+	it("touch 保持中の knob は省く（手とモーターを戦わせない — §9 Touch 中 = 指定）", () => {
+		const fb = computeFeedback({ ...base, touched: new Set(["roto:0"]) });
+		expect(fb.knobs).toEqual([{ index: 1, value: 0.45 }]);
+	});
+
+	it("fader = transition の t。fader touch 中（human が握っている）は null", () => {
+		expect(computeFeedback({ ...base, transitionT: 0.42 }).fader).toBe(0.42);
+		expect(
+			computeFeedback({
+				...base,
+				transitionT: 0.42,
+				touched: new Set(["xtouch:fader0"]),
+			}).fader,
+		).toBeNull();
+	});
+
+	it("member 9 枚以上は knob 8 本に切り詰め、欠落 share は 0", () => {
+		const many = Array.from({ length: 10 }, (_, i) => `p${i}`);
+		const fb = computeFeedback({ ...base, memberOrder: many, shares: { p0: 0.5 } });
+		expect(fb.knobs).toHaveLength(8);
+		expect(fb.knobs[0]).toEqual({ index: 0, value: 0.5 });
+		expect(fb.knobs[1]).toEqual({ index: 1, value: 0 });
 	});
 });

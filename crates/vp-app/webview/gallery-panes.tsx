@@ -38,7 +38,7 @@ import {
 import { PaneStage, useEngineResolved } from "@chronista-club/creo-ui-layout/solid";
 import { onCleanup, onMount } from "solid-js";
 import { render } from "solid-js/web";
-import { type FleetOp, type FleetPayload, mapControl } from "./fleet";
+import { type FleetOp, type FleetPayload, computeFeedback, mapControl } from "./fleet";
 import {
 	GALLERY_CSS,
 	type LayoutSpec,
@@ -271,6 +271,10 @@ function applyFleetOp(op: FleetOp): void {
 				return;
 			}
 			fleetTouches.delete(op.source);
+			// release で touched 除外が解ける = その knob へ motor feedback を再開する。
+			// engine.settle は notify しない（log 追記のみ）ため手動で押し出す —
+			// これが無いと「release 後 = 表示」（§9）に戻らない（team-b review 検出）
+			scheduleFleetFeedback();
 			// 他の指がまだ触れている間は確定しない — settle は最後の 1 本の手放しが刻む
 			if (fleetTouches.size > 0) return;
 			const handle = engine.transition(SCOPE);
@@ -300,6 +304,8 @@ function applyFleetOp(op: FleetOp): void {
 			const held = pressedAt != null && performance.now() - pressedAt >= PAD_HOLD_MS;
 			if (held) {
 				sceneSlots.set(op.slot, cloneLayout(engine.current(SCOPE)));
+				// capture は engine を通らない（notify なし）ので pad LED の点灯を手動で押し出す
+				scheduleFleetFeedback();
 			} else {
 				const layout = sceneSlots.get(op.slot);
 				if (layout) {
@@ -323,6 +329,44 @@ function applyFleetOp(op: FleetOp): void {
 		if (op) applyFleetOp(op);
 	},
 };
+
+// ---------- フィードバック方向（場 → 機材、LE-19） ----------
+// 経路: engine.subscribe → throttle(50ms trailing) + diff → ipc "fleet:feedback"
+// → app.rs watch(latest-wins) → world-device 上り event → Bastet が各機材に投影。
+// ROTO モーターが share を追い、X-Touch fader が t を示し、LPD8 RGB が Scene slot を灯す —
+// 「正規化の結合が物理で見える」（1 本上げると他のノブが下がる、§9）。
+
+const FEEDBACK_THROTTLE_MS = 50;
+let feedbackTimer: number | null = null;
+let lastFeedbackJson = "";
+
+function sendFleetFeedback(): void {
+	const fb = computeFeedback({
+		memberOrder: memberIds(engine.current(SCOPE).structure),
+		shares: sharesFrom(engine.resolved(SCOPE)),
+		transitionT: engine.transition(SCOPE)?.t ?? null,
+		filledSlots: new Set(sceneSlots.keys()),
+		touched: fleetTouches,
+	});
+	const json = JSON.stringify(fb);
+	if (json === lastFeedbackJson) return; // 変化なしは送らない（機材への無駄 sysex 防止）
+	lastFeedbackJson = json;
+	const ipc = (globalThis as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+	ipc?.postMessage(JSON.stringify({ t: "fleet:feedback", feedback: fb }));
+}
+
+/** trailing throttle — 連続 notify（knob 回し / spring 駆動中）を 50ms 粒度に落とす */
+function scheduleFleetFeedback(): void {
+	if (feedbackTimer != null) return;
+	feedbackTimer = window.setTimeout(() => {
+		feedbackTimer = null;
+		sendFleetFeedback();
+	}, FEEDBACK_THROTTLE_MS);
+}
+
+engine.subscribe((scope) => {
+	if (scope === SCOPE) scheduleFleetFeedback();
+});
 
 // ---------- mount / unmount（旧 syncGalleryDom の後継） ----------
 
