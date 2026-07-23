@@ -43,7 +43,7 @@
 | 3 | 別の相手に投げたい | engine 選択（doc 39） | **§3 済** |
 | 4 | 死んでも続きから | resume / replay 永続 | **§4 済** |
 | 5 | 隔離された並行作業 | performer lane | **§5 済** |
-| 6 | AI が視せる面 | PP board / Canvas | |
+| 6 | AI が視せる面 | PP board / Canvas | **§6 済** |
 | 7 | project を跨ぐ | sidebar / TheWorld | |
 | 8 | AI と一緒に UI を調整 | Editor Mode / layout MCP（doc 48/49） | |
 | 9 | 物理で演奏する | 艦隊 | |
@@ -243,6 +243,32 @@ layout 記法: `cc16 | grok17/board | sh18`
 - wire は現状形を維持（協調の背骨）。subagent との使い分け基準を明文化（本節の表）
 - **AI 側の対**: wire / lanes_list / capture / nudge で対称性は概ね済 — lane の now-line を
   AI が書く口だけ追加（session の now-line と同じ契約の lane 版）
+
+---
+
+## 6. AI が視せる面（PP board）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> PP の最初は掲示板だった。codex・grok は Artifact では賄えないから活躍した。
+> **計器盤があると、Information Navigator らしくなってくる。**
+
+- **掲示板は残す** — PP の価値の核は **engine 中立性**（Artifact を持たない engine の
+  唯一の「視せる」口）。多 engine 化で見つかった真の役割
+- **計器盤へ進化させる** — 同じ item が更新され続ける生きた面（進捗表・テスト結果の
+  最新値・design の現在形）。functional name（Information Navigator）に実体が追いつく
+
+### どうすべきだったのか（回顧）
+
+- 掲示板から入ったのは正しい最小形。board 化（#771 server-authoritative）が土台として効いた
+- 「claude の canvas」という出自の framing は多 engine 化で古びた — 価値は中立性にあった
+
+### 何が必要か
+
+- **item に identity を与える**: `show` は現状 append 型。id 指定の update（同じ item を
+  置き換える）を足すと掲示板が計器盤になる — 「この表を貼っておいて、進むたび更新して」
+- **常設（pin）と流れ（stream → 履歴 strip）の区別** — 計器は流されない
+- **AI 側の対**: MCP `show` は全 engine から届く（済）。update 口も同じ MCP に足すだけ
 
 ---
 
