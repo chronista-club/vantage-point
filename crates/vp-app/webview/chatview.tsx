@@ -199,6 +199,16 @@ function laneChat(lane: string): LaneChat {
 const REPLAY_WATCHDOG_MS = 10_000
 const replayWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 
+/**
+ * 入力欄の高さを内容に合わせる（既定 1 行 → 打った分だけ伸び、CSS の max-height で頭打ち）。
+ * `height:auto` で一度潰してから scrollHeight を測るのは、縮む方向にも追随させるため
+ *（先に潰さないと scrollHeight が前回の高さに引きずられて減らない）。
+ */
+function autosize(el: HTMLTextAreaElement): void {
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
 /** 張ってある watchdog を取り消す（replay_end / error / 明示解除の時）。 */
 function clearReplayWatchdog(lane: string): void {
   const t = replayWatchdogs.get(lane)
@@ -1172,6 +1182,7 @@ function ChatView() {
     const text = draft().trim()
     if (!lane || !text) return
     setDraft('')
+    if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
     // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
     if (laneChat(lane).state.streaming) {
@@ -1526,33 +1537,8 @@ function ChatView() {
             </div>
           </Show>
         </div>
-        <div class="echoes-input">
-          <textarea
-            ref={inputRef}
-            class="echoes-input-box"
-            placeholder="メッセージを入力（⌘Enter で送信）"
-            value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault()
-                submit()
-              }
-            }}
-          />
-          <Show when={state()!.streaming}>
-            <button class="echoes-stop" onClick={interrupt} title="turn を中断 (Esc)">
-              停止
-            </button>
-          </Show>
-          <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
-            送信
-          </button>
-        </div>
-        {/* 計器盤（pane の下段）— 「今の文脈」をここに集約する（doc 29/30 の縦軸を pane に再適用）。
-            左 = 今の状態（deriveStatus の畳み込み）、右 = 今の設定（model / permission / context）。
-            model・perm はかつて stream の上（上段側）に別行で在ったが、どちらも「今の session の
-            設定」= local なので下段が home。行が 1 本減り、絵（stream）が上へ広がる。 */}
+        {/* status bar — **入力の上**（stream に隣接）。engine が今何をしているかの読み取り専用の
+            計器で、操作は持たない。context 残量も「読み取り」なのでここ。 */}
         <div
           class={`echoes-status s-${statusLine().kind}`}
           classList={{ stalled: statusLine().stalled }}
@@ -1573,7 +1559,42 @@ function ChatView() {
               <CreoIcon name="ph:pencil-simple" size={11} /> 送信待ち
             </span>
           </Show>
-          <div class="echoes-status-controls">
+          <Show when={ctxPct() !== null}>
+            <span
+              class="echoes-context"
+              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
+              title={ctxTitle()}
+            >
+              <span class="echoes-context-bar">
+                <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
+              </span>
+              <span class="echoes-context-pct">{ctxPct()}%</span>
+            </span>
+          </Show>
+        </div>
+        {/* composer — 入力とその操作を 1 つの器にまとめる。上 = 打つ場所、下 = 操作。
+            model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
+        <div class="echoes-composer">
+          {/* 既定は **1 行**。打った分だけ scrollHeight に合わせて伸び、max-height で頭打ち
+              （CSS だけでは textarea は内容に追随しないので、伸縮はここで行う）。 */}
+          <textarea
+            ref={inputRef}
+            class="echoes-input-box"
+            rows={1}
+            placeholder="メッセージを入力（⌘Enter で送信）"
+            value={draft()}
+            onInput={(e) => {
+              setDraft(e.currentTarget.value)
+              autosize(e.currentTarget)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+          />
+          <div class="echoes-actions">
             <select
               class="echoes-model-select"
               disabled={state()!.streaming}
@@ -1606,18 +1627,15 @@ function ChatView() {
                 計画
               </option>
             </select>
-            <Show when={ctxPct() !== null}>
-              <span
-                class="echoes-context"
-                classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
-                title={ctxTitle()}
-              >
-                <span class="echoes-context-bar">
-                  <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
-                </span>
-                <span class="echoes-context-pct">{ctxPct()}%</span>
-              </span>
+            <div class="echoes-actions-spacer" />
+            <Show when={state()!.streaming}>
+              <button class="echoes-stop" onClick={interrupt} title="turn を中断 (Esc)">
+                <CreoIcon name="ph:stop" size={11} /> 停止
+              </button>
             </Show>
+            <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
+              <CreoIcon name="ph:paper-plane-right" size={12} /> 送信
+            </button>
           </div>
         </div>
       </Show>
@@ -1651,18 +1669,14 @@ export const CHATVIEW_CSS = `
 /* composer に打ちかけ下書きがある間は編集不可 = グレーアウト（下書きを潰さないための MVP ガード）。 */
 .echoes-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
 .echoes-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
-/* 計器盤（pane 下段）: 状態 + 今の設定（model / perm / context）。左 = 状態、右 = 設定。
-   §5.1 診断の status バーが母体で、旧「model/perm 行」を右側に畳み込んで 1 本にした。 */
-.echoes-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:26px; font-size:11px;
+/* status bar（入力の上）: engine の現況の**読み取り専用**計器。操作は composer 側が持つ。 */
+.echoes-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:24px; font-size:11px;
   font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7);
   border-top:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115); }
 .echoes-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
 .echoes-status-label { letter-spacing:.03em; }
 .echoes-status-detail { color: var(--color-text-secondary,#a8b0c0); }
 .echoes-status-pending { color: var(--color-accent,#e2b96f); }
-/* 右寄せの設定群。margin-left:auto はこの group だけが持つ（旧実装は pending と context が
-   それぞれ auto を持ち、両方出た時に押し合っていた）。 */
-.echoes-status-controls { margin-left:auto; display:flex; align-items:center; gap:8px; flex:none; }
 .echoes-status.s-streaming .echoes-status-dot { background: var(--color-success,#6fe2a8); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
 .echoes-status.s-thinking .echoes-status-dot { background:#8fb0ff; animation: echoes-status-pulse 1.2s ease-in-out infinite; }
 .echoes-status.s-tool .echoes-status-dot { background: var(--color-accent,#e2b96f); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
@@ -1773,16 +1787,25 @@ export const CHATVIEW_CSS = `
 .echoes-plan-item.in_progress { color: var(--color-text,#e6e9ef); } .echoes-plan-item.in_progress .echoes-plan-dot { background: var(--color-accent,#e2b96f); }
 .echoes-plan-item.completed { color: var(--color-text-tertiary,#616b80); } .echoes-plan-item.completed .echoes-plan-dot { background: var(--color-success,#6fe2a8); }
 .echoes-plan-item.completed .echoes-plan-text { text-decoration: line-through; }
-.echoes-input { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--color-border,#2a3040); }
-.echoes-input-box { flex:1; resize:none; min-height:38px; max-height:160px; padding:9px 12px; font-size:13px;
+/* composer: 入力（上）と操作（下）を 1 つの器に。枠は器が持ち、textarea は枠なしで中に敷く。 */
+.echoes-composer { display:flex; flex-direction:column; margin:8px 14px 10px; border-radius:10px;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#161a20);
+  overflow:hidden; }
+.echoes-composer:focus-within { border-color: var(--color-accent,#3b82f6); }
+/* 操作の行（入力の下）: 左 = 送る前に決める設定、右 = 実行。 */
+.echoes-actions { display:flex; align-items:center; gap:6px; padding:4px 6px 5px 8px; }
+.echoes-actions-spacer { flex:1; }
+/* 既定 1 行（min-height は置かず、rows=1 + autosize が高さを決める）。伸びる上限だけ CSS が持つ。 */
+.echoes-input-box { flex:1; resize:none; max-height:160px; padding:8px 10px 4px; font-size:13px; line-height:1.5;
   font-family: var(--vp-font-sans),var(--typography-family-sans); color: var(--color-text,#e6e9ef);
-  background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040); border-radius:9px; outline:none; }
-.echoes-input-box:focus { border-color: var(--color-accent,#3b82f6); }
-.echoes-send { align-self:flex-end; padding:9px 16px; font-size:13px; border-radius:9px; border:none; cursor:pointer;
-  background: var(--color-accent,#3b82f6); color:#fff; }
+  /* 枠と地色は composer(器) が持つ — textarea 自身は素で敷く（二重枠にしない）。 */
+  background:transparent; border:none; outline:none; }
+.echoes-send { display:inline-flex; align-items:center; gap:4px; padding:4px 11px; font-size:12px;
+  border-radius:7px; border:none; cursor:pointer; background: var(--color-accent,#3b82f6); color:#fff; }
 .echoes-send:disabled { opacity:.4; cursor:default; }
-.echoes-stop { align-self:flex-end; padding:9px 14px; font-size:13px; border-radius:9px; cursor:pointer;
-  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f); color: var(--color-text-secondary,#a8b0c0); }
+.echoes-stop { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px;
+  border-radius:7px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
 .echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
 /* Act toggle は下段（#pane-tabs）へ移設した — 見た目は隣の chip（.pane-tab）に合わせるため
    main_area.rs の .pane-act-toggle が持つ。旧 floating 定義（.echoes-act-toggle /
@@ -1843,8 +1866,8 @@ export const CHATVIEW_CSS = `
   padding:8px 10px; background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); border-radius:6px; }
 .echoes-plan-body :first-child { margin-top:0; } .echoes-plan-body :last-child { margin-bottom:0; }
 /* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
-/* 右寄せは親（.echoes-status-controls）が持つので、ここでは margin-left:auto を持たない。 */
-.echoes-context { display:flex; align-items:center; gap:6px; }
+/* status bar の右端へ寄せる（読み取り計器の並びの末尾）。 */
+.echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
   background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); }
 .echoes-context-fill { display:block; height:100%; border-radius:2px;
