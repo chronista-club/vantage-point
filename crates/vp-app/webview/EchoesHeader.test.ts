@@ -9,7 +9,6 @@ import {
   tildify,
   middleEllipsis,
   laneShortName,
-  permModeLabel,
   sessionChipPrefix,
   rootPickerItems,
 } from './EchoesHeader'
@@ -55,16 +54,6 @@ describe('laneShortName — address から表示短名', () => {
   it('legacy lead / wing も受理', () => {
     expect(laneShortName('vp/lead')).toBe('conductor')
     expect(laneShortName('vp/wing/foo')).toBe('foo')
-  })
-})
-
-describe('permModeLabel — 長い canonical 名だけ縮める', () => {
-  it('bypassPermissions → bypass', () => {
-    expect(permModeLabel('bypassPermissions')).toBe('bypass')
-  })
-  it('未知値は素通し', () => {
-    expect(permModeLabel('default')).toBe('default')
-    expect(permModeLabel('plan')).toBe('plan')
   })
 })
 

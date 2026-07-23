@@ -156,6 +156,16 @@ body{overflow:hidden;}
 :root{
   --frame-transition-ms:220ms;
   --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
+  /* Pane の名札（上段）token。「上 = この pane が何であるか（居る間 変わらない素性）」を
+     載せる帯の見た目を、実装 2 本（静的 .pane-header と SolidJS の #echoes-header）で共有する。
+     doc 29/30 の Edge Ring（上 = global / 下 = local）を pane スケールへ再適用した縦軸に基づく。
+     以前は 28px（.pane-header）と 30px（#echoes-header）で高さが割れており、隣り合うと段差が
+     見えていた（2026-07-23 の実機比較）。値の SSOT はここ 1 箇所。 */
+  --vp-nameplate-h:28px;
+  --vp-nameplate-pad-x:10px;
+  --vp-nameplate-font-size:12px;
+  --vp-nameplate-bg:var(--color-surface-surface);
+  --vp-nameplate-border:1px solid var(--color-surface-border-subtle);
   /* VP-143: Echoes terminal (xterm.js) の Live Token 群。 creo-ui-editor-host (Ctrl+Shift+E)
      で runtime 調整可能。 JS 側 createLaneInstance が値を読んで `new Terminal({...})` を構築、
      MutationObserver が documentElement style 変更を捕捉して全 terminal に setter +
@@ -195,7 +205,7 @@ body{overflow:hidden;}
    (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
 #pane-terminal{--echoes-header-h:0px;}
-#pane-terminal.echoes-header-active{--echoes-header-h:30px;}
+#pane-terminal.echoes-header-active{--echoes-header-h:var(--vp-nameplate-h);}
 #echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
@@ -224,6 +234,10 @@ body{overflow:hidden;}
 #pane-terminal:not(.pane-tabs-active) #pane-tabs{border-top:none;}
 /* 「+ New」は chip と区別する（畳まれた Pane ではなく作成の入口）。 */
 .pane-tab.pane-new{border-style:dashed;}
+/* Act toggle（backend の console_mode 切替）。隣の Console/Chat chip は **表示の畳み** で
+   別レイヤーの操作なので、右端に寄せ + 区切りで系統が違うことを見せる。 */
+.pane-act-toggle{margin-left:auto;border-color:var(--color-surface-border-subtle);}
+.pane-act-toggle:hover{border-color:var(--sb-conn-auto,#22E0FF);}
 /* Engine × Act の選択メニュー（doc 46 P2 要件 4）。タブエリアの上に出す。 */
 .pane-new-menu{position:fixed;z-index:9999;min-width:180px;padding:4px;
   border:1px solid var(--color-border,#2a3040);border-radius:6px;
@@ -272,17 +286,21 @@ body{overflow:hidden;}
    `.center` modifier で個別制御)。 */
 .pane-header{
   position:absolute;
-  top:0;left:0;right:0;height:28px;
+  top:0;left:0;right:0;height:var(--vp-nameplate-h);
   display:flex;
   align-items:center;
   gap:8px;
-  padding:0 10px;
-  font-size:12px;
-  background:var(--color-surface-surface);
-  border-bottom:1px solid var(--color-surface-border-subtle);
+  padding:0 var(--vp-nameplate-pad-x);
+  font-size:var(--vp-nameplate-font-size);
+  background:var(--vp-nameplate-bg);
+  border-bottom:var(--vp-nameplate-border);
   user-select:none;
   -webkit-app-region:drag;
   z-index:1;
+  /* 名札は 1 行きり。溢れは折り返さず省略する（PP の "Paisley Park" が 2 行に割れて
+     隣の pane と高さが揃わなくなっていた実機バグ、2026-07-23）。 */
+  white-space:nowrap;
+  overflow:hidden;
 }
 .pane-header .pane-title{
   flex:1;
@@ -291,9 +309,15 @@ body{overflow:hidden;}
   gap:6px;
   color:var(--color-text-primary);
   min-width:0;
+  overflow:hidden;
 }
-.pane-header .pane-icon{flex-shrink:0;font-size:14px;}
-.pane-header .pane-name{font-weight:500;}
+/* glyph は Phosphor (iconify-icon)。sidebar は既に CreoIcon で統一済で、額縁だけ絵文字が
+   残っていたのを揃えた (2026-07-23)。iconify-icon の既定サイズは 1em なので、寸法は
+   font-size で決まる = 周囲の文字と自然に揃う。 */
+iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align:-0.125em;}
+.pane-header .pane-icon{flex-shrink:0;font-size:14px;display:inline-flex;align-items:center;}
+/* 名前は最優先で残し、breadcrumb（従属情報）から先に削る。 */
+.pane-header .pane-name{font-weight:500;flex-shrink:0;}
 .pane-header .pane-breadcrumb{color:var(--color-text-tertiary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .pane-header .pane-actions{
   display:flex;
@@ -313,7 +337,7 @@ body{overflow:hidden;}
 .pane-header .pane-action-btn:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
 .pane-body{
   position:absolute;
-  top:28px;left:0;right:0;bottom:0;
+  top:var(--vp-nameplate-h);left:0;right:0;bottom:0;
   overflow:auto;
 }
 .pane-body.center{display:grid;place-items:center;}
@@ -470,7 +494,7 @@ body{overflow:hidden;}
   <div class="pane preview" id="pane-preview" data-kind="preview" data-frame-id="preview">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🔍</span>
+        <span class="pane-icon"><iconify-icon icon="ph:magnifying-glass"></iconify-icon></span>
         <span class="pane-name">Preview</span>
         <span class="pane-breadcrumb" id="preview-breadcrumb">about:blank</span>
       </div>
@@ -485,13 +509,13 @@ body{overflow:hidden;}
   <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-frame-id="pp">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🧭</span>
+        <span class="pane-icon"><iconify-icon icon="ph:compass"></iconify-icon></span>
         <span class="pane-name">Paisley Park</span>
         <span class="pane-breadcrumb" id="pp-breadcrumb">Information Router</span>
       </div>
       <div class="pane-actions">
         <button class="pane-action-btn" data-action="clear" data-target="pp" title="Clear PP body content">Clear</button>
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body">
@@ -510,12 +534,12 @@ body{overflow:hidden;}
   <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🌿</span>
+        <span class="pane-icon"><iconify-icon icon="ph:plant"></iconify-icon></span>
         <span class="pane-name">Gold Experience</span>
         <span class="pane-breadcrumb">Code Runner</span>
       </div>
       <div class="pane-actions">
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body center">
@@ -528,12 +552,12 @@ body{overflow:hidden;}
   <div class="pane stand" id="pane-bastet" data-kind="bastet" data-frame-id="bs">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🧲</span>
+        <span class="pane-icon"><iconify-icon icon="ph:magnet"></iconify-icon></span>
         <span class="pane-name">Bastet</span>
         <span class="pane-breadcrumb">Device Registry</span>
       </div>
       <div class="pane-actions">
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body">

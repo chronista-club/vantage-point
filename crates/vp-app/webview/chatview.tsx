@@ -23,6 +23,7 @@ import {
   type Accessor,
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
+import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { marked } from 'marked'
 import type {
   BusRequestId,
@@ -1406,7 +1407,7 @@ function ChatView() {
                       removeSession(sess.key)
                     }}
                   >
-                    ×
+                    <CreoIcon name="ph:x" size={9} />
                   </span>
                 </Show>
               </button>
@@ -1420,7 +1421,7 @@ function ChatView() {
               onClick={toggleAddMenu}
               title="engine を選んで session を追加"
             >
-              +
+              <CreoIcon name="ph:plus" size={11} />
             </button>
             {/* stands_list の結果で埋める簡素な dropdown（doc 38: UI は state を持たない仮置き）。
                 doc 38 Phase 3: chat_capable な engine だけに絞る（shell の dead-end tab を出さない）。 */}
@@ -1444,49 +1445,6 @@ function ChatView() {
               </div>
             </Show>
           </div>
-        </div>
-        <div class="echoes-header">
-          <span class="echoes-header-label">model</span>
-          <select
-            class="echoes-model-select"
-            disabled={state()!.streaming}
-            onChange={(e) => setModel(e.currentTarget.value)}
-          >
-            <For each={modelChoices()}>
-              {([v, label]) => (
-                <option value={v} selected={v === currentModel()}>
-                  {label}
-                </option>
-              )}
-            </For>
-          </select>
-          <span class="echoes-header-label">perm</span>
-          <select
-            class="echoes-model-select"
-            onChange={(e) => setPermissionMode(e.currentTarget.value)}
-          >
-            <option value="bypassPermissions" selected={currentPermMode() === 'bypassPermissions'}>
-              素通し
-            </option>
-            <option value="default" selected={currentPermMode() === 'default'}>
-              承認
-            </option>
-            <option value="plan" selected={currentPermMode() === 'plan'}>
-              計画
-            </option>
-          </select>
-          <Show when={ctxPct() !== null}>
-            <span
-              class="echoes-context"
-              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
-              title={ctxTitle()}
-            >
-              <span class="echoes-context-bar">
-                <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
-              </span>
-              <span class="echoes-context-pct">{ctxPct()}%</span>
-            </span>
-          </Show>
         </div>
         <PlanWidget entries={() => state()!.plan} />
         <div
@@ -1568,22 +1526,6 @@ function ChatView() {
             </div>
           </Show>
         </div>
-        <div class={`echoes-status s-${statusLine().kind}`} classList={{ stalled: statusLine().stalled }}>
-          <span class="echoes-status-dot" />
-          <span class="echoes-status-label">{statusLine().label}</span>
-          <Show when={statusLine().detail}>
-            <span class="echoes-status-detail">{statusLine().detail}</span>
-          </Show>
-          <Show when={statusLine().stalled}>
-            <span class="echoes-status-stalled">反応無 {statusLine().idleSec}s</span>
-          </Show>
-          <Show when={statusLine().lastEvent}>
-            <span class="echoes-status-event">· {statusLine().lastEvent}</span>
-          </Show>
-          <Show when={statusLine().pending}>
-            <span class="echoes-status-pending">✎ 送信待ち</span>
-          </Show>
-        </div>
         <div class="echoes-input">
           <textarea
             ref={inputRef}
@@ -1606,6 +1548,77 @@ function ChatView() {
           <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
             送信
           </button>
+        </div>
+        {/* 計器盤（pane の下段）— 「今の文脈」をここに集約する（doc 29/30 の縦軸を pane に再適用）。
+            左 = 今の状態（deriveStatus の畳み込み）、右 = 今の設定（model / permission / context）。
+            model・perm はかつて stream の上（上段側）に別行で在ったが、どちらも「今の session の
+            設定」= local なので下段が home。行が 1 本減り、絵（stream）が上へ広がる。 */}
+        <div
+          class={`echoes-status s-${statusLine().kind}`}
+          classList={{ stalled: statusLine().stalled }}
+        >
+          <span class="echoes-status-dot" />
+          <span class="echoes-status-label">{statusLine().label}</span>
+          <Show when={statusLine().detail}>
+            <span class="echoes-status-detail">{statusLine().detail}</span>
+          </Show>
+          <Show when={statusLine().stalled}>
+            <span class="echoes-status-stalled">反応無 {statusLine().idleSec}s</span>
+          </Show>
+          <Show when={statusLine().lastEvent}>
+            <span class="echoes-status-event">· {statusLine().lastEvent}</span>
+          </Show>
+          <Show when={statusLine().pending}>
+            <span class="echoes-status-pending">
+              <CreoIcon name="ph:pencil-simple" size={11} /> 送信待ち
+            </span>
+          </Show>
+          <div class="echoes-status-controls">
+            <select
+              class="echoes-model-select"
+              disabled={state()!.streaming}
+              title="model"
+              onChange={(e) => setModel(e.currentTarget.value)}
+            >
+              <For each={modelChoices()}>
+                {([v, label]) => (
+                  <option value={v} selected={v === currentModel()}>
+                    {label}
+                  </option>
+                )}
+              </For>
+            </select>
+            <select
+              class="echoes-model-select"
+              title="permission mode"
+              onChange={(e) => setPermissionMode(e.currentTarget.value)}
+            >
+              <option
+                value="bypassPermissions"
+                selected={currentPermMode() === 'bypassPermissions'}
+              >
+                素通し
+              </option>
+              <option value="default" selected={currentPermMode() === 'default'}>
+                承認
+              </option>
+              <option value="plan" selected={currentPermMode() === 'plan'}>
+                計画
+              </option>
+            </select>
+            <Show when={ctxPct() !== null}>
+              <span
+                class="echoes-context"
+                classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
+                title={ctxTitle()}
+              >
+                <span class="echoes-context-bar">
+                  <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
+                </span>
+                <span class="echoes-context-pct">{ctxPct()}%</span>
+              </span>
+            </Show>
+          </div>
         </div>
       </Show>
     </div>
@@ -1638,14 +1651,18 @@ export const CHATVIEW_CSS = `
 /* composer に打ちかけ下書きがある間は編集不可 = グレーアウト（下書きを潰さないための MVP ガード）。 */
 .echoes-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
 .echoes-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
-/* §5.1 診断: history 最下部の常時 status バー。状態を dot 色 + パルスで表す。 */
-.echoes-status { display:flex; align-items:center; gap:8px; padding:5px 14px; min-height:24px; font-size:11px;
+/* 計器盤（pane 下段）: 状態 + 今の設定（model / perm / context）。左 = 状態、右 = 設定。
+   §5.1 診断の status バーが母体で、旧「model/perm 行」を右側に畳み込んで 1 本にした。 */
+.echoes-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:26px; font-size:11px;
   font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7);
   border-top:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115); }
 .echoes-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
 .echoes-status-label { letter-spacing:.03em; }
 .echoes-status-detail { color: var(--color-text-secondary,#a8b0c0); }
-.echoes-status-pending { margin-left:auto; color: var(--color-accent,#e2b96f); }
+.echoes-status-pending { color: var(--color-accent,#e2b96f); }
+/* 右寄せの設定群。margin-left:auto はこの group だけが持つ（旧実装は pending と context が
+   それぞれ auto を持ち、両方出た時に押し合っていた）。 */
+.echoes-status-controls { margin-left:auto; display:flex; align-items:center; gap:8px; flex:none; }
 .echoes-status.s-streaming .echoes-status-dot { background: var(--color-success,#6fe2a8); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
 .echoes-status.s-thinking .echoes-status-dot { background:#8fb0ff; animation: echoes-status-pulse 1.2s ease-in-out infinite; }
 .echoes-status.s-tool .echoes-status-dot { background: var(--color-accent,#e2b96f); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
@@ -1767,14 +1784,11 @@ export const CHATVIEW_CSS = `
 .echoes-stop { align-self:flex-end; padding:9px 14px; font-size:13px; border-radius:9px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f); color: var(--color-text-secondary,#a8b0c0); }
 .echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
-.echoes-act-toggle { position:absolute; top:8px; right:12px; z-index:10; font-size:11px; padding:4px 11px;
-  border-radius:14px; border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  color: var(--color-text-secondary,#a8b0c0); cursor:pointer; opacity:.75; transition: opacity .15s ease; }
-.echoes-act-toggle:hover { opacity:1; }
-/* console 右上の操作群（New Session + Act toggle）。container が位置を持ち、子は並ぶだけ。 */
-.echoes-console-actions { position:absolute; top:8px; right:12px; z-index:10; display:flex; gap:8px; }
-.echoes-console-actions .echoes-act-toggle { position:static; }
-/* doc 38 Phase 2: session tab strip（仮置き）。header の直上・コンパクト・既存トーン準拠。 */
+/* Act toggle は下段（#pane-tabs）へ移設した — 見た目は隣の chip（.pane-tab）に合わせるため
+   main_area.rs の .pane-act-toggle が持つ。旧 floating 定義（.echoes-act-toggle /
+   .echoes-console-actions）は置き場ごと消えたので撤去。 */
+/* doc 38 Phase 2: session tab strip（仮置き）。名札（#echoes-header）の直下に続く上段の一部
+   — session = 別 layer への切替なので上段が home。 */
 .echoes-tabs { display:flex; align-items:center; gap:6px; padding:5px 12px 0; flex-wrap:wrap;
   background: var(--color-bg-elevated,#13161c); }
 .echoes-tab { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; font-size:11px;
@@ -1807,13 +1821,11 @@ export const CHATVIEW_CSS = `
   font-family: var(--vp-font-mono),var(--typography-family-mono); }
 .echoes-tab-menuitem:hover { background: var(--color-bg,#0f1115); color: var(--color-text,#e6e9ef); }
 .echoes-tab-menu-empty { padding:6px 10px; font-size:11px; color: var(--color-text-tertiary,#616b80); }
-.echoes-header { display:flex; align-items:center; gap:8px; padding:7px 14px;
-  border-bottom:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#13161c); }
-.echoes-header-label { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
-  color: var(--color-text-tertiary,#616b80); }
-.echoes-model-select { font-size:11px; padding:3px 7px; border-radius:7px; outline:none; cursor:pointer;
+/* 旧 .echoes-header（model/perm の独立行）は計器盤へ畳んで撤去。select は下段の高さに収まる
+   よう一段小さくする（行が status と共用になったため）。 */
+.echoes-model-select { font-size:10.5px; padding:1px 5px; border-radius:6px; outline:none; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  color: var(--color-text-secondary,#a8b0c0); }
+  color: var(--color-text-secondary,#a8b0c0); font-family:inherit; }
 .echoes-model-select:disabled { opacity:.45; cursor:default; }
 /* PR3: permission 承認カード（allow/deny）。question カードと同じ枠、action だけ差し替え。 */
 .echoes-perm-tool { font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-accent,#e2b96f); }
@@ -1831,7 +1843,8 @@ export const CHATVIEW_CSS = `
   padding:8px 10px; background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); border-radius:6px; }
 .echoes-plan-body :first-child { margin-top:0; } .echoes-plan-body :last-child { margin-bottom:0; }
 /* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
-.echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
+/* 右寄せは親（.echoes-status-controls）が持つので、ここでは margin-left:auto を持たない。 */
+.echoes-context { display:flex; align-items:center; gap:6px; }
 .echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
   background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); }
 .echoes-context-fill { display:block; height:100%; border-radius:2px;
