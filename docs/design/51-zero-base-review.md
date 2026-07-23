@@ -46,7 +46,7 @@
 | 6 | AI が視せる面 | PP board / Canvas | **§6 済** |
 | 7 | project を跨ぐ | sidebar / TheWorld | **§7 済** |
 | 8 | AI と一緒に UI を調整 | Editor Mode / layout MCP（doc 48/49） | **§8 済** |
-| 9 | 物理で演奏する | 艦隊 | |
+| 9 | 物理で演奏する | 艦隊 | **§9 済** |
 | 10 | lane 同士の通信 | wire | |
 | 11 | machine を跨ぐ | hub federation | |
 
@@ -335,4 +335,31 @@ layout 記法: `cc16 | grok17/board | sh18`
 
 ---
 
-（以降の項目は審査が進み次第追記。残: §9 艦隊 / §10 wire（§5 で大半決着）/ §11 hub）
+## 9. 物理で演奏する（艦隊）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> 注視の移動は（キーボードショートカット含め）実際に使ってる。台の形にも使う。
+> **期待してるのは creo-ui を経由したデザインなどの細かい微調整。**
+
+- 現用: **注視の移動**（keyboard + 物理）と**台の形**（knob = share 等）— 磨き続行
+- **本命の期待 = Live Token の演奏**: 物理 fader で design token（spacing / color / 字階）を
+  撫でて微調整する（size-stepper 構想）。「lane を楽器にする」より先にこちら
+
+### どうすべきだったのか（回顧）
+
+- doc 48/49（Editor Mode + 艦隊双方向）は期待の方向と一致していた。warm palette の
+  実運用（#872）が最初の一周。基盤はある — 常用化が薄い
+
+### 何が必要か
+
+- **fader ↔ editor field の binding を軽く組める**こと（mapping preset — 「今日はこの
+  token 群を演奏する」を 1 手で）
+- **lock → 書き戻し**の流れの常設（探った値は source へ、AI が書き戻し係 — doc 48 の HITL）
+- **motor fader sync** = 表象の共有の物理面（token の現在値が fader 位置に還る。X-Touch は
+  motorized — 画面と指先が同じ値を指す）
+- 注視移動: keyboard shortcuts も一級の入力として整備（物理が無い場面の同型）
+
+---
+
+（以降の項目は審査が進み次第追記。残: §10 wire（§5 で大半決着）/ §11 hub）
