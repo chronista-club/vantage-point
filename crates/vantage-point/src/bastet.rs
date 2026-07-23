@@ -102,6 +102,23 @@ fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
 
 // ─── actions（I/O）────────────────────────────────────────
 
+/// pattern 部分一致で MIDI output port を開く。複数候補は "INT" を含む名を優先
+/// （X-Touch INT = MCU の実 port / EXT = 物理 MIDI passthrough の別）。
+fn open_output(pattern: &str) -> Option<midir::MidiOutputConnection> {
+    let midi_out = midir::MidiOutput::new("vp-bastet-feedback").ok()?;
+    let ports = midi_out.ports();
+    let named: Vec<(String, midir::MidiOutputPort)> = ports
+        .into_iter()
+        .filter_map(|p| midi_out.port_name(&p).ok().map(|n| (n, p)))
+        .filter(|(n, _)| n.contains(pattern))
+        .collect();
+    let (name, port) = named
+        .iter()
+        .find(|(n, _)| n.contains("INT"))
+        .or_else(|| named.first())?;
+    midi_out.connect(port, &format!("vp-feedback-{name}")).ok()
+}
+
 /// midir で input + output の全 port を enumeration し、displayName → (has_input, has_output) の map を返す。
 /// 物理デバイスは同じ displayName で input/output 両方のポートを持つため、名前で merge する。
 fn enumerate_ports() -> HashMap<String, (bool, bool)> {
@@ -132,6 +149,14 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
 /// spawn 判定はこの map を通す 1 本に畳む（[[one-edge-two-jobs]] — polling loop の
 /// local map に閉じていたせいで Model D 移行後に listener が誰からも張られなくなった）。
 type InputListeners = Arc<RwLock<HashMap<String, JoinHandle<()>>>>;
+
+/// ROTO motor へ注入する byte 列（knob_position の 14bit hi-res CC ペア × N knob）
+pub(crate) type MotorFrames = Vec<Vec<u8>>;
+
+/// motor 注入路の共有 slot（`start_roto_control` が設定、`apply_feedback` が使う）。
+/// watch = 真の latest-wins（mpsc + try_send は満杯時に**新しい方**を落とす drop-newest で
+/// 意味論が逆になる — team-b review。vp-app 側の feedback 経路と同型に揃える）
+type RotoFeedbackTx = Arc<RwLock<Option<tokio::sync::watch::Sender<Option<MotorFrames>>>>>;
 
 /// parser 対応 device の input listener を冪等に張る。
 ///
@@ -243,6 +268,16 @@ pub struct Bastet {
     roto_cancel: Option<CancellationToken>,
     /// input listener 管理（起動時 attach / agent 報告 / polling discovery の 3 経路で共有）
     input_listeners: InputListeners,
+    /// フィードバック方向（LE-19）の出力接続（port displayName → output conn）。
+    /// 必要時に開き、send 失敗で捨てて次回再接続する（X-Touch / LPD8。ROTO は専用 loop 所有）
+    outputs: Arc<tokio::sync::Mutex<HashMap<String, midir::MidiOutputConnection>>>,
+    /// LPD8 pad LED の shadow（RGB 一括 sysex は全 pad 分を持つため差分計算に要る）
+    lpd8_profile: Arc<tokio::sync::Mutex<crate::device_profile::lpd8::Lpd8Profile>>,
+    /// ROTO motor への注入路（conn_out は roto loop が独占所有するため、byte 列を loop に渡す）。
+    /// `start_roto_control` が設定。buffer 超過は drop（feedback は latest-wins で欠落無害）
+    roto_feedback_tx: RotoFeedbackTx,
+    /// 前回 apply した feedback（section 単位の dedupe — 変わらない sysex を機材に投げない）
+    last_feedback: Arc<tokio::sync::Mutex<crate::daemon::protocol::FleetFeedback>>,
 }
 
 impl Bastet {
@@ -257,6 +292,97 @@ impl Bastet {
             roto_task: None,
             roto_cancel: None,
             input_listeners: Arc::new(RwLock::new(HashMap::new())),
+            outputs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            lpd8_profile: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            roto_feedback_tx: Arc::new(RwLock::new(None)),
+            last_feedback: Arc::new(tokio::sync::Mutex::new(Default::default())),
+        }
+    }
+
+    /// フィードバック方向（LE-19）: 場の状態を機材の出力面に写す。
+    ///
+    /// 送り手（webview）が throttle + diff 済みだが、section 単位でもう一段 dedupe する
+    /// （knob だけ動いた frame で pad の RGB 一括 sysex を再送しない）。
+    /// 出力接続は必要時に開き、send 失敗で捨てて次回再接続（hot-unplug 耐性）。
+    pub async fn apply_feedback(&self, fb: &crate::daemon::protocol::FleetFeedback) {
+        let mut last = self.last_feedback.lock().await;
+
+        // ROTO motor: knob byte 列を専用 loop に注入（conn_out は loop が独占所有）。
+        // watch send = 最新値の置き換え（未消費の古い frame は自然に消える = latest-wins）
+        if fb.knobs != last.knobs
+            && !fb.knobs.is_empty()
+            && let Some(tx) = self.roto_feedback_tx.read().await.as_ref()
+        {
+            let msgs: MotorFrames = fb
+                .knobs
+                .iter()
+                .filter(|k| k.index < 8)
+                .flat_map(|k| crate::device_profile::roto::knob_position(k.index, k.value))
+                .collect();
+            let _ = tx.send(Some(msgs));
+        }
+
+        // X-Touch fader 1（index 0）= t の表示。transition 無し（None）は動かさない
+        if fb.fader != last.fader
+            && let Some(t) = fb.fader
+        {
+            let msg = crate::device_profile::xtouch::fader_position(0, t);
+            self.send_output("X-Touch INT", &[msg]).await;
+        }
+
+        // LPD8 pad RGB: Scene slot の filled 状態（filled = 琥珀 / empty = 消灯）
+        if fb.pads != last.pads && !fb.pads.is_empty() {
+            let msgs = {
+                use crate::device_profile::DeviceProfile;
+                let mut profile = self.lpd8_profile.lock().await;
+                let mut msgs: Vec<Vec<u8>> = Vec::new();
+                for pad in fb.pads.iter().filter(|p| p.index < 8) {
+                    let color = if pad.filled {
+                        crate::device_profile::Rgb::new(255, 180, 40)
+                    } else {
+                        crate::device_profile::Rgb::new(0, 0, 0)
+                    };
+                    // project_track は shadow 更新 + LED 一括 sysex を返す — 最後の 1 回分で足りる
+                    msgs = profile.project_track(pad.index, "", color, false);
+                }
+                msgs
+            };
+            self.send_output("LPD8", &msgs).await;
+        }
+
+        *last = fb.clone();
+    }
+
+    /// 出力接続を必要時に開いて送る。send 失敗は接続を捨てる（次回再接続）。
+    /// port は displayName の部分一致（複数候補は "INT" 優先 — X-Touch INT/EXT の別）
+    async fn send_output(&self, pattern: &str, msgs: &[Vec<u8>]) {
+        if msgs.is_empty() {
+            return;
+        }
+        let mut outputs = self.outputs.lock().await;
+        if !outputs.contains_key(pattern) {
+            match open_output(pattern) {
+                Some(conn) => {
+                    outputs.insert(pattern.to_string(), conn);
+                    tracing::info!("🧲 feedback output opened: {}", pattern);
+                }
+                None => {
+                    tracing::debug!("🧲 feedback output 不在: {}", pattern);
+                    return;
+                }
+            }
+        }
+        if let Some(conn) = outputs.get_mut(pattern) {
+            for msg in msgs {
+                if conn.send(msg).is_err() {
+                    tracing::warn!(
+                        "🧲 feedback send 失敗 — 接続を捨てて次回再接続: {}",
+                        pattern
+                    );
+                    outputs.remove(pattern);
+                    return;
+                }
+            }
         }
     }
 
@@ -442,12 +568,18 @@ impl Bastet {
             lane_registry: Some(lane_registry),
             world_cap: Some(world_cap),
         };
+        // フィードバック方向: motor byte 列の注入路（conn_out は loop が独占所有するため）。
+        // watch = latest-wins（apply_feedback の連続送信は最新だけが残る）
+        let (feedback_tx, feedback_rx) = tokio::sync::watch::channel::<Option<MotorFrames>>(None);
+        *self.roto_feedback_tx.write().await = Some(feedback_tx);
+
         let bracket = RotoSessionBracket::new(
             lane_source,
             QuicSwitchSink::new(),
             child.clone(),
             // knob 系入力を bastet.control_event に流す（fleet 配線 — doc 49 LE-19）
             Some(Arc::clone(&self.event_bus)),
+            feedback_rx,
         );
         let mut driver = RotoHealDriver {
             shutdown: child,

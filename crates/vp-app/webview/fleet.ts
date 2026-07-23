@@ -57,6 +57,50 @@ const MAX_KNOB_SHARE = 0.95;
 
 const clamp01 = (n: number): number => Math.min(1, Math.max(0, n));
 
+// ---------- フィードバック方向（場 → 機材の投影、LE-19） ----------
+
+/** wire 形（daemon/protocol.rs `FleetFeedback` と一致 — 正規化 0..1） */
+export interface FleetFeedback {
+	knobs: { index: number; value: number }[];
+	fader: number | null;
+	pads: { index: number; filled: boolean }[];
+}
+
+/** LPD8 の pad 数 = Scene slot 数 */
+const PAD_COUNT = 8;
+
+/**
+ * 場の状態 → 機材への投影指示（純 calculation）。
+ * - knobs: structure 順の member share。**touch 保持中の knob は省く**（Touch 中 = 指定、
+ *   release 後 = 表示 — §9。手とモーターを戦わせない）
+ * - fader: 進行中 transition の t。無し / fader touch 中は null（動かさない）
+ * - pads: Scene slot の占有状態（filled = 点灯）
+ */
+export function computeFeedback(opts: {
+	memberOrder: readonly string[];
+	shares: Readonly<Record<string, number>>;
+	transitionT: number | null;
+	filledSlots: ReadonlySet<number>;
+	touched: ReadonlySet<string>;
+}): FleetFeedback {
+	const knobs: { index: number; value: number }[] = [];
+	for (let i = 0; i < Math.min(opts.memberOrder.length, 8); i++) {
+		if (opts.touched.has(`roto:${i}`)) continue;
+		const id = opts.memberOrder[i];
+		if (id === undefined) continue;
+		knobs.push({ index: i, value: clamp01(opts.shares[id] ?? 0) });
+	}
+	const fader =
+		opts.transitionT != null && !opts.touched.has("xtouch:fader0")
+			? clamp01(opts.transitionT)
+			: null;
+	const pads = Array.from({ length: PAD_COUNT }, (_, index) => ({
+		index,
+		filled: opts.filledSlots.has(index),
+	}));
+	return { knobs, fader, pads };
+}
+
 /** 物理入力 1 件 → 論理操作（対応が無ければ null = 無視）。純 calculation */
 export function mapControl(portName: string, event: FleetControlEvent): FleetOp | null {
 	const device = deviceOf(portName);

@@ -920,6 +920,18 @@ fn editor_bridge_js(
 /// `control_event` のみ転送する (device_connected 等は sidebar registry の領分)。
 /// editor bridge と違い応答不要の一方向 push なので callback なしの `evaluate_script` で投げる。
 /// 受け手不在 (gallery 未 mount 等) は JS 側の `window.vpFleet` guard が吸収する。
+/// フィードバック方向 (LE-19): webview の ipc body から fleet feedback payload を取り出す。
+///
+/// `{"t":"fleet:feedback","feedback":{...}}` の形のみ Some。tag 不一致 / 形不正は None
+/// (通常の ipc dispatch に流す)。payload の中身の検証は World 側 (serde) が担う。
+fn fleet_feedback_payload(body: &str) -> Option<serde_json::Value> {
+    let v = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    if v.get("t").and_then(|t| t.as_str()) != Some("fleet:feedback") {
+        return None;
+    }
+    v.get("feedback").cloned()
+}
+
 fn fleet_dispatch_js(payload: &serde_json::Value) -> Option<String> {
     if payload.get("kind").and_then(|v| v.as_str()) != Some("control_event") {
         return None;
@@ -954,6 +966,20 @@ mod fleet_dispatch_js_tests {
         let connected = json!({"kind": "device_connected", "port_name": "LPD8", "has_input": true});
         assert_eq!(fleet_dispatch_js(&connected), None);
         assert_eq!(fleet_dispatch_js(&json!({})), None);
+    }
+
+    #[test]
+    fn feedback_payload_extracts_only_fleet_tag() {
+        use super::fleet_feedback_payload;
+        let body = r#"{"t":"fleet:feedback","feedback":{"knobs":[{"index":0,"value":0.5}],"fader":null,"pads":[]}}"#;
+        let fb = fleet_feedback_payload(body).expect("fleet:feedback は抽出される");
+        assert_eq!(fb["knobs"][0]["value"], 0.5);
+        // 他 tag / 非 JSON は None（通常の ipc dispatch へ）
+        assert_eq!(
+            fleet_feedback_payload(r#"{"t":"term:write","d":"x"}"#),
+            None
+        );
+        assert_eq!(fleet_feedback_payload("not json"), None);
     }
 }
 
@@ -1483,8 +1509,9 @@ fn spawn_device_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     conn: SharedWorldConn,
+    fleet_rx: tokio::sync::watch::Receiver<serde_json::Value>,
 ) {
-    rt_handle.spawn(device_subscription_loop(proxy, conn));
+    rt_handle.spawn(device_subscription_loop(proxy, conn, fleet_rx));
 }
 
 /// "world-device" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
@@ -1493,7 +1520,11 @@ fn spawn_device_subscription(
 /// 自体は共有 manager が維持するので、 「接続済なのに open_channel が連続失敗」= channel 未提供と
 /// 判断して graceful give-up する (= device 機能なしで app は動く)。 connection-down (Disconnected)
 /// は失敗カウントに含めない (channel は在った)。
-async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: SharedWorldConn) {
+async fn device_subscription_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    mut conn: SharedWorldConn,
+    fleet_rx: tokio::sync::watch::Receiver<serde_json::Value>,
+) {
     const MAX_FAILURES: u32 = 10;
     let mut failures: u32 = 0;
 
@@ -1502,7 +1533,7 @@ async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: Sha
             Some(c) => c,
             None => return, // app 終了
         };
-        match run_device_session(&proxy, &client).await {
+        match run_device_session(&proxy, &client, fleet_rx.clone()).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {
                 // channel は在った (= 接続できた)。 失敗カウントを reset し次 client を待つ。
@@ -1532,20 +1563,44 @@ async fn device_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: Sha
 async fn run_device_session(
     proxy: &EventLoopProxy<AppEvent>,
     client: &unison::ProtocolClient,
+    mut fleet_rx: tokio::sync::watch::Receiver<serde_json::Value>,
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
     // F1b: 共有 connection 上に "world-device" stream を開く (旧: 専用 connect)。
-    let channel = client
-        .open_channel("world-device")
-        .await
-        .map_err(|e| format!("open world-device channel: {}", e))?;
+    let channel = std::sync::Arc::new(
+        client
+            .open_channel("world-device")
+            .await
+            .map_err(|e| format!("open world-device channel: {}", e))?,
+    );
     tracing::info!("world-device subscription connected");
 
-    loop {
+    // フィードバック方向 (doc 49 LE-19): webview の場の状態を World へ上り event で送る。
+    // watch = latest-wins (連続更新は自然に coalesce)。session 終了時に abort。
+    // 本関数は rt_handle.spawn 済み task 内で走るため runtime context がある —
+    // 素の tokio::spawn は disallowed (tao main thread 規約) なので Handle::current 経由。
+    let feedback_channel = channel.clone();
+    let feedback_task = tokio::runtime::Handle::current().spawn(async move {
+        while fleet_rx.changed().await.is_ok() {
+            let value = fleet_rx.borrow_and_update().clone();
+            if value.is_null() {
+                continue;
+            }
+            if feedback_channel
+                .send_event("feedback", &value)
+                .await
+                .is_err()
+            {
+                return; // 切断 — session ごと作り直される
+            }
+        }
+    });
+
+    let outcome = loop {
         let msg = match channel.recv().await {
             Ok(m) => m,
-            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+            Err(_) => break Ok(SubscriptionOutcome::Disconnected),
         };
         if msg.msg_type != MessageType::Event || msg.method != "event" {
             continue;
@@ -1559,9 +1614,11 @@ async fn run_device_session(
         };
         if proxy.send_event(AppEvent::DeviceEvent { payload }).is_err() {
             // event loop が閉じた = app 終了。
-            return Ok(SubscriptionOutcome::AppClosing);
+            break Ok(SubscriptionOutcome::AppClosing);
         }
-    }
+    };
+    feedback_task.abort();
+    outcome
 }
 
 /// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
@@ -2894,9 +2951,20 @@ pub fn run() -> anyhow::Result<()> {
     // event loop closure が move capture するので、 closure 内の spawn は `world_conn.clone()` を渡す。
     let world_conn = spawn_world_conn_manager(&rt_handle, crate::client::default_world_port());
 
+    // フィードバック方向 (doc 49 LE-19): webview の場の状態 → world-device 上り event。
+    // watch = latest-wins (webview が throttle 済みでも Rust 側で自然に coalesce)。
+    // 送り手 = ipc_handler の "fleet:feedback" 分岐 / 受け手 = device session の sender task。
+    let (fleet_feedback_tx, fleet_feedback_rx) =
+        tokio::sync::watch::channel(serde_json::Value::Null);
+
     // Bastet 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
     // canvas/lanes は per-SP だが device は World scope (= daemon singleton) なので起動時 1 回。
-    spawn_device_subscription(&rt_handle, event_loop.create_proxy(), world_conn.clone());
+    spawn_device_subscription(
+        &rt_handle,
+        event_loop.create_proxy(),
+        world_conn.clone(),
+        fleet_feedback_rx,
+    );
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session_state より前に確定する。
@@ -3081,6 +3149,11 @@ pub fn run() -> anyhow::Result<()> {
             // main tag (terminal / pane 系) → terminal、 それ以外 (sidebar IpcEnvelope:
             // project: / lane: 系) → SidebarIpc。 terminal の fall-through に頼らない。
             let body = req.body();
+            // fleet feedback (LE-19) は event loop を経由せず watch へ直行 (高頻度 + 状態量)
+            if let Some(fb) = fleet_feedback_payload(body) {
+                let _ = fleet_feedback_tx.send(fb);
+                return;
+            }
             if is_main_ipc_tag(body) {
                 terminal::handle_ipc_message(body, &ipc_proxy);
             } else {
