@@ -118,8 +118,15 @@ pub struct EchoesHostConfig {
     pub cwd: String,
     /// cc_session 記録キー（project 名）。
     pub project: String,
-    /// cc_session 記録キー（lane label: conductor / performer 名）。
+    /// cc_session 記録キー（**store label**: session #1 = 素の lane 名 / #2 以降は `<lane>#<n>`）。
+    /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
+    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — Act I の
+    /// stand_spawner 注入と同じ契約。`vp now` / wire がこれを読んで宛先を名乗る）。
+    pub lane_label: String,
+    /// identity env（`VP_SESSION_KEY`）用の session key（doc 40 §4 の hook identity と同じ —
+    /// Act II の engine が「自分がどの session か」を名乗れるようにする）。
+    pub session_key: crate::lane::session_registry::SessionKey,
     /// 再開する session id（`--resume`）。Act I ⇄ II 切替 / SP 再起動復帰に使う。
     pub resume_session_id: Option<String>,
     /// 使用モデル（`--model`）。None = claude default。
@@ -243,6 +250,11 @@ impl EchoesAgentHost {
         let mut cmd = Command::new(&claude_path);
         // 親（SP）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
         cmd.envs(std::env::vars());
+        // identity env（doc 51 §1 A3b）: Act I の stand_spawner と同じ契約を Act II にも。
+        // engine（とその shell tool の子プロセス）が `vp now` / wire で自分を名乗るための口。
+        cmd.env("VP_PROJECT", &config.project);
+        cmd.env("VP_LANE", &config.lane_label);
+        cmd.env("VP_SESSION_KEY", config.session_key.to_string());
         // cwd 空は「継承」（呼び元の cwd を使う）— test / project_dir 未解決時の防御。
         if !config.cwd.is_empty() {
             cmd.current_dir(&config.cwd);
@@ -1083,6 +1095,8 @@ mod tests {
             cwd: tmp.path().to_string_lossy().to_string(),
             project: "vp-test".to_string(),
             lane: "spike".to_string(),
+            lane_label: "spike".to_string(),
+            session_key: 1,
             resume_session_id: None,
             model: Some("haiku".to_string()),
             claude_cli_path: None,
@@ -1140,6 +1154,8 @@ mod tests {
             cwd: tmp.path().to_string_lossy().to_string(),
             project: "vp-test".to_string(),
             lane: "spike-q".to_string(),
+            lane_label: "spike-q".to_string(),
+            session_key: 1,
             resume_session_id: None,
             model: Some("haiku".to_string()),
             claude_cli_path: None,

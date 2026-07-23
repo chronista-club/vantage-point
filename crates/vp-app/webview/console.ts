@@ -84,6 +84,9 @@ export type EchoesEvent =
       context_tokens?: number
       context_window?: number
     }
+  /** session の「今なにを」自己申告（doc 51 §1 A3b — `vp now` CLI 発、World が注入）。
+   *  GUI は now-line（名札直下の動的一行）に出し、turn_completed で消す。 */
+  | { kind: 'now_line'; text: string }
   | { kind: 'error'; message: string }
   /** engine プロセスの終了（途絶）= 回復可能な休眠。error（本物の異常）と別語彙で、
    *  GUI は「💤 休眠（送信で起動）」と穏当に出す。次の submit / reconnect demand で復活する。 */

@@ -1425,6 +1425,47 @@ async fn handle_console_set_mode(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "mode": mode.as_str()}))
 }
 
+/// doc 51 §1 A3b: session の「今なにを」自己申告を該当 session の echoes topic に注入する。
+///
+/// 発生源は AI 自身の `vp now` CLI（識別は spawn 時注入の `VP_PROJECT` / `VP_LANE` /
+/// `VP_SESSION_KEY` env）。World は値を保存しない — 非 retained topic への fire-and-forget
+/// （now-line は揮発。lane 行への掲揚で保持が要るのは Phase B の関心 — その時に retained 化を
+/// 判断する）。session 未指定は root（lane の代表）に読み替える。
+async fn handle_session_now(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
+    if lane.is_empty() {
+        return Err("session_now: lane 未指定".to_string());
+    }
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if text.is_empty() {
+        return Err("session_now: text が空です".to_string());
+    }
+    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
+        .ok_or_else(|| format!("session_now: lane パース失敗: {lane}"))?;
+    let session = match payload.get("session").and_then(serde_json::Value::as_u64) {
+        Some(s) => s as crate::lane::session_registry::SessionKey,
+        None => crate::lane::session_registry::load(&addr.project, &addr.name, "echoes").root,
+    };
+    state
+        .topic_router
+        .route(crate::protocol::ProcessMessage::EchoesEvent {
+            lane: lane.to_string(),
+            session,
+            event: crate::echoes::EchoesEvent::NowLine {
+                text: text.to_string(),
+            },
+        })
+        .await;
+    Ok(serde_json::json!({ "ok": true, "lane": lane, "session": session }))
+}
+
 /// Act II モデル切替: chat engine の `--model` を lane 単位で切替える。
 ///
 /// `{lane, model: string|null}`。null / 省略 = 記録を消して claude default に戻す。
@@ -2000,6 +2041,8 @@ pub(crate) async fn dispatch_process_method(
         "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,
         "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
+        // doc 51 §1 A3b: `vp now` — session の「今なにを」自己申告を now-line に注入
+        "session_now" => handle_session_now(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の SP-proxy 入口 (旧 tmux send-keys の置換)
         "lane_nudge" => handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
@@ -3119,6 +3162,66 @@ mod tests {
         .await
         .expect("capture #2");
         assert_eq!(res["session"], 2);
+    }
+
+    /// doc 51 §1 A3b: `session_now`（`vp now` の World 側）が NowLine event を該当 session の
+    /// echoes topic に注入する。session は message の別 field で運ぶ（doc 38 落とし穴① —
+    /// topic key は per-lane のまま）。非 retained なので subscribe が先。
+    #[tokio::test]
+    async fn session_now_routes_nowline_to_session_topic() {
+        use super::dispatch_process_method;
+        use crate::echoes::EchoesEvent;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let (_id, mut srx) = state
+            .topic_router
+            .subscribe("process/echoes/data/vp~root/event")
+            .await;
+
+        let resp = dispatch_process_method(
+            &state,
+            "session_now",
+            serde_json::json!({ "lane": "vp/root", "session": 3, "text": "panic 箇所を特定中" }),
+        )
+        .await
+        .expect("session_now");
+        assert_eq!(resp["session"], 3);
+
+        let (topic, msg) = tokio::time::timeout(std::time::Duration::from_secs(1), srx.recv())
+            .await
+            .expect("timeout")
+            .expect("recv");
+        assert_eq!(topic, "process/echoes/data/vp~root/event");
+        match msg {
+            ProcessMessage::EchoesEvent {
+                lane,
+                session,
+                event,
+            } => {
+                assert_eq!(lane, "vp/root");
+                assert_eq!(session, 3);
+                assert_eq!(
+                    event,
+                    EchoesEvent::NowLine {
+                        text: "panic 箇所を特定中".into()
+                    }
+                );
+            }
+            other => panic!("想定外の message: {other:?}"),
+        }
+
+        // 空 text は明示エラー（無音の no-op にしない）。
+        let err = dispatch_process_method(
+            &state,
+            "session_now",
+            serde_json::json!({ "lane": "vp/root", "text": "  " }),
+        )
+        .await
+        .expect_err("空 text は拒否");
+        assert!(err.contains("text"), "エラーが理由を運ぶ: {err}");
     }
 
     /// doc 39 P4-A: console_set_model の可否判定は lane 固定 stand ではなく **root session の

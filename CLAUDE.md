@@ -144,6 +144,10 @@ vp lane slots <lane>   # lane が持つ console slot 一覧（doc 46 P5 — slot
 vp lane slot-new <lane> [--stand <engine>]  # console をもう 1 枚立てる（新 session を採番。root は動かない）
 vp lane nudge <lane> <text> [--session N]  # lane の claude に text+Enter を注入（旧 vp tmux send-keys / directmsg の後継）
 # ⚠️ `--session` 省略は **root**（lane の代表 slot）。chat 系 API の session 省略が focused なのと既定が違う
+vp now "<一行>"        # session の「今なにを」を GUI の now-line に自己申告（doc 51 §1 A3b）。
+                       # **VP の lane で働く AI はサブタスクの切れ目ごとに打つこと**（例:
+                       # `vp now "panic 箇所を特定中 — pty_slot の lock 順を確認"`）。宛先は
+                       # env（VP_PROJECT/VP_LANE/VP_SESSION_KEY）から自動導出、日本語で書く
 
 # その他
 vp port                # deterministic port layout の計算・表示

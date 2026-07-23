@@ -124,6 +124,16 @@ pub enum EchoesEvent {
         context_window: Option<u64>,
     },
 
+    /// session の「今なにを」自己申告（doc 51 §1 A3b — now-line のメイン供給）。
+    ///
+    /// 発生源は engine の出力翻訳ではなく **AI 自身の `vp now` CLI**（World の `session_now`
+    /// method が該当 session の topic に注入する）。GUI は名札直下の now-line に出し、
+    /// `TurnCompleted` で消す —「今」は turn より長生きしない。
+    /// replay log には記録しない（揮発の自己申告 — 過去の「今」を再生すると嘘になる。
+    /// [`crate::process::echoes_pump`] の記録対象リスト参照）。
+    /// 凍結語彙への additive variant（`EngineExited` / context gauge と同じ前例）。
+    NowLine { text: String },
+
     /// engine / 翻訳層のエラー（turn の失敗・翻訳失敗など「本物の異常」）。
     /// GUI は ⚠ engine（警告）として出す。
     Error { message: String },
