@@ -400,8 +400,10 @@ layout 記法: `cc16 | grok17/board | sh18`
 
 - 理想の絵（multi-machine 構想 / localLLM 別機）は**まだ描かない** — 安定が先
 - 具体的な痛み: `vp auth login` を何度も求められる
-- **将来**: 他のユーザの world とやり取りしたい — **World + 「ユーザが誰か」**の identity
-  （Creo ID が自然な土台。federation は machine 跨ぎから人跨ぎへ育つ）
+- **将来**: 他のユーザの world とやり取りしたい — **World + 「ユーザが誰か」をきちんと
+  認識の上で利用する**。identity が付くだけでなく、やり取りの瞬間ごとに「相手が誰の
+  world か」が双方の認知に見えていること（表象の共有の信頼版 — 匿名の配線にしない）。
+  Creo ID が自然な土台。federation は machine 跨ぎから人跨ぎへ育つ
 
 ### どうすべきだったのか（回顧）
 
