@@ -124,21 +124,36 @@ if (session !== focusedOf(lane)) return   // background session の event を捨
 backend は**全 session の event を既に流している**。JS が focused 以外を捨てているだけ。
 つまり Rust 側で終わった P5 の re-key と**同型の作業が JS 側に残っている**。
 
-### 4.3 変更範囲 — 両 World に同型の re-key
+### 4.3 変更範囲 — 「lane で key されている層」は 4 つある
 
-⚠️ xterm は **World A**（`main_area.rs` のインライン JS）にあり、bundle（World B）からは
-触らない境界規律がある（doc 33 §8）。session = Pane は**この境界の両側**に同じ形の変更を要求する。
+> ⚠️ **訂正（2026-07-23、実装着手時）**: 初稿の本節は **JS 層しか数えていなかった**。
+> 実際には lane を key にした層が vp-app（Rust）にもあり、さらに **chat 動詞の宛先は
+> session を引数に取らず lane の focused に解決される**。§4.2 の「塞いでいるのは 1 行」は
+> **表示について**は正しいが、**打てるようにする**には足りない。
 
-| 層 | 現在の key | 必要な key | World |
-|---|---|---|---|
-| chat state | `laneChats: Map<lane, LaneChat>` | `Map<lane, Map<session, _>>` | B (`chatview.tsx`、呼び出し 14 箇所) |
-| event fold | focused 以外を破棄 | session 別に振り分け | B (`chatview.tsx:406`) |
-| console facade | `lanes: Map<lane, LaneConsole>` | buffer / renderer を session 別に | B (`console.ts`) |
-| **xterm instance** | `laneInstances: Map<lane, _>` | `Map<lane, Map<session, _>>` | **A** (`main_area.rs`) |
-| pane refs | `LANE_PANE_REFS` 固定 2 枚 | session list から動的に | B (`lane-panes.ts`) |
-| DOM host | `#lane-host` / `#console-chat-host` 固定 2 | session ごとに生成 | A + B |
-| tab strip | `.echoes-tabs` | 撤去（chip = 畳まれた Pane、§1.3） | B (`chatview.tsx`) |
-| Act toggle | lane の mode 切替 | **消滅**（Act = Pane の kind） | B (`entry.tsx`) |
+xterm は **World A**（`main_area.rs` のインライン JS）にあり、bundle（World B）からは触らない
+境界規律がある（doc 33 §8）。session = Pane はこの境界の両側 **+ Rust 側**に同型の変更を要求する。
+
+| # | 層 | 現在の key | 必要な key | 場所 |
+|---|---|---|---|---|
+| 1 | chat state | `laneChats: Map<lane, _>` | `Map<lane, Map<session, _>>` | B `chatview.tsx`（呼び出し 14 箇所） |
+| 2 | event fold | focused 以外を**破棄** | session 別に振り分け | B `chatview.tsx:416` |
+| 3 | console facade | `lanes: Map<lane, LaneConsole>` | buffer / renderer を session 別に | B `console.ts` |
+| 4 | **xterm instance** | `laneInstances: Map<lane, _>` | `Map<lane, Map<session, _>>` | **A** `main_area.rs` |
+| 5 | **SP 接続** | `echoes_sessions: HashMap<lane, _>` | `(lane, session)` | **Rust** `app.rs:4075` |
+| 6 | **chat 動詞の宛先** | `EchoesSubmit { lane, prompt }` = **focused へ** | `session` を明示で受ける | **Rust** `terminal.rs:191` + SP |
+| 7 | pane refs | `LANE_PANE_REFS` 固定 2 枚 | session list から動的に | B `lane-panes.ts` |
+| 8 | DOM host | `#lane-host` / `#console-chat-host` 固定 2 | session ごとに生成 | A + B |
+| 9 | tab strip | `.echoes-tabs` | 撤去（chip = 畳まれた Pane、§1.3） | B `chatview.tsx` |
+| 10 | Act toggle | lane の mode 切替 | **消滅**（Act = Pane の kind） | B `entry.tsx` |
+
+**#6 が本丸**。doc 46 §P5 の決定表が「focused は chat 動詞の宛先」と書いたとおり、submit /
+set_model / set_permission_mode / interrupt はすべて lane の focused session に落ちる。
+N 枚の chat Pane が**それぞれ打てる**ためには、この動詞群が session を引数に取る必要がある。
+
+> ⚠️ **やってはいけない回避策**: 「submit の直前に focusSession を送る」。別 IPC なので順序保証が
+> 無く、**他の session に送信される**レースを作る。宛先は引数で運ぶ（[[wire-command-ack-timing]]
+> と同型の失敗）。
 
 ### 4.4 配置は既存の engine がそのまま担う
 
@@ -154,15 +169,22 @@ cc16 | cc17 | sid18   ← 3 列並列
 
 ### 4.5 Phase
 
-| Phase | scope | 規模 |
-|---|---|---|
-| **P1** | World B: chat session を Pane 化（state re-key + 動的 host + tab strip 撤去） | 中 |
-| **P2** | World A: xterm を `(lane, session)` へ re-key、term session を Pane 化 | 中〜大 |
-| **P3** | Act toggle 撤去（Act = Pane の kind に畳み切る）+ `console_mode` の残滓掃除 | 小 |
-| **P4** | lane scope の layout 永続 + MCP 公開（write gate / 承認 UX、doc 49 の follow-up） | 小 |
+「見る」と「打つ」で必要な層が違うので、そこで切る。
 
-P1 だけでも mako の画（cc#16 / cc#17 / sid#18 を並べる）は出る。P2 は World A の境界を越える
-ので単独で扱う（doc 46 §3 が `pty_slots` re-key で測ったのと同じ「1 辺が 2 仕事」の危険域）。
+| Phase | scope | 層（§4.3 の #） | 規模 |
+|---|---|---|---|
+| **P1** | **視る** — chat session を Pane として並べる。state を `(lane, session)` へ re-key、fold の破棄をやめ、host を session ごとに生成、tab strip 撤去 | 1,2,3,7,8,9 | 中 |
+| **P2** | **打つ** — chat 動詞（submit / set_model / set_permission_mode / interrupt）に session を通す。SP 接続も `(lane, session)` へ | 5,6 | 中 |
+| **P3** | **World A** — xterm を `(lane, session)` へ re-key、term session も Pane 化 | 4,8 | 中〜大 |
+| **P4** | Act toggle 撤去（Act = Pane の kind に畳み切る）+ `console_mode` の残滓掃除 | 10 | 小 |
+| **P5** | lane scope の layout 永続 + MCP 公開（write gate / 承認 UX、doc 49 の follow-up） | — | 小 |
+
+- **P1 で mako の画（cc#16 / cc#17 / sid#18 を並べる）は出る**。ただし composer が有効なのは
+  focused Pane だけ = 「並べて視る」まで。P2 でどの Pane からも打てるようになる
+- P1 と P2 の間の中間状態（並ぶが打てない Pane がある）は **1 リリースを跨がせない** —
+  [[pre-mvp-development-stance]]「中間状態を作らず最短で canonical に切る」。P1→P2 を続けて出す
+- P3 は World A の境界を越えるので単独で扱う（doc 46 §3 が `pty_slots` re-key で測ったのと
+  同じ「1 辺が 2 仕事」の危険域）
 
 ## 5. やってはいけない
 

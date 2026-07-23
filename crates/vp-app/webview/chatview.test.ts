@@ -13,6 +13,7 @@ import {
   clampToolDetail,
   chatCapableStands,
   canCloseSession,
+  chatKey,
   type StandOption,
 } from './chatview'
 import type { EchoesEvent } from './console'
@@ -862,5 +863,47 @@ describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3 �
 
   it('旧 SP（root field なし = undefined）は従来挙動（本数のみ）に倒す', () => {
     expect(canCloseSession(2, undefined)).toBe(true)
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// chatKey — 会話 store の (lane, session) key（doc 50 §4.3 #1）
+// ---------------------------------------------------------------------------
+
+describe('chatKey — lane と session が衝突なく畳める', () => {
+  it('lane と session を NUL で連結する', () => {
+    expect(chatKey('vp/root', 1)).toBe(`vp/root\u00001`)
+  })
+
+  it('別 session は別 key', () => {
+    expect(chatKey('vp/root', 1)).not.toBe(chatKey('vp/root', 2))
+  })
+
+  it('別 lane は別 key', () => {
+    expect(chatKey('vp/root', 1)).not.toBe(chatKey('vp/performer/a', 1))
+  })
+
+  // key の分離が壊れる典型: 区切りが lane 名に現れうる文字だと、別の (lane, session) が
+  // 同じ key に潰れる。`#` や `:` を区切りに選ぶとこの組で衝突する。
+  it('lane 名に区切り候補（# : / 空白）が入っても衝突しない', () => {
+    const pairs: [string, number][] = [
+      ['vp/root#2', 1],
+      ['vp/root', 21],
+      ['vp:root', 1],
+      ['vp/root 2', 1],
+      ['vp/performer/a#1', 2],
+    ]
+    const keys = pairs.map(([l, s]) => chatKey(l, s))
+    expect(new Set(keys).size).toBe(pairs.length)
+  })
+
+  // prefix 走査（clearReplaying が lane の全 session を舐める経路）が、名前の前方一致で
+  // 隣の lane を巻き込まないこと。`vp/root` の prefix で `vp/root-2` を拾ってはいけない。
+  it('lane prefix 走査が名前の前方一致で隣の lane を巻き込まない', () => {
+    const prefix = `vp/root\u0000`
+    expect(chatKey('vp/root', 3).startsWith(prefix)).toBe(true)
+    expect(chatKey('vp/root-2', 3).startsWith(prefix)).toBe(false)
+    expect(chatKey('vp/rootlike', 1).startsWith(prefix)).toBe(false)
   })
 })

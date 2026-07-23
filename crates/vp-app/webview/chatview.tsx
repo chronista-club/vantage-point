@@ -170,17 +170,47 @@ type LaneChat = {
   set: SetStoreFunction<ChatState>
 }
 
+/**
+ * 会話 store は **(lane, session) 単位**（doc 50 §4.3 #1）。
+ *
+ * 旧実装は lane 単位で、focused 以外の session の event は `foldEvent` が捨てていた
+ * （= 1 lane に 1 つの会話しか持てない）。session ↔ Pane 1:1（doc 46 §1.5）では N 枚の
+ * chat Pane が同時に生きるので、Rust 側 P5 の `pty_slots` re-key と**同型の re-key** を
+ * JS 側にも入れる。
+ *
+ * key は `lane` と `session` を NUL で連結する。`#` や `:` は lane 名や engine session id に
+ * 現れうるので衝突源になる。NUL はどの経路の lane 名にも入らない。
+ * ⚠️ source では必ずエスケープ（`\u0000`）で書く — リテラルの不可視文字を置くと grep も diff も
+ * 読めなくなる（この commit で実際に踏んだ）。
+ */
 const laneChats = new Map<string, LaneChat>()
 const [activeLane, setActiveLane] = createSignal<string | null>(null)
 
-function laneChat(lane: string): LaneChat {
-  let lc = laneChats.get(lane)
+/** store の key（純関数 = テスト対象）。lane 名に何が入っても衝突しない区切りを使う。 */
+export function chatKey(lane: string, session: number): string {
+  return `${lane}\u0000${session}`
+}
+
+function laneChat(lane: string, session: number): LaneChat {
+  const k = chatKey(lane, session)
+  let lc = laneChats.get(k)
   if (!lc) {
     const [state, set] = createStore<ChatState>(emptyChatState())
     lc = { state, set }
-    laneChats.set(lane, lc)
+    laneChats.set(k, lc)
   }
   return lc
+}
+
+/**
+ * lane の **focused session** の store。
+ *
+ * ⚠️ 過渡的な helper。doc 50 P1 の残り（ChatView を (lane, session) の props で受け、session
+ * ごとに 1 枚ずつ mount する）が入ると呼び出し側は自分の session を知っているので不要になる。
+ * 今は「**store は session 別 / 描画はまだ focused の 1 枚**」の段階。
+ */
+function focusedChat(lane: string): LaneChat {
+  return laneChat(lane, focusedOf(lane))
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +221,10 @@ function laneChat(lane: string): LaneChat {
 // attach 状態機械」に束縛する:
 //  ① lane/Act/tab 切替で必ず解除（clearReplaying を各遷移点で呼ぶ）
 //  ② replay_start ごとに watchdog を張り、REPLAY_WATCHDOG_MS 無応答なら強制解除 + warn（安全網）
-//  ③ session filter との整合は foldEvent の `session !== focusedOf` で担保済（background session の
-//     replay は fold されない = replaying を立てない）。
+//  ③ watchdog は **(lane, session) 単位**（doc 50 §4.3 #2 で store を session 別にしたのに合わせる）。
+//     旧実装は lane 単位で、fold 側が background session を捨てていたので衝突しなかった。
+//     捨てるのをやめた今は lane 単位のままだと、別 session の replay_start が
+//     前の session の watchdog を解除してしまう（= 固着の検出を取りこぼす）。
 // ---------------------------------------------------------------------------
 
 /** replay_end が来ない時に replaying を強制解除するまでの猶予 ms（安全網）。 */
@@ -210,26 +242,28 @@ function autosize(el: HTMLTextAreaElement): void {
 }
 
 /** 張ってある watchdog を取り消す（replay_end / error / 明示解除の時）。 */
-function clearReplayWatchdog(lane: string): void {
-  const t = replayWatchdogs.get(lane)
+function clearReplayWatchdog(lane: string, session: number): void {
+  const k = chatKey(lane, session)
+  const t = replayWatchdogs.get(k)
   if (t !== undefined) {
     clearTimeout(t)
-    replayWatchdogs.delete(lane)
+    replayWatchdogs.delete(k)
   }
 }
 
 /** replay_start を受けた時に watchdog を張り直す（REPLAY_WATCHDOG_MS 後に強制解除）。 */
-function armReplayWatchdog(lane: string): void {
-  clearReplayWatchdog(lane)
+function armReplayWatchdog(lane: string, session: number): void {
+  clearReplayWatchdog(lane, session)
+  const k = chatKey(lane, session)
   replayWatchdogs.set(
-    lane,
+    k,
     setTimeout(() => {
-      replayWatchdogs.delete(lane)
-      const lc = laneChats.get(lane)
+      replayWatchdogs.delete(k)
+      const lc = laneChats.get(k)
       if (lc && lc.state.replaying) {
         // replay_end 未達 = 固着。強制解除して warn（console IPC 経由で Rust log にも載る）。
         console.warn(
-          `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane})`,
+          `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane} session=${session})`,
         )
         lc.set('replaying', false)
       }
@@ -237,12 +271,19 @@ function armReplayWatchdog(lane: string): void {
   )
 }
 
-/** 指定 lane の再同期表示を明示的に下ろす（lane/Act/tab 切替で呼ぶ）。watchdog も取り消す。
- *  cache 未作成の lane は no-op（空 entry を作らない）。 */
+/** 指定 lane の**全 session** の再同期表示を明示的に下ろす（lane 切替で呼ぶ）。watchdog も取り消す。
+ *  cache 未作成の session は no-op（空 entry を作らない）。 */
 function clearReplaying(lane: string): void {
-  clearReplayWatchdog(lane)
-  const lc = laneChats.get(lane)
-  if (lc && lc.state.replaying) lc.set('replaying', false)
+  const prefix = `${lane}\u0000`
+  for (const [k, lc] of laneChats) {
+    if (!k.startsWith(prefix)) continue
+    const t = replayWatchdogs.get(k)
+    if (t !== undefined) {
+      clearTimeout(t)
+      replayWatchdogs.delete(k)
+    }
+    if (lc.state.replaying) lc.set('replaying', false)
+  }
 }
 
 /**
@@ -407,23 +448,25 @@ function sealLastAssistant(s: ChatState): void {
   if (last && last.kind === 'assistant') last.sealed = true
 }
 
-/** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。
- *  doc 38 Phase 2（本改修の要）: session が現在の focused でなければ fold しない — 背景 session の
- *  stream を focused の会話に混ぜない。session は console.ts で正規化済み（未指定 = focused = 1、
- *  旧 SP 互換）なので単純比較で足りる。focus 切替後の会話表示は demand_start → ReplayStart が
- *  filter を通って fold の clear→再構築で担う（切替時の明示クリアは不要）。 */
+/** EchoesEvent を **その session の** store に畳み込む（console.ts の renderer 本体）。
+ *
+ *  doc 50 §4.3 #2: 旧実装は `session !== focusedOf(lane)` で背景 session の event を**捨てて**
+ *  いた（lane に会話が 1 本しか無い前提）。session ↔ Pane 1:1 では N 本が同時に生きるので、
+ *  捨てずに **session ごとの store へ振り分ける**。背景 session の stream が focused の会話に
+ *  混ざる心配は、store が別なので構造的に消える（旧 filter が担っていた役割は key が担う）。
+ *  session は console.ts で正規化済み（未指定 = focused = 1、旧 SP 互換）。 */
 function foldEvent(lane: string, ev: EchoesEvent, session: number): void {
-  if (session !== focusedOf(lane)) return
-  laneChat(lane).set(produce((s) => foldInto(s, ev)))
-  laneChat(lane).set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
+  const lc = laneChat(lane, session)
+  lc.set(produce((s) => foldInto(s, ev)))
+  lc.set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
   // doc 38 §4.3: replay window の watchdog を張り替える。replay_start で arm、replay_end / error で
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
-  if (ev.kind === 'replay_start') armReplayWatchdog(lane)
+  if (ev.kind === 'replay_start') armReplayWatchdog(lane, session)
   else if (ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited')
-    clearReplayWatchdog(lane) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
+    clearReplayWatchdog(lane, session) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
-  if (isTurnClosingEvent(ev.kind)) flushPending(lane)
+  if (isTurnClosingEvent(ev.kind)) flushPending(lane, session)
 }
 
 /** turn が閉じた（= pending flush を発火してよい）event か（doc 35 §5.1、vitest 対象）。
@@ -433,9 +476,14 @@ export function isTurnClosingEvent(kind: EchoesEvent['kind']): boolean {
   return kind === 'turn_completed' || kind === 'error' || kind === 'engine_exited'
 }
 
-/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象は引数 lane = turn を閉じた lane）。 */
-function flushPending(lane: string): void {
-  const lc = laneChat(lane)
+/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象 = turn を閉じた (lane, session)）。
+ *  ⚠️ `echoes:submit` は今のところ session を運ばず SP 側で lane の focused に落ちる
+ *  （doc 50 §4.3 #6 = P2 の対象）。したがって background session の pending がここで流れると
+ *  **focused 側に送られてしまう** — それを避けるため、focused でない session は flush しない
+ *  で pending に留め置く（その session が focused になった時に改めて閉じ event で流れる）。 */
+function flushPending(lane: string, session: number): void {
+  if (session !== focusedOf(lane)) return
+  const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text) return
   lc.set(
@@ -478,10 +526,12 @@ export function emptyChatState(): ChatState {
   }
 }
 
-/** active lane が transcript replay（再同期）中か。resync-loader の可視条件（reactive）。 */
+/** active lane の **focused session** が transcript replay（再同期）中か。
+ *  resync-loader の可視条件（reactive）。ローダーは lane 全面に出る 1 枚なので、
+ *  代表として focused を見る（背景 session の replay で全面を覆わない）。 */
 export function activeLaneReplaying(): boolean {
   const l = activeLane()
-  return l ? laneChat(l).state.replaying : false
+  return l ? laneChat(l, focusedOf(l)).state.replaying : false
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,7 +1056,7 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
 function ChatView() {
   const current = (): LaneChat | null => {
     const l = activeLane()
-    return l ? laneChat(l) : null
+    return l ? focusedChat(l) : null
   }
   const state = (): ChatState | null => current()?.state ?? null
 
@@ -1040,7 +1090,7 @@ function ChatView() {
     if (!lane) return
     // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
     // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
-    laneChat(lane).set(produce((s) => (s.permissionMode = mode)))
+    focusedChat(lane).set(produce((s) => (s.permissionMode = mode)))
     // Echoes 共通ヘッダの permission chip にも同期（engine は即時 event を返さないため）。
     ;(
       window as unknown as {
@@ -1185,12 +1235,12 @@ function ChatView() {
     if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
     // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
-    if (laneChat(lane).state.streaming) {
-      laneChat(lane).set('pending', (p) => (p ? `${p}\n${text}` : text))
+    if (focusedChat(lane).state.streaming) {
+      focusedChat(lane).set('pending', (p) => (p ? `${p}\n${text}` : text))
       return
     }
     // idle: 送信順 = 処理順なので optimistic に即描画して送る
-    laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
+    focusedChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
   }
@@ -1201,7 +1251,7 @@ function ChatView() {
   const editPending = () => {
     const lane = activeLane()
     if (!lane) return
-    const lc = laneChat(lane)
+    const lc = focusedChat(lane)
     if (!canDequeuePending(draft(), lc.state.pending)) return
     const text = lc.state.pending as string
     lc.set('pending', null) // 先に空にする → 以降の turn_completed が flush しない（レース消滅）
@@ -1222,7 +1272,7 @@ function ChatView() {
   const answerPrompt = (requestId: string, answers: Record<string, string>) => {
     const lane = activeLane()
     if (!lane) return
-    laneChat(lane).set(
+    focusedChat(lane).set(
       produce((s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
@@ -1239,7 +1289,7 @@ function ChatView() {
   const decidePrompt = (requestId: string, behavior: 'allow' | 'deny') => {
     const lane = activeLane()
     if (!lane) return
-    laneChat(lane).set(
+    focusedChat(lane).set(
       produce((s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
@@ -1904,7 +1954,7 @@ export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatV
     showLane(lane: string) {
       if (!attached.has(lane)) {
         attached.add(lane)
-        laneChat(lane) // store を先に用意（replay が流し込む）
+        focusedChat(lane) // store を先に用意（replay が流し込む）
         // doc 38 Phase 2: renderer は session も受け取り、foldEvent が focused 以外を弾く。
         vpConsole.attachRenderer(lane, (ev, session) => foldEvent(lane, ev, session))
       }
