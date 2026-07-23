@@ -182,6 +182,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
                 | "console:switch_root"
                 | "console:set_model"
+                // Bastet pane の device 一覧 catch-up（allowlist 漏れは sidebar IPC へ流れて
+                // silent drop = 「pane が空のまま」regression — session tab 4 tag と同じ罠）
+                | "bastet:devices_fetch"
         )
     )
 }
@@ -204,6 +207,8 @@ mod ipc_tag_tests {
             "echoes:stands_fetch",
             // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
             "console:switch_root",
+            // Bastet pane の device catch-up（boot 窓救済 — lanes:ensure-all の同型）
+            "bastet:devices_fetch",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -3867,6 +3872,13 @@ pub fn run() -> anyhow::Result<()> {
                 if lane_respawn_triggered.remove(&address) {
                     tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
                 }
+            }
+            Event::UserEvent(AppEvent::BastetDevicesFetch) => {
+                // boot 窓 catch-up: world-device の接続時 snapshot は bundle ロード前に届き、
+                // renderDevices の `window.vpBastet &&` guard で黙って落ちる（sidebar の
+                // Devices badge は state 再 push で生きるが pane だけ空のまま、2026-07-23
+                // 実機で確認）。view の誕生時に保持済み state から再 render する。
+                lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 tracing::debug!("🧲 device event: {}", payload);

@@ -113,6 +113,11 @@ pub enum AppEvent {
     /// 要求する。 Rust は `sidebar_state.lanes_by_project` 全 lane に対して ensureLane + 現在
     /// active lane に showLane を再発行する (idempotent)。
     LanesEnsureAll,
+    /// Bastet pane の device 一覧 catch-up 要求（`lanes:ensure-all` と同型の boot 窓救済）。
+    /// world-device の接続時 snapshot は bundle ロード前に届き、`renderDevices` の
+    /// `window.vpBastet &&` guard で黙って落ちる — 以後の再送は次の hot-plug まで無い。
+    /// JS 側が vpBastet を install した直後に送り、Rust は保持済み state から再 render する。
+    BastetDevicesFetch,
     /// VP-143: 全 lane の cc session display name (custom-title) を再 resolve する周期 tick。
     /// `tokio::spawn` で 5s 間隔の background task が proxy 経由で send。 main thread は
     /// `sidebar_state.lanes_by_project` を walk して `session_title::resolve_title_for_cwd` を
@@ -481,6 +486,11 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             // 起動 race で silent drop された ensureLane を再発行させるための signal。
             tracing::info!("[ipc] lanes:ensure-all (JS DOMContentLoaded catch-up)");
             let _ = proxy.send_event(AppEvent::LanesEnsureAll);
+        }
+        Some("bastet:devices_fetch") => {
+            // Bastet pane の catch-up（boot 窓で snapshot の render が落ちた分の再要求）。
+            tracing::info!("[ipc] bastet:devices_fetch (JS bundle-ready catch-up)");
+            let _ = proxy.send_event(AppEvent::BastetDevicesFetch);
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き
