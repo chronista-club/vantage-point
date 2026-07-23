@@ -6,16 +6,16 @@
 //! private item を参照可）。
 use super::*;
 
-/// board scope の検証（board モデル 2026-07-15）: None/"lane"→None(=lane 既定)、
-/// "proj"→Some("proj")、 "vp"/その他→fail-closed。 "vp"(全体 board) は cross-project 共有で
-/// World store が要り Phase 2 未実装のため、 silent に lane 降格せず明示エラーで弾く。
+/// board scope の検証: **'lane' のみ**（mako 決定 2026-07-23 — board は注視中 lane に一本化）。
+/// 旧 'proj'（project 共有 board、2026-07-15〜）と 'vp'（全体 board）構想は撤去。
+/// silent に lane 降格せず明示エラーで弾く（書けたつもりで表示されない board を作らない —
+/// GUI 側は scope != 'lane' の BoardUpdated を無視するため、通すと writer-without-reader になる）。
 fn validate_board_scope(scope: Option<&str>) -> Result<Option<String>, McpError> {
     match scope {
         None | Some("lane") => Ok(None),
-        Some("proj") => Ok(Some("proj".to_string())),
         Some(other) => Err(McpError::invalid_params(
             format!(
-                "未対応の board scope: '{}'。 'lane'(既定) か 'proj' を指定してください（'vp' は未実装）",
+                "未対応の board scope: '{}'。board は 'lane'(既定) のみです（'proj' は 2026-07-23 に撤去）",
                 other
             ),
             None,
@@ -57,7 +57,7 @@ pub struct ShowParams {
 
     /// board scope（board モデル）: どの board に貼るか。
     #[schemars(
-        description = "Board to pin this content to: 'lane' (default; the current lane's board) or 'proj' (the project-wide board shared across all lanes)."
+        description = "Board to pin this content to. Only 'lane' (default; the current lane's board) is supported."
     )]
     pub scope: Option<String>,
 }
@@ -70,9 +70,7 @@ pub struct ClearParams {
     pub pane_id: Option<String>,
 
     /// board scope to clear
-    #[schemars(
-        description = "Board to clear: 'lane' (default) or 'proj' (the project-wide board)."
-    )]
+    #[schemars(description = "Board to clear. Only 'lane' (default) is supported.")]
     pub scope: Option<String>,
 }
 

@@ -27,20 +27,17 @@ import {
   _resetForTest,
   clearActiveBoard,
   deleteItem,
-  getActiveBoard,
   getCanvasState,
   handleMessage,
-  setActiveBoard,
   setActiveLaneName,
   setCursor,
   subscribeCanvasState,
-  type BoardScope,
   type CanvasItem,
 } from './canvas-handler'
 
 // SP からの BoardUpdated message を組み立てるヘルパ。
 function boardUpdated(
-  scope: BoardScope,
+  scope: string,
   lane: string | null,
   items: Array<{
     id: string
@@ -83,8 +80,7 @@ beforeEach(() => {
 describe('BoardUpdated 受信', () => {
   it('lane board（active=conductor）を受けて items/cursor が反映される', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'a', title: 'A' }]))
-    const { items, cursor, activeScope } = getCanvasState()
-    expect(activeScope).toBe('lane')
+    const { items, cursor } = getCanvasState()
     expect(items).toHaveLength(1)
     expect(items[0].title).toBe('A')
     expect(cursor).toBe('a')
@@ -100,17 +96,16 @@ describe('BoardUpdated 受信', () => {
 // board 切替（scope）
 // ============================================================================
 
-describe('board 切替（scope）', () => {
-  it('proj board は setActiveBoard("proj") で見える。 lane board とは独立', () => {
+describe('lane 以外の scope は無視される（proj 撤去 2026-07-23）', () => {
+  it('旧 proj board の retained 再配信が lane board に混ざらない', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'L' }]))
     handleMessage(boardUpdated('proj', null, [{ id: 'P' }]))
-    // 既定は lane
-    expect(getCanvasState().items[0].id).toBe('L')
-    setActiveBoard('proj')
-    expect(getActiveBoard()).toBe('proj')
-    expect(getCanvasState().items[0].id).toBe('P')
-    setActiveBoard('lane')
-    expect(getCanvasState().items[0].id).toBe('L')
+    expect(getCanvasState().items.map((i) => i.id)).toEqual(['L'])
+  })
+
+  it('未知 scope（将来の追加）も fail-quiet で無視する', () => {
+    handleMessage(boardUpdated('vp', null, [{ id: 'V' }]))
+    expect(getCanvasState().items).toHaveLength(0)
   })
 })
 
@@ -180,11 +175,10 @@ describe('delete / clear は SP に IPC 依頼', () => {
     expect(payload.lane).toBeNull()
   })
 
-  it('proj board の clearActiveBoard は board:clear scope=proj lane=null', () => {
-    setActiveBoard('proj')
+  it('clearActiveBoard は常に scope=lane を送る（proj 撤去後の canonical）', () => {
     clearActiveBoard()
     const payload = JSON.parse(ipcSpy.mock.calls[0][0] as string)
-    expect(payload).toMatchObject({ t: 'board:clear', scope: 'proj', lane: null })
+    expect(payload).toMatchObject({ t: 'board:clear', scope: 'lane', lane: null })
   })
 
   it('deleteItem は local state を変えない（SP truth の反映を待つ）', () => {
@@ -213,13 +207,6 @@ describe('subscribeCanvasState', () => {
     unsub()
     handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
     expect(listener).not.toHaveBeenCalled()
-  })
-
-  it('setActiveBoard 切替でも呼ばれる', () => {
-    const listener = vi.fn()
-    subscribeCanvasState(listener)
-    setActiveBoard('proj')
-    expect(listener).toHaveBeenCalledTimes(1)
   })
 })
 

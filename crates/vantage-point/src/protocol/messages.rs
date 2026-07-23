@@ -98,7 +98,7 @@ pub enum ProcessMessage {
         /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を conductor 扱い）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
-        /// board scope（board モデル 2026-07-15）: `"lane"`(default) | `"proj"`。
+        /// board scope: `"lane"` のみ（'proj' は 2026-07-23 撤去。wire 上は文字列のまま = 旧値との互換）。
         /// show した item をどの board に貼るか。 `None` = lane で後方互換。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
@@ -119,7 +119,7 @@ pub enum ProcessMessage {
     /// topic `process/paisley-park/state/board/{scope}/{lane}`（category=state で retained）に載り、
     /// 再接続 / board 切替時の初期配信を retained が兼ねる。 webview はこれを受けて board を置換する view。
     BoardUpdated {
-        /// board scope: `"lane"` | `"proj"`。
+        /// board scope: `"lane"` のみ（'proj' は 2026-07-23 撤去）。
         scope: String,
         /// lane board のときの lane（root/performer）。 proj board は `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
