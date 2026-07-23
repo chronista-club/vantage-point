@@ -110,7 +110,8 @@
   （session 会話を読む MCP）と**配置**（lane scope layout MCP の公開）— 表象の共有を
   API まで届かせる
 
-mock: `.notes/` ではなく Artifact（vp-concurrent-gaze、workbench-v2）。
+mock: Artifact「同時注視 — 1 lane の作業台」（workbench-v2）
+<https://claude.ai/code/artifact/47e5bd06-2013-4558-8e3c-2847089415de>。
 layout 記法: `cc16 | grok17/board | sh18`
 
 ---
