@@ -1371,6 +1371,17 @@ function SessionChatView(props: { lane: string; session: number }) {
           <span class="echoes-tab-dot" />
         </Show>
         <span class="echoes-session-plate-label">{sessionLabel()}</span>
+        {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
+            これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
+        <Show when={sessionInfo()?.root}>
+          <span
+            class="echoes-session-plate-root"
+            title="root session（lane の代表 — 閉じられない。素に戻すのは sidebar の Reset Lane）"
+          >
+            <CreoIcon name="ph:anchor-simple" size={10} />
+            root
+          </span>
+        </Show>
         <Show when={sessionInfo()?.engine_session_id}>
           {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
         </Show>
@@ -1761,6 +1772,9 @@ export const CHATVIEW_CSS = `
   border-bottom: var(--vp-nameplate-border); user-select:none; }
 .echoes-session-plate.focused { color: var(--color-text-secondary,#a8b0c0); }
 .echoes-session-plate-label { font-weight:500; }
+.echoes-session-plate-root { display:inline-flex; align-items:center; gap:2px; padding:0 5px;
+  border-radius:9999px; border:1px solid var(--color-surface-border-subtle,#2a3040);
+  font-size:9.5px; opacity:.8; }
 .echoes-session-plate-sid { opacity:.65; }
 .echoes-session-plate-hint { opacity:.5; font-family: var(--vp-font-sans),var(--typography-family-sans); }
 .echoes-session-plate-spacer { flex:1; }
