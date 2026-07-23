@@ -233,6 +233,7 @@ fn vp_lane_cleanup_dryrun_in_empty_repo() {
     Command::cargo_bin("vp")
         .unwrap()
         .args(["lane", "cleanup"])
+        .env("VP_TEST_NO_RUNNING_LANES", "1")
         .current_dir(repo.path())
         .assert()
         .success()
@@ -314,6 +315,7 @@ fn vp_lane_cleanup_force_removes_merged_branch_from_shared_git() {
     Command::cargo_bin("vp")
         .unwrap()
         .args(["lane", "cleanup", "--force"])
+        .env("VP_TEST_NO_RUNNING_LANES", "1")
         .current_dir(root)
         .assert()
         .success();
