@@ -759,6 +759,12 @@ if (paneTerminal) {
 ).vpBastet = {
 	renderDevices: renderBastetDevices,
 };
+// boot 窓 catch-up: world-device の接続時 snapshot は bundle ロード前に届いて renderDevices
+// guard で落ちている可能性がある — view の誕生時に一覧を pull する（lanes:ensure-all の同型。
+// 逆順（bundle が先）でも fetch は空を返すだけで、後から届く snapshot の push が埋める）
+(window as unknown as { ipc?: { postMessage(m: string): void } }).ipc?.postMessage(
+	JSON.stringify({ t: "bastet:devices_fetch" }),
+);
 
 // ===== Pane action button delegation =====
 // 各 pane の `[data-action]` button を click delegation で hook。 S2 では Clear のみ実装、
