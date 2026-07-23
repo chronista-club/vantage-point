@@ -322,6 +322,12 @@ body{overflow:hidden;}
    PP を浮かせると背後の console が透けて文字が重なり内容が読めない。PP 内容を solid surface に
    載せて読めるようにする (side-review / pp-focus でも有効)。 */
 #pane-paisley-park .pane-body{background:var(--color-surface-bg-base);}
+/* Bastet 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
+   見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
+.bastet-devices{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
+.bastet-device{display:flex;align-items:baseline;gap:10px;}
+.bastet-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
+.bastet-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
 /* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
 .pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
