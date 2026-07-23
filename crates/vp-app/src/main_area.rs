@@ -198,20 +198,20 @@ body{overflow:hidden;}
 #pane-terminal.echoes-header-active{--echoes-header-h:30px;}
 #echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
   overflow:hidden;z-index:2;}
-/* doc 46 P1: Pane shell。header 下・タブエリア上の領域を flex row で分け合う。
-   子 Pane (#lane-host / #console-chat-host) は **中身を変えず** 位置づけだけ
-   「全面 absolute」→「flex child」に変わる。 */
+/* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
+   (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
+   子 Pane (#lane-host / #console-chat-host) は中身を変えず位置づけだけ absolute。
+   inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
+   解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* タブエリアは「+ New」を常に載せるので高さは固定。.pane-tabs-active は
    「畳まれた Pane が 1 つ以上ある」= 区切り線を出すかどうかにだけ効く。 */
 #pane-terminal{--pane-tabs-h:26px;}
 #lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
-  bottom:var(--pane-tabs-h);display:flex;flex-direction:row;align-items:stretch;gap:1px;
-  background:var(--color-border,#2a3040);}
-/* Pane 共通: flex で等分、min-width:0 が無いと中身 (xterm) が縮まず溢れる。 */
-#lane-panes > *{flex:1 1 0;min-width:0;position:relative;background:var(--color-bg,#0f1115);}
-/* 縮小された Pane は列から外れる (タブエリアに chip が出る)。 */
-#lane-panes > .pane-minimized{display:none;}
-/* 要件 3: フォーカスが**視認できる**。内側 ring なので幅を食わず、隣との 1px gap と干渉しない。 */
+  bottom:var(--pane-tabs-h);background:var(--color-border,#2a3040);}
+/* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
+#lane-panes > *{position:absolute;inset:0;background:var(--color-bg,#0f1115);
+  outline:1px solid var(--color-border,#2a3040);outline-offset:-1px;}
+/* 要件 3: フォーカスが**視認できる**。内側 ring なので幅を食わず、区切り線とも干渉しない。 */
 #lane-panes > .pane-focused{box-shadow:inset 0 0 0 1px var(--sb-conn-auto,#22E0FF);}
 /* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
@@ -420,10 +420,10 @@ body{overflow:hidden;}
          EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
          Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
     <div id="echoes-header"></div>
-    <!-- doc 46 P1: Pane shell。lane の表示領域を「Act I か Act II」の排他から
-         **N 枚の Pane を並べる tiling** に変える器。子 (#lane-host / #console-chat-host) は
-         中身を一切変えず、位置づけだけ「全面 absolute」→「flex child」に変わる。
-         縮小 (minimize) された Pane は #pane-tabs に chip として畳まれる。 -->
+    <!-- doc 46 P1 → doc 49 LE-P4 PR2: lane の表示領域を「Act I か Act II」の排他から
+         **N 枚の Pane を並べる tiling** に変える器。配置は creo-ui-layout の lane scope
+         (lane-panes.ts) が resolved rect を inline で書く。子 (#lane-host /
+         #console-chat-host) の中身は一切変えない。畳まれた Pane は #pane-tabs に chip。 -->
     <div id="lane-panes">
       <div id="lane-host"></div>
       <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の

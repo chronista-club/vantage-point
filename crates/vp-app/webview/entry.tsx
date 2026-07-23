@@ -108,8 +108,8 @@ import {
 	type BusRequestId,
 	type EchoesStandsDetail,
 } from "./console";
-// doc 46 P1: lane 内 tiling（Pane の並び / 縮小 / focus）。
-import { PaneShell, newPaneChoices } from "./pane-shell";
+// doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
+import { installLanePanes, newPaneChoices } from "./lane-panes";
 // `vp:echoes-stands` bus が運ぶ stand entry（chatview の StandOption と同形）。
 type PaneStand = { name: string; label?: string; chat_capable?: boolean };
 import { installChatView, CHATVIEW_CSS } from "./chatview";
@@ -448,23 +448,21 @@ let consoleActiveLane: string | null = null;
 // 見た目の class と状態を兼務させると、片方の意味を変えた時にもう片方が静かに壊れる。
 let consoleActiveMode: "tui" | "chat" = "tui";
 
-// doc 46 P1: Pane shell。lane の表示領域を「Act I か Act II」の排他から tiling へ。
-// ⚠️ Pane の**中身**（xterm / ChatView）には触れず、host 要素の class だけを操る。
+// doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担う。
+// ⚠️ Pane の**中身**（xterm / ChatView）には触れず、host 要素の style / class だけを操る。
+// 顔ぶれ（Console → Chat の並び順、要件 1）は lane-panes.ts の LANE_PANE_REFS が SSOT。
 const paneTabs = document.getElementById("pane-tabs");
 const paneFrame = document.getElementById("pane-terminal");
-const paneShell =
+const lanePanes =
 	paneTabs && paneFrame
-		? new PaneShell(
-				(id: string) => document.getElementById(id),
-				paneTabs,
-				paneFrame,
-			)
+		? installLanePanes({
+				hostOf: (id: string) => document.getElementById(id),
+				tabs: paneTabs,
+				frame: paneFrame,
+			})
 		: null;
-if (paneShell && paneFrame && paneTabs) {
+if (lanePanes && paneFrame && paneTabs) {
 	const tabsEl: HTMLElement = paneTabs;
-	// 要件 1: 既定で左右に並べる。順は「操る（console）→ 視る（chat）」。
-	paneShell.dock({ id: "lane-host", label: "Console" });
-	paneShell.dock({ id: "console-chat-host", label: "Chat" });
 	// doc 46 P2 要件 4/5: 「+ New」= Engine × Act を選んで**新しい session** を作る。
 	// 一覧は既存の `vp:echoes-stands` bus（stands_list の結果）から受ける — 新配信路は作らない。
 	const newBtn = document.createElement("button");
@@ -551,7 +549,7 @@ if (paneShell && paneFrame && paneTabs) {
 	});
 	document.addEventListener("click", () => closePaneMenu());
 	tabsEl.appendChild(newBtn);
-	// PaneShell.render は tabs を作り直すので、「+ New」は毎回付け直す。
+	// lane-panes の chip render は tabs を作り直すので、「+ New」は毎回付け直す。
 	const paneObserver = new MutationObserver(() => {
 		if (!tabsEl.contains(newBtn)) tabsEl.appendChild(newBtn);
 	});
@@ -564,19 +562,18 @@ if (paneShell && paneFrame && paneTabs) {
 			const host = (e.target as HTMLElement | null)?.closest(
 				"#lane-host, #console-chat-host",
 			);
-			if (host?.id) paneShell.focus(host.id);
+			if (host?.id) lanePanes.focusPane(host.id);
 		},
 		true,
 	);
 }
 
-// mode に応じて chat Pane を開き、focus を移す。
+// mode に応じて表示 Pane を切り替える（表示は 1 枚ずつ = showOnly、mako 2026-07-21）。
 //
 // doc 46 §1.4: Act は将来 Pane の kind に畳まれる（lane の mode ではなくなる）が、
-// P1 では既存の `console_mode` を**初期 Pane 構成 + focus 先**に写して残置する。
+// 既存の `console_mode` を**表示 Pane + focus 先**に写して残置する。
 // いきなり撤去すると Act 切替の全経路（doc 33 / doc 38 の資産）が同時に壊れるため。
-//
-// 旧実装との差: 片方を `display:none` で**隠す**のをやめ、両方を並べたまま focus だけ移す。
+// 並列表示（tiling）は chip から手動で戻せる — 既定だけを 1 枚ずつに寄せている。
 const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	consoleActiveLane = lane;
 	consoleActiveMode = mode;
@@ -588,24 +585,18 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	// Act が決めるのは **focus だけ**で、どちらの Pane も中身は常に現 lane を映す。
 	chatHost?.classList.add("active");
 	chatView?.showLane(lane);
-	// doc 47 §3: Pane 構成は **lane ごと**。DOM host は app 共有なので、lane が
-	// 変わったら新 lane の layout を DOM へ写し直す（これが無いと「どの lane に
+	// doc 47 §3: Pane 構成は **lane ごと**（= engine の lane scope）。DOM host は app 共有
+	// なので、lane が変わったら新 lane の配置を DOM へ写し直す（これが無いと「どの lane に
 	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
-	paneShell?.setLane(lane);
-	// ⚠️ 表示は **1 枚ずつ**（mako 2026-07-21）。内部モデル（doc 47）を整えるまで
-	// view は「現状維持・シンプル・ミニマム」に倒す方針。
-	//
-	// tiling の内部（`LaneLayouts` / `PaneLayout`）はそのまま残し、**既定の見せ方**だけを
-	// 従来の「Act I か Act II」に戻す。畳んだ側はタブ chip に残るので、`+ New` も
-	// 手動での並列表示も失われない（機能を消さずに既定だけを寄せる）。
-	//
-	// doc 47 §1 の決着（doc 46 の Pane を FrameEngine に畳む）後、既定を tiling に戻す。
+	lanePanes?.setActiveLane(lane);
+	// ⚠️ 表示は **1 枚ずつ**（mako 2026-07-21）。showOnly = solo（旧 minimizeOthers の
+	// attention 版）。畳んだ側はタブ chip に残るので、`+ New` も手動での並列表示も
+	// 失われない（機能を消さずに既定だけを寄せる）。
+	// doc 47 §1 の決着後に既定を tiling へ戻す時は showOnly を focusPane に緩める。
 	if (mode === "chat") {
-		paneShell?.focus("console-chat-host");
-		paneShell?.minimizeOthers("console-chat-host");
+		lanePanes?.showOnly("console-chat-host");
 	} else {
-		paneShell?.focus("lane-host");
-		paneShell?.minimizeOthers("lane-host");
+		lanePanes?.showOnly("lane-host");
 		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
 		// resync-loader は activeLane の replaying を読むだけで Act を知らないため、chat→tui で
 		// stuck した replaying が Act I 表示の上に居座るのを防ぐ。
