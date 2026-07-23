@@ -93,9 +93,11 @@ import {
 } from "@chronista-club/creo-ui-editor-host";
 import {
 	applyAppScene,
+	closeAppPaneVisit,
 	installAppPanes,
 	restoreAppStateFor,
 	saveAppStateFor,
+	visitAppPane,
 } from "./app-panes";
 import { layoutEngine } from "./layout-host";
 import { installGallery } from "./gallery-panes";
@@ -274,14 +276,15 @@ const installSetActivePaneBridge = (): void => {
 			setActiveLaneName(laneName);
 			return;
 		}
-		// kind != terminal (PP/GE/Bastet/preview click 等): fixed-Pane focus、 Lane state は更新しない
+		// kind != terminal (PP/GE/Bastet/preview click 等): stand pane の**訪問**（一時 view）。
+		// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
 		const paneId = KIND_TO_PANE[info.kind];
 		if (!paneId) {
 			console.warn("[app-panes] unknown kind for setActivePane:", info.kind);
 			applyAppScene("empty");
 			return;
 		}
-		applyAppScene(`${paneId}-focus`);
+		visitAppPane(paneId);
 	};
 };
 
@@ -778,6 +781,12 @@ document.addEventListener(
 		if (!btn) return;
 		const action = btn.dataset.action;
 		const dataTarget = btn.dataset.target;
+		if (action === "close-pane") {
+			// stand pane の ✕ — 訪問を閉じて出発点の配置へ（2026-07-23 dogfood:
+			// 「Bastet が出っ放しで close できない」の根治）
+			closeAppPaneVisit();
+			return;
+		}
 		if (action === "clear") {
 			if (dataTarget === "pp") {
 				// doc 19 PP Canvas Stack Model: clear は items + cursor + DOM の 3 つを全 reset

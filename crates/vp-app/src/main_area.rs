@@ -491,6 +491,7 @@ body{overflow:hidden;}
       </div>
       <div class="pane-actions">
         <button class="pane-action-btn" data-action="clear" data-target="pp" title="Clear PP body content">Clear</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
       </div>
     </div>
     <div class="pane-body">
@@ -513,6 +514,9 @@ body{overflow:hidden;}
         <span class="pane-name">Gold Experience</span>
         <span class="pane-breadcrumb">Code Runner</span>
       </div>
+      <div class="pane-actions">
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+      </div>
     </div>
     <div class="pane-body center">
       <main>
@@ -527,6 +531,9 @@ body{overflow:hidden;}
         <span class="pane-icon">🧲</span>
         <span class="pane-name">Bastet</span>
         <span class="pane-breadcrumb">Device Registry</span>
+      </div>
+      <div class="pane-actions">
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
       </div>
     </div>
     <div class="pane-body">

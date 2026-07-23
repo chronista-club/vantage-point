@@ -14,13 +14,16 @@ import {
 	PRESET_CYCLE,
 	_resetForTest,
 	appLayoutReady,
+	applyAppLayoutFromAi,
 	applyAppScene,
+	closeAppPaneVisit,
 	currentAppSceneId,
 	cycleAppScene,
 	isAppPaneVisible,
 	primaryAppPane,
 	restoreAppStateFor,
 	saveAppStateFor,
+	visitAppPane,
 } from "./app-panes";
 import { layoutEngine } from "./layout-host";
 
@@ -204,5 +207,67 @@ describe("lane 別の配置記憶", () => {
 		restoreAppStateFor("proj/root");
 		const log = layoutEngine.history(APP_SCOPE);
 		expect(log[log.length - 1]?.author).toBe("scene");
+	});
+});
+
+describe("stand pane の訪問（sidebar click の一時 view — 2026-07-23 dogfood）", () => {
+	beforeEach(() => {
+		_resetForTest();
+		applyAppScene("side-review");
+	});
+
+	it("visit → ✕ で出発点の配置に戻る（「出っ放しで close できない」の根治）", () => {
+		visitAppPane("bs");
+		expect(isAppPaneVisible("bs")).toBe(true);
+		closeAppPaneVisit();
+		expect(layoutEngine.resolved(APP_SCOPE).echoes?.rect.w).toBeCloseTo(0.5);
+		expect(currentAppSceneId()).toBe("side-review");
+	});
+
+	it("訪問中の lane save は出発点を覚える（stand 画面を記憶に焼き込まない）", () => {
+		visitAppPane("bs");
+		saveAppStateFor("proj/root");
+		applyAppScene("pp-focus");
+		restoreAppStateFor("proj/root");
+		expect(layoutEngine.resolved(APP_SCOPE).echoes?.rect.w).toBeCloseTo(0.5);
+		expect(currentAppSceneId()).toBe("side-review");
+	});
+
+	it("訪問の入れ子（Bastet → GE）は最初の出発点を保つ", () => {
+		visitAppPane("bs");
+		visitAppPane("ge");
+		expect(isAppPaneVisible("ge")).toBe(true);
+		closeAppPaneVisit();
+		expect(layoutEngine.resolved(APP_SCOPE).echoes?.rect.w).toBeCloseTo(0.5);
+	});
+
+	it("明示の scene 選択（hotkey）は訪問を終える — 以後の ✕ は lead-focus に倒れる", () => {
+		visitAppPane("bs");
+		applyAppScene("pp-focus");
+		closeAppPaneVisit();
+		expect(currentAppSceneId()).toBe("lead-focus");
+	});
+
+	it("未訪問時の ✕ は lead-focus（stale な出発点に飛ばない）", () => {
+		closeAppPaneVisit();
+		expect(currentAppSceneId()).toBe("lead-focus");
+	});
+
+	it("AI の layout_set（applyAppLayoutFromAi）は訪問を終える — 古い出発点で AI 配置を握り潰さない", () => {
+		visitAppPane("bs");
+		applyAppLayoutFromAi(sceneById("ge-focus").layout);
+		// 訪問はもう終わっているので、✕ は stale な beforeVisit（side-review）へ戻さず
+		// lead-focus に倒れる（closeAppPaneVisit の「未訪問」経路）
+		closeAppPaneVisit();
+		expect(currentAppSceneId()).toBe("lead-focus");
+	});
+
+	it("訪問中の AI layout_set 後の lane save は AI の配置を覚える（古い出発点を焼き込まない）", () => {
+		visitAppPane("bs");
+		applyAppLayoutFromAi(sceneById("ge-focus").layout);
+		saveAppStateFor("proj/root");
+		applyAppScene("pp-focus");
+		restoreAppStateFor("proj/root");
+		expect(isAppPaneVisible("ge")).toBe(true);
 	});
 });
