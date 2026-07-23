@@ -26,7 +26,6 @@ import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { marked } from 'marked'
 import type {
-  BusRequestId,
   EchoesEvent,
   EchoesSession,
   PlanEntry,
@@ -1365,7 +1364,8 @@ function SessionChatView(props: { lane: string; session: number }) {
     >
       {/* session 名札（pane 上端）: この pane = この session の素性。doc 46 §1.3 の帰結で
           タブ strip は撤去 — session の識別は pane 自身が名乗り、切替は pane click が担う。
-          engine 選択付きの新規作成は #pane-tabs の「+ New」一本（doc 46 P2 の canonical 入口）。 */}
+          engine 選択付きの新規作成は EchoesHeader（lane の名札）の「+ New」一本
+          （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。 */}
       <div class="echoes-session-plate" classList={{ focused: isFocused() }}>
         <Show when={sessionInfo()?.live}>
           <span class="echoes-tab-dot" />
@@ -1759,9 +1759,8 @@ export const CHATVIEW_CSS = `
   border-radius:7px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
 .echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
-/* Act toggle は下段（#pane-tabs）へ移設した — 見た目は隣の chip（.pane-tab）に合わせるため
-   main_area.rs の .pane-act-toggle が持つ。旧 floating 定義（.echoes-act-toggle /
-   .echoes-console-actions）は置き場ごと消えたので撤去。 */
+/* Act 切替（見え方の乗り換え = 避難路）は EchoesHeader の root picker「見え方」行へ
+   （doc 51 §2 — 旧 lane-level Act toggle と下端の帯は doc 51 §1 A1 で退役）。 */
 /* session 名札（pane 上端）: この pane = この session の素性。tab strip（doc 38 仮置き）の
    後継 — session ↔ Pane 1:1（doc 46 §1.5 / doc 50 P1）で pane 自身が名乗る。
    Pane 共通の名札 token（--vp-nameplate-*）に乗せて、全 pane の上端と同じ見えにする。 */

@@ -14,25 +14,41 @@
  *
  * ## 載せるもの / 載せないもの（pane の縦軸、doc 29/30 の Edge Ring を pane に再適用）
  *
- * 上段 = **名札**。「この pane が何であるか」= 居る間 変わらない素性だけを載せる:
- * lane 名 / cwd / branch、そして Act I の session（Act I は tab strip を持たないため、
- * ここが唯一の表示器 = 操作器）。
+ * これは **lane の名札**（doc 51 §1 の lane-plate）。「この lane が何であるか」= 居る間
+ * 変わらない素性（lane 名 / cwd / branch = 台上の全員が共有するもの）と、root session の
+ * 表示器 = 操作器（session chip → picker）、そして **+ New**（台に器械を足す = 場所への
+ * 操作なので場所の名札に住む — mako 2026-07-24「一旦 Lane のヘッダ右側に」）を載せる。
  *
- * 「今の文脈」（状態・model・permission・engine 異常）と「view への操作」（Act 切替 /
- * 中断 / New）は **下段**（chatview の status 行 / `#pane-tabs`）が持つ。かつては上段にも
- * 併置されていたが、同じ役割の二重実装だったので撤去した:
+ * session 単位の「今の文脈」（状態・model・permission・engine 異常）は各 pane の
+ * **計器盤**（chatview の status 行 / composer）が持つ。かつては上段にも併置されていたが、
+ * 同じ役割の二重実装だったので撤去した:
  * - `⏹ Stop` → 入力欄の「停止」（同じ `echoes:interrupt`）
  * - perm chip → status 行の perm select（表示だけの chip は操作器に含まれる）
  * - `⚠ engine` / `💤 休眠` → status 行（`deriveStatus` が同じ event を畳んでいる）
- * - session chip（Act II 分）→ tab strip（cc#1 …）
- * - `✨ New` → Root 切替 picker の「✨ 新 ID から」（同じ `console:new_session`）
+ *
+ * 旧・下端の帯（`#pane-tabs`）は doc 51 §1 A1 で退役 — pane chip は tiling 既定で存在理由が
+ * 消え、+ New はここへ、Act 切替（避難路、doc 51 §2）は root picker の「見え方」行へ移設。
  */
 
 import { render } from 'solid-js/web'
 import { createSignal, For, Show } from 'solid-js'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
-import type { VpConsole, EchoesHeaderState, EchoesSession } from './console'
+import {
+  isMyResponse,
+  nextRequestId,
+  type BusRequestId,
+  type EchoesStandsDetail,
+  type VpConsole,
+  type EchoesHeaderState,
+  type EchoesSession,
+} from './console'
+// ⚠️ 循環 import（lane-panes → sessionChipPrefix / ここ → newPaneChoices）だが、双方とも
+// hoist される関数宣言を handler 内で遅延参照するだけなので ESM 的に安全。
+import { newPaneChoices } from './lane-panes'
 import { STAND_ICON } from './icons/stand'
+
+/** `vp:echoes-stands` bus が運ぶ stand entry（newPaneChoices の入力と同形）。 */
+type PaneStand = { name: string; label?: string; chat_capable?: boolean }
 
 // ---------------------------------------------------------------------------
 // 純関数（vitest 対象）
@@ -170,16 +186,56 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     copiedTimer = window.setTimeout(() => setCopiedKey(null), 900)
   }
 
-  // doc 39 P3: Root 切替 picker（Act I の chip click で開く dropdown）。
+  // doc 39 P3: Root 切替 picker（session chip click で開く dropdown）。
   // sessions は 'vp:echoes-sessions'（handleSessionList の既存 bus）から受ける — 新配信路は作らない。
   const [pickerOpen, setPickerOpen] = createSignal(false)
   const [pickerPos, setPickerPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
   const [sessions, setSessions] = createSignal<EchoesSession[]>([])
 
+  // doc 51 §1 A1: + New（engine × Act で新 session = 台に器械を足す）。旧・下端の帯から移設。
+  // null = 閉。stands は click → `echoes:stands_fetch` 要求 → 応答（相関 id 照合）で開く。
+  const [newMenu, setNewMenu] = createSignal<PaneStand[] | null>(null)
+  const [newMenuPos, setNewMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
+  let newMenuReq: BusRequestId | null = null
+
   const sendIpc = (payload: Record<string, unknown>): void => {
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify(payload))
   }
+
+  /** + New click: menu が開いていれば閉じ、閉じていれば stands を取り直して開く
+   *  （開くたび authoritative — picker の openPicker と同じ流儀）。 */
+  const toggleNewMenu = (btn: HTMLElement): void => {
+    if (newMenu()) {
+      setNewMenu(null)
+      return
+    }
+    const lane = ctx()?.addr
+    if (!lane) return
+    const rect = btn.getBoundingClientRect()
+    // 右端の button なので menu は右揃えで下に開く（x = 右端。CSS が translateX で寄せる）。
+    setNewMenuPos({ x: rect.right, y: rect.bottom + 4 })
+    newMenuReq = nextRequestId('pane-new')
+    sendIpc({ t: 'echoes:stands_fetch', lane, req: newMenuReq })
+  }
+
+  /** menu 行 click: backend が新しい session id を採番し、lane の cwd から始める
+   *  （doc 46 P2 要件 5）。tiling 既定なので新 pane はそのまま台に並ぶ。 */
+  const createPane = (engine: string, act: 'tui' | 'chat'): void => {
+    const lane = ctx()?.addr
+    setNewMenu(null)
+    if (!lane) return
+    sendIpc({ t: 'console:new_session', lane, engine, act })
+  }
+
+  // doc 47 §6: `vp:echoes-stands` は共有 bus。自分の要求（相関 id）への応答だけで menu を
+  // 開く（chat composer の要求では開かない）。連打しても最新 id 以外の応答は捨てられる。
+  document.addEventListener('vp:echoes-stands', (e) => {
+    const d = (e as CustomEvent<EchoesStandsDetail<PaneStand>>).detail
+    if (!isMyResponse(newMenuReq, d?.req)) return
+    newMenuReq = null
+    setNewMenu(d?.stands ?? [])
+  })
 
   /** chip click（Act I）: picker を開き、一覧を SP から取り直す（開くたび authoritative）。 */
   const openPicker = (chip: HTMLElement): void => {
@@ -207,12 +263,28 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     sendIpc({ t: 'console:new_session', lane })
   }
 
+  /** 見え方の乗り換え（避難路、doc 51 §2）: root session の Act を切り替える。
+   *  旧 lane-level Act toggle の後継 — pre-A6 は term になれるのが root だけなので、
+   *  root の名札 menu（この picker）が住処。handoff overlay / 二重切替 lock は
+   *  entry.tsx が持ち続ける — ここは event で依頼するだけ（overlay DOM と絡ませない）。 */
+  const requestActSwitch = (target: 'tui' | 'chat'): void => {
+    const lane = ctx()?.addr
+    setPickerOpen(false)
+    if (!lane || (target === 'chat') === (mode() === 'chat')) return
+    document.dispatchEvent(
+      new CustomEvent('vp:act-switch-request', { detail: { lane, target } }),
+    )
+  }
+
   // 外側 click で閉じる（picker / chip の内側は除外 — chip click は toggle が担う）。
   document.addEventListener('click', (ev) => {
-    if (!pickerOpen()) return
     const target = ev.target as HTMLElement | null
-    if (target?.closest('.eh-root-picker, .eh-session')) return
-    setPickerOpen(false)
+    if (pickerOpen() && !target?.closest('.eh-root-picker, .eh-session')) {
+      setPickerOpen(false)
+    }
+    if (newMenu() && !target?.closest('.eh-new-menu, .eh-new')) {
+      setNewMenu(null)
+    }
   })
 
   // Act 切替追従（vpConsole.setMode → CustomEvent。表示中 lane 以外は無視）。
@@ -257,14 +329,14 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                 {c().branch}
               </span>
             </Show>
-            {/* session chip: **Act I 限定**。Act II は tab strip（cc#1 …）が session の
-                識別と切替をどちらも担うので、同じ役割を上段にも置かない（重複の撤去）。
-                Act I は tab strip を持たないため、ここが session の唯一の表示器 = 操作器
-                （doc 39 P3、2026-07-18 mako 決定「表示器 = 操作器」）。
+            {/* session chip: root session の表示器 = 操作器（doc 39 P3、2026-07-18 mako 決定）。
+                かつては Act I 限定だった（Act II は tab strip が識別と切替を担っていた）が、
+                tab strip は doc 50 P1 の session = Pane で退役 — 担い手が消えたので両 Act で
+                出す。picker は root の名札 menu（Root 切替 + 見え方の乗り換え = 避難路）。
                 供給路は setActivePane 相乗りの engine_session_id（ctx）— Act I は
                 EchoesEvent が流れないため summary は空になりうる（OR merge で両対応）。
                 prefix は engine 別（cc/cdx/grok/oc、doc 37: chip が engine indicator を兼ねる）。 */}
-            <Show when={mode() === 'tui' && (summary().sessionId ?? c().sessionId)}>
+            <Show when={summary().sessionId ?? c().sessionId}>
               {(sid) => (
                 <button
                   type="button"
@@ -342,7 +414,75 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                     </button>
                   )}
                 </Show>
+                {/* 見え方の乗り換え（避難路、doc 51 §2 — 旧 lane-level Act toggle の後継）。
+                    低頻度・低目立ちの操作なので、root の名札 menu の末尾が住処。 */}
+                <div class="eh-rp-divider" />
+                <div class="eh-rp-title">見え方</div>
+                <button
+                  type="button"
+                  class="eh-rp-row"
+                  classList={{ 'eh-rp-root': mode() === 'tui' }}
+                  onClick={() => requestActSwitch('tui')}
+                >
+                  <CreoIcon name="ph:terminal-window" size={11} />
+                  Console（Act I）
+                  <Show when={mode() === 'tui'}>
+                    <span class="eh-rp-now">今</span>
+                  </Show>
+                </button>
+                <button
+                  type="button"
+                  class="eh-rp-row"
+                  classList={{ 'eh-rp-root': mode() === 'chat' }}
+                  onClick={() => requestActSwitch('chat')}
+                >
+                  <CreoIcon name="ph:chat-circle" size={11} />
+                  Chat（Act II）
+                  <Show when={mode() === 'chat'}>
+                    <span class="eh-rp-now">今</span>
+                  </Show>
+                </button>
               </div>
+            </Show>
+            {/* + New: 台に器械を足す（場所への操作 = 場所の名札の右端、mako 2026-07-24）。
+                click で stands を取り直し（相関 id）、応答で menu が開く — 同期では開かない
+                ので stopPropagation は不要（#836/#837: document click を無条件に止めない）。 */}
+            <button
+              type="button"
+              class="eh-chip eh-new"
+              title="Engine と Act を選んで、この台に新しいコンソールを作る"
+              onClick={(ev) => toggleNewMenu(ev.currentTarget as HTMLElement)}
+            >
+              <CreoIcon name="ph:plus" size={11} />
+              New
+            </button>
+            <Show when={newMenu()}>
+              {(stands) => (
+                <div
+                  class="eh-root-picker eh-new-menu"
+                  style={{ left: `${newMenuPos().x}px`, top: `${newMenuPos().y}px` }}
+                >
+                  <For
+                    each={newPaneChoices(stands())}
+                    fallback={<div class="eh-rp-empty">engine なし</div>}
+                  >
+                    {(nc) => (
+                      <button
+                        type="button"
+                        class="eh-rp-row"
+                        onClick={() => createPane(nc.engine, nc.act)}
+                      >
+                        {/* Act は「Console（Act I）」「Chat（Act II）」で見せる — 内部語（tui/chat）は出さない */}
+                        <CreoIcon
+                          name={nc.act === 'chat' ? 'ph:chat-circle' : 'ph:terminal-window'}
+                          size={11}
+                        />
+                        {nc.engineLabel} · {nc.act === 'chat' ? 'Chat' : 'Console'}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              )}
             </Show>
           </>
         )}
@@ -357,8 +497,9 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
       setCtx(next)
       setMode(next?.chat ? 'chat' : 'tui')
       setSummary(next ? vpConsole.headerState(next.addr) : {})
-      // lane が替わったら picker は閉じ、一覧も捨てる（別 lane の session を誤表示しない）。
+      // lane が替わったら picker / + New menu は閉じ、一覧も捨てる（別 lane の session を誤表示しない）。
       setPickerOpen(false)
+      setNewMenu(null)
       setSessions([])
       // strip の開閉（World A の DOM に触れる唯一の接点）: lane 文脈がある時だけ
       // #pane-terminal に .echoes-header-active を付け、main_area.rs の --echoes-header-h を
@@ -415,4 +556,10 @@ export const ECHOES_HEADER_CSS = `
 #echoes-header .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
 #echoes-header .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
 #echoes-header .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
+/* doc 51 §1 A1: + New（台に器械を足す）。名札の右端 = margin-left:auto、作成の入口なので
+   chip とは破線で区別（旧・帯の .pane-new と同じ記号論）。 */
+#echoes-header .eh-new{ margin-left:auto; border-style:dashed; }
+/* + New の menu。器は root picker と同じ（.eh-root-picker を継承）。右端の button から
+   開くので、fixed の基準点 x = button 右端 → translateX で右揃えにする。 */
+#echoes-header .eh-new-menu{ transform:translateX(-100%); }
 `
