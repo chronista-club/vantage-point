@@ -42,7 +42,7 @@
 | 2 | 同じ往復を別の見え方で | Act I/II → Act = Pane kind（P4 残） | **§2 済** |
 | 3 | 別の相手に投げたい | engine 選択（doc 39） | **§3 済** |
 | 4 | 死んでも続きから | resume / replay 永続 | **§4 済** |
-| 5 | 隔離された並行作業 | performer lane | |
+| 5 | 隔離された並行作業 | performer lane | **§5 済** |
 | 6 | AI が視せる面 | PP board / Canvas | |
 | 7 | project を跨ぐ | sidebar / TheWorld | |
 | 8 | AI と一緒に UI を調整 | Editor Mode / layout MCP（doc 48/49） | |
@@ -205,6 +205,44 @@ layout 記法: `cc16 | grok17/board | sh18`
   server 永続し、attach 時に復元する。doc 50 P5 を「follow-up」から**本審査の必須**へ格上げ
 - **AI 側の対**: lane scope layout MCP の公開（write gate / 承認 UX）と永続化は同根 —
   同じ工事で両方通す（私が台の形を読み書きできる = 「台を整えておいたよ」ができる）
+
+---
+
+## 5. 隔離された並行作業（performer lane）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> 同じ形でいきたい。「終わったら知らせて」は cc の subagent にあるので、別 Lane では
+> あるけど wire で協調しながら、同じような環境で、私も時には介入して、別の作業・
+> タスクを走らせるイメージ。
+
+**委譲の三段階層**が確定:
+
+| 段 | 形 | 距離感 |
+|---|---|---|
+| subagent（cc の中） | 往復の中の入れ子 | 見えなくていい、終わったら知らせて |
+| 台の上の別器械（同 lane） | grok に打たせる等 | 同時注視 |
+| **performer lane（別の場所）** | **もう一つの作業台** | wire で協調、灯で見え、時に人が訪ねて介入 |
+
+- performer に「見えない worker」を求めない — 放置型は subagent の領分
+- performer lane も作業台（§1 と同じ環境・同じ認知言語）。§4 の台の復元があれば
+  「訪ねて介入」がそのまま成立する
+
+### どうすべきだったのか（回顧）
+
+- wire 協調（ack 規律 / NEEDS YOU / flow_state）の方向は正しかった
+- ただし**状態言語が二重化**した: sidebar の lane 行（connector FSM / NEEDS YOU）と、
+  今回の pane の灯（3 状態）は同じ概念（並行作業の状態）の別方言 — 統一されていない
+
+### 何が必要か
+
+- **同じ形を lane スケールへ**: sidebar の lane 行に 3 状態の灯 + 「今なにを」の動的一行
+  （lane の掲げる一行 = root/focused session の now-line）。一行はフラクタルに掲揚される:
+  session pane → lane 行 → （将来 project 行）
+- **状態言語の統一**: connector / NEEDS YOU / 灯 を一つの 3 状態語彙に畳む
+- wire は現状形を維持（協調の背骨）。subagent との使い分け基準を明文化（本節の表）
+- **AI 側の対**: wire / lanes_list / capture / nudge で対称性は概ね済 — lane の now-line を
+  AI が書く口だけ追加（session の now-line と同じ契約の lane 版）
 
 ---
 
