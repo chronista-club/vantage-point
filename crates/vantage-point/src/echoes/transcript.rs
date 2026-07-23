@@ -443,6 +443,60 @@ mod tests {
         );
     }
 
+    /// **JSON としては妥当だが構造が壊れている**行も後続を止めない。
+    ///
+    /// 上の [`malformed_line_does_not_abort`] は「非 JSON」= `serde_json` の parse 段階で
+    /// 落ちる行しか見ていない。 実際に事故になるのは **parse は通るが期待した形でない**行の方で、
+    /// claude 本体も 2.1.216〜218 で同種の regression を 3 件直している（malformed attachment /
+    /// delta attachment を持つ transcript で `--resume` が TypeError / 毎ターン失敗 / crash、
+    /// 中断された tool 呼び出しが unpaired `tool_use` block を残す）。
+    ///
+    /// VP の replay は行ごとに `Value` で受けて必要な field だけ `Option` で拾う設計なので
+    /// 同じ穴は開いていない。 それを**不変条件として固定する** — 型付き構造体への一括
+    /// deserialize に「整理」すると、1 行の異常で会話全体が復元不能になる。
+    #[test]
+    fn structurally_broken_entries_do_not_abort() {
+        let lines = [
+            // message ごと欠落 / null / 配列（content pointer が引けない or 形違い）
+            r#"{"type":"user"}"#,
+            r#"{"type":"assistant","message":null}"#,
+            r#"{"type":"user","message":{"content":{"unexpected":"object"}}}"#,
+            // content block が配列でない / block が object でない
+            r#"{"type":"assistant","message":{"content":42}}"#,
+            r#"{"type":"assistant","message":{"content":["bare string",null,7]}}"#,
+            // block の type が欠落 / 未知
+            r#"{"type":"assistant","message":{"content":[{"text":"type なし"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"future_block","x":1}]}}"#,
+            // tool_use の必須 field 欠落（id / name / input のどれかが無い = 部分的な block）
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","input":{}}]}}"#,
+            // 型が違う（text が文字列でない / id が数値）
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":{"nested":true}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":9,"name":"Bash","input":{}}]}}"#,
+            // attachment 系（表示対象外の type — claude 2.1.216〜218 が踏んだ形）
+            r#"{"type":"attachment","attachment":{"malformed":true}}"#,
+            r#"{"type":"attachment"}"#,
+            // 最後に生きた行。 ここに到達すれば「1 行の異常で全体が死なない」が示せる
+            r#"{"type":"user","message":{"role":"user","content":"生きてる"}}"#,
+        ]
+        .join("\n");
+
+        assert_eq!(
+            events_from_lines(&lines),
+            vec![EchoesEvent::UserMessage {
+                text: "生きてる".into()
+            }],
+            "壊れた行は捨て、最後の正常な行だけが event になる"
+        );
+    }
+
+    /// 空 transcript / 空行だけの transcript でも panic しない（境界）。
+    #[test]
+    fn empty_and_blank_lines_yield_nothing() {
+        assert!(events_from_lines("").is_empty());
+        assert!(events_from_lines("\n\n   \n").is_empty());
+    }
+
     /// 実 transcript 由来の回帰: `origin.kind` が human 以外の user 行は発話にしない。
     ///
     /// harness は user role で背景 task 完了通知 (`task-notification`) や slash command の
