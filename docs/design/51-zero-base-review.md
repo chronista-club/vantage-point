@@ -400,6 +400,8 @@ layout 記法: `cc16 | grok17/board | sh18`
 
 - 理想の絵（multi-machine 構想 / localLLM 別機）は**まだ描かない** — 安定が先
 - 具体的な痛み: `vp auth login` を何度も求められる
+- **将来**: 他のユーザの world とやり取りしたい — **World + 「ユーザが誰か」**の identity
+  （Creo ID が自然な土台。federation は machine 跨ぎから人跨ぎへ育つ）
 
 ### どうすべきだったのか（回顧）
 
