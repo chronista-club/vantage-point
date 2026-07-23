@@ -119,6 +119,7 @@ impl ReplayTap {
 /// - `Question` / `PermissionRequest`: control 面（doc 35「transcript に commit されない」と同じ扱い）
 /// - `ReplayStart` / `ReplayEnd`: replay 制御マーカー（記録すると入れ子で二重 clear）
 /// - `UserMessage`: pump には流れない（submit 成功後に unison_server が別途 append する）
+/// - `NowLine`: 揮発の自己申告（doc 51 §1 A3b）— 過去の「今」を再生すると嘘になる
 fn tap_event(base: &Path, tap: &ReplayLogTap, pending: &mut String, event: &EchoesEvent) {
     match event {
         // 高頻度 delta は貯めるだけ（ここでは書かない）。

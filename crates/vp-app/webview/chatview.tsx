@@ -446,6 +446,10 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
     case 'plan':
       s.plan = ev.entries
       break
+    case 'now_line':
+      // AI の自己申告（doc 51 §1 A3b — `vp now` 発）。deriveNowLine が質問要旨の次に読む。
+      s.nowLine = ev.text
+      break
     case 'turn_completed':
       s.streaming = false
       s.cost = ev.cost_usd ?? s.cost

@@ -225,6 +225,13 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     // 契約（nowLine — A3b の口）は機械導出より濃い
     tooling.nowLine = 'panic 箇所を特定中'
     expect(deriveNowLine(tooling)).toBe('panic 箇所を特定中')
+    // 契約の書き手 = `vp now` 発の now_line event（fold 経路）
+    const reported = fold([
+      { kind: 'user_message', text: '調査して' },
+      { kind: 'message_chunk', text: 'x' },
+      { kind: 'now_line', text: 'pty_slot の lock 順を確認中' },
+    ])
+    expect(deriveNowLine(reported)).toBe('pty_slot の lock 順を確認中')
     // 質問の要旨は契約より濃い（ボールが人にある）
     const asking = fold([
       {

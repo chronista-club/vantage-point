@@ -99,7 +99,12 @@ pub struct AcpHostConfig {
     /// registry 書き込みキー（project 名）。
     pub project: String,
     /// registry 書き込みキー（session label: `conductor` / `conductor#2` …）。
+    /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
+    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — Act I と同じ契約）。
+    pub lane_label: String,
+    /// identity env（`VP_SESSION_KEY`）用の session key（doc 40 §4 の hook identity と同じ）。
+    pub session_key: crate::lane::session_registry::SessionKey,
     /// 再開する ACP sessionId（doc 40 registry の `conversation`）。None = 新規 session。
     pub session_id: Option<String>,
 }
@@ -274,6 +279,11 @@ impl AcpAgentHost {
         let mut cmd = tokio::process::Command::new(engine.cli_path());
         cmd.args(engine.spawn_args())
             .current_dir(&config.cwd)
+            // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
+            // wire で自分を名乗る口。Act I の stand_spawner / claude host と同じ契約。
+            .env("VP_PROJECT", &config.project)
+            .env("VP_LANE", &config.lane_label)
+            .env("VP_SESSION_KEY", config.session_key.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -860,6 +870,8 @@ mod tests {
             cwd: tmp.path().to_string_lossy().into_owned(),
             project: "vptest-acp".into(),
             lane: "root".into(),
+            lane_label: "root".into(),
+            session_key: 1,
             session_id: None,
         })
         .expect("spawn grok agent stdio");

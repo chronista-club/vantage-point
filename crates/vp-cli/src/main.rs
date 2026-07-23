@@ -47,6 +47,19 @@ enum Commands {
     /// 稼働中のインスタンス一覧
     #[command(alias = "list")]
     Ps,
+    /// session の「今なにを」を 1 行で報告（now-line、doc 51 §1 A3b）。
+    /// 宛先は env（VP_PROJECT / VP_LANE / VP_SESSION_KEY）から自動導出 — AI が自分の
+    /// shell tool からサブタスクの切れ目ごとに打つ想定
+    Now {
+        /// 「今なにを」の 1 行（例: "panic 箇所を特定中"）
+        text: String,
+        /// lane address 明示（env 不在の手動実行用: "<project>/root" 等）
+        #[arg(long)]
+        lane: Option<String>,
+        /// session key 明示（省略時 VP_SESSION_KEY → それも無ければ root）
+        #[arg(long)]
+        session: Option<u32>,
+    },
     /// projects.kdl を現実と同期 — ghost project (dir 実在せず) を除去
     Sync,
     /// 設定と登録済みプロジェクトを表示
@@ -389,6 +402,11 @@ fn main() -> Result<()> {
     match command {
         Commands::RestartAll => commands::restart_all::execute(),
         Commands::Ps => cli::list_instances(&config),
+        Commands::Now {
+            text,
+            lane,
+            session,
+        } => commands::now::report(&text, lane.as_deref(), session, &config),
         Commands::Sync => commands::sync::execute(),
         Commands::Config => commands::config::execute(&config),
         Commands::Mcp => {

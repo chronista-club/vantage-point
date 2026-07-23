@@ -28,7 +28,8 @@ use crate::commands::process_client::{
 use crate::config::Config;
 
 /// lane address の project 部分を project path に解決する（World ask の handshake identifier）。
-fn project_path_for_lane(lane: &str, config: &Config) -> Result<String> {
+/// `commands::now`（`vp now`）も同じ解決を使う。
+pub(crate) fn project_path_for_lane(lane: &str, config: &Config) -> Result<String> {
     let project = lane
         .split('/')
         .next()
