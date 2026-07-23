@@ -146,17 +146,33 @@ export function currentAppSceneId(): string | null {
 }
 
 /**
- * scene 適用の共通経路（preset / lane recall 両方が通る）。
- * float の位置は ephemeral（Scene / Layout snapshot に直列化されない、LE-18）で、
- * pp が非 floating の形を経由すると engine 側で prune される — 適用の度に、pp が
- * 浮いている形なら右上定位置へ置き直す（team-b review #2: recall 経由で中央寄せに
+ * float 位置の再 pin。位置は ephemeral（Scene / Layout snapshot に直列化されない、
+ * LE-18）で、pp が非 floating の形を経由すると engine 側で prune される — 適用の度に、
+ * pp が浮いている形なら右上定位置へ置き直す（team-b review #2: recall 経由で中央寄せに
  * 戻っていた漏れの根治）。
  */
-function applySceneToEngine(scene: Scene): void {
-	layoutEngine.applyScene(APP_SCOPE, scene);
+function repinPpFloat(): void {
 	if (layoutEngine.resolved(APP_SCOPE).pp?.floating) {
 		layoutEngine.moveFloat(APP_SCOPE, "pp", PP_OVERLAY_FLOAT_POS);
 	}
+}
+
+/** scene 適用の共通経路（preset / lane recall 両方が通る）。 */
+function applySceneToEngine(scene: Scene): void {
+	layoutEngine.applyScene(APP_SCOPE, scene);
+	repinPpFloat();
+}
+
+/**
+ * AI（MCP layout_set、doc 49 LE-P4 PR3）からの直接適用。jump — CSS transition が
+ * 視覚を均す（scrub / driver は app scope 未導入、冒頭 doc）。author="ai" が settle
+ * 監査に残る。preset 外の形になるので cycle の現在位置はリセットする。
+ */
+export function applyAppLayoutFromAi(next: Layout): void {
+	layoutEngine.update(APP_SCOPE, () => cloneLayout(next));
+	repinPpFloat();
+	layoutEngine.settle(APP_SCOPE, "ai");
+	currentSceneId = null;
 }
 
 /** preset を適用する（author = "scene" で settle log に刻まれる）。未知 id は false */

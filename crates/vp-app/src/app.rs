@@ -878,11 +878,18 @@ fn editor_bridge_js(
 ) -> Option<String> {
     // h = EditorHostMcpApi
     const PRELUDE: &str = "const h=window.vpEditorHost&&window.vpEditorHost.mcp;if(!h)return{error:\"editor host not available\"};";
-    // h = layout bridge（doc 49 LE-P2 PR2。gallery-panes.tsx が window.vpLayoutHost に expose）
+    // h = layout bridge（doc 49 LE-P2 PR2 → P4 PR3: layout-mcp.ts の scope dispatcher が
+    // window.vpLayoutHost を所有。gallery-panes.tsx は 1 scope handler として登録される）
     const LAYOUT_PRELUDE: &str = "const h=window.vpLayoutHost&&window.vpLayoutHost.mcp;if(!h)return{error:\"layout host not available\"};";
     match op {
         // === layout bridge (LE-15) — editor と同じ配管、別 host global ===
-        "layout_get" => Some(format!("(()=>{{{LAYOUT_PRELUDE}return h.get()}})()")),
+        // LE-P4 PR3: get も body（{scope}）を渡す。value 欠落は null = 既定 scope
+        "layout_get" => {
+            let body = value
+                .and_then(|v| serde_json::to_string(v).ok())
+                .unwrap_or_else(|| "null".to_string());
+            Some(format!("(()=>{{{LAYOUT_PRELUDE}return h.get({body})}})()"))
+        }
         "layout_set" => {
             // body(JSON) はそのまま JS literal として合法 (JSON ⊂ JS)。value 欠落は防御的に None
             let body = serde_json::to_string(value?).ok()?;
@@ -1028,9 +1035,22 @@ mod editor_bridge_js_tests {
     fn layout_ops_use_layout_bridge_global() {
         let get = editor_bridge_js("layout_get", None, None).expect("layout_get");
         assert!(get.contains("window.vpLayoutHost"), "js={get}");
-        assert!(get.contains("h.get()"), "js={get}");
+        // LE-P4 PR3: value 欠落は null = 既定 scope（gallery、後方互換）
+        assert!(get.contains("h.get(null)"), "js={get}");
         // editor 側の global には触れない（host の取り違え防止）
         assert!(!get.contains("vpEditorHost"), "js={get}");
+    }
+
+    /// layout_get は scope body（LE-P4 PR3）を JS literal として渡す。
+    #[test]
+    fn layout_get_passes_scope_body() {
+        let js = editor_bridge_js(
+            "layout_get",
+            None,
+            Some(&serde_json::json!({"scope": "app"})),
+        )
+        .expect("layout_get");
+        assert!(js.contains(r#"h.get({"scope":"app"})"#), "js={js}");
     }
 
     /// layout_set は body(JSON) を JS literal として埋め込む。value 欠落は None。

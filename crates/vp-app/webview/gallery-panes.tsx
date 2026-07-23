@@ -24,7 +24,6 @@ import {
 	type ResolvedMap,
 	type TransitionDriver,
 	cloneLayout,
-	createLayoutEngine,
 	createTimeDriver,
 	equalize,
 	jumpDriver,
@@ -39,6 +38,8 @@ import { PaneStage, useEngineResolved } from "@chronista-club/creo-ui-layout/sol
 import { onCleanup, onMount } from "solid-js";
 import { render } from "solid-js/web";
 import { type FleetOp, type FleetPayload, computeFeedback, mapControl } from "./fleet";
+import { layoutEngine } from "./layout-host";
+import { registerLayoutScope } from "./layout-mcp";
 import {
 	GALLERY_CSS,
 	type LayoutSpec,
@@ -57,8 +58,9 @@ const SCOPE = "gallery";
 /** click で主役に引き上げる時の share（独占でなく「大きめ」— 他の story も見えたまま） */
 const RAISE_SHARE = 0.55;
 
-// engine は module 単位で 1 個 — gallery を閉じても場と settle log が残る（dogfood 都合）
-const engine = createLayoutEngine();
+// engine は webview 共有（layout-host、LE-P4 PR3 で独立 instance から統一）。scope は
+// "gallery" に閉じるので寿命の性質は不変 — gallery を閉じても場と settle log が残る
+const engine = layoutEngine;
 engine.update(SCOPE, () => initialLayout());
 engine.settle(SCOPE, "human");
 
@@ -155,13 +157,12 @@ function GalleryPanes() {
 	);
 }
 
-// ---------- MCP layout bridge（LE-P2 PR2 = LE-15 の webview 側、P3 で policy 経由に） ----------
-// 読み手: vp-app app.rs `editor_bridge_js` の layout_* arm（`window.vpLayoutHost.mcp`）。
+// ---------- MCP layout bridge の gallery scope handler（LE-P2 PR2 → P4 PR3 で dispatcher 配下に） ----------
+// 読み手: layout-mcp.ts の dispatcher（`window.vpLayoutHost.mcp`、scope 振り分け）。
 // gallery scope の apply policy = read（LE-16）: set は proposeLayout が受け、time driver
 // （spring）が t を運び切った所で commit(author="ai") が settle 監査を刻む — AI の変更が
 // 「滑らかに現れる」のを mako が画面で見る HITL ループ（#872 の editor_set と同型）。
 // 駆動中に human が触れば seize されて commit は起きない（Touch — 注視の主権は user）。
-// ⚠️ work lane の scope を追加する時は既定を "write"（hitl gate）にすること（P4、Moody 申し送り）。
 
 const APPLY_POLICY: ApplyPolicy = "read";
 
@@ -192,7 +193,7 @@ const layoutMcp = {
 		// 遷移中は commit 前の layout が返る（≈0.35s の eventual consistency — 監査は settle log）
 		return layoutSnapshot(SCOPE, engine.current(SCOPE), sharesFrom(engine.resolved(SCOPE)));
 	},
-	set(spec: unknown): unknown {
+	set(spec: LayoutSpec): unknown {
 		try {
 			const next = applyLayoutSpec(engine.current(SCOPE), (spec ?? {}) as LayoutSpec);
 			seizeDrive();
@@ -222,7 +223,8 @@ const layoutMcp = {
 		};
 	},
 };
-(window as unknown as { vpLayoutHost?: unknown }).vpLayoutHost = { mcp: layoutMcp };
+// vpLayoutHost 本体は layout-mcp.ts の dispatcher（LE-P4 PR3）— gallery は 1 scope として登録
+registerLayoutScope(SCOPE, layoutMcp);
 
 // ---------- fleet 配線（LE-19: 机上の 3 台 → gallery の場） ----------
 // 読み手: vp-app app.rs `fleet_dispatch_js`（world-device channel の control_event 転送）。
