@@ -40,7 +40,7 @@
 |---|---|---|---|
 | 1 | もう 1 本の往復 | session 複数化（doc 38→46→50） | **§1 済** |
 | 2 | 同じ往復を別の見え方で | Act I/II → Act = Pane kind（P4 残） | **§2 済** |
-| 3 | 別の相手に投げたい | engine 選択（doc 39） | |
+| 3 | 別の相手に投げたい | engine 選択（doc 39） | **§3 済** |
 | 4 | 死んでも続きから | resume / replay 永続 | |
 | 5 | 隔離された並行作業 | performer lane | |
 | 6 | AI が視せる面 | PP board / Canvas | |
@@ -143,6 +143,41 @@ layout 記法: `cc16 | grok17/board | sh18`
 - **lane-level Act toggle は退役**（doc 50 P4 完遂。作業台に「lane の mode」は存在しない）
 - **AI 側の対**: `console:set_mode` の session 単位化を P4 に含める（AI も「この pane を
   term にして」と address できる）
+
+---
+
+## 3. 別の相手に投げたい（engine 選択）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> 開発を続けていくと役割固定になっていくと思うけど、進化が目まぐるしいから、
+> その場の判断も重要。
+
+- **役割は固定化へ収斂する — が、固定を構造に焼かない**。engine の進化速度が速く、
+  今日の分担は半年後に無効になりうる（model-tier-strategy と同じ哲学）
+- 「比較」（同じ問いを並べる）は一次要求ではない
+- **まとめ上げる層 = creo-memories**。異種 engine が一つのチームでいられるのは、
+  記憶が engine の外に住むから。作業台の共有は三層:
+  場所（cwd/branch/board = lane）/ 往復（resume = session）/ **記憶（creo = engine 非依存）**
+
+### どうすべきだったのか（回顧）
+
+- doc 39 の「常駐型のみの一枚岩」と cursor/agy 撤去は正しかった — 目まぐるしい進化に
+  個別実装で追従しない、という同じ原理の実装側
+- AcpHost / RpcHost の共通骨格（1 度作れば新 engine はほぼゼロ）は進化速度への正しい投資
+  （opencode がその実証: route B は「AcpHost 完成後ほぼゼロ」の見積り通り着地）
+
+### 何が必要か
+
+- **作業台プリセット（soft）**: よく使う組（例 `cc | grok/board | sh`）を 1 発で開ける。
+  layout scene の lane 版。⚠️ 役割ラベル（「調査係」等）は作らない — engine 名のまま、
+  組はいつでも編集可能（固定を構造に焼かない、の UI 表現）
+- **その場の判断の入口は現状形**（engine × Act の menu）を維持
+- **記憶の配線の等価性（要調査）**: creo-memories MCP が届くのは現状 claude のみのはず。
+  codex / grok / opencode の session に同じ記憶の口を配線できるか（各 engine の MCP
+  対応）を調べる —「まとめ上げる」image の成立条件
+- **AI 側の対**: session 作成の MCP（AI が「grok の pane を開いて調査を打たせる」を
+  address できる — 面 B 台帳に追加）
 
 ---
 
