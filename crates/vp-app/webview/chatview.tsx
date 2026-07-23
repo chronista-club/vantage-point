@@ -1764,9 +1764,11 @@ export const CHATVIEW_CSS = `
 .echoes-session-plate-sid { opacity:.65; }
 .echoes-session-plate-hint { opacity:.5; font-family: var(--vp-font-sans),var(--typography-family-sans); }
 .echoes-session-plate-spacer { flex:1; }
+/* 既定 opacity .55 は暗い名札上で沈んで「削除の動線が無い」ように見えた（2026-07-24 実機）。
+   常時視認できる濃さに上げ、hover で確定的に立てる。 */
 .echoes-session-plate-close { flex:none; display:inline-flex; align-items:center; padding:2px 4px;
   line-height:1; border:none; border-radius:4px; background:transparent; cursor:pointer;
-  color: var(--color-text-tertiary,#616b80); opacity:.55; }
+  color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
 .echoes-session-plate-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
   background: var(--color-bg,#0f1115); }
 /* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
