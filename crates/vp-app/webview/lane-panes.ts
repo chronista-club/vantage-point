@@ -9,7 +9,7 @@
  *
  * ## 層の分離（CLAUDE.md: data / calculations / actions）
  *
- * - **data**: `LANE_PANE_REFS` — lane に並ぶ Pane の顔ぶれ（lane によらず共通）
+ * - **data**: `TERM_PANE_REF` + session 由来の動的 refs（`lanePaneRefs` — doc 50 P1 で動的化）
  * - **calculations**: `toggleLanePane` / `newPaneChoices` — 純関数（vitest で固定）
  * - **actions**: `installLanePanes` — engine 購読 + DOM への反映（display / rect / class）
  *
@@ -33,12 +33,64 @@ import {
 	visibleIds,
 } from "@chronista-club/creo-ui-layout";
 import { layoutEngine } from "./layout-host";
+import { focusedOf } from "./console";
+import { sessionChipPrefix } from "./EchoesHeader";
 
-/** lane に並ぶ Pane の顔ぶれ（id = host 要素の DOM id）。lane によらず共通 */
-export const LANE_PANE_REFS = [
-	{ id: "lane-host", label: "Console" },
-	{ id: "console-chat-host", label: "Chat" },
-] as const;
+/** lane に並ぶ Pane の 1 参照（id = host 要素の DOM id）。 */
+export type PaneRef = {
+	id: string;
+	label: string;
+	/** chat session pane なら session key（doc 46 §1.5 session ↔ Pane 1:1）。term pane は無し */
+	session?: number;
+};
+
+/** Act I（xterm）の代表 pane。World A の xterm re-key（doc 50 P3）まで lane に 1 枚 */
+export const TERM_PANE_REF: PaneRef = { id: "lane-host", label: "Console" };
+
+/** chat session pane の host DOM id。表示中 lane の host にだけ使う（lane 切替で作り直すため
+ *  lane を id に含めない — DOM には常に 1 lane 分しか存在しない） */
+export function chatHostId(session: number): string {
+	return `chat-session-${session}`;
+}
+
+/** host DOM id → session key（chatHostId の逆写像。term pane / 未知 id は null）。 */
+export function sessionOfHostId(id: string): number | null {
+	const m = id.match(/^chat-session-(\d+)$/);
+	return m ? Number(m[1]) : null;
+}
+
+/** lane の pane の顔ぶれ（純関数）: Console + chat session 群。
+ *  旧 LANE_PANE_REFS（固定 2 枚: lane-host / console-chat-host）の後継 — 「Chat」という
+ *  固定 1 枚は session ↔ Pane 1:1（doc 46 §1.5）に反していたため、session の数だけ生える */
+export function lanePaneRefs(
+	sessions: readonly { key: number; stand: string }[],
+): PaneRef[] {
+	return [
+		TERM_PANE_REF,
+		...sessions.map((v) => ({
+			id: chatHostId(v.key),
+			label: `${sessionChipPrefix(v.stand)}#${v.key}`,
+			session: v.key,
+		})),
+	];
+}
+
+/** layout の列を refs に同期する（純関数）。
+ *  - refs に居るが structure に無い pane: 右端に列 append（attention は 0 = chip に生えるだけ。
+ *    開くのは mode 切替の showOnly / chip click / focus が担う）
+ *  - structure に居るが refs から消えた pane（closed session）: 列から除去
+ *  往復（sync → sync）は不動点 = 冪等 */
+export function syncPaneColumns(layout: Layout, ids: readonly string[]): Layout {
+	const want = new Set(ids);
+	const columns = layout.structure.columns
+		.map((c) => ({ panes: c.panes.filter((v) => want.has(v)) }))
+		.filter((c) => c.panes.length > 0);
+	const present = new Set(columns.flatMap((c) => c.panes));
+	for (const id of ids) if (!present.has(id)) columns.push({ panes: [id] });
+	const attention: Record<string, number> = {};
+	for (const id of ids) attention[id] = layout.attention[id] ?? 0;
+	return { structure: { columns }, attention };
+}
 
 /** 要件 3: フォーカスの視認 ring（CSS は main_area.rs `#lane-panes > .pane-focused`） */
 export const CLASS_FOCUSED = "pane-focused";
@@ -50,13 +102,13 @@ export function laneScope(lane: string): string {
 	return `lane:${lane}`;
 }
 
-/** 初期配置: 全 Pane が横並び・等分（旧 PaneShell の template seed と同じ既定） */
+/** 初期配置: lane-host（Console）1 枚が全面。chat session pane は session 一覧の到着後に
+ *  syncPaneColumns で生える（boot 窓に空の chat host が xterm を覆う #880 系の問題は、
+ *  「無い host は覆えない」の形で構造的に消えた） */
 export function initialLaneLayout(): Layout {
-	const attention: Record<string, number> = {};
-	for (const p of LANE_PANE_REFS) attention[p.id] = 1;
 	return {
-		structure: { columns: LANE_PANE_REFS.map((p) => ({ panes: [p.id] })) },
-		attention,
+		structure: { columns: [{ panes: [TERM_PANE_REF.id] }] },
+		attention: { [TERM_PANE_REF.id]: 1 },
 	};
 }
 
@@ -120,6 +172,10 @@ export interface LanePanesDeps {
 	tabs: HTMLElement;
 	/** タブエリアの開閉 class を載せる要素（#pane-terminal） */
 	frame: HTMLElement;
+	/** chat session host を生やす親（#lane-panes）。動的 pane は render が生成/破棄する */
+	container: HTMLElement;
+	/** chat session pane の中身を host に mount する（chatview.mountSession）。返り値 = dispose */
+	mountChat: (host: HTMLElement, lane: string, session: number) => () => void;
 }
 
 /**
@@ -130,29 +186,41 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	let activeLane: string | null = null;
 	/** lane → focus を持つ pane id（LE-20: focus は場の外 = module 状態） */
 	const focusById = new Map<string, string>();
+	/** lane → pane の顔ぶれ（session 一覧由来。未着 lane は Console のみ） */
+	const refsByLane = new Map<string, PaneRef[]>();
+	/** 表示中 lane の動的 host の dispose（host id → SessionChatView の unmount） */
+	const dynDisposers = new Map<string, () => void>();
+	/** showOnly が「まだ生えていない pane」を指した時の保留先（boot 窓: applyConsoleMode は
+	 *  session 一覧の到着前に走る）。到着時に 1 回だけ貼って消費する — 保留にせず solo すると
+	 *  存在しない id への solo で全 pane が消える（2026-07-24 実機で観測した空白画面）。 */
+	let pendingShowOnly: string | null = null;
+
+	/** pane が layout の構造に居るか（showOnly / focus の前提確認）。 */
+	const paneExists = (scope: string, id: string): boolean =>
+		layoutEngine.current(scope).structure.columns.some((c) => c.panes.includes(id));
+
+	const refsOf = (lane: string): PaneRef[] =>
+		refsByLane.get(lane) ?? [TERM_PANE_REF];
 
 	// boot 既定を **同期で** DOM に書く（旧 PaneShell.dock() が bundle init 時に同期 render
-	// していたのと同じ「event を待たず DOM 確定」）。これが無いと vp:console-mode 到着までの
-	// 窓で、CSS 既定 inset:0 のまま DOM 後発の空 chat host が xterm host を覆う
-	// （#880 と同族の boot 窓 — team-b review #1）。初期の見た目も旧実装と同じ等分並び。
+	// していたのと同じ「event を待たず DOM 確定」）。boot 時点の refs は Console のみ —
+	// chat host は session 一覧の到着後に生成されるので、空 host が xterm を覆う boot 窓
+	// （#880 と同族）は「無い host は覆えない」の形で構造ごと消えた。
 	{
 		const bootResolved = resolve(initialLaneLayout());
-		for (const p of LANE_PANE_REFS) {
-			const el = deps.hostOf(p.id);
-			if (!el) continue;
-			const r = bootResolved[p.id];
-			if (!r) continue;
+		const el = deps.hostOf(TERM_PANE_REF.id);
+		const r = bootResolved[TERM_PANE_REF.id];
+		if (el && r) {
 			el.style.display = "";
 			el.style.left = `${r.rect.x * 100}%`;
 			el.style.top = `${r.rect.y * 100}%`;
 			el.style.width = `${r.rect.w * 100}%`;
 			el.style.height = `${r.rect.h * 100}%`;
-			// 旧実装は最初に dock した Pane（Console）が focus を持っていた
-			el.classList.toggle(CLASS_FOCUSED, p.id === LANE_PANE_REFS[0].id);
+			el.classList.toggle(CLASS_FOCUSED, true);
 		}
 	}
 
-	/** scope の初期化（未訪問 lane は等分並びで始める）。戻り値は scope key */
+	/** scope の初期化（未訪問 lane は Console 全面で始める）。戻り値は scope key */
 	const ensure = (lane: string): string => {
 		const scope = laneScope(lane);
 		if (layoutEngine.current(scope).structure.columns.length === 0) {
@@ -161,25 +229,55 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		return scope;
 	};
 
-	const visibleOf = (scope: string): string[] => {
+	/** 表示中 lane の動的 host（chat session pane）を refs に同期する — 無ければ生成 + mount、
+	 *  消えた session の host は dispose + DOM 除去。生成直後は display:none（render が
+	 *  可視性を決めるまで何も覆わない — #880 の教訓）。 */
+	const syncDynHosts = (lane: string, refs: PaneRef[]): void => {
+		const want = new Map(
+			refs.filter((v) => v.session !== undefined).map((v) => [v.id, v.session as number]),
+		);
+		// 消えた host の破棄
+		for (const [id, dispose] of [...dynDisposers]) {
+			if (want.has(id)) continue;
+			dispose();
+			dynDisposers.delete(id);
+			deps.hostOf(id)?.remove();
+		}
+		// 足りない host の生成 + mount
+		for (const [id, session] of want) {
+			if (dynDisposers.has(id)) continue;
+			const host = document.createElement("div");
+			host.id = id;
+			host.className = "chat-session-host";
+			host.style.display = "none";
+			deps.container.appendChild(host);
+			dynDisposers.set(id, deps.mountChat(host, lane, session));
+		}
+	};
+
+	const visibleOf = (scope: string, refs: PaneRef[]): string[] => {
 		const resolved = layoutEngine.resolved(scope);
-		return LANE_PANE_REFS.filter((p) => {
-			const r = resolved[p.id];
-			return !!r && r.rect.w > 0 && r.rect.h > 0;
-		}).map((p) => p.id);
+		return refs
+			.filter((v) => {
+				const r = resolved[v.id];
+				return !!r && r.rect.w > 0 && r.rect.h > 0;
+			})
+			.map((v) => v.id);
 	};
 
 	const render = (): void => {
 		if (!activeLane) return;
 		const lane = activeLane;
+		const refs = refsOf(lane);
+		syncDynHosts(lane, refs);
 		const scope = laneScope(lane);
 		const resolved = layoutEngine.resolved(scope);
-		const visible = visibleOf(scope);
+		const visible = visibleOf(scope, refs);
 		// focus が畳まれた Pane を指していたら残った先頭へ（focus を失わせない）
 		const stored = focusById.get(lane);
 		const focused = stored && visible.includes(stored) ? stored : (visible[0] ?? null);
 
-		for (const p of LANE_PANE_REFS) {
+		for (const p of refs) {
 			const el = deps.hostOf(p.id);
 			if (!el) continue;
 			const r = resolved[p.id];
@@ -194,17 +292,21 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			}
 			el.classList.toggle(CLASS_FOCUSED, isVisible && p.id === focused);
 		}
-		renderChips(lane, visible);
+		renderChips(lane, refs, visible);
 	};
 
 	// タブエリアは **全 Pane のスイッチャー**（旧 PaneShell.render と同じ設計 — 畳んだもの
 	// だけ並べると「並んでいる Pane を畳む」入口が UI から消える）。render はべき等:
 	// 状態から chip を作り直すだけで差分を追わない（数枚前提、entry 側の MutationObserver
 	// が「+ New」を毎回付け直す規約も従来どおり）
-	const renderChips = (lane: string, visible: readonly string[]): void => {
+	const renderChips = (
+		lane: string,
+		refs: readonly PaneRef[],
+		visible: readonly string[],
+	): void => {
 		deps.tabs.replaceChildren();
 		let hiddenCount = 0;
-		for (const p of LANE_PANE_REFS) {
+		for (const p of refs) {
 			const isVisible = visible.includes(p.id);
 			if (!isVisible) hiddenCount += 1;
 			const chip = document.createElement("button");
@@ -239,16 +341,76 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (activeLane && scope === laneScope(activeLane)) render();
 	});
 
+	// session 一覧（SP truth の鏡、chatview.installChatView が dispatch）→ pane の顔ぶれを同期。
+	// doc 46 §1.5 の実装点: session が増減すると pane / chip / layout 列が追従する。
+	document.addEventListener("vp:echoes-sessions", (e) => {
+		const d = (
+			e as CustomEvent<{
+				lane: string;
+				sessions?: { key: number; stand: string }[];
+			}>
+		).detail;
+		if (!d?.lane) return;
+		const refs = lanePaneRefs(d.sessions ?? []);
+		refsByLane.set(d.lane, refs);
+		if (d.lane !== activeLane) return; // 非表示 lane は refs だけ更新（DOM は表示時に作る）
+		const scope = ensure(d.lane);
+		layoutEngine.update(scope, (l) =>
+			syncPaneColumns(
+				l,
+				refs.map((v) => v.id),
+			),
+		);
+		// 構造の同期は「人の配置」でも「AI の提案」でもないデータ追従 = author は 'scene'
+		layoutEngine.settle(scope, "scene");
+		// 保留中の showOnly を消費する（boot 窓の救済）。保留先が「もう存在しない session の
+		// host」なら、意図（= focused の chat pane を見せる）に読み替えて現 focused に貼る
+		//（applyConsoleMode 時点の focusedOf は一覧未着で 1 に化けている事があるため）。
+		if (pendingShowOnly !== null) {
+			let target = pendingShowOnly;
+			if (sessionOfHostId(target) !== null && !refs.some((v) => v.id === target)) {
+				target = chatHostId(focusedOf(d.lane));
+			}
+			if (refs.some((v) => v.id === target)) {
+				pendingShowOnly = null;
+				layoutEngine.update(scope, (l) => solo(l, target));
+				layoutEngine.settle(scope, "human");
+				focusById.set(d.lane, target);
+			}
+		}
+		render();
+	});
+
 	return {
 		setActiveLane(lane) {
 			if (activeLane === lane) return;
+			// 前 lane の動的 host は lane ごと破棄（chat の再 render は安価。xterm と違い
+			// DOM 保持の必要が無く、保持すると全 lane × 全 session の host が DOM に堆積する）
+			for (const [id, dispose] of dynDisposers) {
+				dispose();
+				deps.hostOf(id)?.remove();
+			}
+			dynDisposers.clear();
+			pendingShowOnly = null; // 保留は旧 lane の意図 — 新 lane は applyConsoleMode が貼り直す
 			activeLane = lane;
-			ensure(lane);
+			const scope = ensure(lane);
+			// 既知の refs（過去に受けた session 一覧）があれば layout 列も先に同期しておく
+			layoutEngine.update(scope, (l) =>
+				syncPaneColumns(
+					l,
+					refsOf(lane).map((v) => v.id),
+				),
+			);
 			render();
 		},
 		showOnly(paneId) {
 			if (!activeLane) return;
 			const scope = ensure(activeLane);
+			if (!paneExists(scope, paneId)) {
+				// まだ生えていない pane（boot 窓）— session 一覧の到着時に貼る
+				pendingShowOnly = paneId;
+				return;
+			}
 			layoutEngine.update(scope, (l) => solo(l, paneId));
 			// ⚠️ solo 直後の settle は**意図的**（team-b review #2 の明文化）。protocol の
 			// solo は「un-solo = restoreLastSettle」の一時 view だが、ここでの showOnly は
@@ -261,6 +423,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		focusPane(paneId) {
 			if (!activeLane) return;
 			const scope = ensure(activeLane);
+			if (!paneExists(scope, paneId)) return; // 消えた session の host への click 残留
 			if ((layoutEngine.current(scope).attention[paneId] ?? 0) <= 0) {
 				// minimized を指したら復元も行う（旧 PaneLayout.focus と同じ）
 				layoutEngine.update(scope, (l) => setShare(l, paneId, RESTORE_SHARE));

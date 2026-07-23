@@ -198,10 +198,10 @@ body{overflow:hidden;}
 /* Echoes 共通ヘッダ (操縦席、mem `vp-pane-common-header`): Act I(xterm)/Act II(chat) を跨いで
    載り続ける lane-local な情報 + 操作の strip。DOM の器だけを World A が用意し、中身は
    editor-host bundle の EchoesHeader component が #echoes-header に mount する
-   (#console-chat-host と同じ mount 点パターン)。
+   (chat session host と同じ mount 点パターン)。
    高さ 0 が default = header 不在時は xterm/chat が全高 (既存挙動、regression なし)。
    header が内容を持つ時だけ World B が #pane-terminal に .echoes-header-active を付け、
-   strip を開いて lane-host / console-chat-host / lane-empty をその分だけ押し下げる
+   strip を開いて lane-host / chat session host / lane-empty をその分だけ押し下げる
    (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
 #pane-terminal{--echoes-header-h:0px;}
@@ -210,7 +210,7 @@ body{overflow:hidden;}
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
    (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
-   子 Pane (#lane-host / #console-chat-host) は中身を変えず位置づけだけ absolute。
+   子 Pane (#lane-host / .chat-session-host) は中身を変えず位置づけだけ absolute。
    inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* タブエリアは「+ New」を常に載せるので高さは固定。.pane-tabs-active は
@@ -450,16 +450,14 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
          EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
          Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
     <div id="echoes-header"></div>
-    <!-- doc 46 P1 → doc 49 LE-P4 PR2: lane の表示領域を「Act I か Act II」の排他から
-         **N 枚の Pane を並べる tiling** に変える器。配置は creo-ui-layout の lane scope
-         (lane-panes.ts) が resolved rect を inline で書く。子 (#lane-host /
-         #console-chat-host) の中身は一切変えない。畳まれた Pane は #pane-tabs に chip。 -->
+    <!-- doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane の表示領域 = N 枚の Pane を並べる
+         tiling の器。配置は creo-ui-layout の lane scope (lane-panes.ts) が resolved rect を
+         inline で書く。子は #lane-host (Act I xterm、World A 所有・中身に触れない) +
+         chat session host 群（World B の lane-panes が session ↔ Pane 1:1 で動的に生やす。
+         旧 #console-chat-host 固定 1 枚は session ↔ Pane 1:1 への移行で退役）。
+         畳まれた Pane は #pane-tabs に chip。 -->
     <div id="lane-panes">
       <div id="lane-host"></div>
-      <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
-           ChatView がここに render する。doc 46 P1 で lane-host との**排他をやめ**、
-           既定で左右に並ぶ (要件 1)。片方だけ見たい時は他方を minimize する。 -->
-      <div id="console-chat-host"></div>
     </div>
     <!-- doc 46 P1 要件 2: 縮小された Pane の置き場 (タブエリア)。chip を 1 クリックで
          Pane に戻す。空の時は高さ 0 = 従来の見た目を壊さない。 -->

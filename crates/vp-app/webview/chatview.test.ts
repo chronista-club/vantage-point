@@ -11,10 +11,8 @@ import {
   formatToolInput,
   formatToolResult,
   clampToolDetail,
-  chatCapableStands,
   canCloseSession,
   chatKey,
-  type StandOption,
 } from './chatview'
 import type { EchoesEvent } from './console'
 
@@ -803,44 +801,6 @@ describe('clampToolDetail — 巨大 detail の honest clamp（黙って切ら�
 
   it('超過は切り詰め、省略した文字数を返す（UI が「…N 文字省略」を出せる）', () => {
     expect(clampToolDetail('abcdefghij', 4)).toEqual({ text: 'abcd', omitted: 6 })
-  })
-})
-
-describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Phase 3）', () => {
-  const stands = (xs: StandOption[]): StandOption[] => xs
-
-  it('chat_capable === true は表示する', () => {
-    const out = chatCapableStands(stands([{ name: 'echoes', chat_capable: true }]))
-    expect(out.map((s) => s.name)).toEqual(['echoes'])
-  })
-
-  it('chat_capable === false は隠す（shell の dead-end tab を出さない）', () => {
-    const out = chatCapableStands(
-      stands([
-        { name: 'echoes', chat_capable: true },
-        { name: 'codex', chat_capable: true },
-        { name: 'shell', chat_capable: false },
-      ]),
-    )
-    expect(out.map((s) => s.name)).toEqual(['echoes', 'codex'])
-  })
-
-  it('後方互換: chat_capable undefined（旧 SP は field を送らない）は表示する', () => {
-    const out = chatCapableStands(
-      stands([{ name: 'echoes' }, { name: 'codex', chat_capable: undefined }]),
-    )
-    expect(out.map((s) => s.name)).toEqual(['echoes', 'codex'])
-  })
-
-  it('false だけが除外され、true / undefined は残る（混在）', () => {
-    const out = chatCapableStands(
-      stands([
-        { name: 'a' }, // undefined → 表示
-        { name: 'b', chat_capable: true }, // 表示
-        { name: 'c', chat_capable: false }, // 隠す
-      ]),
-    )
-    expect(out.map((s) => s.name)).toEqual(['a', 'b'])
   })
 })
 
