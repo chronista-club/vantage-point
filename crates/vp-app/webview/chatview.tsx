@@ -1090,13 +1090,9 @@ function ChatView() {
     if (!lane) return
     // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
     // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
+    //（旧: notePermissionMode でヘッダ chip にも同期していたが、chip は doc 50 の名札純化で
+    //  撤去済み — 同期先ごと消えた）
     focusedChat(lane).set(produce((s) => (s.permissionMode = mode)))
-    // Echoes 共通ヘッダの permission chip にも同期（engine は即時 event を返さないため）。
-    ;(
-      window as unknown as {
-        vpConsole?: { notePermissionMode?: (lane: string, mode: string) => void }
-      }
-    ).vpConsole?.notePermissionMode?.(lane, mode)
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
   }

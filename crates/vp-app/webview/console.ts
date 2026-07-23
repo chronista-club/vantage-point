@@ -226,21 +226,18 @@ export function syncHeaderSessionId(lane: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * EchoesHeader（共通ヘッダ strip）が表示する lane の session summary。
- * EchoesEvent 既存流（session_init / turn_completed / error）だけから畳む —
- * 新しい Rust→JS チャネルは作らない。全 field presence-driven（無ければ chip 非表示）。
+ * EchoesHeader（pane 名札）が表示する lane の session summary。
+ * EchoesEvent 既存流（session_init / turn_completed）だけから畳む — 新しい Rust→JS
+ * チャネルは作らない。presence-driven（無ければ chip 非表示）。
+ *
+ * doc 50: 名札に残るのは **素性だけ**になったので、summary も sessionId 1 本に縮約した。
+ * 旧 field（model / permissionMode / engineError / engineDormant）は名札の chip 撤去で
+ * 読み手を失った — model / perm は composer の select、engine 異常は status 行の
+ * `deriveStatus` が別経路で同じ event から導出しており、ここで畳む必要が無い。
  */
 export type EchoesHeaderState = {
   /** cc session id（Act を跨いで同一 session が継続することの可視化）。 */
   sessionId?: string
-  model?: string
-  permissionMode?: string
-  /** 直近の engine 異常（turn crash / 翻訳失敗など「本物の error」）。⚠ engine（警告）で出す。
-   *  session_init（engine 復帰）/ turn_completed（生存証拠）で clear。 */
-  engineError?: string
-  /** engine プロセスの休眠（途絶 = 回復可能）。💤 休眠 で穏当に出す。error とは排他
-   *  （engine_exited は clean exit なので engineError を消す）。session_init / turn_completed で clear。 */
-  engineDormant?: string
 }
 
 /**
@@ -250,42 +247,10 @@ export type EchoesHeaderState = {
  */
 export function foldHeaderState(h: EchoesHeaderState, event: EchoesEvent): boolean {
   switch (event.kind) {
-    case 'session_init': {
-      const changed =
-        h.sessionId !== event.session_id ||
-        (event.model !== undefined && h.model !== event.model) ||
-        (event.permission_mode !== undefined && h.permissionMode !== event.permission_mode) ||
-        h.engineError !== undefined ||
-        h.engineDormant !== undefined
-      h.sessionId = event.session_id
-      if (event.model !== undefined) h.model = event.model
-      if (event.permission_mode !== undefined) h.permissionMode = event.permission_mode
-      // engine 復帰 = error / 休眠 の両方を下ろす。
-      h.engineError = undefined
-      h.engineDormant = undefined
-      return changed
-    }
+    case 'session_init':
     case 'turn_completed': {
-      const changed =
-        h.sessionId !== event.session_id || h.engineError !== undefined || h.engineDormant !== undefined
+      const changed = h.sessionId !== event.session_id
       h.sessionId = event.session_id
-      // 生存証拠 = error / 休眠 の両方を下ろす。
-      h.engineError = undefined
-      h.engineDormant = undefined
-      return changed
-    }
-    case 'error': {
-      // 本物の異常 → engineError。休眠表示とは排他。
-      const changed = h.engineError !== event.message || h.engineDormant !== undefined
-      h.engineError = event.message
-      h.engineDormant = undefined
-      return changed
-    }
-    case 'engine_exited': {
-      // 途絶 = 回復可能な休眠 → engineDormant。clean exit なので engineError は消す。
-      const changed = h.engineDormant !== event.message || h.engineError !== undefined
-      h.engineDormant = event.message
-      h.engineError = undefined
       return changed
     }
     default:
@@ -340,9 +305,6 @@ export type VpConsole = {
   peek(lane: string, n?: number): EchoesEvent[]
   /** Echoes 共通ヘッダ用 summary の snapshot（copy を返す — caller の signal 更新用）。 */
   headerState(lane: string): EchoesHeaderState
-  /** ChatView の permission mode optimistic 切替をヘッダにも同期する（engine は即時 event を
-   *  返さないため。respawn 時は session_init.permission_mode の真値が上書きする）。 */
-  notePermissionMode(lane: string, mode: string): void
   /** doc 38 Phase 2: SP の echoes_session_list を per-lane cache に取り込み、tab strip へ
    *  'vp:echoes-sessions' CustomEvent を発火する（focused も併せて更新）。 */
   handleSessionList(lane: string, payload: EchoesSessionListPayload): void
@@ -425,14 +387,6 @@ export function installConsole(): VpConsole {
     },
     headerState(lane) {
       return { ...laneOf(lane).header }
-    },
-    notePermissionMode(lane, mode) {
-      const h = laneOf(lane).header
-      if (h.permissionMode === mode) return
-      h.permissionMode = mode
-      document.dispatchEvent(
-        new CustomEvent('vp:echoes-header', { detail: { lane } }),
-      )
     },
     handleSessionList(lane, payload) {
       const focused = normalizeSession(
