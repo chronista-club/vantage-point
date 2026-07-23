@@ -219,6 +219,7 @@ dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cas
   vpd daemon status  # → Port: 32100 で確認 / vpd db path → .../vp-dev/db/...
   vpd app start      # dev GUI（要 `cargo install --path crates/vp-app` で dev vp-app）
   ```
+- ⚠️ **`~/.cargo/bin/vp` は既定で不在**（2026-07-23 に撤去）。cargo dev binary は PATH 上 `/opt/homebrew/bin` より先に来るため、置いたままにすると **alias が効かない経路（script / 非対話 shell / 他プロセスからの exec）が古い dev binary を掴む**。素の `vp` は PATH で `/opt/homebrew/bin/vp`（= `.app` 同梱 CLI への symlink）へ解決させるのが正。`vpd` を使うときだけ `cargo install --path crates/vp-cli --locked` で作り直す（作らない限り `vpd` は command not found のまま = それが安全側の既定）。
 - release（brew）は素の `vp`（= `.app` 同梱 CLI への symlink）/ GUI は `VantagePoint.app`。dev(32100) と release(32000) は完全並列で常駐でき、互いに衝突しない。
 - ⚠️ `VP_PROFILE` を honor するのは **#643 を含む binary のみ**。未対応 binary に `VP_PROFILE=dev` を渡しても無視され brew namespace(32000) に落ちる（混在再発）ので、dev alias は feature 込みで `cargo install` した `~/.cargo/bin/vp` を明示指定する。
 
