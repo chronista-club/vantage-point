@@ -45,7 +45,7 @@
 | 5 | 隔離された並行作業 | performer lane | **§5 済** |
 | 6 | AI が視せる面 | PP board / Canvas | **§6 済** |
 | 7 | project を跨ぐ | sidebar / TheWorld | **§7 済** |
-| 8 | AI と一緒に UI を調整 | Editor Mode / layout MCP（doc 48/49） | |
+| 8 | AI と一緒に UI を調整 | Editor Mode / layout MCP（doc 48/49） | **§8 済** |
 | 9 | 物理で演奏する | 艦隊 | |
 | 10 | lane 同士の通信 | wire | |
 | 11 | machine を跨ぐ | hub federation | |
@@ -307,4 +307,32 @@ layout 記法: `cc16 | grok17/board | sh18`
 
 ---
 
-（以降の項目は審査が進み次第追記）
+## 8. AI と一緒に UI を調整する（Editor Mode / layout MCP）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> できるだけ、あなた（AI）の自由度を奪いたくない。今も bypass を使っている通り、
+> 適切に動かしてもらって構わない。
+
+- **gate ではなく、自由度 + 透明性**。bypassPermissions と同じ思想を UI 操作にも
+- HITL ループ（doc 48）は「AI が提案し、人が実画面で見る」協働のリズムであって、
+  許可の関所ではない
+
+### どうすべきだったのか（回顧）
+
+- lane scope layout の「承認 UX 決着まで非公開」（doc 49 の write gate 保留）は慎重すぎた —
+  mako の哲学は最初から自由度側だった。ただし保留の間に監査（settle-log author:"ai"）が
+  先に整ったのは正しい順序: **自由は監査の上に開く**
+
+### 何が必要か
+
+- **lane scope layout MCP の公開（gate なし）** — settle-log で監査可能、
+  restoreLastSettle で可逆。AI が動かした瞬間が見える軽い合図（一瞬の highlight 程度）
+- **GUI 操作の MCP 面も同じ哲学で開く**（面 B: lane 選択 / pane focus / 見え方切替 /
+  session 作成）— 「私が台を整えておく」を可能に
+- 開発ループの道具（面 B）: webview hot reload / pane 単位 capture — AI の検証自律性
+- Editor Mode ループは現行形を継続（実運用 #872 で実証済み）
+
+---
+
+（以降の項目は審査が進み次第追記。残: §9 艦隊 / §10 wire（§5 で大半決着）/ §11 hub）
