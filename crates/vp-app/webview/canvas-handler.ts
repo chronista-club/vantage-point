@@ -17,7 +17,7 @@
  */
 
 import { renderPP, clearPP, type ContentType } from './pp'
-import type { FrameEngine } from './frame-engine'
+import { appLayoutReady, applyAppScene, isAppPaneVisible } from './app-panes'
 
 /** board の scope。 'vp'（全体）は Phase 2 で追加予定。 */
 export type BoardScope = 'lane' | 'proj'
@@ -96,7 +96,7 @@ function notifyStateChange(): void {
 
 function sendIpc(payload: Record<string, unknown>): void {
   // browser では window===globalThis（window.ipc）。 globalThis 経由なら node 単体テストでも
-  // ReferenceError にならない（maybeAutoOpenPP の vpFrame 参照と同じ流儀）。
+  // ReferenceError にならない。
   const ipc = (globalThis as unknown as { ipc?: { postMessage(msg: string): void } }).ipc
   if (!ipc || typeof ipc.postMessage !== 'function') {
     // 単体テスト等 IPC 不在環境では silent skip（prod では必ず存在する）。
@@ -164,17 +164,14 @@ function renderCurrentMain(): void {
 
 /**
  * active board に新規 item が増えたのに PP panel が非表示なら、 pp-overlay で軽く開く
- * （「配送されたのに見えない」を防ぐ）。 既に PP が見える scene なら何もしない。
+ * （「配送されたのに見えない」を防ぐ）。 既に PP が見えていれば何もしない。
+ * appLayoutReady guard: boot で default 配置が乗る前の暴発（何も無い場に overlay を
+ * 焼き付ける）を防ぐ — 旧実装の `if (!sceneId) return` と同じ位置づけ。
  */
 function maybeAutoOpenPP(): void {
-  const frame = (globalThis as unknown as { vpFrame?: FrameEngine }).vpFrame
-  if (!frame) return
-  const sceneId = frame.getCurrentSceneId()
-  if (!sceneId) return
-  const pp = frame.getScene(sceneId)?.panes['pp']
-  const ppVisible = !!pp && pp.state !== 'hidden' && pp.opacity > 0
-  if (!ppVisible) {
-    frame.applyScene('pp-overlay')
+  if (!appLayoutReady()) return
+  if (!isAppPaneVisible('pp')) {
+    applyAppScene('pp-overlay')
   }
 }
 
