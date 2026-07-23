@@ -107,11 +107,12 @@ import {
 	installConsole,
 	nextRequestId,
 	isMyResponse,
+	focusedOf,
 	type BusRequestId,
 	type EchoesStandsDetail,
 } from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
-import { installLanePanes, newPaneChoices } from "./lane-panes";
+import { chatHostId, installLanePanes, newPaneChoices } from "./lane-panes";
 // `vp:echoes-stands` bus が運ぶ stand entry（chatview の StandOption と同形）。
 type PaneStand = { name: string; label?: string; chat_capable?: boolean };
 import { installChatView, CHATVIEW_CSS } from "./chatview";
@@ -419,12 +420,13 @@ console.info("[vp-bundle] vpAppLayout attached to window — bundle init complet
 // DevTools 検分: window.vpConsole.peek("<project>/root")
 const vpConsole = installConsole();
 
-// ChatView (C2): #console-chat-host に SolidJS ChatView を mount。scoped CSS を注入。
+// ChatView (C2 → doc 50 P1): scoped CSS を注入し、mount 管理 API を得る。
+// SessionChatView の mount 先は lane-panes が session ごとに生やす動的 host
+// （旧 #console-chat-host 固定 1 枚は session ↔ Pane 1:1 で退役）。
 const chatStyle = document.createElement("style");
 chatStyle.textContent = CHATVIEW_CSS;
 document.head.appendChild(chatStyle);
-const chatHost = document.getElementById("console-chat-host");
-const chatView = chatHost ? installChatView(chatHost, vpConsole) : null;
+const chatView = installChatView(vpConsole);
 
 // ===== Echoes 共通ヘッダ（creo memo `vp-pane-common-header`）=====
 // pane-host 上端の #echoes-header（main_area.rs が mount 点だけ提供）に strip を mount。
@@ -451,17 +453,22 @@ let consoleActiveLane: string | null = null;
 // 見た目の class と状態を兼務させると、片方の意味を変えた時にもう片方が静かに壊れる。
 let consoleActiveMode: "tui" | "chat" = "tui";
 
-// doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担う。
-// ⚠️ Pane の**中身**（xterm / ChatView）には触れず、host 要素の style / class だけを操る。
-// 顔ぶれ（Console → Chat の並び順、要件 1）は lane-panes.ts の LANE_PANE_REFS が SSOT。
+// doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane 内 tiling は creo-ui-layout の lane scope が
+// 担い、pane の顔ぶれは session 一覧から動的に導く（lane-panes.ts の lanePaneRefs が SSOT）。
+// ⚠️ xterm（lane-host）の**中身**には触れず、host 要素の style / class だけを操る。
+// chat session host は lane-panes が生成し、中身は chatView.mountSession が入れる。
 const paneTabs = document.getElementById("pane-tabs");
 const paneFrame = document.getElementById("pane-terminal");
+const lanePanesEl = document.getElementById("lane-panes");
 const lanePanes =
-	paneTabs && paneFrame
+	paneTabs && paneFrame && lanePanesEl
 		? installLanePanes({
 				hostOf: (id: string) => document.getElementById(id),
 				tabs: paneTabs,
 				frame: paneFrame,
+				container: lanePanesEl,
+				mountChat: (host, lane, session) =>
+					chatView.mountSession(host, lane, session),
 			})
 		: null;
 if (lanePanes && paneFrame && paneTabs) {
@@ -471,7 +478,8 @@ if (lanePanes && paneFrame && paneTabs) {
 	const newBtn = document.createElement("button");
 	newBtn.type = "button";
 	newBtn.className = "pane-tab pane-new";
-	newBtn.textContent = "+ New";
+	newBtn.innerHTML =
+		'<iconify-icon icon="ph:plus" width="11"></iconify-icon>New';
 	newBtn.title = "Engine と Act を選んで新しいコンソールを作る";
 	let paneMenu: HTMLElement | null = null;
 	const closePaneMenu = (): void => {
@@ -563,7 +571,7 @@ if (lanePanes && paneFrame && paneTabs) {
 		"click",
 		(e) => {
 			const host = (e.target as HTMLElement | null)?.closest(
-				"#lane-host, #console-chat-host",
+				"#lane-host, .chat-session-host",
 			);
 			if (host?.id) lanePanes.focusPane(host.id);
 		},
@@ -580,14 +588,9 @@ if (lanePanes && paneFrame && paneTabs) {
 const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	consoleActiveLane = lane;
 	consoleActiveMode = mode;
-	// chat Pane は常に描画対象にしておく（並んでいるので「表示中の Act」に関係なく見える）。
-	//
-	// ⚠️ `showLane` も**必ず**呼ぶ。「表示するか」（`.active`）だけを常時化して
-	// 「何を表示するか」（`showLane`）を chat 分岐に残すと、Act I の lane では
-	// chat Pane が並んでいるのに中身が空のままになる（P1 の取りこぼし）。
-	// Act が決めるのは **focus だけ**で、どちらの Pane も中身は常に現 lane を映す。
-	chatHost?.classList.add("active");
-	chatView?.showLane(lane);
+	// `showLane` は**必ず**呼ぶ（renderer attach + sessions_fetch）。Act I の lane でも
+	// session 一覧が届かないと pane の顔ぶれ（lanePaneRefs）が Console 1 枚のままになる。
+	chatView.showLane(lane);
 	// doc 47 §3: Pane 構成は **lane ごと**（= engine の lane scope）。DOM host は app 共有
 	// なので、lane が変わったら新 lane の配置を DOM へ写し直す（これが無いと「どの lane に
 	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
@@ -597,13 +600,15 @@ const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
 	// 失われない（機能を消さずに既定だけを寄せる）。
 	// doc 47 §1 の決着後に既定を tiling へ戻す時は showOnly を focusPane に緩める。
 	if (mode === "chat") {
-		lanePanes?.showOnly("console-chat-host");
+		// 表示対象 = focused session の pane（session ↔ Pane 1:1）。focused は console.ts の
+		// registry が真値（echoes_session_list で同期済み。未知 lane は 1 = 旧 SP 互換）。
+		lanePanes?.showOnly(chatHostId(focusedOf(lane)));
 	} else {
 		lanePanes?.showOnly("lane-host");
 		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
 		// resync-loader は activeLane の replaying を読むだけで Act を知らないため、chat→tui で
 		// stuck した replaying が Act I 表示の上に居座るのを防ぐ。
-		chatView?.clearReplaying(lane);
+		chatView.clearReplaying(lane);
 	}
 };
 
@@ -680,16 +685,34 @@ document.addEventListener("vp:console-ready", (e) => {
 	}
 });
 
-// Act toggle: #pane-terminal 右上の floating button。現在 mode を反転して console_set_mode を送る
+// Act toggle: **下段**（#pane-tabs）に置く。現在 mode を反転して console_set_mode を送る
 // (World B 所有、xterm/chat どちらの表示中でも常に押せる)。root(conductor) の切替を主眼とする。
-const paneTerminal = document.getElementById("pane-terminal");
-if (paneTerminal) {
+//
+// 置き場が「上段の右（#echoes-header-actions）」から下段へ移った理由は pane の縦軸
+// (doc 29/30 の Edge Ring を pane に再適用): 上段 = 変わらない素性の名札 / 下段 = 今の文脈と
+// それへの操作。Act 切替は「今どの見え方をしているか」への操作なので下段が home。
+// ⚠️ 下段でも **#pane-tabs** でなければならない — Act I (xterm) には chatview の status 行が
+// 無いので、chatview 側に置くと Act I から Act II へ戻る動線が消える。
+//
+// ⚠️ #pane-tabs の Console/Chat chip とは別物（混同しないこと）:
+//   - この toggle  = backend の console_mode 切替（engine の resume handoff を伴う）
+//   - Console/Chat chip = frontend の pane 可視性（doc 46 の lane 内 tiling、attention 0/1）
+// mode 変更が applyConsoleMode → showOnly を呼ぶため結果が似て見えるだけ。
+const paneTabsHost = document.getElementById("pane-tabs");
+if (paneTabsHost) {
 	const toggle = document.createElement("button");
-	toggle.className = "echoes-act-toggle";
-	toggle.textContent = "💬 Act II";
+	toggle.className = "pane-tab pane-act-toggle";
+	// glyph は Phosphor（sidebar が既に CreoIcon で統一済 — 額縁だけ絵文字が残っていた）。
+	// ここは imperative DOM なので SolidJS の <CreoIcon> ではなく、同じ実体である
+	// `<iconify-icon>` custom element を直接書く（bundle が iconify-icon を import 済）。
+	// 押すと**次に何になるか**を出すラベル（現在地ではない）— 従来の意味論を維持。
 	const syncLabel = (): void => {
-		toggle.textContent = consoleActiveMode === "chat" ? "⌨ Act I" : "💬 Act II";
+		const toChat = consoleActiveMode !== "chat";
+		toggle.innerHTML = `<iconify-icon icon="${
+			toChat ? "ph:chat-circle" : "ph:terminal-window"
+		}" width="12"></iconify-icon>${toChat ? "Act II" : "Act I"}`;
 	};
+	syncLabel();
 	document.addEventListener("vp:console-mode", syncLabel);
 	toggle.addEventListener("click", () => {
 		// resume 確定前の二重切替をロック（中間状態を作らない）。
@@ -714,40 +737,19 @@ if (paneTerminal) {
 		);
 	});
 
-	// New Session ボタン（doc 39 §4）: 「今いる Act に出す」非破壊の New。
-	//  - Act I（tui lane）: 新 session + root 張り替え + slot の bare respawn（旧会話はタブに残存）
-	//  - Act II（chat lane）: 新 Draft タブ + focus（従来どおり）
-	// 分岐は Rust（ConsoleNewSession の lane_is_chat）が行う。旧実装の 2 クリック armed 防爆は
-	// New が破壊的（fresh restart = 全会話破棄）だった時代の名残 — 非破壊化で不要になり撤去し、
-	// 全会話破棄は sidebar の Reset Lane（2-click 確認付き context menu）へ退避した。
-	const newSession = document.createElement("button");
-	newSession.className = "echoes-act-toggle echoes-new-session";
-	newSession.textContent = "✨ New";
-	newSession.addEventListener("click", () => {
-		if (handoffPending) return;
-		const lane = activeLaneAddress ?? consoleActiveLane;
-		if (!lane) {
-			console.warn(
-				"[new-session] active lane 不明 — lane を選択してから押してください",
-			);
-			return;
-		}
-		const ipc = (
-			window as unknown as { ipc?: { postMessage(m: string): void } }
-		).ipc;
-		ipc?.postMessage(JSON.stringify({ t: "console:new_session", lane }));
+	// ⚠️ 旧「✨ New」ボタンはここにあったが撤去した — Root 切替 picker の
+	// 「✨ 新 ID から（素の engine）」と **同一の IPC**（`console:new_session`、engine/act 無し）
+	// を送る完全な双子だったため。engine と Act を選んで作る入口は同じ下段の「+ New」
+	// （こちらは engine/act 付きの `console:new_session`）、chat の session 追加は tab strip の
+	// 「+」（`echoes:session_create`）が担う。
+	//
+	// lane-panes の chip render は tabs を作り直す（replaceChildren）ので毎回付け直す
+	//（「+ New」と同じ規約）。
+	paneTabsHost.appendChild(toggle);
+	const actObserver = new MutationObserver(() => {
+		if (!paneTabsHost.contains(toggle)) paneTabsHost.appendChild(toggle);
 	});
-
-	// 操作群コンテナ。Echoes 共通ヘッダの操作エリア（#echoes-header-actions、EchoesHeader が
-	// 描く安定 div）へ集約する。ヘッダ不在（bundle 半壊等）時は旧位置 = pane-terminal 右上
-	// floating に fallback（CHATVIEW_CSS の絶対配置が生きる）。
-	const actions = document.createElement("div");
-	actions.className = "echoes-console-actions";
-	actions.appendChild(newSession);
-	actions.appendChild(toggle);
-	const actionsHost =
-		document.getElementById("echoes-header-actions") ?? paneTerminal;
-	actionsHost.appendChild(actions);
+	actObserver.observe(paneTabsHost, { childList: true });
 }
 
 // ===== Bastet 🧲 device 一覧 render API =====

@@ -23,12 +23,12 @@ import {
   type Accessor,
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
+import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { marked } from 'marked'
 import type {
   BusRequestId,
   EchoesEvent,
   EchoesSession,
-  EchoesStandsDetail,
   PlanEntry,
   QuestionSpec,
   VpConsole,
@@ -36,7 +36,7 @@ import type {
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
 // （SP が真実源、ここは view）。session chip の prefix 規則は EchoesHeader を SSOT として再利用。
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
-import { focusedOf, isMyResponse, nextRequestId, noteFocus, syncHeaderSessionId } from './console'
+import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './EchoesHeader'
 
 // ---------------------------------------------------------------------------
@@ -169,17 +169,90 @@ type LaneChat = {
   set: SetStoreFunction<ChatState>
 }
 
+/**
+ * 会話 store は **(lane, session) 単位**（doc 50 §4.3 #1）。
+ *
+ * 旧実装は lane 単位で、focused 以外の session の event は `foldEvent` が捨てていた
+ * （= 1 lane に 1 つの会話しか持てない）。session ↔ Pane 1:1（doc 46 §1.5）では N 枚の
+ * chat Pane が同時に生きるので、Rust 側 P5 の `pty_slots` re-key と**同型の re-key** を
+ * JS 側にも入れる。
+ *
+ * key は `lane` と `session` を NUL で連結する。`#` や `:` は lane 名や engine session id に
+ * 現れうるので衝突源になる。NUL はどの経路の lane 名にも入らない。
+ * ⚠️ source では必ずエスケープ（`\u0000`）で書く — リテラルの不可視文字を置くと grep も diff も
+ * 読めなくなる（この commit で実際に踏んだ）。
+ */
 const laneChats = new Map<string, LaneChat>()
 const [activeLane, setActiveLane] = createSignal<string | null>(null)
 
-function laneChat(lane: string): LaneChat {
-  let lc = laneChats.get(lane)
+/** store の key（純関数 = テスト対象）。lane 名に何が入っても衝突しない区切りを使う。 */
+export function chatKey(lane: string, session: number): string {
+  return `${lane}\u0000${session}`
+}
+
+function laneChat(lane: string, session: number): LaneChat {
+  const k = chatKey(lane, session)
+  let lc = laneChats.get(k)
   if (!lc) {
     const [state, set] = createStore<ChatState>(emptyChatState())
     lc = { state, set }
-    laneChats.set(lane, lc)
+    laneChats.set(k, lc)
   }
   return lc
+}
+
+/**
+ * lane の **focused session** の store。
+ *
+ * ⚠️ 過渡的な helper。doc 50 P1 の残り（ChatView を (lane, session) の props で受け、session
+ * ごとに 1 枚ずつ mount する）が入ると呼び出し側は自分の session を知っているので不要になる。
+ * 今は「**store は session 別 / 描画はまだ focused の 1 枚**」の段階。
+ */
+function focusedChat(lane: string): LaneChat {
+  return laneChat(lane, focusedOf(lane))
+}
+
+// ---------------------------------------------------------------------------
+// session view registry（module-level — 全 SessionChatView と installChatView が共有）
+// SP（echoes_session_list）が真実源。ここは 'vp:echoes-sessions' bus を映すだけの view cache で
+// state を持たない。focused の真値は console.ts の registry（focusedOf）— ここは reactive 表示用の鏡。
+// ---------------------------------------------------------------------------
+
+export type LaneSessionsView = { focused: number; sessions: EchoesSession[] }
+const [sessionViews, setSessionViews] = createSignal<Record<string, LaneSessionsView>>({})
+
+/** lane の session 一覧 view（reactive）。 */
+function sessionsOf(lane: string): LaneSessionsView | null {
+  return sessionViews()[lane] ?? null
+}
+
+/** session に focus を移す（pane click / 旧 tab click の移植）。
+ *  楽観更新（noteFocus + local signal）+ IPC。authoritative は後続の echoes_session_list。 */
+export function focusChatSession(lane: string, session: number): void {
+  if (session === (sessionsOf(lane)?.focused ?? focusedOf(lane))) return
+  // doc 38 §4.3: focus 切替で再同期ローダーを必ず一度下ろす（旧 focused の replay_end を
+  // 取りこぼしていても固着させない）。直後の demand_start → ReplayStart が必要なら立て直す。
+  clearReplaying(lane)
+  noteFocus(lane, session)
+  // D1: 既存 session 間の切替でも名札の session chip を即追従させる（authoritative は
+  // echoes_session_list → handleSessionList 側の sync が上書き）。
+  if (syncHeaderSessionId(lane)) {
+    document.dispatchEvent(new CustomEvent('vp:echoes-header', { detail: { lane } }))
+  }
+  setSessionViews((prev) => {
+    const cur = prev[lane] ?? { focused: session, sessions: [] }
+    return { ...prev, [lane]: { ...cur, focused: session } }
+  })
+  const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+  ipc?.postMessage(JSON.stringify({ t: 'echoes:session_focus', lane, session }))
+}
+
+/** session を閉じる（session ↔ Pane 1:1 なので pane ごと消える）。backend（echoes_session_remove）
+ *  が registry から除去 → 除去後の focus 先を返し、app.rs が list 再取得 + demand_start する。
+ *  最後の 1 本 / root は backend が Err で拒否（UI 側 canCloseSession と多重防御）。 */
+export function removeChatSession(lane: string, session: number): void {
+  const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+  ipc?.postMessage(JSON.stringify({ t: 'echoes:session_remove', lane, session }))
 }
 
 // ---------------------------------------------------------------------------
@@ -190,35 +263,49 @@ function laneChat(lane: string): LaneChat {
 // attach 状態機械」に束縛する:
 //  ① lane/Act/tab 切替で必ず解除（clearReplaying を各遷移点で呼ぶ）
 //  ② replay_start ごとに watchdog を張り、REPLAY_WATCHDOG_MS 無応答なら強制解除 + warn（安全網）
-//  ③ session filter との整合は foldEvent の `session !== focusedOf` で担保済（background session の
-//     replay は fold されない = replaying を立てない）。
+//  ③ watchdog は **(lane, session) 単位**（doc 50 §4.3 #2 で store を session 別にしたのに合わせる）。
+//     旧実装は lane 単位で、fold 側が background session を捨てていたので衝突しなかった。
+//     捨てるのをやめた今は lane 単位のままだと、別 session の replay_start が
+//     前の session の watchdog を解除してしまう（= 固着の検出を取りこぼす）。
 // ---------------------------------------------------------------------------
 
 /** replay_end が来ない時に replaying を強制解除するまでの猶予 ms（安全網）。 */
 const REPLAY_WATCHDOG_MS = 10_000
 const replayWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 
+/**
+ * 入力欄の高さを内容に合わせる（既定 1 行 → 打った分だけ伸び、CSS の max-height で頭打ち）。
+ * `height:auto` で一度潰してから scrollHeight を測るのは、縮む方向にも追随させるため
+ *（先に潰さないと scrollHeight が前回の高さに引きずられて減らない）。
+ */
+function autosize(el: HTMLTextAreaElement): void {
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
 /** 張ってある watchdog を取り消す（replay_end / error / 明示解除の時）。 */
-function clearReplayWatchdog(lane: string): void {
-  const t = replayWatchdogs.get(lane)
+function clearReplayWatchdog(lane: string, session: number): void {
+  const k = chatKey(lane, session)
+  const t = replayWatchdogs.get(k)
   if (t !== undefined) {
     clearTimeout(t)
-    replayWatchdogs.delete(lane)
+    replayWatchdogs.delete(k)
   }
 }
 
 /** replay_start を受けた時に watchdog を張り直す（REPLAY_WATCHDOG_MS 後に強制解除）。 */
-function armReplayWatchdog(lane: string): void {
-  clearReplayWatchdog(lane)
+function armReplayWatchdog(lane: string, session: number): void {
+  clearReplayWatchdog(lane, session)
+  const k = chatKey(lane, session)
   replayWatchdogs.set(
-    lane,
+    k,
     setTimeout(() => {
-      replayWatchdogs.delete(lane)
-      const lc = laneChats.get(lane)
+      replayWatchdogs.delete(k)
+      const lc = laneChats.get(k)
       if (lc && lc.state.replaying) {
         // replay_end 未達 = 固着。強制解除して warn（console IPC 経由で Rust log にも載る）。
         console.warn(
-          `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane})`,
+          `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane} session=${session})`,
         )
         lc.set('replaying', false)
       }
@@ -226,12 +313,19 @@ function armReplayWatchdog(lane: string): void {
   )
 }
 
-/** 指定 lane の再同期表示を明示的に下ろす（lane/Act/tab 切替で呼ぶ）。watchdog も取り消す。
- *  cache 未作成の lane は no-op（空 entry を作らない）。 */
+/** 指定 lane の**全 session** の再同期表示を明示的に下ろす（lane 切替で呼ぶ）。watchdog も取り消す。
+ *  cache 未作成の session は no-op（空 entry を作らない）。 */
 function clearReplaying(lane: string): void {
-  clearReplayWatchdog(lane)
-  const lc = laneChats.get(lane)
-  if (lc && lc.state.replaying) lc.set('replaying', false)
+  const prefix = `${lane}\u0000`
+  for (const [k, lc] of laneChats) {
+    if (!k.startsWith(prefix)) continue
+    const t = replayWatchdogs.get(k)
+    if (t !== undefined) {
+      clearTimeout(t)
+      replayWatchdogs.delete(k)
+    }
+    if (lc.state.replaying) lc.set('replaying', false)
+  }
 }
 
 /**
@@ -396,23 +490,25 @@ function sealLastAssistant(s: ChatState): void {
   if (last && last.kind === 'assistant') last.sealed = true
 }
 
-/** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。
- *  doc 38 Phase 2（本改修の要）: session が現在の focused でなければ fold しない — 背景 session の
- *  stream を focused の会話に混ぜない。session は console.ts で正規化済み（未指定 = focused = 1、
- *  旧 SP 互換）なので単純比較で足りる。focus 切替後の会話表示は demand_start → ReplayStart が
- *  filter を通って fold の clear→再構築で担う（切替時の明示クリアは不要）。 */
+/** EchoesEvent を **その session の** store に畳み込む（console.ts の renderer 本体）。
+ *
+ *  doc 50 §4.3 #2: 旧実装は `session !== focusedOf(lane)` で背景 session の event を**捨てて**
+ *  いた（lane に会話が 1 本しか無い前提）。session ↔ Pane 1:1 では N 本が同時に生きるので、
+ *  捨てずに **session ごとの store へ振り分ける**。背景 session の stream が focused の会話に
+ *  混ざる心配は、store が別なので構造的に消える（旧 filter が担っていた役割は key が担う）。
+ *  session は console.ts で正規化済み（未指定 = focused = 1、旧 SP 互換）。 */
 function foldEvent(lane: string, ev: EchoesEvent, session: number): void {
-  if (session !== focusedOf(lane)) return
-  laneChat(lane).set(produce((s) => foldInto(s, ev)))
-  laneChat(lane).set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
+  const lc = laneChat(lane, session)
+  lc.set(produce((s) => foldInto(s, ev)))
+  lc.set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
   // doc 38 §4.3: replay window の watchdog を張り替える。replay_start で arm、replay_end / error で
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
-  if (ev.kind === 'replay_start') armReplayWatchdog(lane)
+  if (ev.kind === 'replay_start') armReplayWatchdog(lane, session)
   else if (ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited')
-    clearReplayWatchdog(lane) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
+    clearReplayWatchdog(lane, session) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
-  if (isTurnClosingEvent(ev.kind)) flushPending(lane)
+  if (isTurnClosingEvent(ev.kind)) flushPending(lane, session)
 }
 
 /** turn が閉じた（= pending flush を発火してよい）event か（doc 35 §5.1、vitest 対象）。
@@ -422,9 +518,11 @@ export function isTurnClosingEvent(kind: EchoesEvent['kind']): boolean {
   return kind === 'turn_completed' || kind === 'error' || kind === 'engine_exited'
 }
 
-/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象は引数 lane = turn を閉じた lane）。 */
-function flushPending(lane: string): void {
-  const lc = laneChat(lane)
+/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象 = turn を閉じた (lane, session)）。
+ *  doc 50 P2: `echoes:submit` が session を運ぶようになったので、background session の
+ *  pending もその session 自身へ安全に流せる（旧 focused guard は撤去）。 */
+function flushPending(lane: string, session: number): void {
+  const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text) return
   lc.set(
@@ -434,7 +532,7 @@ function flushPending(lane: string): void {
     }),
   )
   const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-  ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+  ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, session, prompt: text }))
 }
 
 /**
@@ -467,27 +565,18 @@ export function emptyChatState(): ChatState {
   }
 }
 
-/** active lane が transcript replay（再同期）中か。resync-loader の可視条件（reactive）。 */
+/** active lane の **focused session** が transcript replay（再同期）中か。
+ *  resync-loader の可視条件（reactive）。ローダーは lane 全面に出る 1 枚なので、
+ *  代表として focused を見る（背景 session の replay で全面を覆わない）。 */
 export function activeLaneReplaying(): boolean {
   const l = activeLane()
-  return l ? laneChat(l).state.replaying : false
+  return l ? laneChat(l, focusedOf(l)).state.replaying : false
 }
 
 // ---------------------------------------------------------------------------
 // doc 38 Phase 3 — session tab strip の純粋ロジック（document 非依存 = vitest 対象）
 // ---------------------------------------------------------------------------
 
-/** 「+」menu / session tab の engine 選択肢（stands_list の 1 entry の view mirror）。 */
-export type StandOption = { name: string; description?: string; chat_capable?: boolean }
-
-/** doc 38 §4 / Phase 3: chat_capable な stand だけを「+」menu に残す（純粋 = テスト可能）。
- *  shell（chat host を持たない）は「作れるが submit がエラーになるだけの dead-end tab」に
- *  なるため除外する（bikeboy dogfood で実発生）。
- *  ⚠️ 後方互換: 旧 SP は chat_capable field を送らない → undefined は「表示する」側に倒す
- *  （chat_capable === false の時だけ隠す = 従来挙動を壊さない）。 */
-export function chatCapableStands(stands: StandOption[]): StandOption[] {
-  return stands.filter((s) => s.chat_capable !== false)
-}
 
 /** doc 38 Phase 3 → doc 39: session tab の × を出してよいか。純粋 = テスト可能。
  *  - 2 本以上でのみ close 可（1 本 = 素に戻すのは Reset lane の役目）
@@ -992,12 +1081,21 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
   ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
 ]
 
-function ChatView() {
-  const current = (): LaneChat | null => {
-    const l = activeLane()
-    return l ? laneChat(l) : null
-  }
-  const state = (): ChatState | null => current()?.state ?? null
+/** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
+ *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
+ *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt）は session を運ぶ = どの pane
+ *  からも打てる。例外は model 切替のみ — SP 側 console_set_model が root slot 単位（engine の
+ *  --resume 込み respawn）のため、focused でだけ有効にしている。 */
+function SessionChatView(props: { lane: string; session: number }) {
+  const lc = laneChat(props.lane, props.session)
+  const state = (): ChatState => lc.state
+  /** この pane が lane の focused session か（= chat 動詞の宛先か）。 */
+  const isFocused = (): boolean => (sessionsOf(props.lane)?.focused ?? 1) === props.session
+  /** この pane の session の registry entry（label / live / root 表示用）。 */
+  const sessionInfo = (): EchoesSession | undefined =>
+    sessionsOf(props.lane)?.sessions.find((v) => v.key === props.session)
+  const sessionLabel = (): string =>
+    `${sessionChipPrefix(sessionInfo()?.stand)}#${props.session}`
 
   // Act II モデル切替（spec: セッション進行中でも切替可能）。SP が engine を --resume +
   // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
@@ -1011,8 +1109,7 @@ function ChatView() {
       : MODEL_CHOICES
   }
   const setModel = (model: string) => {
-    const lane = activeLane()
-    if (!lane) return
+    const lane = props.lane
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
       JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
@@ -1025,19 +1122,16 @@ function ChatView() {
   // review #2: 旧実装はグローバル signal で lane 横断共有 + respawn の bypass reset を映さなかった。
   const currentPermMode = (): string => state()?.permissionMode ?? 'bypassPermissions'
   const setPermissionMode = (mode: string) => {
-    const lane = activeLane()
-    if (!lane) return
+    const lane = props.lane
     // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
     // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
-    laneChat(lane).set(produce((s) => (s.permissionMode = mode)))
-    // Echoes 共通ヘッダの permission chip にも同期（engine は即時 event を返さないため）。
-    ;(
-      window as unknown as {
-        vpConsole?: { notePermissionMode?: (lane: string, mode: string) => void }
-      }
-    ).vpConsole?.notePermissionMode?.(lane, mode)
+    //（旧: notePermissionMode でヘッダ chip にも同期していたが、chip は doc 50 の名札純化で
+    //  撤去済み — 同期先ごと消えた）
+    lc.set(produce((s) => (s.permissionMode = mode)))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'echoes:set_permission_mode', lane, session: props.session, mode }),
+    )
   }
 
   // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
@@ -1053,110 +1147,6 @@ function ChatView() {
     return `context ${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} tokens`
   }
 
-  // --- doc 38 Phase 2: session tab strip（仮置き UI）--------------------------------------------
-  // SP（echoes_session_list）が真実源。ここは vp:echoes-sessions / vp:echoes-stands を描くだけの
-  // 薄い view で state を持たない（表示場所は dogfood で変わる前提）。focused の真値は console.ts の
-  // registry（focusedOf）で、tab click は楽観更新 + RPC round-trip 後に authoritative 値で上書きされる。
-  type LaneSessionsView = { focused: number; sessions: EchoesSession[] }
-  const [sessionViews, setSessionViews] = createSignal<Record<string, LaneSessionsView>>({})
-  // 「+」の engine 選択 menu（stands_list の結果）。開いている lane のみ表示。StandOption は
-  // module-level（doc 38 Phase 3: chat_capable filter を純関数化してテスト可能にした）。
-  const [standsMenu, setStandsMenu] = createSignal<{ lane: string; stands: StandOption[] } | null>(
-    null,
-  )
-  // doc 47 §6: 共有 bus `vp:echoes-stands` で「自分が出した要求」を識別する相関 id。
-  // 表示に使わない照合用の値なので signal ではなく素の let（再描画を誘発させない）。
-  let standsReq: BusRequestId | null = null
-
-  onMount(() => {
-    const onSessions = (e: Event): void => {
-      const d = (
-        e as CustomEvent<{ lane: string; focused: number; sessions: EchoesSession[] }>
-      ).detail
-      if (!d?.lane) return
-      setSessionViews((prev) => ({
-        ...prev,
-        [d.lane]: { focused: d.focused, sessions: d.sessions },
-      }))
-    }
-    const onStands = (e: Event): void => {
-      const d = (e as CustomEvent<EchoesStandsDetail<StandOption>>).detail
-      if (!d?.lane) return
-      // doc 47 §6: `vp:echoes-stands` は共有 bus なので、相関 id で応答を振り分ける。
-      // 自分が出した要求でなければ何もしない（Pane の「+ New」の応答でこちらの menu まで
-      // 開く混線 = #838 の根治。旧 `window.vpPaneNewPending` フラグはこれで撤去）。
-      if (!isMyResponse(standsReq, d.req)) return
-      standsReq = null
-      setStandsMenu({ lane: d.lane, stands: d.stands })
-    }
-    document.addEventListener('vp:echoes-sessions', onSessions)
-    document.addEventListener('vp:echoes-stands', onStands)
-    onCleanup(() => {
-      document.removeEventListener('vp:echoes-sessions', onSessions)
-      document.removeEventListener('vp:echoes-stands', onStands)
-    })
-  })
-
-  const currentSessions = (): LaneSessionsView | null => {
-    const l = activeLane()
-    return l ? (sessionViews()[l] ?? null) : null
-  }
-
-  const focusSession = (session: number): void => {
-    const lane = activeLane()
-    if (!lane) return
-    if (session === (currentSessions()?.focused ?? 1)) return // 既に focused なら no-op
-    // doc 38 §4.3: tab 切替で再同期ローダーを必ず一度下ろす（旧 focused の replay_end を取りこぼして
-    // いても固着させない）。直後の demand_start → ReplayStart が本当に必要なら立て直す。
-    clearReplaying(lane)
-    // 楽観的に local focused を更新: console.ts registry（filter が即切り替わる）+ tab 強調の両方。
-    // demand_start → ReplayStart が届いて fold が会話を clear→再構築する（明示クリア不要）。
-    noteFocus(lane, session)
-    // D1: 既存 session 間の tab 切替でも chip を即追従させる（authoritative は後続の
-    // echoes_session_list → handleSessionList 側の sync が上書き）。
-    if (syncHeaderSessionId(lane)) {
-      document.dispatchEvent(new CustomEvent('vp:echoes-header', { detail: { lane } }))
-    }
-    setSessionViews((prev) => {
-      const cur = prev[lane] ?? { focused: session, sessions: [] }
-      return { ...prev, [lane]: { ...cur, focused: session } }
-    })
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_focus', lane, session }))
-  }
-
-  // doc 38 Phase 3: session tab の × で session を閉じる。backend（echoes_session_remove）が
-  // registry から除去 → 除去後の focus 先を返し、app.rs が list 再取得 + demand_start で新 focused の
-  // 会話を replay する。最後の 1 本は backend が Err で拒否（× は 2 本以上でしか出さない = 多重防御）。
-  const removeSession = (session: number): void => {
-    const lane = activeLane()
-    if (!lane) return
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_remove', lane, session }))
-  }
-
-  const toggleAddMenu = (): void => {
-    const lane = activeLane()
-    if (!lane) return
-    if (standsMenu()?.lane === lane) {
-      setStandsMenu(null) // 開いていれば閉じる（トグル。開いている = 応答済 = standsReq は既に null）
-      return
-    }
-    // doc 47 §6: 要求元タグ = 相関 id。応答（handleStands → bus）まで往復する。
-    standsReq = nextRequestId('chat-add')
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:stands_fetch', lane, req: standsReq }))
-  }
-
-  const createSession = (stand: string): void => {
-    const lane = activeLane()
-    if (!lane) return
-    setStandsMenu(null)
-    // focus は送らない = backend 既定 true（作った session にそのまま話しかける UX、doc 38 §3）。
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_create', lane, stand }))
-  }
-
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
   // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
@@ -1167,29 +1157,29 @@ function ChatView() {
   })
   const statusLine = () => deriveStatus(state(), nowMs())
   const submit = () => {
-    const lane = activeLane()
+    const lane = props.lane
     const text = draft().trim()
-    if (!lane || !text) return
+    if (!text) return
     setDraft('')
+    if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
     // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
-    if (laneChat(lane).state.streaming) {
-      laneChat(lane).set('pending', (p) => (p ? `${p}\n${text}` : text))
+    if (lc.state.streaming) {
+      lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
       return
     }
     // idle: 送信順 = 処理順なので optimistic に即描画して送る
-    laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
+    lc.set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'echoes:submit', lane, session: props.session, prompt: text }),
+    )
   }
 
   // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
   // composer が空のときだけ有効（下書きを潰さない）。戻した瞬間 pending は空 = 自動送信されない。
-  const canEditPending = () => canDequeuePending(draft(), state()?.pending ?? null)
+  const canEditPending = () => canDequeuePending(draft(), state().pending ?? null)
   const editPending = () => {
-    const lane = activeLane()
-    if (!lane) return
-    const lc = laneChat(lane)
     if (!canDequeuePending(draft(), lc.state.pending)) return
     const text = lc.state.pending as string
     lc.set('pending', null) // 先に空にする → 以降の turn_completed が flush しない（レース消滅）
@@ -1199,18 +1189,17 @@ function ChatView() {
 
   // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
   const interrupt = () => {
-    const lane = activeLane()
-    if (!lane) return
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:interrupt', lane }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'echoes:interrupt', lane: props.lane, session: props.session }),
+    )
   }
 
   // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で SP に戻す
   //（host が control_response を stdin に書いて turn が継続する）。
   const answerPrompt = (requestId: string, answers: Record<string, string>) => {
-    const lane = activeLane()
-    if (!lane) return
-    laneChat(lane).set(
+    const lane = props.lane
+    lc.set(
       produce((s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
@@ -1220,14 +1209,17 @@ function ChatView() {
       }),
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, answers }))
+    ipc?.postMessage(
+      JSON.stringify({
+        t: 'echoes:respond', lane, session: props.session, request_id: requestId, answers,
+      }),
+    )
   }
 
   // doc 35 PR3: permission 承認/却下。カードを decision 表示へ折りたたみ、echoes:respond {behavior} で戻す。
   const decidePrompt = (requestId: string, behavior: 'allow' | 'deny') => {
-    const lane = activeLane()
-    if (!lane) return
-    laneChat(lane).set(
+    const lane = props.lane
+    lc.set(
       produce((s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
@@ -1237,7 +1229,11 @@ function ChatView() {
       }),
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, behavior }))
+    ipc?.postMessage(
+      JSON.stringify({
+        t: 'echoes:respond', lane, session: props.session, request_id: requestId, behavior,
+      }),
+    )
   }
 
   // doc 35 PR4: plan 承認/却下。承認 = ExitPlanMode を allow + mode を default へ戻す（plan mode を
@@ -1351,9 +1347,8 @@ function ChatView() {
     }
   })
 
-  // lane 切替時は「その lane の最新（下端）」を見せる（履歴の途中で開かない）。
-  createEffect(() => {
-    activeLane() // dep
+  // mount 時は「この session の最新（下端）」を見せる（履歴の途中で開かない）。
+  onMount(() => {
     stuckToBottom = true
     requestAnimationFrame(() => {
       if (streamEl) streamEl.scrollTop = streamEl.scrollHeight
@@ -1361,134 +1356,57 @@ function ChatView() {
   })
 
   return (
-    <div class="echoes-chat">
-      <Show
-        when={state()}
-        fallback={<div class="echoes-empty">Console (Act II) — lane 未選択</div>}
-      >
-        {/* doc 38 Phase 2: session tab strip。1 本でも「+」の置き場として常時表示（仮置き UI）。 */}
-        <div class="echoes-tabs">
-          <For each={currentSessions()?.sessions ?? []}>
-            {(sess) => (
-              <button
-                type="button"
-                class="echoes-tab"
-                classList={{ active: sess.key === (currentSessions()?.focused ?? 1) }}
-                onClick={() => focusSession(sess.key)}
-                title={`${sessionChipPrefix(sess.stand)} session #${sess.key}${
-                  sess.engine_session_id ? ` · ${sess.engine_session_id.slice(0, 8)}` : ''
-                }`}
-              >
-                {/* live（engine が生きている session）だけ小さな dot を出す。 */}
-                <Show when={sess.live}>
-                  <span class="echoes-tab-dot" />
-                </Show>
-                <span class="echoes-tab-label">
-                  {sessionChipPrefix(sess.stand)}#{sess.key}
-                </span>
-                {/* doc 38 Phase 3 → doc 39: × で session close。root タブと 1 本きりの時は隠す
-                    （backend も root / 最後の 1 本の remove を Err で拒否 = 多重防御。素に戻すのは
-                    sidebar の Reset Lane）。tab は <button> なので × は span で描き、
-                    stopPropagation で focus click に伝播させない。 */}
-                <Show
-                  when={canCloseSession(
-                    currentSessions()?.sessions.length ?? 0,
-                    sess.root,
-                  )}
-                >
-                  <span
-                    class="echoes-tab-close"
-                    role="button"
-                    aria-label={`session #${sess.key} を閉じる`}
-                    title="この session を閉じる"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      removeSession(sess.key)
-                    }}
-                  >
-                    ×
-                  </span>
-                </Show>
-              </button>
-            )}
-          </For>
-          <div class="echoes-tab-add-wrap">
-            <button
-              type="button"
-              class="echoes-tab-add"
-              classList={{ open: standsMenu()?.lane === activeLane() }}
-              onClick={toggleAddMenu}
-              title="engine を選んで session を追加"
-            >
-              +
-            </button>
-            {/* stands_list の結果で埋める簡素な dropdown（doc 38: UI は state を持たない仮置き）。
-                doc 38 Phase 3: chat_capable な engine だけに絞る（shell の dead-end tab を出さない）。 */}
-            <Show when={standsMenu() && standsMenu()!.lane === activeLane()}>
-              <div class="echoes-tab-menu">
-                <For each={chatCapableStands(standsMenu()!.stands)}>
-                  {(st) => (
-                    <button
-                      type="button"
-                      class="echoes-tab-menuitem"
-                      onClick={() => createSession(st.name)}
-                      title={st.description}
-                    >
-                      {st.name}
-                    </button>
-                  )}
-                </For>
-                <Show when={chatCapableStands(standsMenu()!.stands).length === 0}>
-                  <div class="echoes-tab-menu-empty">engine なし</div>
-                </Show>
-              </div>
-            </Show>
-          </div>
-        </div>
-        <div class="echoes-header">
-          <span class="echoes-header-label">model</span>
-          <select
-            class="echoes-model-select"
-            disabled={state()!.streaming}
-            onChange={(e) => setModel(e.currentTarget.value)}
+    <div
+      class="echoes-chat"
+      classList={{ focused: isFocused() }}
+      onClick={() => {
+        if (!isFocused()) focusChatSession(props.lane, props.session)
+      }}
+    >
+      {/* session 名札（pane 上端）: この pane = この session の素性。doc 46 §1.3 の帰結で
+          タブ strip は撤去 — session の識別は pane 自身が名乗り、切替は pane click が担う。
+          engine 選択付きの新規作成は #pane-tabs の「+ New」一本（doc 46 P2 の canonical 入口）。 */}
+      <div class="echoes-session-plate" classList={{ focused: isFocused() }}>
+        <Show when={sessionInfo()?.live}>
+          <span class="echoes-tab-dot" />
+        </Show>
+        <span class="echoes-session-plate-label">{sessionLabel()}</span>
+        {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
+            これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
+        <Show when={sessionInfo()?.root}>
+          <span
+            class="echoes-session-plate-root"
+            title="root session（lane の代表 — 閉じられない。素に戻すのは sidebar の Reset Lane）"
           >
-            <For each={modelChoices()}>
-              {([v, label]) => (
-                <option value={v} selected={v === currentModel()}>
-                  {label}
-                </option>
-              )}
-            </For>
-          </select>
-          <span class="echoes-header-label">perm</span>
-          <select
-            class="echoes-model-select"
-            onChange={(e) => setPermissionMode(e.currentTarget.value)}
+            <CreoIcon name="ph:anchor-simple" size={10} />
+            root
+          </span>
+        </Show>
+        <Show when={sessionInfo()?.engine_session_id}>
+          {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
+        </Show>
+        <Show when={!isFocused()}>
+          {/* focus は「Act toggle の対象 / replay demand の宛先」— 送信はどの pane からも可 */}
+          <span class="echoes-session-plate-hint">click で focus</span>
+        </Show>
+        <span class="echoes-session-plate-spacer" />
+        <Show
+          when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, sessionInfo()?.root)}
+        >
+          <button
+            type="button"
+            class="echoes-session-plate-close"
+            title="この session を閉じる（pane ごと消える）"
+            onClick={(e) => {
+              e.stopPropagation()
+              removeChatSession(props.lane, props.session)
+            }}
           >
-            <option value="bypassPermissions" selected={currentPermMode() === 'bypassPermissions'}>
-              素通し
-            </option>
-            <option value="default" selected={currentPermMode() === 'default'}>
-              承認
-            </option>
-            <option value="plan" selected={currentPermMode() === 'plan'}>
-              計画
-            </option>
-          </select>
-          <Show when={ctxPct() !== null}>
-            <span
-              class="echoes-context"
-              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
-              title={ctxTitle()}
-            >
-              <span class="echoes-context-bar">
-                <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
-              </span>
-              <span class="echoes-context-pct">{ctxPct()}%</span>
-            </span>
-          </Show>
-        </div>
-        <PlanWidget entries={() => state()!.plan} />
+            <CreoIcon name="ph:x" size={9} />
+          </button>
+        </Show>
+      </div>
+              <PlanWidget entries={() => state().plan} />
         <div
           class="echoes-stream"
           ref={streamEl}
@@ -1496,20 +1414,20 @@ function ChatView() {
           onScroll={onStreamScroll}
           onClick={onStreamLinkClick}
         >
-          <For each={state()!.items}>
+          <For each={state().items}>
             {(item, index) => {
               if (item.kind === 'thinking')
                 return (
                   <ThinkingBlock
                     text={item.text}
                     // 末尾 thinking かつ turn 進行中 = 今まさに考え中 → shimmer。
-                    active={() => index() === state()!.items.length - 1 && state()!.streaming}
+                    active={() => index() === state().items.length - 1 && state().streaming}
                   />
                 )
               if (item.kind === 'tool') {
                 // 連続同名 tool run を畳む。head=accordion / member=非描画 / single=従来 1 行。
                 // items/index を reactive に読むので stream 追記で single→head へ昇格する。
-                const role = createMemo(() => classifyToolRun(state()!.items, index()))
+                const role = createMemo(() => classifyToolRun(state().items, index()))
                 return (
                   <Switch>
                     <Match when={role().role === 'member'}>{null}</Match>
@@ -1547,10 +1465,10 @@ function ChatView() {
               )
             }}
           </For>
-          <Show when={state()!.streaming}>
+          <Show when={state().streaming}>
             <div class="echoes-cursor" />
           </Show>
-          <Show when={state()!.pending}>
+          <Show when={state().pending}>
             <div
               class="echoes-msg user pending"
               classList={{ editable: canEditPending(), locked: !canEditPending() }}
@@ -1561,14 +1479,19 @@ function ChatView() {
                   : '編集するには入力欄を空にしてください'
               }
             >
-              <div class="echoes-msg-body" innerHTML={mdToHtml(state()!.pending!)} />
+              <div class="echoes-msg-body" innerHTML={mdToHtml(state().pending!)} />
               <span class="echoes-pending-badge">
                 {canEditPending() ? '送信待ち · クリックで編集' : '送信待ち · turn 完了後に送信'}
               </span>
             </div>
           </Show>
         </div>
-        <div class={`echoes-status s-${statusLine().kind}`} classList={{ stalled: statusLine().stalled }}>
+        {/* status bar — **入力の上**（stream に隣接）。engine が今何をしているかの読み取り専用の
+            計器で、操作は持たない。context 残量も「読み取り」なのでここ。 */}
+        <div
+          class={`echoes-status s-${statusLine().kind}`}
+          classList={{ stalled: statusLine().stalled }}
+        >
           <span class="echoes-status-dot" />
           <span class="echoes-status-label">{statusLine().label}</span>
           <Show when={statusLine().detail}>
@@ -1581,16 +1504,38 @@ function ChatView() {
             <span class="echoes-status-event">· {statusLine().lastEvent}</span>
           </Show>
           <Show when={statusLine().pending}>
-            <span class="echoes-status-pending">✎ 送信待ち</span>
+            <span class="echoes-status-pending">
+              <CreoIcon name="ph:pencil-simple" size={11} /> 送信待ち
+            </span>
+          </Show>
+          <Show when={ctxPct() !== null}>
+            <span
+              class="echoes-context"
+              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
+              title={ctxTitle()}
+            >
+              <span class="echoes-context-bar">
+                <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
+              </span>
+              <span class="echoes-context-pct">{ctxPct()}%</span>
+            </span>
           </Show>
         </div>
-        <div class="echoes-input">
+        {/* composer — 入力とその操作を 1 つの器にまとめる。上 = 打つ場所、下 = 操作。
+            model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
+        <div class="echoes-composer">
+          {/* 既定は **1 行**。打った分だけ scrollHeight に合わせて伸び、max-height で頭打ち
+              （CSS だけでは textarea は内容に追随しないので、伸縮はここで行う）。 */}
           <textarea
             ref={inputRef}
             class="echoes-input-box"
+            rows={1}
             placeholder="メッセージを入力（⌘Enter で送信）"
             value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
+            onInput={(e) => {
+              setDraft(e.currentTarget.value)
+              autosize(e.currentTarget)
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault()
@@ -1598,16 +1543,54 @@ function ChatView() {
               }
             }}
           />
-          <Show when={state()!.streaming}>
-            <button class="echoes-stop" onClick={interrupt} title="turn を中断 (Esc)">
-              停止
+          <div class="echoes-actions">
+            <select
+              class="echoes-model-select"
+              disabled={state().streaming || !isFocused()}
+              title={
+                isFocused()
+                  ? 'model'
+                  : 'model 切替は root slot 単位（focus してから）'
+              }
+              onChange={(e) => setModel(e.currentTarget.value)}
+            >
+              <For each={modelChoices()}>
+                {([v, label]) => (
+                  <option value={v} selected={v === currentModel()}>
+                    {label}
+                  </option>
+                )}
+              </For>
+            </select>
+            <select
+              class="echoes-model-select"
+              title="permission mode"
+              onChange={(e) => setPermissionMode(e.currentTarget.value)}
+            >
+              <option
+                value="bypassPermissions"
+                selected={currentPermMode() === 'bypassPermissions'}
+              >
+                素通し
+              </option>
+              <option value="default" selected={currentPermMode() === 'default'}>
+                承認
+              </option>
+              <option value="plan" selected={currentPermMode() === 'plan'}>
+                計画
+              </option>
+            </select>
+            <div class="echoes-actions-spacer" />
+            <Show when={state().streaming}>
+              <button class="echoes-stop" onClick={interrupt} title="turn を中断 (Esc)">
+                <CreoIcon name="ph:stop" size={11} /> 停止
+              </button>
+            </Show>
+            <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
+              <CreoIcon name="ph:paper-plane-right" size={12} /> 送信
             </button>
-          </Show>
-          <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
-            送信
-          </button>
+          </div>
         </div>
-      </Show>
     </div>
   )
 }
@@ -1638,14 +1621,14 @@ export const CHATVIEW_CSS = `
 /* composer に打ちかけ下書きがある間は編集不可 = グレーアウト（下書きを潰さないための MVP ガード）。 */
 .echoes-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
 .echoes-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
-/* §5.1 診断: history 最下部の常時 status バー。状態を dot 色 + パルスで表す。 */
-.echoes-status { display:flex; align-items:center; gap:8px; padding:5px 14px; min-height:24px; font-size:11px;
+/* status bar（入力の上）: engine の現況の**読み取り専用**計器。操作は composer 側が持つ。 */
+.echoes-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:24px; font-size:11px;
   font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7);
   border-top:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115); }
 .echoes-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
 .echoes-status-label { letter-spacing:.03em; }
 .echoes-status-detail { color: var(--color-text-secondary,#a8b0c0); }
-.echoes-status-pending { margin-left:auto; color: var(--color-accent,#e2b96f); }
+.echoes-status-pending { color: var(--color-accent,#e2b96f); }
 .echoes-status.s-streaming .echoes-status-dot { background: var(--color-success,#6fe2a8); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
 .echoes-status.s-thinking .echoes-status-dot { background:#8fb0ff; animation: echoes-status-pulse 1.2s ease-in-out infinite; }
 .echoes-status.s-tool .echoes-status-dot { background: var(--color-accent,#e2b96f); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
@@ -1756,64 +1739,60 @@ export const CHATVIEW_CSS = `
 .echoes-plan-item.in_progress { color: var(--color-text,#e6e9ef); } .echoes-plan-item.in_progress .echoes-plan-dot { background: var(--color-accent,#e2b96f); }
 .echoes-plan-item.completed { color: var(--color-text-tertiary,#616b80); } .echoes-plan-item.completed .echoes-plan-dot { background: var(--color-success,#6fe2a8); }
 .echoes-plan-item.completed .echoes-plan-text { text-decoration: line-through; }
-.echoes-input { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--color-border,#2a3040); }
-.echoes-input-box { flex:1; resize:none; min-height:38px; max-height:160px; padding:9px 12px; font-size:13px;
+/* composer: 入力（上）と操作（下）を 1 つの器に。枠は器が持ち、textarea は枠なしで中に敷く。 */
+.echoes-composer { display:flex; flex-direction:column; margin:8px 14px 10px; border-radius:10px;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#161a20);
+  overflow:hidden; }
+.echoes-composer:focus-within { border-color: var(--color-accent,#3b82f6); }
+/* 操作の行（入力の下）: 左 = 送る前に決める設定、右 = 実行。 */
+.echoes-actions { display:flex; align-items:center; gap:6px; padding:4px 6px 5px 8px; }
+.echoes-actions-spacer { flex:1; }
+/* 既定 1 行（min-height は置かず、rows=1 + autosize が高さを決める）。伸びる上限だけ CSS が持つ。 */
+.echoes-input-box { flex:1; resize:none; max-height:160px; padding:8px 10px 4px; font-size:13px; line-height:1.5;
   font-family: var(--vp-font-sans),var(--typography-family-sans); color: var(--color-text,#e6e9ef);
-  background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040); border-radius:9px; outline:none; }
-.echoes-input-box:focus { border-color: var(--color-accent,#3b82f6); }
-.echoes-send { align-self:flex-end; padding:9px 16px; font-size:13px; border-radius:9px; border:none; cursor:pointer;
-  background: var(--color-accent,#3b82f6); color:#fff; }
+  /* 枠と地色は composer(器) が持つ — textarea 自身は素で敷く（二重枠にしない）。 */
+  background:transparent; border:none; outline:none; }
+.echoes-send { display:inline-flex; align-items:center; gap:4px; padding:4px 11px; font-size:12px;
+  border-radius:7px; border:none; cursor:pointer; background: var(--color-accent,#3b82f6); color:#fff; }
 .echoes-send:disabled { opacity:.4; cursor:default; }
-.echoes-stop { align-self:flex-end; padding:9px 14px; font-size:13px; border-radius:9px; cursor:pointer;
-  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f); color: var(--color-text-secondary,#a8b0c0); }
+.echoes-stop { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px;
+  border-radius:7px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
 .echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
-.echoes-act-toggle { position:absolute; top:8px; right:12px; z-index:10; font-size:11px; padding:4px 11px;
-  border-radius:14px; border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  color: var(--color-text-secondary,#a8b0c0); cursor:pointer; opacity:.75; transition: opacity .15s ease; }
-.echoes-act-toggle:hover { opacity:1; }
-/* console 右上の操作群（New Session + Act toggle）。container が位置を持ち、子は並ぶだけ。 */
-.echoes-console-actions { position:absolute; top:8px; right:12px; z-index:10; display:flex; gap:8px; }
-.echoes-console-actions .echoes-act-toggle { position:static; }
-/* doc 38 Phase 2: session tab strip（仮置き）。header の直上・コンパクト・既存トーン準拠。 */
-.echoes-tabs { display:flex; align-items:center; gap:6px; padding:5px 12px 0; flex-wrap:wrap;
-  background: var(--color-bg-elevated,#13161c); }
-.echoes-tab { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; font-size:11px;
-  border-radius:8px 8px 0 0; cursor:pointer; border:1px solid var(--color-border,#2a3040);
-  border-bottom:none; background: var(--color-bg,#0f1115); color: var(--color-text-tertiary,#8b93a7);
-  font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.echoes-tab:hover { color: var(--color-text-secondary,#a8b0c0); }
-.echoes-tab.active { background: var(--color-bg-elevated,#16191f); color: var(--color-text,#e6e9ef);
-  border-color: var(--color-accent,#3b82f6); }
-.echoes-tab-dot { width:6px; height:6px; border-radius:50%; flex:none; background: var(--color-success,#6fe2a8); }
-.echoes-tab-label { line-height:1.5; }
-/* doc 38 Phase 3: session tab の close（×）。既定は淡く、hover / tab active で目立たせる。 */
-.echoes-tab-close { flex:none; margin-left:2px; padding:0 3px; line-height:1; border-radius:4px;
-  font-size:13px; color: var(--color-text-tertiary,#616b80); opacity:.55; cursor:pointer; }
-.echoes-tab-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
+/* Act toggle は下段（#pane-tabs）へ移設した — 見た目は隣の chip（.pane-tab）に合わせるため
+   main_area.rs の .pane-act-toggle が持つ。旧 floating 定義（.echoes-act-toggle /
+   .echoes-console-actions）は置き場ごと消えたので撤去。 */
+/* session 名札（pane 上端）: この pane = この session の素性。tab strip（doc 38 仮置き）の
+   後継 — session ↔ Pane 1:1（doc 46 §1.5 / doc 50 P1）で pane 自身が名乗る。
+   Pane 共通の名札 token（--vp-nameplate-*）に乗せて、全 pane の上端と同じ見えにする。 */
+.echoes-session-plate { display:flex; align-items:center; gap:6px; flex:none;
+  height:calc(var(--vp-nameplate-h) - 4px); padding:0 var(--vp-nameplate-pad-x);
+  font-size:10.5px; font-family: var(--vp-font-mono),var(--typography-family-mono);
+  color: var(--color-text-tertiary,#8b93a7); background: var(--vp-nameplate-bg);
+  border-bottom: var(--vp-nameplate-border); user-select:none; }
+.echoes-session-plate.focused { color: var(--color-text-secondary,#a8b0c0); }
+.echoes-session-plate-label { font-weight:500; }
+.echoes-session-plate-root { display:inline-flex; align-items:center; gap:2px; padding:0 5px;
+  border-radius:9999px; border:1px solid var(--color-surface-border-subtle,#2a3040);
+  font-size:9.5px; opacity:.8; }
+.echoes-session-plate-sid { opacity:.65; }
+.echoes-session-plate-hint { opacity:.5; font-family: var(--vp-font-sans),var(--typography-family-sans); }
+.echoes-session-plate-spacer { flex:1; }
+/* 既定 opacity .55 は暗い名札上で沈んで「削除の動線が無い」ように見えた（2026-07-24 実機）。
+   常時視認できる濃さに上げ、hover で確定的に立てる。 */
+.echoes-session-plate-close { flex:none; display:inline-flex; align-items:center; padding:2px 4px;
+  line-height:1; border:none; border-radius:4px; background:transparent; cursor:pointer;
+  color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
+.echoes-session-plate-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
   background: var(--color-bg,#0f1115); }
-.echoes-tab.active .echoes-tab-close { opacity:.8; }
-.echoes-tab-add-wrap { position:relative; }
-.echoes-tab-add { padding:3px 9px; font-size:13px; line-height:1; cursor:pointer; border-radius:8px;
-  border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
-  color: var(--color-text-tertiary,#8b93a7); }
-.echoes-tab-add:hover, .echoes-tab-add.open { color: var(--color-text,#e6e9ef); border-color: var(--color-accent,#3b82f6); }
-/* engine 選択 dropdown（簡素）。tab の下に浮かせる。 */
-.echoes-tab-menu { position:absolute; z-index:20; top:calc(100% + 4px); left:0; min-width:120px;
-  display:flex; flex-direction:column; padding:4px; border-radius:8px;
+/* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
+.echoes-chat:not(.focused) { opacity:.82; }
+.echoes-tab-dot { width:6px; height:6px; border-radius:50%; flex:none; background: var(--color-success,#6fe2a8); }
+/* 旧 .echoes-header（model/perm の独立行）は計器盤へ畳んで撤去。select は下段の高さに収まる
+   よう一段小さくする（行が status と共用になったため）。 */
+.echoes-model-select { font-size:10.5px; padding:1px 5px; border-radius:6px; outline:none; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  box-shadow:0 6px 18px rgba(0,0,0,.35); }
-.echoes-tab-menuitem { text-align:left; padding:6px 10px; font-size:12px; border:none; cursor:pointer;
-  border-radius:6px; background:transparent; color: var(--color-text-secondary,#a8b0c0);
-  font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.echoes-tab-menuitem:hover { background: var(--color-bg,#0f1115); color: var(--color-text,#e6e9ef); }
-.echoes-tab-menu-empty { padding:6px 10px; font-size:11px; color: var(--color-text-tertiary,#616b80); }
-.echoes-header { display:flex; align-items:center; gap:8px; padding:7px 14px;
-  border-bottom:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#13161c); }
-.echoes-header-label { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
-  color: var(--color-text-tertiary,#616b80); }
-.echoes-model-select { font-size:11px; padding:3px 7px; border-radius:7px; outline:none; cursor:pointer;
-  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  color: var(--color-text-secondary,#a8b0c0); }
+  color: var(--color-text-secondary,#a8b0c0); font-family:inherit; }
 .echoes-model-select:disabled { opacity:.45; cursor:default; }
 /* PR3: permission 承認カード（allow/deny）。question カードと同じ枠、action だけ差し替え。 */
 .echoes-perm-tool { font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-accent,#e2b96f); }
@@ -1831,6 +1810,7 @@ export const CHATVIEW_CSS = `
   padding:8px 10px; background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); border-radius:6px; }
 .echoes-plan-body :first-child { margin-top:0; } .echoes-plan-body :last-child { margin-bottom:0; }
 /* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
+/* status bar の右端へ寄せる（読み取り計器の並びの末尾）。 */
 .echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
   background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); }
@@ -1855,21 +1835,35 @@ export const CHATVIEW_CSS = `
 `
 
 export type ChatViewApi = {
-  /** lane を active にして表示（初出なら vpConsole renderer を attach）。 */
+  /** lane を active にする（初出なら vpConsole renderer を attach + session 一覧を取得）。 */
   showLane(lane: string): void
   /** doc 38 §4.3: 指定 lane の再同期ローダーを明示的に下ろす（Act I 切替時に entry.tsx が呼ぶ）。 */
   clearReplaying(lane: string): void
+  /** chat session pane を host に mount する（lane-panes の動的 host 生成から呼ばれる）。
+   *  返り値 = dispose（lane 切替 / session close で host ごと破棄する時に呼ぶ）。 */
+  mountSession(host: HTMLElement, lane: string, session: number): () => void
 }
 
-export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatViewApi {
-  render(() => <ChatView />, mount)
+export function installChatView(vpConsole: VpConsole): ChatViewApi {
+  // session 一覧 bus → module signal（全 SessionChatView が共有）。install は起動時 1 回。
+  document.addEventListener('vp:echoes-sessions', (e) => {
+    const d = (
+      e as CustomEvent<{ lane: string; focused: number; sessions: EchoesSession[] }>
+    ).detail
+    if (!d?.lane) return
+    setSessionViews((prev) => ({
+      ...prev,
+      [d.lane]: { focused: d.focused, sessions: d.sessions ?? [] },
+    }))
+  })
   const attached = new Set<string>()
   return {
     showLane(lane: string) {
       if (!attached.has(lane)) {
         attached.add(lane)
-        laneChat(lane) // store を先に用意（replay が流し込む）
-        // doc 38 Phase 2: renderer は session も受け取り、foldEvent が focused 以外を弾く。
+        focusedChat(lane) // store を先に用意（replay が流し込む）
+        // doc 38 Phase 2 → doc 50: renderer は session も受け取り、foldEvent が session ごとの
+        // store に振り分ける（旧「focused 以外を弾く」は store の re-key で役目を終えた）。
         vpConsole.attachRenderer(lane, (ev, session) => foldEvent(lane, ev, session))
       }
       // doc 38 §4.3: 離れる lane の再同期ローダーを掃除する（replay_end 取りこぼしで stuck した
@@ -1878,10 +1872,14 @@ export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatV
       const prev = activeLane()
       if (prev && prev !== lane) clearReplaying(prev)
       setActiveLane(lane)
-      // doc 38 Phase 2: attach 時に session 一覧を取得して tab strip を埋める（focused も確定）。
+      // attach 時に session 一覧を取得（focused の確定 + pane の顔ぶれ（lane-panes）の種）。
       const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
       ipc?.postMessage(JSON.stringify({ t: 'echoes:sessions_fetch', lane }))
     },
     clearReplaying,
+    mountSession(host, lane, session) {
+      laneChat(lane, session) // store を先に用意（mount 前に届く replay の取りこぼし防止）
+      return render(() => <SessionChatView lane={lane} session={session} />, host)
+    },
   }
 }

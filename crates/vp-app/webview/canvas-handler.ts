@@ -11,16 +11,16 @@
  *    `BoardUpdated` で反映する（optimistic 更新はせず SP truth に一本化）。
  *  - cursor（main に出す item）だけは view local。
  *
- * scope: 'lane'（lane ごと）/ 'proj'（project 共有）。 'vp'（全体）は Phase 2（World store 要）。
- * canvas channel は project 単位で全 lane の `BoardUpdated`(retained) を配信するので、 lane board は
- * lane ごとに保持（`laneBoards`）し、 active lane のものを表示する（lane 切替後も board が残る）。
+ * scope: **'lane' のみ**（mako 決定 2026-07-23 — board は注視中 lane に一本化。旧 'proj' は
+ * 撤去、'vp'（全体）構想も同決定で消滅）。canvas channel は project 単位で全 lane の
+ * `BoardUpdated`(retained) を配信するので、 lane board は lane ごとに保持（`laneBoards`）し、
+ * active lane のものを表示する（lane 切替後も board が残る）。旧 proj board の retained topic /
+ * DB 行は SP 側に残りうるが、client は scope !== 'lane' を無視するので表示に混ざらない。
  */
 
 import { renderPP, clearPP, type ContentType } from './pp'
 import { appLayoutReady, applyAppScene, isAppPaneVisible } from './app-panes'
 
-/** board の scope。 'vp'（全体）は Phase 2 で追加予定。 */
-export type BoardScope = 'lane' | 'proj'
 
 /** board の 1 item。 id は SP が一元発行する（webview は自前生成しない）。 */
 export interface CanvasItem {
@@ -39,7 +39,8 @@ interface Board {
 /** SP から canvas channel で届く BoardUpdated message（protocol::ProcessMessage::BoardUpdated）。 */
 interface BoardUpdatedMessage {
   type: 'board_updated'
-  scope: BoardScope
+  /** SP 側の board scope。client が扱うのは 'lane' のみ（他は applyBoardUpdated が無視）。 */
+  scope: string
   lane?: string | null
   items: CanvasItem[]
   cursor?: string | null
@@ -53,27 +54,20 @@ function emptyBoard(): Board {
 
 /** module-local state。 SP truth のミラー（view）。 bundle reload で reset、 再購読で retained 復元。 */
 const canvasState: {
-  activeScope: BoardScope
   activeLane: string // lane board のキー。 'conductor' = lead。
-  proj: Board
   laneBoards: Record<string, Board>
 } = {
-  activeScope: 'lane',
   activeLane: 'conductor',
-  proj: emptyBoard(),
   laneBoards: {},
 }
 
 /** active board（表示対象）を返す。 lane board は active lane のもの。 */
 function activeBoard(): Board {
-  if (canvasState.activeScope === 'proj') return canvasState.proj
   return canvasState.laneBoards[canvasState.activeLane] ?? emptyBoard()
 }
 
-/** 指定 (scope, lane) が現在の表示 view と一致するか（描画/auto-open の判定用）。 */
-function isActiveView(scope: BoardScope, lane: string | null | undefined): boolean {
-  if (scope !== canvasState.activeScope) return false
-  if (scope === 'proj') return true
+/** 指定 lane が現在の表示 view と一致するか（描画/auto-open の判定用）。 */
+function isActiveView(lane: string | null | undefined): boolean {
   return (lane ?? 'conductor') === canvasState.activeLane
 }
 
@@ -109,9 +103,8 @@ function sendIpc(payload: Record<string, unknown>): void {
   }
 }
 
-/** board mutate 用の lane キー（lane board のみ。 conductor / proj は null）。 */
+/** board mutate 用の lane キー（conductor は null）。 */
 function boardLaneKey(): string | null {
-  if (canvasState.activeScope !== 'lane') return null
   return canvasState.activeLane === 'conductor' ? null : canvasState.activeLane
 }
 
@@ -129,18 +122,6 @@ export function setActiveLaneName(lane: string | null): void {
 /** 現在の active lane name（'conductor' は null に正規化して返す）。 */
 export function getActiveLaneName(): string | null {
   return canvasState.activeLane === 'conductor' ? null : canvasState.activeLane
-}
-
-/** 表示 board の scope を切替（[Lane | Proj] segment click）。 */
-export function setActiveBoard(scope: BoardScope): void {
-  canvasState.activeScope = scope
-  renderCurrentMain()
-  notifyStateChange()
-}
-
-/** 現在の表示 scope。 */
-export function getActiveBoard(): BoardScope {
-  return canvasState.activeScope
 }
 
 // ============================================================================
@@ -181,12 +162,11 @@ function maybeAutoOpenPP(): void {
 
 /** active board の readonly snapshot + activeScope。 listener 経由で更新を購読する。 */
 export function getCanvasState(): {
-  activeScope: BoardScope
   items: ReadonlyArray<CanvasItem>
   cursor: string | null
 } {
   const b = activeBoard()
-  return { activeScope: canvasState.activeScope, items: b.items.slice(), cursor: b.cursor }
+  return { items: b.items.slice(), cursor: b.cursor }
 }
 
 /** state 変更 listener を登録。 解除関数を返す。 */
@@ -215,7 +195,7 @@ export function setCursor(id: string): void {
 export function deleteItem(id: string): void {
   sendIpc({
     t: 'board:delete',
-    scope: canvasState.activeScope,
+    scope: 'lane',
     lane: boardLaneKey(),
     item_id: id,
   })
@@ -223,7 +203,7 @@ export function deleteItem(id: string): void {
 
 /** active board を空にする（Clear ボタン）。 SP に依頼。 */
 export function clearActiveBoard(): void {
-  sendIpc({ t: 'board:clear', scope: canvasState.activeScope, lane: boardLaneKey() })
+  sendIpc({ t: 'board:clear', scope: 'lane', lane: boardLaneKey() })
 }
 
 // ============================================================================
@@ -246,21 +226,20 @@ function hasFreshArrival(items: CanvasItem[], prevIds: Set<string>): boolean {
 }
 
 function applyBoardUpdated(msg: BoardUpdatedMessage): void {
+  // proj scope 撤去後も、SP の retained topic には旧 proj board の再配信が残りうる。
+  // 未知 scope（将来の追加も含む）ごと無視する = 表示は lane board だけ（fail-quiet）。
+  if (msg.scope !== 'lane') return
   const laneKey = msg.lane ?? 'conductor'
-  const prev = msg.scope === 'proj' ? canvasState.proj : canvasState.laneBoards[laneKey]
+  const prev = canvasState.laneBoards[laneKey]
   const prevIds = new Set((prev?.items ?? []).map((i) => i.id))
   const board: Board = {
     items: Array.isArray(msg.items) ? msg.items : [],
     cursor: msg.cursor ?? null,
   }
-  if (msg.scope === 'proj') {
-    canvasState.proj = board
-  } else {
-    canvasState.laneBoards[laneKey] = board
-  }
+  canvasState.laneBoards[laneKey] = board
   // 表示中の board が更新されたときだけ main を再描画。 live 新着のときだけ PP を軽く開く
   // （起動時の retained replay で毎回 PP が開いてしまう regression の根治）。
-  if (isActiveView(msg.scope, msg.lane)) {
+  if (isActiveView(msg.lane)) {
     renderCurrentMain()
     if (hasFreshArrival(board.items, prevIds)) {
       maybeAutoOpenPP()
@@ -286,9 +265,7 @@ export function handleMessage(msg: AnyMessage): void {
 
 /** module-local state をリセットする（**テスト専用**）。 */
 export function _resetForTest(): void {
-  canvasState.activeScope = 'lane'
   canvasState.activeLane = 'conductor'
-  canvasState.proj = emptyBoard()
   canvasState.laneBoards = {}
   stateListeners.clear()
 }

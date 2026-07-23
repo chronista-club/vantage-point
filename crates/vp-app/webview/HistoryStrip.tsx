@@ -21,7 +21,6 @@ import type { IconName } from '@chronista-club/creo-ui-icons-web'
 import {
   deleteItem,
   getCanvasState,
-  setActiveBoard,
   setCursor,
   subscribeCanvasState,
   type CanvasItem,
@@ -64,25 +63,6 @@ function HistoryStrip() {
 
   return (
     <div class="pp-history-strip-inner">
-      {/* board 切替 segment（[Lane | Proj]）。 選んだ board の中身を右の thumbnail 列に出す。 */}
-      <div class="pp-board-seg" role="tablist" aria-label="board 切替">
-        <button
-          type="button"
-          class="pp-board-tab"
-          classList={{ active: state().activeScope === 'lane' }}
-          onClick={() => setActiveBoard('lane')}
-        >
-          Lane
-        </button>
-        <button
-          type="button"
-          class="pp-board-tab"
-          classList={{ active: state().activeScope === 'proj' }}
-          onClick={() => setActiveBoard('proj')}
-        >
-          Proj
-        </button>
-      </div>
       <For each={state().items}>
         {(item) => {
           const alias = aliasOf(item)
@@ -139,16 +119,6 @@ export const HISTORY_STRIP_CSS = `
   background:var(--color-surface-bg-subtle);padding:6px 8px;overflow:hidden;}
 .pp-history-strip-inner{display:flex;gap:4px;overflow-x:auto;align-items:center;}
 .pp-history-strip-inner::-webkit-scrollbar{height:4px;}
-/* board 切替 segment（[Lane|Proj]）: strip 左端に固定、 thumbnail はその右にスクロール。 */
-.pp-board-seg{display:flex;gap:2px;flex:0 0 auto;margin-right:6px;padding-right:6px;
-  border-right:1px solid var(--color-surface-border,#1f2233);}
-.pp-board-tab{border:1px solid var(--color-surface-border,#1f2233);
-  background:var(--color-surface-bg-raised);color:var(--color-text-secondary);
-  font-size:11px;font-family:inherit;padding:3px 8px;border-radius:4px;cursor:pointer;
-  height:24px;transition:border-color .12s ease,background .12s ease,color .12s ease;}
-.pp-board-tab:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
-.pp-board-tab.active{border-color:var(--color-brand-primary);
-  background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
 .pp-history-strip-inner::-webkit-scrollbar-thumb{background:var(--color-surface-border,#1f2233);
   border-radius:2px;}
 

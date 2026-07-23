@@ -12,15 +12,27 @@
  *   （session_init / turn_completed / error の畳み込み。'vp:echoes-header' event で追従）
  * - Act 切替追従: 'vp:console-mode' event（vpConsole.setMode が dispatch する既存 bus）
  *
- * 操作エリア（右側）:
- * - interrupt（chat 時のみ、既存 IPC `echoes:interrupt`）
- * - Act toggle / New Session は entry.tsx の既存 imperative ボタン群が
- *   `#echoes-header-actions`（本 component が描く安定 div）に append される（移設、挙動は不変）。
+ * ## 載せるもの / 載せないもの（pane の縦軸、doc 29/30 の Edge Ring を pane に再適用）
+ *
+ * 上段 = **名札**。「この pane が何であるか」= 居る間 変わらない素性だけを載せる:
+ * lane 名 / cwd / branch、そして Act I の session（Act I は tab strip を持たないため、
+ * ここが唯一の表示器 = 操作器）。
+ *
+ * 「今の文脈」（状態・model・permission・engine 異常）と「view への操作」（Act 切替 /
+ * 中断 / New）は **下段**（chatview の status 行 / `#pane-tabs`）が持つ。かつては上段にも
+ * 併置されていたが、同じ役割の二重実装だったので撤去した:
+ * - `⏹ Stop` → 入力欄の「停止」（同じ `echoes:interrupt`）
+ * - perm chip → status 行の perm select（表示だけの chip は操作器に含まれる）
+ * - `⚠ engine` / `💤 休眠` → status 行（`deriveStatus` が同じ event を畳んでいる）
+ * - session chip（Act II 分）→ tab strip（cc#1 …）
+ * - `✨ New` → Root 切替 picker の「✨ 新 ID から」（同じ `console:new_session`）
  */
 
 import { render } from 'solid-js/web'
 import { createSignal, For, Show } from 'solid-js'
+import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import type { VpConsole, EchoesHeaderState, EchoesSession } from './console'
+import { STAND_ICON } from './icons/stand'
 
 // ---------------------------------------------------------------------------
 // 純関数（vitest 対象）
@@ -48,11 +60,6 @@ export function laneShortName(addr: string): string {
   if (addr.endsWith('/root') || addr.endsWith('/lead')) return 'conductor'
   const m = addr.match(/\/(?:performer|wing)\/(.+)$/)
   return m?.[1] ?? addr
-}
-
-/** permission mode の chip 表示名（長い canonical 名だけ縮める、未知値は素通し）。 */
-export function permModeLabel(mode: string): string {
-  return mode === 'bypassPermissions' ? 'bypass' : mode
 }
 
 /**
@@ -83,7 +90,10 @@ export type RootPickerItem = {
   /** `cc:3d91933b` 形。会話 id が未発行（Draft / 未発話）の session は `cc:新品`。 */
   label: string
   isRoot: boolean
-  /** engine が未知（chip prefix が `sid` = 撤去済み / legacy stand）= 切替不可。 */
+  /** 切替不可。実質の理由は「**resume を持たない**」（doc 50 §4.0 — shell 層に落ちる
+   *  session は `--resume` で slot に張り替えられない）。判定は chip prefix `sid`
+   *  （撤去済み / legacy stand）を代理指標にしている — shell が正規の投げる先になる時は
+   *  この代理を「resume capability」の実表現に置き換えること。 */
   disabled: boolean
 }
 
@@ -221,22 +231,15 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     if (d?.lane && d.lane === ctx()?.addr) setSummary(vpConsole.headerState(d.lane))
   })
 
-  const interrupt = (): void => {
-    const lane = ctx()?.addr
-    if (!lane) return
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:interrupt', lane }))
-  }
-
   const Header = () => (
     <div class="eh-root" classList={{ 'eh-empty': !ctx() }}>
       <Show when={ctx()}>
         {(c) => (
           <>
             <span class="eh-chip eh-lane" title={c().addr}>
-              💬 {c().name ?? laneShortName(c().addr)}
+              <CreoIcon name={STAND_ICON.echoes.default} size={13} />
+              {c().name ?? laneShortName(c().addr)}
             </span>
-            <span class="eh-chip eh-act">{mode() === 'chat' ? 'Act II' : 'Act I'}</span>
             <Show when={c().cwd}>
               <button
                 type="button"
@@ -250,40 +253,30 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
             </Show>
             <Show when={c().branch}>
               <span class="eh-chip eh-branch" title="git branch">
-                ⎇ {c().branch}
+                <CreoIcon name="ph:git-branch" size={12} />
+                {c().branch}
               </span>
             </Show>
-            {/* session chip: Act II は event 由来（summary）が真値、Act I は setActivePane
-                相乗りの engine_session_id（ctx）が唯一の供給路 — OR merge で両 Act に出す。
-                prefix は engine 別（cc/cdx/grok/oc、doc 37: chip が engine indicator を兼ねる）。
-                click は Act で分岐（doc 39 P3、2026-07-18 mako 決定「表示器 = 操作器」）:
-                Act I = Root 切替 picker を開く（copy は picker 内の行へ移設）/ Act II = 従来 copy
-                （session 選択は tab strip が担うため picker は出さない。backend の Tui gate とも一致）。 */}
-            <Show when={summary().sessionId ?? c().sessionId}>
+            {/* session chip: **Act I 限定**。Act II は tab strip（cc#1 …）が session の
+                識別と切替をどちらも担うので、同じ役割を上段にも置かない（重複の撤去）。
+                Act I は tab strip を持たないため、ここが session の唯一の表示器 = 操作器
+                （doc 39 P3、2026-07-18 mako 決定「表示器 = 操作器」）。
+                供給路は setActivePane 相乗りの engine_session_id（ctx）— Act I は
+                EchoesEvent が流れないため summary は空になりうる（OR merge で両対応）。
+                prefix は engine 別（cc/cdx/grok/oc、doc 37: chip が engine indicator を兼ねる）。 */}
+            <Show when={mode() === 'tui' && (summary().sessionId ?? c().sessionId)}>
               {(sid) => (
                 <button
                   type="button"
                   class="eh-chip eh-session"
-                  classList={{ copied: copiedKey() === 'sid' }}
-                  title={
-                    mode() === 'tui'
-                      ? `${sessionChipPrefix(c().stand)} session ${sid()}（click で Root 切替）`
-                      : `${sessionChipPrefix(c().stand)} session ${sid()}（click で copy）`
-                  }
+                  title={`${sessionChipPrefix(c().stand)} session ${sid()}（click で Root 切替）`}
                   onClick={(ev) => {
-                    if (mode() !== 'tui') {
-                      copy('sid', sid())
-                    } else if (pickerOpen()) {
-                      setPickerOpen(false)
-                    } else {
-                      openPicker(ev.currentTarget as HTMLElement)
-                    }
+                    if (pickerOpen()) setPickerOpen(false)
+                    else openPicker(ev.currentTarget as HTMLElement)
                   }}
                 >
                   {sessionChipPrefix(c().stand)}:{sid().slice(0, 8)}
-                  <Show when={mode() === 'tui'}>
-                    <span class="eh-session-caret">▾</span>
-                  </Show>
+                  <CreoIcon name="ph:caret-down" size={10} class="eh-session-caret" />
                 </button>
               )}
             </Show>
@@ -308,7 +301,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                         item.isRoot
                           ? '今の slot（root）'
                           : item.disabled
-                            ? 'engine が未知のため切替不可'
+                            ? 'この session は resume を持たないため root に切替不可'
                             : 'この session を root にする（slot を resume で張り替え）'
                       }
                       onClick={() => {
@@ -317,7 +310,11 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                         else switchRoot(item.key)
                       }}
                     >
-                      {item.isRoot ? '●' : '○'} {item.label}
+                      <CreoIcon
+                        name={item.isRoot ? 'ph:circle-fill' : 'ph:circle'}
+                        size={9}
+                      />
+                      {item.label}
                       <span class="eh-rp-key">#{item.key}</span>
                       <Show when={item.isRoot}>
                         <span class="eh-rp-now">今の slot</span>
@@ -327,7 +324,8 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                 </For>
                 <div class="eh-rp-divider" />
                 <button type="button" class="eh-rp-row" onClick={newRoot}>
-                  ✨ 新 ID から（素の engine）
+                  <CreoIcon name="ph:sparkle" size={11} />
+                  新 ID から（素の engine）
                 </button>
                 <Show when={summary().sessionId ?? c().sessionId}>
                   {(sid) => (
@@ -339,48 +337,16 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                         setPickerOpen(false)
                       }}
                     >
-                      ⧉ 今の id を copy
+                      <CreoIcon name="ph:copy" size={11} />
+                      今の id を copy
                     </button>
                   )}
                 </Show>
               </div>
             </Show>
-            <Show when={summary().permissionMode}>
-              <span class="eh-chip eh-perm" title="permission mode">
-                {permModeLabel(summary().permissionMode!)}
-              </span>
-            </Show>
-            {/* engine 状態は Act II 表示時のみ（Act I は engine-less が正常形なので出さない）。
-                本物の異常（⚠ engine）と回復可能な休眠（💤 休眠）を分けて出す。error 優先。 */}
-            <Show when={mode() === 'chat' && summary().engineError}>
-              <span class="eh-chip eh-engine-down" title={summary().engineError}>
-                ⚠ engine
-              </span>
-            </Show>
-            <Show when={mode() === 'chat' && !summary().engineError && summary().engineDormant}>
-              <span class="eh-chip eh-engine-dormant" title={summary().engineDormant}>
-                💤 休眠
-              </span>
-            </Show>
           </>
         )}
       </Show>
-      <div class="eh-spacer" />
-      <div class="eh-actions">
-        <Show when={ctx() && mode() === 'chat'}>
-          <button
-            type="button"
-            class="eh-chip eh-stop"
-            onClick={interrupt}
-            title="実行中 turn を中断（echoes:interrupt）"
-          >
-            ⏹ Stop
-          </button>
-        </Show>
-        {/* entry.tsx の既存 Act toggle / New Session（imperative 生成）が append される安定 div。
-            動的 JSX を含まないので Solid の再描画がここの子を触ることはない。 */}
-        <div class="eh-legacy-actions" id="echoes-header-actions" />
-      </div>
     </div>
   )
 
@@ -410,11 +376,13 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
 // ---------------------------------------------------------------------------
 
 export const ECHOES_HEADER_CSS = `
-/* Echoes 共通ヘッダ strip。1 行・控えめ・creo tokens 準拠。strip 自体は window drag 面、
-   chip / button は no-drag（.pane-header と同じ規約）。 */
-#echoes-header .eh-root{ display:flex; align-items:center; gap:6px; height:30px; padding:0 10px;
-  font-size:11.5px; background:var(--color-surface-surface);
-  border-bottom:1px solid var(--color-surface-border-subtle);
+/* Echoes の名札（pane 上段）。素性だけを載せる 1 行 — 高さ・地色・境界は Pane 共通の
+   名札 token（main_area.rs の --vp-nameplate-*）を参照し、.pane-header と同一の見えにする。
+   strip 自体は window drag 面、chip / button は no-drag（.pane-header と同じ規約）。 */
+#echoes-header .eh-root{ display:flex; align-items:center; gap:6px;
+  height:var(--vp-nameplate-h); padding:0 var(--vp-nameplate-pad-x);
+  font-size:var(--vp-nameplate-font-size); background:var(--vp-nameplate-bg);
+  border-bottom:var(--vp-nameplate-border);
   color:var(--color-text-secondary);
   font-family:var(--vp-font-sans),var(--typography-family-sans); font-weight:300;
   user-select:none; -webkit-app-region:drag; overflow:hidden; white-space:nowrap; }
@@ -428,16 +396,6 @@ export const ECHOES_HEADER_CSS = `
 #echoes-header .eh-lane{ color:var(--color-text-primary); border-color:transparent; padding-left:0; font-weight:500; }
 #echoes-header .eh-cwd, #echoes-header .eh-session{
   font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; }
-#echoes-header .eh-engine-down{ color:#f0a3a3; border-color:rgba(240,163,163,.4); }
-/* 休眠は異常ではないので muted（警告色にしない）。送信で起きることを title で伝える。 */
-#echoes-header .eh-engine-dormant{ color:var(--color-text-tertiary); border-color:var(--color-border-subtle); opacity:.75; }
-#echoes-header .eh-stop{ color:#f0a3a3; }
-#echoes-header .eh-spacer{ flex:1; min-width:8px; }
-#echoes-header .eh-actions{ display:flex; align-items:center; gap:8px; -webkit-app-region:no-drag; }
-#echoes-header .eh-root.eh-empty .eh-actions{ display:none; }
-#echoes-header .eh-legacy-actions{ display:flex; gap:8px; }
-/* 移設された既存 Act toggle / New Session（CHATVIEW_CSS は絶対配置で定義）を strip 内 flow に戻す。 */
-#echoes-header .echoes-console-actions{ position:static; top:auto; right:auto; }
 /* doc 39 P3: Root 切替 picker。strip の overflow:hidden を position:fixed で脱出する。 */
 #echoes-header .eh-session-caret{ opacity:.6; margin-left:2px; }
 #echoes-header .eh-root-picker{ position:fixed; z-index:1000; min-width:230px; padding:4px;

@@ -238,7 +238,11 @@ root 切替を許すと「選んだ会話と別 engine の新品」が無言で�
 | — | cursor | **撤去済み**（2026-07-18 sweep 6.5、再導入時は新規実装 — 旧実装は git history #773/#776） | Composer 2.5 は魅力（`composer-2.5` / `-fast` を CLI 実物確認）だが、cursor-agent に入力 stream が無く turn-scoped しか組めない = 常駐一枚岩の方針に反する。**CLI が入力 stream / ACP を積んだら Composer 枠として再検討**（将来素材） |
 | — | agy | **撤去済み**（2026-07-18 sweep 6.5、再導入時は新規実装 — 旧実装は git history #773/#776） | 会話 id 供給なし・常駐路なし |
 
-**帰結 — 対応 engine は常駐型のみ（claude / codex / grok）の一枚岩**:
+**帰結 — 対応 engine は常駐型のみ（claude / codex / grok / opencode）の一枚岩**:
+
+> 追記（2026-07-24）: §7-1 route B の OpenCode は**実装済み**（acp_host 経由、session chip
+> prefix `oc`）。ACP 常駐なので一枚岩の方針にそのまま適合する。本行の一覧が
+> 3 engine のまま実装だけ先行していたため、doc を実態に合わせた。
 - codex app-server と grok ACP は共に「常駐 JSON-RPC over stdio + typed protocol」— 常駐系の
   共通ホスト骨格（RpcHost 相当）を 1 度作れば両方に効く
 - codex の app-server 移行が完了した時点で **TurnHost 系（turn_host / cursor_host /

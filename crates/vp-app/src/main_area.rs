@@ -156,6 +156,16 @@ body{overflow:hidden;}
 :root{
   --frame-transition-ms:220ms;
   --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
+  /* Pane の名札（上段）token。「上 = この pane が何であるか（居る間 変わらない素性）」を
+     載せる帯の見た目を、実装 2 本（静的 .pane-header と SolidJS の #echoes-header）で共有する。
+     doc 29/30 の Edge Ring（上 = global / 下 = local）を pane スケールへ再適用した縦軸に基づく。
+     以前は 28px（.pane-header）と 30px（#echoes-header）で高さが割れており、隣り合うと段差が
+     見えていた（2026-07-23 の実機比較）。値の SSOT はここ 1 箇所。 */
+  --vp-nameplate-h:28px;
+  --vp-nameplate-pad-x:10px;
+  --vp-nameplate-font-size:12px;
+  --vp-nameplate-bg:var(--color-surface-surface);
+  --vp-nameplate-border:1px solid var(--color-surface-border-subtle);
   /* VP-143: Echoes terminal (xterm.js) の Live Token 群。 creo-ui-editor-host (Ctrl+Shift+E)
      で runtime 調整可能。 JS 側 createLaneInstance が値を読んで `new Terminal({...})` を構築、
      MutationObserver が documentElement style 変更を捕捉して全 terminal に setter +
@@ -188,19 +198,19 @@ body{overflow:hidden;}
 /* Echoes 共通ヘッダ (操縦席、mem `vp-pane-common-header`): Act I(xterm)/Act II(chat) を跨いで
    載り続ける lane-local な情報 + 操作の strip。DOM の器だけを World A が用意し、中身は
    editor-host bundle の EchoesHeader component が #echoes-header に mount する
-   (#console-chat-host と同じ mount 点パターン)。
+   (chat session host と同じ mount 点パターン)。
    高さ 0 が default = header 不在時は xterm/chat が全高 (既存挙動、regression なし)。
    header が内容を持つ時だけ World B が #pane-terminal に .echoes-header-active を付け、
-   strip を開いて lane-host / console-chat-host / lane-empty をその分だけ押し下げる
+   strip を開いて lane-host / chat session host / lane-empty をその分だけ押し下げる
    (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
 #pane-terminal{--echoes-header-h:0px;}
-#pane-terminal.echoes-header-active{--echoes-header-h:30px;}
+#pane-terminal.echoes-header-active{--echoes-header-h:var(--vp-nameplate-h);}
 #echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
    (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
-   子 Pane (#lane-host / #console-chat-host) は中身を変えず位置づけだけ absolute。
+   子 Pane (#lane-host / .chat-session-host) は中身を変えず位置づけだけ absolute。
    inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* タブエリアは「+ New」を常に載せるので高さは固定。.pane-tabs-active は
@@ -222,8 +232,15 @@ body{overflow:hidden;}
   display:flex;align-items:center;gap:4px;padding:0 6px;overflow-x:auto;overflow-y:hidden;
   background:var(--color-bg,#0f1115);border-top:1px solid var(--color-border,#2a3040);}
 #pane-terminal:not(.pane-tabs-active) #pane-tabs{border-top:none;}
+/* doc 50 §2「空なら描かない」: lane 未選択（#lane-empty active）なら pane 操作の帯
+   （+ New / Act toggle）も存在しない — 操作対象の lane が無いのに入口だけ残さない。 */
+#pane-terminal:has(#lane-empty.active) #pane-tabs{display:none;}
 /* 「+ New」は chip と区別する（畳まれた Pane ではなく作成の入口）。 */
 .pane-tab.pane-new{border-style:dashed;}
+/* Act toggle（backend の console_mode 切替）。隣の Console/Chat chip は **表示の畳み** で
+   別レイヤーの操作なので、右端に寄せ + 区切りで系統が違うことを見せる。 */
+.pane-act-toggle{margin-left:auto;border-color:var(--color-surface-border-subtle);}
+.pane-act-toggle:hover{border-color:var(--sb-conn-auto,#22E0FF);}
 /* Engine × Act の選択メニュー（doc 46 P2 要件 4）。タブエリアの上に出す。 */
 .pane-new-menu{position:fixed;z-index:9999;min-width:180px;padding:4px;
   border:1px solid var(--color-border,#2a3040);border-radius:6px;
@@ -272,17 +289,21 @@ body{overflow:hidden;}
    `.center` modifier で個別制御)。 */
 .pane-header{
   position:absolute;
-  top:0;left:0;right:0;height:28px;
+  top:0;left:0;right:0;height:var(--vp-nameplate-h);
   display:flex;
   align-items:center;
   gap:8px;
-  padding:0 10px;
-  font-size:12px;
-  background:var(--color-surface-surface);
-  border-bottom:1px solid var(--color-surface-border-subtle);
+  padding:0 var(--vp-nameplate-pad-x);
+  font-size:var(--vp-nameplate-font-size);
+  background:var(--vp-nameplate-bg);
+  border-bottom:var(--vp-nameplate-border);
   user-select:none;
   -webkit-app-region:drag;
   z-index:1;
+  /* 名札は 1 行きり。溢れは折り返さず省略する（PP の "Paisley Park" が 2 行に割れて
+     隣の pane と高さが揃わなくなっていた実機バグ、2026-07-23）。 */
+  white-space:nowrap;
+  overflow:hidden;
 }
 .pane-header .pane-title{
   flex:1;
@@ -291,15 +312,28 @@ body{overflow:hidden;}
   gap:6px;
   color:var(--color-text-primary);
   min-width:0;
+  overflow:hidden;
 }
-.pane-header .pane-icon{flex-shrink:0;font-size:14px;}
-.pane-header .pane-name{font-weight:500;}
+/* glyph は Phosphor (iconify-icon)。sidebar は既に CreoIcon で統一済で、額縁だけ絵文字が
+   残っていたのを揃えた (2026-07-23)。iconify-icon の既定サイズは 1em なので、寸法は
+   font-size で決まる = 周囲の文字と自然に揃う。 */
+iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align:-0.125em;}
+.pane-header .pane-icon{flex-shrink:0;font-size:14px;display:inline-flex;align-items:center;}
+/* 名前は最優先で残し、breadcrumb（従属情報）から先に削る。 */
+.pane-header .pane-name{font-weight:500;flex-shrink:0;}
 .pane-header .pane-breadcrumb{color:var(--color-text-tertiary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .pane-header .pane-actions{
   display:flex;
   gap:4px;
   -webkit-app-region:no-drag;
+  /* doc 50 §2: ツール（Clear / ×）は名札に常設しない — 縦軸に乗らない操作は hover で
+     召喚する（mako 決定 2026-07-23 の暫定形。恒久の home は右 edge 構想 = 棚上げ中）。
+     focus-within はキーボード到達性の保険（Tab で入れば見える）。 */
+  opacity:0;
+  transition:opacity .12s ease;
 }
+.pane-header:hover .pane-actions,
+.pane-header:focus-within .pane-actions{opacity:1;}
 .pane-header .pane-action-btn{
   cursor:pointer;
   padding:2px 8px;
@@ -313,7 +347,7 @@ body{overflow:hidden;}
 .pane-header .pane-action-btn:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
 .pane-body{
   position:absolute;
-  top:28px;left:0;right:0;bottom:0;
+  top:var(--vp-nameplate-h);left:0;right:0;bottom:0;
   overflow:auto;
 }
 .pane-body.center{display:grid;place-items:center;}
@@ -426,16 +460,14 @@ body{overflow:hidden;}
          EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
          Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
     <div id="echoes-header"></div>
-    <!-- doc 46 P1 → doc 49 LE-P4 PR2: lane の表示領域を「Act I か Act II」の排他から
-         **N 枚の Pane を並べる tiling** に変える器。配置は creo-ui-layout の lane scope
-         (lane-panes.ts) が resolved rect を inline で書く。子 (#lane-host /
-         #console-chat-host) の中身は一切変えない。畳まれた Pane は #pane-tabs に chip。 -->
+    <!-- doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane の表示領域 = N 枚の Pane を並べる
+         tiling の器。配置は creo-ui-layout の lane scope (lane-panes.ts) が resolved rect を
+         inline で書く。子は #lane-host (Act I xterm、World A 所有・中身に触れない) +
+         chat session host 群（World B の lane-panes が session ↔ Pane 1:1 で動的に生やす。
+         旧 #console-chat-host 固定 1 枚は session ↔ Pane 1:1 への移行で退役）。
+         畳まれた Pane は #pane-tabs に chip。 -->
     <div id="lane-panes">
       <div id="lane-host"></div>
-      <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
-           ChatView がここに render する。doc 46 P1 で lane-host との**排他をやめ**、
-           既定で左右に並ぶ (要件 1)。片方だけ見たい時は他方を minimize する。 -->
-      <div id="console-chat-host"></div>
     </div>
     <!-- doc 46 P1 要件 2: 縮小された Pane の置き場 (タブエリア)。chip を 1 クリックで
          Pane に戻す。空の時は高さ 0 = 従来の見た目を壊さない。 -->
@@ -470,7 +502,7 @@ body{overflow:hidden;}
   <div class="pane preview" id="pane-preview" data-kind="preview" data-frame-id="preview">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🔍</span>
+        <span class="pane-icon"><iconify-icon icon="ph:magnifying-glass"></iconify-icon></span>
         <span class="pane-name">Preview</span>
         <span class="pane-breadcrumb" id="preview-breadcrumb">about:blank</span>
       </div>
@@ -485,13 +517,13 @@ body{overflow:hidden;}
   <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-frame-id="pp">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🧭</span>
+        <span class="pane-icon"><iconify-icon icon="ph:compass"></iconify-icon></span>
         <span class="pane-name">Paisley Park</span>
         <span class="pane-breadcrumb" id="pp-breadcrumb">Information Router</span>
       </div>
       <div class="pane-actions">
         <button class="pane-action-btn" data-action="clear" data-target="pp" title="Clear PP body content">Clear</button>
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body">
@@ -510,12 +542,12 @@ body{overflow:hidden;}
   <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🌿</span>
+        <span class="pane-icon"><iconify-icon icon="ph:plant"></iconify-icon></span>
         <span class="pane-name">Gold Experience</span>
         <span class="pane-breadcrumb">Code Runner</span>
       </div>
       <div class="pane-actions">
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body center">
@@ -528,12 +560,12 @@ body{overflow:hidden;}
   <div class="pane stand" id="pane-bastet" data-kind="bastet" data-frame-id="bs">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🧲</span>
+        <span class="pane-icon"><iconify-icon icon="ph:magnet"></iconify-icon></span>
         <span class="pane-name">Bastet</span>
         <span class="pane-breadcrumb">Device Registry</span>
       </div>
       <div class="pane-actions">
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body">

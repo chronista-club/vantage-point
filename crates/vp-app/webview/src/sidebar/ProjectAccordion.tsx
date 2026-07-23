@@ -59,7 +59,10 @@ function hintFor(
 ): string | null {
 	const s = proc.state;
 	if (!s || s === "stopped") {
-		return proc.expanded ? "⏳ SP starting…" : "💤 SP stopped — open to spawn";
+		// 旧実装は expanded なら「⏳ SP starting…」と言った —「accordion を開く = spawn」の
+		// 旧仮定で、stop / disable された project にも「起動中」と嘘をつく（2026-07-24 実機:
+		// 全 project 停止時に全行が SP starting… のまま）。事実だけを言う。
+		return "💤 SP stopped — ▷ で起動";
 	}
 	if (s === "starting") return "⏳ SP starting…";
 	if (s === "stopping") return "⏳ SP stopping…";

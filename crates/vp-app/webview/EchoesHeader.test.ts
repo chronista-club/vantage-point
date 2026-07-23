@@ -9,7 +9,6 @@ import {
   tildify,
   middleEllipsis,
   laneShortName,
-  permModeLabel,
   sessionChipPrefix,
   rootPickerItems,
 } from './EchoesHeader'
@@ -58,32 +57,19 @@ describe('laneShortName — address から表示短名', () => {
   })
 })
 
-describe('permModeLabel — 長い canonical 名だけ縮める', () => {
-  it('bypassPermissions → bypass', () => {
-    expect(permModeLabel('bypassPermissions')).toBe('bypass')
-  })
-  it('未知値は素通し', () => {
-    expect(permModeLabel('default')).toBe('default')
-    expect(permModeLabel('plan')).toBe('plan')
-  })
-})
-
 describe('foldHeaderState — session summary の畳み込み（変化検知）', () => {
+  // doc 50: 名札の縮約で summary は sessionId 1 本になった。model / perm は composer、
+  // engine 異常は status 行（deriveStatus）が別経路で担うので、ここでは畳まない。
   const sessionInit = (over: Partial<Extract<EchoesEvent, { kind: 'session_init' }>> = {}): EchoesEvent => ({
     kind: 'session_init',
     session_id: 'sid-1',
-    model: 'claude',
-    permission_mode: 'default',
     ...over,
   })
 
-  it('session_init は sessionId / model / perm を畳み、変化ありで true', () => {
+  it('session_init は sessionId を畳み、変化ありで true', () => {
     const h: EchoesHeaderState = {}
     expect(foldHeaderState(h, sessionInit())).toBe(true)
     expect(h.sessionId).toBe('sid-1')
-    expect(h.model).toBe('claude')
-    expect(h.permissionMode).toBe('default')
-    expect(h.engineError).toBeUndefined()
   })
 
   it('同値 session_init は冪等 = false（無駄な再描画を出さない）', () => {
@@ -92,55 +78,12 @@ describe('foldHeaderState — session summary の畳み込み（変化検知）'
     expect(foldHeaderState(h, sessionInit())).toBe(false)
   })
 
-  it('error（本物の異常）は engineError を立て、true', () => {
+  it('turn_completed も sessionId を追従する（resume で id が変わる経路）', () => {
     const h: EchoesHeaderState = { sessionId: 'sid-1' }
-    const err: EchoesEvent = { kind: 'error', message: 'engine turn error' }
-    expect(foldHeaderState(h, err)).toBe(true)
-    expect(h.engineError).toBe('engine turn error')
-  })
-
-  it('error 後の session_init は engineError を clear（engine 復帰）', () => {
-    const h: EchoesHeaderState = {}
-    foldHeaderState(h, { kind: 'error', message: 'engine turn error' })
-    expect(foldHeaderState(h, sessionInit({ session_id: 'sid-2' }))).toBe(true)
-    expect(h.engineError).toBeUndefined()
+    expect(foldHeaderState(h, { kind: 'turn_completed', session_id: 'sid-2' })).toBe(true)
     expect(h.sessionId).toBe('sid-2')
-  })
-
-  it('turn_completed は生存証拠として engineError を clear', () => {
-    const h: EchoesHeaderState = { sessionId: 'sid-1', engineError: 'engine turn error' }
-    const done: EchoesEvent = { kind: 'turn_completed', session_id: 'sid-1' }
-    expect(foldHeaderState(h, done)).toBe(true)
-    expect(h.engineError).toBeUndefined()
-  })
-
-  it('engine_exited（途絶 = 回復可能）は engineDormant を立て、engineError とは排他', () => {
-    const h: EchoesHeaderState = { sessionId: 'sid-1' }
-    const exited: EchoesEvent = { kind: 'engine_exited', message: 'エンジンが休眠しました' }
-    expect(foldHeaderState(h, exited)).toBe(true)
-    expect(h.engineDormant).toBe('エンジンが休眠しました')
-    expect(h.engineError).toBeUndefined()
-  })
-
-  it('engine_exited 後の session_init は engineDormant を clear（engine 復活）', () => {
-    const h: EchoesHeaderState = {}
-    foldHeaderState(h, { kind: 'engine_exited', message: '休眠' })
-    expect(foldHeaderState(h, sessionInit({ session_id: 'sid-2' }))).toBe(true)
-    expect(h.engineDormant).toBeUndefined()
-  })
-
-  it('turn_completed は engineDormant も clear（生存証拠）', () => {
-    const h: EchoesHeaderState = { sessionId: 'sid-1', engineDormant: '休眠' }
-    const done: EchoesEvent = { kind: 'turn_completed', session_id: 'sid-1' }
-    expect(foldHeaderState(h, done)).toBe(true)
-    expect(h.engineDormant).toBeUndefined()
-  })
-
-  it('error → engine_exited は engineError を消して engineDormant へ（休眠が上書き）', () => {
-    const h: EchoesHeaderState = { engineError: 'engine turn error' }
-    expect(foldHeaderState(h, { kind: 'engine_exited', message: '休眠' })).toBe(true)
-    expect(h.engineDormant).toBe('休眠')
-    expect(h.engineError).toBeUndefined()
+    // 同値なら冪等
+    expect(foldHeaderState(h, { kind: 'turn_completed', session_id: 'sid-2' })).toBe(false)
   })
 
   it('高頻度 event（message_chunk）は summary を変えず false（ヘッダ再描画を出さない）', () => {
