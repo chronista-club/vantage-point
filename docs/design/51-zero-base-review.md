@@ -44,7 +44,7 @@
 | 4 | 死んでも続きから | resume / replay 永続 | **§4 済** |
 | 5 | 隔離された並行作業 | performer lane | **§5 済** |
 | 6 | AI が視せる面 | PP board / Canvas | **§6 済** |
-| 7 | project を跨ぐ | sidebar / TheWorld | |
+| 7 | project を跨ぐ | sidebar / TheWorld | **§7 済** |
 | 8 | AI と一緒に UI を調整 | Editor Mode / layout MCP（doc 48/49） | |
 | 9 | 物理で演奏する | 艦隊 | |
 | 10 | lane 同士の通信 | wire | |
@@ -269,6 +269,33 @@ layout 記法: `cc16 | grok17/board | sh18`
   置き換える）を足すと掲示板が計器盤になる — 「この表を貼っておいて、進むたび更新して」
 - **常設（pin）と流れ（stream → 履歴 strip）の区別** — 計器は流されない
 - **AI 側の対**: MCP `show` は全 engine から届く（済）。update 口も同じ MCP に足すだけ
+
+---
+
+## 7. project を跨ぐ（sidebar / TheWorld）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> 開発したいものが多く、10 に近いプロジェクトをガンガン進めているから、**一覧性は欲しい**。
+
+- sidebar は艦隊の**一覧（fleet overview）**であるべき — 「注視の数個だけ」仮説は否定
+- ただし一覧性 ≠ 全展開。求められているのは「**畳んだままでも艦隊の状態が読める**」こと
+
+### どうすべきだったのか（回顧）
+
+- sidebar は accordion（展開して lane 一覧）が基本形で、「lane picker」と「fleet overview」の
+  2 役を 1 つの構造で担ってきた — 14 project 時代はスクロールと死んだ hint（SP starting…）で
+  一覧性が壊れていた（2026-07-24 実機）。一覧性は overview の要求で、picker とは別の関心
+
+### 何が必要か
+
+- **フラクタル掲揚の完成**: §5 で決めた「灯 + 今なにを」を project 行にも —
+  session pane → lane 行 → **project 行**。畳んだ project 行 1 行 = 灯（その project で
+  何か動いている / あなたが要る）+ 一行（いま何が進んでいるか）。10 行で艦隊全体が読める
+- 展開（accordion を開く）=「入る」操作として残す。enable / disable / add は UI から軽く
+  （今日は CLI でやった — 引数語彙の不統一 add NAME PATH / disable PATH / stop NAME も要修正）
+- **AI 側の対**: fleet の読みは `vp ps` / lanes_list / health で概ね済。project 行の一行の
+  供給は lane now-line の集約（新契約は不要）
 
 ---
 
