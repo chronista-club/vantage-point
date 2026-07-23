@@ -39,7 +39,7 @@
 | # | 必要（の候補） | これまでの答え | 審査 |
 |---|---|---|---|
 | 1 | もう 1 本の往復 | session 複数化（doc 38→46→50） | **§1 済** |
-| 2 | 同じ往復を別の見え方で | Act I/II → Act = Pane kind（P4 残） | |
+| 2 | 同じ往復を別の見え方で | Act I/II → Act = Pane kind（P4 残） | **§2 済** |
 | 3 | 別の相手に投げたい | engine 選択（doc 39） | |
 | 4 | 死んでも続きから | resume / replay 永続 | |
 | 5 | 隔離された並行作業 | performer lane | |
@@ -112,6 +112,37 @@
 
 mock: `.notes/` ではなく Artifact（vp-concurrent-gaze、workbench-v2）。
 layout 記法: `cc16 | grok17/board | sh18`
+
+---
+
+## 2. 同じ往復を別の見え方で（Act I/II）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> Act II で行っていて、Act I でしかできないことが出たり、Act II の使い勝手が微妙な時は
+> Act I によく戻ってた。**切り替えつつも、セッションは継続させたかったから、とても
+> 助かってた。**
+
+- 乗り換えは目的ではなく**避難**（capability gap / quality gap からの）。理想は Act II の
+  充実で頻度が下がること。ただし構造的 gap（生の TUI 対話）は Act I の領分として残る
+- **価値の核 = 会話の連続性**: 見え方は替わっても往復は切れない（Echoes の定義そのもの —
+  往復が本体、見え方は衣装）。resume handoff は残す価値のある機構
+
+### どうすべきだったのか（回顧）
+
+- 実装は「lane 全体の mode 切替」だったが、必要だったのは **session 単位の見え方切替**。
+  backend は P4 #848 で session 属性化済み — UI（lane toggle）だけが取り残された
+- アーキテクチャの事実: 同じ session の term / chat **同時 2 枚は原理的に不可**
+  （Act I = TUI claude 常駐、Act II = headless stream-json。1 会話 1 プロセス、
+  切替 = resume handoff でプロセスを入れ替える）。同時 2 view は追わない
+
+### 何が必要か
+
+- **per-pane の「見え方を切り替える」操作** — session pane の中に置く（避難路なので
+  低頻度・低目立ち。計器盤の隅 or 名札 menu。実体は既存 resume handoff）
+- **lane-level Act toggle は退役**（doc 50 P4 完遂。作業台に「lane の mode」は存在しない）
+- **AI 側の対**: `console:set_mode` の session 単位化を P4 に含める（AI も「この pane を
+  term にして」と address できる）
 
 ---
 
