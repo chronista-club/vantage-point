@@ -13,6 +13,7 @@ import {
   clampToolDetail,
   canCloseSession,
   chatKey,
+  lampOf,
 } from './chatview'
 import type { EchoesEvent } from './console'
 
@@ -178,6 +179,29 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     // engine の休眠(engine_exited)は異常ではない = idle 扱いで「💤 休眠」と穏当に出す
     const dormant = fold([{ kind: 'engine_exited', message: '休眠' }])
     expect(deriveStatus(dormant)).toMatchObject({ kind: 'idle', label: '💤 休眠' })
+  })
+
+  it('lampOf: 灯 3 状態への畳み込み（doc 51 §1 A2 — 横目の視覚言語）', () => {
+    // 動いている = run（streaming / thinking / tool）
+    expect(lampOf(deriveStatus(fold([{ kind: 'message_chunk', text: 'hi' }])))).toBe('run')
+    expect(lampOf(deriveStatus(fold([{ kind: 'thought_chunk', text: '…' }])))).toBe('run')
+    // あなたが要る = need（HITL 質問/承認 + engine 異常 — 介入が要る側）
+    const asking = fold([
+      {
+        kind: 'question',
+        request_id: 'q1',
+        questions: [{ question: 'どっち?', header: 'Q', options: [] }],
+      },
+    ])
+    expect(lampOf(deriveStatus(asking))).toBe('need')
+    expect(lampOf(deriveStatus(fold([{ kind: 'error', message: 'x' }])))).toBe('need')
+    // 待っている = off（待機中 / 💤 休眠）— presence でなく活動の灯
+    expect(lampOf(deriveStatus(emptyChatState()))).toBe('off')
+    expect(lampOf(deriveStatus(fold([{ kind: 'engine_exited', message: '休眠' }])))).toBe('off')
+    // stalled は run のまま（8s 無イベントは平常でも起きる — 嘘の告発は status 行の文字の領分）
+    const stalled = fold([{ kind: 'message_chunk', text: 'hi' }])
+    stalled.lastEventAt = 1000
+    expect(lampOf(deriveStatus(stalled, 1000 + 9000))).toBe('run')
   })
 
   it('isTurnClosingEvent: pending flush の発火契機（doc 35 §5.1 + engine_exited の自己修復継承）', () => {

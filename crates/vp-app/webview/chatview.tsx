@@ -632,6 +632,22 @@ export function deriveStatus(s: ChatState | null, nowMs = 0): EchoesStatus {
   return { ...base, kind: 'idle', label: '待機中', stalled: false }
 }
 
+/** 灯の 3 状態（doc 51 §1 A2 — 並行性を支える視点の視覚言語）。
+ *  動いている（run = 緑・脈動）/ 待っている（off = 無灯）/ あなたが要る（need = 赤・速い脈動）。 */
+export type SessionLamp = 'run' | 'off' | 'need'
+
+/** EchoesStatus → 灯（純関数）。細かい状態語（thinking / tool / 停滞…）は計器盤（status 行）の
+ *  領分で、灯は「横目で読む」ための 3 値に畳む:
+ *  - need = ボールが人にある（質問 / 承認）+ engine 異常（介入が要る点で同じ側）
+ *  - run  = engine が動いている（streaming / thinking / tool）。stalled は run のまま —
+ *    8s 無イベントは平常でも起きるので灯を赤にせず、嘘の告発は status 行の文字に任せる
+ *  - off  = 待っている（待機中 / 💤 休眠） */
+export function lampOf(status: EchoesStatus): SessionLamp {
+  if (status.kind === 'awaiting' || status.kind === 'error') return 'need'
+  if (status.kind === 'streaming' || status.kind === 'thinking' || status.kind === 'tool') return 'run'
+  return 'off'
+}
+
 // ---------------------------------------------------------------------------
 // 描画
 // ---------------------------------------------------------------------------
@@ -1155,6 +1171,8 @@ function SessionChatView(props: { lane: string; session: number }) {
     onCleanup(() => clearInterval(id))
   })
   const statusLine = () => deriveStatus(state(), nowMs())
+  // 灯 3 状態（doc 51 §1 A2）: status の畳み込み。名札の dot が読む。
+  const lamp = () => lampOf(statusLine())
   const submit = () => {
     const lane = props.lane
     const text = draft().trim()
@@ -1367,9 +1385,14 @@ function SessionChatView(props: { lane: string; session: number }) {
           engine 選択付きの新規作成は EchoesHeader（lane の名札）の「+ New」一本
           （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。 */}
       <div class="echoes-session-plate" classList={{ focused: isFocused() }}>
-        <Show when={sessionInfo()?.live}>
-          <span class="echoes-tab-dot" />
-        </Show>
+        {/* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
+            （赤速脈動）。旧「live なら緑点」を置換 — presence でなく活動を灯す（lampOf）。
+            細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。 */}
+        <span
+          class="echoes-lamp"
+          classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
+          title={statusLine().label}
+        />
         <span class="echoes-session-plate-label">{sessionLabel()}</span>
         {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
             これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
@@ -1786,7 +1809,16 @@ export const CHATVIEW_CSS = `
   background: var(--color-bg,#0f1115); }
 /* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
 .echoes-chat:not(.focused) { opacity:.82; }
-.echoes-tab-dot { width:6px; height:6px; border-radius:50%; flex:none; background: var(--color-success,#6fe2a8); }
+/* 灯 3 状態（doc 51 §1 A2）: 動いている = 緑・脈動 / 待っている = 無灯（地の色の点）/
+   あなたが要る = 赤・速い脈動。脈動の速さが緊急度を運ぶ（mock workbench-v2 の視覚言語）。 */
+.echoes-lamp { width:7px; height:7px; border-radius:50%; flex:none;
+  background: var(--color-border,#2a3040); }
+.echoes-lamp.run { background: var(--color-success,#6fe2a8);
+  animation: echoes-lamp-pulse 1.2s ease-in-out infinite; }
+.echoes-lamp.need { background: var(--color-error,#f0a3a3);
+  animation: echoes-lamp-pulse .7s ease-in-out infinite; }
+@keyframes echoes-lamp-pulse { 50% { opacity:.3; } }
+@media (prefers-reduced-motion: reduce){ .echoes-lamp { animation: none !important; } }
 /* 旧 .echoes-header（model/perm の独立行）は計器盤へ畳んで撤去。select は下段の高さに収まる
    よう一段小さくする（行が status と共用になったため）。 */
 .echoes-model-select { font-size:10.5px; padding:1px 5px; border-radius:6px; outline:none; cursor:pointer;
