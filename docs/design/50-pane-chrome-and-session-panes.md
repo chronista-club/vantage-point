@@ -1,6 +1,9 @@
 # doc 50 — Pane の額縁（縦軸）と session = Pane
 
-**Status**: 額縁の縦軸は実装済（`d1b71dde` / `cd037f66`）。session = Pane は **未着手**（本 doc が設計）。
+**Status**: 額縁の縦軸は実装済（`d1b71dde` / `cd037f66`）。session = Pane は **P1（視る）+
+P2（打つ）実装済**（`38f5f00e` 〜 `c6b93791`、2026-07-24）— 残りは P3（World A xterm re-key）/
+P4（Act toggle 撤去）/ P5（layout 永続）。PP Proj 撤去（`0330eb0d`）・名札ツールの hover 召喚
+（`d8d33efd`）も出荷済。
 **Owners**: vp-app（webview World B + main_area World A）
 **Related**: [46-lane-pane-model.md](./46-lane-pane-model.md)（session ↔ Pane 1:1 の確定）、
 [49-gui-layout-engine.md](./49-gui-layout-engine.md)（lane scope の tiling 機構）、
@@ -114,7 +117,7 @@ backend は**もう出来ている**: P4（#848）で Act が session の属性�
 残っていたのは P5 決定表の 1 行 — **「GUI 配線（pump）は張らない」（表示はミニマム据え置き）**。
 本 doc の §4 がその配線。
 
-### 4.2 塞いでいるのは client 側の 1 行
+### 4.2 塞いでいるのは client 側の 1 行（→ P1 で解消済）
 
 ```ts
 // chatview.tsx
