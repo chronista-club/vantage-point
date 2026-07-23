@@ -41,7 +41,7 @@
 | 1 | もう 1 本の往復 | session 複数化（doc 38→46→50） | **§1 済** |
 | 2 | 同じ往復を別の見え方で | Act I/II → Act = Pane kind（P4 残） | **§2 済** |
 | 3 | 別の相手に投げたい | engine 選択（doc 39） | **§3 済** |
-| 4 | 死んでも続きから | resume / replay 永続 | |
+| 4 | 死んでも続きから | resume / replay 永続 | **§4 済** |
 | 5 | 隔離された並行作業 | performer lane | |
 | 6 | AI が視せる面 | PP board / Canvas | |
 | 7 | project を跨ぐ | sidebar / TheWorld | |
@@ -178,6 +178,33 @@ layout 記法: `cc16 | grok17/board | sh18`
   対応）を調べる —「まとめ上げる」image の成立条件
 - **AI 側の対**: session 作成の MCP（AI が「grok の pane を開いて調査を打たせる」を
   address できる — 面 B 台帳に追加）
+
+---
+
+## 4. 死んでも続きから（resume / replay）— 2026-07-24 結論
+
+### どうしたいか（mako）
+
+> **「昨日の続きがそこにある」**
+
+再起動後・翌朝の作業再開 = 昨日の台がそのまま（pane 配置・並び・focused まで復元）。
+白紙から組み直す儀式ではなく、続きから。
+
+### どうすべきだったのか（回顧）
+
+- 会話の復元（`--resume` / transcript replay / disk 永続）への投資は正解だった
+  （§2「会話の連続性が価値の核」の裏付け）
+- ただし復元を**往復単位**でしか考えてこなかった。今の VP は
+  場所（cwd/branch）永続 ✓ / 記憶（creo）永続 ✓ / 往復（resume+replay）永続 ✓ /
+  board（SurrealDB）永続 ✓ / **台の形（layout・focused）だけが揮発** —
+  layout 永続は doc 46 P6 → doc 50 P5 と 2 度先送りされ、**復元の非対称**として残った
+
+### 何が必要か
+
+- **台の形の永続**: lane scope の layout（構造 + attention）+ focused session を
+  server 永続し、attach 時に復元する。doc 50 P5 を「follow-up」から**本審査の必須**へ格上げ
+- **AI 側の対**: lane scope layout MCP の公開（write gate / 承認 UX）と永続化は同根 —
+  同じ工事で両方通す（私が台の形を読み書きできる = 「台を整えておいたよ」ができる）
 
 ---
 
