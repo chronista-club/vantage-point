@@ -1,24 +1,24 @@
 /**
- * lane-panes（doc 49 LE-P4 PR2）の検証 — 純 calculation と lane scope の意味論。
+ * lane-panes（doc 49 LE-P4 PR2 → doc 51 §1 A1）の検証 — 純 calculation と lane scope の意味論。
  *
- * 旧 pane-shell.test.ts の後継。旧 PaneLayout の要件（doc 46 P1 要件 1-3）は
- * engine + gestures の意味論に写して固定し直す:
- *   既定で並ぶ = initialLaneLayout / 縮小・復元 = toggleLanePane（mute / setShare）/
- *   最後の 1 枚は畳ませない = mute の全零 guard / 構成は lane ごと = engine scope。
- * DOM 反映（installLanePanes の render / chips）は node 環境のため対象外（薄い action 層）。
+ * 旧 pane-shell.test.ts の後継。doc 51 §1 A1（tiling 既定 + 帯撤去）で固定し直した要件:
+ *   既定で並ぶ = initialLaneLayout + syncPaneColumns の可視入場（enterShare）/
+ *   roster は mode × root で term / chat を排他にする（同じ session を 2 枚にしない）/
+ *   構成は lane ごと = engine scope。
+ * DOM 反映（installLanePanes の render）は node 環境のため対象外（薄い action 層）。
  */
 
 import { resolve, visibleIds } from "@chronista-club/creo-ui-layout";
 import { describe, expect, it } from "vitest";
 import {
 	chatHostId,
+	enterShare,
 	initialLaneLayout,
 	lanePaneRefs,
 	laneScope,
 	newPaneChoices,
 	sessionOfHostId,
 	syncPaneColumns,
-	toggleLanePane,
 } from "./lane-panes";
 import { layoutEngine } from "./layout-host";
 
@@ -34,22 +34,39 @@ describe("initialLaneLayout（doc 50 P1: boot は Console 1 枚）", () => {
 	});
 });
 
-describe("lanePaneRefs（pane の顔ぶれ = Console + session 群）", () => {
-	it("session の数だけ chat pane が生え、label は engine prefix#key", () => {
+describe("lanePaneRefs（roster = mode × root で term / chat を排他、doc 51 §2）", () => {
+	it("tui: Console + 非 root session の chat pane（root は Act I 面に居る）", () => {
 		expect(
-			lanePaneRefs([
-				{ key: 1, stand: "echoes" },
-				{ key: 3, stand: "codex" },
-			]),
+			lanePaneRefs(
+				[
+					{ key: 1, stand: "echoes", root: true },
+					{ key: 3, stand: "codex" },
+				],
+				"tui",
+			),
 		).toEqual([
 			{ id: "lane-host", label: "Console" },
+			{ id: "chat-session-3", label: "cdx#3", session: 3 },
+		]);
+	});
+
+	it("chat: 全 session の chat pane（root も chat。抜け殻の xterm は台に並べない）", () => {
+		expect(
+			lanePaneRefs(
+				[
+					{ key: 1, stand: "echoes", root: true },
+					{ key: 3, stand: "codex" },
+				],
+				"chat",
+			),
+		).toEqual([
 			{ id: "chat-session-1", label: "cc#1", session: 1 },
 			{ id: "chat-session-3", label: "cdx#3", session: 3 },
 		]);
 	});
 
-	it("session なし = Console のみ", () => {
-		expect(lanePaneRefs([]).map((p) => p.id)).toEqual([TERM]);
+	it("tui + session なし = Console のみ", () => {
+		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
 	});
 });
 
@@ -63,16 +80,18 @@ describe("chatHostId / sessionOfHostId（往復）", () => {
 	});
 });
 
-describe("syncPaneColumns（layout 列 ↔ session 一覧の同期）", () => {
-	it("新しい session は右端に列 append、attention 0（chip に生えるだけ）", () => {
+describe("syncPaneColumns（layout 列 ↔ roster の同期、tiling 既定）", () => {
+	it("新しい pane は右端に列 append、**可視で入場**（enterShare = 可視 raw 平均）", () => {
 		const l = syncPaneColumns(initialLaneLayout(), [TERM, CHAT]);
 		expect(l.structure.columns.map((c) => c.panes)).toEqual([[TERM], [CHAT]]);
-		expect(l.attention[CHAT]).toBe(0);
-		// 既存（Console）の attention は保たれる
+		// tiling 既定: 畳まれて生まれない。Console(1) と等しい share で並ぶ = 等分
+		expect(l.attention[CHAT]).toBe(1);
 		expect(l.attention[TERM]).toBe(1);
+		const r = resolve(l);
+		expect(r[CHAT]?.rect.w).toBeCloseTo(0.5);
 	});
 
-	it("消えた session の列は除去される（既存の attention は保たれる）", () => {
+	it("消えた pane の列は除去される（既存の attention は保たれる）", () => {
 		const grown = syncPaneColumns(initialLaneLayout(), [TERM, CHAT, chatHostId(2)]);
 		const shrunk = syncPaneColumns(grown, [TERM, CHAT]);
 		expect(shrunk.structure.columns.map((c) => c.panes)).toEqual([[TERM], [CHAT]]);
@@ -84,35 +103,31 @@ describe("syncPaneColumns（layout 列 ↔ session 一覧の同期）", () => {
 		expect(syncPaneColumns(once, [TERM, CHAT])).toEqual(once);
 	});
 
+	it("再入場も可視（roster から外れた pane が戻る = attention 記録は消えている → enterShare）", () => {
+		// mode 切替で Console が roster を出て（chat）、戻る（tui）往復の縮図
+		const noTerm = syncPaneColumns(initialLaneLayout(), [CHAT]);
+		expect(TERM in noTerm.attention).toBe(false);
+		const back = syncPaneColumns(noTerm, [TERM, CHAT]);
+		expect(back.attention[TERM]).toBeGreaterThan(0);
+	});
+
 	it("lane-host は ids に含める限り常在（refs 側が必ず先頭に置く前提の裏）", () => {
 		const l = syncPaneColumns(initialLaneLayout(), [TERM]);
 		expect(l.structure.columns).toEqual([{ panes: [TERM] }]);
 	});
 });
 
-/** 2 枚構成（Console + session 1 の pane を開いた状態）を作る helper。 */
-function twoPane() {
-	const synced = syncPaneColumns(initialLaneLayout(), [TERM, CHAT]);
-	return toggleLanePane(synced, CHAT); // attention 0 → 0.5 で開く
-}
-
-describe("toggleLanePane（chip の 1 クリック往復、要件 2）", () => {
-	it("attention 0 で生えた chat pane は toggle で開く", () => {
-		const l = twoPane();
-		expect(visibleIds(l).sort()).toEqual([CHAT, TERM].sort());
+describe("enterShare（入場 share = 可視 raw 平均、creo-ui-layout admit と同じ規則）", () => {
+	it("可視 pane が居なければ 1", () => {
+		expect(enterShare({ structure: { columns: [] }, attention: {} })).toBe(1);
 	});
-
-	it("可視 Pane は mute で畳まれ、畳んだ Pane は復帰する（往復）", () => {
-		const folded = toggleLanePane(twoPane(), CHAT);
-		expect(visibleIds(folded)).toEqual([TERM]);
-		const restored = toggleLanePane(folded, CHAT);
-		const r = resolve(restored);
-		expect(r[CHAT]?.rect.w).toBeCloseTo(0.5);
-	});
-
-	it("最後の 1 枚は畳ませない（mute の全零 guard = 同一参照が返る）", () => {
-		const folded = toggleLanePane(twoPane(), CHAT);
-		expect(toggleLanePane(folded, TERM)).toBe(folded);
+	it("可視 pane の raw 平均（非可視 0 は数えない）", () => {
+		expect(
+			enterShare({
+				structure: { columns: [{ panes: ["a", "b", "c"] }] },
+				attention: { a: 1, b: 0.5, c: 0 },
+			}),
+		).toBeCloseTo(0.75);
 	});
 });
 
@@ -122,9 +137,10 @@ describe("lane scope（doc 47 §3: 構成は lane ごと）", () => {
 		const b = laneScope("proj/performer/w1");
 		expect(a).not.toBe(b);
 
-		layoutEngine.update(a, () => twoPane());
-		layoutEngine.update(b, () => twoPane());
-		layoutEngine.update(a, (l) => toggleLanePane(l, CHAT));
+		layoutEngine.update(a, () => syncPaneColumns(initialLaneLayout(), [TERM, CHAT]));
+		layoutEngine.update(b, () => syncPaneColumns(initialLaneLayout(), [TERM, CHAT]));
+		// a だけ session 1 が閉じた（roster から消えた）
+		layoutEngine.update(a, (l) => syncPaneColumns(l, [TERM]));
 
 		expect(visibleIds(layoutEngine.current(a))).toEqual([TERM]);
 		expect(visibleIds(layoutEngine.current(b)).sort()).toEqual([CHAT, TERM].sort());

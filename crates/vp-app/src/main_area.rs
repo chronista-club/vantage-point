@@ -213,11 +213,10 @@ body{overflow:hidden;}
    子 Pane (#lane-host / .chat-session-host) は中身を変えず位置づけだけ absolute。
    inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
-/* タブエリアは「+ New」を常に載せるので高さは固定。.pane-tabs-active は
-   「畳まれた Pane が 1 つ以上ある」= 区切り線を出すかどうかにだけ効く。 */
-#pane-terminal{--pane-tabs-h:26px;}
+/* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
+   消え、+ New / Act 切替は EchoesHeader（lane の名札）へ移設した。 */
 #lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
-  bottom:var(--pane-tabs-h);background:var(--color-border,#2a3040);}
+  bottom:0;background:var(--color-border,#2a3040);}
 /* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
 #lane-panes > *{position:absolute;inset:0;background:var(--color-bg,#0f1115);
   outline:1px solid var(--color-border,#2a3040);outline-offset:-1px;}
@@ -226,40 +225,6 @@ body{overflow:hidden;}
 /* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
-/* doc 46 P1 要件 2: タブエリア。縮小された Pane の chip 置き場。
-   空なら高さ 0 (--pane-tabs-h) = 従来の見た目のまま。 */
-#pane-tabs{position:absolute;left:0;right:0;bottom:0;height:var(--pane-tabs-h);
-  display:flex;align-items:center;gap:4px;padding:0 6px;overflow-x:auto;overflow-y:hidden;
-  background:var(--color-bg,#0f1115);border-top:1px solid var(--color-border,#2a3040);}
-#pane-terminal:not(.pane-tabs-active) #pane-tabs{border-top:none;}
-/* doc 50 §2「空なら描かない」: lane 未選択（#lane-empty active）なら pane 操作の帯
-   （+ New / Act toggle）も存在しない — 操作対象の lane が無いのに入口だけ残さない。 */
-#pane-terminal:has(#lane-empty.active) #pane-tabs{display:none;}
-/* 「+ New」は chip と区別する（畳まれた Pane ではなく作成の入口）。 */
-.pane-tab.pane-new{border-style:dashed;}
-/* Act toggle（backend の console_mode 切替）。隣の Console/Chat chip は **表示の畳み** で
-   別レイヤーの操作なので、右端に寄せ + 区切りで系統が違うことを見せる。 */
-.pane-act-toggle{margin-left:auto;border-color:var(--color-surface-border-subtle);}
-.pane-act-toggle:hover{border-color:var(--sb-conn-auto,#22E0FF);}
-/* Engine × Act の選択メニュー（doc 46 P2 要件 4）。タブエリアの上に出す。 */
-.pane-new-menu{position:fixed;z-index:9999;min-width:180px;padding:4px;
-  border:1px solid var(--color-border,#2a3040);border-radius:6px;
-  background:var(--color-bg-elevated,#161a22);box-shadow:0 6px 20px #0008;
-  display:flex;flex-direction:column;gap:1px;}
-.pane-new-item{appearance:none;border:none;background:transparent;text-align:left;
-  padding:5px 8px;border-radius:4px;cursor:pointer;font-size:12px;
-  font-family:var(--vp-font-sans),var(--typography-family-sans);
-  color:var(--color-text-secondary,#a8b0c0);white-space:nowrap;}
-.pane-new-item:hover{background:var(--color-bg-hover,#1e242e);color:var(--color-text,#e6e9ef);}
-.pane-new-empty{padding:5px 8px;font-size:12px;color:var(--color-text-tertiary,#6b7280);}
-.pane-tab{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;
-  height:18px;padding:0 8px;border-radius:9px;cursor:pointer;
-  border:1px solid var(--color-border,#2a3040);background:transparent;
-  color:var(--color-text-secondary,#a8b0c0);font-size:11px;
-  font-family:var(--vp-font-sans),var(--typography-family-sans);white-space:nowrap;}
-.pane-tab:hover{color:var(--color-text,#e6e9ef);border-color:var(--sb-conn-auto,#22E0FF);}
-/* docked = 今並んでいる Pane。click で畳む。畳まれた chip（枠だけ）と区別する。 */
-.pane-tab.docked{background:var(--color-bg-hover,#1e242e);color:var(--color-text,#e6e9ef);}
 /* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
    header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
 #console-switching{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
@@ -465,13 +430,11 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
          inline で書く。子は #lane-host (Act I xterm、World A 所有・中身に触れない) +
          chat session host 群（World B の lane-panes が session ↔ Pane 1:1 で動的に生やす。
          旧 #console-chat-host 固定 1 枚は session ↔ Pane 1:1 への移行で退役）。
-         畳まれた Pane は #pane-tabs に chip。 -->
+         下端の帯 (#pane-tabs) は doc 51 §1 A1 で退役 — 表示は既定 tiling、
+         + New / Act 切替は EchoesHeader (lane の名札) へ移設。 -->
     <div id="lane-panes">
       <div id="lane-host"></div>
     </div>
-    <!-- doc 46 P1 要件 2: 縮小された Pane の置き場 (タブエリア)。chip を 1 クリックで
-         Pane に戻す。空の時は高さ 0 = 従来の見た目を壊さない。 -->
-    <div id="pane-tabs"></div>
     <!-- doc 33 §9: Act I⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
     <div id="console-switching">

@@ -1,9 +1,13 @@
 # doc 50 — Pane の額縁（縦軸）と session = Pane
 
 **Status**: 額縁の縦軸は実装済（`d1b71dde` / `cd037f66`）。session = Pane は **P1（視る）+
-P2（打つ）実装済**（`38f5f00e` 〜 `c6b93791`、2026-07-24）— 残りは P3（World A xterm re-key）/
-P4（Act toggle 撤去）/ P5（layout 永続）。PP Proj 撤去（`0330eb0d`）・名札ツールの hover 召喚
-（`d8d33efd`）も出荷済。
+P2（打つ）実装済**（`38f5f00e` 〜 `c6b93791`、2026-07-24）。**P4 は doc 51 §1 A1
+（帯撤去パッケージ、`ec38a479`）で完了** — lane-level Act toggle 撤去、避難路は EchoesHeader
+root picker の「見え方」行へ。ただし `console:set_mode` の session 単位化は **P3 送り**
+（pre-P3 は term になれるのが root だけで、session 引数は行使できる意味を持たない —
+読み手のない口を先に作らない）。tiling 既定 + 下端の帯（`#pane-tabs`）撤去も同 commit。
+残りは P3（World A xterm re-key）/ P5（layout 永続）。PP Proj 撤去（`0330eb0d`）・
+名札ツールの hover 召喚（`d8d33efd`）も出荷済。
 **Owners**: vp-app（webview World B + main_area World A）
 **Related**: [46-lane-pane-model.md](./46-lane-pane-model.md)（session ↔ Pane 1:1 の確定）、
 [49-gui-layout-engine.md](./49-gui-layout-engine.md)（lane scope の tiling 機構）、
