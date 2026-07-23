@@ -917,8 +917,17 @@ fn origin_for_cleanup(repo_root: &Path) -> String {
 ///
 /// 失敗は [`Liveness::Unknown`] で返し、**空リストには畳まない** — それが P3 第一スライスで
 /// guard を never-fire にしていた形そのもの。
+///
+/// `VP_TEST_NO_RUNNING_LANES=1` は **e2e テスト専用**の注入口で、World に訊かずに
+/// 「稼働 lane 0」を**答え**として返す。これが無いと `vp lane cleanup` の e2e は
+/// daemon 常駐マシンでしか通らない（開発機では通り CI だけ 10s timeout で落ちる =
+/// 手元の daemon が failure をマスクする形）。`Unknown` ではなく `Known(空)` を返すのが
+/// 要点 — 「World に訊けなかった」ではなく「訊いた結果 0 件だった」を模す。
 fn liveness_for_cleanup(repo_root: &Path) -> crate::host::liveness::Liveness {
     use crate::host::liveness::Liveness;
+    if skip_world_for_test() {
+        return Liveness::Known(Vec::new());
+    }
     let Some(project_path) = repo_root.to_str() else {
         return Liveness::Unknown("repo path に invalid UTF-8".to_string());
     };
@@ -953,7 +962,17 @@ pub(crate) trait FarewellLedger {
 /// 帳簿は db/world にあり surrealkv の OS 排他ロックで World が専有するので、CLI からは
 /// この経路しかない（doc 44 §8.4）。**失敗しても見送りは止めない**（best-effort）— 記録は
 /// 判断材料であって、それが取れないことは lane を消してよいかの判断を変えない。
+///
+/// ⚠️ `cleanup` の World 依存は **2 本ある**（稼働状況 = [`liveness_for_cleanup`] と、この帳簿）。
+/// `VP_TEST_NO_RUNNING_LANES` は両方を塞ぐ — 片方だけだと e2e は「通るが World 接続の
+/// timeout ぶん遅い」状態になる（実測 45s → 157s）。fail-open なので結果は正しく、
+/// **遅さでしか気付けない**。
 struct WorldFarewellLedger;
+
+/// e2e テスト用に World への問い合わせを丸ごと省くか（[`liveness_for_cleanup`] と同じ口）。
+fn skip_world_for_test() -> bool {
+    std::env::var("VP_TEST_NO_RUNNING_LANES").as_deref() == Ok("1")
+}
 
 impl FarewellLedger for WorldFarewellLedger {
     fn observe(
@@ -961,6 +980,9 @@ impl FarewellLedger for WorldFarewellLedger {
         repo_root: &Path,
         observations: &[crate::host::ledger::FarewellObservation],
     ) -> Vec<crate::host::ledger::FarewellEntry> {
+        if skip_world_for_test() {
+            return Vec::new();
+        }
         let Some(path) = repo_root.to_str() else {
             return Vec::new();
         };
@@ -972,6 +994,9 @@ impl FarewellLedger for WorldFarewellLedger {
         repo_root: &Path,
         entries: &[crate::host::ledger::FarewellObservation],
     ) {
+        if skip_world_for_test() {
+            return;
+        }
         let Some(path) = repo_root.to_str() else {
             return;
         };
