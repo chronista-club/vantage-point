@@ -247,6 +247,82 @@ mod ipc_tag_tests {
     }
 }
 
+/// doc 50 §4.6 A6: 「どの session に xterm / 購読が要るか」の導出（実機で踏んだ穴の固定）。
+///
+/// 旧実装は lane 単位の `console_mode` / `pid` で gate していた。あれは「term になれるのは
+/// root だけ」という制約下では正しかったが、A6 で非 root も term になれるので **root の act で
+/// lane 全体を切ると、非 root の住人が丸ごと落ちる**（2026-07-25 実機 dogfood で観測 —
+/// pane は並ぶのに中身が来ない）。導出は registry の act から行う、をここで固定する。
+#[cfg(test)]
+mod session_derivation_tests {
+    use super::{lane_has_chat_session, term_sessions_of};
+    use crate::client::LaneInfo;
+
+    /// registry snapshot 付きの最小 LaneInfo（wire と同じ JSON 形で組む）。
+    fn lane_with(root: u32, sessions: serde_json::Value, console_mode: &str) -> LaneInfo {
+        serde_json::from_value(serde_json::json!({
+            "address": {"kind": "root", "project": "vp"},
+            "console_mode": console_mode,
+            "sessions": {"root": root, "focused": root, "sessions": sessions},
+        }))
+        .expect("LaneInfo deserialize")
+    }
+
+    fn s(key: u32, act: &str) -> serde_json::Value {
+        serde_json::json!({"key": key, "stand": "echoes", "act": act})
+    }
+
+    #[test]
+    fn term_sessions_picks_every_tui_session_with_root_flag() {
+        // root=16 が chat、非 root=19 が tui（2026-07-25 実機で踏んだ構成そのもの）。
+        let lane = lane_with(16, serde_json::json!([s(16, "chat"), s(19, "tui")]), "chat");
+        assert_eq!(
+            term_sessions_of(&lane),
+            vec![(19, false)],
+            "root が chat でも非 root の term は拾う（lane ごと skip しない）"
+        );
+
+        // root も tui なら root フラグ付きで拾う。
+        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "tui")]), "tui");
+        assert_eq!(term_sessions_of(&lane), vec![(16, true), (19, false)]);
+
+        // 全部 chat なら term はゼロ = lane に xterm は要らない。
+        let lane = lane_with(16, serde_json::json!([s(16, "chat")]), "chat");
+        assert!(term_sessions_of(&lane).is_empty());
+    }
+
+    #[test]
+    fn term_sessions_falls_back_to_root_for_legacy_wire() {
+        // registry snapshot が無い旧 SP からの wire は root 1 枚に畳む（従来挙動）。
+        let lane: LaneInfo = serde_json::from_value(serde_json::json!({
+            "address": {"kind": "root", "project": "vp"},
+        }))
+        .expect("LaneInfo deserialize");
+        assert_eq!(term_sessions_of(&lane), vec![(1, true)]);
+    }
+
+    #[test]
+    fn chat_gate_looks_at_any_session_not_just_root() {
+        use crate::pane::SidebarState;
+
+        // root=tui + 非 root=chat: echoes 購読を張らないと その chat pane が無言になる。
+        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "chat")]), "tui");
+        let addr = lane.address.key();
+        let mut state = SidebarState::default();
+        state.lanes_by_project.insert("p".to_string(), vec![lane]);
+        assert!(
+            lane_has_chat_session(&state, &addr),
+            "非 root だけ chat の構成でも購読を張る"
+        );
+
+        // 全部 tui なら購読不要。
+        let lane = lane_with(16, serde_json::json!([s(16, "tui")]), "tui");
+        let mut state2 = SidebarState::default();
+        state2.lanes_by_project.insert("p".to_string(), vec![lane]);
+        assert!(!lane_has_chat_session(&state2, &addr));
+    }
+}
+
 /// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に
 /// 変換する pump スレッドを起動する。muda の menu event は global channel (single
 /// receiver) なので 1 thread だけ起動する。
@@ -2029,6 +2105,29 @@ fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// lane に **chat session（act=chat）が 1 つでもある**か（doc 50 §4.6 A6）。
+///
+/// [`lane_is_chat`]（= root の act）との違いが効くのは「root は tui のまま、非 root だけ
+/// chat」の構成。echoes topic の購読は **lane 単位**（session は message field で運ぶ）なので、
+/// 購読を張るかどうかは root の act ではなく「chat の住人が居るか」で決めないと、その
+/// session の event が誰にも届かない（pane は並ぶのに無言、の形）。
+///
+/// registry snapshot が無い旧 SP からの wire は root の act に倒す（従来挙動）。
+fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
+    let Some(lane) = state
+        .lanes_by_project
+        .values()
+        .flatten()
+        .find(|l| l.address.key() == address)
+    else {
+        return false;
+    };
+    match &lane.sessions {
+        Some(reg) if !reg.sessions.is_empty() => reg.sessions.iter().any(|s| s.act == "chat"),
+        _ => lane.console_mode == "chat",
+    }
+}
+
 /// doc 38 §4.2: `echoes_session_list` payload（`{focused, sessions:[{key, stand, focused, ...}]}`）
 /// から focused session の stand を引く。New Session の chat 分岐で「現 focused と同じ engine の
 /// 新 Draft を作る」ために使う。`focused` フラグ優先 → `focused` key 一致 → 先頭 の順で解決し、
@@ -2204,7 +2303,10 @@ fn ensure_echoes_attach(
     proxy: &EventLoopProxy<AppEvent>,
     world_conn: &SharedWorldConn,
 ) {
-    if !lane_is_chat(sidebar_state, address) || echoes_sessions.contains_key(address) {
+    // doc 50 §4.6 A6: gate は「lane に chat session が居るか」（root の act ではない）。
+    // 購読は lane 単位で全 session の event を運ぶので、root=tui + 非 root=chat の構成でも
+    // 張る必要がある（張らないと その chat pane が無言になる = xterm 側と同型の穴）。
+    if !lane_has_chat_session(sidebar_state, address) || echoes_sessions.contains_key(address) {
         return;
     }
     let Some(process_path) = resolve_project_path_for_lane(sidebar_state, address) else {
@@ -3850,22 +3952,26 @@ pub fn run() -> anyhow::Result<()> {
                 // terminal session start (World 購読 → demand → SP pump)。 どちらも idempotent。
                 if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
                     for lane in lanes_for_proj {
-                        // pid:null = PtySlot 不在 → xterm を作らない。 内訳は 2 種で、 どちらも
-                        // ここでは対象外にするのが正しい:
-                        //  - Dead Lane (spawn 失敗、 F.8 B Convergent) → 別途 on-demand respawn
-                        //  - chat lane (Act II) → 内容は ChatView が描く
-                        // ⚠️ 「pid=null = 死」ではない。逆に「pid あり = tui」でもない — chat lane
-                        //    は engine 稼働中 pid=Some になる（ensure_chat_engine が host pid を
-                        //    記録）ため、pid だけで gate すると chat lane に xterm と terminal
-                        //    購読を作ってしまう。console_mode の除外を必ず併用（#702 と同じ教訓）。
-                        if lane.pid.is_none() || lane.console_mode == "chat" {
+                        // doc 50 §4.6 A6: gate は **term session が 1 つでもあるか**。
+                        //
+                        // ⚠️ 旧 gate は `pid.is_none() || console_mode == "chat"` だった。あれは
+                        //    「term になれるのは root だけ」という制約下では正しかった（root が
+                        //    chat なら lane に xterm は要らない）。A6 で非 root も term になれる
+                        //    ので、**root が chat でも非 root の term** が居うる — lane ごと skip
+                        //    すると、その term に xterm も購読も作られず「pane は並ぶが真っ黒」に
+                        //    なる（2026-07-25 実機 dogfood で観測。pid も root slot の pid なので
+                        //    root=chat では None に見え、二重に間違う）。
+                        //    lane 単位の判断はやめ、registry の act から導出する。
+                        let terms = term_sessions_of(lane);
+                        if terms.is_empty() {
                             continue;
                         }
                         // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
                         let addr_str = lane.address.key();
                         lane_respawn_triggered.remove(&addr_str);
-                        // doc 50 §4.6 A6: term session（act=tui）ごとに xterm を用意する。
-                        for (session, is_root) in term_sessions_of(lane) {
+                        // term session ごとに xterm を用意する（PtySlot 不在なら pump が張れない
+                        // だけで graceful — Dead lane は別途 on-demand respawn が拾う）。
+                        for (session, is_root) in terms {
                             lane_js::ensure_lane(&webview, &addr_str, session, is_root);
                         }
                         // terminal session 未起動なら start (idempotent)。
@@ -3923,11 +4029,9 @@ pub fn run() -> anyhow::Result<()> {
                 // terminal session 自体は LanesLoaded reconcile が管理するのでここでは触らない。
                 for (_project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
                     for lane in lanes {
-                        // pid:null = PtySlot 不在 (Dead Lane / chat lane) → xterm 不要。
-                        if lane.pid.is_none() {
-                            continue;
-                        }
-                        // doc 50 §4.6 A6: term session ごとに catch-up（idempotent）。
+                        // doc 50 §4.6 A6: gate は term session の有無（LanesLoaded と同じ規則 —
+                        // lane 単位の pid / mode で切ると root=chat の lane の非 root term が
+                        // 落ちる）。ensureLane は idempotent なので catch-up で撃ち直してよい。
                         let addr_str = lane.address.key();
                         for (session, is_root) in term_sessions_of(lane) {
                             lane_js::ensure_lane(&webview, &addr_str, session, is_root);
