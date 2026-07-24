@@ -50,8 +50,16 @@ import { sessionChipPrefix } from "./EchoesHeader";
 export type PaneRef = {
 	id: string;
 	label: string;
-	/** chat session pane なら session key（doc 46 §1.5 session ↔ Pane 1:1）。term pane は無し */
+	/** session pane なら session key（doc 46 §1.5 session ↔ Pane 1:1）。board pane は無し。
+	 *  ⚠️ **kind の代用にしないこと** — A6 以前は「session を持つ = chat pane」が成り立ち、
+	 *  `session !== undefined` が判別に使えたが、A6 で term pane も session を持つように
+	 *  なったのでこの対応は壊れた。種類は `kind` を見る。 */
 	session?: number;
+	/** この pane の種類（doc 50 §4.6 A6）。host を誰が作るか / 何を mount するかが変わる:
+	 *  - `term`: host は World A（xterm）が所有。SolidJS は名札だけを差し込む
+	 *  - `chat`: host も中身も SolidJS が作る
+	 *  - `board`: lane に 1 枚の静的 host（session と直交） */
+	kind: "term" | "chat" | "board";
 };
 
 /** roster の入力になる session の最小形（'vp:echoes-sessions' bus の 1 要素）。
@@ -72,12 +80,20 @@ export function termHostId(session: number, isRoot: boolean): string {
 /** root session の term pane（= 静的 host `#lane-host`）。非 root の term は
  *  `termHostId` が返す動的 host（`#term-session-<n>`）に載る（doc 50 §4.6 A6）。
  *  root だけ静的なのは、layout 永続 / boot 既定の id を変えないため。 */
-export const TERM_PANE_REF: PaneRef = { id: "lane-host", label: "Console" };
+export const TERM_PANE_REF: PaneRef = {
+	id: "lane-host",
+	label: "Console",
+	kind: "term",
+};
 
 /** board（PP）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
  *  1 lane 1 枚、表示 lane は常に 1 つ = xterm と同じ性質。動的生成は不要、位置決めだけ動く）。
  *  roster に載るのは board が非空のときだけ（doc 52 §10 wave 0 — board 非空で自動）。 */
-export const BOARD_PANE_REF: PaneRef = { id: "lane-board", label: "Paisley Park" };
+export const BOARD_PANE_REF: PaneRef = {
+	id: "lane-board",
+	label: "Paisley Park",
+	kind: "board",
+};
 
 /** chat session pane の host DOM id。表示中 lane の host にだけ使う（lane 切替で作り直すため
  *  lane を id に含めない — DOM には常に 1 lane 分しか存在しない） */
@@ -119,8 +135,8 @@ export function lanePaneRefs(
 	const sessionPanes = sessions.map((v): PaneRef => {
 		const label = `${sessionChipPrefix(v.stand)}#${v.key}`;
 		return v.act === "chat"
-			? { id: chatHostId(v.key), label, session: v.key }
-			: { id: termHostId(v.key, !!v.root), label, session: v.key };
+			? { id: chatHostId(v.key), label, session: v.key, kind: "chat" }
+			: { id: termHostId(v.key, !!v.root), label, session: v.key, kind: "term" };
 	});
 	return boardPresent ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
 }
@@ -220,6 +236,12 @@ export interface LanePanesDeps {
 	container: HTMLElement;
 	/** chat session pane の中身を host に mount する（chatview.mountSession）。返り値 = dispose */
 	mountChat: (host: HTMLElement, lane: string, session: number) => () => void;
+	/** term pane の名札を host に差し込む（doc 50 §4.6 A6 ②）。返り値 = dispose。
+	 *
+	 *  host（`#lane-host` / `#term-session-<n>`）と中の xterm は World A の持ち物なので、
+	 *  **名札 DOM を足すだけ**にとどめる（xterm container には触れない — doc 33 §8）。
+	 *  xterm を名札の高さぶん下げるのは World A 側の CSS（`.has-term-plate`）。 */
+	mountTermPlate: (host: HTMLElement, lane: string, session: number) => () => void;
 }
 
 /**
@@ -294,29 +316,48 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		layoutEngine.settle(scope, "scene");
 	};
 
-	/** 表示中 lane の動的 host（chat session pane）を refs に同期する — 無ければ生成 + mount、
-	 *  消えた session の host は dispose + DOM 除去。生成直後は display:none（render が
-	 *  可視性を決めるまで何も覆わない — #880 の教訓）。 */
+	/** 表示中 lane の session pane を refs に同期する（doc 50 §4.6 A6 で term も対象に）。
+	 *
+	 *  kind で扱いが分かれる:
+	 *  - **chat**: host も中身も SolidJS。無ければ生成 + mount、消えたら dispose + DOM 除去。
+	 *    生成直後は display:none（render が可視性を決めるまで何も覆わない — #880 の教訓）
+	 *  - **term**: host は World A（xterm）の持ち物なので**作らない・消さない**。名札だけを
+	 *    host に差し込み、消えたら名札だけ外す（xterm 本体には触れない = doc 33 §8 の境界）
+	 */
 	const syncDynHosts = (lane: string, refs: PaneRef[]): void => {
 		const want = new Map(
-			refs.filter((v) => v.session !== undefined).map((v) => [v.id, v.session as number]),
+			refs
+				.filter((v) => v.session !== undefined && v.kind !== "board")
+				.map((v) => [v.id, v]),
 		);
-		// 消えた host の破棄
+		// 消えた pane の後始末（chat は host ごと、term は名札だけ）
 		for (const [id, dispose] of [...dynDisposers]) {
 			if (want.has(id)) continue;
 			dispose();
 			dynDisposers.delete(id);
-			deps.hostOf(id)?.remove();
+			// chat host は SolidJS が作ったものなので除去する。term host は World A の
+			// 持ち物なので残す（dispose 側が名札 DOM だけを片付ける）。
+			const host = deps.hostOf(id);
+			if (host?.classList.contains("chat-session-host")) host.remove();
 		}
-		// 足りない host の生成 + mount
-		for (const [id, session] of want) {
+		// 足りない pane の mount
+		for (const [id, ref] of want) {
 			if (dynDisposers.has(id)) continue;
-			const host = document.createElement("div");
-			host.id = id;
-			host.className = "chat-session-host";
-			host.style.display = "none";
-			deps.container.appendChild(host);
-			dynDisposers.set(id, deps.mountChat(host, lane, session));
+			const session = ref.session as number;
+			if (ref.kind === "chat") {
+				const host = document.createElement("div");
+				host.id = id;
+				host.className = "chat-session-host";
+				host.style.display = "none";
+				deps.container.appendChild(host);
+				dynDisposers.set(id, deps.mountChat(host, lane, session));
+			} else {
+				// term: host は World A が ensureLane で用意する。まだ無ければ次の同期に回す
+				// （boot 窓 — session 一覧が先に届き、xterm 生成が後になることがある）。
+				const host = deps.hostOf(id);
+				if (!host) continue;
+				dynDisposers.set(id, deps.mountTermPlate(host, lane, session));
+			}
 		}
 	};
 

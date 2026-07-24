@@ -229,6 +229,14 @@ body{overflow:hidden;}
 /* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
+/* doc 50 §4.6 A6 ②: term pane にも名札が載る。名札の DOM と中身は World B（SolidJS の
+   SessionPlate）が host に差し込むが、**xterm を下げる責務は World A 側**に置く —
+   `.lane-pane` は World A の持ち物なので、その位置決めも World A が持つ（World B は
+   host に `.has-term-plate` を付けるだけ = DOM 所有の境界を跨がない、doc 33 §8）。
+   名札は絶対配置で上端に載せ、xterm はその分だけ top を下げる。 */
+.has-term-plate > .lane-pane{top:var(--vp-nameplate-h);}
+.term-plate{position:absolute;top:0;left:0;right:0;height:var(--vp-nameplate-h);
+  z-index:1;overflow:hidden;}
 /* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
    header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
 #console-switching{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;z-index:20;

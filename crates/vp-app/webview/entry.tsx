@@ -469,6 +469,9 @@ const lanePanes =
 				container: lanePanesEl,
 				mountChat: (host, lane, session) =>
 					chatView.mountSession(host, lane, session),
+				// doc 50 §4.6 A6 ②: term pane にも名札（素性 + kind badge）を出す。
+				mountTermPlate: (host, lane, session) =>
+					chatView.mountTermPlate(host, lane, session),
 			})
 		: null;
 if (lanePanes && paneFrame) {

@@ -43,8 +43,8 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 				{ key: 3, stand: "codex", act: "chat" },
 			]),
 		).toEqual([
-			{ id: "lane-host", label: "cc#1", session: 1 },
-			{ id: "chat-session-3", label: "cdx#3", session: 3 },
+			{ id: "lane-host", label: "cc#1", session: 1, kind: "term" },
+			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
 		]);
 	});
 
@@ -55,8 +55,8 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 				{ key: 3, stand: "codex", act: "chat" },
 			]),
 		).toEqual([
-			{ id: "chat-session-1", label: "cc#1", session: 1 },
-			{ id: "chat-session-3", label: "cdx#3", session: 3 },
+			{ id: "chat-session-1", label: "cc#1", session: 1, kind: "chat" },
+			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
 		]);
 	});
 
@@ -97,6 +97,25 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 		const s = [{ key: 1, stand: "echoes", root: true, act: "tui" as const }];
 		expect(lanePaneRefs(s, false).map((p) => p.id)).toEqual([TERM]);
 		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);
+	});
+
+	it("kind が pane の種類を運ぶ（session の有無では判別できない）", () => {
+		// ⚠️ A6 以前は「session を持つ = chat pane」で判別できたが、term も session を持つ
+		// ようになったので壊れた。kind は「host を誰が作るか」（term = World A / chat =
+		// SolidJS）を決める分岐なので、取り違えると xterm の host を消しかねない。
+		const refs = lanePaneRefs(
+			[
+				{ key: 1, stand: "echoes", root: true, act: "tui" },
+				{ key: 3, stand: "codex", act: "chat" },
+			],
+			true,
+		);
+		expect(refs.map((p) => p.kind)).toEqual(["term", "chat", "board"]);
+		// term と chat の両方が session を持つ = session は kind の代用にならない。
+		expect(refs.filter((p) => p.session !== undefined).map((p) => p.kind)).toEqual([
+			"term",
+			"chat",
+		]);
 	});
 });
 

@@ -2071,6 +2071,8 @@ export type ChatViewApi = {
   /** chat session pane を host に mount する（lane-panes の動的 host 生成から呼ばれる）。
    *  返り値 = dispose（lane 切替 / session close で host ごと破棄する時に呼ぶ）。 */
   mountSession(host: HTMLElement, lane: string, session: number): () => void
+  /** doc 50 §4.6 A6 ②: term pane（xterm）の host に名札だけを差し込む。返り値 = dispose。 */
+  mountTermPlate(host: HTMLElement, lane: string, session: number): () => void
 }
 
 export function installChatView(vpConsole: VpConsole): ChatViewApi {
@@ -2117,6 +2119,33 @@ export function installChatView(vpConsole: VpConsole): ChatViewApi {
     mountSession(host, lane, session) {
       laneChat(lane, session) // store を先に用意（mount 前に届く replay の取りこぼし防止）
       return render(() => <SessionChatView lane={lane} session={session} />, host)
+    },
+    mountTermPlate(host, lane, session) {
+      // doc 50 §4.6 A6 ②: term pane の名札。host と中の xterm は World A の持ち物なので
+      // **名札用の div を足すだけ**（xterm container には触れない — doc 33 §8）。
+      // `.has-term-plate` を host に付けると World A 側の CSS が xterm を名札分下げる。
+      const mount = document.createElement('div')
+      mount.className = 'term-plate'
+      host.appendChild(mount)
+      host.classList.add('has-term-plate')
+      const dispose = render(
+        () => (
+          <SessionPlate
+            lane={lane}
+            session={session}
+            act="tui"
+            // term pane は focus 状態を World B が持たない（keyboard focus は xterm 側）。
+            // 名札の focus 強調は chat の「打つ宛先」を示すものなので、term では常に false。
+            focused={false}
+          />
+        ),
+        mount,
+      )
+      return () => {
+        dispose()
+        mount.remove()
+        host.classList.remove('has-term-plate')
+      }
     },
   }
 }
