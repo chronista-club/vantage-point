@@ -47,7 +47,7 @@ pub struct HistoryMessage {
 /// board（PP Canvas の scope 別永続リスト）の 1 item（board モデル 2026-07-15）。
 ///
 /// SP が id を一元発行し（webview は自前生成しない）、 [`ProcessMessage::BoardUpdated`] の
-/// snapshot で配信される。 JSON は webview の CanvasItem と揃える（camelCase:
+/// snapshot で配信される。 JSON は webview の BoardItem と揃える（camelCase:
 /// id / content / contentType / title / createdAt）ので DB stack にもそのまま載る。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

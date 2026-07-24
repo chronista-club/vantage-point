@@ -340,7 +340,7 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `bastet@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
+        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Paisley Park inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `bastet@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
@@ -394,9 +394,9 @@ impl VantageMcp {
             // mailbox_addresses 計算 (= per-Lane の wire address。VP-166 設計 doc 16)。
             //
             // 各 Lane (conductor / performer) は 2 つの box を持つ:
-            //   - `agent#<lane>`  = その lane の Claude session 宛 (= coding-assistant inbox)
-            //   - `canvas#<lane>` = その lane の Canvas / PP 宛 (PR-5 で配線)
-            // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "canvas"`)。
+            //   - `agent#<lane>` = その lane の Claude session 宛 (= coding-assistant inbox)
+            //   - `board#<lane>` = その lane の board / PP 宛
+            // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "board"`)。
             // JoJo 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
             // wire syntax は `<stand-id>@<project>/<lane>` (conductor は `/lane` 省略可)。
             // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
@@ -410,7 +410,7 @@ impl VantageMcp {
             };
             let mailbox = serde_json::json!({
                 "agent": format!("agent@{}{}", project, lane_suffix),
-                "canvas": format!("canvas@{}{}", project, lane_suffix),
+                "board": format!("board@{}{}", project, lane_suffix),
             });
             // VP-166 PR-4: この MCP プロセスの lane と一致する entry に `is_self` を付与
             // (SP は caller を知らないので MCP 側で post-process)。agent は自分の entry を

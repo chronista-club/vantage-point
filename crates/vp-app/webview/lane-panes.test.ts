@@ -11,6 +11,7 @@
 import { resolve, visibleIds } from "@chronista-club/creo-ui-layout";
 import { describe, expect, it } from "vitest";
 import {
+	boardLaneKeyOf,
 	chatHostId,
 	enterShare,
 	initialLaneLayout,
@@ -67,6 +68,39 @@ describe("lanePaneRefs（roster = mode × root で term / chat を排他、doc 5
 
 	it("tui + session なし = Console のみ", () => {
 		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
+	});
+
+	it("board 非空: mode を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
+		// tui: Console + board
+		expect(lanePaneRefs([], "tui", true).map((p) => p.id)).toEqual([
+			TERM,
+			"lane-board",
+		]);
+		// chat: 全 chat + board（session あり）
+		expect(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true }], "chat", true).map(
+				(p) => p.id,
+			),
+		).toEqual(["chat-session-1", "lane-board"]);
+	});
+
+	it("board 空（既定）は board pane を出さない", () => {
+		expect(lanePaneRefs([], "tui", false).map((p) => p.id)).toEqual([TERM]);
+		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
+	});
+});
+
+describe("boardLaneKeyOf（address → board flat key の写像。'vp:board-presence' 突合の seam）", () => {
+	it("root / lead は 'conductor'（board-handler の None→'conductor' と一致）", () => {
+		expect(boardLaneKeyOf("vantage-point/root")).toBe("conductor");
+		expect(boardLaneKeyOf("vantage-point/lead")).toBe("conductor");
+	});
+	it("performer は名前を返す", () => {
+		expect(boardLaneKeyOf("vantage-point/performer/foo")).toBe("foo");
+		expect(boardLaneKeyOf("vantage-point/wing/bar")).toBe("bar");
+	});
+	it("未知形は 'conductor' に倒す（board は最悪 conductor board に出す側）", () => {
+		expect(boardLaneKeyOf("weird")).toBe("conductor");
 	});
 });
 

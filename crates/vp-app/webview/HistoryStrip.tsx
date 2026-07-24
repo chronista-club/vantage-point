@@ -1,7 +1,7 @@
 /**
  * History Strip — PP body の下行に直近 N=10 件の thumbnail を新→古 順で表示する component。
  *
- * doc 19 PP Canvas Stack Model (2026-05-27) Phase 2。 canvas-handler.ts の `CanvasState`
+ * doc 19 PP Canvas Stack Model (2026-05-27) Phase 2。 board-handler.ts の `CanvasState`
  * を購読し、 items × cursor を 1 row の thumbnail strip として render。
  *
  * 動作:
@@ -23,8 +23,8 @@ import {
   getCanvasState,
   setCursor,
   subscribeCanvasState,
-  type CanvasItem,
-} from './canvas-handler'
+  type BoardItem,
+} from './board-handler'
 
 /** content_type → Phosphor icon mapping (= doc 19 §5.1)。 */
 const CONTENT_TYPE_ICON: Record<string, IconName> = {
@@ -37,7 +37,7 @@ const CONTENT_TYPE_ICON: Record<string, IconName> = {
 const TITLE_MAX_CHARS = 8
 
 /** title 未指定時に content 先頭を fallback として返す。 */
-export function aliasOf(item: CanvasItem): string {
+export function aliasOf(item: BoardItem): string {
   if (item.title && item.title.trim().length > 0) {
     return item.title.trim()
   }
@@ -53,7 +53,7 @@ export function truncate(s: string, n: number): string {
 }
 
 function HistoryStrip() {
-  // canvas-handler の state を SolidJS signal に bridge。 listener で再 read して reactivity 化。
+  // board-handler の state を SolidJS signal に bridge。 listener で再 read して reactivity 化。
   const [state, setState] = createSignal(getCanvasState())
 
   onMount(() => {
@@ -148,13 +148,11 @@ export const HISTORY_STRIP_CSS = `
   color:var(--color-text-primary);}
 .pp-history-cell.active .pp-history-close{color:var(--color-brand-primary);}
 
-/* pane-body を flex column 化して main + strip を縦並びにする。
-   .pane-body は position:absolute (top:28px/bottom:0) で既に definite height を持つので
-   height:100% は付けない — top:28px オフセット + height:100% = コンテナを 28px はみ出し、
-   最下行の history-strip が window 下端で clip される (= タブ上端だけ見える原因)。
-   pp-content は flex:1 + min-height:0 で内部スクロール (flex item の default min-height:auto
-   だと長い content が縮まず strip を押し出すため、min-height:0 で縮小を許可する)。 */
-#pane-paisley-park .pane-body{display:flex;flex-direction:column;}
-#pane-paisley-park .pane-body .pp-content{flex:1;overflow-y:auto;min-height:0;}
-#pane-paisley-park .pane-body .pp-history-strip{flex:0 0 auto;}
+/* board pane（doc 52 §10 wave 0: #lane-board）の内部縦並び。#lane-board 自体が flex column
+   （main_area.rs 側で定義）なので、pp-content を flex:1 + min-height:0 で内部スクロールさせ、
+   history-strip を下端に固定する（flex item の default min-height:auto だと長い content が
+   縮まず strip を押し出すため、min-height:0 で縮小を許可 = 長文 item が strip を window 外へ
+   追い出す旧症状の予防）。 */
+#lane-board .pp-content{flex:1;overflow-y:auto;min-height:0;}
+#lane-board .pp-history-strip{flex:0 0 auto;}
 `

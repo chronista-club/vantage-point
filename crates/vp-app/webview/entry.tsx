@@ -115,10 +115,10 @@ import {
 } from "./EchoesHeader";
 import { renderDevices as renderBastetDevices } from "./bastet";
 import {
-	handleMessage as handleCanvasMessage,
+	handleMessage as handleBoardMessage,
 	setActiveLaneName,
 	clearActiveBoard,
-} from "./canvas-handler";
+} from "./board-handler";
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from "./HistoryStrip";
 import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 
@@ -131,12 +131,12 @@ console.info("[vp-bundle] imports resolved");
 // 集約され、ここは購読の install と setActivePane bridge（下方）だけを持つ。
 //
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
-//   echoes  → pane-terminal      (Echoes Stand = lane terminal host)
-//   pp      → pane-paisley-park  (Paisley Park 🧭 / Information Router、 PP body = Smart Canvas surface)
+//   echoes  → pane-terminal      (Echoes Stand = lane workbench。console/chat/board の tiling を内包)
 //   ge      → pane-gold-experience (Gold Experience 🌿)
 //   bs      → pane-bastet         (Bastet 🧲 / device 一覧)
 //   preview → pane-preview        (iframe preview)
 //   empty   → pane-empty          (no selection)
+//   doc 52 §10 wave 0: pp（Paisley Park）は app pane を退役 → lane tiling の board pane (#lane-board)
 // 注: 旧 data-pane-id (main_area.rs inline JS が Lane address 等に書き換える native overlay sync 用)
 // と attribute を分離。 同名にすると Lane click で legacy 側が hijack して配置 lookup が
 // undefined → 非表示投影で pane が見えなくなる回帰を起こすため (VP-141 fix)。
@@ -161,12 +161,11 @@ attachKeybindings(window);
 // - kind != terminal (PP/GE/Bastet click 等) は Lane を跨がない fixed-Pane focus、 記憶は更新しない
 const KIND_TO_PANE: Record<string, string> = {
 	terminal: "echoes",
-	paisley_park: "pp",
 	gold_experience: "ge",
 	bastet: "bs",
 	preview: "preview",
 	empty: "empty",
-	// VP-142 cleanup: legacy "canvas" kind 削除 (Smart Canvas surface = PP body に物理化済)
+	// doc 52 §10 wave 0: paisley_park → pp は退役（board pane = lane tiling へ移設）。
 	// LE-P4 PR1: 幽霊の hermit_purple → hp（DOM 不在）を落とし、DOM に居た bastet → bs を
 	// 補充（旧体系では unknown kind → empty に落ちて Bastet pane が見えなかった）
 };
@@ -197,7 +196,7 @@ let activeLaneAddress: string | null = null;
 let echoesHeader: EchoesHeaderApi | null = null;
 
 /**
- * LaneAddress::Display 形を canvas-handler が使う flat lane_name に翻訳する。
+ * LaneAddress::Display 形を board-handler が使う flat lane_name に翻訳する。
  * `null` = conductor（lead）、`string` = performer 名。
  *
  * D2 統一: 語彙は root/performer。rename 途上のため legacy `lead`/`wing` も受理する:
@@ -282,14 +281,14 @@ const installSetActivePaneBridge = (): void => {
 };
 
 // wiremsg Stage 2: Rust 注入口。Rust 側 spawn_canvas_subscription が active project の
-// canvas ProcessMessage ごとに `window.vpCanvas.handleMessage(msg)` を evaluate_script で呼ぶ。
-// DevTools から手動 trigger も可: window.vpCanvas.handleMessage({type:'show',content:{markdown:'# hi'}})
+// canvas ProcessMessage ごとに `window.vpBoard.handleMessage(msg)` を evaluate_script で呼ぶ。
+// DevTools から手動 trigger も可: window.vpBoard.handleMessage({type:'show',content:{markdown:'# hi'}})
 (
 	window as unknown as {
-		vpCanvas: { handleMessage: typeof handleCanvasMessage };
+		vpBoard: { handleMessage: typeof handleBoardMessage };
 	}
-).vpCanvas = {
-	handleMessage: handleCanvasMessage,
+).vpBoard = {
+	handleMessage: handleBoardMessage,
 };
 
 // doc 19 PP Canvas Stack Model: HistoryStrip CSS を head に注入 + DOMContentLoaded で mount。
@@ -376,7 +375,7 @@ if (document.readyState === "loading") {
 	}
 }
 
-// DevTools 検査用 (window.vpAppLayout.applyScene('side-review') 等で手動 trigger 可能)
+// DevTools 検査用 (window.vpAppLayout.applyScene('ge-focus') 等で手動 trigger 可能)
 (window as unknown as { vpAppLayout: unknown }).vpAppLayout = {
 	engine: layoutEngine,
 	applyScene: applyAppScene,
@@ -605,6 +604,15 @@ document.addEventListener("vp:act-switch-request", (e) => {
 	JSON.stringify({ t: "bastet:devices_fetch" }),
 );
 
+// board pane の boot 窓 catch-up（doc 52 §10 wave 0）: board の retained BoardUpdated は
+// bundle ロード前に届いて `window.vpBoard &&` guard で落ちる → reopen で board pane が出ない。
+// vpBoard install 済のこの時点で Rust に保持済み board snapshot の再配信を要求する
+// （bastet:devices_fetch と同型。activeLane 未設定でも boardByLane に presence が積まれ、
+//  lane 選択時に board pane が生える）。
+(window as unknown as { ipc?: { postMessage(m: string): void } }).ipc?.postMessage(
+	JSON.stringify({ t: "board:demand" }),
+);
+
 // ===== Pane action button delegation =====
 // 各 pane の `[data-action]` button を click delegation で hook。 S2 では Clear のみ実装、
 // data-target 属性で対象 surface を識別 (`pp` = Paisley Park body)。 将来的に Pin / Lane 切替
@@ -628,7 +636,7 @@ document.addEventListener(
 				// doc 19 PP Canvas Stack Model: clear は items + cursor + DOM の 3 つを全 reset
 				// する semantic。 `clearPP()` 直叩きだと canvasState (items / cursor) が残り、
 				// strip は表示されたまま main だけ空になる非対称が起きる (= team-b review で発覚)。
-				// canvas-handler の `handleMessage({type:'clear'})` 経路で stack 含めて全 reset する。
+				// board-handler の `handleMessage({type:'clear'})` 経路で stack 含めて全 reset する。
 				clearActiveBoard();
 			} else {
 				console.warn("[vp-bundle] clear: unknown target", dataTarget);

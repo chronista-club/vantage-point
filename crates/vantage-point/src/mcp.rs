@@ -42,45 +42,9 @@ pub struct RestartParams {
     pub open_viewer: Option<bool>,
 }
 
-/// Canvas の 1 pane の最新内容 (= retained Show、 list_canvas / read_pane の共通中間表現)
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CanvasPane {
-    pub pane_id: String,
-    pub content_type: String,
-    pub content: String,
-    pub title: Option<String>,
-    /// Show の append フラグ。 true = 同一 pane_id の既存内容に追記 (canvas_state と同義)。
-    pub append: bool,
-}
-
-/// "canvas" channel の retained Show payload (ProcessMessage::Show JSON) を CanvasPane に
-/// parse する (純関数)。
-///
-/// Show 以外 (clear / toggle 等) や形不正は None。 Content は外部タグ enum なので
-/// `content` object の唯一の key が content_type (markdown/html/log/url)、 値が本文。
-/// `image_base64` variant は値が object のため `content` は空文字になる (PP Canvas は現状未使用)。
-pub(crate) fn parse_show_payload(v: &serde_json::Value) -> Option<CanvasPane> {
-    if v.get("type")?.as_str()? != "show" {
-        return None;
-    }
-    let pane_id = v.get("pane_id")?.as_str()?.to_string();
-    let content_obj = v.get("content")?.as_object()?;
-    let (content_type, content_val) = content_obj.iter().next()?;
-    let content = content_val.as_str().unwrap_or("").to_string();
-    let title = v
-        .get("title")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string());
-    // append 不在は false 扱い (= 上書き、 show tool の既定)。
-    let append = v.get("append").and_then(|a| a.as_bool()).unwrap_or(false);
-    Some(CanvasPane {
-        pane_id,
-        content_type: content_type.clone(),
-        content,
-        title,
-        append,
-    })
-}
+// doc 52 §7: CanvasPane / parse_show_payload は list_canvas / read_pane（死んだ読み手）と共に撤去。
+// board モデル化（2026-07-15）で show は board 経路に intercept され、retained Show を broadcast
+// する者が消えた → これらは常に空を読む reader-without-writer だった。board を読む口は §4 で別途新設。
 
 /// MCP → Process 通信クライアント
 ///
@@ -507,87 +471,6 @@ impl VantageMcp {
         }
     }
 
-    /// World :32000 の集約 "canvas" channel に one-shot 接続し、 retained snapshot
-    /// (pane_id ごとの最新 Show) を drain して返す (vp-app `run_canvas_session` と同 protocol)。
-    ///
-    /// L0 SP-portless (canvas slice): 旧実装は SP `[::1]:{process_port}` へ QUIC 直結していたが、
-    /// portless SP は listen しないため構造的に 100% 失敗していた (bug 019f546f、 L0 の未移行
-    /// 残骸)。 vp-app と同じく World の集約 channel + subscribe handshake (project scope) に乗る。
-    /// retained は handshake ack 直後に届くため、 live update を待たないよう短い timeout で
-    /// drain する。
-    async fn fetch_canvas_panes(&self) -> Result<Vec<CanvasPane>, McpError> {
-        use unison::network::MessageType;
-
-        let client = connect_quic(&quic_addr(crate::cli::world_port())).await?;
-        // 接続確立後は全経路で disconnect を通す — drop 任せでは unison client の UDP socket が
-        // 解放されず、 長寿命の `vp mcp` では 1 call = 1 fd leak になる (world_wire.rs と同根)。
-        let result = async {
-            let channel = client.open_channel("canvas").await.map_err(|e| {
-                McpError::internal_error(format!("open canvas channel: {}", e), None)
-            })?;
-            // World "canvas" channel は project 単位。 subscribe handshake で project_path を渡す
-            // (World 側で path_key に正規化して TopicRouter と突合、 `daemon/server.rs` の
-            // recv_subscribe_handshake_with_pattern)。 ack 後に当該 project の retained canvas
-            // (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
-            channel
-                .request::<serde_json::Value, serde_json::Value>(
-                    "subscribe",
-                    &serde_json::json!({ "project_path": self.project_path.as_str() }),
-                )
-                .await
-                .map_err(|e| {
-                    McpError::internal_error(format!("canvas subscribe handshake: {}", e), None)
-                })?;
-
-            // per-lane PP: list_canvas / read_pane は呼び出し元 (cwd 由来) の lane の pane だけ返す。
-            // canvas channel は全 lane の retained を流すため、self lane で filter しないと
-            // 別 lane の同名 pane_id が混ざる (lane 欠落 = conductor)。
-            let self_lane = SelfLane::detect().lane_name;
-
-            // pane_id ごとに最新を保持。 append:false は上書き、 append:true は既存内容に追記
-            // (canvas_state と同義)。 追記先が無ければ新規 (= 単独追記でも内容が残る)。
-            let mut panes: std::collections::HashMap<String, CanvasPane> =
-                std::collections::HashMap::new();
-            loop {
-                match tokio::time::timeout(Duration::from_millis(500), channel.recv()).await {
-                    Ok(Ok(msg)) => {
-                        if msg.msg_type != MessageType::Event || msg.method != "pane" {
-                            continue;
-                        }
-                        if let Ok(v) = msg.payload_as_value() {
-                            // 別 lane の pane は除外
-                            let msg_lane = v
-                                .get("lane")
-                                .and_then(|l| l.as_str())
-                                .unwrap_or(crate::process::lanes_state::ROOT_LANE_NAME);
-                            if msg_lane != self_lane {
-                                continue;
-                            }
-                            if let Some(p) = parse_show_payload(&v) {
-                                match panes.get_mut(&p.pane_id) {
-                                    Some(existing) if p.append => {
-                                        existing.content.push_str(&p.content)
-                                    }
-                                    _ => {
-                                        panes.insert(p.pane_id.clone(), p);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Ok(Err(_)) => break, // channel closed
-                    Err(_) => break,     // timeout = snapshot drained
-                }
-            }
-            let mut out: Vec<CanvasPane> = panes.into_values().collect();
-            out.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
-            Ok(out)
-        }
-        .await;
-        let _ = client.disconnect().await;
-        result
-    }
-
     /// Restart the Vantage Point Process
     ///
     /// This tool restarts the Process process while preserving session state.
@@ -748,14 +631,14 @@ impl rmcp::ServerHandler for VantageMcp {
         // する pattern で API contract を満たす (= 公式が future-compatible として用意してる upgrade path)。
         let mut info = ServerInfo::default();
         info.instructions = Some(
-            "Vantage Point Process - Display rich content (markdown, HTML, images) in a browser viewer. \
-             Use 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
-             'show' to display content, 'clear' to clear panes, \
+            "Vantage Point Process - Pin rich content (markdown, HTML, images) to the board (Paisley Park). \
+             Use 'capture_window' to take a PNG screenshot of the GUI window (viewable with Read tool), \
+             'show' to pin content to the board, 'clear' to clear the board, \
              'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
              'restart' to restart the Process, \
              'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.\n\n\
              When using 'show', prefer content_type='markdown' as the default format. \
-             Markdown renders well in the Canvas and is easy to read. \
+             Markdown renders well on the board and is easy to read. \
              Use content_type='html' only when you need precise visual layout (dashboards, diagrams with colors, interactive elements).".into()
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
@@ -958,8 +841,9 @@ mod tests {
             router.has_route("restart"),
             "手書き tool restart が失われた"
         );
-        // canvas_router family の代表 tool が合成 router に登録されていること。
-        for name in ["show", "list_canvas", "read_pane"] {
+        // canvas_router family の代表 tool が合成 router に登録されていること
+        // （doc 52 §7: list_canvas / read_pane は死んだ読み手として撤去済み）。
+        for name in ["show", "clear", "capture_window"] {
             assert!(
                 router.has_route(name),
                 "canvas family tool {name} が合成 router に無い"

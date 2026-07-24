@@ -188,6 +188,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // Bastet pane の device 一覧 catch-up（allowlist 漏れは sidebar IPC へ流れて
                 // silent drop = 「pane が空のまま」regression — session tab 4 tag と同じ罠）
                 | "bastet:devices_fetch"
+                // board pane の boot 窓 catch-up（doc 52 §10 wave 0。漏れると「reopen で board
+                // pane が出ない」= bastet:devices_fetch と同じ罠）
+                | "board:demand"
         )
     )
 }
@@ -214,6 +217,8 @@ mod ipc_tag_tests {
             "console:switch_root",
             // Bastet pane の device catch-up（boot 窓救済 — lanes:ensure-all の同型）
             "bastet:devices_fetch",
+            // board pane の boot 窓 catch-up（doc 52 §10 wave 0）
+            "board:demand",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -773,14 +778,15 @@ async fn run_canvas_session(
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
-    // F1b: 共有 connection 上に "canvas" stream を開く (旧: session ごと別 connect)。
+    // F1b: 共有 connection 上に "gui" stream を開く (旧: session ごと別 connect)。
+    // doc 52 §6: channel 名は "canvas" → "gui"（board / terminal / echoes / editor の配信バス）。
     let channel = client
-        .open_channel("canvas")
+        .open_channel("gui")
         .await
-        .map_err(|e| format!("open canvas channel: {}", e))?;
-    // L0 SP-portless: World "canvas" channel は project 単位なので、 接続後に subscribe handshake で
+        .map_err(|e| format!("open gui channel: {}", e))?;
+    // L0 SP-portless: World "gui" channel は project 単位なので、 接続後に subscribe handshake で
     // project_path を渡す (World 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 project の
-    // retained canvas (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
+    // retained board (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
     channel
         .request::<serde_json::Value, serde_json::Value>(
             "subscribe",
@@ -809,7 +815,7 @@ async fn run_canvas_session(
                 continue;
             }
         };
-        // doc 48 Phase 2: editor bridge command は canvas-handler (webview) に流さず、
+        // doc 48 Phase 2: editor bridge command は board-handler (webview) に流さず、
         // ここで JS 評価を event loop へ依頼し、結果を同一 channel の `editor_result` で
         // 返す (request-response。channel は subscribe 済なので project 束縛も正しい)。
         // この await 中は当該 project の canvas event が最大 ~2.5s 待たされるが、editor
@@ -1176,11 +1182,11 @@ async fn run_terminal_session(
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
-    // F1b: 共有 connection 上に per-lane terminal 用 "canvas" stream を開く (旧: lane ごと別 connect)。
+    // F1b: 共有 connection 上に per-lane terminal 用 "gui" stream を開く (旧: lane ごと別 connect)。
     let channel = client
-        .open_channel("canvas")
+        .open_channel("gui")
         .await
-        .map_err(|e| format!("open canvas channel: {}", e))?;
+        .map_err(|e| format!("open gui channel: {}", e))?;
     // 当該 lane の terminal topic を pattern 指定で subscribe (= demand を立てて SP pump を起こす)。
     let topic = format!("process/terminal/data/{}/out", lane_key.replace('/', "~"));
     channel
@@ -1344,9 +1350,9 @@ async fn run_echoes_session(
     use unison::network::MessageType;
 
     let channel = client
-        .open_channel("canvas")
+        .open_channel("gui")
         .await
-        .map_err(|e| format!("open canvas channel (echoes): {}", e))?;
+        .map_err(|e| format!("open gui channel (echoes): {}", e))?;
     let topic = format!("process/echoes/data/{}/event", lane_key.replace('/', "~"));
     channel
         .request::<serde_json::Value, serde_json::Value>(
@@ -3245,8 +3251,16 @@ pub fn run() -> anyhow::Result<()> {
     // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
     // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // wiremsg Stage 2: per-SP の "canvas" Unison 購読 guard (lanes_sub_active と同型)。
+    // wiremsg Stage 2: per-SP の "gui" Unison 購読 guard (lanes_sub_active と同型)。
     let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // board pane の boot 窓救済（doc 52 §10 wave 0、bastet_devices と同型）: gui channel で届いた
+    // BoardUpdated を project × lane で保持し、`board:demand`（webview bundle-ready）で再配信する。
+    // retained BoardUpdated は bundle ロード前に届いて `window.vpBoard &&` guard で落ちるため、
+    // これが無いと reopen 時に board pane が出ない（live show まで空）。
+    let mut board_snapshots: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, serde_json::Value>,
+    > = std::collections::HashMap::new();
     // terminal S4: per-lane terminal session registry (lane key → LaneTerminal)。
     // LanesLoaded で live lane に対し start、 消えた lane / app 終了で stop (= map から remove)。
     let mut terminal_sessions: std::collections::HashMap<String, LaneTerminal> =
@@ -3895,6 +3909,28 @@ pub fn run() -> anyhow::Result<()> {
                 // 実機で確認）。view の誕生時に保持済み state から再 render する。
                 lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
             }
+            Event::UserEvent(AppEvent::BoardDemand) => {
+                // board pane の boot 窓 catch-up（doc 52 §10 wave 0、BastetDevicesFetch と同型）:
+                // active project の保持済み BoardUpdated を全 lane 分 vpBoard へ再配信する。
+                // retained が bundle ロード前に落ちた分を埋め、reopen で board pane が出るようにする。
+                let active_project = sidebar_state
+                    .active_lane_address
+                    .as_deref()
+                    .and_then(|addr| addr.split('/').next());
+                if let Some(proj) = active_project
+                    && let Some(boards) = board_snapshots.get(proj)
+                {
+                    for message in boards.values() {
+                        if let Ok(json) = serde_json::to_string(message) {
+                            let script =
+                                format!("window.vpBoard && window.vpBoard.handleMessage({})", json);
+                            if let Err(e) = webview.evaluate_script(&script) {
+                                tracing::warn!("board:demand re-deliver 失敗: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 tracing::debug!("🧲 device event: {}", payload);
                 // Phase 2: device 一覧を registry 更新 → sidebar (Devices badge) + main area
@@ -3935,6 +3971,30 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_project = std::path::Path::new(&process_path)
                     .file_name()
                     .and_then(|s| s.to_str());
+                // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を project × lane で
+                // 保持する。`board:demand`（webview bundle-ready）で再配信し、retained が bundle
+                // ロード前に落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
+                //
+                // ⚠️ scope=="lane" のみ buffer する（消費側 board-handler.ts `applyBoardUpdated` の
+                //   `if (msg.scope !== 'lane') return` と対称にする）。退役済み scope="proj" の孤児行も
+                //   seed_boards が無条件 broadcast し、board_key() で proj も conductor lane も
+                //   broadcast_lane=None → lane_key="conductor" に衝突する。scope guard が無いと、行順
+                //   次第で proj 孤児が本物の lane board を上書きし、board:demand が「JS が捨てる死んだ
+                //   message」を配って boot 窓 regression が再発する（team-b review 2026-07-24）。
+                if message.get("type").and_then(|t| t.as_str()) == Some("board_updated")
+                    && message.get("scope").and_then(|s| s.as_str()) == Some("lane")
+                    && let Some(proj) = msg_project
+                {
+                    let lane_key = message
+                        .get("lane")
+                        .and_then(|l| l.as_str())
+                        .unwrap_or("conductor")
+                        .to_string();
+                    board_snapshots
+                        .entry(proj.to_string())
+                        .or_default()
+                        .insert(lane_key, message.clone());
+                }
                 // B1 + cross-project: switch_lane は PP content ではなく active Lane 切替コマンド。
                 // active を「変える」コマンドなので、active project guard の **外**で処理する
                 // （別 project の SP から来た switch_lane こそ通す）。送信元 SP の project
@@ -3986,11 +4046,11 @@ pub fn run() -> anyhow::Result<()> {
                     match serde_json::to_string(&message) {
                         Ok(json) => {
                             let script = format!(
-                                "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                                "window.vpBoard && window.vpBoard.handleMessage({})",
                                 json
                             );
                             if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
+                                tracing::warn!("vpBoard.handleMessage 失敗: {}", e);
                             }
                             // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
                         }
@@ -4000,10 +4060,10 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
 
-                // Canvas 着信 badge (bug: canvas 可観測性 D): show が現在 active でない lane に
-                // 着いたら sidebar に canvas_unread を計上する。別 project / 別 lane（同 project
-                // だが別 lane）の両ケースを 1 箇所で拾う（上の forward guard とは独立）。active lane
-                // 宛の show は panel 側 (pp-overlay auto-open, canvas-handler.ts) で解決する。
+                // board 着信 badge: show が現在 active でない lane に着いたら sidebar に
+                // canvas_unread を計上する。別 project / 別 lane（同 project だが別 lane）の両ケースを
+                // 1 箇所で拾う（上の forward guard とは独立）。active lane 宛の show は board pane 側
+                // （board-handler.ts の presence → lane-panes、doc 52 §10 wave 0）で解決する。
                 if message.get("type").and_then(|t| t.as_str()) == Some("show")
                     && let Some(project) = msg_project
                 {
@@ -4879,11 +4939,11 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_str =
                     serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());
                 let script = format!(
-                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                    "window.vpBoard && window.vpBoard.handleMessage({})",
                     msg_str
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("main_view vpCanvas.handleMessage (files:open) 失敗: {}", e);
+                    tracing::warn!("main_view vpBoard.handleMessage (files:open) 失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {

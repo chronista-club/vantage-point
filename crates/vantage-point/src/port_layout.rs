@@ -34,7 +34,7 @@ impl Default for PortLayout {
         roles.insert("agent".into(), 0);
         roles.insert("dev_server".into(), 1);
         roles.insert("db_admin".into(), 2);
-        roles.insert("canvas".into(), 3);
+        roles.insert("board".into(), 3);
         roles.insert("preview".into(), 4);
         Self {
             // VP_PROFILE 分離 (#643): brew=32000 / dev=32100。 SSOT は vp_paths::default_world_port()。
