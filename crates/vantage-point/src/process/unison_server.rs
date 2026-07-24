@@ -4514,6 +4514,10 @@ mod tests {
         use crate::lane::session_registry::{self, SessionAct};
         use crate::process::state::build_test_app_state;
 
+        // set_session_act は registry（disk = vp_state_dir）を読み書きする → tempdir に隔離。
+        // ⚠️ 隔離しないと実 state dir を汚染し、**2 回目以降の run で act が既に chat のため
+        // no-op 早期 return して落ちる**（= 実行順・実行回数に依存する偽の緑/赤）。
+        let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         let addr = insert_test_lane(&state, "vptest-ssa", SessionAct::Tui).await;
         let lane = "vptest-ssa/root";
