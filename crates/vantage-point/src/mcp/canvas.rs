@@ -205,6 +205,9 @@ impl VantageMcp {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
+        // cursor = mako が今 main に出している item（doc 52 §5 注視可視化）。AI が「今どれを
+        // 見ているか」を知り、その item を優先して update / 中継できるようにマークする。
+        let cursor = resp.get("cursor").and_then(|v| v.as_str());
         if items.is_empty() {
             return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
                 "Board is empty.".to_string(),
@@ -222,9 +225,25 @@ impl VantageMcp {
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
             let content = it.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            // updatedAt は wave 3 以降の item のみ持つ（旧 item は createdAt に fallback）。
+            let updated = it
+                .get("updatedAt")
+                .or_else(|| it.get("createdAt"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let viewing = if cursor == Some(id) {
+                " ★ 今表示中"
+            } else {
+                ""
+            };
+            let stamp = if updated.is_empty() {
+                String::new()
+            } else {
+                format!(" · 更新 {}", updated)
+            };
             out.push_str(&format!(
-                "\n\n─── id={} [{}] {} ───\n{}",
-                id, ct, title, content
+                "\n\n─── id={} [{}] {}{}{} ───\n{}",
+                id, ct, title, stamp, viewing, content
             ));
         }
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(

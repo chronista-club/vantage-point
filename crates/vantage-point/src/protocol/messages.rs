@@ -48,7 +48,7 @@ pub struct HistoryMessage {
 ///
 /// SP が id を一元発行し（webview は自前生成しない）、 [`ProcessMessage::BoardUpdated`] の
 /// snapshot で配信される。 JSON は webview の BoardItem と揃える（camelCase:
-/// id / content / contentType / title / createdAt）ので DB stack にもそのまま載る。
+/// id / content / contentType / title / createdAt / updatedAt）ので DB stack にもそのまま載る。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardItem {
@@ -58,6 +58,10 @@ pub struct BoardItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub created_at: String,
+    /// 最終更新時刻（RFC3339。show=createdAt 同値 / update で stamp、doc 52 §5 計器盤の鮮度）。
+    /// 旧 item（wave 3 以前に貼られた）は欠くので Option — 表示側は createdAt に fallback する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 /// Message from Process to browser (WebSocket)

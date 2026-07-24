@@ -1337,7 +1337,8 @@ impl VpDb {
                 } ON DUPLICATE KEY UPDATE
                     stack = {
                         items: array::slice(array::prepend(stack.items ?? [], $item), 0, $cap),
-                        cursor: $item_id
+                        cursor: IF stack.cursor IS NONE OR stack.cursor = (stack.items ?? [])[0].id
+                            THEN $item_id ELSE stack.cursor END
                     },
                     content_type = $input.content_type,
                     content = $input.content,
@@ -1425,7 +1426,8 @@ impl VpDb {
                             content: $content,
                             contentType: $content_type,
                             title: $it.title,
-                            createdAt: $it.createdAt
+                            createdAt: $it.createdAt,
+                            updatedAt: $updated_at
                         }
                         ELSE $it END),
                     content = IF stack.cursor = $item_id THEN $content ELSE content END,
@@ -1441,10 +1443,50 @@ impl VpDb {
             .bind(("item_id", item_id.to_string()))
             .bind(("content", content.to_string()))
             .bind(("content_type", content_type.to_string()))
+            // updatedAt は RFC3339 文字列で stamp（show の createdAt と型を揃える = 額縁が
+            // 一様に parse できる。time::now() の datetime 型だと read 時に型がばらつく）。
+            .bind(("updated_at", chrono::Utc::now().to_rfc3339()))
             .await
             .map_err(|e| anyhow::anyhow!("board update 失敗: {}", e))?
             .check()
             .map_err(|e| anyhow::anyhow!("board update エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// board の cursor（= 注視 = main に出す item）を id で更新する（doc 52 §5 — cursor の
+    /// server 昇格。thumbnail click / scrollback で mako の注視を SP truth にする）。
+    ///
+    /// cursor が指す item の content / contentType を top-level reflection にも写す
+    /// （update_board_item の cursor 一致時と同じ扱い）。存在確認は呼び出し側が read-first で
+    /// 行う（無い id を渡すと WHERE の item 条件で no-op になり cursor は動かない = 安全側）。
+    pub async fn set_board_cursor(
+        &self,
+        project_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+        item_id: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE pane_contents SET
+                    stack.cursor = $item_id,
+                    content = (array::filter(stack.items ?? [], |$it| $it.id = $item_id)[0].content) ?? content,
+                    content_type = (array::filter(stack.items ?? [], |$it| $it.id = $item_id)[0].contentType) ?? content_type,
+                    updated_at = time::now()
+                 WHERE project_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id
+                   AND $item_id IN (stack.items ?? []).id",
+            )
+            .bind(("path", project_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("item_id", item_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board set_cursor 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board set_cursor エラー: {}", e))?;
         Ok(())
     }
 

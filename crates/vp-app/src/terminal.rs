@@ -683,6 +683,14 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 body: parsed.clone(),
             });
         }
+        Some("board:cursor") => {
+            // cursor の server 昇格（doc 52 §5 計器盤）: thumbnail click / scrollback の注視を
+            // SP の board_set_cursor へ forward（app.rs で World ask → BoardUpdated 再配信）。
+            let _ = proxy.send_event(AppEvent::BoardMutate {
+                method: "board_set_cursor".to_string(),
+                body: parsed.clone(),
+            });
+        }
         // console bridge: webview の console.* を vp-app log (app.kdl.log) に転送する。
         // agent が DevTools を開かず log Read で webview console を観測する経路。
         Some("console") => {

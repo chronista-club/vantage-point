@@ -14,7 +14,7 @@
  * 関連 doc: docs/design/19-canvas-stack-model.md
  */
 
-import { For, createSignal, onCleanup, onMount } from 'solid-js'
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { render } from 'solid-js/web'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import type { IconName } from '@chronista-club/creo-ui-icons-web'
@@ -67,13 +67,20 @@ function HistoryStrip() {
         {(item) => {
           const alias = aliasOf(item)
           const isActive = () => state().cursor === item.id
+          // 未読 dot（doc 52 §5）: cursor に流されず届いた新着。click で消える。
+          const isUnread = () => state().unread.has(item.id)
           return (
             <div
               class="pp-history-cell"
-              classList={{ active: isActive() }}
+              classList={{ active: isActive(), unread: isUnread() }}
               onClick={() => setCursor(item.id)}
               title={alias}
             >
+              {/* 未読 dot は inline（cell 内側）。絶対配置 + 負 offset は strip の overflow に
+                  クリップされて見えない（2026-07-24 実機 dogfood）— icon の前に置いて確実に出す。 */}
+              <Show when={isUnread()}>
+                <span class="pp-history-dot" aria-label="未読" />
+              </Show>
               <CreoIcon name={CONTENT_TYPE_ICON[item.contentType] ?? 'ph:file'} size={12} />
               <span class="pp-history-title">{truncate(alias, TITLE_MAX_CHARS)}</span>
               <button
@@ -136,6 +143,11 @@ export const HISTORY_STRIP_CSS = `
   background:var(--color-brand-primary-subtle);
   color:var(--color-brand-primary);}
 .pp-history-cell.active:hover{background:var(--color-brand-primary-subtle);}
+/* 未読 dot（doc 52 §5 計器盤）: cursor に流されず届いた新着 = icon の前に灯す。click（= setCursor）で
+   消える。「知らせるが奪わない」— pane focus は寄せず、視界の主権は mako に残す。
+   inline 配置なのは strip の overflow に負 offset の絶対配置がクリップされるため（実機 dogfood）。 */
+.pp-history-dot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;
+  background:var(--color-brand-primary);}
 
 .pp-history-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   color:inherit;font-family:inherit;}

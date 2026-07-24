@@ -160,6 +160,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "slot:rect"
                 | "board:delete"
                 | "board:clear"
+                // cursor server 昇格（doc 52 §5）: thumbnail click / scrollback の注視 → SP。
+                // allowlist 漏れは sidebar IPC へ silent drop = click しても注視が同期されない
+                | "board:cursor"
                 | "console"
                 | "open-url"
                 | "echoes:submit"
@@ -224,6 +227,8 @@ mod ipc_tag_tests {
             "board:demand",
             // ink（対話面, doc 52 §3）: 送信の snapshot 要求（漏れは「送っても画像が飛ばない」）
             "ink:snapshot",
+            // cursor server 昇格（doc 52 §5 計器盤）: 漏れは「click しても注視が同期されない」
+            "board:cursor",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(

@@ -30,11 +30,15 @@ export interface BoardItem {
   contentType: ContentType
   title?: string
   createdAt: string
+  /** 最終更新時刻（RFC3339、doc 52 §5 計器盤の鮮度）。旧 item は欠くので額縁は createdAt に fallback。 */
+  updatedAt?: string
 }
 
 interface Board {
   items: BoardItem[]
   cursor: string | null
+  /** cursor に流されず届いた新着（未読 dot、doc 52 §5）。setCursor / 消滅で減る。view-local。 */
+  unread: Set<string>
 }
 
 /** SP から canvas channel で届く BoardUpdated message（protocol::ProcessMessage::BoardUpdated）。 */
@@ -50,7 +54,7 @@ interface BoardUpdatedMessage {
 type AnyMessage = BoardUpdatedMessage | { type: string; [key: string]: unknown }
 
 function emptyBoard(): Board {
-  return { items: [], cursor: null }
+  return { items: [], cursor: null, unread: new Set() }
 }
 
 /** module-local state。 SP truth のミラー（view）。 bundle reload で reset、 再購読で retained 復元。 */
@@ -129,19 +133,39 @@ export function getActiveLaneName(): string | null {
 // render
 // ============================================================================
 
+/** 額縁の鮮度表示テキスト（純関数、doc 52 §5）。updatedAt（無ければ createdAt）を「更新 HH:MM:SS」に。
+ *  parse 不能 / 時刻なしは空文字（額縁に何も出さない = 嘘をつかない）。 */
+export function formatFreshness(item: BoardItem | undefined): string {
+  if (!item) return ''
+  const stamp = item.updatedAt ?? item.createdAt
+  const t = Date.parse(stamp)
+  if (Number.isNaN(t)) return ''
+  return `更新 ${new Date(t).toLocaleTimeString('ja-JP')}`
+}
+
+/** 額縁（board-plate）の鮮度 span に cursor item の最終更新時刻を出す。DOM 不在（test）は skip。 */
+function renderFreshness(item: BoardItem | undefined): void {
+  if (typeof document === 'undefined') return
+  const el = document.getElementById('board-freshness')
+  if (el) el.textContent = formatFreshness(item)
+}
+
 /** active board の cursor が指す item を main pane に描画。 cursor null なら空表示。 */
 function renderCurrentMain(): void {
   const b = activeBoard()
   if (b.cursor === null) {
     clearPP()
+    renderFreshness(undefined)
     return
   }
   const item = b.items.find((i) => i.id === b.cursor)
   if (!item) {
     clearPP()
+    renderFreshness(undefined)
     return
   }
   renderPP(item.content, item.contentType)
+  renderFreshness(item)
 }
 
 /**
@@ -173,9 +197,10 @@ function notifyBoardPresence(lane: string | null | undefined, present: boolean, 
 export function getCanvasState(): {
   items: ReadonlyArray<BoardItem>
   cursor: string | null
+  unread: ReadonlySet<string>
 } {
   const b = activeBoard()
-  return { items: b.items.slice(), cursor: b.cursor }
+  return { items: b.items.slice(), cursor: b.cursor, unread: new Set(b.unread) }
 }
 
 /** state 変更 listener を登録。 解除関数を返す。 */
@@ -188,7 +213,9 @@ export function subscribeCanvasState(listener: StateListener): () => void {
 // view 操作（cursor は local、 delete/clear は SP に依頼）
 // ============================================================================
 
-/** cursor を移動（thumbnail click）。 view local（durable でない）。 */
+/** cursor を移動（thumbnail click）。cursor は SP truth（doc 52 §5 server 昇格）なので、
+ *  optimistic に local 反映しつつ SP に board:cursor を送る（SP が BoardUpdated で確定値を配る）。
+ *  scrollback 規則の follow 判定は SP が cursor を知って初めて成立する。 */
 export function setCursor(id: string): void {
   const b = activeBoard()
   if (!b.items.some((i) => i.id === id)) {
@@ -196,6 +223,8 @@ export function setCursor(id: string): void {
     return
   }
   b.cursor = id
+  b.unread.delete(id) // 見た = 未読解除
+  sendIpc({ t: 'board:cursor', scope: 'lane', lane: boardLaneKey(), item_id: id })
   renderCurrentMain()
   notifyStateChange()
 }
@@ -230,8 +259,37 @@ const BOOT_TS = Date.now()
  * createdAt が parse 不能(NaN)な item は fresh 扱いしない（board / badge には載るので
  * 静かな側に倒す）。
  */
+/** webview 起動後に生まれた未知 item = live 新着の id 一覧（retained replay / re-seed は
+ *  createdAt < BOOT_TS なので空）。未読 dot と focus 寄せの一次ソース。 */
+export function freshNewIds(items: BoardItem[], prevIds: Set<string>): string[] {
+  return items
+    .filter((i) => !prevIds.has(i.id) && Date.parse(i.createdAt) >= BOOT_TS)
+    .map((i) => i.id)
+}
+
 export function hasFreshArrival(items: BoardItem[], prevIds: Set<string>): boolean {
-  return items.some((i) => !prevIds.has(i.id) && Date.parse(i.createdAt) >= BOOT_TS)
+  return freshNewIds(items, prevIds).length > 0
+}
+
+/**
+ * 未読 dot 集合を計算する（純関数、doc 52 §5）。前回の未読を引き継ぎ（存在する id のみ・
+ * cursor が指すものは既読）、cursor が **follow しなかった** 新着を足す。scrollback 規則で
+ * cursor 据え置きなら新着 = 未読 / follow したなら cursor 自身なので dot にしない。
+ */
+export function computeUnread(
+  prevUnread: ReadonlySet<string>,
+  itemIds: ReadonlySet<string>,
+  freshIds: readonly string[],
+  cursor: string | null,
+): Set<string> {
+  const unread = new Set<string>()
+  for (const id of prevUnread) {
+    if (itemIds.has(id) && id !== cursor) unread.add(id)
+  }
+  for (const id of freshIds) {
+    if (id !== cursor) unread.add(id)
+  }
+  return unread
 }
 
 function applyBoardUpdated(msg: BoardUpdatedMessage): void {
@@ -241,16 +299,26 @@ function applyBoardUpdated(msg: BoardUpdatedMessage): void {
   const laneKey = msg.lane ?? 'conductor'
   const prev = canvasState.laneBoards[laneKey]
   const prevIds = new Set((prev?.items ?? []).map((i) => i.id))
+  const items = Array.isArray(msg.items) ? msg.items : []
+  const cursor = msg.cursor ?? null
+  const freshIds = freshNewIds(items, prevIds)
   const board: Board = {
-    items: Array.isArray(msg.items) ? msg.items : [],
-    cursor: msg.cursor ?? null,
+    items,
+    cursor,
+    unread: computeUnread(
+      prev?.unread ?? new Set(),
+      new Set(items.map((i) => i.id)),
+      freshIds,
+      cursor,
+    ),
   }
   canvasState.laneBoards[laneKey] = board
   // board pane 化（doc 52 §10 wave 0）: presence を lane-panes に知らせる。全 lane 分 dispatch
-  // し、非 active lane の board も lane 切替時に roster へ正しく載る。fresh（live 新着）は
-  // active view のときだけ立てる — 裏 lane の新着で表 lane の focus を奪わない。retained replay /
-  // SP re-seed は hasFreshArrival が false（createdAt < BOOT_TS）なので focus を寄せない。
-  const fresh = isActiveView(msg.lane) && hasFreshArrival(board.items, prevIds)
+  // し、非 active lane の board も lane 切替時に roster へ正しく載る。
+  // focus 寄せ（fresh）は **cursor が新着に follow したときだけ**（doc 52 §5 = 奪わない）: mako が
+  // 古い item を見ていて cursor 据え置きなら、新着は dot で灯すが focus は奪わない。裏 lane も対象外。
+  const cursorFollowed = cursor !== null && freshIds.includes(cursor)
+  const fresh = isActiveView(msg.lane) && cursorFollowed
   notifyBoardPresence(msg.lane, board.items.length > 0, fresh)
   // 表示中の board が更新されたときだけ main を再描画。
   if (isActiveView(msg.lane)) {
