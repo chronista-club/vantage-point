@@ -344,8 +344,51 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 .bastet-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
 /* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
-.pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
+/* ink stage（doc 52 §3）: #pp-content を充填 + overlay / palette の位置決め基準。 */
+#ink-stage{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}
+.pp-content{flex:1 1 auto;min-height:0;overflow:auto;
+  padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
   font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+/* ink 赤: shottr と同じ 1 色固定（意図的に単色 — 描くのは「場所と関係を指す指」）。 */
+#ink-stage{--vp-ink-color:#ff5b4d;}
+/* 透明レイヤー: 道具未選択（.ink-off）時は pointer-events:none で下の item を素通し
+   （text 選択 / Clear ボタンが生きる）。道具選択で auto に切り替え描画を捕まえる。 */
+#ink-overlay{position:absolute;inset:0;pointer-events:none;touch-action:none;z-index:4;}
+#ink-overlay:not(.ink-off){pointer-events:auto;cursor:crosshair;}
+#ink-overlay .ink-note{font:600 14px var(--vp-font-sans),var(--typography-family-sans);
+  fill:var(--vp-ink-color);paint-order:stroke;stroke:rgba(0,0,0,.55);stroke-width:3px;
+  stroke-linejoin:round;}
+/* text 注釈の入力ボックス（配置は ink.ts が left/top を絶対指定）。 */
+#ink-text{position:absolute;display:none;transform:translate(-2px,-50%);z-index:6;
+  background:rgba(12,14,22,.92);color:var(--vp-ink-color);border:1px dashed var(--vp-ink-color);
+  border-radius:4px;font:600 14px var(--vp-font-sans),var(--typography-family-sans);
+  padding:2px 6px;outline:none;min-width:120px;}
+/* 道具パレット: stage 下端中央に浮かす。撮影時は ink.ts が visibility:hidden にする。 */
+#ink-palette{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:8;
+  display:flex;align-items:center;gap:3px;padding:5px;
+  background:var(--color-surface-bg-subtle);border:1px solid var(--color-surface-border,#1f2233);
+  border-radius:10px;box-shadow:0 6px 22px rgba(0,0,0,.4);}
+#ink-palette button{background:none;border:1px solid transparent;border-radius:7px;
+  width:36px;height:32px;color:var(--color-text-tertiary);cursor:pointer;
+  display:grid;place-items:center;padding:0;font-family:inherit;transition:color .1s,border-color .1s,background .1s;}
+#ink-palette button:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
+#ink-palette button.ink-active{color:var(--vp-ink-color);border-color:var(--vp-ink-color);
+  background:color-mix(in srgb,var(--vp-ink-color) 12%,transparent);}
+#ink-palette button:disabled{opacity:.35;cursor:default;}
+#ink-palette .ink-sep{width:1px;height:20px;background:var(--color-surface-border,#1f2233);margin:0 3px;}
+#ink-palette svg{display:block;pointer-events:none;}
+#ink-send{width:auto!important;padding:0 14px!important;font-weight:600;font-size:13px;
+  color:var(--color-surface-bg-base)!important;background:var(--vp-ink-color)!important;
+  border-color:var(--vp-ink-color)!important;}
+#ink-send:hover:not(:disabled){filter:brightness(1.08);}
+#ink-send:disabled{opacity:.4;background:var(--vp-ink-color)!important;}
+/* 送信結果の一時トースト（成功/失敗）。ink.ts が textContent + .show を付ける。 */
+#ink-toast{position:absolute;left:50%;bottom:54px;transform:translateX(-50%);z-index:9;
+  max-width:80%;padding:5px 12px;border-radius:6px;font-size:12px;pointer-events:none;
+  background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);
+  border:1px solid var(--color-surface-border,#1f2233);opacity:0;transition:opacity .15s;}
+#ink-toast.show{opacity:1;}
+#ink-toast.ink-error{color:var(--vp-ink-color);border-color:var(--vp-ink-color);}
 .pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
 .pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
 .pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
@@ -454,7 +497,22 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
           <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Paisley Park</span>
           <button class="board-clear-btn" data-action="clear" data-target="pp" title="board を空にする">Clear</button>
         </div>
-        <div class="pp-content" id="pp-content"></div>
+        <!-- ink（対話面、doc 52 §3）: #pp-content の上に透明レイヤーを重ねて描く。renderPP は
+             #pp-content の innerHTML を差し替えるので overlay は sibling（stage 直下）に置く。
+             stage = 描画対象 = snapshot 矩形。overlay / palette / text input の挙動は ink.ts。 -->
+        <div id="ink-stage">
+          <div class="pp-content" id="pp-content"></div>
+          <svg id="ink-overlay" class="ink-off" aria-label="対話面 描画レイヤー">
+            <defs>
+              <marker id="ink-arrowhead" markerWidth="9" markerHeight="8" refX="7" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 z" fill="var(--vp-ink-color)"></path>
+              </marker>
+            </defs>
+          </svg>
+          <input id="ink-text" type="text" placeholder="文字を入力 → Enter" aria-label="ink text 注釈の入力" />
+          <div id="ink-palette" role="toolbar" aria-label="対話面 描画道具"></div>
+          <div id="ink-toast" role="status"></div>
+        </div>
         <div class="pp-history-strip" id="pp-history-strip"></div>
       </div>
     </div>

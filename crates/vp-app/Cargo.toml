@@ -119,8 +119,14 @@ libc = "0.2"
 # portal favicon を dock に当てる。 版は tao 0.35 が使う objc2 stack に合わせる (重複回避)。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+# NSBitmapImageRep = ink（対話面, doc 52 §3）の NSImage → PNG 変換。版は上記 objc2 0.6 stack に合わせる。
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSBitmapImageRep"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
+# ink snapshot: WKWebView.takeSnapshot(rect) で board pane を PNG 化（ink_snapshot.rs）。
+# block2 = completion handler / objc2-core-foundation = CGRect / objc2-app-kit = NSImage 返り値。
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKSnapshotConfiguration", "block2", "objc2-core-foundation", "objc2-app-kit"] }
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
+block2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
