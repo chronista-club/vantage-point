@@ -260,6 +260,9 @@ pub enum AppEvent {
     /// ask `echoes_session_create`（focus は送らない = backend 既定 true）→ 続けて一覧を再取得して
     /// push back（作成と一覧更新を 1 task で直列に）。
     EchoesSessionCreate { lane: String, stand: Option<String> },
+    /// replay demand（2026-07-24）: webview の renderer 準備完了後に撃つ消費者主導 demand。
+    /// ask `echoes_demand_start` → SP が engine ensure + transcript replay を配送する。
+    EchoesDemandStart { lane: String },
     /// doc 38 Phase 2: session tab click による focused 切替。ask `echoes_session_focus` →
     /// 一覧再取得 → `echoes_demand_start`（新 focused の transcript replay を発火）。
     EchoesSessionFocus { lane: String, session: u32 },
@@ -484,6 +487,17 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::EchoesSessionFocus {
                     lane: lane.to_string(),
                     session: session as u32,
+                });
+            }
+        }
+        // replay demand（2026-07-24）: webview が renderer を張った直後に撃つ「消費者主導」の
+        // demand。Rust attach 時 demand の boot 窓取りこぼし（bundle 読込前配送 = silent drop）
+        // を埋める。⚠️ app.rs の is_main_ipc_tag allowlist と両方更新（片側だと sidebar IPC へ
+        // 流れて silent drop — 2026-07-16 の「+」無反応 regression と同じ罠）。
+        Some("echoes:demand_start") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::EchoesDemandStart {
+                    lane: lane.to_string(),
                 });
             }
         }

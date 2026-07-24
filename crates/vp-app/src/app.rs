@@ -176,6 +176,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // 流れて silent drop = 「×無反応」regression。tests でも固定）。
                 | "echoes:session_remove"
                 | "echoes:stands_fetch"
+                // replay demand（2026-07-24）: 消費者主導 demand。allowlist 漏れは sidebar IPC へ
+                // 流れて silent drop = 「chat が空のまま」regression（terminal.rs の arm と対）
+                | "echoes:demand_start"
                 | "console:set_mode"
                 | "console:new_session"
                 // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
@@ -205,6 +208,8 @@ mod ipc_tag_tests {
             "echoes:session_focus",
             "echoes:session_remove",
             "echoes:stands_fetch",
+            // 消費者主導 replay demand（2026-07-24 — 漏れは「chat が空のまま」）
+            "echoes:demand_start",
             // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
             "console:switch_root",
             // Bastet pane の device catch-up（boot 窓救済 — lanes:ensure-all の同型）
@@ -4573,6 +4578,27 @@ pub fn run() -> anyhow::Result<()> {
             }
             // doc 38 Phase 2: session tab click による focused 切替。focus → 一覧再取得 →
             // demand_start（新 focused の transcript replay 発火）の順で直列に。
+            Event::UserEvent(AppEvent::EchoesDemandStart { lane }) => {
+                // 消費者主導の replay demand（2026-07-24）: webview が renderer を張った直後に
+                // 届く。attach 時 demand（run_echoes_session）の boot 窓取りこぼしを埋める第 2 弾
+                //（冪等 — ensure_chat_engine は既起動 no-op / replay は clear-prefix で収束）。
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:demand_start skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                rt_handle.spawn(async move {
+                    if let Err(e) = world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "echoes_demand_start",
+                        serde_json::json!({ "lane": &lane }),
+                    )
+                    .await
+                    {
+                        tracing::warn!("echoes_demand_start（webview 発）失敗 (lane={lane}): {e}");
+                    }
+                });
+            }
             Event::UserEvent(AppEvent::EchoesSessionFocus { lane, session }) => {
                 let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
                     tracing::warn!("echoes:session_focus skip — lane の project 解決失敗 (lane={lane})");

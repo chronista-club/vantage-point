@@ -1972,6 +1972,14 @@ export function installChatView(vpConsole: VpConsole): ChatViewApi {
         // doc 38 Phase 2 → doc 50: renderer は session も受け取り、foldEvent が session ごとの
         // store に振り分ける（旧「focused 以外を弾く」は store の re-key で役目を終えた）。
         vpConsole.attachRenderer(lane, (ev, session) => foldEvent(lane, ev, session))
+        // replay の demand は**消費者が構えたここ**からも撃つ（2026-07-24 根治の第 2 弾）。
+        // Rust の subscribe 直後 demand（attach 時）だけだと、配送が bundle 読込前に届いた場合
+        // `window.vpConsole && …` guard で黙って捨てられる（Rust 側に buffer なし）— session id
+        // は request/response で復帰するのに会話だけ空、の非対称が起きる。renderer を張った
+        // 直後なら受け手が確実に居る。attached gate で page-load ごと lane 1 回 = 切替 spam なし。
+        // 二重 replay は ReplayStart の clear-prefix で収束（無害）。
+        const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+        bootIpc?.postMessage(JSON.stringify({ t: 'echoes:demand_start', lane }))
       }
       // doc 38 §4.3: 離れる lane の再同期ローダーを掃除する（replay_end 取りこぼしで stuck した
       // まま戻って来ても固着させない）。新 lane が本当に再同期するなら attach / demand の
