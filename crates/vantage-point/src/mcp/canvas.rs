@@ -57,6 +57,36 @@ pub struct ClearParams {
     pub scope: Option<String>,
 }
 
+/// Parameters for the update tool（doc 52 §5: id 指定 in-place 置換）
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateParams {
+    /// Board item id（read_board で取得した現在の id）
+    #[schemars(
+        description = "The id of the board item to replace. Obtain it from read_board first."
+    )]
+    pub id: String,
+
+    /// New content
+    #[schemars(description = "The new content (markdown, html, or plain text)")]
+    pub content: String,
+
+    /// Content type
+    #[schemars(description = "Content type: 'markdown' (default), 'html', 'log', or 'url'")]
+    pub content_type: Option<String>,
+
+    /// board scope
+    #[schemars(description = "Board to update. Only 'lane' (default) is supported.")]
+    pub scope: Option<String>,
+}
+
+/// Parameters for the read_board tool（doc 52 §4 中継台 + §5 identity）
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReadBoardParams {
+    /// board scope
+    #[schemars(description = "Board to read. Only 'lane' (default) is supported.")]
+    pub scope: Option<String>,
+}
+
 /// Parameters for the capture_window tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CaptureWindowParams {
@@ -126,6 +156,78 @@ impl VantageMcp {
         self.process_call("clear", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             "Board cleared.".to_string(),
+        )]))
+    }
+
+    /// board item を id 指定で in-place 置換する（doc 52 §5）。
+    #[tool(
+        description = "Update (replace in place) a board item by id, keeping its position and title. Obtain the id from read_board first — updating by an unknown id fails loudly on purpose, so you never silently create a duplicate. Use this to keep a pinned item current (a progress table, test results, a design's current form): read_board → recognize the item by its title/content → update it by id."
+    )]
+    async fn update(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<UpdateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let scope = validate_board_scope(params.scope.as_deref())?;
+        let content_type = params
+            .content_type
+            .unwrap_or_else(|| "markdown".to_string());
+        let payload = serde_json::json!({
+            "id": params.id,
+            "content": params.content,
+            "content_type": content_type,
+            // per-lane board: 呼び出し元 Lane（cwd 由来）を stamp（show / clear と同じ）
+            "lane": SelfLane::detect().lane_name,
+            "scope": scope,
+        });
+        self.quic_call("board_update", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Board item {} updated.", params.id),
+        )]))
+    }
+
+    /// 呼び出し元 Lane の board を id 付き全文で読む（doc 52 §4 中継台 + §5 identity）。
+    #[tool(
+        description = "Read the current lane's board — every item with its id, title, content_type, and full content (newest first). Use this to (a) get an item's id before calling update, or (b) pull an item's full content to save it elsewhere (e.g. mcp__creo-memories__remember). The id is the stable handle: recognize the item you mean by its title/content, then act on it by id."
+    )]
+    async fn read_board(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ReadBoardParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let scope = validate_board_scope(params.scope.as_deref())?;
+        let payload = serde_json::json!({
+            "lane": SelfLane::detect().lane_name,
+            "scope": scope,
+        });
+        let resp = self.quic_call("read_board", payload).await?;
+        let items = resp
+            .get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if items.is_empty() {
+            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                "Board is empty.".to_string(),
+            )]));
+        }
+        let mut out = format!("Board ({} items, newest first):", items.len());
+        for it in &items {
+            let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let title = it
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(untitled)");
+            let ct = it
+                .get("contentType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let content = it.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            out.push_str(&format!(
+                "\n\n─── id={} [{}] {} ───\n{}",
+                id, ct, title, content
+            ));
+        }
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            out,
         )]))
     }
 

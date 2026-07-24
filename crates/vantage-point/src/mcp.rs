@@ -841,9 +841,9 @@ mod tests {
             router.has_route("restart"),
             "手書き tool restart が失われた"
         );
-        // canvas_router family の代表 tool が合成 router に登録されていること
-        // （doc 52 §7: list_canvas / read_pane は死んだ読み手として撤去済み）。
-        for name in ["show", "clear", "capture_window"] {
+        // board family の代表 tool が合成 router に登録されていること
+        // （doc 52 §7: list_canvas / read_pane は撤去済み。§4/§5: read_board / update を新設）。
+        for name in ["show", "clear", "capture_window", "update", "read_board"] {
             assert!(
                 router.has_route(name),
                 "canvas family tool {name} が合成 router に無い"
