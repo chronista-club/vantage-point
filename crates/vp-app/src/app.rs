@@ -188,6 +188,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // Bastet pane の device 一覧 catch-up（allowlist 漏れは sidebar IPC へ流れて
                 // silent drop = 「pane が空のまま」regression — session tab 4 tag と同じ罠）
                 | "bastet:devices_fetch"
+                // board pane の boot 窓 catch-up（doc 52 §10 wave 0。漏れると「reopen で board
+                // pane が出ない」= bastet:devices_fetch と同じ罠）
+                | "board:demand"
         )
     )
 }
@@ -214,6 +217,8 @@ mod ipc_tag_tests {
             "console:switch_root",
             // Bastet pane の device catch-up（boot 窓救済 — lanes:ensure-all の同型）
             "bastet:devices_fetch",
+            // board pane の boot 窓 catch-up（doc 52 §10 wave 0）
+            "board:demand",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -3246,8 +3251,16 @@ pub fn run() -> anyhow::Result<()> {
     // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
     // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // wiremsg Stage 2: per-SP の "canvas" Unison 購読 guard (lanes_sub_active と同型)。
+    // wiremsg Stage 2: per-SP の "gui" Unison 購読 guard (lanes_sub_active と同型)。
     let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // board pane の boot 窓救済（doc 52 §10 wave 0、bastet_devices と同型）: gui channel で届いた
+    // BoardUpdated を project × lane で保持し、`board:demand`（webview bundle-ready）で再配信する。
+    // retained BoardUpdated は bundle ロード前に届いて `window.vpBoard &&` guard で落ちるため、
+    // これが無いと reopen 時に board pane が出ない（live show まで空）。
+    let mut board_snapshots: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, serde_json::Value>,
+    > = std::collections::HashMap::new();
     // terminal S4: per-lane terminal session registry (lane key → LaneTerminal)。
     // LanesLoaded で live lane に対し start、 消えた lane / app 終了で stop (= map から remove)。
     let mut terminal_sessions: std::collections::HashMap<String, LaneTerminal> =
@@ -3896,6 +3909,28 @@ pub fn run() -> anyhow::Result<()> {
                 // 実機で確認）。view の誕生時に保持済み state から再 render する。
                 lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
             }
+            Event::UserEvent(AppEvent::BoardDemand) => {
+                // board pane の boot 窓 catch-up（doc 52 §10 wave 0、BastetDevicesFetch と同型）:
+                // active project の保持済み BoardUpdated を全 lane 分 vpBoard へ再配信する。
+                // retained が bundle ロード前に落ちた分を埋め、reopen で board pane が出るようにする。
+                let active_project = sidebar_state
+                    .active_lane_address
+                    .as_deref()
+                    .and_then(|addr| addr.split('/').next());
+                if let Some(proj) = active_project
+                    && let Some(boards) = board_snapshots.get(proj)
+                {
+                    for message in boards.values() {
+                        if let Ok(json) = serde_json::to_string(message) {
+                            let script =
+                                format!("window.vpBoard && window.vpBoard.handleMessage({})", json);
+                            if let Err(e) = webview.evaluate_script(&script) {
+                                tracing::warn!("board:demand re-deliver 失敗: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 tracing::debug!("🧲 device event: {}", payload);
                 // Phase 2: device 一覧を registry 更新 → sidebar (Devices badge) + main area
@@ -3936,6 +3971,22 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_project = std::path::Path::new(&process_path)
                     .file_name()
                     .and_then(|s| s.to_str());
+                // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を project × lane で
+                // 保持する。`board:demand`（webview bundle-ready）で再配信し、retained が bundle
+                // ロード前に落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
+                if message.get("type").and_then(|t| t.as_str()) == Some("board_updated")
+                    && let Some(proj) = msg_project
+                {
+                    let lane_key = message
+                        .get("lane")
+                        .and_then(|l| l.as_str())
+                        .unwrap_or("conductor")
+                        .to_string();
+                    board_snapshots
+                        .entry(proj.to_string())
+                        .or_default()
+                        .insert(lane_key, message.clone());
+                }
                 // B1 + cross-project: switch_lane は PP content ではなく active Lane 切替コマンド。
                 // active を「変える」コマンドなので、active project guard の **外**で処理する
                 // （別 project の SP から来た switch_lane こそ通す）。送信元 SP の project

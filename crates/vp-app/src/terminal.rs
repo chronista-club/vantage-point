@@ -118,6 +118,11 @@ pub enum AppEvent {
     /// `window.vpBastet &&` guard で黙って落ちる — 以後の再送は次の hot-plug まで無い。
     /// JS 側が vpBastet を install した直後に送り、Rust は保持済み state から再 render する。
     BastetDevicesFetch,
+    /// board pane の catch-up 要求（`bastet:devices_fetch` と同型の boot 窓救済、doc 52 §10 wave 0）。
+    /// board の retained BoardUpdated は bundle ロード前に届き、`window.vpBoard &&` guard で
+    /// 黙って落ちる — 以後の再送は次の live show まで無い（= reopen で board pane が出ない）。
+    /// JS 側が vpBoard を install した直後に送り、Rust は保持済み board snapshot から再配信する。
+    BoardDemand,
     /// VP-143: 全 lane の cc session display name (custom-title) を再 resolve する周期 tick。
     /// `tokio::spawn` で 5s 間隔の background task が proxy 経由で send。 main thread は
     /// `sidebar_state.lanes_by_project` を walk して `session_title::resolve_title_for_cwd` を
@@ -535,6 +540,12 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             // Bastet pane の catch-up（boot 窓で snapshot の render が落ちた分の再要求）。
             tracing::info!("[ipc] bastet:devices_fetch (JS bundle-ready catch-up)");
             let _ = proxy.send_event(AppEvent::BastetDevicesFetch);
+        }
+        Some("board:demand") => {
+            // board pane の catch-up（boot 窓で retained BoardUpdated の render が落ちた分の再要求、
+            // doc 52 §10 wave 0）。Rust が保持済み board snapshot を再配信する。
+            tracing::info!("[ipc] board:demand (JS bundle-ready catch-up)");
+            let _ = proxy.send_event(AppEvent::BoardDemand);
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き

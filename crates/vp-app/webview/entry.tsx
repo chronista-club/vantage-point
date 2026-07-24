@@ -604,6 +604,15 @@ document.addEventListener("vp:act-switch-request", (e) => {
 	JSON.stringify({ t: "bastet:devices_fetch" }),
 );
 
+// board pane の boot 窓 catch-up（doc 52 §10 wave 0）: board の retained BoardUpdated は
+// bundle ロード前に届いて `window.vpBoard &&` guard で落ちる → reopen で board pane が出ない。
+// vpBoard install 済のこの時点で Rust に保持済み board snapshot の再配信を要求する
+// （bastet:devices_fetch と同型。activeLane 未設定でも boardByLane に presence が積まれ、
+//  lane 選択時に board pane が生える）。
+(window as unknown as { ipc?: { postMessage(m: string): void } }).ipc?.postMessage(
+	JSON.stringify({ t: "board:demand" }),
+);
+
 // ===== Pane action button delegation =====
 // 各 pane の `[data-action]` button を click delegation で hook。 S2 では Clear のみ実装、
 // data-target 属性で対象 surface を識別 (`pp` = Paisley Park body)。 将来的に Pin / Lane 切替
