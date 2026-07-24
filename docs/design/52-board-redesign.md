@@ -182,7 +182,25 @@ board モデル化（2026-07-15）で書き込みが board 経路に intercept �
 
 ## 10. 実装順序（2026-07-24 確定）
 
-0. **A4 = board pane を先に単独出荷**（表示の器の引っ越し。doc 51 Epic の A4 — lane roster に board pane を足し、app 層 PP を退役。新規コードは board 語彙）
+### ✅ wave 0 完了（2026-07-24、branch `mako/a4-board-pane`、実機 dogfood 済み）
+
+board pane 移設 + canvas 語彙退去を一波で出荷。8 commit:
+1. doc 52 起草
+2. **board pane 移設** — app 層 PP（#pane-paisley-park）退役 → lane tiling の #lane-board。presence 駆動（board 非空で自動）、mode 直交、旧 pp scene（side-review/pp-overlay/pp-focus）退役
+3. **死んだ読み手撤去** — list_canvas / read_pane / CanvasPane / fetch_canvas_panes / pane_id。capture_canvas → capture_window
+4. **Stand id board / channel gui** — PAISLEY_PARK.id `canvas`→`board`（address `board@`）、QUIC channel `canvas`→`gui` + `canvas-ingest`→`gui-ingest`、Navigator 統一
+5. **webview 語彙退去** — canvas-handler.ts→board-handler.ts、CanvasItem→BoardItem、window.vpCanvas→vpBoard
+6. **seam fix**（dogfood 発見）— lane key 空間ミスマッチ（board-handler の flat key vs lane-panes の address）を `boardLaneKeyOf` で写して根治
+7. **boot 窓 board:demand**（dogfood 発見）— retained BoardUpdated の bundle-ロード前 drop を Rust buffer + consumer-driven demand（bastet:devices_fetch 同型）で埋める
+
+品質ゲート: fmt / clippy -D warnings / cargo test（workspace 1243 + vp-app 115）/ vitest 263 全緑。
+実機確認: live show で board pane 生成 + cold boot（reopen）で retained から board pane 復元を screenshot 確認。
+
+**dogfood で見つかった 2 バグ（seam / boot 窓）は webview の pure function テストでは出ず、module 間 seam と Rust↔webview boundary という runtime でしか踏めない箇所だった** — mock でなく実物 dogfood が効いた実例。
+
+### 残り
+
+0. **A4 = board pane を先に単独出荷**（表示の器の引っ越し。doc 51 Epic の A4 — lane roster に board pane を足し、app 層 PP を退役。新規コードは board 語彙）✅
    - 生え方（mako 決定 2026-07-24）: **board 非空で自動** — roster を「board に item がある lane に board pane」と機械導出。畳む/復元は既存 layout 文法（share 0 / live 新着で復元 = 現行 auto-open の lane 文法版）。新しい状態は足さない
    - 旧 PP（同決定）: **即退役で一本化** — scene 群（side-review / pp-overlay / pp-focus）から pp を外し、sidebar の PP クリックは現 lane の board pane focus に読み替え
    - **canvas 語彙の退去も同じ波でできるだけやる**（mako 2026-07-24「このタイミングでできるだけ Canvas をリネームして、新 HD の時にすぐ実装に入れるようにしたい」）: webview の型・ファイル名（CanvasItem → BoardItem 等）+ viral 分（channel 名 / Stand id）を含む。§6 ③④⑤ の前倒し。残置は DB pane_id `"paisley-park"`（encapsulated な const 1 点 + 既存データ保全）のみ許容
