@@ -545,6 +545,10 @@ pub struct ChatSessionInfo {
     /// doc 39: この session が lane の root（Act I slot に立ち mailbox を名乗る）か。
     /// GUI は root タブの × を隠す（backend の「root は remove 不可」の UI 反映）。
     pub root: bool,
+    /// doc 50 §4.6 A6: この session の Act（見え方）。GUI の roster（term / chat のどちらの
+    /// Pane を生やすか）と名札の kind badge が読む **唯一の供給源**。旧 lane 単位 console_mode
+    /// による roster 導出はこの field に置き換わった（term になれるのが root だけ、の制約は A6 で消滅）。
+    pub act: SessionAct,
 }
 
 /// [`LanePool::slot_inventory`] の 1 要素 — lane が持つ PTY slot 1 枚分の view。
@@ -1436,6 +1440,8 @@ impl LanePool {
                     live: live.is_some_and(|m| m.contains_key(&s.key)),
                     focused: s.key == reg.focused,
                     root: s.key == reg.root,
+                    // doc 50 §4.6 A6: GUI の roster / kind badge の供給源（registry が SSOT）。
+                    act: s.act,
                 }
             })
             .collect())

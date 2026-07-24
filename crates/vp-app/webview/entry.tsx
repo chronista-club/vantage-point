@@ -264,6 +264,10 @@ const installSetActivePaneBridge = (): void => {
 			// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
 			// 保存済配置を restore、 初訪問 Lane は lead-focus を default にする
 			if (laneChanged) restoreAppStateFor(newLane);
+			// doc 50 §4.6 A6: lane の表示を開く（roster 同期 + focus）。旧実装は
+			// 'vp:console-mode'（lane 単位 mode の到着）が契機だったが、見え方が session の
+			// 属性になったので lane 切替そのものが契機になる。
+			if (laneChanged) applyLaneView(newLane);
 			// board モデル: lane 切替時に active lane を更新する。 lane board は canvas channel で既に
 			// retained 受信済みなので、 setActiveLaneName で表示 board を切り替えるだけでよい（別 load 不要）。
 			// LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
@@ -483,42 +487,30 @@ if (lanePanes && paneFrame) {
 // mode に応じて表示を追従させる（表示は既定 tiling、doc 51 §1 — mako 2026-07-24 同時注視。
 // 旧「1 枚ずつ = showOnly」は doc 47 §1 決着までの暫定だった）。
 //
-// pane の顔ぶれ（roster）の mode 追従は lane-panes.ts 自身が 'vp:console-mode' 購読で行う
-// （mode == tui は Console + 非 root chat / mode == chat は全 chat — 同じ session の
-// term / chat 同時 2 枚は原理的に不可、doc 51 §2）。ここは lane 切替と focus だけを担う。
-const applyConsoleMode = (lane: string, mode: "tui" | "chat"): void => {
-	// `showLane` は**必ず**呼ぶ（renderer attach + sessions_fetch）。Act I の lane でも
-	// session 一覧が届かないと pane の顔ぶれ（lanePaneRefs）が Console 1 枚のままになる。
+// lane の表示を開く（doc 50 §4.6 A6 — 旧 `applyConsoleMode` の後継）。
+//
+// pane の顔ぶれ（roster）は lane-panes.ts が session 一覧 × 各 session の act から導出する
+// （'vp:echoes-sessions' / 'vp:session-act' 購読）。ここは lane 切替と focus だけを担う。
+// 旧実装は lane 単位 mode を引数に取っていたが、見え方が session の属性になったので
+// 「lane を開く」操作から mode の概念が消えた。
+const applyLaneView = (lane: string): void => {
+	// `showLane` は**必ず**呼ぶ（renderer attach + sessions_fetch）。session 一覧が届かないと
+	// pane の顔ぶれ（lanePaneRefs）が空のままになる。
 	chatView.showLane(lane);
 	// doc 47 §3: Pane 構成は **lane ごと**（= engine の lane scope）。DOM host は app 共有
 	// なので、lane が変わったら新 lane の配置を DOM へ写し直す（これが無いと「どの lane に
 	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
 	lanePanes?.setActiveLane(lane);
-	if (mode === "chat") {
-		// focus 先 = focused session の pane（session ↔ Pane 1:1）。focused は console.ts の
-		// registry が真値（echoes_session_list で同期済み。未知 lane は 1 = 旧 SP 互換）。
-		lanePanes?.focusPane(chatHostId(focusedOf(lane)));
-	} else {
-		lanePanes?.focusPane("lane-host");
-		// doc 38 §4.3: Act I へ切替えたら再同期ローダー（global fixed 要素）を必ず下ろす。
-		// resync-loader は activeLane の replaying を読むだけで Act を知らないため、chat→tui で
-		// stuck した replaying が Act I 表示の上に居座るのを防ぐ。
-		chatView.clearReplaying(lane);
-	}
+	// focus 先 = focused session の pane（session ↔ Pane 1:1）。その session の act で
+	// host が決まる（term なら xterm、chat なら ChatView）。focused は console.ts の
+	// registry が真値（echoes_session_list で同期済み。未知 lane は 1 = 旧 SP 互換）。
+	// pane がまだ生えていない boot 窓は lane-panes 側が pendingFocus で救済する。
+	lanePanes?.focusPane(chatHostId(focusedOf(lane)));
+	// doc 38 §4.3: 再同期ローダー（global fixed 要素）は lane 切替で必ず下ろす。
+	// resync-loader は activeLane の replaying を読むだけなので、stuck した replaying が
+	// 新しい表示の上に居座るのを防ぐ。
+	chatView.clearReplaying(lane);
 };
-
-// vpConsole.setMode(lane, mode) が投げる CustomEvent を受けて表示を切替える
-// (Rust が lane 選択 / console_set_mode 成功時に setMode を呼ぶ)。
-document.addEventListener("vp:console-mode", (e) => {
-	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>)
-		.detail;
-	if (!detail?.lane) return;
-	// SP 応答待ちの間に別 lane へ移った後から届いた mode 適用で、表示ごと元の lane に
-	// 引き戻さない（overlay 解除 / toggle label は別 listener なので影響なし）。lane の
-	// mode 自体は vpConsole 側 map に記録済みで、再選択時の setMode 同期が正しく開く。
-	if (activeLaneAddress && detail.lane !== activeLaneAddress) return;
-	applyConsoleMode(detail.lane, detail.mode);
-});
 
 // doc 33 §9: Act I⇄II 切替の progress overlay + switch lock。
 // 「resume 確定まで切替を見せる + 二重切替を防ぐ」= 安全なハンドオフ。
@@ -526,12 +518,21 @@ const switchingOverlay = document.getElementById("console-switching");
 const switchingMsg = switchingOverlay?.querySelector(
 	".console-switching-msg",
 ) as HTMLElement | undefined;
-// 進行中の handoff。null = idle。set 中は toggle をロックする。
-let handoffPending: { lane: string; target: "tui" | "chat" } | null = null;
+// 進行中の handoff。null = idle。set 中は同 session の再切替をロックする。
+// doc 50 §4.6 A6: 切替は session 単位（名札 kind badge）になったので、lock も session を持つ。
+let handoffPending: {
+	lane: string;
+	session: number;
+	target: "tui" | "chat";
+} | null = null;
 let handoffTimer: number | undefined;
 
-const beginHandoff = (lane: string, target: "tui" | "chat"): void => {
-	handoffPending = { lane, target };
+const beginHandoff = (
+	lane: string,
+	session: number,
+	target: "tui" | "chat",
+): void => {
+	handoffPending = { lane, session, target };
 	if (switchingMsg) {
 		switchingMsg.textContent =
 			target === "chat"
@@ -552,18 +553,20 @@ const endHandoff = (): void => {
 	switchingOverlay?.classList.remove("active");
 };
 
-// mode 適用（tui=PTY respawn 済 / chat=engine スロット確定）で overlay を clear。
+// act 適用（tui=PTY respawn 済 / chat=engine スロット確定）で overlay を clear。
 // doc 33 §9 改訂（Act I レベルに合わせる）: chat 行きも session_init を待たず、
-// mode 適用で即解除する。Act I の「切替は即・claude の load は非同期」と同じ哲学で、
+// act 適用で即解除する。Act I の「切替は即・claude の load は非同期」と同じ哲学で、
 // overlay が engine 起動（resume 確定）を gate して固まるのを防ぐ。切替を表示した
-// のと同じ vp:console-mode で overlay も畳むので、ハングが構造的に起きない。
-document.addEventListener("vp:console-mode", (e) => {
-	const detail = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>)
-		.detail;
+// のと同じ 'vp:session-act' で overlay も畳むので、ハングが構造的に起きない。
+document.addEventListener("vp:session-act", (e) => {
+	const d = (
+		e as CustomEvent<{ lane: string; session: number; act: "tui" | "chat" }>
+	).detail;
 	if (
 		handoffPending &&
-		detail?.lane === handoffPending.lane &&
-		detail?.mode === handoffPending.target
+		d?.lane === handoffPending.lane &&
+		d?.session === handoffPending.session &&
+		d?.act === handoffPending.target
 	) {
 		endHandoff();
 	}
@@ -580,23 +583,32 @@ document.addEventListener("vp:console-ready", (e) => {
 	}
 });
 
-// Act 切替（見え方の乗り換え = 避難路、doc 51 §2）: 入口は EchoesHeader の root picker
-// （名札 menu — 低頻度・低目立ち）。lane-level の Act toggle は帯（#pane-tabs）とともに
-// 退役した（doc 50 P4 — Act は lane の mode ではなく session の見え方）。
-// handoff overlay / 二重切替 lock はここ（entry.tsx）が持ち続け、EchoesHeader からは
-// event で依頼される — overlay の DOM / timer と picker の実装を絡ませない。
+// Act 切替（見え方の乗り換え、doc 50 §4.6 A6 ②）: 入口は **各 pane の名札 kind badge**。
+// 「この pane が何であるか」の一部なので名札（上段）が住処 — §3.1 の「下段右端は消えるまでの
+// 置き場」の終着点がここ。旧 lane-level Act toggle（帯）は doc 51 §1 A1 で、root picker の
+// 「見え方」行（pre-A6 の仮住まい）は本 A6 で退役した。
+// handoff overlay / 二重切替 lock はここ（entry.tsx）が持ち続け、名札からは event で依頼される
+// — overlay の DOM / timer と名札の実装を絡ませない。
 document.addEventListener("vp:act-switch-request", (e) => {
-	const d = (e as CustomEvent<{ lane: string; target: "tui" | "chat" }>).detail;
-	if (!d?.lane || !d.target) return;
+	const d = (
+		e as CustomEvent<{ lane: string; session: number; target: "tui" | "chat" }>
+	).detail;
+	if (!d?.lane || !d.session || !d.target) return;
 	// resume 確定前の二重切替をロック（中間状態を作らない）。
 	if (handoffPending) return;
 	// 押下で即 progress を出す（round-trip 前に反応 = 待ち時間を可視化）。
-	beginHandoff(d.lane, d.target);
+	beginHandoff(d.lane, d.session, d.target);
 	const ipc = (
 		window as unknown as { ipc?: { postMessage(m: string): void } }
 	).ipc;
+	// 宛先 session は引数で運ぶ（doc 50 §4.3 — focus 依存の分割はレース）。
 	ipc?.postMessage(
-		JSON.stringify({ t: "console:set_mode", lane: d.lane, mode: d.target }),
+		JSON.stringify({
+			t: "session:set_act",
+			lane: d.lane,
+			session: d.session,
+			act: d.target,
+		}),
 	);
 });
 

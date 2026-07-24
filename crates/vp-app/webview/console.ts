@@ -126,6 +126,10 @@ export type EchoesSession = {
    *  root タブは × を隠す（backend の「root は remove 不可」の UI 反映）。
    *  旧 SP は送らない → undefined（後方互換は canCloseSession 側が吸収）。 */
   root?: boolean
+  /** doc 50 §4.6 A6: この session の Act（見え方）。roster（lane-panes）が Pane kind を
+   *  決める **唯一の入力**で、名札 kind badge の表示もこれに従う。
+   *  旧 SP は送らない → undefined（roster 側が "tui" に倒す = 従来の既定）。 */
+  act?: 'tui' | 'chat'
 }
 
 /** echoes_session_list の生 payload（Rust `handle_echoes_session_list` の返り値 mirror）。 */
@@ -301,6 +305,9 @@ export type VpConsole = {
   handleEvent(lane: string, event: EchoesEvent, session?: number): void
   setMode(lane: string, mode: ConsoleMode): void
   getMode(lane: string): ConsoleMode
+  /** doc 50 §4.6 A6: session の Act（見え方）が変わったことを通知する（'vp:session-act'）。
+   *  Rust の `SessionActApplied` が呼ぶ口。roster と kind badge がこれで追従する。 */
+  setSessionAct(lane: string, session: number, act: ConsoleMode): void
   /** ChatView (C2) が mount 時に登録。既存 buffer を replay してから live 配信に接続する。 */
   attachRenderer(lane: string, renderer: ConsoleRenderer): void
   detachRenderer(lane: string): void
@@ -363,6 +370,14 @@ export function installConsole(): VpConsole {
       // 表示切替は ChatView / layout 側の判断（ビューとエンジンは別軸）。通知だけ流す。
       document.dispatchEvent(
         new CustomEvent('vp:console-mode', { detail: { lane, mode } }),
+      )
+    },
+    setSessionAct(lane, session, act) {
+      // doc 50 §4.6 A6: 見え方は **session の属性**。roster（lane-panes）と名札の kind badge
+      // （EchoesHeader）がこの bus を購読して、その session の Pane kind を入れ替える。
+      // lane 単位の mode cache は触らない（root の追従は sidebar snapshot が持つ）。
+      document.dispatchEvent(
+        new CustomEvent('vp:session-act', { detail: { lane, session, act } }),
       )
     },
     getMode(lane) {

@@ -259,6 +259,27 @@ export function removeChatSession(lane: string, session: number): void {
   ipc?.postMessage(JSON.stringify({ t: 'echoes:session_remove', lane, session }))
 }
 
+/** doc 50 §4.6 A6 ②: 名札 kind badge → session の Act（見え方）切替を要求する。
+ *
+ * IPC を直接撃たず `vp:act-switch-request` に流すのは、handoff overlay と二重切替 lock を
+ * entry.tsx が一元管理しているため（名札の実装と overlay の DOM / timer を絡ませない —
+ * doc 51 §2 で root picker から event 依頼にした規律をそのまま引き継ぐ）。
+ * 宛先 session は **引数で運ぶ**（focus に依存しない — 「focus してから送る」型の分割は
+ * 別 IPC なので順序保証が無く、別 session に届くレースを作る。doc 50 §4.3 の警告）。
+ * 応答は Rust の `SessionActApplied` → `vpConsole.setSessionAct` → 'vp:session-act' で返り、
+ * roster がその session の Pane kind を入れ替える。 */
+export function requestSessionAct(
+  lane: string,
+  session: number,
+  act: 'tui' | 'chat',
+): void {
+  document.dispatchEvent(
+    new CustomEvent('vp:act-switch-request', {
+      detail: { lane, session, target: act },
+    }),
+  )
+}
+
 // ---------------------------------------------------------------------------
 // doc 38 §4.3 — 再同期ローダー（resync-loader）の固着防止
 //
@@ -598,6 +619,31 @@ export function activeLaneReplaying(): boolean {
  *    従来挙動（本数のみ）に倒す。 */
 export function canCloseSession(sessionCount: number, isRoot?: boolean): boolean {
   return sessionCount >= 2 && isRoot !== true
+}
+
+/** kind badge（doc 50 §4.6 A6 ②）の可否と理由。`null` = 切替可、文字列 = 不可の理由。
+ *
+ * **能力表引きで判定し、engine 名の型分岐は書かない**（§4.6 ② — shell の chat が
+ * 「原理不可」ではなく「host 未実装」であるように、能力は engine 側の申告で変わる。
+ * 実装された日に gating 側を触らず badge が生えるのが正しい形。`newPaneChoices` が
+ * 同じ `chat_capable` を引いているのと同一規律）。
+ *
+ * - **term→chat**: その session の stand が chat host を持つか（stands bus の `chat_capable`）。
+ *   stand が一覧に無い（= 未着 / 未知）ときは不可に倒す — 「作れるが submit がエラーになる
+ *   だけ」の行き止まりを出さない。
+ * - **chat→tui**: 常に可。Act I は login shell に engine を流し込むだけなのでどの engine でも
+ *   成立する（doc 50 §4.0 帰結 1「login shell は劣化ケースではなく正規の投げる先」）。
+ */
+export function actSwitchBlockedReason(
+  target: 'tui' | 'chat',
+  stand: string,
+  stands: readonly { name: string; chat_capable?: boolean }[],
+): string | null {
+  if (target === 'tui') return null
+  const entry = stands.find((s) => s.name === stand)
+  return entry?.chat_capable === true
+    ? null
+    : `${stand} は Chat（Act II）の受け口を持ちません`
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,10 +1507,26 @@ function SessionChatView(props: { lane: string; session: number }) {
           {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
         </Show>
         <Show when={!isFocused()}>
-          {/* focus は「Act toggle の対象 / replay demand の宛先」— 送信はどの pane からも可 */}
+          {/* focus は「replay demand の宛先」— 送信はどの pane からも可 */}
           <span class="echoes-session-plate-hint">click で focus</span>
         </Show>
         <span class="echoes-session-plate-spacer" />
+        {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
+            click で session_set_act → SP が resume handoff → 同じ往復路が Console として
+            立ち上がる（位置と同一性は不変、中身だけ入れ替わる = in-place 変身）。
+            chat→tui は常に可（Act I は login shell に engine を流し込むだけ、§4.0 帰結 1）。 */}
+        <button
+          type="button"
+          class="echoes-session-plate-kind"
+          title="Console（Act I）に切り替える — 会話はそのまま resume で続く"
+          onClick={(e) => {
+            e.stopPropagation()
+            requestSessionAct(props.lane, props.session, 'tui')
+          }}
+        >
+          <CreoIcon name="ph:chat-circle" size={9} />
+          Chat
+        </button>
         <Show
           when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, sessionInfo()?.root)}
         >
@@ -1874,6 +1936,15 @@ export const CHATVIEW_CSS = `
   color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
 .echoes-session-plate-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
   background: var(--color-bg,#0f1115); }
+/* kind badge（doc 50 §4.6 A6 ②）: この pane の見え方 = 素性の一部なので名札（上段）に住む。
+   §2.1 の規律で名札は静かに保ち、hover で操作可能だと分かる程度に立てる（root chip と
+   同じ pill 形。あちらは表示専用、こちらは押せる = hover の差で区別する）。 */
+.echoes-session-plate-kind { flex:none; display:inline-flex; align-items:center; gap:3px;
+  padding:1px 6px; border-radius:9999px; cursor:pointer;
+  border:1px solid var(--color-surface-border-subtle,#2a3040); background:transparent;
+  font-size:9.5px; font-family:inherit; color: var(--color-text-tertiary,#8b93a7); opacity:.8; }
+.echoes-session-plate-kind:hover { opacity:1; color: var(--color-text,#e6e9ef);
+  border-color: var(--color-accent,#3b82f6); background: var(--color-bg,#0f1115); }
 /* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
 .echoes-chat:not(.focused) { opacity:.82; }
 /* 灯 3 状態（doc 51 §1 A2）: 動いている = 緑・脈動 / 待っている = 無灯（地の色の点）/

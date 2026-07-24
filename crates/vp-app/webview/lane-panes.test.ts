@@ -35,58 +35,68 @@ describe("initialLaneLayout（doc 50 P1: boot は Console 1 枚）", () => {
 	});
 });
 
-describe("lanePaneRefs（roster = mode × root で term / chat を排他、doc 51 §2）", () => {
-	it("tui: Console + 非 root session の chat pane（root は Act I 面に居る）", () => {
+describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）", () => {
+	it("act ごとに kind が決まる（root=tui は Console、非 root=chat は chat pane）", () => {
 		expect(
-			lanePaneRefs(
-				[
-					{ key: 1, stand: "echoes", root: true },
-					{ key: 3, stand: "codex" },
-				],
-				"tui",
-			),
+			lanePaneRefs([
+				{ key: 1, stand: "echoes", root: true, act: "tui" },
+				{ key: 3, stand: "codex", act: "chat" },
+			]),
 		).toEqual([
-			{ id: "lane-host", label: "Console" },
+			{ id: "lane-host", label: "cc#1", session: 1 },
 			{ id: "chat-session-3", label: "cdx#3", session: 3 },
 		]);
 	});
 
-	it("chat: 全 session の chat pane（root も chat。抜け殻の xterm は台に並べない）", () => {
+	it("全 session が chat（root も chat = 旧 mode==chat 相当）", () => {
 		expect(
-			lanePaneRefs(
-				[
-					{ key: 1, stand: "echoes", root: true },
-					{ key: 3, stand: "codex" },
-				],
-				"chat",
-			),
+			lanePaneRefs([
+				{ key: 1, stand: "echoes", root: true, act: "chat" },
+				{ key: 3, stand: "codex", act: "chat" },
+			]),
 		).toEqual([
 			{ id: "chat-session-1", label: "cc#1", session: 1 },
 			{ id: "chat-session-3", label: "cdx#3", session: 3 },
 		]);
 	});
 
-	it("tui + session なし = Console のみ", () => {
-		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
+	it("A6 の核心: 非 root も term になれる（term が 2 枚並ぶ = 旧実装では不可能だった形）", () => {
+		expect(
+			lanePaneRefs([
+				{ key: 1, stand: "echoes", root: true, act: "tui" },
+				{ key: 2, stand: "echoes", act: "tui" },
+				{ key: 3, stand: "codex", act: "chat" },
+			]).map((p) => p.id),
+		).toEqual(["lane-host", "term-session-2", "chat-session-3"]);
 	});
 
-	it("board 非空: mode を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
-		// tui: Console + board
-		expect(lanePaneRefs([], "tui", true).map((p) => p.id)).toEqual([
-			TERM,
-			"lane-board",
-		]);
-		// chat: 全 chat + board（session あり）
+	it("act 欠落（旧 SP）は tui に倒す（従来の既定 = Act I）", () => {
 		expect(
-			lanePaneRefs([{ key: 1, stand: "echoes", root: true }], "chat", true).map(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true }]).map((p) => p.id),
+		).toEqual([TERM]);
+	});
+
+	it("session なし = 空 roster（board 無しなら pane ゼロ）", () => {
+		expect(lanePaneRefs([]).map((p) => p.id)).toEqual([]);
+	});
+
+	it("board 非空: act を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
+		expect(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true, act: "tui" }], true).map(
+				(p) => p.id,
+			),
+		).toEqual([TERM, "lane-board"]);
+		expect(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true, act: "chat" }], true).map(
 				(p) => p.id,
 			),
 		).toEqual(["chat-session-1", "lane-board"]);
 	});
 
 	it("board 空（既定）は board pane を出さない", () => {
-		expect(lanePaneRefs([], "tui", false).map((p) => p.id)).toEqual([TERM]);
-		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
+		const s = [{ key: 1, stand: "echoes", root: true, act: "tui" as const }];
+		expect(lanePaneRefs(s, false).map((p) => p.id)).toEqual([TERM]);
+		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);
 	});
 });
 
