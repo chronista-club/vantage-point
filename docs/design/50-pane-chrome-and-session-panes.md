@@ -303,16 +303,29 @@ Design B は diff が小さいだけでなく、§4.6 が警告した「1 辺が
 
 「xterm は lane に 1 枚」を前提にした適応が、制約撤廃で**意味が反転**した箇所:
 
-| 箇所 | 旧（制約下では正しかった） | 新 |
-|---|---|---|
-| `console:new_session` tui 分岐 | 新 session + **root 張り替え** + slot respawn | 新 session + slot 起立（root 不動） |
-| `ink.ts` の送り先 | lane 単位 `getMode` + `term:write {lane}` | focused **session の act** + `{lane, session}` |
-| `activate_lane` / boot catch-up | `vpConsole.setMode` で lane の mode を同期 | 退役（roster が session×act から導出） |
+| 箇所 | 旧（制約下では正しかった） | 新 | 発見 |
+|---|---|---|---|
+| `console:new_session` tui 分岐 | 新 session + **root 張り替え** + slot respawn | 新 session + slot 起立（root 不動） | 設計時 |
+| `ink.ts` の送り先 | lane 単位 `getMode` + `term:write {lane}` | focused **session の act** + `{lane, session}` | 清算時 grep |
+| `activate_lane` / boot catch-up | `vpConsole.setMode` で lane の mode を同期 | 退役（roster が session×act から導出） | 清算時 grep |
+| **boot 経路の gate**（`LanesLoaded` / `LanesEnsureAll`） | `pid.is_none() \|\| console_mode == "chat"` で lane ごと skip | `term_sessions_of(lane).is_empty()` | **実機 dogfood** |
+| **`ensure_echoes_attach` の gate** | `lane_is_chat`（= root の act） | `lane_has_chat_session`（どれか 1 つでも chat か） | 実機の同型探索 |
 
-**ink が最も危険だった** — roster を直しても ink は壊れたままで、症状は「送信は成功するが
-root に届く」= エラーゼロの誤配送。しかもテストが「tui は session を無視する」を*正*として
-固定していた。**制約の撤廃は「正しさの定義」も変える**ので、古い正しさを守るテストは変更を
-守らず隠す。制約前提の適応は grep で全数を洗うこと。
+**共通形は「lane 単位で判断している箇所」**。A6 は「session ごとに act が違いうる」世界を作った
+ので、lane 単位の述語（`console_mode` / `pid` / `lane_is_chat`）はすべて**誤った要約**になる。
+
+発見のされ方が 3 通りあったのが示唆的:
+
+- **ink が最も危険だった**（静的発見）— roster を直しても壊れたままで、症状は「送信は成功するが
+  root に届く」= エラーゼロの誤配送。しかもテストが「tui は session を無視する」を*正*として
+  固定していた。**制約の撤廃は「正しさの定義」も変える**ので、古い正しさを守るテストは変更を
+  守らず隠す。
+- **boot gate は実機でしか出なかった**（動的発見）— unit も型も通り、pane も並ぶ。server 側も
+  正常（PtySlot 生存・prompt も出ている）。**「pane は並ぶのに中身が来ない」**という、静的には
+  見えない形だった。root=chat + 非 root=tui という**構成の組み合わせ**が要るのも、テストを
+  書きにくくしていた（だから見つけた後に `session_derivation_tests` で固定した）。
+- **echoes attach は実機の 1 件目から横に探して見つけた**（[[one-edge-two-jobs]]「同型は必ず横に
+  探す」）。1 件直して満足せず、同じ述語を使う場所を全数見ることが効く。
 
 #### 撤去したもの（読み手/書き手を失った残骸）
 

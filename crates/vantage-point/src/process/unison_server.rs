@@ -4590,6 +4590,57 @@ mod tests {
         );
     }
 
+    /// doc 50 §4.6 A6 ②: Chat 化の可否は **その session の stand** の能力で決まる。
+    ///
+    /// GUI 側 badge も同じ能力表（`chat_capable`）で gating するが、**server が最終的な門番**。
+    /// root 決め打ちにしないこと（非 root は engine が違いうる — shell の console を chat に
+    /// しようとしても、その session の stand で弾く）を固定する。
+    #[tokio::test]
+    async fn session_set_act_chat_requires_chat_capable_stand() {
+        use super::dispatch_process_method;
+        use crate::lane::session_registry::{self, SessionAct};
+        use crate::process::state::build_test_app_state;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let addr = insert_test_lane(&state, "vptest-cap", SessionAct::Tui).await;
+        let lane = "vptest-cap/root";
+
+        // lane の stand は echoes（chat 可能）だが、**非 root に shell の session** を足す。
+        let shell = session_registry::create(
+            &addr.project,
+            "root",
+            "echoes",
+            "shell",
+            SessionAct::Tui,
+            false,
+        )
+        .expect("shell session 作成");
+
+        // その session を chat にしようとすると、**その session の stand（shell）**で弾かれる。
+        let err = dispatch_process_method(
+            &state,
+            "session_set_act",
+            serde_json::json!({ "lane": lane, "session": shell, "act": "chat" }),
+        )
+        .await
+        .expect_err("shell session の chat 化は Err");
+        assert!(
+            err.contains("shell") || err.contains("Act II"),
+            "エラーは能力不足を説明する（got={err}）"
+        );
+
+        // 逆向き（chat → tui）は engine を問わず可能（Act I は login shell に流し込むだけ）。
+        // shell session は既に tui なので no-op Ok になることで「拒否されない」ことを示す。
+        dispatch_process_method(
+            &state,
+            "session_set_act",
+            serde_json::json!({ "lane": lane, "session": shell, "act": "tui" }),
+        )
+        .await
+        .expect("tui 方向は engine を問わず通る");
+    }
+
     /// 実機統合: mode=chat の lane への echoes_submit が engine を lazy spawn し、EchoesEvent が
     /// `process/echoes/data/{lane}/event` topic に届く SP 終端 round-trip を検証する。
     /// `cargo test -p vantage-point --ignored echoes_submit_roundtrip`（要 claude CLI）。
