@@ -67,18 +67,23 @@
 | パレット | **line / arrow / text / freehand の 4 つ** | Shottr 実使用の実測（mako は 3〜4 tool しか使わない） |
 | text の位置づけ | **注釈**（矢印・線と同格の一要素。本文への昇格はしない） | mako 決定 2026-07-24 |
 | 読み方 | **合成画像 + item id** — 描いた状態の pane を pixel のまま AI に渡す（vision） | ⚠️ 初版からの反転。下記「決定の反転記録」 |
-| 撮影 | 既存 screenshot 機構の **`-l` window capture → pane 矩形に crop**（`image` crate、既存依存） | `-R`（rect 直撮り）は重なった他 window が写り込む。`-l` は window 自身の buffer なので occlusion 非感受 |
-| 届け方 | **明示送信**。合成画像を file に落とし、会話へ「画像パス + item id」の一行 | AI は Read tool で開く = Act I / Act II 両方で今日動く経路。image block の新配管不要（Act II 画像対応 C3/C4 を待たない） |
+| 撮影 | **WKWebView.takeSnapshot（rect = pane 矩形）** — wry `WebViewExtMacOS::webview()` + objc2-web-kit（両部品とも実在確認済み、objc2-web-kit 0.3.2 は wry の objc2 stack に既在） | mako 確定 2026-07-24。screencapture `-l`+crop 案は 3 コストで却下: ① Screen Recording **権限がコア動線に入る** ② 隣 pane（別 session の秘密）込みの**中間 full-window PNG が disk に実体化** ③ title bar / Retina の座標写像。snapshot は権限不要・pane 以外を一切実体化しない・座標は webview 系のまま。「表象を所有する surface 自身が画像を吐く」= 表象の共有の純度も上。Windows は WebView2 `CapturePreviewAsync` が同型の扉 |
+| 送信先 | **focused session**（chat 系 API の session 省略 = focused と同じ規約）。board pane 自身が focus なら直前に focus していた session pane、無ければ root | 未規定だと実装時に暗黙で決まるため明示（polish review 2026-07-24） |
+| 送信文面 | **自然文プロンプト**: 「[対話面] board の item \<id\> に注釈を描いた。\<path\> の画像を見て意図を汲んでほしい」 | 内輪語の規約（「対話面: path」形式）を読み手の予備知識にしない — codex / grok も一行で分かる。一行がそのまま instruction |
+| 届け方 | **明示送信**。snapshot を file に落とし、上記一行を会話へ | AI は Read tool で開く = Act I / Act II 両方で今日動く経路。image block の新配管不要（Act II 画像対応 C3/C4 を待たない） |
+| temp file | state dir の per-lane dir（例 `ink/<lane>/`）に保存、起動時に 7 日超を prune | **消し手のないファイルを作らない**（terminal replay disk leak の轍、task_b54fb82d） |
 | 送信後 | **残らない**（送信 = 手放す。痕跡は会話側 = 送った画像に生きる） | mako 決定 2026-07-24。`update`（in-place 置換）との anchor drift 問題を構造的に回避 |
 | 対象 engine | **claude / codex / grok**（常駐 3 engine、全て vision 対応） | mako 決定 2026-07-24「全てに対応するのはナンセンス」 |
+| code 語彙 | **ink**（ink layer / `ink_send` 等） | 「対話面」は表示層の名（Stand 名と同じ層分け、naming 規律）。annotation は creo の annotate と紛れるため不採用 |
 
 ```
 AI が貼る（board item）
   → 人が見る
   → 人が上に描く（line / arrow / text / freehand）
   → 明示送信
-      = palette を一瞬隠す → window capture(-l) → pane 矩形 crop → temp file
-  → 会話に一行: 「対話面: /path/to/annotation.png（item d48a11e1）」
+      = palette を一瞬隠す → WKWebView.takeSnapshot(rect = pane 矩形) → temp file
+  → focused session の会話に一行:
+      「[対話面] board の item d48a11e1-… に注釈を描いた。/path/to/ink.png の画像を見て意図を汲んでほしい」
   → AI が Read tool で画像を見る（正確な本文が要るときは read_board が保険）
   → AI が動く（修正 / creo へ / 次の一手）
   → レイヤーは消える（送信 = 手放す）
@@ -86,6 +91,9 @@ AI が貼る（board item）
 
 - 4 primitive 限定は維持: 注釈は場所と関係を指す指。形そのもので伝えるスケッチは **HD の領分**（住み分け）
 - anchor の粒度問題（行/セル/文字 range のどこまで解決するか）は**解く必要がなくなった** — 矢印は pixel のまま届き、粒度は受け手が文脈で汲む。Shottr 実運用と同じ読み方
+- **明示送信 = 整合性装置**: AI が item を in-place update した瞬間に描いていても、ink のズレは
+  人の目に見え、**見てから送る**。WYSIWYG capture + 明示送信の組が、freeze 機構なしで整合性を
+  人の目に委ねる構造 — 「描画中は item render を凍結すべきか」は解かなくてよい問いになる
 
 ### 決定の反転記録: semantic anchor → 合成画像（2026-07-24、mako「画像にしちゃう？」起点）
 
