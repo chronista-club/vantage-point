@@ -352,10 +352,15 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 /* ink 赤: shottr と同じ 1 色固定（意図的に単色 — 描くのは「場所と関係を指す指」）。 */
 #ink-stage{--vp-ink-color:#ff5b4d;}
 /* 透明レイヤー: 道具未選択（.ink-off）時は pointer-events:none で下の item を素通し
-   （text 選択 / Clear ボタンが生きる）。道具選択で auto に切り替え描画を捕まえる。 */
-#ink-overlay{position:absolute;inset:0;pointer-events:none;touch-action:none;z-index:4;}
+   （text 選択 / Clear ボタンが生きる）。道具選択で auto に切り替え描画を捕まえる。
+   overlay は div（HTML box 全体を捕まえる）。空白部分を透過させないため svg には委ねない。 */
+#ink-overlay{position:absolute;inset:0;pointer-events:none;touch-action:none;z-index:4;
+  user-select:none;-webkit-user-select:none;}
 #ink-overlay:not(.ink-off){pointer-events:auto;cursor:crosshair;}
-#ink-overlay .ink-note{font:600 14px var(--vp-font-sans),var(--typography-family-sans);
+/* 描画キャンバス: div いっぱいの svg。pointer は div が捕まえるので自身は none。 */
+#ink-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;
+  overflow:visible;}
+#ink-canvas .ink-note{font:600 14px var(--vp-font-sans),var(--typography-family-sans);
   fill:var(--vp-ink-color);paint-order:stroke;stroke:rgba(0,0,0,.55);stroke-width:3px;
   stroke-linejoin:round;}
 /* text 注釈の入力ボックス（配置は ink.ts が left/top を絶対指定）。 */
@@ -502,13 +507,18 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
              stage = 描画対象 = snapshot 矩形。overlay / palette / text input の挙動は ink.ts。 -->
         <div id="ink-stage">
           <div class="pp-content" id="pp-content"></div>
-          <svg id="ink-overlay" class="ink-off" aria-label="対話面 描画レイヤー">
-            <defs>
-              <marker id="ink-arrowhead" markerWidth="9" markerHeight="8" refX="7" refY="4" orient="auto">
-                <path d="M0,0 L8,4 L0,8 z" fill="var(--vp-ink-color)"></path>
-              </marker>
-            </defs>
-          </svg>
+          <!-- overlay は **div**（HTML box 全体で pointer を捕まえる）。中の svg で描く。
+               svg root を直に armed にすると、SVG の pointer-events 既定 visiblePainted の
+               ため空白部分が透過し pointerdown が下の文字に落ちて text 選択に吸われる。 -->
+          <div id="ink-overlay" class="ink-off" aria-label="対話面 描画レイヤー">
+            <svg id="ink-canvas">
+              <defs>
+                <marker id="ink-arrowhead" markerWidth="9" markerHeight="8" refX="7" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--vp-ink-color)"></path>
+                </marker>
+              </defs>
+            </svg>
+          </div>
           <input id="ink-text" type="text" placeholder="文字を入力 → Enter" aria-label="ink text 注釈の入力" />
           <div id="ink-palette" role="toolbar" aria-label="対話面 描画道具"></div>
           <div id="ink-toast" role="status"></div>

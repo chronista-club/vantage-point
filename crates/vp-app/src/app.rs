@@ -191,6 +191,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // board pane の boot 窓 catch-up（doc 52 §10 wave 0。漏れると「reopen で board
                 // pane が出ない」= bastet:devices_fetch と同じ罠）
                 | "board:demand"
+                // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
+                // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
+                | "ink:snapshot"
         )
     )
 }
@@ -219,6 +222,8 @@ mod ipc_tag_tests {
             "bastet:devices_fetch",
             // board pane の boot 窓 catch-up（doc 52 §10 wave 0）
             "board:demand",
+            // ink（対話面, doc 52 §3）: 送信の snapshot 要求（漏れは「送っても画像が飛ばない」）
+            "ink:snapshot",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(

@@ -126,11 +126,14 @@ function dispatchRoute(route: InkRoute): void {
  */
 export function installInk(deps: InkDeps): void {
 	const stage = document.getElementById("ink-stage");
-	const overlay = document.getElementById("ink-overlay") as SVGSVGElement | null;
+	// overlay = pointer を捕まえる div（box 全体）。canvas = 描画する svg（pointer-events:none）。
+	// svg root を直に armed にすると空白部分が visiblePainted で透過し、下の文字が text 選択される。
+	const overlay = document.getElementById("ink-overlay");
+	const canvas = document.getElementById("ink-canvas") as unknown as SVGSVGElement | null;
 	const palette = document.getElementById("ink-palette");
 	const textInput = document.getElementById("ink-text") as HTMLInputElement | null;
 	const toast = document.getElementById("ink-toast");
-	if (!stage || !overlay || !palette || !textInput) {
+	if (!stage || !overlay || !canvas || !palette || !textInput) {
 		console.warn("[ink] mount target 不在 — skip");
 		return;
 	}
@@ -233,7 +236,7 @@ export function installInk(deps: InkDeps): void {
 		const t = svgEl("text", { x, y, class: "ink-note" });
 		t.setAttribute("dominant-baseline", "middle");
 		t.textContent = v;
-		overlay.appendChild(t);
+		canvas.appendChild(t);
 		annotations.push({ kind: "text", els: [t] });
 		refreshSend();
 	};
@@ -269,7 +272,7 @@ export function installInk(deps: InkDeps): void {
 				"stroke-linecap": "round",
 				"stroke-linejoin": "round",
 			});
-			overlay.appendChild(path);
+			canvas.appendChild(path);
 			drawing = { kind: "free", el: path, points: [[x, y]] };
 		} else {
 			const line = svgEl("line", {
@@ -282,7 +285,7 @@ export function installInk(deps: InkDeps): void {
 				"stroke-linecap": "round",
 			});
 			if (tool === "arrow") line.setAttribute("marker-end", "url(#ink-arrowhead)");
-			overlay.appendChild(line);
+			canvas.appendChild(line);
 			drawing = { kind: tool, el: line, from: [x, y], to: [x, y] };
 		}
 	});
