@@ -73,6 +73,17 @@ export function sessionOfHostId(id: string): number | null {
 	return m ? Number(m[1]) : null;
 }
 
+/** lane address（`<project>/root` | `<project>/performer/<name>`）→ board の flat lane key
+ *  （root/lead = `conductor` / performer = `<name>`）。board-handler は BoardUpdated.lane を
+ *  flat name（None→'conductor'）で扱うが、lane-panes は address で lane を追う。'vp:board-presence'
+ *  は board-handler の flat key で飛んでくるので、突合のためここで address → flat を写す。
+ *  entry.tsx の laneNameFromAddress と同型（あちらは null=conductor、こちらは 'conductor' 文字列）。 */
+export function boardLaneKeyOf(address: string): string {
+	if (address.endsWith("/root") || address.endsWith("/lead")) return "conductor";
+	const m = address.match(/\/(?:performer|wing)\/(.+)$/);
+	return m ? (m[1] ?? "conductor") : "conductor";
+}
+
 /** lane の pane の顔ぶれ（純関数）。mode と root で term / chat を排他にする（冒頭 doc の
  *  roster 規則 — 同じ session を 2 枚にしない）。
  *
@@ -205,7 +216,9 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	const sessionsByLane = new Map<string, PaneSession[]>();
 	/** lane → console_mode（'vp:console-mode' の鏡。未着 lane は tui = boot 既定） */
 	const modeByLane = new Map<string, "tui" | "chat">();
-	/** lane → board が非空か（'vp:board-presence' の鏡。roster に board pane を出すかを決める） */
+	/** board flat key（'conductor' / performer 名）→ board が非空か（'vp:board-presence' の鏡。
+	 *  board-handler は flat key で presence を飛ばすので、address 空間の他の Map とは別 key 系。
+	 *  lookup は boardLaneKeyOf(address) で写して引く）。 */
 	const boardByLane = new Map<string, boolean>();
 	/** 表示中 lane の動的 host の dispose（host id → SessionChatView の unmount） */
 	const dynDisposers = new Map<string, () => void>();
@@ -223,7 +236,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		lanePaneRefs(
 			sessionsByLane.get(lane) ?? [],
 			modeOf(lane),
-			boardByLane.get(lane) ?? false,
+			boardByLane.get(boardLaneKeyOf(lane)) ?? false,
 		);
 
 	// boot 既定を **同期で** DOM に書く（旧 PaneShell.dock() が bundle init 時に同期 render
@@ -398,9 +411,11 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			e as CustomEvent<{ lane: string; present: boolean; fresh?: boolean }>
 		).detail;
 		if (!d?.lane) return;
+		// d.lane は board-handler の flat key（'conductor' / performer 名）。boardByLane も flat
+		// key で持つ。active 判定は activeLane（address）を flat に写して突合する。
 		boardByLane.set(d.lane, d.present);
-		if (d.lane !== activeLane) return;
-		syncRoster(d.lane);
+		if (!activeLane || boardLaneKeyOf(activeLane) !== d.lane) return;
+		syncRoster(activeLane);
 		render();
 		if (d.present && d.fresh) controller.focusPane(BOARD_PANE_REF.id);
 	});
