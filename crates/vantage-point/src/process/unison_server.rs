@@ -1831,11 +1831,26 @@ async fn handle_lane_slot_new(
         return Err(format!("lane_slot_new: lane パース失敗: {}", lane));
     };
     let stand = payload.get("stand").and_then(|v| v.as_str());
-    let mut pool = state.lane_pool.write().await;
-    let (session, pid) = pool
-        .open_new_slot(&addr, stand)
-        .map_err(|e| format!("lane_slot_new: {e}"))?;
-    let count = pool.slot_sessions(&addr).len();
+    let (session, pid, count) = {
+        let mut pool = state.lane_pool.write().await;
+        let (session, pid) = pool
+            .open_new_slot(&addr, stand)
+            .map_err(|e| format!("lane_slot_new: {e}"))?;
+        let count = pool.slot_sessions(&addr).len();
+        (session, pid, count)
+    };
+    // doc 50 §4.6 A6: **新 slot に pump を張る**（`apply_session_act` の tui 分岐と同じ規律）。
+    //
+    // ⚠️ これが無いと新 session の PTY 出力が誰にも届かない。pump の起動契機は
+    // ①demand hook（購読者数 0→1 のエッジ）②act 切替 の 2 つしかなく、slot 追加はどちらでもない。
+    // しかも client 側の terminal 購読は **lane 単位で 1 本**（`terminal_sessions` は lane key）
+    // なので、root が既に tui で購読済の lane に 2 枚目を足すと購読者数は 1→1 のまま = エッジが
+    // 立たない → 入力は通る（terminal_write は直送）のに**出力だけ永久に沈黙**する。
+    // 「lane 単位のハンドルが session の増加を捉えない」= 制約撤廃の随伴（§4.7）の一族。
+    // write lock は上の block を抜けて drop 済（respawn_terminal_pump は内部で read lock を取る）。
+    if !respawn_terminal_pump(state, lane).await {
+        tracing::warn!("lane_slot_new: pump 張り直し不発（lane={lane} session={session}）");
+    }
     Ok(serde_json::json!({
         "status": "ok",
         "lane": lane,
@@ -4415,9 +4430,12 @@ mod tests {
         )
         .await
         .expect_err("tui mode は Err");
+        // ⚠️ 旧 assertion は `contains("console_set_mode") || contains("mode")` で、`||` の第 2 項が
+        // 何にでも当たるため **撤去済 verb を案内し続けていることを検知できなかった**（team-b review
+        // 2026-07-25）。案内する verb 名そのものを固定する（動詞を rename したらここが落ちる）。
         assert!(
-            err.contains("console_set_mode") || err.contains("mode"),
-            "切替を促すメッセージ: {err}"
+            err.contains("session_set_act"),
+            "現役の切替 verb を案内するメッセージであること: {err}"
         );
     }
 
@@ -4501,6 +4519,97 @@ mod tests {
         );
         assert!(matches!(got[2], EchoesEvent::TurnCompleted { .. }));
         assert_eq!(got[3], EchoesEvent::ReplayEnd { in_flight: false });
+    }
+
+    /// doc 50 §4.6 A6: `lane_slot_new` は **新 slot に pump を張る**。
+    ///
+    /// team-b review 2026-07-25 の指摘（score 87）: pump の起動契機は ①demand hook（購読者数
+    /// 0→1 のエッジ）②act 切替 の 2 つしかなく、slot 追加はどちらでもなかった。しかも client の
+    /// terminal 購読は lane 単位 1 本なので、root が既に tui で購読済の lane に「+ New」で 2 枚目を
+    /// 足すと購読者数は 1→1 のまま = エッジが立たない → **入力は通るのに出力だけ永久に沈黙**。
+    ///
+    /// 「既に pump がある lane に slot を足す」順序（= 実運用で最頻の経路）で回帰を止める。
+    #[tokio::test]
+    async fn lane_slot_new_attaches_pump_to_the_new_slot() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+        use std::time::Duration;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let shell = default_test_shell();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let addr = LaneAddress::performer("vp", "feat-slotpump");
+        let lane = addr.to_string();
+
+        // lane を登録（stand=shell = console に engine を注入しない）+ root slot を立てる。
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                console_mode: crate::lane::session_registry::SessionAct::Tui,
+                id: Default::default(),
+                address: addr.clone(),
+                state: LaneState::Running,
+                stand: "shell".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: cwd.clone(),
+                performer_status: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                engine_stand: None,
+                flow_state: None,
+            });
+            let (slot, rx) =
+                PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("spawn root");
+            pool.insert_pty_slot(addr.clone(), None, slot, rx);
+        }
+        // 購読を張って demand_start → root に pump（= 「既に購読済」の状態を作る）。
+        let topic = format!("process/terminal/data/{}/out", lane.replace('/', "~"));
+        let (_sub, _srx) = state.topic_router.subscribe(&topic).await;
+        dispatch_process_method(
+            &state,
+            "terminal_demand_start",
+            serde_json::json!({ "lane": lane }),
+        )
+        .await
+        .expect("demand_start");
+        let pumps_before = state
+            .terminal_pumps
+            .read()
+            .await
+            .get(&lane)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        assert_eq!(pumps_before, 1, "root の pump が 1 本張られている");
+
+        // ここで「+ New」相当（lane_slot_new）。**購読者数は 1→1 のままでエッジは立たない**。
+        let res = dispatch_process_method(
+            &state,
+            "lane_slot_new",
+            serde_json::json!({ "lane": lane, "stand": "shell" }),
+        )
+        .await
+        .expect("lane_slot_new");
+        let new_session = res["session"].as_u64().expect("session") as u32;
+
+        // それでも新 slot に pump が張られている（handler 自身が respawn するため）。
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let pumps = state.terminal_pumps.read().await;
+        let lane_pumps = pumps.get(&lane).expect("lane の pump map");
+        assert_eq!(
+            lane_pumps.len(),
+            2,
+            "root + 新 session の 2 本（got keys={:?}）",
+            lane_pumps.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            lane_pumps.contains_key(&new_session),
+            "新 session の pump がある（無いと出力が永久に届かない）"
+        );
     }
 
     // doc 50 §4.6 A6: 旧 `console_set_mode_validates_and_transitions` は動詞ごと撤去した

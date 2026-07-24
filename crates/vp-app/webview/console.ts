@@ -4,7 +4,8 @@
  * - data plane: `window.vpConsole.handleEvent(lane, event)` — SP の EchoesAgentHost が吐く
  *   EchoesEvent（engine 非依存語彙、doc 32 §4）を per-lane ring buffer に蓄積し、
  *   mount 済みの ChatView renderer に届ける（renderer は C2 で登録）。
- * - control plane: `window.vpConsole.setMode(lane, mode)` — エンジンモードの通知。
+ * - control plane: `window.vpConsole.setSessionAct(lane, session, act)` — その session の
+ *   Act（見え方）が変わったことの通知（doc 50 §4.6 A6。旧 lane 単位 `setMode` の後継）。
  *   ⚠️ 表示は強制しない（ビューとエンジンは別軸 — Lane 内で Act I/II pane は共存し得る）。
  * - 検分: `window.vpConsole.peek(lane)` — devtools から buffer を覗く（throwaway debug pane を
  *   作らないための恒久 API）。

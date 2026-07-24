@@ -1823,7 +1823,7 @@ impl LanePool {
             // 呼び元は echoes_submit / echoes_nudge の両方（doc 34 channel E）— method 名は
             // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
             anyhow::bail!(
-                "chat engine には console mode=chat が必要（addr={}、現在 {:?}。console_set_mode で切替）",
+                "chat engine には act=chat が必要（addr={}、現在 {:?}。session_set_act で切替）",
                 addr,
                 info.console_mode
             );
@@ -2349,13 +2349,14 @@ mod tests {
         )
         .expect("create legacy session");
 
-        // focused（#1、省略時）は mode ガードで弾かれる。
+        // focused（#1、省略時）は act ガードで弾かれる（doc 50 §4.6 A6 で文言が
+        // `console mode=chat` → `act=chat` / 案内 verb が `session_set_act` に変わった）。
         let err = pool
             .ensure_chat_engine(&addr, None, &router)
-            .expect_err("Tui mode の focused ensure は Err");
+            .expect_err("Tui act の focused ensure は Err");
         assert!(
-            err.to_string().contains("console mode=chat が必要"),
-            "focused は mode ガード: {err}"
+            err.to_string().contains("act=chat が必要"),
+            "focused は act ガード: {err}"
         );
 
         // 非 focused は mode ガードを通過し、engine 能力の防壁で弾かれる（legacy stand = host なし）。

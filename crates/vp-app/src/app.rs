@@ -4547,11 +4547,8 @@ pub fn run() -> anyhow::Result<()> {
                 } else {
                     // →chat: その session の xterm を畳む（PtySlot は SP 側で drop 済）。
                     lane_js::remove_lane_session(&webview, &lane, session);
-                    // Act I→II の対称: echoes topic に即 attach（→ demand 0→1 → transcript
-                    // replay）。attach は lane 選択時と LanesLoaded にしか無いので、これが無いと
-                    // tui 起点の session を初めて chat にした時、periodic snapshot（最大 5 秒）
-                    // まで会話が出ない。上の手元 snapshot 反映が先に要る（attach の gate が
-                    // act を読む）。attach 済みなら no-op（idempotent）。
+                    // Act I→II の対称: echoes topic への購読を確保する（初回 chat 化で張られる）。
+                    // 上の手元 snapshot 反映が先に要る（attach の gate が act を読む）。
                     ensure_echoes_attach(
                         &lane,
                         &sidebar_state,
@@ -4560,6 +4557,39 @@ pub fn run() -> anyhow::Result<()> {
                         &async_action_proxy,
                         &world_conn,
                     );
+                    // **Reborn ⊃ replay の実体**（doc 50 §4.6 ① / §4.7 逸脱②）: 切替のたび
+                    // transcript を読み直す。
+                    //
+                    // ⚠️ `ensure_echoes_attach` に任せてはいけない — あれは購読ハンドル
+                    // （`echoes_sessions`、**lane 単位**）が既にあれば no-op で、購読は lane 削除まで
+                    // 残る。つまり chat→tui→chat の 2 回目以降は attach が発火せず、**Act I で
+                    // 進めた分が chat に出ない**（A6 が根治すると宣言した当の症状が別の理由で再現する。
+                    // team-b review 2026-07-25 の指摘で発覚）。購読を落として張り直す案は採らない —
+                    // 購読は lane 単位で**他の chat session の live stream も運んでいる**ため、
+                    // 落とすと巻き添えになる。gate を経由しない明示 demand が正しい形。
+                    //
+                    // demand は session を明示する（replay は session 単位 — `echoes_demand_start`
+                    // の None は focused に解決されるので、非 focused な pane を切り替えた時に
+                    // 別会話を読んでしまう）。
+                    if let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) {
+                        let proxy = async_action_proxy.clone();
+                        let lane_for_log = lane.clone();
+                        rt_handle.spawn(async move {
+                            if let Err(e) = world_process_request(
+                                crate::client::default_world_port(),
+                                &path,
+                                "echoes_demand_start",
+                                serde_json::json!({ "lane": lane_for_log, "session": session }),
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "echoes_demand_start（act 切替後）失敗 (session={session}): {e}"
+                                );
+                            }
+                            let _ = &proxy; // 応答は topic 経由で届く（ここでは event を投げない）
+                        });
+                    }
                 }
                 let script = format!(
                     "window.vpConsole && window.vpConsole.setSessionAct({}, {}, {})",
