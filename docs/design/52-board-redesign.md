@@ -209,10 +209,11 @@ in-place 連続更新 → 別 show で洗い流し）で mako が体感確認、
 | **read_board** | 全件返しのまま + cursor item に**「今表示中」マーク** + updatedAt 併記 | 既定を狭めず（wave 1 の意味論と ink の全件読み実証を保つ)、AI から注視が見える |
 | **glow** | **入れない**（mako 確定 2026-07-24）。更新の瞬きは時刻 + 中身の変化で足りている | dogfood で「見逃す」が実際に起きたら再考 |
 
-- 細粒度 pub/sub（per-item topic）は検討の上**不採用**（2026-07-24）: 現行の retained topic +
-  full snapshot replace が boot 窓/replay/再接続系を自己修復してきた実績があり、board の規模
-  （〜10 item・人間ペース更新）は差分配信を要求しない。要るとしたら人跨ぎ（hub 越し board 共有）
-  の世界で、その要求が実在になったときに。
+- pub/sub は本 wave では**不採用**（mako 確定 2026-07-24「曖昧な使い方はやめよう」）: 現行の
+  retained topic + full snapshot replace が boot 窓/replay/再接続系を自己修復してきた実績があり、
+  board の規模（〜10 item・人間ペース更新）は差分配信を要求しない。**導入するのは「observe して
+  いるプログラムから計器盤への自動適用・更新」のような実機能が要求になったとき**（例: watcher /
+  process monitor が計器 item へ publish する）— 比喩・語彙としての流用はしない。
 
 ---
 
