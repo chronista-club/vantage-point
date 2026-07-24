@@ -1612,10 +1612,14 @@ impl LanePool {
         Ok(())
     }
 
-    /// session を取り除く（doc 38 Phase 3 — tab を閉じる）。戻り値 = 新 focused key。
+    /// session を取り除く（doc 38 Phase 3 — pane を閉じる）。戻り値 = 新 focused key。
     ///
     /// - registry から除去（最後の 1 本は registry 側が拒否 — lane を素に戻すのは fresh restart）
-    /// - 当該 session の engine slot を drop（走行中 turn は落ちる = 会話をやめる意思表示）
+    /// - 当該 session の **engine slot（chat）と PtySlot（term）の両方**を drop
+    ///   （走行中 turn は落ちる = 会話をやめる意思表示）。doc 50 §4.6 A6 で term pane にも ✕ が
+    ///   出たので、chat 側だけ畳むと **registry からは消えたのに PTY が生き残る**（孤児 slot、
+    ///   誰も読まない console が CPU と会話 id を抱えたまま残る）。名前は chat 由来だが
+    ///   実体は「session を閉じる」— 1 往復路の終わりなので、その化身は種類を問わず畳む
     /// - 会話 id は registry の SSOT（doc 40）— session を registry から取り除いた時点で消えるので
     ///   個別の破棄は不要（doc 40 PR-2 で旧 cc/codex_sessions store は退役済み）
     /// - replay log（transcript を持たない engine の replay 源）は session 単位に破棄する（残すと
@@ -1644,6 +1648,10 @@ impl LanePool {
                 self.chat_engines.remove(addr);
             }
         }
+        // doc 50 §4.6 A6: term 側の化身（PtySlot + 双子の TermAttach）も畳む。閉じた session の
+        // PTY を残すと、registry から消えているのに login shell / engine が生き続ける（孤児）。
+        // `drop_slot` は不在なら no-op なので chat session でも安全に通せる。
+        self.drop_slot(addr, key);
         // 会話 id は registry から entry を取り除いた時点で消える（doc 40 SSOT）。transcript を
         // 持たない engine の replay 源だけ session 単位に破棄する（残すと閉じた会話が slot で蘇る）。
         let label = session_registry::session_label(&lane_label, key);
@@ -2461,6 +2469,47 @@ mod tests {
 
         // 最後の 1 本は取り除けない（fresh restart が正道）
         assert!(pool.remove_chat_session(&addr, 1).is_err());
+    }
+
+    /// doc 50 §4.6 A6: **term session を閉じたら PtySlot も畳む**（孤児 slot を作らない）。
+    ///
+    /// A6 で term pane にも名札の ✕ が出た。`remove_chat_session` は名前どおり chat_engines しか
+    /// 畳んでいなかったので、term を閉じると **registry からは消えるのに PTY が生き残る**
+    /// （誰も読まない console が会話 id ごと残る）。「1 往復路の終わり」なので化身は種類を問わず畳む。
+    #[tokio::test]
+    async fn remove_session_drops_pty_slot_too() {
+        // PtySlot::spawn は reader task を立てるので tokio runtime が要る（async test）。
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+
+        // 非 root の term session を 1 本足す（slot 付き）。
+        let key = pool
+            .create_chat_session(&addr, Some("echoes"), false)
+            .expect("create session");
+        let (slot, rx) = crate::daemon::pty_slot::PtySlot::spawn(
+            &std::env::temp_dir().to_string_lossy(),
+            "/bin/sh",
+            &["-c".to_string(), "cat".to_string()],
+            &[],
+            80,
+            24,
+            None,
+        )
+        .expect("spawn slot");
+        pool.insert_pty_slot(addr.clone(), Some(key), slot, rx);
+        assert!(
+            pool.slot_sessions(&addr).contains(&key),
+            "前提: term session に slot が居る"
+        );
+
+        pool.remove_chat_session(&addr, key).expect("remove");
+
+        assert!(
+            !pool.slot_sessions(&addr).contains(&key),
+            "session を閉じたら PtySlot も畳まれる（孤児 PTY を残さない）"
+        );
     }
 
     /// list_chat_sessions は registry の session + 会話 id（registry SSOT）+ focused を突き合わせる。

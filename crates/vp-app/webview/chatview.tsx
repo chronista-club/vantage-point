@@ -1242,8 +1242,10 @@ export function SessionPlate(props: {
       <Show when={info()?.engine_session_id}>
         {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
       </Show>
-      <Show when={!props.focused}>
-        {/* focus は「replay demand の宛先」— 送信はどの pane からも可 */}
+      {/* focus は **chat の概念**（replay demand の宛先。送信はどの pane からも可）。
+          term pane は focus を World B が持たない（keyboard focus は xterm 側）ので、
+          この hint を出すと「押しても何も起きない」誤誘導になる — chat のときだけ出す。 */}
+      <Show when={props.act === 'chat' && !props.focused}>
         <span class="echoes-session-plate-hint">click で focus</span>
       </Show>
       <span class="echoes-session-plate-spacer" />
