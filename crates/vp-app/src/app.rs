@@ -182,9 +182,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // replay demand（2026-07-24）: 消費者主導 demand。allowlist 漏れは sidebar IPC へ
                 // 流れて silent drop = 「chat が空のまま」regression（terminal.rs の arm と対）
                 | "echoes:demand_start"
-                | "console:set_mode"
                 // doc 50 §4.6 A6: 名札 kind badge の Act 切替（session 明示）。漏れると
-                // sidebar IPC へ流れて silent drop = 「badge を押しても変身しない」regression
+                // sidebar IPC へ流れて silent drop = 「badge を押しても変身しない」regression。
+                // 旧 lane 単位 `console:set_mode` は同 A6 で退役（見え方は session の属性）。
                 | "session:set_act"
                 | "console:new_session"
                 // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
@@ -2373,26 +2373,9 @@ fn activate_lane(
     // genuine activation で高頻度発火しないため、 毎回 push しても focus 奪取 flood は起きない。
     push_sidebar_state(webview, sidebar_state);
     push_active_view(webview, sidebar_state);
-    // doc 33 C2: この lane の console_mode を WebView に同期する（xterm⇄chat 表示を確定 +
-    // Act toggle の宛先 consoleActiveLane を初期化）。lane の mode は LaneInfo から引く。
-    let mode = sidebar_state
-        .lanes_by_project
-        .values()
-        .flatten()
-        .find(|l| l.address.key() == address)
-        .map(|l| l.console_mode.clone())
-        .unwrap_or_else(|| {
-            // snapshot 欠落時は tui に落ちる = chat lane が Act I 表示で開く。起動レースでしか
-            // 起きないはずなので、黙って既定値を使わず観測できるようにしておく。
-            tracing::warn!("activate_lane: lane が snapshot に不在、console_mode を tui と仮定 (lane={address})");
-            "tui".to_string()
-        });
-    let script = format!(
-        "window.vpConsole && window.vpConsole.setMode({}, {})",
-        serde_json::to_string(address).unwrap_or_else(|_| "\"\"".into()),
-        serde_json::to_string(&mode).unwrap_or_else(|_| "\"tui\"".into()),
-    );
-    let _ = webview.evaluate_script(&script);
+    // doc 50 §4.6 A6: lane 単位 console_mode の同期は退役。表示（roster + focus）は World B の
+    // `applyLaneView` が lane 切替を契機に開き、顔ぶれは session 一覧 × 各 session の act から
+    // 導出される（見え方は session の属性なので、lane 単位の mode を送る意味が無くなった）。
     maybe_respawn_dead_lane(
         address,
         sidebar_state,
@@ -3956,19 +3939,15 @@ pub fn run() -> anyhow::Result<()> {
                     let is_chat = lane_is_chat(&sidebar_state, &addr);
                     lane_js::show_lane(&webview, Some(&addr), is_chat);
                     // 起動 race で silent drop されるのは ensureLane だけではない。 auto-select の
-                    // activate_lane が撃つ setActivePane / vpConsole.setMode も同じ窓で落ちるが、
-                    // この 2 つは JS 側の「active lane」(= Act toggle の宛先) を埋める唯一の経路。
-                    // showLane だけ再発行しても JS の active lane は null のままなので、 Act II 押下が
-                    // "active lane 不明" で早期 return し「Act II に移行できない」になる (lane を手で
-                    // 選び直すと activate_lane が再走して直る、が user から見れば不可解)。 catch-up は
-                    // 3 つとも再発行して JS 側 state を確定させる。 いずれも冪等。
+                    // activate_lane が撃つ setActivePane も同じ窓で落ちるが、これが JS 側の
+                    // 「active lane」を埋める唯一の経路 — showLane だけ再発行しても JS の active
+                    // lane は null のままなので、lane 文脈を要する操作が「active lane 不明」で
+                    // 早期 return する。冪等なので毎回再発行して JS 側 state を確定させる。
+                    //
+                    // doc 50 §4.6 A6: vpConsole.setMode の catch-up は退役（lane 単位 mode が
+                    // 消滅）。roster は 'vp:echoes-sessions' が届いた時点で session×act から
+                    // 導出され直すので、この経路で mode を送る必要が無い。
                     push_active_view(&webview, &sidebar_state);
-                    let script = format!(
-                        "window.vpConsole && window.vpConsole.setMode({}, {})",
-                        serde_json::to_string(&addr).unwrap_or_else(|_| "\"\"".into()),
-                        if is_chat { "\"chat\"" } else { "\"tui\"" },
-                    );
-                    let _ = webview.evaluate_script(&script);
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
             }
@@ -4378,123 +4357,6 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("echoes:set_permission_mode skip — session 未起動 (lane={lane})");
                 }
             }
-            // doc 33 C2: Act toggle → SP console_set_mode。成功したら vpConsole.setMode で
-            // WebView の表示を切替える（成功後に反映 = SP が真実源）。
-            Event::UserEvent(AppEvent::ConsoleSetMode { lane, mode }) => {
-                let Some(path) = resolve_active_project_path(&sidebar_state) else {
-                    tracing::warn!("console:set_mode skip — active project 解決失敗");
-                    return;
-                };
-                let proxy = async_action_proxy.clone();
-                let mode_for_js = mode.clone();
-                let lane_for_js = lane.clone();
-                rt_handle.spawn(async move {
-                    match world_process_request(
-                        crate::client::default_world_port(),
-                        &path,
-                        "console_set_mode",
-                        serde_json::json!({ "lane": lane, "mode": mode }),
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            tracing::info!("console_set_mode ok: lane={lane_for_js} mode={mode_for_js}");
-                            // 表示切替は main thread の evaluate_script で行う必要があるため
-                            // ConsoleModeApplied event を投げ直す。
-                            let _ = proxy.send_event(AppEvent::ConsoleModeApplied {
-                                lane: lane_for_js,
-                                mode: mode_for_js,
-                            });
-                        }
-                        Err(e) => tracing::warn!("console_set_mode 失敗: {e}"),
-                    }
-                });
-            }
-            // doc 33 C2: console_set_mode 成功後、WebView に mode を反映（xterm⇄chat 表示切替）。
-            Event::UserEvent(AppEvent::ConsoleModeApplied { lane, mode }) => {
-                // SP が Ok を返した = mode は確定。だが lanes snapshot への反映は 5s periodic
-                // 頼み（SystemEvent::Lane は Add/Remove しか fire しない）で最大 5 秒 stale が
-                // 残るため、手元 snapshot に即時反映する。これが無いと (a) 5 秒以内に lane を
-                // 離れて戻ると activate_lane が旧 mode で開く（間欠の「戻ると Act I で開く」）、
-                // (b) 下の ensure_echoes_attach が旧 mode を読んで skip する。
-                for lanes in sidebar_state.lanes_by_project.values_mut() {
-                    if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane) {
-                        l.console_mode = mode.clone();
-                    }
-                }
-                push_sidebar_state(&webview, &sidebar_state);
-                // Act I 復帰では xterm と terminal session を mode 反映の前に用意する。
-                // 起動時に chat だった lane は LanesLoaded の pid=None 分岐で ensure_lane も
-                // session start も素通りしており、mode を反映しただけでは購読者が居ないまま
-                // SP の pump が出力を route する。terminal topic は非 retained なので、その間の
-                // PTY 出力は復元されず xterm が空のままになる（II→I で何も出ない の真因）。
-                // subscribe すると demand 0→1 が World の hook を撃ち、SP が pump を張り直して
-                // replay を先頭配送する。どちらも idempotent（起動時 tui の lane は entry 既存）。
-                let is_tui = mode == "tui";
-                if is_tui {
-                    // doc 50 §4.6 A6: この経路は root の act 切替（lane 単位 mode の後継）。
-                    lane_js::ensure_lane(&webview, &lane, root_session_of(&sidebar_state, &lane), true);
-                    // SP 応答待ちの間に user が別 lane / 別 project へ移り得るため、project は
-                    // 「今の active lane」ではなく対象 lane 自身から逆引きする（chat 分岐の
-                    // ensure_echoes_attach と同じ resolver — 揃えないと遅着応答が別 project の
-                    // path で購読を張る）。
-                    match resolve_project_path_for_lane(&sidebar_state, &lane) {
-                        Some(path) => {
-                            terminal_sessions.entry(lane.clone()).or_insert_with(|| {
-                                spawn_terminal_session(
-                                    &rt_handle,
-                                    async_action_proxy.clone(),
-                                    world_conn.clone(),
-                                    path,
-                                    lane.clone(),
-                                )
-                            });
-                        }
-                        // 購読を張れない = PTY 出力が届かず xterm が空のままになる。切替は
-                        // 成立しているので黙って落とさず、原因を残す。
-                        None => tracing::warn!(
-                            "console:mode_applied — lane の project 解決失敗、terminal session を張れず (lane={lane})"
-                        ),
-                    }
-                }
-                let script = format!(
-                    "window.vpConsole && window.vpConsole.setMode({}, {})",
-                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
-                    serde_json::to_string(&mode).unwrap_or_else(|_| "\"tui\"".into()),
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("vpConsole.setMode 失敗 (lane={}): {}", lane, e);
-                }
-                // Act I 復帰は xterm container を active 化しないと見えない（`.lane-pane.active`
-                // は per-lane の切替で、chat で生まれた lane の container は非 active のまま）。
-                // showLane は active 化に加えて rAF 2 段で fit / sendResize / focus まで行う。
-                // ⚠️ setMode より後に呼ぶこと — container が非 active のままだと clientWidth=0 で
-                // fit が見送られ 80×24 に固定される。
-                //
-                // doc 46 P1: 旧記述にあった `.console-hidden`（Act II 表示中に lane-host を
-                // display:none で隠す機構）は撤去済。両 Pane は常に並び、Act は focus で表す。
-                if is_tui {
-                    // SP 応答待ちの間に別 lane へ移っていたら表示は奪わない。mode は上で手元
-                    // snapshot に反映済みなので、戻った時の activate_lane が正しい mode で開く。
-                    if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
-                        lane_js::show_lane(&webview, Some(&lane), false);
-                    }
-                } else {
-                    // I→II の対称: toggle 経路でも echoes topic に即 attach（→ demand 0→1 →
-                    // transcript replay）。attach は lane 選択時と LanesLoaded にしか無く、
-                    // tui 起点の lane を初めて chat に切替えた場合は periodic snapshot（最大
-                    // 5 秒）まで会話が出ない。上の手元 snapshot 反映が先に要る（attach の
-                    // gate が lane_is_chat を読む）。attach 済みなら no-op（idempotent）。
-                    ensure_echoes_attach(
-                        &lane,
-                        &sidebar_state,
-                        &mut echoes_sessions,
-                        &rt_handle,
-                        &async_action_proxy,
-                        &world_conn,
-                    );
-                }
-            }
             // doc 50 §4.6 A6: 名札 kind badge からの Act 切替（session 明示）。SP の
             // `session_set_act` に forward し、成功したら SessionActApplied で表示を追従させる。
             Event::UserEvent(AppEvent::SessionSetAct { lane, session, act }) => {
@@ -4581,6 +4443,19 @@ pub fn run() -> anyhow::Result<()> {
                 } else {
                     // →chat: その session の xterm を畳む（PtySlot は SP 側で drop 済）。
                     lane_js::remove_lane_session(&webview, &lane, session);
+                    // Act I→II の対称: echoes topic に即 attach（→ demand 0→1 → transcript
+                    // replay）。attach は lane 選択時と LanesLoaded にしか無いので、これが無いと
+                    // tui 起点の session を初めて chat にした時、periodic snapshot（最大 5 秒）
+                    // まで会話が出ない。上の手元 snapshot 反映が先に要る（attach の gate が
+                    // act を読む）。attach 済みなら no-op（idempotent）。
+                    ensure_echoes_attach(
+                        &lane,
+                        &sidebar_state,
+                        &mut echoes_sessions,
+                        &rt_handle,
+                        &async_action_proxy,
+                        &world_conn,
+                    );
                 }
                 let script = format!(
                     "window.vpConsole && window.vpConsole.setSessionAct({}, {}, {})",

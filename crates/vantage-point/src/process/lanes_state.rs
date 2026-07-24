@@ -740,7 +740,13 @@ impl LanePool {
     }
 
     /// lane の root session key（`slot_session(addr, None)` の公開版）。
-    /// 旧 lane 単位動詞（`console_set_mode`）を session 明示の新経路へ橋渡しする時に使う。
+    ///
+    /// 「session 省略 = root」の解決規則（`payload_session_key` の doc）を **呼び手側から
+    /// 明示的に引ける**ようにするもの。session 明示が必須な新経路（`session_set_act` 等）に
+    /// 対して「root を指したい」と書けるのが用途。
+    // 現状の読み手はテストのみ（旧 `console_set_mode` の橋渡しは A6 で撤去）。slot_session は
+    // private なので、これが無いと外から root を名指しできない。
+    #[allow(dead_code)]
     pub fn root_session_key(addr: &LaneAddress) -> SessionKey {
         Self::slot_session(addr, None)
     }

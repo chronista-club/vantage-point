@@ -1629,36 +1629,9 @@ async fn handle_session_set_act(
     apply_session_act(state, lane, &addr, session, act).await
 }
 
-/// 旧 Act II mode 切替（lane 単位）。`{lane, mode: "tui"|"chat"}`。
-///
-/// ⚠️ **退役予定**（doc 50 §4.6 A6 S5/S6）: GUI が `session:set_act`（session 明示）へ移行
-/// 完了後に本 handler と dispatch を撤去する。それまでの間、root session の act 切替として
-/// 新経路（[`apply_session_act`]）に委譲する（二重実装を作らない）。
-async fn handle_console_set_mode(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
-    if lane.is_empty() {
-        return Err("console_set_mode: lane 未指定".to_string());
-    }
-    let mode_str = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
-    let mode = crate::lane::session_registry::SessionAct::parse(mode_str)
-        .ok_or_else(|| format!("console_set_mode: mode 不正: {mode_str:?}（tui|chat）"))?;
-    let addr = crate::process::lanes_state::LanePool::parse_address(lane)
-        .ok_or_else(|| format!("console_set_mode: lane パース失敗: {lane}"))?;
-    // root session（lane の代表 slot）の act 切替として新経路に委譲。
-    let root = crate::process::lanes_state::LanePool::root_session_key(&addr);
-    let mut res = apply_session_act(state, lane, &addr, root, mode).await?;
-    // 旧 caller 互換: 応答の `mode` field を保つ（新経路は `act` を返す）。
-    if let Some(obj) = res.as_object_mut() {
-        obj.insert(
-            "mode".to_string(),
-            serde_json::Value::String(mode.as_str().to_string()),
-        );
-    }
-    Ok(res)
-}
+// doc 50 §4.6 A6: 旧 `console_set_mode`（lane 単位の Act 切替）は撤去した。見え方は session の
+// 属性になり、切替は `session_set_act {lane, session, act}` 一本（名札 kind badge が撃つ）。
+// mode / act の二語併存を PR 後に残さないため、GUI 移行と同じ PR で消している。
 
 /// doc 51 §1 A3b: session の「今なにを」自己申告を該当 session の echoes topic に注入する。
 ///
@@ -2279,7 +2252,6 @@ pub(crate) async fn dispatch_process_method(
         // doc 38 Phase 3: tab を閉じる（session remove）。
         "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,
         "session_set_act" => handle_session_set_act(state, payload).await,
-        "console_set_mode" => handle_console_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // doc 51 §1 A3b: `vp now` — session の「今なにを」自己申告を now-line に注入
         "session_now" => handle_session_now(state, payload).await,
@@ -4531,48 +4503,8 @@ mod tests {
         assert_eq!(got[3], EchoesEvent::ReplayEnd { in_flight: false });
     }
 
-    /// console_set_mode の入力検証（claude 不要。engine-less lane の tui→chat 遷移も確認）。
-    #[tokio::test]
-    async fn console_set_mode_validates_and_transitions() {
-        use super::dispatch_process_method;
-        use crate::lane::session_registry::SessionAct;
-        use crate::process::state::build_test_app_state;
-
-        let state = build_test_app_state(None).await;
-        // mode 不正 / lane 不正
-        assert!(
-            dispatch_process_method(
-                &state,
-                "console_set_mode",
-                serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "gui" })
-            )
-            .await
-            .is_err(),
-            "mode 不正は Err"
-        );
-        // engine-less の tui lane → chat へ遷移（PTY 不在でも成立、registry が更新される）
-        let addr = insert_test_lane(&state, "vptest-c1-sm", SessionAct::Tui).await;
-        let res = dispatch_process_method(
-            &state,
-            "console_set_mode",
-            serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "chat" }),
-        )
-        .await
-        .expect("tui→chat ok");
-        assert_eq!(res["mode"], "chat");
-        assert_eq!(
-            state.lane_pool.read().await.console_mode(&addr),
-            Some(SessionAct::Chat)
-        );
-        // 同一 mode への再切替は no-op Ok
-        dispatch_process_method(
-            &state,
-            "console_set_mode",
-            serde_json::json!({ "lane": "vptest-c1-sm/root", "mode": "chat" }),
-        )
-        .await
-        .expect("chat→chat no-op ok");
-    }
+    // doc 50 §4.6 A6: 旧 `console_set_mode_validates_and_transitions` は動詞ごと撤去した
+    // （検証内容は下の `session_set_act_*` が session 単位で引き継いでいる）。
 
     /// doc 50 §4.6 A6: `session_set_act` は session 明示必須で、その session の act を切り替える。
     /// 旧 `console_set_mode`（root 固定）と同じ実体に委譲されるが、session を省略できない。

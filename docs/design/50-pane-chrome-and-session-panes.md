@@ -6,8 +6,10 @@ P2（打つ）実装済**（`38f5f00e` 〜 `c6b93791`、2026-07-24）。**P4 は
 root picker の「見え方」行へ。ただし `console:set_mode` の session 単位化は **P3 送り**
 （pre-P3 は term になれるのが root だけで、session 引数は行使できる意味を持たない —
 読み手のない口を先に作らない）。tiling 既定 + 下端の帯（`#pane-tabs`）撤去も同 commit。
-残りは P3（World A xterm re-key、**設計確定 = §4.6**）/ P5（layout 永続）。PP Proj 撤去
-（`0330eb0d`）・名札ツールの hover 召喚（`d8d33efd`）も出荷済。
+**P3（World A xterm re-key = doc 51 A6）も実装完了**（2026-07-25、設計 = §4.6 / 実装記録 =
+§4.7）。xterm が `(lane, session)` へ re-key され、Act は session の属性に一本化された
+（lane 単位 `console_mode` の概念は GUI から全消し）。残りは **P5（layout 永続 = A7）**。
+PP Proj 撤去（`0330eb0d`）・名札ツールの hover 召喚（`d8d33efd`）も出荷済。
 **Owners**: vp-app（webview World B + main_area World A）
 **Related**: [46-lane-pane-model.md](./46-lane-pane-model.md)（session ↔ Pane 1:1 の確定）、
 [49-gui-layout-engine.md](./49-gui-layout-engine.md)（lane scope の tiling 機構）、
@@ -182,7 +184,7 @@ cc16 | cc17 | sid18   ← 3 列並列
 |---|---|---|---|
 | **P1** | **視る** — chat session を Pane として並べる。state を `(lane, session)` へ re-key、fold の破棄をやめ、host を session ごとに生成、tab strip 撤去 | 1,2,3,7,8,9 | 中 |
 | **P2** | **打つ** — chat 動詞（submit / set_model / set_permission_mode / interrupt）に session を通す。SP 接続も `(lane, session)` へ | 5,6 | 中 |
-| **P3** | **World A** — xterm を `(lane, session)` へ re-key、term session も Pane 化（設計確定 = §4.6） | 4,8 | 中〜大 |
+| **P3** ✅ | **World A** — xterm を `(lane, session)` へ re-key、term session も Pane 化（設計 = §4.6 / 実装記録 = §4.7、2026-07-25 完了） | 4,8 | 中〜大 |
 | **P4** | Act toggle 撤去（Act = Pane の kind に畳み切る）+ `console_mode` の残滓掃除 | 10 | 小 |
 | **P5** | lane scope の layout 永続 + MCP 公開（write gate / 承認 UX、doc 49 の follow-up） | — | 小 |
 
@@ -194,6 +196,9 @@ cc16 | cc17 | sid18   ← 3 列並列
   同じ「1 辺が 2 仕事」の危険域）
 
 ### 4.6 P3（= doc 51 A6）設計確定 — 2026-07-25、mako × Claude 議論
+
+> **実装完了（2026-07-25）**。実装中に確定した 2 点は §4.7 に追記した（topic の物理形 =
+> Design B / replay の発火点）。以下は設計時の記述で、§4.7 が優先する。
 
 §4.0 の定義と club-nostos の lifecycle 語彙（Bracket / Outcome）で前提を固定し、確定 4 点を
 その導出として書く。
@@ -261,6 +266,72 @@ cc16 | cc17 | sid18   ← 3 列並列
 - P3 は**単独 PR**（他フェーズと混ぜない）。doc 33 §8 の境界（World B から xterm に触らない）
   を維持し、「1 辺が 2 仕事」の同型チェックを PR 前に全数（doc 46 §3 の pty_slots re-key と
   同じ危険域）
+
+### 4.7 A6 実装記録（2026-07-25）— 設計からの逸脱 2 点と、実装で見つかった同型
+
+実装は S1〜S6 の 6 スライス（単独 PR）。§4.6 の確定 4 点はすべて実装されたが、**実装段階の
+発見で 2 点を設計から変えた**。理由ごと残す（同じ問いが再訪されたときに再検討を省くため）。
+
+#### 逸脱 ① topic に session を埋めない（Design B）
+
+§4.6 の「実装範囲」は topic 形を実装者に委ねていた。姉妹の Act II を確認したところ、
+`ProcessMessage::EchoesEvent` のコメントが **doc 38 落とし穴①「session を lane 名に埋めない
+— topic key は lane のまま、session は本 field で運ぶ」** を明文で禁じていた。terminal も
+これに倣う:
+
+| | Design A（当初案） | **Design B（採用）** |
+|---|---|---|
+| topic | `…/<lane~>/<session>/out` | `…/<lane~>/out`（**不変**） |
+| session | topic segment | `LaneTerminalOutput.session` field |
+| demand hook | `+/+/out` へ改修（共有関数を割る） | **不変**（`+/out` のまま） |
+
+Design B は diff が小さいだけでなく、§4.6 が警告した「1 辺が 2 仕事」の危険域
+（topic rename = 配送と demand 契機の両方を運ぶ辺）**そのものを消す**。
+振り分けは受信側（World A の `vpTerminal.handleOutput(lane, session, b64)`）で行う。
+
+#### 逸脱 ② replay は動詞でなく client の demand で撃つ
+
+§4.6 ① は「handler が handoff 後に replay を撃つ」としたが、server が切替直後に撃つと
+**client が新 pane の topic を購読する前に流れて落ちる**（非 retained topic）。既存
+`ConsoleNewSession` と同じ「pane mount → 購読 → demand」の規律に倣い、client 側の
+`echoes_demand_start` / terminal subscribe で撃つ。
+
+§4.6 の狙い（demand **edge** race の圏外）は保たれる — これは購読 0→1 の*エッジ観測*ではなく、
+「切り替えたので読み直す」という**明示 demand** だから。動詞は state 遷移に徹する。
+
+#### 実装で見つかった同型（制約撤廃の随伴）
+
+「xterm は lane に 1 枚」を前提にした適応が、制約撤廃で**意味が反転**した箇所:
+
+| 箇所 | 旧（制約下では正しかった） | 新 |
+|---|---|---|
+| `console:new_session` tui 分岐 | 新 session + **root 張り替え** + slot respawn | 新 session + slot 起立（root 不動） |
+| `ink.ts` の送り先 | lane 単位 `getMode` + `term:write {lane}` | focused **session の act** + `{lane, session}` |
+| `activate_lane` / boot catch-up | `vpConsole.setMode` で lane の mode を同期 | 退役（roster が session×act から導出） |
+
+**ink が最も危険だった** — roster を直しても ink は壊れたままで、症状は「送信は成功するが
+root に届く」= エラーゼロの誤配送。しかもテストが「tui は session を無視する」を*正*として
+固定していた。**制約の撤廃は「正しさの定義」も変える**ので、古い正しさを守るテストは変更を
+守らず隠す。制約前提の適応は grep で全数を洗うこと。
+
+#### 撤去したもの（読み手/書き手を失った残骸）
+
+`console_set_mode`（動詞・IPC・allowlist・handler・テスト）/ `vpConsole.setMode` /
+`getMode` / `'vp:console-mode'` / `laneModes` / `ConsoleSetMode` / `ConsoleModeApplied` /
+`ConsoleSessionRenewed`（New 対称化で送り手が消えた）/ EchoesHeader の `requestActSwitch` と
+`mode` signal（picker の「見え方」行を消した連鎖）。
+
+#### 境界を跨ぐ contract のテスト
+
+Rust→JS の `evaluate_script` は**引数の数が食い違ってもコンパイルも実行時も黙る**
+（`undefined` が渡って silent に壊れる）。IPC allowlist の二箇所規則と同じ地形なので、
+`embedded_terminal_api_is_session_keyed` が HTML 文字列に対して signature を assert する。
+
+#### 残タスク
+
+- **term pane の名札**（kind badge を term 側にも置く）。今は chat pane の badge で往復できる
+  （chat→tui して戻れる）が、term→chat の直接動線が無い。Pane 共通 chrome（§2）の話なので
+  A6 とは別に扱う
 
 ## 5. やってはいけない
 

@@ -103,7 +103,7 @@ import { layoutEngine } from "./layout-host";
 import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
-import { installConsole, focusedOf } from "./console";
+import { installConsole, focusedOf, sessionActOf } from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Act で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import { chatHostId, installLanePanes } from "./lane-panes";
@@ -421,13 +421,14 @@ const vpConsole = installConsole();
 // ink（対話面、doc 52 §3）を board pane に配線する。lane 文脈は closure で注入:
 //   - getItemId    = 表示中 board item（board-handler の cursor）
 //   - getLaneAddress = 現 active lane の address（setActivePane bridge が更新する module 変数）
-//   - getFocusedSession / getMode = console.ts の per-lane registry
+//   - getFocusedSession / getSessionAct = console.ts の per-lane registry
 // server は触らない（既存 IPC echoes:submit / term:write を撃つだけ、doc 52 §3 = 状態ゼロの往復）。
 installInk({
 	getItemId: () => getCanvasState().cursor,
 	getLaneAddress: () => activeLaneAddress,
 	getFocusedSession: (laneAddr) => focusedOf(laneAddr),
-	getMode: (laneAddr) => vpConsole.getMode(laneAddr),
+	// doc 50 §4.6 A6: 送り先は focused session の act（旧 lane 単位 vpConsole.getMode）。
+	getSessionAct: (laneAddr, session) => sessionActOf(laneAddr, session),
 });
 
 // ChatView (C2 → doc 50 P1): scoped CSS を注入し、mount 管理 API を得る。

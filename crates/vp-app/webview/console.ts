@@ -211,6 +211,14 @@ export function focusedOf(lane: string): number {
   return laneSessions.get(lane)?.focused ?? 1
 }
 
+/** その session の act（見え方）。未知 / 旧 SP（act 欠落）は 'tui'（従来の既定）。
+ *  doc 50 §4.6 A6: 見え方は session の属性なので、lane 単位 `getMode` の代わりにこれを引く。 */
+export function sessionActOf(lane: string, session: number): 'tui' | 'chat' {
+  return (
+    laneSessions.get(lane)?.sessions.find((s) => s.key === session)?.act ?? 'tui'
+  )
+}
+
 /** focused session の engine_session_id を共通ヘッダの chip に同期する（変化時 true —
  *  caller はその時だけ 'vp:echoes-header' を dispatch する）。
  *
@@ -303,8 +311,6 @@ function laneOf(lane: string): LaneConsole {
 export type VpConsole = {
   /** doc 38 Phase 2: session = envelope 由来の VP 採番 key（未指定 = focused = 1、旧 SP 互換）。 */
   handleEvent(lane: string, event: EchoesEvent, session?: number): void
-  setMode(lane: string, mode: ConsoleMode): void
-  getMode(lane: string): ConsoleMode
   /** doc 50 §4.6 A6: session の Act（見え方）が変わったことを通知する（'vp:session-act'）。
    *  Rust の `SessionActApplied` が呼ぶ口。roster と kind badge がこれで追従する。 */
   setSessionAct(lane: string, session: number, act: ConsoleMode): void
@@ -365,13 +371,6 @@ export function installConsole(): VpConsole {
         }
       }
     },
-    setMode(lane, mode) {
-      laneOf(lane).mode = mode
-      // 表示切替は ChatView / layout 側の判断（ビューとエンジンは別軸）。通知だけ流す。
-      document.dispatchEvent(
-        new CustomEvent('vp:console-mode', { detail: { lane, mode } }),
-      )
-    },
     setSessionAct(lane, session, act) {
       // doc 50 §4.6 A6: 見え方は **session の属性**。roster（lane-panes）と名札の kind badge
       // （EchoesHeader）がこの bus を購読して、その session の Pane kind を入れ替える。
@@ -379,9 +378,6 @@ export function installConsole(): VpConsole {
       document.dispatchEvent(
         new CustomEvent('vp:session-act', { detail: { lane, session, act } }),
       )
-    },
-    getMode(lane) {
-      return laneOf(lane).mode
     },
     attachRenderer(lane, renderer) {
       const entry = laneOf(lane)

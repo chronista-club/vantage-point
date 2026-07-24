@@ -25,21 +25,30 @@ describe("inkSendLine", () => {
 	});
 });
 
-describe("inkRoute", () => {
-	it("chat mode は focused chat session への echoes:submit 相当を返す", () => {
+describe("inkRoute（送り先は focused session の act、doc 50 §4.6 A6）", () => {
+	it("chat は focused chat session への echoes:submit 相当を返す", () => {
 		const r = inkRoute("chat", "vantage-point/root", 3, "L");
 		expect(r).toEqual({ kind: "chat", lane: "vantage-point/root", session: 3, prompt: "L" });
 	});
 
-	it("tui mode は PTY 直書き（行 + CR）を返す", () => {
+	it("tui は PTY 直書き（行 + CR）を返す", () => {
 		const r = inkRoute("tui", "vantage-point/root", 1, "L");
-		expect(r).toEqual({ kind: "tui", lane: "vantage-point/root", data: "L\r" });
+		expect(r).toEqual({
+			kind: "tui",
+			lane: "vantage-point/root",
+			session: 1,
+			data: "L\r",
+		});
 	});
 
-	it("tui は session を無視する（console は lane の Act I 一本）", () => {
+	it("tui も session ごとに宛先が違う（A6: xterm が (lane, session) になった）", () => {
+		// pre-A6 は「console は lane に 1 本」だったので session を無視していた。非 root の
+		// console に描いた注釈が root へ流れてしまうため、A6 で宛先を session まで運ぶ。
 		const a = inkRoute("tui", "p/root", 1, "hi");
 		const b = inkRoute("tui", "p/root", 9, "hi");
-		expect(a).toEqual(b);
+		expect(a).not.toEqual(b);
+		expect(a).toMatchObject({ session: 1 });
+		expect(b).toMatchObject({ session: 9 });
 	});
 });
 

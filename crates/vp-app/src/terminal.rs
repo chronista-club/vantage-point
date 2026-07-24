@@ -258,13 +258,6 @@ pub enum AppEvent {
         /// 宛先 session（doc 50 P2）。None = focused。
         session: Option<u32>,
     },
-    /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
-    /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
-    /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
-    ConsoleSetMode { lane: String, mode: String },
-    /// doc 33 C2: console_set_mode 成功後、WebView へ mode を反映する内部 event
-    /// (async task → main thread の evaluate_script 橋渡し)。
-    ConsoleModeApplied { lane: String, mode: String },
     /// doc 50 §4.6 A6: session = Pane の Act（見え方）切替要求。名札の kind badge が撃つ。
     /// event loop が World process-proxy ask `session_set_act` で SP に forward し、成功したら
     /// `SessionActApplied` で WebView の roster を更新する。`act` は "tui" | "chat"。
@@ -452,17 +445,6 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     lane: lane.to_string(),
                     mode: mode.to_string(),
                     session: parse_session(&parsed),
-                });
-            }
-        }
-        // doc 33 C2: Act toggle。 console mode 切替要求を event loop へ。
-        Some("console:set_mode") => {
-            let lane = parsed.get("lane").and_then(|v| v.as_str());
-            let mode = parsed.get("mode").and_then(|v| v.as_str());
-            if let (Some(lane), Some(mode)) = (lane, mode) {
-                let _ = proxy.send_event(AppEvent::ConsoleSetMode {
-                    lane: lane.to_string(),
-                    mode: mode.to_string(),
                 });
             }
         }
