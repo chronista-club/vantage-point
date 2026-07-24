@@ -238,6 +238,22 @@ in-place 連続更新 → 別 show で洗い流し）で mako が体感確認、
 
 - **Navigator / Router の割れの根治**: 表示名を stands.rs から引く配線にする（文字列複製はコンパイラもテストも黙る — memory `type-flatten-string-leftovers` と同型。今回の割れがまさに実例）
 
+### ⑥ 予約: Stand 名をエンジニアリング識別子から全面撤去（第 2 弾、mako 2026-07-24）
+
+> **原則（mako 2026-07-24）: だれでもわかる・伝わる名称をベースに、Stand 名は「よく使う特定機能の
+> alias 名」として。** エンジニアリング文脈（wire / topic / 型 / IPC tag / DOM id）からは外す。
+> — 2026-07-19 の層分け方針（Stand 名 = 表示層のみ / コード識別子 = 本質機能名）を wire まで伸ばす。
+
+- 対象例: retained topic `process/paisley-park/state/board/...` → `process/board/...`、DOM の
+  `#pp-content` / `#pp-history-strip`（pp = Paisley Park 略）、`BOARD_PANE_ID = "paisley-park"`、
+  そして **Echoes 系全部**（`EchoesEvent` / `echoes:submit` / `echoes_replay` / channel 名 …）
+- **Echoes は機能名の決定が先**（chat? session? — doc 50 の定義「往復そのもの」に照らして議論で一語決める）。board は機能名決定済みで機械的に落とせる
+- ⚠️ retained topic の rename は producer/consumer/文字列リテラル/テストの**両側一斉切替**
+  （`type-flatten-string-leftovers` の領域。pre-MVP 直切替 + daemon 再起動で retained は新 topic に
+  再 seed されるので移行機構は不要。往復テストで固定）
+- **時期 = A6/A7 の後・release cut の前**、単独 PR（行動変更と混ぜず review を濁さない。
+  公開前に wire を正して互換負債を作らない）
+
 ---
 
 ## 7. オミット（Echoes rebuild 規律の適用）
