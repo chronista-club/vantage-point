@@ -284,9 +284,25 @@ doc 52 §5（identity）+ §4（中継台 read 口）を **read-first / handle �
   in-place 置換 / 旧内容消滅 / contentType 保持 / 枚数不変(4→4) / 未知 id loud error の
   5 項目 PASS + screenshot で board pane に v2 が markdown 描画されるのを目視確認
 
+### ✅ wave 2 完了（2026-07-24、branch `mako/ink-wave2`）— 対話面（ink）
+
+doc 52 §3 を確定仕様どおり実装（**server 0 行** = 状態ゼロの往復）。code 語彙 = `ink`。
+- **描画層**（`ink.ts`）: board item（#pp-content）の上の透明 SVG overlay に line/arrow/text/
+  freehand + undo/clear/送信。道具未選択時は pointer-events:none で下の item を素通し
+- **撮影**（`ink_snapshot.rs`）: WKWebView.takeSnapshot(rect = #ink-stage) で PNG 化
+  （objc2-web-kit + block2、部品は registry 実物で確認済み）。afterScreenUpdates=true で
+  palette 隠しを反映してから撮る。座標は getBoundingClientRect そのまま（WKWebView isFlipped=YES）
+- **送信**（webview の既存 IPC）: focused session へ chat=`echoes:submit` / tui=`term:write`
+  （UTF-8→base64）。lane は address をそのまま payload に積む（flat key 2 空間の罠を回避、wave 0 教訓）
+- **後始末**: 送信後 annotations 全消去（残らない）。temp file は state_dir/ink/<lane>/、
+  起動時に 7 日超を prune（消し手のないファイルを作らない）
+- 検証: workspace build / clippy -D / fmt / vitest 271（+8 ink 純関数）/ tsc clean /
+  実機で palette 描画を目視確認。⚠️ **draw→send→PNG の対話ループは mako の手動 dogfood 待ち**
+  （自動描画は Aqua Voice 浮遊窓が palette に被さり不可。座標 flip は isFlipped=YES で写る想定 —
+  実 PNG で答え合わせ）
+
 ### 残り
 
-- **wave 2**: 対話面（§3、line/arrow/text/freehand + 明示送信 = 合成画像 + item id。anchor 方式は反転で廃案 — §3 反転記録）
 - **wave 3**: 計器盤の pin/stream 表示（§5 で「流されない」は表示側に送った分）+ 注視可視化（§9、cursor の server 昇格 → read_board の「今表示してるもの」default）
 
 0. **A4 = board pane を先に単独出荷**（表示の器の引っ越し。doc 51 Epic の A4 — lane roster に board pane を足し、app 層 PP を退役。新規コードは board 語彙）✅
