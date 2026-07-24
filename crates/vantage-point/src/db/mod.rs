@@ -1395,6 +1395,59 @@ impl VpDb {
         Ok(())
     }
 
+    /// board の item を id で **in-place 置換**する（= mcp__update、doc 52 §5）。
+    ///
+    /// stack 内の id 一致 item の content / contentType だけ差し替え、 id / title / createdAt は
+    /// 保つ（計器の更新 = 位置も生成時刻も動かさない。fresh 判定 createdAt<BOOT_TS のままなので
+    /// focus を奪わない）。cursor が対象を指していれば top-level reflection も更新する。
+    /// id 不一致は array::map が no-op（呼び出し側が事前に存在確認して loud error にする）。
+    // (project_path, scope, lane_name, pane_id) の board-key 4 分割は sibling（append/delete）と
+    // 揃えているため、item_id + content + content_type を足すと 8 引数になる。bundle すると
+    // 兄弟と不整合になるので許容する。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_board_item(
+        &self,
+        project_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+        item_id: &str,
+        content: &str,
+        content_type: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE pane_contents SET
+                    stack.items = array::map(stack.items ?? [], |$it|
+                        IF $it.id = $item_id
+                        THEN {
+                            id: $it.id,
+                            content: $content,
+                            contentType: $content_type,
+                            title: $it.title,
+                            createdAt: $it.createdAt
+                        }
+                        ELSE $it END),
+                    content = IF stack.cursor = $item_id THEN $content ELSE content END,
+                    content_type = IF stack.cursor = $item_id THEN $content_type ELSE content_type END,
+                    updated_at = time::now()
+                 WHERE project_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id",
+            )
+            .bind(("path", project_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("item_id", item_id.to_string()))
+            .bind(("content", content.to_string()))
+            .bind(("content_type", content_type.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board update 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board update エラー: {}", e))?;
+        Ok(())
+    }
+
     /// board を空にする（= mcp__clear / Clear ボタン）。
     pub async fn clear_board(
         &self,
@@ -2713,6 +2766,69 @@ mod tests {
             "非 cursor 削除で cursor は不変"
         );
         assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 1);
+    }
+
+    /// update は id 一致 item の content/contentType を in-place 置換し、id/createdAt/位置は保つ。
+    /// cursor が対象を指していれば top-level content も反映する（doc 52 §5）。
+    #[tokio::test]
+    async fn test_board_update_item_in_place() {
+        let db = make_test_db().await;
+        for id in ["a", "b", "c"] {
+            db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item(id), 10)
+                .await
+                .unwrap();
+        }
+        // items=[c,b,a], cursor=c。 非 cursor の b を html で更新。
+        db.update_board_item(
+            "/repos/vp",
+            "lane",
+            "",
+            "paisley-park",
+            "b",
+            "updated-body",
+            "html",
+        )
+        .await
+        .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        let items = rec["stack"]["items"].as_array().unwrap();
+        // 位置不変（[c,b,a]）、b だけ content/contentType 差し替え、id/createdAt 保持。
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[1]["id"], "b");
+        assert_eq!(items[1]["content"], "updated-body");
+        assert_eq!(items[1]["contentType"], "html");
+        assert_eq!(items[1]["createdAt"], "2026-07-15T00:00:00Z");
+        // cursor(c) 非対象なので top-level reflection は不変。
+        assert_eq!(rec["stack"]["cursor"], "c");
+        // 他 item は無傷。
+        assert_eq!(items[0]["id"], "c");
+        assert_eq!(items[0]["content"], "c");
+
+        // cursor(c) を更新 → top-level content も反映。
+        db.update_board_item(
+            "/repos/vp",
+            "lane",
+            "",
+            "paisley-park",
+            "c",
+            "c-latest",
+            "markdown",
+        )
+        .await
+        .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rec["content"], "c-latest",
+            "cursor 対象の更新は top-level に反映"
+        );
     }
 
     /// clear は board を空にする。

@@ -186,6 +186,19 @@ fn content_to_parts(content: &Content) -> Option<(&'static str, String)> {
     }
 }
 
+/// mcp__update の content_type 文字列を board 保存形（stored contentType）に正規化する。
+/// show の `content_to_parts` と対称: markdown/html はそのまま、log は text、url/image/未知は
+/// None（board 非対応 → 呼び出し側が loud error）。update が show の許さない type を board に
+/// 忍び込ませない（webview は markdown/html/text の 3 種のみ render する）。
+fn normalize_board_content_type(ct: &str) -> Option<&'static str> {
+    match ct {
+        "markdown" => Some("markdown"),
+        "html" => Some("html"),
+        "log" | "text" => Some("text"),
+        _ => None,
+    }
+}
+
 /// board record の stack から items（Vec<BoardItem>）と cursor（Option<String>）を取り出す。
 fn extract_stack(rec: Option<&serde_json::Value>) -> (Vec<BoardItem>, Option<String>) {
     let Some(rec) = rec else {
@@ -335,6 +348,103 @@ async fn handle_board_clear(
         .map_err(|e| format!("board clear: {}", e))?;
     broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
     Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// mcp__update を board（SP truth）に反映する（doc 52 §5 — id 指定 in-place 置換）。
+///
+/// read-first 前提: id は AI が read_board で読んだ現在の item id。存在確認して**無ければ loud
+/// error**（`show` 二挙動を避け `update` に分けた狙い = 静かな重複を作らない）。存在すれば
+/// content / contentType を差し替え（id/title/createdAt は保持）→ 更新後 board を broadcast。
+async fn handle_board_update(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("board_update: vpdb 未初期化".to_string());
+    };
+    let item_id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("board_update: id 必須")?
+        .to_string();
+    let content = payload
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or("board_update: content 必須")?
+        .to_string();
+    // content_type は **省略時 = 既存 item の type を保つ**（下で解決）。既定 "markdown" 直書きだと
+    // html item を update しただけで markdown に silent 降格し、pp.ts の trust 境界（html=sandbox
+    // iframe / markdown=innerHTML）まで崩れる（team-b review 2026-07-24）。
+    let content_type_arg = payload
+        .get("content_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let (board_scope, lane_name, bc_lane) = board_key(
+        payload.get("scope").and_then(|v| v.as_str()),
+        payload.get("lane").and_then(|v| v.as_str()),
+    );
+    // read-first の loud error: 対象 lane の board に id が居ることを確認してから更新する。
+    let rec = vpdb
+        .load_board(&state.project_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+        .await
+        .map_err(|e| format!("board load: {}", e))?;
+    let (items, _) = extract_stack(rec.as_ref());
+    let Some(existing) = items.iter().find(|it| it.id == item_id) else {
+        return Err(format!(
+            "board_update: id '{}' が board に無い（read_board で現在の id を確認してください）",
+            item_id
+        ));
+    };
+    // content_type: 省略 = 既存 type を保つ / 指定 = show と同じ board-supported set に正規化
+    // （url/image は board 非対応。show の content_to_parts と対称、divergence を作らない）。
+    let content_type = match content_type_arg.as_deref() {
+        None => existing.content_type.clone(),
+        Some(ct) => normalize_board_content_type(ct)
+            .ok_or_else(|| {
+                format!(
+                    "board_update: content_type '{}' は board 非対応（markdown / html / log のみ）",
+                    ct
+                )
+            })?
+            .to_string(),
+    };
+    vpdb.update_board_item(
+        &state.project_dir,
+        &board_scope,
+        &lane_name,
+        BOARD_PANE_ID,
+        &item_id,
+        &content,
+        &content_type,
+    )
+    .await
+    .map_err(|e| format!("board update: {}", e))?;
+    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// mcp__read_board を処理する（doc 52 §4 中継台 + §5 identity 兼務）。
+///
+/// 呼び出し元 lane の board を **id 付き全文**で返す（AI は content/title で「どれか」を認識し、
+/// id で update / creo 中継の対象を指す）。read-only（broadcast しない）。
+async fn handle_board_read(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("read_board: vpdb 未初期化".to_string());
+    };
+    let (board_scope, lane_name, _) = board_key(
+        payload.get("scope").and_then(|v| v.as_str()),
+        payload.get("lane").and_then(|v| v.as_str()),
+    );
+    let rec = vpdb
+        .load_board(&state.project_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+        .await
+        .map_err(|e| format!("board load: {}", e))?;
+    let (items, cursor) = extract_stack(rec.as_ref());
+    Ok(serde_json::json!({ "items": items, "cursor": cursor }))
 }
 
 /// SP 起動時に DB の全 board を retained topic に seed する。
@@ -1996,6 +2106,10 @@ pub(crate) async fn dispatch_process_method(
         // board モデル (2026-07-15): show/clear は SP-authoritative な board 経路へ。
         // item を DB に durable append し、 更新後 board を BoardUpdated(retained) で broadcast する。
         "show" | "clear" => handle_canvas_command(state, payload).await,
+        // doc 52 §5: id 指定 in-place 置換（read-first、id 不在は loud error）
+        "board_update" => handle_board_update(state, payload).await,
+        // doc 52 §4/§5: 呼び出し元 lane の board を id 付き全文で返す（中継台 + identity lookup）
+        "read_board" => handle_board_read(state, payload).await,
         // doc 48 Phase 2: editor bridge (MCP → GUI request-response)
         "editor_fields" | "editor_values" | "editor_set" => {
             handle_editor_command(state, method, payload).await
@@ -2476,6 +2590,96 @@ mod tests {
             !state.terminal_pumps.read().await.contains_key(&lane),
             "pump が除去される"
         );
+    }
+
+    /// doc 52 §4/§5: show → read_board（id 取得）→ board_update（in-place 置換）→ read_board の往復。
+    /// 未知 id の update が loud error になることも固定する。
+    #[tokio::test]
+    async fn board_read_and_update_roundtrip() {
+        use super::dispatch_process_method;
+        use crate::db::VpDb;
+        use crate::process::state::build_test_app_state_with;
+        use std::sync::Arc;
+
+        let db = Arc::new(VpDb::connect_mem().await.unwrap());
+        let state = build_test_app_state_with("/repos/vp", Some(db), None).await;
+
+        // show で 1 件貼る（lane/scope 省略 = conductor lane / scope=lane）。
+        let show = serde_json::json!({
+            "type": "show", "pane_id": "main",
+            "content": { "markdown": "original" }, "append": false, "title": "t"
+        });
+        dispatch_process_method(&state, "show", show)
+            .await
+            .expect("show");
+
+        // read_board で item と id を取る。
+        let read = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read_board");
+        let items = read["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 1);
+        let id = items[0]["id"].as_str().expect("id").to_string();
+        assert_eq!(items[0]["content"], "original");
+
+        // update で in-place 置換。
+        dispatch_process_method(
+            &state,
+            "board_update",
+            serde_json::json!({ "id": id, "content": "revised", "content_type": "html" }),
+        )
+        .await
+        .expect("board_update");
+
+        let read2 = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read_board 2");
+        assert_eq!(read2["items"][0]["content"], "revised", "in-place で反映");
+        assert_eq!(read2["items"][0]["contentType"], "html");
+        assert_eq!(read2["items"][0]["id"], id, "id 不変");
+        assert_eq!(
+            read2["items"].as_array().unwrap().len(),
+            1,
+            "item 数は増えない（重複を作らない）"
+        );
+
+        // content_type 省略 = 既存 type を保つ（html→markdown の silent 降格を防ぐ、team-b review）。
+        dispatch_process_method(
+            &state,
+            "board_update",
+            serde_json::json!({ "id": id, "content": "revised-2" }),
+        )
+        .await
+        .expect("board_update (content_type 省略)");
+        let read3 = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read_board 3");
+        assert_eq!(read3["items"][0]["content"], "revised-2");
+        assert_eq!(
+            read3["items"][0]["contentType"], "html",
+            "content_type 省略で既存 type(html) が保たれる"
+        );
+
+        // board 非対応の content_type（url）は loud error（show の content_to_parts と対称）。
+        let bad_ct = dispatch_process_method(
+            &state,
+            "board_update",
+            serde_json::json!({ "id": id, "content": "x", "content_type": "url" }),
+        )
+        .await;
+        assert!(
+            bad_ct.is_err(),
+            "url content_type の update は error: {bad_ct:?}"
+        );
+
+        // 未知 id の update は loud error（静かな重複を作らない = update に分けた狙い）。
+        let err = dispatch_process_method(
+            &state,
+            "board_update",
+            serde_json::json!({ "id": "no-such", "content": "x" }),
+        )
+        .await;
+        assert!(err.is_err(), "未知 id の update は error: {err:?}");
     }
 
     /// PtySlot を持たない Lane への demand_start は graceful に no_lane を返し pump を張らない。

@@ -123,6 +123,45 @@ board モデル化（2026-07-15）で書き込みが board 経路に intercept �
 - 本議論での格上げ: **identity は計器盤だけの要求ではない**。中継台（どれを取り出すか）も対話面（どの item の上の注釈か）も安定 id を前提にする → データモデル改修の最初の一手
 - 実演でも実証: 議論用に貼った現状地図を、議論の進行に合わせて更新できなかった（摩擦 ①）
 
+### 確定（mako 議論 2026-07-24）— handle は board から読む・AI は覚えない
+
+**核の問い**: AI はどうやって item に「後で更新できる名前」を付けるか。現状は SP が毎回 uuid を
+振り新 item を push するだけで更新の口が無い。
+
+- **却下**: 呼び出し側 key を付ける / show が id を返して AI が覚える。**どちらも AI の記憶に依存
+  → 揮発で壊れる**（mako 指摘「AI が key/id を覚えなきゃだめだよね」）: 会話が伸びて忘れる / `--resume`
+  で別セッションに継がれると id は文脈ごと消える → 更新のつもりが**黙って重複を生む**。
+- **確定 = read-first、handle は board から取得**（mako「その方式がいいな。board から key なり id を
+  取得する感じ」）: AI は更新前に **board を読んで id を得て**、その id で更新する。handle は AI の
+  記憶ではなく **board 上の事実**。§4（read 口）と §5（identity）は**実装では 1 組**に畳まれる。
+- **新 key 概念は不要**: 読むだけなら handle が memorable である必要が無い → **既存の SP uuid を
+  そのまま handle にする**。データモデル改修は「uuid を read で見せて update の口を足す」だけ
+  （新テーブル・新 key 体系なし）。
+- 役割分担: **認識** = content / title（人間に意味のあるもの、読んだとき「どれか」を見分ける）/
+  **指定** = uuid（機械に一意に伝える）。
+- **pin / stream は溶ける**: どの item も id で更新できるなら pin（計器）= 「更新し続ける item」・
+  stream（掲示板）= 「一度きりの item」という**振る舞いの差**でしかなく、構造フラグは不要。
+  「流されない」（新着で計器が視界から消えない）は**表示側**の話 → 表示を詰めるときに扱う。
+
+### 道具立て（3 tool）と update の形（mako 確定 2026-07-24: 別 tool `update`）
+
+| tool | 役割 | 失敗の仕方 |
+|---|---|---|
+| `show(content, …)` | 貼る（新規 / append。現状維持） | — |
+| `read_board`（§4 中継台 + §5 identity 兼務） | lane の board item を **id 付き全文**で読む | — |
+| `update(id, content, content_type?)` | 読んだ id で貼り直す（DB の item を in-place 置換 + BoardUpdated 再配信） | **id 必須 → 読まず/id 無しは即 schema エラー** |
+
+- **`show` 二挙動（id 省略可）を却下し別 tool `update` を採用した理由**（AI の動作コスト = 打鍵数でなく
+  **間違えたときの回復コスト**で測る）: `show` に id 省略可だと、更新のつもりで id 渡し忘れ → **静かに
+  重複**（今回避けたい失敗そのもの、AI は成功と誤認）。`update` は id 必須なので失敗が**即エラーで可視**、
+  read-first（read → id → update）を **id 必須が構造で強制**する。動詞が意図を名乗る分、説明文も短く曖昧でない。
+- **update は createdAt を保つ**（in-place。fresh 判定 createdAt<BOOT_TS のまま → 計器の更新が focus を
+  奪わない = 正しい）。webview 変更は不要（BoardUpdated は full-snapshot replace なので content 差し替えが
+  そのまま反映される）。
+- **read_board の既定**: この wave では **lane の board 全 item を id + 全文で返す**（identity lookup +
+  中継の両方を満たす最小形）。§4 の「今表示してるもの」= cursor 由来の default は注視可視化（§9、cursor の
+  server 昇格）が要るので後続 wave に送る。
+
 ---
 
 ## 6. 語彙の清算 — canvas 5 義の解体
@@ -198,7 +237,24 @@ board pane 移設 + canvas 語彙退去を一波で出荷。8 commit:
 
 **dogfood で見つかった 2 バグ（seam / boot 窓）は webview の pure function テストでは出ず、module 間 seam と Rust↔webview boundary という runtime でしか踏めない箇所だった** — mock でなく実物 dogfood が効いた実例。
 
+### ✅ wave 1 完了（2026-07-24、branch `mako/board-identity`）— identity + read 口
+
+doc 52 §5（identity）+ §4（中継台 read 口）を **read-first / handle は board から / 既存 uuid を
+そのまま handle** の確定に沿って実装:
+- **DB `update_board_item`**: id 一致 item の content/contentType を in-place 置換（id/title/createdAt
+  保持 = 位置も生成時刻も動かさない → focus を奪わない）。cursor 対象なら top-level reflection も更新
+- **daemon dispatch**: `board_update`（read-first の loud error = id 不在は明示エラー）/ `read_board`
+  （lane の board を id + 全文で返す）
+- **MCP tools**: `update(id, content, content_type?)` / `read_board`。SelfLane で lane 導出、scope=lane
+- テスト: DB round-trip（in-place / id 保持 / cursor reflection）+ dispatch 統合（show→read_board→
+  update→read_board + 未知 id の loud error）。workspace 1245 / clippy -D / fmt 全緑
+- ⚠️ **MCP 駆動の実機 dogfood は次セッション**（走行中 `vp mcp` が旧 binary で read_board/update
+  未露出。webview の BoardUpdated 経路は不変なので update の board pane 反映は構造的に保証）
+
 ### 残り
+
+- **wave 2**: 対話面（§3、line/arrow/text/freehand + semantic anchor + 明示送信）
+- **wave 3**: 計器盤の pin/stream 表示（§5 で「流されない」は表示側に送った分）+ 注視可視化（§9、cursor の server 昇格 → read_board の「今表示してるもの」default）
 
 0. **A4 = board pane を先に単独出荷**（表示の器の引っ越し。doc 51 Epic の A4 — lane roster に board pane を足し、app 層 PP を退役。新規コードは board 語彙）✅
    - 生え方（mako 決定 2026-07-24）: **board 非空で自動** — roster を「board に item がある lane に board pane」と機械導出。畳む/復元は既存 layout 文法（share 0 / live 新着で復元 = 現行 auto-open の lane 文法版）。新しい状態は足さない
