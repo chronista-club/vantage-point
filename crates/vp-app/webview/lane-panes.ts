@@ -310,6 +310,20 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			}
 			el.classList.toggle(CLASS_FOCUSED, isVisible && p.id === focused);
 		}
+		// ⚠️ roster **外**の常設 host（chat mode の #lane-host）を明示的に隠す。上のループは
+		// roster しか触らないため、mode 切替で roster から外れた lane-host は「見えないのに
+		// display のまま」chat host の下に残る。DOM から消してはいけない（World A の xterm を
+		// 保持する境界規律、doc 33 §8）が、隠さないと xterm viewport（overflow-y:scroll +
+		// 巨大 scrollback）が同じ矩形に残り、WebKit の async-scroll hit-test が**奥の見えない
+		// viewport に wheel を奪う** — chat が「wheel 不動 / PgDn は動く」になる
+		//（2026-07-24 実機再現。A1 帯撤去の regression）。
+		if (!refs.some((p) => p.id === TERM_PANE_REF.id)) {
+			const el = deps.hostOf(TERM_PANE_REF.id);
+			if (el) {
+				el.style.display = "none";
+				el.classList.toggle(CLASS_FOCUSED, false);
+			}
+		}
 	};
 
 	// 表示 lane の scope が外（AI / MCP / fleet / layout_set）から動いた時も追従する
