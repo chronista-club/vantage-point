@@ -1311,24 +1311,12 @@ async fn echoes_session_loop(
     lane_key: String,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
 ) {
-    // 初回 attach は false、2 回目以降の subscribe（= reconnect）は true。reconnect 時のみ
-    // engine 復活の明示 demand を撃つ（初回は World 自動 demand hook に任せて二重 replay を避ける）。
-    let mut reconnect = false;
     loop {
         let client = match conn.wait_client().await {
             Some(c) => c,
             None => return, // app 終了
         };
-        match run_echoes_session(
-            &proxy,
-            &process_path,
-            &lane_key,
-            &client,
-            reconnect,
-            &mut cmd_rx,
-        )
-        .await
-        {
+        match run_echoes_session(&proxy, &process_path, &lane_key, &client, &mut cmd_rx).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
@@ -1336,8 +1324,6 @@ async fn echoes_session_loop(
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
-        // 次の subscribe は reconnect（World / SP 再起動後の張り直し）。
-        reconnect = true;
     }
 }
 
@@ -1348,7 +1334,6 @@ async fn run_echoes_session(
     process_path: &str,
     lane_key: &str,
     client: &unison::ProtocolClient,
-    reconnect: bool,
     cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
@@ -1371,26 +1356,30 @@ async fn run_echoes_session(
         topic
     );
 
-    // reconnect（World / SP 再起動後の張り直し）時は engine 復活の demand を明示的に撃つ。
+    // subscribe 直後に engine 復活 + replay の demand を**毎回**明示的に撃つ。
     //
     // 背景: Act II engine は demand-driven。本来は購読 0→1 を World の TopicRouter demand hook が
     // 検知して SP に echoes_demand_start を reverse-route し ensure_chat_engine で復活させる経路が
-    // あるが、full restart 直後は「World 復帰 / SP 再登録 / surface 再購読 / router 生成」の多者間
-    // レースで reverse-route を取りこぼす（refire_active_demands の救済も順序に脆い）。結果、submit
-    // するまで engine 不在（⚠/💤 が固着）。ここで forward request として明示的に撃つと、
-    // forward_to_sp_control が **request 時に SP を lookup** するためレースに強く、確実に復活させられる。
-    // 冪等: ensure_chat_engine は既起動なら no-op / transcript replay は ReplayStart の clear-prefix で
-    // 冪等。初回 attach では撃たない（自動 hook に任せ、二重 replay を避ける）ため reconnect 限定。
-    if reconnect
-        && let Err(e) = channel
-            .request::<serde_json::Value, serde_json::Value>(
-                "echoes_demand_start",
-                &serde_json::json!({ "lane": lane_key }),
-            )
-            .await
+    // あるが、この edge は 2 つのレースで取りこぼされる:
+    // (a) full restart 直後の「World 復帰 / SP 再登録 / surface 再購読 / router 生成」の多者間レース
+    //     （refire_active_demands の救済も順序に脆い）→ submit まで engine 不在（⚠/💤 固着）
+    // (b) **前任 GUI の残留購読**: pkill された旧 GUI の QUIC 購読が cleanup される前に新 GUI が
+    //     subscribe すると 1→2 で edge が立たず、demand が発火しない = **chat が空で始まる**
+    //     （transcript replay 不発、2026-07-24 実測 — swap 連打で毎回再現）。
+    // ここで forward request として明示的に撃つと forward_to_sp_control が **request 時に SP を
+    // lookup** するためレースに強い。冪等なので二重発火は無害: ensure_chat_engine は既起動なら
+    // no-op / transcript replay は ReplayStart の clear-prefix で収束する（自動 hook と重なっても
+    // 一瞬の再描画のみ）。旧実装は「初回は自動 hook に任せる」と reconnect 限定にしていたが、
+    // (b) は初回 attach でこそ起きるため撃ち分けをやめた。
+    if let Err(e) = channel
+        .request::<serde_json::Value, serde_json::Value>(
+            "echoes_demand_start",
+            &serde_json::json!({ "lane": lane_key }),
+        )
+        .await
     {
         tracing::warn!(
-            "echoes reconnect demand_start 失敗（次 submit の self-heal に委ねる, lane={}）: {}",
+            "echoes attach demand_start 失敗（次 submit の self-heal に委ねる, lane={}）: {}",
             lane_key,
             e
         );
