@@ -71,8 +71,10 @@ pub const STAR_PLATINUM: StandAlias = StandAlias {
 // ─── Capability（Process にぶら下がるスタンド能力）───
 
 /// 情報ナビゲーション能力 — ユーザーと AI に最適な情報を届ける（Paisley Park）
+/// doc 52 §1/§6: id は `board`（貼る台）。旧 `canvas` は「描く」= 新生 Heaven's Door に予約
+/// するため退去した（address は `board@project/lane`）。
 pub const PAISLEY_PARK: StandAlias = StandAlias {
-    id: "canvas",
+    id: "board",
     functional_name: "Information Navigator",
     stand_name: "Paisley Park",
     short: "PP",

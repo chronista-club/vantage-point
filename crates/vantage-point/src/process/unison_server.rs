@@ -2129,7 +2129,7 @@ pub(crate) async fn dispatch_process_method(
 /// 防御層**。bare を残す理由: 旧 bare 送信が来ても store 識別子を qualified 一本に揃え、
 /// cross-process 返信 (`agent@<project>` 宛 forward) が bare query と完全一致せず届かない
 /// バグ (B2、 レビュー mem_1CbuxQuNRwHBiZgBVUWVfN) を防ぐため。
-/// bare 以外 (qualified / canvas@... / gold_experience@... 等) はそのまま返す。
+/// bare 以外 (qualified / board@... / gold_experience@... 等) はそのまま返す。
 ///
 /// ⚠️ 正規化先 `self_project` は「繋いだ SP の project」なので、bare のままだと誤 SP 接続で
 /// identity が化ける (= 旧 conductor バグの根)。だから identity の SSOT は MCP 側 canonical
@@ -2388,7 +2388,7 @@ mod tests {
         assert_eq!(normalize_agent_addr("agent@vp", "vp"), "agent@vp");
         assert_eq!(normalize_agent_addr("agent@other", "vp"), "agent@other");
         assert_eq!(normalize_agent_addr("agent@vp/sub", "vp"), "agent@vp/sub");
-        assert_eq!(normalize_agent_addr("canvas@vp", "vp"), "canvas@vp");
+        assert_eq!(normalize_agent_addr("board@vp", "vp"), "board@vp");
     }
 
     /// テスト用の spawn 可能な shell。 `$SHELL` があればそれを、 無ければ OS 既定

@@ -773,14 +773,15 @@ async fn run_canvas_session(
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
-    // F1b: 共有 connection 上に "canvas" stream を開く (旧: session ごと別 connect)。
+    // F1b: 共有 connection 上に "gui" stream を開く (旧: session ごと別 connect)。
+    // doc 52 §6: channel 名は "canvas" → "gui"（board / terminal / echoes / editor の配信バス）。
     let channel = client
-        .open_channel("canvas")
+        .open_channel("gui")
         .await
-        .map_err(|e| format!("open canvas channel: {}", e))?;
-    // L0 SP-portless: World "canvas" channel は project 単位なので、 接続後に subscribe handshake で
+        .map_err(|e| format!("open gui channel: {}", e))?;
+    // L0 SP-portless: World "gui" channel は project 単位なので、 接続後に subscribe handshake で
     // project_path を渡す (World 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 project の
-    // retained canvas (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
+    // retained board (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
     channel
         .request::<serde_json::Value, serde_json::Value>(
             "subscribe",
@@ -1176,11 +1177,11 @@ async fn run_terminal_session(
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
-    // F1b: 共有 connection 上に per-lane terminal 用 "canvas" stream を開く (旧: lane ごと別 connect)。
+    // F1b: 共有 connection 上に per-lane terminal 用 "gui" stream を開く (旧: lane ごと別 connect)。
     let channel = client
-        .open_channel("canvas")
+        .open_channel("gui")
         .await
-        .map_err(|e| format!("open canvas channel: {}", e))?;
+        .map_err(|e| format!("open gui channel: {}", e))?;
     // 当該 lane の terminal topic を pattern 指定で subscribe (= demand を立てて SP pump を起こす)。
     let topic = format!("process/terminal/data/{}/out", lane_key.replace('/', "~"));
     channel
@@ -1344,9 +1345,9 @@ async fn run_echoes_session(
     use unison::network::MessageType;
 
     let channel = client
-        .open_channel("canvas")
+        .open_channel("gui")
         .await
-        .map_err(|e| format!("open canvas channel (echoes): {}", e))?;
+        .map_err(|e| format!("open gui channel (echoes): {}", e))?;
     let topic = format!("process/echoes/data/{}/event", lane_key.replace('/', "~"));
     channel
         .request::<serde_json::Value, serde_json::Value>(

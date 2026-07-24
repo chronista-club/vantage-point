@@ -34,8 +34,9 @@ const VP_DAEMON_KDL: &str = include_str!("../schema/vp-daemon.kdl");
 const DAEMON_CHANNELS: &[&str] = &[
     "world-process",
     "lanes",
-    "canvas-ingest",
-    "canvas",
+    // doc 52 §6: canvas 語彙退去 — "canvas-ingest" → "gui-ingest" / "canvas" → "gui"
+    "gui-ingest",
+    "gui",
     "process-proxy",
     "world-device",
     "device",

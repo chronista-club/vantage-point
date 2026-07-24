@@ -1658,21 +1658,21 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // "canvas-ingest" Channel（L0 SP-portless canvas slice — SP → World の canvas push 受け口）
+    // "gui-ingest" Channel（SP → World の GUI-bound content push 受け口。旧名 "canvas-ingest"）
     // =========================================================================
-    // doc 44 P1 (fold-in) 以前は、各 SP の canvas pusher (`discovery::spawn_world_uplink`) が
+    // doc 44 P1 (fold-in) 以前は、各 SP の pusher (`discovery::spawn_world_uplink`) が
     // paisley-park topic の ProcessMessage をこの channel に push していた。fold-in 後は
     // project の TopicRouter を World が直接購読するため、この受け口に来る push は無い
     // （`canvas_router_for` が project 起動時に実 router へ差し替える）。channel 自体は
-    // 外部からの ingest 口として残置。
+    // 外部からの ingest 口として残置（doc 52 §6: 対の配信 channel は "gui"）。
     //
-    // プロトコル: SP が open_channel("canvas-ingest") → request("subscribe", {project_path}) →
+    // プロトコル: SP が open_channel("gui-ingest") → request("subscribe", {project_path}) →
     //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。
     {
         let canvas_routers = state.canvas_routers.clone();
         let control_channels = state.control_channels.clone();
         server
-            .register_channel("canvas-ingest", {
+            .register_channel("gui-ingest", {
                 move |_ctx, stream| {
                     let canvas_routers = canvas_routers.clone();
                     let control_channels = control_channels.clone();
@@ -1718,17 +1718,18 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // "canvas" Channel（L0 SP-portless canvas slice — vp-app per-project canvas 購読の World 集約版）
+    // "gui" Channel（vp-app への配信バス — board / terminal / echoes / editor を一本で運ぶ）
     // =========================================================================
+    // doc 52 §6: 旧名 "canvas" から改名（実態は PP 専用でなく GUI への配信路の総称）。
     // vp-app は SP 直結ではなく World :32000 の本 channel に集約する。 project の TopicRouter を
-    // `subscribe("process/paisley-park/#")` し、 retained 初期配信 (最新 Show 等) + live delta を
-    // SP "canvas" channel と同形 (`send_event("pane", <ProcessMessage JSON>)`) で配る。
+    // `subscribe("process/paisley-park/#")` し、 retained 初期配信 (最新 board 等) + live delta を
+    // `send_event("pane", <ProcessMessage JSON>)` 形で配る。
     // → vp-app の consumer (`run_canvas_session`) は接続先が変わっても無改造。
     {
         let canvas_routers = state.canvas_routers.clone();
         let control_channels = state.control_channels.clone();
         server
-            .register_channel("canvas", {
+            .register_channel("gui", {
                 move |_ctx, stream| {
                     let canvas_routers = canvas_routers.clone();
                     let control_channels = control_channels.clone();
