@@ -183,6 +183,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // 流れて silent drop = 「chat が空のまま」regression（terminal.rs の arm と対）
                 | "echoes:demand_start"
                 | "console:set_mode"
+                // doc 50 §4.6 A6: 名札 kind badge の Act 切替（session 明示）。漏れると
+                // sidebar IPC へ流れて silent drop = 「badge を押しても変身しない」regression
+                | "session:set_act"
                 | "console:new_session"
                 // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
                 // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
@@ -229,6 +232,8 @@ mod ipc_tag_tests {
             "ink:snapshot",
             // cursor server 昇格（doc 52 §5 計器盤）: 漏れは「click しても注視が同期されない」
             "board:cursor",
+            // doc 50 §4.6 A6: 名札 kind badge の Act 切替（漏れは「押しても変身しない」）
+            "session:set_act",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -1109,10 +1114,11 @@ mod editor_bridge_js_tests {
 /// terminal S4 (doc 27 §4.1): per-lane terminal session への command (WebView → SP)。
 #[derive(Debug)]
 enum TermCmd {
-    /// keystroke (base64)。 canvas channel 上り request `terminal_write` で SP に送る。
-    Write(String),
-    /// resize (cols, rows)。 `terminal_resize` で送る。
-    Resize(u16, u16),
+    /// keystroke (session, base64)。 canvas channel 上り request `terminal_write` で SP に送る。
+    /// doc 50 §4.6 A6: `session` は宛先 slot（0 = 未指定 → SP が root に解決）。
+    Write(u32, String),
+    /// resize (session, cols, rows)。 `terminal_resize` で送る（0 = 未指定 → root）。
+    Resize(u32, u16, u16),
 }
 
 /// terminal S4: 1 lane の terminal session handle (event loop が保持)。
@@ -1226,12 +1232,19 @@ async fn run_terminal_session(
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                // LaneTerminalOutput { lane, data(base64) }。 lane は subscription で確定済なので
-                // data だけ抜いて lane_key 付きで JS に渡す。
+                // LaneTerminalOutput { lane, session, data(base64) }。 lane は subscription で
+                // 確定済なので、session（doc 50 §4.6 A6 — 同 topic に複数 session が流れる）と
+                // data を抜いて lane_key 付きで JS に渡す。session 欠落は 1（旧 sender 互換 =
+                // ProcessMessage 側の serde default と同値）。
                 if let Some(data) = payload.get("data").and_then(|v| v.as_str())
                     && proxy
                         .send_event(AppEvent::TerminalOutput {
                             lane: lane_key.to_string(),
+                            session: payload
+                                .get("session")
+                                .and_then(serde_json::Value::as_u64)
+                                .and_then(|n| u32::try_from(n).ok())
+                                .unwrap_or(1),
                             data: data.to_string(),
                         })
                         .is_err()
@@ -1241,19 +1254,29 @@ async fn run_terminal_session(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(TermCmd::Write(data)) => {
+                    Some(TermCmd::Write(session, data)) => {
+                        // session=0 は「未指定」= SP が root に解決する（slot 系の規律）。
+                        let mut payload = serde_json::json!({ "lane": lane_key, "data": data });
+                        if session > 0 {
+                            payload["session"] = serde_json::Value::from(session);
+                        }
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "terminal_write",
-                                &serde_json::json!({ "lane": lane_key, "data": data }),
+                                &payload,
                             )
                             .await;
                     }
-                    Some(TermCmd::Resize(cols, rows)) => {
+                    Some(TermCmd::Resize(session, cols, rows)) => {
+                        let mut payload =
+                            serde_json::json!({ "lane": lane_key, "cols": cols, "rows": rows });
+                        if session > 0 {
+                            payload["session"] = serde_json::Value::from(session);
+                        }
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "terminal_resize",
-                                &serde_json::json!({ "lane": lane_key, "cols": cols, "rows": rows }),
+                                &payload,
                             )
                             .await;
                     }
@@ -4144,10 +4167,17 @@ pub fn run() -> anyhow::Result<()> {
             }
             // terminal S4 (doc 27 §4.1): per-lane terminal session 由来の PTY 出力を当該 lane の
             // xterm に inject する。 data は base64 (JS 側で decode → term.write)。
-            Event::UserEvent(AppEvent::TerminalOutput { lane, data }) => {
+            Event::UserEvent(AppEvent::TerminalOutput {
+                lane,
+                session,
+                data,
+            }) => {
+                // doc 50 §4.6 A6: 同 lane の複数 xterm に振り分けるため session を第 2 引数で渡す
+                // （`vpConsole.handleEvent(lane, event, session)` と同じ形）。
                 let script = format!(
-                    "window.vpTerminal && window.vpTerminal.handleOutput({}, {})",
+                    "window.vpTerminal && window.vpTerminal.handleOutput({}, {}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                    session,
                     serde_json::to_string(&data).unwrap_or_else(|_| "\"\"".into()),
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
@@ -4155,16 +4185,25 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             // terminal S4: xterm onData → 当該 lane の terminal session に渡す (上り request)。
-            Event::UserEvent(AppEvent::TerminalWrite { lane, data }) => {
+            Event::UserEvent(AppEvent::TerminalWrite {
+                lane,
+                session,
+                data,
+            }) => {
                 vp_paths::term_trace("A:app-dispatch(b64)", &lane, data.as_bytes());
-                if let Some(session) = terminal_sessions.get(&lane) {
-                    let _ = session.cmd_tx.send(TermCmd::Write(data));
+                if let Some(term) = terminal_sessions.get(&lane) {
+                    let _ = term.cmd_tx.send(TermCmd::Write(session, data));
                 }
             }
             // terminal S4: xterm resize → 当該 lane の terminal session に渡す (上り request)。
-            Event::UserEvent(AppEvent::TerminalResize { lane, cols, rows }) => {
-                if let Some(session) = terminal_sessions.get(&lane) {
-                    let _ = session.cmd_tx.send(TermCmd::Resize(cols, rows));
+            Event::UserEvent(AppEvent::TerminalResize {
+                lane,
+                session,
+                cols,
+                rows,
+            }) => {
+                if let Some(term) = terminal_sessions.get(&lane) {
+                    let _ = term.cmd_tx.send(TermCmd::Resize(session, cols, rows));
                 }
             }
             // Echoes Act II (doc 32): SP から受信した構造化イベントを当該 lane の Console pane に渡す。
@@ -4394,6 +4433,63 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 }
             }
+            // doc 50 §4.6 A6: 名札 kind badge からの Act 切替（session 明示）。SP の
+            // `session_set_act` に forward し、成功したら SessionActApplied で表示を追従させる。
+            Event::UserEvent(AppEvent::SessionSetAct { lane, session, act }) => {
+                // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
+                // active lane が変わり得るため resolve_active_project_path は使わない）。
+                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("session:set_act skip — lane の project 解決失敗 (lane={lane})");
+                    return;
+                };
+                let proxy = async_action_proxy.clone();
+                let (lane_for_js, act_for_js) = (lane.clone(), act.clone());
+                rt_handle.spawn(async move {
+                    match world_process_request(
+                        crate::client::default_world_port(),
+                        &path,
+                        "session_set_act",
+                        serde_json::json!({ "lane": lane, "session": session, "act": act }),
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            tracing::info!(
+                                "session_set_act ok: lane={lane_for_js} session={session} act={act_for_js}"
+                            );
+                            let _ = proxy.send_event(AppEvent::SessionActApplied {
+                                lane: lane_for_js,
+                                session,
+                                act: act_for_js,
+                            });
+                        }
+                        Err(e) => tracing::warn!(
+                            "session_set_act 失敗 (lane={lane_for_js} session={session}): {e}"
+                        ),
+                    }
+                });
+            }
+            // doc 50 §4.6 A6: session_set_act 成功後、WebView に act を反映する。
+            //
+            // **replay はここでは撃たない**（S2 と対）— World B が新しい kind の pane を mount し、
+            // その pane が購読を張ってから demand を撃つ（購読前 replay は非 retained topic で
+            // 落ちる順序 race）。ここは「act が変わった」事実を JS に渡すだけに徹する。
+            Event::UserEvent(AppEvent::SessionActApplied { lane, session, act }) => {
+                // root session の切替なら手元 snapshot の console_mode も更新する（S5 で roster が
+                // session×act 導出に移るまでの間、lane 単位の読み手（activate_lane / attach gate）
+                // が旧値を読まないようにする。非 root は lane の mode を動かさない）。
+                let script = format!(
+                    "window.vpConsole && window.vpConsole.setSessionAct({}, {}, {})",
+                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
+                    session,
+                    serde_json::to_string(&act).unwrap_or_else(|_| "\"tui\"".into()),
+                );
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!(
+                        "vpConsole.setSessionAct 失敗 (lane={lane} session={session}): {e}"
+                    );
+                }
+            }
             // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Act に出す」で分岐する:
             //  - chat lane（Act II）: 「新 Draft session を作って focus」。旧会話はタブに残る
             //    （タブモデルの自然形 = 前回状態キープの延長）。
@@ -4489,25 +4585,29 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 } else {
-                    // tui lane（Act I）: doc 39 §4 — 新 session + root 張り替え + slot の bare respawn。
+                    // tui（Act I）: doc 50 §4.6 A6 ③ — chat 分岐と**対称**に「新 session を作って
+                    // 台に並べる」だけ。新 term pane が tiling に入場し、既存 pane は無傷。
+                    //
+                    // ⚠️ 旧実装は `echoes_session_new_root`（新 session + **root 張り替え** + slot
+                    // bare respawn）だった。あれは「xterm が lane に 1 枚」制約下では正しい適応
+                    // （新しい console を見せる唯一の方法が root の付け替えだった）が、A6 で制約が
+                    // 外れた今は「勝手に root を動かす副作用」に意味が反転する。root の付け替えは
+                    // `console:switch_root`（root picker）の明示操作に一本化した。
                     rt_handle.spawn(async move {
-                        // doc 46 P2 要件 4: Act I でも engine の明示指定を backend まで通す
-                        // （無ければ backend が現 root の engine を引き継ぐ = 従来挙動）。
+                        // engine の明示指定は backend まで通す（無ければ lane の stand を継ぐ）。
                         let mut payload = serde_json::json!({ "lane": &lane });
                         if let Some(e) = &engine {
                             payload["stand"] = serde_json::Value::String(e.clone());
                         }
-                        match world_process_request(port, &path, "echoes_session_new_root", payload)
-                            .await
-                        {
-                            Ok(_) => {
+                        match world_process_request(port, &path, "lane_slot_new", payload).await {
+                            Ok(res) => {
+                                let session = res.get("session").and_then(serde_json::Value::as_u64);
                                 tracing::info!(
-                                    "console:new_session ok（tui, new root）: lane={lane}"
+                                    "console:new_session ok（tui, new slot）: lane={lane} session={session:?}"
                                 );
-                                // 新 root が focused になった registry を取り直して tab strip +
-                                // focusedOf を authoritative に更新してから replay_start を送る。
-                                // 逆順だと chatview の session filter が旧 focused のままで
-                                // replay_start を落とし、会話が clear されない（doc 38 Phase 2 の規律）。
+                                // registry を取り直して roster（session 一覧）を authoritative に
+                                // 更新する。新 term pane はこの一覧から生える（root は動いていない
+                                // ので ConsoleSessionRenewed = 会話 clear は送らない）。
                                 match world_process_request(
                                     port,
                                     &path,
@@ -4526,7 +4626,6 @@ pub fn run() -> anyhow::Result<()> {
                                         "echoes_session_list（new_session 後）失敗 (lane={lane}): {e}"
                                     ),
                                 }
-                                let _ = proxy.send_event(AppEvent::ConsoleSessionRenewed { lane });
                             }
                             Err(e) => tracing::warn!("console:new_session 失敗 (lane={lane}): {e}"),
                         }
@@ -4594,19 +4693,6 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     }
                 });
-            }
-            // fresh restart 成功 → ChatView の会話表示をクリアする。replay_start は foldInto が
-            // 「会話 clear + header 保持」で畳む既存意味論（chatview.tsx）— 新 engine の
-            // session_init が届けば header も新しくなる。tui lane は追加処理不要（新 PtySlot の
-            // pump replay が clear prefix 付きで xterm を拭く）。
-            Event::UserEvent(AppEvent::ConsoleSessionRenewed { lane }) => {
-                let script = format!(
-                    "window.vpConsole && window.vpConsole.handleEvent({}, {{kind:'replay_start'}})",
-                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("console:new_session の ChatView クリア失敗 (lane={lane}): {e}");
-                }
             }
             // Act II モデル切替: console_set_model で SP に forward（fire & forget）。
             // 適用の視覚確認は新 engine の session_init が header.model を更新することで得る。

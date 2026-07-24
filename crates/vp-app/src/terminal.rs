@@ -183,14 +183,34 @@ pub enum AppEvent {
     },
     /// terminal S4 (doc 27 §4.1): per-lane terminal session が World canvas channel から受信した
     /// PTY 出力 1 chunk。 `data` は base64 (LaneTerminalOutput.data)。 event loop が
-    /// `window.vpTerminal.handleOutput(lane, data)` で当該 lane の xterm に inject する。
-    TerminalOutput { lane: String, data: String },
+    /// `window.vpTerminal.handleOutput(lane, session, data)` で当該 (lane, session) の xterm に
+    /// inject する。
+    ///
+    /// doc 50 §4.6 A6: `session` = 発生元 session の VP 採番 key。topic は lane 単位で共有し、
+    /// session は `LaneTerminalOutput.session`（serde default=1）で運ぶ（`EchoesEvent` と対称、
+    /// doc 38 落とし穴① =「session を lane 名に埋めない」）。
+    TerminalOutput {
+        lane: String,
+        session: u32,
+        data: String,
+    },
     /// terminal S4: WebView (xterm onData) からの入力。 `data` は base64。 event loop が
     /// 当該 lane の terminal session に渡し、 canvas channel 上り request `terminal_write` で SP へ。
-    TerminalWrite { lane: String, data: String },
+    /// doc 50 §4.6 A6: `session` = 宛先 slot（どの xterm から打たれたか。宛先は引数で運ぶ）。
+    TerminalWrite {
+        lane: String,
+        session: u32,
+        data: String,
+    },
     /// terminal S4: WebView からの resize。 event loop が当該 lane の terminal session に渡し、
     /// canvas channel 上り request `terminal_resize` で SP へ。
-    TerminalResize { lane: String, cols: u16, rows: u16 },
+    /// doc 50 §4.6 A6: `session` = 宛先 slot（pane ごとに大きさが違う）。
+    TerminalResize {
+        lane: String,
+        session: u32,
+        cols: u16,
+        rows: u16,
+    },
     /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
     /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
     /// event loop が `window.vpConsole.handleEvent(lane, event, session)` で当該 lane の Console pane に渡す。
@@ -245,6 +265,24 @@ pub enum AppEvent {
     /// doc 33 C2: console_set_mode 成功後、WebView へ mode を反映する内部 event
     /// (async task → main thread の evaluate_script 橋渡し)。
     ConsoleModeApplied { lane: String, mode: String },
+    /// doc 50 §4.6 A6: session = Pane の Act（見え方）切替要求。名札の kind badge が撃つ。
+    /// event loop が World process-proxy ask `session_set_act` で SP に forward し、成功したら
+    /// `SessionActApplied` で WebView の roster を更新する。`act` は "tui" | "chat"。
+    ///
+    /// ⚠️ 宛先は **引数で運ぶ**（session を明示）。「focus してから送る」型の分割はレース
+    /// （doc 50 §4.3 の警告）。
+    SessionSetAct {
+        lane: String,
+        session: u32,
+        act: String,
+    },
+    /// `session_set_act` 成功後、WebView へ act を反映する内部 event
+    /// （`ConsoleModeApplied` と同じ async → main thread 橋渡し）。
+    SessionActApplied {
+        lane: String,
+        session: u32,
+        act: String,
+    },
     /// 新セッション開始要求（console の New Session ボタン）。 event loop が
     /// `lane_restart` (fresh=true) で SP に forward — cc_session 破棄 = `/exit` → 手打ち
     /// `claude` の置き換え。 Act I/II 両対応（restart_lane が mode で分岐）。
@@ -259,9 +297,6 @@ pub enum AppEvent {
         /// この field の役割で、指定が無ければ従来どおり lane の Act を継ぐ。
         act: Option<String>,
     },
-    /// lane_restart(fresh=true) 成功後、WebView の会話表示をクリアする内部 event
-    /// (ConsoleModeApplied と同じ async → main thread 橋渡し)。
-    ConsoleSessionRenewed { lane: String },
     /// doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）からの root 向け替え要求。
     /// event loop が `echoes_session_switch_root` で SP に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
@@ -345,6 +380,9 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             if let (Some(lane), Some(data)) = (lane, data) {
                 let _ = proxy.send_event(AppEvent::TerminalWrite {
                     lane: lane.to_string(),
+                    // doc 50 §4.6 A6: 打った xterm の session（省略 = root。slot 系の None は
+                    // root 解決 = `payload_session_key` の規律。0 を「未指定」の印に使う）。
+                    session: parse_session(&parsed).unwrap_or(0),
                     data: data.to_string(),
                 });
             }
@@ -356,6 +394,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             if let (Some(lane), Some(cols), Some(rows)) = (lane, cols, rows) {
                 let _ = proxy.send_event(AppEvent::TerminalResize {
                     lane: lane.to_string(),
+                    session: parse_session(&parsed).unwrap_or(0),
                     cols: cols as u16,
                     rows: rows as u16,
                 });
@@ -425,6 +464,22 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     lane: lane.to_string(),
                     mode: mode.to_string(),
                 });
+            }
+        }
+        // doc 50 §4.6 A6: 名札 kind badge からの Act 切替。lane / session / act 必須
+        // （session は明示のみ — root 決め打ちにしない = 誤配送を黙って起こさない）。
+        Some("session:set_act") => {
+            let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let session = parsed.get("session").and_then(serde_json::Value::as_u64);
+            let act = parsed.get("act").and_then(|v| v.as_str());
+            if let (Some(lane), Some(session), Some(act)) = (lane, session, act) {
+                let _ = proxy.send_event(AppEvent::SessionSetAct {
+                    lane: lane.to_string(),
+                    session: session as u32,
+                    act: act.to_string(),
+                });
+            } else {
+                tracing::warn!("session:set_act skip — lane / session / act が揃っていない");
             }
         }
         // 新セッション開始（console の New Session ボタン）。 lane 必須。
