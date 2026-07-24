@@ -330,6 +330,13 @@ function renderAppPanes(root: ParentNode, resolved: ResolvedMap): void {
 		el.style.height = visible ? `${p.rect.h * 100}%` : "100%";
 		el.style.opacity = visible ? "1" : "0";
 		el.style.pointerEvents = visible ? "auto" : "none";
+		// ⚠️ visibility は opacity と別に必須（2026-07-24 実測の根治）: opacity:0 +
+		// pointer-events:none でも、pane 内の iframe（#preview-frame / PP の sandbox）は
+		// WebKit の **compositor 側 scroll hit-test に残り**、main area 上の wheel を
+		// 空の iframe に吸い込む（macOS 26.5 で顕在化 — click は main-thread 判定で
+		// 素通りするため「wheel だけ死ぬ」）。visibility:hidden は両スレッドの
+		// hit-test から外れ、layout は保たれるので xterm の fit も壊さない。
+		el.style.visibility = visible ? "visible" : "hidden";
 		el.style.zIndex = p.floating ? String(100 + Math.round(p.attention * 100)) : "0";
 		el.classList.toggle("active", id === primary);
 	});
