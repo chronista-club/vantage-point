@@ -21,6 +21,7 @@ import {
   Switch,
   Match,
   type Accessor,
+  type JSX,
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
@@ -1192,6 +1193,101 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
   ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
 ]
 
+/**
+ * session 名札（pane 上端） — **term / chat 共通**（doc 50 §4.6 A6 ②）。
+ *
+ * この pane が「何であるか」= session の素性を名乗る 1 行。全 pane が同じ顔で名乗ることで
+ * 「どれが root か」が一目で読める（3 pane 並ぶと名札が無い pane は識別不能になる —
+ * 2026-07-25 実機で mako が踏んだ）。
+ *
+ * 載せるもの（doc 50 §2「上段 = この pane が何であるか」）:
+ *  - 灯（slot 注入。**chat 固有** — term は EchoesEvent stream を持たないので出さない）
+ *  - session ラベル / root chip / 会話 id = 素性
+ *  - kind badge = 見え方（click で `session_set_act` → in-place 変身）
+ *  - ✕ = この session を閉じる（root は不可）
+ *
+ * 供給は `sessionsOf(lane)`（`echoes_session_list` の cache）— term / chat どちらの pane でも
+ * 同じ 1 本の真実源から引く。
+ */
+export function SessionPlate(props: {
+  lane: string
+  session: number
+  /** この pane の見え方。badge の表示と切替先を決める。 */
+  act: 'tui' | 'chat'
+  focused: boolean
+  /** 活動の灯（chat のみ。term は供給が無いので省略 = 描かない）。 */
+  lamp?: JSX.Element
+}) {
+  const info = (): EchoesSession | undefined =>
+    sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
+  const label = (): string => `${sessionChipPrefix(info()?.stand)}#${props.session}`
+  /** badge を押した時の切替先（今の見え方の逆）。 */
+  const target = (): 'tui' | 'chat' => (props.act === 'chat' ? 'tui' : 'chat')
+
+  return (
+    <div class="echoes-session-plate" classList={{ focused: props.focused }}>
+      {props.lamp}
+      <span class="echoes-session-plate-label">{label()}</span>
+      {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
+          これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
+      <Show when={info()?.root}>
+        <span
+          class="echoes-session-plate-root"
+          title="root session（lane の代表 — 閉じられない。素に戻すのは sidebar の Reset Lane）"
+        >
+          <CreoIcon name="ph:anchor-simple" size={10} />
+          root
+        </span>
+      </Show>
+      <Show when={info()?.engine_session_id}>
+        {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
+      </Show>
+      <Show when={!props.focused}>
+        {/* focus は「replay demand の宛先」— 送信はどの pane からも可 */}
+        <span class="echoes-session-plate-hint">click で focus</span>
+      </Show>
+      <span class="echoes-session-plate-spacer" />
+      {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
+          click で session_set_act → SP が resume handoff → **同じ往復路**が別の面として
+          立ち上がる（位置と同一性は不変、中身だけ入れ替わる = in-place 変身）。
+          ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると Act II へ戻る入口が消える
+          （2026-07-25 に実際に片道ドアを作った）。 */}
+      <button
+        type="button"
+        class="echoes-session-plate-kind"
+        title={
+          target() === 'tui'
+            ? 'Console（Act I）に切り替える — 会話はそのまま resume で続く'
+            : 'Chat（Act II）に切り替える — 会話はそのまま resume で続く'
+        }
+        onClick={(e) => {
+          e.stopPropagation()
+          requestSessionAct(props.lane, props.session, target())
+        }}
+      >
+        <CreoIcon
+          name={props.act === 'chat' ? 'ph:chat-circle' : 'ph:terminal-window'}
+          size={9}
+        />
+        {props.act === 'chat' ? 'Chat' : 'Console'}
+      </button>
+      <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
+        <button
+          type="button"
+          class="echoes-session-plate-close"
+          title="この session を閉じる（pane ごと消える）"
+          onClick={(e) => {
+            e.stopPropagation()
+            removeChatSession(props.lane, props.session)
+          }}
+        >
+          <CreoIcon name="ph:x" size={9} />
+        </button>
+      </Show>
+    </div>
+  )
+}
+
 /** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
  *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
  *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt）は session を運ぶ = どの pane
@@ -1202,11 +1298,8 @@ function SessionChatView(props: { lane: string; session: number }) {
   const state = (): ChatState => lc.state
   /** この pane が lane の focused session か（= chat 動詞の宛先か）。 */
   const isFocused = (): boolean => (sessionsOf(props.lane)?.focused ?? 1) === props.session
-  /** この pane の session の registry entry（label / live / root 表示用）。 */
-  const sessionInfo = (): EchoesSession | undefined =>
-    sessionsOf(props.lane)?.sessions.find((v) => v.key === props.session)
-  const sessionLabel = (): string =>
-    `${sessionChipPrefix(sessionInfo()?.stand)}#${props.session}`
+  // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
+  // （doc 50 §4.6 A6 — term pane と共有するため）。
 
   // Act II モデル切替（spec: セッション進行中でも切替可能）。SP が engine を --resume +
   // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
@@ -1481,68 +1574,26 @@ function SessionChatView(props: { lane: string; session: number }) {
       {/* session 名札（pane 上端）: この pane = この session の素性。doc 46 §1.3 の帰結で
           タブ strip は撤去 — session の識別は pane 自身が名乗り、切替は pane click が担う。
           engine 選択付きの新規作成は EchoesHeader（lane の名札）の「+ New」一本
-          （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。 */}
-      <div class="echoes-session-plate" classList={{ focused: isFocused() }}>
-        {/* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
-            （赤速脈動）。旧「live なら緑点」を置換 — presence でなく活動を灯す（lampOf）。
-            細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。 */}
-        <span
-          class="echoes-lamp"
-          classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
-          title={statusLine().label}
-        />
-        <span class="echoes-session-plate-label">{sessionLabel()}</span>
-        {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
-            これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
-        <Show when={sessionInfo()?.root}>
+          （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。
+          実体は term pane と共有する `SessionPlate`（doc 50 §4.6 A6 — 全 pane が同じ顔で
+          名乗る。灯だけは chat 固有なので slot で渡す）。 */}
+      <SessionPlate
+        lane={props.lane}
+        session={props.session}
+        act="chat"
+        focused={isFocused()}
+        lamp={
+          /* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
+             （赤速脈動）。旧「live なら緑点」を置換 — presence でなく活動を灯す（lampOf）。
+             細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。
+             term pane はこの供給（EchoesEvent stream）を持たないので灯を出さない。 */
           <span
-            class="echoes-session-plate-root"
-            title="root session（lane の代表 — 閉じられない。素に戻すのは sidebar の Reset Lane）"
-          >
-            <CreoIcon name="ph:anchor-simple" size={10} />
-            root
-          </span>
-        </Show>
-        <Show when={sessionInfo()?.engine_session_id}>
-          {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
-        </Show>
-        <Show when={!isFocused()}>
-          {/* focus は「replay demand の宛先」— 送信はどの pane からも可 */}
-          <span class="echoes-session-plate-hint">click で focus</span>
-        </Show>
-        <span class="echoes-session-plate-spacer" />
-        {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
-            click で session_set_act → SP が resume handoff → 同じ往復路が Console として
-            立ち上がる（位置と同一性は不変、中身だけ入れ替わる = in-place 変身）。
-            chat→tui は常に可（Act I は login shell に engine を流し込むだけ、§4.0 帰結 1）。 */}
-        <button
-          type="button"
-          class="echoes-session-plate-kind"
-          title="Console（Act I）に切り替える — 会話はそのまま resume で続く"
-          onClick={(e) => {
-            e.stopPropagation()
-            requestSessionAct(props.lane, props.session, 'tui')
-          }}
-        >
-          <CreoIcon name="ph:chat-circle" size={9} />
-          Chat
-        </button>
-        <Show
-          when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, sessionInfo()?.root)}
-        >
-          <button
-            type="button"
-            class="echoes-session-plate-close"
-            title="この session を閉じる（pane ごと消える）"
-            onClick={(e) => {
-              e.stopPropagation()
-              removeChatSession(props.lane, props.session)
-            }}
-          >
-            <CreoIcon name="ph:x" size={9} />
-          </button>
-        </Show>
-      </div>
+            class="echoes-lamp"
+            classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
+            title={statusLine().label}
+          />
+        }
+      />
       {/* now-line（doc 51 §1 A3）: 名札（素性・不変）と区別された「今」の帯。名札の直下。
           供給 = 質問要旨 > 契約（A3b）> 機械導出（A3a 保険）。空なら描かない（doc 50 §2）。 */}
       <Show when={nowLine()}>
