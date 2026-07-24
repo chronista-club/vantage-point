@@ -346,9 +346,31 @@ doc 52 §3 を確定仕様どおり実装（**server 0 行** = 状態ゼロの�
   ② 送信しても PNG が飛ばない = terminal.rs の match arm だけ足し app.rs の `is_main_ipc_tag`
   allowlist に漏れ sidebar IPC へ silent drop（「1辺が2仕事の罠」の同型）→ allowlist + テストに追加
 
+### ✅ wave 3 完了（2026-07-24、branch `mako/keiki-wave3`）— 計器盤（scrollback + 注視可視化）
+
+§5 表示仕様どおり実装。**「流されない」と「注視可視化」を同じ機構で根治**（洗い流しの真因 =
+server が注視を知らないこと）。
+- **cursor server 昇格**: thumbnail click → IPC `board:cursor` → SP `board_set_cursor` →
+  BoardUpdated。view-local cursor 廃止（optimistic set は残す）。DB 永続なので **GUI 再起動で
+  注視が復元**（実機確認済みの副産物）
+- **scrollback 規則**: `append_board_item` の cursor 更新を「cursor が旧 head か NONE のときだけ
+  follow」に（SurrealQL の SET 右辺 = 更新前 stack を利用）。pin フラグ/UI を足さず計器が守れる
+- **鮮度**: `BoardItem.updatedAt`（show=createdAt / update で RFC3339 stamp）、額縁が
+  「更新 HH:MM:SS」を自動表示（出力元は server 一箇所）
+- **未読 dot**: cursor に流されなかった fresh 新着を strip に inline で灯す（focus は奪わない）
+- **read_board**: 全件 + updatedAt 併記 + cursor item に「★ 今表示中」
+- 検証: DB 往復テスト（follow / 据え置き / updatedAt / set_cursor loud error）+ vitest 280（+9、
+  computeUnread / freshNewIds / formatFreshness）+ clippy -D / fmt / tsc
+- ✅ **実機 dogfood 全項目クリア**: 額縁鮮度・update で時刻移動・click で server 昇格・
+  **古い item を見ている間に新着 → 据え置き（洗い流されない）**・未読 dot・GUI 再起動で注視復元
+- **dogfood で 2 発見**: ① test の `connect_mem` は schema 未定義で ON DUPLICATE が発火せず
+  蓄積しない（`define_schema()` 必須。1 show だけの既存 test では masked だった）② 未読 dot の
+  絶対配置 + 負 offset は strip の overflow にクリップされる → inline flex 配置で根治
+
 ### 残り
 
-- **wave 3**: 計器盤の pin/stream 表示（§5 で「流されない」は表示側に送った分）+ 注視可視化（§9、cursor の server 昇格 → read_board の「今表示してるもの」default）
+- doc 52 は wave 0〜3 で 4 役割（掲示板 / 計器盤 / 中継台 / 対話面）が出揃い、board 再設計は一区切り。
+  次は doc 51 A6/A7（xterm re-key / layout 永続）→ 語彙清算 第 2 弾（§6 ⑥）→ Epic release cut
 
 0. **A4 = board pane を先に単独出荷**（表示の器の引っ越し。doc 51 Epic の A4 — lane roster に board pane を足し、app 層 PP を退役。新規コードは board 語彙）✅
    - 生え方（mako 決定 2026-07-24）: **board 非空で自動** — roster を「board に item がある lane に board pane」と機械導出。畳む/復元は既存 layout 文法（share 0 / live 新着で復元 = 現行 auto-open の lane 文法版）。新しい状態は足さない
