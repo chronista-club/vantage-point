@@ -649,6 +649,36 @@ pub fn set_root_act_in(
     Ok(true)
 }
 
+/// 指定 session の act を書き替える（doc 50 §4.6 A6 — [`set_root_act_in`] の session 一般化）。
+///
+/// root を渡せば `set_root_act_in` と同義（root は session の 1 つ）。session = Pane の
+/// act badge（World B）が root 以外の pane も切り替えられるようになったため、任意 session の
+/// act を永続する入口が要る。戻り値は「実際に変わったか」（`set_root_act_in` と同じく
+/// 「切替えた」ログを変化と 1:1 にする）。session 不在は Err。
+pub fn set_session_act_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    session: SessionKey,
+    act: SessionAct,
+) -> std::io::Result<bool> {
+    let _guard = mutation_guard();
+    let mut reg = load_in(base, project, lane, default_stand);
+    let Some(entry) = reg.sessions.iter_mut().find(|s| s.key == session) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("session が存在しません（project={project}, lane={lane}, session={session}）"),
+        ));
+    };
+    if entry.act == act {
+        return Ok(false);
+    }
+    entry.act = act;
+    save_in(base, project, lane, &reg)?;
+    Ok(true)
+}
+
 /// registry を捨てる（fresh reset）。file 不在は no-op。
 ///
 /// 「fresh = N=1 の既定形へ戻す」の state 側表現（doc 38 落とし穴②「fresh が副 session を
@@ -723,6 +753,24 @@ pub fn set_root_act(
         project,
         lane,
         default_stand,
+        act,
+    )
+}
+
+/// 本番 base での set_session_act（doc 50 §4.6 A6）。
+pub fn set_session_act(
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    session: SessionKey,
+    act: SessionAct,
+) -> std::io::Result<bool> {
+    set_session_act_in(
+        &crate::config::vp_state_dir(),
+        project,
+        lane,
+        default_stand,
+        session,
         act,
     )
 }

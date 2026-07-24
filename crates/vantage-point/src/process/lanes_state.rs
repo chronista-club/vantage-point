@@ -735,6 +735,12 @@ impl LanePool {
         })
     }
 
+    /// lane の root session key（`slot_session(addr, None)` の公開版）。
+    /// 旧 lane 単位動詞（`console_set_mode`）を session 明示の新経路へ橋渡しする時に使う。
+    pub fn root_session_key(addr: &LaneAddress) -> SessionKey {
+        Self::slot_session(addr, None)
+    }
+
     /// Phase 3-A: 既に spawn 済の PtySlot を (lane, session) 紐付けで insert。
     ///
     /// `session=None` は root（[`Self::slot_session`]）。boot / restart / performer spawn の
@@ -1674,83 +1680,107 @@ impl LanePool {
             .map(|slot| slot.host.commit_seq())
     }
 
-    /// Console のエンジンモードを切り替える（doc 33 §2 の状態機械）。
+    /// 指定 session の Act（見え方）を切り替える（doc 50 §4.6 A6 — 旧 `set_console_mode` を
+    /// root 専用から session 一般へ広げたもの。session = Pane の kind badge が任意 pane を
+    /// 切り替える経路）。切替 = resume handoff（1 往復路 = Active 化身 高々 1 の遷移）。
     ///
-    /// - → Chat: PtySlot + TermAttach を drop（claude TUI 停止）→ mode 永続 → engine-less
-    ///   （EchoesAgentHost は初回 submit で lazy spawn）
-    /// - → Tui: chat engine を drop（headless 停止）→ mode 永続 → PTY respawn
-    ///   （`restart_lane` 再利用 = cc_session `--resume` で文脈継承）
+    /// - → Chat: その session の PtySlot + TermAttach を drop（TUI 停止）→ act 永続 → engine-less
+    ///   （`EchoesAgentHost` は demand_start / 初回 submit で lazy spawn。replay は handler が撃つ）
+    /// - → Tui: その session の chat engine を drop（headless 停止）→ act 永続 → PtySlot respawn
+    ///   （root は `restart_lane` 再利用 = `--resume` で文脈継承 / 非 root は `open_slot_for_session`）
     ///
-    /// 同一 mode への切替は no-op。Chat が許されるのは stand="echoes" の lane のみ。
-    pub fn set_console_mode(&mut self, addr: &LaneAddress, mode: SessionAct) -> anyhow::Result<()> {
+    /// root を指定すると旧 `set_console_mode` と同義（root cache = `info.console_mode` も更新し、
+    /// boot spawn 可否 / nudge 配送の root 特例を保つ）。非 root は root cache を触らない。
+    /// 同一 act への切替は no-op。Chat が許されるのは **その session の stand** が chat_capable な
+    /// engine のときのみ（root 決め打ちにしない）。
+    pub fn set_session_act(
+        &mut self,
+        addr: &LaneAddress,
+        session: SessionKey,
+        act: SessionAct,
+    ) -> anyhow::Result<()> {
         let info = self
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        if info.console_mode == mode {
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+        let default_stand = info.stand.clone();
+        let root_key = Self::slot_session(addr, None);
+        let is_root = session == root_key;
+
+        // その session の現 act / stand を registry（disk SSOT）から引く。
+        let reg = session_registry::load(&addr.project, &lane_label, &default_stand);
+        let entry = reg
+            .sessions
+            .iter()
+            .find(|s| s.key == session)
+            .ok_or_else(|| {
+                anyhow::anyhow!("session が存在しません（addr={addr}, session={session}）")
+            })?;
+        if entry.act == act {
             return Ok(());
         }
-        // Chat（Act II）は headless host を持つ engine の lane のみ（能力表明は EngineKind に
-        // 一元化 — shell 等は engine なし、legacy/未知 stand も chat 不可）。
-        // 未対応 stand を Chat に切替えて誤 spawn するのを型ではなくここで塞ぐ。
-        if mode == SessionAct::Chat
-            && !EngineKind::from_stand(&info.stand).is_some_and(EngineKind::chat_capable)
+        let session_stand = entry.stand.clone();
+
+        // Chat（Act II）は headless host を持つ engine のみ（能力表明は EngineKind に一元化）。
+        // その session の stand で判定する（root 決め打ちにしない = 非 root は engine が違い得る）。
+        if act == SessionAct::Chat
+            && !EngineKind::from_stand(&session_stand).is_some_and(EngineKind::chat_capable)
         {
             anyhow::bail!(
-                "console mode Chat は Act II host を持つ engine の lane のみ（addr={}, stand={}）",
-                addr,
-                info.stand
+                "Act II（chat）は Act II host を持つ engine の session のみ（addr={addr}, session={session}, stand={session_stand}）"
             );
         }
-        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-        // doc 47 §4: 永続先は root session の act（registry file 不在時の既定形に使う stand）。
-        let default_stand = info.stand.clone();
 
-        match mode {
+        // act 永続（→tui では open_slot_for_session が act=Tui を前提に読むため、遷移前に永続する）。
+        if let Err(e) = session_registry::set_session_act(
+            &addr.project,
+            &lane_label,
+            &default_stand,
+            session,
+            act,
+        ) {
+            tracing::warn!("session act の永続失敗（addr={addr}, session={session}）: {e}");
+        }
+
+        match act {
             SessionAct::Chat => {
-                // TUI engine 停止（PtySlot Drop = child kill + wait、restart_lane step1 と同順序）。
-                // doc 46 P5: console_mode は **root session の act**（doc 47 §4）なので、
-                // 落とすのも root の slot だけ。非 root の slot は独立の住人として生き残る
-                // （chat engine 側で「focused だけ落とす」のと同じ非対称性の裏返し）。
-                let root_key = Self::slot_session(addr, None);
-                self.drop_slot(addr, root_key);
-                if let Err(e) =
-                    session_registry::set_root_act(&addr.project, &lane_label, &default_stand, mode)
-                {
-                    tracing::warn!("root session act の永続失敗（addr={addr}）: {e}");
-                }
-                if let Some(info) = self.lanes.get_mut(addr) {
+                // その session の TUI engine 停止（PtySlot Drop = child kill + wait）。
+                self.drop_slot(addr, session);
+                if is_root && let Some(info) = self.lanes.get_mut(addr) {
+                    // root cache を更新（boot spawn / nudge 配送の root 特例が読む）。
                     info.console_mode = SessionAct::Chat;
                     info.pid = None;
                     info.state = LaneState::Running; // chat-idle は正常形（doc 33 §3）
                 }
-                tracing::info!("console mode → chat（TUI 停止、engine は submit で lazy）: {addr}");
+                tracing::info!(
+                    "session act → chat（TUI 停止、engine は demand/submit で lazy）: addr={addr} session={session}"
+                );
                 Ok(())
             }
             SessionAct::Tui => {
-                // focused session の chat engine 停止（Drop = kill_on_drop + pump abort）。
-                // doc 38 §2: slot（Act I）と排他なのは focused session だけ。非 focused の
-                // session は slot と独立に生き続ける（lane 内の session 同士は独立）。
-                // N=1（registry file 不在）では focused=1 = 唯一の slot なので従来と同一挙動。
-                let focused = session_registry::focused(&addr.project, &lane_label);
+                // その session の chat engine 停止（Drop = kill_on_drop + pump abort）。
                 if let Some(slots) = self.chat_engines.get_mut(addr) {
-                    slots.remove(&focused);
+                    slots.remove(&session);
                     if slots.is_empty() {
                         self.chat_engines.remove(addr);
                     }
                 }
-                if let Err(e) =
-                    session_registry::set_root_act(&addr.project, &lane_label, &default_stand, mode)
-                {
-                    tracing::warn!("root session act の永続失敗（addr={addr}）: {e}");
+                if is_root {
+                    if let Some(info) = self.lanes.get_mut(addr) {
+                        info.console_mode = SessionAct::Tui;
+                    }
+                    // root の PTY respawn は restart_lane を再利用（--resume は
+                    // build_stand_command が cc_session から拾う = 会話継続）。
+                    tracing::info!("session act → tui（root、headless 停止、PTY respawn）: {addr}");
+                    self.restart_lane(addr, RespawnMode::Resume)
+                } else {
+                    // 非 root は open_slot_for_session で PtySlot を起立（act=Tui 永続済が前提）。
+                    tracing::info!(
+                        "session act → tui（非 root、headless 停止、slot 起立）: addr={addr} session={session}"
+                    );
+                    self.open_slot_for_session(addr, session).map(|_pid| ())
                 }
-                if let Some(info) = self.lanes.get_mut(addr) {
-                    info.console_mode = SessionAct::Tui;
-                }
-                // PTY respawn は restart_lane を再利用（--resume は build_stand_command が
-                // cc_session から拾う = 会話継続）。
-                tracing::info!("console mode → tui（headless 停止、PTY respawn）: {addr}");
-                self.restart_lane(addr, RespawnMode::Resume)
             }
         }
     }
