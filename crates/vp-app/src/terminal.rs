@@ -123,6 +123,17 @@ pub enum AppEvent {
     /// 黙って落ちる — 以後の再送は次の live show まで無い（= reopen で board pane が出ない）。
     /// JS 側が vpBoard を install した直後に送り、Rust は保持済み board snapshot から再配信する。
     BoardDemand,
+    /// ink（対話面、doc 52 §3）: webview から board pane（#ink-stage）の snapshot 要求。
+    /// event loop が WKWebView.takeSnapshot で `rect` を撮って PNG を state_dir に書き、完了を
+    /// `InkSnapshotReady` で受けて `window.vpInk.onSnapshot({path})` を webview に返す。
+    /// 送信文面・宛先（chat/tui）の決定は webview 側（ink.ts）が既存 IPC で行う（server 0 行）。
+    InkSnapshot { rect: crate::ink_snapshot::InkRect },
+    /// ink: takeSnapshot の completion handler（main thread）から event loop へ返す結果。
+    /// `path` Some = 成功（PNG の絶対パス）、`error` Some = 失敗（理由）。
+    InkSnapshotReady {
+        path: Option<String>,
+        error: Option<String>,
+    },
     /// VP-143: 全 lane の cc session display name (custom-title) を再 resolve する周期 tick。
     /// `tokio::spawn` で 5s 間隔の background task が proxy 経由で send。 main thread は
     /// `sidebar_state.lanes_by_project` を walk して `session_title::resolve_title_for_cwd` を
@@ -546,6 +557,21 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             // doc 52 §10 wave 0）。Rust が保持済み board snapshot を再配信する。
             tracing::info!("[ipc] board:demand (JS bundle-ready catch-up)");
             let _ = proxy.send_event(AppEvent::BoardDemand);
+        }
+        Some("ink:snapshot") => {
+            // ink（対話面、doc 52 §3）: board pane（#ink-stage）の rect を WKWebView.takeSnapshot で
+            // 撮り PNG 化する要求。rect は webview 論理座標（getBoundingClientRect）= WKWebView の
+            // 座標系そのままなので Retina 換算不要。結果は app.rs が window.vpInk.onSnapshot で返す。
+            if let Some(r) = parsed.get("rect") {
+                let get = |k: &str| r.get(k).and_then(|v| v.as_f64());
+                if let (Some(x), Some(y), Some(w), Some(h)) =
+                    (get("x"), get("y"), get("w"), get("h"))
+                {
+                    let _ = proxy.send_event(AppEvent::InkSnapshot {
+                        rect: crate::ink_snapshot::InkRect { x, y, w, h },
+                    });
+                }
+            }
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き

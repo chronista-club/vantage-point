@@ -191,6 +191,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // board pane の boot 窓 catch-up（doc 52 §10 wave 0。漏れると「reopen で board
                 // pane が出ない」= bastet:devices_fetch と同じ罠）
                 | "board:demand"
+                // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
+                // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
+                | "ink:snapshot"
         )
     )
 }
@@ -219,6 +222,8 @@ mod ipc_tag_tests {
             "bastet:devices_fetch",
             // board pane の boot 窓 catch-up（doc 52 §10 wave 0）
             "board:demand",
+            // ink（対話面, doc 52 §3）: 送信の snapshot 要求（漏れは「送っても画像が飛ばない」）
+            "ink:snapshot",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -2938,6 +2943,10 @@ pub fn run() -> anyhow::Result<()> {
     // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
     vp_paths::migrate_legacy_paths();
 
+    // ink（対話面, doc 52 §3）: 送信済み snapshot は ephemeral だが disk に残るので、起動時に
+    // 7 日超を掃除する（「消し手のないファイルを作らない」— terminal replay disk leak の轍）。
+    crate::ink_snapshot::prune_old(Duration::from_secs(7 * 24 * 3600));
+
     // Windows taskbar の identity。 **window を作る前**に設定する必要がある
     // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
     crate::icon::set_app_user_model_id();
@@ -3929,6 +3938,52 @@ pub fn run() -> anyhow::Result<()> {
                             }
                         }
                     }
+                }
+            }
+            Event::UserEvent(AppEvent::InkSnapshot { rect }) => {
+                // ink（対話面, doc 52 §3）: board pane（#ink-stage）を WKWebView.takeSnapshot で
+                // PNG 化する。保存先 dir は active lane の flat key で分ける（board と同じ空間）。
+                // completion（main thread）は InkSnapshotReady で event loop に戻す（proxy.clone）。
+                let lane_key = sidebar_state
+                    .active_lane_address
+                    .as_deref()
+                    .map(crate::ink_snapshot::lane_key_from_address)
+                    .unwrap_or_else(|| "conductor".to_string());
+                match crate::ink_snapshot::snapshot_path(&lane_key) {
+                    Ok(out_path) => {
+                        let ready_proxy = proxy.clone();
+                        crate::ink_snapshot::take_snapshot(
+                            &webview,
+                            rect,
+                            out_path,
+                            move |path, error| {
+                                let _ = ready_proxy
+                                    .send_event(AppEvent::InkSnapshotReady { path, error });
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        let _ = proxy.send_event(AppEvent::InkSnapshotReady {
+                            path: None,
+                            error: Some(format!("snapshot 保存先の作成に失敗: {e}")),
+                        });
+                    }
+                }
+            }
+            Event::UserEvent(AppEvent::InkSnapshotReady { path, error }) => {
+                // ink: snapshot 完了/失敗を webview に返す（ink.ts が会話へ一行 + 画像を送る）。
+                let script = match &path {
+                    Some(p) => format!(
+                        "window.vpInk && window.vpInk.onSnapshot({})",
+                        serde_json::json!({ "path": p })
+                    ),
+                    None => format!(
+                        "window.vpInk && window.vpInk.onSnapshotError({})",
+                        serde_json::json!({ "message": error.clone().unwrap_or_default() })
+                    ),
+                };
+                if let Err(e) = webview.evaluate_script(&script) {
+                    tracing::warn!("ink snapshot 結果の webview 反映失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {

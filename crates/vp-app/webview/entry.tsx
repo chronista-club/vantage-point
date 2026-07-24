@@ -118,7 +118,10 @@ import {
 	handleMessage as handleBoardMessage,
 	setActiveLaneName,
 	clearActiveBoard,
+	getCanvasState,
 } from "./board-handler";
+// ink（対話面、doc 52 §3）: board item の上に描いて明示送信で snapshot + 一行を会話へ。
+import { installInk } from "./ink";
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from "./HistoryStrip";
 import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 
@@ -410,6 +413,18 @@ console.info("[vp-bundle] vpAppLayout attached to window — bundle init complet
 // `window.vpConsole.setMode(lane, mode)` でエンジンモードを通知する。
 // DevTools 検分: window.vpConsole.peek("<project>/root")
 const vpConsole = installConsole();
+
+// ink（対話面、doc 52 §3）を board pane に配線する。lane 文脈は closure で注入:
+//   - getItemId    = 表示中 board item（board-handler の cursor）
+//   - getLaneAddress = 現 active lane の address（setActivePane bridge が更新する module 変数）
+//   - getFocusedSession / getMode = console.ts の per-lane registry
+// server は触らない（既存 IPC echoes:submit / term:write を撃つだけ、doc 52 §3 = 状態ゼロの往復）。
+installInk({
+	getItemId: () => getCanvasState().cursor,
+	getLaneAddress: () => activeLaneAddress,
+	getFocusedSession: (laneAddr) => focusedOf(laneAddr),
+	getMode: (laneAddr) => vpConsole.getMode(laneAddr),
+});
 
 // ChatView (C2 → doc 50 P1): scoped CSS を注入し、mount 管理 API を得る。
 // SessionChatView の mount 先は lane-panes が session ごとに生やす動的 host
