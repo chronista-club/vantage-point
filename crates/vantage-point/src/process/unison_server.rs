@@ -186,6 +186,19 @@ fn content_to_parts(content: &Content) -> Option<(&'static str, String)> {
     }
 }
 
+/// mcp__update の content_type 文字列を board 保存形（stored contentType）に正規化する。
+/// show の `content_to_parts` と対称: markdown/html はそのまま、log は text、url/image/未知は
+/// None（board 非対応 → 呼び出し側が loud error）。update が show の許さない type を board に
+/// 忍び込ませない（webview は markdown/html/text の 3 種のみ render する）。
+fn normalize_board_content_type(ct: &str) -> Option<&'static str> {
+    match ct {
+        "markdown" => Some("markdown"),
+        "html" => Some("html"),
+        "log" | "text" => Some("text"),
+        _ => None,
+    }
+}
+
 /// board record の stack から items（Vec<BoardItem>）と cursor（Option<String>）を取り出す。
 fn extract_stack(rec: Option<&serde_json::Value>) -> (Vec<BoardItem>, Option<String>) {
     let Some(rec) = rec else {
@@ -360,11 +373,13 @@ async fn handle_board_update(
         .and_then(|v| v.as_str())
         .ok_or("board_update: content 必須")?
         .to_string();
-    let content_type = payload
+    // content_type は **省略時 = 既存 item の type を保つ**（下で解決）。既定 "markdown" 直書きだと
+    // html item を update しただけで markdown に silent 降格し、pp.ts の trust 境界（html=sandbox
+    // iframe / markdown=innerHTML）まで崩れる（team-b review 2026-07-24）。
+    let content_type_arg = payload
         .get("content_type")
         .and_then(|v| v.as_str())
-        .unwrap_or("markdown")
-        .to_string();
+        .map(|s| s.to_string());
     let (board_scope, lane_name, bc_lane) = board_key(
         payload.get("scope").and_then(|v| v.as_str()),
         payload.get("lane").and_then(|v| v.as_str()),
@@ -375,12 +390,25 @@ async fn handle_board_update(
         .await
         .map_err(|e| format!("board load: {}", e))?;
     let (items, _) = extract_stack(rec.as_ref());
-    if !items.iter().any(|it| it.id == item_id) {
+    let Some(existing) = items.iter().find(|it| it.id == item_id) else {
         return Err(format!(
             "board_update: id '{}' が board に無い（read_board で現在の id を確認してください）",
             item_id
         ));
-    }
+    };
+    // content_type: 省略 = 既存 type を保つ / 指定 = show と同じ board-supported set に正規化
+    // （url/image は board 非対応。show の content_to_parts と対称、divergence を作らない）。
+    let content_type = match content_type_arg.as_deref() {
+        None => existing.content_type.clone(),
+        Some(ct) => normalize_board_content_type(ct)
+            .ok_or_else(|| {
+                format!(
+                    "board_update: content_type '{}' は board 非対応（markdown / html / log のみ）",
+                    ct
+                )
+            })?
+            .to_string(),
+    };
     vpdb.update_board_item(
         &state.project_dir,
         &board_scope,
@@ -2613,6 +2641,35 @@ mod tests {
             read2["items"].as_array().unwrap().len(),
             1,
             "item 数は増えない（重複を作らない）"
+        );
+
+        // content_type 省略 = 既存 type を保つ（html→markdown の silent 降格を防ぐ、team-b review）。
+        dispatch_process_method(
+            &state,
+            "board_update",
+            serde_json::json!({ "id": id, "content": "revised-2" }),
+        )
+        .await
+        .expect("board_update (content_type 省略)");
+        let read3 = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read_board 3");
+        assert_eq!(read3["items"][0]["content"], "revised-2");
+        assert_eq!(
+            read3["items"][0]["contentType"], "html",
+            "content_type 省略で既存 type(html) が保たれる"
+        );
+
+        // board 非対応の content_type（url）は loud error（show の content_to_parts と対称）。
+        let bad_ct = dispatch_process_method(
+            &state,
+            "board_update",
+            serde_json::json!({ "id": id, "content": "x", "content_type": "url" }),
+        )
+        .await;
+        assert!(
+            bad_ct.is_err(),
+            "url content_type の update は error: {bad_ct:?}"
         );
 
         // 未知 id の update は loud error（静かな重複を作らない = update に分けた狙い）。

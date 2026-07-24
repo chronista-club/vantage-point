@@ -71,7 +71,9 @@ pub struct UpdateParams {
     pub content: String,
 
     /// Content type
-    #[schemars(description = "Content type: 'markdown' (default), 'html', 'log', or 'url'")]
+    #[schemars(
+        description = "Content type: 'markdown', 'html', or 'log'. Omit to keep the item's current type (only pass this when you intend to change how the content is rendered)."
+    )]
     pub content_type: Option<String>,
 
     /// board scope
@@ -168,13 +170,12 @@ impl VantageMcp {
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<UpdateParams>,
     ) -> Result<CallToolResult, McpError> {
         let scope = validate_board_scope(params.scope.as_deref())?;
-        let content_type = params
-            .content_type
-            .unwrap_or_else(|| "markdown".to_string());
+        // content_type は既定を入れない（None → null）。省略時は server 側が既存 item の type を
+        // 保つ（markdown 直書きで html→markdown に silent 降格させない、doc 52 §5 / team-b review）。
         let payload = serde_json::json!({
             "id": params.id,
             "content": params.content,
-            "content_type": content_type,
+            "content_type": params.content_type,
             // per-lane board: 呼び出し元 Lane（cwd 由来）を stamp（show / clear と同じ）
             "lane": SelfLane::detect().lane_name,
             "scope": scope,
