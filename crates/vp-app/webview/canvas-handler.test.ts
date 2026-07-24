@@ -14,14 +14,9 @@ vi.mock('./pp', () => ({
   clearPP: vi.fn(),
 }))
 
-// app-panes（pp-overlay auto-open の依存）をモック — engine / DOM を持ち込まない
-vi.mock('./app-panes', () => ({
-  appLayoutReady: vi.fn(() => true),
-  applyAppScene: vi.fn(),
-  isAppPaneVisible: vi.fn(() => false),
-}))
-
-import { appLayoutReady, applyAppScene, isAppPaneVisible } from './app-panes'
+// doc 52 §10 wave 0: 旧 pp-overlay auto-open（app-panes 依存）は退役。board pane 化で
+// presence は 'vp:board-presence' event に載る（薄い action 層 = node 環境では silent skip）。
+// live/replay 区別の判定は hasFreshArrival を純関数として直接検証する（下方）。
 
 import {
   _resetForTest,
@@ -29,6 +24,7 @@ import {
   deleteItem,
   getCanvasState,
   handleMessage,
+  hasFreshArrival,
   setActiveLaneName,
   setCursor,
   subscribeCanvasState,
@@ -229,47 +225,53 @@ describe('getCanvasState immutability', () => {
 })
 
 // ============================================================================
-// pp-overlay auto-open（live/replay 区別）
+// hasFreshArrival（live/replay 区別 — board pane の focus 判定の核）
 // ============================================================================
 
-/** app-panes モックの状態を組む（PP 可視状態と layout 準備状態）。 */
-function primeAppPanes({ ppVisible = false, ready = true } = {}) {
-  vi.mocked(appLayoutReady).mockReturnValue(ready)
-  vi.mocked(isAppPaneVisible).mockReturnValue(ppVisible)
-  return vi.mocked(applyAppScene)
-}
+/** BOOT_TS より未来 = live 新着相当の createdAt。テスト実行より確実に後の固定値を使う
+ *  （Date.now を使わず — 現在時刻 >= BOOT_TS は自明なので、十分先の固定 ISO で十分）。 */
+const FUTURE_ISO = '2999-01-01T00:00:00.000Z'
+/** BOOT_TS より過去 = retained replay 相当。 */
+const PAST_ISO = '2000-01-01T00:00:00.000Z'
 
-describe('pp-overlay auto-open（live/replay 区別）', () => {
-  it('起動時の retained replay（過去 createdAt）では auto-open しない', () => {
-    const spy = primeAppPanes()
-    handleMessage(boardUpdated('lane', null, [{ id: 'a' }, { id: 'b' }]))
-    expect(spy).not.toHaveBeenCalled()
+const item = (id: string, createdAt: string): CanvasItem => ({
+  id,
+  content: id,
+  contentType: 'markdown',
+  createdAt,
+})
+
+describe('hasFreshArrival（board pane focus の live/replay 区別）', () => {
+  it('起動後 createdAt の未知 item = live 新着（focus を寄せる対象）', () => {
+    expect(hasFreshArrival([item('fresh', FUTURE_ISO)], new Set())).toBe(true)
   })
 
-  it('live 新着（起動後 createdAt の未知 item）で pp-overlay が開く', () => {
-    const spy = primeAppPanes()
-    handleMessage(boardUpdated('lane', null, [{ id: 'fresh', createdAt: new Date().toISOString() }]))
-    expect(spy).toHaveBeenCalledWith('pp-overlay')
+  it('過去 createdAt（retained replay 相当）は新着でない', () => {
+    expect(hasFreshArrival([item('a', PAST_ISO), item('b', PAST_ISO)], new Set())).toBe(false)
   })
 
-  it('既知 item の再配信（SP re-seed 相当）は createdAt が新しくても auto-open しない', () => {
-    const spy = primeAppPanes()
-    const fresh = new Date().toISOString()
-    handleMessage(boardUpdated('lane', null, [{ id: 'x', createdAt: fresh }]))
-    spy.mockClear()
-    handleMessage(boardUpdated('lane', null, [{ id: 'x', createdAt: fresh }]))
-    expect(spy).not.toHaveBeenCalled()
+  it('既知 item の再配信（SP re-seed 相当）は createdAt が新しくても新着でない', () => {
+    expect(hasFreshArrival([item('x', FUTURE_ISO)], new Set(['x']))).toBe(false)
   })
 
-  it('PP が既に見えていれば live 新着でも applyScene しない', () => {
-    const spy = primeAppPanes({ ppVisible: true })
-    handleMessage(boardUpdated('lane', null, [{ id: 'y', createdAt: new Date().toISOString() }]))
-    expect(spy).not.toHaveBeenCalled()
+  it('createdAt が parse 不能な item は新着扱いしない（静かな側に倒す）', () => {
+    expect(hasFreshArrival([item('bad', 'not-a-date')], new Set())).toBe(false)
+  })
+})
+
+// ============================================================================
+// board presence（handleMessage が board 状態を正しく持つ — event は action 層で対象外）
+// ============================================================================
+
+describe('board presence（board 状態の反映）', () => {
+  it('items 到着で board が非空になる（presence event の元 = items.length>0）', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
+    expect(getCanvasState().items).toHaveLength(1)
   })
 
-  it('default 配置が乗る前（appLayoutReady = false）は auto-open しない', () => {
-    const spy = primeAppPanes({ ready: false })
-    handleMessage(boardUpdated('lane', null, [{ id: 'z', createdAt: new Date().toISOString() }]))
-    expect(spy).not.toHaveBeenCalled()
+  it('空 board 受信で board が空になる', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
+    handleMessage(boardUpdated('lane', null, []))
+    expect(getCanvasState().items).toHaveLength(0)
   })
 })

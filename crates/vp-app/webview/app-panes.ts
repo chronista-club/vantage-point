@@ -33,8 +33,10 @@ import { layoutEngine } from "./layout-host";
 
 export const APP_SCOPE = "app";
 
-/** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT） */
-export const APP_PANE_IDS = ["echoes", "pp", "ge", "bs", "preview", "empty"] as const;
+/** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT）。
+ *  doc 52 §10 wave 0: pp（Paisley Park）は app pane を退役し、lane tiling の board pane
+ *  （#lane-board、lane-panes.ts）へ移った。echoes（= lane workbench 全体）の中に board が並ぶ。 */
+export const APP_PANE_IDS = ["echoes", "ge", "bs", "preview", "empty"] as const;
 export type AppPaneId = (typeof APP_PANE_IDS)[number];
 
 // ---------- data: preset Scene 群（旧 scenes.ts の後継） ----------
@@ -58,43 +60,15 @@ function focusLayout(id: AppPaneId): Layout {
 	return { structure: baseStructure(), attention: fieldOf({ [id]: 1 }) };
 }
 
-/**
- * pp-overlay の float は場が決めるサイズ（share = raw/(1+raw) ≈ 0.44 → 正方形の辺）。
- * 位置は ephemeral（moveFloat）— applyAppScene が毎回右上へ置き直す
- */
-const PP_OVERLAY_RAW = 0.8;
-const PP_OVERLAY_FLOAT_POS = { x: 0.98, y: 0.04 };
-
 export const APP_SCENES: readonly Scene[] = [
 	{
 		id: "lead-focus",
 		name: "Lead Focus",
-		description: "集中 coding — Echoes 独占、PP は場の外で待機",
+		description: "集中 coding — lane workbench（Echoes）独占",
 		layout: focusLayout("echoes"),
 	},
-	{
-		id: "side-review",
-		name: "Side Review",
-		description: "並列 review — 左で打鍵、右で参照",
-		layout: {
-			structure: baseStructure(),
-			attention: fieldOf({ echoes: 1, pp: 1 }),
-		},
-	},
-	{
-		id: "pp-overlay",
-		name: "PP Overlay",
-		description: "軽い参照 — PP が右上に浮かぶ（構造非所属 = floating）",
-		layout: {
-			// pp を構造から外す = popOut の形。attention > 0 なので浮く（LE-18）
-			structure: baseStructure("pp"),
-			attention: fieldOf({ echoes: 1, pp: PP_OVERLAY_RAW }),
-		},
-	},
-	{ id: "pp-focus", name: "PP Focus", description: "Canvas 集中", layout: focusLayout("pp") },
-	// kind → `${pane}-focus` bridge（entry.tsx）が使う単独 focus 群。
-	// bs-focus は旧体系からの欠落補充 — Bastet click が unknown kind → empty に
-	// 落ちて pane が見えなかった潜在バグの根治
+	// kind → `${pane}-focus` bridge（entry.tsx）が使う単独 focus 群。pp は退役（doc 52 §10
+	// wave 0 — board は lane workbench 内の pane に移り、app scene の関心事から外れた）。
 	{ id: "ge-focus", name: "GE Focus", description: "Gold Experience 単独", layout: focusLayout("ge") },
 	{ id: "bs-focus", name: "Bastet Focus", description: "Bastet 単独", layout: focusLayout("bs") },
 	{
@@ -113,8 +87,9 @@ export const APP_SCENES: readonly Scene[] = [
 
 const APP_SCENE_BY_ID = new Map(APP_SCENES.map((s) => [s.id, s]));
 
-/** Ctrl+Shift+]/[ で巡る preset（単独 focus 群と empty は巡回に入れない） */
-export const PRESET_CYCLE = ["lead-focus", "side-review", "pp-overlay", "pp-focus"] as const;
+/** Ctrl+Shift+]/[ で巡る preset（doc 52 §10 wave 0: pp scene 退役後は 4 つの stand focus を巡る。
+ *  empty は巡回に入れない）。lead-focus = lane workbench（board も console も chat もこの中の tiling）。 */
+export const PRESET_CYCLE = ["lead-focus", "ge-focus", "bs-focus", "preview-focus"] as const;
 
 // ---------- calculations ----------
 
@@ -146,22 +121,9 @@ export function currentAppSceneId(): string | null {
 	return currentSceneId;
 }
 
-/**
- * float 位置の再 pin。位置は ephemeral（Scene / Layout snapshot に直列化されない、
- * LE-18）で、pp が非 floating の形を経由すると engine 側で prune される — 適用の度に、
- * pp が浮いている形なら右上定位置へ置き直す（team-b review #2: recall 経由で中央寄せに
- * 戻っていた漏れの根治）。
- */
-function repinPpFloat(): void {
-	if (layoutEngine.resolved(APP_SCOPE).pp?.floating) {
-		layoutEngine.moveFloat(APP_SCOPE, "pp", PP_OVERLAY_FLOAT_POS);
-	}
-}
-
 /** scene 適用の共通経路（preset / lane recall 両方が通る）。 */
 function applySceneToEngine(scene: Scene): void {
 	layoutEngine.applyScene(APP_SCOPE, scene);
-	repinPpFloat();
 }
 
 /**
@@ -173,7 +135,6 @@ function applySceneToEngine(scene: Scene): void {
  */
 export function applyAppLayoutFromAi(next: Layout): void {
 	layoutEngine.update(APP_SCOPE, () => cloneLayout(next));
-	repinPpFloat();
 	layoutEngine.settle(APP_SCOPE, "ai");
 	currentSceneId = null;
 	transientVisit = false;

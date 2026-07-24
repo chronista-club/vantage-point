@@ -148,13 +148,11 @@ export const HISTORY_STRIP_CSS = `
   color:var(--color-text-primary);}
 .pp-history-cell.active .pp-history-close{color:var(--color-brand-primary);}
 
-/* pane-body を flex column 化して main + strip を縦並びにする。
-   .pane-body は position:absolute (top:28px/bottom:0) で既に definite height を持つので
-   height:100% は付けない — top:28px オフセット + height:100% = コンテナを 28px はみ出し、
-   最下行の history-strip が window 下端で clip される (= タブ上端だけ見える原因)。
-   pp-content は flex:1 + min-height:0 で内部スクロール (flex item の default min-height:auto
-   だと長い content が縮まず strip を押し出すため、min-height:0 で縮小を許可する)。 */
-#pane-paisley-park .pane-body{display:flex;flex-direction:column;}
-#pane-paisley-park .pane-body .pp-content{flex:1;overflow-y:auto;min-height:0;}
-#pane-paisley-park .pane-body .pp-history-strip{flex:0 0 auto;}
+/* board pane（doc 52 §10 wave 0: #lane-board）の内部縦並び。#lane-board 自体が flex column
+   （main_area.rs 側で定義）なので、pp-content を flex:1 + min-height:0 で内部スクロールさせ、
+   history-strip を下端に固定する（flex item の default min-height:auto だと長い content が
+   縮まず strip を押し出すため、min-height:0 で縮小を許可 = 長文 item が strip を window 外へ
+   追い出す旧症状の予防）。 */
+#lane-board .pp-content{flex:1;overflow-y:auto;min-height:0;}
+#lane-board .pp-history-strip{flex:0 0 auto;}
 `

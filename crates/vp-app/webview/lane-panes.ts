@@ -56,6 +56,11 @@ export type PaneSession = { key: number; stand: string; root?: boolean };
 /** Act I（xterm）の代表 pane。World A の xterm re-key（doc 50 P3 = A6）まで lane に 1 枚 */
 export const TERM_PANE_REF: PaneRef = { id: "lane-host", label: "Console" };
 
+/** board（PP）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
+ *  1 lane 1 枚、表示 lane は常に 1 つ = xterm と同じ性質。動的生成は不要、位置決めだけ動く）。
+ *  roster に載るのは board が非空のときだけ（doc 52 §10 wave 0 — board 非空で自動）。 */
+export const BOARD_PANE_REF: PaneRef = { id: "lane-board", label: "Paisley Park" };
+
 /** chat session pane の host DOM id。表示中 lane の host にだけ使う（lane 切替で作り直すため
  *  lane を id に含めない — DOM には常に 1 lane 分しか存在しない） */
 export function chatHostId(session: number): string {
@@ -69,18 +74,26 @@ export function sessionOfHostId(id: string): number | null {
 }
 
 /** lane の pane の顔ぶれ（純関数）。mode と root で term / chat を排他にする（冒頭 doc の
- *  roster 規則 — 同じ session を 2 枚にしない）。 */
+ *  roster 規則 — 同じ session を 2 枚にしない）。
+ *
+ *  board pane は engine session と直交する lane-level の面なので、mode を問わず board が
+ *  非空なら**末尾に**足す（doc 52 §2 — board は掲示板/計器盤/中継台/対話面の役割を持つ
+ *  lane の道具で、どの Act で作業していても同じ台に並ぶ）。 */
 export function lanePaneRefs(
 	sessions: readonly PaneSession[],
 	mode: "tui" | "chat",
+	boardPresent = false,
 ): PaneRef[] {
 	const chatPane = (v: PaneSession): PaneRef => ({
 		id: chatHostId(v.key),
 		label: `${sessionChipPrefix(v.stand)}#${v.key}`,
 		session: v.key,
 	});
-	if (mode === "chat") return sessions.map(chatPane);
-	return [TERM_PANE_REF, ...sessions.filter((v) => !v.root).map(chatPane)];
+	const sessionPanes =
+		mode === "chat"
+			? sessions.map(chatPane)
+			: [TERM_PANE_REF, ...sessions.filter((v) => !v.root).map(chatPane)];
+	return boardPresent ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
 }
 
 /** 入場 share = 可視 pane の raw 平均（creo-ui-layout `admit` の既定と同じ規則。
@@ -192,6 +205,8 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	const sessionsByLane = new Map<string, PaneSession[]>();
 	/** lane → console_mode（'vp:console-mode' の鏡。未着 lane は tui = boot 既定） */
 	const modeByLane = new Map<string, "tui" | "chat">();
+	/** lane → board が非空か（'vp:board-presence' の鏡。roster に board pane を出すかを決める） */
+	const boardByLane = new Map<string, boolean>();
 	/** 表示中 lane の動的 host の dispose（host id → SessionChatView の unmount） */
 	const dynDisposers = new Map<string, () => void>();
 	/** focusPane が「まだ生えていない pane」を指した時の保留先（boot 窓: applyConsoleMode は
@@ -205,7 +220,11 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	const modeOf = (lane: string): "tui" | "chat" => modeByLane.get(lane) ?? "tui";
 
 	const refsOf = (lane: string): PaneRef[] =>
-		lanePaneRefs(sessionsByLane.get(lane) ?? [], modeOf(lane));
+		lanePaneRefs(
+			sessionsByLane.get(lane) ?? [],
+			modeOf(lane),
+			boardByLane.get(lane) ?? false,
+		);
 
 	// boot 既定を **同期で** DOM に書く（旧 PaneShell.dock() が bundle init 時に同期 render
 	// していたのと同じ「event を待たず DOM 確定」）。boot 時点の refs は Console のみ —
@@ -310,15 +329,16 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			}
 			el.classList.toggle(CLASS_FOCUSED, isVisible && p.id === focused);
 		}
-		// ⚠️ roster **外**の常設 host（chat mode の #lane-host）を明示的に隠す。上のループは
-		// roster しか触らないため、mode 切替で roster から外れた lane-host は「見えないのに
-		// display のまま」chat host の下に残る。DOM から消してはいけない（World A の xterm を
-		// 保持する境界規律、doc 33 §8）が、隠さないと xterm viewport（overflow-y:scroll +
-		// 巨大 scrollback）が同じ矩形に残り、WebKit の async-scroll hit-test が**奥の見えない
-		// viewport に wheel を奪う** — chat が「wheel 不動 / PgDn は動く」になる
-		//（2026-07-24 実機再現。A1 帯撤去の regression）。
-		if (!refs.some((p) => p.id === TERM_PANE_REF.id)) {
-			const el = deps.hostOf(TERM_PANE_REF.id);
+		// ⚠️ roster **外**の常設 host（#lane-host / #lane-board）を明示的に隠す。上のループは
+		// roster しか触らないため、roster から外れた常設 host は「見えないのに display のまま」
+		// 他 host の下に残る。DOM から消してはいけない（#lane-host は World A の xterm を保持する
+		// 境界規律、doc 33 §8。#lane-board も静的 host を作り直さない）が、隠さないと中身の
+		// viewport（xterm の overflow-y:scroll + 巨大 scrollback / board の overflow-y:auto）が
+		// 同じ矩形に残り、WebKit の async-scroll hit-test が**奥の見えない viewport に wheel を
+		// 奪う** — 手前の pane が「wheel 不動 / PgDn は動く」になる（2026-07-24 実機再現）。
+		for (const staticId of [TERM_PANE_REF.id, BOARD_PANE_REF.id]) {
+			if (refs.some((p) => p.id === staticId)) continue;
+			const el = deps.hostOf(staticId);
 			if (el) {
 				el.style.display = "none";
 				el.classList.toggle(CLASS_FOCUSED, false);
@@ -369,7 +389,23 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		render();
 	});
 
-	return {
+	// board 非空 → roster に board pane を出す（canvas-handler が BoardUpdated 受信で dispatch。
+	// doc 52 §10 wave 0）。fresh = live 新着なら board pane に focus を寄せる（旧 maybeAutoOpenPP =
+	// pp-overlay app scene の後継。「配送されたのに見えない」を防ぐ）。畳んだ pane も新着で復元される
+	// のは focusPane（消えていた pane を指すと RESTORE_SHARE で戻す）が担う。
+	document.addEventListener("vp:board-presence", (e) => {
+		const d = (
+			e as CustomEvent<{ lane: string; present: boolean; fresh?: boolean }>
+		).detail;
+		if (!d?.lane) return;
+		boardByLane.set(d.lane, d.present);
+		if (d.lane !== activeLane) return;
+		syncRoster(d.lane);
+		render();
+		if (d.present && d.fresh) controller.focusPane(BOARD_PANE_REF.id);
+	});
+
+	const controller: LanePanesController = {
 		setActiveLane(lane) {
 			if (activeLane === lane) return;
 			// 前 lane の動的 host は lane ごと破棄（chat の再 render は安価。xterm と違い
@@ -401,4 +437,5 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			render();
 		},
 	};
+	return controller;
 }

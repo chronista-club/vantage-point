@@ -19,7 +19,6 @@
  */
 
 import { renderPP, clearPP, type ContentType } from './pp'
-import { appLayoutReady, applyAppScene, isAppPaneVisible } from './app-panes'
 
 
 /** board の 1 item。 id は SP が一元発行する（webview は自前生成しない）。 */
@@ -144,16 +143,24 @@ function renderCurrentMain(): void {
 }
 
 /**
- * active board に新規 item が増えたのに PP panel が非表示なら、 pp-overlay で軽く開く
- * （「配送されたのに見えない」を防ぐ）。 既に PP が見えていれば何もしない。
- * appLayoutReady guard: boot で default 配置が乗る前の暴発（何も無い場に overlay を
- * 焼き付ける）を防ぐ — 旧実装の `if (!sceneId) return` と同じ位置づけ。
+ * board の presence（非空か）を lane-panes に知らせる（doc 52 §10 wave 0 — board pane 化）。
+ * lane-panes は present で roster に board pane を出し、fresh（live 新着）なら focus を寄せる
+ * （旧 maybeAutoOpenPP = pp-overlay app scene の後継。「配送されたのに見えない」を防ぐ）。
+ *
+ * 全 lane 分 dispatch する（非 active lane の board も boardByLane に記録され、lane 切替時に
+ * roster が正しく再構成される）。fresh は active view のときだけ立てる — 裏 lane の新着で
+ * 表 lane の focus を奪わない。
  */
-function maybeAutoOpenPP(): void {
-  if (!appLayoutReady()) return
-  if (!isAppPaneVisible('pp')) {
-    applyAppScene('pp-overlay')
-  }
+function notifyBoardPresence(lane: string | null | undefined, present: boolean, fresh: boolean): void {
+  // sendIpc と同じ規律: DOM 不在環境（単体テスト等）では silent skip（prod の webview では
+  // document / CustomEvent は必ず存在）。event 配線は「薄い action 層」= 単体テスト対象外で、
+  // 判定ロジック（hasFreshArrival / present = items.length>0）は純関数として直接検証する。
+  if (typeof document === 'undefined' || typeof CustomEvent === 'undefined') return
+  document.dispatchEvent(
+    new CustomEvent('vp:board-presence', {
+      detail: { lane: lane ?? 'conductor', present, fresh },
+    }),
+  )
 }
 
 // ============================================================================
@@ -221,7 +228,7 @@ const BOOT_TS = Date.now()
  * createdAt が parse 不能(NaN)な item は fresh 扱いしない（board / badge には載るので
  * 静かな側に倒す）。
  */
-function hasFreshArrival(items: CanvasItem[], prevIds: Set<string>): boolean {
+export function hasFreshArrival(items: CanvasItem[], prevIds: Set<string>): boolean {
   return items.some((i) => !prevIds.has(i.id) && Date.parse(i.createdAt) >= BOOT_TS)
 }
 
@@ -237,13 +244,15 @@ function applyBoardUpdated(msg: BoardUpdatedMessage): void {
     cursor: msg.cursor ?? null,
   }
   canvasState.laneBoards[laneKey] = board
-  // 表示中の board が更新されたときだけ main を再描画。 live 新着のときだけ PP を軽く開く
-  // （起動時の retained replay で毎回 PP が開いてしまう regression の根治）。
+  // board pane 化（doc 52 §10 wave 0）: presence を lane-panes に知らせる。全 lane 分 dispatch
+  // し、非 active lane の board も lane 切替時に roster へ正しく載る。fresh（live 新着）は
+  // active view のときだけ立てる — 裏 lane の新着で表 lane の focus を奪わない。retained replay /
+  // SP re-seed は hasFreshArrival が false（createdAt < BOOT_TS）なので focus を寄せない。
+  const fresh = isActiveView(msg.lane) && hasFreshArrival(board.items, prevIds)
+  notifyBoardPresence(msg.lane, board.items.length > 0, fresh)
+  // 表示中の board が更新されたときだけ main を再描画。
   if (isActiveView(msg.lane)) {
     renderCurrentMain()
-    if (hasFreshArrival(board.items, prevIds)) {
-      maybeAutoOpenPP()
-    }
   }
   notifyStateChange()
 }

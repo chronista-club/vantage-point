@@ -68,6 +68,25 @@ describe("lanePaneRefs（roster = mode × root で term / chat を排他、doc 5
 	it("tui + session なし = Console のみ", () => {
 		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
 	});
+
+	it("board 非空: mode を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
+		// tui: Console + board
+		expect(lanePaneRefs([], "tui", true).map((p) => p.id)).toEqual([
+			TERM,
+			"lane-board",
+		]);
+		// chat: 全 chat + board（session あり）
+		expect(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true }], "chat", true).map(
+				(p) => p.id,
+			),
+		).toEqual(["chat-session-1", "lane-board"]);
+	});
+
+	it("board 空（既定）は board pane を出さない", () => {
+		expect(lanePaneRefs([], "tui", false).map((p) => p.id)).toEqual([TERM]);
+		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
+	});
 });
 
 describe("chatHostId / sessionOfHostId（往復）", () => {

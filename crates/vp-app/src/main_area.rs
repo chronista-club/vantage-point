@@ -321,10 +321,21 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 }
 .pane-body.center{display:grid;place-items:center;}
 .pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
-/* PP overlay 可読性 (bug: canvas 可観測性 D): pane-body は背景透明のため、pp-overlay scene で
-   PP を浮かせると背後の console が透けて文字が重なり内容が読めない。PP 内容を solid surface に
-   載せて読めるようにする (side-review / pp-focus でも有効)。 */
-#pane-paisley-park .pane-body{background:var(--color-surface-bg-base);}
+/* board (PP) pane — doc 52 §10 wave 0: lane tiling の 1 枚。#lane-panes > * の absolute inset を
+   受けた上で、中身を plate / content / history-strip の縦並びにする。solid surface で載せて
+   背後の xterm が透けないようにする（旧 pp-overlay の可読性対策の後継）。 */
+#lane-board{display:flex;flex-direction:column;background:var(--color-surface-bg-base);
+  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+/* board の名札 — 台の中で「これは Paisley Park の board」と読める最小 chrome + Clear。 */
+.board-plate{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;
+  gap:8px;padding:4px 10px;border-bottom:1px solid var(--color-surface-border,#1f2233);
+  background:var(--color-surface-bg-subtle);}
+.board-plate-name{display:inline-flex;align-items:center;gap:6px;font-size:12px;
+  color:var(--color-text-secondary);letter-spacing:.02em;}
+.board-clear-btn{border:1px solid var(--color-surface-border,#1f2233);background:transparent;
+  color:var(--color-text-tertiary);font-size:11px;padding:1px 8px;border-radius:4px;cursor:pointer;
+  font-family:inherit;transition:color .1s ease,border-color .1s ease,background .1s ease;}
+.board-clear-btn:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
 /* Bastet 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
    見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
 .bastet-devices{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
@@ -334,11 +345,6 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 /* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
 .pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
-  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
-/* PP pane 全体 (header / breadcrumb / button 等) も同 family。 pane の他 CSS は触らず
-   font-family のみ override。 */
-#pane-paisley-park,#pane-paisley-park .pane-header,#pane-paisley-park .pane-name,
-#pane-paisley-park .pane-breadcrumb,#pane-paisley-park .pane-action-btn{
   font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 .pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
 .pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
@@ -438,6 +444,19 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
          + New / Act 切替は EchoesHeader (lane の名札) へ移設。 -->
     <div id="lane-panes">
       <div id="lane-host"></div>
+      <!-- board (PP) pane — doc 52 §10 wave 0: app 層の #pane-paisley-park から lane tiling へ
+           引っ越した「貼る台」。lane-host と同じく lane に 1 枚の静的 host（board は lane-scoped、
+           表示 lane は常に 1 つ = xterm と同じ性質）。roster に載るのは board 非空のときだけで、
+           位置決めは lane-panes.ts が担う。中身の #pp-content / #pp-history-strip は移設のみで
+           id 不変 = pp.ts / HistoryStrip / canvas-handler の render 先は変わらない。 -->
+      <div id="lane-board">
+        <div class="board-plate">
+          <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Paisley Park</span>
+          <button class="board-clear-btn" data-action="clear" data-target="pp" title="board を空にする">Clear</button>
+        </div>
+        <div class="pp-content" id="pp-content"></div>
+        <div class="pp-history-strip" id="pp-history-strip"></div>
+      </div>
     </div>
     <!-- doc 33 §9: Act I⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
@@ -478,34 +497,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
       <iframe id="preview-frame" src="about:blank" sandbox="allow-same-origin allow-scripts"></iframe>
     </div>
   </div>
-  <!-- Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP)。
-       click action は Phase 3-B で導入した sidebar の vp-project-stand-row から発火、
-       将来 (Phase 6+) で Canvas 実描画 / Ruby eval / MIDI 制御を bind する予定。 -->
-  <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-frame-id="pp">
-    <div class="pane-header">
-      <div class="pane-title">
-        <span class="pane-icon"><iconify-icon icon="ph:compass"></iconify-icon></span>
-        <span class="pane-name">Paisley Park</span>
-        <span class="pane-breadcrumb" id="pp-breadcrumb">Information Router</span>
-      </div>
-      <div class="pane-actions">
-        <button class="pane-action-btn" data-action="clear" data-target="pp" title="Clear PP body content">Clear</button>
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
-      </div>
-    </div>
-    <div class="pane-body">
-      <!-- VP-141: PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target。
-           initial state は placeholder、 window.vpPP.renderPP(content) で innerHTML が差し替わる。 -->
-      <div class="pp-content" id="pp-content">
-        <p class="pp-placeholder">Information Router — markdown / HTML / 画像 を表示する surface (PR-ε-3 で mcp__show 経路から content が流れ込む)</p>
-      </div>
-      <!-- doc 19 PP Canvas Stack Model: bottom history strip。 SolidJS HistoryStrip component が
-           entry.tsx の mountHistoryStrip() で #pp-history-strip 内に render する。 mcp__show
-           投入ごとに canvas.items に push され、 strip 上に thumbnail (icon + 8-char title + ✕)
-           として並ぶ。 cursor が指す cell は brand color frame で強調。 -->
-      <div class="pp-history-strip" id="pp-history-strip"></div>
-    </div>
-  </div>
+  <!-- doc 52 §10 wave 0: Paisley Park は app 層の pane を退役し、lane tiling の board pane
+       （#lane-board、上方 #lane-panes 内）へ引っ越した。GE / Bastet / Preview は app pane のまま。 -->
   <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
     <div class="pane-header">
       <div class="pane-title">
@@ -1339,10 +1332,10 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // payload: {kind: "terminal"|"preview"|"paisley_park"|"gold_experience"|"bastet"|null, pane_id, preview_url}
   // Phase 5-A: Project-scope Stand (PP/GE/HP) を click 可能 pane として追加。
   // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
+  // doc 52 §10 wave 0: paisley_park は app pane を退役（board pane = lane tiling へ）。
   const KIND_TO_PANE = {
     terminal: 'pane-terminal',
     preview: 'pane-preview',
-    paisley_park: 'pane-paisley-park',
     gold_experience: 'pane-gold-experience',
     bastet: 'pane-bastet',
     empty: 'pane-empty',
