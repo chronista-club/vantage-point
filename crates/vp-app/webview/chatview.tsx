@@ -1691,6 +1691,12 @@ export const CHATVIEW_CSS = `
   font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
 .echoes-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .echoes-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+/* スクロールバー常時表示（mako 2026-07-24）: 既定の overlay scrollbar は「スクロール中だけ」
+   なので現在地が読めない。custom style を当てると常時表示になる（WebKit 仕様）。細く控えめに。 */
+.echoes-stream::-webkit-scrollbar { width:8px; }
+.echoes-stream::-webkit-scrollbar-track { background:transparent; }
+.echoes-stream::-webkit-scrollbar-thumb { background:var(--color-border,#2a3040); border-radius:4px; }
+.echoes-stream::-webkit-scrollbar-thumb:hover { background:var(--color-text-tertiary,#8b93a7); }
 /* history は tabindex=0 で focus 可能（Home/End/PgUp/PgDn 用）。領域全体を囲む outline は
    目障りなので抑制する（focus 合図は scrollbar 操作で十分伝わる）。 */
 .echoes-stream:focus, .echoes-stream:focus-visible { outline:none; }

@@ -185,6 +185,10 @@ body{overflow:hidden;}
   left:0;top:0;width:100%;height:100%;
   opacity:0;
   pointer-events:none;
+  /* wheel 吸い込み根治（2026-07-24）: opacity:0 でも iframe が compositor の scroll
+     hit-test に残るため、投影前の boot 窓も含めて hit-test から外す（app-panes.ts の
+     投影が visible 時に inline visibility:visible で上書きする）。 */
+  visibility:hidden;
   transition:
     top var(--frame-transition-ms) var(--frame-transition-easing),
     left var(--frame-transition-ms) var(--frame-transition-easing),
@@ -420,7 +424,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
        Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;">
+  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;visibility:visible;">
     <!-- Echoes 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
          EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
          Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
