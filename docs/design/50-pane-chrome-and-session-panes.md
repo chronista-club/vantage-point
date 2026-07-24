@@ -6,8 +6,8 @@ P2（打つ）実装済**（`38f5f00e` 〜 `c6b93791`、2026-07-24）。**P4 は
 root picker の「見え方」行へ。ただし `console:set_mode` の session 単位化は **P3 送り**
 （pre-P3 は term になれるのが root だけで、session 引数は行使できる意味を持たない —
 読み手のない口を先に作らない）。tiling 既定 + 下端の帯（`#pane-tabs`）撤去も同 commit。
-残りは P3（World A xterm re-key）/ P5（layout 永続）。PP Proj 撤去（`0330eb0d`）・
-名札ツールの hover 召喚（`d8d33efd`）も出荷済。
+残りは P3（World A xterm re-key、**設計確定 = §4.6**）/ P5（layout 永続）。PP Proj 撤去
+（`0330eb0d`）・名札ツールの hover 召喚（`d8d33efd`）も出荷済。
 **Owners**: vp-app（webview World B + main_area World A）
 **Related**: [46-lane-pane-model.md](./46-lane-pane-model.md)（session ↔ Pane 1:1 の確定）、
 [49-gui-layout-engine.md](./49-gui-layout-engine.md)（lane scope の tiling 機構）、
@@ -182,7 +182,7 @@ cc16 | cc17 | sid18   ← 3 列並列
 |---|---|---|---|
 | **P1** | **視る** — chat session を Pane として並べる。state を `(lane, session)` へ re-key、fold の破棄をやめ、host を session ごとに生成、tab strip 撤去 | 1,2,3,7,8,9 | 中 |
 | **P2** | **打つ** — chat 動詞（submit / set_model / set_permission_mode / interrupt）に session を通す。SP 接続も `(lane, session)` へ | 5,6 | 中 |
-| **P3** | **World A** — xterm を `(lane, session)` へ re-key、term session も Pane 化 | 4,8 | 中〜大 |
+| **P3** | **World A** — xterm を `(lane, session)` へ re-key、term session も Pane 化（設計確定 = §4.6） | 4,8 | 中〜大 |
 | **P4** | Act toggle 撤去（Act = Pane の kind に畳み切る）+ `console_mode` の残滓掃除 | 10 | 小 |
 | **P5** | lane scope の layout 永続 + MCP 公開（write gate / 承認 UX、doc 49 の follow-up） | — | 小 |
 
@@ -192,6 +192,75 @@ cc16 | cc17 | sid18   ← 3 列並列
   [[pre-mvp-development-stance]]「中間状態を作らず最短で canonical に切る」。P1→P2 を続けて出す
 - P3 は World A の境界を越えるので単独で扱う（doc 46 §3 が `pty_slots` re-key で測ったのと
   同じ「1 辺が 2 仕事」の危険域）
+
+### 4.6 P3（= doc 51 A6）設計確定 — 2026-07-25、mako × Claude 議論
+
+§4.0 の定義と club-nostos の lifecycle 語彙（Bracket / Outcome）で前提を固定し、確定 4 点を
+その導出として書く。
+
+#### 前提 — 続くもの / 走るもの / 不変条件
+
+- **続くもの = 往復路**（§4.0 の Echoes）。**走るもの = 化身**（PTY の engine TUI / headless
+  host。nostos の Bracket 1 回分に相当）。engine 側の会話 id（cc_session）は resume のたび
+  新 id へ rotate し得る — 往復路の安定名は **SessionKey**（lane 内の局所名）。SessionKey は
+  プロセスの名ではない
+- **不変条件: 1 往復路につき Active な化身は高々 1**。「1 会話 1 プロセス」の正確な言い方で、
+  同 session の term / chat 同時 2 枚不可（lane-panes.ts 冒頭）の根拠
+- **act 切替 = Reborn** — 今の化身を exit し、別の形で enter、記憶（transcript）を引き継ぐ。
+  **→chat の Reborn は必ず transcript replay を伴う**（replay の無い切替は「プロセスは続くが
+  視界が古い」— II→I→II で Act I の分が chat に出ない既知の症状はこの欠落。→tui は engine
+  TUI が resume で自前描画するので VP 側 replay は不要）
+- 往復路の**分離 id（global id）は発行留保**（[[writer-without-reader]] — 読み手が今日
+  存在しない）。発行条件 = 会話が lane / 機械を跨いで動く日。その日が来ても名は機能名
+  （Stand 名 `EchoesId` にはしない）
+
+#### 確定 ① 動詞 — `session_set_act`（lane 単位 mode は概念ごと撤去）
+
+- `session_set_act {lane, session, act}` を新設し、lane 単位 `console_set_mode` を撤去。
+  最初から act 語彙で作る（mode / act の二語併存期間を作らない）
+- lane 単位 mode の GUI 概念も全消し: `vpConsole.setMode(lane, mode)` / `'vp:console-mode'`
+  bus / lane-panes の `laneModes` mirror → session 単位の act 通知へ置換
+- **handler は handoff 完了後、同じ流れでその session の transcript replay を撃つ**（切替と
+  replay は 1 動詞の中の対）。attach / demand のエッジ観測に依らない**動詞駆動** — replay 系の
+  既知レース（demand edge race、pre-existing bug）の影響圏から切替動線を外す
+- 変えないもの: root 特例（boot 時 PTY spawn 可否 / wire nudge 配送 = **root session の act**
+  で決まる）は server 意味論として不変。act の**所有も server のまま**（session_registry.rs の
+  線 — 「PTY を立てるか」は実体で、見え方に決めさせると projection が逆流する）
+
+#### 確定 ② UI — 名札の kind badge（in-place 変身）
+
+- Act = Pane の kind（doc 46 §1.4）= 「この pane が何であるか」の一部 → **名札（§2 上段）の
+  管轄**。名札に kind badge を常設し、click = `session_set_act`
+- **pane は in-place で変身する**: tiling 上の位置・名札の同一性は不変、中身だけ
+  chatview ⇄ xterm。§3.1 の「下段右端は消えるまでの置き場」の終着点がこれ。root picker の
+  「見え方」行（doc 51 A1 の避難路）も badge に吸収して退役
+- gating は**能力表引き**（型分岐にしない）:
+  - term→chat: stands の `chatCapable`（`newPaneChoices` と同じ規則）。shell の chat は
+    「原理不可」ではなく「host 未実装」（§4.0 — bash の往復も Echoes。Warp 型 block UI は
+    将来作れる余白）。実装された日に gating 側は無変更で badge が生える形に
+  - chat→tui: engine TUI の resume 能力（claude `--resume` は既知。codex / grok は実装時に
+    engine 能力表で確認）
+- 切替の実利用（mako dogfood 実測）: Act I 固有 = `/mcp`・esc 二度押し巻き戻し・subagent
+  観測 / Act II 固有 = HTML・画像の rich 描画。**同格の使い分け**（§4.0 帰結 3 の実証）で、
+  badge は不足時の fallback ではなく**表面選択器**。日常動線なので 1 click 常設
+
+#### 確定 ③ New の対称化（root 乗っ取り廃止）
+
+- `console:new_session` の tui 分岐を chat 分岐と対称へ: 新 session（act=tui）を作り、新 term
+  pane が tiling に入場するだけ。**root 張り替え + slot respawn を廃止**
+- root の付け替えは `console:switch_root`（root picker）の明示操作に一本化
+- 旧挙動は「xterm が lane に 1 枚」制約下の**正しい適応**だった — 制約撤廃と同時に「勝手に
+  root を動かす副作用」へ意味が反転する。同型（制約前提の適応）を実装時に全数洗うこと
+
+#### 実装範囲と進め方
+
+- §4.3 の残り層: **#4** `laneInstances: Map<lane, _>` → `Map<lane, Map<session, _>>` /
+  **#8** `#lane-host` 固定 1 枚 → session ごと動的生成（いずれも World A）
+- World B 側の随伴: `TERM_PANE_REF`（静的 1 枚）→ session 由来の動的化、roster 導出を
+  console_mode 依存から **session 一覧 × act** へ（lane-panes.ts 冒頭の pre-A6 注記を清算）
+- P3 は**単独 PR**（他フェーズと混ぜない）。doc 33 §8 の境界（World B から xterm に触らない）
+  を維持し、「1 辺が 2 仕事」の同型チェックを PR 前に全数（doc 46 §3 の pty_slots re-key と
+  同じ危険域）
 
 ## 5. やってはいけない
 
