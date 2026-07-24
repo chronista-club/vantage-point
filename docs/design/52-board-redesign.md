@@ -192,6 +192,28 @@ board モデル化（2026-07-15）で書き込みが board 経路に intercept �
   中継の両方を満たす最小形）。§4 の「今表示してるもの」= cursor 由来の default は注視可視化（§9、cursor の
   server 昇格）が要るので後続 wave に送る。
 
+### 表示仕様（wave 3、2026-07-24 実演デモ + mako 議論で確定）
+
+**設計発見: 「流されない」と「注視可視化」（§8 摩擦①③）は別機能ではなく同じ機構の表裏。**
+洗い流しの真因 = server が注視を知らないこと（`append_board_item` は無条件に cursor を新 item に
+上書き / webview の thumbnail click は view-local で server に同期されない）。実演デモ（計器を貼る →
+in-place 連続更新 → 別 show で洗い流し）で mako が体感確認、「その場更新 = 計器が生きている」体験は
+成立済み（wave 1 の update 設計が正しかった）。
+
+| 要素 | 決定 | 根拠 |
+|---|---|---|
+| **残る** | **scrollback 規則**: 最新 item を見ているときだけ新着に follow。特定 item を見ているなら cursor は動かず、新着は strip に増えるだけ | xterm の scroll 挙動と同じ心性。pin フラグ/UI を**足さない**で計器が守れる |
+| **注視の SSOT** | **cursor を server 昇格**（thumbnail click → IPC → SP が stack.cursor 更新 → BoardUpdated 再配信。view-local cursor は廃止） | scrollback 規則の前提（server が注視を知らないと follow 判定不能）+ 摩擦③の根治 + SP=truth の家風。ループ無し（IPC を撃つのは人の click だけ） |
+| **鮮度** | item に **updatedAt** を追加（show=createdAt と同値、update で stamp）。**額縁が「更新 hh:mm:ss」を自動表示** | mako 確定:「**出力元は一箇所が良い**」— 鮮度の出所は server の updatedAt のみ（AI の content 手書き時刻と二重にしない）。計器の信頼を AI の作法に依存させない |
+| **灯** | cursor が動かなかった新着 = strip thumbnail に**未読 dot**（click で消える）。**pane focus も奪わない**（fresh の focus 寄せは「mako が head にいて follow した」ときだけ） | 「知らせるが、奪わない」。視界の主権は mako に残す |
+| **read_board** | 全件返しのまま + cursor item に**「今表示中」マーク** + updatedAt 併記 | 既定を狭めず（wave 1 の意味論と ink の全件読み実証を保つ)、AI から注視が見える |
+| **glow** | **入れない**（mako 確定 2026-07-24）。更新の瞬きは時刻 + 中身の変化で足りている | dogfood で「見逃す」が実際に起きたら再考 |
+
+- 細粒度 pub/sub（per-item topic）は検討の上**不採用**（2026-07-24）: 現行の retained topic +
+  full snapshot replace が boot 窓/replay/再接続系を自己修復してきた実績があり、board の規模
+  （〜10 item・人間ペース更新）は差分配信を要求しない。要るとしたら人跨ぎ（hub 越し board 共有）
+  の世界で、その要求が実在になったときに。
+
 ---
 
 ## 6. 語彙の清算 — canvas 5 義の解体
