@@ -504,11 +504,17 @@ pub fn build_stand_command_for_session(
         initial_input,
         env,
         cwd: project_cwd,
-        // console replay の disk 永続 path（lane 単位）。 SP 再起動をまたぐ画面復元に使う。
-        // **root slot だけ**が持つ（理由は関数 doc の表の下）。非 root slot は None =
-        // seed も flush もしない（同じ file を 2 本で奪い合わない / 消し漏れを作らない）。
-        replay_path: (key == reg.root)
-            .then(|| crate::daemon::pty_slot::replay_file_path(&addr.project, lane_label(addr))),
+        // console replay の disk 永続 path（session 単位、doc 50 §4.6 A6）。daemon 再起動をまたぐ
+        // 画面復元に使う。**全 slot** が session 別 file を持つ（旧: root のみ）— A6 で root 以外の
+        // session も term pane になれるため、非 root term の scrollback も daemon 再起動で残す。
+        // root は旧名 `<project>__<lane>` を継承（後方互換）、非 root は `__<session>` suffix で
+        // 別 file（同一 file の奪い合い無し）。
+        replay_path: Some(crate::daemon::pty_slot::replay_file_path_session(
+            &addr.project,
+            lane_label(addr),
+            key,
+            key == reg.root,
+        )),
     }
 }
 
@@ -654,13 +660,21 @@ mod tests {
                 && !input.contains("11111111-1111-1111-1111-111111111111"),
             "resume は #2 の会話 id（root の id を継がない）: {input}"
         );
+        // doc 50 §4.6 A6: 非 root slot も replay を disk に持つ（term pane になれるため）。
+        // ただし root の旧名ではなく session suffix 付き `<project>__<lane>__<session>`。
+        let non_root_replay = cmd
+            .replay_path
+            .as_ref()
+            .expect("非 root slot も replay を disk に持つ (A6)");
         assert!(
-            cmd.replay_path.is_none(),
-            "非 root slot は replay を disk に持たない: {:?}",
-            cmd.replay_path
+            non_root_replay
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with("__2")),
+            "非 root は session suffix 付き file: {non_root_replay:?}"
         );
 
-        // 同じ lane の root 版（session 省略）は従来どおり #1 / claude / replay あり。
+        // 同じ lane の root 版（session 省略）は従来どおり #1 / claude / replay あり（旧名継承）。
         let root_cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
         let root_env: std::collections::HashMap<_, _> = root_cmd.env.iter().cloned().collect();
         assert_eq!(
@@ -674,9 +688,20 @@ mod tests {
                 .is_some_and(|i| i.starts_with("claude")),
             "root は claude のまま（同居人の engine に引きずられない）"
         );
+        let root_replay = root_cmd
+            .replay_path
+            .as_ref()
+            .expect("root slot は従来どおり replay を disk に永続する");
         assert!(
-            root_cmd.replay_path.is_some(),
-            "root slot は従来どおり replay を disk に永続する"
+            root_replay
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !n.ends_with("__1")),
+            "root は旧名 `<project>__<lane>` を継承（session suffix 無し）: {root_replay:?}"
+        );
+        assert_ne!(
+            non_root_replay, root_replay,
+            "root と非 root は別 file（同一 file を奪い合わない）"
         );
     }
 

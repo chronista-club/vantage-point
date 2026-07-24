@@ -203,7 +203,16 @@ pub enum ProcessMessage {
     /// `process/terminal/{lane}/data/out` topic に乗せ、 World 経由で WebView に届ける
     /// (raw WebSocket `/ws/terminal` 退役の置換)。 session 系 `TerminalOutput` とは別系統
     /// (こちらは LanePool スコープ、 lane address を持つ)。
-    LaneTerminalOutput { lane: String, data: String },
+    LaneTerminalOutput {
+        lane: String,
+        /// doc 50 §4.6 A6: 発生元 session の VP 採番 key（1 Lane = N term session）。
+        /// `EchoesEvent.session` と対称の additive field — topic key は lane のまま、session は
+        /// 本 field で運び、World A の xterm が session 別に振り分ける（doc 38 落とし穴① =
+        /// 「session を lane 名に埋めない」を Act I 側でも踏襲）。旧 sender 由来は default の 1。
+        #[serde(default = "default_session_key")]
+        session: u32,
+        data: String,
+    },
     /// Echoes Act II（構造化会話 GUI）の翻訳済みイベント（per-lane）。doc 32。
     /// `EchoesAgentHost` が headless claude の stream-json を [`crate::echoes::EchoesEvent`]
     /// へ翻訳し、`process/echoes/data/{lane}/event` topic に乗せて vp-app へ届ける。

@@ -801,8 +801,11 @@ pub async fn delete_lane_orchestrated(
     // 自壊するが、entry は demand_stop か次の respawn でしか消えず lane 削除では残留する。
     // ⚠️ 消してよいのは削除経路だけ — 生存 lane の dead entry は restart_lane_orchestrated の
     // had_pump（購読者が居た証跡）が再 attach 判定に使うので、几帳面に消すと console が凍る。
-    if let Some(handle) = state.terminal_pumps.write().await.remove(&addr.to_string()) {
-        handle.abort();
+    // doc 50 §4.6 A6: entry は lane → session → handle の入れ子。lane 削除では全 session を掃除。
+    if let Some(handles) = state.terminal_pumps.write().await.remove(&addr.to_string()) {
+        for (_session, handle) in handles {
+            handle.abort();
+        }
     }
 
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の

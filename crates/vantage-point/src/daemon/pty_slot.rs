@@ -76,15 +76,78 @@ pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
     replay_file_path_in(&crate::config::vp_state_dir(), project, lane)
 }
 
+/// session 別の replay 永続 file path（base 注入版、doc 50 §4.6 A6）。
+///
+/// root は lane 単位の旧名 `<project>__<lane>` を**継承**する（後方互換 = daemon 再起動で
+/// 既存 scrollback を失わない / 既存 file の rename migration 不要）。非 root term session は
+/// suffix 付き `<project>__<lane>__<session>` で、slot ごとに別 file（同一 file の奪い合い無し）。
+pub fn replay_file_path_session_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+    is_root: bool,
+) -> PathBuf {
+    if is_root {
+        replay_file_path_in(base, project, lane)
+    } else {
+        base.join("terminal_replay").join(format!(
+            "{}__{}__{}",
+            sanitize_replay(project),
+            sanitize_replay(lane),
+            session
+        ))
+    }
+}
+
+/// [`replay_file_path_session_in`] の実 state dir 版（slot spawn 経路が使う）。
+pub fn replay_file_path_session(
+    project: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+    is_root: bool,
+) -> PathBuf {
+    replay_file_path_session_in(
+        &crate::config::vp_state_dir(),
+        project,
+        lane,
+        session,
+        is_root,
+    )
+}
+
 /// lane 削除時に replay file を消す (不在は no-op、 best-effort)。base 注入版。
 ///
 /// lane-scoped state の一元 GC ([`crate::lane::commands::clear_lane_state_in`]) が呼ぶ。
 /// 残すと同名 lane 再作成時に旧画面の scrollback が seed されて蘇る (ghost replay)。
+///
+/// doc 50 §4.6 A6: root（`<project>__<lane>`）に加え、全 session file
+/// (`<project>__<lane>__<session>`) も消す。session file を残すと同名 lane 再作成時に
+/// 非 root pane が ghost replay する。session suffix は数字のみなので、別 lane
+/// (`<project>__<lane>x`) を誤爆しない（prefix 一致 + 残りが全数字の 2 条件）。
 pub fn clear_replay_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
+    // root（旧名）file。
     match std::fs::remove_file(replay_file_path_in(base, project, lane)) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        r => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+        Ok(()) => {}
     }
+    // session file 群（`<project>__<lane>__<digits>`）を read_dir で拾って消す（不在 dir = no-op）。
+    let dir = base.join("terminal_replay");
+    let session_prefix = format!("{}__{}__", sanitize_replay(project), sanitize_replay(lane));
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if let Some(suffix) = name.strip_prefix(&session_prefix)
+                && !suffix.is_empty()
+                && suffix.chars().all(|c| c.is_ascii_digit())
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// replay buffer を atomic (`.tmp` → rename) に disk へ書く。 親 dir は都度 ensure。
@@ -519,6 +582,19 @@ fn strip_byte_seq(data: &[u8], seq: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// doc 50 §4.6 A6: root は lane 単位の旧名を継承（後方互換）、非 root は session suffix。
+    #[test]
+    fn replay_file_path_session_naming() {
+        let base = Path::new("/tmp/vp-test-state");
+        // root（is_root=true）は session を無視して旧名 `<project>__<lane>` に一致する。
+        let root = replay_file_path_session_in(base, "vp", "root", 16, true);
+        assert_eq!(root, replay_file_path_in(base, "vp", "root"));
+        // 非 root は `<project>__<lane>__<session>` の suffix 付き（別 file）。
+        let non_root = replay_file_path_session_in(base, "vp", "root", 17, false);
+        assert_eq!(non_root.file_name().unwrap(), "vp__root__17");
+        assert_ne!(root, non_root, "root と非 root は別 file（奪い合わない）");
+    }
 
     /// テスト用のデフォルトシェルを返す。
     /// $SHELL があればそれを、無ければ OS 既定（Unix: /bin/sh、Windows: cmd.exe）を使う。

@@ -22,6 +22,13 @@ use crate::protocol::{Content, ProcessMessage};
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 
+/// demand-driven terminal pump の lane → session → JoinHandle map（doc 50 §4.6 A6）。
+/// `pty_slots` と対称の入れ子（lane 単位の teardown と session 単位の付け替えを両立）。
+type TerminalPumps = HashMap<
+    String,
+    HashMap<crate::lane::session_registry::SessionKey, tokio::task::JoinHandle<()>>,
+>;
+
 /// Application state
 pub(crate) struct AppState {
     pub hub: Hub,
@@ -120,14 +127,16 @@ pub(crate) struct AppState {
     /// 既存 `lane_pool` / `project_stands` とは並立 (gradual migration、 PR-γ で GE も移管予定)。
     /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 / VP-120 / VP-135 / VP-136
     pub lane_capabilities: Option<Arc<RwLock<super::lane_capabilities::LaneCapabilitiesPool>>>,
-    /// S2 (doc 27 §4.1): demand-driven terminal pump の lane → JoinHandle map。
+    /// S2 (doc 27 §4.1): demand-driven terminal pump の lane → session → JoinHandle map。
     ///
     /// World の demand hook が control reverse-route で `terminal_demand_start {lane}` を撃つと、
-    /// SP は当該 Lane の PtySlot output を購読する pump を spawn して本 map に保持する
-    /// (`process/terminal/data/{lane}/out` topic に route)。 `terminal_demand_stop {lane}` で
+    /// SP は当該 Lane の**各 session** の PtySlot output を購読する pump を session ごとに spawn し、
+    /// 本 map に保持する (`process/terminal/data/{lane}/out` topic に route、session は message
+    /// field で運ぶ = doc 50 §4.6 A6 Design B)。 `terminal_demand_stop {lane}` で lane の全 pump を
     /// abort して除去する (= 購読者が居る間だけ pump を回す lazy production)。
-    /// key は LaneAddress の Display 形 (`"<project>/root"` 等)。
-    pub terminal_pumps: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// 外側 key は LaneAddress の Display 形 (`"<project>/root"` 等)、内側 key は session key。
+    /// `pty_slots` と対称の入れ子（lane 単位の teardown と session 単位の付け替えを両立）。
+    pub terminal_pumps: Arc<RwLock<TerminalPumps>>,
     /// Agent 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。
     ///
     /// **World mode (`run_world`) でのみ Some**、SP mode (`run`) では None。delegation record は

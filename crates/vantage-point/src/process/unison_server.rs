@@ -757,28 +757,50 @@ pub(crate) async fn respawn_terminal_pump(state: &AppState, lane: &str) -> bool 
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return false;
     };
-    // doc 46 P5: pump が張るのは lane の代表 slot（session=None = root）。
-    // 非 root slot の GUI 配線は UI フェーズ（LayoutEngine）で pane ごとに張る。
-    let attached = state.lane_pool.read().await.attach_output(&addr, None);
-    let Some((replay, rx)) = attached else {
+    // doc 50 §4.6 A6: pump は lane の**各 session** に張る（旧: root 1 本のみ）。topic は
+    // lane 単位で共有し、session は `LaneTerminalOutput.session` で運ぶ（Design B / 落とし穴①）。
+    // slot_sessions と attach_output を同一 read lock 内で原子的に取る（列挙と subscribe の間に
+    // slot が差し替わると replay snapshot と rx の境界がずれるため）。
+    let attaches: Vec<(crate::lane::session_registry::SessionKey, (Vec<u8>, _))> = {
+        let pool = state.lane_pool.read().await;
+        pool.slot_sessions(&addr)
+            .into_iter()
+            .filter_map(|s| pool.attach_output(&addr, Some(s)).map(|a| (s, a)))
+            .collect()
+    };
+    if attaches.is_empty() {
         tracing::debug!("respawn_terminal_pump: Lane に PtySlot 無 (lane={})", lane);
         return false;
-    };
-    let handle = crate::process::terminal_pump::spawn_lane_terminal_pump(
-        lane.to_string(),
-        replay,
-        rx,
-        state.topic_router.clone(),
-    );
+    }
+    let sessions: Vec<_> = attaches.iter().map(|(s, _)| *s).collect();
+    let mut new_pumps = std::collections::HashMap::new();
+    for (session, (replay, rx)) in attaches {
+        let handle = crate::process::terminal_pump::spawn_lane_terminal_pump(
+            lane.to_string(),
+            session,
+            replay,
+            rx,
+            state.topic_router.clone(),
+        );
+        new_pumps.insert(session, handle);
+    }
+    // 旧 lane pump を全 abort して差し替える（restart / 二重 demand_start でも session ごと 1 本に
+    // 収束）。lane 単位でまとめて入れ替えるので、消えた session の pump も取り残さない。
     if let Some(old) = state
         .terminal_pumps
         .write()
         .await
-        .insert(lane.to_string(), handle)
+        .insert(lane.to_string(), new_pumps)
     {
-        old.abort();
+        for (_session, handle) in old {
+            handle.abort();
+        }
     }
-    tracing::info!("terminal pump start (lane={})", lane);
+    tracing::info!(
+        "terminal pump start (lane={}, sessions={:?})",
+        lane,
+        sessions
+    );
     true
 }
 
@@ -795,14 +817,18 @@ async fn handle_terminal_demand_stop(
     if lane.is_empty() {
         return Err("terminal_demand_stop: lane 未指定".to_string());
     }
+    // doc 50 §4.6 A6: demand は lane 単位（topic 共有）なので、lane の全 session pump を止める。
     let removed = state.terminal_pumps.write().await.remove(&lane);
     match removed {
-        Some(handle) => {
-            handle.abort();
-            tracing::info!("terminal pump stop (lane={})", lane);
-            Ok(serde_json::json!({"status": "stopped", "lane": lane}))
+        Some(handles) if !handles.is_empty() => {
+            let count = handles.len();
+            for (_session, handle) in handles {
+                handle.abort();
+            }
+            tracing::info!("terminal pump stop (lane={}, pumps={})", lane, count);
+            Ok(serde_json::json!({"status": "stopped", "lane": lane, "pumps": count}))
         }
-        None => Ok(serde_json::json!({"status": "not_running", "lane": lane})),
+        _ => Ok(serde_json::json!({"status": "not_running", "lane": lane})),
     }
 }
 
@@ -3044,7 +3070,14 @@ mod tests {
         let mut found = false;
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_secs(1), srx.recv()).await {
-                Ok(Some((got_topic, ProcessMessage::LaneTerminalOutput { lane: l, data }))) => {
+                Ok(Some((
+                    got_topic,
+                    ProcessMessage::LaneTerminalOutput {
+                        lane: l,
+                        session: _,
+                        data,
+                    },
+                ))) => {
                     assert_eq!(got_topic, topic);
                     assert_eq!(l, lane, "message は full lane address を載せる");
                     let bytes = base64::engine::general_purpose::STANDARD
@@ -3064,6 +3097,111 @@ mod tests {
         assert!(
             found,
             "performer lane の後発 attach で replay されず画面が復元しない (seen={seen:?})"
+        );
+    }
+
+    /// doc 50 §4.6 A6: demand_start が lane の**各 session** に pump を張り、共有 topic に
+    /// session stamp 付きで route する（Design B）。2 slot を立て、両 session の出力が
+    /// それぞれ正しい `session` field で届くことを検証する。
+    #[tokio::test]
+    async fn respawn_terminal_pump_covers_all_sessions() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::LaneAddress;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use base64::Engine;
+        use std::time::Duration;
+
+        let state = build_test_app_state(None).await;
+        let shell = default_test_shell();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let addr = LaneAddress::performer("vp", "feat-multi");
+        let lane = addr.to_string();
+
+        // root（None）と 2 枚目の session（Some(2)）を立てる。
+        {
+            let mut pool = state.lane_pool.write().await;
+            let (s0, rx0) =
+                PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("spawn root");
+            pool.insert_pty_slot(addr.clone(), None, s0, rx0);
+            let (s2, rx2) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("spawn s2");
+            pool.insert_pty_slot(addr.clone(), Some(2), s2, rx2);
+        }
+        // root の実 key（fresh lane の既定）を控える。もう片方は 2。
+        let sessions = state.lane_pool.read().await.slot_sessions(&addr);
+        assert_eq!(sessions.len(), 2, "root + session 2 の 2 枚");
+        let root_key = *sessions.iter().find(|&&k| k != 2).expect("root key");
+
+        // 各 slot に別マーカーを echo（過去出力 = replay buffer に溜まる）。
+        let nl = if cfg!(windows) { "\r" } else { "\n" };
+        {
+            let pool = state.lane_pool.write().await;
+            pool.write_to_lane(&addr, None, format!("echo VP_ROOT_MARK{nl}").as_bytes())
+                .expect("write root");
+            pool.write_to_lane(&addr, Some(2), format!("echo VP_SESS2_MARK{nl}").as_bytes())
+                .expect("write s2");
+        }
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        // 後発 subscribe → demand_start → 全 session に pump。
+        let topic = format!("process/terminal/data/{}/out", lane.replace('/', "~"));
+        let (_sub, mut srx) = state.topic_router.subscribe(&topic).await;
+        dispatch_process_method(
+            &state,
+            "terminal_demand_start",
+            serde_json::json!({ "lane": lane }),
+        )
+        .await
+        .expect("demand_start");
+
+        // session 別に受信を畳み、両マーカーが正しい session field で届くまで待つ。
+        let mut by_session: std::collections::HashMap<u32, String> =
+            std::collections::HashMap::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(1), srx.recv()).await {
+                Ok(Some((_t, ProcessMessage::LaneTerminalOutput { session, data, .. }))) => {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .expect("base64");
+                    by_session
+                        .entry(session)
+                        .or_default()
+                        .push_str(&String::from_utf8_lossy(&bytes));
+                    let root_ok = by_session
+                        .get(&root_key)
+                        .is_some_and(|s| s.contains("VP_ROOT_MARK"));
+                    let s2_ok = by_session
+                        .get(&2)
+                        .is_some_and(|s| s.contains("VP_SESS2_MARK"));
+                    if root_ok && s2_ok {
+                        break;
+                    }
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => break,
+                Err(_) => continue,
+            }
+        }
+        assert!(
+            by_session
+                .get(&root_key)
+                .is_some_and(|s| s.contains("VP_ROOT_MARK")),
+            "root session の出力が root_key stamp で届く (got={by_session:?})"
+        );
+        assert!(
+            by_session
+                .get(&2)
+                .is_some_and(|s| s.contains("VP_SESS2_MARK")),
+            "session 2 の出力が session=2 stamp で届く (got={by_session:?})"
+        );
+        // マーカーが session をまたいで混ざらない（振り分けの健全性）。
+        assert!(
+            !by_session
+                .get(&root_key)
+                .is_some_and(|s| s.contains("VP_SESS2_MARK")),
+            "root stream に session 2 のマーカーが混ざらない"
         );
     }
 

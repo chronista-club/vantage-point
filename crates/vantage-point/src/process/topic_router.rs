@@ -525,6 +525,7 @@ mod tests {
         // category(seg2)=data なので 非 retained（ephemeral stream）。
         let msg = ProcessMessage::LaneTerminalOutput {
             lane: "vp/performer/foo".to_string(),
+            session: 1,
             data: "aGVsbG8=".to_string(),
         };
         let topic = TopicRouter::message_to_topic(&msg);
@@ -537,13 +538,33 @@ mod tests {
         // 別 lane は別 topic（subscriber 数 = lane 別 demand の前提、 S2 で効く）。
         let a = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
             lane: "vp/root".to_string(),
+            session: 1,
             data: String::new(),
         });
         let b = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
             lane: "vp/performer/foo".to_string(),
+            session: 1,
             data: String::new(),
         });
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_lane_terminal_topic_ignores_session() {
+        // doc 50 §4.6 A6（Design B / doc 38 落とし穴①）: session は topic key に埋めず message
+        // field で運ぶ。同 lane の別 session は **同一 topic** に流れ、 World A の xterm が
+        // session で振り分ける（demand は lane 単位のまま = register_lane_demand 不変の前提）。
+        let s1 = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
+            lane: "vp/root".to_string(),
+            session: 1,
+            data: String::new(),
+        });
+        let s2 = TopicRouter::message_to_topic(&ProcessMessage::LaneTerminalOutput {
+            lane: "vp/root".to_string(),
+            session: 7,
+            data: String::new(),
+        });
+        assert_eq!(s1, s2, "session は topic を分けない（落とし穴①）");
     }
 
     #[test]
