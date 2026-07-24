@@ -59,29 +59,51 @@
 - **連続値は指・構造は言葉**（横断原理）: 空間的な指示（この表のここ / この 2 つの関係）は言葉だと長く曖昧、丸 1 つ・線 1 本なら一瞬で正確。描画は「場所と関係を指す指」— MIDI フェーダー（量の指）と対になる
 - canvas / board を別道具に分離（§1）したからこそ「重ねる」という合成が定義できた
 
-### 仕様骨格（v1）
+### 仕様骨格（v1、2026-07-24 mock 議論で更新）
 
 | 項目 | 決定 | 根拠 |
 |---|---|---|
-| 構造 | board item の上の透明レイヤー | mako 着想 |
+| 構造 | board item の上の透明レイヤー（SVG overlay、webview 内） | mako 着想。mock（artifact）で描き味は確認済み |
 | パレット | **line / arrow / text / freehand の 4 つ** | Shottr 実使用の実測（mako は 3〜4 tool しか使わない） |
-| 読み方 | **semantic anchor 解決** — webview が座標を content 位置に hit-test し、構造データで AI に渡す | engine 中立（vision 非依存で全 engine が読める）。下地が pixel でなく自前 render の文書だから可能 = Shottr より質的に上 |
-| freehand の解決 | 内包（囲み → 要素列挙）/ 交差（下線・なぞり → 対象解決）。軌跡の形そのものの意味は解かない | 注釈用途に十分。形を描いて伝えるスケッチは **HD の領分**（住み分け） |
-| 届け方 | **明示送信**（描いてから送る。v1 で感触探り） | mako「明示送信でまず感触探りたいね」。wire の command 意味論と同族（誤配なし） |
-| 画像合成 | 将来の補助（vision 対応 engine 向けの追加情報）に格下げ | 中立の主経路は構造データ |
+| text の位置づけ | **注釈**（矢印・線と同格の一要素。本文への昇格はしない） | mako 決定 2026-07-24 |
+| 読み方 | **合成画像 + item id** — 描いた状態の pane を pixel のまま AI に渡す（vision） | ⚠️ 初版からの反転。下記「決定の反転記録」 |
+| 撮影 | 既存 screenshot 機構の **`-l` window capture → pane 矩形に crop**（`image` crate、既存依存） | `-R`（rect 直撮り）は重なった他 window が写り込む。`-l` は window 自身の buffer なので occlusion 非感受 |
+| 届け方 | **明示送信**。合成画像を file に落とし、会話へ「画像パス + item id」の一行 | AI は Read tool で開く = Act I / Act II 両方で今日動く経路。image block の新配管不要（Act II 画像対応 C3/C4 を待たない） |
+| 送信後 | **残らない**（送信 = 手放す。痕跡は会話側 = 送った画像に生きる） | mako 決定 2026-07-24。`update`（in-place 置換）との anchor drift 問題を構造的に回避 |
+| 対象 engine | **claude / codex / grok**（常駐 3 engine、全て vision 対応） | mako 決定 2026-07-24「全てに対応するのはナンセンス」 |
 
 ```
 AI が貼る（board item）
   → 人が見る
   → 人が上に描く（line / arrow / text / freehand）
   → 明示送信
-  → AI が読む（item + 注釈の構造データ:
-      { type: "arrow", target: "§5 > finding[0]", ... }
-      { type: "text", anchor: "§2 table row 3", content: "ここ古い" }）
+      = palette を一瞬隠す → window capture(-l) → pane 矩形 crop → temp file
+  → 会話に一行: 「対話面: /path/to/annotation.png（item d48a11e1）」
+  → AI が Read tool で画像を見る（正確な本文が要るときは read_board が保険）
   → AI が動く（修正 / creo へ / 次の一手）
+  → レイヤーは消える（送信 = 手放す）
 ```
 
-- 道具を絞ると能力が上がる構図: 自由スケッチ許容 → 読み手 vision 必須 → 中立性崩壊。4 primitive 限定 → 注釈が構造データ → 全 engine + テストで扱える
+- 4 primitive 限定は維持: 注釈は場所と関係を指す指。形そのもので伝えるスケッチは **HD の領分**（住み分け）
+- anchor の粒度問題（行/セル/文字 range のどこまで解決するか）は**解く必要がなくなった** — 矢印は pixel のまま届き、粒度は受け手が文脈で汲む。Shottr 実運用と同じ読み方
+
+### 決定の反転記録: semantic anchor → 合成画像（2026-07-24、mako「画像にしちゃう？」起点）
+
+初版は「semantic anchor 解決（構造データ）が主経路、画像合成は補助」。根拠は engine 中立性
+（vision 非依存で全 engine + テストが読める）だった。mock 議論で反転:
+
+- **「vision 非依存」の読み手はまだ居ない** — 常駐 3 engine は全員 vision 持ち。今 anchor 機構
+  （DOM 対応表 / AST 写像 / 粒度設計）を作るのは writer-without-reader（LaneId の教訓）
+- **anchor 方式の実費が mock で見えた**: 粒度の問い、先端ズレ → 隣要素への誤解決、
+  html item（sandbox iframe）は hit-test が届かない = 「Shottr より質的に上」は markdown item 限定だった
+- **画像は item の種類を問わない**（markdown / html / image / 将来の drawing item）
+- **表象の共有の最も文字通りの形**: mako が見ている pixel を AI がそのまま見る。毎日実証済みの
+  Shottr フローからアプリ切替だけを抜いたものになる
+- 本文テキストの pixel 化リスクは **read_board（wave 1）が保険**: 指す先は画像から、正確な本文は read 口から
+- 非 vision engine への対応は**予定しない**（mako 2026-07-24「これを使いたい時は localLLM は
+  使わないと思う」）— 対話面を使いたい場面と vision engine を使う場面は揃う。anchor 経路の
+  将来復活も hedge として持たない（欲しくなった日に描く UI はそのまま使え、足すのは payload
+  生成の一段だけ、という事実だけ残す）
 
 ---
 
@@ -217,7 +239,7 @@ board モデル化（2026-07-15）で書き込みが board 経路に intercept �
 - url / image content の扱い（§7）
 - 長文 item の表示（摩擦 ④）: board の表示設計 or 中継台で doc 化に流すのが正か
 - ~~A4（PP の lane pane 化）との実装順序~~ → **決定（2026-07-24）: A4 は「board pane」の名で先に単独出荷**（mako「A4は『board pane』の名で先に単独出荷でいこう」）。表示の器を lane に移してから中身（identity / read 口 / 対話面）を工事する。新規コードは最初から board 語彙（canvas kind とは呼ばない — §6 ⑤ の先取り）
-- 対話面の実装詳細: レイヤーの永続（item に付随して残るか、送信で消えるか）、複数回の往復
+- ~~対話面の実装詳細: レイヤーの永続（item に付随して残るか、送信で消えるか）~~ → **決定（2026-07-24）: 残らない**（送信 = 手放す、§3）。複数回の往復は「描く → 送る → AI が item を update → また描く」の繰り返しで自然に成立（レイヤーが毎回まっさらなので anchor drift も無い）
 
 ## 10. 実装順序（2026-07-24 確定）
 
@@ -256,7 +278,7 @@ doc 52 §5（identity）+ §4（中継台 read 口）を **read-first / handle �
 
 ### 残り
 
-- **wave 2**: 対話面（§3、line/arrow/text/freehand + semantic anchor + 明示送信）
+- **wave 2**: 対話面（§3、line/arrow/text/freehand + 明示送信 = 合成画像 + item id。anchor 方式は反転で廃案 — §3 反転記録）
 - **wave 3**: 計器盤の pin/stream 表示（§5 で「流されない」は表示側に送った分）+ 注視可視化（§9、cursor の server 昇格 → read_board の「今表示してるもの」default）
 
 0. **A4 = board pane を先に単独出荷**（表示の器の引っ越し。doc 51 Epic の A4 — lane roster に board pane を足し、app 層 PP を退役。新規コードは board 語彙）✅
