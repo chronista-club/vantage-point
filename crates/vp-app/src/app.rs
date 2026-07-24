@@ -3987,11 +3987,11 @@ pub fn run() -> anyhow::Result<()> {
                     match serde_json::to_string(&message) {
                         Ok(json) => {
                             let script = format!(
-                                "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                                "window.vpBoard && window.vpBoard.handleMessage({})",
                                 json
                             );
                             if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
+                                tracing::warn!("vpBoard.handleMessage 失敗: {}", e);
                             }
                             // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
                         }
@@ -4880,11 +4880,11 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_str =
                     serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());
                 let script = format!(
-                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                    "window.vpBoard && window.vpBoard.handleMessage({})",
                     msg_str
                 );
                 if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("main_view vpCanvas.handleMessage (files:open) 失敗: {}", e);
+                    tracing::warn!("main_view vpBoard.handleMessage (files:open) 失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {

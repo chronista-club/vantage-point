@@ -1,5 +1,5 @@
 /**
- * canvas-handler.ts の unit tests（board モデル 2026-07-15）
+ * board-handler.ts の unit tests（board モデル 2026-07-15）
  *
  * board = SP truth のミラー view。 SP からの BoardUpdated 受信で board を置換し、
  * scope 切替 / lane 別保持 / cursor(local) / delete・clear(IPC 依頼) を検証する。
@@ -28,8 +28,8 @@ import {
   setActiveLaneName,
   setCursor,
   subscribeCanvasState,
-  type CanvasItem,
-} from './canvas-handler'
+  type BoardItem,
+} from './board-handler'
 
 // SP からの BoardUpdated message を組み立てるヘルパ。
 function boardUpdated(
@@ -51,7 +51,7 @@ function boardUpdated(
     items: items.map((i) => ({
       id: i.id,
       content: i.content ?? i.id,
-      contentType: (i.contentType ?? 'markdown') as CanvasItem['contentType'],
+      contentType: (i.contentType ?? 'markdown') as BoardItem['contentType'],
       title: i.title,
       // 既定は過去時刻 = retained replay 相当。 live 新着を作るときだけ明示指定する。
       createdAt: i.createdAt ?? '2026-07-15T00:00:00Z',
@@ -214,7 +214,7 @@ describe('getCanvasState immutability', () => {
   it('返却 items を変更しても internal state に影響しない (shallow copy)', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
     const snap = getCanvasState()
-    ;(snap.items as CanvasItem[]).push({
+    ;(snap.items as BoardItem[]).push({
       id: 'x',
       content: '',
       contentType: 'markdown',
@@ -234,7 +234,7 @@ const FUTURE_ISO = '2999-01-01T00:00:00.000Z'
 /** BOOT_TS より過去 = retained replay 相当。 */
 const PAST_ISO = '2000-01-01T00:00:00.000Z'
 
-const item = (id: string, createdAt: string): CanvasItem => ({
+const item = (id: string, createdAt: string): BoardItem => ({
   id,
   content: id,
   contentType: 'markdown',

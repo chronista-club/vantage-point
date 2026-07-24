@@ -210,7 +210,7 @@ export function appLayoutReady(): boolean {
 	return layoutEngine.history(APP_SCOPE).length > 0;
 }
 
-/** pane が今見えているか（面積 > 0）。canvas-handler の auto-open 判定用 */
+/** pane が今見えているか（面積 > 0）。board-handler の auto-open 判定用 */
 export function isAppPaneVisible(id: string): boolean {
 	const p = layoutEngine.resolved(APP_SCOPE)[id];
 	return !!p && p.rect.w > 0 && p.rect.h > 0;

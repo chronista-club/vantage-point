@@ -143,7 +143,7 @@ pub enum AppEvent {
     /// Sidebar File Explorer: `files:open` の blocking file 読み込み結果。
     /// `content` は `canvas-handler.ts:22-28` の `ShowMessage::content` shape
     /// (`{markdown}` | `{log}` | `{html}` のいずれか)。 main_view に
-    /// `window.vpCanvas.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
+    /// `window.vpBoard.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
     FilesOpenResult { content: serde_json::Value },
     /// wiremsg Stage 2: SP の "canvas" Unison channel から受信した Canvas (Paisley Park)
     /// ProcessMessage 1 件。`message` は ProcessMessage の生 JSON (`{"type":"show",...}` 等)。

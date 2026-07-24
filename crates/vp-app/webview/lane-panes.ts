@@ -389,7 +389,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		render();
 	});
 
-	// board 非空 → roster に board pane を出す（canvas-handler が BoardUpdated 受信で dispatch。
+	// board 非空 → roster に board pane を出す（board-handler が BoardUpdated 受信で dispatch。
 	// doc 52 §10 wave 0）。fresh = live 新着なら board pane に focus を寄せる（旧 maybeAutoOpenPP =
 	// pp-overlay app scene の後継。「配送されたのに見えない」を防ぐ）。畳んだ pane も新着で復元される
 	// のは focusPane（消えていた pane を指すと RESTORE_SHARE で戻す）が担う。

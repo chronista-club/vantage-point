@@ -115,10 +115,10 @@ import {
 } from "./EchoesHeader";
 import { renderDevices as renderBastetDevices } from "./bastet";
 import {
-	handleMessage as handleCanvasMessage,
+	handleMessage as handleBoardMessage,
 	setActiveLaneName,
 	clearActiveBoard,
-} from "./canvas-handler";
+} from "./board-handler";
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from "./HistoryStrip";
 import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 
@@ -196,7 +196,7 @@ let activeLaneAddress: string | null = null;
 let echoesHeader: EchoesHeaderApi | null = null;
 
 /**
- * LaneAddress::Display 形を canvas-handler が使う flat lane_name に翻訳する。
+ * LaneAddress::Display 形を board-handler が使う flat lane_name に翻訳する。
  * `null` = conductor（lead）、`string` = performer 名。
  *
  * D2 統一: 語彙は root/performer。rename 途上のため legacy `lead`/`wing` も受理する:
@@ -281,14 +281,14 @@ const installSetActivePaneBridge = (): void => {
 };
 
 // wiremsg Stage 2: Rust 注入口。Rust 側 spawn_canvas_subscription が active project の
-// canvas ProcessMessage ごとに `window.vpCanvas.handleMessage(msg)` を evaluate_script で呼ぶ。
-// DevTools から手動 trigger も可: window.vpCanvas.handleMessage({type:'show',content:{markdown:'# hi'}})
+// canvas ProcessMessage ごとに `window.vpBoard.handleMessage(msg)` を evaluate_script で呼ぶ。
+// DevTools から手動 trigger も可: window.vpBoard.handleMessage({type:'show',content:{markdown:'# hi'}})
 (
 	window as unknown as {
-		vpCanvas: { handleMessage: typeof handleCanvasMessage };
+		vpBoard: { handleMessage: typeof handleBoardMessage };
 	}
-).vpCanvas = {
-	handleMessage: handleCanvasMessage,
+).vpBoard = {
+	handleMessage: handleBoardMessage,
 };
 
 // doc 19 PP Canvas Stack Model: HistoryStrip CSS を head に注入 + DOMContentLoaded で mount。
@@ -627,7 +627,7 @@ document.addEventListener(
 				// doc 19 PP Canvas Stack Model: clear は items + cursor + DOM の 3 つを全 reset
 				// する semantic。 `clearPP()` 直叩きだと canvasState (items / cursor) が残り、
 				// strip は表示されたまま main だけ空になる非対称が起きる (= team-b review で発覚)。
-				// canvas-handler の `handleMessage({type:'clear'})` 経路で stack 含めて全 reset する。
+				// board-handler の `handleMessage({type:'clear'})` 経路で stack 含めて全 reset する。
 				clearActiveBoard();
 			} else {
 				console.warn("[vp-bundle] clear: unknown target", dataTarget);

@@ -1,7 +1,7 @@
 /**
  * History Strip — PP body の下行に直近 N=10 件の thumbnail を新→古 順で表示する component。
  *
- * doc 19 PP Canvas Stack Model (2026-05-27) Phase 2。 canvas-handler.ts の `CanvasState`
+ * doc 19 PP Canvas Stack Model (2026-05-27) Phase 2。 board-handler.ts の `CanvasState`
  * を購読し、 items × cursor を 1 row の thumbnail strip として render。
  *
  * 動作:
@@ -23,8 +23,8 @@ import {
   getCanvasState,
   setCursor,
   subscribeCanvasState,
-  type CanvasItem,
-} from './canvas-handler'
+  type BoardItem,
+} from './board-handler'
 
 /** content_type → Phosphor icon mapping (= doc 19 §5.1)。 */
 const CONTENT_TYPE_ICON: Record<string, IconName> = {
@@ -37,7 +37,7 @@ const CONTENT_TYPE_ICON: Record<string, IconName> = {
 const TITLE_MAX_CHARS = 8
 
 /** title 未指定時に content 先頭を fallback として返す。 */
-export function aliasOf(item: CanvasItem): string {
+export function aliasOf(item: BoardItem): string {
   if (item.title && item.title.trim().length > 0) {
     return item.title.trim()
   }
@@ -53,7 +53,7 @@ export function truncate(s: string, n: number): string {
 }
 
 function HistoryStrip() {
-  // canvas-handler の state を SolidJS signal に bridge。 listener で再 read して reactivity 化。
+  // board-handler の state を SolidJS signal に bridge。 listener で再 read して reactivity 化。
   const [state, setState] = createSignal(getCanvasState())
 
   onMount(() => {

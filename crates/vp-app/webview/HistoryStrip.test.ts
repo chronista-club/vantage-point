@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { aliasOf, truncate } from './HistoryStrip'
-import type { CanvasItem } from './canvas-handler'
+import type { BoardItem } from './board-handler'
 
 // ============================================================================
 // truncate — codepoint ベースの文字列切り詰め (doc 19 §5.1)
@@ -56,7 +56,7 @@ describe('truncate', () => {
 // aliasOf — title / content fallback 解決 (doc 19 §5.1)
 // ============================================================================
 
-function makeItem(partial: Partial<CanvasItem> & { content: string }): CanvasItem {
+function makeItem(partial: Partial<BoardItem> & { content: string }): BoardItem {
   return {
     id: 'test-id',
     contentType: 'markdown',

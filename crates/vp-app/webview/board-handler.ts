@@ -1,18 +1,20 @@
 /**
- * Canvas (Paisley Park) の board handler（board モデル 2026-07-15）。
+ * board (Paisley Park) handler（board モデル 2026-07-15、doc 52 §6 で canvas → board 改名）。
  *
  * ## board モデル
- * PP Canvas を scope 別の永続 board にする。 board = show した item の scope 別リストで、
- * **SP が唯一の truth を持つ**（SurrealDB durable）。 webview はそれを表示する view:
+ * PP の board = show した item の scope 別リストで、**SP が唯一の truth を持つ**
+ * （SurrealDB durable）。 webview はそれを表示する view:
  *  - SP が mcp__show 着信で item を生成し DB append → `BoardUpdated`(retained topic
  *    `process/paisley-park/state/board/{scope}/{lane}`) を broadcast する。
- *  - webview は canvas channel で `BoardUpdated` を受けて boards を置換する（自前 save はしない）。
+ *  - webview は gui channel で `BoardUpdated` を受けて boards を置換する（自前 save はしない）。
  *  - thumbnail ✕ / Clear は `board:delete` / `board:clear` IPC で SP に依頼し、 SP が DB 更新 →
  *    `BoardUpdated` で反映する（optimistic 更新はせず SP truth に一本化）。
  *  - cursor（main に出す item）だけは view local。
+ *  - doc 52 §10 wave 0: presence（非空か）を 'vp:board-presence' で lane-panes へ通知し、
+ *    board pane を roster に出す（旧 pp-overlay app scene の auto-open はここに移った）。
  *
  * scope: **'lane' のみ**（mako 決定 2026-07-23 — board は注視中 lane に一本化。旧 'proj' は
- * 撤去、'vp'（全体）構想も同決定で消滅）。canvas channel は project 単位で全 lane の
+ * 撤去、'vp'（全体）構想も同決定で消滅）。gui channel は project 単位で全 lane の
  * `BoardUpdated`(retained) を配信するので、 lane board は lane ごとに保持（`laneBoards`）し、
  * active lane のものを表示する（lane 切替後も board が残る）。旧 proj board の retained topic /
  * DB 行は SP 側に残りうるが、client は scope !== 'lane' を無視するので表示に混ざらない。
@@ -22,7 +24,7 @@ import { renderPP, clearPP, type ContentType } from './pp'
 
 
 /** board の 1 item。 id は SP が一元発行する（webview は自前生成しない）。 */
-export interface CanvasItem {
+export interface BoardItem {
   id: string
   content: string
   contentType: ContentType
@@ -31,7 +33,7 @@ export interface CanvasItem {
 }
 
 interface Board {
-  items: CanvasItem[]
+  items: BoardItem[]
   cursor: string | null
 }
 
@@ -41,7 +43,7 @@ interface BoardUpdatedMessage {
   /** SP 側の board scope。client が扱うのは 'lane' のみ（他は applyBoardUpdated が無視）。 */
   scope: string
   lane?: string | null
-  items: CanvasItem[]
+  items: BoardItem[]
   cursor?: string | null
 }
 
@@ -169,7 +171,7 @@ function notifyBoardPresence(lane: string | null | undefined, present: boolean, 
 
 /** active board の readonly snapshot + activeScope。 listener 経由で更新を購読する。 */
 export function getCanvasState(): {
-  items: ReadonlyArray<CanvasItem>
+  items: ReadonlyArray<BoardItem>
   cursor: string | null
 } {
   const b = activeBoard()
@@ -228,7 +230,7 @@ const BOOT_TS = Date.now()
  * createdAt が parse 不能(NaN)な item は fresh 扱いしない（board / badge には載るので
  * 静かな側に倒す）。
  */
-export function hasFreshArrival(items: CanvasItem[], prevIds: Set<string>): boolean {
+export function hasFreshArrival(items: BoardItem[], prevIds: Set<string>): boolean {
   return items.some((i) => !prevIds.has(i.id) && Date.parse(i.createdAt) >= BOOT_TS)
 }
 
