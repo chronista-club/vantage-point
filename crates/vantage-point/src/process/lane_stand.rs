@@ -78,9 +78,9 @@ pub trait LaneStandHost: Any + Send + Sync + 'static {
     /// stand_kind ID (例: `"paisley_park"` / `"gold_experience"` / `"mock_b"`)。
     ///
     /// `stands.rs` の `StandAlias.id` とは **別 namespace**: `StandAlias.id` は外部 API
-    /// パス (例: `PAISLEY_PARK.id = "canvas"`) 用で、 こちらは Registry の HashMap key として
-    /// 使われる **内部 Stand ID**。 snake_case の安定キーという規約は共通だが、 値は乖離する
-    /// (例: PP は `StandAlias.id = "canvas"` vs `stand_kind() = "paisley_park"`)。
+    /// パス (例: `PAISLEY_PARK.id = "board"`、doc 52 §6 で canvas→board 改名) 用で、 こちらは
+    /// Registry の HashMap key として使われる **内部 Stand ID**。 snake_case の安定キーという規約は
+    /// 共通だが、 値は乖離する (例: PP は `StandAlias.id = "board"` vs `stand_kind() = "paisley_park"`)。
     /// PR-δ-4 (VP-138) で 2 namespace 意図的分離を明示化。
     fn stand_kind(&self) -> &'static str;
 

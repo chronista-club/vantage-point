@@ -815,7 +815,7 @@ async fn run_canvas_session(
                 continue;
             }
         };
-        // doc 48 Phase 2: editor bridge command は canvas-handler (webview) に流さず、
+        // doc 48 Phase 2: editor bridge command は board-handler (webview) に流さず、
         // ここで JS 評価を event loop へ依頼し、結果を同一 channel の `editor_result` で
         // 返す (request-response。channel は subscribe 済なので project 束縛も正しい)。
         // この await 中は当該 project の canvas event が最大 ~2.5s 待たされるが、editor
@@ -3974,7 +3974,15 @@ pub fn run() -> anyhow::Result<()> {
                 // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を project × lane で
                 // 保持する。`board:demand`（webview bundle-ready）で再配信し、retained が bundle
                 // ロード前に落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
+                //
+                // ⚠️ scope=="lane" のみ buffer する（消費側 board-handler.ts `applyBoardUpdated` の
+                //   `if (msg.scope !== 'lane') return` と対称にする）。退役済み scope="proj" の孤児行も
+                //   seed_boards が無条件 broadcast し、board_key() で proj も conductor lane も
+                //   broadcast_lane=None → lane_key="conductor" に衝突する。scope guard が無いと、行順
+                //   次第で proj 孤児が本物の lane board を上書きし、board:demand が「JS が捨てる死んだ
+                //   message」を配って boot 窓 regression が再発する（team-b review 2026-07-24）。
                 if message.get("type").and_then(|t| t.as_str()) == Some("board_updated")
+                    && message.get("scope").and_then(|s| s.as_str()) == Some("lane")
                     && let Some(proj) = msg_project
                 {
                     let lane_key = message
@@ -4052,10 +4060,10 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
 
-                // Canvas 着信 badge (bug: canvas 可観測性 D): show が現在 active でない lane に
-                // 着いたら sidebar に canvas_unread を計上する。別 project / 別 lane（同 project
-                // だが別 lane）の両ケースを 1 箇所で拾う（上の forward guard とは独立）。active lane
-                // 宛の show は panel 側 (pp-overlay auto-open, canvas-handler.ts) で解決する。
+                // board 着信 badge: show が現在 active でない lane に着いたら sidebar に
+                // canvas_unread を計上する。別 project / 別 lane（同 project だが別 lane）の両ケースを
+                // 1 箇所で拾う（上の forward guard とは独立）。active lane 宛の show は board pane 側
+                // （board-handler.ts の presence → lane-panes、doc 52 §10 wave 0）で解決する。
                 if message.get("type").and_then(|t| t.as_str()) == Some("show")
                     && let Some(project) = msg_project
                 {

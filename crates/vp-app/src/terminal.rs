@@ -146,7 +146,7 @@ pub enum AppEvent {
         truncated: bool,
     },
     /// Sidebar File Explorer: `files:open` の blocking file 読み込み結果。
-    /// `content` は `canvas-handler.ts:22-28` の `ShowMessage::content` shape
+    /// `content` は `board-handler.ts` の `BoardItem::content` shape
     /// (`{markdown}` | `{log}` | `{html}` のいずれか)。 main_view に
     /// `window.vpBoard.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
     FilesOpenResult { content: serde_json::Value },

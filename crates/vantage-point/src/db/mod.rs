@@ -1292,7 +1292,7 @@ impl VpDb {
     ///   cursor を新 item に更新する。
     /// - RMW を避け ON DUPLICATE KEY UPDATE 内の array 関数で atomic に行う
     ///   （人/agent が連続 show した際の read-modify-write race を排除）。
-    /// - `item` は webview の CanvasItem 形（camelCase: id/content/contentType/title/createdAt）。
+    /// - `item` は webview の BoardItem 形（camelCase: id/content/contentType/title/createdAt）。
     ///   top-level content/content_type/title は「現在 main で見せる item の reflection」(seek fallback)。
     pub async fn append_board_item(
         &self,

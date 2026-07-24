@@ -448,7 +448,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
            引っ越した「貼る台」。lane-host と同じく lane に 1 枚の静的 host（board は lane-scoped、
            表示 lane は常に 1 つ = xterm と同じ性質）。roster に載るのは board 非空のときだけで、
            位置決めは lane-panes.ts が担う。中身の #pp-content / #pp-history-strip は移設のみで
-           id 不変 = pp.ts / HistoryStrip / canvas-handler の render 先は変わらない。 -->
+           id 不変 = pp.ts / HistoryStrip / board-handler の render 先は変わらない。 -->
       <div id="lane-board">
         <div class="board-plate">
           <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Paisley Park</span>
@@ -1181,7 +1181,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   }
 
   // terminal S4: Rust の per-lane terminal session が World canvas channel から受けた PTY 出力を
-  //  `window.vpTerminal.handleOutput(address, base64)` で注入してくる (canvas-handler.ts と同じ wry-IPC edge)。
+  //  `window.vpTerminal.handleOutput(address, base64)` で注入してくる (board-handler.ts と同じ wry-IPC edge)。
   window.vpTerminal = {
     handleOutput(address, b64) {
       const info = laneInstances.get(address);

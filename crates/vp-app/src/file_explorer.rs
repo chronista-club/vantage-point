@@ -5,7 +5,7 @@
 //! `files:list` / `files:open` IPC (`schema/vp-sidebar.kdl` 参照) の Rust 側実装。
 //! `list_entries` で lane workdir 配下のファイルツリーを `.gitignore` を尊重して
 //! 列挙し、 `open_file` で選択ファイルを Canvas (Paisley Park) 向けの JSON content
-//! shape (`canvas-handler.ts` の `ShowMessage::content` と一致) に変換する。
+//! shape (`board-handler.ts` の `ShowMessage::content` と一致) に変換する。
 //!
 //! ## 設計判断
 //!
@@ -13,7 +13,7 @@
 //!   wry/tao の main thread からは呼ばず、 caller (event loop) で
 //!   `thread::Builder::spawn` してから呼ぶ。 結果は `AppEvent` で push back。
 //! - **画像は `Content::Html` ルート**: `protocol/messages.rs` の `ImageBase64` variant は
-//!   既存 `canvas-handler.ts:40-60` で skip されているため、 base64 化した `<img>` を
+//!   既存 `board-handler.ts:40-60` で skip されているため、 base64 化した `<img>` を
 //!   sandbox iframe (PP `html` mode) で表示する path を採る。 handler 改修不要。
 //! - **path traversal 防御**: `open_file` は `rel_path` を `Component::Normal` のみで
 //!   構成されていることを確認し、 `..` / 絶対パスを弾く。
@@ -130,7 +130,7 @@ pub fn list_entries_with_limit(workdir: &Path, limit: usize) -> (Vec<Entry>, boo
 
 /// 指定ファイルを開いて Canvas (PP) 向け JSON content を返す。
 ///
-/// 戻り値 shape は `canvas-handler.ts:22-28` の `ShowMessage::content` と同じ:
+/// 戻り値 shape は `board-handler.ts:22-28` の `ShowMessage::content` と同じ:
 /// `{ markdown }` | `{ log }` | `{ html }` のいずれかを 1 つ含む object。
 pub fn open_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
     let safe_rel = match safe_rel_path(rel_path) {
