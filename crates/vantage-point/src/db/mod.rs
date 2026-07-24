@@ -1337,7 +1337,14 @@ impl VpDb {
                 } ON DUPLICATE KEY UPDATE
                     stack = {
                         items: array::slice(array::prepend(stack.items ?? [], $item), 0, $cap),
-                        cursor: $item_id
+                        -- cursor 据え置き（scrollback）は 3 条件を全て満たすときだけ: (1) NONE でない
+                        -- (2) 旧 head でない（head を見ていたら follow）(3) capacity trim 後も生き残る。
+                        -- (3) が無いと、最古 item を pin した状態で show が来ると cursor が指す item が
+                        -- evict されて孤児化し主画面が無言で空白化する（team-b review, doc 52 §5「流されない」に反する）。
+                        cursor: IF stack.cursor IS NOT NONE
+                            AND stack.cursor != (stack.items ?? [])[0].id
+                            AND stack.cursor IN array::slice(array::prepend(stack.items ?? [], $item), 0, $cap).id
+                            THEN stack.cursor ELSE $item_id END
                     },
                     content_type = $input.content_type,
                     content = $input.content,
@@ -1425,7 +1432,8 @@ impl VpDb {
                             content: $content,
                             contentType: $content_type,
                             title: $it.title,
-                            createdAt: $it.createdAt
+                            createdAt: $it.createdAt,
+                            updatedAt: $updated_at
                         }
                         ELSE $it END),
                     content = IF stack.cursor = $item_id THEN $content ELSE content END,
@@ -1441,10 +1449,50 @@ impl VpDb {
             .bind(("item_id", item_id.to_string()))
             .bind(("content", content.to_string()))
             .bind(("content_type", content_type.to_string()))
+            // updatedAt は RFC3339 文字列で stamp（show の createdAt と型を揃える = 額縁が
+            // 一様に parse できる。time::now() の datetime 型だと read 時に型がばらつく）。
+            .bind(("updated_at", chrono::Utc::now().to_rfc3339()))
             .await
             .map_err(|e| anyhow::anyhow!("board update 失敗: {}", e))?
             .check()
             .map_err(|e| anyhow::anyhow!("board update エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// board の cursor（= 注視 = main に出す item）を id で更新する（doc 52 §5 — cursor の
+    /// server 昇格。thumbnail click / scrollback で mako の注視を SP truth にする）。
+    ///
+    /// cursor が指す item の content / contentType を top-level reflection にも写す
+    /// （update_board_item の cursor 一致時と同じ扱い）。存在確認は呼び出し側が read-first で
+    /// 行う（無い id を渡すと WHERE の item 条件で no-op になり cursor は動かない = 安全側）。
+    pub async fn set_board_cursor(
+        &self,
+        project_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+        item_id: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE pane_contents SET
+                    stack.cursor = $item_id,
+                    content = (array::filter(stack.items ?? [], |$it| $it.id = $item_id)[0].content) ?? content,
+                    content_type = (array::filter(stack.items ?? [], |$it| $it.id = $item_id)[0].contentType) ?? content_type,
+                    updated_at = time::now()
+                 WHERE project_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id
+                   AND $item_id IN (stack.items ?? []).id",
+            )
+            .bind(("path", project_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("item_id", item_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board set_cursor 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board set_cursor エラー: {}", e))?;
         Ok(())
     }
 
@@ -2766,6 +2814,44 @@ mod tests {
             "非 cursor 削除で cursor は不変"
         );
         assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 1);
+    }
+
+    /// scrollback で最古 item を pin した状態で show が来て、その item が capacity trim で
+    /// evict される場合、cursor は孤児化せず新 head に fallback する（team-b review、doc 52 §5
+    /// 「流されない」に反する孤児 cursor = 主画面が無言で空白化するのを防ぐ）。
+    #[tokio::test]
+    async fn test_board_cursor_survives_capacity_eviction() {
+        let db = make_test_db().await;
+        // capacity=2 で a, b を貼る → items=[b,a]、cursor は head 追従で b。
+        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("a"), 2)
+            .await
+            .unwrap();
+        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("b"), 2)
+            .await
+            .unwrap();
+        // 最古の a を pin（scrollback で遡って見ている状態）。
+        db.set_board_cursor("/repos/vp", "lane", "", "paisley-park", "a")
+            .await
+            .unwrap();
+        // c を貼る → items=[c,b]（a が evict）。cursor=a は消えるので新 head c に fallback。
+        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("c"), 2)
+            .await
+            .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        let items = rec["stack"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(
+            !items.iter().any(|i| i["id"] == "a"),
+            "最古 a は capacity trim で evict される"
+        );
+        assert_eq!(
+            rec["stack"]["cursor"], "c",
+            "evict された cursor は孤児化せず新 head c に fallback（主画面が空白化しない）"
+        );
     }
 
     /// update は id 一致 item の content/contentType を in-place 置換し、id/createdAt/位置は保つ。

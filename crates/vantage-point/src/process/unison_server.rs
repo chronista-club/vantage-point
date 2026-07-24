@@ -268,12 +268,16 @@ async fn handle_canvas_command(
                 );
             };
             let (board_scope, lane_name, bc_lane) = board_key(scope.as_deref(), lane.as_deref());
+            // 新規 item は updatedAt = createdAt（貼った瞬間が最終更新）。以後 update で stamp し直す
+            // （doc 52 §5 — 鮮度の出力元は server の updatedAt 一箇所、額縁が読む）。
+            let created_at = chrono::Utc::now().to_rfc3339();
             let item = serde_json::json!({
                 "id": uuid::Uuid::new_v4().to_string(),
                 "content": content_str,
                 "contentType": content_type,
                 "title": title,
-                "createdAt": chrono::Utc::now().to_rfc3339(),
+                "createdAt": created_at,
+                "updatedAt": created_at,
             });
             vpdb.append_board_item(
                 &state.project_dir,
@@ -420,6 +424,53 @@ async fn handle_board_update(
     )
     .await
     .map_err(|e| format!("board update: {}", e))?;
+    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// webview からの cursor 移動（thumbnail click）を board（SP truth）に反映する（doc 52 §5 —
+/// cursor の server 昇格。view-local だった cursor を SP-authoritative にし、scrollback 規則
+/// = 「head を見ているときだけ新 show に follow」の判定を server が持てるようにする）。
+///
+/// read-first: item_id が board に居ることを確認してから set（無い id で cursor を迷子に
+/// させない）。set 後の board を broadcast（cursor が真として全 view に配られる）。
+async fn handle_board_set_cursor(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return Err("board_set_cursor: vpdb 未初期化".to_string());
+    };
+    let item_id = payload
+        .get("item_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("board_set_cursor: item_id 必須")?
+        .to_string();
+    let (board_scope, lane_name, bc_lane) = board_key(
+        payload.get("scope").and_then(|v| v.as_str()),
+        payload.get("lane").and_then(|v| v.as_str()),
+    );
+    let rec = vpdb
+        .load_board(&state.project_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+        .await
+        .map_err(|e| format!("board load: {}", e))?;
+    let (items, _) = extract_stack(rec.as_ref());
+    if !items.iter().any(|it| it.id == item_id) {
+        return Err(format!(
+            "board_set_cursor: id '{}' が board に無い",
+            item_id
+        ));
+    }
+    vpdb.set_board_cursor(
+        &state.project_dir,
+        &board_scope,
+        &lane_name,
+        BOARD_PANE_ID,
+        &item_id,
+    )
+    .await
+    .map_err(|e| format!("board set_cursor: {}", e))?;
     broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
     Ok(serde_json::json!({"status": "ok"}))
 }
@@ -2170,6 +2221,8 @@ pub(crate) async fn dispatch_process_method(
         // 旧 pp_state_save/load は撤去（board は SP truth、 webview は BoardUpdated 購読 + mutate へ）。
         "board_delete_item" => handle_board_delete_item(state, payload).await,
         "board_clear" => handle_board_clear(state, payload).await,
+        // cursor の server 昇格（doc 52 §5 計器盤）: thumbnail click / scrollback の注視を SP truth に。
+        "board_set_cursor" => handle_board_set_cursor(state, payload).await,
         // lanes portless: Lane create/list (旧 SP HTTP POST/GET /api/lanes を process-proxy ask に移管)
         "lane_create" => handle_lane_create(state, payload).await,
         "lanes_list" => handle_lanes_list(state).await,
@@ -2680,6 +2733,121 @@ mod tests {
         )
         .await;
         assert!(err.is_err(), "未知 id の update は error: {err:?}");
+    }
+
+    /// wave 3 計器盤（doc 52 §5）: scrollback 規則（head を見ているときだけ follow）+ cursor
+    /// server 昇格 + updatedAt の鮮度 stamp を往復で固定する。
+    #[tokio::test]
+    async fn board_cursor_follow_and_freshness() {
+        use super::dispatch_process_method;
+        use crate::db::VpDb;
+        use crate::process::state::build_test_app_state_with;
+        use std::sync::Arc;
+
+        let db = Arc::new(VpDb::connect_mem().await.unwrap());
+        // schema（idx_pane_scope UNIQUE）を定義しないと show ごとに新 row になり ON DUPLICATE KEY
+        // UPDATE の item 蓄積が起きない（accumulation / follow の検証に必須）。
+        db.define_schema().await.unwrap();
+        let state = build_test_app_state_with("/repos/vp", Some(db), None).await;
+
+        let show = |body: &str| {
+            serde_json::json!({
+                "type": "show", "pane_id": "main",
+                "content": { "markdown": body }, "append": false, "title": body
+            })
+        };
+
+        // A を貼る → cursor = A、updatedAt = createdAt（貼った瞬間が最終更新）。
+        dispatch_process_method(&state, "show", show("A"))
+            .await
+            .expect("show A");
+        let r1 = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read 1");
+        let id_a = r1["items"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(r1["cursor"], id_a, "貼った直後は cursor が新 item");
+        assert_eq!(
+            r1["items"][0]["updatedAt"], r1["items"][0]["createdAt"],
+            "新規 item は updatedAt = createdAt"
+        );
+
+        // B を貼る → cursor は head(A) を見ていたので follow して B へ（scrollback: 最新追従）。
+        dispatch_process_method(&state, "show", show("B"))
+            .await
+            .expect("show B");
+        let r2 = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read 2");
+        let id_b = r2["items"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(r2["cursor"], id_b, "head を見ていたら新着に follow");
+
+        // 古い A に cursor を移す（thumbnail click 相当 = server 昇格）。
+        dispatch_process_method(
+            &state,
+            "board_set_cursor",
+            serde_json::json!({ "item_id": id_a }),
+        )
+        .await
+        .expect("set_cursor A");
+        let r_click = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read after click");
+        assert_eq!(r_click["cursor"], id_a, "cursor が A に移った");
+
+        // C を貼る → cursor は head でない A を見ているので **据え置き**（洗い流されない = 本丸）。
+        dispatch_process_method(&state, "show", show("C"))
+            .await
+            .expect("show C");
+        let r3 = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read 3");
+        assert_eq!(r3["cursor"], id_a, "古い item を見ていたら新着に流されない");
+        assert_eq!(r3["items"].as_array().unwrap().len(), 3, "item は 3 件");
+
+        // A を update → updatedAt が createdAt より後になる（鮮度が動く）。createdAt は保つ。
+        let created_a = r3["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|it| it["id"] == serde_json::json!(id_a))
+            .unwrap()["createdAt"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        dispatch_process_method(
+            &state,
+            "board_update",
+            serde_json::json!({ "id": id_a, "content": "A-updated" }),
+        )
+        .await
+        .expect("update A");
+        let r4 = dispatch_process_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read 4");
+        let item_a = r4["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|it| it["id"] == serde_json::json!(id_a))
+            .unwrap();
+        assert_eq!(
+            item_a["createdAt"],
+            serde_json::json!(created_a),
+            "createdAt は保たれる"
+        );
+        assert_ne!(
+            item_a["updatedAt"], item_a["createdAt"],
+            "update で updatedAt が進む"
+        );
+
+        // 未知 id への set_cursor は loud error（cursor を迷子にさせない）。
+        let err = dispatch_process_method(
+            &state,
+            "board_set_cursor",
+            serde_json::json!({ "item_id": "no-such" }),
+        )
+        .await;
+        assert!(err.is_err(), "未知 id の set_cursor は error: {err:?}");
     }
 
     /// PtySlot を持たない Lane への demand_start は graceful に no_lane を返し pump を張らない。

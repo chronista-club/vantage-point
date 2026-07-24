@@ -332,6 +332,10 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   background:var(--color-surface-bg-subtle);}
 .board-plate-name{display:inline-flex;align-items:center;gap:6px;font-size:12px;
   color:var(--color-text-secondary);letter-spacing:.02em;}
+/* 鮮度（doc 52 §5 計器盤）: cursor item の最終更新時刻。name の右に寄せ、控えめに。 */
+.board-freshness{margin-left:auto;margin-right:10px;font-size:11px;
+  color:var(--color-text-tertiary,#8a8fa3);font-variant-numeric:tabular-nums;
+  font-family:var(--typography-family-mono);white-space:nowrap;}
 .board-clear-btn{border:1px solid var(--color-surface-border,#1f2233);background:transparent;
   color:var(--color-text-tertiary);font-size:11px;padding:1px 8px;border-radius:4px;cursor:pointer;
   font-family:inherit;transition:color .1s ease,border-color .1s ease,background .1s ease;}
@@ -500,6 +504,9 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
       <div id="lane-board">
         <div class="board-plate">
           <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Paisley Park</span>
+          <!-- 鮮度: cursor item の updatedAt を board-handler が「更新 HH:MM:SS」で書く（doc 52 §5 計器盤）。
+               出力元は SP の updatedAt 一箇所（content 手書きに依存しない）。 -->
+          <span id="board-freshness" class="board-freshness"></span>
           <button class="board-clear-btn" data-action="clear" data-target="pp" title="board を空にする">Clear</button>
         </div>
         <!-- ink（対話面、doc 52 §3）: #pp-content の上に透明レイヤーを重ねて描く。renderPP は

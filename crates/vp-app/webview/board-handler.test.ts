@@ -21,7 +21,10 @@ vi.mock('./pp', () => ({
 import {
   _resetForTest,
   clearActiveBoard,
+  computeUnread,
   deleteItem,
+  formatFreshness,
+  freshNewIds,
   getCanvasState,
   handleMessage,
   hasFreshArrival,
@@ -273,5 +276,72 @@ describe('board presence（board 状態の反映）', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'a' }]))
     handleMessage(boardUpdated('lane', null, []))
     expect(getCanvasState().items).toHaveLength(0)
+  })
+})
+
+// ============================================================================
+// wave 3 計器盤（doc 52 §5）: 未読 dot / 鮮度 の純関数
+// ============================================================================
+
+describe('computeUnread（cursor に流されなかった新着 = 未読 dot）', () => {
+  const ids = (s: Iterable<string>) => [...s].sort()
+
+  it('cursor が follow した新着は未読にしない（cursor 自身）', () => {
+    // 新着 B に cursor が follow → B は表示中なので dot 不要
+    const u = computeUnread(new Set(), new Set(['b', 'a']), ['b'], 'b')
+    expect(ids(u)).toEqual([])
+  })
+
+  it('cursor 据え置きで届いた新着は未読になる（scrollback の据え置き）', () => {
+    // cursor は古い A、新着 C が届いた → C は未読
+    const u = computeUnread(new Set(), new Set(['c', 'b', 'a']), ['c'], 'a')
+    expect(ids(u)).toEqual(['c'])
+  })
+
+  it('前回の未読を引き継ぐ（存在する id かつ cursor 以外）', () => {
+    const u = computeUnread(new Set(['x', 'gone']), new Set(['x', 'a']), [], 'a')
+    expect(ids(u)).toEqual(['x']) // gone は消滅、x は残る
+  })
+
+  it('cursor に移った未読は既読化される', () => {
+    const u = computeUnread(new Set(['x']), new Set(['x', 'a']), [], 'x')
+    expect(ids(u)).toEqual([]) // cursor が x を指す = 既読
+  })
+})
+
+describe('freshNewIds（live 新着の id — 未読 / focus の一次ソース）', () => {
+  const FUTURE = new Date(Date.now() + 60_000).toISOString()
+  const PAST = new Date(Date.now() - 60_000).toISOString()
+  const it_ = (id: string, createdAt: string): BoardItem => ({
+    id,
+    content: '',
+    contentType: 'markdown',
+    createdAt,
+  })
+
+  it('未知かつ BOOT 後生成のみ拾う', () => {
+    expect(freshNewIds([it_('new', FUTURE), it_('old', PAST)], new Set())).toEqual(['new'])
+  })
+
+  it('既知 id（prevIds）は replay 扱いで拾わない', () => {
+    expect(freshNewIds([it_('x', FUTURE)], new Set(['x']))).toEqual([])
+  })
+})
+
+describe('formatFreshness（額縁の鮮度表示）', () => {
+  const base: BoardItem = { id: 'a', content: '', contentType: 'markdown', createdAt: '2026-07-24T10:00:00Z' }
+
+  it('updatedAt を優先して「更新 …」で出す', () => {
+    const s = formatFreshness({ ...base, updatedAt: '2026-07-24T11:30:00Z' })
+    expect(s.startsWith('更新 ')).toBe(true)
+  })
+
+  it('updatedAt が無ければ createdAt に fallback（旧 item）', () => {
+    expect(formatFreshness(base).startsWith('更新 ')).toBe(true)
+  })
+
+  it('item 無し / parse 不能は空文字（額縁に嘘を出さない）', () => {
+    expect(formatFreshness(undefined)).toBe('')
+    expect(formatFreshness({ ...base, createdAt: 'not-a-date', updatedAt: undefined })).toBe('')
   })
 })
