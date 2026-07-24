@@ -1694,6 +1694,37 @@ async fn run_device_session(
 
 /// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
 /// xterm.js + WebSocket は **JS-side で per-Lane に管理** され、 Rust は thin trigger を出すだけ。
+/// lane の term session（Act I = act "tui"）の (session, is_root) 一覧を返す。
+///
+/// doc 50 §4.6 A6: xterm は (lane, session) ごとなので、boot / lane 選択の経路は
+/// 「この lane にどの term pane が要るか」をここで解決する。registry snapshot（`sessions`）が
+/// 無い旧 SP からの wire は root=1 の 1 枚に畳む（従来挙動 = lane に xterm 1 枚）。
+fn term_sessions_of(lane: &crate::client::LaneInfo) -> Vec<(u32, bool)> {
+    match &lane.sessions {
+        Some(reg) if !reg.sessions.is_empty() => reg
+            .sessions
+            .iter()
+            .filter(|s| s.act != "chat")
+            .map(|s| (s.key, s.key == reg.root))
+            .collect(),
+        // registry 不在（旧 SP / N=1 特殊ケース）: lane の console_mode が tui なら root 1 枚。
+        _ => vec![(1, true)],
+    }
+}
+
+/// lane address から root session key を引く（snapshot 由来。不明は 1 = 従来の既定）。
+///
+/// lane 名しか手元に無い経路（act 切替の適用など）が root の xterm を ensure するのに使う。
+fn root_session_of(sidebar_state: &crate::pane::SidebarState, lane: &str) -> u32 {
+    sidebar_state
+        .lanes_by_project
+        .values()
+        .flatten()
+        .find(|l| l.address.key() == lane)
+        .and_then(|l| l.sessions.as_ref().map(|r| r.root))
+        .unwrap_or(1)
+}
+
 mod lane_js {
     use wry::WebView;
 
@@ -1704,15 +1735,38 @@ mod lane_js {
         serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
     }
 
-    /// `window.ensureLane(address)` を呼ぶ — 既存ならば no-op (idempotent)。
+    /// `window.ensureLane(address, session, is_root)` を呼ぶ — 既存ならば no-op (idempotent)。
     ///
     /// terminal S4: SP port は不要になった (xterm の transport は World "canvas" channel +
     /// per-lane terminal session、 旧 `/ws/terminal?port=` 直結を撤去)。 JS は xterm instance を
     /// 作るだけで socket は持たない。 出力/入力は Rust の terminal session が IPC で橋渡しする。
-    pub fn ensure_lane(main_view: &WebView, address: &str) {
-        let script = format!("window.ensureLane({})", js_str(address));
+    ///
+    /// doc 50 §4.6 A6: xterm は **(lane, session) ごと**。`is_root` は host の選び方を決める
+    /// （root = 静的 `#lane-host` / 非 root = 動的 `#term-session-<n>`）。
+    pub fn ensure_lane(main_view: &WebView, address: &str, session: u32, is_root: bool) {
+        let script = format!(
+            "window.ensureLane({}, {}, {})",
+            js_str(address),
+            session,
+            is_root
+        );
         if let Err(e) = main_view.evaluate_script(&script) {
-            tracing::warn!("ensureLane script failed (addr={}): {}", address, e);
+            tracing::warn!("ensureLane script failed (addr={address} session={session}): {e}");
+        }
+    }
+
+    /// `window.removeLaneSession(address, session)` — 1 session の term instance だけ畳む
+    /// （act 切替 tui→chat の後始末。lane 全体は [`remove_lane`]）。
+    pub fn remove_lane_session(main_view: &WebView, address: &str, session: u32) {
+        let script = format!(
+            "window.removeLaneSession && window.removeLaneSession({}, {})",
+            js_str(address),
+            session
+        );
+        if let Err(e) = main_view.evaluate_script(&script) {
+            tracing::warn!(
+                "removeLaneSession script failed (addr={address} session={session}): {e}"
+            );
         }
     }
 
@@ -3827,7 +3881,10 @@ pub fn run() -> anyhow::Result<()> {
                         // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
                         let addr_str = lane.address.key();
                         lane_respawn_triggered.remove(&addr_str);
-                        lane_js::ensure_lane(&webview, &addr_str);
+                        // doc 50 §4.6 A6: term session（act=tui）ごとに xterm を用意する。
+                        for (session, is_root) in term_sessions_of(lane) {
+                            lane_js::ensure_lane(&webview, &addr_str, session, is_root);
+                        }
                         // terminal session 未起動なら start (idempotent)。
                         terminal_sessions
                             .entry(addr_str.clone())
@@ -3887,7 +3944,11 @@ pub fn run() -> anyhow::Result<()> {
                         if lane.pid.is_none() {
                             continue;
                         }
-                        lane_js::ensure_lane(&webview, &lane.address.key());
+                        // doc 50 §4.6 A6: term session ごとに catch-up（idempotent）。
+                        let addr_str = lane.address.key();
+                        for (session, is_root) in term_sessions_of(lane) {
+                            lane_js::ensure_lane(&webview, &addr_str, session, is_root);
+                        }
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
@@ -4371,7 +4432,8 @@ pub fn run() -> anyhow::Result<()> {
                 // replay を先頭配送する。どちらも idempotent（起動時 tui の lane は entry 既存）。
                 let is_tui = mode == "tui";
                 if is_tui {
-                    lane_js::ensure_lane(&webview, &lane);
+                    // doc 50 §4.6 A6: この経路は root の act 切替（lane 単位 mode の後継）。
+                    lane_js::ensure_lane(&webview, &lane, root_session_of(&sidebar_state, &lane), true);
                     // SP 応答待ちの間に user が別 lane / 別 project へ移り得るため、project は
                     // 「今の active lane」ではなく対象 lane 自身から逆引きする（chat 分岐の
                     // ensure_echoes_attach と同じ resolver — 揃えないと遅着応答が別 project の
@@ -4475,9 +4537,51 @@ pub fn run() -> anyhow::Result<()> {
             // その pane が購読を張ってから demand を撃つ（購読前 replay は非 retained topic で
             // 落ちる順序 race）。ここは「act が変わった」事実を JS に渡すだけに徹する。
             Event::UserEvent(AppEvent::SessionActApplied { lane, session, act }) => {
-                // root session の切替なら手元 snapshot の console_mode も更新する（S5 で roster が
-                // session×act 導出に移るまでの間、lane 単位の読み手（activate_lane / attach gate）
-                // が旧値を読まないようにする。非 root は lane の mode を動かさない）。
+                let is_tui = act == "tui";
+                let is_root = root_session_of(&sidebar_state, &lane) == session;
+                // 手元 snapshot（registry の投影）を即時更新する。lanes snapshot の反映は 5s
+                // periodic 頼みで stale が残るため（ConsoleModeApplied と同じ理由）、act を
+                // 読む後続（term_sessions_of / attach gate / activate_lane）が旧値を見ないようにする。
+                for lanes in sidebar_state.lanes_by_project.values_mut() {
+                    if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane) {
+                        if let Some(reg) = l.sessions.as_mut()
+                            && let Some(e) = reg.sessions.iter_mut().find(|s| s.key == session)
+                        {
+                            e.act = act.clone();
+                        }
+                        // root の act は lane 単位 mode の投影でもある（boot spawn / nudge 配送の
+                        // 特例が読む）。非 root は lane の mode を動かさない。
+                        if is_root {
+                            l.console_mode = act.clone();
+                        }
+                    }
+                }
+                push_sidebar_state(&webview, &sidebar_state);
+                // xterm の起立 / 撤去（World A は instance 管理に徹し、顔ぶれの決定は上位が持つ）。
+                if is_tui {
+                    lane_js::ensure_lane(&webview, &lane, session, is_root);
+                    // 購読が無いと新 PtySlot の出力が届かない（terminal topic は非 retained）。
+                    // demand 0→1 が SP の pump 張り直し + replay を撃つ。idempotent。
+                    match resolve_project_path_for_lane(&sidebar_state, &lane) {
+                        Some(path) => {
+                            terminal_sessions.entry(lane.clone()).or_insert_with(|| {
+                                spawn_terminal_session(
+                                    &rt_handle,
+                                    async_action_proxy.clone(),
+                                    world_conn.clone(),
+                                    path,
+                                    lane.clone(),
+                                )
+                            });
+                        }
+                        None => tracing::warn!(
+                            "session:act_applied — lane の project 解決失敗、terminal session を張れず (lane={lane})"
+                        ),
+                    }
+                } else {
+                    // →chat: その session の xterm を畳む（PtySlot は SP 側で drop 済）。
+                    lane_js::remove_lane_session(&webview, &lane, session);
+                }
                 let script = format!(
                     "window.vpConsole && window.vpConsole.setSessionAct({}, {}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),

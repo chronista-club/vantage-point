@@ -764,12 +764,23 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     };
   }
 
-  // ========= Phase 2.5: per-Lane instance registry =========
-  // Lane address → {term, fitAddon, writeOutput, sendResize, container, ro, webglAddon, webglCleanup}
-  // Architecture v4: Lane = Session Process なので 1 Lane に 1 xterm.js。 transport は terminal S4 で
-  //  World "canvas" channel + Rust per-lane terminal session に移行 (socket は JS が持たない)。
-  // memory cost > switch reliability の trade-off で per-instance を選択 (user 決定)。
+  // ========= per-(Lane, session) instance registry (doc 50 §4.6 A6) =========
+  // `<lane>#<session>` → {address, session, term, fitAddon, writeOutput, sendResize, container,
+  //                       ro, webglAddon, webglCleanup}
+  // doc 46 §1.5「session ↔ Pane は 1:1」に従い、xterm も **session ごと**に 1 枚持つ
+  //  (旧: lane ごとに 1 枚 = 「term になれるのは root だけ」の物理制約の由来だった)。
+  // transport は terminal S4 の World "canvas" channel + Rust per-lane terminal session のまま。
+  //  topic は lane 単位で共有し、session は message field で運ぶ (Design B) ので、購読は lane 1 本、
+  //  振り分けだけがここ (handleOutput の session 引数) で起きる。
+  //
+  // ⚠️ key を入れ子 Map ではなく合成文字列にしているのは、この層の支配的アクセスが
+  //  **全 instance 走査** (token 反映 / paste / resize) だから。lane 単位の操作 (showLane /
+  //  removeLane) だけ info.address で絞る。Rust 側 (pty_slots / terminal_pumps) が入れ子なのは
+  //  あちらが lane 単位 teardown と session 単位付け替えを両方回すため — 層ごとに主軸が違う。
   const laneInstances = new Map();
+
+  /** (lane, session) → registry key。session は 1 以上の整数 (VP 採番)。 */
+  function instKey(address, session) { return address + '#' + session; }
 
   function dbg(msg) {
     try { window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg})); } catch (_) {}
@@ -781,16 +792,39 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   //  対象外: preview iframe (cross-context、 iframe 内に独立 listener が必要)。
   document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
 
-  function createLaneInstance(address) {
-    const host = document.getElementById('lane-host');
+  /**
+   * (lane, session) の term host 要素を get-or-create する（doc 50 §4.6 A6）。
+   *
+   * root session は静的 `#lane-host` を使い続ける（旧実装との連続性 = lane-panes の
+   * TERM_PANE_REF / layout 永続の id が変わらない）。非 root は `#term-session-<n>` を
+   * `#lane-panes` 直下に動的生成する（chat 側 `chatHostId` = `chat-session-<n>` と同型）。
+   * lane 切替では作り直すので id に lane を含めない（DOM には常に 1 lane 分しか無い）。
+   */
+  function ensureTermHost(session, isRoot) {
+    if (isRoot) return document.getElementById('lane-host');
+    const id = 'term-session-' + session;
+    let host = document.getElementById(id);
+    if (host) return host;
+    const parent = document.getElementById('lane-panes');
+    if (!parent) return null;
+    host = document.createElement('div');
+    host.id = id;
+    host.className = 'term-session-host';
+    parent.appendChild(host);
+    return host;
+  }
+
+  function createLaneInstance(address, session, isRoot) {
+    const host = ensureTermHost(session, isRoot);
     if (!host) {
-      console.error('createLaneInstance: lane-host not found');
+      console.error('createLaneInstance: term host not found (session=' + session + ')');
       return null;
     }
-    // container は Lane あたり 1 つ、 absolute で pane-terminal 全領域を埋める
+    // container は (Lane, session) あたり 1 つ、 absolute で host 全領域を埋める
     const container = document.createElement('div');
     container.className = 'lane-pane';
     container.dataset.laneAddr = address;
+    container.dataset.session = String(session);
     const tdiv = document.createElement('div');
     tdiv.className = 'lane-term';
     container.appendChild(tdiv);
@@ -1155,7 +1189,8 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
 
     function sendResize() {
       try {
-        window.ipc.postMessage(JSON.stringify({ t: 'term:resize', lane: address, cols: term.cols, rows: term.rows }));
+        // doc 50 §4.6 A6: 宛先 slot は **引数で運ぶ**（pane ごとに大きさが違う）。
+        window.ipc.postMessage(JSON.stringify({ t: 'term:resize', lane: address, session: session, cols: term.cols, rows: term.rows }));
       } catch (_) {}
     }
 
@@ -1165,9 +1200,10 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
         const bytes = new TextEncoder().encode(d);
         let bin = '';
         for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        window.ipc.postMessage(JSON.stringify({ t: 'term:write', lane: address, data: btoa(bin) }));
+        // 宛先 session を明示（「focus してから送る」型の分割はレース — doc 50 §4.3）。
+        window.ipc.postMessage(JSON.stringify({ t: 'term:write', lane: address, session: session, data: btoa(bin) }));
       } catch (e) {
-        dbg('[lane:' + address + '] input send error: ' + e);
+        dbg('[lane:' + address + '#' + session + '] input send error: ' + e);
       }
     });
 
@@ -1252,14 +1288,18 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     ro.observe(container);
 
     // writeOutput / sendResize は global vpTerminal.handleOutput / showLane / resize 観測者から呼ぶ。
-    return { term, fitAddon, writeOutput, sendResize, container, ro, webglAddon, webglCleanup };
+    // address / session は全走査ループが lane・session を絞るのに使う（合成キーの逆引き）。
+    // isRootHost は focus の優先（lane 表示時にキーボードを渡す先）に使う。
+    return { address, session, isRootHost: isRoot, term, fitAddon, writeOutput, sendResize, container, ro, webglAddon, webglCleanup };
   }
 
   // terminal S4: Rust の per-lane terminal session が World canvas channel から受けた PTY 出力を
-  //  `window.vpTerminal.handleOutput(address, base64)` で注入してくる (board-handler.ts と同じ wry-IPC edge)。
+  //  `window.vpTerminal.handleOutput(address, session, base64)` で注入してくる
+  //  (board-handler.ts と同じ wry-IPC edge)。
+  //  doc 50 §4.6 A6: topic は lane 単位で共有されるので、**ここが session の振り分け点**。
   window.vpTerminal = {
-    handleOutput(address, b64) {
-      const info = laneInstances.get(address);
+    handleOutput(address, session, b64) {
+      const info = laneInstances.get(instKey(address, session));
       if (!info) return;
       let bytes;
       try {
@@ -1271,12 +1311,15 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     },
   };
 
-  window.ensureLane = function(address) {
-    if (laneInstances.has(address)) return;
-    const inst = createLaneInstance(address);
+  // doc 50 §4.6 A6: (lane, session) ごとに xterm を用意する。`isRoot` は host の選び方
+  //  （root = 静的 #lane-host / 非 root = 動的 #term-session-<n>）を決める。
+  window.ensureLane = function(address, session, isRoot) {
+    const key = instKey(address, session);
+    if (laneInstances.has(key)) return;
+    const inst = createLaneInstance(address, session, !!isRoot);
     if (inst) {
-      laneInstances.set(address, inst);
-      dbg('[lane:' + address + '] ensured');
+      laneInstances.set(key, inst);
+      dbg('[lane:' + key + '] ensured');
     }
   };
 
@@ -1286,46 +1329,81 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     //  Act II (chat): 内容 = ChatView。 xterm instance を持たないのが正常形なので、
     //   laneInstances 基準で判定すると placeholder が ChatView を覆い続ける
     //   (#lane-empty は position:absolute; inset:0)。 isChat で抑止する。
-    const hasContent = !!address && (isChat === true || laneInstances.has(address));
+    //  doc 50 §4.6 A6: lane は N 枚の term instance を持ちうるので「1 枚でもあるか」で判定。
+    let laneHasTerm = false;
+    for (const [, info] of laneInstances) {
+      if (info.address === address) { laneHasTerm = true; break; }
+    }
+    const hasContent = !!address && (isChat === true || laneHasTerm);
     const empty = document.getElementById('lane-empty');
     if (empty) empty.classList.toggle('active', !hasContent);
-    for (const [addr, info] of laneInstances) {
-      info.container.classList.toggle('active', addr === address);
+    // 当該 lane の全 term instance を active に（並列表示 = tiling 既定。位置決めは
+    //  lane-panes.ts の resolved rect が担い、ここは lane の可視性だけを切替える）。
+    const actives = [];
+    for (const [, info] of laneInstances) {
+      const on = info.address === address;
+      info.container.classList.toggle('active', on);
+      if (on) actives.push(info);
     }
-    const active = laneInstances.get(address);
-    if (active) {
+    if (actives.length > 0) {
       // active 化直後の hidden→visible 遷移で fit / resize / focus。
       //  setTimeout(0) は display 切替の layout flush 前に走ることがあり、 fit が 0 幅で潰れる
       //  (= 狭幅復元bug の intermittent 原因)。 rAF 2 段で layout 確定後に fit し、 container 幅が
       //  まだ 0 なら fit を見送る (80×24 を保持、 次の ResizeObserver/resize で復帰)。
       requestAnimationFrame(() => requestAnimationFrame(() => {
+        for (const info of actives) {
+          try {
+            if (info.container.clientWidth > 0) {
+              info.fitAddon.fit();
+              info.sendResize();
+            }
+          } catch (_) {}
+        }
+        // focus は 1 枚だけ（キーボード入力の宛先は 1 つ）。root を優先し、無ければ先頭。
         try {
-          if (active.container.clientWidth > 0) {
-            active.fitAddon.fit();
-            active.sendResize();
-          }
-          active.term.focus();
+          const target = actives.find((i) => i.isRootHost) || actives[0];
+          target.term.focus();
         } catch (_) {}
       }));
     }
   };
 
-  window.removeLane = function(address) {
-    const info = laneInstances.get(address);
-    if (!info) return;
+  /** 1 つの term instance を dispose する（xterm + observer。socket は持たない）。 */
+  function disposeInstance(key, info) {
     try {
-      // terminal S4: socket は持たない (Rust session が transport)。 xterm + observer の dispose のみ。
-      //  session の停止は Rust 側 LanesLoaded reconcile が lane 消滅検知で行う (= map remove)。
       info.ro.disconnect();
       if (info.webglCleanup) { try { info.webglCleanup(); } catch (_) {} }
       if (info.webglAddon) { try { info.webglAddon.dispose(); } catch (_) {} }
       info.term.dispose();
       info.container.remove();
+      // 非 root の動的 host は空になったら畳む（root の #lane-host は静的なので残す）。
+      const host = document.getElementById('term-session-' + info.session);
+      if (host && host.childElementCount === 0) host.remove();
     } catch (e) {
-      console.error('removeLane error:', e);
+      console.error('disposeInstance error:', e);
     }
-    laneInstances.delete(address);
-    dbg('[lane:' + address + '] removed');
+    laneInstances.delete(key);
+  }
+
+  window.removeLane = function(address) {
+    // doc 50 §4.6 A6: lane 消滅では **その lane の全 session** を畳む。
+    //  session の停止は Rust 側 LanesLoaded reconcile が lane 消滅検知で行う (= map remove)。
+    let removed = 0;
+    for (const [key, info] of [...laneInstances]) {
+      if (info.address !== address) continue;
+      disposeInstance(key, info);
+      removed++;
+    }
+    if (removed > 0) dbg('[lane:' + address + '] removed (' + removed + ' term)');
+  };
+
+  /** doc 50 §4.6 A6: 1 session の term instance だけ畳む（act 切替 tui→chat の後始末）。 */
+  window.removeLaneSession = function(address, session) {
+    const key = instKey(address, session);
+    const info = laneInstances.get(key);
+    if (!info) return;
+    disposeInstance(key, info);
+    dbg('[lane:' + key + '] term removed');
   };
 
   // ========= VP-143: terminal Live Token 群の runtime 反映 (creo-ui-editor-host 連携) =========
@@ -1628,6 +1706,36 @@ mod tests {
         assert!(
             MAIN_AREA_HTML.contains("window.showLane(info && info.pane_id, !!(info && info.chat))"),
             "setActiveImpl が chat flag を showLane に渡していない"
+        );
+    }
+
+    /// doc 50 §4.6 A6: World A の xterm API は (lane, session) 契約。
+    ///
+    /// Rust 側 `lane_js` / `AppEvent` は `evaluate_script` で JS を呼ぶだけなので、引数の
+    /// 数が食い違っても **コンパイルも実行時も黙る**（undefined が渡って silent に壊れる）。
+    /// 境界を跨ぐ contract をここで固定する（allowlist 二箇所規則と同じ発想）。
+    #[test]
+    fn embedded_terminal_api_is_session_keyed() {
+        assert!(
+            MAIN_AREA_HTML.contains("window.ensureLane = function(address, session, isRoot)"),
+            "ensureLane の signature が (address, session, isRoot) でない"
+        );
+        assert!(
+            MAIN_AREA_HTML.contains("handleOutput(address, session, b64)"),
+            "vpTerminal.handleOutput が session 引数を取っていない（同一 topic の振り分け点）"
+        );
+        assert!(
+            MAIN_AREA_HTML.contains("window.removeLaneSession = function(address, session)"),
+            "removeLaneSession（act 切替 tui→chat の後始末）が無い"
+        );
+        // 上り IPC は宛先 session を明示で運ぶ（focus 依存にしない = doc 50 §4.3 のレース回避）。
+        assert!(
+            MAIN_AREA_HTML.contains("t: 'term:write', lane: address, session: session"),
+            "term:write が session を運んでいない"
+        );
+        assert!(
+            MAIN_AREA_HTML.contains("t: 'term:resize', lane: address, session: session"),
+            "term:resize が session を運んでいない"
         );
     }
 }

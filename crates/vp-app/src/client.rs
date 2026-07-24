@@ -278,6 +278,12 @@ pub struct LaneInfo {
     /// 本 field で gate する（#683 再演防止）。
     #[serde(default = "default_console_mode")]
     pub console_mode: String,
+    /// doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
+    /// server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
+    /// 「どの session が root か」「各 session の act」の SSOT。boot 経路が xterm を
+    /// (lane, session) で ensure するのに使う。旧 SP からは欠落 = None。
+    #[serde(default)]
+    pub sessions: Option<LaneSessionsWire>,
     /// FSM 投影 (2026-07-11): dev-flow FSM の現在 state。 "idle" | "working" | "hitl_pending" |
     /// "awaiting_user" | "completed" | "stuck"。 TheWorld が snapshot 送信時に enrich する
     /// (source = `vp flow progress` と同一判定)。 欠落 (旧 daemon) = None → sidebar は
@@ -289,6 +295,43 @@ pub struct LaneInfo {
 /// LaneInfo.console_mode の serde default（旧 SP からの wire に field が無い時）。
 fn default_console_mode() -> String {
     "tui".to_string()
+}
+
+/// lane の session registry snapshot（server `session_registry::SessionRegistry` の wire 投影）。
+///
+/// doc 50 §4.6 A6: 「どの session が root か」「各 session の act（tui/chat）」を boot 経路が
+/// 読み、xterm を (lane, session) 単位で ensure するのに使う。読み取り専用なので必要な
+/// field だけを写す（`next` 等は vp-app に読み手が無い = 写さない）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct LaneSessionsWire {
+    /// lane の器（slot / mailbox）に化身する session の key。
+    #[serde(default = "default_root_session")]
+    pub root: u32,
+    /// 現在 focus されている session の key。
+    #[serde(default = "default_root_session")]
+    pub focused: u32,
+    /// session 一覧（生成順）。
+    #[serde(default)]
+    pub sessions: Vec<LaneSessionEntryWire>,
+}
+
+/// [`LaneSessionsWire`] の 1 session。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct LaneSessionEntryWire {
+    pub key: u32,
+    /// engine 種別（stand 名）。
+    #[serde(default)]
+    pub stand: String,
+    /// この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
+    #[serde(default = "default_console_mode")]
+    pub act: String,
+}
+
+/// root / focused の serde default（field 欠落 = 従来の「#1」）。
+fn default_root_session() -> u32 {
+    1
 }
 
 /// Phase 5-D: vantage-point 側 `lane::commands::PerformerStatus` の wire shape。
