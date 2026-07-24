@@ -248,8 +248,11 @@ doc 52 §5（identity）+ §4（中継台 read 口）を **read-first / handle �
 - **MCP tools**: `update(id, content, content_type?)` / `read_board`。SelfLane で lane 導出、scope=lane
 - テスト: DB round-trip（in-place / id 保持 / cursor reflection）+ dispatch 統合（show→read_board→
   update→read_board + 未知 id の loud error）。workspace 1245 / clippy -D / fmt 全緑
-- ⚠️ **MCP 駆動の実機 dogfood は次セッション**（走行中 `vp mcp` が旧 binary で read_board/update
-  未露出。webview の BoardUpdated 経路は不変なので update の board pane 反映は構造的に保証）
+- ✅ **実機 dogfood 完了（2026-07-24、PR #903 merge + app:swap 後）**: 新 binary の `vp mcp` を
+  stdio JSON-RPC 直結で駆動（走行中セッションの MCP が旧 binary でも検証できる手）。
+  show(v1)→read_board(id 取得)→update(v2, **content_type 省略**)→read_board で
+  in-place 置換 / 旧内容消滅 / contentType 保持 / 枚数不変(4→4) / 未知 id loud error の
+  5 項目 PASS + screenshot で board pane に v2 が markdown 描画されるのを目視確認
 
 ### 残り
 
