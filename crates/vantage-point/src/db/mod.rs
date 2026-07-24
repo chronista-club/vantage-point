@@ -1337,8 +1337,14 @@ impl VpDb {
                 } ON DUPLICATE KEY UPDATE
                     stack = {
                         items: array::slice(array::prepend(stack.items ?? [], $item), 0, $cap),
-                        cursor: IF stack.cursor IS NONE OR stack.cursor = (stack.items ?? [])[0].id
-                            THEN $item_id ELSE stack.cursor END
+                        -- cursor 据え置き（scrollback）は 3 条件を全て満たすときだけ: (1) NONE でない
+                        -- (2) 旧 head でない（head を見ていたら follow）(3) capacity trim 後も生き残る。
+                        -- (3) が無いと、最古 item を pin した状態で show が来ると cursor が指す item が
+                        -- evict されて孤児化し主画面が無言で空白化する（team-b review, doc 52 §5「流されない」に反する）。
+                        cursor: IF stack.cursor IS NOT NONE
+                            AND stack.cursor != (stack.items ?? [])[0].id
+                            AND stack.cursor IN array::slice(array::prepend(stack.items ?? [], $item), 0, $cap).id
+                            THEN stack.cursor ELSE $item_id END
                     },
                     content_type = $input.content_type,
                     content = $input.content,
@@ -2808,6 +2814,44 @@ mod tests {
             "非 cursor 削除で cursor は不変"
         );
         assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 1);
+    }
+
+    /// scrollback で最古 item を pin した状態で show が来て、その item が capacity trim で
+    /// evict される場合、cursor は孤児化せず新 head に fallback する（team-b review、doc 52 §5
+    /// 「流されない」に反する孤児 cursor = 主画面が無言で空白化するのを防ぐ）。
+    #[tokio::test]
+    async fn test_board_cursor_survives_capacity_eviction() {
+        let db = make_test_db().await;
+        // capacity=2 で a, b を貼る → items=[b,a]、cursor は head 追従で b。
+        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("a"), 2)
+            .await
+            .unwrap();
+        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("b"), 2)
+            .await
+            .unwrap();
+        // 最古の a を pin（scrollback で遡って見ている状態）。
+        db.set_board_cursor("/repos/vp", "lane", "", "paisley-park", "a")
+            .await
+            .unwrap();
+        // c を貼る → items=[c,b]（a が evict）。cursor=a は消えるので新 head c に fallback。
+        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("c"), 2)
+            .await
+            .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .await
+            .unwrap()
+            .unwrap();
+        let items = rec["stack"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(
+            !items.iter().any(|i| i["id"] == "a"),
+            "最古 a は capacity trim で evict される"
+        );
+        assert_eq!(
+            rec["stack"]["cursor"], "c",
+            "evict された cursor は孤児化せず新 head c に fallback（主画面が空白化しない）"
+        );
     }
 
     /// update は id 一致 item の content/contentType を in-place 置換し、id/createdAt/位置は保つ。
