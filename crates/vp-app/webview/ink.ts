@@ -256,6 +256,9 @@ export function installInk(deps: InkDeps): void {
 	// ---- line / arrow / freehand ----
 	overlay.addEventListener("pointerdown", (e) => {
 		if (tool === "select") return;
+		// 送信の snapshot 往復中（pendingLane !== null）は描画を止める。ここで描くと撮影に
+		// 入らないのに onSnapshot の clearAll() で黙って消え「描いた線が消えた」になる（team-b）。
+		if (pendingLane !== null) return;
 		if (tool === "text") {
 			placeTextInput(...pt(e));
 			return;

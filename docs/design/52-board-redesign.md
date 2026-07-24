@@ -296,10 +296,16 @@ doc 52 §3 を確定仕様どおり実装（**server 0 行** = 状態ゼロの�
   （UTF-8→base64）。lane は address をそのまま payload に積む（flat key 2 空間の罠を回避、wave 0 教訓）
 - **後始末**: 送信後 annotations 全消去（残らない）。temp file は state_dir/ink/<lane>/、
   起動時に 7 日超を prune（消し手のないファイルを作らない）
-- 検証: workspace build / clippy -D / fmt / vitest 271（+8 ink 純関数）/ tsc clean /
-  実機で palette 描画を目視確認。⚠️ **draw→send→PNG の対話ループは mako の手動 dogfood 待ち**
-  （自動描画は Aqua Voice 浮遊窓が palette に被さり不可。座標 flip は isFlipped=YES で写る想定 —
-  実 PNG で答え合わせ）
+- 検証: workspace build / clippy -D / fmt / vitest 271（+8 ink 純関数）/ tsc clean
+- ✅ **実機 dogfood 完了（2026-07-24、mako）= end-to-end 一周**: line/arrow/text/freehand で
+  描く → 送信 → PNG 生成（board pane 領域ぴったり・座標 flip なし・palette 写らず）→ **隣の
+  Echoes（chat）が Read で画像を開き、3 要素（投げ縄/矢印/箱+「移動」）と編集意図を正確に読み、
+  read_board で item を突き合わせた**。wave 1（read 口）が wave 2 の「保険」として設計どおり合成
+- **dogfood で 2 バグを連続発見・根治**（unit test 全緑でも出ず、実機でのみ露出）:
+  ① line で描くと text 選択に吸われる = svg root の pointer-events 既定 visiblePainted で空白が
+  透過 → overlay を div 化（box 全体で捕捉）+ 描画 svg は pointer-events:none。
+  ② 送信しても PNG が飛ばない = terminal.rs の match arm だけ足し app.rs の `is_main_ipc_tag`
+  allowlist に漏れ sidebar IPC へ silent drop（「1辺が2仕事の罠」の同型）→ allowlist + テストに追加
 
 ### 残り
 
