@@ -257,13 +257,8 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     sendIpc({ t: 'console:switch_root', lane, session: key })
   }
 
-  /** 「✨ 新 ID から」: 既存の New（Act I = new_root）に委譲する。 */
-  const newRoot = (): void => {
-    const lane = ctx()?.addr
-    setPickerOpen(false)
-    if (!lane) return
-    sendIpc({ t: 'console:new_session', lane })
-  }
+  // doc 50 §4.6 A6: 「✨ 新 ID から」（旧 `newRoot`）は picker から撤去した — Add（Echoes を
+  // 足す）と Reborn（その場で始め直す）の合成でしかなく、同じことをする口を 2 つ作らない。
 
   // doc 50 §4.6 A6: 見え方の乗り換えは **各 pane の名札 kind badge**（chatview の
   // `requestSessionAct`）へ移設。lane の名札はこの操作を持たない（Act は lane ではなく
@@ -383,11 +378,14 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                     </button>
                   )}
                 </For>
+                {/* doc 50 §4.6 A6: 「✨ 新 ID から」は撤去した。
+                    「新しい session を作る」は 2 つの操作に分かれ、この行はその合成でしかない:
+                    ① lane の名札の **Add**（Echoes を足す = pane が増える）
+                    ② その pane の **Reborn**（同じ場所で新しく始める = pane 数は不変）
+                    root を新しい session にしたいなら「root pane で Reborn」で到達できる
+                    （A6 で switch_root の tui 限定 gate も外れたので、どの session でも代表にできる）。
+                    picker は **既存の Echoes から代表を選ぶ**ことに専念する。 */}
                 <div class="eh-rp-divider" />
-                <button type="button" class="eh-rp-row" onClick={newRoot}>
-                  <CreoIcon name="ph:sparkle" size={11} />
-                  新 ID から（素の engine）
-                </button>
                 <Show when={summary().sessionId ?? c().sessionId}>
                   {(sid) => (
                     <button

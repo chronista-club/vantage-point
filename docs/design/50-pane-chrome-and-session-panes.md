@@ -211,10 +211,15 @@ cc16 | cc17 | sid18   ← 3 列並列
   プロセスの名ではない
 - **不変条件: 1 往復路につき Active な化身は高々 1**。「1 会話 1 プロセス」の正確な言い方で、
   同 session の term / chat 同時 2 枚不可（lane-panes.ts 冒頭）の根拠
-- **act 切替 = Reborn** — 今の化身を exit し、別の形で enter、記憶（transcript）を引き継ぐ。
-  **→chat の Reborn は必ず transcript replay を伴う**（replay の無い切替は「プロセスは続くが
-  視界が古い」— II→I→II で Act I の分が chat に出ない既知の症状はこの欠落。→tui は engine
-  TUI が resume で自前描画するので VP 側 replay は不要）
+- **act 切替 = 見え方の乗り換え**（doc 51 §2 の語彙）— 化身を exit して別の形で enter するが、
+  **会話は死んでいない**（transcript は engine 側が SSOT で、VP が取り替えるのは読み取り装置）。
+  > ⚠️ 初稿は「act 切替 = Reborn（記憶を引き継ぐ再誕）」と書いていたが **§4.7 で撤回**した。
+  > VP は会話を持っていないので「引き継ぐ」動作すら無く、Reborn は別の操作（同じ場所で新しい
+  > session を始める）に割り当てた。理由と語彙の全体は §4.7「語彙の確定」。
+- **→chat では必ず transcript を読み直す** — 「**窓を開けたら中を見直す**」（attach 時の replay）。
+  これが無いと「プロセスは続くが視界が古い」= II→I→II で Act I の分が chat に出ない既知の症状に
+  なる。窓を開けた側が読み直すので、**client の demand で撃つのが正しい**（§4.7 逸脱②）。
+  →tui は engine TUI が resume で自前描画するので VP 側 replay は不要
 - 往復路の**分離 id（global id）は発行留保**（[[writer-without-reader]] — 読み手が今日
   存在しない）。発行条件 = 会話が lane / 機械を跨いで動く日。その日が来ても名は機能名
   （Stand 名 `EchoesId` にはしない）
@@ -339,6 +344,9 @@ Design B は diff が小さいだけでなく、§4.6 が警告した「1 辺が
 | **kind badge の gating** | 未配線（S5 の `actSwitchBlockedReason` は**一度も呼ばれていなかった**） | server が `chat_capable` を送り、client は押せる見た目を出さない | 実機（押しても無言） |
 | **`handle_echoes_demand_start` の gate** | lane 単位 `console_mode`（root cache）— root=tui だと非 root の chat に **ReplayStart すら送らない** | `resolved.act`（`ResolvedSession` に `act` を追加） | team-b 再 review（score 92） |
 | **`ensure_chat_engine` の gate** | `resolved.focused && info.console_mode != Chat` — 非 root chat を focus すると **engine 起動が拒否**、逆に非 focused は素通り | `resolved.act != Chat`（focused の特例も不要に） | 上記の同型探索 |
+| **handoff lock** | 単一 slot の存在チェック — **無関係な pane の badge click を無言で落とす**（解除側は (lane,session) を照合していたので入口だけ非対称） | `Map<lane#session, target>` で pane ごとに独立 | team-b 3 回目（score 85） |
+| **boot の slot 復元** | root だけ立てる — World / project 再起動後に**非 root term の pane が空で無反応**（roster は registry から出るので pane は現れる） | `restore_term_slots` で act=Tui の非 root も eager 復元 | team-b 3 回目（score 78） |
+| **`switch_root` / `new_root` の gate** | `console_mode != Tui` — root=chat のとき**代表を付け替えられない**（root は act と直交する概念なのに） | 撤去（残る制限は engine の有無だけ = mailbox の主は engine を持つ必要がある） | mako 判断（「最初は tui しか安定していなかったから」） |
 
 **共通形は「lane 単位で判断している箇所」**。A6 は「session ごとに act が違いうる」世界を作った
 ので、lane 単位の述語（`console_mode` / `pid` / `lane_is_chat`）はすべて**誤った要約**になる。
@@ -399,8 +407,43 @@ S5 では「term 名札は Pane 共通 chrome（§2）の話だから後続で�
 無いのは「名札が無いから」か「root でないから」か区別できない）。これが §2「額縁の統一」の
 実利で、見た目が揃うだけの話ではない。
 
+#### 語彙の確定（mako × Claude、2026-07-25）
+
+A6 の実装中に「act 切替を Reborn と呼ぶ」と書いたが、**議論で撤回した**。
+
+**act 切替（shell ⟷ tui ⟷ chat）は Reborn ではない。** 理由:
+
+- **VP は会話を持っていない** — transcript は engine 側が SSOT。VP が取り替えるのは
+  *読み取り装置*（PTY / headless）で、主体は死んでいない。**レンズの交換**であって死と再生ではない
+- nostos の Reborn は「**記憶を引き継ぐ**再誕」だが、act 切替には引き継ぐ動作すら無い
+  （記憶は最初から VP の外にある = 引き継ぐ主体がいない）
+- `shell` を並べると決定的: shell は act ではなく **投げる先**（engine）なので、この 3 つは
+  §4.0 の 2 軸（見え方 × 投げる先）を**横断**する。死と再生の語彙では捉えられない粒度
+
+呼び名は doc 51 §2 の既存語彙 **「見え方の乗り換え」**を使う。badge は `[Console]` / `[Chat]` の
+**表示そのものが操作を語る**ので、動作名を持たなくてよい。
+
+3 操作の語彙（重複なし）:
+
+| 操作 | 場所 | pane の数 | 何が起きるか |
+|---|---|---|---|
+| **Add** | lane の名札 | **増える** | Echoes を足す（root 不動） |
+| **Reborn** | 各 Pane の名札 | **不変** | いまの session を終え、新しい session を同じ場所で始める |
+| **root picker** | lane の名札 | 不変 | **既存の** Echoes から代表を選ぶ |
+
+- `New` → **Add**: 「New」は *何ができるか*（新しい session）を言うが、Reborn も新しい session を
+  作るので**区別にならない**。Add は *集まりがどう変わるか* を言うので対比が立つ。
+  **名前の良し悪しは単体では決まらず、隣に何が並ぶかで決まる**（語彙は集合として設計する）
+- ~~`Restart`~~ は不適 — 「同じものが戻る」含意（`restart_lane` は `--resume` で同じ会話が戻る）で、
+  Reborn は逆（別のものが同じ場所に入る）。語も衝突する
+- picker の「✨ 新 ID から」は **Add + Reborn の合成**なので撤去した（同じことをする口を 2 つ作らない）
+
+> **Reborn の実装は次 PR**（A6 は re-key に集中）。server 側の種は
+> `echoes_session_new_root`（現在 client からの呼び手なし、その旨を doc コメントに明記）。
+
 #### 残タスク
 
+- **Reborn の実装**（各 Pane の名札に動線）+ `+ New` → `Add` のラベル変更。次の小さい PR
 - **board が daemon 再起動を跨いで空になる**（A6 とは独立 — `git diff` で board / db に触れて
   いないことを確認済み）。doc 52 の領域なので別途
 

@@ -638,6 +638,16 @@ export function canSwitchTo(target: 'tui' | 'chat', chatCapable?: boolean): bool
   return target === 'tui' ? true : chatCapable === true
 }
 
+/** 進行中の act 切替（handoff）を (lane, session) で引くための key。
+ *
+ * doc 50 §4.6 A6: 切替は **pane 単位**になったので、lock も pane（= session）単位で持つ。
+ * 「どれか 1 つでも進行中なら全部弾く」にすると、**無関係な pane の click を無言で落とす**
+ * （A6 で全 pane が badge を持つため実際に起こる。team-b review 2026-07-25 score 85 —
+ * 解除側は (lane, session) を照合していたのに入口だけ素の存在チェックで非対称だった）。 */
+export function handoffKey(lane: string, session: number): string {
+  return `${lane}#${session}`
+}
+
 // ---------------------------------------------------------------------------
 // agent status 導出（doc 35 §5.1 診断用の常時可視化ブロック）— 純粋関数 = テスト可能
 // ---------------------------------------------------------------------------

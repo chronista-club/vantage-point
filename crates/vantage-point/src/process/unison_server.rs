@@ -1447,11 +1447,17 @@ async fn handle_echoes_session_remove(
 }
 
 /// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向け、slot を素の engine で
-/// 張り替える（= Root 切替「✨ 新 ID から」の shorthand。旧 root の会話はタブに残存 = 非破壊）。
-/// `{lane}` → `{lane, session}`。mode=Tui 限定（chat lane の New は echoes_session_create —
-/// 「今いる Act に出す」の分岐は vp-app が担う）。slot の spawn は restart 経路
+/// 張り替える（旧 root の会話は pane に残存 = 非破壊）。
+/// `{lane}` → `{lane, session}`。slot の spawn は restart 経路
 ///（retry / pump 付替 / Diff push 込み）を [`RespawnMode::Bare`] で再利用する — 第 2 の
 /// spawn 経路を作らない。
+///
+/// ⚠️ **現在 client からの呼び手は無い**（doc 50 §4.6 A6）。picker の「✨ 新 ID から」は
+/// 「Add（Echoes を足す）+ Reborn（その場で始め直す）」の合成でしかないため撤去した。
+/// この verb は **Reborn の server 側の種**として残す — Reborn は「今の session を終えて
+/// 新しい session を同じ場所（Pane）で始める」操作で、root pane に適用したときの挙動が
+/// ちょうどこれ（旧 root を残すか閉じるかは Reborn の設計で決める）。
+/// A6 で lane 単位 act の gate（旧「mode=Tui 限定」）は撤去済。
 ///
 /// [`RespawnMode::Bare`]: crate::process::lanes_state::RespawnMode::Bare
 async fn handle_echoes_session_new_root(

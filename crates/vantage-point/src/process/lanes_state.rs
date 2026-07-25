@@ -690,8 +690,46 @@ impl LanePool {
             engine_stand: None,
             flow_state: None,
         };
-        pool.lanes.insert(addr, info);
+        pool.lanes.insert(addr.clone(), info);
+        // doc 50 §4.6 A6: **非 root の term session（act=Tui）も boot で復元する**。
+        //
+        // A6 で「非 root が term である」は registry に永続する一級の状態になったが、boot で
+        // slot を立てるのは root だけだった。そのため World / project 再起動のあと（dogfood の
+        // `VP_SWAP_RESTART_DAEMON=1` は毎回これ）**pane は出るのに中身が空で無反応**になる —
+        // roster は registry から導出されるので pane は現れ、slot だけが居ない状態
+        // （team-b review 2026-07-25 score 78。実機でも観測していたが原因を追っていなかった）。
+        // root と同じ「前回状態キープ」の規律で eager に復元する。
+        pool.restore_term_slots(&addr);
         pool
+    }
+
+    /// registry 上の **非 root の `act=Tui` session** に slot を立て直す（boot 復元）。
+    ///
+    /// root は呼び手が既に立てている（[`Self::with_root`] / lane spawn）。ここは「前回 term
+    /// だった非 root」を戻す担当。失敗は warn で継続（1 枚立たなくても lane 全体は使える —
+    /// graceful degrade。`open_slot_for_session` 側の法の check もそのまま効く）。
+    pub(crate) fn restore_term_slots(&mut self, addr: &LaneAddress) {
+        let Some(info) = self.lanes.get(addr) else {
+            return;
+        };
+        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
+        let reg = session_registry::load(&addr.project, &lane_label, &info.stand);
+        let targets: Vec<SessionKey> = reg
+            .sessions
+            .iter()
+            .filter(|s| s.key != reg.root && s.act == SessionAct::Tui)
+            .map(|s| s.key)
+            .collect();
+        for key in targets {
+            match self.open_slot_for_session(addr, key) {
+                Ok(pid) => tracing::info!(
+                    "term slot restored: addr={addr} session={key} pid={pid}（boot 復元）"
+                ),
+                Err(e) => tracing::warn!(
+                    "term slot の boot 復元に失敗（pane は空で出る）: addr={addr} session={key}: {e}"
+                ),
+            }
+        }
     }
 
     /// Lane 一覧を **Conductor 先頭、 続いて Performer を生成順 (created_at 昇順)** で返す。
@@ -1524,11 +1562,9 @@ impl LanePool {
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        if info.console_mode != SessionAct::Tui {
-            anyhow::bail!(
-                "echoes_session_new_root は Act I（mode=tui）専用です（addr={addr}。chat lane の New は echoes_session_create）"
-            );
-        }
+        // doc 50 §4.6 A6: `switch_root` と同じ理由で lane 単位 act の gate を撤去した
+        // （root の付け替えは act と直交する。act が session の属性になった今「chat lane」は無い）。
+        // 新 root は bare engine の slot で立つので、旧 root が chat だった場合も成立する。
         let lane_label = crate::process::stand_spawner::lane_label(addr);
         // 新 session の engine は現 root の stand を引き継ぐ（doc 39 §1「engine は現 session を
         // 引き継ぎ」— lane の stand でなく root の stand。N=1 では両者は一致する）。
@@ -1572,11 +1608,18 @@ impl LanePool {
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        if info.console_mode != SessionAct::Tui {
-            anyhow::bail!(
-                "echoes_session_switch_root は Act I（mode=tui）専用です（addr={addr}。chat lane の切替は echoes_session_focus）"
-            );
-        }
+        // doc 50 §4.6 A6: 旧実装は「root の act が tui でなければ拒否」だった
+        // （メッセージ: 「chat lane の切替は echoes_session_focus」）。**A6 で撤去**:
+        //
+        // - あの gate が実際に見ていたのは「lane 全体が Act I か」で、旧・lane 単位 mode 時代の
+        //   区別。act が session の属性になった今、「chat lane」という概念自体が無い
+        // - root は「**誰が lane の代表か**」（slot / mailbox `agent@<lane>` の主、doc 39）で、
+        //   act（見え方）とは**直交**する。root=chat のまま非 root の term を代表にしたい、は
+        //   正当な要求（A6 が root=chat + 非 root=tui を正規の構成にしたので普通に起きる）
+        // - 当初 tui 限定にしたのは「最初は tui しか安定していなかったから」（mako 2026-07-25）
+        //
+        // 残る制限は engine の有無だけ（下の EngineKind check）— root は mailbox の主なので、
+        // engine を持たない shell が `agent@<lane>` を名乗るのは意味を持たない。
         let lane_label = crate::process::stand_spawner::lane_label(addr);
         // doc 39 P4-B: slot の respawn（restart_lane → build_stand_command）は root session の stand で
         // engine を決めるようになった（P4-A）ため、cross-engine の Root 切替は安全になった（選んだ
@@ -2495,6 +2538,44 @@ mod tests {
         assert!(pool.remove_chat_session(&addr, 1).is_err());
     }
 
+    /// doc 50 §4.6 A6: **非 root の term session は boot で復元される**（再起動を越える）。
+    ///
+    /// team-b review 2026-07-25（score 78）: A6 で「非 root が term」は registry に永続する一級の
+    /// 状態になったが、boot で slot を立てるのは root だけだった。World / project 再起動のあと
+    /// （dogfood の `VP_SWAP_RESTART_DAEMON=1` は毎回これ）**pane は出るのに中身が空で無反応**に
+    /// なる — roster は registry から導出されるので pane は現れ、slot だけが居ない。
+    ///
+    /// 「registry に act=Tui の非 root が居る状態で lane を初めて触る」= 再起動後の主経路を再現する。
+    #[tokio::test]
+    async fn boot_restores_non_root_term_slots() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+
+        // 再起動前の registry を模す: root(#1)=chat + 非 root=tui（A6 の正規構成）。
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        session_registry::set_root_act("vp", lane_label, "echoes", SessionAct::Chat)
+            .expect("root を chat に");
+        let term_key =
+            session_registry::create("vp", lane_label, "echoes", "shell", SessionAct::Tui, false)
+                .expect("非 root term session");
+
+        // lane を初めて触る（= pool に entry が無い状態からの登録 + 復元）。
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+        pool.restore_term_slots(&addr);
+
+        assert!(
+            pool.slot_sessions(&addr).contains(&term_key),
+            "非 root の term session に slot が立つ（無いと pane が空で無反応になる）: got={:?}",
+            pool.slot_sessions(&addr)
+        );
+        // root（chat）には slot を立てない — chat は engine-less が正常形（doc 33 §3）。
+        assert!(
+            !pool.slot_sessions(&addr).contains(&1),
+            "root=chat には PTY を立てない（1 会話 2 エンジンを作らない）"
+        );
+    }
+
     /// doc 50 §4.6 A6: **term session を閉じたら PtySlot も畳む**（孤児 slot を作らない）。
     ///
     /// A6 で term pane にも名札の ✕ が出た。`remove_chat_session` は名前どおり chat_engines しか
@@ -2602,10 +2683,21 @@ mod tests {
         // 不在 key → Err
         assert!(pool.prepare_switch_root_session(&addr, 99).is_err());
 
-        // chat lane は Tui gate で Err
+        // doc 50 §4.6 A6: **root が chat でも付け替えできる**（旧 Tui gate は撤去）。
+        // root は「誰が lane の代表か」で act（見え方）とは直交する — root=chat のまま
+        // 別 session を代表にしたいのは正当な要求（当初 tui 限定にしたのは「最初は tui しか
+        // 安定していなかったから」= mako 2026-07-25）。残る制限は engine の有無だけ。
         let chat = LaneAddress::performer("vp", "chatty");
         insert_chat_lane(&mut pool, &chat);
-        assert!(pool.prepare_switch_root_session(&chat, 1).is_err());
+        session_registry::create("vp", "chatty", "echoes", "echoes", SessionAct::Chat, false)
+            .expect("chatty に #2 を作る");
+        pool.prepare_switch_root_session(&chat, 2)
+            .expect("root=chat でも engine を持つ session への付け替えは通る");
+        assert_eq!(
+            session_registry::root("vp", "chatty"),
+            2,
+            "root が移っている"
+        );
     }
 
     #[test]

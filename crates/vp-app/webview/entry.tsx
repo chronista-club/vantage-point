@@ -107,7 +107,7 @@ import { installConsole, focusedOf, sessionActOf } from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Act で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import { chatHostId, installLanePanes } from "./lane-panes";
-import { installChatView, CHATVIEW_CSS } from "./chatview";
+import { installChatView, CHATVIEW_CSS, handoffKey } from "./chatview";
 import {
 	mountEchoesHeader,
 	ECHOES_HEADER_CSS,
@@ -524,11 +524,13 @@ const switchingMsg = switchingOverlay?.querySelector(
 ) as HTMLElement | undefined;
 // 進行中の handoff。null = idle。set 中は同 session の再切替をロックする。
 // doc 50 §4.6 A6: 切替は session 単位（名札 kind badge）になったので、lock も session を持つ。
-let handoffPending: {
-	lane: string;
-	session: number;
-	target: "tui" | "chat";
-} | null = null;
+// 進行中の handoff を **pane（= (lane, session)）ごと**に持つ（doc 50 §4.6 A6）。
+//
+// ⚠️ 単一 slot（`{lane, session} | null`）だと「どれか 1 つでも進行中なら全部弾く」になり、
+// **無関係な pane の badge click を無言で落とす**（A6 で全 pane が badge を持つので実際に
+// 起こる。team-b review 2026-07-25 score 85 — 解除側は (lane, session) を照合していたのに
+// 入口だけ素の存在チェックで、入口と出口が非対称だった）。Map なら独立に始めて独立に終わる。
+const handoffPending = new Map<string, "tui" | "chat">();
 let handoffTimer: number | undefined;
 
 const beginHandoff = (
@@ -536,7 +538,7 @@ const beginHandoff = (
 	session: number,
 	target: "tui" | "chat",
 ): void => {
-	handoffPending = { lane, session, target };
+	handoffPending.set(handoffKey(lane, session), target);
 	if (switchingMsg) {
 		switchingMsg.textContent =
 			target === "chat"
@@ -544,12 +546,20 @@ const beginHandoff = (
 				: "Act I にセッションを引き継ぎ中…";
 	}
 	switchingOverlay?.classList.add("active");
-	// safety: ready 信号が来なくても 30s で解除（stuck 防止）。
+	// safety: ready 信号が来なくても 30s で全解除（stuck 防止の網。正常系は個別に解除される）。
 	if (handoffTimer) clearTimeout(handoffTimer);
-	handoffTimer = window.setTimeout(() => endHandoff(), 30000);
+	handoffTimer = window.setTimeout(() => {
+		handoffPending.clear();
+		endHandoffIfIdle();
+	}, 30000);
 };
-const endHandoff = (): void => {
-	handoffPending = null;
+/** 1 つの handoff を終える。**全部終わってから** overlay を畳む（他が進行中なら出したまま）。 */
+const endHandoff = (lane: string, session: number): void => {
+	handoffPending.delete(handoffKey(lane, session));
+	endHandoffIfIdle();
+};
+const endHandoffIfIdle = (): void => {
+	if (handoffPending.size > 0) return;
 	if (handoffTimer) {
 		clearTimeout(handoffTimer);
 		handoffTimer = undefined;
@@ -566,25 +576,25 @@ document.addEventListener("vp:session-act", (e) => {
 	const d = (
 		e as CustomEvent<{ lane: string; session: number; act: "tui" | "chat" }>
 	).detail;
-	if (
-		handoffPending &&
-		d?.lane === handoffPending.lane &&
-		d?.session === handoffPending.session &&
-		d?.act === handoffPending.target
-	) {
-		endHandoff();
+	if (!d?.lane || !d.session) return;
+	// 自分が始めた切替（同じ (lane, session) で同じ target）だけを終える。
+	if (handoffPending.get(handoffKey(d.lane, d.session)) === d.act) {
+		endHandoff(d.lane, d.session);
 	}
 });
-// chat: engine が resume を確定 (session_init) したら、mode 適用より早ければ先に clear
+// chat: engine が resume を確定 (session_init) したら、act 適用より早ければ先に clear
 // する belt-and-suspenders（overlay の完了条件ではなく「更に早い解除」の位置づけ）。
+// ⚠️ この event は lane しか運ばないので、当該 lane で **chat 行きの** handoff を畳む
+// （session を特定できないため、chat 待ちのものだけを対象にする）。
 document.addEventListener("vp:console-ready", (e) => {
 	const detail = (e as CustomEvent<{ lane: string }>).detail;
-	if (
-		handoffPending?.target === "chat" &&
-		detail?.lane === handoffPending.lane
-	) {
-		endHandoff();
+	if (!detail?.lane) return;
+	for (const [key, target] of [...handoffPending]) {
+		if (target === "chat" && key.startsWith(`${detail.lane}#`)) {
+			handoffPending.delete(key);
+		}
 	}
+	endHandoffIfIdle();
 });
 
 // Act 切替（見え方の乗り換え、doc 50 §4.6 A6 ②）: 入口は **各 pane の名札 kind badge**。
@@ -598,8 +608,9 @@ document.addEventListener("vp:act-switch-request", (e) => {
 		e as CustomEvent<{ lane: string; session: number; target: "tui" | "chat" }>
 	).detail;
 	if (!d?.lane || !d.session || !d.target) return;
-	// resume 確定前の二重切替をロック（中間状態を作らない）。
-	if (handoffPending) return;
+	// resume 確定前の二重切替をロック（中間状態を作らない）。**同じ pane の**再クリックだけを
+	// 弾く — 他の pane の切替は独立に始められる（A6 で全 pane が badge を持つ）。
+	if (handoffPending.has(handoffKey(d.lane, d.session))) return;
 	// 押下で即 progress を出す（round-trip 前に反応 = 待ち時間を可視化）。
 	beginHandoff(d.lane, d.session, d.target);
 	const ipc = (
