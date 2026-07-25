@@ -1759,8 +1759,10 @@ async fn handle_lane_slots(
 ///   Act I 版。`echoes_session_create` は Act=Chat 固定なのでそちらでは作れない）
 /// - **root / focused は動かさない** — mailbox も pid も Dead 判定も root のまま（doc 40 §4-1）
 ///
-/// GUI 配線（pump）は張らない。表示はミニマム据え置き（doc 47 §7）なので、立てた console を
-/// 読み書きするのは `vp lane slots` / `vp lane capture --session` / `vp lane nudge --session`。
+/// pump は動詞の末尾の reconcile が demand（購読者の有無）に応じて張る（doc 53 R2 —
+/// 旧「GUI 配線は張らない」は A6 の pump wiring 追加以降コードと矛盾していた、moody 指摘）。
+/// 購読者不在の CLI 運用では pump なしのまま `vp lane slots` / `vp lane capture --session` /
+/// `vp lane nudge --session` で読み書きする（capture は TermAttach 直読で topic 非依存）。
 async fn handle_lane_slot_new(
     state: &AppState,
     payload: serde_json::Value,
