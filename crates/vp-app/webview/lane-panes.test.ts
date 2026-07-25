@@ -18,6 +18,7 @@ import {
 	lanePaneRefs,
 	laneScope,
 	newPaneChoices,
+	renamePane,
 	sessionOfHostId,
 	syncPaneColumns,
 } from "./lane-panes";
@@ -116,6 +117,48 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 			"term",
 			"chat",
 		]);
+	});
+});
+
+describe("renamePane（in-place 変身 — doc 50 §4.6 A6 ②）", () => {
+	/** 3 列・share が偏った layout（真ん中の pane を変身させる）。 */
+	const base = () => ({
+		structure: {
+			columns: [
+				{ panes: ["a"] },
+				{ panes: ["chat-session-16"] },
+				{ panes: ["term-session-21"] },
+			],
+		},
+		attention: { a: 0.2, "chat-session-16": 0.5, "term-session-21": 0.3 },
+	});
+
+	it("列の位置と share を保ったまま id だけ差し替える", () => {
+		const out = renamePane(base(), "chat-session-16", "lane-host");
+		// 位置: 真ん中のまま（右端に飛ばない = 実機で踏んだ症状の固定）
+		expect(out.structure.columns.map((c) => c.panes)).toEqual([
+			["a"],
+			["lane-host"],
+			["term-session-21"],
+		]);
+		// share: 引き継ぐ（enterShare で作り直されない）
+		expect(out.attention["lane-host"]).toBe(0.5);
+		expect(out.attention["chat-session-16"]).toBeUndefined();
+		// 他の pane は無傷
+		expect(out.attention.a).toBe(0.2);
+		expect(out.attention["term-session-21"]).toBe(0.3);
+	});
+
+	it("居ない id / 同一 id は layout を触らない（冪等）", () => {
+		const b = base();
+		expect(renamePane(b, "not-there", "x")).toBe(b);
+		expect(renamePane(b, "a", "a")).toBe(b);
+	});
+
+	it("往復すると元に戻る（chat→tui→chat で位置が漂わない）", () => {
+		const once = renamePane(base(), "chat-session-16", "lane-host");
+		const back = renamePane(once, "lane-host", "chat-session-16");
+		expect(back).toEqual(base());
 	});
 });
 

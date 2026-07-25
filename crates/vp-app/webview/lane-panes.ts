@@ -169,6 +169,29 @@ export function syncPaneColumns(layout: Layout, ids: readonly string[]): Layout 
 	return { structure: { columns }, attention };
 }
 
+/** pane の id を **その場で**差し替える（純関数、doc 50 §4.6 A6 ② の in-place 変身の実体）。
+ *
+ *  act 切替は「同じ往復路の見え方が変わる」だけなのに、host id は変わる
+ *  （`chat-session-16` ⇄ `lane-host` / `term-session-16`）。素直に roster 同期に任せると
+ *  **1 枚消えて 1 枚が右端に入場**する扱いになり、列の位置と share を失う
+ *  （2026-07-25 実機: chat→tui で pane が右端の細い列に飛んだ = 「立ち上がっていない」ように見えた）。
+ *  列の中で id だけ書き換えれば、位置・幅・並び順が保たれて「その場で変身」に見える。
+ *
+ *  `fromId` が居ない（既に置換済 / boot 窓）ときは layout を触らない = 冪等。 */
+export function renamePane(layout: Layout, fromId: string, toId: string): Layout {
+	if (fromId === toId) return layout;
+	if (!layout.structure.columns.some((c) => c.panes.includes(fromId))) return layout;
+	const columns = layout.structure.columns.map((c) => ({
+		panes: c.panes.map((v) => (v === fromId ? toId : v)),
+	}));
+	const attention = { ...layout.attention };
+	if (fromId in attention) {
+		attention[toId] = attention[fromId] as number;
+		delete attention[fromId];
+	}
+	return { structure: { columns }, attention };
+}
+
 /** 要件 3: フォーカスの視認 ring（CSS は main_area.rs `#lane-panes > .pane-focused`） */
 export const CLASS_FOCUSED = "pane-focused";
 
@@ -449,9 +472,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 
 	// session act（見え方）の変化 → roster を同期（doc 50 §4.6 A6、旧 'vp:console-mode' の後継）。
 	// 名札の kind badge → session_set_act → SP → SessionActApplied → vpConsole.setSessionAct が
-	// この bus を撃つ。当該 session の Pane kind が in-place で入れ替わる（位置は不変 —
-	// syncPaneColumns が新 id を旧 id の代わりに置くのではなく、旧 id が消えて新 id が入場する。
-	// 位置の連続性は §4.6 ② の狙いなので、focus を新 host に引き継いで「その場で変身」に見せる）。
+	// この bus を撃つ。**当該 session の Pane kind が in-place で入れ替わる**（§4.6 ②）。
 	document.addEventListener("vp:session-act", (e) => {
 		const d = (
 			e as CustomEvent<{ lane: string; session: number; act: "tui" | "chat" }>
@@ -461,7 +482,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		const entry = list?.find((v) => v.key === d.session);
 		if (entry) entry.act = d.act;
 		if (d.lane !== activeLane) return;
-		// 変身前に focus を持っていたなら、新しい kind の host へ移す（視線の連続性）。
+		// 見え方が変わると host id も変わる（chat-session-N ⇄ lane-host / term-session-N）。
 		const prevId =
 			d.act === "chat"
 				? termHostId(d.session, !!entry?.root)
@@ -470,6 +491,12 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			d.act === "chat"
 				? chatHostId(d.session)
 				: termHostId(d.session, !!entry?.root);
+		// ⚠️ **roster 同期より先に**列の中で id を差し替える。順序を逆にすると
+		// syncPaneColumns が「旧 id が消えた / 新 id が入場した」と解釈し、pane が右端の
+		// 細い列に飛ぶ（2026-07-25 実機: chat→tui で「立ち上がっていない」ように見えた真因）。
+		// 位置・幅・並び順を保ってこそ「その場で変身」になる。
+		layoutEngine.update(ensure(d.lane), (cur) => renamePane(cur, prevId, nextId));
+		// focus も新しい host へ引き継ぐ（視線の連続性）。
 		if (focusById.get(d.lane) === prevId) focusById.set(d.lane, nextId);
 		syncRoster(d.lane);
 		render();
