@@ -1343,11 +1343,22 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     const inst = createLaneInstance(address, session, !!isRoot);
     if (inst) {
       laneInstances.set(key, inst);
+      // **表示中 lane の instance は生まれた時点で active**。`.active` を付けるのは元々
+      // `showLane` だけで、それは lane 切替でしか呼ばれない — 表示中の lane に session を
+      // 足すと instance は出来て出力も届くのに `display:none` のままで**黒い pane** になる
+      // （doc 53 §6.5.0 ①、2026-07-26 実機）。fit は ResizeObserver が拾う
+      // （`showLane` と同じ「幅 0 なら見送り、次の resize で復帰」の既定）。
+      if (address === shownLane) inst.container.classList.add('active');
       dbg('[lane:' + key + '] ensured');
     }
   };
 
+  /** 今どの lane を見せているか（`showLane` が書く level）。`ensureLane` が読む —
+   *  表示中 lane に後から生まれた instance を active にするため。 */
+  let shownLane = null;
+
   window.showLane = function(address, isChat) {
+    shownLane = address;
     // empty placeholder は「Lane が選ばれていない」時だけ出す。
     //  Act I (tui): 内容 = xterm instance。 未 ensure (Dead lane 等) なら placeholder。
     //  Act II (chat): 内容 = ChatView。 xterm instance を持たないのが正常形なので、
@@ -1478,28 +1489,32 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // で `main_view.evaluate_script("window.deliverPaste(text)")` の最終受け取り口。
   window.deliverPaste = function(text) {
     if (!text) return;
-    for (const [, info] of laneInstances) {
-      if (info.container.classList.contains('active')) {
-        try {
-          info.term.paste(text);
-        } catch (e) {
-          console.error('deliverPaste error:', e);
-        }
-        return;
-      }
+    // 宛先は **focus 中の 1 枚**。A6（session = Pane）で lane に active な pane が複数
+    // 並ぶようになったので、「最初の active」では**意図しない pane に貼られる**
+    // （それ以前は lane に active 1 枚だったので等価だった）。
+    const actives = [...laneInstances.values()].filter((i) =>
+      i.container.classList.contains('active'),
+    );
+    const target =
+      actives.find((i) => i.term.textarea === document.activeElement) || actives[0];
+    if (!target) return; // active が無ければ noop
+    try {
+      target.term.paste(text);
+    } catch (e) {
+      console.error('deliverPaste error:', e);
     }
-    // active Lane が無い場合は noop
   };
 
   window.addEventListener('resize', () => {
-    // active かつ可視 (clientWidth>0) な Lane だけ fit + resize 通知
+    // active かつ可視 (clientWidth>0) な instance を **全部** fit + resize 通知。
+    // A6 以前は lane に active 1 枚だったので `break` で足りたが、tiling で複数並ぶ今は
+    // 2 枚目以降が window resize で再フィットされず cols がずれたままになる。
     for (const [, info] of laneInstances) {
       if (info.container.classList.contains('active') && info.container.clientWidth > 0) {
         try {
           info.fitAddon.fit();
           info.sendResize();
         } catch (_) {}
-        break;
       }
     }
   });
