@@ -670,6 +670,11 @@ mod tests {
     async fn origin_name_for_lanes_resolves_through_db() {
         use crate::process::lanes_state::LanePool;
 
+        // ⚠️ `with_root` は **実 PTY を spawn** し、その replay を `vp_state_dir()` に書く。
+        // 隔離しないと user の実 state（`~/.local/state/vp/terminal_replay/proj__root__1`）を
+        // 汚し、かつテストが hermetic でなくなる（実 state 依存で実行回数によって挙動が変わる
+        // — 過去に同型で CI だけ落ちた）。doc 50 §4.6 A6 の作業中に発見（2026-07-25）。
+        let _state = crate::test_env::state_dir_async().await;
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();
 
