@@ -275,6 +275,74 @@ server は既に **「どの pane が存在すべきか」を知っている** �
 
 ---
 
+## 6.5 もう半分 — World A / World B の分割（mako 2026-07-25）
+
+> mako「これだけ、あなたが苦労するのは設計・仕様の取り方や何かが無用に複雑なんだと思う」
+> 「あとは完全性を求めすぎてるか。切っていいものもなんとかしようとしているか」
+
+§1 の診断（intent と実体の乖離）は **17 件のうち 5 件**しか説明しない。バグが実際にどこに
+集まったかを数え直すと:
+
+| クラスタ | 件数 | 何が起きたか |
+|---|---|---|
+| **World A / World B の境界** | **4** | host id の身元 / `isRootHost` の焼き込み / `show_lane` の移植漏れ / click-focus selector |
+| **5 つの手書き遷移**（本 doc §1） | 5 | 合わせ忘れ |
+| client の cache 3 つ | 3 | 供給路の二重化 |
+| role ベースの識別子 | 2 | naming（A6 内で解決） |
+| lane 単位の gate | 3 | A6 の本題 |
+
+**最大タイのクラスタは World A/B の境界**で、本 doc の reconcile は**それに触れていない**。
+
+### 6.5.1 その境界は doc 自身が「一時的」と書いている
+
+`docs/design/33-console-unification.md:60`:
+
+> **World A（インライン xterm JS）は不可侵**: input-doubling 調査（VP_TERM_TRACE hop A/B）の
+> 診断ベースラインを壊さない。**xterm の bundle 移管は input-doubling 決着後の専用 PR**
+
+つまり恒久的な設計ではなく、**調査が終わるまでの保留**。その調査（memory
+`vp-term-input-doubling`）は step 2（診断ログ出荷）で止まっている。
+
+境界が生きている間のコスト（A6 で実測）:
+
+- **同じ概念を 2 言語で表現する**（session roster / host id / focus 優先）
+- **境界に型が無い** — `evaluate_script` は引数の数が違っても**コンパイルも実行時も黙る**。
+  検証を HTML 文字列に対する assert で代替している（`embedded_terminal_api_is_session_keyed`）
+- **同じ webview の中**にいるのに 2 コードベース（doc 33 §1 の表現「同一面が 2 コードベース」）
+
+→ **A6 の直後に「input-doubling がまだ World A を要求するか」を再検証**する価値がある。
+要求しないなら xterm を bundle へ移し、World A を畳む。**cache も 1 つ減る**（`laneInstances` の
+`isRootHost` は §3.3 の派生値そのもの）。
+
+### 6.5.2 切ってよかったもの — 完全性を求めすぎた例
+
+A6 で作ったもののうち、**切る判断をすべきだった**もの:
+
+| 作ったもの | なぜ切れたか |
+|---|---|
+| **`migrate_legacy_replay_in`**（旧名 replay の移設） | replay は「再起動後に前画面が見える」ための飾りで、失っても次の出力で描き直される。**memory `pre-MVP-development-stance`（後方互換は MVP 到達後）に反していた** |
+| **boot 窓の保留箱**（`pending_session_fetch`） | §3.2 のとおり**供給路を 1 本にすれば要らない**。症状に機構を足して、根（2 本目の供給路）を消さなかった |
+| ✕ の replay file 掃除 | team-b 自身が sub-75「無害」と判定。29 commit の PR でやることではない |
+
+**メタな原因**: 「見つけたものは全部この PR で直す」を既定にしていた。**「これは切っていいか」を
+先に問う手順が無かった**。
+
+> ⚠️ 規律として: 見つけたものは **①この PR で直す ②別 PR に起票する ③切る（直さないと決める）**
+> の 3 択で、**既定は ①ではない**。判定基準は「**それが無いと user が困るか**」— replay の
+> 前画面は困らない（次の出力で戻る）/ ghost replay は困る（消したはずの画面が出る）。
+
+### 6.5.3 必要な複雑さ（過剰修正しないための線）
+
+逆に、**畳んではいけない**もの:
+
+| もの | なぜ必要か |
+|---|---|
+| **intent / 実体の 2 層** | 再起動を跨いだ復元が要る（intent が無いと「前回 chat だった」を思い出せない） |
+| **vp-app Rust の中継** | webview は QUIC を話せない。ただし**中継の cache を authoritative にする必要はない**（pass-through でよい） |
+| **session ごとの資源分離**（slot / engine / replay） | 「1 session = 高々 1 engine」の法の実体。畳むと会話が混ざる |
+
+---
+
 ## 7. 未決（議論が要る）
 
 ### 7.0 原理・仕様の層（mako「その際に原理や構造も見直していこう」2026-07-25）
