@@ -490,6 +490,7 @@ A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能�
 | 7 | xterm host の身元が **role** に紐づく（`#lane-host`） | root 付け替えで **DOM 位置と focus が旧 root に残留**（+ 非 root term が click で focus できない） |
 | 8 | `act → host id` の写像が **4 箇所に散在**（うち 2 箇所が chat 決め打ち） | term が focused の lane で **focus ring が別 pane に誤爆**（pendingFocus が永久に未解決） |
 | 9 | `setSessionAct` が**自分の読み手 cache を更新しない**（旧 `setMode` は していた） | act 切替直後に ink が**畳まれた PtySlot へ送って黙って消える**（エラーゼロの誤配送） |
+| 10 | **session を触る動詞が lane 全体の pump を張り直す** | 1 枚触ると隣の term pane が **clear + 全 replay**（scroll 位置が飛ぶ）= 「既存 pane は無傷」に反する |
 
 **「レビューを 1 回通したから安全」は成り立たない。** 特に制約撤廃を含む変更では、レビュー自体が
 **新たに到達可能になった構成**を発見する過程になるので、収束するまで回す必要がある。
@@ -619,6 +620,39 @@ focus 優先だけは root に依るので、`ensureLane` が既存 instance に
 >
 > なお `applyLaneView` も同じ stale cache を読むが、`pendingFocus` の再解決で自己修復する
 > （lane 切替は必ず fetch を伴う）。**`ink.ts` にだけ自己修復が無い**のが実害の分かれ目。
+
+#### session を触る動詞が lane 全体を巻き込む（10 例目）
+
+`respawn_terminal_pump` は lane の**全 session の pump を abort して作り直して**いた。pump の
+張り直しは client に `REPLAY_CLEAR_PREFIX` + 全 replay を送るので、**1 枚の session を触っただけで
+隣の term pane が clear され scroll 位置が飛ぶ** — `app.rs` が「新 term pane が tiling に入場し、
+既存 pane は無傷」と明記している不変条件に反していた。
+
+呼び出し元 4 つのうち **3 つは session-scoped** だった:
+
+| 呼び出し元 | 何が変わったか | 範囲 |
+|---|---|---|
+| `terminal_demand_start` | 初回購読 | **lane 全体**（全 session を揃える） |
+| `apply_session_act` | その session の slot | `Some(session)` |
+| `handle_lane_slot_new` | 新 session の slot | `Some(session)` |
+| `restart_lane_orchestrated` | Reset = 全 slot / Resume・Bare = root だけ | mode で分岐 |
+
+`only: Option<SessionKey>` を足し、差分だけ触る形にした（`None` のときだけ slot を失った
+session の pump を撤去する — `Some` で兄弟を巻き込まないため）。
+
+> ⚠️ **これは 1 周目の修正の副作用**だった。1 周目「`handle_lane_slot_new` が pump を張らない
+> → 出力が永久に沈黙」を、`respawn_terminal_pump` を呼ぶ形で直した。その関数が lane 全体を
+> 作り直す実装だったので、**沈黙は直ったが隣を乱す性質が入った**。バグを直すときは「何を
+> 呼ぶか」だけでなく「**その関数の作用範囲が今の粒度に合っているか**」を見る必要がある。
+>
+> 検証は **client が見るもの**で固定した（pump handle の同一性ではなく、張り直し後に流れてくる
+> 出力の session stamp が指定した 1 つだけであること）。壊し方 = `only` を無視して lane 全体に
+> 戻す → `seen={root, 2}` で赤くなることを確認。
+
+**同 round の sub-75 から 1 件拾った**: `remove_chat_session`（名札の ✕）が chat の replay_log は
+消すのに **term の PTY replay file を残していた**。key 再利用は Reset だけなので ghost replay には
+直結しないが、A6 で非 root も replay を持つようになった分の**純粋な disk leak**。chat 側と対称に
+`clear_replay_session` を並べた。
 
 #### 残タスク
 

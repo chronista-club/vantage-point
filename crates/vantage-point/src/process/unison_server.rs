@@ -736,7 +736,8 @@ async fn handle_terminal_demand_start(
 
     // 当該 Lane の現行 PtySlot に pump を張る。 Lane 不在 / PtySlot 無 = pump 張れず
     // (demand 自体は受理 = Lane 起動後の再 demand 余地を残す)。
-    if respawn_terminal_pump(state, &lane).await {
+    // `None` = lane 全体（初回購読 = 全 session の pump を揃える契機）。
+    if respawn_terminal_pump(state, &lane, None).await {
         Ok(serde_json::json!({"status": "started", "lane": lane}))
     } else {
         Ok(serde_json::json!({"status": "no_lane", "lane": lane}))
@@ -753,53 +754,91 @@ async fn handle_terminal_demand_start(
 /// demand hook (購読 0→1) の start 経路と、 restart_lane 後の pump 付け替え (BUG#1: restart で
 /// slot を差し替えても World 側 subscriber は張りっぱなしで demand が再発火しない) が、
 /// この単一経路を共有する。 `lane` は LaneAddress の Display 形。
-pub(crate) async fn respawn_terminal_pump(state: &AppState, lane: &str) -> bool {
+pub(crate) async fn respawn_terminal_pump(
+    state: &AppState,
+    lane: &str,
+    only: Option<crate::lane::session_registry::SessionKey>,
+) -> bool {
     let Some(addr) = crate::process::lanes_state::LanePool::parse_address(lane) else {
         return false;
     };
     // doc 50 §4.6 A6: pump は lane の**各 session** に張る（旧: root 1 本のみ）。topic は
     // lane 単位で共有し、session は `LaneTerminalOutput.session` で運ぶ（Design B / 落とし穴①）。
+    //
+    // `only` で**触る範囲**を絞る:
+    //
+    // - `Some(session)` = その session の slot だけ差し替わった（act 切替 / slot 追加 /
+    //   root の Resume respawn）。**兄弟の pump は触らない**
+    // - `None` = lane 全体を揃える（初回 demand / Reset で全 slot が入れ替わった）。不足分を
+    //   新設し、slot を失った session の pump は撤去する
+    //
+    // ⚠️ 以前は常に lane 全体を abort → 作り直していた。pump の張り直しは client に
+    // `REPLAY_CLEAR_PREFIX` + 全 replay を送るので、**1 枚触っただけで隣の pane が clear されて
+    // scroll 位置も飛ぶ**（`app.rs` の「既存 pane は無傷」に反する。team-b 10 回目 2026-07-25）。
+    //
     // slot_sessions と attach_output を同一 read lock 内で原子的に取る（列挙と subscribe の間に
     // slot が差し替わると replay snapshot と rx の境界がずれるため）。
-    let attaches: Vec<(crate::lane::session_registry::SessionKey, (Vec<u8>, _))> = {
+    let (attaches, live_sessions) = {
         let pool = state.lane_pool.read().await;
-        pool.slot_sessions(&addr)
+        let live = pool.slot_sessions(&addr);
+        let targets: Vec<_> = match only {
+            Some(s) => live.iter().copied().filter(|&k| k == s).collect(),
+            None => live.clone(),
+        };
+        let attaches: Vec<_> = targets
             .into_iter()
             .filter_map(|s| pool.attach_output(&addr, Some(s)).map(|a| (s, a)))
-            .collect()
+            .collect();
+        (attaches, live)
     };
     if attaches.is_empty() {
         tracing::debug!("respawn_terminal_pump: Lane に PtySlot 無 (lane={})", lane);
         return false;
     }
     let sessions: Vec<_> = attaches.iter().map(|(s, _)| *s).collect();
-    let mut new_pumps = std::collections::HashMap::new();
-    for (session, (replay, rx)) in attaches {
-        let handle = crate::process::terminal_pump::spawn_lane_terminal_pump(
-            lane.to_string(),
-            session,
-            replay,
-            rx,
-            state.topic_router.clone(),
-        );
-        new_pumps.insert(session, handle);
-    }
-    // 旧 lane pump を全 abort して差し替える（restart / 二重 demand_start でも session ごと 1 本に
-    // 収束）。lane 単位でまとめて入れ替えるので、消えた session の pump も取り残さない。
-    if let Some(old) = state
-        .terminal_pumps
-        .write()
-        .await
-        .insert(lane.to_string(), new_pumps)
+    let mut replaced = Vec::new();
     {
-        for (_session, handle) in old {
-            handle.abort();
+        let mut pumps = state.terminal_pumps.write().await;
+        let lane_pumps = pumps.entry(lane.to_string()).or_default();
+        // 対象 session だけ差し替える（同 session の二重 demand でも 1 本に収束する）。
+        for (session, (replay, rx)) in attaches {
+            let handle = crate::process::terminal_pump::spawn_lane_terminal_pump(
+                lane.to_string(),
+                session,
+                replay,
+                rx,
+                state.topic_router.clone(),
+            );
+            if let Some(old) = lane_pumps.insert(session, handle) {
+                replaced.push(old);
+            }
+        }
+        // lane 全体を揃える時だけ、slot を失った session の pump を撤去する（`only` 指定では
+        // 触らない — 兄弟を巻き込まないため。残っても source が閉じれば pump 自身が終わる）。
+        if only.is_none() {
+            let stale: Vec<_> = lane_pumps
+                .keys()
+                .copied()
+                .filter(|k| !live_sessions.contains(k))
+                .collect();
+            for k in stale {
+                if let Some(h) = lane_pumps.remove(&k) {
+                    replaced.push(h);
+                }
+            }
         }
     }
+    for handle in replaced {
+        handle.abort();
+    }
     tracing::info!(
-        "terminal pump start (lane={}, sessions={:?})",
+        "terminal pump start (lane={}, sessions={:?}, scope={})",
         lane,
-        sessions
+        sessions,
+        match only {
+            Some(s) => format!("session {s}"),
+            None => "lane".to_string(),
+        }
     );
     true
 }
@@ -1607,14 +1646,16 @@ async fn apply_session_act(
         }
     }
     // Tui 方向は set_session_act 内の restart_lane / open_slot_for_session が新 PtySlot を立てる。
-    // その新 slot の PTY 出力を terminal topic に route するため pump を張り直す（Design B の
-    // respawn_terminal_pump は lane の全 session を張り直すので、新設 slot も拾う）。
+    // その新 slot の PTY 出力を terminal topic に route するため pump を張り直す。
     //
     // これが要るのは「vp-app が購読を跨いで維持している」lane（demand が 1 のままで購読 0→1 の
     // hook が発火しない）。terminal topic は非 retained なので、購読者不在の間の PTY 出力は
     // 復元されない。上の write lock は drop 済（respawn_terminal_pump は内部で read lock を取る）。
+    //
+    // ⚠️ **この session だけ**張り直す（`Some(session)`）。lane 全体にすると隣の term pane まで
+    // clear + 全 replay が飛び、触っていない pane の scroll 位置が飛ぶ（team-b 10 回目）。
     if act == crate::lane::session_registry::SessionAct::Tui
-        && !respawn_terminal_pump(state, lane).await
+        && !respawn_terminal_pump(state, lane, Some(session)).await
     {
         tracing::warn!(
             "session_set_act(tui): PtySlot 不在で terminal pump 張り直し不発（lane={lane}）"
@@ -1866,7 +1907,8 @@ async fn handle_lane_slot_new(
     // 立たない → 入力は通る（terminal_write は直送）のに**出力だけ永久に沈黙**する。
     // 「lane 単位のハンドルが session の増加を捉えない」= 制約撤廃の随伴（§4.7）の一族。
     // write lock は上の block を抜けて drop 済（respawn_terminal_pump は内部で read lock を取る）。
-    if !respawn_terminal_pump(state, lane).await {
+    // **新 session だけ**（`Some(session)`）— 既存 pane を巻き込まない（team-b 10 回目）。
+    if !respawn_terminal_pump(state, lane, Some(session)).await {
         tracing::warn!("lane_slot_new: pump 張り直し不発（lane={lane} session={session}）");
     }
     Ok(serde_json::json!({
@@ -3256,6 +3298,101 @@ mod tests {
                 .get(&root_key)
                 .is_some_and(|s| s.contains("VP_SESS2_MARK")),
             "root stream に session 2 のマーカーが混ざらない"
+        );
+    }
+
+    /// `only = Some(session)` の張り直しが **兄弟 pane を乱さない**こと（team-b 10 回目）。
+    ///
+    /// pump の張り直しは client に `REPLAY_CLEAR_PREFIX` + 全 replay を送る。以前は 1 枚触った
+    /// だけで lane 全体を abort → 作り直していたので、**触っていない pane が clear されて
+    /// scroll 位置も飛んだ**（`app.rs` の「既存 pane は無傷」に反する）。
+    ///
+    /// 観測は **client が見るもの**で行う: 張り直し後に流れてくる出力の session stamp が、
+    /// 指定した session だけであること。「pump handle が同一か」ではなく症状で固定する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn respawn_scoped_to_one_session_leaves_siblings_alone() {
+        use super::{dispatch_process_method, respawn_terminal_pump};
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::LaneAddress;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use std::time::Duration;
+
+        let state = build_test_app_state(None).await;
+        let shell = default_test_shell();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let addr = LaneAddress::performer("vp", "feat-scoped");
+        let lane = addr.to_string();
+
+        // root + 2 枚目。どちらも出力を持たせて replay buffer を非空にする。
+        {
+            let mut pool = state.lane_pool.write().await;
+            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("root");
+            pool.insert_pty_slot(addr.clone(), None, s0, rx0);
+            let (s2, rx2) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("s2");
+            pool.insert_pty_slot(addr.clone(), Some(2), s2, rx2);
+            pool.write_to_lane(&addr, None, b"echo VP_A\n")
+                .expect("w root");
+            pool.write_to_lane(&addr, Some(2), b"echo VP_B\n")
+                .expect("w s2");
+        }
+        let sessions = state.lane_pool.read().await.slot_sessions(&addr);
+        let root_key = *sessions.iter().find(|&&k| k != 2).expect("root key");
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // 初回 demand（lane 全体）で両方に pump を張る。
+        let topic = format!("process/terminal/data/{}/out", lane.replace('/', "~"));
+        let (_sub, mut srx) = state.topic_router.subscribe(&topic).await;
+        dispatch_process_method(
+            &state,
+            "terminal_demand_start",
+            serde_json::json!({ "lane": lane }),
+        )
+        .await
+        .expect("demand_start");
+        // 初回 replay を吸い切る（ここまでは両 session に流れて正常）。
+        while tokio::time::timeout(Duration::from_millis(400), srx.recv())
+            .await
+            .is_ok()
+        {}
+
+        // session 2 だけ張り直す（= act 切替 / slot 追加の実際の呼び方）。
+        assert!(
+            respawn_terminal_pump(&state, &lane, Some(2)).await,
+            "session 2 の pump を張れる"
+        );
+
+        // 以後届く出力の session stamp を集める。root が混ざったら兄弟を乱している。
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(300), srx.recv()).await {
+                Ok(Some((_t, ProcessMessage::LaneTerminalOutput { session, .. }))) => {
+                    seen.insert(session);
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => break,
+                Err(_) => continue,
+            }
+        }
+        assert!(
+            seen.contains(&2),
+            "指定した session 2 には replay が流れる (seen={seen:?})"
+        );
+        assert!(
+            !seen.contains(&root_key),
+            "**触っていない root には何も流れない**（lane 全体を張り直すと clear + 全 replay が \
+             飛んで scroll 位置が消える）(seen={seen:?})"
+        );
+
+        // 両方の pump が生きている（片方を差し替えても他方を落とさない）。
+        let pumps = state.terminal_pumps.read().await;
+        let lane_pumps = pumps.get(&lane).expect("lane の pump 集合");
+        assert!(
+            lane_pumps.contains_key(&2) && lane_pumps.contains_key(&root_key),
+            "session ごとに 1 本ずつ残る (keys={:?})",
+            lane_pumps.keys().collect::<Vec<_>>()
         );
     }
 

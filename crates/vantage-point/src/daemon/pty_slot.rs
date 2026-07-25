@@ -152,6 +152,36 @@ pub fn migrate_legacy_replay(
     migrate_legacy_replay_in(&crate::config::vp_state_dir(), project, lane, root)
 }
 
+/// **1 session** の replay file を消す（base 注入版、doc 50 §4.6 A6）。
+///
+/// session を閉じる（名札の ✕ = `remove_chat_session`）ときに呼ぶ。A6 で非 root も replay を
+/// disk に持つようになったので、閉じても消さないと**孤児 file が溜まり続ける**。
+/// ghost replay には直結しない（`session_registry` の採番は単調増加で、key 再利用は `clear`
+/// = Reset のときだけ。Reset は prefix 掃きで全部消す）が、放っておくと純粋な disk leak になる
+/// （team-b 10 回目 2026-07-25）。不在は no-op、失敗は best-effort。
+pub fn clear_replay_session_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+) {
+    let path = replay_file_path_session_in(base, project, lane, session);
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::debug!("session replay の削除に失敗（best-effort）: {path:?}: {e}"),
+        Ok(()) => {}
+    }
+}
+
+/// [`clear_replay_session_in`] の実 state dir 版。
+pub fn clear_replay_session(
+    project: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+) {
+    clear_replay_session_in(&crate::config::vp_state_dir(), project, lane, session)
+}
+
 /// lane 削除時に replay file を消す (不在は no-op、 best-effort)。base 注入版。
 ///
 /// lane-scoped state の一元 GC ([`crate::lane::commands::clear_lane_state_in`]) が呼ぶ。

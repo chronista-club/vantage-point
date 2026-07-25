@@ -964,9 +964,25 @@ pub async fn restart_lane_orchestrated(
                 let lane_key = addr.to_string();
                 let had_pump = state.terminal_pumps.read().await.contains_key(&lane_key);
                 if had_pump {
-                    let reattached =
-                        crate::process::unison_server::respawn_terminal_pump(state, &lane_key)
-                            .await;
+                    // 触る範囲は mode で決まる（doc 50 §4.6 A6 / team-b 10 回目 2026-07-25）:
+                    //
+                    // - Reset は **全 slot を畳んで** root だけ立て直す（`restart_lane` の
+                    //   `pty_slots.remove(addr)`）→ lane 全体を揃える（`None`）。消えた session の
+                    //   pump も撤去する必要がある
+                    // - Resume / Bare は **root の slot だけ**差し替える（同居人は独立の住人）→
+                    //   `Some(root)`。lane 全体にすると隣の term pane まで clear + 全 replay が
+                    //   飛び、触っていない pane の scroll 位置が飛ぶ
+                    let scope = if mode == crate::process::lanes_state::RespawnMode::Reset {
+                        None
+                    } else {
+                        Some(crate::process::lanes_state::LanePool::root_session_key(
+                            &addr,
+                        ))
+                    };
+                    let reattached = crate::process::unison_server::respawn_terminal_pump(
+                        state, &lane_key, scope,
+                    )
+                    .await;
                     tracing::info!(
                         "restart_lane: terminal pump re-attach (lane={} ok={})",
                         lane_key,

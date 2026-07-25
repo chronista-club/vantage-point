@@ -802,9 +802,9 @@ impl LanePool {
     /// 「session 省略 = root」の解決規則（`payload_session_key` の doc）を **呼び手側から
     /// 明示的に引ける**ようにするもの。session 明示が必須な新経路（`session_set_act` 等）に
     /// 対して「root を指したい」と書けるのが用途。
-    // 現状の読み手はテストのみ（旧 `console_set_mode` の橋渡しは A6 で撤去）。slot_session は
-    // private なので、これが無いと外から root を名指しできない。
-    #[allow(dead_code)]
+    // 読み手: `restart_lane_orchestrated` が pump の張り直し範囲（root の slot だけ差し替わる）を
+    // 決めるのに使う + テスト。slot_session は private なので、これが無いと外から root を
+    // 名指しできない。
     pub fn root_session_key(addr: &LaneAddress) -> SessionKey {
         Self::slot_session(addr, None)
     }
@@ -1780,6 +1780,11 @@ impl LanePool {
                 "session remove: replay_log の破棄に失敗（addr={addr}, session={key}）: {e}"
             );
         }
+        // term 側の replay（PTY 画面）も同じく session 単位で捨てる。A6 で非 root も replay を
+        // disk に持つようになったため、閉じても消さないと**孤児 file が溜まり続ける**
+        // （key 再利用は Reset だけなので ghost replay には直結しないが、純粋な leak。
+        // team-b 10 回目 2026-07-25）。chat 側と対称に並べる。
+        crate::daemon::pty_slot::clear_replay_session(&addr.project, &lane_label, key);
         if is_chat {
             let pid = self
                 .chat_engines
@@ -2688,6 +2693,11 @@ mod tests {
             },
         )
         .expect("replay log append #2");
+        // term 側の replay（PTY 画面）も置いておく — A6 で非 root も持つようになった側。
+        let term_replay =
+            crate::daemon::pty_slot::replay_file_path_session(&addr.project, "root", 2);
+        std::fs::create_dir_all(term_replay.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&term_replay, b"old screen").expect("write term replay");
 
         // focused(#2) を remove → focus は #1 へ、#2 の会話 id は registry entry ごと消える
         let focused = pool.remove_chat_session(&addr, k2).expect("remove #2");
@@ -2696,6 +2706,11 @@ mod tests {
         assert!(
             reg.sessions.iter().all(|s| s.key != 2),
             "閉じた session (#2) は registry から消える = 会話 id も道連れ（doc 40 SSOT）"
+        );
+        assert!(
+            !term_replay.exists(),
+            "閉じた session の **term replay file** も破棄される（残すと孤児 file が溜まる。\
+             team-b 10 回目 2026-07-25）: {term_replay:?}"
         );
         assert!(
             crate::echoes::replay_log::load("vp", "root#2").is_empty(),
