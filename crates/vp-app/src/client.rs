@@ -294,11 +294,13 @@ fn default_act() -> String {
     "tui".to_string()
 }
 
-/// lane の session registry snapshot（server `session_registry::SessionRegistry` の wire 投影）。
+/// lane の session roster（server `lanes_state::LaneSessionsView` の鏡）。
 ///
 /// doc 50 §4.6 A6: 「どの session が root か」「各 session の act（tui/chat）」を boot 経路が
-/// 読み、xterm を (lane, session) 単位で ensure するのに使う。読み取り専用なので必要な
-/// field だけを写す（`next` 等は vp-app に読み手が無い = 写さない）。
+/// 読み、xterm を (lane, session) 単位で ensure するのに使う。
+/// **doc 53 §11: GUI の roster 供給はこれ 1 本**（旧 `echoes_session_list` の fetch は
+/// client から退役 — GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の変化が pane に
+/// 出なかった）。webview の tab strip / pane grid もここから流す。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct LaneSessionsWire {
@@ -324,6 +326,13 @@ pub struct LaneSessionEntryWire {
     /// この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
     #[serde(default = "default_act")]
     pub act: String,
+    /// engine の会話 id（Draft = None）。session chip / tab の表示用（doc 53 §11）。
+    #[serde(default)]
+    pub conversation: Option<String>,
+    /// この session を Chat にできるか（能力表は server が SSOT = `EngineKind`）。
+    /// 名札の kind badge がこれで gate する。旧 server は送らない → false（不可に倒す）。
+    #[serde(default)]
+    pub chat_capable: bool,
 }
 
 /// root / focused の serde default（field 欠落 = 従来の「#1」）。

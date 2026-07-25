@@ -169,10 +169,10 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "echoes:respond"
                 | "echoes:interrupt"
                 | "echoes:set_permission_mode"
-                // doc 38 Phase 2: session tab strip の 4 tag。terminal.rs に match arm を
+                // doc 38 Phase 2: session tab strip の tag。terminal.rs に match arm を
                 // 足すだけでは届かない — この allowlist に無い tag は sidebar IPC に流れて
                 // 「unknown variant」で捨てられる（2026-07-16 dogfood で「+」無反応の根因）。
-                | "echoes:sessions_fetch"
+                // 旧 `echoes:sessions_fetch` は doc 53 §11 で退役（roster は snapshot が運ぶ）。
                 | "echoes:session_create"
                 | "echoes:session_focus"
                 // doc 38 Phase 3: session tab の × による close（allowlist 漏れは sidebar IPC へ
@@ -215,7 +215,6 @@ mod ipc_tag_tests {
     #[test]
     fn session_tab_tags_route_to_main_ipc() {
         for t in [
-            "echoes:sessions_fetch",
             "echoes:session_create",
             "echoes:session_focus",
             "echoes:session_remove",
@@ -255,42 +254,60 @@ mod ipc_tag_tests {
 /// pane は並ぶのに中身が来ない）。導出は registry の act から行う、をここで固定する。
 #[cfg(test)]
 mod session_derivation_tests {
-    use super::{drain_resolvable_fetches, lane_has_chat_session, term_sessions_of};
+    use super::{lane_has_chat_session, session_list_payload, term_sessions_of};
     use crate::client::LaneInfo;
 
-    /// boot 窓で取りこぼした session 一覧要求が、project 解決後に**送り直される**こと。
+    /// doc 53 §11: snapshot の roster が **webview 契約の形**に写ること。
     ///
-    /// 2026-07-25 実機: boot 直後の `echoes:sessions_fetch` は `lanes_by_project` が空で
-    /// 捨てられ、再試行の契機が無かった。A6 で pane の顔ぶれが session 一覧に全面依存する
-    /// ようになったため、この 1 回の取りこぼしが「pane も名札も出ない」に化けた。
+    /// 旧実装ではこの payload は `echoes_session_list` の ask 結果そのものだった。供給を
+    /// snapshot に 1 本化した今、変換はこの純関数 1 箇所 — 形がずれると tab strip / pane grid /
+    /// 名札が同時に壊れるので、**client が読む field を名指しで**固定する。
+    ///
+    /// （旧テスト `dropped_fetch_is_replayed_once_project_resolves` が守っていた性質
+    /// 「boot 窓で roster を取りこぼさない」は、供給が retained snapshot になったことで
+    /// 構造的に消滅した — 取りこぼす対象の要求が存在しない。§8.6 の規律に従い、
+    /// 代わりに新しい供給の契約をここで固定する。）
     #[test]
-    fn dropped_fetch_is_replayed_once_project_resolves() {
-        let mut pending: std::collections::HashSet<String> = ["vp/root", "other/root"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+    fn session_list_payload_matches_webview_contract() {
+        let lane = lane_with(
+            16,
+            serde_json::json!([
+                {"key": 16, "stand": "echoes", "act": "chat",
+                 "conversation": "conv-abc", "chat_capable": true},
+                {"key": 24, "stand": "shell", "act": "tui", "chat_capable": false},
+            ]),
+        );
+        let sessions = lane.sessions.as_ref().expect("roster");
+        let payload = session_list_payload("vp/root", sessions);
 
-        // まだどの project も解決できない = 何も再送せず、保留は減らない。
-        assert!(drain_resolvable_fetches(&mut pending, |_| false).is_empty());
+        assert_eq!(payload["lane"], "vp/root");
+        assert_eq!(payload["focused"], 16, "focused は top-level にも出す");
+        let entries = payload["sessions"].as_array().expect("sessions array");
+        assert_eq!(entries.len(), 2);
+
+        // root / focused は **entry ごとの bool** に展開する（webview はこの形で読む）。
+        assert_eq!(entries[0]["key"], 16);
+        assert_eq!(entries[0]["root"], true);
+        assert_eq!(entries[0]["focused"], true);
+        assert_eq!(entries[0]["act"], "chat");
         assert_eq!(
-            pending.len(),
-            2,
-            "解決できない lane は保留に残す（捨てない）"
+            entries[0]["engine_session_id"], "conv-abc",
+            "会話 id は engine_session_id という名で運ぶ（webview 契約）"
+        );
+        assert_eq!(
+            entries[0]["chat_capable"], true,
+            "能力表は server が SSOT — client に engine 名の分岐を作らない"
         );
 
-        // vp だけ解決できるようになった = vp のみ再送し、保留から抜ける。
-        let ready = drain_resolvable_fetches(&mut pending, |lane| lane.starts_with("vp/"));
-        assert_eq!(ready, vec!["vp/root".to_string()]);
-        assert_eq!(
-            pending.iter().collect::<Vec<_>>(),
-            vec![&"other/root".to_string()],
-            "未解決の lane は次の snapshot まで保留のまま"
+        assert_eq!(entries[1]["key"], 24);
+        assert_eq!(entries[1]["root"], false);
+        assert_eq!(entries[1]["focused"], false);
+        assert_eq!(entries[1]["act"], "tui");
+        assert!(
+            entries[1]["engine_session_id"].is_null(),
+            "会話 id 未発番（Draft / shell）は null"
         );
-
-        // 再送済みの lane は二度と出てこない（LanesLoaded 毎の重複要求を防ぐ）。
-        assert!(drain_resolvable_fetches(&mut pending, |_| true).len() == 1);
-        assert!(pending.is_empty());
-        assert!(drain_resolvable_fetches(&mut pending, |_| true).is_empty());
+        assert_eq!(entries[1]["chat_capable"], false);
     }
 
     /// registry snapshot 付きの最小 LaneInfo（wire と同じ JSON 形で組む）。
@@ -1823,25 +1840,51 @@ fn term_sessions_of(lane: &crate::client::LaneInfo) -> Vec<(u32, bool)> {
     }
 }
 
-/// 保留した session 一覧要求のうち「今なら project を解決できる」ものを取り出す。
+/// roster を webview へ渡す（`vpConsole.handleSessionList` → `vp:echoes-sessions`）。
 ///
-/// 戻り値 = 再送する lane（保留箱からは除く）。まだ解決できない lane は保留に残し、次の
-/// snapshot で再挑戦する（lane が消えれば永久に解決せず残るが、集合なので増えはしない）。
-/// event loop から切り出してあるのは、boot 窓の再送は**実機でしか踏まない**ため — 純粋関数に
-/// しておかないとテストで固定できない（2026-07-25 の「pane も名札も出ない」の再発防止）。
-fn drain_resolvable_fetches(
-    pending: &mut std::collections::HashSet<String>,
-    resolvable: impl Fn(&str) -> bool,
-) -> Vec<String> {
-    let ready: Vec<String> = pending
-        .iter()
-        .filter(|lane| resolvable(lane))
-        .cloned()
-        .collect();
-    for lane in &ready {
-        pending.remove(lane);
+/// doc 53 §11: 呼び手は LanesLoaded の 1 箇所だけ（旧実装は動詞ごとの再取得 7 箇所から
+/// 撃っていた — 供給路が 2 本ある構造そのものだった）。
+fn push_session_list(webview: &wry::WebView, lane: &str, payload: &serde_json::Value) {
+    let script = format!(
+        "window.vpConsole && window.vpConsole.handleSessionList({}, {})",
+        serde_json::to_string(lane).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(payload).unwrap_or_else(|_| "null".into()),
+    );
+    if let Err(e) = webview.evaluate_script(&script) {
+        tracing::warn!("vpConsole.handleSessionList 失敗 (lane={lane}): {e}");
     }
-    ready
+}
+
+/// doc 53 §11: lane snapshot の roster を webview の session 一覧 payload に写す（純関数）。
+///
+/// **roster の供給はこの 1 本**。旧実装は `echoes_session_list` の ask 結果を流していたが、
+/// その fetch は「lane を開いた時 / GUI 自身が動詞を撃った後 / boot 窓の再送」でしか走らず、
+/// **CLI・MCP 由来の session 変化が pane grid に出なかった**（doc 53 §11.1）。snapshot は
+/// server が動詞の末尾で push する（`emit_lane_update`）ので、誰が起こした変化でも届く。
+///
+/// payload の形は webview 契約（`vpConsole.handleSessionList`）そのまま — 供給路を差し替える
+/// だけで消費側（tab strip / pane grid / 名札）は無改造。`root` / `focused` は entry の
+/// bool に展開する（webview は entry ごとの flag で読む）。
+fn session_list_payload(
+    lane: &str,
+    sessions: &crate::client::LaneSessionsWire,
+) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = sessions
+        .sessions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "key": s.key,
+                "stand": s.stand,
+                "engine_session_id": s.conversation,
+                "focused": s.key == sessions.focused,
+                "root": s.key == sessions.root,
+                "act": s.act,
+                "chat_capable": s.chat_capable,
+            })
+        })
+        .collect();
+    serde_json::json!({ "lane": lane, "focused": sessions.focused, "sessions": entries })
 }
 
 /// lane address から root session key を引く（snapshot 由来。不明は 1 = 従来の既定）。
@@ -3518,15 +3561,17 @@ pub fn run() -> anyhow::Result<()> {
     // terminal と違い demand-driven: EchoesSubmit の初回で lazy spawn (reconcile 非結合)。
     let mut echoes_sessions: std::collections::HashMap<String, LaneEchoes> =
         std::collections::HashMap::new();
-    // doc 50 §4.6 A6: **取りこぼした session 一覧要求**の保留箱（lane address）。
-    // webview は lane を開くとき `echoes:sessions_fetch` を撃つが、boot 直後は
-    // `lanes_by_project` が空で project を解決できず捨てられ、**再試行の契機が無い**。
-    // A6 で pane の顔ぶれ（roster）が session 一覧に全面依存するようになったため、
-    // 1 回の取りこぼしが「pane も名札も出ない」に化ける（2026-07-25 実機で観測。A6 以前は
-    // lane 単位 mode から導出でき boot 既定が偶然正しかった）。捨てずにここへ積み、
-    // project が解決できるようになる契機 = LanesLoaded で送り直す。
-    let mut pending_session_fetch: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    // doc 53 §11: lane ごとに **最後に webview へ渡した roster** の指紋。定期 snapshot で
+    // 同じ roster を撃ち直して pane を作り直さないための変化検知（`header_lane_fields_changed`
+    // と同じ「変化時のみ push」の規律）。
+    //
+    // ⚠️ 旧実装にはここに **取りこぼした fetch の保留箱**（`pending_session_fetch`）が在った。
+    // 供給が fetch 1 本だった時代、boot 直後の要求が project 未解決で捨てられると
+    // 「pane も名札も出ない」になり、再試行の契機が無かったため箱で救っていた。
+    // 供給が snapshot（retained + 変化時 push）に一本化された今、取りこぼしという状態自体が
+    // 存在しない（doc 53 §6.5.2 が予言した「供給路を 1 本にすれば要らない」）。
+    let mut last_roster_push: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
@@ -4102,15 +4147,31 @@ pub fn run() -> anyhow::Result<()> {
                         &world_conn,
                     );
                 }
-                // doc 50 §4.6 A6: 保留した session 一覧要求を送り直す（boot 窓の救済）。
-                // LanesLoaded = 「project が解決できるようになった」契機。同じ
-                // `EchoesSessionsFetch` として event loop に戻すので、要求の作り方は 1 箇所の
-                // ままで経路が二重化しない。
-                for lane in drain_resolvable_fetches(&mut pending_session_fetch, |lane| {
-                    resolve_project_path_for_lane(&sidebar_state, lane).is_some()
-                }) {
-                    tracing::info!("echoes:sessions_fetch 再送 — project 解決 (lane={lane})");
-                    let _ = async_action_proxy.send_event(AppEvent::EchoesSessionsFetch { lane });
+                // doc 53 §11: **roster の供給点はここ 1 本**（旧 `echoes_session_list` fetch は
+                // 退役）。snapshot は server が動詞の末尾で push する（`emit_lane_update`）ので、
+                // GUI 自身が起こした変化も CLI / MCP 由来の変化も同じ道で届く。
+                //
+                // 変化した lane だけ push する（LanesLoaded は定期 snapshot でも走る高頻度 event。
+                // 毎回撃つと webview が roster を作り直して pane が無用に再配置される）。
+                // 判定の規律は上の `active_header_refresh` と同型 = 「変化時のみ push」。
+                if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
+                    for lane in lanes_for_proj {
+                        let Some(sessions) = lane.sessions.as_ref() else {
+                            continue;
+                        };
+                        let addr = lane.address.key();
+                        let payload = session_list_payload(&addr, sessions);
+                        let fingerprint = payload.to_string();
+                        if last_roster_push.get(&addr) == Some(&fingerprint) {
+                            continue;
+                        }
+                        last_roster_push.insert(addr.clone(), fingerprint);
+                        push_session_list(&webview, &addr, &payload);
+                    }
+                }
+                // 消えた lane の指紋も落とす（同名再作成で「変化なし」と誤判定しないため）。
+                for addr in &removed_addrs {
+                    last_roster_push.remove(addr);
                 }
             }
             // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
@@ -4718,7 +4779,6 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("console:new_session skip — lane の project 解決失敗 (lane={lane})");
                     return;
                 };
-                let proxy = async_action_proxy.clone();
                 let port = crate::client::default_world_port();
                 // doc 46 P2 要件 4: Act は**明示指定を優先**し、無ければ lane の現 Act を継ぐ。
                 // 未知の値（typo 等）は継承に倒す — 「指定したのに黙って別の Act で作られた」より
@@ -4765,27 +4825,15 @@ pub fn run() -> anyhow::Result<()> {
                             return;
                         }
                         tracing::info!("console:new_session ok（chat, new draft）: lane={lane}");
-                        // 3. 一覧を取り直して tab strip + focusedOf を authoritative（新 draft）に更新。
-                        //    demand_start より先に送る — 逆順だと session filter が旧 focused のまま
-                        //    replay_start を落として会話が clear されない（focus 切替と同じ順序規律）。
-                        match world_process_request(
-                            port,
-                            &path,
-                            "echoes_session_list",
-                            serde_json::json!({ "lane": &lane }),
-                        )
-                        .await
-                        {
-                            Ok(payload) => {
-                                let _ = proxy.send_event(AppEvent::EchoesSessionList {
-                                    lane: lane.clone(),
-                                    payload,
-                                });
-                            }
-                            Err(e) => tracing::warn!(
-                                "echoes_session_list（new_session 後）失敗 (lane={lane}): {e}"
-                            ),
-                        }
+                        // 3. roster（tab strip / focusedOf）の更新は **snapshot が運ぶ**
+                        //    （doc 53 §11。server の `emit_lane_update` → LanesLoaded）。
+                        //
+                        //    ⚠️ 旧実装はここで一覧を取り直し「demand_start より先に送る」順序を
+                        //    守っていた。その理由（session filter が旧 focused のまま replay_start を
+                        //    落とす）は **A6 で消えている** — event は focused で捨てず session ごとの
+                        //    store に振り分けるようになった（doc 50 §4.3 #2 / `foldEvent`）。
+                        //    roster が数十 ms 遅れて届いても、表示先が切り替わるのが僅かに遅れるだけで
+                        //    event は落ちない。
                         // 4. demand_start で新 focused（Draft）の replay を発火。no_session path でも
                         //    ReplayStart/End が届いて会話がクリアされる（doc 38 §4.2）。
                         if let Err(e) = world_process_request(
@@ -4820,27 +4868,8 @@ pub fn run() -> anyhow::Result<()> {
                                 tracing::info!(
                                     "console:new_session ok（tui, new slot）: lane={lane} session={session:?}"
                                 );
-                                // registry を取り直して roster（session 一覧）を authoritative に
-                                // 更新する。新 term pane はこの一覧から生える（root は動いていない
-                                // ので ConsoleSessionRenewed = 会話 clear は送らない）。
-                                match world_process_request(
-                                    port,
-                                    &path,
-                                    "echoes_session_list",
-                                    serde_json::json!({ "lane": &lane }),
-                                )
-                                .await
-                                {
-                                    Ok(payload) => {
-                                        let _ = proxy.send_event(AppEvent::EchoesSessionList {
-                                            lane: lane.clone(),
-                                            payload,
-                                        });
-                                    }
-                                    Err(e) => tracing::warn!(
-                                        "echoes_session_list（new_session 後）失敗 (lane={lane}): {e}"
-                                    ),
-                                }
+                                // roster（新 term pane が生える元）の更新は snapshot が運ぶ
+                                // （doc 53 §11）。root は動いていないので会話 clear も送らない。
                             }
                             Err(e) => tracing::warn!("console:new_session 失敗 (lane={lane}): {e}"),
                         }
@@ -4858,7 +4887,6 @@ pub fn run() -> anyhow::Result<()> {
                     );
                     return;
                 };
-                let proxy = async_action_proxy.clone();
                 let port = crate::client::default_world_port();
                 rt_handle.spawn(async move {
                     let payload = serde_json::json!({ "lane": &lane, "session": session });
@@ -4869,27 +4897,10 @@ pub fn run() -> anyhow::Result<()> {
                             tracing::info!(
                                 "console:switch_root ok: lane={lane} session={session}"
                             );
-                            // 切替後 registry を取り直して tab strip / picker を authoritative に
-                            // 更新してから replay を要求する（逆順だと session filter が旧 focused の
-                            // ままで replay を落とす — doc 38 Phase 2 の規律）。
-                            match world_process_request(
-                                port,
-                                &path,
-                                "echoes_session_list",
-                                serde_json::json!({ "lane": &lane }),
-                            )
-                            .await
-                            {
-                                Ok(payload) => {
-                                    let _ = proxy.send_event(AppEvent::EchoesSessionList {
-                                        lane: lane.clone(),
-                                        payload,
-                                    });
-                                }
-                                Err(e) => tracing::warn!(
-                                    "echoes_session_list（switch_root 後）失敗 (lane={lane}): {e}"
-                                ),
-                            }
+                            // roster（tab strip / picker）の更新は snapshot が運ぶ（doc 53 §11）。
+                            // 旧実装が守っていた「replay より先に一覧」の順序は A6 で不要に
+                            // なっている（event は session ごとの store に振り分けられる —
+                            // `ConsoleNewSession` の chat 分岐のコメント参照）。
                             if let Err(e) = world_process_request(
                                 port,
                                 &path,
@@ -4931,36 +4942,10 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
             }
-            // doc 38 Phase 2: session tab strip の一覧取得。ask echoes_session_list → 結果を
-            // EchoesSessionList で push back（vpConsole.handleSessionList が tab strip を描く）。
-            // project は対象 lane 自身から逆引き（#705 の active-lane レース教訓）。
-            Event::UserEvent(AppEvent::EchoesSessionsFetch { lane }) => {
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    // 捨てずに保留する（A6: 取りこぼし = pane も名札も出ない）。
-                    // LanesLoaded（project が解決できるようになる契機）で送り直す。
-                    tracing::info!(
-                        "echoes:sessions_fetch 保留 — lane の project 未解決 (lane={lane})"
-                    );
-                    pending_session_fetch.insert(lane);
-                    return;
-                };
-                let proxy = async_action_proxy.clone();
-                rt_handle.spawn(async move {
-                    match world_process_request(
-                        crate::client::default_world_port(),
-                        &path,
-                        "echoes_session_list",
-                        serde_json::json!({ "lane": &lane }),
-                    )
-                    .await
-                    {
-                        Ok(payload) => {
-                            let _ = proxy.send_event(AppEvent::EchoesSessionList { lane, payload });
-                        }
-                        Err(e) => tracing::warn!("echoes_session_list 失敗 (lane={lane}): {e}"),
-                    }
-                });
-            }
+            // doc 53 §11: 旧 `EchoesSessionsFetch`（webview → ask `echoes_session_list`）は退役。
+            // roster の供給は lanes snapshot 1 本（LanesLoaded の push）— fetch は GUI 自身の
+            // 動詞でしか撃たれず、CLI / MCP 由来の session 変化が pane に出なかった。
+            //
             // doc 38 Phase 2: 「+」からの新 session 作成。focus は送らない = backend 既定 true。
             // 作成後に一覧を取り直して tab strip に新 session を即反映（1 task で直列）。
             Event::UserEvent(AppEvent::EchoesSessionCreate { lane, stand }) => {
@@ -4968,12 +4953,13 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("echoes:session_create skip — lane の project 解決失敗 (lane={lane})");
                     return;
                 };
-                let proxy = async_action_proxy.clone();
                 rt_handle.spawn(async move {
                     let mut create = serde_json::json!({ "lane": &lane });
                     if let Some(s) = &stand {
                         create["stand"] = serde_json::Value::String(s.clone());
                     }
+                    // doc 53 §11: 動詞を撃つだけ。roster の更新は server の `emit_lane_update`
+                    // → lanes snapshot → LanesLoaded で届く（旧: ここで一覧を取り直していた）。
                     if let Err(e) = world_process_request(
                         crate::client::default_world_port(),
                         &path,
@@ -4983,22 +4969,6 @@ pub fn run() -> anyhow::Result<()> {
                     .await
                     {
                         tracing::warn!("echoes_session_create 失敗 (lane={lane}): {e}");
-                        return;
-                    }
-                    match world_process_request(
-                        crate::client::default_world_port(),
-                        &path,
-                        "echoes_session_list",
-                        serde_json::json!({ "lane": &lane }),
-                    )
-                    .await
-                    {
-                        Ok(payload) => {
-                            let _ = proxy.send_event(AppEvent::EchoesSessionList { lane, payload });
-                        }
-                        Err(e) => {
-                            tracing::warn!("echoes_session_list（create 後）失敗 (lane={lane}): {e}")
-                        }
                     }
                 });
             }
@@ -5030,7 +5000,6 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("echoes:session_focus skip — lane の project 解決失敗 (lane={lane})");
                     return;
                 };
-                let proxy = async_action_proxy.clone();
                 rt_handle.spawn(async move {
                     if let Err(e) = world_process_request(
                         crate::client::default_world_port(),
@@ -5045,25 +5014,8 @@ pub fn run() -> anyhow::Result<()> {
                         );
                         return;
                     }
-                    // 一覧を取り直して tab strip の focused を authoritative に確定させる。
-                    match world_process_request(
-                        crate::client::default_world_port(),
-                        &path,
-                        "echoes_session_list",
-                        serde_json::json!({ "lane": &lane }),
-                    )
-                    .await
-                    {
-                        Ok(payload) => {
-                            let _ = proxy.send_event(AppEvent::EchoesSessionList {
-                                lane: lane.clone(),
-                                payload,
-                            });
-                        }
-                        Err(e) => {
-                            tracing::warn!("echoes_session_list（focus 後）失敗 (lane={lane}): {e}")
-                        }
-                    }
+                    // tab strip の focused 確定は snapshot が運ぶ（doc 53 §11 — server の
+                    // `echoes_session_focus` が末尾で `emit_lane_update` を撃つ）。
                     // 新 focused の transcript replay を発火（session 省略 = focused に解決）。
                     // 応答は使わない（replay は topic 経由で ReplayStart として届く）。エラーは warn のみ。
                     if let Err(e) = world_process_request(
@@ -5086,7 +5038,6 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("echoes:session_remove skip — lane の project 解決失敗 (lane={lane})");
                     return;
                 };
-                let proxy = async_action_proxy.clone();
                 let port = crate::client::default_world_port();
                 rt_handle.spawn(async move {
                     if let Err(e) = world_process_request(
@@ -5103,25 +5054,7 @@ pub fn run() -> anyhow::Result<()> {
                         );
                         return;
                     }
-                    // 除去後の一覧を取り直して tab strip の focused を authoritative に確定させる。
-                    match world_process_request(
-                        port,
-                        &path,
-                        "echoes_session_list",
-                        serde_json::json!({ "lane": &lane }),
-                    )
-                    .await
-                    {
-                        Ok(payload) => {
-                            let _ = proxy.send_event(AppEvent::EchoesSessionList {
-                                lane: lane.clone(),
-                                payload,
-                            });
-                        }
-                        Err(e) => {
-                            tracing::warn!("echoes_session_list（remove 後）失敗 (lane={lane}): {e}")
-                        }
-                    }
+                    // 除去後の roster / focused は snapshot が運ぶ（doc 53 §11）。
                     // 除去後の新 focused の transcript replay を発火（session 省略 = focused に解決）。
                     if let Err(e) = world_process_request(
                         port,
@@ -5162,18 +5095,6 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     }
                 });
-            }
-            // doc 38 Phase 2: echoes_session_list の結果を tab strip へ push back。
-            // vpConsole.handleSessionList が per-lane に取り込み 'vp:echoes-sessions' を発火する。
-            Event::UserEvent(AppEvent::EchoesSessionList { lane, payload }) => {
-                let script = format!(
-                    "window.vpConsole && window.vpConsole.handleSessionList({}, {})",
-                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
-                    serde_json::to_string(&payload).unwrap_or_else(|_| "null".into()),
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("vpConsole.handleSessionList 失敗 (lane={lane}): {e}");
-                }
             }
             // doc 38 Phase 2: stands_list の結果を「+」menu へ push back。
             // doc 47 §6: 第 3 引数 = 要求元の相関 id。共有 bus の購読側はこれで振り分ける。

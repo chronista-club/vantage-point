@@ -11,4 +11,13 @@ stand: string,
 /**
  * この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
  */
-act: string, };
+act: string, 
+/**
+ * engine の会話 id（Draft = None）。session chip / tab の表示用（doc 53 §11）。
+ */
+conversation: string | null, 
+/**
+ * この session を Chat にできるか（能力表は server が SSOT = `EngineKind`）。
+ * 名札の kind badge がこれで gate する。旧 server は送らない → false（不可に倒す）。
+ */
+chat_capable: boolean, };

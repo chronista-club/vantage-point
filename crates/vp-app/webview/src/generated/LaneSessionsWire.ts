@@ -2,11 +2,13 @@
 import type { LaneSessionEntryWire } from "./LaneSessionEntryWire";
 
 /**
- * lane の session registry snapshot（server `session_registry::SessionRegistry` の wire 投影）。
+ * lane の session roster（server `lanes_state::LaneSessionsView` の鏡）。
  *
  * doc 50 §4.6 A6: 「どの session が root か」「各 session の act（tui/chat）」を boot 経路が
- * 読み、xterm を (lane, session) 単位で ensure するのに使う。読み取り専用なので必要な
- * field だけを写す（`next` 等は vp-app に読み手が無い = 写さない）。
+ * 読み、xterm を (lane, session) 単位で ensure するのに使う。
+ * **doc 53 §11: GUI の roster 供給はこれ 1 本**（旧 `echoes_session_list` の fetch は
+ * client から退役 — GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の変化が pane に
+ * 出なかった）。webview の tab strip / pane grid もここから流す。
  */
 export type LaneSessionsWire = { 
 /**

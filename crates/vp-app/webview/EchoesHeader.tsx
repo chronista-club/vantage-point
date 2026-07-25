@@ -37,6 +37,7 @@ import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import {
   isMyResponse,
   nextRequestId,
+  sessionListOf,
   type BusRequestId,
   type EchoesStandsDetail,
   type VpConsole,
@@ -247,7 +248,9 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     const rect = chip.getBoundingClientRect()
     setPickerPos({ x: rect.left, y: rect.bottom + 4 })
     setPickerOpen(true)
-    sendIpc({ t: 'echoes:sessions_fetch', lane })
+    // doc 53 §11: roster は lanes snapshot が運ぶ（旧: ここで `echoes:sessions_fetch` を撃って
+    // いた = 供給路 2 本目の入口）。picker は cache から拾う。
+    setSessions(sessionListOf(lane))
   }
 
   /** picker 行 click: 既存 session へ root を向け替え（backend が slot を Resume respawn）。 */
@@ -460,10 +463,12 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     setLane(next) {
       setCtx(next)
       setSummary(next ? vpConsole.headerState(next.addr) : {})
-      // lane が替わったら picker / + New menu は閉じ、一覧も捨てる（別 lane の session を誤表示しない）。
+      // lane が替わったら picker / + New menu は閉じ、一覧は **新 lane の cache** に張り替える
+      //（別 lane の session を誤表示しない / doc 53 §11: push は roster 変化時だけなので
+      // 「開いた時」は自分で cache を読む）。
       setPickerOpen(false)
       setNewMenu(null)
-      setSessions([])
+      setSessions(next ? sessionListOf(next.addr) : [])
       // strip の開閉（World A の DOM に触れる唯一の接点）: lane 文脈がある時だけ
       // #pane-terminal に .echoes-header-active を付け、main_area.rs の --echoes-header-h を
       // 0→30px にして strip を開く。無い時は高さ 0 = xterm/chat が全面（regression なし）。

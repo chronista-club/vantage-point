@@ -507,8 +507,8 @@ if (lanePanes && paneFrame) {
 // 旧実装は lane 単位 mode を引数に取っていたが、見え方が session の属性になったので
 // 「lane を開く」操作から mode の概念が消えた。
 const applyLaneView = (lane: string): void => {
-	// `showLane` は**必ず**呼ぶ（renderer attach + sessions_fetch）。session 一覧が届かないと
-	// pane の顔ぶれ（lanePaneRefs）が空のままになる。
+	// `showLane` は**必ず**呼ぶ（renderer attach）。roster 自体は lanes snapshot が運ぶ
+	// （doc 53 §11 — 旧: showLane の中で `sessions_fetch` を撃っていた）。
 	chatView.showLane(lane);
 	// doc 47 §3: Pane 構成は **lane ごと**（= engine の lane scope）。DOM host は app 共有
 	// なので、lane が変わったら新 lane の配置を DOM へ写し直す（これが無いと「どの lane に

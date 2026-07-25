@@ -297,12 +297,12 @@ pub enum AppEvent {
     /// Act II モデル切替要求（ChatView の model picker）。 event loop が
     /// `console_set_model` で SP に forward。 `model` None = claude default に戻す。
     ConsoleSetModel { lane: String, model: Option<String> },
-    /// doc 38 Phase 2: session tab strip の一覧取得要求（chat attach / 表示時）。
-    /// event loop が World process-proxy ask `echoes_session_list` → `EchoesSessionList` で push back。
-    EchoesSessionsFetch { lane: String },
+    // doc 53 §11: 旧 `EchoesSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
+    // lanes snapshot 1 本になった（fetch は GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の
+    // session 変化が pane grid に出なかった）。
     /// doc 38 Phase 2: chat header「+」からの新 session 作成（`stand` 省略 = lane の stand）。
-    /// ask `echoes_session_create`（focus は送らない = backend 既定 true）→ 続けて一覧を再取得して
-    /// push back（作成と一覧更新を 1 task で直列に）。
+    /// ask `echoes_session_create`（focus は送らない = backend 既定 true）。roster の更新は
+    /// server の `emit_lane_update` → lanes snapshot が運ぶ（doc 53 §11）。
     EchoesSessionCreate { lane: String, stand: Option<String> },
     /// replay demand（2026-07-24）: webview の renderer 準備完了後に撃つ消費者主導 demand。
     /// ask `echoes_demand_start` → SP が engine ensure + transcript replay を配送する。
@@ -321,12 +321,8 @@ pub enum AppEvent {
     /// 購読する共有 bus なので、要求元をそのまま往復させて応答側で振り分けさせる
     /// （Rust は中身を解釈しない不透明な札）。
     EchoesStandsFetch { lane: String, req: Option<String> },
-    /// doc 38 Phase 2: `echoes_session_list` の結果を webview の tab strip へ push back する内部 event
-    /// （async task → main thread の evaluate_script 橋渡し。`ConsoleModeApplied` と同型）。
-    EchoesSessionList {
-        lane: String,
-        payload: serde_json::Value,
-    },
+    // doc 53 §11: 旧 `EchoesSessionList`（ask 結果の push back）は退役。roster は LanesLoaded で
+    // snapshot から直接 webview へ渡す（`push_session_list`）。
     /// doc 38 Phase 2: `stands_list` の結果を「+」menu へ push back する内部 event。
     /// doc 47 §6: `req` は `EchoesStandsFetch` から持ち回った相関 id（そのまま JS へ返す）。
     EchoesStands {
@@ -512,14 +508,8 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             }
         }
         // doc 38 Phase 2: session tab strip。lane は常に別 field で運び、session を lane 名に
-        // 埋めない（doc 38 落とし穴①）。一覧取得 / 作成 / focused 切替 / stands 取得。
-        Some("echoes:sessions_fetch") => {
-            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                let _ = proxy.send_event(AppEvent::EchoesSessionsFetch {
-                    lane: lane.to_string(),
-                });
-            }
-        }
+        // 埋めない（doc 38 落とし穴①）。作成 / focused 切替 / stands 取得。
+        // 一覧取得（`echoes:sessions_fetch`）は doc 53 §11 で退役 — roster は snapshot が運ぶ。
         Some("echoes:session_create") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 // stand 省略 = lane の stand（backend 既定）。
