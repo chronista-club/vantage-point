@@ -358,6 +358,37 @@ A6 で作ったもののうち、**切る判断をすべきだった**もの:
 > の 3 択で、**既定は ①ではない**。判定基準は「**それが無いと user が困るか**」— replay の
 > 前画面は困らない（次の出力で戻る）/ ghost replay は困る（消したはずの画面が出る）。
 
+### 6.5.0 実機証拠 — R3 出荷後の dogfood で World A/B の穴が 3 件出た（2026-07-26）
+
+R3c 出荷直後（`VP_SWAP_RESTART_DAEMON=1 mise run app:swap`）に実機で確認したところ、
+**server 側は全経路で正しく、乖離は 3 件とも client 側に出た**。§6.5 が「reconcile はここに
+触れていない」と書いた通りの結果で、**次の設計ゲート（World A/B 再検証）の一次資料**になる。
+
+| # | 症状 | server 側の観測 | client 側の機構 |
+|---|---|---|---|
+| ① | **CLI から console を足すと pane は出るが中身が黒い**（GUI 再起動で描画される） | `lane reconcile (spawned=1)` → `terminal pump reconcile (attached=1)` → `terminal pump replay: N bytes 配送` = **全部正常** | `handleOutput` が `laneInstances` に無い session の出力を**黙って捨てる**（`if (!info) return`）。動的に増えた session の xterm 実体が作られていない |
+| ② | **lane を切り替えて戻ると term pane が GUI から消える** | `vp lane slots` は slot alive のまま | roster から pane を出す World B と、host を持つ World A の同期漏れ |
+| ③ | **root picker で chat session を選ぶと `focused` だけ動いて `root` が動かない** | `chat session focus: session=16`（`switch root session` が来ていない） | tui を選ぶと両方動く。backend は A6 で lane 単位 act の gate を撤去済なので、**分岐は client 側にだけ残っている** |
+
+**①は [[gate-hid-a-second-bug]] の実例**: #910（roster 供給 1 本化）で「CLI 由来の console が
+GUI に出ない」を直した結果 pane が出るようになり、**その向こうに隠れていた配線漏れ**が露出した。
+#910 以前は pane 自体が出なかったので、この穴は**到達不能で隠れていた**。
+
+**症状の出方が非対称**なのが厄介な点: ①は **boot 経路（GUI 起動）では正しく配線される**ので、
+再起動すれば直る = 「たまに黒い」という報告になり原因が掴みにくい。
+
+> R3 で server 側の intent↔実体が 1 本に収束したぶん、**残る乖離が client 側に集中して見える**
+> ようになった。これは §6.5 の「もう半分」がそのまま残っている、という測定結果でもある。
+
+#### 併せて確認できた R3c の正しさ（同じ dogfood 回）
+
+| 動詞 | 実機の観測 |
+|---|---|
+| boot reconcile | root=chat → `0 slot`（engine-less が正常形）を intent から導出 |
+| Add console（CLI） | `lane reconcile (spawned=1)` + pump + replay、GUI の roster にも反映 |
+| **Switch root** | registry の代表だけ移動し、**slot の pid は 2 枚とも不変**（旧実装は root slot を張り替えていた = §12.4 の狙いどおり） |
+| **✕** | `session remove` → `pump reconcile (removed=1, **kept=1**)` → `lane reconcile (dropped_slots=1)`。**閉じた側だけ消えて隣は無傷** |
+
 ### 6.5.3 必要な複雑さ（過剰修正しないための線）
 
 逆に、**畳んではいけない**もの:
