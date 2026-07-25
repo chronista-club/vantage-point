@@ -919,9 +919,11 @@ async fn handle_echoes_demand_start(
     // A6 の正規構成で `not_chat` を返し、ReplayStart すら送らずに会話が復元されなかった
     // （team-b review 2026-07-25、score 92。§4.7「共通形は lane 単位で判断している箇所」の同型）。
     // lane 不在は graceful に not_chat（従来挙動の温存 — Err にすると boot 窓で騒がしい）。
+    // doc 53 §8.4: 旧実装は `console_mode(addr).is_none()` を「lane 実在」の signal に流用
+    // していた（値は不使用）。存在 check を明示形にする。
     let resolved = {
         let pool = state.lane_pool.read().await;
-        if pool.console_mode(&addr).is_none() {
+        if !pool.contains(&addr) {
             return Ok(serde_json::json!({"status": "not_chat", "lane": lane}));
         }
         let resolved = pool
@@ -1942,8 +1944,9 @@ async fn handle_lane_capture(
         Some(c) => c,
         None => {
             // capture 不能の理由を分岐して UX 混乱を減らす（dogfood 2026-07-19: chat mode lane で
-            // 一律「lane 不在 or console 未配線」に混乱した）。chat mode lane は term_attach 無しが
-            // 正常なので、pool に実在して console_mode==Chat なら「Act I に切り替えよ」と案内する。
+            // 一律「lane 不在 or console 未配線」に混乱した）。chat lane は term_attach 無しが
+            // 正常なので、pool に実在して root の act（registry 直読、doc 53 R1）が Chat なら
+            // 「Act I に切り替えよ」と案内する。
             // doc 46 P5: slot が複数枚になったので「その lane には何枚あるか」も添える
             // （--session の指し先が無い時に、存在する session key が判る）。
             let available = pool.slot_sessions(&addr);
@@ -1953,8 +1956,8 @@ async fn handle_lane_capture(
                     session.unwrap_or(0),
                     available
                 ),
-                Some(info)
-                    if info.console_mode == crate::lane::session_registry::SessionAct::Chat =>
+                Some(_)
+                    if pool.root_act(&addr) == crate::lane::session_registry::SessionAct::Chat =>
                 {
                     format!(
                         "lane_capture: chat mode の lane に console はありません（Act I に切り替えると capture できます）: {lane}"
@@ -3608,6 +3611,9 @@ mod tests {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::process::state::build_test_app_state;
 
+        // doc 53 R1: chat 案内の分岐が registry（root_act）直読になったため、state dir を
+        // 隔離して registry に書く（隔離しないと実 state を読み書きしてしまう）。
+        let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         let res = dispatch_process_method(&state, "lane_capture", serde_json::json!({})).await;
         assert!(res.is_err(), "lane 未指定は Err: {res:?}");
@@ -3632,13 +3638,20 @@ mod tests {
             "pool 不在は『lane 不在』を返す: {err}"
         );
 
-        // pool に実在するが console_mode==Chat の lane = 「chat mode の lane に console はありません」。
+        // pool に実在して root act==Chat の lane = 「chat mode の lane に console はありません」。
         // chat lane は term_attach を持たないので capture_lane は None だが、これは正常状態。
+        // act は registry（SSOT）に書く — 案内分岐の読み手（root_act 直読）と同じ経路を通す。
         let addr = LaneAddress::performer("vp", "chat-x");
+        crate::lane::session_registry::set_root_act(
+            "vp",
+            "chat-x",
+            "echoes",
+            crate::lane::session_registry::SessionAct::Chat,
+        )
+        .expect("test registry へ root act を書けること");
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
-                console_mode: crate::lane::session_registry::SessionAct::Chat,
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
@@ -3699,7 +3712,6 @@ mod tests {
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
-                console_mode: crate::lane::session_registry::SessionAct::Tui,
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
@@ -3803,7 +3815,6 @@ mod tests {
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
-                console_mode: crate::lane::session_registry::SessionAct::Tui,
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
@@ -3938,9 +3949,9 @@ mod tests {
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
 
-        // console_mode=Chat の performer LaneInfo を組む（Chat なので drop/ensure engine は走らない）。
+        // performer LaneInfo を組む（chat engine 不在なので drop→ensure の engine 入替は
+        // no-op — drop_chat_engine が false を返し ensure は走らない）。
         let build = |name: &str, stand: &str| LaneInfo {
-            console_mode: crate::lane::session_registry::SessionAct::Chat,
             id: Default::default(),
             address: LaneAddress::performer("vp", name),
             state: LaneState::Running,
@@ -4037,7 +4048,6 @@ mod tests {
             let mut pool = state.lane_pool.write().await;
             // delete は lanes map (LaneInfo) を remove するので LaneInfo + PtySlot 両方を登録する。
             pool.insert(LaneInfo {
-                console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
@@ -4157,7 +4167,6 @@ mod tests {
         let state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         state.lane_pool.write().await.insert(LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::root("vp"),
             state: LaneState::Running,
@@ -4216,7 +4225,6 @@ mod tests {
         let state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         state.lane_pool.write().await.insert(LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::root("vp"),
             state: LaneState::Running,
@@ -4291,7 +4299,6 @@ mod tests {
         let state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         state.lane_pool.write().await.insert(LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::root("vp"),
             state: LaneState::Running,
@@ -4509,8 +4516,11 @@ mod tests {
     ) -> crate::process::lanes_state::LaneAddress {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
         let addr = LaneAddress::root(project);
+        // doc 53 R1: act の SSOT は registry（pool cache は退役）。テストも registry に書いて
+        // 読み手（root_act 直読）と同じ経路を通す。
+        crate::lane::session_registry::set_root_act(project, "root", "echoes", mode)
+            .expect("test registry へ root act を書けること");
         state.lane_pool.write().await.insert(LaneInfo {
-            console_mode: mode,
             id: Default::default(),
             address: addr.clone(),
             state: LaneState::Running,
@@ -4778,7 +4788,6 @@ mod tests {
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
-                console_mode: crate::lane::session_registry::SessionAct::Tui,
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
@@ -4895,16 +4904,18 @@ mod tests {
         .expect("tui→chat ok");
         assert_eq!(res["act"], "chat");
         assert_eq!(res["session"], root);
-        // registry（disk SSOT）に act が永続し、root cache も追従する。
+        // registry（disk SSOT）に act が永続し、読み手（root_act 直読）が新しい値を見る。
+        // doc 53 R1: 旧 root cache は退役 — 「cache も追従する」の性質は「読み手が SSOT を
+        // 直読する」に言い直された（§8.6: テストの消滅 = 性質の消滅にしない）。
         assert_eq!(
             session_registry::root_act(&addr.project, "root"),
             SessionAct::Chat,
             "root session の act が registry に永続する"
         );
         assert_eq!(
-            state.lane_pool.read().await.console_mode(&addr),
-            Some(SessionAct::Chat),
-            "root 切替は root cache（boot spawn / nudge 配送の特例）も更新する"
+            state.lane_pool.read().await.root_act(&addr),
+            SessionAct::Chat,
+            "boot spawn / nudge 配送が使う読み手（pool.root_act）が新しい act を見る"
         );
 
         // 同一 act への再切替は no-op Ok。

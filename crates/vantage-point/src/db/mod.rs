@@ -2223,7 +2223,6 @@ mod tests {
 
         // テスト用 LaneInfo builder (live 値 pid は埋めるが、 検証は descriptor 中心)。
         let mk = |project: &str, name: &str| LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::new(project, name),
             state: LaneState::Running,

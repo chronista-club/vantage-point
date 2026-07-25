@@ -128,10 +128,9 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
         }
         lanes.push(LaneInfo {
-            // doc 47 §4: root session の act を honor。 Default (=Tui) で埋めると
-            // 再起動直後の boot 窓で chat lane が "tui" として snapshot に載り、 その窓で
-            // vp-app が active lane を復元すると Act II の lane が xterm で開いてしまう。
-            console_mode: crate::lane::session_registry::root_act(&project, &entry.name),
+            // doc 53 R1: boot 窓の act は `sessions`（下の refresh_engine_session_id が registry
+            // から populate）で運ぶ — 旧 console_mode 投影は退役。vp-app は sessions から root の
+            // act を導出して「chat lane を xterm で開く」誤復元を防ぐ（doc 47 §4 の性質は不変）。
             id: crate::lane::lane_id::load_or_create(&project, &entry.name),
             address,
             state: crate::process::lanes_state::LaneState::Spawning,
@@ -418,7 +417,6 @@ pub(crate) async fn create_performer_orchestrated(
             return Err(format!("Lane {} already exists", addr));
         }
         pool.insert(LaneInfo {
-            console_mode: Default::default(),
             id: lane_id.clone(),
             address: addr.clone(),
             state: LaneState::Spawning,
@@ -454,7 +452,6 @@ pub(crate) async fn create_performer_orchestrated(
         state,
         &db_key,
         &LaneInfo {
-            console_mode: Default::default(),
             id: lane_id.clone(),
             address: addr.clone(),
             // process liveness: PtySlot は未起動 (= lifecycle と別軸)
@@ -658,7 +655,6 @@ pub(crate) async fn create_performer_orchestrated(
     // I1: performer の安定 id は reserve 時に load_or_create 済 (address = project + name で決まる
     // 決定的な値なので、reservation・intent・確定 descriptor の 3 者で同じものを使う)。
     let info = LaneInfo {
-        console_mode: Default::default(),
         id: lane_id,
         address: addr.clone(),
         state: lane_state,
@@ -994,9 +990,12 @@ pub async fn restart_lane_orchestrated(
                 // fresh 直後に新 session_init が届き「新品になった」フィードバックが即出る
                 // （resume の開始も早い）。失敗しても restart 自体は成功扱い、次 submit の
                 // self-heal で再試行される。
-                let is_chat = state.lane_pool.read().await.get(&addr).is_some_and(|i| {
-                    i.console_mode == crate::lane::session_registry::SessionAct::Chat
-                });
+                // doc 53 R1: 分岐は root の act = registry 直読（実在 check は従来どおり pool）。
+                let is_chat = {
+                    let pool = state.lane_pool.read().await;
+                    pool.contains(&addr)
+                        && pool.root_act(&addr) == crate::lane::session_registry::SessionAct::Chat
+                };
                 if is_chat {
                     let mut pool = state.lane_pool.write().await;
                     if let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router) {
@@ -1276,7 +1275,6 @@ mod core_tests {
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
-                console_mode: Default::default(),
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Spawning,
@@ -1403,7 +1401,6 @@ mod core_tests {
         let addr = LaneAddress::performer("vp-intent", "sub");
 
         let mut info = LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: addr.clone(),
             state: LaneState::Spawning,
@@ -1477,7 +1474,6 @@ mod core_tests {
         .await;
         let addr = LaneAddress::performer("vp-delete", "sub");
         let info = LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: addr.clone(),
             state: LaneState::Running,

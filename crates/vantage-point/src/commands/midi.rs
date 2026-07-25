@@ -1209,7 +1209,6 @@ mod tests {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
         let make = |name: &str| LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::new("vp", name),
             state: LaneState::Running,
