@@ -1343,11 +1343,22 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     const inst = createLaneInstance(address, session, !!isRoot);
     if (inst) {
       laneInstances.set(key, inst);
+      // **表示中 lane の instance は生まれた時点で active**。`.active` を付けるのは元々
+      // `showLane` だけで、それは lane 切替でしか呼ばれない — 表示中の lane に session を
+      // 足すと instance は出来て出力も届くのに `display:none` のままで**黒い pane** になる
+      // （doc 53 §6.5.0 ①、2026-07-26 実機）。fit は ResizeObserver が拾う
+      // （`showLane` と同じ「幅 0 なら見送り、次の resize で復帰」の既定）。
+      if (address === shownLane) inst.container.classList.add('active');
       dbg('[lane:' + key + '] ensured');
     }
   };
 
+  /** 今どの lane を見せているか（`showLane` が書く level）。`ensureLane` が読む —
+   *  表示中 lane に後から生まれた instance を active にするため。 */
+  let shownLane = null;
+
   window.showLane = function(address, isChat) {
+    shownLane = address;
     // empty placeholder は「Lane が選ばれていない」時だけ出す。
     //  Act I (tui): 内容 = xterm instance。 未 ensure (Dead lane 等) なら placeholder。
     //  Act II (chat): 内容 = ChatView。 xterm instance を持たないのが正常形なので、
