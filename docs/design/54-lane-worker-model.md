@@ -58,6 +58,7 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
 | — | 観測の trigger は PTY 入力 | 「PTY への入力のデータを観測するのはどう？」 |
 | — | enrich は hooks でなく fs 痕跡（→ 批判的分析で「必須にしない」へ精緻化、§3.7） | 「cc の hook に頼るのはなんか正確性・拡張性がなさそうな雰囲気する」 |
 | — | `\|\|` fallback は構文でなく policy | 「claude --resume X \|\| claude ←これって扱いづらくない？」「問題が隠蔽されやすい」 |
+| — | **既定のレンズは Chat**（新 root / 新 lane）+ **既定は claude × Opus** | 「安定してなかったから tui だったけど、ここからは安定して動かせる土台が築けるので、われわれの ChatView 採用しちゃおうぜ」「新 root や、デフォルトの root は、chat にしよう」「モデルはもちろん CC & Opus で」 |
 
 ---
 
@@ -83,6 +84,13 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
   （3 箇所の check で守っていた規則）は、この定義に**吸収**される
 - act（レンズ）は可変。shell の act が tui のみなのは禁止でなく**定義**
   （chat レンズには映す会話が無い）
+- **既定のレンズは Chat**（2026-07-25 決定）: 新 root / 新 lane の仕込みは Chat で書く
+  （旧「新 root は必ず Tui」は安定性の都合による暫定 — 土台が整った今、既定は自前の
+  ChatView）。⚠️ 2 つの既定を混ぜない: **生成の既定 = Chat（雇用時に registry へ明示的に
+  書く）** / **欠損の解釈 = Tui のまま**（registry 不在・旧 wire の fallback は歴史的事実に
+  従う — 昔の lane は tui だった。`SessionAct::default()` は反転させない）。
+  随伴: Act II parity gap（permission / AskUserQuestion 相当 / diff）が critical path に昇格。
+  実装は R1 の後の独立 PR（behavior change を refactor に混ぜない）
 
 ### 3.2 pane（見え方）
 
@@ -358,3 +366,9 @@ R1（console_mode 廃止 — 着手済、本地図と整合）
    prompt に留めて人間に委ねるか。boot（N 席復元）と単発 restart で既定を変えるか
 10. **養子縁組の可視化**: 観測が仕込み（intent）を書き換える逆矢印は**名札に見える**こと
     （表象の共有 — 見えない intent 変更は boot で驚きを生む）。自動継承の代表交代も同様
+11. **既定 Chat × claude × Opus の実装**（R1 後の独立 PR）: create 動詞群の act 引数
+    （`prepare_new_root_session` の Tui 固定解除 / with_root / performer 生成が Chat を
+    明示的に書く）+ 既定 model の注入方式（VP が `-m opus` を明示するか、claude 側の
+    ユーザー既定を尊重して VP picker の初期表示だけ Opus にするか — 前者は user 設定を
+    上書きする。実装時に決める）+ `MODEL_CHOICES` の鮮度（Opus 5 が表に無い問題は
+    handoff-add-menu-polish ②' と同じ束）。随伴 = Act II parity gap の昇格（§3.1）
