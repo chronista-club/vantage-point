@@ -56,6 +56,9 @@ pub struct LaneReconcile {
     pub dropped_engines: usize,
     /// spawn に失敗した数（intent は残る = 次の契機で再試行）。
     pub failed: usize,
+    /// 最後の spawn 失敗の理由（呼び手が user に見せる用。R3c-2 — restart の orchestration が
+    /// 動詞の `Err` を返せなくなったので、診断をここで運ぶ）。
+    pub last_error: Option<String>,
 }
 
 impl LaneReconcile {
@@ -162,10 +165,12 @@ pub async fn reconcile_lane(
                 // doc 53 §12.2: intent は残す（registry から消さない）。次の契機で再試行される。
                 tracing::warn!("reconcile: slot spawn 失敗（intent は残す）: addr={addr}: {e}");
                 result.failed += 1;
+                result.last_error = Some(e.to_string());
             }
             Err(join) => {
                 tracing::warn!("reconcile: spawn task が落ちた: addr={addr}: {join}");
                 result.failed += 1;
+                result.last_error = Some(join.to_string());
             }
         }
     }

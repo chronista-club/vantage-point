@@ -1453,27 +1453,23 @@ async fn handle_echoes_session_new_root(
         .ok_or_else(|| format!("echoes_session_new_root: lane パース失敗: {lane}"))?;
     let key = state
         .lane_pool
-        .write()
+        .read()
         .await
-        .prepare_new_root_session(&addr, payload.get("stand").and_then(|v| v.as_str()))
+        .create_root_session(&addr, payload.get("stand").and_then(|v| v.as_str()))
         .map_err(|e| format!("echoes_session_new_root: {e}"))?;
-    // registry は新 root へ切替済み（原子的な 1 save）。以降の slot 張り替えが失敗しても registry は
-    // 先行して整合 — 次の respawn / restart（Resume 経路）でも未発話の非 #1 root は
-    // build_stand_command が bare に倒すため（--continue 混入防止）、新 root の新品として
-    // 立ち直る。Err は spawn 失敗として caller に返す。
-    super::routes::lanes::restart_lane_orchestrated(
-        state,
-        addr,
-        crate::process::lanes_state::RespawnMode::Follow,
-    )
-    .await?;
+    // doc 53 §12.4 R3c-2: **旧 root の console は残る**。旧実装は restart_lane_orchestrated で
+    // root slot を張り替えていたので、代表が変わるたびに前の pane が消えていた — session =
+    // Pane（doc 50）の今、代表の変更は pane の破棄ではない。reconcile は新 root の実体を
+    // 足すだけ（新 root は会話 id を持たないので bare で立つ）。
+    reconcile_lane(state, &addr).await;
+    super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
 /// doc 39 P3: Root 切替 picker — root を既存 session へ向け替え、slot をその session の store で
 /// resume 張り替えする（`{lane, session}` → `{lane, session}`）。旧 root の会話はタブに残存 =
 /// 非破壊。lane 単位 act の gate は A6 で撤去（残る制限は既知 engine のみ —
-/// `prepare_switch_root_session` 参照）。new_root（Bare = 素の engine）との違いは respawn が
+/// `switch_root_session` 参照）。new_root（Bare = 素の engine）との違いは respawn が
 /// [`RespawnMode::Follow`]（対象 session の会話に slot が化身する）である点のみ。
 ///
 /// [`RespawnMode::Follow`]: crate::process::lanes_state::RespawnMode::Follow
@@ -1494,18 +1490,16 @@ async fn handle_echoes_session_switch_root(
         .ok_or_else(|| format!("echoes_session_switch_root: lane パース失敗: {lane}"))?;
     state
         .lane_pool
-        .write()
+        .read()
         .await
-        .prepare_switch_root_session(&addr, key)
+        .switch_root_session(&addr, key)
         .map_err(|e| format!("echoes_session_switch_root: {e}"))?;
-    // registry は切替済み（1 save 原子）。slot 張り替えが失敗しても registry は先行して整合 —
-    // 次の respawn / restart（Resume 経路）で同じ root に立ち直る。
-    super::routes::lanes::restart_lane_orchestrated(
-        state,
-        addr,
-        crate::process::lanes_state::RespawnMode::Follow,
-    )
-    .await?;
+    // doc 53 §12.4 R3c-2: 対象 session の pane は**既に在る**ので、reconcile から見て
+    // desired は変わらない = 実体には何も起きないのが正しい（旧実装は root slot を対象 session の
+    // 会話で張り替えていた = 代表の変更を化身の置き換えと混同していた）。呼ぶのは
+    // 「契機は判断を持たない」の規律と、代表値（pid / state）の導出をやり直すため。
+    reconcile_lane(state, &addr).await;
+    super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
@@ -2001,20 +1995,22 @@ async fn handle_lane_restart(
         .filter(|s| !s.is_empty())
         .ok_or("lane_restart: address 必須")?;
     // fresh default=false (旧 RestartLaneQuery の #[serde(default)] と一致)。wire は bool のまま
-    // （fresh=true = Reset lane / false = 会話を継ぐ）— Bare は wire に出さない（New root 専用の
-    // 内部 mode で、echoes_session_new_root だけが使う）。
+    // （fresh=true = Reset lane / false = 会話を継ぐ）。
+    //
+    // R3c-2: server 側では `RespawnMode` ではなく**別の動詞**に分かれた（restart = 実体だけ
+    // 捨てる / Reset = intent ごと素に戻す）。wire の bool は互換のため維持 — client の語彙を
+    // 変える話は doc 54 の schema 束で扱う。
     let fresh = payload
         .get("fresh")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let mode = if fresh {
-        crate::process::lanes_state::RespawnMode::Reset
-    } else {
-        crate::process::lanes_state::RespawnMode::Follow
-    };
     let addr = crate::process::lanes_state::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
-    super::routes::lanes::restart_lane_orchestrated(state, addr, mode).await
+    if fresh {
+        super::routes::lanes::reset_lane_orchestrated(state, addr).await
+    } else {
+        super::routes::lanes::restart_lane_orchestrated(state, addr).await
+    }
 }
 
 /// 供給 push 根治（session chip 凍結、2026-07-17）: engine session pointer の変化通知。

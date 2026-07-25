@@ -953,116 +953,126 @@ pub(crate) async fn emit_lane_update(state: &AppState, addr: &LaneAddress) {
     }
 }
 
-/// VP-131 / F6③ (doc 27 §3.4.5/§6): Lane restart の透過 retry orchestration を関数化
-/// (`delete_lane_orchestrated` と対称)。 旧 `restart_handler` (HTTP) の retry loop を移植し、
-/// process-proxy ask `lane_restart` が呼ぶ core logic に。 SP route + handler は撤去。
+/// **restart**（VP-131 / F6③ の透過 retry orchestration）: root の実体を捨てて立て直す。
 ///
-/// 動作:
-/// 1. LanePool::restart_lane で 既存 PtySlot kill + tmux kill (VP-131) → 同 stand で respawn
-/// 2. spawn 失敗時は exponential backoff で **最大 3 attempts まで透過 retry** (VP-131)
-/// 3. vp-app は canvas channel demand 経由で透過的に新 PtySlot に再 attach
+/// doc 53 §12.3 / R3c-2: 動詞（[`LanePool::drop_root_entities`]）が実体を捨て、
+/// reconcile があるべき姿に戻す。**intent（registry）は 1 bit も動かない** — 会話 id が
+/// あれば `--resume` で、無ければ素で立ち直るのは reconcile が registry から決めること。
 ///
-/// 戻り値: `{restarted, pid, attempts}` JSON / 全 attempts 失敗で `Err(err_msg)` (LaneInfo は
-/// state=Dead に遷移済み)。
+/// 戻り値: `{restarted, pid, attempts}` / 全 attempts 失敗で `Err`（`LaneInfo.state` は
+/// reconcile が root の実体から Dead を導出済み）。
+///
+/// [`LanePool::drop_root_entities`]: crate::process::lanes_state::LanePool::drop_root_entities
 pub async fn restart_lane_orchestrated(
     state: &Arc<AppState>,
     addr: LaneAddress,
-    mode: crate::process::lanes_state::RespawnMode,
 ) -> Result<serde_json::Value, String> {
-    // VP-131: 透過 retry with exponential backoff。 各 attempt 間で write lock を release して
-    // 他 handler を blocking しない設計、 tokio::time::sleep で async wait。
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 0..RESTART_MAX_ATTEMPTS {
-        let result = {
-            let mut pool = state.lane_pool.write().await;
-            pool.restart_lane(&addr, mode)
-        };
+    // ⚠️ 実在確認は**ここでしかできない**: `drop_root_entities` は不在なら no-op、reconcile も
+    // 「合わせる相手が居ない」で静かに返るので、guard が無いと **存在しない lane の restart が
+    // 成功を返す**（旧 `restart_lane` は `Lane not found` を返していた）。動詞を薄くすると
+    // 「不在」と「何もすることが無い」が同じ形になる — その区別は呼び手の責任に移る。
+    {
+        let mut pool = state.lane_pool.write().await;
+        if !pool.contains(&addr) {
+            return Err(format!("Lane not found: {addr}"));
+        }
+        pool.drop_root_entities(&addr);
+    }
+    converge_lane(state, addr).await
+}
 
-        match result {
-            Ok(()) => {
-                let pid = state
-                    .lane_pool
-                    .read()
-                    .await
-                    .get(&addr)
-                    .and_then(|i| i.pid)
-                    .unwrap_or(0);
-                // BUG#1: restart で PtySlot を差し替えても World 側 subscriber は張りっぱなし
-                // (count 1 のまま) で demand hook が再発火しない (= 入力は terminal_write で
-                // 現 slot に届くが出力が沈黙 = 凍る console)。動詞の末尾で reconcile を呼ぶ
-                // （doc 53 R2）。旧実装の判断 2 つはどちらも reconcile の照合に吸収された:
-                //
-                // - `had_pump`（pump 残留 = 購読者が居た証跡、という間接推論）→ demand の
-                //   level 直読（`TopicRouter::demand_active`）
-                // - mode → scope（Reset=lane 全体 / Resume・Bare=root のみ、team-b 10 回目）→
-                //   pid 照合。差し替わった slot だけ attach され、健在な兄弟 pane は触られない
-                let lane_key = addr.to_string();
-                let r =
-                    crate::process::unison_server::reconcile_terminal_pumps(state, &lane_key).await;
-                tracing::info!(
-                    "restart_lane: terminal pump reconcile (lane={} attached={} removed={} kept={})",
-                    lane_key,
-                    r.attached,
-                    r.removed,
-                    r.kept
-                );
-                // Act II（chat lane）の restart_lane は engine drop（lazy respawn）で終わる。
-                // console_set_mode の chat 分岐と同じ理由でここで eager spawn する —
-                // fresh 直後に新 session_init が届き「新品になった」フィードバックが即出る
-                // （resume の開始も早い）。失敗しても restart 自体は成功扱い、次 submit の
-                // self-heal で再試行される。
-                // doc 53 R1: 分岐は root の act = registry 直読（実在 check は従来どおり pool）。
-                let is_chat = {
-                    let pool = state.lane_pool.read().await;
-                    pool.contains(&addr)
-                        && pool.root_act(&addr) == crate::lane::session_registry::SessionAct::Chat
-                };
-                if is_chat {
-                    let mut pool = state.lane_pool.write().await;
-                    if let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router) {
-                        tracing::warn!(
-                            "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
-                        );
-                    }
-                }
-                tracing::info!(
-                    "Lane restart OK: addr={} new_pid={} attempts={}",
-                    addr,
-                    pid,
-                    attempt + 1
-                );
-                // 供給 push 根治: restart は pid / engine_session_id（fresh は pointer 破棄）を
-                // 変える in-place mutation なのに従来 Diff を emit しておらず、World registry が
-                // 凍結していた。fresh 直後は enrich=None が届いて chip が消灯し、初回発話の
-                // hook 通知（lane_session_changed）が新 id を灯す、という一連の流れの起点。
-                emit_lane_update(state, &addr).await;
-                return Ok(serde_json::json!({
-                    "restarted": addr.to_string(),
-                    "pid": pid,
-                    "attempts": attempt + 1,
-                }));
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Lane restart attempt {}/{} failed: addr={} err={}",
-                    attempt + 1,
-                    RESTART_MAX_ATTEMPTS,
-                    addr,
-                    e
-                );
-                last_err = Some(e);
-                if attempt < RESTART_MAX_ATTEMPTS - 1 {
-                    let backoff = RESTART_BACKOFF_MS[attempt as usize];
-                    tokio::time::sleep(Duration::from_millis(backoff)).await;
+/// **Reset**（sidebar の Reset lane）: intent ごと素に戻して立て直す。
+///
+/// [`LanePool::reset_lane`] が registry / replay / 全実体を捨てて既定形を書き、reconcile が
+/// 新しい root を bare（会話 id が無い = 継がない）で立てる。破棄に失敗した場合は
+/// **何も遷移させずに** Err を返す（fresh でない中間状態を作らない）。
+///
+/// [`LanePool::reset_lane`]: crate::process::lanes_state::LanePool::reset_lane
+pub async fn reset_lane_orchestrated(
+    state: &Arc<AppState>,
+    addr: LaneAddress,
+) -> Result<serde_json::Value, String> {
+    state
+        .lane_pool
+        .write()
+        .await
+        .reset_lane(&addr)
+        .map_err(|e| e.to_string())?;
+    converge_lane(state, addr).await
+}
+
+/// 捨てたあとに **収束させる**共通部（restart / Reset が共有する）。
+///
+/// VP-131 の透過 retry を reconcile の上で回す: `reconcile_lane` は冪等なので、再試行は
+/// **もう一度呼ぶだけ**。旧実装の all-or-nothing な retry と違い、部分的に立った slot は
+/// そのまま残り、立たなかったものだけが次の attempt の対象になる（desired との差分だけを
+/// 埋めるのが reconcile なので、この性質は自動的に手に入る）。
+async fn converge_lane(
+    state: &Arc<AppState>,
+    addr: LaneAddress,
+) -> Result<serde_json::Value, String> {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..RESTART_MAX_ATTEMPTS {
+        let r = crate::process::unison_server::reconcile_lane(state, &addr).await;
+        if r.failed == 0 {
+            let pid = state
+                .lane_pool
+                .read()
+                .await
+                .get(&addr)
+                .and_then(|i| i.pid)
+                .unwrap_or(0);
+            // Act II（chat lane）の restart は engine drop（lazy respawn）で終わる。ここで
+            // eager に起こすのは「新品になった」feedback を早く出すため（resume の開始も早い）。
+            // 失敗しても restart 自体は成功扱い、次 submit の self-heal で再試行される。
+            // doc 53 R1: 分岐は root の act = registry 直読（実在 check は従来どおり pool）。
+            let is_chat = {
+                let pool = state.lane_pool.read().await;
+                pool.contains(&addr)
+                    && pool.root_act(&addr) == crate::lane::session_registry::SessionAct::Chat
+            };
+            if is_chat {
+                let mut pool = state.lane_pool.write().await;
+                if let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router) {
+                    tracing::warn!(
+                        "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
+                    );
                 }
             }
+            tracing::info!(
+                "Lane restart OK: addr={} new_pid={} attempts={}",
+                addr,
+                pid,
+                attempt + 1
+            );
+            // 供給 push 根治: restart は pid / engine_session_id を変える in-place mutation なのに
+            // 従来 Diff を emit しておらず、World registry が凍結していた。
+            emit_lane_update(state, &addr).await;
+            return Ok(serde_json::json!({
+                "restarted": addr.to_string(),
+                "pid": pid,
+                "attempts": attempt + 1,
+            }));
+        }
+        tracing::warn!(
+            "Lane restart attempt {}/{} failed: addr={} failed_spawns={}",
+            attempt + 1,
+            RESTART_MAX_ATTEMPTS,
+            addr,
+            r.failed
+        );
+        last_err = Some(
+            r.last_error
+                .unwrap_or_else(|| format!("{} 件の slot が立ち上がりませんでした", r.failed)),
+        );
+        if attempt < RESTART_MAX_ATTEMPTS - 1 {
+            let backoff = RESTART_BACKOFF_MS[attempt as usize];
+            tokio::time::sleep(Duration::from_millis(backoff)).await;
         }
     }
 
-    // 全 attempts 失敗 → LaneInfo.state は restart_lane 内で既に Dead 化済み
-    Err(last_err
-        .map(|e| e.to_string())
-        .unwrap_or_else(|| "unknown restart failure".to_string()))
+    // 全 attempts 失敗。state=Dead は reconcile の代表値導出（act=Tui × slot 無し）が既に付けている。
+    Err(last_err.unwrap_or_else(|| "unknown restart failure".to_string()))
 }
 
 /// Performer name から default branch を auto-derive する。
