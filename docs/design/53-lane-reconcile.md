@@ -581,3 +581,83 @@ Pane — view（ConvId に紐づく）。shell pane は conversation を持た�
 §7.0 との接続: ①（act の定義軸）は「act = Conversation のレンズ」で答えの半分が出る。
 ③（Reborn の語彙）は「VP id は不変で engine_ref を捨てる」か「新 ConvId」かの選択として
 きれいに言い直せる（design phase 送り）。
+
+---
+
+## 10. R3 実装 census（2026-07-25、着手前の棚卸し）
+
+R1/R2 と同じ手順（census → 地図 → 実装）。**動詞の全数**と、各動詞が持つ
+「registry write（intent）/ 手書きの実体遷移 / LaneInfo 代表値の追随」の 3 つ組を数えた。
+設計ゲート決定①（doc 54 §7）により **R3 は現行 schema のまま機構のみ**。
+
+### 10.1 動詞の全数 — 3 つ組の対応表
+
+| # | 動詞（実装） | registry write | 手書きの実体遷移 | 代表値追随 |
+|---|---|---|---|---|
+| 1a | boot conductor（`with_root`） | 初回のみ既定 act | root PTY spawn + `restore_term_slots` | insert |
+| 1b | boot performer（`lane_spawn_actor::handle_cmd`） | なし（root_act 読みで分岐） | chat: engine-less 登録 / tui: root spawn + restore + **pump reconcile（R2）** | insert |
+| 2 | act 切替（`set_session_act`） | `set_session_act` | →chat: `drop_slot` / →tui: `chat_engines.remove` + root なら `restart_lane(Resume)`・非 root なら `open_slot_for_session` | pid / state |
+| 3a | Add console（`open_new_slot`） | `create`(Tui)、**失敗時 remove 巻き戻し** | `open_slot_for_session` | — |
+| 3b | Add chat（`create_chat_session`） | `create`(Chat, focus) | なし（engine は lazy） | — |
+| 4 | ✕（`remove_chat_session`） | `remove` | `chat_engines.remove` + `drop_slot` + `replay_log::clear` + `clear_replay_session` | pid（root=chat 時） |
+| 5 | restart（`restart_lane` ×3 mode） | Reset のみ: replay ×N + registry `clear` + PTY replay 破棄 | chat: `chat_engines.remove` / tui: `drop_slot(root)` + spawn + insert | pid / state |
+| 6 | New root（`prepare_new_root_session`） | `create_root`（root+focused 付替、既定 act） | caller が restart(**Bare**) | — |
+| 7 | Switch root（`prepare_switch_root_session`） | root+focused 付替 | caller が restart(**Resume**) | — |
+| 8 | focus（`focus_chat_session`） | focused 付替 | `ensure_chat_engine`（eager） | pid |
+
+### 10.2 実体は 4 種 + 台帳 1 つ — desired の導出規則
+
+| 実体 | あるべき条件（desired） | eager / lazy |
+|---|---|---|
+| PtySlot（+TermAttach 双子） | act=Tui の session | **eager**（console は見る物 — boot 復元が現に eager） |
+| chat engine | act=Chat の session **∧ demand**（submit / focus / GUI 購読） | **lazy**（pump と同型の demand 依存） |
+| replay 貯蔵（PTY replay / replay_log） | session が registry に存在 | 随伴（remove / Reset で破棄） |
+| LaneInfo.pid / state | root の実体から**導出**（読む時点の代表） | 派生値（reconcile が更新側を畳む） |
+| terminal pump | R2 で reconcile 済 | reconcile_lane の末尾の 1 契機に |
+
+「1 session = 高々 1 エンジン」の法（`open_slot_for_session` の 4 拒否 / `ensure_chat_engine` の
+番人）は、**desired が act から一意に導出される**ことで構造的に満たされる — reconcile 化の後、
+入口ガードは「法の執行」から「不正 intent の早期拒否」に役割が変わる。
+
+### 10.3 発見 — RespawnMode は registry に吸収できる（要検証）
+
+Bare / Resume / Reset の差を数え直すと、**すべて registry の今に既に表現されている**:
+
+- **Resume** = その session の `conversation` で立てる（level で表現可能）
+- **Bare** = 新 root は conversation **無し**で作られる（`create_root` 直後）→
+  「registry に従って立てる」だけで bare になる。現に `handle_echoes_session_new_root` の
+  コメントが「未発話の非 #1 root は build_stand_command が bare に倒す」と**既にこの方向**
+- **Reset** = registry `clear` が intent を運ぶ（既にそう — 実体の畳みは reconcile の仕事）
+
+→ R3 で `RespawnMode` 引数は「registry に何を書くか」（動詞側）に還元できる可能性が高い。
+検証ポイント: `build_stand_command` の bare フラグを mode でなく registry（conversation 有無）
+から決めて全経路で同値か。
+
+### 10.4 reconcile_lane の素描
+
+```
+reconcile_lane(addr):
+  desired = registry の sessions（key, act, stand, conversation）
+  各 desired session:
+    act=Tui ∧ slot 無  → 立てる（conversation 有れば resume、無ければ bare — §10.3）
+    act=Chat ∧ slot 有 → 畳む
+    act=Tui ∧ engine 有 → 畳む
+  registry に無い session の実体 → slot / engine 畳む + replay 破棄
+  LaneInfo 代表値を root の実体から導出して更新
+  末尾で terminal pump reconcile（R2）
+  （chat engine の起立は lazy のまま = demand 契機に委ねる）
+```
+
+動詞は「registry に書く + `reconcile_lane(addr)`」だけになる（§2 の応答そのもの）。
+
+### 10.5 設計判断が要る点（R3 の地図で決める）
+
+1. **spawn の隔離**: slot 起立は 800ms×N sync。§6 の規律（write lock 下で spawn しない）を
+   reconcile_lane 自身がどう満たすか — 「読みで desired/actual 差分を計算 → lock 外で spawn →
+   write lock で insert（race 再検査）」の 3 段（`lane_spawn_actor` と同じ形）
+2. **失敗の意味論の統一**: 現行 `open_new_slot` は失敗時に registry を**巻き戻す**が、boot 復元は
+   **残して空 pane**（graceful degrade）。reconcile 思想では後者に統一（残った intent は次の契機で
+   再試行される）が、「Draft が残る」体験の変化を含む — 要判断
+3. **restart の「差し替え」表現**: reconcile は「無ければ立てる」— restart（生きた slot を意図的に
+   殺して張り替える）は「動詞が slot を落としてから reconcile を呼ぶ」で表現するか、
+   世代（pid）を intent 側に持つか
