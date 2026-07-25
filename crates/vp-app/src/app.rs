@@ -254,7 +254,10 @@ mod ipc_tag_tests {
 /// pane は並ぶのに中身が来ない）。導出は registry の act から行う、をここで固定する。
 #[cfg(test)]
 mod session_derivation_tests {
-    use super::{lane_has_chat_session, session_list_payload, term_sessions_of};
+    use super::{
+        forget_roster_push, lane_has_chat_session, remember_roster_push, roster_push_needed,
+        session_list_payload, term_sessions_of,
+    };
     use crate::client::LaneInfo;
 
     /// doc 53 §11: snapshot の roster が **webview 契約の形**に写ること。
@@ -308,6 +311,55 @@ mod session_derivation_tests {
             "会話 id 未発番（Draft / shell）は null"
         );
         assert_eq!(entries[1]["chat_capable"], false);
+    }
+
+    /// doc 53 §11: 定期 snapshot で roster を撃ち直さない指紋 gate の意味論。
+    ///
+    /// LanesLoaded は高頻度 event なので、値が同じなら push しない（毎回撃つと webview が
+    /// roster を作り直して pane が無用に再配置される）。**catch-up 経路（`LanesEnsureAll`）は
+    /// この gate を通さない** — boot 窓で落ちた push を取り戻す唯一の機会で、そこで
+    /// 「変化なし」と判断すると roster が永久に空のままになる（team-b 指摘 2026-07-25）。
+    /// 呼び分けは実装側の構造（gate を呼ぶ / 呼ばない）で表す。
+    #[test]
+    fn roster_push_gate_fires_on_change_only() {
+        let lane = lane_with(
+            16,
+            serde_json::json!([{"key": 16, "stand": "echoes", "act": "chat"}]),
+        );
+        let payload = session_list_payload("vp/root", lane.sessions.as_ref().expect("roster"));
+        let mut last: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        assert!(
+            roster_push_needed(&last, "vp/root", &payload),
+            "初回は push（指紋が無い）"
+        );
+        remember_roster_push(&mut last, "vp/root", &payload);
+        assert!(
+            !roster_push_needed(&last, "vp/root", &payload),
+            "変化が無ければ push しない"
+        );
+
+        // session が 1 本増えた = roster の変化 → 撃つ。
+        let grown = lane_with(
+            16,
+            serde_json::json!([
+                {"key": 16, "stand": "echoes", "act": "chat"},
+                {"key": 24, "stand": "shell", "act": "tui"},
+            ]),
+        );
+        let grown_payload =
+            session_list_payload("vp/root", grown.sessions.as_ref().expect("roster"));
+        assert!(
+            roster_push_needed(&last, "vp/root", &grown_payload),
+            "roster が変われば push する"
+        );
+
+        // lane が消えたら指紋も落とす（同名再作成で「変化なし」と誤判定しないため）。
+        forget_roster_push(&mut last, "vp/root");
+        assert!(
+            roster_push_needed(&last, "vp/root", &payload),
+            "lane 削除後は初回扱いに戻る"
+        );
     }
 
     /// registry snapshot 付きの最小 LaneInfo（wire と同じ JSON 形で組む）。
@@ -1838,6 +1890,36 @@ fn term_sessions_of(lane: &crate::client::LaneInfo) -> Vec<(u32, bool)> {
         // registry 不在（boot 窓の placeholder / N=1 特殊ケース）: root 1 枚（tui）に畳む。
         _ => vec![(1, true)],
     }
+}
+
+/// roster を push すべきか（前回渡した値と違うか）。純関数 = テスト可能。
+///
+/// doc 53 §11: LanesLoaded は定期 snapshot でも走る高頻度 event なので、**変化した lane だけ**
+/// 撃つ（毎回撃つと webview が roster を作り直して pane が無用に再配置される）。
+///
+/// ⚠️ **catch-up 経路（`LanesEnsureAll`）はこの gate を通さない** — bundle ロード前の
+/// `evaluate_script` は無言 no-op になるのに指紋だけ残るため、gate を共有すると boot 窓で
+/// 落ちた 1 回目を永久に取り戻せない（team-b 指摘 2026-07-25）。
+fn roster_push_needed(
+    last: &std::collections::HashMap<String, String>,
+    addr: &str,
+    payload: &serde_json::Value,
+) -> bool {
+    last.get(addr) != Some(&payload.to_string())
+}
+
+/// [`roster_push_needed`] の対 — 撃った値を覚える。
+fn remember_roster_push(
+    last: &mut std::collections::HashMap<String, String>,
+    addr: &str,
+    payload: &serde_json::Value,
+) {
+    last.insert(addr.to_string(), payload.to_string());
+}
+
+/// 消えた lane の指紋を落とす（同名再作成で「変化なし」と誤判定しないため）。
+fn forget_roster_push(last: &mut std::collections::HashMap<String, String>, addr: &str) {
+    last.remove(addr);
 }
 
 /// roster を webview へ渡す（`vpConsole.handleSessionList` → `vp:echoes-sessions`）。
@@ -4161,17 +4243,16 @@ pub fn run() -> anyhow::Result<()> {
                         };
                         let addr = lane.address.key();
                         let payload = session_list_payload(&addr, sessions);
-                        let fingerprint = payload.to_string();
-                        if last_roster_push.get(&addr) == Some(&fingerprint) {
+                        if !roster_push_needed(&last_roster_push, &addr, &payload) {
                             continue;
                         }
-                        last_roster_push.insert(addr.clone(), fingerprint);
+                        remember_roster_push(&mut last_roster_push, &addr, &payload);
                         push_session_list(&webview, &addr, &payload);
                     }
                 }
                 // 消えた lane の指紋も落とす（同名再作成で「変化なし」と誤判定しないため）。
                 for addr in &removed_addrs {
-                    last_roster_push.remove(addr);
+                    forget_roster_push(&mut last_roster_push, addr);
                 }
             }
             // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
@@ -4189,6 +4270,25 @@ pub fn run() -> anyhow::Result<()> {
                         for (session, is_root) in term_sessions_of(lane) {
                             lane_js::ensure_lane(&webview, &addr_str, session, is_root);
                         }
+                        // doc 53 §11: **roster も同じ窓で落ちる**（team-b 指摘 2026-07-25）。
+                        //
+                        // roster が push 型になった以上、`ensure_lane` / `push_active_view` /
+                        // Bastet と同じ boot race を持つ: bundle ロード前の `evaluate_script` は
+                        // `window.vpConsole &&` guard で無言 no-op になるのに、Rust 側は
+                        // 「送った」として指紋を残す → その lane の roster が**実際に変わるまで
+                        // 二度と push されない**（tab strip / pane grid / picker が空のまま）。
+                        // 供給が fetch だった頃は「JS が能動的に取りに行く」ので原理的に
+                        // 起きなかった窓 — 供給路を変えたことの随伴。
+                        //
+                        // ここは JS が ready を名乗った後なので、**指紋を無視して撃ち直す**
+                        // （送った値は同じなので指紋の更新は不要）。
+                        if let Some(sessions) = lane.sessions.as_ref() {
+                            push_session_list(
+                                &webview,
+                                &addr_str,
+                                &session_list_payload(&addr_str, sessions),
+                            );
+                        }
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
@@ -4202,8 +4302,8 @@ pub fn run() -> anyhow::Result<()> {
                     // 早期 return する。冪等なので毎回再発行して JS 側 state を確定させる。
                     //
                     // doc 50 §4.6 A6: vpConsole.setMode の catch-up は退役（lane 単位 mode が
-                    // 消滅）。roster は 'vp:echoes-sessions' が届いた時点で session×act から
-                    // 導出され直すので、この経路で mode を送る必要が無い。
+                    // 消滅）。roster の catch-up は上の lane ループが撃つ（doc 53 §11 — push 型に
+                    // なって以降、この経路にも roster が要る）。
                     push_active_view(&webview, &sidebar_state);
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
