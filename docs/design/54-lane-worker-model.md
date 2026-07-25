@@ -56,7 +56,8 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
 | B | 身元は VP 発行 | 「VP で発行したものを使って構造化する」「セッションは Echoes の中で完結」 |
 | — | shell の万能性は雇用窓口（養子縁組で解く） | 「shell は、cc にも codex にも grok にもなれるからなぁ。でもここを解けたらすごい良い」 |
 | — | 観測の trigger は PTY 入力 | 「PTY への入力のデータを観測するのはどう？」 |
-| — | enrich は hooks でなく fs 痕跡 | 「cc の hook に頼るのはなんか正確性・拡張性がなさそうな雰囲気する」 |
+| — | enrich は hooks でなく fs 痕跡（→ 批判的分析で「必須にしない」へ精緻化、§3.7） | 「cc の hook に頼るのはなんか正確性・拡張性がなさそうな雰囲気する」 |
+| — | `\|\|` fallback は構文でなく policy | 「claude --resume X \|\| claude ←これって扱いづらくない？」「問題が隠蔽されやすい」 |
 
 ---
 
@@ -185,6 +186,16 @@ engine 不変の法は働き手の水準で守られたまま、席は誰でも�
 binding）だけが動的。A6 が replay を session（= 席）に鍵付けしたのは、この分離の
 **既に正しい側**にいる。
 
+**着席の法（批判的分析 2026-07-25 で確定）**: PTY 席では shell（親）と engine（子）の
+プロセスが**同時に生きている** — 「1 働き手 = 1 プロセス」はそのままで、崩れるのは
+「1 席 = 1 働き手」の方。正しい法は:
+
+> **席の active な働き手 = PTY の foreground process group の主（`tcgetpgrp`）。**
+
+これは推定ではなく **kernel が管理する ground truth**（1 syscall で読める）。shell 働き手は
+席の基層（親）として残り、engine が foreground の間は engine が active、exit すれば shell が
+自然に active へ戻る — プロセス木がそのままモデルになる。
+
 #### 4 層観測 — すべて engine 非協力で成立
 
 | 層 | 源 | 役割 | engine 協力 |
@@ -205,17 +216,52 @@ binding）だけが動的。A6 が replay を session（= 席）に鍵付けし�
 - **engine 追加コスト = 静的知識 2 行**（argv の形 + 痕跡の path）。`EngineKind::from_stand`
   と同じ「対応表 1 箇所」パターン — runtime のプロトコル統合はゼロ
 
-#### hooks は identity 任務から退役
+#### 観測源は「それが正確な領域」でのみ信じる（批判的分析 2026-07-25 で修正）
 
-CC hook を identity の源にしない根拠（全て実績）: **幻 session**（`|| claude` が新 id で
-SessionStart → F1/F2 guard が要った）/ **発火の非一貫性**（Notification hook は headless +
-bypass で不発と実測済）/ **注入の穴**（`--settings` type-ahead 限定 = 手打ち claude に
-乗らない）/ **schema 契約なし**。
+当初「hooks は identity 任務から全退役」としたが、**批判的分析で操業上の誤りと判明**。
+hook と fs は正確性の分布が**正反対**で、被覆域も正反対:
 
-- `vp wire hook-check` の 2 仕事を分離（[[one-edge-two-jobs]] の逆適用）: **会話報告は
-  fs 観測へ退役**、wire 未読 pull（ターン頭の inbox check = agent の礼儀作法）は残る
-- F1/F2 幻 session guard は「報告の信頼調停」から「**intent と fs の乖離検出**」（reconcile 形）
-  へ置き換わる — 観測はすべて駅③（`record_conversation` の policy 集約点）に収束
+| | 席への帰属 | 会話の身元 | 被覆域 |
+|---|---|---|---|
+| hook | **正確**（席の env を継ぐ） | 不正確（幻 session） | **VP spawn 席には必ず載る**（`--settings` は VP 自身が注入） |
+| fs 痕跡 | 不正確（相関推定） | **正確**（resume が読む実物） | 手打ち含む全て。手打ちは人間の速度 = 同時多発しない |
+
+boot 復元は N 席へ順次注入 = **同時多発の帰属曖昧性が出るのは VP spawn 域** — そこには
+hook がある。手打ちは hook が無いが、逐次なので fs 相関で足りる。
+**互いの弱点を互いの得意域が正確に覆っている** — 全退役はこの相補性を捨てる。正しい規律:
+
+> **hook = 帰属の証言（あれば使う、決して要求しない）/ fs = 会話の身元の真実 /
+> 衝突は駅③（`record_conversation` の policy 集約点）で fs 優先。**
+
+- hook を退ける根拠だった実績（幻 session / 発火非一貫 / 注入穴 / 契約なし）は
+  「**hook を必須にしない**」根拠としては全て有効のまま
+- `vp wire hook-check` の 2 仕事分離（会話報告と wire 未読 pull）は維持 — pull は
+  agent の礼儀作法として残る
+- 調査項目: claude の `--session-id` 指定が interactive で効くなら、VP が engine
+  名前空間の id を**先に指名**でき、幻 session が根から消える（§8）
+
+#### `|| claude` fallback の退役 — policy を構文から VP へ（mako 発見 2026-07-25）
+
+`claude --resume X || claude` は **policy が shell 構文に隠れている**形（mako「問題が
+隠蔽されやすい」）。隠蔽 3 つ: ①resume 失敗が「記憶喪失 claude の成功の顔」で座る
+（[[masked-not-absent]] の設計版）②`||` は経過時間を見ない — 1 時間走った claude の
+crash でも発火し、**頼んでいない fresh claude が湧く** ③fresh が誰の決定でもなく始まる =
+幻 session の発生源（F1/F2 は全部この 1 個の `||` の尻拭い）。
+
+退役後の形:
+
+```
+type-ahead は `claude --resume X` のみ（|| なし）
+  失敗 → shell 基層に落ちる（エラーが scrollback に見える = 物理的に正直。席は死なない）
+  → VP が観測（exit + fs）して divergence を記録
+  → 見える形で回復（名札に「resume 失敗」/ policy で fresh を明示起動 / 人間に委ねる）
+```
+
+- **幻 session が発生源から消える**: fresh は常に「誰かの明示的決定」としてのみ始まる
+- **crash 後の勝手な再起動が消える**: 死は死として見え、Reborn は動詞になる
+- 復元力は失わない — 席の生存は `||` でなく **shell 基層が担っていた**
+- 一般形（今日 3 回目の同じ手）: 郵便（push→store）/ 身元（申告→痕跡）/ fallback
+  （構文→policy）— **「隠れた場所で起きる変換を、観測される決定に変える」**
 
 ---
 
@@ -304,4 +350,11 @@ R1（console_mode 廃止 — 着手済、本地図と整合）
 6. **働き手宛の郵便**: 箱は lane 粒度のまま = **意図的な cut**。必要が実証されたら再訪
 7. **観測の実装詳細（§3.7）**: 同 cwd に同 engine が 2 席のときの痕跡相関（起動時刻 +
    必要なら PTY 活動 ↔ file mtime）/ grok・opencode の痕跡規約調査 / 痕跡 path の
-   対応表化（`EngineKind` 拡張）
+   対応表化（`EngineKind` 拡張）/ foreground pgrp 観測の per-OS backend
+   （macOS: tcgetpgrp + kqueue / Linux: pidfd / Windows: 要調査。劣化版 = 低速 poll でも稼働）
+8. **`--session-id` 指定の調査**: claude の interactive で効くなら VP が engine 名前空間の
+   id を先に指名でき、幻 session が根から消える
+9. **fallback policy の形**: resume 失敗時に fresh を自動起動するか（明示 notice つき）/
+   prompt に留めて人間に委ねるか。boot（N 席復元）と単発 restart で既定を変えるか
+10. **養子縁組の可視化**: 観測が仕込み（intent）を書き換える逆矢印は**名札に見える**こと
+    （表象の共有 — 見えない intent 変更は boot で驚きを生む）。自動継承の代表交代も同様
