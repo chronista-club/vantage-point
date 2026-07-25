@@ -1370,6 +1370,8 @@ mod core_tests {
     /// vpdb=None の fixture では書き込み自体が no-op で素通りするため、ここは実 db を差す。
     #[tokio::test]
     async fn failed_create_leaves_no_lane_rows() {
+        // ⑤ の session_registry 検査が vp_state_dir() を読むため隔離（実 state を見ない）。
+        let _state_dir = crate::test_env::state_dir_async().await;
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();
 
@@ -1410,6 +1412,14 @@ mod core_tests {
         assert!(
             state.lane_pool.read().await.list().is_empty(),
             "失敗した create の Spawning placeholder は残らない"
+        );
+        // ⑤ 生成の既定レンズ（session_registry）も残っていない — write は**実 insert 確定後**
+        //    （moody 指摘 2026-07-25: 孤児 registry の stale stand が同名再作成時に engine を
+        //    取り違えさせる）。write が spawn 前へ戻る regression をここで機械検知する。
+        let project_id = repo.file_name().unwrap().to_string_lossy();
+        assert!(
+            !crate::lane::session_registry::exists(&project_id, "ghost"),
+            "失敗した create は session_registry file を残さない"
         );
 
         let _ = std::fs::remove_dir_all(&repo);
