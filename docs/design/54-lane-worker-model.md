@@ -31,7 +31,7 @@ World 👑
         │    │            + act: tui / chat（レンズ。可変）
         │    └── shell — 人間が駆る席。engine なし。act は tui のみ（定義）
         │
-        ├── pane = 見え方（働き手 1 人につき 1 枚）
+        ├── pane / 席 = 見え方と器（scrollback は席のもの。着席は動的 — §3.7）
         │
         ├── 代表 = 役職（Option）。lane の顔: pid / Dead 判定・push の宛先・CLI 既定
         │    └── 自動継承 + 空位許容（§3.3）
@@ -54,6 +54,9 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
 | C | 注視は client | 「focus は gui 側にあるべきと思う」 |
 | — | 代表の継承 | 「UX 的には『自動継承 + 空位許容』これが良さそう」 |
 | B | 身元は VP 発行 | 「VP で発行したものを使って構造化する」「セッションは Echoes の中で完結」 |
+| — | shell の万能性は雇用窓口（養子縁組で解く） | 「shell は、cc にも codex にも grok にもなれるからなぁ。でもここを解けたらすごい良い」 |
+| — | 観測の trigger は PTY 入力 | 「PTY への入力のデータを観測するのはどう？」 |
+| — | enrich は hooks でなく fs 痕跡 | 「cc の hook に頼るのはなんか正確性・拡張性がなさそうな雰囲気する」 |
 
 ---
 
@@ -150,9 +153,69 @@ lane を見る）でも取り合いが起きない — 注視は視る者の属�
 | **C: 基層 shell + 観測**（現行の完成形） | #661 維持 + SessionEnd hook / activity poll で現在形を観測 | 変更最小・席内 prompt 復帰の自由 / 多孔性が全 engine 席に残る（観測で追う） |
 | **A: 封印席** | engine 席は `$SHELL -lc 'exec <engine> …'` — **engine exit = 席の死 = 決定的 signal** | 「1 働き手 = 1 プロセス」が文字通り・prompt への nudge 誤爆が構造的に消滅・多孔性は shell 席のみ / 席内 prompt 復帰を失う（受け皿 = 隣の shell 席。本 doc で shell は一級市民）・exit 後 UI（respawn / close）が要る |
 
-判断材料: 本 doc で shell が一級の席になり「席内で prompt に落ちる」自由の独自価値が下がった
-（A の代償低下）。一方 C は観測原理だけで成立し変更最小。実装フェーズの証拠（drift が実際
-どれだけ噛むか）と一緒に設計ゲートで決める。
+→ **§3.7（養子縁組）の採用により C 案が本線に確定**（2026-07-25 同日）。A 案（封印席）は
+「shell が何にでもなれる」= 雇用窓口そのものを塞ぐため棄却。
+
+### 3.7 養子縁組（adoption）— 雇用の 2 つの入口と 4 層観測（2026-07-25 追記）
+
+**shell の万能性は「モデルの穴」ではなく「人間側の雇用窓口」。** 働き手を雇う入口は 2 つ、
+着地は 1 つ:
+
+```
+VP の動詞で雇う（Add メニュー）──┐
+                                ├──→ 同じ registry（働き手 + engine + engine_ref）
+人間が席で手打ちで招く ──────────┘
+        └── 観測で「養子縁組」
+```
+
+養子縁組後は VP 雇用と区別が付かない — **再起動すると手打ちで招いた会話も resume される**
+（作業台が、あなたが招いた客を覚えている）。
+
+#### 席と働き手の分離（§3.1 / §3.2 の精錬）
+
+「shell が cc になる」のではなく「**席に cc の働き手が座った**」:
+
+| | 席（seat） | 働き手（worker） |
+|---|---|---|
+| 何か | lane の備品。PTY + scrollback | engine の会話（or 人間の手） |
+| 身元 | pane の id | VP 発行 id、**engine 不変** |
+| 歴史 | **scrollback / replay は席のもの**（prompt → claude → prompt → codex が 1 本の巻物） | **会話は働き手のもの**（transcript / engine_ref） |
+
+engine 不変の法は働き手の水準で守られたまま、席は誰でも招ける。着席（seat × worker の
+binding）だけが動的。A6 が replay を session（= 席）に鍵付けしたのは、この分離の
+**既に正しい側**にいる。
+
+#### 4 層観測 — すべて engine 非協力で成立
+
+| 層 | 源 | 役割 | engine 協力 |
+|---|---|---|---|
+| **trigger** | 入力 tap（CR のみ検知。**内容は読まない** = keylog 性が構造的にゼロ） | 検査の合図（edge — 落としてよい） | 不要 |
+| **inspect** | 席のプロセス木 + argv（VP は shell の pid を持つ。同 uid で sysctl 可） | 誰が座ったか / `--resume` id | 不要 |
+| **watch** | kqueue NOTE_EXIT | 退席の event-driven 検知 | 不要 |
+| **enrich** | **fs 痕跡観測**（claude: `~/.claude/projects/<slug>/*.jsonl` / codex: rollout の filename — 中身の深 parse は不要） | fresh 起動の会話 id | **不要 — 規約知識のみ** |
+
+- **生の入力 parse は採らない**: 補完（`cla<TAB>`）・履歴（`↑↑`）・Ctrl-R では、コマンド本文が
+  入力 stream に**存在しない**。入力は合図（edge）、真実はプロセス木（level）— doc 53 §2.3 の
+  規律の観測版
+- **痕跡は自己検証的**: resume が読むもの（transcript / rollout）と同一の source を見るので、
+  「報告」と違い嘘をつかない。VP は既に hook 報告を `transcript_exists` で裏取りしている
+  （stand_spawner.rs）— **聞くのをやめて身分証を直接見る**形に揃える
+- **段階構造の保険**: 安全（nudge 誤爆防止）は inspect 層だけで成立。enrich が欠けた engine
+  でも安全は劣化せず、取れる engine だけが「再起動で会話も蘇る」上位体験を得る
+- **engine 追加コスト = 静的知識 2 行**（argv の形 + 痕跡の path）。`EngineKind::from_stand`
+  と同じ「対応表 1 箇所」パターン — runtime のプロトコル統合はゼロ
+
+#### hooks は identity 任務から退役
+
+CC hook を identity の源にしない根拠（全て実績）: **幻 session**（`|| claude` が新 id で
+SessionStart → F1/F2 guard が要った）/ **発火の非一貫性**（Notification hook は headless +
+bypass で不発と実測済）/ **注入の穴**（`--settings` type-ahead 限定 = 手打ち claude に
+乗らない）/ **schema 契約なし**。
+
+- `vp wire hook-check` の 2 仕事を分離（[[one-edge-two-jobs]] の逆適用）: **会話報告は
+  fs 観測へ退役**、wire 未読 pull（ターン頭の inbox check = agent の礼儀作法）は残る
+- F1/F2 幻 session guard は「報告の信頼調停」から「**intent と fs の乖離検出**」（reconcile 形）
+  へ置き換わる — 観測はすべて駅③（`record_conversation` の policy 集約点）に収束
 
 ---
 
@@ -182,6 +245,7 @@ lane を見る）でも取り合いが起きない — 注視は視る者の属�
 | 郵便 | 箱 + 遅延束縛の代表。shell 代表への「通知」は計器盤の未読 dot（level） ✓ |
 | 併用 | 各働き手が id / pane / replay / 会話を持つ。model も働き手の属性（lane 単位 `engine_model` は地図の間違いが field に出ていたもの） ✓ |
 | ✕ / Reset | id 永久欠番で ghost class 消滅。代表は自動継承、空位可 ✓ |
+| 手打ち起動（多孔性） | 入力 tap → プロセス木 → fs 痕跡で養子縁組（§3.7）。VP 雇用と同じ registry に合流、再起動で resume ✓ |
 
 歩行で出た新しい問いは「代表の空位規則」1 つだけ（→ §2 で決定済み）。構造の破綻はゼロ。
 
@@ -238,3 +302,6 @@ R1（console_mode 廃止 — 着手済、本地図と整合）
 5. **registry schema / wire 契約 / migration**（forward-only — 過去会話の移設 migration は
    書かない。doc 53 §6.5.2 の教訓）
 6. **働き手宛の郵便**: 箱は lane 粒度のまま = **意図的な cut**。必要が実証されたら再訪
+7. **観測の実装詳細（§3.7）**: 同 cwd に同 engine が 2 席のときの痕跡相関（起動時刻 +
+   必要なら PTY 活動 ↔ file mtime）/ grok・opencode の痕跡規約調査 / 痕跡 path の
+   対応表化（`EngineKind` 拡張）
