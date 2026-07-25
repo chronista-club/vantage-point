@@ -1057,14 +1057,13 @@ impl LanePool {
 
     /// spawn 失敗時は LaneInfo.state を Dead にして error を返す (caller の責任で UI 通知)。
     ///
-    /// `mode` は slot（engine）の張り替え方（doc 39 P2 で 旧 `fresh: bool` から昇格 —
-    /// 「素の engine で起動する」と「store を破棄する」は独立の軸で、New root は前者だけが要る）:
-    /// - [`RespawnMode::Follow`]: 従来の restart（root session の store から `--resume` で会話を
-    ///   継ぐ — tmux decoupling 後の継続性はこれが担う）
-    /// - [`RespawnMode::Reset`]: lane を素に戻す（全 session store + registry 破棄 = 旧 fresh。
-    ///   sidebar の Reset lane）
-    /// - [`RespawnMode::Follow`]: 素の engine で張り替え、store は破棄しない（doc 39 §4 Act I の
-    ///   ✨ New — 新 root は記録ゼロなので bare 起動が正、旧 session の会話は無傷でタブに残る）
+    /// `mode` が決めるのは「**registry を破棄するか**」の 1 本だけ（doc 53 §12.1 で 3 値 → 2 値）:
+    /// - [`RespawnMode::Follow`]: registry に従って立て直す（会話 id があれば `--resume`、
+    ///   無ければ素で立つ）。旧 `Resume`（会話を継ぐ restart）と旧 `Bare`（New root の
+    ///   張り替え）は **同じ操作**になった — 結果が違うのは registry の中身が違うから
+    /// - [`RespawnMode::Reset`]: lane を素に戻す（全 session store + registry + replay を
+    ///   破棄してから立て直す = sidebar の Reset lane）。破棄の結果 root は会話 id を失うので
+    ///   素で立つ
     pub fn restart_lane(&mut self, addr: &LaneAddress, mode: RespawnMode) -> anyhow::Result<()> {
         let info = self
             .lanes
@@ -1094,7 +1093,7 @@ impl LanePool {
             // doc 46 P5: Reset は registry を既定形（N=1）へ戻す = 非 root session が
             // **registry 上から消える**。その slot を残すと「もう存在しない session の
             // 端末」が生き続ける（orphan）ので、Reset に限り全 slot を畳む。
-            // Resume / Bare は registry 無傷なので、張り替えるのは root の slot だけ（後述）。
+            // Follow は registry 無傷なので、張り替えるのは root の slot だけ（後述）。
             self.term_attaches.remove(addr);
             self.pty_slots.remove(addr);
             // doc 50 §4.6 A6: **term の PTY replay file も消す**（Reset = 素に戻す）。
@@ -2495,16 +2494,17 @@ mod tests {
         assert_eq!(
             root_conv().as_deref(),
             Some("old-session-id"),
-            "Resume restart は resume の矢印を保つ"
+            "Follow restart は resume の矢印を保つ"
         );
 
-        // Bare（doc 39 P2）: 素の engine で張り替えるが registry は破棄しない
+        // doc 53 §12.1: 旧 Bare（新 root の張り替え）は Follow と同一操作になったので、
+        // 2 回目の呼び出しは **べき等性の確認**（同じ mode を続けて撃っても記録は動かない）。
         pool.restart_lane(&addr, RespawnMode::Follow)
-            .expect("bare chat restart");
+            .expect("follow chat restart 2 回目");
         assert_eq!(
             root_conv().as_deref(),
             Some("old-session-id"),
-            "Bare restart は会話 id を無傷に保つ（新 root 用 — 旧会話をタブに残す）"
+            "Follow は何度撃っても会話 id を動かさない（べき等）"
         );
 
         // Reset: 素の新規 session にするため記録を捨てる（registry ごと N=1 へ）

@@ -847,16 +847,24 @@ mod tests {
         );
     }
 
-    /// fresh=true は builder 経由（統合）でも resume/continue を含まない
-    /// （sidebar "New Conductor Session" の契約。 実行環境の cc_session state に依存しない）。
+    /// doc 53 §12.1: **registry に会話 id が無い session は素の claude で立つ**
+    /// （builder 経由の統合確認 — `--continue` 退役でここが lane の種類に依らなくなった）。
+    ///
+    /// ⚠️ **state 隔離が必須**（team-b 指摘 2026-07-25）。旧テストは `fresh: bool` を渡して
+    /// いた時代のもので、`claude_command` が `if fresh { return }` を **resume_id を見る前**に
+    /// 通っていたため実 registry に依存しなかった。引数が消えて分岐が registry 直読み 1 本に
+    /// なった今、隔離を欠くと**この開発機の実 state**（project 名が文字通り `"vp"`）を読み、
+    /// 会話 id が記録されている限り毎回落ちる（CI は空なので通る = 開発機だけ赤）。
+    /// [[dev-machine-masks-ci-failure]] の逆向き — 環境依存を持ち込んだ側。
     #[test]
-    fn fresh_true_never_resumes_via_builder() {
+    fn session_without_conversation_spawns_bare_via_builder() {
+        let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(
             !input.contains("--resume") && !input.contains("--continue"),
-            "fresh は素の claude: {input}"
+            "会話 id が無ければ素の claude（cwd の最新を推測で拾わない）: {input}"
         );
     }
 
