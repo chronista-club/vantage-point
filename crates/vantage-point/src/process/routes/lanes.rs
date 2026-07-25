@@ -598,7 +598,6 @@ pub(crate) async fn create_performer_orchestrated(
                 &stand_for_spawn,
                 &addr_for_spawn,
                 std::path::Path::new(&cwd_for_spawn),
-                false,
             );
             crate::process::stand_spawner::spawn_stand(&cmd, 120, 48)
         })

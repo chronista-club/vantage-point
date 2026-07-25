@@ -355,7 +355,6 @@ async fn handle_cmd(
             &stand_for_blocking,
             &addr_for_blocking,
             Path::new(&cwd_for_blocking),
-            false,
         );
         // PTY 初期 winsize 120x48: xterm.js が fitAddon で実サイズに resize する
         // までの初期値 + headless Stand の作業サイズ。 classic 80x24 は VP の広い
