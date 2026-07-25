@@ -2477,15 +2477,14 @@ mod tests {
         session_registry::create("vp", "root", "shell", "shell", SessionAct::Tui, false)
             .expect("非 root term session");
 
-        let file_of = |session: SessionKey, is_root: bool| {
+        let file_of = |session: SessionKey| {
             crate::daemon::pty_slot::replay_file_path_session(
                 &addr.project,
                 crate::process::stand_spawner::lane_label(&addr),
                 session,
-                is_root,
             )
         };
-        let (root_file, mate_file) = (file_of(1, true), file_of(2, false));
+        let (root_file, mate_file) = (file_of(1), file_of(2));
 
         // 各 slot に**固有の目印を出力させる**。Drop の最終 flush でこれが disk に書かれるので、
         // 掃除の順序を間違えると目印が生き残る = 罠が検出される。
@@ -2516,6 +2515,58 @@ mod tests {
             !has(&mate_file, "PRE_RESET_MATE"),
             "非 root の旧画面が残っている（Reset で採番が N=1 に戻り、次の session も key=2 になる）"
         );
+    }
+
+    /// **root を付け替えても replay file の身元が動かない**こと（team-b 6 回目 score 92）。
+    ///
+    /// 初版は root だけ lane 単位の旧名 file を使っていた = file の身元が **role**（誰が root か）
+    /// に紐づいていた。A6 が「非 root も term になれる / 旧 root は付け替え後もタブに残る」を
+    /// 正規にしたので、この命名は 2 つの壊れ方を生む:
+    ///
+    /// - **①内容の混入**: 新 root は spawn 時に `is_root=true` になり旧名 file を seed する →
+    ///   *別 session の画面*が新 root の console に出る（Reset の ghost replay より実害が大きい —
+    ///   「消したはずの自分の画面」ではなく「他人の会話」が出る）
+    /// - **②同一 file の奪い合い**: 旧 root の slot は付け替えでは畳まれない（「同居人は独立の
+    ///   住人」= 意図的）。その slot の `replay_path` は spawn 時に焼き込んだ旧名のままなので、
+    ///   新旧 2 本の**生きた** slot が同じ file を 3s ごとに上書きし合う
+    ///
+    /// 身元を session に紐づけると両方が構造的に消える（旧 root は自分の file を持ち続け、
+    /// 新 root は自分の file を読む）。ここでは path の不変条件として固定する — 実 spawn は
+    /// engine の PTY を立てることになり CI に置けないため。
+    #[test]
+    fn switching_root_does_not_move_any_replay_file_identity() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        let path_of = |session: SessionKey| {
+            crate::daemon::pty_slot::replay_file_path_session(&addr.project, lane_label, session)
+        };
+
+        // engine 持ちの非 root session を足し、root=1 時点の両者の path を覚える。
+        session_registry::create("vp", "root", "echoes", "echoes", SessionAct::Tui, false)
+            .expect("非 root session");
+        let (p1_before, p2_before) = (path_of(1), path_of(2));
+        assert_ne!(p1_before, p2_before, "session ごとに別 file");
+
+        // root を #2 へ付け替える。
+        pool.prepare_switch_root_session(&addr, 2)
+            .expect("root 付け替え");
+        assert_eq!(session_registry::root("vp", "root"), 2, "root が動いた");
+
+        // **どちらの file も動かない** = 内容の混入も奪い合いも起きない。
+        assert_eq!(
+            path_of(1),
+            p1_before,
+            "旧 root(#1) の file は付け替え後も同じ（生存 slot が書き続ける先が変わらない）"
+        );
+        assert_eq!(
+            path_of(2),
+            p2_before,
+            "新 root(#2) は自分の file を読む（旧 root の画面を seed しない）"
+        );
+        assert_ne!(path_of(1), path_of(2), "付け替え後も衝突しない");
     }
 
     /// doc 38 落とし穴③: console_mode ガードは focused session にのみ適用される。

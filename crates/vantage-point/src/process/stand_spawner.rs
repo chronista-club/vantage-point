@@ -357,13 +357,17 @@ pub fn build_stand_command(
 /// | `VP_SESSION_KEY` | この session の key（hook がこれを名乗り、SP は報告 session に会話 id を書く、doc 40 §4-1） |
 /// | engine（Act3 の arm） | この session の entry の `stand` |
 /// | resume id | この session の entry の `conversation` |
-/// | replay 永続 | **root の slot だけ** disk へ（後述） |
+/// | replay 永続 | **全 slot** が session 別 file へ（doc 50 §4.6 A6、後述） |
 ///
-/// replay（`replay_path`）を root 限定にしているのは、file が lane 単位の 1 本しかないため。
-/// 非 root slot に同じ file を渡すと 2 本の console が同じ replay を上書きし合い、しかも
-/// 非 root slot は SP 再起動で復元されない（boot が立てるのは root だけ）ので **読み手のいない
-/// 書き込み**になる。lane GC（`clear_lane_state_files_in`）が知っている file も lane 単位の
-/// 1 本だけなので、per-session file を足すと消し漏れ（orphan）が生まれる。
+/// replay（`replay_path`）は元々 root 限定だった。理由は「file が lane 単位の 1 本しかないので
+/// 非 root に同じ file を渡すと 2 本の console が奪い合う」「非 root は再起動で復元されないので
+/// **読み手のいない書き込み**になる」「lane GC が知る file は 1 本だけなので消し漏れが生まれる」。
+/// **A6 でこの 3 つの前提すべてを解いた**:
+///
+/// - file は **session 単位**（`__<session>`）になり奪い合いが構造的に消えた
+///   （身元を role にすると root 付け替えで再発する — [`crate::daemon::pty_slot::replay_file_path_session_in`]）
+/// - 非 root term も boot で復元される（`LanePool::restore_term_slots`）ので読み手が居る
+/// - lane GC / Reset は prefix 掃き（`clear_replay_in`）で session file 群も消す
 pub fn build_stand_command_for_session(
     stand_name: &str,
     addr: &LaneAddress,
@@ -412,6 +416,11 @@ pub fn build_stand_command_for_session(
     // だけが非 root を名指しする。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
     // engine_model は lane 単位（Act I/II 共有）のまま。
     let reg = crate::lane::session_registry::load(&addr.project, lane_label(addr), stand_name);
+    // A6 の後始末: 旧名 replay file（lane 単位）を現 root の session file へ 1 回だけ移設する。
+    // slot の replay_path を決める経路はここ 1 本なので、移設もここに置けば取りこぼさない
+    // （呼び手ごとに migration を書かせると 1 つ忘れる = [[normalize-at-module-boundary]]）。
+    // 冪等・best-effort なので毎 spawn 通しても実質 `exists()` 1 回。
+    crate::daemon::pty_slot::migrate_legacy_replay(&addr.project, lane_label(addr), reg.root);
     // この slot が化身する session（`None` = root = 従来の全経路）。
     let key = session.unwrap_or(reg.root);
     let entry = reg.sessions.iter().find(|s| s.key == key);
@@ -504,16 +513,17 @@ pub fn build_stand_command_for_session(
         initial_input,
         env,
         cwd: project_cwd,
-        // console replay の disk 永続 path（session 単位、doc 50 §4.6 A6）。daemon 再起動をまたぐ
-        // 画面復元に使う。**全 slot** が session 別 file を持つ（旧: root のみ）— A6 で root 以外の
-        // session も term pane になれるため、非 root term の scrollback も daemon 再起動で残す。
-        // root は旧名 `<project>__<lane>` を継承（後方互換）、非 root は `__<session>` suffix で
-        // 別 file（同一 file の奪い合い無し）。
+        // console replay の disk 永続 path（doc 50 §4.6 A6）。daemon 再起動をまたぐ画面復元に
+        // 使う。**全 slot** が session 別 file を持つ（旧: root のみ）— A6 で root 以外の session も
+        // term pane になれるため、非 root term の scrollback も daemon 再起動で残す。
+        //
+        // ⚠️ file の身元は **session**（`__<session>`）で、role（誰が root か）ではない。role で
+        // 決めると root 付け替えで「新 root が旧 root の画面を seed」「新旧 2 本の slot が同じ
+        // file を奪い合う」が起きる（[`crate::daemon::pty_slot::replay_file_path_session_in`]）。
         replay_path: Some(crate::daemon::pty_slot::replay_file_path_session(
             &addr.project,
             lane_label(addr),
             key,
-            key == reg.root,
         )),
     }
 }
@@ -692,12 +702,15 @@ mod tests {
             .replay_path
             .as_ref()
             .expect("root slot は従来どおり replay を disk に永続する");
+        // team-b 6 回目 2026-07-25: **root も session suffix**（旧: root だけ lane 単位の旧名）。
+        // file の身元を role に縛ると、root 付け替えで新 root が旧 root の画面を seed し、
+        // 旧 root の生存 slot と同じ file を奪い合う（`replay_file_path_session_in` の doc）。
         assert!(
             root_replay
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| !n.ends_with("__1")),
-            "root は旧名 `<project>__<lane>` を継承（session suffix 無し）: {root_replay:?}"
+                .is_some_and(|n| n.ends_with("__1")),
+            "root も自分の session file を持つ（role ではなく identity で決まる）: {root_replay:?}"
         );
         assert_ne!(
             non_root_replay, root_replay,

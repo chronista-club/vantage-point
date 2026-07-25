@@ -78,26 +78,28 @@ pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
 
 /// session 別の replay 永続 file path（base 注入版、doc 50 §4.6 A6）。
 ///
-/// root は lane 単位の旧名 `<project>__<lane>` を**継承**する（後方互換 = daemon 再起動で
-/// 既存 scrollback を失わない / 既存 file の rename migration 不要）。非 root term session は
-/// suffix 付き `<project>__<lane>__<session>` で、slot ごとに別 file（同一 file の奪い合い無し）。
+/// **file の身元は session に紐づく**（`<project>__<lane>__<session>`）。role（誰が root か）では
+/// なく identity で決めるのが要:
+///
+/// - 初版は root だけ旧名 `<project>__<lane>` を継承していた（migration 不要という後方互換の
+///   都合）。しかしそれは file を **role** に縛る形で、root を付け替えると
+///   ①新 root が spawn 時に `is_root=true` になり旧名 file を seed する = **旧 root の画面が
+///   別 session の console に出る** ②旧 root の生存 slot は spawn 時に旧名を焼き込んでいるので、
+///   新旧 2 本の生きた slot が同じ file を 3s ごとに奪い合う（team-b 6 回目 2026-07-25）。
+/// - A6 が「非 root も term になれる / 旧 root は付け替え後もタブに残る」を正規にしたので、
+///   role ベースの命名は成立しない。旧名は [`migrate_legacy_replay_in`] で 1 回だけ移設する。
 pub fn replay_file_path_session_in(
     base: &Path,
     project: &str,
     lane: &str,
     session: crate::lane::session_registry::SessionKey,
-    is_root: bool,
 ) -> PathBuf {
-    if is_root {
-        replay_file_path_in(base, project, lane)
-    } else {
-        base.join("terminal_replay").join(format!(
-            "{}__{}__{}",
-            sanitize_replay(project),
-            sanitize_replay(lane),
-            session
-        ))
-    }
+    base.join("terminal_replay").join(format!(
+        "{}__{}__{}",
+        sanitize_replay(project),
+        sanitize_replay(lane),
+        session
+    ))
 }
 
 /// [`replay_file_path_session_in`] の実 state dir 版（slot spawn 経路が使う）。
@@ -105,15 +107,49 @@ pub fn replay_file_path_session(
     project: &str,
     lane: &str,
     session: crate::lane::session_registry::SessionKey,
-    is_root: bool,
 ) -> PathBuf {
-    replay_file_path_session_in(
-        &crate::config::vp_state_dir(),
-        project,
-        lane,
-        session,
-        is_root,
-    )
+    replay_file_path_session_in(&crate::config::vp_state_dir(), project, lane, session)
+}
+
+/// 旧名 `<project>__<lane>` の replay file を **現 root の session file** へ 1 回だけ移設する。
+///
+/// A6 以前は root だけが replay を disk に持ち、file 名は lane 単位だった。identity ベースへ
+/// 移す際にこれを放置すると、upgrade 直後の root が「前回の画面」を失う（旧名を誰も読まなく
+/// なるため）。rename で身元を付け替えれば継続性を保ったまま role 依存を畳める。
+///
+/// 冪等: 旧名が無ければ no-op。移設先が既にあれば旧名を捨てる（**session 自身の file が正**
+/// — 旧名は「当時の root の画面」でしかなく、その session が自前 file を持っているなら
+/// そちらが新しい）。失敗は best-effort（replay は無くても console は live で動く）。
+pub fn migrate_legacy_replay_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    root: crate::lane::session_registry::SessionKey,
+) {
+    let legacy = replay_file_path_in(base, project, lane);
+    if !legacy.exists() {
+        return;
+    }
+    let target = replay_file_path_session_in(base, project, lane, root);
+    if target.exists() {
+        let _ = std::fs::remove_file(&legacy);
+        return;
+    }
+    if let Some(dir) = target.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::rename(&legacy, &target) {
+        tracing::debug!("replay 旧名の移設に失敗（best-effort）: {legacy:?} → {target:?}: {e}");
+    }
+}
+
+/// [`migrate_legacy_replay_in`] の実 state dir 版。
+pub fn migrate_legacy_replay(
+    project: &str,
+    lane: &str,
+    root: crate::lane::session_registry::SessionKey,
+) {
+    migrate_legacy_replay_in(&crate::config::vp_state_dir(), project, lane, root)
 }
 
 /// lane 削除時に replay file を消す (不在は no-op、 best-effort)。base 注入版。
@@ -583,17 +619,69 @@ fn strip_byte_seq(data: &[u8], seq: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// doc 50 §4.6 A6: root は lane 単位の旧名を継承（後方互換）、非 root は session suffix。
+    /// doc 50 §4.6 A6: file の身元は **session**（role ではない）。
+    ///
+    /// role（`is_root`）で決めていた初版は、root を付け替えると新 root が旧名 file を掴んで
+    /// 旧 root の画面を seed し、かつ旧 root の生存 slot と同じ file を奪い合った
+    /// （team-b 6 回目 2026-07-25）。同じ session なら常に同じ file、違う session なら必ず
+    /// 別 file、が守る不変条件。
     #[test]
-    fn replay_file_path_session_naming() {
+    fn replay_file_path_is_keyed_by_session_not_by_role() {
         let base = Path::new("/tmp/vp-test-state");
-        // root（is_root=true）は session を無視して旧名 `<project>__<lane>` に一致する。
-        let root = replay_file_path_session_in(base, "vp", "root", 16, true);
-        assert_eq!(root, replay_file_path_in(base, "vp", "root"));
-        // 非 root は `<project>__<lane>__<session>` の suffix 付き（別 file）。
-        let non_root = replay_file_path_session_in(base, "vp", "root", 17, false);
-        assert_eq!(non_root.file_name().unwrap(), "vp__root__17");
-        assert_ne!(root, non_root, "root と非 root は別 file（奪い合わない）");
+        let legacy = replay_file_path_in(base, "vp", "root");
+        // **session 1 も例外にしない**のが要点。「既定の root は 1 なので旧名でよい」と特例を
+        // 作った瞬間に role 依存が戻る（= 付け替えで身元が動く）。1 を含めて全数 suffix 付き。
+        for session in [1, 2, 16] {
+            let p = replay_file_path_session_in(base, "vp", "root", session);
+            assert_eq!(
+                p.file_name().unwrap(),
+                std::ffi::OsStr::new(&format!("vp__root__{session}")),
+                "session {session} の file は suffix 付き（旧名の特例を作らない）"
+            );
+            assert_ne!(
+                p, legacy,
+                "lane 単位の旧名は誰も使わない（session {session}）"
+            );
+        }
+        // 別 session は必ず別 file（同一 file の奪い合いが構造的に起きない）。
+        assert_ne!(
+            replay_file_path_session_in(base, "vp", "root", 16),
+            replay_file_path_session_in(base, "vp", "root", 17),
+        );
+    }
+
+    /// 旧名 file は現 root の session file へ 1 回だけ移設される（upgrade の継続性）。
+    #[test]
+    fn legacy_replay_migrates_to_the_current_root_session() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let legacy = replay_file_path_in(base, "vp", "root");
+        std::fs::create_dir_all(legacy.parent().unwrap()).expect("mkdir");
+        std::fs::write(&legacy, b"pre-A6 screen").expect("write legacy");
+
+        // root=5（A6 以前に switch_root で動いていた lane でも身元を正しく引き継ぐ）。
+        migrate_legacy_replay_in(base, "vp", "root", 5);
+        assert!(!legacy.exists(), "旧名は移設後に残さない");
+        let target = replay_file_path_session_in(base, "vp", "root", 5);
+        assert_eq!(
+            std::fs::read(&target).expect("移設先"),
+            b"pre-A6 screen",
+            "内容ごと現 root の file へ移る（upgrade で前回画面を失わない）"
+        );
+
+        // 冪等: 2 度目は no-op（旧名が無い）。
+        migrate_legacy_replay_in(base, "vp", "root", 5);
+        assert_eq!(std::fs::read(&target).expect("移設先"), b"pre-A6 screen");
+
+        // 移設先が既にあれば旧名を捨てる（session 自身の file が正）。
+        std::fs::write(&legacy, b"stale legacy").expect("write legacy again");
+        migrate_legacy_replay_in(base, "vp", "root", 5);
+        assert!(!legacy.exists());
+        assert_eq!(
+            std::fs::read(&target).expect("移設先"),
+            b"pre-A6 screen",
+            "session 自身の file を旧名で上書きしない"
+        );
     }
 
     /// テスト用のデフォルトシェルを返す。

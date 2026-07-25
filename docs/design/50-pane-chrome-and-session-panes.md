@@ -486,6 +486,7 @@ A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能�
 | 3 | handoff lock / 非 root 復元 | 無関係 pane を落とす / 再起動で pane が空 |
 | 4 | root 投影の乖離 / worker blocking | PTY 不発 or 1 会話 2 engine / runtime を塞ぐ |
 | 5 | Reset が term replay を消さない | **ghost replay** — Reset したはずの画面が新 console に蘇る |
+| 6 | replay file の身元が **role** に紐づく | 付け替えで**他 session の画面**が出る / 2 slot が同じ file を奪い合う |
 
 **「レビューを 1 回通したから安全」は成り立たない。** 特に制約撤廃を含む変更では、レビュー自体が
 **新たに到達可能になった構成**を発見する過程になるので、収束するまで回す必要がある。
@@ -505,6 +506,38 @@ A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能�
 > 「**旧画面が残っていないか**」— Reset 後に立て直した slot が同じ path へ自分の出力を flush
 > するのは正常なので、存在だけ見ると誤判定する
 > （[[verify-the-cleanup-not-just-the-disappearance]]）。
+
+#### 永続物の身元は role ではなく identity で決める（6 例目）
+
+term replay file の初版は **root だけ lane 単位の旧名 `<project>__<lane>` を継承**していた。
+migration 不要という後方互換の都合だったが、これは file の身元を **role（誰が root か）** に
+縛る形で、A6 が「非 root も term になれる / 旧 root は付け替え後もタブに残る」を正規にした瞬間に
+2 つの壊れ方を生んだ:
+
+- **内容の混入**: 新 root は spawn 時に `is_root=true` になり旧名 file を seed する →
+  **他 session の画面**が新 root の console に出る。Reset の ghost replay より実害が大きい
+  （「消したはずの自分の画面」ではなく「別の会話」が出る）
+- **同一 file の奪い合い**: 旧 root の slot は付け替えでは畳まれない（「同居人は独立の住人」=
+  意図的な設計）。その `replay_path` は spawn 時に焼き込んだ旧名のままなので、新旧 2 本の
+  **生きた** slot が同じ file を 3s ごとに上書きし合う
+
+修正は naming を **identity ベース**（全 session が `__<session>`）に統一し、旧名は
+`migrate_legacy_replay_in` で**現 root の session file へ 1 回だけ rename** する。これで
+`is_root` 引数が消えるので、**どの呼び手も role で path を決められなくなる**（テストより強い
+構造的保証）。旧 root は自分の file を持ち続け、新 root は自分の file を読む — 付け替えで
+身元が動かない。
+
+> ⚠️ **コードだけ変えて根拠を残した**のがこの穴の入口。`build_stand_command_for_session` の
+> doc には「replay を root 限定にしているのは file が lane 単位の 1 本しかないため。非 root に
+> 同じ file を渡すと 2 本の console が奪い合う」と、**まさにこの衝突を警告する文**が残っていた。
+> A6 は非 root にも file を渡すようコードを変えたが、この警告文を読み直して「では前提はどう
+> 変わったのか」を書き換えなかった。**古い根拠は、新しい設計の反例として機能する** —
+> 消すか、なぜ前提が解けたのかを書くかの二択で、放置は third option ではない。
+>
+> ⚠️ ここでも**最初のテストは罠を検出しなかった**（2 度目）。`is_root` を消した後の signature は
+> 旧バグを表現できないので、「role 依存が戻る」形（= session 1 だけ旧名の特例）を作って
+> 実験したら通ってしまった。session 1 を含めて**全数** suffix を assert する形に直して初めて
+> 赤くなった。**特例を 1 つ作れば role 依存は戻る**ので、テストは「例外なし」を見る。
 
 #### 残タスク
 
