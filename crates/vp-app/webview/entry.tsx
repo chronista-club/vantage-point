@@ -106,7 +106,7 @@ import { renderPP, clearPP, appendPP } from "./pp";
 import { installConsole, focusedOf, sessionActOf } from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Act で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
-import { chatHostId, installLanePanes } from "./lane-panes";
+import { chatHostId, installLanePanes, TERM_HOST_CLASS } from "./lane-panes";
 import { installChatView, CHATVIEW_CSS, handoffKey } from "./chatview";
 import {
 	mountEchoesHeader,
@@ -479,8 +479,12 @@ if (lanePanes && paneFrame) {
 	paneFrame.addEventListener(
 		"click",
 		(e) => {
+			// A6: term host は session 単位（`.term-session-host`）。旧 selector は静的
+			// `#lane-host` しか見ておらず、**非 root の term pane は click で focus が
+			// 移らなかった**（host の身元を role で決めていた副作用）。class で拾えば全 term が
+			// 対象になる（team-b 7 回目 2026-07-25 の同型探索で発見）。
 			const host = (e.target as HTMLElement | null)?.closest(
-				"#lane-host, .chat-session-host",
+				`.${TERM_HOST_CLASS}, .chat-session-host`,
 			);
 			if (host?.id) lanePanes.focusPane(host.id);
 		},

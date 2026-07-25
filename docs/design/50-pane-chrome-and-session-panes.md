@@ -487,6 +487,7 @@ A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能�
 | 4 | root 投影の乖離 / worker blocking | PTY 不発 or 1 会話 2 engine / runtime を塞ぐ |
 | 5 | Reset が term replay を消さない | **ghost replay** — Reset したはずの画面が新 console に蘇る |
 | 6 | replay file の身元が **role** に紐づく | 付け替えで**他 session の画面**が出る / 2 slot が同じ file を奪い合う |
+| 7 | xterm host の身元が **role** に紐づく（`#lane-host`） | root 付け替えで **DOM 位置と focus が旧 root に残留**（+ 非 root term が click で focus できない） |
 
 **「レビューを 1 回通したから安全」は成り立たない。** 特に制約撤廃を含む変更では、レビュー自体が
 **新たに到達可能になった構成**を発見する過程になるので、収束するまで回す必要がある。
@@ -538,6 +539,38 @@ migration 不要という後方互換の都合だったが、これは file の�
 > 旧バグを表現できないので、「role 依存が戻る」形（= session 1 だけ旧名の特例）を作って
 > 実験したら通ってしまった。session 1 を含めて**全数** suffix を assert する形に直して初めて
 > 赤くなった。**特例を 1 つ作れば role 依存は戻る**ので、テストは「例外なし」を見る。
+
+**同じ病気が xterm host にもあった**（7 例目、team-b 7 回目 score 92）。初版は root だけ静的
+`#lane-host` を使い、非 root は `#term-session-<n>` を動的生成していた。root 付け替えで:
+
+- World B（layout）は最新 roster から id を計算し直す → 2 つの pane の id が**入れ替わる**
+- World A は生成時の host を握り続ける（`ensureLane` は `laneInstances.has(key)` で idempotent）
+  → **DOM 位置と focus が旧 root に残留**。対象が未 slot だった場合は同じ `#lane-host` に
+  **物理的に重畳**する
+
+act 切替には `renamePane` で id 変化を吸収する機構が既にあったが、**root 切替は act を変えない**
+ので `vp:session-act` が発火せず、その機構を通らなかった（同じ症状に 2 つの入口があり、片方
+しか塞いでいなかった = [[one-edge-two-jobs]] の変種）。
+
+修正は host も **identity ベース**（全 session が `#term-session-<n>`、静的 `#lane-host` は退役）。
+`ensureTermHost` から `isRoot` が消えるので、**どの呼び手も role で host を決められない**。
+focus 優先だけは root に依るので、`ensureLane` が既存 instance にも毎回 `isRootHost` を焼き直す
+（role を identity に混ぜず、role を**状態として更新**する側に置いた）。
+
+> **副産物 2 つ**: ① click-to-focus の selector が `#lane-host, .chat-session-host` で、
+> **非 root term pane は click で focus できなかった**（role ベース命名の副作用）。class で
+> 拾う形にして全 term が対象に。② boot 既定 layout が**空**になった — root の session key は
+> boot 時点で未知なので置く id が無い。「host が無ければ覆えない」（#880 で学んだ形）で成立する。
+>
+> ⚠️ **実機で「term pane が空」に見えたが、原因は別だった**。DIAG を仕込んで確定させたところ
+> instance は作られ `.active` も付いており（`actives=1`）、**DOM は正常**。空だったのは
+> **server 側の demand edge が GUI 単独再起動で立たない**既知の pre-existing bug（daemon を
+> 再起動したら中身が戻った = 切り分け完了）。**症状が同じでも層が違う** — 「自分の変更が
+> 原因」と決めつけて DOM を疑い続けるのは 4 手ほど無駄だった。**推測を重ねる前に診断を
+> 仕込む**方が速い。
+>
+> migration も実データで確認: `vantage-point__root`（262144 bytes）→ `vantage-point__root__16`
+> へ内容ごと rename。他 60 lane は次の spawn で lazy に移設される。
 
 #### 残タスク
 

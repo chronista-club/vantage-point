@@ -205,7 +205,8 @@ body{overflow:hidden;}
    (chat session host と同じ mount 点パターン)。
    高さ 0 が default = header 不在時は xterm/chat が全高 (既存挙動、regression なし)。
    header が内容を持つ時だけ World B が #pane-terminal に .echoes-header-active を付け、
-   strip を開いて lane-host / chat session host / lane-empty をその分だけ押し下げる
+   strip を開いて session host 群 (#term-session-<n> / .chat-session-host) と lane-empty を
+   その分だけ押し下げる
    (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
 #pane-terminal{--echoes-header-h:0px;}
@@ -214,7 +215,7 @@ body{overflow:hidden;}
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
    (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
-   子 Pane (#lane-host / .chat-session-host) は中身を変えず位置づけだけ absolute。
+   子 Pane (.term-session-host / .chat-session-host) は中身を変えず位置づけだけ absolute。
    inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
@@ -484,8 +485,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
        legacy 側 setAttribute が Frame Engine の static attribute を hijack して Scene lookup undefined
        → HIDDEN_TRANSFORM 適用 → pane が見えなくなる回帰を防ぐため (VP-141 fix)。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
-  <!-- Phase 2.5 (per-Lane instance): pane-terminal 内に lane-host を置き、
-       Lane ごとに xterm.js instance を mount。 active な 1 つだけ display:block。 -->
+  <!-- Phase 2.5 (per-Lane instance) → doc 50 §4.6 A6: pane-terminal 内の #lane-panes に
+       (lane, session) ごとの xterm.js instance を mount。 active な instance だけ display:block。 -->
   <!-- VP-140 fail-safe: pane-terminal は Frame Engine が apply される前から visible にしておく。
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
@@ -497,15 +498,16 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
     <div id="echoes-header"></div>
     <!-- doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane の表示領域 = N 枚の Pane を並べる
          tiling の器。配置は creo-ui-layout の lane scope (lane-panes.ts) が resolved rect を
-         inline で書く。子は #lane-host (Act I xterm、World A 所有・中身に触れない) +
-         chat session host 群（World B の lane-panes が session ↔ Pane 1:1 で動的に生やす。
-         旧 #console-chat-host 固定 1 枚は session ↔ Pane 1:1 への移行で退役）。
+         inline で書く。子は **session ごとの host 群**を動的に生やす:
+         `#term-session-<n>`（Act I xterm、World A 所有・中身に触れない）と
+         `#chat-session-<n>`（World B の lane-panes が生やす）。どちらも 1 session = 1 Pane。
+         旧 #console-chat-host 固定 1 枚 / 静的 #lane-host（root 専用の term host）は退役 —
+         host の身元を role でなく session に紐づけた（doc 50 §4.6 A6、`ensureTermHost`）。
          下端の帯 (#pane-tabs) は doc 51 §1 A1 で退役 — 表示は既定 tiling、
          + New / Act 切替は EchoesHeader (lane の名札) へ移設。 -->
     <div id="lane-panes">
-      <div id="lane-host"></div>
       <!-- board (PP) pane — doc 52 §10 wave 0: app 層の #pane-paisley-park から lane tiling へ
-           引っ越した「貼る台」。lane-host と同じく lane に 1 枚の静的 host（board は lane-scoped、
+           引っ越した「貼る台」。**lane に 1 枚の静的 host**（board は lane-scoped、
            表示 lane は常に 1 つ = xterm と同じ性質）。roster に載るのは board 非空のときだけで、
            位置決めは lane-panes.ts が担う。中身の #pp-content / #pp-history-strip は移設のみで
            id 不変 = pp.ts / HistoryStrip / board-handler の render 先は変わらない。 -->
@@ -803,13 +805,18 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   /**
    * (lane, session) の term host 要素を get-or-create する（doc 50 §4.6 A6）。
    *
-   * root session は静的 `#lane-host` を使い続ける（旧実装との連続性 = lane-panes の
-   * TERM_PANE_REF / layout 永続の id が変わらない）。非 root は `#term-session-<n>` を
-   * `#lane-panes` 直下に動的生成する（chat 側 `chatHostId` = `chat-session-<n>` と同型）。
+   * **host の身元は session**（`#term-session-<n>`、chat 側 `chat-session-<n>` と同型）。
+   * root も例外にしない — 初版は root だけ静的 `#lane-host` を使っていたが、それは host を
+   * **role**（誰が root か）に縛る形で、root を付け替えると host id が session 間で入れ替わる:
+   * World A は生成時の host を握り続け、World B（layout）は最新 roster から id を計算し直すので
+   * **DOM 位置と focus が旧 root に残留**する（team-b 7 回目 2026-07-25）。
+   * A6 が「非 root も term になれる / どの session でも代表にできる」を正規にした以上、role で
+   * 識別子を決める形は成立しない（replay file と同じ判断 —
+   * `daemon::pty_slot::replay_file_path_session_in`）。
+   *
    * lane 切替では作り直すので id に lane を含めない（DOM には常に 1 lane 分しか無い）。
    */
-  function ensureTermHost(session, isRoot) {
-    if (isRoot) return document.getElementById('lane-host');
+  function ensureTermHost(session) {
     const id = 'term-session-' + session;
     let host = document.getElementById(id);
     if (host) return host;
@@ -823,7 +830,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   }
 
   function createLaneInstance(address, session, isRoot) {
-    const host = ensureTermHost(session, isRoot);
+    const host = ensureTermHost(session);
     if (!host) {
       console.error('createLaneInstance: term host not found (session=' + session + ')');
       return null;
@@ -1319,11 +1326,20 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     },
   };
 
-  // doc 50 §4.6 A6: (lane, session) ごとに xterm を用意する。`isRoot` は host の選び方
-  //  （root = 静的 #lane-host / 非 root = 動的 #term-session-<n>）を決める。
+  // doc 50 §4.6 A6: (lane, session) ごとに xterm を用意する。
+  //
+  // `isRoot` は **host の選び方には使わない**（host の身元は session — `ensureTermHost`）。
+  // 使うのは focus の優先だけ（`showLane` が「代表を優先して 1 枚に focus」する）。
+  // ⚠️ root は **付け替えで動く**ので、既存 instance にも毎回**焼き直す** — 生成時の値を
+  // 握り続けると、root 切替後もキーボード入力が旧 root に飛び続ける
+  // （team-b 7 回目 2026-07-25。role を identity に混ぜない、の focus 側）。
   window.ensureLane = function(address, session, isRoot) {
     const key = instKey(address, session);
-    if (laneInstances.has(key)) return;
+    const existing = laneInstances.get(key);
+    if (existing) {
+      existing.isRootHost = !!isRoot;
+      return;
+    }
     const inst = createLaneInstance(address, session, !!isRoot);
     if (inst) {
       laneInstances.set(key, inst);
@@ -1384,7 +1400,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       if (info.webglAddon) { try { info.webglAddon.dispose(); } catch (_) {} }
       info.term.dispose();
       info.container.remove();
-      // 非 root の動的 host は空になったら畳む（root の #lane-host は静的なので残す）。
+      // host は全 session 動的（A6 の identity 化）なので、空になったら一律で畳む。
       const host = document.getElementById('term-session-' + info.session);
       if (host && host.childElementCount === 0) host.remove();
     } catch (e) {
@@ -1744,6 +1760,33 @@ mod tests {
         assert!(
             MAIN_AREA_HTML.contains("t: 'term:resize', lane: address, session: session"),
             "term:resize が session を運んでいない"
+        );
+    }
+
+    /// term host の身元が **session**（role ではない）ことを HTML 文字列で固定する。
+    ///
+    /// 初版は root だけ静的 `#lane-host` を使っていた。それは host を role に縛る形で、
+    /// root 付け替えで id が session 間で入れ替わり、World A は生成時の host を握り続けるので
+    /// **DOM 位置と focus が旧 root に残留**した（team-b 7 回目 2026-07-25）。次に root を動かす
+    /// 動詞（Reborn）が来ても再発しないよう、**静的 host の復活を禁じる**方向で固定する。
+    #[test]
+    fn term_host_is_keyed_by_session_and_never_static() {
+        assert!(
+            MAIN_AREA_HTML.contains("function ensureTermHost(session)"),
+            "ensureTermHost が session だけを取る形でない（role を混ぜると付け替えで壊れる）"
+        );
+        assert!(
+            !MAIN_AREA_HTML.contains(r#"<div id="lane-host">"#),
+            "静的 #lane-host が復活している（root 専用 host = role ベース命名。session 単位に）"
+        );
+        assert!(
+            MAIN_AREA_HTML.contains("host.className = 'term-session-host'"),
+            "term host の class が無い（World B の roster 外掃除 / click focus が class で拾う）"
+        );
+        // focus 優先だけは root に依るので、既存 instance にも毎回焼き直すこと（root は動く）。
+        assert!(
+            MAIN_AREA_HTML.contains("existing.isRootHost = !!isRoot;"),
+            "既存 instance の isRootHost を更新していない（付け替え後も旧 root に focus が飛ぶ）"
         );
     }
 }

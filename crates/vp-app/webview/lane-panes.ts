@@ -7,7 +7,7 @@
  *
  * ## 層の分離（CLAUDE.md: data / calculations / actions）
  *
- * - **data**: `TERM_PANE_REF` + session 由来の動的 refs（`lanePaneRefs` — doc 50 P1 で動的化）
+ * - **data**: session 由来の動的 refs（`lanePaneRefs`）。静的 refs は board だけ（A6 で term も session 単位に）
  * - **calculations**: `lanePaneRefs` / `syncPaneColumns` / `newPaneChoices` — 純関数（vitest で固定）
  * - **actions**: `installLanePanes` — engine 購読 + DOM への反映（display / rect / class）
  *
@@ -72,19 +72,20 @@ export type PaneSession = {
 	act?: "tui" | "chat";
 };
 
-/** term pane の host DOM id（World A の `ensureTermHost` と対。root は静的 #lane-host）。 */
-export function termHostId(session: number, isRoot: boolean): string {
-	return isRoot ? TERM_PANE_REF.id : `term-session-${session}`;
+/**
+ * term pane の host DOM id（World A の `ensureTermHost` と対）。
+ *
+ * **身元は session**（root も例外にしない）。初版は root だけ静的 `#lane-host` を使っていたが、
+ * それは host を **role** に縛る形で、root 付け替えで id が session 間で入れ替わる → World A は
+ * 生成時の host を握り続けるので **DOM 位置と focus が旧 root に残留**した
+ * （team-b 7 回目 2026-07-25）。role で識別子を決めない、が守る不変条件。
+ */
+export function termHostId(session: number): string {
+	return `term-session-${session}`;
 }
 
-/** root session の term pane（= 静的 host `#lane-host`）。非 root の term は
- *  `termHostId` が返す動的 host（`#term-session-<n>`）に載る（doc 50 §4.6 A6）。
- *  root だけ静的なのは、layout 永続 / boot 既定の id を変えないため。 */
-export const TERM_PANE_REF: PaneRef = {
-	id: "lane-host",
-	label: "Console",
-	kind: "term",
-};
+/** term host の class（World A `ensureTermHost` が付ける値と対。roster 外の掃除に使う）。 */
+export const TERM_HOST_CLASS = "term-session-host";
 
 /** board（PP）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
  *  1 lane 1 枚、表示 lane は常に 1 つ = xterm と同じ性質。動的生成は不要、位置決めだけ動く）。
@@ -136,7 +137,7 @@ export function lanePaneRefs(
 		const label = `${sessionChipPrefix(v.stand)}#${v.key}`;
 		return v.act === "chat"
 			? { id: chatHostId(v.key), label, session: v.key, kind: "chat" }
-			: { id: termHostId(v.key, !!v.root), label, session: v.key, kind: "term" };
+			: { id: termHostId(v.key), label, session: v.key, kind: "term" };
 	});
 	return boardPresent ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
 }
@@ -200,14 +201,20 @@ export function laneScope(lane: string): string {
 	return `lane:${lane}`;
 }
 
-/** 初期配置: lane-host（Console）1 枚が全面。chat session pane は session 一覧の到着後に
- *  syncPaneColumns で生える（boot 窓に空の chat host が xterm を覆う #880 系の問題は、
- *  「無い host は覆えない」の形で構造的に消えた） */
+/**
+ * 初期配置: **空**（pane は session 一覧の到着後に `syncPaneColumns` で生える）。
+ *
+ * doc 50 §4.6 A6 で host の身元が session になったため、**boot 時点では id を作れない**
+ * （root の session key を知るのが session 一覧の到着後）。旧実装は静的 `#lane-host` を
+ * 1 枚全面で置いていたが、それは role ベース命名の産物だった。
+ *
+ * 空で困らないのは、host が無い間は**覆うものが無い**から（boot 窓に空の chat host が xterm を
+ * 覆う #880 系と同じ「無い host は覆えない」の形）。World A が `ensureLane` で host を作った
+ * 時点では inline rect が未設定 = CSS の `inset:0` で全面 — 1 枚構成なら結果は旧既定と同じで、
+ * 2 枚以上でも roster 到着で即座に並ぶ。
+ */
 export function initialLaneLayout(): Layout {
-	return {
-		structure: { columns: [{ panes: [TERM_PANE_REF.id] }] },
-		attention: { [TERM_PANE_REF.id]: 1 },
-	};
+	return { structure: { columns: [] }, attention: {} };
 }
 
 /** 消えていた Pane に focus を当て直す時の share（2 枚構成なら等分に戻る） */
@@ -299,23 +306,9 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			boardByLane.get(boardLaneKeyOf(lane)) ?? false,
 		);
 
-	// boot 既定を **同期で** DOM に書く（旧 PaneShell.dock() が bundle init 時に同期 render
-	// していたのと同じ「event を待たず DOM 確定」）。boot 時点の refs は Console のみ —
-	// chat host は session 一覧の到着後に生成されるので、空 host が xterm を覆う boot 窓
-	// （#880 と同族）は「無い host は覆えない」の形で構造ごと消えた。
-	{
-		const bootResolved = resolve(initialLaneLayout());
-		const el = deps.hostOf(TERM_PANE_REF.id);
-		const r = bootResolved[TERM_PANE_REF.id];
-		if (el && r) {
-			el.style.display = "";
-			el.style.left = `${r.rect.x * 100}%`;
-			el.style.top = `${r.rect.y * 100}%`;
-			el.style.width = `${r.rect.w * 100}%`;
-			el.style.height = `${r.rect.h * 100}%`;
-			el.classList.toggle(CLASS_FOCUSED, true);
-		}
-	}
+	// boot 既定の同期描画（旧 PaneShell.dock() 相当）は退役 — A6 で host が session 単位に
+	// なり、boot 時点に描く相手（静的 host）が存在しなくなった。host は World A が
+	// `ensureLane` で作り、位置は session 一覧の到着で `syncPaneColumns` が書く。
 
 	/** scope の初期化（未訪問 lane は Console 全面で始める）。戻り値は scope key */
 	const ensure = (lane: string): string => {
@@ -421,20 +414,27 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			}
 			el.classList.toggle(CLASS_FOCUSED, isVisible && p.id === focused);
 		}
-		// ⚠️ roster **外**の常設 host（#lane-host / #lane-board）を明示的に隠す。上のループは
-		// roster しか触らないため、roster から外れた常設 host は「見えないのに display のまま」
-		// 他 host の下に残る。DOM から消してはいけない（#lane-host は World A の xterm を保持する
-		// 境界規律、doc 33 §8。#lane-board も静的 host を作り直さない）が、隠さないと中身の
-		// viewport（xterm の overflow-y:scroll + 巨大 scrollback / board の overflow-y:auto）が
-		// 同じ矩形に残り、WebKit の async-scroll hit-test が**奥の見えない viewport に wheel を
-		// 奪う** — 手前の pane が「wheel 不動 / PgDn は動く」になる（2026-07-24 実機再現）。
-		for (const staticId of [TERM_PANE_REF.id, BOARD_PANE_REF.id]) {
-			if (refs.some((p) => p.id === staticId)) continue;
-			const el = deps.hostOf(staticId);
-			if (el) {
-				el.style.display = "none";
-				el.classList.toggle(CLASS_FOCUSED, false);
-			}
+		// ⚠️ roster **外**の host を明示的に隠す。上のループは roster しか触らないため、roster
+		// から外れた host は「見えないのに display のまま」他 host の下に残る。DOM から消して
+		// はいけない（term host は World A の xterm を保持する境界規律、doc 33 §8。#lane-board も
+		// 静的 host を作り直さない）が、隠さないと中身の viewport（xterm の overflow-y:scroll +
+		// 巨大 scrollback / board の overflow-y:auto）が同じ矩形に残り、WebKit の async-scroll
+		// hit-test が**奥の見えない viewport に wheel を奪う** — 手前の pane が「wheel 不動 /
+		// PgDn は動く」になる（2026-07-24 実機再現）。
+		//
+		// A6 で term host が session 単位（動的）になったので、**静的 id 1 つでは足りない**
+		// （旧 `#lane-host` だけ見ていた）。DOM に居る term host を全数走査して roster 外を畳む。
+		const strays: HTMLElement[] = [];
+		const board = deps.hostOf(BOARD_PANE_REF.id);
+		if (board && !refs.some((p) => p.id === BOARD_PANE_REF.id)) strays.push(board);
+		for (const el of deps.container.querySelectorAll<HTMLElement>(
+			`.${TERM_HOST_CLASS}`,
+		)) {
+			if (!refs.some((p) => p.id === el.id)) strays.push(el);
+		}
+		for (const el of strays) {
+			el.style.display = "none";
+			el.classList.toggle(CLASS_FOCUSED, false);
 		}
 	};
 
@@ -482,15 +482,15 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		const entry = list?.find((v) => v.key === d.session);
 		if (entry) entry.act = d.act;
 		if (d.lane !== activeLane) return;
-		// 見え方が変わると host id も変わる（chat-session-N ⇄ lane-host / term-session-N）。
+		// 見え方が変わると host id も変わる（chat-session-N ⇄ term-session-N）。
 		const prevId =
 			d.act === "chat"
-				? termHostId(d.session, !!entry?.root)
+				? termHostId(d.session)
 				: chatHostId(d.session);
 		const nextId =
 			d.act === "chat"
 				? chatHostId(d.session)
-				: termHostId(d.session, !!entry?.root);
+				: termHostId(d.session);
 		// ⚠️ **roster 同期より先に**列の中で id を差し替える。順序を逆にすると
 		// syncPaneColumns が「旧 id が消えた / 新 id が入場した」と解釈し、pane が右端の
 		// 細い列に飛ぶ（2026-07-25 実機: chat→tui で「立ち上がっていない」ように見えた真因）。
