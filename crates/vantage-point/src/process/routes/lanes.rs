@@ -563,27 +563,13 @@ pub(crate) async fn create_performer_orchestrated(
         }
     }
 
-    // doc 54 §3.1 / §8-11: 生成の既定レンズを registry に**明示的に書く**（仕込み = explicit
-    // intent）。chat_capable な engine は Chat（VP 自前の ChatView が既定の面）、shell 等は
-    // Tui（定義）。以降の boot（lane_spawn_actor）はこの registry を honor する。
-    let root_act = {
-        let act = crate::lane::session_registry::default_act_for_stand(&stand);
-        let lane_label = crate::process::stand_spawner::lane_label(&addr);
-        if let Err(e) =
-            crate::lane::session_registry::set_root_act(&addr.project, lane_label, &stand, act)
-        {
-            // 書けなくても lane 作成は続行（読み手の fallback = Tui で従来形に degrade）。
-            tracing::warn!(
-                "既定レンズの永続失敗（Tui 相当で継続）: addr={} act={:?} err={}",
-                addr,
-                act,
-                e
-            );
-            crate::lane::session_registry::SessionAct::Tui
-        } else {
-            act
-        }
-    };
+    // doc 54 §3.1 / §8-11: 生成の既定レンズ（**純粋計算** — chat_capable な engine は Chat、
+    // shell 等は Tui = 定義）。registry への永続は**実 insert 確定後**（下の stand_store::record
+    // と同じ規律）: spawn 前に書くと create 失敗の rollback（abort_lane_creation）が回収せず、
+    // 孤児 registry の stale な stand が同名再作成時に engine を取り違えさせる（moody 指摘
+    // 2026-07-25）。Tui 経路の初回 spawn は registry 不在でも安全 — build_stand_command の
+    // root entry 解決は不在時に引数の stand へ fallback する。
+    let root_act = crate::lane::session_registry::default_act_for_stand(&stand);
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
@@ -730,6 +716,22 @@ pub(crate) async fn create_performer_orchestrated(
         tracing::warn!(
             "lane stand の永続に失敗（再起動後は default に fallback）: addr={addr} stand={stand}: {e}"
         );
+    }
+
+    // doc 54 §8-11: 生成の既定レンズを registry に**明示的に書く**（仕込み = explicit intent。
+    // 以降の boot = lane_spawn_actor がこれを honor する）。⚠️ 位置は stand_store と同じく
+    // **実 insert 確定後** — 「作れなかった create」が state file を残さない（rollback 経路は
+    // 上で早期 return 済み。Dead 登録は disk に lane が実在 = boot respawn の対象なので書く）。
+    // 失敗は warn のみ（欠落時の読み手 fallback = Tui なので、次 boot が Tui で立つ従来形に退化）。
+    {
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        if let Err(e) =
+            crate::lane::session_registry::set_root_act(&addr.project, lane_label, &stand, root_act)
+        {
+            tracing::warn!(
+                "既定レンズの永続失敗（次 boot は Tui 相当に退化）: addr={addr} act={root_act:?}: {e}"
+            );
+        }
     }
 
     // wiremsg Stage 0: Lane 追加を SystemEvent::Lane(Diff::Add) で発火する。
