@@ -252,10 +252,16 @@ server は既に **「どの pane が存在すべきか」を知っている** �
 | Phase | scope | 消えるバグ class | 規模 |
 |---|---|---|---|
 | **R1** | **`console_mode` 廃止** — 読み手 8 箇所をそれぞれの問いに置き換え、投影と `sync_root_act_projection` を撤去 | #4 | 中 |
-| **R2** | **pump を reconcile 化** — 「生きた term slot に pump が 1 本」を level で保つ。`respawn_terminal_pump` の `only` 引数と呼び手 4 箇所の判断が消える | #1 / #10 / demand edge | 中 |
+| **R2** | **pump を reconcile 化** — 「生きた term slot に pump が 1 本」を level で保つ。`respawn_terminal_pump` の `only` 引数と呼び手 4 箇所の判断が消える | #1 / #10 / demand edge / **#11（下記）** | 中 |
 | **R3** | **slot / engine を reconcile 化** — 5 つの手書き遷移を `reconcile_lane` 1 本に畳む。動詞は registry に書くだけ | #3 / #5 | 大 |
 | **R4** | **pane 一覧を配る** — server が導出、client は描くだけ。`echoes_session_list` を client API から退役、cache 1 本化 | #8 / #9 / boot 窓 | 中〜大 |
 
+> **R2 は既知バグを 1 件抱えている**（doc 50 §4.7「直さないと決めた 1 件」）: boot 復元
+> （`restore_term_slots`、800ms×N の逐次）が進む間に demand の 0→1 edge が先に立ち、**後から
+> 復元された slot に pump が張られない**。A6 の 11 周目で発見し、**patch が R2 の消す機構になる**
+> ため意図的に据え置いた。**R2 の受け入れ条件にこれを含める**（World 再起動 → 非 root term が
+> 2 枚以上 → 全 pane に出力が来ること）。
+>
 > R1 と R2 は **A6 の直後にやると安い**（触った記憶が残っているうちに）。R3 が本体、R4 は client 側。
 > R4 の前提として「registry の change stream」が要るので、R3 で intent の変更点が 1 箇所に
 > 畳まれているとそこから流せる（R3 → R4 の順に意味がある）。

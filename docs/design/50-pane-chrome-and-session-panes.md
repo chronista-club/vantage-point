@@ -155,6 +155,7 @@ xterm は **World A**（`main_area.rs` のインライン JS）にあり、bundl
 | 8 | DOM host | `#lane-host` / `#console-chat-host` 固定 2 | session ごとに生成 | A + B |
 | 9 | tab strip | `.echoes-tabs` | 撤去（chip = 畳まれた Pane、§1.3） | B `chatview.tsx` |
 | 10 | Act toggle | lane の mode 切替 | **消滅**（Act = Pane の kind） | B `entry.tsx` |
+| 11 | boot 復元 × demand edge のレース（**直さないと決めた** — 下記） | World 再起動後、一部 term pane が GUI 再起動まで無音 |
 
 **#6 が本丸**。doc 46 §P5 の決定表が「focused は chat 動詞の宛先」と書いたとおり、submit /
 set_model / set_permission_mode / interrupt はすべて lane の focused session に落ちる。
@@ -653,6 +654,40 @@ session の pump を撤去する — `Some` で兄弟を巻き込まないため
 消すのに **term の PTY replay file を残していた**。key 再利用は Reset だけなので ghost replay には
 直結しないが、A6 で非 root も replay を持つようになった分の**純粋な disk leak**。chat 側と対称に
 `clear_replay_session` を並べた。
+
+#### 直さないと決めた 1 件 — boot 復元 × demand edge のレース（11 周目 score 90）
+
+**症状**: World / project 再起動後、非 root term session を持つ lane で **一部 pane が無音**になりうる
+（pane は出るが出力が永久に来ない = 1 周目と同じ症状、経路は新規）。
+
+**機序**:
+
+1. `lane_spawn_actor` が root slot を立てて `pool_write.insert(info)` → **この時点で lane が見える**
+   （`build_lanes_snapshot` は `lane_pool` を**直読み**する。doc 44 fold-in で project が同一
+   プロセスになった結果、`SystemEvent` の publish を待たない経路がある）
+2. `restore_term_slots` は非 root を **1 枚 800ms で逐次**復元する（まだ途中）
+3. vp-app は registry 由来の roster（全 session）で subscribe → **購読者 0→1 の edge** が立ち、
+   `respawn_terminal_pump(None)` が**その瞬間 live な slot だけ**に pump を張る
+4. 後から復元された slot には pump が張られない。**edge は lane につき 1 回**なので再発火しない
+   （救済網の `refire_active_demands` は **production 呼び手ゼロ**）
+
+**なぜ直さないか**（doc 53 §6.5.2 の規律「①直す ②起票 ③切る、既定は①でない」を適用）:
+
+- **復旧手段が既知の class と同じ**: vp-app が死ぬと購読者数が 0 に戻るので、**次の GUI 起動で
+  edge が立ち直り全 slot に pump が張られる**。症状は「World 再起動後、GUI を再起動するまで
+  一部 pane が無音」= 既に記録済みの demand edge 一族
+- **正しい fix は既に設計済み**: 根本原因は「pump の起動契機が edge」で、答えは
+  **edge → level**（doc 53 §2.3 / Phase **R2**）。いま patch を当てると **R2 が消す機構**を
+  作ることになる（「症状に機構を足す」= doc 53 §6.5.2 で名指しした失敗形）
+- 代替案はどれも代償がある: actor に `AppState` を持たせる（責務境界を汚す）/ SystemEvent 配管を
+  増やす（R2 が消す）/ lane の可視化を遅らせる（`open_slot_for_session` の param を 2 関数に通す）
+
+→ **doc 53 R2 で直す**。A6 直後の最初の作業にする（§5 の Phase 順）。
+
+> ⚠️ **私（Claude）の検証が甘かった点も記録する**。「`restore_term_slots` は publish より前だから
+> 安全」と一度結論したが、**可視化の経路を 1 本しか数えていなかった** — fold-in で snapshot が
+> pool を直読みする経路が増えていた。「誰がこれを見るか」を**全数数える**のが、この種の race を
+> 静的に見つける唯一の方法。
 
 #### 残タスク
 
