@@ -530,15 +530,15 @@ fn clear_lane_state_files(repo_root: &Path, lane: &str) {
 /// (lane worktree の中から呼んでも SP 読み手の `addr.project` = main root basename と一致する。
 /// 旧: worktree 内実行で project key mismatch → model が silent 無視。project key 正規化で解消)。
 fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
-    // 明示 `--model` が無ければ config の `default-lane-model`（未設定なら Opus）を既定にする。
-    // mcp / sidebar 経路（create_performer_orchestrated）と同じ既定規則を CLI にも効かせる。
+    // doc 54 §8-11: 明示 `--model` > config `default-lane-model` > 無記録（engine 側の
+    // user 既定に委ねる）。mcp / sidebar 経路（create_performer_orchestrated）と同じ既定規則。
     let cfg = crate::config::Config::load().unwrap_or_default();
-    let effective = super::engine_model::resolve_default(model, cfg.default_lane_model_or_opus());
+    let effective = super::engine_model::resolve_default(model, cfg.default_lane_model());
     persist_lane_model_in(
         &crate::config::vp_state_dir(),
         repo_root,
         lane,
-        Some(&effective),
+        effective.as_deref(),
     )
 }
 

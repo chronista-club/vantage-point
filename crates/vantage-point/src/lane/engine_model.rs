@@ -31,14 +31,18 @@ pub fn is_valid_model(s: &str) -> bool {
 }
 
 /// 明示 model（Some=優先）と既定（config knob）から、engine_model に記録する実効 model を返す。
-/// 空白 / 未指定は `fallback`（= `Config::default_lane_model_or_opus()`）へ落とす。
+///
+/// **None = 記録しない**（doc 54 §8-11、mako 2026-07-25「Opus のところはユーザ設定に任せる」）:
+/// 明示指定 > VP config `default-lane-model` > **無記録** — engine_model file が無ければ
+/// `--model` は注入されず、**engine 側の user 既定**（claude なら ~/.claude の設定）が効く。
+/// 旧実装は未設定時に Opus を強制 record しており、user の claude 既定を上書きしていた。
 /// performer 追加の全経路（mcp / cli / sidebar）が共有する解決規則。純粋 = テスト可能。
-pub fn resolve_default(explicit: Option<&str>, fallback: &str) -> String {
+pub fn resolve_default(explicit: Option<&str>, config_default: Option<&str>) -> Option<String> {
     explicit
         .map(str::trim)
         .filter(|m| !m.is_empty())
-        .unwrap_or(fallback)
-        .to_string()
+        .or(config_default)
+        .map(str::to_string)
 }
 
 /// file 名に使えない文字を潰す（console_mode / cc_session と同一規則）。
@@ -141,24 +145,31 @@ mod tests {
     fn resolve_default_prefers_explicit_then_falls_back() {
         // 明示指定が最優先
         assert_eq!(
-            resolve_default(Some("claude-sonnet-5"), "claude-opus-4-8"),
-            "claude-sonnet-5"
+            resolve_default(Some("claude-sonnet-5"), Some("claude-opus-4-8")),
+            Some("claude-sonnet-5".to_string())
         );
-        // 未指定は fallback（= config knob / opus）
-        assert_eq!(resolve_default(None, "claude-opus-4-8"), "claude-opus-4-8");
-        // 空白 / 空文字は fallback（picker の '' や whitespace を default 扱い）
+        // 未指定は config knob へ
         assert_eq!(
-            resolve_default(Some("   "), "claude-opus-4-8"),
-            "claude-opus-4-8"
+            resolve_default(None, Some("claude-opus-4-8")),
+            Some("claude-opus-4-8".to_string())
+        );
+        // doc 54 §8-11: 両方未指定は None = 記録しない（engine 側の user 既定に委ねる。
+        // 旧「Opus 強制」の再演をここで塞ぐ）
+        assert_eq!(resolve_default(None, None), None);
+        assert_eq!(resolve_default(Some("   "), None), None);
+        // 空白 / 空文字は config knob へ（picker の '' や whitespace を default 扱い）
+        assert_eq!(
+            resolve_default(Some("   "), Some("claude-opus-4-8")),
+            Some("claude-opus-4-8".to_string())
         );
         assert_eq!(
-            resolve_default(Some(""), "claude-opus-4-8"),
-            "claude-opus-4-8"
+            resolve_default(Some(""), Some("claude-opus-4-8")),
+            Some("claude-opus-4-8".to_string())
         );
         // 明示の前後空白は trim される
         assert_eq!(
-            resolve_default(Some(" claude-fable-5 "), "claude-opus-4-8"),
-            "claude-fable-5"
+            resolve_default(Some(" claude-fable-5 "), Some("claude-opus-4-8")),
+            Some("claude-fable-5".to_string())
         );
     }
 

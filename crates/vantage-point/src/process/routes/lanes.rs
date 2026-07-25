@@ -545,14 +545,13 @@ pub(crate) async fn create_performer_orchestrated(
     // 検証は関数冒頭 (reserve 前) で済んでいるので、ここは永続のみ。 IO 失敗は best-effort warn
     // （claude default に degrade するだけで lane 作成は続行）。
     //
-    // 明示 model が無ければ config の `default-lane-model`（未設定なら Opus）を既定に record する
-    // ＝ performer 追加時の既定 model。CLI (persist_lane_model) と同じ既定規則を共有し、Act I/II
-    // 両方に効く（model は per-lane 単一真実源）。
-    {
-        let model = crate::lane::engine_model::resolve_default(
-            req.model.as_deref(),
-            config.default_lane_model_or_opus(),
-        );
+    // doc 54 §8-11: 明示 model > config `default-lane-model` > **無記録**（engine 側の
+    // user 既定に委ねる — 旧「未設定なら Opus 強制」は撤去）。CLI (persist_lane_model) と
+    // 同じ既定規則を共有し、Act I/II 両方に効く（model は per-lane 単一真実源）。
+    if let Some(model) = crate::lane::engine_model::resolve_default(
+        req.model.as_deref(),
+        config.default_lane_model(),
+    ) {
         let lane_label = crate::process::stand_spawner::lane_label(&addr);
         if let Err(e) = crate::lane::engine_model::record(&addr.project, lane_label, &model) {
             tracing::warn!(
@@ -564,91 +563,128 @@ pub(crate) async fn create_performer_orchestrated(
         }
     }
 
+    // doc 54 §3.1 / §8-11: 生成の既定レンズを registry に**明示的に書く**（仕込み = explicit
+    // intent）。chat_capable な engine は Chat（VP 自前の ChatView が既定の面）、shell 等は
+    // Tui（定義）。以降の boot（lane_spawn_actor）はこの registry を honor する。
+    let root_act = {
+        let act = crate::lane::session_registry::default_act_for_stand(&stand);
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        if let Err(e) =
+            crate::lane::session_registry::set_root_act(&addr.project, lane_label, &stand, act)
+        {
+            // 書けなくても lane 作成は続行（読み手の fallback = Tui で従来形に degrade）。
+            tracing::warn!(
+                "既定レンズの永続失敗（Tui 相当で継続）: addr={} act={:?} err={}",
+                addr,
+                act,
+                e
+            );
+            crate::lane::session_registry::SessionAct::Tui
+        } else {
+            act
+        }
+    };
+
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の lane clone と同じ pattern。
     // tmux decoupling PR2: slot (login shell) + claude 注入の Rust-native spawn (design §13)。
     // build_stand_command も closure 内で呼ぶ（state file 直読みの同期 I/O を async worker から
     // 外す。PtySlot::spawn 自体が openpty + syscall でブロッキングなので同形）。
-    let stand_for_spawn = stand.clone();
-    let addr_for_spawn = addr.clone();
-    let cwd_for_spawn = cwd.clone();
-    let spawn_join = tokio::task::spawn_blocking(move || {
-        let cmd = crate::process::stand_spawner::build_stand_command(
-            &stand_for_spawn,
-            &addr_for_spawn,
-            std::path::Path::new(&cwd_for_spawn),
-            false,
+    //
+    // doc 54 §8-11: root act=Chat の生成は **PTY を立てない**（chat lane は engine-less
+    // idle が正常形 — engine は初回 submit / demand で lazy spawn。boot の chat 分岐
+    // = lane_spawn_actor と同じ形）。
+    let (lane_state, pid) = if root_act == crate::lane::session_registry::SessionAct::Chat {
+        tracing::info!(
+            "Performer Lane created as chat (PTY skip): addr={} stand={} cwd={}",
+            addr,
+            stand,
+            cwd
         );
-        crate::process::stand_spawner::spawn_stand(&cmd, 120, 48)
-    })
-    .await;
-    let spawn_result = match spawn_join {
-        Ok(r) => r,
-        Err(e) => {
-            // 後始末 (spawn task panic で早期 return、placeholder / db intent leak 防止)。
-            abort_lane_creation(state, &db_key, &addr).await;
-            return Err(format!("PtySlot spawn task join: {}", e));
-        }
-    };
-    let (lane_state, pid) = match spawn_result {
-        Ok((slot, term_rx)) => {
-            let pid = slot.pid();
-            let mut pool = state.lane_pool.write().await;
-            // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Conductor 経路と統一)
-            // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
-            pool.insert_pty_slot(addr.clone(), None, slot, term_rx);
-            tracing::info!(
-                "Performer Lane spawned: addr={} stand={} cwd={} pid={}",
-                addr,
-                stand,
-                cwd,
-                pid
+        (LaneState::Running, None)
+    } else {
+        let stand_for_spawn = stand.clone();
+        let addr_for_spawn = addr.clone();
+        let cwd_for_spawn = cwd.clone();
+        let spawn_join = tokio::task::spawn_blocking(move || {
+            let cmd = crate::process::stand_spawner::build_stand_command(
+                &stand_for_spawn,
+                &addr_for_spawn,
+                std::path::Path::new(&cwd_for_spawn),
+                false,
             );
-            (LaneState::Running, Some(pid))
-        }
-        Err(e) => {
-            // F.8 B Convergent: spawn 失敗時の rollback ポリシー
-            // - was_lane_cloned=true (自分で disk dir を作った): rollback で dir 削除 + 500 早期 return
-            //   (= 中間状態 disk-only Lane を残さない)
-            // - was_lane_cloned=false (explicit cwd): dir は user / watcher 由来なので保護、
-            //   Dead state で LanePool に record (= sidebar に失敗が見える、 後で手動 retry 可能)
-            if was_lane_cloned {
+            crate::process::stand_spawner::spawn_stand(&cmd, 120, 48)
+        })
+        .await;
+        let spawn_result = match spawn_join {
+            Ok(r) => r,
+            Err(e) => {
+                // 後始末 (spawn task panic で早期 return、placeholder / db intent leak 防止)。
+                abort_lane_creation(state, &db_key, &addr).await;
+                return Err(format!("PtySlot spawn task join: {}", e));
+            }
+        };
+        match spawn_result {
+            Ok((slot, term_rx)) => {
+                let pid = slot.pid();
+                let mut pool = state.lane_pool.write().await;
+                // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Conductor 経路と統一)
+                // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
+                pool.insert_pty_slot(addr.clone(), None, slot, term_rx);
+                tracing::info!(
+                    "Performer Lane spawned: addr={} stand={} cwd={} pid={}",
+                    addr,
+                    stand,
+                    cwd,
+                    pid
+                );
+                (LaneState::Running, Some(pid))
+            }
+            Err(e) => {
+                // F.8 B Convergent: spawn 失敗時の rollback ポリシー
+                // - was_lane_cloned=true (自分で disk dir を作った): rollback で dir 削除 + 500 早期 return
+                //   (= 中間状態 disk-only Lane を残さない)
+                // - was_lane_cloned=false (explicit cwd): dir は user / watcher 由来なので保護、
+                //   Dead state で LanePool に record (= sidebar に失敗が見える、 後で手動 retry 可能)
+                if was_lane_cloned {
+                    tracing::warn!(
+                        "Performer Lane spawn failed → rollback (lane clone で作った disk dir を削除): addr={} cwd={}: {}",
+                        addr,
+                        cwd,
+                        e
+                    );
+                    let cwd_for_rm = cwd.clone();
+                    let rm_result =
+                        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&cwd_for_rm))
+                            .await;
+                    match rm_result {
+                        Ok(Ok(())) => tracing::info!("rollback: disk dir 削除成功 cwd={}", cwd),
+                        Ok(Err(rm_err)) => tracing::warn!(
+                            "rollback: disk dir 削除失敗 (orphan dir 残置) cwd={}: {}",
+                            cwd,
+                            rm_err
+                        ),
+                        Err(join_err) => {
+                            tracing::warn!("rollback: rm task join 失敗 cwd={}: {}", cwd, join_err)
+                        }
+                    }
+                    // 後始末 (spawn 失敗 + disk rollback で早期 return)。disk dir を消したので
+                    // descriptor / lifecycle も残してはいけない (= 存在しない ground を指す行)。
+                    abort_lane_creation(state, &db_key, &addr).await;
+                    return Err(format!(
+                        "Performer Lane spawn failed (rollback executed): {}",
+                        e
+                    ));
+                }
                 tracing::warn!(
-                    "Performer Lane spawn failed → rollback (lane clone で作った disk dir を削除): addr={} cwd={}: {}",
+                    "Performer Lane spawn failed (explicit cwd、 Dead で record): addr={} cwd={}: {}",
                     addr,
                     cwd,
                     e
                 );
-                let cwd_for_rm = cwd.clone();
-                let rm_result =
-                    tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&cwd_for_rm)).await;
-                match rm_result {
-                    Ok(Ok(())) => tracing::info!("rollback: disk dir 削除成功 cwd={}", cwd),
-                    Ok(Err(rm_err)) => tracing::warn!(
-                        "rollback: disk dir 削除失敗 (orphan dir 残置) cwd={}: {}",
-                        cwd,
-                        rm_err
-                    ),
-                    Err(join_err) => {
-                        tracing::warn!("rollback: rm task join 失敗 cwd={}: {}", cwd, join_err)
-                    }
-                }
-                // 後始末 (spawn 失敗 + disk rollback で早期 return)。disk dir を消したので
-                // descriptor / lifecycle も残してはいけない (= 存在しない ground を指す行)。
-                abort_lane_creation(state, &db_key, &addr).await;
-                return Err(format!(
-                    "Performer Lane spawn failed (rollback executed): {}",
-                    e
-                ));
+                (LaneState::Dead, None)
             }
-            tracing::warn!(
-                "Performer Lane spawn failed (explicit cwd、 Dead で record): addr={} cwd={}: {}",
-                addr,
-                cwd,
-                e
-            );
-            (LaneState::Dead, None)
         }
     };
 

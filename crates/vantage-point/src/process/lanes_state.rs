@@ -608,6 +608,17 @@ impl LanePool {
         // PR-pre2 (VP-118): "hd" → "echoes" rename。 mise task `vp:stand:echoes` (旧 hd)。
         let stand_name = "echoes";
 
+        // doc 54 §8-11: conductor の**初回作成**（registry file 不在 = 一度も仕込みを持って
+        // いない）は既定レンズを書く。with_root は毎 boot 呼ばれるので、file 不在を生成契機と
+        // みなす — 以降の boot は既存 file を honor（= user の act 切替が boot で戻らない）。
+        if !session_registry::exists(&project_id, "root") {
+            let act = session_registry::default_act_for_stand(stand_name);
+            if let Err(e) = session_registry::set_root_act(&project_id, "root", stand_name, act) {
+                tracing::warn!(
+                    "conductor 既定レンズの永続失敗（Tui 相当で継続）: project={project_id} err={e}"
+                );
+            }
+        }
         // doc 47 §4: root session の act を boot で honor。chat の lane に PTY を立てない
         // （立てると echoes_submit がもう 1 本の engine を呼び、1 会話 2 エンジンになる）。
         // doc 53 R1: これは spawn 判断の入力としての registry 直読（投影に書き戻さない）。
@@ -1589,9 +1600,10 @@ impl LanePool {
     /// [`RespawnMode::Bare`] で呼ぶ（spawn の orchestration = retry / pump 付替 / Diff push は
     /// restart 経路に一元化 — 第 2 の spawn 経路を作らない）。
     ///
-    /// 新 root は必ず Act I（Tui）で立つ。Act II の「新しい会話」は `create_chat_session`
-    /// （新 Draft タブ）が担う — 「今いる Act に出す」の分岐は vp-app が行い、backend は
-    /// 各動詞の整合だけ守る。旧 lane 単位 act の gate は A6 で撤去済み（下記）。
+    /// 新 root は**既定レンズ**で立つ（doc 54 §3.1: chat_capable な engine は Chat、shell 等は
+    /// Tui。旧「必ず Act I」は 2026-07-25 に撤回）。Act II 内の「新しい会話」タブは従来どおり
+    /// `create_chat_session`（新 Draft タブ）が担う — 「どこに出すか」の分岐は vp-app が行い、
+    /// backend は各動詞の整合だけ守る。旧 lane 単位 act の gate は A6 で撤去済み（下記）。
     /// `stand_override` は doc 46 P2 要件 4（Engine を選んで新コンソールを作る）。
     /// `None` なら従来どおり**現 root の engine を引き継ぐ**（doc 39 §1）。
     pub fn prepare_new_root_session(
@@ -1620,15 +1632,13 @@ impl LanePool {
                 .map(|s| s.stand.clone())
                 .unwrap_or_else(|| info.stand.clone()),
         };
-        // doc 47 §4: 新 root の Act は常に Tui（Act II の「新しい会話」は create_chat_session）。
-        let key = session_registry::create_root(
-            &addr.project,
-            lane_label,
-            &info.stand,
-            &stand,
-            SessionAct::Tui,
-        )
-        .map_err(|e| anyhow::anyhow!("root session 作成に失敗（addr={addr}）: {e}"))?;
+        // doc 54 §3.1（2026-07-25）: 新 root は**既定レンズ**で立つ — chat_capable な engine は
+        // Chat（VP 自前の ChatView が既定の面）、shell 等は Tui（定義）。旧「新 root は必ず
+        // Act I（Tui）」は安定性の都合による暫定だった。
+        let act = session_registry::default_act_for_stand(&stand);
+        let key =
+            session_registry::create_root(&addr.project, lane_label, &info.stand, &stand, act)
+                .map_err(|e| anyhow::anyhow!("root session 作成に失敗（addr={addr}）: {e}"))?;
         // doc 53 R1: 旧「投影の同期」はここに在った。root の act の読み手が registry 直読に
         // なったので、同期すべき cache が存在しない（乖離の 15 例目が構造的に消えた）。
         tracing::info!(
@@ -2318,6 +2328,49 @@ mod tests {
         insert_lane(pool, addr, SessionAct::Chat);
     }
 
+    /// doc 54 §8-11: conductor の初回作成（registry 不在）は既定レンズ（Chat）で立ち、
+    /// PTY を立てない（engine-less / Running = chat-idle の正常形）。2 回目以降の boot は
+    /// 既存 registry を honor する — 生成の既定であって毎 boot の強制ではない（壊し方②:
+    /// これが「不在なら書く」の gate 無しだと、user の act 切替が boot のたびに Chat へ戻る）。
+    #[tokio::test]
+    async fn with_root_first_boot_defaults_to_chat_and_does_not_rewrite_existing() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vptest-chatdefault");
+
+        // 初回: registry 不在 → 既定レンズ Chat（PTY spawn なし = テストでも安全に通る）。
+        let pool = LanePool::with_root("vptest-chatdefault", "/tmp");
+        assert_eq!(
+            pool.root_act(&addr),
+            SessionAct::Chat,
+            "初回作成は既定レンズ Chat（われわれの ChatView）"
+        );
+        let info = pool.get(&addr).expect("conductor 登録");
+        assert_eq!(info.pid, None, "chat boot は engine-less（PTY を立てない）");
+        assert_eq!(info.state, LaneState::Running, "chat-idle は正常形");
+        drop(pool);
+
+        // 2 回目の boot: 既存 registry（session #2 を足して user の痕跡を付ける）を
+        // with_root が書き換えないこと — 「不在なら書く」の gate の証明。
+        session_registry::create(
+            "vptest-chatdefault",
+            "root",
+            "echoes",
+            "echoes",
+            SessionAct::Tui,
+            false,
+        )
+        .expect("user が session #2 を追加");
+        let pool = LanePool::with_root("vptest-chatdefault", "/tmp");
+        assert_eq!(
+            session_registry::load("vptest-chatdefault", "root", "echoes")
+                .sessions
+                .len(),
+            2,
+            "既存 registry は初回 gate の外 = 上書き・再初期化されない"
+        );
+        assert_eq!(pool.root_act(&addr), SessionAct::Chat, "root の act も無傷");
+    }
+
     /// doc 33 → doc 39 P2: chat lane の restart は `RespawnMode` で意味が割れる。
     /// - Resume → 会話 id を残す（次 spawn が `--resume` で会話を継ぐ）
     /// - Bare   → 会話 id を残す（素の engine で張り替えるが registry は無傷 — 新 root 用）
@@ -2924,13 +2977,23 @@ mod tests {
             "root が chat に移ったら述語も Chat（Tui のままだと 1 会話 2 engine）"
         );
 
-        // new_root: 新 root は常に Tui で立つ。
+        // new_root: 新 root は既定レンズで立つ（doc 54 §3.1 — echoes は chat_capable → Chat）。
         pool.prepare_new_root_session(&addr, None)
             .expect("chat root からの New");
         assert_eq!(
             pool.root_act(&addr),
+            SessionAct::Chat,
+            "新 root は既定レンズ（Chat）で立つ = 述語も Chat"
+        );
+
+        // 特例（壊し方①）: shell を明示指定した新 root は Tui（chat レンズには映す会話が無い
+        // = 定義。既定 Chat を一律にすると shell root が挙動不能になる）。
+        pool.prepare_new_root_session(&addr, Some("shell"))
+            .expect("shell 指定の New");
+        assert_eq!(
+            pool.root_act(&addr),
             SessionAct::Tui,
-            "新 root は Act I で立つ = 述語も Tui"
+            "shell の新 root は Tui（default_act_for_stand の定義側）"
         );
     }
 
