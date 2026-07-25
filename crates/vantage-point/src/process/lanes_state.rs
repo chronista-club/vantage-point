@@ -1028,6 +1028,29 @@ impl LanePool {
             // Resume / Bare は registry 無傷なので、張り替えるのは root の slot だけ（後述）。
             self.term_attaches.remove(addr);
             self.pty_slots.remove(addr);
+            // doc 50 §4.6 A6: **term の PTY replay file も消す**（Reset = 素に戻す）。
+            //
+            // ⚠️ **順序が要**: `PtySlot::drop` は最終 flush で replay を disk に書き戻すので、
+            // 上の `clear_fresh_lane_state`（= 破壊より前）に混ぜると消したそばから復活する。
+            // だからここ = `pty_slots.remove` の**直後**に置く。
+            //
+            // 消さないと **ghost replay**: registry を消すと採番が N=1 に戻り、次に作る session
+            // は同じ key を再利用する → `build_stand_command_for_session` が同じ file path を
+            // 返す → `load_replay_seed` が旧画面を新 console の scrollback に seed する =
+            // 「Reset したはずの画面」が蘇る。`clear_replay_in` の doc は同じ機序を **lane
+            // 再作成**について警告していたが、Reset は経路が別で漏れていた（root は以前から
+            // replay を持つので pre-existing、A6 で非 root も持つようになり範囲が広がった。
+            // team-b 5 回目 2026-07-25）。best-effort（消せなくても console は live で動く）。
+            let lane_label = crate::process::stand_spawner::lane_label(addr);
+            if let Err(e) = crate::daemon::pty_slot::clear_replay_in(
+                &crate::config::vp_state_dir(),
+                &addr.project,
+                lane_label,
+            ) {
+                tracing::warn!(
+                    "fresh restart: term replay の破棄に失敗（ghost replay の恐れ）: addr={addr}: {e}"
+                );
+            }
         }
 
         // doc 33: chat mode の lane の restart = chat engine の入れ替え（PTY は立てない）。
@@ -2429,6 +2452,72 @@ mod tests {
         assert_eq!(reg.sessions[0].conversation, None, "#1 の会話 id も消える");
     }
 
+    /// Reset は **term の PTY replay file** も消すこと（ghost replay の封じ、team-b 5 回目）。
+    ///
+    /// registry を消すと採番が N=1 に戻るので、次に作る session は**同じ key を再利用**する。
+    /// replay file が残っていると同じ path を seed に読み、「Reset したはずの画面」が新しい
+    /// console に蘇る（`clear_replay_in` の doc が lane 再作成について警告していた機序。Reset は
+    /// 経路が別で漏れていた）。root は以前から replay を持つので pre-existing、A6 で非 root も
+    /// 持つようになり範囲が広がった。
+    ///
+    /// **順序も固定する**: 掃除が破壊より前だと `PtySlot::drop` の最終 flush が書き戻して無効化
+    /// される。だから slot は `replay_path` **付き**で立て、実際に出力させてから Reset する
+    /// （`replay_path` なしの test slot だと Drop が何も書かず、順序を間違えても通ってしまう）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reset_wipes_term_replay_and_only_after_slots_are_dropped() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
+        if let Some(info) = pool.lanes.get_mut(&addr) {
+            info.stand = "shell".to_string(); // engine を注入しない = restart の spawn が軽い
+        }
+        // 非 root の term session（A6 で replay を持つようになった側）を registry に足す。
+        session_registry::create("vp", "root", "shell", "shell", SessionAct::Tui, false)
+            .expect("非 root term session");
+
+        let file_of = |session: SessionKey, is_root: bool| {
+            crate::daemon::pty_slot::replay_file_path_session(
+                &addr.project,
+                crate::process::stand_spawner::lane_label(&addr),
+                session,
+                is_root,
+            )
+        };
+        let (root_file, mate_file) = (file_of(1, true), file_of(2, false));
+
+        // 各 slot に**固有の目印を出力させる**。Drop の最終 flush でこれが disk に書かれるので、
+        // 掃除の順序を間違えると目印が生き残る = 罠が検出される。
+        let (root_slot, _root_rx) =
+            spawn_test_slot_with_replay("printf PRE_RESET_ROOT; cat", &root_file).await;
+        let (mate_slot, _mate_rx) =
+            spawn_test_slot_with_replay("printf PRE_RESET_MATE; cat", &mate_file).await;
+        pool.insert_pty_slot(addr.clone(), Some(1), root_slot, _root_rx.resubscribe());
+        pool.insert_pty_slot(addr.clone(), Some(2), mate_slot, _mate_rx.resubscribe());
+
+        pool.restart_lane(&addr, RespawnMode::Reset)
+            .expect("reset restart");
+
+        // 見るのは「file が消えたか」ではなく「**旧画面が残っていないか**」。Reset 後に立て直した
+        // root slot が自分の出力を同じ path に flush するのは正常なので、存在だけ見ると誤判定する
+        // （[[verify-the-cleanup-not-just-the-disappearance]]）。
+        let has = |path: &std::path::Path, needle: &str| {
+            std::fs::read(path)
+                .map(|b| String::from_utf8_lossy(&b).contains(needle))
+                .unwrap_or(false)
+        };
+        assert!(
+            !has(&root_file, "PRE_RESET_ROOT"),
+            "root の旧画面が残っている（Reset 後 root は必ず key=1 = 同じ path を再利用する。\
+             掃除が PtySlot::drop より前だと最終 flush で書き戻される）"
+        );
+        assert!(
+            !has(&mate_file, "PRE_RESET_MATE"),
+            "非 root の旧画面が残っている（Reset で採番が N=1 に戻り、次の session も key=2 になる）"
+        );
+    }
+
     /// doc 38 落とし穴③: console_mode ガードは focused session にのみ適用される。
     /// - focused の ensure は Tui mode で「mode=chat が必要」で弾かれる（従来どおり）
     /// - 非 focused の ensure は mode ガードを**通過**し、engine 能力の防壁まで到達して弾かれる
@@ -3101,6 +3190,36 @@ mod tests {
             None,
         )
         .expect("PTY spawn")
+    }
+
+    /// `spawn_test_slot` の **replay を disk に永続する**版（本番の term slot と同じ形）。
+    ///
+    /// `replay_path` を持つ slot は `PtySlot::drop` が最終 flush で file を**書き戻す**。
+    /// 掃除の順序（破壊の前か後か）を検証するテストは、この形でないと**罠を検出できない**
+    /// （`None` の slot だと Drop が何も書かないので、順序を間違えても test が通る —
+    /// 実際に一度それで取り逃した）。出力を 1 回 recv して buffer が埋まるのを待つ。
+    #[cfg(unix)]
+    async fn spawn_test_slot_with_replay(
+        cmd: &str,
+        replay: &std::path::Path,
+    ) -> (
+        crate::daemon::pty_slot::PtySlot,
+        tokio::sync::broadcast::Receiver<Vec<u8>>,
+    ) {
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let (slot, mut rx) = crate::daemon::pty_slot::PtySlot::spawn(
+            &cwd,
+            "/bin/sh",
+            &["-c".to_string(), cmd.to_string()],
+            &[],
+            80,
+            24,
+            Some(replay.to_path_buf()),
+        )
+        .expect("PTY spawn");
+        // 出力が replay buffer に入るまで待つ（Drop の final flush が空を書かないように）。
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
+        (slot, rx)
     }
 
     /// 当該 slot が終了する（is_alive=false になる）まで待つ。

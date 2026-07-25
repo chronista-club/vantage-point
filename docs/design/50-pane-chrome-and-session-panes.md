@@ -485,9 +485,26 @@ A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能�
 | 2 | `demand_start` の lane gate | 非 root chat に replay が来ない |
 | 3 | handoff lock / 非 root 復元 | 無関係 pane を落とす / 再起動で pane が空 |
 | 4 | root 投影の乖離 / worker blocking | PTY 不発 or 1 会話 2 engine / runtime を塞ぐ |
+| 5 | Reset が term replay を消さない | **ghost replay** — Reset したはずの画面が新 console に蘇る |
 
 **「レビューを 1 回通したから安全」は成り立たない。** 特に制約撤廃を含む変更では、レビュー自体が
 **新たに到達可能になった構成**を発見する過程になるので、収束するまで回す必要がある。
+
+> ⚠️ **team-b の「処方」は指摘とは別に検証すること**。5 回目の指摘（Reset が
+> `pty_slot::clear_replay_in` を呼ばない）は正しかったが、提案された修正箇所
+> （「`clear_fresh_lane_state` のループに並べるだけ」）では**効かなかった** — その関数は
+> `pty_slots.remove()` の**前**に走り、`PtySlot::drop` の最終 flush が消したそばから file を
+> 書き戻す。掃除は**破壊の直後**でなければならない。指摘（何が壊れているか）と処方
+> （どう直すか）は独立に確かめる。
+>
+> ⚠️ **最初に書いた回帰テストは、その順序の罠を検出しなかった**。`spawn_test_slot` は
+> `replay_path: None` なので Drop が何も書かず、掃除を破壊より前に移しても test が通った
+> （なのにコメントには「順序も守っている」と書いていた = [[comment-is-not-proof]] の実演）。
+> `replay_path` 付きの slot を立てる helper を足し、**①fix を外す ②順序を間違える**の 2 通りで
+> 赤くなることを確認して初めて固定できた。アサーションも「file が消えたか」ではなく
+> 「**旧画面が残っていないか**」— Reset 後に立て直した slot が同じ path へ自分の出力を flush
+> するのは正常なので、存在だけ見ると誤判定する
+> （[[verify-the-cleanup-not-just-the-disappearance]]）。
 
 #### 残タスク
 
