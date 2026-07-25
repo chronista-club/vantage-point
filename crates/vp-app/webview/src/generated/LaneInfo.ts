@@ -36,12 +36,6 @@ engine_session_id: string | null,
  */
 engine_stand: string | null, 
 /**
- * doc 33: Console のエンジンモード（"tui" | "chat"）。default = "tui"（wire 後方互換）。
- * chat lane は engine-less（pid=None）が正常形なので、Dead-lane auto-respawn を
- * 本 field で gate する（#683 再演防止）。
- */
-console_mode: string, 
-/**
  * doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
  * server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
  * 「どの session が root か」「各 session の act」の SSOT。boot 経路が xterm を

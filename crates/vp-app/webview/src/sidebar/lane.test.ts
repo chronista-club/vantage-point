@@ -19,29 +19,62 @@ function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 		created_at: "2026-07-10T00:00:00Z",
 		pid: null,
 		cwd: "/tmp",
-		console_mode: "tui",
 		...over,
 	} as LaneInfo;
 }
 
+/** root session の act を sessions（registry snapshot）で表現する（doc 53 R1 — 旧
+ *  console_mode field は退役。act は wire の sessions だけが運ぶ）。 */
+function withRootAct(act: string): Partial<LaneInfo> {
+	return {
+		sessions: {
+			root: 1,
+			focused: 1,
+			sessions: [{ key: 1, stand: "echoes", act }],
+		},
+	} as Partial<LaneInfo>;
+}
+
 describe("isLaneAlive", () => {
 	it("tui lane は pid の有無で生死が決まる", () => {
-		expect(isLaneAlive(lane({ console_mode: "tui", pid: 1234 }))).toBe(true);
+		expect(isLaneAlive(lane({ ...withRootAct("tui"), pid: 1234 }))).toBe(true);
 		// PTY spawn 失敗 = Dead lane (dim 表示 + Respawn menu)
-		expect(isLaneAlive(lane({ console_mode: "tui", pid: null }))).toBe(false);
+		expect(isLaneAlive(lane({ ...withRootAct("tui"), pid: null }))).toBe(false);
+	});
+
+	it("sessions 欠落（boot 窓の placeholder）は tui 扱い = pid が生死を決める", () => {
+		// doc 53 R1: 導出の fallback は旧 serde default（"tui"）と同値。
+		expect(isLaneAlive(lane({ pid: null }))).toBe(false);
+		expect(isLaneAlive(lane({ pid: 99 }))).toBe(true);
 	});
 
 	it("chat lane は engine-less (pid=null) でも生きている", () => {
 		// doc 33: chat engine は submit 契機の lazy spawn。 pid=null は正常形であって Dead ではない。
-		expect(isLaneAlive(lane({ console_mode: "chat", pid: null }))).toBe(true);
+		expect(isLaneAlive(lane({ ...withRootAct("chat"), pid: null }))).toBe(true);
 	});
 
 	it("chat lane の生死は engine の起動状態で揺れない", () => {
 		// engine 起動中 (pid あり) と idle (pid なし) で判定が変わると、
 		// 同じ lane の context menu が時間で Restart / Respawn に化ける。
-		const idle = isLaneAlive(lane({ console_mode: "chat", pid: null }));
-		const running = isLaneAlive(lane({ console_mode: "chat", pid: 4321 }));
+		const idle = isLaneAlive(lane({ ...withRootAct("chat"), pid: null }));
+		const running = isLaneAlive(lane({ ...withRootAct("chat"), pid: 4321 }));
 		expect(idle).toBe(running);
+	});
+
+	it("root の act で判定する — 非 root に chat が居ても root=tui なら pid が真実", () => {
+		// doc 53 R1 の壊し方テスト（root=tui のまま非 root だけ chat の A6 正規構成）:
+		// lane 単位の要約に落ちると「chat が 1 枚でもあれば生存」に化ける。
+		const mixed = {
+			sessions: {
+				root: 1,
+				focused: 2,
+				sessions: [
+					{ key: 1, stand: "echoes", act: "tui" },
+					{ key: 2, stand: "echoes", act: "chat" },
+				],
+			},
+		} as Partial<LaneInfo>;
+		expect(isLaneAlive(lane({ ...mixed, pid: null }))).toBe(false);
 	});
 });
 

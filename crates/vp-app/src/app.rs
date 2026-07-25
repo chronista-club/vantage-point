@@ -294,10 +294,10 @@ mod session_derivation_tests {
     }
 
     /// registry snapshot 付きの最小 LaneInfo（wire と同じ JSON 形で組む）。
-    fn lane_with(root: u32, sessions: serde_json::Value, console_mode: &str) -> LaneInfo {
+    /// doc 53 R1: act は sessions（registry snapshot）だけが運ぶ — 旧 console_mode field は退役。
+    fn lane_with(root: u32, sessions: serde_json::Value) -> LaneInfo {
         serde_json::from_value(serde_json::json!({
             "address": {"kind": "root", "project": "vp"},
-            "console_mode": console_mode,
             "sessions": {"root": root, "focused": root, "sessions": sessions},
         }))
         .expect("LaneInfo deserialize")
@@ -310,7 +310,7 @@ mod session_derivation_tests {
     #[test]
     fn term_sessions_picks_every_tui_session_with_root_flag() {
         // root=16 が chat、非 root=19 が tui（2026-07-25 実機で踏んだ構成そのもの）。
-        let lane = lane_with(16, serde_json::json!([s(16, "chat"), s(19, "tui")]), "chat");
+        let lane = lane_with(16, serde_json::json!([s(16, "chat"), s(19, "tui")]));
         assert_eq!(
             term_sessions_of(&lane),
             vec![(19, false)],
@@ -318,11 +318,11 @@ mod session_derivation_tests {
         );
 
         // root も tui なら root フラグ付きで拾う。
-        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "tui")]), "tui");
+        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "tui")]));
         assert_eq!(term_sessions_of(&lane), vec![(16, true), (19, false)]);
 
         // 全部 chat なら term はゼロ = lane に xterm は要らない。
-        let lane = lane_with(16, serde_json::json!([s(16, "chat")]), "chat");
+        let lane = lane_with(16, serde_json::json!([s(16, "chat")]));
         assert!(term_sessions_of(&lane).is_empty());
     }
 
@@ -341,7 +341,7 @@ mod session_derivation_tests {
         use crate::pane::SidebarState;
 
         // root=tui + 非 root=chat: echoes 購読を張らないと その chat pane が無言になる。
-        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "chat")]), "tui");
+        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "chat")]));
         let addr = lane.address.key();
         let mut state = SidebarState::default();
         state.lanes_by_project.insert("p".to_string(), vec![lane]);
@@ -351,7 +351,7 @@ mod session_derivation_tests {
         );
 
         // 全部 tui なら購読不要。
-        let lane = lane_with(16, serde_json::json!([s(16, "tui")]), "tui");
+        let lane = lane_with(16, serde_json::json!([s(16, "tui")]));
         let mut state2 = SidebarState::default();
         state2.lanes_by_project.insert("p".to_string(), vec![lane]);
         assert!(!lane_has_chat_session(&state2, &addr));
@@ -1818,7 +1818,7 @@ fn term_sessions_of(lane: &crate::client::LaneInfo) -> Vec<(u32, bool)> {
             .filter(|s| s.act != "chat")
             .map(|s| (s.key, s.key == reg.root))
             .collect(),
-        // registry 不在（旧 SP / N=1 特殊ケース）: lane の console_mode が tui なら root 1 枚。
+        // registry 不在（boot 窓の placeholder / N=1 特殊ケース）: root 1 枚（tui）に畳む。
         _ => vec![(1, true)],
     }
 }
@@ -1904,7 +1904,7 @@ mod lane_js {
 
     /// `window.showLane(address, isChat)` を呼ぶ — active な 1 Lane を表示。 None なら empty placeholder。
     ///
-    /// `is_chat` = Act II (console_mode="chat")。 chat lane は xterm を持たない (ChatView が内容) ため、
+    /// `is_chat` = Act II (root act="chat"、sessions 由来)。 chat lane は xterm を持たない (ChatView が内容) ため、
     /// これを渡さないと JS 側が「xterm 無し = 内容無し」と誤判定して placeholder を被せる。
     pub fn show_lane(main_view: &WebView, address: Option<&str>, is_chat: bool) {
         let script = match address {
@@ -2147,17 +2147,32 @@ async fn collect_activity(
 ///   3. 両方 None → kind=None で empty placeholder
 ///
 /// Lane address ごとの terminal 接続は per-Lane xterm.js (Phase 2.5) が JS-side で管理。
-/// 指定 lane address が Act II (console_mode="chat") かを `lanes_by_project` から引く。
+/// root session の act（"tui" | "chat"）を wire の `sessions`（registry snapshot）から導出する。
+///
+/// doc 53 R1: 旧 `console_mode` field（root act の投影）は退役 — **client 側の導出はこの
+/// 1 関数に閉じる**（読み手 3 系統: chat 判定 / respawn gate / header 差分。R4 で pane 一覧
+/// 配信に差し替える時の改修点もここ 1 箇所）。sessions 欠落（boot 窓の placeholder 等）は
+/// "tui"（旧 serde default と同値）に倒す。
+fn root_act_of(lane: &crate::client::LaneInfo) -> &str {
+    lane.sessions
+        .as_ref()
+        .and_then(|reg| reg.sessions.iter().find(|s| s.key == reg.root))
+        .map(|s| s.act.as_str())
+        .unwrap_or("tui")
+}
+
+/// 指定 lane address が Act II (root act="chat") かを `lanes_by_project` から引く。
 ///
 /// 未知 address (LanesLoaded 未着 等) は false (= Act I 扱い) に倒す。 chat lane は
-/// engine-less (pid=None) が正常形なので、 pid では判定できない — mode が唯一の真実源。
+/// engine-less (pid=None) が正常形なので、 pid では判定できない — sessions（registry
+/// snapshot）由来の root act が真実源（doc 53 R1）。
 fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
     state
         .lanes_by_project
         .values()
         .flatten()
         .find(|l| l.address.key() == address)
-        .map(|l| l.console_mode == "chat")
+        .map(|l| root_act_of(l) == "chat")
         .unwrap_or(false)
 }
 
@@ -2168,7 +2183,7 @@ fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
 /// 購読を張るかどうかは root の act ではなく「chat の住人が居るか」で決めないと、その
 /// session の event が誰にも届かない（pane は並ぶのに無言、の形）。
 ///
-/// registry snapshot が無い旧 SP からの wire は root の act に倒す（従来挙動）。
+/// registry snapshot 欠落（boot 窓の placeholder 等）は root act 導出（= "tui"）に倒す。
 fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
     let Some(lane) = state
         .lanes_by_project
@@ -2180,7 +2195,7 @@ fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
     };
     match &lane.sessions {
         Some(reg) if !reg.sessions.is_empty() => reg.sessions.iter().any(|s| s.act == "chat"),
-        _ => lane.console_mode == "chat",
+        _ => root_act_of(lane) == "chat",
     }
 }
 
@@ -2460,7 +2475,8 @@ fn header_lane_fields_changed(
         // その変化（cross-engine root 切替）でも header を再 push する。
         || prev.engine_stand != next.engine_stand
         || prev.address.name != next.address.name
-        || prev.console_mode != next.console_mode
+        // doc 53 R1: root act の変化（act 切替 / root 付け替え）は sessions から導出して比較。
+        || root_act_of(prev) != root_act_of(next)
         || prev
             .performer_status
             .as_ref()
@@ -2565,17 +2581,18 @@ fn maybe_respawn_dead_lane(
         lanes
             .iter()
             .find(|l| l.address.key() == addr)
-            .map(|l| (path.clone(), l.pid, l.console_mode.clone()))
+            .map(|l| (path.clone(), l.pid, root_act_of(l).to_string()))
     });
-    let Some((project_path, pid, console_mode)) = entry else {
+    let Some((project_path, pid, root_act)) = entry else {
         return; // lane 未知 (まだ LanesLoaded 来てない等) — 後続の LanesLoaded で再評価される
     };
     if pid.is_some() {
         return; // Running、 respawn 不要
     }
-    // doc 33 §3: chat mode の lane は engine-less (pid=None) が正常形。
-    // respawn 対象は「mode=tui かつ pid=None」のみ（chat lane を殺しに行かない — #683 再演防止）。
-    if console_mode == "chat" {
+    // doc 33 §3: chat lane は engine-less (pid=None) が正常形。
+    // respawn 対象は「root act=tui かつ pid=None」のみ（chat lane を殺しに行かない — #683
+    // 再演防止。act は sessions 由来 — doc 53 R1）。
+    if root_act == "chat" {
         return;
     }
     // dedup: 既に respawn 進行中なら skip
@@ -4583,18 +4600,15 @@ pub fn run() -> anyhow::Result<()> {
                 // 手元 snapshot（registry の投影）を即時更新する。lanes snapshot の反映は 5s
                 // periodic 頼みで stale が残るため（ConsoleModeApplied と同じ理由）、act を
                 // 読む後続（term_sessions_of / attach gate / activate_lane）が旧値を見ないようにする。
+                // doc 53 R1: 更新は sessions の 1 箇所だけ — 読み手（lane_is_chat / respawn
+                // gate / header 差分）は sessions から root act を導出するので、この 1 書きで
+                // 全読み手に届く（旧「root なら lane 単位 mode 投影も更新」は退役）。
                 for lanes in sidebar_state.lanes_by_project.values_mut() {
-                    if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane) {
-                        if let Some(reg) = l.sessions.as_mut()
-                            && let Some(e) = reg.sessions.iter_mut().find(|s| s.key == session)
-                        {
-                            e.act = act.clone();
-                        }
-                        // root の act は lane 単位 mode の投影でもある（boot spawn / nudge 配送の
-                        // 特例が読む）。非 root は lane の mode を動かさない。
-                        if is_root {
-                            l.console_mode = act.clone();
-                        }
+                    if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane)
+                        && let Some(reg) = l.sessions.as_mut()
+                        && let Some(e) = reg.sessions.iter_mut().find(|s| s.key == session)
+                    {
+                        e.act = act.clone();
                     }
                 }
                 push_sidebar_state(&webview, &sidebar_state);

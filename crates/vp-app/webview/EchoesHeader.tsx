@@ -142,7 +142,8 @@ export type HeaderLaneCtx = {
   name: string | null
   cwd: string | null
   branch: string | null
-  /** console_mode == "chat"（Act の初期値。以降は vp:console-mode で追従） */
+  /** root act == "chat"（Act の初期値。Rust 側が sessions から導出 — doc 53 R1。
+   *  以降は vp:console-mode event で追従） */
   chat: boolean
   /** active engine の session id（LaneInfo.engine_session_id 由来）。
    *  Act I は EchoesEvent が流れないため、この供給路が無いと chip が出ない
