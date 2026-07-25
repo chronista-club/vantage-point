@@ -347,11 +347,20 @@ Design B は diff が小さいだけでなく、§4.6 が警告した「1 辺が
 | **handoff lock** | 単一 slot の存在チェック — **無関係な pane の badge click を無言で落とす**（解除側は (lane,session) を照合していたので入口だけ非対称） | `Map<lane#session, target>` で pane ごとに独立 | team-b 3 回目（score 85） |
 | **boot の slot 復元** | root だけ立てる — World / project 再起動後に**非 root term の pane が空で無反応**（roster は registry から出るので pane は現れる） | `restore_term_slots` で act=Tui の非 root も eager 復元 | team-b 3 回目（score 78） |
 | **`switch_root` / `new_root` の gate** | `console_mode != Tui` — root=chat のとき**代表を付け替えられない**（root は act と直交する概念なのに） | 撤去（残る制限は engine の有無だけ = mailbox の主は engine を持つ必要がある） | mako 判断（「最初は tui しか安定していなかったから」） |
+| **root 付け替え後の `console_mode` 投影** | 更新しない（gate があった時代は root の act が必ず Tui のままだったので**乖離しなかった**） | `sync_root_act_projection` で registry から引き直す — 直後の `restart_lane` がこの投影で「PTY を立てるか engine を畳むか」を分岐するため | team-b 4 回目（score 93） |
 
 **共通形は「lane 単位で判断している箇所」**。A6 は「session ごとに act が違いうる」世界を作った
 ので、lane 単位の述語（`console_mode` / `pid` / `lane_is_chat`）はすべて**誤った要約**になる。
 
-> ⚠️ **この清算は 4 周かかった**（設計時 → 清算 grep → 実機 → team-b 2 回）。`console_mode` を
+> ⚠️ **最後の 1 件は「gate がバグを隠していた」形だった**。`switch_root` / `new_root` は registry の
+> root を動かすのに投影を更新していなかったが、**旧 gate が root=Tui 以外を弾いていたので乖離が
+> 起きなかった**。mako の判断で gate を外した瞬間に、この 15 例目が到達可能になった
+> （root=chat → 非 root(tui) で **PtySlot が永久に立たない** / 逆向きで **1 会話 2 engine**）。
+> 制約を撤廃するときは「その制約が何を守っていたか」を、設計意図とは別に**副作用として**
+> 数える必要がある — gate の目的は「act と root の混同を防ぐ」ではなく、結果として
+> 「投影の乖離を防ぐ」役も担っていた（[[one-edge-two-jobs]] の変種）。
+>
+> ⚠️ **この清算は 5 周かかった**（設計時 → 清算 grep → 実機 → team-b 3 回）。`console_mode` を
 > 読む場所を消したつもりでも、**その投影を読む場所**（`LaneInfo.console_mode` は root の act の
 > 投影）が残る。最後の 2 件（`echoes_demand_start` / `ensure_chat_engine`）は「root=tui のまま
 > 非 root だけ chat」という**構成の組み合わせ**でしか露出せず、root=chat の既存テストでは
@@ -441,9 +450,50 @@ A6 の実装中に「act 切替を Reborn と呼ぶ」と書いたが、**議論
 > **Reborn の実装は次 PR**（A6 は re-key に集中）。server 側の種は
 > `echoes_session_new_root`（現在 client からの呼び手なし、その旨を doc コメントに明記）。
 
+#### 依存の集中が既存の取りこぼしを致命化した（boot 窓）
+
+webview は lane を開くとき `echoes:sessions_fetch` を撃つが、boot 直後は Rust 側の
+`lanes_by_project` が空で project を解決できず、**要求は捨てられ再試行の契機が無かった**。
+この取りこぼしはログを見ると **A6 以前から起きていた**（2026-07-21 / 07-22 にも記録がある）
+のに、誰も困っていなかった — 当時 roster は lane 単位 mode から導出でき、**boot 既定が偶然
+正しかった**から。A6 が roster を session 一覧に**全面依存**させた結果、同じ 1 回の取りこぼしが
+「pane も名札も出ない」に化けた。
+
+> **依存を 1 本に集約すると、その 1 本の既存の弱さが全体の弱さになる。** SSOT 化は正しい方向
+> だが、集約先の**供給の確実性**を同時に上げないと、それまで冗長性が隠していた欠陥が露出する。
+> 「新しく壊した」ではなく「**前から壊れていたものが初めて効いた**」形なので、犯人探しは
+> diff の中では終わらない（[[masked-not-absent]] の boot 窓版）。
+
+修正は「捨てる」を「**保留する**」に変えるだけ:未解決の要求を保留箱に積み、project が解決
+できるようになる契機（`LanesLoaded`）で**同じ `AppEvent` として送り直す**。要求の作り方が
+1 箇所に残るので経路が二重化しない。判断は `drain_resolvable_fetches`（純粋関数）に切り出して
+テストで固定した — boot 窓の race は**実機でしか踏めない**ので、event loop に埋めたままでは
+「捨てない / 二度送らない」という契約を誰も守れない。
+
+> ⚠️ **再送の実発火は未観測**。修正後に app 再起動 5 回・daemon 込み再起動 2 回を試したが
+> drop 自体を再現できなかった（drop は `activate_lane` が `LanesLoaded` より先に走った時だけ
+> 起きる）。契約は test で固定済みだが、**実機で保留→再送が走ったログはまだ無い**。
+
+#### review は「新規が出なくなるまで」回す
+
+A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能バグ**が出た（score 92 / 85+78 /
+93+90）。3 回目まで出続けたことを「まだある」証拠と扱って 4 回目を回したのが当たった。
+
+| 周 | 新規 | 質 |
+|---|---|---|
+| 1 | pump 不張り / re-attach no-op | 出力が永久に来ない |
+| 2 | `demand_start` の lane gate | 非 root chat に replay が来ない |
+| 3 | handoff lock / 非 root 復元 | 無関係 pane を落とす / 再起動で pane が空 |
+| 4 | root 投影の乖離 / worker blocking | PTY 不発 or 1 会話 2 engine / runtime を塞ぐ |
+
+**「レビューを 1 回通したから安全」は成り立たない。** 特に制約撤廃を含む変更では、レビュー自体が
+**新たに到達可能になった構成**を発見する過程になるので、収束するまで回す必要がある。
+
 #### 残タスク
 
 - **Reborn の実装**（各 Pane の名札に動線）+ `+ New` → `Add` のラベル変更。次の小さい PR
+- **handoff lock の実機確認**（team-b 3 回目 #1）: chat 可能な pane 2 枚で badge を同時押しする
+  必要があり、shell の badge は正しく非活性なので構成を作るのが手間。Reborn PR に畳む
 - **board が daemon 再起動を跨いで空になる**（A6 とは独立 — `git diff` で board / db に触れて
   いないことを確認済み）。doc 52 の領域なので別途
 
