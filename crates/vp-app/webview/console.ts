@@ -4,7 +4,8 @@
  * - data plane: `window.vpConsole.handleEvent(lane, event)` — SP の EchoesAgentHost が吐く
  *   EchoesEvent（engine 非依存語彙、doc 32 §4）を per-lane ring buffer に蓄積し、
  *   mount 済みの ChatView renderer に届ける（renderer は C2 で登録）。
- * - control plane: `window.vpConsole.setMode(lane, mode)` — エンジンモードの通知。
+ * - control plane: `window.vpConsole.setSessionAct(lane, session, act)` — その session の
+ *   Act（見え方）が変わったことの通知（doc 50 §4.6 A6。旧 lane 単位 `setMode` の後継）。
  *   ⚠️ 表示は強制しない（ビューとエンジンは別軸 — Lane 内で Act I/II pane は共存し得る）。
  * - 検分: `window.vpConsole.peek(lane)` — devtools から buffer を覗く（throwaway debug pane を
  *   作らないための恒久 API）。
@@ -126,6 +127,14 @@ export type EchoesSession = {
    *  root タブは × を隠す（backend の「root は remove 不可」の UI 反映）。
    *  旧 SP は送らない → undefined（後方互換は canCloseSession 側が吸収）。 */
   root?: boolean
+  /** doc 50 §4.6 A6: この session の Act（見え方）。roster（lane-panes）が Pane kind を
+   *  決める **唯一の入力**で、名札 kind badge の表示もこれに従う。
+   *  旧 SP は送らない → undefined（roster 側が "tui" に倒す = 従来の既定）。 */
+  act?: 'tui' | 'chat'
+  /** doc 50 §4.6 A6 ②: この session を Chat にできるか（能力表は server が SSOT）。
+   *  名札の kind badge は false なら Chat への切替を出さない（押しても server に弾かれる
+   *  だけの行き止まりを作らない）。旧 SP は送らない → undefined = 不可に倒す。 */
+  chat_capable?: boolean
 }
 
 /** echoes_session_list の生 payload（Rust `handle_echoes_session_list` の返り値 mirror）。 */
@@ -202,9 +211,43 @@ export function noteFocus(lane: string, session: number): void {
   else laneSessions.set(lane, { focused: session, sessions: [] })
 }
 
+/**
+ * act 切替の楽観的な local 反映（[`sessionActOf`] の読み手 cache を即時更新する）。
+ *
+ * ⚠️ **これが無いと act を読む消費者が旧値で分岐する**。`laneSessions` は
+ * `echoes_session_list` の full fetch でしか更新されないが、**act 切替はその fetch を伴わない**
+ * （badge click の成功パスは `session_set_act` → `SessionActApplied` で完結する）。
+ * 実害は `ink.ts` の送り先判定 — tui→chat の直後に board 注釈を送ると、畳まれた PtySlot へ
+ * `term:write` が飛んで**黙って消える**（chat には届かない。エラーはゼロ）。
+ *
+ * 旧 lane 単位 `setMode` は `laneOf(lane).mode = mode` で自分の読み手を更新していた。A6 で
+ * session 単位へ移す際にこの 1 行が落ちた（team-b 9 回目 2026-07-25）。Rust 側は
+ * `SessionActApplied` で手元 snapshot を同じ理由で即時更新している — **同じ判断を 2 つの
+ * cache に要求されていて、片方だけ満たしていた**。
+ *
+ * session 一覧を知らない lane では no-op（次の full fetch が埋める）。badge は roster から
+ * 描かれるので、実際には一覧が既にある状態でしか呼ばれない。
+ */
+export function noteSessionAct(
+  lane: string,
+  session: number,
+  act: 'tui' | 'chat',
+): void {
+  const entry = laneSessions.get(lane)?.sessions.find((s) => s.key === session)
+  if (entry) entry.act = act
+}
+
 /** lane の focused session key（未知 = 1）。chatview の event filter / tab 強調の基準。 */
 export function focusedOf(lane: string): number {
   return laneSessions.get(lane)?.focused ?? 1
+}
+
+/** その session の act（見え方）。未知 / 旧 SP（act 欠落）は 'tui'（従来の既定）。
+ *  doc 50 §4.6 A6: 見え方は session の属性なので、lane 単位 `getMode` の代わりにこれを引く。 */
+export function sessionActOf(lane: string, session: number): 'tui' | 'chat' {
+  return (
+    laneSessions.get(lane)?.sessions.find((s) => s.key === session)?.act ?? 'tui'
+  )
 }
 
 /** focused session の engine_session_id を共通ヘッダの chip に同期する（変化時 true —
@@ -299,8 +342,9 @@ function laneOf(lane: string): LaneConsole {
 export type VpConsole = {
   /** doc 38 Phase 2: session = envelope 由来の VP 採番 key（未指定 = focused = 1、旧 SP 互換）。 */
   handleEvent(lane: string, event: EchoesEvent, session?: number): void
-  setMode(lane: string, mode: ConsoleMode): void
-  getMode(lane: string): ConsoleMode
+  /** doc 50 §4.6 A6: session の Act（見え方）が変わったことを通知する（'vp:session-act'）。
+   *  Rust の `SessionActApplied` が呼ぶ口。roster と kind badge がこれで追従する。 */
+  setSessionAct(lane: string, session: number, act: ConsoleMode): void
   /** ChatView (C2) が mount 時に登録。既存 buffer を replay してから live 配信に接続する。 */
   attachRenderer(lane: string, renderer: ConsoleRenderer): void
   detachRenderer(lane: string): void
@@ -358,15 +402,18 @@ export function installConsole(): VpConsole {
         }
       }
     },
-    setMode(lane, mode) {
-      laneOf(lane).mode = mode
-      // 表示切替は ChatView / layout 側の判断（ビューとエンジンは別軸）。通知だけ流す。
+    setSessionAct(lane, session, act) {
+      // doc 50 §4.6 A6: 見え方は **session の属性**。roster（lane-panes）と名札の kind badge
+      // （EchoesHeader）がこの bus を購読して、その session の Pane kind を入れ替える。
+      // lane 単位の mode cache は触らない（root の追従は sidebar snapshot が持つ）。
+      //
+      // ⚠️ **自分の読み手 cache を先に更新する**（`sessionActOf` の供給元）。bus の購読者は
+      // 各自の cache を更新するが、`laneSessions` は full fetch でしか埋まらず、act 切替は
+      // fetch を伴わない — 更新を忘れると `ink.ts` が旧 act で誤配送する（`noteSessionAct`）。
+      noteSessionAct(lane, session, act)
       document.dispatchEvent(
-        new CustomEvent('vp:console-mode', { detail: { lane, mode } }),
+        new CustomEvent('vp:session-act', { detail: { lane, session, act } }),
       )
-    },
-    getMode(lane) {
-      return laneOf(lane).mode
     },
     attachRenderer(lane, renderer) {
       const entry = laneOf(lane)

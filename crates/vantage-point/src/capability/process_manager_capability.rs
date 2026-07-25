@@ -2650,6 +2650,10 @@ mod tests {
     /// **ここでは意図的に registry を空のままにして masking を外し**、db 行の生存を直接見る。
     #[tokio::test]
     async fn test_create_lane_rejects_reserved_name_without_touching_db() {
+        // ⚠️ 下の `with_root` は **実 PTY を spawn** し、その replay を `vp_state_dir()` に書く。
+        // 隔離しないと user の実 state（`~/.local/state/vp/terminal_replay/reserved__root__1`）を
+        // 汚し、かつテストが hermetic でなくなる（doc 50 §4.6 A6 の作業中に発見、2026-07-25）。
+        let _state = crate::test_env::state_dir_async().await;
         let mut cap = make_test_cap();
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();

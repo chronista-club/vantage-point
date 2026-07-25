@@ -18,75 +18,152 @@ import {
 	lanePaneRefs,
 	laneScope,
 	newPaneChoices,
+	renamePane,
 	sessionOfHostId,
+	hostIdForAct,
 	syncPaneColumns,
+	termHostId,
 } from "./lane-panes";
 import { layoutEngine } from "./layout-host";
 
-const TERM = "lane-host";
+/** A6: term host も session 単位（旧 `lane-host` = root 専用の静的 host は退役）。 */
+const TERM = termHostId(1);
 /** doc 50 P1: 固定の Chat pane は退役 — session ↔ Pane 1:1。テストは session 1 の pane で行う */
 const CHAT = chatHostId(1);
 
-describe("initialLaneLayout（doc 50 P1: boot は Console 1 枚）", () => {
-	it("Console が全面（chat host は session 一覧の到着後にしか存在しない = boot 窓を覆えない）", () => {
+describe("initialLaneLayout（A6: boot は空 — host の身元が session になった）", () => {
+	it("pane ゼロ（session 一覧の到着まで id を作れない = 覆う host も存在しない）", () => {
 		const r = resolve(initialLaneLayout());
-		expect(r[TERM]?.rect).toEqual({ x: 0, y: 0, w: 1, h: 1 });
-		expect(r[CHAT]).toBeUndefined();
+		expect(Object.keys(r)).toEqual([]);
+		// 旧実装は静的 `lane-host` を 1 枚全面で置いていた（root 専用 host = role ベース命名の
+		// 産物）。A6 で root も session suffix になったため boot 時点では id が決まらない。
+		expect(r["lane-host"]).toBeUndefined();
 	});
 });
 
-describe("lanePaneRefs（roster = mode × root で term / chat を排他、doc 51 §2）", () => {
-	it("tui: Console + 非 root session の chat pane（root は Act I 面に居る）", () => {
+describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）", () => {
+	it("act ごとに kind が決まる（root=tui は Console、非 root=chat は chat pane）", () => {
 		expect(
-			lanePaneRefs(
-				[
-					{ key: 1, stand: "echoes", root: true },
-					{ key: 3, stand: "codex" },
-				],
-				"tui",
-			),
+			lanePaneRefs([
+				{ key: 1, stand: "echoes", root: true, act: "tui" },
+				{ key: 3, stand: "codex", act: "chat" },
+			]),
 		).toEqual([
-			{ id: "lane-host", label: "Console" },
-			{ id: "chat-session-3", label: "cdx#3", session: 3 },
+			{ id: "term-session-1", label: "cc#1", session: 1, kind: "term" },
+			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
 		]);
 	});
 
-	it("chat: 全 session の chat pane（root も chat。抜け殻の xterm は台に並べない）", () => {
+	it("全 session が chat（root も chat = 旧 mode==chat 相当）", () => {
 		expect(
-			lanePaneRefs(
-				[
-					{ key: 1, stand: "echoes", root: true },
-					{ key: 3, stand: "codex" },
-				],
-				"chat",
-			),
+			lanePaneRefs([
+				{ key: 1, stand: "echoes", root: true, act: "chat" },
+				{ key: 3, stand: "codex", act: "chat" },
+			]),
 		).toEqual([
-			{ id: "chat-session-1", label: "cc#1", session: 1 },
-			{ id: "chat-session-3", label: "cdx#3", session: 3 },
+			{ id: "chat-session-1", label: "cc#1", session: 1, kind: "chat" },
+			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
 		]);
 	});
 
-	it("tui + session なし = Console のみ", () => {
-		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
-	});
-
-	it("board 非空: mode を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
-		// tui: Console + board
-		expect(lanePaneRefs([], "tui", true).map((p) => p.id)).toEqual([
-			TERM,
-			"lane-board",
-		]);
-		// chat: 全 chat + board（session あり）
+	it("A6 の核心: 非 root も term になれる（term が 2 枚並ぶ = 旧実装では不可能だった形）", () => {
 		expect(
-			lanePaneRefs([{ key: 1, stand: "echoes", root: true }], "chat", true).map(
+			lanePaneRefs([
+				{ key: 1, stand: "echoes", root: true, act: "tui" },
+				{ key: 2, stand: "echoes", act: "tui" },
+				{ key: 3, stand: "codex", act: "chat" },
+			]).map((p) => p.id),
+		).toEqual(["term-session-1", "term-session-2", "chat-session-3"]);
+	});
+
+	it("act 欠落（旧 SP）は tui に倒す（従来の既定 = Act I）", () => {
+		expect(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true }]).map((p) => p.id),
+		).toEqual([TERM]);
+	});
+
+	it("session なし = 空 roster（board 無しなら pane ゼロ）", () => {
+		expect(lanePaneRefs([]).map((p) => p.id)).toEqual([]);
+	});
+
+	it("board 非空: act を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
+		expect(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true, act: "tui" }], true).map(
+				(p) => p.id,
+			),
+		).toEqual([TERM, "lane-board"]);
+		expect(
+			lanePaneRefs([{ key: 1, stand: "echoes", root: true, act: "chat" }], true).map(
 				(p) => p.id,
 			),
 		).toEqual(["chat-session-1", "lane-board"]);
 	});
 
 	it("board 空（既定）は board pane を出さない", () => {
-		expect(lanePaneRefs([], "tui", false).map((p) => p.id)).toEqual([TERM]);
-		expect(lanePaneRefs([], "tui").map((p) => p.id)).toEqual([TERM]);
+		const s = [{ key: 1, stand: "echoes", root: true, act: "tui" as const }];
+		expect(lanePaneRefs(s, false).map((p) => p.id)).toEqual([TERM]);
+		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);
+	});
+
+	it("kind が pane の種類を運ぶ（session の有無では判別できない）", () => {
+		// ⚠️ A6 以前は「session を持つ = chat pane」で判別できたが、term も session を持つ
+		// ようになったので壊れた。kind は「host を誰が作るか」（term = World A / chat =
+		// SolidJS）を決める分岐なので、取り違えると xterm の host を消しかねない。
+		const refs = lanePaneRefs(
+			[
+				{ key: 1, stand: "echoes", root: true, act: "tui" },
+				{ key: 3, stand: "codex", act: "chat" },
+			],
+			true,
+		);
+		expect(refs.map((p) => p.kind)).toEqual(["term", "chat", "board"]);
+		// term と chat の両方が session を持つ = session は kind の代用にならない。
+		expect(refs.filter((p) => p.session !== undefined).map((p) => p.kind)).toEqual([
+			"term",
+			"chat",
+		]);
+	});
+});
+
+describe("renamePane（in-place 変身 — doc 50 §4.6 A6 ②）", () => {
+	/** 3 列・share が偏った layout（真ん中の pane を変身させる）。 */
+	const base = () => ({
+		structure: {
+			columns: [
+				{ panes: ["a"] },
+				{ panes: ["chat-session-16"] },
+				{ panes: ["term-session-21"] },
+			],
+		},
+		attention: { a: 0.2, "chat-session-16": 0.5, "term-session-21": 0.3 },
+	});
+
+	it("列の位置と share を保ったまま id だけ差し替える", () => {
+		const out = renamePane(base(), "chat-session-16", "term-session-16");
+		// 位置: 真ん中のまま（右端に飛ばない = 実機で踏んだ症状の固定）
+		expect(out.structure.columns.map((c) => c.panes)).toEqual([
+			["a"],
+			["term-session-16"],
+			["term-session-21"],
+		]);
+		// share: 引き継ぐ（enterShare で作り直されない）
+		expect(out.attention["term-session-16"]).toBe(0.5);
+		expect(out.attention["chat-session-16"]).toBeUndefined();
+		// 他の pane は無傷
+		expect(out.attention.a).toBe(0.2);
+		expect(out.attention["term-session-21"]).toBe(0.3);
+	});
+
+	it("居ない id / 同一 id は layout を触らない（冪等）", () => {
+		const b = base();
+		expect(renamePane(b, "not-there", "x")).toBe(b);
+		expect(renamePane(b, "a", "a")).toBe(b);
+	});
+
+	it("往復すると元に戻る（chat→tui→chat で位置が漂わない）", () => {
+		const once = renamePane(base(), "chat-session-16", "term-session-16");
+		const back = renamePane(once, "term-session-16", "chat-session-16");
+		expect(back).toEqual(base());
 	});
 });
 
@@ -109,8 +186,26 @@ describe("chatHostId / sessionOfHostId（往復）", () => {
 		expect(sessionOfHostId(chatHostId(7))).toBe(7);
 	});
 	it("term pane / 未知 id は null", () => {
-		expect(sessionOfHostId("lane-host")).toBeNull();
+		expect(sessionOfHostId(termHostId(1))).toBeNull();
 		expect(sessionOfHostId("chat-session-x")).toBeNull();
+	});
+});
+
+describe("hostIdForAct（act → host id の唯一の写像）", () => {
+	it("chat は chat host、それ以外（tui / 不明）は term host", () => {
+		expect(hostIdForAct(5, "chat")).toBe(chatHostId(5));
+		expect(hostIdForAct(5, "tui")).toBe(termHostId(5));
+		// 旧 SP wire（act 欠落）は tui に倒す = 従来の既定。
+		expect(hostIdForAct(5, undefined)).toBe(termHostId(5));
+	});
+
+	it("**tui を chat に倒さない**（focus 側 2 箇所が chat 決め打ちだった退行の固定）", () => {
+		// team-b 8 回目: `applyLaneView` と pendingFocus の fallback が act を読まず常に
+		// chat host を指していた → term が focused の lane で pane が見つからず、focus ring が
+		// 挿入順の先頭に誤爆した。写像を 1 本にしたので、ここが守れば全 call site が守れる。
+		for (const act of ["tui", undefined] as const) {
+			expect(hostIdForAct(9, act)).not.toBe(chatHostId(9));
+		}
 	});
 });
 
@@ -145,7 +240,7 @@ describe("syncPaneColumns（layout 列 ↔ roster の同期、tiling 既定）",
 		expect(back.attention[TERM]).toBeGreaterThan(0);
 	});
 
-	it("lane-host は ids に含める限り常在（refs 側が必ず先頭に置く前提の裏）", () => {
+	it("term pane は ids に含める限り常在（refs 側が必ず先頭に置く前提の裏）", () => {
 		const l = syncPaneColumns(initialLaneLayout(), [TERM]);
 		expect(l.structure.columns).toEqual([{ panes: [TERM] }]);
 	});

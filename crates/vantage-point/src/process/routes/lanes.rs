@@ -801,8 +801,11 @@ pub async fn delete_lane_orchestrated(
     // 自壊するが、entry は demand_stop か次の respawn でしか消えず lane 削除では残留する。
     // ⚠️ 消してよいのは削除経路だけ — 生存 lane の dead entry は restart_lane_orchestrated の
     // had_pump（購読者が居た証跡）が再 attach 判定に使うので、几帳面に消すと console が凍る。
-    if let Some(handle) = state.terminal_pumps.write().await.remove(&addr.to_string()) {
-        handle.abort();
+    // doc 50 §4.6 A6: entry は lane → session → handle の入れ子。lane 削除では全 session を掃除。
+    if let Some(handles) = state.terminal_pumps.write().await.remove(&addr.to_string()) {
+        for (_session, handle) in handles {
+            handle.abort();
+        }
     }
 
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
@@ -961,9 +964,25 @@ pub async fn restart_lane_orchestrated(
                 let lane_key = addr.to_string();
                 let had_pump = state.terminal_pumps.read().await.contains_key(&lane_key);
                 if had_pump {
-                    let reattached =
-                        crate::process::unison_server::respawn_terminal_pump(state, &lane_key)
-                            .await;
+                    // 触る範囲は mode で決まる（doc 50 §4.6 A6 / team-b 10 回目 2026-07-25）:
+                    //
+                    // - Reset は **全 slot を畳んで** root だけ立て直す（`restart_lane` の
+                    //   `pty_slots.remove(addr)`）→ lane 全体を揃える（`None`）。消えた session の
+                    //   pump も撤去する必要がある
+                    // - Resume / Bare は **root の slot だけ**差し替える（同居人は独立の住人）→
+                    //   `Some(root)`。lane 全体にすると隣の term pane まで clear + 全 replay が
+                    //   飛び、触っていない pane の scroll 位置が飛ぶ
+                    let scope = if mode == crate::process::lanes_state::RespawnMode::Reset {
+                        None
+                    } else {
+                        Some(crate::process::lanes_state::LanePool::root_session_key(
+                            &addr,
+                        ))
+                    };
+                    let reattached = crate::process::unison_server::respawn_terminal_pump(
+                        state, &lane_key, scope,
+                    )
+                    .await;
                     tracing::info!(
                         "restart_lane: terminal pump re-attach (lane={} ok={})",
                         lane_key,

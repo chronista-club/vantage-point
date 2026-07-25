@@ -10,7 +10,8 @@
  * - lane 名 / cwd / branch / Act 初期値: setActivePane payload（entry.tsx bridge が setLane で届ける）
  * - cc session id / permission mode / engine 途絶: vpConsole の header summary
  *   （session_init / turn_completed / error の畳み込み。'vp:echoes-header' event で追従）
- * - Act 切替追従: 'vp:console-mode' event（vpConsole.setMode が dispatch する既存 bus）
+ * - Act（見え方）は載せない: doc 50 §4.6 A6 で session の属性になり、切替は各 pane の
+ *   名札 kind badge が持つ（lane の名札は「この lane が何であるか」だけを載せる）
  *
  * ## 載せるもの / 載せないもの（pane の縦軸、doc 29/30 の Edge Ring を pane に再適用）
  *
@@ -173,7 +174,8 @@ function copyText(text: string): void {
 
 export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): EchoesHeaderApi {
   const [ctx, setCtx] = createSignal<HeaderLaneCtx | null>(null)
-  const [mode, setMode] = createSignal<'tui' | 'chat'>('tui')
+  // doc 50 §4.6 A6: lane 単位 mode の signal は退役（見え方は session の属性 = 各 pane の
+  // 名札が持つ）。lane の名札は「この lane が何であるか」だけを載せる。
   const [summary, setSummary] = createSignal<EchoesHeaderState>({})
   /** click copy の視覚 feedback（copied class を短時間付ける対象 chip の key）。 */
   const [copiedKey, setCopiedKey] = createSignal<string | null>(null)
@@ -255,26 +257,12 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     sendIpc({ t: 'console:switch_root', lane, session: key })
   }
 
-  /** 「✨ 新 ID から」: 既存の New（Act I = new_root）に委譲する。 */
-  const newRoot = (): void => {
-    const lane = ctx()?.addr
-    setPickerOpen(false)
-    if (!lane) return
-    sendIpc({ t: 'console:new_session', lane })
-  }
+  // doc 50 §4.6 A6: 「✨ 新 ID から」（旧 `newRoot`）は picker から撤去した — Add（Echoes を
+  // 足す）と Reborn（その場で始め直す）の合成でしかなく、同じことをする口を 2 つ作らない。
 
-  /** 見え方の乗り換え（避難路、doc 51 §2）: root session の Act を切り替える。
-   *  旧 lane-level Act toggle の後継 — pre-A6 は term になれるのが root だけなので、
-   *  root の名札 menu（この picker）が住処。handoff overlay / 二重切替 lock は
-   *  entry.tsx が持ち続ける — ここは event で依頼するだけ（overlay DOM と絡ませない）。 */
-  const requestActSwitch = (target: 'tui' | 'chat'): void => {
-    const lane = ctx()?.addr
-    setPickerOpen(false)
-    if (!lane || (target === 'chat') === (mode() === 'chat')) return
-    document.dispatchEvent(
-      new CustomEvent('vp:act-switch-request', { detail: { lane, target } }),
-    )
-  }
+  // doc 50 §4.6 A6: 見え方の乗り換えは **各 pane の名札 kind badge**（chatview の
+  // `requestSessionAct`）へ移設。lane の名札はこの操作を持たない（Act は lane ではなく
+  // session の属性 — 旧 `requestActSwitch` は同 PR で撤去した）。
 
   // 外側 click で閉じる（picker / chip の内側は除外 — chip click は toggle が担う）。
   document.addEventListener('click', (ev) => {
@@ -287,11 +275,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     }
   })
 
-  // Act 切替追従（vpConsole.setMode → CustomEvent。表示中 lane 以外は無視）。
-  document.addEventListener('vp:console-mode', (e) => {
-    const d = (e as CustomEvent<{ lane: string; mode: 'tui' | 'chat' }>).detail
-    if (d?.lane && d.lane === ctx()?.addr) setMode(d.mode)
-  })
+  // doc 50 §4.6 A6: 'vp:console-mode' 追従は退役（lane の名札は Act を表示しない）。
   // session 一覧追従（handleSessionList の既存 bus。picker が閉じていても cache しておく）。
   document.addEventListener('vp:echoes-sessions', (e) => {
     const d = (e as CustomEvent<{ lane: string; sessions?: EchoesSession[] }>).detail
@@ -394,11 +378,14 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                     </button>
                   )}
                 </For>
+                {/* doc 50 §4.6 A6: 「✨ 新 ID から」は撤去した。
+                    「新しい session を作る」は 2 つの操作に分かれ、この行はその合成でしかない:
+                    ① lane の名札の **Add**（Echoes を足す = pane が増える）
+                    ② その pane の **Reborn**（同じ場所で新しく始める = pane 数は不変）
+                    root を新しい session にしたいなら「root pane で Reborn」で到達できる
+                    （A6 で switch_root の tui 限定 gate も外れたので、どの session でも代表にできる）。
+                    picker は **既存の Echoes から代表を選ぶ**ことに専念する。 */}
                 <div class="eh-rp-divider" />
-                <button type="button" class="eh-rp-row" onClick={newRoot}>
-                  <CreoIcon name="ph:sparkle" size={11} />
-                  新 ID から（素の engine）
-                </button>
                 <Show when={summary().sessionId ?? c().sessionId}>
                   {(sid) => (
                     <button
@@ -414,34 +401,10 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                     </button>
                   )}
                 </Show>
-                {/* 見え方の乗り換え（避難路、doc 51 §2 — 旧 lane-level Act toggle の後継）。
-                    低頻度・低目立ちの操作なので、root の名札 menu の末尾が住処。 */}
-                <div class="eh-rp-divider" />
-                <div class="eh-rp-title">見え方</div>
-                <button
-                  type="button"
-                  class="eh-rp-row"
-                  classList={{ 'eh-rp-root': mode() === 'tui' }}
-                  onClick={() => requestActSwitch('tui')}
-                >
-                  <CreoIcon name="ph:terminal-window" size={11} />
-                  Console（Act I）
-                  <Show when={mode() === 'tui'}>
-                    <span class="eh-rp-now">今</span>
-                  </Show>
-                </button>
-                <button
-                  type="button"
-                  class="eh-rp-row"
-                  classList={{ 'eh-rp-root': mode() === 'chat' }}
-                  onClick={() => requestActSwitch('chat')}
-                >
-                  <CreoIcon name="ph:chat-circle" size={11} />
-                  Chat（Act II）
-                  <Show when={mode() === 'chat'}>
-                    <span class="eh-rp-now">今</span>
-                  </Show>
-                </button>
+                {/* doc 50 §4.6 A6: 「見え方」行はここから退役した。見え方は session の属性に
+                    なり、切替は**各 pane の名札 kind badge**が持つ（§4.6 ② — Act = Pane の
+                    kind なので「この pane が何であるか」を名乗る名札が住処）。この picker は
+                    root の付け替え（lane の代表を誰にするか）に専念する。 */}
               </div>
             </Show>
             {/* + New: 台に器械を足す（場所への操作 = 場所の名札の右端、mako 2026-07-24）。
@@ -495,7 +458,6 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
   return {
     setLane(next) {
       setCtx(next)
-      setMode(next?.chat ? 'chat' : 'tui')
       setSummary(next ? vpConsole.headerState(next.addr) : {})
       // lane が替わったら picker / + New menu は閉じ、一覧も捨てる（別 lane の session を誤表示しない）。
       setPickerOpen(false)

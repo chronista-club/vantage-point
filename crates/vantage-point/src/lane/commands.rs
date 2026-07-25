@@ -2021,6 +2021,9 @@ mod tests {
             let rp = pty_slot::replay_file_path_in(base, "vp", lane);
             std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
             std::fs::write(&rp, b"scrollback").unwrap();
+            // ⑤b terminal_replay の非 root session file（doc 50 §4.6 A6 — session file も掃除対象）
+            let rp2 = pty_slot::replay_file_path_session_in(base, "vp", lane, 2);
+            std::fs::write(&rp2, b"scrollback-2").unwrap();
             // ⑥ lane_id
             lane_id::load_or_create_in(base, "vp", lane);
         };
@@ -2054,7 +2057,11 @@ mod tests {
         );
         assert!(
             !pty_slot::replay_file_path_in(base, "vp", "feat").exists(),
-            "⑤terminal_replay"
+            "⑤terminal_replay (root)"
+        );
+        assert!(
+            !pty_slot::replay_file_path_session_in(base, "vp", "feat", 2).exists(),
+            "⑤b terminal_replay (非 root session file も消える)"
         );
         assert!(
             !lane_id::id_file_in(base, "vp", "feat").exists(),
@@ -2076,6 +2083,10 @@ mod tests {
             "別 lane の replay_log は残る"
         );
         assert!(pty_slot::replay_file_path_in(base, "vp", "other").exists());
+        assert!(
+            pty_slot::replay_file_path_session_in(base, "vp", "other", 2).exists(),
+            "別 lane の session file は残る（誤爆しない）"
+        );
         assert!(lane_id::id_file_in(base, "vp", "other").exists());
 
         // 未記録 lane / 二重呼び出しでも panic しない (best-effort 冪等)。

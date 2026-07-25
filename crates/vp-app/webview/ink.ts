@@ -36,15 +36,17 @@ export interface InkDeps {
 	getLaneAddress: () => string | null;
 	/** lane の focused session key（console.focusedOf）。 */
 	getFocusedSession: (laneAddr: string) => number;
-	/** lane の console_mode（vpConsole.getMode）。 */
-	getMode: (laneAddr: string) => "tui" | "chat";
+	/** その session の act（見え方）。doc 50 §4.6 A6 で lane 単位 console_mode から移行 —
+	 *  送り先は「focused session がどちらの面で生きているか」で決まる。 */
+	getSessionAct: (laneAddr: string, session: number) => "tui" | "chat";
 }
 
 /** IPC 送信の宛先（純関数 inkRoute の出力。actions が実際の postMessage に写す）。 */
 export type InkRoute =
 	| { kind: "chat"; lane: string; session: number; prompt: string }
 	// tui = PTY 直書き。data は「行 + CR」の生文字列（actions 側で UTF-8 → base64 化）。
-	| { kind: "tui"; lane: string; data: string };
+	// session は宛先 slot（doc 50 §4.6 A6 — xterm が (lane, session) になったので必須）。
+	| { kind: "tui"; lane: string; session: number; data: string };
 
 // ============================================================================
 // calculations（純関数 — vitest 対象）
@@ -57,19 +59,22 @@ export function inkSendLine(itemId: string | null, path: string): string {
 	return `[対話面] board の ${where}に注釈を描いた。${path} の画像を見て意図を汲んでほしい`;
 }
 
-/** mode → 送信経路。chat は focused chat session へ、tui は lane の Act I console（PTY）へ。
- *  tui の非 root chat pane も v1 は console に流す（「この lane の主会話へ」の予測可能な既定。
- *  dogfood で不足なら refine — doc 52 §3 の pre-MVP 姿勢）。 */
+/** act → 送信経路。**focused session の見え方**で決まる（doc 50 §4.6 A6 — 旧 lane 単位
+ *  console_mode 依存から session 単位へ）。chat ならその session の会話へ、term ならその
+ *  session の console（PTY）へ流す。
+ *
+ *  term 側が session を運ぶのは A6 で xterm が (lane, session) になったため — 旧実装は
+ *  lane だけを送っており、非 root の console に描いても root へ流れていた。 */
 export function inkRoute(
-	mode: "tui" | "chat",
+	act: "tui" | "chat",
 	laneAddr: string,
 	session: number,
 	line: string,
 ): InkRoute {
-	if (mode === "chat") {
+	if (act === "chat") {
 		return { kind: "chat", lane: laneAddr, session, prompt: line };
 	}
-	return { kind: "tui", lane: laneAddr, data: `${line}\r` };
+	return { kind: "tui", lane: laneAddr, session, data: `${line}\r` };
 }
 
 /** 線/矢印が「点」レベルで短いか（誤タップの棄却）。freehand は点数で別判定。 */
@@ -115,7 +120,12 @@ function dispatchRoute(route: InkRoute): void {
 	if (route.kind === "chat") {
 		ipcSend({ t: "echoes:submit", lane: route.lane, session: route.session, prompt: route.prompt });
 	} else {
-		ipcSend({ t: "term:write", lane: route.lane, data: toBase64Utf8(route.data) });
+		ipcSend({
+			t: "term:write",
+			lane: route.lane,
+			session: route.session,
+			data: toBase64Utf8(route.data),
+		});
 	}
 }
 
@@ -391,12 +401,13 @@ export function installInk(deps: InkDeps): void {
 			return;
 		}
 		const itemId = deps.getItemId();
-		const mode = deps.getMode(laneAddr);
 		const session = deps.getFocusedSession(laneAddr);
+		// doc 50 §4.6 A6: 送り先は focused **session の act**（旧: lane 単位 console_mode）。
+		const act = deps.getSessionAct(laneAddr, session);
 		const line = inkSendLine(itemId, path);
-		dispatchRoute(inkRoute(mode, laneAddr, session, line));
+		dispatchRoute(inkRoute(act, laneAddr, session, line));
 		clearAll();
-		showToast(mode === "chat" ? "focused session に送りました" : "console に送りました", false);
+		showToast(act === "chat" ? "focused session に送りました" : "console に送りました", false);
 	};
 	const onSnapshotError = (payload: { message?: string }): void => {
 		palette.style.visibility = "";

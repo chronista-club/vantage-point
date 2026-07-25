@@ -43,19 +43,24 @@ const REPLAY_CHUNK: usize = 32 * 1024;
 /// `\x1b[3J` は xterm 拡張の scrollback clear、 `\x1b[2J` は画面 clear、 `\x1b[H` は cursor home。
 const REPLAY_CLEAR_PREFIX: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 
-/// 1 Lane の PtySlot output broadcast を購読し、 `LaneTerminalOutput` topic に流す pump を spawn。
+/// 1 Lane の 1 session の PtySlot output broadcast を購読し、 `LaneTerminalOutput` topic に
+/// 流す pump を spawn。
 ///
 /// - `lane`: LaneAddress の Display 形 (`"vp/root"` / `"vp/performer/foo"`)。 vp-app が
 ///   `/ws/terminal?lane=` に渡していた値と一致させ、 topic key 化は `TopicRouter` が担う。
+/// - `session`: この pump が担う session の VP 採番 key（doc 50 §4.6 A6）。topic は lane 単位で
+///   共有し、 session は `LaneTerminalOutput.session` に stamp する（Act II の `route_echoes` と
+///   対称 — 同 lane の複数 session が同一 topic に流れ、 World A の xterm が session で振り分ける）。
 /// - `replay`: attach 時に先頭配送する直近出力 snapshot。 rx と原子的に取得したもの
 ///   (`LanePool::attach_output`) を渡せば byte 順序が保たれる (欠落・重複なし)。
 ///   vp-app 再起動後の新 xterm に前回画面を復元する。 空 Vec = replay なし (従来挙動)。
-/// - `rx`: `LanePool::attach_output(addr)` で得た PtySlot output の broadcast receiver。
+/// - `rx`: `LanePool::attach_output(addr, session)` で得た PtySlot output の broadcast receiver。
 /// - `topic_router`: SP の topic_router。 route 先 (World へは ingest が転送する)。
 ///
 /// PtySlot drop (broadcast Closed) で pump は自然終了する。 lag 時は drop を warn して継続。
 pub fn spawn_lane_terminal_pump(
     lane: String,
+    session: u32,
     replay: Vec<u8>,
     mut rx: broadcast::Receiver<Vec<u8>>,
     topic_router: Arc<TopicRouter>,
@@ -67,7 +72,7 @@ pub fn spawn_lane_terminal_pump(
         // (既存 xterm が生きたままの reconnect でも二重描画にならない、 REPLAY_CLEAR_PREFIX 参照)。
         if !replay.is_empty() {
             tracing::info!(
-                "terminal pump replay: {} bytes を先頭配送 (lane={lane})",
+                "terminal pump replay: {} bytes を先頭配送 (lane={lane}, session={session})",
                 replay.len()
             );
             let mut framed = Vec::with_capacity(REPLAY_CLEAR_PREFIX.len() + replay.len());
@@ -78,6 +83,7 @@ pub fn spawn_lane_terminal_pump(
                 topic_router
                     .route(ProcessMessage::LaneTerminalOutput {
                         lane: lane.clone(),
+                        session,
                         data,
                     })
                     .await;
@@ -93,15 +99,20 @@ pub fn spawn_lane_terminal_pump(
                     topic_router
                         .route(ProcessMessage::LaneTerminalOutput {
                             lane: lane.clone(),
+                            session,
                             data,
                         })
                         .await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("lane terminal pump lagged: {n} chunks dropped (lane={lane})");
+                    tracing::warn!(
+                        "lane terminal pump lagged: {n} chunks dropped (lane={lane}, session={session})"
+                    );
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    tracing::debug!("lane terminal pump 終了 (PtySlot dropped, lane={lane})");
+                    tracing::debug!(
+                        "lane terminal pump 終了 (PtySlot dropped, lane={lane}, session={session})"
+                    );
                     break;
                 }
             }
@@ -124,7 +135,9 @@ mod tests {
         // 先に subscriber を張る (terminal data は非 retained なので route 前に subscribe が要る)。
         let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
 
-        let _h = spawn_lane_terminal_pump("vp/root".to_string(), Vec::new(), rx, router.clone());
+        // session を明示（5）で流し、 topic は lane 単位のまま session が message field に
+        // stamp される（Design B）ことを往復で確認する。
+        let _h = spawn_lane_terminal_pump("vp/root".to_string(), 5, Vec::new(), rx, router.clone());
 
         tx.send(b"hello".to_vec()).expect("send");
 
@@ -134,8 +147,13 @@ mod tests {
             .expect("recv");
         assert_eq!(topic, "process/terminal/data/vp~root/out");
         match msg {
-            ProcessMessage::LaneTerminalOutput { lane, data } => {
+            ProcessMessage::LaneTerminalOutput {
+                lane,
+                session,
+                data,
+            } => {
                 assert_eq!(lane, "vp/root");
+                assert_eq!(session, 5, "pump は担当 session を message に stamp する");
                 let decoded = base64::engine::general_purpose::STANDARD
                     .decode(data)
                     .expect("base64");
@@ -156,6 +174,7 @@ mod tests {
         tx.send(b"live".to_vec()).expect("send live");
         let _h = spawn_lane_terminal_pump(
             "vp/root".to_string(),
+            1,
             b"replayed-screen".to_vec(),
             rx,
             router.clone(),
@@ -191,6 +210,7 @@ mod tests {
         let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
         let _h = spawn_lane_terminal_pump(
             "vp/root".to_string(),
+            1,
             b"screen".to_vec(),
             rx,
             router.clone(),
@@ -225,7 +245,7 @@ mod tests {
             .map(|i| (i % 251) as u8)
             .collect();
         let _h =
-            spawn_lane_terminal_pump("vp/root".to_string(), replay.clone(), rx, router.clone());
+            spawn_lane_terminal_pump("vp/root".to_string(), 1, replay.clone(), rx, router.clone());
 
         let mut reassembled = Vec::new();
         for _ in 0..2 {
@@ -253,7 +273,7 @@ mod tests {
         let router = Arc::new(TopicRouter::new());
         let (tx, rx) = broadcast::channel::<Vec<u8>>(16);
         let (_id, mut srx) = router.subscribe("process/terminal/data/vp~root/out").await;
-        let _h = spawn_lane_terminal_pump("vp/root".to_string(), Vec::new(), rx, router.clone());
+        let _h = spawn_lane_terminal_pump("vp/root".to_string(), 1, Vec::new(), rx, router.clone());
 
         tx.send(Vec::new()).expect("send empty");
         tx.send(b"x".to_vec()).expect("send x");

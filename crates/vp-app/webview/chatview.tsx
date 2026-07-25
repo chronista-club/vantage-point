@@ -21,6 +21,7 @@ import {
   Switch,
   Match,
   type Accessor,
+  type JSX,
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
@@ -257,6 +258,27 @@ export function focusChatSession(lane: string, session: number): void {
 export function removeChatSession(lane: string, session: number): void {
   const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
   ipc?.postMessage(JSON.stringify({ t: 'echoes:session_remove', lane, session }))
+}
+
+/** doc 50 §4.6 A6 ②: 名札 kind badge → session の Act（見え方）切替を要求する。
+ *
+ * IPC を直接撃たず `vp:act-switch-request` に流すのは、handoff overlay と二重切替 lock を
+ * entry.tsx が一元管理しているため（名札の実装と overlay の DOM / timer を絡ませない —
+ * doc 51 §2 で root picker から event 依頼にした規律をそのまま引き継ぐ）。
+ * 宛先 session は **引数で運ぶ**（focus に依存しない — 「focus してから送る」型の分割は
+ * 別 IPC なので順序保証が無く、別 session に届くレースを作る。doc 50 §4.3 の警告）。
+ * 応答は Rust の `SessionActApplied` → `vpConsole.setSessionAct` → 'vp:session-act' で返り、
+ * roster がその session の Pane kind を入れ替える。 */
+export function requestSessionAct(
+  lane: string,
+  session: number,
+  act: 'tui' | 'chat',
+): void {
+  document.dispatchEvent(
+    new CustomEvent('vp:act-switch-request', {
+      detail: { lane, session, target: act },
+    }),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +620,32 @@ export function activeLaneReplaying(): boolean {
  *    従来挙動（本数のみ）に倒す。 */
 export function canCloseSession(sessionCount: number, isRoot?: boolean): boolean {
   return sessionCount >= 2 && isRoot !== true
+}
+
+/** kind badge（doc 50 §4.6 A6 ②）で `target` の見え方に切り替えられるか。
+ *
+ * **能力表引きで判定し、engine 名の型分岐は書かない**（§4.6 ② — shell の chat が
+ * 「原理不可」ではなく「host 未実装」であるように、能力は engine 側の申告で変わる。
+ * 実装された日に client を触らず badge が生えるのが正しい形）。判定材料は server が
+ * session ごとに送る `chat_capable` 一本で、能力表の SSOT は server（`EngineKind`）。
+ *
+ * - **→chat**: その session が Act II host を持つ engine か。未申告（旧 SP）は**不可**に倒す
+ *   — 押しても server に弾かれるだけの行き止まりを出さない（`newPaneChoices` と同じ規律）。
+ * - **→tui**: 常に可。Act I は login shell に engine を流し込むだけなのでどの engine でも
+ *   成立する（doc 50 §4.0 帰結 1「login shell は劣化ケースではなく正規の投げる先」）。
+ */
+export function canSwitchTo(target: 'tui' | 'chat', chatCapable?: boolean): boolean {
+  return target === 'tui' ? true : chatCapable === true
+}
+
+/** 進行中の act 切替（handoff）を (lane, session) で引くための key。
+ *
+ * doc 50 §4.6 A6: 切替は **pane 単位**になったので、lock も pane（= session）単位で持つ。
+ * 「どれか 1 つでも進行中なら全部弾く」にすると、**無関係な pane の click を無言で落とす**
+ * （A6 で全 pane が badge を持つため実際に起こる。team-b review 2026-07-25 score 85 —
+ * 解除側は (lane, session) を照合していたのに入口だけ素の存在チェックで非対称だった）。 */
+export function handoffKey(lane: string, session: number): string {
+  return `${lane}#${session}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,6 +1194,123 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
   ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
 ]
 
+/**
+ * session 名札（pane 上端） — **term / chat 共通**（doc 50 §4.6 A6 ②）。
+ *
+ * この pane が「何であるか」= session の素性を名乗る 1 行。全 pane が同じ顔で名乗ることで
+ * 「どれが root か」が一目で読める（3 pane 並ぶと名札が無い pane は識別不能になる —
+ * 2026-07-25 実機で mako が踏んだ）。
+ *
+ * 載せるもの（doc 50 §2「上段 = この pane が何であるか」）:
+ *  - 灯（slot 注入。**chat 固有** — term は EchoesEvent stream を持たないので出さない）
+ *  - session ラベル / root chip / 会話 id = 素性
+ *  - kind badge = 見え方（click で `session_set_act` → in-place 変身）
+ *  - ✕ = この session を閉じる（root は不可）
+ *
+ * 供給は `sessionsOf(lane)`（`echoes_session_list` の cache）— term / chat どちらの pane でも
+ * 同じ 1 本の真実源から引く。
+ */
+export function SessionPlate(props: {
+  lane: string
+  session: number
+  /** この pane の見え方。badge の表示と切替先を決める。 */
+  act: 'tui' | 'chat'
+  focused: boolean
+  /** 活動の灯（chat のみ。term は供給が無いので省略 = 描かない）。 */
+  lamp?: JSX.Element
+}) {
+  const info = (): EchoesSession | undefined =>
+    sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
+  const label = (): string => `${sessionChipPrefix(info()?.stand)}#${props.session}`
+  /** badge を押した時の切替先（今の見え方の逆）。 */
+  const target = (): 'tui' | 'chat' => (props.act === 'chat' ? 'tui' : 'chat')
+  /** badge を押せるか（= 切替先に行けるか）。 */
+  const canSwitchAct = (): boolean => canSwitchTo(target(), info()?.chat_capable)
+
+  return (
+    <div class="echoes-session-plate" classList={{ focused: props.focused }}>
+      {props.lamp}
+      <span class="echoes-session-plate-label">{label()}</span>
+      {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
+          これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
+      <Show when={info()?.root}>
+        <span
+          class="echoes-session-plate-root"
+          title="root session（lane の代表 — 閉じられない。素に戻すのは sidebar の Reset Lane）"
+        >
+          <CreoIcon name="ph:anchor-simple" size={10} />
+          root
+        </span>
+      </Show>
+      <Show when={info()?.engine_session_id}>
+        {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
+      </Show>
+      {/* focus は **chat の概念**（replay demand の宛先。送信はどの pane からも可）。
+          term pane は focus を World B が持たない（keyboard focus は xterm 側）ので、
+          この hint を出すと「押しても何も起きない」誤誘導になる — chat のときだけ出す。 */}
+      <Show when={props.act === 'chat' && !props.focused}>
+        <span class="echoes-session-plate-hint">click で focus</span>
+      </Show>
+      <span class="echoes-session-plate-spacer" />
+      {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
+          click で session_set_act → SP が resume handoff → **同じ往復路**が別の面として
+          立ち上がる（位置と share は renamePane が保つ = in-place 変身）。
+          ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると Act II へ戻る入口が消える
+          （2026-07-25 に実際に片道ドアを作った）。
+
+          切替できない session（shell 等、Act II host を持たない engine）は **押せる見た目を
+          出さない** — 押しても server に弾かれるだけの行き止まりになる（2026-07-25 実機で
+          「押しても無言」を踏んだ）。可否の判定は server が送る `chat_capable` 一本で、
+          engine 名の型分岐は client に持たせない（§4.6 ② の能力表引き）。 */}
+      <Show
+        when={canSwitchAct()}
+        fallback={
+          <span
+            class="echoes-session-plate-kind static"
+            title={`${info()?.stand ?? 'この engine'} は Chat（Act II）の受け口を持ちません`}
+          >
+            <CreoIcon name="ph:terminal-window" size={9} />
+            Console
+          </span>
+        }
+      >
+        <button
+          type="button"
+          class="echoes-session-plate-kind"
+          title={
+            target() === 'tui'
+              ? 'Console（Act I）に切り替える — 会話はそのまま resume で続く'
+              : 'Chat（Act II）に切り替える — 会話はそのまま resume で続く'
+          }
+          onClick={(e) => {
+            e.stopPropagation()
+            requestSessionAct(props.lane, props.session, target())
+          }}
+        >
+          <CreoIcon
+            name={props.act === 'chat' ? 'ph:chat-circle' : 'ph:terminal-window'}
+            size={9}
+          />
+          {props.act === 'chat' ? 'Chat' : 'Console'}
+        </button>
+      </Show>
+      <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
+        <button
+          type="button"
+          class="echoes-session-plate-close"
+          title="この session を閉じる（pane ごと消える）"
+          onClick={(e) => {
+            e.stopPropagation()
+            removeChatSession(props.lane, props.session)
+          }}
+        >
+          <CreoIcon name="ph:x" size={9} />
+        </button>
+      </Show>
+    </div>
+  )
+}
+
 /** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
  *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
  *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt）は session を運ぶ = どの pane
@@ -1156,11 +1321,8 @@ function SessionChatView(props: { lane: string; session: number }) {
   const state = (): ChatState => lc.state
   /** この pane が lane の focused session か（= chat 動詞の宛先か）。 */
   const isFocused = (): boolean => (sessionsOf(props.lane)?.focused ?? 1) === props.session
-  /** この pane の session の registry entry（label / live / root 表示用）。 */
-  const sessionInfo = (): EchoesSession | undefined =>
-    sessionsOf(props.lane)?.sessions.find((v) => v.key === props.session)
-  const sessionLabel = (): string =>
-    `${sessionChipPrefix(sessionInfo()?.stand)}#${props.session}`
+  // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
+  // （doc 50 §4.6 A6 — term pane と共有するため）。
 
   // Act II モデル切替（spec: セッション進行中でも切替可能）。SP が engine を --resume +
   // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
@@ -1435,52 +1597,26 @@ function SessionChatView(props: { lane: string; session: number }) {
       {/* session 名札（pane 上端）: この pane = この session の素性。doc 46 §1.3 の帰結で
           タブ strip は撤去 — session の識別は pane 自身が名乗り、切替は pane click が担う。
           engine 選択付きの新規作成は EchoesHeader（lane の名札）の「+ New」一本
-          （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。 */}
-      <div class="echoes-session-plate" classList={{ focused: isFocused() }}>
-        {/* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
-            （赤速脈動）。旧「live なら緑点」を置換 — presence でなく活動を灯す（lampOf）。
-            細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。 */}
-        <span
-          class="echoes-lamp"
-          classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
-          title={statusLine().label}
-        />
-        <span class="echoes-session-plate-label">{sessionLabel()}</span>
-        {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
-            これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
-        <Show when={sessionInfo()?.root}>
+          （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。
+          実体は term pane と共有する `SessionPlate`（doc 50 §4.6 A6 — 全 pane が同じ顔で
+          名乗る。灯だけは chat 固有なので slot で渡す）。 */}
+      <SessionPlate
+        lane={props.lane}
+        session={props.session}
+        act="chat"
+        focused={isFocused()}
+        lamp={
+          /* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
+             （赤速脈動）。旧「live なら緑点」を置換 — presence でなく活動を灯す（lampOf）。
+             細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。
+             term pane はこの供給（EchoesEvent stream）を持たないので灯を出さない。 */
           <span
-            class="echoes-session-plate-root"
-            title="root session（lane の代表 — 閉じられない。素に戻すのは sidebar の Reset Lane）"
-          >
-            <CreoIcon name="ph:anchor-simple" size={10} />
-            root
-          </span>
-        </Show>
-        <Show when={sessionInfo()?.engine_session_id}>
-          {(sid) => <span class="echoes-session-plate-sid">{sid().slice(0, 8)}</span>}
-        </Show>
-        <Show when={!isFocused()}>
-          {/* focus は「Act toggle の対象 / replay demand の宛先」— 送信はどの pane からも可 */}
-          <span class="echoes-session-plate-hint">click で focus</span>
-        </Show>
-        <span class="echoes-session-plate-spacer" />
-        <Show
-          when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, sessionInfo()?.root)}
-        >
-          <button
-            type="button"
-            class="echoes-session-plate-close"
-            title="この session を閉じる（pane ごと消える）"
-            onClick={(e) => {
-              e.stopPropagation()
-              removeChatSession(props.lane, props.session)
-            }}
-          >
-            <CreoIcon name="ph:x" size={9} />
-          </button>
-        </Show>
-      </div>
+            class="echoes-lamp"
+            classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
+            title={statusLine().label}
+          />
+        }
+      />
       {/* now-line（doc 51 §1 A3）: 名札（素性・不変）と区別された「今」の帯。名札の直下。
           供給 = 質問要旨 > 契約（A3b）> 機械導出（A3a 保険）。空なら描かない（doc 50 §2）。 */}
       <Show when={nowLine()}>
@@ -1874,6 +2010,18 @@ export const CHATVIEW_CSS = `
   color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
 .echoes-session-plate-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
   background: var(--color-bg,#0f1115); }
+/* kind badge（doc 50 §4.6 A6 ②）: この pane の見え方 = 素性の一部なので名札（上段）に住む。
+   §2.1 の規律で名札は静かに保ち、hover で操作可能だと分かる程度に立てる（root chip と
+   同じ pill 形。あちらは表示専用、こちらは押せる = hover の差で区別する）。 */
+.echoes-session-plate-kind { flex:none; display:inline-flex; align-items:center; gap:3px;
+  padding:1px 6px; border-radius:9999px; cursor:pointer;
+  border:1px solid var(--color-surface-border-subtle,#2a3040); background:transparent;
+  font-size:9.5px; font-family:inherit; color: var(--color-text-tertiary,#8b93a7); opacity:.8; }
+.echoes-session-plate-kind:hover { opacity:1; color: var(--color-text,#e6e9ef);
+  border-color: var(--color-accent,#3b82f6); background: var(--color-bg,#0f1115); }
+/* 切替できない session（Act II host を持たない engine）の kind 表示。素性としては出すが
+   **押せる見た目を出さない**（cursor / hover を持たない = 行き止まりに誘わない、§4.6 ②）。 */
+.echoes-session-plate-kind.static { cursor:default; opacity:.55; }
 /* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
 .echoes-chat:not(.focused) { opacity:.82; }
 /* 灯 3 状態（doc 51 §1 A2）: 動いている = 緑・脈動 / 待っている = 無灯（地の色の点）/
@@ -1949,6 +2097,8 @@ export type ChatViewApi = {
   /** chat session pane を host に mount する（lane-panes の動的 host 生成から呼ばれる）。
    *  返り値 = dispose（lane 切替 / session close で host ごと破棄する時に呼ぶ）。 */
   mountSession(host: HTMLElement, lane: string, session: number): () => void
+  /** doc 50 §4.6 A6 ②: term pane（xterm）の host に名札だけを差し込む。返り値 = dispose。 */
+  mountTermPlate(host: HTMLElement, lane: string, session: number): () => void
 }
 
 export function installChatView(vpConsole: VpConsole): ChatViewApi {
@@ -1995,6 +2145,33 @@ export function installChatView(vpConsole: VpConsole): ChatViewApi {
     mountSession(host, lane, session) {
       laneChat(lane, session) // store を先に用意（mount 前に届く replay の取りこぼし防止）
       return render(() => <SessionChatView lane={lane} session={session} />, host)
+    },
+    mountTermPlate(host, lane, session) {
+      // doc 50 §4.6 A6 ②: term pane の名札。host と中の xterm は World A の持ち物なので
+      // **名札用の div を足すだけ**（xterm container には触れない — doc 33 §8）。
+      // `.has-term-plate` を host に付けると World A 側の CSS が xterm を名札分下げる。
+      const mount = document.createElement('div')
+      mount.className = 'term-plate'
+      host.appendChild(mount)
+      host.classList.add('has-term-plate')
+      const dispose = render(
+        () => (
+          <SessionPlate
+            lane={lane}
+            session={session}
+            act="tui"
+            // term pane は focus 状態を World B が持たない（keyboard focus は xterm 側）。
+            // 名札の focus 強調は chat の「打つ宛先」を示すものなので、term では常に false。
+            focused={false}
+          />
+        ),
+        mount,
+      )
+      return () => {
+        dispose()
+        mount.remove()
+        host.classList.remove('has-term-plate')
+      }
     },
   }
 }

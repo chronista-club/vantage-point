@@ -7,7 +7,7 @@
  *
  * ## 層の分離（CLAUDE.md: data / calculations / actions）
  *
- * - **data**: `TERM_PANE_REF` + session 由来の動的 refs（`lanePaneRefs` — doc 50 P1 で動的化）
+ * - **data**: session 由来の動的 refs（`lanePaneRefs`）。静的 refs は board だけ（A6 で term も session 単位に）
  * - **calculations**: `lanePaneRefs` / `syncPaneColumns` / `newPaneChoices` — 純関数（vitest で固定）
  * - **actions**: `installLanePanes` — engine 購読 + DOM への反映（display / rect / class）
  *
@@ -22,15 +22,19 @@
  *   入場規則）。「畳んで取っておく」中間状態と下端の帯（pane chip）は退役 —
  *   旧「1 枚ずつ = showOnly」（mako 2026-07-21）は doc 47 §1 決着までの暫定だった
  *
- * ## pane の顔ぶれ（roster）と Act の関係（doc 51 §2）
+ * ## pane の顔ぶれ（roster）と Act の関係（doc 50 §4.6 A6）
  *
- * 同じ session の term / chat 同時 2 枚は**原理的に不可**（1 会話 1 プロセス。Act I = TUI
- * 常駐、Act II = headless stream-json、切替 = resume handoff）。pre-A6（xterm は lane に
- * 1 枚）では term になれるのは root session だけなので、roster は console_mode で決まる:
+ * **roster = session 一覧 × 各 session の act**。1 session = 1 Pane（doc 46 §1.5）で、
+ * act がその Pane の kind（term = Act I の PTY 面 / chat = Act II の構造化面）を決める。
  *
- * - mode == tui:  Console（= root session の Act I 面）+ 非 root session の chat pane
- * - mode == chat: 全 session の chat pane（root も chat。xterm は表示しない — set_mode chat
- *   後の PTY は抜け殻で、見せると「死んだ console」が台に並ぶ）
+ * 同じ session の term / chat 同時 2 枚は**原理的に不可**（1 往復路 = Active な化身 高々 1。
+ * Act I = TUI 常駐、Act II = headless stream-json、切替 = resume handoff）。roster が
+ * session ごとに 1 枚しか作らないので、この不変条件は構造で保たれる。
+ *
+ * > pre-A6 は xterm が lane に 1 枚しか無く、term になれるのは root だけだった。そのため
+ * > roster は lane 単位の console_mode で決まっていた（mode==tui なら Console 1 枚 + 非 root の
+ * > chat、mode==chat なら全部 chat）。A6 で xterm が (lane, session) へ re-key され、この
+ * > 制約と lane 単位 mode の概念は消えた。
  */
 
 import {
@@ -46,20 +50,66 @@ import { sessionChipPrefix } from "./EchoesHeader";
 export type PaneRef = {
 	id: string;
 	label: string;
-	/** chat session pane なら session key（doc 46 §1.5 session ↔ Pane 1:1）。term pane は無し */
+	/** session pane なら session key（doc 46 §1.5 session ↔ Pane 1:1）。board pane は無し。
+	 *  ⚠️ **kind の代用にしないこと** — A6 以前は「session を持つ = chat pane」が成り立ち、
+	 *  `session !== undefined` が判別に使えたが、A6 で term pane も session を持つように
+	 *  なったのでこの対応は壊れた。種類は `kind` を見る。 */
 	session?: number;
+	/** この pane の種類（doc 50 §4.6 A6）。host を誰が作るか / 何を mount するかが変わる:
+	 *  - `term`: host は World A（xterm）が所有。SolidJS は名札だけを差し込む
+	 *  - `chat`: host も中身も SolidJS が作る
+	 *  - `board`: lane に 1 枚の静的 host（session と直交） */
+	kind: "term" | "chat" | "board";
 };
 
-/** roster の入力になる session の最小形（'vp:echoes-sessions' bus の 1 要素）。 */
-export type PaneSession = { key: number; stand: string; root?: boolean };
+/** roster の入力になる session の最小形（'vp:echoes-sessions' bus の 1 要素）。
+ *  doc 50 §4.6 A6: `act` がこの session の見え方（term / chat）を決める **唯一の入力**。
+ *  欠落（旧 SP）は "tui" に倒す（従来の既定 = Act I）。 */
+export type PaneSession = {
+	key: number;
+	stand: string;
+	root?: boolean;
+	act?: "tui" | "chat";
+};
 
-/** Act I（xterm）の代表 pane。World A の xterm re-key（doc 50 P3 = A6）まで lane に 1 枚 */
-export const TERM_PANE_REF: PaneRef = { id: "lane-host", label: "Console" };
+/**
+ * term pane の host DOM id（World A の `ensureTermHost` と対）。
+ *
+ * **身元は session**（root も例外にしない）。初版は root だけ静的 `#lane-host` を使っていたが、
+ * それは host を **role** に縛る形で、root 付け替えで id が session 間で入れ替わる → World A は
+ * 生成時の host を握り続けるので **DOM 位置と focus が旧 root に残留**した
+ * （team-b 7 回目 2026-07-25）。role で識別子を決めない、が守る不変条件。
+ */
+export function termHostId(session: number): string {
+	return `term-session-${session}`;
+}
+
+/** term host の class（World A `ensureTermHost` が付ける値と対。roster 外の掃除に使う）。 */
+export const TERM_HOST_CLASS = "term-session-host";
+
+/**
+ * session の act から pane host id を決める **唯一の写像**。
+ *
+ * この写像は roster 導出 / act 切替の rename / focus 解決の 3 箇所で要る。各所で
+ * `act === "chat" ? … : …` を書くと**片方だけ古くなる** — 実際 focus 側 2 箇所が chat 決め打ちの
+ * まま残り、term が focused の lane で focus ring が別 pane に付いていた（team-b 8 回目
+ * 2026-07-25）。act 不明（旧 SP wire）は tui に倒す = 従来の既定。
+ */
+export function hostIdForAct(
+	session: number,
+	act: "tui" | "chat" | undefined,
+): string {
+	return act === "chat" ? chatHostId(session) : termHostId(session);
+}
 
 /** board（PP）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
  *  1 lane 1 枚、表示 lane は常に 1 つ = xterm と同じ性質。動的生成は不要、位置決めだけ動く）。
  *  roster に載るのは board が非空のときだけ（doc 52 §10 wave 0 — board 非空で自動）。 */
-export const BOARD_PANE_REF: PaneRef = { id: "lane-board", label: "Paisley Park" };
+export const BOARD_PANE_REF: PaneRef = {
+	id: "lane-board",
+	label: "Paisley Park",
+	kind: "board",
+};
 
 /** chat session pane の host DOM id。表示中 lane の host にだけ使う（lane 切替で作り直すため
  *  lane を id に含めない — DOM には常に 1 lane 分しか存在しない） */
@@ -84,26 +134,25 @@ export function boardLaneKeyOf(address: string): string {
 	return m ? (m[1] ?? "conductor") : "conductor";
 }
 
-/** lane の pane の顔ぶれ（純関数）。mode と root で term / chat を排他にする（冒頭 doc の
- *  roster 規則 — 同じ session を 2 枚にしない）。
+/** lane の pane の顔ぶれ（純関数、doc 50 §4.6 A6）。
  *
- *  board pane は engine session と直交する lane-level の面なので、mode を問わず board が
+ *  **各 session の act がその session の Pane kind を決める** — 1 session = 1 Pane
+ *  （doc 46 §1.5）で、term / chat は同じ往復路の見え方違い。同じ session が 2 枚になることは
+ *  原理的に無い（1 往復路 = Active な化身 高々 1）ので、旧実装の「mode で排他にする」規則は
+ *  不要になった（あれは「term になれるのは root だけ」という物理制約の投影だった）。
+ *
+ *  board pane は engine session と直交する lane-level の面なので、act を問わず board が
  *  非空なら**末尾に**足す（doc 52 §2 — board は掲示板/計器盤/中継台/対話面の役割を持つ
  *  lane の道具で、どの Act で作業していても同じ台に並ぶ）。 */
 export function lanePaneRefs(
 	sessions: readonly PaneSession[],
-	mode: "tui" | "chat",
 	boardPresent = false,
 ): PaneRef[] {
-	const chatPane = (v: PaneSession): PaneRef => ({
-		id: chatHostId(v.key),
-		label: `${sessionChipPrefix(v.stand)}#${v.key}`,
-		session: v.key,
+	const sessionPanes = sessions.map((v): PaneRef => {
+		const label = `${sessionChipPrefix(v.stand)}#${v.key}`;
+		const kind = v.act === "chat" ? "chat" : "term";
+		return { id: hostIdForAct(v.key, v.act), label, session: v.key, kind };
 	});
-	const sessionPanes =
-		mode === "chat"
-			? sessions.map(chatPane)
-			: [TERM_PANE_REF, ...sessions.filter((v) => !v.root).map(chatPane)];
 	return boardPresent ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
 }
 
@@ -135,6 +184,29 @@ export function syncPaneColumns(layout: Layout, ids: readonly string[]): Layout 
 	return { structure: { columns }, attention };
 }
 
+/** pane の id を **その場で**差し替える（純関数、doc 50 §4.6 A6 ② の in-place 変身の実体）。
+ *
+ *  act 切替は「同じ往復路の見え方が変わる」だけなのに、host id は変わる
+ *  （`chat-session-16` ⇄ `lane-host` / `term-session-16`）。素直に roster 同期に任せると
+ *  **1 枚消えて 1 枚が右端に入場**する扱いになり、列の位置と share を失う
+ *  （2026-07-25 実機: chat→tui で pane が右端の細い列に飛んだ = 「立ち上がっていない」ように見えた）。
+ *  列の中で id だけ書き換えれば、位置・幅・並び順が保たれて「その場で変身」に見える。
+ *
+ *  `fromId` が居ない（既に置換済 / boot 窓）ときは layout を触らない = 冪等。 */
+export function renamePane(layout: Layout, fromId: string, toId: string): Layout {
+	if (fromId === toId) return layout;
+	if (!layout.structure.columns.some((c) => c.panes.includes(fromId))) return layout;
+	const columns = layout.structure.columns.map((c) => ({
+		panes: c.panes.map((v) => (v === fromId ? toId : v)),
+	}));
+	const attention = { ...layout.attention };
+	if (fromId in attention) {
+		attention[toId] = attention[fromId] as number;
+		delete attention[fromId];
+	}
+	return { structure: { columns }, attention };
+}
+
 /** 要件 3: フォーカスの視認 ring（CSS は main_area.rs `#lane-panes > .pane-focused`） */
 export const CLASS_FOCUSED = "pane-focused";
 
@@ -143,14 +215,20 @@ export function laneScope(lane: string): string {
 	return `lane:${lane}`;
 }
 
-/** 初期配置: lane-host（Console）1 枚が全面。chat session pane は session 一覧の到着後に
- *  syncPaneColumns で生える（boot 窓に空の chat host が xterm を覆う #880 系の問題は、
- *  「無い host は覆えない」の形で構造的に消えた） */
+/**
+ * 初期配置: **空**（pane は session 一覧の到着後に `syncPaneColumns` で生える）。
+ *
+ * doc 50 §4.6 A6 で host の身元が session になったため、**boot 時点では id を作れない**
+ * （root の session key を知るのが session 一覧の到着後）。旧実装は静的 `#lane-host` を
+ * 1 枚全面で置いていたが、それは role ベース命名の産物だった。
+ *
+ * 空で困らないのは、host が無い間は**覆うものが無い**から（boot 窓に空の chat host が xterm を
+ * 覆う #880 系と同じ「無い host は覆えない」の形）。World A が `ensureLane` で host を作った
+ * 時点では inline rect が未設定 = CSS の `inset:0` で全面 — 1 枚構成なら結果は旧既定と同じで、
+ * 2 枚以上でも roster 到着で即座に並ぶ。
+ */
 export function initialLaneLayout(): Layout {
-	return {
-		structure: { columns: [{ panes: [TERM_PANE_REF.id] }] },
-		attention: { [TERM_PANE_REF.id]: 1 },
-	};
+	return { structure: { columns: [] }, attention: {} };
 }
 
 /** 消えていた Pane に focus を当て直す時の share（2 枚構成なら等分に戻る） */
@@ -202,6 +280,12 @@ export interface LanePanesDeps {
 	container: HTMLElement;
 	/** chat session pane の中身を host に mount する（chatview.mountSession）。返り値 = dispose */
 	mountChat: (host: HTMLElement, lane: string, session: number) => () => void;
+	/** term pane の名札を host に差し込む（doc 50 §4.6 A6 ②）。返り値 = dispose。
+	 *
+	 *  host（`#lane-host` / `#term-session-<n>`）と中の xterm は World A の持ち物なので、
+	 *  **名札 DOM を足すだけ**にとどめる（xterm container には触れない — doc 33 §8）。
+	 *  xterm を名札の高さぶん下げるのは World A 側の CSS（`.has-term-plate`）。 */
+	mountTermPlate: (host: HTMLElement, lane: string, session: number) => () => void;
 }
 
 /**
@@ -212,10 +296,10 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	let activeLane: string | null = null;
 	/** lane → focus を持つ pane id（LE-20: focus は場の外 = module 状態） */
 	const focusById = new Map<string, string>();
-	/** lane → session 一覧（'vp:echoes-sessions' の鏡。roster は mode と合成して導出） */
+	/** lane → session 一覧（'vp:echoes-sessions' の鏡。roster は各 session の act から導出）。
+	 *  doc 50 §4.6 A6: lane 単位 console_mode の鏡（旧 `modeByLane`）は退役 — 見え方は
+	 *  session の属性になったので、lane 単位の mode を持つ理由が無くなった。 */
 	const sessionsByLane = new Map<string, PaneSession[]>();
-	/** lane → console_mode（'vp:console-mode' の鏡。未着 lane は tui = boot 既定） */
-	const modeByLane = new Map<string, "tui" | "chat">();
 	/** board flat key（'conductor' / performer 名）→ board が非空か（'vp:board-presence' の鏡。
 	 *  board-handler は flat key で presence を飛ばすので、address 空間の他の Map とは別 key 系。
 	 *  lookup は boardLaneKeyOf(address) で写して引く）。 */
@@ -230,32 +314,15 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	const paneExists = (scope: string, id: string): boolean =>
 		layoutEngine.current(scope).structure.columns.some((c) => c.panes.includes(id));
 
-	const modeOf = (lane: string): "tui" | "chat" => modeByLane.get(lane) ?? "tui";
-
 	const refsOf = (lane: string): PaneRef[] =>
 		lanePaneRefs(
 			sessionsByLane.get(lane) ?? [],
-			modeOf(lane),
 			boardByLane.get(boardLaneKeyOf(lane)) ?? false,
 		);
 
-	// boot 既定を **同期で** DOM に書く（旧 PaneShell.dock() が bundle init 時に同期 render
-	// していたのと同じ「event を待たず DOM 確定」）。boot 時点の refs は Console のみ —
-	// chat host は session 一覧の到着後に生成されるので、空 host が xterm を覆う boot 窓
-	// （#880 と同族）は「無い host は覆えない」の形で構造ごと消えた。
-	{
-		const bootResolved = resolve(initialLaneLayout());
-		const el = deps.hostOf(TERM_PANE_REF.id);
-		const r = bootResolved[TERM_PANE_REF.id];
-		if (el && r) {
-			el.style.display = "";
-			el.style.left = `${r.rect.x * 100}%`;
-			el.style.top = `${r.rect.y * 100}%`;
-			el.style.width = `${r.rect.w * 100}%`;
-			el.style.height = `${r.rect.h * 100}%`;
-			el.classList.toggle(CLASS_FOCUSED, true);
-		}
-	}
+	// boot 既定の同期描画（旧 PaneShell.dock() 相当）は退役 — A6 で host が session 単位に
+	// なり、boot 時点に描く相手（静的 host）が存在しなくなった。host は World A が
+	// `ensureLane` で作り、位置は session 一覧の到着で `syncPaneColumns` が書く。
 
 	/** scope の初期化（未訪問 lane は Console 全面で始める）。戻り値は scope key */
 	const ensure = (lane: string): string => {
@@ -279,29 +346,48 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		layoutEngine.settle(scope, "scene");
 	};
 
-	/** 表示中 lane の動的 host（chat session pane）を refs に同期する — 無ければ生成 + mount、
-	 *  消えた session の host は dispose + DOM 除去。生成直後は display:none（render が
-	 *  可視性を決めるまで何も覆わない — #880 の教訓）。 */
+	/** 表示中 lane の session pane を refs に同期する（doc 50 §4.6 A6 で term も対象に）。
+	 *
+	 *  kind で扱いが分かれる:
+	 *  - **chat**: host も中身も SolidJS。無ければ生成 + mount、消えたら dispose + DOM 除去。
+	 *    生成直後は display:none（render が可視性を決めるまで何も覆わない — #880 の教訓）
+	 *  - **term**: host は World A（xterm）の持ち物なので**作らない・消さない**。名札だけを
+	 *    host に差し込み、消えたら名札だけ外す（xterm 本体には触れない = doc 33 §8 の境界）
+	 */
 	const syncDynHosts = (lane: string, refs: PaneRef[]): void => {
 		const want = new Map(
-			refs.filter((v) => v.session !== undefined).map((v) => [v.id, v.session as number]),
+			refs
+				.filter((v) => v.session !== undefined && v.kind !== "board")
+				.map((v) => [v.id, v]),
 		);
-		// 消えた host の破棄
+		// 消えた pane の後始末（chat は host ごと、term は名札だけ）
 		for (const [id, dispose] of [...dynDisposers]) {
 			if (want.has(id)) continue;
 			dispose();
 			dynDisposers.delete(id);
-			deps.hostOf(id)?.remove();
+			// chat host は SolidJS が作ったものなので除去する。term host は World A の
+			// 持ち物なので残す（dispose 側が名札 DOM だけを片付ける）。
+			const host = deps.hostOf(id);
+			if (host?.classList.contains("chat-session-host")) host.remove();
 		}
-		// 足りない host の生成 + mount
-		for (const [id, session] of want) {
+		// 足りない pane の mount
+		for (const [id, ref] of want) {
 			if (dynDisposers.has(id)) continue;
-			const host = document.createElement("div");
-			host.id = id;
-			host.className = "chat-session-host";
-			host.style.display = "none";
-			deps.container.appendChild(host);
-			dynDisposers.set(id, deps.mountChat(host, lane, session));
+			const session = ref.session as number;
+			if (ref.kind === "chat") {
+				const host = document.createElement("div");
+				host.id = id;
+				host.className = "chat-session-host";
+				host.style.display = "none";
+				deps.container.appendChild(host);
+				dynDisposers.set(id, deps.mountChat(host, lane, session));
+			} else {
+				// term: host は World A が ensureLane で用意する。まだ無ければ次の同期に回す
+				// （boot 窓 — session 一覧が先に届き、xterm 生成が後になることがある）。
+				const host = deps.hostOf(id);
+				if (!host) continue;
+				dynDisposers.set(id, deps.mountTermPlate(host, lane, session));
+			}
 		}
 	};
 
@@ -342,20 +428,27 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			}
 			el.classList.toggle(CLASS_FOCUSED, isVisible && p.id === focused);
 		}
-		// ⚠️ roster **外**の常設 host（#lane-host / #lane-board）を明示的に隠す。上のループは
-		// roster しか触らないため、roster から外れた常設 host は「見えないのに display のまま」
-		// 他 host の下に残る。DOM から消してはいけない（#lane-host は World A の xterm を保持する
-		// 境界規律、doc 33 §8。#lane-board も静的 host を作り直さない）が、隠さないと中身の
-		// viewport（xterm の overflow-y:scroll + 巨大 scrollback / board の overflow-y:auto）が
-		// 同じ矩形に残り、WebKit の async-scroll hit-test が**奥の見えない viewport に wheel を
-		// 奪う** — 手前の pane が「wheel 不動 / PgDn は動く」になる（2026-07-24 実機再現）。
-		for (const staticId of [TERM_PANE_REF.id, BOARD_PANE_REF.id]) {
-			if (refs.some((p) => p.id === staticId)) continue;
-			const el = deps.hostOf(staticId);
-			if (el) {
-				el.style.display = "none";
-				el.classList.toggle(CLASS_FOCUSED, false);
-			}
+		// ⚠️ roster **外**の host を明示的に隠す。上のループは roster しか触らないため、roster
+		// から外れた host は「見えないのに display のまま」他 host の下に残る。DOM から消して
+		// はいけない（term host は World A の xterm を保持する境界規律、doc 33 §8。#lane-board も
+		// 静的 host を作り直さない）が、隠さないと中身の viewport（xterm の overflow-y:scroll +
+		// 巨大 scrollback / board の overflow-y:auto）が同じ矩形に残り、WebKit の async-scroll
+		// hit-test が**奥の見えない viewport に wheel を奪う** — 手前の pane が「wheel 不動 /
+		// PgDn は動く」になる（2026-07-24 実機再現）。
+		//
+		// A6 で term host が session 単位（動的）になったので、**静的 id 1 つでは足りない**
+		// （旧 `#lane-host` だけ見ていた）。DOM に居る term host を全数走査して roster 外を畳む。
+		const strays: HTMLElement[] = [];
+		const board = deps.hostOf(BOARD_PANE_REF.id);
+		if (board && !refs.some((p) => p.id === BOARD_PANE_REF.id)) strays.push(board);
+		for (const el of deps.container.querySelectorAll<HTMLElement>(
+			`.${TERM_HOST_CLASS}`,
+		)) {
+			if (!refs.some((p) => p.id === el.id)) strays.push(el);
+		}
+		for (const el of strays) {
+			el.style.display = "none";
+			el.classList.toggle(CLASS_FOCUSED, false);
 		}
 	};
 
@@ -380,8 +473,16 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (pendingFocus !== null) {
 			let target = pendingFocus;
 			const refs = refsOf(d.lane);
-			if (sessionOfHostId(target) !== null && !refs.some((v) => v.id === target)) {
-				target = chatHostId(focusedOf(d.lane));
+			if (!refs.some((v) => v.id === target)) {
+				// 保留先が現 roster に無い = 一覧未着で当てた id が古い。意図（focused
+				// session の pane を見せる）に読み替える。⚠️ **その session の act** で host が
+				// 決まる — chat 決め打ちだと term が focused の lane で永久に解決しない
+				// （pendingFocus が残り、focus ring が挿入順の先頭に誤爆する）。
+				const focused = focusedOf(d.lane);
+				const act = sessionsByLane
+					.get(d.lane)
+					?.find((v) => v.key === focused)?.act;
+				target = hostIdForAct(focused, act);
 			}
 			if (refs.some((v) => v.id === target)) {
 				pendingFocus = null;
@@ -391,13 +492,29 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		render();
 	});
 
-	// console_mode（Act）→ roster を同期。mode == tui は root の chat pane を持たず、
-	// mode == chat は Console を持たない（冒頭 doc の roster 規則 — 排他は roster で保証）。
-	document.addEventListener("vp:console-mode", (e) => {
-		const d = (e as CustomEvent<{ lane: string; mode: "tui" | "chat" }>).detail;
-		if (!d?.lane) return;
-		modeByLane.set(d.lane, d.mode);
+	// session act（見え方）の変化 → roster を同期（doc 50 §4.6 A6、旧 'vp:console-mode' の後継）。
+	// 名札の kind badge → session_set_act → SP → SessionActApplied → vpConsole.setSessionAct が
+	// この bus を撃つ。**当該 session の Pane kind が in-place で入れ替わる**（§4.6 ②）。
+	document.addEventListener("vp:session-act", (e) => {
+		const d = (
+			e as CustomEvent<{ lane: string; session: number; act: "tui" | "chat" }>
+		).detail;
+		if (!d?.lane || !d.session) return;
+		const list = sessionsByLane.get(d.lane);
+		const entry = list?.find((v) => v.key === d.session);
+		if (entry) entry.act = d.act;
 		if (d.lane !== activeLane) return;
+		// 見え方が変わると host id も変わる（chat-session-N ⇄ term-session-N）。
+		// 変身の前後 = 反対の act の host ⇄ 新しい act の host。
+		const prevId = hostIdForAct(d.session, d.act === "chat" ? "tui" : "chat");
+		const nextId = hostIdForAct(d.session, d.act);
+		// ⚠️ **roster 同期より先に**列の中で id を差し替える。順序を逆にすると
+		// syncPaneColumns が「旧 id が消えた / 新 id が入場した」と解釈し、pane が右端の
+		// 細い列に飛ぶ（2026-07-25 実機: chat→tui で「立ち上がっていない」ように見えた真因）。
+		// 位置・幅・並び順を保ってこそ「その場で変身」になる。
+		layoutEngine.update(ensure(d.lane), (cur) => renamePane(cur, prevId, nextId));
+		// focus も新しい host へ引き継ぐ（視線の連続性）。
+		if (focusById.get(d.lane) === prevId) focusById.set(d.lane, nextId);
 		syncRoster(d.lane);
 		render();
 	});
