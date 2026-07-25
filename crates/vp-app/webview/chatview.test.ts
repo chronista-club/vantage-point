@@ -11,7 +11,7 @@ import {
   formatToolInput,
   formatToolResult,
   clampToolDetail,
-  actSwitchBlockedReason,
+  canSwitchTo,
   canCloseSession,
   chatKey,
   lampOf,
@@ -903,34 +903,28 @@ describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3 �
   })
 })
 
-describe('actSwitchBlockedReason — kind badge の gating（doc 50 §4.6 A6 ②）', () => {
-  const stands = [
-    { name: 'echoes', chat_capable: true },
-    { name: 'shell', chat_capable: false },
-  ]
-
-  it('chat→tui は常に可（Act I は login shell に流し込むだけ = §4.0 帰結 1）', () => {
-    expect(actSwitchBlockedReason('tui', 'echoes', stands)).toBeNull()
-    expect(actSwitchBlockedReason('tui', 'shell', stands)).toBeNull()
-    // 能力表が空でも Act I へは戻せる（term は engine 非依存）。
-    expect(actSwitchBlockedReason('tui', 'unknown', [])).toBeNull()
+describe('canSwitchTo — kind badge の gating（doc 50 §4.6 A6 ②）', () => {
+  it('→tui は常に可（Act I は login shell に流し込むだけ = §4.0 帰結 1）', () => {
+    expect(canSwitchTo('tui', true)).toBe(true)
+    expect(canSwitchTo('tui', false)).toBe(true)
+    // 能力の申告が無くても Act I へは戻せる（term は engine 非依存）。
+    expect(canSwitchTo('tui', undefined)).toBe(true)
   })
 
-  it('term→chat は chat_capable が申告された engine のみ', () => {
-    expect(actSwitchBlockedReason('chat', 'echoes', stands)).toBeNull()
-    expect(actSwitchBlockedReason('chat', 'shell', stands)).toContain('shell')
+  it('→chat は server が chat_capable と申告した session のみ', () => {
+    expect(canSwitchTo('chat', true)).toBe(true)
+    expect(canSwitchTo('chat', false)).toBe(false)
   })
 
-  it('能力表に居ない stand は不可に倒す（行き止まりを出さない）', () => {
-    // 「作れるが submit がエラーになるだけ」の pane を生やさない（newPaneChoices と同規律）。
-    expect(actSwitchBlockedReason('chat', 'codex', stands)).toContain('codex')
-    expect(actSwitchBlockedReason('chat', 'echoes', [])).toContain('echoes')
+  it('未申告（旧 SP）は不可に倒す — 行き止まりを出さない', () => {
+    // 押しても server に弾かれるだけの badge を出さない（newPaneChoices と同じ規律）。
+    expect(canSwitchTo('chat', undefined)).toBe(false)
   })
 
-  it('判定は能力表引きで、engine 名の型分岐を持たない（未来の実装で gating を触らない）', () => {
-    // shell の chat host が実装された日に、この関数を触らず badge が生えることの担保。
-    const withShellChat = [{ name: 'shell', chat_capable: true }]
-    expect(actSwitchBlockedReason('chat', 'shell', withShellChat)).toBeNull()
+  it('判定は server の申告 1 本で、engine 名の型分岐を持たない', () => {
+    // shell の chat host が実装された日、server が true を送るだけで badge が生える
+    // （client 側の gating を touch しない = 能力表の SSOT は server）。
+    expect(canSwitchTo('chat', true)).toBe(true)
   })
 })
 

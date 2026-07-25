@@ -4544,6 +4544,19 @@ pub fn run() -> anyhow::Result<()> {
                             "session:act_applied — lane の project 解決失敗、terminal session を張れず (lane={lane})"
                         ),
                     }
+                    // ⚠️ **xterm の container を active 化しないと見えない**（`.lane-pane` は
+                    // display:none が既定で、`.active` が付いて初めて描かれる）。chat から戻って
+                    // 新しく作った instance は非 active のままなので、これが無いと「名札は出るのに
+                    // 中身が真っ黒」になる（2026-07-25 実機で踏んだ — 旧 ConsoleModeApplied が
+                    // 持っていた 1 行を S6 の撤去時に移植し忘れていた）。
+                    // showLane は active 化に加えて rAF 2 段で fit / sendResize / focus まで行う。
+                    // 順序: ensure_lane より後（instance が無いと active 化できない）。
+                    //
+                    // SP 応答待ちの間に別 lane へ移っていたら表示は奪わない（act は手元 snapshot に
+                    // 反映済みなので、戻った時に正しい顔ぶれで開く）。
+                    if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
+                        lane_js::show_lane(&webview, Some(&lane), false);
+                    }
                 } else {
                     // →chat: その session の xterm を畳む（PtySlot は SP 側で drop 済）。
                     lane_js::remove_lane_session(&webview, &lane, session);

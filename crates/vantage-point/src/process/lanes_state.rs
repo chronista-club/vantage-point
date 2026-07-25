@@ -549,6 +549,14 @@ pub struct ChatSessionInfo {
     /// Pane を生やすか）と名札の kind badge が読む **唯一の供給源**。旧 lane 単位 console_mode
     /// による roster 導出はこの field に置き換わった（term になれるのが root だけ、の制約は A6 で消滅）。
     pub act: SessionAct,
+    /// この session を Chat（Act II）にできるか（doc 50 §4.6 A6 ②）。
+    ///
+    /// 能力表（[`crate::echoes::EngineKind::chat_capable`]）は **server が SSOT**。client は
+    /// この bool を読むだけにして、engine 名の型分岐を GUI 側に持たせない（shell の chat host が
+    /// 実装された日に、client を触らず badge が生えるのが正しい形）。
+    /// 名札の kind badge はこれが false なら**押せる見た目を出さない** — 押しても server に
+    /// 弾かれるだけの「行き止まり」を作らないため（`newPaneChoices` と同じ規律）。
+    pub chat_capable: bool,
 }
 
 /// [`LanePool::slot_inventory`] の 1 要素 — lane が持つ PTY slot 1 枚分の view。
@@ -1448,6 +1456,9 @@ impl LanePool {
                     root: s.key == reg.root,
                     // doc 50 §4.6 A6: GUI の roster / kind badge の供給源（registry が SSOT）。
                     act: s.act,
+                    // 能力表は server が SSOT（client に engine 名の分岐を持たせない）。
+                    chat_capable: EngineKind::from_stand(&s.stand)
+                        .is_some_and(EngineKind::chat_capable),
                 }
             })
             .collect())

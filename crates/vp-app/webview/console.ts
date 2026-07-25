@@ -131,6 +131,10 @@ export type EchoesSession = {
    *  決める **唯一の入力**で、名札 kind badge の表示もこれに従う。
    *  旧 SP は送らない → undefined（roster 側が "tui" に倒す = 従来の既定）。 */
   act?: 'tui' | 'chat'
+  /** doc 50 §4.6 A6 ②: この session を Chat にできるか（能力表は server が SSOT）。
+   *  名札の kind badge は false なら Chat への切替を出さない（押しても server に弾かれる
+   *  だけの行き止まりを作らない）。旧 SP は送らない → undefined = 不可に倒す。 */
+  chat_capable?: boolean
 }
 
 /** echoes_session_list の生 payload（Rust `handle_echoes_session_list` の返り値 mirror）。 */
