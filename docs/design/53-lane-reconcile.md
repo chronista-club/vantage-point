@@ -266,6 +266,27 @@ server は既に **「どの pane が存在すべきか」を知っている** �
 > R4 の前提として「registry の change stream」が要るので、R3 で intent の変更点が 1 箇所に
 > 畳まれているとそこから流せる（R3 → R4 の順に意味がある）。
 
+### 5.1 R2 実装記録（2026-07-25 出荷）
+
+`respawn_terminal_pump(state, lane, only)` → `reconcile_lane_pumps(pool, pumps, router, lane)`
+（`terminal_pump.rs`）。level の比較を成立させた 2 つの実装決定:
+
+1. **demand は edge でなく level で読む** — `TopicRouter::demand_active(topic)`（購読者数の
+   直読）。計上（`demand_counts`）は hook の有無に依らない常時計上に変更 —
+   router 養子縁組の boot 窓（hook 登録前に subscribe が立つ）で計上が抜けないため。
+   restart の `had_pump`（「pump 残留 = 購読者が居た証跡」の間接推論）はこれで消えた。
+   start / stop の hook は**同じ reconcile の契機**になった（嘘の edge が届いても level が勝つ）。
+2. **pump の identity = 張った先の slot の pid**（`TerminalPump.slot_pid`）。「差し替わったか」を
+   呼び手の知識（restart の mode / act の向き）でなく live slot の pid との照合で決める
+   （doc 54「identity は実体に」）。pid 一致は触らない = 兄弟 pane 保護（team-b 10 回目）が
+   `only` 引数（呼び手の注意）から**構造**に変わった。
+
+契機は demand hook（start/stop）/ 動詞の末尾（act 切替・slot 追加・restart・delete）/
+boot 復元後（`lane_spawn_actor` の restore 末尾 + `server.rs` run() の conductor 分）の 3 族。
+#11 は「復元完了後の reconcile が demand level × 全 slot で収束する」ことで消えた（受け入れ
+テスト: `late_restored_slot_gets_pump_on_next_reconcile` / 兄弟保護:
+`reconcile_touches_only_the_swapped_slot_leaving_siblings_alone`）。
+
 ---
 
 ## 6. やってはいけない

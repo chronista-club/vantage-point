@@ -16,12 +16,15 @@
 //! - calculations: なし (pump は I/O bridge)
 //! - actions: broadcast recv → topic route (副作用)
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use base64::Engine;
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 
+use crate::lane::session_registry::SessionKey;
+use crate::process::lanes_state::LanePool;
 use crate::process::topic_router::TopicRouter;
 use crate::protocol::ProcessMessage;
 
@@ -118,6 +121,155 @@ pub fn spawn_lane_terminal_pump(
             }
         }
     })
+}
+
+/// lane の terminal topic（concrete）。購読・demand 計上・pump route が共有する 1 つの形
+/// （lane key は LaneAddress の `/` を `~` に encode する、 `TopicRouter::topic_for` と同じ規約）。
+pub fn lane_topic(lane: &str) -> String {
+    format!("process/terminal/data/{}/out", lane.replace('/', "~"))
+}
+
+/// 1 本の terminal pump の台帳 entry。
+///
+/// `slot_pid` は **張った先の slot 実体の pid = pump の identity**（doc 53 R2 / doc 54
+/// 「identity は実体に」）。「slot が差し替わったか」を呼び手の知識（restart の mode / act の
+/// 向き）でなく、 live slot の pid との照合で決める — これが reconcile の actual 側。
+pub struct TerminalPump {
+    /// attach した時点の slot の pid（照合キー。 pid は slot の生涯で不変）。
+    pub slot_pid: u32,
+    /// pump task の handle。 撤去は abort、 source 断 (slot drop) では自然終了する。
+    pub handle: JoinHandle<()>,
+}
+
+/// demand-driven terminal pump の lane → session → pump 台帳（`AppState::terminal_pumps`）。
+/// 外側 key は LaneAddress の Display 形 (`"<project>/root"` 等)。
+pub type TerminalPumps = HashMap<String, HashMap<SessionKey, TerminalPump>>;
+
+/// reconcile が attach する 1 件分: (session, slot pid, attach_output の replay + rx)。
+type PumpAttach = (SessionKey, u32, (Vec<u8>, broadcast::Receiver<Vec<u8>>));
+
+/// [`reconcile_lane_pumps`] の結果（ログ・テスト用の観測値）。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PumpReconcile {
+    /// 新設 / 差替した pump 数（= replay が飛んだ pane 数）。
+    pub attached: usize,
+    /// 撤去した pump 数（slot 消滅 / demand 消滅 / 差替の旧側）。
+    pub removed: usize,
+    /// 触らなかった健在 pump 数（= 無傷の兄弟 pane 数）。
+    pub kept: usize,
+}
+
+/// 指定 lane の terminal pump を「あるべき状態」に合わせる（doc 53 R2: pump の reconcile 化）。
+///
+/// - intent = demand（topic の現在購読者 > 0、 [`TopicRouter::demand_active`]）×
+///   生きた slot の (session, pid) 一覧（[`LanePool::slot_pids`]）
+/// - actual = `terminal_pumps` の (session, 張った時の slot_pid)
+///
+/// pid が一致する pump は**触らない** — 兄弟 pane に clear + 全 replay を撃たない保証が
+/// scope 引数（旧 `respawn_terminal_pump` の `only`）でなく構造から出る（team-b 10 回目の
+/// regression の構造化）。不一致 / 欠落は attach_output → pump 新設（replay-on-attach）、
+/// desired に無い pump は撤去。demand が無ければ desired = ∅（= 全撤去、 lazy production）。
+///
+/// 呼び手（demand hook / 動詞の末尾 / boot 復元後）は全員ただの**契機**であって判断を
+/// 持たない。冪等なので契機が重なっても 1 本に収束する（二重 demand / 復元中の demand edge
+/// との race — doc 50 §4.7 の「直さないと決めた 1 件」はこの収束性で消える）。
+pub async fn reconcile_lane_pumps(
+    lane_pool: &RwLock<LanePool>,
+    terminal_pumps: &RwLock<TerminalPumps>,
+    topic_router: &Arc<TopicRouter>,
+    lane: &str,
+) -> PumpReconcile {
+    let Some(addr) = LanePool::parse_address(lane) else {
+        return PumpReconcile::default();
+    };
+    let demand = topic_router.demand_active(&lane_topic(lane));
+
+    // actual の snapshot。finished handle は「不在」と数える（pump は source 断で自然終了
+    // する — 万一 slot が生きたまま pump だけ死んだ場合も差替対象に落ちる保険）。
+    let current: HashMap<SessionKey, u32> = {
+        let pumps = terminal_pumps.read().await;
+        pumps
+            .get(lane)
+            .map(|m| {
+                m.iter()
+                    .filter(|(_, p)| !p.handle.is_finished())
+                    .map(|(k, p)| (*k, p.slot_pid))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // intent 側: (session, pid) 列挙と attach を**同一 read guard 内で**原子的に行う
+    // （列挙と subscribe の間に slot が差し替わると replay snapshot と rx の境界がずれる）。
+    // attach は差替が要る session だけ — 健在な pump の session には replay を撃たない。
+    let (live, attaches) = {
+        let pool = lane_pool.read().await;
+        let live = pool.slot_pids(&addr);
+        let attaches: Vec<PumpAttach> = if demand {
+            live.iter()
+                .filter(|(s, pid)| current.get(s) != Some(pid))
+                .filter_map(|&(s, pid)| pool.attach_output(&addr, Some(s)).map(|a| (s, pid, a)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (live, attaches)
+    };
+
+    // 適用: 新設の差し込み + desired 外の撤去。abort は lock を手放してから。
+    let mut result = PumpReconcile::default();
+    let mut removed = Vec::new();
+    {
+        let mut pumps = terminal_pumps.write().await;
+        let lane_pumps = pumps.entry(lane.to_string()).or_default();
+        for (session, pid, (replay, rx)) in attaches {
+            let handle = spawn_lane_terminal_pump(
+                lane.to_string(),
+                session,
+                replay,
+                rx,
+                topic_router.clone(),
+            );
+            result.attached += 1;
+            if let Some(old) = lane_pumps.insert(
+                session,
+                TerminalPump {
+                    slot_pid: pid,
+                    handle,
+                },
+            ) {
+                removed.push(old.handle);
+            }
+        }
+        // desired = demand ? live の session 集合 : ∅
+        let stale: Vec<SessionKey> = lane_pumps
+            .keys()
+            .copied()
+            .filter(|k| !demand || !live.iter().any(|(s, _)| s == k))
+            .collect();
+        for k in stale {
+            if let Some(p) = lane_pumps.remove(&k) {
+                removed.push(p.handle);
+            }
+        }
+        result.kept = lane_pumps.len() - result.attached;
+        if lane_pumps.is_empty() {
+            pumps.remove(lane);
+        }
+    }
+    result.removed = removed.len();
+    for h in removed {
+        h.abort();
+    }
+    if result != PumpReconcile::default() {
+        tracing::info!(
+            "terminal pump reconcile (lane={lane}, demand={demand}, attached={}, removed={}, kept={})",
+            result.attached,
+            result.removed,
+            result.kept
+        );
+    }
+    result
 }
 
 #[cfg(test)]

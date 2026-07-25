@@ -802,9 +802,10 @@ impl LanePool {
     /// 「session 省略 = root」の解決規則（`payload_session_key` の doc）を **呼び手側から
     /// 明示的に引ける**ようにするもの。session 明示が必須な新経路（`session_set_act` 等）に
     /// 対して「root を指したい」と書けるのが用途。
-    // 読み手: `restart_lane_orchestrated` が pump の張り直し範囲（root の slot だけ差し替わる）を
-    // 決めるのに使う + テスト。slot_session は private なので、これが無いと外から root を
-    // 名指しできない。
+    // 読み手: テストのみ（doc 53 R2 で `restart_lane_orchestrated` の pump scope 判断が
+    // reconcile の pid 照合に置き換わり、prod の読み手が消えた）。slot_session は private
+    // なので、これが無いとテストが外から root を名指しできない。
+    #[cfg(test)]
     pub fn root_session_key(addr: &LaneAddress) -> SessionKey {
         Self::slot_session(addr, None)
     }
@@ -1184,6 +1185,27 @@ impl LanePool {
             .unwrap_or_default();
         keys.sort_unstable();
         keys
+    }
+
+    /// lane が持つ slot の (session, pid) 一覧（session 昇順）。
+    ///
+    /// pump reconcile（doc 53 R2）の intent 側入力 — pid は slot **実体**の identity で、
+    /// pump 台帳の `slot_pid` との照合が「差し替わったか」を決める。attach と同一 read guard
+    /// 内で呼ぶこと（列挙と subscribe の間の slot 差替を防ぐのは呼び手の guard）。
+    /// lock poisoned は pid=0 に倒す（`slot_inventory` と同じ縮退）。
+    pub fn slot_pids(&self, addr: &LaneAddress) -> Vec<(SessionKey, u32)> {
+        let Some(slots) = self.pty_slots.get(addr) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(SessionKey, u32)> = slots
+            .iter()
+            .map(|(key, slot_mutex)| {
+                let pid = slot_mutex.lock().map(|s| s.pid()).unwrap_or(0);
+                (*key, pid)
+            })
+            .collect();
+        out.sort_unstable_by_key(|(k, _)| *k);
+        out
     }
 
     /// lane が持つ slot の一覧 view（session / pid / 生死 / root か / attach 有無）。
