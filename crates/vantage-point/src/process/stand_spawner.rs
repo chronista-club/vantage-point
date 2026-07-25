@@ -353,7 +353,7 @@ pub fn build_stand_command(
 ///
 /// - file は **session 単位**（`__<session>`）になり奪い合いが構造的に消えた
 ///   （身元を role にすると root 付け替えで再発する — [`crate::daemon::pty_slot::replay_file_path_session_in`]）
-/// - 非 root term も boot で復元される（`LanePool::restore_term_slots`）ので読み手が居る
+/// - 非 root term も boot で復元される（`lane_reconcile::reconcile_lane`、doc 53 §12）ので読み手が居る
 /// - lane GC / Reset は prefix 掃き（`clear_replay_in`）で session file 群も消す
 pub fn build_stand_command_for_session(
     stand_name: &str,

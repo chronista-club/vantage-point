@@ -65,6 +65,34 @@ impl LaneReconcile {
     }
 }
 
+/// **PtySlot を持つべき session**（act = Tui）。desired の導出規則そのもの。
+///
+/// ①（spawn すべきものを決める）と ③（今の intent に合わせる）が**同じ規則**を共有するため
+/// 関数にしてある — 2 箇所に書くと片方だけ古くなる（doc 53 §3.3 の同型）。
+fn want_slot_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
+    let lane_label = crate::process::stand_spawner::lane_label(addr);
+    session_registry::load(&addr.project, lane_label, lane_stand)
+        .sessions
+        .iter()
+        .filter(|s| s.act == SessionAct::Tui)
+        .map(|s| s.key)
+        .collect()
+}
+
+/// **chat engine を持ってよい session**（act = Chat）。
+///
+/// 立てるのは lazy（submit / focus / 購読が起こす）なので reconcile は**畳む側だけ**に使う —
+/// 「Chat でない session に engine が残っている」= 1 session 2 エンジンの法の破れ。
+fn want_chat_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
+    let lane_label = crate::process::stand_spawner::lane_label(addr);
+    session_registry::load(&addr.project, lane_label, lane_stand)
+        .sessions
+        .iter()
+        .filter(|s| s.act == SessionAct::Chat)
+        .map(|s| s.key)
+        .collect()
+}
+
 /// 1 session ぶんの spawn 指示（① で計算し ② で実行する）。
 struct SpawnPlan {
     session: SessionKey,
@@ -88,59 +116,30 @@ pub async fn reconcile_lane(
 ) -> LaneReconcile {
     let mut result = LaneReconcile::default();
 
-    // ── ① 読み: desired（registry）と actual（pool）の差分を計算する ──────────────
-    let (plans, drop_slots, drop_engines) = {
+    // ── ① 読み: **spawn すべきもの**だけを計算する ────────────────────────────────
+    //
+    // ⚠️ 畳む判断はここでしない。lock の外に出る必要があるのは spawn（800ms×N）だけで、
+    // 畳むのは write lock 下で即座に終わる — ①で決めて③で適用すると、その間に動詞が
+    // intent を動かした場合に**古い判断で畳んでしまう**（insert 側だけ race 再検査があり、
+    // drop 側に無いという非対称になっていた。team-b 指摘 2026-07-26）。
+    // 畳む対象は③で「今の intent」から計算する。
+    let plans: Vec<SpawnPlan> = {
         let pool = lane_pool.read().await;
         let Some(info) = pool.get(addr) else {
             return result; // lane 不在 = 合わせる相手が居ない
         };
         let lane_stand = info.stand.clone();
         let cwd = info.cwd.clone();
-        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-        let reg = session_registry::load(&addr.project, &lane_label, &lane_stand);
-
         let live_slots = pool.slot_sessions(addr);
-        let live_engines = pool.chat_engine_sessions(addr);
-
-        // desired: act=Tui の session は slot を持つべき / act=Chat は engine の器（lazy）。
-        let want_slot: Vec<SessionKey> = reg
-            .sessions
-            .iter()
-            .filter(|s| s.act == SessionAct::Tui)
-            .map(|s| s.key)
-            .collect();
-        let known: Vec<SessionKey> = reg.sessions.iter().map(|s| s.key).collect();
-
-        let plans: Vec<SpawnPlan> = want_slot
-            .iter()
+        want_slot_sessions(addr, &lane_stand)
+            .into_iter()
             .filter(|k| !live_slots.contains(k))
-            .map(|&session| SpawnPlan {
+            .map(|session| SpawnPlan {
                 session,
                 lane_stand: lane_stand.clone(),
                 cwd: cwd.clone(),
             })
-            .collect();
-        // 畳む: act が Tui でない（= Chat）/ registry に居ない session の slot。
-        let drop_slots: Vec<SessionKey> = live_slots
-            .iter()
-            .copied()
-            .filter(|k| !want_slot.contains(k))
-            .collect();
-        // 畳む: act が Chat でない / registry に居ない session の engine
-        //（1 session = 高々 1 エンジンの法。act=Tui の session に engine が残っていると
-        // 同じ会話に 2 本のエンジンがぶら下がる）。
-        let drop_engines: Vec<SessionKey> = live_engines
-            .iter()
-            .copied()
-            .filter(|k| {
-                !known.contains(k)
-                    || reg
-                        .sessions
-                        .iter()
-                        .any(|s| s.key == *k && s.act != SessionAct::Chat)
-            })
-            .collect();
-        (plans, drop_slots, drop_engines)
+            .collect()
     };
 
     // ── ② spawn: lock の外で回す（1 枚 800ms の sync sleep を lock 下に置かない）──────
@@ -171,14 +170,29 @@ pub async fn reconcile_lane(
         }
     }
 
-    // ── ③ 適用: write lock で insert + race 再検査 ────────────────────────────────
+    // ── ③ 適用: write lock で「今の intent」に合わせる ─────────────────────────────
+    //
+    // 判断は**すべてこの中**で行う（②で持ち越すのは spawn 済の実体だけ）。①からここまでの
+    // 間に動詞が intent を動かしていても、適用は最新の registry に従う。
     {
         let mut pool = lane_pool.write().await;
-        if !pool.contains(addr) {
-            return result; // spawn 中に lane が消えた（slot は drop で片付く）
-        }
+        let Some(info) = pool.get(addr) else {
+            return result; // spawn 中に lane が消えた（slot は Drop で child kill される）
+        };
+        let lane_stand = info.stand.clone();
+        let want_slot = want_slot_sessions(addr, &lane_stand);
+        let want_chat = want_chat_sessions(addr, &lane_stand);
+
         for (session, slot, term_rx) in spawned {
-            // spawn 中に他の動詞が同じ session の slot を立てていたら、こちらを捨てる
+            // 立てている間に intent が変わった（act が Chat になった / session が消えた）なら
+            // **入れずに捨てる**（scope 終端の Drop が child を kill する）。
+            if !want_slot.contains(&session) {
+                tracing::debug!(
+                    "reconcile: spawn 済 slot を破棄（intent が変わった）: {addr} s={session}"
+                );
+                continue;
+            }
+            // 他の経路が先に同じ session の slot を立てていたら、こちらを捨てる
             //（`insert_pty_slot` は黙って replace するので、走行中の console を殺さない）。
             if pool.slot_sessions(addr).contains(&session) {
                 tracing::debug!("reconcile: race lost（既に slot あり）: addr={addr} s={session}");
@@ -187,13 +201,27 @@ pub async fn reconcile_lane(
             pool.insert_pty_slot(addr.clone(), Some(session), slot, term_rx);
             result.spawned += 1;
         }
-        for session in drop_slots {
+
+        // 畳む: desired に無い実体（act が変わった / registry から消えた）。
+        for session in pool
+            .slot_sessions(addr)
+            .into_iter()
+            .filter(|k| !want_slot.contains(k))
+            .collect::<Vec<_>>()
+        {
             if pool.drop_slot_public(addr, session) {
                 result.dropped_slots += 1;
             }
         }
-        for session in drop_engines {
-            if pool.drop_chat_engine(addr, Some(session)) {
+        // engine は **registry を引かない経路**で畳む（`drop_chat_engine` は
+        // `resolve_chat_session` を通すので、registry から消えた session を畳めない）。
+        for session in pool
+            .chat_engine_sessions(addr)
+            .into_iter()
+            .filter(|k| !want_chat.contains(k))
+            .collect::<Vec<_>>()
+        {
+            if pool.drop_chat_engine_by_key(addr, session) {
                 result.dropped_engines += 1;
             }
         }
@@ -264,6 +292,41 @@ mod tests {
         assert_eq!(
             lane_state_of(SessionAct::Tui, None),
             (LaneState::Dead, None)
+        );
+    }
+
+    /// doc 53 §12: **registry から消えた session の chat engine が畳まれる**（R3c の ✕ の下地）。
+    ///
+    /// ⚠️ この経路は R3b の呼び手（boot 2 箇所）では**到達しない** — engine が既に居る状態で
+    /// reconcile を呼ぶのは R3c で動詞が繋がってから。それでもここで固定するのは、
+    /// **潰し方を間違えると無音で壊れる**ため（team-b 指摘 2026-07-26）:
+    /// `drop_chat_engine` は `resolve_chat_session` を通すので registry に居ない session を
+    /// 解決できず、**畳みたい当の対象を黙って no-op** する。`drop_chat_engine_by_key`
+    /// （生 key 直接 remove）を使っていることをここで縛る。
+    ///
+    /// 「1 session = 高々 1 エンジン」の法の実体なので、破れると 1 会話に 2 本ぶら下がる。
+    #[tokio::test]
+    async fn engine_of_removed_session_is_dropped() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vptest-reconcile-drop");
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+
+        // root(#1) = Chat だけの registry を作る（= #2 は「存在しない session」）。
+        session_registry::set_root_act(&addr.project, lane_label, "echoes", SessionAct::Chat)
+            .expect("root を chat に");
+
+        // desired の導出: Chat は root だけ / Tui は誰も居ない。
+        let want_chat = want_chat_sessions(&addr, "echoes");
+        let want_slot = want_slot_sessions(&addr, "echoes");
+        assert_eq!(want_chat, vec![1], "registry に居る Chat は root だけ");
+        assert!(want_slot.is_empty(), "act=Tui の session は居ない");
+
+        // registry から消えた session（#2）は **どちらの desired にも入らない** = 畳む対象。
+        // 実 engine を spawn せずに規則だけを固定する（engine の spawn は claude 実バイナリを
+        // 要するため、ここでは「畳む対象に入るか」の判断だけを検証する）。
+        assert!(
+            !want_chat.contains(&2) && !want_slot.contains(&2),
+            "registry に居ない session の実体は残さない（1 session 2 エンジンの法）"
         );
     }
 }

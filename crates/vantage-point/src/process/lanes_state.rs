@@ -2229,6 +2229,29 @@ impl LanePool {
 
     /// 当該 session の chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
     /// `session=None` は focused。他 session の engine は巻き添えにしない（doc 38 §2「独立」）。
+    /// **registry を引かずに** engine を 1 本畳む（doc 53 §12 — reconcile の drop 経路）。
+    ///
+    /// ⚠️ [`Self::drop_chat_engine`] は `resolve_chat_session` を通すので、**registry から
+    /// 消えた session の engine を畳めない**（解決が Err → 黙って false）。reconcile が
+    /// 畳みたい当の対象（= registry から消えた住人の残骸）がまさにそれで、通すと engine が
+    /// `chat_engines` に residual で残る（1 session 2 エンジンの法が破れる / リーク。
+    /// R3c で ✕ が「registry から消して reconcile」になった瞬間に踏む — team-b 指摘 2026-07-26）。
+    /// slot 側（`drop_slot`）は生 key の `HashMap::remove` なので元からこの問題が無く、
+    /// **engine 側だけの非対称**だった。
+    ///
+    /// 代表値（pid）の追随はしない — reconcile が `refresh_lane_representation` で
+    /// root の実体から導出し直す（doc 53 §3.3）。
+    pub fn drop_chat_engine_by_key(&mut self, addr: &LaneAddress, key: SessionKey) -> bool {
+        let Some(slots) = self.chat_engines.get_mut(addr) else {
+            return false;
+        };
+        let dropped = slots.remove(&key).is_some();
+        if slots.is_empty() {
+            self.chat_engines.remove(addr);
+        }
+        dropped
+    }
+
     pub fn drop_chat_engine(&mut self, addr: &LaneAddress, session: Option<SessionKey>) -> bool {
         let Ok(resolved) = self.resolve_chat_session(addr, session) else {
             return false;
