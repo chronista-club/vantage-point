@@ -761,6 +761,25 @@ pub(crate) async fn reconcile_terminal_pumps(
     .await
 }
 
+/// [`crate::process::lane_reconcile::reconcile_lane`] の AppState 版（呼び手の糖衣）。
+///
+/// **動詞の末尾はこれ 1 本**（doc 53 §12.4 / R3c）。registry に intent を書いた動詞は、
+/// 実体（PtySlot / chat engine / 代表値 / pump）を自分で動かさずにこれを呼ぶ。
+/// pump だけを合わせたい契機（demand hook）は [`reconcile_terminal_pumps`] のまま —
+/// あちらは lane 全体の実体を触らない軽い経路。
+pub(crate) async fn reconcile_lane(
+    state: &AppState,
+    addr: &crate::process::lanes_state::LaneAddress,
+) -> crate::process::lane_reconcile::LaneReconcile {
+    crate::process::lane_reconcile::reconcile_lane(
+        &state.lane_pool,
+        &state.terminal_pumps,
+        &state.topic_router,
+        addr,
+    )
+    .await
+}
+
 /// Act II replay-on-attach: echoes demand start ハンドラー。
 ///
 /// World の demand hook が `process/echoes/data/{lane}/event` の購読者 0→1 を検知し、 control
@@ -1317,10 +1336,14 @@ async fn handle_echoes_session_create(
         .ok_or_else(|| format!("echoes_session_create: lane パース失敗: {lane}"))?;
     let key = state
         .lane_pool
-        .write()
+        .read()
         .await
         .create_chat_session(&addr, stand, focus)
         .map_err(|e| format!("echoes_session_create: {e}"))?;
+    // doc 53 §12.4 R3c: 動詞は registry に書いた。実体を合わせるのは reconcile。
+    // Chat の engine は lazy なので普通は no-op — それでも呼ぶのは「**契機は判断を持たない**」
+    // ため（「今回は要らない」を動詞ごとに判断し始めると、要る場合を 1 つ取りこぼす）。
+    reconcile_lane(state, &addr).await;
     // doc 53 §11: roster が変わったので知らせる（GUI の pane 一覧は snapshot 1 本で供給される）。
     super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
@@ -1340,13 +1363,23 @@ async fn handle_echoes_session_focus(
         .ok_or_else(|| "echoes_session_focus: session 未指定".to_string())?;
     let addr = crate::process::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("echoes_session_focus: lane パース失敗: {lane}"))?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .focus_chat_session(&addr, session)
+        .map_err(|e| format!("echoes_session_focus: {e}"))?;
+    // doc 53 §12.4 R3c: focused は intent の一部（registry）。実体側は reconcile。
+    reconcile_lane(state, &addr).await;
     {
-        let mut pool = state.lane_pool.write().await;
-        pool.focus_chat_session(&addr, session)
-            .map_err(|e| format!("echoes_session_focus: {e}"))?;
         // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
         // eager に resume spawn する（切替後の初 submit を待たない）。act=Tui の session（registry のみの
         // 切替 = 正当）/ shell・legacy stand session（Act II host なし）等は debug で飲む — 切替自体は成功。
+        //
+        // reconcile の**後**に置く: reconcile は「act=Chat でない session の engine」を畳むので、
+        // 先に起こすと同じ lock 区間の外で畳まれ得る。順序は「intent を合わせる → 注視に応じて
+        // 起こす」（engine の eager は demand 側の判断 = reconcile の仕事ではない）。
+        let mut pool = state.lane_pool.write().await;
         if let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router) {
             tracing::debug!("echoes_session_focus: eager spawn せず（{e}）");
         }
@@ -1374,10 +1407,21 @@ async fn handle_echoes_session_remove(
         .ok_or_else(|| format!("echoes_session_remove: lane パース失敗: {lane}"))?;
     let focused = state
         .lane_pool
-        .write()
+        .read()
         .await
-        .remove_chat_session(&addr, session)
+        .remove_session(&addr, session)
         .map_err(|e| format!("echoes_session_remove: {e}"))?;
+    // doc 53 §12.4 R3c: registry から消えた session の実体（PtySlot / chat engine）は
+    // reconcile が畳む。旧実装は動詞が種類ごとに手で畳んでいて、A6 で term pane に ✕ が
+    // 出たとき **chat 側だけ畳んで PTY が孤児**になるバグを出した（doc 50 §4.6）。
+    reconcile_lane(state, &addr).await;
+    // ⚠️ replay の破棄は reconcile の**後**。slot が生きている間に消すと `PtySlot::drop` の
+    // 最終 flush が書き戻して復活する（`restart_lane` の Reset 分岐が踏んだのと同じ罠）。
+    state
+        .lane_pool
+        .read()
+        .await
+        .discard_session_traces(&addr, session);
     // doc 53 §11: session が 1 本消えた = roster の変化。
     super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
@@ -1531,25 +1575,29 @@ async fn apply_session_act(
     session: crate::lane::session_registry::SessionKey,
     act: crate::lane::session_registry::SessionAct,
 ) -> Result<serde_json::Value, String> {
+    state
+        .lane_pool
+        .read()
+        .await
+        .set_session_act(addr, session, act)
+        .map_err(|e| format!("session_set_act 失敗: {e}"))?;
+    // doc 53 §12.4 R3c: act を書けば desired が変わる。**両方向を同じ 1 本が合わせる** —
+    // tui 方向は新 PtySlot が立って pump が張られ（「vp-app が購読を跨いで維持している」lane
+    // では demand が 1 のままで 0→1 hook が発火しないので、この契機が必須）、chat 方向は
+    // slot が畳まれて pump 台帳 entry が撤去される。健在な兄弟 pane は pid 照合で触られない
+    // （team-b 10 回目の「隣の pane の clear + 全 replay」は構造で再発しない）。
+    reconcile_lane(state, addr).await;
     {
-        let mut pool = state.lane_pool.write().await;
-        pool.set_session_act(addr, session, act)
-            .map_err(|e| format!("session_set_act 失敗: {e}"))?;
         // doc 33 §9: chat へは engine を eager spawn（切替時に resume を開始 → session_init を
         // 早く出す）。失敗しても切替自体は成功扱い（engine は次 submit で self-heal 再試行）。
+        // reconcile の後（`echoes_session_focus` と同じ「intent → 注視」の順序）。
+        let mut pool = state.lane_pool.write().await;
         if act == crate::lane::session_registry::SessionAct::Chat
             && let Err(e) = pool.ensure_chat_engine(addr, Some(session), &state.topic_router)
         {
             tracing::warn!("session_set_act: eager chat engine spawn 失敗（submit で再試行）: {e}");
         }
     }
-    // 動詞の末尾で pump を reconcile（doc 53 R2）。tui 方向は set_session_act 内で立った
-    // 新 PtySlot に pump が新設され（「vp-app が購読を跨いで維持している」lane では demand が
-    // 1 のままで 0→1 hook が発火しないので、この契機が必須）、chat 方向は畳まれた slot の
-    // pump 台帳 entry が撤去される。健在な兄弟 pane は pid 照合で触られない（team-b 10 回目の
-    // 「隣の pane の clear + 全 replay」は構造で再発しない）。
-    // 上の write lock は drop 済（reconcile は内部で read lock を取る）。
-    reconcile_terminal_pumps(state, lane).await;
     // doc 53 §11: act は roster の一部（pane の kind を決める）ので知らせる。
     super::routes::lanes::emit_lane_update(state, addr).await;
     Ok(serde_json::json!({
@@ -1783,24 +1831,31 @@ async fn handle_lane_slot_new(
         return Err(format!("lane_slot_new: lane パース失敗: {}", lane));
     };
     let stand = payload.get("stand").and_then(|v| v.as_str());
-    let (session, pid, count) = {
-        let mut pool = state.lane_pool.write().await;
-        let (session, pid) = pool
-            .open_new_slot(&addr, stand)
-            .map_err(|e| format!("lane_slot_new: {e}"))?;
-        let count = pool.slot_sessions(&addr).len();
-        (session, pid, count)
-    };
-    // doc 53 R2: 動詞の末尾で pump を reconcile。
+    let session = state
+        .lane_pool
+        .read()
+        .await
+        .create_console_session(&addr, stand)
+        .map_err(|e| format!("lane_slot_new: {e}"))?;
+    // doc 53 §12.4 R3c: slot を立てるのは reconcile（desired = act=Tui の session）。
     //
-    // ⚠️ この契機が無いと新 session の PTY 出力が誰にも届かない。client 側の terminal 購読は
-    // **lane 単位で 1 本**（`terminal_sessions` は lane key）なので、root が既に tui で購読済の
-    // lane に 2 枚目を足すと購読者数は 1→1 のまま = demand hook のエッジが立たない → 入力は
-    // 通る（terminal_write は直送）のに**出力だけ永久に沈黙**する。
+    // ⚠️ pump もこの中で合う。これが無いと新 session の PTY 出力が誰にも届かない: client 側の
+    // terminal 購読は **lane 単位で 1 本**（`terminal_sessions` は lane key）なので、root が既に
+    // tui で購読済の lane に 2 枚目を足すと購読者数は 1→1 のまま = demand hook のエッジが
+    // 立たない → 入力は通る（terminal_write は直送）のに**出力だけ永久に沈黙**する。
     // 「lane 単位のハンドルが session の増加を捉えない」= 制約撤廃の随伴（doc 50 §4.7）の一族。
-    // 新 slot だけが pid 照合で不足と判定され、既存 pane は触られない（team-b 10 回目）。
-    // write lock は上の block を抜けて drop 済（reconcile は内部で read lock を取る）。
-    reconcile_terminal_pumps(state, lane).await;
+    reconcile_lane(state, &addr).await;
+    // pid は**導出**する（動詞の戻り値ではなくなった）。spawn に失敗していれば None =
+    // 「intent はあるが立っていない」の観測値そのもの（doc 53 §12.2 — 巻き戻さない）。
+    let (pid, count) = {
+        let pool = state.lane_pool.read().await;
+        let pid = pool
+            .slot_pids(&addr)
+            .into_iter()
+            .find(|(k, _)| *k == session)
+            .map(|(_, p)| p);
+        (pid, pool.slot_sessions(&addr).len())
+    };
     // doc 53 §11: **本バグの当事者** — CLI / MCP から console を足しても、これが無いと
     // GUI の roster に出ない（GUI 自身の動詞しか fetch の契機にならなかった）。
     super::routes::lanes::emit_lane_update(state, &addr).await;

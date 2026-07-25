@@ -154,7 +154,8 @@ pub fn migrate_legacy_replay(
 
 /// **1 session** の replay file を消す（base 注入版、doc 50 §4.6 A6）。
 ///
-/// session を閉じる（名札の ✕ = `remove_chat_session`）ときに呼ぶ。A6 で非 root も replay を
+/// session を閉じる（名札の ✕）ときに呼ぶ（R3c: `LanePool::discard_session_traces` 経由で、
+/// **reconcile が slot を畳んだ後**。順序が逆だと `PtySlot::drop` の flush が書き戻す）。A6 で非 root も replay を
 /// disk に持つようになったので、閉じても消さないと**孤児 file が溜まり続ける**。
 /// ghost replay には直結しない（`session_registry` の採番は単調増加で、key 再利用は `clear`
 /// = Reset のときだけ。Reset は prefix 掃きで全部消す）が、放っておくと純粋な disk leak になる

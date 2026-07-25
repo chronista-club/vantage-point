@@ -788,3 +788,42 @@ reconcile_lane(addr):
 | New root | 新 session が root に → reconcile が新 root の slot を bare で立てる。**旧 root の pane はそのまま残る**（会話は無傷） |
 | boot（World 再起動） | registry の act=Tui 全員に slot、Chat は engine-less、末尾で pump — **今の 3 経路（with_root / lane_spawn_actor / restore_term_slots）が 1 本になる** |
 | spawn 失敗 | intent は残り pane は空で出る。次の reconcile 契機（動詞 / boot）で自動再試行 |
+
+### 12.7 R3c-1 の実装記録（session 動詞 5 本、2026-07-26）
+
+R3c は 9 動詞に触るので **2 段に割った**。R3c-1 = session 系 5 本（act 切替 / Add console /
+Add chat / ✕ / focus）、R3c-2 = lane 系 4 本（New root / Switch root / Reset / restart。
+`RespawnMode` の帰結を含む）。混ぜるとレビューで「どの変更がどの判断由来か」が読めなくなる。
+
+**形**: 各動詞は `LanePool` の `&self` メソッド（= registry に書くだけ）になり、handler が
+末尾で `reconcile_lane` を呼ぶ。`&mut self` が `&self` に変わったこと自体が「実体に触らない」の
+型による証明になっている。
+
+| 動詞 | 消えた手書き遷移 |
+|---|---|
+| act 切替 | **4 経路**（→Chat の `drop_slot`+代表値 / →Tui の engine drop × root は `restart_lane`・非 root は `open_slot_for_session`）→ 0。root の特例が消えた |
+| Add console | spawn + **失敗時の registry 巻き戻し**（§12.2 で退役） |
+| Add chat | （元から registry のみ。reconcile は普通 no-op だが**契機は判断を持たない**ので呼ぶ） |
+| ✕ | chat engine remove + `drop_slot`（A6 で「chat 側だけ畳んで PTY が孤児」を出した経路） |
+| focus | `LaneInfo.pid` の手書き追随（chat なら focused の engine pid を写す）— R3b の導出規則と矛盾していた最後の 1 件 |
+
+**発見①: guard の 4 分の 3 が消滅した**。旧 `open_slot_for_session` は 4 つの入口 guard で法
+（1 session = 高々 1 エンジン）を守っていたが、R3c 後に残るのは **未知 stand の 1 つだけ**。
+残り 3 つ（registry に居ない / 既に console がある / act=Chat）は **desired の導出規則が
+そもそも生成しない**ので、断る対象が存在しない。
+
+→ **判別基準**（doc 51 の未決「不変条件は入口で弾くか収束させるか」への部分解）:
+**intent を汚しうる入力だけが入口 guard を要る**。reconcile は registry を信じるので、
+汚れた intent は毎回忠実に再現され、後段では直せない。逆に「実体の today の形」に関する
+条件は収束側に任せてよい。
+
+**発見②: 永続失敗の意味論が変わった**。旧 `set_session_act` は registry 書き込み失敗を
+`warn!` で握り潰して実体遷移へ進んでいた（= 見た目は切り替わるが次の reconcile で戻る）。
+act を書くのが動詞の**全て**になった今、これは Err にするしかない。
+「動詞を薄くすると、握り潰していた失敗が握り潰せなくなる」— 薄くすることの副産物。
+
+**発見③: `pid` が戻り値から導出値になった**。`lane_slot_new` の応答 pid は動詞の戻り値
+だったが、spawn が reconcile 側へ移ったので**読み直して導出**する。spawn 失敗時は
+`null`（= 「intent はあるが立っていない」の観測値）。CLI は bail をやめて
+「pid=未起動（次の契機で再試行）」を表示する — §12.2 の失敗意味論が wire と CLI に
+そのまま現れた形。
