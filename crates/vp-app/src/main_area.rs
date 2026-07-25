@@ -47,7 +47,7 @@ pub struct ActivePaneInfo<'a> {
     pub pane_id: Option<&'a str>,
     /// Preview kind の URL (preview kind 以外では None)
     pub preview_url: Option<&'a str>,
-    /// この Lane が Act II (console_mode="chat") か。terminal kind でのみ意味を持つ。
+    /// この Lane が Act II (root act="chat"、sessions 由来 — doc 53 R1) か。terminal kind でのみ意味を持つ。
     ///
     /// chat lane は engine-less (pid=None) が正常形で **xterm instance を持たない**ため、
     /// JS の `showLane` が「xterm が無い = 表示すべき内容が無い」と誤判定して

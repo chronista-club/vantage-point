@@ -2596,7 +2596,6 @@ mod tests {
         // registry を直接埋める（project の publish を模す）。project 名 / created_at / stand を
         // わざと逆順・混在で入れて、sort と filter が実際に仕事をする状態を作る。
         let mk = |project: &str, name: &str, created_at: &str, stand: &str| LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::new(project, name),
             state: LaneState::Running,

@@ -2453,7 +2453,6 @@ mod tests {
         // lane_registry に conductor + performer descriptor を投入 (daemon-canonical truth)。
         let key = normalize_path_key(&PathBuf::from(&project_path));
         let mk = |addr: LaneAddress, cwd: &str| LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: addr,
             state: LaneState::Running,
@@ -2518,7 +2517,6 @@ mod tests {
         // 状態を模す。 plain dir なので worktree reclaim は fs 削除に落ちる = git 非依存)。
         let key = normalize_path_key(&PathBuf::from(&project_path));
         let performer = LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::performer("hasperf", "foo"),
             state: LaneState::Running,
@@ -2724,7 +2722,6 @@ mod tests {
 
         let key = "/test/proj";
         let mk = |name: &str, cwd: &std::path::Path| LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: LaneAddress::performer("proj", name),
             state: LaneState::Spawning,

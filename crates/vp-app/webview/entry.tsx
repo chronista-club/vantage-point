@@ -460,7 +460,7 @@ if (echoesHeaderHost) {
 }
 
 // doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1 → doc 51 §1 A1: lane 内 tiling は creo-ui-layout の
-// lane scope が担い、pane の顔ぶれは session 一覧 × console_mode から動的に導く
+// lane scope が担い、pane の顔ぶれは session 一覧 ×（各 session の act）から動的に導く
 // （lane-panes.ts の lanePaneRefs が SSOT）。下端の帯（#pane-tabs）は退役 — pane chip は
 // tiling 既定で存在理由が消え、+ New は EchoesHeader（lane の名札）右端へ移設した。
 // ⚠️ xterm（lane-host）の**中身**には触れず、host 要素の style / class だけを操る。

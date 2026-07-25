@@ -402,3 +402,161 @@ reconcile が収束させる（eventually correct）か**は設計思想の選�
    関係は整理が要る
 4. **R4 の「pane 一覧」に何を載せるか。** id / kind / label / session / root は要る。
    灯（活動）/ 会話 id / 鮮度は event 由来で頻度が違うので**別 channel が正**か
+
+---
+
+## 8. R1 実装 census（2026-07-25、着手前の棚卸し）
+
+`console_mode` の grep 169 箇所を分類し、**読み手ごとの「本当の問い」と置き換え先**を確定した。
+[[comment-is-not-proof]] の規律で、doc §3.1 の表は**コードを読んで訂正**してある（下記 8.2）。
+
+### 8.1 169 箇所の内訳
+
+| 分類 | 数 | 扱い |
+|---|---|---|
+| **実読み手**（値で分岐する） | 9（server 6 / client 3 系統） | §8.2 の表で置き換え |
+| **書き手**（投影に代入） | 5 箇所 | field ごと撤去 |
+| test fixture `console_mode: Default::default()` | ~20 | field 削除で機械的に消滅 |
+| **`migrate_console_modes`**（旧 disk file の one-shot migration） | 6 | **別物 — 残す**（disk の後方互換であって投影ではない） |
+| comment / 旧名の言及 / 命名規則の参照 | 残り | 文言のみ追随 |
+
+> ⚠️ **書き手のうち 2 箇所（`lane_spawn_actor:281` / `routes/lanes.rs:134`）は既に
+> `session_registry::root_act()` を直読して LaneInfo に詰めている**。つまり現状は
+> 「registry を読む → 投影に書く → 読み手が投影を読む」の**往復**で、投影を消せば
+> 読み手が registry を直読するだけになる（経路が 1 本減る）。
+
+### 8.2 読み手 × 本当の問い × 置き換え先
+
+| # | 読み手 | 本当の問い | 置き換え |
+|---|---|---|---|
+| 1 | `lanes_state::restart_lane`（:1064） | root の act（PTY 張替か engine drop か） | `root_act()` 直読 |
+| 2 | `focus_chat_session`（:1714） | `LaneInfo.pid` の意味（chat engine か PTY か） | 同上 |
+| 3 | `remove_chat_session`（:1758） | 同上 | 同上 |
+| 4 | `routes/lanes.rs`（:998） | restart 後に engine を eager spawn するか | 同上 |
+| 5 | `unison_server`（:924） | **lane が pool に実在するか**（値は不使用） | **明示的な存在 check**（§8.4） |
+| 6 | `unison_server`（:1957） | capture 失敗の案内文（root が chat か） | `root_act()` 直読 |
+| 7 | `delivery_actor` / `delegation`（nudge） | **打てる先の種類**（PTY か engine か） | 呼び手が registry から埋める（§8.3） |
+| 8 | client `isLaneAlive`（`sidebar/lane.ts:85`） | engine-less でも生きているか（#683 再演防止） | `sessions` から導出（§8.5） |
+| 9 | client `is_chat_lane` / respawn gate（`app.rs:2160/2578`） | 同上 | 同上 |
+
+### 8.3 §3.1 の訂正 — nudge の問いは実体ではなく intent
+
+§3.1 の表は `delivery_actor` の問いを「**root slot が存在するか（PTY に打てるか）**」= 実体と
+書いていた。**これは誤り**。実体で答えると壊れる:
+
+`pick_nudge_target` は Running な lane を選ぶ。Running かつ root slot 不在は 2 通りある
+——「chat lane（正常）」と「**tui だが slot が死んだ**」。実体ベースだと後者を chat と誤判定して
+`echoes_nudge` に流し、engine が lazy spawn される → PTY が復活した瞬間に**同一会話 2 engine**。
+現状の投影（intent）なら `lane_nudge` を送って失敗し、**pending 保持で次 pulse に再試行**という
+正しい挙動になる。
+
+> **gate が副作用として守っていたもの、1 件目**（[[gate-hid-a-second-bug]]）。
+> 一般形: **「打てる先の種類」は intent、「今打てるか」は実体**。混ぜると boot 窓と
+> 死んだ slot で誤る。
+
+置き換えは「`NudgeTarget.console_mode` → `root_act`（呼び手が `session_registry` から埋める）」。
+純関数性は保つ（unit test を disk 依存にしない）。読む頻度は pending がある lane のみで軽微。
+
+### 8.4 副産物 — 存在 check の流用（#5）
+
+`unison_server:924` の `pool.console_mode(&addr).is_none()` は **値を使っていない** —
+getter が `Option` を返すことを「lane 実在」の signal に流用している。投影廃止と独立に
+「明示的な存在 check」へ直す（[[one-predicate-three-properties]] の亜種）。
+
+### 8.5 client 側をどうするか（R1 の scope 判断）
+
+client の読み手 3 系統（alive 判定 / Act II 判定 / respawn gate）は**すべて同じ問い**に還元できる
+——「この lane は PTY を持たなくても生きているか」。選択肢と判断:
+
+| 案 | 内容 | 判定 |
+|---|---|---|
+| (i) server だけ直す | wire に `console_mode` を残す | ✗ 中間状態（[[pre-MVP-development-stance]] に反する） |
+| (ii) `sessions` から導出 | 既に wire に載る `sessions`（A6 で追加）から root の act を引く | **採用** |
+| (iii) 実体 field を新設 | `alive` 等を server から配る | ✗ R4 の pane 一覧で消える field を今足す（§6「中間の投影を残すな」） |
+
+(ii) を採り、**client の導出は 1 関数に閉じる**（3 読み手が同じ関数を呼ぶ）。R4 で pane 一覧に
+差し替えるときの改修点も 1 箇所になる。
+
+> ⚠️ **未確認の前提**: `sessions` は `Option<SessionRegistry>`（旧 SP 互換の serde default）。
+> `app.rs:1821` に「registry 不在なら console_mode が tui として root 1 枚」という fallback が
+> あり、投影を消すとこの退路が失われる。fold-in 後は旧 SP が存在しないので `None` の意味は
+> 「boot 窓（enrich 前）」だけのはずだが、**実装時に供給点を数えて確認する**
+> （[[ssot-concentrates-existing-weakness]]）。
+
+### 8.6 壊し方テスト（[[decide-the-breaking-change-first]]）
+
+fix を外して赤、では不十分。**特例を作る / 順序を入れ替える / 呼び手を繋がない**の 3 通りで赤を見る:
+
+1. **root を chat にして nudge** → `echoes_nudge` に route されること（投影ではなく registry を見る）
+2. **root 付け替え直後に restart** → 新 root の act が honor されること（投影の同期忘れが再発しない）
+3. **root=tui のまま非 root だけ chat** で capture / demand → lane 単位の要約に落ちないこと（:918 の旧バグ再演）
+
+加えて既存 `moving_root_syncs_the_console_mode_projection` は投影ごと消えるので、
+**同じ性質を registry 直読で言い直す**形に書き換える（テストの消滅 = 性質の消滅にしない）。
+
+---
+
+## 9. mako 提案（2026-07-25）— VP が identity の発行者になる
+
+> mako「VPは、あまりモデルとのsession idを利用しない構造にして、VPで発行したものを使って
+> 構造化するイメージ」「Echoesが一つのIDを生成時にもって、それをrootに割り当てる」
+> 「セッションはEchoesの中で完結するようにする」
+
+**状態: 確定（2026-07-25 の一問一答で採用・拡張）→ SSOT は
+[54-lane-worker-model.md](./54-lane-worker-model.md)。本節は経緯の記録として残す。**
+（議論の過程で本節の「単独 presence としての Echoes ID」は棄却され、「働き手 = 席を占める
+プロセス（shell 含む・複数）」へ発展した — 詳細は doc 54 §2 の決定の記録）
+CLAUDE.md の第一行「VP が主、Claude Code はそのエンジン」に identity 層を追いつかせる話 —
+DB の surrogate key vs natural key と同型（engine session id = 他システムの natural key）。
+
+### 9.1 診断 — 「session」1 語が 3 役を兼ねている
+
+shell が root になれない gate（`prepare_switch_root_session` の EngineKind check）は症状で、
+病因は **pane（見え方 1 枚）/ conversation（engine との対話、resume の単位）/
+presence（lane の働き手 = mailbox の主）の 3 概念が「session」1 つに畳まれている**こと
+（[[one-predicate-three-properties]] の命名版）。presence の座を pane が争う構造だから
+資格審査（gate）が要る。3 役に別の identity を与えれば gate は**表現不能**に変わる
+（A6「identity で識別子を決める = 間違える手段を消す」の 1 段上への適用）。
+
+### 9.2 目標形（sketch）
+
+```
+Lane（場所）
+└── Echoes（presence）— VP 発行 ID、生成時に確定、不変。agent@<lane> の解決先（= 旧 root）
+    ├── active: ConvId（lane 宛 mail に誰が答えるか。旧 root/focused の非対称はここに畳まれる）
+    └── conversations: [ConvId]
+Conversation — VP 発行 ID。engine: EngineKind / engine_ref: Option<String>（cc_session 等、
+    私有・後着・交換可）/ act: レンズ
+Pane — view（ConvId に紐づく）。shell pane は conversation を持たない pane = Echoes の外
+```
+
+**原則: engine の id は「値」として流れてよいが「鍵」になってはならない**（`--resume` の
+引数は正、wire field / state file 名 / 配送判断の鍵は誤）。
+
+### 9.3 消える病巣（証拠つき）
+
+| # | 病巣 | 証拠 |
+|---|---|---|
+| a | **遅れて届く身元**（engine id は初応答まで無い）→「名前の無い session」窓の機構一式 | `ReportTrigger::Issued/Spoken` + F1/F2 guard（幻 session 対策、session_registry.rs:418） |
+| b | **供給点全部で enrich** | `refresh_engine_session_id` の「供給点すべてで呼ぶこと」⚠️（lanes_state.rs:399、#683 地形） |
+| c | **claude 特別扱いの非対称** | `LaneInfo.cc_session_id` / `NudgeTarget.cc_session_id` / `cc_session` file / channel D headless（`build_bg_args` = claude 専用。codex/grok root に channel D の「継ぐ」経路が無い — 要検証） |
+| d | **root 資格 gate + 付け替え機構** | `prepare_switch_root_session` gate / `canCloseSession` の二重執行（server Err + client gating） |
+| e | **key 再利用 ghost** | fresh Reset で採番が戻る → A6 の c3289e3a（ghost replay）と同族。一意・永久 ID で構造的に消滅 |
+
+### 9.4 消えないもの / コスト
+
+- **本 doc の本丸（intent/実体の reconcile）は消えない** — R2/R3 はそのまま必要。World A/B も無関係
+- mapping invariant（VP id → engine_ref が腐ると silent fresh resume）が registry に集中
+  （[[ssot-concentrates-existing-weakness]]）
+- **[[writer-without-reader]] の前例 = `LaneId`（2 年間読み手ゼロ）**。Echoes ID は読み手
+  （mailbox 解決 / chat 動詞の既定宛先）と同じ PR で入れること
+- 移行は forward-only（§6.5.2 の教訓 — 過去会話の migration は書かない）
+
+### 9.5 順序への制約
+
+**R4 の wire 契約（pane 一覧の鍵）より前に決める** — 契約を 2 回鋳直さない。R1/R2 は
+両モデルで同形なので影響なし。→ `R1 → R2 → [設計枠: doc 54 起草 + §6.5 World A/B 再検証] → R3 → R4`
+
+§7.0 との接続: ①（act の定義軸）は「act = Conversation のレンズ」で答えの半分が出る。
+③（Reborn の語彙）は「VP id は不変で engine_ref を捨てる」か「新 ConvId」かの選択として
+きれいに言い直せる（design phase 送り）。

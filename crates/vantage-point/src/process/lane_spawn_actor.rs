@@ -278,15 +278,15 @@ async fn handle_cmd(
     // doc 47 §4: root session の act を boot で honor（conductor の with_root と同じ規律）。
     // chat の lane に PTY を立てない — 立てると echoes_submit がもう 1 本の engine を呼び、
     // 同一 cc_session に 2 エンジン（PTY claude + EchoesAgentHost）が発生する。
-    let console_mode = crate::lane::session_registry::root_act(&addr.project, &name);
-    if console_mode == crate::lane::session_registry::SessionAct::Chat {
+    // doc 53 R1: これは spawn 判断の入力としての registry 直読（投影に書き戻さない）。
+    let root_act = crate::lane::session_registry::root_act(&addr.project, &name);
+    if root_act == crate::lane::session_registry::SessionAct::Chat {
         // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
-        // pid=None + state=Running は chat lane の正常形（vp-app は console_mode で
-        // respawn 判定を gate する — doc 33 §3）。
+        // pid=None + state=Running は chat lane の正常形（vp-app は sessions 由来の act で
+        // respawn 判定を gate する — doc 33 §3 / doc 53 R1）。
         tracing::info!("Lane boot as chat mode (PTY skip): addr={}", addr);
         let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &name);
         let info = LaneInfo {
-            console_mode,
             id: lane_id,
             address: addr.clone(),
             state: LaneState::Running,
@@ -390,10 +390,9 @@ async fn handle_cmd(
     // 注: load_or_create は同期 file IO だが、 cc_session の lazy read と同じく数 ms で、
     // spawn_blocking 隔離は省略 (pre-MVP の単純化。 重い処理は上の spawn_with_fallback で隔離済)。
     let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &name);
+    // ここは tui 経路のみ到達（chat は上の root_act 分岐で早期 return 済 — doc 53 R1 で
+    // 投影 field は退役、act は registry が SSOT）。
     let info = LaneInfo {
-        // ここは tui 経路のみ到達（chat は上で早期 return 済）だが、 変数を通して
-        // 「persisted mode を honor した」事実を型の流れで残す。
-        console_mode,
         id: lane_id,
         address: addr.clone(),
         state,
@@ -562,7 +561,6 @@ mod tests {
         // race guard を意図的に踏ませる: 同 addr を事前に pool へ insert しておく
         let addr = LaneAddress::performer("proj", "already-there");
         pool.write().await.insert(LaneInfo {
-            console_mode: Default::default(),
             id: Default::default(),
             address: addr,
             state: LaneState::Running,
@@ -653,10 +651,12 @@ mod tests {
         let info = pool_read
             .get(&addr)
             .expect("chat performer が登録されるはず");
+        // doc 53 R1: 投影 field は退役 — honor の証明は挙動（下の pid/PtySlot assert）と
+        // 読み手経路（root_act 直読）で行う。
         assert_eq!(
-            info.console_mode,
+            pool_read.root_act(&addr),
             SessionAct::Chat,
-            "永続 chat mode が honor される"
+            "boot 後も読み手（root_act 直読）が永続 chat act を見る"
         );
         assert_eq!(
             info.state,

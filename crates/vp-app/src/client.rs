@@ -273,11 +273,6 @@ pub struct LaneInfo {
     /// fallback。旧 SP からは欠落 = None。
     #[serde(default)]
     pub engine_stand: Option<String>,
-    /// doc 33: Console のエンジンモード（"tui" | "chat"）。default = "tui"（wire 後方互換）。
-    /// chat lane は engine-less（pid=None）が正常形なので、Dead-lane auto-respawn を
-    /// 本 field で gate する（#683 再演防止）。
-    #[serde(default = "default_console_mode")]
-    pub console_mode: String,
     /// doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
     /// server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
     /// 「どの session が root か」「各 session の act」の SSOT。boot 経路が xterm を
@@ -292,8 +287,10 @@ pub struct LaneInfo {
     pub flow_state: Option<String>,
 }
 
-/// LaneInfo.console_mode の serde default（旧 SP からの wire に field が無い時）。
-fn default_console_mode() -> String {
+/// session act の serde default（旧 wire に field が無い時）。doc 53 R1: 旧 lane 単位
+/// `console_mode` field は退役 — act の導出は `sessions`（registry snapshot）から行う
+/// （Rust 側 = `app::root_act_of` / TS 側 = `sidebar/lane.ts rootActOf` の各 1 箇所）。
+fn default_act() -> String {
     "tui".to_string()
 }
 
@@ -325,7 +322,7 @@ pub struct LaneSessionEntryWire {
     #[serde(default)]
     pub stand: String,
     /// この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
-    #[serde(default = "default_console_mode")]
+    #[serde(default = "default_act")]
     pub act: String,
 }
 
