@@ -211,6 +211,32 @@ export function noteFocus(lane: string, session: number): void {
   else laneSessions.set(lane, { focused: session, sessions: [] })
 }
 
+/**
+ * act 切替の楽観的な local 反映（[`sessionActOf`] の読み手 cache を即時更新する）。
+ *
+ * ⚠️ **これが無いと act を読む消費者が旧値で分岐する**。`laneSessions` は
+ * `echoes_session_list` の full fetch でしか更新されないが、**act 切替はその fetch を伴わない**
+ * （badge click の成功パスは `session_set_act` → `SessionActApplied` で完結する）。
+ * 実害は `ink.ts` の送り先判定 — tui→chat の直後に board 注釈を送ると、畳まれた PtySlot へ
+ * `term:write` が飛んで**黙って消える**（chat には届かない。エラーはゼロ）。
+ *
+ * 旧 lane 単位 `setMode` は `laneOf(lane).mode = mode` で自分の読み手を更新していた。A6 で
+ * session 単位へ移す際にこの 1 行が落ちた（team-b 9 回目 2026-07-25）。Rust 側は
+ * `SessionActApplied` で手元 snapshot を同じ理由で即時更新している — **同じ判断を 2 つの
+ * cache に要求されていて、片方だけ満たしていた**。
+ *
+ * session 一覧を知らない lane では no-op（次の full fetch が埋める）。badge は roster から
+ * 描かれるので、実際には一覧が既にある状態でしか呼ばれない。
+ */
+export function noteSessionAct(
+  lane: string,
+  session: number,
+  act: 'tui' | 'chat',
+): void {
+  const entry = laneSessions.get(lane)?.sessions.find((s) => s.key === session)
+  if (entry) entry.act = act
+}
+
 /** lane の focused session key（未知 = 1）。chatview の event filter / tab 強調の基準。 */
 export function focusedOf(lane: string): number {
   return laneSessions.get(lane)?.focused ?? 1
@@ -380,6 +406,11 @@ export function installConsole(): VpConsole {
       // doc 50 §4.6 A6: 見え方は **session の属性**。roster（lane-panes）と名札の kind badge
       // （EchoesHeader）がこの bus を購読して、その session の Pane kind を入れ替える。
       // lane 単位の mode cache は触らない（root の追従は sidebar snapshot が持つ）。
+      //
+      // ⚠️ **自分の読み手 cache を先に更新する**（`sessionActOf` の供給元）。bus の購読者は
+      // 各自の cache を更新するが、`laneSessions` は full fetch でしか埋まらず、act 切替は
+      // fetch を伴わない — 更新を忘れると `ink.ts` が旧 act で誤配送する（`noteSessionAct`）。
+      noteSessionAct(lane, session, act)
       document.dispatchEvent(
         new CustomEvent('vp:session-act', { detail: { lane, session, act } }),
       )

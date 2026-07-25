@@ -489,6 +489,7 @@ A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能�
 | 6 | replay file の身元が **role** に紐づく | 付け替えで**他 session の画面**が出る / 2 slot が同じ file を奪い合う |
 | 7 | xterm host の身元が **role** に紐づく（`#lane-host`） | root 付け替えで **DOM 位置と focus が旧 root に残留**（+ 非 root term が click で focus できない） |
 | 8 | `act → host id` の写像が **4 箇所に散在**（うち 2 箇所が chat 決め打ち） | term が focused の lane で **focus ring が別 pane に誤爆**（pendingFocus が永久に未解決） |
+| 9 | `setSessionAct` が**自分の読み手 cache を更新しない**（旧 `setMode` は していた） | act 切替直後に ink が**畳まれた PtySlot へ送って黙って消える**（エラーゼロの誤配送） |
 
 **「レビューを 1 回通したから安全」は成り立たない。** 特に制約撤廃を含む変更では、レビュー自体が
 **新たに到達可能になった構成**を発見する過程になるので、収束するまで回す必要がある。
@@ -593,6 +594,31 @@ focus 優先だけは root に依るので、`ensureLane` が既存 instance に
 > 誤った値を再計算するので focus は解決しない。修正は `hostIdForAct(session, act)` を 1 本作って
 > 4 箇所すべてを通す形にした — 次に呼び手が増えても分岐を書き写す機会が無い。
 > テストは「例外なし」を見る（tui と act 欠落の両方で chat host にならないこと）。
+
+#### 同じ判断を「片側だけ」満たす（9 例目）— しかも自分で意識していた
+
+`sessionActOf` が読む cache（`console.ts` の `laneSessions`）は `echoes_session_list` の
+**full fetch でしか埋まらない**。ところが act 切替は fetch を伴わない（badge click の成功パスは
+`session_set_act` → `SessionActApplied` で完結する）。旧 lane 単位 `setMode` は
+`laneOf(lane).mode = mode` で**自分の読み手を更新していた**が、A6 で session 単位へ移す際に
+この 1 行が落ちた。
+
+実害は `ink.ts`（board 注釈の送り先判定）。tui→chat の直後に送ると、既に畳まれた PtySlot へ
+`term:write` が飛んで**黙って消える**（chat には届かない、エラーはゼロ）。§4.7 が「ink が
+最も危険だった」と書いた同型の再発で、**軸が違う**（あちらは session 軸、今回は act 軸）。
+
+> ⚠️ **Rust 側では同じことを意識してやっていた**。`SessionActApplied` のコメント:
+> 「手元 snapshot を即時更新する。… act を読む後続が旧値を見ないようにする」。
+> つまり要求は理解していて、**2 つある cache の片方だけ満たしていた**。理解していることは
+> 実装されていることを意味しない — 同じ判断が要る場所を**数える**しかない。
+>
+> ⚠️ **テストが罠を検出しない、4 回目**。最初に書いたテストは helper（`noteSessionAct`）を
+> 直接呼んでいて、バグのあった `setSessionAct`（実際の書き手）を通っていなかった。fix を
+> 外しても緑。**「落ちるべき壊し方」を先に決めて、その壊し方で赤くなるまで書き直す**のが唯一
+> 確実な手順（この PR で 4 回同じ失敗をした = 単発の不注意ではなく手順の欠落）。
+>
+> なお `applyLaneView` も同じ stale cache を読むが、`pendingFocus` の再解決で自己修復する
+> （lane 切替は必ず fetch を伴う）。**`ink.ts` にだけ自己修復が無い**のが実害の分かれ目。
 
 #### 残タスク
 
