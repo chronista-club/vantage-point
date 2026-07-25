@@ -211,58 +211,45 @@ fn is_safe_session_id(id: &str) -> bool {
 /// Agent View dashboard 化する（send-keys handoff が list-nav UI に化ける既知バグ）。 id を指名する
 /// `--resume '<id>'` はこの罠を構造的に回避する（設計 mem_1CbXZyCiqrdgteGhRFDaHW / R3-b）。
 ///
-/// - fresh（"New Conductor Session"）: 素の claude（resume/continue 回避）
-/// - conductor + id あり: `--resume '<id>' || resume-failed || fresh`（session 消失時は
+/// **分岐は「VP が会話 id を知っているか」の 1 本だけ**（doc 53 §12.1、2026-07-25）:
+///
+/// - id あり: `--resume '<id>' || resume-failed || fresh`（session 消失時は
 ///   失敗を記録してから fresh に fallback — 無音 fallback がポインタ自壊の証拠を消していた F4 対策）
-/// - conductor + id なし（初回/移行直後）: `--continue || resume-failed || fresh`（従来 chain 維持 —
-///   一度会話が発生すれば UserPromptSubmit hook が id を記録し、 以後は --resume 側に乗る）
-/// - performer + id あり: `--resume '<id>' || resume-failed || fresh`（tmux 撤去で SP restart =
-///   claude 再起動になったため、 performer も会話継続を resume で担う。 id 指名なので dashboard 罠は踏まない）
-/// - performer + id なし: fresh（`--continue` は dashboard 罠のため使わない）
+/// - id なし: 素の claude（fresh）
+///
+/// ⚠️ **旧「conductor + id なし → `--continue`」は退役した**（mako 判断）。`--continue` は
+/// 「cwd の最新会話」= **VP の帳簿の外**へ手を伸ばす推測で、registry が会話 id の SSOT に
+/// なった今は「VP が見せている会話」と「実際に繋がる会話」が乖離しうる（doc 54 の
+/// 「隠れた変換」の一種。同 §3.7 の `|| claude` fallback 退役と同じ判断）。
+/// 副産物として **`bare` が `conversation.is_none()` から完全に導出**でき、
+/// 「今回は素で立てる」という呼び手の 1 bit（旧 `fresh` 引数 / `RespawnMode`）が消える。
+/// 代償: VP の registry を失った状態で起点 lane を開くと以前の会話を継がず新規で始まる。
 ///
 /// `model`（co-evolution #1）: lane 単位の model alias（`engine_model` 由来）。 Some のとき
 /// **全 claude 起動**（fresh / resume / continue の全分岐、`||` fallback 先も含む）に `--model
 /// <alias>` を注入する。 alias は `engine_model::is_valid_model` が `[A-Za-z0-9._-]`（先頭 `-`
 /// 不可）を保証済みなので、 shell metachar / 空白を含まず unquoted 埋め込みで injection 安全。
-fn claude_command(
-    is_root: bool,
-    fresh: bool,
-    resume_id: Option<&str>,
-    model: Option<&str>,
-) -> String {
+fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
     // `--model <alias> `（末尾 space 込み、None なら空文字）。 全分岐の "claude " 直後に挿す。
     let model_flag = match model.filter(|m| crate::lane::engine_model::is_valid_model(m)) {
         Some(m) => format!("--model {} ", m),
         None => String::new(),
     };
     let fresh_cmd = format!("claude {}--settings '{}'", model_flag, WIRE_HOOKS);
-    if fresh {
-        return fresh_cmd;
-    }
     // `|| vp lane resume-failed '<x>' ||` の 3 連 chain: resume-failed は「記録して常に
     // exit 1」の中継専用コマンドで、失敗を伝播させて次の fresh fallback へ繋ぐ。
     // shell group `{ …; }` を使わないのは fish 互換のため（slot の shell は user の login shell）。
     // vp が PATH に無くても command-not-found = 非ゼロで chain は進む（fail-open）。
-    // doc 44 P2: 旧 `LaneKind` 分岐を `is_root`（予約名判定）に置換。挙動は不変。
-    // この分岐が残るのは cwd の性質差に根拠がある — 開発起点 lane は repo root に居るので
-    // `--continue`（最新セッションを継ぐ）が自分の会話に当たるが、worktree の lane で同じことを
-    // すると他 lane のセッションを掴む（dashboard 罠）。
     //
-    // ⚠️ §6.6 の「P3 で Host がポインタを持てば『起点 lane か？』を Host に問う形になる」は
-    // **doc §8.1 で撤回済**。ここが訊いているのは「cwd が repo root か」（物理）であって
-    // 「開発起点か」（意図）ではない。D4 で起点は worktree lane にも移せるようになったので、
-    // 帳簿のポインタに繋ぐと**上で警告している dashboard 罠がそのまま発火する**。
-    // 置き換えるなら `has_ground` 相当（cwd の性質）を訊く形へ。
-    match (is_root, resume_id.filter(|id| is_safe_session_id(id))) {
-        (_, Some(id)) => format!(
+    // doc 53 §12.1: 旧 `is_root` 分岐（起点 lane だけ `--continue`）は退役。理由は上の doc —
+    // 「cwd の最新」は VP の帳簿の外で、performer 側では既に dashboard 罠として使っていな
+    // かった（= 同じ罠を起点 lane にだけ許していた非対称でもあった）。
+    match resume_id.filter(|id| is_safe_session_id(id)) {
+        Some(id) => format!(
             "claude {}--resume '{}' --settings '{}' || vp lane resume-failed '{}' || {}",
             model_flag, id, WIRE_HOOKS, id, fresh_cmd
         ),
-        (true, None) => format!(
-            "claude {}--continue --settings '{}' || vp lane resume-failed 'continue' || {}",
-            model_flag, WIRE_HOOKS, fresh_cmd
-        ),
-        (false, None) => fresh_cmd,
+        None => fresh_cmd,
     }
 }
 
@@ -331,8 +318,9 @@ fn opencode_command(resume_id: Option<&str>) -> String {
 /// - `"tmux"`（退役 stand）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: shell のみ + warn
 ///   （DB descriptor の legacy 値を graceful 吸収）
 ///
-/// `fresh=true` は resume/continue を回避して素の claude を起動する
-/// （sidebar "New Conductor Session"。 旧 `VP_FRESH=1` env の spawn パラメータ化）。
+/// doc 53 §12.1: 旧 `fresh` 引数（resume/continue を回避して素で立てる指示）は退役した。
+/// 「素で立てるか」は registry の会話 id の有無から導出される — 呼び手は intent（registry）を
+/// 書くだけでよく、spawn の作法を知らなくてよい。
 ///
 /// **この形は root session の slot 専用**（既存の boot / respawn / restart 経路）。非 root
 /// session に slot を立てる producer（doc 46 P5）は
@@ -341,9 +329,8 @@ pub fn build_stand_command(
     stand_name: &str,
     addr: &LaneAddress,
     project_dir: &Path,
-    fresh: bool,
 ) -> StandCommand {
-    build_stand_command_for_session(stand_name, addr, project_dir, fresh, None)
+    build_stand_command_for_session(stand_name, addr, project_dir, None)
 }
 
 /// [`build_stand_command`] の session 明示版（doc 46 P5 — slot は lane に 1 枚ではなく
@@ -372,7 +359,6 @@ pub fn build_stand_command_for_session(
     stand_name: &str,
     addr: &LaneAddress,
     project_dir: &Path,
-    fresh: bool,
     session: Option<crate::lane::session_registry::SessionKey>,
 ) -> StandCommand {
     let project_cwd = project_dir.to_string_lossy().to_string();
@@ -443,8 +429,8 @@ pub fn build_stand_command_for_session(
     let initial_input = match crate::echoes::EngineKind::from_stand(effective_stand) {
         Some(crate::echoes::EngineKind::Claude) => {
             // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
-            // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒すと
-            // conductor は `--continue` に落ち、cwd 最新の実会話を拾える（F2/F3 根治）。
+            // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒せば
+            // 素の claude で立つ（doc 53 §12.1 で `--continue` fallback は退役）。
             let resume_id = conversation
                 .clone()
                 .filter(|id| crate::lane::cc_session::transcript_exists(id));
@@ -452,45 +438,31 @@ pub fn build_stand_command_for_session(
             // 未記録 = None = claude default（co-evolution #1）。 respawn（SP restart）でも
             // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
             let model = crate::lane::engine_model::last(&addr.project, lane_label(addr));
-            // doc 39 P2: `--continue` fallback（conductor + id なし）は **session #1 専用**の
-            // 互換層 — registry 導入前の既存 cwd 会話を拾うためのもの。#2 以降の session が
-            // record 無し = VP が作った未発話の新品なので、`--continue`（cwd 最新拾い）に
-            // 落とすと**別 session（旧 root / 同居人）の会話を混入**させる。bare に倒して
-            // 「新 ID から」を守る（moody 指摘: Bare spawn 失敗後の Resume 復帰経路がこの罠を
-            // 踏んでいた。doc 46 P5 の producer が立てる新 session も同じ理由でここに乗る）。
-            let bare = fresh || (key >= 2 && resume_id.is_none());
-            let cmd = claude_command(addr.is_root(), bare, resume_id.as_deref(), model.as_deref());
+            // doc 53 §12.1: 「素で立てるか」は **registry の会話 id の有無だけ**で決まる。
+            // 旧実装は `fresh || (key >= 2 && resume_id.is_none())` で、`--continue` 分岐が
+            // 起点 lane × id 無しに存在したため「Reset 直後（id を捨てた）」と「初回（まだ
+            // id が無い）」を区別する 1 bit（`fresh`）が要っていた。`--continue` 退役で
+            // 両者は同じ「VP が会話を知らない」に畳まれ、呼び手の 1 bit が消える。
+            let cmd = claude_command(resume_id.as_deref(), model.as_deref());
             Some(format!("{}\r", cmd))
         }
         Some(crate::echoes::EngineKind::Codex) => {
-            if fresh {
-                // fresh は素の codex（registry-native — 会話 id は registry の SSOT で、fresh の
-                // registry clear が既に処理済み。doc 40 PR-2 で旧 codex_sessions store は退役）。
-                // 次の id 採番は Act II の record-from-init（RpcHost）が registry に書き戻す。
-                Some("codex\r".to_string())
-            } else {
-                // thread id は registry のこの session の会話 id（doc 40 §5）。
-                Some(format!("{}\r", codex_command(conversation.as_deref())))
-            }
+            // doc 53 §12.1: resume 先は registry の会話 id 1 本（None = 素で立つ）。
+            // 旧 `if fresh { 素 } else { resume }` は冗長だった — `codex_command(None)` は
+            // 元から素の `codex` を返すので、呼び手の 1 bit は何も足していなかった。
+            Some(format!("{}\r", codex_command(conversation.as_deref())))
         }
         Some(crate::echoes::EngineKind::Grok) => {
-            if fresh {
-                // fresh は素の grok（registry-native なので clear すべき旧 store も無い —
-                // 会話 id は registry 側の semantics（New root 等）が既に処理済み）。
-                Some("grok\r".to_string())
-            } else {
-                // sessionId は registry のこの session の会話 id（doc 42 — TUI は `-r '<id>'` 指名 resume）。
-                Some(format!("{}\r", grok_command(conversation.as_deref())))
-            }
+            // doc 53 §12.1: resume 先は registry の会話 id 1 本（None = 素で立つ）。
+            // 旧 `if fresh { 素 } else { resume }` は冗長だった — `grok_command(None)` は
+            // 元から素の `grok` を返すので、呼び手の 1 bit は何も足していなかった。
+            Some(format!("{}\r", grok_command(conversation.as_deref())))
         }
         Some(crate::echoes::EngineKind::OpenCode) => {
-            if fresh {
-                // fresh は素の opencode（grok と同じ registry-native — clear すべき旧 store も無い）。
-                Some("opencode\r".to_string())
-            } else {
-                // sessionId は registry のこの session の会話 id（doc 43 — TUI は `-s '<id>'` 指名 resume）。
-                Some(format!("{}\r", opencode_command(conversation.as_deref())))
-            }
+            // doc 53 §12.1: resume 先は registry の会話 id 1 本（None = 素で立つ）。
+            // 旧 `if fresh { 素 } else { resume }` は冗長だった — `opencode_command(None)` は
+            // 元から素の `opencode` を返すので、呼び手の 1 bit は何も足していなかった。
+            Some(format!("{}\r", opencode_command(conversation.as_deref())))
         }
         None if effective_stand == "shell" => None,
         None => {
@@ -541,7 +513,7 @@ mod tests {
         // 拾い「shell なのに claude を注入」になって間欠 fail する）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        let cmd = build_stand_command("shell", &addr, Path::new("/work/vp"), false);
+        let cmd = build_stand_command("shell", &addr, Path::new("/work/vp"));
         assert_eq!(
             cmd.cwd, "/work/vp",
             "cwd は project dir 直（install root ではない）"
@@ -561,7 +533,7 @@ mod tests {
         // build_stand_command は registry を読む — 実 vp_state_dir を拾わないよう隔離（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::performer("vantage-point", "sub");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/work/vp"), false);
+        let cmd = build_stand_command("echoes", &addr, Path::new("/work/vp"));
 
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert!(
@@ -603,7 +575,7 @@ mod tests {
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root #2");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert_eq!(
             env.get("VP_SESSION_KEY").map(String::as_str),
@@ -652,8 +624,7 @@ mod tests {
         )
         .expect("#2 の会話 id");
 
-        let cmd =
-            build_stand_command_for_session("echoes", &addr, Path::new("/tmp"), false, Some(key));
+        let cmd = build_stand_command_for_session("echoes", &addr, Path::new("/tmp"), Some(key));
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert_eq!(
             env.get("VP_SESSION_KEY").map(String::as_str),
@@ -685,7 +656,7 @@ mod tests {
         );
 
         // 同じ lane の root 版（session 省略）は従来どおり #1 / claude / replay あり（旧名継承）。
-        let root_cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let root_cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         let root_env: std::collections::HashMap<_, _> = root_cmd.env.iter().cloned().collect();
         assert_eq!(
             root_env.get("VP_SESSION_KEY").map(String::as_str),
@@ -735,7 +706,7 @@ mod tests {
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(
             !input.contains("--continue") && !input.contains("--resume"),
@@ -748,7 +719,7 @@ mod tests {
     #[test]
     fn echoes_injects_claude_via_initial_input() {
         let addr = LaneAddress::performer("vp", "w1");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(input.starts_with("claude"), "claude 起動 command: {input}");
         assert!(input.contains("wire hook-check"), "wire hook 同梱: {input}");
@@ -764,7 +735,7 @@ mod tests {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
         for stand in ["tmux", "opus-xhigh"] {
-            let cmd = build_stand_command(stand, &addr, Path::new("/tmp"), false);
+            let cmd = build_stand_command(stand, &addr, Path::new("/tmp"));
             assert!(
                 cmd.initial_input.is_none(),
                 "{stand} は shell のみ（initial_input なし）"
@@ -772,15 +743,15 @@ mod tests {
         }
     }
 
-    /// claude_command の分岐: fresh / resume / continue / performer-fresh。
+    /// doc 53 §12.1: claude_command の分岐は **会話 id の有無 1 本**。
+    ///
+    /// 旧実装は `(起点 lane か, id の有無)` の 2 軸 3 分岐で、起点 lane × id 無しだけ
+    /// `--continue`（cwd の最新会話）だった。**この枝を退役**したので、lane の種類は
+    /// 起動 command に影響しない（= 呼び手が「どの lane か」を渡す必要も消えた）。
     #[test]
-    fn claude_command_variants() {
-        // fresh は resume/continue を含まない
-        let fresh = claude_command(true, true, Some("abc-123"), None);
-        assert!(!fresh.contains("--resume") && !fresh.contains("--continue"));
-
-        // conductor + id → --resume '<id>' || resume-failed || fresh
-        let resume = claude_command(true, false, Some("abc-123"), None);
+    fn claude_command_branches_on_conversation_id_only() {
+        // id あり → --resume '<id>' || resume-failed || fresh
+        let resume = claude_command(Some("abc-123"), None);
         assert!(resume.contains("--resume 'abc-123'"), "{resume}");
         assert!(
             resume.contains("||"),
@@ -792,34 +763,22 @@ mod tests {
             "resume 失敗の観測中継が chain に入る: {resume}"
         );
 
-        // conductor + id なし → --continue || resume-failed || fresh（初回/移行直後の従来 chain）
-        let cont = claude_command(true, false, None, None);
-        assert!(cont.contains("--continue"), "{cont}");
+        // id なし → 素の claude（**`--continue` は使わない** — VP が知らない会話は継がない）
+        let fresh = claude_command(None, None);
         assert!(
-            cont.contains("vp lane resume-failed 'continue'"),
-            "--continue 失敗も観測する: {cont}"
+            !fresh.contains("--continue"),
+            "cwd の最新会話を推測で拾わない（doc 53 §12.1）: {fresh}"
         );
-
-        // fresh は失敗するものが無い = 観測中継も入らない
+        assert!(!fresh.contains("--resume"), "{fresh}");
+        // 失敗するものが無い = 観測中継も入らない
         assert!(!fresh.contains("resume-failed"), "{fresh}");
-
-        // performer + id → --resume（SP restart 後の会話継続、 dashboard 罠は id 指名で回避）
-        let perf = claude_command(false, false, Some("abc-123"), None);
-        assert!(perf.contains("--resume 'abc-123'"), "{perf}");
-
-        // performer + id なし → fresh（--continue は dashboard 罠のため使わない）
-        let perf_fresh = claude_command(false, false, None, None);
-        assert!(
-            !perf_fresh.contains("--continue") && !perf_fresh.contains("--resume"),
-            "{perf_fresh}"
-        );
     }
 
     /// 不正な session id（quote 破り / 空）は resume に採用されない。
     #[test]
     fn unsafe_session_ids_are_rejected() {
         for bad in ["", "a'b", "x;rm -rf /", "id with space"] {
-            let cmd = claude_command(true, false, Some(bad), None);
+            let cmd = claude_command(Some(bad), None);
             assert!(
                 !cmd.contains("--resume"),
                 "不正 id '{bad}' は resume に使わない: {cmd}"
@@ -831,7 +790,7 @@ mod tests {
     #[test]
     fn model_flag_injected_into_all_claude_invocations() {
         // fresh: 単一 claude に --model
-        let fresh = claude_command(false, true, None, Some("sonnet"));
+        let fresh = claude_command(None, Some("sonnet"));
         assert_eq!(
             fresh,
             format!("claude --model sonnet --settings '{WIRE_HOOKS}'"),
@@ -839,7 +798,7 @@ mod tests {
         );
 
         // resume: 主 claude と `||` fallback 先の fresh、 両方に --model が乗る
-        let resume = claude_command(false, false, Some("abc-123"), Some("opus"));
+        let resume = claude_command(Some("abc-123"), Some("opus"));
         assert_eq!(
             resume.matches("--model opus").count(),
             2,
@@ -850,16 +809,17 @@ mod tests {
             "{resume}"
         );
 
-        // continue: 主 claude と fallback fresh の両方
-        let cont = claude_command(true, false, None, Some("claude-fable-5"));
-        assert_eq!(cont.matches("--model claude-fable-5").count(), 2, "{cont}");
+        // id 無し（素の claude）にも --model が乗る。doc 53 §12.1 で `--continue` 枝が
+        // 消えたので、ここは fallback を持たない単一 command = 1 回だけ。
+        let bare = claude_command(None, Some("claude-fable-5"));
+        assert_eq!(bare.matches("--model claude-fable-5").count(), 1, "{bare}");
     }
 
     /// 不正な model 名（injection 形 / 空 / 先頭 `-`）は `--model` に採用されない。
     #[test]
     fn unsafe_models_are_rejected() {
         for bad in ["", "opus --dangerously", "a;rm -rf /", "-x", "mo del"] {
-            let cmd = claude_command(false, true, None, Some(bad));
+            let cmd = claude_command(None, Some(bad));
             assert!(
                 !cmd.contains("--model"),
                 "不正 model '{bad}' は --model に使わない: {cmd}"
@@ -892,7 +852,7 @@ mod tests {
     #[test]
     fn fresh_true_never_resumes_via_builder() {
         let addr = LaneAddress::root("vp");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), true);
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(
             !input.contains("--resume") && !input.contains("--continue"),
@@ -930,7 +890,7 @@ mod tests {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
         // 会話 id 未記録 → 素の opencode（新規会話）。model / provider flag は無い。
-        let cmd = build_stand_command("opencode", &addr, Path::new("/tmp"), false);
+        let cmd = build_stand_command("opencode", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("opencode は initial_input あり");
         assert!(input.starts_with("opencode"), "opencode 起動: {input}");
         assert!(
@@ -939,7 +899,7 @@ mod tests {
         );
         assert!(input.ends_with('\r'), "Enter (CR) で submit: {input:?}");
         // fresh も素の opencode（registry-native なので clear 対象の旧 store が無い）。
-        let fresh = build_stand_command("opencode", &addr, Path::new("/tmp"), true);
+        let fresh = build_stand_command("opencode", &addr, Path::new("/tmp"));
         assert_eq!(fresh.initial_input.as_deref(), Some("opencode\r"));
     }
 
@@ -950,7 +910,7 @@ mod tests {
         // build_stand_command は registry を読む — 実 conductor registry を拾わないよう隔離（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        let cmd = build_stand_command("cursor", &addr, Path::new("/tmp"), false);
+        let cmd = build_stand_command("cursor", &addr, Path::new("/tmp"));
         #[cfg(not(windows))]
         assert!(
             cmd.args.contains(&"-l".to_string()),
@@ -980,7 +940,7 @@ mod tests {
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root codex");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("codex root は initial_input あり");
         assert!(
             input.starts_with("codex") && !input.contains("claude"),
@@ -1003,7 +963,7 @@ mod tests {
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root cursor");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"), false);
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         assert!(
             cmd.initial_input.is_none(),
             "未知 root stand は engine を注入せず shell のみ、 got: {:?}",

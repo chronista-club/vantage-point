@@ -709,3 +709,82 @@ R4 は「**pane 一覧**を server が導出して配る」。本節は roster�
 1. GUI 起動中に **CLI から** `vp lane slot-new` → **pane が現れる**（本バグ）
 2. GUI 自身の動詞（Add / ✕ / act 切替 / New root / Switch root）で従来どおり即時反映
 3. boot 直後に lane を開いても roster が出る（保留箱の撤去で退行しない）
+## 12. R3 の地図 — `reconcile_lane` の設計（2026-07-25 確定）
+
+census（§10）の上に、**着手前に決めた 3 つの判断**と reconcile 本体の形を置く。
+
+### 12.1 決定①: `claude --continue` を退役させる（mako 判断）
+
+census §10.3 の仮説「`RespawnMode` は registry に吸収できる」は、そのままでは**反証される**:
+`claude_command` は `(lane が開発起点か, 会話 id の有無)` で 3 分岐し、**起点 lane × 会話 id 無し**
+だけ `--continue`（cwd の最新会話を継ぐ）という第 3 の意味を持つ。すると「Reset 直後（id を
+捨てた）」と「初回起動（まだ id が無い）」が registry 上で同じ形になり、区別に `fresh` の 1 bit が
+要り続ける。
+
+**決定: `--continue` を退役する** — 「**VP が知らない会話は継がない**」に倒す。
+
+- 根拠は doc 54 §3.7 の `|| claude` fallback 退役と**同じ判断**（policy を shell 構文から VP へ）。
+  registry が会話 id の SSOT になった今、`--continue` は VP の帳簿の外へ手を伸ばす推測で、
+  「VP が見せている会話」と「実際に繋がる会話」が乖離しうる（doc 54「隠れた変換」の一種）
+- これで **`bare = conversation.is_none()`** が全 lane・全 session で成立し、`RespawnMode`
+  （Bare / Resume / Reset）という**概念そのものが消える**
+- ⚠️ 挙動変化（受容する）: VP の registry を失った状態で起点 lane を開くと、以前の会話を
+  継がず新規で始まる。**代償は「知らない会話に勝手に繋がらない」という正しさ**
+
+### 12.2 決定②: spawn 失敗でも intent は残す（mako 判断）
+
+現状は非対称 — `open_new_slot`（Add）だけ失敗時に registry を巻き戻し、boot 復元は
+「pane は出るが空」で残す。**残す側に統一する**。
+
+- reconcile 思想の帰結: intent が残っていれば**次の契機で自動的に再試行される**。巻き戻すと
+  「なぜ消えたのか」の情報が user から失われる
+- 「立ち上がっていない pane」は中間状態ではなく**観測された事実**（doc 51 A1 が退役させた
+  「畳んで取っておく」とは別物 — あれは user が作る状態、これは失敗の表示）
+- boot 復元の現挙動（graceful degrade）と揃うので、**経路ごとに違う意味論**が消える
+
+### 12.3 決定③: restart は「動詞が捨てて reconcile が戻す」（実装判断）
+
+restart（生きた slot を意図的に殺して立て直す）は **intent の変化ではない** — registry は
+変わらない。よって「世代（pid）を intent 側に持つ」形は採らない（intent に実体由来の値を
+入れると doc 53 §3.3「派生値を cache に持たない」に反する）。
+
+**動詞が実体を捨て、reconcile があるべき姿に戻す**。R2 の pump が既にこの形
+（slot が差し替わったら pid 照合で張り直す）。
+
+### 12.4 動詞の書き換え（10 動詞 → intent + reconcile）
+
+| 動詞 | R3 後に書くもの | 実体側 |
+|---|---|---|
+| boot（conductor / performer） | — | `reconcile_lane` のみ |
+| act 切替 | `set_session_act` | reconcile |
+| Add console | `create`(Tui) | reconcile |
+| Add chat | `create`(Chat) | reconcile |
+| ✕ | `remove` | reconcile（+ replay 破棄） |
+| **Reset** | `clear`（registry + replay） | reconcile（= 全部畳んで root が bare で立つ） |
+| **New root** | `create_root`（conversation 無し） | reconcile（新 root が bare で立つ。**旧 root の slot は残る** — session = Pane なので代表の変更は pane の破棄ではない） |
+| **Switch root** | root ポインタ変更 | reconcile（対象 session に slot が既に在れば**何も起きない**。今は Resume 張り替えをしていた） |
+| focus | focused 変更 | reconcile（chat engine の eager は demand 側） |
+| restart | — | 動詞が slot を drop → reconcile |
+
+### 12.5 reconcile_lane の構造（§6「やってはいけない」を満たす 3 段）
+
+```
+reconcile_lane(addr):
+  ① 読み（read lock + registry load）→ desired と actual の差分を**計算だけ**する
+  ② lock 外で spawn（spawn_blocking、800ms×N を lock 下に置かない）
+  ③ write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）
+  末尾で pump reconcile（R2）
+```
+
+`lane_spawn_actor` が既にこの形（読み → `spawn_blocking` → `pool.write()` で race 再検査）。
+**新しい規律ではなく、既に採っている形を lane 内へ持ち込む**。
+
+### 12.6 歩行検証（この地図で 5 場面を歩く）
+
+| 場面 | 起きること |
+|---|---|
+| chat lane を tui に切替 | registry に act=Tui → reconcile が engine を畳み、conversation 有りなので `--resume` で slot が立つ |
+| Reset | registry clear → reconcile が全 slot / engine を畳み、root が **bare** で立つ（id が無い = 継がない） |
+| New root | 新 session が root に → reconcile が新 root の slot を bare で立てる。**旧 root の pane はそのまま残る**（会話は無傷） |
+| boot（World 再起動） | registry の act=Tui 全員に slot、Chat は engine-less、末尾で pump — **今の 3 経路（with_root / lane_spawn_actor / restore_term_slots）が 1 本になる** |
+| spawn 失敗 | intent は残り pane は空で出る。次の reconcile 契機（動詞 / boot）で自動再試行 |

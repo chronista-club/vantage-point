@@ -1386,7 +1386,7 @@ async fn handle_echoes_session_remove(
 /// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向け、slot を素の engine で
 /// 張り替える（旧 root の会話は pane に残存 = 非破壊）。
 /// `{lane}` → `{lane, session}`。slot の spawn は restart 経路
-///（retry / pump 付替 / Diff push 込み）を [`RespawnMode::Bare`] で再利用する — 第 2 の
+///（retry / pump 付替 / Diff push 込み）を [`RespawnMode::Follow`] で再利用する — 第 2 の
 /// spawn 経路を作らない。
 ///
 /// ⚠️ **現在 client からの呼び手は無い**（doc 50 §4.6 A6）。picker の「✨ 新 ID から」は
@@ -1396,7 +1396,7 @@ async fn handle_echoes_session_remove(
 /// ちょうどこれ（旧 root を残すか閉じるかは Reborn の設計で決める）。
 /// A6 で lane 単位 act の gate（旧「mode=Tui 限定」）は撤去済。
 ///
-/// [`RespawnMode::Bare`]: crate::process::lanes_state::RespawnMode::Bare
+/// [`RespawnMode::Follow`]: crate::process::lanes_state::RespawnMode::Follow
 async fn handle_echoes_session_new_root(
     state: &Arc<AppState>,
     payload: serde_json::Value,
@@ -1420,7 +1420,7 @@ async fn handle_echoes_session_new_root(
     super::routes::lanes::restart_lane_orchestrated(
         state,
         addr,
-        crate::process::lanes_state::RespawnMode::Bare,
+        crate::process::lanes_state::RespawnMode::Follow,
     )
     .await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
@@ -1430,9 +1430,9 @@ async fn handle_echoes_session_new_root(
 /// resume 張り替えする（`{lane, session}` → `{lane, session}`）。旧 root の会話はタブに残存 =
 /// 非破壊。lane 単位 act の gate は A6 で撤去（残る制限は既知 engine のみ —
 /// `prepare_switch_root_session` 参照）。new_root（Bare = 素の engine）との違いは respawn が
-/// [`RespawnMode::Resume`]（対象 session の会話に slot が化身する）である点のみ。
+/// [`RespawnMode::Follow`]（対象 session の会話に slot が化身する）である点のみ。
 ///
-/// [`RespawnMode::Resume`]: crate::process::lanes_state::RespawnMode::Resume
+/// [`RespawnMode::Follow`]: crate::process::lanes_state::RespawnMode::Follow
 async fn handle_echoes_session_switch_root(
     state: &Arc<AppState>,
     payload: serde_json::Value,
@@ -1459,7 +1459,7 @@ async fn handle_echoes_session_switch_root(
     super::routes::lanes::restart_lane_orchestrated(
         state,
         addr,
-        crate::process::lanes_state::RespawnMode::Resume,
+        crate::process::lanes_state::RespawnMode::Follow,
     )
     .await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
@@ -1955,7 +1955,7 @@ async fn handle_lane_restart(
     let mode = if fresh {
         crate::process::lanes_state::RespawnMode::Reset
     } else {
-        crate::process::lanes_state::RespawnMode::Resume
+        crate::process::lanes_state::RespawnMode::Follow
     };
     let addr = crate::process::lanes_state::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
