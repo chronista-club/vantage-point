@@ -3971,6 +3971,119 @@ mod tests {
         assert_eq!(res["session"], 2);
     }
 
+    /// **✕ の end-to-end（dispatch → 動詞 → reconcile → replay 破棄）**（doc 53 §12.4 / R3c-1）。
+    ///
+    /// R3c で「動詞は registry に書くだけ / 実体は reconcile が畳む」に割れたので、**配線が
+    /// 繋がっているか**は handler を通してしか見えない（LanePool 単体テストは動詞と reconcile を
+    /// テストが手で並べるため、本番で片方を呼び忘れても緑になる）。
+    ///
+    /// 併せて**順序**も固定する: `PtySlot::drop` は最終 flush で replay を disk に書き戻すので、
+    /// replay 破棄が reconcile より前だと消したそばから復活する。ここでは slot に固有の目印を
+    /// 出力させ、✕ の後にそれが**残っていない**ことを見る（team-b 指摘 2026-07-26）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_remove_drops_slot_and_replay_through_dispatch() {
+        use super::dispatch_process_method;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::process::state::build_test_app_state;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let addr = LaneAddress::root("vp");
+        let lane = addr.to_string();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+
+        // stand="shell" の lane + root slot（root は ✕ できないので #2 を足して閉じる）。
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                id: Default::default(),
+                address: addr.clone(),
+                state: LaneState::Running,
+                stand: "shell".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: cwd.clone(),
+                performer_status: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                engine_stand: None,
+                flow_state: None,
+            });
+        }
+        let res = dispatch_process_method(
+            &state,
+            "lane_slot_new",
+            serde_json::json!({ "lane": lane.clone() }),
+        )
+        .await
+        .expect("lane_slot_new");
+        let session = res["session"].as_u64().expect("session") as u32;
+
+        // #2 の slot を **replay_path 付き**で立て直し、固有の目印を出力させる。
+        //
+        // ⚠️ ここが**順序の罠を検出できる形**にする鍵: replay を持たない test slot だと Drop が
+        // 何も書かないので、`discard_session_traces` を reconcile の**前**に動かしても緑のまま
+        // 通ってしまう（= 壊し方を先に決める規律。この test は逆順にすると赤くなる）。
+        let replay = crate::daemon::pty_slot::replay_file_path_session(
+            &addr.project,
+            crate::process::stand_spawner::lane_label(&addr),
+            session,
+        );
+        {
+            let (slot, mut rx) = PtySlot::spawn(
+                &cwd,
+                "/bin/sh",
+                &["-c".to_string(), "printf GHOST_SCREEN; cat".to_string()],
+                &[],
+                80,
+                24,
+                Some(replay.clone()),
+            )
+            .expect("PTY spawn");
+            // 出力が replay buffer に入るまで待つ（空 buffer は Drop が書かない）。
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
+            state
+                .lane_pool
+                .write()
+                .await
+                .insert_pty_slot(addr.clone(), Some(session), slot, rx);
+        }
+
+        dispatch_process_method(
+            &state,
+            "echoes_session_remove",
+            serde_json::json!({ "lane": lane.clone(), "session": session }),
+        )
+        .await
+        .expect("echoes_session_remove");
+
+        let pool = state.lane_pool.read().await;
+        assert!(
+            !pool.slot_sessions(&addr).contains(&session),
+            "✕ で PtySlot が畳まれる（動詞 → reconcile の配線が繋がっている証拠）"
+        );
+        assert!(
+            !crate::lane::session_registry::load("vp", "root", "shell")
+                .sessions
+                .iter()
+                .any(|s| s.key == session),
+            "registry からも消える"
+        );
+        // 「file が消えたか」ではなく「**旧画面が残っていないか**」を見る
+        // （[[verify-the-cleanup-not-just-the-disappearance]]）。
+        let ghost = std::fs::read(&replay)
+            .map(|b| String::from_utf8_lossy(&b).contains("GHOST_SCREEN"))
+            .unwrap_or(false);
+        assert!(
+            !ghost,
+            "閉じた session の画面が残っている（replay 破棄が reconcile より前だと \
+             PtySlot::drop の最終 flush が書き戻す）: {replay:?}"
+        );
+    }
+
     /// doc 51 §1 A3b: `session_now`（`vp now` の World 側）が NowLine event を該当 session の
     /// echoes topic に注入する。session は message の別 field で運ぶ（doc 38 落とし穴① —
     /// topic key は per-lane のまま）。非 retained なので subscribe が先。

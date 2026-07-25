@@ -790,9 +790,11 @@ impl LanePool {
     /// 既存経路はすべて lane の代表 slot を立てるので `None` を渡す。
     ///
     /// ⚠️ **ここは配線であって門番ではない**（法の check は持たない — 既存 entry があれば
-    /// 黙って replace する）。非 root session に slot を立てる入口は
-    /// [`Self::open_slot_for_session`] で、法（1 session = 高々 1 エンジン）の check は
-    /// そちらに置いてある。
+    /// 黙って replace する）。R3c で slot を立てる入口は
+    /// [`reconcile_lane`](crate::process::lane_reconcile::reconcile_lane) **1 本**になり、
+    /// 法（1 session = 高々 1 エンジン）は**断り文句ではなく導出規則**が守る（act=Tui の
+    /// session にだけ slot を立て、同じ write lock 区間で act=Chat でない engine を畳む）。
+    /// 旧 `open_slot_for_session`（4 つの入口 guard）は R3c-1 で退役。
     ///
     /// Stage 1 (ADR-0001): TermAttach も同期 spawn する。 `term_rx` は spawn_stand の
     /// 戻り値 (= broadcast::channel 作成と同時の initial_rx)、 reader_task が start する前に
@@ -1344,12 +1346,15 @@ impl LanePool {
     // これで法は型と同じ高さで検査できる: `pty_slots[addr][key]` と `chat_engines[addr][key]`
     // の**同一 key に両方が居ないこと**（= 1 session に書き手が 2 本にならない）。
     //
-    // 排他は set_session_act / ensure_chat_engine（chat engine 側）と
-    // [`LanePool::open_slot_for_session`]（slot 側）の 3 箇所だけが engine を作ることで保証。
-    // `insert_pty_slot` 自体は「配線」であって門番ではない（boot / restart / performer spawn の
-    // root 経路は mode ガードを通った後に呼ぶ）。**非 root slot を立てる入口は
-    // `open_slot_for_session` 1 つ**で、そこに「同 session に chat engine が居ないこと」の
-    // check を置いた（逆方向は ensure_chat_engine が持つ = 両向きが揃った）。
+    // **R3c-1 で排他の守り方が変わった**（doc 53 §12.7 発見①）。旧: slot を立てる入口
+    // `open_slot_for_session` に 4 つの guard を置いて**断る**。新: slot を立てるのは
+    // [`reconcile_lane`](crate::process::lane_reconcile::reconcile_lane) 1 本だけになり、
+    // **導出規則が破れた状態を生成しない**（act=Tui の session にだけ slot を立て、同じ
+    // write lock 区間で act=Chat でない engine を畳む = 外から同居は観測できない）。
+    //
+    // engine を作る側は `ensure_chat_engine`（lazy spawn）が今も入口 guard を持つ — こちらは
+    // demand（誰かが見ている）で起きるので、reconcile の導出だけでは防げないため。
+    // `insert_pty_slot` 自体は「配線」であって門番ではない。
     //
     // ⚠️ 旧記述「1 lane = 高々 1 エンジン（pty_slots xor chat_engines）= 1 cc_session」は
     // doc 33（Act I/II 排他）時代のもので、`chat_engines` が session ごとの map になった
