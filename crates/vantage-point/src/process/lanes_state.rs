@@ -708,6 +708,13 @@ impl LanePool {
     /// root は呼び手が既に立てている（[`Self::with_root`] / lane spawn）。ここは「前回 term
     /// だった非 root」を戻す担当。失敗は warn で継続（1 枚立たなくても lane 全体は使える —
     /// graceful degrade。`open_slot_for_session` 側の法の check もそのまま効く）。
+    ///
+    /// ⚠️ **sync + 重い**: 1 session あたり `spawn_stand` の 800ms sync sleep がかかる。
+    /// async 文脈から呼ぶなら `spawn_blocking` で隔離すること（`lane_spawn_actor` はそうして
+    /// いる）。`with_root` からの呼び出しは `server.rs` が「起動 1 回だけなので軽微」と
+    /// 受容している経路だが、その前提は **root 1 枚**のときのもの — 本関数は非 root 数に
+    /// 比例して伸びるので、蓄積した term が増えたら起動が目に見えて遅くなる
+    /// （team-b 4 回目 2026-07-25 の指摘。今は N が小さいので据え置き）。
     pub(crate) fn restore_term_slots(&mut self, addr: &LaneAddress) {
         let Some(info) = self.lanes.get(addr) else {
             return;
@@ -1543,14 +1550,39 @@ impl LanePool {
         Ok(key)
     }
 
+    /// `LaneInfo.console_mode`（= **root session の act の投影**）を registry から引き直す。
+    ///
+    /// root を付け替える動詞（`prepare_switch_root_session` / `prepare_new_root_session`）は
+    /// registry の root を動かすので、投影も一緒に動かないと実体と乖離する。乖離すると
+    /// 読み手全員（8 箇所以上）が古い答えを見るが、いちばん痛いのは [`Self::restart_lane`]
+    /// で、「PTY を立てるか engine を畳むか」をこの値で分岐する:
+    ///
+    /// - root=chat → 非 root(tui) へ switch: 投影が Chat のままだと chat 分岐に落ちて
+    ///   **PtySlot が永久に立たない**（pane は出るが無反応）
+    /// - root=tui → 非 root(chat) へ switch: 逆に PTY を張ってしまい、その session に
+    ///   `ensure_chat_engine` も engine を立てて **1 会話 2 engine**（同じ `--resume` を奪い合う）
+    ///
+    /// A6 で lane 単位 act の gate を撤去した結果 root=chat が正規の構成になり、前者が
+    /// 到達可能になった（doc 50 §4.7「lane 単位で判断している箇所」の 15 例目、
+    /// team-b 4 回目 2026-07-25）。書き手ごとに代入を足すと 1 つ忘れるので、root を動かす
+    /// 動詞はここを通す（cache は wire 投影で、SSOT は registry）。
+    fn sync_root_act_projection(&mut self, addr: &LaneAddress) {
+        let lane_label = crate::process::stand_spawner::lane_label(addr);
+        let act = session_registry::root_act(&addr.project, lane_label);
+        if let Some(info) = self.lanes.get_mut(addr) {
+            info.console_mode = act;
+        }
+    }
+
     /// doc 39 §4: Act I の ✨ New の registry 部 — 新 session（現 root の stand を引き継ぐ）を
     /// 作り、root と focused を同時にそれへ向ける。slot の張り替え（respawn）は caller が
     /// [`restart_lane_orchestrated`](crate::process::routes::lanes::restart_lane_orchestrated) を
     /// [`RespawnMode::Bare`] で呼ぶ（spawn の orchestration = retry / pump 付替 / Diff push は
     /// restart 経路に一元化 — 第 2 の spawn 経路を作らない）。
     ///
-    /// mode=Tui 限定: chat lane（Act II）の New は既存の `create_chat_session`（新 Draft タブ）が
-    /// 担う — 「今いる Act に出す」の分岐は vp-app が行い、backend は各動詞の整合だけ守る。
+    /// 新 root は必ず Act I（Tui）で立つ。Act II の「新しい会話」は `create_chat_session`
+    /// （新 Draft タブ）が担う — 「今いる Act に出す」の分岐は vp-app が行い、backend は
+    /// 各動詞の整合だけ守る。旧 lane 単位 act の gate は A6 で撤去済み（下記）。
     /// `stand_override` は doc 46 P2 要件 4（Engine を選んで新コンソールを作る）。
     /// `None` なら従来どおり**現 root の engine を引き継ぐ**（doc 39 §1）。
     pub fn prepare_new_root_session(
@@ -1579,7 +1611,7 @@ impl LanePool {
                 .map(|s| s.stand.clone())
                 .unwrap_or_else(|| info.stand.clone()),
         };
-        // doc 47 §4: root session の Act は Tui（この動詞が Act I 専用なのは上の guard のとおり）。
+        // doc 47 §4: 新 root の Act は常に Tui（Act II の「新しい会話」は create_chat_session）。
         let key = session_registry::create_root(
             &addr.project,
             lane_label,
@@ -1588,6 +1620,8 @@ impl LanePool {
             SessionAct::Tui,
         )
         .map_err(|e| anyhow::anyhow!("root session 作成に失敗（addr={addr}）: {e}"))?;
+        // root が動いた = 投影も動かす（忘れると restart_lane が chat 分岐に落ちて PTY 不発）。
+        self.sync_root_act_projection(addr);
         tracing::info!(
             "new root session: addr={addr} session={key} stand={stand}（旧 root はタブに残存）"
         );
@@ -1598,7 +1632,7 @@ impl LanePool {
     /// 向け替える。slot の張り替え（対象 session の store で resume）は caller が
     /// [`restart_lane_orchestrated`](crate::process::routes::lanes::restart_lane_orchestrated) を
     /// [`RespawnMode::Resume`] で呼ぶ（`prepare_new_root_session` と同じ「第 2 の spawn 経路を
-    /// 作らない」規律）。mode=Tui 限定も同様。
+    /// 作らない」規律）。lane 単位 act の gate が無いのも同様（A6 で撤去、下記）。
     pub fn prepare_switch_root_session(
         &mut self,
         addr: &LaneAddress,
@@ -1638,6 +1672,8 @@ impl LanePool {
         }
         session_registry::set_root(&addr.project, lane_label, &info.stand, key)
             .map_err(|e| anyhow::anyhow!("root 切替に失敗（addr={addr}, session={key}）: {e}"))?;
+        // root が動いた = 投影も動かす（root=chat ⇄ tui の付け替えで restart_lane が誤分岐する）。
+        self.sync_root_act_projection(addr);
         tracing::info!("switch root session: addr={addr} session={key}（旧 root はタブに残存）");
         Ok(())
     }
@@ -2644,11 +2680,12 @@ mod tests {
         );
     }
 
-    /// doc 39 P4-B: Root 切替は Tui 限定 + **既知 engine 限定**（cross-engine は respawn が root
+    /// doc 39 P4-B: Root 切替に残る制限は **既知 engine 限定**だけ（cross-engine は respawn が root
     /// stand に追従する P4-A で安全になり解禁。未知 / 撤去済み stand は shell 層に落ちるため拒否の
-    /// まま。"hd"/"echoes" の旧名差は同 engine 扱い）。
+    /// まま。"hd"/"echoes" の旧名差は同 engine 扱い）。doc 50 §4.6 A6 で「Tui 限定」は撤去 —
+    /// root=chat のまま非 root を代表に立てられることを本テストが固定する。
     #[test]
-    fn switch_root_validates_mode_engine_and_moves_root() {
+    fn switch_root_validates_engine_and_moves_root() {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
@@ -2697,6 +2734,55 @@ mod tests {
             session_registry::root("vp", "chatty"),
             2,
             "root が移っている"
+        );
+    }
+
+    /// root を付け替えたら `LaneInfo.console_mode`（root の act の投影）も動くこと。
+    ///
+    /// この投影は [`LanePool::restart_lane`] が「PTY を立てるか engine を畳むか」を分岐する
+    /// 述語で、root 付け替えの直後に必ず restart が走る（`restart_lane_orchestrated`）。
+    /// 古いままだと root=chat → 非 root(tui) で **PtySlot が永久に立たない**（pane は出るが
+    /// 無反応）、逆向きでは **1 会話 2 engine**。A6 の gate 撤去で前者が到達可能になった
+    /// （team-b 4 回目 2026-07-25 で指摘、当時 prepare_* は registry だけ動かしていた）。
+    #[test]
+    fn moving_root_syncs_the_console_mode_projection() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::performer("vp", "proj");
+        let mut pool = LanePool::new();
+
+        // root=chat の lane に、engine 持ちの非 root tui session を足す。
+        insert_chat_lane(&mut pool, &addr);
+        assert_eq!(pool.console_mode(&addr), Some(SessionAct::Chat));
+        session_registry::create("vp", "proj", "echoes", "echoes", SessionAct::Tui, false)
+            .expect("非 root tui session");
+
+        // switch_root: 代表が tui になったので投影も Tui へ（= restart_lane が PTY を立てる）。
+        pool.prepare_switch_root_session(&addr, 2)
+            .expect("root=chat から tui session への付け替え");
+        assert_eq!(
+            pool.console_mode(&addr),
+            Some(SessionAct::Tui),
+            "root が tui に移ったら投影も Tui（Chat のままだと PTY が立たない）"
+        );
+
+        // 逆向き: chat session を代表にしたら投影も Chat へ（= PTY を張って 2 engine にしない）。
+        session_registry::create("vp", "proj", "echoes", "echoes", SessionAct::Chat, false)
+            .expect("chat session");
+        pool.prepare_switch_root_session(&addr, 3)
+            .expect("tui root から chat session への付け替え");
+        assert_eq!(
+            pool.console_mode(&addr),
+            Some(SessionAct::Chat),
+            "root が chat に移ったら投影も Chat（Tui のままだと 1 会話 2 engine）"
+        );
+
+        // new_root: 新 root は常に Tui で立つので、chat lane からでも投影は Tui になる。
+        pool.prepare_new_root_session(&addr, None)
+            .expect("chat root からの New");
+        assert_eq!(
+            pool.console_mode(&addr),
+            Some(SessionAct::Tui),
+            "新 root は Act I で立つ = 投影も Tui"
         );
     }
 

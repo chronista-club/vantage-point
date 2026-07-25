@@ -255,8 +255,43 @@ mod ipc_tag_tests {
 /// pane は並ぶのに中身が来ない）。導出は registry の act から行う、をここで固定する。
 #[cfg(test)]
 mod session_derivation_tests {
-    use super::{lane_has_chat_session, term_sessions_of};
+    use super::{drain_resolvable_fetches, lane_has_chat_session, term_sessions_of};
     use crate::client::LaneInfo;
+
+    /// boot 窓で取りこぼした session 一覧要求が、project 解決後に**送り直される**こと。
+    ///
+    /// 2026-07-25 実機: boot 直後の `echoes:sessions_fetch` は `lanes_by_project` が空で
+    /// 捨てられ、再試行の契機が無かった。A6 で pane の顔ぶれが session 一覧に全面依存する
+    /// ようになったため、この 1 回の取りこぼしが「pane も名札も出ない」に化けた。
+    #[test]
+    fn dropped_fetch_is_replayed_once_project_resolves() {
+        let mut pending: std::collections::HashSet<String> = ["vp/root", "other/root"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // まだどの project も解決できない = 何も再送せず、保留は減らない。
+        assert!(drain_resolvable_fetches(&mut pending, |_| false).is_empty());
+        assert_eq!(
+            pending.len(),
+            2,
+            "解決できない lane は保留に残す（捨てない）"
+        );
+
+        // vp だけ解決できるようになった = vp のみ再送し、保留から抜ける。
+        let ready = drain_resolvable_fetches(&mut pending, |lane| lane.starts_with("vp/"));
+        assert_eq!(ready, vec!["vp/root".to_string()]);
+        assert_eq!(
+            pending.iter().collect::<Vec<_>>(),
+            vec![&"other/root".to_string()],
+            "未解決の lane は次の snapshot まで保留のまま"
+        );
+
+        // 再送済みの lane は二度と出てこない（LanesLoaded 毎の重複要求を防ぐ）。
+        assert!(drain_resolvable_fetches(&mut pending, |_| true).len() == 1);
+        assert!(pending.is_empty());
+        assert!(drain_resolvable_fetches(&mut pending, |_| true).is_empty());
+    }
 
     /// registry snapshot 付きの最小 LaneInfo（wire と同じ JSON 形で組む）。
     fn lane_with(root: u32, sessions: serde_json::Value, console_mode: &str) -> LaneInfo {
@@ -1786,6 +1821,27 @@ fn term_sessions_of(lane: &crate::client::LaneInfo) -> Vec<(u32, bool)> {
         // registry 不在（旧 SP / N=1 特殊ケース）: lane の console_mode が tui なら root 1 枚。
         _ => vec![(1, true)],
     }
+}
+
+/// 保留した session 一覧要求のうち「今なら project を解決できる」ものを取り出す。
+///
+/// 戻り値 = 再送する lane（保留箱からは除く）。まだ解決できない lane は保留に残し、次の
+/// snapshot で再挑戦する（lane が消えれば永久に解決せず残るが、集合なので増えはしない）。
+/// event loop から切り出してあるのは、boot 窓の再送は**実機でしか踏まない**ため — 純粋関数に
+/// しておかないとテストで固定できない（2026-07-25 の「pane も名札も出ない」の再発防止）。
+fn drain_resolvable_fetches(
+    pending: &mut std::collections::HashSet<String>,
+    resolvable: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let ready: Vec<String> = pending
+        .iter()
+        .filter(|lane| resolvable(lane))
+        .cloned()
+        .collect();
+    for lane in &ready {
+        pending.remove(lane);
+    }
+    ready
 }
 
 /// lane address から root session key を引く（snapshot 由来。不明は 1 = 従来の既定）。
@@ -3445,6 +3501,15 @@ pub fn run() -> anyhow::Result<()> {
     // terminal と違い demand-driven: EchoesSubmit の初回で lazy spawn (reconcile 非結合)。
     let mut echoes_sessions: std::collections::HashMap<String, LaneEchoes> =
         std::collections::HashMap::new();
+    // doc 50 §4.6 A6: **取りこぼした session 一覧要求**の保留箱（lane address）。
+    // webview は lane を開くとき `echoes:sessions_fetch` を撃つが、boot 直後は
+    // `lanes_by_project` が空で project を解決できず捨てられ、**再試行の契機が無い**。
+    // A6 で pane の顔ぶれ（roster）が session 一覧に全面依存するようになったため、
+    // 1 回の取りこぼしが「pane も名札も出ない」に化ける（2026-07-25 実機で観測。A6 以前は
+    // lane 単位 mode から導出でき boot 既定が偶然正しかった）。捨てずにここへ積み、
+    // project が解決できるようになる契機 = LanesLoaded で送り直す。
+    let mut pending_session_fetch: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
@@ -4019,6 +4084,16 @@ pub fn run() -> anyhow::Result<()> {
                         &async_action_proxy,
                         &world_conn,
                     );
+                }
+                // doc 50 §4.6 A6: 保留した session 一覧要求を送り直す（boot 窓の救済）。
+                // LanesLoaded = 「project が解決できるようになった」契機。同じ
+                // `EchoesSessionsFetch` として event loop に戻すので、要求の作り方は 1 箇所の
+                // ままで経路が二重化しない。
+                for lane in drain_resolvable_fetches(&mut pending_session_fetch, |lane| {
+                    resolve_project_path_for_lane(&sidebar_state, lane).is_some()
+                }) {
+                    tracing::info!("echoes:sessions_fetch 再送 — project 解決 (lane={lane})");
+                    let _ = async_action_proxy.send_event(AppEvent::EchoesSessionsFetch { lane });
                 }
             }
             // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
@@ -4847,7 +4922,12 @@ pub fn run() -> anyhow::Result<()> {
             // project は対象 lane 自身から逆引き（#705 の active-lane レース教訓）。
             Event::UserEvent(AppEvent::EchoesSessionsFetch { lane }) => {
                 let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:sessions_fetch skip — lane の project 解決失敗 (lane={lane})");
+                    // 捨てずに保留する（A6: 取りこぼし = pane も名札も出ない）。
+                    // LanesLoaded（project が解決できるようになる契機）で送り直す。
+                    tracing::info!(
+                        "echoes:sessions_fetch 保留 — lane の project 未解決 (lane={lane})"
+                    );
+                    pending_session_fetch.insert(lane);
                     return;
                 };
                 let proxy = async_action_proxy.clone();

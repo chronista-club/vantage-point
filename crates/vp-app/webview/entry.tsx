@@ -531,14 +531,22 @@ const switchingMsg = switchingOverlay?.querySelector(
 // 起こる。team-b review 2026-07-25 score 85 — 解除側は (lane, session) を照合していたのに
 // 入口だけ素の存在チェックで、入口と出口が非対称だった）。Map なら独立に始めて独立に終わる。
 const handoffPending = new Map<string, "tui" | "chat">();
-let handoffTimer: number | undefined;
+// stuck 防止の網も **pane ごと**に持つ。
+//
+// ⚠️ 単一 timer を使い回すと、Map 化した意味が timer 経路だけ元に戻る:
+// ①後発の handoff が `clearTimeout` で先発の締切を押し流す → 先発の網が消える
+// ②30s 未満で切替が続くと締切が永久に先送りされて **一度も発火しない**
+// ③発火時に `handoffPending.clear()` で無関係な pane まで巻き添えで畳む
+// （team-b review 4 回目 2026-07-25 score 78）。
+const handoffTimers = new Map<string, number>();
 
 const beginHandoff = (
 	lane: string,
 	session: number,
 	target: "tui" | "chat",
 ): void => {
-	handoffPending.set(handoffKey(lane, session), target);
+	const key = handoffKey(lane, session);
+	handoffPending.set(key, target);
 	if (switchingMsg) {
 		switchingMsg.textContent =
 			target === "chat"
@@ -546,24 +554,32 @@ const beginHandoff = (
 				: "Act I にセッションを引き継ぎ中…";
 	}
 	switchingOverlay?.classList.add("active");
-	// safety: ready 信号が来なくても 30s で全解除（stuck 防止の網。正常系は個別に解除される）。
-	if (handoffTimer) clearTimeout(handoffTimer);
-	handoffTimer = window.setTimeout(() => {
-		handoffPending.clear();
-		endHandoffIfIdle();
-	}, 30000);
+	// safety: ready 信号が来なくても 30s で **この pane の** handoff を諦める
+	// （正常系は 'vp:session-act' で個別に解除される）。
+	const prev = handoffTimers.get(key);
+	if (prev) clearTimeout(prev);
+	handoffTimers.set(
+		key,
+		window.setTimeout(() => {
+			handoffTimers.delete(key);
+			handoffPending.delete(key);
+			endHandoffIfIdle();
+		}, 30000),
+	);
 };
 /** 1 つの handoff を終える。**全部終わってから** overlay を畳む（他が進行中なら出したまま）。 */
 const endHandoff = (lane: string, session: number): void => {
-	handoffPending.delete(handoffKey(lane, session));
+	const key = handoffKey(lane, session);
+	handoffPending.delete(key);
+	const timer = handoffTimers.get(key);
+	if (timer) {
+		clearTimeout(timer);
+		handoffTimers.delete(key);
+	}
 	endHandoffIfIdle();
 };
 const endHandoffIfIdle = (): void => {
 	if (handoffPending.size > 0) return;
-	if (handoffTimer) {
-		clearTimeout(handoffTimer);
-		handoffTimer = undefined;
-	}
 	switchingOverlay?.classList.remove("active");
 };
 

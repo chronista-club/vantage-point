@@ -1412,7 +1412,7 @@ async fn handle_echoes_session_focus(
         pool.focus_chat_session(&addr, session)
             .map_err(|e| format!("echoes_session_focus: {e}"))?;
         // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
-        // eager に resume spawn する（切替後の初 submit を待たない）。mode=Tui（registry のみの
+        // eager に resume spawn する（切替後の初 submit を待たない）。act=Tui の session（registry のみの
         // 切替 = 正当）/ shell・legacy stand session（Act II host なし）等は debug で飲む — 切替自体は成功。
         if let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router) {
             tracing::debug!("echoes_session_focus: eager spawn せず（{e}）");
@@ -1491,7 +1491,8 @@ async fn handle_echoes_session_new_root(
 
 /// doc 39 P3: Root 切替 picker — root を既存 session へ向け替え、slot をその session の store で
 /// resume 張り替えする（`{lane, session}` → `{lane, session}`）。旧 root の会話はタブに残存 =
-/// 非破壊。mode=Tui 限定。new_root（Bare = 素の engine）との違いは respawn が
+/// 非破壊。lane 単位 act の gate は A6 で撤去（残る制限は既知 engine のみ —
+/// `prepare_switch_root_session` 参照）。new_root（Bare = 素の engine）との違いは respawn が
 /// [`RespawnMode::Resume`]（対象 session の会話に slot が化身する）である点のみ。
 ///
 /// [`RespawnMode::Resume`]: crate::process::lanes_state::RespawnMode::Resume

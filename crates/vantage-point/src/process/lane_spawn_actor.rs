@@ -424,15 +424,32 @@ async fn handle_cmd(
         pool_write.insert_pty_slot(addr.clone(), None, slot, term_rx);
     }
     pool_write.insert(info.clone());
+    drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
+
     // doc 50 §4.6 A6: **非 root の term session（act=Tui）も復元する**。
     //
     // ここは「pool に entry が無い lane を初めて触った時」= World / project 再起動後の主経路。
     // root だけ立てると、A6 で永続した非 root term の pane が **空で無反応**になる
     // （roster は registry から出るので pane は現れ、slot だけ居ない）。root と同じ
     // 「前回状態キープ」の規律で eager に戻す（team-b review 2026-07-25 score 78）。
-    // insert の後（lane が pool に居ないと slot を立てられない）。
-    pool_write.restore_term_slots(&addr);
-    drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
+    //
+    // ⚠️ root spawn と同じく `spawn_blocking` で隔離する。中身は session 数ぶんの
+    // `spawn_stand`（= 1 件あたり 800ms の `std::thread::sleep`）で、素で呼ぶと
+    // **tokio worker thread を N×800ms 塞ぐ** — このファイルが避けるために存在している
+    // 当のもの（冒頭 doc）。lane insert の後（lane が pool に居ないと slot を立てられない）
+    // かつ lock 解放の後（他 lane の操作を spawn 中ずっと待たせない）。
+    // team-b 4 回目 2026-07-25 の指摘。
+    let pool_for_restore = pool.clone();
+    let addr_for_restore = addr.clone();
+    if let Err(e) = tokio::task::spawn_blocking(move || {
+        pool_for_restore
+            .blocking_write()
+            .restore_term_slots(&addr_for_restore);
+    })
+    .await
+    {
+        tracing::warn!("term slot の boot 復元 task が落ちた（pane は空で出る）: addr={addr}: {e}");
+    }
 
     // Performer Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
