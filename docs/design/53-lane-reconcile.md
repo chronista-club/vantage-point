@@ -502,7 +502,10 @@ fix を外して赤、では不十分。**特例を作る / 順序を入れ替�
 > 構造化するイメージ」「Echoesが一つのIDを生成時にもって、それをrootに割り当てる」
 > 「セッションはEchoesの中で完結するようにする」
 
-**状態: 未決（設計枠待ち）。採用するなら doc 54 として起草し、R3 の前に決める。**
+**状態: 確定（2026-07-25 の一問一答で採用・拡張）→ SSOT は
+[54-lane-worker-model.md](./54-lane-worker-model.md)。本節は経緯の記録として残す。**
+（議論の過程で本節の「単独 presence としての Echoes ID」は棄却され、「働き手 = 席を占める
+プロセス（shell 含む・複数）」へ発展した — 詳細は doc 54 §2 の決定の記録）
 CLAUDE.md の第一行「VP が主、Claude Code はそのエンジン」に identity 層を追いつかせる話 —
 DB の surrogate key vs natural key と同型（engine session id = 他システムの natural key）。
 
