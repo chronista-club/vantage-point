@@ -299,6 +299,29 @@ Design B は diff が小さいだけでなく、§4.6 が警告した「1 辺が
 §4.6 の狙い（demand **edge** race の圏外）は保たれる — これは購読 0→1 の*エッジ観測*ではなく、
 「切り替えたので読み直す」という**明示 demand** だから。動詞は state 遷移に徹する。
 
+> ⚠️ **この逸脱は最初の実装で機能していなかった**（team-b review が指摘）。`ensure_echoes_attach`
+> の gate は購読ハンドル（`echoes_sessions`、**lane 単位**）の有無で判定し、そのハンドルは lane
+> 削除まで残る。つまり 2 回目以降の chat 化では attach が no-op になり、**A6 が根治すると宣言した
+> 当の症状（II→I→II で Act I の分が出ない）が別の理由で再現**していた。
+> 修正 = chat 分岐で **gate を経由しない明示 `echoes_demand_start {lane, session}`** を撃つ。
+> 購読を落として張り直す案は不採用 — 購読は lane 単位で**他の chat session の live stream も
+> 運んでいる**ため巻き添えになる。session を明示するのも必須（`None` は focused に解決される
+> ので、非 focused な pane を切り替えた時に別会話を読む）。
+> **実機で解消を確認**（Act I の TUI で交わした発話が、chat に戻ったとき吹き出しで現れた）。
+
+#### 逸脱 ③ pane の in-place 変身は「id の置換」で作る
+
+§4.6 ② は「位置と同一性は不変、中身だけ入れ替わる」と書いたが、見え方が変わると **host id も
+変わる**（`chat-session-N` ⇄ `lane-host` / `term-session-N`）。roster 同期に任せると
+`syncPaneColumns` が「旧 id が消えた / 新 id が入場した」と解釈し、**列の位置と share を失う**
+（enterShare で右端の細い列に新規入場 = 実機で「立ち上がっていない」ように見えた）。
+
+→ `renamePane(layout, fromId, toId)` を新設し、**roster 同期より先に**列の中で id を差し替える。
+順序を逆にすると syncPaneColumns が先に消してしまう。
+
+> **設計文書に「in-place」と書いても、機構が伴わなければ言葉だけ**。focus の引き継ぎだけ実装して
+> いたので部分的に「それらしく」見えており、自分のコメントを実装の証明として読んでいた。
+
 #### 実装で見つかった同型（制約撤廃の随伴）
 
 「xterm は lane に 1 枚」を前提にした適応が、制約撤廃で**意味が反転**した箇所:
@@ -310,6 +333,10 @@ Design B は diff が小さいだけでなく、§4.6 が警告した「1 辺が
 | `activate_lane` / boot catch-up | `vpConsole.setMode` で lane の mode を同期 | 退役（roster が session×act から導出） | 清算時 grep |
 | **boot 経路の gate**（`LanesLoaded` / `LanesEnsureAll`） | `pid.is_none() \|\| console_mode == "chat"` で lane ごと skip | `term_sessions_of(lane).is_empty()` | **実機 dogfood** |
 | **`ensure_echoes_attach` の gate** | `lane_is_chat`（= root の act） | `lane_has_chat_session`（どれか 1 つでも chat か） | 実機の同型探索 |
+| **`handle_lane_slot_new`** | pump を張らない（demand hook / act 切替の 2 契機しかなく、slot 追加はどちらでもない） | 末尾で `respawn_terminal_pump` | team-b review |
+| **`remove_chat_session`** | `chat_engines` だけ畳む（名前どおり chat 専用） | `drop_slot` も呼ぶ（**孤児 PTY を残さない**） | term に ✕ が付いて露出 |
+| **名札の「click で focus」** | chat の focus 概念を term にも表示 | chat 限定（term は World B が focus を持たない） | 実機 dogfood |
+| **kind badge の gating** | 未配線（S5 の `actSwitchBlockedReason` は**一度も呼ばれていなかった**） | server が `chat_capable` を送り、client は押せる見た目を出さない | 実機（押しても無言） |
 
 **共通形は「lane 単位で判断している箇所」**。A6 は「session ごとに act が違いうる」世界を作った
 ので、lane 単位の述語（`console_mode` / `pid` / `lane_is_chat`）はすべて**誤った要約**になる。
@@ -340,11 +367,32 @@ Rust→JS の `evaluate_script` は**引数の数が食い違ってもコンパ�
 （`undefined` が渡って silent に壊れる）。IPC allowlist の二箇所規則と同じ地形なので、
 `embedded_terminal_api_is_session_keyed` が HTML 文字列に対して signature を assert する。
 
+#### term pane の名札 — 「後回し」が片道ドアを作った
+
+S5 では「term 名札は Pane 共通 chrome（§2）の話だから後続でよい。今は chat pane の badge で
+往復できる」と切ったが、**この理由付けが誤り**だった。全 session が tui になると chat pane が
+0 枚になり、**badge ごと消えて Act II へ戻る入口が無くなる**（実機で mako が踏んだ）。
+§4.6 ② が「各 pane の名札に badge」と書いていたのは、まさにこの対称性のためだった。
+
+> **スコープを切るときに問うべきは「どちらが大きいか」ではなく「切った先が到達不能状態を
+> 作らないか」**。作業量で切ると、依存が見えないまま片道ドアが残る。
+
+実装（`SessionPlate`）は term / chat 共通。載せるものと載せないもの:
+
+| 要素 | term | 理由 |
+|---|---|---|
+| ラベル / root chip / 会話 id / kind badge / ✕ | ✅ | 素性 = 全 pane が同じ顔で名乗る |
+| **灯**（活動の脈動） | ❌ | `EchoesEvent` stream から導出 = chat 固有（§2「空なら描かない」） |
+| 「click で focus」 | ❌ | focus は chat の概念（World B は term の focus を持たない） |
+
+2 pane が同じ実装を使うことで **「root chip が無い」が情報になる**（片方だけ名札があると、
+無いのは「名札が無いから」か「root でないから」か区別できない）。これが §2「額縁の統一」の
+実利で、見た目が揃うだけの話ではない。
+
 #### 残タスク
 
-- **term pane の名札**（kind badge を term 側にも置く）。今は chat pane の badge で往復できる
-  （chat→tui して戻れる）が、term→chat の直接動線が無い。Pane 共通 chrome（§2）の話なので
-  A6 とは別に扱う
+- **board が daemon 再起動を跨いで空になる**（A6 とは独立 — `git diff` で board / db に触れて
+  いないことを確認済み）。doc 52 の領域なので別途
 
 ## 5. やってはいけない
 
