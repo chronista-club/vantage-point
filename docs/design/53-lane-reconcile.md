@@ -493,3 +493,67 @@ fix を外して赤、では不十分。**特例を作る / 順序を入れ替�
 
 加えて既存 `moving_root_syncs_the_console_mode_projection` は投影ごと消えるので、
 **同じ性質を registry 直読で言い直す**形に書き換える（テストの消滅 = 性質の消滅にしない）。
+
+---
+
+## 9. mako 提案（2026-07-25）— VP が identity の発行者になる
+
+> mako「VPは、あまりモデルとのsession idを利用しない構造にして、VPで発行したものを使って
+> 構造化するイメージ」「Echoesが一つのIDを生成時にもって、それをrootに割り当てる」
+> 「セッションはEchoesの中で完結するようにする」
+
+**状態: 未決（設計枠待ち）。採用するなら doc 54 として起草し、R3 の前に決める。**
+CLAUDE.md の第一行「VP が主、Claude Code はそのエンジン」に identity 層を追いつかせる話 —
+DB の surrogate key vs natural key と同型（engine session id = 他システムの natural key）。
+
+### 9.1 診断 — 「session」1 語が 3 役を兼ねている
+
+shell が root になれない gate（`prepare_switch_root_session` の EngineKind check）は症状で、
+病因は **pane（見え方 1 枚）/ conversation（engine との対話、resume の単位）/
+presence（lane の働き手 = mailbox の主）の 3 概念が「session」1 つに畳まれている**こと
+（[[one-predicate-three-properties]] の命名版）。presence の座を pane が争う構造だから
+資格審査（gate）が要る。3 役に別の identity を与えれば gate は**表現不能**に変わる
+（A6「identity で識別子を決める = 間違える手段を消す」の 1 段上への適用）。
+
+### 9.2 目標形（sketch）
+
+```
+Lane（場所）
+└── Echoes（presence）— VP 発行 ID、生成時に確定、不変。agent@<lane> の解決先（= 旧 root）
+    ├── active: ConvId（lane 宛 mail に誰が答えるか。旧 root/focused の非対称はここに畳まれる）
+    └── conversations: [ConvId]
+Conversation — VP 発行 ID。engine: EngineKind / engine_ref: Option<String>（cc_session 等、
+    私有・後着・交換可）/ act: レンズ
+Pane — view（ConvId に紐づく）。shell pane は conversation を持たない pane = Echoes の外
+```
+
+**原則: engine の id は「値」として流れてよいが「鍵」になってはならない**（`--resume` の
+引数は正、wire field / state file 名 / 配送判断の鍵は誤）。
+
+### 9.3 消える病巣（証拠つき）
+
+| # | 病巣 | 証拠 |
+|---|---|---|
+| a | **遅れて届く身元**（engine id は初応答まで無い）→「名前の無い session」窓の機構一式 | `ReportTrigger::Issued/Spoken` + F1/F2 guard（幻 session 対策、session_registry.rs:418） |
+| b | **供給点全部で enrich** | `refresh_engine_session_id` の「供給点すべてで呼ぶこと」⚠️（lanes_state.rs:399、#683 地形） |
+| c | **claude 特別扱いの非対称** | `LaneInfo.cc_session_id` / `NudgeTarget.cc_session_id` / `cc_session` file / channel D headless（`build_bg_args` = claude 専用。codex/grok root に channel D の「継ぐ」経路が無い — 要検証） |
+| d | **root 資格 gate + 付け替え機構** | `prepare_switch_root_session` gate / `canCloseSession` の二重執行（server Err + client gating） |
+| e | **key 再利用 ghost** | fresh Reset で採番が戻る → A6 の c3289e3a（ghost replay）と同族。一意・永久 ID で構造的に消滅 |
+
+### 9.4 消えないもの / コスト
+
+- **本 doc の本丸（intent/実体の reconcile）は消えない** — R2/R3 はそのまま必要。World A/B も無関係
+- mapping invariant（VP id → engine_ref が腐ると silent fresh resume）が registry に集中
+  （[[ssot-concentrates-existing-weakness]]）
+- **[[writer-without-reader]] の前例 = `LaneId`（2 年間読み手ゼロ）**。Echoes ID は読み手
+  （mailbox 解決 / chat 動詞の既定宛先）と同じ PR で入れること
+- 移行は forward-only（§6.5.2 の教訓 — 過去会話の migration は書かない）
+
+### 9.5 順序への制約
+
+**R4 の wire 契約（pane 一覧の鍵）より前に決める** — 契約を 2 回鋳直さない。R1/R2 は
+両モデルで同形なので影響なし。→ `R1 → R2 → [設計枠: doc 54 起草 + §6.5 World A/B 再検証] → R3 → R4`
+
+§7.0 との接続: ①（act の定義軸）は「act = Conversation のレンズ」で答えの半分が出る。
+③（Reborn の語彙）は「VP id は不変で engine_ref を捨てる」か「新 ConvId」かの選択として
+きれいに言い直せる（design phase 送り）。
