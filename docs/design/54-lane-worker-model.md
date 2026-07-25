@@ -58,7 +58,8 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
 | — | 観測の trigger は PTY 入力 | 「PTY への入力のデータを観測するのはどう？」 |
 | — | enrich は hooks でなく fs 痕跡（→ 批判的分析で「必須にしない」へ精緻化、§3.7） | 「cc の hook に頼るのはなんか正確性・拡張性がなさそうな雰囲気する」 |
 | — | `\|\|` fallback は構文でなく policy | 「claude --resume X \|\| claude ←これって扱いづらくない？」「問題が隠蔽されやすい」 |
-| — | **既定のレンズは Chat**（新 root / 新 lane）+ **既定は claude × Opus** | 「安定してなかったから tui だったけど、ここからは安定して動かせる土台が築けるので、われわれの ChatView 採用しちゃおうぜ」「新 root や、デフォルトの root は、chat にしよう」「モデルはもちろん CC & Opus で」 |
+| — | **既定のレンズは Chat**（新 root / 新 lane）+ **既定 engine は claude** | 「安定してなかったから tui だったけど、ここからは安定して動かせる土台が築けるので、われわれの ChatView 採用しちゃおうぜ」「新 root や、デフォルトの root は、chat にしよう」「モデルはもちろん CC & Opus で」 |
+| — | **model は user 設定に委ねる**（Opus 強制の撤回・同日修正） | 「あ、Opus のところはユーザ設定に任せる方がいいかもね」 |
 
 ---
 
@@ -90,7 +91,8 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
   書く）** / **欠損の解釈 = Tui のまま**（registry 不在・旧 wire の fallback は歴史的事実に
   従う — 昔の lane は tui だった。`SessionAct::default()` は反転させない）。
   随伴: Act II parity gap（permission / AskUserQuestion 相当 / diff）が critical path に昇格。
-  実装は R1 の後の独立 PR（behavior change を refactor に混ぜない）
+  実装は R1 の後の独立 PR（behavior change を refactor に混ぜない）— **✅ 実装済（§8-11）**。
+  model は user 設定に委ねる（同日修正 — Opus 強制は撤回、§8-11）
 
 ### 3.2 pane（見え方）
 
@@ -366,9 +368,16 @@ R1（console_mode 廃止 — 着手済、本地図と整合）
    prompt に留めて人間に委ねるか。boot（N 席復元）と単発 restart で既定を変えるか
 10. **養子縁組の可視化**: 観測が仕込み（intent）を書き換える逆矢印は**名札に見える**こと
     （表象の共有 — 見えない intent 変更は boot で驚きを生む）。自動継承の代表交代も同様
-11. **既定 Chat × claude × Opus の実装**（R1 後の独立 PR）: create 動詞群の act 引数
-    （`prepare_new_root_session` の Tui 固定解除 / with_root / performer 生成が Chat を
-    明示的に書く）+ 既定 model の注入方式（VP が `-m opus` を明示するか、claude 側の
-    ユーザー既定を尊重して VP picker の初期表示だけ Opus にするか — 前者は user 設定を
-    上書きする。実装時に決める）+ `MODEL_CHOICES` の鮮度（Opus 5 が表に無い問題は
-    handoff-add-menu-polish ②' と同じ束）。随伴 = Act II parity gap の昇格（§3.1）
+11. **既定 Chat の実装 — ✅ 実装済（2026-07-25、`mako/chat-default`）**:
+    - **生成の既定レンズ** = `session_registry::default_act_for_stand()` の 1 関数
+      （chat_capable → Chat / shell・未知 → Tui = 定義）。適用 3 動詞:
+      `prepare_new_root_session`（Tui 固定解除）/ `create_performer_orchestrated`
+      （registry へ明示 write + Chat は PTY を立てず engine-less 生成）/ `with_root`
+      （**registry file 不在 = 初回**を生成契機とみなして書く。既存 file は honor —
+      user の act 切替が boot で戻らない）
+    - **model は user 設定に委ねる**（mako 同日修正「Opus のところはユーザ設定に任せる」）:
+      明示指定 > VP config `default-lane-model` > **無記録** = engine 側の user 既定
+      （claude なら ~/.claude 設定）。**旧「未設定なら Opus を強制 record」は撤去**
+      （user の claude 既定を上書きしていた — 隠れた変換の一種）
+    - 残: `MODEL_CHOICES` の鮮度（Opus 5 が表に無い）= handoff-add-menu-polish ②' の束。
+      随伴 = Act II parity gap の昇格（§3.1）は変わらず

@@ -222,6 +222,34 @@ fn is_valid_conversation(stand: &str, id: &str) -> bool {
     }
 }
 
+/// 新しく雇う働き手（新 root / 新 lane）の既定レンズ（doc 54 §3.1、mako 2026-07-25
+/// 「われわれの ChatView 採用しちゃおうぜ」「新 root や、デフォルトの root は、chat にしよう」）。
+///
+/// - chat レンズを持てる engine（chat_capable）→ **Chat**（VP 自前の ChatView が既定の面）
+/// - shell / 未知 stand → Tui（禁止ではなく**定義** — chat レンズには映す会話が無い）
+///
+/// ⚠️ これは**生成の既定**であって欠損の解釈ではない（doc 54 §3.1 の 2 つの既定の分離）。
+/// registry 不在 / 旧 wire の読み fallback は従来どおり Tui（歴史的事実 — 昔の lane は tui）。
+pub fn default_act_for_stand(stand: &str) -> SessionAct {
+    match crate::echoes::EngineKind::from_stand(stand) {
+        Some(k) if k.chat_capable() => SessionAct::Chat,
+        _ => SessionAct::Tui,
+    }
+}
+
+/// registry file が存在するか（= この lane が一度でも仕込みを持ったか）。
+///
+/// doc 54 §8-11: conductor の「初回作成」検出に使う — with_root は毎 boot 呼ばれるため、
+/// 「file 不在 = 初回」を生成契機とみなして既定レンズを書く（以降の boot は既存 file を honor）。
+pub fn exists_in(base: &Path, project: &str, lane: &str) -> bool {
+    registry_file_in(base, project, lane).exists()
+}
+
+/// 本番 base での [`exists_in`]。
+pub fn exists(project: &str, lane: &str) -> bool {
+    exists_in(&crate::config::vp_state_dir(), project, lane)
+}
+
 /// registry を読む。file 不在 / 破損 / 不変条件違反は N=1 の既定形に解決（Err にしない —
 /// 読めない registry で lane 全体を止めるより、既定形で動き続ける方が復旧可能性が高い）。
 pub fn load_in(base: &Path, project: &str, lane: &str, default_stand: &str) -> SessionRegistry {
@@ -1679,6 +1707,27 @@ mod tests {
         assert_eq!(root_act_in(base, "vp", "root"), SessionAct::Tui);
         let reg = load_in(base, "vp", "root", "echoes");
         assert_eq!(reg.sessions[0].act, SessionAct::Tui);
+    }
+
+    /// doc 54 §3.1: 生成の既定レンズ。chat_capable な engine は Chat、shell / 未知は Tui
+    /// （定義 — chat レンズには映す会話が無い）。「生成の既定」と「欠損の解釈（Tui）」は
+    /// 別の問い — 後者は上の root_act fallback テスト群が固定している。
+    #[test]
+    fn default_act_for_stand_is_chat_for_engines_tui_for_shell() {
+        for engine in ["echoes", "hd", "codex", "grok", "opencode"] {
+            assert_eq!(
+                default_act_for_stand(engine),
+                SessionAct::Chat,
+                "engine {engine} の既定レンズは Chat（われわれの ChatView）"
+            );
+        }
+        for non_engine in ["shell", "tmux", "cursor", "agy", "unknown-stand", ""] {
+            assert_eq!(
+                default_act_for_stand(non_engine),
+                SessionAct::Tui,
+                "{non_engine:?} は chat レンズを持てない = Tui（定義）"
+            );
+        }
     }
 
     /// one-shot migration: 旧 `console_modes/` の chat 記録が root の act に畳まれ、
