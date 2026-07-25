@@ -1489,28 +1489,32 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // で `main_view.evaluate_script("window.deliverPaste(text)")` の最終受け取り口。
   window.deliverPaste = function(text) {
     if (!text) return;
-    for (const [, info] of laneInstances) {
-      if (info.container.classList.contains('active')) {
-        try {
-          info.term.paste(text);
-        } catch (e) {
-          console.error('deliverPaste error:', e);
-        }
-        return;
-      }
+    // 宛先は **focus 中の 1 枚**。A6（session = Pane）で lane に active な pane が複数
+    // 並ぶようになったので、「最初の active」では**意図しない pane に貼られる**
+    // （それ以前は lane に active 1 枚だったので等価だった）。
+    const actives = [...laneInstances.values()].filter((i) =>
+      i.container.classList.contains('active'),
+    );
+    const target =
+      actives.find((i) => i.term.textarea === document.activeElement) || actives[0];
+    if (!target) return; // active が無ければ noop
+    try {
+      target.term.paste(text);
+    } catch (e) {
+      console.error('deliverPaste error:', e);
     }
-    // active Lane が無い場合は noop
   };
 
   window.addEventListener('resize', () => {
-    // active かつ可視 (clientWidth>0) な Lane だけ fit + resize 通知
+    // active かつ可視 (clientWidth>0) な instance を **全部** fit + resize 通知。
+    // A6 以前は lane に active 1 枚だったので `break` で足りたが、tiling で複数並ぶ今は
+    // 2 枚目以降が window resize で再フィットされず cols がずれたままになる。
     for (const [, info] of laneInstances) {
       if (info.container.classList.contains('active') && info.container.clientWidth > 0) {
         try {
           info.fitAddon.fit();
           info.sendResize();
         } catch (_) {}
-        break;
       }
     }
   });
