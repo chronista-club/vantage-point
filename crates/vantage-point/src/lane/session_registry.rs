@@ -719,7 +719,53 @@ pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
     }
 }
 
+/// **既定形（N=1）に書き戻す**（Reset = lane を素に戻す動詞の registry 側）。
+///
+/// [`clear_in`] との違いは **file を残すこと**。lane が生き続ける Reset ではこちらを使う:
+///
+/// - `clear_in` は file ごと消すので、その後の [`load_in`] は `SessionRegistry::single()` の
+///   **act=Tui 固定**に倒れる（「壊れていたら保守的に Tui」の判断）。一方 `with_root` は
+///   「file 不在 = 初回」と見て**既定レンズ**（chat_capable なら Chat）を書く。この 2 つの
+///   既定が食い違うので、**file 不在の lane は観測者によって型が変わる**
+/// - 「消してから書き戻す」も同じ穴を踏む: [`set_root_act_in`] は「値が同じなら save しない」
+///   最適化を持ち、その前提（disk が既に正しい）は clear 直後には成り立たない。**Tui へ戻す
+///   ケースだけ save がスキップされ file が不在のまま残る**（team-b 指摘 2026-07-26）
+///
+/// だから Reset は **1 回の save で既定形を確定させる**（不在の窓を作らない）。
+/// lane 自体を消す GC（`clear_lane_state_in`）は file を残す理由が無いので `clear_in` のまま。
+pub fn reset_to_single_in(
+    base: &Path,
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    act: SessionAct,
+) -> std::io::Result<()> {
+    let _guard = mutation_guard();
+    let mut reg = SessionRegistry::single(default_stand);
+    // `single()` は act=Tui 固定なので、呼び手の意図（Reset 直前の act）を必ず上書きする。
+    if let Some(root) = reg.sessions.first_mut() {
+        root.act = act;
+    }
+    save_in(base, project, lane, &reg)
+}
+
 // ---- 本番 base（vp_state_dir）での wrapper ----
+
+/// 本番 base での [`reset_to_single_in`]。
+pub fn reset_to_single(
+    project: &str,
+    lane: &str,
+    default_stand: &str,
+    act: SessionAct,
+) -> std::io::Result<()> {
+    reset_to_single_in(
+        &crate::config::vp_state_dir(),
+        project,
+        lane,
+        default_stand,
+        act,
+    )
+}
 
 /// 本番 base での load。
 pub fn load(project: &str, lane: &str, default_stand: &str) -> SessionRegistry {

@@ -863,6 +863,27 @@ R3c の後半 = **New root / Switch root / Reset / restart**。これで §12.4 
 あって「見え方を出荷時に戻す」ではない — tui console で Reset を押した user の pane が chat に
 化けるのは破壊的な驚きになる。**既定レンズに倒す案もあり、変えるなら `reset_lane` の 1 行**。
 
+##### team-b 指摘（score 92）: 初版は Tui 側だけ穴が空いていた
+
+初版はこれを **「`clear` で file を消す → `set_root_act` で書き戻す」の 4 段**で実装した。
+ところが `set_root_act` は「**値が同じなら save しない**」最適化を持ち、その前提（disk が既に
+正しい）は clear 直後には成り立たない:
+
+- **Chat へ戻す**: file 不在 → `load` の fallback は act=**Tui** → 差分あり → save される ✅
+- **Tui へ戻す**: file 不在 → fallback も **Tui** → 「もう Tui だから」と **save をスキップ** ❌
+  → file が**不在のまま**残り、次の boot で `with_root` が Chat を書く = **§12.8 が防ぐと
+  宣言したその現象が Tui 側で再発**
+
+対処は「force save を足す」ではなく **file が不在になる窓そのものを消す**方向にした:
+`session_registry::reset_to_single`（既定形を **1 回の save で確定**）を新設し、Reset は
+`clear` を使わない（lane 自体を消す GC は file を残す理由が無いので `clear` のまま）。
+結果 4 段 → **3 段**になり、④ の順序制約も消えた。
+
+**教訓**: この穴の機構（`set_root_act` が保存をスキップする）は、同じ日に**間欠テスト失敗の
+根本原因として突き止め、この §12.8 に書いたばかり**だった。原因を言語化しても、**自分の
+コードの別経路に適用するのは別の作業**。横に同型を探す規律（[[one-edge-two-jobs]]）は
+「他人のコード」だけでなく「たった今書いた自分のコード」にも要る。
+
 #### 動詞を薄くしたことの代償（設計上の学び）
 
 `drop_root_entities` は不在なら no-op、reconcile も「合わせる相手が居ない」で静かに返る。

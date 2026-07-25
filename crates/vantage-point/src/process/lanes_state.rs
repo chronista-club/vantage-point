@@ -976,15 +976,26 @@ impl LanePool {
     /// attach し直す ─ pool の write lock を保持してる間は WS の read が queue され、
     /// release 後に新しい broadcast channel + scrollback を subscribe する。
     ///
-    /// fresh restart の state 破棄（「lane を素に戻す」の実体、act 非依存）。
+    /// Reset の intent 側破棄（「lane を素に戻す」の registry / replay_log 部）。
     ///
     /// doc 38 落とし穴②「fresh が副を知らない」の再演防止で、対象は **registry 上の全 session**:
     /// - replay log（transcript を持たない engine の replay 源。残すと「New Session なのに
     ///   前の会話が replay される」嘘になる — session 単位に消す）
-    /// - session registry 自体（既定形 N=1 へ — fresh 後の lane は「素の 1 session」。会話 id は
-    ///   registry の SSOT なので registry clear で全 session の resume の矢印が消える。doc 40 PR-2 で
-    ///   旧 cc/codex_sessions store が退役したため、per-session の store 破棄は不要になった）
-    fn clear_fresh_lane_state(addr: &LaneAddress, default_stand: &str) -> anyhow::Result<()> {
+    /// - session registry を**既定形 N=1 へ書き戻す**（会話 id は registry の SSOT なので、
+    ///   既定形に戻せば全 session の resume の矢印が消える）
+    ///
+    /// ⚠️ **file ごと消して既定に倒す、はしない**（`session_registry::clear` を使わない）。
+    /// registry file が不在の lane は**観測者によって型が変わる**: `load` の fallback は
+    /// act=Tui 固定、`with_root` は「file 不在 = 初回」で既定レンズ（Chat）を書く。
+    /// 「消してから `set_root_act` で書き戻す」も同じ穴を踏む — あの関数は「値が同じなら
+    /// save しない」最適化を持ち、**Tui へ戻すケースだけ save がスキップされて file が
+    /// 不在のまま残る**（team-b 指摘 2026-07-26）。`reset_to_single` は 1 回の save で
+    /// 既定形を確定させるので、不在の窓自体が存在しない。
+    fn clear_fresh_lane_state(
+        addr: &LaneAddress,
+        default_stand: &str,
+        root_act: SessionAct,
+    ) -> anyhow::Result<()> {
         let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
         let reg = session_registry::load(&addr.project, &lane_label, default_stand);
         for s in &reg.sessions {
@@ -996,9 +1007,12 @@ impl LanePool {
                 )
             })?;
         }
-        session_registry::clear(&addr.project, &lane_label).map_err(|e| {
-            anyhow::anyhow!("fresh restart: session registry の破棄に失敗（addr={addr}）: {e}")
-        })?;
+        session_registry::reset_to_single(&addr.project, &lane_label, default_stand, root_act)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "fresh restart: session registry の初期化に失敗（addr={addr}）: {e}"
+                )
+            })?;
         Ok(())
     }
 
@@ -1028,26 +1042,26 @@ impl LanePool {
     /// 実体を破棄し、registry を既定形（N=1）に書き戻す。呼び手が続けて reconcile を呼ぶと
     /// 新しい root が **bare**（会話 id が無い = 継がない）で立つ。
     ///
-    /// ## 順序（この 4 段は入れ替えられない）
+    /// ## 順序（①→② と ②→③ は入れ替えられない）
     ///
-    /// 1. **registry + replay_log の破棄**（失敗したら bail = 何も遷移していない）。破壊より
-    ///    先に置くのは、消せないまま実体を殺すと「死んだのに resume の矢印は残る」= fresh で
-    ///    ない中間状態になるため
-    /// 2. **全実体の破棄**（slot / TermAttach / engine）。registry から全 session が消えた以上、
+    /// 1. **intent を既定形へ**（registry + replay_log。失敗したら bail = 何も遷移していない）。
+    ///    破壊より先に置くのは、消せないまま実体を殺すと「死んだのに resume の矢印は残る」=
+    ///    fresh でない中間状態になるため
+    /// 2. **全実体の破棄**（slot / TermAttach / engine）。registry が N=1 に戻った以上、
     ///    どの化身も desired に居ない
     /// 3. **PTY replay の破棄** — 必ず 2 の**後**。`PtySlot::drop` は最終 flush で replay を
     ///    disk に書き戻すので、先に消すと消したそばから復活する（= ghost replay。Reset は
     ///    採番が N=1 に戻り同じ path を再利用するため、旧画面が新 console に seed される）
-    /// 4. **既定形の act を書く** — [`session_registry::clear`] は file ごと消すので、この時点の
-    ///    disk には registry が無い。`load` の fallback（`SessionRegistry::single`）は
-    ///    **act=Tui 固定**なので、書かずに reconcile へ渡すと chat lane の Reset が PTY を
-    ///    立ててしまう。しかも次の World boot では `with_root` が「file 不在 = 初回」と見て
-    ///    既定レンズ（Chat）を書くため、**同じ lane が観測者によって型を変える**
     ///
-    /// ⚠️ 4 で書き戻すのは **Reset 直前の root の act**（既定レンズではない）。「Reset = 会話を
+    /// ⚠️ ① が **file を消さずに既定形を書く**理由は [`Self::clear_fresh_lane_state`] を見ること
+    /// （registry file が不在の lane は観測者によって型が変わる）。初版は「clear してから
+    /// `set_root_act` で書き戻す」4 段だったが、`set_root_act` の「値が同じなら save しない」
+    /// 最適化により **Tui の Reset だけ file が不在のまま残る**穴があった（team-b 指摘）。
+    ///
+    /// ⚠️ 書き戻すのは **Reset 直前の root の act**（既定レンズではない）。「Reset = 会話を
     /// 捨てる」であって「見え方を出荷時に戻す」ではない、という判断 — tui console で Reset を
     /// 押した user の pane が chat に化けるのは破壊的な驚きになる。既定レンズに倒す案もあり、
-    /// 変えるならこの 1 行（doc 53 §12.8 に記録）。
+    /// 変えるなら `root_act` を `default_act_for_stand(&stand)` にする 1 行（doc 53 §12.8）。
     pub fn reset_lane(&mut self, addr: &LaneAddress) -> anyhow::Result<()> {
         let info = self
             .lanes
@@ -1058,8 +1072,8 @@ impl LanePool {
         let root_act = self.root_act(addr);
         let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
 
-        // ① intent の破棄（失敗したら何も壊さずに返す）
-        Self::clear_fresh_lane_state(addr, &stand)?;
+        // ① intent を既定形へ（失敗したら何も壊さずに返す）
+        Self::clear_fresh_lane_state(addr, &stand, root_act)?;
         // ② 全実体の破棄（registry から全員消えた = どの化身も desired に居ない）
         self.term_attaches.remove(addr);
         self.pty_slots.remove(addr);
@@ -1074,9 +1088,6 @@ impl LanePool {
                 "Reset: term replay の破棄に失敗（ghost replay の恐れ）: addr={addr}: {e}"
             );
         }
-        // ④ 既定形の intent を書く（file 不在のまま reconcile に渡さない）
-        session_registry::set_root_act(&addr.project, &lane_label, &stand, root_act)
-            .map_err(|e| anyhow::anyhow!("Reset: 既定形の永続に失敗（addr={addr}）: {e}"))?;
         tracing::info!(
             "lane reset: 素に戻した（act={} を維持）: addr={addr}",
             root_act.as_str()
@@ -2330,7 +2341,7 @@ mod tests {
         let addr = LaneAddress::root("vp");
         crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("old-id"))
             .expect("record conversation");
-        LanePool::clear_fresh_lane_state(&addr, "echoes").expect("clear");
+        LanePool::clear_fresh_lane_state(&addr, "echoes", SessionAct::Tui).expect("clear");
         assert_eq!(
             crate::lane::session_registry::load("vp", "root", "echoes").sessions[0].conversation,
             None,
@@ -3810,6 +3821,48 @@ mod tests {
             pool.read().await.slot_sessions(&addr).contains(&key),
             "reconcile が intent に追いつかせる"
         );
+    }
+
+    /// **Reset のあと registry file は必ず存在する**（team-b 指摘 2026-07-26、score 92）。
+    ///
+    /// registry file が**不在**の lane は、**観測者によって型が変わる**:
+    /// - `load` の fallback（`SessionRegistry::single`）は **act=Tui 固定**（壊れていたら保守的に）
+    /// - `with_root` は「file 不在 = 初回」と見て**既定レンズ**（chat_capable なら Chat）を書く
+    ///
+    /// 初版の `reset_lane` は「file を clear → `set_root_act` で書き戻す」4 段だった。ところが
+    /// `set_root_act` は「値が同じなら save しない」最適化を持つので、**Tui の Reset だけ**
+    /// 「もう Tui だから」と誤認して save をスキップし、**file が不在のまま残っていた**
+    /// （→ 次の World boot で `with_root` が Chat を書く = tui console が勝手に chat 化する）。
+    /// Chat の Reset は差分があるので save が走り、**片側だけ穴が空いていた**。
+    ///
+    /// 壊し方: `reset_to_single` を `clear` + `set_root_act` に戻すと Tui 側が赤くなる。
+    #[test]
+    fn reset_always_leaves_a_registry_file_for_both_acts() {
+        let _state = crate::test_env::state_dir();
+        for act in [SessionAct::Tui, SessionAct::Chat] {
+            let addr = LaneAddress::root("vp");
+            let mut pool = LanePool::new();
+            insert_lane(&mut pool, &addr, act);
+            // 会話 id を持たせる（Reset が intent ごと捨てることも併せて見る）。
+            session_registry::set_conversation("vp", "root", "echoes", 1, Some("old-id"))
+                .expect("record conversation");
+
+            pool.reset_lane(&addr).expect("reset");
+
+            assert!(
+                session_registry::exists("vp", "root"),
+                "Reset の後 registry file が存在する（不在だと観測者によって型が変わる）: act={act:?}"
+            );
+            let reg = session_registry::load("vp", "root", "echoes");
+            assert_eq!(reg.sessions.len(), 1, "既定形（N=1）へ: act={act:?}");
+            assert_eq!(reg.sessions[0].act, act, "見え方は維持される: act={act:?}");
+            assert_eq!(
+                reg.sessions[0].conversation, None,
+                "会話は捨てる: act={act:?}"
+            );
+            // 次の lane のために片付ける（同じ project/lane 名を使い回すため）。
+            session_registry::clear("vp", "root").expect("cleanup");
+        }
     }
 
     /// doc 53 §12.4（R3c-2）: **代表（root）の変更は pane の破棄ではない**。

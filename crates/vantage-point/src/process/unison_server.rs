@@ -1427,11 +1427,12 @@ async fn handle_echoes_session_remove(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
 }
 
-/// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向け、slot を素の engine で
-/// 張り替える（旧 root の会話は pane に残存 = 非破壊）。
-/// `{lane}` → `{lane, session}`。slot の spawn は restart 経路
-///（retry / pump 付替 / Diff push 込み）を [`RespawnMode::Follow`] で再利用する — 第 2 の
-/// spawn 経路を作らない。
+/// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向ける。
+/// `{lane}` → `{lane, session}`。
+///
+/// R3c-2: 動詞は registry に書くだけで、新 root の実体は reconcile が立てる。
+/// **旧 root の pane はそのまま残る** — 旧実装は `restart_lane_orchestrated` で root slot を
+/// 張り替えていたので、代表が変わるたびに前の console が消えていた（doc 53 §12.4）。
 ///
 /// ⚠️ **現在 client からの呼び手は無い**（doc 50 §4.6 A6）。picker の「✨ 新 ID から」は
 /// 「Add（Echoes を足す）+ Reborn（その場で始め直す）」の合成でしかないため撤去した。
@@ -1439,8 +1440,6 @@ async fn handle_echoes_session_remove(
 /// 新しい session を同じ場所（Pane）で始める」操作で、root pane に適用したときの挙動が
 /// ちょうどこれ（旧 root を残すか閉じるかは Reborn の設計で決める）。
 /// A6 で lane 単位 act の gate（旧「mode=Tui 限定」）は撤去済。
-///
-/// [`RespawnMode::Follow`]: crate::process::lanes_state::RespawnMode::Follow
 async fn handle_echoes_session_new_root(
     state: &Arc<AppState>,
     payload: serde_json::Value,
@@ -1466,13 +1465,15 @@ async fn handle_echoes_session_new_root(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
-/// doc 39 P3: Root 切替 picker — root を既存 session へ向け替え、slot をその session の store で
-/// resume 張り替えする（`{lane, session}` → `{lane, session}`）。旧 root の会話はタブに残存 =
-/// 非破壊。lane 単位 act の gate は A6 で撤去（残る制限は既知 engine のみ —
-/// `switch_root_session` 参照）。new_root（Bare = 素の engine）との違いは respawn が
-/// [`RespawnMode::Follow`]（対象 session の会話に slot が化身する）である点のみ。
+/// doc 39 P3: Root 切替 picker — root（誰が lane の代表か）を既存 session へ向け替える
+/// （`{lane, session}` → `{lane, session}`）。
 ///
-/// [`RespawnMode::Follow`]: crate::process::lanes_state::RespawnMode::Follow
+/// R3c-2: **実体には何も起きない**のが正しい — 対象 session の pane は既に在るので、
+/// reconcile から見て desired は変わらない（doc 53 §12.4）。旧実装は
+/// `restart_lane_orchestrated` で root slot を対象 session の会話に張り替えていた =
+/// 代表の変更を化身の置き換えと混同していた。
+///
+/// lane 単位 act の gate は A6 で撤去（残る制限は既知 engine のみ — `switch_root_session` 参照）。
 async fn handle_echoes_session_switch_root(
     state: &Arc<AppState>,
     payload: serde_json::Value,
