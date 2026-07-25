@@ -22,12 +22,10 @@ use crate::protocol::{Content, ProcessMessage};
 /// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 
-/// demand-driven terminal pump の lane → session → JoinHandle map（doc 50 §4.6 A6）。
-/// `pty_slots` と対称の入れ子（lane 単位の teardown と session 単位の付け替えを両立）。
-type TerminalPumps = HashMap<
-    String,
-    HashMap<crate::lane::session_registry::SessionKey, tokio::task::JoinHandle<()>>,
->;
+/// demand-driven terminal pump の台帳（doc 50 §4.6 A6 → doc 53 R2 で reconcile 化）。
+/// 実体定義は pump module 側（`terminal_pump::TerminalPumps` — entry は JoinHandle に加え
+/// 照合キー `slot_pid` を持つ）。`pty_slots` と対称の入れ子。
+type TerminalPumps = super::terminal_pump::TerminalPumps;
 
 /// Application state
 pub(crate) struct AppState {

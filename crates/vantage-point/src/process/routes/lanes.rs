@@ -831,16 +831,10 @@ pub async fn delete_lane_orchestrated(
         pid
     );
 
-    // terminal pump の entry を掃除する。task 自体は PtySlot drop の broadcast Closed で
-    // 自壊するが、entry は demand_stop か次の respawn でしか消えず lane 削除では残留する。
-    // ⚠️ 消してよいのは削除経路だけ — 生存 lane の dead entry は restart_lane_orchestrated の
-    // had_pump（購読者が居た証跡）が再 attach 判定に使うので、几帳面に消すと console が凍る。
-    // doc 50 §4.6 A6: entry は lane → session → handle の入れ子。lane 削除では全 session を掃除。
-    if let Some(handles) = state.terminal_pumps.write().await.remove(&addr.to_string()) {
-        for (_session, handle) in handles {
-            handle.abort();
-        }
-    }
+    // terminal pump を lane 削除に追随させる（doc 53 R2: 動詞の末尾 = reconcile の契機）。
+    // pool から lane が消えた後なので live slot = ∅ → 全 pump が撤去される。task 自体は
+    // PtySlot drop の broadcast Closed でも自壊するが、台帳 entry の掃除は reconcile が担う。
+    crate::process::unison_server::reconcile_terminal_pumps(state, &addr.to_string()).await;
 
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
     // 子なので Phase 1 の remove (= PtySlot drop) で完全停止する（第 2 の生存木は無い）。
@@ -990,39 +984,25 @@ pub async fn restart_lane_orchestrated(
                     .get(&addr)
                     .and_then(|i| i.pid)
                     .unwrap_or(0);
-                // BUG#1: restart で PtySlot を差し替えたが、 World 側 subscriber は張りっぱなし
-                // (count 1 のまま) で demand hook が再発火せず、 新 slot に pump が付かない
-                // (= 入力は terminal_write で現 slot に届くが出力が沈黙 = 凍る console)。
-                // 旧 pump handle が terminal_pumps に残っている = 購読者が居た証跡なので、
-                // 新 slot に pump を張り直す (respawn_terminal_pump が旧 dead handle を abort して差替)。
+                // BUG#1: restart で PtySlot を差し替えても World 側 subscriber は張りっぱなし
+                // (count 1 のまま) で demand hook が再発火しない (= 入力は terminal_write で
+                // 現 slot に届くが出力が沈黙 = 凍る console)。動詞の末尾で reconcile を呼ぶ
+                // （doc 53 R2）。旧実装の判断 2 つはどちらも reconcile の照合に吸収された:
+                //
+                // - `had_pump`（pump 残留 = 購読者が居た証跡、という間接推論）→ demand の
+                //   level 直読（`TopicRouter::demand_active`）
+                // - mode → scope（Reset=lane 全体 / Resume・Bare=root のみ、team-b 10 回目）→
+                //   pid 照合。差し替わった slot だけ attach され、健在な兄弟 pane は触られない
                 let lane_key = addr.to_string();
-                let had_pump = state.terminal_pumps.read().await.contains_key(&lane_key);
-                if had_pump {
-                    // 触る範囲は mode で決まる（doc 50 §4.6 A6 / team-b 10 回目 2026-07-25）:
-                    //
-                    // - Reset は **全 slot を畳んで** root だけ立て直す（`restart_lane` の
-                    //   `pty_slots.remove(addr)`）→ lane 全体を揃える（`None`）。消えた session の
-                    //   pump も撤去する必要がある
-                    // - Resume / Bare は **root の slot だけ**差し替える（同居人は独立の住人）→
-                    //   `Some(root)`。lane 全体にすると隣の term pane まで clear + 全 replay が
-                    //   飛び、触っていない pane の scroll 位置が飛ぶ
-                    let scope = if mode == crate::process::lanes_state::RespawnMode::Reset {
-                        None
-                    } else {
-                        Some(crate::process::lanes_state::LanePool::root_session_key(
-                            &addr,
-                        ))
-                    };
-                    let reattached = crate::process::unison_server::respawn_terminal_pump(
-                        state, &lane_key, scope,
-                    )
-                    .await;
-                    tracing::info!(
-                        "restart_lane: terminal pump re-attach (lane={} ok={})",
-                        lane_key,
-                        reattached
-                    );
-                }
+                let r =
+                    crate::process::unison_server::reconcile_terminal_pumps(state, &lane_key).await;
+                tracing::info!(
+                    "restart_lane: terminal pump reconcile (lane={} attached={} removed={} kept={})",
+                    lane_key,
+                    r.attached,
+                    r.removed,
+                    r.kept
+                );
                 // Act II（chat lane）の restart_lane は engine drop（lazy respawn）で終わる。
                 // console_set_mode の chat 分岐と同じ理由でここで eager spawn する —
                 // fresh 直後に新 session_init が届き「新品になった」フィードバックが即出る

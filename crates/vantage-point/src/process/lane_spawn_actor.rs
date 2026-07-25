@@ -102,6 +102,11 @@ pub struct LaneSpawnActor {
     lane_pool: Arc<RwLock<LanePool>>,
     lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
+    /// doc 53 R2: spawn / boot 復元の末尾で terminal pump を reconcile するための台帳 + router。
+    /// boot 中に demand（購読）が先に立っていても、 復元完了後の reconcile が残りの slot に
+    /// pump を揃える（doc 50 §4.7「直さないと決めた 1 件」の根治）。
+    terminal_pumps: Arc<RwLock<crate::process::terminal_pump::TerminalPumps>>,
+    topic_router: Arc<crate::process::topic_router::TopicRouter>,
     max_concurrent: usize,
     /// bootstrap (server.rs) からの in-process Cmd 入口。 Sender drop = 投入完了の合図
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<LaneCmd>,
@@ -121,6 +126,8 @@ impl LaneSpawnActor {
         lane_pool: Arc<RwLock<LanePool>>,
         lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
         system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
+        terminal_pumps: Arc<RwLock<crate::process::terminal_pump::TerminalPumps>>,
+        topic_router: Arc<crate::process::topic_router::TopicRouter>,
         max_concurrent: usize,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<LaneCmd>,
     ) -> Self {
@@ -128,6 +135,8 @@ impl LaneSpawnActor {
             lane_pool,
             lane_capabilities_pool,
             system_event_tx,
+            terminal_pumps,
+            topic_router,
             max_concurrent,
             cmd_rx,
         }
@@ -172,6 +181,8 @@ impl SpawnableService for LaneSpawnActor {
             lane_pool,
             lane_capabilities_pool,
             system_event_tx,
+            terminal_pumps,
+            topic_router,
             mut cmd_rx,
             ..
         } = self;
@@ -193,8 +204,10 @@ impl SpawnableService for LaneSpawnActor {
                             let pool = lane_pool.clone();
                             let lc_pool = lane_capabilities_pool.clone();
                             let tx = system_event_tx.clone();
+                            let pumps = terminal_pumps.clone();
+                            let router = topic_router.clone();
                             tokio::spawn(async move {
-                                handle_cmd(cmd, pool, lc_pool, tx, sem).await;
+                                handle_cmd(cmd, pool, lc_pool, tx, pumps, router, sem).await;
                             });
                         }
                         None => {
@@ -223,6 +236,8 @@ async fn handle_cmd(
     pool: Arc<RwLock<LanePool>>,
     lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
+    terminal_pumps: Arc<RwLock<crate::process::terminal_pump::TerminalPumps>>,
+    topic_router: Arc<crate::process::topic_router::TopicRouter>,
     semaphore: Arc<Semaphore>,
 ) {
     let LaneCmd::SpawnLane {
@@ -450,6 +465,21 @@ async fn handle_cmd(
         tracing::warn!("term slot の boot 復元 task が落ちた（pane は空で出る）: addr={addr}: {e}");
     }
 
+    // doc 53 R2: 復元完了後に pump を reconcile する（doc 50 §4.7「直さないと決めた 1 件」の根治）。
+    //
+    // 復元（800ms×N の逐次）の最中に GUI が購読して demand の 0→1 edge が先に立つと、旧実装では
+    // その時点の slot にしか pump が張られず、**後から復元された slot は永久に沈黙**していた。
+    // また World 再起動をまたいで GUI が購読を維持している場合（router 養子縁組で demand count ごと
+    // 引き継がれる）は edge 自体がもう来ない。どちらも「復元完了 = 動詞の末尾」の reconcile が
+    // 現在の demand（level）と全 slot を突き合わせて収束させる。demand 不在なら no-op。
+    crate::process::terminal_pump::reconcile_lane_pumps(
+        &pool,
+        &terminal_pumps,
+        &topic_router,
+        &addr.to_string(),
+    )
+    .await;
+
     // Performer Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
     // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
@@ -492,7 +522,16 @@ mod tests {
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
-        let handle = LaneSpawnActor::new(pool, None, tx, 0, cmd_rx).spawn_loop(shutdown.clone());
+        let handle = LaneSpawnActor::new(
+            pool,
+            None,
+            tx,
+            Default::default(),
+            std::sync::Arc::new(crate::process::topic_router::TopicRouter::new()),
+            0,
+            cmd_rx,
+        )
+        .spawn_loop(shutdown.clone());
 
         // shutdown して terminate を確認 (= 永久 block 回避)。 JoinHandle 完了を timeout 付きで
         // 決定的に検証 (旧 sleep ベースから改善)。
@@ -512,8 +551,16 @@ mod tests {
         let shutdown = CancellationToken::new();
 
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test
-        let handle =
-            LaneSpawnActor::new(pool.clone(), None, tx, 1, cmd_rx).spawn_loop(shutdown.clone());
+        let handle = LaneSpawnActor::new(
+            pool.clone(),
+            None,
+            tx,
+            Default::default(),
+            std::sync::Arc::new(crate::process::topic_router::TopicRouter::new()),
+            1,
+            cmd_rx,
+        )
+        .spawn_loop(shutdown.clone());
 
         // Cmd 未投入なので pool は空のまま
         assert_eq!(pool.read().await.count(), 0);
@@ -535,7 +582,16 @@ mod tests {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
         let shutdown = CancellationToken::new();
 
-        let handle = LaneSpawnActor::new(pool, None, tx, 1, cmd_rx).spawn_loop(shutdown);
+        let handle = LaneSpawnActor::new(
+            pool,
+            None,
+            tx,
+            Default::default(),
+            std::sync::Arc::new(crate::process::topic_router::TopicRouter::new()),
+            1,
+            cmd_rx,
+        )
+        .spawn_loop(shutdown);
 
         // Sender を drop → channel close → actor は自発的に正常終了するはず
         drop(cmd_tx);
@@ -587,7 +643,16 @@ mod tests {
             .expect("receiver 生存中の send は成功するはず");
         drop(cmd_tx);
 
-        let handle = LaneSpawnActor::new(pool.clone(), None, tx, 1, cmd_rx).spawn_loop(shutdown);
+        let handle = LaneSpawnActor::new(
+            pool.clone(),
+            None,
+            tx,
+            Default::default(),
+            std::sync::Arc::new(crate::process::topic_router::TopicRouter::new()),
+            1,
+            cmd_rx,
+        )
+        .spawn_loop(shutdown);
 
         // buffered Cmd を drain (→ race guard で skip) してから channel close で正常終了
         tokio::time::timeout(std::time::Duration::from_secs(2), handle)
@@ -638,7 +703,16 @@ mod tests {
             .expect("send SpawnLane");
         drop(cmd_tx);
 
-        let handle = LaneSpawnActor::new(pool.clone(), None, tx, 1, cmd_rx).spawn_loop(shutdown);
+        let handle = LaneSpawnActor::new(
+            pool.clone(),
+            None,
+            tx,
+            Default::default(),
+            std::sync::Arc::new(crate::process::topic_router::TopicRouter::new()),
+            1,
+            cmd_rx,
+        )
+        .spawn_loop(shutdown);
         tokio::time::timeout(std::time::Duration::from_secs(2), handle)
             .await
             .expect("actor 終了")

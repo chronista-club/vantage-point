@@ -338,6 +338,8 @@ pub(crate) async fn start_project(
                 state.lane_pool.clone(),
                 state.lane_capabilities.clone(), // PR-β-2 (VP-120): Performer spawn 時に populate_lane する
                 state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
+                state.terminal_pumps.clone(),    // doc 53 R2: 復元後 pump reconcile 用
+                state.topic_router.clone(),
                 max_concurrent,
                 lane_spawn_rx,
             ),
@@ -396,6 +398,25 @@ pub(crate) async fn start_project(
                 performers_project_id
             );
         }
+
+        // doc 53 R2: conductor lane の boot 末尾 pump reconcile。
+        //
+        // conductor の slot は `with_root`（AppState 構築中、 sync）で復元済だが、 router を
+        // 養子縁組した場合（project 起動前から GUI が購読 = demand count ごと引き継ぎ）は
+        // 0→1 edge がもう来ない — 旧実装ではこの窓を `refire_active_demands` が塞いでいたが
+        // fold-in で退役した。demand を level（`demand_active`）で読む reconcile なら
+        // 「今購読があるか × 今 slot が居るか」だけで正しく収束する。demand 不在なら no-op。
+        // （performer 側の同じ契機は lane_spawn_actor の復元末尾）
+        // address の project 名は with_root と同じ解決済の名（`state.project_name`）を使う —
+        // `performers_project_id`（dir 名）は登録名と異なり得る。
+        let conductor_lane = super::lanes_state::LaneAddress::root(&state.project_name).to_string();
+        super::terminal_pump::reconcile_lane_pumps(
+            &state.lane_pool,
+            &state.terminal_pumps,
+            &state.topic_router,
+            &conductor_lane,
+        )
+        .await;
     }
 
     // doc 44 P1 (fold-in): project は listener も outbound 接続も持たない。

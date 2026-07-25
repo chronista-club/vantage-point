@@ -42,7 +42,8 @@ pub struct TopicRouter {
     next_id: AtomicU64,
     /// demand hook 一覧 (S2)。 `register_demand` で登録。 std Mutex (await を跨がない)。
     demands: Mutex<Vec<DemandHook>>,
-    /// demand 対象 topic ごとの subscriber 数。 0↔1 遷移で hook.cb を呼ぶ判定に使う。
+    /// topic ごとの現在 subscriber 数（hook の有無に依らず常時計上、 0 で entry 除去）。
+    /// 0↔1 遷移で hook.cb を呼ぶ判定 + `demand_active` の level 読み（doc 53 R2）に使う。
     demand_counts: Mutex<HashMap<String, usize>>,
 }
 
@@ -313,27 +314,31 @@ impl TopicRouter {
         });
     }
 
+    /// 指定 concrete topic に現在 subscriber が居るか（demand の level 読み、doc 53 R2）。
+    ///
+    /// hook の発火が「edge（0↔1 の瞬間）」を伝えるのに対し、これは「今どうか」を答える。
+    /// pump reconcile の intent 側入力（`reconcile_lane_pumps`）が読む。key は購読時の
+    /// concrete topic 文字列（lane key は `~` encode 済の形、`fire_demand` の計上と同一）。
+    pub fn demand_active(&self, topic: &str) -> bool {
+        self.demand_counts
+            .lock()
+            .unwrap()
+            .get(topic)
+            .is_some_and(|c| *c > 0)
+    }
+
     /// subscriber の増減を demand hook に反映する。
     ///
-    /// 同一 topic の subscriber 数を辿り、 0→1 / 1→0 の遷移時だけ該当 hook の cb を呼ぶ。
-    /// hook 未登録 (= 通常の canvas/lanes 経路) なら即 return = ゼロコスト。
+    /// 計上（demand_counts）は **hook の有無に依らず常に**行う — `demand_active` の level 読みが
+    /// hook の登録順序（router 養子縁組の前に subscribe が立つ boot 窓）に依存しないため
+    /// （doc 53 R2。旧実装は hook 未登録なら計上ごと skip していた）。0 で entry を除去するので
+    /// map は「現在購読が生きている topic」に有界。subscribe/unsubscribe は接続単位の頻度なので
+    /// 常時計上のコストは無視できる（hot path の route() は counts に触らない）。
+    ///
+    /// hook の cb 呼び出しは従来どおり 0→1 / 1→0 の遷移時だけ。
     /// lock は cb 呼び出し前に手放す (cb が router を再帰 lock しても deadlock しない)。
     fn fire_demand(&self, topic: &str, added: bool) {
-        let to_call: Vec<DemandCallback> = {
-            let demands = self.demands.lock().unwrap();
-            if demands.is_empty() {
-                return;
-            }
-            let path = TopicPath::parse(topic);
-            let matched: Vec<DemandCallback> = demands
-                .iter()
-                .filter(|h| path.matches(&h.pattern))
-                .map(|h| h.cb.clone())
-                .collect();
-            if matched.is_empty() {
-                return;
-            }
-
+        let transition = {
             let mut counts = self.demand_counts.lock().unwrap();
             let entry = counts.entry(topic.to_string()).or_insert(0);
             let transition = if added {
@@ -348,9 +353,21 @@ impl TopicRouter {
             if *entry == 0 {
                 counts.remove(topic);
             }
-            if transition { matched } else { Vec::new() }
+            transition
         };
+        if !transition {
+            return;
+        }
 
+        let to_call: Vec<DemandCallback> = {
+            let demands = self.demands.lock().unwrap();
+            let path = TopicPath::parse(topic);
+            demands
+                .iter()
+                .filter(|h| path.matches(&h.pattern))
+                .map(|h| h.cb.clone())
+                .collect()
+        };
         for cb in to_call {
             cb(topic.to_string(), added);
         }
@@ -895,11 +912,40 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_without_demand_hook_is_noop() {
-        // hook 未登録なら fire_demand は即 return = 既存 canvas/lanes 経路はゼロ影響。
+        // hook 未登録でも subscribe/unsubscribe は安全に通る (cb は誰も呼ばれない)。
+        // doc 53 R2 で計上 (demand_counts) は hook 非依存の常時計上になった — unsubscribe で
+        // 0 に戻り entry も除去されるので、 map は伸びない。
         let router = TopicRouter::new();
         let (id, _rx) = router.subscribe("process/paisley-park/#").await;
         router.unsubscribe(id).await;
-        // panic せず通れば OK (demand_counts は触られない)。
+        assert!(!router.demand_active("process/paisley-park/#"));
+    }
+
+    /// doc 53 R2: `demand_active` は「今 subscriber が居るか」の level 読み。
+    /// hook の登録有無・登録順序に依存しない（router 養子縁組の boot 窓で、hook 登録前に
+    /// 立った購読も demand として見える — reconcile の intent 側入力の要件）。
+    #[tokio::test]
+    async fn test_demand_active_reads_current_subscribers_without_hooks() {
+        let router = TopicRouter::new();
+        let topic = "process/terminal/data/vp~root/out";
+        assert!(!router.demand_active(topic), "購読前は inactive");
+
+        // hook 未登録のまま subscribe → level は立つ（edge の cb は誰も呼ばれない）。
+        let (id1, _rx1) = router.subscribe(topic).await;
+        assert!(router.demand_active(topic), "hook 無しでも計上される");
+
+        // 2 本目でも active のまま、1 本抜けても active、全部抜けたら inactive。
+        let (id2, _rx2) = router.subscribe(topic).await;
+        router.unsubscribe(id1).await;
+        assert!(router.demand_active(topic), "残 1 本なら active");
+        router.unsubscribe(id2).await;
+        assert!(!router.demand_active(topic), "0 本で inactive に戻る");
+
+        // 別 topic の購読はこの topic の demand に影響しない（concrete topic 単位の計上）。
+        let (_id3, _rx3) = router
+            .subscribe("process/terminal/data/other~root/out")
+            .await;
+        assert!(!router.demand_active(topic));
     }
 
     #[tokio::test]
