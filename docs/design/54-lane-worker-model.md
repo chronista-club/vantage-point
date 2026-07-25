@@ -331,12 +331,20 @@ doc 53 の機構（intent と実体を reconcile で合わせる）は**その�
 「slot を立て忘れる」は起きるので、両者は補完関係。
 
 ```
-R1（console_mode 廃止 — 着手済、本地図と整合）
-→ R2（pump level 化）
-→ [設計ゲート: 本 doc の実装 phase 切り + World A/B 再検証（doc 53 §6.5）]
-→ R3（reconcile_lane — 本 doc のモデルを reconcile する）
-→ R4（pane 一覧配信 — wire 契約は本 doc の id で鋳る。2 回鋳直さない）
+R1（console_mode 廃止）✅ PR #907
+→ 既定 Chat ✅ PR #908
+→ R2（pump reconcile 化）✅ PR #909（実装決定は doc 53 §5.1）
+→ [設計ゲート 2026-07-25 — 決定①: R3 は機構先行（mako）]
+→ R3（reconcile_lane — **現行 schema のまま**機構のみ。5 つの手書き遷移を畳む）
+→ schema 束（本 doc の VP 発行 id + act rename（§8.1）+ forward-only migration — 単独 PR）
+→ R4（pane 一覧配信 — wire 契約は**新 id** で鋳る。2 回鋳直さない）
 ```
+
+**決定①の理由**（2026-07-25、R2 出荷後）: R2 が「機構と鍵は分離できる」を実証した
+（identity は pid で照合しつつ registry の鍵は据え置き）。schema を先に入れると新 id の
+読み手が R4 まで不在（[[writer-without-reader]] の再演）。機構先行なら中間状態は
+「現行鍵のまま reconcile が回る」という完結した姿で、schema 束はその上の独立した 1 手。
+World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残る（R4 の client 地形を決める）。
 
 ---
 
