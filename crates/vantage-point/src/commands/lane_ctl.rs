@@ -129,11 +129,17 @@ pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> 
         serde_json::json!({ "lane": lane, "stand": stand }),
     )?;
     let get_u64 = |k: &str| resp.get(k).and_then(serde_json::Value::as_u64);
-    let (Some(session), Some(pid)) = (get_u64("session"), get_u64("pid")) else {
+    let Some(session) = get_u64("session") else {
         bail!("lane_slot_new 応答が不正です: {}", resp);
     };
+    // doc 53 §12.2 (R3c): pid は **無いことがある** — spawn に失敗しても intent（session）は
+    // 残り、次の契機で再試行される。session は確かに増えているので失敗扱いにはしない。
+    let pid = match get_u64("pid") {
+        Some(pid) => format!("pid={pid}"),
+        None => "pid=未起動（次の契機で再試行）".to_string(),
+    };
     println!(
-        "[vp lane slot-new] {lane}: session={session} pid={pid}（この lane の console {} 枚）",
+        "[vp lane slot-new] {lane}: session={session} {pid}（この lane の console {} 枚）",
         get_u64("count").unwrap_or(0)
     );
     println!("  読む: vp lane capture {lane} --session {session}");
