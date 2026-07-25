@@ -488,6 +488,7 @@ A6 では team-b（moody-blues）を **4 回**回し、毎回**新規の機能�
 | 5 | Reset が term replay を消さない | **ghost replay** — Reset したはずの画面が新 console に蘇る |
 | 6 | replay file の身元が **role** に紐づく | 付け替えで**他 session の画面**が出る / 2 slot が同じ file を奪い合う |
 | 7 | xterm host の身元が **role** に紐づく（`#lane-host`） | root 付け替えで **DOM 位置と focus が旧 root に残留**（+ 非 root term が click で focus できない） |
+| 8 | `act → host id` の写像が **4 箇所に散在**（うち 2 箇所が chat 決め打ち） | term が focused の lane で **focus ring が別 pane に誤爆**（pendingFocus が永久に未解決） |
 
 **「レビューを 1 回通したから安全」は成り立たない。** 特に制約撤廃を含む変更では、レビュー自体が
 **新たに到達可能になった構成**を発見する過程になるので、収束するまで回す必要がある。
@@ -571,6 +572,27 @@ focus 優先だけは root に依るので、`ensureLane` が既存 instance に
 >
 > migration も実データで確認: `vantage-point__root`（262144 bytes）→ `vantage-point__root__16`
 > へ内容ごと rename。他 60 lane は次の spawn で lazy に移設される。
+
+#### 同じ写像を 2 箇所以上に書くと、片方だけ古くなる（8 例目）
+
+`act → host id`（chat なら `chat-session-<n>` / それ以外は `term-session-<n>`）の判断が **4 箇所**に
+散っていた: roster 導出 / act 切替の rename / `applyLaneView` の focus / pendingFocus の fallback。
+前 2 つは act を読んでいたが、**focus 側の 2 つは `chatHostId` 決め打ち**のまま残っていた
+（pre-A6 の `applyConsoleMode` は lane 単位 mode で分岐していて、A6 化で分岐ごと落ちた）。
+
+症状: term が focused の lane で存在しない chat host を指すため `pendingFocus` が永久に解決せず、
+`.pane-focused` が **挿入順の先頭**（無関係な pane）に付く。キーボード入力の宛先は World A 側の
+別経路なので**壊れず、見た目だけズレる** — だから実機でも気付きにくい。
+
+> ⚠️ これは [[comment-is-not-proof]] の**逆向き**だった。これまでは「コメントに書いてあるから
+> 動いている」と誤認する形だったが、今回は**コメントが正しい仕様を述べていて実装が追いついて
+> いなかった**（「その session の act で host が決まる」と書いてあるのに act を一度も読まない）。
+> コメントは意図の記録なので、**実装を落としたときに一緒に落ちない**。
+>
+> ⚠️ **片方だけ直すと症状が残る**。`applyLaneView` を直しても、pendingFocus の fallback が同じ
+> 誤った値を再計算するので focus は解決しない。修正は `hostIdForAct(session, act)` を 1 本作って
+> 4 箇所すべてを通す形にした — 次に呼び手が増えても分岐を書き写す機会が無い。
+> テストは「例外なし」を見る（tui と act 欠落の両方で chat host にならないこと）。
 
 #### 残タスク
 

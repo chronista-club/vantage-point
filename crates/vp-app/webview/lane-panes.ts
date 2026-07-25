@@ -87,6 +87,21 @@ export function termHostId(session: number): string {
 /** term host の class（World A `ensureTermHost` が付ける値と対。roster 外の掃除に使う）。 */
 export const TERM_HOST_CLASS = "term-session-host";
 
+/**
+ * session の act から pane host id を決める **唯一の写像**。
+ *
+ * この写像は roster 導出 / act 切替の rename / focus 解決の 3 箇所で要る。各所で
+ * `act === "chat" ? … : …` を書くと**片方だけ古くなる** — 実際 focus 側 2 箇所が chat 決め打ちの
+ * まま残り、term が focused の lane で focus ring が別 pane に付いていた（team-b 8 回目
+ * 2026-07-25）。act 不明（旧 SP wire）は tui に倒す = 従来の既定。
+ */
+export function hostIdForAct(
+	session: number,
+	act: "tui" | "chat" | undefined,
+): string {
+	return act === "chat" ? chatHostId(session) : termHostId(session);
+}
+
 /** board（PP）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
  *  1 lane 1 枚、表示 lane は常に 1 つ = xterm と同じ性質。動的生成は不要、位置決めだけ動く）。
  *  roster に載るのは board が非空のときだけ（doc 52 §10 wave 0 — board 非空で自動）。 */
@@ -135,9 +150,8 @@ export function lanePaneRefs(
 ): PaneRef[] {
 	const sessionPanes = sessions.map((v): PaneRef => {
 		const label = `${sessionChipPrefix(v.stand)}#${v.key}`;
-		return v.act === "chat"
-			? { id: chatHostId(v.key), label, session: v.key, kind: "chat" }
-			: { id: termHostId(v.key), label, session: v.key, kind: "term" };
+		const kind = v.act === "chat" ? "chat" : "term";
+		return { id: hostIdForAct(v.key, v.act), label, session: v.key, kind };
 	});
 	return boardPresent ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
 }
@@ -459,8 +473,16 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (pendingFocus !== null) {
 			let target = pendingFocus;
 			const refs = refsOf(d.lane);
-			if (sessionOfHostId(target) !== null && !refs.some((v) => v.id === target)) {
-				target = chatHostId(focusedOf(d.lane));
+			if (!refs.some((v) => v.id === target)) {
+				// 保留先が現 roster に無い = 一覧未着で当てた id が古い。意図（focused
+				// session の pane を見せる）に読み替える。⚠️ **その session の act** で host が
+				// 決まる — chat 決め打ちだと term が focused の lane で永久に解決しない
+				// （pendingFocus が残り、focus ring が挿入順の先頭に誤爆する）。
+				const focused = focusedOf(d.lane);
+				const act = sessionsByLane
+					.get(d.lane)
+					?.find((v) => v.key === focused)?.act;
+				target = hostIdForAct(focused, act);
 			}
 			if (refs.some((v) => v.id === target)) {
 				pendingFocus = null;
@@ -483,14 +505,9 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (entry) entry.act = d.act;
 		if (d.lane !== activeLane) return;
 		// 見え方が変わると host id も変わる（chat-session-N ⇄ term-session-N）。
-		const prevId =
-			d.act === "chat"
-				? termHostId(d.session)
-				: chatHostId(d.session);
-		const nextId =
-			d.act === "chat"
-				? chatHostId(d.session)
-				: termHostId(d.session);
+		// 変身の前後 = 反対の act の host ⇄ 新しい act の host。
+		const prevId = hostIdForAct(d.session, d.act === "chat" ? "tui" : "chat");
+		const nextId = hostIdForAct(d.session, d.act);
 		// ⚠️ **roster 同期より先に**列の中で id を差し替える。順序を逆にすると
 		// syncPaneColumns が「旧 id が消えた / 新 id が入場した」と解釈し、pane が右端の
 		// 細い列に飛ぶ（2026-07-25 実機: chat→tui で「立ち上がっていない」ように見えた真因）。

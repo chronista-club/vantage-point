@@ -20,6 +20,7 @@ import {
 	newPaneChoices,
 	renamePane,
 	sessionOfHostId,
+	hostIdForAct,
 	syncPaneColumns,
 	termHostId,
 } from "./lane-panes";
@@ -187,6 +188,24 @@ describe("chatHostId / sessionOfHostId（往復）", () => {
 	it("term pane / 未知 id は null", () => {
 		expect(sessionOfHostId(termHostId(1))).toBeNull();
 		expect(sessionOfHostId("chat-session-x")).toBeNull();
+	});
+});
+
+describe("hostIdForAct（act → host id の唯一の写像）", () => {
+	it("chat は chat host、それ以外（tui / 不明）は term host", () => {
+		expect(hostIdForAct(5, "chat")).toBe(chatHostId(5));
+		expect(hostIdForAct(5, "tui")).toBe(termHostId(5));
+		// 旧 SP wire（act 欠落）は tui に倒す = 従来の既定。
+		expect(hostIdForAct(5, undefined)).toBe(termHostId(5));
+	});
+
+	it("**tui を chat に倒さない**（focus 側 2 箇所が chat 決め打ちだった退行の固定）", () => {
+		// team-b 8 回目: `applyLaneView` と pendingFocus の fallback が act を読まず常に
+		// chat host を指していた → term が focused の lane で pane が見つからず、focus ring が
+		// 挿入順の先頭に誤爆した。写像を 1 本にしたので、ここが守れば全 call site が守れる。
+		for (const act of ["tui", undefined] as const) {
+			expect(hostIdForAct(9, act)).not.toBe(chatHostId(9));
+		}
 	});
 });
 

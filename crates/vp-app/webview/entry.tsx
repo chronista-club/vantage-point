@@ -106,7 +106,12 @@ import { renderPP, clearPP, appendPP } from "./pp";
 import { installConsole, focusedOf, sessionActOf } from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Act で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
-import { chatHostId, installLanePanes, TERM_HOST_CLASS } from "./lane-panes";
+import {
+	chatHostId,
+	hostIdForAct,
+	installLanePanes,
+	TERM_HOST_CLASS,
+} from "./lane-panes";
 import { installChatView, CHATVIEW_CSS, handoffKey } from "./chatview";
 import {
 	mountEchoesHeader,
@@ -509,11 +514,18 @@ const applyLaneView = (lane: string): void => {
 	// なので、lane が変わったら新 lane の配置を DOM へ写し直す（これが無いと「どの lane に
 	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
 	lanePanes?.setActiveLane(lane);
-	// focus 先 = focused session の pane（session ↔ Pane 1:1）。その session の act で
+	// focus 先 = focused session の pane（session ↔ Pane 1:1）。**その session の act** で
 	// host が決まる（term なら xterm、chat なら ChatView）。focused は console.ts の
 	// registry が真値（echoes_session_list で同期済み。未知 lane は 1 = 旧 SP 互換）。
 	// pane がまだ生えていない boot 窓は lane-panes 側が pendingFocus で救済する。
-	lanePanes?.focusPane(chatHostId(focusedOf(lane)));
+	//
+	// ⚠️ 旧実装は `chatHostId(...)` 決め打ちで、上のコメントが主張する act 分岐を**していな
+	// かった**（pre-A6 の `applyConsoleMode` は lane 単位 mode で分岐していたが、A6 化で
+	// 分岐ごと落ちた）。term が focused の lane では存在しない chat host を指すので
+	// pendingFocus が永久に解決せず、focus ring が挿入順の先頭に誤爆する
+	// （team-b 8 回目 2026-07-25 score 85 — コメントだけ残った実装漏れ）。
+	const focused = focusedOf(lane);
+	lanePanes?.focusPane(hostIdForAct(focused, sessionActOf(lane, focused)));
 	// doc 38 §4.3: 再同期ローダー（global fixed 要素）は lane 切替で必ず下ろす。
 	// resync-loader は activeLane の replaying を読むだけなので、stuck した replaying が
 	// 新しい表示の上に居座るのを防ぐ。
