@@ -529,6 +529,11 @@ pub struct ResolvedSession {
     /// session の会話 id（doc 40: registry が SSOT — resolve 時の registry load から同梱。
     /// host 構築の resume 解決が別 store を読み直さないための持ち回り）。
     pub conversation: Option<String>,
+    /// **この session の** Act（doc 50 §4.6 A6）。lane 単位 `console_mode`（= root cache）と
+    /// 混同しないこと — A6 で「root=tui のまま非 root だけ chat」が正規の構成になったので、
+    /// chat 経路の gate は root の act ではなく**当該 session の act** で判定する必要がある
+    /// （root で gate すると非 root の chat に replay が届かない。team-b review 2026-07-25）。
+    pub act: SessionAct,
 }
 
 /// [`LanePool::list_chat_sessions`] の 1 要素 — registry（永続）+ runtime（engine 生死）+
@@ -1429,6 +1434,8 @@ impl LanePool {
             stand: entry.stand.clone(),
             focused: key == reg.focused,
             conversation: entry.conversation.clone(),
+            // doc 50 §4.6 A6: chat 経路の gate はこの値で行う（root cache では非 root を弾く）。
+            act: entry.act,
         })
     }
 
@@ -1823,10 +1830,15 @@ impl LanePool {
     ///   全 session に適用）。P5 で `pty_slots` が session ごとになったので、旧「lane に
     ///   PtySlot が残存」という lane 全体の近似ではなく **`pty_slots[addr][key]` の有無**を
     ///   直接検査できる。これが「1 session = 高々 1 エンジン」の実体
-    /// - **focused session**: 加えて mode=Chat 以外では拒否（= 生きた Act I console を
-    ///   暗黙に殺さないための入口ガード）
-    /// - **非 focused session**: console_mode ガードは適用しない（doc 38 落とし穴③ —
-    ///   ガードの流用は「Tui 中は副 session が動けない」という意図しない制約の混入になる）
+    /// - **act=chat 以外の session では拒否**（= 生きた Act I console を暗黙に殺さないための
+    ///   入口ガード）。判定は **その session の act**（doc 50 §4.6 A6）。
+    ///
+    /// > ⚠️ 旧実装は `resolved.focused && info.console_mode != Chat`（= lane 単位 root cache を
+    /// > focused の時だけ見る）だった。A6 で「root=tui のまま非 root だけ chat」が正規の構成に
+    /// > なったので、**その非 root を focus すると chat engine の起動が拒否される**（root が tui
+    /// > だから）。逆に非 focused は素通りしていた。session ごとに act を持つ今は、focused の
+    /// > 特例（doc 38 落とし穴③ = lane 単位ガードが副 session を縛る問題への対処）も不要 —
+    /// > 自分の act で判定すれば「Tui 中は副 session が動けない」は構造的に起きない。
     pub fn ensure_chat_engine(
         &mut self,
         addr: &LaneAddress,
@@ -1838,13 +1850,14 @@ impl LanePool {
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        if resolved.focused && info.console_mode != SessionAct::Chat {
+        if resolved.act != SessionAct::Chat {
             // 呼び元は echoes_submit / echoes_nudge の両方（doc 34 channel E）— method 名は
             // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
             anyhow::bail!(
-                "chat engine には act=chat が必要（addr={}、現在 {:?}。session_set_act で切替）",
+                "chat engine には act=chat が必要（addr={}, session={}、現在 {:?}。session_set_act で切替）",
                 addr,
-                info.console_mode
+                resolved.key,
+                resolved.act
             );
         }
         // doc 46 P5: 法（1 session = 高々 1 エンジン）を **当該 session の slot 有無**で直接見る。
@@ -3022,13 +3035,18 @@ mod tests {
         let _state = crate::test_env::state_dir_async().await;
         let addr = LaneAddress::root("vp");
         let mut pool = LanePool::new();
-        // mode=Chat にして console_mode ガードを通し、PTY 排他の判定だけを裸で見る。
+        // act ガードを通し、PTY 排他の判定だけを裸で見る。
+        // ⚠️ doc 50 §4.6 A6 で act ガードは **registry の session ごとの act** を見るように
+        // なった（旧: lane cache の console_mode）。`insert_lane` は cache しか設定しないので、
+        // registry 側にも Chat を書く必要がある（registry が SSOT = doc 47 §4）。
         insert_lane(&mut pool, &addr, SessionAct::Chat);
+        let lane_label = crate::process::stand_spawner::lane_label(&addr);
+        session_registry::set_root_act(&addr.project, lane_label, "echoes", SessionAct::Chat)
+            .expect("root の act を chat に");
         let router = std::sync::Arc::new(crate::process::topic_router::TopicRouter::new());
 
         // 非 focused 側の比較対象として、engine を持たない legacy stand の session #2 を作る
         // （engine spawn を実際に走らせないための足場 — 既存 test と同じ手筋）。
-        let lane_label = crate::process::stand_spawner::lane_label(&addr);
         let k2 = session_registry::create(
             &addr.project,
             lane_label,

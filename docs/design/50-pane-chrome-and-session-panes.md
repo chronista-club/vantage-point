@@ -337,9 +337,19 @@ Design B は diff が小さいだけでなく、§4.6 が警告した「1 辺が
 | **`remove_chat_session`** | `chat_engines` だけ畳む（名前どおり chat 専用） | `drop_slot` も呼ぶ（**孤児 PTY を残さない**） | term に ✕ が付いて露出 |
 | **名札の「click で focus」** | chat の focus 概念を term にも表示 | chat 限定（term は World B が focus を持たない） | 実機 dogfood |
 | **kind badge の gating** | 未配線（S5 の `actSwitchBlockedReason` は**一度も呼ばれていなかった**） | server が `chat_capable` を送り、client は押せる見た目を出さない | 実機（押しても無言） |
+| **`handle_echoes_demand_start` の gate** | lane 単位 `console_mode`（root cache）— root=tui だと非 root の chat に **ReplayStart すら送らない** | `resolved.act`（`ResolvedSession` に `act` を追加） | team-b 再 review（score 92） |
+| **`ensure_chat_engine` の gate** | `resolved.focused && info.console_mode != Chat` — 非 root chat を focus すると **engine 起動が拒否**、逆に非 focused は素通り | `resolved.act != Chat`（focused の特例も不要に） | 上記の同型探索 |
 
 **共通形は「lane 単位で判断している箇所」**。A6 は「session ごとに act が違いうる」世界を作った
 ので、lane 単位の述語（`console_mode` / `pid` / `lane_is_chat`）はすべて**誤った要約**になる。
+
+> ⚠️ **この清算は 4 周かかった**（設計時 → 清算 grep → 実機 → team-b 2 回）。`console_mode` を
+> 読む場所を消したつもりでも、**その投影を読む場所**（`LaneInfo.console_mode` は root の act の
+> 投影）が残る。最後の 2 件（`echoes_demand_start` / `ensure_chat_engine`）は「root=tui のまま
+> 非 root だけ chat」という**構成の組み合わせ**でしか露出せず、root=chat の既存テストでは
+> 検出できなかった。同型を探すときは grep だけでなく、**A6 が新たに到達可能にした構成**を
+> 列挙してテストを書く方が確実（`echoes_demand_start_replays_non_root_chat_while_root_is_tui` は
+> 旧実装に戻すと落ちることを確認済み）。
 
 発見のされ方が 3 通りあったのが示唆的:
 

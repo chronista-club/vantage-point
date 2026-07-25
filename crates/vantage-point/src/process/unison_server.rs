@@ -873,16 +873,27 @@ async fn handle_echoes_demand_start(
         return Err(format!("echoes_demand_start: lane パース失敗: {lane}"));
     };
 
-    // chat lane 以外は replay しない（Act I の履歴は PtySlot の terminal replay が担う）。
-    // lane 不在も console_mode=None → not_chat で graceful に返す（従来挙動の温存）。
-    // session の解決（None = focused、doc 38 — replay は session 単位）は chat 確定後。
+    // chat でない session は replay しない（Act I の履歴は PtySlot の terminal replay が担う）。
+    //
+    // ⚠️ gate は **その session の act**（doc 50 §4.6 A6）。旧実装は lane 単位
+    // `console_mode`（= root cache）で弾いていたため、**root=tui のまま非 root だけ chat** という
+    // A6 の正規構成で `not_chat` を返し、ReplayStart すら送らずに会話が復元されなかった
+    // （team-b review 2026-07-25、score 92。§4.7「共通形は lane 単位で判断している箇所」の同型）。
+    // lane 不在は graceful に not_chat（従来挙動の温存 — Err にすると boot 窓で騒がしい）。
     let resolved = {
         let pool = state.lane_pool.read().await;
-        if pool.console_mode(&addr) != Some(crate::lane::session_registry::SessionAct::Chat) {
+        if pool.console_mode(&addr).is_none() {
             return Ok(serde_json::json!({"status": "not_chat", "lane": lane}));
         }
-        pool.resolve_chat_session(&addr, session)
-            .map_err(|e| format!("echoes_demand_start: {e}"))?
+        let resolved = pool
+            .resolve_chat_session(&addr, session)
+            .map_err(|e| format!("echoes_demand_start: {e}"))?;
+        if resolved.act != crate::lane::session_registry::SessionAct::Chat {
+            return Ok(serde_json::json!({
+                "status": "not_chat", "lane": lane, "session": resolved.key
+            }));
+        }
+        resolved
     };
 
     // doc 38 Phase 3（focused eager）: attach = 会話を見に来た合図。当該 session の engine を
@@ -4519,6 +4530,81 @@ mod tests {
         );
         assert!(matches!(got[2], EchoesEvent::TurnCompleted { .. }));
         assert_eq!(got[3], EchoesEvent::ReplayEnd { in_flight: false });
+    }
+
+    /// doc 50 §4.6 A6: **root=tui のまま非 root だけ chat** の構成で replay が届く。
+    ///
+    /// team-b review 2026-07-25（score 92）: `handle_echoes_demand_start` の gate が lane 単位
+    /// `console_mode`（= root cache）だったため、A6 が正規にサポートする構成で `not_chat` を返し、
+    /// **ReplayStart すら送らずに会話が復元されなかった**。gate を「その session の act」に直した
+    /// ことを、root が tui のままである状態で固定する（root=chat の既存テストでは検出できない）。
+    #[tokio::test]
+    async fn echoes_demand_start_replays_non_root_chat_while_root_is_tui() {
+        use super::dispatch_process_method;
+        use crate::echoes::EchoesEvent;
+        use crate::lane::session_registry::SessionAct;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use std::time::Duration;
+
+        let _state_guard = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        // **root は tui**（= 旧 gate ならここで not_chat に落ちる）。
+        let addr = insert_test_lane(&state, "vptest-nonroot-chat", SessionAct::Tui).await;
+
+        // 非 root の chat session を作る（create_chat_session は act=Chat で作る）。
+        let k2 = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("codex"), true)
+            .expect("create chat session");
+
+        // その session の replay 源に会話を仕込む。
+        for ev in [
+            EchoesEvent::MessageChunk {
+                text: "non-root chat lives".to_string(),
+            },
+            EchoesEvent::TurnCompleted {
+                session_id: "s".to_string(),
+                cost_usd: None,
+                context_tokens: None,
+                context_window: None,
+            },
+        ] {
+            crate::echoes::replay_log::append("vptest-nonroot-chat", &format!("root#{k2}"), &ev)
+                .expect("replay log append");
+        }
+
+        let topic = "process/echoes/data/vptest-nonroot-chat~root/event";
+        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+
+        // session を明示して demand（client の act 切替後の明示 demand と同じ形）。
+        let res = dispatch_process_method(
+            &state,
+            "echoes_demand_start",
+            serde_json::json!({ "lane": "vptest-nonroot-chat/root", "session": k2 }),
+        )
+        .await
+        .expect("demand_start");
+        assert_ne!(
+            res["status"], "not_chat",
+            "root が tui でも非 root の chat には replay が届く（旧 gate はここで落ちていた）"
+        );
+        assert_eq!(res["events"], 2, "仕込んだ 2 event が replay される");
+
+        // 配送列の先頭が ReplayStart（= GUI の会話 clear 契機）で、session field が非 root を運ぶ。
+        let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
+            .await
+            .expect("replay event timeout")
+            .expect("topic closed");
+        match msg {
+            ProcessMessage::EchoesEvent { session, event, .. } => {
+                assert_eq!(session, k2, "session field で非 root を運ぶ");
+                assert_eq!(event, EchoesEvent::ReplayStart);
+            }
+            other => panic!("想定外の message: {other:?}"),
+        }
     }
 
     /// doc 50 §4.6 A6: `lane_slot_new` は **新 slot に pump を張る**。
