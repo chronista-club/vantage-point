@@ -827,3 +827,88 @@ act を書くのが動詞の**全て**になった今、これは Err にする�
 `null`（= 「intent はあるが立っていない」の観測値）。CLI は bail をやめて
 「pid=未起動（次の契機で再試行）」を表示する — §12.2 の失敗意味論が wire と CLI に
 そのまま現れた形。
+
+### 12.8 R3c-2 の実装記録（lane 動詞 4 本 + `RespawnMode` 退役、2026-07-26）
+
+R3c の後半 = **New root / Switch root / Reset / restart**。これで §12.4 の 10 動詞すべてが
+「intent を書く（or 実体を捨てる）+ reconcile」に揃った。
+
+**`RespawnMode` が完全退役した（3 値 → 2 値 → 0）**。R3a で `--continue` を退役させて
+「素で立てるか」の軸が registry から導出されるようになり（Bare ≡ Resume）、残った 1 軸
+（registry を破棄するか）も R3c-2 で**別々の動詞**になった:
+
+| 旧 | 新 | 意味 |
+|---|---|---|
+| `restart_lane(Follow)` | `drop_root_entities` + reconcile | **実体だけ**捨てる（intent は 1 bit も動かない） |
+| `restart_lane(Reset)` | `reset_lane` + reconcile | **intent ごと**素に戻す |
+
+同じ関数に mode で 2 つの意味を持たせていた形自体が、intent と実体を混ぜていた証拠だった。
+
+#### 挙動の変化（意図したもの）
+
+| 動詞 | 旧 | 新 |
+|---|---|---|
+| **New root** | `restart_lane(Follow)` で root slot を張り替え = **旧 root の console が消える** | 新 root の pane が**足される**だけ。旧 root は無傷（session = Pane なら代表の変更は pane の破棄ではない） |
+| **Switch root** | 対象 session の会話で root slot を張り替え | **実体には何も起きない**（対象の pane は既に在る）。動くのは代表だけ |
+| **restart** | chat lane では `chat_engines.remove(addr)` = **lane 全体**の engine を落とす | **root だけ**。兄弟 pane は巻き込まない（R2 の pump reconcile と同じ判断） |
+
+#### Reset が **既定形の act を書く**理由（順序 4 段の ④）
+
+`session_registry::clear` は file ごと消すが、`load` の fallback（`SessionRegistry::single`）は
+**act=Tui 固定**。書かずに reconcile へ渡すと **chat lane の Reset が PTY を立てる**。さらに
+次の World boot では `with_root` が「file 不在 = 初回」と見て既定レンズ（Chat）を書くので、
+**同じ lane が観測者によって型を変える**。だから Reset は消したあと必ず intent を書き直す。
+
+⚠️ 書き戻すのは **Reset 直前の root の act**（既定レンズではない）。「Reset = 会話を捨てる」で
+あって「見え方を出荷時に戻す」ではない — tui console で Reset を押した user の pane が chat に
+化けるのは破壊的な驚きになる。**既定レンズに倒す案もあり、変えるなら `reset_lane` の 1 行**。
+
+##### team-b 指摘（score 92）: 初版は Tui 側だけ穴が空いていた
+
+初版はこれを **「`clear` で file を消す → `set_root_act` で書き戻す」の 4 段**で実装した。
+ところが `set_root_act` は「**値が同じなら save しない**」最適化を持ち、その前提（disk が既に
+正しい）は clear 直後には成り立たない:
+
+- **Chat へ戻す**: file 不在 → `load` の fallback は act=**Tui** → 差分あり → save される ✅
+- **Tui へ戻す**: file 不在 → fallback も **Tui** → 「もう Tui だから」と **save をスキップ** ❌
+  → file が**不在のまま**残り、次の boot で `with_root` が Chat を書く = **§12.8 が防ぐと
+  宣言したその現象が Tui 側で再発**
+
+対処は「force save を足す」ではなく **file が不在になる窓そのものを消す**方向にした:
+`session_registry::reset_to_single`（既定形を **1 回の save で確定**）を新設し、Reset は
+`clear` を使わない（lane 自体を消す GC は file を残す理由が無いので `clear` のまま）。
+結果 4 段 → **3 段**になり、④ の順序制約も消えた。
+
+**教訓**: この穴の機構（`set_root_act` が保存をスキップする）は、同じ日に**間欠テスト失敗の
+根本原因として突き止め、この §12.8 に書いたばかり**だった。原因を言語化しても、**自分の
+コードの別経路に適用するのは別の作業**。横に同型を探す規律（[[one-edge-two-jobs]]）は
+「他人のコード」だけでなく「たった今書いた自分のコード」にも要る。
+
+#### 動詞を薄くしたことの代償（設計上の学び）
+
+`drop_root_entities` は不在なら no-op、reconcile も「合わせる相手が居ない」で静かに返る。
+その結果 **「lane が存在しない」と「やることが何も無い」が同じ形**になり、
+`restart_lane_orchestrated` は存在しない lane の restart に成功を返すようになった
+（旧 `restart_lane` は `Lane not found` を返していた。既存テストが検出）。
+→ 実在確認は**呼び手の責任**として明示的に置き直した。冪等性を徹底すると、その徹底が
+エラー検出能力を吸収することがある。
+
+retry も形が変わった: VP-131 の透過 retry は「reconcile をもう一度呼ぶ」だけになり、
+**部分的に立った slot はそのまま残って、立たなかったものだけが次の attempt の対象**になる
+（差分だけを埋めるのが reconcile なので自動的にそうなる。旧実装は all-or-nothing）。
+診断のために `LaneReconcile.last_error` を足した（動詞が `Err` を返せなくなったぶんの補償）。
+
+#### 間欠テスト失敗の根治（副産物、2026-07-26）
+
+R3c-2 の作業中に `add_console_creates_a_session_and_reconcile_stands_it_up` が
+**並列実行時のみ**落ちるようになった。原因は**独立した 2 性質の噛み合わせ**:
+
+1. `set_root_act(Tui)` は「既に Tui なら**保存せず** `Ok(false)`」。既定が Tui なので
+   test helper `insert_lane(pool, addr, Tui)` は **registry file を作らない**（書いたつもり）
+2. `lane_pool_with_conductor_pre_populates_one_lane` が **guard 無し**で
+   `LanePool::with_root("vp")` を呼ぶ。`with_root` は「file 不在 = 初回」で既定レンズ
+   （**Chat**）を書くので、①の隙に file を作って #1 を Chat にしてしまう
+
+→ reconcile は「act=Chat の root に slot は要らない」と正しく判断して root の console を畳む =
+テストが落ちる。**guard 抜けは同時に開発機の実 state（`~/.local/state/vp/`）へ project "vp" の
+registry を書いていた**（[[dev-machine-masks-ci-failure]] の一族）。guard を足して根治。
