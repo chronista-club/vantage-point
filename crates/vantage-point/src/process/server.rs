@@ -399,22 +399,25 @@ pub(crate) async fn start_project(
             );
         }
 
-        // doc 53 R2: conductor lane の boot 末尾 pump reconcile。
+        // doc 53 §12: **conductor lane の実体はここで立つ**（`with_root` は登録だけ）。
         //
-        // conductor の slot は `with_root`（AppState 構築中、 sync）で復元済だが、 router を
-        // 養子縁組した場合（project 起動前から GUI が購読 = demand count ごと引き継ぎ）は
-        // 0→1 edge がもう来ない — 旧実装ではこの窓を `refire_active_demands` が塞いでいたが
-        // fold-in で退役した。demand を level（`demand_active`）で読む reconcile なら
-        // 「今購読があるか × 今 slot が居るか」だけで正しく収束する。demand 不在なら no-op。
-        // （performer 側の同じ契機は lane_spawn_actor の復元末尾）
+        // reconcile が registry に従って act=Tui の全 session に slot を立て、末尾で pump も
+        // 合わせる（R2）。旧実装は ①`with_root` が root を spawn ②`restore_term_slots` が
+        // 非 root を spawn ③ここで pump だけ reconcile、の 3 段で、①② が **AppState 構築中の
+        // sync 文脈**（server.rs 自身が「restructure したいが不可」と書いていた場所）だった。
+        //
+        // pump 側の事情も引き続き満たす: router を養子縁組した場合（project 起動前から GUI が
+        // 購読 = demand count ごと引き継ぎ）は 0→1 edge が来ないので、level 読みの reconcile が
+        // 要る。demand 不在なら no-op。（performer 側の同じ契機は lane_spawn_actor の末尾）
+        //
         // address の project 名は with_root と同じ解決済の名（`state.project_name`）を使う —
         // `performers_project_id`（dir 名）は登録名と異なり得る。
-        let conductor_lane = super::lanes_state::LaneAddress::root(&state.project_name).to_string();
-        super::terminal_pump::reconcile_lane_pumps(
+        let conductor_addr = super::lanes_state::LaneAddress::root(&state.project_name);
+        super::lane_reconcile::reconcile_lane(
             &state.lane_pool,
             &state.terminal_pumps,
             &state.topic_router,
-            &conductor_lane,
+            &conductor_addr,
         )
         .await;
     }

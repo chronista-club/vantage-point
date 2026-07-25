@@ -22,6 +22,8 @@ pub(crate) mod hub;
 pub(crate) mod lane_capabilities;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
 pub(crate) mod lane_cmd;
+/// lane の実体（PtySlot / chat engine / 代表値）を intent（registry）に合わせる reconcile 本体（doc 53 §12）
+pub(crate) mod lane_reconcile;
 /// Lane spawn actor — `LaneCmd` を recv して Semaphore で gate しつつ Lane を spawn (I-b、 2026-04-30)
 pub(crate) mod lane_spawn_actor;
 /// Lane に host される Stand の minimal marker trait + Registry (PR-δ-1、 VP-135)
