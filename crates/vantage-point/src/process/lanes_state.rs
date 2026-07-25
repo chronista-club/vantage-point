@@ -364,13 +364,19 @@ pub struct LaneInfo {
     /// lane `stand` に fallback。serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_stand: Option<String>,
-    /// doc 40 §3: lane の session 構造（registry snapshot — focused / root /
-    /// sessions[{key, stand, conversation}]）。LaneInfo を「lane の完全な descriptor」に
-    /// する一歩（cwd は既在、sessions が最後の外付けだった）— chip とタブの供給を同一
-    /// snapshot に揃える土台。populate は [`Self::refresh_engine_session_id`]（enrich 供給点）。
+    /// doc 40 §3 → doc 53 §11: lane の session roster（**wire view**）。
+    ///
+    /// GUI の roster（pane 一覧の元）は**これ 1 本**で供給される（旧: `echoes_session_list`
+    /// の fetch と snapshot の 2 本立てで、fetch は GUI 自身の動詞でしか撃たれないため
+    /// **CLI / MCP 由来の session 変化が pane に出なかった** — doc 53 §11.1）。
+    ///
+    /// ⚠️ **disk 型（`SessionRegistry`）を直に載せない** — roster には `chat_capable` のような
+    /// **導出値**が要り（能力表は server が SSOT = client に engine 名の分岐を作らない）、
+    /// disk の永続形に runtime 由来の field を混ぜないため wire 専用型に分ける（§11.2 決定 3）。
+    /// populate は [`Self::refresh_engine_session_id`]（enrich 供給点）。
     /// serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sessions: Option<crate::lane::session_registry::SessionRegistry>,
+    pub sessions: Option<LaneSessionsView>,
     /// FSM 投影 (2026-07-11): dev-flow FSM (`flow::derive_flow_state`) の現在 state。
     /// **TheWorld が vp-app への snapshot 送信時に enrich する derive 値** — SP / lane_registry /
     /// db では常に `None` (derive できるものは store しない原則)。 source は wire store
@@ -378,6 +384,60 @@ pub struct LaneInfo {
     /// serde default + skip で旧 SP / 旧 client と wire 完全互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow_state: Option<crate::flow::FlowState>,
+}
+
+/// lane の session roster の **wire view**（disk 型 `SessionRegistry` の投影 + 導出値）。
+///
+/// doc 53 §11: GUI の roster 供給はこれ 1 本（`LaneInfo.sessions`）。registry を丸ごと載せる
+/// のではなく「client が roster を描くのに要るもの」だけを写し、能力（`chat_capable`）は
+/// **server が導出**して載せる。`next`（採番カーソル）は client に読み手が無いので写さない。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LaneSessionsView {
+    /// lane の器（slot / mailbox）に化身する session。
+    pub root: SessionKey,
+    /// 現在 focus されている session。
+    pub focused: SessionKey,
+    /// session 一覧（生成順）。
+    pub sessions: Vec<LaneSessionView>,
+}
+
+/// [`LaneSessionsView`] の 1 session。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LaneSessionView {
+    pub key: SessionKey,
+    /// engine 種別（stand 名）。
+    pub stand: String,
+    /// この session の Act（見え方）。
+    pub act: SessionAct,
+    /// engine の会話 id（registry が SSOT。Draft = None）。session chip / タブの表示用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+    /// この session を Chat にできるか（能力表 = `EngineKind` が SSOT、server 導出）。
+    /// 名札の kind badge がこれで gate する（押しても弾かれる行き止まりを作らない）。
+    #[serde(default)]
+    pub chat_capable: bool,
+}
+
+impl LaneSessionsView {
+    /// disk の registry から wire view を作る（導出値はここで 1 回だけ計算する）。
+    fn from_registry(reg: &session_registry::SessionRegistry) -> Self {
+        Self {
+            root: reg.root,
+            focused: reg.focused,
+            sessions: reg
+                .sessions
+                .iter()
+                .map(|s| LaneSessionView {
+                    key: s.key,
+                    stand: s.stand.clone(),
+                    act: s.act,
+                    conversation: s.conversation.clone(),
+                    chat_capable: EngineKind::from_stand(&s.stand)
+                        .is_some_and(EngineKind::chat_capable),
+                })
+                .collect(),
+        }
+    }
 }
 
 impl LaneInfo {
@@ -417,7 +477,9 @@ impl LaneInfo {
                 )
             })
             .and_then(|s| s.conversation.clone());
-        self.sessions = Some(reg);
+        // doc 53 §11: roster は wire view で載せる（disk 型は載せない — 導出値 chat_capable を
+        // 混ぜないため）。GUI の pane 一覧はこの 1 本から作られる。
+        self.sessions = Some(LaneSessionsView::from_registry(&reg));
     }
 }
 

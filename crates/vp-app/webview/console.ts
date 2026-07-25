@@ -242,6 +242,16 @@ export function focusedOf(lane: string): number {
   return laneSessions.get(lane)?.focused ?? 1
 }
 
+/** lane の session 一覧（未知 = 空）。**遅れて現れた購読者**が cache から拾うための入口。
+ *
+ *  doc 53 §11: roster の供給が lanes snapshot 1 本になり、push は **roster が変わった時だけ**
+ *  走る（定期 snapshot で撃ち直さない）。そのため「lane を開いた」だけでは新しい event は
+ *  来ない — 開いた側が cache を読む。旧実装はここで `echoes:sessions_fetch` を撃っていた
+ *  （= 供給路 2 本目の入口そのもの）。 */
+export function sessionListOf(lane: string): EchoesSession[] {
+  return laneSessions.get(lane)?.sessions ?? []
+}
+
 /** その session の act（見え方）。未知 / 旧 SP（act 欠落）は 'tui'（従来の既定）。
  *  doc 50 §4.6 A6: 見え方は session の属性なので、lane 単位 `getMode` の代わりにこれを引く。 */
 export function sessionActOf(lane: string, session: number): 'tui' | 'chat' {

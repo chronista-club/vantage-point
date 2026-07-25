@@ -933,7 +933,11 @@ const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 atte
 /// engine_session_id は focused session 規則（`refresh_engine_session_id`）でここで確定させる
 /// （uplink 側 enrich は同じ lazy read の冪等な保険）。lane 不在（削除 race）と購読者ゼロ
 /// （boot 直後）は正常系なので no-op / warn に留める。
-pub(crate) async fn emit_lane_update(state: &Arc<AppState>, addr: &LaneAddress) {
+///
+/// doc 53 §11: **session を変える動詞の末尾でも呼ぶ**（roster の供給が snapshot 1 本に
+/// なったので、これが「roster が変わった」を知らせる唯一の経路 — 撃たない動詞の変化は
+/// 次の定期 snapshot まで GUI に出ない）。R2 の「動詞の末尾で reconcile」と同型の規律。
+pub(crate) async fn emit_lane_update(state: &AppState, addr: &LaneAddress) {
     let Some(mut info) = state.lane_pool.read().await.get(addr).cloned() else {
         return;
     };

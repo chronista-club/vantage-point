@@ -2137,9 +2137,9 @@ export function installChatView(vpConsole: VpConsole): ChatViewApi {
       const prev = activeLane()
       if (prev && prev !== lane) clearReplaying(prev)
       setActiveLane(lane)
-      // attach 時に session 一覧を取得（focused の確定 + pane の顔ぶれ（lane-panes）の種）。
-      const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-      ipc?.postMessage(JSON.stringify({ t: 'echoes:sessions_fetch', lane }))
+      // doc 53 §11: roster（focused の確定 + pane の顔ぶれ）は lanes snapshot が運ぶ。
+      // lane-panes / chatview は lane ごとに roster を持ち続けるので、attach 時に取り直す
+      // 必要が無い（旧: ここで `echoes:sessions_fetch` を撃っていた = 供給路 2 本目の入口）。
     },
     clearReplaying,
     mountSession(host, lane, session) {

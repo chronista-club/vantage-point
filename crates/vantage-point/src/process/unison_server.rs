@@ -1321,6 +1321,8 @@ async fn handle_echoes_session_create(
         .await
         .create_chat_session(&addr, stand, focus)
         .map_err(|e| format!("echoes_session_create: {e}"))?;
+    // doc 53 §11: roster が変わったので知らせる（GUI の pane 一覧は snapshot 1 本で供給される）。
+    super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
@@ -1349,6 +1351,8 @@ async fn handle_echoes_session_focus(
             tracing::debug!("echoes_session_focus: eager spawn せず（{e}）");
         }
     }
+    // doc 53 §11: focused も roster の一部（chip / tab の点灯先）なので知らせる。
+    super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
 }
 
@@ -1374,6 +1378,8 @@ async fn handle_echoes_session_remove(
         .await
         .remove_chat_session(&addr, session)
         .map_err(|e| format!("echoes_session_remove: {e}"))?;
+    // doc 53 §11: session が 1 本消えた = roster の変化。
+    super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
 }
 
@@ -1544,6 +1550,8 @@ async fn apply_session_act(
     // 「隣の pane の clear + 全 replay」は構造で再発しない）。
     // 上の write lock は drop 済（reconcile は内部で read lock を取る）。
     reconcile_terminal_pumps(state, lane).await;
+    // doc 53 §11: act は roster の一部（pane の kind を決める）ので知らせる。
+    super::routes::lanes::emit_lane_update(state, addr).await;
     Ok(serde_json::json!({
         "status": "ok", "lane": lane, "session": session, "act": act.as_str()
     }))
@@ -1793,6 +1801,9 @@ async fn handle_lane_slot_new(
     // 新 slot だけが pid 照合で不足と判定され、既存 pane は触られない（team-b 10 回目）。
     // write lock は上の block を抜けて drop 済（reconcile は内部で read lock を取る）。
     reconcile_terminal_pumps(state, lane).await;
+    // doc 53 §11: **本バグの当事者** — CLI / MCP から console を足しても、これが無いと
+    // GUI の roster に出ない（GUI 自身の動詞しか fetch の契機にならなかった）。
+    super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({
         "status": "ok",
         "lane": lane,

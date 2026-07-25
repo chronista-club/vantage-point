@@ -661,3 +661,51 @@ reconcile_lane(addr):
 3. **restart の「差し替え」表現**: reconcile は「無ければ立てる」— restart（生きた slot を意図的に
    殺して張り替える）は「動詞が slot を落としてから reconcile を呼ぶ」で表現するか、
    世代（pid）を intent 側に持つか
+
+---
+
+## 11. roster の供給 1 本化（2026-07-25 夜、bug 起点の §3.2 前倒し）
+
+R2 の実機受け入れ検証で踏んだバグ（creo `mem_1CdNphDXfrVwCs8Z4Etrhm`）の根治。
+**症状**: GUI 起動後に GUI の外（CLI / MCP）から `vp lane slot-new` した term session が
+**pane grid に現れない**（xterm 実体と terminal 購読は裏で動いている）。
+
+### 11.1 診断 — 同じ roster が 2 本の道から届いている
+
+| 消費者 | 供給路 | server の変化に |
+|---|---|---|
+| World A（xterm instance + terminal 購読） | lanes **snapshot** の `lane.sessions` | **追随する** |
+| World B（pane grid の roster） | `echoes_session_list` の **fetch 結果のみ** | **追随しない** |
+
+fetch の契機は ①lane を開く ②GUI 自身が動詞を撃った後 ③boot 窓の再送 の 3 つだけ。
+つまり **GUI は自分が起こした変化しか見えない**。しかも server の session 動詞
+（slot_new / session_create / session_remove / set_act / new_root / switch_root / focus）は
+**`emit_lane_update` を 1 つも呼んでいない**（既存の呼び手は restart と hook 通知の 2 箇所のみ）
+= 「roster が変わった」を server が誰にも知らせていない。
+
+これは §3.2 が予告していた class そのもの（供給路 2 本 / client cache 3 つ）。
+
+### 11.2 決定 — 2 本目を削る（足さない）
+
+mako「不具合がある上に新しい実装は載せたくない」（2026-07-25）。対症（snapshot 到着時に
+差分を検知して webview へ push = 2 本のまま同期を足す）は §6 の「やってはいけない」に該当。
+
+| # | 決定 | 理由 |
+|---|---|---|
+| 1 | **roster の供給 = snapshot 1 本**。`echoes_session_list` は **client から撃たない**（CLI / MCP 用に server は残す） | §3.2。供給路が 1 本なら「どちらが新しいか」の問いが消える |
+| 2 | **知らせるのは動詞の責務** — session を変える動詞の末尾で `emit_lane_update` | R2 の「動詞の末尾で reconcile」と同型。契機は判断を持たない |
+| 3 | **wire 型を disk 型から分ける** — `LaneInfo.sessions` を `SessionRegistry`（disk SSOT）の直載せから **wire view** に変え、`chat_capable` を **server で導出**して載せる | 能力表は server が SSOT（client に engine 名の分岐を作らない）。disk 型に runtime 由来の field を足さない |
+| 4 | **保留箱（`pending_session_fetch`）を撤去** | §6.5.2 の予言どおり — 供給が 1 本になれば boot 窓の取りこぼしは構造的に消える（snapshot は変化時 push + 定期） |
+| 5 | `live`（chat engine の in-memory 有無）は **wire に載せない** | roster の読み手がゼロ（grep 確認）。fetch 側 `list_chat_sessions` には残す |
+
+### 11.3 R4 との関係
+
+R4 は「**pane 一覧**を server が導出して配る」。本節は roster（session 一覧）の**供給路**だけを
+1 本にする — 形は変えない。R4 はこの 1 本の上で「配るものを pane 一覧に変える」だけになり、
+**R4 の前提（供給 1 本 + 変化時 push）が先に揃う**。R3（reconcile_lane）とも独立。
+
+### 11.4 受け入れ条件
+
+1. GUI 起動中に **CLI から** `vp lane slot-new` → **pane が現れる**（本バグ）
+2. GUI 自身の動詞（Add / ✕ / act 切替 / New root / Switch root）で従来どおり即時反映
+3. boot 直後に lane を開いても roster が出る（保留箱の撤去で退行しない）
