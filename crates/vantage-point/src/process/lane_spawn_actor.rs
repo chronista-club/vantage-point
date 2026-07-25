@@ -76,7 +76,6 @@
 //! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Stand)
 
 use std::any::Any;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -290,129 +289,23 @@ async fn handle_cmd(
     );
     let started = Instant::now();
 
-    // doc 47 §4: root session の act を boot で honor（conductor の with_root と同じ規律）。
-    // chat の lane に PTY を立てない — 立てると echoes_submit がもう 1 本の engine を呼び、
-    // 同一 cc_session に 2 エンジン（PTY claude + EchoesAgentHost）が発生する。
-    // doc 53 R1: これは spawn 判断の入力としての registry 直読（投影に書き戻さない）。
-    let root_act = crate::lane::session_registry::root_act(&addr.project, &name);
-    if root_act == crate::lane::session_registry::SessionAct::Chat {
-        // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
-        // pid=None + state=Running は chat lane の正常形（vp-app は sessions 由来の act で
-        // respawn 判定を gate する — doc 33 §3 / doc 53 R1）。
-        tracing::info!("Lane boot as chat mode (PTY skip): addr={}", addr);
-        let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &name);
-        let info = LaneInfo {
-            id: lane_id,
-            address: addr.clone(),
-            state: LaneState::Running,
-            stand: stand.clone(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            pid: None,
-            cwd,
-            performer_status: None,
-            cc_session_id: None,
-            sessions: None,
-            engine_session_id: None,
-            engine_stand: None,
-            flow_state: None,
-        };
-        let mut pool_write = pool.write().await;
-        if pool_write.get(&addr).is_some() {
-            tracing::debug!(
-                "Lane spawn actor: race lost (chat register) addr={}、 skip",
-                addr
-            );
-            return;
-        }
-        pool_write.insert(info.clone());
-        drop(pool_write);
-        // doc 13 §6: Lane 起動時に PP (Paisley Park / Justice) を同時 spawn するのが default。
-        // conductor の chat-boot は console_mode 非依存で常時 populate される (server.rs) ため、
-        // performer の chat-boot でも populate して非対称を作らない (chat lane も Running=生存)。
-        if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
-            lc_pool.write().await.populate_lane(addr.clone(), &stand);
-            tracing::debug!(
-                "LaneCapabilities pool に chat Performer Lane populate (addr={}, stand={})",
-                addr,
-                stand
-            );
-        }
-        if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {
-            tracing::warn!("Lane chat register の SystemEvent push 失敗 (best-effort): {e}");
-        }
-        return;
-    }
-
-    // spawn_stand は内部で std::thread::sleep(800ms) を呼ぶ sync 関数。
-    // tokio worker thread を block しないよう spawn_blocking で隔離する。
-    let cwd_for_blocking = cwd.clone();
-    // Phase 1e: build_stand_command が addr を要求するので clone を closure に move
-    let addr_for_blocking = addr.clone();
-    let stand_for_blocking = stand.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        // tmux decoupling PR2: slot + claude 注入の Rust-native spawn (adopt は退役、 §13.3)。
-        let cmd_built = super::stand_spawner::build_stand_command(
-            &stand_for_blocking,
-            &addr_for_blocking,
-            Path::new(&cwd_for_blocking),
-        );
-        // PTY 初期 winsize 120x48: xterm.js が fitAddon で実サイズに resize する
-        // までの初期値 + headless Stand の作業サイズ。 classic 80x24 は VP の広い
-        // terminal には狭く、 claude TUI の reflow ジャンプも大きいため 120x48。
-        super::stand_spawner::spawn_stand(&cmd_built, 120, 48)
-    })
-    .await;
-
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-
-    // Stage 1 (ADR-0001): TermAttach 配線のため term_rx を tuple に保持して await 跨ぎで持ち越す。
-    // initial_rx (= reader_task start 前の Receiver) を pool.insert_pty_slot まで届ける = race フリー。
-    let (state, pid, slot_rx_opt) = match result {
-        Ok(Ok((slot, term_rx))) => {
-            let pid = slot.pid();
-            tracing::info!(
-                "Lane spawn completed: addr={} pid={} elapsed_ms={}",
-                addr,
-                pid,
-                elapsed_ms
-            );
-            (LaneState::Running, Some(pid), Some((slot, term_rx)))
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(
-                "Lane spawn failed (graceful degrade to Dead): addr={} elapsed_ms={} err={}",
-                addr,
-                elapsed_ms,
-                e
-            );
-            (LaneState::Dead, None, None)
-        }
-        Err(join_err) => {
-            tracing::warn!(
-                "Lane spawn join error (graceful degrade to Dead): addr={} elapsed_ms={} err={}",
-                addr,
-                elapsed_ms,
-                join_err
-            );
-            (LaneState::Dead, None, None)
-        }
-    };
-
-    // pool に insert。 spawn 中の race (= permit 待ち後だが spawn_blocking 完了前に手動 create)
-    // を再 check し、 lost race なら spawn 済 slot を drop して zombie reap。
-    // I1: performer の安定 id を address (project, name) で load_or_create。
-    // 注: load_or_create は同期 file IO だが、 cc_session の lazy read と同じく数 ms で、
-    // spawn_blocking 隔離は省略 (pre-MVP の単純化。 重い処理は上の spawn_with_fallback で隔離済)。
+    // doc 53 §12: **actor は登録だけ**。実体（PtySlot / engine）は下の `reconcile_lane` が
+    // registry に従って立てる。
+    //
+    // 旧実装はここに 2 つの分岐を持っていた: ①root の act が Chat なら engine-less で登録して
+    // 早期 return ②Tui なら root を spawn → insert → さらに `restore_term_slots` で非 root を
+    // 復元。どちらも「registry を読んで実体を作る」仕事で、reconcile と同じことを別の場所で
+    // 書いていた（census §10.1 の boot 行）。act の分岐は desired の導出規則
+    // （act=Tui → slot / act=Chat → engine は lazy）に吸収される。
     let lane_id = crate::lane::lane_id::load_or_create(&addr.project, &name);
-    // ここは tui 経路のみ到達（chat は上の root_act 分岐で早期 return 済 — doc 53 R1 で
-    // 投影 field は退役、act は registry が SSOT）。
     let info = LaneInfo {
         id: lane_id,
         address: addr.clone(),
-        state,
+        // 代表値は reconcile が実体から導出して上書きする（doc 53 §3.3）。
+        state: LaneState::Running,
         stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
-        pid,
+        pid: None,
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         performer_status: None,
@@ -422,70 +315,42 @@ async fn handle_cmd(
         engine_stand: None,
         flow_state: None,
     };
-    let mut pool_write = pool.write().await;
-    if pool_write.get(&addr).is_some() {
-        tracing::debug!(
-            "Lane spawn actor: race lost (post-spawn) addr={}、 spawn 済 slot を drop",
-            addr
-        );
-        // slot_rx_opt は scope 終端で drop されるので明示的処理不要。
-        return;
-    }
-    if let Some((slot, term_rx)) = slot_rx_opt {
-        // Stage 1 (ADR-0001): TermAttach も同時に spawn (race フリー、 Conductor 経路と統一)
-        // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
-        pool_write.insert_pty_slot(addr.clone(), None, slot, term_rx);
-    }
-    pool_write.insert(info.clone());
-    drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
-
-    // doc 50 §4.6 A6: **非 root の term session（act=Tui）も復元する**。
-    //
-    // ここは「pool に entry が無い lane を初めて触った時」= World / project 再起動後の主経路。
-    // root だけ立てると、A6 で永続した非 root term の pane が **空で無反応**になる
-    // （roster は registry から出るので pane は現れ、slot だけ居ない）。root と同じ
-    // 「前回状態キープ」の規律で eager に戻す（team-b review 2026-07-25 score 78）。
-    //
-    // ⚠️ root spawn と同じく `spawn_blocking` で隔離する。中身は session 数ぶんの
-    // `spawn_stand`（= 1 件あたり 800ms の `std::thread::sleep`）で、素で呼ぶと
-    // **tokio worker thread を N×800ms 塞ぐ** — このファイルが避けるために存在している
-    // 当のもの（冒頭 doc）。lane insert の後（lane が pool に居ないと slot を立てられない）
-    // かつ lock 解放の後（他 lane の操作を spawn 中ずっと待たせない）。
-    // team-b 4 回目 2026-07-25 の指摘。
-    let pool_for_restore = pool.clone();
-    let addr_for_restore = addr.clone();
-    if let Err(e) = tokio::task::spawn_blocking(move || {
-        pool_for_restore
-            .blocking_write()
-            .restore_term_slots(&addr_for_restore);
-    })
-    .await
     {
-        tracing::warn!("term slot の boot 復元 task が落ちた（pane は空で出る）: addr={addr}: {e}");
+        let mut pool_write = pool.write().await;
+        if pool_write.get(&addr).is_some() {
+            tracing::debug!(
+                "Lane spawn actor: race lost (register) addr={}、 skip",
+                addr
+            );
+            return;
+        }
+        pool_write.insert(info.clone());
     }
-
-    // doc 53 R2: 復元完了後に pump を reconcile する（doc 50 §4.7「直さないと決めた 1 件」の根治）。
-    //
-    // 復元（800ms×N の逐次）の最中に GUI が購読して demand の 0→1 edge が先に立つと、旧実装では
-    // その時点の slot にしか pump が張られず、**後から復元された slot は永久に沈黙**していた。
-    // また World 再起動をまたいで GUI が購読を維持している場合（router 養子縁組で demand count ごと
-    // 引き継がれる）は edge 自体がもう来ない。どちらも「復元完了 = 動詞の末尾」の reconcile が
-    // 現在の demand（level）と全 slot を突き合わせて収束させる。demand 不在なら no-op。
-    crate::process::terminal_pump::reconcile_lane_pumps(
+    // 実体を立てる（3 段隔離は reconcile の中 — 800ms×N を lock 下で回さない）。
+    // 失敗しても intent は残る = 次の契機で再試行される（doc 53 §12.2）。
+    let r = crate::process::lane_reconcile::reconcile_lane(
         &pool,
         &terminal_pumps,
         &topic_router,
-        &addr.to_string(),
+        &addr,
     )
     .await;
+    tracing::info!(
+        "Lane spawn completed: addr={} spawned={} failed={} elapsed_ms={}",
+        addr,
+        r.spawned,
+        r.failed,
+        started.elapsed().as_millis() as u64
+    );
 
     // Performer Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
     // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
-    // Dead state では populate しない (cascade lifecycle、 上の tmux: vec![] と同型 guard)。
-    if matches!(state, LaneState::Running)
-        && let Some(lc_pool) = lane_capabilities_pool.as_ref()
-    {
+    //
+    // doc 53 §12.2: **spawn 失敗でも populate する**（旧: Dead なら skip）。intent が残る以上
+    // lane は「立ち上がっていないが在る」— 次の契機で slot が立った時に PP だけ不在、を
+    // 作らない。chat lane（PTY 無しで正常）も同じ扱いになり、旧 state 分岐の非対称も消える。
+    if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
         lc_pool.write().await.populate_lane(addr.clone(), &stand);
         tracing::debug!(
             "LaneCapabilities pool に Performer Lane populate (addr={}, stand={})",

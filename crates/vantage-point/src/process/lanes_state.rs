@@ -684,67 +684,22 @@ impl LanePool {
                 );
             }
         }
-        // doc 47 §4: root session の act を boot で honor。chat の lane に PTY を立てない
-        // （立てると echoes_submit がもう 1 本の engine を呼び、1 会話 2 エンジンになる）。
-        // doc 53 R1: これは spawn 判断の入力としての registry 直読（投影に書き戻さない）。
-        let root_act = session_registry::root_act(&project_id, "root");
-
-        let (state, pid) = if root_act == SessionAct::Chat {
-            // Chat mode: engine-less で登録（EchoesAgentHost は初回 submit で lazy spawn）。
-            // pid=None + state=Running は chat lane の正常形（vp-app は sessions 由来の act で
-            // respawn 判定を gate する — doc 33 §3 / doc 53 R1）。
-            tracing::info!("Lane boot as chat mode (PTY skip): addr={}", addr);
-            (LaneState::Running, None)
-        } else {
-            // tmux decoupling PR2: slot (login shell) + claude 注入の Rust-native spawn (design §13)。
-            // 旧 spawn_or_adopt (tmux session の adopt) は退役 — 重複 SP は DB-LOCK が spawn 前に
-            // abort し (§13.3)、 claude は SP の子なので orphan session は存在しない。
-            let cmd = crate::process::stand_spawner::build_stand_command(
-                stand_name,
-                &addr,
-                std::path::Path::new(&cwd),
-            );
-
-            match crate::process::stand_spawner::spawn_stand(&cmd, 120, 48) {
-                Ok((slot, term_rx)) => {
-                    let pid = slot.pid();
-                    tracing::info!(
-                        "Lane spawned: addr={} stand={} program={} args={:?} pid={}",
-                        addr,
-                        stand_name,
-                        cmd.program,
-                        cmd.args,
-                        pid
-                    );
-                    // Stage 1 (ADR-0001): PtySlot insert と TermAttach spawn を 1 関数に集約。
-                    // term_rx は initial_rx (= reader_task start 前に取得) なので race フリー。
-                    // session=None = root（boot で立つ slot は lane の代表、doc 39）。
-                    pool.insert_pty_slot(addr.clone(), None, slot, term_rx);
-                    (LaneState::Running, Some(pid))
-                }
-                Err(e) => {
-                    // graceful degrade: SP 自体は起動継続、 Lane は Dead で record
-                    tracing::warn!(
-                        "Lane spawn failed (graceful degrade to Dead): addr={} stand={} program={} cwd={} err={}",
-                        addr,
-                        stand_name,
-                        cmd.program,
-                        cwd,
-                        e
-                    );
-                    (LaneState::Dead, None)
-                }
-            }
-        };
-
+        // doc 53 §12: **with_root は登録だけ**。実体（PtySlot / engine）は boot 直後の
+        // `reconcile_lane` が registry に従って立てる（`process/server.rs` の run()）。
+        //
+        // 旧実装はここで root の PTY を spawn し、続けて `restore_term_slots` で非 root も
+        // 立てていた。AppState 構築の途中（sync 文脈）で 800ms×N の spawn を回す形で、
+        // server.rs 自身が「restructure したいが不可」とコメントを残していた場所でもある。
+        // 立てる仕事を reconcile に渡すと、その制約ごと消える。
         let info = LaneInfo {
             // I1: conductor の安定 id を address (project, "root") で load_or_create
             id: crate::lane::lane_id::load_or_create(&project_id, "root"),
             address: addr.clone(),
-            state,
+            // 代表値は reconcile が実体から導出して上書きする（doc 53 §3.3）。
+            state: LaneState::Running,
             stand: stand_name.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
-            pid,
+            pid: None,
             cwd,
             // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
             performer_status: None,
@@ -755,52 +710,7 @@ impl LanePool {
             flow_state: None,
         };
         pool.lanes.insert(addr.clone(), info);
-        // doc 50 §4.6 A6: **非 root の term session（act=Tui）も boot で復元する**。
-        //
-        // A6 で「非 root が term である」は registry に永続する一級の状態になったが、boot で
-        // slot を立てるのは root だけだった。そのため World / project 再起動のあと（dogfood の
-        // `VP_SWAP_RESTART_DAEMON=1` は毎回これ）**pane は出るのに中身が空で無反応**になる —
-        // roster は registry から導出されるので pane は現れ、slot だけが居ない状態
-        // （team-b review 2026-07-25 score 78。実機でも観測していたが原因を追っていなかった）。
-        // root と同じ「前回状態キープ」の規律で eager に復元する。
-        pool.restore_term_slots(&addr);
         pool
-    }
-
-    /// registry 上の **非 root の `act=Tui` session** に slot を立て直す（boot 復元）。
-    ///
-    /// root は呼び手が既に立てている（[`Self::with_root`] / lane spawn）。ここは「前回 term
-    /// だった非 root」を戻す担当。失敗は warn で継続（1 枚立たなくても lane 全体は使える —
-    /// graceful degrade。`open_slot_for_session` 側の法の check もそのまま効く）。
-    ///
-    /// ⚠️ **sync + 重い**: 1 session あたり `spawn_stand` の 800ms sync sleep がかかる。
-    /// async 文脈から呼ぶなら `spawn_blocking` で隔離すること（`lane_spawn_actor` はそうして
-    /// いる）。`with_root` からの呼び出しは `server.rs` が「起動 1 回だけなので軽微」と
-    /// 受容している経路だが、その前提は **root 1 枚**のときのもの — 本関数は非 root 数に
-    /// 比例して伸びるので、蓄積した term が増えたら起動が目に見えて遅くなる
-    /// （team-b 4 回目 2026-07-25 の指摘。今は N が小さいので据え置き）。
-    pub(crate) fn restore_term_slots(&mut self, addr: &LaneAddress) {
-        let Some(info) = self.lanes.get(addr) else {
-            return;
-        };
-        let lane_label = crate::process::stand_spawner::lane_label(addr).to_string();
-        let reg = session_registry::load(&addr.project, &lane_label, &info.stand);
-        let targets: Vec<SessionKey> = reg
-            .sessions
-            .iter()
-            .filter(|s| s.key != reg.root && s.act == SessionAct::Tui)
-            .map(|s| s.key)
-            .collect();
-        for key in targets {
-            match self.open_slot_for_session(addr, key) {
-                Ok(pid) => tracing::info!(
-                    "term slot restored: addr={addr} session={key} pid={pid}（boot 復元）"
-                ),
-                Err(e) => tracing::warn!(
-                    "term slot の boot 復元に失敗（pane は空で出る）: addr={addr} session={key}: {e}"
-                ),
-            }
-        }
     }
 
     /// Lane 一覧を **Conductor 先頭、 続いて Performer を生成順 (created_at 昇順)** で返す。
@@ -910,6 +820,47 @@ impl LanePool {
             .entry(addr)
             .or_default()
             .insert(key, term_attach);
+    }
+
+    /// lane が抱えている chat engine の session key 一覧（昇順）。
+    ///
+    /// doc 53 §12: reconcile の actual 側入力（`slot_pids` の engine 版）。
+    pub fn chat_engine_sessions(&self, addr: &LaneAddress) -> Vec<SessionKey> {
+        let mut keys: Vec<SessionKey> = self
+            .chat_engines
+            .get(addr)
+            .map(|m| m.keys().copied().collect())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// [`Self::drop_slot`] の外部入口（doc 53 §12 — reconcile が「desired に無い slot」を畳む）。
+    ///
+    /// 動詞は自分で slot を畳まなくなるので、外から畳むのは reconcile だけになる。
+    pub fn drop_slot_public(&mut self, addr: &LaneAddress, key: SessionKey) -> bool {
+        self.drop_slot(addr, key)
+    }
+
+    /// `LaneInfo` の代表値（pid / state）を **root の実体から導出**して書き戻す（doc 53 §12）。
+    ///
+    /// 旧実装は動詞ごとに `info.pid = …` を手で書いていた（census §10.1 の「代表値追随」列）。
+    /// 派生値を書き手ごとに持つと、書き忘れた動詞だけが古い値を映す（doc 53 §3.3）。
+    /// 判断は純関数 [`crate::process::lane_reconcile::lane_state_of`] が持ち、ここは
+    /// 実体を集めて書き戻すだけ。
+    pub fn refresh_lane_representation(&mut self, addr: &LaneAddress) {
+        let root_act = self.root_act(addr);
+        let root_key = Self::slot_session(addr, None);
+        let root_pid = self
+            .pty_slots
+            .get(addr)
+            .and_then(|m| m.get(&root_key))
+            .and_then(|slot| slot.lock().ok().map(|s| s.pid()));
+        let (state, pid) = crate::process::lane_reconcile::lane_state_of(root_act, root_pid);
+        if let Some(info) = self.lanes.get_mut(addr) {
+            info.state = state;
+            info.pid = pid;
+        }
     }
 
     /// 1 枚の slot（+ 双子の TermAttach）を落とす。戻り値 = 実際に落ちたか。
@@ -2866,6 +2817,10 @@ mod tests {
     /// なる — roster は registry から導出されるので pane は現れ、slot だけが居ない。
     ///
     /// 「registry に act=Tui の非 root が居る状態で lane を初めて触る」= 再起動後の主経路を再現する。
+    ///
+    /// doc 53 §12: 復元の実体は `reconcile_lane`（旧 `restore_term_slots` は退役）。boot 経路が
+    /// 3 本（with_root / lane_spawn_actor / restore_term_slots）から 1 本になったので、
+    /// テストも「registry に従って実体が揃うか」を reconcile 経由で見る。
     #[tokio::test]
     async fn boot_restores_non_root_term_slots() {
         let _state = crate::test_env::state_dir_async().await;
@@ -2879,19 +2834,24 @@ mod tests {
             session_registry::create("vp", lane_label, "echoes", "shell", SessionAct::Tui, false)
                 .expect("非 root term session");
 
-        // lane を初めて触る（= pool に entry が無い状態からの登録 + 復元）。
-        let mut pool = LanePool::new();
-        insert_chat_lane(&mut pool, &addr);
-        pool.restore_term_slots(&addr);
+        // lane を初めて触る（= pool に entry が無い状態からの登録 + reconcile）。
+        let pool = std::sync::Arc::new(tokio::sync::RwLock::new(LanePool::new()));
+        {
+            let mut w = pool.write().await;
+            insert_chat_lane(&mut w, &addr);
+        }
+        let pumps = std::sync::Arc::new(tokio::sync::RwLock::new(Default::default()));
+        let router = std::sync::Arc::new(crate::process::topic_router::TopicRouter::new());
+        crate::process::lane_reconcile::reconcile_lane(&pool, &pumps, &router, &addr).await;
 
+        let slots = pool.read().await.slot_sessions(&addr);
         assert!(
-            pool.slot_sessions(&addr).contains(&term_key),
-            "非 root の term session に slot が立つ（無いと pane が空で無反応になる）: got={:?}",
-            pool.slot_sessions(&addr)
+            slots.contains(&term_key),
+            "非 root の term session に slot が立つ（無いと pane が空で無反応になる）: got={slots:?}"
         );
         // root（chat）には slot を立てない — chat は engine-less が正常形（doc 33 §3）。
         assert!(
-            !pool.slot_sessions(&addr).contains(&1),
+            !slots.contains(&1),
             "root=chat には PTY を立てない（1 会話 2 エンジンを作らない）"
         );
     }
