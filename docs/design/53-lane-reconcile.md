@@ -402,3 +402,94 @@ reconcile が収束させる（eventually correct）か**は設計思想の選�
    関係は整理が要る
 4. **R4 の「pane 一覧」に何を載せるか。** id / kind / label / session / root は要る。
    灯（活動）/ 会話 id / 鮮度は event 由来で頻度が違うので**別 channel が正**か
+
+---
+
+## 8. R1 実装 census（2026-07-25、着手前の棚卸し）
+
+`console_mode` の grep 169 箇所を分類し、**読み手ごとの「本当の問い」と置き換え先**を確定した。
+[[comment-is-not-proof]] の規律で、doc §3.1 の表は**コードを読んで訂正**してある（下記 8.2）。
+
+### 8.1 169 箇所の内訳
+
+| 分類 | 数 | 扱い |
+|---|---|---|
+| **実読み手**（値で分岐する） | 9（server 6 / client 3 系統） | §8.2 の表で置き換え |
+| **書き手**（投影に代入） | 5 箇所 | field ごと撤去 |
+| test fixture `console_mode: Default::default()` | ~20 | field 削除で機械的に消滅 |
+| **`migrate_console_modes`**（旧 disk file の one-shot migration） | 6 | **別物 — 残す**（disk の後方互換であって投影ではない） |
+| comment / 旧名の言及 / 命名規則の参照 | 残り | 文言のみ追随 |
+
+> ⚠️ **書き手のうち 2 箇所（`lane_spawn_actor:281` / `routes/lanes.rs:134`）は既に
+> `session_registry::root_act()` を直読して LaneInfo に詰めている**。つまり現状は
+> 「registry を読む → 投影に書く → 読み手が投影を読む」の**往復**で、投影を消せば
+> 読み手が registry を直読するだけになる（経路が 1 本減る）。
+
+### 8.2 読み手 × 本当の問い × 置き換え先
+
+| # | 読み手 | 本当の問い | 置き換え |
+|---|---|---|---|
+| 1 | `lanes_state::restart_lane`（:1064） | root の act（PTY 張替か engine drop か） | `root_act()` 直読 |
+| 2 | `focus_chat_session`（:1714） | `LaneInfo.pid` の意味（chat engine か PTY か） | 同上 |
+| 3 | `remove_chat_session`（:1758） | 同上 | 同上 |
+| 4 | `routes/lanes.rs`（:998） | restart 後に engine を eager spawn するか | 同上 |
+| 5 | `unison_server`（:924） | **lane が pool に実在するか**（値は不使用） | **明示的な存在 check**（§8.4） |
+| 6 | `unison_server`（:1957） | capture 失敗の案内文（root が chat か） | `root_act()` 直読 |
+| 7 | `delivery_actor` / `delegation`（nudge） | **打てる先の種類**（PTY か engine か） | 呼び手が registry から埋める（§8.3） |
+| 8 | client `isLaneAlive`（`sidebar/lane.ts:85`） | engine-less でも生きているか（#683 再演防止） | `sessions` から導出（§8.5） |
+| 9 | client `is_chat_lane` / respawn gate（`app.rs:2160/2578`） | 同上 | 同上 |
+
+### 8.3 §3.1 の訂正 — nudge の問いは実体ではなく intent
+
+§3.1 の表は `delivery_actor` の問いを「**root slot が存在するか（PTY に打てるか）**」= 実体と
+書いていた。**これは誤り**。実体で答えると壊れる:
+
+`pick_nudge_target` は Running な lane を選ぶ。Running かつ root slot 不在は 2 通りある
+——「chat lane（正常）」と「**tui だが slot が死んだ**」。実体ベースだと後者を chat と誤判定して
+`echoes_nudge` に流し、engine が lazy spawn される → PTY が復活した瞬間に**同一会話 2 engine**。
+現状の投影（intent）なら `lane_nudge` を送って失敗し、**pending 保持で次 pulse に再試行**という
+正しい挙動になる。
+
+> **gate が副作用として守っていたもの、1 件目**（[[gate-hid-a-second-bug]]）。
+> 一般形: **「打てる先の種類」は intent、「今打てるか」は実体**。混ぜると boot 窓と
+> 死んだ slot で誤る。
+
+置き換えは「`NudgeTarget.console_mode` → `root_act`（呼び手が `session_registry` から埋める）」。
+純関数性は保つ（unit test を disk 依存にしない）。読む頻度は pending がある lane のみで軽微。
+
+### 8.4 副産物 — 存在 check の流用（#5）
+
+`unison_server:924` の `pool.console_mode(&addr).is_none()` は **値を使っていない** —
+getter が `Option` を返すことを「lane 実在」の signal に流用している。投影廃止と独立に
+「明示的な存在 check」へ直す（[[one-predicate-three-properties]] の亜種）。
+
+### 8.5 client 側をどうするか（R1 の scope 判断）
+
+client の読み手 3 系統（alive 判定 / Act II 判定 / respawn gate）は**すべて同じ問い**に還元できる
+——「この lane は PTY を持たなくても生きているか」。選択肢と判断:
+
+| 案 | 内容 | 判定 |
+|---|---|---|
+| (i) server だけ直す | wire に `console_mode` を残す | ✗ 中間状態（[[pre-MVP-development-stance]] に反する） |
+| (ii) `sessions` から導出 | 既に wire に載る `sessions`（A6 で追加）から root の act を引く | **採用** |
+| (iii) 実体 field を新設 | `alive` 等を server から配る | ✗ R4 の pane 一覧で消える field を今足す（§6「中間の投影を残すな」） |
+
+(ii) を採り、**client の導出は 1 関数に閉じる**（3 読み手が同じ関数を呼ぶ）。R4 で pane 一覧に
+差し替えるときの改修点も 1 箇所になる。
+
+> ⚠️ **未確認の前提**: `sessions` は `Option<SessionRegistry>`（旧 SP 互換の serde default）。
+> `app.rs:1821` に「registry 不在なら console_mode が tui として root 1 枚」という fallback が
+> あり、投影を消すとこの退路が失われる。fold-in 後は旧 SP が存在しないので `None` の意味は
+> 「boot 窓（enrich 前）」だけのはずだが、**実装時に供給点を数えて確認する**
+> （[[ssot-concentrates-existing-weakness]]）。
+
+### 8.6 壊し方テスト（[[decide-the-breaking-change-first]]）
+
+fix を外して赤、では不十分。**特例を作る / 順序を入れ替える / 呼び手を繋がない**の 3 通りで赤を見る:
+
+1. **root を chat にして nudge** → `echoes_nudge` に route されること（投影ではなく registry を見る）
+2. **root 付け替え直後に restart** → 新 root の act が honor されること（投影の同期忘れが再発しない）
+3. **root=tui のまま非 root だけ chat** で capture / demand → lane 単位の要約に落ちないこと（:918 の旧バグ再演）
+
+加えて既存 `moving_root_syncs_the_console_mode_projection` は投影ごと消えるので、
+**同じ性質を registry 直読で言い直す**形に書き換える（テストの消滅 = 性質の消滅にしない）。
