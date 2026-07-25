@@ -116,6 +116,44 @@ focused は registry から消える。GUI composer は「どの pane で打っ�
 focused」という既定の非対称（CLAUDE.md に ⚠️ 付きで記載）が消える。多視点（2 画面が同じ
 lane を見る）でも取り合いが起きない — 注視は視る者の属性であって台の属性ではない。
 
+### 3.6 多孔質な境界 — shell↔tui は VP 抜きで動く（2026-07-25 追記）
+
+> mako「shell↔tui が VP 抜きでできちゃうから、ここだけうまく落とし込まないといけない」
+> 「ここは私の設計がまずいのかもと何回か思ってる」
+
+**評価: #661（Act1-layered、login shell 基層）は env 注入税と復元力の実問題を解いた正しい
+設計。多孔性は設計ミスの産物ではなく端末の真実** — real shell が 1 席でも存在する限り、
+人間はそこで何でも起動できる。選べるのは「多孔性をどこに閉じ込めるか」だけ。
+
+境界には 2 種類ある:
+
+| 境界 | 誰が動かすか |
+|---|---|
+| **tui ↔ chat**（PTY の席 ↔ chat の席） | **VP の動詞でしか起きない** |
+| **shell ↔ tui**（素の prompt ↔ engine TUI） | **VP 抜きで起きる**（engine exit → prompt に落ちる / 人間が手打ちで engine 起動） |
+
+**原理: VP が仲介する境界は intent に書ける。VP 抜きで動く境界を intent に書くと、それは
+「VP が制御していない現実の cache」= 投影病（doc 53）の再来。観測（level）で読む。**
+
+- **intent = 席の仕込み**（bare-pty / engine-pty の type-ahead / engine-chat）。boot と
+  reconcile が enforce するのは**ここまで** — 席の中身に intent を強制しない（人間が意図的に
+  exit した engine を勝手に再注入したら、それは作業台ではなく檻）
+- **shell/tui の現在形 = 観測**。観測装置は実在する: ①席 env 経由の hooks 自己申告
+  （手打ち起動の claude も `VP_LANE` を持つので SessionStart hook が届く = 席の市民権の実利）
+  ②delivery の CC activity poll（`recipient_readiness` は**観測してから打鍵** — 居なければ
+  型打ちせず headless fallback。素の prompt への打鍵事故は観測を前提条件にして防ぐ）
+
+**設計 fork（設計ゲートで決める。今決めない）**:
+
+| 案 | 形 | 得る / 失う |
+|---|---|---|
+| **C: 基層 shell + 観測**（現行の完成形） | #661 維持 + SessionEnd hook / activity poll で現在形を観測 | 変更最小・席内 prompt 復帰の自由 / 多孔性が全 engine 席に残る（観測で追う） |
+| **A: 封印席** | engine 席は `$SHELL -lc 'exec <engine> …'` — **engine exit = 席の死 = 決定的 signal** | 「1 働き手 = 1 プロセス」が文字通り・prompt への nudge 誤爆が構造的に消滅・多孔性は shell 席のみ / 席内 prompt 復帰を失う（受け皿 = 隣の shell 席。本 doc で shell は一級市民）・exit 後 UI（respawn / close）が要る |
+
+判断材料: 本 doc で shell が一級の席になり「席内で prompt に落ちる」自由の独自価値が下がった
+（A の代償低下）。一方 C は観測原理だけで成立し変更最小。実装フェーズの証拠（drift が実際
+どれだけ噛むか）と一緒に設計ゲートで決める。
+
 ---
 
 ## 4. 原理（この議論で結晶したもの）
@@ -185,7 +223,14 @@ R1（console_mode 廃止 — 着手済、本地図と整合）
 ## 8. 未決（実装層に送る詳細）
 
 1. **語彙**: 「働き手」のコード識別子（候補: worker / WorkerId）。Stand 名との層分け規律
-   （コードは機能名・Stand 名は表示層）に従う
+   （コードは機能名・Stand 名は表示層）に従う。
+   **act の rename 候補（mako 2026-07-25）: `shell → act-i / tui → act-ii / chat → act-iii`**
+   — 3 幕の梯子は #661 の物理層（Act1 = login shell が土台）と一致し物理モデルに忠実。
+   ⚠️ rename 時に処理する 3 点: ①act は registry / wire に**永続される値** = 純 rename でなく
+   format 変更 → **本 doc の schema 変更（id 形式）と同じ migration に束ねる** ②既存の
+   「Act I/II」（doc 33 系 = tui/chat）と採番がシフトする（今の Act I が新 act-ii）ため
+   doc / memory / コメントの旧参照を一括訂正 ③§3.6 により shell/tui の現在形は stored enum
+   でなく観測 derive → rename は「仕込み intent + 観測」への再編とセットで行う
 2. **id の形式**: ULID 等。CLI の指し方（短縮 prefix / 表示序数）とセットで決める
 3. **代表継承の決定的規則の具体**: 最古参か。要件は「決定的で、user に説明可能」
 4. **Reborn との整合**: 「同じ働き手で会話を作り直す」= engine_ref を捨てる（id 不変）か、
