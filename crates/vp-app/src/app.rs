@@ -149,10 +149,12 @@ fn is_main_ipc_tag(body: &str) -> bool {
     matches!(
         v.get("t").and_then(|t| t.as_str()),
         Some(
+            // webview が受け口を全部生やした合図。Rust はこれを受けて現在の状態を丸ごと
+            // 撃ち直す（旧 `lanes:ensure-all` / `bastet:devices_fetch` / `board:demand` の
+            // 3 本はここに畳んだ）。allowlist 漏れは「起動直後だけ何も出ない」になる。
             "ready"
                 | "term:write"
                 | "term:resize"
-                | "lanes:ensure-all"
                 | "copy"
                 | "paste:request"
                 | "debug"
@@ -191,12 +193,6 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
                 | "console:switch_root"
                 | "console:set_model"
-                // Bastet pane の device 一覧 catch-up（allowlist 漏れは sidebar IPC へ流れて
-                // silent drop = 「pane が空のまま」regression — session tab 4 tag と同じ罠）
-                | "bastet:devices_fetch"
-                // board pane の boot 窓 catch-up（doc 52 §10 wave 0。漏れると「reopen で board
-                // pane が出ない」= bastet:devices_fetch と同じ罠）
-                | "board:demand"
                 // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
                 // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
                 | "ink:snapshot"
@@ -223,10 +219,9 @@ mod ipc_tag_tests {
             "echoes:demand_start",
             // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
             "console:switch_root",
-            // Bastet pane の device catch-up（boot 窓救済 — lanes:ensure-all の同型）
-            "bastet:devices_fetch",
-            // board pane の boot 窓 catch-up（doc 52 §10 wave 0）
-            "board:demand",
+            // webview の誕生合図。Rust の replay 一式がここに畳んである（旧 catch-up pull
+            // 3 本の後継）。漏れると「起動直後だけ console も pane も空」になる
+            "ready",
             // ink（対話面, doc 52 §3）: 送信の snapshot 要求（漏れは「送っても画像が飛ばない」）
             "ink:snapshot",
             // cursor server 昇格（doc 52 §5 計器盤）: 漏れは「click しても注視が同期されない」
@@ -316,7 +311,7 @@ mod session_derivation_tests {
     /// doc 53 §11: 定期 snapshot で roster を撃ち直さない指紋 gate の意味論。
     ///
     /// LanesLoaded は高頻度 event なので、値が同じなら push しない（毎回撃つと webview が
-    /// roster を作り直して pane が無用に再配置される）。**catch-up 経路（`LanesEnsureAll`）は
+    /// roster を作り直して pane が無用に再配置される）。**replay 経路（`WebviewReady`）は
     /// この gate を通さない** — boot 窓で落ちた push を取り戻す唯一の機会で、そこで
     /// 「変化なし」と判断すると roster が永久に空のままになる（team-b 指摘 2026-07-25）。
     /// 呼び分けは実装側の構造（gate を呼ぶ / 呼ばない）で表す。
@@ -1901,7 +1896,7 @@ fn term_sessions_of(lane: &crate::client::LaneInfo) -> Vec<(u32, bool)> {
 /// doc 53 §11: LanesLoaded は定期 snapshot でも走る高頻度 event なので、**変化した lane だけ**
 /// 撃つ（毎回撃つと webview が roster を作り直して pane が無用に再配置される）。
 ///
-/// ⚠️ **catch-up 経路（`LanesEnsureAll`）はこの gate を通さない** — bundle ロード前の
+/// ⚠️ **replay 経路（`WebviewReady`）はこの gate を通さない** — bundle ロード前の
 /// `evaluate_script` は無言 no-op になるのに指紋だけ残るため、gate を共有すると boot 窓で
 /// 落ちた 1 回目を永久に取り戻せない（team-b 指摘 2026-07-25）。
 fn roster_push_needed(
@@ -1990,8 +1985,8 @@ mod lane_js {
     use wry::WebView;
 
     use crate::generated::push::{
-        PushEventEnvelope, TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession,
-        TermShowLane,
+        BoardMessage, DevicesRender, PushEventEnvelope, TermEnsureLane, TermPaste, TermRemoveLane,
+        TermRemoveSession, TermShowLane,
     };
 
     /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
@@ -2003,14 +1998,15 @@ mod lane_js {
     /// 1. **型が無い** — 引数の数や順序が食い違っても Rust も TS も黙る
     /// 2. **押し込みが黙って落ちる** — `window.X && window.X.y(...)` は bundle 準備前なら
     ///    **no-op で「成功」する**。VP はこの穴を feature ごとの pull で埋めてきた
-    ///    （`lanes:ensure-all` / `bastet:devices_fetch` / `board:demand`）
+    ///    （旧 `lanes:ensure-all` / `bastet:devices_fetch` / `board:demand` — 3 本とも退役済）
     ///
     /// envelope なら ① は codegen が、② は受け側 1 箇所の buffer が塞ぐ。窓口が 1 つになって
     /// 初めて buffer を 1 個置けば済む（~24 個の窓口それぞれには置けなかった）。
     ///
     /// ⚠️ `window.vpDispatch &&` の guard は**残す**。bundle 評価前に Rust が撃つ窓は依然あり、
-    /// そこは JS が存在しないので queue にも積めない。取りこぼしの最終救済は今のところ
-    /// `lanes:ensure-all` の catch-up のまま（移行が一巡したら合わせて畳む）。
+    /// そこは JS が存在しないので queue にも積めない。その窓の救済は
+    /// [`AppEvent::WebviewReady`](crate::terminal::AppEvent::WebviewReady) の replay
+    /// （受け口が揃った合図を受けて現在の状態を丸ごと撃ち直す）。
     fn push(main_view: &WebView, msg: &PushEventEnvelope) {
         let json = match serde_json::to_string(msg) {
             Ok(j) => j,
@@ -2096,14 +2092,39 @@ mod lane_js {
         );
     }
 
-    /// `window.vpBastet.renderDevices(devices)` を呼ぶ — Bastet pane に device 一覧を render。
-    /// Phase 2: world-device bridge の出口 (= AppEvent::DeviceEvent handler から呼ぶ)。
-    pub fn render_bastet_devices(main_view: &WebView, devices: &[crate::pane::DeviceSnapshot]) {
-        let json = serde_json::to_string(devices).unwrap_or_else(|_| "[]".into());
-        let script = format!("window.vpBastet && window.vpBastet.renderDevices({json})");
-        if let Err(e) = main_view.evaluate_script(&script) {
-            tracing::warn!("renderBastetDevices script failed: {}", e);
-        }
+    /// 計器盤 pane に MIDI device 一覧を render する（world-device bridge の出口）。
+    ///
+    /// 差分ではなく**全量の置き換え**（level 駆動）なので、途中の 1 通を落としても次の 1 通で
+    /// 正しい状態に戻る。`AppEvent::DeviceEvent` と webview 誕生時の replay の両方から呼ぶ。
+    pub fn render_devices(main_view: &WebView, devices: &[crate::pane::DeviceSnapshot]) {
+        // 1 件でも黙って消えると「device が 1 つ足りない」だけが残って原因が辿れない。
+        // 実路では起きない（`DeviceSnapshot` は平たい 3 field）が、**黙って落とさない**のが
+        // この経路の主題なので、省いたことは必ず言う。
+        let devices = devices
+            .iter()
+            .filter_map(|d| match serde_json::to_value(d) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("device の serialize に失敗（この 1 件を省く）: {e}");
+                    None
+                }
+            })
+            .collect();
+        push(
+            main_view,
+            &PushEventEnvelope::DevicesRender(DevicesRender { devices }),
+        );
+    }
+
+    /// 掲示板（board）へ SP の canvas message をそのまま渡す。
+    ///
+    /// 中身の形は SP が持つ（VP は転送するだけ）。型が要るのは「どの窓口へ届けるか」の方で、
+    /// それは envelope の tag が担う。
+    pub fn board_message(main_view: &WebView, message: serde_json::Value) {
+        push(
+            main_view,
+            &PushEventEnvelope::BoardMessage(BoardMessage { message }),
+        );
     }
 }
 
@@ -3674,10 +3695,10 @@ pub fn run() -> anyhow::Result<()> {
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
     // wiremsg Stage 2: per-SP の "gui" Unison 購読 guard (lanes_sub_active と同型)。
     let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // board pane の boot 窓救済（doc 52 §10 wave 0、bastet_devices と同型）: gui channel で届いた
-    // BoardUpdated を project × lane で保持し、`board:demand`（webview bundle-ready）で再配信する。
-    // retained BoardUpdated は bundle ロード前に届いて `window.vpBoard &&` guard で落ちるため、
-    // これが無いと reopen 時に board pane が出ない（live show まで空）。
+    // board pane の boot 窓救済（doc 52 §10 wave 0、device 一覧と同型）: gui channel で届いた
+    // BoardUpdated を project × lane で保持し、`AppEvent::WebviewReady` の replay で再配信する。
+    // retained BoardUpdated は bundle 評価前に届いて受け口不在で落ちるため、これが無いと
+    // reopen 時に board pane が出ない（live show まで空）。
     let mut board_snapshots: std::collections::HashMap<
         String,
         std::collections::HashMap<String, serde_json::Value>,
@@ -4292,10 +4313,20 @@ pub fn run() -> anyhow::Result<()> {
                     forget_roster_push(&mut last_roster_push, addr);
                 }
             }
-            // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
-            // 起動 race で silent drop された ensureLane を再発行する (WebView HTML load 完了
-            // 後なので、 evaluate_script は確実に実行される)。 idempotent (ensureLane 内で既存なら no-op)。
-            Event::UserEvent(AppEvent::LanesEnsureAll) => {
+            // webview が「受け口を全部生やした」と名乗った（`entry.tsx` の `t:"ready"`）。
+            //
+            // ## これは catch-up ではなく **replay**
+            //
+            // bundle 評価前に Rust が撃った押し込みは、受け口 (`window.vpDispatch`) が居ないので
+            // 届かない。ここで**現在の状態を丸ごと撃ち直す**ことでそれを埋める。全部 idempotent /
+            // 全量置き換えなので、二重に撃っても壊れない（level 駆動）。
+            //
+            // ⚠️ 以前は同じことを **feature ごとの pull 3 本**（`lanes:ensure-all` /
+            // `bastet:devices_fetch` / `board:demand`）でやっていた。面を足すたびに pull を 1 本
+            // 足す形で、しかも**その面が install された後**に撃つ順序制約が JS 側に散っていた。
+            // 「webview が生まれた」という事実は 1 つなので、signal も 1 本に畳んである。
+            // 新しい面を足したら **ここに replay を 1 行足す**（新しい IPC tag は要らない）。
+            Event::UserEvent(AppEvent::WebviewReady) => {
                 // terminal S4: JS xterm instance の catch-up 再発行のみ (SP port 不要)。
                 // terminal session 自体は LanesLoaded reconcile が管理するのでここでは触らない。
                 for (_project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
@@ -4357,7 +4388,7 @@ pub fn run() -> anyhow::Result<()> {
                                 .await
                                 {
                                     tracing::debug!(
-                                        "LanesEnsureAll: terminal demand 再要求に失敗（次の契機で再試行）: {e}"
+                                        "WebviewReady: terminal demand 再要求に失敗（次の契機で再試行）: {e}"
                                     );
                                 }
                             });
@@ -4378,6 +4409,23 @@ pub fn run() -> anyhow::Result<()> {
                     // 消滅）。roster の catch-up は上の lane ループが撃つ（doc 53 §11 — push 型に
                     // なって以降、この経路にも roster が要る）。
                     push_active_view(&webview, &sidebar_state);
+                }
+                // 計器盤: world-device の接続時 snapshot は bundle ロード前に届いて落ちている
+                // （sidebar の Devices badge は state 再 push で生きるが pane だけ空、2026-07-23
+                // 実機で確認）。保持済み state から全量で撃ち直す。
+                lane_js::render_devices(&webview, &sidebar_state.bastet_devices);
+                // 掲示板: retained BoardUpdated も同じ窓で落ちる（doc 52 §10 wave 0）。
+                // active project の保持分を全 lane 撃ち直す（落ちたままだと reopen で board pane
+                // が出ず、次の live show まで空のまま）。
+                if let Some(proj) = sidebar_state
+                    .active_lane_address
+                    .as_deref()
+                    .and_then(|addr| addr.split('/').next())
+                    && let Some(boards) = board_snapshots.get(proj)
+                {
+                    for message in boards.values() {
+                        lane_js::board_message(&webview, message.clone());
+                    }
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
             }
@@ -4407,35 +4455,6 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::LaneRespawnFailed { address }) => {
                 if lane_respawn_triggered.remove(&address) {
                     tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
-                }
-            }
-            Event::UserEvent(AppEvent::BastetDevicesFetch) => {
-                // boot 窓 catch-up: world-device の接続時 snapshot は bundle ロード前に届き、
-                // renderDevices の `window.vpBastet &&` guard で黙って落ちる（sidebar の
-                // Devices badge は state 再 push で生きるが pane だけ空のまま、2026-07-23
-                // 実機で確認）。view の誕生時に保持済み state から再 render する。
-                lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
-            }
-            Event::UserEvent(AppEvent::BoardDemand) => {
-                // board pane の boot 窓 catch-up（doc 52 §10 wave 0、BastetDevicesFetch と同型）:
-                // active project の保持済み BoardUpdated を全 lane 分 vpBoard へ再配信する。
-                // retained が bundle ロード前に落ちた分を埋め、reopen で board pane が出るようにする。
-                let active_project = sidebar_state
-                    .active_lane_address
-                    .as_deref()
-                    .and_then(|addr| addr.split('/').next());
-                if let Some(proj) = active_project
-                    && let Some(boards) = board_snapshots.get(proj)
-                {
-                    for message in boards.values() {
-                        if let Ok(json) = serde_json::to_string(message) {
-                            let script =
-                                format!("window.vpBoard && window.vpBoard.handleMessage({})", json);
-                            if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!("board:demand re-deliver 失敗: {}", e);
-                            }
-                        }
-                    }
                 }
             }
             Event::UserEvent(AppEvent::InkSnapshot { rect }) => {
@@ -4490,7 +4509,7 @@ pub fn run() -> anyhow::Result<()> {
                 // (Bastet pane の device list) の両方に push。
                 if crate::pane::apply_device_event(&mut sidebar_state.bastet_devices, &payload) {
                     push_sidebar_state(&webview, &sidebar_state);
-                    lane_js::render_bastet_devices(&webview, &sidebar_state.bastet_devices);
+                    lane_js::render_devices(&webview, &sidebar_state.bastet_devices);
                 }
                 // fleet 配線 (doc 49 LE-19): 操作入力 (control_event) は webview の mapping
                 // registry へ fire-and-forget 転送。受け手 (window.vpFleet) は gallery-panes.tsx。
@@ -4525,14 +4544,14 @@ pub fn run() -> anyhow::Result<()> {
                     .file_name()
                     .and_then(|s| s.to_str());
                 // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を project × lane で
-                // 保持する。`board:demand`（webview bundle-ready）で再配信し、retained が bundle
-                // ロード前に落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
+                // 保持する。`AppEvent::WebviewReady` の replay で再配信し、retained が bundle 評価前に
+                // 落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
                 //
                 // ⚠️ scope=="lane" のみ buffer する（消費側 board-handler.ts `applyBoardUpdated` の
                 //   `if (msg.scope !== 'lane') return` と対称にする）。退役済み scope="proj" の孤児行も
                 //   seed_boards が無条件 broadcast し、board_key() で proj も conductor lane も
                 //   broadcast_lane=None → lane_key="conductor" に衝突する。scope guard が無いと、行順
-                //   次第で proj 孤児が本物の lane board を上書きし、board:demand が「JS が捨てる死んだ
+                //   次第で proj 孤児が本物の lane board を上書きし、replay が「JS が捨てる死んだ
                 //   message」を配って boot 窓 regression が再発する（team-b review 2026-07-24）。
                 if message.get("type").and_then(|t| t.as_str()) == Some("board_updated")
                     && message.get("scope").and_then(|s| s.as_str()) == Some("lane")
@@ -4596,17 +4615,8 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 } else if active_project.is_some() && active_project == msg_project {
                     // PP content (非 switch_lane) は active project の分のみ main area に転送する。
-                    match serde_json::to_string(&message) {
-                        Ok(json) => {
-                            let script = format!(
-                                "window.vpBoard && window.vpBoard.handleMessage({})",
-                                json
-                            );
-                            if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!("vpBoard.handleMessage 失敗: {}", e);
-                            }
-                            // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
-                        }
+                    match serde_json::to_value(&message) {
+                        Ok(json) => lane_js::board_message(&webview, json),
                         Err(e) => {
                             tracing::warn!("CanvasMessage serialize 失敗: {}", e);
                         }
@@ -5391,20 +5401,14 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::FilesOpenResult { content }) => {
                 // doc 19 PP Canvas Stack Model: append field は omit (= stack push に
                 // 統一)。 pane_id は dead field だが backward compat で keep。
-                let msg = serde_json::json!({
-                    "type": "show",
-                    "pane_id": "main",
-                    "content": content,
-                });
-                let msg_str =
-                    serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());
-                let script = format!(
-                    "window.vpBoard && window.vpBoard.handleMessage({})",
-                    msg_str
+                lane_js::board_message(
+                    &webview,
+                    serde_json::json!({
+                        "type": "show",
+                        "pane_id": "main",
+                        "content": content,
+                    }),
                 );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("main_view vpBoard.handleMessage (files:open) 失敗: {}", e);
-                }
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;
