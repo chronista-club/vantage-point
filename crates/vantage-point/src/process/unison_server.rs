@@ -735,8 +735,24 @@ async fn handle_terminal_demand(
     if crate::process::lanes_state::LanePool::parse_address(&lane).is_none() {
         return Err(format!("terminal_demand: lane パース失敗: {}", lane));
     }
+    // client が「画面を持っていない」と名乗った場合は replay を必ず流す
+    // （JS ready 後の catch-up。webview 準備前に届いた replay は捨てられている）。
+    let force_replay = payload
+        .get("replay")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // Lane 不在 / PtySlot 無でも受理（= Lane 起動後の再 demand 余地を残す）。
-    let r = reconcile_terminal_pumps(state, &lane).await;
+    let r = if force_replay {
+        crate::process::terminal_pump::reconcile_lane_pumps_forcing_replay(
+            &state.lane_pool,
+            &state.terminal_pumps,
+            &state.topic_router,
+            &lane,
+        )
+        .await
+    } else {
+        reconcile_terminal_pumps(state, &lane).await
+    };
     Ok(serde_json::json!({
         "status": "reconciled", "lane": lane,
         "attached": r.attached, "removed": r.removed, "kept": r.kept,
@@ -3289,6 +3305,109 @@ mod tests {
     ///
     /// 観測は **client が見るもの**で行う: slot 差替 + reconcile 後に流れてくる出力の
     /// session stamp が、差し替わった session だけであること。
+    /// **GUI が再起動したら replay を流し直す**（doc 53 §6.5.0 の最終段、2026-07-26）。
+    ///
+    /// GUI プロセスが入れ替わっても **slot は生きたまま**なので、pump の identity（slot pid）は
+    /// 一致する。旧実装はそれを「変化なし」と判定して attach を skip し、**新しい GUI に過去の
+    /// 画面が届かなかった**（console が黒いまま = 実機で観測）。
+    ///
+    /// pump が答えるべきは 2 つの別の問い:
+    /// - **張り直すべきか**（server 側の生産）→ slot pid
+    /// - **replay を流すべきか**（client が画面を持っているか）→ **購読の世代**
+    ///
+    /// 1 つの述語で兼ねていたのを分けた（[[one-predicate-three-properties]]）。
+    ///
+    /// 壊し方: attach 判定を `current.get(s) != Some(pid)`（pid だけ）に戻すと、②の
+    /// 「再購読後に replay が届く」が落ちる。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reconnecting_client_gets_replay_even_when_slot_is_unchanged() {
+        use super::reconcile_terminal_pumps;
+        use crate::daemon::pty_slot::PtySlot;
+        use crate::process::lanes_state::LaneAddress;
+        use crate::process::state::build_test_app_state;
+        use crate::protocol::ProcessMessage;
+        use base64::Engine;
+        use std::time::Duration;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let shell = default_test_shell();
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let addr = LaneAddress::performer("vp", "feat-reconnect");
+        let lane = addr.to_string();
+        let topic = format!("process/terminal/data/{}/out", lane.replace('/', "~"));
+
+        // slot を 1 本立てて、識別できる出力を出しておく（= replay の中身になる）。
+        {
+            let mut pool = state.lane_pool.write().await;
+            let (slot, rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("spawn");
+            pool.insert_pty_slot(addr.clone(), None, slot, rx);
+            pool.write_to_lane(&addr, None, b"echo VP_RECONNECT_MARK\n")
+                .expect("write");
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // ① 最初の client が購読 → pump が張られ replay が流れる。
+        let (sub1, _rx1) = state.topic_router.subscribe(&topic).await;
+        reconcile_terminal_pumps(&state, &lane).await;
+        let pid_before = {
+            let pumps = state.terminal_pumps.read().await;
+            pumps
+                .get(&lane)
+                .and_then(|m| m.values().next())
+                .map(|p| p.slot_pid)
+        };
+        assert!(pid_before.is_some(), "前提: pump が張られている");
+
+        // ① の client に replay が届ききるのを待ってから捨てる（= 以降 live 出力は流れない）。
+        // ⚠️ ここで待たないと ② の観測が **replay ではなく live 出力**を拾ってしまい、
+        // pid だけの旧判定でも緑になる（テストが性質を守らない）。
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        drop(_rx1);
+
+        // ② client が入れ替わる（GUI 再起動）。**slot は触らない** = pid は変わらない。
+        //    旧購読の掃除は QUIC idle timeout 待ちで遅れるので、ここでは外さない（実機と同じ形）。
+        let (_sub2, mut rx2) = state.topic_router.subscribe(&topic).await;
+        reconcile_terminal_pumps(&state, &lane).await;
+
+        // 新しい購読者に **過去の画面（replay）が届く**こと。
+        let mut seen = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(400), rx2.recv()).await {
+                Ok(Some((_t, ProcessMessage::LaneTerminalOutput { data, .. }))) => {
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&data) {
+                        seen.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    if seen.contains("VP_RECONNECT_MARK") {
+                        break;
+                    }
+                }
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+        assert!(
+            seen.contains("VP_RECONNECT_MARK"),
+            "再購読した client に replay が届く（slot は同じでも購読者が変われば流し直す）: got={seen:?}"
+        );
+
+        // slot は張り替えていない（兄弟保護 = R2 の性質を壊していない）。
+        let pid_after = {
+            let pumps = state.terminal_pumps.read().await;
+            pumps
+                .get(&lane)
+                .and_then(|m| m.values().next())
+                .map(|p| p.slot_pid)
+        };
+        assert_eq!(
+            pid_after, pid_before,
+            "slot は差し替えていない（pump の張り直しだけ）"
+        );
+        state.topic_router.unsubscribe(sub1).await;
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn reconcile_touches_only_the_swapped_slot_leaving_siblings_alone() {

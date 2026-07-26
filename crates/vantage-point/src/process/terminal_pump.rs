@@ -137,6 +137,14 @@ pub fn lane_topic(lane: &str) -> String {
 pub struct TerminalPump {
     /// attach した時点の slot の pid（照合キー。 pid は slot の生涯で不変）。
     pub slot_pid: u32,
+    /// attach した時点の**購読の世代**（`TopicRouter::subscriber_epoch`）。
+    ///
+    /// slot pid が「server 側の生産（張り直すべきか）」を答えるのに対し、これは
+    /// 「**client が画面を持っているか**（replay を流すべきか）」を答える。GUI が再起動すると
+    /// slot は同じまま購読者だけが入れ替わるので、pid だけでは「変化なし」と誤答して
+    /// **新しい GUI に過去の画面が届かない**（doc 53 §6.5.0）。2 つの問いに 1 つの述語で
+    /// 答えていたのを分けたもの（[[one-predicate-three-properties]]）。
+    pub subscriber_epoch: Option<u64>,
     /// pump task の handle。 撤去は abort、 source 断 (slot drop) では自然終了する。
     pub handle: JoinHandle<()>,
 }
@@ -179,6 +187,37 @@ pub async fn reconcile_lane_pumps(
     topic_router: &Arc<TopicRouter>,
     lane: &str,
 ) -> PumpReconcile {
+    reconcile_lane_pumps_inner(lane_pool, terminal_pumps, topic_router, lane, false).await
+}
+
+/// **client が「画面を持っていない」と名乗ったときの reconcile**（`force_replay = true`）。
+///
+/// 通常の reconcile は「pump を張り直す必要があるか」で attach を決めるので、pump も購読者も
+/// 変わっていなければ replay は流れない（それが正しい — 生きた console を無闇に clear しない）。
+/// ところが **client が replay を受け取り損ねた**場合、その事実は server から観測できない:
+///
+/// - GUI 再起動の replay は **webview が JS を読み込む前**（実測 0.4 秒前）に届いて捨てられる
+/// - terminal の replay は一度きりなので二度と来ない → console が黒いまま（doc 53 §6.5.0）
+///
+/// JS が ready を名乗った後に client がこれを要求する（`terminal_demand_start` の `replay:true`）。
+/// **client の明示的な要求を server 側の推測で断らない** — 二重描画は replay 先頭の
+/// clear prefix が吸収する（本 module 冒頭の doc）。
+pub async fn reconcile_lane_pumps_forcing_replay(
+    lane_pool: &RwLock<LanePool>,
+    terminal_pumps: &RwLock<TerminalPumps>,
+    topic_router: &Arc<TopicRouter>,
+    lane: &str,
+) -> PumpReconcile {
+    reconcile_lane_pumps_inner(lane_pool, terminal_pumps, topic_router, lane, true).await
+}
+
+async fn reconcile_lane_pumps_inner(
+    lane_pool: &RwLock<LanePool>,
+    terminal_pumps: &RwLock<TerminalPumps>,
+    topic_router: &Arc<TopicRouter>,
+    lane: &str,
+    force_replay: bool,
+) -> PumpReconcile {
     let Some(addr) = LanePool::parse_address(lane) else {
         return PumpReconcile::default();
     };
@@ -186,14 +225,16 @@ pub async fn reconcile_lane_pumps(
 
     // actual の snapshot。finished handle は「不在」と数える（pump は source 断で自然終了
     // する — 万一 slot が生きたまま pump だけ死んだ場合も差替対象に落ちる保険）。
-    let current: HashMap<SessionKey, u32> = {
+    // 今 その topic を見ている購読の世代（GUI 再起動で必ず増える）。
+    let epoch = topic_router.subscriber_epoch(&lane_topic(lane)).await;
+    let current: HashMap<SessionKey, (u32, Option<u64>)> = {
         let pumps = terminal_pumps.read().await;
         pumps
             .get(lane)
             .map(|m| {
                 m.iter()
                     .filter(|(_, p)| !p.handle.is_finished())
-                    .map(|(k, p)| (*k, p.slot_pid))
+                    .map(|(k, p)| (*k, (p.slot_pid, p.subscriber_epoch)))
                     .collect()
             })
             .unwrap_or_default()
@@ -207,7 +248,14 @@ pub async fn reconcile_lane_pumps(
         let live = pool.slot_pids(&addr);
         let attaches: Vec<PumpAttach> = if demand {
             live.iter()
-                .filter(|(s, pid)| current.get(s) != Some(pid))
+                // **2 つの理由**で張り直す（片方だけでは足りない）:
+                // ① slot が差し替わった（pid 不一致）= server 側の生産が別物になった
+                // ② 購読者が入れ替わった（epoch 不一致）= client が画面を持っていない
+                //    → GUI 再起動は ② だけが動く（slot は生きたまま）。pid だけ見ていた頃は
+                //      「変化なし」と判定して replay を落としていた（doc 53 §6.5.0）。
+                // replay の二重描画は clear prefix が吸収する（既存 xterm が生きたまま
+                // demand が立ち直る場合を想定済み — 本 module 冒頭の doc）。
+                .filter(|(s, pid)| force_replay || current.get(s) != Some(&(*pid, epoch)))
                 .filter_map(|&(s, pid)| pool.attach_output(&addr, Some(s)).map(|a| (s, pid, a)))
                 .collect()
         } else {
@@ -234,6 +282,7 @@ pub async fn reconcile_lane_pumps(
             if let Some(old) = lane_pumps.insert(
                 session,
                 TerminalPump {
+                    subscriber_epoch: epoch,
                     slot_pid: pid,
                     handle,
                 },
