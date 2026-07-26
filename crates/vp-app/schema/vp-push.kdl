@@ -1,0 +1,78 @@
+// vp-app server → webview push protocol schema — SSOT
+//
+// Rust（vp-app）が main webview に押し込む message を、この KDL を唯一の真実として
+// club-kdl-codegen で生成する:
+//
+//   - Rust enum → crates/vp-app/src/generated/push.rs            (`PushEnvelope`)
+//   - TS union  → crates/vp-app/webview/src/generated/Push.ts    (`PushEnvelope`)
+//
+// 生成は `cargo test -p vp-app --test push_codegen` で走る（tests/push_codegen.rs）。
+//
+// ## なぜ envelope 1 本にするか（doc 53 §6.5 の続き）
+//
+// 旧来 Rust → JS は **名前で関数を呼ぶ**形だった（`evaluate_script("window.ensureLane(...)")`、
+// 面は ~24 個 / 呼び出し 40 箇所）。この形には 2 つの負債がある:
+//
+// 1. **型が無い** — 引数の数や順序が食い違っても Rust も TS も黙る。#921 で HTML 文字列に対する
+//    assert を撤去したぶん、いま完全に無防備
+// 2. **押し込みが黙って落ちる** — `window.X && window.X.y(...)` は bundle 準備前なら **no-op で
+//    成功**する。VP はこの穴を feature ごとの pull で埋めてきた（`lanes:ensure-all` /
+//    `bastet:devices_fetch` / `board:demand` の 3 本 + 退役 1 本 `echoes:sessions_fetch`）
+//
+// envelope 1 本 + 受け側の buffer にすると、②が**構造的に**消える（準備前の push は queue に
+// 積まれ ready で流れる）ので、上の catch-up pull は順次退役できる。①は codegen が塞ぐ。
+//
+// ## 移行方針（strangler）
+//
+// 骨格（この schema + dispatcher）を先に入れ、~24 面は **1 つずつ** envelope へ移す。
+// 一度に全部移すと、回帰が出たとき原因を「移設」と「envelope 化」のどちらにも帰せなくなる
+// （#921 で「純粋な移設」に絞った判断と同じ理由）。
+//
+// ## 何を buffer するか
+//
+// **制御面（この channel）は buffer する** — 取りこぼすと state が食い違うため。
+// 一方 **stream 面（PTY 出力 `vpTerminal.handleOutput` 等）は buffer しない**方針で、
+// これは別 event として足すときに改めて決める（server 側 replay が取りこぼしを埋めるので、
+// 積むとメモリだけ食う）。現時点の第 1 弾は制御面のみ。
+
+protocol "vp-push" version="1.0.0" {
+    namespace "vp.push"
+
+    // channel "push": envelope="t" で全 push を束ねる discriminated union（`PushEnvelope`）。
+    // from="server" = Rust 側が開いて押し込む向き。lifetime="persistent" = webview の生存中ずっと。
+    channel "push" from="server" lifetime="persistent" envelope="t" {
+        // ===== Echoes Act I（xterm）の制御面 — 実装は webview/term.ts =====
+
+        // (lane, session) の xterm instance を用意する（既存なら no-op = 冪等）。
+        // `is_root` は **host の選び方には使わない**（host の身元は session）。focus の優先だけ。
+        // root は付け替えで動くので、既存 instance にも毎回焼き直す。
+        event "term:ensure_lane" {
+            field "lane" type="string"
+            field "session" type="int"
+            field "is_root" type="bool"
+        }
+
+        // 表示する lane を切り替える。`lane` 省略 = どの lane も選ばれていない（placeholder）。
+        // `is_chat` = Act II（xterm を持たないのが正常形）— placeholder の抑止に要る。
+        event "term:show_lane" {
+            field "lane" type="string" optional=#true
+            field "is_chat" type="bool"
+        }
+
+        // lane 消滅: その lane の **全 session** の xterm を畳む。
+        event "term:remove_lane" {
+            field "lane" type="string"
+        }
+
+        // session 1 枚だけ畳む（act 切替 tui→chat の後始末）。
+        event "term:remove_session" {
+            field "lane" type="string"
+            field "session" type="int"
+        }
+
+        // OS clipboard の中身を focus 中の xterm へ流し込む（`paste:request` の戻り）。
+        event "term:paste" {
+            field "text" type="string"
+        }
+    }
+}

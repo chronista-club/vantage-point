@@ -83,7 +83,7 @@ pub enum AppEvent {
     /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
     ClonePathPicked(Option<String>),
     /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。
-    /// 空文字なら paste skip。 main_view の `window.deliverPaste(text)` で active Lane の xterm に inject。
+    /// 空文字なら paste skip。 `term:paste` の push で focus 中の xterm に inject。
     PasteText(String),
     /// Phase 5-D Sprint C P2.1: Lane HD notification 通知 (OSC 99 final-chunk + a=focus)。
     /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
@@ -635,7 +635,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         Some("paste:request") => {
             // Phase 4-paste-fix: navigator.clipboard.readText() が webview で permission denied する
             // ケースの fallback。 arboard で OS clipboard を読んで AppEvent::PasteText で main thread
-            // に届ける → event loop が main_view の window.deliverPaste(text) を evaluate_script。
+            // に届ける → event loop が `lane_js::deliver_paste` で `term:paste` を push。
             let text = match arboard::Clipboard::new() {
                 Ok(mut cb) => match cb.get_text() {
                     Ok(t) => {

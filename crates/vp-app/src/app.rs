@@ -1985,14 +1985,43 @@ fn root_session_of(sidebar_state: &crate::pane::SidebarState, lane: &str) -> u32
 mod lane_js {
     use wry::WebView;
 
-    /// JS string literal にする (Phase review fix #3 と同設計: serde_json::to_string で
-    /// 全 UTF-8 + null byte + surrogate を JSON spec で escape、 JS の valid string literal に)。
-    /// Lane address は通常 ASCII safe (`<project>/root`) だが、 一貫性と future-proof のため統一。
-    fn js_str(s: &str) -> String {
-        serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+    use crate::generated::push::{
+        PushEventEnvelope, TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession,
+        TermShowLane,
+    };
+
+    /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
+    ///
+    /// ## なぜ名前で関数を呼ばず envelope 1 本にするか（`schema/vp-push.kdl`）
+    ///
+    /// 旧来 Rust → JS は `window.ensureLane(...)` のように**名前で関数を呼ぶ**形で、負債が 2 つ:
+    ///
+    /// 1. **型が無い** — 引数の数や順序が食い違っても Rust も TS も黙る
+    /// 2. **押し込みが黙って落ちる** — `window.X && window.X.y(...)` は bundle 準備前なら
+    ///    **no-op で「成功」する**。VP はこの穴を feature ごとの pull で埋めてきた
+    ///    （`lanes:ensure-all` / `bastet:devices_fetch` / `board:demand`）
+    ///
+    /// envelope なら ① は codegen が、② は受け側 1 箇所の buffer が塞ぐ。窓口が 1 つになって
+    /// 初めて buffer を 1 個置けば済む（~24 個の窓口それぞれには置けなかった）。
+    ///
+    /// ⚠️ `window.vpDispatch &&` の guard は**残す**。bundle 評価前に Rust が撃つ窓は依然あり、
+    /// そこは JS が存在しないので queue にも積めない。取りこぼしの最終救済は今のところ
+    /// `lanes:ensure-all` の catch-up のまま（移行が一巡したら合わせて畳む）。
+    fn push(main_view: &WebView, msg: &PushEventEnvelope) {
+        let json = match serde_json::to_string(msg) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("push envelope の serialize に失敗: {e}");
+                return;
+            }
+        };
+        let script = format!("window.vpDispatch && window.vpDispatch({json})");
+        if let Err(e) = main_view.evaluate_script(&script) {
+            tracing::warn!("vpDispatch script failed: {e}");
+        }
     }
 
-    /// `window.ensureLane(address, session, is_root)` を呼ぶ — 既存ならば no-op (idempotent)。
+    /// (lane, session) の xterm instance を用意する — 既存ならば no-op (idempotent)。
     ///
     /// terminal S4: SP port は不要になった (xterm の transport は World "canvas" channel +
     /// per-lane terminal session、 旧 `/ws/terminal?port=` 直結を撤去)。 JS は xterm instance を
@@ -2001,52 +2030,66 @@ mod lane_js {
     /// doc 50 §4.6 A6: xterm は **(lane, session) ごと**。`is_root` は host の選び方を決める
     /// （root = 静的 `#lane-host` / 非 root = 動的 `#term-session-<n>`）。
     pub fn ensure_lane(main_view: &WebView, address: &str, session: u32, is_root: bool) {
-        let script = format!(
-            "window.ensureLane({}, {}, {})",
-            js_str(address),
-            session,
-            is_root
+        push(
+            main_view,
+            &PushEventEnvelope::TermEnsureLane(TermEnsureLane {
+                lane: address.to_string(),
+                session: i64::from(session),
+                is_root,
+            }),
         );
-        if let Err(e) = main_view.evaluate_script(&script) {
-            tracing::warn!("ensureLane script failed (addr={address} session={session}): {e}");
-        }
     }
 
-    /// `window.removeLaneSession(address, session)` — 1 session の term instance だけ畳む
-    /// （act 切替 tui→chat の後始末。lane 全体は [`remove_lane`]）。
+    /// 1 session の term instance だけ畳む（act 切替 tui→chat の後始末。lane 全体は [`remove_lane`]）。
     pub fn remove_lane_session(main_view: &WebView, address: &str, session: u32) {
-        let script = format!(
-            "window.removeLaneSession && window.removeLaneSession({}, {})",
-            js_str(address),
-            session
+        push(
+            main_view,
+            &PushEventEnvelope::TermRemoveSession(TermRemoveSession {
+                lane: address.to_string(),
+                session: i64::from(session),
+            }),
         );
-        if let Err(e) = main_view.evaluate_script(&script) {
-            tracing::warn!(
-                "removeLaneSession script failed (addr={address} session={session}): {e}"
-            );
-        }
     }
 
-    /// `window.showLane(address, isChat)` を呼ぶ — active な 1 Lane を表示。 None なら empty placeholder。
+    /// active な 1 Lane を表示。`None` なら empty placeholder。
     ///
-    /// `is_chat` = Act II (root act="chat"、sessions 由来)。 chat lane は xterm を持たない (ChatView が内容) ため、
-    /// これを渡さないと JS 側が「xterm 無し = 内容無し」と誤判定して placeholder を被せる。
+    /// `is_chat` = Act II (root act="chat"、sessions 由来)。 chat lane は xterm を持たない
+    /// (ChatView が内容) ため、これを渡さないと JS 側が「xterm 無し = 内容無し」と誤判定して
+    /// placeholder を被せる。
+    ///
+    /// 「lane 未選択」は schema の `optional` field で表現される（旧: JS の `null` 直書き）。
     pub fn show_lane(main_view: &WebView, address: Option<&str>, is_chat: bool) {
-        let script = match address {
-            Some(a) => format!("window.showLane({}, {})", js_str(a), is_chat),
-            None => "window.showLane(null, false)".into(),
-        };
-        if let Err(e) = main_view.evaluate_script(&script) {
-            tracing::warn!("showLane script failed: {}", e);
-        }
+        push(
+            main_view,
+            &PushEventEnvelope::TermShowLane(TermShowLane {
+                lane: address.map(str::to_string),
+                // lane 未選択なら chat 判定も意味を持たない（旧実装の `showLane(null, false)`）。
+                is_chat: address.is_some() && is_chat,
+            }),
+        );
     }
 
-    /// `window.removeLane(address)` を呼ぶ — Lane が消えた時に xterm + WS を dispose。
+    /// Lane が消えた時に、その lane の **全 session** の xterm を dispose。
     pub fn remove_lane(main_view: &WebView, address: &str) {
-        let script = format!("window.removeLane({})", js_str(address));
-        if let Err(e) = main_view.evaluate_script(&script) {
-            tracing::warn!("removeLane script failed (addr={}): {}", address, e);
-        }
+        push(
+            main_view,
+            &PushEventEnvelope::TermRemoveLane(TermRemoveLane {
+                lane: address.to_string(),
+            }),
+        );
+    }
+
+    /// OS clipboard の中身を focus 中の xterm へ流し込む（`paste:request` の戻り）。
+    ///
+    /// 宛先は JS 側が決める（focus 中の 1 枚。A6 で lane に active pane が複数並ぶように
+    /// なったので「最初の active」では意図しない pane に貼られる）。
+    pub fn deliver_paste(main_view: &WebView, text: &str) {
+        push(
+            main_view,
+            &PushEventEnvelope::TermPaste(TermPaste {
+                text: text.to_string(),
+            }),
+        );
     }
 
     /// `window.vpBastet.renderDevices(devices)` を呼ぶ — Bastet pane に device 一覧を render。
@@ -3828,20 +3871,10 @@ pub fn run() -> anyhow::Result<()> {
                 if text.is_empty() {
                     tracing::debug!("PasteText empty (clipboard 空 or 取得失敗)、 skip");
                 } else {
-                    // Phase review fix #3: 旧手書き escape (backslash/quote/newline/cr) は
-                    // null byte (`\0`) や Unicode surrogate を見落とす可能性があった。
-                    // serde_json::to_string で **JSON spec full escape** を使えば、
-                    // 全 UTF-8 sequence が JS の string literal として安全に literalize される。
-                    // 出力例: `"foo\nbar"` (ダブルクォート + JSON escape 込み) → JS で valid string literal。
-                    let json_text = serde_json::to_string(&text)
-                        .unwrap_or_else(|_| "\"\"".into());
-                    let script = format!(
-                        "if (window.deliverPaste) window.deliverPaste({});",
-                        json_text
-                    );
-                    if let Err(e) = webview.evaluate_script(&script) {
-                        tracing::warn!("paste deliver script failed: {}", e);
-                    }
+                    // escape は envelope の serde_json 化に含まれる（Phase review fix #3 の
+                    // 「手書き escape は null byte / surrogate を見落とす」は、payload ごと
+                    // JSON にすることで構造的に解消）。
+                    lane_js::deliver_paste(&webview, &text);
                 }
             }
             Event::UserEvent(AppEvent::OscNotification { lane, code: _ }) => {

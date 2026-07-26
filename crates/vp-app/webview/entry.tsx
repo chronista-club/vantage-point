@@ -133,6 +133,7 @@ import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 // install の呼び出しは **module body の末尾**（inline `<script>` が bundle の後に置かれていた
 // 元の実行順を保つため）。
 import { installTerm } from "./term";
+import { installDispatch, openDispatch } from "./dispatch";
 import {
 	type ActivePaneInfo,
 	applyPaneSwitch,
@@ -970,8 +971,11 @@ installGallery();
 //
 // ⚠️ `window.setActivePane` はここではなく **module 評価時**（上方）に載る。DOM 未 ready の間の
 // 呼びは自前で buffer するので、早く載せるほど取りこぼしが少ない。
+// ⚠️ `openDispatch()` を **最初に** — 受け口さえ生えていれば、実処理が繋がる前に Rust が
+// 撃った分は保留箱が預かる（旧来は `window.X &&` guard で黙って捨てていた）。
+openDispatch();
 installBundleProbe();
-installTerm();
+installDispatch(installTerm());
 installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })
 	.ipc;

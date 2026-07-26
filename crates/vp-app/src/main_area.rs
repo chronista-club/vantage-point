@@ -649,7 +649,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
      webview bundle へ移設（`webview/term.ts` = xterm 配線 / `webview/active-pane.ts` =
      pane 切替 + slot rect）。install は `entry.tsx` の module body 末尾で、実行順は
      inline 時と同じ（bundle は classic blocking script なので文書順で走る）。
-     Rust → JS は今も名前で呼ぶ（`window.ensureLane` 等、app.rs）— この契約は term.ts が持つ。
+     Rust → JS の制御面は単一受け口 `window.vpDispatch` の envelope（SSOT = schema/vp-push.kdl、
+     型は codegen が両側に出す）。受け側は webview/dispatch.ts。
 
      xterm.js + addon は npm 依存として term.ts が直 import する（#920 で vendored asset 8 本
      ≈938KB の include_str! を撤去、window global 経由の橋渡しも本 PR で不要になった）。
@@ -736,8 +737,10 @@ mod tests {
     // 対象の JS が HTML から消えたので assert が空振りするだけになったため。
     //
     // これらは doc 53 §6.5.1 が言う「**境界に型が無い**ので検証を HTML 文字列に対する assert で
-    // 代替している」状態そのものだった。JS 内の境界は消えたが、**Rust → JS を名前で呼ぶ経路
-    //（`app.rs` の `evaluate_script("window.ensureLane(...)")`）は残っている** — この 1 本は
-    // いま無防備で、bundle は minify で仮引数名が潰れるため文字列 assert では守れない。
-    // 塞ぐなら codegen か IPC 契約の型付け（sidebar_ipc_codegen と同型）で、別 PR の仕事。
+    // 代替している」状態そのものだった。
+    //
+    // Rust → JS の名前呼びも **制御面は型で塞いだ**（`schema/vp-push.kdl` を SSOT に codegen が
+    // 両側へ enum / union を出し、受け口は `window.vpDispatch` 1 本）。引数の数が食い違えば
+    // TS のコンパイルが落ちる。残るは高頻度 stream の `vpTerminal.handleOutput` だけで、
+    // これは buffer 方針を別に決める必要があるため移行は別 PR。
 }
