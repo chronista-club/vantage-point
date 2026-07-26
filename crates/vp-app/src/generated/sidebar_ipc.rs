@@ -121,6 +121,54 @@ pub struct UpdateApply {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidebarState {
+    pub state: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidebarError {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformerCreateResult {
+    pub project_path: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandsResult {
+    pub project_path: String,
+    pub stands: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesListResult {
+    pub address: String,
+    pub entries: Vec<serde_json::Value>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireResult {
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClonePathPicked {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePickerOpen {
+    pub address: String,
+}
+
 /// Envelope enum for channel "ipc" — a discriminated union over its
 /// requests, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,4 +214,27 @@ pub enum IpcEnvelope {
     WireAck(WireAck),
     #[serde(rename = "update:apply")]
     UpdateApply(UpdateApply),
+}
+
+/// Envelope enum for channel "ipc" — a discriminated union over its
+/// events, internally tagged by the "t" field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "t")]
+pub enum IpcEventEnvelope {
+    #[serde(rename = "sidebar:state")]
+    SidebarState(SidebarState),
+    #[serde(rename = "sidebar:error")]
+    SidebarError(SidebarError),
+    #[serde(rename = "performer:create_result")]
+    PerformerCreateResult(PerformerCreateResult),
+    #[serde(rename = "stands:result")]
+    StandsResult(StandsResult),
+    #[serde(rename = "files:list_result")]
+    FilesListResult(FilesListResult),
+    #[serde(rename = "wire:result")]
+    WireResult(WireResult),
+    #[serde(rename = "clone:path_picked")]
+    ClonePathPicked(ClonePathPicked),
+    #[serde(rename = "file_picker:open")]
+    FilePickerOpen(FilePickerOpen),
 }

@@ -117,10 +117,24 @@ fn regenerates_sidebar_ipc_bindings() {
         // in-app update: sidebar footer の「更新する」ボタン。schema 編集で codegen から
         // 落ちると button → Rust dispatch が silently 壊れるので regression net を張る。
         "update:apply",
+        // server → client（doc 53 §6.5.1.3）。同じ channel が両方向を運ぶ。
+        "sidebar:state",
+        "sidebar:error",
+        "performer:create_result",
+        "stands:result",
+        "files:list_result",
+        "wire:result",
+        "clone:path_picked",
+        "file_picker:open",
     ] {
         assert!(rust_file.contains(wire), "Rust に wire 名 {wire} が無い");
         assert!(ts_file.contains(wire), "TS に wire 名 {wire} が無い");
     }
+
+    // request / event で **別名の envelope** が出ること（club-kdl 0.12.0 / club-kdl#33）。
+    // 1 本に混ざると、client が送れないはずの event を送れてしまい型が意味を失う。
+    assert!(rust_file.contains("pub enum IpcEventEnvelope {"));
+    assert!(ts_file.contains("export type IpcEventEnvelope ="));
 }
 
 /// 内容が変わったときだけ書き込む (無変更なら git status / mtime を汚さない)。

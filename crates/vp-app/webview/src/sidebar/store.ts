@@ -1,7 +1,7 @@
 /**
  * sidebar の Solid store — Rust 側 `SidebarState` の mirror。
  *
- * v1.0 柱 2 PR-1 足場。 Rust が `window.renderSidebarState(json)` で push してくる
+ * v1.0 柱 2 PR-1 足場。 Rust が push envelope `sidebar:state` で送ってくる
  * `SidebarState` を、 ここで定義する単一の Solid store に流し込む。 sidebar component は
  * この `sidebar` proxy を読むだけで、 Rust からの state 更新に細粒度で追従する。
  *

@@ -14,6 +14,52 @@ export type LanguageCode = string; // ISO 639-1 format
 // Channel: ipc (backend=stream)
 // ════════════════════════════════════════════════
 
+/** Event "sidebar:state" */
+export interface SidebarState {
+  state: any;
+}
+
+/** Event "sidebar:error" */
+export interface SidebarError {
+  message: string;
+}
+
+/** Event "performer:create_result" */
+export interface PerformerCreateResult {
+  project_path: string;
+  name: string;
+  error?: string;
+}
+
+/** Event "stands:result" */
+export interface StandsResult {
+  project_path: string;
+  stands: any[];
+  error?: string;
+}
+
+/** Event "files:list_result" */
+export interface FilesListResult {
+  address: string;
+  entries: any[];
+  truncated: boolean;
+}
+
+/** Event "wire:result" */
+export interface WireResult {
+  payload: any;
+}
+
+/** Event "clone:path_picked" */
+export interface ClonePathPicked {
+  path: string;
+}
+
+/** Event "file_picker:open" */
+export interface FilePickerOpen {
+  address: string;
+}
+
 /** Request "process:toggle" */
 export interface ProcessToggle {
   path: string;
@@ -128,7 +174,16 @@ export interface UpdateApply {
 }
 
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
-export type IpcChannelEventTypes = Record<string, never>;
+export type IpcChannelEventTypes = {
+  SidebarState: SidebarState;
+  SidebarError: SidebarError;
+  PerformerCreateResult: PerformerCreateResult;
+  StandsResult: StandsResult;
+  FilesListResult: FilesListResult;
+  WireResult: WireResult;
+  ClonePathPicked: ClonePathPicked;
+  FilePickerOpen: FilePickerOpen;
+};
 
 /** Request name → { request, response } 生成 interface の map for "ipc" */
 export type IpcChannelRequestTypes = {
@@ -160,7 +215,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: [] as const,
+  events: ["sidebar:state", "sidebar:error", "performer:create_result", "stands:result", "files:list_result", "wire:result", "clone:path_picked", "file_picker:open"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
@@ -208,5 +263,16 @@ export type IpcEnvelope =
   | ({ t: "wire:fetch" } & WireFetch)
   | ({ t: "wire:ack" } & WireAck)
   | ({ t: "update:apply" } & UpdateApply);
+
+/** Envelope union for channel "ipc" — discriminated on "t". */
+export type IpcEventEnvelope =
+  | ({ t: "sidebar:state" } & SidebarState)
+  | ({ t: "sidebar:error" } & SidebarError)
+  | ({ t: "performer:create_result" } & PerformerCreateResult)
+  | ({ t: "stands:result" } & StandsResult)
+  | ({ t: "files:list_result" } & FilesListResult)
+  | ({ t: "wire:result" } & WireResult)
+  | ({ t: "clone:path_picked" } & ClonePathPicked)
+  | ({ t: "file_picker:open" } & FilePickerOpen);
 
 
