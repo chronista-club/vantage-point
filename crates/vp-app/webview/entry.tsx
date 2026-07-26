@@ -133,7 +133,12 @@ import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 // install の呼び出しは **module body の末尾**（inline `<script>` が bundle の後に置かれていた
 // 元の実行順を保つため）。
 import { installTerm } from "./term";
-import { installActivePane, installBundleProbe } from "./active-pane";
+import {
+	type ActivePaneInfo,
+	applyPaneSwitch,
+	installBundleProbe,
+	installSlotRect,
+} from "./active-pane";
 
 console.info("[vp-bundle] imports resolved");
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
@@ -141,7 +146,7 @@ console.info("[vp-bundle] imports resolved");
 
 // ===== doc 49 LE-P4 PR1: app pane 配置を creo-ui-layout の場へ =====
 // 旧 FrameEngine（VP-140 の Scene engine）の後継。preset / DOM 反映は app-panes.ts に
-// 集約され、ここは購読の install と setActivePane bridge（下方）だけを持つ。
+// 集約され、ここは購読の install と `setActivePane`（下方 `applyActivePane`）だけを持つ。
 //
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
 //   echoes  → pane-terminal      (Echoes Stand = lane workbench。console/chat/board の tiling を内包)
@@ -162,16 +167,12 @@ attachKeybindings(window);
 // handler (src/sidebar/keybindings.ts の installDirectiveHandler) が同一 window で
 // 直接捕捉する。 IPC 往復 bridge を残すと 1 回の Cmd hold + key で二重発火する。
 
-// ===== legacy setActivePane bridge + per-Lane 配置記憶 =====
-// 既存 main_area.rs JS が定義する window.setActivePane を wrap して、
-// 旧 logic (showLane / preview iframe src 切替 / sendSlotRect) を保ったまま
-// app-panes に配置切替を発火させる。
+// ===== setActivePane（Rust `push_active_view` の受け口）=====
+// 本体は下方の `applyActivePane`。
 //
-// per-Lane 配置の記憶 (VP-141 follow-up の後継):
-// - kind=terminal Lane 切替時に旧 Lane の配置 snapshot を save、 新 Lane の保存済
-//   snapshot (or default lead-focus) を restore する → user が Lane を跨いでも
-//   Side Review / PP Overlay 等の選択 + share 調整の形が記憶される（app-panes.ts 所有）
-// - kind != terminal (PP/GE/Bastet click 等) は Lane を跨がない fixed-Pane focus、 記憶は更新しない
+// ⚠️ この表は `active-pane.ts` の同名の表と**別の写像**で、統合してはいけない — こちらは
+// Frame Engine の `data-frame-id`（"echoes" 等 = 配置の座標系）、あちらは DOM element id
+// （"pane-terminal" 等 = 可視性の gate）。同じ kind から別の軸を引いている。
 const KIND_TO_PANE: Record<string, string> = {
 	terminal: "echoes",
 	gold_experience: "ge",
@@ -183,29 +184,11 @@ const KIND_TO_PANE: Record<string, string> = {
 	// 補充（旧体系では unknown kind → empty に落ちて Bastet pane が見えなかった）
 };
 
-interface SetActivePaneInfo {
-	kind?: string | null;
-	pane_id?: string | null;
-	preview_url?: string | null;
-	/** doc 33: chat lane (Act II) フラグ（Rust push_active_view 由来）。 */
-	chat?: boolean;
-	// Echoes 共通ヘッダ用 lane 文脈（setActivePane 相乗り、creo memo `vp-pane-common-header`）
-	lane_name?: string | null;
-	cwd?: string | null;
-	branch?: string | null;
-	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
-	session_id?: string | null;
-	/** root session の stand（= slot に載る engine 種別、chip prefix 導出用: "echoes" / "codex" /
-	 *  "grok" 等）。doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決
-	 *  済み（cross-engine root でも chip prefix が slot の engine を映す）。無ければ lane 固定 stand。 */
-	stand?: string | null;
-}
-
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
 let activeLaneAddress: string | null = null;
 
 /** Echoes 共通ヘッダ（pane-host 上端 strip）。mount は vpConsole install 後（下方）、
- *  setActivePane bridge が lane 文脈を届ける。null = mount 点不在（graceful skip）。 */
+ *  `applyActivePane` が lane 文脈を届ける。null = mount 点不在（graceful skip）。 */
 let echoesHeader: EchoesHeaderApi | null = null;
 
 /**
@@ -226,76 +209,112 @@ function laneNameFromAddress(addr: string | null): string | null {
 	if (m) return m[1] ?? null;
 	return null;
 }
-const installSetActivePaneBridge = (): void => {
-	const w = window as unknown as {
-		setActivePane?: (info: SetActivePaneInfo | null) => void;
-	};
-	const original = w.setActivePane;
-	w.setActivePane = (info) => {
-		// 旧 logic を先に呼ぶ (showLane / preview iframe / sendSlotRect 等)
-		if (typeof original === "function") {
-			try {
-				original(info);
-			} catch (e) {
-				console.warn("[app-panes] legacy setActivePane error", e);
-			}
+/**
+ * Rust `push_active_view` の受け口（`window.setActivePane`）の本体。
+ *
+ * **1 本の関数**として ①DOM の可視性（active-pane.ts）→ ②配置・EchoesHeader・board の順に行う。
+ * 旧構成は ①を active-pane.ts が `window.setActivePane` として定義し、ここが **wrap** して②を
+ * 足す 2 段だった。あれは「DOM 切替は World A（inline JS）、layout は World B（bundle）」という
+ * 世界の分断が理由の形で、World A が消えた（#921）時点で意味を失っていた。
+ *
+ * 2 段は順序依存も生んでいた — wrap は被 wrap 側が定義済みでないと `original` を掴めないため、
+ * この install を **DOMContentLoaded まで遅らせる**必要があった。1 本になったので module 評価時に
+ * 載せられる（早く載るほど、Rust からの呼びを取りこぼす窓が狭い）。
+ *
+ * per-Lane 配置の記憶 (VP-141 follow-up の後継):
+ * - kind=terminal Lane 切替時に旧 Lane の配置 snapshot を save、新 Lane の保存済 snapshot
+ *   (or default lead-focus) を restore する → user が Lane を跨いでも Side Review / PP Overlay 等の
+ *   選択 + share 調整の形が記憶される（app-panes.ts 所有）
+ * - kind != terminal (PP/GE/Bastet click 等) は Lane を跨がない fixed-Pane focus、記憶は更新しない
+ */
+const applyActivePane = (info: ActivePaneInfo | null): void => {
+	// ① DOM の可視性（pane の active 切替 / preview iframe / showLane / slot rect）
+	try {
+		applyPaneSwitch(info);
+	} catch (e) {
+		console.warn("[app-panes] pane switch error", e);
+	}
+	// ② app-panes に配置を発火
+	if (!info || !info.kind || info.kind === "empty") {
+		applyAppScene("empty");
+		// lane 無し = Echoes 共通ヘッダも空へ（chips は presence-driven）。
+		echoesHeader?.setLane(null);
+		return;
+	}
+	// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
+	if (info.kind === "terminal" && info.pane_id) {
+		const newLane = info.pane_id;
+		// ⚠️ restore は **lane が本当に変わった時だけ**。header refresh（engine_session_id /
+		// branch 変化等）は同一 lane に setActivePane を再送してくるため、無条件 restore だと
+		// hotkey で選んだ配置（save 未経由）が黙って巻き戻る（team-b review #1）。
+		const laneChanged = activeLaneAddress !== newLane;
+		// Lane が変わったら旧 Lane の配置 snapshot を save（empty が主役なら app-panes 側で skip）
+		if (activeLaneAddress && laneChanged) {
+			saveAppStateFor(activeLaneAddress);
 		}
-		// app-panes に配置を発火
-		if (!info || !info.kind || info.kind === "empty") {
-			applyAppScene("empty");
-			// lane 無し = Echoes 共通ヘッダも空へ（chips は presence-driven）。
-			echoesHeader?.setLane(null);
-			return;
-		}
-		// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
-		if (info.kind === "terminal" && info.pane_id) {
-			const newLane = info.pane_id;
-			// ⚠️ restore は **lane が本当に変わった時だけ**。header refresh（engine_session_id /
-			// branch 変化等）は同一 lane に setActivePane を再送してくるため、無条件 restore だと
-			// hotkey で選んだ配置（save 未経由）が黙って巻き戻る（team-b review #1）。
-			const laneChanged = activeLaneAddress !== newLane;
-			// Lane が変わったら旧 Lane の配置 snapshot を save（empty が主役なら app-panes 側で skip）
-			if (activeLaneAddress && laneChanged) {
-				saveAppStateFor(activeLaneAddress);
-			}
-			activeLaneAddress = newLane;
-			// Echoes 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
-			// PP 等を眺めている間も直前の lane 文脈が載り続ける）。
-			echoesHeader?.setLane({
-				addr: newLane,
-				name: info.lane_name ?? null,
-				cwd: info.cwd ?? null,
-				branch: info.branch ?? null,
-				chat: !!info.chat,
-				sessionId: info.session_id ?? null,
-				stand: info.stand ?? null,
-			});
-			// wiremsg Stage 2: canvas (PP body) の供給は Rust 側 spawn_canvas_subscription が
-			// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
-			// 保存済配置を restore、 初訪問 Lane は lead-focus を default にする
-			if (laneChanged) restoreAppStateFor(newLane);
-			// doc 50 §4.6 A6: lane の表示を開く（roster 同期 + focus）。旧実装は
-			// 'vp:console-mode'（lane 単位 mode の到着）が契機だったが、見え方が session の
-			// 属性になったので lane 切替そのものが契機になる。
-			if (laneChanged) applyLaneView(newLane);
-			// board モデル: lane 切替時に active lane を更新する。 lane board は canvas channel で既に
-			// retained 受信済みなので、 setActiveLaneName で表示 board を切り替えるだけでよい（別 load 不要）。
-			// LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
-			const laneName = laneNameFromAddress(newLane);
-			setActiveLaneName(laneName);
-			return;
-		}
-		// kind != terminal (PP/GE/Bastet/preview click 等): stand pane の**訪問**（一時 view）。
-		// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
-		const paneId = KIND_TO_PANE[info.kind];
-		if (!paneId) {
-			console.warn("[app-panes] unknown kind for setActivePane:", info.kind);
-			applyAppScene("empty");
-			return;
-		}
-		visitAppPane(paneId);
-	};
+		activeLaneAddress = newLane;
+		// Echoes 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
+		// PP 等を眺めている間も直前の lane 文脈が載り続ける）。
+		echoesHeader?.setLane({
+			addr: newLane,
+			name: info.lane_name ?? null,
+			cwd: info.cwd ?? null,
+			branch: info.branch ?? null,
+			chat: !!info.chat,
+			sessionId: info.session_id ?? null,
+			stand: info.stand ?? null,
+		});
+		// wiremsg Stage 2: canvas (PP body) の供給は Rust 側 spawn_canvas_subscription が
+		// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
+		// 保存済配置を restore、 初訪問 Lane は lead-focus を default にする
+		if (laneChanged) restoreAppStateFor(newLane);
+		// doc 50 §4.6 A6: lane の表示を開く（roster 同期 + focus）。旧実装は
+		// 'vp:console-mode'（lane 単位 mode の到着）が契機だったが、見え方が session の
+		// 属性になったので lane 切替そのものが契機になる。
+		if (laneChanged) applyLaneView(newLane);
+		// board モデル: lane 切替時に active lane を更新する。 lane board は canvas channel で既に
+		// retained 受信済みなので、 setActiveLaneName で表示 board を切り替えるだけでよい（別 load 不要）。
+		// LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
+		const laneName = laneNameFromAddress(newLane);
+		setActiveLaneName(laneName);
+		return;
+	}
+	// kind != terminal (PP/GE/Bastet/preview click 等): stand pane の**訪問**（一時 view）。
+	// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
+	const paneId = KIND_TO_PANE[info.kind];
+	if (!paneId) {
+	console.warn("[app-panes] unknown kind for setActivePane:", info.kind);
+	applyAppScene("empty");
+	return;
+	}
+	visitAppPane(paneId);
 };
+
+// DOM 未 ready の間に来た呼びは buffer して DOMContentLoaded で流す。
+// Rust は WebView の HTML load 完了を待たずに `push_active_view` を撃つことがあり、その時点では
+// `.pane` も `#host` も居ない（旧 World A から引き継いだ既定）。
+let pendingPane: ActivePaneInfo | null = null;
+let domReady = false;
+const setActivePane = (info: ActivePaneInfo | null): void => {
+	if (!domReady) {
+		pendingPane = info;
+		return;
+	}
+	applyActivePane(info);
+};
+(
+	window as unknown as {
+		setActivePane: (info: ActivePaneInfo | null) => void;
+	}
+).setActivePane = setActivePane;
+window.addEventListener("DOMContentLoaded", () => {
+	domReady = true;
+	if (pendingPane !== null) {
+		const flush = pendingPane;
+		pendingPane = null;
+		setActivePane(flush);
+	}
+});
 
 // wiremsg Stage 2: Rust 注入口。Rust 側 spawn_canvas_subscription が active project の
 // canvas ProcessMessage ごとに `window.vpBoard.handleMessage(msg)` を evaluate_script で呼ぶ。
@@ -345,8 +364,9 @@ ppFontStyle.textContent = `
 document.head.appendChild(ppFontStyle);
 
 // 起動時 default Scene apply + HistoryStrip mount
+// （`window.setActivePane` の install は module 評価時に済んでいる — 旧 2 段 wrap 時代は
+//   被 wrap 側の定義を待つ必要があってここに居た）
 const applyDefaultScene = (): void => {
-	installSetActivePaneBridge();
 	const ok = applyAppScene("lead-focus");
 	const paneCount = document.querySelectorAll("[data-frame-id]").length;
 	// 診断 log: 配置が apply された事実と、 data-frame-id 要素の存在を確認できるようにする。
@@ -430,7 +450,7 @@ const vpConsole = installConsole();
 
 // ink（対話面、doc 52 §3）を board pane に配線する。lane 文脈は closure で注入:
 //   - getItemId    = 表示中 board item（board-handler の cursor）
-//   - getLaneAddress = 現 active lane の address（setActivePane bridge が更新する module 変数）
+//   - getLaneAddress = 現 active lane の address（`applyActivePane` が更新する module 変数）
 //   - getFocusedSession / getSessionAct = console.ts の per-lane registry
 // server は触らない（既存 IPC echoes:submit / term:write を撃つだけ、doc 52 §3 = 状態ゼロの往復）。
 installInk({
@@ -939,7 +959,7 @@ if (root) {
 installGallery();
 
 // ===== 旧 World A（main_area.rs inline xterm JS）の install =====
-// doc 53 §6.5 の畳み込みで移設（term.ts / active-pane.ts）。**この 4 行の順序は元の inline JS の
+// doc 53 §6.5 の畳み込みで移設（term.ts / active-pane.ts）。**この順序は元の inline JS の
 // 実行順そのもの**で、意味がある:
 //   1. 全部の window API を先に生やす（Rust は `ready` を受けた瞬間に撃ち返してくる）
 //   2. `ready` で webview の準備完了を伝える
@@ -947,9 +967,12 @@ installGallery();
 //      （Rust は AppEvent::LanesEnsureAll で全 project の lane を walk。ensureLane は
 //        idempotent なので既に ensured 済の lane には影響しない）
 // 置き場所が module body 末尾なのは、inline `<script>` が bundle の **後**に置かれていたため。
+//
+// ⚠️ `window.setActivePane` はここではなく **module 評価時**（上方）に載る。DOM 未 ready の間の
+// 呼びは自前で buffer するので、早く載せるほど取りこぼしが少ない。
 installBundleProbe();
 installTerm();
-installActivePane();
+installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })
 	.ipc;
 bootIpc?.postMessage(JSON.stringify({ t: "ready" }));
