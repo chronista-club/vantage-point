@@ -1037,9 +1037,15 @@ fn register_echoes_demand(
 
 /// per-lane topic の demand hook を登録する共通実装（terminal / echoes で共有）。
 ///
-/// `pattern` は `process/<x>/data/+/<y>` 形（lane key は segment 3）。 購読者 0↔1 遷移で
-/// `start_method` / `stop_method` を当該 SP に control reverse-route で撃つ。 cb は sync で
-/// 呼ばれるため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
+/// `pattern` は `process/<x>/data/+/<y>` 形（lane key は segment 3）。 購読者の増減のたびに
+/// **その時点の level**（`demand_active`）を読んで `start_method` / `stop_method` を当該
+/// project に撃つ。 cb は sync で呼ばれるため、 reverse-route (async I/O) は `tokio::spawn` に逃がす。
+///
+/// ⚠️ **cb の第 2 引数（増減方向）で分岐しない**（doc 53 §2.3 — edge → level）。GUI が死んでも
+/// daemon は QUIC の idle timeout（~60s）まで気づかないので、**新購読が先・旧購読の掃除が後**に
+/// なる順序逆転が起きる。方向で分岐すると「count=2 の増加」を start と読んで撃つべきときに
+/// 撃たない / 「count=1 に減っただけ」を stop と読んで撃つ、が起きうる。level を読めば
+/// 順序に依存しない（受け手の reconcile は冪等なので、同じ結論に何度到達しても構わない）。
 fn register_lane_demand(
     router: &Arc<crate::process::topic_router::TopicRouter>,
     control_channels: ControlChannels,
@@ -1048,14 +1054,24 @@ fn register_lane_demand(
     start_method: &'static str,
     stop_method: &'static str,
 ) {
-    router.register_demand(pattern, move |topic, active| {
+    let router_for_level = Arc::downgrade(router);
+    router.register_demand(pattern, move |topic, _added| {
         // topic = `process/<x>/data/{lanekey}/<y>` → lane address を復元
         // (topic key は LaneAddress の '/' を '~' に encode したもの。 逆変換する)。
         let Some(lane_key) = topic.split('/').nth(3) else {
             return;
         };
         let lane = lane_key.replace('~', "/");
-        let method = if active { start_method } else { stop_method };
+        // **今 購読者が居るか**で決める（増減方向は見ない — 上記 ⚠️）。router が既に落ちて
+        // いる場合は撃たない（level を読めない = 判断材料が無い）。
+        let Some(router) = router_for_level.upgrade() else {
+            return;
+        };
+        let method = if router.demand_active(&topic) {
+            start_method
+        } else {
+            stop_method
+        };
         let control_channels = control_channels.clone();
         let path_key = path_key.clone();
         // doc 44 P1 (fold-in): 旧実装は SP の control channel を逆引きして request を

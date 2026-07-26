@@ -335,30 +335,42 @@ impl TopicRouter {
     /// map は「現在購読が生きている topic」に有界。subscribe/unsubscribe は接続単位の頻度なので
     /// 常時計上のコストは無視できる（hot path の route() は counts に触らない）。
     ///
-    /// hook の cb 呼び出しは従来どおり 0→1 / 1→0 の遷移時だけ。
+    /// **hook は購読の増減があれば毎回呼ぶ**（doc 53 §2.3 — edge → level の hook 側）。
+    ///
+    /// ⚠️ 旧実装は 0→1 / 1→0 の遷移時だけ呼んでいた。これは **寿命の違う 2 者の間で変化を
+    /// signal にする**形で、次の順序逆転で edge が落ちる（2026-07-26 実測）:
+    ///
+    /// ```text
+    /// 01:35:22  added=true   count=1  ← GUI が購読、pump 起動
+    /// 01:36:03  added=true   count=2  ← GUI 再起動の新購読（旧がまだ居る = edge 立たず）
+    /// 01:37:00  added=false  count=1  ← 旧購読の掃除が **57 秒遅れて** 到着
+    /// ```
+    ///
+    /// GUI プロセスが死んでも daemon は QUIC の idle timeout（~60s）まで気づかないため、
+    /// **新購読が先・旧購読の掃除が後**になり count が一度も 0 を通らない。結果 hook が
+    /// 飛ばず、pump が張られず、**console が永久に沈黙**する（doc 53 §6.5.0 の追跡で判明）。
+    /// timeout を縮めても遅延が小さくなるだけで、crash では bye も送れない —
+    /// **順序に依存する限り原理的に塞げない**。
+    ///
+    /// 呼び手（`register_demand` の cb）は reconcile で**冪等**なので、何度呼ばれても
+    /// 「今の level（`demand_active`）を読んであるべき姿に合わせる」に収束する。R2 が pump 側で
+    /// 採った形を hook 側にも適用したもの（**契機は判断を持たない**）。
+    /// 頻度は購読の増減 = 人間の操作（GUI 起動 / lane 切替）なので実質無視できる。
+    ///
     /// lock は cb 呼び出し前に手放す (cb が router を再帰 lock しても deadlock しない)。
     fn fire_demand(&self, topic: &str, added: bool) {
-        let transition = {
+        {
             let mut counts = self.demand_counts.lock().unwrap();
             let entry = counts.entry(topic.to_string()).or_insert(0);
-            let transition = if added {
+            if added {
                 *entry += 1;
-                *entry == 1 // 0→1
-            } else {
-                if *entry > 0 {
-                    *entry -= 1;
-                }
-                *entry == 0 // 1→0
-            };
+            } else if *entry > 0 {
+                *entry -= 1;
+            }
             if *entry == 0 {
                 counts.remove(topic);
             }
-            transition
-        };
-        if !transition {
-            return;
         }
-
         let to_call: Vec<DemandCallback> = {
             let demands = self.demands.lock().unwrap();
             let path = TopicPath::parse(topic);
@@ -836,37 +848,106 @@ mod tests {
     // demand-driven production (S2 / doc 27 §4.1 Cap2)
     // =========================================================================
 
+    /// **消費者が到達する結論は level で決まる**（doc 53 §2.3 — edge → level）。
+    ///
+    /// 旧テストは「hook の**呼ばれた回数**」（start 1 回 / stop 1 回）を固定していた。それは
+    /// 「hook は 0↔1 の遷移でだけ飛ぶ」という edge 仕様の写しで、**寿命の違う 2 者の間で
+    /// 順序が逆転すると落ちる**形だった（実測: GUI 再起動で `1 → 2 → 1` となり count が
+    /// 0 を通らず、hook が飛ばず console が永久沈黙）。
+    ///
+    /// 今は購読の増減のたびに hook が飛び、**消費者が `demand_active` を読んで決める**
+    /// （`register_lane_demand` の実装と同じ形をここで再現する）。固定すべき性質は
+    /// 「何回呼ばれたか」ではなく「**最後にどちらへ収束したか**」。
     #[tokio::test]
-    async fn test_demand_fires_on_first_and_last_subscriber() {
-        use std::sync::atomic::AtomicUsize;
-        let router = TopicRouter::new();
-        let starts = Arc::new(AtomicUsize::new(0));
-        let stops = Arc::new(AtomicUsize::new(0));
+    async fn test_demand_consumer_converges_on_current_level() {
+        use std::sync::Mutex as StdMutex;
+        let router = Arc::new(TopicRouter::new());
+        // 消費者が到達した結論（true = start すべき / false = stop すべき）。
+        let verdict: Arc<StdMutex<Vec<bool>>> = Arc::new(StdMutex::new(Vec::new()));
         {
-            let s = starts.clone();
-            let t = stops.clone();
-            router.register_demand("process/terminal/data/+/out", move |_topic, active| {
-                if active {
-                    s.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    t.fetch_add(1, Ordering::Relaxed);
-                }
+            let v = verdict.clone();
+            let weak = Arc::downgrade(&router);
+            router.register_demand("process/terminal/data/+/out", move |topic, _added| {
+                let Some(r) = weak.upgrade() else { return };
+                v.lock().unwrap().push(r.demand_active(&topic));
             });
         }
+        let last = || *verdict.lock().unwrap().last().expect("hook が呼ばれる");
 
-        // 同一 lane topic に 2 subscriber: start は 0→1 の 1 回だけ。
+        // 同一 lane topic に 2 subscriber。増えるたびに hook は飛ぶが、結論は常に「start」。
         let (id1, _rx1) = router.subscribe("process/terminal/data/vp~root/out").await;
+        assert!(last(), "購読者が居る = start");
         let (id2, _rx2) = router.subscribe("process/terminal/data/vp~root/out").await;
-        assert_eq!(starts.load(Ordering::Relaxed), 1, "start は 0→1 の 1 回");
-        assert_eq!(stops.load(Ordering::Relaxed), 0);
+        assert!(last(), "2 本目でも結論は start（回数ではなく level）");
 
-        // 1 つ抜けてもまだ残るので stop しない。
+        // 1 つ抜けてもまだ残る = start のまま。
         router.unsubscribe(id1).await;
-        assert_eq!(stops.load(Ordering::Relaxed), 0, "残 1 なので stop しない");
+        assert!(last(), "残 1 なので stop に倒れない");
 
-        // 最後の 1 つが抜けて 1→0 で stop。
+        // 最後の 1 つが抜けて初めて stop。
         router.unsubscribe(id2).await;
-        assert_eq!(stops.load(Ordering::Relaxed), 1, "stop は 1→0 の 1 回");
+        assert!(!last(), "誰も居なくなったら stop");
+    }
+
+    /// **順序が逆転しても正しく収束する**（本修正の受け入れ条件）。
+    ///
+    /// GUI が死んでも daemon は QUIC idle timeout（~60s）まで気づかないため、実機では
+    /// **新購読が先・旧購読の掃除が後**という順序になる（2026-07-26 実測）。旧 edge 仕様では
+    /// count が `1 → 2 → 1` と動いて 0 を通らず、hook が 1 度も飛ばずに pump が沈黙した。
+    ///
+    /// 壊し方: `fire_demand` に `if !transition { return; }` を戻すと、この test は
+    /// 「hook が呼ばれる」の時点で落ちる。
+    #[tokio::test]
+    async fn test_demand_survives_stale_subscriber_outliving_reconnect() {
+        use std::sync::Mutex as StdMutex;
+        let router = Arc::new(TopicRouter::new());
+        let verdict: Arc<StdMutex<Vec<bool>>> = Arc::new(StdMutex::new(Vec::new()));
+        {
+            let v = verdict.clone();
+            let weak = Arc::downgrade(&router);
+            router.register_demand("process/terminal/data/+/out", move |topic, _added| {
+                let Some(r) = weak.upgrade() else { return };
+                v.lock().unwrap().push(r.demand_active(&topic));
+            });
+        }
+        let topic = "process/terminal/data/vp~root/out";
+
+        // ① 旧 GUI が購読（count 0→1）。ここは旧実装でも hook が飛ぶ。
+        let (stale, _rx_stale) = router.subscribe(topic).await;
+        let after_first = verdict.lock().unwrap().len();
+
+        // ② 旧 GUI が死ぬ。だが daemon は QUIC idle timeout まで気づかない
+        //    （stale は router に残ったまま = ここでは unsubscribe しない）。
+        // ③ 新 GUI が購読 → count 1→2 で **0 を通らない**。
+        let (_fresh, _rx_fresh) = router.subscribe(topic).await;
+
+        // **ここが本命**: 新しい購読者に pump を張り直す契機は、この hook しかない。
+        // 旧 edge 実装は「遷移していない」として飛ばさず、console が永久に沈黙した。
+        let (calls, verdict_now) = {
+            let v = verdict.lock().unwrap();
+            (v.len(), *v.last().expect("hook が呼ばれる"))
+        };
+        assert!(
+            calls > after_first,
+            "stale が残ったままの再購読でも hook が飛ぶ（旧 edge 実装はここで飛ばなかった）"
+        );
+        assert!(
+            verdict_now,
+            "結論は『購読者が居る』= start（level 直読なので count=2 でも正しい）"
+        );
+
+        // ④ 遅れて旧購読の掃除が届く（count 2→1）。まだ新 GUI が見ているので stop に倒れない。
+        let before_cleanup = verdict.lock().unwrap().len();
+        router.unsubscribe(stale).await;
+        let (calls, verdict_now) = {
+            let v = verdict.lock().unwrap();
+            (v.len(), *v.last().expect("hook が呼ばれる"))
+        };
+        assert!(calls > before_cleanup, "掃除でも hook は飛ぶ");
+        assert!(
+            verdict_now,
+            "生きた購読が残っていれば stop に倒れない（方向ではなく level で決める）"
+        );
     }
 
     #[tokio::test]
