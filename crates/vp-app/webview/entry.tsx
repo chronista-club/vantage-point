@@ -80,10 +80,6 @@ window.addEventListener("unhandledrejection", (e) => {
 	console.error("[vp-bundle] unhandledrejection", e.reason);
 });
 
-// xterm.js + addon を window global として供給する（World A の inline JS がまだ
-// `new Terminal(...)` / `new FitAddon.FitAddon()` を素の global で書いているため）。
-// 旧 vendored `<script>` 8 本の置き換え。詳細は xterm-globals.ts の doc comment。
-import "./xterm-globals";
 import { render } from "solid-js/web";
 import {
 	EditorHostProvider,
@@ -133,6 +129,11 @@ import {
 import { installInk } from "./ink";
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from "./HistoryStrip";
 import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
+// doc 53 §6.5: 旧 World A（main_area.rs の inline xterm JS 976 行）の移設先。
+// install の呼び出しは **module body の末尾**（inline `<script>` が bundle の後に置かれていた
+// 元の実行順を保つため）。
+import { installTerm } from "./term";
+import { installActivePane, installBundleProbe } from "./active-pane";
 
 console.info("[vp-bundle] imports resolved");
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
@@ -936,3 +937,20 @@ if (root) {
 // Component Gallery mode（doc 48 Phase 3 → doc 49 LE-P2 で creo-ui-layout の pane 化）。
 // EditorHostProvider とは独立に生きる（gallery 中も Ctrl+Shift+E / editor_set が効く）。
 installGallery();
+
+// ===== 旧 World A（main_area.rs inline xterm JS）の install =====
+// doc 53 §6.5 の畳み込みで移設（term.ts / active-pane.ts）。**この 4 行の順序は元の inline JS の
+// 実行順そのもの**で、意味がある:
+//   1. 全部の window API を先に生やす（Rust は `ready` を受けた瞬間に撃ち返してくる）
+//   2. `ready` で webview の準備完了を伝える
+//   3. `lanes:ensure-all` で起動 race に取りこぼされた `ensureLane` を再発行させる
+//      （Rust は AppEvent::LanesEnsureAll で全 project の lane を walk。ensureLane は
+//        idempotent なので既に ensured 済の lane には影響しない）
+// 置き場所が module body 末尾なのは、inline `<script>` が bundle の **後**に置かれていたため。
+installBundleProbe();
+installTerm();
+installActivePane();
+const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })
+	.ipc;
+bootIpc?.postMessage(JSON.stringify({ t: "ready" }));
+bootIpc?.postMessage(JSON.stringify({ t: "lanes:ensure-all" }));
