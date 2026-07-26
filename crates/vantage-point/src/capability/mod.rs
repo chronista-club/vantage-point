@@ -1,27 +1,21 @@
-//! Capability Module - Stand能力の拡張システム
+//! Capability Module - 拡張可能な能力システム
 //!
-//! このモジュールはProcessに拡張可能な「能力（Capability）」システムを提供します。
-//! JoJoスタンドの世界観から着想を得て、各能力が独立しながらも協調動作します。
+//! このモジュールはプロセスに拡張可能な「能力（Capability）」システムを提供します。
+//! 各能力が独立しながらも協調動作します。
 //!
 //! ## モジュール構成
 //!
 //! - `core`: Capabilityトレイトとライフサイクル管理（REQ-CAP-001）
-//! - `params`: 能力のパラメータ評価（A〜Eランク、6パラメータ）
-//! - `evolution`: 能力の成長・進化システム（ACT進化、レクイエム、覚醒）
 //!
 //! ## 関連ドキュメント
 //!
-//! - [docs/spec/05-process-capability.md](../../../docs/spec/05-process-capability.md)
+//! - [docs/spec/02-capability.md](../../../docs/spec/02-capability.md)
 
 pub mod actor_registry;
 pub mod agent_capability;
 pub mod core;
 pub mod delegation_store;
 pub mod eventbus;
-pub mod evolution;
-#[cfg(feature = "midi")]
-pub mod midi_capability;
-pub mod params;
 pub mod process_manager_capability;
 pub mod protocol_capability;
 pub mod stand_service;
@@ -34,8 +28,6 @@ pub use core::{
     CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState, DiagnosticReport,
 };
 pub use eventbus::EventBus;
-#[cfg(feature = "midi")]
-pub use midi_capability::MidiCapability;
 // wiremsg R5-4: 旧 msgbox の registry サブシステム (`msgbox_registry` / `msgbox_remote`) を
 // 完全撤去。 msg messaging は wiremsg (`wiremsg_store`) に一本化済。
 pub use process_manager_capability::{

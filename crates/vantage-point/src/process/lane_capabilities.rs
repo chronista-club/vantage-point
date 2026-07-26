@@ -10,7 +10,7 @@
 //! - **Paisley Park 🧭** (`PaisleyParkStand`): PR-δ-2 (VP-136) で **`LaneStandRegistry` 経由 host** へ進化、
 //!   Lane あたり独立 instance (= 1 → N cardinality)
 //! - **Gold Experience 🌿** (planned): PR-γ で同様に Lane instance 化、 LaneStandHost impl 追加予定
-//! - **The Hand 🤚** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない)
+//! - **shell** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない)
 //!
 //! ## 実装状態
 //!
@@ -45,7 +45,7 @@ use crate::justice::JusticeStand;
 /// Lane 階層 Stand container (Lane あたり 1 instance)。
 ///
 /// PR-δ-2 (VP-136) で **`registry: LaneStandRegistry` 経由 N Stand host** に統一。
-/// Echoes / The Hand は mise task PtySlot 経由なので本 struct には host しない
+/// Echoes / shell は mise task PtySlot 経由なので本 struct には host しない
 /// (`LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)。
 // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Stand-host skeleton。現状 field は未 read。
 #[allow(dead_code)]

@@ -217,7 +217,7 @@ pub fn vp_config_dir() -> PathBuf {
 
 /// VP の data zone (XDG `$XDG_DATA_HOME/vp/`、 default `~/.local/share/vp/`)。
 ///
-/// 永続 data store (SurrealDB の `db/`、 Whitesnake `discs/`)。 失っても再生成
+/// 永続 data store (SurrealDB の `db/`、 `discs/`)。 失っても再生成
 /// される類の cache ではなく、 失えない user data を置く。
 pub fn vp_data_dir() -> PathBuf {
     xdg_base("XDG_DATA_HOME", ".local/share")

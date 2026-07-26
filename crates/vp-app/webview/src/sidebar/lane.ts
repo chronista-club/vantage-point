@@ -19,7 +19,6 @@ const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
 	tmux: { default: "ph:presentation", active: "ph:presentation-fill" },
 	paisley_park: { default: "ph:compass", active: "ph:compass-fill" },
 	gold_experience: { default: "ph:plant", active: "ph:plant-fill" },
-	hermit_purple: { default: "ph:plug", active: "ph:plug-fill" },
 	bastet: { default: "ph:magnet", active: "ph:magnet-fill" },
 };
 
@@ -44,8 +43,6 @@ export function standDisplayName(stand: string): string {
 			return "Paisley Park";
 		case "gold_experience":
 			return "Gold Experience";
-		case "hermit_purple":
-			return "Hermit Purple";
 		case "bastet":
 			return "Bastet";
 		default:

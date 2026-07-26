@@ -14,8 +14,8 @@ export type MessageState = {
  */
 unread_count: number, 
 /**
- * 永続化メッセージの存在 (= Whitesnake に persist された未消費 msg があるか)
- * Phase 2 PR-P2-3 では default false、 後続 PR で Whitesnake query から populate。
+ * 永続化メッセージの存在 (= 永続 store に persist された未消費 msg があるか)
+ * Phase 2 PR-P2-3 では default false、 後続 PR で永続 store query から populate。
  */
 has_persistent: boolean, 
 /**

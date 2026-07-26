@@ -1,7 +1,7 @@
 //! wiremsg threaded inbox store (設計 memory `mem_1CbDLrECNZiNEZqjySLfSB`)
 //!
 //! agent 間メッセージング「wiremsg」の inbox 実体。 threading 対応 store。
-//! wiremsg R5-3 で旧 msgbox store (`WhitesnakeStore` / msgs table, claim-based Mailbox)
+//! wiremsg R5-3 で旧 msgbox store (msgs table, claim-based Mailbox)
 //! は撤去され、 msg messaging はこの store に一本化済。
 //!
 //! ## per-reader state = per-agent 単一 cursor (決定 III)
@@ -39,7 +39,7 @@
 //! ## 設計判断
 //!
 //! - **TopicRouter を使わない**: inbox = SurrealDB の message store。 `wire_recv` がその
-//!   store を直接 long-poll する (= 既存 `msg_recv` / `WhitesnakeStore.claim` と同型)。
+//!   store を直接 long-poll する (= 既存 `msg_recv` / 旧 store の claim と同型)。
 //! - **`prev` は record link でなく plain string** (= message の local id)。 既存 msgs
 //!   table の `id` / `reply_to` も plain string で同型、 record-link traversal は
 //!   migration 部分適用で壊れやすい (creo-memories の教訓)。

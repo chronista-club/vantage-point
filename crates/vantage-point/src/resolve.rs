@@ -209,7 +209,7 @@ pub(crate) fn match_project_name_for_path(
 // doc 44 P1 PR4 (DB 統合): `project_slug` / `fnv1a_64` を撤去。
 //
 // slug は project 名を **DB ディレクトリ名 `db/sp_{slug}/`** に落とすためだけに存在し
-// （VP-165 / doc 17 決定B。Whitesnake 退役後は db dir が唯一の用途だった）、`fnv1a_64` は
+// （VP-165 / doc 17 決定B。旧永続化レイヤー退役後は db dir が唯一の用途だった）、`fnv1a_64` は
 // その永続 key を Rust バージョン間で安定させるための決定的 hash だった。
 // DB 統合でディレクトリ分離が消え、project 次元が table の `project_path` 列に移った結果、
 // **slug という概念そのものが宙に浮いた**（production の呼び出し元が 0 になった）。

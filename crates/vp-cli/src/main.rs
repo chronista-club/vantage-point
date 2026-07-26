@@ -121,7 +121,7 @@ enum Commands {
     #[command(subcommand)]
     Db(commands::db::DbCommands),
 
-    /// Stone Free 🧵 — performer Lane 管理（旧 vp ws、Phase 1 で統合）
+    /// performer Lane 管理（旧 vp ws、Phase 1 で統合）
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
 
@@ -183,7 +183,7 @@ enum Commands {
     },
 }
 
-/// Stone Free performer Lane コマンド（lane library への薄い wrapper）
+/// performer Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
     /// 新しい performer 環境を作成（worktree add + symlink + setup）
@@ -723,7 +723,7 @@ fn execute_shot(
     Ok(())
 }
 
-/// Stone Free 🧵 performer Lane 操作を lane library に委譲
+/// performer Lane 操作を lane library に委譲
 ///
 /// wiremsg R5-4: 旧 msgbox の registry サブシステム (performer 作成/削除時の
 /// `performer-{name}@{project}` actor register/unregister) は撤去済。

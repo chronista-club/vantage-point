@@ -34,7 +34,7 @@ use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEv
 use super::super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
-// stand 識別子 String 化と同タイミングで導入した「heavens_door / the_hand → echoes / shell」 (PR-pre2 で hd → echoes)
+// stand 識別子 String 化と同タイミングで導入した旧 stand 名 → 現行名の変換 (PR-pre2 で hd → echoes)
 // migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
 // VP は user 1 人 + lane performer のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。

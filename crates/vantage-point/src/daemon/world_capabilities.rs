@@ -8,7 +8,6 @@
 //!
 //! - **TheWorld 👑** (`ProcessManagerCapability`): VP world process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
-//! - **Whitesnake 🐍** (`Whitesnake`): file-backed persistence wrapper
 //! - **Bastet 🧲** (`Bastet`): multi-device registry + 艦隊 input listener（`with_bastet`）
 //!
 //! ## 実装状態
@@ -18,10 +17,10 @@
 //! - 旧 `MidiCapability` hosting（PR-α-2 の single-device monitor）は退役 — 消費者
 //!   （`ProtocolCapability`）が本番で実体化されず、enumeration 先頭 device（実機で LPD8）を
 //!   無条件 grab して Bastet listener を沈黙させる害だけが残っていたため（fleet dogfood で発覚）。
-//! - 後続 cleanup: AppState 既存 field (`world` / `update` / `whitesnake`)
-//!   と本 struct の重複保持を整理 (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
+//! - 後続 cleanup: AppState 既存 field (`world` / `update`) と本 struct の重複保持を整理
+//!   (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
 //!
-//! wiremsg R5-4: 旧 msgbox の registry サブシステム (`hermit_purple@world` の registry
+//! wiremsg R5-4: 旧 msgbox の registry サブシステム (旧 External Control stand の registry
 //! 登録を含む) は撤去済。 wire の cross-process delivery は TheWorld の project registry
 //! (project → SP port) を使う別経路で、 msgbox registry には依存しない。
 //!
@@ -55,7 +54,7 @@ impl WorldCapabilities {
     /// 既存 instance を集約して新規構築 (midi なし版、 feature gate 無効時 / test 用)。
     ///
     /// PR-α-1 (VP-111): `run_world` で散乱していた World 階層 capability 群の集約 view を提供。
-    /// AppState 既存 field (`world` / `update` / `whitesnake`) と本 struct の
+    /// AppState 既存 field (`world` / `update`) と本 struct の
     /// 重複保持は意図的 HACK (LSCM A6 share-nothing 整合は β 以降で整理予定)。
     ///
     /// Bastet を host したい場合は `with_bastet` を使う (feature = "midi")。

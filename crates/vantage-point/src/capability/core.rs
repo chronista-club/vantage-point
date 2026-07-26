@@ -1,7 +1,7 @@
 //! Capability Core Trait (REQ-CAP-001)
 //!
 //! 全ての能力が実装する共通インターフェース。
-//! JoJoスタンドの「能力」を表現し、Process全体として協調動作する。
+//! 各能力を表現し、Process全体として協調動作する。
 //!
 //! ## 設計思想
 //!
@@ -10,7 +10,6 @@
 //! - **非同期**: 全ての操作はasyncで実行可能
 //! - **イベント駆動**: EventBusを通じて能力間で通信
 
-use crate::capability::params::CapabilityParams;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -176,8 +175,6 @@ pub struct CapabilityInfo {
     pub homepage: Option<String>,
     /// 能力タイプ（分類名）
     pub capability_type: String,
-    /// 能力パラメータ（6パラメータ）
-    pub params: CapabilityParams,
 }
 
 impl CapabilityInfo {
@@ -194,7 +191,6 @@ impl CapabilityInfo {
             author: None,
             homepage: None,
             capability_type: "general".to_string(),
-            params: CapabilityParams::balanced(),
         }
     }
 
@@ -213,12 +209,6 @@ impl CapabilityInfo {
     /// 能力タイプを設定
     pub fn with_type(mut self, capability_type: impl Into<String>) -> Self {
         self.capability_type = capability_type.into();
-        self
-    }
-
-    /// パラメータを設定
-    pub fn with_params(mut self, params: CapabilityParams) -> Self {
-        self.params = params;
         self
     }
 

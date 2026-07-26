@@ -2,7 +2,7 @@
 
 > **status**: 設計確定（2026-07-15）
 > **supersedes**: [doc 36](./36-echoes-engine-axis.md) §4「A（lane サブコンソール）方向で攻める」決定 → **保留**に格下げ（本 doc §6）
-> **関連**: [doc 36](./36-echoes-engine-axis.md)（engine 軸格子・サブコンソール設計）/ [doc 33](./33-console-unification.md)（console-unification, 1 lane=1 engine 法）/ [cursor-engine.md](./cursor-engine.md) / [doc 32](./32-echoes-act2-gui.md)
+> **関連**: [doc 36](./36-echoes-engine-axis.md)（engine 軸格子・サブコンソール設計）/ [doc 33](./33-console-unification.md)（console-unification, 1 lane=1 engine 法）/ [cursor-engine.md](../archive/cursor-engine.md) / [doc 32](./32-echoes-act2-gui.md)
 > **動機**: cursor(#773/#776) で 2 エンジン目、codex を 3 エンジン目に見据えた段階で、「Act」という語が **surface（TUI/GUI）**と **engine（頭脳）**の二重の意味を背負い始めた。engine が増えるほどこの二重性が破綻するため、2 軸の mental model を確定して開発の背骨にする（user 指示 2026-07-15）。
 
 ## 0. TL;DR — 法
@@ -35,7 +35,7 @@ Echoes は「コーディングアシスタント」という能力の namespace
 | **Act** | 覗く窓（presentation） | いつでも切替可 | 同 engine=同会話のまま view だけ変わる（`--resume` で継続） |
 
 - doc 33 の法「1 lane = 1 Console = ≤1 engine = 1 cc_session」は、実は **engine ≈ session** を宣言していた。
-- cursor-engine.md の `record-from-init`（Act II で進めた会話が Act I へ継がれる）も「engine は session 束縛、Act は view」を裏付ける。`console_mode` を Tui↔Chat と切っても engine=会話は不変。
+- archive/cursor-engine.md の `record-from-init`（Act II で進めた会話が Act I へ継がれる）も「engine は session 束縛、Act は view」を裏付ける。`console_mode` を Tui↔Chat と切っても engine=会話は不変。
 - **帰結**: 「Act = engine」はカテゴリエラー。engine は「何が走っているか」、Act は「どう視るか」。
 
 ## 3. JoJo 忠実性 — Act を engine に使わない理由
@@ -57,7 +57,7 @@ user の原イメージ「その名の通りいろんなエコーズ（Act1,2,3�
 ## 5. 現決定 — engine は lane-pinned（doc 33 の法を維持）
 
 - **1 lane = 1 engine = 1 session**。複数 engine を触りたければ**複数 lane**を立てる。
-- cursor は既に `add_performer(stand="cursor")` で動く（cursor-engine.md）。engine 軸は「格子に row を 1 本足す」だけで増える。
+- cursor は既に `add_performer(stand="cursor")` で動く（archive/cursor-engine.md）。engine 軸は「格子に row を 1 本足す」だけで増える。
 - **サブコンソール split（1 lane 内 engine 共存）は作らない**。理由:
   - pre-MVP 最小化方針（over-scope しない）。主+副 2 枚固定 split は codex 3 本目でスケールしない。
   - 「1 lane 内で別 engine を即重ねる」体験が本当に要るかは、**3 エンジンを実機で触ってから**判断する方が確度が高い。
@@ -113,7 +113,7 @@ host を足すだけで乗った」直交性の配当（doc 36 §1）を踏襲�
 
 ⚠️ **`agent_message` が delta streaming か whole-message か**（cursor の `--stream-partial-output` delta
 判定に相当）は **live 実測が要る**（`codex login` 後に `codex exec --json "hi"` を 1 本流して確認）。
-外すと二重描画（cursor-engine.md の教訓）。
+外すと二重描画（archive/cursor-engine.md の教訓）。
 
 ### Act I（TUI 床）
 

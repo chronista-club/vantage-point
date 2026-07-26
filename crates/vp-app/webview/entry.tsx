@@ -199,8 +199,8 @@ const KIND_TO_PANE: Record<string, string> = {
 	preview: "preview",
 	empty: "empty",
 	// doc 52 §10 wave 0: paisley_park → pp は退役（board pane = lane tiling へ移設）。
-	// LE-P4 PR1: 幽霊の hermit_purple → hp（DOM 不在）を落とし、DOM に居た bastet → bs を
-	// 補充（旧体系では unknown kind → empty に落ちて Bastet pane が見えなかった）
+	// LE-P4 PR1: DOM 不在の幽霊 entry を落とし、DOM に居た bastet → bs を補充
+	// （旧体系では unknown kind → empty に落ちて Bastet pane が見えなかった）
 };
 
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */

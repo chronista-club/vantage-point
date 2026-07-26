@@ -141,7 +141,7 @@ pub enum AppEvent {
     /// Phase 2 (icon visibility のみ) では active Lane に対して placeholder MessageState
     /// (= 0 件 default) を populate し、 sidebar UI で `.vp-message-icon` を表示するための
     /// signal として機能。 unread_count / has_persistent / last_msg_ts の actual 値は
-    /// 後続 PR で backend peek API + Whitesnake query を実装して populate。
+    /// 後続 PR で backend peek API + 永続 store query を実装して populate。
     ResolveLaneInboxes,
     /// Sidebar File Explorer: `files:list` の blocking walk 結果を sidebar webview に
     /// push back する。 `window.vpFiles.handleListResult({address,entries,truncated})` で
