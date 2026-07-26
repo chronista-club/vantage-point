@@ -423,7 +423,7 @@ mod tests {
             .await
             .expect("relay が 2s 以内に届くこと")
             .expect("channel が生きていること");
-        assert_eq!(topic, "repo/star-platinum/event/ping");
+        assert_eq!(topic, "repo/runtime/event/ping");
         token.cancel();
     }
 
