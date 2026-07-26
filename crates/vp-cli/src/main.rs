@@ -338,6 +338,18 @@ enum LaneCommands {
         #[arg(long)]
         stand: Option<String>,
     },
+    /// lane の console (slot) を 1 枚閉じる ([`SlotNew`](LaneCommands::SlotNew) の対)
+    ///
+    /// GUI の名札 ✕ と**同じ動詞** (`echoes_session_remove`)。session を registry から取り除き、
+    /// 実体 (PtySlot / chat engine) は reconcile が畳む (doc 53 §12.4)。replay も破棄される。
+    /// **root は閉じられない** (lane の代表 = mailbox の主。素に戻すのは `vp lane restart --fresh`)。
+    SlotClose {
+        /// lane address ("<project>/root" / "<project>/performer/<name>")
+        lane: String,
+        /// 閉じる session (`vp lane slots` の SESSION 列)
+        #[arg(long)]
+        session: u32,
+    },
     /// この project の開発起点 lane を表示 / 設定する (doc 44 D4、Project Host の帳簿)
     ///
     /// 引数なしで現在の起点を表示。lane 名を渡すとその lane を起点に指定する。
@@ -829,6 +841,10 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         LaneCommands::SlotNew { lane, stand } => {
             let config = Config::load().unwrap_or_default();
             commands::lane_ctl::slot_new(&lane, stand.as_deref(), &config)
+        }
+        LaneCommands::SlotClose { lane, session } => {
+            let config = Config::load().unwrap_or_default();
+            commands::lane_ctl::slot_close(&lane, session, &config)
         }
         LaneCommands::Origin { name } => lane_origin(name.as_deref()),
         LaneCommands::Nudge {
