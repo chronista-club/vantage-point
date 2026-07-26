@@ -26,7 +26,7 @@ import { solidPlugin } from 'esbuild-plugin-solid'
 
 // xterm.css を npm package から assets へ複写する。
 //
-// xterm 本体と addon は bundle に取り込む（xterm-globals.ts）が、CSS だけは `main_area.rs` の
+// xterm 本体と addon は bundle に取り込む（term.ts が直 import）が、CSS だけは `main_area.rs` の
 // `<style>` に `include_str!` で焼く形を保つ — bundle から `document.head.appendChild` すると
 // **head の静的 <style> より後ろ**に入り、app 側の上書き規則（`.xterm-viewport::-webkit-scrollbar`
 // 等）との cascade 順が逆転するため。複写なら位置も内容も従来と完全に同じになる。
