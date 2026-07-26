@@ -69,6 +69,16 @@ pub struct ConsoleStands {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InkSnapshot {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InkSnapshotError {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardMessage {
     pub message: serde_json::Value,
 }
@@ -98,6 +108,10 @@ pub enum PushEventEnvelope {
     ConsoleActApplied(ConsoleActApplied),
     #[serde(rename = "console:stands")]
     ConsoleStands(ConsoleStands),
+    #[serde(rename = "ink:snapshot")]
+    InkSnapshot(InkSnapshot),
+    #[serde(rename = "ink:snapshot_error")]
+    InkSnapshotError(InkSnapshotError),
     #[serde(rename = "board:message")]
     BoardMessage(BoardMessage),
 }

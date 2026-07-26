@@ -471,7 +471,7 @@ const vpConsole = installConsole();
 //   - getLaneAddress = 現 active lane の address（`applyActivePane` が更新する module 変数）
 //   - getFocusedSession / getSessionAct = console.ts の per-lane registry
 // server は触らない（既存 IPC echoes:submit / term:write を撃つだけ、doc 52 §3 = 状態ゼロの往復）。
-installInk({
+const inkHandlers = installInk({
 	getItemId: () => getCanvasState().cursor,
 	getLaneAddress: () => activeLaneAddress,
 	getFocusedSession: (laneAddr) => focusedOf(laneAddr),
@@ -990,6 +990,10 @@ installDispatch({
 		vpConsole.setSessionAct(lane, session, act as ConsoleMode),
 	consoleStands: (lane, payload, req) =>
 		vpConsole.handleStands(lane, payload as EchoesStandsPayload, req),
+	// 対話面（ink）。mount target 不在なら `installInk` が null を返すので no-op で埋める
+	// （dispatch の表は常に全 arm 揃っている = 網羅性検査が効く形を崩さない）。
+	inkSnapshot: (path) => inkHandlers?.inkSnapshot(path),
+	inkSnapshotError: (message) => inkHandlers?.inkSnapshotError(message),
 });
 installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })

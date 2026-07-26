@@ -7,7 +7,9 @@
  * - 読み方 = **合成画像 + item id**（semantic anchor は廃案）。annotation は構造データにせず
  *   pixel のまま届き、意味は受け手（claude / codex / grok = vision）が画像から汲む
  * - 撮影 = **WKWebView.takeSnapshot(rect = #ink-stage)**（Rust 側 ink_snapshot.rs）。webview は
- *   rect を送り、Rust が PNG を書いて `window.vpInk.onSnapshot({path})` で返す
+ *   rect を送り、Rust が PNG を書いて push envelope `ink:snapshot`（失敗時
+ *   `ink:snapshot_error`）で返す。`window.vpInk` は DevTools 検分用に残っているだけで、
+ *   **Rust は名前で呼ばない**（doc 53 §6.5.1.3）
  * - 送信後 = **残らない**（送信 = 手放す。update との anchor drift を構造的に回避）
  * - 送信先 = focused session。mode で経路分岐（chat = `echoes:submit` / tui = PTY `term:write`）
  * - **server 0 行**: 既存 IPC（echoes:submit / term:write）を撃つだけ。永続も購読もしない
@@ -18,6 +20,8 @@
  * - **calculations**: `inkSendLine` / `inkRoute` / `resolveTooSmall` — 純関数（vitest で固定）
  * - **actions**: `installInk`（overlay の pointer 配線 + palette + snapshot 往復 + IPC 送信）
  */
+
+import type { InkPushHandlers } from "./dispatch";
 
 /** 道具。select = 描かない（下の item を触れる）。 */
 export type InkTool = "select" | "line" | "arrow" | "text" | "free";
@@ -134,7 +138,7 @@ function dispatchRoute(route: InkRoute): void {
  * main_area.rs HTML 側で保証される。board pane が roster から外れると #lane-board が display:none
  * になり、overlay ごと自然に隠れる（別の可視 gate は不要）。
  */
-export function installInk(deps: InkDeps): void {
+export function installInk(deps: InkDeps): InkPushHandlers | null {
 	const stage = document.getElementById("ink-stage");
 	// overlay = pointer を捕まえる div（box 全体）。canvas = 描画する svg（pointer-events:none）。
 	// svg root を直に armed にすると空白部分が visiblePainted で透過し、下の文字が text 選択される。
@@ -145,7 +149,8 @@ export function installInk(deps: InkDeps): void {
 	const toast = document.getElementById("ink-toast");
 	if (!stage || !overlay || !canvas || !palette || !textInput) {
 		console.warn("[ink] mount target 不在 — skip");
-		return;
+		// 受け手が居ない = 消費者不在。呼び手（entry.tsx）が no-op を埋める。
+		return null;
 	}
 
 	let tool: InkTool = "select";
@@ -415,6 +420,12 @@ export function installInk(deps: InkDeps): void {
 		refreshSend(); // annotations は残す（再送できるように）
 		showToast(`snapshot 失敗: ${payload?.message ?? "unknown"}`, true);
 	};
+	// Rust からの供給は **push envelope**（`ink:snapshot` / `ink:snapshot_error`）で、
+	// この window face は DevTools からの手動 trigger 用に残してある。
 	(window as unknown as { vpInk: { onSnapshot: typeof onSnapshot; onSnapshotError: typeof onSnapshotError } }).vpInk =
 		{ onSnapshot, onSnapshotError };
+	return {
+		inkSnapshot: (path) => onSnapshot({ path }),
+		inkSnapshotError: (message) => onSnapshotError({ message }),
+	};
 }

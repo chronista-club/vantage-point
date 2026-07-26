@@ -49,7 +49,15 @@ export interface PushHandlers {
 	consoleEvent(lane: string, event: unknown, session: number): void;
 	consoleActApplied(lane: string, session: number, act: string): void;
 	consoleStands(lane: string, payload: unknown, req: string | null): void;
+	inkSnapshot(path: string): void;
+	inkSnapshotError(message: string): void;
 }
+
+/** `ink.ts` が持ち分として返す arm（mount target 不在なら null を返す = 受け手不在）。 */
+export type InkPushHandlers = Pick<
+	PushHandlers,
+	"inkSnapshot" | "inkSnapshotError"
+>;
 
 /**
  * `term.ts` が持ち分として返す arm。
@@ -95,6 +103,12 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "board:message":
 			handlers.handleBoardMessage(msg.message);
+			break;
+		case "ink:snapshot":
+			handlers.inkSnapshot(msg.path);
+			break;
+		case "ink:snapshot_error":
+			handlers.inkSnapshotError(msg.message);
 			break;
 		case "console:session_list":
 			handlers.consoleSessionList(msg.lane, msg.payload);

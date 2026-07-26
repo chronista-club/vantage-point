@@ -130,6 +130,23 @@ protocol "vp-push" version="1.0.0" {
             field "req" type="string" optional=#true
         }
 
+        // ===== 対話面（ink, doc 52 §3）の制御面 — 実装は webview/ink.ts =====
+        //
+        // board pane に描いた注釈を PNG 化する往復の**戻り**。要求（`ink:snapshot` IPC）は
+        // client → server で、こちらはその応答にあたる。成功と失敗で受け手の振る舞いが
+        // 別（成功 = 会話へ送る / 失敗 = 注釈を残して再送可能にする）なので **2 event に分ける**
+        // — 1 event に `path` / `error` を両方 optional で載せると「どちらでもない」が型に載る。
+
+        // snapshot 成功: PNG の絶対 path。
+        event "ink:snapshot" {
+            field "path" type="string"
+        }
+
+        // snapshot 失敗: 理由（toast に出す）。
+        event "ink:snapshot_error" {
+            field "message" type="string"
+        }
+
         // ===== 掲示板（board, doc 52 §1）の制御面 — 実装は webview/board-handler.ts =====
 
         // SP の canvas channel から来た `ProcessMessage` をそのまま board へ渡す。

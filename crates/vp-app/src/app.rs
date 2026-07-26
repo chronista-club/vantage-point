@@ -1979,8 +1979,8 @@ mod lane_js {
 
     use crate::generated::push::{
         BoardMessage, ConsoleActApplied, ConsoleEvent, ConsoleSessionList, ConsoleStands,
-        DevicesRender, PushEventEnvelope, TermEnsureLane, TermPaste, TermRemoveLane,
-        TermRemoveSession, TermShowLane,
+        DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope, TermEnsureLane, TermPaste,
+        TermRemoveLane, TermRemoveSession, TermShowLane,
     };
 
     /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
@@ -2164,6 +2164,22 @@ mod lane_js {
                 payload,
                 req,
             }),
+        );
+    }
+
+    /// 対話面（ink）へ snapshot の成功を返す（`path` = PNG の絶対 path）。
+    pub fn ink_snapshot(main_view: &WebView, path: String) {
+        push(
+            main_view,
+            &PushEventEnvelope::InkSnapshot(InkSnapshot { path }),
+        );
+    }
+
+    /// 対話面（ink）へ snapshot の失敗を返す（注釈は残して再送可能にする）。
+    pub fn ink_snapshot_error(main_view: &WebView, message: String) {
+        push(
+            main_view,
+            &PushEventEnvelope::InkSnapshotError(InkSnapshotError { message }),
         );
     }
 
@@ -4696,18 +4712,10 @@ pub fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(AppEvent::InkSnapshotReady { path, error }) => {
                 // ink: snapshot 完了/失敗を webview に返す（ink.ts が会話へ一行 + 画像を送る）。
-                let script = match &path {
-                    Some(p) => format!(
-                        "window.vpInk && window.vpInk.onSnapshot({})",
-                        serde_json::json!({ "path": p })
-                    ),
-                    None => format!(
-                        "window.vpInk && window.vpInk.onSnapshotError({})",
-                        serde_json::json!({ "message": error.clone().unwrap_or_default() })
-                    ),
-                };
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("ink snapshot 結果の webview 反映失敗: {}", e);
+                // 成功と失敗で受け手の振る舞いが別なので event も 2 本（schema 参照）。
+                match path {
+                    Some(p) => lane_js::ink_snapshot(&webview, p),
+                    None => lane_js::ink_snapshot_error(&webview, error.unwrap_or_default()),
                 }
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
