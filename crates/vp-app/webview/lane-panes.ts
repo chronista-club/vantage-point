@@ -540,11 +540,18 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	const controller: LanePanesController = {
 		setActiveLane(lane) {
 			if (activeLane === lane) return;
-			// 前 lane の動的 host は lane ごと破棄（chat の再 render は安価。xterm と違い
-			// DOM 保持の必要が無く、保持すると全 lane × 全 session の host が DOM に堆積する）
+			// 前 lane の動的 host を畳む。**除去してよいのは chat host だけ**（再 render が
+			// 安価で、保持すると全 lane × 全 session ぶん DOM に堆積する）。
+			//
+			// ⚠️ term host は World A（xterm）の持ち物なので**残す** — 消すと lane 往復で
+			// pane ごと失われる（doc 53 §6.5.0 ②、2026-07-26 実機）。`syncDynHosts` の
+			// 後始末は種類を判別しているのに、こちらは A6（session = Pane で term も
+			// `dynDisposers` に入った）以降も**旧前提のまま一律 remove** していた。
+			// dispose 自体は両方に要る（term 側は名札 DOM だけを片付ける）。
 			for (const [id, dispose] of dynDisposers) {
 				dispose();
-				deps.hostOf(id)?.remove();
+				const host = deps.hostOf(id);
+				if (host?.classList.contains("chat-session-host")) host.remove();
 			}
 			dynDisposers.clear();
 			pendingFocus = null; // 保留は旧 lane の意図 — 新 lane は applyConsoleMode が当て直す
