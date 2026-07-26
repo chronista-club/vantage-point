@@ -341,6 +341,50 @@ boot 復元後（`lane_spawn_actor` の restore 末尾 + `server.rs` run() の c
 要求しないなら xterm を bundle へ移し、World A を畳む。**cache も 1 つ減る**（`laneInstances` の
 `isRootHost` は §3.3 の派生値そのもの）。
 
+#### 6.5.1.1 再検証の結果 — 凍結を解除した（2026-07-26）
+
+**結論: input-doubling は World A を要求していない。凍結は解除、doc 33 §4 / §6 に反映済み。**
+
+決め手は「調査が決着したか」ではなく、**計器がどの層にあるか**を測ったこと（[[measure-before-hypothesis]]）:
+
+| hop | 実装位置 | 層 |
+|---|---|---|
+| A | `crates/vp-app/src/app.rs:4626` — `term_trace("A:app-dispatch(b64)", …)` | **Rust** |
+| B | `crates/vantage-point/src/process/unison_server.rs:1093` — `term_trace("B:sp-recv", …)` | **Rust** |
+| 実装本体 | `crates/vp-paths/src/lib.rs:196` — `VP_TERM_TRACE` gate | **Rust** |
+
+`main_area.rs`（World A）の trace は **0 件**。hop A/B は keystroke が Rust に入ってから先だけを
+測っており、**xterm JS を一度も通らない**。したがって World A をどう動かしても hop A/B の観測は
+変わらず、「診断ベースライン保護」は移管を止める理由にならない。
+
+補強が 2 つ:
+
+- **保護対象がもう無い** — 「JS は無罪」の根拠だった `ensureLane` の形は A6（`(lane, session)`
+  キー化）が既に書き換えている。凍結が守ろうとしたベースラインは A6 時点で失われていた
+- **調査は 23 日以上停止** — memory `vp-term-input-doubling` は step 2（診断ログ出荷）で
+  「再現待ち」のまま。凍結の対価だけを払い続けていた
+
+⚠️ **input-doubling 調査そのものは未決着のまま**（再現待ち）。凍結の解除は「バグが直った」では
+なく「**この凍結はこのバグの解決に寄与していなかった**」の意。調査は独立に続く。
+
+#### 解除の射程 — 「観測可能性」と「挙動不変」を分ける
+
+上の hop 表が言えるのは「World A を動かしても hop A/B で**観測し続けられる**」までで、
+「World A を動かしても**二重化が起きない**」ではない。**1 文が 2 つの命題を兼ねている**状態で、
+答えが一致している間は誰も気づかない（[[one-predicate-three-properties]]）。分けて書く:
+
+| 段 | 内容 | 解除で足りるか |
+|---|---|---|
+| **第 1 段**（#920） | 依存供給路を vendored `<script>` → npm bundle。**inline JS 無改変**・xterm 同 version（6.0.0） | **足りる** — 触っていないので挙動が変わる余地が無い（diff 実測: 配線行 0 件） |
+| **第 2 段** | inline JS 976 行を TS module へ移設 | **要追加確認** — `ensureLane` の `laneInstances` 重複登録 guard と `term.onData` の登録タイミングを書き換える = **二重配送を新たに作る側**の変更。rewrite 後の dogfood で `VP_TERM_TRACE=1` の hop A が 1 keystroke = 1 回であることを見るのが最小の確認（計測点は Rust 側のままなので、そのまま使える） |
+
+つまり第 2 段は「gate が解除されたから自由」ではなく、**同じ計器を今度は自分の変更に向けて撃つ**段。
+凍結が守っていなかったものを、検証として能動的に取りに行く形に変わる。
+
+> これは [[gate-hid-a-second-bug]] の裏返しの形 — gate が守っていたつもりのものを数えたら、
+> **実は何も守っていなかった**。制約を外す前に「副作用として何を守っていたか」を数える規律は、
+> 「守っていない」と判明する場合にも同じだけ効く。
+
 ### 6.5.2 切ってよかったもの — 完全性を求めすぎた例
 
 A6 で作ったもののうち、**切る判断をすべきだった**もの:
