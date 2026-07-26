@@ -4,7 +4,24 @@
 
 Vantage Point（`vp`）は Rust製の **AI ネイティブ開発環境**。
 Claude CLI をエンジンとして、TUI コンソール・Canvas（WebView）・外部コントロールを統合した開発体験を提供する。
-OSS（MIT/Apache-2.0 dual ライセンス）として公開。配布は `.dmg` 直配布（GitHub Releases）/ Homebrew tap（`chronista-club/tap`）/ `cargo install` の三本柱。Mac/Win/Linux 対応。
+OSS（MIT/Apache-2.0 dual ライセンス）として公開。配布は `.dmg` 直配布（GitHub Releases）/ Homebrew tap（`chronista-club/tap`）/ `cargo install` の三本柱。Mac 主軸 / Windows 追随 / Linux 未検証。
+
+### プラットフォーム方針（2026-07-26 確定）
+
+| OS | 位置づけ | 開発の場 |
+|---|---|---|
+| **macOS** | **主軸**。先行開発はここ | Mac |
+| **Windows** | 追随。`cfg(windows)` は 45 箇所あり生きている | **Windows 上でやる**（Mac セッションで作り込まない） |
+| **Linux** | **未検証**。CI で build も test も回っていない（ubuntu の 2 job は fmt と security audit ＝ プラットフォーム非依存）。固有コードは screenshot の stub 程度 | — |
+
+> ⚠️ **`cfg(unix)` は Linux の話ではない** — macOS も unix なので、この gate が守っているのは
+> **Windows ビルド**。外すと macOS 向けのコードが Windows で compile されて壊れる（2026-07-26 に
+> 実際に踏んだ: test を 1 つ挿入した際に隣の `#[cfg(unix)]` を奪い、**mac のローカル test でも
+> clippy でも cfg が真になるので不可視**のまま Windows を壊した）。
+>
+> CI の `Check (Windows)` は windows runner で `cargo check --all-targets` を回すだけで
+> **Mac 側の負担はゼロ**、required check でもない（merge は止めない）。Windows 整備フェーズに
+> 入るとき「どの変更から壊れているか」を辿るための記録として残してある。
 
 <!--
 配布方針メモ — Mac App Store ではなく直接配布（2026-04-18 OSS 化決定で App Store 配布を見送り）:
