@@ -80,6 +80,10 @@ window.addEventListener("unhandledrejection", (e) => {
 	console.error("[vp-bundle] unhandledrejection", e.reason);
 });
 
+// xterm.js + addon を window global として供給する（World A の inline JS がまだ
+// `new Terminal(...)` / `new FitAddon.FitAddon()` を素の global で書いているため）。
+// 旧 vendored `<script>` 8 本の置き換え。詳細は xterm-globals.ts の doc comment。
+import "./xterm-globals";
 import { render } from "solid-js/web";
 import {
 	EditorHostProvider,

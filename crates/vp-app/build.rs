@@ -19,7 +19,14 @@ fn main() {
     // 不可解なコンパイルエラーの前に、生成手順を案内して fail する。
     // rerun-if-changed は「bundle を作り直したのに cargo が embed を取りこぼす」旧 footgun
     // （touch main_area.rs の儀式）の根治。
-    for bundle in ["assets/editor-host.bundle.js", "assets/sidebar.bundle.js"] {
+    // xterm.css も同じ生成物（build.mjs が node_modules/@xterm/xterm から複写、xterm 本体と
+    // addon は bundle に取り込み済み）。vendored copy を手で維持すると `bun update` で
+    // JS と CSS が黙って版ズレするため、供給路を npm 1 本に寄せてある。
+    for bundle in [
+        "assets/editor-host.bundle.js",
+        "assets/sidebar.bundle.js",
+        "assets/xterm.css",
+    ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(bundle);
         assert!(
             path.exists(),

@@ -137,6 +137,10 @@ pub const MAIN_AREA_HTML: &str = concat!(
 </style>
 <style>
 "#,
+    // xterm.css は生成物 — build.mjs が node_modules/@xterm/xterm から複写する
+    // (*.bundle.js と同じ扱い、build.rs が存在を guard)。bundle 側から head へ注入せず
+    // ここに焼くのは、直後に続く app 側の上書き規則 (.xterm-viewport::-webkit-scrollbar 等) が
+    // **同じ <style> の後ろ**に来る cascade 順を保つため。
     include_str!("../assets/xterm.css"),
     r#"
 html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
@@ -631,46 +635,11 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 <!-- VP-101 Phase A2: creo-ui-editor-host (SolidJS) の mount 先。
      Ctrl+Shift+E で activate される floating overlay (font / theme / token を runtime 編集)。 -->
 <div id="editor-root"></div>
-<script>
-"#,
-    include_str!("../assets/xterm.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-fit.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-webgl.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-unicode11.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-unicode-graphemes.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-image.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-progress.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-web-links.js"),
-    r#"
-</script>
+<!-- xterm.js + addon は editor-host.bundle.js が npm 依存として供給する (webview/xterm-globals.ts)。
+     旧構成は vendored asset 8 本 (約 938KB) を include_str! で HTML に焼いていたが、
+     依存が semver の外にあり、不要判定済みの addon-image.js まで積んでいた。
+     bundle は classic blocking script なので、下の inline JS より文書順で先に実行される
+     = `window.Terminal` / `window.FitAddon` 等は inline JS が使う時点で必ず揃っている。 -->
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
      Build: cd crates/vp-app/webview && bun install && bun run build。
@@ -1802,6 +1771,68 @@ mod tests {
         assert!(
             MAIN_AREA_HTML.contains("existing.isRootHost = !!isRoot;"),
             "既存 instance の isRootHost を更新していない（付け替え後も旧 root に focus が飛ぶ）"
+        );
+    }
+
+    /// World A（inline JS）が使う xterm global を、bundle が実際に供給していることを固定する。
+    ///
+    /// 旧構成は vendored `<script>` 8 本の UMD が global を作っていた。npm 化でこれは
+    /// `webview/xterm-globals.ts` の window 代入へ移ったが、**この境界には型が無い**
+    /// （doc 53 §6.5.1「`evaluate_script` は引数の数が違ってもコンパイルも実行時も黙る」と同じ穴）。
+    /// entry.tsx から import が落ちても TS も Rust も緑のままで、実機で console が黒くなるだけ。
+    /// 供給側（bundle）と消費側（inline JS）を 1 つの test で突き合わせて塞ぐ。
+    ///
+    /// minify は property 名を保つ（`cv.FitAddon={FitAddon:Ehe}`）ので prod bundle でも成立する。
+    /// dev bundle（`bun run build:dev`）は空白が入るだけなので、比較前に空白を落とす。
+    #[test]
+    fn xterm_globals_are_supplied_by_the_bundle() {
+        let bundle: String = EDITOR_HOST_BUNDLE_JS
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+
+        // (inline JS での使い方, bundle 側の供給の形)
+        // xterm 本体だけ global がクラス直、addon は UMD 由来の入れ子（xterm-globals.ts 参照）。
+        let bindings = [
+            ("new Terminal({", ".Terminal="),
+            ("new FitAddon.FitAddon()", ".FitAddon={FitAddon"),
+            (
+                "new ProgressAddon.ProgressAddon()",
+                ".ProgressAddon={ProgressAddon",
+            ),
+            (
+                "new Unicode11Addon.Unicode11Addon()",
+                ".Unicode11Addon={Unicode11Addon",
+            ),
+            (
+                "new UnicodeGraphemesAddon.UnicodeGraphemesAddon()",
+                ".UnicodeGraphemesAddon={UnicodeGraphemesAddon",
+            ),
+            (
+                "new WebLinksAddon.WebLinksAddon(",
+                ".WebLinksAddon={WebLinksAddon",
+            ),
+            ("new WebglAddon.WebglAddon()", ".WebglAddon={WebglAddon"),
+        ];
+
+        for (used_by_inline_js, supplied_by_bundle) in bindings {
+            assert!(
+                MAIN_AREA_HTML.contains(used_by_inline_js),
+                "inline JS が `{used_by_inline_js}` を使っていない\
+                 （使い方を変えたなら xterm-globals.ts の供給形も合わせること）"
+            );
+            assert!(
+                bundle.contains(supplied_by_bundle),
+                "bundle が `{supplied_by_bundle}` を供給していない\
+                 — inline JS は `{used_by_inline_js}` を呼ぶので実機で console が黒くなる。\
+                 entry.tsx の `import \"./xterm-globals\"` が落ちていないか確認"
+            );
+        }
+
+        // vendored `<script>` の復活も禁じる（npm 化した依存を手 copy で二重に持たない）。
+        assert!(
+            !MAIN_AREA_HTML.contains("globalThis.FitAddon"),
+            "vendored xterm asset が HTML に復活している（供給路は npm bundle 1 本）"
         );
     }
 }
