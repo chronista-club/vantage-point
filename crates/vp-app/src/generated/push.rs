@@ -41,6 +41,34 @@ pub struct DevicesRender {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsoleSessionList {
+    pub lane: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsoleEvent {
+    pub lane: String,
+    pub event: serde_json::Value,
+    pub session: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsoleActApplied {
+    pub lane: String,
+    pub session: i64,
+    pub act: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsoleStands {
+    pub lane: String,
+    pub payload: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub req: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardMessage {
     pub message: serde_json::Value,
 }
@@ -62,6 +90,14 @@ pub enum PushEventEnvelope {
     TermPaste(TermPaste),
     #[serde(rename = "devices:render")]
     DevicesRender(DevicesRender),
+    #[serde(rename = "console:session_list")]
+    ConsoleSessionList(ConsoleSessionList),
+    #[serde(rename = "console:event")]
+    ConsoleEvent(ConsoleEvent),
+    #[serde(rename = "console:act_applied")]
+    ConsoleActApplied(ConsoleActApplied),
+    #[serde(rename = "console:stands")]
+    ConsoleStands(ConsoleStands),
     #[serde(rename = "board:message")]
     BoardMessage(BoardMessage),
 }

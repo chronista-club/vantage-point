@@ -56,6 +56,12 @@
 - **`window.vpEchoes` → `window.vpConsole` に改名**（PR2a の evaluate_script 1 行 + 新 TS）。理由: EchoesEvent 語彙は engine 非依存（doc 32 §4）であり、sink は**面（Console）**の名を持つべき。将来 Antigravity engine のイベントも同じ sink に流れる
   - data plane: `vpConsole.handleEvent(lane, event)`
   - control plane: `vpConsole.setMode(lane, mode)`（Rust push）
+  - ⚠️ **供給は 2026-07-26 に push envelope へ移した**（doc 53 §6.5.1.3）。Rust が
+    `window.vpConsole` を**名前で呼ぶことはもう無い**（wire 名 `console:event` /
+    `console:act_applied` / `console:session_list` / `console:stands`、SSOT =
+    `crates/vp-app/schema/vp-push.kdl`）。`window.vpConsole` は DevTools 検分用に残っている。
+    `setMode`（lane 単位 mode）自体も doc 50 §4.6 A6 で退役し、session 単位の
+    `setSessionAct` が後継
 - **World B に `webview/console/` module**: per-lane `ConsoleHost` が chat container の mount と mode 表示切替を所有。C1 時点では handleEvent は per-lane ring buffer に蓄積（C2 の ChatView mount 時に replay。devtools から `vpConsole.peek(lane)` で検分可能 = throwaway デバッグ pane を作らずに検証可能性を確保）
 - ~~**World A（インライン xterm JS）は不可侵**: input-doubling 調査（VP_TERM_TRACE hop A/B）の診断ベースラインを壊さない。xterm の bundle 移管は input-doubling 決着後の専用 PR~~ **← 2026-07-26 に解除（下記）**
 

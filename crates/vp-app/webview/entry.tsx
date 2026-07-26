@@ -104,6 +104,12 @@ import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
 import { renderPP, clearPP, appendPP } from "./pp";
 import { installConsole, focusedOf, sessionActOf } from "./console";
+import type {
+	ConsoleMode,
+	EchoesEvent,
+	EchoesSessionListPayload,
+	EchoesStandsPayload,
+} from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Act で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
@@ -144,6 +150,18 @@ import {
 console.info("[vp-bundle] imports resolved");
 (window as unknown as { vpBundleStatus?: Record<string, boolean> })
 	.vpBundleStatus!.importsResolved = true;
+
+// Rust → webview 押し込みの受け口を **module body の最初に**生やす。
+//
+// ⚠️ ここに置くこと自体が保留箱の効き目を決める。`openDispatch()` を末尾（`installDispatch` の
+// 直前）に置くと、**保留窓が実質ゼロ**になる: bundle 評価中は `window.vpDispatch` がまだ無く、
+// Rust 側の `window.vpDispatch &&` guard が押し込みを**黙って捨てる**（＝保留箱に入らない）。
+// 先頭に置けば、bundle 評価の間（下方の mount / install が全部終わるまで）に届いた分を
+// 保留箱が預かり、`installDispatch` で順序どおり流れる。
+//
+// 実処理の接続は下方（受け手の module が揃ってから）。受け口と実処理を分けているのは
+// このため — 受け口は依存ゼロなので、いくらでも早く載せられる。
+openDispatch();
 
 // ===== doc 49 LE-P4 PR1: app pane 配置を creo-ui-layout の場へ =====
 // 旧 FrameEngine（VP-140 の Scene engine）の後継。preset / DOM 反映は app-panes.ts に
@@ -443,10 +461,9 @@ console.info("[vp-bundle] vpAppLayout attached to window — bundle init complet
 };
 
 // ===== Echoes Act II (doc 33): Console facade + ChatView =====
-// window.vpConsole を公開（EchoesEvent の per-lane ring buffer + ChatView renderer 接続点）。
-// Rust event loop が `window.vpConsole.handleEvent(lane, event)` で EchoesEvent を届け、
-// `window.vpConsole.setMode(lane, mode)` でエンジンモードを通知する。
-// DevTools 検分: window.vpConsole.peek("<project>/root")
+// EchoesEvent の per-lane ring buffer + ChatView renderer 接続点。
+// Rust からの供給は push envelope（下方 `installDispatch` の console* handler）で、
+// `window.vpConsole` は **DevTools 検分用**に生えている: window.vpConsole.peek("<project>/root")
 const vpConsole = installConsole();
 
 // ink（対話面、doc 52 §3）を board pane に配線する。lane 文脈は closure で注入:
@@ -956,16 +973,23 @@ installGallery();
 // 散っていた。「生まれた」は 1 つの事実なので `ready` 1 本に畳んである（Rust 側 SSOT =
 // `AppEvent::WebviewReady`）。**新しい面を足しても、ここに行を足す必要は無い**。
 //
-// ⚠️ `window.setActivePane` はここではなく **module 評価時**（上方）に載る。DOM 未 ready の間の
-// 呼びは自前で buffer するので、早く載せるほど取りこぼしが少ない。
-// ⚠️ `openDispatch()` を **最初に** — 受け口さえ生えていれば、実処理が繋がる前に Rust が
-// 撃った分は保留箱が預かる（旧来は `window.X &&` guard で黙って捨てていた）。
-openDispatch();
+// ⚠️ `window.setActivePane` と `openDispatch()` はここではなく **module 評価の先頭**（上方）に
+// 載る。どちらも「受け口だけ先に生やす」もので、早いほど取りこぼす窓が狭い。
 installBundleProbe();
 installDispatch({
 	...installTerm(),
 	renderDevices: renderBastetDevices,
 	handleBoardMessage,
+	// Console 面（console.ts）。`window.vpConsole` は DevTools 検分用に残っている
+	// （`window.vpConsole.peek("<project>/root")`）が、Rust からはここ経由で届く。
+	consoleSessionList: (lane, payload) =>
+		vpConsole.handleSessionList(lane, payload as EchoesSessionListPayload),
+	consoleEvent: (lane, event, session) =>
+		vpConsole.handleEvent(lane, event as EchoesEvent, session),
+	consoleActApplied: (lane, session, act) =>
+		vpConsole.setSessionAct(lane, session, act as ConsoleMode),
+	consoleStands: (lane, payload, req) =>
+		vpConsole.handleStands(lane, payload as EchoesStandsPayload, req),
 });
 installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })
