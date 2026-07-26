@@ -1,20 +1,20 @@
 //! roto_control — ROTO-CONTROL の双方向 control loop（CLI / daemon 共有）
 //!
 //! `vp midi roto control`（前景・secs 制限）と DeviceRegistry 常駐（持続・自動再接続）が
-//! **同一の control loop body を共有**するための module。doc 23 の DeviceRegistry（device 接続所有 @ World）
+//! **同一の control loop body を共有**するための module。doc 23 の DeviceRegistry（device 接続所有 @ Daemon）
 //! に control loop を載せる際、loop を二重実装しないための注入境界を定義する。
 //!
 //! ## 構造
 //! - `LaneSource` / `SwitchSink`: loop が外界に触れる 2 点を trait で注入
-//!   - CLI: `QuicLaneSource`(world-process QUIC) + `QuicSwitchSink`(World process-proxy 経由)
-//!   - daemon: `InProcessLaneSource`(build_world_lanes 直読み) + `QuicSwitchSink`(World process-proxy)
-//!     ※ L0 portless: SP は listen しないので switch は CLI/daemon とも World :32000 経由で forward
+//!   - CLI: `QuicLaneSource`(daemon-process QUIC) + `QuicSwitchSink`(daemon process-proxy 経由)
+//!   - daemon: `InProcessLaneSource`(build_node_lanes 直読み) + `QuicSwitchSink`(daemon process-proxy)
+//!     ※ L0 portless: SP は listen しないので switch は CLI/daemon とも Daemon :32000 経由で forward
 //! - `roto_control_loop`: keepalive(autorespond) + LCD projection + nav→switch を回す共有 body
 //! - `RotoSessionBracket`(nostos `AsyncBracket`) + `RotoHealDriver`(`AsyncDriver`):
 //!   enter=open+handshake / exit=control loop / disconnect→Reborn(自動再接続) を表現
 //!
-//! data / calculations / actions 分離: lane 並びの計算は `build_world_lanes`(daemon/server.rs) と
-//! `parse_world_lanes`(midi.rs) の純粋関数に委譲。本 module は配線（orchestration）に集中する。
+//! data / calculations / actions 分離: lane 並びの計算は `build_node_lanes`(daemon/server.rs) と
+//! `parse_node_lanes`(midi.rs) の純粋関数に委譲。本 module は配線（orchestration）に集中する。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ use crate::device_profile::{DeviceProfile, Rgb, roto::RotoProfile};
 use crate::process::lanes_state::LaneInfo;
 
 use super::midi::{
-    LaneNav, RotoLane, page_slots, parse_world_lanes, roto_autorespond, roto_lane_nav,
+    LaneNav, RotoLane, page_slots, parse_node_lanes, roto_autorespond, roto_lane_nav,
     roto_open_async, roto_project_slots, roto_project_slots_full,
 };
 
@@ -95,7 +95,7 @@ pub(crate) trait LaneSource {
 }
 
 /// 選択 lane を対象 SP に switch_lane する。L0 portless: SP は listen しないので CLI/daemon とも
-/// World :32000 の process-proxy ask 経由で forward する（project_path で SP を逆引き）。
+/// Daemon :32000 の process-proxy ask 経由で forward する（project_path で SP を逆引き）。
 #[allow(async_fn_in_trait)]
 pub(crate) trait SwitchSink {
     async fn switch(&mut self, project_path: &str, token: &str) -> Result<()>;
@@ -323,51 +323,51 @@ pub(crate) async fn roto_control_loop(
 
 // ─── 注入実装 ──────────────────────────────────────────────
 
-/// CLI 版 lane source: world-process channel に `list_all_lanes` を QUIC request。
+/// CLI 版 lane source: daemon-process channel に `list_all_lanes` を QUIC request。
 pub(crate) struct QuicLaneSource {
-    pub world_ch: unison::network::UnisonChannel,
+    pub daemon_ch: unison::network::UnisonChannel,
 }
 
 impl LaneSource for QuicLaneSource {
     async fn poll(&mut self) -> Result<Vec<RotoLane>> {
         let v = self
-            .world_ch
+            .daemon_ch
             .request::<serde_json::Value, serde_json::Value>(
                 "list_all_lanes",
                 &serde_json::json!({}),
             )
             .await
             .map_err(|e| anyhow::anyhow!("list_all_lanes: {}", e))?;
-        Ok(parse_world_lanes(&v))
+        Ok(parse_node_lanes(&v))
     }
 }
 
-/// daemon 版 lane source: `build_world_lanes` を in-process 直読み（QUIC self-loop なし）。
-/// `parse_world_lanes` を経由するので CLI（QUIC 経由）と lane 並びが完全一致する。
+/// daemon 版 lane source: `build_node_lanes` を in-process 直読み（QUIC self-loop なし）。
+/// `parse_node_lanes` を経由するので CLI（QUIC 経由）と lane 並びが完全一致する。
 #[allow(clippy::type_complexity)]
 pub(crate) struct InProcessLaneSource {
     pub running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
     pub lane_registry: Option<Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>>,
-    pub world_cap: Option<Arc<RwLock<ProcessManagerCapability>>>,
+    pub daemon_cap: Option<Arc<RwLock<ProcessManagerCapability>>>,
 }
 
 impl LaneSource for InProcessLaneSource {
     async fn poll(&mut self) -> Result<Vec<RotoLane>> {
-        let projects = crate::daemon::server::build_world_lanes(
+        let projects = crate::daemon::server::build_node_lanes(
             &self.running_processes,
             &self.lane_registry,
-            &self.world_cap,
+            &self.daemon_cap,
         )
         .await;
         let v = serde_json::json!({ "projects": projects });
-        Ok(parse_world_lanes(&v))
+        Ok(parse_node_lanes(&v))
     }
 }
 
 /// CLI/daemon 共有の switch_lane sink: L0 portless で SP が listen しなくなったため、対象 SP の
-/// project_path を使い World :32000 の process-proxy ask 経由で `switch_lane` を forward する。
+/// project_path を使い Daemon :32000 の process-proxy ask 経由で `switch_lane` を forward する。
 ///
-/// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。daemon = World 本体
+/// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。daemon = Daemon 本体
 /// なので世界への self-loop QUIC になるが、switch はボタン押下時のみの低頻度なので loopback の
 /// connect+forward（数 ms）で keepalive を落とさない（lane poll の 2 秒周期とは違い cache 不要）。
 #[derive(Default)]
@@ -382,10 +382,10 @@ impl QuicSwitchSink {
 impl SwitchSink for QuicSwitchSink {
     async fn switch(&mut self, project_path: &str, token: &str) -> Result<()> {
         // payload = ProcessMessage::SwitchLane の JSON 表現（`{"type":"switch_lane","lane":...}`）。
-        // World が project_path を path_key 逆引きして当該 SP の dispatch_process_method へ forward。
+        // daemon が project_path を path_key 逆引きして当該 SP の dispatch_process_method へ forward。
         let payload = serde_json::json!({ "type": "switch_lane", "lane": token });
-        super::process_client::world_process_request(
-            crate::cli::world_port(),
+        super::process_client::daemon_process_request(
+            crate::cli::daemon_port(),
             project_path,
             "switch_lane",
             payload,

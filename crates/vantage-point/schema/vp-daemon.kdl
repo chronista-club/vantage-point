@@ -1,7 +1,7 @@
 // vp-daemon channel の wire protocol を記述する KDL（runtime discovery 用）。
 //
 // 目的:
-//   VP daemon（TheWorld、Unison ProtocolServer "vp-daemon"）が起動時に enable_discovery で
+//   VP daemon（daemon、Unison ProtocolServer "vp-daemon"）が起動時に enable_discovery で
 //   この KDL を unison.discovery channel から配信する。無改造の unison-mcp（Unison Protocol の
 //   runtime discovery + typed tool 合成 MCP bridge、v1.1.0+）が runtime fetch して
 //   `unison_<channel>_<method>` の typed tool を合成できるようにする。VP 開発のデバッグ機。
@@ -25,8 +25,8 @@
 //   handshake なしの純 request/response ＝ 無改造 unison-mcp で即 round-trip 可能な channel を採用。
 //   process-proxy は subscribe handshake 前提（unison-mcp 未対応）＋要 SP 起動のため follow-up
 //   （creo mem_1CcuR73WSNFkyAgzVJvWyF ＝ unison-mcp の handshake 対応 or daemon auto-subscribe が要る）。
-// 2026-07-12 拡張: world-control の read-safe subset（hub/discover）を追加 — hub registry の
-//   worlds 一覧 + connected liveness（hub protocol v0.6.0）を MCP から照会可能にする。
+// 2026-07-12 拡張: daemon-control の read-safe subset（hub/discover）を追加 — hub registry の
+//   nodes 一覧 + connected liveness（hub protocol v0.6.0）を MCP から照会可能にする。
 //   projects/* mutation は手で叩くと projects.kdl 状態を壊すため記述しない（registry と同じ方針）。
 
 protocol "vp-daemon" version="0.2.0" {
@@ -45,23 +45,23 @@ protocol "vp-daemon" version="0.2.0" {
         }
     }
 
-    // world-control channel: World 権威の control plane（CLI → World 直接 Unison）。
-    // handler: server.rs handle_world_control（match method: projects/* + lanes/* + hub/discover + ping）。
+    // daemon-control channel: daemon 権威の control plane（CLI → Daemon 直接 Unison）。
+    // handler: server.rs handle_daemon_control（match method: projects/* + lanes/* + hub/discover + ping）。
     //
     // ここには read-safe な request だけ記述する（hub/discover / lanes/list）。mutation は
     // 手で叩くと projects.kdl / lane descriptor の状態を壊すため記述しない（unison-mcp に
     // 露出させない）。この「意図的に書かない」判断は tests/vp_daemon_kdl.rs の
-    // WORLD_CONTROL_OMITTED_BY_DESIGN と対になっていて、handler に method を足したのに
+    // DAEMON_CONTROL_OMITTED_BY_DESIGN と対になっていて、handler に method を足したのに
     // KDL にも omission list にも入れなかった場合はテストが落ちる（= 露出/非露出を
     // 無意識に決めてしまうことを防ぐ）。
     //
-    // doc 45 段 1（2026-07-22）: HTTP `/api/world/*` にしか無かった面を handler へ移設した
+    // doc 45 段 1（2026-07-22）: HTTP `/api/daemon/*` にしか無かった面を handler へ移設した
     // （projects/update・projects/sync・projects/reload・projects/restart・projects/pointview・
     // lanes/create・lanes/set_active）。全て mutation なので上記方針どおり omission 側に置く。
-    channel "world-control" from="client" lifetime="persistent" {
-        request "hub/discover" description="chronista-hub registry に登録された world 一覧を返す federation discovery。TheWorld が credential 付きで hub の worlds.Discover を叩く（SSOT: hub と話すのは TheWorld のみ）。各 entry の connected (bool) は hub との常駐接続が今生きているかの liveness — false は registry に居るが relay は offline を返す (stale / 切断中)。hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）ならエラーを返す。引数なし。" {
-            returns "WorldList" {
-                field "worlds" type="json" required=#true description="world の配列。各要素は { wld_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
+    channel "daemon-control" from="client" lifetime="persistent" {
+        request "hub/discover" description="chronista-hub registry に登録された daemon 一覧を返す federation discovery。daemon が credential 付きで hub の nodes.Discover を叩く（SSOT: hub と話すのは daemon のみ）。各 entry の connected (bool) は hub との常駐接続が今生きているかの liveness — false は registry に居るが relay は offline を返す (stale / 切断中)。hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）ならエラーを返す。引数なし。" {
+            returns "DaemonList" {
+                field "worlds" type="json" required=#true description="daemon の配列。各要素は { wld_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
             }
         }
         request "lanes/list" description="全 project 横断の lane 一覧を返す read-only 照会。各 lane は project / name (開発起点は予約名 root) / stand / state (spawning|running|exiting|dead) を持つ。`vp ps` の LANES / STATUS 列や外部 agent の俯瞰に使う。project 単位の詳細操作は process-proxy 経由。全ての引数は省略可で、省略 = 絞り込みなし。並びは project 名昇順 → 同 project 内は開発起点 (root) が先 → 作成順。" {

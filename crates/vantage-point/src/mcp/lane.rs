@@ -187,7 +187,7 @@ impl VantageMcp {
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SwitchLaneParams>,
     ) -> Result<CallToolResult, McpError> {
         // QUIC で local SP に SwitchLane を送る → hub → canvas channel → vp-app。
-        // 旧: TheWorld(:32000) HTTP に global broadcast（project 切替意味論）。per-lane board 後は
+        // 旧: daemon(:32000) HTTP に global broadcast（project 切替意味論）。per-lane board 後は
         // local SP への per-project 経路に統一（lane-within-project の active 切替）。
         let msg = ProcessMessage::SwitchLane {
             lane: params.lane.clone(),
@@ -229,7 +229,7 @@ impl VantageMcp {
         if let Some(m) = params.model.as_ref().filter(|s| !s.trim().is_empty()) {
             body["model"] = serde_json::Value::String(m.clone());
         }
-        // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
+        // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を daemon process-proxy ask
         // `lane_create` に移管。 lane clone は 数 sec ~ 数 10 sec かかるので outer timeout 60s。
         // server Err (CONFLICT="already exists"/"既に存在" 等) は quic_call_with_timeout が
         // McpError に変換して返す (= 旧 HTTP の非 2xx → McpError 経路と等価)。
@@ -275,7 +275,7 @@ impl VantageMcp {
             ));
         }
 
-        // F6②: 旧 SP 直結 (/api/health + DELETE /api/lanes reqwest) を World process-proxy ask
+        // F6②: 旧 SP 直結 (/api/health + DELETE /api/lanes reqwest) を daemon process-proxy ask
         // (lane_delete) に移管。 project_name は self.project_path の basename から取得する
         // (SP health round-trip 不要、 port reshuffle で揺れない stable identifier)。 add_performer と
         // 異なり full address を渡す design (DELETE は SP 側で project 補完しない)。
@@ -291,7 +291,7 @@ impl VantageMcp {
         let address = format!("{}/performer/{}", project_name, params.name);
         let cleanup = params.cleanup.unwrap_or(true);
 
-        // World process-proxy 経由で SP の lane_delete を ask (workspace cleanup 等 orchestration を
+        // daemon process-proxy 経由で SP の lane_delete を ask (workspace cleanup 等 orchestration を
         // 含むため outer timeout 30s)。 server Err は quic_call_with_timeout が McpError に変換して返す。
         let payload = serde_json::json!({ "address": address, "cleanup": cleanup });
         match self
@@ -338,9 +338,9 @@ impl VantageMcp {
     ///
     /// Conductor Lane Echoes が「lane を operate するすべての座標」 を 1 call で取得するための tool。
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
-    /// top-level に project_addresses + world_addresses を synthesize。
+    /// top-level に project_addresses + machine_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `runner@<project>`) and world_addresses (e.g. `devices@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
+        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `runner@<project>`) and machine_addresses (e.g. `devices@machine`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
@@ -363,7 +363,7 @@ impl VantageMcp {
                 .to_string(),
         };
 
-        // 全 lane を World process-proxy ask `lanes_list` で取得 (旧 GET /api/lanes)。
+        // 全 lane を daemon process-proxy ask `lanes_list` で取得 (旧 GET /api/lanes)。
         let resp = self.quic_call("lanes_list", serde_json::json!({})).await?;
 
         let lanes_in = resp
@@ -424,15 +424,15 @@ impl VantageMcp {
             lanes_out.push(lane);
         }
 
-        // top-level に project / world Stand addresses を synthesize
+        // top-level に project / daemon Stand addresses を synthesize
         let result = serde_json::json!({
             "project": project,
             "lanes": lanes_out,
             "project_addresses": {
                 "runner": format!("runner@{}", project),
             },
-            "world_addresses": {
-                "devices": "devices@world",
+            "machine_addresses": {
+                "devices": "devices@machine",
             },
         });
 
@@ -476,7 +476,7 @@ impl VantageMcp {
         }
         let nudge = params.nudge.unwrap_or(true);
 
-        // ── Step 1: Performer 作成 (= add_performer と同型 path、 World process-proxy ask `lane_create`) ──
+        // ── Step 1: Performer 作成 (= add_performer と同型 path、 daemon process-proxy ask `lane_create`) ──
         // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を撤去。 lane clone は
         // 数 sec ~ 数 10 sec かかるので outer timeout 60s。 server Err は quic_call_with_timeout が
         // McpError に変換 (= 旧 HTTP 非 2xx → McpError と等価)。
@@ -637,7 +637,7 @@ impl VantageMcp {
                 .to_string(),
         };
 
-        // 全 lane (conductor + performers) を World process-proxy ask `lanes_list` で取得
+        // 全 lane (conductor + performers) を daemon process-proxy ask `lanes_list` で取得
         // (= performer_status 込み、 旧 GET /api/lanes)。
         let lanes_resp = self.quic_call("lanes_list", serde_json::json!({})).await?;
         let lanes_in = lanes_resp

@@ -72,7 +72,7 @@ pub struct BoardItem {
 pub enum ProcessMessage {
     /// doc 48 Phase 2: Editor Mode bridge — MCP から GUI (vp-app webview) への editor 操作。
     ///
-    /// World の `editor_fields` / `editor_values` / `editor_set` handler が request_id を
+    /// daemon の `editor_fields` / `editor_values` / `editor_set` handler が request_id を
     /// 発行して broadcast し、GUI が webview で評価した結果を `editor_result` request で
     /// 返す (request-response)。topic は category=event (非 retained) — 再購読時に stale な
     /// command が replay されてはならない。
@@ -200,7 +200,7 @@ pub enum ProcessMessage {
     /// ターミナルPTYセッション終了通知（子プロセス EOF）
     TerminalExited,
     /// Lane PTY 出力（base64、 per-lane）。 doc 27 §4.1 S1: SP Lane PtySlot の出力を
-    /// `process/terminal/{lane}/data/out` topic に乗せ、 World 経由で WebView に届ける
+    /// `process/terminal/{lane}/data/out` topic に乗せ、 daemon 経由で WebView に届ける
     /// (raw WebSocket `/ws/terminal` 退役の置換)。 session 系 `TerminalOutput` とは別系統
     /// (こちらは LanePool スコープ、 lane address を持つ)。
     LaneTerminalOutput {

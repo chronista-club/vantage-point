@@ -40,7 +40,7 @@ import {
 /**
  * Lane の tree connector class (FSM 投影 2026-07-11: 実体は lane.ts の純関数 `laneConnector`)。
  *
- * 一次 source = server 側 flow_state (World が wire store から derive)、 fallback = pid
+ * 一次 source = server 側 flow_state (daemon が wire store から derive)、 fallback = pid
  * heuristic。 OSC 99 の awaiting_input (store 依存) だけここで束ねて渡す。
  */
 function connectorFor(lane: LaneInfo): string {
@@ -67,7 +67,7 @@ function hintFor(
 	if (s === "starting") return "⏳ SP starting…";
 	if (s === "stopping") return "⏳ SP stopping…";
 	if (s === "error") return "⚠️ SP error — restart で復帰";
-	// lane 供給 (World "lanes" channel) の可用性を SP state とは別軸で見る (doc 30 §5-3)。
+	// lane 供給 (Daemon "lanes" channel) の可用性を SP state とは別軸で見る (doc 30 §5-3)。
 	// QUIC 購読が停滞 (open/subscribe/snapshot timeout or QUIC 未接続) したら `loading lanes` に
 	// 潰さず、 daemon restart で復帰できると surface する。 snapshot 受信で "ready" に解消。
 	if (laneCount === 0) {

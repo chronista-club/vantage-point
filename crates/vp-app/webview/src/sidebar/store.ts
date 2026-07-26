@@ -21,11 +21,11 @@ export function emptyState(): SidebarState {
 		processes: [],
 		widget: "activity",
 		activity: {
-			world_online: false,
+			node_online: false,
 			project_count: 0,
 			running_process_count: 0,
 			hub: "",
-			hub_worlds: [],
+			hub_nodes: [],
 			presence: {},
 			update_available: false,
 		},

@@ -1,4 +1,4 @@
-//! Project add / clone ダイアログ — native folder picker + git clone + TheWorld control plane。
+//! Project add / clone ダイアログ — native folder picker + git clone + daemon control plane。
 //!
 //! sidebar の「+ Add Project」「+ Clone Repository」操作の裏側。 rfd の folder picker
 //! は blocking なので別スレッドで実行し、 結果を `AppEvent` で main thread に返す。
@@ -8,7 +8,7 @@
 //! `spawn_clone_project` / `spawn_clone_path_picker` / `derive_repo_name`) を本 module に
 //! 切り出した。 挙動は不変 (= 純粋な module 移動、 picker / API / event 送出は同一)。
 //!
-//! doc 45 段 3: daemon 呼び出しを HTTP から Unison (`world-control`) に差し替えた。
+//! doc 45 段 3: daemon 呼び出しを HTTP から Unison (`daemon-control`) に差し替えた。
 //! これに伴い picker thread 内の使い捨て tokio runtime を廃し、 async 部分は
 //! app の shared runtime (`rt_handle`) に投げる — Unison の共有 QUIC connection は
 //! そこで駆動されているので、 別 runtime から触ってはいけない。
@@ -18,7 +18,7 @@ use std::thread;
 
 use tao::event_loop::EventLoopProxy;
 
-use crate::app::SharedWorldConn;
+use crate::app::SharedDaemonConn;
 use crate::pane::SidebarState;
 use crate::settings::Settings;
 use crate::terminal::AppEvent;
@@ -75,7 +75,7 @@ pub(crate) fn resolve_default_project_root(
 /// VP-100 follow-up: 「+ Add Project」クリック時の native folder picker + API 呼出。
 ///
 /// rfd の picker は blocking なので別スレッドで実行。folder 選択後:
-/// 1. `control.add_project(name, path)` を呼ぶ (Unison `world-control.projects/add`)
+/// 1. `control.add_project(name, path)` を呼ぶ (Unison `daemon-control.projects/add`)
 /// 2. `control.start_process(name)` で project を起動し、即「稼働中」にする (VP-203)
 /// 3. `fetch_projects_with_ports` で runtime port 付きで再取得 → `AppEvent::ProjectsLoaded`
 ///
@@ -85,7 +85,7 @@ pub(crate) fn spawn_add_project_picker(
     proxy: EventLoopProxy<AppEvent>,
     initial_dir: Option<std::path::PathBuf>,
     rt_handle: tokio::runtime::Handle,
-    conn: SharedWorldConn,
+    conn: SharedDaemonConn,
 ) {
     let _ = thread::Builder::new()
         .name("add-project-picker".into())
@@ -146,7 +146,7 @@ pub(crate) fn spawn_add_project_picker(
 ///
 /// 1. `git clone <url> <target>` を実行 (target は override 優先、無ければ
 ///    `<default_root>/<repo_name>`)
-/// 2. 成功なら `add_project` で TheWorld に register
+/// 2. 成功なら `add_project` で daemon に register
 /// 3. `fetch_projects_with_ports` で runtime port 付きで再取得 → `AppEvent::ProjectsLoaded`
 ///
 /// `target_override` が `Some` ならそれを target とする (user が picker で選択した
@@ -159,7 +159,7 @@ pub(crate) fn spawn_clone_project(
     default_root: Option<std::path::PathBuf>,
     target_override: Option<std::path::PathBuf>,
     rt_handle: tokio::runtime::Handle,
-    conn: SharedWorldConn,
+    conn: SharedDaemonConn,
 ) {
     // Phase 2.x-a: #210 の target_override を取り込み + Phase 1 の `process:` prefix を維持。
     // priority: 1) explicit target_override (picker 選択 path)、 2) default_root + repo 名

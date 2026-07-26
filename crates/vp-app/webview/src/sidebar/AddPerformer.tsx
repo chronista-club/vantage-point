@@ -5,7 +5,7 @@
  * 「+」アイコンボタンで toggle する。 name + optional branch + **engine(stand) dropdown**
  * → 作成で `lane:add_performer` IPC を送る。
  *
- * stand dropdown（doc 37）: mount 時に `stands:fetch` を撃ち、 World `stands_list`
+ * stand dropdown（doc 37）: mount 時に `stands:fetch` を撃ち、 Daemon `stands_list`
  * （SSOT = `EngineKind::ALL` + shell）の結果を `window.handleStandsResult` で受けて populate
  * する。 選択値は IPC の `stand` に載る（未選択 = SP-side default = echoes）。
  * fetch 前 / 失敗時は dropdown を出さず、 従来どおり default engine で作成できる（fail-open）。
@@ -13,7 +13,7 @@
 import { createSignal, onCleanup, onMount, For, Show } from 'solid-js'
 import { sendIpc } from './ipc'
 
-/** World `stands_list` の 1 entry（`crate::client::StandInfo` の wire shape）。 */
+/** Daemon `stands_list` の 1 entry（`crate::client::StandInfo` の wire shape）。 */
 type StandInfo = { name: string; description: string }
 
 /** `window.handleStandsResult` が受ける payload（app.rs StandsResult 由来）。 */

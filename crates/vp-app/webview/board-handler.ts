@@ -90,7 +90,7 @@ function notifyStateChange(): void {
 }
 
 // ============================================================================
-// IPC (webview → vp-app → World process-proxy → SP)
+// IPC (webview → vp-app → daemon process-proxy → SP)
 // ============================================================================
 
 function sendIpc(payload: Record<string, unknown>): void {

@@ -23,15 +23,15 @@ use tao::event_loop::EventLoopProxy;
 /// Lane terminals は per-Lane の browser-native WebSocket で input/output を扱う。
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// TheWorld から Project list 取得成功 (= `fetch_projects_with_ports` 経由で runtime port 込み)。
+    /// daemon から Project list 取得成功 (= `fetch_projects_with_ports` 経由で runtime port 込み)。
     ProjectsLoaded(Vec<crate::client::ProjectInfo>),
-    /// TheWorld への接続失敗 (= daemon 未起動 / network エラー)。
+    /// daemon への接続失敗 (= daemon 未起動 / network エラー)。
     ProjectsError(String),
     /// VP-95: Activity widget の定期更新 payload
     ActivityUpdate(crate::pane::ActivitySnapshot),
     /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
     SidebarIpc(String),
-    /// doc 48 Phase 2 (editor bridge): World からの `EditorCommand` を webview で評価する。
+    /// doc 48 Phase 2 (editor bridge): daemon からの `EditorCommand` を webview で評価する。
     ///
     /// `js` を main webview で `evaluate_script_with_callback` し、結果 (wry が JSON
     /// 文字列化した評価値) を `resp` に 1 回送る。sender が mpsc なのは AppEvent の
@@ -73,7 +73,7 @@ pub enum AppEvent {
     /// event loop で lane_respawn_triggered から address を除去し、 次の Dead 検出で
     /// 再 respawn できるようにする (失敗が永続 suppression にならないための解除通知)。
     LaneRespawnFailed { address: String },
-    /// Wire inbox (doc 34 §4 V1): World "wire" channel への read-only fetch 結果。
+    /// Wire inbox (doc 34 §4 V1): Daemon "wire" channel への read-only fetch 結果。
     /// event loop が `window.vpWire.handleResult(payload)` で sidebar に push back する。
     /// payload = `{address, agent, history, unread}` (エラーは `{address, error}`)。
     WireHistoryResult {
@@ -98,7 +98,7 @@ pub enum AppEvent {
         error: Option<String>,
     },
     /// doc 11 PR-C / F6④: 利用可能 Stand 一覧を sidebar に push back する。
-    /// `+ Add Performer` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で World
+    /// `+ Add Performer` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で Daemon
     /// process-proxy ask (`stands_list`) を叩いた結果がここに乗る。 JS は `window.handleStandsResult`
     /// で受領し、 dropdown を populate する。 `error` Some なら fetch 失敗、 dropdown は
     /// disabled + error message 表示。
@@ -164,19 +164,19 @@ pub enum AppEvent {
         message: serde_json::Value,
     },
     /// DeviceRegistry 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
-    /// daemon "world-device" Unison channel から受信した `DeviceEvent` の生 JSON。
+    /// daemon "daemon-device" Unison channel から受信した `DeviceEvent` の生 JSON。
     /// Phase 1 handler は tracing で log。 Phase 2 で DeviceRegistry pane / sidebar に反映予定。
     DeviceEvent { payload: serde_json::Value },
     /// board モデル (2026-07-15): WebView からの board mutate（thumbnail ✕ / Clear ボタン）。
     /// `method` = "board_delete_item" | "board_clear"、 `body` は IPC payload の生 JSON
-    /// (scope / lane / item_id 等)。 active project の SP に World process-proxy ask で forward し、
+    /// (scope / lane / item_id 等)。 active project の SP に daemon process-proxy ask で forward し、
     /// SP が DB 更新 → BoardUpdated(retained) broadcast → canvas channel で webview に反映する。
     /// board は SP が truth を持つため、 webview 側の save/load 経路（旧 PpState*）は撤去した。
     BoardMutate {
         method: String,
         body: serde_json::Value,
     },
-    /// terminal S4 (doc 27 §4.1): per-lane terminal session が World canvas channel から受信した
+    /// terminal S4 (doc 27 §4.1): per-lane terminal session が daemon canvas channel から受信した
     /// PTY 出力 1 chunk。 `data` は base64 (LaneTerminalOutput.data)。 event loop が
     /// `window.vpTerminal.handleOutput(lane, session, data)` で当該 (lane, session) の xterm に
     /// inject する。
@@ -206,7 +206,7 @@ pub enum AppEvent {
         cols: u16,
         rows: u16,
     },
-    /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
+    /// Echoes Act II (doc 32): 当該 lane の echoes session が daemon canvas channel から受信した
     /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
     /// event loop が push envelope `console:event` で当該 lane の Console pane に渡す。
     /// doc 38 Phase 2: `session` = 発生元 session の VP 採番 key（1 Lane = N session）。topic の
@@ -254,7 +254,7 @@ pub enum AppEvent {
         session: Option<u32>,
     },
     /// doc 50 §4.6 A6: session = Pane の Act（見え方）切替要求。名札の kind badge が撃つ。
-    /// event loop が World process-proxy ask `session_set_act` で SP に forward し、成功したら
+    /// event loop が daemon process-proxy ask `session_set_act` で SP に forward し、成功したら
     /// `SessionActApplied` で WebView の roster を更新する。`act` は "tui" | "chat"。
     ///
     /// ⚠️ 宛先は **引数で運ぶ**（session を明示）。「focus してから送る」型の分割はレース
@@ -684,7 +684,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             }
         }
         Some("board:delete") => {
-            // board モデル: thumbnail ✕。 SP の board_delete_item に forward（app.rs で World ask）。
+            // board モデル: thumbnail ✕。 SP の board_delete_item に forward（app.rs で Daemon ask）。
             let _ = proxy.send_event(AppEvent::BoardMutate {
                 method: "board_delete_item".to_string(),
                 body: parsed.clone(),
@@ -699,7 +699,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         }
         Some("board:cursor") => {
             // cursor の server 昇格（doc 52 §5 計器盤）: thumbnail click / scrollback の注視を
-            // SP の board_set_cursor へ forward（app.rs で World ask → BoardUpdated 再配信）。
+            // SP の board_set_cursor へ forward（app.rs で Daemon ask → BoardUpdated 再配信）。
             let _ = proxy.send_event(AppEvent::BoardMutate {
                 method: "board_set_cursor".to_string(),
                 body: parsed.clone(),

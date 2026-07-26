@@ -1,18 +1,18 @@
-//! TheWorld daemon の auto-launch
+//! daemon の auto-launch
 //!
-//! vp-app 起動時、`VP_WORLD_URL` の daemon が up でなければ `vp` バイナリを
+//! vp-app 起動時、`VP_DAEMON_URL` の daemon が up でなければ `vp` バイナリを
 //! 同梱 (standalone distribution) から spawn して待つ。
 //!
 //! ## 挙動
 //!
-//! 1. `<world_url>/api/health` を ping (500ms timeout)
+//! 1. `<node_url>/api/health` を ping (500ms timeout)
 //! 2. 成功 → ready を返す
 //! 3. 失敗 + URL が localhost 相当なら → 起動を試み、up まで poll (最大 `LAUNCH_TIMEOUT`)。起動経路は:
 //!    - macOS で LaunchAgent job が load 済みなら `launchctl kickstart`（-k なし）で起こす
 //!      （所有権一本化 2026-07-14: 直接 spawn 個体が port を握ると LaunchAgent 個体が
 //!      二重起動ガードで空回りし続け、brew upgrade の `kickstart -k` が実 holder に
 //!      届かない「所有権分裂」が起きる。job が居るなら起動は launchd に委譲する）
-//!    - job 未 load（LaunchAgent 未 install ユーザー）なら従来どおり `vp world` を
+//!    - job 未 load（LaunchAgent 未 install ユーザー）なら従来どおり `vp daemon` を
 //!      background spawn（fallback）
 //! 4. 失敗 + 非 localhost → auto-launch せず Err を返す (remote daemon 扱い)
 //!
@@ -33,7 +33,7 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// ping 間隔
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// TheWorld LaunchAgent の label。
+/// daemon LaunchAgent の label。
 ///
 /// SSOT は `crates/vantage-point/src/daemon/process.rs` の `LAUNCH_AGENT_LABEL`。
 /// vp-app は重量 crate (vantage-point) に依存しない方針（Cargo.toml 参照）のため
@@ -149,10 +149,10 @@ fn try_kickstart_launch_agent() -> bool {
 }
 
 /// daemon が up になるまで poll する（最大 [`LAUNCH_TIMEOUT`]）
-fn wait_daemon_up(world_url: &str) -> Result<()> {
+fn wait_daemon_up(node_url: &str) -> Result<()> {
     let deadline = Instant::now() + LAUNCH_TIMEOUT;
     while Instant::now() < deadline {
-        if ping_health(world_url) {
+        if ping_health(node_url) {
             tracing::info!("daemon up after auto-launch");
             return Ok(());
         }
@@ -160,21 +160,21 @@ fn wait_daemon_up(world_url: &str) -> Result<()> {
     }
     anyhow::bail!(
         "daemon auto-launch: {} に {}s 以内に応答なし",
-        world_url,
+        node_url,
         LAUNCH_TIMEOUT.as_secs()
     )
 }
 
 /// daemon が up でなければ auto-launch してから ready まで待つ
-pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
-    if ping_health(world_url) {
-        tracing::info!("daemon already up at {}", world_url);
+pub fn ensure_daemon_ready(node_url: &str) -> Result<()> {
+    if ping_health(node_url) {
+        tracing::info!("daemon already up at {}", node_url);
         return Ok(());
     }
-    if !is_localhost(world_url) {
+    if !is_localhost(node_url) {
         anyhow::bail!(
             "daemon 未起動 ({}): remote URL なので auto-launch しない",
-            world_url
+            node_url
         );
     }
 
@@ -183,7 +183,7 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     if try_kickstart_launch_agent() {
         tracing::info!("daemon auto-launch: LaunchAgent kickstart に委譲");
-        if wait_daemon_up(world_url).is_ok() {
+        if wait_daemon_up(node_url).is_ok() {
             return Ok(());
         }
         // kickstart したが up せず = plist 破損の疑い（ProgramArguments[0] の binary が
@@ -194,18 +194,18 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
         // #687 の二重起動ガード + bind AddrInUse で片方が譲り自己解決する。
         tracing::warn!(
             "daemon auto-launch: LaunchAgent kickstart 後も {} が up せず — 直接 spawn で救済を試みる（plist 破損の疑い、恢復は `vp daemon install` 再実行）",
-            world_url
+            node_url
         );
     }
 
     let vp_bin = locate_vp_binary();
     tracing::info!(
-        "daemon auto-launch: spawning {} world (bg)",
+        "daemon auto-launch: spawning {} daemon (bg)",
         vp_bin.display()
     );
 
     let mut cmd = Command::new(&vp_bin);
-    cmd.arg("world")
+    cmd.arg("daemon")
         // GUI/launchd 起動の最小 PATH (`/usr/bin:/bin:...`) が daemon → SP → mise → claude へ
         // 伝播するのを spawn 最上流で断つ (#498/#501 再発の根治、 補正の SSOT は下記 augment_path)。
         .env("PATH", vp_paths::spawn_env::augmented_spawn_path())
@@ -224,7 +224,7 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
     {
         // Phase 5-D fix: setsid(2) で 新 session leader 化 → controlling tty / parent process group
         // から完全切り離し。 これが無いと vp-app (parent) が pkill SIGTERM で死んだ時、 child の
-        // TheWorld も SIGHUP 巻き添えで死亡 → `mise run app` ごとに TheWorld 再起動 = sidebar の
+        // daemon も SIGHUP 巻き添えで死亡 → `mise run app` ごとに daemon 再起動 = sidebar の
         // Started time が 0sec にリセットされる bug が発生していた (2026-04-29 観測)。
         //
         // Windows は CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS で同等効果を得てる (上)。
@@ -250,7 +250,7 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
     drop(child);
     tracing::info!("daemon spawned (pid={})", pid);
 
-    wait_daemon_up(world_url)
+    wait_daemon_up(node_url)
 }
 
 // PATH 補強 (`augmented_spawn_path`) の SSOT は `vp_paths::spawn_env` に一本化した。

@@ -1,6 +1,6 @@
 //! Device I/O 🌫️ — Lane scope の双方向 device I/O endpoint (doc 23 §6)
 //!
-//! DeviceRegistry 🧲 (World scope の device registry) が集約した物理 device に対し、
+//! DeviceRegistry 🧲 (machine scope の device registry) が集約した物理 device に対し、
 //! Lane 単位の双方向 I/O を担う。
 //!
 //! 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`

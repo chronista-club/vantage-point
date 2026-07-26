@@ -1,6 +1,6 @@
-// VP TheWorld / Process glyph mapping (@chronista-club/creo-ui-icons-web の VP-domain alias)。
+// VP daemon / Process glyph mapping (@chronista-club/creo-ui-icons-web の VP-domain alias)。
 //
-// TheWorld = 常駐 daemon (Process Manager)、 SP (Star Platinum) = 各 project 用 server。
+// daemon = 常駐 daemon (Process Manager)、 SP (Star Platinum) = 各 project 用 server。
 // process state を icon で表現: running / spawning / stopped / error / restarting。
 //
 // 参考 memory: feedback_creo_ui_icon_dual_axis.md (2026-04-29)
@@ -16,8 +16,8 @@ export type ProcessState =
   | 'error'        // crash / unhealthy
   | 'restarting'   // 再起動中 (動的)
 
-export type WorldEntity =
-  | 'theworld'     // TheWorld daemon (port 32000)
+export type DaemonEntity =
+  | 'daemon'     // daemon (port 32000)
   | 'sp'           // Star Platinum (port 33000+、 project SP)
   | 'project'      // generic project entry
 
@@ -26,8 +26,8 @@ export interface ProcessIconSet {
   active: IconName
 }
 
-export const THEWORLD_ICON: Record<WorldEntity, ProcessIconSet> = {
-  theworld: {
+export const DAEMON_ICON: Record<DaemonEntity, ProcessIconSet> = {
+  daemon: {
     default: 'ph:planet',
     active: 'ph:planet-fill',
   },
@@ -50,11 +50,11 @@ export const PROCESS_STATE_ICON: Record<ProcessState, IconName> = {
   restarting: 'svg-spinners:ring-resize',
 }
 
-export function iconForWorld(
-  entity: WorldEntity,
+export function iconForDaemon(
+  entity: DaemonEntity,
   state: 'default' | 'active' = 'default',
 ): IconName {
-  return THEWORLD_ICON[entity][state]
+  return DAEMON_ICON[entity][state]
 }
 
 export function iconForProcessState(state: ProcessState): IconName {

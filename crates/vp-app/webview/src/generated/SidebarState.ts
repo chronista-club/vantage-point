@@ -62,8 +62,8 @@ active_stand?: ActiveStand | null,
  * Currents セクションの project 表示順 (path の順)。
  *
  * `SessionState.currents_order` から push される。 sidebar JS は Currents
- * rendering 時に this list の順で並び替える (list に無い path は末尾、 TheWorld order 維持)。
- * `None` なら順序指定なし (TheWorld registration 順)。
+ * rendering 時に this list の順で並び替える (list に無い path は末尾、 daemon order 維持)。
+ * `None` なら順序指定なし (daemon registration 順)。
  */
 currents_order?: Array<string> | null, 
 /**
@@ -115,11 +115,11 @@ lane_inboxes?: { [key in string]?: MessageState },
  */
 devices?: Array<DeviceSnapshot>, 
 /**
- * doc 30 §5-3 / lanes 購読 self-heal: per-project の World "lanes" channel 購読フェーズ。
+ * doc 30 §5-3 / lanes 購読 self-heal: per-project の Daemon "lanes" channel 購読フェーズ。
  * Key: project_path。 Value は 3 値モデル (entry 有無 + 2 文字列):
  *
  * - entry なし (absent) = 初期 (購読開始〜初回 snapshot 未受信)。 `hintFor` は `📡 loading lanes…`
- * - `"stalled"` = open / subscribe / 初回 snapshot が timeout (World lanes channel 無応答 or QUIC 未接続)。 `LanesError` で挿入。 `hintFor` は `⚠️ lane 接続が停滞 — daemon restart で復帰`
+ * - `"stalled"` = open / subscribe / 初回 snapshot が timeout (Daemon lanes channel 無応答 or QUIC 未接続)。 `LanesError` で挿入。 `hintFor` は `⚠️ lane 接続が停滞 — daemon restart で復帰`
  * - `"ready"` = snapshot を 1 度でも受信 (`LanesLoaded` で挿入、 以後 entry は残る)。 lane 0 本なら `hintFor` は `📡 lane なし`
  *
  * stall→ready は復帰時の snapshot で上書きされ自動解消 (self-heal と連動)。 起動時は全 project entry

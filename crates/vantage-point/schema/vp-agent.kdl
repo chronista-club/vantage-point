@@ -1,5 +1,5 @@
 // Agent (Claude / MCP) action space — SSOT。
-// rebuild Epic L2 第二手（doc 27 §5-1 "MCP = World topic への thin generated bridge" /
+// rebuild Epic L2 第二手（doc 27 §5-1 "MCP = Daemon topic への thin generated bridge" /
 // §5-2 "KDL = agent action space の SSOT"）。
 //
 // この KDL を唯一の真実として VP-local codegen が rmcp tool を生成する:

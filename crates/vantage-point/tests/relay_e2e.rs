@@ -12,8 +12,8 @@
 //!   cargo test -p vantage-point --test relay_e2e -- --ignored --nocapture
 //! ```
 //!
-//! 検証内容: target world が `relay` server-channel を connect 前に登録して hub registry に
-//! register（hub が wld_id→ctx を index）→ source world が `dial_relay(target_wld_id)` で hub 経由
+//! 検証内容: target daemon が `relay` server-channel を connect 前に登録して hub registry に
+//! register（hub が wld_id→ctx を index）→ source daemon が `dial_relay(target_wld_id)` で hub 経由
 //! の片方向 relay を確立 → data frame を 1 本送る → target の inbound handler が同じ payload を
 //! 送信元 wld_id 付きで受け取る、という relay 往復（source→hub→target）を実証する。
 
@@ -37,7 +37,7 @@ async fn relay_source_to_target_roundtrip() {
     let target_wld = "wld_relay-target";
     let source_wld = "wld_relay-source";
 
-    // ── target world: relay inbound handler を登録 → register（hub が wld_id→ctx を index）。
+    // ── target daemon: relay inbound handler を登録 → register（hub が wld_id→ctx を index）。
     let (tx, mut rx) = mpsc::unbounded_channel();
     let target = HubClient::connect_with_inbound(&addr, 5, move |inbound| {
         let tx = tx.clone();
@@ -53,7 +53,7 @@ async fn relay_source_to_target_roundtrip() {
         .await
         .expect("target: register 失敗");
 
-    // ── source world: 接続して target へ relay を張る。register（hub が target_wld→ctx を
+    // ── source daemon: 接続して target へ relay を張る。register（hub が target_wld→ctx を
     //    引けるよう、target の register が hub に反映されてから dial する＝この await 順序で担保）。
     let source = HubClient::connect(&addr, 5)
         .await
@@ -110,7 +110,7 @@ async fn run_hub_federation_resident_relay_target() {
     // 本番 daemon（process/server.rs）と同じ常駐セッションを起動。
     let shutdown = CancellationToken::new();
     let status = hub_client::HubFederationStatus::new();
-    let worlds_cache = hub_client::HubWorldsCache::new();
+    let daemons_cache = hub_client::HubNodesCache::new();
     // この test は register + relay target liveness を見るので、配送 handler は no-op で十分。
     let driver = tokio::spawn(hub_client::run_hub_federation(
         addr.clone(),
@@ -119,7 +119,7 @@ async fn run_hub_federation_resident_relay_target() {
         target_handle.to_string(),
         "VP resident target".to_string(),
         status.clone(),
-        worlds_cache.clone(),
+        daemons_cache.clone(),
         shutdown.clone(),
         |_inbound| async {},
     ));
@@ -137,8 +137,8 @@ async fn run_hub_federation_resident_relay_target() {
     // 常駐 target が registry に現れるまで poll（run_hub_federation の register は非同期）。
     let mut seen = false;
     for _ in 0..50 {
-        let worlds = source.discover().await.expect("source: discover 失敗");
-        if worlds.iter().any(|w| w.handle == target_handle) {
+        let nodes = source.discover().await.expect("source: discover 失敗");
+        if nodes.iter().any(|w| w.handle == target_handle) {
             seen = true;
             break;
         }
@@ -156,12 +156,15 @@ async fn run_hub_federation_resident_relay_target() {
         "run_hub_federation の status が Connected に遷移していない"
     );
 
-    // available worlds cache に**自 world は決して混入しない**（available_worlds の意味論 =
+    // available nodes cache に**自 daemon は決して混入しない**（available_nodes の意味論 =
     // 「hub の向こうに誰がいるか」）。cache が空か populated かは discover tick の timing 次第
     // なので断定しない（初回 discover は接続直後、以降 45s 周期）。
     assert!(
-        worlds_cache.get().iter().all(|w| w.handle != target_handle),
-        "worlds cache に自 world (handle={target_handle}) が混入している"
+        daemons_cache
+            .get()
+            .iter()
+            .all(|w| w.handle != target_handle),
+        "nodes cache に自 daemon (handle={target_handle}) が混入している"
     );
 
     // 常駐 target は relay registry にも居るはず → established を返せば relay target として live。

@@ -91,7 +91,7 @@ export type EchoesEvent =
       context_tokens?: number
       context_window?: number
     }
-  /** session の「今なにを」自己申告（doc 51 §1 A3b — `vp now` CLI 発、World が注入）。
+  /** session の「今なにを」自己申告（doc 51 §1 A3b — `vp now` CLI 発、daemon が注入）。
    *  GUI は now-line（名札直下の動的一行）に出し、turn_completed で消す。 */
   | { kind: 'now_line'; text: string }
   | { kind: 'error'; message: string }

@@ -13,7 +13,7 @@
 //! - **Linux**: `$SHELL` > `/bin/bash`。
 //!
 //! Mode 1 (`crate::terminal::spawn_shell` — local portable-pty) と
-//! Mode 2 (`crate::ws_terminal::connect_daemon_terminal` — TheWorld daemon WS 経由)
+//! Mode 2 (`crate::ws_terminal::connect_daemon_terminal` — daemon WS 経由)
 //! の両方から使える共通モジュール。
 
 // Phase review fix #1: detect_shell_args は OS-agnostic に basename 抽出するので Path 非依存。

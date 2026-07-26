@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::commands::process_client::{
-    resolve_project_path_from_target, world_process_request_blocking,
+    daemon_process_request_blocking, resolve_project_path_from_target,
 };
 use crate::config::Config;
 use crate::protocol::{Content, ProcessMessage, SplitDirection};
@@ -106,8 +106,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
                 scope: None,
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
+            daemon_process_request_blocking(
+                crate::cli::daemon_port(),
                 &project_path,
                 "show",
                 serde_json::to_value(&msg)?,
@@ -125,8 +125,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
                 scope: None,
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
+            daemon_process_request_blocking(
+                crate::cli::daemon_port(),
                 &project_path,
                 "show",
                 serde_json::to_value(&msg)?,
@@ -157,8 +157,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 new_pane_id: new_pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
+            daemon_process_request_blocking(
+                crate::cli::daemon_port(),
                 &project_path,
                 "split_pane",
                 serde_json::to_value(&msg)?,
@@ -175,8 +175,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 pane_id: pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
+            daemon_process_request_blocking(
+                crate::cli::daemon_port(),
                 &project_path,
                 "close_pane",
                 serde_json::to_value(&msg)?,
@@ -195,8 +195,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 visible,
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
+            daemon_process_request_blocking(
+                crate::cli::daemon_port(),
                 &project_path,
                 "toggle_pane",
                 serde_json::to_value(&msg)?,

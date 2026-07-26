@@ -1,12 +1,12 @@
 import Foundation
 import UnisonClient
 
-/// VP の `vp-world` protocol（doc 26 §2）の Swift 対応。
+/// VP の `vp-daemon` protocol（doc 26 §2）の Swift 対応。
 ///
 /// 本来は KDL schema → Swift codegen で生成する想定だが、 codegen が来るまでの手書き定義
 /// （doc 26 §5「2 codegen 層」の app 層を当面手書き）。 channel meta + request 型を
 /// UnisonClient SDK の `StreamChannelMeta` / `UnisonRequest` に適合させる。
-enum VPWorld {
+enum VPDaemon {
     /// agent → daemon: CoreMIDI hot-plug を報告する stream channel（doc 26 §2 channel "device"）。
     ///
     /// M2 では request（`ReportDevice`）のみ使う一方向。 server → client の push event は
@@ -18,7 +18,7 @@ enum VPWorld {
         struct Event: Decodable, Sendable {}
     }
 
-    /// `openChannel(VPWorld.device)` 用の meta インスタンス。
+    /// `openChannel(VPDaemon.device)` 用の meta インスタンス。
     static let device = Device()
 }
 

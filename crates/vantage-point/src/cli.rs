@@ -4,10 +4,10 @@
 
 use anyhow::Result;
 
-/// World daemon (:32000) の `/api/health` レスポンス parser。
+/// daemon (:32000) の `/api/health` レスポンス parser。
 ///
-/// L0 finale: SP は HTTP listener を撤去したが、 **World daemon は HTTP を保持**するため (daemon/process.rs
-/// が World 自身の health を読む)、 この struct は残す。 旧 SP /api/health 用の用途 (check_status /
+/// L0 finale: SP は HTTP listener を撤去したが、 **daemon は HTTP を保持**するため (daemon/process.rs
+/// が Daemon 自身の health を読む)、 この struct は残す。 旧 SP /api/health 用の用途 (check_status /
 /// scan_instances) は撤去済。
 #[derive(serde::Deserialize)]
 pub struct HealthResponse {
@@ -18,23 +18,23 @@ pub struct HealthResponse {
     pub project_dir: Option<String>,
 }
 
-/// TheWorld（Daemon 統合）のデフォルトポート。
+/// daemon（Daemon 統合）のデフォルトポート。
 ///
 /// VP_PROFILE 分離 (dev/brew 混在根治): brew=32000 / dev=32100。 SP portless なので実 listener は
-/// world 単一 → この 1 本を profile でずらせば daemon bind / app connect / SP→world connect が
-/// 芋づるで追随する。 定義は `vp_paths::default_world_port()` (全 crate 共有の SSOT)。
-pub fn world_port() -> u16 {
-    vp_paths::default_world_port()
+/// daemon 単一 → この 1 本を profile でずらせば daemon bind / app connect / SP→daemon connect が
+/// 芋づるで追随する。 定義は `vp_paths::default_daemon_port()` (全 crate 共有の SSOT)。
+pub fn daemon_port() -> u16 {
+    vp_paths::default_daemon_port()
 }
 
 /// 稼働中 project を一覧表示する（`vp ps`）。
 ///
-/// 真実源は World registry（`discovery::list` = World :32000 が維持する稼働 project 一覧）。
+/// 真実源は Daemon registry（`discovery::list` = Daemon :32000 が維持する稼働 project 一覧）。
 ///
 /// # 列の意味論（doc 44 §5.3）
 ///
-/// fold-in で **PORT / PID 列は情報量を失った** — project は World と同一プロセスなので
-/// pid は全行 World 自身、port は listen しないので常に 0 になる。どちらも
+/// fold-in で **PORT / PID 列は情報量を失った** — project は daemon と同一プロセスなので
+/// pid は全行 Daemon 自身、port は listen しないので常に 0 になる。どちらも
 /// 「project = プロセス」という前提の上にあった表示で、その前提を fold-in が消した。
 ///
 /// 代わりに project 間の実体的な差である **LANES（何本のラインを抱えているか）** と
@@ -45,12 +45,12 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
     rt.block_on(async {
         // control plane は Unison に寄せる方針（KDL schema + drift テスト + MCP tool 合成が
         // 付いてくる）。processes / lanes とも 1 接続の別 stream で引く。
-        let client = crate::daemon::client::WorldControlClient::connect(world_port(), 3)
+        let client = crate::daemon::client::DaemonControlClient::connect(daemon_port(), 3)
             .await
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "World daemon (port {}) に接続できません。 `vp daemon start` で起動してください: {}",
-                    world_port(),
+                    "daemon (port {}) に接続できません。 `vp daemon start` で起動してください: {}",
+                    daemon_port(),
                     e
                 )
             })?;
@@ -117,7 +117,7 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
                 false
             };
             let marker = if is_cwd { "  ← cwd" } else { "" };
-            // World に問い合わせできなかった場合は lane 数不明として `-` を出す
+            // daemon に問い合わせできなかった場合は lane 数不明として `-` を出す
             // （project 一覧そのものは出せるべきなので、lane 取得失敗で表を潰さない）。
             let (lanes, status) = match lane_counts.get(name) {
                 Some(c) if c.running > 0 => (c.total.to_string(), "active"),

@@ -29,7 +29,7 @@ final class AgentModel: ObservableObject {
     @Published private(set) var status: Status = .connecting
     /// M2: agent が daemon に報告中の device displayName 一覧 (menu 表示用)。
     @Published private(set) var reportedDevices: Set<String> = []
-    /// M2b: 稼働中の VP (TheWorld) — fold-in 後は 0/1 件 (旧: SP ごとに複数)。
+    /// M2b: 稼働中の VP (daemon) — fold-in 後は 0/1 件 (旧: SP ごとに複数)。
     @Published private(set) var instances: [VpInstance] = []
 
     private let client = DaemonClient()
@@ -52,7 +52,7 @@ final class AgentModel: ObservableObject {
             status = .connected(identity)
             // M1 疎通の機械検証用。 LSUIElement app でも terminal 直起動なら stdout に出る。
             print(
-                "[VPAgent] connected: World \(identity.name) v\(identity.version) "
+                "[VPAgent] connected: daemon \(identity.name) v\(identity.version) "
                     + "ns=\(identity.namespace) channels=\(identity.channels)")
             // M2: CoreMIDI hot-plug 監視 → daemon 報告を開始。
             startDeviceReporting()

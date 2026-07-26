@@ -122,7 +122,7 @@ impl From<RawConfig> for PerformerConfig {
 /// `git rev-parse --show-toplevel` は呼び出し元の worktree 自身を返すため、 lane worktree の
 /// 中から `vp lane` を実行すると project 同一性がズレていた: lane が worktree 配下にネスト、
 /// state file (engine_model / cc_session / console_mode) の project key が SP 読み手
-/// (`addr.project` = main root basename) と mismatch、 World handshake の project_path が SP
+/// (`addr.project` = main root basename) と mismatch、 Daemon handshake の project_path が SP
 /// 登録値と不一致。 全 worktree が共有する git-common-dir (`<main>/.git`) の親を main worktree
 /// root として解決し、 どの worktree からでも同一 project に着地させる (project key 正規化)。
 pub fn find_repo_root() -> io::Result<PathBuf> {

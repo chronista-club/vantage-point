@@ -2,15 +2,15 @@
 //!
 //! ## 概要
 //!
-//! TheWorld 中央 wire store の `wire_recv` を long-poll loop で叩き、 受信した wire message を
+//! daemon 中央 wire store の `wire_recv` を long-poll loop で叩き、 受信した wire message を
 //! 1 行 JSON で stdout に出力する。 Claude Code Monitor tool の subscription source として活用
 //! される (Monitor は stdout-emitting 何でも push channel になる、 universal subscription primitive)。
 //!
-//! ## L0 portless B-4 (wire-unison): transport は World "wire" unison channel に直結
+//! ## L0 portless B-4 (wire-unison): transport は Daemon "wire" unison channel に直結
 //!
-//! 旧 SP HTTP proxy (`--url` で SP base を指定 → SP `/api/wire/*` → World relay) は撤去。
-//! CLI は `crate::process::world_wire::call` で **World daemon (QUIC, port 32000) の "wire" channel**
-//! に直結する (doc 27 §62「全通信 unison channel」)。 World 直結のため address は qualified 前提
+//! 旧 SP HTTP proxy (`--url` で SP base を指定 → SP `/api/wire/*` → Daemon relay) は撤去。
+//! CLI は `crate::process::daemon_wire::call` で **daemon (QUIC, port 32000) の "wire" channel**
+//! に直結する (doc 27 §62「全通信 unison channel」)。 Daemon 直結のため address は qualified 前提
 //! (bare `"agent"` は中央 store が reject、 正規化は MCP 経路の SP のみが行う)。
 //!
 //! ## 使い方
@@ -40,7 +40,7 @@ use std::time::Duration;
 
 #[derive(Subcommand, Debug)]
 pub enum WireCommands {
-    /// World wire channel を long-poll で watch、 受信 message を 1 行 JSON で stdout に出す
+    /// Daemon wire channel を long-poll で watch、 受信 message を 1 行 JSON で stdout に出す
     ///
     /// Claude Code Monitor の subscription source として使う想定。 SIGTERM / Ctrl-C で graceful exit。
     Watch {
@@ -51,7 +51,7 @@ pub enum WireCommands {
         #[arg(short, long, default_value_t = 25)]
         timeout: u64,
     },
-    /// World wire channel から 1-shot で受信 (= mcp__wire_recv の CLI pair)。
+    /// Daemon wire channel から 1-shot で受信 (= mcp__wire_recv の CLI pair)。
     ///
     /// `watch` と異なり loop しない: long-poll を 1 回だけ実行し、 受信した message 一式を
     /// 1 行 JSON ({"messages":[...], "count":N}) で stdout に出して即 exit。
@@ -65,10 +65,10 @@ pub enum WireCommands {
         #[arg(short, long, default_value_t = 5)]
         timeout: u64,
     },
-    /// World wire channel に message を送信 (ad-hoc test 用)
+    /// Daemon wire channel に message を送信 (ad-hoc test 用)
     Send {
-        /// 宛先 wire address (例: `agent@vantage-point`)。 World 直結のため qualified 前提。
-        /// `--world` 指定時は **宛先 world 内部の logical address**（例: `agent@nostos/main`）。
+        /// 宛先 wire address (例: `agent@vantage-point`)。 Daemon 直結のため qualified 前提。
+        /// `--node` 指定時は **宛先 node 内部の logical address**（例: `agent@nostos/main`）。
         #[arg(short, long)]
         to: String,
         /// 送信 body (string)
@@ -84,20 +84,20 @@ pub enum WireCommands {
         /// command は受信者が ack するまで delivery loop の再掲示対象 (R2-b)
         #[arg(long)]
         category: Option<String>,
-        /// 宛先 **remote world** の handle（federation 送信、flow ③）。指定すると TheWorld が
-        /// hub relay 経由で遠方 world へ送る。`--to` はその world 内部の logical address になる。
+        /// 宛先 **remote daemon** の handle（federation 送信、flow ③）。指定すると daemon が
+        /// hub relay 経由で遠方 node へ送る。`--to` はその node 内部の logical address になる。
         /// 未指定ならローカル中央 store に送る（従来動作）。
         #[arg(long)]
-        world: Option<String>,
+        node: Option<String>,
     },
-    /// 遠方 world の lane 一覧を問い合わせる (federation discovery、 在庫確認、 flow step 2)
+    /// 遠方 node の lane 一覧を問い合わせる (federation discovery、 在庫確認、 flow step 2)
     ///
-    /// 宛先を知らないとき、 relay 上の request-response で相手 world の lane を列挙する。
-    /// 例: `vp wire discover --world taro-box`
+    /// 宛先を知らないとき、 relay 上の request-response で相手 node の lane を列挙する。
+    /// 例: `vp wire discover --node taro-box`
     Discover {
-        /// 問い合わせる remote world の handle
+        /// 問い合わせる remote node の handle
         #[arg(long)]
-        world: String,
+        node: String,
     },
     /// 未読の在庫確認 (= mcp__wire_inbox の CLI pair、 read-only で cursor 不触り)
     ///
@@ -134,7 +134,7 @@ pub enum WireCommands {
     /// (決定 D2)。 あらゆる失敗は silent 成功 (fail-open、 会話を邪魔しない)。
     /// 注意: CC hook 専用 — stdin を pipe で繋いで使う (TTY 直接実行は即 return する)。
     HookCheck,
-    /// 観測（Canvas Pane 可視化、doc 28 §7/§2）: TheWorld 中央 store の全委譲を「会話 thread」
+    /// 観測（Canvas Pane 可視化、doc 28 §7/§2）: daemon 中央 store の全委譲を「会話 thread」
     /// markdown にして stdout に出す read-only コマンド。`mcp__vantage-point__show` に流して
     /// Canvas Pane に表示する静的観測 surface（介入でなく観測でフロー全体を追う）。
     DelegThread,
@@ -165,7 +165,7 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             from,
             reply_to,
             category,
-            world,
+            node,
         } => {
             send(
                 &to,
@@ -173,11 +173,11 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
                 &from,
                 reply_to.as_deref(),
                 category.as_deref(),
-                world.as_deref(),
+                node.as_deref(),
             )
             .await
         }
-        WireCommands::Discover { world } => discover_lanes(&world).await,
+        WireCommands::Discover { node } => discover_lanes(&node).await,
         WireCommands::Inbox { agent } => inbox(&agent).await,
         WireCommands::Thread { message_id } => thread(&message_id).await,
         WireCommands::Ack { message_id, agent } => ack(&message_id, &agent).await,
@@ -191,12 +191,12 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
     }
 }
 
-/// World "wire" channel への QUIC 呼び出し (= `world_wire::call` の CLI 薄 wrapper)。
+/// Daemon "wire" channel への QUIC 呼び出し (= `daemon_wire::call` の CLI 薄 wrapper)。
 ///
-/// 旧 SP HTTP proxy (`--url`) を撤去し、 wire/delegation を World daemon 直結に統一 (doc 27 §62)。
-/// `world_wire::call` の Err(String) を anyhow に写す (error frame は call が既に Err 化済)。
-async fn call_world(path: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
-    crate::process::world_wire::call(path, payload)
+/// 旧 SP HTTP proxy (`--url`) を撤去し、 wire/delegation を daemon 直結に統一 (doc 27 §62)。
+/// `daemon_wire::call` の Err(String) を anyhow に写す (error frame は call が既に Err 化済)。
+async fn call_daemon(path: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
+    crate::process::daemon_wire::call(path, payload)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
@@ -256,7 +256,7 @@ async fn watch_supervised(agent: &str, timeout_secs: u64, restart_delay_secs: u6
 
 async fn watch(agent: &str, timeout_secs: u64) -> Result<()> {
     eprintln!(
-        "[vp wire watch] subscribed to World wire channel (agent={}, timeout={}s)",
+        "[vp wire watch] subscribed to Daemon wire channel (agent={}, timeout={}s)",
         agent, timeout_secs
     );
 
@@ -334,10 +334,10 @@ async fn recv(agent: &str, timeout_secs: u64) -> Result<()> {
 
 /// 1 回の long-poll。 受信した wire message の配列を返す (timeout 時は空 vec)。
 ///
-/// `world_wire::call` が server Err (`{"error":..}` frame) を既に Err に変換するので、 ここでは
+/// `daemon_wire::call` が server Err (`{"error":..}` frame) を既に Err に変換するので、 ここでは
 /// `messages` 配列の取り出しだけ行う。
 async fn poll_recv(agent: &str, timeout_secs: u64) -> Result<Vec<serde_json::Value>> {
-    let resp = call_world(
+    let resp = call_daemon(
         "/api/wire/recv",
         serde_json::json!({ "agent": agent, "timeout": timeout_secs }),
     )
@@ -351,9 +351,9 @@ async fn poll_recv(agent: &str, timeout_secs: u64) -> Result<Vec<serde_json::Val
 }
 
 /// read-only 系 (inbox / thread / ack) の共通実行部。
-/// 応答を pretty JSON で stdout に出す (error frame は `call_world` が Err にする)。
+/// 応答を pretty JSON で stdout に出す (error frame は `call_daemon` が Err にする)。
 async fn post_and_print(path: &str, payload: serde_json::Value) -> Result<()> {
-    let resp = call_world(path, payload).await?;
+    let resp = call_daemon(path, payload).await?;
     println!("{}", serde_json::to_string_pretty(&resp)?);
     Ok(())
 }
@@ -584,9 +584,9 @@ fn delegation_thread_markdown(delegations: &[serde_json::Value]) -> String {
 /// hook 実体 (R2-c、 チャネル B): 設計 mem_1CbvcJj4ppU3QKH9d7xMpT。
 ///
 /// 全エラー path で Ok(()) を返し何も出力しない (fail-open) — hook の失敗で
-/// 会話を邪魔しないことが最優先。 TheWorld "wire" channel 直叩き (qualified address を自前導出
+/// 会話を邪魔しないことが最優先。 daemon "wire" channel 直叩き (qualified address を自前導出
 /// するので SP proxy 不要 = 自 SP が落ちていても未読通知は出る)。 hook は会話を block しない
-/// よう各 call を 2s で bound する (`world_wire::call` の 40s outer とは別の短い実効上限)。
+/// よう各 call を 2s で bound する (`daemon_wire::call` の 40s outer とは別の短い実効上限)。
 /// hook event → 会話報告の契機（doc 40 §6 の wire 表現。None = 報告対象外の event）。
 ///
 /// hook は**報告者**であり記録判断を持たない — 宛先 session の解決と F1/F2 guard（resume 失敗
@@ -631,7 +631,7 @@ async fn hook_check() -> Result<()> {
     let session_key = session_key_from_env(std::env::var("VP_SESSION_KEY").ok().as_deref());
 
     // doc 40 §4: hook は会話 id の**報告者** — (project, lane, session, session_id, 契機) を
-    // World 経由で SP へ送るだけ。宛先 session の解決と記録判断（F1/F2 guard 込みの policy）は
+    // daemon 経由で SP へ送るだけ。宛先 session の解決と記録判断（F1/F2 guard 込みの policy）は
     // SP 側 `session_registry::record_conversation` の 1 箇所が持つ。旧実装の
     // `cc_session::record(VP_LANE)` 直書きは root の session label に追従せず、root≥2 で
     // 書き手/読み手のラベル乖離バグを起こした（doc 40 §1-1 の根治でここから file 書きを撤去）。
@@ -667,7 +667,7 @@ async fn hook_check() -> Result<()> {
             }
             let _ = tokio::time::timeout(
                 Duration::from_secs(2),
-                crate::process::world_wire::call("/api/lane/session-changed", payload),
+                crate::process::daemon_wire::call("/api/lane/session-changed", payload),
             )
             .await;
         }
@@ -680,7 +680,7 @@ async fn hook_check() -> Result<()> {
     // 未読 wire count を 2s で bound して取得。 daemon 不在/wedge/transport 失敗は silent 成功。
     let total = match tokio::time::timeout(
         Duration::from_secs(2),
-        crate::process::world_wire::call(
+        crate::process::daemon_wire::call(
             "/api/wire/unread-count",
             serde_json::json!({ "agent": agent }),
         ),
@@ -691,11 +691,11 @@ async fn hook_check() -> Result<()> {
         _ => return Ok(()), // timeout / transport 失敗 — fail-open
     };
 
-    // pull-hook（C、doc 28 §3-2）: World の undelivered 委譲を poll してターン頭に surface。
+    // pull-hook（C、doc 28 §3-2）: daemon の undelivered 委譲を poll してターン頭に surface。
     // 失敗は fail-open（委譲 pull が無くても wire 通知は出す）。
     let deleg_summary = match tokio::time::timeout(
         Duration::from_secs(2),
-        crate::process::world_wire::call(
+        crate::process::daemon_wire::call(
             "/api/delegation/poll",
             serde_json::json!({ "agent": agent }),
         ),
@@ -715,11 +715,11 @@ async fn hook_check() -> Result<()> {
     Ok(())
 }
 
-/// 観測（Canvas Pane 可視化、doc 28 §7/§2）: TheWorld 中央 store の全委譲を取得し、
+/// 観測（Canvas Pane 可視化、doc 28 §7/§2）: daemon 中央 store の全委譲を取得し、
 /// 「会話 thread」markdown を stdout に出す。`mcp__vantage-point__show` に流して Canvas Pane へ。
 /// hook と違い fail-open ではなく、取得失敗は Err にして利用者に分かるようにする（対話 CLI）。
 async fn deleg_thread() -> Result<()> {
-    let body = call_world("/api/delegation/list", serde_json::json!({}))
+    let body = call_daemon("/api/delegation/list", serde_json::json!({}))
         .await
         .map_err(|e| anyhow::anyhow!("delegation list 取得失敗: {e}"))?;
     let ds = body
@@ -746,7 +746,7 @@ async fn send(
     from: &str,
     reply_to: Option<&str>,
     category: Option<&str>,
-    world: Option<&str>,
+    node: Option<&str>,
 ) -> Result<()> {
     // wire_send payload: to は配列、 body は任意 JSON。
     // CLI は ad-hoc test 用なので body string を `{"text": ...}` object に wrap して送る。
@@ -764,26 +764,26 @@ async fn send(
         payload["reply_to"] = serde_json::Value::String(prev_id.to_string());
     }
 
-    // --world 指定時は federation 送信（flow ③）: TheWorld が hub relay 経由で遠方 world へ送る。
-    // `to` はその world 内部の logical address（agent@project/lane）。未指定はローカル中央 store。
-    let path = if let Some(remote) = world {
-        payload["world"] = serde_json::Value::String(remote.to_string());
+    // --node 指定時は federation 送信（flow ③）: daemon が hub relay 経由で遠方 node へ送る。
+    // `to` はその node 内部の logical address（agent@project/lane）。未指定はローカル中央 store。
+    let path = if let Some(remote) = node {
+        payload["node"] = serde_json::Value::String(remote.to_string());
         "/api/wire/federate"
     } else {
         "/api/wire/send"
     };
 
-    let resp = call_world(path, payload).await?;
+    let resp = call_daemon(path, payload).await?;
     println!("{}", serde_json::to_string(&resp).unwrap_or_default());
     Ok(())
 }
 
-/// 遠方 world の lane 一覧を問い合わせる（federation discovery）。TheWorld 経由で relay 上の
-/// request-response を回し、相手 world の lane を列挙する。
-async fn discover_lanes(world: &str) -> Result<()> {
-    let resp = call_world(
+/// 遠方 node の lane 一覧を問い合わせる（federation discovery）。daemon 経由で relay 上の
+/// request-response を回し、相手 node の lane を列挙する。
+async fn discover_lanes(node: &str) -> Result<()> {
+    let resp = call_daemon(
         "/api/wire/discover-lanes",
-        serde_json::json!({ "world": world }),
+        serde_json::json!({ "node": node }),
     )
     .await?;
     println!(
@@ -870,7 +870,7 @@ mod tests {
         }
     }
 
-    /// R2-a CLI parity: inbox は agent 必須 (World 直結、 url 引数は撤去済)
+    /// R2-a CLI parity: inbox は agent 必須 (Daemon 直結、 url 引数は撤去済)
     #[test]
     fn inbox_parses_agent() {
         let cli = TestCli::try_parse_from(["vp-wire-test", "inbox", "-a", "agent@vp"])

@@ -1,10 +1,10 @@
-//! World control の core 関数群（doc 45 段 4 で HTTP route は全廃）。
+//! daemon control の core 関数群（doc 45 段 4 で HTTP route は全廃）。
 //!
-//! かつては TheWorld の REST API（`/api/world/projects*` / `/api/world/processes*` /
-//! `/api/world/lanes*`）の axum handler を置いていた。control plane は Unison
-//! "world-control" channel に一本化したので（doc 45）、本 module は**入口を持たない
+//! かつては daemon の REST API（`/api/daemon/projects*` / `/api/daemon/processes*` /
+//! `/api/daemon/lanes*`）の axum handler を置いていた。control plane は Unison
+//! "daemon-control" channel に一本化したので（doc 45）、本 module は**入口を持たない
 //! 実装だけ**になった: [`apply_project_update`] / [`collect_lanes`] /
-//! [`resolve_create_lane_args`] の 3 つを `daemon::server::handle_world_control` が呼ぶ。
+//! [`resolve_create_lane_args`] の 3 つを `daemon::server::handle_daemon_control` が呼ぶ。
 //!
 //! ## なぜ「入口が消えても関数は残る」のか
 //!
@@ -25,7 +25,7 @@ use crate::capability::ProcessManagerCapability;
 /// **どちらも未指定なら `Err("No fields to update")`** — 「何も指定しない update」は
 /// 呼び出し側のバグなので黙って成功にしない（旧 HTTP の 400 と同じ意味論を保つ）。
 pub(crate) async fn apply_project_update(
-    world: &ProcessManagerCapability,
+    daemon: &ProcessManagerCapability,
     path: &str,
     name: Option<&str>,
     enabled: Option<bool>,
@@ -33,7 +33,7 @@ pub(crate) async fn apply_project_update(
     let mut updated = false;
 
     if let Some(new_name) = name {
-        world
+        daemon
             .rename_project(path, new_name)
             .await
             .map_err(|e| e.to_string())?;
@@ -41,7 +41,7 @@ pub(crate) async fn apply_project_update(
     }
 
     if let Some(enabled) = enabled {
-        world
+        daemon
             .set_project_enabled(path, enabled)
             .await
             .map_err(|e| e.to_string())?;
@@ -78,12 +78,12 @@ pub(crate) fn resolve_create_lane_args(
     (branch, stand)
 }
 
-// doc 44 P1 (fold-in): world_register_process / world_unregister_process は撤去。
-// project は World 自身が起こすため「外から自己登録される」経路が存在しない。
+// doc 44 P1 (fold-in): daemon_register_process / daemon_unregister_process は撤去。
+// project は Daemon 自身が起こすため「外から自己登録される」経路が存在しない。
 
-// doc 44 P1 (fold-in): POST /api/world/refresh (world_refresh) は撤去。
+// doc 44 P1 (fold-in): POST /api/daemon/refresh (daemon_refresh) は撤去。
 // 呼び出し元はゼロで、中身の `refresh_process_status`（PID liveness）が
-// fold-in で無意味化したため（pid が全 project 共通の World 自身）。
+// fold-in で無意味化したため（pid が全 project 共通の Daemon 自身）。
 
 // =============================================================================
 // Lane Registry — Phase 1c: agent (Echoes on Claude CLI) が lane console を引く
@@ -110,10 +110,10 @@ pub struct LanesQuery {
 /// 全 project の Lane を flatten して返すので、`vp ps` / sidebar が見る一覧はここが源。
 /// disconnect した project の Lane は registry から消えるので、応答 = Currents 限定。
 pub(crate) async fn collect_lanes(
-    world: &ProcessManagerCapability,
+    daemon: &ProcessManagerCapability,
     query: &LanesQuery,
 ) -> Vec<crate::process::lanes_state::LaneInfo> {
-    let lane_registry = world.lane_registry_ref();
+    let lane_registry = daemon.lane_registry_ref();
     let registry = lane_registry.read().await;
 
     // 全 project の Lane を flatten + filter (project / lane / stand)
@@ -153,6 +153,6 @@ pub(crate) async fn collect_lanes(
     lanes
 }
 
-// doc 45 段 4: 本 module の inline test（`world_list_projects` / `world_list_processes` の
+// doc 45 段 4: 本 module の inline test（`daemon_list_projects` / `daemon_list_processes` の
 // axum oneshot smoke）は route ごと撤去した。残った 3 関数の振る舞いは
-// `daemon/server.rs` の world-control テスト群が Unison 入口から固定する。
+// `daemon/server.rs` の daemon-control テスト群が Unison 入口から固定する。

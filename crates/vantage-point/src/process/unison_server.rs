@@ -147,7 +147,7 @@ async fn handle_editor_result(
 // item を生成し DB に durable append、 更新後 board を BoardUpdated（retained topic
 // `.../state/board/{scope}/{lane}`）で broadcast する。 webview はそれを購読して board を置換する view
 // （旧 Show 揮発 stack / webview self-save は廃止）。 lane board は lane ごと、 proj board は project 共有
-// （lane_name=''）。 vp board（全体）は cross-project 共有で World store が要るため Phase 2。
+// （lane_name=''）。 vp board（全体）は cross-project 共有で Daemon store が要るため Phase 2。
 // =============================================================================
 
 /// board の DB pane_id（webview の PP_PANE_ID と一致）。
@@ -708,13 +708,13 @@ async fn handle_ruby_stop(
 
 /// SP "process" channel の method dispatch（reverse-routing と共有する単一の入口）。
 ///
-/// SP の "process" Unison channel handler と、 World reverse-routing 経由 (SP control
-/// keepalive) の **両方**がこの関数を呼ぶことで、 「MCP が SP 直結」「MCP → World → SP
+/// SP の "process" Unison channel handler と、 Daemon reverse-routing 経由 (SP control
+/// keepalive) の **両方**がこの関数を呼ぶことで、 「MCP が SP 直結」「MCP → Daemon → SP
 /// reverse」どちらの経路でも同一の dispatch ロジック・同一の AppState 操作になる
-/// (L0 SP-portless: SP listen port を World 単一 endpoint に寄せても挙動不変)。
+/// (L0 SP-portless: SP listen port を Daemon 単一 endpoint に寄せても挙動不変)。
 /// S2 (doc 27 §4.1) → doc 53 R2: terminal demand start / stop の共通ハンドラー。
 ///
-/// World の TopicRouter demand hook が `process/terminal/data/{lane}/out` の購読者 0↔1 を
+/// daemon の TopicRouter demand hook が `process/terminal/data/{lane}/out` の購読者 0↔1 を
 /// 検知して撃つ。旧実装は start / stop がそれぞれ「張る」「畳む」を実行していたが、
 /// reconcile 化で両者は**同じ操作**になった — demand の今（購読者数の level）は
 /// `TopicRouter::demand_active` が答えるので、 hook の向きは信じず契機としてだけ使う
@@ -798,7 +798,7 @@ pub(crate) async fn reconcile_lane(
 
 /// Act II replay-on-attach: echoes demand start ハンドラー。
 ///
-/// World の demand hook が `process/echoes/data/{lane}/event` の購読者 0→1 を検知し、 control
+/// daemon の demand hook が `process/echoes/data/{lane}/event` の購読者 0→1 を検知し、 control
 /// reverse-route で本 method を撃つ。 SP は当該 chat lane の **transcript を replay** して topic に
 /// route する（`ReplayStart` + 過去会話の EchoesEvent 列）。
 ///
@@ -1074,7 +1074,7 @@ fn payload_session_key(
 
 /// S3 (doc 27 §4.1, 経路 B): terminal 入力。
 ///
-/// surface (vp-app) → World canvas channel (upstream request) → SP control → 本 dispatch。
+/// surface (vp-app) → daemon canvas channel (upstream request) → SP control → 本 dispatch。
 /// `data` は base64 (出力 pump の encoding と対称、 任意バイトを JSON で運ぶため)。 decode して
 /// 当該 slot の PtySlot に書き込む (`session` 省略 = root、doc 46 P5)。
 async fn handle_terminal_write(
@@ -1109,7 +1109,7 @@ async fn handle_terminal_write(
 
 /// Act II (doc 33): echoes プロンプト投入。
 ///
-/// surface (vp-app) → World canvas channel → SP control → 本 dispatch。
+/// surface (vp-app) → daemon canvas channel → SP control → 本 dispatch。
 /// **mode=chat が前提**（法: 1 lane 高々 1 エンジン。tui のまま submit は Err で弾き、
 /// 生きた TUI を暗黙に殺さない）。engine は LanePool が lazy spawn（初回のみ）し、
 /// EchoesEvent は echoes_pump 経由で `process/echoes/data/{lane}/event` に流れる。
@@ -1213,7 +1213,7 @@ async fn handle_echoes_nudge(
 
 /// Act II HITL (doc 35 PR1): PromptCard の回答を逆方向 `can_use_tool` へ書き戻す。
 ///
-/// surface (vp-app) → World canvas channel → SP control → 本 dispatch。`request_id` は Question
+/// surface (vp-app) → daemon canvas channel → SP control → 本 dispatch。`request_id` は Question
 /// event 由来の control_response マッチング用。allow は `{lane, request_id, answers}`、deny は
 /// `{lane, request_id, behavior:"deny", message?}`。**ensure しない**（応答対象 engine 不在は Err —
 /// 質問した engine が死んでいたら応答先が無い、doc §2.3）。
@@ -1645,7 +1645,7 @@ async fn handle_session_set_act(
 /// doc 51 §1 A3b: session の「今なにを」自己申告を該当 session の echoes topic に注入する。
 ///
 /// 発生源は AI 自身の `vp now` CLI（識別は spawn 時注入の `VP_PROJECT` / `VP_LANE` /
-/// `VP_SESSION_KEY` env）。World は値を保存しない — 非 retained topic への fire-and-forget
+/// `VP_SESSION_KEY` env）。daemon は値を保存しない — 非 retained topic への fire-and-forget
 /// （now-line は揮発。lane 行への掲揚で保持が要るのは Phase B の関心 — その時に retained 化を
 /// 判断する）。session 未指定は root（lane の代表）に読み替える。
 async fn handle_session_now(
@@ -1764,7 +1764,7 @@ async fn handle_console_set_model(
 
 /// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
 ///
-/// 旧制御面 (`tmux send-keys -t <session>`) の SP-proxy 置換。 World daemon (delivery/reconcile
+/// 旧制御面 (`tmux send-keys -t <session>`) の SP-proxy 置換。 daemon (delivery/reconcile
 /// loop の re-nudge) / CLI (`vp flow handoff`) / MCP (`flow_handoff`) が control channel 経由で
 /// この method を ask する。 SP-local な `AppState::nudge_lane` は同じ `deliver_nudge` sink を
 /// in-process で呼ぶ (text→Enter の submit 意味論は `deliver_nudge` に集約)。
@@ -1972,7 +1972,7 @@ async fn handle_terminal_resize(
 }
 
 /// F6② (doc 27 §3.4.5/§6): Lane delete。 旧 SP HTTP `DELETE /api/lanes` を process-proxy ask に
-/// 移管（surface→SP 直結 HTTP を撤去、 World 経由の ask に統一）。 logic は旧 `delete_handler`
+/// 移管（surface→SP 直結 HTTP を撤去、 daemon 経由の ask に統一）。 logic は旧 `delete_handler`
 /// から移設し、 core の `delete_lane_orchestrated` を再利用（HTTP route + handler は削除）。
 async fn handle_lane_delete(
     state: &Arc<AppState>,
@@ -2034,9 +2034,9 @@ async fn handle_lane_restart(
 ///
 /// pointer（cc_sessions 等の state file）の書き手は claude の UserPromptSubmit hook で、
 /// SP プロセスの外にいる — SP は file を「読みに行った時だけ」変化を知る（ask 経路は正しく、
-/// push 経路に変化イベントが存在しなかった）。hook → World "wire" channel
+/// push 経路に変化イベントが存在しなかった）。hook → Daemon "wire" channel
 /// (`lane/session-changed`) → 本 method で SP に届き、SP が focused session 規則で真値を
-/// re-enrich して `Diff::Update` を emit する（World は routing のみ、真実源は SP のまま）。
+/// re-enrich して `Diff::Update` を emit する（daemon は routing のみ、真実源は SP のまま）。
 ///
 /// doc 40 §4 / doc 46 P5: payload の `session` は**報告者が名乗った session**。会話 id は
 /// その session に記録される（root 固定ではない）— 同じ lane に複数の console slot が
@@ -2260,7 +2260,7 @@ pub(crate) async fn dispatch_process_method(
         }
         "watch_file" => handle_watch_file(state, payload).await,
         "unwatch_file" => handle_unwatch_file(state, payload).await,
-        // S2: demand-driven terminal pump (World demand hook → control reverse-route)
+        // S2: demand-driven terminal pump (Daemon demand hook → control reverse-route)
         // doc 53 R2: start / stop は同じ reconcile の契機（demand の今は level で読む）。
         "terminal_demand_start" | "terminal_demand_stop" => {
             handle_terminal_demand(state, payload).await
@@ -2316,7 +2316,7 @@ pub(crate) async fn dispatch_process_method(
         "lane_delete" => handle_lane_delete(state, payload).await,
         // F6③: Lane restart (旧 SP HTTP POST /api/lanes/restart を process-proxy ask に移管)
         "lane_restart" => handle_lane_restart(state, payload).await,
-        // 供給 push 根治: hook → World 経由の session pointer 変化通知（Diff::Update push の起点）
+        // 供給 push 根治: hook → daemon 経由の session pointer 変化通知（Diff::Update push の起点）
         "lane_session_changed" => handle_lane_session_changed(state, payload).await,
         // doc 44 D4: Project Host の帳簿 — 開発起点ポインタの読み書き
         "lane_origin_get" => handle_lane_origin_get(state).await,
@@ -2325,7 +2325,7 @@ pub(crate) async fn dispatch_process_method(
         // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を process-proxy ask に移管)
         "stands_list" => handle_stands_list().await,
         // L0 finale: SP graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、
-        // World stop_process / restart_process 用)。 shutdown_token.cancel() で graceful 停止
+        // Daemon stop_process / restart_process 用)。 shutdown_token.cancel() で graceful 停止
         // (DB close 等)。 SP が即 QUIC server を畳むため応答が返らない事もあるが best-effort。
         "shutdown" => {
             tracing::info!("Shutdown requested via QUIC dispatch");
@@ -2366,10 +2366,10 @@ pub(crate) async fn dispatch_process_method(
 }
 
 // =============================================================================
-// wiremsg ハンドラー (R2-a: TheWorld 中央 store への proxy 層)
+// wiremsg ハンドラー (R2-a: daemon 中央 store への proxy 層)
 //
-// store 直結のロジックは routes/wire.rs (TheWorld 側) に移設済。 SP の責務は
-// 「アドレス正規化 (N1) → TheWorld へ HTTP relay」 のみ。 QUIC dispatch と
+// store 直結のロジックは routes/wire.rs (daemon 側) に移設済。 SP の責務は
+// 「アドレス正規化 (N1) → daemon へ HTTP relay」 のみ。 QUIC dispatch と
 // HTTP wrapper (routes/health.rs) は本 proxy 群を呼ぶため signature 不変。
 // =============================================================================
 
@@ -2395,12 +2395,12 @@ fn normalize_agent_addr(addr: &str, self_project: &str) -> String {
     }
 }
 
-/// wiremsg を送信する (R2-a: TheWorld 中央 store への proxy)
+/// wiremsg を送信する (R2-a: daemon 中央 store への proxy)
 ///
 /// payload: `{ from, to: [..], body, reply_to? }`
 ///
 /// SP の責務はアドレス正規化 (N1: bare `"agent"` → `"agent@<self_project>"`) のみ。
-/// 保存・notify・local_seq 採番・body coerce は全て TheWorld 側
+/// 保存・notify・local_seq 採番・body coerce は全て daemon 側
 /// ([`crate::process::routes::wire`])。 cross-process forward は中央化で概念ごと消滅。
 pub(crate) async fn handle_wire_send(
     state: &AppState,
@@ -2431,12 +2431,12 @@ pub(crate) async fn handle_wire_send(
     if let Some(reply_to) = payload.get("reply_to") {
         forwarded["reply_to"] = reply_to.clone();
     }
-    super::world_wire::call("/api/wire/send", forwarded).await
+    super::daemon_wire::call("/api/wire/send", forwarded).await
 }
 
-/// wiremsg を受信する (R2-a: TheWorld 中央 store への proxy、 long-poll は TheWorld 側)
+/// wiremsg を受信する (R2-a: daemon 中央 store への proxy、 long-poll は daemon 側)
 ///
-/// payload: `{ agent, timeout? }` — timeout の clamp (default 5s / max 30s) も TheWorld 側。
+/// payload: `{ agent, timeout? }` — timeout の clamp (default 5s / max 30s) も daemon 側。
 pub(crate) async fn handle_wire_recv(
     state: &AppState,
     payload: serde_json::Value,
@@ -2447,14 +2447,14 @@ pub(crate) async fn handle_wire_recv(
         .map(|s| normalize_agent_addr(s, &state.project_name))
         .ok_or_else(|| "wire_recv: 'agent' required".to_string())?;
     let timeout = payload.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5);
-    super::world_wire::call(
+    super::daemon_wire::call(
         "/api/wire/recv",
         serde_json::json!({ "agent": agent, "timeout": timeout }),
     )
     .await
 }
 
-/// wiremsg の ancestor-chain (系譜) を取得する (R2-a: TheWorld proxy、 read-only)
+/// wiremsg の ancestor-chain (系譜) を取得する (R2-a: daemon proxy、 read-only)
 ///
 /// payload: `{ message_id }` — agent 文脈不要のため正規化なしで relay。
 pub(crate) async fn handle_wire_thread(
@@ -2466,14 +2466,14 @@ pub(crate) async fn handle_wire_thread(
         .get("message_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "wire_thread: 'message_id' required".to_string())?;
-    super::world_wire::call(
+    super::daemon_wire::call(
         "/api/wire/thread",
         serde_json::json!({ "message_id": message_id }),
     )
     .await
 }
 
-/// wiremsg の agent 関与最新 message を取得する (R2-a: TheWorld proxy、 read-only)
+/// wiremsg の agent 関与最新 message を取得する (R2-a: daemon proxy、 read-only)
 ///
 /// payload: `{ agent }`。 `flow_progress` の 5-state FSM derive で使う。
 pub(crate) async fn handle_wire_latest_msg(
@@ -2485,14 +2485,14 @@ pub(crate) async fn handle_wire_latest_msg(
         .and_then(|v| v.as_str())
         .map(|s| normalize_agent_addr(s, &state.project_name))
         .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?;
-    super::world_wire::call(
+    super::daemon_wire::call(
         "/api/wire/latest-msg",
         serde_json::json!({ "agent": agent }),
     )
     .await
 }
 
-/// wiremsg の agent 発 未 ack needs_user を取得する (TheWorld proxy、 read-only)
+/// wiremsg の agent 発 未 ack needs_user を取得する (daemon proxy、 read-only)
 ///
 /// payload: `{ agent }` → `{ status, message }`。 `flow_progress` の `AwaitingUser` 判定で使う。
 pub(crate) async fn handle_wire_needs_user_pending(
@@ -2504,14 +2504,14 @@ pub(crate) async fn handle_wire_needs_user_pending(
         .and_then(|v| v.as_str())
         .map(|s| normalize_agent_addr(s, &state.project_name))
         .ok_or_else(|| "wire_needs_user_pending: 'agent' required".to_string())?;
-    super::world_wire::call(
+    super::daemon_wire::call(
         "/api/wire/needs-user-pending",
         serde_json::json!({ "agent": agent }),
     )
     .await
 }
 
-/// wiremsg の per-agent 未読 count を取得する (R2-a: TheWorld proxy、 read-only)
+/// wiremsg の per-agent 未読 count を取得する (R2-a: daemon proxy、 read-only)
 ///
 /// payload: `{ agent }`。 `flow_progress` の集約 view / `wire_inbox` MCP tool で使う。
 pub(crate) async fn handle_wire_unread_count(
@@ -2523,7 +2523,7 @@ pub(crate) async fn handle_wire_unread_count(
         .and_then(|v| v.as_str())
         .map(|s| normalize_agent_addr(s, &state.project_name))
         .ok_or_else(|| "wire_unread_count: 'agent' required".to_string())?;
-    super::world_wire::call(
+    super::daemon_wire::call(
         "/api/wire/unread-count",
         serde_json::json!({ "agent": agent }),
     )
@@ -2546,7 +2546,7 @@ pub(crate) async fn handle_wire_ack(
         .and_then(|v| v.as_str())
         .map(|s| normalize_agent_addr(s, &state.project_name))
         .ok_or_else(|| "wire_ack: 'agent' required".to_string())?;
-    super::world_wire::call(
+    super::daemon_wire::call(
         "/api/wire/ack",
         serde_json::json!({ "message_id": message_id, "agent": agent }),
     )
@@ -2663,7 +2663,7 @@ mod tests {
 
     /// 実 PtySlot を lane_pool に仕込み、 demand_start → pump 起動 → PTY 出力が
     /// per-lane terminal topic に届く → demand_stop → pump 除去、 を 1 本で検証する
-    /// (World 側 demand hook の reverse-route 先 = SP dispatch の責務範囲)。
+    /// (daemon 側 demand hook の reverse-route 先 = SP dispatch の責務範囲)。
     #[tokio::test]
     async fn terminal_demand_start_routes_pty_output_then_stop() {
         use super::dispatch_process_method;
@@ -2987,7 +2987,7 @@ mod tests {
     }
 
     /// S3: terminal_write の base64 入力が実 PTY に届き (echo 出力で確認)、 terminal_resize が
-    /// status ok を返す。 surface→World→SP control の終端 = SP dispatch の責務範囲を検証する。
+    /// status ok を返す。 surface→Daemon→SP control の終端 = SP dispatch の責務範囲を検証する。
     #[tokio::test]
     async fn terminal_write_reaches_pty_and_resize_ok() {
         use super::dispatch_process_method;
@@ -3515,7 +3515,7 @@ mod tests {
     /// doc 53 R2 受け入れ条件①（doc 50 §4.7「直さないと決めた 1 件」の根治）:
     /// **demand が立った後から現れた slot** にも、次の reconcile 契機で pump が張られる。
     ///
-    /// 実機の形: World 再起動 → GUI が購読（demand edge）→ boot 復元が 800ms×N で遅れて
+    /// 実機の形: daemon 再起動 → GUI が購読（demand edge）→ boot 復元が 800ms×N で遅れて
     /// slot を立てる → 旧実装ではその slot に pump が張られず**永久に沈黙**した。
     /// reconcile は「復元完了 = 動詞の末尾」（lane_spawn_actor / server boot）で呼ばれ、
     /// 現在の demand（level）× 現在の slot で収束する — edge の順序に依存しない。
@@ -4200,7 +4200,7 @@ mod tests {
         );
     }
 
-    /// doc 51 §1 A3b: `session_now`（`vp now` の World 側）が NowLine event を該当 session の
+    /// doc 51 §1 A3b: `session_now`（`vp now` の daemon 側）が NowLine event を該当 session の
     /// echoes topic に注入する。session は message の別 field で運ぶ（doc 38 落とし穴① —
     /// topic key は per-lane のまま）。非 retained なので subscribe が先。
     #[tokio::test]
@@ -4480,7 +4480,7 @@ mod tests {
 
     /// 供給 push 根治: `lane_session_changed` が `Diff::Update` を emit し、payload の
     /// engine_session_id が state file の現値（focused session 規則の re-enrich）を映す。
-    /// これが World lane_registry / vp-app header を追従させる push の起点になる。
+    /// これが Daemon lane_registry / vp-app header を追従させる push の起点になる。
     #[tokio::test]
     async fn lane_session_changed_emits_enriched_lane_update() {
         use super::dispatch_process_method;
@@ -4778,12 +4778,12 @@ mod tests {
 
     // =========================================================================
     // Agent 委譲 (doc 28 §4) の SP dispatch — early validation のみ。
-    // 状態遷移ロジックは World 中央 store に移管したため (doc 28 §6)、その単体 test は
-    // `capability::delegation_store` が担う。SP handler は必須 field 検証後に World へ proxy
-    // する (world_wire::call) ので、ここでは World 不要な早期 Err 経路だけを固定する。
+    // 状態遷移ロジックは daemon 中央 store に移管したため (doc 28 §6)、その単体 test は
+    // `capability::delegation_store` が担う。SP handler は必須 field 検証後に daemon へ proxy
+    // する (daemon_wire::call) ので、ここでは Daemon 不要な早期 Err 経路だけを固定する。
     // =========================================================================
 
-    /// delegate/complete/respond の必須 field 欠落 / 不正 outcome は World 到達前に Err。
+    /// delegate/complete/respond の必須 field 欠落 / 不正 outcome は Daemon 到達前に Err。
     #[tokio::test]
     async fn delegation_dispatch_validates_before_proxy() {
         use super::dispatch_process_method;

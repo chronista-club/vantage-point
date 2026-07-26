@@ -583,7 +583,7 @@ fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
 
 /// lane の安定 id を引く（Project Host の帳簿の key、doc 44 §8.2）。
 ///
-/// SSOT は `lane_ids/<project>__<lane>` state file で、World 側の `LaneInfo.id` も
+/// SSOT は `lane_ids/<project>__<lane>` state file で、daemon 側の `LaneInfo.id` も
 /// 同じ関数（[`super::lane_id::load_or_create`]）から来る = **同じ lane なら同じ id**。
 /// だから CLI 側で解決した id をそのまま帳簿に送れる。
 ///
@@ -883,8 +883,8 @@ pub fn status_performers() -> Result<(), String> {
 
 /// 見送り判定に渡す開発起点 lane 名を決める（doc 44 D4）。
 ///
-/// 帳簿は World が持つ（DB は surrealkv の OS 排他ロックで World 専有）ので、CLI からは
-/// process-proxy 越しに問い合わせる。World 不在 / 応答不正なら **予約名にフォールバック**し、
+/// 帳簿は daemon が持つ（DB は surrealkv の OS 排他ロックで Daemon 専有）ので、CLI からは
+/// process-proxy 越しに問い合わせる。Daemon 不在 / 応答不正なら **予約名にフォールバック**し、
 /// その旨を告げる。
 ///
 /// なぜ黙って落とさないか: 起点が確認できないまま見送ると、**移動済みの起点 lane を
@@ -895,8 +895,8 @@ fn origin_for_cleanup(repo_root: &Path) -> String {
     let Some(project_path) = repo_root.to_str() else {
         return reserved;
     };
-    let resp = crate::commands::process_client::world_process_request_blocking(
-        crate::cli::world_port(),
+    let resp = crate::commands::process_client::daemon_process_request_blocking(
+        crate::cli::daemon_port(),
         project_path,
         "lane_origin_get",
         serde_json::json!({}),
@@ -912,33 +912,34 @@ fn origin_for_cleanup(repo_root: &Path) -> String {
     }
 }
 
-/// 見送り判定に渡す「今動いている lane」を World に問い合わせる（doc 44 §7.5）。
+/// 見送り判定に渡す「今動いている lane」を daemon に問い合わせる（doc 44 §7.5）。
 ///
 /// lane の生死は git からは知れないので、[`crate::host::farewell`] は外からの供給に頼る。
-/// CLI は World の "world-process" channel に `list_all_lanes` を ask し、応答から
+/// CLI は daemon の "daemon-process" channel に `list_all_lanes` を ask し、応答から
 /// **この project の分だけ**を [`crate::host::liveness::running_lanes_in`] で取り出す。
 ///
-/// なぜ process-proxy (`lanes_list`) ではないか: あちらは対象 project の SP が World に
+/// なぜ process-proxy (`lanes_list`) ではないか: あちらは対象 project の SP が daemon に
 /// 登録されていないと逆引きに失敗して error になり、「project が動いていない（= 稼働 lane 0）」と
-/// 「World に訊けなかった（= 不明）」が区別できない。cross-project 一覧なら前者は**答え**として返る。
+/// 「daemon に訊けなかった（= 不明）」が区別できない。cross-project 一覧なら前者は**答え**として返る。
 ///
 /// 失敗は [`Liveness::Unknown`] で返し、**空リストには畳まない** — それが P3 第一スライスで
 /// guard を never-fire にしていた形そのもの。
 ///
-/// `VP_TEST_NO_RUNNING_LANES=1` は **e2e テスト専用**の注入口で、World に訊かずに
+/// `VP_TEST_NO_RUNNING_LANES=1` は **e2e テスト専用**の注入口で、daemon に訊かずに
 /// 「稼働 lane 0」を**答え**として返す。これが無いと `vp lane cleanup` の e2e は
 /// daemon 常駐マシンでしか通らない（開発機では通り CI だけ 10s timeout で落ちる =
 /// 手元の daemon が failure をマスクする形）。`Unknown` ではなく `Known(空)` を返すのが
-/// 要点 — 「World に訊けなかった」ではなく「訊いた結果 0 件だった」を模す。
+/// 要点 — 「daemon に訊けなかった」ではなく「訊いた結果 0 件だった」を模す。
 fn liveness_for_cleanup(repo_root: &Path) -> crate::host::liveness::Liveness {
     use crate::host::liveness::Liveness;
-    if skip_world_for_test() {
+    if skip_daemon_for_test() {
         return Liveness::Known(Vec::new());
     }
     let Some(project_path) = repo_root.to_str() else {
         return Liveness::Unknown("repo path に invalid UTF-8".to_string());
     };
-    match crate::commands::process_client::world_lanes_snapshot_blocking(crate::cli::world_port()) {
+    match crate::commands::process_client::daemon_lanes_snapshot_blocking(crate::cli::daemon_port())
+    {
         Ok(snapshot) => Liveness::Known(crate::host::liveness::running_lanes_in(
             &snapshot,
             Path::new(project_path),
@@ -947,13 +948,13 @@ fn liveness_for_cleanup(repo_root: &Path) -> crate::host::liveness::Liveness {
     }
 }
 
-/// 見送りの帳簿（World が持つ）への読み書き（doc 44 §7.5）。
+/// 見送りの帳簿（daemon が持つ）への読み書き（doc 44 §7.5）。
 ///
 /// trait にしているのは **「稼働状況が不明で保留した時に帳簿へ 1 文字も書かない」を
 /// テストで固定する**ため。実装が直接 RPC を撃つ形だと、書かなかったことを検証できない
 /// （事実が無い状態を履歴に残さない、が要件）。
 pub(crate) trait FarewellLedger {
-    /// 判定を記録し、**反映後の滞留一覧**を返す（World 不達なら空 = 注記を諦めて続行）。
+    /// 判定を記録し、**反映後の滞留一覧**を返す（Daemon 不達なら空 = 注記を諦めて続行）。
     fn observe(
         &mut self,
         repo_root: &Path,
@@ -964,36 +965,36 @@ pub(crate) trait FarewellLedger {
     fn reclaimed(&mut self, repo_root: &Path, entries: &[crate::host::ledger::FarewellObservation]);
 }
 
-/// 本番の帳簿 — World の world-control channel 越しに読み書きする。
+/// 本番の帳簿 — daemon の daemon-control channel 越しに読み書きする。
 ///
-/// 帳簿は db/world にあり surrealkv の OS 排他ロックで World が専有するので、CLI からは
+/// 帳簿は db/machine にあり surrealkv の OS 排他ロックで daemon が専有するので、CLI からは
 /// この経路しかない（doc 44 §8.4）。**失敗しても見送りは止めない**（best-effort）— 記録は
 /// 判断材料であって、それが取れないことは lane を消してよいかの判断を変えない。
 ///
-/// ⚠️ `cleanup` の World 依存は **2 本ある**（稼働状況 = [`liveness_for_cleanup`] と、この帳簿）。
-/// `VP_TEST_NO_RUNNING_LANES` は両方を塞ぐ — 片方だけだと e2e は「通るが World 接続の
+/// ⚠️ `cleanup` の Daemon 依存は **2 本ある**（稼働状況 = [`liveness_for_cleanup`] と、この帳簿）。
+/// `VP_TEST_NO_RUNNING_LANES` は両方を塞ぐ — 片方だけだと e2e は「通るが Daemon 接続の
 /// timeout ぶん遅い」状態になる（実測 45s → 157s）。fail-open なので結果は正しく、
 /// **遅さでしか気付けない**。
-struct WorldFarewellLedger;
+struct DaemonFarewellLedger;
 
-/// e2e テスト用に World への問い合わせを丸ごと省くか（[`liveness_for_cleanup`] と同じ口）。
-fn skip_world_for_test() -> bool {
+/// e2e テスト用に daemon への問い合わせを丸ごと省くか（[`liveness_for_cleanup`] と同じ口）。
+fn skip_daemon_for_test() -> bool {
     std::env::var("VP_TEST_NO_RUNNING_LANES").as_deref() == Ok("1")
 }
 
-impl FarewellLedger for WorldFarewellLedger {
+impl FarewellLedger for DaemonFarewellLedger {
     fn observe(
         &mut self,
         repo_root: &Path,
         observations: &[crate::host::ledger::FarewellObservation],
     ) -> Vec<crate::host::ledger::FarewellEntry> {
-        if skip_world_for_test() {
+        if skip_daemon_for_test() {
             return Vec::new();
         }
         let Some(path) = repo_root.to_str() else {
             return Vec::new();
         };
-        crate::world_client::farewell_observe_blocking(path, observations).unwrap_or_default()
+        crate::daemon_client::farewell_observe_blocking(path, observations).unwrap_or_default()
     }
 
     fn reclaimed(
@@ -1001,13 +1002,13 @@ impl FarewellLedger for WorldFarewellLedger {
         repo_root: &Path,
         entries: &[crate::host::ledger::FarewellObservation],
     ) {
-        if skip_world_for_test() {
+        if skip_daemon_for_test() {
             return;
         }
         let Some(path) = repo_root.to_str() else {
             return;
         };
-        if crate::world_client::farewell_reclaimed_blocking(path, entries).is_none() {
+        if crate::daemon_client::farewell_reclaimed_blocking(path, entries).is_none() {
             eprintln!("[vp] 見送りを帳簿に記録できませんでした（削除自体は完了しています）");
         }
     }
@@ -1046,7 +1047,7 @@ pub(crate) enum CleanupOutcome {
 /// Host 版は 3 値（reclaim / keep / ask_human）で、判定は I/O ゼロの純関数
 /// （[`crate::host::farewell::judge_farewell`]）に分離済み。
 ///
-/// doc 44 §7.5: 判定に要る事実（開発起点 / 稼働中 lane）は本関数が World から集めて渡す。
+/// doc 44 §7.5: 判定に要る事実（開発起点 / 稼働中 lane）は本関数が daemon から集めて渡す。
 /// **稼働状況が確認できない場合は判定に進まず保留する**（[`cleanup_performers_with`]）。
 /// 判定と実行は Project Host の帳簿に記録され、`AskHuman` の滞留として出力に戻ってくる。
 pub fn cleanup_performers(force: bool) -> Result<(), String> {
@@ -1061,18 +1062,18 @@ pub fn cleanup_performers(force: bool) -> Result<(), String> {
         force,
         &liveness,
         origin_for_cleanup,
-        &mut WorldFarewellLedger,
+        &mut DaemonFarewellLedger,
     )
     .map(|_| ())
 }
 
-/// [`cleanup_performers`] の本体（World から取る事実は注入、I/O 境界を外に出した形）。
+/// [`cleanup_performers`] の本体（daemon から取る事実は注入、I/O 境界を外に出した形）。
 ///
 /// `liveness` を引数で受けるのは、**「稼働状況が不明なら見送らない」をテストで固定する**ため
-/// （World を立てずに `Unknown` を注入できる）。
+/// （daemon を立てずに `Unknown` を注入できる）。
 ///
 /// `resolve_origin` が値ではなく関数なのは**順序が意味を持つ**から: 稼働状況が不明なら
-/// 保留して抜けるので、その先の起点照会（World への 2 度目の ask）まで行ってはいけない。
+/// 保留して抜けるので、その先の起点照会（daemon への 2 度目の ask）まで行ってはいけない。
 /// `ledger` も同じ理由で注入する — 保留したなら**帳簿にも触らない**（事実が無い状態を
 /// 履歴に残さない）ことを、spy でテストから見る。
 ///
@@ -1106,7 +1107,7 @@ fn cleanup_performers_with(
             let _ = writeln!(out, "  理由: {reason}");
             let _ = writeln!(
                 out,
-                "  World を起動してから再実行してください（`vp daemon status` / `vp daemon start`）。"
+                "  daemon を起動してから再実行してください（`vp daemon status` / `vp daemon start`）。"
             );
             return Ok(CleanupOutcome::Held);
         }
@@ -1231,8 +1232,8 @@ pub fn show_farewell_history(limit: usize) -> Result<(), String> {
     let path = repo_root
         .to_str()
         .ok_or_else(|| "repo path に invalid UTF-8".to_string())?;
-    let entries = crate::world_client::farewell_log_blocking(path, limit).ok_or_else(|| {
-        "帳簿は World が専有しているため、daemon 稼働中のみ読めます（`vp daemon start`）"
+    let entries = crate::daemon_client::farewell_log_blocking(path, limit).ok_or_else(|| {
+        "帳簿は daemon が専有しているため、daemon 稼働中のみ読めます（`vp daemon start`）"
             .to_string()
     })?;
     if entries.is_empty() {
@@ -1712,7 +1713,7 @@ mod tests {
 
     /// 回帰固定（doc 44 §7.5）: **稼働状況が確認できないときは 1 件も見送らない**。
     ///
-    /// 「不明」を空リストに畳むと、World が落ちている時にだけ稼働中 lane の保護が消える
+    /// 「不明」を空リストに畳むと、daemon が落ちている時にだけ稼働中 lane の保護が消える
     /// （= 一番危ない条件で guard が外れる）。`--force` でも通さない — `--force` は
     /// 「判定結果を実行する」意思であって「事実が無くてよい」ではない。
     ///
@@ -1744,7 +1745,7 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-qm", "init"]);
 
-        // 起点照会は World を叩くので注入する（保留経路では呼ばれないこと自体も要件）。
+        // 起点照会は daemon を叩くので注入する（保留経路では呼ばれないこと自体も要件）。
         let origin = |_: &Path| crate::process::lanes_state::ROOT_LANE_NAME.to_string();
         let mut ledger = SpyLedger::default();
         let mut out = Vec::new();
@@ -1754,7 +1755,7 @@ mod tests {
             &mut out,
             &root,
             true,
-            &Liveness::Unknown("World 不達".to_string()),
+            &Liveness::Unknown("Daemon 不達".to_string()),
             |_| panic!("保留するなら起点照会まで進んではいけない"),
             &mut ledger,
         )
@@ -1790,12 +1791,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 帳簿の spy（World を立てずに「何を書いたか / 書かなかったか」を見る）。
+    /// 帳簿の spy（daemon を立てずに「何を書いたか / 書かなかったか」を見る）。
     #[derive(Debug, Default)]
     struct SpyLedger {
         observed: Vec<Vec<crate::host::ledger::FarewellObservation>>,
         reclaimed: Vec<Vec<crate::host::ledger::FarewellObservation>>,
-        /// `observe` が返す滞留（World が持っている体の帳簿）
+        /// `observe` が返す滞留（daemon が持っている体の帳簿）
         pending: Vec<crate::host::ledger::FarewellEntry>,
     }
 

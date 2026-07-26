@@ -13,7 +13,7 @@ path: string, name: string,
  */
 expanded: boolean, 
 /**
- * Process state (running/dead/spawning 等、 TheWorld fetch から merge される)
+ * Process state (running/dead/spawning 等、 daemon fetch から merge される)
  * sidebar JS が state badge 表示に使う
  */
 state?: string | null, 

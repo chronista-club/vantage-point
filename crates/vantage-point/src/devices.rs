@@ -1,4 +1,4 @@
-//! DeviceRegistry 🧲 — World scope の物理 device 集約 registry (doc 23 §5)
+//! DeviceRegistry 🧲 — machine scope の物理 device 集約 registry (doc 23 §5)
 //!
 //! 旧 `MidiCapability`（single-device monitor、2026-07-27 撤去済）を multi-device registry に発展させたもの。
 //!
@@ -247,7 +247,7 @@ fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<Joi
 
 // ─── DeviceRegistry struct ─────────────────────────────────────────
 
-/// World scope の物理 device 集約 registry（DeviceRegistry 🧲）。
+/// machine scope の物理 device 集約 registry（DeviceRegistry 🧲）。
 ///
 /// key = CoreMIDI port の displayName（背骨 mem 準拠、doc 23 §5.2）。
 /// 旧 `MidiCapability`（single-device monitor、撤去済）を multi-device registry に発展させたもの。
@@ -262,7 +262,7 @@ pub struct DeviceRegistry {
     discovery_task: Option<JoinHandle<()>>,
     /// discovery cancel signal
     cancel_tx: Option<mpsc::Sender<()>>,
-    /// ROTO 持続セッション task（nostos self-heal driver、World lifecycle に enclose）
+    /// ROTO 持続セッション task（nostos self-heal driver、Daemon lifecycle に enclose）
     roto_task: Option<JoinHandle<()>>,
     /// ROTO セッションの shutdown 子 token
     roto_cancel: Option<CancellationToken>,
@@ -398,7 +398,7 @@ impl DeviceRegistry {
         for (name, (has_in, has_out)) in &ports {
             // agent 報告と**同じ 1 本の辺**（registry 挿入 + 新規 emit + listener ensure）に
             // 畳む。旧実装は ensure_input_listener 直呼びで listener だけ張り、registry が
-            // 空のまま — polling 停止 + agent 報告 0 件の環境では world-device snapshot が
+            // 空のまま — polling 停止 + agent 報告 0 件の環境では daemon-device snapshot が
             // 常に空で、DeviceRegistry pane が「No devices connected」に固定されていた
             // （discovery の辺の 2 仕事のうち片方だけ移管された取り残し、#878 の同型）
             self.report_device_connected(name, *has_in, *has_out).await;
@@ -544,16 +544,16 @@ impl DeviceRegistry {
     /// で「接続 1 サイクル = enter→control loop→exit」を表し、disconnect は `Reborn` で再接続する。
     ///
     /// lane data は `ProcessManagerCapability` の Arc を in-process 直読み（QUIC self-loop なし、
-    /// `build_world_lanes` 共有で CLI と並び一致）。switch_lane は L0 portless で SP が listen
-    /// しなくなったため World :32000 の process-proxy ask 経由で forward する（daemon = World への
+    /// `build_node_lanes` 共有で CLI と並び一致）。switch_lane は L0 portless で SP が listen
+    /// しなくなったため Daemon :32000 の process-proxy ask 経由で forward する（daemon = daemon への
     /// self-loop QUIC だが、ボタン押下時のみの低頻度なので lane poll と違い cache 不要）。
-    /// `shutdown` の子 token で World/daemon の shutdown chain に enclose する。
+    /// `shutdown` の子 token で Daemon/daemon の shutdown chain に enclose する。
     ///
     /// ⚠️ CoreMIDI 物理 port は単一 owner。daemon 常駐中は CLI `vp midi roto control` が
     /// 同 port を取得できない（想定挙動）。
     pub async fn start_roto_control(
         &mut self,
-        world_cap: Arc<RwLock<ProcessManagerCapability>>,
+        daemon_cap: Arc<RwLock<ProcessManagerCapability>>,
         shutdown: CancellationToken,
     ) {
         // 二重起動防止（既に走っていれば no-op）
@@ -565,13 +565,13 @@ impl DeviceRegistry {
 
         // ProcessManagerCapability から lane data の Arc を取り出す（in-process 直読み）。
         let (running_processes, lane_registry) = {
-            let pmc = world_cap.read().await;
+            let pmc = daemon_cap.read().await;
             (pmc.running_processes_ref(), pmc.lane_registry_ref())
         };
         let lane_source = InProcessLaneSource {
             running_processes,
             lane_registry: Some(lane_registry),
-            world_cap: Some(world_cap),
+            daemon_cap: Some(daemon_cap),
         };
         // フィードバック方向: motor byte 列の注入路（conn_out は loop が独占所有するため）。
         // watch = latest-wins（apply_feedback の連続送信は最新だけが残る）
@@ -628,7 +628,7 @@ impl DeviceRegistry {
     // macOS menu bar agent（Swift `CoreMIDIWatcher`、AppKit run loop で CoreMIDI 通知が
     // 自然に効く）へ移した。agent が `device` stream channel で `ReportDevice` を送り、
     // 下記メソッドが registry + EventBus に反映する（discovery loop の added/removed 分岐と
-    // 同一効果）。EventBus の `devices.device_*` は既存 world-device bridge が拾って vp-app に push。
+    // 同一効果）。EventBus の `devices.device_*` は既存 daemon-device bridge が拾って vp-app に push。
 
     /// agent からの device 接続報告を registry に反映し、新規なら EventBus に emit する。
     ///
@@ -698,7 +698,7 @@ impl Service for DeviceRegistry {
     }
 
     fn layer_scope(&self) -> LayerScope {
-        LayerScope::World
+        LayerScope::Machine
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -724,7 +724,7 @@ mod tests {
         let bus = Arc::new(EventBus::new());
         let devices = DeviceRegistry::new(bus);
         assert_eq!(devices.actor_name(), "devices");
-        assert_eq!(devices.layer_scope(), LayerScope::World);
+        assert_eq!(devices.layer_scope(), LayerScope::Machine);
     }
 
     #[tokio::test]

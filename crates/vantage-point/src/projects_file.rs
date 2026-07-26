@@ -203,22 +203,22 @@ fn prune_ghosts_with<F: Fn(&str) -> bool>(pf: &mut ProjectsFile, dir_exists: F) 
     removed
 }
 
-/// 稼働中の daemon (TheWorld) に projects.kdl の reload を通知する (best-effort)。
+/// 稼働中の daemon (daemon) に projects.kdl の reload を通知する (best-effort)。
 ///
 /// VP-189: `ProjectsFile::sync` が projects.kdl を書き換えても、 既に稼働している
 /// daemon は in-memory projects を保持したままで乖離する。 daemon に projects.kdl を
-/// 読み直させる (doc 45 段 2 で `POST /api/world/projects/reload` から Unison
-/// `world-control.projects/reload` に差し替え、意味論は同じ best-effort)。
+/// 読み直させる (doc 45 段 2 で `POST /api/daemon/projects/reload` から Unison
+/// `daemon-control.projects/reload` に差し替え、意味論は同じ best-effort)。
 ///
 /// daemon が動いていなければ黙って無視する (= 次回 daemon 起動時の `load_config` で
 /// projects.kdl が読まれるため取りこぼしにならない)。 テスト環境では no-op。
 #[cfg(test)]
 fn notify_daemon_reload() {}
 
-/// 稼働中の daemon (TheWorld) に projects.kdl の reload を通知する (best-effort)。
+/// 稼働中の daemon (daemon) に projects.kdl の reload を通知する (best-effort)。
 #[cfg(not(test))]
 fn notify_daemon_reload() {
-    crate::world_client::notify_world_reload();
+    crate::daemon_client::notify_daemon_reload();
 }
 
 /// [`ProjectsFile::sync`] の結果サマリ。

@@ -1,11 +1,11 @@
 //! `vp restart-all` コマンドの実行ロジック
 //!
-//! doc 44 P1 (fold-in): project が World プロセス内の `Arc<AppState>` になったため、
-//! 「全 Process + TheWorld の一括再起動」は **daemon の再起動 1 手**に collapse する。
-//! 停止側は World の graceful shutdown が抱えている project を全部畳み、起動側は
+//! doc 44 P1 (fold-in): project が daemon プロセス内の `Arc<AppState>` になったため、
+//! 「全 Process + daemon の一括再起動」は **daemon の再起動 1 手**に collapse する。
+//! 停止側は daemon の graceful shutdown が抱えている project を全部畳み、起動側は
 //! autostart が enabled な project を順に起こす。
 //!
-//! 旧実装は「稼働 SP を World registry から列挙 → 1 本ずつ API 停止 → daemon 停止 →
+//! 旧実装は「稼働 SP を Daemon registry から列挙 → 1 本ずつ API 停止 → daemon 停止 →
 //! daemon 起動 → 1 本ずつ detached spawn」という多段の段取りだったが、
 //! 対象である SP プロセスが存在しなくなったため段取りごと不要になった。
 //!

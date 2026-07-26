@@ -42,6 +42,8 @@ pub mod protocol;
 pub mod resolve;
 #[cfg(feature = "midi")]
 pub use midistage_profiles::roto_palette;
+pub mod daemon_client;
+pub mod node;
 pub mod screenshot;
 pub mod spawn_env;
 pub mod stands;
@@ -50,5 +52,3 @@ pub mod terminal;
 #[cfg(test)]
 pub(crate) mod test_env;
 pub mod trace_log;
-pub mod world;
-pub mod world_client;

@@ -231,7 +231,7 @@ impl UpdateCapability {
     /// 直近チェック結果の cache を読む（HTTP は発行しない）。
     ///
     /// `/api/health` のような高頻度 endpoint から呼ばれる前提で、 network を伴う
-    /// `check_update()` とは分離している。 cache は World mode の定期チェック task
+    /// `check_update()` とは分離している。 cache は daemon mode の定期チェック task
     /// （起動時 + 24h 毎）が `check_update()` で温める。 未チェックなら `(false, None)`。
     pub fn cached_update_status(&self) -> (bool, Option<String>) {
         match &self.cached_release {

@@ -1,4 +1,4 @@
-//! home-World が federation で advertise する到達可能 endpoint の収集 (ADR-020 D3、 S2)。
+//! home-node が federation で advertise する到達可能 endpoint の収集 (ADR-020 D3、 S2)。
 //!
 //! ## 方針 (council 2026-06-27 / 28)
 //! - **tailnet 非依存**: tailscale enroll 済みの相手しか繋げない依存は環境を絞るので外す。

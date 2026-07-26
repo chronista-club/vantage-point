@@ -1,10 +1,10 @@
 //! `vp db` コマンド — embedded SurrealDB のメンテナンス
 //!
-//! embedded mode に移行したため、DB は TheWorld Process のライフサイクルと
+//! embedded mode に移行したため、DB は daemon Process のライフサイクルと
 //! 一緒に上がる (別 daemon は不要)。ここでは主に path 確認・初期化・スキーマ
 //! 適用に絞った utility を提供する。
 //!
-//! doc 44 P1 PR4 (DB 統合): DB は `db/world/` の**単一**になった。旧構成の
+//! doc 44 P1 PR4 (DB 統合): DB は `db/machine/` の**単一**になった。旧構成の
 //! per-SP DB (`db/sp_{slug}/`) は VP-182 の LOCK 衝突回避で分かれていたが、
 //! fold-in で SP プロセスが消えて分離理由が失効したため、project 次元は
 //! table の `project_path` 列が持つ形に統合された。
@@ -30,7 +30,7 @@ pub fn execute(cmd: DbCommands) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let data_dir = db::db_data_dir_for_world();
+    let data_dir = db::db_data_dir_for_machine();
 
     match cmd {
         DbCommands::Init => rt.block_on(async {

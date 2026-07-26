@@ -1,17 +1,17 @@
-//! `vp projects` subcommand — 登録 project の管理（World daemon に直接 Unison RPC）
+//! `vp projects` subcommand — 登録 project の管理（daemon に直接 Unison RPC）
 //!
 //! ## control plane 一元化 (creo `mem_1CbmWjCGNi9z49s3r21TwQ`)
 //!
-//! projects は World 権威 (db/world) なので、 CLI は projects.kdl を直接書かず、 World daemon の
-//! "world-control" Unison channel に **直接** RPC する (= SP を経由しない、 tier 構造で
-//! CLI=executor が World=権威 に依頼)。 World 不在なら操作できない (= projects 操作は
+//! projects は daemon 権威 (db/machine) なので、 CLI は projects.kdl を直接書かず、 daemon の
+//! "daemon-control" Unison channel に **直接** RPC する (= SP を経由しない、 tier 構造で
+//! CLI=executor が Daemon=権威 に依頼)。 Daemon 不在なら操作できない (= projects 操作は
 //! daemon 起動が前提、 既知の制約)。
 
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::cli::world_port;
-use crate::daemon::client::WorldControlClient;
+use crate::cli::daemon_port;
+use crate::daemon::client::DaemonControlClient;
 
 #[derive(Subcommand, Debug)]
 pub enum ProjectsCommands {
@@ -38,8 +38,8 @@ pub enum ProjectsCommands {
     Reorder { paths: Vec<String> },
     /// project を起動する (旧 `vp sp start`)
     ///
-    /// doc 44 P1 (fold-in): project は World プロセス内で動くため、これは子プロセスの
-    /// spawn ではなく World の registry への登録。既に起動済みなら no-op。
+    /// doc 44 P1 (fold-in): project は daemon プロセス内で動くため、これは子プロセスの
+    /// spawn ではなく daemon の registry への登録。既に起動済みなら no-op。
     Start {
         /// project 名 (`vp projects list` の名前)
         name: String,
@@ -54,12 +54,12 @@ pub enum ProjectsCommands {
 /// `vp projects` のエントリポイント。 async (Unison client は async) なので
 /// caller (main.rs) は per-command Runtime で `block_on` する。
 pub async fn execute(cmd: ProjectsCommands) -> Result<()> {
-    let client = WorldControlClient::connect(world_port(), 3)
+    let client = DaemonControlClient::connect(daemon_port(), 3)
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "World daemon (port {}) に接続できません。 `vp daemon` で起動してください: {}",
-                world_port(),
+                "daemon (port {}) に接続できません。 `vp daemon` で起動してください: {}",
+                daemon_port(),
                 e
             )
         })?;
@@ -136,7 +136,7 @@ pub async fn execute(cmd: ProjectsCommands) -> Result<()> {
 }
 
 /// `path` (省略時 cwd) を絶対パスに解決する。 実在 dir なら canonicalize、 失敗時は
-/// そのまま送って World 側の `is_dir` チェックにエラーを委ねる (= 二重バリデーション回避)。
+/// そのまま送って daemon 側の `is_dir` チェックにエラーを委ねる (= 二重バリデーション回避)。
 ///
 /// canonicalize は `dunce` 経由。 std の方は Windows で `\\?\C:\...` (verbatim prefix) を返し、
 /// それが projects.kdl と SP の spawn 引数まで伝播してしまう。

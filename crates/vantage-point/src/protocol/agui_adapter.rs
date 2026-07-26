@@ -374,10 +374,10 @@ mod tests {
         );
 
         // 2回目のテキストチャンクは TextMessageContent のみ
-        let events = adapter.convert(AgentEvent::TextChunk(" World".to_string()));
+        let events = adapter.convert(AgentEvent::TextChunk(" Daemon".to_string()));
         assert_eq!(events.len(), 1);
         assert!(
-            matches!(&events[0], AgUiEvent::TextMessageContent { delta, .. } if delta == " World")
+            matches!(&events[0], AgUiEvent::TextMessageContent { delta, .. } if delta == " Daemon")
         );
     }
 

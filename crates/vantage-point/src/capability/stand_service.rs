@@ -37,7 +37,7 @@
 //! - design-decision: `mem_1CatjVq5NUsjn1EHjRcaPG` §E (中期 framework 整理)
 //! - VP-24 (Mailbox core 2026-03-18) — original ECS 意図
 //! - VP-157 (PR #325) — `mcp` 廃止 + agent observer 化 (= ECS 純度回復の第一歩)
-//! - PR-α-1 (#265、 VP-111) — 受け皿 pattern 先例 (`WorldCapabilities`)
+//! - PR-α-1 (#265、 VP-111) — 受け皿 pattern 先例 (`MachineCapabilities`)
 //! - PR-β-1 (#274、 VP-119) — 受け皿 pattern 直近先例 (`LaneCapabilities`)
 //! - PR-δ-1 (#288、 VP-135) — minimal marker pattern 先例 (`LaneStandHost`)
 
@@ -46,10 +46,10 @@ use std::any::Any;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-/// actor の lifecycle / address 範囲を表現する layer enum (LSCM 公理: World / Project / Lane)。
+/// actor の lifecycle / address 範囲を表現する layer enum (LSCM 公理: Daemon / Project / Lane)。
 ///
 /// VP の 3 層 architecture (`docs/design/12-stand-architecture.md` LSCM):
-/// - **World**: machine-wide singleton (TheWorld daemon scope、 例: `devices@world`)
+/// - **Daemon**: machine-wide singleton (daemon scope、 例: `devices@machine`)
 /// - **Project**: SP 起動単位 (= 1 Process per project、 例: `agent` / `protocol` / `notify`)
 /// - **Lane**: Project 内 Lane 単位 (= 1 Lane per Stand instance、 例: `board`)
 ///
@@ -57,8 +57,8 @@ use tokio_util::sync::CancellationToken;
 /// 明示的に持たせる事で supervisor (PR-4) が scope 検証可能になる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LayerScope {
-    /// machine-wide singleton (TheWorld daemon scope)。
-    World,
+    /// machine-wide singleton (daemon scope)。
+    Machine,
     /// SP 起動単位 (= 1 Process per project)。
     Project,
     /// Project 内 Lane 単位 (= 1 Lane per Stand instance)。
@@ -128,7 +128,7 @@ pub trait Stand: Any + Send + Sync + 'static {
 /// - `notify` (= DistributedNotification bridge、 Project scope)
 /// - `lane-spawn` (= Lane spawn lifecycle infra、 Project scope)
 /// - `sp-bootstrap` (= SP startup bootstrap、 Project scope)
-/// - `devices@world` (= MIDI / external control、 World scope)
+/// - `devices@machine` (= MIDI / external control、 machine scope)
 ///
 /// `Stand` 同様 `Any` super-trait で downcast 支援、 lifecycle method は PR-3 で各 Service の
 /// 現実に合わせて追加する。
@@ -139,7 +139,7 @@ pub trait Service: Any + Send + Sync + 'static {
     /// rename された後)。
     fn actor_name(&self) -> &str;
 
-    /// service の lifecycle / address scope。 多くは `Project`、 `devices` のみ `World`。
+    /// service の lifecycle / address scope。 多くは `Project`、 `devices` のみ `Daemon`。
     fn layer_scope(&self) -> LayerScope;
 
     /// `&dyn Any` への型強制 (downcast 用)。
@@ -154,7 +154,7 @@ pub trait Service: Any + Send + Sync + 'static {
 ///
 /// 一方、 `DeviceRegistry` 🧲 のような「**instance hold + 内部 `monitor_task`
 /// field**」 pattern の Service は本 trait を impl **しない** (= consume pattern に fit しない、
-/// `WorldCapabilities.devices` で instance を保持する必要があるため)。 MIDI の正しい abstraction
+/// `MachineCapabilities.devices` で instance を保持する必要があるため)。 MIDI の正しい abstraction
 /// は dynamic routing vision 確定後に再設計 (= design-spark `mem_1CavFi5D1aMSpEkas89SvQ` 参照)。
 ///
 /// `ActorRegistry::spawn_service<S: SpawnableService>` が spawn 統合 + JoinHandle 保持する際の
@@ -244,19 +244,19 @@ mod tests {
     fn service_supports_downcast_via_any() {
         let boxed: Box<dyn Service> = Box::new(FixtureService {
             name: "devices",
-            scope: LayerScope::World,
+            scope: LayerScope::Machine,
         });
         let downcast = boxed.as_any().downcast_ref::<FixtureService>();
         assert!(downcast.is_some());
-        assert_eq!(downcast.unwrap().scope, LayerScope::World);
+        assert_eq!(downcast.unwrap().scope, LayerScope::Machine);
     }
 
     #[test]
     fn layer_scope_variants_are_distinct() {
         // 3 variant が PartialEq で区別される事 (supervisor PR-4 で scope 検証に使う)
-        assert_ne!(LayerScope::World, LayerScope::Project);
+        assert_ne!(LayerScope::Machine, LayerScope::Project);
         assert_ne!(LayerScope::Project, LayerScope::Lane);
-        assert_ne!(LayerScope::World, LayerScope::Lane);
+        assert_ne!(LayerScope::Machine, LayerScope::Lane);
     }
 
     #[test]
@@ -299,7 +299,7 @@ mod tests {
             }),
             Box::new(FixtureStand {
                 name: "devices",
-                scope: LayerScope::World,
+                scope: LayerScope::Machine,
             }),
         ];
         assert_eq!(stands.len(), 3);
@@ -313,12 +313,12 @@ mod tests {
             .iter()
             .filter(|s| s.layer_scope() == LayerScope::Project)
             .count();
-        let world_count = stands
+        let machine_count = stands
             .iter()
-            .filter(|s| s.layer_scope() == LayerScope::World)
+            .filter(|s| s.layer_scope() == LayerScope::Machine)
             .count();
         assert_eq!(project_count, 2, "Project scope の Stand は 2 個");
-        assert_eq!(world_count, 1, "World scope の Stand は 1 個");
+        assert_eq!(machine_count, 1, "machine scope の Stand は 1 個");
     }
 
     #[test]
@@ -338,7 +338,7 @@ mod tests {
             }),
             Box::new(FixtureService {
                 name: "devices",
-                scope: LayerScope::World,
+                scope: LayerScope::Machine,
             }),
         ];
         assert_eq!(services.len(), 3);
@@ -352,14 +352,17 @@ mod tests {
             .iter()
             .filter(|s| s.layer_scope() == LayerScope::Project)
             .count();
-        let world_count = services
+        let machine_count = services
             .iter()
-            .filter(|s| s.layer_scope() == LayerScope::World)
+            .filter(|s| s.layer_scope() == LayerScope::Machine)
             .count();
         assert_eq!(
             project_count, 2,
             "Project scope の Service は 2 個 (= notify + lane-spawn)"
         );
-        assert_eq!(world_count, 1, "World scope の Service は 1 個 (= devices)");
+        assert_eq!(
+            machine_count, 1,
+            "machine scope の Service は 1 個 (= devices)"
+        );
     }
 }

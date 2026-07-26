@@ -178,7 +178,7 @@ export function installTerm(): TermPushHandlers {
 	// ========= per-(Lane, session) instance registry (doc 50 §4.6 A6) =========
 	// doc 46 §1.5「session ↔ Pane は 1:1」に従い、xterm も **session ごと**に 1 枚持つ
 	//  (旧: lane ごとに 1 枚 = 「term になれるのは root だけ」の物理制約の由来だった)。
-	// transport は terminal S4 の World "canvas" channel + Rust per-lane terminal session のまま。
+	// transport は terminal S4 の Daemon "canvas" channel + Rust per-lane terminal session のまま。
 	//  topic は lane 単位で共有し、session は message field で運ぶ (Design B) ので、購読は lane 1 本、
 	//  振り分けだけがここ (handleOutput の session 引数) で起きる。
 	//
@@ -407,10 +407,10 @@ export function installTerm(): TermPushHandlers {
 		} catch (_) {}
 		installOscHandlers(term, address);
 
-		// ===== Transport: World "canvas" channel 経由 (terminal S4、 doc 27 §4.1) =====
+		// ===== Transport: Daemon "canvas" channel 経由 (terminal S4、 doc 27 §4.1) =====
 		// 旧 `/ws/terminal` browser-native WebSocket 直結を撤去し、 Rust 側 per-lane terminal session
 		// (app.rs `spawn_terminal_session`) に橋渡しする IPC 経路に直切替:
-		//   - 出力: Rust が World canvas channel から PTY bytes を受け、 `window.vpTerminal.handleOutput
+		//   - 出力: Rust が daemon canvas channel から PTY bytes を受け、 `window.vpTerminal.handleOutput
 		//           (address, session, base64)` で inject (下記 coalescer で 1 frame 分まとめて term.write)。
 		//   - 入力: `term.onData` → IPC `{t:'term:write', lane, session, data:base64}` → Rust session → SP。
 		//   - resize: `sendResize` → IPC `{t:'term:resize', lane, session, cols, rows}` → Rust session → SP。
@@ -746,7 +746,7 @@ export function installTerm(): TermPushHandlers {
 		dbg(`[lane:${key}] term removed`);
 	};
 
-	// terminal S4: Rust の per-lane terminal session が World canvas channel から受けた PTY 出力を
+	// terminal S4: Rust の per-lane terminal session が daemon canvas channel から受けた PTY 出力を
 	//  `window.vpTerminal.handleOutput(address, session, base64)` で注入してくる
 	//  (board-handler.ts と同じ wry-IPC edge)。
 	//  doc 50 §4.6 A6: topic は lane 単位で共有されるので、**ここが session の振り分け点**。

@@ -50,7 +50,7 @@ fn resolve_from_cwd(config: &Config) -> Result<ResolvedTarget> {
     let cwd = std::env::current_dir()?;
     let cwd_str = Config::normalize_path(&cwd);
 
-    // 1. 稼働中 Process を検索（TheWorld API → HTTP スキャンフォールバック）
+    // 1. 稼働中 Process を検索（daemon API → HTTP スキャンフォールバック）
     if let Some(running) = crate::discovery::find_for_cwd_blocking() {
         let name = project_name_from_path(&running.project_dir, config);
         return Ok(ResolvedTarget::Running {
@@ -177,7 +177,7 @@ pub fn project_name_from_path(project_dir: &str, config: &Config) -> String {
 /// 正規化済み path から登録 project 名を **SP 非依存 (config のみ)** に解決する純関数
 /// (wire identity SSOT)。完全一致 → longest-prefix サブディレクトリ一致 → `None`。
 ///
-/// `resolve_from_cwd` の config 経路だけを抜き出した純 config lookup。discovery / TheWorld を
+/// `resolve_from_cwd` の config 経路だけを抜き出した純 config lookup。discovery / daemon を
 /// 引かないので、自 project の SP が落ちていても conductor の canonical address
 /// (`agent@<project>`) を確定できる。I/O なし (cwd は呼び出し側で正規化して渡す) で単体 test 可能。
 ///

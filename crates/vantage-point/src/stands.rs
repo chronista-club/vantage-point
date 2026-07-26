@@ -8,7 +8,7 @@
 //! ```rust,ignore
 //! use vantage_point::stands;
 //!
-//! tracing::info!("{} 起動 (port {})", stands::WORLD.display(), port);
+//! tracing::info!("{} 起動 (port {})", stands::DAEMON.display(), port);
 //! ```
 
 /// Stand の愛称定義
@@ -30,17 +30,17 @@ pub struct StandAlias {
 }
 
 impl StandAlias {
-    /// 表示用文字列: "👑 TheWorld"
+    /// 表示用文字列: "👑 daemon"
     pub fn display(&self) -> String {
         format!("{} {}", self.emoji, self.stand_name)
     }
 
-    /// CLI ヘルプ用の説明: "TheWorld（Process Manager）"
+    /// CLI ヘルプ用の説明: "daemon（Process Manager）"
     pub fn description(&self) -> String {
         format!("{}（{}）", self.stand_name, self.functional_name)
     }
 
-    /// ログ用の短い表記: "[TheWorld]"
+    /// ログ用の短い表記: "[daemon]"
     pub fn log_prefix(&self) -> String {
         format!("[{}]", self.stand_name)
     }
@@ -48,13 +48,13 @@ impl StandAlias {
 
 // ─── システムレベル ──────────────────────────────────
 
-/// 全 board を統括管理する常駐デーモン
-pub const WORLD: StandAlias = StandAlias {
-    id: "world",
+/// 全 project を統括管理する常駐デーモン
+pub const DAEMON: StandAlias = StandAlias {
+    id: "daemon",
     functional_name: "Process Manager",
-    stand_name: "TheWorld",
-    short: "W",
-    emoji: "👑",
+    stand_name: "Daemon",
+    short: "D",
+    emoji: "⚙️",
 };
 
 // ─── プロジェクトレベル ──────────────────────────────
@@ -103,9 +103,9 @@ pub const RUNNER: StandAlias = StandAlias {
     emoji: "🌿",
 };
 
-/// デバイス集約能力 — World scope の物理 device registry / hot-plug / routing（DeviceRegistry 🧲）
+/// デバイス集約能力 — machine scope の物理 device registry / hot-plug / routing（DeviceRegistry 🧲）
 ///
-/// epic v3.1 (E2) で旧 External Control stand の World 座を継承し、device 集約 registry に
+/// epic v3.1 (E2) で旧 External Control stand の machine 座を継承し、device 集約 registry に
 /// 発展。per-lane の双方向 I/O は [`DEVICE_IO`] が担う。
 /// 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`。
 pub const DEVICES: StandAlias = StandAlias {
@@ -134,7 +134,7 @@ pub const DEVICE_IO: StandAlias = StandAlias {
 
 /// 全 Stand の一覧（イテレーション用）
 pub const ALL: &[&StandAlias] = &[
-    &WORLD,
+    &DAEMON,
     &STAR_PLATINUM,
     &RUNNER,
     &BOARD,

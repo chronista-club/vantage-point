@@ -1,14 +1,14 @@
-//! home-World の位置独立な安定 id `wld_xxx` (federation L2、 ADR-020 D2)。
+//! home-node の位置独立な安定 id `wld_xxx` (federation L2、 ADR-020 D2)。
 //!
-//! home-World (= VP の TheWorld daemon) の identity を machine / hostname / endpoint から
+//! home-node (= VP の daemon) の identity を machine / hostname / endpoint から
 //! 切り離す。daemon が別マシンへ移ろうと hostname が変わろうと、 この id は変わらない。
 //! federation の **routing key** であり、 hub が `wld_id → endpoint` を解決する (machine は
 //! 「今の居場所」、 wld_id は「不変の番地」、 handle は表示名 = ADR-002/008 idiom)。
 //!
 //! ## [`crate::lane::lane_id::LaneId`] との違い
 //! - LaneId は (project, lane) ごとに **多数**、 address で引く。
-//! - WorldId は home-World に **1 つ (singleton)**。daemon に 1 個なので address key を持たない。
-//!   発行・永続は db/world の単一 row ([`crate::db::VpDb::load_or_create_world_id`])。
+//! - NodeId は home-node に **1 つ (singleton)**。daemon に 1 個なので address key を持たない。
+//!   発行・永続は db/machine の単一 row ([`crate::db::VpDb::load_or_create_node_id`])。
 //!
 //! ## format = EntId 形式 (`wld_` + base58(uuid_v7))
 //! chronista エコシステムの EntId (`mem_xxx` / `atl_xxx`) と **byte 単位で同一の符号**に揃える
@@ -55,12 +55,12 @@ fn encode_base58_uuid(uuid: Uuid) -> String {
     String::from_utf8(out).expect("base58 output is ASCII")
 }
 
-/// home-World の位置独立 安定 id。opaque newtype (中身に依存しないこと)。
+/// home-node の位置独立 安定 id。opaque newtype (中身に依存しないこと)。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub struct WorldId(String);
+pub struct NodeId(String);
 
-impl WorldId {
+impl NodeId {
     /// 新規 wld_id を生成する (`wld_` + creo 互換 base58(uuid_v7))。
     pub fn generate() -> Self {
         Self(format!(
@@ -79,13 +79,13 @@ impl WorldId {
     }
 }
 
-impl From<String> for WorldId {
+impl From<String> for NodeId {
     fn from(s: String) -> Self {
         Self(s)
     }
 }
 
-impl std::fmt::Display for WorldId {
+impl std::fmt::Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn generate_has_wld_prefix() {
-        let id = WorldId::generate();
+        let id = NodeId::generate();
         assert!(
             id.as_str().starts_with(WORLD_ID_PREFIX),
             "wld_ prefix が無い: {}",
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn generate_is_entid_shaped() {
         // EntId 形式: prefix の後ろは base58 本体で、 現状の UUID v7 era では `1` 始まり。
-        let id = WorldId::generate();
+        let id = NodeId::generate();
         let body = id.as_str().strip_prefix(WORLD_ID_PREFIX).expect("prefix");
         assert!(
             body.starts_with('1'),
@@ -136,21 +136,21 @@ mod tests {
     #[test]
     fn generate_is_unique_across_calls() {
         // singleton だが採番自体は毎回ユニーク (load_or_create が「1 回だけ生成」を担う)。
-        let a = WorldId::generate();
-        let b = WorldId::generate();
+        let a = NodeId::generate();
+        let b = NodeId::generate();
         assert_ne!(a, b, "generate は毎回新しい id を返す");
     }
 
     #[test]
     fn roundtrips_through_string_and_serde() {
-        let id = WorldId::generate();
+        let id = NodeId::generate();
         // From<String> で復元できる (db / wire から読んだ値の再構築経路)。
-        let restored = WorldId::from(id.as_str().to_string());
+        let restored = NodeId::from(id.as_str().to_string());
         assert_eq!(id, restored);
         // serde transparent: 素の文字列として乗る (引用符付き JSON string)。
         let json = serde_json::to_string(&id).unwrap();
         assert_eq!(json, format!("\"{}\"", id.as_str()));
-        let de: WorldId = serde_json::from_str(&json).unwrap();
+        let de: NodeId = serde_json::from_str(&json).unwrap();
         assert_eq!(de, id);
     }
 }

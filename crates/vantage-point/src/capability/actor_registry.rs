@@ -57,7 +57,7 @@ pub enum ActorKind {
 pub struct ActorRegistryEntry {
     /// actor 名 (= mailbox address の actor 部分と一致、 例: `"notify"` / `"agent"`)
     pub name: String,
-    /// actor の lifecycle / address scope (= LSCM World / Project / Lane)
+    /// actor の lifecycle / address scope (= LSCM Daemon / Project / Lane)
     pub scope: LayerScope,
     /// actor の種類 (= Stand or Service)
     pub kind: ActorKind,
@@ -82,12 +82,12 @@ impl std::fmt::Debug for ActorRegistryEntry {
 /// Stand / Service actor の supervisor 受け皿 (PR-4a)。
 ///
 /// PR-4a 段階では metadata catalog として機能、 既存 actor の caller は無変更で `register_*`
-/// メソッドを optional に呼ぶ form。 PR-4b で caller (= `server.rs` / `world_capabilities.rs`)
+/// メソッドを optional に呼ぶ form。 PR-4b で caller (= `server.rs` / `machine_capabilities.rs`)
 /// を ActorRegistry 経由に集約する path を開く。
 ///
 /// ## scope と kind の 2 軸 filter
 ///
-/// supervisor (PR-4b 想定) は scope (= World / Project / Lane) と kind (= Stand / Service) の
+/// supervisor (PR-4b 想定) は scope (= Daemon / Project / Lane) と kind (= Stand / Service) の
 /// 2 軸で actor を dispatch / filter する。 `list_by_scope` / `list_by_kind` で各 axis の
 /// subset を取得可能。
 #[derive(Default)]
@@ -282,12 +282,12 @@ mod tests {
         // 同 name で異 scope を register
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::World, // 異 scope
+            scope: LayerScope::Machine, // 異 scope
         });
         assert_eq!(r.len(), 1, "同 name は 1 entry");
         assert_eq!(
             r.get("notify").unwrap().scope,
-            LayerScope::World,
+            LayerScope::Machine,
             "上書き済"
         );
     }
@@ -305,14 +305,14 @@ mod tests {
         });
         r.register_service(&FixtureService {
             name: "devices",
-            scope: LayerScope::World,
+            scope: LayerScope::Machine,
         });
 
         let project_entries = r.list_by_scope(LayerScope::Project);
-        let world_entries = r.list_by_scope(LayerScope::World);
+        let daemon_entries = r.list_by_scope(LayerScope::Machine);
         let lane_entries = r.list_by_scope(LayerScope::Lane);
         assert_eq!(project_entries.len(), 2, "Project scope は 2 個");
-        assert_eq!(world_entries.len(), 1, "World scope は 1 個");
+        assert_eq!(daemon_entries.len(), 1, "machine scope は 1 個");
         assert_eq!(lane_entries.len(), 0, "Lane scope は 0 個");
     }
 
@@ -361,14 +361,14 @@ mod tests {
         });
         r.register_service(&FixtureService {
             name: "devices",
-            scope: LayerScope::World,
+            scope: LayerScope::Machine,
         });
 
         assert_eq!(r.len(), 5);
         assert_eq!(r.list_by_kind(ActorKind::Stand).len(), 2);
         assert_eq!(r.list_by_kind(ActorKind::Service).len(), 3);
         assert_eq!(r.list_by_scope(LayerScope::Project).len(), 4);
-        assert_eq!(r.list_by_scope(LayerScope::World).len(), 1);
+        assert_eq!(r.list_by_scope(LayerScope::Machine).len(), 1);
         assert_eq!(r.list_by_scope(LayerScope::Lane).len(), 0);
     }
 

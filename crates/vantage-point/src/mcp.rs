@@ -185,7 +185,7 @@ pub struct VantageMcp {
     process_port: Arc<Mutex<u16>>,
     /// Unison "process-proxy" チャネル（lazy 接続、canvas 操作も含む）
     process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
-    /// L0 SP-portless: この MCP が操作対象とする project の path（World "process-proxy" の
+    /// L0 SP-portless: この MCP が操作対象とする project の path（Daemon "process-proxy" の
     /// handshake に渡す stable な project 識別子）。 port と違い reshuffle で揺れない。
     project_path: Arc<String>,
     /// この MCP プロセスが属する Lane（cwd 由来、VP-166 PR-4）
@@ -246,11 +246,11 @@ impl VantageMcp {
             return Ok(Arc::clone(ch));
         }
 
-        // L0 SP-portless: SP 直結 (process_port) ではなく World :32000 の "process-proxy"
-        // channel に繋ぐ。 World が project_path から SP の "control" channel を逆引きして
-        // process method を forward する (reverse-routing)。 World は常駐 daemon で port は
+        // L0 SP-portless: SP 直結 (process_port) ではなく Daemon :32000 の "process-proxy"
+        // channel に繋ぐ。 daemon が project_path から SP の "control" channel を逆引きして
+        // process method を forward する (reverse-routing)。 daemon は常駐 daemon で port は
         // 固定なので、 旧来の stale-port self-heal は不要。
-        let client = connect_quic(&quic_addr(crate::cli::world_port())).await?;
+        let client = connect_quic(&quic_addr(crate::cli::daemon_port())).await?;
         // unison 内部の request timeout は default 30s。 outer timeout (wire_recv 等で
         // server_timeout + buffer = 最大 35s) より長く取らないと unison 側が先に発火するので
         // 60s に引き上げる (VP-163)。
@@ -267,7 +267,7 @@ impl VantageMcp {
                 .with_request_timeout(std::time::Duration::from_secs(60)),
         );
 
-        // handshake: project_path を渡す (World が path_key に正規化して control channel を逆引き)。
+        // handshake: project_path を渡す (daemon が path_key に正規化して control channel を逆引き)。
         channel
             .request::<serde_json::Value, serde_json::Value>(
                 "subscribe",
@@ -451,7 +451,7 @@ impl VantageMcp {
     /// flow_handoff の rollback path: performer 削除 (best-effort、 失敗は log only)
     ///
     /// wire_send 失敗時など、 performer 作成は成功したが orchestration の続きが失敗した時に呼ぶ。
-    /// lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を World process-proxy ask
+    /// lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を daemon process-proxy ask
     /// `lane_delete` に移管。 不在 performer は "Lane not found" を Err で返すので idempotent
     /// no-op として吸収する (= 旧 HTTP 404 NOT_FOUND を許容していた挙動と等価)。
     async fn flow_rollback_performer(
@@ -485,8 +485,8 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let _ = params;
         // L0 finale (Push-only): 旧 SP HTTP の手動 shutdown+respawn dance (`/api/health` poll +
-        // `/api/shutdown` + `vp start` 子 spawn) を撤去し、 World :32000 の restart API に委譲する。
-        // World の `restart_process` が stop + `start_process`（registry-based launch verify）を
+        // `/api/shutdown` + `vp start` 子 spawn) を撤去し、 Daemon :32000 の restart API に委譲する。
+        // daemon の `restart_process` が stop + `start_process`（registry-based launch verify）を
         // atomically 実行。 旧 respawn の `vp start` は撤去済の存在しないコマンドで既に壊れていた
         // (CLAUDE.md) ため、 本移行は fix も兼ねる。
         let config = crate::config::Config::load().ok();
@@ -499,18 +499,18 @@ impl VantageMcp {
                 .to_string(),
         };
 
-        // doc 45 段 2: 旧 `POST /api/world/processes/{name}/restart` を Unison
-        // `world-control.projects/restart` に差し替え。restart は内部に grace sleep +
+        // doc 45 段 2: 旧 `POST /api/daemon/processes/{name}/restart` を Unison
+        // `daemon-control.projects/restart` に差し替え。restart は内部に grace sleep +
         // 起動確認を含むので、旧 HTTP の 45s timeout に相当する外側 timeout をここで掛ける
         // (Unison client 側に per-request timeout が無いため)。
         let client = tokio::time::timeout(
             Duration::from_secs(45),
-            crate::daemon::client::WorldControlClient::connect(crate::cli::world_port(), 3),
+            crate::daemon::client::DaemonControlClient::connect(crate::cli::daemon_port(), 3),
         )
         .await
-        .map_err(|_| McpError::internal_error("World restart 接続 timeout (45s)", None))?
+        .map_err(|_| McpError::internal_error("Daemon restart 接続 timeout (45s)", None))?
         .map_err(|e| {
-            McpError::internal_error(format!("World restart に到達できません: {}", e), None)
+            McpError::internal_error(format!("Daemon restart に到達できません: {}", e), None)
         })?;
 
         let result = tokio::time::timeout(
@@ -518,15 +518,15 @@ impl VantageMcp {
             client.projects_restart(&project_name),
         )
         .await
-        .map_err(|_| McpError::internal_error("World restart timeout (45s)", None))?
-        .map_err(|e| McpError::internal_error(format!("World restart 失敗: {}", e), None))?;
+        .map_err(|_| McpError::internal_error("Daemon restart timeout (45s)", None))?
+        .map_err(|e| McpError::internal_error(format!("Daemon restart 失敗: {}", e), None))?;
 
         // QUIC チャネルをリセットして再接続を強制（新 SP に張り直す）
         *self.process_channel.lock().await = None;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
-                "Process '{}' を World restart で再起動: {}",
+                "Process '{}' を Daemon restart で再起動: {}",
                 project_name, result
             ),
         )]))
@@ -596,7 +596,7 @@ impl VantageMcp {
     /// 「投げたら読んでほしい」が多数派なので、素の wire_send を「配送 + 自動読み込み + ack 必須」
     /// (= command 挙動) に昇格させる。FYI は `body.category` に `"event"` / `"data"` / `"state"` /
     /// `"log"` を明示して opt-out（明示指定は尊重し上書きしない）。default 注入をこの MCP 経路に
-    /// 閉じることで、category を明示しない内部 sender（delegation / server の `world_wire::call`）を
+    /// 閉じることで、category を明示しない内部 sender（delegation / server の `daemon_wire::call`）を
     /// 巻き込まない（= CC 限定 scope、global 反転による予期せぬ nudge を回避）。
     async fn wire_send_impl(&self, params: WireSendParams) -> Result<CallToolResult, McpError> {
         let __self_lane = self.self_lane.from_address()?;
@@ -660,7 +660,7 @@ fn performer_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -
 
 /// Process ポートを解決（MCP 通信先の決定）
 ///
-/// VP-165 (doc 17 決定A): **discovery（= TheWorld、reconciliation の真実源）で live port を
+/// VP-165 (doc 17 決定A): **discovery（= daemon、reconciliation の真実源）で live port を
 /// 引くのを最優先**にする。stale port を踏むと別 project の SP に msg を投げ、その SP の
 /// `local_project` で `from` が汚染される（VP-165 dogfood 症状 (1)）。
 ///
@@ -704,10 +704,10 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     33000
 }
 
-/// L0 SP-portless: World "process-proxy" の addressing 用に、 この MCP が属する project の
+/// L0 SP-portless: Daemon "process-proxy" の addressing 用に、 この MCP が属する project の
 /// path（正規化済 path_key と同形）を解決する。 `resolve_process_port` と同じ discovery 経路
 /// (performer→parent / conductor→cwd) で running SP の `project_dir` を引く。 SP 未起動などで
-/// 引けない場合は cwd の正規化 path に fallback（World 側で normalize_path_key 再正規化される）。
+/// 引けない場合は cwd の正規化 path に fallback（daemon 側で normalize_path_key 再正規化される）。
 async fn resolve_project_path() -> String {
     let self_lane = SelfLane::detect();
     let info = match &self_lane.performer_parent {
@@ -736,8 +736,8 @@ async fn resolve_project_path() -> String {
 
 /// HTTP port から同一 host の QUIC 接続先アドレスを組み立てる ([::1] = IPv6 loopback)。
 ///
-/// Process(SP) port と World port(`cli::world_port()`、fetch_canvas_panes 等)の両方で
-/// 使われる。`QUIC_PORT_OFFSET` は両者共通の前提 — SP/World でオフセットを分ける時は
+/// Process(SP) port と Daemon port(`cli::daemon_port()`、fetch_canvas_panes 等)の両方で
+/// 使われる。`QUIC_PORT_OFFSET` は両者共通の前提 — SP/daemon でオフセットを分ける時は
 /// この関数を分割すること。
 fn quic_addr(http_port: u16) -> String {
     format!(
@@ -772,11 +772,11 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
 
     // Resolve the actual port to use（HTTP フォールバック用に保持）
     let resolved_port = resolve_process_port(process_port).await;
-    // L0 SP-portless: QUIC 経路は World "process-proxy" を project_path で addressing する。
+    // L0 SP-portless: QUIC 経路は Daemon "process-proxy" を project_path で addressing する。
     let project_path = resolve_project_path().await;
 
     // wiremsg R5-4: 旧 msgbox の registry サブシステム (Performer self-register) は撤去済。
-    // wire の cross-process delivery は TheWorld の project registry を使う別経路。
+    // wire の cross-process delivery は daemon の project registry を使う別経路。
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication

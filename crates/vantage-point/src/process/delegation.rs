@@ -2,8 +2,8 @@
 //!
 //! doc 28 (`docs/design/28-agent-delegation.md`) §4 の atom を、最小往復で実機に接地する spike。
 //! dogfood #1「A lane が実装中に B lane へ追加実装を委譲 → 完了報告 → block 解除 → 再開」を、
-//! 人間の介入なしで自走させる。**v1 はローカルのみ**（same World / same SP / 2 lane）、federation
-//! （hub / World 間）は別 Phase。ただし location-transparent に作る（不変条件 ↓）。
+//! 人間の介入なしで自走させる。**v1 はローカルのみ**（same Daemon / same SP / 2 lane）、federation
+//! （hub / Daemon 間）は別 Phase。ただし location-transparent に作る（不変条件 ↓）。
 //!
 //! ## state machine（nostos Bracket(enter/Active/exit) + 三相 Outcome）
 //! ```text
@@ -14,24 +14,24 @@
 //!     [AwaitingResponse] ─requester respond(ans) → [Active] ─wake doer→ B が回答付きで再開（loop）
 //! ```
 //! nostos 三相 Done / Reborn / Failed を完全実装（Reborn = NeedsInput、`respond` で Active へ loop）。
-//! record は **TheWorld 中央 store（SurrealDB）** に永続化（wire-store backing 済、doc 28 §6 / 下記）。
+//! record は **daemon 中央 store（SurrealDB）** に永続化（wire-store backing 済、doc 28 §6 / 下記）。
 //! pull-hook・reconcile・timeout・federation は doc 28 §7 staging の follow-up。
 //!
 //! ## federation 不変条件（v1 で焼き込む）
 //! - record の `requester` / `doer` は**論理 wire address**（`agent@<project>` /
 //!   `agent@<project>/<name>`）で持つ。raw tmux session は焼き込まない。
 //! - wake は `address → (local lane session)` の resolution を介す（[`lane_query_for`] +
-//!   [`AppState::nudge_lane`]）。後で `world-handle:` 接頭の remote 分岐を足すだけで federation 化
+//!   [`AppState::nudge_lane`]）。後で `daemon-handle:` 接頭の remote 分岐を足すだけで federation 化
 //!   できる（local は退化形）。
 
 use serde::{Deserialize, Serialize};
 
 use super::state::AppState;
 
-/// 委譲 1 件の record（TheWorld 中央 store = `delegations` table のエントリ）。
+/// 委譲 1 件の record（daemon 中央 store = `delegations` table のエントリ）。
 ///
-/// `requester` / `doer` は論理 wire address（federation 不変条件）。SP は `world_wire::call` で
-/// World に proxy し、record は SurrealDB に永続化される（durable、SP 再起動を跨いで生存。
+/// `requester` / `doer` は論理 wire address（federation 不変条件）。SP は `daemon_wire::call` で
+/// daemon に proxy し、record は SurrealDB に永続化される（durable、SP 再起動を跨いで生存。
 /// 永続/遷移ロジックは `capability::delegation_store::DelegationStore` が SSOT）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Delegation {
@@ -53,7 +53,7 @@ pub(crate) struct Delegation {
 /// 委譲の lifecycle 状態（nostos Bracket の spike 版縮約）。
 ///
 /// serde は snake_case（`pending` / `active` / `awaiting_response` / `done` / `failed`）。
-/// World 中央 store（`delegations` table）の `state` field 文字列と一致させる。
+/// daemon 中央 store（`delegations` table）の `state` field 文字列と一致させる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DelegationState {
@@ -92,7 +92,7 @@ pub(crate) enum Outcome {
 /// が解する lane address query（`<project>/root` / `<project>/performer/<name>`）に翻訳する。
 ///
 /// これが resolution の **local 分岐**（= federation 不変条件の swappable 層）。後で
-/// `world-handle:` 接頭を見て remote World に振る分岐を足すだけで federation 化できる。
+/// `daemon-handle:` 接頭を見て remote daemon に振る分岐を足すだけで federation 化できる。
 /// `delivery_actor::lane_identity_from_agent` と同じ wire→lane 分解則:
 /// - `agent@<project>`        → `<project>/root`
 /// - `agent@<project>/<name>` → `<project>/performer/<name>`
@@ -163,8 +163,8 @@ fn respond_wake_prompt(id: &str, task: &str, answer: &str) -> String {
 
 /// `delegate(doer, task, requester) → {id}`（doc 28 §4 / 動詞 1）。
 ///
-/// id 採番 → World 中央 store に persist（durable）→ doer を SP-local wake → delivered 記録。
-/// store は wire と同じく TheWorld 中央（`world_wire::call`）。wake は SP-local（`nudge_lane`、
+/// id 採番 → daemon 中央 store に persist（durable）→ doer を SP-local wake → delivered 記録。
+/// store は wire と同じく daemon 中央（`daemon_wire::call`）。wake は SP-local（`nudge_lane`、
 /// doer が別 SP / 不在なら `woke=false` で graceful、取りこぼしは reconcile が後で拾う = follow-up B）。
 pub(crate) async fn handle_delegate(
     state: &AppState,
@@ -191,8 +191,8 @@ pub(crate) async fn handle_delegate(
 
     let id = format!("dlg-{}", uuid::Uuid::new_v4());
 
-    // World 中央 store に persist（durable、reconcile の駆動源）。
-    super::world_wire::call(
+    // daemon 中央 store に persist（durable、reconcile の駆動源）。
+    super::daemon_wire::call(
         "/api/delegation/create",
         serde_json::json!({ "id": id, "requester": requester, "doer": doer, "task": task }),
     )
@@ -210,8 +210,8 @@ pub(crate) async fn handle_delegate(
 
 /// `complete(id, outcome)`（doc 28 §4 / 動詞 2）。
 ///
-/// World store で transition（Done/Failed/AwaitingResponse）→ 更新後 record を受け取り requester を
-/// SP-local wake（Outcome 同梱）。未知 id は World handler が error を返し、`world_wire::call` 経由で Err。
+/// Daemon store で transition（Done/Failed/AwaitingResponse）→ 更新後 record を受け取り requester を
+/// SP-local wake（Outcome 同梱）。未知 id は Daemon handler が error を返し、`daemon_wire::call` 経由で Err。
 pub(crate) async fn handle_complete(
     state: &AppState,
     payload: serde_json::Value,
@@ -230,9 +230,9 @@ pub(crate) async fn handle_complete(
             serde_json::from_value(v).map_err(|e| format!("complete: invalid outcome ({e})"))
         })?;
 
-    // World store で transition。返り = 更新後 record（{id, requester, doer, task, state, outcome}）。
-    // 未知 id は World handler が `{error}` を返す → world_wire::call が Err にする。
-    let rec = super::world_wire::call(
+    // Daemon store で transition。返り = 更新後 record（{id, requester, doer, task, state, outcome}）。
+    // 未知 id は Daemon handler が `{error}` を返す → daemon_wire::call が Err にする。
+    let rec = super::daemon_wire::call(
         "/api/delegation/complete",
         serde_json::json!({ "id": id, "outcome": outcome }),
     )
@@ -254,9 +254,9 @@ pub(crate) async fn handle_complete(
 
 /// `respond(id, answer)`（doc 28 §4 / 動詞 3）。
 ///
-/// World store で Active に戻す（NeedsInput の outcome を消費）→ 更新後 record を受け取り doer を
-/// answer 同梱で再 wake。未知 id は World handler が error を返す。状態 AwaitingResponse でなくても
-/// 前進させる lenient 設計は World store 側（`apply_respond`）が担保（厳密ガードは reconcile follow-up）。
+/// Daemon store で Active に戻す（NeedsInput の outcome を消費）→ 更新後 record を受け取り doer を
+/// answer 同梱で再 wake。未知 id は Daemon handler が error を返す。状態 AwaitingResponse でなくても
+/// 前進させる lenient 設計は Daemon store 側（`apply_respond`）が担保（厳密ガードは reconcile follow-up）。
 pub(crate) async fn handle_respond(
     state: &AppState,
     payload: serde_json::Value,
@@ -274,9 +274,9 @@ pub(crate) async fn handle_respond(
         .ok_or("respond: 'answer' required")?
         .to_string();
 
-    // World store で Active に戻す。返り = 更新後 record（doer / task が doer 再 wake に要る）。
-    let rec =
-        super::world_wire::call("/api/delegation/respond", serde_json::json!({ "id": id })).await?;
+    // Daemon store で Active に戻す。返り = 更新後 record（doer / task が doer 再 wake に要る）。
+    let rec = super::daemon_wire::call("/api/delegation/respond", serde_json::json!({ "id": id }))
+        .await?;
     let doer = rec["doer"].as_str().unwrap_or_default().to_string();
     let task = rec["task"].as_str().unwrap_or_default().to_string();
 
@@ -290,11 +290,11 @@ pub(crate) async fn handle_respond(
     Ok(serde_json::json!({ "id": id, "state": "active", "woke": woke }))
 }
 
-/// wake の woke 結果を World store に記録する（best-effort、失敗は無視）。
+/// wake の woke 結果を Daemon store に記録する（best-effort、失敗は無視）。
 ///
 /// delivered=false の record を reconcile（B）が再 nudge、pull-hook（C）が poll する。
 async fn mark_delivered(id: &str, delivered: bool) {
-    let _ = super::world_wire::call(
+    let _ = super::daemon_wire::call(
         "/api/delegation/mark_delivered",
         serde_json::json!({ "id": id, "delivered": delivered }),
     )
@@ -302,12 +302,12 @@ async fn mark_delivered(id: &str, delivered: bool) {
 }
 
 // =============================================================================
-// reconcile + timeout（doc 28 §7 — Push + Pull 調停の Pull パス、World 常駐 loop）
+// reconcile + timeout（doc 28 §7 — Push + Pull 調停の Pull パス、Daemon 常駐 loop）
 //
 // process 管理の reconcile と同じ DNA: push（SP-local wake）の取りこぼし / doer 沈黙を、
-// World 常駐 loop が durable な World 中央 store を走査して self-heal する。
+// Daemon 常駐 loop が durable な daemon 中央 store を走査して self-heal する。
 // - **timeout**: stale な active/awaiting_response を `Failed{timeout}` に落とす（永久 block 回避）。
-// - **re-nudge**: `delivered=false` の record を World-side で直接 wake（lane_registry + send-keys、
+// - **re-nudge**: `delivered=false` の record を Daemon-side で直接 wake（lane_registry + send-keys、
 //   delivery_actor と同経路）。timeout 化した分も同 pass で requester に届く。
 // =============================================================================
 
@@ -349,7 +349,7 @@ fn wake_for(d: &Delegation) -> (String, String) {
     }
 }
 
-/// reconcile loop を spawn（run_world で呼ぶ）。shutdown でループ終了。
+/// reconcile loop を spawn（run_daemon で呼ぶ）。shutdown でループ終了。
 pub(crate) fn spawn_reconcile_loop(
     store: crate::capability::DelegationStore,
     lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
@@ -377,7 +377,7 @@ pub(crate) fn spawn_reconcile_loop(
     })
 }
 
-/// 1 回の reconcile pulse: timeout 化 → undelivered を World-side で再 wake。
+/// 1 回の reconcile pulse: timeout 化 → undelivered を Daemon-side で再 wake。
 async fn reconcile_pulse(
     store: &crate::capability::DelegationStore,
     lane_registry: &Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
@@ -397,7 +397,7 @@ async fn reconcile_pulse(
         }
     }
 
-    // 2. re-nudge: delivered=false の record を World-side で直接 wake（timeout 化分も含む）。
+    // 2. re-nudge: delivered=false の record を Daemon-side で直接 wake（timeout 化分も含む）。
     let undelivered = store.list_undelivered().await?;
     if undelivered.is_empty() {
         return Ok(());
