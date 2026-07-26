@@ -162,7 +162,11 @@ export function installBundleProbe(): void {
 			bundleStatus: w.vpBundleStatus,
 			vpAppLayoutDefined: typeof w.vpAppLayout !== "undefined",
 			setActivePaneDefined: typeof w.setActivePane === "function",
-			ensureLaneDefined: typeof w.ensureLane === "function",
+			// Rust → JS の押し込みは envelope 1 本（`window.vpDispatch`）に集約された。
+			// ⚠️ 旧 `ensureLaneDefined` はここで消した — `window.ensureLane` は
+			// `installTerm()` の戻り値経由になり window から外れたので、**bundle が完全に
+			// 正常でも常に false** を返す状態だった（診断ツール自身が嘘をつく）。
+			vpDispatchDefined: typeof w.vpDispatch === "function",
 			showLaneDefined: typeof w.showLane === "function",
 			laneInstancesSize:
 				w.__vpLanes instanceof Map ? w.__vpLanes.size : "no __vpLanes",

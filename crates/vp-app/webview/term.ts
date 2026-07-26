@@ -10,22 +10,20 @@
  * いたが、2026-07-26 に凍結を解除した（計器 hop A/B は 2 点とも Rust 側で xterm JS を通らない
  * ため、そもそも守っていなかった。doc 33 §4 / doc 53 §6.5.1.1）。
  *
- * ## window に生やす理由（残る 1 本の境界）
+ * ## Rust からどう届くか
  *
- * Rust は `evaluate_script("window.ensureLane(...)")` の形で **名前で** JS を呼ぶ（`app.rs`）。
- * この経路は bundle 化しても消えないので、下記の window API は契約として維持する:
+ * 制御面（lane/session の出現・表示切替・消滅・paste）は **`installTerm` の戻り値**として
+ * `dispatch.ts` に渡し、Rust からは単一受け口 `window.vpDispatch` の envelope で届く
+ * （SSOT = `crates/vp-app/schema/vp-push.kdl`、型は codegen が両側に出す）。
+ * **引数の数や順序が食い違えば TS のコンパイルが落ちる** — 旧来この境界は名前で関数を呼ぶ形で、
+ * 食い違っても Rust も TS も黙っていた（doc 53 §6.5.1）。
  *
- * | window API | Rust 側の呼び手 |
+ * ⚠️ window に残しているのは 2 つだけ:
+ *
+ * | window API | 理由 |
  * |---|---|
- * | `ensureLane(address, session, isRoot)` | `app.rs` — lane/session の出現 |
- * | `showLane(address, isChat)` | `app.rs` — 表示 lane の切替 |
- * | `removeLane(address)` | `app.rs` — lane 消滅 |
- * | `removeLaneSession(address, session)` | `app.rs` — session 1 枚の消滅 |
- * | `vpTerminal.handleOutput(address, session, b64)` | `app.rs` — PTY 出力の注入 |
- * | `deliverPaste(text)` | `app.rs` — OS clipboard の戻り |
- *
- * ⚠️ この境界には型が無い（引数の数が違ってもコンパイルも実行時も黙る）。Rust 側を変えるときは
- * 必ず対で直すこと（doc 53 §6.5.1）。
+ * | `vpTerminal.handleOutput(lane, session, b64)` | PTY 出力は高頻度 stream。envelope 化には「buffer するか」を制御面と別に決める必要があり、移行は別 PR |
+ * | `showLane(lane, isChat)` | `active-pane.ts` が kind=terminal で呼ぶ（TS 内の呼び出し）。`installTerm` の closure にあるため今は window 経由 |
  */
 import { FitAddon } from "@xterm/addon-fit";
 import { ProgressAddon } from "@xterm/addon-progress";
@@ -34,6 +32,7 @@ import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import type { PushHandlers } from "./dispatch";
 
 /** wry が注入する IPC。install 時ではなく **呼ぶ時に** 引く（注入が後の場合があるため）。 */
 const ipc = () =>
@@ -88,7 +87,7 @@ interface LaneInstance {
 	webglCleanup: (() => void) | null;
 }
 
-export function installTerm(): void {
+export function installTerm(): PushHandlers {
 	// Creo tokens から xterm.js theme を構築 (全 Lane instance で共有)。
 	// OKLCH 値は xterm.js の内部 color parser が直接解釈できないので、
 	// hidden probe で `color: var(...)` を browser に解決させて
@@ -510,7 +509,7 @@ export function installTerm(): void {
 		function doPaste(): void {
 			// Phase 4-paste-fix: navigator.clipboard.readText() は webview の permission policy で
 			// silent fail することがあるので、 **常に IPC fallback を併用**。 Rust 側 arboard が
-			// OS clipboard を読んで `window.deliverPaste(text)` で戻してくる経路。
+			// OS clipboard を読んで `term:paste` の push で戻してくる経路。
 			try {
 				navigator.clipboard
 					.readText()
@@ -767,7 +766,7 @@ export function installTerm(): void {
 
 	// Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
 	// `terminal.rs::handle_ipc_message` の `paste:request` → `AppEvent::PasteText` → `app.rs` event loop
-	// で `main_view.evaluate_script("window.deliverPaste(text)")` の最終受け取り口。
+	// の `lane_js::deliver_paste` → `term:paste` envelope → dispatch.ts、の最終受け取り口。
 	const deliverPaste = (text: string): void => {
 		if (!text) return;
 		// 宛先は **focus 中の 1 枚**。A6（session = Pane）で lane に active な pane が複数
@@ -787,15 +786,21 @@ export function installTerm(): void {
 		}
 	};
 
+	// 制御面（ensureLane / showLane / removeLane / removeLaneSession / deliverPaste）は
+	// **window に生やさない** — `installTerm` の戻り値として dispatch.ts に渡し、Rust からは
+	// 単一受け口 `window.vpDispatch` 経由の envelope で届く（`schema/vp-push.kdl`）。
+	//
+	// ⚠️ `vpTerminal.handleOutput` だけは window のまま。PTY 出力は高頻度 stream で、
+	// envelope 化の際に「buffer するか」を制御面と別に決める必要がある（server 側 replay が
+	// 取りこぼしを埋めるので、積むとメモリだけ食う）。移行は別 PR。
 	Object.assign(window, {
-		ensureLane,
-		showLane,
-		removeLane,
-		removeLaneSession,
-		deliverPaste,
 		vpTerminal: { handleOutput },
 		// DevTools console から laneInstances を手動検査できるよう露出
 		__vpLanes: laneInstances,
+		// `active-pane.ts` の `applyPaneSwitch` が kind=terminal で呼ぶ。TS 内の呼び出しなので
+		// 本来は直 import が筋だが、`showLane` は `installTerm` の closure にあるため今は window
+		// 経由のまま（両方 TS になった今、次段で直参照に畳める）。
+		showLane,
 	});
 
 	// ========= VP-143: terminal Live Token 群の runtime 反映 (creo-ui-editor-host 連携) =========
@@ -894,6 +899,9 @@ export function installTerm(): void {
 		},
 		true,
 	);
+
+	// Rust からの押し込みはここを通る（dispatch.ts が envelope を解いて呼ぶ）。
+	return { ensureLane, showLane, removeLane, removeLaneSession, deliverPaste };
 }
 
 // ---------------------------------------------------------------------------

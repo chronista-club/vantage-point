@@ -1334,12 +1334,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "club-kdl-codegen"
-version = "0.11.1"
+name = "club-kdl"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "418f997f15be316ce99c3642cfbc1cc9a09385d2780c995e8811a9bb2f904fcc"
+checksum = "42e7a262c2e8e1ecc2c38fb832c222019b30b00121c4b3e8b6a8abcafc066bda"
 dependencies = [
- "club-kdl 0.11.1",
+ "club-kdl-derive 0.12.0",
+ "kdl",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "club-kdl-codegen"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33d134722671850c5fb3e36422ab09a2b25a781b8cc09d8e8103c26cf94649d1"
+dependencies = [
+ "club-kdl 0.12.0",
  "club-kdl-compose",
  "kdl",
  "thiserror 2.0.18",
@@ -1347,11 +1358,11 @@ dependencies = [
 
 [[package]]
 name = "club-kdl-compose"
-version = "0.11.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6288c260f63eb9aac1969f31fb09c3eb6e3c558fb66fd828302070c13cacd2"
+checksum = "442a2020b6b147a1c9ae6a6390fe2113d2aac6196cc62daa09b4a2a23d523a5f"
 dependencies = [
- "club-kdl 0.11.1",
+ "club-kdl 0.12.0",
  "glob",
  "kdl",
  "thiserror 2.0.18",
@@ -1373,6 +1384,17 @@ name = "club-kdl-derive"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5149da344c8d6bfcd7956ca5f3b96ded97ca1f0572c4e277351fd37560ea5747"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "club-kdl-derive"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ee2a2d5239510b5ddc2465a97178f88891e684da6e254dedae875f5acc82e2e"
 dependencies = [
  "proc-macro2",
  "quote",
