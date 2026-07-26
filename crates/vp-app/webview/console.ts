@@ -1,12 +1,18 @@
 /**
  * Console facade (doc 33 §4) — Act I/II が同居する Console 面の World B 側 controller。
  *
- * - data plane: `window.vpConsole.handleEvent(lane, event)` — SP の EchoesAgentHost が吐く
+ * Rust からの供給は **push envelope**（`window.vpDispatch` の単一受け口 → `dispatch.ts` が
+ * ここの method へ配る）。`window.vpConsole` は **DevTools 検分用に残してある**だけで、
+ * Rust は名前で呼ばない（SSOT = `crates/vp-app/schema/vp-push.kdl`）。
+ *
+ * - data plane: `console:event` → [`VpConsole.handleEvent`] — SP の EchoesAgentHost が吐く
  *   EchoesEvent（engine 非依存語彙、doc 32 §4）を per-lane ring buffer に蓄積し、
  *   mount 済みの ChatView renderer に届ける（renderer は C2 で登録）。
- * - control plane: `window.vpConsole.setSessionAct(lane, session, act)` — その session の
+ * - control plane: `console:act_applied` → [`VpConsole.setSessionAct`] — その session の
  *   Act（見え方）が変わったことの通知（doc 50 §4.6 A6。旧 lane 単位 `setMode` の後継）。
  *   ⚠️ 表示は強制しない（ビューとエンジンは別軸 — Lane 内で Act I/II pane は共存し得る）。
+ * - roster: `console:session_list` → [`VpConsole.handleSessionList`]（供給はこの 1 本、doc 53 §11）
+ * - 「+」menu: `console:stands` → [`VpConsole.handleStands`]
  * - 検分: `window.vpConsole.peek(lane)` — devtools から buffer を覗く（throwaway debug pane を
  *   作らないための恒久 API）。
  *

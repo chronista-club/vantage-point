@@ -48,6 +48,33 @@ export interface DevicesRender {
   devices: any[];
 }
 
+/** Event "console:session_list" */
+export interface ConsoleSessionList {
+  lane: string;
+  payload: any;
+}
+
+/** Event "console:event" */
+export interface ConsoleEvent {
+  lane: string;
+  event: any;
+  session: number;
+}
+
+/** Event "console:act_applied" */
+export interface ConsoleActApplied {
+  lane: string;
+  session: number;
+  act: string;
+}
+
+/** Event "console:stands" */
+export interface ConsoleStands {
+  lane: string;
+  payload: any;
+  req?: string;
+}
+
 /** Event "board:message" */
 export interface BoardMessage {
   message: any;
@@ -61,6 +88,10 @@ export type PushChannelEventTypes = {
   TermRemoveSession: TermRemoveSession;
   TermPaste: TermPaste;
   DevicesRender: DevicesRender;
+  ConsoleSessionList: ConsoleSessionList;
+  ConsoleEvent: ConsoleEvent;
+  ConsoleActApplied: ConsoleActApplied;
+  ConsoleStands: ConsoleStands;
   BoardMessage: BoardMessage;
 };
 
@@ -73,7 +104,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "board:message"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "console:session_list", "console:event", "console:act_applied", "console:stands", "board:message"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -86,6 +117,10 @@ export type PushEventEnvelope =
   | ({ t: "term:remove_session" } & TermRemoveSession)
   | ({ t: "term:paste" } & TermPaste)
   | ({ t: "devices:render" } & DevicesRender)
+  | ({ t: "console:session_list" } & ConsoleSessionList)
+  | ({ t: "console:event" } & ConsoleEvent)
+  | ({ t: "console:act_applied" } & ConsoleActApplied)
+  | ({ t: "console:stands" } & ConsoleStands)
   | ({ t: "board:message" } & BoardMessage);
 
 

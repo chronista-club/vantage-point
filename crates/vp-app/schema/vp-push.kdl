@@ -89,6 +89,47 @@ protocol "vp-push" version="1.0.0" {
             field "devices" type="array<json>"
         }
 
+        // ===== Echoes の Console 面（doc 33）— 実装は webview/console.ts =====
+
+        // lane の session 一覧（roster）。**供給はこの 1 本**（doc 53 §11）で、呼び手は
+        // LanesLoaded の 1 箇所だけ。payload の形の持ち主は TS の `EchoesSessionListPayload`
+        // （Rust 側は `session_list_payload()` が組む）。
+        event "console:session_list" {
+            field "lane" type="string"
+            field "payload" type="json"
+        }
+
+        // SP の EchoesAgentHost が吐く構造化イベント（Act II の会話 stream）。
+        //
+        // ⚠️ これは**制御面ではなく stream**。取りこぼしは受け側の replay 要求
+        // （`echoes:demand_start`）が埋めるので、**この channel の保留箱に頼らない**。
+        // 同じ channel に載せているのは窓口を増やさないため（保留窓は openDispatch →
+        // installDispatch の間だけなので、stream が積み上がる余地は事実上ない）。
+        event "console:event" {
+            field "lane" type="string"
+            field "event" type="json"
+            // VP 採番の session key。console.ts が focused 判定に使い、chatview が背景 session の
+            // stream を焦点会話へ混ぜないよう振り分ける。
+            field "session" type="int"
+        }
+
+        // act 切替が **実体に適用された**通知（`SessionActApplied` の戻り）。
+        // 要求側の IPC tag `session:set_act`（JS → Rust）と対で、こちらは applied の報せ。
+        event "console:act_applied" {
+            field "lane" type="string"
+            field "session" type="int"
+            field "act" type="string"
+        }
+
+        // 「+」menu の stand 一覧（`stands_list` の結果）。
+        // `req` = 要求元の相関 id（doc 47 §6）。共有 bus の購読側がこれで振り分ける。
+        // 省略 = 応答を誰も拾わない（旧: JS へ `null` 直書き）。
+        event "console:stands" {
+            field "lane" type="string"
+            field "payload" type="json"
+            field "req" type="string" optional=#true
+        }
+
         // ===== 掲示板（board, doc 52 §1）の制御面 — 実装は webview/board-handler.ts =====
 
         // SP の canvas channel から来た `ProcessMessage` をそのまま board へ渡す。

@@ -208,7 +208,7 @@ pub enum AppEvent {
     },
     /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
     /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
-    /// event loop が `window.vpConsole.handleEvent(lane, event, session)` で当該 lane の Console pane に渡す。
+    /// event loop が push envelope `console:event` で当該 lane の Console pane に渡す。
     /// doc 38 Phase 2: `session` = 発生元 session の VP 採番 key（1 Lane = N session）。topic の
     /// `ProcessMessage::EchoesEvent::session`（serde default=1）由来。session は lane 名に埋めず
     /// 常に別 field で運ぶ（doc 38 落とし穴①）。

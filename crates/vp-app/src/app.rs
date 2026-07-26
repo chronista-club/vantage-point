@@ -1921,19 +1921,12 @@ fn forget_roster_push(last: &mut std::collections::HashMap<String, String>, addr
     last.remove(addr);
 }
 
-/// roster を webview へ渡す（`vpConsole.handleSessionList` → `vp:echoes-sessions`）。
+/// roster を webview へ渡す（push envelope `console:session_list` → `vp:echoes-sessions`）。
 ///
 /// doc 53 §11: 呼び手は LanesLoaded の 1 箇所だけ（旧実装は動詞ごとの再取得 7 箇所から
 /// 撃っていた — 供給路が 2 本ある構造そのものだった）。
 fn push_session_list(webview: &wry::WebView, lane: &str, payload: &serde_json::Value) {
-    let script = format!(
-        "window.vpConsole && window.vpConsole.handleSessionList({}, {})",
-        serde_json::to_string(lane).unwrap_or_else(|_| "\"\"".into()),
-        serde_json::to_string(payload).unwrap_or_else(|_| "null".into()),
-    );
-    if let Err(e) = webview.evaluate_script(&script) {
-        tracing::warn!("vpConsole.handleSessionList 失敗 (lane={lane}): {e}");
-    }
+    lane_js::console_session_list(webview, lane, payload.clone());
 }
 
 /// doc 53 §11: lane snapshot の roster を webview の session 一覧 payload に写す（純関数）。
@@ -1943,7 +1936,7 @@ fn push_session_list(webview: &wry::WebView, lane: &str, payload: &serde_json::V
 /// **CLI・MCP 由来の session 変化が pane grid に出なかった**（doc 53 §11.1）。snapshot は
 /// server が動詞の末尾で push する（`emit_lane_update`）ので、誰が起こした変化でも届く。
 ///
-/// payload の形は webview 契約（`vpConsole.handleSessionList`）そのまま — 供給路を差し替える
+/// payload の形は webview 契約（`console.ts` の `EchoesSessionListPayload`）そのまま — 供給路を差し替える
 /// だけで消費側（tab strip / pane grid / 名札）は無改造。`root` / `focused` は entry の
 /// bool に展開する（webview は entry ごとの flag で読む）。
 fn session_list_payload(
@@ -1985,7 +1978,8 @@ mod lane_js {
     use wry::WebView;
 
     use crate::generated::push::{
-        BoardMessage, DevicesRender, PushEventEnvelope, TermEnsureLane, TermPaste, TermRemoveLane,
+        BoardMessage, ConsoleActApplied, ConsoleEvent, ConsoleSessionList, ConsoleStands,
+        DevicesRender, PushEventEnvelope, TermEnsureLane, TermPaste, TermRemoveLane,
         TermRemoveSession, TermShowLane,
     };
 
@@ -2113,6 +2107,63 @@ mod lane_js {
         push(
             main_view,
             &PushEventEnvelope::DevicesRender(DevicesRender { devices }),
+        );
+    }
+
+    /// Console 面へ lane の session 一覧（roster）を渡す。
+    ///
+    /// 供給はこの 1 本（doc 53 §11）。呼び手は [`super::push_session_list`] 経由の 1 箇所だけ。
+    pub fn console_session_list(main_view: &WebView, lane: &str, payload: serde_json::Value) {
+        push(
+            main_view,
+            &PushEventEnvelope::ConsoleSessionList(ConsoleSessionList {
+                lane: lane.to_string(),
+                payload,
+            }),
+        );
+    }
+
+    /// Console 面へ Act II の構造化イベントを渡す。
+    ///
+    /// ⚠️ これは制御面ではなく **stream**。取りこぼしは受け側の replay 要求
+    /// （`echoes:demand_start`）が埋める設計で、押し込みの保留箱には頼らない。
+    pub fn console_event(main_view: &WebView, lane: &str, event: serde_json::Value, session: u32) {
+        push(
+            main_view,
+            &PushEventEnvelope::ConsoleEvent(ConsoleEvent {
+                lane: lane.to_string(),
+                event,
+                session: i64::from(session),
+            }),
+        );
+    }
+
+    /// act 切替が実体に適用されたことを Console 面へ報せる（`SessionActApplied` の戻り）。
+    pub fn console_act_applied(main_view: &WebView, lane: &str, session: u32, act: &str) {
+        push(
+            main_view,
+            &PushEventEnvelope::ConsoleActApplied(ConsoleActApplied {
+                lane: lane.to_string(),
+                session: i64::from(session),
+                act: act.to_string(),
+            }),
+        );
+    }
+
+    /// 「+」menu へ stand 一覧を返す。`req` は要求元の相関 id（doc 47 §6、省略 = 誰も拾わない）。
+    pub fn console_stands(
+        main_view: &WebView,
+        lane: &str,
+        payload: serde_json::Value,
+        req: Option<String>,
+    ) {
+        push(
+            main_view,
+            &PushEventEnvelope::ConsoleStands(ConsoleStands {
+                lane: lane.to_string(),
+                payload,
+                req,
+            }),
         );
     }
 
@@ -4341,8 +4392,8 @@ pub fn run() -> anyhow::Result<()> {
                         // doc 53 §11: **roster も同じ窓で落ちる**（team-b 指摘 2026-07-25）。
                         //
                         // roster が push 型になった以上、`ensure_lane` / `push_active_view` /
-                        // Bastet と同じ boot race を持つ: bundle ロード前の `evaluate_script` は
-                        // `window.vpConsole &&` guard で無言 no-op になるのに、Rust 側は
+                        // device 一覧と同じ boot race を持つ: bundle **評価前**の押し込みは
+                        // 受け口（`window.vpDispatch`）が居ないので届かないのに、Rust 側は
                         // 「送った」として指紋を残す → その lane の roster が**実際に変わるまで
                         // 二度と push されない**（tab strip / pane grid / picker が空のまま）。
                         // 供給が fetch だった頃は「JS が能動的に取りに行く」ので原理的に
@@ -4405,7 +4456,7 @@ pub fn run() -> anyhow::Result<()> {
                     // lane は null のままなので、lane 文脈を要する操作が「active lane 不明」で
                     // 早期 return する。冪等なので毎回再発行して JS 側 state を確定させる。
                     //
-                    // doc 50 §4.6 A6: vpConsole.setMode の catch-up は退役（lane 単位 mode が
+                    // doc 50 §4.6 A6: lane 単位 mode の catch-up は退役（lane 単位 mode が
                     // 消滅）。roster の catch-up は上の lane ループが撃つ（doc 53 §11 — push 型に
                     // なって以降、この経路にも roster が要る）。
                     push_active_view(&webview, &sidebar_state);
@@ -4653,7 +4704,7 @@ pub fn run() -> anyhow::Result<()> {
                 data,
             }) => {
                 // doc 50 §4.6 A6: 同 lane の複数 xterm に振り分けるため session を第 2 引数で渡す
-                // （`vpConsole.handleEvent(lane, event, session)` と同じ形）。
+                // （push envelope `console:event` と同じ形）。
                 let script = format!(
                     "window.vpTerminal && window.vpTerminal.handleOutput({}, {}, {})",
                     serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
@@ -4694,15 +4745,7 @@ pub fn run() -> anyhow::Result<()> {
             }) => {
                 // doc 38 Phase 2: 第 3 引数 session（VP 採番 key）を渡す。console.ts が focused
                 // 判定に使い、chatview が背景 session の stream を焦点会話へ混ぜないよう filter する。
-                let script = format!(
-                    "window.vpConsole && window.vpConsole.handleEvent({}, {}, {})",
-                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
-                    serde_json::to_string(&event).unwrap_or_else(|_| "null".into()),
-                    session,
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("vpConsole.handleEvent 失敗 (lane={}): {}", lane, e);
-                }
+                lane_js::console_event(&webview, &lane, event.clone(), session);
                 // 路 A（memory echoes-act2-notification-signal）: Act II の完了/エラーを Act I の
                 // OSC 通知と同じ sink に流す。headless stream-json は Notification hook を発火しない
                 // ため、turn_completed（stream `result` 由来）が「Claude が返し終えた＝入力待ち」の
@@ -4937,17 +4980,7 @@ pub fn run() -> anyhow::Result<()> {
                         });
                     }
                 }
-                let script = format!(
-                    "window.vpConsole && window.vpConsole.setSessionAct({}, {}, {})",
-                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
-                    session,
-                    serde_json::to_string(&act).unwrap_or_else(|_| "\"tui\"".into()),
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!(
-                        "vpConsole.setSessionAct 失敗 (lane={lane} session={session}): {e}"
-                    );
-                }
+                lane_js::console_act_applied(&webview, &lane, session, &act);
             }
             // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Act に出す」で分岐する:
             //  - chat lane（Act II）: 「新 Draft session を作って focus」。旧会話はタブに残る
@@ -5282,15 +5315,7 @@ pub fn run() -> anyhow::Result<()> {
             // doc 38 Phase 2: stands_list の結果を「+」menu へ push back。
             // doc 47 §6: 第 3 引数 = 要求元の相関 id。共有 bus の購読側はこれで振り分ける。
             Event::UserEvent(AppEvent::EchoesStands { lane, payload, req }) => {
-                let script = format!(
-                    "window.vpConsole && window.vpConsole.handleStands({}, {}, {})",
-                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
-                    serde_json::to_string(&payload).unwrap_or_else(|_| "null".into()),
-                    serde_json::to_string(&req).unwrap_or_else(|_| "null".into()),
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("vpConsole.handleStands 失敗 (lane={lane}): {e}");
-                }
+                lane_js::console_stands(&webview, &lane, payload, req);
             }
             Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
                 // board モデル (2026-07-15): WebView の board mutate（thumbnail ✕ / Clear ボタン）を

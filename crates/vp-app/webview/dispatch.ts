@@ -45,6 +45,10 @@ export interface PushHandlers {
 	deliverPaste(text: string): void;
 	renderDevices(devices: unknown[]): void;
 	handleBoardMessage(message: unknown): void;
+	consoleSessionList(lane: string, payload: unknown): void;
+	consoleEvent(lane: string, event: unknown, session: number): void;
+	consoleActApplied(lane: string, session: number, act: string): void;
+	consoleStands(lane: string, payload: unknown, req: string | null): void;
 }
 
 /**
@@ -91,6 +95,19 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "board:message":
 			handlers.handleBoardMessage(msg.message);
+			break;
+		case "console:session_list":
+			handlers.consoleSessionList(msg.lane, msg.payload);
+			break;
+		case "console:event":
+			handlers.consoleEvent(msg.lane, msg.event, msg.session);
+			break;
+		case "console:act_applied":
+			handlers.consoleActApplied(msg.lane, msg.session, msg.act);
+			break;
+		case "console:stands":
+			// `req` は schema で optional — 「応答を誰も拾わない」が型に載る。
+			handlers.consoleStands(msg.lane, msg.payload, msg.req ?? null);
 			break;
 		default: {
 			// 網羅していれば `never`。Rust 側が新しい event を撃ってきた（= 版ズレ）ときだけ来る。

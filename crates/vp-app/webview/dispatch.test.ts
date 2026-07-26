@@ -28,6 +28,13 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 				calls.push(`devices:${devices.length}`),
 			handleBoardMessage: (message) =>
 				calls.push(`board:${(message as { type?: string }).type}`),
+			consoleSessionList: (lane, _payload) => calls.push(`roster:${lane}`),
+			consoleEvent: (lane, _event, session) =>
+				calls.push(`ev:${lane}#${session}`),
+			consoleActApplied: (lane, session, act) =>
+				calls.push(`act:${lane}#${session}:${act}`),
+			consoleStands: (lane, _payload, req) =>
+				calls.push(`stands:${lane}:${req}`),
 		},
 	};
 }
@@ -120,6 +127,18 @@ describe("dispatch", () => {
 
 		mod.installDispatch(handlers);
 		expect(calls).toEqual(["devices:2", "board:show"]);
+	});
+
+	it("optional field の省略は null として渡る（stands の相関 id）", async () => {
+		// `req` 省略 = 「応答を誰も拾わない」。旧実装は JS へ `null` を直書きしていた。
+		const mod = await import("./dispatch");
+		mod.openDispatch();
+		const { calls, handlers } = recordingHandlers();
+		mod.installDispatch(handlers);
+
+		dispatch({ t: "console:stands", lane: "vp/root", payload: {} });
+		dispatch({ t: "console:stands", lane: "vp/root", payload: {}, req: "r1" });
+		expect(calls).toEqual(["stands:vp/root:null", "stands:vp/root:r1"]);
 	});
 
 	it("install 前に届いた分は二重に流れない", async () => {
