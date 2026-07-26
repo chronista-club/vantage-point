@@ -10,7 +10,7 @@
  *
  * - PR-1: shell layout + Solid store の最小可視化。
  * - PR-2: Repo accordion + Lane ツリー
- *   (stand icon / status / awaiting dot / mailbox icon / performer git meta)。
+ *   (agent icon / status / awaiting dot / mailbox icon / performer git meta)。
  *   操作 (click 選択・context menu・restart/delete・Add Performer form・DnD) は PR-3。
  *   Daemon widget 本体は後続 increment。
  */
@@ -386,7 +386,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* Conductor / Performer の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
-/* 開発起点マーカー (doc 44 D4)。stand icon と title の間に置く「属性」の層。
+/* 開発起点マーカー (doc 44 D4)。agent icon と title の間に置く「属性」の層。
    mute 色 = git meta / cwd と同じ最も引っ込んだ階層で、光らせない
    (光 = needs-you の専有)。起点は常時真なので、目立たせると常に鳴る警告になる。 */
 .vp-lane-origin{display:inline-flex;flex:0 0 auto;margin-right:4px;
@@ -466,7 +466,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-meta,11px);
   box-sizing:border-box;}
 .vp-add-performer-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
-.vp-add-performer-stand{cursor:pointer;appearance:none;-webkit-appearance:none;
+.vp-add-performer-agent{cursor:pointer;appearance:none;-webkit-appearance:none;
   background-image:linear-gradient(45deg,transparent 50%,var(--lg-hot,#EAFBFF) 50%),
     linear-gradient(135deg,var(--lg-hot,#EAFBFF) 50%,transparent 50%);
   background-position:calc(100% - 12px) center,calc(100% - 8px) center;
@@ -542,18 +542,18 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-daemon-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
   font-variant-numeric:tabular-nums;}
 
-/* Devices 🧲 — machine scope の Devices セクション (stand row + device count badge) */
+/* Devices 🧲 — machine scope の Devices セクション (agent row + device count badge) */
 .vp-devices{flex:0 0 auto;padding-bottom:4px;}
-.vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
+.vp-agent-row{position:relative;display:flex;align-items:center;gap:6px;
   padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);
   color:var(--lg-mute,#5C7A85);}
-.vp-stand-row:hover{background:#ffffff06;}
-.vp-stand-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);
+.vp-agent-row:hover{background:#ffffff06;}
+.vp-agent-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);
   color:var(--sb-conn-auto,#FFF76B);}
-.vp-stand-icon{display:flex;align-items:center;flex:0 0 auto;}
-.vp-stand-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+.vp-agent-icon{display:flex;align-items:center;flex:0 0 auto;}
+.vp-agent-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
-.vp-stand-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
+.vp-agent-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
   background:#ffffff08;color:var(--lg-mute,#5C7A85);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}

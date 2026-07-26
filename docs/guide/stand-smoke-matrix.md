@@ -1,18 +1,18 @@
 # Stand スモーク行列 — エンジン横断の動作チェック
 
 > **日付**: 2026-07-16（cursor 実機 dogfood 起点、bikeboy 一次メモから正式移設）  
-> **正本**: 本ファイル（stand 追加 PR の DoD がここを参照する）  
+> **正本**: 本ファイル（agent 追加 PR の DoD がここを参照する）  
 > **進め方ノート**: `.note/multi-engine-advancement.md`（基板=面軸 / 差分=engine / 記録=セル。lane 作業用の非コミット文書）  
 > **関連 doc**: [doc 37](../design/37-echoes-two-axes.md)（engine × Act 直交格子）/ [doc 38](../design/38-lane-multi-session.md)（1 Lane = N session — 排他の単位は session に改定済み）  
-> **status**: living checklist（stand 追加のたびに列を足す）
+> **status**: living checklist（agent 追加のたびに列を足す）
 
 ## なぜ必要か
 
-Lane engine（stand）は増える一方:
+Lane engine（agent）は増える一方:
 
-| stand | エンジン | 備考 |
+| agent | エンジン | 備考 |
 |-------|----------|------|
-| `echoes` (cc) | Claude Code / claude CLI | 既定。Act I + Act II |
+| `claude` (cc) | Claude Code / claude CLI | 既定。Act I + Act II |
 | `cursor` | cursor-agent | 2026-07 dogfood 中 |
 | `codex` | OpenAI Codex CLI | |
 | `agy` | Antigravity CLI | Act I のみ（chat 非対応） |
@@ -21,18 +21,18 @@ Lane engine（stand）は増える一方:
 
 unit test の `EngineKind::ALL` roundtrip は **名前対応の防壁**にはなるが、
 **実 console での tool 権限・MCP・PTY・session resume** は実機でしか壊れない。
-stand を足すたびに同じ穴を踏まないよう、**能力表 + スモーク手順 + 観測ログ**をここに集約する。
+agent を足すたびに同じ穴を踏まないよう、**能力表 + スモーク手順 + 観測ログ**をここに集約する。
 
 ## 層分け
 
 | 層 | 何を守るか | 誰が回すか |
 |----|-----------|-----------|
-| **A. 名前 / 能力表** | `from_stand` / `stand_name` / chat_capable 等 | `cargo test`（`engine.rs` 既存） |
-| **B. spawn / resume** | create-chat / --resume / fail-open / repo 再起動で stand 保持 | 半自動 + 実機 |
+| **A. 名前 / 能力表** | `from_agent` / `agent_name` / chat_capable 等 | `cargo test`（`engine.rs` 既存） |
+| **B. spawn / resume** | create-chat / --resume / fail-open / repo 再起動で agent 保持 | 半自動 + 実機 |
 | **C. Console 実機** | Act I 対話・Act II chat・入力・表示 | **手動 dogfood（本 doc の主戦場）** |
-| **D. Agent tool surface** | Shell / MCP / Read-Write / wire | **stand 内 agent が自己報告**（下記テンプレ） |
+| **D. Agent tool surface** | Shell / MCP / Read-Write / wire | **席の中の AI 本体が自己報告**（下記テンプレ） |
 
-C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェック**と**実機ログの追記**で回す。
+C/D は CI に載せにくい。代わりに **agent 追加 PR の必須チェック**と**実機ログの追記**で回す。
 
 ## 能力表（期待値・正）
 
@@ -45,20 +45,20 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 | MCP `CallMcpTool` (vp) | ✅ 想定 | ✅ II=`--force`要 | ❓ | ❓ | ❓ | — |
 | Shell tool | ✅ 想定 | ✅ II=`--force`要 | ❓ | ❓ | ❓ | n/a |
 | wire_send/recv | ✅ | ❓ | ❓ | ❓ | ❓ | — |
-| repo restart 後 stand 保持 | ✅ | ✅ 要確認 | ✅ 要確認 | ✅ | ❓ | ✅ |
+| repo restart 後 agent 保持 | ✅ | ✅ 要確認 | ✅ 要確認 | ✅ | ❓ | ✅ |
 
-`❓` = 未計測。stand 追加時は必ず列を埋め、❌/制限は「仕様」か「バグ」かを注記する。
+`❓` = 未計測。agent 追加時は必ず列を埋め、❌/制限は「仕様」か「バグ」かを注記する。
 
-## C. Console 実機チェックリスト（stand ごと）
+## C. Console 実機チェックリスト（agent ごと）
 
-新 stand / 大きな console 変更のたびに、対象 stand で全部通す。
+新 agent / 大きな console 変更のたびに、対象 agent で全部通す。
 
 ### 起動
 
-- [ ] `add_performer(stand="<name>")` または GUI「+」で lane が立つ
-- [ ] sidebar に正しい stand 名 / icon が出る
+- [ ] `add_performer(agent="<name>")` または GUI「+」で lane が立つ
+- [ ] sidebar に正しい agent 名 / icon が出る
 - [ ] Act I console に prompt / TUI が出る（login 待ちならその旨が分かる）
-- [ ] 未知 stand / CLI 不在時に **shell だけ残って死なない**（fail-open）
+- [ ] 未知 agent / CLI 不在時に **shell だけ残って死なない**（fail-open）
 
 ### 対話
 
@@ -70,9 +70,9 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 
 - [ ] lane 切替 → 戻ってきても同一 session（指名 resume）
 - [ ] New Session / fresh で本当に新規になる
-- [ ] repo Restart 後も **stand が echoes に化けない**
+- [ ] repo Restart 後も **agent が echoes に化けない**
 
-### Act II（chat_capable な stand のみ）
+### Act II（chat_capable な agent のみ）
 
 - [ ] console_set_mode(chat) できる
 - [ ] submit → ストリーム表示
@@ -80,13 +80,13 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 
 ## D. Agent tool surface 自己診断テンプレ
 
-stand 内の agent に次を投げ、結果を下表に転記する（コピペ可）。
+agent 内の agent に次を投げ、結果を下表に転記する（コピペ可）。
 
 ```text
-あなたは VP stand 実機スモーク中です。次を試し、OK/NG/メッセージを表で返してください。
+あなたは VP agent 実機スモーク中です。次を試し、OK/NG/メッセージを表で返してください。
 1. Shell: `echo stand-smoke-ok && pwd`
 2. Read: リポジトリ直下の何か 1 ファイル先頭数行
-3. Write → Delete: /tmp/vp-stand-smoke-<stand>.tmp を書いて消す
+3. Write → Delete: /tmp/vp-stand-smoke-<agent>.tmp を書いて消す
 4. GetMcpTools(server=vp) の serverStatus
 5. CallMcpTool vp/show（短い markdown ping）
 6. CallMcpTool vp/wire_inbox
@@ -112,7 +112,7 @@ stand 内の agent に次を投げ、結果を下表に転記する（コピペ�
 
 ### 2026-07-16 — cursor console（bikeboy / VP Cursor 実機）
 
-実行環境: VP Cursor stand コンソール（agent 経由）。対話応答自体は成立。
+実行環境: VP Cursor agent コンソール（agent 経由）。対話応答自体は成立。
 
 | # | 操作 | 結果 | メモ |
 |---|------|------|------|
@@ -202,7 +202,7 @@ server 一括のみ）ため、claude の can_use_tool（doc 35）と同型の b
 ＝ C4 で cursor 側 control protocol の対応状況を先に調査してから。それまでは `--force`（全許可）が唯一
 現実的な parity 手段。
 
-## stand 追加時の Definition of Done（短い）
+## agent 追加時の Definition of Done（短い）
 
 1. `EngineKind` / stand_store バリデーション / UI chip に名前を足す（層 A）
 2. 本 doc の能力表に列を足し、❓ を実測で潰す（層 C/D）
@@ -211,6 +211,6 @@ server 一括のみ）ため、claude の can_use_tool（doc 35）と同型の b
 
 ## 自動化の次の一歩（まだやらない / やりたい）
 
-- [ ] 層 D を stand 内 agent が JSON で吐き、conductor が集約する smoke harness
+- [ ] 層 D を agent 内 agent が JSON で吐き、conductor が集約する smoke harness
 - [ ] CI では層 A のみ必須。層 C/D は release / dogfood checklist
 - [ ] `User rejected` と auto-block をエラー種別で分離（観測 6・仮説 1）

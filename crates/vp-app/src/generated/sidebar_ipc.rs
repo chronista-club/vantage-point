@@ -73,11 +73,11 @@ pub struct LaneAddPerformer {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stand: Option<String>,
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StandsFetch {
+pub struct AgentsFetch {
     pub path: String,
 }
 
@@ -140,9 +140,9 @@ pub struct PerformerCreateResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StandsResult {
+pub struct AgentsResult {
     pub repo_path: String,
-    pub stands: Vec<serde_json::Value>,
+    pub agents: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -198,8 +198,8 @@ pub enum IpcEnvelope {
     LaneReorder(LaneReorder),
     #[serde(rename = "lane:add_performer")]
     LaneAddPerformer(LaneAddPerformer),
-    #[serde(rename = "stands:fetch")]
-    StandsFetch(StandsFetch),
+    #[serde(rename = "agents:fetch")]
+    AgentsFetch(AgentsFetch),
     #[serde(rename = "stand:select")]
     StandSelect(StandSelect),
     #[serde(rename = "repo:clone:pickFolder")]
@@ -227,8 +227,8 @@ pub enum IpcEventEnvelope {
     SidebarError(SidebarError),
     #[serde(rename = "performer:create_result")]
     PerformerCreateResult(PerformerCreateResult),
-    #[serde(rename = "stands:result")]
-    StandsResult(StandsResult),
+    #[serde(rename = "agents:result")]
+    AgentsResult(AgentsResult),
     #[serde(rename = "files:list_result")]
     FilesListResult(FilesListResult),
     #[serde(rename = "wire:result")]

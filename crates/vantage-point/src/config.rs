@@ -97,16 +97,16 @@ pub struct Config {
     #[kdl(child, name = "claude-cli-path", unwrap_arg)]
     pub claude_cli_path: Option<String>,
 
-    /// Lane 作成時の default Stand 名 (例: "echoes" / "shell" / "tmux")。
+    /// Lane 作成時の default Stand 名 (例: "claude" / "shell" / "tmux")。
     ///
-    /// `mise run vp:stand:{name}` の `name` 部分を指定。 None なら "echoes" fallback
-    /// (`Config::default_stand_or_echoes()` 経由)。
+    /// `mise run vp:agent:{name}` の `name` 部分を指定。 None なら "claude" fallback
+    /// (`Config::default_agent_or_claude()` 経由)。
     ///
-    /// doc 11 §3 (Stand init_script system / mise task 路線)、 PR-B 対応。
-    /// PR-pre2 (VP-118): "hd" → "echoes" rename (Stand metaphor + identifier sweep)。
+    /// doc 11 §3 (Agent init_script system / mise task 路線)、 PR-B 対応。
+    /// PR-pre2 (VP-118): "hd" → "claude" rename (Agent metaphor + identifier sweep)。
     #[serde(default)]
-    #[kdl(child, name = "default-stand", unwrap_arg)]
-    pub default_stand: Option<String>,
+    #[kdl(child, name = "default-agent", unwrap_arg)]
+    pub default_agent: Option<String>,
 
     /// performer lane 追加時の既定 claude model alias（`--model` 未指定時に engine_model へ記録）。
     ///
@@ -315,15 +315,15 @@ impl Config {
         config_file_path()
     }
 
-    /// Default Stand 名 (config 未指定なら "echoes" fallback)。
+    /// Default Stand 名 (config 未指定なら "claude" fallback)。
     ///
-    /// `mise run vp:stand:{name}` の `name` 部分。 lane 作成時 (sidebar UI / HTTP API /
-    /// LanePool::with_root 等) で stand 指定が無い場合の選択値。
+    /// `mise run vp:agent:{name}` の `name` 部分。 lane 作成時 (sidebar UI / HTTP API /
+    /// LanePool::with_root 等) で agent 指定が無い場合の選択値。
     ///
-    /// PR-pre2 (VP-118): rename `default_stand_or_hd` → `default_stand_or_echoes`、
-    /// fallback "hd" → "echoes" (HD → Echoes rename の一環)。
-    pub fn default_stand_or_echoes(&self) -> &str {
-        self.default_stand.as_deref().unwrap_or("echoes")
+    /// PR-pre2 (VP-118): rename `default_stand_or_hd` → `default_agent_or_claude`、
+    /// fallback "hd" → "claude" (HD → Echoes rename の一環)。
+    pub fn default_agent_or_claude(&self) -> &str {
+        self.default_agent.as_deref().unwrap_or("claude")
     }
 
     /// performer 追加時の既定 model alias（config 未指定 or 形式外なら **None = 記録しない**）。
@@ -507,7 +507,7 @@ mod tests {
 default-repo-dir "/home/user/repos/main"
 default-port 33001
 claude-cli-path "/opt/claude/bin/claude"
-default-stand "echoes"
+default-agent "claude"
 hub-addr "hub.chronista.club:12879"
 startup {
     max-concurrent-lane-spawn 3
@@ -523,7 +523,7 @@ startup {
             config.claude_cli_path.as_deref(),
             Some("/opt/claude/bin/claude")
         );
-        assert_eq!(config.default_stand.as_deref(), Some("echoes"));
+        assert_eq!(config.default_agent.as_deref(), Some("claude"));
         assert_eq!(config.hub_addr.as_deref(), Some("hub.chronista.club:12879"));
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
         // repos は config.kdl に出さない (#[kdl(skip)]、 SSOT は repos.kdl)

@@ -1,10 +1,10 @@
-//! machine 階層 Stand container (LSCM、 doc 12 §3 / §9 参照)
+//! machine 階層 Agent container (LSCM、 doc 12 §3 / §9 参照)
 //!
 //! daemon (`run_daemon`、 port 32000) で 1 instance、 machine 全体で共有される
-//! machine 階層 Stand 群を host する。 LSCM (Layer-Stand Composition Model) における
+//! machine 階層 Agent 群を host する。 LSCM (Layer-Agent Composition Model) における
 //! "Layer がそこに保持されるべき Stand を抱える" の machine layer 実体。
 //!
-//! ## host する Stand
+//! ## host する Agent
 //!
 //! - **daemon 👑** (`RepoManagerCapability`): VP daemon process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
@@ -20,7 +20,7 @@
 //! - 後続 cleanup: AppState 既存 field (`daemon` / `update`) と本 struct の重複保持を整理
 //!   (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
 //!
-//! wiremsg R5-4: 旧 msgbox の registry サブシステム (旧 External Control stand の registry
+//! wiremsg R5-4: 旧 msgbox の registry サブシステム (旧 External Control agent の registry
 //! 登録を含む) は撤去済。 wire の cross-process delivery は daemon の repo registry
 //! (repo → repo port) を使う別経路で、 msgbox registry には依存しない。
 //!
@@ -34,7 +34,7 @@ use crate::capability::{RepoManagerCapability, UpdateCapability};
 #[cfg(feature = "midi")]
 use crate::devices::DeviceRegistry;
 
-/// machine 階層 Stand container。
+/// machine 階層 Agent container。
 ///
 /// daemon で 1 instance、 machine 全体で共有。
 pub struct MachineCapabilities {

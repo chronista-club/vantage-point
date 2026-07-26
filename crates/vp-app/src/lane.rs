@@ -1,6 +1,6 @@
 //! Lane — repo 内で起動する PTY セッションの抽象。
 //!
-//! 関連: `mem_1CaSpvE??` (VP Architecture: 3 段 Stand scope + Lane semantic)
+//! 関連: `mem_1CaSpvE??` (VP Architecture: 3 段 Agent scope + Lane semantic)
 //!
 //! ## 構造 (memory rule)
 //!
@@ -132,9 +132,9 @@ impl From<&LaneAddressWire> for LaneAddress {
     }
 }
 
-// `LaneStand` enum は doc 11 PR-B で削除。 stand 識別子は wire 経由で String として
-// 受け取る (`crate::client::LaneInfo.stand: String`)、 vp-app 内では直接文字列で扱う。
-// 表示用 mapping (旧 Display impl の "HD" / "TH") は app.rs の standDisplayName JS 関数に
+// `LaneStand` enum は doc 11 PR-B で削除。 agent 識別子は wire 経由で String として
+// 受け取る (`crate::client::LaneInfo.agent: String`)、 vp-app 内では直接文字列で扱う。
+// 表示用 mapping (旧 Display impl の "HD" / "TH") は app.rs の agentDisplayName JS 関数に
 // 集約 (`hd` / `shell` / `tmux` / その他 fallback)。
 
 #[cfg(test)]

@@ -87,7 +87,7 @@ export const APP_SCENES: readonly Scene[] = [
 
 const APP_SCENE_BY_ID = new Map(APP_SCENES.map((s) => [s.id, s]));
 
-/** Ctrl+Shift+]/[ で巡る preset（doc 52 §10 wave 0: pp scene 退役後は 4 つの stand focus を巡る。
+/** Ctrl+Shift+]/[ で巡る preset（doc 52 §10 wave 0: pp scene 退役後は 4 つの agent focus を巡る。
  *  empty は巡回に入れない）。lead-focus = lane workbench（board も console も chat もこの中の tiling）。 */
 export const PRESET_CYCLE = ["lead-focus", "runner-focus", "devices-focus", "preview-focus"] as const;
 
@@ -130,7 +130,7 @@ function applySceneToEngine(scene: Scene): void {
  * AI（MCP layout_set、doc 49 LE-P4 PR3）からの直接適用。jump — CSS transition が
  * 視覚を均す（scrub / driver は app scope 未導入、冒頭 doc）。author="ai" が settle
  * 監査に残る。preset 外の形になるので cycle の現在位置はリセットする。
- * AI の明示配置は stand 訪問を終える（訪問中の場を無関係な出発点で上書きしない —
+ * AI の明示配置は agent 訪問を終える（訪問中の場を無関係な出発点で上書きしない —
  * 未終了だと後続の ✕ / lane 切替が古い beforeVisit で AI の配置を握り潰す）。
  */
 export function applyAppLayoutFromAi(next: Layout): void {
@@ -143,7 +143,7 @@ export function applyAppLayoutFromAi(next: Layout): void {
 
 /** preset を適用する（author = "scene" で settle log に刻まれる）。未知 id は false */
 export function applyAppScene(id: string): boolean {
-	// 明示の scene 選択（hotkey / cycle / empty 等）は stand 訪問を終える
+	// 明示の scene 選択（hotkey / cycle / empty 等）は agent 訪問を終える
 	transientVisit = false;
 	const scene = APP_SCENE_BY_ID.get(id);
 	if (!scene) {
@@ -157,7 +157,7 @@ export function applyAppScene(id: string): boolean {
 
 // ---------- stand pane の「訪問」（sidebar click の一時 view、2026-07-23 dogfood） ----------
 // sidebar から board/runner/Devices を開くのは「ちょっと見る」訪問であって workspace の形の
-// 選択ではない — 訪問を lane の配置記憶に焼き込むと、lane を行き来しても stand 画面が
+// 選択ではない — 訪問を lane の配置記憶に焼き込むと、lane を行き来しても agent 画面が
 // 出っ放しになり console に戻る口が hotkey しかなくなる（Devices 可視化で表面化した
 // 新旧共通の UX ギャップ）。訪問は出発点を覚え、✕（close-pane）で戻る。
 
@@ -224,7 +224,7 @@ const laneStates = new Map<string, { layout: Layout; sceneId: string | null }>()
 
 /** lane を離れる時に呼ぶ。「empty が主役」（何も選択していない）の形は覚えない */
 export function saveAppStateFor(lane: string): void {
-	// stand 訪問中は**出発点**の形を覚える — 一時 view を lane の記憶に焼き込まない
+	// agent 訪問中は**出発点**の形を覚える — 一時 view を lane の記憶に焼き込まない
 	if (transientVisit && beforeVisit) {
 		const primary = primaryAppPane(resolve(beforeVisit.layout));
 		if (primary === null || primary === "empty") return;
@@ -242,7 +242,7 @@ export function saveAppStateFor(lane: string): void {
 	});
 }
 
-/** lane に入る時に呼ぶ。初訪問は lead-focus（旧 default と同じ）。stand 訪問は終わる */
+/** lane に入る時に呼ぶ。初訪問は lead-focus（旧 default と同じ）。agent 訪問は終わる */
 export function restoreAppStateFor(lane: string): void {
 	transientVisit = false;
 	const saved = laneStates.get(lane);

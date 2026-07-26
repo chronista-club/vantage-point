@@ -34,10 +34,10 @@ export interface ActivePaneInfo {
 	branch?: string | null;
 	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
 	session_id?: string | null;
-	/** root session の stand（= slot に載る engine 種別、chip prefix 導出用: "echoes" / "codex" /
-	 *  "grok" 等）。doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決
-	 *  済み（cross-engine root でも chip prefix が slot の engine を映す）。無ければ lane 固定 stand。 */
-	stand?: string | null;
+	/** root session の agent（= slot に載る engine 種別、chip prefix 導出用: "claude" / "codex" /
+	 *  "grok" 等）。doc 39 P4-C: Rust push_active_view が agent_name（root の engine）優先で解決
+	 *  済み（cross-engine root でも chip prefix が slot の engine を映す）。無ければ lane 固定 agent。 */
+	agent?: string | null;
 }
 
 const ipc = () =>
@@ -49,9 +49,9 @@ function post(payload: unknown): void {
 	} catch (_) {}
 }
 
-// ========= Architecture v4: Lane / Stand 切替 API =========
+// ========= Architecture v4: Lane / Agent 切替 API =========
 // Rust → JS で active Lane / Stand を切替。kind が null の場合は empty 状態を表示。
-// Phase 5-A: Repo-scope Stand (board/runner ほか) を click 可能 pane として追加。
+// Phase 5-A: Repo-scope Agent (board/runner ほか) を click 可能 pane として追加。
 // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
 // doc 52 §10 wave 0: board は app pane を退役（board pane = lane tiling へ）。
 //

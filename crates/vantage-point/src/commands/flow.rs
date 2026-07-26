@@ -36,9 +36,9 @@ pub enum FlowCommands {
         /// Lane clone する branch (省略時は repo 側で `<git-user>/<sanitized-name>` を auto-derive)
         #[arg(long, short)]
         branch: Option<String>,
-        /// Lane Stand: 'echoes' (default、 Claude CLI) or 'shell'
+        /// Lane Agent: 'claude' (default、 Claude CLI) or 'shell'
         #[arg(long, short)]
-        stand: Option<String>,
+        agent: Option<String>,
         /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
         /// performer-files.kdl の base-ref → origin/HEAD → main
         #[arg(long)]
@@ -69,14 +69,14 @@ pub async fn run(cmd: FlowCommands) -> Result<()> {
             name,
             task_spec,
             branch,
-            stand,
+            agent,
             base,
             model,
             mode,
             no_nudge,
         } => {
             handoff(
-                &name, &task_spec, branch, stand, base, model, &mode, !no_nudge,
+                &name, &task_spec, branch, agent, base, model, &mode, !no_nudge,
             )
             .await
         }
@@ -126,7 +126,7 @@ async fn handoff(
     name: &str,
     task_spec_arg: &str,
     branch: Option<String>,
-    stand: Option<String>,
+    agent: Option<String>,
     base: Option<String>,
     model: Option<String>,
     mode: &str,
@@ -153,8 +153,8 @@ async fn handoff(
     if let Some(ref b) = branch.as_ref().filter(|s| !s.trim().is_empty()) {
         create_body["branch"] = serde_json::Value::String(b.to_string());
     }
-    if let Some(ref s) = stand.as_ref().filter(|s| !s.trim().is_empty()) {
-        create_body["stand"] = serde_json::Value::String(s.to_string());
+    if let Some(ref s) = agent.as_ref().filter(|s| !s.trim().is_empty()) {
+        create_body["agent"] = serde_json::Value::String(s.to_string());
     }
     if let Some(ref b) = base.as_ref().filter(|s| !s.trim().is_empty()) {
         create_body["base"] = serde_json::Value::String(b.to_string());

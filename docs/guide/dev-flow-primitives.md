@@ -25,7 +25,7 @@ mcp__vantage-point__flow_handoff {
   "name": "feat-api",                 // 必須: performer slug
   "task_spec": "# mission\n...",      // 必須: worker への markdown 仕様
   "branch": "mako/feat-api",          // 省略時 `<git-user>/<slug>` を auto-derive
-  "stand": "echoes",                  // default "echoes" (= Claude CLI)
+  "agent": "claude",                  // default "claude" (= Claude CLI)
   "mode": "hitl",                     // "hitl" (default、 nudge 後応答期待) / "auto"
   "nudge": true                       // default true、 false で tmux send-keys を skip
 }
@@ -84,7 +84,7 @@ mcp__vantage-point__flow_progress {}
     "name": "feat-api",
     "address": "agent@vantage-point/feat-api",
     "state": "Running",                          // = repo の Lane state (生死)
-    "stand": "echoes",
+    "agent": "claude",
     "cwd": "/.../.vp/lanes/feat-api",
     "performer_status": {
       "branch": "mako/feat-api",

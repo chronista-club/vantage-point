@@ -154,7 +154,7 @@ impl Default for DeviceIoStand {
 }
 
 impl LaneStandHost for DeviceIoStand {
-    fn stand_kind(&self) -> &'static str {
+    fn service_kind(&self) -> &'static str {
         "device_io"
     }
 
@@ -231,14 +231,14 @@ mod tests {
 
     #[test]
     fn stand_kind_is_device_io() {
-        let stand = DeviceIoStand::new();
-        assert_eq!(stand.stand_kind(), "device_io");
+        let agent = DeviceIoStand::new();
+        assert_eq!(agent.service_kind(), "device_io");
     }
 
     #[test]
     fn supports_downcast() {
-        let stand = DeviceIoStand::new();
-        let host: &dyn LaneStandHost = &stand;
+        let agent = DeviceIoStand::new();
+        let host: &dyn LaneStandHost = &agent;
         let downcast = host.as_any().downcast_ref::<DeviceIoStand>();
         assert!(downcast.is_some());
     }
@@ -247,42 +247,42 @@ mod tests {
 
     #[tokio::test]
     async fn bind_profile_increments_count() {
-        let stand = DeviceIoStand::new();
-        assert_eq!(stand.profile_count().await, 0);
+        let agent = DeviceIoStand::new();
+        assert_eq!(agent.profile_count().await, 0);
 
-        stand
+        agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
-        assert_eq!(stand.profile_count().await, 1);
+        assert_eq!(agent.profile_count().await, 1);
 
-        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
-        assert_eq!(stand.profile_count().await, 2);
+        agent.bind_profile(Box::new(MockProfile::new("Roto"))).await;
+        assert_eq!(agent.profile_count().await, 2);
     }
 
     #[tokio::test]
     async fn unbind_all_clears_profiles() {
-        let stand = DeviceIoStand::new();
-        stand
+        let agent = DeviceIoStand::new();
+        agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
-        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
-        assert_eq!(stand.profile_count().await, 2);
+        agent.bind_profile(Box::new(MockProfile::new("Roto"))).await;
+        assert_eq!(agent.profile_count().await, 2);
 
-        stand.unbind_all().await;
-        assert_eq!(stand.profile_count().await, 0);
+        agent.unbind_all().await;
+        assert_eq!(agent.profile_count().await, 0);
     }
 
     // ─── projection ────────────────────────────────────
 
     #[tokio::test]
     async fn handshake_all_returns_batches_per_profile() {
-        let stand = DeviceIoStand::new();
-        stand
+        let agent = DeviceIoStand::new();
+        agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
-        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
+        agent.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
-        let batches = stand.handshake_all().await;
+        let batches = agent.handshake_all().await;
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].port_pattern, "X-Touch");
         assert_eq!(batches[1].port_pattern, "Roto");
@@ -290,23 +290,23 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_filters_empty() {
-        let stand = DeviceIoStand::new();
-        stand
+        let agent = DeviceIoStand::new();
+        agent
             .bind_profile(Box::new(MockProfile::without_handshake("silent")))
             .await;
 
-        let batches = stand.handshake_all().await;
+        let batches = agent.handshake_all().await;
         assert!(batches.is_empty());
     }
 
     #[tokio::test]
     async fn repo_track_generates_batches() {
-        let stand = DeviceIoStand::new();
-        stand
+        let agent = DeviceIoStand::new();
+        agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
 
-        let batches = stand
+        let batches = agent
             .project_track(0, "vocal", Rgb::new(255, 0, 0), false)
             .await;
         assert_eq!(batches.len(), 1);
@@ -317,13 +317,13 @@ mod tests {
 
     #[tokio::test]
     async fn repo_track_multi_profile() {
-        let stand = DeviceIoStand::new();
-        stand
+        let agent = DeviceIoStand::new();
+        agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
-        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
+        agent.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
-        let batches = stand
+        let batches = agent
             .project_track(3, "bass", Rgb::new(0, 0, 255), true)
             .await;
         assert_eq!(batches.len(), 2);
@@ -333,11 +333,11 @@ mod tests {
 
     #[tokio::test]
     async fn repo_parameter_generates_batches() {
-        let stand = DeviceIoStand::new();
-        stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
+        let agent = DeviceIoStand::new();
+        agent.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
         let spec = ParamSpec::continuous("volume", 0.5);
-        let batches = stand.project_parameter(0, &spec).await;
+        let batches = agent.project_parameter(0, &spec).await;
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].port_pattern, "Roto");
         // mock: [0xB0, index, value_byte] where 0.5 * 127 ≈ 63
@@ -346,8 +346,8 @@ mod tests {
 
     #[tokio::test]
     async fn repo_on_empty_returns_nothing() {
-        let stand = DeviceIoStand::new();
-        let batches = stand
+        let agent = DeviceIoStand::new();
+        let batches = agent
             .project_track(0, "test", Rgb::new(0, 0, 0), false)
             .await;
         assert!(batches.is_empty());
@@ -355,16 +355,16 @@ mod tests {
 
     #[tokio::test]
     async fn projection_updates_shadow_state() {
-        let stand = DeviceIoStand::new();
-        stand
+        let agent = DeviceIoStand::new();
+        agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
 
         // 2 回 repo → shadow state（track_calls）が累積するか
-        stand.project_track(0, "a", Rgb::new(0, 0, 0), false).await;
-        stand.project_track(1, "b", Rgb::new(0, 0, 0), false).await;
+        agent.project_track(0, "a", Rgb::new(0, 0, 0), false).await;
+        agent.project_track(1, "b", Rgb::new(0, 0, 0), false).await;
 
-        let state = stand.state().read().await;
+        let state = agent.state().read().await;
         // MockProfile は track_calls を内部で increment — shadow state の動作確認
         // （実 profile では LCD/色の shadow buffer がこれに相当）
         assert_eq!(state.profiles.len(), 1);

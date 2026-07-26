@@ -101,7 +101,7 @@ reconcile_lane(addr):
     for session in live - intent:                   # intent から消えた
         drop engine / slot / pump、replay file を掃除
     for session in intent where act=Tui and no slot:
-        slot を立てる（その session の stand / conversation で）
+        slot を立てる（その session の agent / conversation で）
     for session in intent where act=Chat and slot exists:
         slot を畳む（1 session = 高々 1 engine の法）
     for live term slot without pump, if 購読者が居る:
@@ -167,7 +167,7 @@ A6 で「**lane 単位の述語はすべて誤った要約になる**」と分�
 | lane が持つ | session が持つ |
 |---|---|
 | cwd / branch / repo（作業の場所） | act（見え方） |
-| mailbox `agent@<lane>`（誰に宛てるか）※ 主語は root | engine / stand（投げる先） |
+| mailbox `agent@<lane>`（誰に宛てるか）※ 主語は root | engine / agent（投げる先） |
 | board（貼る台。lane-scoped で 1 枚） | conversation id（会話の在処） |
 | layout scope（`lane:<addr>` の tiling） | PtySlot / chat engine / pump / replay（実体） |
 | 代表 = root（**誰が lane を名乗るか**） | 自分の識別子（`__<session>` の付く全て） |
@@ -819,7 +819,7 @@ Bare / Resume / Reset の差を数え直すと、**すべて registry の今に�
 
 ```
 reconcile_lane(addr):
-  desired = registry の sessions（key, act, stand, conversation）
+  desired = registry の sessions（key, act, agent, conversation）
   各 desired session:
     act=Tui ∧ slot 無  → 立てる（conversation 有れば resume、無ければ bare — §10.3）
     act=Chat ∧ slot 有 → 畳む
@@ -990,7 +990,7 @@ Add chat / ✕ / focus）、R3c-2 = lane 系 4 本（New root / Switch root / Re
 | focus | `LaneInfo.pid` の手書き追随（chat なら focused の engine pid を写す）— R3b の導出規則と矛盾していた最後の 1 件 |
 
 **発見①: guard の 4 分の 3 が消滅した**。旧 `open_slot_for_session` は 4 つの入口 guard で法
-（1 session = 高々 1 エンジン）を守っていたが、R3c 後に残るのは **未知 stand の 1 つだけ**。
+（1 session = 高々 1 エンジン）を守っていたが、R3c 後に残るのは **未知 agent の 1 つだけ**。
 残り 3 つ（registry に居ない / 既に console がある / act=Chat）は **desired の導出規則が
 そもそも生成しない**ので、断る対象が存在しない。
 

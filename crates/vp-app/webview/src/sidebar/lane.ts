@@ -1,20 +1,19 @@
 /**
  * Lane (Conductor / Performer) の表示ヘルパー。
  *
- * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `STAND_GLYPH` / `standDisplayName` /
+ * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `STAND_GLYPH` / `agentDisplayName` /
  * `laneLabel` / `laneAddressKey` を SolidJS sidebar 用に port したもの。
  */
 import type { IconName } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 
 /**
- * Lane Stand kind → Phosphor icon (default / active=fill weight) のペア。
+ * Lane Agent kind → Phosphor icon (default / active=fill weight) のペア。
  * 旧 SIDEBAR_HTML `STAND_GLYPH` の port。 `-fill` を別 literal で持ち、
  * `IconName` 型に収まるようにする (文字列連結だと型が string に広がるため)。
  */
 const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
-	echoes: { default: "ph:chats-teardrop", active: "ph:chats-teardrop-fill" },
-	hd: { default: "ph:chats-teardrop", active: "ph:chats-teardrop-fill" }, // legacy alias
+	claude: { default: "ph:chats-teardrop", active: "ph:chats-teardrop-fill" },
 	shell: { default: "ph:terminal-window", active: "ph:terminal-window-fill" },
 	tmux: { default: "ph:presentation", active: "ph:presentation-fill" },
 	board: { default: "ph:compass", active: "ph:compass-fill" },
@@ -22,17 +21,17 @@ const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
 	devices: { default: "ph:magnet", active: "ph:magnet-fill" },
 };
 
-/** Stand kind から icon 名を解決。 active 時は fill weight。 未知 stand は `null`。 */
-export function standIcon(stand: string, active: boolean): IconName | null {
-	const set = STAND_ICON[stand];
+/** Agent kind から icon 名を解決。 active 時は fill weight。 未知 agent は `null`。 */
+export function agentIcon(agent: string, active: boolean): IconName | null {
+	const set = STAND_ICON[agent];
 	if (!set) return null;
 	return active ? set.active : set.default;
 }
 
 /** Stand の表示名 (Architecture v4 metaphor)。 */
-export function standDisplayName(stand: string): string {
-	switch (stand) {
-		case "echoes":
+export function agentDisplayName(agent: string): string {
+	switch (agent) {
+		case "claude":
 		case "hd": // legacy alias (旧 Heaven's Door)
 			return "Echoes";
 		case "shell":
@@ -46,7 +45,7 @@ export function standDisplayName(stand: string): string {
 		case "devices":
 			return "Devices";
 		default:
-			return stand;
+			return agent;
 	}
 }
 

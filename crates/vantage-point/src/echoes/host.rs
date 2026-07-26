@@ -122,7 +122,7 @@ pub struct EchoesHostConfig {
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
     /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — Act I の
-    /// stand_spawner 注入と同じ契約。`vp now` / wire がこれを読んで宛先を名乗る）。
+    /// agent_spawner 注入と同じ契約。`vp now` / wire がこれを読んで宛先を名乗る）。
     pub lane_label: String,
     /// identity env（`VP_SESSION_KEY`）用の session key（doc 40 §4 の hook identity と同じ —
     /// Act II の engine が「自分がどの session か」を名乗れるようにする）。
@@ -250,7 +250,7 @@ impl EchoesAgentHost {
         let mut cmd = Command::new(&claude_path);
         // 親（repo）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
         cmd.envs(std::env::vars());
-        // identity env（doc 51 §1 A3b）: Act I の stand_spawner と同じ契約を Act II にも。
+        // identity env（doc 51 §1 A3b）: Act I の agent_spawner と同じ契約を Act II にも。
         // engine（とその shell tool の子プロセス）が `vp now` / wire で自分を名乗るための口。
         cmd.env("VP_REPO", &config.repo);
         cmd.env("VP_LANE", &config.lane_label);
@@ -522,7 +522,7 @@ fn record_session(repo: &str, lane: &str, session_id: &str) {
     if let Err(e) = crate::lane::session_registry::set_conversation(
         repo,
         lane_label,
-        "echoes",
+        "claude",
         key,
         Some(session_id),
     ) {

@@ -49,7 +49,7 @@ import {
 import { newPaneChoices } from './lane-panes'
 import { STAND_ICON } from './icons/stand'
 
-/** `vp:echoes-stands` bus が運ぶ stand entry（newPaneChoices の入力と同形）。 */
+/** `vp:echoes-agents` bus が運ぶ agent entry（newPaneChoices の入力と同形）。 */
 type PaneStand = { name: string; label?: string; chat_capable?: boolean }
 
 // ---------------------------------------------------------------------------
@@ -86,9 +86,9 @@ export function laneShortName(addr: string): string {
  * claude は歴史的な `cc`（Claude Code）を維持、未知 engine（撤去済み cursor / agy 含む）は
  * 中立の `sid`。
  */
-export function sessionChipPrefix(stand: string | null | undefined): string {
-  switch (stand) {
-    case 'echoes':
+export function sessionChipPrefix(agent: string | null | undefined): string {
+  switch (agent) {
+    case 'claude':
     case 'hd':
       return 'cc'
     case 'codex':
@@ -110,7 +110,7 @@ export type RootPickerItem = {
   isRoot: boolean
   /** 切替不可。実質の理由は「**resume を持たない**」（doc 50 §4.0 — shell 層に落ちる
    *  session は `--resume` で slot に張り替えられない）。判定は chip prefix `sid`
-   *  （撤去済み / legacy stand）を代理指標にしている — shell が正規の投げる先になる時は
+   *  （撤去済み / legacy agent）を代理指標にしている — shell が正規の投げる先になる時は
    *  この代理を「resume capability」の実表現に置き換えること。 */
   disabled: boolean
 }
@@ -118,17 +118,17 @@ export type RootPickerItem = {
 /**
  * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 → P4 — Root 切替 picker）。
  * 並びは repo の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙する。
- * doc 39 P4: slot の respawn が root session の stand で engine を決めるようになった（P4-A）ため、
+ * doc 39 P4: slot の respawn が root session の agent で engine を決めるようになった（P4-A）ため、
  * cross-engine の Root 切替が解禁された。disabled にするのは **engine が未知**（chip prefix が
- * `sid` = 撤去済み cursor/agy や legacy stand — shell 層に落ちて resume が効かない）行のみ。
+ * `sid` = 撤去済み cursor/agy や legacy agent — shell 層に落ちて resume が効かない）行のみ。
  * backend の `prepare_switch_root_session`（未知 engine を Err）と二重防御。
  */
 export function rootPickerItems(sessions: EchoesSession[]): RootPickerItem[] {
   return sessions.map((s) => ({
     key: s.key,
-    label: `${sessionChipPrefix(s.stand)}:${s.engine_session_id ? s.engine_session_id.slice(0, 8) : '新品'}`,
+    label: `${sessionChipPrefix(s.agent)}:${s.engine_session_id ? s.engine_session_id.slice(0, 8) : '新品'}`,
     isRoot: s.root === true,
-    disabled: sessionChipPrefix(s.stand) === 'sid',
+    disabled: sessionChipPrefix(s.agent) === 'sid',
   }))
 }
 
@@ -150,10 +150,10 @@ export type HeaderLaneCtx = {
    *  Act I は EchoesEvent が流れないため、この供給路が無いと chip が出ない
    *  （bug mem_1Cd3icsvKiGsQ8TtX8t1FR）。Act II では event 由来の真値が優先される。 */
   sessionId: string | null
-  /** root session の stand（= slot に載る engine 種別）。session chip の prefix 導出用。
-   *  doc 39 P4-C: Rust push_active_view が engine_stand（root の engine）優先で解決した値
-   *  （cross-engine root でも chip が slot の engine を映す。無ければ lane 固定 stand）。 */
-  stand: string | null
+  /** root session の agent（= slot に載る engine 種別）。session chip の prefix 導出用。
+   *  doc 39 P4-C: Rust push_active_view が agent_name（root の engine）優先で解決した値
+   *  （cross-engine root でも chip が slot の engine を映す。無ければ lane 固定 agent）。 */
+  agent: string | null
 }
 
 export type EchoesHeaderApi = {
@@ -197,7 +197,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
   const [sessions, setSessions] = createSignal<EchoesSession[]>([])
 
   // doc 51 §1 A1: + New（engine × Act で新 session = 台に器械を足す）。旧・下端の帯から移設。
-  // null = 閉。stands は click → `echoes:stands_fetch` 要求 → 応答（相関 id 照合）で開く。
+  // null = 閉。agents は click → `echoes:stands_fetch` 要求 → 応答（相関 id 照合）で開く。
   const [newMenu, setNewMenu] = createSignal<PaneStand[] | null>(null)
   const [newMenuPos, setNewMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
   let newMenuReq: BusRequestId | null = null
@@ -207,7 +207,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     ipc?.postMessage(JSON.stringify(payload))
   }
 
-  /** + New click: menu が開いていれば閉じ、閉じていれば stands を取り直して開く
+  /** + New click: menu が開いていれば閉じ、閉じていれば agents を取り直して開く
    *  （開くたび authoritative — picker の openPicker と同じ流儀）。 */
   const toggleNewMenu = (btn: HTMLElement): void => {
     if (newMenu()) {
@@ -232,13 +232,13 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     sendIpc({ t: 'console:new_session', lane, engine, act })
   }
 
-  // doc 47 §6: `vp:echoes-stands` は共有 bus。自分の要求（相関 id）への応答だけで menu を
+  // doc 47 §6: `vp:echoes-agents` は共有 bus。自分の要求（相関 id）への応答だけで menu を
   // 開く（chat composer の要求では開かない）。連打しても最新 id 以外の応答は捨てられる。
-  document.addEventListener('vp:echoes-stands', (e) => {
+  document.addEventListener('vp:echoes-agents', (e) => {
     const d = (e as CustomEvent<EchoesStandsDetail<PaneStand>>).detail
     if (!isMyResponse(newMenuReq, d?.req)) return
     newMenuReq = null
-    setNewMenu(d?.stands ?? [])
+    setNewMenu(d?.agents ?? [])
   })
 
   /** chip click（Act I）: picker を開き、一覧を repo から取り直す（開くたび authoritative）。 */
@@ -297,7 +297,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
         {(c) => (
           <>
             <span class="eh-chip eh-lane" title={c().addr}>
-              <CreoIcon name={STAND_ICON.echoes.default} size={13} />
+              <CreoIcon name={STAND_ICON.claude.default} size={13} />
               {c().name ?? laneShortName(c().addr)}
             </span>
             <Show when={c().cwd}>
@@ -329,13 +329,13 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                 <button
                   type="button"
                   class="eh-chip eh-session"
-                  title={`${sessionChipPrefix(c().stand)} session ${sid()}（click で Root 切替）`}
+                  title={`${sessionChipPrefix(c().agent)} session ${sid()}（click で Root 切替）`}
                   onClick={(ev) => {
                     if (pickerOpen()) setPickerOpen(false)
                     else openPicker(ev.currentTarget as HTMLElement)
                   }}
                 >
-                  {sessionChipPrefix(c().stand)}:{sid().slice(0, 8)}
+                  {sessionChipPrefix(c().agent)}:{sid().slice(0, 8)}
                   <CreoIcon name="ph:caret-down" size={10} class="eh-session-caret" />
                 </button>
               )}
@@ -412,7 +412,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
               </div>
             </Show>
             {/* + New: 台に器械を足す（場所への操作 = 場所の名札の右端、mako 2026-07-24）。
-                click で stands を取り直し（相関 id）、応答で menu が開く — 同期では開かない
+                click で agents を取り直し（相関 id）、応答で menu が開く — 同期では開かない
                 ので stopPropagation は不要（#836/#837: document click を無条件に止めない）。 */}
             <button
               type="button"
@@ -424,13 +424,13 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
               New
             </button>
             <Show when={newMenu()}>
-              {(stands) => (
+              {(agents) => (
                 <div
                   class="eh-root-picker eh-new-menu"
                   style={{ left: `${newMenuPos().x}px`, top: `${newMenuPos().y}px` }}
                 >
                   <For
-                    each={newPaneChoices(stands())}
+                    each={newPaneChoices(agents())}
                     fallback={<div class="eh-rp-empty">engine なし</div>}
                   >
                     {(nc) => (

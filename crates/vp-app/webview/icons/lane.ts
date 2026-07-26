@@ -1,6 +1,6 @@
 // VP Lane glyph mapping (@chronista-club/creo-ui-icons-web の VP-domain alias)。
 //
-// Lane = Stand 配下で稼働する個別実行単位。 Lead Lane (repo lead 1 体) +
+// Lane = Agent 配下で稼働する個別実行単位。 Lead Lane (repo lead 1 体) +
 // Wing Lane (Issue 別 wing 群) の構成。
 // state-driven: default = regular, active = fill。
 //
@@ -12,7 +12,7 @@ import type { IconName } from '@chronista-club/creo-ui-icons-web'
 export type LaneKind =
   | 'lead'         // Lead Lane (repo lead、 master agent)
   | 'wing'         // Wing Lane (wing、 Issue 専属)
-  | 'init_script'  // init_script で起動した scripted Stand
+  | 'init_script'  // init_script で起動した scripted Agent
   | 'idle'         // sleeping / awaiting Lane
   | 'meta'         // Meta Lane (catalog / inspect 用)
 

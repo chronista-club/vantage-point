@@ -38,7 +38,7 @@ export interface SidebarPushHandlers {
   state(state: unknown): void
   error(message: string): void
   performerCreateResult(repoPath: string, name: string, error: string | null): void
-  standsResult(repoPath: string, stands: unknown[], error: string | null): void
+  agentsResult(repoPath: string, agents: unknown[], error: string | null): void
   filesListResult(address: string, entries: unknown[], truncated: boolean): void
   wireResult(payload: unknown): void
   clonePathPicked(path: string): void
@@ -62,8 +62,8 @@ function apply(msg: IpcEventEnvelope): void {
       // `error` は schema で optional — 「成功」が型に載る（旧: JS へ null 直書き）。
       handlers.performerCreateResult(msg.repo_path, msg.name, msg.error ?? null)
       break
-    case 'stands:result':
-      handlers.standsResult(msg.repo_path, msg.stands, msg.error ?? null)
+    case 'agents:result':
+      handlers.agentsResult(msg.repo_path, msg.agents, msg.error ?? null)
       break
     case 'files:list_result':
       handlers.filesListResult(msg.address, msg.entries, msg.truncated)

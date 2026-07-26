@@ -53,7 +53,7 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Lane Conductor Stand restart 要求
+        // Lane Conductor Agent restart 要求
         // fresh=true は resume/continue を回避し fresh な claude を起動する
         // (sidebar "New Conductor Session")。 省略時は従来通り --resume で会話を継ぐ。
         request "lane:restart" {
@@ -73,18 +73,18 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "order" type="array<string>"
         }
-        // Performer Lane 作成要求 (branch / stand は optional)
+        // Performer Lane 作成要求 (branch / agent は optional)
         request "lane:add_performer" {
             field "path" type="string"
             field "name" type="string"
             field "branch" type="string" optional=#true
-            field "stand" type="string" optional=#true
+            field "agent" type="string" optional=#true
         }
-        // + Add Performer form の利用可能 Stand 一覧 fetch
-        request "stands:fetch" {
+        // + Add Performer form の利用可能 Agent 一覧 fetch
+        request "agents:fetch" {
             field "path" type="string"
         }
-        // Repo-scope Stand row click → main area に対応 pane を表示
+        // Repo-scope Agent row click → main area に対応 pane を表示
         request "stand:select" {
             field "path" type="string"
             field "kind" type="string"
@@ -163,11 +163,11 @@ protocol "sidebar" version="1.0.0" {
             field "error" type="string" optional=#true
         }
 
-        // + Add Performer の dropdown を populate する Stand 一覧（`stands:fetch` の戻り）。
-        // 要素の形の持ち主は Rust `client::StandInfo`。
-        event "stands:result" {
+        // + Add Performer の dropdown を populate する Agent 一覧（`agents:fetch` の戻り）。
+        // 要素の形の持ち主は Rust `client::AgentInfo`。
+        event "agents:result" {
             field "repo_path" type="string"
-            field "stands" type="array<json>"
+            field "agents" type="array<json>"
             field "error" type="string" optional=#true
         }
 

@@ -42,7 +42,7 @@ pub(crate) struct AppState {
     pub repo_name: String,
     /// Capability system (Agent, MIDI, Protocol)
     pub capabilities: Arc<RepoCapabilities>,
-    /// VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。
+    /// VP-159 PR-4b: Agent / Service actor の supervisor 受け皿。
     ///
     /// repo mode で notify / lane-spawn を `spawn_service` 経由で起動・register、 JoinHandle を保持。
     /// daemon mode では空で構築 (= machine scope actor の register は後続 PR、 device registry の
@@ -98,7 +98,7 @@ pub(crate) struct AppState {
     /// R2-b: wire delivery loop の即時 wake (command 着信時に notify)。
     /// daemon mode でのみ DeliveryActor が待ち受ける。 repo では未使用 (proxy が daemon に送るだけ)。
     pub delivery_notify: Arc<tokio::sync::Notify>,
-    /// Lane Pool (Conductor/Performer registry) — Lane scope の Stand container
+    /// Lane Pool (Conductor/Performer registry) — Lane scope の Agent container
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (repo-as-Repo-Master 9 component #4)
     pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
     /// Phase 2 (Step E): repo の system 系 lifecycle event を 1 つの broadcast bus で配信。
@@ -106,16 +106,16 @@ pub(crate) struct AppState {
     /// `state.system_event_tx.send(SystemEvent::Lane(LaneDiff::*))` 等で publish、
     /// repo の lanes publish task (`publish_lanes`) が subscribe して daemon の集約 view を
     /// 更新する経路（doc 44 P1 fold-in で旧 `spawn_daemon_uplink` の QUIC push から置換）。
-    /// 将来 Pane / Stand / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
+    /// 将来 Pane / Agent / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
     pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
-    /// machine 階層 Stand container (LSCM、 PR-α series / VP-109)。
+    /// machine 階層 Agent container (LSCM、 PR-α series / VP-109)。
     ///
     /// daemon mode (`run_daemon`) でのみ Some、 repo mode (`run`) では None。
     /// PR-α 完了後も既存 machine 階層 field (daemon / update)
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
     /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub machine_capabilities: Option<Arc<crate::daemon::machine_capabilities::MachineCapabilities>>,
-    /// Lane 階層 Stand container pool (LSCM、 PR-δ-2 / VP-136 で board を `LaneStandRegistry` 経由 host に統一)。
+    /// Lane 階層 Agent container pool (LSCM、 PR-δ-2 / VP-136 で board を `LaneStandRegistry` 経由 host に統一)。
     ///
     /// repo mode (`run`) でのみ Some、 daemon mode (`run_daemon`) では None。
     /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で board を
@@ -382,12 +382,12 @@ mod lane_resolve_tests {
     use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
     /// 指定 lane の Running な LaneInfo を作る test helper
-    fn running_lane(addr: LaneAddress, stand: &str) -> LaneInfo {
+    fn running_lane(addr: LaneAddress, agent: &str) -> LaneInfo {
         LaneInfo {
             id: Default::default(),
             address: addr.clone(),
             state: LaneState::Running,
-            stand: stand.to_string(),
+            agent: agent.to_string(),
             created_at: "2026-06-16T00:00:00Z".to_string(),
             pid: Some(1234),
             cwd: "/tmp/work".to_string(),
@@ -395,7 +395,7 @@ mod lane_resolve_tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         }
     }
@@ -406,10 +406,10 @@ mod lane_resolve_tests {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
-            pool.insert(running_lane(LaneAddress::root("vantage-point"), "echoes"));
+            pool.insert(running_lane(LaneAddress::root("vantage-point"), "claude"));
             pool.insert(running_lane(
                 LaneAddress::performer("vantage-point", "hub-unison-client"),
-                "echoes",
+                "claude",
             ));
         }
 
@@ -439,7 +439,7 @@ mod lane_resolve_tests {
         let state = build_test_app_state(None).await;
         {
             let mut pool = state.lane_pool.write().await;
-            let mut info = running_lane(LaneAddress::root("vp"), "echoes");
+            let mut info = running_lane(LaneAddress::root("vp"), "claude");
             info.state = LaneState::Dead;
             pool.insert(info);
         }

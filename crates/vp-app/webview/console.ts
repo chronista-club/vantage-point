@@ -12,7 +12,7 @@
  *   Act（見え方）が変わったことの通知（doc 50 §4.6 A6。旧 lane 単位 `setMode` の後継）。
  *   ⚠️ 表示は強制しない（ビューとエンジンは別軸 — Lane 内で Act I/II pane は共存し得る）。
  * - roster: `console:session_list` → [`VpConsole.handleSessionList`]（供給はこの 1 本、doc 53 §11）
- * - 「+」menu: `console:stands` → [`VpConsole.handleStands`]
+ * - 「+」menu: `console:agents` → [`VpConsole.handleAgents`]
  * - 検分: `window.vpConsole.peek(lane)` — devtools から buffer を覗く（throwaway debug pane を
  *   作らないための恒久 API）。
  *
@@ -123,7 +123,7 @@ export type EchoesSession = {
   /** VP 採番のローカル key（<lane>#<n> の n）。 */
   key: number
   /** engine 種別（session chip / tab の prefix 導出用）。 */
-  stand: string
+  agent: string
   /** engine の会話 id（cc_session 等。Draft = null、doc 38 §1.1）。 */
   engine_session_id: string | null
   /** chat host が現在生きているか（in-memory slot の有無）。 */
@@ -151,15 +151,15 @@ export type EchoesSessionListPayload = {
   sessions?: EchoesSession[]
 }
 
-/** stands_list の生 payload（`{stands:[{name, description}]}`）。 */
+/** agents_list の生 payload（`{agents:[{name, description}]}`）。 */
 export type EchoesStandsPayload = {
-  stands?: unknown[]
+  agents?: unknown[]
 }
 
 // --- doc 47 §6: 共有 bus の相関 id ---------------------------------------------------------------
-// `vp:echoes-stands` は broadcast なので、購読側が複数いると「誰の要求への応答か」が判らない
+// `vp:echoes-agents` は broadcast なので、購読側が複数いると「誰の要求への応答か」が判らない
 // （doc 46 P2 で「+ New」の要求に chat の「+」menu まで反応した混線 = #838）。
-// 要求時に採番した id を round-trip（webview → Rust IPC → stands_list → handleStands）させ、
+// 要求時に採番した id を round-trip（webview → Rust IPC → agents_list → handleAgents）させ、
 // 購読側は **自分が出した要求の id と一致した時だけ** 反応する。
 //
 // bus を要求元ごとに分ける案は採らなかった: 分けても id の round-trip は要るうえ、発火元
@@ -187,10 +187,10 @@ export function isMyResponse(
   return pending !== null && req === pending
 }
 
-/** `vp:echoes-stands` の detail。req は要求元の相関 id（要求外の発火は null）。 */
+/** `vp:echoes-agents` の detail。req は要求元の相関 id（要求外の発火は null）。 */
 export type EchoesStandsDetail<S = unknown> = {
   lane: string
-  stands: S[]
+  agents: S[]
   req: BusRequestId | null
 }
 
@@ -371,10 +371,10 @@ export type VpConsole = {
   /** doc 38 Phase 2: repo の echoes_session_list を per-lane cache に取り込み、tab strip へ
    *  'vp:echoes-sessions' CustomEvent を発火する（focused も併せて更新）。 */
   handleSessionList(lane: string, payload: EchoesSessionListPayload): void
-  /** doc 38 Phase 2: stands_list を「+」menu へ 'vp:echoes-stands' CustomEvent で中継する。
+  /** doc 38 Phase 2: agents_list を「+」menu へ 'vp:echoes-agents' CustomEvent で中継する。
    *  doc 47 §6: req = 要求元の相関 id（IPC の `req` を Rust が往復させたもの）。購読側は
    *  自分の id と一致した時だけ反応する。 */
-  handleStands(lane: string, payload: EchoesStandsPayload, req?: BusRequestId | null): void
+  handleAgents(lane: string, payload: EchoesStandsPayload, req?: BusRequestId | null): void
   /** doc 38 Phase 2: lane の focused session key（未知 = 1）。chatview の event filter が参照。 */
   focusedOf(lane: string): number
 }
@@ -472,11 +472,11 @@ export function installConsole(): VpConsole {
         new CustomEvent('vp:echoes-sessions', { detail: { lane, focused, sessions } }),
       )
     },
-    handleStands(lane, payload, req) {
-      const stands = Array.isArray(payload?.stands) ? payload!.stands! : []
+    handleAgents(lane, payload, req) {
+      const agents = Array.isArray(payload?.agents) ? payload!.agents! : []
       // doc 47 §6: req をそのまま detail に載せる（発火元は要求元が誰かを解釈しない）。
-      const detail: EchoesStandsDetail = { lane, stands, req: req ?? null }
-      document.dispatchEvent(new CustomEvent('vp:echoes-stands', { detail }))
+      const detail: EchoesStandsDetail = { lane, agents, req: req ?? null }
+      document.dispatchEvent(new CustomEvent('vp:echoes-agents', { detail }))
     },
     // 純関数 focusedOf をそのまま公開（laneSessions cache を参照。property 名は method binding を
     // 作らないので module-level の focusedOf を指す — 自己再帰にはならない）。

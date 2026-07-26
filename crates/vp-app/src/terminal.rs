@@ -94,14 +94,14 @@ pub enum AppEvent {
         name: String,
         error: Option<String>,
     },
-    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧を sidebar に push back する。
-    /// `+ Add Performer` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で Daemon
-    /// repo-proxy ask (`stands_list`) を叩いた結果がここに乗る。 JS は `window.handleStandsResult`
+    /// doc 11 PR-C / F6④: 利用可能 Agent 一覧を sidebar に push back する。
+    /// `+ Add Performer` form 開閉時に JS から `agents:fetch` が来て、 Rust 側で Daemon
+    /// repo-proxy ask (`agents_list`) を叩いた結果がここに乗る。 JS は `window.handleAgentsResult`
     /// で受領し、 dropdown を populate する。 `error` Some なら fetch 失敗、 dropdown は
     /// disabled + error message 表示。
-    StandsResult {
+    AgentsResult {
         repo_path: String,
-        stands: Vec<crate::client::StandInfo>,
+        agents: Vec<crate::client::AgentInfo>,
         error: Option<String>,
     },
     /// webview が受け口を全部生やした（`entry.tsx` の `t:"ready"`）。
@@ -273,7 +273,7 @@ pub enum AppEvent {
     /// `claude` の置き換え。 Act I/II 両対応（restart_lane が mode で分岐）。
     ConsoleNewSession {
         lane: String,
-        /// doc 46 P2 要件 4: どの engine で作るか（stand 名。`None` = 現 focused を継承）。
+        /// doc 46 P2 要件 4: どの engine で作るか（agent 名。`None` = 現 focused を継承）。
         engine: Option<String>,
         /// doc 46 P2 要件 4: どの Act で作るか（`"tui"` / `"chat"`。`None` = lane の現 Act）。
         ///
@@ -292,10 +292,10 @@ pub enum AppEvent {
     // doc 53 §11: 旧 `EchoesSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
     // lanes snapshot 1 本になった（fetch は GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の
     // session 変化が pane grid に出なかった）。
-    /// doc 38 Phase 2: chat header「+」からの新 session 作成（`stand` 省略 = lane の stand）。
+    /// doc 38 Phase 2: chat header「+」からの新 session 作成（`agent` 省略 = lane の agent）。
     /// ask `echoes_session_create`（focus は送らない = backend 既定 true）。roster の更新は
     /// server の `emit_lane_update` → lanes snapshot が運ぶ（doc 53 §11）。
-    EchoesSessionCreate { lane: String, stand: Option<String> },
+    EchoesSessionCreate { lane: String, agent: Option<String> },
     /// replay demand（2026-07-24）: webview の renderer 準備完了後に撃つ消費者主導 demand。
     /// ask `echoes_demand_start` → repo が engine ensure + transcript replay を配送する。
     EchoesDemandStart { lane: String },
@@ -307,16 +307,16 @@ pub enum AppEvent {
     /// backend が Err で拒否（GUI も × は 2 本以上でしか出さない）。session は lane 名に埋めず
     /// 常に別 field で運ぶ（doc 38 落とし穴①）。
     EchoesSessionRemove { lane: String, session: u32 },
-    /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
-    /// ask `stands_list` → `EchoesStands` で push back。
-    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:echoes-stands` は複数の「+」menu が
+    /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
+    /// ask `agents_list` → `EchoesStands` で push back。
+    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:echoes-agents` は複数の「+」menu が
     /// 購読する共有 bus なので、要求元をそのまま往復させて応答側で振り分けさせる
     /// （Rust は中身を解釈しない不透明な札）。
-    EchoesStandsFetch { lane: String, req: Option<String> },
+    EchoesAgentsFetch { lane: String, req: Option<String> },
     // doc 53 §11: 旧 `EchoesSessionList`（ask 結果の push back）は退役。roster は LanesLoaded で
     // snapshot から直接 webview へ渡す（`push_session_list`）。
-    /// doc 38 Phase 2: `stands_list` の結果を「+」menu へ push back する内部 event。
-    /// doc 47 §6: `req` は `EchoesStandsFetch` から持ち回った相関 id（そのまま JS へ返す）。
+    /// doc 38 Phase 2: `agents_list` の結果を「+」menu へ push back する内部 event。
+    /// doc 47 §6: `req` は `EchoesAgentsFetch` から持ち回った相関 id（そのまま JS へ返す）。
     EchoesStands {
         lane: String,
         payload: serde_json::Value,
@@ -509,18 +509,18 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             }
         }
         // doc 38 Phase 2: session tab strip。lane は常に別 field で運び、session を lane 名に
-        // 埋めない（doc 38 落とし穴①）。作成 / focused 切替 / stands 取得。
+        // 埋めない（doc 38 落とし穴①）。作成 / focused 切替 / agents 取得。
         // 一覧取得（`echoes:sessions_fetch`）は doc 53 §11 で退役 — roster は snapshot が運ぶ。
         Some("echoes:session_create") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                // stand 省略 = lane の stand（backend 既定）。
-                let stand = parsed
-                    .get("stand")
+                // agent 省略 = lane の agent（backend 既定）。
+                let agent = parsed
+                    .get("agent")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
                 let _ = proxy.send_event(AppEvent::EchoesSessionCreate {
                     lane: lane.to_string(),
-                    stand,
+                    agent,
                 });
             }
         }
@@ -563,7 +563,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     .get("req")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::EchoesStandsFetch {
+                let _ = proxy.send_event(AppEvent::EchoesAgentsFetch {
                     lane: lane.to_string(),
                     req,
                 });

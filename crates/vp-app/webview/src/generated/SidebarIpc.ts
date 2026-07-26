@@ -31,10 +31,10 @@ export interface PerformerCreateResult {
   error?: string;
 }
 
-/** Event "stands:result" */
-export interface StandsResult {
+/** Event "agents:result" */
+export interface AgentsResult {
   repo_path: string;
-  stands: any[];
+  agents: any[];
   error?: string;
 }
 
@@ -125,11 +125,11 @@ export interface LaneAddPerformer {
   path: string;
   name: string;
   branch?: string;
-  stand?: string;
+  agent?: string;
 }
 
-/** Request "stands:fetch" */
-export interface StandsFetch {
+/** Request "agents:fetch" */
+export interface AgentsFetch {
   path: string;
 }
 
@@ -178,7 +178,7 @@ export type IpcChannelEventTypes = {
   SidebarState: SidebarState;
   SidebarError: SidebarError;
   PerformerCreateResult: PerformerCreateResult;
-  StandsResult: StandsResult;
+  AgentsResult: AgentsResult;
   FilesListResult: FilesListResult;
   WireResult: WireResult;
   ClonePathPicked: ClonePathPicked;
@@ -199,7 +199,7 @@ export type IpcChannelRequestTypes = {
   LaneSetOrigin: { request: LaneSetOrigin; response: void };
   LaneReorder: { request: LaneReorder; response: void };
   LaneAddPerformer: { request: LaneAddPerformer; response: void };
-  StandsFetch: { request: StandsFetch; response: void };
+  AgentsFetch: { request: AgentsFetch; response: void };
   StandSelect: { request: StandSelect; response: void };
   RepoClonePickFolder: { request: RepoClonePickFolder; response: void };
   FilesList: { request: FilesList; response: void };
@@ -215,7 +215,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: ["sidebar:state", "sidebar:error", "performer:create_result", "stands:result", "files:list_result", "wire:result", "clone:path_picked", "file_picker:open"] as const,
+  events: ["sidebar:state", "sidebar:error", "performer:create_result", "agents:result", "files:list_result", "wire:result", "clone:path_picked", "file_picker:open"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
@@ -229,7 +229,7 @@ export const IpcChannelMeta = {
     LaneSetOrigin: { request: "lane:set_origin" as const, response: "void" as const },
     LaneReorder: { request: "lane:reorder" as const, response: "void" as const },
     LaneAddPerformer: { request: "lane:add_performer" as const, response: "void" as const },
-    StandsFetch: { request: "stands:fetch" as const, response: "void" as const },
+    AgentsFetch: { request: "agents:fetch" as const, response: "void" as const },
     StandSelect: { request: "stand:select" as const, response: "void" as const },
     RepoClonePickFolder: { request: "repo:clone:pickFolder" as const, response: "void" as const },
     FilesList: { request: "files:list" as const, response: "void" as const },
@@ -255,7 +255,7 @@ export type IpcEnvelope =
   | ({ t: "lane:set_origin" } & LaneSetOrigin)
   | ({ t: "lane:reorder" } & LaneReorder)
   | ({ t: "lane:add_performer" } & LaneAddPerformer)
-  | ({ t: "stands:fetch" } & StandsFetch)
+  | ({ t: "agents:fetch" } & AgentsFetch)
   | ({ t: "stand:select" } & StandSelect)
   | ({ t: "repo:clone:pickFolder" } & RepoClonePickFolder)
   | ({ t: "files:list" } & FilesList)
@@ -269,7 +269,7 @@ export type IpcEventEnvelope =
   | ({ t: "sidebar:state" } & SidebarState)
   | ({ t: "sidebar:error" } & SidebarError)
   | ({ t: "performer:create_result" } & PerformerCreateResult)
-  | ({ t: "stands:result" } & StandsResult)
+  | ({ t: "agents:result" } & AgentsResult)
   | ({ t: "files:list_result" } & FilesListResult)
   | ({ t: "wire:result" } & WireResult)
   | ({ t: "clone:path_picked" } & ClonePathPicked)

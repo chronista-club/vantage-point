@@ -391,7 +391,7 @@ fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<Strin
     }
 }
 
-/// `VP_SESSION_KEY` env（spawn 時に `stand_spawner` が注入）から「自分がどの session か」を
+/// `VP_SESSION_KEY` env（spawn 時に `agent_spawner` が注入）から「自分がどの session か」を
 /// 復元する（純関数、doc 40 §4）。
 ///
 /// **None = 不明**であって root ではない。ここで `unwrap_or(1)` に倒すと「名乗らなかった」と
@@ -647,7 +647,7 @@ async fn hook_check() -> Result<()> {
         // 時は送って repo 側の no-op に任せる）。名乗らない場合の比較先は root = repo 側
         // `ReportTarget::Unspecified` の着地先と揃える（ここがズレると「送らないのに
         // 記録もされない」無音の穴になる）。
-        let reg = crate::lane::session_registry::load(p, l, "echoes");
+        let reg = crate::lane::session_registry::load(p, l, "claude");
         let target_key = session_key.unwrap_or(reg.root);
         let target_conv = reg
             .sessions

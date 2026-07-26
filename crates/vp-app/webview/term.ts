@@ -631,7 +631,7 @@ export function installTerm(): TermPushHandlers {
 	 * **level 駆動**（#918 と同型）: 「サイズが変わった」という edge ではなく「今この instance が
 	 * 可視である」という level を契機に撃つ。container の ResizeObserver は size **変化**でしか
 	 * 発火しないので、生成後に誰もサイズを動かさなければ一度も同期されない — PTY は
-	 * `spawn_stand(&cmd, 120, 48)`（`lane_reconcile.rs`）の 120×48 のまま取り残される。
+	 * `spawn_agent(&cmd, 120, 48)`（`lane_reconcile.rs`）の 120×48 のまま取り残される。
 	 *
 	 * rAF 2 段なのは、`display` 切替の layout flush 前に走ると fit が 0 幅で潰れるため
 	 * （= 狭幅復元bug の intermittent 原因）。幅がまだ 0 なら見送り、80×24 を保つ。

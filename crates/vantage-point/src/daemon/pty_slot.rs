@@ -346,7 +346,7 @@ impl PtySlot {
         }
         // PATH 補正: vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
         // `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
-        // conductor lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
+        // conductor lane = `mise run vp:agent:echoes` の program) を見つけられず spawn が失敗 →
         // lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
         // 既知の user tool location を base PATH の先頭に前置して解決する。
         // base は caller env の PATH (あれば) → なければ親プロセスの PATH。
@@ -365,9 +365,9 @@ impl PtySlot {
         }
 
         // TERM 補正: vp-app を GUI / launchd 経由で起動 (= 再起動後の LaunchAgent 自動起動) すると、
-        // daemon プロセスは端末非接続で TERM を持たない。 echoes stand の `tmux new-session -A`
+        // daemon プロセスは端末非接続で TERM を持たない。 echoes agent の `tmux new-session -A`
         // (attach 付き) は terminfo 引きに TERM を要求するため、 TERM 不在だと
-        // "open terminal failed: terminal does not support clear" で即 exit → stand spawn が
+        // "open terminal failed: terminal does not support clear" で即 exit → agent spawn が
         // 800ms 以内に死に lane が即 Dead 化 → Echoes コンソールが出ない。 PATH 補正 (#498) と
         // 同じ launchd-env-stripping の双子で、 plist EnvironmentVariables も PATH だけ焼いて
         // TERM を取りこぼしていた。 この PTY の出力は vp-app の xterm.js が描画する (echoes script
@@ -377,7 +377,7 @@ impl PtySlot {
             cmd.env("TERM", "xterm-256color");
         }
 
-        // COLORTERM 補正 (tmux decoupling PR2): 旧 echoes stand は tmux の
+        // COLORTERM 補正 (tmux decoupling PR2): 旧 echoes agent は tmux の
         // `terminal-overrides ',xterm-256color:Tc'` で truecolor を交渉していた。 tmux 撤去で
         // その交渉主体が消えたため、 PtySlot が新たな端点として `COLORTERM=truecolor` を宣言する。
         // これが無いと claude は TERM=xterm-256color を見て 24-bit を諦め 256 色に退行する
@@ -387,7 +387,7 @@ impl PtySlot {
         }
 
         // LANG/LC_CTYPE 補正: PATH (#498) / TERM の双子で、 launchd / GUI 起動の daemon は
-        // C ロケール伝播で LANG 不在になり、 echoes stand の tmux client が utf8=0 で起動 →
+        // C ロケール伝播で LANG 不在になり、 echoes agent の tmux client が utf8=0 で起動 →
         // console の CJK (日本語) が `_` 化する (三つ子の三本目)。 plist EnvironmentVariables や
         // echoes mise task の LANG guard は「①旧 plist が upgrade で再生成されない ②session 永続で
         // 2 回目以降は adopt 経路が LANG guard を通らない」で漏れるが、 全 spawn 経路 (mise task /
@@ -907,7 +907,7 @@ mod tests {
     /// TERM=xterm-256color を受け取る。 launchd 自動起動の daemon は端末非接続で TERM を
     /// 継承しないため、 TERM 不在だと echoes の `tmux new-session -A` が "open terminal
     /// failed" で即死 → lane spawn 全滅 → console が出ない。 PtySlot が TERM 既定を注入する
-    /// ことで daemon の TERM 有無に依らず stand が描画可能になることを pin する。
+    /// ことで daemon の TERM 有無に依らず agent が描画可能になることを pin する。
     #[cfg(unix)]
     #[tokio::test]
     async fn test_pty_spawn_injects_term_default() {

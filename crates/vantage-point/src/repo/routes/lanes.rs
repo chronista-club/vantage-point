@@ -22,7 +22,7 @@
 //!
 //! ## 未実装 (後 phase)
 //!
-//! - 1 件取得 (addr 指定) / Stand 切替 dispatch (addr encoding path 確定後)
+//! - 1 件取得 (addr 指定) / Agent 切替 dispatch (addr encoding path 確定後)
 //! - WS /ws/terminal の lane param 強化 (A4-2d)
 
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEv
 use super::super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
-// stand 識別子 String 化と同タイミングで導入した旧 stand 名 → 現行名の変換 (PR-pre2 で hd → echoes)
+// agent 識別子 String 化と同タイミングで導入した旧 agent 名 → 現行名の変換 (PR-pre2 で hd → echoes)
 // migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
 // VP は user 1 人 + lane performer のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
@@ -110,9 +110,9 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         .to_string();
     let present: std::collections::HashSet<String> =
         lanes.iter().map(|l| l.address.to_string()).collect();
-    let default_stand = crate::config::Config::load()
+    let default_agent = crate::config::Config::load()
         .unwrap_or_default()
-        .default_stand_or_echoes()
+        .default_agent_or_claude()
         .to_string();
     // ⚠️ この placeholder の field は **publish ごとに変わってはいけない**（doc 44 §11.3）。
     // `publish_lanes` は snapshot の指紋で「変わった時だけ vp-app を起こす」ので、ここに
@@ -132,7 +132,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             id: crate::lane::lane_id::load_or_create(&repo, &entry.name),
             address,
             state: crate::repo::lanes_state::LaneState::Spawning,
-            stand: default_stand.clone(),
+            agent: default_agent.clone(),
             created_at: ground_created_at(&entry.path),
             pid: None,
             cwd: entry.path,
@@ -140,7 +140,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         });
     }
@@ -183,9 +183,9 @@ pub struct CreateLaneReq {
     // 旧 client が `kind: "performer"` を送っても unknown field として無視される。
     /// lane 名 (人間可読、 `LaneAddress.name` に入る)
     pub name: String,
-    /// LaneStand: "echoes" (default) or "shell"
+    /// LaneStand: "claude" (default) or "shell"
     #[serde(default)]
-    pub stand: Option<String>,
+    pub agent: Option<String>,
     /// 既存 worktree path。 Some なら直接 cwd として使う、 None なら branch 指定で lane clone を実行する。
     #[serde(default)]
     pub cwd: Option<String>,
@@ -208,16 +208,16 @@ pub struct CreateLaneReq {
 ///
 /// doc 44 §9.4 の統合で、daemon 側の `RepoManagerCapability::create_lane` は
 /// **自前の実装を持たず**本 module の [`create_performer_orchestrated`] を呼ぶ薄い adapter に
-/// なった。その境界で唯一発生するのが「(name, branch, stand) → `CreateLaneReq`」の写像で、
-/// ここが黙ってズレると **GUI から作った lane だけ branch / stand が効かない**という
+/// なった。その境界で唯一発生するのが「(name, branch, agent) → `CreateLaneReq`」の写像で、
+/// ここが黙ってズレると **GUI から作った lane だけ branch / agent が効かない**という
 /// 経路差が復活する。純関数に切り出して往復を test で固定する。
 ///
 /// `cwd` / `base` / `model` が None なのは Daemon 入口がそれらを受け取らないため
 /// （= 既定の lane clone に落ちる。旧 `create_lane` と同じ範囲）。
-pub(crate) fn build_create_lane_req(name: &str, branch: &str, stand: &str) -> CreateLaneReq {
+pub(crate) fn build_create_lane_req(name: &str, branch: &str, agent: &str) -> CreateLaneReq {
     CreateLaneReq {
         name: name.to_string(),
-        stand: Some(stand.to_string()),
+        agent: Some(agent.to_string()),
         cwd: None,
         branch: Some(branch.to_string()),
         base: None,
@@ -373,18 +373,18 @@ pub(crate) async fn create_performer_orchestrated(
         .unwrap_or("unknown")
         .to_string();
     let addr = LaneAddress::performer(&repo_id, &req.name);
-    // doc 11 PR-B: stand 識別子 String 化。 wire format は新 stand 名 (echoes / shell / tmux 等)
-    // をそのまま受け取る。 未指定なら config の `default_stand` (未設定なら "echoes" fallback、
-    // PR-pre2 / VP-118 で "hd" → "echoes" rename)。
+    // doc 11 PR-B: agent 識別子 String 化。 wire format は新 agent 名 (echoes / shell / tmux 等)
+    // をそのまま受け取る。 未指定なら config の `default_agent` (未設定なら "claude" fallback、
+    // PR-pre2 / VP-118 で "hd" → "claude" rename)。
     //
     // Config::load() は他 handler でも ad-hoc に呼ばれており (server.rs:49, mcp.rs:2577 等)、
     // SSOT は config.toml ファイル自体。 AppState に持たせない pattern を踏襲。
     let config = crate::config::Config::load().unwrap_or_default();
-    let stand: String = req
-        .stand
+    let agent: String = req
+        .agent
         .as_deref()
         .map(str::to_string)
-        .unwrap_or_else(|| config.default_stand_or_echoes().to_string());
+        .unwrap_or_else(|| config.default_agent_or_claude().to_string());
 
     // 重複チェック + 予約 (check-and-reserve、二重 dispatch race の根治)。
     //
@@ -418,7 +418,7 @@ pub(crate) async fn create_performer_orchestrated(
             id: lane_id.clone(),
             address: addr.clone(),
             state: LaneState::Spawning,
-            stand: stand.clone(),
+            agent: agent.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
@@ -426,7 +426,7 @@ pub(crate) async fn create_performer_orchestrated(
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         });
     }
@@ -454,7 +454,7 @@ pub(crate) async fn create_performer_orchestrated(
             address: addr.clone(),
             // process liveness: PtySlot は未起動 (= lifecycle と別軸)
             state: LaneState::Spawning,
-            stand: stand.clone(),
+            agent: agent.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: intended_cwd,
@@ -462,7 +462,7 @@ pub(crate) async fn create_performer_orchestrated(
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         },
     )
@@ -538,7 +538,7 @@ pub(crate) async fn create_performer_orchestrated(
         (path_buf.to_string_lossy().into_owned(), true)
     };
 
-    // co-evolution #1: model 指定を spawn 前に永続する。 build_stand_command が Act I claude の
+    // co-evolution #1: model 指定を spawn 前に永続する。 build_agent_command が Act I claude の
     // `--model` として読み、 respawn（repo restart）や Act II engine も同じ file を共有する。
     // 検証は関数冒頭 (reserve 前) で済んでいるので、ここは永続のみ。 IO 失敗は best-effort warn
     // （claude default に degrade するだけで lane 作成は続行）。
@@ -550,7 +550,7 @@ pub(crate) async fn create_performer_orchestrated(
         req.model.as_deref(),
         config.default_lane_model(),
     ) {
-        let lane_label = crate::repo::stand_spawner::lane_label(&addr);
+        let lane_label = crate::repo::agent_spawner::lane_label(&addr);
         if let Err(e) = crate::lane::engine_model::record(&addr.repo, lane_label, &model) {
             tracing::warn!(
                 "engine_model 永続失敗（claude default で spawn）: addr={} model={} err={}",
@@ -562,18 +562,18 @@ pub(crate) async fn create_performer_orchestrated(
     }
 
     // doc 54 §3.1 / §8-11: 生成の既定レンズ（**純粋計算** — chat_capable な engine は Chat、
-    // shell 等は Tui = 定義）。registry への永続は**実 insert 確定後**（下の stand_store::record
+    // shell 等は Tui = 定義）。registry への永続は**実 insert 確定後**（下の agent_store::record
     // と同じ規律）: spawn 前に書くと create 失敗の rollback（abort_lane_creation）が回収せず、
-    // 孤児 registry の stale な stand が同名再作成時に engine を取り違えさせる（moody 指摘
-    // 2026-07-25）。Tui 経路の初回 spawn は registry 不在でも安全 — build_stand_command の
-    // root entry 解決は不在時に引数の stand へ fallback する。
-    let root_act = crate::lane::session_registry::default_act_for_stand(&stand);
+    // 孤児 registry の stale な agent が同名再作成時に engine を取り違えさせる（moody 指摘
+    // 2026-07-25）。Tui 経路の初回 spawn は registry 不在でも安全 — build_agent_command の
+    // root entry 解決は不在時に引数の agent へ fallback する。
+    let root_act = crate::lane::session_registry::default_act_for_stand(&agent);
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の lane clone と同じ pattern。
     // tmux decoupling PR2: slot (login shell) + claude 注入の Rust-native spawn (design §13)。
-    // build_stand_command も closure 内で呼ぶ（state file 直読みの同期 I/O を async worker から
+    // build_agent_command も closure 内で呼ぶ（state file 直読みの同期 I/O を async worker から
     // 外す。PtySlot::spawn 自体が openpty + syscall でブロッキングなので同形）。
     //
     // doc 54 §8-11: root act=Chat の生成は **PTY を立てない**（chat lane は engine-less
@@ -581,23 +581,23 @@ pub(crate) async fn create_performer_orchestrated(
     // = lane_spawn_actor と同じ形）。
     let (lane_state, pid) = if root_act == crate::lane::session_registry::SessionAct::Chat {
         tracing::info!(
-            "Performer Lane created as chat (PTY skip): addr={} stand={} cwd={}",
+            "Performer Lane created as chat (PTY skip): addr={} agent={} cwd={}",
             addr,
-            stand,
+            agent,
             cwd
         );
         (LaneState::Running, None)
     } else {
-        let stand_for_spawn = stand.clone();
+        let stand_for_spawn = agent.clone();
         let addr_for_spawn = addr.clone();
         let cwd_for_spawn = cwd.clone();
         let spawn_join = tokio::task::spawn_blocking(move || {
-            let cmd = crate::repo::stand_spawner::build_stand_command(
+            let cmd = crate::repo::agent_spawner::build_agent_command(
                 &stand_for_spawn,
                 &addr_for_spawn,
                 std::path::Path::new(&cwd_for_spawn),
             );
-            crate::repo::stand_spawner::spawn_stand(&cmd, 120, 48)
+            crate::repo::agent_spawner::spawn_agent(&cmd, 120, 48)
         })
         .await;
         let spawn_result = match spawn_join {
@@ -616,9 +616,9 @@ pub(crate) async fn create_performer_orchestrated(
                 // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
                 pool.insert_pty_slot(addr.clone(), None, slot, term_rx);
                 tracing::info!(
-                    "Performer Lane spawned: addr={} stand={} cwd={} pid={}",
+                    "Performer Lane spawned: addr={} agent={} cwd={} pid={}",
                     addr,
-                    stand,
+                    agent,
                     cwd,
                     pid
                 );
@@ -677,7 +677,7 @@ pub(crate) async fn create_performer_orchestrated(
         id: lane_id,
         address: addr.clone(),
         state: lane_state,
-        stand: stand.clone(),
+        agent: agent.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         pid,
         cwd,
@@ -686,7 +686,7 @@ pub(crate) async fn create_performer_orchestrated(
         cc_session_id: None,
         sessions: None,
         engine_session_id: None,
-        engine_stand: None,
+        agent_name: None,
         flow_state: None,
     };
 
@@ -701,29 +701,29 @@ pub(crate) async fn create_performer_orchestrated(
     // 実在する worktree を「消えた」扱いにする)。
     persist_lane_ready(state, &db_key, &info).await;
 
-    // per-lane stand 永続（mem_1Cd4M7i5Enp3HHMLVYayRe）: repo 再起動後の boot bootstrap が
-    // この記録を読んで同じ stand で respawn する（従来は全 performer が default_stand に
+    // per-lane agent 永続（mem_1Cd4M7i5Enp3HHMLVYayRe）: repo 再起動後の boot bootstrap が
+    // この記録を読んで同じ agent で respawn する（従来は全 performer が default_agent に
     // 倒れていた）。全 create 入口（GUI watcher / MCP / CLI）が本関数を通る choke point。
     // ⚠️ 位置は**実 insert 確定後**（moody 指摘）: dedup reject / clone・spawn 失敗の rollback
-    // 経路で record すると、既存 lane の永続 stand を「作れなかった create」が上書きし得る +
+    // 経路で record すると、既存 lane の永続 agent を「作れなかった create」が上書きし得る +
     // 失敗系テストが実 state dir に file を残す。lane が pool に実在化した時だけ記録する
     // （Dead 登録も disk に lane が実在 = 次回 boot respawn の対象なので記録する）。
     // 失敗は warn のみ（記録欠落は「再起動後 default に戻る」従来挙動に退化するだけ）。
-    if let Err(e) = crate::lane::stand_store::record(&repo_id, &req.name, &stand) {
+    if let Err(e) = crate::lane::agent_store::record(&repo_id, &req.name, &agent) {
         tracing::warn!(
-            "lane stand の永続に失敗（再起動後は default に fallback）: addr={addr} stand={stand}: {e}"
+            "lane agent の永続に失敗（再起動後は default に fallback）: addr={addr} agent={agent}: {e}"
         );
     }
 
     // doc 54 §8-11: 生成の既定レンズを registry に**明示的に書く**（仕込み = explicit intent。
-    // 以降の boot = lane_spawn_actor がこれを honor する）。⚠️ 位置は stand_store と同じく
+    // 以降の boot = lane_spawn_actor がこれを honor する）。⚠️ 位置は agent_store と同じく
     // **実 insert 確定後** — 「作れなかった create」が state file を残さない（rollback 経路は
     // 上で早期 return 済み。Dead 登録は disk に lane が実在 = boot respawn の対象なので書く）。
     // 失敗は warn のみ（欠落時の読み手 fallback = Tui なので、次 boot が Tui で立つ従来形に退化）。
     {
-        let lane_label = crate::repo::stand_spawner::lane_label(&addr);
+        let lane_label = crate::repo::agent_spawner::lane_label(&addr);
         if let Err(e) =
-            crate::lane::session_registry::set_root_act(&addr.repo, lane_label, &stand, root_act)
+            crate::lane::session_registry::set_root_act(&addr.repo, lane_label, &agent, root_act)
         {
             tracing::warn!(
                 "既定レンズの永続失敗（次 boot は Tui 相当に退化）: addr={addr} act={root_act:?}: {e}"
@@ -842,7 +842,7 @@ pub async fn delete_lane_orchestrated(
     // lane が消えた時点で意味を失う (残す価値がない)。破棄リストは CLI 側 (`remove_performer`)
     // と共有する `clear_lane_state` に一元化 (2 経路が別リストを持って片方に漏れる ghost leak を
     // 構造的に断つ — replay_log / terminal_replay / lane_id はここが従来欠落していた)。
-    let lane_label = crate::repo::stand_spawner::lane_label(&addr).to_string();
+    let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
     crate::lane::commands::clear_lane_state(&addr.repo, &lane_label);
 
     // Phase 2a': db の descriptor + lifecycle も回収する (best-effort)。
@@ -1180,7 +1180,7 @@ mod core_tests {
     fn req(name: &str) -> CreateLaneReq {
         CreateLaneReq {
             name: name.to_string(),
-            stand: None,
+            agent: None,
             cwd: None,
             branch: None,
             base: None,
@@ -1307,7 +1307,7 @@ mod core_tests {
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Spawning,
-                stand: "echoes".to_string(),
+                agent: "claude".to_string(),
                 created_at: "2026-07-13T00:00:00Z".to_string(),
                 pid: None,
                 cwd: String::new(),
@@ -1315,7 +1315,7 @@ mod core_tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
-                engine_stand: None,
+                agent_name: None,
                 flow_state: None,
             });
         }
@@ -1339,14 +1339,14 @@ mod core_tests {
     /// doc 44 §9.4: Daemon 入口（`daemon-control.lanes/create`）→ core の引数写像を固定する。
     ///
     /// 統合で daemon 側は自前の実装を捨てて本 module を呼ぶだけになった。残った唯一の
-    /// 変換がここで、黙ってズレると「GUI から作った lane だけ branch / stand が効かない」
+    /// 変換がここで、黙ってズレると「GUI から作った lane だけ branch / agent が効かない」
     /// という**経路差が復活する**（統合が壊れる時に最初に壊れる場所）。
     #[test]
     fn daemon_entry_maps_args_into_create_req() {
         let req = build_create_lane_req("sub", "mako/sub", "codex");
         assert_eq!(req.name, "sub");
         assert_eq!(req.branch.as_deref(), Some("mako/sub"));
-        assert_eq!(req.stand.as_deref(), Some("codex"));
+        assert_eq!(req.agent.as_deref(), Some("codex"));
         // Daemon 入口が受け取らない 3 つは None = 既定の lane clone に落ちる（旧 create_lane と同じ範囲）。
         assert!(req.cwd.is_none(), "Daemon 入口は cwd を受け取らない");
         assert!(req.base.is_none(), "Daemon 入口は base を受け取らない");
@@ -1404,7 +1404,7 @@ mod core_tests {
             "失敗した create の Spawning placeholder は残らない"
         );
         // ⑤ 生成の既定レンズ（session_registry）も残っていない — write は**実 insert 確定後**
-        //    （moody 指摘 2026-07-25: 孤児 registry の stale stand が同名再作成時に engine を
+        //    （moody 指摘 2026-07-25: 孤児 registry の stale agent が同名再作成時に engine を
         //    取り違えさせる）。write が spawn 前へ戻る regression をここで機械検知する。
         let repo_id = repo.file_name().unwrap().to_string_lossy();
         assert!(
@@ -1439,7 +1439,7 @@ mod core_tests {
             id: Default::default(),
             address: addr.clone(),
             state: LaneState::Spawning,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp/vp-intent/.vp/lanes/sub".to_string(), // clone 前の予測値
@@ -1447,7 +1447,7 @@ mod core_tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
 
@@ -1509,7 +1509,7 @@ mod core_tests {
             id: Default::default(),
             address: addr.clone(),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp/vp-delete/.vp/lanes/sub".to_string(),
@@ -1517,7 +1517,7 @@ mod core_tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
         state.lane_pool.write().await.insert(info.clone());

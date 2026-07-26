@@ -205,7 +205,7 @@ describe("stand pane の訪問（sidebar click の一時 view — 2026-07-23 dog
 		expect(layoutEngine.resolved(APP_SCOPE).runner?.rect.w).toBeCloseTo(0.5);
 	});
 
-	it("訪問中の lane save は出発点を覚える（stand 画面を記憶に焼き込まない）", () => {
+	it("訪問中の lane save は出発点を覚える（agent 画面を記憶に焼き込まない）", () => {
 		visitAppPane("devices");
 		saveAppStateFor("proj/root");
 		applyAppScene("runner-focus");

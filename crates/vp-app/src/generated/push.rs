@@ -61,7 +61,7 @@ pub struct ConsoleActApplied {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsoleStands {
+pub struct ConsoleAgents {
     pub lane: String,
     pub payload: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,8 +106,8 @@ pub enum PushEventEnvelope {
     ConsoleEvent(ConsoleEvent),
     #[serde(rename = "console:act_applied")]
     ConsoleActApplied(ConsoleActApplied),
-    #[serde(rename = "console:stands")]
-    ConsoleStands(ConsoleStands),
+    #[serde(rename = "console:agents")]
+    ConsoleAgents(ConsoleAgents),
     #[serde(rename = "ink:snapshot")]
     InkSnapshot(InkSnapshot),
     #[serde(rename = "ink:snapshot_error")]

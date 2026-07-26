@@ -17,9 +17,9 @@ export type LaneInfo = { address: LaneAddressWire,
  */
 state: string, 
 /**
- * "echoes" | "shell"
+ * "claude" | "shell"
  */
-stand: string, created_at: string, pid: number | null, cwd: string, 
+agent: string, created_at: string, pid: number | null, cwd: string, 
 /**
  * Phase 5-D: Performer Lane のみ有効、 git workspace の状態 snapshot。
  */
@@ -30,11 +30,11 @@ performer_status: PerformerStatusWire | null,
  */
 engine_session_id: string | null, 
 /**
- * doc 39 P4: root session の stand（= slot に載る engine 種別）。Act I の session chip prefix は
- * これを優先し（cross-engine root で slot の engine を正しく映す）、無ければ `stand`（lane 固定）に
+ * doc 39 P4: root session の agent（= slot に載る engine 種別）。Act I の session chip prefix は
+ * これを優先し（cross-engine root で slot の engine を正しく映す）、無ければ `agent`（lane 固定）に
  * fallback。旧 SP からは欠落 = None。
  */
-engine_stand: string | null, 
+agent_name: string | null, 
 /**
  * doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
  * server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、

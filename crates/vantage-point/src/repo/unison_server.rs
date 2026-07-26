@@ -861,9 +861,9 @@ async fn handle_echoes_demand_start(
     // ここで eager に resume spawn する（doc 33 C1 の lazy「submit まで engine-less」からの転換 —
     // repo 再起動後も uplink 再接続 → demand 再発火でこの経路に入るため「前回状態キープ」が成立）。
     // ensure は冪等（既起動なら no-op）。失敗しても replay は続行し、engine は次 submit の
-    // self-heal で再試行される。shell / legacy stand 等 Act II host を持たない session は skip
+    // self-heal で再試行される。shell / legacy agent 等 Act II host を持たない session は skip
     //（能力表 = EngineKind が SSOT。bail を warn で騒がせない）。
-    if crate::echoes::EngineKind::from_stand(&resolved.stand)
+    if crate::echoes::EngineKind::from_agent(&resolved.agent)
         .is_some_and(crate::echoes::EngineKind::chat_capable)
         && let Err(e) =
             state
@@ -875,14 +875,14 @@ async fn handle_echoes_demand_start(
         tracing::warn!("echoes_demand_start: eager engine spawn 失敗（submit で再試行）: {e}");
     }
 
-    let lane_label = crate::repo::stand_spawner::lane_label(&addr).to_string();
+    let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
     // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。会話 id は
     // registry が SSOT（doc 40 §5 reader #6 — resolve 時の registry load から持ち回った
     // `resolved.conversation`。旧 cc_session store 直読みは PR-2 で退役）。codex / grok /
     // opencode session は claude transcript を持たないため None に倒し、必ず下の no_session
     // path（replay_log）を通す。
-    let session_id = match crate::echoes::EngineKind::from_stand(&resolved.stand) {
+    let session_id = match crate::echoes::EngineKind::from_agent(&resolved.agent) {
         Some(crate::echoes::EngineKind::Claude) => resolved.conversation.clone(),
         _ => None,
     };
@@ -892,7 +892,7 @@ async fn handle_echoes_demand_start(
         // replay_tap と同じ Codex|Grok|OpenCode）。それ以外（claude で会話未開始 等）は log を読まず
         // 空 chat に収束させる。
         let buffered = if matches!(
-            crate::echoes::EngineKind::from_stand(&resolved.stand),
+            crate::echoes::EngineKind::from_agent(&resolved.agent),
             Some(
                 crate::echoes::EngineKind::Codex
                     | crate::echoes::EngineKind::Grok
@@ -1153,7 +1153,7 @@ async fn record_user_message_if_transcriptless(
     };
     // 記録対象は transcript を持たない engine のみ（tap と同じ Codex|Grok|OpenCode 判定）。
     if !matches!(
-        crate::echoes::EngineKind::from_stand(&resolved.stand),
+        crate::echoes::EngineKind::from_agent(&resolved.agent),
         Some(
             crate::echoes::EngineKind::Codex
                 | crate::echoes::EngineKind::Grok
@@ -1162,7 +1162,7 @@ async fn record_user_message_if_transcriptless(
     ) {
         return;
     }
-    let lane_label = crate::repo::stand_spawner::lane_label(&addr).to_string();
+    let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
     let event = crate::echoes::EchoesEvent::UserMessage {
         text: prompt.to_string(),
@@ -1199,7 +1199,7 @@ async fn handle_echoes_nudge(
     let session = crate::repo::lanes_state::LanePool::parse_address(lane).map(|addr| {
         crate::lane::session_registry::root(
             &addr.repo,
-            crate::repo::stand_spawner::lane_label(&addr),
+            crate::repo::agent_spawner::lane_label(&addr),
         )
     });
     ensure_and_submit_chat(state, "echoes_nudge", lane, session, text).await?;
@@ -1305,7 +1305,7 @@ async fn handle_echoes_set_permission_mode(
 }
 
 /// doc 38: lane の session 一覧（registry + engine 生死 + 会話 id の view）。
-/// `{lane}` → `{lane, focused, sessions: [{key, stand, engine_session_id?, live, focused}]}`。
+/// `{lane}` → `{lane, focused, sessions: [{key, agent, engine_session_id?, live, focused}]}`。
 /// Phase 2 の tab strip はこれを描くだけ（UI は state を持たない）。
 async fn handle_echoes_session_list(
     state: &AppState,
@@ -1328,7 +1328,7 @@ async fn handle_echoes_session_list(
 }
 
 /// doc 38: session を追加する（Phase 2 の chat header「+」の backend）。
-/// `{lane, stand?, focus?}` → `{lane, session}`。stand 省略 = lane の stand、focus 省略 = true
+/// `{lane, agent?, focus?}` → `{lane, session}`。agent 省略 = lane の agent、focus 省略 = true
 /// （「+」で作った session にそのまま話しかける UX が既定）。engine は spawn しない（Draft）。
 async fn handle_echoes_session_create(
     state: &AppState,
@@ -1338,7 +1338,7 @@ async fn handle_echoes_session_create(
     if lane.is_empty() {
         return Err("echoes_session_create: lane 未指定".to_string());
     }
-    let stand = payload.get("stand").and_then(|v| v.as_str());
+    let agent = payload.get("agent").and_then(|v| v.as_str());
     let focus = payload
         .get("focus")
         .and_then(|v| v.as_bool())
@@ -1349,7 +1349,7 @@ async fn handle_echoes_session_create(
         .lane_pool
         .read()
         .await
-        .create_chat_session(&addr, stand, focus)
+        .create_chat_session(&addr, agent, focus)
         .map_err(|e| format!("echoes_session_create: {e}"))?;
     // doc 53 §12.4 R3c: 動詞は registry に書いた。実体を合わせるのは reconcile。
     // Chat の engine は lazy なので普通は no-op — それでも呼ぶのは「**契機は判断を持たない**」
@@ -1385,7 +1385,7 @@ async fn handle_echoes_session_focus(
     {
         // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
         // eager に resume spawn する（切替後の初 submit を待たない）。act=Tui の session（registry のみの
-        // 切替 = 正当）/ shell・legacy stand session（Act II host なし）等は debug で飲む — 切替自体は成功。
+        // 切替 = 正当）/ shell・legacy agent session（Act II host なし）等は debug で飲む — 切替自体は成功。
         //
         // reconcile の**後**に置く: reconcile は「act=Chat でない session の engine」を畳むので、
         // 先に起こすと同じ lock 区間の外で畳まれ得る。順序は「intent を合わせる → 注視に応じて
@@ -1465,7 +1465,7 @@ async fn handle_echoes_session_new_root(
         .lane_pool
         .read()
         .await
-        .create_root_session(&addr, payload.get("stand").and_then(|v| v.as_str()))
+        .create_root_session(&addr, payload.get("agent").and_then(|v| v.as_str()))
         .map_err(|e| format!("echoes_session_new_root: {e}"))?;
     // doc 53 §12.4 R3c-2: **旧 root の console は残る**。旧実装は restart_lane_orchestrated で
     // root slot を張り替えていたので、代表が変わるたびに前の pane が消えていた — session =
@@ -1663,7 +1663,7 @@ async fn handle_session_now(
         .ok_or_else(|| format!("session_now: lane パース失敗: {lane}"))?;
     let session = match payload.get("session").and_then(serde_json::Value::as_u64) {
         Some(s) => s as crate::lane::session_registry::SessionKey,
-        None => crate::lane::session_registry::load(&addr.repo, &addr.name, "echoes").root,
+        None => crate::lane::session_registry::load(&addr.repo, &addr.name, "claude").root,
     };
     state
         .topic_router
@@ -1711,22 +1711,22 @@ async fn handle_console_set_model(
         let info = pool
             .get(&addr)
             .ok_or_else(|| format!("console_set_model: Lane not found: {lane}"))?;
-        // doc 39 P4-A: slot に載る engine は lane 作成時固定の `info.stand` ではなく **root session の
-        // stand**（cross-engine root 切替 #812 で lane stand と食い違う）。model 切替の可否も
-        // slot の engine で判定しないと、picker で root を claude に向けても「lane stand は codex
-        // だから不可」の誤判定が出る。stand_spawner の slot spawn（`build_stand_command`）と同じ
-        // root-stand 解決に揃える（root entry 不在 = registry 破損は N=1 既定形で info.stand へ fallback）。
-        let lane_label = crate::repo::stand_spawner::lane_label(&addr).to_string();
-        let reg = crate::lane::session_registry::load(&addr.repo, &lane_label, &info.stand);
+        // doc 39 P4-A: slot に載る engine は lane 作成時固定の `info.agent` ではなく **root session の
+        // agent**（cross-engine root 切替 #812 で lane agent と食い違う）。model 切替の可否も
+        // slot の engine で判定しないと、picker で root を claude に向けても「lane agent は codex
+        // だから不可」の誤判定が出る。agent_spawner の slot spawn（`build_agent_command`）と同じ
+        // root-agent 解決に揃える（root entry 不在 = registry 破損は N=1 既定形で info.agent へ fallback）。
+        let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
+        let reg = crate::lane::session_registry::load(&addr.repo, &lane_label, &info.agent);
         let effective_stand = reg
             .sessions
             .iter()
             .find(|s| s.key == reg.root)
-            .map(|s| s.stand.clone())
-            .unwrap_or_else(|| info.stand.clone());
+            .map(|s| s.agent.clone())
+            .unwrap_or_else(|| info.agent.clone());
         // model 切替の可否は EngineKind の能力表明に一元化（engine_model は claude alias 前提の
         // state。他 engine は engine 側 UI（TUI `/model` 等）で選ぶ — doc 37 §7）。
-        match crate::echoes::EngineKind::from_stand(&effective_stand) {
+        match crate::echoes::EngineKind::from_agent(&effective_stand) {
             Some(k) if k.model_switchable() => {}
             Some(_) => {
                 return Err(format!(
@@ -1735,7 +1735,7 @@ async fn handle_console_set_model(
             }
             None => {
                 return Err(format!(
-                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, stand={effective_stand}）"
+                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, agent={effective_stand}）"
                 ));
             }
         }
@@ -1813,11 +1813,11 @@ async fn handle_lane_slots(
 }
 
 /// doc 46 P5 **producer**: 新しい console（slot）を 1 枚立てる。
-/// `{lane, stand?}` → `{status, lane, session, pid, count}`。
+/// `{lane, agent?}` → `{status, lane, session, pid, count}`。
 ///
 /// - 常に **新しい session** を採番してそこに slot を立てる（doc 46 §1.5「Pane は必ず新しい
 ///   session id で始まる」= session ↔ Pane 1:1）。既存 session の open は持たない
-/// - `stand` 省略 = 現 root の engine を引き継ぐ（doc 46 P2 の「Engine を選んで新コンソール」の
+/// - `agent` 省略 = 現 root の engine を引き継ぐ（doc 46 P2 の「Engine を選んで新コンソール」の
 ///   Act I 版。`echoes_session_create` は Act=Chat 固定なのでそちらでは作れない）
 /// - **root / focused は動かさない** — mailbox も pid も Dead 判定も root のまま（doc 40 §4-1）
 ///
@@ -1836,12 +1836,12 @@ async fn handle_lane_slot_new(
     let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(lane) else {
         return Err(format!("lane_slot_new: lane パース失敗: {}", lane));
     };
-    let stand = payload.get("stand").and_then(|v| v.as_str());
+    let agent = payload.get("agent").and_then(|v| v.as_str());
     let session = state
         .lane_pool
         .read()
         .await
-        .create_console_session(&addr, stand)
+        .create_console_session(&addr, agent)
         .map_err(|e| format!("lane_slot_new: {e}"))?;
     // doc 53 §12.4 R3c: slot を立てるのは reconcile（desired = act=Tui の session）。
     //
@@ -2046,12 +2046,12 @@ async fn handle_lane_session_changed(
     }
     let addr = crate::repo::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("lane_session_changed: invalid lane address: {lane}"))?;
-    let Some(stand) = state
+    let Some(agent) = state
         .lane_pool
         .read()
         .await
         .get(&addr)
-        .map(|l| l.stand.clone())
+        .map(|l| l.agent.clone())
     else {
         return Err(format!("lane_session_changed: lane が存在しません: {lane}"));
     };
@@ -2077,9 +2077,9 @@ async fn handle_lane_session_changed(
             conversation: sid,
             trigger,
         };
-        let lane_label = crate::repo::stand_spawner::lane_label(&addr);
+        let lane_label = crate::repo::agent_spawner::lane_label(&addr);
         match crate::lane::session_registry::record_conversation(
-            &addr.repo, lane_label, &stand, report,
+            &addr.repo, lane_label, &agent, report,
         ) {
             Ok(outcome) => {
                 tracing::info!(
@@ -2097,7 +2097,7 @@ async fn handle_lane_session_changed(
 
 /// lanes portless (doc 27 §3.4.5): Lane create。 旧 SP HTTP `POST /api/lanes` を repo-proxy ask に
 /// 移管。 core の `create_performer_orchestrated` (lane clone + PtySlot spawn) を呼ぶ薄い adapter。
-/// payload は `CreateLaneReq` 互換 JSON (kind/name/stand?/cwd?/branch?/base?)。 成功は LaneInfo JSON、
+/// payload は `CreateLaneReq` 互換 JSON (kind/name/agent?/cwd?/branch?/base?)。 成功は LaneInfo JSON、
 /// 失敗は core が返す String error (旧 HTTP の CONFLICT="already exists" 等を保持)。
 async fn handle_lane_create(
     state: &Arc<AppState>,
@@ -2214,11 +2214,11 @@ async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, S
     Ok(serde_json::json!({ "lanes": lanes }))
 }
 
-/// F6④ (doc 27 §3.4.5/§6): Stand 一覧。 旧 SP HTTP `GET /api/stands` を repo-proxy ask に移管。
+/// F6④ (doc 27 §3.4.5/§6): Agent 一覧。 旧 SP HTTP `GET /api/agents` を repo-proxy ask に移管。
 /// tmux decoupling PR2: built-in 静的テーブル (旧 mise task scan + TTL cache は廃止)。
 async fn handle_stands_list() -> Result<serde_json::Value, String> {
-    let stands = super::routes::stands::list_stands();
-    Ok(serde_json::json!({ "stands": stands }))
+    let agents = super::routes::agents::list_agents();
+    Ok(serde_json::json!({ "agents": agents }))
 }
 
 pub(crate) async fn dispatch_repo_method(
@@ -2314,8 +2314,8 @@ pub(crate) async fn dispatch_repo_method(
         "lane_origin_get" => handle_lane_origin_get(state).await,
         "lane_origin_set" => handle_lane_origin_set(state, payload).await,
         "lane_order_set" => handle_lane_order_set(state, payload).await,
-        // F6④: Stand 一覧 (旧 SP HTTP GET /api/stands を repo-proxy ask に移管)
-        "stands_list" => handle_stands_list().await,
+        // F6④: Agent 一覧 (旧 SP HTTP GET /api/agents を repo-proxy ask に移管)
+        "agents_list" => handle_stands_list().await,
         // L0 finale: repo graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、
         // Daemon stop_process / restart_process 用)。 shutdown_token.cancel() で graceful 停止
         // (DB close 等)。 repo が即 QUIC server を畳むため応答が返らない事もあるが best-effort。
@@ -3847,7 +3847,7 @@ mod tests {
         crate::lane::session_registry::set_root_act(
             "vp",
             "chat-x",
-            "echoes",
+            "claude",
             crate::lane::session_registry::SessionAct::Chat,
         )
         .expect("test registry へ root act を書けること");
@@ -3857,7 +3857,7 @@ mod tests {
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
-                stand: "echoes".to_string(),
+                agent: "claude".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: std::env::temp_dir().to_string_lossy().to_string(),
@@ -3865,7 +3865,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
-                engine_stand: None,
+                agent_name: None,
                 flow_state: None,
             });
         }
@@ -3917,7 +3917,7 @@ mod tests {
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
-                stand: "shell".to_string(),
+                agent: "shell".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
@@ -3925,7 +3925,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
-                engine_stand: None,
+                agent_name: None,
                 flow_state: None,
             });
             for key in [1u32, 2] {
@@ -4012,7 +4012,7 @@ mod tests {
             assert!(res.is_err(), "入口検査: {payload} は Err: {res:?}");
         }
 
-        // stand="shell" の lane（console に engine を注入しない）+ 既存の root slot。
+        // agent="shell" の lane（console に engine を注入しない）+ 既存の root slot。
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         {
             let mut pool = state.lane_pool.write().await;
@@ -4020,7 +4020,7 @@ mod tests {
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
-                stand: "shell".to_string(),
+                agent: "shell".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
@@ -4028,7 +4028,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
-                engine_stand: None,
+                agent_name: None,
                 flow_state: None,
             });
             let (slot, rx) = PtySlot::spawn(
@@ -4044,7 +4044,7 @@ mod tests {
             pool.insert_pty_slot(addr.clone(), Some(1), slot, rx);
         }
 
-        // stand 省略 = 現 root の engine を引き継ぐ（registry 不在 = lane stand の "shell"）。
+        // agent 省略 = 現 root の engine を引き継ぐ（registry 不在 = lane agent の "shell"）。
         let res = dispatch_repo_method(
             &state,
             "lane_slot_new",
@@ -4101,14 +4101,14 @@ mod tests {
         let lane = addr.to_string();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        // stand="shell" の lane + root slot（root は ✕ できないので #2 を足して閉じる）。
+        // agent="shell" の lane + root slot（root は ✕ できないので #2 を足して閉じる）。
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
-                stand: "shell".to_string(),
+                agent: "shell".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
@@ -4116,7 +4116,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
-                engine_stand: None,
+                agent_name: None,
                 flow_state: None,
             });
         }
@@ -4136,7 +4136,7 @@ mod tests {
         // 通ってしまう（= 壊し方を先に決める規律。この test は逆順にすると赤くなる）。
         let replay = crate::daemon::pty_slot::replay_file_path_session(
             &addr.repo,
-            crate::repo::stand_spawner::lane_label(&addr),
+            crate::repo::agent_spawner::lane_label(&addr),
             session,
         );
         {
@@ -4251,8 +4251,8 @@ mod tests {
         assert!(err.contains("text"), "エラーが理由を運ぶ: {err}");
     }
 
-    /// doc 39 P4-A: console_set_model の可否判定は lane 固定 stand ではなく **root session の
-    /// stand**（slot の engine）で決まる。cross-engine root（#812）で lane stand と食い違っても、
+    /// doc 39 P4-A: console_set_model の可否判定は lane 固定 agent ではなく **root session の
+    /// agent**（slot の engine）で決まる。cross-engine root（#812）で lane agent と食い違っても、
     /// picker で slot に立てた engine の能力に追従することを両方向で固定する。
     #[tokio::test]
     async fn console_set_model_gates_on_root_session_stand() {
@@ -4266,11 +4266,11 @@ mod tests {
 
         // performer LaneInfo を組む（chat engine 不在なので drop→ensure の engine 入替は
         // no-op — drop_chat_engine が false を返し ensure は走らない）。
-        let build = |name: &str, stand: &str| LaneInfo {
+        let build = |name: &str, agent: &str| LaneInfo {
             id: Default::default(),
             address: LaneAddress::performer("vp", name),
             state: LaneState::Running,
-            stand: stand.to_string(),
+            agent: agent.to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             pid: None,
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
@@ -4278,17 +4278,17 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
 
-        // ケース①: lane 固定 stand=codex（非対応）だが root session を echoes（claude）に向けた lane。
-        // → root stand で判定するので model 切替は **成功**する。
+        // ケース①: lane 固定 agent=codex（非対応）だが root session を echoes（claude）に向けた lane。
+        // → root agent で判定するので model 切替は **成功**する。
         crate::lane::session_registry::create_root(
             "vp",
             "root-claude",
             "codex",
-            "echoes",
+            "claude",
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("root を echoes session に");
@@ -4305,7 +4305,7 @@ mod tests {
         .await;
         assert!(
             res.is_ok(),
-            "root が claude session なら lane stand=codex でも切替可: {res:?}"
+            "root が claude session なら lane agent=codex でも切替可: {res:?}"
         );
         assert_eq!(
             crate::lane::engine_model::last("vp", "root-claude").as_deref(),
@@ -4313,12 +4313,12 @@ mod tests {
             "model が engine_model に永続される"
         );
 
-        // ケース②: lane 固定 stand=echoes（対応）だが root session を codex に向けた lane。
-        // → root stand で判定するので model 切替は **拒否**される（lane stand に引きずられない）。
+        // ケース②: lane 固定 agent=echoes（対応）だが root session を codex に向けた lane。
+        // → root agent で判定するので model 切替は **拒否**される（lane agent に引きずられない）。
         crate::lane::session_registry::create_root(
             "vp",
             "root-codex",
-            "echoes",
+            "claude",
             "codex",
             crate::lane::session_registry::SessionAct::Tui,
         )
@@ -4327,14 +4327,14 @@ mod tests {
             .lane_pool
             .write()
             .await
-            .insert(build("root-codex", "echoes"));
+            .insert(build("root-codex", "claude"));
         let res = dispatch_repo_method(
             &state,
             "console_set_model",
             serde_json::json!({ "lane": LaneAddress::performer("vp", "root-codex").to_string(), "model": "sonnet" }),
         )
         .await;
-        let err = res.expect_err("root が codex session なら lane stand=echoes でも拒否");
+        let err = res.expect_err("root が codex session なら lane agent=echoes でも拒否");
         assert!(
             err.contains("codex"),
             "拒否メッセージは root の engine(codex)を指す: {err}"
@@ -4366,7 +4366,7 @@ mod tests {
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
-                stand: "echoes".to_string(),
+                agent: "claude".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
@@ -4374,7 +4374,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
-                engine_stand: None,
+                agent_name: None,
                 flow_state: None,
             });
             pool.insert_pty_slot(addr.clone(), None, slot, rx);
@@ -4485,7 +4485,7 @@ mod tests {
             id: Default::default(),
             address: LaneAddress::root("vp"),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-07-17T00:00:00Z".to_string(),
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
@@ -4493,11 +4493,11 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         });
         // hook 相当の会話 id 記録（記録契機 UserPromptSubmit の後の状態）。doc 40: SSOT は registry。
-        crate::lane::session_registry::set_conversation("vp", "root", "echoes", 1, Some("sid-new"))
+        crate::lane::session_registry::set_conversation("vp", "root", "claude", 1, Some("sid-new"))
             .expect("record conversation");
 
         let mut rx = state.system_event_tx.subscribe();
@@ -4543,7 +4543,7 @@ mod tests {
             id: Default::default(),
             address: LaneAddress::root("vp"),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-07-18T00:00:00Z".to_string(),
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
@@ -4551,7 +4551,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         });
 
@@ -4569,7 +4569,7 @@ mod tests {
         .expect("lane_session_changed ok");
 
         // registry（SSOT）に記録され、旧 store には書かれない
-        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
+        let reg = crate::lane::session_registry::load("vp", "root", "claude");
         let root_conv = reg
             .sessions
             .iter()
@@ -4617,7 +4617,7 @@ mod tests {
             id: Default::default(),
             address: LaneAddress::root("vp"),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
@@ -4625,14 +4625,14 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         });
         // root(#1) は発話済み、同居人 #2 が立っている状態。
         crate::lane::session_registry::set_conversation(
             "vp",
             "root",
-            "echoes",
+            "claude",
             1,
             Some("sid-root"),
         )
@@ -4640,8 +4640,8 @@ mod tests {
         let k2 = crate::lane::session_registry::create(
             "vp",
             "root",
-            "echoes",
-            "echoes",
+            "claude",
+            "claude",
             crate::lane::session_registry::SessionAct::Tui,
             false,
         )
@@ -4661,7 +4661,7 @@ mod tests {
         .await
         .expect("lane_session_changed ok");
 
-        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
+        let reg = crate::lane::session_registry::load("vp", "root", "claude");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some("sid-root"),
@@ -4686,7 +4686,7 @@ mod tests {
         )
         .await
         .expect("lane_session_changed ok（記録はしないが配線は成功）");
-        let reg = crate::lane::session_registry::load("vp", "root", "echoes");
+        let reg = crate::lane::session_registry::load("vp", "root", "claude");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some("sid-root"),
@@ -4695,9 +4695,9 @@ mod tests {
         assert_eq!(reg.sessions.len(), 2, "session は増えない");
     }
 
-    /// F6④: stands_list dispatch — repo-proxy ask が `{stands:[...]}` 形で返る。
+    /// F6④: agents_list dispatch — repo-proxy ask が `{agents:[...]}` 形で返る。
     /// list_stands_cached は mise 不在 (CI) でも空 Vec に graceful degrade するので、 配線 +
-    /// wire shape (stands array 常在) を CI でも固定できる (実 stand 内容は stands.rs の
+    /// wire shape (agents array 常在) を CI でも固定できる (実 agent 内容は stands.rs の
     /// mise-gated test が担保)。
     #[tokio::test]
     async fn stands_list_returns_stands_array() {
@@ -4705,12 +4705,12 @@ mod tests {
         use crate::repo::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
-        let res = dispatch_repo_method(&state, "stands_list", serde_json::json!({}))
+        let res = dispatch_repo_method(&state, "agents_list", serde_json::json!({}))
             .await
-            .expect("stands_list dispatch");
+            .expect("agents_list dispatch");
         assert!(
-            res.get("stands").map(|s| s.is_array()).unwrap_or(false),
-            "stands_list は {{stands:[...]}} 形で返る: {res}"
+            res.get("agents").map(|s| s.is_array()).unwrap_or(false),
+            "agents_list は {{agents:[...]}} 形で返る: {res}"
         );
     }
 
@@ -4833,13 +4833,13 @@ mod tests {
         let addr = LaneAddress::root(repo);
         // doc 53 R1: act の SSOT は registry（pool cache は退役）。テストも registry に書いて
         // 読み手（root_act 直読）と同じ経路を通す。
-        crate::lane::session_registry::set_root_act(repo, "root", "echoes", mode)
+        crate::lane::session_registry::set_root_act(repo, "root", "claude", mode)
             .expect("test registry へ root act を書けること");
         state.lane_pool.write().await.insert(LaneInfo {
             id: Default::default(),
             address: addr.clone(),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
@@ -4847,7 +4847,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         });
         addr
@@ -5099,14 +5099,14 @@ mod tests {
         let addr = LaneAddress::performer("vp", "feat-slotpump");
         let lane = addr.to_string();
 
-        // lane を登録（stand=shell = console に engine を注入しない）+ root slot を立てる。
+        // lane を登録（agent=shell = console に engine を注入しない）+ root slot を立てる。
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
                 id: Default::default(),
                 address: addr.clone(),
                 state: LaneState::Running,
-                stand: "shell".to_string(),
+                agent: "shell".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
@@ -5114,7 +5114,7 @@ mod tests {
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
-                engine_stand: None,
+                agent_name: None,
                 flow_state: None,
             });
             let (slot, rx) =
@@ -5144,7 +5144,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "lane_slot_new",
-            serde_json::json!({ "lane": lane, "stand": "shell" }),
+            serde_json::json!({ "lane": lane, "agent": "shell" }),
         )
         .await
         .expect("lane_slot_new");
@@ -5255,11 +5255,11 @@ mod tests {
         );
     }
 
-    /// doc 50 §4.6 A6 ②: Chat 化の可否は **その session の stand** の能力で決まる。
+    /// doc 50 §4.6 A6 ②: Chat 化の可否は **その session の agent** の能力で決まる。
     ///
     /// GUI 側 badge も同じ能力表（`chat_capable`）で gating するが、**server が最終的な門番**。
     /// root 決め打ちにしないこと（非 root は engine が違いうる — shell の console を chat に
-    /// しようとしても、その session の stand で弾く）を固定する。
+    /// しようとしても、その session の agent で弾く）を固定する。
     #[tokio::test]
     async fn session_set_act_chat_requires_chat_capable_stand() {
         use super::dispatch_repo_method;
@@ -5271,18 +5271,18 @@ mod tests {
         let addr = insert_test_lane(&state, "vptest-cap", SessionAct::Tui).await;
         let lane = "vptest-cap/root";
 
-        // lane の stand は echoes（chat 可能）だが、**非 root に shell の session** を足す。
+        // lane の agent は echoes（chat 可能）だが、**非 root に shell の session** を足す。
         let shell = session_registry::create(
             &addr.repo,
             "root",
-            "echoes",
+            "claude",
             "shell",
             SessionAct::Tui,
             false,
         )
         .expect("shell session 作成");
 
-        // その session を chat にしようとすると、**その session の stand（shell）**で弾かれる。
+        // その session を chat にしようとすると、**その session の agent（shell）**で弾かれる。
         let err = dispatch_repo_method(
             &state,
             "session_set_act",

@@ -99,7 +99,7 @@ impl RepoRuntimes {
     /// Daemon bootstrap 専用。
     /// - `node_lanes` を渡さないと repo を起こしても daemon の view が更新されず、
     ///   `vp ps` / sidebar / Unison `lanes/list` が boot 時の db 値で固まる。
-    /// - `vpdb` を渡さないと repo は DB なしで走り、board / stand status が
+    /// - `vpdb` を渡さないと repo は DB なしで走り、board / agent status が
     ///   永続しない（doc 44 P1 PR4 以前は repo が自分で db を開いていた）。
     pub fn for_daemon(
         node_lanes: super::server::NodeLaneView,

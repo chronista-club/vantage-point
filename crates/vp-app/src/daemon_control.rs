@@ -187,17 +187,17 @@ impl DaemonControl {
 
     /// performer lane を作る (旧 `POST /api/daemon/lanes`、doc 24 §10 Phase 2 B-create)。
     ///
-    /// `branch` / `stand` を省くと daemon 側が default を導出する
+    /// `branch` / `agent` を省くと daemon 側が default を導出する
     /// (HTTP route と同じ `resolve_create_lane_args` を共有)。
     pub async fn create_performer_lane(
         &self,
         repo_path: &str,
         name: &str,
         branch: Option<&str>,
-        stand: Option<&str>,
+        agent: Option<&str>,
     ) -> Result<()> {
         let mut payload = serde_json::json!({ "path": repo_path, "name": name });
-        for (key, value) in [("branch", branch), ("stand", stand)] {
+        for (key, value) in [("branch", branch), ("agent", agent)] {
             if let Some(value) = value {
                 payload[key] = serde_json::Value::String(value.to_string());
             }

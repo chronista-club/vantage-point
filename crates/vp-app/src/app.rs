@@ -236,7 +236,7 @@ mod ipc_tag_tests {
         }
         // sidebar 系 tag は従来どおり main に取られない（disjoint の維持）。
         assert!(!is_main_ipc_tag(r#"{"t":"lane:select","lane":"x"}"#));
-        assert!(!is_main_ipc_tag(r#"{"t":"stands:fetch","path":"x"}"#));
+        assert!(!is_main_ipc_tag(r#"{"t":"agents:fetch","path":"x"}"#));
     }
 }
 
@@ -269,9 +269,9 @@ mod session_derivation_tests {
         let lane = lane_with(
             16,
             serde_json::json!([
-                {"key": 16, "stand": "echoes", "act": "chat",
+                {"key": 16, "agent": "claude", "act": "chat",
                  "conversation": "conv-abc", "chat_capable": true},
-                {"key": 24, "stand": "shell", "act": "tui", "chat_capable": false},
+                {"key": 24, "agent": "shell", "act": "tui", "chat_capable": false},
             ]),
         );
         let sessions = lane.sessions.as_ref().expect("roster");
@@ -318,7 +318,7 @@ mod session_derivation_tests {
     fn roster_push_gate_fires_on_change_only() {
         let lane = lane_with(
             16,
-            serde_json::json!([{"key": 16, "stand": "echoes", "act": "chat"}]),
+            serde_json::json!([{"key": 16, "agent": "claude", "act": "chat"}]),
         );
         let payload = session_list_payload("vp/root", lane.sessions.as_ref().expect("roster"));
         let mut last: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -337,8 +337,8 @@ mod session_derivation_tests {
         let grown = lane_with(
             16,
             serde_json::json!([
-                {"key": 16, "stand": "echoes", "act": "chat"},
-                {"key": 24, "stand": "shell", "act": "tui"},
+                {"key": 16, "agent": "claude", "act": "chat"},
+                {"key": 24, "agent": "shell", "act": "tui"},
             ]),
         );
         let grown_payload =
@@ -367,7 +367,7 @@ mod session_derivation_tests {
     }
 
     fn s(key: u32, act: &str) -> serde_json::Value {
-        serde_json::json!({"key": key, "stand": "echoes", "act": act})
+        serde_json::json!({"key": key, "agent": "claude", "act": act})
     }
 
     #[test]
@@ -1940,7 +1940,7 @@ fn session_list_payload(
         .map(|s| {
             serde_json::json!({
                 "key": s.key,
-                "stand": s.stand,
+                "agent": s.agent,
                 "engine_session_id": s.conversation,
                 "focused": s.key == sessions.focused,
                 "root": s.key == sessions.root,
@@ -1969,7 +1969,7 @@ mod lane_js {
     use wry::WebView;
 
     use crate::generated::push::{
-        BoardMessage, ConsoleActApplied, ConsoleEvent, ConsoleSessionList, ConsoleStands,
+        BoardMessage, ConsoleActApplied, ConsoleAgents, ConsoleEvent, ConsoleSessionList,
         DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope, TermEnsureLane, TermPaste,
         TermRemoveLane, TermRemoveSession, TermShowLane,
     };
@@ -2141,7 +2141,7 @@ mod lane_js {
         );
     }
 
-    /// 「+」menu へ stand 一覧を返す。`req` は要求元の相関 id（doc 47 §6、省略 = 誰も拾わない）。
+    /// 「+」menu へ agent 一覧を返す。`req` は要求元の相関 id（doc 47 §6、省略 = 誰も拾わない）。
     pub fn console_stands(
         main_view: &WebView,
         lane: &str,
@@ -2150,7 +2150,7 @@ mod lane_js {
     ) {
         push(
             main_view,
-            &PushEventEnvelope::ConsoleStands(ConsoleStands {
+            &PushEventEnvelope::ConsoleAgents(ConsoleAgents {
                 lane: lane.to_string(),
                 payload,
                 req,
@@ -2447,10 +2447,10 @@ fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
     }
 }
 
-/// doc 38 §4.2: `echoes_session_list` payload（`{focused, sessions:[{key, stand, focused, ...}]}`）
-/// から focused session の stand を引く。New Session の chat 分岐で「現 focused と同じ engine の
+/// doc 38 §4.2: `echoes_session_list` payload（`{focused, sessions:[{key, agent, focused, ...}]}`）
+/// から focused session の agent を引く。New Session の chat 分岐で「現 focused と同じ engine の
 /// 新 Draft を作る」ために使う。`focused` フラグ優先 → `focused` key 一致 → 先頭 の順で解決し、
-/// 取れなければ None（backend が lane 既定 stand を使うため送らなくてよい）。純粋 = テスト可能。
+/// 取れなければ None（backend が lane 既定 agent を使うため送らなくてよい）。純粋 = テスト可能。
 fn focused_session_stand(payload: &serde_json::Value) -> Option<String> {
     let sessions = payload.get("sessions").and_then(|v| v.as_array())?;
     let focused_key = payload.get("focused").and_then(|v| v.as_u64());
@@ -2465,7 +2465,7 @@ fn focused_session_stand(payload: &serde_json::Value) -> Option<String> {
             })
         })
         .or_else(|| sessions.first())
-        .and_then(|s| s.get("stand").and_then(|v| v.as_str()).map(str::to_string))
+        .and_then(|s| s.get("agent").and_then(|v| v.as_str()).map(str::to_string))
 }
 
 #[cfg(test)]
@@ -2561,14 +2561,14 @@ mod lane_key_wire_agent_tests {
 mod focused_session_stand_tests {
     use super::focused_session_stand;
 
-    /// focused フラグ付き session の stand を引く（doc 38 §4.2 New Session の chat 分岐）。
+    /// focused フラグ付き session の agent を引く（doc 38 §4.2 New Session の chat 分岐）。
     #[test]
     fn picks_stand_of_focused_flagged_session() {
         let payload = serde_json::json!({
             "focused": 2,
             "sessions": [
-                {"key": 1, "stand": "echoes", "focused": false},
-                {"key": 2, "stand": "codex", "focused": true},
+                {"key": 1, "agent": "claude", "focused": false},
+                {"key": 2, "agent": "codex", "focused": true},
             ]
         });
         assert_eq!(focused_session_stand(&payload).as_deref(), Some("codex"));
@@ -2580,23 +2580,23 @@ mod focused_session_stand_tests {
         let payload = serde_json::json!({
             "focused": 3,
             "sessions": [
-                {"key": 1, "stand": "echoes"},
-                {"key": 3, "stand": "grok"},
+                {"key": 1, "agent": "claude"},
+                {"key": 3, "agent": "grok"},
             ]
         });
         assert_eq!(focused_session_stand(&payload).as_deref(), Some("grok"));
     }
 
-    /// どちらも決まらなければ先頭 session の stand（安全側 = とにかく作れる）。
+    /// どちらも決まらなければ先頭 session の agent（安全側 = とにかく作れる）。
     #[test]
     fn falls_back_to_first_session() {
         let payload = serde_json::json!({
-            "sessions": [{"key": 1, "stand": "echoes"}, {"key": 2, "stand": "codex"}]
+            "sessions": [{"key": 1, "agent": "claude"}, {"key": 2, "agent": "codex"}]
         });
-        assert_eq!(focused_session_stand(&payload).as_deref(), Some("echoes"));
+        assert_eq!(focused_session_stand(&payload).as_deref(), Some("claude"));
     }
 
-    /// sessions が空 / 欠落なら None（backend の lane 既定 stand に委ねる）。
+    /// sessions が空 / 欠落なら None（backend の lane 既定 agent に委ねる）。
     #[test]
     fn returns_none_when_no_sessions() {
         assert_eq!(focused_session_stand(&serde_json::json!({})), None);
@@ -2643,18 +2643,18 @@ fn ensure_echoes_attach(
 }
 
 fn push_active_view(main_view: &WebView, state: &SidebarState) {
-    let info = if let Some(stand) = state.active_stand.as_ref() {
+    let info = if let Some(agent) = state.active_stand.as_ref() {
         ActivePaneInfo {
-            kind: Some(stand.kind.as_str()),
+            kind: Some(agent.kind.as_str()),
             pane_id: None,
             preview_url: None,
             chat: false,
-            // 非 lane pane (Stand) は Echoes ヘッダの lane 情報を持たない。
+            // 非 lane pane (Agent) は Echoes ヘッダの lane 情報を持たない。
             cwd: None,
             branch: None,
             lane_name: None,
             session_id: None,
-            stand: None,
+            agent: None,
         }
     } else if let Some(addr) = state.active_lane_address.as_deref() {
         // Echoes 共通ヘッダ用: active lane の LaneInfo から cwd / branch を引く。cwd は
@@ -2682,10 +2682,10 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             lane_name: lane.map(|l| l.address.name.as_str()),
             // Act I の session chip はこの相乗りが唯一の供給路（Act II は event が上書き）。
             session_id: lane.and_then(|l| l.engine_session_id.as_deref()),
-            // doc 39 P4-C: chip prefix は root session の engine（engine_stand）を優先する
-            // （cross-engine root で slot の engine を正しく映す）。無ければ lane 固定の stand に fallback。
-            stand: lane
-                .map(|l| l.engine_stand.as_deref().unwrap_or(l.stand.as_str()))
+            // doc 39 P4-C: chip prefix は root session の engine（agent_name）を優先する
+            // （cross-engine root で slot の engine を正しく映す）。無ければ lane 固定の agent に fallback。
+            agent: lane
+                .map(|l| l.agent_name.as_deref().unwrap_or(l.agent.as_str()))
                 .filter(|st| !st.is_empty()),
         }
     } else {
@@ -2698,7 +2698,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             branch: None,
             lane_name: None,
             session_id: None,
-            stand: None,
+            agent: None,
         }
     };
     let script = main_area::build_set_active_pane_script(&info);
@@ -2711,17 +2711,17 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
 ///
 /// `push_active_view` 再発行の gate（供給 push 根治）。LanesLoaded は loop event で頻発する
 /// ため毎回撃つと setActivePane が noise になる — header が実際に読む field（session chip /
-/// cwd / branch / lane 名 / stand / Act 初期値）に変化がある時だけ true を返す。
+/// cwd / branch / lane 名 / agent / Act 初期値）に変化がある時だけ true を返す。
 fn header_lane_fields_changed(
     prev: &crate::client::LaneInfo,
     next: &crate::client::LaneInfo,
 ) -> bool {
     prev.engine_session_id != next.engine_session_id
         || prev.cwd != next.cwd
-        || prev.stand != next.stand
-        // doc 39 P4-C: chip prefix は engine_stand（root session の engine）で決まるため、
+        || prev.agent != next.agent
+        // doc 39 P4-C: chip prefix は agent_name（root session の engine）で決まるため、
         // その変化（cross-engine root 切替）でも header を再 push する。
-        || prev.engine_stand != next.engine_stand
+        || prev.agent_name != next.agent_name
         || prev.address.name != next.address.name
         // doc 53 R1: root act の変化（act 切替 / root 付け替え）は sessions から導出して比較。
         || root_act_of(prev) != root_act_of(next)
@@ -2998,28 +2998,28 @@ mod sidebar_js {
         );
     }
 
-    /// + Add Performer の dropdown を populate する Stand 一覧。
+    /// + Add Performer の dropdown を populate する Agent 一覧。
     pub fn stands_result(
         sidebar: &WebView,
         repo_path: String,
-        stands: &[crate::client::StandInfo],
+        agents: &[crate::client::AgentInfo],
         error: Option<String>,
     ) {
-        let stands = stands
+        let agents = agents
             .iter()
             .filter_map(|s| match serde_json::to_value(s) {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    tracing::warn!("StandInfo の serialize に失敗（この 1 件を省く）: {e}");
+                    tracing::warn!("AgentInfo の serialize に失敗（この 1 件を省く）: {e}");
                     None
                 }
             })
             .collect();
         push(
             sidebar,
-            &IpcEventEnvelope::StandsResult(crate::generated::sidebar_ipc::StandsResult {
+            &IpcEventEnvelope::AgentsResult(crate::generated::sidebar_ipc::AgentsResult {
                 repo_path,
-                stands,
+                agents,
                 error,
             }),
         );
@@ -3142,7 +3142,7 @@ struct SidebarIpcOutcome {
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     changed: bool,
     /// active Lane/Stand が変わったか (true なら push_active_view を呼ぶ)。
-    /// Lane 選択の場合は `activate_lane` を使うこと（こちらは Stand 選択・Lane 削除用）。
+    /// Lane 選択の場合は `activate_lane` を使うこと（こちらは Agent 選択・Lane 削除用）。
     active_changed: bool,
     /// Lane activation 要求 — caller が `activate_lane()` を呼ぶ。
     /// `active_changed` とは排他（こちらが Some なら active_changed は不要）。
@@ -3151,18 +3151,18 @@ struct SidebarIpcOutcome {
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
     /// dedup は caller の `repo_spawn_triggered: HashSet<String>` (path key) で行う。
     repo_spawn_request: Option<(String, String)>,
-    /// Phase 3-A: Performer Lane 作成要求 `(repo_path, name, branch, stand)`。
+    /// Phase 3-A: Performer Lane 作成要求 `(repo_path, name, branch, agent)`。
     /// doc 24 §10 B-create: caller が daemon (:32000) の `create_performer_lane`
     /// (Unison `daemon-control.lanes/create`) を呼ぶ (repo port 解決は不要)。
-    /// `stand` は doc 11 PR-C で追加 (None なら daemon-side default)。
+    /// `agent` は doc 11 PR-C で追加 (None なら daemon-side default)。
     add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
-    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 `(repo_path)`。
-    /// caller が daemon repo-proxy ask (`stands_list`) を呼ぶ → `AppEvent::StandsResult` で push back。
+    /// doc 11 PR-C / F6④: 利用可能 Agent 一覧 fetch 要求 `(repo_path)`。
+    /// caller が daemon repo-proxy ask (`agents_list`) を呼ぶ → `AppEvent::AgentsResult` で push back。
     list_stands_request: Option<String>,
     /// Phase 4-A: Performer Lane 削除要求 `(repo_path, address)`。
     /// caller が repo port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
-    /// Lane Conductor Stand restart 要求 `(repo_path, address, fresh)`。
+    /// Lane Conductor Agent restart 要求 `(repo_path, address, fresh)`。
     /// caller が repo port を解決して `client.restart_lane` を呼ぶ。
     /// fresh=true は "New Conductor Session" (resume/continue 回避の fresh 起動)。
     restart_lane_request: Option<(String, String, bool)>,
@@ -3313,26 +3313,26 @@ fn handle_sidebar_ipc(
         IpcEnvelope::LaneAddPerformer(m) => {
             // Phase 3-A: sidebar から Performer Lane 作成要求。 doc 24 §10 B-create:
             // caller (event loop) が daemon (:32000) の create_performer_lane を呼ぶ。
-            // doc 11 PR-C: branch / stand は optional。 空文字は None に畳んで
+            // doc 11 PR-C: branch / agent は optional。 空文字は None に畳んで
             // daemon-side default にフォールバックさせる。
             let branch = m.branch.filter(|s| !s.is_empty());
-            let stand = m.stand.filter(|s| !s.is_empty());
+            let agent = m.agent.filter(|s| !s.is_empty());
             if !m.path.is_empty() && !m.name.is_empty() {
-                out.add_performer_request = Some((m.path, m.name, branch, stand));
+                out.add_performer_request = Some((m.path, m.name, branch, agent));
             }
         }
-        IpcEnvelope::StandsFetch(m) => {
-            // doc 11 PR-C: sidebar の + Add Performer form 開閉時に利用可能 Stand 一覧を取得。
-            // caller (event loop) で daemon repo-proxy ask (`stands_list`) → window.handleStandsResult で push back。
+        IpcEnvelope::AgentsFetch(m) => {
+            // doc 11 PR-C: sidebar の + Add Performer form 開閉時に利用可能 Agent 一覧を取得。
+            // caller (event loop) で daemon repo-proxy ask (`agents_list`) → window.handleAgentsResult で push back。
             if !m.path.is_empty() {
                 out.list_stands_request = Some(m.path);
             }
         }
         IpcEnvelope::StandSelect(m) => {
-            // Phase 5-A: Repo-scope Stand row click → main area に対応 pane を表示
+            // Phase 5-A: Repo-scope Agent row click → main area に対応 pane を表示
             // (Lane と mutually exclusive、 active_lane_address は preemptively clear)
-            // DeviceRegistry 🧲 は machine-scope Stand (device = daemon 共通) なので path="" で来る。
-            // machine-scope stand は path 空を許可、 それ以外 (Repo-scope) は path 必須。
+            // DeviceRegistry 🧲 は machine-scope Agent (device = daemon 共通) なので path="" で来る。
+            // machine-scope agent は path 空を許可、 それ以外 (Repo-scope) は path 必須。
             if m.kind.is_empty() || (m.path.is_empty() && m.kind != "devices") {
                 tracing::warn!("stand:select with empty path/kind: {}", msg);
                 return out;
@@ -3347,7 +3347,7 @@ fn handle_sidebar_ipc(
             }
             tracing::info!("stand:select repo={} kind={}", m.path, m.kind);
             state.active_stand = Some(new_stand);
-            // Lane を排他で clear (= main area の active 軸を Stand に切替)
+            // Lane を排他で clear (= main area の active 軸を Agent に切替)
             if state.active_lane_address.is_some() {
                 state.active_lane_address = None;
             }
@@ -5162,7 +5162,7 @@ pub fn run() -> anyhow::Result<()> {
                         // 1. engine を決める。doc 46 P2 要件 4 の**明示指定があればそれを使い**、
                         //    無い時だけ現 focused を継ぐ（従来挙動）。指定がある場合は
                         //    session_list の往復ごと省ける。
-                        let stand = match engine {
+                        let agent = match engine {
                             Some(e) => Some(e),
                             None => match daemon_repo_request(
                                 port,
@@ -5183,8 +5183,8 @@ pub fn run() -> anyhow::Result<()> {
                         };
                         // 2. 新 Draft session を作って focus（focus は明示 true）。
                         let mut create = serde_json::json!({ "lane": &lane, "focus": true });
-                        if let Some(s) = &stand {
-                            create["stand"] = serde_json::Value::String(s.clone());
+                        if let Some(s) = &agent {
+                            create["agent"] = serde_json::Value::String(s.clone());
                         }
                         if let Err(e) =
                             daemon_repo_request(port, &path, "echoes_session_create", create).await
@@ -5225,10 +5225,10 @@ pub fn run() -> anyhow::Result<()> {
                     // 外れた今は「勝手に root を動かす副作用」に意味が反転する。root の付け替えは
                     // `console:switch_root`（root picker）の明示操作に一本化した。
                     rt_handle.spawn(async move {
-                        // engine の明示指定は backend まで通す（無ければ lane の stand を継ぐ）。
+                        // engine の明示指定は backend まで通す（無ければ lane の agent を継ぐ）。
                         let mut payload = serde_json::json!({ "lane": &lane });
                         if let Some(e) = &engine {
-                            payload["stand"] = serde_json::Value::String(e.clone());
+                            payload["agent"] = serde_json::Value::String(e.clone());
                         }
                         match daemon_repo_request(port, &path, "lane_slot_new", payload).await {
                             Ok(res) => {
@@ -5316,15 +5316,15 @@ pub fn run() -> anyhow::Result<()> {
             //
             // doc 38 Phase 2: 「+」からの新 session 作成。focus は送らない = backend 既定 true。
             // 作成後に一覧を取り直して tab strip に新 session を即反映（1 task で直列）。
-            Event::UserEvent(AppEvent::EchoesSessionCreate { lane, stand }) => {
+            Event::UserEvent(AppEvent::EchoesSessionCreate { lane, agent }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
                     tracing::warn!("echoes:session_create skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
                     let mut create = serde_json::json!({ "lane": &lane });
-                    if let Some(s) = &stand {
-                        create["stand"] = serde_json::Value::String(s.clone());
+                    if let Some(s) = &agent {
+                        create["agent"] = serde_json::Value::String(s.clone());
                     }
                     // doc 53 §11: 動詞を撃つだけ。roster の更新は server の `emit_lane_update`
                     // → lanes snapshot → LanesLoaded で届く（旧: ここで一覧を取り直していた）。
@@ -5436,9 +5436,9 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
             }
-            // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
-            // 既存 + Add Performer と同じ stands_list を再利用（doc 38 §3 の作成 UX）。
-            Event::UserEvent(AppEvent::EchoesStandsFetch { lane, req }) => {
+            // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
+            // 既存 + Add Performer と同じ agents_list を再利用（doc 38 §3 の作成 UX）。
+            Event::UserEvent(AppEvent::EchoesAgentsFetch { lane, req }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
                     tracing::warn!("echoes:stands_fetch skip — lane の repo 解決失敗 (lane={lane})");
                     return;
@@ -5448,7 +5448,7 @@ pub fn run() -> anyhow::Result<()> {
                     match daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
-                        "stands_list",
+                        "agents_list",
                         serde_json::json!({}),
                     )
                     .await
@@ -5459,12 +5459,12 @@ pub fn run() -> anyhow::Result<()> {
                                 proxy.send_event(AppEvent::EchoesStands { lane, payload, req });
                         }
                         Err(e) => {
-                            tracing::warn!("echoes:stands_fetch の stands_list 失敗 (lane={lane}): {e}")
+                            tracing::warn!("echoes:stands_fetch の agents_list 失敗 (lane={lane}): {e}")
                         }
                     }
                 });
             }
-            // doc 38 Phase 2: stands_list の結果を「+」menu へ push back。
+            // doc 38 Phase 2: agents_list の結果を「+」menu へ push back。
             // doc 47 §6: 第 3 引数 = 要求元の相関 id。共有 bus の購読側はこれで振り分ける。
             Event::UserEvent(AppEvent::EchoesStands { lane, payload, req }) => {
                 lane_js::console_stands(&webview, &lane, payload, req);
@@ -5506,13 +5506,13 @@ pub fn run() -> anyhow::Result<()> {
             }) => {
                 sidebar_js::performer_create_result(&webview, repo_path, name, error);
             }
-            Event::UserEvent(AppEvent::StandsResult {
+            Event::UserEvent(AppEvent::AgentsResult {
                 repo_path,
-                stands,
+                agents,
                 error,
             }) => {
                 // doc 11 PR-C: + Add Performer form の dropdown を populate するための push back。
-                sidebar_js::stands_result(&webview, repo_path, &stands, error);
+                sidebar_js::stands_result(&webview, repo_path, &agents, error);
             }
             // Sidebar File Explorer: walk 結果を sidebar bundle へ push back。
             // JS 側 (`FileExplorer.tsx`) が `vpFiles.handleListResult` で受け取る。
@@ -5871,7 +5871,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 }
-                // Lane Conductor Stand restart 要求 (sidebar の restart icon → confirm dialog から)
+                // Lane Conductor Agent restart 要求 (sidebar の restart icon → confirm dialog から)
                 if let Some((repo_path, address, fresh)) = outcome.restart_lane_request {
                     // F6③: 旧 DaemonRpcClient.restart_lane (repo 直結 reqwest) を daemon repo-proxy
                     // ask (lane_restart) に移管。 repo port 解決は不要、 repo_path を handshake で渡す。
@@ -5984,12 +5984,12 @@ pub fn run() -> anyhow::Result<()> {
                 // lane 作成 core に委譲する — worktree も PtySlot も**この 1 往復で揃う**。
                 // 旧構成は descriptor だけ作って PtySlot を lane_watcher の到達に賭けており、
                 // 「+ で作った lane だけ engine 指定が別経路で伝わる」等の経路差が生じていた。
-                // doc 11 PR-C: stand 指定 を tuple 4 番目に保持 (None なら daemon-side default)。
-                if let Some((repo_path, name, branch, stand)) = outcome.add_performer_request {
+                // doc 11 PR-C: agent 指定 を tuple 4 番目に保持 (None なら daemon-side default)。
+                if let Some((repo_path, name, branch, agent)) = outcome.add_performer_request {
                     let proxy = async_action_proxy.clone();
                     let name_clone = name.clone();
                     let branch_clone = branch.clone();
-                    let stand_clone = stand.clone();
+                    let stand_clone = agent.clone();
                     let path_clone = repo_path.clone();
                     let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
@@ -6054,50 +6054,50 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
 
-                // doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)。
-                // 旧 SP 直結 (client.list_stands) を撤去し daemon repo-proxy ask (`stands_list`) に移管。
+                // doc 11 PR-C / F6④: 利用可能 Agent 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)。
+                // 旧 SP 直結 (client.list_agents) を撤去し daemon repo-proxy ask (`agents_list`) に移管。
                 // repo port 解決が消滅し、 surface は Daemon :32000 だけを知れば済む (L1 portless 前進)。
                 if let Some(repo_path) = outcome.list_stands_request {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
-                        let (stands, error) = match daemon_repo_request(
+                        let (agents, error) = match daemon_repo_request(
                             crate::client::default_daemon_port(),
                             &repo_path,
-                            "stands_list",
+                            "agents_list",
                             serde_json::json!({}),
                         )
                         .await
                         {
-                            // repo は {stands:[...]} を返す。 stands 配列だけ Vec<StandInfo> に deserialize。
+                            // repo は {agents:[...]} を返す。 agents 配列だけ Vec<AgentInfo> に deserialize。
                             Ok(v) => {
-                                let stands = v
-                                    .get("stands")
+                                let agents = v
+                                    .get("agents")
                                     .and_then(|s| {
-                                        serde_json::from_value::<Vec<crate::client::StandInfo>>(
+                                        serde_json::from_value::<Vec<crate::client::AgentInfo>>(
                                             s.clone(),
                                         )
                                         .ok()
                                     })
                                     .unwrap_or_default();
                                 tracing::debug!(
-                                    "stands listed: repo={} count={}",
+                                    "agents listed: repo={} count={}",
                                     repo_path,
-                                    stands.len()
+                                    agents.len()
                                 );
-                                (stands, None)
+                                (agents, None)
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "stands_list failed: repo={}: {}",
+                                    "agents_list failed: repo={}: {}",
                                     repo_path,
                                     e
                                 );
                                 (Vec::new(), Some(e))
                             }
                         };
-                        let _ = proxy.send_event(AppEvent::StandsResult {
+                        let _ = proxy.send_event(AppEvent::AgentsResult {
                             repo_path,
-                            stands,
+                            agents,
                             error,
                         });
                     });

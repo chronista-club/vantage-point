@@ -1,4 +1,4 @@
-//! Stand 命名体系 — 機能名と愛称の分離レイヤー
+//! Agent 命名体系 — 機能名と愛称の分離レイヤー
 //!
 //! コード内部は安定した機能名（id）を使い、UI/CLI/ログでは愛称（stand_name）を表示する。
 //! 愛称を変更しても stands.rs だけの修正で済む。
@@ -6,7 +6,7 @@
 //! ## 使い方
 //!
 //! ```rust,ignore
-//! use vantage_point::stands;
+//! use vantage_point::agents;
 //!
 //! tracing::info!("{} 起動 (port {})", stands::DAEMON.display(), port);
 //! ```
@@ -105,7 +105,7 @@ pub const RUNNER: StandAlias = StandAlias {
 
 /// デバイス集約能力 — machine scope の物理 device registry / hot-plug / routing（DeviceRegistry 🧲）
 ///
-/// epic v3.1 (E2) で旧 External Control stand の machine 座を継承し、device 集約 registry に
+/// epic v3.1 (E2) で旧 External Control agent の machine 座を継承し、device 集約 registry に
 /// 発展。per-lane の双方向 I/O は [`DEVICE_IO`] が担う。
 /// 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`。
 pub const DEVICES: StandAlias = StandAlias {
@@ -120,7 +120,7 @@ pub const DEVICES: StandAlias = StandAlias {
 ///
 /// epic v3.1 (E3) 新設。per-lane の双方向 I/O endpoint。
 /// lane state → 機材 LED/LCD projection（output）と 機材 → active Lane command（input）を担う。
-/// `LaneStandHost`（`stand_kind="device_io"`）として Lane に host される。
+/// `LaneStandHost`（`service_kind="device_io"`）として Lane に host される。
 pub const DEVICE_IO: StandAlias = StandAlias {
     id: "device_io",
     functional_name: "Device I/O",

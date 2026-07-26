@@ -36,7 +36,7 @@ declare global {
     /** ⚠️ **実装なし**（stub 止まり。PR-3 で実描画に繋ぐ予定のまま）。 */
     handleAddPerformerResult?: (msg: unknown) => void
     /** `AddPerformer.tsx` が form 表示中だけ**差し替える**受け手（外すと前の値に戻す）。 */
-    handleStandsResult?: (msg: unknown) => void
+    handleAgentsResult?: (msg: unknown) => void
     /** ⚠️ **実装なし**（stub 止まり。PR-3 で実描画に繋ぐ予定のまま）。 */
     setClonePath?: (path: string) => void
   }
@@ -76,8 +76,8 @@ export function installIpcBridge(): void {
   window.renderError ??= (msg) => console.warn('[vp-sidebar] renderError (stub):', msg)
   window.handleAddPerformerResult ??= (msg) =>
     console.debug('[vp-sidebar] handleAddPerformerResult (stub):', msg)
-  window.handleStandsResult ??= (msg) =>
-    console.debug('[vp-sidebar] handleStandsResult (stub):', msg)
+  window.handleAgentsResult ??= (msg) =>
+    console.debug('[vp-sidebar] handleAgentsResult (stub):', msg)
   window.setClonePath ??= (path) => console.debug('[vp-sidebar] setClonePath (stub):', path)
 
   installSidebarDispatch({
@@ -87,8 +87,8 @@ export function installIpcBridge(): void {
     error: (message) => window.renderError?.(message),
     performerCreateResult: (repo_path, name, error) =>
       window.handleAddPerformerResult?.({ repo_path, name, error }),
-    standsResult: (repo_path, stands, error) =>
-      window.handleStandsResult?.({ repo_path, stands, error }),
+    agentsResult: (repo_path, agents, error) =>
+      window.handleAgentsResult?.({ repo_path, agents, error }),
     filesListResult: (address, entries, truncated) =>
       window.vpFiles?.handleListResult({
         address,

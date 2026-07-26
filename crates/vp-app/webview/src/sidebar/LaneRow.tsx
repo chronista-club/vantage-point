@@ -2,7 +2,7 @@
  * Lane (Conductor / Performer) 1 行の描画 component。
  *
  * v1.0 柱 2。 旧 SIDEBAR_HTML の `.vp-lane-row` 構築ロジックを SolidJS に port。
- * 描画 (PR-2): stand icon / label / performer git meta / awaiting dot / mailbox icon /
+ * 描画 (PR-2): agent icon / label / performer git meta / awaiting dot / mailbox icon /
  * session title (2 行目)。 click 選択 (PR-3): row click → `lane:select` IPC で
  * main area を当該 Lane に切り替え。 右クリック操作 (restart / delete) は
  * ContextMenu に集約 (VP-204 PR-1)。
@@ -29,8 +29,8 @@ import {
 	laneAddressKey,
 	laneCwdLabel,
 	laneLabel,
-	standDisplayName,
-	standIcon,
+	agentDisplayName,
+	agentIcon,
 } from "./lane";
 
 /** Performer Lane の git 状態を右端に小さく表示 (= dirty / ahead-behind の signal のみ、
@@ -85,7 +85,7 @@ export function LaneRow(props: {
 	// F.8 B Convergent: Pane (Echoes) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
 	const isInactive = () => !isLaneAlive(props.lane);
 	const isPerformer = () => isPerformerLane(props.lane);
-	const icon = () => standIcon(props.lane.stand, isActive());
+	const icon = () => agentIcon(props.lane.agent, isActive());
 	// mailbox inbox: entry がある Lane のみ icon 表示 (mailbox infra が active)。
 	const inbox = () => sidebar.lane_inboxes?.[addr()];
 	// OSC 99 由来の入力待ち。 active lane は即読扱いで dot を出さない。 inactive も除外。
@@ -298,22 +298,22 @@ export function LaneRow(props: {
 					classList={{ last: props.connectorLast }}
 				/>
 			</Show>
-			{/* ① stand icon */}
+			{/* ① agent icon */}
 			<Show when={icon()}>
-				<span class="vp-lane-icon" title={standDisplayName(props.lane.stand)}>
+				<span class="vp-lane-icon" title={agentDisplayName(props.lane.agent)}>
 					<CreoIcon name={icon()!} size={14} />
 				</span>
 			</Show>
-			{/* 開発起点マーカー (doc 44 D4)。stand icon の直後 = 「この lane が何か」を
+			{/* 開発起点マーカー (doc 44 D4)。agent icon の直後 = 「この lane が何か」を
 			    修飾する層に置く (右端の state / badge は「今どうなっているか」で層が違う)。
-			    stand icon より 1 段小さく、光らせない — 起点は状態ではなく属性なので
+			    agent icon より 1 段小さく、光らせない — 起点は状態ではなく属性なので
 			    注意を引かない (光 = needs-you の専有、Shell.tsx の階層規約)。 */}
 			<Show when={isOrigin()}>
 				<span class="vp-lane-origin" title="この repo の開発起点">
 					<CreoIcon name="ph:star-fill" size={11} />
 				</span>
 			</Show>
-			{/* session title を stand icon の右へ (= 旧 2 段目を 1 行目に昇格)。
+			{/* session title を agent icon の右へ (= 旧 2 段目を 1 行目に昇格)。
 			    label (④) は tree 段下げで performer 視認可なので omit。
 			    fallback: session title 未設定なら performer は name、 conductor は repo 名を
 			    dimmed で出す (= 旧 "—" placeholder の代替、 空行回避)。 */}

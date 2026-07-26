@@ -1,9 +1,9 @@
-//! Lane 階層 Stand container (LSCM、 doc 12 §3 / §9 / doc 13 §3 参照)
+//! Lane 階層 Agent container (LSCM、 doc 12 §3 / §9 / doc 13 §3 参照)
 //!
-//! Lane (Conductor/Performer) あたり 1 instance、 repo per Repo で host。 LSCM (Layer-Stand
+//! Lane (Conductor/Performer) あたり 1 instance、 repo per Repo で host。 LSCM (Layer-Agent
 //! Composition Model) の **Lane Layer 実体** = "Lane が必要な Stand を抱える" の物理表現。
 //!
-//! ## host する Stand (target、 doc 12 §9 catalog)
+//! ## host する Agent (target、 doc 12 §9 catalog)
 //!
 //! - **Echoes 💬** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない、
 //!   `LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)
@@ -21,9 +21,9 @@
 //! - PR-δ-1 (VP-135 ✅、 #288): `LaneStandHost` trait + `LaneStandRegistry` 受け皿新設、
 //!   既存挙動への影響ゼロ。
 //! - PR-δ-2 (VP-136 ✅、 #289): **board を `BoardStand` (LaneStandHost impl) に rewire** +
-//!   `board` hardcoded field を削除、 `registry: LaneStandRegistry` で N Stand host に統一。
+//!   `board` hardcoded field を削除、 `registry: LaneStandRegistry` で N Agent host に統一。
 //!   production caller ゼロを着手前 grep で確認 (PR-β-2 と同じ argument)、 b 路線 aggressive replace。
-//! - PR-δ-3 (VP-137 ✅、 #290): mock Stand B + 「N Stand host」 invariant test 4 件追加
+//! - PR-δ-3 (VP-137 ✅、 #290): mock Agent B + 「N Agent host」 invariant test 4 件追加
 //!   (`lane_capabilities.rs` tests module 内、 production binary 影響ゼロ)。
 //! - PR-δ-4 (VP-138 ✅、 本 PR): cleanup — module-level doc roadmap update +
 //!   lane_stand.rs 命名規約 doc fix + doc 13 §9 catalog 更新。
@@ -42,24 +42,24 @@ use super::repo_stands_state::BoardStand;
 #[cfg(feature = "midi")]
 use crate::device_io::DeviceIoStand;
 
-/// Lane 階層 Stand container (Lane あたり 1 instance)。
+/// Lane 階層 Agent container (Lane あたり 1 instance)。
 ///
-/// PR-δ-2 (VP-136) で **`registry: LaneStandRegistry` 経由 N Stand host** に統一。
+/// PR-δ-2 (VP-136) で **`registry: LaneStandRegistry` 経由 N Agent host** に統一。
 /// Echoes / shell は mise task PtySlot 経由なので本 struct には host しない
 /// (`LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)。
-// 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Stand-host skeleton。現状 field は未 read。
+// 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Agent-host skeleton。現状 field は未 read。
 #[allow(dead_code)]
 pub struct LaneCapabilities {
     /// Lane の identity (Conductor / Performer、 repo 名 + name)
     pub address: LaneAddress,
 
-    /// mise task 名 (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で `"hd"` → `"echoes"` rename)。
+    /// mise task 名 (例: `"claude"` / `"shell"` / `"tmux"`、 PR-pre2 で `"hd"` → `"claude"` rename)。
     /// `LanePool` の Lane entry と同期、 spawn 経路で参照される。
-    pub stand: String,
+    pub agent: String,
 
     /// Lane に host される Stand の **registry** (PR-δ-2 / VP-136)。
     ///
-    /// `new()` で `BoardStand` (= `stand_kind = "board"`) が default 登録される。
+    /// `new()` で `BoardStand` (= `service_kind = "board"`) が default 登録される。
     /// PR-γ で `RunnerStand` 等が同 registry に追加される予定。 caller は
     /// `lc.registry.get_typed::<BoardStand>("board")` で typed access する。
     pub registry: LaneStandRegistry,
@@ -73,7 +73,7 @@ impl LaneCapabilities {
     /// 統一。 doc 13 §6 自動 spawn rule (Lane 起動時に board 同時 spawn が default) との整合のため、
     /// factory を分けず `new()` で populate する設計を維持。
     /// 将来 board なし Lane (opt-out) が必要になったら `without_board()` factory 追加で対応。
-    pub fn new(address: LaneAddress, stand: impl Into<String>) -> Self {
+    pub fn new(address: LaneAddress, agent: impl Into<String>) -> Self {
         let mut registry = LaneStandRegistry::new();
         // PR-δ-2 (VP-136): board を最初の住人として LaneStandRegistry に登録
         registry.insert(Arc::new(BoardStand::new()));
@@ -82,13 +82,13 @@ impl LaneCapabilities {
         registry.insert(Arc::new(DeviceIoStand::new()));
         Self {
             address,
-            stand: stand.into(),
+            agent: agent.into(),
             registry,
         }
     }
 }
 
-/// Lane scope Stand pool — repo per Repo で 1 instance、 各 Lane の `LaneCapabilities` を集約。
+/// Lane scope Agent pool — repo per Repo で 1 instance、 各 Lane の `LaneCapabilities` を集約。
 ///
 /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で `LanePool::with_root`
 /// と `lane_spawn_actor` (Performer spawn 経路) から populate される lifecycle と sync。
@@ -104,7 +104,7 @@ impl LaneCapabilitiesPool {
     }
 
     /// entry 数を返す (debug / metrics / test 用)。
-    // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Stand-host skeleton の registry helper。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Agent-host skeleton の registry helper。
     #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.entries.len()
@@ -115,13 +115,13 @@ impl LaneCapabilitiesPool {
     /// `LanePool::with_root` / `lane_spawn_actor` (Performer spawn) から呼ばれて、 Lane あたり
     /// 独立 BoardState を持つ entry を HashMap に挿入する。 同じ address で重複 insert
     /// した場合は overwrite (= idempotent、 restart / respawn 経路で安全)。
-    pub fn populate_lane(&mut self, address: LaneAddress, stand: impl Into<String>) {
-        let lc = Arc::new(LaneCapabilities::new(address.clone(), stand));
+    pub fn populate_lane(&mut self, address: LaneAddress, agent: impl Into<String>) {
+        let lc = Arc::new(LaneCapabilities::new(address.clone(), agent));
         self.entries.insert(address, lc);
     }
 
     /// PR-β-2 (VP-120): Lane destroy 時に entry を削除 (cascade lifecycle)。
-    // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Stand-host skeleton の registry helper。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Agent-host skeleton の registry helper。
     #[allow(dead_code)]
     pub fn remove_lane(&mut self, address: &LaneAddress) -> Option<Arc<LaneCapabilities>> {
         self.entries.remove(address)
@@ -138,11 +138,11 @@ mod tests {
 
     /// PR-δ-3 (VP-137): test-only mock Stand。 「LaneCapabilities が board 含めて N Stand を host
     /// できる generic interface」 invariant (doc 13 §9 boundary) を真の test に格上げするための
-    /// 2 つ目の Stand impl。 production binary には登場しない (`#[cfg(test)]` 限定)。
+    /// 2 つ目の Agent impl。 production binary には登場しない (`#[cfg(test)]` 限定)。
     ///
     /// minimal counter state (`AtomicU32`) を持つだけの passive Stand、 caller が
     /// `increment()` を呼ぶごとに value が +1 される。 BoardStand とは state shape
-    /// (RwLock<BoardState> vs AtomicU32) が異なるので「型が違う 2 Stand 共存」 の
+    /// (RwLock<BoardState> vs AtomicU32) が異なるので「型が違う 2 Agent 共存」 の
     /// invariant test 素材として最適。
     struct MockStandB {
         counter: AtomicU32,
@@ -165,7 +165,7 @@ mod tests {
     }
 
     impl LaneStandHost for MockStandB {
-        fn stand_kind(&self) -> &'static str {
+        fn service_kind(&self) -> &'static str {
             "mock_b"
         }
 
@@ -178,10 +178,10 @@ mod tests {
     fn lane_capabilities_new_populates_board() {
         // PR-δ-2 (VP-136): board は registry 経由で host される (Lane あたり独立 instance)
         let addr = LaneAddress::root("vp");
-        let lc = LaneCapabilities::new(addr.clone(), "echoes");
+        let lc = LaneCapabilities::new(addr.clone(), "claude");
 
         assert_eq!(lc.address, addr);
-        assert_eq!(lc.stand, "echoes");
+        assert_eq!(lc.agent, "claude");
         assert!(
             lc.registry.get_typed::<BoardStand>("board").is_some(),
             "PR-δ-2 物理移管後は registry に BoardStand が host される"
@@ -195,7 +195,7 @@ mod tests {
         let lc = LaneCapabilities::new(addr.clone(), "shell");
 
         assert_eq!(lc.address, addr);
-        assert_eq!(lc.stand, "shell");
+        assert_eq!(lc.agent, "shell");
         assert!(
             lc.registry.get_typed::<BoardStand>("board").is_some(),
             "Performer Lane も独立 BoardStand を持つ"
@@ -205,8 +205,8 @@ mod tests {
     #[tokio::test]
     async fn lane_capabilities_board_instances_are_independent() {
         // PR-β-2 (VP-120) cardinality 1 → N invariant、 PR-δ-2 (VP-136) registry 経由でも維持
-        let conductor = LaneCapabilities::new(LaneAddress::root("vp"), "echoes");
-        let performer = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "echoes");
+        let conductor = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
+        let performer = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "claude");
 
         let conductor_board = conductor
             .registry
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn lane_capabilities_registry_count_after_new() {
-        let lc = LaneCapabilities::new(LaneAddress::root("vp"), "echoes");
+        let lc = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
         // board + Device I/O（midi feature 有効時）
         let expected = if cfg!(feature = "midi") { 2 } else { 1 };
         assert_eq!(
@@ -255,11 +255,11 @@ mod tests {
         // PR-β-2 (VP-120): populate_lane で entry 挿入、 PR-δ-2 (VP-136) で registry 経由 board 確認
         let mut pool = LaneCapabilitiesPool::new();
         let addr = LaneAddress::root("vp");
-        pool.populate_lane(addr.clone(), "echoes");
+        pool.populate_lane(addr.clone(), "claude");
 
         assert_eq!(pool.count(), 1);
         let lc = pool.entries.get(&addr).expect("Conductor entry 不在");
-        assert_eq!(lc.stand, "echoes");
+        assert_eq!(lc.agent, "claude");
         assert!(
             lc.registry.get_typed::<BoardStand>("board").is_some(),
             "populate 後は registry に board host 済"
@@ -271,12 +271,12 @@ mod tests {
         // PR-β-2 (VP-120): 同 address で 2 回 populate しても overwrite で 1 entry のまま
         let mut pool = LaneCapabilitiesPool::new();
         let addr = LaneAddress::root("vp");
-        pool.populate_lane(addr.clone(), "echoes");
+        pool.populate_lane(addr.clone(), "claude");
         pool.populate_lane(addr.clone(), "shell"); // restart 経路想定
 
         assert_eq!(pool.count(), 1, "overwrite で 1 entry のみ");
         let lc = pool.entries.get(&addr).expect("entry");
-        assert_eq!(lc.stand, "shell", "後の populate が勝つ");
+        assert_eq!(lc.agent, "shell", "後の populate が勝つ");
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
         // PR-β-2 (VP-120): cascade lifecycle = Lane destroy で entry も削除
         let mut pool = LaneCapabilitiesPool::new();
         let addr = LaneAddress::root("vp");
-        pool.populate_lane(addr.clone(), "echoes");
+        pool.populate_lane(addr.clone(), "claude");
 
         let removed = pool.remove_lane(&addr);
         assert!(removed.is_some(), "remove で entry 削除");
@@ -295,11 +295,11 @@ mod tests {
     }
 
     // ========================================================================
-    // PR-δ-3 (VP-137) — 「N Stand host」 invariant tests
+    // PR-δ-3 (VP-137) — 「N Agent host」 invariant tests
     //
     // doc 13 §9 boundary invariant 「LaneCapabilities が board 含めて N Stand を
     // host できる generic interface」 を、 LaneCapabilities lifecycle context での
-    // 2 Stand 共存 + 状態独立性 + per-Lane 独立性 + remove 独立性で test 化。
+    // 2 Agent 共存 + 状態独立性 + per-Lane 独立性 + remove 独立性で test 化。
     // ========================================================================
 
     /// PR-δ-3 (VP-137): LaneCapabilities が board + MockStandB を **同時に host できる**
@@ -307,7 +307,7 @@ mod tests {
     /// 両 Stand が typed access 可能。
     #[test]
     fn lane_capabilities_hosts_board_and_mock_b_simultaneously() {
-        let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "echoes");
+        let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
         let base_count = lc.registry.count();
 
         // MockStandB を insert
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(
             lc.registry.count(),
             base_count + 1,
-            "MockStandB insert 後は base + 1 Stand 共存"
+            "MockStandB insert 後は base + 1 Agent 共存"
         );
         assert!(
             lc.registry.get_typed::<BoardStand>("board").is_some(),
@@ -330,10 +330,10 @@ mod tests {
 
     /// PR-δ-3 (VP-137): board と MockStandB の **state が完全に独立** している invariant。
     /// MockStandB.increment() が board state を変化させない、 board content set が
-    /// MockStandB.value() を変化させない、 cross-Stand state share なし (doc 12 A6 整合)。
+    /// MockStandB.value() を変化させない、 cross-Agent state share なし (doc 12 A6 整合)。
     #[tokio::test]
     async fn lane_capabilities_board_and_mock_b_states_are_independent() {
-        let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "echoes");
+        let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
         lc.registry.insert(Arc::new(MockStandB::new()));
 
         let board = lc
@@ -376,8 +376,8 @@ mod tests {
     /// MockStandB でも成立)、 PR-β-2 board 独立性 invariant の generic 拡張。
     #[test]
     fn lane_capabilities_mock_b_independent_per_lane() {
-        let mut lane_a = LaneCapabilities::new(LaneAddress::root("vp"), "echoes");
-        let mut lane_b = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "echoes");
+        let mut lane_a = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
+        let mut lane_b = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "claude");
 
         lane_a.registry.insert(Arc::new(MockStandB::new()));
         lane_b.registry.insert(Arc::new(MockStandB::new()));
@@ -409,7 +409,7 @@ mod tests {
     /// PR-δ-1 `registry_remove_does_not_affect_other_stands` の Lane lifecycle 版。
     #[test]
     fn lane_capabilities_remove_mock_b_keeps_pp() {
-        let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "echoes");
+        let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
         let base_count = lc.registry.count();
         lc.registry.insert(Arc::new(MockStandB::new()));
         assert_eq!(lc.registry.count(), base_count + 1, "insert 後は base + 1");

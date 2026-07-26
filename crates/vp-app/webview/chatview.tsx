@@ -1221,7 +1221,7 @@ export function SessionPlate(props: {
 }) {
   const info = (): EchoesSession | undefined =>
     sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
-  const label = (): string => `${sessionChipPrefix(info()?.stand)}#${props.session}`
+  const label = (): string => `${sessionChipPrefix(info()?.agent)}#${props.session}`
   /** badge を押した時の切替先（今の見え方の逆）。 */
   const target = (): 'tui' | 'chat' => (props.act === 'chat' ? 'tui' : 'chat')
   /** badge を押せるか（= 切替先に行けるか）。 */
@@ -1267,7 +1267,7 @@ export function SessionPlate(props: {
         fallback={
           <span
             class="echoes-session-plate-kind static"
-            title={`${info()?.stand ?? 'この engine'} は Chat（Act II）の受け口を持ちません`}
+            title={`${info()?.agent ?? 'この engine'} は Chat（Act II）の受け口を持ちません`}
           >
             <CreoIcon name="ph:terminal-window" size={9} />
             Console

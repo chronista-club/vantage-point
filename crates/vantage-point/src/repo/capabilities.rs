@@ -5,8 +5,8 @@
 //!
 //! ## LSCM 境界 (PR-α-2 / VP-112、 doc 12 §9)
 //!
-//! - **Repo 階層 Stand**: 本 module の `RepoCapabilities` が host (Protocol / Agent / 等)
-//! - **machine 階層 Stand**: `crate::daemon::machine_capabilities::MachineCapabilities` が host
+//! - **Repo 階層 Agent**: 本 module の `RepoCapabilities` が host (Protocol / Agent / 等)
+//! - **machine 階層 Agent**: `crate::daemon::machine_capabilities::MachineCapabilities` が host
 //!   - device 集約（DeviceRegistry 🧲）は **PR-α-2 で本 module から daemon に移管完了**
 //!   - 旧 `RepoCapabilities.midi` field / `CapabilityConfig.midi_config` field は削除済
 //!   - mailbox address `midi@{repo}` (旧) → `devices@machine` (新)
@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 /// Process Capability Manager
 ///
 /// Process (= LSCM Repo Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
-/// Repo 階層 Stand のみ host。 machine 階層 Stand (DeviceRegistry / Update / daemon) は
+/// Repo 階層 Stand のみ host。 machine 階層 Agent (DeviceRegistry / Update / daemon) は
 /// `crate::daemon::machine_capabilities::MachineCapabilities` 側に移管 (PR-α-2 完了)。
 ///
 /// VP-179 (Phase 5): `msgbox_router` field 撤去。 wiremsg R5-3 で旧 msgbox store も

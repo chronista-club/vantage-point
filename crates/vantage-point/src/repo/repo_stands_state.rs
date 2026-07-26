@@ -1,15 +1,15 @@
-//! Board 🧭 の Lane Stand 実体（`BoardState` + `LaneStandHost` wrapper）。
+//! Board 🧭 の Lane Agent 実体（`BoardState` + `LaneStandHost` wrapper）。
 //!
 //! ## Repo scope pool は消滅した（doc 44 P1 露払い、2026-07-20）
 //!
-//! 本 module は元々 Repo scope の Stand pool (`RepoStandsPool`) を提供していたが、
-//! Stand は順次 Lane scope へ移管され、最後まで残っていた runner 🌿 の skeleton
+//! 本 module は元々 Repo scope の Agent pool (`RepoStandsPool`) を提供していたが、
+//! Agent は順次 Lane scope へ移管され、最後まで残っていた runner 🌿 の skeleton
 //! (`RunnerState` 相当) も **一度も read されないまま**残置されていた。
 //! doc 44 P1 で `AppState.repo_stands` を除去した結果 pool は到達不能になったため、
 //! pool・runner skeleton とも削除した（PR-γ の「runner を Lane 移管したら pool が空になる」
 //! という見通しに、pool 側から先に到達した形）。
 //!
-//! 旧 External Control stand は PR-α で daemon 移管 + epic v3.1 で
+//! 旧 External Control agent は PR-α で daemon 移管 + epic v3.1 で
 //! DeviceRegistry 🧲 (Daemon device registry) / Device I/O 🌫️ (Lane device I/O) に再編済。
 //!
 //! ## 現在ここが提供するもの
@@ -47,7 +47,7 @@ pub struct BoardState {
 /// PR-δ-1 (VP-135) で新設の `LaneStandHost` trait の **最初の impl**。 internal mutability 用に
 /// `RwLock<BoardState>` を持ち、 caller は `state()` accessor 経由で Read/Write する。
 ///
-/// `stand_kind() = "board"` を ID として Registry の HashMap key に使われる。
+/// `service_kind() = "board"` を ID として Registry の HashMap key に使われる。
 ///
 /// ## 関連
 ///
@@ -83,7 +83,7 @@ impl Default for BoardStand {
 }
 
 impl LaneStandHost for BoardStand {
-    fn stand_kind(&self) -> &'static str {
+    fn service_kind(&self) -> &'static str {
         "board"
     }
 
@@ -98,14 +98,14 @@ mod tests {
 
     #[test]
     fn board_stand_reports_its_kind() {
-        let stand = BoardStand::new();
-        assert_eq!(stand.stand_kind(), "board");
+        let agent = BoardStand::new();
+        assert_eq!(agent.service_kind(), "board");
     }
 
     #[test]
     fn board_stand_starts_empty() {
-        let stand = BoardStand::new();
-        let state = stand.state().blocking_read();
+        let agent = BoardStand::new();
+        let state = agent.state().blocking_read();
         assert!(state.content.is_none());
         assert!(state.content_type.is_none());
     }

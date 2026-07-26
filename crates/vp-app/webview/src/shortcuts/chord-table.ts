@@ -67,7 +67,7 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
     semantic: 'focus-transferring',
   },
   // v0.8 (curation) で撤去:
-  //   e/g/h (Stand focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
+  //   e/g/h (Agent focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
   //   w (daemon status)  — 将来の Unison WebView 直結 UI に status を委ねるため撤去。
   //   i (cheatsheet)       — directive を最小動詞に絞る方針で不要。SSOT は docs/design/18。
 }

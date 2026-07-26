@@ -96,7 +96,7 @@ describe('foldHeaderState — session summary の畳み込み（変化検知）'
 
 describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）', () => {
   it('claude（echoes / 旧名 hd）は歴史的な cc を維持する', () => {
-    expect(sessionChipPrefix('echoes')).toBe('cc')
+    expect(sessionChipPrefix('claude')).toBe('cc')
     expect(sessionChipPrefix('hd')).toBe('cc')
   })
   it('codex / grok / opencode は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
@@ -104,8 +104,8 @@ describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）',
     expect(sessionChipPrefix('grok')).toBe('grok')
     expect(sessionChipPrefix('opencode')).toBe('oc')
   })
-  it('撤去済み engine（cursor / agy）と未知 / 欠落 stand は中立の sid（graceful degradation）', () => {
-    // sweep 6.5: cursor / agy は engine として撤去。disk / wire に残る旧 stand 文字列は sid に倒れる。
+  it('撤去済み engine（cursor / agy）と未知 / 欠落 agent は中立の sid（graceful degradation）', () => {
+    // sweep 6.5: cursor / agy は engine として撤去。disk / wire に残る旧 agent 文字列は sid に倒れる。
     expect(sessionChipPrefix('cursor')).toBe('sid')
     expect(sessionChipPrefix('agy')).toBe('sid')
     expect(sessionChipPrefix('shell')).toBe('sid')
@@ -119,13 +119,13 @@ describe('rootPickerItems — Root 切替 picker の行導出（doc 39 P3 → P4
     const items = rootPickerItems([
       {
         key: 1,
-        stand: 'echoes',
+        agent: 'claude',
         engine_session_id: '3d91933b-aaaa-bbbb',
         live: true,
         focused: false,
         root: true,
       },
-      { key: 2, stand: 'codex', engine_session_id: '0199a2ffee', live: false, focused: true },
+      { key: 2, agent: 'codex', engine_session_id: '0199a2ffee', live: false, focused: true },
     ])
     expect(items).toEqual([
       { key: 1, label: 'cc:3d91933b', isRoot: true, disabled: false },
@@ -134,17 +134,17 @@ describe('rootPickerItems — Root 切替 picker の行導出（doc 39 P3 → P4
   })
   it('会話 id 未発行（Draft / 未発話）は「新品」、root 欠落（旧 SP）は非 root 扱い', () => {
     const items = rootPickerItems([
-      { key: 3, stand: 'grok', engine_session_id: null, live: false, focused: false },
+      { key: 3, agent: 'grok', engine_session_id: null, live: false, focused: false },
     ])
     expect(items).toEqual([{ key: 3, label: 'grok:新品', isRoot: false, disabled: false }])
   })
   it('cross-engine 行は enabled、未知 engine（撤去済み cursor）行だけ disabled（doc 39 P4）', () => {
     const items = rootPickerItems([
-      { key: 1, stand: 'hd', engine_session_id: 'aaaa1111', live: true, focused: true, root: true },
-      { key: 2, stand: 'codex', engine_session_id: 'bbbb2222', live: false, focused: false },
-      { key: 3, stand: 'cursor', engine_session_id: null, live: false, focused: false },
+      { key: 1, agent: 'hd', engine_session_id: 'aaaa1111', live: true, focused: true, root: true },
+      { key: 2, agent: 'codex', engine_session_id: 'bbbb2222', live: false, focused: false },
+      { key: 3, agent: 'cursor', engine_session_id: null, live: false, focused: false },
     ])
-    // cross-engine（codex）は P4 で解禁 = enabled、legacy/撤去済み stand（cursor → prefix sid）のみ disabled。
+    // cross-engine（codex）は P4 で解禁 = enabled、legacy/撤去済み agent（cursor → prefix sid）のみ disabled。
     expect(items.map((i) => i.disabled)).toEqual([false, false, true])
   })
 })

@@ -111,7 +111,7 @@ fn regenerates_sidebar_ipc_bindings() {
         "lane:delete",
         "lane:restart",
         "lane:add_performer",
-        "stands:fetch",
+        "agents:fetch",
         "stand:select",
         "repo:clone:pickFolder",
         // in-app update: sidebar footer の「更新する」ボタン。schema 編集で codegen から
@@ -121,7 +121,7 @@ fn regenerates_sidebar_ipc_bindings() {
         "sidebar:state",
         "sidebar:error",
         "performer:create_result",
-        "stands:result",
+        "agents:result",
         "files:list_result",
         "wire:result",
         "clone:path_picked",

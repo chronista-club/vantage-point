@@ -10,9 +10,9 @@
 //!
 //! - Repo (= Runtime Process) accordion: `RepoPaneState`
 //! - Lane (= Session Process / Conductor/Performer): `SidebarState.lanes_by_repo` (repo fetch 結果)
-//! - Stand (= Stand process / Echoes/Shell/...): Lane の中身として並列 row
+//! - Agent (= Agent process / Echoes/Shell/...): Lane の中身として並列 row
 //!
-//! つまり Pane は廃止、 階層は **Repo → Lane → Stand** に統一。
+//! つまり Pane は廃止、 階層は **Repo → Lane → Agent** に統一。
 //!
 //! ## active selection
 //!
@@ -66,7 +66,7 @@ impl RepoPaneState {
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub enum WidgetKind {
-    /// D — Activity / Stand Status (MVP)
+    /// D — Activity / Agent Status (MVP)
     #[default]
     Activity,
     /// B — MsgBox / Inbox (P4 で実装、placeholder)
@@ -174,7 +174,7 @@ pub struct SidebarState {
     /// 空の時だけ省く（`session_titles` 等と同じ扱い）。
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub origin_by_repo: std::collections::HashMap<String, String>,
-    /// Phase 5-A: 現在 active な Repo-scope Stand kind
+    /// Phase 5-A: 現在 active な Repo-scope Agent kind
     /// (`"board"` / `"runner"` / `"devices"`)。
     /// `(repo_path, kind)` の tuple で repo ごとに区別。 app 全体で 1 つだけ active。
     /// `active_lane_address` と **mutually exclusive** ── どちらか一方が None。

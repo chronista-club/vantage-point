@@ -108,7 +108,7 @@ impl DaemonClient {
     /// daemon-repo.list — 現在の Process snapshot を取得する。
     ///
     /// 古い daemon バイナリで channel 不在なら error。 caller は `vp daemon stop && start`
-    /// でバイナリ更新を促すか、 `/api/health` の stands field に fallback する。
+    /// でバイナリ更新を促すか、 `/api/health` の agents field に fallback する。
     pub async fn daemon_processes_list(&self) -> Result<Vec<ProcessSnapshot>> {
         let ch = self.daemon_repo_ch.as_ref().ok_or_else(|| {
             anyhow::anyhow!("daemon-repo チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
@@ -413,7 +413,7 @@ impl DaemonControlClient {
         self.lanes_list_filtered(None, None, None).await
     }
 
-    /// filter 付きの lane 一覧（`repo` / `lane` / `stand`、いずれも省略可 = 無フィルタ）。
+    /// filter 付きの lane 一覧（`repo` / `lane` / `agent`、いずれも省略可 = 無フィルタ）。
     ///
     /// 並びは repo 名昇順 → 同 repo 内は開発起点 (root) 先 → created_at 昇順
     /// （実装は `routes::daemon::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/daemon/lanes` を
@@ -422,10 +422,10 @@ impl DaemonControlClient {
         &self,
         repo: Option<&str>,
         lane: Option<&str>,
-        stand: Option<&str>,
+        agent: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
         let mut payload = serde_json::json!({});
-        for (key, value) in [("repo", repo), ("lane", lane), ("stand", stand)] {
+        for (key, value) in [("repo", repo), ("lane", lane), ("agent", agent)] {
             if let Some(value) = value {
                 payload[key] = serde_json::Value::String(value.to_string());
             }
@@ -440,17 +440,17 @@ impl DaemonControlClient {
 
     /// performer lane を作成する（daemon-canonical な descriptor を作る）。
     ///
-    /// `branch` / `stand` 省略時は daemon 側で default を導出する
-    /// （branch = `<user>/<name>`、stand = config の `default_stand` → `echoes`）。
+    /// `branch` / `agent` 省略時は daemon 側で default を導出する
+    /// （branch = `<user>/<name>`、agent = config の `default_agent` → `claude`）。
     pub async fn lanes_create(
         &self,
         path: &str,
         name: &str,
         branch: Option<&str>,
-        stand: Option<&str>,
+        agent: Option<&str>,
     ) -> Result<serde_json::Value> {
         let mut payload = serde_json::json!({ "path": path, "name": name });
-        for (key, value) in [("branch", branch), ("stand", stand)] {
+        for (key, value) in [("branch", branch), ("agent", agent)] {
             if let Some(value) = value {
                 payload[key] = serde_json::Value::String(value.to_string());
             }

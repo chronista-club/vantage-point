@@ -54,11 +54,11 @@ pub struct AddPerformerParams {
         description = "Lane clone する branch 名 (省略可)。 省略時は server が `git config user.name` から `<user>/<name>` を auto-derive。"
     )]
     pub branch: Option<String>,
-    /// Optional Lane Stand. Defaults to "echoes".
+    /// Optional Lane Agent. Defaults to "claude".
     #[schemars(
-        description = "Lane Stand 種類 (engine): 'echoes' (default、 claude) / 'codex' (OpenAI Codex CLI) / 'grok' (xAI Grok CLI) / 'opencode' (opencode、 model は opencode config) / 'shell'。"
+        description = "Lane Agent 種類 (engine): 'claude' (default、 claude) / 'codex' (OpenAI Codex CLI) / 'grok' (xAI Grok CLI) / 'opencode' (opencode、 model は opencode config) / 'shell'。"
     )]
-    pub stand: Option<String>,
+    pub agent: Option<String>,
     /// Optional base ref for the worktree fork point (co-evolution #2).
     #[schemars(
         description = "worktree の分岐元 ref (省略可)。未 push の local branch も可 (root の feature branch 上の未 merge 土台を wing に配れる)。省略時は performer-files.kdl の base-ref → origin/HEAD → main。"
@@ -121,12 +121,12 @@ pub struct FlowHandoffParams {
     #[serde(default)]
     pub branch: Option<String>,
 
-    /// Optional Lane Stand (default: "echoes")
+    /// Optional Lane Agent (default: "claude")
     #[schemars(
-        description = "Lane Stand (engine): 'echoes' (default、 claude) / 'codex' / 'grok' / 'opencode' / 'shell'。"
+        description = "Lane Agent (engine): 'claude' (default、 claude) / 'codex' / 'grok' / 'opencode' / 'shell'。"
     )]
     #[serde(default)]
-    pub stand: Option<String>,
+    pub agent: Option<String>,
 
     /// Optional base ref for the worktree fork point (co-evolution #2)
     #[schemars(
@@ -220,8 +220,8 @@ impl VantageMcp {
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             body["branch"] = serde_json::Value::String(b.clone());
         }
-        if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
-            body["stand"] = serde_json::Value::String(s.clone());
+        if let Some(s) = params.agent.as_ref().filter(|s| !s.trim().is_empty()) {
+            body["agent"] = serde_json::Value::String(s.clone());
         }
         if let Some(b) = params.base.as_ref().filter(|s| !s.trim().is_empty()) {
             body["base"] = serde_json::Value::String(b.clone());
@@ -337,10 +337,10 @@ impl VantageMcp {
     /// List Lanes in the current repo with comprehensive routing info (VP-124 Phase 1).
     ///
     /// Conductor Lane Echoes が「lane を operate するすべての座標」 を 1 call で取得するための tool。
-    /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
+    /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Agents の wire address)、
     /// top-level に repo_addresses + machine_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Conductor + Performers) in the current repo with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns repo_addresses (e.g. `runner@<repo>`) and machine_addresses (e.g. `devices@machine`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
+        description = "List all Lanes (Conductor + Performers) in the current repo with comprehensive routing info. Each Lane returns: address, kind, state, agent, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns repo_addresses (e.g. `runner@<repo>`) and machine_addresses (e.g. `devices@machine`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
@@ -396,7 +396,7 @@ impl VantageMcp {
             //   - `board#<lane>` = その lane の board / board 宛
             // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `BOARD.id = "board"`)。
             // 愛称 (`echoes` / `board`) は表示専用なので wire には出さない。
-            // wire syntax は `<stand-id>@<repo>/<lane>` (conductor は `/lane` 省略可)。
+            // wire syntax は `<agent-id>@<repo>/<lane>` (conductor は `/lane` 省略可)。
             // 旧実装の `<愛称>.<lane>@<repo>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。
             let lane_label = lane_name_of(&lane);
@@ -422,7 +422,7 @@ impl VantageMcp {
             lanes_out.push(lane);
         }
 
-        // top-level に repo / daemon Stand addresses を synthesize
+        // top-level に repo / daemon Agent addresses を synthesize
         let result = serde_json::json!({
             "repo": repo,
             "lanes": lanes_out,
@@ -482,8 +482,8 @@ impl VantageMcp {
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["branch"] = serde_json::Value::String(b.clone());
         }
-        if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
-            create_body["stand"] = serde_json::Value::String(s.clone());
+        if let Some(s) = params.agent.as_ref().filter(|s| !s.trim().is_empty()) {
+            create_body["agent"] = serde_json::Value::String(s.clone());
         }
         if let Some(b) = params.base.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["base"] = serde_json::Value::String(b.clone());
@@ -684,8 +684,8 @@ impl VantageMcp {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let stand = lane
-                .get("stand")
+            let agent = lane
+                .get("agent")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -732,7 +732,7 @@ impl VantageMcp {
                 "name": lane_label,
                 "address": format!("agent@{}/{}", repo, lane_label),
                 "state": state,
-                "stand": stand,
+                "agent": agent,
                 "cwd": cwd,
                 "performer_status": performer_status,
                 "unread_wire_count": unread_total,

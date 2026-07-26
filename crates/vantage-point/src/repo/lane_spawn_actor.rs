@@ -1,5 +1,5 @@
 //! Lane spawn actor — `LaneCmd::SpawnLane` を in-process channel 経由で受信し、 内部 Semaphore で
-//! 並列度を gate しつつ `stand_spawner::spawn_with_fallback` で Lane を spawn する Service actor。
+//! 並列度を gate しつつ `agent_spawner::spawn_with_fallback` で Lane を spawn する Service actor。
 //!
 //! ## 背景 (I-b、 2026-04-30)
 //!
@@ -55,7 +55,7 @@
 //!
 //! ## 計測 log (dogfood で N 値決定の足場)
 //!
-//! - `Lane spawn requested: addr=... cwd=... stand=...` — permit acquire 後
+//! - `Lane spawn requested: addr=... cwd=... agent=...` — permit acquire 後
 //! - `Lane spawn completed: addr=... pid=... elapsed_ms=...` — slot insert 成功
 //! - `Lane spawn failed: addr=... err=... elapsed_ms=...` — graceful degrade
 //!
@@ -73,7 +73,7 @@
 //! - Cmd 定義: `super::lane_cmd::LaneCmd`
 //! - VP-159 PR-3 — Service trait 形式登録 (= ECS 純度回復)
 //! - parent epic: VP-156 (Mailbox routing 統一)
-//! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Stand)
+//! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Agent)
 
 use std::any::Any;
 use std::sync::Arc;
@@ -243,7 +243,7 @@ async fn handle_cmd(
         repo_id,
         name,
         cwd,
-        stand,
+        agent,
     } = cmd;
 
     let addr = LaneAddress::performer(&repo_id, &name);
@@ -282,10 +282,10 @@ async fn handle_cmd(
     }
 
     tracing::info!(
-        "Lane spawn requested: addr={} cwd={} stand={}",
+        "Lane spawn requested: addr={} cwd={} agent={}",
         addr,
         cwd,
-        stand
+        agent
     );
     let started = Instant::now();
 
@@ -303,7 +303,7 @@ async fn handle_cmd(
         address: addr.clone(),
         // 代表値は reconcile が実体から導出して上書きする（doc 53 §3.3）。
         state: LaneState::Running,
-        stand: stand.clone(),
+        agent: agent.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         pid: None,
         cwd,
@@ -312,7 +312,7 @@ async fn handle_cmd(
         cc_session_id: None,
         sessions: None,
         engine_session_id: None,
-        engine_stand: None,
+        agent_name: None,
         flow_state: None,
     };
     {
@@ -347,11 +347,11 @@ async fn handle_cmd(
     // lane は「立ち上がっていないが在る」— 次の契機で slot が立った時に board だけ不在、を
     // 作らない。chat lane（PTY 無しで正常）も同じ扱いになり、旧 state 分岐の非対称も消える。
     if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
-        lc_pool.write().await.populate_lane(addr.clone(), &stand);
+        lc_pool.write().await.populate_lane(addr.clone(), &agent);
         tracing::debug!(
-            "LaneCapabilities pool に Performer Lane populate (addr={}, stand={})",
+            "LaneCapabilities pool に Performer Lane populate (addr={}, agent={})",
             addr,
-            stand
+            agent
         );
     }
 
@@ -480,7 +480,7 @@ mod tests {
             id: Default::default(),
             address: addr,
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: "/nonexistent".to_string(),
@@ -488,7 +488,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         });
 
@@ -498,7 +498,7 @@ mod tests {
                 repo_id: "proj".to_string(),
                 name: "already-there".to_string(),
                 cwd: "/nonexistent".to_string(),
-                stand: "echoes".to_string(),
+                agent: "claude".to_string(),
             })
             .expect("receiver 生存中の send は成功するはず");
         drop(cmd_tx);
@@ -543,7 +543,7 @@ mod tests {
         crate::lane::session_registry::set_root_act(
             "proj",
             "chat-perf",
-            "echoes",
+            "claude",
             SessionAct::Chat,
         )
         .expect("record chat act");
@@ -558,7 +558,7 @@ mod tests {
                 repo_id: "proj".to_string(),
                 name: "chat-perf".to_string(),
                 cwd: state.path().to_string_lossy().to_string(),
-                stand: "echoes".to_string(),
+                agent: "claude".to_string(),
             })
             .expect("send SpawnLane");
         drop(cmd_tx);

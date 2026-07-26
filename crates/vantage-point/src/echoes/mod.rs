@@ -5,7 +5,7 @@
 //! - **Act(surface) 軸**（どう視るか: Act I 端末 / Act II chat GUI）= 切替可能な view
 //!
 //! の直交 2 軸がある。本 module は Act II のバックエンド（repo 側）+ engine 軸の語彙を持つ。
-//! Act I は raw PTY（`process::stand_spawner` の slot + CLI 注入）で、本 module を通らない。
+//! Act I は raw PTY（`process::agent_spawner` の slot + CLI 注入）で、本 module を通らない。
 //!
 //! 設計 SSOT: `docs/design/37-echoes-two-axes.md`（2 軸）/ `32-echoes-act2-gui.md`（Act II）。
 //!
@@ -23,7 +23,7 @@
 //!
 //! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok / opencode — doc 41・42・43）。
 //! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み、
-//! cursor / agy は sweep 6.5 で stand ごと完全撤去（再導入時は新規実装 — 旧実装は
+//! cursor / agy は sweep 6.5 で agent ごと完全撤去（再導入時は新規実装 — 旧実装は
 //! git history #773/#776。Composer の CLI 進化待ちの再検討方針は doc 39 §7）。
 //!
 //! Unison 配信は `process::echoes_pump`（terminal_pump と同型）が担う。GUI 語彙 [`EchoesEvent`] は

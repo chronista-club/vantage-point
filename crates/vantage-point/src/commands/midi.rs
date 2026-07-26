@@ -1211,7 +1211,7 @@ mod tests {
             id: Default::default(),
             address: LaneAddress::new("vp", name),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: None,
             cwd: "/repos/vp".to_string(),
@@ -1219,7 +1219,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
         let v = serde_json::json!({

@@ -39,7 +39,7 @@ pub fn daemon_port() -> u16 {
 ///
 /// 代わりに repo 間の実体的な差である **LANES（何本のラインを抱えているか）** と
 /// **STATUS（そのうち動いているものがあるか = active / idle）** を出す。
-/// lane 個別の詳細（kind / stand / pid / state）は `vp lane` が持つ。
+/// lane 個別の詳細（kind / agent / pid / state）は `vp lane` が持つ。
 pub fn list_instances(config: &crate::config::Config) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {

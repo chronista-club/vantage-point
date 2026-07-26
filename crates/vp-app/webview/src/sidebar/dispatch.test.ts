@@ -21,7 +21,7 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
       state: (s) => calls.push(`state:${(s as { version?: number }).version}`),
       error: (m) => calls.push(`error:${m}`),
       performerCreateResult: (p, n, e) => calls.push(`performer:${p}/${n}:${e}`),
-      standsResult: (p, s, e) => calls.push(`stands:${p}:${s.length}:${e}`),
+      agentsResult: (p, s, e) => calls.push(`agents:${p}:${s.length}:${e}`),
       filesListResult: (a, entries, t) => calls.push(`files:${a}:${entries.length}:${t}`),
       wireResult: (p) => calls.push(`wire:${(p as { total?: number }).total}`),
       clonePathPicked: (p) => calls.push(`clone:${p}`),
@@ -91,9 +91,9 @@ describe('sidebar dispatch', () => {
 
     dispatch({ t: 'performer:create_result', repo_path: '/p', name: 'w1' })
     dispatch({ t: 'performer:create_result', repo_path: '/p', name: 'w2', error: 'ng' })
-    dispatch({ t: 'stands:result', repo_path: '/p', stands: [{}, {}] })
+    dispatch({ t: 'agents:result', repo_path: '/p', agents: [{}, {}] })
 
-    expect(calls).toEqual(['performer:/p/w1:null', 'performer:/p/w2:ng', 'stands:/p:2:null'])
+    expect(calls).toEqual(['performer:/p/w1:null', 'performer:/p/w2:ng', 'agents:/p:2:null'])
   })
 
   it('オブジェクトを分解した面が元の形で受け手に届く', async () => {

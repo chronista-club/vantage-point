@@ -210,7 +210,7 @@ pub(crate) async fn start_repo(
     // `RepoRuntimes` の map への二重 insert 防止が引き継いだ（プロセスが無いので、
     // 重複は HashMap のキー衝突として表現される）。
 
-    // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 repo-local Service (= lane-spawn)
+    // VP-159 PR-4b: Agent / Service actor の supervisor 受け皿。 repo-local Service (= lane-spawn)
     // を `spawn_service` 経由で起動・register、 JoinHandle を保持。 machine scope の
     // device registry の metadata register は dynamic routing vision 確定後 (cf. design-spark
     // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
@@ -248,9 +248,9 @@ pub(crate) async fn start_repo(
         // delivery loop wake)。 repo では未使用だが AppState 共有 field のため空で満たす
         wire_notifier: crate::capability::WireNotifier::new(),
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // Phase A4-2b: Lane scope の Stand pool — Conductor Lane 1 つ pre-populate
+        // Phase A4-2b: Lane scope の Agent pool — Conductor Lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
-        // Performer Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
+        // Performer Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
         //
         // (I-b、 2026-04-30): Performer auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
         // lane performers を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
@@ -263,10 +263,10 @@ pub(crate) async fn start_repo(
         // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
         // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
         // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + `publish_lanes` subscribe で
-        // daemon の集約 view を更新する経路。 将来 Pane / Stand 等の event も同 bus に variant
+        // daemon の集約 view を更新する経路。 将来 Pane / Agent 等の event も同 bus に variant
         // 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        // Phase A4-2b: Repo scope の Stand pool (board/runner ほか) — skeleton
+        // Phase A4-2b: Repo scope の Agent pool (board/runner ほか) — skeleton
         // PR-α-1 (VP-111): repo モードでは MachineCapabilities を持たない (daemon mode 専用)
         machine_capabilities: None,
         // PR-β-1 (VP-119): repo モードで LaneCapabilities pool 受け皿を Some で初期化。
@@ -295,14 +295,14 @@ pub(crate) async fn start_repo(
     // doc 13 §6 自動 spawn rule = Lane 起動時に board 同時 spawn (default) を default で実現。
     if let Some(lc_pool) = state.lane_capabilities.as_ref() {
         let conductor_addr = super::lanes_state::LaneAddress::root(&repo_name_for_remote);
-        let default_stand = crate::config::Config::load()
+        let default_agent = crate::config::Config::load()
             .unwrap_or_default()
-            .default_stand_or_echoes()
+            .default_agent_or_claude()
             .to_string();
         lc_pool
             .write()
             .await
-            .populate_lane(conductor_addr, default_stand);
+            .populate_lane(conductor_addr, default_agent);
         tracing::info!(
             "PR-β-2: LaneCapabilities pool に Conductor Lane populate (repo={}, board host 化)",
             repo_name_for_remote
@@ -362,27 +362,27 @@ pub(crate) async fn start_repo(
                 performers_repo_id,
                 max_concurrent
             );
-            // doc 11 PR-B: stand は String 化、 default は config の `default_stand`
-            // (未設定なら "echoes" fallback、 PR-pre2 / VP-118 で "hd" → "echoes")。
-            let default_stand = crate::config::Config::load()
+            // doc 11 PR-B: agent は String 化、 default は config の `default_agent`
+            // (未設定なら "claude" fallback、 PR-pre2 / VP-118 で "hd" → "claude")。
+            let default_agent = crate::config::Config::load()
                 .unwrap_or_default()
-                .default_stand_or_echoes()
+                .default_agent_or_claude()
                 .to_string();
             // in-process 直結: 型付き LaneCmd を channel に同期 send (serialize / retry 不要)。
             // send が Err を返すのは receiver drop 後のみ (= actor task 終了後。 startup 時点では
             // 起き得ないが防御的に warn)。 投入順序は Semaphore gate が並列度を制御するため保証不要。
             for entry in &performers {
-                // per-lane stand 永続 (mem_1Cd4M7i5Enp3HHMLVYayRe): create 時に記録された stand で
+                // per-lane agent 永続 (mem_1Cd4M7i5Enp3HHMLVYayRe): create 時に記録された agent で
                 // respawn する。記録不在 (旧 lane / 手動 `vp lane new`) は従来どおり default。
                 // これが無いと非 echoes performer (codex/grok) が repo 再起動で echoes に化ける
-                // (stand 非永続の既知バグの根治)。
-                let stand = crate::lane::stand_store::last(&performers_repo_id, &entry.name)
-                    .unwrap_or_else(|| default_stand.clone());
+                // (agent 非永続の既知バグの根治)。
+                let agent = crate::lane::agent_store::last(&performers_repo_id, &entry.name)
+                    .unwrap_or_else(|| default_agent.clone());
                 let cmd = super::lane_cmd::LaneCmd::SpawnLane {
                     repo_id: performers_repo_id.clone(),
                     name: entry.name.clone(),
                     cwd: entry.path.clone(),
-                    stand,
+                    agent,
                 };
                 if lane_spawn_tx.send(cmd).is_err() {
                     tracing::warn!(
@@ -783,7 +783,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
         // Phase 2 (Step E): system event central bus
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        // PR-α-1 (VP-111): machine 階層 Stand container (LSCM doc 12 §3 / §9)
+        // PR-α-1 (VP-111): machine 階層 Agent container (LSCM doc 12 §3 / §9)
         machine_capabilities: Some(machine_capabilities),
         // PR-β-1 (VP-119): daemon mode では LaneCapabilities を持たない (Lane scope は repo per repo)
         lane_capabilities: None,
