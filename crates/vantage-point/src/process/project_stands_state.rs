@@ -10,7 +10,7 @@
 //! という見通しに、pool 側から先に到達した形）。
 //!
 //! 旧 External Control stand は PR-α で World 移管 + epic v3.1 で
-//! Bastet 🧲 (World device registry) / Justice 🌫️ (Lane device I/O) に再編済。
+//! DeviceRegistry 🧲 (World device registry) / Device I/O 🌫️ (Lane device I/O) に再編済。
 //!
 //! ## 現在ここが提供するもの
 //!

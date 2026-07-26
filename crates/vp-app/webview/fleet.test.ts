@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { computeFeedback, deviceOf, mapControl } from "./fleet";
 
 describe("deviceOf", () => {
-	it("port 名の部分一致で 3 台を識別（Bastet の pattern 規約と同一）", () => {
+	it("port 名の部分一致で 3 台を識別（Devices の pattern 規約と同一）", () => {
 		expect(deviceOf("ROTO-CONTROL Roto")).toBe("roto");
 		expect(deviceOf("X-Touch X-TOUCH")).toBe("xtouch");
 		expect(deviceOf("LPD8 mk2")).toBe("lpd8");

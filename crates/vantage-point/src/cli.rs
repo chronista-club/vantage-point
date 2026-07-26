@@ -186,7 +186,7 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
         // DebugMode::None (= 通常運転) は set しない — 後段の default EnvFilter
         // (vantage_point=info + 依存 crate の chatty log 抑制) に落とす。
         // 旧実装は None でも `vantage_point=warn` を焼き込んでいたため後段 default が
-        // 到達不能になり、daemon の INFO (Bastet/QUIC 起動等の運転記録) が全起動経路で
+        // 到達不能になり、daemon の INFO (DeviceRegistry/QUIC 起動等の運転記録) が全起動経路で
         // 恒久的に沈黙していた (log 出力先とは独立の第 2 の結線切れ)。
         match debug_mode {
             DebugMode::None => {}

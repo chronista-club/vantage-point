@@ -75,14 +75,14 @@ protocol "vp-push" version="1.0.0" {
             field "text" type="string"
         }
 
-        // ===== 計器盤（device 一覧, doc 52 §4）の制御面 — 実装は webview/bastet.ts =====
+        // ===== 計器盤（device 一覧, doc 52 §4）の制御面 — 実装は webview/devices.ts =====
         //
-        // ⚠️ wire 名は **機能名**（`devices:`）。Stand 名（Bastet 🧲）は表示層だけの語で、
-        // コード識別子には出さない規約（memory `naming-stand-vs-code`）。既存の
-        // `window.vpBastet` / `bastet.ts` / `pane-bastet` は歴史的な違反で、改名は別途。
+        // wire 名は **機能名**（`devices:`）— 表示層の語をコード識別子に出さない規約
+        // （memory `naming-stand-vs-code`）。旧 `vpBastet` / `bastet.ts` / `pane-bastet` は
+        // この規約への歴史的な違反だったが、rename(devices)（2026-07-27）で解消済み。
 
         // MIDI device 一覧を pane に render する（差分でなく**全量の置き換え** = level 駆動）。
-        // 要素の形の持ち主は Rust `pane::DeviceSnapshot` / TS 側 `bastet.ts` の `DeviceInfo`。
+        // 要素の形の持ち主は Rust `pane::DeviceSnapshot` / TS 側 `devices.ts` の `DeviceInfo`。
         // ここで `array<json>` にしているのは、その 1 つの形を **KDL にも書くと二重定義**に
         // なるため（wire 上は今までと同じ `serde_json::to_string(devices)`）。
         event "devices:render" {

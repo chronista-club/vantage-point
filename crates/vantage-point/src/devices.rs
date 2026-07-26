@@ -1,6 +1,6 @@
-//! Bastet 🧲 — World scope の物理 device 集約 registry (doc 23 §5)
+//! DeviceRegistry 🧲 — World scope の物理 device 集約 registry (doc 23 §5)
 //!
-//! 現 `MidiCapability` (single-device monitor) を multi-device registry に発展させる。
+//! 旧 `MidiCapability`（single-device monitor、2026-07-27 撤去済）を multi-device registry に発展させたもの。
 //!
 //! 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`
 //!
@@ -8,7 +8,7 @@
 //! - **registry**: 接続中 device を `HashMap<port_displayName, ConnectedDevice>` で hold
 //! - **hot-plug discovery**: midir enumeration polling (2〜3s) で接続/切断検出
 //! - **input parse**: device byte → `DeviceInput::parse` → `ControlEvent` 化
-//! - **routing policy**: `ControlEvent` を active Lane の Justice へ dispatch (E3)
+//! - **routing policy**: `ControlEvent` を active Lane の Device I/O へ dispatch (E3)
 //! - **active Lane track**: SP の「lanes」QUIC channel を購読し cache 更新 (E3)
 
 use std::any::Any;
@@ -39,7 +39,7 @@ const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 
 // ─── data ──────────────────────────────────────────────────
 
-/// Bastet registry に登録される接続中の物理 device (doc 23 §5.2)。
+/// DeviceRegistry registry に登録される接続中の物理 device (doc 23 §5.2)。
 ///
 /// HashMap の value 型。key = CoreMIDI port の displayName。
 #[derive(Debug)]
@@ -105,7 +105,7 @@ fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
 /// pattern 部分一致で MIDI output port を開く。複数候補は "INT" を含む名を優先
 /// （X-Touch INT = MCU の実 port / EXT = 物理 MIDI passthrough の別）。
 fn open_output(pattern: &str) -> Option<midir::MidiOutputConnection> {
-    let midi_out = midir::MidiOutput::new("vp-bastet-feedback").ok()?;
+    let midi_out = midir::MidiOutput::new("vp-devices-feedback").ok()?;
     let ports = midi_out.ports();
     let named: Vec<(String, midir::MidiOutputPort)> = ports
         .into_iter()
@@ -124,7 +124,7 @@ fn open_output(pattern: &str) -> Option<midir::MidiOutputConnection> {
 fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     let mut result: HashMap<String, (bool, bool)> = HashMap::new();
 
-    if let Ok(midi_in) = midir::MidiInput::new("vp-bastet-scan") {
+    if let Ok(midi_in) = midir::MidiInput::new("vp-devices-scan") {
         for port in midi_in.ports() {
             if let Ok(name) = midi_in.port_name(&port) {
                 result.entry(name).or_insert((false, false)).0 = true;
@@ -132,7 +132,7 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
         }
     }
 
-    if let Ok(midi_out) = midir::MidiOutput::new("vp-bastet-scan") {
+    if let Ok(midi_out) = midir::MidiOutput::new("vp-devices-scan") {
         for port in midi_out.ports() {
             if let Ok(name) = midi_out.port_name(&port) {
                 result.entry(name).or_insert((false, false)).1 = true;
@@ -195,7 +195,7 @@ async fn ensure_input_listener(
 fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<JoinHandle<()>> {
     let mut parser = create_device_input(port_name)?;
 
-    let midi_in = midir::MidiInput::new("vp-bastet-input").ok()?;
+    let midi_in = midir::MidiInput::new("vp-devices-input").ok()?;
     let ports = midi_in.ports();
     let port_idx = ports.iter().position(|p| {
         midi_in
@@ -212,7 +212,7 @@ fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<Joi
     let connection = midi_in
         .connect(
             port,
-            "vp-bastet-input",
+            "vp-devices-input",
             move |_timestamp, message, _| {
                 let _ = tx.blocking_send(message.to_vec());
             },
@@ -230,7 +230,7 @@ fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<Joi
         while let Some(msg) = rx.recv().await {
             if let Some(event) = parser.parse(&msg) {
                 tracing::debug!("🧲 control event from {}: {:?}", port, event);
-                let cap_event = CapabilityEvent::new("bastet.control_event", "bastet")
+                let cap_event = CapabilityEvent::new("devices.control_event", "devices")
                     .with_payload(&serde_json::json!({
                         "port_name": port,
                         "event": event,
@@ -245,16 +245,16 @@ fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<Joi
     Some(handle)
 }
 
-// ─── Bastet struct ─────────────────────────────────────────
+// ─── DeviceRegistry struct ─────────────────────────────────────────
 
-/// World scope の物理 device 集約 registry（Bastet 🧲）。
+/// World scope の物理 device 集約 registry（DeviceRegistry 🧲）。
 ///
 /// key = CoreMIDI port の displayName（背骨 mem 準拠、doc 23 §5.2）。
-/// 現 `MidiCapability` の single-device monitor を multi-device registry に発展させる。
-pub struct Bastet {
+/// 旧 `MidiCapability`（single-device monitor、撤去済）を multi-device registry に発展させたもの。
+pub struct DeviceRegistry {
     /// 接続中 device を port displayName で引く（polling task と共有）
     devices: Arc<RwLock<HashMap<String, ConnectedDevice>>>,
-    /// active Lane の購読 cache（SSOT は SP の lanes_state、Bastet は購読側。doc 23 Q-1）
+    /// active Lane の購読 cache（SSOT は SP の lanes_state、DeviceRegistry は購読側。doc 23 Q-1）
     active_lane: Arc<RwLock<Option<LaneAddress>>>,
     /// Capability event bus（接続/切断イベント配信用）
     event_bus: Arc<EventBus>,
@@ -280,7 +280,7 @@ pub struct Bastet {
     last_feedback: Arc<tokio::sync::Mutex<crate::daemon::protocol::FleetFeedback>>,
 }
 
-impl Bastet {
+impl DeviceRegistry {
     /// 空の registry で構築
     pub fn new(event_bus: Arc<EventBus>) -> Self {
         Self {
@@ -399,7 +399,7 @@ impl Bastet {
             // agent 報告と**同じ 1 本の辺**（registry 挿入 + 新規 emit + listener ensure）に
             // 畳む。旧実装は ensure_input_listener 直呼びで listener だけ張り、registry が
             // 空のまま — polling 停止 + agent 報告 0 件の環境では world-device snapshot が
-            // 常に空で、Bastet pane が「No devices connected」に固定されていた
+            // 常に空で、DeviceRegistry pane が「No devices connected」に固定されていた
             // （discovery の辺の 2 仕事のうち片方だけ移管された取り残し、#878 の同型）
             self.report_device_connected(name, *has_in, *has_out).await;
         }
@@ -423,7 +423,7 @@ impl Bastet {
         &self.devices
     }
 
-    /// active Lane cache の read handle（Justice dispatch / 外部クエリ用）
+    /// active Lane cache の read handle（Device I/O dispatch / 外部クエリ用）
     pub fn active_lane(&self) -> &Arc<RwLock<Option<LaneAddress>>> {
         &self.active_lane
     }
@@ -454,7 +454,7 @@ impl Bastet {
 
         let task = tokio::spawn(async move {
             tracing::info!(
-                "Bastet 🧲 discovery started (interval: {}s)",
+                "devices 🧲 discovery started (interval: {}s)",
                 DISCOVERY_INTERVAL.as_secs()
             );
 
@@ -480,7 +480,7 @@ impl Bastet {
                             connected_at: Instant::now(),
                         },
                     );
-                    let event = CapabilityEvent::new("bastet.device_connected", "bastet")
+                    let event = CapabilityEvent::new("devices.device_connected", "devices")
                         .with_payload(&serde_json::json!({
                             "port_name": name,
                             "has_input": has_in,
@@ -498,7 +498,7 @@ impl Bastet {
                 for name in &diff.removed {
                     tracing::info!("🧲 device disconnected: {}", name);
                     devs.remove(name);
-                    let event = CapabilityEvent::new("bastet.device_disconnected", "bastet")
+                    let event = CapabilityEvent::new("devices.device_disconnected", "devices")
                         .with_payload(&serde_json::json!({ "port_name": name }));
                     event_bus.emit(event).await;
 
@@ -513,9 +513,9 @@ impl Bastet {
 
                 tokio::select! {
                     _ = cancel_rx.recv() => {
-                        // listener は Bastet 所有（共有 map）— discovery 停止 ≠ device 消滅
+                        // listener は DeviceRegistry 所有（共有 map）— discovery 停止 ≠ device 消滅
                         // なのでここでは畳まない（切断報告 / process 終了が寿命を決める）
-                        tracing::info!("Bastet 🧲 discovery stopped");
+                        tracing::info!("devices 🧲 discovery stopped");
                         break;
                     }
                     _ = tokio::time::sleep(DISCOVERY_INTERVAL) => {}
@@ -582,7 +582,7 @@ impl Bastet {
             lane_source,
             QuicSwitchSink::new(),
             child.clone(),
-            // knob 系入力を bastet.control_event に流す（fleet 配線 — doc 49 LE-19）
+            // knob 系入力を devices.control_event に流す（fleet 配線 — doc 49 LE-19）
             Some(Arc::clone(&self.event_bus)),
             feedback_rx,
         );
@@ -596,16 +596,16 @@ impl Bastet {
                 port_pattern: "Roto".to_string(),
                 view: RotoView::default(),
             };
-            tracing::info!("🧲 Bastet ROTO 持続セッション開始 (self-heal)");
+            tracing::info!("🧲 devices: ROTO 持続セッション開始 (self-heal)");
             match driver.run(&bracket, initial).await {
                 Outcome::Done(()) => {
-                    tracing::info!("🧲 Bastet ROTO セッション終了 (graceful)")
+                    tracing::info!("🧲 devices: ROTO セッション終了 (graceful)")
                 }
                 Outcome::Reborn(_) => {
-                    tracing::info!("🧲 Bastet ROTO セッション離脱 (shutdown)")
+                    tracing::info!("🧲 devices: ROTO セッション離脱 (shutdown)")
                 }
                 Outcome::Failed(msg) => {
-                    tracing::warn!("🧲 Bastet ROTO セッション fatal: {}", msg)
+                    tracing::warn!("🧲 devices: ROTO セッション fatal: {}", msg)
                 }
             }
         });
@@ -628,7 +628,7 @@ impl Bastet {
     // macOS menu bar agent（Swift `CoreMIDIWatcher`、AppKit run loop で CoreMIDI 通知が
     // 自然に効く）へ移した。agent が `device` stream channel で `ReportDevice` を送り、
     // 下記メソッドが registry + EventBus に反映する（discovery loop の added/removed 分岐と
-    // 同一効果）。EventBus の `bastet.device_*` は既存 world-device bridge が拾って vp-app に push。
+    // 同一効果）。EventBus の `devices.device_*` は既存 world-device bridge が拾って vp-app に push。
 
     /// agent からの device 接続報告を registry に反映し、新規なら EventBus に emit する。
     ///
@@ -656,7 +656,7 @@ impl Bastet {
         };
         if is_new {
             tracing::info!("🧲 device connected (agent report): {}", port_name);
-            let event = CapabilityEvent::new("bastet.device_connected", "bastet").with_payload(
+            let event = CapabilityEvent::new("devices.device_connected", "devices").with_payload(
                 &serde_json::json!({
                     "port_name": port_name,
                     "has_input": has_input,
@@ -683,7 +683,7 @@ impl Bastet {
         let existed = self.devices.write().await.remove(port_name).is_some();
         if existed {
             tracing::info!("🧲 device disconnected (agent report): {}", port_name);
-            let event = CapabilityEvent::new("bastet.device_disconnected", "bastet")
+            let event = CapabilityEvent::new("devices.device_disconnected", "devices")
                 .with_payload(&serde_json::json!({ "port_name": port_name }));
             self.event_bus.emit(event).await;
         }
@@ -692,9 +692,9 @@ impl Bastet {
 
 // ─── Service impl ──────────────────────────────────────────
 
-impl Service for Bastet {
+impl Service for DeviceRegistry {
     fn actor_name(&self) -> &str {
-        "bastet"
+        "devices"
     }
 
     fn layer_scope(&self) -> LayerScope {
@@ -715,23 +715,23 @@ mod tests {
     #[tokio::test]
     async fn new_creates_empty_registry() {
         let bus = Arc::new(EventBus::new());
-        let bastet = Bastet::new(bus);
-        assert_eq!(bastet.device_count().await, 0);
+        let devices = DeviceRegistry::new(bus);
+        assert_eq!(devices.device_count().await, 0);
     }
 
     #[test]
     fn service_impl_correct() {
         let bus = Arc::new(EventBus::new());
-        let bastet = Bastet::new(bus);
-        assert_eq!(bastet.actor_name(), "bastet");
-        assert_eq!(bastet.layer_scope(), LayerScope::World);
+        let devices = DeviceRegistry::new(bus);
+        assert_eq!(devices.actor_name(), "devices");
+        assert_eq!(devices.layer_scope(), LayerScope::World);
     }
 
     #[tokio::test]
     async fn active_lane_initially_none() {
         let bus = Arc::new(EventBus::new());
-        let bastet = Bastet::new(bus);
-        let lane = bastet.active_lane().read().await;
+        let devices = DeviceRegistry::new(bus);
+        let lane = devices.active_lane().read().await;
         assert!(lane.is_none());
     }
 
@@ -740,48 +740,48 @@ mod tests {
     #[tokio::test]
     async fn report_device_connected_updates_registry_idempotently() {
         let bus = Arc::new(EventBus::new());
-        let bastet = Bastet::new(bus);
+        let devices = DeviceRegistry::new(bus);
 
-        bastet
+        devices
             .report_device_connected("X-Touch Compact", true, true)
             .await;
-        assert_eq!(bastet.device_count().await, 1);
+        assert_eq!(devices.device_count().await, 1);
 
         // 同一 device の再報告（agent reconnect 時の initial 再送）は重複しない
-        bastet
+        devices
             .report_device_connected("X-Touch Compact", true, true)
             .await;
-        assert_eq!(bastet.device_count().await, 1);
+        assert_eq!(devices.device_count().await, 1);
 
         // 別 device を足すと増える
-        bastet
+        devices
             .report_device_connected("LPD8 mk2", true, false)
             .await;
-        assert_eq!(bastet.device_count().await, 2);
+        assert_eq!(devices.device_count().await, 2);
     }
 
     #[tokio::test]
     async fn report_device_disconnected_removes_from_registry() {
         let bus = Arc::new(EventBus::new());
-        let bastet = Bastet::new(bus);
+        let devices = DeviceRegistry::new(bus);
 
-        bastet.report_device_connected("ROTO", true, true).await;
-        assert_eq!(bastet.device_count().await, 1);
+        devices.report_device_connected("ROTO", true, true).await;
+        assert_eq!(devices.device_count().await, 1);
 
-        bastet.report_device_disconnected("ROTO").await;
-        assert_eq!(bastet.device_count().await, 0);
+        devices.report_device_disconnected("ROTO").await;
+        assert_eq!(devices.device_count().await, 0);
 
         // 未知 device の切断報告は no-op（panic しない）
-        bastet.report_device_disconnected("Unknown").await;
-        assert_eq!(bastet.device_count().await, 0);
+        devices.report_device_disconnected("Unknown").await;
+        assert_eq!(devices.device_count().await, 0);
     }
 
     #[test]
     fn service_supports_downcast() {
         let bus = Arc::new(EventBus::new());
-        let bastet = Bastet::new(bus);
-        let service: &dyn Service = &bastet;
-        let downcast = service.as_any().downcast_ref::<Bastet>();
+        let devices = DeviceRegistry::new(bus);
+        let service: &dyn Service = &devices;
+        let downcast = service.as_any().downcast_ref::<DeviceRegistry>();
         assert!(downcast.is_some());
     }
 
@@ -905,15 +905,15 @@ mod tests {
     async fn agent_report_paths_do_not_panic_without_ports() {
         // agent 報告経路が listener ensure / abort を通っても実機不在で安全に流れる
         let bus = Arc::new(EventBus::new());
-        let bastet = Bastet::new(bus);
-        bastet
+        let devices = DeviceRegistry::new(bus);
+        devices
             .report_device_connected("X-Touch INT", true, true)
             .await;
-        assert_eq!(bastet.device_count().await, 1);
-        bastet.report_device_disconnected("X-Touch INT").await;
-        assert_eq!(bastet.device_count().await, 0);
+        assert_eq!(devices.device_count().await, 1);
+        devices.report_device_disconnected("X-Touch INT").await;
+        assert_eq!(devices.device_count().await, 0);
         // 起動時 attach も同様（CI では対象 port が無い前提で走るだけ）
-        bastet.attach_fleet_inputs().await;
+        devices.attach_fleet_inputs().await;
     }
 
     // ─── discovery lifecycle ───────────────────────────
@@ -921,19 +921,19 @@ mod tests {
     #[tokio::test]
     async fn discovery_lifecycle() {
         let bus = Arc::new(EventBus::new());
-        let mut bastet = Bastet::new(bus);
+        let mut devices = DeviceRegistry::new(bus);
 
-        assert!(!bastet.is_discovering());
+        assert!(!devices.is_discovering());
 
-        bastet.start_discovery().await;
-        assert!(bastet.is_discovering());
+        devices.start_discovery().await;
+        assert!(devices.is_discovering());
 
         // 二重起動は no-op
-        bastet.start_discovery().await;
+        devices.start_discovery().await;
 
-        bastet.stop_discovery().await;
+        devices.stop_discovery().await;
         // task abort 後は is_discovering = false
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!bastet.is_discovering());
+        assert!(!devices.is_discovering());
     }
 }

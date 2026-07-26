@@ -8,7 +8,7 @@
 //!
 //! - **TheWorld 👑** (`ProcessManagerCapability`): VP world process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
-//! - **Bastet 🧲** (`Bastet`): multi-device registry + 艦隊 input listener（`with_bastet`）
+//! - **DeviceRegistry 🧲** (`DeviceRegistry`): multi-device registry + 艦隊 input listener（`with_devices`）
 //!
 //! ## 実装状態
 //!
@@ -16,7 +16,7 @@
 //!   `AppState.world_capabilities` field に Some で注入。
 //! - 旧 `MidiCapability` hosting（PR-α-2 の single-device monitor）は退役 — 消費者
 //!   （`ProtocolCapability`）が本番で実体化されず、enumeration 先頭 device（実機で LPD8）を
-//!   無条件 grab して Bastet listener を沈黙させる害だけが残っていたため（fleet dogfood で発覚）。
+//!   無条件 grab して DeviceRegistry listener を沈黙させる害だけが残っていたため（fleet dogfood で発覚）。
 //! - 後続 cleanup: AppState 既存 field (`world` / `update`) と本 struct の重複保持を整理
 //!   (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
 //!
@@ -30,9 +30,9 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-#[cfg(feature = "midi")]
-use crate::bastet::Bastet;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
+#[cfg(feature = "midi")]
+use crate::devices::DeviceRegistry;
 
 /// World 階層 Stand container。
 ///
@@ -44,10 +44,10 @@ pub struct WorldCapabilities {
     /// Self-update Capability (LSCM Open Question Q-12 catalog 拡張候補)
     pub update: Arc<RwLock<UpdateCapability>>,
 
-    /// Bastet 🧲 — multi-device registry + 艦隊 input listener。
-    /// `with_bastet` で構築すると起動時 attach（既接続 device の listener）まで済む。
+    /// DeviceRegistry 🧲 — multi-device registry + 艦隊 input listener。
+    /// `with_devices` で構築すると起動時 attach（既接続 device の listener）まで済む。
     #[cfg(feature = "midi")]
-    pub bastet: Option<Arc<RwLock<Bastet>>>,
+    pub devices: Option<Arc<RwLock<DeviceRegistry>>>,
 }
 
 impl WorldCapabilities {
@@ -57,7 +57,7 @@ impl WorldCapabilities {
     /// AppState 既存 field (`world` / `update`) と本 struct の
     /// 重複保持は意図的 HACK (LSCM A6 share-nothing 整合は β 以降で整理予定)。
     ///
-    /// Bastet を host したい場合は `with_bastet` を使う (feature = "midi")。
+    /// DeviceRegistry を host したい場合は `with_devices` を使う (feature = "midi")。
     pub fn new(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
@@ -66,30 +66,30 @@ impl WorldCapabilities {
             process_manager,
             update,
             #[cfg(feature = "midi")]
-            bastet: None,
+            devices: None,
         }
     }
 
-    /// Bastet 🧲 を host した状態で構築（feature = "midi"）。
+    /// DeviceRegistry 🧲 を host した状態で構築（feature = "midi"）。
     ///
     /// hot-plug 検知の authority は macOS menu bar agent（Swift `CoreMIDIWatcher`）で、
-    /// agent が `device` channel で送る `ReportDevice` を `Bastet::report_device_*` が
+    /// agent が `device` channel で送る `ReportDevice` を `DeviceRegistry::report_device_*` が
     /// registry に反映する（daemon は midir polling を回さない）。起動前から挿さっている
     /// device は agent 報告が来ない環境があるため、`attach_fleet_inputs` の 1 回
     /// enumeration で input listener を確実に張る（fleet #877/#878）。
     /// ROTO 持続制御は独立経路（`start_roto_control`、process/server.rs）。
     #[cfg(feature = "midi")]
-    pub async fn with_bastet(
+    pub async fn with_devices(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
     ) -> Self {
         let mut wc = Self::new(process_manager, update);
 
         let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());
-        let bastet = Bastet::new(event_bus);
-        bastet.attach_fleet_inputs().await;
-        tracing::info!("Bastet 🧲 registry ready (hot-plug は Swift agent が報告 / polling 停止)");
-        wc.bastet = Some(Arc::new(RwLock::new(bastet)));
+        let devices = DeviceRegistry::new(event_bus);
+        devices.attach_fleet_inputs().await;
+        tracing::info!("devices 🧲 registry ready (hot-plug は Swift agent が報告 / polling 停止)");
+        wc.devices = Some(Arc::new(RwLock::new(devices)));
 
         wc
     }
@@ -111,8 +111,8 @@ mod tests {
 
         #[cfg(feature = "midi")]
         assert!(
-            wc.bastet.is_none(),
-            "new() では bastet は None (with_bastet() を使うと Some)"
+            wc.devices.is_none(),
+            "new() では devices は None (with_devices() を使うと Some)"
         );
     }
 }

@@ -334,7 +334,7 @@ function applyFleetOp(op: FleetOp): void {
 
 // ---------- フィードバック方向（場 → 機材、LE-19） ----------
 // 経路: engine.subscribe → throttle(50ms trailing) + diff → ipc "fleet:feedback"
-// → app.rs watch(latest-wins) → world-device 上り event → Bastet が各機材に投影。
+// → app.rs watch(latest-wins) → world-device 上り event → Devices が各機材に投影。
 // ROTO モーターが share を追い、X-Touch fader が t を示し、LPD8 RGB が Scene slot を灯す —
 // 「正規化の結合が物理で見える」（1 本上げると他のノブが下がる、§9）。
 

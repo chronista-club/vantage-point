@@ -43,7 +43,7 @@ actor DaemonClient {
 
     /// CoreMIDI hot-plug 変化を daemon に報告する (device channel 経由、 best-effort)。
     ///
-    /// daemon の `handle_device_report` が Bastet registry を更新し、 `bastet.*` を emit
+    /// daemon の `handle_device_report` が Devices registry を更新し、 `devices.*` を emit
     /// (→ world-device bridge → vp-app) する。 channel 未確立時は no-op。
     func reportDevice(_ change: MidiDeviceChange) async {
         guard let channel = deviceChannel else { return }

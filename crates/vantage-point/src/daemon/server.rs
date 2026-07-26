@@ -107,19 +107,19 @@ pub struct DaemonState {
     /// in-memory `lane_registry` への反映と並行して db に永続する。 これにより SP disconnect /
     /// daemon 再起動を越えて descriptor が生き残る (§3.3 re-animate / §4.1 喪失ゼロ)。
     pub vpdb: Option<crate::db::SharedVpDb>,
-    /// Bastet 🧲 EventBus の参照 — "world-device" Unison channel の data plane。
+    /// DeviceRegistry 🧲 EventBus の参照 — "world-device" Unison channel の data plane。
     ///
-    /// `WorldCapabilities.bastet` が Some (= feature = "midi" + Bastet 稼働) のときのみ注入される。
-    /// world-device channel handler がこれを subscribe して `bastet.*` event (device 接続/切断/
+    /// `WorldCapabilities.devices` が Some (= feature = "midi" + DeviceRegistry 稼働) のときのみ注入される。
+    /// world-device channel handler がこれを subscribe して `devices.*` event (device 接続/切断/
     /// 操作入力) を `DeviceEvent` に変換し、 vp-app に push する。
-    pub bastet_event_bus: Option<Arc<crate::capability::eventbus::EventBus>>,
-    /// Bastet 🧲 registry 本体の参照 — "device" Unison channel (agent → daemon) の data plane。
+    pub devices_event_bus: Option<Arc<crate::capability::eventbus::EventBus>>,
+    /// DeviceRegistry 🧲 registry 本体の参照 — "device" Unison channel (agent → daemon) の data plane。
     ///
     /// M2 / doc 26 §2: macOS menu bar agent (Swift `CoreMIDIWatcher`) が hot-plug を `ReportDevice`
     /// で報告する。`device` channel handler がこの handle 越しに `report_device_*` を呼び、registry
-    /// 更新 + `bastet.*` emit を行う (emit は world-device bridge 経由で vp-app に届く)。
+    /// 更新 + `devices.*` emit を行う (emit は world-device bridge 経由で vp-app に届く)。
     #[cfg(feature = "midi")]
-    pub bastet: Option<Arc<RwLock<crate::bastet::Bastet>>>,
+    pub devices: Option<Arc<RwLock<crate::devices::DeviceRegistry>>>,
     /// L0 portless B-4 (wire-unison): World 中央 wire store の参照 — "wire" Unison channel の data plane。
     ///
     /// 旧 `world_wire::call` の HTTP relay 先 (`POST /api/wire/*`) を unison channel に移行 (doc 27 §62
@@ -158,9 +158,9 @@ impl Default for DaemonState {
             control_channels: Arc::new(crate::process::project_registry::ProjectRuntimes::new()),
             world_cap: None,
             vpdb: None,
-            bastet_event_bus: None,
+            devices_event_bus: None,
             #[cfg(feature = "midi")]
-            bastet: None,
+            devices: None,
             wiremsg_store: None,
             wire_notifier: None,
             delivery_notify: None,
@@ -249,25 +249,25 @@ impl DaemonState {
         self
     }
 
-    /// Bastet 🧲 EventBus を共有する (feature = "midi")。
+    /// DeviceRegistry 🧲 EventBus を共有する (feature = "midi")。
     ///
-    /// `run_world` が `WorldCapabilities.bastet` の `event_bus()` を渡し、 world-device channel
+    /// `run_world` が `WorldCapabilities.devices` の `event_bus()` を渡し、 world-device channel
     /// handler がこれを subscribe して device event を vp-app に push する。
-    pub fn with_bastet_event_bus(
+    pub fn with_devices_event_bus(
         mut self,
         event_bus: Arc<crate::capability::eventbus::EventBus>,
     ) -> Self {
-        self.bastet_event_bus = Some(event_bus);
+        self.devices_event_bus = Some(event_bus);
         self
     }
 
-    /// Bastet 🧲 registry 本体を共有する (feature = "midi")。
+    /// DeviceRegistry 🧲 registry 本体を共有する (feature = "midi")。
     ///
     /// `device` channel handler が agent の `ReportDevice` を受けて registry を更新するために使う。
-    /// `with_bastet_event_bus` と同じ `WorldCapabilities.bastet` を指す (event_bus は registry 内蔵)。
+    /// `with_devices_event_bus` と同じ `WorldCapabilities.devices` を指す (event_bus は registry 内蔵)。
     #[cfg(feature = "midi")]
-    pub fn with_bastet(mut self, bastet: Arc<RwLock<crate::bastet::Bastet>>) -> Self {
-        self.bastet = Some(bastet);
+    pub fn with_devices(mut self, devices: Arc<RwLock<crate::devices::DeviceRegistry>>) -> Self {
+        self.devices = Some(devices);
         self
     }
 
@@ -656,14 +656,14 @@ pub(crate) async fn handle_world_control(
 ///
 /// ChannelMessage::Response は send_response() で、
 /// ChannelMessage::Error は send_response() でエラーペイロードとして送信する。
-/// device.report_device: agent (Swift menu bar) からの CoreMIDI hot-plug 報告を Bastet registry に反映する。
+/// device.report_device: agent (Swift menu bar) からの CoreMIDI hot-plug 報告を DeviceRegistry registry に反映する。
 ///
 /// doc 26 §2 `ReportDevice` request。`state` = "connected" | "disconnected" で分岐し、
-/// `Bastet::report_device_*` が registry 更新 + `bastet.*` emit を行う (emit は既存 world-device
+/// `DeviceRegistry::report_device_*` が registry 更新 + `devices.*` emit を行う (emit は既存 world-device
 /// bridge 経由で vp-app に届く)。
 #[cfg(feature = "midi")]
 async fn handle_device_report(
-    bastet: &Arc<RwLock<crate::bastet::Bastet>>,
+    devices: &Arc<RwLock<crate::devices::DeviceRegistry>>,
     id: u64,
     payload: serde_json::Value,
 ) -> ChannelMessage {
@@ -672,7 +672,7 @@ async fn handle_device_report(
         Err(e) => return ChannelMessage::err(id, format!("Invalid payload: {}", e)),
     };
 
-    let b = bastet.read().await;
+    let b = devices.read().await;
     match req.state.as_str() {
         "connected" => {
             b.report_device_connected(&req.port_name, req.has_input, req.has_output)
@@ -710,7 +710,7 @@ async fn send_channel_response(
 ///
 /// `running_processes`（port/name の SSOT）と `lane_registry` を project ごとに join し、
 /// `world_cap` の project_order で安定ソートした projects 配列（`Vec<serde_json::Value>`）を返す。
-/// "world-process" channel の `list_all_lanes` handler と、Bastet 常駐 ROTO loop の
+/// "world-process" channel の `list_all_lanes` handler と、DeviceRegistry 常駐 ROTO loop の
 /// `InProcessLaneSource`（in-process 直読み）が **同一ロジックを共有**することで、
 /// CLI（QUIC 経由）と daemon（直読み）で lane 並びが完全一致する（doc 23 の重複回避）。
 ///
@@ -1489,7 +1489,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     // cross-project lane view: running_processes (port/name の SSOT)
                                     // と lane_registry を join し、project ごとに lanes を束ねて返す。
                                     // ROTO の cross-project 8-slot LCD が consumer。join 本体は
-                                    // build_world_lanes に抽出し、Bastet 常駐 ROTO loop の
+                                    // build_world_lanes に抽出し、DeviceRegistry 常駐 ROTO loop の
                                     // InProcessLaneSource と共有する (lane 並び一致)。
                                     let projects =
                                         build_world_lanes(&running_processes, &lane_registry, &world_cap)
@@ -1881,33 +1881,33 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // World-Device Channel（Bastet 🧲 device event → vp-app への bridge）
+    // World-Device Channel（DeviceRegistry 🧲 device event → vp-app への bridge）
     // =========================================================================
-    // EventBus の `bastet.*` event (device 接続/切断/操作入力) を Unison wire の `DeviceEvent` に
+    // EventBus の `devices.*` event (device 接続/切断/操作入力) を Unison wire の `DeviceEvent` に
     // 変換して push する単機能 channel。 world-process と違い method 分岐は無く、 接続 = 購読
-    // (canvas channel 方式)。 `bastet_event_bus` が Some (= feature midi + Bastet 稼働) のときのみ登録。
-    if let Some(ref bastet_event_bus) = state.bastet_event_bus {
-        let bastet_event_bus = bastet_event_bus.clone();
+    // (canvas channel 方式)。 `devices_event_bus` が Some (= feature midi + DeviceRegistry 稼働) のときのみ登録。
+    if let Some(ref devices_event_bus) = state.devices_event_bus {
+        let devices_event_bus = devices_event_bus.clone();
         // M2 follow-up: subscribe 時の registry snapshot 送信用に registry 本体も capture (midi のみ)。
         #[cfg(feature = "midi")]
-        let bastet = state.bastet.clone();
+        let devices = state.devices.clone();
         server
             .register_channel("world-device", {
                 move |_ctx, stream| {
-                    let event_bus = bastet_event_bus.clone();
+                    let event_bus = devices_event_bus.clone();
                     #[cfg(feature = "midi")]
-                    let bastet = bastet.clone();
+                    let devices = devices.clone();
                     async move {
                         // フィードバック方向（LE-19）で full-duplex 化: 下り（DeviceEvent push）を
                         // 別 task に分け、main task は上り（webview → 機材の feedback event）専従。
                         // canvas channel の並行 send/recv と同じ実証済みパターン。
                         let channel = std::sync::Arc::new(UnisonChannel::new(stream));
-                        // 接続即購読: bastet.* を FilteredSubscription で受け、 DeviceEvent に変換して push。
+                        // 接続即購読: devices.* を FilteredSubscription で受け、 DeviceEvent に変換して push。
                         // subscriber id は接続ごとにユニーク化する (= 複数 vp-app instance が同時購読
                         // しても EventBus の subscriptions メタデータが last-write-wins で衝突しない。
                         // broadcast 配信自体は receiver 独立で元々壊れないが、 subscriber_count を正確に保つ)。
                         let sub_id = format!("world-device-bridge-{}", uuid::Uuid::new_v4());
-                        let sub = event_bus.subscribe(&sub_id, "bastet.*").await;
+                        let sub = event_bus.subscribe(&sub_id, "devices.*").await;
                         let mut filtered =
                             crate::capability::eventbus::FilteredSubscription::new(sub);
 
@@ -1918,9 +1918,9 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         // = 冪等なので吸収される。 registry lock は collect で解放してから送る (send を跨いで
                         // 保持しない)。
                         #[cfg(feature = "midi")]
-                        if let Some(bastet) = bastet.as_ref() {
+                        if let Some(devices) = devices.as_ref() {
                             let devices_arc = {
-                                let b = bastet.read().await;
+                                let b = devices.read().await;
                                 std::sync::Arc::clone(b.devices())
                             };
                             let snapshot: Vec<crate::daemon::protocol::DeviceEvent> = {
@@ -1983,7 +1983,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 continue;
                             }
                             #[cfg(feature = "midi")]
-                            if let Some(bastet) = bastet.as_ref() {
+                            if let Some(devices) = devices.as_ref() {
                                 let Ok(value) = msg.payload_as_value() else {
                                     continue;
                                 };
@@ -1991,7 +1991,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     crate::daemon::protocol::FleetFeedback,
                                 >(value)
                                 {
-                                    Ok(fb) => bastet.read().await.apply_feedback(&fb).await,
+                                    Ok(fb) => devices.read().await.apply_feedback(&fb).await,
                                     Err(e) => {
                                         tracing::warn!("fleet feedback decode 失敗: {}", e);
                                     }
@@ -2010,15 +2010,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // Device Channel（agent → daemon: CoreMIDI hot-plug 報告、doc 26 §2 channel_id=2）
     // =========================================================================
     // request-dispatch 型 channel。macOS menu bar agent (Swift
-    // `CoreMIDIWatcher`) が `ReportDevice` を送り、Bastet registry を更新する。
+    // `CoreMIDIWatcher`) が `ReportDevice` を送り、DeviceRegistry registry を更新する。
     // Model D (doc 25): hot-plug authority = agent。daemon は polling を回さない。
     #[cfg(feature = "midi")]
-    if let Some(ref bastet) = state.bastet {
-        let bastet = bastet.clone();
+    if let Some(ref devices) = state.devices {
+        let devices = devices.clone();
         server
             .register_channel("device", {
                 move |_ctx, stream| {
-                    let bastet = bastet.clone();
+                    let devices = devices.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         loop {
@@ -2037,7 +2037,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
 
                             let response = match method.as_str() {
                                 "report_device" => {
-                                    handle_device_report(&bastet, request_id, payload).await
+                                    handle_device_report(&devices, request_id, payload).await
                                 }
                                 _ => ChannelMessage::err(
                                     request_id,

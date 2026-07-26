@@ -5,8 +5,6 @@
 
 pub mod agent;
 pub mod agui;
-#[cfg(feature = "midi")]
-pub mod bastet;
 pub mod capability;
 pub mod cli;
 pub mod commands;
@@ -14,20 +12,22 @@ pub mod config;
 pub mod creo;
 pub mod daemon;
 pub mod db;
+#[cfg(feature = "midi")]
+pub mod devices;
 // device_input / device_profile / roto_palette は midistage-profiles に切り出し済み。
 // 既存の crate::device_input::* 等の参照パスを保つため再エクスポートする。
 #[cfg(feature = "midi")]
 pub use midistage_profiles::device_input;
 #[cfg(feature = "midi")]
 pub use midistage_profiles::device_profile;
+#[cfg(feature = "midi")]
+pub mod device_io;
 pub mod discovery;
 pub mod echoes;
 pub mod file_watcher;
 pub mod flow;
 /// Project Host — project の面倒を見る決定的サービス（doc 44 D3 / §7）
 pub mod host;
-#[cfg(feature = "midi")]
-pub mod justice;
 // lane lib 本体 (vp-cli の bin `vp lane` も `vantage_point::lane` を経由する)
 pub mod lane;
 pub mod mcp;

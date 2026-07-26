@@ -45,7 +45,7 @@ pub(crate) struct AppState {
     /// VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。
     ///
     /// SP mode で notify / lane-spawn を `spawn_service` 経由で起動・register、 JoinHandle を保持。
-    /// World mode では空で構築 (= World scope actor の register は後続 PR、 MidiCapability の
+    /// World mode では空で構築 (= World scope actor の register は後続 PR、 device registry の
     /// metadata register は dynamic routing vision 確定後、 cf. design-spark `mem_1CavFi5D1aMSpEkas89SvQ`)。
     /// PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
     pub actor_registry: Arc<RwLock<ActorRegistry>>,

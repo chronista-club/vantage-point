@@ -7,9 +7,9 @@
 //!
 //! - **Project 階層 Stand**: 本 module の `ProcessCapabilities` が host (Protocol / Agent / 等)
 //! - **World 階層 Stand**: `crate::daemon::world_capabilities::WorldCapabilities` が host
-//!   - device 集約（Bastet 🧲）は **PR-α-2 で本 module から World に移管完了**
+//!   - device 集約（DeviceRegistry 🧲）は **PR-α-2 で本 module から World に移管完了**
 //!   - 旧 `ProcessCapabilities.midi` field / `CapabilityConfig.midi_config` field は削除済
-//!   - mailbox address `midi@{project}` (旧) → `bastet@world` (新)
+//!   - mailbox address `midi@{project}` (旧) → `devices@world` (新)
 
 use crate::capability::core::Capability;
 use crate::capability::{AgentCapability, CapabilityContext, EventBus, ProtocolCapability};
@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 /// Process Capability Manager
 ///
 /// Process (= LSCM Project Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
-/// Project 階層 Stand のみ host。 World 階層 Stand (Bastet / Update / TheWorld) は
+/// Project 階層 Stand のみ host。 World 階層 Stand (DeviceRegistry / Update / TheWorld) は
 /// `crate::daemon::world_capabilities::WorldCapabilities` 側に移管 (PR-α-2 完了)。
 ///
 /// VP-179 (Phase 5): `msgbox_router` field 撤去。 wiremsg R5-3 で旧 msgbox store も

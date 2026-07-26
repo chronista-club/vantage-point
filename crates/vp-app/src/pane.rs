@@ -175,7 +175,7 @@ pub struct SidebarState {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub origin_by_project: std::collections::HashMap<String, String>,
     /// Phase 5-A: 現在 active な Project-scope Stand kind
-    /// (`"paisley_park"` / `"gold_experience"` / `"bastet"`)。
+    /// (`"paisley_park"` / `"gold_experience"` / `"devices"`)。
     /// `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
     /// `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
     /// `stand:select` IPC で更新される。
@@ -226,10 +226,10 @@ pub struct SidebarState {
     /// icon visibility のみ用途。 actual peek 値は後続 PR で backend API 経由で populate。
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub lane_inboxes: std::collections::HashMap<String, MessageState>,
-    /// Bastet 🧲 接続中 device 一覧 (`bastet.device_connected` / `disconnected` で更新)。
-    /// JS 側は Bastet pane に device list を render する。 disk persist 不要 (起動時 0)。
+    /// DeviceRegistry 🧲 接続中 device 一覧 (`devices.device_connected` / `disconnected` で更新)。
+    /// JS 側は DeviceRegistry pane に device list を render する。 disk persist 不要 (起動時 0)。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bastet_devices: Vec<DeviceSnapshot>,
+    pub devices: Vec<DeviceSnapshot>,
     /// doc 30 §5-3 / lanes 購読 self-heal: per-project の World "lanes" channel 購読フェーズ。
     /// Key: project_path。 Value は 3 値モデル (entry 有無 + 2 文字列):
     ///
@@ -270,12 +270,12 @@ pub struct MessageState {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct ActiveStand {
     pub project_path: String,
-    /// `"paisley_park"` | `"gold_experience"` | `"bastet"`
+    /// `"paisley_park"` | `"gold_experience"` | `"devices"`
     pub kind: String,
 }
 
-/// Bastet 🧲 接続中 device の snapshot (sidebar webview に渡す)。
-/// `bastet.device_connected` / `disconnected` event で `apply_device_event` が更新する。
+/// DeviceRegistry 🧲 接続中 device の snapshot (sidebar webview に渡す)。
+/// `devices.device_connected` / `disconnected` event で `apply_device_event` が更新する。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct DeviceSnapshot {

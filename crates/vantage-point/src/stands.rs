@@ -103,29 +103,29 @@ pub const GOLD_EXPERIENCE: StandAlias = StandAlias {
     emoji: "🌿",
 };
 
-/// デバイス集約能力 — World scope の物理 device registry / hot-plug / routing（Bastet 🧲）
+/// デバイス集約能力 — World scope の物理 device registry / hot-plug / routing（DeviceRegistry 🧲）
 ///
 /// epic v3.1 (E2) で旧 External Control stand の World 座を継承し、device 集約 registry に
-/// 発展。per-lane の双方向 I/O は [`JUSTICE`] が担う。
+/// 発展。per-lane の双方向 I/O は [`DEVICE_IO`] が担う。
 /// 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`。
-pub const BASTET: StandAlias = StandAlias {
-    id: "bastet",
+pub const DEVICES: StandAlias = StandAlias {
+    id: "devices",
     functional_name: "Device Registry",
-    stand_name: "Bastet",
-    short: "BS",
+    stand_name: "Devices",
+    short: "DV",
     emoji: "🧲",
 };
 
-/// デバイス I/O 能力 — Lane scope の双方向 device endpoint（Justice 🌫️）
+/// デバイス I/O 能力 — Lane scope の双方向 device endpoint（Device I/O 🌫️）
 ///
-/// epic v3.1 (E3) 新設。「霧で機器に侵入する」per-lane の双方向 I/O endpoint。
+/// epic v3.1 (E3) 新設。per-lane の双方向 I/O endpoint。
 /// lane state → 機材 LED/LCD projection（output）と 機材 → active Lane command（input）を担う。
-/// `LaneStandHost`（`stand_kind="justice"`）として Lane に host される。
-pub const JUSTICE: StandAlias = StandAlias {
-    id: "justice",
+/// `LaneStandHost`（`stand_kind="device_io"`）として Lane に host される。
+pub const DEVICE_IO: StandAlias = StandAlias {
+    id: "device_io",
     functional_name: "Device I/O",
-    stand_name: "Justice",
-    short: "JS",
+    stand_name: "Device I/O",
+    short: "IO",
     emoji: "🌫️",
 };
 
@@ -139,6 +139,6 @@ pub const ALL: &[&StandAlias] = &[
     &GOLD_EXPERIENCE,
     &PAISLEY_PARK,
     &ECHOES,
-    &BASTET,
-    &JUSTICE,
+    &DEVICES,
+    &DEVICE_IO,
 ];

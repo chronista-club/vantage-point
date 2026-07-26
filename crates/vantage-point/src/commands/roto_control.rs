@@ -1,7 +1,7 @@
 //! roto_control — ROTO-CONTROL の双方向 control loop（CLI / daemon 共有）
 //!
-//! `vp midi roto control`（前景・secs 制限）と Bastet 常駐（持続・自動再接続）が
-//! **同一の control loop body を共有**するための module。doc 23 の Bastet（device 接続所有 @ World）
+//! `vp midi roto control`（前景・secs 制限）と DeviceRegistry 常駐（持続・自動再接続）が
+//! **同一の control loop body を共有**するための module。doc 23 の DeviceRegistry（device 接続所有 @ World）
 //! に control loop を載せる際、loop を二重実装しないための注入境界を定義する。
 //!
 //! ## 構造
@@ -128,9 +128,9 @@ async fn send_paced(conn_out: &mut midir::MidiOutputConnection, msgs: &[Vec<u8>]
 /// `shutdown` 発火で graceful 停止（Shutdown）。
 /// loop が消費しない入力（Knob / KnobTouch）を EventBus に流す口（doc 49 LE-19 fleet 配線）。
 ///
-/// ROTO は Bastet の汎用 input listener（`spawn_input_listener`）から除外され本 loop が
-/// input を独占所有するため、`bastet.control_event` への合流はここから行う。
-/// Button は lane-nav（Justice 経路）の意味を既に持つため流さない（二重配送の回避）。
+/// ROTO は DeviceRegistry の汎用 input listener（`spawn_input_listener`）から除外され本 loop が
+/// input を独占所有するため、`devices.control_event` への合流はここから行う。
+/// Button は lane-nav（Device I/O 経路）の意味を既に持つため流さない（二重配送の回避）。
 /// None = CLI 前景デバッグ（EventBus 不在）。
 pub(crate) struct ControlTap {
     pub event_bus: Arc<EventBus>,
@@ -148,7 +148,7 @@ pub(crate) async fn roto_control_loop(
     deadline: Option<Instant>,
     shutdown: CancellationToken,
     control_tap: Option<&ControlTap>,
-    // フィードバック方向（LE-19）: Bastet `apply_feedback` からの motor byte 列注入。
+    // フィードバック方向（LE-19）: DeviceRegistry `apply_feedback` からの motor byte 列注入。
     // conn_out を loop が独占所有するため、外からの書き込みはこの watch を通る
     // （latest-wins — 未消費の古い frame は新しい値で置き換わる）。
     // sender が閉じたら arm を止める（CLI 前景 = dummy channel で即閉）
@@ -212,7 +212,7 @@ pub(crate) async fn roto_control_loop(
                 if let Some(tap) = control_tap
                     && matches!(event, ControlEvent::Knob { .. } | ControlEvent::KnobTouch { .. })
                 {
-                    let cap_event = CapabilityEvent::new("bastet.control_event", "bastet")
+                    let cap_event = CapabilityEvent::new("devices.control_event", "devices")
                         .with_payload(&serde_json::json!({
                             "port_name": tap.port_name,
                             "event": event,
@@ -265,7 +265,7 @@ pub(crate) async fn roto_control_loop(
                     }
                 }
             }
-            // フィードバック方向（LE-19）: Bastet からの motor byte 列を conn_out に流す。
+            // フィードバック方向（LE-19）: DeviceRegistry からの motor byte 列を conn_out に流す。
             // 送信失敗 = ROTO 切断（他の out 送信と同じ扱い）
             changed = feedback_rx.changed(), if feedback_alive => {
                 match changed {
@@ -426,7 +426,7 @@ pub(crate) struct RotoSessionBracket<L: LaneSource, S: SwitchSink> {
     lane_source: Mutex<L>,
     switch_sink: Mutex<S>,
     shutdown: CancellationToken,
-    /// Some = daemon（Bastet）: knob 系入力を `bastet.control_event` に流す（fleet 配線）
+    /// Some = daemon（DeviceRegistry）: knob 系入力を `devices.control_event` に流す（fleet 配線）
     event_bus: Option<Arc<EventBus>>,
     /// フィードバック方向（LE-19）: motor byte 列の注入路。reconnect を跨いで再利用する
     feedback_rx: Mutex<tokio::sync::watch::Receiver<Option<Vec<Vec<u8>>>>>,

@@ -1,20 +1,20 @@
-//! Justice 🌫️ — Lane scope の双方向 device I/O endpoint (doc 23 §6)
+//! Device I/O 🌫️ — Lane scope の双方向 device I/O endpoint (doc 23 §6)
 //!
-//! Bastet 🧲 (World scope の device registry) が集約した物理 device に対し、
+//! DeviceRegistry 🧲 (World scope の device registry) が集約した物理 device に対し、
 //! Lane 単位の双方向 I/O を担う。
 //!
 //! 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`
 //!
 //! 2 片方向 flow (doc 23 §6.2):
-//! - **input**: Bastet が parse した ControlEvent を「active Lane = 自分」のときだけ受け取り、
+//! - **input**: DeviceRegistry が parse した ControlEvent を「active Lane = 自分」のときだけ受け取り、
 //!   Lane command context に着地させる
-//! - **output**: Lane state 変化を subscribe → DeviceProfile で byte 化 → Bastet の out port 経由送出
+//! - **output**: Lane state 変化を subscribe → DeviceProfile で byte 化 → DeviceRegistry の out port 経由送出
 //!
 //! ## 実装状態 (sub-PR 追跡)
 //!
 //! | sub-PR | scope | status |
 //! |--------|-------|--------|
-//! | E3-1 | JusticeStand (LaneStandHost impl) 型 + LaneStandRegistry insert | ✅ Done (#556) |
+//! | E3-1 | DeviceIoStand (LaneStandHost impl) 型 + LaneStandRegistry insert | ✅ Done (#556) |
 //! | E3-2 | output projection: DeviceProfile hold + projection batch 生成 | ← 本 PR |
 
 use std::any::Any;
@@ -33,37 +33,37 @@ pub struct ProjectionBatch {
     pub messages: Vec<Vec<u8>>,
 }
 
-/// Justice 🌫️ の Lane-local state。
+/// Device I/O 🌫️ の Lane-local state。
 ///
 /// bound された DeviceProfile 群を保持し、projection 要求時に byte batch を生成する。
 #[derive(Default)]
-pub struct JusticeState {
+pub struct DeviceIoState {
     /// この Lane に bind された device profile 群（projection 対象）
     profiles: Vec<Box<dyn DeviceProfile + Send + Sync>>,
 }
 
-// ─── JusticeStand ──────────────────────────────────────────
+// ─── DeviceIoStand ──────────────────────────────────────────
 
-/// Lane に host される device I/O endpoint（Justice 🌫️）。
+/// Lane に host される device I/O endpoint（Device I/O 🌫️）。
 ///
 /// `PaisleyParkStand` と同型の **passive marker**（`LaneStandHost` impl）。
 /// `LaneCapabilities::new()` で各 Lane に自動登録される（midi feature 有効時）。
 ///
 /// E3-2 で DeviceProfile の hold + projection batch 生成を追加。
-/// Justice は **計算に徹し**、I/O（`send_batch`）は caller/Bastet に委譲する。
-pub struct JusticeStand {
-    state: RwLock<JusticeState>,
+/// Device I/O は **計算に徹し**、I/O（`send_batch`）は caller/DeviceRegistry に委譲する。
+pub struct DeviceIoStand {
+    state: RwLock<DeviceIoState>,
 }
 
-impl JusticeStand {
+impl DeviceIoStand {
     pub fn new() -> Self {
         Self {
-            state: RwLock::new(JusticeState::default()),
+            state: RwLock::new(DeviceIoState::default()),
         }
     }
 
-    /// internal `RwLock<JusticeState>` への参照。
-    pub fn state(&self) -> &RwLock<JusticeState> {
+    /// internal `RwLock<DeviceIoState>` への参照。
+    pub fn state(&self) -> &RwLock<DeviceIoState> {
         &self.state
     }
 
@@ -147,15 +147,15 @@ impl JusticeStand {
     }
 }
 
-impl Default for JusticeStand {
+impl Default for DeviceIoStand {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LaneStandHost for JusticeStand {
+impl LaneStandHost for DeviceIoStand {
     fn stand_kind(&self) -> &'static str {
-        "justice"
+        "device_io"
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -230,16 +230,16 @@ mod tests {
     // ─── LaneStandHost ─────────────────────────────────
 
     #[test]
-    fn stand_kind_is_justice() {
-        let stand = JusticeStand::new();
-        assert_eq!(stand.stand_kind(), "justice");
+    fn stand_kind_is_device_io() {
+        let stand = DeviceIoStand::new();
+        assert_eq!(stand.stand_kind(), "device_io");
     }
 
     #[test]
     fn supports_downcast() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         let host: &dyn LaneStandHost = &stand;
-        let downcast = host.as_any().downcast_ref::<JusticeStand>();
+        let downcast = host.as_any().downcast_ref::<DeviceIoStand>();
         assert!(downcast.is_some());
     }
 
@@ -247,7 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_profile_increments_count() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         assert_eq!(stand.profile_count().await, 0);
 
         stand
@@ -261,7 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn unbind_all_clears_profiles() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -276,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_all_returns_batches_per_profile() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -290,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_filters_empty() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::without_handshake("silent")))
             .await;
@@ -301,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_track_generates_batches() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -317,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_track_multi_profile() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -333,7 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_parameter_generates_batches() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
         let spec = ParamSpec::continuous("volume", 0.5);
@@ -346,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_on_empty_returns_nothing() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         let batches = stand
             .project_track(0, "test", Rgb::new(0, 0, 0), false)
             .await;
@@ -355,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn projection_updates_shadow_state() {
-        let stand = JusticeStand::new();
+        let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;

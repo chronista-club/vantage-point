@@ -1,5 +1,5 @@
 /**
- * app pane（Echoes / Preview / GE / Bastet / empty）の **DOM 切替**と slot rect の push。
+ * app pane（Echoes / Preview / GE / Devices / empty）の **DOM 切替**と slot rect の push。
  *
  * doc 53 §6.5 の World A 畳み込みで `main_area.rs` の inline `<script>` から移設した。
  *
@@ -62,7 +62,7 @@ const KIND_TO_PANE: Record<string, string> = {
 	terminal: "pane-terminal",
 	preview: "pane-preview",
 	gold_experience: "pane-gold-experience",
-	bastet: "pane-bastet",
+	devices: "pane-devices",
 	empty: "pane-empty",
 };
 

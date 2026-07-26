@@ -1752,7 +1752,7 @@ async fn world_process_request(
     Ok(resp)
 }
 
-/// Bastet 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
+/// DeviceRegistry 🧲 device event 購読: daemon (32000) の "world-device" channel を購読して
 /// `AppEvent::DeviceEvent` を emit する。 daemon に 1 本のみ (canvas/lanes は per-SP だが
 /// device は World scope = singleton)。 F1b で共有 connection 上の stream に集約。
 fn spawn_device_subscription(
@@ -1766,7 +1766,7 @@ fn spawn_device_subscription(
 
 /// "world-device" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
 ///
-/// device channel は **optional** (daemon が feature midi 無効 / Bastet 不在なら未登録)。 connection
+/// device channel は **optional** (daemon が feature midi 無効 / DeviceRegistry 不在なら未登録)。 connection
 /// 自体は共有 manager が維持するので、 「接続済なのに open_channel が連続失敗」= channel 未提供と
 /// 判断して graceful give-up する (= device 機能なしで app は動く)。 connection-down (Disconnected)
 /// は失敗カウントに含めない (channel は在った)。
@@ -1793,9 +1793,9 @@ async fn device_subscription_loop(
                 failures += 1;
                 if failures >= MAX_FAILURES {
                     // 接続済なのに open_channel が連続失敗 = daemon が world-device を出さない
-                    // (feature midi 無効 / Bastet 不在) → graceful degrade。
+                    // (feature midi 無効 / DeviceRegistry 不在) → graceful degrade。
                     tracing::warn!(
-                        "world-device subscription giving up (no midi / Bastet absent): {}",
+                        "world-device subscription giving up (no midi / device registry absent): {}",
                         e
                     );
                     return;
@@ -2402,7 +2402,7 @@ async fn collect_activity(
 ///
 /// Phase 5-A 拡張: Lane と Stand が **mutually exclusive** な active 軸として扱われる。
 /// 優先順位:
-///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "bastet"
+///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "devices"
 ///   2. `active_lane_address` Some → kind = "terminal"、 pane_id = Lane address
 ///   3. 両方 None → kind=None で empty placeholder
 ///
@@ -3343,9 +3343,9 @@ fn handle_sidebar_ipc(
         IpcEnvelope::StandSelect(m) => {
             // Phase 5-A: Project-scope Stand row click → main area に対応 pane を表示
             // (Lane と mutually exclusive、 active_lane_address は preemptively clear)
-            // Bastet 🧲 は World-scope Stand (device = daemon 共通) なので path="" で来る。
+            // DeviceRegistry 🧲 は World-scope Stand (device = daemon 共通) なので path="" で来る。
             // World-scope stand は path 空を許可、 それ以外 (Project-scope) は path 必須。
-            if m.kind.is_empty() || (m.path.is_empty() && m.kind != "bastet") {
+            if m.kind.is_empty() || (m.path.is_empty() && m.kind != "devices") {
                 tracing::warn!("stand:select with empty path/kind: {}", msg);
                 return out;
             }
@@ -3668,7 +3668,7 @@ pub fn run() -> anyhow::Result<()> {
     let (fleet_feedback_tx, fleet_feedback_rx) =
         tokio::sync::watch::channel(serde_json::Value::Null);
 
-    // Bastet 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
+    // DeviceRegistry 🧲 device event を daemon (world-device channel) から購読する (daemon に 1 本)。
     // canvas/lanes は per-SP だが device は World scope (= daemon singleton) なので起動時 1 回。
     spawn_device_subscription(
         &rt_handle,
@@ -4636,7 +4636,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 計器盤: world-device の接続時 snapshot は bundle ロード前に届いて落ちている
                 // （sidebar の Devices badge は state 再 push で生きるが pane だけ空、2026-07-23
                 // 実機で確認）。保持済み state から全量で撃ち直す。
-                lane_js::render_devices(&webview, &sidebar_state.bastet_devices);
+                lane_js::render_devices(&webview, &sidebar_state.devices);
                 // 掲示板: retained BoardUpdated も同じ窓で落ちる（doc 52 §10 wave 0）。
                 // active project の保持分を全 lane 撃ち直す（落ちたままだと reopen で board pane
                 // が出ず、次の live show まで空のまま）。
@@ -4721,10 +4721,10 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 tracing::debug!("🧲 device event: {}", payload);
                 // Phase 2: device 一覧を registry 更新 → sidebar (Devices badge) + main area
-                // (Bastet pane の device list) の両方に push。
-                if crate::pane::apply_device_event(&mut sidebar_state.bastet_devices, &payload) {
+                // (DeviceRegistry pane の device list) の両方に push。
+                if crate::pane::apply_device_event(&mut sidebar_state.devices, &payload) {
                     push_sidebar_state(&webview, &sidebar_state);
-                    lane_js::render_devices(&webview, &sidebar_state.bastet_devices);
+                    lane_js::render_devices(&webview, &sidebar_state.devices);
                 }
                 // fleet 配線 (doc 49 LE-19): 操作入力 (control_event) は webview の mapping
                 // registry へ fire-and-forget 転送。受け手 (window.vpFleet) は gallery-panes.tsx。
