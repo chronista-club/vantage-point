@@ -1,5 +1,5 @@
 /**
- * app pane（Echoes / Preview / GE / Devices / empty）の **DOM 切替**と slot rect の push。
+ * app pane（Echoes / Preview / runner / Devices / empty）の **DOM 切替**と slot rect の push。
  *
  * doc 53 §6.5 の World A 畳み込みで `main_area.rs` の inline `<script>` から移設した。
  *
@@ -51,9 +51,9 @@ function post(payload: unknown): void {
 
 // ========= Architecture v4: Lane / Stand 切替 API =========
 // Rust → JS で active Lane / Stand を切替。kind が null の場合は empty 状態を表示。
-// Phase 5-A: Project-scope Stand (PP/GE/HP) を click 可能 pane として追加。
+// Phase 5-A: Project-scope Stand (board/runner ほか) を click 可能 pane として追加。
 // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
-// doc 52 §10 wave 0: paisley_park は app pane を退役（board pane = lane tiling へ）。
+// doc 52 §10 wave 0: board は app pane を退役（board pane = lane tiling へ）。
 //
 // ⚠️ entry.tsx にも同じ kind を引く表があるが**別の写像**で、統合してはいけない —
 // あちらは Frame Engine の `data-frame-id`（"echoes" 等 = 配置の座標系）、こちらは DOM
@@ -61,7 +61,7 @@ function post(payload: unknown): void {
 const KIND_TO_PANE: Record<string, string> = {
 	terminal: "pane-terminal",
 	preview: "pane-preview",
-	gold_experience: "pane-gold-experience",
+	runner: "pane-runner",
 	devices: "pane-devices",
 	empty: "pane-empty",
 };
@@ -96,7 +96,7 @@ export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 		const isActive = el.id === targetId;
 		el.classList.toggle("active", isActive);
 		// 動的に data-pane-id を設定 (γ-light: native overlay が pane_id で照合する想定)。
-		// 注: Frame Engine の static `data-frame-id` (= "echoes" / "pp" 等の Scene lookup key) とは
+		// 注: Frame Engine の static `data-frame-id` (= "echoes" / "runner" 等の Scene lookup key) とは
 		// 別 attribute。 同名にすると Lane click でこの動的書き換えが Frame Engine の attribute を
 		// hijack して Scene lookup undefined → HIDDEN_TRANSFORM で pane が見えなくなる (VP-141 fix)。
 		if (isActive && info?.pane_id) {

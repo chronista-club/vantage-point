@@ -6,9 +6,9 @@
  * file 内は `_resetForTest` + applyScene の上書きで状態を作り直す。
  * DOM 反映（installAppPanes / renderAppPanes）は node 環境のため対象外（薄い action 層）。
  *
- * doc 52 §10 wave 0: pp（Paisley Park）は app pane を退役（board = lane tiling へ）。旧テストの
+ * doc 52 §10 wave 0: pp（Board）は app pane を退役（board = lane tiling へ）。旧テストの
  * pp scene（side-review / pp-overlay / pp-focus）依存は撤去し、2 pane 形が要る箇所は AI layout
- * （echoes + ge の 50/50）で組む。float は app scene が使わなくなったのでテスト対象外。
+ * （echoes + runner の 50/50）で組む。float は app scene が使わなくなったのでテスト対象外。
  */
 
 import { type Layout, resolve } from "@chronista-club/creo-ui-layout";
@@ -38,10 +38,10 @@ const sceneById = (id: string) => {
 	return s;
 };
 
-/** echoes / ge の 50/50 2 pane（旧 side-review の代役 — pp 退役後に 2 pane 形を作る手段）。 */
+/** echoes / runner の 50/50 2 pane（旧 side-review の代役 — board scene 退役後に 2 pane 形を作る手段）。 */
 const twoPaneLayout = (): Layout => ({
-	structure: { columns: [{ panes: ["echoes"] }, { panes: ["ge"] }] },
-	attention: { echoes: 1, ge: 1 },
+	structure: { columns: [{ panes: ["echoes"] }, { panes: ["runner"] }] },
+	attention: { echoes: 1, runner: 1 },
 });
 
 // ============================================================================
@@ -64,7 +64,7 @@ describe("preset Scene 群", () => {
 	it("lead-focus: echoes（lane workbench）独占、他は面積 0", () => {
 		const r = resolve(sceneById("lead-focus").layout);
 		expect(r.echoes?.rect).toEqual({ x: 0, y: 0, w: 1, h: 1 });
-		expect((r.ge?.rect.w ?? 0) * (r.ge?.rect.h ?? 0)).toBe(0);
+		expect((r.runner?.rect.w ?? 0) * (r.runner?.rect.h ?? 0)).toBe(0);
 	});
 
 	it("devices-focus が存在する（旧体系の欠落補充 — devices click が empty に落ちていた回帰 guard）", () => {
@@ -74,7 +74,7 @@ describe("preset Scene 群", () => {
 
 	it("kind bridge が使う focus 群 + empty が揃っている（pp-focus は退役）", () => {
 		const ids = APP_SCENES.map((s) => s.id);
-		for (const id of ["ge-focus", "devices-focus", "preview-focus", "empty"]) {
+		for (const id of ["runner-focus", "devices-focus", "preview-focus", "empty"]) {
 			expect(ids).toContain(id);
 		}
 		expect(ids).not.toContain("pp-focus");
@@ -93,8 +93,8 @@ describe("preset Scene 群", () => {
 
 describe("primaryAppPane", () => {
 	it("同格の tiled は後勝ち（旧 renderer の DOM 後勝ちと同じ結果）", () => {
-		// echoes → ge の順で並ぶ 2 pane では、後の ge が主役
-		expect(primaryAppPane(resolve(twoPaneLayout()))).toBe("ge");
+		// echoes → runner の順で並ぶ 2 pane では、後の runner が主役
+		expect(primaryAppPane(resolve(twoPaneLayout()))).toBe("runner");
 	});
 
 	it("empty scene では empty が主役", () => {
@@ -163,7 +163,7 @@ describe("lane 別の配置記憶", () => {
 
 		restoreAppStateFor("proj/root");
 		expect(layoutEngine.resolved(APP_SCOPE).echoes?.rect.w).toBeCloseTo(0.5);
-		expect(layoutEngine.resolved(APP_SCOPE).ge?.rect.w).toBeCloseTo(0.5);
+		expect(layoutEngine.resolved(APP_SCOPE).runner?.rect.w).toBeCloseTo(0.5);
 	});
 
 	it("初訪問 lane は lead-focus", () => {
@@ -182,7 +182,7 @@ describe("lane 別の配置記憶", () => {
 	});
 
 	it("restore は settle log に刻まれる（author = scene の監査）", () => {
-		applyAppScene("ge-focus");
+		applyAppScene("runner-focus");
 		saveAppStateFor("proj/root");
 		restoreAppStateFor("proj/root");
 		const log = layoutEngine.history(APP_SCOPE);
@@ -202,28 +202,28 @@ describe("stand pane の訪問（sidebar click の一時 view — 2026-07-23 dog
 		expect(isAppPaneVisible("devices")).toBe(true);
 		closeAppPaneVisit();
 		expect(layoutEngine.resolved(APP_SCOPE).echoes?.rect.w).toBeCloseTo(0.5);
-		expect(layoutEngine.resolved(APP_SCOPE).ge?.rect.w).toBeCloseTo(0.5);
+		expect(layoutEngine.resolved(APP_SCOPE).runner?.rect.w).toBeCloseTo(0.5);
 	});
 
 	it("訪問中の lane save は出発点を覚える（stand 画面を記憶に焼き込まない）", () => {
 		visitAppPane("devices");
 		saveAppStateFor("proj/root");
-		applyAppScene("ge-focus");
+		applyAppScene("runner-focus");
 		restoreAppStateFor("proj/root");
 		expect(layoutEngine.resolved(APP_SCOPE).echoes?.rect.w).toBeCloseTo(0.5);
 	});
 
-	it("訪問の入れ子（Devices → GE）は最初の出発点を保つ", () => {
+	it("訪問の入れ子（Devices → runner）は最初の出発点を保つ", () => {
 		visitAppPane("devices");
-		visitAppPane("ge");
-		expect(isAppPaneVisible("ge")).toBe(true);
+		visitAppPane("runner");
+		expect(isAppPaneVisible("runner")).toBe(true);
 		closeAppPaneVisit();
 		expect(layoutEngine.resolved(APP_SCOPE).echoes?.rect.w).toBeCloseTo(0.5);
 	});
 
 	it("明示の scene 選択（hotkey）は訪問を終える — 以後の ✕ は lead-focus に倒れる", () => {
 		visitAppPane("devices");
-		applyAppScene("ge-focus");
+		applyAppScene("runner-focus");
 		closeAppPaneVisit();
 		expect(currentAppSceneId()).toBe("lead-focus");
 	});
@@ -235,7 +235,7 @@ describe("stand pane の訪問（sidebar click の一時 view — 2026-07-23 dog
 
 	it("AI の layout_set（applyAppLayoutFromAi）は訪問を終える — 古い出発点で AI 配置を握り潰さない", () => {
 		visitAppPane("devices");
-		applyAppLayoutFromAi(sceneById("ge-focus").layout);
+		applyAppLayoutFromAi(sceneById("runner-focus").layout);
 		// 訪問はもう終わっているので、✕ は stale な beforeVisit へ戻さず lead-focus に倒れる
 		closeAppPaneVisit();
 		expect(currentAppSceneId()).toBe("lead-focus");
@@ -243,10 +243,10 @@ describe("stand pane の訪問（sidebar click の一時 view — 2026-07-23 dog
 
 	it("訪問中の AI layout_set 後の lane save は AI の配置を覚える（古い出発点を焼き込まない）", () => {
 		visitAppPane("devices");
-		applyAppLayoutFromAi(sceneById("ge-focus").layout);
+		applyAppLayoutFromAi(sceneById("runner-focus").layout);
 		saveAppStateFor("proj/root");
 		applyAppScene("devices-focus");
 		restoreAppStateFor("proj/root");
-		expect(isAppPaneVisible("ge")).toBe(true);
+		expect(isAppPaneVisible("runner")).toBe(true);
 	});
 });

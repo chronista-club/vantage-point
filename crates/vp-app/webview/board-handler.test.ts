@@ -3,15 +3,15 @@
  *
  * board = SP truth のミラー view。 SP からの BoardUpdated 受信で board を置換し、
  * scope 切替 / lane 別保持 / cursor(local) / delete・clear(IPC 依頼) を検証する。
- * DOM 依存 (pp.ts renderPP/clearPP) は vi.mock でモック。 IPC (window.ipc) もモック。
+ * DOM 依存 (board-render.ts renderBoard/clearBoard) は vi.mock でモック。 IPC (window.ipc) もモック。
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-// pp.ts の DOM 操作をモック (JSDOM 不要)
-vi.mock('./pp', () => ({
-  renderPP: vi.fn(),
-  clearPP: vi.fn(),
+// board-render.ts の DOM 操作をモック (JSDOM 不要)
+vi.mock('./board-render', () => ({
+  renderBoard: vi.fn(),
+  clearBoard: vi.fn(),
 }))
 
 // doc 52 §10 wave 0: 旧 pp-overlay auto-open（app-panes 依存）は退役。board pane 化で

@@ -4,7 +4,7 @@
 //!
 //! `files:list` / `files:open` IPC (`schema/vp-sidebar.kdl` 参照) の Rust 側実装。
 //! `list_entries` で lane workdir 配下のファイルツリーを `.gitignore` を尊重して
-//! 列挙し、 `open_file` で選択ファイルを Canvas (Paisley Park) 向けの JSON content
+//! 列挙し、 `open_file` で選択ファイルを Canvas (Board) 向けの JSON content
 //! shape (`board-handler.ts` の `ShowMessage::content` と一致) に変換する。
 //!
 //! ## 設計判断
@@ -14,7 +14,7 @@
 //!   `thread::Builder::spawn` してから呼ぶ。 結果は `AppEvent` で push back。
 //! - **画像は `Content::Html` ルート**: `protocol/messages.rs` の `ImageBase64` variant は
 //!   既存 `board-handler.ts:40-60` で skip されているため、 base64 化した `<img>` を
-//!   sandbox iframe (PP `html` mode) で表示する path を採る。 handler 改修不要。
+//!   sandbox iframe (board `html` mode) で表示する path を採る。 handler 改修不要。
 //! - **path traversal 防御**: `open_file` は `rel_path` を `Component::Normal` のみで
 //!   構成されていることを確認し、 `..` / 絶対パスを弾く。
 //! - **巨大ファイル**: text 1 MiB / image 8 MiB を超えたら `> Unsupported` プレースホルダ
@@ -128,7 +128,7 @@ pub fn list_entries_with_limit(workdir: &Path, limit: usize) -> (Vec<Entry>, boo
     (entries, truncated)
 }
 
-/// 指定ファイルを開いて Canvas (PP) 向け JSON content を返す。
+/// 指定ファイルを開いて Canvas (board) 向け JSON content を返す。
 ///
 /// 戻り値 shape は `board-handler.ts:22-28` の `ShowMessage::content` と同じ:
 /// `{ markdown }` | `{ log }` | `{ html }` のいずれかを 1 つ含む object。
@@ -179,7 +179,7 @@ pub fn open_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
         FileKind::Image => {
             // SVG を含む全画像を **`<img src="data:...;base64,...">` でラップ** して
             // `Content::Html` に流す。 raw SVG を `Content::Html` に直接渡すと
-            // `pp.ts:33-51` の sandbox iframe (`sandbox="allow-scripts"`) 経由で
+            // `board-render.ts:33-51` の sandbox iframe (`sandbox="allow-scripts"`) 経由で
             // SVG 内 `<script>` が実行可能になるため。 `<img>` タグの data URI 経由 SVG では
             // ブラウザ仕様により script 実行されないので、 この経路なら XSS 経路を閉じられる。
             let mime = image_mime_for(rel_path);

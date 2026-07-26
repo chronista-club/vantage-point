@@ -1,7 +1,7 @@
 //! Topic パス: MQTT v5 inspired topic routing
 //!
 //! 命名規則: `{scope}/{capability}/{category}/{detail}`
-//! 例: `"process/paisley-park/command/show"`
+//! 例: `"process/board/command/show"`
 //!
 //! ## ワイルドカード
 //! - `+` (または `*`): 1セグメントに一致（MQTT 互換）
@@ -184,8 +184,8 @@ mod tests {
 
     #[test]
     fn test_parse_and_as_str_roundtrip() {
-        let path = TopicPath::parse("process/paisley-park/command/show");
-        assert_eq!(path.as_str(), "process/paisley-park/command/show");
+        let path = TopicPath::parse("process/board/command/show");
+        assert_eq!(path.as_str(), "process/board/command/show");
         assert_eq!(path.len(), 4);
     }
 
@@ -206,8 +206,8 @@ mod tests {
 
     #[test]
     fn test_capability() {
-        let path = TopicPath::parse("process/paisley-park/command/show");
-        assert_eq!(path.capability(), Some("paisley-park"));
+        let path = TopicPath::parse("process/board/command/show");
+        assert_eq!(path.capability(), Some("board"));
     }
 
     #[test]
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_is_retained_command() {
-        let path = TopicPath::parse("process/paisley-park/command/show/main");
+        let path = TopicPath::parse("process/board/command/show/main");
         assert!(path.is_retained());
     }
 
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_pattern_parse_literals() {
-        let pattern = TopicPattern::parse("process/paisley-park/command/show");
+        let pattern = TopicPattern::parse("process/board/command/show");
         assert_eq!(pattern.segments().len(), 4);
         assert!(matches!(&pattern.segments()[0], Segment::Literal(s) if s == "process"));
         assert!(matches!(&pattern.segments()[3], Segment::Literal(s) if s == "show"));
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn test_pattern_parse_star_alias() {
         // `*` は `+` のエイリアス
-        let pattern = TopicPattern::parse("process/paisley-park/command/*");
+        let pattern = TopicPattern::parse("process/board/command/*");
         assert_eq!(pattern.segments().len(), 4);
         assert!(matches!(pattern.segments()[3], Segment::SingleWildcard));
     }
@@ -293,59 +293,59 @@ mod tests {
 
     #[test]
     fn test_match_exact_literal() {
-        let topic = TopicPath::parse("process/paisley-park/command/show");
-        let pattern = TopicPattern::parse("process/paisley-park/command/show");
+        let topic = TopicPath::parse("process/board/command/show");
+        let pattern = TopicPattern::parse("process/board/command/show");
         assert!(topic.matches(&pattern));
     }
 
     #[test]
     fn test_no_match_different_literal() {
-        let topic = TopicPath::parse("process/paisley-park/command/show");
-        let pattern = TopicPattern::parse("process/paisley-park/command/clear");
+        let topic = TopicPath::parse("process/board/command/show");
+        let pattern = TopicPattern::parse("process/board/command/clear");
         assert!(!topic.matches(&pattern));
     }
 
     #[test]
     fn test_match_single_wildcard() {
-        let topic = TopicPath::parse("process/paisley-park/command/show");
-        let pattern = TopicPattern::parse("process/paisley-park/command/+");
+        let topic = TopicPath::parse("process/board/command/show");
+        let pattern = TopicPattern::parse("process/board/command/+");
         assert!(topic.matches(&pattern));
     }
 
     #[test]
     fn test_match_star_as_single_wildcard() {
-        let topic = TopicPath::parse("process/paisley-park/command/show");
-        let pattern = TopicPattern::parse("process/paisley-park/command/*");
+        let topic = TopicPath::parse("process/board/command/show");
+        let pattern = TopicPattern::parse("process/board/command/*");
         assert!(topic.matches(&pattern));
     }
 
     #[test]
     fn test_single_wildcard_does_not_match_multiple() {
         // `+` は1セグメントのみ一致
-        let topic = TopicPath::parse("process/paisley-park/command/show/main");
-        let pattern = TopicPattern::parse("process/paisley-park/command/+");
+        let topic = TopicPath::parse("process/board/command/show/main");
+        let pattern = TopicPattern::parse("process/board/command/+");
         assert!(!topic.matches(&pattern));
     }
 
     #[test]
     fn test_match_multi_wildcard_zero_segments() {
         // `#` は0セグメントにも一致
-        let topic = TopicPath::parse("process/paisley-park/command");
-        let pattern = TopicPattern::parse("process/paisley-park/command/#");
+        let topic = TopicPath::parse("process/board/command");
+        let pattern = TopicPattern::parse("process/board/command/#");
         assert!(topic.matches(&pattern));
     }
 
     #[test]
     fn test_match_multi_wildcard_one_segment() {
-        let topic = TopicPath::parse("process/paisley-park/command/show");
-        let pattern = TopicPattern::parse("process/paisley-park/command/#");
+        let topic = TopicPath::parse("process/board/command/show");
+        let pattern = TopicPattern::parse("process/board/command/#");
         assert!(topic.matches(&pattern));
     }
 
     #[test]
     fn test_match_multi_wildcard_many_segments() {
-        let topic = TopicPath::parse("process/paisley-park/command/show/main/extra");
-        let pattern = TopicPattern::parse("process/paisley-park/command/#");
+        let topic = TopicPath::parse("process/board/command/show/main/extra");
+        let pattern = TopicPattern::parse("process/board/command/#");
         assert!(topic.matches(&pattern));
     }
 
@@ -359,8 +359,8 @@ mod tests {
 
     #[test]
     fn test_no_match_too_short() {
-        let topic = TopicPath::parse("process/paisley-park");
-        let pattern = TopicPattern::parse("process/paisley-park/command/show");
+        let topic = TopicPath::parse("process/board");
+        let pattern = TopicPattern::parse("process/board/command/show");
         assert!(!topic.matches(&pattern));
     }
 
@@ -378,7 +378,7 @@ mod tests {
 
         let chat = TopicPath::parse("process/heavens-door/event/chat-message");
         let session = TopicPath::parse("process/heavens-door/event/session-created");
-        let command = TopicPath::parse("process/paisley-park/command/show");
+        let command = TopicPath::parse("process/board/command/show");
 
         assert!(chat.matches(&pattern));
         assert!(session.matches(&pattern));

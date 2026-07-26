@@ -91,7 +91,7 @@ export function LaneRow(props: {
 	// OSC 99 由来の入力待ち。 active lane は即読扱いで dot を出さない。 inactive も除外。
 	const isAwaiting = () =>
 		!isInactive() && !isActive() && !!sidebar.awaiting_input[addr()];
-	// Canvas (PP) 着信 badge (bug: canvas 可観測性 D): 現在 active でない lane に show が
+	// Canvas (board) 着信 badge (bug: canvas 可観測性 D): 現在 active でない lane に show が
 	// 届くと点灯。 awaiting(magenta = 用事)とは別語彙の「絵が届いた」 info 信号で、
 	// active 化 (行 click) で reset される。
 	// isInactive は見ない: canvas 着信は「絵が届いた」事実で、lane の claude の生死とは無関係

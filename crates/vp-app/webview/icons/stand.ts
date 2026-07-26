@@ -11,8 +11,8 @@ import type { IconName } from '@chronista-club/creo-ui-icons-web'
 // emoji 📖 → 💬、 icon 'ph:book-open' → 'ph:chat-circle' (prompt/response 対話型)。
 export type StandKind =
   | 'echoes'
-  | 'paisley_park'
-  | 'gold_experience'
+  | 'board'
+  | 'runner'
   | 'theworld'
 
 export interface StandIconSet {
@@ -27,12 +27,12 @@ export const STAND_ICON: Record<StandKind, StandIconSet> = {
     active: 'ph:chat-circle-fill',
     disabled: 'ph:chat-circle-thin',
   },
-  paisley_park: {
+  board: {
     default: 'ph:compass',
     active: 'ph:compass-fill',
     disabled: 'ph:compass-thin',
   },
-  gold_experience: {
+  runner: {
     default: 'ph:plant',
     active: 'ph:plant-fill',
     disabled: 'ph:plant-thin',

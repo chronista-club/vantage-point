@@ -44,7 +44,7 @@ pub struct HistoryMessage {
     pub timestamp: u64,
 }
 
-/// board（PP Canvas の scope 別永続リスト）の 1 item（board モデル 2026-07-15）。
+/// board（board Canvas の scope 別永続リスト）の 1 item（board モデル 2026-07-15）。
 ///
 /// SP が id を一元発行し（webview は自前生成しない）、 [`ProcessMessage::BoardUpdated`] の
 /// snapshot で配信される。 JSON は webview の BoardItem と揃える（camelCase:
@@ -97,7 +97,7 @@ pub enum ProcessMessage {
         /// ペインのタイトル（タブ表示用）
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
-        /// このメッセージが属する Lane（per-lane PP scope、root/performer 語彙）。
+        /// このメッセージが属する Lane（per-lane board scope、root/performer 語彙）。
         /// `None` = conductor（lead）。topic の lane segment になり、retained を lane 別に分離する。
         /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を conductor 扱い）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,10 +117,10 @@ pub enum ProcessMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
     },
-    /// board（PP Canvas の scope 別永続リスト）の snapshot（board モデル 2026-07-15）。
+    /// board（board Canvas の scope 別永続リスト）の snapshot（board モデル 2026-07-15）。
     ///
     /// SP が唯一の truth を持ち、 item 追加/削除/clear のたびに更新後 snapshot を broadcast する。
-    /// topic `process/paisley-park/state/board/{scope}/{lane}`（category=state で retained）に載り、
+    /// topic `process/board/state/board/{scope}/{lane}`（category=state で retained）に載り、
     /// 再接続 / board 切替時の初期配信を retained が兼ねる。 webview はこれを受けて board を置換する view。
     BoardUpdated {
         /// board scope: `"lane"` のみ（'proj' は 2026-07-23 撤去）。

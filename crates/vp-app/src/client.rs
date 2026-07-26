@@ -74,7 +74,7 @@ pub enum ProcessKind {
     Runtime,
     /// PTY session を持つ stream-based process (= Lane: Conductor / Performer)
     Session,
-    /// 機能 service を提供する Stand process (= Echoes / Shell / PP / GE / HP)
+    /// 機能 service を提供する Stand process (= Echoes / Shell / board / runner ほか)
     Stand,
 }
 

@@ -124,7 +124,7 @@ export function Shell() {
 
 			{/* File Explorer overlay picker (singleton)。 LaneRow のフォルダボタン or Cmd+F で
           window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
-          出現してファイルを選べる。 選択すると Canvas (PP) に投げて dismiss する ephemeral。 */}
+          出現してファイルを選べる。 選択すると Canvas (board) に投げて dismiss する ephemeral。 */}
 			<FileExplorer />
 
 			{/* Wire Inbox overlay panel (doc 34 §4 V1、 singleton)。 LaneRow の mailbox badge click で
@@ -442,7 +442,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* awaiting dot — needs-you 言語 (magenta) に従属。 diamond node と同源の信号。 */
 .vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
   background:var(--sb-conn-hitl,#FF4A2D);flex:0 0 auto;}
-/* canvas 着信 (D) — PP に絵が届いた info 信号。 needs-you(magenta glow)とは別語彙。
+/* canvas 着信 (D) — board に絵が届いた info 信号。 needs-you(magenta glow)とは別語彙。
    Light Grid「光=注意」に従い bright(--lg-hot)で目を引くが glow(pulse)は付けない
    (glow は needs-you 専用)。 easel icon は bundled subset 外で不可視だったため pure-CSS の
    小 square (canvas/frame メタファ) に。 awaiting の円 / mailbox の封筒と形で区別。 */

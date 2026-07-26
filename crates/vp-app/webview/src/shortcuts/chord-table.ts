@@ -38,7 +38,7 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   },
   p: {
     description:
-      'send current/selected to PP (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
+      'send current/selected to board (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
     semantic: 'panel-local',
   },
   // v0.5 (PR 445) で実装 — lane 操作系

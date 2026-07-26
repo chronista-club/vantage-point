@@ -39,7 +39,7 @@ struct UnwatchFileRequest {
 ///
 /// 配信先:
 /// 1. Hub broadcast → WebSocket → Canvas（既存）
-/// 2. Msgbox "protocol" → PP Capability（VP-24）
+/// 2. Msgbox "protocol" → board Capability（VP-24）
 fn handle_process_message(
     state: &AppState,
     payload: serde_json::Value,
@@ -141,7 +141,7 @@ async fn handle_editor_result(
 }
 
 // =============================================================================
-// board モデル (2026-07-15): PP Canvas を scope 別の永続 board にする server-authoritative 実装
+// board モデル (2026-07-15): board Canvas を scope 別の永続 board にする server-authoritative 実装
 //
 // board = show した item の scope 別永続リスト（SP が唯一の truth を持つ）。 mcp__show 着信で SP が
 // item を生成し DB に durable append、 更新後 board を BoardUpdated（retained topic
@@ -151,7 +151,7 @@ async fn handle_editor_result(
 // =============================================================================
 
 /// board の DB pane_id（webview の PP_PANE_ID と一致）。
-const BOARD_PANE_ID: &str = "paisley-park";
+const BOARD_PANE_ID: &str = "board";
 /// board の item 上限（永続なので揮発 stack の 10 より大きく取る）。
 const BOARD_CAPACITY: usize = 50;
 
@@ -378,7 +378,7 @@ async fn handle_board_update(
         .ok_or("board_update: content 必須")?
         .to_string();
     // content_type は **省略時 = 既存 item の type を保つ**（下で解決）。既定 "markdown" 直書きだと
-    // html item を update しただけで markdown に silent 降格し、pp.ts の trust 境界（html=sandbox
+    // html item を update しただけで markdown に silent 降格し、board-render.ts の trust 境界（html=sandbox
     // iframe / markdown=innerHTML）まで崩れる（team-b review 2026-07-24）。
     let content_type_arg = payload
         .get("content_type")
@@ -2236,7 +2236,7 @@ pub(crate) async fn dispatch_process_method(
 ) -> Result<serde_json::Value, String> {
     match method {
         // switch_lane も generic broadcast 経路に乗せる（B1: 遠隔 active Lane 制御）。
-        // hub → topic `process/paisley-park/event/switch-lane`（一時コマンド=非
+        // hub → topic `process/board/event/switch-lane`（一時コマンド=非
         // retained）→ canvas channel → vp-app が受信して active Lane を切り替える。
         // board モデル (2026-07-15): show/clear は SP-authoritative な board 経路へ。
         // item を DB に durable append し、 更新後 board を BoardUpdated(retained) で broadcast する。
@@ -2382,7 +2382,7 @@ pub(crate) async fn dispatch_process_method(
 /// 防御層**。bare を残す理由: 旧 bare 送信が来ても store 識別子を qualified 一本に揃え、
 /// cross-process 返信 (`agent@<project>` 宛 forward) が bare query と完全一致せず届かない
 /// バグ (B2、 レビュー mem_1CbuxQuNRwHBiZgBVUWVfN) を防ぐため。
-/// bare 以外 (qualified / board@... / gold_experience@... 等) はそのまま返す。
+/// bare 以外 (qualified / board@... / runner@... 等) はそのまま返す。
 ///
 /// ⚠️ 正規化先 `self_project` は「繋いだ SP の project」なので、bare のままだと誤 SP 接続で
 /// identity が化ける (= 旧 conductor バグの根)。だから identity の SSOT は MCP 側 canonical

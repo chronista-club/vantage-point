@@ -2,7 +2,7 @@
  * Sidebar File Explorer overlay picker。
  *
  * Lane の workdir 配下のファイルを ephemeral picker で探索し、 選択ファイルを
- * Canvas (Paisley Park) に投げ込むワンショット UI。 picker は file 選択 / Esc /
+ * Canvas (Board) に投げ込むワンショット UI。 picker は file 選択 / Esc /
  * 背景クリックで dismiss する (常設 panel ではない)。
  *
  * ## UX
@@ -242,7 +242,7 @@ export function FileExplorer() {
 	let bodyRef: HTMLDivElement | undefined;
 
 	/**
-	 * Directive `p` (= "send current/selected to PP") の picker context 実装。
+	 * Directive `p` (= "send current/selected to board") の picker context 実装。
 	 * picker visible + selected が file の時に file を Canvas に投げる。 ピン留めの有無に
 	 * かかわらず picker は **dismiss しない** (= 規約 v0.3 §C.2 "連続選択を許す")。
 	 * 投擲後は input に focus を戻し、 user が次の選択 / 検索 input 操作にすぐ進めるようにする。

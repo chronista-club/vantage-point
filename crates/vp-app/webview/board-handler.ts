@@ -1,11 +1,11 @@
 /**
- * board (Paisley Park) handler（board モデル 2026-07-15、doc 52 §6 で canvas → board 改名）。
+ * board (Board) handler（board モデル 2026-07-15、doc 52 §6 で canvas → board 改名）。
  *
  * ## board モデル
- * PP の board = show した item の scope 別リストで、**SP が唯一の truth を持つ**
+ * board の board = show した item の scope 別リストで、**SP が唯一の truth を持つ**
  * （SurrealDB durable）。 webview はそれを表示する view:
  *  - SP が mcp__show 着信で item を生成し DB append → `BoardUpdated`(retained topic
- *    `process/paisley-park/state/board/{scope}/{lane}`) を broadcast する。
+ *    `process/board/state/board/{scope}/{lane}`) を broadcast する。
  *  - webview は gui channel で `BoardUpdated` を受けて boards を置換する（自前 save はしない）。
  *  - thumbnail ✕ / Clear は `board:delete` / `board:clear` IPC で SP に依頼し、 SP が DB 更新 →
  *    `BoardUpdated` で反映する（optimistic 更新はせず SP truth に一本化）。
@@ -20,7 +20,7 @@
  * DB 行は SP 側に残りうるが、client は scope !== 'lane' を無視するので表示に混ざらない。
  */
 
-import { renderPP, clearPP, type ContentType } from './pp'
+import { renderBoard, clearBoard, type ContentType } from './board-render'
 
 
 /** board の 1 item。 id は SP が一元発行する（webview は自前生成しない）。 */
@@ -154,17 +154,17 @@ function renderFreshness(item: BoardItem | undefined): void {
 function renderCurrentMain(): void {
   const b = activeBoard()
   if (b.cursor === null) {
-    clearPP()
+    clearBoard()
     renderFreshness(undefined)
     return
   }
   const item = b.items.find((i) => i.id === b.cursor)
   if (!item) {
-    clearPP()
+    clearBoard()
     renderFreshness(undefined)
     return
   }
-  renderPP(item.content, item.contentType)
+  renderBoard(item.content, item.contentType)
   renderFreshness(item)
 }
 

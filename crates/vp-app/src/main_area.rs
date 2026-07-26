@@ -40,9 +40,9 @@ use serde::{Deserialize, Serialize};
 /// Rust から main area JS に渡す active pane の payload
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivePaneInfo<'a> {
-    /// Pane kind ("terminal" | "preview" | "paisley_park" | "gold_experience" | "devices" | "empty" | null)
+    /// Pane kind ("terminal" | "preview" | "board" | "runner" | "devices" | "empty" | null)
     /// null = 何も active でない (空状態を表示)。
-    /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で PP body が Smart Canvas surface 物理化)
+    /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で board body が Smart Canvas surface 物理化)
     pub kind: Option<&'a str>,
     pub pane_id: Option<&'a str>,
     /// Preview kind の URL (preview kind 以外では None)
@@ -282,7 +282,7 @@ body{overflow:hidden;}
   user-select:none;
   -webkit-app-region:drag;
   z-index:1;
-  /* 名札は 1 行きり。溢れは折り返さず省略する（PP の "Paisley Park" が 2 行に割れて
+  /* 名札は 1 行きり。溢れは折り返さず省略する（board の "Board" が 2 行に割れて
      隣の pane と高さが揃わなくなっていた実機バグ、2026-07-23）。 */
   white-space:nowrap;
   overflow:hidden;
@@ -334,12 +334,12 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 }
 .pane-body.center{display:grid;place-items:center;}
 .pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
-/* board (PP) pane — doc 52 §10 wave 0: lane tiling の 1 枚。#lane-panes > * の absolute inset を
+/* board (board) pane — doc 52 §10 wave 0: lane tiling の 1 枚。#lane-panes > * の absolute inset を
    受けた上で、中身を plate / content / history-strip の縦並びにする。solid surface で載せて
    背後の xterm が透けないようにする（旧 pp-overlay の可読性対策の後継）。 */
 #lane-board{display:flex;flex-direction:column;background:var(--color-surface-bg-base);
   font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
-/* board の名札 — 台の中で「これは Paisley Park の board」と読める最小 chrome + Clear。 */
+/* board の名札 — 台の中で「これは Board の board」と読める最小 chrome + Clear。 */
 .board-plate{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;
   gap:8px;padding:4px 10px;border-bottom:1px solid var(--color-surface-border,#1f2233);
   background:var(--color-surface-bg-subtle);}
@@ -359,11 +359,11 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 .devices-device{display:flex;align-items:baseline;gap:10px;}
 .devices-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
 .devices-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
-/* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
+/* board markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
-/* ink stage（doc 52 §3）: #pp-content を充填 + overlay / palette の位置決め基準。 */
+/* ink stage（doc 52 §3）: #board-content を充填 + overlay / palette の位置決め基準。 */
 #ink-stage{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}
-.pp-content{flex:1 1 auto;min-height:0;overflow:auto;
+.board-content{flex:1 1 auto;min-height:0;overflow:auto;
   padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
   font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 /* ink 赤: shottr と同じ 1 色固定（意図的に単色 — 描くのは「場所と関係を指す指」）。 */
@@ -411,29 +411,29 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   border:1px solid var(--color-surface-border,#1f2233);opacity:0;transition:opacity .15s;}
 #ink-toast.show{opacity:1;}
 #ink-toast.ink-error{color:var(--vp-ink-color);border-color:var(--vp-ink-color);}
-.pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
-.pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
-.pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
-.pp-content p{margin:.5rem 0;color:var(--color-text-secondary);}
-.pp-content code{background:var(--color-surface-surface);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
-.pp-content pre{background:var(--color-surface-surface);padding:12px;border-radius:6px;overflow-x:auto;}
-.pp-content pre code{background:transparent;padding:0;}
-.pp-content a{color:var(--color-brand-primary);}
-.pp-content ul,.pp-content ol{padding-left:1.5em;margin:.5rem 0;}
-.pp-content blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;color:var(--color-text-tertiary);}
-.pp-content table{border-collapse:collapse;margin:.5rem 0;}
-.pp-content th,.pp-content td{border:1px solid var(--color-surface-border-subtle);padding:4px 8px;}
-.pp-content hr{border:0;border-top:1px solid var(--color-surface-border-subtle);margin:1rem 0;}
+.board-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
+.board-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
+.board-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
+.board-content p{margin:.5rem 0;color:var(--color-text-secondary);}
+.board-content code{background:var(--color-surface-surface);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
+.board-content pre{background:var(--color-surface-surface);padding:12px;border-radius:6px;overflow-x:auto;}
+.board-content pre code{background:transparent;padding:0;}
+.board-content a{color:var(--color-brand-primary);}
+.board-content ul,.board-content ol{padding-left:1.5em;margin:.5rem 0;}
+.board-content blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;color:var(--color-text-tertiary);}
+.board-content table{border-collapse:collapse;margin:.5rem 0;}
+.board-content th,.board-content td{border:1px solid var(--color-surface-border-subtle);padding:4px 8px;}
+.board-content hr{border:0;border-top:1px solid var(--color-surface-border-subtle);margin:1rem 0;}
 .pp-placeholder{color:var(--color-text-tertiary);font-style:italic;}
-/* content_type=html: sandbox iframe を PP pane いっぱいに広げる。
-   renderPP が container に .pp-content-html を付与し full-bleed に切り替える。 */
-.pp-content.pp-content-html{padding:0;height:100%;}
-.pp-html-frame{width:100%;height:100%;border:0;display:block;background:#fff;}
+/* content_type=html: sandbox iframe を board pane いっぱいに広げる。
+   renderBoard が container に .board-content-html を付与し full-bleed に切り替える。 */
+.board-content.board-content-html{padding:0;height:100%;}
+.board-html-frame{width:100%;height:100%;border:0;display:block;background:#fff;}
 /* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
 /* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
-   PP body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
+   board body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
 .pane.preview iframe{width:100%;height:100%;border:0;background:#fff;}
-/* Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP) */
+/* Phase 5-A: Project-scope Stand placeholder panes (board/runner ほか) */
 .pane.stand{display:grid;place-items:center;}
 .pane.stand main{text-align:center;max-width:520px;padding:0 24px;}
 .pane.stand h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
@@ -481,7 +481,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 <div id="sidebar-root"></div>
 <div id="host">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
-       - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「paisley_park」 等の kind classification)
+       - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「board」 等の kind classification)
        - data-frame-id="..." : 静的 (HTML hardcode、 Frame Engine の Scene lookup key、 「echoes」「pp」 等)
        - data-pane-id="..." : 動的 (active pane 切替時に main_area inline JS `setActiveImpl` が Lane address
                               等で setAttribute、 VP-100 γ-light native overlay sync 用 / Phase 4+ 同期 target)
@@ -510,24 +510,24 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
          下端の帯 (#pane-tabs) は doc 51 §1 A1 で退役 — 表示は既定 tiling、
          + New / Act 切替は EchoesHeader (lane の名札) へ移設。 -->
     <div id="lane-panes">
-      <!-- board (PP) pane — doc 52 §10 wave 0: app 層の #pane-paisley-park から lane tiling へ
+      <!-- board (board) pane — doc 52 §10 wave 0: app 層の #pane-board から lane tiling へ
            引っ越した「貼る台」。**lane に 1 枚の静的 host**（board は lane-scoped、
            表示 lane は常に 1 つ = xterm と同じ性質）。roster に載るのは board 非空のときだけで、
-           位置決めは lane-panes.ts が担う。中身の #pp-content / #pp-history-strip は移設のみで
-           id 不変 = pp.ts / HistoryStrip / board-handler の render 先は変わらない。 -->
+           位置決めは lane-panes.ts が担う。中身の #board-content / #board-history-strip は移設のみで
+           id 不変 = board-render.ts / HistoryStrip / board-handler の render 先は変わらない。 -->
       <div id="lane-board">
         <div class="board-plate">
-          <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Paisley Park</span>
+          <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Board</span>
           <!-- 鮮度: cursor item の updatedAt を board-handler が「更新 HH:MM:SS」で書く（doc 52 §5 計器盤）。
                出力元は SP の updatedAt 一箇所（content 手書きに依存しない）。 -->
           <span id="board-freshness" class="board-freshness"></span>
-          <button class="board-clear-btn" data-action="clear" data-target="pp" title="board を空にする">Clear</button>
+          <button class="board-clear-btn" data-action="clear" data-target="board" title="board を空にする">Clear</button>
         </div>
-        <!-- ink（対話面、doc 52 §3）: #pp-content の上に透明レイヤーを重ねて描く。renderPP は
-             #pp-content の innerHTML を差し替えるので overlay は sibling（stage 直下）に置く。
+        <!-- ink（対話面、doc 52 §3）: #board-content の上に透明レイヤーを重ねて描く。renderBoard は
+             #board-content の innerHTML を差し替えるので overlay は sibling（stage 直下）に置く。
              stage = 描画対象 = snapshot 矩形。overlay / palette / text input の挙動は ink.ts。 -->
         <div id="ink-stage">
-          <div class="pp-content" id="pp-content"></div>
+          <div class="board-content" id="board-content"></div>
           <!-- overlay は **div**（HTML box 全体で pointer を捕まえる）。中の svg で描く。
                svg root を直に armed にすると、SVG の pointer-events 既定 visiblePainted の
                ため空白部分が透過し pointerdown が下の文字に落ちて text 選択に吸われる。 -->
@@ -544,7 +544,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
           <div id="ink-palette" role="toolbar" aria-label="対話面 描画道具"></div>
           <div id="ink-toast" role="status"></div>
         </div>
-        <div class="pp-history-strip" id="pp-history-strip"></div>
+        <div class="board-history-strip" id="board-history-strip"></div>
       </div>
     </div>
     <!-- doc 33 §9: Act I⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
@@ -570,8 +570,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
     </div>
   </div>
   <!-- VP-142 cleanup (PR-ε-4): legacy `pane-canvas` placeholder を削除済。
-       VP-42 era の「汎用 Canvas surface」 placeholder だったが、 PR-ε-3 で PP body
-       (`pane-paisley-park` 内 `<div id="pp-content">`) が Smart Canvas surface を物理化
+       VP-42 era の「汎用 Canvas surface」 placeholder だったが、 PR-ε-3 で board body
+       (`pane-board` 内 `<div id="board-content">`) が Smart Canvas surface を物理化
        したため vestigial。 doc 13 §10 Q-3 (= Smart Canvas 配置) も PR-ε-3 で確定済。 -->
 
   <div class="pane preview" id="pane-preview" data-kind="preview" data-frame-id="preview">
@@ -586,13 +586,13 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
       <iframe id="preview-frame" src="about:blank" sandbox="allow-same-origin allow-scripts"></iframe>
     </div>
   </div>
-  <!-- doc 52 §10 wave 0: Paisley Park は app 層の pane を退役し、lane tiling の board pane
-       （#lane-board、上方 #lane-panes 内）へ引っ越した。GE / Devices / Preview は app pane のまま。 -->
-  <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
+  <!-- doc 52 §10 wave 0: Board は app 層の pane を退役し、lane tiling の board pane
+       （#lane-board、上方 #lane-panes 内）へ引っ越した。runner / Devices / Preview は app pane のまま。 -->
+  <div class="pane stand" id="pane-runner" data-kind="runner" data-frame-id="runner">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon"><iconify-icon icon="ph:plant"></iconify-icon></span>
-        <span class="pane-name">Gold Experience</span>
+        <span class="pane-name">Runner</span>
         <span class="pane-breadcrumb">Code Runner</span>
       </div>
       <div class="pane-actions">

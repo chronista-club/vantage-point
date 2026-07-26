@@ -52,7 +52,7 @@ active_lane_address?: string | null,
 origin_by_project?: { [key in string]?: string }, 
 /**
  * Phase 5-A: 現在 active な Project-scope Stand kind
- * (`"paisley_park"` / `"gold_experience"` / `"devices"`)。
+ * (`"board"` / `"runner"` / `"devices"`)。
  * `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
  * `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
  * `stand:select` IPC で更新される。
@@ -81,7 +81,7 @@ unread_notifications: { [key in string]?: number },
  */
 awaiting_input: { [key in string]?: boolean }, 
 /**
- * Canvas (Paisley Park) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
+ * Canvas (Board) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
  * Key: Lane address (`"<project>/root"` 等)、 Value: 現在 active でない lane に
  * show が着いた回数。 `CanvasMessage`(show) で increment、 `lane:select` (activate_lane) で
  * 対応 Lane を 0 reset。 `unread_notifications` (HITL/OSC = 黄 dot) とは**別 sink** =

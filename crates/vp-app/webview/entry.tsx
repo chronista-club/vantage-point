@@ -102,7 +102,7 @@ import {
 import { layoutEngine } from "./layout-host";
 import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
-import { renderPP, clearPP, appendPP } from "./pp";
+import { renderBoard, clearBoard, appendBoard } from "./board-render";
 import { installConsole, focusedOf, sessionActOf } from "./console";
 import type {
 	ConsoleMode,
@@ -169,11 +169,11 @@ openDispatch();
 //
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
 //   echoes  → pane-terminal      (Echoes Stand = lane workbench。console/chat/board の tiling を内包)
-//   ge      → pane-gold-experience (Gold Experience 🌿)
+//   runner  → pane-runner        (Runner 🌿)
 //   devices → pane-devices        (Devices 🧲 / device 一覧)
 //   preview → pane-preview        (iframe preview)
 //   empty   → pane-empty          (no selection)
-//   doc 52 §10 wave 0: pp（Paisley Park）は app pane を退役 → lane tiling の board pane (#lane-board)
+//   doc 52 §10 wave 0: pp（Board）は app pane を退役 → lane tiling の board pane (#lane-board)
 // 注: 旧 data-pane-id (main_area.rs inline JS が Lane address 等に書き換える native overlay sync 用)
 // と attribute を分離。 同名にすると Lane click で legacy 側が hijack して配置 lookup が
 // undefined → 非表示投影で pane が見えなくなる回帰を起こすため (VP-141 fix)。
@@ -194,11 +194,11 @@ attachKeybindings(window);
 // （"pane-terminal" 等 = 可視性の gate）。同じ kind から別の軸を引いている。
 const KIND_TO_PANE: Record<string, string> = {
 	terminal: "echoes",
-	gold_experience: "ge",
+	runner: "runner",
 	devices: "devices",
 	preview: "preview",
 	empty: "empty",
-	// doc 52 §10 wave 0: paisley_park → pp は退役（board pane = lane tiling へ移設）。
+	// doc 52 §10 wave 0: board → pp は退役（board pane = lane tiling へ移設）。
 	// LE-P4 PR1: DOM 不在の幽霊 entry を落とし、DOM に居た devices → bs を補充
 	// （旧体系では unknown kind → empty に落ちて Devices pane が見えなかった）
 };
@@ -218,7 +218,7 @@ let echoesHeader: EchoesHeaderApi | null = null;
  * - `<project>/root` / `<project>/lead` → `null`（root/lead）
  * - `<project>/performer/<name>` / `<project>/wing/<name>` → `<name>`（performer）
  *
- * この値は (a) pp-content-persist の SurrealDB record key、(b) per-lane PP の
+ * この値は (a) board-content-persist の SurrealDB record key、(b) per-lane board の
  * canvas filter token（`null`→`conductor` に正規化して producer の lane と突合）に使う。
  */
 function laneNameFromAddress(addr: string | null): string | null {
@@ -242,9 +242,9 @@ function laneNameFromAddress(addr: string | null): string | null {
  *
  * per-Lane 配置の記憶 (VP-141 follow-up の後継):
  * - kind=terminal Lane 切替時に旧 Lane の配置 snapshot を save、新 Lane の保存済 snapshot
- *   (or default lead-focus) を restore する → user が Lane を跨いでも Side Review / PP Overlay 等の
+ *   (or default lead-focus) を restore する → user が Lane を跨いでも Side Review / board Overlay 等の
  *   選択 + share 調整の形が記憶される（app-panes.ts 所有）
- * - kind != terminal (PP/GE/Devices click 等) は Lane を跨がない fixed-Pane focus、記憶は更新しない
+ * - kind != terminal (board/runner/Devices click 等) は Lane を跨がない fixed-Pane focus、記憶は更新しない
  */
 const applyActivePane = (info: ActivePaneInfo | null): void => {
 	// ① DOM の可視性（pane の active 切替 / preview iframe / showLane / slot rect）
@@ -273,7 +273,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		}
 		activeLaneAddress = newLane;
 		// Echoes 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
-		// PP 等を眺めている間も直前の lane 文脈が載り続ける）。
+		// board 等を眺めている間も直前の lane 文脈が載り続ける）。
 		echoesHeader?.setLane({
 			addr: newLane,
 			name: info.lane_name ?? null,
@@ -283,7 +283,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 			sessionId: info.session_id ?? null,
 			stand: info.stand ?? null,
 		});
-		// wiremsg Stage 2: canvas (PP body) の供給は Rust 側 spawn_canvas_subscription が
+		// wiremsg Stage 2: canvas (board body) の供給は Rust 側 spawn_canvas_subscription が
 		// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
 		// 保存済配置を restore、 初訪問 Lane は lead-focus を default にする
 		if (laneChanged) restoreAppStateFor(newLane);
@@ -298,7 +298,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		setActiveLaneName(laneName);
 		return;
 	}
-	// kind != terminal (PP/GE/Devices/preview click 等): stand pane の**訪問**（一時 view）。
+	// kind != terminal (board/runner/Devices/preview click 等): stand pane の**訪問**（一時 view）。
 	// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
 	const paneId = KIND_TO_PANE[info.kind];
 	if (!paneId) {
@@ -346,8 +346,8 @@ window.addEventListener("DOMContentLoaded", () => {
 	handleMessage: handleBoardMessage,
 };
 
-// doc 19 PP Canvas Stack Model: HistoryStrip CSS を head に注入 + DOMContentLoaded で mount。
-// PP pane の DOM (#pp-history-strip) は main_area.rs HTML 側で保証される。
+// doc 19 board Canvas Stack Model: HistoryStrip CSS を head に注入 + DOMContentLoaded で mount。
+// board pane の DOM (#board-history-strip) は main_area.rs HTML 側で保証される。
 const historyStripStyle = document.createElement("style");
 historyStripStyle.textContent = HISTORY_STRIP_CSS;
 document.head.appendChild(historyStripStyle);
@@ -357,23 +357,23 @@ const resyncLoaderStyle = document.createElement("style");
 resyncLoaderStyle.textContent = RESYNC_LOADER_CSS;
 document.head.appendChild(resyncLoaderStyle);
 
-// PP Canvas font — font zero-start (2026-07-11): 旧 ルイカ等幅 (TLT-RuikaMono-02、
-// 2026-06-01 の console look 意匠) の font-family 注入を撤去。 PP の書体は main_area.rs 側の
+// board Canvas font — font zero-start (2026-07-11): 旧 ルイカ等幅 (TLT-RuikaMono-02、
+// 2026-06-01 の console look 意匠) の font-family 注入を撤去。 board の書体は main_area.rs 側の
 // principal token (本文 = --vp-font-sans / code = --typography-family-mono) に従う。
 // この style block には font 以外の意匠 (font-size 段上げ / mermaid 余白) が残るため維持する。
 const ppFontStyle = document.createElement("style");
 ppFontStyle.textContent = `
-/* PP body の base font-size を 1 段上げる (= creoui token chain: base → l)。
-   fallback で 1.125em (= 16→18px 相当)。 #pp-content scope 内のみ override し
+/* board body の base font-size を 1 段上げる (= creoui token chain: base → l)。
+   fallback で 1.125em (= 16→18px 相当)。 #board-content scope 内のみ override し
    sidebar 等の別 webview には波及しない。 marked-based revert (#477) で .creo-md
-   wrapper 廃止に伴い selector を #pp-content 直に向け直し (= 2528097 の復活)。 */
-#pp-content {
+   wrapper 廃止に伴い selector を #board-content 直に向け直し (= 2528097 の復活)。 */
+#board-content {
   font-size: var(--typography-size-l, 1.125em);
 }
 /* mermaid SVG wrapper の余白 — code block 置換後の見栄え */
-#pp-content .creo-md-mermaid { margin: 1em 0; }
-#pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
-#pp-content .creo-md-mermaid-error {
+#board-content .creo-md-mermaid { margin: 1em 0; }
+#board-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
+#board-content .creo-md-mermaid-error {
   font-family: var(--vp-font-mono),var(--typography-family-mono);
   color: var(--color-text-secondary, #c66);
   background: var(--color-surface-bg-subtle, #1a1a22);
@@ -393,7 +393,7 @@ const applyDefaultScene = (): void => {
 	console.info(
 		`[app-panes] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,
 	);
-	// doc 19: PP body 下の history strip を SolidJS で mount。
+	// doc 19: board body 下の history strip を SolidJS で mount。
 	mountHistoryStrip();
 	// Act II 再同期コーナーローダーを body 直下に mount（active lane の replaying に追従）。
 	mountResyncLoader();
@@ -431,7 +431,7 @@ if (document.readyState === "loading") {
 	}
 }
 
-// DevTools 検査用 (window.vpAppLayout.applyScene('ge-focus') 等で手動 trigger 可能)
+// DevTools 検査用 (window.vpAppLayout.applyScene('runner-focus') 等で手動 trigger 可能)
 (window as unknown as { vpAppLayout: unknown }).vpAppLayout = {
 	engine: layoutEngine,
 	applyScene: applyAppScene,
@@ -442,22 +442,22 @@ if (document.readyState === "loading") {
 	.vpBundleStatus!.vpFrameSet = true;
 console.info("[vp-bundle] vpAppLayout attached to window — bundle init complete");
 
-// ===== VP-141 / PR-ε-2: PP markdown render API =====
-// window.vpPP で PP body の renderPP / clearPP / appendPP を公開。 PR-ε-3 で /ws/show 経由
+// ===== VP-141 / PR-ε-2: board markdown render API =====
+// window.vpBoardRender で board body の renderBoard / clearBoard / appendBoard を公開。 PR-ε-3 で /ws/show 経由
 // mcp__show が来た時の inject point として使う。 DevTools console から手動 trigger 可能:
-//   window.vpPP.renderPP("# Hello\n\n**bold**")
+//   window.vpBoardRender.renderBoard("# Hello\n\n**bold**")
 (
 	window as unknown as {
-		vpPP: {
-			renderPP: typeof renderPP;
-			clearPP: typeof clearPP;
-			appendPP: typeof appendPP;
+		vpBoardRender: {
+			renderBoard: typeof renderBoard;
+			clearBoard: typeof clearBoard;
+			appendBoard: typeof appendBoard;
 		};
 	}
-).vpPP = {
-	renderPP,
-	clearPP,
-	appendPP,
+).vpBoardRender = {
+	renderBoard,
+	clearBoard,
+	appendBoard,
 };
 
 // ===== Echoes Act II (doc 33): Console facade + ChatView =====
@@ -717,7 +717,7 @@ document.addEventListener("vp:act-switch-request", (e) => {
 
 // ===== Pane action button delegation =====
 // 各 pane の `[data-action]` button を click delegation で hook。 S2 では Clear のみ実装、
-// data-target 属性で対象 surface を識別 (`pp` = Paisley Park body)。 将来的に Pin / Lane 切替
+// data-target 属性で対象 surface を識別 (`board` = Board body)。 将来的に Pin / Lane 切替
 // 等を追加する場合も同 delegation で wire 可能。
 document.addEventListener(
 	"click",
@@ -734,9 +734,9 @@ document.addEventListener(
 			return;
 		}
 		if (action === "clear") {
-			if (dataTarget === "pp") {
-				// doc 19 PP Canvas Stack Model: clear は items + cursor + DOM の 3 つを全 reset
-				// する semantic。 `clearPP()` 直叩きだと canvasState (items / cursor) が残り、
+			if (dataTarget === "board") {
+				// doc 19 board Canvas Stack Model: clear は items + cursor + DOM の 3 つを全 reset
+				// する semantic。 `clearBoard()` 直叩きだと canvasState (items / cursor) が残り、
 				// strip は表示されたまま main だけ空になる非対称が起きる (= team-b review で発覚)。
 				// board-handler の `handleMessage({type:'clear'})` 経路で stack 含めて全 reset する。
 				clearActiveBoard();

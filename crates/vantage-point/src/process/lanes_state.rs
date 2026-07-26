@@ -3,23 +3,23 @@
 //! 関連 memory:
 //! - `mem_1CaSrCxysdGaaSsN4Dvxth` (VP Architecture: 3 段 Stand scope + Lane semantic)
 //! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (SP-as-Project-Master: 9 component minimum)
-//! - **2026-04-27 rule** (旧):「Lane scope に attach するのは HD と TH のみ。PP/GE/HP は Project scope」
+//! - **2026-04-27 rule** (旧):「Lane scope に attach するのは echoes と shell のみ。board/runner/external-control は Project scope」
 //!   → **doc 12 LSCM (VP-109、 2026-05-04) で明示的に supersede**。 LSCM では Layer container
 //!   (World / Project / Lane) が必要な Stand を抱える composition モデルで、 各 Stand の居住可能
 //!   Layer は doc 12 §9 catalog の「保持 layer pattern」 列が SSOT。
 //! - PR-pre2 (VP-118 / 2026-05-04): HD → Echoes rename。
-//! - PR-β-2 (VP-120 / 2026-05-04): PP を Project → Lane に物理移管 (`LaneCapabilities.paisley_park`)。
-//! - PR-δ-2 (VP-136 / 2026-05-06): PP を `LaneStandRegistry` 経由 host へ rewire (`LaneCapabilities.registry`)。
+//! - PR-β-2 (VP-120 / 2026-05-04): board を Project → Lane に物理移管 (`LaneCapabilities.board`)。
+//! - PR-δ-2 (VP-136 / 2026-05-06): board を `LaneStandRegistry` 経由 host へ rewire (`LaneCapabilities.registry`)。
 //!
 //! ## architecture (LSCM 確定 + PR-δ-2 後)
 //!
 //! Lane scope に host する Stand:
 //! - Echoes 💬 (旧 HD) — Lane mise task PtySlot で立つ (= LaneCapabilities では host しない)
 //! - shell — Lane mise task PtySlot で立つ (= 同上)
-//! - Paisley Park 🧭 — `LaneCapabilities.registry` 内 PaisleyParkStand (PR-δ-2 で trait-based host へ rewire、 Lane あたり 1 instance)
-//! - Gold Experience 🌿 (planned PR-γ で Lane 移管予定、 LaneStand impl 追加)
+//! - Board 🧭 — `LaneCapabilities.registry` 内 BoardStand (PR-δ-2 で trait-based host へ rewire、 Lane あたり 1 instance)
+//! - Runner 🌿 (planned PR-γ で Lane 移管予定、 LaneStand impl 追加)
 //!
-//! Project scope の Stand pool (`project_stands_state.rs`) は GE / HP のみ host (PR-β-2 後)。
+//! Project scope の Stand pool (`project_stands_state.rs`) は runner / external-control のみ host していた (PR-β-2 後、現在は縮退済)。
 //! Lane は **Conductor/Performer の PTY セッション + Stand container** に集中:
 //! - Conductor 1 / project (固定)、stand = "echoes" / "shell" / "tmux"
 //! - Performer 0..n / project (可変、lane clone)、stand 同上

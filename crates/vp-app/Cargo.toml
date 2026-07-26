@@ -34,7 +34,7 @@ tray-icon = "0.24"
 # HTTP client (TheWorld API)
 reqwest = { workspace = true }
 
-# pp-content-persist: URL encode for /api/pp/state query (lane / pane_id)
+# pp-content-persist(当時の epic 名): board state ask の query encode (lane / pane_id)
 urlencoding = "2"
 
 # Serialization

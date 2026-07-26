@@ -1819,7 +1819,7 @@ function SessionChatView(props: { lane: string; session: number }) {
 // install — entry.tsx から呼ぶ
 // ---------------------------------------------------------------------------
 
-/** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（pp.ts の style 注入と同型）。
+/** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（board-render.ts の style 注入と同型）。
  *  色は creo-ui token（--color-* 系）に寄せ、無い環境でも読める fallback を持つ。 */
 export const CHATVIEW_CSS = `
 .echoes-chat { position:absolute; inset:0; display:flex; flex-direction:column;

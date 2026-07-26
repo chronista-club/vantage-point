@@ -99,7 +99,7 @@ impl ProjectRuntimes {
     /// World bootstrap 専用。
     /// - `world_lanes` を渡さないと project を起こしても World の view が更新されず、
     ///   `vp ps` / sidebar / Unison `lanes/list` が boot 時の db 値で固まる。
-    /// - `vpdb` を渡さないと project は DB なしで走り、PP board / stand status が
+    /// - `vpdb` を渡さないと project は DB なしで走り、board / stand status が
     ///   永続しない（doc 44 P1 PR4 以前は project が自分で db を開いていた）。
     pub fn for_world(
         world_lanes: super::server::WorldLaneView,

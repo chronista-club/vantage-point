@@ -23,7 +23,7 @@ pub struct TopicAlias {
 /// Seed alias set。`docs/design/06-creoui-draft.md` §6.3 を実体化。
 pub fn default_aliases() -> HashMap<String, String> {
     [
-        ("pp.route", "project/pp/command/route"),
+        ("board.route", "project/board/command/route"),
         ("sc.item.added", "project/sc/state/item-added"),
         ("sc.item.updated", "project/sc/state/item-updated"),
         // PR-pre2 (VP-118): hd → echoes rename (Heaven's Door → Echoes)
@@ -34,7 +34,7 @@ pub fn default_aliases() -> HashMap<String, String> {
         ),
         ("user.click", "user/user/command/click"),
         ("user.focus", "user/user/state/focus-changed"),
-        ("build.done", "project/ge/state/build-done"),
+        ("build.done", "project/runner/state/build-done"),
     ]
     .iter()
     .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -55,8 +55,8 @@ mod tests {
     fn aliases_contain_seed_entries() {
         let a = default_aliases();
         assert_eq!(
-            a.get("pp.route").map(String::as_str),
-            Some("project/pp/command/route")
+            a.get("board.route").map(String::as_str),
+            Some("project/board/command/route")
         );
         assert_eq!(
             a.get("sc.item.added").map(String::as_str),
@@ -70,10 +70,10 @@ mod tests {
 
     #[test]
     fn canonical_shape_check() {
-        assert!(looks_canonical("project/pp/command/route"));
+        assert!(looks_canonical("project/board/command/route"));
         assert!(looks_canonical("user/user/state/focus-changed"));
-        assert!(!looks_canonical("pp.route"));
-        assert!(!looks_canonical("project/pp"));
+        assert!(!looks_canonical("board.route"));
+        assert!(!looks_canonical("project/board"));
         assert!(!looks_canonical(""));
     }
 }

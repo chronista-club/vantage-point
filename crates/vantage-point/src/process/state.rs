@@ -18,7 +18,7 @@ use crate::capability::{ActorRegistry, ProcessManagerCapability, UpdateCapabilit
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::{Content, ProcessMessage};
 
-/// PP の overall canvas layout を pane_contents に畳む際の reserved pane_id。
+/// board の overall canvas layout を pane_contents に畳む際の reserved pane_id。
 /// 通常 pane ではないので restore / pane 一覧から除外する (旧永続化レイヤー退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 
@@ -115,14 +115,14 @@ pub(crate) struct AppState {
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
     /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub world_capabilities: Option<Arc<crate::daemon::world_capabilities::WorldCapabilities>>,
-    /// Lane 階層 Stand container pool (LSCM、 PR-δ-2 / VP-136 で PP を `LaneStandRegistry` 経由 host に統一)。
+    /// Lane 階層 Stand container pool (LSCM、 PR-δ-2 / VP-136 で board を `LaneStandRegistry` 経由 host に統一)。
     ///
     /// SP mode (`run`) でのみ Some、 World mode (`run_world`) では None。
-    /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で PP を
-    /// `project_stands.paisley_park` から本 pool の各 Lane entry に物理移管。 PR-δ-2 (VP-136) で
+    /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で board を
+    /// `project_stands.board` から本 pool の各 Lane entry に物理移管。 PR-δ-2 (VP-136) で
     /// `LaneStand` trait + `LaneStandRegistry` 経由 host に進化、 hardcoded field を
     /// trait-based generic interface に置換。 cardinality 1 → N invariant は保持。
-    /// 既存 `lane_pool` / `project_stands` とは並立 (gradual migration、 PR-γ で GE も移管予定)。
+    /// 既存 `lane_pool` / `project_stands` とは並立 (gradual migration、 PR-γ で runner も移管予定)。
     /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 / VP-120 / VP-135 / VP-136
     pub lane_capabilities: Option<Arc<RwLock<super::lane_capabilities::LaneCapabilitiesPool>>>,
     /// S2 (doc 27 §4.1): demand-driven terminal pump の lane → session → JoinHandle map。
@@ -218,12 +218,12 @@ impl AppState {
     // ペイン状態永続化（pane_contents / SurrealDB 経由、 旧 file-backed DISC 層は退役）
     // =========================================================================
 
-    /// pane_contents (SurrealDB) から PP pane 状態を RetainedStore に boot 復元する。
+    /// pane_contents (SurrealDB) から board pane 状態を RetainedStore に boot 復元する。
     ///
     /// 旧 DISC 層退役 → canonical な pane_contents を直接読む。 webview 自身は
-    /// `/api/pp/state` GET で state を読むが、 retained `show` topic を購読する経路 (MCP show 等)
+    /// board state ask（process-proxy 経由、旧 `/api/pp/state`）で state を読むが、 retained `show` topic を購読する経路 (MCP show 等)
     /// のため boot で RetainedStore も埋める (旧挙動保存)。 旧 DISC restore と同じく
-    /// **conductor scope のみ**復元する (performer は webview が lane 切替時に /api/pp/state で読む)。
+    /// **conductor scope のみ**復元する (performer は webview が lane 切替時に board state ask で読む)。
     /// reserved な canvas-layout row は pane ではないので除外。
     pub async fn restore_pane_contents(&self) {
         let Some(vpdb) = self.vpdb.as_ref() else {
@@ -250,7 +250,7 @@ impl AppState {
                 continue;
             }
             // pane_contents は content_type(str)+content(str) で持つ → Content enum に組み直す。
-            // image_base64 は data/mime を content 1 列に畳めず PP Canvas でも現状未使用
+            // image_base64 は data/mime を content 1 列に畳めず board Canvas でも現状未使用
             // (mcp.rs: image_base64 は content 空文字保存) なので markdown fallback で可
             // (旧 DISC 層も実経路では同等の dead path)。
             let content_str = row
@@ -268,7 +268,7 @@ impl AppState {
                 .get("title")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let topic = format!("process/paisley-park/command/show/root/{}", pane_id);
+            let topic = format!("process/board/command/show/root/{}", pane_id);
             store.set(
                 &topic,
                 ProcessMessage::Show {

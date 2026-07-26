@@ -103,7 +103,7 @@ impl TopicRouter {
     }
 
     /// lane segment の正規化: `None` = conductor（lead）。
-    /// per-lane PP topic の lane 部に使う（root/performer 語彙）。
+    /// per-lane board topic の lane 部に使う（root/performer 語彙）。
     fn lane_seg(lane: &Option<String>) -> &str {
         lane.as_deref()
             .unwrap_or(crate::process::lanes_state::ROOT_LANE_NAME)
@@ -120,46 +120,46 @@ impl TopicRouter {
     ///
     /// 命名規則: `{scope}/{capability}/{category}/{detail}`
     /// - scope: "process"
-    /// - capability: paisley-park, heavens-door, terminal, debug, star-platinum
+    /// - capability: board, heavens-door, terminal, debug, star-platinum
     /// - category: command, event, state, data, log, trace
     fn message_to_topic(msg: &ProcessMessage) -> String {
         match msg {
-            // === Paisley Park（Canvas 表示能力）===
+            // === Board（Canvas 表示能力）===
             // lane segment を verb の後に挿入: `.../command/{verb}/{lane}/{pane_id}`。
             // category(seg2)=command は不変なので is_retained は維持され、retained store は
             // lane 別に分離される（root/main と performer-foo/main が別 topic）。
             // lane=None は conductor（lead）に正規化。
             ProcessMessage::Show { pane_id, lane, .. } => {
                 format!(
-                    "process/paisley-park/command/show/{}/{}",
+                    "process/board/command/show/{}/{}",
                     Self::lane_seg(lane),
                     pane_id
                 )
             }
             ProcessMessage::Clear { pane_id, lane, .. } => {
                 format!(
-                    "process/paisley-park/command/clear/{}/{}",
+                    "process/board/command/clear/{}/{}",
                     Self::lane_seg(lane),
                     pane_id
                 )
             }
             ProcessMessage::Split { pane_id, lane, .. } => {
                 format!(
-                    "process/paisley-park/command/split/{}/{}",
+                    "process/board/command/split/{}/{}",
                     Self::lane_seg(lane),
                     pane_id
                 )
             }
             ProcessMessage::Close { pane_id, lane, .. } => {
                 format!(
-                    "process/paisley-park/command/close/{}/{}",
+                    "process/board/command/close/{}/{}",
                     Self::lane_seg(lane),
                     pane_id
                 )
             }
             ProcessMessage::TogglePane { pane_id, lane, .. } => {
                 format!(
-                    "process/paisley-park/command/toggle/{}/{}",
+                    "process/board/command/toggle/{}/{}",
                     Self::lane_seg(lane),
                     pane_id
                 )
@@ -170,16 +170,16 @@ impl TopicRouter {
             // (lane board は lane で分離、 proj board は lane=conductor に正規化)。
             ProcessMessage::BoardUpdated { scope, lane, .. } => {
                 format!(
-                    "process/paisley-park/state/board/{}/{}",
+                    "process/board/state/board/{}/{}",
                     scope,
                     Self::lane_seg(lane)
                 )
             }
-            // doc 48 Phase 2: editor bridge command。canvas channel (`paisley-park/#`) に乗せて
+            // doc 48 Phase 2: editor bridge command。canvas channel (`board/#`) に乗せて
             // vp-app へ届ける。category=event = 非 retained (stale command の再購読 replay を
             // 構造的に防ぐ — retained にすると再接続のたびに古い editor_set が再実行される)。
             ProcessMessage::EditorCommand { request_id, .. } => {
-                format!("process/paisley-park/event/editor/{}", request_id)
+                format!("process/board/event/editor/{}", request_id)
             }
             // === Heaven's Door（AI Agent 能力）===
             ProcessMessage::ChatChunk { .. } => "process/heavens-door/event/text-chunk".to_string(),
@@ -236,11 +236,9 @@ impl TopicRouter {
             // switch_lane は一時コマンド（active Lane 切替）であり state ではない。
             // category=event にして **非 retained** にする（command にすると retained store に
             // 残り、canvas channel 再接続のたび「最後の switch」が replay され、ユーザーが別 lane
-            // を選んでいても強制ジャンプする副作用が出る）。canvas channel は paisley-park/# を
+            // を選んでいても強制ジャンプする副作用が出る）。canvas channel は board/# を
             // 購読するので event でも live 配信は届く。
-            ProcessMessage::SwitchLane { .. } => {
-                "process/paisley-park/event/switch-lane".to_string()
-            }
+            ProcessMessage::SwitchLane { .. } => "process/board/event/switch-lane".to_string(),
             // wiremsg: Lane 一覧 snapshot。category=state → retained。
             ProcessMessage::LanesSnapshot { .. } => "process/star-platinum/state/lanes".to_string(),
         }
@@ -457,11 +455,11 @@ mod tests {
     use super::*;
     use crate::protocol::{Content, ProcessMessage};
 
-    /// doc 48 Phase 2: EditorCommand は canvas channel (`paisley-park/#`) 配下かつ
+    /// doc 48 Phase 2: EditorCommand は canvas channel (`board/#`) 配下かつ
     /// **非 retained** (category=event)。retained にすると再購読のたびに stale な
     /// editor_set が replay される — その回帰を固定するガード。
     #[test]
-    fn editor_command_topic_is_under_paisley_park_and_not_retained() {
+    fn editor_command_topic_is_under_board_and_not_retained() {
         let topic = TopicRouter::message_to_topic(&ProcessMessage::EditorCommand {
             request_id: "r1".to_string(),
             op: "values".to_string(),
@@ -469,7 +467,7 @@ mod tests {
             value: None,
         });
         assert!(
-            topic.starts_with("process/paisley-park/event/editor/"),
+            topic.starts_with("process/board/event/editor/"),
             "topic={topic}"
         );
         assert!(
@@ -511,7 +509,7 @@ mod tests {
         // lane=None は conductor に正規化され lane segment に入る
         let msg = make_show("main", "# Hello");
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/command/show/root/main");
+        assert_eq!(topic, "process/board/command/show/root/main");
     }
 
     #[test]
@@ -519,7 +517,7 @@ mod tests {
         // performer lane は lane segment にその名が入り、conductor と別 topic になる
         let msg = make_show_lane("main", "# Hi", "feat-api");
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/command/show/feat-api/main");
+        assert_eq!(topic, "process/board/command/show/feat-api/main");
     }
 
     #[test]
@@ -541,7 +539,7 @@ mod tests {
             scope: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/command/clear/root/side");
+        assert_eq!(topic, "process/board/command/clear/root/side");
     }
 
     #[test]
@@ -648,7 +646,7 @@ mod tests {
             lane: "feat-api".to_string(),
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/paisley-park/event/switch-lane");
+        assert_eq!(topic, "process/board/event/switch-lane");
         assert!(!TopicPath::parse(&topic).is_retained());
     }
 
@@ -690,7 +688,7 @@ mod tests {
         router.route(show).await;
 
         let retained = router.retained.read().await;
-        let msg = retained.get("process/paisley-park/command/show/root/main");
+        let msg = retained.get("process/board/command/show/root/main");
         assert!(msg.is_some());
     }
 
@@ -1008,8 +1006,8 @@ mod tests {
                 f.fetch_add(1, Ordering::Relaxed);
             });
         }
-        // paisley-park の subscribe は terminal demand を発火しない。
-        let (_id, _rx) = router.subscribe("process/paisley-park/#").await;
+        // board の subscribe は terminal demand を発火しない。
+        let (_id, _rx) = router.subscribe("process/board/#").await;
         assert_eq!(fired.load(Ordering::Relaxed), 0);
     }
 
@@ -1019,9 +1017,9 @@ mod tests {
         // doc 53 R2 で計上 (demand_counts) は hook 非依存の常時計上になった — unsubscribe で
         // 0 に戻り entry も除去されるので、 map は伸びない。
         let router = TopicRouter::new();
-        let (id, _rx) = router.subscribe("process/paisley-park/#").await;
+        let (id, _rx) = router.subscribe("process/board/#").await;
         router.unsubscribe(id).await;
-        assert!(!router.demand_active("process/paisley-park/#"));
+        assert!(!router.demand_active("process/board/#"));
     }
 
     /// doc 53 R2: `demand_active` は「今 subscriber が居るか」の level 読み。

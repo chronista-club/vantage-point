@@ -156,7 +156,7 @@ pub enum AppEvent {
     /// (`{markdown}` | `{log}` | `{html}` のいずれか)。 main_view に
     /// `window.vpBoard.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
     FilesOpenResult { content: serde_json::Value },
-    /// wiremsg Stage 2: SP の "canvas" Unison channel から受信した Canvas (Paisley Park)
+    /// wiremsg Stage 2: SP の "canvas" Unison channel から受信した Canvas (Board)
     /// ProcessMessage 1 件。`message` は ProcessMessage の生 JSON (`{"type":"show",...}` 等)。
     /// handler は active project の分のみ main_view WebView に転送する。
     CanvasMessage {
