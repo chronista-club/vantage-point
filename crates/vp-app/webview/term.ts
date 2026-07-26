@@ -406,14 +406,6 @@ export function installTerm(): void {
 		try {
 			term.textarea?.setAttribute("autocomplete", "on");
 		} catch (_) {}
-		// 可視 (container clientWidth>0) のときだけ fit。 hidden で fit すると 0 cols 化するので、
-		//  不可視時は 80×24 init を保ち、 実 fit は showLane (active 化後) に委ねる。
-		if (container.clientWidth > 0) {
-			try {
-				fitAddon.fit();
-			} catch (_) {}
-		}
-
 		installOscHandlers(term, address);
 
 		// ===== Transport: World "canvas" channel 経由 (terminal S4、 doc 27 §4.1) =====
@@ -465,6 +457,12 @@ export function installTerm(): void {
 				rows: term.rows,
 			});
 		}
+
+		// ⚠️ ここに「生成直後の初回 fit」は置かない。`.lane-pane` は `display:none` で生まれ
+		// （main_area.rs の CSS）、`.active` が付くのは `createLaneInstance` が**戻った後**
+		// （`ensureLane`）。つまり生成時点の `clientWidth` は必ず 0 で、`clientWidth > 0` を
+		// 条件にした fit は**一度も走らない**（旧実装の `fit()` 単独呼び出しも到達不能だった）。
+		// サイズ合わせは `syncSize` が「可視になった契機」で行う。
 
 		// input → IPC (Rust session → SP)。 d は xterm の UTF-16 string、 UTF-8 bytes に直して base64 化。
 		term.onData((d) => {
@@ -628,6 +626,40 @@ export function installTerm(): void {
 	// Rust → JS の window API（名前で呼ばれる契約。冒頭の doc comment 参照）
 	// -------------------------------------------------------------------------
 
+	/**
+	 * 可視になった instance を実サイズへ合わせ、PTY にも伝える（`fit()` と `sendResize()` は対）。
+	 *
+	 * **level 駆動**（#918 と同型）: 「サイズが変わった」という edge ではなく「今この instance が
+	 * 可視である」という level を契機に撃つ。container の ResizeObserver は size **変化**でしか
+	 * 発火しないので、生成後に誰もサイズを動かさなければ一度も同期されない — PTY は
+	 * `spawn_stand(&cmd, 120, 48)`（`lane_reconcile.rs`）の 120×48 のまま取り残される。
+	 *
+	 * rAF 2 段なのは、`display` 切替の layout flush 前に走ると fit が 0 幅で潰れるため
+	 * （= 狭幅復元bug の intermittent 原因）。幅がまだ 0 なら見送り、80×24 を保つ。
+	 *
+	 * @param focus 真なら fit 後に 1 枚へ focus する（root 優先、無ければ先頭）。
+	 *   キーボード入力の宛先は 1 つなので、focus を撃つのは lane 表示の契機だけ。
+	 */
+	const syncSize = (targets: LaneInstance[], focus = false): void => {
+		if (targets.length === 0) return;
+		requestAnimationFrame(() =>
+			requestAnimationFrame(() => {
+				for (const info of targets) {
+					try {
+						if (info.container.clientWidth > 0) {
+							info.fitAddon.fit();
+							info.sendResize();
+						}
+					} catch (_) {}
+				}
+				if (!focus) return;
+				try {
+					(targets.find((i) => i.isRootHost) || targets[0]).term.focus();
+				} catch (_) {}
+			}),
+		);
+	};
+
 	// doc 50 §4.6 A6: (lane, session) ごとに xterm を用意する。
 	//
 	// `isRoot` は **host の選び方には使わない**（host の身元は session — `ensureTermHost`）。
@@ -652,9 +684,15 @@ export function installTerm(): void {
 			// **表示中 lane の instance は生まれた時点で active**。`.active` を付けるのは元々
 			// `showLane` だけで、それは lane 切替でしか呼ばれない — 表示中の lane に session を
 			// 足すと instance は出来て出力も届くのに `display:none` のままで**黒い pane** になる
-			// （doc 53 §6.5.0 ①、2026-07-26 実機）。fit は ResizeObserver が拾う
-			// （`showLane` と同じ「幅 0 なら見送り、次の resize で復帰」の既定）。
-			if (address === shownLane) inst.container.classList.add("active");
+			// （doc 53 §6.5.0 ①、2026-07-26 実機）。
+			//
+			// active 化は「可視になった契機」なので **その場で同期する**。旧実装は
+			// 「fit は ResizeObserver が拾う」に委ねていたが、RO は size **変化**でしか発火せず、
+			// 生成後に誰もサイズを動かさなければ cols が PTY(120×48) とズレたまま残った。
+			if (address === shownLane) {
+				inst.container.classList.add("active");
+				syncSize([inst]);
+			}
 			dbg(`[lane:${key}] ensured`);
 		}
 	};
@@ -684,28 +722,8 @@ export function installTerm(): void {
 			info.container.classList.toggle("active", on);
 			if (on) actives.push(info);
 		}
-		if (actives.length > 0) {
-			// active 化直後の hidden→visible 遷移で fit / resize / focus。
-			//  setTimeout(0) は display 切替の layout flush 前に走ることがあり、 fit が 0 幅で潰れる
-			//  (= 狭幅復元bug の intermittent 原因)。 rAF 2 段で layout 確定後に fit し、 container 幅が
-			//  まだ 0 なら fit を見送る (80×24 を保持、 次の ResizeObserver/resize で復帰)。
-			requestAnimationFrame(() =>
-				requestAnimationFrame(() => {
-					for (const info of actives) {
-						try {
-							if (info.container.clientWidth > 0) {
-								info.fitAddon.fit();
-								info.sendResize();
-							}
-						} catch (_) {}
-					}
-					// focus は 1 枚だけ（キーボード入力の宛先は 1 つ）。root を優先し、無ければ先頭。
-					try {
-						(actives.find((i) => i.isRootHost) || actives[0]).term.focus();
-					} catch (_) {}
-				}),
-			);
-		}
+		// active 化直後の hidden→visible 遷移で fit / resize / focus（`syncSize` が SSOT）。
+		syncSize(actives, true);
 	};
 
 	const removeLane = (address: string): void => {
