@@ -116,7 +116,7 @@ pub fn slots(lane: &str, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// 新しい console（slot）を 1 枚立てる（doc 46 P5 producer）。
+/// 新しい console（slot）を 1 枚立てる（doc 46 P5 producer。閉じるのは [`slot_close`]）。
 ///
 /// 立つのは **新しい session**（doc 46 §1.5「Pane は必ず新しい session id で始まる」）。
 /// root（= lane の代表 / mailbox の主）は動かないので、既存 console はそのまま。
@@ -143,6 +143,27 @@ pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> 
         get_u64("count").unwrap_or(0)
     );
     println!("  読む: vp lane capture {lane} --session {session}");
+    Ok(())
+}
+
+/// console（slot）を 1 枚閉じる（[`slot_new`] の対）。
+///
+/// GUI の名札 ✕ と**同じ動詞**（`echoes_session_remove`）を叩く。session を registry から
+/// 取り除けば、実体（PtySlot / chat engine）は reconcile が畳む（doc 53 §12.4）。
+/// root は registry 側が拒否する（lane の代表を消す = 素に戻すのは `--fresh` restart の役目）。
+pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
+    let path = project_path_for_lane(lane, config)?;
+    let resp = world_process_request_blocking(
+        crate::cli::world_port(),
+        &path,
+        "echoes_session_remove",
+        serde_json::json!({ "lane": lane, "session": session }),
+    )?;
+    let focused = resp
+        .get("focused")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    println!("[vp lane slot-close] {lane}: session={session} を閉じた（focused={focused}）");
     Ok(())
 }
 
