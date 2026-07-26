@@ -17,8 +17,8 @@ const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
 	hd: { default: "ph:chats-teardrop", active: "ph:chats-teardrop-fill" }, // legacy alias
 	shell: { default: "ph:terminal-window", active: "ph:terminal-window-fill" },
 	tmux: { default: "ph:presentation", active: "ph:presentation-fill" },
-	paisley_park: { default: "ph:compass", active: "ph:compass-fill" },
-	gold_experience: { default: "ph:plant", active: "ph:plant-fill" },
+	board: { default: "ph:compass", active: "ph:compass-fill" },
+	runner: { default: "ph:plant", active: "ph:plant-fill" },
 	devices: { default: "ph:magnet", active: "ph:magnet-fill" },
 };
 
@@ -39,10 +39,10 @@ export function standDisplayName(stand: string): string {
 			return "Shell";
 		case "tmux":
 			return "Tmux";
-		case "paisley_park":
-			return "Paisley Park";
-		case "gold_experience":
-			return "Gold Experience";
+		case "board":
+			return "Board";
+		case "runner":
+			return "Runner";
 		case "devices":
 			return "Devices";
 		default:

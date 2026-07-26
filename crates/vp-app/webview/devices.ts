@@ -1,7 +1,7 @@
 /**
  * Devices 🧲 — main area の Devices pane に接続中 device 一覧を render する API。
  *
- * pp.ts (Paisley Park body render) と同じ純 action layer (DOM 操作のみ、 state なし)。
+ * board-render.ts (Board body render) と同じ純 action layer (DOM 操作のみ、 state なし)。
  * Rust が device event 時に `window.vpDevices.renderDevices(devices)` を呼ぶ
  * (= EventBus → world-device channel → AppEvent::DeviceEvent → main_view push)。
  *

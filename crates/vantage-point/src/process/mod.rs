@@ -31,7 +31,7 @@ pub(crate) mod lane_stand;
 /// Lane state types (LaneAddress / LanePool 等) — Lane scope の data model
 pub(crate) mod lanes_state;
 pub mod process_runner;
-/// Project scope の Stand pool (PP / GE / HP)
+/// Project scope の Stand pool (board / runner ほか — 現在は縮退済)
 pub(crate) mod project_registry;
 pub(crate) mod project_stands_state;
 pub(crate) mod retained;

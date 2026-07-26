@@ -46,7 +46,7 @@ pub struct DeviceIoState {
 
 /// Lane に host される device I/O endpoint（Device I/O 🌫️）。
 ///
-/// `PaisleyParkStand` と同型の **passive marker**（`LaneStandHost` impl）。
+/// `BoardStand` と同型の **passive marker**（`LaneStandHost` impl）。
 /// `LaneCapabilities::new()` で各 Lane に自動登録される（midi feature 有効時）。
 ///
 /// E3-2 で DeviceProfile の hold + projection batch 生成を追加。

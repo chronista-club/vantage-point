@@ -915,12 +915,12 @@ async fn lanes_session_after_open(
     }
 }
 
-/// wiremsg Stage 2 consumer: SP の "canvas" Unison channel を購読し、Canvas (Paisley Park)
+/// wiremsg Stage 2 consumer: SP の "canvas" Unison channel を購読し、Canvas (Board)
 /// ProcessMessage を受信して `AppEvent::CanvasMessage` を emit する。`spawn_lanes_subscription`
 /// と同型（QUIC 購読 + 指数バックオフ再接続）。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
 ///
 /// L0 SP-portless (canvas slice): 接続先は SP 直結ではなく **World :32000 の集約 "canvas" channel**。
-/// 各 SP が paisley-park topic を World に push し、 World が project の TopicRouter に集約済なので、
+/// 各 SP が board topic を World に push し、 World が project の TopicRouter に集約済なので、
 /// 本購読は project_path で scope して当該 project の canvas (retained + live) を受ける。
 fn spawn_canvas_subscription(
     rt_handle: &tokio::runtime::Handle,
@@ -958,7 +958,7 @@ async fn canvas_subscription_loop(
 
 /// 1 回の "canvas" channel 接続セッション: connect → `open_channel("canvas")` → recv ループ。
 ///
-/// "canvas" channel は `process/paisley-park/#` retained topic を購読しており、接続直後に
+/// "canvas" channel は `process/board/#` retained topic を購読しており、接続直後に
 /// 現スナップショット（最新 Show 等）が届く。各メッセージは `send_event("pane", <JSON>)` で
 /// 来る（payload = ProcessMessage の生 JSON）。
 async fn run_canvas_session(
@@ -2402,7 +2402,7 @@ async fn collect_activity(
 ///
 /// Phase 5-A 拡張: Lane と Stand が **mutually exclusive** な active 軸として扱われる。
 /// 優先順位:
-///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "devices"
+///   1. `active_stand` Some → kind = "board" / "runner" / "devices"
 ///   2. `active_lane_address` Some → kind = "terminal"、 pane_id = Lane address
 ///   3. 両方 None → kind=None で empty placeholder
 ///
@@ -3128,7 +3128,7 @@ fn mark_lane_awaiting_input(
     push_sidebar_state(webview, sidebar_state);
 }
 
-/// lane に Canvas (PP) show が着信したことを sidebar の canvas_unread に計上する。
+/// lane に Canvas (board) show が着信したことを sidebar の canvas_unread に計上する。
 ///
 /// `mark_lane_awaiting_input` (HITL/OSC = 黄 dot) とは**別 sink**。Canvas 着信は sidebar 行に
 /// Canvas 専用 icon (Phosphor easel) として出し、「用事(黄 dot)」と「絵が届いた(easel)」の
@@ -3461,7 +3461,7 @@ fn handle_sidebar_ipc(
             }
         }
         IpcEnvelope::FilesOpen(m) => {
-            // Sidebar File Explorer: 選択されたファイルを Canvas (PP) に表示する要求。
+            // Sidebar File Explorer: 選択されたファイルを Canvas (board) に表示する要求。
             // rel_path は workdir 相対 (TS 側で list_entries の戻り値そのまま投げる想定)。
             if !m.path.is_empty() && !m.address.is_empty() && !m.rel_path.is_empty() {
                 out.files_open_request = Some((m.path, m.address, m.rel_path));
@@ -3613,7 +3613,7 @@ pub fn run() -> anyhow::Result<()> {
     //
     // tao の event_loop は macOS main thread を専有し、 closure 内には Tokio
     // runtime context が無いため、 bare `tokio::spawn` を呼ぶと
-    // 「no reactor running」 panic で即死する (= 過去事故、 PP 永続化 #456241e 等)。
+    // 「no reactor running」 panic で即死する (= 過去事故、 board 永続化 #456241e 等)。
     //
     // 全 async work はここで作る共有 runtime の `Handle::spawn` に乗せる。
     // closure / helper 関数には `rt_handle.clone()` を move-capture で配る。
@@ -4286,7 +4286,7 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // wiremsg: 各 project の SP の Unison channel を購読する (per-SP 1 本ずつ)。
                 // - Stage 1: "lanes" channel → sidebar Lane ツリー
-                // - Stage 2: "canvas" channel → main area の Paisley Park body
+                // - Stage 2: "canvas" channel → main area の Board body
                 // retained topic なので接続直後に現スナップショットが届き、以降変化のたび
                 // push される。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
                 for (path, _port) in &project_ports {
@@ -4749,7 +4749,7 @@ pub fn run() -> anyhow::Result<()> {
                 message,
             }) => {
                 // wiremsg Stage 2: SP の "canvas" channel から受信した ProcessMessage。
-                // active project の分のみ main area の Paisley Park body に転送する。
+                // active project の分のみ main area の Board body に転送する。
                 // active 判定: active_lane_address の project segment == process_path の basename。
                 let active_project = sidebar_state
                     .active_lane_address
@@ -4782,7 +4782,7 @@ pub fn run() -> anyhow::Result<()> {
                         .or_default()
                         .insert(lane_key, message.clone());
                 }
-                // B1 + cross-project: switch_lane は PP content ではなく active Lane 切替コマンド。
+                // B1 + cross-project: switch_lane は board content ではなく active Lane 切替コマンド。
                 // active を「変える」コマンドなので、active project guard の **外**で処理する
                 // （別 project の SP から来た switch_lane こそ通す）。送信元 SP の project
                 // (= msg_project) の lane を activate し、sidebar / main area を追随させる。
@@ -4829,7 +4829,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     }
                 } else if active_project.is_some() && active_project == msg_project {
-                    // PP content (非 switch_lane) は active project の分のみ main area に転送する。
+                    // board content (非 switch_lane) は active project の分のみ main area に転送する。
                     match serde_json::to_value(&message) {
                         Ok(json) => lane_js::board_message(&webview, json),
                         Err(e) => {
@@ -5540,11 +5540,11 @@ pub fn run() -> anyhow::Result<()> {
                 tracing::debug!("wire history 受領 (address={address})");
                 sidebar_js::wire_result(&webview, payload);
             }
-            // Sidebar File Explorer: file 読み込み結果を Canvas (PP) に inject。
+            // Sidebar File Explorer: file 読み込み結果を Canvas (board) に inject。
             // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
             // 再現するため、 `ProcessMessage::Show` 相当の JSON を main_view にそのまま渡す。
             Event::UserEvent(AppEvent::FilesOpenResult { content }) => {
-                // doc 19 PP Canvas Stack Model: append field は omit (= stack push に
+                // doc 19 board Canvas Stack Model: append field は omit (= stack push に
                 // 統一)。 pane_id は dead field だが backward compat で keep。
                 lane_js::board_message(
                     &webview,
@@ -6165,7 +6165,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
 
-                // Sidebar File Explorer: 選択されたファイルを Canvas (PP) に表示する要求。
+                // Sidebar File Explorer: 選択されたファイルを Canvas (board) に表示する要求。
                 // file 読み込み + base64 (画像) も blocking thread に逃す。 結果の Content JSON は
                 // AppEvent::FilesOpenResult で main thread に戻して main_view へ inject。
                 if let Some((project_path, address, rel_path)) = outcome.files_open_request {

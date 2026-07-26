@@ -210,7 +210,7 @@ export function runFileExplorer(): void {
 	window.vpFilePicker?.open(address);
 }
 
-/** `p` — send current/selected to PP。 */
+/** `p` — send current/selected to board。 */
 export function runSendToPP(): void {
 	if (window.vpFilePicker?.sendSelectedToPP) {
 		window.vpFilePicker.sendSelectedToPP();

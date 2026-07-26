@@ -18,7 +18,7 @@
 //! | PR-2 | Stand migrate (`agent` + `protocol`、 observer/consumer pattern 形式化) | 未着手 |
 //! | PR-3 | Service migrate (`notify` + `lane-spawn` + `sp-bootstrap` + `devices`) | 未着手 |
 //! | PR-4 | supervisor 統一 (`ActorRegistry` / `SupervisorFactory` 集約) | 未着手 |
-//! | PR-5 | cleanup + guideline docs/spec + paisley_park / gold_experience は将来 PR-γ | 未着手 |
+//! | PR-5 | cleanup + guideline docs/spec + board / runner は将来 PR-γ | 未着手 |
 //!
 //! ## 設計分岐 (= i 路線採用、 PR-δ-1 同型)
 //!
@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 /// VP の 3 層 architecture (`docs/design/12-stand-architecture.md` LSCM):
 /// - **World**: machine-wide singleton (TheWorld daemon scope、 例: `devices@world`)
 /// - **Project**: SP 起動単位 (= 1 Process per project、 例: `agent` / `protocol` / `notify`)
-/// - **Lane**: Project 内 Lane 単位 (= 1 Lane per Stand instance、 例: `paisley_park`)
+/// - **Lane**: Project 内 Lane 単位 (= 1 Lane per Stand instance、 例: `board`)
 ///
 /// 既存 code は dev discipline 任せで scope を表現していたが、 本 enum で trait 内に
 /// 明示的に持たせる事で supervisor (PR-4) が scope 検証可能になる。
@@ -68,7 +68,7 @@ pub enum LayerScope {
 /// ECS entity bound actor の **minimal marker trait** (PR-1 受け皿)。
 ///
 /// `Stand` は VP-24 original 設計意図 「Stand に component bolt-on で msgbox 使える」 の
-/// 形式化。 Echoes (Claude CLI) / Protocol / 将来 PaisleyPark / GoldExperience 等の **能力
+/// 形式化。 Echoes (Claude CLI) / Protocol / 将来 board / runner 等の **能力
 /// (= ECS entity)** を表現する。
 ///
 /// `Any` super-trait で downcast を支援 (caller が specific Stand state を取り出すため)。
@@ -92,13 +92,13 @@ pub enum LayerScope {
 /// ## `LaneStandHost` との違い
 ///
 /// `process::lane_stand::LaneStandHost` は **Lane に host される受動的 marker** (= passive、
-/// `paisley_park` 等)。 `Stand` は **ECS entity bound actor** (= active、 `agent` /
+/// `board` 等)。 `Stand` は **ECS entity bound actor** (= active、 `agent` /
 /// `protocol`)。 同じ「Stand」 という言葉で 2 概念を区別する規約:
 ///
 /// - `Stand` (本 trait): ECS entity bound、 自律的に lifecycle / message を処理
 /// - `LaneStandHost` (PR-δ-1): Lane に hosted、 LaneStandRegistry で N 個 host する marker
 ///
-/// 将来的に `paisley_park` が `LaneStandHost` impl から `Stand` impl に進化する path も
+/// 将来的に `board` が `LaneStandHost` impl から `Stand` impl に進化する path も
 /// 想定 (= PR-γ で Lane に migrate されたら entity bound 化)、 その際は両 trait impl も可能。
 pub trait Stand: Any + Send + Sync + 'static {
     /// actor 名 (例: `"agent"` / `"protocol"`)。 mailbox address の actor 部分と一致する。

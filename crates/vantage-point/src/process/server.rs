@@ -133,7 +133,7 @@ pub(crate) async fn start_project(
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
-    // 旧 file-backed 永続化レイヤー退役: 永続は SurrealDB 一本化 (PP pane state は pane_contents)。
+    // 旧 file-backed 永続化レイヤー退役: 永続は SurrealDB 一本化 (board pane state は pane_contents)。
 
     // project_name は project_dir から解決（AppState / lane pool 等で使用）
     let project_name_for_remote =
@@ -266,11 +266,11 @@ pub(crate) async fn start_project(
         // World の集約 view を更新する経路。 将来 Pane / Stand 等の event も同 bus に variant
         // 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
+        // Phase A4-2b: Project scope の Stand pool (board/runner ほか) — skeleton
         // PR-α-1 (VP-111): SP モードでは WorldCapabilities を持たない (World mode 専用)
         world_capabilities: None,
         // PR-β-1 (VP-119): SP モードで LaneCapabilities pool 受け皿を Some で初期化。
-        // 物理移管 (PP) は PR-β-2、 本 PR では空 HashMap で構築のみ。
+        // 物理移管 (board) は PR-β-2、 本 PR では空 HashMap で構築のみ。
         lane_capabilities: Some(Arc::new(RwLock::new(
             super::lane_capabilities::LaneCapabilitiesPool::new(),
         ))),
@@ -291,8 +291,8 @@ pub(crate) async fn start_project(
     state.restore_pane_contents().await;
 
     // PR-β-2 (VP-120): Conductor Lane の LaneCapabilities entry を populate (LanePool::with_root と同期)。
-    // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Conductor Lane の独立 PaisleyParkState を host。
-    // doc 13 §6 自動 spawn rule = Lane 起動時に PP 同時 spawn (default) を default で実現。
+    // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Conductor Lane の独立 BoardState を host。
+    // doc 13 §6 自動 spawn rule = Lane 起動時に board 同時 spawn (default) を default で実現。
     if let Some(lc_pool) = state.lane_capabilities.as_ref() {
         let conductor_addr = super::lanes_state::LaneAddress::root(&project_name_for_remote);
         let default_stand = crate::config::Config::load()
@@ -304,7 +304,7 @@ pub(crate) async fn start_project(
             .await
             .populate_lane(conductor_addr, default_stand);
         tracing::info!(
-            "PR-β-2: LaneCapabilities pool に Conductor Lane populate (project={}, PP host 化)",
+            "PR-β-2: LaneCapabilities pool に Conductor Lane populate (project={}, board host 化)",
             project_name_for_remote
         );
     }
@@ -521,7 +521,7 @@ pub(crate) async fn start_project(
 /// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
 /// 本関数は token では止まらないリソースの解放を担当する）。
 pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
-    // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 DISC
+    // pane 状態は webview が board state ask（process-proxy）で逐次 pane_contents に保存済 (旧 DISC
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
 
     // ファイル監視を全停止

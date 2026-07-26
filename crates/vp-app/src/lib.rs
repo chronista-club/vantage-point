@@ -14,7 +14,7 @@
 //!
 //! vp-app は tao の event_loop が macOS main thread を専有し、 closure 内に Tokio
 //! runtime context が無い。 そこで bare `tokio::spawn` を呼ぶと「no reactor running」
-//! panic で即死する (= 過去事故、 PP 永続化 #456241e 等)。
+//! panic で即死する (= 過去事故、 board 永続化 #456241e 等)。
 //!
 //! 全 async work は `app::run()` で作る shared runtime の
 //! `rt_handle.spawn(...)` / `rt_handle.spawn_blocking(...)` 経由で投げる。

@@ -631,7 +631,7 @@ impl rmcp::ServerHandler for VantageMcp {
         // する pattern で API contract を満たす (= 公式が future-compatible として用意してる upgrade path)。
         let mut info = ServerInfo::default();
         info.instructions = Some(
-            "Vantage Point Process - Pin rich content (markdown, HTML, images) to the board (Paisley Park). \
+            "Vantage Point Process - Pin rich content (markdown, HTML, images) to the board (Board). \
              Use 'capture_window' to take a PNG screenshot of the GUI window (viewable with Read tool), \
              'show' to pin content to the board, 'clear' to clear the board, \
              'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \

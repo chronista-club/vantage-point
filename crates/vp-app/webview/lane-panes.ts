@@ -102,12 +102,12 @@ export function hostIdForAct(
 	return act === "chat" ? chatHostId(session) : termHostId(session);
 }
 
-/** board（PP）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
+/** board（board）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
  *  1 lane 1 枚、表示 lane は常に 1 つ = xterm と同じ性質。動的生成は不要、位置決めだけ動く）。
  *  roster に載るのは board が非空のときだけ（doc 52 §10 wave 0 — board 非空で自動）。 */
 export const BOARD_PANE_REF: PaneRef = {
 	id: "lane-board",
-	label: "Paisley Park",
+	label: "Board",
 	kind: "board",
 };
 

@@ -34,9 +34,9 @@ import { layoutEngine } from "./layout-host";
 export const APP_SCOPE = "app";
 
 /** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT）。
- *  doc 52 §10 wave 0: pp（Paisley Park）は app pane を退役し、lane tiling の board pane
+ *  doc 52 §10 wave 0: pp（Board）は app pane を退役し、lane tiling の board pane
  *  （#lane-board、lane-panes.ts）へ移った。echoes（= lane workbench 全体）の中に board が並ぶ。 */
-export const APP_PANE_IDS = ["echoes", "ge", "devices", "preview", "empty"] as const;
+export const APP_PANE_IDS = ["echoes", "runner", "devices", "preview", "empty"] as const;
 export type AppPaneId = (typeof APP_PANE_IDS)[number];
 
 // ---------- data: preset Scene 群（旧 scenes.ts の後継） ----------
@@ -69,7 +69,7 @@ export const APP_SCENES: readonly Scene[] = [
 	},
 	// kind → `${pane}-focus` bridge（entry.tsx）が使う単独 focus 群。pp は退役（doc 52 §10
 	// wave 0 — board は lane workbench 内の pane に移り、app scene の関心事から外れた）。
-	{ id: "ge-focus", name: "GE Focus", description: "Gold Experience 単独", layout: focusLayout("ge") },
+	{ id: "runner-focus", name: "runner Focus", description: "Runner 単独", layout: focusLayout("runner") },
 	{ id: "devices-focus", name: "Devices Focus", description: "Devices 単独", layout: focusLayout("devices") },
 	{
 		id: "preview-focus",
@@ -89,7 +89,7 @@ const APP_SCENE_BY_ID = new Map(APP_SCENES.map((s) => [s.id, s]));
 
 /** Ctrl+Shift+]/[ で巡る preset（doc 52 §10 wave 0: pp scene 退役後は 4 つの stand focus を巡る。
  *  empty は巡回に入れない）。lead-focus = lane workbench（board も console も chat もこの中の tiling）。 */
-export const PRESET_CYCLE = ["lead-focus", "ge-focus", "devices-focus", "preview-focus"] as const;
+export const PRESET_CYCLE = ["lead-focus", "runner-focus", "devices-focus", "preview-focus"] as const;
 
 // ---------- calculations ----------
 
@@ -156,7 +156,7 @@ export function applyAppScene(id: string): boolean {
 }
 
 // ---------- stand pane の「訪問」（sidebar click の一時 view、2026-07-23 dogfood） ----------
-// sidebar から PP/GE/Devices を開くのは「ちょっと見る」訪問であって workspace の形の
+// sidebar から board/runner/Devices を開くのは「ちょっと見る」訪問であって workspace の形の
 // 選択ではない — 訪問を lane の配置記憶に焼き込むと、lane を行き来しても stand 画面が
 // 出っ放しになり console に戻る口が hotkey しかなくなる（Devices 可視化で表面化した
 // 新旧共通の UX ギャップ）。訪問は出発点を覚え、✕（close-pane）で戻る。
@@ -166,7 +166,7 @@ let beforeVisit: { layout: Layout; sceneId: string | null } | null = null;
 
 /**
  * stand pane を訪問する（bridge の kind≠terminal 経路用）。
- * 訪問の入れ子（Devices → GE）は最初の出発点を保つ。
+ * 訪問の入れ子（Devices → runner）は最初の出発点を保つ。
  */
 export function visitAppPane(paneId: string): boolean {
 	if (!transientVisit) {
@@ -292,7 +292,7 @@ function renderAppPanes(root: ParentNode, resolved: ResolvedMap): void {
 		el.style.opacity = visible ? "1" : "0";
 		el.style.pointerEvents = visible ? "auto" : "none";
 		// ⚠️ visibility は opacity と別に必須（2026-07-24 実測の根治）: opacity:0 +
-		// pointer-events:none でも、pane 内の iframe（#preview-frame / PP の sandbox）は
+		// pointer-events:none でも、pane 内の iframe（#preview-frame / board の sandbox）は
 		// WebKit の **compositor 側 scroll hit-test に残り**、main area 上の wheel を
 		// 空の iframe に吸い込む（macOS 26.5 で顕在化 — click は main-thread 判定で
 		// 素通りするため「wheel だけ死ぬ」）。visibility:hidden は両スレッドの

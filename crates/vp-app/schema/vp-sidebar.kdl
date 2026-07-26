@@ -97,7 +97,7 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "address" type="string"
         }
-        // File picker: 選択されたファイルを Canvas (Paisley Park) に表示。
+        // File picker: 選択されたファイルを Canvas (Board) に表示。
         // Rust 側で拡張子に応じて Markdown/Log/Html を組み立て、 main_view へ Show を inject。
         request "files:open" {
             field "path" type="string"

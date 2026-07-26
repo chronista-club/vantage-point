@@ -377,7 +377,7 @@ export function installTerm(): TermPushHandlers {
 		//   ✅ ProgressAddon         — V4+ enhancer
 		//   ✅ WebLinksAddon         — V4+ enhancer
 		//   ❌ ImageAddon            — VP-162 で不要判定 (2026-05-11)。#920 で npm 依存からも外した。
-		//      VP architecture は「Canvas (= PP) で視る、 TUI で操る」で image は PP body markdown
+		//      VP architecture は「Canvas (= board) で視る、 TUI で操る」で image は board body markdown
 		//      pipeline が主路線、 terminal 内 inline (sixel/iTerm IIP/kitty graphics) は副次的。
 		//      復帰 cost は低い (`@xterm/addon-image` を足して try/catch 1 block) ので必要時に revisit。
 		//

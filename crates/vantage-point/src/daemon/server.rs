@@ -64,11 +64,11 @@ pub struct DaemonState {
     /// SP 内 lane (Performer 等) の add/remove/update を realtime 配信する。 capacity 64 は
     /// 同上 (短時間に lane diff が集中しても drop しない buffer)。
     pub lane_change_tx: tokio::sync::broadcast::Sender<String>,
-    /// L0 SP-portless (canvas slice): project ごとの Canvas (Paisley Park) TopicRouter。
+    /// L0 SP-portless (canvas slice): project ごとの Canvas (Board) TopicRouter。
     ///
-    /// 各 SP が "canvas-ingest" channel で paisley-park の ProcessMessage を push し、 World は
+    /// 各 SP が "canvas-ingest" channel で board の ProcessMessage を push し、 World は
     /// それを project の TopicRouter に `route()` する。 vp-app 向け "canvas" channel はこの
-    /// TopicRouter を `subscribe("process/paisley-park/#")` して retained 初期配信 + live delta を
+    /// TopicRouter を `subscribe("process/board/#")` して retained 初期配信 + live delta を
     /// 配る。 SP の "canvas" channel (`process/unison_server.rs`) と **同じ TopicRouter 型を再利用**
     /// することで、 retained/delta/atomicity を World 側で再実装せず委譲する (lanes の lane_registry
     /// に相当する canvas 版の per-project store)。 project_path (path_key) → TopicRouter。
@@ -1116,7 +1116,7 @@ async fn recv_subscribe_handshake(channel: &UnisonChannel) -> Option<String> {
 ///
 /// subscribe payload に任意の `pattern` field を許す。 canvas channel は購読対象 topic を
 /// この pattern で指定する (例: terminal surface は `process/terminal/data/{lane}/out`)。
-/// 既存 vp-app は `pattern` を送らないので `None` を返し、 caller 側で paisley-park default に
+/// 既存 vp-app は `pattern` を送らないので `None` を返し、 caller 側で board default に
 /// フォールバックする (= 既存 canvas 購読は無改造で動く)。
 async fn recv_subscribe_handshake_with_pattern(
     channel: &UnisonChannel,
@@ -1677,7 +1677,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // "gui-ingest" Channel（SP → World の GUI-bound content push 受け口。旧名 "canvas-ingest"）
     // =========================================================================
     // doc 44 P1 (fold-in) 以前は、各 SP の pusher (`discovery::spawn_world_uplink`) が
-    // paisley-park topic の ProcessMessage をこの channel に push していた。fold-in 後は
+    // board topic の ProcessMessage をこの channel に push していた。fold-in 後は
     // project の TopicRouter を World が直接購読するため、この受け口に来る push は無い
     // （`canvas_router_for` が project 起動時に実 router へ差し替える）。channel 自体は
     // 外部からの ingest 口として残置（doc 52 §6: 対の配信 channel は "gui"）。
@@ -1700,7 +1700,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let router =
                             canvas_router_for(&canvas_routers, &control_channels, &path_key).await;
 
-                        // SP から push される paisley-park ProcessMessage を router に route。
+                        // SP から push される board ProcessMessage を router に route。
                         // event は method="pane"、 payload = ProcessMessage JSON (SP の canvas
                         // channel と同形)。
                         loop {
@@ -1736,9 +1736,9 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "gui" Channel（vp-app への配信バス — board / terminal / echoes / editor を一本で運ぶ）
     // =========================================================================
-    // doc 52 §6: 旧名 "canvas" から改名（実態は PP 専用でなく GUI への配信路の総称）。
+    // doc 52 §6: 旧名 "canvas" から改名（実態は board 専用でなく GUI への配信路の総称）。
     // vp-app は SP 直結ではなく World :32000 の本 channel に集約する。 project の TopicRouter を
-    // `subscribe("process/paisley-park/#")` し、 retained 初期配信 (最新 board 等) + live delta を
+    // `subscribe("process/board/#")` し、 retained 初期配信 (最新 board 等) + live delta を
     // `send_event("pane", <ProcessMessage JSON>)` 形で配る。
     // → vp-app の consumer (`run_canvas_session`) は接続先が変わっても無改造。
     {
@@ -1757,7 +1757,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         // 別 task に分け、 main task は上り request 専従にする (control handler +
                         // process-proxy が実証済の並行 send/recv パターン)。
                         let channel = Arc::new(UnisonChannel::new(stream));
-                        // S2: handshake で購読 pattern を受領 (省略時 paisley-park default で
+                        // S2: handshake で購読 pattern を受領 (省略時 board default で
                         // 既存 vp-app を無改造に保つ)。 terminal surface は
                         // `process/terminal/data/{lane}/out` を指定して demand を立てる。
                         let Some((path_key, pattern)) =
@@ -1768,9 +1768,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let router =
                             canvas_router_for(&canvas_routers, &control_channels, &path_key).await;
 
-                        // pattern 指定があればそれを、 無ければ paisley-park default を購読。
-                        let pattern =
-                            pattern.unwrap_or_else(|| "process/paisley-park/#".to_string());
+                        // pattern 指定があればそれを、 無ければ board default を購読。
+                        let pattern = pattern.unwrap_or_else(|| "process/board/#".to_string());
                         let (sub_id, mut rx) = router.subscribe(&pattern).await;
 
                         // 下り push task: topic event → surface (`pane` event)。

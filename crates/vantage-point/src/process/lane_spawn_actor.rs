@@ -96,7 +96,7 @@ use super::lanes_state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, Syste
 /// `spawn_loop(shutdown)` で background recv loop を `tokio::spawn` 起動する。
 ///
 /// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Performer spawn 成功時に
-/// `populate_lane` を呼び、 Lane あたり独立 PaisleyParkState を host する。
+/// `populate_lane` を呼び、 Lane あたり独立 BoardState を host する。
 pub struct LaneSpawnActor {
     lane_pool: Arc<RwLock<LanePool>>,
     lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
@@ -229,7 +229,7 @@ impl SpawnableService for LaneSpawnActor {
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
 ///
 /// PR-β-2 (VP-120): `lane_capabilities_pool` 引数 (Option) を追加、 spawn 成功時に
-/// `populate_lane` を呼んで Performer Lane あたり独立 PaisleyParkState を host する。
+/// `populate_lane` を呼んで Performer Lane あたり独立 BoardState を host する。
 async fn handle_cmd(
     cmd: LaneCmd,
     pool: Arc<RwLock<LanePool>>,
@@ -344,11 +344,11 @@ async fn handle_cmd(
     );
 
     // Performer Lane spawn 完了 → LaneCapabilities pool に entry 追加
-    // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
+    // (Lane あたり独立 BoardState を host、 doc 13 §6 自動 spawn rule = default)。
     // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
     //
     // doc 53 §12.2: **spawn 失敗でも populate する**（旧: Dead なら skip）。intent が残る以上
-    // lane は「立ち上がっていないが在る」— 次の契機で slot が立った時に PP だけ不在、を
+    // lane は「立ち上がっていないが在る」— 次の契機で slot が立った時に board だけ不在、を
     // 作らない。chat lane（PTY 無しで正常）も同じ扱いになり、旧 state 分岐の非対称も消える。
     if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
         lc_pool.write().await.populate_lane(addr.clone(), &stand);

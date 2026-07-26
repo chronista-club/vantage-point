@@ -111,9 +111,9 @@ mod tests {
     fn test_set_and_get() {
         let mut store = RetainedStore::new();
         let msg = make_show("main", "# Hello");
-        store.set("process/paisley-park/command/show/main", msg);
+        store.set("process/board/command/show/main", msg);
 
-        let retrieved = store.get("process/paisley-park/command/show/main");
+        let retrieved = store.get("process/board/command/show/main");
         assert!(retrieved.is_some());
         match retrieved.unwrap() {
             ProcessMessage::Show { pane_id, .. } => {
@@ -174,10 +174,7 @@ mod tests {
             "process/terminal/state/ready",
             ProcessMessage::TerminalReady,
         );
-        store.set(
-            "process/paisley-park/command/show/main",
-            make_show("main", "Hi"),
-        );
+        store.set("process/board/command/show/main", make_show("main", "Hi"));
         assert_eq!(store.len(), 2);
 
         store.clear();
@@ -187,21 +184,15 @@ mod tests {
     #[test]
     fn test_get_matching_exact() {
         let mut store = RetainedStore::new();
-        store.set(
-            "process/paisley-park/command/show/main",
-            make_show("main", "A"),
-        );
-        store.set(
-            "process/paisley-park/command/show/side",
-            make_show("side", "B"),
-        );
+        store.set("process/board/command/show/main", make_show("main", "A"));
+        store.set("process/board/command/show/side", make_show("side", "B"));
         store.set(
             "process/terminal/state/ready",
             ProcessMessage::TerminalReady,
         );
 
-        // Paisley Park の command 配下を全取得
-        let pattern = TopicPattern::parse("process/paisley-park/command/#");
+        // Board の command 配下を全取得
+        let pattern = TopicPattern::parse("process/board/command/#");
         let results = store.get_matching(&pattern);
         assert_eq!(results.len(), 2);
     }
@@ -220,10 +211,7 @@ mod tests {
                 active_id: None,
             },
         );
-        store.set(
-            "process/paisley-park/command/show/main",
-            make_show("main", "X"),
-        );
+        store.set("process/board/command/show/main", make_show("main", "X"));
 
         // 全 capability の state を取得
         let pattern = TopicPattern::parse("process/+/state/#");

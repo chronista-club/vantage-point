@@ -896,7 +896,7 @@ fn list_performers_detail() -> Result<()> {
 /// ask で forward する（SP は listen しないので旧来の SP 直結 QUIC は撤去）。World が project_path
 /// を path_key に正規化して当該 SP の control channel を逆引きし、`dispatch_process_method`
 /// （"switch_lane" → `handle_process_message`）へ forward → hub.broadcast → topic
-/// `process/paisley-park/event/switch-lane`（非 retained）→ canvas channel 経由で vp-app が受信し、
+/// `process/board/event/switch-lane`（非 retained）→ canvas channel 経由で vp-app が受信し、
 /// その lane を active 化する（lane-within-project の per-project 切替）。
 /// MCP 側も `process_call("switch_lane", …)`（mcp.rs、process-proxy 経由）で同 dispatch に着地。
 fn switch_lane_via_quic(name: &str) -> Result<()> {

@@ -175,7 +175,7 @@ pub struct SidebarState {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub origin_by_project: std::collections::HashMap<String, String>,
     /// Phase 5-A: 現在 active な Project-scope Stand kind
-    /// (`"paisley_park"` / `"gold_experience"` / `"devices"`)。
+    /// (`"board"` / `"runner"` / `"devices"`)。
     /// `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
     /// `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
     /// `stand:select` IPC で更新される。
@@ -200,7 +200,7 @@ pub struct SidebarState {
     /// `unread_notifications` (履歴 count) と分離した「現在の活動状態」 表現。
     #[serde(default)]
     pub awaiting_input: std::collections::HashMap<String, bool>,
-    /// Canvas (Paisley Park) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
+    /// Canvas (Board) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
     /// Key: Lane address (`"<project>/root"` 等)、 Value: 現在 active でない lane に
     /// show が着いた回数。 `CanvasMessage`(show) で increment、 `lane:select` (activate_lane) で
     /// 対応 Lane を 0 reset。 `unread_notifications` (HITL/OSC = 黄 dot) とは**別 sink** =
@@ -270,7 +270,7 @@ pub struct MessageState {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct ActiveStand {
     pub project_path: String,
-    /// `"paisley_park"` | `"gold_experience"` | `"devices"`
+    /// `"board"` | `"runner"` | `"devices"`
     pub kind: String,
 }
 

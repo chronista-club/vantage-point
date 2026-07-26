@@ -180,14 +180,14 @@ pub struct FlowProgressParams {
 impl VantageMcp {
     /// vp-app の active Lane を切り替える（B1: Unison-native、per-project）。
     #[tool(
-        description = "Switch the active lane shown in the vp-app PP Canvas of the CURRENT project. `lane` is a lane token: 'root' (lead) or a performer name. Routes over Unison (local SP → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
+        description = "Switch the active lane shown in the vp-app board Canvas of the CURRENT project. `lane` is a lane token: 'root' (lead) or a performer name. Routes over Unison (local SP → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
     )]
     async fn switch_lane(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SwitchLaneParams>,
     ) -> Result<CallToolResult, McpError> {
         // QUIC で local SP に SwitchLane を送る → hub → canvas channel → vp-app。
-        // 旧: TheWorld(:32000) HTTP に global broadcast（project 切替意味論）。per-lane PP 後は
+        // 旧: TheWorld(:32000) HTTP に global broadcast（project 切替意味論）。per-lane board 後は
         // local SP への per-project 経路に統一（lane-within-project の active 切替）。
         let msg = ProcessMessage::SwitchLane {
             lane: params.lane.clone(),
@@ -340,7 +340,7 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Paisley Park inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `devices@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
+        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `runner@<project>`) and world_addresses (e.g. `devices@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
@@ -395,9 +395,9 @@ impl VantageMcp {
             //
             // 各 Lane (conductor / performer) は 2 つの box を持つ:
             //   - `agent#<lane>` = その lane の Claude session 宛 (= coding-assistant inbox)
-            //   - `board#<lane>` = その lane の board / PP 宛
-            // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "board"`)。
-            // 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
+            //   - `board#<lane>` = その lane の board / board 宛
+            // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `BOARD.id = "board"`)。
+            // 愛称 (`echoes` / `board`) は表示専用なので wire には出さない。
             // wire syntax は `<stand-id>@<project>/<lane>` (conductor は `/lane` 省略可)。
             // 旧実装の `<愛称>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。
@@ -429,7 +429,7 @@ impl VantageMcp {
             "project": project,
             "lanes": lanes_out,
             "project_addresses": {
-                "gold_experience": format!("gold_experience@{}", project),
+                "runner": format!("runner@{}", project),
             },
             "world_addresses": {
                 "devices": "devices@world",

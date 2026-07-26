@@ -1,5 +1,5 @@
 /**
- * Paisley Park (PP) body の markdown render API。
+ * Board (board) body の markdown render API。
  *
  * VP-141 / PR-ε-2 で marked.parse で開始。 pp-content-persist follow-up (2026-05-28) で
  * creoui-md-view (= creo-views/md WASM mdast) に置換したが、 wry WebView で WASM module の
@@ -21,16 +21,16 @@
  *   `mermaid.render` で SVG に置換 (= WASM 不要、 npm mermaid package のみ)
  *
  * 公開 API (entry.tsx で window.vpPP に attach):
- * - `renderPP(content, contentType?)`: PP body を上書き render
- * - `clearPP()`: PP body を空にする
- * - `appendPP(content, contentType?)`: PP body に末尾追加 (timeline-style 累積表示用)
+ * - `renderBoard(content, contentType?)`: board body を上書き render
+ * - `clearBoard()`: board body を空にする
+ * - `appendBoard(content, contentType?)`: board body に末尾追加 (timeline-style 累積表示用)
  */
 
 import { marked } from 'marked'
 import mermaid from 'mermaid'
 
-/** PP body の DOM target selector. main_area.rs HTML 側で `id="pp-content"` を保証. */
-const TARGET_SELECTOR = '#pp-content'
+/** board body の DOM target selector. main_area.rs HTML 側で `id="board-content"` を保証. */
+const TARGET_SELECTOR = '#board-content'
 
 export type ContentType = 'markdown' | 'text' | 'html'
 
@@ -104,7 +104,7 @@ function toHtml(content: string, contentType: ContentType): string {
     // raw HTML は sandbox iframe (srcdoc) に隔離。 srcdoc 属性値に埋めるので & と " を
     // エスケープ — & を先に処理する (逆順だと " 由来の &quot; の & が二重エスケープ)。
     const escaped = content.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-    return `<iframe class="pp-html-frame" sandbox="allow-scripts" srcdoc="${escaped}"></iframe>`
+    return `<iframe class="board-html-frame" sandbox="allow-scripts" srcdoc="${escaped}"></iframe>`
   }
   // text: HTML escape して span で出す
   const span = document.createElement('span')
@@ -112,11 +112,11 @@ function toHtml(content: string, contentType: ContentType): string {
   return span.outerHTML
 }
 
-/** PP body を完全置換 render。 placeholder も含めて innerHTML が書き換わる. */
-export function renderPP(content: string, contentType: ContentType = 'markdown'): void {
+/** board body を完全置換 render。 placeholder も含めて innerHTML が書き換わる. */
+export function renderBoard(content: string, contentType: ContentType = 'markdown'): void {
   const target = getTarget()
   if (!target) {
-    console.warn('[vpPP] renderPP: target not found:', TARGET_SELECTOR)
+    console.warn('[vpPP] renderBoard: target not found:', TARGET_SELECTOR)
     return
   }
   target.innerHTML = toHtml(content, contentType)
@@ -124,28 +124,28 @@ export function renderPP(content: string, contentType: ContentType = 'markdown')
   if (contentType === 'markdown') {
     void runMermaidPostProcess(target)
   }
-  // html は iframe を PP pane いっぱいに広げるため container を full-bleed に切り替える。
+  // html は iframe を board pane いっぱいに広げるため container を full-bleed に切り替える。
   // markdown / text は通常の padding 付き flow に戻す。
-  target.classList.toggle('pp-content-html', contentType === 'html')
+  target.classList.toggle('board-content-html', contentType === 'html')
 }
 
-/** PP body を空にする (Clear button 等から呼ばれる). */
-export function clearPP(): void {
+/** board body を空にする (Clear button 等から呼ばれる). */
+export function clearBoard(): void {
   const target = getTarget()
   if (!target) return
   target.innerHTML = ''
   // html render 時に付けた full-bleed class を戻す。
-  target.classList.remove('pp-content-html')
+  target.classList.remove('board-content-html')
 }
 
 /**
- * PP body の末尾に append。
+ * board body の末尾に append。
  *
  * `innerHTML += ...` は既存 DOM の event listener を破棄するため使わない。
  * `insertAdjacentHTML('beforeend', ...)` で既存 DOM を保ったまま挿入する。
  * markdown の場合は append 後に mermaid post-process も走らせる。
  */
-export function appendPP(content: string, contentType: ContentType = 'markdown'): void {
+export function appendBoard(content: string, contentType: ContentType = 'markdown'): void {
   const target = getTarget()
   if (!target) return
   target.insertAdjacentHTML('beforeend', toHtml(content, contentType))

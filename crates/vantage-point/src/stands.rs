@@ -48,7 +48,7 @@ impl StandAlias {
 
 // ─── システムレベル ──────────────────────────────────
 
-/// 全 PP を統括管理する常駐デーモン
+/// 全 board を統括管理する常駐デーモン
 pub const WORLD: StandAlias = StandAlias {
     id: "world",
     functional_name: "Process Manager",
@@ -70,14 +70,14 @@ pub const STAR_PLATINUM: StandAlias = StandAlias {
 
 // ─── Capability（Process にぶら下がるスタンド能力）───
 
-/// 情報ナビゲーション能力 — ユーザーと AI に最適な情報を届ける（Paisley Park）
-/// doc 52 §1/§6: id は `board`（貼る台）。旧 `canvas` は「描く」= 新生 Heaven's Door に予約
-/// するため退去した（address は `board@project/lane`）。
-pub const PAISLEY_PARK: StandAlias = StandAlias {
+/// 情報ナビゲーション能力 — ユーザーと AI に最適な情報を届ける
+/// doc 52 §1/§6: id は `board`（貼る台）。旧 `canvas` は「描く」= 将来の canvas 著述機能に
+/// 予約するため退去した（address は `board@project/lane`）。
+pub const BOARD: StandAlias = StandAlias {
     id: "board",
     functional_name: "Information Navigator",
-    stand_name: "Paisley Park",
-    short: "PP",
+    stand_name: "Board",
+    short: "BD",
     emoji: "🧭",
 };
 
@@ -94,12 +94,12 @@ pub const ECHOES: StandAlias = StandAlias {
     emoji: "💬",
 };
 
-/// コード実行能力 — 動的生命注入エンジン（Ruby VM / ProcessRunner）
-pub const GOLD_EXPERIENCE: StandAlias = StandAlias {
+/// コード実行能力 — code runner（Ruby VM / ProcessRunner）
+pub const RUNNER: StandAlias = StandAlias {
     id: "runner",
     functional_name: "Code Runner",
-    stand_name: "Gold Experience",
-    short: "GE",
+    stand_name: "Runner",
+    short: "RN",
     emoji: "🌿",
 };
 
@@ -130,14 +130,14 @@ pub const DEVICE_IO: StandAlias = StandAlias {
 };
 
 // 旧 file-backed 永続化レイヤーは退役 — 永続は SurrealDB (vpdb) に一本化。
-// PP pane state は pane_contents table が担う (file-backed DISC 層は撤去)。
+// board pane state は pane_contents table が担う (file-backed DISC 層は撤去)。
 
 /// 全 Stand の一覧（イテレーション用）
 pub const ALL: &[&StandAlias] = &[
     &WORLD,
     &STAR_PLATINUM,
-    &GOLD_EXPERIENCE,
-    &PAISLEY_PARK,
+    &RUNNER,
+    &BOARD,
     &ECHOES,
     &DEVICES,
     &DEVICE_IO,

@@ -2,27 +2,27 @@
 //!
 //! LSCM (`docs/design/12-stand-architecture.md` §13) Stand 自己診断 design + doc 13
 //! (`docs/design/13-paisley-park-revival.md` §9) PR-δ boundary invariant
-//! 「**LaneCapabilities が PP 含めて N Stand を host できる generic interface**」 の foundation。
+//! 「**LaneCapabilities が board 含めて N Stand を host できる generic interface**」 の foundation。
 //!
 //! ## 設計分岐 (session ヒアリング 2026-05-06)
 //!
 //! - **B 路線** (speculative generic): trait 抽出 + mock Stand B で「N Stand host」
 //!   invariant を test 化
 //! - **i 路線** (minimal marker first): passive marker trait のみ定義、 actor lifecycle
-//!   (spawn / shutdown / diagnose) は PR-γ (GE Lane 移管) で必要が出た段階で trait 拡張
+//!   (spawn / shutdown / diagnose) は PR-γ (runner Lane 移管) で必要が出た段階で trait 拡張
 //!
 //! ## 本 PR (PR-δ-1) の scope
 //!
 //! - trait 定義 + Registry struct **型のみ** 落とす
 //! - 既存挙動への影響 **ゼロ** (`LaneCapabilities` への統合は PR-δ-2)
-//! - PP impl 追加は PR-δ-2、 mock Stand B + invariant test は PR-δ-3
+//! - board impl 追加は PR-δ-2、 mock Stand B + invariant test は PR-δ-3
 //!
 //! ## PR-δ 全体 roadmap (doc 13 §9)
 //!
 //! | sub-PR | scope | status |
 //! |--------|------|--------|
 //! | PR-δ-1 | LaneStandHost trait + LaneStandRegistry 受け皿 | ✅ Done (#288、 VP-135) |
-//! | PR-δ-2 | PP を LaneStandHost impl に rewire + LaneCapabilities 統合 | ✅ Done (#289、 VP-136) |
+//! | PR-δ-2 | board を LaneStandHost impl に rewire + LaneCapabilities 統合 | ✅ Done (#289、 VP-136) |
 //! | PR-δ-3 | mock Stand B test + 「N Stand host」 invariant test | ✅ Done (#290、 VP-137) |
 //! | PR-δ-4 | cleanup (catalog 更新、 命名規約 doc 明示化、 stale 表記 sweep) | ✅ Done (VP-138) |
 //!
@@ -65,22 +65,22 @@ use std::sync::Arc;
 /// ## impl 例 (PR-δ-2 で導入済)
 ///
 /// ```rust,ignore
-/// pub struct PaisleyParkStand {
-///     state: tokio::sync::RwLock<PaisleyParkState>,
+/// pub struct BoardStand {
+///     state: tokio::sync::RwLock<BoardState>,
 /// }
 ///
-/// impl LaneStandHost for PaisleyParkStand {
-///     fn stand_kind(&self) -> &'static str { "paisley_park" }
+/// impl LaneStandHost for BoardStand {
+///     fn stand_kind(&self) -> &'static str { "board" }
 ///     fn as_any(&self) -> &dyn Any { self }
 /// }
 /// ```
 pub trait LaneStandHost: Any + Send + Sync + 'static {
-    /// stand_kind ID (例: `"paisley_park"` / `"gold_experience"` / `"mock_b"`)。
+    /// stand_kind ID (例: `"board"` / `"runner"` / `"mock_b"`)。
     ///
     /// `stands.rs` の `StandAlias.id` とは **別 namespace**: `StandAlias.id` は外部 API
-    /// パス (例: `PAISLEY_PARK.id = "board"`、doc 52 §6 で canvas→board 改名) 用で、 こちらは
+    /// パス (例: `BOARD.id = "board"`、doc 52 §6 で canvas→board 改名) 用で、 こちらは
     /// Registry の HashMap key として使われる **内部 Stand ID**。 snake_case の安定キーという規約は
-    /// 共通だが、 値は乖離する (例: PP は `StandAlias.id = "board"` vs `stand_kind() = "paisley_park"`)。
+    /// 共通だが、 値は乖離する (例: board は `StandAlias.id = "board"` vs `stand_kind() = "board"`)。
     /// PR-δ-4 (VP-138) で 2 namespace 意図的分離を明示化。
     fn stand_kind(&self) -> &'static str;
 
@@ -100,10 +100,10 @@ pub trait LaneStandHost: Any + Send + Sync + 'static {
 /// `HashMap<&'static str, Arc<dyn LaneStandHost>>` で **N 個 host** する。 key は
 /// `LaneStandHost::stand_kind()` の戻り値 (= stand id)。 Arc-shared なので caller が typed
 /// reference を保持しつつ Registry にも置ける (= state mutation は impl 内 RwLock 等の
-/// interior mutability で行う設計、 PR-δ-2 PP impl で具体化)。
+/// interior mutability で行う設計、 PR-δ-2 board impl で具体化)。
 ///
 /// PR-δ-2 で `LaneCapabilities` が field として保持、 `populate_lane` で Lane 起動時に
-/// PP を insert する flow に置き換わる。
+/// board を insert する flow に置き換わる。
 #[derive(Default)]
 pub struct LaneStandRegistry {
     stands: HashMap<&'static str, Arc<dyn LaneStandHost>>,
@@ -151,8 +151,8 @@ impl LaneStandRegistry {
     /// `kind` ID で specific Stand 型に downcast 取得。
     ///
     /// `Arc<dyn LaneStandHost>` → `&dyn Any` → `&T` の 2 段 cast。 失敗時 (`kind` 不在 / 型不一致)
-    /// は `None`。 PR-δ-2 で PP caller (例: `routes/canvas.rs`) が
-    /// `registry.get_typed::<PaisleyParkStand>("paisley_park")` で typed access する。
+    /// は `None`。 PR-δ-2 で board caller (例: `routes/canvas.rs`) が
+    /// `registry.get_typed::<BoardStand>("board")` で typed access する。
     pub fn get_typed<T: LaneStandHost>(&self, kind: &str) -> Option<&T> {
         self.stands.get(kind)?.as_any().downcast_ref::<T>()
     }

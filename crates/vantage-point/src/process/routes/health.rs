@@ -102,10 +102,10 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
-        // 🧭 Paisley Park（Canvas）— WebSocket クライアント接続数
+        // 🧭 Board（Canvas）— WebSocket クライアント接続数
         let canvas_clients = state.canvas_senders.lock().await.len();
         map.insert(
-            "paisley_park".to_string(),
+            "board".to_string(),
             StandStatus {
                 status: if canvas_clients > 0 {
                     "connected"
@@ -116,10 +116,10 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
-        // 🌿 Gold Experience（ProcessRunner）— 実行中プロセス数
+        // 🌿 Runner（ProcessRunner）— 実行中プロセス数
         let running_processes = state.process_registry.lock().await.list().len();
         map.insert(
-            "gold_experience".to_string(),
+            "runner".to_string(),
             StandStatus {
                 status: if running_processes > 0 {
                     "active"

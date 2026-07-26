@@ -68,7 +68,7 @@ pub fn db_data_dir_for_world() -> PathBuf {
 /// なったため、`db/sp_*` は **1 バイトも読まれない残骸**になった。だが撤去されたのは
 /// 「開くコード」だけで、既に disk にある dir はそのまま残っていた（実機で 23 dir / 約 1.2 GB）。
 ///
-/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の PP board
+/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の board board
 /// (`pane_contents`) が引き継がれないことだけで、これは fold-in の破壊的変更として
 /// 既に出荷・周知されている（board は空から始まる）。
 ///
@@ -1163,7 +1163,7 @@ impl VpDb {
     ) -> Result<()> {
         // lane_name='' (= conductor sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
         // ON DUPLICATE KEY UPDATE 句で **触らない** — 旧 caller (= 純粋な content / title 更新)
-        // が PP Canvas Stack の stack / ui_state を巻き戻さないようにする。
+        // が board Canvas Stack の stack / ui_state を巻き戻さないようにする。
         self.db
             .query(
                 "INSERT INTO pane_contents {
@@ -1192,7 +1192,7 @@ impl VpDb {
         Ok(())
     }
 
-    /// PP Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
+    /// board Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
     ///
     /// - `lane_name`: None なら conductor (= 内部で `''` sentinel)、 Some(name) なら performer。 UNIQUE INDEX は
     ///   (project_path, lane_name, pane_id) のため root/performer は別 record として独立。
@@ -1201,7 +1201,7 @@ impl VpDb {
     /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
     ///   (= 旧 caller 互換)。 stack が主、 content は seek 用 fallback。
     #[allow(clippy::too_many_arguments)] // pane_contents の field count に追従、 caller (route handler) も flat に展開する
-    pub async fn upsert_pp_state(
+    pub async fn upsert_board_state(
         &self,
         project_path: &str,
         lane_name: Option<&str>,
@@ -1243,16 +1243,16 @@ impl VpDb {
             .bind(("stack", stack.cloned()))
             .bind(("ui_state", ui_state.cloned()))
             .await
-            .map_err(|e| anyhow::anyhow!("pp_state upsert 失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("board_state upsert 失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("pp_state upsert エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("board_state upsert エラー: {}", e))?;
         Ok(())
     }
 
-    /// 特定 (project_path, lane_name, pane_id) の PP state を 1 件取得。 不在なら Ok(None)。
+    /// 特定 (project_path, lane_name, pane_id) の board state を 1 件取得。 不在なら Ok(None)。
     ///
     /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 conductor として読める。
-    pub async fn load_pp_state(
+    pub async fn load_board_state(
         &self,
         project_path: &str,
         lane_name: Option<&str>,
@@ -1272,7 +1272,7 @@ impl VpDb {
             .bind(("pane_id", pane_id.to_string()))
             .bind(("lane", lane_sentinel.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("pp_state load 失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("board_state load 失敗: {}", e))?;
         let mut records: Vec<serde_json::Value> = result.take(0)?;
         Ok(records.pop())
     }
@@ -1280,7 +1280,7 @@ impl VpDb {
     // =========================================================================
     // board モデル (2026-07-15): scope 別 Canvas board の CRUD
     //
-    // board = PP Canvas に show した item の scope 別永続リスト（SP が唯一の truth を持つ）。
+    // board = board Canvas に show した item の scope 別永続リスト（SP が唯一の truth を持つ）。
     // stack = { items: [...新→古], cursor: <id|NONE> } を pane_contents.stack に保存する。
     // キーは (project_path, scope, lane_name, pane_id)。 lane board は lane_name で lane ごとに
     // 分離、 proj board は lane_name='' (project 共有)。
@@ -1807,12 +1807,12 @@ DEFINE INDEX IF NOT EXISTS idx_host_farewell_lane ON host_farewell COLUMNS proje
 -- `WHERE project_path = $path` で絞る前提。これを欠くと他 project の行を掴む）。
 -- =========================================================================
 
--- Canvas ペイン状態（PP Canvas Stack Model 永続化、 doc 19）
+-- Canvas ペイン状態（board Canvas Stack Model 永続化、 doc 19）
 --
 -- 2026-05-28 [pp-content-persist]:
 --   lane scope 対応 — 旧 idx_pane (project_path, pane_id) を
 --   (project_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が conductor、
---   "<name>" が performer。 同一 project の conductor と performer は **独立した PP state** を持つ。
+--   "<name>" が performer。 同一 project の conductor と performer は **独立した board state** を持つ。
 --   追加 field:
 --     - lane_name: string DEFAULT ''       — lane scope key (空文字=conductor / 非空=performer 名)
 --     - stack:     option<object> FLEXIBLE — Canvas Stack { items: [], cursor: id, capacity: 10 }
@@ -2559,12 +2559,12 @@ mod tests {
     }
 
     // =========================================================================
-    // PP Canvas Stack Model (lane scope) — pp-content-persist
+    // board Canvas Stack Model (lane scope) — pp-content-persist
     // =========================================================================
 
     /// 新 API: lane_name=None (conductor) と Some(name) (performer) が独立 record として共存できる
     #[tokio::test]
-    async fn test_pp_state_conductor_and_performer_independent() {
+    async fn test_board_state_conductor_and_performer_independent() {
         let db = make_test_db().await;
 
         let conductor_stack = serde_json::json!({
@@ -2580,10 +2580,10 @@ mod tests {
         let ui =
             serde_json::json!({"visible": true, "collapsed": false, "width": 480, "height": 720});
 
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "# root\n",
             None,
@@ -2592,10 +2592,10 @@ mod tests {
         )
         .await
         .unwrap();
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             Some("foo"),
-            "paisley-park",
+            "board",
             "markdown",
             "# performer\n",
             None,
@@ -2607,7 +2607,7 @@ mod tests {
 
         // conductor 読み込み
         let conductor = db
-            .load_pp_state("/repos/vp", None, "paisley-park")
+            .load_board_state("/repos/vp", None, "board")
             .await
             .unwrap()
             .expect("root record 不在");
@@ -2619,7 +2619,7 @@ mod tests {
 
         // performer 読み込み — conductor と独立した record
         let performer = db
-            .load_pp_state("/repos/vp", Some("foo"), "paisley-park")
+            .load_board_state("/repos/vp", Some("foo"), "board")
             .await
             .unwrap()
             .expect("performer record 不在");
@@ -2631,9 +2631,9 @@ mod tests {
         assert_eq!(all.len(), 2, "root + performer で 2 record");
     }
 
-    /// upsert_pp_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)
+    /// upsert_board_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)
     #[tokio::test]
-    async fn test_pp_state_upsert_roundtrip() {
+    async fn test_board_state_upsert_roundtrip() {
         let db = make_test_db().await;
         let stack_v1 = serde_json::json!({"items": [], "cursor": null, "capacity": 10});
         let stack_v2 = serde_json::json!({
@@ -2642,10 +2642,10 @@ mod tests {
             "capacity": 10
         });
 
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "",
             None,
@@ -2654,10 +2654,10 @@ mod tests {
         )
         .await
         .unwrap();
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "x",
             None,
@@ -2668,7 +2668,7 @@ mod tests {
         .unwrap();
 
         let rec = db
-            .load_pp_state("/repos/vp", None, "paisley-park")
+            .load_board_state("/repos/vp", None, "board")
             .await
             .unwrap()
             .expect("record 不在");
@@ -2682,7 +2682,7 @@ mod tests {
 
     /// 旧 caller (upsert_pane_content) は lane_name=None で row を作る。 stack/ui_state を巻き戻さない。
     #[tokio::test]
-    async fn test_pp_state_legacy_upsert_keeps_stack() {
+    async fn test_board_state_legacy_upsert_keeps_stack() {
         let db = make_test_db().await;
         let stack = serde_json::json!({
             "items": [{"id":"keep","content":"keep","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
@@ -2691,10 +2691,10 @@ mod tests {
         });
 
         // 新 API で stack を先に保存
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "keep",
             Some("t"),
@@ -2705,18 +2705,12 @@ mod tests {
         .unwrap();
 
         // 旧 API (content / title だけ更新)。 stack は触らないことを期待
-        db.upsert_pane_content(
-            "/repos/vp",
-            "paisley-park",
-            "markdown",
-            "updated",
-            Some("t2"),
-        )
-        .await
-        .unwrap();
+        db.upsert_pane_content("/repos/vp", "board", "markdown", "updated", Some("t2"))
+            .await
+            .unwrap();
 
         let rec = db
-            .load_pp_state("/repos/vp", None, "paisley-park")
+            .load_board_state("/repos/vp", None, "board")
             .await
             .unwrap()
             .expect("record 不在");
@@ -2728,12 +2722,12 @@ mod tests {
         );
     }
 
-    /// load_pp_state: 不在の (project_path, lane_name, pane_id) は Ok(None)
+    /// load_board_state: 不在の (project_path, lane_name, pane_id) は Ok(None)
     #[tokio::test]
-    async fn test_pp_state_load_missing_returns_none() {
+    async fn test_board_state_load_missing_returns_none() {
         let db = make_test_db().await;
         let v = db
-            .load_pp_state("/repos/vp", None, "missing")
+            .load_board_state("/repos/vp", None, "missing")
             .await
             .unwrap();
         assert!(v.is_none());
@@ -2753,12 +2747,12 @@ mod tests {
     async fn test_board_append_head_push_cursor_and_cap() {
         let db = make_test_db().await;
         for id in ["a", "b", "c"] {
-            db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item(id), 2)
+            db.append_board_item("/repos/vp", "proj", "", "board", &mk_item(id), 2)
                 .await
                 .unwrap();
         }
         let rec = db
-            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .load_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap()
             .expect("board 不在");
@@ -2774,23 +2768,16 @@ mod tests {
     async fn test_board_delete_item_cursor_fallback() {
         let db = make_test_db().await;
         for id in ["a", "b", "c"] {
-            db.append_board_item(
-                "/repos/vp",
-                "lane",
-                "wing",
-                "paisley-park",
-                &mk_item(id),
-                10,
-            )
-            .await
-            .unwrap();
+            db.append_board_item("/repos/vp", "lane", "wing", "board", &mk_item(id), 10)
+                .await
+                .unwrap();
         }
         // items=[c,b,a], cursor=c。 c を削除 → items=[b,a], cursor=b（先頭 fallback）。
-        db.delete_board_item("/repos/vp", "lane", "wing", "paisley-park", "c")
+        db.delete_board_item("/repos/vp", "lane", "wing", "board", "c")
             .await
             .unwrap();
         let rec = db
-            .load_board("/repos/vp", "lane", "wing", "paisley-park")
+            .load_board("/repos/vp", "lane", "wing", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2800,11 +2787,11 @@ mod tests {
         assert_eq!(rec["stack"]["cursor"], "b");
 
         // items=[b,a], cursor=b。 a（非 cursor）削除 → cursor=b 不変。
-        db.delete_board_item("/repos/vp", "lane", "wing", "paisley-park", "a")
+        db.delete_board_item("/repos/vp", "lane", "wing", "board", "a")
             .await
             .unwrap();
         let rec = db
-            .load_board("/repos/vp", "lane", "wing", "paisley-park")
+            .load_board("/repos/vp", "lane", "wing", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2822,22 +2809,22 @@ mod tests {
     async fn test_board_cursor_survives_capacity_eviction() {
         let db = make_test_db().await;
         // capacity=2 で a, b を貼る → items=[b,a]、cursor は head 追従で b。
-        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("a"), 2)
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("a"), 2)
             .await
             .unwrap();
-        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("b"), 2)
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("b"), 2)
             .await
             .unwrap();
         // 最古の a を pin（scrollback で遡って見ている状態）。
-        db.set_board_cursor("/repos/vp", "lane", "", "paisley-park", "a")
+        db.set_board_cursor("/repos/vp", "lane", "", "board", "a")
             .await
             .unwrap();
         // c を貼る → items=[c,b]（a が evict）。cursor=a は消えるので新 head c に fallback。
-        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("c"), 2)
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("c"), 2)
             .await
             .unwrap();
         let rec = db
-            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .load_board("/repos/vp", "lane", "", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2859,7 +2846,7 @@ mod tests {
     async fn test_board_update_item_in_place() {
         let db = make_test_db().await;
         for id in ["a", "b", "c"] {
-            db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item(id), 10)
+            db.append_board_item("/repos/vp", "lane", "", "board", &mk_item(id), 10)
                 .await
                 .unwrap();
         }
@@ -2868,7 +2855,7 @@ mod tests {
             "/repos/vp",
             "lane",
             "",
-            "paisley-park",
+            "board",
             "b",
             "updated-body",
             "html",
@@ -2876,7 +2863,7 @@ mod tests {
         .await
         .unwrap();
         let rec = db
-            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .load_board("/repos/vp", "lane", "", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2898,7 +2885,7 @@ mod tests {
             "/repos/vp",
             "lane",
             "",
-            "paisley-park",
+            "board",
             "c",
             "c-latest",
             "markdown",
@@ -2906,7 +2893,7 @@ mod tests {
         .await
         .unwrap();
         let rec = db
-            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .load_board("/repos/vp", "lane", "", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2920,14 +2907,14 @@ mod tests {
     #[tokio::test]
     async fn test_board_clear() {
         let db = make_test_db().await;
-        db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item("a"), 10)
+        db.append_board_item("/repos/vp", "proj", "", "board", &mk_item("a"), 10)
             .await
             .unwrap();
-        db.clear_board("/repos/vp", "proj", "", "paisley-park")
+        db.clear_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap();
         let rec = db
-            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .load_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2939,19 +2926,19 @@ mod tests {
     #[tokio::test]
     async fn test_board_scope_isolation() {
         let db = make_test_db().await;
-        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("L"), 10)
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("L"), 10)
             .await
             .unwrap();
-        db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item("P"), 10)
+        db.append_board_item("/repos/vp", "proj", "", "board", &mk_item("P"), 10)
             .await
             .unwrap();
         let lane = db
-            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .load_board("/repos/vp", "lane", "", "board")
             .await
             .unwrap()
             .unwrap();
         let proj = db
-            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .load_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap()
             .unwrap();
@@ -3028,7 +3015,7 @@ mod tests {
     async fn test_stand_status_detail_null() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "paisley-park", "idle", None)
+        db.upsert_stand_status("/repos/vp", "board", "idle", None)
             .await
             .unwrap();
 
@@ -3051,7 +3038,7 @@ mod tests {
             "pane_count": 3
         });
 
-        db.upsert_stand_status("/repos/vp", "paisley-park", "running", Some(&detail))
+        db.upsert_stand_status("/repos/vp", "board", "running", Some(&detail))
             .await
             .unwrap();
 

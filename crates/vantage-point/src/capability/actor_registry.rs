@@ -44,7 +44,7 @@ use super::stand_service::{LayerScope, Service, SpawnableService, Stand};
 /// discriminator として機能する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActorKind {
-    /// ECS entity bound actor (= agent / protocol / paisley_park 等)。 PR-2 で formalized。
+    /// ECS entity bound actor (= agent / protocol / board 等)。 PR-2 で formalized。
     Stand,
     /// singleton infra actor (= notify / lane-spawn / devices 等)。 PR-3 で formalized。
     Service,
