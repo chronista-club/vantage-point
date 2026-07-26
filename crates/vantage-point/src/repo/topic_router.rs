@@ -120,7 +120,7 @@ impl TopicRouter {
     ///
     /// 命名規則: `{scope}/{capability}/{category}/{detail}`
     /// - scope: "process"
-    /// - capability: board, heavens-door, terminal, debug, star-platinum
+    /// - capability: board, heavens-door（#8 再訪）, terminal, debug, runtime
     /// - category: command, event, state, data, log, trace
     fn message_to_topic(msg: &RepoMessage) -> String {
         match msg {
@@ -214,7 +214,7 @@ impl TopicRouter {
             }
 
             // === repo（Process 管理）===
-            RepoMessage::Ping => "repo/star-platinum/event/ping".to_string(),
+            RepoMessage::Ping => "repo/runtime/event/ping".to_string(),
             // switch_lane は一時コマンド（active Lane 切替）であり state ではない。
             // category=event にして **非 retained** にする（command にすると retained store に
             // 残り、canvas channel 再接続のたび「最後の switch」が replay され、ユーザーが別 lane
@@ -222,7 +222,7 @@ impl TopicRouter {
             // 購読するので event でも live 配信は届く。
             RepoMessage::SwitchLane { .. } => "repo/board/event/switch-lane".to_string(),
             // wiremsg: Lane 一覧 snapshot。category=state → retained。
-            RepoMessage::LanesSnapshot { .. } => "repo/star-platinum/state/lanes".to_string(),
+            RepoMessage::LanesSnapshot { .. } => "repo/runtime/state/lanes".to_string(),
         }
     }
 
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn test_message_to_topic_ping() {
         let topic = TopicRouter::message_to_topic(&RepoMessage::Ping);
-        assert_eq!(topic, "repo/star-platinum/event/ping");
+        assert_eq!(topic, "repo/runtime/event/ping");
     }
 
     #[test]
@@ -637,7 +637,7 @@ mod tests {
             origin: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/star-platinum/state/lanes");
+        assert_eq!(topic, "repo/runtime/state/lanes");
         assert!(TopicPath::parse(&topic).is_retained());
     }
 
@@ -765,7 +765,7 @@ mod tests {
         router.route(RepoMessage::TerminalReady).await;
 
         let (topic1, _) = rx.try_recv().expect("Ping を受信");
-        assert_eq!(topic1, "repo/star-platinum/event/ping");
+        assert_eq!(topic1, "repo/runtime/event/ping");
 
         let (topic2, _) = rx.try_recv().expect("TerminalReady を受信");
         assert_eq!(topic2, "repo/terminal/state/ready");

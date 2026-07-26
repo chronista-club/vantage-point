@@ -235,7 +235,7 @@ pub enum RepoMessage {
     },
     /// wiremsg: repo の Lane 一覧 snapshot（retained state topic）。
     ///
-    /// LanePool 変化のたび全 list を publish し、`process/star-platinum/state/lanes`
+    /// LanePool 変化のたび全 list を publish し、`repo/runtime/state/lanes`
     /// に retain される（category=state → RetainedStore が最新値を保持）。
     /// subscriber は subscribe 即値 + 変化で push を受ける。
     /// 設計: creo-memories `mem_1CbA198fsHJsoKpu2jDUCv`（wiremsg restructure）。

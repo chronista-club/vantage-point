@@ -434,7 +434,7 @@ pub(crate) async fn start_repo(
 
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
-    // `process/star-platinum/state/lanes`（category=state → RetainedStore で保持）へ流す。
+    // `repo/runtime/state/lanes`（category=state → RetainedStore で保持）へ流す。
     // hub.broadcast → Hub→TopicRouter pump → retained。consumer（Stage 1 で vp-app が
     // subscribe）不在でも no-op で安全。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
     {

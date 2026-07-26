@@ -877,7 +877,7 @@ async fn lanes_session_after_open(
             }
         };
         // payload = RepoMessage::LanesSnapshot = {"type":"lanes_snapshot","lanes":[...]}。
-        // topic は `repo/star-platinum/state/#` の wildcard 購読なので、将来別 message
+        // topic は `repo/runtime/state/#` の wildcard 購読なので、将来別 message
         // 種別が同 subtree に publish されても無視する。
         if payload.get("type").and_then(|t| t.as_str()) != Some("lanes_snapshot") {
             continue;
