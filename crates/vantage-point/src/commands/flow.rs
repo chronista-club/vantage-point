@@ -3,9 +3,9 @@
 //! ## 概要
 //!
 //! Conductor × Performer × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
-//! lanes portless (doc 27 §3.4.5): 全 operation は World :32000 の process-proxy ask 経由で SP を
+//! lanes portless (doc 27 §3.4.5): 全 operation は Daemon :32000 の process-proxy ask 経由で SP を
 //! 操作する (旧 SP HTTP 直結 `/api/lanes` `/api/tmux/*` `/api/health` を撤去)。 cwd から parent
-//! project path を auto-resolve し、 World handshake の identifier に使う。
+//! project path を auto-resolve し、 Daemon handshake の identifier に使う。
 //!
 //! `vp flow handoff <name> --task-spec <file or '-'>` で新規 performer への atomic 手渡し、
 //! `vp flow progress` で parallel work 集約 view を表示。
@@ -18,7 +18,7 @@ use clap::Subcommand;
 use std::io::Read;
 
 use crate::commands::process_client::{
-    resolve_project_path_from_target, world_process_request, world_process_request_with_timeout,
+    daemon_process_request, daemon_process_request_with_timeout, resolve_project_path_from_target,
 };
 
 #[derive(Subcommand, Debug)]
@@ -84,11 +84,11 @@ pub async fn run(cmd: FlowCommands) -> Result<()> {
     }
 }
 
-/// cwd から parent project path + config を解決（World process-proxy handshake の identifier）。
+/// cwd から parent project path + config を解決（daemon process-proxy handshake の identifier）。
 ///
 /// 旧 `resolve_sp_base`（SP HTTP base URL）の置換。 SP port を引かず project path を返すので、
-/// SP 未起動でも path は決まる（実際の操作は World process-proxy が SP control channel に forward
-/// し、 SP 不在なら World 側で error になる）。
+/// SP 未起動でも path は決まる（実際の操作は daemon process-proxy が SP control channel に forward
+/// し、 SP 不在なら daemon 側で error になる）。
 ///
 /// `resolve_project_path_from_target` は内部で `find_for_cwd_blocking`（= `make_runtime().block_on`）
 /// を踏むので、 async context (handoff / progress) から直呼びすると nested-runtime panic になる。
@@ -145,7 +145,7 @@ async fn handoff(
 
     let (project_path, _config) = resolve_project().await?;
 
-    // Step 1: Performer 作成 (World process-proxy ask `lane_create`)
+    // Step 1: Performer 作成 (daemon process-proxy ask `lane_create`)
     let mut create_body = serde_json::json!({
         "kind": "performer",
         "name": name,
@@ -164,8 +164,8 @@ async fn handoff(
     }
     // lane_create は SP 側で git clone を含み数 10 sec かかり得るので outer timeout 60s
     // (MCP add_performer/flow_handoff の quic_call_with_timeout と揃える、 orphan lane race 回避)。
-    let lane_info = world_process_request_with_timeout(
-        crate::cli::world_port(),
+    let lane_info = daemon_process_request_with_timeout(
+        crate::cli::daemon_port(),
         &project_path,
         "lane_create",
         create_body,
@@ -198,9 +198,9 @@ async fn handoff(
     let performer_address = format!("agent@{}/{}", project_name, performer_name);
     let lane_address = format!("{}/performer/{}", project_name, performer_name);
 
-    // Step 2: wire_send (World "wire" channel 直結、 L0 portless B-4)。 失敗時は performer rollback。
+    // Step 2: wire_send (Daemon "wire" channel 直結、 L0 portless B-4)。 失敗時は performer rollback。
     // `from` は conductor 相当 (= CLI から起動 = conductor context として送信、 qualified address)。
-    // `world_wire::call` が transport 失敗 / server error frame の両方を Err にするので、 旧 HTTP の
+    // `daemon_wire::call` が transport 失敗 / server error frame の両方を Err にするので、 旧 HTTP の
     // 3 分岐 (send / parse / server error) は 1 つに畳まれる (atomic + rollback の意味論は不変)。
     let from = format!("agent@{}", project_name);
     let send_payload = serde_json::json!({
@@ -213,7 +213,7 @@ async fn handoff(
         },
         "reply_to": serde_json::Value::Null,
     });
-    let send_json = match crate::process::world_wire::call("/api/wire/send", send_payload).await {
+    let send_json = match crate::process::daemon_wire::call("/api/wire/send", send_payload).await {
         Ok(j) => j,
         Err(e) => {
             rollback_performer(&project_path, &project_name, &performer_name).await;
@@ -250,12 +250,12 @@ async fn handoff(
 /// nudge — lane_nudge proxy で performer の Claude session に wire_recv を促す (best-effort)。
 ///
 /// tmux decoupling PR1: 旧 2 段 (`tmux_resolve_pane` で pane 解決 → `tmux_send_keys` で送信) を
-/// World process-proxy ask `lane_nudge` の 1 発に置換。 lane address を直接渡し、 SP 側の
+/// daemon process-proxy ask `lane_nudge` の 1 発に置換。 lane address を直接渡し、 SP 側の
 /// `write_nudge` が PtySlot に literal text + Enter を書く (pane 解決の中間層が消える)。
 async fn try_nudge(project_path: &str, lane_address: &str) -> String {
     let nudge_text = "root から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n";
-    match world_process_request(
-        crate::cli::world_port(),
+    match daemon_process_request(
+        crate::cli::daemon_port(),
         project_path,
         "lane_nudge",
         serde_json::json!({ "lane": lane_address, "text": nudge_text }),
@@ -269,12 +269,12 @@ async fn try_nudge(project_path: &str, lane_address: &str) -> String {
 
 /// Rollback: performer 削除 (best-effort、 失敗は stderr に log)。
 ///
-/// lanes portless: 旧 SP HTTP (`DELETE /api/lanes`) を World process-proxy ask (`lane_delete`) に
+/// lanes portless: 旧 SP HTTP (`DELETE /api/lanes`) を daemon process-proxy ask (`lane_delete`) に
 /// 移管。 `lane_delete` は不在 performer に "Lane not found" を Err で返すので idempotent no-op 扱い。
 async fn rollback_performer(project_path: &str, project_name: &str, performer_name: &str) {
     let address = format!("{}/performer/{}", project_name, performer_name);
-    match world_process_request(
-        crate::cli::world_port(),
+    match daemon_process_request(
+        crate::cli::daemon_port(),
         project_path,
         "lane_delete",
         serde_json::json!({ "address": address, "cleanup": true }),
@@ -308,9 +308,9 @@ async fn progress(format: &str) -> Result<()> {
     // flow_progress / list_lanes と同型 (project_name_from_path)。
     let project = crate::resolve::project_name_from_path(&project_path, &config);
 
-    // lanes (performer_status 込み) を取得 (World process-proxy ask `lanes_list`)
-    let lanes_resp = world_process_request(
-        crate::cli::world_port(),
+    // lanes (performer_status 込み) を取得 (daemon process-proxy ask `lanes_list`)
+    let lanes_resp = daemon_process_request(
+        crate::cli::daemon_port(),
         &project_path,
         "lanes_list",
         serde_json::json!({}),
@@ -345,8 +345,8 @@ async fn progress(format: &str) -> Result<()> {
             format!("agent@{}/{}", project, label)
         };
 
-        // unread count (cursor 不触り、 World "wire" channel 直結。 best-effort: 失敗は 0)
-        let unread_total = match crate::process::world_wire::call(
+        // unread count (cursor 不触り、 Daemon "wire" channel 直結。 best-effort: 失敗は 0)
+        let unread_total = match crate::process::daemon_wire::call(
             "/api/wire/unread-count",
             serde_json::json!({ "agent": agent_addr }),
         )
@@ -374,8 +374,8 @@ async fn progress(format: &str) -> Result<()> {
 
         // 5-state FSM derive (= conductor 説示 control surrender model)。
         // wire_latest_msg + performer_status から flow_state / control_surrender / state_reason を推論。
-        // World "wire" channel 直結 (best-effort: 失敗は None → FSM は performer_status のみで derive)。
-        let latest_view = match crate::process::world_wire::call(
+        // Daemon "wire" channel 直結 (best-effort: 失敗は None → FSM は performer_status のみで derive)。
+        let latest_view = match crate::process::daemon_wire::call(
             "/api/wire/latest-msg",
             serde_json::json!({ "agent": agent_addr }),
         )
@@ -388,7 +388,7 @@ async fn progress(format: &str) -> Result<()> {
         };
         let performer_status_view = crate::flow::PerformerStatusView::from_json(&performer_status);
         // AwaitingUser 判定: 未 ack needs_user (best-effort、 失敗は None = 判定 off で degrade)
-        let needs_user_view = match crate::process::world_wire::call(
+        let needs_user_view = match crate::process::daemon_wire::call(
             "/api/wire/needs-user-pending",
             serde_json::json!({ "agent": agent_addr }),
         )

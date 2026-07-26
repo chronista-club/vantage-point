@@ -2,7 +2,7 @@
 //!
 //! AI が自分の shell tool から 1 行で「今」を環境へ報告する口（表象の共有の AI→人方向）。
 //! MCP でなく CLI なのは意図的: shell tool は全 engine が必ず持つ（= MCP 設定不要で
-//! engine 中立）、`vp wire` / `vp flow` と同じ家風、binary 直で World に届く。
+//! engine 中立）、`vp wire` / `vp flow` と同じ家風、binary 直で daemon に届く。
 //!
 //! ```bash
 //! vp now "panic 箇所を特定中 — pty_slot の lock 順を確認"
@@ -19,7 +19,7 @@
 use anyhow::{Result, bail};
 
 use crate::commands::lane_ctl::project_path_for_lane;
-use crate::commands::process_client::world_process_request_blocking;
+use crate::commands::process_client::daemon_process_request_blocking;
 use crate::config::Config;
 
 /// env（VP_PROJECT / VP_LANE）から lane address（Display 形）を導く。
@@ -34,10 +34,10 @@ fn lane_addr_from_env() -> Option<String> {
     }
 }
 
-/// 「今なにを」1 行を World へ送る（`session_now` method）。
+/// 「今なにを」1 行を daemon へ送る（`session_now` method）。
 ///
 /// `lane` / `session` 省略時は env から導出。session が env にも無い場合は None のまま送り、
-/// World 側が root（lane の代表）に読み替える。
+/// daemon 側が root（lane の代表）に読み替える。
 pub fn report(
     text: &str,
     lane_override: Option<&str>,
@@ -61,8 +61,8 @@ pub fn report(
             .and_then(|s| s.parse().ok())
     });
     let path = project_path_for_lane(&lane, config)?;
-    let resp = world_process_request_blocking(
-        crate::cli::world_port(),
+    let resp = daemon_process_request_blocking(
+        crate::cli::daemon_port(),
         &path,
         "session_now",
         serde_json::json!({ "lane": lane, "session": session, "text": text }),

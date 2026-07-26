@@ -1,25 +1,25 @@
-//! TheWorld 中央 wire store のハンドラ群 (R2-a、 設計 mem_1CbvcJj4ppU3QKH9d7xMpT)
+//! daemon 中央 wire store のハンドラ群 (R2-a、 設計 mem_1CbvcJj4ppU3QKH9d7xMpT)
 //!
-//! wiremsg R2-a で wire store は TheWorld (`db/world/`) に中央化された。
-//! 本 module は store 直結のロジック層 (`*_store` 関数) と、 run_world の Router に
-//! 登録する axum wrapper (`world_wire_*_handler`) を提供する。 SP 側
+//! wiremsg R2-a で wire store は daemon (`db/machine/`) に中央化された。
+//! 本 module は store 直結のロジック層 (`*_store` 関数) と、 run_daemon の Router に
+//! 登録する axum wrapper (`daemon_wire_*_handler`) を提供する。 SP 側
 //! (`unison_server::handle_wire_*`) はアドレス正規化のみ行い、 ここへ HTTP relay
-//! する薄い proxy ([`crate::process::world_wire`])。
+//! する薄い proxy ([`crate::process::daemon_wire`])。
 //!
 //! ## アドレス規約 (N1: canonical = qualified 一本)
 //!
 //! 正規化 (bare `"agent"` → `"agent@<project>"`) は project 文脈を持つ SP の入口で
-//! 行う。 TheWorld は文脈を持たないため正規化せず、 曖昧な bare `"agent"` を
+//! 行う。 daemon は文脈を持たないため正規化せず、 曖昧な bare `"agent"` を
 //! **reject** する ([`validate_addr`])。
 //!
 //! ## local_seq のマシン大域単調性
 //!
-//! TheWorld が唯一の writer になったことで、 [`WiremsgStore`] の AtomicU64 採番が
+//! daemon が唯一の writer になったことで、 [`WiremsgStore`] の AtomicU64 採番が
 //! そのまま「マシン大域で厳密単調」を満たす (設計決定 C1 の帰結、 追加コード不要)。
 
 use crate::capability::{WireNotifier, WiremsgStore};
 
-/// bare `"agent"` を reject する (TheWorld は project 文脈が無く正規化できない)
+/// bare `"agent"` を reject する (daemon は project 文脈が無く正規化できない)
 fn validate_addr(addr: &str) -> Result<(), String> {
     if addr == "agent" {
         return Err(
@@ -396,11 +396,11 @@ pub(crate) async fn wire_ack_store(
 
 /// "wire" Unison channel の method dispatch (daemon `handle_wire_channel` から呼ぶ)。
 ///
-/// 旧 `world_wire_*_handler` (axum POST /api/wire/*) を unison channel に移行したもの (doc 27 §62)。
-/// `method` は `world_wire::call` が path `"/api/wire/<m>"` から prefix を剥いだ sub-part
+/// 旧 `daemon_wire_*_handler` (axum POST /api/wire/*) を unison channel に移行したもの (doc 27 §62)。
+/// `method` は `daemon_wire::call` が path `"/api/wire/<m>"` から prefix を剥いだ sub-part
 /// (= `"send"` / `"recv"` / `"thread"` / `"unread-count"` / `"latest-msg"` / `"ack"`)。
 ///
-/// store / notifier / delivery_notify は daemon が World process AppState と共有する Arc。
+/// store / notifier / delivery_notify は daemon が daemon process AppState と共有する Arc。
 /// エラーは Err(String) で返り、channel handler が `{"error": ...}` フレームに詰める
 /// (unison 慣習 — 専用 error frame なし)。
 pub(crate) async fn dispatch_wire(
@@ -414,7 +414,7 @@ pub(crate) async fn dispatch_wire(
         "send" => {
             // R2-b: command 着信なら delivery loop を即 wake。 判定は保存前の素の payload で行う —
             // body が文字列化 JSON の場合 (coerce 救済経路) はここで拾えないが、 その場合も
-            // delivery loop の 30s tick が拾うため fail-open (旧 world_wire_send_handler から移植)。
+            // delivery loop の 30s tick が拾うため fail-open (旧 daemon_wire_send_handler から移植)。
             let is_command = payload
                 .get("body")
                 .and_then(|b| b.get("category"))

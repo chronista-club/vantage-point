@@ -2,12 +2,12 @@
  * Wire Inbox overlay panel (doc 34 §4 V1) — 選択 lane の wire 履歴表示 + ack。
  *
  * FileExplorer と同型の singleton overlay。 LaneRow の mailbox badge click で
- * `window.vpWire.open(address)` が呼ばれ、 Rust へ `wire:fetch` IPC → World "wire"
+ * `window.vpWire.open(address)` が呼ばれ、 Rust へ `wire:fetch` IPC → Daemon "wire"
  * channel の read-only request (wire/history + wire/unread-count、 **cursor 不触り** =
  * GUI が覗いても lane の claude の未読は減らない) → 結果が
  * `window.vpWire.handleResult(payload)` で push back される。
  *
- * 更新ループ: wire 活動 (send/ack) のたびに World が lanes snapshot を再 push する
+ * 更新ループ: wire 活動 (send/ack) のたびに daemon が lanes snapshot を再 push する
  * (既存機構) ため、 panel 表示中に sidebar の lanes が更新されたら再 fetch する —
  * 専用の push 購読なしで「wire が動くと panel が追従する」。
  */
@@ -199,7 +199,7 @@ export function WirePanel() {
 		});
 	});
 
-	// wire 活動 → World が lanes snapshot を再 push (既存) → 表示中なら追従 fetch。
+	// wire 活動 → daemon が lanes snapshot を再 push (既存) → 表示中なら追従 fetch。
 	createEffect(
 		on(
 			() => sidebar.lanes_by_project,

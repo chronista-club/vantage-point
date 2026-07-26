@@ -10,8 +10,8 @@ use crate::projects_file::ProjectsFile;
 
 /// `vp sync` を実行。 projects.kdl から ghost project を除去する。
 pub fn execute() -> Result<()> {
-    // PR-D: ghost 除去を daemon (db/world 真実源) 経由で行う。 daemon 不在は kdl フォールバック。
-    let outcome = match crate::world_client::notify_world_sync() {
+    // PR-D: ghost 除去を daemon (db/machine 真実源) 経由で行う。 daemon 不在は kdl フォールバック。
+    let outcome = match crate::daemon_client::notify_daemon_sync() {
         Some(o) => o,
         None => ProjectsFile::sync()?,
     };

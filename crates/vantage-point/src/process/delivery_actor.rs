@@ -1,7 +1,7 @@
-//! wire delivery loop (R2-b、 設計 mem_1CbvcJj4ppU3QKH9d7xMpT) — TheWorld 常駐 actor
+//! wire delivery loop (R2-b、 設計 mem_1CbvcJj4ppU3QKH9d7xMpT) — daemon 常駐 actor
 //!
 //! 未 ack の command category message を受信者の tmux session に nudge (チャネル C) する。
-//! TheWorld 上で store と同居 (in-process query、 決定 D1-c)。
+//! daemon 上で store と同居 (in-process query、 決定 D1-c)。
 //!
 //! ## policy (R3-a 精密化 + R3-c channel D + doc 34 channel E)
 //!
@@ -20,12 +20,12 @@
 //! ## 台帳は in-memory (nudge / bg dispatch を別管理)
 //!
 //! どちらも (message_id, agent) → (回数, 最終時刻)。 ack 済 (pending から消えた) entry は
-//! 共通 GC で落とす。 TheWorld 再起動でリセットされ上限回が再付与されるが、 ack されれば
+//! 共通 GC で落とす。 daemon 再起動でリセットされ上限回が再付与されるが、 ack されれば
 //! 止まるため許容 (table 化は必要になってから)。
 //!
 //! ## チャネル C の送出は SP control channel 経由 (tmux decoupling PR1)
 //!
-//! TheWorld は PtySlot を持たない（PtySlot は SP scope）ので、 lane を所有する SP の control
+//! daemon は PtySlot を持たない（PtySlot は SP scope）ので、 lane を所有する SP の control
 //! channel に `lane_nudge` を forward し、 SP 側で `LanePool::write_nudge` が PtySlot に直書きする。
 //! 旧実装は lane registry の tmux session 名に daemon から直接 `send-keys` していた（cross-process
 //! IPC namespace = tmux session への依存）が、 PR1 で SP-proxy に寄せて tmux 非依存化した。
@@ -278,11 +278,11 @@ fn build_bg_args(cc_session_id: Option<&str>, prompt: &str) -> Vec<String> {
 // actions — actor 本体 (store query / tmux send の I/O 層)
 // =============================================================================
 
-/// TheWorld 常駐の wire delivery actor (R2-b)
+/// daemon 常駐の wire delivery actor (R2-b)
 pub struct DeliveryActor {
-    /// 中央 wire store (TheWorld の in-process 参照)
+    /// 中央 wire store (daemon の in-process 参照)
     store: WiremsgStore,
-    /// TheWorld lane registry (QUIC push でリアルタイム更新される)
+    /// daemon lane registry (QUIC push でリアルタイム更新される)
     lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
     /// tmux decoupling PR1: SP control channel registry（nudge の forward 先解決に使う）
     control_channels: ControlChannels,
@@ -312,8 +312,8 @@ impl Service for DeliveryActor {
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // machine-wide singleton (TheWorld daemon scope) — 初の World 常駐 actor
-        LayerScope::World
+        // machine-wide singleton (daemon scope) — 初の Daemon 常駐 actor
+        LayerScope::Machine
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -395,7 +395,7 @@ async fn pulse(
         .flat_map(|(k, v)| v.iter().map(move |l| (k.clone(), l.clone())))
         .collect();
     if lanes.is_empty() {
-        // lane なし = nudge 先がない (TheWorld 起動直後等)。 poll の claude fork を省く
+        // lane なし = nudge 先がない (daemon 起動直後等)。 poll の claude fork を省く
         return Ok(());
     }
     // R3-a: CC activity を pulse ごとに 1 回 poll。 None = poll 不能 (claude 不在 /
@@ -554,7 +554,7 @@ async fn pulse(
 /// 配信を block しないよう、 子プロセスは別 tokio task が await して reap する
 /// (zombie 防止 + 終了 status を結果ログとして観測 = 簡易な結果収集)。
 ///
-/// 注意 (TheWorld shutdown): in-flight の claude 子プロセスは runtime abort で孤立し得るが、
+/// 注意 (daemon shutdown): in-flight の claude 子プロセスは runtime abort で孤立し得るが、
 /// その場合 wire_ack が届かず pending が残るため、 次回起動の pulse で再 dispatch される
 /// (idempotent に収束)。 重複処理は wire_ack の冪等性で吸収される。
 fn spawn_bg_dispatch(cwd: String, project: String, lane: String, args: Vec<String>) {

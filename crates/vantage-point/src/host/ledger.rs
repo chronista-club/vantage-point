@@ -217,7 +217,7 @@ pub struct FarewellEntry {
     pub ongoing: bool,
 }
 
-/// 1 lane 分の見送り判定の観測（CLI → World の RPC payload でもある）。
+/// 1 lane 分の見送り判定の観測（CLI → daemon の RPC payload でもある）。
 ///
 /// `verdict` は [`FarewellVerdict`] をそのまま flatten するので、wire 上は
 /// `{"lane_id":..,"lane_name":..,"verdict":"ask_human","reason":".."}` になる
@@ -380,7 +380,7 @@ pub async fn origin(
 /// `LaneInfo` の並びから起点を解決する（snapshot publisher 用の薄い adapter）。
 ///
 /// `LanesSnapshot` を publish する経路が 2 本ある（project runtime の live push と、
-/// World が vp-app 接続時に配る retained snapshot）ので、両方が同じ解決を通るように
+/// daemon が vp-app 接続時に配る retained snapshot）ので、両方が同じ解決を通るように
 /// ここに畳む。**片方だけ解決すると受け手が起点の有無で flicker する。**
 pub async fn origin_name_for_lanes(
     vpdb: Option<&crate::db::SharedVpDb>,
@@ -663,7 +663,7 @@ mod tests {
 
     /// snapshot publisher が使う adapter が、DB 越しでも純関数と同じ答えを出すこと。
     ///
-    /// publish 経路は 2 本（project runtime の live push と World の retained snapshot）で、
+    /// publish 経路は 2 本（project runtime の live push と daemon の retained snapshot）で、
     /// **両方が同じ解決を通らないと受け手が起点の有無で flicker する**。だから解決を
     /// [`origin_name_for_lanes`] 1 本に畳んでいる。ここではその 1 本を固定する。
     #[tokio::test]
@@ -1257,7 +1257,7 @@ mod tests {
     /// `FarewellObservation` は wire に載るので serde 形を固定する。
     ///
     /// `verdict` は flatten なので `{"verdict":"ask_human","reason":".."}` の形。
-    /// ここがズレると CLI の観測が World で `serde_json::from_value` に落ちて、
+    /// ここがズレると CLI の観測が daemon で `serde_json::from_value` に落ちて、
     /// **記録だけが黙って止まる**（cleanup 自体は動くので気付けない）。
     #[test]
     fn observation_serde_shape() {
@@ -1270,7 +1270,7 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<FarewellObservation>(json).unwrap(),
             obs,
-            "往復する（World 側で観測を読み戻せる）"
+            "往復する（daemon 側で観測を読み戻せる）"
         );
     }
 }

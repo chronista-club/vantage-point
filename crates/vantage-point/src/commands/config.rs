@@ -6,22 +6,22 @@ use crate::config::Config;
 
 /// `vp config` を実行
 ///
-/// TheWorld 接続時は API からプロジェクト一覧を取得。
+/// daemon 接続時は API からプロジェクト一覧を取得。
 /// 未接続時は config / projects.kdl にフォールバック。
 pub fn execute(config: &Config) -> Result<()> {
     println!("Config file: {}", Config::config_path().display());
     println!();
 
-    // TheWorld API からプロジェクト一覧を取得（フォールバック: projects.kdl）
-    let (projects, source) = match fetch_projects_from_theworld() {
-        Some(projects) => (projects, "TheWorld API"),
+    // daemon API からプロジェクト一覧を取得（フォールバック: projects.kdl）
+    let (projects, source) = match fetch_projects_from_thedaemon() {
+        Some(projects) => (projects, "daemon API"),
         None => {
             let projects: Vec<(String, String)> = config
                 .projects
                 .iter()
                 .map(|p| (p.name.clone(), p.path.clone()))
                 .collect();
-            (projects, "projects.kdl (TheWorld offline)")
+            (projects, "projects.kdl (daemon offline)")
         }
     };
 
@@ -57,20 +57,20 @@ pub fn execute(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// TheWorld からプロジェクト一覧を取得（Unison `world-control.projects/list`）
+/// daemon からプロジェクト一覧を取得（Unison `daemon-control.projects/list`）
 ///
-/// doc 45 段 2: 旧 `GET /api/world/projects` から差し替え。daemon 不在は None で、
+/// doc 45 段 2: 旧 `GET /api/daemon/projects` から差し替え。daemon 不在は None で、
 /// caller が projects.kdl フォールバックに落とす（従来どおり）。
-fn fetch_projects_from_theworld() -> Option<Vec<(String, String)>> {
-    crate::world_client::list_projects_blocking()
+fn fetch_projects_from_thedaemon() -> Option<Vec<(String, String)>> {
+    crate::daemon_client::list_projects_blocking()
 }
 
-/// TheWorld から稼働中プロセスのパス一覧を取得（Unison `registry.list`）
+/// daemon から稼働中プロセスのパス一覧を取得（Unison `registry.list`）
 ///
-/// doc 45 段 2: 旧 `GET /api/world/processes` から差し替え。daemon 不在は空 Vec
+/// doc 45 段 2: 旧 `GET /api/daemon/processes` から差し替え。daemon 不在は空 Vec
 /// （= 全 project が「停止」表示。表示系なので落とさない）。
 fn fetch_running_processes() -> Vec<String> {
-    crate::world_client::list_processes_blocking()
+    crate::daemon_client::list_processes_blocking()
         .unwrap_or_default()
         .iter()
         .filter_map(|p| p.get("project_path")?.as_str().map(String::from))

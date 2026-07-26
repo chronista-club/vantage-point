@@ -11,11 +11,11 @@
 //!   3. starter channel（registry / events）が KDL に存在する
 //!   4. registry / events の request 名 ⊆ daemon handler の match method 集合
 //!      （method レベル drift 検出 = 文字列一致しない request は dead tool になる）
-//!   5. world-control の全 method は「KDL に記述」か「意図的な omission」のどちらかに属する
+//!   5. daemon-control の全 method は「KDL に記述」か「意図的な omission」のどちらかに属する
 //!      （doc 45 段 1 で追加。4 の逆方向 = 記述漏れの検出）
 //!
 //! SSOT: crates/vantage-point/src/daemon/server.rs の register_channel(...) と各 match method。
-//! channel 名と world-control の method は source から抽出して突き合わせる（自動）。
+//! channel 名と daemon-control の method は source から抽出して突き合わせる（自動）。
 //! registry / events の method だけは小さく安定なので手動 const（コメント参照）。
 
 use unison::network::{ProtocolCache, SchemaRegistry};
@@ -32,17 +32,17 @@ const VP_DAEMON_KDL: &str = include_str!("../schema/vp-daemon.kdl");
 /// 現在は [`daemon_channels_const_matches_source`] が source と突き合わせるので、
 /// server.rs 側の増減はテスト失敗として現れる。
 const DAEMON_CHANNELS: &[&str] = &[
-    "world-process",
+    "daemon-process",
     "lanes",
     // doc 52 §6: canvas 語彙退去 — "canvas-ingest" → "gui-ingest" / "canvas" → "gui"
     "gui-ingest",
     "gui",
     "process-proxy",
-    "world-device",
+    "daemon-device",
     "device",
     "registry",
     "events",
-    "world-control",
+    "daemon-control",
     "wire",
 ];
 
@@ -96,12 +96,12 @@ fn channels_are_subset_of_daemon_registered() {
     }
 }
 
-/// 3. starter set（registry / events）+ 2026-07-12 拡張（world-control read-safe subset）が
+/// 3. starter set（registry / events）+ 2026-07-12 拡張（daemon-control read-safe subset）が
 ///    KDL に存在する。
 #[test]
 fn starter_channels_present() {
     let reg = registry();
-    for want in ["registry", "events", "world-control"] {
+    for want in ["registry", "events", "daemon-control"] {
         assert!(
             reg.channel(want).is_some(),
             "channel '{want}' が vp-daemon.kdl に無い"
@@ -121,29 +121,29 @@ fn request_names_match_daemon_methods() {
     const REGISTRY_METHODS: &[&str] = &["list"];
     // SSOT: server.rs events handler の match method（emit/query）。
     const EVENTS_METHODS: &[&str] = &["emit", "query"];
-    // world-control は最も method が増減する handler なので、手動 const ではなく
-    // source（`handle_world_control` の match arm）から抽出して突き合わせる。
+    // daemon-control は最も method が増減する handler なので、手動 const ではなく
+    // source（`handle_daemon_control` の match arm）から抽出して突き合わせる。
     // これで「method を消したのに const が取り残される」drift（registry で実際に起きた）が
-    // world-control では構造的に起きない。
-    let world_control_methods = extract_world_control_methods();
+    // daemon-control では構造的に起きない。
+    let daemon_control_methods = extract_daemon_control_methods();
 
     let reg = registry();
     assert_requests_subset(&reg, "registry", REGISTRY_METHODS);
     assert_requests_subset(&reg, "events", EVENTS_METHODS);
-    assert_requests_subset(&reg, "world-control", &world_control_methods);
+    assert_requests_subset(&reg, "daemon-control", &daemon_control_methods);
 }
 
-/// KDL に**意図的に記述しない** world-control method。
+/// KDL に**意図的に記述しない** daemon-control method。
 ///
-/// 方針（vp-daemon.kdl の channel コメントと対）: world-control に描くのは read-safe な
+/// 方針（vp-daemon.kdl の channel コメントと対）: daemon-control に描くのは read-safe な
 /// request だけ。mutation は手で叩くと projects.kdl / lane descriptor の状態を壊すので
 /// unison-mcp の合成 tool に露出させない。`ping` は liveness probe（意味のある観測面ではない）。
 ///
 /// この const の存在意義は「omission を明示的な決定にする」こと。テスト 4 は
 /// KDL → source の片方向しか見ないため、handler に method を足しても KDL に書き忘れれば
 /// 素通りする（= 露出させるか否かを誰も判断しないまま出荷される）。下の
-/// [`world_control_methods_are_described_or_explicitly_omitted`] が逆方向を塞ぐ。
-const WORLD_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
+/// [`daemon_control_methods_are_described_or_explicitly_omitted`] が逆方向を塞ぐ。
+const DAEMON_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
     // projects mutation（projects.kdl / db の状態を壊しうる）
     "projects/list",
     "projects/add",
@@ -170,7 +170,7 @@ const WORLD_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
     "ping",
 ];
 
-/// 5. world-control の全 method は「KDL に記述」か「[`WORLD_CONTROL_OMITTED_BY_DESIGN`]」の
+/// 5. daemon-control の全 method は「KDL に記述」か「[`DAEMON_CONTROL_OMITTED_BY_DESIGN`]」の
 ///    どちらかに属する。
 ///
 /// テスト 4（KDL ⊆ source）は dead tool を防ぐが、逆に **source に増えた method を KDL に
@@ -179,23 +179,23 @@ const WORLD_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
 /// そのまま agent の面になる」ことなので、無意識の非露出は利得の取りこぼし）。
 /// 新 method を足したら KDL に書くか、omission list に理由付きで足すかを選ぶこと。
 #[test]
-fn world_control_methods_are_described_or_explicitly_omitted() {
+fn daemon_control_methods_are_described_or_explicitly_omitted() {
     let reg = registry();
     let described: std::collections::BTreeSet<&str> = reg
-        .channel("world-control")
-        .expect("world-control が KDL に無い")
+        .channel("daemon-control")
+        .expect("daemon-control が KDL に無い")
         .requests
         .iter()
         .map(|r| r.name.as_str())
         .collect();
 
-    for method in extract_world_control_methods() {
+    for method in extract_daemon_control_methods() {
         assert!(
             described.contains(method.as_str())
-                || WORLD_CONTROL_OMITTED_BY_DESIGN.contains(&method.as_str()),
-            "world-control.{method} が KDL にも omission list にも無い\
+                || DAEMON_CONTROL_OMITTED_BY_DESIGN.contains(&method.as_str()),
+            "daemon-control.{method} が KDL にも omission list にも無い\
              （露出させるなら schema/vp-daemon.kdl に request を足す、\
-             露出させないなら WORLD_CONTROL_OMITTED_BY_DESIGN に理由付きで足す）"
+             露出させないなら DAEMON_CONTROL_OMITTED_BY_DESIGN に理由付きで足す）"
         );
     }
 }
@@ -206,24 +206,24 @@ fn world_control_methods_are_described_or_explicitly_omitted() {
 #[test]
 fn omitted_methods_still_exist_in_source() {
     let found: std::collections::BTreeSet<String> =
-        extract_world_control_methods().into_iter().collect();
-    for omitted in WORLD_CONTROL_OMITTED_BY_DESIGN {
+        extract_daemon_control_methods().into_iter().collect();
+    for omitted in DAEMON_CONTROL_OMITTED_BY_DESIGN {
         assert!(
             found.contains(*omitted),
-            "WORLD_CONTROL_OMITTED_BY_DESIGN の '{omitted}' が handle_world_control に無い\
+            "DAEMON_CONTROL_OMITTED_BY_DESIGN の '{omitted}' が handle_daemon_control に無い\
              （method を撤去したら本 const からも消すこと）"
         );
     }
 }
 
-/// `handle_world_control` の `"method" =>` arm を source から抽出する。
+/// `handle_daemon_control` の `"method" =>` arm を source から抽出する。
 ///
 /// 独立関数なので「関数開始 → 列 0 の `}` で終端」で body を切り出せる。method arm は
 /// `"xxx" => {` の形で一意（内部の match arm は `Ok(_)` / `Err(_)` で文字列リテラルではない）。
-fn extract_world_control_methods() -> Vec<String> {
+fn extract_daemon_control_methods() -> Vec<String> {
     let start = DAEMON_SERVER_RS
-        .find("async fn handle_world_control")
-        .expect("handle_world_control が server.rs に無い");
+        .find("async fn handle_daemon_control")
+        .expect("handle_daemon_control が server.rs に無い");
     let body = &DAEMON_SERVER_RS[start..];
     // 関数終端 = 次に現れる列 0 の閉じ括弧。
     let end = body.find("\n}\n").map(|e| e + 2).unwrap_or(body.len());

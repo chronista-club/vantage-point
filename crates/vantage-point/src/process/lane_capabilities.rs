@@ -68,7 +68,7 @@ pub struct LaneCapabilities {
 impl LaneCapabilities {
     /// 新規構築 (PR-δ-2 / VP-136 で `registry` に board を default 登録)。
     ///
-    /// PR-α-1 の `WorldCapabilities::new` (= midi None で構築) とは異なり、 本 struct は
+    /// PR-α-1 の `MachineCapabilities::new` (= midi None で構築) とは異なり、 本 struct は
     /// **PR-β-2 で board を常時 host 化**、 PR-δ-2 でその host path を `LaneStandRegistry` 経由に
     /// 統一。 doc 13 §6 自動 spawn rule (Lane 起動時に board 同時 spawn が default) との整合のため、
     /// factory を分けず `new()` で populate する設計を維持。

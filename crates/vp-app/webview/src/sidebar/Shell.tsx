@@ -1,7 +1,7 @@
 /**
  * sidebar の shell layout component。
  *
- * v1.0 柱 2。 3 段 layout (header / scrollable list / World widget) の骨格と、
+ * v1.0 柱 2。 3 段 layout (header / scrollable list / Daemon widget) の骨格と、
  * 全 Project を 1 リストで accordion + Lane ツリーとして描画する。
  *
  * 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 SP presence の再起動フラップで
@@ -12,7 +12,7 @@
  * - PR-2: Project accordion + Lane ツリー
  *   (stand icon / status / awaiting dot / mailbox icon / performer git meta)。
  *   操作 (click 選択・context menu・restart/delete・Add Performer form・DnD) は PR-3。
- *   World widget 本体は後続 increment。
+ *   Daemon widget 本体は後続 increment。
  */
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
@@ -31,7 +31,7 @@ import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { ProjectAccordion } from "./ProjectAccordion";
-import { WorldWidget } from "./WorldWidget";
+import { DaemonWidget } from "./DaemonWidget";
 
 /**
  * 指定 path の project accordion を view にスクロールして一瞬 flash させる。
@@ -117,7 +117,7 @@ export function Shell() {
 				</Show>
 			</div>
 
-			<WorldWidget />
+			<DaemonWidget />
 
 			{/* 右クリック context menu (Lane 行 / project ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
 			<ContextMenu />
@@ -224,7 +224,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
-   header 下線 / World・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
+   header 下線 / Daemon・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
   padding:12px 12px 8px;font-size:var(--sb-text-micro,10px);letter-spacing:.14em;
   text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
@@ -481,18 +481,18 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-add-performer-actions button.primary{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);
   color:var(--sb-conn-auto,#FFF76B);border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
 
-/* World widget (sidebar 最下部) — Light Grid foot: mono 面、 muted、 dot は cyan-dim。
+/* Daemon widget (sidebar 最下部) — Light Grid foot: mono 面、 muted、 dot は cyan-dim。
    地の一部なので発光させない (online の緑 dot 廃止)。 offline だけ僅かに magenta。 */
-.vp-world{flex:0 0 auto;background:transparent;padding-top:4px;}
-.vp-world-summary{list-style:none;display:flex;align-items:center;gap:8px;
+.vp-daemon{flex:0 0 auto;background:transparent;padding-top:4px;}
+.vp-daemon-summary{list-style:none;display:flex;align-items:center;gap:8px;
   padding:8px var(--spacing-sm,10px);cursor:pointer;
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-meta,11px);color:var(--lg-mute-2,#38525b);user-select:none;}
-.vp-world-summary::-webkit-details-marker{display:none;}
-.vp-world-summary:hover{color:var(--lg-mute,#5C7A85);}
-.vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
+.vp-daemon-summary::-webkit-details-marker{display:none;}
+.vp-daemon-summary:hover{color:var(--lg-mute,#5C7A85);}
+.vp-daemon-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--lg-cyan-dim,#1C6C7C);}
-.vp-world-dot.offline{background:color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 40%);}
+.vp-daemon-dot.offline{background:color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 40%);}
 /* L1 lifecycle: project 行の SP presence dot。 Light Grid では project = 地なので発光させない
    (「発光ドット無し」)。 semantics は残しつつ muted 表現に落とす: connected = mute-2 定常、
    connecting = mute pulse、 disconnected = magenta 60% (要注意だけが僅かに彩度を持つ)、
@@ -505,44 +505,44 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj-presence-dot.disconnected{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
 .vp-proj-presence-dot.unregistered{background:var(--lg-mute-2,#38525b);opacity:.4;}
 @keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
-.vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+.vp-daemon-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums;}
-.vp-world-detail{padding:2px var(--spacing-sm,8px) 6px;}
-.vp-world-stat{display:flex;justify-content:space-between;font-size:var(--sb-text-meta,11px);
+.vp-daemon-detail{padding:2px var(--spacing-sm,8px) 6px;}
+.vp-daemon-stat{display:flex;justify-content:space-between;font-size:var(--sb-text-meta,11px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);padding:1px 0;}
-.vp-world-stat .k{color:var(--lg-mute-2,#38525b);}
-.vp-world-stat .v{color:var(--lg-mute,#5C7A85);font-weight:500;
+.vp-daemon-stat .k{color:var(--lg-mute-2,#38525b);}
+.vp-daemon-stat .v{color:var(--lg-mute,#5C7A85);font-weight:500;
   font-variant-numeric:tabular-nums;}
-/* Hub available worlds — Hub 行直下に常時リスト表示。地の一部なので発光なし、muted mono。
+/* Hub available nodes — Hub 行直下に常時リスト表示。地の一部なので発光なし、muted mono。
    左 11px + dot(5px) + gap(8px) = handle が 24px（Hub 行 label の直下）に揃い、dot は Hub 行の
-   dot 列に載る。per-world dot = hub v0.6.0 の connected liveness（presence dot と同じ muted 語彙:
+   dot 列に載る。per-daemon dot = hub v0.6.0 の connected liveness（presence dot と同じ muted 語彙:
    connected = mute-2 定常 / offline = magenta 60% — registry に居るが relay 不達の stale）。 */
-.vp-hub-worlds{padding:0 var(--spacing-sm,10px) 4px 11px;}
-.vp-hub-world{display:flex;align-items:center;gap:8px;
+.vp-hub-nodes{padding:0 var(--spacing-sm,10px) 4px 11px;}
+.vp-hub-daemon{display:flex;align-items:center;gap:8px;
   font-size:var(--sb-text-meta,11px);font-family:var(--vp-font-mono),var(--typography-family-mono);
   padding:1px 0;}
-.vp-hub-world-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
+.vp-hub-daemon-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
   background:var(--lg-mute-2,#38525b);}
-.vp-hub-world-dot.offline{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
-.vp-hub-world .k{flex:1 1 auto;color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;
+.vp-hub-daemon-dot.offline{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
+.vp-hub-daemon .k{flex:1 1 auto;color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
-.vp-hub-world .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
+.vp-hub-daemon .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
   font-variant-numeric:tabular-nums;}
-/* in-app update: 新しい release 検知時のみ World widget 直下に出る CTA 行。
+/* in-app update: 新しい release 検知時のみ Daemon widget 直下に出る CTA 行。
    地の muted 語彙から一段持ち上げて「押せる」ことを示す (cyan accent + hover)。 */
-.vp-world-update{display:flex;align-items:center;gap:8px;margin:2px var(--spacing-sm,10px) 6px;
+.vp-daemon-update{display:flex;align-items:center;gap:8px;margin:2px var(--spacing-sm,10px) 6px;
   padding:6px 10px;cursor:pointer;border-radius:6px;
   font-size:var(--sb-text-hint,12px);font-family:var(--vp-font-mono),var(--typography-family-mono);
   color:var(--sb-conn-auto,#FFF76B);
   background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 90%);
   border:1px solid color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 78%);
   user-select:none;}
-.vp-world-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
-.vp-world-update-label{flex:1 1 auto;font-weight:600;}
-.vp-world-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
+.vp-daemon-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
+.vp-daemon-update-label{flex:1 1 auto;font-weight:600;}
+.vp-daemon-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
   font-variant-numeric:tabular-nums;}
 
-/* Devices 🧲 — World scope の Devices セクション (stand row + device count badge) */
+/* Devices 🧲 — machine scope の Devices セクション (stand row + device count badge) */
 .vp-devices{flex:0 0 auto;padding-bottom:4px;}
 .vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
   padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);

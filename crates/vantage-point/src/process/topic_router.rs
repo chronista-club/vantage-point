@@ -408,7 +408,7 @@ impl TopicRouter {
     /// 現在 active (subscriber count > 0) な全 demand topic に対し、 demand hook を
     /// `active=true` で **再発火** する (count は変えない)。
     ///
-    /// 用途 (S2 polish): SP control channel が World に (再)接続した瞬間の catch-up。
+    /// 用途 (S2 polish): SP control channel が daemon に (再)接続した瞬間の catch-up。
     /// surface が先に subscribe して demand_start を撃った時点で SP control channel が
     /// 不在だと reverse-route が捨てられる (start が SP に届かない)。 SP 接続後に本 method を
     /// 呼ぶと、 既に立っている demand を撃ち直して pump を起こせる。 cb (terminal_demand_start)

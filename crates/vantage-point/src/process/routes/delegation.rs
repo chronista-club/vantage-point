@@ -1,6 +1,6 @@
-//! 委譲 (delegation) の TheWorld 中央 store HTTP handler（doc 28 §4 / §6）。
+//! 委譲 (delegation) の daemon 中央 store HTTP handler（doc 28 §4 / §6）。
 //!
-//! SP の `process/delegation.rs` が `world_wire::call("/api/delegation/*")` で叩く先。
+//! SP の `process/delegation.rs` が `daemon_wire::call("/api/delegation/*")` で叩く先。
 //! store（`DelegationStore`、SurrealDB backing）への CRUD/遷移のみを担う — wake（誰を起こすか）
 //! は SP-local の責務（store は data + transition、wake は actions として分離）。
 //!
@@ -9,7 +9,7 @@
 //! - `POST /api/delegation/respond`        — respond: Active へ戻す、更新後 record を返す
 //! - `POST /api/delegation/mark_delivered` — wake の woke 結果を記録（B/C 用）
 //!
-//! 未知 id は `{ "error": ... }` を返す（`world_wire::call` が Err に変換 → SP handler が Err）。
+//! 未知 id は `{ "error": ... }` を返す（`daemon_wire::call` が Err に変換 → SP handler が Err）。
 
 use crate::capability::DelegationStore;
 use crate::process::delegation::Outcome;
@@ -29,8 +29,8 @@ fn record_json(d: &crate::process::delegation::Delegation) -> serde_json::Value 
 
 /// "wire" Unison channel の `delegation/*` method dispatch (daemon `handle_wire_channel` から呼ぶ)。
 ///
-/// 旧 `world_delegation_*_handler` (axum POST /api/delegation/*) を unison channel に移行 (doc 27 §62)。
-/// wire と同じ transport (`world_wire::call`) を共有するため同 channel に相乗りする (path 分岐)。
+/// 旧 `daemon_delegation_*_handler` (axum POST /api/delegation/*) を unison channel に移行 (doc 27 §62)。
+/// wire と同じ transport (`daemon_wire::call`) を共有するため同 channel に相乗りする (path 分岐)。
 /// `method` は path `"/api/delegation/<m>"` から prefix を剥いだ sub-part
 /// (= `"create"` / `"complete"` / `"respond"` / `"poll"` / `"mark_delivered"` / `"list"`)。
 ///

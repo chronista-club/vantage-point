@@ -9,8 +9,8 @@
 //! pool・runner skeleton とも削除した（PR-γ の「runner を Lane 移管したら pool が空になる」
 //! という見通しに、pool 側から先に到達した形）。
 //!
-//! 旧 External Control stand は PR-α で World 移管 + epic v3.1 で
-//! DeviceRegistry 🧲 (World device registry) / Device I/O 🌫️ (Lane device I/O) に再編済。
+//! 旧 External Control stand は PR-α で daemon 移管 + epic v3.1 で
+//! DeviceRegistry 🧲 (Daemon device registry) / Device I/O 🌫️ (Lane device I/O) に再編済。
 //!
 //! ## 現在ここが提供するもの
 //!
@@ -18,7 +18,7 @@
 //! - `BoardStand` — それを `LaneStandHost` trait に適合させる wrapper。
 //!   `LaneCapabilities.registry` が Lane あたり 1 instance を host する (PR-δ-2 / VP-136)。
 //!
-//! 関連: doc 12 LSCM (VP-109) — Layer container は World/Project/Lane の 3 kind、
+//! 関連: doc 12 LSCM (VP-109) — Layer container は Daemon/Project/Lane の 3 kind、
 //! 各 Stand の居住可能 Layer は doc 12 §9 catalog の「保持 layer pattern」列が定める。
 
 use std::any::Any;

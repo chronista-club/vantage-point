@@ -16,10 +16,10 @@
 //! manager.initialize(&ctx).await?;
 //!
 //! // プロジェクト一覧取得
-//! let projects = world.list_projects().await;
+//! let projects = daemon.list_projects().await;
 //!
 //! // Process起動
-//! world.start_process("my-project").await?;
+//! daemon.start_process("my-project").await?;
 //! ```
 
 use crate::capability::core::{Capability, CapabilityContext, CapabilityError, CapabilityResult};
@@ -91,7 +91,7 @@ pub struct RunningProcess {
     pub project_path: PathBuf,
 }
 
-/// project の presence 状態（World daemon-canonical、vp-app sidebar の ●◐○ 表示用）。
+/// project の presence 状態（daemon-canonical、vp-app sidebar の ●◐○ 表示用）。
 ///
 /// `/api/health` の `processes[].presence` で vp-app に expose される。
 ///
@@ -99,10 +99,10 @@ pub struct RunningProcess {
 /// `Unregistered`（`stop_process`）の**2 値のみ**。`Connecting`（respawn 着手中）と
 /// `Disconnected`（QUIC 切断）は、別プロセスの SP が register/heartbeat していた時代の状態で、
 /// その生産者（registry handler は #824、health monitor は本 PR）が消えたため到達不能になった。
-/// fold-in 後の project は「World の中に居る（=起動済）か、居ないか」の二値しか取り得ない。
+/// fold-in 後の project は「daemon の中に居る（=起動済）か、居ないか」の二値しか取り得ない。
 /// enum の 2 値への縮約と vp-app 描画の追従は presence 意味論の follow-up（doc 44 §5.5 PR3）。
 /// **2 値**（doc 44 §5.5 PR3 の follow-up、2026-07-22 着地）。fold-in 後の project は
-/// 「World の中に居る」か「居ない」かしか取り得ない。
+/// 「daemon の中に居る」か「居ない」かしか取り得ない。
 ///
 /// 旧 4 値のうち `Connecting`（再起動 in-flight）/ `Disconnected`（QUIC 切断検知）は
 /// **別プロセスの SP が register / heartbeat していた時代の状態**で、その生産者
@@ -114,9 +114,9 @@ pub struct RunningProcess {
 /// > 消える経路は型からも消す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessPresenceState {
-    /// 未登録（projects には在るが未起動 / 停止済）= **World の外**。
+    /// 未登録（projects には在るが未起動 / 停止済）= **daemon の外**。
     Unregistered,
-    /// 起動済み（`start_process` 成功）= **World の中に居る**。
+    /// 起動済み（`start_process` 成功）= **daemon の中に居る**。
     Connected,
 }
 
@@ -201,10 +201,10 @@ pub struct ProcessManagerCapability {
     /// vpバイナリパス
     /// SurrealDB クライアント（Some なら DB に二重書き込み）
     vpdb: Option<crate::db::SharedVpDb>,
-    /// doc 44 P1 (fold-in): project を World 内で起動・保持する registry（World mode のみ Some）。
+    /// doc 44 P1 (fold-in): project を Daemon 内で起動・保持する registry（daemon mode のみ Some）。
     /// 旧構成で `vp sp start` を spawn していた箇所が、この registry への `start()` に置き換わる。
     project_runtimes: Option<Arc<crate::process::project_registry::ProjectRuntimes>>,
-    /// process lifecycle event の broadcast Sender（World mode のみ Some、DaemonState と共有）。
+    /// process lifecycle event の broadcast Sender（daemon mode のみ Some、DaemonState と共有）。
     ///
     /// doc 44 P1 (fold-in): 旧構成では SP の register/unregister を受けた registry channel
     /// handler がここに Add/Remove を流していた。SP が消えたため、in-process の起動元である
@@ -213,7 +213,7 @@ pub struct ProcessManagerCapability {
     process_lifecycle_tx:
         Option<tokio::sync::broadcast::Sender<crate::daemon::protocol::ProcessLifecycleEvent>>,
     /// active lane (presence、 Model Q): project ごとの選択中 lane (キー: 正規化パス)。
-    /// daemon-canonical。 `set_active_lane` で更新 + db/world に upsert、 boot で load。
+    /// daemon-canonical。 `set_active_lane` で更新 + db/machine に upsert、 boot で load。
     active_lanes: Arc<RwLock<HashMap<String, String>>>,
     /// L1 lifecycle (Phase C): project の presence (キー: 正規化パス)。daemon-canonical (doc 27 §3.2)。
     /// doc 44 P1 (fold-in): `start_process`→Connected / `stop_process`→Unregistered の 2 値のみ
@@ -266,7 +266,7 @@ impl ProcessManagerCapability {
     /// SurrealDB クライアントを設定
     /// doc 44 P1 (fold-in): project を in-process 起動するための registry を差し込む。
     ///
-    /// World mode でのみ設定される。未設定のまま `start_process` を呼ぶと Err になる
+    /// daemon mode でのみ設定される。未設定のまま `start_process` を呼ぶと Err になる
     /// （旧構成で `vp` binary が見つからない場合と同じ「起動手段が無い」状態）。
     pub(crate) fn set_project_runtimes(
         &mut self,
@@ -275,7 +275,7 @@ impl ProcessManagerCapability {
         self.project_runtimes = Some(runtimes);
     }
 
-    /// process lifecycle broadcast の Sender を差し込む（World mode のみ）。
+    /// process lifecycle broadcast の Sender を差し込む（daemon mode のみ）。
     ///
     /// DaemonState と同一 Sender を共有し、`start_process` / `stop_process` が
     /// Add / Remove を流す。未設定なら emit は no-op（SP 単体起動 / test）。
@@ -290,10 +290,10 @@ impl ProcessManagerCapability {
         self.vpdb = Some(vpdb);
     }
 
-    /// db/world への参照（Project Host の帳簿を World の control 面から触るため）。
+    /// db/machine への参照（Project Host の帳簿を daemon の control 面から触るため）。
     ///
     /// 帳簿 (`host_origin` / `host_lane_order` / `host_farewell`) は surrealkv の OS 排他
-    /// ロックで World が専有するので、CLI からは World 経由でしか読み書きできない
+    /// ロックで daemon が専有するので、CLI からは daemon 経由でしか読み書きできない
     /// (doc 44 §8.4)。`None` = DB 未接続（CLI / test 初期）。
     pub fn vpdb(&self) -> Option<&crate::db::SharedVpDb> {
         self.vpdb.as_ref()
@@ -333,7 +333,7 @@ impl ProcessManagerCapability {
             .insert(path_key.to_string(), state);
     }
 
-    /// L1 lifecycle: vp-app sidebar 用の SP presence 一覧を作る（World daemon-canonical）。
+    /// L1 lifecycle: vp-app sidebar 用の SP presence 一覧を作る（daemon-canonical）。
     ///
     /// `projects`（desired = 全登録 project）を軸に `running_processes`（live port/pid）と
     /// `process_presence`（接続状態）を join する。SP が crash/disconnect しても projects には
@@ -369,8 +369,8 @@ impl ProcessManagerCapability {
     /// 設定を読み込み
     ///
     /// PR-C (control plane 一元化, creo `mem_1CbmWjCGNi9z49s3r21TwQ`): registered projects の
-    /// 真実源を db/world に切り替える。
-    /// - `vpdb=Some` (= World daemon): **db/world を真実源**にする。 DB が空なら config.projects
+    /// 真実源を db/machine に切り替える。
+    /// - `vpdb=Some` (= daemon): **db/machine を真実源**にする。 DB が空なら config.projects
     ///   (= projects.kdl) から一回 import して復旧 (VP-182 シナリオ / 既存ユーザーの移行)。
     /// - `vpdb=None` (= CLI / SP / test 初期): 従来通り config.projects (= projects.kdl) から展開。
     ///
@@ -387,7 +387,7 @@ impl ProcessManagerCapability {
                 CapabilityError::InitializationFailed(format!("DB projects 取得失敗: {}", e))
             })?;
             if entries.is_empty() && !config.projects.is_empty() {
-                // DB 空 + kdl に projects あり → kdl から db/world へ一回 import (移行 / 復旧)。
+                // DB 空 + kdl に projects あり → kdl から db/machine へ一回 import (移行 / 復旧)。
                 let seed = config_projects_to_entries(&config);
                 db.import_projects(&seed).await.map_err(|e| {
                     CapabilityError::InitializationFailed(format!(
@@ -396,7 +396,7 @@ impl ProcessManagerCapability {
                     ))
                 })?;
                 tracing::info!(
-                    "projects を projects.kdl から db/world に復旧 ({} 件)",
+                    "projects を projects.kdl から db/machine に復旧 ({} 件)",
                     seed.len()
                 );
                 entries = db.export_projects().await.map_err(|e| {
@@ -436,7 +436,7 @@ impl ProcessManagerCapability {
         drop(projects);
         drop(order);
 
-        // Model Q: active lane (presence) を db/world から load する (vpdb=Some のみ)。
+        // Model Q: active lane (presence) を db/machine から load する (vpdb=Some のみ)。
         if let Some(db) = &self.vpdb {
             match db.list_active_lanes().await {
                 Ok(rows) => {
@@ -449,7 +449,7 @@ impl ProcessManagerCapability {
                 Err(e) => tracing::warn!("active_lane の load 失敗 (空で継続): {}", e),
             }
 
-            // doc 24 §10 Phase 2: lane descriptor を db/world から boot load する (daemon
+            // doc 24 §10 Phase 2: lane descriptor を db/machine から boot load する (daemon
             // 再起動を re-animate、 §3.3)。 旧来 lane_registry は SP push を待って初めて
             // 埋まる cache だったが、 daemon-canonical 化で boot 時点から truth を持つ。
             // SP が後で reconnect すれば register snapshot が最新で上書きする (= reconcile)。
@@ -562,7 +562,7 @@ impl ProcessManagerCapability {
     /// 現在の projects HashMap を真実源に永続化する。
     ///
     /// PR-C (control plane 一元化): `project_order` の順序で `ProjectEntry` 列を組み立て、
-    /// - `vpdb=Some` (= World): **db/world に全置換** (= 真実源)。 projects.kdl は DB からの
+    /// - `vpdb=Some` (= Daemon): **db/machine に全置換** (= 真実源)。 projects.kdl は DB からの
     ///   一方向 export ミラー (= 過渡期の人間可読 + 復旧の種、 PR-D で撤去予定)。
     /// - `vpdb=None` (= CLI / SP / test): 従来通り projects.kdl に atomic write。
     ///
@@ -590,7 +590,7 @@ impl ProcessManagerCapability {
         };
 
         if let Some(db) = &self.vpdb {
-            // db/world を真実源として全置換。
+            // db/machine を真実源として全置換。
             db.replace_all_projects(&entries).await.map_err(|e| {
                 CapabilityError::InitializationFailed(format!("DB projects 全置換失敗: {}", e))
             })?;
@@ -713,7 +713,7 @@ impl ProcessManagerCapability {
 
         // PR-C: vpdb=Some なら DB に同期する。 reload は kdl→in-memory→DB の向きで、
         // running 保護後の in-memory を書くので、 古い kdl で DB を盲目上書きせず取りこぼしも防ぐ。
-        // (= CLI が kdl 経由で更新した slot 等を db/world に焼く合流点)
+        // (= CLI が kdl 経由で更新した slot 等を db/machine に焼く合流点)
         if self.vpdb.is_some()
             && let Err(e) = self.persist_projects().await
         {
@@ -797,13 +797,13 @@ impl ProcessManagerCapability {
         self.project_order.write().await.retain(|k| k != &key);
 
         // Model Q / §4.6 含有=所有=寿命: project(namespace) を倒したら、 その presence
-        // (active_lane) も畳む。 in-memory map と db/world から回収する (DB は best-effort)。
+        // (active_lane) も畳む。 in-memory map と db/machine から回収する (DB は best-effort)。
         self.active_lanes.write().await.remove(&key);
         if let Some(db) = &self.vpdb
             && let Err(e) = db.delete_active_lane(&key).await
         {
             tracing::warn!(
-                "active_lane の db/world 削除に失敗 (in-memory は削除済): {}",
+                "active_lane の db/machine 削除に失敗 (in-memory は削除済): {}",
                 e
             );
         }
@@ -812,16 +812,16 @@ impl ProcessManagerCapability {
         // 起点が `Dangling` に落ちる (= 指定した覚えのない「指定が失われました」表示)。
         if let Some(db) = &self.vpdb {
             if let Err(e) = db.delete_host_origin(&key).await {
-                tracing::warn!("host_origin の db/world 削除に失敗: {}", e);
+                tracing::warn!("host_origin の db/machine 削除に失敗: {}", e);
             }
             // doc 44 §12: lane の並び順も同じ namespace の帳簿なので一緒に畳む。
             if let Err(e) = db.delete_lane_order_for_project(&key).await {
-                tracing::warn!("host_lane_order の db/world 削除に失敗: {}", e);
+                tracing::warn!("host_lane_order の db/machine 削除に失敗: {}", e);
             }
             // doc 44 §7.5: 見送りの履歴 / 滞留も同じ namespace の帳簿。project を倒したら
             // 一緒に畳む (残すと同 path で再登録した時、無関係な過去の見送りが出てくる)。
             if let Err(e) = db.delete_farewell_entries_for_project(&key).await {
-                tracing::warn!("host_farewell の db/world 削除に失敗: {}", e);
+                tracing::warn!("host_farewell の db/machine 削除に失敗: {}", e);
             }
         }
         // L1 lifecycle: connection presence も namespace と共に回収 (active_lanes と対称、
@@ -840,11 +840,11 @@ impl ProcessManagerCapability {
             .unwrap_or_default();
         if let Some(db) = &self.vpdb {
             if let Err(e) = db.delete_lanes_for_project(&key).await {
-                tracing::warn!("lane の db/world 削除に失敗 (in-memory は削除済): {}", e);
+                tracing::warn!("lane の db/machine 削除に失敗 (in-memory は削除済): {}", e);
             }
             // §4.6: lane lifecycle (別 table) も同様に回収する。
             if let Err(e) = db.delete_lane_lifecycles_for_project(&key).await {
-                tracing::warn!("lane_lifecycle の db/world 削除に失敗: {}", e);
+                tracing::warn!("lane_lifecycle の db/machine 削除に失敗: {}", e);
             }
         }
 
@@ -890,7 +890,7 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// World 入口（Unison `world-control.lanes/create`）から performer lane を作る。
+    /// Daemon 入口（Unison `daemon-control.lanes/create`）から performer lane を作る。
     ///
     /// ## doc 44 §9.4: 実装は持たない（統合後）
     ///
@@ -927,7 +927,7 @@ impl ProcessManagerCapability {
         let key = normalize_path_key(&PathBuf::from(project_path));
         let runtimes = self.project_runtimes.as_ref().ok_or_else(|| {
             CapabilityError::Other(
-                "project runtimes 未設定 — World mode 以外では lane を作れない".to_string(),
+                "project runtimes 未設定 — daemon mode 以外では lane を作れない".to_string(),
             )
         })?;
         // 停止中 project に lane は作れない。GUI 側も「+ Add Performer」を稼働中限定にして
@@ -1016,7 +1016,7 @@ impl ProcessManagerCapability {
     /// active lane (presence、 Model Q) を設定する。
     ///
     /// project ごとの選択中 lane を daemon-canonical に持つ。 in-memory map を更新し、
-    /// vpdb=Some (= World) なら db/world の active_lane table に upsert する。
+    /// vpdb=Some (= Daemon) なら db/machine の active_lane table に upsert する。
     /// §4.6: presence は tail-loss 許容なので DB 永続は best-effort (失敗は warn のみ)。
     pub async fn set_active_lane(
         &self,
@@ -1032,7 +1032,7 @@ impl ProcessManagerCapability {
             && let Err(e) = db.upsert_active_lane(&key, lane_address).await
         {
             tracing::warn!(
-                "active_lane の db/world 永続に失敗 (in-memory は更新済): {}",
+                "active_lane の db/machine 永続に失敗 (in-memory は更新済): {}",
                 e
             );
         }
@@ -1076,7 +1076,7 @@ impl ProcessManagerCapability {
     /// L0 finale (Push-only): 指定 path の live SP を `running_processes` registry から引く。
     ///
     /// `start_process` の重複 spawn 防止 dedup check。
-    /// doc 44 P1 (fold-in): project が World 内の map エントリになり、重複起動は
+    /// doc 44 P1 (fold-in): project が Daemon 内の map エントリになり、重複起動は
     /// `ProjectRuntimes` のキー一意性が構造的に防ぐ。本 check は running_processes を直引きする
     /// 補助（旧 VP-133 の port scan dedup / SP uplink reconnect / health monitor respawn の
     /// 段取りはいずれも SP プロセス前提で、fold-in で不要になった）。
@@ -1176,21 +1176,21 @@ impl ProcessManagerCapability {
             }
         }
 
-        // VP-165 PR-5b: TheWorld が port allocation の authority。
+        // VP-165 PR-5b: daemon が port allocation の authority。
         // - `sp_port_for_project` で slot ベースの port を解決 (新規割当なら config 永続)
         // - `vp sp start -p <port>` で port を明示渡し
         // - `wait_for_health(port, &path)` で QUIC registry 登録を確認 (Push-only、 L0 finale)
         // - 外部衝突 (別 project SP / 非 VP process) なら 1 回きり auto-reassign + retry
         //
         // 旧 (PR-5 まで): `vp sp start -C <path>` (-p 無し) → 子の resolve_port が slot 解決 →
-        // TheWorld が `wait_for_process_port` で range scan で discover、 だった。 PR-5b で
-        // TheWorld が port を明示所有する形に整理。
+        // daemon が `wait_for_process_port` で range scan で discover、 だった。 PR-5b で
+        // daemon が port を明示所有する形に整理。
         let project_path_str = project.path.to_string_lossy().to_string();
         // doc 44 P1 (fold-in): 旧実装は `vp sp start -C <path> -p <port>` を子プロセスとして
         // spawn し、QUIC registry への自己登録を `wait_for_health` で待ち、port が他 project に
         // 取られていれば `auto_reassign_slot` して 1 回だけ retry する、という多段の段取りだった。
         //
-        // project が World 内の `Arc<AppState>` になった今、これは単なる関数呼び出しになる。
+        // project が Daemon 内の `Arc<AppState>` になった今、これは単なる関数呼び出しになる。
         // 旧段取りの構成要素はいずれも概念ごと不要になった:
         //   - port 解決      … bind しないので割り当てる対象が無い
         //   - health 待ち    … 起動の成否は Result で同期的に返る
@@ -1199,7 +1199,7 @@ impl ProcessManagerCapability {
         //     （旧: registry dedup + spawn Semaphore + per-project DB LOCK の 3 重掛け）
         let runtimes = self.project_runtimes.clone().ok_or_else(|| {
             CapabilityError::Other(
-                "project runtimes 未設定 — World mode 以外では project を起動できない".to_string(),
+                "project runtimes 未設定 — daemon mode 以外では project を起動できない".to_string(),
             )
         })?;
         let started = runtimes.start(&project_path_str).await.map_err(|e| {
@@ -1208,8 +1208,8 @@ impl ProcessManagerCapability {
         if !started {
             tracing::info!("project は既に起動済み → skip (project={})", project_name);
         }
-        // port / pid は SP プロセスの遺産。 project は World と同一プロセスで動くので
-        // pid は World 自身、 port は不在を表す 0 を入れる（表示の意味論整理は doc 44 P3）。
+        // port / pid は SP プロセスの遺産。 project は daemon と同一プロセスで動くので
+        // pid は Daemon 自身、 port は不在を表す 0 を入れる（表示の意味論整理は doc 44 P3）。
         let running_process = RunningProcess {
             project_name: project_name.to_string(),
             port: 0,
@@ -1308,7 +1308,7 @@ impl ProcessManagerCapability {
             }
         }
 
-        // doc 44 P1 (fold-in): 旧実装は World process-proxy の "shutdown" method を loopback で
+        // doc 44 P1 (fold-in): 旧実装は daemon process-proxy の "shutdown" method を loopback で
         // 撃ち、reverse-route で SP に届けて自死させていた。SP は shutdown_token cancel 直後に
         // control channel を畳むため応答が返らないことがあり、best-effort 扱いにせざるを得な
         // かった（「止まったかどうか確かめられない」）。
@@ -1420,21 +1420,21 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// 起動時設定の復帰: TheWorld 起動時に `enabled` な project の SP を自動起動する。
+    /// 起動時設定の復帰: daemon 起動時に `enabled` な project の SP を自動起動する。
     ///
-    /// daemon restart 後に working set を復元する (VP-207)。 TheWorld 起動時に
+    /// daemon restart 後に working set を復元する (VP-207)。 daemon 起動時に
     /// バックグラウンドタスクとして 1 回だけ spawn される。
     /// 1. `enabled == true` かつ未稼働の project を収集
     /// 2. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
     ///
     /// 二重起動は `ProjectRuntimes` の map キー一意性が構造的に防ぐ。
     /// lock 規律: `start_process`（内部で sleep する）を呼ぶ前に read ガードを clone して解放する。
-    pub async fn autostart_enabled_projects(world: Arc<RwLock<Self>>) {
+    pub async fn autostart_enabled_projects(daemon: Arc<RwLock<Self>>) {
         // doc 44 P1 (fold-in): 旧「registry 静穏待ち」(最大 60s) を撤去した。
         //
         // あの待ちの目的は「gentle daemon restart を生き延びた旧 SP の QUIC heal 再登録が
         // 届くまで待ち、稼働中の SP を重複 spawn しない」ことだった。fold-in で project が
-        // World 内に入り、daemon 停止を生き延びる SP が存在しなくなったため、registry は
+        // Daemon 内に入り、daemon 停止を生き延びる SP が存在しなくなったため、registry は
         // boot 時に**常に空**で安定する = 待つ理由そのものが消滅した。
         //
         // 残したままだと毎回きっかり QUIET_WINDOW(20s) 空回りしてから project を起こすことに
@@ -1443,11 +1443,11 @@ impl ProcessManagerCapability {
         //
         // doc 44 P1 (fold-in): 旧実装はここで `refresh_process_status`（PID liveness）を
         // 呼んでいたが、boot 時点で running_processes は空なので no-op だった上、fold-in で
-        // pid が全 project 共通の World 自身になり liveness check 自体が無意味化したため撤去。
+        // pid が全 project 共通の Daemon 自身になり liveness check 自体が無意味化したため撤去。
 
         // enabled かつ未稼働の project 名を収集。
         let targets: Vec<String> = {
-            let w = world.read().await;
+            let w = daemon.read().await;
             let projects = w.projects.read().await;
             let running = w.running_processes.read().await;
             projects
@@ -1470,11 +1470,11 @@ impl ProcessManagerCapability {
 
         // start_process は内部で sleep するため、read ガードを保持せず clone した cap で呼ぶ。
         for name in &targets {
-            let world_cap = {
-                let w = world.read().await;
+            let daemon_cap = {
+                let w = daemon.read().await;
                 w.clone()
             };
-            match world_cap.start_process(name).await {
+            match daemon_cap.start_process(name).await {
                 Ok(p) => tracing::info!("autostart: '{}' 起動成功（port {}）", name, p.port),
                 Err(e) => tracing::warn!("autostart: '{}' 起動失敗: {}", name, e),
             }
@@ -1508,7 +1508,7 @@ impl ProcessManagerCapability {
     /// - event-based hot-reload: scope 外 (= polling で十分、 PR 1 の `build_lanes_snapshot`
     ///   periodic と同 cadence で user の mental model 一致)
     pub async fn run_lane_watcher(
-        world: Arc<RwLock<Self>>,
+        daemon: Arc<RwLock<Self>>,
         shutdown_token: tokio_util::sync::CancellationToken,
     ) {
         use notify::EventKind;
@@ -1531,7 +1531,7 @@ impl ProcessManagerCapability {
 
         // 起動時 snapshot を arm。 0 project でも loop は起動し、 periodic tick で
         // 後から register された project を pick up する (= hot-reload 動作)。
-        let mut path_map = Self::build_lane_watch_path_map(&world).await;
+        let mut path_map = Self::build_lane_watch_path_map(&daemon).await;
         let mut watched: std::collections::HashSet<std::path::PathBuf> =
             std::collections::HashSet::new();
         for (path, (name, _)) in &path_map {
@@ -1544,7 +1544,7 @@ impl ProcessManagerCapability {
             watched.len()
         );
 
-        // lanes portless: 旧 reqwest client (SP HTTP 直結) は撤去。 event handler は World
+        // lanes portless: 旧 reqwest client (SP HTTP 直結) は撤去。 event handler は Daemon
         // process-proxy ask (`lane_create` / `lane_delete`) に loopback する。
 
         // 5s tick で projects.kdl 経由の register/unregister を hot-reload。
@@ -1559,7 +1559,7 @@ impl ProcessManagerCapability {
                 }
                 _ = hot_reload.tick() => {
                     // diff 計算 → 差分のみ unwatch/watch
-                    let new_map = Self::build_lane_watch_path_map(&world).await;
+                    let new_map = Self::build_lane_watch_path_map(&daemon).await;
                     let new_paths: std::collections::HashSet<std::path::PathBuf> =
                         new_map.keys().cloned().collect();
                     let (to_add, to_remove) = compute_watch_diff(&watched, &new_paths);
@@ -1587,14 +1587,14 @@ impl ProcessManagerCapability {
                     let Some(event) = event_opt else { break }; // channel closed
                     match event.kind {
                         EventKind::Remove(_) => {
-                            Self::handle_lane_remove_event(&world, &path_map, &event).await;
+                            Self::handle_lane_remove_event(&daemon, &path_map, &event).await;
                         }
                         EventKind::Create(_) => {
                             // F.8 B Convergent: SP 起動後に CLI / 外部で `.vp/lanes/<name>`
-                            // dir が増えた時、 World process-proxy ask `lane_create` (cwd 明示) で
+                            // dir が増えた時、 daemon process-proxy ask `lane_create` (cwd 明示) で
                             // spawn を依頼。 「disk dir があるが LanePool に居ない」 中間状態
                             // (= disk-only Lane) を恒久化させない、 lifecycle 自動 convergence。
-                            Self::handle_lane_create_event(&world, &path_map, &event).await;
+                            Self::handle_lane_create_event(&daemon, &path_map, &event).await;
                         }
                         _ => {} // Modify / Access 等は無視
                     }
@@ -1645,11 +1645,11 @@ impl ProcessManagerCapability {
     /// `config.projects` から `<repo>/.vp/lanes/` path → (project_name, project_path) の
     /// HashMap を build する。 起動 snapshot 用 (= 動的更新は scope 外)。
     async fn build_lane_watch_path_map(
-        world: &Arc<RwLock<Self>>,
+        daemon: &Arc<RwLock<Self>>,
     ) -> std::collections::HashMap<std::path::PathBuf, (String, String)> {
         let mut map = std::collections::HashMap::new();
-        let world_read = world.read().await;
-        let Some(config) = world_read.config.as_ref() else {
+        let daemon_read = daemon.read().await;
+        let Some(config) = daemon_read.config.as_ref() else {
             return map;
         };
         for proj in &config.projects {
@@ -1660,10 +1660,10 @@ impl ProcessManagerCapability {
         map
     }
 
-    /// VP-129: Remove event 1 件を処理。 path → project 解決 → World process-proxy ask `lane_delete`。
+    /// VP-129: Remove event 1 件を処理。 path → project 解決 → daemon process-proxy ask `lane_delete`。
     /// `run_lane_watcher` の inner、 各 path を独立処理。
     async fn handle_lane_remove_event(
-        world: &Arc<RwLock<Self>>,
+        daemon: &Arc<RwLock<Self>>,
         path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
         event: &notify::Event,
     ) {
@@ -1677,8 +1677,8 @@ impl ProcessManagerCapability {
             // SP port 取得 (= running_processes registry)。 `project_path` は config の
             // String 型で持たれているので Path 変換してから normalize する。
             let port = {
-                let world_read = world.read().await;
-                let procs = world_read.running_processes.read().await;
+                let daemon_read = daemon.read().await;
+                let procs = daemon_read.running_processes.read().await;
                 let key = normalize_path_key(std::path::Path::new(&project_path));
                 procs.get(&key).map(|p| p.port)
             };
@@ -1691,8 +1691,8 @@ impl ProcessManagerCapability {
                 continue;
             };
 
-            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を World process-proxy ask
-            // `lane_delete` に移管 (World 内 loopback、 surface 群と uniform な transport)。 cleanup=false
+            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を daemon process-proxy ask
+            // `lane_delete` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 cleanup=false
             // で dir は既に gone。 self-loop case (= SP 経由削除で dir 消滅 → watcher が Remove 検知 →
             // 本 lane_delete 発火) は server が "Lane not found" を Err で返すので no-op 扱い。
             let address = format!("{}/performer/{}", project_name, performer_name);
@@ -1703,8 +1703,8 @@ impl ProcessManagerCapability {
                 performer_name,
                 port
             );
-            match crate::commands::process_client::world_process_request(
-                crate::cli::world_port(),
+            match crate::commands::process_client::daemon_process_request(
+                crate::cli::daemon_port(),
                 &project_path,
                 "lane_delete",
                 payload,
@@ -1744,7 +1744,7 @@ impl ProcessManagerCapability {
     ///   が返り、 watcher 側はそれを debug log で受ける (= silent OK)
     /// - SP 起動時 bootstrap で既に同 performer が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
     async fn handle_lane_create_event(
-        world: &Arc<RwLock<Self>>,
+        daemon: &Arc<RwLock<Self>>,
         path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
         event: &notify::Event,
     ) {
@@ -1761,8 +1761,8 @@ impl ProcessManagerCapability {
 
             // SP port 取得 (= running_processes registry)
             let port = {
-                let world_read = world.read().await;
-                let procs = world_read.running_processes.read().await;
+                let daemon_read = daemon.read().await;
+                let procs = daemon_read.running_processes.read().await;
                 let key = normalize_path_key(std::path::Path::new(&project_path));
                 procs.get(&key).map(|p| p.port)
             };
@@ -1775,8 +1775,8 @@ impl ProcessManagerCapability {
                 continue;
             };
 
-            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
-            // `lane_create` に移管 (World 内 loopback、 surface 群と uniform な transport)。 payload は
+            // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を daemon process-proxy ask
+            // `lane_create` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 payload は
             // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_performer_in skip)。
             // doc 44 P2: `kind` は撤去（lane に種別が無くなり、指定する余地が消えた）。
             //
@@ -1798,8 +1798,8 @@ impl ProcessManagerCapability {
                 performer_name,
                 port
             );
-            match crate::commands::process_client::world_process_request(
-                crate::cli::world_port(),
+            match crate::commands::process_client::daemon_process_request(
+                crate::cli::daemon_port(),
                 &project_path,
                 "lane_create",
                 payload,
@@ -1882,9 +1882,9 @@ impl Default for ProcessManagerCapability {
 impl Capability for ProcessManagerCapability {
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo::new(
-            "world-capability",
+            "daemon-capability",
             env!("CARGO_PKG_VERSION"),
-            "Process World - 複数のProject Processを統括管理",
+            "Process Daemon - 複数のProject Processを統括管理",
         )
     }
 
@@ -1910,7 +1910,7 @@ impl Capability for ProcessManagerCapability {
         }
 
         // doc 44 P1 (fold-in): 旧「初期状態チェック（PID liveness）」は撤去。boot 時点で
-        // running_processes は空で、fold-in 後は pid が World 自身になり liveness が無意味。
+        // running_processes は空で、fold-in 後は pid が Daemon 自身になり liveness が無意味。
 
         self.state = CapabilityState::Idle;
 
@@ -1955,7 +1955,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_world_capability_new() {
+    fn test_daemon_capability_new() {
         let cap = ProcessManagerCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
     }
@@ -2554,7 +2554,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// doc 44 §9.4: World 入口は **自前の実装を持たない**。project runtime が居なければ
+    /// doc 44 §9.4: Daemon 入口は **自前の実装を持たない**。project runtime が居なければ
     /// 「project 未起動」で止まり、worktree も db 行も作らない。
     ///
     /// 旧実装（本関数がここで worktree を provision して descriptor を所有していた）の
@@ -2604,9 +2604,9 @@ mod tests {
     ///
     /// 名前の gate は両入口とも `validate_performer_name` 1 本（doc 44 §9.3）だが、
     /// 「同じ関数を呼んでいる」は片方の呼び出しが消えても静かに真でなくなる。
-    /// World 入口と core に同じ名前を投げて **同一の error 文字列**が返ることで固定する。
+    /// Daemon 入口と core に同じ名前を投げて **同一の error 文字列**が返ることで固定する。
     #[tokio::test]
-    async fn test_world_entry_and_core_reject_names_identically() {
+    async fn test_daemon_entry_and_core_reject_names_identically() {
         let cap = make_test_cap();
         let state = crate::process::state::build_test_app_state(None).await;
         let parent = std::env::temp_dir().join(format!("vp-test-parity-{}", std::process::id()));
@@ -2616,10 +2616,10 @@ mod tests {
         let project_path = tmp.to_string_lossy().to_string();
 
         for bad in ["", "   ", "root", "../etc/passwd", "foo bar", "-leading"] {
-            let world_err = cap
+            let daemon_err = cap
                 .create_lane(&project_path, bad, "test/x", "echoes")
                 .await
-                .expect_err("World 入口は拒否する")
+                .expect_err("Daemon 入口は拒否する")
                 .to_string();
             let core_err = crate::process::routes::lanes::create_performer_orchestrated(
                 &state,
@@ -2628,7 +2628,7 @@ mod tests {
             .await
             .expect_err("core も拒否する");
             assert_eq!(
-                world_err, core_err,
+                daemon_err, core_err,
                 "両入口が同じ理由で拒否すること (name={bad:?})"
             );
         }

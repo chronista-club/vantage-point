@@ -202,7 +202,7 @@ performer が「conductor では捌けない、 **ユーザ本人**の意見が�
 
 ### sidebar への投影 (= LaneInfo.flow_state、 2026-07-11)
 
-TheWorld が vp-app へ lane snapshot を送る直前に、 performer の `LaneInfo` へ `flow_state` を
+daemon が vp-app へ lane snapshot を送る直前に、 performer の `LaneInfo` へ `flow_state` を
 enrich する (= `vp flow progress` と同一判定、 送信時 derive で registry / db には保存しない)。
 wire send/ack の成功が関与 project の snapshot 再 push をトリガするため、 flow_state の変化は
 polling 無しで sidebar に届く。 vp-app 側は `flow_state` を state 言語 (working / idle /
@@ -212,12 +212,12 @@ needs-you) の一次 source とし、 field 欠落時 (旧 daemon) は pid heuri
 
 ## 4. composition 図 (= 内部経路)
 
-L0 portless 完了後、 全 step は **World process-proxy dispatch** または **World "wire" channel** 経由（旧 SP HTTP 直叩きは撤去済）:
+L0 portless 完了後、 全 step は **daemon process-proxy dispatch** または **daemon "wire" channel** 経由（旧 SP HTTP 直叩きは撤去済）:
 
 ```
 flow_handoff:
   lane_create  ─────────────────────→ create_performer_orchestrated (= new_performer_in)
-  wire/send (World "wire" channel) ──→ WiremsgStore::send_root
+  wire/send (daemon "wire" channel) ──→ WiremsgStore::send_root
   tmux_resolve_pane + tmux_send_keys → nudge (best-effort)
    ↑ wire_send 失敗 → lane_delete (rollback)
 
@@ -228,9 +228,9 @@ flow_progress:
   wire/latest-msg     (per performer × M)       → 最新 wmsg (FSM derive 入力)
 ```
 
-`flow_*` は既存 primitive (`add_performer` / `wire_send` / `tmux_send_keys` / `list_lanes`) の上に乗る薄い composition tool。 これら primitive は L0 portless で全て World process-proxy dispatch / World "wire" channel に移行済（旧 SP HTTP 直叩きは撤去）、 単発で叩く path も dispatch 経由で引き続き有効。
+`flow_*` は既存 primitive (`add_performer` / `wire_send` / `tmux_send_keys` / `list_lanes`) の上に乗る薄い composition tool。 これら primitive は L0 portless で全て daemon process-proxy dispatch / daemon "wire" channel に移行済（旧 SP HTTP 直叩きは撤去）、 単発で叩く path も dispatch 経由で引き続き有効。
 
-supporting method (= cursor 不触り、 read-only、 World "wire" channel):
+supporting method (= cursor 不触り、 read-only、 daemon "wire" channel):
 
 - `wire/unread-count` — `{agent}` → `{total, by_thread}`
 - `wire/latest-msg` — `{agent}` → `{message}` (= 最新 1 件 or null)

@@ -9,7 +9,7 @@
 //! - テスト: `kv-mem` で in-memory embedded DB
 //!
 //! 単一プロセスが DB を保持する single-writer モデル。
-//! 複数 Process が同時に書くユースケースは現状ない (TheWorld が集約点)。
+//! 複数 Process が同時に書くユースケースは現状ない (daemon が集約点)。
 //!
 //! ## テーブル設計
 //!
@@ -44,21 +44,24 @@ fn db_root() -> PathBuf {
     crate::config::vp_data_dir().join("db")
 }
 
-/// VP 唯一の DB ディレクトリ (`vp_data_dir()/db/world`)
+/// VP 唯一の DB ディレクトリ (`vp_data_dir()/db/machine`)
 ///
-/// doc 44 P1 PR4 (DB 統合): 旧構成では World (`db/world/`) と project (`db/sp_{slug}/`) が
+/// doc 44 P1 PR4 (DB 統合): 旧構成では Daemon (`db/machine/`) と project (`db/sp_{slug}/`) が
 /// **別ディレクトリ**だった。理由は VP-182 — surrealkv は OS レベル排他ロック
-/// (`try_lock_exclusive`) を持つため、別プロセスの World と SP が同一ディレクトリを
+/// (`try_lock_exclusive`) を持つため、別プロセスの daemon と SP が同一ディレクトリを
 /// open すると LOCK 衝突で 2 番目が失敗する。
 ///
-/// fold-in で SP プロセスが消え、World が全 project を同一プロセス内に抱えるようになった
+/// fold-in で SP プロセスが消え、daemon が全 project を同一プロセス内に抱えるようになった
 /// 時点でこの分離理由は消滅した（同一プロセスからの open は handle 共有で足りる）。
 /// project 次元は**ディレクトリではなく table の `project_path` 列**が持つ
 /// （SP 固有 table も元から全て `project_path` を持っており、クエリも全てそれで絞る）。
 ///
-/// 名前が `world` のままなのは、既存の `db/world/` を移行なしでそのまま使い続けるため。
-pub fn db_data_dir_for_world() -> PathBuf {
-    db_root().join("world")
+/// dir 名は `machine`（machine に 1 つの単一 DB）。旧 `db/world/` からの rename は
+/// **意図的に migration なし**（命名エピック 4/9、mako 承認 2026-07-27 — doc 54 §8.1 の
+/// 「legacy データは初期化」policy。旧 dir は disk に残るが参照されない。doc 44 P1 の
+/// DB 統合と同型の割り切り）。
+pub fn db_data_dir_for_machine() -> PathBuf {
+    db_root().join("machine")
 }
 
 /// 旧 per-project DB ディレクトリ (`db/sp_{slug}/`) を回収する（doc 44 P1 の後始末）。
@@ -72,7 +75,7 @@ pub fn db_data_dir_for_world() -> PathBuf {
 /// (`pane_contents`) が引き継がれないことだけで、これは fold-in の破壊的変更として
 /// 既に出荷・周知されている（board は空から始まる）。
 ///
-/// - `world` は名前で除外する（prefix `sp_` の dir だけを対象にする）
+/// - `daemon` は名前で除外する（prefix `sp_` の dir だけを対象にする）
 /// - best-effort: 個々の削除失敗は warn して残置し、他は続行する
 /// - 冪等: 残骸が無ければ 0 を返すだけ
 pub fn reclaim_legacy_project_dbs_in(root: &std::path::Path) -> usize {
@@ -101,7 +104,7 @@ pub fn reclaim_legacy_project_dbs_in(root: &std::path::Path) -> usize {
     removed
 }
 
-/// 本番 root での [`reclaim_legacy_project_dbs_in`]（World boot から 1 回）。
+/// 本番 root での [`reclaim_legacy_project_dbs_in`]（Daemon boot から 1 回）。
 pub fn reclaim_legacy_project_dbs() -> usize {
     reclaim_legacy_project_dbs_in(&db_root())
 }
@@ -193,7 +196,7 @@ impl VpDb {
         //
         // doc 44 P1 PR4 以前は、これを typed marker (`DbLockHeldByLiveHolder`) で返し SP 起動路が
         // downcast して「重複 spawn」と判定していた。db が単一化された今、この db を開くのは
-        // World だけで、World の単一性は :32000 の port bind (`bind_dual_stack` は SO_REUSEADDR
+        // Daemon だけで、daemon の単一性は :32000 の port bind (`bind_dual_stack` は SO_REUSEADDR
         // のみで SO_REUSEPORT を使わない = 二重 listen 不可) が bind 時点で保証する。
         // よって本エラーに到達したら異常事態であり、caller が分岐に使う marker は不要になった。
         // (`daemon.pid` は bind 成功後に書く bookkeeping で、起動排他には関与しない。)
@@ -355,48 +358,48 @@ impl VpDb {
     }
 
     // =========================================================================
-    // World identity (federation L2、 ADR-020 D2): home-World の位置独立 安定 id `wld_xxx`。
-    // db/world の singleton row (固定 record id world_identity:self)。daemon が初回起動で
+    // Daemon identity (federation L2、 ADR-020 D2): home-node の位置独立 安定 id `wld_xxx`。
+    // db/machine の singleton row (固定 record id node_identity:self)。daemon が初回起動で
     // 1 度だけ発行し永続、 以降の再起動は復元する。[`crate::lane::lane_id::load_or_create`] の
-    // db 版 — lane は (project,lane) ごと file 永続、 World は daemon に 1 つなので db singleton。
+    // db 版 — lane は (project,lane) ごと file 永続、 daemon は daemon に 1 つなので db singleton。
     // =========================================================================
 
-    /// home-World の wld_id を取得する (無ければ生成して永続)。
+    /// home-node の wld_id を取得する (無ければ生成して永続)。
     ///
     /// - 既存 singleton row があり非空なら **それを復元** (= 再起動を越えて安定)。
     /// - 無い / 空なら **新規生成して永続** し、 その id を返す。
     ///
-    /// World daemon は single-writer (db comment 参照) かつ boot で 1 度だけ呼ぶため race は無い。
+    /// daemon は single-writer (db comment 参照) かつ boot で 1 度だけ呼ぶため race は無い。
     /// 書き込みは DELETE+CREATE を単一 query (= 1 transaction、 [`Self::upsert_lane`] と同方針) で
     /// atomic に行う (空 row が残っていた場合も確実に上書き)。
-    pub async fn load_or_create_world_id(&self) -> Result<crate::world::WorldId> {
+    pub async fn load_or_create_node_id(&self) -> Result<crate::node::NodeId> {
         // 既存 singleton row の wld_id を読む (存在しなければ空配列)。
         let mut result = self
             .db
-            .query("SELECT VALUE wld_id FROM world_identity:self")
+            .query("SELECT VALUE wld_id FROM node_identity:self")
             .await
-            .map_err(|e| anyhow::anyhow!("world_id 取得失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("node_id 取得失敗: {}", e))?;
         let existing: Vec<String> = result.take(0)?;
         if let Some(id) = existing.into_iter().find(|s| !s.trim().is_empty()) {
-            return Ok(crate::world::WorldId::from(id));
+            return Ok(crate::node::NodeId::from(id));
         }
 
         // 無ければ新規発行して永続する。
-        let id = crate::world::WorldId::generate();
+        let id = crate::node::NodeId::generate();
         self.db
             .query(
-                "DELETE world_identity:self;
-                 CREATE world_identity:self CONTENT {
+                "DELETE node_identity:self;
+                 CREATE node_identity:self CONTENT {
                     wld_id: $wld_id,
                     created_at: time::now()
                  }",
             )
             .bind(("wld_id", id.as_str().to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("world_id 永続失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("node_id 永続失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("world_id 永続エラー: {}", e))?;
-        tracing::info!("home-World identity 発行: wld_id={}", id);
+            .map_err(|e| anyhow::anyhow!("node_id 永続エラー: {}", e))?;
+        tracing::info!("home-node identity 発行: wld_id={}", id);
         Ok(id)
     }
 
@@ -1020,7 +1023,7 @@ impl VpDb {
         Ok(())
     }
 
-    /// 全プロセスを削除（TheWorld 再起動時のクリーンアップ用）
+    /// 全プロセスを削除（daemon 再起動時のクリーンアップ用）
     pub async fn clear_all_processes(&self) -> Result<()> {
         self.db
             .query("DELETE FROM processes")
@@ -1032,7 +1035,7 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Projects CRUD（PoC: VP-188 revert、 db/world 真実源 + projects.kdl 一方向 export）
+    // Projects CRUD（PoC: VP-188 revert、 db/machine 真実源 + projects.kdl 一方向 export）
     // =========================================================================
 
     /// 登録 project を UPSERT（path で一意）。 ord = sidebar 並び順。
@@ -1133,7 +1136,7 @@ impl VpDb {
     /// DB を上書きするため、 in-memory から消えた project は DB からも消える (= upsert のみでは
     /// 残ってしまう削除分を確実に反映)。
     ///
-    /// DELETE と import の間に空を読む窓が理論上あるが、 World は単一プロセスで reload/persist を
+    /// DELETE と import の間に空を読む窓が理論上あるが、 daemon は単一プロセスで reload/persist を
     /// 直列実行するため実害なし。 完全な単一トランザクション化は follow-up (epic memory のリスク表)。
     pub async fn replace_all_projects(
         &self,
@@ -1617,7 +1620,7 @@ impl VpDb {
     /// processes テーブルの LIVE SELECT を開始
     ///
     /// INSERT/UPDATE/DELETE のたびに `Notification<serde_json::Value>` を返すストリーム。
-    /// TheWorld が購読して DistributedNotification に変換する。
+    /// daemon が購読して DistributedNotification に変換する。
     ///
     /// 返り値は `'static` ライフタイム（`Surreal<Any>` は内部 Arc なので clone が軽量）。
     pub async fn live_processes(
@@ -1666,19 +1669,19 @@ DEFINE FIELD IF NOT EXISTS started_at ON processes TYPE datetime;
 DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
 DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path UNIQUE;
 
--- home-World identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
--- daemon が初回起動で 1 度だけ発行し db/world に永続する singleton (固定 record id
--- world_identity:self、 index 不要)。machine/hostname/endpoint から独立で、 hub の routing
+-- home-node identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
+-- daemon が初回起動で 1 度だけ発行し db/machine に永続する singleton (固定 record id
+-- node_identity:self、 index 不要)。machine/hostname/endpoint から独立で、 hub の routing
 -- key になる。書き手は daemon 起動路のみ (doc 44 P1 PR4 で db は単一化されたが、 本 table を
--- 触るのは World bootstrap だけなので daemon-canonical な truth であることは変わらない)。
-DEFINE TABLE IF NOT EXISTS world_identity SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS wld_id ON world_identity TYPE string;
-DEFINE FIELD IF NOT EXISTS created_at ON world_identity TYPE datetime DEFAULT time::now();
+-- 触るのは Daemon bootstrap だけなので daemon-canonical な truth であることは変わらない)。
+DEFINE TABLE IF NOT EXISTS node_identity SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS wld_id ON node_identity TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON node_identity TYPE datetime DEFAULT time::now();
 
 -- registered projects (PoC: VP-188 を revert し DB 真実源へ戻す)。
 -- 当時 council (2026-05-16) が file に逃した理由は VP-182 (surrealkv の OS 排他
 -- ロックで DB dir を分離 → DB dir 変更で projects 消失)。 本 PoC の仮説:
---   ① projects を **World 専用 DB (db/world) に限定** すれば SP は触らず LOCK 衝突なし
+--   ① projects を **Daemon 専用 DB (db/machine) に限定** すれば SP は触らず LOCK 衝突なし
 --   ② DB 消失耐性 + 人間可読性は projects.kdl への **一方向 export** で担保
 -- ord = sidebar 並び順 (projects.kdl の node 出現順を保持)。
 DEFINE TABLE IF NOT EXISTS projects SCHEMAFULL;
@@ -1947,8 +1950,8 @@ DEFINE FIELD IF NOT EXISTS agent ON wire_acks TYPE string;
 DEFINE FIELD IF NOT EXISTS acked_at ON wire_acks TYPE number;
 DEFINE INDEX IF NOT EXISTS wire_acks_uniq ON wire_acks FIELDS message_id, agent UNIQUE;
 
--- agent 委譲 (delegation、 doc 28 §4 / §6): durable cross-agent future の World 中央 store。
--- wire と同じく TheWorld の SurrealDB に持つ (= SP 再起動を跨いで生存、 World reconcile の駆動源)。
+-- agent 委譲 (delegation、 doc 28 §4 / §6): durable cross-agent future の daemon 中央 store。
+-- wire と同じく daemon の SurrealDB に持つ (= SP 再起動を跨いで生存、 Daemon reconcile の駆動源)。
 -- requester / doer は論理 wire address。 state ∈ {pending, active, awaiting_response, done, failed}。
 -- outcome = {kind, result|reason|question} (= Outcome の serde 形)。 created_at/updated_at は ms
 -- (B reconcile の timeout 判定用)。 delivered = 直近 wake が target に届いたか (B/C の取りこぼし検出用)。
@@ -1974,13 +1977,13 @@ DEFINE INDEX IF NOT EXISTS delegations_state_idx ON delegations FIELDS state;
 mod tests {
     use super::*;
 
-    /// 旧 per-project DB の回収: `sp_*` だけを消し、`world` と無関係な dir / file は残す。
+    /// 旧 per-project DB の回収: `sp_*` だけを消し、`daemon` と無関係な dir / file は残す。
     /// 冪等（2 回目は 0）。掃除は「消えたか」でなく「**残っていないか**」で検証する。
     #[test]
     fn reclaim_legacy_project_dbs_removes_only_sp_dirs() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
-        for d in ["world", "sp_vp", "sp_nexus", "backups"] {
+        for d in ["machine", "sp_vp", "sp_nexus", "backups"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         // 中身のある dir も丸ごと消える（remove_dir_all）
@@ -1990,7 +1993,7 @@ mod tests {
 
         assert_eq!(reclaim_legacy_project_dbs_in(root), 2);
 
-        assert!(root.join("world").exists(), "world は残る");
+        assert!(root.join("machine").exists(), "machine は残る");
         assert!(root.join("backups").exists(), "無関係な dir は残る");
         assert!(root.join("sp_not_a_dir").exists(), "file は対象外");
         assert!(!root.join("sp_vp").exists(), "sp_ dir は中身ごと消える");
@@ -2061,30 +2064,30 @@ mod tests {
         );
     }
 
-    /// doc 44 P1 PR4: DB ディレクトリは `vp_data_dir()/db/world` の**単一**であること。
+    /// doc 44 P1 PR4: DB ディレクトリは `vp_data_dir()/db/machine` の**単一**であること。
     ///
-    /// 旧テストは「World と SP の dir が分離されていること」を固定していた（VP-182 の
+    /// 旧テストは「daemon と SP の dir が分離されていること」を固定していた（VP-182 の
     /// LOCK 衝突回避）。fold-in で project がプロセスでなくなり handle 共有になったため、
     /// 固定すべき性質が「分離」から「単一」に反転した。
     #[test]
-    fn test_db_data_dir_is_single_world_dir() {
-        let world = db_data_dir_for_world();
+    fn test_db_data_dir_is_single_daemon_dir() {
+        let daemon = db_data_dir_for_machine();
 
         // VP-192: vp_data_dir()/db 配下
         assert!(
-            world.starts_with(crate::config::vp_data_dir()),
+            daemon.starts_with(crate::config::vp_data_dir()),
             "DB dir は vp_data_dir() 配下であるべき: {}",
-            world.display()
+            daemon.display()
         );
         assert!(
-            world.parent().is_some_and(|p| p.ends_with("db")),
+            daemon.parent().is_some_and(|p| p.ends_with("db")),
             "DB dir の親は 'db' であるべき: {}",
-            world.display()
+            daemon.display()
         );
         assert!(
-            world.ends_with("world"),
-            "DB dir は 'world' で終わるべき: {}",
-            world.display()
+            daemon.ends_with("machine"),
+            "DB dir は 'machine' で終わるべき: {}",
+            daemon.display()
         );
     }
 
@@ -2101,19 +2104,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_world_id_load_or_create_is_stable() {
+    async fn test_daemon_id_load_or_create_is_stable() {
         // federation L2: wld_id singleton の発行 → 復元 round-trip。
         let db = make_test_db().await;
 
         // 初回は生成して永続 (EntId 形式 wld_1.. )。
-        let first = db.load_or_create_world_id().await.unwrap();
+        let first = db.load_or_create_node_id().await.unwrap();
         assert!(
             first.as_str().starts_with("wld_1"),
             "EntId 形式 wld_1.. のはず: {first}"
         );
 
         // 2 回目以降は同じ id を復元する (= singleton、 再起動越え安定の核)。
-        let second = db.load_or_create_world_id().await.unwrap();
+        let second = db.load_or_create_node_id().await.unwrap();
         assert_eq!(first, second, "wld_id は singleton で安定して復元される");
     }
 

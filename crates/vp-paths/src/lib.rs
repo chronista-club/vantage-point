@@ -32,7 +32,7 @@ pub mod spawn_env;
 /// - `Some("dev")` = **開発者** — dev binary (`~/.cargo/bin`) を brew cask と混在させても
 ///   state を完全分離するための namespace suffix。
 ///
-/// dev binary と brew cask は single-instance 前提で state (dir / world port / tmux socket) を
+/// dev binary と brew cask は single-instance 前提で state (dir / daemon port / tmux socket) を
 /// 共有するため、 両方走ると sp_LOCK 衝突・port 衝突・tmux adopt 混線を起こす (2026-07-01 実機事故)。
 /// この profile が dir / port / socket の 3 レバー全ての分岐点。
 ///
@@ -165,22 +165,22 @@ pub fn migrate_root_lane_state_files(base: &std::path::Path) -> usize {
     renamed
 }
 
-/// world port の base 値 (brew の TheWorld port)。
-pub const WORLD_PORT_BASE: u16 = 32000;
+/// daemon port の base 値 (brew の daemon port)。
+pub const DAEMON_PORT_BASE: u16 = 32000;
 
-/// profile に応じた TheWorld の world port。 brew=32000 / dev=32100。
+/// profile に応じた daemon の daemon port。 brew=32000 / dev=32100。
 ///
-/// SP は portless (33000 番台は bind しない論理 identity) なので、 実 listener は world 単一。
-/// この 1 本を profile でずらせば daemon bind / app connect / SP→world connect が芋づるで追随し、
+/// SP は portless (33000 番台は bind しない論理 identity) なので、 実 listener は daemon 単一。
+/// この 1 本を profile でずらせば daemon bind / app connect / SP→daemon connect が芋づるで追随し、
 /// dev daemon (32100) と brew daemon (32000) が衝突せず並列常駐できる。
 ///
 /// 未設定 = 32000 (brew、 従来値で不変)。 `Some(_)` = base + 100。
 /// 注: offset は現状「profile 有無」の 2 値 (dev=+100)。 複数 dev profile を同時常駐させる
 /// 要件は無いため、 `dev` 以外の任意 profile も同じ +100 に落ちる (dir 名は分離されるが port は共有)。
-pub fn default_world_port() -> u16 {
+pub fn default_daemon_port() -> u16 {
     match vp_profile() {
-        Some(_) => WORLD_PORT_BASE + 100,
-        None => WORLD_PORT_BASE,
+        Some(_) => DAEMON_PORT_BASE + 100,
+        None => DAEMON_PORT_BASE,
     }
 }
 
@@ -191,7 +191,7 @@ pub fn default_world_port() -> u16 {
 /// 「どの hop で 1 keystroke が 2 回になるか」を特定する用途。
 ///
 /// hop 命名規約: `A:app-dispatch`(vp-app 上り dispatch) → `B:sp-recv`(SP handle_terminal_write 受信)。
-/// A=2 なら vp-app 内二重 / A=1・B=2 なら vp-app→World→SP 区間の二重 / 両方 1 なら SP 書込より下
+/// A=2 なら vp-app 内二重 / A=1・B=2 なら vp-app→Daemon→SP 区間の二重 / 両方 1 なら SP 書込より下
 /// (tmux adopt / PTY 層)。 env は継承で全 process (vp-app / daemon / SP) に伝播する。
 pub fn term_trace(hop: &str, lane: &str, data: &[u8]) {
     static ON: OnceLock<bool> = OnceLock::new();
@@ -361,7 +361,7 @@ pub fn migrate_legacy_paths() {
                 &new_log.join("daemon.stdout.log"),
             );
             // 廃止 (rename 前の遺物)
-            for legacy in ["vp-app.kdl.log", "vp-app.stdout.log", "vp-world.kdl.log"] {
+            for legacy in ["vp-app.kdl.log", "vp-app.stdout.log", "vp-daemon.kdl.log"] {
                 delete_file_if_exists(&mac_log_dir.join(legacy));
             }
             delete_dir_if_empty(&mac_log_dir);
@@ -709,10 +709,10 @@ mod tests {
     }
 
     #[test]
-    fn test_default_world_port_default_is_base() {
-        // VP_PROFILE 未設定なら world port は base (32000)
-        assert_eq!(default_world_port(), WORLD_PORT_BASE);
-        assert_eq!(default_world_port(), 32000);
+    fn test_default_daemon_port_default_is_base() {
+        // VP_PROFILE 未設定なら daemon port は base (32000)
+        assert_eq!(default_daemon_port(), DAEMON_PORT_BASE);
+        assert_eq!(default_daemon_port(), 32000);
     }
 
     #[test]

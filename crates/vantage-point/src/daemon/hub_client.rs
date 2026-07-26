@@ -1,17 +1,17 @@
-//! chronista-hub への Unison client — VP の実 world を hub registry に register / discover する。
+//! chronista-hub への Unison client — VP の実 daemon を hub registry に register / discover する。
 //!
 //! ## 責務分担（prior art: mem_1CaVeTysipdgVHoxwxUcPj / mem_1Cc1dA79VZu586fjqafiBS）
-//! - **SSOT**: hub への register は **TheWorld 経由のみ**。個別 SP / performer は hub と直接話さない。
+//! - **SSOT**: hub への register は **daemon 経由のみ**。個別 SP / performer は hub と直接話さない。
 //! - **opt-in**: hub addr（env `CHRONISTA_HUB_ADDR` > config.kdl `hub-addr`、[`hub_addr()`] が解決）
 //!   未設定なら全 skip（= machine-local 動作）。常設運用は config.kdl 側（launchd daemon は env を持たない）。
-//! - **degradation**: hub down でも world は machine-local で動き続ける（federation 機能だけ失う）。
+//! - **degradation**: hub down でも daemon は machine-local で動き続ける（federation 機能だけ失う）。
 //!
 //! ## connection-level auth（ADR-020 §S3、credential = Creo ID user-jwt）
 //! - 接続時に [`hub_credential`]（= `~/.vp/credentials.json` の access_token、期限が近ければ
 //!   refresh_token で proactive に巻き直す）が有れば `connect_with_credential` で提示、無ければ
 //!   credential なしで接続（graceful degrade）。
 //! - credential 提示は全 hub 経路（常駐 register / federate_wire_send / federate_discover_lanes /
-//!   hub-discover RPC）で共通 —— 接続確立が [`connect_and_open_worlds`] の 1 点に集約されているため。
+//!   hub-discover RPC）で共通 —— 接続確立が [`connect_and_open_nodes`] の 1 点に集約されているため。
 //! - hub は現状 permissive = **observe mode**（credential を verify してログるが未認証も通す）。
 //!   VP のこの提示は非破壊で、hub が required に反転した後は未ログイン connection が gate される。
 //!   contract 確定の経緯は wire thread 019f28c9（hub↔VP coordination、2026-07-04）。
@@ -27,7 +27,7 @@
 //!   候補 `["[GUA]:port"]`、IPv6 GUA 優先・tailnet 非依存・relay floor）を **additive** で載せる。
 //! - hub S2（registry endpoint field）未実装の現状 hub はこの 2 field を無視するが、 protocol は
 //!   additive なので非破壊。S2 landed 後に hub が `wld_id → endpoint(s)` を index し、 `Discover`
-//!   が両者を carry する（[`WorldEntry::wld_id`] / [`WorldEntry::endpoints`] が受け皿）。
+//!   が両者を carry する（[`NodeEntry::wld_id`] / [`NodeEntry::endpoints`] が受け皿）。
 //!
 //! ## cert 検証（trust anchors、2026-06-28〜）
 //! - 公開 hub `hub.chronista.club:12879` は **実 CA cert（Let's Encrypt、ISRG Root chain）** で
@@ -35,7 +35,7 @@
 //!   公的検証する。cert は90日ごと無人 rotate されるが System trust なので VP は無変更。
 //!   ⚠️ System trust は SNI↔SAN を照合するので **必ず hostname で dial**（生 IP 不可）。
 //! - loopback dev hub（self-signed）は `SkipVerification`。振り分けは [`hub_trust_anchors`]。
-//! - VP は既に Unison native（daemon QUIC server / WorldControlClient）。rustls の
+//! - VP は既に Unison native（daemon QUIC server / DaemonControlClient）。rustls の
 //!   CryptoProvider は VP 既存経路（aws_lc_rs）で install 済みのため、ここでの再 install は不要。
 
 use std::sync::Arc;
@@ -49,10 +49,10 @@ use unison::ProtocolClient;
 use unison::network::channel::UnisonChannel;
 use unison::network::{ClientConnectionEvent, ClientConnectionEventReceiver, NetworkError};
 
-/// hub federation の接続状態（vp-app の world status 表示用）。
+/// hub federation の接続状態（vp-app の daemon status 表示用）。
 ///
 /// [`run_hub_federation`] が遷移ごとに更新し、`/api/health` handler が読んで vp-app に返す。
-/// 表示は「world online の近くに `Hub ● connected`」のシンプルなインジケータ。
+/// 表示は「daemon online の近くに `Hub ● connected`」のシンプルなインジケータ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HubFederationState {
     /// hub addr 未設定（env `CHRONISTA_HUB_ADDR` / config.kdl `hub-addr` とも無し =
@@ -120,25 +120,25 @@ impl HubFederationStatus {
     }
 }
 
-/// hub registry に居る available worlds の cache（`/api/health` の `hub_worlds` field の SSOT）。
+/// hub registry に居る available nodes の cache（`/api/health` の `hub_nodes` field の SSOT）。
 ///
 /// writer = [`run_hub_federation`]（接続直後 + 定期 discover で更新、切断で clear）、
-/// reader = `/api/health` handler。中身は [`available_worlds`] 適用済（自 world 除外・
+/// reader = `/api/health` handler。中身は [`available_nodes`] 適用済（自 daemon 除外・
 /// handle dedup 済）の list。読み書きとも await を跨がない短い critical section なので
 /// `std::sync::RwLock` で足りる（[`HubFederationStatus`] の AtomicU8 は enum 1 値だから
 /// 成立する手で、可変長 list には使えない）。
 #[derive(Clone, Default)]
-pub struct HubWorldsCache(Arc<std::sync::RwLock<Vec<WorldEntry>>>);
+pub struct HubNodesCache(Arc<std::sync::RwLock<Vec<NodeEntry>>>);
 
-impl HubWorldsCache {
+impl HubNodesCache {
     /// 初期状態 = 空（hub 未接続相当）。
     pub fn new() -> Self {
         Self::default()
     }
 
     /// discover 結果を反映する（writer = [`run_hub_federation`]）。
-    pub fn set(&self, worlds: Vec<WorldEntry>) {
-        *self.0.write().unwrap_or_else(|e| e.into_inner()) = worlds;
+    pub fn set(&self, nodes: Vec<NodeEntry>) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = nodes;
     }
 
     /// hub 切断時に空へ戻す（stale list を「available」と見せない）。
@@ -146,8 +146,8 @@ impl HubWorldsCache {
         self.set(Vec::new());
     }
 
-    /// 現在の available worlds（reader = `/api/health` handler）。
-    pub fn get(&self) -> Vec<WorldEntry> {
+    /// 現在の available nodes（reader = `/api/health` handler）。
+    pub fn get(&self) -> Vec<NodeEntry> {
         self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
@@ -156,15 +156,15 @@ impl HubWorldsCache {
 /// env / config とも未設定なら hub federation は opt-out（解決は [`hub_addr()`]）。
 pub const HUB_ADDR_ENV: &str = "CHRONISTA_HUB_ADDR";
 
-/// hub registry に登録された 1 world の entry（`worlds.Discover` の戻り要素）。
+/// hub registry に登録された 1 daemon の entry（`nodes.Discover` の戻り要素）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WorldEntry {
-    /// home-World の位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 (registry endpoint
+pub struct NodeEntry {
+    /// home-node の位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 (registry endpoint
     /// field) 未実装の現状は空文字で返り得るため `#[serde(default)]`。S2 landed 後は
     /// Discover が `wld_id → endpoint` を carry する（前方互換のためここで先に受け皿を持つ）。
     #[serde(default)]
     pub wld_id: String,
-    /// この world の direct 到達 endpoint 候補 (`["[GUA]:port", ..]`、ADR-020 D3-a)。dialer が
+    /// この daemon の direct 到達 endpoint 候補 (`["[GUA]:port", ..]`、ADR-020 D3-a)。dialer が
     /// 順に QUIC direct を試し、全滅で hub relay に落ちる。hub S2 未実装の現状は空配列で返り得る
     /// ため `#[serde(default)]`（Discover が endpoints を返すのは S2 landed 後）。
     #[serde(default)]
@@ -174,7 +174,7 @@ pub struct WorldEntry {
     pub name: String,
     #[serde(default)]
     pub registered_at: String,
-    /// この world の常駐接続が hub で今生きているか（hub protocol v0.6.0 の additive field、
+    /// この daemon の常駐接続が hub で今生きているか（hub protocol v0.6.0 の additive field、
     /// relay registry snapshot 由来）。false = registry には居るが relay は offline を返す
     /// （stale entry / 切断中）。旧 hub は field を返さないため `#[serde(default)]` で false。
     #[serde(default)]
@@ -319,12 +319,12 @@ fn credential_from_creds(creds: Option<crate::commands::auth::Credentials>) -> O
     }
 }
 
-/// この world の handle（hub registry の一意キー）を解決する。
+/// この daemon の handle（hub registry の一意キー）を解決する。
 ///
 /// 優先順位（prior art の `@host = VP machine` と整合）:
 /// 1. 明示 override（呼び出し側が handle を指定した場合）
 /// 2. OS hostname（`hostname` crate）
-/// 3. fallback `"vp-world"`
+/// 3. fallback `"vp-node"`
 pub fn resolve_handle(override_handle: Option<&str>) -> String {
     if let Some(h) = override_handle.map(str::trim).filter(|s| !s.is_empty()) {
         return h.to_string();
@@ -334,7 +334,7 @@ pub fn resolve_handle(override_handle: Option<&str>) -> String {
         .and_then(|s| s.into_string().ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "vp-world".to_string())
+        .unwrap_or_else(|| "vp-node".to_string())
 }
 
 /// hub addr の host 部が loopback（localhost / 127.0.0.1 / `[::1]`）か判定する。
@@ -365,9 +365,9 @@ fn hub_trust_anchors(addr: &str) -> unison::network::TrustAnchors {
     }
 }
 
-/// hub の `worlds` channel に接続済みの client。
+/// hub の `nodes` channel に接続済みの client。
 ///
-/// `ProtocolClient` で QUIC 接続を張り、`worlds` channel（register/discover 用）を保持する。
+/// `ProtocolClient` で QUIC 接続を張り、`nodes` channel（register/discover 用）を保持する。
 ///
 /// ## なぜ `client` 本体も保持するのか（relay 対応で変更、ADR-020 §S4）
 /// register/discover だけなら `open_channel` の戻り channel が接続を内部保持するため `client` は
@@ -383,7 +383,7 @@ pub struct HubClient {
 }
 
 impl HubClient {
-    /// hub Unison surface に接続し `worlds` channel を open する（リトライ付き）。
+    /// hub Unison surface に接続し `nodes` channel を open する（リトライ付き）。
     ///
     /// `retries` 回まで接続を試み、全失敗なら最後のエラーを返す。caller（register 経路）は
     /// このエラーを warn ログに落として machine-local 動作を継続する（degradation）。
@@ -393,15 +393,15 @@ impl HubClient {
     /// （server-initiated stream の handler を connect 前に登録する必要があるため）。
     pub async fn connect(addr: &str, retries: u32) -> Result<Self> {
         let client = build_hub_client(addr)?;
-        let ch = connect_and_open_worlds(&client, addr, retries).await?;
+        let ch = connect_and_open_nodes(&client, addr, retries).await?;
         Ok(Self { client, ch })
     }
 
     /// relay target inbound（受信）対応で接続する（ADR-020 §S4 = universal floor）。
     ///
     /// **connect 前**に `relay` server-channel handler を登録してから接続する。direct 全滅で
-    /// 別 world が hub 経由 relay を張ってきたとき、hub は `open_server_stream("relay")` で
-    /// この world へ server-initiated reliable stream を push する。handler はその raw stream を
+    /// 別 node が hub 経由 relay を張ってきたとき、hub は `open_server_stream("relay")` で
+    /// この node へ server-initiated reliable stream を push する。handler はその raw stream を
     /// 直読し、先頭 frame = `open{from}`（送信元 wld_id）・以降 = forward された data frame として
     /// drain し、データフレーム毎に `on_msg` を呼ぶ。
     ///
@@ -442,7 +442,7 @@ impl HubClient {
             })
             .await;
 
-        let ch = connect_and_open_worlds(&client, addr, retries).await?;
+        let ch = connect_and_open_nodes(&client, addr, retries).await?;
         Ok(Self { client, ch })
     }
 
@@ -451,7 +451,7 @@ impl HubClient {
     /// `registry.lookup(wld_id).endpoints` への QUIC direct が全滅したときの **fallback floor**。
     /// `relay` channel を開いて宛先宣言 `{to, from}` を送り、hub の status を待つ:
     /// - `established` → [`RelayDial`] を返す（以降 [`RelayDial::send`] で data を片方向送信）。
-    /// - `offline` → target 不在。Err（送り手 home-World の reconcile 対象 = D3-c）。
+    /// - `offline` → target 不在。Err（送り手 home-node の reconcile 対象 = D3-c）。
     /// - `error` / その他 → Err。
     pub async fn dial_relay(&self, to_wld_id: &str, from_wld_id: &str) -> Result<RelayDial> {
         let ch = self
@@ -489,9 +489,9 @@ impl HubClient {
         }
     }
 
-    /// この world を hub registry に register する（`worlds.Register`）。
+    /// この daemon を hub registry に register する（`nodes.Register`）。
     ///
-    /// - `wld_id` = home-World の位置独立 routing key（ADR-020 D2）。
+    /// - `wld_id` = home-node の位置独立 routing key（ADR-020 D2）。
     /// - `endpoints` = direct 到達 endpoint 候補（`["[GUA]:port", ..]`、D3-a。空配列 = direct
     ///   候補なしで relay floor に委ねる）。
     ///
@@ -503,7 +503,7 @@ impl HubClient {
         endpoints: &[String],
         handle: &str,
         name: &str,
-    ) -> Result<WorldEntry> {
+    ) -> Result<NodeEntry> {
         let resp: serde_json::Value = self
             .ch
             .request(
@@ -513,7 +513,7 @@ impl HubClient {
             .await
             .map_err(|e| anyhow::anyhow!("worlds.Register 失敗: {}", e))?;
         // hub は auth 拒否等の handler Err を通常 Response の `{"error": ...}` で返す（in-band）。
-        // WorldEntry 化の前に判定し、FEDERATION_AUTH=required 下の失効/未ログインを「parse 失敗」で
+        // NodeEntry 化の前に判定し、FEDERATION_AUTH=required 下の失効/未ログインを「parse 失敗」で
         // 潰さず明示エラーに浮かせる（2026-07-11 の federation 途絶で診断を数手遠回りさせた元凶）。
         if let Some(err) = hub_reply_error(&resp) {
             anyhow::bail!(
@@ -521,12 +521,12 @@ impl HubClient {
                  が主因 — `vp auth login` で再ログインを検討）: {err}"
             );
         }
-        serde_json::from_value::<WorldEntry>(resp.clone())
+        serde_json::from_value::<NodeEntry>(resp.clone())
             .with_context(|| format!("Register レスポンスのパースに失敗（応答: {resp}）"))
     }
 
-    /// hub registry に居る world 一覧を取得する（`worlds.Discover`）。
-    pub async fn discover(&self) -> Result<Vec<WorldEntry>> {
+    /// hub registry に居る daemon 一覧を取得する（`nodes.Discover`）。
+    pub async fn discover(&self) -> Result<Vec<NodeEntry>> {
         let resp: serde_json::Value = self
             .ch
             .request("Discover", &json!({}))
@@ -540,8 +540,8 @@ impl HubClient {
                  が主因 — `vp auth login` で再ログインを検討）: {err}"
             );
         }
-        let worlds = resp.get("worlds").cloned().unwrap_or_else(|| json!([]));
-        serde_json::from_value(worlds).context("Discover レスポンスのパースに失敗")
+        let nodes = resp.get("worlds").cloned().unwrap_or_else(|| json!([]));
+        serde_json::from_value(nodes).context("Discover レスポンスのパースに失敗")
     }
 
     /// connection lifecycle event（Connected / Disconnected）を subscribe する。
@@ -571,7 +571,7 @@ fn build_hub_client(addr: &str) -> Result<ProtocolClient> {
     Ok(ProtocolClient::new(transport))
 }
 
-/// `client` で hub に接続し（`retries` 回リトライ）`worlds` channel を open する。
+/// `client` で hub に接続し（`retries` 回リトライ）`nodes` channel を open する。
 ///
 /// register/discover/relay-dialer 共通の接続確立。relay target inbound 用の handler 登録は
 /// **connect より前**に済ませておく必要があるため、この関数の呼び出し前に行う（[`HubClient::
@@ -589,8 +589,8 @@ fn build_hub_client(addr: &str) -> Result<ProtocolClient> {
 /// 失敗するだけで、次回呼び出し時に credential は再評価される）。
 ///
 /// **auth channel は他 channel より先**という club-unison の制約は `connect_with_credential`
-/// が内部で満たす（connect → auth → 本メソッドが worlds を open）。
-async fn connect_and_open_worlds(
+/// が内部で満たす（connect → auth → 本メソッドが nodes を open）。
+async fn connect_and_open_nodes(
     client: &ProtocolClient,
     addr: &str,
     retries: u32,
@@ -618,7 +618,7 @@ async fn connect_and_open_worlds(
                 // 文言での選別は club-unison の内部文言に依存して取りこぼす（moody-blues レビューで
                 // channel 不在経路の取りこぼしを指摘）。credential なし接続は既存の安全パス
                 //（permissive なら従来同等）なので無条件降格で悪化しない — 純粋な網断なら降格後も
-                // 同じ理由で失敗するだけで、次回の `connect_and_open_worlds` 呼び出し時には
+                // 同じ理由で失敗するだけで、次回の `connect_and_open_nodes` 呼び出し時には
                 // [`hub_credential`] が再評価されるため恒久降格にもならない。
                 if credential.take().is_some() {
                     tracing::warn!(
@@ -646,10 +646,10 @@ async fn connect_and_open_worlds(
 /// relay で受信した 1 データフレーム（target inbound 側、[`HubClient::connect_with_inbound`]）。
 ///
 /// hub は payload を opaque に dumb forward する（中身を覗かない = D5）ので、`payload` の意味は
-/// 送り手 world と受け手 world のアプリ層が決める。`from` = 送信元 wld_id。
+/// 送り手 daemon と受け手 daemon のアプリ層が決める。`from` = 送信元 wld_id。
 #[derive(Debug, Clone)]
 pub struct RelayInbound {
-    /// 送信元 home-World の wld_id（hub の `open{from}` 宣言由来）。
+    /// 送信元 home-node の wld_id（hub の `open{from}` 宣言由来）。
     pub from: String,
     /// forward された data frame の payload（opaque JSON、欠落時は `Value::Null`）。
     pub payload: Value,
@@ -699,52 +699,52 @@ async fn relay_send_on(
 /// `discover` で `handle` → 採用 entry を引く（不在 / wld_id 空はエラー）。曖昧性回避のため
 /// federation 宛先は handle 明示で受け、ここで routing key（wld_id）と direct 候補
 /// （endpoints — §S6 dialer が消費）に解決する。
-async fn discover_entry_by_handle(client: &HubClient, handle: &str) -> Result<WorldEntry> {
-    let worlds = client.discover().await.context("discover に失敗")?;
-    let target = pick_latest_by_handle(&worlds, handle).ok_or_else(|| {
+async fn discover_entry_by_handle(client: &HubClient, handle: &str) -> Result<NodeEntry> {
+    let nodes = client.discover().await.context("discover に失敗")?;
+    let target = pick_latest_by_handle(&nodes, handle).ok_or_else(|| {
         anyhow::anyhow!(
-            "world '{}' が hub registry に居ない（discover {} 件）",
+            "daemon '{}' が hub registry に居ない（discover {} 件）",
             handle,
-            worlds.len()
+            nodes.len()
         )
     })?;
     if target.wld_id.is_empty() {
         anyhow::bail!(
-            "world '{}' の wld_id が空（hub が wld_id を index していない）",
+            "daemon '{}' の wld_id が空（hub が wld_id を index していない）",
             handle
         );
     }
     Ok(target.clone())
 }
 
-/// handle 一致の world から採用する 1 件を選ぶ純関数 — **registered_at 最新を選ぶ**。
+/// handle 一致の daemon から採用する 1 件を選ぶ純関数 — **registered_at 最新を選ぶ**。
 ///
 /// registry には同一 handle の stale entry が残留し得る（daemon 再作成による wld_id 変化後の
 /// 再 register、hub 側 cleanup 前 等）。先頭一致だと stale（死んだ wld_id）を拾って relay が
 /// offline で失敗する（2026-07-04 実害: 別 PC の discover が mito-mba.local の stale を掴んだ）。
 /// `registered_at` は ISO 8601（同一フォーマット）なので辞書順比較 = 時系列比較。
-fn pick_latest_by_handle<'a>(worlds: &'a [WorldEntry], handle: &str) -> Option<&'a WorldEntry> {
-    worlds
+fn pick_latest_by_handle<'a>(nodes: &'a [NodeEntry], handle: &str) -> Option<&'a NodeEntry> {
+    nodes
         .iter()
         .filter(|w| w.handle == handle)
         .max_by(|a, b| a.registered_at.cmp(&b.registered_at))
 }
 
 /// discovery 一時 register（[`federate_discover_lanes`] の短命 identity）の handle。
-/// available worlds 表示（[`available_worlds`]）からは transient ノイズとして除外する。
+/// available nodes 表示（[`available_nodes`]）からは transient ノイズとして除外する。
 pub const TRANSIENT_DISCO_HANDLE: &str = "vp-disco";
 
-/// discover 結果から「hub の向こうに居る available worlds」を選ぶ純関数。
+/// discover 結果から「hub の向こうに居る available nodes」を選ぶ純関数。
 ///
-/// - **自 world（`own_handle`）を除外** — この list の意味論は「hub の向こうに誰がいるか」
+/// - **自 daemon（`own_handle`）を除外** — この list の意味論は「hub の向こうに誰がいるか」
 /// - 空 handle と discovery 一時 register（[`TRANSIENT_DISCO_HANDLE`]）を除外（表示ノイズ）
 /// - 同一 handle は registered_at 最新の 1 件に dedup（stale 残留対策、[`pick_latest_by_handle`]
 ///   と同基準 — registered_at は ISO 8601 なので辞書順比較 = 時系列比較）
 /// - handle 昇順で返す（表示の安定化）
-pub fn available_worlds(worlds: Vec<WorldEntry>, own_handle: &str) -> Vec<WorldEntry> {
-    let mut by_handle: std::collections::BTreeMap<String, WorldEntry> =
+pub fn available_nodes(nodes: Vec<NodeEntry>, own_handle: &str) -> Vec<NodeEntry> {
+    let mut by_handle: std::collections::BTreeMap<String, NodeEntry> =
         std::collections::BTreeMap::new();
-    for w in worlds {
+    for w in nodes {
         if w.handle.is_empty() || w.handle == own_handle || w.handle == TRANSIENT_DISCO_HANDLE {
             continue;
         }
@@ -772,26 +772,26 @@ pub async fn relay_send_to_wld(
     relay_send_on(&client, target_wld, from_label, envelope).await
 }
 
-/// 遠方 world の lane へ wire envelope を送る（flow ③ = federation 送信、daemon-side）。
+/// 遠方 node の lane へ wire envelope を送る（flow ③ = federation 送信、daemon-side）。
 ///
-/// SSOT 原則（hub と話すのは TheWorld のみ）に従い、CLI ではなく **TheWorld の wire channel handler**
+/// SSOT 原則（hub と話すのは daemon のみ）に従い、CLI ではなく **daemon の wire channel handler**
 /// （`handle_wire_channel` の `wire/federate` method）から呼ぶ。MVP は短命接続:
-/// connect → `discover` で `target_world_handle` → entry（wld_id + endpoints）解決 →
+/// connect → `discover` で `target_node_handle` → entry（wld_id + endpoints）解決 →
 /// **direct 試行（§S6 HEv2 race）→ 全滅で relay floor（§S4）** — ADR-020 degrade ladder の
-/// consume 側。受信 world はどちらの経路でも `dispatch_wire("send")` でローカル配送する
+/// consume 側。受信 node はどちらの経路でも `dispatch_wire("send")` でローカル配送する
 /// （direct = wire channel 直、relay = hub 経由 inbound handler、payload 形は同一）。
 /// `from_label` は relay の `open{from}` に載るが受信側は envelope の `from` を使うため
 /// cosmetic。永続接続の再利用は後の最適化。
 pub async fn federate_wire_send(
     hub_addr: &str,
-    target_world_handle: &str,
+    target_node_handle: &str,
     from_label: &str,
     envelope: &Value,
 ) -> Result<()> {
     let client = HubClient::connect(hub_addr, 3)
         .await
         .context("federate-send: hub 接続に失敗")?;
-    let entry = discover_entry_by_handle(&client, target_world_handle)
+    let entry = discover_entry_by_handle(&client, target_node_handle)
         .await
         .context("federate-send")?;
     // §S6: direct 試行（endpoints あり && kill-switch 有効）。全滅は relay floor に degrade
@@ -814,7 +814,7 @@ pub async fn federate_wire_send(
     Ok(())
 }
 
-/// 遠方 world の lane 一覧を問い合わせる（flow discovery = step 2、daemon-side）。
+/// 遠方 node の lane 一覧を問い合わせる（flow discovery = step 2、daemon-side）。
 ///
 /// 片方向 relay の上に request-response を作る（「双方向は片方向 relay × 2 で創発」）:
 /// 1. discovery 用の**一時 wld_id**（`wld_disco-<nonce>`）で別接続を temp-register（永続接続の
@@ -826,7 +826,7 @@ pub async fn federate_wire_send(
 /// 宛先を知らないときの「在庫確認」。返りは lane subset（address/kind/name/state）の配列。
 pub async fn federate_discover_lanes(
     hub_addr: &str,
-    target_world_handle: &str,
+    target_node_handle: &str,
 ) -> Result<Vec<Value>> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let temp_wld = format!("wld_disco-{}", uuid::Uuid::new_v4().simple());
@@ -865,7 +865,7 @@ pub async fn federate_discover_lanes(
         .await
         .context("discover-lanes: 一時 register に失敗")?;
 
-    let target_wld = discover_entry_by_handle(&client, target_world_handle)
+    let target_wld = discover_entry_by_handle(&client, target_node_handle)
         .await
         .context("discover-lanes")?
         .wld_id;
@@ -892,7 +892,7 @@ pub async fn federate_discover_lanes(
 ///
 /// ## なぜ常駐か（使い捨て register からの昇格）
 /// 旧実装は起動時に `connect → register → drop` する**使い捨て**だった（存在告知のみ）。だが
-/// relay の **target inbound**（別 world が hub 経由で送ってくる relay の受信）は、server-initiated
+/// relay の **target inbound**（別 node が hub 経由で送ってくる relay の受信）は、server-initiated
 /// stream を受ける accept loop が **connection 生存中だけ**動くため、接続を張りっぱなしにする
 /// 必要がある。この関数はその常駐ループ:
 /// 1. [`HubClient::connect_with_inbound`] で relay 受信 handler を仕込んで接続
@@ -901,16 +901,16 @@ pub async fn federate_discover_lanes(
 ///
 /// 受信した relay frame は `on_relay`（caller 注入）に渡す。transport の lifecycle（接続 / 再接続 /
 /// register）と **配送ポリシー**（relay → VP wire への routing 等）を分離するため、配送先は
-/// run_world 側で AppState（wire store）を capture したクロージャとして渡す。`on_relay` は再接続
+/// run_daemon 側で AppState（wire store）を capture したクロージャとして渡す。`on_relay` は再接続
 /// ごとに再登録するため `Clone` を要求する。`shutdown` cancel でループを抜ける。hub 未設定時は
 /// この関数自体を呼ばない（caller 側で opt-in 判定）。
 ///
 /// 接続状態は `status`（[`HubFederationStatus`]）に遷移ごとに反映し、`/api/health` 経由で vp-app
-/// が world status 横の `Hub ● connected` インジケータとして表示する。available worlds は
-/// `worlds`（[`HubWorldsCache`]）に反映し、同じく `/api/health`（`hub_worlds` field）経由で
-/// vp-app が Hub 行の「· N worlds」として表示する。
-// federation session の固有パラメータ（identity 3 つ + status/worlds/shutdown/handler）。いずれも
-// 独立に必要で struct 化しても可読性が上がらないため allow（caller は run_world の 1 箇所のみ）。
+/// が daemon status 横の `Hub ● connected` インジケータとして表示する。available nodes は
+/// `nodes`（[`HubNodesCache`]）に反映し、同じく `/api/health`（`hub_nodes` field）経由で
+/// vp-app が Hub 行の「· N nodes」として表示する。
+// federation session の固有パラメータ（identity 3 つ + status/nodes/shutdown/handler）。いずれも
+// 独立に必要で struct 化しても可読性が上がらないため allow（caller は run_daemon の 1 箇所のみ）。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_hub_federation<F, Fut>(
     addr: String,
@@ -919,7 +919,7 @@ pub async fn run_hub_federation<F, Fut>(
     handle: String,
     name: String,
     status: HubFederationStatus,
-    worlds: HubWorldsCache,
+    nodes: HubNodesCache,
     shutdown: CancellationToken,
     on_relay: F,
 ) where
@@ -930,7 +930,7 @@ pub async fn run_hub_federation<F, Fut>(
     const RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
     // Disconnected event を取りこぼした場合の health poll 間隔（backstop）。
     const HEALTH_POLL: Duration = Duration::from_secs(30);
-    // available worlds の定期 discover 間隔（hub への負荷を考え短くしすぎない、30-60s レンジ）。
+    // available nodes の定期 discover 間隔（hub への負荷を考え短くしすぎない、30-60s レンジ）。
     const DISCOVER_INTERVAL: Duration = Duration::from_secs(45);
     // discover RPC の応答上限。QUIC 面 wedge 等で request が返らない場合に select loop
     //（= Disconnected 検知）を塞がないための保険。
@@ -1004,13 +1004,13 @@ pub async fn run_hub_federation<F, Fut>(
                             match tokio::time::timeout(DISCOVER_TIMEOUT, client.discover()).await {
                                 Ok(Ok(list)) => {
                                     let total = list.len();
-                                    let avail = available_worlds(list, &handle);
+                                    let avail = available_nodes(list, &handle);
                                     tracing::debug!(
                                         "hub discover: registry {} 件 → available {} 件",
                                         total,
                                         avail.len()
                                     );
-                                    worlds.set(avail);
+                                    nodes.set(avail);
                                 }
                                 // 一過性 error では cache を消さない（真の切断は Disconnected event /
                                 // HEALTH_POLL 側が検知して下の clear に到達する）。
@@ -1027,9 +1027,9 @@ pub async fn run_hub_federation<F, Fut>(
                     }
                 }
                 // 切断検知 → Disconnected を反映（次 iteration 冒頭で Connecting に戻る）。
-                // available worlds も clear（未接続の間 stale list を「available」と見せない）。
+                // available nodes も clear（未接続の間 stale list を「available」と見せない）。
                 status.set(HubFederationState::Disconnected);
-                worlds.clear();
+                nodes.clear();
                 // client drop → connection close。
             }
             Err(e) => tracing::warn!(
@@ -1083,7 +1083,7 @@ mod tests {
             hub_reply_error(&rejected),
             Some("authentication required (scope 'federation.register')")
         );
-        // 成功応答（WorldEntry 形）は error なし → None（通常の型変換に進む）。
+        // 成功応答（NodeEntry 形）は error なし → None（通常の型変換に進む）。
         let ok = json!({ "handle": "mito-mba.local", "registered_at": "2026-07-11T14:55:16Z" });
         assert_eq!(hub_reply_error(&ok), None);
         // error が文字列でない異常形も None（誤検出しない）。
@@ -1157,9 +1157,9 @@ mod tests {
         );
     }
 
-    /// テスト用 WorldEntry を最小構成で作る。
-    fn entry(handle: &str, wld_id: &str, registered_at: &str) -> WorldEntry {
-        WorldEntry {
+    /// テスト用 NodeEntry を最小構成で作る。
+    fn entry(handle: &str, wld_id: &str, registered_at: &str) -> NodeEntry {
+        NodeEntry {
             wld_id: wld_id.to_string(),
             endpoints: vec![],
             handle: handle.to_string(),
@@ -1172,35 +1172,35 @@ mod tests {
     #[test]
     fn pick_latest_by_handle_prefers_newest_registration() {
         // stale（旧 wld）が先頭でも registered_at 最新の現役 entry を選ぶ（2026-07-04 実害の再現形）。
-        let worlds = vec![
+        let nodes = vec![
             entry("mba.local", "wld_stale", "2026-07-03T10:38:33.760655172Z"),
             entry("other.local", "wld_other", "2026-07-03T23:15:30.389430772Z"),
             entry("mba.local", "wld_live", "2026-07-03T23:00:07.784137934Z"),
         ];
         assert_eq!(
-            pick_latest_by_handle(&worlds, "mba.local").map(|w| w.wld_id.as_str()),
+            pick_latest_by_handle(&nodes, "mba.local").map(|w| w.wld_id.as_str()),
             Some("wld_live")
         );
         // 一致 1 件ならそれを返す
         assert_eq!(
-            pick_latest_by_handle(&worlds, "other.local").map(|w| w.wld_id.as_str()),
+            pick_latest_by_handle(&nodes, "other.local").map(|w| w.wld_id.as_str()),
             Some("wld_other")
         );
         // 一致なしは None
-        assert!(pick_latest_by_handle(&worlds, "nowhere.local").is_none());
+        assert!(pick_latest_by_handle(&nodes, "nowhere.local").is_none());
     }
 
     #[test]
-    fn available_worlds_excludes_self_and_transient_noise() {
-        // 自 world・discovery 一時 register（vp-disco）・空 handle は「hub の向こうに誰が
+    fn available_daemons_excludes_self_and_transient_noise() {
+        // 自 daemon・discovery 一時 register（vp-disco）・空 handle は「hub の向こうに誰が
         // いるか」の意味論から外れる表示ノイズ → 全て除外される。
-        let worlds = vec![
+        let nodes = vec![
             entry("mito-mba.local", "wld_self", "2026-07-12T00:00:00Z"),
             entry("other.local", "wld_other", "2026-07-12T00:00:01Z"),
             entry(TRANSIENT_DISCO_HANDLE, "wld_disco", "2026-07-12T00:00:02Z"),
             entry("", "wld_anon", "2026-07-12T00:00:03Z"),
         ];
-        let avail = available_worlds(worlds, "mito-mba.local");
+        let avail = available_nodes(nodes, "mito-mba.local");
         assert_eq!(
             avail.iter().map(|w| w.handle.as_str()).collect::<Vec<_>>(),
             vec!["other.local"]
@@ -1208,15 +1208,15 @@ mod tests {
     }
 
     #[test]
-    fn available_worlds_dedups_by_handle_keeping_latest() {
+    fn available_daemons_dedups_by_handle_keeping_latest() {
         // 同一 handle の stale 残留（daemon 再作成後の再 register 等）は registered_at 最新の
         // 1 件に畳む（pick_latest_by_handle と同基準）。返り順は handle 昇順（表示安定化）。
-        let worlds = vec![
+        let nodes = vec![
             entry("b.local", "wld_b_stale", "2026-07-10T00:00:00Z"),
             entry("a.local", "wld_a", "2026-07-11T00:00:00Z"),
             entry("b.local", "wld_b_live", "2026-07-12T00:00:00Z"),
         ];
-        let avail = available_worlds(worlds, "self.local");
+        let avail = available_nodes(nodes, "self.local");
         assert_eq!(
             avail
                 .iter()
@@ -1227,9 +1227,9 @@ mod tests {
     }
 
     #[test]
-    fn hub_worlds_cache_set_get_clear() {
+    fn hub_daemons_cache_set_get_clear() {
         // set → get で反映、clear で空へ（切断時に stale を「available」と見せない根拠）。
-        let cache = HubWorldsCache::new();
+        let cache = HubNodesCache::new();
         assert!(cache.get().is_empty());
         cache.set(vec![entry("a.local", "wld_a", "2026-07-12T00:00:00Z")]);
         assert_eq!(cache.get().len(), 1);
@@ -1257,15 +1257,15 @@ mod tests {
     }
 
     #[test]
-    fn world_entry_parses_partial() {
+    fn daemon_entry_parses_partial() {
         // name / registered_at が欠けても default で埋まる。
-        let e: WorldEntry = serde_json::from_value(json!({ "handle": "world-a" })).unwrap();
-        assert_eq!(e.handle, "world-a");
+        let e: NodeEntry = serde_json::from_value(json!({ "handle": "daemon-a" })).unwrap();
+        assert_eq!(e.handle, "daemon-a");
         assert_eq!(e.name, "");
         assert_eq!(e.registered_at, "");
     }
 
-    /// flow ③+⑤ e2e: 別 world が relay で送ってきた wire envelope が、受信 world のローカル中央
+    /// flow ③+⑤ e2e: 別 node が relay で送ってきた wire envelope が、受信 node のローカル中央
     /// wire store に inject され、宛先 lane が `wire_recv` で拾えることを実証する（hub 起動前提）。
     /// `dispatch_wire` が pub(crate) なので integration test ではなく内部 test に置く。
     ///
@@ -1280,7 +1280,7 @@ mod tests {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let addr = hub_addr().expect("CHRONISTA_HUB_ADDR を設定して hub を起動して実行すること");
 
-        // 受信 world のローカル中央 wire store（run_world の AppState 相当を mem db で再現）。
+        // 受信 node のローカル中央 wire store（run_daemon の AppState 相当を mem db で再現）。
         let db = crate::db::VpDb::connect_mem().await.expect("connect_mem");
         db.define_schema().await.expect("define_schema");
         let store = crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
@@ -1289,7 +1289,7 @@ mod tests {
         let notifier = crate::capability::WireNotifier::new();
         let notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
-        // 受信 world: relay inbound → dispatch_wire("send") でローカル store に inject（run_world と同形）。
+        // 受信 node: relay inbound → dispatch_wire("send") でローカル store に inject（run_daemon と同形）。
         let target_wld = "wld_wire-target";
         let on_relay = {
             let store = store.clone();
@@ -1319,20 +1319,20 @@ mod tests {
             .await
             .expect("receiver: register");
 
-        // 送信 world: relay を張って wire envelope（{from, to, body}）を送る。to は受信 world 内部の
+        // 送信 daemon: relay を張って wire envelope（{from, to, body}）を送る。to は受信 node 内部の
         // logical address（agent@nostos/main）。送信側は相手の port/PID を知らない。
         // production の federate_wire_send を直接叩く（connect → discover で handle→wld_id →
-        // dial_relay → send）。宛先 world は handle "vp-wire-target" で明示（曖昧性回避）。
+        // dial_relay → send）。宛先 daemon は handle "vp-wire-target" で明示（曖昧性回避）。
         let envelope = json!({
             "from": "agent@vp-wire-source/proj/main",
             "to": ["agent@nostos/main"],
-            "body": { "kind": "event", "text": "遠方 world からの wire" }
+            "body": { "kind": "event", "text": "遠方 node からの wire" }
         });
         federate_wire_send(&addr, "vp-wire-target", "vp-wire-source", &envelope)
             .await
             .expect("federate_wire_send");
 
-        // 受信 world の store に届くまで poll（relay → handler → dispatch_wire は非同期）。
+        // 受信 node の store に届くまで poll（relay → handler → dispatch_wire は非同期）。
         let mut delivered = None;
         for _ in 0..50 {
             let recvd = crate::process::routes::wire::dispatch_wire(
@@ -1358,9 +1358,9 @@ mod tests {
         );
     }
 
-    /// flow step 2 e2e: 遠方 world の lane 一覧を `federate_discover_lanes` で問い合わせ、relay 上の
+    /// flow step 2 e2e: 遠方 node の lane 一覧を `federate_discover_lanes` で問い合わせ、relay 上の
     /// request-response（lanes-query → lanes-reply）で lane 配列を受け取ることを実証する（hub 前提）。
-    /// target 側の lanes-query handler は run_world の on_relay と同形（ここでは固定 lane を返す）。
+    /// target 側の lanes-query handler は run_daemon の on_relay と同形（ここでは固定 lane を返す）。
     ///
     /// 手動実行:
     /// ```bash
@@ -1373,7 +1373,7 @@ mod tests {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let addr = hub_addr().expect("CHRONISTA_HUB_ADDR を設定して hub を起動して実行すること");
 
-        // target world: lanes-query を受けたら固定 lane 2 件を lanes-reply で返す（run_world の
+        // target daemon: lanes-query を受けたら固定 lane 2 件を lanes-reply で返す（run_daemon の
         // on_relay と同形の routing。実機では lane_registry を flatten する）。
         let target_wld = "wld_disco-target";
         let addr_for_target = addr.clone();

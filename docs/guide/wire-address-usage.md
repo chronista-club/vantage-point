@@ -3,7 +3,7 @@
 > **改訂 (2026-05-21)**: 旧 msgbox 実装は 2026-05 の wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃された。
 > 本 doc の **address syntax (`<actor>@<location>`) は wiremsg がそのまま継承**しており現行有効。
 > ただし CLI は `vp msg` → **`vp wire`** に、 MCP tool は `msg_send` / `msg_recv` → **`wire_send` / `wire_recv` / `wire_thread`** に置き換わった。 本 doc の CLI / MCP example は現行の wiremsg 系コマンドに更新済。
-> Ruby DSL / mDNS の example は将来計画。 **hub 経由の federation (cross-PC) は既に実装済** — `vp wire discover --world` / `vp wire send --world` の現行挙動と direct→relay 配送は [`messaging.md`](./messaging.md) §3 を参照 (本 doc の address 文法はその上で有効)。
+> Ruby DSL / mDNS の example は将来計画。 **hub 経由の federation (cross-PC) は既に実装済** — `vp wire discover --daemon` / `vp wire send --daemon` の現行挙動と direct→relay 配送は [`messaging.md`](./messaging.md) §3 を参照 (本 doc の address 文法はその上で有効)。
 
 > **Status**: address syntax は現行有効 (wiremsg が継承)。 旧称 "Msgbox address v3.1" (VP-144 Epic、 Phase 0 SDG)。
 > **Spec**: [docs/spec/wire-address-v3.md](../spec/wire-address-v3.md) (Why + What)
@@ -57,7 +57,7 @@ vp wire send --to '*@vantage-point/root' --body "全員へ通知"
 ### 2.2 cross-process (= 同 machine 別 project)
 
 ```bash
-# self world 内 cross-process (= 別 project process、 wire R3 の best-effort forward)
+# self daemon 内 cross-process (= 別 project process、 wire R3 の best-effort forward)
 vp wire send --to creo-memories/root --body "hello from vantage-point"
 
 # v1 syntax (互換、 default lane = conductor)
@@ -68,7 +68,7 @@ vp wire send --to agent@creo-memories --body "v1 形式 (互換動作)"
 
 ```bash
 # 同 LAN の他 machine を mDNS 列挙
-vp world list --lan
+vp daemon list --lan
 # →
 # [
 #   { alias: "macbook-b", endpoint: "https://macbook-b.local:32000" },
@@ -76,7 +76,7 @@ vp world list --lan
 # ]
 
 # address book に追加
-vp world add macbook-b
+vp daemon add macbook-b
 
 # LAN wire send
 vp wire send --to agent@macbook-b/vantage-point/root --body "hello from macbook-a"
@@ -89,7 +89,7 @@ vp wire send --to agent@macbook-b.local/vantage-point/root --body "explicit mDNS
 
 ```bash
 # hub 経由 user identity 解決
-vp world add mako@chronista.club
+vp daemon add mako@chronista.club
 # → hub に query、 alias 'mako' の pubkey + endpoint を address book に保存
 
 # Internet wire send
@@ -106,7 +106,7 @@ vp wire send --to agent@mako.chronista.club/vantage-point/root --body "FQDN expl
 ### 3.1 address inline (primary form)
 
 ```ruby
-# self world、 lane 指定
+# self daemon、 lane 指定
 Vp.send_to("vantage-point/root", { hello: "world" })
 
 # actor 明示
@@ -122,8 +122,8 @@ Vp.send_to("agent@mako/vantage-point/root", { msg: "via hub" })
 ### 3.2 connection scope (= shorthand、 batch 用途)
 
 ```ruby
-# world / project context を fix して address 短縮
-Vp.with_world("mako.chronista.club") do |w|
+# daemon / project context を fix して address 短縮
+Vp.with_daemon("mako.chronista.club") do |w|
   w.send_to("agent/vantage-point/root", payload1)
   w.send_to("agent/vantage-point/performer/objrec", payload2)
   # 同 hub への 2 件、 connection 1 個で済ます
@@ -170,7 +170,7 @@ public_users = Vp.discover_hub("chronista.club")
 
 ```toml
 # auto-discovered (mDNS) は last_seen で freshness 判定
-[[world]]
+[[daemon]]
 alias = "macbook-b"
 pubkey = "ed25519:6f3e..."
 endpoint = "https://macbook-b.local:32000"
@@ -178,14 +178,14 @@ discovered_via = "mDNS"
 last_seen = "2026-05-08T07:00:00Z"
 
 # manual register (hub 経由)
-[[world]]
+[[daemon]]
 alias = "taro"
 pubkey = "ed25519:abc..."
 endpoint = "wss://hub.chronista.club/relay/xyz"
 discovered_via = "hub"
 last_seen = "2026-05-08T06:30:00Z"
 
-# trust list (= broadcast / public msg を受け入れる world)
+# trust list (= broadcast / public msg を受け入れる daemon)
 trust_list = ["macbook-b", "studio", "taro"]
 ```
 
@@ -193,18 +193,18 @@ trust_list = ["macbook-b", "studio", "taro"]
 
 ```bash
 # 列挙
-vp world list
+vp daemon list
 
 # 追加
-vp world add <alias>          # mDNS or hub から自動解決
-vp world add <alias>@<hub>    # hub 明示
+vp daemon add <alias>          # mDNS or hub から自動解決
+vp daemon add <alias>@<hub>    # hub 明示
 
 # 削除
-vp world remove <alias>
+vp daemon remove <alias>
 
 # trust list 編集
-vp world trust add <alias>
-vp world trust remove <alias>
+vp daemon trust add <alias>
+vp daemon trust remove <alias>
 ```
 
 ---
@@ -218,7 +218,7 @@ vp world trust remove <alias>
 | `notify@vantage-point` | ✅ valid (default lane) | `notify@vantage-point/root` |
 | (なかった) | — | `vantage-point/root` (= actor 省略、 v3.1 新) |
 | (なかった) | — | `vantage-point/performer/objrec` (= per-lane、 v3.1 新) |
-| (なかった) | — | `mako/vantage-point/root` (= cross-world、 v3.1 新) |
+| (なかった) | — | `mako/vantage-point/root` (= cross-daemon、 v3.1 新) |
 
 **v1 user は何も変更不要**、 v3.1 features は opt-in。
 
@@ -288,18 +288,18 @@ $ vp wire send --to vantage-point/root --body "hello"
 
 - 2 台 macbook (= macbook-a / macbook-b) が同 LAN (Wi-Fi or Ethernet)
 - 両方で `vp daemon start` + `vp app start` 完了
-- 両方で `vp world init` で keypair 生成済
+- 両方で `vp daemon init` で keypair 生成済
 
 ### Step 1: discovery
 
 **macbook-a**:
 ```bash
-$ vp world list --lan
+$ vp daemon list --lan
 [
   { alias: "macbook-b", pubkey: "ed25519:abc...", endpoint: "https://macbook-b.local:32000" }
 ]
 
-$ vp world add macbook-b
+$ vp daemon add macbook-b
 ✓ macbook-b added to address book
 ```
 
@@ -387,7 +387,7 @@ A. **`agent`** (= reserved default)。 `vantage-point/root` = `agent@vantage-poi
 
 ### Q. lane 名と actor 名が衝突した場合は?
 
-A. 衝突しない設計。 actor は `@` の左、 lane は `/` の中。 構文上 disambiguous (`agent@vantage-point/root` の `root` は lane segment、 `agent` は actor)。 reserved actor 名 (`agent` / `notify` / `mcp` / `protocol` / `world` / `*`) は lane segment / project name でも reject (= validate error)。
+A. 衝突しない設計。 actor は `@` の左、 lane は `/` の中。 構文上 disambiguous (`agent@vantage-point/root` の `root` は lane segment、 `agent` は actor)。 reserved actor 名 (`agent` / `notify` / `mcp` / `protocol` / `daemon` / `*`) は lane segment / project name でも reject (= validate error)。
 
 ### Q. hub.chronista.club が落ちたら何が起きる?
 
@@ -395,7 +395,7 @@ A. **LAN msg は影響なし** (= mDNS direct path、 hub 経由しない)。 se
 
 ### Q. 自分で hub を立てられる?
 
-A. はい (Phase 4+)。 hub spec は ~500 LOC の Rust or TypeScript で実装可能、 self-host で `your-hub.example.com` を運営できる。 `vp world add taro@your-hub.example.com` で接続可能。 vendor lock-in なし。
+A. はい (Phase 4+)。 hub spec は ~500 LOC の Rust or TypeScript で実装可能、 self-host で `your-hub.example.com` を運営できる。 `vp daemon add taro@your-hub.example.com` で接続可能。 vendor lock-in なし。
 
 ### Q. msg payload は hub に見える?
 

@@ -105,7 +105,7 @@ protocol "sidebar" version="1.0.0" {
             field "rel_path" type="string"
         }
         // Wire inbox (doc 34 §4 V1): 選択 lane の wire 履歴を read-only で取得。
-        // Rust が World "wire" channel に wire/history + wire/unread-count を request し、
+        // Rust が Daemon "wire" channel に wire/history + wire/unread-count を request し、
         // 結果を window.vpWire.handleResult で push back する (cursor 不触り)。
         request "wire:fetch" {
             field "path" type="string"
@@ -151,7 +151,7 @@ protocol "sidebar" version="1.0.0" {
             field "state" type="json"
         }
 
-        // TheWorld 接続失敗等の error 表示。
+        // daemon 接続失敗等の error 表示。
         event "sidebar:error" {
             field "message" type="string"
         }

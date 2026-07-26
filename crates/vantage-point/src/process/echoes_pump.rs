@@ -3,7 +3,7 @@
 //! 1 つの Lane の [`EchoesAgentHost`] が broadcast する [`EchoesEvent`] を購読し、
 //! per-lane topic (`process/echoes/data/{lane}/event`) に [`ProcessMessage::EchoesEvent`]
 //! として route する。これにより Act II の構造化イベントが単一 topic 空間に乗り、
-//! World 経由で vp-app へ届く（terminal_pump と完全に同型）。
+//! daemon 経由で vp-app へ届く（terminal_pump と完全に同型）。
 //!
 //! data / calculations / actions:
 //! - calculations: なし（pump は I/O bridge）

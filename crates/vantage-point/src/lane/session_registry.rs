@@ -951,7 +951,7 @@ pub fn record_conversation(
 /// 旧 `console_modes/<project>__<lane>` を **root session の act** へ畳む one-shot migration
 /// （doc 47 §4 — Act の lane → session 移設）。戻り値は畳んだ lane 数。
 ///
-/// World boot で 1 回だけ呼ぶ。畳み終えたら legacy file / dir ごと消えるので 2 回目以降は
+/// Daemon boot で 1 回だけ呼ぶ。畳み終えたら legacy file / dir ごと消えるので 2 回目以降は
 /// no-op（`clear_in` と同じ「終端まで進めて痕跡を残さない」規律）。
 ///
 /// - `Tui` の記録は**書かずに捨てる** — Tui は既定なので、registry file を持たない lane に
@@ -1002,7 +1002,7 @@ pub fn migrate_console_modes_in(base: &Path) -> usize {
     migrated
 }
 
-/// 本番 base での console_mode migration（World boot から 1 回）。
+/// 本番 base での console_mode migration（Daemon boot から 1 回）。
 pub fn migrate_console_modes() -> usize {
     migrate_console_modes_in(&crate::config::vp_state_dir())
 }

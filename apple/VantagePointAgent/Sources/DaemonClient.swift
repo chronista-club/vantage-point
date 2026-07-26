@@ -1,7 +1,7 @@
 import Foundation
 import UnisonClient
 
-/// Mac daemon (TheWorld :32000) への Unison 接続を司る。
+/// Mac daemon (daemon :32000) への Unison 接続を司る。
 ///
 /// 接続状態 (`Connection` / device channel) を所有するので `actor` で thread-safe に閉じ込める
 /// (doc 26 §4 が `Connection` を actor にした意図と同じ)。 UI からは `AgentModel`
@@ -12,7 +12,7 @@ actor DaemonClient {
     /// 現在の接続。 再接続時は古い接続を畳んでから張り直す。
     private var connection: Connection?
     /// agent → daemon の hot-plug 報告に使う device stream channel (doc 26 §2 channel "device")。
-    private var deviceChannel: StreamChannel<VPWorld.Device>?
+    private var deviceChannel: StreamChannel<VPDaemon.Device>?
 
     /// daemon に接続し、 server identity を取得し、 device channel を開く。
     ///
@@ -31,9 +31,9 @@ actor DaemonClient {
         let identity = try await connection.serverIdentity()
 
         // M2: device channel を開いておく (agent → daemon の ReportDevice 経路)。
-        // 失敗しても identity は返す (device 報告は best-effort、 menu bar の World 表示は生かす)。
+        // 失敗しても identity は返す (device 報告は best-effort、 menu bar の daemon 表示は生かす)。
         do {
-            self.deviceChannel = try await connection.openChannel(VPWorld.device)
+            self.deviceChannel = try await connection.openChannel(VPDaemon.device)
         } catch {
             print("[VPAgent] device channel open 失敗 (報告を無効化): \(error)")
         }
@@ -44,7 +44,7 @@ actor DaemonClient {
     /// CoreMIDI hot-plug 変化を daemon に報告する (device channel 経由、 best-effort)。
     ///
     /// daemon の `handle_device_report` が Devices registry を更新し、 `devices.*` を emit
-    /// (→ world-device bridge → vp-app) する。 channel 未確立時は no-op。
+    /// (→ daemon-device bridge → vp-app) する。 channel 未確立時は no-op。
     func reportDevice(_ change: MidiDeviceChange) async {
         guard let channel = deviceChannel else { return }
         let state = change.isConnected ? "connected" : "disconnected"

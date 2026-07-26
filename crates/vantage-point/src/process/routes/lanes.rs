@@ -1,7 +1,7 @@
 //! Lane lifecycle の core 関数群 (lanes portless、 doc 27 §3.4.5)。
 //!
 //! SP 直結 HTTP route (`GET`/`POST`/`DELETE /api/lanes` `POST /api/lanes/restart`) は全廃。
-//! create / list / delete / restart は全て World process-proxy ask の dispatch method
+//! create / list / delete / restart は全て daemon process-proxy ask の dispatch method
 //! (`lane_create` / `lanes_list` / `lane_delete` / `lane_restart`) に移管し、 本 module は
 //! その core 関数 (axum 非依存) のみを保持する。 全 surface (CLI flow / MCP / lane watcher) は
 //! 同 dispatch method を共有する (semantics SSOT)。
@@ -65,7 +65,7 @@ fn ground_created_at(path: &str) -> String {
 
 /// SP の全 Lane snapshot を build する (LanePool 由来のみ、 disk-only は乗せない)。
 ///
-/// World process-proxy ask `lanes_list` と QUIC `lanes_snapshot` 両 publish 経路で **同一 logic**
+/// daemon process-proxy ask `lanes_list` と QUIC `lanes_snapshot` 両 publish 経路で **同一 logic**
 /// を共有するための helper（旧 HTTP `GET /api/lanes` も同 logic だったが lanes portless で撤去）。
 ///
 /// ## F.8 B Convergent (2026-05-26): disk-only Lane の表示廃止
@@ -176,7 +176,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
 
 /// Performer Lane create の request body (Phase 3-A: Performer Lane create + lane clone)。
 ///
-/// lanes portless: 旧 `POST /api/lanes` body。 World process-proxy ask `lane_create` の payload
+/// lanes portless: 旧 `POST /api/lanes` body。 daemon process-proxy ask `lane_create` の payload
 /// として `dispatch_process_method` が serde で deserialize する。
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
@@ -206,15 +206,15 @@ pub struct CreateLaneReq {
     pub model: Option<String>,
 }
 
-/// World 入口（Unison `world-control.lanes/create`）の引数を [`CreateLaneReq`] に写す (= calc)。
+/// Daemon 入口（Unison `daemon-control.lanes/create`）の引数を [`CreateLaneReq`] に写す (= calc)。
 ///
-/// doc 44 §9.4 の統合で、World 側の `ProcessManagerCapability::create_lane` は
+/// doc 44 §9.4 の統合で、daemon 側の `ProcessManagerCapability::create_lane` は
 /// **自前の実装を持たず**本 module の [`create_performer_orchestrated`] を呼ぶ薄い adapter に
 /// なった。その境界で唯一発生するのが「(name, branch, stand) → `CreateLaneReq`」の写像で、
 /// ここが黙ってズレると **GUI から作った lane だけ branch / stand が効かない**という
 /// 経路差が復活する。純関数に切り出して往復を test で固定する。
 ///
-/// `cwd` / `base` / `model` が None なのは World 入口がそれらを受け取らないため
+/// `cwd` / `base` / `model` が None なのは Daemon 入口がそれらを受け取らないため
 /// （= 既定の lane clone に落ちる。旧 `create_lane` と同じ範囲）。
 pub(crate) fn build_create_lane_req(name: &str, branch: &str, stand: &str) -> CreateLaneReq {
     CreateLaneReq {
@@ -230,7 +230,7 @@ pub(crate) fn build_create_lane_req(name: &str, branch: &str, stand: &str) -> Cr
 /// lane descriptor / lifecycle を db に永続する時の project key。
 ///
 /// `AppState.project_dir` は生パス（`CapabilityConfig` にそのまま入る）だが、db の
-/// `project_path` 列と World の registry key は**正規化済パス**なので、境界で 1 回だけ畳む。
+/// `project_path` 列と daemon の registry key は**正規化済パス**なので、境界で 1 回だけ畳む。
 /// call site に任せると 1 箇所忘れて「boot load では引けない行」が無音で生まれる
 /// （doc 44 §10.4 の帳簿 key と同じ罠）。
 fn lane_db_key(state: &AppState) -> String {
@@ -241,7 +241,7 @@ fn lane_db_key(state: &AppState) -> String {
 /// `lifecycle=Provisioning` を **provision（lane clone）より先に**永続する。
 ///
 /// crash が provision の途中で起きても「provisioning が残る」ので、boot reconcile が
-/// ground の有無で heal できる。旧 World 側 `create_lane` だけが持っていた振る舞いで、
+/// ground の有無で heal できる。旧 daemon 側 `create_lane` だけが持っていた振る舞いで、
 /// 統合で全入口（MCP / CLI / watcher / GUI）に効くようになった。
 ///
 /// 失敗は warn のみ（db が無い / 書けない時に lane 作成そのものを止めない — 永続の欠落は
@@ -321,11 +321,11 @@ async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddres
 /// Performer Lane create core orchestration (Phase 3-A: lane clone + PtySlot spawn)。
 ///
 /// lanes portless (doc 27 §3.4.5): 旧 `POST /api/lanes` の core を抽出し、 全 trigger
-/// (MCP `add_performer`/`flow_handoff` / CLI `vp flow handoff` / lane watcher) が World
+/// (MCP `add_performer`/`flow_handoff` / CLI `vp flow handoff` / lane watcher) が Daemon
 /// process-proxy ask `lane_create` 経由で共有する core logic に。 `delete_lane_orchestrated` /
 /// `restart_lane_orchestrated` と対称 (SP HTTP route + axum handler は撤去)。
 ///
-/// **doc 44 §9.4 の統合後、lane 作成の実装はこの関数 1 本**。旧 World 側
+/// **doc 44 §9.4 の統合後、lane 作成の実装はこの関数 1 本**。旧 daemon 側
 /// `ProcessManagerCapability::create_lane`（worktree provision + descriptor 永続のみで
 /// PtySlot は watcher 経由という別実装）は本関数を呼ぶ adapter に畳んだ。
 /// SP がプロセスだった頃の「ground を provision する唯一の主体は daemon」(doc 24 §5.3) は
@@ -438,7 +438,7 @@ pub(crate) async fn create_performer_orchestrated(
     // (`<repo>/.vp/lanes/<name>`) なので clone 前に予測でき、explicit cwd ならそれ自体。
     // 実 path は clone 後に [`persist_lane_ready`] が上書きする。
     //
-    // doc 44 §9.4 の統合で World 側 `create_lane` から移設した。旧構成ではこの bracket が
+    // doc 44 §9.4 の統合で daemon 側 `create_lane` から移設した。旧構成ではこの bracket が
     // GUI 経由の create にしか効かず、MCP / CLI / watcher で作った lane は **descriptor が
     // 一度も db に載らなかった** (= 経路ごとの差。boot reconcile の射程外だった)。
     let db_key = lane_db_key(state);
@@ -921,11 +921,11 @@ pub async fn delete_lane_orchestrated(
 const RESTART_MAX_ATTEMPTS: u32 = 3;
 const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 attempt 1→2: 500ms
 
-/// lane の現況を `SystemEvent::Lane(Diff::Update)` として World へ push する。
+/// lane の現況を `SystemEvent::Lane(Diff::Update)` として daemon へ push する。
 ///
 /// 供給 push 根治（session chip 凍結、2026-07-17 解剖）: `Diff::Update` は従来、受信側
-/// （uplink / World registry / vp-app）だけ実装されて **emitter が repo に存在しなかった**。
-/// そのため restart や session pointer の変化が World lane_registry に届かず、vp-app の
+/// （uplink / Daemon registry / vp-app）だけ実装されて **emitter が repo に存在しなかった**。
+/// そのため restart や session pointer の変化が Daemon lane_registry に届かず、vp-app の
 /// header（session chip 等）が SP 登録時の enrich 値で凍結していた。
 /// lane を in-place mutate した後（restart 等）と `lane_session_changed`（hook 通知）から呼ぶ。
 ///
@@ -1046,7 +1046,7 @@ async fn converge_lane(
                 attempt + 1
             );
             // 供給 push 根治: restart は pid / engine_session_id を変える in-place mutation なのに
-            // 従来 Diff を emit しておらず、World registry が凍結していた。
+            // 従来 Diff を emit しておらず、Daemon registry が凍結していた。
             emit_lane_update(state, &addr).await;
             return Ok(serde_json::json!({
                 "restarted": addr.to_string(),
@@ -1086,7 +1086,7 @@ async fn converge_lane(
 /// 例: user="Mako", name="sub" → `mako/sub`
 ///
 /// branch 未指定時の create で使う。 doc 24 §10 B-create で daemon 側 create
-/// (`routes/world.rs` の `resolve_create_lane_args` = Unison `lanes/create` の実体) からも
+/// (`routes/daemon.rs` の `resolve_create_lane_args` = Unison `lanes/create` の実体) からも
 /// sibling 呼びするため `pub(crate)`。
 pub(crate) fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
     let prefix = std::process::Command::new("git")
@@ -1338,26 +1338,26 @@ mod core_tests {
         );
     }
 
-    /// doc 44 §9.4: World 入口（`world-control.lanes/create`）→ core の引数写像を固定する。
+    /// doc 44 §9.4: Daemon 入口（`daemon-control.lanes/create`）→ core の引数写像を固定する。
     ///
-    /// 統合で World 側は自前の実装を捨てて本 module を呼ぶだけになった。残った唯一の
+    /// 統合で daemon 側は自前の実装を捨てて本 module を呼ぶだけになった。残った唯一の
     /// 変換がここで、黙ってズレると「GUI から作った lane だけ branch / stand が効かない」
     /// という**経路差が復活する**（統合が壊れる時に最初に壊れる場所）。
     #[test]
-    fn world_entry_maps_args_into_create_req() {
+    fn daemon_entry_maps_args_into_create_req() {
         let req = build_create_lane_req("sub", "mako/sub", "codex");
         assert_eq!(req.name, "sub");
         assert_eq!(req.branch.as_deref(), Some("mako/sub"));
         assert_eq!(req.stand.as_deref(), Some("codex"));
-        // World 入口が受け取らない 3 つは None = 既定の lane clone に落ちる（旧 create_lane と同じ範囲）。
-        assert!(req.cwd.is_none(), "World 入口は cwd を受け取らない");
-        assert!(req.base.is_none(), "World 入口は base を受け取らない");
-        assert!(req.model.is_none(), "World 入口は model を受け取らない");
+        // Daemon 入口が受け取らない 3 つは None = 既定の lane clone に落ちる（旧 create_lane と同じ範囲）。
+        assert!(req.cwd.is_none(), "Daemon 入口は cwd を受け取らない");
+        assert!(req.base.is_none(), "Daemon 入口は base を受け取らない");
+        assert!(req.model.is_none(), "Daemon 入口は model を受け取らない");
     }
 
     /// doc 44 §9.4 の回帰固定: **失敗した create は db に descriptor も lifecycle も残さない**。
     ///
-    /// intent-first bracket（provision より先に descriptor を永続する）は統合で World 側から
+    /// intent-first bracket（provision より先に descriptor を永続する）は統合で daemon 側から
     /// 本 core に移設した。移設で落としやすいのは enter ではなく **exit（失敗時の rollback）**で、
     /// 落ちても成功系のテストは緑のまま「拒否された lane の行が db に残る」状態になる。
     /// vpdb=None の fixture では書き込み自体が no-op で素通りするため、ここは実 db を差す。

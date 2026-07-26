@@ -5,7 +5,7 @@
 //! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (SP-as-Project-Master: 9 component minimum)
 //! - **2026-04-27 rule** (旧):「Lane scope に attach するのは echoes と shell のみ。board/runner/external-control は Project scope」
 //!   → **doc 12 LSCM (VP-109、 2026-05-04) で明示的に supersede**。 LSCM では Layer container
-//!   (World / Project / Lane) が必要な Stand を抱える composition モデルで、 各 Stand の居住可能
+//!   (Daemon / Project / Lane) が必要な Stand を抱える composition モデルで、 各 Stand の居住可能
 //!   Layer は doc 12 §9 catalog の「保持 layer pattern」 列が SSOT。
 //! - PR-pre2 (VP-118 / 2026-05-04): HD → Echoes rename。
 //! - PR-β-2 (VP-120 / 2026-05-04): board を Project → Lane に物理移管 (`LaneCapabilities.board`)。
@@ -238,11 +238,11 @@ impl fmt::Display for LaneAddress {
 /// - `P` = payload 型 (add/update 時の full state、 例: `LaneInfo`)
 ///
 /// caller で event 発生 → AppState の broadcast channel に publish → subscriber が
-/// World 側 cache を realtime sync する primitive。
+/// daemon 側 cache を realtime sync する primitive。
 ///
 /// doc 44 P1 (fold-in): subscriber は旧「SP の QUIC registry push」から、project 自身の
 /// lanes publish task（`process/server.rs` の `publish_lanes`）に替わった。同一プロセスに
-/// なったので push は World の集約 view への map 書き込みに退化している。
+/// なったので push は daemon の集約 view への map 書き込みに退化している。
 ///
 /// wire format: internally tagged JSON
 /// ```json
@@ -266,14 +266,14 @@ pub enum Diff<I, P> {
     Update { payload: P },
 }
 
-/// Phase 2: Lane lifecycle 用の Diff alias。 SP の lane_pool 変更を TheWorld に伝える。
+/// Phase 2: Lane lifecycle 用の Diff alias。 SP の lane_pool 変更を daemon に伝える。
 pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
 
 /// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。
 ///
 /// caller (lane_spawn_actor / routes/* / lifecycle monitor / restart_lane 等) が
 /// `state.system_event_tx.send(SystemEvent::*)` で publish、project の lanes publish task
-/// (`publish_lanes`) が受けて World の集約 view を更新する（doc 44 P1 fold-in で
+/// (`publish_lanes`) が受けて daemon の集約 view を更新する（doc 44 P1 fold-in で
 /// 旧 QUIC registry push から置き換わった）。
 ///
 /// scope ごとに variant 分け、 内部に該当 Diff を内包。 将来 Pane / Stand 等は
@@ -375,7 +375,7 @@ pub struct LaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<LaneSessionsView>,
     /// FSM 投影 (2026-07-11): dev-flow FSM (`flow::derive_flow_state`) の現在 state。
-    /// **TheWorld が vp-app への snapshot 送信時に enrich する derive 値** — SP / lane_registry /
+    /// **daemon が vp-app への snapshot 送信時に enrich する derive 値** — SP / lane_registry /
     /// db では常に `None` (derive できるものは store しない原則)。 source は wire store
     /// (latest msg + 未 ack needs_user) + performer_status で、 `vp flow progress` と同一判定。
     /// serde default + skip で旧 SP / 旧 client と wire 完全互換。
@@ -442,7 +442,7 @@ impl LaneInfo {
     /// （Echoes 共通ヘッダの session chip 用。表示専用の別契約 — [`Self::cc_session_id`] は
     /// claude resume 用でここでは触らない）。engine 対応表は `EngineKind` が SSOT。
     ///
-    /// ⚠️ **lanes が World へ流れる供給点すべてで呼ぶこと**: ①`build_lanes_snapshot`
+    /// ⚠️ **lanes が daemon へ流れる供給点すべてで呼ぶこと**: ①`build_lanes_snapshot`
     /// （ask 経路 = MCP list_lanes / lanes_list）②uplink の agent_card（register payload）
     /// ③uplink の LaneDiff push（lanes/add|update）。供給が複数経路あるのは #683 と同じ地形で、
     /// 1 箇所だけ enrich すると「ask には出るが registry（= vp-app）には出ない」に化ける
@@ -2199,7 +2199,7 @@ impl LanePool {
 ///
 /// PtySlot の lock は各 write ごとに `read().await` で都度取り即 drop し、間の sleep は無 lock で
 /// 行う（await 跨ぎで guard を保持しない）。 in-process nudge（`AppState::nudge_lane`）と
-/// World→SP proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
+/// Daemon→SP proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
 ///
 /// ## 並行 nudge の直列化（#674 の race を塞ぐ）
 /// phase 間の sleep 中は PtySlot lock を手放すため、同一 lane へ並行に走る 2 本の `deliver_nudge`
@@ -2744,7 +2744,7 @@ mod tests {
     /// doc 50 §4.6 A6: **非 root の term session は boot で復元される**（再起動を越える）。
     ///
     /// team-b review 2026-07-25（score 78）: A6 で「非 root が term」は registry に永続する一級の
-    /// 状態になったが、boot で slot を立てるのは root だけだった。World / project 再起動のあと
+    /// 状態になったが、boot で slot を立てるのは root だけだった。Daemon / project 再起動のあと
     /// （dogfood の `VP_SWAP_RESTART_DAEMON=1` は毎回これ）**pane は出るのに中身が空で無反応**に
     /// なる — roster は registry から導出されるので pane は現れ、slot だけが居ない。
     ///
@@ -3950,7 +3950,7 @@ mod tests {
     /// 初版の `reset_lane` は「file を clear → `set_root_act` で書き戻す」4 段だった。ところが
     /// `set_root_act` は「値が同じなら save しない」最適化を持つので、**Tui の Reset だけ**
     /// 「もう Tui だから」と誤認して save をスキップし、**file が不在のまま残っていた**
-    /// （→ 次の World boot で `with_root` が Chat を書く = tui console が勝手に chat 化する）。
+    /// （→ 次の Daemon boot で `with_root` が Chat を書く = tui console が勝手に chat 化する）。
     /// Chat の Reset は差分があるので save が走り、**片側だけ穴が空いていた**。
     ///
     /// 壊し方: `reset_to_single` を `clear` + `set_root_act` に戻すと Tui 側が赤くなる。

@@ -1,10 +1,10 @@
-//! World が抱える per-project 実行状態の registry（doc 44 P1 = SP fold-in）。
+//! daemon が抱える per-project 実行状態の registry（doc 44 P1 = SP fold-in）。
 //!
 //! # 位置付け
 //!
-//! 旧構成では project 1 件 = SP プロセス 1 本で、World は QUIC registry / control /
+//! 旧構成では project 1 件 = SP プロセス 1 本で、daemon は QUIC registry / control /
 //! canvas-ingest の 3 channel を張って外から操作していた。fold-in はこのプロセス境界を
-//! 取り払い、project を **World プロセス内の `Arc<AppState>` 1 個**に降格させる。
+//! 取り払い、project を **daemon プロセス内の `Arc<AppState>` 1 個**に降格させる。
 //! 本 registry がその map の実体で、旧 `running_processes` + `control_channels` の
 //! 役割を 1 つにまとめて引き継ぐ。
 //!
@@ -16,7 +16,7 @@
 //! `LanePool` は key が `LaneAddress { project, kind, name }` なので原理的には全 project
 //! 分を 1 枚に merge できる。ただしそれをやると `AppState.project_dir` の単一前提が壊れ、
 //! `dispatch_process_method` の signature 変更 → 約 50 箇所のテスト改修に波及する。
-//! 一方 fold-in の目的（World↔SP 配管の撤去・`vp sp` 退役・spine 三段→二段）は
+//! 一方 fold-in の目的（Daemon↔SP 配管の撤去・`vp sp` 退役・spine 三段→二段）は
 //! **プロセス境界を消すだけで達成される**ため、1 枚化は分離して doc 44 P2
 //! （`LaneAddress` フラット化）の担当とした。
 
@@ -44,22 +44,22 @@ pub(crate) struct ProjectRuntime {
 #[derive(Default)]
 pub(crate) struct ProjectRuntimes {
     inner: RwLock<HashMap<String, ProjectRuntime>>,
-    /// World の lane 集約 view（`ProcessManagerCapability::lane_registry` と同一 Arc）。
+    /// daemon の lane 集約 view（`ProcessManagerCapability::lane_registry` と同一 Arc）。
     ///
-    /// doc 44 P1 (fold-in): 旧構成では SP が QUIC "lanes" channel で World へ register
+    /// doc 44 P1 (fold-in): 旧構成では SP が QUIC "lanes" channel で daemon へ register
     /// snapshot を push し、この view を最新化していた。SP が消えた今、更新役は
     /// project 自身の publish task が引き継ぐ（[`start`] が本 Arc を渡す）。
-    /// `None` は「World 以外の文脈」= test / SP 単体起動で、その場合 view は存在しない。
-    world_lanes: Option<super::server::WorldLaneView>,
-    /// World が開いた唯一の SurrealDB handle（doc 44 P1 PR4 = DB 統合）。
+    /// `None` は「Daemon 以外の文脈」= test / SP 単体起動で、その場合 view は存在しない。
+    node_lanes: Option<super::server::NodeLaneView>,
+    /// daemon が開いた唯一の SurrealDB handle（doc 44 P1 PR4 = DB 統合）。
     ///
     /// 旧構成では project ごとに `db/sp_{slug}/` を開いていた（VP-182: 別プロセス間の
     /// surrealkv LOCK 衝突回避）。fold-in で同一プロセスになったため handle を共有し、
     /// project 次元は table の `project_path` 列が持つ。`None` は DB なし（test / 接続失敗）。
-    world_db: Option<crate::db::SharedVpDb>,
+    daemon_db: Option<crate::db::SharedVpDb>,
     /// doc 44 §11: project の publish が vp-app への push を起こすための通知路。
     ///
-    /// fold-in 前は SP の QUIC uplink（register / lanes-diff）が World の `lane_registry` を
+    /// fold-in 前は SP の QUIC uplink（register / lanes-diff）が daemon の `lane_registry` を
     /// 更新しつつ `lane_change_tx` も撃っていた。fold-in で **view の更新だけが
     /// `publish_lanes` へ移管され、起床通知が移管されなかった**ため、vp-app の sidebar は
     /// wire 活動がある間しか新鮮でなくなっていた。この Arc がその辺を戻す。
@@ -70,15 +70,15 @@ pub(crate) struct ProjectRuntimes {
     /// 先に届くと `canvas_router_for` は placeholder router を作って購読させる。project 起動時に
     /// この map を引き、**placeholder が居ればそれを自分の `topic_router` として養子縁組**する
     /// （= 既存購読者ごと実 router になる）。居なければ従来どおり新規作成し、後から来る
-    /// subscribe が live 結線する（get-or-create の両側性）。`None` は World 以外の文脈（test）。
+    /// subscribe が live 結線する（get-or-create の両側性）。`None` は Daemon 以外の文脈（test）。
     canvas_routers: Option<super::topic_router::CanvasRouters>,
     /// shutdown 開始後に新規登録を受け付けないための門。
     ///
     /// [`shutdown_all`](Self::shutdown_all) は map を drain して停止するが、drain の**後**に
     /// 進行中の [`start`](Self::start) が insert を完了させると、その project の spawn 済 task と
-    /// SurrealDB handle が「World stopped」ログの後も生き残る（= プロセスが終了できない）。
+    /// SurrealDB handle が「Daemon stopped」ログの後も生き残る（= プロセスが終了できない）。
     ///
-    /// 起動の入口は複数あり、いずれも World の shutdown 手続きの射程外で走る:
+    /// 起動の入口は複数あり、いずれも daemon の shutdown 手続きの射程外で走る:
     ///   - `autostart_enabled_projects`（spawn した JoinHandle を保持していない）
     ///   - `projects/start` RPC（unison が接続ごとに独立 task で handler を回すため、
     ///     accept loop を abort しても既存接続の in-flight handler には波及しない）
@@ -94,23 +94,23 @@ impl ProjectRuntimes {
         Self::default()
     }
 
-    /// World の資源（lane 集約 view + DB handle）を結線した registry を作る。
+    /// daemon の資源（lane 集約 view + DB handle）を結線した registry を作る。
     ///
-    /// World bootstrap 専用。
-    /// - `world_lanes` を渡さないと project を起こしても World の view が更新されず、
+    /// Daemon bootstrap 専用。
+    /// - `node_lanes` を渡さないと project を起こしても daemon の view が更新されず、
     ///   `vp ps` / sidebar / Unison `lanes/list` が boot 時の db 値で固まる。
     /// - `vpdb` を渡さないと project は DB なしで走り、board / stand status が
     ///   永続しない（doc 44 P1 PR4 以前は project が自分で db を開いていた）。
-    pub fn for_world(
-        world_lanes: super::server::WorldLaneView,
+    pub fn for_daemon(
+        node_lanes: super::server::NodeLaneView,
         vpdb: Option<crate::db::SharedVpDb>,
         lane_change_tx: tokio::sync::broadcast::Sender<String>,
         canvas_routers: super::topic_router::CanvasRouters,
     ) -> Self {
         Self {
             inner: RwLock::new(HashMap::new()),
-            world_lanes: Some(world_lanes),
-            world_db: vpdb,
+            node_lanes: Some(node_lanes),
+            daemon_db: vpdb,
             lane_change_tx: Some(lane_change_tx),
             canvas_routers: Some(canvas_routers),
             closing: AtomicBool::new(false),
@@ -130,7 +130,7 @@ impl ProjectRuntimes {
         let key = crate::capability::normalize_path_key(std::path::Path::new(project_dir));
 
         if self.closing.load(Ordering::Acquire) {
-            anyhow::bail!("World が shutdown 中のため project を起動しない (key={key})");
+            anyhow::bail!("daemon が shutdown 中のため project を起動しない (key={key})");
         }
 
         // 二重起動の早期棄却。 起動には時間がかかるので、まず read lock だけで判定する。
@@ -153,8 +153,8 @@ impl ProjectRuntimes {
             0,
             cap_config,
             shutdown.clone(),
-            self.world_lanes.clone(),
-            self.world_db.clone(),
+            self.node_lanes.clone(),
+            self.daemon_db.clone(),
             self.lane_change_tx.clone(),
             adopted_router,
         )
@@ -176,7 +176,7 @@ impl ProjectRuntimes {
             drop(guard);
             shutdown.cancel();
             super::server::shutdown_project(&state).await;
-            anyhow::bail!("起動中に World の shutdown が始まったため巻き戻した (key={key})");
+            anyhow::bail!("起動中に daemon の shutdown が始まったため巻き戻した (key={key})");
         }
         let live_router = state.topic_router.clone();
         let bridge_shutdown = shutdown.clone();
@@ -216,18 +216,18 @@ impl ProjectRuntimes {
         true
     }
 
-    /// 登録済 project を**すべて**停止する（World の graceful shutdown 用）。戻り値は停止数。
+    /// 登録済 project を**すべて**停止する（daemon の graceful shutdown 用）。戻り値は停止数。
     ///
     /// doc 44 P1 (fold-in): 旧構成では project = 別プロセス (SP) だったため、daemon が
     /// 落ちても project は生き残るのが**設計上の正**だった（`vp daemon stop` の gentle 挙動）。
-    /// project が World 内の `Arc<AppState>` になった今、この前提は反転する — project は
-    /// World の tokio task と SurrealDB handle でしかないので、**World が畳まなければ
+    /// project が Daemon 内の `Arc<AppState>` になった今、この前提は反転する — project は
+    /// daemon の tokio task と SurrealDB handle でしかないので、**daemon が畳まなければ
     /// 誰も畳まない**。
     ///
-    /// これを怠ると World は listener を閉じて「停止」を名乗るのにプロセスが終了できない。
+    /// これを怠ると daemon は listener を閉じて「停止」を名乗るのにプロセスが終了できない。
     /// PR4（DB 統合）以前はこれが db の LOCK 保持として表面化し、次に起動した daemon が
     /// その LOCK を「重複 spawn」と誤検出して**全 project の起動に失敗**していた
-    /// （実機で観測済み）。db が単一化された今、残留プロセスは `db/world/` の LOCK と
+    /// （実機で観測済み）。db が単一化された今、残留プロセスは `db/machine/` の LOCK と
     /// :32000 の bind を握るので、次の daemon は起動そのものが弾かれる（= 失敗が早期化した
     /// だけで、畳み残しが致命的である点は変わらない）。
     pub async fn shutdown_all(&self) -> usize {
@@ -260,7 +260,7 @@ impl ProjectRuntimes {
 
     /// 当該 project の [`dispatch_process_method`] を **直接呼ぶ**。
     ///
-    /// 旧 `forward_to_sp_control`（World → QUIC control channel → SP）の後継。
+    /// 旧 `forward_to_sp_control`（Daemon → QUIC control channel → SP）の後継。
     /// 戻り値の形（成功は生の JSON、失敗は `{"error": ...}`）は caller が
     /// `send_response` でそのまま client に relay するため互換に保つ。
     ///
@@ -376,7 +376,7 @@ mod tests {
 
         let (tx, _) = tokio::sync::broadcast::channel::<String>(4);
         let runtimes =
-            ProjectRuntimes::for_world(Default::default(), None, tx, canvas_routers.clone());
+            ProjectRuntimes::for_daemon(Default::default(), None, tx, canvas_routers.clone());
 
         let adopted = runtimes
             .adopted_router_for("/tmp/proj-a")
@@ -387,7 +387,7 @@ mod tests {
             "同一 Arc であること（購読者ごと養子縁組できる個体）"
         );
         assert!(runtimes.adopted_router_for("/tmp/other").await.is_none());
-        // World 以外の文脈（map なし = ProjectRuntimes::new）は常に None
+        // Daemon 以外の文脈（map なし = ProjectRuntimes::new）は常に None
         assert!(
             ProjectRuntimes::new()
                 .adopted_router_for("/tmp/proj-a")
@@ -459,7 +459,7 @@ mod tests {
     /// 回帰固定: ここが `Ok(false)` だと caller の `start_process` が「既に起動済み」と
     /// 解釈して running_processes / presence に動いていない project を載せる。また
     /// `shutdown_all` の drain 後に insert が滑り込むと、その project の task と db handle が
-    /// 残ってプロセスが終了できなくなる（World shutdown の 82 分ハングの再現経路）。
+    /// 残ってプロセスが終了できなくなる（Daemon shutdown の 82 分ハングの再現経路）。
     #[tokio::test]
     async fn start_after_shutdown_is_rejected() {
         let runtimes = ProjectRuntimes::new();

@@ -1,9 +1,9 @@
-//! TheWorld daemon の HTTP 面 (`/api/health`) + surface が扱う wire 型
+//! daemon の HTTP 面 (`/api/health`) + surface が扱う wire 型
 //!
 //! ## doc 45 段 3 — 残っているのは health だけ
 //!
 //! 元は projects / processes / lanes を触る REST client (12 method) だったが、
-//! control plane は Unison に寄せた ([`crate::world_control`])。ここに残るのは
+//! control plane は Unison に寄せた ([`crate::daemon_control`])。ここに残るのは
 //! **`/api/health` 1 本**で、これは統一の取りこぼしではなく doc 45 §2 の設計判断:
 //! health は「他が壊れている時に動いてほしい」probe なので、Unison 層が wedge した時に
 //! 診断手段ごと失わないよう、意図的に鈍い外殻 (HTTP) として置く。
@@ -13,7 +13,7 @@
 //! 本 module に置いたまま — 読み手は Unison client / QUIC 購読 / sidebar push の 3 者。
 //!
 //! ## URL 解決
-//! 1. `VP_WORLD_URL` env var があれば優先 (例: `http://172.20.78.253:32000`)
+//! 1. `VP_DAEMON_URL` env var があれば優先 (例: `http://172.20.78.253:32000`)
 //! 2. それ以外は `http://127.0.0.1:32000` (IPv4 loopback)
 //!
 //! **IPv6 `[::1]` は WSL2 → Windows の localhost 転送で通らない**ため
@@ -32,43 +32,43 @@ use crate::lane::LaneAddressWire;
 #[cfg(test)]
 use ts_rs::TS;
 
-/// TheWorld の既定ポート。
+/// daemon の既定ポート。
 ///
 /// VP_PROFILE 分離 (dev/brew 混在根治): brew=32000 / dev=32100。 定義は
-/// `vp_paths::default_world_port()` (全 crate 共有の SSOT)。 dev binary と brew cask が
-/// 別 world port で並列常駐できるよう、 app→world connect もこの port を honor する。
-pub fn default_world_port() -> u16 {
-    vp_paths::default_world_port()
+/// `vp_paths::default_daemon_port()` (全 crate 共有の SSOT)。 dev binary と brew cask が
+/// 別 node port で並列常駐できるよう、 app→daemon connect もこの port を honor する。
+pub fn default_daemon_port() -> u16 {
+    vp_paths::default_daemon_port()
 }
 
 /// デフォルト URL 解決
 ///
-/// `VP_WORLD_URL` env var → `http://127.0.0.1:{default_world_port()}`
+/// `VP_DAEMON_URL` env var → `http://127.0.0.1:{default_daemon_port()}`
 fn default_base_url() -> String {
-    std::env::var("VP_WORLD_URL")
-        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", default_world_port()))
+    std::env::var("VP_DAEMON_URL")
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", default_daemon_port()))
 }
 
-/// TheWorld daemon の HTTP health クライアント (`/api/health` 専用)
+/// daemon の HTTP health クライアント (`/api/health` 専用)
 ///
-/// doc 45 段 3 以降、control plane は [`crate::world_control::WorldControl`] が持つ。
-pub struct TheWorldClient {
+/// doc 45 段 3 以降、control plane は [`crate::daemon_control::DaemonControl`] が持つ。
+pub struct DaemonRpcClient {
     base_url: String,
     client: reqwest::Client,
 }
 
 /// Process kind (Architecture v4: mem_1CaSwJ?... Process Recursive)
 ///
-/// 全 VP entity (TheWorld / SP / Lane / Stand) は `ProcessKind` を持つ Process として
+/// 全 VP entity (daemon / SP / Lane / Stand) は `ProcessKind` を持つ Process として
 /// homogeneous に扱う。Display metaphor は UI / log の format string のみで使い、
 /// code 内 logic は kind 直値で switch する。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessKind {
-    /// system 全体を supervise する root process (= TheWorld 👑)
+    /// system 全体を supervise する root process (= daemon 👑)
     Supervisor,
     /// Project に bind された runtime container (= 旧 SP / Project Core ⭐)
-    /// TheWorld の projects 応答に kind field が無いケースは
+    /// daemon の projects 応答に kind field が無いケースは
     /// Runtime (= Project Process) 扱い (serde default)。
     #[default]
     Runtime,
@@ -82,7 +82,7 @@ impl ProcessKind {
     /// Display 用 metaphor (UI / log の format string のみ、code logic では kind 直値で switch)
     pub fn metaphor(&self) -> &'static str {
         match self {
-            ProcessKind::Supervisor => "👑 TheWorld",
+            ProcessKind::Supervisor => "👑 daemon",
             ProcessKind::Runtime => "⭐ Star Platinum",
             ProcessKind::Session => "📍 Lane",
             ProcessKind::Stand => "🦾 Stand",
@@ -92,7 +92,7 @@ impl ProcessKind {
 
 /// Process state (全 ProcessKind 共通 state machine、Architecture v4 Idea 2)
 ///
-/// daemon の projects 応答 (`world-control.projects/list`) の `process_status` の wire mirror。
+/// daemon の projects 応答 (`daemon-control.projects/list`) の `process_status` の wire mirror。
 ///
 /// daemon 側 `capability::process_manager_capability::ProcessStatus`
 /// (Stopped/Starting/Running/Stopping/Error) と 1:1 対応させる。
@@ -136,7 +136,7 @@ impl ProcessStatus {
     }
 }
 
-/// Project info — `world-control.projects/list` レスポンス要素 (= 登録済 path identity)。
+/// Project info — `daemon-control.projects/list` レスポンス要素 (= 登録済 path identity)。
 ///
 /// server 側 `ProjectInfo` (`capability::process_manager_capability::ProjectInfo`) と
 /// 命名統一。 「list / identity 系 = Project」 「runtime lifecycle 系 = Process」 の
@@ -144,7 +144,7 @@ impl ProcessStatus {
 /// runtime port は `registry.list` (= `RunningProcess`) との join で merge する。
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 pub struct ProjectInfo {
-    /// Process kind (default Runtime: TheWorld response 互換)
+    /// Process kind (default Runtime: daemon response 互換)
     #[serde(default)]
     pub kind: ProcessKind,
     pub name: String,
@@ -165,17 +165,17 @@ pub struct ProjectInfo {
     pub active_lane: Option<String>,
 }
 
-// 旧 HTTP `GET /api/world/projects` の包み (`{"projects": [...]}`) は撤去した。
-// Unison `world-control.projects/list` は裸配列を返すため (doc 45 段 3)。
-// 新旧が同じ `ProjectInfo` 一覧に落ちることは `world_control` の decode parity テストが固定する。
+// 旧 HTTP `GET /api/daemon/projects` の包み (`{"projects": [...]}`) は撤去した。
+// Unison `daemon-control.projects/list` は裸配列を返すため (doc 45 段 3)。
+// 新旧が同じ `ProjectInfo` 一覧に落ちることは `daemon_control` の decode parity テストが固定する。
 
 /// `/api/health` の主要 field のみを取り出した軽量レスポンス
 ///
-/// vp-app の Activity widget で表示するため、TheWorld 側 `HealthResponse` の
+/// vp-app の Activity widget で表示するため、daemon 側 `HealthResponse` の
 /// stands / terminal_token / pid 等は無視。サーバ側の field 追加で壊れないよう
 /// `#[serde(default)]` を付けている。
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct WorldHealthInfo {
+pub struct DaemonHealthInfo {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
@@ -186,11 +186,11 @@ pub struct WorldHealthInfo {
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`、旧 daemon は空文字）。
     #[serde(default)]
     pub hub: String,
-    /// hub の向こうに居る available worlds（`hub_worlds[]`、旧 daemon は field 不在 → 空）。
-    /// daemon 側と同形なので `crate::pane::HubWorld` をそのまま deserialize に使う。
+    /// hub の向こうに居る available nodes（`hub_nodes[]`、旧 daemon は field 不在 → 空）。
+    /// daemon 側と同形なので `crate::pane::HubNode` をそのまま deserialize に使う。
     #[serde(default)]
-    pub hub_worlds: Vec<crate::pane::HubWorld>,
-    /// L1 lifecycle: World 配下 SP の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
+    pub hub_nodes: Vec<crate::pane::HubNode>,
+    /// L1 lifecycle: Daemon 配下 SP の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
     /// 旧 daemon は field 不在 → 空。`path` で project 行に join する。
     #[serde(default)]
     pub processes: Vec<SpPresence>,
@@ -223,8 +223,8 @@ pub struct SpPresence {
 /// subset で、 命名も揃える。 vp-app では Activity widget の count と
 /// `fetch_projects_with_ports` での port join に使う。
 ///
-/// doc 45 段 3 で transport は `GET /api/world/processes` から `registry.list` に移ったが、
-/// World は同じ `running_processes` map を両面で共有しているので中身は同一。
+/// doc 45 段 3 で transport は `GET /api/daemon/processes` から `registry.list` に移ったが、
+/// daemon は同じ `running_processes` map を両面で共有しているので中身は同一。
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RunningProcess {
     #[serde(default)]
@@ -280,7 +280,7 @@ pub struct LaneInfo {
     #[serde(default)]
     pub sessions: Option<LaneSessionsWire>,
     /// FSM 投影 (2026-07-11): dev-flow FSM の現在 state。 "idle" | "working" | "hitl_pending" |
-    /// "awaiting_user" | "completed" | "stuck"。 TheWorld が snapshot 送信時に enrich する
+    /// "awaiting_user" | "completed" | "stuck"。 daemon が snapshot 送信時に enrich する
     /// (source = `vp flow progress` と同一判定)。 欠落 (旧 daemon) = None → sidebar は
     /// pid heuristic に fallback。 conductor lane は常に None (dev-flow FSM の対象外)。
     #[serde(default)]
@@ -361,7 +361,7 @@ pub struct PerformerStatusWire {
     pub is_merged: bool,
 }
 
-/// doc 11 PR-C: World process-proxy ask `stands_list` 応答 (`{stands:[...]}`) の 1 entry。
+/// doc 11 PR-C: daemon process-proxy ask `stands_list` 応答 (`{stands:[...]}`) の 1 entry。
 ///
 /// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。 F6④ で SP 直結
 /// HTTP は撤去したが、 本 struct は ask 応答の deserialize + JS push back の serialize 用に残置。
@@ -374,10 +374,10 @@ pub struct StandInfo {
     pub description: String,
 }
 
-impl TheWorldClient {
+impl DaemonRpcClient {
     // doc 45 段 3: `new(port)` は撤去した。 port 指定で HTTP を叩いていたのは control plane の
-    // 呼び出し元だけで、 それらは Unison に移った (world port は共有 connection manager が持つ)。
-    // 残る唯一の caller は `Default` (= `VP_WORLD_URL` / profile 既定の解決) なので、
+    // 呼び出し元だけで、 それらは Unison に移った (daemon port は共有 connection manager が持つ)。
+    // 残る唯一の caller は `Default` (= `VP_DAEMON_URL` / profile 既定の解決) なので、
     // 使われない ctor を「いつか誰か使う」で残さない。
 
     /// 任意の base URL で作成 (env var override / テスト用)
@@ -397,14 +397,14 @@ impl TheWorldClient {
     /// Unison に載せると、Unison 層が wedge した時に診断手段ごと失う。
     /// `.mise/tasks/app/swap` (Ruby) や Swift menu bar agent も同じ endpoint を叩いており、
     /// それらに Unison client を持たせる理由もない。
-    pub async fn world_health(&self) -> Result<WorldHealthInfo> {
+    pub async fn daemon_health(&self) -> Result<DaemonHealthInfo> {
         let url = format!("{}/api/health", self.base_url);
-        let info: WorldHealthInfo = self.client.get(&url).send().await?.json().await?;
+        let info: DaemonHealthInfo = self.client.get(&url).send().await?.json().await?;
         Ok(info)
     }
 }
 
-impl Default for TheWorldClient {
+impl Default for DaemonRpcClient {
     fn default() -> Self {
         Self::with_base_url(default_base_url())
     }

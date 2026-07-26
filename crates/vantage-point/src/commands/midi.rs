@@ -13,10 +13,10 @@ pub enum MidiCommands {
         /// 接続するMIDIポート番号
         #[arg(short, long)]
         port: Option<usize>,
-        /// アクション送信先のWorld daemon ポート (PR-α-3 / VP-113 で 33000 → 32000 に変更、
-        /// MidiCapability が World 階層に移管済)。 旧 `--process-port` flag は alias 維持。
+        /// アクション送信先のdaemon ポート (PR-α-3 / VP-113 で 33000 → 32000 に変更、
+        /// MidiCapability が machine 階層に移管済)。 旧 `--process-port` flag は alias 維持。
         #[arg(short = 'P', long, alias = "process-port", default_value = "32000")]
-        world_port: u16,
+        daemon_port: u16,
     },
     /// 利用可能なMIDI入力ポート一覧
     Ports,
@@ -75,16 +75,16 @@ pub enum RotoCommands {
     /// transport ◄ (CC36)=prev / ► (CC37)=next（or 右 button 0/1）。現 project の local SP に
     /// QUIC 接続し、「lanes」channel で lane list を購読、`switch_lane` QUIC method で発火する。
     ///
-    /// ⚠️ TheWorld daemon 稼働中は DeviceRegistry 🧲 が ROTO を持続所有する（接続 + 自動再接続）ため、
+    /// ⚠️ daemon 稼働中は DeviceRegistry 🧲 が ROTO を持続所有する（接続 + 自動再接続）ため、
     /// CoreMIDI 物理 port の単一 owner 制約により本コマンドは port 取得に失敗する。daemon を
     /// 起動していない場合の前景デバッグ用途として残す（loop body は daemon 版と共有）。
     Control {
         /// MIDIポート名のパターン（部分一致）
         #[arg(long, default_value = "Roto")]
         port: String,
-        /// 接続先 TheWorld ポート（cross-project lane view の集約元）
+        /// 接続先 daemon ポート（cross-project lane view の集約元）
         #[arg(long, default_value = "32000")]
-        world_port: u16,
+        daemon_port: u16,
         /// 継続秒数
         #[arg(long, default_value = "600")]
         secs: u64,
@@ -144,7 +144,7 @@ pub enum XtouchCommands {
 /// `vp midi` を実行
 pub fn execute(cmd: MidiCommands) -> Result<()> {
     match cmd {
-        MidiCommands::Monitor { port, world_port } => {
+        MidiCommands::Monitor { port, daemon_port } => {
             let mut config = crate::midi::MidiConfig::default();
             config
                 .note_actions
@@ -157,7 +157,7 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
                 .insert(38, crate::midi::MidiAction::ResetSession { port: None });
 
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(crate::midi::run_midi_interactive(port, config, world_port))
+            rt.block_on(crate::midi::run_midi_interactive(port, config, daemon_port))
         }
         MidiCommands::Ports => {
             crate::midi::print_ports();
@@ -647,9 +647,9 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
         }
         RotoCommands::Control {
             port,
-            world_port,
+            daemon_port,
             secs,
-        } => execute_roto_control(port, world_port, secs),
+        } => execute_roto_control(port, daemon_port, secs),
     }
 }
 
@@ -709,11 +709,11 @@ pub(crate) async fn connect_quic_local(port: u16) -> Result<unison::ProtocolClie
     Ok(client)
 }
 
-/// cross-project view の 1 lane。TheWorld `list_all_lanes` の flat 化結果。
+/// cross-project view の 1 lane。daemon `list_all_lanes` の flat 化結果。
 #[derive(Clone, PartialEq)]
 pub(crate) struct RotoLane {
-    /// switch_lane 送信先 project path（World process-proxy handshake の stable identifier）。
-    /// L0 portless: SP port 直結は撤去、World が path_key に正規化して当該 SP へ forward する。
+    /// switch_lane 送信先 project path（daemon process-proxy handshake の stable identifier）。
+    /// L0 portless: SP port 直結は撤去、daemon が path_key に正規化して当該 SP へ forward する。
     pub(crate) project_path: String,
     /// switch_lane payload の lane token（"root" or performer 名）
     pub(crate) token: String,
@@ -731,13 +731,13 @@ fn compact_lane_label(project: &str, token: &str) -> String {
     format!("{}:{}", proj, lane)
 }
 
-/// TheWorld `list_all_lanes` 応答（`{projects: [{project_name, port, lanes:[LaneInfo]}]}`）を
+/// daemon `list_all_lanes` 応答（`{projects: [{project_name, port, lanes:[LaneInfo]}]}`）を
 /// flat な `Vec<RotoLane>` に変換。
 ///
 /// **順序は server が決める** — server は project_order (= sidebar 順) で projects を、
 /// 各 project 内は lane_registry 順 (= conductor 先頭 + performer 作成順) で lanes を送る。
 /// client は再ソートせず、その順序をそのまま保つ（物理 controller の位置 = sidebar の位置）。
-pub(crate) fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
+pub(crate) fn parse_node_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
     let Some(projects) = v.get("projects").and_then(|p| p.as_array()) else {
         return Vec::new();
     };
@@ -746,8 +746,8 @@ pub(crate) fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
         let Some(project) = p.get("project_name").and_then(|n| n.as_str()) else {
             continue;
         };
-        // L0 portless: switch_lane は project_path で World process-proxy handshake する
-        // （build_world_lanes が project_path を emit、SP port には依存しない）。
+        // L0 portless: switch_lane は project_path で daemon process-proxy handshake する
+        // （build_node_lanes が project_path を emit、SP port には依存しない）。
         let Some(project_path) = p.get("project_path").and_then(|n| n.as_str()) else {
             continue;
         };
@@ -760,7 +760,7 @@ pub(crate) fn parse_world_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
             //
             // ⚠️ 旧実装は `lane.get("kind")` を必須にしており、field が消えた後は
             // **全 lane が `continue` で捨てられて ROTO の cross-project 一覧が恒久的に空**
-            // だった。emitter（`build_world_lanes`）は `LaneInfo` をそのまま serialize するので、
+            // だった。emitter（`build_node_lanes`）は `LaneInfo` をそのまま serialize するので、
             // 型から field が消えても parser 側はコンパイラに怒られない
             // （「型フラット化の文字列取り残し」— JSON 直読みはコンパイラが黙る）。
             let Some(token) = lane
@@ -806,7 +806,7 @@ pub(crate) fn roto_lane_nav(index: u8) -> Option<LaneNav> {
     }
 }
 
-/// cross-project ROTO control: TheWorld (32000) から全 project の Lane を集約し、
+/// cross-project ROTO control: daemon (32000) から全 project の Lane を集約し、
 /// 8 slot LCD + paging で選択する（Unison-native）。
 ///
 /// 設計: async control loop。`block_on` は最外 1 回のみ。midir(sync) → tokio mpsc bridge。
@@ -815,9 +815,9 @@ pub(crate) fn roto_lane_nav(index: u8) -> Option<LaneNav> {
 /// - transport ◄/► (CC36/37) = ページ送り（8 lane を超えるリストの切替、view のみ）
 ///
 /// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。ROTO は対象
-/// lane の SP port へ QUIC で直接届ける（per-port channel を lazy cache）。TheWorld に
+/// lane の SP port へ QUIC で直接届ける（per-port channel を lazy cache）。daemon に
 /// relay を足さない最小設計。
-fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> {
+fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()> {
     use crate::commands::roto_control::{
         LoopExit, QuicLaneSource, QuicSwitchSink, RotoView, roto_control_loop,
     };
@@ -832,23 +832,23 @@ fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> 
         conn_out.send(&msg)?;
     }
     println!(
-        "DAW_START 送信（{}）→ TheWorld :{} に接続中（track button で選択 / ◄► でページ送り）",
-        port_name, world_port
+        "DAW_START 送信（{}）→ daemon :{} に接続中（track button で選択 / ◄► でページ送り）",
+        port_name, daemon_port
     );
 
     // CLI 版: self-heal は不要（secs 経過で終了）なので Bracket は被せず、
-    // QuicLaneSource(world-process QUIC) + QuicSwitchSink で shared loop を直接回す。
+    // QuicLaneSource(daemon-process QUIC) + QuicSwitchSink で shared loop を直接回す。
     // daemon 常駐版（DeviceRegistry::start_roto_control）と loop body を 1 本共有する（重複ゼロ）。
     let rt = tokio::runtime::Runtime::new()?;
     let exit = rt.block_on(async move {
-        // world(ProtocolClient) は world_ch を生かすため block 終端まで保持する。
-        let world = connect_quic_local(world_port).await?;
-        let world_ch = world
-            .open_channel("world-process")
+        // daemon(ProtocolClient) は daemon_ch を生かすため block 終端まで保持する。
+        let daemon = connect_quic_local(daemon_port).await?;
+        let daemon_ch = daemon
+            .open_channel("daemon-process")
             .await
-            .map_err(|e| anyhow::anyhow!("open world-process channel: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("open daemon-process channel: {}", e))?;
 
-        let mut lane_source = QuicLaneSource { world_ch };
+        let mut lane_source = QuicLaneSource { daemon_ch };
         let mut switch = QuicSwitchSink::new();
         let mut view = RotoView::default();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
@@ -872,7 +872,7 @@ fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> 
             &mut dummy_feedback_rx,
         )
         .await?;
-        drop(world);
+        drop(daemon);
         Ok::<LoopExit, anyhow::Error>(exit)
     })?;
     match exit {
@@ -1154,7 +1154,7 @@ mod tests {
     /// list_all_lanes 応答 → flat な RotoLane 列。順序は **server 順をそのまま保つ**
     /// （client は再ソートしない = sidebar / project_order と一致させる契約）。
     #[test]
-    fn parse_world_lanes_preserves_server_order() {
+    fn parse_daemon_lanes_preserves_server_order() {
         let v = serde_json::json!({
             "projects": [
                 // server が project_order で並べた前提。client は触らず保つ。
@@ -1176,7 +1176,7 @@ mod tests {
                 },
             ]
         });
-        let lanes = parse_world_lanes(&v);
+        let lanes = parse_node_lanes(&v);
         // server 順そのまま: zeta(cond, beta, alpha) → aaa(cond)。
         // L0 portless: key は project_path:token（SP port 非依存）。
         let keys: Vec<&str> = lanes.iter().map(|l| l.key.as_str()).collect();
@@ -1189,7 +1189,7 @@ mod tests {
                 "/repos/aaa-proj:root",
             ]
         );
-        // project_path が switch_lane の World process-proxy handshake 先として保持される
+        // project_path が switch_lane の daemon process-proxy handshake 先として保持される
         assert_eq!(lanes[0].project_path, "/repos/zeta-proj");
         assert_eq!(lanes[3].project_path, "/repos/aaa-proj");
         assert_eq!(lanes[1].token, "beta");
@@ -1197,7 +1197,7 @@ mod tests {
 
     /// **emitter ↔ parser の往復**を固定する。
     ///
-    /// `build_world_lanes` は `LaneInfo` を**そのまま** serialize するので、fixture を手で
+    /// `build_node_lanes` は `LaneInfo` を**そのまま** serialize するので、fixture を手で
     /// 書くと型の変化に追随しない。実際に `LaneInfo` を serde で JSON 化して食わせることで、
     /// 「型から field が消えたのに parser が読み続ける」ズレを次からはテストが落とす。
     ///
@@ -1205,7 +1205,7 @@ mod tests {
     /// 取り残され、**全 lane が捨てられて ROTO の一覧が恒久的に空**になっていた。
     /// JSON 直読みはコンパイラが黙るので、この往復が唯一の検出口。
     #[test]
-    fn parse_world_lanes_reads_the_real_lane_info_shape() {
+    fn parse_daemon_lanes_reads_the_real_lane_info_shape() {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
         let make = |name: &str| LaneInfo {
@@ -1232,7 +1232,7 @@ mod tests {
             }]
         });
 
-        let lanes = parse_world_lanes(&v);
+        let lanes = parse_node_lanes(&v);
         assert_eq!(
             lanes.iter().map(|l| l.token.as_str()).collect::<Vec<_>>(),
             vec!["root", "feat-x"],
@@ -1243,8 +1243,8 @@ mod tests {
 
     /// projects 不在 / 空でも panic せず空 Vec。
     #[test]
-    fn parse_world_lanes_empty() {
-        assert!(parse_world_lanes(&serde_json::json!({})).is_empty());
-        assert!(parse_world_lanes(&serde_json::json!({ "projects": [] })).is_empty());
+    fn parse_daemon_lanes_empty() {
+        assert!(parse_node_lanes(&serde_json::json!({})).is_empty());
+        assert!(parse_node_lanes(&serde_json::json!({ "projects": [] })).is_empty());
     }
 }

@@ -19,10 +19,10 @@ pub struct StandStatus {
     pub detail: Option<serde_json::Value>,
 }
 
-/// `/api/health` の `hub_worlds` 要素 — hub の向こうに居る available world 1 件。
+/// `/api/health` の `hub_nodes` 要素 — hub の向こうに居る available node 1 件。
 #[derive(serde::Serialize)]
-pub struct HubWorldInfo {
-    /// world の identity（hostname 由来、hub registry の一意キー相当）
+pub struct HubNodeInfo {
+    /// daemon の identity（hostname 由来、hub registry の一意キー相当）
     pub handle: String,
     /// 位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 前は空になり得るため空なら omit。
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -51,17 +51,17 @@ pub struct HealthResponse {
     pub stands: Option<std::collections::HashMap<String, StandStatus>>,
     /// chronista-hub federation の接続状態
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`）。
-    /// World mode のみ意味を持つ（SP mode は常に `"disabled"`）。vp-app が world status 横に表示。
+    /// daemon mode のみ意味を持つ（SP mode は常に `"disabled"`）。vp-app が daemon status 横に表示。
     pub hub: &'static str,
-    /// hub の向こうに居る available worlds（**自 world は除外**、handle dedup 済）。
-    /// World mode + hub connected の間だけ非空（SP mode / 未接続は空配列）。既存 `hub` field
+    /// hub の向こうに居る available nodes（**自 daemon は除外**、handle dedup 済）。
+    /// daemon mode + hub connected の間だけ非空（SP mode / 未接続は空配列）。既存 `hub` field
     /// （string）は不変のまま additive に足す — 旧 client は本 field を無視するだけで壊れない。
-    pub hub_worlds: Vec<HubWorldInfo>,
-    /// L1 lifecycle (Phase C): World 配下の SP presence 一覧（vp-app sidebar の ●◐○ 表示用）。
-    /// daemon-canonical（doc 27 §3.2 / Model Q）。World mode のみ Some、SP mode では None。
+    pub hub_nodes: Vec<HubNodeInfo>,
+    /// L1 lifecycle (Phase C): Daemon 配下の SP presence 一覧（vp-app sidebar の ●◐○ 表示用）。
+    /// daemon-canonical（doc 27 §3.2 / Model Q）。daemon mode のみ Some、SP mode では None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processes: Option<Vec<crate::capability::ProcessHealthInfo>>,
-    /// in-app update: 新しい release が GitHub にあるか。World mode の定期チェック task
+    /// in-app update: 新しい release が GitHub にあるか。daemon mode の定期チェック task
     /// （起動時 + 24h 毎）が温めた cache 由来で、本 handler は network を発行しない。
     /// vp-app sidebar が「更新する」ボタンの表示 gate に使う。SP mode / 未チェックは false。
     pub update_available: bool,
@@ -72,21 +72,21 @@ pub struct HealthResponse {
 
 // L0 portless B-4 (wire-unison): SP `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
 // latest-msg/thread/ack) は撤去。 MCP は SP "process" channel の `wire_*` dispatch
-// (= `handle_wire_send` 等が normalize して `world_wire::call` で World "wire" channel に relay) を
-// 使い、 CLI/flow は World "wire" channel に QUIC 直結する (doc 27 §62)。
+// (= `handle_wire_send` 等が normalize して `daemon_wire::call` で Daemon "wire" channel に relay) を
+// 使い、 CLI/flow は Daemon "wire" channel に QUIC 直結する (doc 27 §62)。
 
 // L0 portless: `/api/diagnose` (Stand 自己診断 HTTP) は consumer 消滅で撤去。 必要なら将来
-// World channel / mailbox query (`devices@world` 等) 経由で再設計する。
+// Daemon channel / mailbox query (`devices@machine` 等) 経由で再設計する。
 
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let token = if state.terminal_token == "WORLD_DISABLED" {
+    let token = if state.terminal_token == "DAEMON_DISABLED" {
         None
     } else {
         Some(state.terminal_token.clone())
     };
 
-    // Stand ステータスを収集（TheWorld モードでは省略）
-    let stands = if state.terminal_token != "WORLD_DISABLED" {
+    // Stand ステータスを収集（daemon モードでは省略）
+    let stands = if state.terminal_token != "DAEMON_DISABLED" {
         let mut map = std::collections::HashMap::new();
 
         // 💬 Echoes (Coding Assistant) — interactive_agent の有無で判定
@@ -130,11 +130,11 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
-        // 🧲 DeviceRegistry（MIDI device registry）— World mode のみ host。
+        // 🧲 DeviceRegistry（MIDI device registry）— daemon mode のみ host。
         // SP mode からは「disabled」として報告（α-3 で cross-process query 経由に rewire 予定）。
         #[cfg(feature = "midi")]
         let (devices_status, devices_detail) = {
-            if let Some(wc) = state.world_capabilities.as_ref() {
+            if let Some(wc) = state.machine_capabilities.as_ref() {
                 if let Some(ref devices) = wc.devices {
                     let b = devices.read().await;
                     let count = b.device_count().await;
@@ -177,12 +177,12 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
 
         Some(map)
     } else {
-        // World mode — DeviceRegistry のみ報告（World 階層に host される唯一の observable Stand）
+        // daemon mode — DeviceRegistry のみ報告（machine 階層に host される唯一の observable Stand）
         #[cfg(feature = "midi")]
         {
             let mut map = std::collections::HashMap::new();
             if let Some(devices) = state
-                .world_capabilities
+                .machine_capabilities
                 .as_ref()
                 .and_then(|wc| wc.devices.as_ref())
             {
@@ -208,19 +208,19 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         }
     };
 
-    // L1 lifecycle: World mode は配下 SP の presence 一覧を expose（vp-app sidebar の ●◐○ 用）。
-    // SP mode (`state.world` 不在) は None — presence は daemon-canonical で World のみが持つ。
-    let processes = match state.world.as_ref() {
-        Some(world) => Some(world.read().await.presence_snapshot().await),
+    // L1 lifecycle: daemon mode は配下 SP の presence 一覧を expose（vp-app sidebar の ●◐○ 用）。
+    // SP mode (`state.daemon` 不在) は None — presence は daemon-canonical で daemon のみが持つ。
+    let processes = match state.daemon.as_ref() {
+        Some(daemon) => Some(daemon.read().await.presence_snapshot().await),
         None => None,
     };
 
-    // hub の向こうの available worlds（run_hub_federation が discover で更新する cache を読む）。
-    let hub_worlds = state
-        .hub_worlds
+    // hub の向こうの available nodes（run_hub_federation が discover で更新する cache を読む）。
+    let hub_nodes = state
+        .hub_nodes
         .get()
         .into_iter()
-        .map(|w| HubWorldInfo {
+        .map(|w| HubNodeInfo {
             handle: w.handle,
             wld_id: w.wld_id,
             endpoints_count: w.endpoints.len(),
@@ -243,7 +243,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         started_at: state.started_at.clone(),
         stands,
         hub: state.hub_status.get().as_str(),
-        hub_worlds,
+        hub_nodes,
         processes,
         update_available,
         latest_version,
@@ -356,7 +356,7 @@ mod tests {
         assert!(body.get("project_dir").is_some(), "project_dir field 必須");
         assert!(body.get("started_at").is_some(), "started_at field 必須");
         // stands は test 用 AppState では terminal_token == "test" なので
-        // "WORLD_DISABLED" 分岐に入らず populate される
+        // "DAEMON_DISABLED" 分岐に入らず populate される
         assert!(
             body.get("stands").is_some(),
             "stands field 必須 (= Stand status map)"
@@ -368,13 +368,13 @@ mod tests {
             Some("disabled"),
             "hub field 必須 (SP/test mode は Disabled = \"disabled\")"
         );
-        // hub_worlds は常時 serialize（SP/test mode = HubWorldsCache::new() は空配列）。
+        // hub_nodes は常時 serialize（SP/test mode = HubNodesCache::new() は空配列）。
         assert_eq!(
-            body.get("hub_worlds")
+            body.get("hub_nodes")
                 .and_then(|v| v.as_array())
                 .map(Vec::len),
             Some(0),
-            "hub_worlds field 必須 (SP/test mode は空配列)"
+            "hub_nodes field 必須 (SP/test mode は空配列)"
         );
         // in-app update: test AppState は update capability 不在（None）= 常に false。
         // cache 未チェック時も false なので、field の常時 serialize を regression net にする。

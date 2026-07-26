@@ -3,7 +3,7 @@
 //! ## 役割
 //!
 //! sidebar の `+ Add Performer` で stand dropdown 表示するための data source。
-//! entry point は World process-proxy ask `stands_list`
+//! entry point は daemon process-proxy ask `stands_list`
 //! （`unison_server::handle_stands_list` → `list_stands`）。
 //!
 //! ## tmux decoupling PR2: 静的テーブル化

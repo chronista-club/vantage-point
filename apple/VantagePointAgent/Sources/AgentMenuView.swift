@@ -30,7 +30,7 @@ struct AgentMenuView: View {
         }
         .padding(12)
         .frame(width: 320)
-        // menu を開くたびに稼働中 VP (TheWorld) を再 probe する。
+        // menu を開くたびに稼働中 VP (daemon) を再 probe する。
         .task { await model.refreshInstances() }
     }
 
@@ -42,7 +42,7 @@ struct AgentMenuView: View {
             Label("daemon に接続中…", systemImage: "circle.dotted")
 
         case .connected(let id):
-            Label("World: \(id.name) v\(id.version)", systemImage: "circle.fill")
+            Label("Daemon: \(id.name) v\(id.version)", systemImage: "circle.fill")
                 .foregroundStyle(.primary)
             Text("namespace: \(id.namespace)")
                 .font(.caption)
@@ -73,7 +73,7 @@ struct AgentMenuView: View {
     }
 
     /// M2b: 稼働中 VP の表示 + 停止操作 (旧 daemon tray の instance submenu に相当)。
-    /// fold-in 後は World の 0/1 件 (doc 45 §5-5 で port scan を撤去)。
+    /// fold-in 後は daemon の 0/1 件 (doc 45 §5-5 で port scan を撤去)。
     @ViewBuilder
     private var instancesSection: some View {
         HStack {

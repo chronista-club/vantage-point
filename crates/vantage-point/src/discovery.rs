@@ -1,22 +1,22 @@
 //! プロセス発見モジュール
 //!
-//! TheWorld（port 32000）を単一の真実源として稼働中 project を発見する。
+//! daemon（port 32000）を単一の真実源として稼働中 project を発見する。
 //!
 //! ## データフロー
 //!
 //! ```text
-//! project 起動（World が in-process で起こす）→ World の registry に登録
-//! 問い合わせ → TheWorld Unison `registry.list` (QUIC :32000) → 返却
+//! project 起動（daemon が in-process で起こす）→ daemon の registry に登録
+//! 問い合わせ → daemon Unison `registry.list` (QUIC :32000) → 返却
 //! ```
 //!
 //! doc 44 P1 (fold-in) 以前は「SP が QUIC registry で自己登録し、切断で即時除去」
-//! だったが、project が World と同一プロセスになり自己登録も切断も無くなった。
+//! だったが、project が daemon と同一プロセスになり自己登録も切断も無くなった。
 //!
-//! doc 45 段 2: 問い合わせ transport を `GET /api/world/processes` から Unison
+//! doc 45 段 2: 問い合わせ transport を `GET /api/daemon/processes` から Unison
 //! `registry.list` に差し替えた（`vp ps` が既に使っている面と同じ 1 本に寄せる）。
 
 use crate::config::Config;
-use crate::daemon::client::WorldControlClient;
+use crate::daemon::client::DaemonControlClient;
 
 /// 発見された Process の情報
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -32,9 +32,9 @@ pub struct ProcessInfo {
     pub terminal_token: Option<String>,
 }
 
-/// TheWorld `registry.list` が返す Process エントリ
+/// daemon `registry.list` が返す Process エントリ
 #[derive(Debug, serde::Deserialize)]
-struct WorldProcessEntry {
+struct DaemonProcessEntry {
     #[serde(default)]
     port: u16,
     #[serde(default)]
@@ -44,13 +44,13 @@ struct WorldProcessEntry {
 
 /// 全稼働中 project を取得
 ///
-/// TheWorld (port 32000) に問い合わせ。project を起こすのは World 自身なので
-/// World の registry が単一の真実源（doc 44 P1 fold-in 以前は SP の QUIC 自己登録が source）。
+/// daemon (port 32000) に問い合わせ。project を起こすのは Daemon 自身なので
+/// daemon の registry が単一の真実源（doc 44 P1 fold-in 以前は SP の QUIC 自己登録が source）。
 ///
-/// 返る `ProcessInfo` の `port` は常に 0、`pid` は World 自身のもの — どちらも
+/// 返る `ProcessInfo` の `port` は常に 0、`pid` は Daemon 自身のもの — どちらも
 /// SP プロセス時代の遺構で、意味を持つのは `project_dir` だけ（doc 44 §5.3）。
 pub async fn list() -> Vec<ProcessInfo> {
-    query_world().await.unwrap_or_default()
+    query_daemon().await.unwrap_or_default()
 }
 
 /// project 1 件が抱える lane の集計。
@@ -62,10 +62,10 @@ pub struct LaneCounts {
     pub running: usize,
 }
 
-/// lane 一覧（`world-control.lanes/list` の返り値）を project 名ごとに集計する（純関数）。
+/// lane 一覧（`daemon-control.lanes/list` の返り値）を project 名ごとに集計する（純関数）。
 ///
-/// doc 44 §5.3: fold-in で `vp ps` の PORT / PID 列が無意味化した（project は World と
-/// 同一プロセスなので pid は全行 World 自身、port は不在の 0）。代わりに project の実体的な
+/// doc 44 §5.3: fold-in で `vp ps` の PORT / PID 列が無意味化した（project は daemon と
+/// 同一プロセスなので pid は全行 Daemon 自身、port は不在の 0）。代わりに project の実体的な
 /// 差である「何本のラインを抱え、そのうち動いているものがあるか」を出すための集計。
 ///
 /// 各要素の想定 shape: `{"address": {"project": "<name>", ...}, "state": "running", ...}`。
@@ -123,12 +123,12 @@ pub async fn find_for_cwd() -> Option<ProcessInfo> {
         .max_by_key(|p| p.project_dir.len())
 }
 
-/// TheWorld に問い合わせ（Unison `registry.list`）
+/// daemon に問い合わせ（Unison `registry.list`）
 ///
 /// daemon 不在 / 接続失敗は None（caller の `list()` が空 Vec に落とす）。
 /// retry=1 は「daemon が居ないことを素早く確定させたい」ため（旧 HTTP の 1s timeout 相当）。
-async fn query_world() -> Option<Vec<ProcessInfo>> {
-    let client = WorldControlClient::connect(crate::cli::world_port(), 1)
+async fn query_daemon() -> Option<Vec<ProcessInfo>> {
+    let client = DaemonControlClient::connect(crate::cli::daemon_port(), 1)
         .await
         .ok()?;
     let processes = client.processes_list().await.ok()?;
@@ -136,12 +136,12 @@ async fn query_world() -> Option<Vec<ProcessInfo>> {
     Some(
         processes
             .into_iter()
-            .filter_map(|v| serde_json::from_value::<WorldProcessEntry>(v).ok())
+            .filter_map(|v| serde_json::from_value::<DaemonProcessEntry>(v).ok())
             .map(|p| ProcessInfo {
                 port: p.port,
                 pid: p.pid,
                 project_dir: p.project_path,
-                terminal_token: None, // TheWorld は token を持たない — 必要なら health API で取得
+                terminal_token: None, // daemon は token を持たない — 必要なら health API で取得
             })
             .collect(),
     )
@@ -152,13 +152,13 @@ pub fn generate_terminal_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-// ─── World uplink（退役）───────────────────────────────────
+// ─── Daemon uplink（退役）───────────────────────────────────
 //
-// doc 44 P1 (fold-in): SP → TheWorld の uplink（registry / canvas-ingest / control の
+// doc 44 P1 (fold-in): SP → daemon の uplink（registry / canvas-ingest / control の
 // 3 channel を 1 QUIC connection に集約したもの）は、SP プロセスの消滅とともに退役した。
-// project は World と同一プロセスの `Arc<AppState>` になったため、
+// project は daemon と同一プロセスの `Arc<AppState>` になったため、
 //   - 自己登録 / heartbeat → `ProjectRuntimes` の map エントリ
-//   - canvas-ingest      → project の TopicRouter を World が直接購読
+//   - canvas-ingest      → project の TopicRouter を daemon が直接購読
 //   - control 逆ルート    → `dispatch_process_method` の直呼び
 // にそれぞれ退化した。`run()` を外した時点で本ブロックは丸ごと到達不能になっている。
 

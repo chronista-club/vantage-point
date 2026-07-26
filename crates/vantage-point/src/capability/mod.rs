@@ -38,8 +38,8 @@ pub use protocol_capability::ProtocolCapability;
 pub use stand_service::{LayerScope, Service, Stand};
 pub use update_capability::UpdateCapability;
 // Phase A ①: wiremsg threaded inbox store (設計 mem_1CbD9H1KGQykBaFG8XXVsn)。
-// R2-a: store は TheWorld に中央化 (cross-process forward = wire_remote は撤去、
+// R2-a: store は daemon に中央化 (cross-process forward = wire_remote は撤去、
 // 設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-b)。
 pub use wiremsg_store::{ParticipantStatus, WireMessage, WireNotifier, WiremsgStore};
-// 委譲 (delegation) の World 中央 store (doc 28 §4 / §6)。 委譲型は crate 内部なので pub(crate)。
+// 委譲 (delegation) の daemon 中央 store (doc 28 §4 / §6)。 委譲型は crate 内部なので pub(crate)。
 pub(crate) use delegation_store::DelegationStore;

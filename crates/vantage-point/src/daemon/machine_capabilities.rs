@@ -1,27 +1,27 @@
-//! World 階層 Stand container (LSCM、 doc 12 §3 / §9 参照)
+//! machine 階層 Stand container (LSCM、 doc 12 §3 / §9 参照)
 //!
-//! TheWorld daemon (`run_world`、 port 32000) で 1 instance、 machine 全体で共有される
-//! World 階層 Stand 群を host する。 LSCM (Layer-Stand Composition Model) における
-//! "Layer がそこに保持されるべき Stand を抱える" の World Layer 実体。
+//! daemon (`run_daemon`、 port 32000) で 1 instance、 machine 全体で共有される
+//! machine 階層 Stand 群を host する。 LSCM (Layer-Stand Composition Model) における
+//! "Layer がそこに保持されるべき Stand を抱える" の machine layer 実体。
 //!
 //! ## host する Stand
 //!
-//! - **TheWorld 👑** (`ProcessManagerCapability`): VP world process manager
+//! - **daemon 👑** (`ProcessManagerCapability`): VP daemon process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
 //! - **DeviceRegistry 🧲** (`DeviceRegistry`): multi-device registry + 艦隊 input listener（`with_devices`）
 //!
 //! ## 実装状態
 //!
-//! - PR-α-1 (VP-111 ✅): struct 新設、 既存 World 階層 instance を集約 view、
-//!   `AppState.world_capabilities` field に Some で注入。
+//! - PR-α-1 (VP-111 ✅): struct 新設、 既存 machine 階層 instance を集約 view、
+//!   `AppState.machine_capabilities` field に Some で注入。
 //! - 旧 `MidiCapability` hosting（PR-α-2 の single-device monitor）は退役 — 消費者
 //!   （`ProtocolCapability`）が本番で実体化されず、enumeration 先頭 device（実機で LPD8）を
 //!   無条件 grab して DeviceRegistry listener を沈黙させる害だけが残っていたため（fleet dogfood で発覚）。
-//! - 後続 cleanup: AppState 既存 field (`world` / `update`) と本 struct の重複保持を整理
+//! - 後続 cleanup: AppState 既存 field (`daemon` / `update`) と本 struct の重複保持を整理
 //!   (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
 //!
 //! wiremsg R5-4: 旧 msgbox の registry サブシステム (旧 External Control stand の registry
-//! 登録を含む) は撤去済。 wire の cross-process delivery は TheWorld の project registry
+//! 登録を含む) は撤去済。 wire の cross-process delivery は daemon の project registry
 //! (project → SP port) を使う別経路で、 msgbox registry には依存しない。
 //!
 //! 関連: doc 12 (`docs/design/12-stand-architecture.md` §3 Layer + §9 Catalog)、
@@ -34,11 +34,11 @@ use crate::capability::{ProcessManagerCapability, UpdateCapability};
 #[cfg(feature = "midi")]
 use crate::devices::DeviceRegistry;
 
-/// World 階層 Stand container。
+/// machine 階層 Stand container。
 ///
-/// TheWorld daemon で 1 instance、 machine 全体で共有。
-pub struct WorldCapabilities {
-    /// Process Manager (TheWorld 👑、 LSCM World 階層 SSOT)
+/// daemon で 1 instance、 machine 全体で共有。
+pub struct MachineCapabilities {
+    /// Process Manager (daemon 👑、 LSCM machine 階層 SSOT)
     pub process_manager: Arc<RwLock<ProcessManagerCapability>>,
 
     /// Self-update Capability (LSCM Open Question Q-12 catalog 拡張候補)
@@ -50,11 +50,11 @@ pub struct WorldCapabilities {
     pub devices: Option<Arc<RwLock<DeviceRegistry>>>,
 }
 
-impl WorldCapabilities {
+impl MachineCapabilities {
     /// 既存 instance を集約して新規構築 (midi なし版、 feature gate 無効時 / test 用)。
     ///
-    /// PR-α-1 (VP-111): `run_world` で散乱していた World 階層 capability 群の集約 view を提供。
-    /// AppState 既存 field (`world` / `update`) と本 struct の
+    /// PR-α-1 (VP-111): `run_daemon` で散乱していた machine 階層 capability 群の集約 view を提供。
+    /// AppState 既存 field (`daemon` / `update`) と本 struct の
     /// 重複保持は意図的 HACK (LSCM A6 share-nothing 整合は β 以降で整理予定)。
     ///
     /// DeviceRegistry を host したい場合は `with_devices` を使う (feature = "midi")。
@@ -100,11 +100,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn world_capabilities_new_smoke() {
+    async fn daemon_capabilities_new_smoke() {
         let pmc = Arc::new(RwLock::new(ProcessManagerCapability::new()));
         let upd = Arc::new(RwLock::new(UpdateCapability::new()));
 
-        let wc = WorldCapabilities::new(pmc, upd);
+        let wc = MachineCapabilities::new(pmc, upd);
         // smoke test: construct succeeds without panic、 各 field が存在
         let _ = wc.process_manager.read().await;
         let _ = wc.update.read().await;

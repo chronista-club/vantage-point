@@ -1,7 +1,7 @@
 //! federation direct dialer — ADR-020 §S6 の VP 消費側（discover → direct race → relay floor）。
 //!
-//! chronista-hub の `worlds.Discover` が返す direct 到達候補
-//! （[`WorldEntry::endpoints`]、`["[GUA]:port", ..]`）を club-unison の Happy Eyeballs v2
+//! chronista-hub の `nodes.Discover` が返す direct 到達候補
+//! （[`NodeEntry::endpoints`]、`["[GUA]:port", ..]`）を club-unison の Happy Eyeballs v2
 //! dialer（`ProtocolClient::connect_race`、RFC 8305 staggered race）で並行 dial し、勝った
 //! 接続の `wire` channel に envelope を送る。全滅は `Err` — caller
 //! （[`super::hub_client::federate_wire_send`]）が relay floor（§S4）に落とす。
@@ -10,12 +10,12 @@
 //! ## trust（現状と将来）
 //!
 //! - 全候補 loopback → `SkipVerification`（dev/test。unison 側が loopback 限定を enforce）。
-//! - 非 loopback を含む → `System`（webpki）。**現状の TheWorld は dev cert のため remote
+//! - 非 loopback を含む → `System`（webpki）。**現状の daemon は dev cert のため remote
 //!   direct はここで fast-fail → relay floor に落ちる（= 正しい degradation）**。mesh cert
 //!   （PR-3 InternalMeshKeypair）が入ると direct が勝ち始める。cert で挙動が変わるのは
 //!   dialer でなく trust の責務（S1 と同型）。
 //! - SNI = `wld_id`（位置独立 identity、ADR-020 D2）。将来の mesh cert は SAN=wld_id を
-//!   推奨 — 「どの機械に居るか」でなく「どの world か」を検証する（Skip 時は未使用）。
+//!   推奨 — 「どの機械に居るか」でなく「どの node か」を検証する（Skip 時は未使用）。
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use unison::network::RaceCfg;
 
-use super::hub_client::WorldEntry;
+use super::hub_client::NodeEntry;
 
 /// direct 試行の ops kill-switch。`VP_FEDERATION_DIRECT=0|false|off` で無効（default 有効）。
 ///
@@ -42,7 +42,7 @@ pub fn direct_enabled() -> bool {
 
 /// registry の endpoint 文字列（`"[GUA]:port"`）群を `SocketAddr` に解く純関数。
 ///
-/// 不正 entry は warn + skip — endpoints は他 world の self-report（opaque、D2）なので
+/// 不正 entry は warn + skip — endpoints は他 daemon の self-report（opaque、D2）なので
 /// 1 個の不正で全体を落とさない。
 pub fn parse_endpoints(endpoints: &[String]) -> Vec<SocketAddr> {
     endpoints
@@ -74,9 +74,9 @@ fn federation_race_cfg() -> RaceCfg {
 /// `entry.endpoints` へ Happy Eyeballs v2 staggered race で direct QUIC 接続する。
 ///
 /// 勝者の [`unison::ProtocolClient`] を返す。**caller は使用後 `disconnect()` を必ず呼ぶ**
-/// （drop 任せは quinn endpoint driver = UDP socket が解放されない。world_wire の
+/// （drop 任せは quinn endpoint driver = UDP socket が解放されない。daemon_wire の
 /// 「1 call = 1 fd leak」と同じ罠）。
-pub async fn dial_direct(entry: &WorldEntry) -> Result<unison::ProtocolClient> {
+pub async fn dial_direct(entry: &NodeEntry) -> Result<unison::ProtocolClient> {
     let addrs = parse_endpoints(&entry.endpoints);
     if addrs.is_empty() {
         anyhow::bail!("direct 候補なし（endpoints が空 / 全 entry parse 不能）");
@@ -112,7 +112,7 @@ pub async fn dial_direct(entry: &WorldEntry) -> Result<unison::ProtocolClient> {
 /// MVP は短命接続（`federate_wire_send` の relay 経路と同型、永続接続の再利用は後の最適化）。
 /// 成否に関わらず disconnect でリソースを解放する。受信側 daemon の wire channel はエラーを
 /// success frame の `{"error": ...}` で返す（VP-163 慣習）ため、response の `error` key を検査。
-pub async fn wire_send_direct(entry: &WorldEntry, envelope: &Value) -> Result<()> {
+pub async fn wire_send_direct(entry: &NodeEntry, envelope: &Value) -> Result<()> {
     let client = dial_direct(entry).await?;
     let result = async {
         let channel = client

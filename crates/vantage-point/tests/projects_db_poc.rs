@@ -1,13 +1,13 @@
-//! PoC: projects を db/world 真実源化（VP-188 revert）の go/no-go 検証。
+//! PoC: projects を db/machine 真実源化（VP-188 revert）の go/no-go 検証。
 //!
 //! epic 設計: creo `mem_1CbmWjCGNi9z49s3r21TwQ` / `.note/control-plane-consolidation-epic.md`
 //!
 //! 検証する仮説:
-//! - T1: db/world の projects table に insert→list できる
+//! - T1: db/machine の projects table に insert→list できる
 //! - T2: DB→projects.kdl の一方向 export が round-trip する（read back しない出力専用）
 //! - T3 ★: DB dir が消失しても（VP-182 シナリオ）、export 済 kdl から import で復旧できる
 //!   = VP-188 council が「embedded DB は ephemeral」として file に逃げた壁を、
-//!   「World 専用安定 DB + 一方向 export backstop」で正面突破できることの実証。
+//!   「Daemon 専用安定 DB + 一方向 export backstop」で正面突破できることの実証。
 
 use vantage_point::db::VpDb;
 use vantage_point::projects_file::{ProjectEntry, ProjectsFile};
@@ -44,7 +44,7 @@ fn sample() -> Vec<ProjectEntry> {
     ]
 }
 
-/// T1: db/world projects table に insert → list できる。
+/// T1: db/machine projects table に insert → list できる。
 #[tokio::test]
 async fn t1_insert_and_list() {
     let dir = temp_db_dir("t1");

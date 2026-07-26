@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::commands::process_client::{
-    resolve_project_path_from_target, world_process_request_blocking,
+    daemon_process_request_blocking, resolve_project_path_from_target,
 };
 use crate::config::Config;
 use crate::file_watcher::{WatchConfig, WatchFormat, WatchStyle};
@@ -71,8 +71,8 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
                 style: WatchStyle::Terminal,
             };
 
-            world_process_request_blocking(
-                crate::cli::world_port(),
+            daemon_process_request_blocking(
+                crate::cli::daemon_port(),
                 &project_path,
                 "watch_file",
                 serde_json::to_value(&watch_config)?,
@@ -82,8 +82,8 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
         }
         FileCommands::Unwatch { pane_id, target } => {
             let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
-            world_process_request_blocking(
-                crate::cli::world_port(),
+            daemon_process_request_blocking(
+                crate::cli::daemon_port(),
                 &project_path,
                 "unwatch_file",
                 serde_json::json!({ "pane_id": pane_id }),

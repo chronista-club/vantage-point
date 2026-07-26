@@ -255,7 +255,7 @@ impl VantageMcp {
     ///
     /// ネイティブ screenshot backend（`vp shot` と同じ `screenshot::default_backend()`）で
     /// "Vantage Point" window を直接キャプチャする。旧設計（webview html2canvas を
-    /// World→WS 往復で回収）は往復の両端が移行時に撤去されて機能停止していたため、
+    /// Daemon→WS 往復で回収）は往復の両端が移行時に撤去されて機能停止していたため、
     /// 往復依存を排して `vp shot` と機構を統一した（bug: canvas 可観測性の複合故障 B）。
     /// window 全体（sidebar + console + board）を撮るので、board が非表示なら「非表示のまま」が
     /// 正直に写る（= GUI の実可視状態が ground truth になる）。保存ファイルは Read ツールで確認可能。

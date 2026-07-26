@@ -13,7 +13,7 @@ export type StandKind =
   | 'echoes'
   | 'board'
   | 'runner'
-  | 'theworld'
+  | 'daemon'
 
 export interface StandIconSet {
   default: IconName  // idle/regular state (Phosphor Regular weight)
@@ -37,7 +37,7 @@ export const STAND_ICON: Record<StandKind, StandIconSet> = {
     active: 'ph:plant-fill',
     disabled: 'ph:plant-thin',
   },
-  theworld: {
+  daemon: {
     default: 'ph:planet',
     active: 'ph:planet-fill',
     disabled: 'ph:planet-thin',

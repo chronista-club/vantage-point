@@ -107,7 +107,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 | REQ5.2 | tmux ペイン操作（分割・キャプチャ）を MCP 経由で提供する | Should |
 | REQ5.3 | MCP サーバーモード (`vp mcp`) で外部ツールと統合できる | Must |
 
-### R6: プロセス管理（👑 TheWorld — Process Manager）
+### R6: プロセス管理（👑 daemon — Process Manager）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -139,7 +139,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 ## Architecture Overview
 
 ```
-TheWorld 👑 (Process Manager / 常駐デーモン)
+daemon ⚙️ (Process Manager / 常駐デーモン)
   └── Star Platinum ⭐ (Project Core / TUI 統合ビュー)
         ├── Echoes 💬 (Coding Assistant / Claude CLI、 旧 Heaven's Door 📖)
         ├── Paisley Park 🧭 (Information Navigator / Canvas)
@@ -149,7 +149,7 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 
 - **Process**: プロジェクトの開発プロセス本体。Star Platinum が主人公として各 Stand を束ねる
 - **Stand（能力）**: Process が保持する Capability の総称
-- **TheWorld**: 常駐デーモン。全 Process のライフサイクルを管理
+- **daemon**: 常駐デーモン。全 Process のライフサイクルを管理
 
 > 詳細な技術設計は `design/01-architecture.md` を参照。
 

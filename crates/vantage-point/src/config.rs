@@ -189,7 +189,7 @@ fn default_max_concurrent_lane_spawn() -> u32 {
 /// PortLayout の config 上書き (全 field optional、未指定は default)
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct PortLayoutOverrides {
-    pub world_port: Option<u16>,
+    pub daemon_port: Option<u16>,
     pub project_slot_base: Option<u16>,
     pub project_slot_size: Option<u16>,
     pub max_projects: Option<u16>,
@@ -379,8 +379,8 @@ impl Config {
     pub fn port_layout(&self) -> crate::port_layout::PortLayout {
         let mut layout = crate::port_layout::PortLayout::default();
         if let Some(ov) = &self.ports {
-            if let Some(v) = ov.world_port {
-                layout.world_port = v;
+            if let Some(v) = ov.daemon_port {
+                layout.daemon_port = v;
             }
             if let Some(v) = ov.project_slot_base {
                 layout.project_slot_base = v;

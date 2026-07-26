@@ -1,6 +1,6 @@
-//! SP → TheWorld の wire/delegation transport (L0 portless B-4: unison "wire" channel)
+//! SP → daemon の wire/delegation transport (L0 portless B-4: unison "wire" channel)
 //!
-//! wire store / delegation store は TheWorld (daemon QUIC、 port 32000、 config override 可) に
+//! wire store / delegation store は daemon (daemon QUIC、 port 32000、 config override 可) に
 //! 中央化されている。 SP の wire ハンドラ ([`crate::process::unison_server`]) /
 //! delegation ([`crate::process::delegation`]) はこの client 経由で中央 store を読み書きする。
 //! (旧 lane-spawn actor の wire recv は in-process channel 直結に移行済 — 2026-07-09、
@@ -22,9 +22,9 @@
 //! SP 常駐 actor の wire/recv long-poll (≤25s) により約 100 分で RLIMIT_NOFILE=256 に到達、
 //! wire mesh 全体が EMFILE で死んでいた (mem_1Ccbou9kzfGtJsLbUrRX8b)。
 //! 現実装は lazy connect した 1 接続を cache し、 切断検知 / outer timeout で破棄 → 次の call が
-//! 再接続する (registry uplink ([`crate::discovery`] の `WorldUplink`) と同型の epoch 再接続)。
+//! 再接続する (registry uplink ([`crate::discovery`] の `DaemonUplink`) と同型の epoch 再接続)。
 //!
-//! TheWorld 停止 = wire 停止 (設計決定 D1-c で許容済、 実運用は既に事実上依存)。
+//! daemon 停止 = wire 停止 (設計決定 D1-c で許容済、 実運用は既に事実上依存)。
 //! 呼び出し側は Err を受けて各自の方針で扱う:
 //! - proxy (handle_wire_*): エラーをそのまま caller に返す
 
@@ -36,7 +36,7 @@ use tokio::sync::Mutex;
 /// connect → handshake → request 全体の outer timeout。
 ///
 /// wire_recv は server 側で long-poll する (各 caller は ≤25s に抑える規約 — unison 内部 request
-/// timeout 30s 下に収める)。 outer を 40s 取り、 TheWorld が wedge した場合の無言ハングを防ぐ
+/// timeout 30s 下に収める)。 outer を 40s 取り、 daemon が wedge した場合の無言ハングを防ぐ
 /// (= unison 内部 30s が先に発火する safety net)。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 
@@ -49,14 +49,14 @@ struct WireLink {
     channel: unison::UnisonChannel,
 }
 
-/// SP 1 プロセス = TheWorld への wire 接続 1 本 (lazy connect、 切断検知で再接続)。
+/// SP 1 プロセス = daemon への wire 接続 1 本 (lazy connect、 切断検知で再接続)。
 static WIRE_LINK: Mutex<Option<Arc<WireLink>>> = Mutex::const_new(None);
 
-/// TheWorld の port を解決する (config override → default 32000)
-pub(crate) fn world_port() -> u16 {
+/// daemon の port を解決する (config override → default 32000)
+pub(crate) fn daemon_port() -> u16 {
     crate::config::Config::load()
-        .map(|c| c.port_layout().world_port)
-        .unwrap_or(crate::cli::world_port())
+        .map(|c| c.port_layout().daemon_port)
+        .unwrap_or(crate::cli::daemon_port())
 }
 
 /// 生きた cache 接続を返すか、 無ければ接続して cache する。
@@ -82,7 +82,7 @@ async fn get_or_connect(addr: &str) -> Result<Arc<WireLink>, String> {
     let client = unison::ProtocolClient::new(transport);
     client.connect(addr).await.map_err(|e| {
         format!(
-            "TheWorld unreachable ({addr}): {e} — wire/delegation store は TheWorld に \
+            "daemon unreachable ({addr}): {e} — wire/delegation store は daemon に \
              中央化されています。 `vp daemon start` を確認してください"
         )
     })?;
@@ -112,15 +112,15 @@ async fn invalidate(link: &Arc<WireLink>) {
     }
 }
 
-/// TheWorld の wire/delegation API を呼ぶ。 `path` は `/api/wire/send` / `/api/delegation/create` 等。
+/// daemon の wire/delegation API を呼ぶ。 `path` は `/api/wire/send` / `/api/delegation/create` 等。
 ///
 /// path から `/api/` prefix を剥いだ残り (= `"wire/send"` / `"delegation/create"`) を unison "wire"
-/// channel の method として TheWorld daemon (QUIC) に request する。
+/// channel の method として daemon (QUIC) に request する。
 ///
 /// エラー規約 (HTTP 版と不変):
-/// - transport 失敗 → `Err("TheWorld unreachable ...")`
+/// - transport 失敗 → `Err("daemon unreachable ...")`
 /// - 応答 JSON に `error` field → その内容を Err として relay
-///   (TheWorld 側 channel handler は server Err を success frame の `{"error": <msg>}` で返す)
+///   (daemon 側 channel handler は server Err を success frame の `{"error": <msg>}` で返す)
 pub(crate) async fn call(
     path: &str,
     payload: serde_json::Value,
@@ -129,11 +129,11 @@ pub(crate) async fn call(
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     // path "/api/wire/send" → method "wire/send"。 prefix が無ければ path をそのまま使う (防御的)。
     let method = path.strip_prefix("/api/").unwrap_or(path);
-    let addr = format!("[::1]:{}", world_port());
+    let addr = format!("[::1]:{}", daemon_port());
 
     // outer timeout 発火時に「自分が使った接続」だけを invalidate するための退避先。
     // 無条件破棄 (cache を丸ごと take) だと、 同じ共有接続上で健全に進行中の他の並行呼び出しを
-    // 巻き添えにし、 高負荷時 (TheWorld が単に遅いだけ) に集団切断 → reconnect storm を誘発する。
+    // 巻き添えにし、 高負荷時 (daemon が単に遅いだけ) に集団切断 → reconnect storm を誘発する。
     // critical section は await を跨がないため std::sync::Mutex で足りる。
     let used_link: std::sync::Mutex<Option<Arc<WireLink>>> = std::sync::Mutex::new(None);
     let work = async {
@@ -173,7 +173,7 @@ pub(crate) async fn call(
                 invalidate(&link).await;
             }
             Err(format!(
-                "TheWorld ({addr}) wire channel ({method}) が {}s 以内に応答しませんでした",
+                "daemon ({addr}) wire channel ({method}) が {}s 以内に応答しませんでした",
                 REQUEST_TIMEOUT.as_secs()
             ))
         }

@@ -55,7 +55,7 @@ dogfooding を通じて体験を磨き、納得できる完成度でリリース
 命名定義は `crates/vantage-point/src/stands.rs` に集約。
 
 ```
-TheWorld 👑 (Process Manager / 常駐デーモン)
+daemon ⚙️ (Process Manager / 常駐デーモン)
   └── Star Platinum ⭐ (Project Core / TUI 統合ビュー + 各 Stand が同居する場)
         ├── Echoes 💬 (Coding Assistant / Claude CLI オーケストレーター、 旧 Heaven's Door 📖)
         ├── Paisley Park 🧭 (Information Navigator / Canvas・情報提供)
@@ -94,9 +94,9 @@ product の依存。 maintainer の repo にある道具は project の道具（
 ```
 vp-app (GUI: wry+tao)   vp (CLI)
         └────────┬───────┘
-                 │ HTTP + QUIC（listener は TheWorld のみ）
-        TheWorld 👑 :32000          ← Process Manager (常駐 daemon)
-                 │ spawn ↓ ／ SP→World QUIC registry 自己登録 ↑（reconcile = Push 一本）
+                 │ HTTP + QUIC（listener は daemon のみ）
+        daemon ⚙️ :32000          ← Process Manager (常駐 daemon)
+                 │ spawn ↓ ／ SP→daemon QUIC registry 自己登録 ↑（reconcile = Push 一本）
      ┌───────────┼───────────┐
    SP[33000]   SP[33001]  ...      ← Star Platinum ⭐ (project ごと、portless = outbound-only)
      └ Stands: Echoes 💬 / Paisley Park 🧭 / Gold Experience 🌿 / Hermit Purple 🍇
@@ -107,7 +107,7 @@ vp-app (GUI: wry+tao)   vp (CLI)
 ```
 vantage-point/
 ├── crates/
-│   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vantage-point/   # server lib (daemon + SP の HTTP/WS server)
 │   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
@@ -129,17 +129,17 @@ vp projects            # 登録 project 管理（add/remove/rename/enable/disabl
 vp sync                # projects.kdl を現実と同期（ghost project 除去）
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
-vp restart-all         # TheWorld を再起動（= 全 project 再起動。fold-in 後は daemon restart と等価）
+vp restart-all         # daemon を再起動（= 全 project 再起動。fold-in 後は daemon restart と等価）
                        # ⚠️ 復元されるのは「enabled な project」で「再起動前に動いていた project」ではない。
                        #    停止を永続させたいなら vp projects disable（stop だけでは再起動で生き返る）。
 
-# TheWorld（Daemon）/ Project
-vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
+# daemon（Daemon）/ Project
+vp daemon start|stop|status  # daemon 管理
 vp daemon restart [--if-running]  # ownership-agnostic 再起動（実 port holder を停止 → LaunchAgent 優先で起動。--if-running = 不在なら no-op、brew cask postflight 用）
 vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
 vp projects start|stop <name>  # 単一 project の起動/停止（doc 44 P1 fold-in で `vp sp` から移設）
 # ⚠️⚠️ doc 44 P1 (fold-in) で daemon 停止の意味論が変わった:
-#   project は World プロセス内の Arc<AppState> になったため、**daemon を止めると
+#   project は daemon プロセス内の Arc<AppState> になったため、**daemon を止めると
 #   全 project が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
 #   止めて SP は温存）」は SP が別プロセスだった時代の挙動で、fold-in 後は成立しない。
 #   → lane の中から daemon を再起動すると自分が死ぬ。実機検証は VP の外（kitty 等）で行うこと。
@@ -154,7 +154,7 @@ vp shot                # vp-app window の screenshot を PNG 保存
 # Lane / dev-flow / messaging
 vp lane                # performer Lane 管理（Stone Free 🧵）
 vp flow handoff|progress  # Conductor × Performer orchestration
-vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は TheWorld :32000 に中央化。hook-check は claude hook 実体、R2-c）
+vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は daemon :32000 に中央化。hook-check は claude hook 実体、R2-c）
 vp lane history [--limit N]  # 見送りの記録（いつ何を見送ったか / 判断待ちの滞留、doc 44 §7.5 の帳簿）
 vp lane capture <lane> [--session N]  # lane console の現在画面を読む（旧 vp tmux capture の後継、tmux 非依存）
 vp lane slots <lane>   # lane が持つ console slot 一覧（doc 46 P5 — slot は session ごと）
@@ -217,19 +217,19 @@ mise run app:bundle                        # bun install --frozen-lockfile + bun
   - federation opt-in は config.kdl の `hub-addr "hub.chronista.club:12879"`（常設 SSOT — launchd daemon は shell env を持たない）。env `CHRONISTA_HUB_ADDR` は dev override として優先される。未設定 = federation off（machine-local）。状態確認は `vp daemon status` の `Hub:` 行 or `/api/health` の `hub` field。
   - 起動時に旧パス（Application Support / Library/Logs / `dirs::config_dir()/vantage/` 等）から新 XDG zone へ冪等にデータ移行（`migrate_legacy_paths()`、旧データは残す）。
 - ポート割り当て:
-  - TheWorld: 32000 (HTTP + QUIC) — **唯一の listener**
+  - daemon: 32000 (HTTP + QUIC) — **唯一の listener**
   - Project (SP): 33000〜（`PORT_RANGE` 33000-33024 の deterministic slot）— **portless**。SP は listen せず、この番号は registry 上の論理 identity（停止/特定に使う）
-  - SP → World の QUIC は **outbound のみ**（registry / canvas-ingest / control の自己登録接続）。SP 自身は per-process な QUIC listener を持たない
-- `vp ps` は TheWorld registry（:32000）に問い合わせて一覧化（ポートスキャンは廃止）
+  - SP → daemon の QUIC は **outbound のみ**（registry / canvas-ingest / control の自己登録接続）。SP 自身は per-process な QUIC listener を持たない
+- `vp ps` は daemon registry（:32000）に問い合わせて一覧化（ポートスキャンは廃止）
 
 ### VP_PROFILE — dev / brew の state 分離（#643）
 
-dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_world_port()`）。
+dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_daemon_port()`）。
 
 | レバー | 未設定 = **brew**（一般ユーザ・従来通り） | `VP_PROFILE=dev`（開発者） |
 |---|---|---|
 | config/data/state/db dir | `vp`（`~/.local/share/vp/` 等） | `vp-dev`（`~/.local/share/vp-dev/` 等） |
-| world port | 32000 | 32100 |
+| daemon port | 32000 | 32100 |
 | daemon pidfile | `$TMPDIR/vp/` | `$TMPDIR/vp-dev/` |
 
 > （旧レバー「tmux socket `-L vp` / `-L vp-dev`」は tmux decoupling PR2 で退役 — lane は SP の PtySlot 直ホストで tmux server を持たない）
@@ -237,7 +237,7 @@ dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cas
 - env は継承で伝播する（dev shell → daemon → SP → lane claude）ので **`export VP_PROFILE=dev` 一発**で以降の全 vp が dev namespace になる。`vp switch` command / 起動時 guard / LaunchAgent 処理は不要。brew は LaunchAgent 起動で env を持たないため自然に brew namespace。
 - **dev 起動は専用 alias（`.zprofile`）**: `alias vpd='VP_PROFILE=dev ~/.cargo/bin/vp'`。素の `vp`（release）と混ざらないよう cargo dev binary を明示指定する。
   ```zsh
-  vpd daemon start   # → TheWorld :32100 / ~/.local/share/vp-dev
+  vpd daemon start   # → daemon :32100 / ~/.local/share/vp-dev
   vpd daemon status  # → Port: 32100 で確認 / vpd db path → .../vp-dev/db/...
   vpd app start      # dev GUI（要 `cargo install --path crates/vp-app` で dev vp-app）
   ```
@@ -247,11 +247,11 @@ dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cas
 
 ### プロセス管理（Reconciliation）
 
-TheWorld が **QUIC registry（Push）** でプロセスを管理する。SP-portless 化に伴い旧 Pull（ポートスキャン）は撤去され、registry が**単一の真実源**になった（portless SP は listen しないためポートスキャンでは発見できない）。
+daemon が **QUIC registry（Push）** でプロセスを管理する。SP-portless 化に伴い旧 Pull（ポートスキャン）は撤去され、registry が**単一の真実源**になった（portless SP は listen しないためポートスキャンでは発見できない）。
 
 | パス | 仕組み | 用途 |
 |------|--------|------|
-| **Push (QUIC Registry)** | SP が TheWorld に QUIC 永続接続で自己登録（outbound）。heartbeat 15s + 再接続時の snapshot replace で reconcile。切断 = 即時除去 | リアルタイム検出 + 自律復帰 |
+| **Push (QUIC Registry)** | SP が daemon に QUIC 永続接続で自己登録（outbound）。heartbeat 15s + 再接続時の snapshot replace で reconcile。切断 = 即時除去 | リアルタイム検出 + 自律復帰 |
 
 - `running_processes` / `projects` の HashMap キーは正規化パス（`normalize_path_key()`）。`project_name` は表示用ラベル
 - `/api/health` レスポンスに `stands` フィールドを含む（各 Stand の状態をリアルタイムで返す）

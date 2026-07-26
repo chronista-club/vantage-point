@@ -1,13 +1,13 @@
 import Foundation
 
-/// 稼働中の VP 本体 (TheWorld) 1 件。 menu の表示・操作の単位。
+/// 稼働中の VP 本体 (daemon) 1 件。 menu の表示・操作の単位。
 ///
 /// doc 44 P1 (fold-in) 以前は project ごとに SP プロセスが居たため複数件あり得たが、
-/// fold-in で project は World プロセス内の状態になったので **高々 1 件**になった。
+/// fold-in で project は daemon プロセス内の状態になったので **高々 1 件**になった。
 struct VpInstance: Identifiable, Sendable, Equatable {
-    /// TheWorld の HTTP port (32000)
+    /// daemon の HTTP port (32000)
     let port: Int
-    /// 表示名 (World は project に属さないので `"TheWorld"` 固定)
+    /// 表示名 (daemon は project に属さないので `"daemon"` 固定)
     let projectName: String
     let pid: Int
 
@@ -24,22 +24,22 @@ struct VpInstance: Identifiable, Sendable, Equatable {
 ///
 /// 旧実装は SP の port range 33000...33015 を並行 probe していたが、 **SP-portless 化で
 /// 33000 番台は誰も listen しなくなった**ため、 この scan は常に空を返す no-op だった
-/// (「読み手のない書き込み」の逆 = 答えの返らない問い合わせ)。 World 単発 probe に置換。
+/// (「読み手のない書き込み」の逆 = 答えの返らない問い合わせ)。 daemon 単発 probe に置換。
 ///
 /// `/api/health` と `/api/shutdown` が HTTP のまま残っているのは doc 45 §2 の設計判断
 /// (Unison 層が wedge した時に診断手段ごと失わないための、 意図的に鈍い外殻)。
 /// この agent はまさにその VP 外の消費者にあたる。
 enum InstanceControl {
-    /// TheWorld の HTTP port。 deterministic port layout (CLAUDE.md): World = 32000 唯一の listener。
+    /// daemon の HTTP port。 deterministic port layout (CLAUDE.md): daemon = 32000 唯一の listener。
     ///
     /// dev profile (`VP_PROFILE=dev` = 32100) は追わない — この agent は brew 導入の
-    /// 常駐 menu bar なので、 見る相手は常に brew namespace の World。
+    /// 常駐 menu bar なので、 見る相手は常に brew namespace の daemon。
     static let worldPort = 32000
 
-    /// 稼働中の VP を列挙する。 fold-in 後は「World が居るか居ないか」の 0/1 件。
+    /// 稼働中の VP を列挙する。 fold-in 後は「daemon が居るか居ないか」の 0/1 件。
     static func scan() async -> [VpInstance] {
-        guard let world = await probe(port: worldPort) else { return [] }
-        return [world]
+        guard let daemon = await probe(port: worldPort) else { return [] }
+        return [daemon]
     }
 
     /// `/api/health` を叩いて、 200 なら instance を返す。
@@ -54,14 +54,14 @@ enum InstanceControl {
         else { return nil }
 
         let pid = json["pid"] as? Int ?? 0
-        // fold-in 後の World は特定 project に属さないため `project_dir` は空。
+        // fold-in 後の daemon は特定 project に属さないため `project_dir` は空。
         // 旧 SP の health は project_dir を持っていたので、 表示名の導出はここで固定する。
-        return VpInstance(port: port, projectName: "TheWorld", pid: pid)
+        return VpInstance(port: port, projectName: "daemon", pid: pid)
     }
 
     /// instance を graceful shutdown する (POST `/api/shutdown` = shutdown_token cancel)。
     ///
-    /// ⚠️ fold-in 後は **World を止める = 全 project / 全 lane が落ちる** (CLAUDE.md)。
+    /// ⚠️ fold-in 後は **daemon を止める = 全 project / 全 lane が落ちる** (CLAUDE.md)。
     /// 旧 SP 時代の「1 project だけ止める」意味論はもう無い。
     static func stop(port: Int) async {
         guard let url = URL(string: "http://[::1]:\(port)/api/shutdown") else { return }

@@ -38,7 +38,7 @@ pub struct ProjectPaneState {
     /// accordion 開閉状態 (default = 閉じる)
     #[serde(default)]
     pub expanded: bool,
-    /// Process state (running/dead/spawning 等、 TheWorld fetch から merge される)
+    /// Process state (running/dead/spawning 等、 daemon fetch から merge される)
     /// sidebar JS が state badge 表示に使う
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -75,14 +75,14 @@ pub enum WidgetKind {
     Notes,
 }
 
-/// hub の向こうに居る available world 1 件（`/api/health` の `hub_worlds[]` 要素）。
+/// hub の向こうに居る available node 1 件（`/api/health` の `hub_nodes[]` 要素）。
 ///
-/// daemon 側 `HubWorldInfo` と同形。deserialize（`/api/health` 受け）と serialize
+/// daemon 側 `HubNodeInfo` と同形。deserialize（`/api/health` 受け）と serialize
 /// （sidebar への push）の両面で使うため中間 mapping を持たない。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
-pub struct HubWorld {
-    /// world の identity（hostname 由来、hub registry の一意キー相当）
+pub struct HubNode {
+    /// daemon の identity（hostname 由来、hub registry の一意キー相当）
     pub handle: String,
     /// 位置独立 routing key `wld_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
     #[serde(default)]
@@ -103,33 +103,33 @@ pub struct HubWorld {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct ActivitySnapshot {
-    /// TheWorld daemon 到達可否
-    pub world_online: bool,
+    /// daemon 到達可否
+    pub node_online: bool,
     /// `/api/health` から取得 (オフライン時 None)
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub world_version: Option<String>,
+    pub daemon_version: Option<String>,
     /// daemon の起動時刻 (ISO 8601、オフライン時 None)
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub world_started_at: Option<String>,
+    pub daemon_started_at: Option<String>,
     /// 登録プロジェクト数
     pub project_count: usize,
     /// 稼働中 process 数 (`registry.list`)
     pub running_process_count: usize,
-    /// chronista-hub federation 接続状態（`/api/health` の `hub`、World 横に表示）。
+    /// chronista-hub federation 接続状態（`/api/health` の `hub`、Daemon 横に表示）。
     /// `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
     #[serde(default)]
     pub hub: String,
-    /// hub の向こうに居る available worlds（`/api/health` の `hub_worlds`、自 world 除外・dedup 済）。
+    /// hub の向こうに居る available nodes（`/api/health` の `hub_nodes`、自 daemon 除外・dedup 済）。
     /// Hub 行の下に常時リスト表示する。未接続 / 旧 daemon は空。
     #[serde(default)]
-    pub hub_worlds: Vec<HubWorld>,
+    pub hub_nodes: Vec<HubNode>,
     /// L1 lifecycle: SP presence map（project path → `"connected"`|`"unregistered"`
     /// |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
     /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
     #[serde(default)]
     pub presence: std::collections::HashMap<String, String>,
     /// in-app update: 新しい release が GitHub にあるか（`/api/health` の `update_available`）。
-    /// sidebar World widget の「更新する」ボタンの表示 gate。旧 daemon は false。
+    /// sidebar Daemon widget の「更新する」ボタンの表示 gate。旧 daemon は false。
     #[serde(default)]
     pub update_available: bool,
     /// 最新 release version（ボタン label「更新する ⤴ vX.Y.Z」用、未取得は None）。
@@ -184,8 +184,8 @@ pub struct SidebarState {
     /// Currents セクションの project 表示順 (path の順)。
     ///
     /// `SessionState.currents_order` から push される。 sidebar JS は Currents
-    /// rendering 時に this list の順で並び替える (list に無い path は末尾、 TheWorld order 維持)。
-    /// `None` なら順序指定なし (TheWorld registration 順)。
+    /// rendering 時に this list の順で並び替える (list に無い path は末尾、 daemon order 維持)。
+    /// `None` なら順序指定なし (daemon registration 順)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
     /// Phase 5-D Sprint C P2.1: per-Lane HD notification unread count。
@@ -230,11 +230,11 @@ pub struct SidebarState {
     /// JS 側は DeviceRegistry pane に device list を render する。 disk persist 不要 (起動時 0)。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<DeviceSnapshot>,
-    /// doc 30 §5-3 / lanes 購読 self-heal: per-project の World "lanes" channel 購読フェーズ。
+    /// doc 30 §5-3 / lanes 購読 self-heal: per-project の Daemon "lanes" channel 購読フェーズ。
     /// Key: project_path。 Value は 3 値モデル (entry 有無 + 2 文字列):
     ///
     /// - entry なし (absent) = 初期 (購読開始〜初回 snapshot 未受信)。 `hintFor` は `📡 loading lanes…`
-    /// - `"stalled"` = open / subscribe / 初回 snapshot が timeout (World lanes channel 無応答 or QUIC 未接続)。 `LanesError` で挿入。 `hintFor` は `⚠️ lane 接続が停滞 — daemon restart で復帰`
+    /// - `"stalled"` = open / subscribe / 初回 snapshot が timeout (Daemon lanes channel 無応答 or QUIC 未接続)。 `LanesError` で挿入。 `hintFor` は `⚠️ lane 接続が停滞 — daemon restart で復帰`
     /// - `"ready"` = snapshot を 1 度でも受信 (`LanesLoaded` で挿入、 以後 entry は残る)。 lane 0 本なら `hintFor` は `📡 lane なし`
     ///
     /// stall→ready は復帰時の snapshot で上書きされ自動解消 (self-heal と連動)。 起動時は全 project entry
@@ -340,13 +340,13 @@ mod tests {
     fn sidebar_state_serializes_round_trip() {
         let mut s = SidebarState::default();
         s.processes.push(ProjectPaneState::new("/a", "alpha"));
-        s.activity.world_online = true;
+        s.activity.node_online = true;
         s.activity.project_count = 1;
         s.active_lane_address = Some("alpha/root".into());
         let json = serde_json::to_string(&s).unwrap();
         let parsed: SidebarState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.processes.len(), 1);
-        assert!(parsed.activity.world_online);
+        assert!(parsed.activity.node_online);
         assert_eq!(parsed.widget, WidgetKind::Activity);
         assert_eq!(parsed.active_lane_address.as_deref(), Some("alpha/root"));
     }

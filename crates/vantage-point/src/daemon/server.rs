@@ -1,6 +1,6 @@
 //! Daemon の Unison QUIC サーバー
 //!
-//! World daemon の live channel（world-process / events / wire / registry / device 等）を提供。
+//! daemon の live channel（daemon-process / events / wire / registry / device 等）を提供。
 //! SP の自己登録を受け付け、process lifecycle / wire / event log を中継する。
 
 use std::collections::HashMap;
@@ -19,11 +19,11 @@ use crate::capability::{ProcessPresenceState, RunningProcess};
 /// SP control channel registry（key = `path_key`、 value = SP の live control channel）。
 ///
 /// daemon server の process-proxy / registry handler が populate し、 canvas/terminal_write の
-/// reverse-routing に使う。 tmux decoupling PR1: World-side の nudge loop（delivery_actor /
+/// reverse-routing に使う。 tmux decoupling PR1: Daemon-side の nudge loop（delivery_actor /
 /// delegation reconcile）も同一 map を引いて `lane_nudge` を所有 SP に forward する（SSOT はここ）。
 /// doc 44 P1 (fold-in): 旧 SP control channel registry (`path_key` → QUIC channel) の後継。
 ///
-/// SP プロセスが消えたので「どう話すか」は QUIC channel ではなく **World 内の
+/// SP プロセスが消えたので「どう話すか」は QUIC channel ではなく **Daemon 内の
 /// `Arc<AppState>` を引くこと**になった。型名は呼び出し側の意味 (= project へ話す口) を
 /// 保つため据え置き、指す先だけを差し替えている。
 pub(crate) type ControlChannels = Arc<crate::process::project_registry::ProjectRuntimes>;
@@ -47,10 +47,10 @@ pub struct DaemonState {
     /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected
     /// を書き、`/api/health` の `processes[]` が同一 Arc を読んで vp-app に expose する（doc 27 §3.2）。
     pub process_presence: Option<Arc<RwLock<HashMap<String, ProcessPresenceState>>>>,
-    /// VP-154 PR-2: Process lifecycle event broadcast bus (= "world-process" channel の data plane)
+    /// VP-154 PR-2: Process lifecycle event broadcast bus (= "daemon-process" channel の data plane)
     ///
     /// registry channel handler が SP register/unregister を受信したタイミングで `send` し、
-    /// "world-process" subscribe handler の broadcast::Receiver が pump して client に
+    /// "daemon-process" subscribe handler の broadcast::Receiver が pump して client に
     /// `send_event` で push する経路。 capacity 64 = SP 同時 register が短時間に集中しても
     /// drop しない buffer (= 既存 system_event_tx と同サイズ)。
     pub process_lifecycle_tx: tokio::sync::broadcast::Sender<ProcessLifecycleEvent>,
@@ -58,7 +58,7 @@ pub struct DaemonState {
     /// broadcast bus。 registry channel handler が lane_registry を mutate した直後
     /// (register / lanes/add / lanes/remove / lanes/update) に `send(path_key)` し、
     /// per-project "lanes" channel の subscriber がこれを購読して当該 project の現 snapshot を
-    /// vp-app に再 push する経路 (= SP "lanes" channel 直結の World 集約版)。
+    /// vp-app に再 push する経路 (= SP "lanes" channel 直結の Daemon 集約版)。
     ///
     /// `process_lifecycle_tx` (process Add/Remove) と相補: あちらは SP の up/down、 こちらは
     /// SP 内 lane (Performer 等) の add/remove/update を realtime 配信する。 capacity 64 は
@@ -66,11 +66,11 @@ pub struct DaemonState {
     pub lane_change_tx: tokio::sync::broadcast::Sender<String>,
     /// L0 SP-portless (canvas slice): project ごとの Canvas (Board) TopicRouter。
     ///
-    /// 各 SP が "canvas-ingest" channel で board の ProcessMessage を push し、 World は
+    /// 各 SP が "canvas-ingest" channel で board の ProcessMessage を push し、 daemon は
     /// それを project の TopicRouter に `route()` する。 vp-app 向け "canvas" channel はこの
     /// TopicRouter を `subscribe("process/board/#")` して retained 初期配信 + live delta を
     /// 配る。 SP の "canvas" channel (`process/unison_server.rs`) と **同じ TopicRouter 型を再利用**
-    /// することで、 retained/delta/atomicity を World 側で再実装せず委譲する (lanes の lane_registry
+    /// することで、 retained/delta/atomicity を daemon 側で再実装せず委譲する (lanes の lane_registry
     /// に相当する canvas 版の per-project store)。 project_path (path_key) → TopicRouter。
     /// 初出 project は ingest / subscribe のどちらか早い方が get-or-create する。
     ///
@@ -85,56 +85,56 @@ pub struct DaemonState {
         Arc<RwLock<HashMap<String, Arc<crate::process::topic_router::TopicRouter>>>>,
     /// project ごとの実行状態 registry（旧「SP control channel handle」の後継）。
     ///
-    /// doc 44 P1 (fold-in) 以前: 各 SP が起動時に "control" channel で World に outbound 接続し、
-    /// World はその `UnisonChannel` を path_key で保持していた。"process-proxy" 経由で来た外部
+    /// doc 44 P1 (fold-in) 以前: 各 SP が起動時に "control" channel で daemon に outbound 接続し、
+    /// daemon はその `UnisonChannel` を path_key で保持していた。"process-proxy" 経由で来た外部
     /// client (MCP/CLI) の process 操作は、この handle を**逆用**して当該 SP に forward していた
-    /// (= World→SP reverse-routing)。SP 切断で handle を除去 = reverse 不能、という寿命だった。
+    /// (= Daemon→SP reverse-routing)。SP 切断で handle を除去 = reverse 不能、という寿命だった。
     ///
-    /// fold-in 後: project は World と同一プロセスの `Arc<AppState>` なので、forward ではなく
+    /// fold-in 後: project は daemon と同一プロセスの `Arc<AppState>` なので、forward ではなく
     /// `ProjectRuntimes::dispatch` → `dispatch_process_method` の直呼びになる。「切断」という
     /// 状態が存在せず、map に居るか居ないかだけになった。
     pub(crate) control_channels: ControlChannels,
-    /// projects 操作の権威 (= CLI → World 直接 Unison "world-control" channel の data plane)。
+    /// projects 操作の権威 (= CLI → Daemon 直接 Unison "daemon-control" channel の data plane)。
     ///
-    /// HTTP `routes/world.rs` と同一の `ProcessManagerCapability` 実体を Arc 共有し、
+    /// HTTP `routes/daemon.rs` と同一の `ProcessManagerCapability` 実体を Arc 共有し、
     /// add/remove/rename/set_enabled/reorder/list を Unison 経由でも受ける。
-    /// control plane 一元化 (creo `mem_1CbmWjCGNi9z49s3r21TwQ`): projects は World 権威なので
-    /// CLI は SP を経由せず World daemon に直接 Unison RPC する (= projects.kdl 共有メモリの置換)。
-    pub world_cap: Option<Arc<RwLock<crate::capability::ProcessManagerCapability>>>,
+    /// control plane 一元化 (creo `mem_1CbmWjCGNi9z49s3r21TwQ`): projects は daemon 権威なので
+    /// CLI は SP を経由せず daemon に直接 Unison RPC する (= projects.kdl 共有メモリの置換)。
+    pub daemon_cap: Option<Arc<RwLock<crate::capability::ProcessManagerCapability>>>,
     /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (daemon-canonical 化)。
     ///
     /// registry channel handler が SP push (register snapshot / lanes diff) を受けた時、
     /// in-memory `lane_registry` への反映と並行して db に永続する。 これにより SP disconnect /
     /// daemon 再起動を越えて descriptor が生き残る (§3.3 re-animate / §4.1 喪失ゼロ)。
     pub vpdb: Option<crate::db::SharedVpDb>,
-    /// DeviceRegistry 🧲 EventBus の参照 — "world-device" Unison channel の data plane。
+    /// DeviceRegistry 🧲 EventBus の参照 — "daemon-device" Unison channel の data plane。
     ///
-    /// `WorldCapabilities.devices` が Some (= feature = "midi" + DeviceRegistry 稼働) のときのみ注入される。
-    /// world-device channel handler がこれを subscribe して `devices.*` event (device 接続/切断/
+    /// `MachineCapabilities.devices` が Some (= feature = "midi" + DeviceRegistry 稼働) のときのみ注入される。
+    /// daemon-device channel handler がこれを subscribe して `devices.*` event (device 接続/切断/
     /// 操作入力) を `DeviceEvent` に変換し、 vp-app に push する。
     pub devices_event_bus: Option<Arc<crate::capability::eventbus::EventBus>>,
     /// DeviceRegistry 🧲 registry 本体の参照 — "device" Unison channel (agent → daemon) の data plane。
     ///
     /// M2 / doc 26 §2: macOS menu bar agent (Swift `CoreMIDIWatcher`) が hot-plug を `ReportDevice`
     /// で報告する。`device` channel handler がこの handle 越しに `report_device_*` を呼び、registry
-    /// 更新 + `devices.*` emit を行う (emit は world-device bridge 経由で vp-app に届く)。
+    /// 更新 + `devices.*` emit を行う (emit は daemon-device bridge 経由で vp-app に届く)。
     #[cfg(feature = "midi")]
     pub devices: Option<Arc<RwLock<crate::devices::DeviceRegistry>>>,
-    /// L0 portless B-4 (wire-unison): World 中央 wire store の参照 — "wire" Unison channel の data plane。
+    /// L0 portless B-4 (wire-unison): daemon 中央 wire store の参照 — "wire" Unison channel の data plane。
     ///
-    /// 旧 `world_wire::call` の HTTP relay 先 (`POST /api/wire/*`) を unison channel に移行 (doc 27 §62
-    /// 「全通信 unison」)。run_world が **World process AppState と同一 Arc** を `with_wire` で plumb する
+    /// 旧 `daemon_wire::call` の HTTP relay 先 (`POST /api/wire/*`) を unison channel に移行 (doc 27 §62
+    /// 「全通信 unison」)。run_daemon が **daemon process AppState と同一 Arc** を `with_wire` で plumb する
     /// (同一プロセス)。`wire` channel handler がこれを使って wire の send/recv/thread/unread/latest/ack を
-    /// 中央 store に直結する。SP mode の DaemonState では None (= wire は World 専有)。
+    /// 中央 store に直結する。SP mode の DaemonState では None (= wire は Daemon 専有)。
     pub wiremsg_store: Option<crate::capability::WiremsgStore>,
     /// wire long-poll (`wire_recv`) の起床通知器 — `wiremsg_store` と対で plumb される (同 AppState 由来)。
     pub wire_notifier: Option<crate::capability::WireNotifier>,
     /// command 着信時に delivery loop を即 wake する Notify — `wire/send` で category=command を検出して叩く。
     pub delivery_notify: Option<Arc<tokio::sync::Notify>>,
-    /// 委譲 (delegation) の World 中央 store — "wire" channel の `delegation/*` method の data plane (doc 28 §6)。
+    /// 委譲 (delegation) の daemon 中央 store — "wire" channel の `delegation/*` method の data plane (doc 28 §6)。
     ///
-    /// `world_wire::call("/api/delegation/*")` は wire と同じ transport を共有するため、unison 移行も同 channel に
-    /// 相乗りする (path 分岐で dispatch)。run_world が AppState と同一 Arc を plumb する。
+    /// `daemon_wire::call("/api/delegation/*")` は wire と同じ transport を共有するため、unison 移行も同 channel に
+    /// 相乗りする (path 分岐で dispatch)。run_daemon が AppState と同一 Arc を plumb する。
     /// (`DelegationStore` は pub(crate) なので本 field も crate 可視に揃える)
     pub(crate) delegation_store: Option<crate::capability::DelegationStore>,
     /// L2 (doc 27 §5-3): event log（agent の episodic memory）。always-on daemon が in-memory ring で
@@ -156,7 +156,7 @@ impl Default for DaemonState {
             lane_change_tx,
             canvas_routers: Arc::new(RwLock::new(HashMap::new())),
             control_channels: Arc::new(crate::process::project_registry::ProjectRuntimes::new()),
-            world_cap: None,
+            daemon_cap: None,
             vpdb: None,
             devices_event_bus: None,
             #[cfg(feature = "midi")]
@@ -194,13 +194,13 @@ impl DaemonState {
 
     /// projects 操作の権威 (`ProcessManagerCapability`) を共有する。
     ///
-    /// HTTP `AppState.world` と同一の Arc を渡すことで、 Unison "world-control" channel から
+    /// HTTP `AppState.daemon` と同一の Arc を渡すことで、 Unison "daemon-control" channel から
     /// 受けた projects mutation を HTTP と同じ実体に反映する (= 入口は複数でも権威は 1 つ)。
-    pub fn with_world_cap(
+    pub fn with_daemon_cap(
         mut self,
-        world_cap: Arc<RwLock<crate::capability::ProcessManagerCapability>>,
+        daemon_cap: Arc<RwLock<crate::capability::ProcessManagerCapability>>,
     ) -> Self {
-        self.world_cap = Some(world_cap);
+        self.daemon_cap = Some(daemon_cap);
         self
     }
 
@@ -208,8 +208,8 @@ impl DaemonState {
     ///
     /// `control_channels` は SP 接続の live handle map（key = `path_key`）。 daemon server の
     /// process-proxy handler が populate し、 canvas/terminal_write の reverse-routing に使う。
-    /// World-side の nudge loop（delivery_actor / delegation reconcile）も同一 map を引いて
-    /// `lane_nudge` を所有 SP に forward するため、 `run_world` が hoist した同一 Arc を
+    /// Daemon-side の nudge loop（delivery_actor / delegation reconcile）も同一 map を引いて
+    /// `lane_nudge` を所有 SP に forward するため、 `run_daemon` が hoist した同一 Arc を
     /// DaemonState と両 loop の双方に注入する（別々に `new()` すると map が分裂して forward 不能）。
     pub(crate) fn with_control_channels(mut self, control_channels: ControlChannels) -> Self {
         self.control_channels = control_channels;
@@ -218,7 +218,7 @@ impl DaemonState {
 
     /// canvas 集約 map を**外から**共有する（boot 窓の根治）。
     ///
-    /// 既定では [`Default`] が内部で作るが、run_world は `ProjectRuntimes` と同一の map を
+    /// 既定では [`Default`] が内部で作るが、run_daemon は `ProjectRuntimes` と同一の map を
     /// 配る必要がある — project 起動が先行 subscribe の placeholder router を養子縁組する
     /// ため（別々に `new()` すると map が分裂し、placeholder 購読者が永遠に取り残される）。
     pub(crate) fn with_canvas_routers(
@@ -229,14 +229,14 @@ impl DaemonState {
         self
     }
 
-    /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (db/world) を共有する。
+    /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (db/machine) を共有する。
     ///
     /// registry channel handler がこの db に SP push を永続して daemon-canonical 化する。
     /// capability の boot load (`load_config`) と同一の db を指す (= 書いた truth を起動時に読む)。
     /// vp-app への lanes push を起こす通知路を**外から**差し替える（doc 44 §11）。
     ///
     /// 既定では [`new`](Self::new) が内部で作るが、fold-in 後は **project 側の
-    /// `publish_lanes` が生産者**になるため、World が先に channel を作って
+    /// `publish_lanes` が生産者**になるため、daemon が先に channel を作って
     /// `ProjectRuntimes` と DaemonState の両方へ配る必要がある。
     /// `process_lifecycle_tx` を capability と共有しているのと同じ構図。
     pub fn with_lane_change_tx(mut self, tx: tokio::sync::broadcast::Sender<String>) -> Self {
@@ -251,7 +251,7 @@ impl DaemonState {
 
     /// DeviceRegistry 🧲 EventBus を共有する (feature = "midi")。
     ///
-    /// `run_world` が `WorldCapabilities.devices` の `event_bus()` を渡し、 world-device channel
+    /// `run_daemon` が `MachineCapabilities.devices` の `event_bus()` を渡し、 daemon-device channel
     /// handler がこれを subscribe して device event を vp-app に push する。
     pub fn with_devices_event_bus(
         mut self,
@@ -264,19 +264,19 @@ impl DaemonState {
     /// DeviceRegistry 🧲 registry 本体を共有する (feature = "midi")。
     ///
     /// `device` channel handler が agent の `ReportDevice` を受けて registry を更新するために使う。
-    /// `with_devices_event_bus` と同じ `WorldCapabilities.devices` を指す (event_bus は registry 内蔵)。
+    /// `with_devices_event_bus` と同じ `MachineCapabilities.devices` を指す (event_bus は registry 内蔵)。
     #[cfg(feature = "midi")]
     pub fn with_devices(mut self, devices: Arc<RwLock<crate::devices::DeviceRegistry>>) -> Self {
         self.devices = Some(devices);
         self
     }
 
-    /// L0 portless B-4 (wire-unison): World 中央 wire/delegation store を共有する。
+    /// L0 portless B-4 (wire-unison): daemon 中央 wire/delegation store を共有する。
     ///
-    /// run_world が World process `AppState` 構築後に **同一 Arc** を渡す (同一プロセスなので clone で共有)。
-    /// "wire" channel handler がこれらを使って `world_wire::call` の旧 HTTP relay 先を unison で serve する。
+    /// run_daemon が daemon process `AppState` 構築後に **同一 Arc** を渡す (同一プロセスなので clone で共有)。
+    /// "wire" channel handler がこれらを使って `daemon_wire::call` の旧 HTTP relay 先を unison で serve する。
     /// `wiremsg_store` / `delegation_store` は DB 接続失敗時 None (= 当該 method は error を返す)。
-    /// (`DelegationStore` が pub(crate) のため本 method も crate 可視。 caller は同一 crate の run_world)
+    /// (`DelegationStore` が pub(crate) のため本 method も crate 可視。 caller は同一 crate の run_daemon)
     pub(crate) fn with_wire(
         mut self,
         wiremsg_store: Option<crate::capability::WiremsgStore>,
@@ -296,7 +296,7 @@ impl DaemonState {
 ///
 /// ## doc 45 — processes 一覧の唯一の面
 ///
-/// 旧 HTTP `GET /api/world/processes` は段 4 で撤去し、稼働中 project を配るのはここだけに
+/// 旧 HTTP `GET /api/daemon/processes` は段 4 で撤去し、稼働中 project を配るのはここだけに
 /// なった（vp-app は段 3、CLI は段 2 で移設済み）。map を JSON にする写し方は手書き object を
 /// やめて `RunningProcess` の Serialize をそのまま使う —— field を足した時に写し漏れる、が
 /// 構造的に起きない。振る舞いテスト: `registry_list_snapshot_carries_name_and_port`。
@@ -311,30 +311,30 @@ pub(crate) async fn registry_process_snapshot(
 }
 
 // =========================================================================
-// World Control Channel ハンドラー（projects mutation: CLI → World 直接 Unison）
+// daemon control Channel ハンドラー（projects mutation: CLI → Daemon 直接 Unison）
 // =========================================================================
 
-/// "world-control" channel の method を `ProcessManagerCapability` に dispatch する。
+/// "daemon-control" channel の method を `ProcessManagerCapability` に dispatch する。
 ///
 /// 戻り値は成功時 result JSON、失敗時は `Err(String)`。 caller は Unison の慣習 (VP-163) に
 /// 従い success frame に `{"error": ...}` を詰めて返す (= Unison は専用 error frame を持たない)。
 ///
 /// ## doc 45 — control plane の唯一の入口
 ///
-/// 段 1 で `routes/world.rs`（旧 HTTP）にしか無かった操作をここへ出し
+/// 段 1 で `routes/daemon.rs`（旧 HTTP）にしか無かった操作をここへ出し
 /// （`projects/update` `projects/reload` `projects/sync` `projects/restart` `projects/pointview`
 /// `lanes/create` `lanes/set_active`、および `lanes/list` の filter/sort）、段 2 で CLI・
 /// 段 3 で vp-app を移設、**段 4 で HTTP route を撤去**した。projects CRUD / lifecycle / lanes を
 /// 触れる面は現在ここだけで、HTTP に残るのは `/api/health` `/api/shutdown` の 2 本のみ（§2）。
 ///
-/// route 層にしか無かった orchestration は `routes::world` の `pub(crate)` 関数に括り出して
+/// route 層にしか無かった orchestration は `routes::daemon` の `pub(crate)` 関数に括り出して
 /// ある（`apply_project_update` / `collect_lanes` / `resolve_create_lane_args`）。段 1 で
 /// 1 実装に畳んであったので、段 4 の撤去は handler の殻を剥がすだけで済んだ。
 ///
 /// `pub(crate)` なのは同 crate のテストから直接叩くため（Unison 経路を実際に張らずに
 /// dispatch の振る舞いを固定する）。
-pub(crate) async fn handle_world_control(
-    world_cap: &Arc<RwLock<crate::capability::ProcessManagerCapability>>,
+pub(crate) async fn handle_daemon_control(
+    daemon_cap: &Arc<RwLock<crate::capability::ProcessManagerCapability>>,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -343,7 +343,7 @@ pub(crate) async fn handle_world_control(
     // 内部 mutation は ProcessManagerCapability の Arc<RwLock> field で直列化される。
     match method {
         "projects/list" => {
-            let list = world_cap.read().await.list_projects().await;
+            let list = daemon_cap.read().await.list_projects().await;
             serde_json::to_value(&list).map_err(|e| e.to_string())
         }
         "projects/add" => {
@@ -353,7 +353,7 @@ pub(crate) async fn handle_world_control(
             let path = payload["path"]
                 .as_str()
                 .ok_or_else(|| "path is required".to_string())?;
-            let info = world_cap
+            let info = daemon_cap
                 .read()
                 .await
                 .add_project(name, path)
@@ -365,7 +365,7 @@ pub(crate) async fn handle_world_control(
             let path = payload["path"]
                 .as_str()
                 .ok_or_else(|| "path is required".to_string())?;
-            world_cap
+            daemon_cap
                 .read()
                 .await
                 .remove_project(path)
@@ -380,7 +380,7 @@ pub(crate) async fn handle_world_control(
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            world_cap
+            daemon_cap
                 .read()
                 .await
                 .rename_project(path, name)
@@ -395,7 +395,7 @@ pub(crate) async fn handle_world_control(
             let enabled = payload["enabled"]
                 .as_bool()
                 .ok_or_else(|| "enabled is required".to_string())?;
-            world_cap
+            daemon_cap
                 .read()
                 .await
                 .set_project_enabled(path, enabled)
@@ -403,7 +403,7 @@ pub(crate) async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "ok", "path": path, "enabled": enabled}))
         }
-        // doc 45 段 1: HTTP `POST /api/world/projects/update` の Unison 版。
+        // doc 45 段 1: HTTP `POST /api/daemon/projects/update` の Unison 版。
         // rename と set_enabled をまとめて適用する部分更新（vp-app の編集 dialog が使う形）。
         // 個別の `projects/rename` / `projects/set_enabled` と実体は同じで、こちらは
         // 「1 往復で両方直す」ための合成入口（HTTP と同じ `apply_project_update` を共有）。
@@ -413,15 +413,15 @@ pub(crate) async fn handle_world_control(
                 .ok_or_else(|| "path is required".to_string())?;
             let name = payload["name"].as_str();
             let enabled = payload["enabled"].as_bool();
-            let cap = world_cap.read().await;
-            crate::process::routes::world::apply_project_update(&cap, path, name, enabled).await?;
+            let cap = daemon_cap.read().await;
+            crate::process::routes::daemon::apply_project_update(&cap, path, name, enabled).await?;
             Ok(serde_json::json!({"status": "updated", "path": path}))
         }
-        // doc 45 段 1: HTTP `POST /api/world/projects/sync` の Unison 版。
+        // doc 45 段 1: HTTP `POST /api/daemon/projects/sync` の Unison 版。
         // projects.kdl / db から ghost project（dir が実在しない登録）を除去する。
         // `vp sync` / `vp app start` が叩く（daemon 不在時は CLI 側が kdl 直操作に落ちる）。
         "projects/sync" => {
-            let outcome = world_cap
+            let outcome = daemon_cap
                 .read()
                 .await
                 .sync_projects()
@@ -429,17 +429,17 @@ pub(crate) async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({ "removed": outcome.removed }))
         }
-        // doc 45 段 1: HTTP `POST /api/world/projects/reload` の Unison 版。
+        // doc 45 段 1: HTTP `POST /api/daemon/projects/reload` の Unison 版。
         // projects.kdl を読み直して in-memory projects に反映する（VP-189）。
         // CLI が projects.kdl を書き換えた後に稼働 daemon の乖離を解消する best-effort 通知。
         "projects/reload" => {
-            world_cap.read().await.reload_config().await;
+            daemon_cap.read().await.reload_config().await;
             Ok(serde_json::json!({"status": "reloaded"}))
         }
         "projects/reorder" => {
             let paths: Vec<String> = serde_json::from_value(payload["paths"].clone())
                 .map_err(|e| format!("paths is required (string array): {}", e))?;
-            world_cap
+            daemon_cap
                 .read()
                 .await
                 .reorder_projects(&paths)
@@ -449,14 +449,14 @@ pub(crate) async fn handle_world_control(
         }
         // doc 44 P1 (fold-in): 単一 project の lifecycle 制御。旧 `vp sp start/stop` の後継で、
         // 名詞を「SP（プロセス）」から「project」へ移した（D2: project はプロセスではなく
-        // World が抱える map のエントリ）。旧 `vp sp start` は project を World の外で
-        // 二重に走らせる口だったが、本 RPC は World 内の registry を操作するため
+        // daemon が抱える map のエントリ）。旧 `vp sp start` は project を daemon の外で
+        // 二重に走らせる口だったが、本 RPC は Daemon 内の registry を操作するため
         // 二重起動が原理的に表現できない（既に居れば `start` は no-op になる）。
         "projects/start" => {
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            let proc = world_cap
+            let proc = daemon_cap
                 .read()
                 .await
                 .start_process(name)
@@ -472,7 +472,7 @@ pub(crate) async fn handle_world_control(
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            world_cap
+            daemon_cap
                 .read()
                 .await
                 .stop_process(name)
@@ -480,24 +480,24 @@ pub(crate) async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "stopped", "name": name}))
         }
-        // doc 45 段 1: HTTP `POST /api/world/processes/{name}/restart` の Unison 版。
-        // stop + start を World 側で atomically に繋ぐ（MCP の `restart` tool が唯一の消費者）。
+        // doc 45 段 1: HTTP `POST /api/daemon/processes/{name}/restart` の Unison 版。
+        // stop + start を daemon 側で atomically に繋ぐ（MCP の `restart` tool が唯一の消費者）。
         //
         // 内部に grace sleep + 起動確認が入るので、HTTP handler と同じく **read guard を
         // 保持したまま await しない**（capability を clone してから解放する）。ここを guard 越しに
-        // すると restart 中の数秒、他の world-control / HTTP リクエストが全部待たされる。
+        // すると restart 中の数秒、他の daemon-control / HTTP リクエストが全部待たされる。
         "projects/restart" => {
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
             let cap = {
-                let guard = world_cap.read().await;
+                let guard = daemon_cap.read().await;
                 guard.clone()
             };
             let proc = cap.restart_process(name).await.map_err(|e| e.to_string())?;
             serde_json::to_value(&proc).map_err(|e| e.to_string())
         }
-        // doc 45 段 1: HTTP `POST /api/world/processes/{name}/pointview` の Unison 版。
+        // doc 45 段 1: HTTP `POST /api/daemon/processes/{name}/pointview` の Unison 版。
         // project の PointView を開く（未起動なら内部で start_process する）。
         // restart と同じ理由で capability を clone してから await する。
         "projects/pointview" => {
@@ -505,7 +505,7 @@ pub(crate) async fn handle_world_control(
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
             let cap = {
-                let guard = world_cap.read().await;
+                let guard = daemon_cap.read().await;
                 guard.clone()
             };
             cap.open_pointview(name).await.map_err(|e| e.to_string())?;
@@ -513,22 +513,22 @@ pub(crate) async fn handle_world_control(
         }
         // 全 project 横断の lane 一覧（read-only）。
         //
-        // 従来この面は HTTP `GET /api/world/lanes` にしか無く、CLI は Unison で繋いだ後に
+        // 従来この面は HTTP `GET /api/daemon/lanes` にしか無く、CLI は Unison で繋いだ後に
         // わざわざ HTTP を叩く必要があった。control plane は Unison に寄せる方針（KDL schema +
         // drift テスト + MCP tool 合成が付いてくる）なので、read 面をここに置く。
         // project 単位の詳細は process-proxy の `lanes_list` が持つ。
         //
         // doc 45 段 1: HTTP 版の query filter (project / lane / stand) と表示順を取り込んだ。
         // ここが素の flatten のままだと、CLI を Unison に移した瞬間に一覧の並びが静かに変わる。
-        // filter/sort は `routes::world::collect_lanes` を HTTP と共有する。
+        // filter/sort は `routes::daemon::collect_lanes` を HTTP と共有する。
         "lanes/list" => {
-            let query: crate::process::routes::world::LanesQuery =
+            let query: crate::process::routes::daemon::LanesQuery =
                 serde_json::from_value(payload).unwrap_or_default();
-            let cap = world_cap.read().await;
-            let lanes = crate::process::routes::world::collect_lanes(&cap, &query).await;
+            let cap = daemon_cap.read().await;
+            let lanes = crate::process::routes::daemon::collect_lanes(&cap, &query).await;
             Ok(serde_json::json!({ "count": lanes.len(), "lanes": lanes }))
         }
-        // doc 45 段 1: HTTP `POST /api/world/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
+        // doc 45 段 1: HTTP `POST /api/daemon/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
         // doc 44 §9.4: 実体は project runtime の lane 作成 core（`create_performer_orchestrated`）
         // 1 本で、`create_lane` はそこへの adapter。ここに残るのは「省略時 default の導出」だけ
         // （data/calc は route の責務 = `resolve_create_lane_args` を CLI/GUI と共有）。
@@ -539,13 +539,13 @@ pub(crate) async fn handle_world_control(
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            let (branch, stand) = crate::process::routes::world::resolve_create_lane_args(
+            let (branch, stand) = crate::process::routes::daemon::resolve_create_lane_args(
                 path,
                 name,
                 payload["branch"].as_str(),
                 payload["stand"].as_str(),
             );
-            let info = world_cap
+            let info = daemon_cap
                 .read()
                 .await
                 .create_lane(path, name, &branch, &stand)
@@ -553,7 +553,7 @@ pub(crate) async fn handle_world_control(
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(&info).map_err(|e| e.to_string())
         }
-        // doc 45 段 1: HTTP `POST /api/world/lanes/active` の Unison 版。
+        // doc 45 段 1: HTTP `POST /api/daemon/lanes/active` の Unison 版。
         // project の active lane (presence、Model Q) を daemon-canonical に設定する。
         "lanes/set_active" => {
             let path = payload["path"]
@@ -562,7 +562,7 @@ pub(crate) async fn handle_world_control(
             let address = payload["address"]
                 .as_str()
                 .ok_or_else(|| "address is required".to_string())?;
-            world_cap
+            daemon_cap
                 .read()
                 .await
                 .set_active_lane(path, address)
@@ -572,12 +572,12 @@ pub(crate) async fn handle_world_control(
         }
         // doc 44 §7.5: Project Host の帳簿（見送りの記録）を CLI から触る 3 面。
         //
-        // 帳簿は db/world にあり surrealkv の OS 排他ロックで World が専有するので、
+        // 帳簿は db/machine にあり surrealkv の OS 排他ロックで daemon が専有するので、
         // `vp lane cleanup` / `vp lane history` は直接読み書きできない（§8.4 と同じ理由）。
         //
         // ⚠️ **名前 → id の解決はここでしない**。CLI が観測と一緒に `lane_id` を送る。
-        // 見送りの対象には「World が一度も見たことのない lane」（disk にだけ在る worktree）が
-        // 含まれ、World の registry から引くとそれらが黙って記録から落ちるため — 落ちるのは
+        // 見送りの対象には「daemon が一度も見たことのない lane」（disk にだけ在る worktree）が
+        // 含まれ、daemon の registry から引くとそれらが黙って記録から落ちるため — 落ちるのは
         // まさに放置されて溜まった lane なので、追いたいものだけが追えなくなる。
         // id の SSOT は lane_ids state file で、両プロセスが同じ derivation で引く。
         "host/farewell_observe" => {
@@ -587,7 +587,7 @@ pub(crate) async fn handle_world_control(
             let observations: Vec<crate::host::ledger::FarewellObservation> =
                 serde_json::from_value(payload["observations"].clone())
                     .map_err(|e| format!("observations が不正: {e}"))?;
-            let db = world_cap.read().await.vpdb().cloned();
+            let db = daemon_cap.read().await.vpdb().cloned();
             let now = chrono::Utc::now().to_rfc3339();
             let pending = crate::host::ledger::record_farewell_observations(
                 db.as_ref(),
@@ -605,7 +605,7 @@ pub(crate) async fn handle_world_control(
             let lanes: Vec<crate::host::ledger::FarewellObservation> =
                 serde_json::from_value(payload["lanes"].clone())
                     .map_err(|e| format!("lanes が不正: {e}"))?;
-            let db = world_cap.read().await.vpdb().cloned();
+            let db = daemon_cap.read().await.vpdb().cloned();
             let now = chrono::Utc::now().to_rfc3339();
             let recorded =
                 crate::host::ledger::record_farewell_reclaimed(db.as_ref(), path, &lanes, &now)
@@ -617,12 +617,12 @@ pub(crate) async fn handle_world_control(
                 .as_str()
                 .ok_or_else(|| "path is required".to_string())?;
             let limit = payload["limit"].as_u64().unwrap_or(0) as usize;
-            let db = world_cap.read().await.vpdb().cloned();
+            let db = daemon_cap.read().await.vpdb().cloned();
             let entries = crate::host::ledger::farewell_history(db.as_ref(), path, limit).await;
             Ok(serde_json::json!({ "entries": entries }))
         }
-        // chronista-hub federation: hub registry に居る world 一覧を取得する。
-        // SSOT 原則により hub と話すのは TheWorld のみ。CLI / プログラム経路はこの RPC を叩く
+        // chronista-hub federation: hub registry に居る daemon 一覧を取得する。
+        // SSOT 原則により hub と話すのは daemon のみ。CLI / プログラム経路はこの RPC を叩く
         // (= 直接 hub に接続しない)。hub addr（env > config.kdl）未設定なら federation 無効を返す。
         "hub/discover" => {
             let Some(addr) = crate::daemon::hub_client::hub_addr() else {
@@ -634,17 +634,17 @@ pub(crate) async fn handle_world_control(
             let client = crate::daemon::hub_client::HubClient::connect(&addr, 3)
                 .await
                 .map_err(|e| e.to_string())?;
-            let worlds = client.discover().await.map_err(|e| e.to_string())?;
+            let nodes = client.discover().await.map_err(|e| e.to_string())?;
             // channel 慣習 (registry.list={processes} / events.query={events}) に合わせ
             // object で包む。unison-mcp synthesized tool の returns 記述 (vp-daemon.kdl) と一致。
-            Ok(serde_json::json!({ "worlds": worlds }))
+            Ok(serde_json::json!({ "worlds": nodes }))
         }
         // F1b heartbeat: surface (vp-app) の共有 connection liveness probe。 client→server の
         // 一方向で、 server は応答するだけ (世界状態に触れない no-op)。 vp-app の
-        // `spawn_world_conn_manager` が 15s ごとに送り、 応答が来なければ connection 死と判断して
+        // `spawn_daemon_conn_manager` が 15s ごとに送り、 応答が来なければ connection 死と判断して
         // 再接続する (passive subscriber だけだと dead 検知が QUIC idle timeout 60s 任せになる対策)。
         "ping" => Ok(serde_json::json!({ "pong": true })),
-        other => Err(format!("不明なメソッド: world-control.{}", other)),
+        other => Err(format!("不明なメソッド: daemon-control.{}", other)),
     }
 }
 
@@ -659,7 +659,7 @@ pub(crate) async fn handle_world_control(
 /// device.report_device: agent (Swift menu bar) からの CoreMIDI hot-plug 報告を DeviceRegistry registry に反映する。
 ///
 /// doc 26 §2 `ReportDevice` request。`state` = "connected" | "disconnected" で分岐し、
-/// `DeviceRegistry::report_device_*` が registry 更新 + `devices.*` emit を行う (emit は既存 world-device
+/// `DeviceRegistry::report_device_*` が registry 更新 + `devices.*` emit を行う (emit は既存 daemon-device
 /// bridge 経由で vp-app に届く)。
 #[cfg(feature = "midi")]
 async fn handle_device_report(
@@ -709,23 +709,23 @@ async fn send_channel_response(
 /// `list_all_lanes` の cross-project join を純粋化した共有関数。
 ///
 /// `running_processes`（port/name の SSOT）と `lane_registry` を project ごとに join し、
-/// `world_cap` の project_order で安定ソートした projects 配列（`Vec<serde_json::Value>`）を返す。
-/// "world-process" channel の `list_all_lanes` handler と、DeviceRegistry 常駐 ROTO loop の
+/// `daemon_cap` の project_order で安定ソートした projects 配列（`Vec<serde_json::Value>`）を返す。
+/// "daemon-process" channel の `list_all_lanes` handler と、DeviceRegistry 常駐 ROTO loop の
 /// `InProcessLaneSource`（in-process 直読み）が **同一ロジックを共有**することで、
 /// CLI（QUIC 経由）と daemon（直読み）で lane 並びが完全一致する（doc 23 の重複回避）。
 ///
 /// ロック順序: running_processes → lane_registry（register と同順、deadlock 回避）。
 #[allow(clippy::type_complexity)]
-pub(crate) async fn build_world_lanes(
+pub(crate) async fn build_node_lanes(
     running_processes: &Arc<RwLock<HashMap<String, RunningProcess>>>,
     lane_registry: &Option<
         Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
     >,
-    world_cap: &Option<Arc<RwLock<crate::capability::ProcessManagerCapability>>>,
+    daemon_cap: &Option<Arc<RwLock<crate::capability::ProcessManagerCapability>>>,
 ) -> Vec<serde_json::Value> {
     // 並び順は sidebar と一致させる（= project_order）。物理 controller は位置 = 意味なので、
     // track button N の位置が sidebar の N 番目と対応する必要がある。
-    let order: Vec<String> = match world_cap {
+    let order: Vec<String> = match daemon_cap {
         Some(w) => w
             .read()
             .await
@@ -775,7 +775,7 @@ pub(crate) async fn build_world_lanes(
 ///
 /// `lane_registry[path_key]` の現値を `ProcessMessage::LanesSnapshot` に包み、 SP "lanes" channel と
 /// **同一の event 形** (`method="snapshot"`、 payload = `{"type":"lanes_snapshot","lanes":[...]}`) で
-/// 送る。 これにより vp-app の consumer (`run_lanes_session`) は接続先が SP→World に変わっても無改造。
+/// 送る。 これにより vp-app の consumer (`run_lanes_session`) は接続先が SP→daemon に変わっても無改造。
 /// 登録が無い project は空 Vec を送る (SP 未登録/lane 無しを「空」として正しく表現)。
 ///
 /// FSM 投影 (2026-07-11): 送信直前に performer LaneInfo へ `flow_state` を enrich する
@@ -827,8 +827,8 @@ async fn send_lanes_snapshot(
 /// FSM 投影 (2026-07-11): performer LaneInfo へ dev-flow FSM の現在 state を enrich する。
 ///
 /// source は `vp flow progress` / MCP `flow_progress` と同一判定 (`flow::derive_flow_state`):
-/// wire store の latest msg + 未 ack needs_user + `LaneInfo.performer_status`。 World は
-/// wire store を in-process に持つため hop なしで derive できる (= 計算点を World に置く理由)。
+/// wire store の latest msg + 未 ack needs_user + `LaneInfo.performer_status`。 daemon は
+/// wire store を in-process に持つため hop なしで derive できる (= 計算点を daemon に置く理由)。
 /// conductor は dev-flow FSM の対象外 (spine の頭) で `None` のまま。 store クエリ失敗は
 /// 当該 lane を `None` に留めて degrade (client 側は pid heuristic に fallback)。
 async fn enrich_lanes_flow_state(
@@ -871,7 +871,7 @@ async fn enrich_lanes_flow_state(
     }
 }
 
-/// `WireMessage` (typed、 World in-process) → `LatestMsgView`。 JSON round-trip 不要の直変換。
+/// `WireMessage` (typed、 Daemon in-process) → `LatestMsgView`。 JSON round-trip 不要の直変換。
 fn wire_msg_view(m: &crate::capability::WireMessage) -> crate::flow::LatestMsgView {
     crate::flow::LatestMsgView {
         from_addr: m.from.clone(),
@@ -1155,7 +1155,7 @@ pub(crate) async fn forward_to_sp_control(
     payload: &serde_json::Value,
 ) -> serde_json::Value {
     // doc 44 P1 (fold-in): 旧実装は path_key で SP の QUIC control channel を逆引きし
-    // request を投げていた。SP プロセスが World に畳み込まれた今、同じ dispatch
+    // request を投げていた。SP プロセスが daemon に畳み込まれた今、同じ dispatch
     // (`dispatch_process_method`) を **同一プロセス内で直接呼ぶ**。
     // これで reverse-route の取りこぼし (SP 未接続の無言破棄 / refire の空振りレース /
     // start・stop の到着順非保証) というバグクラスが発生源ごと消える。
@@ -1164,10 +1164,10 @@ pub(crate) async fn forward_to_sp_control(
 
 /// L0 portless B-4 (wire-unison): "wire" channel の method dispatch。
 ///
-/// `world_wire::call` が path `"/api/<rest>"` を method=`"<rest>"` (= `"wire/send"` /
+/// `daemon_wire::call` が path `"/api/<rest>"` を method=`"<rest>"` (= `"wire/send"` /
 /// `"delegation/create"` 等) にして本 channel に投げてくる。prefix で wire / delegation を切り分け、
 /// `routes::{wire,delegation}::dispatch_*` に委譲する。store は `with_wire` で plumb された
-/// World process AppState 由来の Arc。未初期化 (SP mode / DB 接続失敗) は Err を返し、channel
+/// daemon process AppState 由来の Arc。未初期化 (SP mode / DB 接続失敗) は Err を返し、channel
 /// handler が `{"error": ...}` フレームに詰める (旧 HTTP handler の error JSON と等価)。
 async fn handle_wire_channel(
     state: &DaemonState,
@@ -1175,11 +1175,11 @@ async fn handle_wire_channel(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     // 供給 push 根治（session chip 凍結、2026-07-17）: claude UserPromptSubmit hook が
-    // cc_session pointer を動かした時の変化通知。SP は portless で hook は World しか
+    // cc_session pointer を動かした時の変化通知。SP は portless で hook は Daemon しか
     // 知らないため、ここで project 名 → path_key を lane_registry から逆引きし、当該 SP の
     // control channel に `lane_session_changed` を forward する。SP が真値を re-enrich して
     // `Diff::Update` を push → 本 daemon の "lanes/update" 受信 → registry replace +
-    // lanes snapshot 再 push、という既存経路に乗る（World は routing のみ、真実源は SP）。
+    // lanes snapshot 再 push、という既存経路に乗る（daemon は routing のみ、真実源は SP）。
     // SP 不在 / 未接続は Err（hook 側は fail-open で握る）。
     if method == "lane/session-changed" {
         let project = payload
@@ -1215,7 +1215,7 @@ async fn handle_wire_channel(
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を SP へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
         // 新旧 binary 混在に安全。`session` 不在も同様で、SP 側が root 宛の後方互換に倒す
-        // （World は routing のみ — ここで欠けた値を補完しない）。
+        // （daemon は routing のみ — ここで欠けた値を補完しない）。
         let mut fwd = serde_json::json!({ "lane": display });
         if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
             fwd["session_id"] = sid.into();
@@ -1239,58 +1239,58 @@ async fn handle_wire_channel(
         return Ok(resp);
     }
     if let Some(sub) = method.strip_prefix("wire/") {
-        // flow ③: federation 送信。宛先 world が remote なら relay 経由で送る（ローカル store は使わない）。
-        // payload = `{world: <宛先 world handle>, from, to, body, reply_to?}`。SSOT 原則で hub と話すのは
-        // TheWorld のみなので、CLI ではなくここ（daemon）が federate_wire_send を呼ぶ。
+        // flow ③: federation 送信。宛先 daemon が remote なら relay 経由で送る（ローカル store は使わない）。
+        // payload = `{daemon: <宛先 daemon handle>, from, to, body, reply_to?}`。SSOT 原則で hub と話すのは
+        // daemon のみなので、CLI ではなくここ（daemon）が federate_wire_send を呼ぶ。
         if sub == "federate" {
-            let world = payload
-                .get("world")
+            let daemon = payload
+                .get("node")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| "wire/federate: 'world' (宛先 world handle) required".to_string())?
+                .ok_or_else(|| "wire/federate: 'daemon' (宛先 daemon handle) required".to_string())?
                 .to_string();
             let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
                 "wire/federate: hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）— federation 無効"
                     .to_string()
             })?;
             let from_label = crate::daemon::hub_client::resolve_handle(None);
-            // envelope = payload から `world`（transport 用 routing key）を除いた wire 本体。
+            // envelope = payload から `daemon`（transport 用 routing key）を除いた wire 本体。
             let mut envelope = payload;
             if let Some(obj) = envelope.as_object_mut() {
-                obj.remove("world");
+                obj.remove("node");
             }
             crate::daemon::hub_client::federate_wire_send(
                 &hub_addr,
-                &world,
+                &daemon,
                 &from_label,
                 &envelope,
             )
             .await
             .map_err(|e| e.to_string())?;
-            return Ok(serde_json::json!({ "status": "ok", "federated": world }));
+            return Ok(serde_json::json!({ "status": "ok", "federated": daemon }));
         }
-        // discovery（flow step 2）: 遠方 world の lane 一覧を問い合わせる（relay 上の request-response）。
-        // payload = `{world: <宛先 world handle>}`。「在庫確認」: 宛先を知らないときに lane を列挙する。
+        // discovery（flow step 2）: 遠方 node の lane 一覧を問い合わせる（relay 上の request-response）。
+        // payload = `{daemon: <宛先 daemon handle>}`。「在庫確認」: 宛先を知らないときに lane を列挙する。
         if sub == "discover-lanes" {
-            let world = payload
-                .get("world")
+            let daemon = payload
+                .get("node")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
-                    "wire/discover-lanes: 'world' (宛先 world handle) required".to_string()
+                    "wire/discover-lanes: 'daemon' (宛先 daemon handle) required".to_string()
                 })?
                 .to_string();
             let hub_addr = crate::daemon::hub_client::hub_addr().ok_or_else(|| {
                 "wire/discover-lanes: hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）— federation 無効"
                     .to_string()
             })?;
-            let lanes = crate::daemon::hub_client::federate_discover_lanes(&hub_addr, &world)
+            let lanes = crate::daemon::hub_client::federate_discover_lanes(&hub_addr, &daemon)
                 .await
                 .map_err(|e| e.to_string())?;
-            return Ok(serde_json::json!({ "status": "ok", "world": world, "lanes": lanes }));
+            return Ok(serde_json::json!({ "status": "ok", "node": daemon, "lanes": lanes }));
         }
         let store = state.wiremsg_store.as_ref().ok_or_else(|| {
-            "wire store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
+            "wire store not initialized (daemon DB 接続失敗 or SP mode)".to_string()
         })?;
         let notifier = state
             .wire_notifier
@@ -1316,7 +1316,7 @@ async fn handle_wire_channel(
         result
     } else if let Some(sub) = method.strip_prefix("delegation/") {
         let store = state.delegation_store.as_ref().ok_or_else(|| {
-            "delegation store not initialized (TheWorld DB 接続失敗 or SP mode)".to_string()
+            "delegation store not initialized (daemon DB 接続失敗 or SP mode)".to_string()
         })?;
         crate::process::routes::delegation::dispatch_delegation(store, sub, payload).await
     } else {
@@ -1326,7 +1326,7 @@ async fn handle_wire_channel(
 
 /// Daemon の Unison QUIC サーバーを起動する
 ///
-/// world-process / events / wire / registry / device 等の live channel ハンドラーを登録し、
+/// daemon-process / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // doc 44 P1 の後始末: fold-in で読まれなくなった旧 per-project DB (`db/sp_*`) を回収する。
@@ -1413,15 +1413,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // world-process Channel (VP-154 PR-2)
+    // daemon-process Channel (VP-154 PR-2)
     //
-    // World 内側 hub の data plane を Unison 経由で expose。
+    // Daemon 内側 hub の data plane を Unison 経由で expose。
     //   - `list`      : RPC、 現在の running_processes snapshot を JSON で返す
     //   - `subscribe` : push stream、 register/unregister/disconnect の lifecycle event を
     //                   `send_event("event", ProcessLifecycleEvent)` で client に realtime push
     //
     // 経路: start_process / stop_process (in-process 起動元) → process_lifecycle_tx broadcast
-    //       → 本 channel の subscribe handler → client (vp-app / 別 World / 将来 hub gateway)。
+    //       → 本 channel の subscribe handler → client (vp-app / 別 Daemon / 将来 hub gateway)。
     //   doc 44 P1 (fold-in) 以前は「SP register/heartbeat (QUIC Push) → registry channel」が
     //   生産者だったが、SP 消滅で in-process の start/stop_process が daemon-canonical に引き継いだ。
     //
@@ -1433,15 +1433,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         let process_lifecycle_tx_for_channel = state.process_lifecycle_tx.clone();
         // cross-project lane view (ROTO `list_all_lanes`) のため lane_registry も capture。
         let lane_registry_for_channel = state.lane_registry.clone();
-        // sidebar と同じ project 順 (project_order) を引くため world_cap も capture。
-        let world_cap_for_channel = state.world_cap.clone();
+        // sidebar と同じ project 順 (project_order) を引くため daemon_cap も capture。
+        let daemon_cap_for_channel = state.daemon_cap.clone();
         server
-            .register_channel("world-process", {
+            .register_channel("daemon-process", {
                 move |_ctx, stream| {
                     let running_processes = running_processes_snapshot.clone();
                     let process_lifecycle_tx = process_lifecycle_tx_for_channel.clone();
                     let lane_registry = lane_registry_for_channel.clone();
-                    let world_cap = world_cap_for_channel.clone();
+                    let daemon_cap = daemon_cap_for_channel.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         loop {
@@ -1489,10 +1489,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     // cross-project lane view: running_processes (port/name の SSOT)
                                     // と lane_registry を join し、project ごとに lanes を束ねて返す。
                                     // ROTO の cross-project 8-slot LCD が consumer。join 本体は
-                                    // build_world_lanes に抽出し、DeviceRegistry 常駐 ROTO loop の
+                                    // build_node_lanes に抽出し、DeviceRegistry 常駐 ROTO loop の
                                     // InProcessLaneSource と共有する (lane 並び一致)。
                                     let projects =
-                                        build_world_lanes(&running_processes, &lane_registry, &world_cap)
+                                        build_node_lanes(&running_processes, &lane_registry, &daemon_cap)
                                             .await;
                                     if channel
                                         .send_response(
@@ -1529,7 +1529,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                                     Ok(v) => v,
                                                     Err(e) => {
                                                         tracing::warn!(
-                                                            "world-process event serialize 失敗: {}",
+                                                            "daemon-process event serialize 失敗: {}",
                                                             e
                                                         );
                                                         continue;
@@ -1547,7 +1547,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                                 tokio::sync::broadcast::error::RecvError::Lagged(n),
                                             ) => {
                                                 tracing::warn!(
-                                                    "world-process subscribe lagged: {} events dropped",
+                                                    "daemon-process subscribe lagged: {} events dropped",
                                                     n
                                                 );
                                             }
@@ -1566,7 +1566,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                             &method,
                                             &serde_json::json!({
                                                 "error": format!(
-                                                    "不明なメソッド: world-process.{}",
+                                                    "不明なメソッド: daemon-process.{}",
                                                     method
                                                 )
                                             }),
@@ -1583,10 +1583,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // "lanes" Channel（L0 SP-portless lanes slice — vp-app per-project lane 購読の World 集約版）
+    // "lanes" Channel（L0 SP-portless lanes slice — vp-app per-project lane 購読の Daemon 集約版）
     // =========================================================================
     // 旧経路では vp-app が各 SP (:33000+) の "lanes" channel に直結して project ごとの lane
-    // snapshot を購読していた。 SP-portless 化により、 vp-app は World :32000 の本 channel 1 本に
+    // snapshot を購読していた。 SP-portless 化により、 vp-app は Daemon :32000 の本 channel 1 本に
     // 集約する。
     //
     // 経路: SP register/lanes-diff (QUIC Push) → registry channel → lane_registry + lane_change_tx
@@ -1674,16 +1674,16 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // "gui-ingest" Channel（SP → World の GUI-bound content push 受け口。旧名 "canvas-ingest"）
+    // "gui-ingest" Channel（SP → daemon の GUI-bound content push 受け口。旧名 "canvas-ingest"）
     // =========================================================================
-    // doc 44 P1 (fold-in) 以前は、各 SP の pusher (`discovery::spawn_world_uplink`) が
+    // doc 44 P1 (fold-in) 以前は、各 SP の pusher (`discovery::spawn_daemon_uplink`) が
     // board topic の ProcessMessage をこの channel に push していた。fold-in 後は
-    // project の TopicRouter を World が直接購読するため、この受け口に来る push は無い
+    // project の TopicRouter を daemon が直接購読するため、この受け口に来る push は無い
     // （`canvas_router_for` が project 起動時に実 router へ差し替える）。channel 自体は
     // 外部からの ingest 口として残置（doc 52 §6: 対の配信 channel は "gui"）。
     //
     // プロトコル: SP が open_channel("gui-ingest") → request("subscribe", {project_path}) →
-    //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 World は route() するのみ (応答不要)。
+    //   以降 send_event("pane", <ProcessMessage JSON>) を流す。 daemon は route() するのみ (応答不要)。
     {
         let canvas_routers = state.canvas_routers.clone();
         let control_channels = state.control_channels.clone();
@@ -1737,7 +1737,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // "gui" Channel（vp-app への配信バス — board / terminal / echoes / editor を一本で運ぶ）
     // =========================================================================
     // doc 52 §6: 旧名 "canvas" から改名（実態は board 専用でなく GUI への配信路の総称）。
-    // vp-app は SP 直結ではなく World :32000 の本 channel に集約する。 project の TopicRouter を
+    // vp-app は SP 直結ではなく Daemon :32000 の本 channel に集約する。 project の TopicRouter を
     // `subscribe("process/board/#")` し、 retained 初期配信 (最新 board 等) + live delta を
     // `send_event("pane", <ProcessMessage JSON>)` 形で配る。
     // → vp-app の consumer (`run_canvas_session`) は接続先が変わっても無改造。
@@ -1783,7 +1783,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             }
                         });
 
-                        // 上り: surface → World → SP control へ forward (S3 terminal_write/resize)。
+                        // 上り: surface → Daemon → SP control へ forward (S3 terminal_write/resize)。
                         // 既存 vp-app canvas は request を送らないので、 ここは切断まで block するだけ
                         // (= 従来の downstream-only と同じ lifecycle)。
                         loop {
@@ -1821,18 +1821,18 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "control" Channel — doc 44 P1 (fold-in) で退役
     // =========================================================================
-    // 旧: 各 SP が outbound で "control" channel を張り、World が UnisonChannel を
+    // 旧: 各 SP が outbound で "control" channel を張り、daemon が UnisonChannel を
     // control_channels[path_key] に保持して process 操作を reverse-route していた。
-    // SP プロセスが World に畳み込まれたため channel 自体が不要になり、同じ dispatch を
+    // SP プロセスが daemon に畳み込まれたため channel 自体が不要になり、同じ dispatch を
     // `ProjectRuntimes::dispatch` が in-process で直接呼ぶ。
     // これに伴い「SP 未接続で無言破棄」「refire_active_demands の空振りレース」
     // 「高速再接続で旧 handler が新 channel を clobber」の 3 バグクラスが消滅した。
 
     // =========================================================================
-    // "process-proxy" Channel（L0 SP-portless control slice — 外部 client → World → SP reverse）
+    // "process-proxy" Channel（L0 SP-portless control slice — 外部 client → Daemon → SP reverse）
     // =========================================================================
     // MCP/CLI は SP listen port ではなく本 channel に繋ぎ、 handshake {project_path} 後に
-    // process method (show/clear/tmux/process/wire 等) を request する。 World は当該 SP の
+    // process method (show/clear/tmux/process/wire 等) を request する。 daemon は当該 SP の
     // control channel を逆用して forward し、 応答を client に relay する。 SP "process" channel と
     // 同一 method・同一 dispatch (SP 側 `dispatch_process_method`) なので、 client から見た挙動は
     // SP 直結と不変 (= SP portless 化しても透過)。
@@ -1860,7 +1860,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             let method = msg.method.clone();
                             let payload = msg.payload_as_value().unwrap_or_default();
 
-                            // 当該 SP の control channel を逆用して forward (= World→SP reverse)。
+                            // 当該 SP の control channel を逆用して forward (= Daemon→SP reverse)。
                             let response = forward_to_sp_control(
                                 &control_channels,
                                 &path_key,
@@ -1880,10 +1880,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // World-Device Channel（DeviceRegistry 🧲 device event → vp-app への bridge）
+    // Daemon-Device Channel（DeviceRegistry 🧲 device event → vp-app への bridge）
     // =========================================================================
     // EventBus の `devices.*` event (device 接続/切断/操作入力) を Unison wire の `DeviceEvent` に
-    // 変換して push する単機能 channel。 world-process と違い method 分岐は無く、 接続 = 購読
+    // 変換して push する単機能 channel。 daemon-process と違い method 分岐は無く、 接続 = 購読
     // (canvas channel 方式)。 `devices_event_bus` が Some (= feature midi + DeviceRegistry 稼働) のときのみ登録。
     if let Some(ref devices_event_bus) = state.devices_event_bus {
         let devices_event_bus = devices_event_bus.clone();
@@ -1891,7 +1891,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         #[cfg(feature = "midi")]
         let devices = state.devices.clone();
         server
-            .register_channel("world-device", {
+            .register_channel("daemon-device", {
                 move |_ctx, stream| {
                     let event_bus = devices_event_bus.clone();
                     #[cfg(feature = "midi")]
@@ -1905,7 +1905,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         // subscriber id は接続ごとにユニーク化する (= 複数 vp-app instance が同時購読
                         // しても EventBus の subscriptions メタデータが last-write-wins で衝突しない。
                         // broadcast 配信自体は receiver 独立で元々壊れないが、 subscriber_count を正確に保つ)。
-                        let sub_id = format!("world-device-bridge-{}", uuid::Uuid::new_v4());
+                        let sub_id = format!("daemon-device-bridge-{}", uuid::Uuid::new_v4());
                         let sub = event_bus.subscribe(&sub_id, "devices.*").await;
                         let mut filtered =
                             crate::capability::eventbus::FilteredSubscription::new(sub);
@@ -1946,7 +1946,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         // 下り push task。
                         // TODO(Phase 2): FilteredSubscription は lag を silent skip する (eventbus.rs:39)。
                         // ControlEvent 高頻度時に lag 警告が出ないため、 必要なら Lagged 警告付きの
-                        // 購読に差し替えるか buffer_size を調整する (world-process は lag を warn 可視化)。
+                        // 購読に差し替えるか buffer_size を調整する (daemon-process は lag を warn 可視化)。
                         let push_channel = channel.clone();
                         let pusher = tokio::spawn(async move {
                             while let Some(cap_event) = filtered.recv().await {
@@ -2063,10 +2063,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     //
     // doc 44 P1 (fold-in) 以前は「SP 自己登録 — QUIC 永続接続による即時登録・即時死亡検出」
-    // の control plane で、register / unregister / heartbeat / lanes/* を受けて World 側の
+    // の control plane で、register / unregister / heartbeat / lanes/* を受けて daemon 側の
     // running_processes / lane_registry / process_presence を維持していた。
     //
-    // fold-in で project が World プロセス内に入り、自己登録しに来る SP が消滅した。
+    // fold-in で project が daemon プロセス内に入り、自己登録しに来る SP が消滅した。
     // 上記 state の維持は起動元（`start_process` / `publish_lanes`）が直接行う daemon-canonical
     // に移ったため、SP 向け method 群と切断時の後始末は撤去した。
     //
@@ -2129,7 +2129,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
 
                         // doc 44 P1 (fold-in): SP 切断時の自動除去は撤去した。
                         // `registered_name` を立てる `register` が無くなったため到達不能で、
-                        // かつ project の生存は World 自身の `ProjectRuntimes` が持つ
+                        // かつ project の生存は Daemon 自身の `ProjectRuntimes` が持つ
                         // （切断という状態が存在しない = map に居るか居ないか）。
 
                         Ok(())
@@ -2227,17 +2227,17 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             .await;
     }
 
-    // World Control Channel（projects mutation: CLI → World 直接 Unison）
+    // daemon control Channel（projects mutation: CLI → Daemon 直接 Unison）
     //
-    // control plane 一元化: projects は World 権威 (db/world) なので、 CLI は SP を経由せず
-    // World daemon に直接 Unison RPC する。 registry (SP 自己登録専用) とは責務を分離した
-    // 別 channel にする。 world_cap 不在 (= 非 World mode) なら登録しない。
-    if let Some(ref world_cap) = state.world_cap {
-        let world_cap = world_cap.clone();
+    // control plane 一元化: projects は daemon 権威 (db/machine) なので、 CLI は SP を経由せず
+    // daemon に直接 Unison RPC する。 registry (SP 自己登録専用) とは責務を分離した
+    // 別 channel にする。 daemon_cap 不在 (= 非 daemon mode) なら登録しない。
+    if let Some(ref daemon_cap) = state.daemon_cap {
+        let daemon_cap = daemon_cap.clone();
         server
-            .register_channel("world-control", {
+            .register_channel("daemon-control", {
                 move |_ctx, stream| {
-                    let world_cap = world_cap.clone();
+                    let daemon_cap = daemon_cap.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         loop {
@@ -2254,7 +2254,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             // 成功時 result JSON、 失敗時は success frame に {"error": ...}
                             // を詰める (= Unison は専用 error frame を持たない、 VP-163 慣習)。
                             let response =
-                                match handle_world_control(&world_cap, &method, payload).await {
+                                match handle_daemon_control(&daemon_cap, &method, payload).await {
                                     Ok(v) => v,
                                     Err(e) => serde_json::json!({ "error": e }),
                                 };
@@ -2274,12 +2274,12 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // Wire Channel (L0 portless B-4: 旧 world_wire::call の HTTP relay 先を unison 化)
+    // Wire Channel (L0 portless B-4: 旧 daemon_wire::call の HTTP relay 先を unison 化)
     //
-    // `world_wire::call` (SP→World の wire/delegation transport) を HTTP `POST /api/wire/*`
+    // `daemon_wire::call` (SP→daemon の wire/delegation transport) を HTTP `POST /api/wire/*`
     // `/api/delegation/*` から本 channel に移行 (doc 27 §62「全通信 unison」)。method は
     // "wire/<m>" / "delegation/<m>" の prefix 分岐で各 store dispatch に振る (`handle_wire_channel`)。
-    // store は World process AppState と共有 (`with_wire` で plumb)。SP mode (store=None) では
+    // store は daemon process AppState と共有 (`with_wire` で plumb)。SP mode (store=None) では
     // 各 method が error を返す (= 旧 HTTP handler の「store not initialized」と等価)。
     // =========================================================================
     server
@@ -2288,7 +2288,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             move |_ctx, stream| {
                 let state = state.clone();
                 async move {
-                    // SP は永続 link の 1 channel に全 wire request を多重化する (world_wire.rs の
+                    // SP は永続 link の 1 channel に全 wire request を多重化する (daemon_wire.rs の
                     // fd leak 根治)。 直列 loop のままだと wire/recv long-poll (≤25s) の await 中に
                     // 同一 channel の後続 request (wire/send 等) を読めず塞ぐため、 request ごとに
                     // spawn して並行処理する。 応答は message id で対応付くので順序保証は不要、
@@ -2419,7 +2419,7 @@ async fn quic_liveness_watchdog(port: u16) {
 ///
 /// ⚠️ QUIC(UDP) は TCP と違い dead port への connect が即失敗せず handshake timeout まで
 /// ハングする (RST が無い)。 そのため timeout は **内部** に持ち、 ハング時も必ず `disconnect()`
-/// に到達させて UDP socket leak を防ぐ (drop 任せでは socket が残る、 world_wire.rs module doc 参照)。
+/// に到達させて UDP socket leak を防ぐ (drop 任せでは socket が残る、 daemon_wire.rs module doc 参照)。
 async fn probe_quic_once(addr: &str) -> Result<(), String> {
     const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
     const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -2460,14 +2460,14 @@ mod tests {
     use std::sync::Arc;
 
     // =====================================================================
-    // World Control Channel — projects mutation dispatch (handle_world_control)
+    // daemon control Channel — projects mutation dispatch (handle_daemon_control)
     //
     // QUIC server を立てず handler 関数を直接呼ぶ Small test。 dispatch が
     // ProcessManagerCapability を正しく叩き、 in-memory 状態に反映されることを検証する。
     // (DB 真実源化は PR-C、 ここでは vpdb=None なので persist は projects.kdl no-op)
     // =====================================================================
 
-    fn new_world_cap() -> Arc<RwLock<crate::capability::ProcessManagerCapability>> {
+    fn new_daemon_cap() -> Arc<RwLock<crate::capability::ProcessManagerCapability>> {
         Arc::new(RwLock::new(
             crate::capability::ProcessManagerCapability::new(),
         ))
@@ -2504,13 +2504,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn world_control_add_list_remove() {
-        let cap = new_world_cap();
+    async fn daemon_control_add_list_remove() {
+        let cap = new_daemon_cap();
         // add_project は path.is_dir() を要求するので実在 dir (temp_dir) を使う
         let path = std::env::temp_dir().to_string_lossy().to_string();
 
         // add → 追加された ProjectInfo が返る
-        let added = handle_world_control(
+        let added = handle_daemon_control(
             &cap,
             "projects/add",
             serde_json::json!({"name": "wc-test", "path": path}),
@@ -2520,7 +2520,7 @@ mod tests {
         assert_eq!(added["name"], "wc-test");
 
         // list に反映される
-        let list = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+        let list = handle_daemon_control(&cap, "projects/list", serde_json::json!({}))
             .await
             .expect("list ok");
         let arr = list.as_array().expect("list is array");
@@ -2530,24 +2530,24 @@ mod tests {
         );
 
         // remove (add と同じ path → 同じ正規化キーで削除)
-        handle_world_control(&cap, "projects/remove", serde_json::json!({"path": path}))
+        handle_daemon_control(&cap, "projects/remove", serde_json::json!({"path": path}))
             .await
             .expect("remove ok");
-        let list2 = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+        let list2 = handle_daemon_control(&cap, "projects/list", serde_json::json!({}))
             .await
             .expect("list ok");
         assert!(list2.as_array().unwrap().is_empty(), "remove 後は空になる");
     }
 
     #[tokio::test]
-    async fn world_control_unknown_method_errors() {
-        let cap = new_world_cap();
-        let r = handle_world_control(&cap, "projects/bogus", serde_json::json!({})).await;
+    async fn daemon_control_unknown_method_errors() {
+        let cap = new_daemon_cap();
+        let r = handle_daemon_control(&cap, "projects/bogus", serde_json::json!({})).await;
         assert!(r.is_err(), "未知 method は Err");
     }
 
     // =====================================================================
-    // doc 45 段 4 — HTTP 撤去後の world-control 振る舞い固定
+    // doc 45 段 4 — HTTP 撤去後の daemon-control 振る舞い固定
     //
     // 段 2 / 段 3 では「新面（Unison）が旧面（HTTP route）と同じ答えを返す」を
     // 突き合わせで担保していた。段 4 で HTTP route を落としたので、突き合わせる
@@ -2556,16 +2556,16 @@ mod tests {
     // 対して直接固定し直す** — 旧面が消えたからといって期待値まで消すと、
     // 移行で守ったものが黙って外れる。
     //
-    // 実装は `routes::world` の共有関数（apply_project_update / collect_lanes /
+    // 実装は `routes::daemon` の共有関数（apply_project_update / collect_lanes /
     // resolve_create_lane_args）1 本なので、ここが落ちるのは振る舞いが動いた時。
     // =====================================================================
 
     /// `projects/update` が rename + enabled を 1 往復で適用する（旧 HTTP の合成 update）。
     #[tokio::test]
-    async fn world_control_projects_update_applies_rename_and_enabled() {
+    async fn daemon_control_projects_update_applies_rename_and_enabled() {
         let path = std::env::temp_dir().to_string_lossy().to_string();
-        let cap = new_world_cap();
-        handle_world_control(
+        let cap = new_daemon_cap();
+        handle_daemon_control(
             &cap,
             "projects/add",
             serde_json::json!({"name": "update-target", "path": path}),
@@ -2573,7 +2573,7 @@ mod tests {
         .await
         .expect("add ok");
 
-        handle_world_control(
+        handle_daemon_control(
             &cap,
             "projects/update",
             serde_json::json!({"path": path, "name": "renamed", "enabled": false}),
@@ -2581,7 +2581,7 @@ mod tests {
         .await
         .expect("update ok");
 
-        let after = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+        let after = handle_daemon_control(&cap, "projects/list", serde_json::json!({}))
             .await
             .expect("list ok");
         assert_eq!(after[0]["name"], "renamed", "rename が効いている");
@@ -2589,7 +2589,7 @@ mod tests {
 
         // 「何も指定しない update」は Err（黙って成功にしない）。旧 HTTP の 400 と同じ意味論。
         let empty =
-            handle_world_control(&cap, "projects/update", serde_json::json!({"path": path})).await;
+            handle_daemon_control(&cap, "projects/update", serde_json::json!({"path": path})).await;
         assert_eq!(
             empty.unwrap_err(),
             "No fields to update",
@@ -2603,10 +2603,10 @@ mod tests {
     /// 実際に積んでから確認する。並びは project 名昇順 → 同 project 内は開発起点 (root) 先 →
     /// 続いて created_at 昇順。
     #[tokio::test]
-    async fn world_control_lanes_list_filters_and_sorts() {
+    async fn daemon_control_lanes_list_filters_and_sorts() {
         use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
-        let cap = new_world_cap();
+        let cap = new_daemon_cap();
 
         // registry を直接埋める（project の publish を模す）。project 名 / created_at / stand を
         // わざと逆順・混在で入れて、sort と filter が実際に仕事をする状態を作る。
@@ -2662,7 +2662,7 @@ mod tests {
         ];
 
         for (payload, expected) in cases {
-            let resp = handle_world_control(&cap, "lanes/list", payload.clone())
+            let resp = handle_daemon_control(&cap, "lanes/list", payload.clone())
                 .await
                 .expect("lanes/list ok");
             let names: Vec<&str> = resp["lanes"]
@@ -2682,9 +2682,9 @@ mod tests {
 
     /// `projects/sync` は ghost 無しなら `{removed: []}` を返す（旧 HTTP と同じ形）。
     #[tokio::test]
-    async fn world_control_projects_sync_returns_removed_list() {
-        let cap = new_world_cap();
-        let resp = handle_world_control(&cap, "projects/sync", serde_json::json!({}))
+    async fn daemon_control_projects_sync_returns_removed_list() {
+        let cap = new_daemon_cap();
+        let resp = handle_daemon_control(&cap, "projects/sync", serde_json::json!({}))
             .await
             .expect("sync ok");
         assert_eq!(resp["removed"], serde_json::json!([]), "ghost 無しなら空");
@@ -2697,7 +2697,7 @@ mod tests {
     /// ここが割れる時は「JSON への写し方に手が入った」場合に限られる。
     #[tokio::test]
     async fn registry_list_snapshot_carries_name_and_port() {
-        let cap = new_world_cap();
+        let cap = new_daemon_cap();
         // capability と registry channel が共有する map に直接置く（start_process は
         // 実際に project を起こしてしまうので、ここでは snapshot の写し方だけを見る）。
         let running = cap.read().await.running_processes_ref();
@@ -2723,7 +2723,7 @@ mod tests {
     /// vp-app の sidebar D&D が通る面。`ord` は表示順の canonical なので、
     /// ここが壊れると「並べ替えたのに戻る」形で表に出る。
     #[tokio::test]
-    async fn world_control_reorder_orders_projects() {
+    async fn daemon_control_reorder_orders_projects() {
         // 実在 dir が 2 つ要る（add_project は path.is_dir() を要求する）。
         // TempDir なので test 終了時に消える（固定 path にすると再実行で残骸を拾う）。
         let base = tempfile::tempdir().expect("tempdir");
@@ -2734,9 +2734,9 @@ mod tests {
         let first = first.to_string_lossy().to_string();
         let second = second.to_string_lossy().to_string();
 
-        let cap = new_world_cap();
+        let cap = new_daemon_cap();
         for (name, path) in [("alpha", &first), ("beta", &second)] {
-            handle_world_control(
+            handle_daemon_control(
                 &cap,
                 "projects/add",
                 serde_json::json!({"name": name, "path": path}),
@@ -2746,7 +2746,7 @@ mod tests {
         }
 
         // 逆順に並べ替える。
-        handle_world_control(
+        handle_daemon_control(
             &cap,
             "projects/reorder",
             serde_json::json!({ "paths": [second, first] }),
@@ -2754,7 +2754,7 @@ mod tests {
         .await
         .expect("reorder ok");
 
-        let list = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+        let list = handle_daemon_control(&cap, "projects/list", serde_json::json!({}))
             .await
             .expect("list ok");
         let names: Vec<&str> = list
@@ -2766,10 +2766,10 @@ mod tests {
         assert_eq!(names, ["beta", "alpha"], "指定した順に並ぶこと");
     }
 
-    /// mutation 系 RPC の必須 field 欠落は Err（World の状態を触る前に弾く）。
+    /// mutation 系 RPC の必須 field 欠落は Err（daemon の状態を触る前に弾く）。
     #[tokio::test]
-    async fn world_control_new_methods_require_their_fields() {
-        let cap = new_world_cap();
+    async fn daemon_control_new_methods_require_their_fields() {
+        let cap = new_daemon_cap();
         for (method, payload) in [
             ("projects/update", serde_json::json!({})),
             ("projects/restart", serde_json::json!({})),
@@ -2778,7 +2778,7 @@ mod tests {
             ("lanes/set_active", serde_json::json!({"path": "/tmp"})),
         ] {
             assert!(
-                handle_world_control(&cap, method, payload).await.is_err(),
+                handle_daemon_control(&cap, method, payload).await.is_err(),
                 "{method} は必須 field 欠落を Err にする"
             );
         }
@@ -2787,7 +2787,7 @@ mod tests {
     /// `lanes/create` の省略時 default 導出（旧 HTTP route と共有していた calc）。
     #[test]
     fn create_lane_defaults_are_derived() {
-        use crate::process::routes::world::resolve_create_lane_args;
+        use crate::process::routes::daemon::resolve_create_lane_args;
 
         let (branch, stand) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
         assert!(
@@ -2808,11 +2808,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn world_control_add_missing_field_errors() {
-        let cap = new_world_cap();
+    async fn daemon_control_add_missing_field_errors() {
+        let cap = new_daemon_cap();
         // name 欠落 → Err
         let r =
-            handle_world_control(&cap, "projects/add", serde_json::json!({"path": "/tmp"})).await;
+            handle_daemon_control(&cap, "projects/add", serde_json::json!({"path": "/tmp"})).await;
         assert!(r.is_err(), "name 欠落は Err");
     }
 

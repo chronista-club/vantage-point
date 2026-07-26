@@ -6,11 +6,11 @@
 //!
 //! ## 責務の切り分け (重要)
 //!
-//! - **Process state** (SSOT): TheWorld daemon が保持 ─ running/dead/port、 SP 起動状態
+//! - **Process state** (SSOT): daemon が保持 ─ running/dead/port、 SP 起動状態
 //! - **UI state** (per-instance preference): この file ─ expanded / active selection / 表示順
 //! - **User preference**: `Settings` (vp-app.toml) ─ developer_mode、 default_project_root
 //!
-//! TheWorld に UI state を載せると secondary vp-app instance (`VP_APP_INSTANCE != 0`) が
+//! daemon に UI state を載せると secondary vp-app instance (`VP_APP_INSTANCE != 0`) が
 //! 同 server に向かう時に「私はこの Lane を見る」 「私はあの Lane」 が両立できなくなる。
 //! UI state は client ごとに独立であるべき ─ なのでここに置く。
 //!
@@ -140,7 +140,7 @@ pub struct SessionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
     /// Currents セクションの project 表示順 (path の order)。
-    /// `None` なら TheWorld の registration 順。 sidebar の DnD で書き込まれる。
+    /// `None` なら daemon の registration 順。 sidebar の DnD で書き込まれる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
     /// **この instance** の window 位置 / サイズ / monitor。

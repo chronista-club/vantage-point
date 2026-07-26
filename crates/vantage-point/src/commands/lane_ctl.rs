@@ -2,7 +2,7 @@
 //!
 //! 旧 `vp tmux capture` / `vp tmux send-keys` / `vp directmsg` の native 後継。
 //! lane address（`<project>/root` / `<project>/performer/<name>`）を唯一の宛先語彙とし、
-//! World process-proxy ask（`lane_capture` / `lane_nudge`）経由で SP の PtySlot に到達する
+//! daemon process-proxy ask（`lane_capture` / `lane_nudge`）経由で SP の PtySlot に到達する
 //! （tmux session 名 / pane id の第 2 名前空間は廃止）。
 //!
 //! ```bash
@@ -23,11 +23,11 @@
 use anyhow::{Result, bail};
 
 use crate::commands::process_client::{
-    resolve_project_path_from_target, world_process_request_blocking,
+    daemon_process_request_blocking, resolve_project_path_from_target,
 };
 use crate::config::Config;
 
-/// lane address の project 部分を project path に解決する（World ask の handshake identifier）。
+/// lane address の project 部分を project path に解決する（Daemon ask の handshake identifier）。
 /// `commands::now`（`vp now`）も同じ解決を使う。
 pub(crate) fn project_path_for_lane(lane: &str, config: &Config) -> Result<String> {
     let project = lane
@@ -46,8 +46,8 @@ pub(crate) fn project_path_for_lane(lane: &str, config: &Config) -> Result<Strin
 /// slot console の現在画面（Term grid render）を stdout に出す。`session=None` は root。
 pub fn capture(lane: &str, session: Option<u32>, config: &Config) -> Result<()> {
     let path = project_path_for_lane(lane, config)?;
-    let resp = world_process_request_blocking(
-        crate::cli::world_port(),
+    let resp = daemon_process_request_blocking(
+        crate::cli::daemon_port(),
         &path,
         "lane_capture",
         serde_json::json!({ "lane": lane, "session": session }),
@@ -81,8 +81,8 @@ pub fn capture(lane: &str, session: Option<u32>, config: &Config) -> Result<()> 
 /// 表示（vp-app）を通さずに「今この lane に端末が何枚あるか」を読む口。
 pub fn slots(lane: &str, config: &Config) -> Result<()> {
     let path = project_path_for_lane(lane, config)?;
-    let resp = world_process_request_blocking(
-        crate::cli::world_port(),
+    let resp = daemon_process_request_blocking(
+        crate::cli::daemon_port(),
         &path,
         "lane_slots",
         serde_json::json!({ "lane": lane }),
@@ -122,8 +122,8 @@ pub fn slots(lane: &str, config: &Config) -> Result<()> {
 /// root（= lane の代表 / mailbox の主）は動かないので、既存 console はそのまま。
 pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> {
     let path = project_path_for_lane(lane, config)?;
-    let resp = world_process_request_blocking(
-        crate::cli::world_port(),
+    let resp = daemon_process_request_blocking(
+        crate::cli::daemon_port(),
         &path,
         "lane_slot_new",
         serde_json::json!({ "lane": lane, "stand": stand }),
@@ -153,8 +153,8 @@ pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> 
 /// root は registry 側が拒否する（lane の代表を消す = 素に戻すのは `--fresh` restart の役目）。
 pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
     let path = project_path_for_lane(lane, config)?;
-    let resp = world_process_request_blocking(
-        crate::cli::world_port(),
+    let resp = daemon_process_request_blocking(
+        crate::cli::daemon_port(),
         &path,
         "echoes_session_remove",
         serde_json::json!({ "lane": lane, "session": session }),
@@ -171,8 +171,8 @@ pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
 /// `session=None` は root（wire mailbox `agent@<lane>` を名乗る住人、doc 39）。
 pub fn nudge(lane: &str, session: Option<u32>, text: &str, config: &Config) -> Result<()> {
     let path = project_path_for_lane(lane, config)?;
-    world_process_request_blocking(
-        crate::cli::world_port(),
+    daemon_process_request_blocking(
+        crate::cli::daemon_port(),
         &path,
         "lane_nudge",
         serde_json::json!({ "lane": lane, "text": text, "session": session }),

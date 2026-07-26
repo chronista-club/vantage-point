@@ -5,7 +5,7 @@
 //!   vp sp start   # SP サーバーを起動
 //!   vp lane capture <lane>  # lane console を読む (tmux 非依存)
 //!   vp mcp        # MCPサーバーとして起動（stdio）
-//!   vp daemon     # TheWorld デーモン管理 (alias: vp world)
+//!   vp daemon     # daemon 管理
 //!
 //! Environment variables:
 //!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード
@@ -41,7 +41,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 全 Process + TheWorld を一括再起動
+    /// 全 Process + daemon を一括再起動
     #[command(alias = "ra")]
     RestartAll,
     /// 稼働中のインスタンス一覧
@@ -79,14 +79,12 @@ enum Commands {
     #[command(subcommand)]
     File(FileCommands),
 
-    /// TheWorld 管理 — 全 Process を統括する常駐プロセス
+    /// daemon 管理 — 全 Process を統括する常駐プロセス
     ///
-    /// alias: `vp world` (旧名、 後方互換)。
     /// 旧 `vp conductor` alias は撤去 (conductor は lane 役割名に確定、語の衝突回避)。
-    #[command(visible_alias = "world")]
     Daemon {
         /// 待ち受けポート番号（サブコマンド省略時に使用）
-        #[arg(short, long, default_value_t = cli::world_port())]
+        #[arg(short, long, default_value_t = cli::daemon_port())]
         port: u16,
         /// サブコマンド（省略時は start として動作）
         #[command(subcommand)]
@@ -125,7 +123,7 @@ enum Commands {
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
 
-    /// 登録 project 管理 — World daemon に直接 Unison RPC (add/remove/rename/enable/disable/reorder/list)
+    /// 登録 project 管理 — daemon に直接 Unison RPC (add/remove/rename/enable/disable/reorder/list)
     #[command(subcommand)]
     Projects(commands::projects::ProjectsCommands),
 
@@ -268,8 +266,8 @@ enum LaneCommands {
     },
     /// この project の見送りの記録を新しい順に表示する (doc 44 §7.5、Project Host の帳簿)
     ///
-    /// 「いつ何を見送ったか」と「判断待ちがいつから何回続いているか」。帳簿は World が
-    /// 専有する db/world にあるので daemon 稼働が前提。
+    /// 「いつ何を見送ったか」と「判断待ちがいつから何回続いているか」。帳簿は daemon が
+    /// 専有する db/machine にあるので daemon 稼働が前提。
     History {
         /// 表示件数の上限 (0 = 無制限)
         #[arg(long, default_value_t = 20)]
@@ -354,7 +352,7 @@ enum LaneCommands {
     ///
     /// 引数なしで現在の起点を表示。lane 名を渡すとその lane を起点に指定する。
     /// 指定は **帳簿のポインタ書き換えだけ** — cwd も active lane も engine も動かない (D5)。
-    /// 未指定なら予約名 `conductor` が起点（従来挙動）。daemon (World) 稼働が前提。
+    /// 未指定なら予約名 `conductor` が起点（従来挙動）。daemon (Daemon) 稼働が前提。
     Origin {
         /// 起点にする lane 名 (省略時は現在の起点を表示)
         name: Option<String>,
@@ -387,7 +385,7 @@ fn main() -> Result<()> {
     // 引数なし → vp ps（稼働中インスタンス一覧）
     let command = cli.command.unwrap_or(Commands::Ps);
 
-    // daemon server 本体 (`vp daemon start` / `vp world` / subcommand 省略) は stdout/stderr が
+    // daemon server 本体 (`vp daemon start` / `vp daemon` / subcommand 省略) は stdout/stderr が
     // spawn 経路依存で闇に落ちる (daemonize・restart-all の Stdio::null・launchd redirect の混在)
     // ため、VP_DAEMON_LOG_FILE 未設定なら vp_log_dir()/daemon.kdl.log を default にして
     // init_tracing の file appender 分岐 (rotate 付き) へ固定する。spawn 経路非依存の log SSOT。
@@ -434,7 +432,7 @@ fn main() -> Result<()> {
             let cmd = command.unwrap_or(commands::daemon::DaemonCommands::Start { port });
             commands::daemon::execute(cmd)
         }
-        // doc 44 P1 (fold-in): `vp sp` は退役。project は World プロセス内の
+        // doc 44 P1 (fold-in): `vp sp` は退役。project は daemon プロセス内の
         // `Arc<AppState>` になり、外から起動する概念が消えた。lifecycle 操作は
         // `vp projects start|stop`（名詞を SP から project へ移した）。
         // tmux decoupling PR2: `vp hd` / `vp tmux` は退役。 lane の console 操作は
@@ -445,7 +443,7 @@ fn main() -> Result<()> {
 
         Commands::Lane(cmd) => execute_lane(cmd),
         Commands::Projects(cmd) => {
-            // projects 操作は World daemon に直接 Unison RPC (async)。 auth/wire/flow と同じ
+            // projects 操作は daemon に直接 Unison RPC (async)。 auth/wire/flow と同じ
             // per-command Runtime で block_on する。
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::projects::execute(cmd))
@@ -858,25 +856,25 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
     }
 }
 
-/// `vp lane ls --detail` 実装: World process-proxy ask `lanes_list` を query して pretty JSON で出力。
+/// `vp lane ls --detail` 実装: daemon process-proxy ask `lanes_list` を query して pretty JSON で出力。
 ///
-/// lanes portless (doc 27 §3.4.5): 旧 SP `/api/lanes` 直叩きを撤去し World :32000 の process-proxy に
-/// 一本化 (`try_sp_delete_performer` と同型、 SP port 解決不要)。 SP 不在 (= TheWorld に未登録 /
-/// cwd が repo 外 / SP 未起動) なら World が control channel 逆引き失敗で error を返す。 `--detail` を
+/// lanes portless (doc 27 §3.4.5): 旧 SP `/api/lanes` 直叩きを撤去し Daemon :32000 の process-proxy に
+/// 一本化 (`try_sp_delete_performer` と同型、 SP port 解決不要)。 SP 不在 (= daemon に未登録 /
+/// cwd が repo 外 / SP 未起動) なら daemon が control channel 逆引き失敗で error を返す。 `--detail` を
 /// 要求した時点で SP 稼働を前提とする (= fs-only fallback はせず、 明示的に user に SP 未起動を伝える)。
 ///
 /// MCP `list_lanes` の mailbox_addresses 計算 / project_addresses synthesis までは実装せず、
 /// dispatch `lanes_list` の生 JSON (`{lanes:[...]}`) を pretty print する (mailbox は SKILL.md doc 案内)。
 fn list_performers_detail() -> Result<()> {
-    // repo_root = project_path (World handshake の stable identifier)。 SP port は process-proxy で不要。
+    // repo_root = project_path (Daemon handshake の stable identifier)。 SP port は process-proxy で不要。
     let repo_root = lane::config::find_repo_root()
         .map_err(|e| anyhow::anyhow!("repo root 解決失敗 (--detail は project 内が前提): {}", e))?;
     let project_path = repo_root
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("repo path に invalid UTF-8"))?;
 
-    let resp = vantage_point::commands::process_client::world_process_request_blocking(
-        cli::world_port(),
+    let resp = vantage_point::commands::process_client::daemon_process_request_blocking(
+        cli::daemon_port(),
         project_path,
         "lanes_list",
         serde_json::json!({}),
@@ -892,8 +890,8 @@ fn list_performers_detail() -> Result<()> {
 
 /// active Lane 切り替え CLI 実装 (= mcp__switch_lane の CLI pair)。
 ///
-/// L0 portless: 現 project の SP に `SwitchLane` ProcessMessage を World :32000 の process-proxy
-/// ask で forward する（SP は listen しないので旧来の SP 直結 QUIC は撤去）。World が project_path
+/// L0 portless: 現 project の SP に `SwitchLane` ProcessMessage を Daemon :32000 の process-proxy
+/// ask で forward する（SP は listen しないので旧来の SP 直結 QUIC は撤去）。daemon が project_path
 /// を path_key に正規化して当該 SP の control channel を逆引きし、`dispatch_process_method`
 /// （"switch_lane" → `handle_process_message`）へ forward → hub.broadcast → topic
 /// `process/board/event/switch-lane`（非 retained）→ canvas channel 経由で vp-app が受信し、
@@ -907,8 +905,8 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
         anyhow::bail!("lane token is required (空文字不可)");
     }
 
-    // repo_root = project_path (World process-proxy handshake の stable identifier)。
-    // L0 portless: SP port 解決は不要（World が path_key 逆引きで forward する）。
+    // repo_root = project_path (daemon process-proxy handshake の stable identifier)。
+    // L0 portless: SP port 解決は不要（daemon が path_key 逆引きで forward する）。
     let repo_root = lane::config::find_repo_root()
         .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
     let (Some(project_name), Some(project_path)) = (
@@ -918,28 +916,28 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
         anyhow::bail!("repo path contains invalid UTF-8");
     };
 
-    // SwitchLane を World process-proxy ask で SP へ forward（payload = ProcessMessage JSON、
+    // SwitchLane を daemon process-proxy ask で SP へ forward（payload = ProcessMessage JSON、
     // `{"type":"switch_lane","lane":...}`）。SP 側 dispatch_process_method が受けて broadcast。
     let msg = vantage_point::protocol::ProcessMessage::SwitchLane {
         lane: trimmed.to_string(),
     };
     let payload = serde_json::to_value(&msg)?;
-    vantage_point::commands::process_client::world_process_request_blocking(
-        cli::world_port(),
+    vantage_point::commands::process_client::daemon_process_request_blocking(
+        cli::daemon_port(),
         project_path,
         "switch_lane",
         payload,
     )
     .map_err(|e| {
         anyhow::anyhow!(
-            "SP {} への switch_lane 送信失敗 (World process-proxy): {}",
+            "SP {} への switch_lane 送信失敗 (daemon process-proxy): {}",
             project_name,
             e
         )
     })?;
 
     println!(
-        "switched active lane to '{}' (project={}, via World process-proxy)",
+        "switched active lane to '{}' (project={}, via daemon process-proxy)",
         trimmed, project_name
     );
     Ok(())
@@ -947,7 +945,7 @@ fn switch_lane_via_quic(name: &str) -> Result<()> {
 
 /// `vp lane origin [<name>]` 実装: Project Host の帳簿にある開発起点ポインタを読む / 書く。
 ///
-/// `switch_lane_via_quic` と同じ World process-proxy ask 経路（SP port 解決不要）。
+/// `switch_lane_via_quic` と同じ daemon process-proxy ask 経路（SP port 解決不要）。
 /// 起点は project 単位の 1 本なので lane address ではなく **lane 名**で受ける。
 ///
 /// 表示は「どう決まったか」まで出す（D4 の既定フォールバックと、指した lane が消えた
@@ -964,13 +962,13 @@ fn lane_origin(name: Option<&str>) -> Result<()> {
         None => ("lane_origin_get", serde_json::json!({})),
     };
 
-    let resp = vantage_point::commands::process_client::world_process_request_blocking(
-        cli::world_port(),
+    let resp = vantage_point::commands::process_client::daemon_process_request_blocking(
+        cli::daemon_port(),
         project_path,
         method,
         payload,
     )
-    .map_err(|e| anyhow::anyhow!("{} 失敗 (World process-proxy): {}", method, e))?;
+    .map_err(|e| anyhow::anyhow!("{} 失敗 (daemon process-proxy): {}", method, e))?;
 
     let origin: vantage_point::host::ledger::Origin = serde_json::from_value(resp)
         .map_err(|e| anyhow::anyhow!("{} の応答を解釈できません: {}", method, e))?;
@@ -989,16 +987,16 @@ fn lane_origin(name: Option<&str>) -> Result<()> {
 
 /// VP-124 Phase 1: SP-aware Performer Lane delete を試みる helper。
 ///
-/// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら World process-proxy ask
+/// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら daemon process-proxy ask
 /// (`lane_delete`) 経由で `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm +
 /// SystemEvent broadcast を SP 側で atomically 実行)。 SP 不在 / failure なら false 返して
 /// filesystem-only fallback (= 現挙動の `ws::remove_performer`) に委譲。
 ///
-/// F6② (doc 27 §3.4.5/§6): 旧 SP 直結 (`DELETE /api/lanes` reqwest) を撤去し World :32000 の
+/// F6② (doc 27 §3.4.5/§6): 旧 SP 直結 (`DELETE /api/lanes` reqwest) を撤去し Daemon :32000 の
 /// process-proxy に一本化 (SP port 解決不要、 L1 portless 前進)。 best-effort: 全 failure
 /// (SP 不在 / lane not found / network) は warn print して false → fs-only に委譲。
 fn try_sp_delete_performer(performer_name: &str) -> bool {
-    // repo_root = project_path (World handshake の stable identifier)。 SP port は process-proxy で不要。
+    // repo_root = project_path (Daemon handshake の stable identifier)。 SP port は process-proxy で不要。
     let repo_root = match lane::config::find_repo_root() {
         Ok(r) => r,
         Err(e) => {
@@ -1018,8 +1016,8 @@ fn try_sp_delete_performer(performer_name: &str) -> bool {
     let address = format!("{project_name}/performer/{performer_name}");
     let payload = serde_json::json!({ "address": address, "cleanup": true });
 
-    match vantage_point::commands::process_client::world_process_request_blocking(
-        cli::world_port(),
+    match vantage_point::commands::process_client::daemon_process_request_blocking(
+        cli::daemon_port(),
         project_path,
         "lane_delete",
         payload,

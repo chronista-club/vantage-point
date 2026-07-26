@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! info ts="2026-04-25T12:34:56.789Z" target="vp_app::app" "vp-app 起動 (Creo UI mint-dark)"
-//! warn ts="2026-04-25T12:34:57.012Z" target="vp_app::client" "TheWorld fetch 失敗 (daemon 未起動?): connection refused"
+//! warn ts="2026-04-25T12:34:57.012Z" target="vp_app::client" "daemon fetch 失敗 (daemon 未起動?): connection refused"
 //! info ts="2026-04-25T12:34:58.123Z" target="vp_app::app" project_count=3 "daemon online 復帰検知"
 //! ```
 //!

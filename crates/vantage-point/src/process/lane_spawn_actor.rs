@@ -22,18 +22,18 @@
 //!
 //! ## in-process channel 直結 (2026-07-09) — SP 再起動時の幽霊 long-poll 消費の根治
 //!
-//! 旧実装 (wiremsg R2-a、 2026-06-11) は recv path を TheWorld 中央 wire store への
+//! 旧実装 (wiremsg R2-a、 2026-06-11) は recv path を daemon 中央 wire store への
 //! HTTP long-poll (`lane-spawn@<project>` mailbox) で行っていたが、 producer は同一
-//! process の bootstrap (server.rs) **のみ**であり、 自プロセス内の指示に TheWorld 往復
+//! process の bootstrap (server.rs) **のみ**であり、 自プロセス内の指示に daemon 往復
 //! (4-hop) を挟む構造だった。 この配送は at-most-once (recv = fetch と同時に per-agent
 //! cursor 前進の破壊的読み出し) のため、 SP 再起動シーケンスで Cmd が失われる:
-//! 旧 SP の actor が張った long-poll が World 側に残存 (≤30s 窓) → 新 SP bootstrap の
+//! 旧 SP の actor が張った long-poll が daemon 側に残存 (≤30s 窓) → 新 SP bootstrap の
 //! Cmd を fetch → cursor 前進 → 応答は死んだ接続へ → 新 actor には何も届かない
 //! → performer 永久 Spawning (2026-07-09 障害)。
 //!
 //! 本修正で bootstrap → actor を `tokio::sync::mpsc` unbounded channel に直結。
 //! channel は process-local なので旧 SP の consumer が新 SP の Cmd を消費する経路が
-//! 構造的に消滅し、 TheWorld 不達 retry も不要になった (standalone SP でも spawn 可能)。
+//! 構造的に消滅し、 daemon 不達 retry も不要になった (standalone SP でも spawn 可能)。
 //! Semaphore gate / race guard / `handle_cmd` の内部挙動は完全互換。
 //!
 //! ## 設計
@@ -114,7 +114,7 @@ pub struct LaneSpawnActor {
 impl LaneSpawnActor {
     /// 新しい `LaneSpawnActor` を構築する。
     ///
-    /// in-process 直結 (2026-07-09): 旧 wire long-poll (TheWorld 中央 store の
+    /// in-process 直結 (2026-07-09): 旧 wire long-poll (daemon 中央 store の
     /// `lane-spawn@<project>` mailbox) を撤去し、 `cmd_rx` (unbounded channel) を
     /// constructor 注入する。 unbounded なので producer の send は receiver 生存中
     /// infallible かつ recv loop 開始前の send もバッファされる (投入順序に依存しない)。
@@ -345,7 +345,7 @@ async fn handle_cmd(
 
     // Performer Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 BoardState を host、 doc 13 §6 自動 spawn rule = default)。
-    // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
+    // None は daemon mode (Lane scope なし) で発生、 SP mode では常に Some。
     //
     // doc 53 §12.2: **spawn 失敗でも populate する**（旧: Dead なら skip）。intent が残る以上
     // lane は「立ち上がっていないが在る」— 次の契機で slot が立った時に board だけ不在、を
@@ -359,7 +359,7 @@ async fn handle_cmd(
         );
     }
 
-    // Phase 2 (Step E): Performer spawn 完了を SystemEvent::Lane(Diff::Add) で TheWorld に push。
+    // Phase 2 (Step E): Performer spawn 完了を SystemEvent::Lane(Diff::Add) で daemon に push。
     // QUIC registry channel 経由で realtime sync。 失敗は warn のみ (best-effort、
     // SP lane_pool が SSOT、 reconnect 時に register snapshot で必ず再構築される)。
     if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {

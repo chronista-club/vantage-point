@@ -2,7 +2,7 @@
 //!
 //! 1 つの Lane PtySlot の出力 broadcast を購読し、 per-lane terminal topic
 //! (`process/terminal/data/{lane}/out`) に `LaneTerminalOutput` として route する。
-//! これにより Lane の PTY 出力が単一 topic 空間に乗り、 World 経由で WebView へ届く
+//! これにより Lane の PTY 出力が単一 topic 空間に乗り、 daemon 経由で WebView へ届く
 //! (raw WebSocket `/ws/terminal` 退役の置換)。
 //!
 //! ## production の lifecycle
@@ -38,7 +38,7 @@ const REPLAY_CHUNK: usize = 32 * 1024;
 /// replay の冪等化 prefix — clear scrollback + clear screen + cursor home。
 ///
 /// replay は「新規 xterm への画面復元」だけでなく、 **既存 xterm が生きたまま** demand が
-/// 撃ち直される経路 (vp-app WS 瞬断の 1→0→1 再 subscribe / SP↔World control 再接続時の
+/// 撃ち直される経路 (vp-app WS 瞬断の 1→0→1 再 subscribe / SP↔daemon control 再接続時の
 /// `refire_active_demands`) でも走る。 backend は「新規 attach」と「reconnect」を区別できない
 /// (どちらも topic への fresh subscribe) ため、 raw replay を単純追記すると既存画面に
 /// 二重描画 (ゴースト) が出る。 replay 先頭で端末を clear してから raw を流し直すことで、
@@ -58,7 +58,7 @@ const REPLAY_CLEAR_PREFIX: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 ///   (`LanePool::attach_output`) を渡せば byte 順序が保たれる (欠落・重複なし)。
 ///   vp-app 再起動後の新 xterm に前回画面を復元する。 空 Vec = replay なし (従来挙動)。
 /// - `rx`: `LanePool::attach_output(addr, session)` で得た PtySlot output の broadcast receiver。
-/// - `topic_router`: SP の topic_router。 route 先 (World へは ingest が転送する)。
+/// - `topic_router`: SP の topic_router。 route 先 (daemon へは ingest が転送する)。
 ///
 /// PtySlot drop (broadcast Closed) で pump は自然終了する。 lag 時は drop を warn して継続。
 pub fn spawn_lane_terminal_pump(

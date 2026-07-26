@@ -13,7 +13,7 @@ pub mod capabilities;
 pub(crate) mod cc_activity;
 /// Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom (doc 28 §4)
 pub(crate) mod delegation;
-/// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 TheWorld 常駐)
+/// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 daemon 常駐)
 pub(crate) mod delivery_actor;
 /// Lane echoes pump — EchoesAgentHost の EchoesEvent を per-lane topic に route (doc 30、Act II)
 pub(crate) mod echoes_pump;
@@ -37,6 +37,7 @@ pub(crate) mod project_stands_state;
 pub(crate) mod retained;
 // L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
 // `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
+pub(crate) mod daemon_wire;
 pub(crate) mod routes;
 mod server;
 /// StandSpawner — Stand 名 → slot (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
@@ -46,9 +47,8 @@ pub(crate) mod terminal_pump;
 pub mod topic;
 pub(crate) mod topic_router;
 pub(crate) mod unison_server;
-pub(crate) mod world_wire;
 
 pub use capabilities::CapabilityConfig;
-// doc 44 P1 (fold-in): `run`（SP プロセスとしての実行）は退役。project は World の
-// `run_world` が in-process で起こす（`ProjectRuntimes::start` → `start_project`）。
-pub use server::run_world;
+// doc 44 P1 (fold-in): `run`（SP プロセスとしての実行）は退役。project は daemon の
+// `run_daemon` が in-process で起こす（`ProjectRuntimes::start` → `start_project`）。
+pub use server::run_daemon;

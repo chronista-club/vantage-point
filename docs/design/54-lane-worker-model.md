@@ -21,7 +21,7 @@
 ## 1. 一枚絵
 
 ```
-World 👑
+daemon 👑
 └── Project（repo = 場所）
     └── Lane（checkout = 作業台。cwd / branch / board / layout を持つ）
         │

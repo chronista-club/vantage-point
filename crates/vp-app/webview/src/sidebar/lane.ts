@@ -148,7 +148,7 @@ export function laneAddressKey(lane: LaneInfo): string {
  * - idle (conn-dead): flow 不在 = No current (極薄破線 + 中空 node)
  *
  * FSM 投影 (2026-07-11、 mem_1Ccv39yTsb9knkjucKCP3Z): 一次 source は **server 側
- * flow_state** (LaneInfo.flow_state、 TheWorld が wire store から derive = vp flow progress と
+ * flow_state** (LaneInfo.flow_state、 daemon が wire store から derive = vp flow progress と
  * 同一判定)。 client で再推定しない。 これで「プロンプト待ちの TUI claude は pid が生きて
  * いるため working と誤判定」 (dep symlink lane の偽 WORKING) が根治する — wire 活動の
  * 無い lane は flow_state = "idle" でほぼ消える。

@@ -18,7 +18,7 @@ VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/root と creo-
 
 | # | gap | 結果 |
 |---|-----|------|
-| 1 | `mcp` actor の registry 非対称 | self-process 内では存在するが TheWorld registry 未登録 → cross-process `mcp@<other>` 送信は forward 失敗 (silent drop) |
+| 1 | `mcp` actor の registry 非対称 | self-process 内では存在するが daemon registry 未登録 → cross-process `mcp@<other>` 送信は forward 失敗 (silent drop) |
 | 2 | MCP recv の inbox scope 固定 | self process の `mcp` actor inbox 限定、 他 actor (`agent` / `notify` / `protocol`) は MCP tool で観察不可 |
 | 3 | lane address (`<project>/<lane>`) と actor address (`<actor>@<project>`) の **2 namespace 混乱** | user が `vantage-point/echoes` を wire address と誤認 → parse error、 mental model split |
 | 4 | cross-process recv observation gap | `agent` inbox に msg deliver 完了しても receiver 側で即時検知不可、 sidebar UI / CLI watch 経路必要 |
@@ -41,18 +41,18 @@ VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/root と creo-
 ```
 address  = (actor "@")? location
 actor    = [a-zA-Z0-9_-]+ | "*"  // 省略時 default = "agent"、 `*` は broadcast wildcard (reserved)
-location = (world "/")? project ("/" lane)?
-world    = world-segment ("." world-segment)*    // DNS-like
+location = (daemon "/")? project ("/" lane)?
+daemon    = daemon-segment ("." daemon-segment)*    // DNS-like
 project  = [a-zA-Z0-9_-]+                         // reserved: "world" = system project
 lane     = lane-segment ("/" lane-segment)*
-world-segment = [a-zA-Z0-9_-]+
+daemon-segment = [a-zA-Z0-9_-]+
 lane-segment  = [a-zA-Z0-9_-]+
 ```
 
 ### separator 役割直交
 
 - `@` = actor / location 境界 (1 個だけ)
-- `/` = internal hierarchy (world → project → lane)
+- `/` = internal hierarchy (daemon → project → lane)
 - `.` = host DNS-qualifier (mDNS / Internet)
 
 3 separator が役割重複なく **完全直交**。
@@ -62,15 +62,15 @@ lane-segment  = [a-zA-Z0-9_-]+
 ```
 agent @ mako.chronista.club / vantage-point / performer / objrec
   ^         ^                      ^             ^
-  actor    world identity         project       lane (multi-segment 可)
+  actor    daemon identity         project       lane (multi-segment 可)
         (host = machine / user / hub)
 ```
 
 | 階層 | 役割 |
 |------|------|
 | **actor** | 受信 inbox の役割 (= "誰が読むか"、 default = `agent`) |
-| **world** | identity namespace (= machine / user / hub、 host segment) |
-| **project** | VP project (= self world に register された project name、 reserved: `world`) |
+| **daemon** | identity namespace (= machine / user / hub、 host segment) |
+| **project** | VP project (= self daemon に register された project name、 reserved: `daemon`) |
 | **lane** | lane within project (= multi-level、 `performer/objrec` 等) |
 
 ### 4 layer matrix
@@ -78,14 +78,14 @@ agent @ mako.chronista.club / vantage-point / performer / objrec
 | address | layer | meaning | resolve |
 |---------|-------|---------|---------|
 | `agent` | self process | inbox-local | direct dispatch |
-| `vantage-point/root` | same machine | self world、 conductor lane の agent inbox | TheWorld registry (port lookup) |
+| `vantage-point/root` | same machine | self daemon、 conductor lane の agent inbox | daemon registry (port lookup) |
 | `notify@vantage-point/root` | same machine | OS notification trigger | local routing |
-| `mako/vantage-point/root` | Internet via hub | mako world、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
+| `mako/vantage-point/root` | Internet via hub | mako daemon、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
 | `mako.chronista.club/vantage-point/root` | Internet (explicit hub URL) | full FQDN | hub URL inline |
 | `macbook.local/vantage-point/root` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
 | `*@vantage-point/root` | broadcast | conductor lane 全 actor | local fanout |
-| `hermit_purple@world` | self world (system) | TheWorld daemon の actor | (reserved project `world`) |
-| `hermit_purple@mako/world` | Internet | mako world's TheWorld daemon | hub query |
+| `hermit_purple@machine` | self daemon (system) | daemon の actor | (reserved project `daemon`) |
+| `hermit_purple@mako/daemon` | Internet | mako daemon's daemon | hub query |
 
 ### actor optional の効果
 
@@ -103,7 +103,7 @@ agent @ mako.chronista.club / vantage-point / performer / objrec
 
 ## Identity model — Ed25519 pubkey + alias
 
-### 各 world は keypair で identify
+### 各 daemon は keypair で identify
 
 | 要素 | 値の例 |
 |------|--------|
@@ -141,15 +141,15 @@ macbook.local              → mDNS local (LAN)
 | `lane-spawn` / `sp-bootstrap` | infra reserved |
 | `*` | broadcast (special、 actor wildcard) |
 
-> **TheWorld registry visibility (VP-147 PR-P2-2)**: 全 reserved actor (`agent` / `notify` / `mcp` / `protocol`) は SP 起動時に self-process register 後、 TheWorld 中央 registry にも一括 landed する。 これにより cross-process address (例 `mcp@<other-project>` / `notify@<other-project>`) の forward が registry lookup で解決され、 silent drop は発生しない。 旧実装 (PR-P2-2 以前) では mcp/notify が registry snapshot タイミングより後に register されており、 cross-process forward が registry miss で silent drop していた dogfood gap (= `mem_1CapRAtpCpahQGn8nW2fmT` 1)。 なお `lane-spawn` / `sp-bootstrap` は infra-local actor のため TheWorld registry には登録しない (cross-process forward は将来拡張、 現在未実装)。
+> **daemon registry visibility (VP-147 PR-P2-2)**: 全 reserved actor (`agent` / `notify` / `mcp` / `protocol`) は SP 起動時に self-process register 後、 daemon 中央 registry にも一括 landed する。 これにより cross-process address (例 `mcp@<other-project>` / `notify@<other-project>`) の forward が registry lookup で解決され、 silent drop は発生しない。 旧実装 (PR-P2-2 以前) では mcp/notify が registry snapshot タイミングより後に register されており、 cross-process forward が registry miss で silent drop していた dogfood gap (= `mem_1CapRAtpCpahQGn8nW2fmT` 1)。 なお `lane-spawn` / `sp-bootstrap` は infra-local actor のため daemon registry には登録しない (cross-process forward は将来拡張、 現在未実装)。
 
 ### reserved project
 
 | project | 役割 |
 |---------|-----|
-| `world` | system project、 TheWorld daemon が holding (例: `hermit_purple@world`、 `hermit_purple@mako/world`) |
+| `daemon` | system project、 daemon が holding (例: `hermit_purple@machine`、 `hermit_purple@mako/daemon`) |
 
-### reserved world-segment (将来予約)
+### reserved daemon-segment (将来予約)
 
 | segment | 役割 |
 |---------|-----|
@@ -174,7 +174,7 @@ macbook.local              → mDNS local (LAN)
 |-------------|------|
 | `<location>` のみ (= actor 省略) | default actor = `agent`、 v3.1 新文法 |
 | `<actor>@<project>/<lane>` | per-lane wire routing (Phase 2 で物理化) |
-| `<host>/<project>/<lane>` | cross-world routing (Phase 3 で LAN、 Phase 4+ で hub) |
+| `<host>/<project>/<lane>` | cross-daemon routing (Phase 3 で LAN、 Phase 4+ で hub) |
 
 ### migration phase
 

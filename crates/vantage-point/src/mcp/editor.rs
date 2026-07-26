@@ -3,7 +3,7 @@
 //! doc 48 Phase 2: Editor Mode bridge (creo-ui editor-mode.md D-10「AI agent access」の
 //! VP 実装)。GUI (vp-app webview) の Editor Mode field を AI agent が読み書きする口。
 //!
-//! 経路: MCP → World "process" channel → `handle_editor_command` (request_id 発行 +
+//! 経路: MCP → Daemon "process" channel → `handle_editor_command` (request_id 発行 +
 //! `EditorCommand` broadcast、非 retained event topic) → vp-app が webview で評価 →
 //! `editor_result` で応答 → oneshot 解決 → ここに返る。
 //!

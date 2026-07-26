@@ -32,7 +32,7 @@ VP には **intent（何であるべきか）** と **実体（今どうなっ�
 
 | 契機 | 手書きの遷移 | 合わせる対象 |
 |---|---|---|
-| boot / World 再起動 | `restore_term_slots` | slot（非 root の Tui のみ） |
+| boot / daemon 再起動 | `restore_term_slots` | slot（非 root の Tui のみ） |
 | act 切替 | `set_session_act` → `restart_lane` or `open_slot_for_session` → pump | slot + engine + pump + 投影 |
 | Add（slot 追加） | `open_new_slot` → pump | slot + pump |
 | ✕（session を閉じる） | `remove_chat_session` → `drop_slot` + `replay_log::clear` + `clear_replay_session` | engine + slot + replay×2 |
@@ -84,7 +84,7 @@ client 側まで含めると、「lane の session 一覧 × 各 act」は **10 
 
 **新しい思想を持ち込むのではない。** CLAUDE.md「プロセス管理（Reconciliation）」が既に宣言している:
 
-> TheWorld が **QUIC registry（Push）** でプロセスを管理する。… registry が**単一の真実源**になった。
+> daemon が **QUIC registry（Push）** でプロセスを管理する。… registry が**単一の真実源**になった。
 > heartbeat 15s + 再接続時の snapshot replace で reconcile。
 
 **process** に対しては reconcile を採っているのに、**lane 内の session** に対しては手書きの遷移を
@@ -118,7 +118,7 @@ reconcile_lane(addr):
 | Add | registry + slot + pump | registry に書く → reconcile |
 | ✕ | registry から消す + drop + replay×2 + engine | registry から消す → reconcile |
 | Reset | registry clear + 全 drop + 掃除 + pump | registry を clear → reconcile |
-| boot / World 再起動 | `restore_term_slots` | reconcile |
+| boot / daemon 再起動 | `restore_term_slots` | reconcile |
 | root 付け替え | registry + restart + 投影更新 | registry に書く → reconcile |
 
 ### 2.2 なぜこれで 8 件が構造的に消えるか
@@ -259,7 +259,7 @@ server は既に **「どの pane が存在すべきか」を知っている** �
 > **R2 は既知バグを 1 件抱えている**（doc 50 §4.7「直さないと決めた 1 件」）: boot 復元
 > （`restore_term_slots`、800ms×N の逐次）が進む間に demand の 0→1 edge が先に立ち、**後から
 > 復元された slot に pump が張られない**。A6 の 11 周目で発見し、**patch が R2 の消す機構になる**
-> ため意図的に据え置いた。**R2 の受け入れ条件にこれを含める**（World 再起動 → 非 root term が
+> ため意図的に据え置いた。**R2 の受け入れ条件にこれを含める**（daemon 再起動 → 非 root term が
 > 2 枚以上 → 全 pane に出力が来ること）。
 >
 > R1 と R2 は **A6 の直後にやると安い**（触った記憶が残っているうちに）。R3 が本体、R4 は client 側。
@@ -968,7 +968,7 @@ reconcile_lane(addr):
 | chat lane を tui に切替 | registry に act=Tui → reconcile が engine を畳み、conversation 有りなので `--resume` で slot が立つ |
 | Reset | registry clear → reconcile が全 slot / engine を畳み、root が **bare** で立つ（id が無い = 継がない） |
 | New root | 新 session が root に → reconcile が新 root の slot を bare で立てる。**旧 root の pane はそのまま残る**（会話は無傷） |
-| boot（World 再起動） | registry の act=Tui 全員に slot、Chat は engine-less、末尾で pump — **今の 3 経路（with_root / lane_spawn_actor / restore_term_slots）が 1 本になる** |
+| boot（daemon 再起動） | registry の act=Tui 全員に slot、Chat は engine-less、末尾で pump — **今の 3 経路（with_root / lane_spawn_actor / restore_term_slots）が 1 本になる** |
 | spawn 失敗 | intent は残り pane は空で出る。次の reconcile 契機（動詞 / boot）で自動再試行 |
 
 ### 12.7 R3c-1 の実装記録（session 動詞 5 本、2026-07-26）
@@ -1038,7 +1038,7 @@ R3c の後半 = **New root / Switch root / Reset / restart**。これで §12.4 
 
 `session_registry::clear` は file ごと消すが、`load` の fallback（`SessionRegistry::single`）は
 **act=Tui 固定**。書かずに reconcile へ渡すと **chat lane の Reset が PTY を立てる**。さらに
-次の World boot では `with_root` が「file 不在 = 初回」と見て既定レンズ（Chat）を書くので、
+次の daemon boot では `with_root` が「file 不在 = 初回」と見て既定レンズ（Chat）を書くので、
 **同じ lane が観測者によって型を変える**。だから Reset は消したあと必ず intent を書き直す。
 
 ⚠️ 書き戻すのは **Reset 直前の root の act**（既定レンズではない）。「Reset = 会話を捨てる」で

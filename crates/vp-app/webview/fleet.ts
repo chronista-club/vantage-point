@@ -2,7 +2,7 @@
  * fleet — 物理艦隊の入力を gallery layout engine への操作に写す mapping registry
  * （doc 49 LE-19: 機材 → 面の対応は consumer 供給）。
  *
- * 入力経路: Devices 🧲 (World) → world-device channel → app.rs `fleet_dispatch_js`
+ * 入力経路: Devices 🧲 (Daemon) → daemon-device channel → app.rs `fleet_dispatch_js`
  * → `window.vpFleet.dispatch(payload)` → mapControl（本 module、純 calculation）
  * → gallery-panes.tsx の action 層が engine に適用する。
  *

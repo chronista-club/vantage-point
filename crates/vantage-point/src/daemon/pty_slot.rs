@@ -7,7 +7,7 @@
 //! base64エンコードはしない（IPC層の責務）。
 //!
 //! terminal S4 (doc 27 §4.1): PTY 出力は broadcast → per-lane terminal pump →
-//! World "canvas" topic 空間に流れる。 旧 `/ws/terminal` attach 時の scrollback replay
+//! Daemon "canvas" topic 空間に流れる。 旧 `/ws/terminal` attach 時の scrollback replay
 //! (ring buffer) は consumer (ws_terminal) ごと撤去したが、 replay-on-attach で復活した:
 //! vp-app 再起動後の新 xterm は live stream だけでは空白のままになる (claude TUI は次の
 //! 出力まで沈黙する) ため、 PtySlot が直近出力の ring buffer を保持し、 attach 時に

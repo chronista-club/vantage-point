@@ -6,10 +6,10 @@
 //! ## LSCM 境界 (PR-α-2 / VP-112、 doc 12 §9)
 //!
 //! - **Project 階層 Stand**: 本 module の `ProcessCapabilities` が host (Protocol / Agent / 等)
-//! - **World 階層 Stand**: `crate::daemon::world_capabilities::WorldCapabilities` が host
-//!   - device 集約（DeviceRegistry 🧲）は **PR-α-2 で本 module から World に移管完了**
+//! - **machine 階層 Stand**: `crate::daemon::machine_capabilities::MachineCapabilities` が host
+//!   - device 集約（DeviceRegistry 🧲）は **PR-α-2 で本 module から daemon に移管完了**
 //!   - 旧 `ProcessCapabilities.midi` field / `CapabilityConfig.midi_config` field は削除済
-//!   - mailbox address `midi@{project}` (旧) → `devices@world` (新)
+//!   - mailbox address `midi@{project}` (旧) → `devices@machine` (新)
 
 use crate::capability::core::Capability;
 use crate::capability::{AgentCapability, CapabilityContext, EventBus, ProtocolCapability};
@@ -19,8 +19,8 @@ use tokio::sync::RwLock;
 /// Process Capability Manager
 ///
 /// Process (= LSCM Project Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
-/// Project 階層 Stand のみ host。 World 階層 Stand (DeviceRegistry / Update / TheWorld) は
-/// `crate::daemon::world_capabilities::WorldCapabilities` 側に移管 (PR-α-2 完了)。
+/// Project 階層 Stand のみ host。 machine 階層 Stand (DeviceRegistry / Update / daemon) は
+/// `crate::daemon::machine_capabilities::MachineCapabilities` 側に移管 (PR-α-2 完了)。
 ///
 /// VP-179 (Phase 5): `msgbox_router` field 撤去。 wiremsg R5-3 で旧 msgbox store も
 /// 撤去済、 msg messaging は `AppState.wiremsg_store` に一本化。
@@ -139,7 +139,7 @@ impl ProcessCapabilities {
 
 /// CapabilityEvent を ProcessMessage に変換
 ///
-/// 注: PR-α-2 (VP-112) で device 集約を World daemon に移管したため、 SP (Project) の
+/// 注: PR-α-2 (VP-112) で device 集約を daemon に移管したため、 SP (Project) の
 /// EventBus は MIDI event を受け取らない。 旧 `t if t.starts_with("midi.")` 分岐は不要なので削除。
 fn capability_event_to_process_message(
     event: &crate::capability::CapabilityEvent,

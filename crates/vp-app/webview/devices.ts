@@ -3,7 +3,7 @@
  *
  * board-render.ts (Board body render) と同じ純 action layer (DOM 操作のみ、 state なし)。
  * Rust が device event 時に `window.vpDevices.renderDevices(devices)` を呼ぶ
- * (= EventBus → world-device channel → AppEvent::DeviceEvent → main_view push)。
+ * (= EventBus → daemon-device channel → AppEvent::DeviceEvent → main_view push)。
  *
  * 公開 API (entry.tsx で window.vpDevices に attach):
  * - `renderDevices(devices)`: Devices pane に接続中 device 一覧を完全置換 render

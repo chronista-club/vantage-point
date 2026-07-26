@@ -1,6 +1,6 @@
 //! Daemon IPC プロトコルのメッセージ型定義
 //!
-//! World daemon の live channel（world-process / events / device 等）の
+//! daemon の live channel（daemon-process / events / device 等）の
 //! リクエスト・レスポンス・イベント型を定義する。
 
 use serde::{Deserialize, Serialize};
@@ -61,25 +61,25 @@ impl ChannelMessage {
 }
 
 // =============================================================================
-// world-process Channel (VP-154 PR-2)
+// daemon-process Channel (VP-154 PR-2)
 // =============================================================================
 
-/// VP-154 PR-2: Process lifecycle event (= World が SP の register/unregister を broadcast)
+/// VP-154 PR-2: Process lifecycle event (= daemon が SP の register/unregister を broadcast)
 ///
-/// World 内側 hub の data plane を Unison Topic 経由で expose するための event 型。
+/// Daemon 内側 hub の data plane を Unison Topic 経由で expose するための event 型。
 /// Daemon の registry channel handler が SP register/unregister を受信したタイミングで、
-/// `DaemonState.process_lifecycle_tx` に publish。 "world-process" channel の
+/// `DaemonState.process_lifecycle_tx` に publish。 "daemon-process" channel の
 /// subscribe handler が broadcast::Receiver から取り出して client に send_event で push。
 ///
 /// ## Topic semantics (= 将来 TopicRouter migration の予定)
 ///
 /// 現状は wire 上の serde tag (= `kind: "add" | "remove"`) と project_path で区別。
-/// 将来的には `world/process/state/<project>` (retained) + `world/process/event` (transient)
+/// 将来的には `daemon/process/state/<project>` (retained) + `daemon/process/event` (transient)
 /// の Topic 名で SP の TopicRouter と対称化予定 (= 別 PR scope)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProcessLifecycleEvent {
-    /// SP が register された (= 新 Process が World 配下に加わった)
+    /// SP が register された (= 新 Process が Daemon 配下に加わった)
     Add {
         /// 正規化済 project path (= HashMap key と同じ form)
         project_path: String,
@@ -97,10 +97,10 @@ pub enum ProcessLifecycleEvent {
     },
 }
 
-/// DeviceRegistry 🧲 — device 接続/切断/操作イベント (= "world-device" Unison channel の data plane)
+/// DeviceRegistry 🧲 — device 接続/切断/操作イベント (= "daemon-device" Unison channel の data plane)
 ///
 /// EventBus の `devices.*` event を Unison wire に変換した公開型。 `ProcessLifecycleEvent` と
-/// 同じ `serde(tag = "kind")` 規約で serialize する。 daemon の world-device bridge が
+/// 同じ `serde(tag = "kind")` 規約で serialize する。 daemon の daemon-device bridge が
 /// `from_capability_event` で変換し、 vp-app が QUIC subscribe して受ける。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -180,7 +180,7 @@ pub struct ReportDeviceRequest {
 }
 
 /// doc 49 LE-19 フィードバック方向: webview の場の状態 → 機材への投影指示
-/// (= "world-device" channel の上り `feedback` event payload)。
+/// (= "daemon-device" channel の上り `feedback` event payload)。
 ///
 /// 送り手 = gallery webview の mapping registry（fleet.ts `computeFeedback`、consumer 供給）。
 /// 受け手 = DeviceRegistry `apply_feedback` が各 device の出力 profile に写す:
@@ -215,7 +215,7 @@ pub struct PadFeedback {
     pub filled: bool,
 }
 
-/// VP-154 PR-2: Process snapshot 1 entry (= "world-process" list method の応答 payload)
+/// VP-154 PR-2: Process snapshot 1 entry (= "daemon-process" list method の応答 payload)
 ///
 /// 既存 `RunningProcess` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json
 /// で safe に network 越しに送れる形にする。
