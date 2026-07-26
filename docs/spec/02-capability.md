@@ -2,7 +2,7 @@
 
 > **Status**: Active
 > **Created**: 2025-12-16
-> **Updated**: 2026-05-16
+> **Updated**: 2026-07-27
 
 ---
 
@@ -72,89 +72,14 @@ wiremsg は agent 間メッセージングの substrate。 message は中央 sto
 
 ---
 
-## 6 パラメータシステム
+## MIDI / device 連携
 
-JoJo Stand Stats を参考に、Capability の特性を定量化。
-
-**実装**: `crates/vantage-point/src/capability/params.rs`
-
-| パラメータ | 意味 | AI エージェント適用 |
-|-----------|------|-------------------|
-| Power | 影響力・変更範囲 | 扱えるデータ量 |
-| Speed | 応答速度 | 初期化・応答時間 |
-| Range | 適用範囲 | 統合サービス数 |
-| Stamina | 継続動作 | 連続稼働時間 |
-| Precision | 制御精度 | 成功率 |
-| Potential | 拡張性 | カスタマイズ性 |
-
-ランク: A (81-100) > B (61-80) > C (41-60) > D (21-40) > E (1-20)
-
----
-
-## MIDI 連携（🍇 Hermit Purple）
-
-### REQ-CAP-010: MidiCapability
-
-- [x] MIDI デバイスの検出・接続
-- [x] MIDI 入力イベント受信
-- [x] MIDI 出力（Note, CC, SysEx）送信
-- [x] LED フィードバック制御
-- [x] デバイス固有設定管理
-
-**パラメータ**: D/A/C/A/B/B (23/30)
-
-### REQ-CAP-011: LPD8 デバイス定義
-
-- [x] パッド 8 個 + ノブ 8 個の入力処理
-- [x] パッド LED 制御
-- [x] SysEx プログラム読み書き
-
-#### パッドマッピング
-
-```
-┌─────────┬─────────┬─────────┬───────┐
-│  PAD 5  │  PAD 6  │  PAD 7  │ PAD 8 │
-│  (40)   │  (41)   │  (42)   │ (43)  │
-│ Cancel  │  Reset  │   -     │   -   │
-├─────────┼─────────┼─────────┼───────┤
-│  PAD 1  │  PAD 2  │  PAD 3  │ PAD 4 │
-│  (36)   │  (37)   │  (38)   │ (39)  │
-│ Proj 1  │ Proj 2  │ Proj 3  │ Proj 4│
-└─────────┴─────────┴─────────┴───────┘
-```
-
-| PAD 1-4 | プロジェクト切替 (port 33000-33003) |
-| PAD 5 | AI 応答キャンセル |
-| PAD 6 | セッションリセット |
-
-#### LED フィードバック
-
-| 状態 | LED |
-|------|-----|
-| プロジェクト起動中 | 点灯 |
-| AI 応答中 | 点滅 |
-| AI 入力待ち | 点灯 |
-| エラー | 高速点滅 |
-
-#### SysEx プロトコル
-
-Manufacturer: 0x47 (Akai), Model: 0x7F 0x75 (LPD8)
-
-| コマンド | バイト |
-|----------|--------|
-| Send Program | 0x61 |
-| Set Active | 0x62 |
-| Get Program | 0x63 |
-| Get Active | 0x64 |
-
-#### CLI コマンド
-
-```bash
-vp lpd8 write              # VP 設定を Program 1 に書込み
-vp lpd8 switch 1           # アクティブプログラム切替
-vp midi monitor            # MIDI 入力監視
-vp midi ports              # ポート一覧
-```
+> **改訂 (2026-07-27)**: 旧 `MidiCapability`（REQ-CAP-010）と LPD8 単体定義（REQ-CAP-011）は
+> 撤去済 — single-device monitor は消費者不在のまま enumeration 先頭 device を無条件 grab する
+> 害だけが残っていた（fleet dogfood で発覚）。現行の device 連携は **Bastet 🧲（World scope の
+> multi-device registry）+ Justice 🌫️（Lane scope の双方向 I/O）**。設計 SSOT =
+> `design/23-bastet-justice-stand-wiring.md`、実装 = `crates/vantage-point/src/bastet.rs` /
+> `justice.rs`。CLI は `vp midi lpd8 write|switch` / `vp midi monitor|ports`。
 
 ### REQ-CAP-020: Canvas / TUI 連携
 
@@ -173,7 +98,7 @@ vp midi ports              # ポート一覧
 
 ## References
 
-- `design/02-capability-evolution.md` (VP-DESIGN-002) — 進化システム設計
+- `archive/02-capability-evolution.md` (VP-DESIGN-002) — 旧進化システム設計（ACT 進化系は 2026-07-27 撤去、 historical reference）
 - `design/14-wire-address-v3.md` — wire address モデル（Phase 2 プロトコル型 = wiremsg の address 仕様）
 - `design/19-msgbox-whitesnake-primary.md` (VP-169) — 旧 msgbox v2 / WhitesnakeStore 設計（wiremsg 再設計で全廃、 historical reference）
 - `crates/vantage-point/src/capability/` — 実装

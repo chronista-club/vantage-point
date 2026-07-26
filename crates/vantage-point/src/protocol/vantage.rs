@@ -95,28 +95,6 @@ pub enum VantageEvent {
     },
 
     // -------------------------------------------------------------------------
-    // Evolution Events (JoJo-inspired)
-    // -------------------------------------------------------------------------
-    /// 能力進化
-    EvolutionTriggered {
-        capability_id: String,
-        from_level: String,
-        to_level: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trigger: Option<String>,
-        #[serde(default = "now_millis")]
-        timestamp: u64,
-    },
-
-    /// 覚醒
-    Awakening {
-        capability_id: String,
-        awakening_kind: String,
-        #[serde(default = "now_millis")]
-        timestamp: u64,
-    },
-
-    // -------------------------------------------------------------------------
     // Custom Extension Point
     // -------------------------------------------------------------------------
     /// カスタムイベント（拡張用）

@@ -1,7 +1,7 @@
 //! Process module - AI Agent server (HTTP + WebSocket hub)
 //!
 //! Process はプロジェクトの開発プロセスを表す本体。
-//! JoJo の Stand（能力）を保持し、ユーザーの開発を支援する。
+//! 各種能力（Capability / Stand）を保持し、ユーザーの開発を支援する。
 //!
 //! ## 構成
 //! - **Process**: サーバー（開発プロセス本体）

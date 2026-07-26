@@ -19,7 +19,7 @@ use crate::file_watcher::FileWatcherManager;
 use crate::protocol::{Content, ProcessMessage};
 
 /// PP の overall canvas layout を pane_contents に畳む際の reserved pane_id。
-/// 通常 pane ではないので restore / pane 一覧から除外する (Whitesnake 退役で導入)。
+/// 通常 pane ではないので restore / pane 一覧から除外する (旧永続化レイヤー退役で導入)。
 pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 
 /// demand-driven terminal pump の台帳（doc 50 §4.6 A6 → doc 53 R2 で reconcile 化）。
@@ -88,7 +88,7 @@ pub(crate) struct AppState {
     /// `wire_recv` がこの store を直接 long-poll する。
     /// 設計 memory: `mem_1CbD9H1KGQykBaFG8XXVsn`。
     ///
-    /// wiremsg R5-3: 旧 `msgbox_store` (= `WhitesnakeStore`、 msgs table) は撤去済。
+    /// wiremsg R5-3: 旧 `msgbox_store` (msgs table) は撤去済。
     /// msg messaging はこの wiremsg store に一本化。
     pub wiremsg_store: Option<crate::capability::WiremsgStore>,
     /// Phase A ①: wiremsg long-poll の SP 内 in-process 起床機構
@@ -215,14 +215,14 @@ impl AppState {
     }
 
     // =========================================================================
-    // ペイン状態永続化（pane_contents / SurrealDB 経由、 旧 Whitesnake 退役）
+    // ペイン状態永続化（pane_contents / SurrealDB 経由、 旧 file-backed DISC 層は退役）
     // =========================================================================
 
     /// pane_contents (SurrealDB) から PP pane 状態を RetainedStore に boot 復元する。
     ///
-    /// 旧 Whitesnake DISC 退役 → canonical な pane_contents を直接読む。 webview 自身は
+    /// 旧 DISC 層退役 → canonical な pane_contents を直接読む。 webview 自身は
     /// `/api/pp/state` GET で state を読むが、 retained `show` topic を購読する経路 (MCP show 等)
-    /// のため boot で RetainedStore も埋める (旧挙動保存)。 旧 Whitesnake restore と同じく
+    /// のため boot で RetainedStore も埋める (旧挙動保存)。 旧 DISC restore と同じく
     /// **conductor scope のみ**復元する (performer は webview が lane 切替時に /api/pp/state で読む)。
     /// reserved な canvas-layout row は pane ではないので除外。
     pub async fn restore_pane_contents(&self) {
@@ -252,7 +252,7 @@ impl AppState {
             // pane_contents は content_type(str)+content(str) で持つ → Content enum に組み直す。
             // image_base64 は data/mime を content 1 列に畳めず PP Canvas でも現状未使用
             // (mcp.rs: image_base64 は content 空文字保存) なので markdown fallback で可
-            // (旧 Whitesnake も実経路では同等の dead path)。
+            // (旧 DISC 層も実経路では同等の dead path)。
             let content_str = row
                 .get("content")
                 .and_then(|v| v.as_str())

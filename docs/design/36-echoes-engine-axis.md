@@ -1,6 +1,6 @@
 # doc 36 — Echoes engine 軸: surface × engine の直交格子と lane サブコンソール
 
-> 前提: [`cursor-engine.md`](./cursor-engine.md)（#773 Act I / #776 Act II、cursor-agent を 2 つ目の
+> 前提: [`cursor-engine.md`](../archive/cursor-engine.md)（#773 Act I / #776 Act II、cursor-agent を 2 つ目の
 > engine として追加）、[doc 33 console-unification](./33-console-unification.md)（engine 排他 slot +
 > console_mode）、[doc 32 echoes-act2-gui](./32-echoes-act2-gui.md)。
 
@@ -119,7 +119,7 @@ Act I/II の列構造は不変で各ベンダーが両セルを埋める。curso
 7. `vp-app/src/app.rs` + `terminal.rs`: 副 session（topic 用 key と RPC `lane` 用 key を**別引数**で持つ）を
    新設。`echoes:sub_submit` 等の IPC を配線。
 
-HITL / permission / replay は cursor 非対応（cursor-engine.md）なので副では対象外。主・副の会話は独立
+HITL / permission / replay は cursor 非対応（archive/cursor-engine.md）なので副では対象外。主・副の会話は独立
 （chatId 別）で開始。**推奨順 = 1→3(RPC 単体まで) → 7(session 分離) → 5→6(見た目)**。
 
 ## 6. 未解決・リスク
@@ -137,7 +137,7 @@ HITL / permission / replay は cursor 非対応（cursor-engine.md）なので�
   意図しない制約を生む → 専用 `ensure_sub_chat_engine` を新設しガードを持ち込まない。
 - **restart（New Session）は副を知らない**: `restart_lane` の fresh 分岐は主の cc_session/cursor_session/
   chat_engines のみ clear。副の state file・`sub_chat_engines` は残る（stale 副 chatId）。Phase 0 は見送り可。
-- **per-lane stand 非永続**（cursor-engine.md 制約）: 副 host の engine 種別も SP 再起動で失われる。
+- **per-lane stand 非永続**（archive/cursor-engine.md 制約）: 副 host の engine 種別も SP 再起動で失われる。
   副の永続をどこまでやるかは Phase 0 スコープ外（まず in-memory で dogfood）。
 - **アドレス sub-key の正規化**: `normalize_path_key` / lane_label / wire address 等が sub-key を
   取りこぼさないか要検証（`#` を含む key の sanitize）。

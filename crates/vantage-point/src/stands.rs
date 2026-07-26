@@ -103,19 +103,10 @@ pub const GOLD_EXPERIENCE: StandAlias = StandAlias {
     emoji: "🌿",
 };
 
-/// シェルターミナル能力 — 直接操作ターミナル
-pub const THE_HAND: StandAlias = StandAlias {
-    id: "shell",
-    functional_name: "Shell Terminal",
-    stand_name: "The Hand",
-    short: "TH",
-    emoji: "✋",
-};
-
 /// デバイス集約能力 — World scope の物理 device registry / hot-plug / routing（Bastet 🧲）
 ///
-/// epic v3.1 (E2) で旧 Hermit Purple 🍇 の World 座（`hermit_purple@world`）を継承し、
-/// 「磁力で device を集約する」 registry に発展。per-lane の双方向 I/O は [`JUSTICE`] が担う。
+/// epic v3.1 (E2) で旧 External Control stand の World 座を継承し、device 集約 registry に
+/// 発展。per-lane の双方向 I/O は [`JUSTICE`] が担う。
 /// 設計 SSOT: `docs/design/23-bastet-justice-stand-wiring.md`。
 pub const BASTET: StandAlias = StandAlias {
     id: "bastet",
@@ -138,7 +129,7 @@ pub const JUSTICE: StandAlias = StandAlias {
     emoji: "🌫️",
 };
 
-// 旧 Whitesnake 🐍 (永続化レイヤー) は退役 — 永続は SurrealDB (vpdb) に一本化。
+// 旧 file-backed 永続化レイヤーは退役 — 永続は SurrealDB (vpdb) に一本化。
 // PP pane state は pane_contents table が担う (file-backed DISC 層は撤去)。
 
 /// 全 Stand の一覧（イテレーション用）
@@ -148,7 +139,6 @@ pub const ALL: &[&StandAlias] = &[
     &GOLD_EXPERIENCE,
     &PAISLEY_PARK,
     &ECHOES,
-    &THE_HAND,
     &BASTET,
     &JUSTICE,
 ];

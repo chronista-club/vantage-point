@@ -15,7 +15,7 @@
 //!
 //! Lane scope に host する Stand:
 //! - Echoes 💬 (旧 HD) — Lane mise task PtySlot で立つ (= LaneCapabilities では host しない)
-//! - The Hand 🤚 — Lane mise task PtySlot で立つ (= 同上)
+//! - shell — Lane mise task PtySlot で立つ (= 同上)
 //! - Paisley Park 🧭 — `LaneCapabilities.registry` 内 PaisleyParkStand (PR-δ-2 で trait-based host へ rewire、 Lane あたり 1 instance)
 //! - Gold Experience 🌿 (planned PR-γ で Lane 移管予定、 LaneStand impl 追加)
 //!
@@ -89,9 +89,6 @@ impl fmt::Display for LaneId {
 // `LaneStand` enum は doc 11 (PR-B) で削除。 stand 識別子は `String` に統一
 // (例: "echoes" / "shell")。 tmux decoupling PR2 で stand script 層 (mise task) も廃止され、
 // stand は `stand_spawner::build_stand_command` の Rust-native 分岐になった。
-//
-// wire format の legacy 名は `process::routes::lanes::migrate_legacy_stand` で
-// 1 release の deprecation 期間 shim 経由で吸収 ("heavens_door" → "hd"、 "the_hand" → "shell")。
 //
 // `TmuxMode` / `TmuxLaneAddress` (Phase 1a の tmux session registry) は tmux decoupling PR2 で
 // 退役 — lane の identity は `LaneAddress` ただ一つ、 process host は PtySlot ただ一つ

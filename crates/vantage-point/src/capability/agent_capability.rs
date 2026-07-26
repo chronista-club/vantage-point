@@ -393,7 +393,7 @@ impl Capability for AgentCapability {
         // VP-157: msgbox_recv_active は廃止 (= AgentCapability の専属 consumer 削除、
         // observer 化)。 VP-178 (Phase 4): agent box owner だった
         // `AppState.agent_msgbox_conductor` も撤去、 全 msg routing は `msgbox_store`
-        // (= WhitesnakeStore) 経由に統一済。
+        // (= 旧 msgbox store) 経由に統一済。
         let details = serde_json::json!({
             "working_dir": self.config.working_dir,
             "model": self.config.model,
@@ -424,7 +424,7 @@ impl Capability for AgentCapability {
         // 旧: ctx.msgbox().recv() loop で agent#conductor の msg を消費 → EventBus emit
         // 中継: agent box の owner は AppState.agent_msgbox_conductor に移管
         // 新 (VP-178 Phase 4): mpsc Router 経路を全廃、 msg routing は `msgbox_store`
-        //     (= WhitesnakeStore.claim polling) に統一。 EventBus 経路が必要な場合は
+        //     (= 旧 store の claim polling) に統一。 EventBus 経路が必要な場合は
         //     別 trigger (= 他 capability の lifecycle event 等) で emit する設計に再構成
         //     (= VP-159 H1 framework で整理予定)。
 

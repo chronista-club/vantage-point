@@ -133,7 +133,7 @@ pub(crate) async fn start_project(
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
-    // Whitesnake 退役: 永続は SurrealDB 一本化 (PP pane state は pane_contents)。
+    // 旧 file-backed 永続化レイヤー退役: 永続は SurrealDB 一本化 (PP pane state は pane_contents)。
 
     // project_name は project_dir から解決（AppState / lane pool 等で使用）
     let project_name_for_remote =
@@ -521,7 +521,7 @@ pub(crate) async fn start_project(
 /// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
 /// 本関数は token では止まらないリソースの解放を担当する）。
 pub(crate) async fn shutdown_project(state: &Arc<AppState>) {
-    // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 Whitesnake
+    // pane 状態は webview が /api/pp/state で逐次 pane_contents に保存済 (旧 DISC
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
 
     // ファイル監視を全停止

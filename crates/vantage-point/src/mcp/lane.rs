@@ -397,9 +397,9 @@ impl VantageMcp {
             //   - `agent#<lane>` = その lane の Claude session 宛 (= coding-assistant inbox)
             //   - `board#<lane>` = その lane の board / PP 宛
             // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "board"`)。
-            // JoJo 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
+            // 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
             // wire syntax は `<stand-id>@<project>/<lane>` (conductor は `/lane` 省略可)。
-            // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
+            // 旧実装の `<愛称>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。
             let lane_label = lane_name_of(&lane);
             // conductor は `agent@<project>` (lane 省略 = conductor)、performer は `agent@<project>/<name>`

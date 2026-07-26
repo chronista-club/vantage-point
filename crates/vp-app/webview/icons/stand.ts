@@ -1,6 +1,6 @@
 // VP Stand glyph mapping (@chronista-club/creo-ui-icons-web の VP-domain alias)。
 //
-// Stand 概念翻訳辞書も兼ねる: 各 JoJo Stand → Phosphor icon の対応。
+// Stand 概念翻訳辞書も兼ねる: 各 stand kind → Phosphor icon の対応。
 // state-driven: default = regular, active = fill, disabled = thin weight。
 //
 // 参考 memory: ~/.claude/projects/.../memory/feedback_creo_ui_icon_dual_axis.md
@@ -13,8 +13,6 @@ export type StandKind =
   | 'echoes'
   | 'paisley_park'
   | 'gold_experience'
-  | 'hermit_purple'
-  | 'whitesnake'
   | 'theworld'
 
 export interface StandIconSet {
@@ -38,16 +36,6 @@ export const STAND_ICON: Record<StandKind, StandIconSet> = {
     default: 'ph:plant',
     active: 'ph:plant-fill',
     disabled: 'ph:plant-thin',
-  },
-  hermit_purple: {
-    default: 'ph:plug',
-    active: 'ph:plug-fill',
-    disabled: 'ph:plug-thin',
-  },
-  whitesnake: {
-    default: 'ph:database',
-    active: 'ph:database-fill',
-    disabled: 'ph:database-thin',
   },
   theworld: {
     default: 'ph:planet',

@@ -1874,7 +1874,7 @@ DEFINE FIELD IF NOT EXISTS read ON notifications TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS created_at ON notifications TYPE datetime DEFAULT time::now();
 
 -- =========================================================================
--- wiremsg R5-3: 旧 VP-169 msgs table (Whitesnake-primary msgbox) は撤去。
+-- wiremsg R5-3: 旧 VP-169 msgs table (file-backed msgbox) は撤去。
 -- msg messaging は下記 wiremsg threaded inbox (messages table) に一本化済。
 -- =========================================================================
 

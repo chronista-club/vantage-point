@@ -2340,7 +2340,7 @@ fn spawn_session_title_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLo
 /// main thread が `sidebar_state.lanes_by_project` を walk して各 lane の MessageState を
 /// build し、 sidebar に push back する trigger となる。 Phase 2 PR-P2-3 では default 値の
 /// placeholder を populate し、 sidebar UI で `.vp-message-icon` 表示の signal として動く。
-/// 後続 PR で backend peek API + Whitesnake query を実装して actual 値を populate する。
+/// 後続 PR で backend peek API + 永続 store query を実装して actual 値を populate する。
 fn spawn_lane_inbox_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
     rt_handle.spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
@@ -4179,7 +4179,7 @@ pub fn run() -> anyhow::Result<()> {
                 //  poller (`spawn_lane_inbox_poller`) が 5s 間隔で tick を送ってここに来る。
                 //  Phase 2 (icon visibility のみ) では default MessageState を populate して
                 //  sidebar UI で `.vp-message-icon` 表示の signal とする。 backend peek API
-                //  + Whitesnake query は後続 PR で実装、 actual 値で MessageState を populate。
+                //  + 永続 store query は後続 PR で実装、 actual 値で MessageState を populate。
                 use crate::pane::MessageState;
                 let mut changed = false;
                 let mut current_keys: std::collections::HashSet<String> =

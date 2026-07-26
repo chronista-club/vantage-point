@@ -1,4 +1,4 @@
-//! lane (Stone Free 🧵) — Git worktree-based performer workspace manager
+//! lane — Git worktree-based performer workspace manager
 //!
 //! lane = `<repo>/.vp/lanes/<name>` の git worktree (conductor の `.git` を共有)。
 //! `--isolation clone` で旧来の独立 clone も選べる (escape hatch)。

@@ -7,10 +7,9 @@
 //!
 //! - **Project 階層 Stand**: 本 module の `ProcessCapabilities` が host (Protocol / Agent / 等)
 //! - **World 階層 Stand**: `crate::daemon::world_capabilities::WorldCapabilities` が host
-//!   - Bastet 🧲 (`MidiCapability`) は **PR-α-2 で本 module から World に移管完了**
-//!     （epic v3.1 E2-0 で旧 Hermit Purple 🍇 から rename）
+//!   - device 集約（Bastet 🧲）は **PR-α-2 で本 module から World に移管完了**
 //!   - 旧 `ProcessCapabilities.midi` field / `CapabilityConfig.midi_config` field は削除済
-//!   - mailbox address `midi@{project}` (旧) → `bastet@world` (新、 旧称 `hp@world`)
+//!   - mailbox address `midi@{project}` (旧) → `bastet@world` (新)
 
 use crate::capability::core::Capability;
 use crate::capability::{AgentCapability, CapabilityContext, EventBus, ProtocolCapability};
@@ -20,7 +19,7 @@ use tokio::sync::RwLock;
 /// Process Capability Manager
 ///
 /// Process (= LSCM Project Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
-/// Project 階層 Stand のみ host。 World 階層 Stand (HP / Update / TheWorld) は
+/// Project 階層 Stand のみ host。 World 階層 Stand (Bastet / Update / TheWorld) は
 /// `crate::daemon::world_capabilities::WorldCapabilities` 側に移管 (PR-α-2 完了)。
 ///
 /// VP-179 (Phase 5): `msgbox_router` field 撤去。 wiremsg R5-3 で旧 msgbox store も
@@ -37,7 +36,7 @@ pub struct ProcessCapabilities {
 /// Capability 初期化設定
 ///
 /// wiremsg R5-3: 旧 `remote_routing` field (msgbox forward) は撤去済。
-/// Whitesnake 退役 (永続は SurrealDB 一本化): 旧 `whitesnake` field も撤去。
+/// 旧 file-backed 永続化レイヤーは退役 (永続は SurrealDB 一本化): 該当 field も撤去済。
 pub struct CapabilityConfig {
     /// プロジェクトディレクトリ
     pub project_dir: String,
@@ -140,7 +139,7 @@ impl ProcessCapabilities {
 
 /// CapabilityEvent を ProcessMessage に変換
 ///
-/// 注: PR-α-2 (VP-112) で MidiCapability を World daemon に移管したため、 SP (Project) の
+/// 注: PR-α-2 (VP-112) で device 集約を World daemon に移管したため、 SP (Project) の
 /// EventBus は MIDI event を受け取らない。 旧 `t if t.starts_with("midi.")` 分岐は不要なので削除。
 fn capability_event_to_process_message(
     event: &crate::capability::CapabilityEvent,
