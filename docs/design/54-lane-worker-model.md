@@ -360,7 +360,10 @@ World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残�
    **act の rename 候補（mako 2026-07-25）: `shell → act-i / tui → act-ii / chat → act-iii`**
    — 3 幕の梯子は #661 の物理層（Act1 = login shell が土台）と一致し物理モデルに忠実。
 
-   **決定（mako 2026-07-26）: 「固めて一箇所で、それだけやる」= schema 束とは別の単独 PR。**
+   **方針（mako 2026-07-26、確定）: 「一箇所に固めて、もれなく完全に一気に移行する」。**
+   schema 束とは別の単独 PR で、**部分移行・恒久 alias・「あとで撤去」を作らない**
+   （[[pre-mvp-development-stance]]「中間状態を作らない」/ [[vp-rebuild-epic-dev-policy]]
+   「旧経路即撤去」と同じ規律）。タイミングは実装側の裁量。
 
    > ⚠️ **この決定は、下の①「schema 変更と同じ migration に束ねる」を撤回する。**
    > 束ねる理由は「migration を 2 回書かない」だったが、**その前提が成り立たない**ことが
@@ -375,7 +378,18 @@ World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残�
    ⚠️ rename 時に処理する 3 点:
 
    ① act は registry / wire に**永続される値**。~~schema 変更と同じ migration に束ねる~~
-   → **単独 PR 内で完結**（`parse` に旧名 alias / `as_str` は新名。alias の撤去はさらに後）
+   → **単独 PR 内で完結**。ただし「一気に」を**データにも**適用するので、恒久 alias は置かない:
+
+   | | 中身 | 評価 |
+   |---|---|---|
+   | A. 旧値を読まない | `parse` が `None` → 呼び手が既定を選ぶ | 「移行」ではなく**破棄** — 初回起動で全 session の act が既定レンズに戻る（user から見れば設定が消える） |
+   | **B. 起動時 1 回だけ書き換える** | 読みの legacy arm で旧値を受け、**その場で新形式へ save**。以後 file は全部新形式 | **推奨**。恒久 alias ではなく**収束する**（1 周したら legacy arm を消せる = 中間状態が残らない） |
+
+   ⚠️ B の legacy arm は「あとで撤去」の据え置きにしない — **撤去の契機を PR に書く**
+   （= 自分の全 lane が 1 度 load された後）。据え置くと恒久 alias と同じものになる。
+
+   ⚠️ **wire 側には legacy arm を置かない**。GUI / CLI / server は同じ binary から出るので
+   版ズレが起きない（registry file だけが「前の版が書いたもの」を持ちうる）。
 
    ② 既存の「Act I/II」（doc 33 系 = tui/chat）と**採番がシフトする**（今の Act I が新 act-ii）
    ため doc / memory / コメントの旧参照を訂正する。**実測 = 520 箇所 / 25+ file**（design doc が
