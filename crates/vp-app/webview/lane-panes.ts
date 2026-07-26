@@ -22,13 +22,13 @@
  *   入場規則）。「畳んで取っておく」中間状態と下端の帯（pane chip）は退役 —
  *   旧「1 枚ずつ = showOnly」（mako 2026-07-21）は doc 47 §1 決着までの暫定だった
  *
- * ## pane の顔ぶれ（roster）と Act の関係（doc 50 §4.6 A6）
+ * ## pane の顔ぶれ（roster）と Mode の関係（doc 50 §4.6 A6）
  *
- * **roster = session 一覧 × 各 session の act**。1 session = 1 Pane（doc 46 §1.5）で、
- * act がその Pane の kind（term = Act I の PTY 面 / chat = Act II の構造化面）を決める。
+ * **roster = session 一覧 × 各 session の mode**。1 session = 1 Pane（doc 46 §1.5）で、
+ * mode がその Pane の kind（term = tui の PTY 面 / chat = gui の構造化面）を決める。
  *
  * 同じ session の term / chat 同時 2 枚は**原理的に不可**（1 往復路 = Active な化身 高々 1。
- * Act I = TUI 常駐、Act II = headless stream-json、切替 = resume handoff）。roster が
+ * tui = TUI 常駐、gui = headless stream-json、切替 = resume handoff）。roster が
  * session ごとに 1 枚しか作らないので、この不変条件は構造で保たれる。
  *
  * > pre-A6 は xterm が lane に 1 枚しか無く、term になれるのは root だけだった。そのため
@@ -63,13 +63,13 @@ export type PaneRef = {
 };
 
 /** roster の入力になる session の最小形（'vp:echoes-sessions' bus の 1 要素）。
- *  doc 50 §4.6 A6: `act` がこの session の見え方（term / chat）を決める **唯一の入力**。
- *  欠落（旧 SP）は "tui" に倒す（従来の既定 = Act I）。 */
+ *  doc 50 §4.6 A6: `mode` がこの session の見え方（term / chat）を決める **唯一の入力**。
+ *  欠落（旧 SP）は "tui" に倒す（従来の既定 = tui）。 */
 export type PaneSession = {
 	key: number;
 	agent: string;
 	root?: boolean;
-	act?: "tui" | "chat";
+	mode?: "tui" | "gui";
 };
 
 /**
@@ -88,18 +88,18 @@ export function termHostId(session: number): string {
 export const TERM_HOST_CLASS = "term-session-host";
 
 /**
- * session の act から pane host id を決める **唯一の写像**。
+ * session の mode から pane host id を決める **唯一の写像**。
  *
- * この写像は roster 導出 / act 切替の rename / focus 解決の 3 箇所で要る。各所で
- * `act === "chat" ? … : …` を書くと**片方だけ古くなる** — 実際 focus 側 2 箇所が chat 決め打ちの
+ * この写像は roster 導出 / mode 切替の rename / focus 解決の 3 箇所で要る。各所で
+ * `mode === "gui" ? … : …` を書くと**片方だけ古くなる** — 実際 focus 側 2 箇所が chat 決め打ちの
  * まま残り、term が focused の lane で focus ring が別 pane に付いていた（team-b 8 回目
- * 2026-07-25）。act 不明（旧 SP wire）は tui に倒す = 従来の既定。
+ * 2026-07-25）。mode 不明（旧 SP wire）は tui に倒す = 従来の既定。
  */
-export function hostIdForAct(
+export function hostIdForMode(
 	session: number,
-	act: "tui" | "chat" | undefined,
+	mode: "tui" | "gui" | undefined,
 ): string {
-	return act === "chat" ? chatHostId(session) : termHostId(session);
+	return mode === "gui" ? chatHostId(session) : termHostId(session);
 }
 
 /** board（board）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
@@ -136,22 +136,22 @@ export function boardLaneKeyOf(address: string): string {
 
 /** lane の pane の顔ぶれ（純関数、doc 50 §4.6 A6）。
  *
- *  **各 session の act がその session の Pane kind を決める** — 1 session = 1 Pane
+ *  **各 session の mode がその session の Pane kind を決める** — 1 session = 1 Pane
  *  （doc 46 §1.5）で、term / chat は同じ往復路の見え方違い。同じ session が 2 枚になることは
  *  原理的に無い（1 往復路 = Active な化身 高々 1）ので、旧実装の「mode で排他にする」規則は
  *  不要になった（あれは「term になれるのは root だけ」という物理制約の投影だった）。
  *
- *  board pane は engine session と直交する lane-level の面なので、act を問わず board が
+ *  board pane は engine session と直交する lane-level の面なので、mode を問わず board が
  *  非空なら**末尾に**足す（doc 52 §2 — board は掲示板/計器盤/中継台/対話面の役割を持つ
- *  lane の道具で、どの Act で作業していても同じ台に並ぶ）。 */
+ *  lane の道具で、どの Mode で作業していても同じ台に並ぶ）。 */
 export function lanePaneRefs(
 	sessions: readonly PaneSession[],
 	boardPresent = false,
 ): PaneRef[] {
 	const sessionPanes = sessions.map((v): PaneRef => {
 		const label = `${sessionChipPrefix(v.agent)}#${v.key}`;
-		const kind = v.act === "chat" ? "chat" : "term";
-		return { id: hostIdForAct(v.key, v.act), label, session: v.key, kind };
+		const kind = v.mode === "gui" ? "chat" : "term";
+		return { id: hostIdForMode(v.key, v.mode), label, session: v.key, kind };
 	});
 	return boardPresent ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
 }
@@ -186,7 +186,7 @@ export function syncPaneColumns(layout: Layout, ids: readonly string[]): Layout 
 
 /** pane の id を **その場で**差し替える（純関数、doc 50 §4.6 A6 ② の in-place 変身の実体）。
  *
- *  act 切替は「同じ往復路の見え方が変わる」だけなのに、host id は変わる
+ *  mode 切替は「同じ往復路の見え方が変わる」だけなのに、host id は変わる
  *  （`chat-session-16` ⇄ `lane-host` / `term-session-16`）。素直に roster 同期に任せると
  *  **1 枚消えて 1 枚が右端に入場**する扱いになり、列の位置と share を失う
  *  （2026-07-25 実機: chat→tui で pane が右端の細い列に飛んだ = 「立ち上がっていない」ように見えた）。
@@ -234,21 +234,21 @@ export function initialLaneLayout(): Layout {
 /** 消えていた Pane に focus を当て直す時の share（2 枚構成なら等分に戻る） */
 const RESTORE_SHARE = 0.5;
 
-/** 新 Pane の選択肢 1 つ（doc 46 P2 要件 4: Engine × Act）。 */
+/** 新 Pane の選択肢 1 つ（doc 46 P2 要件 4: Engine × Mode）。 */
 export type NewPaneChoice = {
 	/** agent 名（`echoes` / `codex` / `grok` …）。 */
 	engine: string;
 	/** 表示名（engine の人間可読名）。 */
 	engineLabel: string;
-	act: "tui" | "chat";
+	mode: "tui" | "gui";
 };
 
 /**
- * Engine × Act の総当たりを作る（doc 46 P2 要件 4、純関数）。
+ * Engine × Mode の総当たりを作る（doc 46 P2 要件 4、純関数）。
  *
- * `chatCapable` が false の engine は **Act II（chat）を出さない** — chat host を持たない
+ * `chatCapable` が false の engine は **gui（chat）を出さない** — chat host を持たない
  * engine で chat Pane を作ると「作れるが submit がエラーになるだけ」の行き止まりになる
- * （doc 38 Phase 3 が tab の「+」で同じ判断をしている）。Act I（tui）は login shell に
+ * （doc 38 Phase 3 が tab の「+」で同じ判断をしている）。tui（tui）は login shell に
  * 流し込むだけなのでどの engine でも成立する。
  */
 export function newPaneChoices(
@@ -258,8 +258,8 @@ export function newPaneChoices(
 	for (const s of agents) {
 		if (!s.name) continue;
 		const engineLabel = s.label && s.label.length > 0 ? s.label : s.name;
-		out.push({ engine: s.name, engineLabel, act: "tui" });
-		if (s.chat_capable) out.push({ engine: s.name, engineLabel, act: "chat" });
+		out.push({ engine: s.name, engineLabel, mode: "tui" });
+		if (s.chat_capable) out.push({ engine: s.name, engineLabel, mode: "gui" });
 	}
 	return out;
 }
@@ -296,7 +296,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	let activeLane: string | null = null;
 	/** lane → focus を持つ pane id（LE-20: focus は場の外 = module 状態） */
 	const focusById = new Map<string, string>();
-	/** lane → session 一覧（'vp:echoes-sessions' の鏡。roster は各 session の act から導出）。
+	/** lane → session 一覧（'vp:echoes-sessions' の鏡。roster は各 session の mode から導出）。
 	 *  doc 50 §4.6 A6: lane 単位 console_mode の鏡（旧 `modeByLane`）は退役 — 見え方は
 	 *  session の属性になったので、lane 単位の mode を持つ理由が無くなった。 */
 	const sessionsByLane = new Map<string, PaneSession[]>();
@@ -475,14 +475,14 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			const refs = refsOf(d.lane);
 			if (!refs.some((v) => v.id === target)) {
 				// 保留先が現 roster に無い = 一覧未着で当てた id が古い。意図（focused
-				// session の pane を見せる）に読み替える。⚠️ **その session の act** で host が
+				// session の pane を見せる）に読み替える。⚠️ **その session の mode** で host が
 				// 決まる — chat 決め打ちだと term が focused の lane で永久に解決しない
 				// （pendingFocus が残り、focus ring が挿入順の先頭に誤爆する）。
 				const focused = focusedOf(d.lane);
-				const act = sessionsByLane
+				const mode = sessionsByLane
 					.get(d.lane)
-					?.find((v) => v.key === focused)?.act;
-				target = hostIdForAct(focused, act);
+					?.find((v) => v.key === focused)?.mode;
+				target = hostIdForMode(focused, mode);
 			}
 			if (refs.some((v) => v.id === target)) {
 				pendingFocus = null;
@@ -492,22 +492,22 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		render();
 	});
 
-	// session act（見え方）の変化 → roster を同期（doc 50 §4.6 A6、旧 'vp:console-mode' の後継）。
-	// 名札の kind badge → session_set_act → repo → SessionActApplied → vpConsole.setSessionAct が
+	// session mode（見え方）の変化 → roster を同期（doc 50 §4.6 A6、旧 'vp:console-mode' の後継）。
+	// 名札の kind badge → session_set_mode → repo → SessionModeApplied → vpConsole.setSessionMode が
 	// この bus を撃つ。**当該 session の Pane kind が in-place で入れ替わる**（§4.6 ②）。
-	document.addEventListener("vp:session-act", (e) => {
+	document.addEventListener("vp:session-mode", (e) => {
 		const d = (
-			e as CustomEvent<{ lane: string; session: number; act: "tui" | "chat" }>
+			e as CustomEvent<{ lane: string; session: number; mode: "tui" | "gui" }>
 		).detail;
 		if (!d?.lane || !d.session) return;
 		const list = sessionsByLane.get(d.lane);
 		const entry = list?.find((v) => v.key === d.session);
-		if (entry) entry.act = d.act;
+		if (entry) entry.mode = d.mode;
 		if (d.lane !== activeLane) return;
 		// 見え方が変わると host id も変わる（chat-session-N ⇄ term-session-N）。
-		// 変身の前後 = 反対の act の host ⇄ 新しい act の host。
-		const prevId = hostIdForAct(d.session, d.act === "chat" ? "tui" : "chat");
-		const nextId = hostIdForAct(d.session, d.act);
+		// 変身の前後 = 反対の mode の host ⇄ 新しい mode の host。
+		const prevId = hostIdForMode(d.session, d.mode === "gui" ? "tui" : "gui");
+		const nextId = hostIdForMode(d.session, d.mode);
 		// ⚠️ **roster 同期より先に**列の中で id を差し替える。順序を逆にすると
 		// syncPaneColumns が「旧 id が消えた / 新 id が入場した」と解釈し、pane が右端の
 		// 細い列に飛ぶ（2026-07-25 実機: chat→tui で「立ち上がっていない」ように見えた真因）。

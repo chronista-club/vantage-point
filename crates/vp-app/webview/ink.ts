@@ -40,14 +40,14 @@ export interface InkDeps {
 	getLaneAddress: () => string | null;
 	/** lane の focused session key（console.focusedOf）。 */
 	getFocusedSession: (laneAddr: string) => number;
-	/** その session の act（見え方）。doc 50 §4.6 A6 で lane 単位 console_mode から移行 —
+	/** その session の mode（見え方）。doc 50 §4.6 A6 で lane 単位 console_mode から移行 —
 	 *  送り先は「focused session がどちらの面で生きているか」で決まる。 */
-	getSessionAct: (laneAddr: string, session: number) => "tui" | "chat";
+	getSessionMode: (laneAddr: string, session: number) => "tui" | "gui";
 }
 
 /** IPC 送信の宛先（純関数 inkRoute の出力。actions が実際の postMessage に写す）。 */
 export type InkRoute =
-	| { kind: "chat"; lane: string; session: number; prompt: string }
+	| { kind: "gui"; lane: string; session: number; prompt: string }
 	// tui = PTY 直書き。data は「行 + CR」の生文字列（actions 側で UTF-8 → base64 化）。
 	// session は宛先 slot（doc 50 §4.6 A6 — xterm が (lane, session) になったので必須）。
 	| { kind: "tui"; lane: string; session: number; data: string };
@@ -63,20 +63,20 @@ export function inkSendLine(itemId: string | null, path: string): string {
 	return `[対話面] board の ${where}に注釈を描いた。${path} の画像を見て意図を汲んでほしい`;
 }
 
-/** act → 送信経路。**focused session の見え方**で決まる（doc 50 §4.6 A6 — 旧 lane 単位
+/** mode → 送信経路。**focused session の見え方**で決まる（doc 50 §4.6 A6 — 旧 lane 単位
  *  console_mode 依存から session 単位へ）。chat ならその session の会話へ、term ならその
  *  session の console（PTY）へ流す。
  *
  *  term 側が session を運ぶのは A6 で xterm が (lane, session) になったため — 旧実装は
  *  lane だけを送っており、非 root の console に描いても root へ流れていた。 */
 export function inkRoute(
-	act: "tui" | "chat",
+	mode: "tui" | "gui",
 	laneAddr: string,
 	session: number,
 	line: string,
 ): InkRoute {
-	if (act === "chat") {
-		return { kind: "chat", lane: laneAddr, session, prompt: line };
+	if (mode === "gui") {
+		return { kind: "gui", lane: laneAddr, session, prompt: line };
 	}
 	return { kind: "tui", lane: laneAddr, session, data: `${line}\r` };
 }
@@ -121,7 +121,7 @@ function toBase64Utf8(s: string): string {
 
 /** InkRoute を実際の IPC に写す（chat = echoes:submit / tui = term:write）。 */
 function dispatchRoute(route: InkRoute): void {
-	if (route.kind === "chat") {
+	if (route.kind === "gui") {
 		ipcSend({ t: "echoes:submit", lane: route.lane, session: route.session, prompt: route.prompt });
 	} else {
 		ipcSend({
@@ -407,12 +407,12 @@ export function installInk(deps: InkDeps): InkPushHandlers | null {
 		}
 		const itemId = deps.getItemId();
 		const session = deps.getFocusedSession(laneAddr);
-		// doc 50 §4.6 A6: 送り先は focused **session の act**（旧: lane 単位 console_mode）。
-		const act = deps.getSessionAct(laneAddr, session);
+		// doc 50 §4.6 A6: 送り先は focused **session の mode**（旧: lane 単位 console_mode）。
+		const mode = deps.getSessionMode(laneAddr, session);
 		const line = inkSendLine(itemId, path);
-		dispatchRoute(inkRoute(act, laneAddr, session, line));
+		dispatchRoute(inkRoute(mode, laneAddr, session, line));
 		clearAll();
-		showToast(act === "chat" ? "focused session に送りました" : "console に送りました", false);
+		showToast(mode === "gui" ? "focused session に送りました" : "console に送りました", false);
 	};
 	const onSnapshotError = (payload: { message?: string }): void => {
 		palette.style.visibility = "";

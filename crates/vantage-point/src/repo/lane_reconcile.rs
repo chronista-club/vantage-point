@@ -10,13 +10,13 @@
 //!
 //! | 実体 | あるべき条件 | 立ち方 |
 //! |---|---|---|
-//! | PtySlot（+ TermAttach 双子） | act = Tui の session | **eager**（console は見る物） |
-//! | chat engine | act = Chat の session **∧ demand** | **lazy**（submit / focus / 購読が起こす） |
+//! | PtySlot（+ TermAttach 双子） | mode = Tui の session | **eager**（console は見る物） |
+//! | chat engine | mode = Chat の session **∧ demand** | **lazy**（submit / focus / 購読が起こす） |
 //! | `LaneInfo.pid` / `state` | root の実体から**導出** | 派生値 |
 //! | terminal pump | R2 で reconcile 済 | 末尾で 1 回呼ぶ |
 //!
 //! chat engine を eager に立てないのは pump と同じ理由 — 誰も見ていない engine を起こすと
-//! 課金と context を消費する。**畳む方向は eager**（act が Tui になった session の engine は
+//! 課金と context を消費する。**畳む方向は eager**（mode が Tui になった session の engine は
 //! 即座に落とす = 1 session 2 エンジンの法を守る）。
 //!
 //! ## 3 段構造（doc 53 §12.5 — §6「やってはいけない」を満たす形）
@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::lane::session_registry::{self, SessionAct, SessionKey};
+use crate::lane::session_registry::{self, SessionKey, SessionMode};
 use crate::repo::lanes_state::{LaneAddress, LanePool, LaneState};
 use crate::repo::terminal_pump::TerminalPumps;
 use crate::repo::topic_router::TopicRouter;
@@ -50,9 +50,9 @@ use crate::repo::topic_router::TopicRouter;
 pub struct LaneReconcile {
     /// 新しく立てた slot 数。
     pub spawned: usize,
-    /// 畳んだ slot 数（act が Chat になった / registry から消えた）。
+    /// 畳んだ slot 数（mode が Chat になった / registry から消えた）。
     pub dropped_slots: usize,
-    /// 畳んだ chat engine 数（act が Tui になった / registry から消えた）。
+    /// 畳んだ chat engine 数（mode が Tui になった / registry から消えた）。
     pub dropped_engines: usize,
     /// spawn に失敗した数（intent は残る = 次の契機で再試行）。
     pub failed: usize,
@@ -68,7 +68,7 @@ impl LaneReconcile {
     }
 }
 
-/// **PtySlot を持つべき session**（act = Tui）。desired の導出規則そのもの。
+/// **PtySlot を持つべき session**（mode = Tui）。desired の導出規則そのもの。
 ///
 /// ①（spawn すべきものを決める）と ③（今の intent に合わせる）が**同じ規則**を共有するため
 /// 関数にしてある — 2 箇所に書くと片方だけ古くなる（doc 53 §3.3 の同型）。
@@ -77,12 +77,12 @@ fn want_slot_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
     session_registry::load(&addr.repo, lane_label, lane_stand)
         .sessions
         .iter()
-        .filter(|s| s.act == SessionAct::Tui)
+        .filter(|s| s.mode == SessionMode::Tui)
         .map(|s| s.key)
         .collect()
 }
 
-/// **chat engine を持ってよい session**（act = Chat）。
+/// **chat engine を持ってよい session**（mode = Chat）。
 ///
 /// 立てるのは lazy（submit / focus / 購読が起こす）なので reconcile は**畳む側だけ**に使う —
 /// 「Chat でない session に engine が残っている」= 1 session 2 エンジンの法の破れ。
@@ -91,7 +91,7 @@ fn want_chat_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
     session_registry::load(&addr.repo, lane_label, lane_stand)
         .sessions
         .iter()
-        .filter(|s| s.act == SessionAct::Chat)
+        .filter(|s| s.mode == SessionMode::Gui)
         .map(|s| s.key)
         .collect()
 }
@@ -189,7 +189,7 @@ pub async fn reconcile_lane(
         let want_chat = want_chat_sessions(addr, &lane_stand);
 
         for (session, slot, term_rx) in spawned {
-            // 立てている間に intent が変わった（act が Chat になった / session が消えた）なら
+            // 立てている間に intent が変わった（mode が Chat になった / session が消えた）なら
             // **入れずに捨てる**（scope 終端の Drop が child を kill する）。
             if !want_slot.contains(&session) {
                 tracing::debug!(
@@ -207,7 +207,7 @@ pub async fn reconcile_lane(
             result.spawned += 1;
         }
 
-        // 畳む: desired に無い実体（act が変わった / registry から消えた）。
+        // 畳む: desired に無い実体（mode が変わった / registry から消えた）。
         for session in pool
             .slot_sessions(addr)
             .into_iter()
@@ -260,11 +260,14 @@ pub async fn reconcile_lane(
 ///
 /// doc 33 §3 / doc 53 R1: **chat の lane は pid 無しで Running が正常形**（engine は lazy
 /// spawn なので「まだ起きていない」は死ではない）。tui は root slot の有無が生死そのもの。
-pub fn lane_state_of(root_act: SessionAct, root_slot_pid: Option<u32>) -> (LaneState, Option<u32>) {
-    match (root_act, root_slot_pid) {
-        (SessionAct::Chat, _) => (LaneState::Running, None),
-        (SessionAct::Tui, Some(pid)) => (LaneState::Running, Some(pid)),
-        (SessionAct::Tui, None) => (LaneState::Dead, None),
+pub fn lane_state_of(
+    root_mode: SessionMode,
+    root_slot_pid: Option<u32>,
+) -> (LaneState, Option<u32>) {
+    match (root_mode, root_slot_pid) {
+        (SessionMode::Gui, _) => (LaneState::Running, None),
+        (SessionMode::Tui, Some(pid)) => (LaneState::Running, Some(pid)),
+        (SessionMode::Tui, None) => (LaneState::Dead, None),
     }
 }
 
@@ -272,7 +275,7 @@ pub fn lane_state_of(root_act: SessionAct, root_slot_pid: Option<u32>) -> (LaneS
 mod tests {
     use super::*;
 
-    /// doc 53 §12: lane の代表値は root の act と実体から**導出**される。
+    /// doc 53 §12: lane の代表値は root の mode と実体から**導出**される。
     ///
     /// 旧実装は動詞ごとに `info.pid = …` / `info.state = …` を手で書いていた（census §10.1 の
     /// 「代表値追随」列）。書き忘れた動詞だけ古い値を映す、が起きていた class。
@@ -280,22 +283,22 @@ mod tests {
     fn lane_state_is_derived_from_root() {
         // chat: engine が起きていなくても Running（pid は持たない = chat-idle の正常形）
         assert_eq!(
-            lane_state_of(SessionAct::Chat, None),
+            lane_state_of(SessionMode::Gui, None),
             (LaneState::Running, None)
         );
         // chat lane に PTY の pid が紛れていても代表値には出さない（engine が代表）
         assert_eq!(
-            lane_state_of(SessionAct::Chat, Some(42)),
+            lane_state_of(SessionMode::Gui, Some(42)),
             (LaneState::Running, None)
         );
         // tui: root slot があれば Running + その pid
         assert_eq!(
-            lane_state_of(SessionAct::Tui, Some(42)),
+            lane_state_of(SessionMode::Tui, Some(42)),
             (LaneState::Running, Some(42))
         );
         // tui: root slot が無い = 死（spawn 失敗 / 落ちた）
         assert_eq!(
-            lane_state_of(SessionAct::Tui, None),
+            lane_state_of(SessionMode::Tui, None),
             (LaneState::Dead, None)
         );
     }
@@ -317,14 +320,14 @@ mod tests {
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
 
         // root(#1) = Chat だけの registry を作る（= #2 は「存在しない session」）。
-        session_registry::set_root_act(&addr.repo, lane_label, "claude", SessionAct::Chat)
+        session_registry::set_root_mode(&addr.repo, lane_label, "claude", SessionMode::Gui)
             .expect("root を chat に");
 
         // desired の導出: Chat は root だけ / Tui は誰も居ない。
         let want_chat = want_chat_sessions(&addr, "claude");
         let want_slot = want_slot_sessions(&addr, "claude");
         assert_eq!(want_chat, vec![1], "registry に居る Chat は root だけ");
-        assert!(want_slot.is_empty(), "act=Tui の session は居ない");
+        assert!(want_slot.is_empty(), "mode=Tui の session は居ない");
 
         // registry から消えた session（#2）は **どちらの desired にも入らない** = 畳む対象。
         // 実 engine を spawn せずに規則だけを固定する（engine の spawn は claude 実バイナリを

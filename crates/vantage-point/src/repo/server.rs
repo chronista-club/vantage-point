@@ -400,7 +400,7 @@ pub(crate) async fn start_repo(
 
         // doc 53 §12: **conductor lane の実体はここで立つ**（`with_root` は登録だけ）。
         //
-        // reconcile が registry に従って act=Tui の全 session に slot を立て、末尾で pump も
+        // reconcile が registry に従って mode=Tui の全 session に slot を立て、末尾で pump も
         // 合わせる（R2）。旧実装は ①`with_root` が root を spawn ②`restore_term_slots` が
         // 非 root を spawn ③ここで pump だけ reconcile、の 3 段で、①② が **AppState 構築中の
         // sync 文脈**（server.rs 自身が「restructure したいが不可」と書いていた場所）だった。

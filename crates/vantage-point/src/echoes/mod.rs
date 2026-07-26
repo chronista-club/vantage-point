@@ -1,13 +1,13 @@
-//! Echoes 💬 — コーディングアシスタント Stand（engine 軸 × Act(surface) 軸の直交格子）
+//! Echoes 💬 — コーディングアシスタント Stand（engine 軸 × Mode(surface) 軸の直交格子）
 //!
 //! doc 37: Echoes は「コーディングアシスタント」という能力の namespace。その中に
 //! - **engine 軸**（どの頭脳か: claude / codex / grok / opencode …）= session に束縛される identity
-//! - **Act(surface) 軸**（どう視るか: Act I 端末 / Act II chat GUI）= 切替可能な view
+//! - **Mode(surface) 軸**（どう視るか: tui 端末 / gui chat GUI）= 切替可能な view
 //!
-//! の直交 2 軸がある。本 module は Act II のバックエンド（repo 側）+ engine 軸の語彙を持つ。
-//! Act I は raw PTY（`process::agent_spawner` の slot + CLI 注入）で、本 module を通らない。
+//! の直交 2 軸がある。本 module は gui のバックエンド（repo 側）+ engine 軸の語彙を持つ。
+//! tui は raw PTY（`process::agent_spawner` の slot + CLI 注入）で、本 module を通らない。
 //!
-//! 設計 SSOT: `docs/design/37-echoes-two-axes.md`（2 軸）/ `32-echoes-act2-gui.md`（Act II）。
+//! 設計 SSOT: `docs/design/37-echoes-two-axes.md`（2 軸）/ `32-echoes-act2-gui.md`（gui）。
 //!
 //! ## モジュール構成
 //! - [`event`]: GUI 語彙 [`EchoesEvent`]（engine 非依存 — 全 engine をこの共通面に翻訳する）
@@ -19,7 +19,7 @@
 //!   = ACP、doc 42 / `opencode acp` = 同 ACP、doc 43。engine 差分は [`AcpEngine`] に集約）
 //! - [`translate`] / [`transcript`]: claude stream / transcript → [`EchoesEvent`] 翻訳層
 //! - [`replay_log`]: transcript を持たない engine（codex / grok / opencode）の per-session 会話ログ
-//!   （disk 永続、Act II の replay 源）。claude は transcript が SSOT なので使わない
+//!   （disk 永続、gui の replay 源）。claude は transcript が SSOT なので使わない
 //!
 //! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok / opencode — doc 41・42・43）。
 //! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み、

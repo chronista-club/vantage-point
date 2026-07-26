@@ -203,7 +203,7 @@ pub enum AppEvent {
         cols: u16,
         rows: u16,
     },
-    /// Echoes Act II (doc 32): 当該 lane の echoes session が daemon canvas channel から受信した
+    /// Echoes gui (doc 32): 当該 lane の echoes session が daemon canvas channel から受信した
     /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
     /// event loop が push envelope `console:event` で当該 lane の Console pane に渡す。
     /// doc 38 Phase 2: `session` = 発生元 session の VP 採番 key（1 Lane = N session）。topic の
@@ -214,7 +214,7 @@ pub enum AppEvent {
         event: serde_json::Value,
         session: u32,
     },
-    /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
+    /// Echoes gui: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で repo へ。
     EchoesSubmit {
         lane: String,
@@ -222,7 +222,7 @@ pub enum AppEvent {
         /// 宛先 session（doc 50 P2）。None = lane の focused（旧 SP / 旧 UI 互換）。
         session: Option<u32>,
     },
-    /// Echoes Act II HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の echoes
+    /// Echoes gui HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の echoes
     /// session へ渡し、 canvas channel 上り request `echoes_respond` で repo へ。 `request_id` は
     /// Question event 由来の control_response マッチング用。 allow は `answers`、 deny は
     /// `behavior="deny"`+`message` を運ぶ（どちらか）。
@@ -235,14 +235,14 @@ pub enum AppEvent {
         behavior: Option<String>,
         message: Option<String>,
     },
-    /// Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
+    /// Echoes gui HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
     /// event loop が当該 lane の echoes session へ渡し、`echoes_interrupt` で repo へ。
     EchoesInterrupt {
         lane: String,
         /// 宛先 session（doc 50 P2）。None = focused。
         session: Option<u32>,
     },
-    /// Echoes Act II HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
+    /// Echoes gui HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
     /// echoes session へ渡し、`echoes_set_permission_mode` で repo へ。`mode` = "default"|"bypassPermissions" 等。
     EchoesSetPermissionMode {
         lane: String,
@@ -250,43 +250,43 @@ pub enum AppEvent {
         /// 宛先 session（doc 50 P2）。None = focused。
         session: Option<u32>,
     },
-    /// doc 50 §4.6 A6: session = Pane の Act（見え方）切替要求。名札の kind badge が撃つ。
-    /// event loop が daemon repo-proxy ask `session_set_act` で repo に forward し、成功したら
-    /// `SessionActApplied` で WebView の roster を更新する。`act` は "tui" | "chat"。
+    /// doc 50 §4.6 A6: session = Pane の Mode（見え方）切替要求。名札の kind badge が撃つ。
+    /// event loop が daemon repo-proxy ask `session_set_mode` で repo に forward し、成功したら
+    /// `SessionModeApplied` で WebView の roster を更新する。`mode` は "tui" | "gui"。
     ///
     /// ⚠️ 宛先は **引数で運ぶ**（session を明示）。「focus してから送る」型の分割はレース
     /// （doc 50 §4.3 の警告）。
-    SessionSetAct {
+    SessionSetMode {
         lane: String,
         session: u32,
-        act: String,
+        mode: String,
     },
-    /// `session_set_act` 成功後、WebView へ act を反映する内部 event
+    /// `session_set_mode` 成功後、WebView へ mode を反映する内部 event
     /// （`ConsoleModeApplied` と同じ async → main thread 橋渡し）。
-    SessionActApplied {
+    SessionModeApplied {
         lane: String,
         session: u32,
-        act: String,
+        mode: String,
     },
     /// 新セッション開始要求（console の New Session ボタン）。 event loop が
     /// `lane_restart` (fresh=true) で repo に forward — cc_session 破棄 = `/exit` → 手打ち
-    /// `claude` の置き換え。 Act I/II 両対応（restart_lane が mode で分岐）。
+    /// `claude` の置き換え。 tui/gui 両対応（restart_lane が mode で分岐）。
     ConsoleNewSession {
         lane: String,
         /// doc 46 P2 要件 4: どの engine で作るか（agent 名。`None` = 現 focused を継承）。
         engine: Option<String>,
-        /// doc 46 P2 要件 4: どの Act で作るか（`"tui"` / `"chat"`。`None` = lane の現 Act）。
+        /// doc 46 P2 要件 4: どの Mode で作るか（`"tui"` / `"gui"`。`None` = lane の現 Mode）。
         ///
-        /// doc 46 §1.4 の途中経過: Act は最終的に Pane の kind になるが、P2 時点では
+        /// doc 46 §1.4 の途中経過: Mode は最終的に Pane の kind になるが、P2 時点では
         /// まだ lane の mode が残っている。**明示指定を受け取れるようにする**のが
-        /// この field の役割で、指定が無ければ従来どおり lane の Act を継ぐ。
-        act: Option<String>,
+        /// この field の役割で、指定が無ければ従来どおり lane の Mode を継ぐ。
+        mode: Option<String>,
     },
     /// doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）からの root 向け替え要求。
     /// event loop が `echoes_session_switch_root` で repo に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
     ConsoleSwitchRoot { lane: String, session: u64 },
-    /// Act II モデル切替要求（ChatView の model picker）。 event loop が
+    /// gui モデル切替要求（ChatView の model picker）。 event loop が
     /// `console_set_model` で repo に forward。 `model` None = claude default に戻す。
     ConsoleSetModel { lane: String, model: Option<String> },
     // doc 53 §11: 旧 `EchoesSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
@@ -390,7 +390,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Echoes Act II (doc 32): EchoesChatPane からのプロンプト投入。 lane + prompt 必須。
+        // Echoes gui (doc 32): EchoesChatPane からのプロンプト投入。 lane + prompt 必須。
         Some("echoes:submit") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let prompt = parsed.get("prompt").and_then(|v| v.as_str());
@@ -402,7 +402,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Echoes Act II HITL (doc 35 PR1): PromptCard の回答。 lane + request_id 必須。
+        // Echoes gui HITL (doc 35 PR1): PromptCard の回答。 lane + request_id 必須。
         // answers（allow）or behavior+message（deny）を運ぶ。
         Some("echoes:respond") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
@@ -424,7 +424,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断。 lane 必須。
+        // Echoes gui HITL (doc 35 §5 / PR2): 実行中 turn の中断。 lane 必須。
         Some("echoes:interrupt") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::EchoesInterrupt {
@@ -433,7 +433,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Echoes Act II HITL (doc 35 §2.5 / PR3): permission mode 切替。 lane + mode 必須。
+        // Echoes gui HITL (doc 35 §2.5 / PR3): permission mode 切替。 lane + mode 必須。
         Some("echoes:set_permission_mode") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let mode = parsed.get("mode").and_then(|v| v.as_str());
@@ -445,27 +445,27 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // doc 50 §4.6 A6: 名札 kind badge からの Act 切替。lane / session / act 必須
+        // doc 50 §4.6 A6: 名札 kind badge からの Mode 切替。lane / session / mode 必須
         // （session は明示のみ — root 決め打ちにしない = 誤配送を黙って起こさない）。
-        Some("session:set_act") => {
+        Some("session:set_mode") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let session = parsed.get("session").and_then(serde_json::Value::as_u64);
-            let act = parsed.get("act").and_then(|v| v.as_str());
-            if let (Some(lane), Some(session), Some(act)) = (lane, session, act) {
-                let _ = proxy.send_event(AppEvent::SessionSetAct {
+            let mode = parsed.get("mode").and_then(|v| v.as_str());
+            if let (Some(lane), Some(session), Some(mode)) = (lane, session, mode) {
+                let _ = proxy.send_event(AppEvent::SessionSetMode {
                     lane: lane.to_string(),
                     session: session as u32,
-                    act: act.to_string(),
+                    mode: mode.to_string(),
                 });
             } else {
-                tracing::warn!("session:set_act skip — lane / session / act が揃っていない");
+                tracing::warn!("session:set_mode skip — lane / session / mode が揃っていない");
             }
         }
         // 新セッション開始（console の New Session ボタン）。 lane 必須。
         Some("console:new_session") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                // doc 46 P2 要件 4: engine / act は **任意**。省略時は従来の継承挙動
-                // （現 focused の engine / lane の Act）。空文字は未指定に畳む —
+                // doc 46 P2 要件 4: engine / mode は **任意**。省略時は従来の継承挙動
+                // （現 focused の engine / lane の Mode）。空文字は未指定に畳む —
                 // menu の「既定」項目が空文字を送っても継承にしたい。
                 let opt = |k: &str| {
                     parsed
@@ -478,7 +478,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::ConsoleNewSession {
                     lane: lane.to_string(),
                     engine: opt("engine"),
-                    act: opt("act"),
+                    mode: opt("mode"),
                 });
             }
         }
@@ -494,7 +494,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Act II モデル切替（ChatView の model picker）。 lane 必須、 model 省略/null = default。
+        // gui モデル切替（ChatView の model picker）。 lane 必須、 model 省略/null = default。
         Some("console:set_model") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let model = parsed

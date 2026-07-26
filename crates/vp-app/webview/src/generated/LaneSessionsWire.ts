@@ -4,7 +4,7 @@ import type { LaneSessionEntryWire } from "./LaneSessionEntryWire";
 /**
  * lane の session roster（server `lanes_state::LaneSessionsView` の鏡）。
  *
- * doc 50 §4.6 A6: 「どの session が root か」「各 session の act（tui/chat）」を boot 経路が
+ * doc 50 §4.6 A6: 「どの session が root か」「各 session の mode（tui/chat）」を boot 経路が
  * 読み、xterm を (lane, session) 単位で ensure するのに使う。
  * **doc 53 §11: GUI の roster 供給はこれ 1 本**（旧 `echoes_session_list` の fetch は
  * client から退役 — GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の変化が pane に

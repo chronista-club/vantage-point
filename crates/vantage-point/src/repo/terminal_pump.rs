@@ -52,7 +52,7 @@ const REPLAY_CLEAR_PREFIX: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 /// - `lane`: LaneAddress の Display 形 (`"vp/root"` / `"vp/performer/foo"`)。 vp-app が
 ///   `/ws/terminal?lane=` に渡していた値と一致させ、 topic key 化は `TopicRouter` が担う。
 /// - `session`: この pump が担う session の VP 採番 key（doc 50 §4.6 A6）。topic は lane 単位で
-///   共有し、 session は `LaneTerminalOutput.session` に stamp する（Act II の `route_echoes` と
+///   共有し、 session は `LaneTerminalOutput.session` に stamp する（gui の `route_echoes` と
 ///   対称 — 同 lane の複数 session が同一 topic に流れ、 World A の xterm が session で振り分ける）。
 /// - `replay`: attach 時に先頭配送する直近出力 snapshot。 rx と原子的に取得したもの
 ///   (`LanePool::attach_output`) を渡せば byte 順序が保たれる (欠落・重複なし)。
@@ -132,7 +132,7 @@ pub fn lane_topic(lane: &str) -> String {
 /// 1 本の terminal pump の台帳 entry。
 ///
 /// `slot_pid` は **張った先の slot 実体の pid = pump の identity**（doc 53 R2 / doc 54
-/// 「identity は実体に」）。「slot が差し替わったか」を呼び手の知識（restart の mode / act の
+/// 「identity は実体に」）。「slot が差し替わったか」を呼び手の知識（restart の mode / mode の
 /// 向き）でなく、 live slot の pid との照合で決める — これが reconcile の actual 側。
 pub struct TerminalPump {
     /// attach した時点の slot の pid（照合キー。 pid は slot の生涯で不変）。

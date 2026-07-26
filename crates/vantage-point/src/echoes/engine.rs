@@ -1,7 +1,7 @@
-//! engine 軸の語彙（[`EngineKind`]）と Act II chat engine の所有型（[`ChatHost`] / [`ChatEngineSlot`]）
+//! engine 軸の語彙（[`EngineKind`]）と gui chat engine の所有型（[`ChatHost`] / [`ChatEngineSlot`]）
 //!
-//! doc 37 §1: Echoes は **engine 軸 × Act(surface) 軸**の直交格子で、engine = session に束縛される
-//! identity、Act = 切替可能な view。本 module は engine 軸の SSOT — agent 名 ↔ engine の対応と
+//! doc 37 §1: Echoes は **engine 軸 × Mode(surface) 軸**の直交格子で、engine = session に束縛される
+//! identity、Mode = 切替可能な view。本 module は engine 軸の SSOT — agent 名 ↔ engine の対応と
 //! 能力表明（chat 対応 / model 切替対応）をここに一元化し、`agent == "cursor"` のような
 //! stringly 比較の散在（旧 lanes_state / unison_server / agent_spawner の 4 箇所）を畳む。
 //!
@@ -22,16 +22,16 @@ use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
 /// - `None` = engine を持たない agent（`"shell"` / 退役 `"tmux"` / 未知名）。shell（login shell）のみ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
-    /// agent=`"claude"` — claude。常駐 stream-json host（Act II）+ claude TUI（Act I）。
+    /// agent=`"claude"` — claude。常駐 stream-json host（gui）+ claude TUI（tui）。
     Claude,
-    /// agent=`"codex"` — OpenAI Codex CLI。常駐 RpcHost（Act II、`codex app-server` — doc 41）
-    /// + codex TUI（Act I）。
+    /// agent=`"codex"` — OpenAI Codex CLI。常駐 RpcHost（gui、`codex app-server` — doc 41）
+    /// + codex TUI（tui）。
     Codex,
-    /// agent=`"grok"` — xAI Grok CLI。常駐 AcpAgentHost（Act II、`grok agent stdio` = ACP —
-    /// doc 42）+ grok TUI（Act I、`-r` resume）。
+    /// agent=`"grok"` — xAI Grok CLI。常駐 AcpAgentHost（gui、`grok agent stdio` = ACP —
+    /// doc 42）+ grok TUI（tui、`-r` resume）。
     Grok,
-    /// agent=`"opencode"` — opencode。常駐 AcpAgentHost（Act II、`opencode acp` = grok と同 ACP —
-    /// doc 43）+ opencode TUI（Act I、`-s <id>` resume）。model / provider は opencode config が
+    /// agent=`"opencode"` — opencode。常駐 AcpAgentHost（gui、`opencode acp` = grok と同 ACP —
+    /// doc 43）+ opencode TUI（tui、`-s <id>` resume）。model / provider は opencode config が
     /// SSOT（local LLM 等 — VP は注入しない、doc 43 §3）。
     OpenCode,
 }
@@ -71,18 +71,16 @@ impl EngineKind {
     /// GUI（sidebar `+ Add Performer` dropdown 等）向けの表示説明。
     pub fn description(self) -> &'static str {
         match self {
-            Self::Claude => "VP Agent: Echoes 💬 — Act I slot（login shell）+ Claude CLI 自動起動",
-            Self::Codex => {
-                "VP Agent: Codex 🧮 — Act I slot（login shell）+ codex (OpenAI) 自動起動"
-            }
-            Self::Grok => "VP Agent: Grok ⚡ — Act I slot（login shell）+ grok (xAI) 自動起動",
+            Self::Claude => "VP Agent: Echoes 💬 — tui slot（login shell）+ Claude CLI 自動起動",
+            Self::Codex => "VP Agent: Codex 🧮 — tui slot（login shell）+ codex (OpenAI) 自動起動",
+            Self::Grok => "VP Agent: Grok ⚡ — tui slot（login shell）+ grok (xAI) 自動起動",
             Self::OpenCode => {
-                "VP Agent: OpenCode 🧩 — Act I slot（login shell）+ opencode 自動起動（model は opencode config）"
+                "VP Agent: OpenCode 🧩 — tui slot（login shell）+ opencode 自動起動（model は opencode config）"
             }
         }
     }
 
-    /// Act II（chat GUI）の host を持つか = console mode Chat を許すか。
+    /// gui（chat GUI）の host を持つか = console mode Chat を許すか。
     ///
     /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok / opencode — doc 41・42・43）。
     /// 全 engine が chat 対応だが、engine を持たない agent（shell / 未知）は host を持たない。
@@ -120,7 +118,7 @@ impl Drop for ChatEngineSlot {
     }
 }
 
-/// Act II の chat engine host（engine ごとに turn 駆動が違う enum、Pre-MVP は dyn 抽象を作らない）。
+/// gui の chat engine host（engine ごとに turn 駆動が違う enum、Pre-MVP は dyn 抽象を作らない）。
 ///
 /// - [`ChatHost::Claude`]: 常駐 stream-json host（stdin 連投、1 プロセスが会話を保持）。
 /// - [`ChatHost::Codex`]: 常駐 JSONL JSON-RPC host（`codex app-server`、doc 41）。

@@ -188,7 +188,7 @@ impl VantageMcp {
 
     /// 呼び出し元 Lane の board を id 付き全文で読む（doc 52 §4 中継台 + §5 identity）。
     #[tool(
-        description = "Read the current lane's board — every item with its id, title, content_type, and full content (newest first). Use this to (a) get an item's id before calling update, or (b) pull an item's full content to save it elsewhere (e.g. mcp__creo-memories__remember). The id is the stable handle: recognize the item you mean by its title/content, then act on it by id."
+        description = "Read the current lane's board — every item with its id, title, content_type, and full content (newest first). Use this to (a) get an item's id before calling update, or (b) pull an item's full content to save it elsewhere (e.g. mcp__creo-memories__remember). The id is the stable handle: recognize the item you mean by its title/content, then mode on it by id."
     )]
     async fn read_board(
         &self,

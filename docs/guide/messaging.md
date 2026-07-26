@@ -129,7 +129,7 @@ store が扱う table:
   - **Chat lane** — **channel E** `echoes_nudge` を forward（`unison_server.rs:527` `handle_echoes_nudge`）→ `ensure_and_submit_chat`（`unison_server.rs:547`）が engine（`EchoesAgentHost`）へ nudge 文言を **1 ターンとして submit**（`lanes_state.rs:957` `submit_chat`）。chat lane は **readiness も channel D も通らない（#738）**: engine は lazy spawn なので Offline が無く、turn 実行中の submit も engine 側が自前 queue するので Busy が無い → 常時 deliverable（doc 34 §3、Step 0 spike ①実測）。そもそも chat lane は PtySlot を持たず `lane_nudge` は構造的に `Err("Lane has no PtySlot")` になる（`lanes_state.rs:785`）ため、この分岐は同時にバグ修正でもある（旧: 30s ごとに無限リトライ）。payload は両 method とも `{lane, text}` 共通。
   - **delegation reconcile も同じ `nudge_method()` 分岐**を使う（`delegation.rs:436`）。delegation record の re-nudge（`respond` / `complete` 待ち、[design/28](../design/28-agent-delegation.md)）も chat lane では engine 注入に載る。
 - nudge 回数・最終時刻の台帳（`ledger`）は **in-memory**、channel C と channel E で **共有**（同一 `RENUDGE_AFTER` / `MAX_NUDGES`。channel D だけ別台帳 `bg_ledger`）。daemon 再起動でリセットされ上限回が再付与されるが、**ack されれば pending から消えて止まる**（ack 台帳が真値、nudge 台帳は運用状態）。
-- 別チャネル（**channel B**）として、`vp wire hook-check`（claude hook 実体、`commands/wire.rs:136`）が SessionStart 等で未読 wire を `additionalContext` として stdout に出し、会話開始時に未読を気付かせる（fail-open = 失敗は silent 成功で会話を邪魔しない）。Act II（chat lane）でも headless の SessionStart hook は走るため有効（doc 34 §2-5）。
+- 別チャネル（**channel B**）として、`vp wire hook-check`（claude hook 実体、`commands/wire.rs:136`）が SessionStart 等で未読 wire を `additionalContext` として stdout に出し、会話開始時に未読を気付かせる（fail-open = 失敗は silent 成功で会話を邪魔しない）。gui（chat lane）でも headless の SessionStart hook は走るため有効（doc 34 §2-5）。
 
 ---
 
@@ -203,7 +203,7 @@ performer の wire 活動
 | 軸 | 源 | 実体 |
 |---|---|---|
 | `flow_state: AwaitingUser` | **server**（wire 台帳） | 未 ack `needs_user` wire。§2.1 の derive |
-| `awaiting_input` | **vp-app client** | OSC 99/9/777 notification + Act II の turn_completed。`SidebarState.awaiting_input`（`vp-app/src/pane.rs:156`、`lane:select` で reset） |
+| `awaiting_input` | **vp-app client** | OSC 99/9/777 notification + gui の turn_completed。`SidebarState.awaiting_input`（`vp-app/src/pane.rs:156`、`lane:select` で reset） |
 
 - `laneConnector`（`lane.ts`）は `flow_state === "awaiting_user"` **または** `awaitingInput`（OSC 由来）のどちらかで `conn-hitl`（needs-you / magenta diamond）を返す。OSC 軸は「active console がユーザを待っている」signal で、`AskUserQuestion` 等 console 側の HITL を拾える唯一の経路として意図的に needs-you に残されている。
 - **⚠ 未解決 issue（視覚区別なし）**: 両軸は UI 上で**区別されず同一の `conn-hitl` に統合**されている。「server 由来の needs_user 待ち」と「OSC 由来の console 待ち」を sidebar で見分ける手段は現状の実装に無い（意図的な統合だが、源の区別は未実装）。

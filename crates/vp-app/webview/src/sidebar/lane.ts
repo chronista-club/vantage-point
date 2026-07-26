@@ -68,22 +68,22 @@ export function isPerformerLane(lane: LaneInfo): boolean {
 }
 
 /**
- * root session の act ("tui" | "chat") を sessions (registry snapshot) から導出する。
+ * root session の mode ("tui" | "gui") を sessions (registry snapshot) から導出する。
  *
  * doc 53 R1: 旧 lane 単位 `console_mode` field は退役 — TS 側の導出はこの 1 関数に閉じる
- * (Rust 側の対 = `app::root_act_of`)。sessions 欠落 (boot 窓の placeholder 等) は "tui"
+ * (Rust 側の対 = `app::root_mode_of`)。sessions 欠落 (boot 窓の placeholder 等) は "tui"
  * (旧 serde default と同値) に倒す。
  */
-export function rootActOf(lane: LaneInfo): string {
+export function rootModeOf(lane: LaneInfo): string {
 	const reg = lane.sessions;
 	if (!reg) return "tui";
-	return reg.sessions.find((s) => s.key === reg.root)?.act ?? "tui";
+	return reg.sessions.find((s) => s.key === reg.root)?.mode ?? "tui";
 }
 
 /**
  * Lane が生きているか (= engine を持ちうる状態か)。
  *
- * ⚠️ 生死を `pid` だけで測らない。 doc 33: chat lane (Act II) は engine-less (pid=null) が
+ * ⚠️ 生死を `pid` だけで測らない。 doc 33: chat lane (gui) は engine-less (pid=null) が
  * **正常形**で、 chat engine は submit 契機の lazy spawn。 よって pid は「今 engine が
  * 生きているか」で揺れ、 pid だけの判定は同じ lane の見え方を時間で変える。
  *
@@ -91,7 +91,7 @@ export function rootActOf(lane: LaneInfo): string {
  * 述語を共有する — 片方だけ chat の手当てが漏れる形が過去のバグだった。
  */
 export function isLaneAlive(lane: LaneInfo): boolean {
-	return lane.pid != null || rootActOf(lane) === "chat";
+	return lane.pid != null || rootModeOf(lane) === "gui";
 }
 
 /** Lane の表示ラベル。 開発起点はラベルなし、 それ以外は lane 名。 */

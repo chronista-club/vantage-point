@@ -9,9 +9,9 @@ export type LaneSessionEntryWire = { key: number,
  */
 agent: string, 
 /**
- * この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
+ * この session の Mode（"tui" | "gui"）。serde default = "tui"（wire 後方互換）。
  */
-act: string, 
+mode: string, 
 /**
  * engine の会話 id（Draft = None）。session chip / tab の表示用（doc 53 §11）。
  */

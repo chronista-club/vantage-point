@@ -268,14 +268,14 @@ pub struct LaneInfo {
     /// shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
     #[serde(default)]
     pub engine_session_id: Option<String>,
-    /// doc 39 P4: root session の agent（= slot に載る engine 種別）。Act I の session chip prefix は
+    /// doc 39 P4: root session の agent（= slot に載る engine 種別）。tui の session chip prefix は
     /// これを優先し（cross-engine root で slot の engine を正しく映す）、無ければ `agent`（lane 固定）に
     /// fallback。旧 SP からは欠落 = None。
     #[serde(default)]
     pub agent_name: Option<String>,
     /// doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
     /// server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
-    /// 「どの session が root か」「各 session の act」の SSOT。boot 経路が xterm を
+    /// 「どの session が root か」「各 session の mode」の SSOT。boot 経路が xterm を
     /// (lane, session) で ensure するのに使う。旧 SP からは欠落 = None。
     #[serde(default)]
     pub sessions: Option<LaneSessionsWire>,
@@ -287,16 +287,16 @@ pub struct LaneInfo {
     pub flow_state: Option<String>,
 }
 
-/// session act の serde default（旧 wire に field が無い時）。doc 53 R1: 旧 lane 単位
-/// `console_mode` field は退役 — act の導出は `sessions`（registry snapshot）から行う
-/// （Rust 側 = `app::root_act_of` / TS 側 = `sidebar/lane.ts rootActOf` の各 1 箇所）。
-fn default_act() -> String {
+/// session mode の serde default（旧 wire に field が無い時）。doc 53 R1: 旧 lane 単位
+/// `console_mode` field は退役 — mode の導出は `sessions`（registry snapshot）から行う
+/// （Rust 側 = `app::root_mode_of` / TS 側 = `sidebar/lane.ts rootModeOf` の各 1 箇所）。
+fn default_mode() -> String {
     "tui".to_string()
 }
 
 /// lane の session roster（server `lanes_state::LaneSessionsView` の鏡）。
 ///
-/// doc 50 §4.6 A6: 「どの session が root か」「各 session の act（tui/chat）」を boot 経路が
+/// doc 50 §4.6 A6: 「どの session が root か」「各 session の mode（tui/chat）」を boot 経路が
 /// 読み、xterm を (lane, session) 単位で ensure するのに使う。
 /// **doc 53 §11: GUI の roster 供給はこれ 1 本**（旧 `echoes_session_list` の fetch は
 /// client から退役 — GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の変化が pane に
@@ -323,9 +323,9 @@ pub struct LaneSessionEntryWire {
     /// engine 種別（agent 名）。
     #[serde(default)]
     pub agent: String,
-    /// この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
-    #[serde(default = "default_act")]
-    pub act: String,
+    /// この session の Mode（"tui" | "gui"）。serde default = "tui"（wire 後方互換）。
+    #[serde(default = "default_mode")]
+    pub mode: String,
     /// engine の会話 id（Draft = None）。session chip / tab の表示用（doc 53 §11）。
     #[serde(default)]
     pub conversation: Option<String>,

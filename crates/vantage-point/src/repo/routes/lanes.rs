@@ -126,9 +126,9 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
         }
         lanes.push(LaneInfo {
-            // doc 53 R1: boot 窓の act は `sessions`（下の refresh_engine_session_id が registry
+            // doc 53 R1: boot 窓の mode は `sessions`（下の refresh_engine_session_id が registry
             // から populate）で運ぶ — 旧 console_mode 投影は退役。vp-app は sessions から root の
-            // act を導出して「chat lane を xterm で開く」誤復元を防ぐ（doc 47 §4 の性質は不変）。
+            // mode を導出して「chat lane を xterm で開く」誤復元を防ぐ（doc 47 §4 の性質は不変）。
             id: crate::lane::lane_id::load_or_create(&repo, &entry.name),
             address,
             state: crate::repo::lanes_state::LaneState::Spawning,
@@ -198,7 +198,7 @@ pub struct CreateLaneReq {
     #[serde(default)]
     pub base: Option<String>,
     /// lane の claude model alias (co-evolution #1、例: 'opus' / 'sonnet' / 'claude-fable-5')。
-    /// spawn 前に `engine_model` へ永続し、Act I spawn / respawn / Act II engine が共有する。
+    /// spawn 前に `engine_model` へ永続し、tui spawn / respawn / gui engine が共有する。
     /// 省略時は config の `default-lane-model`（未設定なら Opus）にフォールバックして record する。
     #[serde(default)]
     pub model: Option<String>,
@@ -538,14 +538,14 @@ pub(crate) async fn create_performer_orchestrated(
         (path_buf.to_string_lossy().into_owned(), true)
     };
 
-    // co-evolution #1: model 指定を spawn 前に永続する。 build_agent_command が Act I claude の
-    // `--model` として読み、 respawn（repo restart）や Act II engine も同じ file を共有する。
+    // co-evolution #1: model 指定を spawn 前に永続する。 build_agent_command が tui claude の
+    // `--model` として読み、 respawn（repo restart）や gui engine も同じ file を共有する。
     // 検証は関数冒頭 (reserve 前) で済んでいるので、ここは永続のみ。 IO 失敗は best-effort warn
     // （claude default に degrade するだけで lane 作成は続行）。
     //
     // doc 54 §8-11: 明示 model > config `default-lane-model` > **無記録**（engine 側の
     // user 既定に委ねる — 旧「未設定なら Opus 強制」は撤去）。CLI (persist_lane_model) と
-    // 同じ既定規則を共有し、Act I/II 両方に効く（model は per-lane 単一真実源）。
+    // 同じ既定規則を共有し、tui/gui 両方に効く（model は per-lane 単一真実源）。
     if let Some(model) = crate::lane::engine_model::resolve_default(
         req.model.as_deref(),
         config.default_lane_model(),
@@ -567,7 +567,7 @@ pub(crate) async fn create_performer_orchestrated(
     // 孤児 registry の stale な agent が同名再作成時に engine を取り違えさせる（moody 指摘
     // 2026-07-25）。Tui 経路の初回 spawn は registry 不在でも安全 — build_agent_command の
     // root entry 解決は不在時に引数の agent へ fallback する。
-    let root_act = crate::lane::session_registry::default_act_for_stand(&agent);
+    let root_mode = crate::lane::session_registry::default_mode_for_agent(&agent);
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
@@ -576,10 +576,10 @@ pub(crate) async fn create_performer_orchestrated(
     // build_agent_command も closure 内で呼ぶ（state file 直読みの同期 I/O を async worker から
     // 外す。PtySlot::spawn 自体が openpty + syscall でブロッキングなので同形）。
     //
-    // doc 54 §8-11: root act=Chat の生成は **PTY を立てない**（chat lane は engine-less
+    // doc 54 §8-11: root mode=Chat の生成は **PTY を立てない**（chat lane は engine-less
     // idle が正常形 — engine は初回 submit / demand で lazy spawn。boot の chat 分岐
     // = lane_spawn_actor と同じ形）。
-    let (lane_state, pid) = if root_act == crate::lane::session_registry::SessionAct::Chat {
+    let (lane_state, pid) = if root_mode == crate::lane::session_registry::SessionMode::Gui {
         tracing::info!(
             "Performer Lane created as chat (PTY skip): addr={} agent={} cwd={}",
             addr,
@@ -723,10 +723,10 @@ pub(crate) async fn create_performer_orchestrated(
     {
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
         if let Err(e) =
-            crate::lane::session_registry::set_root_act(&addr.repo, lane_label, &agent, root_act)
+            crate::lane::session_registry::set_root_mode(&addr.repo, lane_label, &agent, root_mode)
         {
             tracing::warn!(
-                "既定レンズの永続失敗（次 boot は Tui 相当に退化）: addr={addr} act={root_act:?}: {e}"
+                "既定レンズの永続失敗（次 boot は Tui 相当に退化）: addr={addr} mode={root_mode:?}: {e}"
             );
         }
     }
@@ -1020,14 +1020,14 @@ async fn converge_lane(
                 .get(&addr)
                 .and_then(|i| i.pid)
                 .unwrap_or(0);
-            // Act II（chat lane）の restart は engine drop（lazy respawn）で終わる。ここで
+            // gui（chat lane）の restart は engine drop（lazy respawn）で終わる。ここで
             // eager に起こすのは「新品になった」feedback を早く出すため（resume の開始も早い）。
             // 失敗しても restart 自体は成功扱い、次 submit の self-heal で再試行される。
-            // doc 53 R1: 分岐は root の act = registry 直読（実在 check は従来どおり pool）。
+            // doc 53 R1: 分岐は root の mode = registry 直読（実在 check は従来どおり pool）。
             let is_chat = {
                 let pool = state.lane_pool.read().await;
                 pool.contains(&addr)
-                    && pool.root_act(&addr) == crate::lane::session_registry::SessionAct::Chat
+                    && pool.root_mode(&addr) == crate::lane::session_registry::SessionMode::Gui
             };
             if is_chat {
                 let mut pool = state.lane_pool.write().await;
@@ -1069,7 +1069,7 @@ async fn converge_lane(
         }
     }
 
-    // 全 attempts 失敗。state=Dead は reconcile の代表値導出（act=Tui × slot 無し）が既に付けている。
+    // 全 attempts 失敗。state=Dead は reconcile の代表値導出（mode=Tui × slot 無し）が既に付けている。
     Err(last_err.unwrap_or_else(|| "unknown restart failure".to_string()))
 }
 

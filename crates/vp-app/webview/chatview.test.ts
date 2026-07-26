@@ -393,7 +393,7 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
   })
 })
 
-describe('transcript replay — Act II replay-on-attach', () => {
+describe('transcript replay — gui replay-on-attach', () => {
   /** repo が attach 時に送る replay 列（ReplayStart + 過去会話）。 */
   const replay: EchoesEvent[] = [
     { kind: 'replay_start' },
@@ -904,27 +904,27 @@ describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3 �
 })
 
 describe('canSwitchTo — kind badge の gating（doc 50 §4.6 A6 ②）', () => {
-  it('→tui は常に可（Act I は login shell に流し込むだけ = §4.0 帰結 1）', () => {
+  it('→tui は常に可（tui は login shell に流し込むだけ = §4.0 帰結 1）', () => {
     expect(canSwitchTo('tui', true)).toBe(true)
     expect(canSwitchTo('tui', false)).toBe(true)
-    // 能力の申告が無くても Act I へは戻せる（term は engine 非依存）。
+    // 能力の申告が無くても tui へは戻せる（term は engine 非依存）。
     expect(canSwitchTo('tui', undefined)).toBe(true)
   })
 
-  it('→chat は server が chat_capable と申告した session のみ', () => {
-    expect(canSwitchTo('chat', true)).toBe(true)
-    expect(canSwitchTo('chat', false)).toBe(false)
+  it('→gui は server が chat_capable と申告した session のみ', () => {
+    expect(canSwitchTo('gui', true)).toBe(true)
+    expect(canSwitchTo('gui', false)).toBe(false)
   })
 
   it('未申告（旧 SP）は不可に倒す — 行き止まりを出さない', () => {
     // 押しても server に弾かれるだけの badge を出さない（newPaneChoices と同じ規律）。
-    expect(canSwitchTo('chat', undefined)).toBe(false)
+    expect(canSwitchTo('gui', undefined)).toBe(false)
   })
 
   it('判定は server の申告 1 本で、engine 名の型分岐を持たない', () => {
     // shell の chat host が実装された日、server が true を送るだけで badge が生える
     // （client 側の gating を touch しない = 能力表の SSOT は server）。
-    expect(canSwitchTo('chat', true)).toBe(true)
+    expect(canSwitchTo('gui', true)).toBe(true)
   })
 })
 

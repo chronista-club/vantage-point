@@ -1,4 +1,4 @@
-//! CodexAgentHost — codex を lane 単位で**常駐**駆動する RpcHost（Act II engine host、doc 41）
+//! CodexAgentHost — codex を lane 単位で**常駐**駆動する RpcHost（gui engine host、doc 41）
 //!
 //! 旧 turn-scoped（`codex exec` を turn ごと spawn する TurnHost）を、`codex app-server`
 //! 子プロセス 1 本 + JSONL JSON-RPC の常駐形に置き換えた（doc 39 §7「常駐型のみの一枚岩」の
@@ -13,7 +13,7 @@
 //!   stream → `turn/completed`。中断は `turn/interrupt`（**プロセスを殺さない** — TurnHost の
 //!   kill との最大の差。turn は status=interrupted で完了する）
 //! - approval: `approvalPolicy: "never"` + `sandbox: "danger-full-access"` = 旧
-//!   `--dangerously-bypass-approvals-and-sandbox` の等価（Act I/II parity ポリシー維持）
+//!   `--dangerously-bypass-approvals-and-sandbox` の等価（tui/gui parity ポリシー維持）
 //!
 //! ## 会話 id（thread id）は registry 直結（doc 40 §4）
 //!
@@ -55,7 +55,7 @@ pub struct CodexRpcHostConfig {
     /// registry 書き込みキー（session label: `conductor` / `conductor#2` …）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
-    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — Act I と同じ契約）。
+    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — tui と同じ契約）。
     pub lane_label: String,
     /// identity env（`VP_SESSION_KEY`）用の session key（doc 40 §4 の hook identity と同じ）。
     pub session_key: crate::lane::session_registry::SessionKey,
@@ -223,7 +223,7 @@ impl RpcInner {
     }
 }
 
-/// lane 単位の常駐 codex host（Act II、doc 41）。旧 `TurnHost<CodexEngine>` の置換。
+/// lane 単位の常駐 codex host（gui、doc 41）。旧 `TurnHost<CodexEngine>` の置換。
 pub struct CodexAgentHost {
     inner: Arc<RpcInner>,
     reader: Option<JoinHandle<()>>,
@@ -240,7 +240,7 @@ impl CodexAgentHost {
         cmd.arg("app-server")
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
-            // wire で自分を名乗る口。Act I の agent_spawner / claude host と同じ契約。
+            // wire で自分を名乗る口。tui の agent_spawner / claude host と同じ契約。
             .env("VP_REPO", &config.repo)
             .env("VP_LANE", &config.lane_label)
             .env("VP_SESSION_KEY", config.session_key.to_string())
@@ -437,7 +437,7 @@ impl CodexAgentHost {
 // =============================================================================
 
 /// approval/sandbox の共通指定（doc 41 §1: 旧 `--dangerously-bypass` の等価。
-/// claude bypassPermissions と同じ Act I/II parity ポリシー）。
+/// claude bypassPermissions と同じ tui/gui parity ポリシー）。
 fn thread_permission_fields() -> serde_json::Value {
     serde_json::json!({
         "approvalPolicy": "never",

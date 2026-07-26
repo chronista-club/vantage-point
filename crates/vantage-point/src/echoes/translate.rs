@@ -55,7 +55,7 @@ pub struct EchoesTranslator {
     /// 通常 turn は `delta*` → `assistant`(累積 snapshot) → `result` と流れるので snapshot の
     /// 本文は重複＝破棄でよい。だが CLI 内で完結する turn（`/model` `/context` 等の slash、
     /// API 往復ゼロ・`model: "<synthetic>"`）は **delta を 1 つも出さず assistant snapshot だけで
-    /// 本文を運ぶ**ため、破棄すると GUI が完全な無音になる（Act II で slash を打つと 30 分待っても
+    /// 本文を運ぶ**ため、破棄すると GUI が完全な無音になる（gui で slash を打つと 30 分待っても
     /// 何も出ない、の真因）。「delta 未観測なら snapshot が唯一の一次情報」で拾う — engine 側の
     /// `<synthetic>` という実装詳細に結合しない判定にする。
     /// turn 終端（`result`）で false に戻す。
@@ -330,7 +330,7 @@ impl EchoesTranslator {
 /// assistant snapshot の content を本文 event に写す（delta 未観測 turn 専用 — [`EchoesTranslator::saw_text_delta`]）。
 ///
 /// slash command 等の synthetic turn は delta を出さないため、この snapshot が本文の唯一の
-/// 一次情報になる。thinking block は Act II で暗号化復元不可の前例（doc 39）と揃えて出さず、
+/// 一次情報になる。thinking block は gui で暗号化復元不可の前例（doc 39）と揃えて出さず、
 /// text だけを [`EchoesEvent::MessageChunk`] に写す（chatview は chunk を assistant バブルに畳む）。
 fn snapshot_text_events(content: Vec<RawAssistantContent>) -> Vec<EchoesEvent> {
     content
@@ -684,7 +684,7 @@ mod tests {
     /// 実測 2026-07-20 (claude 2.1.215): `/model opus` 等 CLI 内で完結する turn は
     /// `init → assistant(model:"<synthetic>", 本文入り) → result` と流れ、**delta を 1 つも出さない**。
     /// assistant snapshot を「delta の累積＝重複」として捨てると GUI が完全な無音になる
-    /// （Act II で slash を打って 30 分待っても何も出ない、の真因）。
+    /// （gui で slash を打って 30 分待っても何も出ない、の真因）。
     #[test]
     fn synthetic_turn_without_delta_surfaces_snapshot_text() {
         let mut t = EchoesTranslator::new();

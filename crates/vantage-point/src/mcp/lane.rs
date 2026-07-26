@@ -66,7 +66,7 @@ pub struct AddPerformerParams {
     pub base: Option<String>,
     /// Optional claude model alias for this lane (co-evolution #1).
     #[schemars(
-        description = "この lane の claude model alias (省略可、例: 'opus' / 'sonnet' / 'haiku' / 'claude-fable-5')。task 難度に合わせて指定する (機械的作業=sonnet / 中核設計=opus 等)。Act I spawn・respawn・Act II engine が共有。省略時は config の default-lane-model (既定 Opus)。"
+        description = "この lane の claude model alias (省略可、例: 'opus' / 'sonnet' / 'haiku' / 'claude-fable-5')。task 難度に合わせて指定する (機械的作業=sonnet / 中核設計=opus 等)。tui spawn・respawn・gui engine が共有。省略時は config の default-lane-model (既定 Opus)。"
     )]
     pub model: Option<String>,
 }

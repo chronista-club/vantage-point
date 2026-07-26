@@ -1,7 +1,7 @@
 /**
  * Lane 表示ヘルパーの単体テスト。
  *
- * 主眼は `isLaneAlive` — 「lane の生死を pid で測る」癖が Act II (chat lane は
+ * 主眼は `isLaneAlive` — 「lane の生死を pid で測る」癖が gui (chat lane は
  * engine-less が正常形) で崩れ、 context menu が Restart ではなく Respawn を出す
  * バグを生んだ。 その退行をここで塞ぐ。
  */
@@ -23,23 +23,23 @@ function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	} as LaneInfo;
 }
 
-/** root session の act を sessions（registry snapshot）で表現する（doc 53 R1 — 旧
- *  console_mode field は退役。act は wire の sessions だけが運ぶ）。 */
-function withRootAct(act: string): Partial<LaneInfo> {
+/** root session の mode を sessions（registry snapshot）で表現する（doc 53 R1 — 旧
+ *  console_mode field は退役。mode は wire の sessions だけが運ぶ）。 */
+function withRootMode(mode: string): Partial<LaneInfo> {
 	return {
 		sessions: {
 			root: 1,
 			focused: 1,
-			sessions: [{ key: 1, agent: "claude", act }],
+			sessions: [{ key: 1, agent: "claude", mode }],
 		},
 	} as Partial<LaneInfo>;
 }
 
 describe("isLaneAlive", () => {
 	it("tui lane は pid の有無で生死が決まる", () => {
-		expect(isLaneAlive(lane({ ...withRootAct("tui"), pid: 1234 }))).toBe(true);
+		expect(isLaneAlive(lane({ ...withRootMode("tui"), pid: 1234 }))).toBe(true);
 		// PTY spawn 失敗 = Dead lane (dim 表示 + Respawn menu)
-		expect(isLaneAlive(lane({ ...withRootAct("tui"), pid: null }))).toBe(false);
+		expect(isLaneAlive(lane({ ...withRootMode("tui"), pid: null }))).toBe(false);
 	});
 
 	it("sessions 欠落（boot 窓の placeholder）は tui 扱い = pid が生死を決める", () => {
@@ -50,18 +50,18 @@ describe("isLaneAlive", () => {
 
 	it("chat lane は engine-less (pid=null) でも生きている", () => {
 		// doc 33: chat engine は submit 契機の lazy spawn。 pid=null は正常形であって Dead ではない。
-		expect(isLaneAlive(lane({ ...withRootAct("chat"), pid: null }))).toBe(true);
+		expect(isLaneAlive(lane({ ...withRootMode("gui"), pid: null }))).toBe(true);
 	});
 
 	it("chat lane の生死は engine の起動状態で揺れない", () => {
 		// engine 起動中 (pid あり) と idle (pid なし) で判定が変わると、
 		// 同じ lane の context menu が時間で Restart / Respawn に化ける。
-		const idle = isLaneAlive(lane({ ...withRootAct("chat"), pid: null }));
-		const running = isLaneAlive(lane({ ...withRootAct("chat"), pid: 4321 }));
+		const idle = isLaneAlive(lane({ ...withRootMode("gui"), pid: null }));
+		const running = isLaneAlive(lane({ ...withRootMode("gui"), pid: 4321 }));
 		expect(idle).toBe(running);
 	});
 
-	it("root の act で判定する — 非 root に chat が居ても root=tui なら pid が真実", () => {
+	it("root の mode で判定する — 非 root に chat が居ても root=tui なら pid が真実", () => {
 		// doc 53 R1 の壊し方テスト（root=tui のまま非 root だけ chat の A6 正規構成）:
 		// lane 単位の要約に落ちると「chat が 1 枚でもあれば生存」に化ける。
 		const mixed = {
@@ -69,8 +69,8 @@ describe("isLaneAlive", () => {
 				root: 1,
 				focused: 2,
 				sessions: [
-					{ key: 1, agent: "claude", act: "tui" },
-					{ key: 2, agent: "claude", act: "chat" },
+					{ key: 1, agent: "claude", mode: "tui" },
+					{ key: 2, agent: "claude", mode: "gui" },
 				],
 			},
 		} as Partial<LaneInfo>;

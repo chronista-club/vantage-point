@@ -47,7 +47,7 @@ pub struct ActivePaneInfo<'a> {
     pub pane_id: Option<&'a str>,
     /// Preview kind の URL (preview kind 以外では None)
     pub preview_url: Option<&'a str>,
-    /// この Lane が Act II (root act="chat"、sessions 由来 — doc 53 R1) か。terminal kind でのみ意味を持つ。
+    /// この Lane が gui (root mode="gui"、sessions 由来 — doc 53 R1) か。terminal kind でのみ意味を持つ。
     ///
     /// chat lane は engine-less (pid=None) が正常形で **xterm instance を持たない**ため、
     /// JS の `showLane` が「xterm が無い = 表示すべき内容が無い」と誤判定して
@@ -71,9 +71,9 @@ pub struct ActivePaneInfo<'a> {
     /// cwd / branch と同じ経路で供給しておく（JS 側 entry.tsx は受け取り済み）。
     pub lane_name: Option<&'a str>,
     /// Echoes 共通ヘッダの session chip 用: active engine の session id
-    /// （`LaneInfo.engine_session_id` 由来）。Act I は EchoesEvent が流れないため
+    /// （`LaneInfo.engine_session_id` 由来）。tui は EchoesEvent が流れないため
     /// event 経路では供給されず、この setActivePane 相乗りが唯一の供給路になる
-    /// （Act II では event 由来の真値が上書きする — EchoesHeader 側で OR merge）。
+    /// （gui では event 由来の真値が上書きする — EchoesHeader 側で OR merge）。
     pub session_id: Option<&'a str>,
     /// Echoes 共通ヘッダの chip prefix 用: **root session の agent**（= slot に載る engine 種別、
     /// "claude" / "codex" / "grok" 等）。session chip の engine 別 prefix 導出に使う。doc 39 P4-C:
@@ -203,7 +203,7 @@ body{overflow:hidden;}
 }
 .pane.active{pointer-events:auto;}
 .pane.terminal{padding:0;}
-/* Echoes 共通ヘッダ (操縦席、mem `vp-pane-common-header`): Act I(xterm)/Act II(chat) を跨いで
+/* Echoes 共通ヘッダ (操縦席、mem `vp-pane-common-header`): tui(xterm)/gui(chat) を跨いで
    載り続ける lane-local な情報 + 操作の strip。DOM の器だけを World A が用意し、中身は
    editor-host bundle の EchoesHeader component が #echoes-header に mount する
    (chat session host と同じ mount 点パターン)。
@@ -223,7 +223,7 @@ body{overflow:hidden;}
    inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
-   消え、+ New / Act 切替は EchoesHeader（lane の名札）へ移設した。 */
+   消え、+ New / Mode 切替は EchoesHeader（lane の名札）へ移設した。 */
 #lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
   bottom:0;background:var(--color-border,#2a3040);}
 /* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
@@ -498,17 +498,17 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;visibility:visible;">
     <!-- Echoes 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
          EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
-         Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
+         tui/gui を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
     <div id="echoes-header"></div>
     <!-- doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane の表示領域 = N 枚の Pane を並べる
          tiling の器。配置は creo-ui-layout の lane scope (lane-panes.ts) が resolved rect を
          inline で書く。子は **session ごとの host 群**を動的に生やす:
-         `#term-session-<n>`（Act I xterm、World A 所有・中身に触れない）と
+         `#term-session-<n>`（tui xterm、World A 所有・中身に触れない）と
          `#chat-session-<n>`（World B の lane-panes が生やす）。どちらも 1 session = 1 Pane。
          旧 #console-chat-host 固定 1 枚 / 静的 #lane-host（root 専用の term host）は退役 —
          host の身元を role でなく session に紐づけた（doc 50 §4.6 A6、`ensureTermHost`）。
          下端の帯 (#pane-tabs) は doc 51 §1 A1 で退役 — 表示は既定 tiling、
-         + New / Act 切替は EchoesHeader (lane の名札) へ移設。 -->
+         + New / Mode 切替は EchoesHeader (lane の名札) へ移設。 -->
     <div id="lane-panes">
       <!-- board (board) pane — doc 52 §10 wave 0: app 層の #pane-board から lane tiling へ
            引っ越した「貼る台」。**lane に 1 枚の静的 host**（board は lane-scoped、
@@ -547,7 +547,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
         <div class="board-history-strip" id="board-history-strip"></div>
       </div>
     </div>
-    <!-- doc 33 §9: Act I⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
+    <!-- doc 33 §9: tui⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
     <div id="console-switching">
       <div class="console-switching-card">
@@ -663,13 +663,13 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 mod tests {
     use super::*;
 
-    /// doc 33: chat lane (Act II) は `chat: true` で JS に伝わる。
+    /// doc 33: chat lane (gui) は `chat: true` で JS に伝わる。
     ///
     /// これが落ちると `showLane` が「xterm instance 無し = 内容無し」と誤判定し、
     /// `#lane-empty` placeholder が ChatView を覆って「Lane が選択されていません」で
-    /// 固着する（Act II が選べない体感バグ）。
+    /// 固着する（gui が選べない体感バグ）。
     #[test]
-    fn active_pane_script_carries_chat_flag_for_act2_lane() {
+    fn active_pane_script_carries_chat_flag_for_gui_lane() {
         let script = build_set_active_pane_script(&ActivePaneInfo {
             kind: Some("terminal"),
             pane_id: Some("vp/root"),
@@ -685,7 +685,7 @@ mod tests {
         assert!(script.contains("\"pane_id\":\"vp/root\""));
     }
 
-    /// Act I (tui) lane と非 terminal kind は `chat: false`（従来の xterm 判定に従う）。
+    /// tui (tui) lane と非 terminal kind は `chat: false`（従来の xterm 判定に従う）。
     #[test]
     fn active_pane_script_chat_false_for_tui_and_stand() {
         let tui = build_set_active_pane_script(&ActivePaneInfo {
@@ -706,8 +706,8 @@ mod tests {
             "script={tui}"
         );
         assert!(tui.contains("\"branch\":\"mako/x\""), "script={tui}");
-        // Act I の session chip 供給路（engine_session_id 相乗り + engine 種別）。
-        // Act I は EchoesEvent が流れないため、この経路が欠けると chip が出ない
+        // tui の session chip 供給路（engine_session_id 相乗り + engine 種別）。
+        // tui は EchoesEvent が流れないため、この経路が欠けると chip が出ない
         //（bug mem_1Cd3icsvKiGsQ8TtX8t1FR の再発防止）。
         assert!(
             tui.contains("\"session_id\":\"0196-abcd-ef01\""),

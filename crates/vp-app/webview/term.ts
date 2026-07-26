@@ -1,5 +1,5 @@
 /**
- * Echoes Act I（xterm）の配線 — 旧 World A。
+ * Echoes tui（xterm）の配線 — 旧 World A。
  *
  * doc 53 §6.5 の「もう半分」。2026-07-26 まで、この 976 行は `crates/vp-app/src/main_area.rs` の
  * inline `<script>` に Rust 文字列として埋め込まれていた（World A）。同じ webview の中に 2 つの
@@ -699,8 +699,8 @@ export function installTerm(): TermPushHandlers {
 	const showLane = (address: string | null, isChat: boolean): void => {
 		shownLane = address;
 		// empty placeholder は「Lane が選ばれていない」時だけ出す。
-		//  Act I (tui): 内容 = xterm instance。 未 ensure (Dead lane 等) なら placeholder。
-		//  Act II (chat): 内容 = ChatView。 xterm instance を持たないのが正常形なので、
+		//  tui (tui): 内容 = xterm instance。 未 ensure (Dead lane 等) なら placeholder。
+		//  gui (chat): 内容 = ChatView。 xterm instance を持たないのが正常形なので、
 		//   laneInstances 基準で判定すると placeholder が ChatView を覆い続ける
 		//   (#lane-empty は position:absolute; inset:0)。 isChat で抑止する。
 		//  doc 50 §4.6 A6: lane は N 枚の term instance を持ちうるので「1 枚でもあるか」で判定。
@@ -737,7 +737,7 @@ export function installTerm(): TermPushHandlers {
 		if (removed > 0) dbg(`[lane:${address}] removed (${removed} term)`);
 	};
 
-	/** doc 50 §4.6 A6: 1 session の term instance だけ畳む（act 切替 tui→chat の後始末）。 */
+	/** doc 50 §4.6 A6: 1 session の term instance だけ畳む（mode 切替 tui→chat の後始末）。 */
 	const removeLaneSession = (address: string, session: number): void => {
 		const key = instKey(address, session);
 		const info = laneInstances.get(key);

@@ -33,7 +33,7 @@ pub struct AgentInfo {
     pub name: String,
     /// 表示用の説明
     pub description: String,
-    /// Act II（chat GUI）の host を持つか（doc 38 Phase 3、additive field）。
+    /// gui（chat GUI）の host を持つか（doc 38 Phase 3、additive field）。
     /// chat 系 UI（session tab の「+」menu）はこれで shell（engine なし）を除外する —
     /// dogfood で「作れるが submit がエラーになるだけの dead-end tab」が実発生したため。
     /// sidebar の Add Performer（lane 作成）は全 agent が正当なので filter しない。

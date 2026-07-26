@@ -1,16 +1,16 @@
 /**
- * EchoesHeader — Act I/II 共通の lane-local context strip（creo memo `vp-pane-common-header`）。
+ * EchoesHeader — tui/gui 共通の lane-local context strip（creo memo `vp-pane-common-header`）。
  *
  * pane-host 上端の `#echoes-header`（main_area.rs が mount 点だけ提供）に SolidJS で mount され、
- * どの PaneKind / Act を表示していても「lane の Echoes」の情報が載り続ける
+ * どの PaneKind / Mode を表示していても「lane の Echoes」の情報が載り続ける
  * （帰属は PaneKind ではなく lane の Echoes —「Echoes は一つ、視え方が二つ」の UI 体現）。
  * chips は presence-driven — 値があるものだけ並ぶ。
  *
  * データ源（既存経路への相乗りのみ、新しい Rust→JS 配信チャネルは作らない）:
- * - lane 名 / cwd / branch / Act 初期値: setActivePane payload（entry.tsx bridge が setLane で届ける）
+ * - lane 名 / cwd / branch / Mode 初期値: setActivePane payload（entry.tsx bridge が setLane で届ける）
  * - cc session id / permission mode / engine 途絶: vpConsole の header summary
  *   （session_init / turn_completed / error の畳み込み。'vp:echoes-header' event で追従）
- * - Act（見え方）は載せない: doc 50 §4.6 A6 で session の属性になり、切替は各 pane の
+ * - Mode（見え方）は載せない: doc 50 §4.6 A6 で session の属性になり、切替は各 pane の
  *   名札 kind badge が持つ（lane の名札は「この lane が何であるか」だけを載せる）
  *
  * ## 載せるもの / 載せないもの（pane の縦軸、doc 29/30 の Edge Ring を pane に再適用）
@@ -28,7 +28,7 @@
  * - `⚠ engine` / `💤 休眠` → status 行（`deriveStatus` が同じ event を畳んでいる）
  *
  * 旧・下端の帯（`#pane-tabs`）は doc 51 §1 A1 で退役 — pane chip は tiling 既定で存在理由が
- * 消え、+ New はここへ、Act 切替（避難路、doc 51 §2）は root picker の「見え方」行へ移設。
+ * 消え、+ New はここへ、Mode 切替（避難路、doc 51 §2）は root picker の「見え方」行へ移設。
  */
 
 import { render } from 'solid-js/web'
@@ -143,12 +143,12 @@ export type HeaderLaneCtx = {
   name: string | null
   cwd: string | null
   branch: string | null
-  /** root act == "chat"（Act の初期値。Rust 側が sessions から導出 — doc 53 R1。
+  /** root mode == "gui"（Mode の初期値。Rust 側が sessions から導出 — doc 53 R1。
    *  以降は vp:console-mode event で追従） */
   chat: boolean
   /** active engine の session id（LaneInfo.engine_session_id 由来）。
-   *  Act I は EchoesEvent が流れないため、この供給路が無いと chip が出ない
-   *  （bug mem_1Cd3icsvKiGsQ8TtX8t1FR）。Act II では event 由来の真値が優先される。 */
+   *  tui は EchoesEvent が流れないため、この供給路が無いと chip が出ない
+   *  （bug mem_1Cd3icsvKiGsQ8TtX8t1FR）。gui では event 由来の真値が優先される。 */
   sessionId: string | null
   /** root session の agent（= slot に載る engine 種別）。session chip の prefix 導出用。
    *  doc 39 P4-C: Rust push_active_view が agent_name（root の engine）優先で解決した値
@@ -196,7 +196,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
   const [pickerPos, setPickerPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
   const [sessions, setSessions] = createSignal<EchoesSession[]>([])
 
-  // doc 51 §1 A1: + New（engine × Act で新 session = 台に器械を足す）。旧・下端の帯から移設。
+  // doc 51 §1 A1: + New（engine × Mode で新 session = 台に器械を足す）。旧・下端の帯から移設。
   // null = 閉。agents は click → `echoes:stands_fetch` 要求 → 応答（相関 id 照合）で開く。
   const [newMenu, setNewMenu] = createSignal<PaneStand[] | null>(null)
   const [newMenuPos, setNewMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -225,11 +225,11 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
 
   /** menu 行 click: backend が新しい session id を採番し、lane の cwd から始める
    *  （doc 46 P2 要件 5）。tiling 既定なので新 pane はそのまま台に並ぶ。 */
-  const createPane = (engine: string, act: 'tui' | 'chat'): void => {
+  const createPane = (engine: string, mode: 'tui' | 'gui'): void => {
     const lane = ctx()?.addr
     setNewMenu(null)
     if (!lane) return
-    sendIpc({ t: 'console:new_session', lane, engine, act })
+    sendIpc({ t: 'console:new_session', lane, engine, mode })
   }
 
   // doc 47 §6: `vp:echoes-agents` は共有 bus。自分の要求（相関 id）への応答だけで menu を
@@ -241,7 +241,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     setNewMenu(d?.agents ?? [])
   })
 
-  /** chip click（Act I）: picker を開き、一覧を repo から取り直す（開くたび authoritative）。 */
+  /** chip click（tui）: picker を開き、一覧を repo から取り直す（開くたび authoritative）。 */
   const openPicker = (chip: HTMLElement): void => {
     const lane = ctx()?.addr
     if (!lane) return
@@ -265,8 +265,8 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
   // 足す）と Reborn（その場で始め直す）の合成でしかなく、同じことをする口を 2 つ作らない。
 
   // doc 50 §4.6 A6: 見え方の乗り換えは **各 pane の名札 kind badge**（chatview の
-  // `requestSessionAct`）へ移設。lane の名札はこの操作を持たない（Act は lane ではなく
-  // session の属性 — 旧 `requestActSwitch` は同 PR で撤去した）。
+  // `requestSessionMode`）へ移設。lane の名札はこの操作を持たない（Mode は lane ではなく
+  // session の属性 — 旧 `requestModeSwitch` は同 PR で撤去した）。
 
   // 外側 click で閉じる（picker / chip の内側は除外 — chip click は toggle が担う）。
   document.addEventListener('click', (ev) => {
@@ -279,7 +279,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     }
   })
 
-  // doc 50 §4.6 A6: 'vp:console-mode' 追従は退役（lane の名札は Act を表示しない）。
+  // doc 50 §4.6 A6: 'vp:console-mode' 追従は退役（lane の名札は Mode を表示しない）。
   // session 一覧追従（handleSessionList の既存 bus。picker が閉じていても cache しておく）。
   document.addEventListener('vp:echoes-sessions', (e) => {
     const d = (e as CustomEvent<{ lane: string; sessions?: EchoesSession[] }>).detail
@@ -318,10 +318,10 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
               </span>
             </Show>
             {/* session chip: root session の表示器 = 操作器（doc 39 P3、2026-07-18 mako 決定）。
-                かつては Act I 限定だった（Act II は tab strip が識別と切替を担っていた）が、
-                tab strip は doc 50 P1 の session = Pane で退役 — 担い手が消えたので両 Act で
+                かつては tui 限定だった（gui は tab strip が識別と切替を担っていた）が、
+                tab strip は doc 50 P1 の session = Pane で退役 — 担い手が消えたので両 Mode で
                 出す。picker は root の名札 menu（Root 切替 + 見え方の乗り換え = 避難路）。
-                供給路は setActivePane 相乗りの engine_session_id（ctx）— Act I は
+                供給路は setActivePane 相乗りの engine_session_id（ctx）— tui は
                 EchoesEvent が流れないため summary は空になりうる（OR merge で両対応）。
                 prefix は engine 別（cc/cdx/grok/oc、doc 37: chip が engine indicator を兼ねる）。 */}
             <Show when={summary().sessionId ?? c().sessionId}>
@@ -406,7 +406,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                   )}
                 </Show>
                 {/* doc 50 §4.6 A6: 「見え方」行はここから退役した。見え方は session の属性に
-                    なり、切替は**各 pane の名札 kind badge**が持つ（§4.6 ② — Act = Pane の
+                    なり、切替は**各 pane の名札 kind badge**が持つ（§4.6 ② — Mode = Pane の
                     kind なので「この pane が何であるか」を名乗る名札が住処）。この picker は
                     root の付け替え（lane の代表を誰にするか）に専念する。 */}
               </div>
@@ -417,7 +417,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
             <button
               type="button"
               class="eh-chip eh-new"
-              title="Engine と Act を選んで、この台に新しいコンソールを作る"
+              title="Engine と Mode を選んで、この台に新しいコンソールを作る"
               onClick={(ev) => toggleNewMenu(ev.currentTarget as HTMLElement)}
             >
               <CreoIcon name="ph:plus" size={11} />
@@ -437,14 +437,14 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                       <button
                         type="button"
                         class="eh-rp-row"
-                        onClick={() => createPane(nc.engine, nc.act)}
+                        onClick={() => createPane(nc.engine, nc.mode)}
                       >
-                        {/* Act は「Console（Act I）」「Chat（Act II）」で見せる — 内部語（tui/chat）は出さない */}
+                        {/* Mode は「Console（tui）」「Chat（gui）」で見せる — 内部語（tui/chat）は出さない */}
                         <CreoIcon
-                          name={nc.act === 'chat' ? 'ph:chat-circle' : 'ph:terminal-window'}
+                          name={nc.mode === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
                           size={11}
                         />
-                        {nc.engineLabel} · {nc.act === 'chat' ? 'Chat' : 'Console'}
+                        {nc.engineLabel} · {nc.mode === 'gui' ? 'Chat' : 'Console'}
                       </button>
                     )}
                   </For>

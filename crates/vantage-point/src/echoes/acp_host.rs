@@ -1,4 +1,4 @@
-//! AcpAgentHost — ACP engine（grok / opencode）を lane 単位で**常駐**駆動する host（Act II、doc 42・43）
+//! AcpAgentHost — ACP engine（grok / opencode）を lane 単位で**常駐**駆動する host（gui、doc 42・43）
 //!
 //! `grok agent stdio`（doc 42）と `opencode acp`（doc 43）はどちらも **ACP（Agent Client
 //! Protocol、protocolVersion 1）**を実装しており（各 doc §1 実測）、wire が同一なので本 host が
@@ -12,7 +12,7 @@
 //!   turn/completed notification と違い response 駆動）
 //! - 中断 = `session/cancel` **notification**（応答なし — prompt response が cancelled で畳む）
 //! - **`session/request_permission`（server→client request）を host が自動 allow**
-//!   （claude bypassPermissions / codex approvalPolicy=never と同じ Act I/II parity。grok は
+//!   （claude bypassPermissions / codex approvalPolicy=never と同じ tui/gui parity。grok は
 //!   spawn flag `--always-approve` と二段防御、opencode は自動 allow の一段のみ — doc 43 §6）
 //! - `session/load` の replay 列（過去会話の session/update）は**翻訳しない** — VP 自前の
 //!   replay_log 経由 replay と二重になるため、load 完了まで translator を繋がない（doc 42 §3）
@@ -101,7 +101,7 @@ pub struct AcpHostConfig {
     /// registry 書き込みキー（session label: `conductor` / `conductor#2` …）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
-    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — Act I と同じ契約）。
+    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — tui と同じ契約）。
     pub lane_label: String,
     /// identity env（`VP_SESSION_KEY`）用の session key（doc 40 §4 の hook identity と同じ）。
     pub session_key: crate::lane::session_registry::SessionKey,
@@ -262,7 +262,7 @@ impl AcpInner {
     }
 }
 
-/// lane 単位の常駐 ACP host（Act II、doc 42・43）。grok / opencode の 2 engine を
+/// lane 単位の常駐 ACP host（gui、doc 42・43）。grok / opencode の 2 engine を
 /// [`AcpEngine`] パラメータ（cli_path / spawn_args / name）で共有する — host ロジックは
 /// engine 非依存。
 pub struct AcpAgentHost {
@@ -280,7 +280,7 @@ impl AcpAgentHost {
         cmd.args(engine.spawn_args())
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
-            // wire で自分を名乗る口。Act I の agent_spawner / claude host と同じ契約。
+            // wire で自分を名乗る口。tui の agent_spawner / claude host と同じ契約。
             .env("VP_REPO", &config.repo)
             .env("VP_LANE", &config.lane_label)
             .env("VP_SESSION_KEY", config.session_key.to_string())

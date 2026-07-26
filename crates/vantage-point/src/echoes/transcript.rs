@@ -2,15 +2,15 @@
 //!
 //! ## なぜ要るか
 //!
-//! Act II（chat mode）の会話は `EchoesEvent` stream で GUI に届くが、この topic は
+//! gui（chat mode）の会話は `EchoesEvent` stream で GUI に届くが、この topic は
 //! **非 retained**（`process/echoes/data/{lane}/event`、category=data）で、履歴は vp-app の
 //! webview 内 in-memory ring buffer にしか無い。 つまり **app を再起動すると ChatView が空**
 //! になる（engine 側は `--resume` で会話を保持しているのに、描く履歴が無い）。
 //!
-//! terminal（Act I）は PtySlot の raw PTY bytes を replay して画面を復元するが、chat lane は
+//! terminal（tui）は PtySlot の raw PTY bytes を replay して画面を復元するが、chat lane は
 //! PtySlot を持たないため同じ手は使えない。 代わりに **claude が disk に持つ transcript
 //! (`~/.claude/repos/*/<session_id>.jsonl`)** を唯一の履歴 SSOT として読み、`EchoesEvent` に
-//! 翻訳して attach 時に replay する（= Act II 版 replay-on-attach）。
+//! 翻訳して attach 時に replay する（= gui 版 replay-on-attach）。
 //!
 //! ## [`super::translate`] との違い
 //!

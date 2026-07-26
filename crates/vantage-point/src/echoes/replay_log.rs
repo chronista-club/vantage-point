@@ -2,7 +2,7 @@
 //!
 //! ## なぜ要るか（dogfood で発見した穴）
 //!
-//! Act II の会話復元（replay-on-attach）は claude では transcript(jsonl) を SSOT に再生する。
+//! gui の会話復元（replay-on-attach）は claude では transcript(jsonl) を SSOT に再生する。
 //! だが codex / grok / opencode は transcript を持たない（codex の rollout は形式移行中で直 parse は
 //! 危険、grok / opencode は ACP で会話 store を公開しない — opencode は `session/load` が全履歴を
 //! replay するが VP は採らず replay_log に揃える、doc 43 §5）。結果、これらの engine では

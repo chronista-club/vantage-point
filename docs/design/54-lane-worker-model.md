@@ -90,7 +90,7 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
   ChatView）。⚠️ 2 つの既定を混ぜない: **生成の既定 = Chat（雇用時に registry へ明示的に
   書く）** / **欠損の解釈 = Tui のまま**（registry 不在・旧 wire の fallback は歴史的事実に
   従う — 昔の lane は tui だった。`SessionAct::default()` は反転させない）。
-  随伴: Act II parity gap（permission / AskUserQuestion 相当 / diff）が critical path に昇格。
+  随伴: gui parity gap（permission / AskUserQuestion 相当 / diff）が critical path に昇格。
   実装は R1 の後の独立 PR（behavior change を refactor に混ぜない）— **✅ 実装済（§8-11）**。
   model は user 設定に委ねる（同日修正 — Opus 強制は撤回、§8-11）
 
@@ -135,7 +135,7 @@ lane を見る）でも取り合いが起きない — 注視は視る者の属�
 > mako「shell↔tui が VP 抜きでできちゃうから、ここだけうまく落とし込まないといけない」
 > 「ここは私の設計がまずいのかもと何回か思ってる」
 
-**評価: #661（Act1-layered、login shell 基層）は env 注入税と復元力の実問題を解いた正しい
+**評価: #661（login-shell-layered、login shell 基層）は env 注入税と復元力の実問題を解いた正しい
 設計。多孔性は設計ミスの産物ではなく端末の真実** — real shell が 1 席でも存在する限り、
 人間はそこで何でも起動できる。選べるのは「多孔性をどこに閉じ込めるか」だけ。
 
@@ -358,7 +358,7 @@ World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残�
 1. **語彙**: 「働き手」のコード識別子（候補: worker / WorkerId）。Stand 名との層分け規律
    （コードは機能名・Stand 名は表示層）に従う。
    **act の rename 候補（mako 2026-07-25）: `shell → act-i / tui → act-ii / chat → act-iii`**
-   — 3 幕の梯子は #661 の物理層（Act1 = login shell が土台）と一致し物理モデルに忠実。
+   — 3 幕の梯子は #661 の物理層（土台 = login shell が土台）と一致し物理モデルに忠実。
 
    **方針（mako 2026-07-26、確定）: 「一箇所に固めて、もれなく完全に一気に移行する」。**
    schema 束とは別の単独 PR で、**部分移行・恒久 alias・「あとで撤去」を作らない**
@@ -397,7 +397,7 @@ World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残�
    ⚠️ **wire 側は元から不要**。GUI / CLI / server は同じ binary から出るので版ズレが起きない
    （「前の版が書いたもの」を持ちうるのは registry file だけ）。
 
-   ② 既存の「Act I/II」（doc 33 系 = tui/chat）と**採番がシフトする**（今の Act I が新 act-ii）
+   ② 既存の「tui/gui」（doc 33 系 = tui/chat）と**採番がシフトする**（今の tui が新 act-ii）
    ため doc / memory / コメントの旧参照を訂正する。**実測 = 520 箇所 / 25+ file**（design doc が
    大半、2026-07-26）。⚠️ **単純置換ができない** — 「当時の記述として正しい歴史」と「現在形と
    して誤りになるもの」が混在するので、1 箇所ずつ読んで判定が要る。**rename の本当のコストは
@@ -434,4 +434,4 @@ World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残�
       （claude なら ~/.claude 設定）。**旧「未設定なら Opus を強制 record」は撤去**
       （user の claude 既定を上書きしていた — 隠れた変換の一種）
     - 残: `MODEL_CHOICES` の鮮度（Opus 5 が表に無い）= handoff-add-menu-polish ②' の束。
-      随伴 = Act II parity gap の昇格（§3.1）は変わらず
+      随伴 = gui parity gap の昇格（§3.1）は変わらず

@@ -1,11 +1,11 @@
 //! AgentSpawner — agent 名に応じた spawn command 構築（tmux decoupling PR2 で Rust-native 化）
 //!
-//! ## 構造（design doc §13: Act1-layered）
+//! ## 構造（design doc §13: login-shell-layered）
 //!
 //! ```text
-//! PtySlot → $LOGIN_SHELL -l                    ← Act1: 常に生きる「shell 層」（self-healing）
+//! PtySlot → $LOGIN_SHELL -l                    ← 土台: 常に生きる「login shell 層」（self-healing）
 //!    ↓ initial_input（spawn 後に PTY へ type-ahead 注入）
-//!    claude --resume 'ID' … || claude …        ← Act3（|| fallback は shell が native 処理）
+//!    claude --resume 'ID' … || claude …        ← agent 起動（|| fallback は shell が native 処理）
 //! ```
 //!
 //! 旧構造（PtySlot → bash script → tmux new-session → claude）の bash/mise/tmux 層は全廃。
@@ -15,11 +15,11 @@
 //!
 //! ## エンジン別 agent（対応表の SSOT は [`crate::echoes::EngineKind`]、doc 37）
 //!
-//! `agent_name` で注入する Act3 を切り替える。各 engine CLI は「TUI 起動 / ID 指名 resume」の
-//! surface が揃っているため、同じ Act1-layered 構造に載る:
+//! `agent_name` で注入する agent 起動 command を切り替える。各 engine CLI は「TUI 起動 / ID 指名 resume」の
+//! surface が揃っているため、同じ login-shell-layered 構造に載る:
 //! - `"claude"`（claude）: [`claude_command`]、 cc_session `--resume` + wire hook + model alias
-//! - `"codex"`: [`codex_command`]、 codex_session `resume`（採番は Act II の record-from-init のみ
-//!   — codex に create-chat 相当が無いため、Act I 単独ではまず素の `codex` で開始する）
+//! - `"codex"`: [`codex_command`]、 codex_session `resume`（採番は gui の record-from-init のみ
+//!   — codex に create-chat 相当が無いため、tui 単独ではまず素の `codex` で開始する）
 //! - `"grok"`: [`grok_command`]、registry の会話 id を `-r '<id>'` で指名 resume（doc 42）
 //! - `"opencode"`: [`opencode_command`]、registry の会話 id を `-s '<id>'` で指名 resume（doc 43。
 //!   model は opencode config が SSOT — VP は注入しない）
@@ -61,10 +61,10 @@ const WIRE_HOOKS: &str = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command
 pub struct AgentCommand {
     pub program: String,
     pub args: Vec<String>,
-    /// spawn 後に PTY へ type-ahead 注入する初期入力（= Act3 の claude 起動 command line）。
+    /// spawn 後に PTY へ type-ahead 注入する初期入力（= agent 起動の claude 起動 command line）。
     ///
     /// PTY line discipline が入力をバッファするため、 shell の rc 読込完了を待たずに書いてよい
-    /// （shell が読み始めた時点で消費される）。 None = slot の shell のみ（Act1 で止まる）。
+    /// （shell が読み始めた時点で消費される）。 None = slot の shell のみ（shell 層で止まる）。
     pub initial_input: Option<String>,
     /// PtySlot spawn に渡す環境変数（VP_* identity）。 TERM/LANG/PATH は PtySlot 側の
     /// `spawn_env` が注入する（ここでは持たない — 注入点を 1 箇所に保つ）。
@@ -163,7 +163,7 @@ pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
 ///
 /// - **Unix**: `$SHELL` を尊重（repo が launchd 起動だと SHELL env 不在のことがある →
 ///   `/bin/zsh` → `/bin/bash` → `/bin/sh` の順で実在 shell に fallback）。 `-l` で
-///   login shell 化し、 mise / volta / nvm 等の PATH を rc 経由で取り込む（Act1 = env の shell 層）。
+///   login shell 化し、 mise / volta / nvm 等の PATH を rc 経由で取り込む（login shell 層 = env の土台）。
 /// - **Windows**: git-bash（`vp_paths::shell::find_git_bash`）。 不在時は標準 install path を
 ///   program に据えて ENOENT を明示化する（Git for Windows が前提依存）。
 #[cfg(not(windows))]
@@ -205,7 +205,7 @@ fn is_safe_session_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// Act3: claude 起動 command line を組み立てる（旧 echoes bash script の CLAUDE_CMD 分岐の移植）。
+/// agent 起動: claude 起動 command line を組み立てる（旧 echoes bash script の CLAUDE_CMD 分岐の移植）。
 ///
 /// CC 2.1 Background Agents insulate: `--continue` は「cwd の最新」を拾うため bg session 在りで
 /// Agent View dashboard 化する（send-keys handoff が list-nav UI に化ける既知バグ）。 id を指名する
@@ -253,13 +253,13 @@ fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
     }
 }
 
-/// Act3（codex agent）: codex 起動 command line を組み立てる。
+/// agent 起動（codex agent）: codex 起動 command line を組み立てる。
 ///
 /// codex の TUI resume は `codex resume '<id>'`（id は UUID の指名 — `--last` は claude
 /// `--continue` と同型の「最新」曖昧性があるため使わない、doc 37 §7）。id の供給源は
-/// Act II（[`crate::echoes::codex_host`] の record-from-init）だけ — codex には cursor の
-/// create-chat 相当（id 先取り）が無いため、Act I 単独ではまず素の `codex` で始まり、
-/// Act II を一度でも通ると以後は resume で継がれる。
+/// gui（[`crate::echoes::codex_host`] の record-from-init）だけ — codex には cursor の
+/// create-chat 相当（id 先取り）が無いため、tui 単独ではまず素の `codex` で始まり、
+/// gui を一度でも通ると以後は resume で継がれる。
 ///
 /// - `Some(id)`（`codex_session::is_valid_thread_id` 検証済）: `codex resume '<id>' || codex`
 ///   （thread 消失時は素の codex に fallback、 shell の `||` が native 処理）
@@ -274,7 +274,7 @@ fn codex_command(resume_id: Option<&str>) -> String {
     }
 }
 
-/// grok の Act I 起動 command（doc 42 — TUI は `-r '<id>'` で ACP sessionId を指名 resume）。
+/// grok の tui 起動 command（doc 42 — TUI は `-r '<id>'` で ACP sessionId を指名 resume）。
 ///
 /// - `Some(id)`（英数+ハイフン検証済 = `--resume '<id>'` injection 防壁）: `grok -r '<id>' || grok`
 ///   （session 消失時は素の grok に fallback、shell の `||` が native 処理）
@@ -296,7 +296,7 @@ fn is_safe_opencode_session_id(id: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
-/// opencode の Act I 起動 command（doc 43 §4 — TUI は `-s '<id>'` で ACP sessionId を指名 resume）。
+/// opencode の tui 起動 command（doc 43 §4 — TUI は `-s '<id>'` で ACP sessionId を指名 resume）。
 ///
 /// - `Some(id)`（[`is_safe_opencode_session_id`] 検証済 = injection 防壁）: `opencode -s '<id>' || opencode`
 ///   （session 消失時は素の opencode に fallback、shell の `||` が native 処理）
@@ -338,7 +338,7 @@ pub fn build_agent_command(agent_name: &str, addr: &LaneAddress, repo_dir: &Path
 /// | 決まるもの | 由来 |
 /// |---|---|
 /// | `VP_SESSION_KEY` | この session の key（hook がこれを名乗り、repo は報告 session に会話 id を書く、doc 40 §4-1） |
-/// | engine（Act3 の arm） | この session の entry の `agent` |
+/// | engine（agent 起動の arm） | この session の entry の `agent` |
 /// | resume id | この session の entry の `conversation` |
 /// | replay 永続 | **全 slot** が session 別 file へ（doc 50 §4.6 A6、後述） |
 ///
@@ -396,7 +396,7 @@ pub fn build_agent_command_for_session(
     // doc 39 P1 → doc 40: resume id / 会話 id は **session registry の entry**（SSOT、doc 40 §5）。
     // 既定（`session=None`）で化身するのは root session（lane の人格）で、doc 46 P5 の producer
     // だけが非 root を名指しする。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
-    // engine_model は lane 単位（Act I/II 共有）のまま。
+    // engine_model は lane 単位（tui/gui 共有）のまま。
     let reg = crate::lane::session_registry::load(&addr.repo, lane_label(addr), agent_name);
     // A6 の後始末: 旧名 replay file（lane 単位）を現 root の session file へ 1 回だけ移設する。
     // slot の replay_path を決める経路はここ 1 本なので、移設もここに置けば取りこぼさない
@@ -424,13 +424,13 @@ pub fn build_agent_command_for_session(
     // でなく session の agent で arm を選ぶことが cross-engine root 解禁の核。
     let initial_input = match crate::echoes::EngineKind::from_agent(effective_stand) {
         Some(crate::echoes::EngineKind::Claude) => {
-            // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
+            // transcript_exists pre-flight（doc 33 C2 の gui と対称化）: 発話ゼロで
             // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒せば
             // 素の claude で立つ（doc 53 §12.1 で `--continue` fallback は退役）。
             let resume_id = conversation
                 .clone()
                 .filter(|id| crate::lane::cc_session::transcript_exists(id));
-            // model は lane 単位の state file（`engine_model`、Act I/II 共有）を直読み。
+            // model は lane 単位の state file（`engine_model`、tui/gui 共有）を直読み。
             // 未記録 = None = claude default（co-evolution #1）。 respawn（repo restart）でも
             // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
             let model = crate::lane::engine_model::last(&addr.repo, lane_label(addr));
@@ -568,7 +568,7 @@ mod tests {
             "root",
             "claude",
             "claude",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
         )
         .expect("create_root #2");
         let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
@@ -601,13 +601,13 @@ mod tests {
             Some("11111111-1111-1111-1111-111111111111"),
         )
         .expect("root の会話 id");
-        // 同居人 #2 = codex（producer が採番するのと同じ形: Act=Tui / 非 focus）。
+        // 同居人 #2 = codex（producer が採番するのと同じ形: Mode=Tui / 非 focus）。
         let key = crate::lane::session_registry::create(
             "vp",
             "root",
             "claude",
             "codex",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
             false,
         )
         .expect("create #2");
@@ -693,13 +693,13 @@ mod tests {
     fn unspoken_non_first_root_spawns_bare_not_continue() {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        // root を #2（新品、record 無し）へ — Act I ✨ New 直後の registry 状態。
+        // root を #2（新品、record 無し）へ — tui ✨ New 直後の registry 状態。
         crate::lane::session_registry::create_root(
             "vp",
             "root",
             "claude",
             "claude",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
         )
         .expect("create_root");
         let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
@@ -864,7 +864,7 @@ mod tests {
         );
     }
 
-    /// opencode の Act I 起動（doc 43 §4）: id 有りは `-s '<id>' || opencode` 指名 resume、
+    /// opencode の tui 起動（doc 43 §4）: id 有りは `-s '<id>' || opencode` 指名 resume、
     /// id 無しは素の opencode。injection 形 / grok 形（underscore 無し）の id は resume に採らない。
     #[test]
     fn opencode_command_variants() {
@@ -941,7 +941,7 @@ mod tests {
             "root",
             "claude",
             "codex",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
         )
         .expect("create_root codex");
         let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
@@ -964,7 +964,7 @@ mod tests {
             "root",
             "claude",
             "cursor",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
         )
         .expect("create_root cursor");
         let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));

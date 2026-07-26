@@ -41,7 +41,7 @@ protocol "vp-push" version="1.0.0" {
     // channel "push": envelope="t" で全 push を束ねる discriminated union（`PushEnvelope`）。
     // from="server" = Rust 側が開いて押し込む向き。lifetime="persistent" = webview の生存中ずっと。
     channel "push" from="server" lifetime="persistent" envelope="t" {
-        // ===== Echoes Act I（xterm）の制御面 — 実装は webview/term.ts =====
+        // ===== Echoes tui（xterm）の制御面 — 実装は webview/term.ts =====
 
         // (lane, session) の xterm instance を用意する（既存なら no-op = 冪等）。
         // `is_root` は **host の選び方には使わない**（host の身元は session）。focus の優先だけ。
@@ -53,7 +53,7 @@ protocol "vp-push" version="1.0.0" {
         }
 
         // 表示する lane を切り替える。`lane` 省略 = どの lane も選ばれていない（placeholder）。
-        // `is_chat` = Act II（xterm を持たないのが正常形）— placeholder の抑止に要る。
+        // `is_chat` = gui（xterm を持たないのが正常形）— placeholder の抑止に要る。
         event "term:show_lane" {
             field "lane" type="string" optional=#true
             field "is_chat" type="bool"
@@ -64,7 +64,7 @@ protocol "vp-push" version="1.0.0" {
             field "lane" type="string"
         }
 
-        // session 1 枚だけ畳む（act 切替 tui→chat の後始末）。
+        // session 1 枚だけ畳む（mode 切替 tui→chat の後始末）。
         event "term:remove_session" {
             field "lane" type="string"
             field "session" type="int"
@@ -99,7 +99,7 @@ protocol "vp-push" version="1.0.0" {
             field "payload" type="json"
         }
 
-        // repo の EchoesAgentHost が吐く構造化イベント（Act II の会話 stream）。
+        // repo の EchoesAgentHost が吐く構造化イベント（gui の会話 stream）。
         //
         // ⚠️ これは**制御面ではなく stream**。取りこぼしは受け側の replay 要求
         // （`echoes:demand_start`）が埋めるので、**この channel の保留箱に頼らない**。
@@ -113,12 +113,12 @@ protocol "vp-push" version="1.0.0" {
             field "session" type="int"
         }
 
-        // act 切替が **実体に適用された**通知（`SessionActApplied` の戻り）。
-        // 要求側の IPC tag `session:set_act`（JS → Rust）と対で、こちらは applied の報せ。
-        event "console:act_applied" {
+        // mode 切替が **実体に適用された**通知（`SessionModeApplied` の戻り）。
+        // 要求側の IPC tag `session:set_mode`（JS → Rust）と対で、こちらは applied の報せ。
+        event "console:mode_applied" {
             field "lane" type="string"
             field "session" type="int"
-            field "act" type="string"
+            field "mode" type="string"
         }
 
         // 「+」menu の agent 一覧（`agents_list` の結果）。

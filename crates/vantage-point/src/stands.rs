@@ -84,7 +84,7 @@ pub const BOARD: StandAlias = StandAlias {
 /// コーディングアシスタント能力 — Claude CLI オーケストレーター
 ///
 /// PR-pre2 (VP-118): Heaven's Door (岸辺露伴の「読み書き」) → Echoes (広瀬康一) に rename。
-/// 動機: zsh → tmux → claude の chain spawn が Echoes Act 1/2/3 進化と完璧 fit、
+/// 動機: zsh → tmux → claude の chain spawn が Echoes Mode 1/2/3 進化と完璧 fit、
 /// terminal の echo (反響) 構造とも literal に一致。 emoji 💬 = prompt/response 対話型。
 pub const ECHOES: StandAlias = StandAlias {
     id: "agent",

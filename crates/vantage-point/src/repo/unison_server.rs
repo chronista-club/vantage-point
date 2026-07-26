@@ -756,7 +756,7 @@ async fn handle_terminal_demand(
 
 /// [`crate::repo::terminal_pump::reconcile_lane_pumps`] の AppState 版（呼び手の糖衣）。
 ///
-/// demand hook / 動詞の末尾（act 切替・slot 追加・restart）/ boot 復元後 — pump に影響する
+/// demand hook / 動詞の末尾（mode 切替・slot 追加・restart）/ boot 復元後 — pump に影響する
 /// あらゆる契機がこの 1 本を呼ぶ。旧 `respawn_terminal_pump` の `only` 引数（呼び手ごとの
 /// scope 判断）は廃止 — 「pid 一致は触らない」の照合が兄弟保護を構造で保証する。
 pub(crate) async fn reconcile_terminal_pumps(
@@ -791,7 +791,7 @@ pub(crate) async fn reconcile_lane(
     .await
 }
 
-/// Act II replay-on-attach: echoes demand start ハンドラー。
+/// gui replay-on-attach: echoes demand start ハンドラー。
 ///
 /// daemon の demand hook が `repo/echoes/data/{lane}/event` の購読者 0→1 を検知し、 control
 /// reverse-route で本 method を撃つ。 repo は当該 chat lane の **transcript を replay** して topic に
@@ -832,9 +832,9 @@ async fn handle_echoes_demand_start(
         return Err(format!("echoes_demand_start: lane パース失敗: {lane}"));
     };
 
-    // chat でない session は replay しない（Act I の履歴は PtySlot の terminal replay が担う）。
+    // chat でない session は replay しない（tui の履歴は PtySlot の terminal replay が担う）。
     //
-    // ⚠️ gate は **その session の act**（doc 50 §4.6 A6）。旧実装は lane 単位
+    // ⚠️ gate は **その session の mode**（doc 50 §4.6 A6）。旧実装は lane 単位
     // `console_mode`（= root cache）で弾いていたため、**root=tui のまま非 root だけ chat** という
     // A6 の正規構成で `not_chat` を返し、ReplayStart すら送らずに会話が復元されなかった
     // （team-b review 2026-07-25、score 92。§4.7「共通形は lane 単位で判断している箇所」の同型）。
@@ -849,7 +849,7 @@ async fn handle_echoes_demand_start(
         let resolved = pool
             .resolve_chat_session(&addr, session)
             .map_err(|e| format!("echoes_demand_start: {e}"))?;
-        if resolved.act != crate::lane::session_registry::SessionAct::Chat {
+        if resolved.mode != crate::lane::session_registry::SessionMode::Gui {
             return Ok(serde_json::json!({
                 "status": "not_chat", "lane": lane, "session": resolved.key
             }));
@@ -861,7 +861,7 @@ async fn handle_echoes_demand_start(
     // ここで eager に resume spawn する（doc 33 C1 の lazy「submit まで engine-less」からの転換 —
     // repo 再起動後も uplink 再接続 → demand 再発火でこの経路に入るため「前回状態キープ」が成立）。
     // ensure は冪等（既起動なら no-op）。失敗しても replay は続行し、engine は次 submit の
-    // self-heal で再試行される。shell / legacy agent 等 Act II host を持たない session は skip
+    // self-heal で再試行される。shell / legacy agent 等 gui host を持たない session は skip
     //（能力表 = EngineKind が SSOT。bail を warn で騒がせない）。
     if crate::echoes::EngineKind::from_agent(&resolved.agent)
         .is_some_and(crate::echoes::EngineKind::chat_capable)
@@ -1102,7 +1102,7 @@ async fn handle_terminal_write(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// Act II (doc 33): echoes プロンプト投入。
+/// gui (doc 33): echoes プロンプト投入。
 ///
 /// surface (vp-app) → daemon canvas channel → repo control → 本 dispatch。
 /// **mode=chat が前提**（法: 1 lane 高々 1 エンジン。tui のまま submit は Err で弾き、
@@ -1193,7 +1193,7 @@ async fn handle_echoes_nudge(
         return Err("echoes_nudge: text 未指定".to_string());
     }
     // doc 39 §3-1: wire 配送は常に **root**（lane の人格）に解決する。lane 宛の nudge を
-    // focused に注入すると「Act II で別タブを見ている」だけで配送先が変わる誤配送になる
+    // focused に注入すると「gui で別タブを見ている」だけで配送先が変わる誤配送になる
     // （N=1 では root=focused=1 で従来と同一挙動）。lane パース失敗は session=None のまま
     // ensure_and_submit_chat 側の同じパースが報告する（エラー文言の一元化）。
     let session = crate::repo::lanes_state::LanePool::parse_address(lane).map(|addr| {
@@ -1206,7 +1206,7 @@ async fn handle_echoes_nudge(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// Act II HITL (doc 35 PR1): PromptCard の回答を逆方向 `can_use_tool` へ書き戻す。
+/// gui HITL (doc 35 PR1): PromptCard の回答を逆方向 `can_use_tool` へ書き戻す。
 ///
 /// surface (vp-app) → daemon canvas channel → repo control → 本 dispatch。`request_id` は Question
 /// event 由来の control_response マッチング用。allow は `{lane, request_id, answers}`、deny は
@@ -1384,10 +1384,10 @@ async fn handle_echoes_session_focus(
     reconcile_lane(state, &addr).await;
     {
         // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
-        // eager に resume spawn する（切替後の初 submit を待たない）。act=Tui の session（registry のみの
-        // 切替 = 正当）/ shell・legacy agent session（Act II host なし）等は debug で飲む — 切替自体は成功。
+        // eager に resume spawn する（切替後の初 submit を待たない）。mode=Tui の session（registry のみの
+        // 切替 = 正当）/ shell・legacy agent session（gui host なし）等は debug で飲む — 切替自体は成功。
         //
-        // reconcile の**後**に置く: reconcile は「act=Chat でない session の engine」を畳むので、
+        // reconcile の**後**に置く: reconcile は「mode=Chat でない session の engine」を畳むので、
         // 先に起こすと同じ lock 区間の外で畳まれ得る。順序は「intent を合わせる → 注視に応じて
         // 起こす」（engine の eager は demand 側の判断 = reconcile の仕事ではない）。
         let mut pool = state.lane_pool.write().await;
@@ -1438,7 +1438,7 @@ async fn handle_echoes_session_remove(
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
 }
 
-/// doc 39 §4: Act I の ✨ New — 新 session を作って root をそれへ向ける。
+/// doc 39 §4: tui の ✨ New — 新 session を作って root をそれへ向ける。
 /// `{lane}` → `{lane, session}`。
 ///
 /// R3c-2: 動詞は registry に書くだけで、新 root の実体は reconcile が立てる。
@@ -1450,7 +1450,7 @@ async fn handle_echoes_session_remove(
 /// この verb は **Reborn の server 側の種**として残す — Reborn は「今の session を終えて
 /// 新しい session を同じ場所（Pane）で始める」操作で、root pane に適用したときの挙動が
 /// ちょうどこれ（旧 root を残すか閉じるかは Reborn の設計で決める）。
-/// A6 で lane 単位 act の gate（旧「mode=Tui 限定」）は撤去済。
+/// A6 で lane 単位 mode の gate（旧「mode=Tui 限定」）は撤去済。
 async fn handle_echoes_session_new_root(
     state: &Arc<AppState>,
     payload: serde_json::Value,
@@ -1484,7 +1484,7 @@ async fn handle_echoes_session_new_root(
 /// `restart_lane_orchestrated` で root slot を対象 session の会話に張り替えていた =
 /// 代表の変更を化身の置き換えと混同していた。
 ///
-/// lane 単位 act の gate は A6 で撤去（残る制限は既知 engine のみ — `switch_root_session` 参照）。
+/// lane 単位 mode の gate は A6 で撤去（残る制限は既知 engine のみ — `switch_root_session` 参照）。
 async fn handle_echoes_session_switch_root(
     state: &Arc<AppState>,
     payload: serde_json::Value,
@@ -1564,30 +1564,30 @@ async fn ensure_and_submit_chat(
     Ok(())
 }
 
-/// session Act（見え方）切替の共通実体（doc 50 §4.6 A6）。
+/// session Mode（見え方）切替の共通実体（doc 50 §4.6 A6）。
 ///
-/// 旧 `console_set_mode`（root 固定）と新 `session_set_act`（session 明示）が共有する。
-/// 遷移の実体（旧エンジン stop → act 永続 → 新エンジン起立）は `LanePool::set_session_act`。
+/// 旧 `console_set_mode`（root 固定）と新 `session_set_mode`（session 明示）が共有する。
+/// 遷移の実体（旧エンジン stop → mode 永続 → 新エンジン起立）は `LanePool::set_session_mode`。
 /// 切替後の同一会話継続は cc_session `--resume` が担う。
 ///
 /// **replay はここで撃たない** — client が新 pane を mount → topic を購読してから
 /// `echoes_demand_start`（chat）/ terminal subscribe（tui）で撃つ。動詞側で撃つと購読前
 /// replay の順序 race になる（非 retained topic で落ちる）。既存 `ConsoleNewSession` と同じ
 /// 「購読してから demand」の規律で、Reborn ⊃ replay（更新済 transcript の再読）を保証する。
-async fn apply_session_act(
+async fn apply_session_mode(
     state: &AppState,
     lane: &str,
     addr: &crate::repo::lanes_state::LaneAddress,
     session: crate::lane::session_registry::SessionKey,
-    act: crate::lane::session_registry::SessionAct,
+    mode: crate::lane::session_registry::SessionMode,
 ) -> Result<serde_json::Value, String> {
     state
         .lane_pool
         .read()
         .await
-        .set_session_act(addr, session, act)
-        .map_err(|e| format!("session_set_act 失敗: {e}"))?;
-    // doc 53 §12.4 R3c: act を書けば desired が変わる。**両方向を同じ 1 本が合わせる** —
+        .set_session_mode(addr, session, mode)
+        .map_err(|e| format!("session_set_mode 失敗: {e}"))?;
+    // doc 53 §12.4 R3c: mode を書けば desired が変わる。**両方向を同じ 1 本が合わせる** —
     // tui 方向は新 PtySlot が立って pump が張られ（「vp-app が購読を跨いで維持している」lane
     // では demand が 1 のままで 0→1 hook が発火しないので、この契機が必須）、chat 方向は
     // slot が畳まれて pump 台帳 entry が撤去される。健在な兄弟 pane は pid 照合で触られない
@@ -1598,44 +1598,46 @@ async fn apply_session_act(
         // 早く出す）。失敗しても切替自体は成功扱い（engine は次 submit で self-heal 再試行）。
         // reconcile の後（`echoes_session_focus` と同じ「intent → 注視」の順序）。
         let mut pool = state.lane_pool.write().await;
-        if act == crate::lane::session_registry::SessionAct::Chat
+        if mode == crate::lane::session_registry::SessionMode::Gui
             && let Err(e) = pool.ensure_chat_engine(addr, Some(session), &state.topic_router)
         {
-            tracing::warn!("session_set_act: eager chat engine spawn 失敗（submit で再試行）: {e}");
+            tracing::warn!(
+                "session_set_mode: eager chat engine spawn 失敗（submit で再試行）: {e}"
+            );
         }
     }
-    // doc 53 §11: act は roster の一部（pane の kind を決める）ので知らせる。
+    // doc 53 §11: mode は roster の一部（pane の kind を決める）ので知らせる。
     super::routes::lanes::emit_lane_update(state, addr).await;
     Ok(serde_json::json!({
-        "status": "ok", "lane": lane, "session": session, "act": act.as_str()
+        "status": "ok", "lane": lane, "session": session, "mode": mode.as_str()
     }))
 }
 
-/// doc 50 §4.6 A6: session = Pane の Act 切替。`{lane, session, act: "tui"|"chat"}`。
+/// doc 50 §4.6 A6: session = Pane の Mode 切替。`{lane, session, mode: "tui"|"gui"}`。
 ///
 /// 名札の kind badge が任意 pane を切り替える経路（旧 lane 単位 `console_set_mode` の後継）。
 /// session は明示必須（root 決め打ちにしない）。replay は client が新 pane 購読後に撃つ。
-async fn handle_session_set_act(
+async fn handle_session_set_mode(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
     if lane.is_empty() {
-        return Err("session_set_act: lane 未指定".to_string());
+        return Err("session_set_mode: lane 未指定".to_string());
     }
-    let session = payload_session_key("session_set_act", &payload)?
-        .ok_or_else(|| "session_set_act: session 未指定（root 決め打ちにしない）".to_string())?;
-    let act_str = payload.get("act").and_then(|v| v.as_str()).unwrap_or("");
-    let act = crate::lane::session_registry::SessionAct::parse(act_str)
-        .ok_or_else(|| format!("session_set_act: act 不正: {act_str:?}（tui|chat）"))?;
+    let session = payload_session_key("session_set_mode", &payload)?
+        .ok_or_else(|| "session_set_mode: session 未指定（root 決め打ちにしない）".to_string())?;
+    let mode_str = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+    let mode = crate::lane::session_registry::SessionMode::parse(mode_str)
+        .ok_or_else(|| format!("session_set_mode: mode 不正: {mode_str:?}（tui|gui）"))?;
     let addr = crate::repo::lanes_state::LanePool::parse_address(lane)
-        .ok_or_else(|| format!("session_set_act: lane パース失敗: {lane}"))?;
-    apply_session_act(state, lane, &addr, session, act).await
+        .ok_or_else(|| format!("session_set_mode: lane パース失敗: {lane}"))?;
+    apply_session_mode(state, lane, &addr, session, mode).await
 }
 
-// doc 50 §4.6 A6: 旧 `console_set_mode`（lane 単位の Act 切替）は撤去した。見え方は session の
-// 属性になり、切替は `session_set_act {lane, session, act}` 一本（名札 kind badge が撃つ）。
-// mode / act の二語併存を PR 後に残さないため、GUI 移行と同じ PR で消している。
+// doc 50 §4.6 A6: 旧 `console_set_mode`（lane 単位の Mode 切替）は撤去した。見え方は session の
+// 属性になり、切替は `session_set_mode {lane, session, mode}` 一本（名札 kind badge が撃つ）。
+// mode / mode の二語併存を PR 後に残さないため、GUI 移行と同じ PR で消している。
 
 /// doc 51 §1 A3b: session の「今なにを」自己申告を該当 session の echoes topic に注入する。
 ///
@@ -1678,7 +1680,7 @@ async fn handle_session_now(
     Ok(serde_json::json!({ "ok": true, "lane": lane, "session": session }))
 }
 
-/// Act II モデル切替: chat engine の `--model` を lane 単位で切替える。
+/// gui モデル切替: chat engine の `--model` を lane 単位で切替える。
 ///
 /// `{lane, model: string|null}`。null / 省略 = 記録を消して claude default に戻す。
 /// spec「セッション進行中でも切り替えられる」の実体はここ — 稼働中 engine を drop して
@@ -1818,7 +1820,7 @@ async fn handle_lane_slots(
 /// - 常に **新しい session** を採番してそこに slot を立てる（doc 46 §1.5「Pane は必ず新しい
 ///   session id で始まる」= session ↔ Pane 1:1）。既存 session の open は持たない
 /// - `agent` 省略 = 現 root の engine を引き継ぐ（doc 46 P2 の「Engine を選んで新コンソール」の
-///   Act I 版。`echoes_session_create` は Act=Chat 固定なのでそちらでは作れない）
+///   tui 版。`echoes_session_create` は Mode=Chat 固定なのでそちらでは作れない）
 /// - **root / focused は動かさない** — mailbox も pid も Dead 判定も root のまま（doc 40 §4-1）
 ///
 /// pump は動詞の末尾の reconcile が demand（購読者の有無）に応じて張る（doc 53 R2 —
@@ -1843,7 +1845,7 @@ async fn handle_lane_slot_new(
         .await
         .create_console_session(&addr, agent)
         .map_err(|e| format!("lane_slot_new: {e}"))?;
-    // doc 53 §12.4 R3c: slot を立てるのは reconcile（desired = act=Tui の session）。
+    // doc 53 §12.4 R3c: slot を立てるのは reconcile（desired = mode=Tui の session）。
     //
     // ⚠️ pump もこの中で合う。これが無いと新 session の PTY 出力が誰にも届かない: client 側の
     // terminal 購読は **lane 単位で 1 本**（`terminal_sessions` は lane key）なので、root が既に
@@ -1897,8 +1899,8 @@ async fn handle_lane_capture(
         None => {
             // capture 不能の理由を分岐して UX 混乱を減らす（dogfood 2026-07-19: chat mode lane で
             // 一律「lane 不在 or console 未配線」に混乱した）。chat lane は term_attach 無しが
-            // 正常なので、pool に実在して root の act（registry 直読、doc 53 R1）が Chat なら
-            // 「Act I に切り替えよ」と案内する。
+            // 正常なので、pool に実在して root の mode（registry 直読、doc 53 R1）が Chat なら
+            // 「tui に切り替えよ」と案内する。
             // doc 46 P5: slot が複数枚になったので「その lane には何枚あるか」も添える
             // （--session の指し先が無い時に、存在する session key が判る）。
             let available = pool.slot_sessions(&addr);
@@ -1909,10 +1911,10 @@ async fn handle_lane_capture(
                     available
                 ),
                 Some(_)
-                    if pool.root_act(&addr) == crate::lane::session_registry::SessionAct::Chat =>
+                    if pool.root_mode(&addr) == crate::lane::session_registry::SessionMode::Gui =>
                 {
                     format!(
-                        "lane_capture: chat mode の lane に console はありません（Act I に切り替えると capture できます）: {lane}"
+                        "lane_capture: chat mode の lane に console はありません（tui に切り替えると capture できます）: {lane}"
                     )
                 }
                 Some(_) => format!("lane_capture: console 未配線: {lane}"),
@@ -2257,7 +2259,7 @@ pub(crate) async fn dispatch_repo_method(
         "terminal_demand_start" | "terminal_demand_stop" => {
             handle_terminal_demand(state, payload).await
         }
-        // Act II replay-on-attach: chat lane の transcript を attach 時に replay
+        // gui replay-on-attach: chat lane の transcript を attach 時に replay
         "echoes_demand_start" => handle_echoes_demand_start(state, payload).await,
         "echoes_demand_stop" => handle_echoes_demand_stop(state, payload).await,
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
@@ -2265,7 +2267,7 @@ pub(crate) async fn dispatch_repo_method(
         "echoes_submit" => handle_echoes_submit(state, payload).await,
         // channel E (doc 34): wire/delegation nudge の chat-engine 注入 (lane_nudge の Chat 対応物)
         "echoes_nudge" => handle_echoes_nudge(state, payload).await,
-        // Act II HITL (doc 35 PR1): PromptCard 回答 → 逆方向 can_use_tool へ control_response 書き戻し
+        // gui HITL (doc 35 PR1): PromptCard 回答 → 逆方向 can_use_tool へ control_response 書き戻し
         "echoes_respond" => handle_echoes_respond(state, payload).await,
         // doc 35 §5: 実行中 turn の中断（stop ボタン / Esc）。
         "echoes_interrupt" => handle_echoes_interrupt(state, payload).await,
@@ -2275,14 +2277,14 @@ pub(crate) async fn dispatch_repo_method(
         // Phase 2 の tab strip はこの 3 本 + 既存 RPC の additive session param だけで成立する。
         "echoes_session_list" => handle_echoes_session_list(state, payload).await,
         "echoes_session_create" => handle_echoes_session_create(state, payload).await,
-        // doc 39 §4: Act I の ✨ New（新 session + root 張り替え + slot の bare respawn、非破壊）
+        // doc 39 §4: tui の ✨ New（新 session + root 張り替え + slot の bare respawn、非破壊）
         "echoes_session_new_root" => handle_echoes_session_new_root(state, payload).await,
         // doc 39 P3: Root 切替 picker（既存 session へ root を向け替え + Resume slot 張り替え）
         "echoes_session_switch_root" => handle_echoes_session_switch_root(state, payload).await,
         "echoes_session_focus" => handle_echoes_session_focus(state, payload).await,
         // doc 38 Phase 3: tab を閉じる（session remove）。
         "echoes_session_remove" => handle_echoes_session_remove(state, payload).await,
-        "session_set_act" => handle_session_set_act(state, payload).await,
+        "session_set_mode" => handle_session_set_mode(state, payload).await,
         "console_set_model" => handle_console_set_model(state, payload).await,
         // doc 51 §1 A3b: `vp now` — session の「今なにを」自己申告を now-line に注入
         "session_now" => handle_session_now(state, payload).await,
@@ -3456,7 +3458,7 @@ mod tests {
             "無変化の reconcile は全 pump を keep する"
         );
 
-        // session 2 の slot を差し替える（= restart / act 切替で実際に起きること）。
+        // session 2 の slot を差し替える（= restart / mode 切替で実際に起きること）。
         {
             let mut pool = state.lane_pool.write().await;
             let (s2b, rx2b) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("s2b");
@@ -3813,7 +3815,7 @@ mod tests {
         use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
 
-        // doc 53 R1: chat 案内の分岐が registry（root_act）直読になったため、state dir を
+        // doc 53 R1: chat 案内の分岐が registry（root_mode）直読になったため、state dir を
         // 隔離して registry に書く（隔離しないと実 state を読み書きしてしまう）。
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
@@ -3840,17 +3842,17 @@ mod tests {
             "pool 不在は『lane 不在』を返す: {err}"
         );
 
-        // pool に実在して root act==Chat の lane = 「chat mode の lane に console はありません」。
+        // pool に実在して root mode==Chat の lane = 「chat mode の lane に console はありません」。
         // chat lane は term_attach を持たないので capture_lane は None だが、これは正常状態。
-        // act は registry（SSOT）に書く — 案内分岐の読み手（root_act 直読）と同じ経路を通す。
+        // mode は registry（SSOT）に書く — 案内分岐の読み手（root_mode 直読）と同じ経路を通す。
         let addr = LaneAddress::performer("vp", "chat-x");
-        crate::lane::session_registry::set_root_act(
+        crate::lane::session_registry::set_root_mode(
             "vp",
             "chat-x",
             "claude",
-            crate::lane::session_registry::SessionAct::Chat,
+            crate::lane::session_registry::SessionMode::Gui,
         )
-        .expect("test registry へ root act を書けること");
+        .expect("test registry へ root mode を書けること");
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
@@ -4289,7 +4291,7 @@ mod tests {
             "root-claude",
             "codex",
             "claude",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
         )
         .expect("root を echoes session に");
         state
@@ -4320,7 +4322,7 @@ mod tests {
             "root-codex",
             "claude",
             "codex",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
         )
         .expect("root を codex session に");
         state
@@ -4642,7 +4644,7 @@ mod tests {
             "root",
             "claude",
             "claude",
-            crate::lane::session_registry::SessionAct::Tui,
+            crate::lane::session_registry::SessionMode::Tui,
             false,
         )
         .expect("create #2");
@@ -4827,14 +4829,14 @@ mod tests {
     async fn insert_test_lane(
         state: &crate::repo::state::AppState,
         repo: &str,
-        mode: crate::lane::session_registry::SessionAct,
+        mode: crate::lane::session_registry::SessionMode,
     ) -> crate::repo::lanes_state::LaneAddress {
         use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
         let addr = LaneAddress::root(repo);
-        // doc 53 R1: act の SSOT は registry（pool cache は退役）。テストも registry に書いて
-        // 読み手（root_act 直読）と同じ経路を通す。
-        crate::lane::session_registry::set_root_act(repo, "root", "claude", mode)
-            .expect("test registry へ root act を書けること");
+        // doc 53 R1: mode の SSOT は registry（pool cache は退役）。テストも registry に書いて
+        // 読み手（root_mode 直読）と同じ経路を通す。
+        crate::lane::session_registry::set_root_mode(repo, "root", "claude", mode)
+            .expect("test registry へ root mode を書けること");
         state.lane_pool.write().await.insert(LaneInfo {
             id: Default::default(),
             address: addr.clone(),
@@ -4898,11 +4900,11 @@ mod tests {
     #[tokio::test]
     async fn echoes_submit_rejected_in_tui_mode() {
         use super::dispatch_repo_method;
-        use crate::lane::session_registry::SessionAct;
+        use crate::lane::session_registry::SessionMode;
         use crate::repo::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
-        insert_test_lane(&state, "vptest-c1-tui", SessionAct::Tui).await;
+        insert_test_lane(&state, "vptest-c1-tui", SessionMode::Tui).await;
         let err = dispatch_repo_method(
             &state,
             "echoes_submit",
@@ -4914,7 +4916,7 @@ mod tests {
         // 何にでも当たるため **撤去済 verb を案内し続けていることを検知できなかった**（team-b review
         // 2026-07-25）。案内する verb 名そのものを固定する（動詞を rename したらここが落ちる）。
         assert!(
-            err.contains("session_set_act"),
+            err.contains("session_set_mode"),
             "現役の切替 verb を案内するメッセージであること: {err}"
         );
     }
@@ -4926,7 +4928,7 @@ mod tests {
     async fn echoes_demand_start_replays_buffered_log_for_codex_session() {
         use super::dispatch_repo_method;
         use crate::echoes::EchoesEvent;
-        use crate::lane::session_registry::SessionAct;
+        use crate::lane::session_registry::SessionMode;
         use crate::protocol::RepoMessage;
         use crate::repo::state::build_test_app_state;
         use std::time::Duration;
@@ -4934,7 +4936,7 @@ mod tests {
         // replay_log / session_registry は vp_state_dir() を読む → tempdir に隔離。
         let _state_guard = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
-        let addr = insert_test_lane(&state, "vptest-replaylog", SessionAct::Chat).await;
+        let addr = insert_test_lane(&state, "vptest-replaylog", SessionMode::Gui).await;
 
         // focused な codex session #2 を作る（session=None がこれに解決される）。
         let k2 = state
@@ -5005,13 +5007,13 @@ mod tests {
     ///
     /// team-b review 2026-07-25（score 92）: `handle_echoes_demand_start` の gate が lane 単位
     /// `console_mode`（= root cache）だったため、A6 が正規にサポートする構成で `not_chat` を返し、
-    /// **ReplayStart すら送らずに会話が復元されなかった**。gate を「その session の act」に直した
+    /// **ReplayStart すら送らずに会話が復元されなかった**。gate を「その session の mode」に直した
     /// ことを、root が tui のままである状態で固定する（root=chat の既存テストでは検出できない）。
     #[tokio::test]
     async fn echoes_demand_start_replays_non_root_chat_while_root_is_tui() {
         use super::dispatch_repo_method;
         use crate::echoes::EchoesEvent;
-        use crate::lane::session_registry::SessionAct;
+        use crate::lane::session_registry::SessionMode;
         use crate::protocol::RepoMessage;
         use crate::repo::state::build_test_app_state;
         use std::time::Duration;
@@ -5019,9 +5021,9 @@ mod tests {
         let _state_guard = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         // **root は tui**（= 旧 gate ならここで not_chat に落ちる）。
-        let addr = insert_test_lane(&state, "vptest-nonroot-chat", SessionAct::Tui).await;
+        let addr = insert_test_lane(&state, "vptest-nonroot-chat", SessionMode::Tui).await;
 
-        // 非 root の chat session を作る（create_chat_session は act=Chat で作る）。
+        // 非 root の chat session を作る（create_chat_session は mode=Chat で作る）。
         let k2 = state
             .lane_pool
             .write()
@@ -5048,7 +5050,7 @@ mod tests {
         let topic = "repo/echoes/data/vptest-nonroot-chat~root/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
-        // session を明示して demand（client の act 切替後の明示 demand と同じ形）。
+        // session を明示して demand（client の mode 切替後の明示 demand と同じ形）。
         let res = dispatch_repo_method(
             &state,
             "echoes_demand_start",
@@ -5169,75 +5171,75 @@ mod tests {
     // doc 50 §4.6 A6: 旧 `console_set_mode_validates_and_transitions` は動詞ごと撤去した
     // （検証内容は下の `session_set_act_*` が session 単位で引き継いでいる）。
 
-    /// doc 50 §4.6 A6: `session_set_act` は session 明示必須で、その session の act を切り替える。
+    /// doc 50 §4.6 A6: `session_set_mode` は session 明示必須で、その session の mode を切り替える。
     /// 旧 `console_set_mode`（root 固定）と同じ実体に委譲されるが、session を省略できない。
     #[tokio::test]
-    async fn session_set_act_requires_session_and_switches_that_session() {
+    async fn session_set_mode_requires_session_and_switches_that_session() {
         use super::dispatch_repo_method;
-        use crate::lane::session_registry::{self, SessionAct};
+        use crate::lane::session_registry::{self, SessionMode};
         use crate::repo::state::build_test_app_state;
 
-        // set_session_act は registry（disk = vp_state_dir）を読み書きする → tempdir に隔離。
-        // ⚠️ 隔離しないと実 state dir を汚染し、**2 回目以降の run で act が既に chat のため
+        // set_session_mode は registry（disk = vp_state_dir）を読み書きする → tempdir に隔離。
+        // ⚠️ 隔離しないと実 state dir を汚染し、**2 回目以降の run で mode が既に chat のため
         // no-op 早期 return して落ちる**（= 実行順・実行回数に依存する偽の緑/赤）。
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
-        let addr = insert_test_lane(&state, "vptest-ssa", SessionAct::Tui).await;
+        let addr = insert_test_lane(&state, "vptest-ssa", SessionMode::Tui).await;
         let lane = "vptest-ssa/root";
 
         // session 省略は Err（root 決め打ちにしない = 誤配送を黙って起こさない）。
         assert!(
             dispatch_repo_method(
                 &state,
-                "session_set_act",
+                "session_set_mode",
                 serde_json::json!({ "lane": lane })
             )
             .await
             .is_err(),
             "session 未指定は Err"
         );
-        // act 不正も Err。
+        // mode 不正も Err。
         assert!(
             dispatch_repo_method(
                 &state,
-                "session_set_act",
-                serde_json::json!({ "lane": lane, "session": 1, "act": "gui" })
+                "session_set_mode",
+                serde_json::json!({ "lane": lane, "session": 1, "mode": "bogus" })
             )
             .await
             .is_err(),
-            "act 不正は Err"
+            "mode 不正は Err"
         );
 
         // root session の tui→chat（engine-less でも registry が更新される）。
         let root = crate::repo::lanes_state::LanePool::root_session_key(&addr);
         let res = dispatch_repo_method(
             &state,
-            "session_set_act",
-            serde_json::json!({ "lane": lane, "session": root, "act": "chat" }),
+            "session_set_mode",
+            serde_json::json!({ "lane": lane, "session": root, "mode": "gui" }),
         )
         .await
         .expect("tui→chat ok");
-        assert_eq!(res["act"], "chat");
+        assert_eq!(res["mode"], "gui");
         assert_eq!(res["session"], root);
-        // registry（disk SSOT）に act が永続し、読み手（root_act 直読）が新しい値を見る。
+        // registry（disk SSOT）に mode が永続し、読み手（root_mode 直読）が新しい値を見る。
         // doc 53 R1: 旧 root cache は退役 — 「cache も追従する」の性質は「読み手が SSOT を
         // 直読する」に言い直された（§8.6: テストの消滅 = 性質の消滅にしない）。
         assert_eq!(
-            session_registry::root_act(&addr.repo, "root"),
-            SessionAct::Chat,
-            "root session の act が registry に永続する"
+            session_registry::root_mode(&addr.repo, "root"),
+            SessionMode::Gui,
+            "root session の mode が registry に永続する"
         );
         assert_eq!(
-            state.lane_pool.read().await.root_act(&addr),
-            SessionAct::Chat,
-            "boot spawn / nudge 配送が使う読み手（pool.root_act）が新しい act を見る"
+            state.lane_pool.read().await.root_mode(&addr),
+            SessionMode::Gui,
+            "boot spawn / nudge 配送が使う読み手（pool.root_mode）が新しい mode を見る"
         );
 
-        // 同一 act への再切替は no-op Ok。
+        // 同一 mode への再切替は no-op Ok。
         dispatch_repo_method(
             &state,
-            "session_set_act",
-            serde_json::json!({ "lane": lane, "session": root, "act": "chat" }),
+            "session_set_mode",
+            serde_json::json!({ "lane": lane, "session": root, "mode": "gui" }),
         )
         .await
         .expect("chat→chat no-op ok");
@@ -5246,8 +5248,8 @@ mod tests {
         assert!(
             dispatch_repo_method(
                 &state,
-                "session_set_act",
-                serde_json::json!({ "lane": lane, "session": 99, "act": "chat" })
+                "session_set_mode",
+                serde_json::json!({ "lane": lane, "session": 99, "mode": "gui" })
             )
             .await
             .is_err(),
@@ -5261,14 +5263,14 @@ mod tests {
     /// root 決め打ちにしないこと（非 root は engine が違いうる — shell の console を chat に
     /// しようとしても、その session の agent で弾く）を固定する。
     #[tokio::test]
-    async fn session_set_act_chat_requires_chat_capable_stand() {
+    async fn session_set_mode_gui_requires_chat_capable_agent() {
         use super::dispatch_repo_method;
-        use crate::lane::session_registry::{self, SessionAct};
+        use crate::lane::session_registry::{self, SessionMode};
         use crate::repo::state::build_test_app_state;
 
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
-        let addr = insert_test_lane(&state, "vptest-cap", SessionAct::Tui).await;
+        let addr = insert_test_lane(&state, "vptest-cap", SessionMode::Tui).await;
         let lane = "vptest-cap/root";
 
         // lane の agent は echoes（chat 可能）だが、**非 root に shell の session** を足す。
@@ -5277,7 +5279,7 @@ mod tests {
             "root",
             "claude",
             "shell",
-            SessionAct::Tui,
+            SessionMode::Tui,
             false,
         )
         .expect("shell session 作成");
@@ -5285,22 +5287,22 @@ mod tests {
         // その session を chat にしようとすると、**その session の agent（shell）**で弾かれる。
         let err = dispatch_repo_method(
             &state,
-            "session_set_act",
-            serde_json::json!({ "lane": lane, "session": shell, "act": "chat" }),
+            "session_set_mode",
+            serde_json::json!({ "lane": lane, "session": shell, "mode": "gui" }),
         )
         .await
         .expect_err("shell session の chat 化は Err");
         assert!(
-            err.contains("shell") || err.contains("Act II"),
+            err.contains("shell") || err.contains("gui"),
             "エラーは能力不足を説明する（got={err}）"
         );
 
-        // 逆向き（chat → tui）は engine を問わず可能（Act I は login shell に流し込むだけ）。
+        // 逆向き（chat → tui）は engine を問わず可能（tui は login shell に流し込むだけ）。
         // shell session は既に tui なので no-op Ok になることで「拒否されない」ことを示す。
         dispatch_repo_method(
             &state,
-            "session_set_act",
-            serde_json::json!({ "lane": lane, "session": shell, "act": "tui" }),
+            "session_set_mode",
+            serde_json::json!({ "lane": lane, "session": shell, "mode": "tui" }),
         )
         .await
         .expect("tui 方向は engine を問わず通る");
@@ -5314,7 +5316,7 @@ mod tests {
     async fn echoes_submit_roundtrip() {
         use super::dispatch_repo_method;
         use crate::echoes::EchoesEvent;
-        use crate::lane::session_registry::SessionAct;
+        use crate::lane::session_registry::SessionMode;
         use crate::protocol::RepoMessage;
         use crate::repo::state::build_test_app_state;
         use std::time::Duration;
@@ -5323,7 +5325,7 @@ mod tests {
         // doc 33: submit には mode=chat の lane が pool に要る。
         // repo 名はテスト固有にする — 実在 repo だと registry の会話 id が本物の
         // session id を返し、temp cwd との不整合で resume が失敗する。
-        insert_test_lane(&state, "vptest-c1-rt", SessionAct::Chat).await;
+        insert_test_lane(&state, "vptest-c1-rt", SessionMode::Gui).await;
         // echoes data は非 retained なので submit 前に subscribe。
         let (_id, mut srx) = state
             .topic_router

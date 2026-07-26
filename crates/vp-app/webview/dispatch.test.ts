@@ -31,8 +31,8 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 			consoleSessionList: (lane, _payload) => calls.push(`roster:${lane}`),
 			consoleEvent: (lane, _event, session) =>
 				calls.push(`ev:${lane}#${session}`),
-			consoleActApplied: (lane, session, act) =>
-				calls.push(`act:${lane}#${session}:${act}`),
+			consoleModeApplied: (lane, session, mode) =>
+				calls.push(`mode:${lane}#${session}:${mode}`),
 			consoleStands: (lane, _payload, req) =>
 				calls.push(`agents:${lane}:${req}`),
 			inkSnapshot: (path) => calls.push(`ink:${path}`),
