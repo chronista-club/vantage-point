@@ -1453,6 +1453,10 @@ async fn run_terminal_session(
                         if session > 0 {
                             payload["session"] = serde_json::Value::from(session);
                         }
+                        // ⚠️ 応答は捨てる。SP 側は slot 未登録でも **intent を預かって登録時に
+                        // 適用する**（`LanePool::desired_size`）ので、ここで retry する必要が無い。
+                        // 2026-07-26 以前はそれが無く、この `let _` が「resize が落ちた」ことを
+                        // 3 層にわたって不可視にしていた。
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "terminal_resize",
