@@ -35,6 +35,8 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 				calls.push(`act:${lane}#${session}:${act}`),
 			consoleStands: (lane, _payload, req) =>
 				calls.push(`stands:${lane}:${req}`),
+			inkSnapshot: (path) => calls.push(`ink:${path}`),
+			inkSnapshotError: (message) => calls.push(`inkErr:${message}`),
 		},
 	};
 }
@@ -139,6 +141,23 @@ describe("dispatch", () => {
 		dispatch({ t: "console:stands", lane: "vp/root", payload: {} });
 		dispatch({ t: "console:stands", lane: "vp/root", payload: {}, req: "r1" });
 		expect(calls).toEqual(["stands:vp/root:null", "stands:vp/root:r1"]);
+	});
+
+	it("成功と失敗が別 arm に分かれる（ink の snapshot 往復）", async () => {
+		// 1 event に `path` / `error` を両方 optional で載せると「どちらでもない」が型に載る。
+		// 受け手の振る舞いも別（成功 = 会話へ送る / 失敗 = 注釈を残して再送可能）なので、
+		// **2 event に分けたこと自体**をここで固定する。
+		//
+		// ⚠️ この往復の end-to-end は実機で撃てない（送信すると実際の会話へ投稿される）。
+		// 自動検証はここが唯一。
+		const mod = await import("./dispatch");
+		mod.openDispatch();
+		const { calls, handlers } = recordingHandlers();
+		mod.installDispatch(handlers);
+
+		dispatch({ t: "ink:snapshot", path: "/tmp/a.png" });
+		dispatch({ t: "ink:snapshot_error", message: "書けない" });
+		expect(calls).toEqual(["ink:/tmp/a.png", "inkErr:書けない"]);
 	});
 
 	it("install 前に届いた分は二重に流れない", async () => {

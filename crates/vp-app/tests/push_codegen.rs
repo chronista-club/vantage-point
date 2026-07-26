@@ -108,6 +108,8 @@ fn regenerates_push_bindings() {
         "console:event",
         "console:act_applied",
         "console:stands",
+        "ink:snapshot",
+        "ink:snapshot_error",
     ] {
         assert!(rust_file.contains(wire), "Rust に wire 名 {wire} が無い");
         assert!(ts_file.contains(wire), "TS に wire 名 {wire} が無い");
