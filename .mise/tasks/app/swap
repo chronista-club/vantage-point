@@ -120,6 +120,50 @@ def wait_daemon_ready(timeout: 30)
   end
 end
 
+# GUI が **使える状態** になるまで待つ。
+#
+# `open` も `vp app start` も「起動を要求して即返る」。差し替え直後に自動で何かを叩く経路
+# (dogfood ループ、agent、script) は、待たないと **GUI がまだ window API を install して
+# いない窓**に撃ち込むことになる。実際 2026-07-26 の調査で、swap 直後に console を立てる
+# 手順が `sleep 10` という magic number に依存しており、成否が回ごとに揺れていた。
+#
+# 待つ信号は webview の `ready` IPC — `entry.tsx` が `openDispatch` → `installTerm` →
+# `installSlotRect` の **全 install 完了直後**に 1 度だけ撃つ (`terminal.rs` が info log を出す)。
+# 「Rust が撃ち返して大丈夫になった瞬間」そのものなので、新しい概念を足さずに済む。
+#
+# 判定は「**起動を要求する前**の位置より後に出た ready 行」。前回起動の残骸を拾わないため。
+#
+# ⚠️ 基点 (`base`) は **app を起こす前に** 取ること ([`app_log_pos`])。起動後に取ると、
+# spawn が速い場合に GUI が先に ready を書いてしまい、基点がそれを飛び越して空振りする。
+def app_log_path = File.join(VP.log_dir, "app.kdl.log")
+
+# 起動を要求する**前**の log 末尾位置。file 不在なら 0 (これから作られる)。
+def app_log_pos
+  log = app_log_path
+  File.exist?(log) ? File.size(log) : 0
+end
+
+def wait_app_ready(base, timeout: 30)
+  log = app_log_path
+  VP.log "waiting for webview ready (#{log})…"
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  loop do
+    if File.exist?(log) && File.size(log) > base
+      fresh = File.open(log, "rb") { |f| f.seek(base); f.read } || ""
+      if fresh.include?("[vp-bundle] ready")
+        VP.log "#{VP.icon(:ok)} webview ready"
+        return true
+      end
+    end
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      # 待てなくても致命ではない (人が触る分には数秒で追いつく)。die せず警告に留める。
+      VP.log "#{VP.icon(:warn)} webview が #{timeout}s 以内に ready を返さず — 続行"
+      return false
+    end
+    sleep 0.3
+  end
+end
+
 # 指定 .exe を「実行ファイルとして開いている」 process だけを kill する。
 # ImageName ではなく ExecutablePath で絞るのは、 kill したい対象が厳密に
 # 「これから上書きする file を掴んでいる process」 だから (他 profile / 他 install の
@@ -184,7 +228,10 @@ def swap_windows(restart_daemon)
   end
 
   # ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
+  #    Windows の実体は cargo binary なので app:start がそのまま差し替え後を起動する。
+  ready_base = app_log_pos # ⚠️ 起動要求より前に取る (TOCTOU)
   VP.run("mise", "run", "app:start")
+  wait_app_ready(ready_base)
   swap_epilogue(restart_daemon)
 end
 
@@ -222,7 +269,30 @@ def swap_macos(restart_daemon)
   restart_daemon_macos if restart_daemon
 
   # ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
-  VP.sh "open '#{installed}'"
+  #
+  # ⚠️ 生の `open` ではなく **差し替えた bundle 自身の `vp app start`** を使う。
+  # `open` は LaunchServices 経由なので **GUI の stdout/stderr が捨てられる** —
+  # 起動直後に吐いたものがどこにも残らず、まさに「起動直後の不具合」を追うときに
+  # 手掛かりが無い状態になる。`vp app start` は:
+  #   - stdout/stderr を `app.stdout.log` に redirect
+  #   - `VP_DAEMON_LOG_FILE` を渡す
+  #   - ghost project の除去 (`notify_world_sync`)
+  #   - PID の報告
+  # をしてくれる。bundle 内の `vp` から呼べば隣の `vp-app` を見つける
+  # (`find_vp_app_binary` の「自分の隣」候補、canonicalize 込み)。
+  #
+  # ⚠️ `mise run app:start` ではない。あちらは `VP.cargo_bin` で **cargo dev binary** を
+  # 掴むので、swap した `.app` ではなく別物が起動してしまう (Windows は cargo binary が
+  # 実体なので同 task で正しい — OS で実体が違うだけ)。
+  ready_base = app_log_pos # ⚠️ 起動要求より前に取る (TOCTOU)
+  bundled_vp = File.join(installed, "Contents", "MacOS", "vp")
+  if File.executable?(bundled_vp)
+    VP.run(bundled_vp, "app", "start")
+  else
+    VP.log "#{VP.icon(:warn)} bundle 内に vp が無い (#{bundled_vp}) — open にフォールバック"
+    VP.sh "open '#{installed}'"
+  end
+  wait_app_ready(ready_base)
   swap_epilogue(restart_daemon)
   brew_restore_hint(installed)
 end

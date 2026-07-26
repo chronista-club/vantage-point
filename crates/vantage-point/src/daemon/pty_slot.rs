@@ -477,6 +477,16 @@ impl PtySlot {
         Ok(())
     }
 
+    /// PTY の現在の winsize を `(cols, rows)` で返す。
+    ///
+    /// 「resize が本当に PTY まで届いたか」を**実体側から**確認するための観測点。
+    /// これが無いと `resize_lane` のテストは「呼んだ」ことしか言えず、
+    /// 適用を外しても緑のままになる（2026-07-26 に実際にそうなった）。
+    pub fn size(&self) -> Result<(u16, u16)> {
+        let s = self.pair.master.get_size()?;
+        Ok((s.cols, s.rows))
+    }
+
     /// 出力ストリームを購読（broadcast receiver）
     pub fn subscribe_output(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()

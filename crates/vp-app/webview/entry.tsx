@@ -980,4 +980,9 @@ installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })
 	.ipc;
 bootIpc?.postMessage(JSON.stringify({ t: "ready" }));
+// ⚠️ この 1 行は **外から「GUI が使える状態になった」を待つための信号**（console bridge が
+// `target="webview"` でログに出す）。`mise run app:swap` の `wait_app_ready` が待っている。
+// `open` も `vp app start` も「起動を要求して即返る」ので、待たないと直後に自動で何かを叩く
+// 経路（dogfood ループ / agent / script）が install 前の窓に撃ち込む。消すなら task も直すこと。
+console.info("[vp-bundle] ready");
 bootIpc?.postMessage(JSON.stringify({ t: "lanes:ensure-all" }));

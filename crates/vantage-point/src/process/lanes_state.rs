@@ -513,6 +513,23 @@ pub struct LanePool {
         LaneAddress,
         HashMap<SessionKey, std::sync::Mutex<crate::daemon::pty_slot::PtySlot>>,
     >,
+    /// client が望む端末サイズ（intent）。実体 = PtySlot の winsize。
+    ///
+    /// **なぜ覚えるか**: resize は slot 登録より先に届きうる。`vp lane slot-new` の直後、
+    /// registry 更新 → GUI が xterm を作る → fit → resize、という流れが SP 側の
+    /// `insert_pty_slot` を追い越すと、旧実装は `Lane has no PtySlot` で弾いて終わりだった。
+    /// **client 側に撃ち直す契機が無い**ため（サイズは変わっていないので ResizeObserver も
+    /// 発火しない）、PTY は spawn 既定（120×48）のまま取り残される — 出力が 120 桁前提で
+    /// 整形されるのに端末は実幅で折り返す、という形で罫線がずれる（2026-07-26 実測、
+    /// 起動直後の slot で 3〜4 回に 1 回）。
+    ///
+    /// doc 53 の原理そのまま: **intent は捨てず、実体が現れた契機で合わせる**。
+    /// `resize_lane` が常にここへ書き、`insert_pty_slot` が登録直後に適用する。
+    ///
+    /// `resize_lane` は `pool.read()` から呼ばれる（`&self`）ので、`nudge_locks` と同じく
+    /// **内部可変性**で持つ。⚠️ guard を握ったまま `resize_lane` を呼ぶと自己 deadlock するので、
+    /// 読み出し側は値を copy してから guard を落とすこと。
+    desired_size: std::sync::Mutex<DesiredSizes>,
     /// Stage 1 (ADR-0001): 各 slot の Rust 側 alacritty Term<T> attach。
     ///
     /// ⚠️ **`pty_slots` の双子**。key の形も lifecycle も必ず一致させる
@@ -645,6 +662,12 @@ impl std::fmt::Debug for LanePool {
             .finish()
     }
 }
+
+/// lane × session → client が望む端末サイズ `(cols, rows)`。
+///
+/// [`LanePool::desired_size`] の中身。実体（PtySlot の winsize）に対する **intent** で、
+/// slot 登録より先に届いた resize を預かる箱。
+type DesiredSizes = HashMap<LaneAddress, HashMap<SessionKey, (u16, u16)>>;
 
 impl LanePool {
     pub fn new() -> Self {
@@ -813,9 +836,24 @@ impl LanePool {
         // ⚠️ pty_slots の双子。同じ key で必ず対に insert する（片方だけだと capture が
         // 無音で空になる / 逆に Dead slot の凍結画面が残り続ける）。
         self.term_attaches
-            .entry(addr)
+            .entry(addr.clone())
             .or_default()
             .insert(key, term_attach);
+        // 実体が現れた契機で intent を合わせる（doc 53 の reconcile と同型）。
+        // slot 登録より先に届いた resize はここで初めて効く。
+        // ⚠️ guard を握ったまま resize_lane を呼ぶと self-deadlock（あちらも同じ Mutex を取る）。
+        let pending = self
+            .desired_size
+            .lock()
+            .ok()
+            .and_then(|d| d.get(&addr).and_then(|m| m.get(&key)).copied());
+        if let Some((cols, rows)) = pending {
+            if let Err(e) = self.resize_lane(&addr, session, cols, rows) {
+                tracing::warn!("保留 resize の適用に失敗: {addr} session={key}: {e}");
+            } else {
+                tracing::debug!("保留 resize を適用: {addr} session={key} {cols}x{rows}");
+            }
+        }
     }
 
     /// lane が抱えている chat engine の session key 一覧（昇順）。
@@ -877,6 +915,15 @@ impl LanePool {
         if slots.is_empty() {
             self.pty_slots.remove(addr);
         }
+        // intent も対で落とす（読み手の無い書き込みを残さない）。
+        if let Ok(mut desired) = self.desired_size.lock()
+            && let Some(m) = desired.get_mut(addr)
+        {
+            m.remove(&key);
+            if m.is_empty() {
+                desired.remove(addr);
+            }
+        }
         dropped
     }
 
@@ -890,6 +937,10 @@ impl LanePool {
         // 落とせば inner map ごと Drop = 各 PtySlot の child kill が走る）。
         self.term_attaches.remove(addr);
         self.pty_slots.remove(addr);
+        // intent も対で落とす（lane が消えたら desired も消える）。
+        if let Ok(mut desired) = self.desired_size.lock() {
+            desired.remove(addr);
+        }
         // doc 33: chat engine も同時に drop（kill_on_drop + pump abort）。
         self.chat_engines.remove(addr);
         self.lanes.remove(addr)
@@ -1077,6 +1128,10 @@ impl LanePool {
         // ② 全実体の破棄（registry から全員消えた = どの化身も desired に居ない）
         self.term_attaches.remove(addr);
         self.pty_slots.remove(addr);
+        // intent も対で落とす（Reset は実体を全部捨てるので desired も捨てる）。
+        if let Ok(mut desired) = self.desired_size.lock() {
+            desired.remove(addr);
+        }
         self.chat_engines.remove(addr);
         // ③ PTY replay の破棄（必ず ② の後 — 上の doc 参照）。best-effort。
         if let Err(e) = crate::daemon::pty_slot::clear_replay_in(
@@ -2105,11 +2160,21 @@ impl LanePool {
         rows: u16,
     ) -> anyhow::Result<()> {
         let key = Self::slot_session(addr, session);
-        let slot_mutex = self
-            .pty_slots
-            .get(addr)
-            .and_then(|m| m.get(&key))
-            .ok_or_else(|| anyhow::anyhow!("Lane has no PtySlot: {} (session={})", addr, key))?;
+        // intent は**実体の有無に関わらず**残す。slot がまだ無い場合、client 側には撃ち直す
+        // 契機が無い（サイズは変わっていないので ResizeObserver も発火しない）ので、ここで
+        // 捨てると PTY は spawn 既定のまま取り残される。`insert_pty_slot` が登録直後に適用する。
+        if let Ok(mut desired) = self.desired_size.lock() {
+            desired
+                .entry(addr.clone())
+                .or_default()
+                .insert(key, (cols, rows));
+        }
+        let Some(slot_mutex) = self.pty_slots.get(addr).and_then(|m| m.get(&key)) else {
+            // 実体待ち。エラーにしない — 「まだ来ていない」は失敗ではなく順序であり、
+            // 呼び手（vp-app）に retry させる必要がない（intent は既に預かった）。
+            tracing::debug!("resize 保留（slot 未登録）: {addr} session={key} {cols}x{rows}");
+            return Ok(());
+        };
         let slot = slot_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {} (session={})", addr, key))?;
@@ -3492,6 +3557,62 @@ mod tests {
         );
         assert_eq!(pool.get(&addr).expect("lane").state, LaneState::Dead);
         assert!(pool.slot_sessions(&addr).is_empty());
+    }
+
+    /// slot 登録**前**に届いた resize が、登録後に適用されること。
+    ///
+    /// 2026-07-26 実測の cols ズレの根治点。`vp lane slot-new` の直後、registry 更新 → GUI が
+    /// xterm を作る → fit → resize、という流れが SP 側の `insert_pty_slot` を追い越すと、
+    /// 旧実装は `Lane has no PtySlot` で弾いて終わりだった。**client 側に撃ち直す契機が無い**
+    /// （サイズは変わっていないので ResizeObserver も発火しない）ため、PTY は spawn 既定
+    /// (120×48) のまま取り残され、出力が 120 桁前提で整形されるのに端末は実幅で折り返す。
+    /// 起動直後の slot で 3〜4 回に 1 回再現した。
+    ///
+    /// `spawn_test_slot` が unix 限定なので、このテストも unix 限定。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resize_before_slot_registration_is_applied_on_insert() {
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_lane(&mut pool, &addr, SessionAct::Tui);
+
+        // ① 実体がまだ無い状態で resize が届く。**エラーにせず intent を預かる**
+        //    （「まだ来ていない」は失敗ではなく順序）。
+        pool.resize_lane(&addr, Some(7), 44, 36)
+            .expect("slot 未登録の resize は Ok（intent を預かる）");
+
+        // ② 実体が現れる。ここで intent が適用される。
+        let (slot, rx) = spawn_test_slot("cat");
+        pool.insert_pty_slot(addr.clone(), Some(7), slot, rx);
+
+        // ⚠️ ここで見るのは **PTY の実 winsize**。`desired_size` に値が残っているかだけを見ると、
+        //    適用を外しても緑のままになる（intent は書き込み時点で入るため）。実体を見ること。
+        let actual = pool
+            .pty_slots
+            .get(&addr)
+            .and_then(|m| m.get(&7))
+            .expect("slot が登録されている")
+            .lock()
+            .expect("PtySlot lock")
+            .size()
+            .expect("winsize 取得");
+        assert_eq!(
+            actual,
+            (44, 36),
+            "登録前に届いた resize が PTY に適用されていない（spawn 既定のまま取り残された）"
+        );
+
+        // ③ lane が消えたら intent も消える（読み手の無い書き込みを残さない）。
+        pool.remove(&addr);
+        assert!(
+            !pool
+                .desired_size
+                .lock()
+                .expect("desired_size lock")
+                .contains_key(&addr),
+            "lane 消滅後も desired_size に entry が残っている"
+        );
     }
 
     /// `remove(addr)` は lane ごと消えるので **全 session の slot と双子**が残らないこと。

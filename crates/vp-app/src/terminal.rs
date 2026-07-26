@@ -359,7 +359,15 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
 
     match parsed.get("t").and_then(|v| v.as_str()) {
         Some("ready") => {
-            // per-Lane instance ごとに発火するが Rust 側で flush するものは無い (no-op)。
+            // webview の全 install が済んだ合図（`entry.tsx` が `openDispatch` →
+            // `installTerm` → `installSlotRect` の直後に 1 度だけ撃つ）。Rust 側で flush する
+            // ものは無い。
+            //
+            // ⚠️ 外から「GUI が使える状態になった」を待つ信号は **webview 側の
+            // `console.info("[vp-bundle] ready")`**（console bridge が `target="webview"` で
+            // 必ずログに出す）。ここで `tracing::info!` を足しても出ない — default filter が
+            // `vp_app::terminal=warn` で、PTY hot path の洪水を防ぐため意図的に絞ってある。
+            tracing::debug!("webview ready");
         }
         // terminal S4 (doc 27 §4.1): xterm onData / resize → per-lane terminal session →
         // canvas channel 上り request で SP へ。 lane 必須、 data は base64 (write のみ)。
