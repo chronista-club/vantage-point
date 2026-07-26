@@ -125,5 +125,74 @@ protocol "sidebar" version="1.0.0" {
         request "update:apply" {
             field "version" type="string"
         }
+
+        // ===================================================================
+        // server → client（Rust が sidebar bundle へ押し込む）
+        // ===================================================================
+        //
+        // channel は両方向を運ぶので、request（client → server）と同じ channel に置く。
+        // 生成される envelope は別名（`IpcEnvelope` / `IpcEventEnvelope`）。
+        //
+        // ⚠️ **なぜ main の `vp-push.kdl` に相乗りしないか** — webview は 1 document だが
+        // bundle は 2 本（`editor-host.bundle.js` / `sidebar.bundle.js`）で、module state を
+        // 共有できない。`dispatch.ts` の保留箱は main bundle の中にあるので、sidebar 側の
+        // 受け手をそこへ登録する術がない。**bundle が受け口の単位**なので、sidebar は
+        // 自分の受け口（`window.vpSidebarDispatch`）を持つ。
+        //
+        // ⚠️ 旧来はここも `window.renderSidebarState(...)` のように**名前で関数を呼ぶ**形で、
+        // ①型が無い ②bundle 未評価の間は `window.X &&` guard が黙って捨てる、の 2 つの負債が
+        // あった（doc 53 §6.5.1.3）。
+
+        // sidebar の全 state を push する唯一の経路。
+        // ⚠️ **`state` の形の持ち主は Rust の `SidebarState`**（ts-rs が
+        // `webview/src/generated/SidebarState.ts` を出す）。KDL にも書くと二重定義になるので
+        // ここでは `json` にし、受け側 1 箇所で `SidebarState` に落とす。
+        event "sidebar:state" {
+            field "state" type="json"
+        }
+
+        // TheWorld 接続失敗等の error 表示。
+        event "sidebar:error" {
+            field "message" type="string"
+        }
+
+        // + Add Performer の作成結果。`error` 省略 = 成功（form を閉じる）。
+        event "performer:create_result" {
+            field "project_path" type="string"
+            field "name" type="string"
+            field "error" type="string" optional=#true
+        }
+
+        // + Add Performer の dropdown を populate する Stand 一覧（`stands:fetch` の戻り）。
+        // 要素の形の持ち主は Rust `client::StandInfo`。
+        event "stands:result" {
+            field "project_path" type="string"
+            field "stands" type="array<json>"
+            field "error" type="string" optional=#true
+        }
+
+        // File Explorer の walk 結果（`files:list` の戻り）。
+        event "files:list_result" {
+            field "address" type="string"
+            field "entries" type="array<json>"
+            field "truncated" type="bool"
+        }
+
+        // Wire inbox の履歴（`wire:fetch` / `wire:ack` の戻り）。
+        event "wire:result" {
+            field "payload" type="json"
+        }
+
+        // Clone 用フォルダ picker の選択結果（`project:clone:pickFolder` の戻り）。
+        // ⚠️ **キャンセル時は撃たない**（既存の override を保持する = 既存挙動）。
+        event "clone:path_picked" {
+            field "path" type="string"
+        }
+
+        // Cmd+O（File menu accelerator）で File Explorer overlay を開かせる。
+        // これだけは request の戻りではなく、**menu 起点の一方向 push**。
+        event "file_picker:open" {
+            field "address" type="string"
+        }
     }
 }

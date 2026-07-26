@@ -2751,7 +2751,7 @@ fn resolve_project_path_for_lane(state: &SidebarState, address: &str) -> Option<
 ///   1. `sidebar_state.active_lane_address` + `active_stand` (排他 clear)
 ///   2. `session_state` 永続化
 ///   3. notification / awaiting_input reset
-///   4. sidebar UI push (`renderSidebarState`)
+///   4. sidebar UI push (`sidebar:state`)
 ///   5. main area push (`setActivePane` → `showLane`)
 ///   6. dead lane respawn
 #[allow(clippy::too_many_arguments)]
@@ -2911,19 +2911,175 @@ fn persist_window_geometry(session_state: &mut SessionState, window: &tao::windo
     }
 }
 
-/// SidebarState を JSON にして sidebar webview に push
-fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
-    let json = match serde_json::to_string(state) {
-        Ok(j) => j,
-        Err(e) => {
-            tracing::warn!("SidebarState serialize 失敗: {}", e);
-            return;
+/// sidebar bundle への押し込み（server → client）。
+///
+/// ## なぜ [`lane_js`] と別モジュールなのか
+///
+/// webview は 1 document だが **bundle は 2 本**（`editor-host.bundle.js` /
+/// `sidebar.bundle.js`）で、module state を共有できない。`dispatch.ts` の保留箱は main bundle
+/// の中にあるので、sidebar 側の受け手をそこへ登録する術がない。**bundle が受け口の単位**
+/// なので、sidebar は自分の受け口（`window.vpSidebarDispatch`）を持つ。
+///
+/// SSOT は `schema/vp-sidebar.kdl`（request と同じ channel の event 側 = `IpcEventEnvelope`）。
+mod sidebar_js {
+    use wry::WebView;
+
+    use crate::generated::sidebar_ipc::IpcEventEnvelope;
+
+    /// 生成 envelope を sidebar bundle の単一受け口 `window.vpSidebarDispatch` へ押し込む。
+    ///
+    /// ⚠️ guard を残す理由は [`super::lane_js`] と同じ — bundle 評価**前**に撃つ窓があり、
+    /// そこは JS が存在しないので保留箱にも積めない。sidebar の state は変化のたびに
+    /// 撃ち直されるので、その窓の取りこぼしは次の push で埋まる。
+    fn push(sidebar: &WebView, msg: &IpcEventEnvelope) {
+        let json = match serde_json::to_string(msg) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("sidebar push envelope の serialize に失敗: {e}");
+                return;
+            }
+        };
+        let script = format!("window.vpSidebarDispatch && window.vpSidebarDispatch({json})");
+        if let Err(e) = sidebar.evaluate_script(&script) {
+            tracing::warn!("vpSidebarDispatch script failed: {e}");
         }
-    };
-    let script = format!("window.renderSidebarState({})", json);
-    if let Err(e) = sidebar.evaluate_script(&script) {
-        tracing::warn!("sidebar renderSidebarState 失敗: {}", e);
     }
+
+    /// sidebar の全 state を push する唯一の経路。
+    ///
+    /// `state` の形の持ち主は Rust の [`crate::pane::SidebarState`]（ts-rs が TS 型を出す）。
+    /// envelope は「どの窓口へ届けるか」だけを型にし、中身はその 1 つの定義に委ねる。
+    pub fn state(sidebar: &WebView, state: &crate::pane::SidebarState) {
+        let value = match serde_json::to_value(state) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("SidebarState serialize 失敗: {e}");
+                return;
+            }
+        };
+        push(
+            sidebar,
+            &IpcEventEnvelope::SidebarState(crate::generated::sidebar_ipc::SidebarState {
+                state: value,
+            }),
+        );
+    }
+
+    /// TheWorld 接続失敗等の error 表示。
+    pub fn error(sidebar: &WebView, message: &str) {
+        push(
+            sidebar,
+            &IpcEventEnvelope::SidebarError(crate::generated::sidebar_ipc::SidebarError {
+                message: message.to_string(),
+            }),
+        );
+    }
+
+    /// + Add Performer の作成結果。`error` None = 成功（form を閉じる）。
+    pub fn performer_create_result(
+        sidebar: &WebView,
+        project_path: String,
+        name: String,
+        error: Option<String>,
+    ) {
+        push(
+            sidebar,
+            &IpcEventEnvelope::PerformerCreateResult(
+                crate::generated::sidebar_ipc::PerformerCreateResult {
+                    project_path,
+                    name,
+                    error,
+                },
+            ),
+        );
+    }
+
+    /// + Add Performer の dropdown を populate する Stand 一覧。
+    pub fn stands_result(
+        sidebar: &WebView,
+        project_path: String,
+        stands: &[crate::client::StandInfo],
+        error: Option<String>,
+    ) {
+        let stands = stands
+            .iter()
+            .filter_map(|s| match serde_json::to_value(s) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("StandInfo の serialize に失敗（この 1 件を省く）: {e}");
+                    None
+                }
+            })
+            .collect();
+        push(
+            sidebar,
+            &IpcEventEnvelope::StandsResult(crate::generated::sidebar_ipc::StandsResult {
+                project_path,
+                stands,
+                error,
+            }),
+        );
+    }
+
+    /// File Explorer の walk 結果。要素の形の持ち主は [`crate::file_explorer::Entry`]。
+    pub fn files_list_result(
+        sidebar: &WebView,
+        address: String,
+        entries: &[crate::file_explorer::Entry],
+        truncated: bool,
+    ) {
+        let entries = entries
+            .iter()
+            .filter_map(|e| match serde_json::to_value(e) {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    tracing::warn!("file entry の serialize に失敗（この 1 件を省く）: {err}");
+                    None
+                }
+            })
+            .collect();
+        push(
+            sidebar,
+            &IpcEventEnvelope::FilesListResult(crate::generated::sidebar_ipc::FilesListResult {
+                address,
+                entries,
+                truncated,
+            }),
+        );
+    }
+
+    /// Wire inbox の履歴。
+    pub fn wire_result(sidebar: &WebView, payload: serde_json::Value) {
+        push(
+            sidebar,
+            &IpcEventEnvelope::WireResult(crate::generated::sidebar_ipc::WireResult { payload }),
+        );
+    }
+
+    /// Clone 用フォルダ picker の選択結果。**キャンセル時は呼ばない**（既存 override を保持）。
+    pub fn clone_path_picked(sidebar: &WebView, path: String) {
+        push(
+            sidebar,
+            &IpcEventEnvelope::ClonePathPicked(crate::generated::sidebar_ipc::ClonePathPicked {
+                path,
+            }),
+        );
+    }
+
+    /// Cmd+O で File Explorer overlay を開かせる（menu 起点の一方向 push）。
+    pub fn file_picker_open(sidebar: &WebView, address: String) {
+        push(
+            sidebar,
+            &IpcEventEnvelope::FilePickerOpen(crate::generated::sidebar_ipc::FilePickerOpen {
+                address,
+            }),
+        );
+    }
+}
+
+/// SidebarState を sidebar webview に push（呼び手が多いので薄い別名を残す）。
+fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
+    sidebar_js::state(sidebar, state);
 }
 
 /// lane を「入力待ち（要注意）」として記録し、sidebar の unread count / 黄 dot を更新する。
@@ -5342,11 +5498,7 @@ pub fn run() -> anyhow::Result<()> {
                 });
             }
             Event::UserEvent(AppEvent::ProjectsError(msg)) => {
-                let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
-                let script = format!("window.renderError({})", js_msg);
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("sidebar renderError 失敗: {}", e);
-                }
+                sidebar_js::error(&webview, &msg);
             }
             // R5 Performer create flow: spawn_blocking thread からの結果を sidebar に push back。
             // success → form を閉じる + addPerformerOpen から削除。
@@ -5356,17 +5508,7 @@ pub fn run() -> anyhow::Result<()> {
                 name,
                 error,
             }) => {
-                let payload = serde_json::json!({
-                    "project_path": project_path,
-                    "name": name,
-                    "error": error,
-                });
-                let payload_str = serde_json::to_string(&payload)
-                    .unwrap_or_else(|_| "{}".to_string());
-                let script = format!("window.handleAddPerformerResult({})", payload_str);
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("sidebar handleAddPerformerResult 失敗: {}", e);
-                }
+                sidebar_js::performer_create_result(&webview, project_path, name, error);
             }
             Event::UserEvent(AppEvent::StandsResult {
                 project_path,
@@ -5374,51 +5516,21 @@ pub fn run() -> anyhow::Result<()> {
                 error,
             }) => {
                 // doc 11 PR-C: + Add Performer form の dropdown を populate するための push back。
-                let payload = serde_json::json!({
-                    "project_path": project_path,
-                    "stands": stands,
-                    "error": error,
-                });
-                let payload_str = serde_json::to_string(&payload)
-                    .unwrap_or_else(|_| "{}".to_string());
-                let script = format!("window.handleStandsResult({})", payload_str);
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("sidebar handleStandsResult 失敗: {}", e);
-                }
+                sidebar_js::stands_result(&webview, project_path, &stands, error);
             }
-            // Sidebar File Explorer: walk 結果を sidebar webview に push back。
-            // JS 側 (`FileExplorer.tsx`) が `window.vpFiles.handleListResult` で受信。
+            // Sidebar File Explorer: walk 結果を sidebar bundle へ push back。
+            // JS 側 (`FileExplorer.tsx`) が `vpFiles.handleListResult` で受け取る。
             Event::UserEvent(AppEvent::FilesListResult {
                 address,
                 entries,
                 truncated,
             }) => {
-                let payload = serde_json::json!({
-                    "address": address,
-                    "entries": entries,
-                    "truncated": truncated,
-                });
-                let payload_str =
-                    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-                let script = format!(
-                    "window.vpFiles && window.vpFiles.handleListResult({})",
-                    payload_str
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("sidebar vpFiles.handleListResult 失敗: {}", e);
-                }
+                sidebar_js::files_list_result(&webview, address, &entries, truncated);
             }
             // Wire inbox (doc 34 §4 V1): fetch 結果を sidebar の vpWire 受け口へ push back。
             Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
-                let payload_str =
-                    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-                let script = format!(
-                    "window.vpWire && window.vpWire.handleResult({})",
-                    payload_str
-                );
-                if let Err(e) = webview.evaluate_script(&script) {
-                    tracing::warn!("sidebar vpWire.handleResult 失敗 (address={}): {}", address, e);
-                }
+                tracing::debug!("wire history 受領 (address={address})");
+                sidebar_js::wire_result(&webview, payload);
             }
             // Sidebar File Explorer: file 読み込み結果を Canvas (PP) に inject。
             // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
@@ -5442,12 +5554,7 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::ClonePathPicked(path)) => {
                 // user キャンセル時 (None) は JS 状態を変更しない (= 既存 override を保持)
                 if let Some(p) = path {
-                    let js_arg = serde_json::to_string(&p).unwrap_or_else(|_| "null".into());
-                    let script =
-                        format!("window.setClonePath && window.setClonePath({})", js_arg);
-                    if let Err(e) = webview.evaluate_script(&script) {
-                        tracing::warn!("sidebar setClonePath 失敗: {}", e);
-                    }
+                    sidebar_js::clone_path_picked(&webview, p);
                 } else {
                     tracing::debug!("clone path picker canceled");
                 }
@@ -6163,22 +6270,11 @@ pub fn run() -> anyhow::Result<()> {
                     // ない (= 未選択) 時は no-op + warn log。
                     match sidebar_state.active_lane_address.as_deref() {
                         Some(addr) => {
-                            // sidebar 側の `window.vpFilePicker.open(address)` を呼ぶ。
-                            // 文字列は JSON エンコードして address に特殊文字が混ざっても安全に。
-                            let addr_json = serde_json::to_string(addr)
-                                .unwrap_or_else(|_| "\"\"".into());
-                            let script = format!(
-                                "window.vpFilePicker && window.vpFilePicker.open({})",
-                                addr_json
-                            );
-                            if let Err(e) = webview.evaluate_script(&script) {
-                                tracing::warn!(
-                                    "Cmd+O: sidebar vpFilePicker.open inject 失敗: {}",
-                                    e
-                                );
-                            } else {
-                                tracing::info!("Cmd+O: File Explorer opened for {}", addr);
-                            }
+                            // sidebar の File Explorer overlay を開かせる。
+                            // ⚠️ 「開いた」ではなく「**要求した**」— push は fire-and-forget で、
+                            // 受け手（`FileExplorer.tsx`）が mount していなければ届かない。
+                            tracing::info!("Cmd+O: File Explorer open 要求 ({})", addr);
+                            sidebar_js::file_picker_open(&webview, addr.to_string());
                         }
                         None => {
                             tracing::warn!("Cmd+O: active lane なし、 picker open skip");

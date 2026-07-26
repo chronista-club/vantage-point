@@ -222,7 +222,7 @@ mailbox（`lane_inboxes` unread）/ file picker ボタン。 row class = `active
   （`handle_sidebar_ipc`, `app.rs:1414-`）。 15 種: `process:{toggle,reorder,restart,stop,delete,add}` /
   `lane:{select,delete,restart,add_performer}` / `stands:fetch` / `stand:select` / `project:clone:pickFolder` /
   `files:{list,open}`。
-- **outbound（Rust → sidebar）**: KDL 対象外。 `SidebarState` 全体を `window.renderSidebarState(json)` に注入する
+- **outbound（Rust → sidebar）**: ~~KDL 対象外~~ → **2026-07-26 に KDL 化**（doc 53 §6.5.1.3）。同じ `ipc` channel の event 側（`sidebar:state`）として型が付き、受け口は `window.vpSidebarDispatch` 1 本
   一本道（`push_sidebar_state`, `app.rs:1333-1345`）。 files/stands の結果は個別 JS 関数 push で戻す。
   → **inbound は typed schema、outbound は非対称に丸ごと再 serialize** である点を仕様として明記する。
 
