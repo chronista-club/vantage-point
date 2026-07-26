@@ -378,18 +378,24 @@ World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残�
    ⚠️ rename 時に処理する 3 点:
 
    ① act は registry / wire に**永続される値**。~~schema 変更と同じ migration に束ねる~~
-   → **単独 PR 内で完結**。ただし「一気に」を**データにも**適用するので、恒久 alias は置かない:
+   → **単独 PR 内で完結**。
 
-   | | 中身 | 評価 |
-   |---|---|---|
-   | A. 旧値を読まない | `parse` が `None` → 呼び手が既定を選ぶ | 「移行」ではなく**破棄** — 初回起動で全 session の act が既定レンズに戻る（user から見れば設定が消える） |
-   | **B. 起動時 1 回だけ書き換える** | 読みの legacy arm で旧値を受け、**その場で新形式へ save**。以後 file は全部新形式 | **推奨**。恒久 alias ではなく**収束する**（1 周したら legacy arm を消せる = 中間状態が残らない） |
+   **決定（mako 2026-07-26）: legacy データは「初期化」でよい。**
+   → **legacy read arm を一切置かない**。`parse` は新名しか知らず、旧値の registry は
+   初期化される（＝ migration コードがゼロ）。
 
-   ⚠️ B の legacy arm は「あとで撤去」の据え置きにしない — **撤去の契機を PR に書く**
-   （= 自分の全 lane が 1 度 load された後）。据え置くと恒久 alias と同じものになる。
+   > 「そういう時は legacy データの方を初期化で良いです」
+   >
+   > 検討時に「起動時 1 回だけ書き換える（収束する legacy arm）」を推したが、**却下**。
+   > **収束する arm でも、それが在る間は 2 つの語彙が生きている**。pre-MVP で守る価値の
+   > ある永続データは無い（[[pre-mvp-development-stance]] / [[vp-rebuild-epic-dev-policy]]
+   > 「互換無視・旧経路即撤去」）。**書かない方が「一気に」に忠実**。
 
-   ⚠️ **wire 側には legacy arm を置かない**。GUI / CLI / server は同じ binary から出るので
-   版ズレが起きない（registry file だけが「前の版が書いたもの」を持ちうる）。
+   ⚠️ **承知の上の代償**: rename 後の初回起動で、各 session の act が**既定レンズに戻る**
+   （名札から付け直せる）。これを「バグ」として追わないよう、PR / release note に明記する。
+
+   ⚠️ **wire 側は元から不要**。GUI / CLI / server は同じ binary から出るので版ズレが起きない
+   （「前の版が書いたもの」を持ちうるのは registry file だけ）。
 
    ② 既存の「Act I/II」（doc 33 系 = tui/chat）と**採番がシフトする**（今の Act I が新 act-ii）
    ため doc / memory / コメントの旧参照を訂正する。**実測 = 520 箇所 / 25+ file**（design doc が
