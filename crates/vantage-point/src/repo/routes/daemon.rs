@@ -58,24 +58,24 @@ pub(crate) async fn apply_repo_update(
 /// lane 作成の省略時 default を導出する (= calc) — Unison `lanes/create` の実体。
 ///
 /// repo create_handler と parity: branch 未指定 → `<user>/<name>` derive、
-/// stand 未指定 → config の `default_stand` → `echoes`。返り値は `(branch, stand)`。
+/// agent 未指定 → config の `default_agent` → `claude`。返り値は `(branch, agent)`。
 pub(crate) fn resolve_create_lane_args(
     path: &str,
     name: &str,
     branch: Option<&str>,
-    stand: Option<&str>,
+    agent: Option<&str>,
 ) -> (String, String) {
     let repo_root = std::path::PathBuf::from(path);
     let branch = branch
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .unwrap_or_else(|| super::lanes::derive_default_branch(&repo_root, name));
-    let stand = stand.map(|s| s.to_string()).unwrap_or_else(|| {
+    let agent = agent.map(|s| s.to_string()).unwrap_or_else(|| {
         crate::config::Config::load()
-            .map(|c| c.default_stand_or_echoes().to_string())
-            .unwrap_or_else(|_| "echoes".to_string())
+            .map(|c| c.default_agent_or_claude().to_string())
+            .unwrap_or_else(|_| "claude".to_string())
     });
-    (branch, stand)
+    (branch, agent)
 }
 
 // doc 44 P1 (fold-in): daemon_register_process / daemon_unregister_process は撤去。
@@ -92,15 +92,15 @@ pub(crate) fn resolve_create_lane_args(
 /// Phase 1c: Lane filter query
 ///
 /// Unison `lanes/list` の payload field からそのまま deserialize する
-/// （旧 HTTP は同名の query string `?repo=&lane=&stand=`）。全 field 省略可 = 無フィルタ。
+/// （旧 HTTP は同名の query string `?repo=&lane=&agent=`）。全 field 省略可 = 無フィルタ。
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 pub struct LanesQuery {
     /// Repo name filter (LaneAddress.repo)
     pub repo: Option<String>,
     /// Lane name filter — Conductor は "root"、 Performer は name (例: "sub")
     pub lane: Option<String>,
-    /// Stand kind filter — "echoes" or "shell"
-    pub stand: Option<String>,
+    /// Agent kind filter — "claude" or "shell"
+    pub agent: Option<String>,
 }
 
 /// lane registry を filter + sort して返す — Unison `lanes/list` の実体。
@@ -116,7 +116,7 @@ pub(crate) async fn collect_lanes(
     let lane_registry = daemon.lane_registry_ref();
     let registry = lane_registry.read().await;
 
-    // 全 repo の Lane を flatten + filter (repo / lane / stand)
+    // 全 repo の Lane を flatten + filter (repo / lane / agent)
     let mut lanes: Vec<crate::repo::lanes_state::LaneInfo> = registry
         .values()
         .flatten()
@@ -127,8 +127,8 @@ pub(crate) async fn collect_lanes(
             query.lane.as_deref().is_none_or(|n| l.address.name == n)
         })
         .filter(|l| {
-            // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較 (wire 上は新 stand 名のみ accept)。
-            query.stand.as_deref().is_none_or(|s| l.stand == s)
+            // doc 11 PR-B: l.agent は String 化、 query.agent と直接比較 (wire 上は新 agent 名のみ accept)。
+            query.agent.as_deref().is_none_or(|s| l.agent == s)
         })
         .cloned()
         .collect();

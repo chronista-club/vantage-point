@@ -120,13 +120,13 @@ pub fn slots(lane: &str, config: &Config) -> Result<()> {
 ///
 /// 立つのは **新しい session**（doc 46 §1.5「Pane は必ず新しい session id で始まる」）。
 /// root（= lane の代表 / mailbox の主）は動かないので、既存 console はそのまま。
-pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> {
+pub fn slot_new(lane: &str, agent: Option<&str>, config: &Config) -> Result<()> {
     let path = repo_path_for_lane(lane, config)?;
     let resp = daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
         "lane_slot_new",
-        serde_json::json!({ "lane": lane, "stand": stand }),
+        serde_json::json!({ "lane": lane, "agent": agent }),
     )?;
     let get_u64 = |k: &str| resp.get(k).and_then(serde_json::Value::as_u64);
     let Some(session) = get_u64("session") else {

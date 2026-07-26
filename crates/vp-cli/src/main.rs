@@ -230,7 +230,7 @@ enum LaneCommands {
     ///
     /// default は `<name>\t<branch>\t<path>` の tab-separated 簡易出力 (= fs scan、 repo 不要)。
     /// `--detail` で repo `/api/lanes` を query して MCP `list_lanes` 同等の JSON (= state /
-    /// stand / pid / cwd / performer_status / mailbox_addresses 付き) を出力する (= repo 稼働中のみ)。
+    /// agent / pid / cwd / performer_status / mailbox_addresses 付き) を出力する (= repo 稼働中のみ)。
     #[command(alias = "list")]
     Ls {
         /// repo `/api/lanes` から MCP list_lanes 同等の詳細 JSON を取得して出力
@@ -332,9 +332,9 @@ enum LaneCommands {
     SlotNew {
         /// lane address ("<repo>/root" / "<repo>/performer/<name>")
         lane: String,
-        /// engine (stand 名: echoes / codex / grok / opencode / shell。省略時は現 root の engine)
+        /// engine (agent 名: echoes / codex / grok / opencode / shell。省略時は現 root の engine)
         #[arg(long)]
-        stand: Option<String>,
+        agent: Option<String>,
     },
     /// lane の console (slot) を 1 枚閉じる ([`SlotNew`](LaneCommands::SlotNew) の対)
     ///
@@ -805,7 +805,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             let repo = repo.or_else(|| std::env::var("VP_REPO").ok());
             let lane = lane.or_else(|| std::env::var("VP_LANE").ok());
             if let (Some(p), Some(l)) = (repo, lane) {
-                let reg = vantage_point::lane::session_registry::load(&p, &l, "echoes");
+                let reg = vantage_point::lane::session_registry::load(&p, &l, "claude");
                 if let Some(id) = reg
                     .sessions
                     .iter()
@@ -836,9 +836,9 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             let config = Config::load().unwrap_or_default();
             commands::lane_ctl::slots(&lane, &config)
         }
-        LaneCommands::SlotNew { lane, stand } => {
+        LaneCommands::SlotNew { lane, agent } => {
             let config = Config::load().unwrap_or_default();
-            commands::lane_ctl::slot_new(&lane, stand.as_deref(), &config)
+            commands::lane_ctl::slot_new(&lane, agent.as_deref(), &config)
         }
         LaneCommands::SlotClose { lane, session } => {
             let config = Config::load().unwrap_or_default();

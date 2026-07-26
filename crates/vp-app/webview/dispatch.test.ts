@@ -34,7 +34,7 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 			consoleActApplied: (lane, session, act) =>
 				calls.push(`act:${lane}#${session}:${act}`),
 			consoleStands: (lane, _payload, req) =>
-				calls.push(`stands:${lane}:${req}`),
+				calls.push(`agents:${lane}:${req}`),
 			inkSnapshot: (path) => calls.push(`ink:${path}`),
 			inkSnapshotError: (message) => calls.push(`inkErr:${message}`),
 		},
@@ -131,16 +131,16 @@ describe("dispatch", () => {
 		expect(calls).toEqual(["devices:2", "board:show"]);
 	});
 
-	it("optional field の省略は null として渡る（stands の相関 id）", async () => {
+	it("optional field の省略は null として渡る（agents の相関 id）", async () => {
 		// `req` 省略 = 「応答を誰も拾わない」。旧実装は JS へ `null` を直書きしていた。
 		const mod = await import("./dispatch");
 		mod.openDispatch();
 		const { calls, handlers } = recordingHandlers();
 		mod.installDispatch(handlers);
 
-		dispatch({ t: "console:stands", lane: "vp/root", payload: {} });
-		dispatch({ t: "console:stands", lane: "vp/root", payload: {}, req: "r1" });
-		expect(calls).toEqual(["stands:vp/root:null", "stands:vp/root:r1"]);
+		dispatch({ t: "console:agents", lane: "vp/root", payload: {} });
+		dispatch({ t: "console:agents", lane: "vp/root", payload: {}, req: "r1" });
+		expect(calls).toEqual(["agents:vp/root:null", "agents:vp/root:r1"]);
 	});
 
 	it("成功と失敗が別 arm に分かれる（ink の snapshot 往復）", async () => {

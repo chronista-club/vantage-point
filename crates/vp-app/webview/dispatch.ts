@@ -119,7 +119,7 @@ function apply(msg: PushEventEnvelope): void {
 		case "console:act_applied":
 			handlers.consoleActApplied(msg.lane, msg.session, msg.act);
 			break;
-		case "console:stands":
+		case "console:agents":
 			// `req` は schema で optional — 「応答を誰も拾わない」が型に載る。
 			handlers.consoleStands(msg.lane, msg.payload, msg.req ?? null);
 			break;

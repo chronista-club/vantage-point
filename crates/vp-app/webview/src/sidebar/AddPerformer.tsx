@@ -2,68 +2,68 @@
  * Performer Lane 作成フォーム。
  *
  * v1.0 柱 2 PR-3。 開閉 state は RepoAccordion が持ち、 Repo summary 右上の
- * 「+」アイコンボタンで toggle する。 name + optional branch + **engine(stand) dropdown**
+ * 「+」アイコンボタンで toggle する。 name + optional branch + **engine(agent) dropdown**
  * → 作成で `lane:add_performer` IPC を送る。
  *
- * stand dropdown（doc 37）: mount 時に `stands:fetch` を撃ち、 Daemon `stands_list`
- * （SSOT = `EngineKind::ALL` + shell）の結果を `window.handleStandsResult` で受けて populate
- * する。 選択値は IPC の `stand` に載る（未選択 = repo-side default = echoes）。
+ * agent dropdown（doc 37）: mount 時に `agents:fetch` を撃ち、 Daemon `agents_list`
+ * （SSOT = `EngineKind::ALL` + shell）の結果を `window.handleAgentsResult` で受けて populate
+ * する。 選択値は IPC の `agent` に載る（未選択 = repo-side default = claude）。
  * fetch 前 / 失敗時は dropdown を出さず、 従来どおり default engine で作成できる（fail-open）。
  */
 import { createSignal, onCleanup, onMount, For, Show } from 'solid-js'
 import { sendIpc } from './ipc'
 
-/** Daemon `stands_list` の 1 entry（`crate::client::StandInfo` の wire shape）。 */
-type StandInfo = { name: string; description: string }
+/** Daemon `agents_list` の 1 entry（`crate::client::AgentInfo` の wire shape）。 */
+type AgentInfo = { name: string; description: string }
 
-/** `window.handleStandsResult` が受ける payload（app.rs StandsResult 由来）。 */
-type StandsResultPayload = {
+/** `window.handleAgentsResult` が受ける payload（app.rs AgentsResult 由来）。 */
+type AgentsResultPayload = {
   repo_path?: string
-  stands?: StandInfo[]
+  agents?: AgentInfo[]
   error?: string | null
 }
 
 export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
   const [name, setName] = createSignal('')
   const [branch, setBranch] = createSignal('')
-  const [stands, setStands] = createSignal<StandInfo[]>([])
-  const [stand, setStand] = createSignal<string>('')
+  const [agents, setAgents] = createSignal<AgentInfo[]>([])
+  const [agent, setAgent] = createSignal<string>('')
 
-  // mount 時に当該 repo の利用可能 stand を fetch し、 結果 callback を差し込む。
-  // handleStandsResult は global singleton だが、 Add Performer form は同時に 1 つしか開かない
+  // mount 時に当該 repo の利用可能 agent を fetch し、 結果 callback を差し込む。
+  // handleAgentsResult は global singleton だが、 Add Performer form は同時に 1 つしか開かない
   // （repo accordion ごとの toggle）ので、 mount で奪い cleanup で stub へ戻す。
   onMount(() => {
     const w = window as unknown as {
-      handleStandsResult?: (msg: unknown) => void
+      handleAgentsResult?: (msg: unknown) => void
     }
-    const prev = w.handleStandsResult
-    w.handleStandsResult = (msg: unknown) => {
-      const p = (msg ?? {}) as StandsResultPayload
+    const prev = w.handleAgentsResult
+    w.handleAgentsResult = (msg: unknown) => {
+      const p = (msg ?? {}) as AgentsResultPayload
       // 別 repo の遅延応答が現フォームの dropdown を汚さないよう repo_path で照合。
       if (p.repo_path && p.repo_path !== props.repoPath) return
-      const list = Array.isArray(p.stands) ? p.stands : []
-      setStands(list)
-      // 既定選択 = 先頭（= list_stands の並び: echoes が先頭）。未選択のままでも repo default に倒れる。
-      if (list.length > 0 && !stand()) setStand(list[0]!.name)
+      const list = Array.isArray(p.agents) ? p.agents : []
+      setAgents(list)
+      // 既定選択 = 先頭（= list_agents の並び: echoes が先頭）。未選択のままでも repo default に倒れる。
+      if (list.length > 0 && !agent()) setAgent(list[0]!.name)
     }
     onCleanup(() => {
-      w.handleStandsResult = prev
+      w.handleAgentsResult = prev
     })
-    sendIpc({ t: 'stands:fetch', path: props.repoPath })
+    sendIpc({ t: 'agents:fetch', path: props.repoPath })
   })
 
   const submit = () => {
     const n = name().trim()
     if (!n) return
     const b = branch().trim()
-    const s = stand().trim()
+    const s = agent().trim()
     sendIpc({
       t: 'lane:add_performer',
       path: props.repoPath,
       name: n,
       branch: b || undefined,
       // 未 fetch / 未選択は undefined = repo-side default（echoes）に倒す。
-      stand: s || undefined,
+      agent: s || undefined,
     })
     props.onClose()
   }
@@ -88,15 +88,15 @@ export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
         onInput={(e) => setBranch(e.currentTarget.value)}
         onKeyDown={onKey}
       />
-      {/* engine(stand) 選択。 fetch 済みで 2 件以上ある時だけ出す（1 件 = 選択の余地なし）。 */}
-      <Show when={stands().length > 1}>
+      {/* engine(agent) 選択。 fetch 済みで 2 件以上ある時だけ出す（1 件 = 選択の余地なし）。 */}
+      <Show when={agents().length > 1}>
         <select
-          class="vp-add-performer-input vp-add-performer-stand"
-          value={stand()}
-          onChange={(e) => setStand(e.currentTarget.value)}
+          class="vp-add-performer-input vp-add-performer-agent"
+          value={agent()}
+          onChange={(e) => setAgent(e.currentTarget.value)}
           onKeyDown={onKey}
         >
-          <For each={stands()}>
+          <For each={agents()}>
             {(s) => (
               <option value={s.name} title={s.description}>
                 {s.name}

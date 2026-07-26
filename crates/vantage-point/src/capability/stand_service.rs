@@ -1,10 +1,10 @@
-//! ECS entity bound actor 用 `Stand` trait と singleton infra 用 `Service` trait の
+//! ECS entity bound actor 用 `Agent` trait と singleton infra 用 `Service` trait の
 //! 受け皿 (VP-159 / VP-156 epic H1 段、 PR-1)。
 //!
-//! VP-24 (Mailbox core) で「Stand に component bolt-on で msgbox 使える」 が original 設計
+//! VP-24 (Mailbox core) で「Agent に component bolt-on で msgbox 使える」 が original 設計
 //! 意図だったが、 後付けで infra actor (`mcp` / `notify` / `lane-spawn` / `repo-bootstrap`) が
 //! 混入し ECS 純度が崩れた。 VP-157 (PR #325) で `mcp` box 廃止 + agent observer 化が
-//! 第一歩、 本 PR で残 actor を **Stand** (= ECS entity bound) と **Service** (= singleton
+//! 第一歩、 本 PR で残 actor を **Agent** (= ECS entity bound) と **Service** (= singleton
 //! infra) の 2 trait に分離する受け皿を新設する。
 //!
 //! design-decision: creo-memories `mem_1CatjVq5NUsjn1EHjRcaPG` §E
@@ -14,8 +14,8 @@
 //!
 //! | sub-PR | scope | status |
 //! |--------|-------|--------|
-//! | PR-1 | `Stand` / `Service` trait + `LayerScope` enum 受け皿 + `LaneStand` → `LaneStandHost` rename | 本 PR |
-//! | PR-2 | Stand migrate (`agent` + `protocol`、 observer/consumer pattern 形式化) | 未着手 |
+//! | PR-1 | `Agent` / `Service` trait + `LayerScope` enum 受け皿 + `LaneStand` → `LaneStandHost` rename | 本 PR |
+//! | PR-2 | Agent migrate (`agent` + `protocol`、 observer/consumer pattern 形式化) | 未着手 |
 //! | PR-3 | Service migrate (`notify` + `lane-spawn` + `repo-bootstrap` + `devices`) | 未着手 |
 //! | PR-4 | supervisor 統一 (`ActorRegistry` / `SupervisorFactory` 集約) | 未着手 |
 //! | PR-5 | cleanup + guideline docs/spec + board / runner は将来 PR-γ | 未着手 |
@@ -27,7 +27,7 @@
 //! - **i 路線** (minimal marker first): passive marker trait のみ定義、 lifecycle method は
 //!   PR-2/3 で各 actor の現実 (= consumer / observer の非対称) に合わせて trait 拡張
 //!
-//! 本 PR は **i 路線** を採用 (PR-δ-1 と同 pattern)。 PR-2 で agent / protocol を Stand impl
+//! 本 PR は **i 路線** を採用 (PR-δ-1 と同 pattern)。 PR-2 で agent / protocol を Agent impl
 //! する際に observer / consumer pattern を trait 形式化、 PR-4 で supervisor 統一する際に
 //! lifecycle method を追加する段階的 path。
 //!
@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 /// VP の 3 層 architecture (`docs/design/12-stand-architecture.md` LSCM):
 /// - **Daemon**: machine-wide singleton (daemon scope、 例: `devices@machine`)
 /// - **Repo**: repo 起動単位 (= 1 Process per repo、 例: `agent` / `protocol` / `notify`)
-/// - **Lane**: Repo 内 Lane 単位 (= 1 Lane per Stand instance、 例: `board`)
+/// - **Lane**: Repo 内 Lane 単位 (= 1 Lane per Agent instance、 例: `board`)
 ///
 /// 既存 code は dev discipline 任せで scope を表現していたが、 本 enum で trait 内に
 /// 明示的に持たせる事で supervisor (PR-4) が scope 検証可能になる。
@@ -61,24 +61,24 @@ pub enum LayerScope {
     Machine,
     /// repo 起動単位 (= 1 Process per repo)。
     Repo,
-    /// Repo 内 Lane 単位 (= 1 Lane per Stand instance)。
+    /// Repo 内 Lane 単位 (= 1 Lane per Agent instance)。
     Lane,
 }
 
 /// ECS entity bound actor の **minimal marker trait** (PR-1 受け皿)。
 ///
-/// `Stand` は VP-24 original 設計意図 「Stand に component bolt-on で msgbox 使える」 の
+/// `Agent` は VP-24 original 設計意図 「Agent に component bolt-on で msgbox 使える」 の
 /// 形式化。 Echoes (Claude CLI) / Protocol / 将来 board / runner 等の **能力
 /// (= ECS entity)** を表現する。
 ///
-/// `Any` super-trait で downcast を支援 (caller が specific Stand state を取り出すため)。
+/// `Any` super-trait で downcast を支援 (caller が specific Agent state を取り出すため)。
 /// PR-1 は **passive marker** のみで、 actor lifecycle method は PR-2 で各 actor の
 /// observer / consumer pattern に合わせて追加する。
 ///
 /// ## impl 例 (PR-2 で導入予定)
 ///
 /// ```rust,ignore
-/// use vantage_point::capability::{Stand, LayerScope};
+/// use vantage_point::capability::{Agent, LayerScope};
 ///
 /// pub struct AgentCapability { /* ... */ }
 ///
@@ -92,13 +92,13 @@ pub enum LayerScope {
 /// ## `LaneStandHost` との違い
 ///
 /// `process::lane_stand::LaneStandHost` は **Lane に host される受動的 marker** (= passive、
-/// `board` 等)。 `Stand` は **ECS entity bound actor** (= active、 `agent` /
-/// `protocol`)。 同じ「Stand」 という言葉で 2 概念を区別する規約:
+/// `board` 等)。 `Agent` は **ECS entity bound actor** (= active、 `agent` /
+/// `protocol`)。 同じ「Agent」 という言葉で 2 概念を区別する規約:
 ///
-/// - `Stand` (本 trait): ECS entity bound、 自律的に lifecycle / message を処理
+/// - `Agent` (本 trait): ECS entity bound、 自律的に lifecycle / message を処理
 /// - `LaneStandHost` (PR-δ-1): Lane に hosted、 LaneStandRegistry で N 個 host する marker
 ///
-/// 将来的に `board` が `LaneStandHost` impl から `Stand` impl に進化する path も
+/// 将来的に `board` が `LaneStandHost` impl から `Agent` impl に進化する path も
 /// 想定 (= PR-γ で Lane に migrate されたら entity bound 化)、 その際は両 trait impl も可能。
 pub trait Stand: Any + Send + Sync + 'static {
     /// actor 名 (例: `"agent"` / `"protocol"`)。 mailbox address の actor 部分と一致する。
@@ -121,7 +121,7 @@ pub trait Stand: Any + Send + Sync + 'static {
 /// singleton infra actor の **minimal marker trait** (PR-1 受け皿)。
 ///
 /// `Service` は ECS entity に紐づかない **infra-side actor** (= 通信 / lifecycle / external
-/// integration の専属担当)。 VP-24 original 設計後に後付けで混入した actor 群を、 ECS Stand
+/// integration の専属担当)。 VP-24 original 設計後に後付けで混入した actor 群を、 ECS Agent
 /// と区別する形式化。
 ///
 /// 分類対象 (PR-3 で migrate 予定):
@@ -130,12 +130,12 @@ pub trait Stand: Any + Send + Sync + 'static {
 /// - `repo-bootstrap` (= repo startup bootstrap、 Repo scope)
 /// - `devices@machine` (= MIDI / external control、 machine scope)
 ///
-/// `Stand` 同様 `Any` super-trait で downcast 支援、 lifecycle method は PR-3 で各 Service の
+/// `Agent` 同様 `Any` super-trait で downcast 支援、 lifecycle method は PR-3 で各 Service の
 /// 現実に合わせて追加する。
 pub trait Service: Any + Send + Sync + 'static {
     /// service 名 (例: `"notify"` / `"devices"`)。 mailbox address の actor 部分と一致する。
     ///
-    /// `Stand::actor_name()` と同じ命名規約 (= 既存 `Capability::name()` 衝突回避、 PR-2 で
+    /// `Agent::actor_name()` と同じ命名規約 (= 既存 `Capability::name()` 衝突回避、 PR-2 で
     /// rename された後)。
     fn actor_name(&self) -> &str;
 
@@ -172,7 +172,7 @@ pub trait SpawnableService: Service {
 mod tests {
     use super::*;
 
-    /// test fixture: minimal `Stand` impl (= name / scope / Any のみ)
+    /// test fixture: minimal `Agent` impl (= name / scope / Any のみ)
     struct FixtureStand {
         name: &'static str,
         scope: LayerScope,
@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn stand_and_service_can_coexist_for_same_layer() {
-        // 同じ LayerScope::Repo に Stand (agent) と Service (notify) が共存できる事
-        let stand: Box<dyn Stand> = Box::new(FixtureStand {
+        // 同じ LayerScope::Repo に Agent (agent) と Service (notify) が共存できる事
+        let agent: Box<dyn Stand> = Box::new(FixtureStand {
             name: "agent",
             scope: LayerScope::Repo,
         });
@@ -278,17 +278,17 @@ mod tests {
             name: "notify",
             scope: LayerScope::Repo,
         });
-        assert_eq!(stand.layer_scope(), service.layer_scope());
-        assert_ne!(stand.actor_name(), service.actor_name());
+        assert_eq!(agent.layer_scope(), service.layer_scope());
+        assert_ne!(agent.actor_name(), service.actor_name());
     }
 
     #[test]
     fn n_distinct_stands_coexist_in_collection() {
-        // PR-2 invariant (PR-δ-3 同型): 異なる name / scope の N 個 Stand impl が同じ
+        // PR-2 invariant (PR-δ-3 同型): 異なる name / scope の N 個 Agent impl が同じ
         // Vec<Box<dyn Stand>> で共存できる事 (= PR-4 supervisor 統一の foundation)。
         // 実 impl (AgentCapability / ProtocolCapability) を fixture で代理、 actor_name と
         // layer_scope の組合わせで supervisor が dispatch / filter できる pattern を検証。
-        let stands: Vec<Box<dyn Stand>> = vec![
+        let agents: Vec<Box<dyn Stand>> = vec![
             Box::new(FixtureStand {
                 name: "agent",
                 scope: LayerScope::Repo,
@@ -302,23 +302,23 @@ mod tests {
                 scope: LayerScope::Machine,
             }),
         ];
-        assert_eq!(stands.len(), 3);
+        assert_eq!(agents.len(), 3);
 
         // name が distinct で取り出せる
-        let names: Vec<&str> = stands.iter().map(|s| s.actor_name()).collect();
+        let names: Vec<&str> = agents.iter().map(|s| s.actor_name()).collect();
         assert_eq!(names, vec!["agent", "protocol", "devices"]);
 
         // layer_scope で filter できる (= PR-4 supervisor が scope 別に dispatch する pattern)
-        let repo_count = stands
+        let repo_count = agents
             .iter()
             .filter(|s| s.layer_scope() == LayerScope::Repo)
             .count();
-        let machine_count = stands
+        let machine_count = agents
             .iter()
             .filter(|s| s.layer_scope() == LayerScope::Machine)
             .count();
-        assert_eq!(repo_count, 2, "Repo scope の Stand は 2 個");
-        assert_eq!(machine_count, 1, "machine scope の Stand は 1 個");
+        assert_eq!(repo_count, 2, "Repo scope の Agent は 2 個");
+        assert_eq!(machine_count, 1, "machine scope の Agent は 1 個");
     }
 
     #[test]

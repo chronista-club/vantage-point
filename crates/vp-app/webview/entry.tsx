@@ -168,7 +168,7 @@ openDispatch();
 // 集約され、ここは購読の install と `setActivePane`（下方 `applyActivePane`）だけを持つ。
 //
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
-//   echoes  → pane-terminal      (Echoes Stand = lane workbench。console/chat/board の tiling を内包)
+//   echoes  → pane-terminal      (Echoes Agent = lane workbench。console/chat/board の tiling を内包)
 //   runner  → pane-runner        (Runner 🌿)
 //   devices → pane-devices        (Devices 🧲 / device 一覧)
 //   preview → pane-preview        (iframe preview)
@@ -281,7 +281,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 			branch: info.branch ?? null,
 			chat: !!info.chat,
 			sessionId: info.session_id ?? null,
-			stand: info.stand ?? null,
+			agent: info.agent ?? null,
 		});
 		// wiremsg Stage 2: canvas (board body) の供給は Rust 側 spawn_canvas_subscription が
 		// per-repo で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
@@ -989,7 +989,7 @@ installDispatch({
 	consoleActApplied: (lane, session, act) =>
 		vpConsole.setSessionAct(lane, session, act as ConsoleMode),
 	consoleStands: (lane, payload, req) =>
-		vpConsole.handleStands(lane, payload as EchoesStandsPayload, req),
+		vpConsole.handleAgents(lane, payload as EchoesStandsPayload, req),
 	// 対話面（ink）。mount target 不在なら `installInk` が null を返すので no-op で埋める
 	// （dispatch の表は常に全 arm 揃っている = 網羅性検査が効く形を崩さない）。
 	inkSnapshot: (path) => inkHandlers?.inkSnapshot(path),

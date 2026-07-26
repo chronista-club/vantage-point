@@ -64,13 +64,13 @@ protocol "vp-daemon" version="0.2.0" {
                 field "worlds" type="json" required=#true description="daemon の配列。各要素は { wld_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
             }
         }
-        request "lanes/list" description="全 repo 横断の lane 一覧を返す read-only 照会。各 lane は repo / name (開発起点は予約名 root) / stand / state (spawning|running|exiting|dead) を持つ。`vp ps` の LANES / STATUS 列や外部 agent の俯瞰に使う。repo 単位の詳細操作は repo-proxy 経由。全ての引数は省略可で、省略 = 絞り込みなし。並びは repo 名昇順 → 同 repo 内は開発起点 (root) が先 → 作成順。" {
+        request "lanes/list" description="全 repo 横断の lane 一覧を返す read-only 照会。各 lane は repo / name (開発起点は予約名 root) / agent / state (spawning|running|exiting|dead) を持つ。`vp ps` の LANES / STATUS 列や外部 agent の俯瞰に使う。repo 単位の詳細操作は repo-proxy 経由。全ての引数は省略可で、省略 = 絞り込みなし。並びは repo 名昇順 → 同 repo 内は開発起点 (root) が先 → 作成順。" {
             field "repo" type="string" description="repo 名で絞り込む（LaneAddress.repo と完全一致）。省略時は全 repo。"
             field "lane" type="string" description="lane 名で絞り込む（開発起点は予約名 \"root\"、performer は作成時の名前）。省略時は全 lane。"
-            field "stand" type="string" description="stand で絞り込む（例 \"echoes\" / \"shell\"）。省略時は全 stand。"
+            field "agent" type="string" description="agent で絞り込む（例 \"claude\" / \"shell\"）。省略時は全 agent。"
             returns "LaneList" {
                 field "count" type="int" required=#true description="filter 適用後の lane 件数（lanes 配列の長さ）。"
-                field "lanes" type="json" required=#true description="LaneInfo の配列。各要素は { address: { repo, name }, state, stand, ... }。"
+                field "lanes" type="json" required=#true description="LaneInfo の配列。各要素は { address: { repo, name }, state, agent, ... }。"
             }
         }
         request "host/farewell_log" description="Repo Host の帳簿から見送りの記録を新しい順に返す read-only 照会（doc 44 §7.5）。kind='reclaimed' が「いつ何を見送ったか」、kind='pending' が「人の判断待ちがいつから何回続いているか」。lane_name は記録時点のスナップショット（key は lane_id なので rename でも履歴は動かない）。" {

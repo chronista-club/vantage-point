@@ -1,9 +1,9 @@
 //! engine 軸の語彙（[`EngineKind`]）と Act II chat engine の所有型（[`ChatHost`] / [`ChatEngineSlot`]）
 //!
 //! doc 37 §1: Echoes は **engine 軸 × Act(surface) 軸**の直交格子で、engine = session に束縛される
-//! identity、Act = 切替可能な view。本 module は engine 軸の SSOT — stand 名 ↔ engine の対応と
-//! 能力表明（chat 対応 / model 切替対応）をここに一元化し、`stand == "cursor"` のような
-//! stringly 比較の散在（旧 lanes_state / unison_server / stand_spawner の 4 箇所）を畳む。
+//! identity、Act = 切替可能な view。本 module は engine 軸の SSOT — agent 名 ↔ engine の対応と
+//! 能力表明（chat 対応 / model 切替対応）をここに一元化し、`agent == "cursor"` のような
+//! stringly 比較の散在（旧 lanes_state / unison_server / agent_spawner の 4 箇所）を畳む。
 //!
 //! [`ChatHost`] / [`ChatEngineSlot`] は旧 `lanes_state.rs` から移設（doc 33 の chat engine 所有を
 //! echoes module に閉じ、chat スタック全体を他repo（GFP 等）へ切り出せる形にする）。
@@ -15,42 +15,42 @@ use super::codex_host::CodexAgentHost;
 use super::event::EchoesEvent;
 use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
 
-/// engine 軸の語彙（どの頭脳か）。stand 名から導く。
+/// engine 軸の語彙（どの頭脳か）。agent 名から導く。
 ///
-/// - stand は DB / wire を流れる自由文字列（入口 allowlist なし）なので、engine 判定は必ず
-///   [`EngineKind::from_stand`] を通す — 対応表をここ 1 箇所に閉じる。
-/// - `None` = engine を持たない stand（`"shell"` / 退役 `"tmux"` / 未知名）。shell（login shell）のみ。
+/// - agent は DB / wire を流れる自由文字列（入口 allowlist なし）なので、engine 判定は必ず
+///   [`EngineKind::from_agent`] を通す — 対応表をここ 1 箇所に閉じる。
+/// - `None` = engine を持たない agent（`"shell"` / 退役 `"tmux"` / 未知名）。shell（login shell）のみ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
-    /// stand=`"echoes"`（+ 旧名 `"hd"`）— claude。常駐 stream-json host（Act II）+ claude TUI（Act I）。
+    /// agent=`"claude"` — claude。常駐 stream-json host（Act II）+ claude TUI（Act I）。
     Claude,
-    /// stand=`"codex"` — OpenAI Codex CLI。常駐 RpcHost（Act II、`codex app-server` — doc 41）
+    /// agent=`"codex"` — OpenAI Codex CLI。常駐 RpcHost（Act II、`codex app-server` — doc 41）
     /// + codex TUI（Act I）。
     Codex,
-    /// stand=`"grok"` — xAI Grok CLI。常駐 AcpAgentHost（Act II、`grok agent stdio` = ACP —
+    /// agent=`"grok"` — xAI Grok CLI。常駐 AcpAgentHost（Act II、`grok agent stdio` = ACP —
     /// doc 42）+ grok TUI（Act I、`-r` resume）。
     Grok,
-    /// stand=`"opencode"` — opencode。常駐 AcpAgentHost（Act II、`opencode acp` = grok と同 ACP —
+    /// agent=`"opencode"` — opencode。常駐 AcpAgentHost（Act II、`opencode acp` = grok と同 ACP —
     /// doc 43）+ opencode TUI（Act I、`-s <id>` resume）。model / provider は opencode config が
     /// SSOT（local LLM 等 — VP は注入しない、doc 43 §3）。
     OpenCode,
 }
 
 impl EngineKind {
-    /// 全 engine の列挙（`list_stands` 等の導出元）。
+    /// 全 engine の列挙（`list_agents` 等の導出元）。
     ///
-    /// 新 engine は [`Self::from_stand`] / [`Self::stand_name`] と併せてここにも足す —
+    /// 新 engine は [`Self::from_agent`] / [`Self::agent_name`] と併せてここにも足す —
     /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
     /// コンパイル時 match 網羅性 + テストで検知する。
     pub const ALL: [EngineKind; 4] = [Self::Claude, Self::Codex, Self::Grok, Self::OpenCode];
 
-    /// stand 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
+    /// agent 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
     ///
     /// 撤去済み engine（`"cursor"` / `"agy"` — sweep 6.5、doc 39 §7）は `None` に倒れる。
-    /// disk / wire に残る旧 stand 文字列は shell（login shell）のみで graceful に受ける。
-    pub fn from_stand(stand: &str) -> Option<Self> {
-        match stand {
-            "echoes" | "hd" => Some(Self::Claude),
+    /// disk / wire に残る旧 agent 文字列は shell（login shell）のみで graceful に受ける。
+    pub fn from_agent(agent: &str) -> Option<Self> {
+        match agent {
+            "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
             "grok" => Some(Self::Grok),
             "opencode" => Some(Self::OpenCode),
@@ -58,10 +58,10 @@ impl EngineKind {
         }
     }
 
-    /// canonical な stand 名（[`Self::from_stand`] の逆写像。旧名 `"hd"` は含まない）。
-    pub fn stand_name(self) -> &'static str {
+    /// canonical な agent 名（[`Self::from_agent`] の逆写像）。
+    pub fn agent_name(self) -> &'static str {
         match self {
-            Self::Claude => "echoes",
+            Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
@@ -71,13 +71,13 @@ impl EngineKind {
     /// GUI（sidebar `+ Add Performer` dropdown 等）向けの表示説明。
     pub fn description(self) -> &'static str {
         match self {
-            Self::Claude => "VP Stand: Echoes 💬 — Act I slot（login shell）+ Claude CLI 自動起動",
+            Self::Claude => "VP Agent: Echoes 💬 — Act I slot（login shell）+ Claude CLI 自動起動",
             Self::Codex => {
-                "VP Stand: Codex 🧮 — Act I slot（login shell）+ codex (OpenAI) 自動起動"
+                "VP Agent: Codex 🧮 — Act I slot（login shell）+ codex (OpenAI) 自動起動"
             }
-            Self::Grok => "VP Stand: Grok ⚡ — Act I slot（login shell）+ grok (xAI) 自動起動",
+            Self::Grok => "VP Agent: Grok ⚡ — Act I slot（login shell）+ grok (xAI) 自動起動",
             Self::OpenCode => {
-                "VP Stand: OpenCode 🧩 — Act I slot（login shell）+ opencode 自動起動（model は opencode config）"
+                "VP Agent: OpenCode 🧩 — Act I slot（login shell）+ opencode 自動起動（model は opencode config）"
             }
         }
     }
@@ -85,7 +85,7 @@ impl EngineKind {
     /// Act II（chat GUI）の host を持つか = console mode Chat を許すか。
     ///
     /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok / opencode — doc 41・42・43）。
-    /// 全 engine が chat 対応だが、engine を持たない stand（shell / 未知）は host を持たない。
+    /// 全 engine が chat 対応だが、engine を持たない agent（shell / 未知）は host を持たない。
     pub fn chat_capable(self) -> bool {
         matches!(
             self,
@@ -227,45 +227,46 @@ impl ChatHost {
 mod tests {
     use super::*;
 
-    /// ALL ⇄ from_stand ⇄ stand_name の roundtrip（片側だけ足した engine を検知する防壁）。
+    /// ALL ⇄ from_agent ⇄ agent_name の roundtrip（片側だけ足した engine を検知する防壁）。
     #[test]
     fn all_engines_roundtrip_through_stand_name() {
         for k in EngineKind::ALL {
             assert_eq!(
-                EngineKind::from_stand(k.stand_name()),
+                EngineKind::from_agent(k.agent_name()),
                 Some(k),
-                "stand_name → from_stand が roundtrip しない: {k:?}"
+                "agent_name → from_agent が roundtrip しない: {k:?}"
             );
             assert!(!k.description().is_empty());
         }
     }
 
-    /// stand 名 → engine 対応表の固定（drift 検知）。
+    /// agent 名 → engine 対応表の固定（drift 検知）。
     #[test]
     fn from_stand_maps_all_known_stands() {
-        assert_eq!(EngineKind::from_stand("echoes"), Some(EngineKind::Claude));
-        assert_eq!(EngineKind::from_stand("hd"), Some(EngineKind::Claude));
-        assert_eq!(EngineKind::from_stand("codex"), Some(EngineKind::Codex));
-        assert_eq!(EngineKind::from_stand("grok"), Some(EngineKind::Grok));
+        assert_eq!(EngineKind::from_agent("claude"), Some(EngineKind::Claude));
+        // 旧名 "hd" の alias は命名エピック 6/9 で撤去（未知値として graceful に落ちる）
+        assert_eq!(EngineKind::from_agent("hd"), None);
+        assert_eq!(EngineKind::from_agent("codex"), Some(EngineKind::Codex));
+        assert_eq!(EngineKind::from_agent("grok"), Some(EngineKind::Grok));
         assert_eq!(
-            EngineKind::from_stand("opencode"),
+            EngineKind::from_agent("opencode"),
             Some(EngineKind::OpenCode)
         );
-        assert_eq!(EngineKind::from_stand("shell"), None);
+        assert_eq!(EngineKind::from_agent("shell"), None);
         assert_eq!(
-            EngineKind::from_stand("tmux"),
+            EngineKind::from_agent("tmux"),
             None,
-            "退役 stand は shell のみ"
+            "退役 agent は shell のみ"
         );
-        assert_eq!(EngineKind::from_stand(""), None);
+        assert_eq!(EngineKind::from_agent(""), None);
     }
 
-    /// graceful degradation: 撤去済み engine（cursor / agy — sweep 6.5）の旧 stand 文字列は
+    /// graceful degradation: 撤去済み engine（cursor / agy — sweep 6.5）の旧 agent 文字列は
     /// `None` に倒れる（disk / wire に残っても shell のみで受け、chat 不可・中立 chip）。
     #[test]
     fn removed_engines_degrade_to_none() {
-        assert_eq!(EngineKind::from_stand("cursor"), None, "cursor は撤去済み");
-        assert_eq!(EngineKind::from_stand("agy"), None, "agy は撤去済み");
+        assert_eq!(EngineKind::from_agent("cursor"), None, "cursor は撤去済み");
+        assert_eq!(EngineKind::from_agent("agy"), None, "agy は撤去済み");
     }
 
     /// 能力表: 全 engine が chat 対応、model 切替 = claude のみ。

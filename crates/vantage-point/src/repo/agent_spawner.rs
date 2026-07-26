@@ -1,4 +1,4 @@
-//! StandSpawner — Stand 名に応じた spawn command 構築（tmux decoupling PR2 で Rust-native 化）
+//! AgentSpawner — agent 名に応じた spawn command 構築（tmux decoupling PR2 で Rust-native 化）
 //!
 //! ## 構造（design doc §13: Act1-layered）
 //!
@@ -13,11 +13,11 @@
 //! - claude 終了後は slot の login shell prompt に自然に戻る（旧 `; exec $SHELL -l` chain 不要）
 //! - `--resume` 失敗 → fresh claude の fallback は shell の `||` が担う
 //!
-//! ## エンジン別 stand（対応表の SSOT は [`crate::echoes::EngineKind`]、doc 37）
+//! ## エンジン別 agent（対応表の SSOT は [`crate::echoes::EngineKind`]、doc 37）
 //!
-//! `stand_name` で注入する Act3 を切り替える。各 engine CLI は「TUI 起動 / ID 指名 resume」の
+//! `agent_name` で注入する Act3 を切り替える。各 engine CLI は「TUI 起動 / ID 指名 resume」の
 //! surface が揃っているため、同じ Act1-layered 構造に載る:
-//! - `"echoes"`（claude）: [`claude_command`]、 cc_session `--resume` + wire hook + model alias
+//! - `"claude"`（claude）: [`claude_command`]、 cc_session `--resume` + wire hook + model alias
 //! - `"codex"`: [`codex_command`]、 codex_session `resume`（採番は Act II の record-from-init のみ
 //!   — codex に create-chat 相当が無いため、Act I 単独ではまず素の `codex` で開始する）
 //! - `"grok"`: [`grok_command`]、registry の会話 id を `-r '<id>'` で指名 resume（doc 42）
@@ -56,9 +56,9 @@ use crate::daemon::pty_slot::PtySlot;
 /// 旧「UserPromptSubmit のみ記録」（#795）はこの guard を hook 側の鈍器で担っていた名残。
 const WIRE_HOOKS: &str = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}"#;
 
-/// Stand spawn 用 command（program + args + env + cwd + 初期入力）
+/// Agent spawn 用 command（program + args + env + cwd + 初期入力）
 #[derive(Debug, Clone)]
-pub struct StandCommand {
+pub struct AgentCommand {
     pub program: String,
     pub args: Vec<String>,
     /// spawn 後に PTY へ type-ahead 注入する初期入力（= Act3 の claude 起動 command line）。
@@ -71,7 +71,7 @@ pub struct StandCommand {
     pub env: Vec<(String, String)>,
     /// spawn 時の cwd = repo directory（旧 install-root ダンスは script 層と共に廃止）。
     pub cwd: String,
-    /// replay buffer の disk 永続 path（`build_stand_command` が lane address から算出）。
+    /// replay buffer の disk 永続 path（`build_agent_command` が lane address から算出）。
     ///
     /// Some のとき PtySlot は spawn 時に前回画面を seed + 定期/Drop で flush する
     /// （repo / daemon 再起動をまたいで console を復元する。 [`crate::daemon::pty_slot`]）。
@@ -83,12 +83,12 @@ pub struct StandCommand {
 /// initial_input の書込みもこの窓の後（= shell の生存確認後）に行う。
 const EARLY_EXIT_CHECK_MS: u64 = 800;
 
-/// `StandCommand` を spawn し、 shell の生存確認後に initial_input を注入する。
+/// `AgentCommand` を spawn し、 shell の生存確認後に initial_input を注入する。
 ///
 /// shell（login shell）が `EARLY_EXIT_CHECK_MS` 以内に死んだら、 PTY 出力の末尾を添えて
 /// bail する（死因の握り潰し防止 — console blackout 調査の教訓）。
-pub fn spawn_stand(
-    cmd: &StandCommand,
+pub fn spawn_agent(
+    cmd: &AgentCommand,
     cols: u16,
     rows: u16,
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
@@ -111,7 +111,7 @@ pub fn spawn_stand(
         // bail message に載せる。 無いと「800ms 以内に死んだ」事実しか残らない。
         let tail = drain_pty_tail(&mut rx);
         anyhow::bail!(
-            "Stand spawn early-exit: program={} args={:?}{}",
+            "Agent spawn early-exit: program={} args={:?}{}",
             cmd.program,
             cmd.args,
             if tail.is_empty() {
@@ -253,7 +253,7 @@ fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
     }
 }
 
-/// Act3（codex stand）: codex 起動 command line を組み立てる。
+/// Act3（codex agent）: codex 起動 command line を組み立てる。
 ///
 /// codex の TUI resume は `codex resume '<id>'`（id は UUID の指名 — `--last` は claude
 /// `--continue` と同型の「最新」曖昧性があるため使わない、doc 37 §7）。id の供給源は
@@ -312,10 +312,10 @@ fn opencode_command(resume_id: Option<&str>) -> String {
 
 /// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
-/// - `"echoes"`（+ 旧名 `"hd"`）: slot + claude 注入（`fresh` / cc_session により resume 分岐）
+/// - `"claude"`（+ 旧名 `"hd"`）: slot + claude 注入（`fresh` / cc_session により resume 分岐）
 /// - `"codex"` / `"grok"` / `"opencode"`: slot + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
 /// - `"shell"`: shell のみ
-/// - `"tmux"`（退役 stand）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: shell のみ + warn
+/// - `"tmux"`（退役 agent）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: shell のみ + warn
 ///   （DB descriptor の legacy 値を graceful 吸収）
 ///
 /// doc 53 §12.1: 旧 `fresh` 引数（resume/continue を回避して素で立てる指示）は退役した。
@@ -324,12 +324,12 @@ fn opencode_command(resume_id: Option<&str>) -> String {
 ///
 /// **この形は root session の slot 専用**（既存の boot / respawn / restart 経路）。非 root
 /// session に slot を立てる producer（doc 46 P5）は
-/// [`build_stand_command_for_session`] に session key を渡すこと。
-pub fn build_stand_command(stand_name: &str, addr: &LaneAddress, repo_dir: &Path) -> StandCommand {
-    build_stand_command_for_session(stand_name, addr, repo_dir, None)
+/// [`build_agent_command_for_session`] に session key を渡すこと。
+pub fn build_agent_command(agent_name: &str, addr: &LaneAddress, repo_dir: &Path) -> AgentCommand {
+    build_agent_command_for_session(agent_name, addr, repo_dir, None)
 }
 
-/// [`build_stand_command`] の session 明示版（doc 46 P5 — slot は lane に 1 枚ではなく
+/// [`build_agent_command`] の session 明示版（doc 46 P5 — slot は lane に 1 枚ではなく
 /// session ごと）。`session` = **この slot が化身する session**（`None` = root）。
 ///
 /// この 1 引数が決めるのは 4 つで、いずれも「root の値」ではなく**その session の値**である
@@ -338,7 +338,7 @@ pub fn build_stand_command(stand_name: &str, addr: &LaneAddress, repo_dir: &Path
 /// | 決まるもの | 由来 |
 /// |---|---|
 /// | `VP_SESSION_KEY` | この session の key（hook がこれを名乗り、repo は報告 session に会話 id を書く、doc 40 §4-1） |
-/// | engine（Act3 の arm） | この session の entry の `stand` |
+/// | engine（Act3 の arm） | この session の entry の `agent` |
 /// | resume id | この session の entry の `conversation` |
 /// | replay 永続 | **全 slot** が session 別 file へ（doc 50 §4.6 A6、後述） |
 ///
@@ -351,12 +351,12 @@ pub fn build_stand_command(stand_name: &str, addr: &LaneAddress, repo_dir: &Path
 ///   （身元を role にすると root 付け替えで再発する — [`crate::daemon::pty_slot::replay_file_path_session_in`]）
 /// - 非 root term も boot で復元される（`lane_reconcile::reconcile_lane`、doc 53 §12）ので読み手が居る
 /// - lane GC / Reset は prefix 掃き（`clear_replay_in`）で session file 群も消す
-pub fn build_stand_command_for_session(
-    stand_name: &str,
+pub fn build_agent_command_for_session(
+    agent_name: &str,
     addr: &LaneAddress,
     repo_dir: &Path,
     session: Option<crate::lane::session_registry::SessionKey>,
-) -> StandCommand {
+) -> AgentCommand {
     let repo_cwd = repo_dir.to_string_lossy().to_string();
 
     // doc 40 PR-3: VP_CWD / VP_SESSION は退役（repo 内読み手ゼロ + user statusline 消費なしを
@@ -397,7 +397,7 @@ pub fn build_stand_command_for_session(
     // 既定（`session=None`）で化身するのは root session（lane の人格）で、doc 46 P5 の producer
     // だけが非 root を名指しする。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
     // engine_model は lane 単位（Act I/II 共有）のまま。
-    let reg = crate::lane::session_registry::load(&addr.repo, lane_label(addr), stand_name);
+    let reg = crate::lane::session_registry::load(&addr.repo, lane_label(addr), agent_name);
     // A6 の後始末: 旧名 replay file（lane 単位）を現 root の session file へ 1 回だけ移設する。
     // slot の replay_path を決める経路はここ 1 本なので、移設もここに置けば取りこぼさない
     // （呼び手ごとに migration を書かせると 1 つ忘れる = [[normalize-at-module-boundary]]）。
@@ -412,17 +412,17 @@ pub fn build_stand_command_for_session(
     // 会話 id を書く（root 固定だと、同じ lane の 2 本目の claude が root の会話を上書きして
     // `--resume` が同居人の会話に化ける — doc 46 §3 の producer blocker）。
     env.push(("VP_SESSION_KEY".into(), key.to_string()));
-    // doc 39 P4-A: slot に載る engine は **その session の stand** が決める（lane 作成時固定の
-    // `stand_name` ではない）。cross-engine の Root 切替（picker）で root を別 engine の session に
+    // doc 39 P4-A: slot に載る engine は **その session の agent** が決める（lane 作成時固定の
+    // `agent_name` ではない）。cross-engine の Root 切替（picker）で root を別 engine の session に
     // 向けると、respawn する slot もその engine で立つ。spawn 全経路（boot / respawn / restart /
     // doc 46 P5 の producer）が この 1 箇所を通るため、engine 追従の修正点はここ一つで足りる。
-    // entry 不在（registry 破損 / 指定 key が実在しない）は防御的に `stand_name` へ fallback。
-    let effective_stand = entry.map(|s| s.stand.as_str()).unwrap_or(stand_name);
+    // entry 不在（registry 破損 / 指定 key が実在しない）は防御的に `agent_name` へ fallback。
+    let effective_stand = entry.map(|s| s.agent.as_str()).unwrap_or(agent_name);
 
-    // stand 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
-    // 選択鍵は effective_stand（= その session の engine、doc 39 P4-A）— lane 固定の stand_name
-    // でなく session の stand で arm を選ぶことが cross-engine root 解禁の核。
-    let initial_input = match crate::echoes::EngineKind::from_stand(effective_stand) {
+    // agent 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
+    // 選択鍵は effective_stand（= その session の engine、doc 39 P4-A）— lane 固定の agent_name
+    // でなく session の agent で arm を選ぶことが cross-engine root 解禁の核。
+    let initial_input = match crate::echoes::EngineKind::from_agent(effective_stand) {
         Some(crate::echoes::EngineKind::Claude) => {
             // transcript_exists pre-flight（doc 33 C2 の Act II と対称化）: 発話ゼロで
             // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒せば
@@ -462,20 +462,20 @@ pub fn build_stand_command_for_session(
         }
         None if effective_stand == "shell" => None,
         None => {
-            // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 stand の
+            // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 agent の
             // DB descriptor を shell 層で受ける（graceful degradation）。effective_stand は
-            // root session の stand（cross-engine root で lane 固定 stand と食い違い得る）。
+            // root session の agent（cross-engine root で lane 固定 agent と食い違い得る）。
             tracing::warn!(
-                "unknown/legacy stand '{}' (lane stand '{}') — slot の login shell で起動します (addr={})",
+                "unknown/legacy agent '{}' (lane agent '{}') — slot の login shell で起動します (addr={})",
                 effective_stand,
-                stand_name,
+                agent_name,
                 addr
             );
             None
         }
     };
 
-    StandCommand {
+    AgentCommand {
         program,
         args,
         initial_input,
@@ -503,18 +503,18 @@ mod tests {
     /// slot の shell は login shell、 cwd は repo dir（旧 install-root ダンスの廃止を固定）。
     #[test]
     fn build_stand_command_floor_is_login_shell_at_repo_dir() {
-        // build_stand_command は registry を読む（doc 39 P4-A: slot の engine は root session の
-        // stand に追従）。実 vp_state_dir の conductor registry を拾わないよう tempdir に隔離する
-        // （sibling の build_stand_command テスト群と同じ規律 — 未隔離だと実 registry の root=echoes を
+        // build_agent_command は registry を読む（doc 39 P4-A: slot の engine は root session の
+        // agent に追従）。実 vp_state_dir の conductor registry を拾わないよう tempdir に隔離する
+        // （sibling の build_agent_command テスト群と同じ規律 — 未隔離だと実 registry の root=echoes を
         // 拾い「shell なのに claude を注入」になって間欠 fail する）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        let cmd = build_stand_command("shell", &addr, Path::new("/work/vp"));
+        let cmd = build_agent_command("shell", &addr, Path::new("/work/vp"));
         assert_eq!(
             cmd.cwd, "/work/vp",
             "cwd は repo dir 直（install root ではない）"
         );
-        assert!(cmd.initial_input.is_none(), "shell stand は shell のみ");
+        assert!(cmd.initial_input.is_none(), "shell agent は shell のみ");
         #[cfg(not(windows))]
         assert!(
             cmd.args.contains(&"-l".to_string()),
@@ -526,10 +526,10 @@ mod tests {
     /// VP_* env が注入されること（doc 40 PR-3: VP_CWD / VP_SESSION は退役 — 注入されないことも固定）。
     #[test]
     fn build_stand_command_injects_vp_env() {
-        // build_stand_command は registry を読む — 実 vp_state_dir を拾わないよう隔離（sibling 規律）。
+        // build_agent_command は registry を読む — 実 vp_state_dir を拾わないよう隔離（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::performer("vantage-point", "sub");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/work/vp"));
+        let cmd = build_agent_command("claude", &addr, Path::new("/work/vp"));
 
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert!(
@@ -566,12 +566,12 @@ mod tests {
         crate::lane::session_registry::create_root(
             "vp",
             "root",
-            "echoes",
-            "echoes",
+            "claude",
+            "claude",
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root #2");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert_eq!(
             env.get("VP_SESSION_KEY").map(String::as_str),
@@ -596,7 +596,7 @@ mod tests {
         crate::lane::session_registry::set_conversation(
             "vp",
             "root",
-            "echoes",
+            "claude",
             1,
             Some("11111111-1111-1111-1111-111111111111"),
         )
@@ -605,7 +605,7 @@ mod tests {
         let key = crate::lane::session_registry::create(
             "vp",
             "root",
-            "echoes",
+            "claude",
             "codex",
             crate::lane::session_registry::SessionAct::Tui,
             false,
@@ -614,13 +614,13 @@ mod tests {
         crate::lane::session_registry::set_conversation(
             "vp",
             "root",
-            "echoes",
+            "claude",
             key,
             Some("01999999-9999-7999-8999-999999999999"),
         )
         .expect("#2 の会話 id");
 
-        let cmd = build_stand_command_for_session("echoes", &addr, Path::new("/tmp"), Some(key));
+        let cmd = build_agent_command_for_session("claude", &addr, Path::new("/tmp"), Some(key));
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert_eq!(
             env.get("VP_SESSION_KEY").map(String::as_str),
@@ -630,7 +630,7 @@ mod tests {
         let input = cmd.initial_input.expect("codex は initial_input あり");
         assert!(
             input.starts_with("codex") && !input.contains("claude"),
-            "engine は #2 の stand（root の claude ではない）: {input}"
+            "engine は #2 の agent（root の claude ではない）: {input}"
         );
         assert!(
             input.contains("01999999-9999-7999-8999-999999999999")
@@ -652,7 +652,7 @@ mod tests {
         );
 
         // 同じ lane の root 版（session 省略）は従来どおり #1 / claude / replay あり（旧名継承）。
-        let root_cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+        let root_cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let root_env: std::collections::HashMap<_, _> = root_cmd.env.iter().cloned().collect();
         assert_eq!(
             root_env.get("VP_SESSION_KEY").map(String::as_str),
@@ -697,12 +697,12 @@ mod tests {
         crate::lane::session_registry::create_root(
             "vp",
             "root",
-            "echoes",
-            "echoes",
+            "claude",
+            "claude",
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(
             !input.contains("--continue") && !input.contains("--resume"),
@@ -715,26 +715,26 @@ mod tests {
     #[test]
     fn echoes_injects_claude_via_initial_input() {
         let addr = LaneAddress::performer("vp", "w1");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(input.starts_with("claude"), "claude 起動 command: {input}");
         assert!(input.contains("wire hook-check"), "wire hook 同梱: {input}");
         assert!(input.ends_with('\r'), "Enter (CR) で submit: {input:?}");
     }
 
-    /// 退役 stand ("tmux") / 未知 stand は shell 層に graceful 吸収。
+    /// 退役 agent ("tmux") / 未知 agent は shell 層に graceful 吸収。
     #[test]
     fn legacy_and_unknown_stands_fall_back_to_floor() {
-        // build_stand_command は registry を読む（doc 39 P4-A: slot の engine は root stand 追従）。
-        // 実 vp_state_dir の conductor registry（root=echoes）を拾うと未知 stand でも claude 注入に
-        // なるため、tempdir に隔離して「未知 stand → shell のみ」の意図を検証する（sibling 規律）。
+        // build_agent_command は registry を読む（doc 39 P4-A: slot の engine は root agent 追従）。
+        // 実 vp_state_dir の conductor registry（root=echoes）を拾うと未知 agent でも claude 注入に
+        // なるため、tempdir に隔離して「未知 agent → shell のみ」の意図を検証する（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        for stand in ["tmux", "opus-xhigh"] {
-            let cmd = build_stand_command(stand, &addr, Path::new("/tmp"));
+        for agent in ["tmux", "opus-xhigh"] {
+            let cmd = build_agent_command(agent, &addr, Path::new("/tmp"));
             assert!(
                 cmd.initial_input.is_none(),
-                "{stand} は shell のみ（initial_input なし）"
+                "{agent} は shell のみ（initial_input なし）"
             );
         }
     }
@@ -856,7 +856,7 @@ mod tests {
     fn session_without_conversation_spawns_bare_via_builder() {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("echoes は initial_input あり");
         assert!(
             !input.contains("--resume") && !input.contains("--continue"),
@@ -887,14 +887,14 @@ mod tests {
         assert!(!is_safe_opencode_session_id("089ead04"), "ses_ prefix 必須");
     }
 
-    /// build_stand_command（opencode stand）: fresh は素の opencode、非 fresh は registry の
+    /// build_agent_command（opencode agent）: fresh は素の opencode、非 fresh は registry の
     /// 会話 id 有無で resume 分岐。model flag は注入しない（opencode config が SSOT、doc 43 §3）。
     #[test]
     fn build_stand_command_opencode_arm() {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
         // 会話 id 未記録 → 素の opencode（新規会話）。model / provider flag は無い。
-        let cmd = build_stand_command("opencode", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("opencode", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("opencode は initial_input あり");
         assert!(input.starts_with("opencode"), "opencode 起動: {input}");
         assert!(
@@ -903,18 +903,18 @@ mod tests {
         );
         assert!(input.ends_with('\r'), "Enter (CR) で submit: {input:?}");
         // fresh も素の opencode（registry-native なので clear 対象の旧 store が無い）。
-        let fresh = build_stand_command("opencode", &addr, Path::new("/tmp"));
+        let fresh = build_agent_command("opencode", &addr, Path::new("/tmp"));
         assert_eq!(fresh.initial_input.as_deref(), Some("opencode\r"));
     }
 
-    /// 撤去済み stand（`"cursor"` — sweep 6.5）の DB descriptor は slot の login shell で graceful に
+    /// 撤去済み agent（`"cursor"` — sweep 6.5）の DB descriptor は slot の login shell で graceful に
     /// 受ける（engine 注入なし = `initial_input` は None、warn ログのみ）。
     #[test]
     fn removed_stand_falls_back_to_bare_floor() {
-        // build_stand_command は registry を読む — 実 conductor registry を拾わないよう隔離（sibling 規律）。
+        // build_agent_command は registry を読む — 実 conductor registry を拾わないよう隔離（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        let cmd = build_stand_command("cursor", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("cursor", &addr, Path::new("/tmp"));
         #[cfg(not(windows))]
         assert!(
             cmd.args.contains(&"-l".to_string()),
@@ -923,54 +923,54 @@ mod tests {
         );
         assert!(
             cmd.initial_input.is_none(),
-            "撤去済み stand は engine を注入せず shell のみ、 got: {:?}",
+            "撤去済み agent は engine を注入せず shell のみ、 got: {:?}",
             cmd.initial_input
         );
     }
 
-    /// doc 39 P4-A: slot の engine は lane 固定 stand でなく **root session の stand** で決まる。
-    /// lane stand=echoes でも root を codex session に向けたら slot は codex が立つ（cross-engine の
+    /// doc 39 P4-A: slot の engine は lane 固定 agent でなく **root session の agent** で決まる。
+    /// lane agent=echoes でも root を codex session に向けたら slot は codex が立つ（cross-engine の
     /// Root 切替後の respawn 追従）。effective_stand の解決が engine arm 選択に効くことを固定する。
     #[test]
     fn build_stand_command_follows_root_session_engine() {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        // lane stand=echoes だが root(#2) を codex に向ける（picker の cross-engine 切替後の registry）。
+        // lane agent=echoes だが root(#2) を codex に向ける（picker の cross-engine 切替後の registry）。
         crate::lane::session_registry::create_root(
             "vp",
             "root",
-            "echoes",
+            "claude",
             "codex",
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root codex");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("codex root は initial_input あり");
         assert!(
             input.starts_with("codex") && !input.contains("claude"),
-            "root が codex なら slot は codex 起動（lane stand=echoes に引きずられない）: {input}"
+            "root が codex なら slot は codex 起動（lane agent=echoes に引きずられない）: {input}"
         );
     }
 
-    /// doc 39 P4-A: root entry の stand が legacy / 撤去済み engine（cursor 等）なら、lane stand が
+    /// doc 39 P4-A: root entry の agent が legacy / 撤去済み engine（cursor 等）なら、lane agent が
     /// echoes でも shell 層に graceful fallback する（engine 注入なし = initial_input は None）。
     #[test]
     fn build_stand_command_root_legacy_stand_falls_back_to_floor() {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        // lane stand=echoes だが root(#2) を撤去済み "cursor" に向ける（disk に残る legacy 値の再現）。
+        // lane agent=echoes だが root(#2) を撤去済み "cursor" に向ける（disk に残る legacy 値の再現）。
         crate::lane::session_registry::create_root(
             "vp",
             "root",
-            "echoes",
+            "claude",
             "cursor",
             crate::lane::session_registry::SessionAct::Tui,
         )
         .expect("create_root cursor");
-        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
+        let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         assert!(
             cmd.initial_input.is_none(),
-            "未知 root stand は engine を注入せず shell のみ、 got: {:?}",
+            "未知 root agent は engine を注入せず shell のみ、 got: {:?}",
             cmd.initial_input
         );
     }

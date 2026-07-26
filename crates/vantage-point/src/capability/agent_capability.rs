@@ -380,7 +380,7 @@ impl Capability for AgentCapability {
         self.state
     }
 
-    /// VP-83 Stand 自己診断 (2026-04-25) — Heaven's Door 📖 の実行時 snapshot
+    /// VP-83 Agent 自己診断 (2026-04-25) — Heaven's Door 📖 の実行時 snapshot
     ///
     /// Agent は Claude CLI の orchestrator、観測ポイント:
     /// - working_dir (実行 repo dir)
@@ -468,7 +468,7 @@ impl Capability for AgentCapability {
 // VP-159 PR-2: Stand trait impl
 // =============================================================================
 
-/// `AgentCapability` を VP-159 `Stand` (= ECS entity bound actor) として登録する impl。
+/// `AgentCapability` を VP-159 `Agent` (= ECS entity bound actor) として登録する impl。
 ///
 /// VP-157 で agent box の **observer 化** が完了済 (= EventBus subscribe で notification 受信、
 /// 専属 mpsc consumer は持たない)。 本 impl は Stand trait の minimal marker (name / layer_scope
@@ -567,8 +567,8 @@ mod tests {
     fn agent_capability_implements_stand() {
         // VP-159 PR-2: AgentCapability が Stand trait を満たす事を sig level で確認
         let cap = AgentCapability::new();
-        let stand: &dyn Stand = &cap;
-        assert_eq!(stand.actor_name(), "agent");
-        assert_eq!(stand.layer_scope(), LayerScope::Repo);
+        let agent: &dyn Stand = &cap;
+        assert_eq!(agent.actor_name(), "agent");
+        assert_eq!(agent.layer_scope(), LayerScope::Repo);
     }
 }

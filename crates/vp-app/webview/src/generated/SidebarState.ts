@@ -51,7 +51,7 @@ active_lane_address?: string | null,
  */
 origin_by_repo?: { [key in string]?: string }, 
 /**
- * Phase 5-A: 現在 active な Repo-scope Stand kind
+ * Phase 5-A: 現在 active な Repo-scope Agent kind
  * (`"board"` / `"runner"` / `"devices"`)。
  * `(repo_path, kind)` の tuple で repo ごとに区別。 app 全体で 1 つだけ active。
  * `active_lane_address` と **mutually exclusive** ── どちらか一方が None。

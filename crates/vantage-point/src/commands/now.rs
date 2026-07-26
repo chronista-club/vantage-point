@@ -8,7 +8,7 @@
 //! vp now "panic 箇所を特定中 — pty_slot の lock 順を確認"
 //! ```
 //!
-//! 宛先の識別は **spawn 時注入の env**（Act I slot = stand_spawner / Act II host が注入）:
+//! 宛先の識別は **spawn 時注入の env**（Act I slot = agent_spawner / Act II host が注入）:
 //! `VP_REPO` + `VP_LANE`（lane address の導出）+ `VP_SESSION_KEY`（session の名乗り、
 //! doc 40 §4 の hook identity と同じ）。env の無い場所（lane の外の手動実行）は
 //! `--lane` / `--session` で明示する。
@@ -23,7 +23,7 @@ use crate::commands::process_client::daemon_repo_request_blocking;
 use crate::config::Config;
 
 /// env（VP_REPO / VP_LANE）から lane address（Display 形）を導く。
-/// stand_spawner の注入と対の読み手（値の形は `<repo>/root` / `<repo>/performer/<name>`）。
+/// agent_spawner の注入と対の読み手（値の形は `<repo>/root` / `<repo>/performer/<name>`）。
 fn lane_addr_from_env() -> Option<String> {
     let repo = std::env::var("VP_REPO").ok().filter(|s| !s.is_empty())?;
     let label = std::env::var("VP_LANE").ok().filter(|s| !s.is_empty())?;

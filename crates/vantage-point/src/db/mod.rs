@@ -15,7 +15,7 @@
 //!
 //! - `processes`: プロセス状態（QUIC Registry + HTTP polling 代替）
 //! - `pane_contents`: Canvas ペイン状態
-//! - `stand_status`: Stand ステータス
+//! - `stand_status`: Agent ステータス
 //! - `prompts`: User Prompt
 //! - `notifications`: CC 通知
 
@@ -1571,10 +1571,10 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Stand Status CRUD
+    // Agent Status CRUD
     // =========================================================================
 
-    /// Stand ステータスを更新（UPSERT）
+    /// Agent ステータスを更新（UPSERT）
     pub async fn upsert_stand_status(
         &self,
         repo_path: &str,
@@ -1628,7 +1628,7 @@ impl VpDb {
         Ok(stream)
     }
 
-    /// repoの全 Stand ステータスを取得
+    /// repoの全 Agent ステータスを取得
     pub async fn list_stand_status(&self, repo_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
             .db
@@ -1659,7 +1659,7 @@ DEFINE FIELD IF NOT EXISTS port ON processes TYPE int;
 DEFINE FIELD IF NOT EXISTS pid ON processes TYPE int;
 DEFINE FIELD IF NOT EXISTS status ON processes TYPE string;
 DEFINE FIELD IF NOT EXISTS started_at ON processes TYPE datetime;
-DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS agents ON processes TYPE option<object> FLEXIBLE;
 DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS repo_path UNIQUE;
 
 -- home-node identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
@@ -1839,7 +1839,7 @@ DEFINE FIELD IF NOT EXISTS updated_at ON pane_contents TYPE datetime DEFAULT tim
 REMOVE INDEX IF EXISTS idx_pane_lane ON pane_contents;
 DEFINE INDEX IF NOT EXISTS idx_pane_scope ON pane_contents COLUMNS repo_path, scope, lane_name, pane_id UNIQUE;
 
--- Stand ステータス
+-- Agent ステータス
 DEFINE TABLE IF NOT EXISTS stand_status SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS repo_path ON stand_status TYPE string;
 DEFINE FIELD IF NOT EXISTS stand_key ON stand_status TYPE string;
@@ -2222,7 +2222,7 @@ mod tests {
             id: Default::default(),
             address: LaneAddress::new(repo, name),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-06-20T00:00:00Z".to_string(),
             pid: Some(1234),
             cwd: "/tmp".to_string(),
@@ -2230,7 +2230,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
 
@@ -2246,13 +2246,13 @@ mod tests {
         let rows = db.list_lanes().await.unwrap();
         assert_eq!(rows.len(), 3, "3 lane descriptor が round-trip する");
 
-        // descriptor が round-trip する (address / stand)
+        // descriptor が round-trip する (address / agent)
         let vp_conductor = rows
             .iter()
             .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
             .expect("vp root が読める");
         assert_eq!(vp_conductor.1.address.to_string(), "vp/root");
-        assert_eq!(vp_conductor.1.stand, "echoes");
+        assert_eq!(vp_conductor.1.agent, "claude");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
         db.upsert_lane("/repos/vp", &mk("vp", "root"))
@@ -2969,7 +2969,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Stand Status CRUD テスト
+    // Agent Status CRUD テスト
     // =========================================================================
 
     /// 基本的な INSERT → SELECT フロー

@@ -897,7 +897,7 @@ impl RepoManagerCapability {
     /// 同じ `new_performer_in` で ground を作る）。
     ///
     /// 残っていたのは「同じ動詞に実装が 2 本」という状態そのもので、実際に
-    /// **経路ごとに振る舞いが違った**（`base` / `model` 指定が効かない、stand を descriptor
+    /// **経路ごとに振る舞いが違った**（`base` / `model` 指定が効かない、agent を descriptor
     /// 経由で watcher に伝え直す遠回り、descriptor は GUI 経由だけ db に載る、等）。
     /// 統合後の本関数は「名前の gate → repo runtime を引く → core を呼ぶ」だけの adapter。
     ///
@@ -907,14 +907,14 @@ impl RepoManagerCapability {
     /// 手前で完結させる**（doc 44 §9.2）。加えて repo 未起動時に「予約名です」ではなく
     /// 「repo 未起動」が返ると理由がすり替わる。呼ぶのは同じ関数 1 本なので実装は増えない。
     ///
-    /// `branch` / `stand` は呼び手 (route) が resolve 済の concrete 値を渡す
+    /// `branch` / `agent` は呼び手 (route) が resolve 済の concrete 値を渡す
     /// (default 導出 = data/calc は route の責務)。
     pub async fn create_lane(
         &self,
         repo_path: &str,
         name: &str,
         branch: &str,
-        stand: &str,
+        agent: &str,
     ) -> CapabilityResult<crate::repo::lanes_state::LaneInfo> {
         let name = name.trim();
         crate::lane::config::validate_performer_name(name).map_err(CapabilityError::Other)?;
@@ -935,7 +935,7 @@ impl RepoManagerCapability {
             ))
         })?;
 
-        let req = crate::repo::routes::lanes::build_create_lane_req(name, branch, stand);
+        let req = crate::repo::routes::lanes::build_create_lane_req(name, branch, agent);
         crate::repo::routes::lanes::create_performer_orchestrated(&state, req)
             .await
             .map_err(CapabilityError::Other)
@@ -1756,9 +1756,9 @@ impl RepoManagerCapability {
             // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_performer_in skip)。
             // doc 44 P2: `kind` は撤去（lane に種別が無くなり、指定する余地が消えた）。
             //
-            // stand は payload に積まない = 受け手の default に委ねる。
+            // agent は payload に積まない = 受け手の default に委ねる。
             // doc 44 §9.4 の統合前は、GUI create が descriptor だけ作って spawn を watcher に
-            // 委ねていたため、選んだ stand を `lane_registry` の descriptor から引き直して
+            // 委ねていたため、選んだ agent を `lane_registry` の descriptor から引き直して
             // ここで積む必要があった（bug mem_1Cd4M7i5Enp3HHMLVYayRe「codex を選んでも claude で
             // spawn」の対処）。統合後は GUI create が自分で spawn するので **その lane はここに
             // 来ても "already exists" で弾かれる** — 引き継ぐ相手が居ない。今ここに来るのは
@@ -2425,7 +2425,7 @@ mod tests {
             id: Default::default(),
             address: addr,
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-06-20T00:00:00Z".to_string(),
             pid: None,
             cwd: cwd.to_string(),
@@ -2433,7 +2433,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
         let conductor = mk(LaneAddress::root("bdestroy"), &repo_path);
@@ -2489,7 +2489,7 @@ mod tests {
             id: Default::default(),
             address: LaneAddress::performer("hasperf", "foo"),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-07-11T00:00:00Z".to_string(),
             pid: None,
             cwd: tmp.join(".vp/lanes/foo").to_string_lossy().to_string(),
@@ -2497,7 +2497,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
         cap.lane_registry_ref()
@@ -2544,7 +2544,7 @@ mod tests {
         cap.add_repo("bcreate", &repo_path).await.unwrap();
 
         let err = cap
-            .create_lane(&repo_path, "foo", "test/foo", "echoes")
+            .create_lane(&repo_path, "foo", "test/foo", "claude")
             .await
             .expect_err("repo runtime 不在では作れない");
         let msg = err.to_string();
@@ -2583,13 +2583,13 @@ mod tests {
 
         for bad in ["", "   ", "root", "../etc/passwd", "foo bar", "-leading"] {
             let daemon_err = cap
-                .create_lane(&repo_path, bad, "test/x", "echoes")
+                .create_lane(&repo_path, bad, "test/x", "claude")
                 .await
                 .expect_err("Daemon 入口は拒否する")
                 .to_string();
             let core_err = crate::repo::routes::lanes::create_performer_orchestrated(
                 &state,
-                crate::repo::routes::lanes::build_create_lane_req(bad, "test/x", "echoes"),
+                crate::repo::routes::lanes::build_create_lane_req(bad, "test/x", "claude"),
             )
             .await
             .expect_err("core も拒否する");
@@ -2644,7 +2644,7 @@ mod tests {
 
         // dup check の masking は効かない状況（lane_registry は空）。
         let err = cap
-            .create_lane(&repo_path, "root", "test/x", "echoes")
+            .create_lane(&repo_path, "root", "test/x", "claude")
             .await
             .expect_err("予約名は Err");
         assert!(
@@ -2691,7 +2691,7 @@ mod tests {
             id: Default::default(),
             address: LaneAddress::performer("proj", name),
             state: LaneState::Spawning,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-06-20T00:00:00Z".to_string(),
             pid: None,
             cwd: cwd.to_string_lossy().into_owned(),
@@ -2699,7 +2699,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
         cap.lane_registry_ref().write().await.insert(

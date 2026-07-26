@@ -314,7 +314,7 @@ pub fn validate_performer_name(name: &str) -> Result<(), String> {
         ));
     }
     // VP-166: 開発起点 lane の予約名は performer 名として使えない
-    // (mailbox box key `<stand>#conductor` と衝突するため)。
+    // (mailbox box key `<agent>#conductor` と衝突するため)。
     // 設計: docs/design/16-performer-lane-mailbox-recv.md
     //
     // doc 44 P2 以降、予約名の真実源は `ROOT_LANE_NAME` 定数。文字列直書きだと
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn conductor_name_rejected() {
-        // VP-166: `conductor` は conductor lane の予約名 (mailbox box key `<stand>#conductor` と衝突)
+        // VP-166: `conductor` は conductor lane の予約名 (mailbox box key `<agent>#conductor` と衝突)
         assert!(validate_performer_name("root").is_err());
         // 部分一致や派生名は OK (= `conductor` 完全一致のみ禁止)
         assert!(validate_performer_name("leader").is_ok());

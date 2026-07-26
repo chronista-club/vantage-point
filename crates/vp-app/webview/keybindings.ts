@@ -20,7 +20,7 @@ import { applyAppScene, cycleAppScene } from "./app-panes";
  * "1" → "!", "3" → "#" 等の symbol に変わるため hotkey 判定に使えない（US/JIS 両方該当）。
  */
 // doc 52 §10 wave 0: pp scene（side-review / pp-overlay / pp-focus）退役後、Digit2-4 は残る
-// stand focus（runner / Devices / Preview）へ。Digit1 = lane workbench（board も console も chat も
+// agent focus（runner / Devices / Preview）へ。Digit1 = lane workbench（board も console も chat も
 // この中の tiling）。
 const SCENE_HOTKEY_BY_CODE: Record<string, string> = {
 	Digit1: "lead-focus",

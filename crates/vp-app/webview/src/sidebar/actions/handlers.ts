@@ -238,7 +238,7 @@ export function runRestart(): void {
 		sendIpc({ t: "process:restart", path: sidebar.active_stand.repo_path });
 		return;
 	}
-	console.debug("[directive r] active lane / stand なし、 skip");
+	console.debug("[directive r] active lane / agent なし、 skip");
 }
 
 /** `n` — active repo の AddPerformer form を keyboard で open。 */
@@ -270,7 +270,7 @@ export function runDelete(): void {
 	} else if (sidebar.active_stand) {
 		target = { kind: "repo", path: sidebar.active_stand.repo_path };
 	} else {
-		console.debug("[directive d] active lane / stand なし、 skip");
+		console.debug("[directive d] active lane / agent なし、 skip");
 		return;
 	}
 

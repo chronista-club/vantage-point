@@ -240,7 +240,7 @@ impl CodexAgentHost {
         cmd.arg("app-server")
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
-            // wire で自分を名乗る口。Act I の stand_spawner / claude host と同じ契約。
+            // wire で自分を名乗る口。Act I の agent_spawner / claude host と同じ契約。
             .env("VP_REPO", &config.repo)
             .env("VP_LANE", &config.lane_label)
             .env("VP_SESSION_KEY", config.session_key.to_string())

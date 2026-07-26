@@ -67,7 +67,7 @@ export type PaneRef = {
  *  欠落（旧 SP）は "tui" に倒す（従来の既定 = Act I）。 */
 export type PaneSession = {
 	key: number;
-	stand: string;
+	agent: string;
 	root?: boolean;
 	act?: "tui" | "chat";
 };
@@ -149,7 +149,7 @@ export function lanePaneRefs(
 	boardPresent = false,
 ): PaneRef[] {
 	const sessionPanes = sessions.map((v): PaneRef => {
-		const label = `${sessionChipPrefix(v.stand)}#${v.key}`;
+		const label = `${sessionChipPrefix(v.agent)}#${v.key}`;
 		const kind = v.act === "chat" ? "chat" : "term";
 		return { id: hostIdForAct(v.key, v.act), label, session: v.key, kind };
 	});
@@ -236,7 +236,7 @@ const RESTORE_SHARE = 0.5;
 
 /** 新 Pane の選択肢 1 つ（doc 46 P2 要件 4: Engine × Act）。 */
 export type NewPaneChoice = {
-	/** stand 名（`echoes` / `codex` / `grok` …）。 */
+	/** agent 名（`echoes` / `codex` / `grok` …）。 */
 	engine: string;
 	/** 表示名（engine の人間可読名）。 */
 	engineLabel: string;
@@ -252,10 +252,10 @@ export type NewPaneChoice = {
  * 流し込むだけなのでどの engine でも成立する。
  */
 export function newPaneChoices(
-	stands: readonly { name: string; label?: string; chat_capable?: boolean }[],
+	agents: readonly { name: string; label?: string; chat_capable?: boolean }[],
 ): NewPaneChoice[] {
 	const out: NewPaneChoice[] = [];
-	for (const s of stands) {
+	for (const s of agents) {
 		if (!s.name) continue;
 		const engineLabel = s.label && s.label.length > 0 ? s.label : s.name;
 		out.push({ engine: s.name, engineLabel, act: "tui" });

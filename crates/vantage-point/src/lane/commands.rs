@@ -511,7 +511,7 @@ fn remove_performer_workspace(repo_root: &Path, performer_dir: &Path) -> Result<
 /// ⚠️ `remove_performer_workspace` には置かない — `setup_performer` の `--force` 再作成も
 /// あれを通るため、そこで cc_session を消すと workspace 再作成後の `--resume` 継続性を壊す。
 ///
-/// キーは repo の書き手 (lanes_state::set_console_mode / stand_spawner の VP_REPO env、
+/// キーは repo の書き手 (lanes_state::set_console_mode / agent_spawner の VP_REPO env、
 /// create_performer_orchestrated 等) と同じ derivation: repo = repo_root の basename、
 /// lane = performer 名。
 fn clear_lane_state_files(repo_root: &Path, lane: &str) {
@@ -612,7 +612,7 @@ pub(crate) fn clear_lane_state(repo: &str, lane: &str) {
 /// key derivation と一致する (既存 2 経路が既にこの前提で動いていた)。
 ///
 /// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 6 種):
-/// session_registry (会話 id と Act の SSOT) / engine_model / stand (engine 種別) /
+/// session_registry (会話 id と Act の SSOT) / engine_model / agent (engine 種別) /
 /// echoes_replay (session label 単位) / terminal_replay (slot の scrollback) / lane_id (安定 id)。
 ///
 /// best-effort: 個々の失敗は warn して残置し、他の破棄は続行する (1 file の fs error で
@@ -620,10 +620,10 @@ pub(crate) fn clear_lane_state(repo: &str, lane: &str) {
 fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
     // ① echoes_replay は **session label 単位** (`<lane>` + `<lane>#<n>`)。registry を消す前に
     //    全 session を列挙して各 label の replay log を消す (残すと transcript を持たない engine の
-    //    replay 源が同名 lane に蘇る)。default_stand は registry file 不在時の N=1 既定形にしか
+    //    replay 源が同名 lane に蘇る)。default_agent は registry file 不在時の N=1 既定形にしか
     //    効かず、 その唯一 session の label は素の lane 名 (下の console / terminal_replay と同鍵)
     //    なので列挙値は問わない。
-    let reg = super::session_registry::load_in(base, repo, lane, "echoes");
+    let reg = super::session_registry::load_in(base, repo, lane, "claude");
     for s in &reg.sessions {
         let label = super::session_registry::session_label(lane, s.key);
         if let Err(e) = crate::echoes::replay_log::clear_in(base, repo, &label) {
@@ -642,9 +642,9 @@ fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
     if let Err(e) = super::engine_model::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: engine_model の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ④ stand (engine 種別 — repo 再起動またぎの spawn stand)
-    if let Err(e) = super::stand_store::clear_in(base, repo, lane) {
-        tracing::warn!("lane state GC: stand の破棄に失敗 (残置): lane={lane} err={e}");
+    // ④ agent (engine 種別 — repo 再起動またぎの spawn agent)
+    if let Err(e) = super::agent_store::clear_in(base, repo, lane) {
+        tracing::warn!("lane state GC: agent の破棄に失敗 (残置): lane={lane} err={e}");
     }
     // ⑤ terminal_replay (slot の scrollback の replay seed)
     if let Err(e) = crate::daemon::pty_slot::clear_replay_in(base, repo, lane) {
@@ -1937,7 +1937,7 @@ mod tests {
             base,
             "vp",
             "feat",
-            "echoes",
+            "claude",
             crate::lane::session_registry::SessionAct::Chat,
         )
         .expect("record act");
@@ -1946,7 +1946,7 @@ mod tests {
             base,
             "vp",
             "feat",
-            "echoes",
+            "claude",
             1,
             Some("sess-1"),
         )
@@ -1960,7 +1960,7 @@ mod tests {
             "registry file が消え、Act も既定（Tui）に戻る"
         );
         assert_eq!(
-            crate::lane::session_registry::load_in(base, "vp", "feat", "echoes").sessions[0]
+            crate::lane::session_registry::load_in(base, "vp", "feat", "claude").sessions[0]
                 .conversation,
             None,
             "registry file が消え、既定形（会話 id なし）に戻る"
@@ -1979,7 +1979,7 @@ mod tests {
     fn clear_lane_state_removes_all_six_state_files_and_is_scoped() {
         use crate::daemon::pty_slot;
         use crate::echoes::{EchoesEvent, replay_log};
-        use crate::lane::{engine_model, lane_id, session_registry, stand_store};
+        use crate::lane::{agent_store, engine_model, lane_id, session_registry};
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
@@ -1991,17 +1991,17 @@ mod tests {
                 base,
                 "vp",
                 lane,
-                "echoes",
+                "claude",
                 session_registry::SessionAct::Chat,
             )
             .expect("registry act");
-            session_registry::set_conversation_in(base, "vp", lane, "echoes", 1, Some("sess-1"))
+            session_registry::set_conversation_in(base, "vp", lane, "claude", 1, Some("sess-1"))
                 .expect("registry #1");
             session_registry::create_in(
                 base,
                 "vp",
                 lane,
-                "echoes",
+                "claude",
                 "codex",
                 session_registry::SessionAct::Chat,
                 true,
@@ -2009,8 +2009,8 @@ mod tests {
             .expect("registry #2");
             // ② engine_model
             engine_model::record_in(base, "vp", lane, "sonnet").expect("engine_model");
-            // ③ stand
-            stand_store::record_in(base, "vp", lane, "codex").expect("stand");
+            // ③ agent
+            agent_store::record_in(base, "vp", lane, "codex").expect("agent");
             // ④ echoes_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
             let ev = EchoesEvent::MessageChunk {
                 text: "hi".to_string(),
@@ -2034,7 +2034,7 @@ mod tests {
         clear_lane_state_in(base, "vp", "feat");
 
         // 対象 lane: 全 6 種が消えている。
-        let reg = session_registry::load_in(base, "vp", "feat", "echoes");
+        let reg = session_registry::load_in(base, "vp", "feat", "claude");
         assert_eq!(reg.sessions.len(), 1, "①registry が既定形 N=1 に戻る");
         assert_eq!(reg.sessions[0].conversation, None, "①会話 id も消える");
         assert_eq!(
@@ -2047,7 +2047,7 @@ mod tests {
             None,
             "②engine_model"
         );
-        assert_eq!(stand_store::last_in(base, "vp", "feat"), None, "③stand");
+        assert_eq!(agent_store::last_in(base, "vp", "feat"), None, "③agent");
         assert!(
             replay_log::load_in(base, "vp", "feat").is_empty(),
             "④replay_log #1"
@@ -2076,7 +2076,7 @@ mod tests {
             "別 lane の Act は残る"
         );
         assert_eq!(
-            stand_store::last_in(base, "vp", "other").as_deref(),
+            agent_store::last_in(base, "vp", "other").as_deref(),
             Some("codex")
         );
         assert!(

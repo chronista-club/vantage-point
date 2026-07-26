@@ -1,6 +1,6 @@
-//! Event — Stand Ensemble の単位メッセージ
+//! Event — Agent Ensemble の単位メッセージ
 //!
-//! `payload: CreoContent` が全 Stand 間を流れる。`causation` で why? tree を構築可。
+//! `payload: CreoContent` が全 Agent 間を流れる。`causation` で why? tree を構築可。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -13,12 +13,12 @@ use super::ui::CreoUI;
 /// Time-ordered UUID (v7) として発行される event の id。
 pub type EventId = Uuid;
 
-/// Actor reference — canonical address `{stand}@{repo}/{lane}` の構成要素。
+/// Actor reference — canonical address `{agent}@{repo}/{lane}` の構成要素。
 ///
 /// Mailbox address (VP-24 / VP-146) と互換: `canonical()` で v3.1 syntax 文字列化できる。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ActorRef {
-    pub stand: String,
+    pub agent: String,
     pub lane: String,
     pub repo: String,
 }
@@ -27,11 +27,11 @@ impl ActorRef {
     /// `echoes@vantage-point/root` 形式の v3.1 federated address 文字列を返す。
     /// VP-146 で旧 sub-suffix 形式 (`echoes.conductor@vantage-point`) から移行。
     pub fn canonical(&self) -> String {
-        format!("{}@{}/{}", self.stand, self.repo, self.lane)
+        format!("{}@{}/{}", self.agent, self.repo, self.lane)
     }
 }
 
-/// Stand Ensemble の event stream を流れる最小単位。
+/// Agent Ensemble の event stream を流れる最小単位。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: EventId,
@@ -84,7 +84,7 @@ mod tests {
 
     fn sample_actor() -> ActorRef {
         ActorRef {
-            stand: "echoes".into(),
+            agent: "claude".into(),
             lane: "root".into(),
             repo: "vantage-point".into(),
         }
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn actor_ref_canonical() {
-        assert_eq!(sample_actor().canonical(), "echoes@vantage-point/root");
+        assert_eq!(sample_actor().canonical(), "claude@vantage-point/root");
     }
 
     #[test]

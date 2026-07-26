@@ -517,7 +517,7 @@ pub(crate) async fn handle_daemon_control(
         // drift テスト + MCP tool 合成が付いてくる）なので、read 面をここに置く。
         // repo 単位の詳細は repo-proxy の `lanes_list` が持つ。
         //
-        // doc 45 段 1: HTTP 版の query filter (repo / lane / stand) と表示順を取り込んだ。
+        // doc 45 段 1: HTTP 版の query filter (repo / lane / agent) と表示順を取り込んだ。
         // ここが素の flatten のままだと、CLI を Unison に移した瞬間に一覧の並びが静かに変わる。
         // filter/sort は `routes::daemon::collect_lanes` を HTTP と共有する。
         "lanes/list" => {
@@ -538,16 +538,16 @@ pub(crate) async fn handle_daemon_control(
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            let (branch, stand) = crate::repo::routes::daemon::resolve_create_lane_args(
+            let (branch, agent) = crate::repo::routes::daemon::resolve_create_lane_args(
                 path,
                 name,
                 payload["branch"].as_str(),
-                payload["stand"].as_str(),
+                payload["agent"].as_str(),
             );
             let info = daemon_cap
                 .read()
                 .await
-                .create_lane(path, name, &branch, &stand)
+                .create_lane(path, name, &branch, &agent)
                 .await
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(&info).map_err(|e| e.to_string())
@@ -1415,7 +1415,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     //   doc 44 P1 (fold-in) 以前は「repo register/heartbeat (QUIC Push) → registry channel」が
     //   生産者だったが、repo 消滅で in-process の start/stop_process が daemon-canonical に引き継いだ。
     //
-    // SSOT 規約: Unison-first。 既存 HTTP /api/health の stands field は legacy fallback として
+    // SSOT 規約: Unison-first。 既存 HTTP /api/health の agents field は legacy fallback として
     // 温存するが、 新規 control plane の主経路は本 channel に集約。
     // =========================================================================
     if let Some(ref running_repos) = state.running_repos {
@@ -2585,7 +2585,7 @@ mod tests {
         );
     }
 
-    /// `lanes/list` の filter（repo / lane / stand）と表示順を固定する。
+    /// `lanes/list` の filter（repo / lane / agent）と表示順を固定する。
     ///
     /// **空 registry では filter も sort も無仕事になる**ので、複数 repo × 複数 lane を
     /// 実際に積んでから確認する。並びは repo 名昇順 → 同 repo 内は開発起点 (root) 先 →
@@ -2596,13 +2596,13 @@ mod tests {
 
         let cap = new_daemon_cap();
 
-        // registry を直接埋める（repo の publish を模す）。repo 名 / created_at / stand を
+        // registry を直接埋める（repo の publish を模す）。repo 名 / created_at / agent を
         // わざと逆順・混在で入れて、sort と filter が実際に仕事をする状態を作る。
-        let mk = |repo: &str, name: &str, created_at: &str, stand: &str| LaneInfo {
+        let mk = |repo: &str, name: &str, created_at: &str, agent: &str| LaneInfo {
             id: Default::default(),
             address: LaneAddress::new(repo, name),
             state: LaneState::Running,
-            stand: stand.to_string(),
+            agent: agent.to_string(),
             created_at: created_at.to_string(),
             pid: Some(4321),
             cwd: "/tmp".to_string(),
@@ -2610,7 +2610,7 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
         {
@@ -2620,13 +2620,13 @@ mod tests {
                 "/repos/zeta".to_string(),
                 vec![
                     mk("zeta", "later", "2026-07-02T00:00:00Z", "shell"),
-                    mk("zeta", "root", "2026-07-03T00:00:00Z", "echoes"),
-                    mk("zeta", "earlier", "2026-07-01T00:00:00Z", "echoes"),
+                    mk("zeta", "root", "2026-07-03T00:00:00Z", "claude"),
+                    mk("zeta", "earlier", "2026-07-01T00:00:00Z", "claude"),
                 ],
             );
             registry.insert(
                 "/repos/alpha".to_string(),
-                vec![mk("alpha", "root", "2026-07-01T00:00:00Z", "echoes")],
+                vec![mk("alpha", "root", "2026-07-01T00:00:00Z", "claude")],
             );
         }
 
@@ -2642,7 +2642,7 @@ mod tests {
                 vec!["root", "earlier", "later"],
             ),
             (
-                serde_json::json!({"stand": "echoes"}),
+                serde_json::json!({"agent": "claude"}),
                 vec!["root", "root", "earlier"],
             ),
             (serde_json::json!({"lane": "root"}), vec!["root", "root"]),
@@ -2777,20 +2777,20 @@ mod tests {
     fn create_lane_defaults_are_derived() {
         use crate::repo::routes::daemon::resolve_create_lane_args;
 
-        let (branch, stand) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
+        let (branch, agent) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
         assert!(
             branch.ends_with("/sub"),
             "branch 未指定なら `<user>/<name>` を derive する: {branch}"
         );
         assert!(
-            !stand.is_empty(),
-            "stand 未指定でも default が入る: {stand}"
+            !agent.is_empty(),
+            "agent 未指定でも default が入る: {agent}"
         );
 
         // 明示指定はそのまま通る。空白のみの branch は未指定と同じ扱い。
-        let (branch, stand) =
+        let (branch, agent) =
             resolve_create_lane_args("/tmp/parity", "sub", Some("feat/x"), Some("shell"));
-        assert_eq!((branch.as_str(), stand.as_str()), ("feat/x", "shell"));
+        assert_eq!((branch.as_str(), agent.as_str()), ("feat/x", "shell"));
         let (branch, _) = resolve_create_lane_args("/tmp/parity", "sub", Some("   "), None);
         assert!(branch.ends_with("/sub"), "空白 branch は derive に落ちる");
     }

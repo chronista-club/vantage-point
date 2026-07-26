@@ -15,7 +15,7 @@ function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 		id: "",
 		address: { repo: "vp", name: "root" },
 		state: "running",
-		stand: "echoes",
+		agent: "claude",
 		created_at: "2026-07-10T00:00:00Z",
 		pid: null,
 		cwd: "/tmp",
@@ -30,7 +30,7 @@ function withRootAct(act: string): Partial<LaneInfo> {
 		sessions: {
 			root: 1,
 			focused: 1,
-			sessions: [{ key: 1, stand: "echoes", act }],
+			sessions: [{ key: 1, agent: "claude", act }],
 		},
 	} as Partial<LaneInfo>;
 }
@@ -69,8 +69,8 @@ describe("isLaneAlive", () => {
 				root: 1,
 				focused: 2,
 				sessions: [
-					{ key: 1, stand: "echoes", act: "tui" },
-					{ key: 2, stand: "echoes", act: "chat" },
+					{ key: 1, agent: "claude", act: "tui" },
+					{ key: 2, agent: "claude", act: "chat" },
 				],
 			},
 		} as Partial<LaneInfo>;

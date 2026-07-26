@@ -2,7 +2,7 @@
 //!
 //! lane 単位で claude の `--model` alias を永続する。**「この lane はこの model で走る」**
 //! という単一の真実源として、両 Act の claude 起動が同じ file を読む:
-//! - **Act I（TUI console / echoes stand）**: `build_stand_command` が spawn 時に読み、
+//! - **Act I（TUI console / echoes agent）**: `build_agent_command` が spawn 時に読み、
 //!   PtySlot にホストされる `claude … --model <alias>` の command line へ注入する
 //!   （repo 再起動後の respawn でも自動で維持される）。
 //! - **Act II（GUI chat engine / EchoesAgentHost）**: `ensure_chat_engine` が読む。
@@ -13,7 +13,7 @@
 //! - **書き手**: lane 作成時の `--model`（`create_performer_orchestrated` /
 //!   `new_performer` / `fork_performer`、co-evolution #1）+ Act II の
 //!   `console_set_model` dispatch（切替時。default へ戻す = file 削除）
-//! - **読み手**: `build_stand_command`（Act I spawn）/ `ensure_chat_engine`（Act II spawn）
+//! - **読み手**: `build_agent_command`（Act I spawn）/ `ensure_chat_engine`（Act II spawn）
 //! - 置き場: `vp_state_dir()/engine_models/<repo>__<lane>`
 //! - **未記録 = None = claude default**（`--model` を渡さない）
 

@@ -31,13 +31,13 @@
 //! derive を残す (wire debug / 将来の永続化余地)。 例:
 //! ```json
 //! {"kind": "spawn_lane", "repo_id": "vantage-point", "name": "msg-test",
-//!  "cwd": "/Users/.../lanes/vantage-point-msg-test", "stand": "echoes"}
+//!  "cwd": "/Users/.../lanes/vantage-point-msg-test", "agent": "claude"}
 //! ```
 
 use serde::{Deserialize, Serialize};
 
-// doc 11 PR-B: LaneStand enum 削除、 stand は String 化 (mise task 名 "echoes" / "shell" 等、
-// PR-pre2 (VP-118) で "hd" → "echoes" rename)。
+// doc 11 PR-B: LaneStand enum 削除、 agent は String 化 (mise task 名 "claude" / "shell" 等、
+// PR-pre2 (VP-118) で "hd" → "claude" rename)。
 
 /// Lane に対する操作 Cmd。 [`LaneSpawnActor`](crate::repo::lane_spawn_actor) が
 /// in-process channel で recv し、 内部 Semaphore で gate された tokio worker pool で
@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LaneCmd {
-    /// Performer Lane を spawn (= stand_spawner で PtySlot 起動 + LanePool insert)。
+    /// Performer Lane を spawn (= agent_spawner で PtySlot 起動 + LanePool insert)。
     ///
     /// **1 Performer = 1 SpawnLane Cmd** に分解して actor の channel に流し、 actor が Semaphore で
     /// gate しつつ並列処理する design。
@@ -60,10 +60,10 @@ pub enum LaneCmd {
         name: String,
         /// 起動 cwd (典型: `vp_data_dir()/lanes/<repo>-<name>/`)
         cwd: String,
-        /// Stand 名 (`vp:stand:{name}` task の name 部分、 例: "echoes" / "shell" / "tmux")。
+        /// Stand 名 (`vp:agent:{name}` task の name 部分、 例: "claude" / "shell" / "tmux")。
         /// doc 11 PR-B で String 化、 旧 LaneStand enum 廃止。
-        /// PR-pre2 (VP-118) で "hd" → "echoes" rename。
-        stand: String,
+        /// PR-pre2 (VP-118) で "hd" → "claude" rename。
+        agent: String,
     },
 }
 
@@ -79,7 +79,7 @@ mod tests {
             repo_id: "vantage-point".to_string(),
             name: "msg-test".to_string(),
             cwd: "/tmp/lanes/vantage-point-msg-test".to_string(),
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
         };
         let json = serde_json::to_string(&cmd).unwrap();
         // tag は "kind"、 variant 名は snake_case (= "spawn_lane")
@@ -92,11 +92,11 @@ mod tests {
                 repo_id,
                 name,
                 cwd: _,
-                stand,
+                agent,
             } => {
                 assert_eq!(repo_id, "vantage-point");
                 assert_eq!(name, "msg-test");
-                assert_eq!(stand, "echoes");
+                assert_eq!(agent, "claude");
             }
         }
     }

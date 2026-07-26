@@ -9,7 +9,7 @@ import { For, Show, createSignal, onCleanup } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
-import { standDisplayName, standIcon } from "./lane";
+import { agentDisplayName, agentIcon } from "./lane";
 
 /** ISO 8601 の `started_at` から相対 uptime 文字列を作る。 */
 function formatUptime(iso: string | null | undefined, nowMs: number): string {
@@ -154,21 +154,21 @@ export function DaemonWidget() {
 			</Show>
 			<div class="vp-devices">
 				<div
-					class="vp-stand-row"
+					class="vp-agent-row"
 					classList={{ active: devicesActive() }}
 					onClick={() =>
 						sendIpc({ t: "stand:select", path: "", kind: "devices" })
 					}
 				>
-					<span class="vp-stand-icon">
+					<span class="vp-agent-icon">
 						<CreoIcon
-							name={standIcon("devices", devicesActive()) ?? "ph:magnet"}
+							name={agentIcon("devices", devicesActive()) ?? "ph:magnet"}
 							size={14}
 						/>
 					</span>
-					<span class="vp-stand-title">{standDisplayName("devices")}</span>
+					<span class="vp-agent-title">{agentDisplayName("devices")}</span>
 					<Show when={devices().length > 0}>
-						<span class="vp-stand-badge">{devices().length}</span>
+						<span class="vp-agent-badge">{devices().length}</span>
 					</Show>
 				</div>
 			</div>

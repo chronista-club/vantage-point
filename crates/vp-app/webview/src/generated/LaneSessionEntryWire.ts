@@ -5,9 +5,9 @@
  */
 export type LaneSessionEntryWire = { key: number, 
 /**
- * engine 種別（stand 名）。
+ * engine 種別（agent 名）。
  */
-stand: string, 
+agent: string, 
 /**
  * この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
  */

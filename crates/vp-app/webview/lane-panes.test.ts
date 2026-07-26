@@ -45,8 +45,8 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 	it("act ごとに kind が決まる（root=tui は Console、非 root=chat は chat pane）", () => {
 		expect(
 			lanePaneRefs([
-				{ key: 1, stand: "echoes", root: true, act: "tui" },
-				{ key: 3, stand: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, act: "tui" },
+				{ key: 3, agent: "codex", act: "chat" },
 			]),
 		).toEqual([
 			{ id: "term-session-1", label: "cc#1", session: 1, kind: "term" },
@@ -57,8 +57,8 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 	it("全 session が chat（root も chat = 旧 mode==chat 相当）", () => {
 		expect(
 			lanePaneRefs([
-				{ key: 1, stand: "echoes", root: true, act: "chat" },
-				{ key: 3, stand: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, act: "chat" },
+				{ key: 3, agent: "codex", act: "chat" },
 			]),
 		).toEqual([
 			{ id: "chat-session-1", label: "cc#1", session: 1, kind: "chat" },
@@ -69,16 +69,16 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 	it("A6 の核心: 非 root も term になれる（term が 2 枚並ぶ = 旧実装では不可能だった形）", () => {
 		expect(
 			lanePaneRefs([
-				{ key: 1, stand: "echoes", root: true, act: "tui" },
-				{ key: 2, stand: "echoes", act: "tui" },
-				{ key: 3, stand: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, act: "tui" },
+				{ key: 2, agent: "claude", act: "tui" },
+				{ key: 3, agent: "codex", act: "chat" },
 			]).map((p) => p.id),
 		).toEqual(["term-session-1", "term-session-2", "chat-session-3"]);
 	});
 
 	it("act 欠落（旧 SP）は tui に倒す（従来の既定 = Act I）", () => {
 		expect(
-			lanePaneRefs([{ key: 1, stand: "echoes", root: true }]).map((p) => p.id),
+			lanePaneRefs([{ key: 1, agent: "claude", root: true }]).map((p) => p.id),
 		).toEqual([TERM]);
 	});
 
@@ -88,19 +88,19 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 
 	it("board 非空: act を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
 		expect(
-			lanePaneRefs([{ key: 1, stand: "echoes", root: true, act: "tui" }], true).map(
+			lanePaneRefs([{ key: 1, agent: "claude", root: true, act: "tui" }], true).map(
 				(p) => p.id,
 			),
 		).toEqual([TERM, "lane-board"]);
 		expect(
-			lanePaneRefs([{ key: 1, stand: "echoes", root: true, act: "chat" }], true).map(
+			lanePaneRefs([{ key: 1, agent: "claude", root: true, act: "chat" }], true).map(
 				(p) => p.id,
 			),
 		).toEqual(["chat-session-1", "lane-board"]);
 	});
 
 	it("board 空（既定）は board pane を出さない", () => {
-		const s = [{ key: 1, stand: "echoes", root: true, act: "tui" as const }];
+		const s = [{ key: 1, agent: "claude", root: true, act: "tui" as const }];
 		expect(lanePaneRefs(s, false).map((p) => p.id)).toEqual([TERM]);
 		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);
 	});
@@ -111,8 +111,8 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 		// SolidJS）を決める分岐なので、取り違えると xterm の host を消しかねない。
 		const refs = lanePaneRefs(
 			[
-				{ key: 1, stand: "echoes", root: true, act: "tui" },
-				{ key: 3, stand: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, act: "tui" },
+				{ key: 3, agent: "codex", act: "chat" },
 			],
 			true,
 		);
@@ -279,18 +279,18 @@ describe("lane scope（doc 47 §3: 構成は lane ごと）", () => {
 describe("newPaneChoices（doc 46 P2 要件 4: Engine × Act）", () => {
 	it("chat 非対応 engine は Act II を出さない（行き止まりを作らない）", () => {
 		const choices = newPaneChoices([
-			{ name: "echoes", label: "Claude", chat_capable: true },
+			{ name: "claude", label: "Claude", chat_capable: true },
 			{ name: "shell", label: "Shell", chat_capable: false },
 		]);
 		expect(choices).toEqual([
-			{ engine: "echoes", engineLabel: "Claude", act: "tui" },
-			{ engine: "echoes", engineLabel: "Claude", act: "chat" },
+			{ engine: "claude", engineLabel: "Claude", act: "tui" },
+			{ engine: "claude", engineLabel: "Claude", act: "chat" },
 			// shell は chat host を持たないので tui だけ
 			{ engine: "shell", engineLabel: "Shell", act: "tui" },
 		]);
 	});
 
-	it("label 未設定なら stand 名をそのまま出す", () => {
+	it("label 未設定なら agent 名をそのまま出す", () => {
 		const choices = newPaneChoices([{ name: "codex", chat_capable: true }]);
 		expect(choices.map((c) => c.engineLabel)).toEqual(["codex", "codex"]);
 	});

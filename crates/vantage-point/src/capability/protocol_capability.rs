@@ -226,7 +226,7 @@ impl Capability for ProtocolCapability {
         self.state
     }
 
-    /// VP-83 Stand 自己診断 (2026-04-25) — Protocol layer の snapshot
+    /// VP-83 Agent 自己診断 (2026-04-25) — Protocol layer の snapshot
     /// 観測ポイント: subscriber 数、subscription_id、broadcast receiver count
     fn diagnose(&self) -> crate::capability::DiagnosticReport {
         let details = serde_json::json!({
@@ -311,7 +311,7 @@ impl ProtocolRouter {
 // VP-159 PR-2: Stand trait impl
 // =============================================================================
 
-/// `ProtocolCapability` を VP-159 `Stand` (= ECS entity bound actor) として登録する impl。
+/// `ProtocolCapability` を VP-159 `Agent` (= ECS entity bound actor) として登録する impl。
 ///
 /// 役割: AG-UI / ACP / Vantage transport bridge。 VP-178 (Phase 4) 以降、
 /// `register("protocol")` 経由の mailbox 所有は廃止 (= `initialize` の `_ctx` 未使用)、
@@ -450,8 +450,8 @@ mod tests {
     fn protocol_capability_implements_stand() {
         // VP-159 PR-2: ProtocolCapability が Stand trait を満たす事を sig level で確認
         let cap = ProtocolCapability::new();
-        let stand: &dyn Stand = &cap;
-        assert_eq!(stand.actor_name(), "protocol");
-        assert_eq!(stand.layer_scope(), LayerScope::Repo);
+        let agent: &dyn Stand = &cap;
+        assert_eq!(agent.actor_name(), "protocol");
+        assert_eq!(agent.layer_scope(), LayerScope::Repo);
     }
 }

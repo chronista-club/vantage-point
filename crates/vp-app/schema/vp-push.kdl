@@ -121,10 +121,10 @@ protocol "vp-push" version="1.0.0" {
             field "act" type="string"
         }
 
-        // 「+」menu の stand 一覧（`stands_list` の結果）。
+        // 「+」menu の agent 一覧（`agents_list` の結果）。
         // `req` = 要求元の相関 id（doc 47 §6）。共有 bus の購読側がこれで振り分ける。
         // 省略 = 応答を誰も拾わない（旧: JS へ `null` 直書き）。
-        event "console:stands" {
+        event "console:agents" {
             field "lane" type="string"
             field "payload" type="json"
             field "req" type="string" optional=#true

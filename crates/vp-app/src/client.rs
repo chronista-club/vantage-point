@@ -59,7 +59,7 @@ pub struct DaemonRpcClient {
 
 /// Process kind (Architecture v4: mem_1CaSwJ?... Process Recursive)
 ///
-/// 全 VP entity (daemon / repo / Lane / Stand) は `ProcessKind` を持つ Process として
+/// 全 VP entity (daemon / repo / Lane / Agent) は `ProcessKind` を持つ Process として
 /// homogeneous に扱う。Display metaphor は UI / log の format string のみで使い、
 /// code 内 logic は kind 直値で switch する。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -74,8 +74,8 @@ pub enum ProcessKind {
     Runtime,
     /// PTY session を持つ stream-based process (= Lane: Conductor / Performer)
     Session,
-    /// 機能 service を提供する Stand process (= Echoes / Shell / board / runner ほか)
-    Stand,
+    /// 機能 service を提供する Agent process (= Echoes / Shell / board / runner ほか)
+    Agent,
 }
 
 impl ProcessKind {
@@ -85,7 +85,7 @@ impl ProcessKind {
             ProcessKind::Supervisor => "👑 daemon",
             ProcessKind::Runtime => "⭐ repo",
             ProcessKind::Session => "📍 Lane",
-            ProcessKind::Stand => "🦾 Stand",
+            ProcessKind::Agent => "🦾 Agent",
         }
     }
 }
@@ -172,7 +172,7 @@ pub struct RepoInfo {
 /// `/api/health` の主要 field のみを取り出した軽量レスポンス
 ///
 /// vp-app の Activity widget で表示するため、daemon 側 `HealthResponse` の
-/// stands / terminal_token / pid 等は無視。サーバ側の field 追加で壊れないよう
+/// agents / terminal_token / pid 等は無視。サーバ側の field 追加で壊れないよう
 /// `#[serde(default)]` を付けている。
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct DaemonHealthInfo {
@@ -252,9 +252,9 @@ pub struct LaneInfo {
     /// "spawning" | "running" | "exiting" | "dead"
     #[serde(default)]
     pub state: String,
-    /// "echoes" | "shell"
+    /// "claude" | "shell"
     #[serde(default)]
-    pub stand: String,
+    pub agent: String,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -268,11 +268,11 @@ pub struct LaneInfo {
     /// shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
     #[serde(default)]
     pub engine_session_id: Option<String>,
-    /// doc 39 P4: root session の stand（= slot に載る engine 種別）。Act I の session chip prefix は
-    /// これを優先し（cross-engine root で slot の engine を正しく映す）、無ければ `stand`（lane 固定）に
+    /// doc 39 P4: root session の agent（= slot に載る engine 種別）。Act I の session chip prefix は
+    /// これを優先し（cross-engine root で slot の engine を正しく映す）、無ければ `agent`（lane 固定）に
     /// fallback。旧 SP からは欠落 = None。
     #[serde(default)]
-    pub engine_stand: Option<String>,
+    pub agent_name: Option<String>,
     /// doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
     /// server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
     /// 「どの session が root か」「各 session の act」の SSOT。boot 経路が xterm を
@@ -320,9 +320,9 @@ pub struct LaneSessionsWire {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct LaneSessionEntryWire {
     pub key: u32,
-    /// engine 種別（stand 名）。
+    /// engine 種別（agent 名）。
     #[serde(default)]
-    pub stand: String,
+    pub agent: String,
     /// この session の Act（"tui" | "chat"）。serde default = "tui"（wire 後方互換）。
     #[serde(default = "default_act")]
     pub act: String,
@@ -361,13 +361,13 @@ pub struct PerformerStatusWire {
     pub is_merged: bool,
 }
 
-/// doc 11 PR-C: daemon repo-proxy ask `stands_list` 応答 (`{stands:[...]}`) の 1 entry。
+/// doc 11 PR-C: daemon repo-proxy ask `agents_list` 応答 (`{agents:[...]}`) の 1 entry。
 ///
-/// repo 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。 F6④ で repo 直結
+/// repo 側 `process::routes::agents::AgentInfo` と wire 互換 (snake_case 統一済)。 F6④ で repo 直結
 /// HTTP は撤去したが、 本 struct は ask 応答の deserialize + JS push back の serialize 用に残置。
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
-pub struct StandInfo {
-    /// `vp:stand:{name}` の name 部分 (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で hd → echoes rename)
+pub struct AgentInfo {
+    /// `vp:agent:{name}` の name 部分 (例: `"claude"` / `"shell"` / `"tmux"`、 PR-pre2 で hd → echoes rename)
     pub name: String,
     /// task ファイル先頭の `#MISE description="..."` の値
     #[serde(default)]

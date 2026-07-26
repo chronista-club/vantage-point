@@ -75,11 +75,11 @@ pub struct ActivePaneInfo<'a> {
     /// event 経路では供給されず、この setActivePane 相乗りが唯一の供給路になる
     /// （Act II では event 由来の真値が上書きする — EchoesHeader 側で OR merge）。
     pub session_id: Option<&'a str>,
-    /// Echoes 共通ヘッダの chip prefix 用: **root session の stand**（= slot に載る engine 種別、
-    /// "echoes" / "codex" / "grok" 等）。session chip の engine 別 prefix 導出に使う。doc 39 P4-C:
-    /// 供給値は `LaneInfo.engine_stand`（root の engine）優先で、無ければ lane 固定 `stand` に
+    /// Echoes 共通ヘッダの chip prefix 用: **root session の agent**（= slot に載る engine 種別、
+    /// "claude" / "codex" / "grok" 等）。session chip の engine 別 prefix 導出に使う。doc 39 P4-C:
+    /// 供給値は `LaneInfo.agent_name`（root の engine）優先で、無ければ lane 固定 `agent` に
     /// fallback（push_active_view が解決済み — cross-engine root で chip prefix が正しく点く）。
-    pub stand: Option<&'a str>,
+    pub agent: Option<&'a str>,
 }
 
 /// `window.setActivePane(info)` を呼ぶ JS スニペットを生成
@@ -267,7 +267,7 @@ body{overflow:hidden;}
 /* VP-141 (PR-ε-2): Pane header chrome — pane に「ヘッダ + body」 構造を持たせる共通 chrome。
    icon + Stand 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Echoes、 xterm.js
    full-bleed) は header なしで除外。 .pane-header と .pane-body は両方 position:absolute なので
-   .pane.stand/empty の display:grid context から opt-out される (centering は body 側の
+   .pane.agent/empty の display:grid context から opt-out される (centering は body 側の
    `.center` modifier で個別制御)。 */
 .pane-header{
   position:absolute;
@@ -433,13 +433,13 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 /* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
    board body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
 .pane.preview iframe{width:100%;height:100%;border:0;background:#fff;}
-/* Phase 5-A: Repo-scope Stand placeholder panes (board/runner ほか) */
-.pane.stand{display:grid;place-items:center;}
-.pane.stand main{text-align:center;max-width:520px;padding:0 24px;}
-.pane.stand h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
-.pane.stand p{color:var(--color-text-tertiary);margin:.25rem 0;font-size:.95rem;}
-.pane.stand .sub{font-size:.85rem;color:var(--color-text-tertiary);opacity:.85;margin-top:1rem;line-height:1.6;}
-.pane.stand .brand{color:var(--color-brand-primary);}
+/* Phase 5-A: Repo-scope Agent placeholder panes (board/runner ほか) */
+.pane.agent{display:grid;place-items:center;}
+.pane.agent main{text-align:center;max-width:520px;padding:0 24px;}
+.pane.agent h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
+.pane.agent p{color:var(--color-text-tertiary);margin:.25rem 0;font-size:.95rem;}
+.pane.agent .sub{font-size:.85rem;color:var(--color-text-tertiary);opacity:.85;margin-top:1rem;line-height:1.6;}
+.pane.agent .brand{color:var(--color-brand-primary);}
 .pane.empty{display:grid;place-items:center;}
 .pane.empty main{text-align:center;color:var(--color-text-tertiary);}
 .pane.empty h1{font-weight:400;font-size:1.1rem;margin:0;}
@@ -588,7 +588,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   </div>
   <!-- doc 52 §10 wave 0: Board は app 層の pane を退役し、lane tiling の board pane
        （#lane-board、上方 #lane-panes 内）へ引っ越した。runner / Devices / Preview は app pane のまま。 -->
-  <div class="pane stand" id="pane-runner" data-kind="runner" data-frame-id="runner">
+  <div class="pane agent" id="pane-runner" data-kind="runner" data-frame-id="runner">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon"><iconify-icon icon="ph:plant"></iconify-icon></span>
@@ -606,7 +606,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
       </main>
     </div>
   </div>
-  <div class="pane stand" id="pane-devices" data-kind="devices" data-frame-id="devices">
+  <div class="pane agent" id="pane-devices" data-kind="devices" data-frame-id="devices">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon"><iconify-icon icon="ph:magnet"></iconify-icon></span>
@@ -679,7 +679,7 @@ mod tests {
             branch: None,
             lane_name: None,
             session_id: None,
-            stand: None,
+            agent: None,
         });
         assert!(script.contains("\"chat\":true"), "script={script}");
         assert!(script.contains("\"pane_id\":\"vp/root\""));
@@ -697,7 +697,7 @@ mod tests {
             branch: Some("mako/x"),
             lane_name: Some("x"),
             session_id: Some("0196-abcd-ef01"),
-            stand: Some("echoes"),
+            agent: Some("claude"),
         });
         assert!(tui.contains("\"chat\":false"), "script={tui}");
         // cwd / branch chip の供給が setActivePane 経由で JS に届くこと（header の情報源）。
@@ -713,9 +713,9 @@ mod tests {
             tui.contains("\"session_id\":\"0196-abcd-ef01\""),
             "script={tui}"
         );
-        assert!(tui.contains("\"stand\":\"echoes\""), "script={tui}");
+        assert!(tui.contains("\"agent\":\"claude\""), "script={tui}");
 
-        let stand = build_set_active_pane_script(&ActivePaneInfo {
+        let agent = build_set_active_pane_script(&ActivePaneInfo {
             kind: Some("devices"),
             pane_id: None,
             preview_url: None,
@@ -724,11 +724,11 @@ mod tests {
             branch: None,
             lane_name: None,
             session_id: None,
-            stand: None,
+            agent: None,
         });
-        assert!(stand.contains("\"chat\":false"), "script={stand}");
+        assert!(agent.contains("\"chat\":false"), "script={agent}");
         // 非 lane pane は cwd/branch を持たない（chip 非表示）。
-        assert!(stand.contains("\"cwd\":null"), "script={stand}");
+        assert!(agent.contains("\"cwd\":null"), "script={agent}");
     }
 
     // ⚠️ 旧「HTML 文字列に対する assert」4 本（`embedded_show_lane_takes_is_chat_arg` /

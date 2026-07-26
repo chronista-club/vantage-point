@@ -53,7 +53,7 @@ pub fn detect_shell() -> String {
     #[cfg(windows)]
     {
         // 1. git-bash (標準 install path → PATH 上の bash.exe、 WSL stub 除外)。
-        //    検出ロジックは vp-paths に集約 (stand_spawner と共有、 WindowsApps stub も除外)。
+        //    検出ロジックは vp-paths に集約 (agent_spawner と共有、 WindowsApps stub も除外)。
         if let Some(p) = vp_paths::shell::find_git_bash() {
             return p.to_string_lossy().into_owned();
         }

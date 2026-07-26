@@ -1,6 +1,6 @@
 //! shell interpreter の探索 — Windows で git-bash を見つける共有ロジック。
 //!
-//! vantage-point (stand_spawner: stand script を bash 経由で exec) と vp-app (shell_detect:
+//! vantage-point (agent_spawner: agent script を bash 経由で exec) と vp-app (shell_detect:
 //! Conductor pane の login shell) の双方が git-bash の実在 path を必要とする。 両者が別実装を
 //! 持つと drift するため本 crate に集約する (spawn_env と同じ SSOT 方針)。
 
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 /// 2. PATH 上の `bash.exe` ── ただし **WSL stub を除外**:
 ///    `C:\Windows\System32\bash.exe` (WSL launcher) と `...\WindowsApps\bash.exe`
 ///    (Microsoft Store の WSL app execution alias)。 どちらも native binary を Linux 環境で
-///    動かす stub で git-bash とは別物。 これらを掴むと stand script が WSL 内で動いてしまい
+///    動かす stub で git-bash とは別物。 これらを掴むと agent script が WSL 内で動いてしまい
 ///    cwd / path / tool 解決が全て破綻する。
 ///
 /// non-Windows では常に `None` (呼び出し側は Unix path を別途使う)。

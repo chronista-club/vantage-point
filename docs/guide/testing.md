@@ -197,7 +197,7 @@ cargo tarpaulin --workspace --out Html
 
 ## 実機スモーク（CI に載らない層）
 
-stand（engine）横断の実機チェックは [stand-smoke-matrix.md](./stand-smoke-matrix.md) が正本。
-層 A（stand 名 ↔ EngineKind の対応表・能力表）のみ `cargo test` で CI 必須、
-層 B〜D（spawn/resume・Console 実機・agent tool surface）は stand 追加 PR の DoD +
+agent（engine）横断の実機チェックは [stand-smoke-matrix.md](./stand-smoke-matrix.md) が正本。
+層 A（agent 名 ↔ EngineKind の対応表・能力表）のみ `cargo test` で CI 必須、
+層 B〜D（spawn/resume・Console 実機・agent tool surface）は agent 追加 PR の DoD +
 dogfood 観測ログで回す（行列に「仕様制限かバグか」を必ず一行残す）。

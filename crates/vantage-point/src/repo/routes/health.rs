@@ -14,7 +14,7 @@ use super::super::state::AppState;
 pub struct StandStatus {
     /// Stand の状態: "active", "idle", "connected", "disabled"
     pub status: &'static str,
-    /// Stand 固有の詳細情報
+    /// Agent 固有の詳細情報
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<serde_json::Value>,
 }
@@ -75,7 +75,7 @@ pub struct HealthResponse {
 // (= `handle_wire_send` 等が normalize して `daemon_wire::call` で Daemon "wire" channel に relay) を
 // 使い、 CLI/flow は Daemon "wire" channel に QUIC 直結する (doc 27 §62)。
 
-// L0 portless: `/api/diagnose` (Stand 自己診断 HTTP) は consumer 消滅で撤去。 必要なら将来
+// L0 portless: `/api/diagnose` (Agent 自己診断 HTTP) は consumer 消滅で撤去。 必要なら将来
 // Daemon channel / mailbox query (`devices@machine` 等) 経由で再設計する。
 
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -85,7 +85,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         Some(state.terminal_token.clone())
     };
 
-    // Stand ステータスを収集（daemon モードでは省略）
+    // Agent ステータスを収集（daemon モードでは省略）
     let stands = if state.terminal_token != "DAEMON_DISABLED" {
         let mut map = std::collections::HashMap::new();
 
@@ -95,7 +95,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             if agent.is_some() { "active" } else { "idle" }
         };
         map.insert(
-            "echoes".to_string(),
+            "claude".to_string(),
             StandStatus {
                 status: echoes_status,
                 detail: None,
@@ -159,7 +159,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
-        // DB にも Stand ステータスを書き込み（VP-21）
+        // DB にも Agent ステータスを書き込み（VP-21）
         if let Some(ref db) = state.vpdb {
             for (key, s) in &map {
                 if let Err(e) = db
@@ -173,7 +173,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
 
         Some(map)
     } else {
-        // daemon mode — DeviceRegistry のみ報告（machine 階層に host される唯一の observable Stand）
+        // daemon mode — DeviceRegistry のみ報告（machine 階層に host される唯一の observable Agent）
         #[cfg(feature = "midi")]
         {
             let mut map = std::collections::HashMap::new();
@@ -355,7 +355,7 @@ mod tests {
         // "DAEMON_DISABLED" 分岐に入らず populate される
         assert!(
             body.get("stands").is_some(),
-            "stands field 必須 (= Stand status map)"
+            "stands field 必須 (= Agent status map)"
         );
         // hub federation 状態（test AppState は HubFederationStatus::new() = Disabled）。
         // field 名変更 / as_str() パス破壊の regression net。

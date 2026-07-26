@@ -52,7 +52,7 @@ pub enum AcpEngine {
 }
 
 impl AcpEngine {
-    /// registry / ログ / エラー文言の名乗り（[`super::EngineKind::stand_name`] と一致）。
+    /// registry / ログ / エラー文言の名乗り（[`super::EngineKind::agent_name`] と一致）。
     pub fn name(self) -> &'static str {
         match self {
             Self::Grok => "grok",
@@ -280,7 +280,7 @@ impl AcpAgentHost {
         cmd.args(engine.spawn_args())
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
-            // wire で自分を名乗る口。Act I の stand_spawner / claude host と同じ契約。
+            // wire で自分を名乗る口。Act I の agent_spawner / claude host と同じ契約。
             .env("VP_REPO", &config.repo)
             .env("VP_LANE", &config.lane_label)
             .env("VP_SESSION_KEY", config.session_key.to_string())
@@ -831,7 +831,7 @@ mod tests {
     /// engine パラメタ化（doc 43 §2）: spawn 引数と名乗りが engine 別に切り替わる。
     /// grok = `agent --always-approve stdio`（permission 二段防御）、opencode = `acp` のみ
     /// （flag 注入なし — model は opencode config が SSOT）。名乗りは registry / ログ / エラー
-    /// 文言に載る stand 名（EngineKind::stand_name と一致）。
+    /// 文言に載る agent 名（EngineKind::agent_name と一致）。
     #[test]
     fn acp_engine_spawn_args_and_name_are_engine_specific() {
         assert_eq!(
@@ -846,14 +846,14 @@ mod tests {
         );
         assert_eq!(AcpEngine::Grok.name(), "grok");
         assert_eq!(AcpEngine::OpenCode.name(), "opencode");
-        // stand 名（EngineKind）と registry / ログの名乗り（AcpEngine）が一致する不変条件。
+        // agent 名（EngineKind）と registry / ログの名乗り（AcpEngine）が一致する不変条件。
         assert_eq!(
             AcpEngine::Grok.name(),
-            super::super::EngineKind::Grok.stand_name()
+            super::super::EngineKind::Grok.agent_name()
         );
         assert_eq!(
             AcpEngine::OpenCode.name(),
-            super::super::EngineKind::OpenCode.stand_name()
+            super::super::EngineKind::OpenCode.agent_name()
         );
     }
 
