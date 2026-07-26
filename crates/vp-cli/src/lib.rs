@@ -5,7 +5,7 @@
 //!
 //! 旧 Phase 2.x-e の構造 (vp-cli が lane lib を持つ) は subprocess 連携前提だった。
 //! Phase 4-X で server (vantage-point) からの直接 lib call に方針変更したため、
-//! lane lib の住所も SP server (= vantage-point) 側に move。
+//! lane lib の住所も repo server (= vantage-point) 側に move。
 //!
 //! ## Public re-export
 //!

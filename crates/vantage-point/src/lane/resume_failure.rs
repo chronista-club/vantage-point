@@ -17,8 +17,8 @@ pub fn log_path_in(base: &Path) -> PathBuf {
     base.join("log").join("resume_failures.log")
 }
 
-/// 1 事象を追記する。形式: `ts=<rfc3339>\tproject=<p>\tlane=<l>\tattempted=<id|continue>`
-pub fn append_in(base: &Path, project: &str, lane: &str, attempted: &str) -> std::io::Result<()> {
+/// 1 事象を追記する。形式: `ts=<rfc3339>\trepo=<p>\tlane=<l>\tattempted=<id|continue>`
+pub fn append_in(base: &Path, repo: &str, lane: &str, attempted: &str) -> std::io::Result<()> {
     let path = log_path_in(base);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -29,17 +29,17 @@ pub fn append_in(base: &Path, project: &str, lane: &str, attempted: &str) -> std
         .open(&path)?;
     writeln!(
         f,
-        "ts={}\tproject={}\tlane={}\tattempted={}",
+        "ts={}\trepo={}\tlane={}\tattempted={}",
         chrono::Utc::now().to_rfc3339(),
-        project,
+        repo,
         lane,
         attempted
     )
 }
 
 /// 本番 base（vp_state_dir）での append（`vp lane resume-failed` から呼ぶ）
-pub fn append(project: &str, lane: &str, attempted: &str) -> std::io::Result<()> {
-    append_in(&crate::config::vp_state_dir(), project, lane, attempted)
+pub fn append(repo: &str, lane: &str, attempted: &str) -> std::io::Result<()> {
+    append_in(&crate::config::vp_state_dir(), repo, lane, attempted)
 }
 
 #[cfg(test)]
@@ -56,7 +56,7 @@ mod tests {
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2, "1 事象 1 行: {body}");
         assert!(
-            lines[0].contains("project=vp") && lines[0].contains("attempted=abc-123"),
+            lines[0].contains("repo=vp") && lines[0].contains("attempted=abc-123"),
             "{}",
             lines[0]
         );

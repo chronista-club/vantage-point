@@ -45,7 +45,7 @@ fn ink_root() -> PathBuf {
     vp_paths::vp_state_dir().join("ink")
 }
 
-/// lane address（`<project>/root` | `<project>/performer/<name>`）→ 保存 dir 用の flat key。
+/// lane address（`<repo>/root` | `<repo>/performer/<name>`）→ 保存 dir 用の flat key。
 /// board の `boardLaneKeyOf`（lane-panes.ts）と同じ写像: root/lead → `conductor` / performer → 名前。
 /// snapshot を lane ごとに分けるためだけの folder 名なので、未知形は `conductor` に倒す。
 pub fn lane_key_from_address(addr: &str) -> String {

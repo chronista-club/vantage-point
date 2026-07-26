@@ -64,7 +64,7 @@ shell-words = "1.1"
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
 
-# wiremsg Stage 1 consumer: SP の "lanes" Unison channel を QUIC 購読する。
+# wiremsg Stage 1 consumer: repo の "lanes" Unison channel を QUIC 購読する。
 # workspace 共有 (vantage-point server crate と同一版)。設計 mem_1CbA198fsHJsoKpu2jDUCv。
 unison = { workspace = true }
 
@@ -90,7 +90,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # rotate された世代を app.kdl.log.1.. に逃がす (日付名にしない = tail -F / 既存 reader を壊さない)。
 file-rotate = "0.8"
 
-# Native folder picker (project 追加用、cross-platform)
+# Native folder picker (repo 追加用、cross-platform)
 rfd = "0.17"
 
 # Sidebar File Explorer (overlay picker): lane workdir を walk して .gitignore を

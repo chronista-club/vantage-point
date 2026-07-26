@@ -29,7 +29,7 @@
 //!
 //! tail と transcript の間には「読んだ直後に commit が挟まる」窓がある。 [`Self::in_flight`] は
 //! commit 世代 [`InFlight::seq`] を添えて返すので、 呼び手は transcript 読み後に seq を検算して
-//! 世代が動いていたら読み直せる（[`crate::process::unison_server`] の replay handler）。
+//! 世代が動いていたら読み直せる（[`crate::repo::unison_server`] の replay handler）。
 //!
 //! ## control protocol client（doc 35 PR1、HITL 面の質問レール）
 //!
@@ -114,10 +114,10 @@ fn fold_in_flight(f: &mut InFlight, out: &super::translate::Ingested) {
 /// EchoesAgentHost の起動設定。
 #[derive(Debug, Clone)]
 pub struct EchoesHostConfig {
-    /// engine の作業ディレクトリ（lane の project dir）。
+    /// engine の作業ディレクトリ（lane の repo dir）。
     pub cwd: String,
-    /// cc_session 記録キー（project 名）。
-    pub project: String,
+    /// cc_session 記録キー（repo 名）。
+    pub repo: String,
     /// cc_session 記録キー（**store label**: session #1 = 素の lane 名 / #2 以降は `<lane>#<n>`）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
@@ -127,7 +127,7 @@ pub struct EchoesHostConfig {
     /// identity env（`VP_SESSION_KEY`）用の session key（doc 40 §4 の hook identity と同じ —
     /// Act II の engine が「自分がどの session か」を名乗れるようにする）。
     pub session_key: crate::lane::session_registry::SessionKey,
-    /// 再開する session id（`--resume`）。Act I ⇄ II 切替 / SP 再起動復帰に使う。
+    /// 再開する session id（`--resume`）。Act I ⇄ II 切替 / repo 再起動復帰に使う。
     pub resume_session_id: Option<String>,
     /// 使用モデル（`--model`）。None = claude default。
     pub model: Option<String>,
@@ -177,7 +177,7 @@ pub struct EchoesAgentHost {
 /// - `--help` / `--version` 併用は unknown option が黙殺され exit 0 になるため使えない。
 ///   exit code は両形とも 1 なので **stderr の unknown option 文言**で判定する。
 ///
-/// probe は SP プロセスごとに 1 回だけ（OnceLock。claude path の変更は SP 再起動で再評価）。
+/// probe は repo プロセスごとに 1 回だけ（OnceLock。claude path の変更は repo 再起動で再評価）。
 /// probe 失敗は「付けない」に倒す（fail-open: subagent 発話が出ない機能退化 >> engine 全死）。
 fn supports_forward_subagent_text(claude_path: &str) -> bool {
     static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -195,8 +195,8 @@ fn supports_forward_subagent_text(claude_path: &str) -> bool {
 
 /// probe 本体（[`supports_forward_subagent_text`] の実装）。
 ///
-/// 呼び出し経路は `ensure_chat_engine` = LanePool の **project 全体 write lock 保持下**なので、
-/// 子プロセスを無期限に待つと probe hang = 当該 project の全 lane 操作が凍る（spawn 即死より
+/// 呼び出し経路は `ensure_chat_engine` = LanePool の **repo 全体 write lock 保持下**なので、
+/// 子プロセスを無期限に待つと probe hang = 当該 repo の全 lane 操作が凍る（spawn 即死より
 /// 悪い障害モード）。`try_wait` polling に期限を張り、超過は kill して未対応扱いに倒す
 /// （fail-open: 実測の probe は ~1s、期限は起動遅延マシンの余裕込み）。
 fn probe_forward_subagent_text(claude_path: &str) -> bool {
@@ -248,14 +248,14 @@ impl EchoesAgentHost {
     pub fn spawn(config: EchoesHostConfig) -> anyhow::Result<Self> {
         let claude_path = crate::agent::get_claude_cli_path(config.claude_cli_path.as_deref());
         let mut cmd = Command::new(&claude_path);
-        // 親（SP）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
+        // 親（repo）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
         cmd.envs(std::env::vars());
         // identity env（doc 51 §1 A3b）: Act I の stand_spawner と同じ契約を Act II にも。
         // engine（とその shell tool の子プロセス）が `vp now` / wire で自分を名乗るための口。
-        cmd.env("VP_PROJECT", &config.project);
+        cmd.env("VP_REPO", &config.repo);
         cmd.env("VP_LANE", &config.lane_label);
         cmd.env("VP_SESSION_KEY", config.session_key.to_string());
-        // cwd 空は「継承」（呼び元の cwd を使う）— test / project_dir 未解決時の防御。
+        // cwd 空は「継承」（呼び元の cwd を使う）— test / repo_dir 未解決時の防御。
         if !config.cwd.is_empty() {
             cmd.current_dir(&config.cwd);
         }
@@ -313,8 +313,8 @@ impl EchoesAgentHost {
         cmd.kill_on_drop(true);
 
         tracing::info!(
-            "EchoesAgentHost spawn (project={}, lane={}, resume={:?})",
-            config.project,
+            "EchoesAgentHost spawn (repo={}, lane={}, resume={:?})",
+            config.repo,
             config.lane,
             config.resume_session_id.as_deref().unwrap_or("new")
         );
@@ -358,7 +358,7 @@ impl EchoesAgentHost {
         // stdout ポンプ: 行 → (control frame なら分岐) → translate → in-flight tail 更新 → broadcast
         //（+ SessionInit で cc_session 記録）。
         let tx = event_tx.clone();
-        let project = config.project.clone();
+        let repo = config.repo.clone();
         let lane = config.lane.clone();
         let pump_in_flight = in_flight.clone();
         let pump_pending = pending_permissions.clone();
@@ -378,13 +378,13 @@ impl EchoesAgentHost {
                 fold_in_flight(&mut pump_in_flight.lock().expect("in_flight lock"), &out);
                 for event in out.events {
                     if let EchoesEvent::SessionInit { session_id, .. } = &event {
-                        record_session(&project, &lane, session_id);
+                        record_session(&repo, &lane, session_id);
                     }
                     // 受信者不在（Closed）は無視 — engine は購読者に依存せず動く。
                     let _ = tx.send(event);
                 }
             }
-            tracing::debug!("EchoesAgentHost stdout ポンプ終了（project={project}, lane={lane}）");
+            tracing::debug!("EchoesAgentHost stdout ポンプ終了（repo={repo}, lane={lane}）");
             // stream 途絶（engine crash / stop）を GUI に可視化する。stdout close =
             // engine プロセス終了だが、従来は debug log に落ちるだけで購読者（chatview）に
             // 届かず「止まった?」が見えなかった（Act I は PTY 切断が xterm に即見える）。
@@ -517,16 +517,16 @@ fn user_message_json(text: &str) -> String {
 /// SSOT は registry）。`lane` は host config の session label（`conductor` / `conductor#2`）
 /// なので registry の (lane, key) へ逆引きして書く。headless spawn に `|| claude` fallback は
 /// 無い（doc 33 C2 pre-flight 済み）ため guard 不要の無条件 authoritative 書き込み。
-fn record_session(project: &str, lane: &str, session_id: &str) {
+fn record_session(repo: &str, lane: &str, session_id: &str) {
     let (lane_label, key) = crate::lane::session_registry::parse_session_label(lane);
     if let Err(e) = crate::lane::session_registry::set_conversation(
-        project,
+        repo,
         lane_label,
         "echoes",
         key,
         Some(session_id),
     ) {
-        tracing::warn!("会話 id の registry 記録失敗（project={project}, lane={lane}）: {e}");
+        tracing::warn!("会話 id の registry 記録失敗（repo={repo}, lane={lane}）: {e}");
     }
 }
 
@@ -1093,7 +1093,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut host = EchoesAgentHost::spawn(EchoesHostConfig {
             cwd: tmp.path().to_string_lossy().to_string(),
-            project: "vp-test".to_string(),
+            repo: "vp-test".to_string(),
             lane: "spike".to_string(),
             lane_label: "spike".to_string(),
             session_key: 1,
@@ -1152,7 +1152,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let host = EchoesAgentHost::spawn(EchoesHostConfig {
             cwd: tmp.path().to_string_lossy().to_string(),
-            project: "vp-test".to_string(),
+            repo: "vp-test".to_string(),
             lane: "spike-q".to_string(),
             lane_label: "spike-q".to_string(),
             session_key: 1,

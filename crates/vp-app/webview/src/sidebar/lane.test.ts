@@ -13,7 +13,7 @@ import { isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { project: "vp", name: "root" },
+		address: { repo: "vp", name: "root" },
 		state: "running",
 		stand: "echoes",
 		created_at: "2026-07-10T00:00:00Z",
@@ -81,7 +81,7 @@ describe("isLaneAlive", () => {
 /** performer の最小 LaneInfo (laneConnector 用)。 */
 function performer(over: Partial<LaneInfo> = {}): LaneInfo {
 	return lane({
-		address: { project: "vp", name: "feat" },
+		address: { repo: "vp", name: "feat" },
 		...over,
 	} as Partial<LaneInfo>);
 }
@@ -135,18 +135,18 @@ describe("laneConnector (FSM 投影)", () => {
 	});
 });
 
-describe("laneCwdLabel — 絶対 path は project が持ち、 lane は差分だけを名乗る", () => {
+describe("laneCwdLabel — 絶対 path は repo が持ち、 lane は差分だけを名乗る", () => {
 	const proj = "/Users/makoto/repos/vantage-point";
 
-	it("root (cwd = project root) は空 = 語ることが無いので黙る", () => {
+	it("root (cwd = repo root) は空 = 語ることが無いので黙る", () => {
 		expect(laneCwdLabel(proj, proj)).toBe("");
 	});
 
-	it("performer は project root 起点の相対 path", () => {
+	it("performer は repo root 起点の相対 path", () => {
 		expect(laneCwdLabel(`${proj}/.vp/lanes/act2`, proj)).toBe(".vp/lanes/act2");
 	});
 
-	it("project の外に居る lane は絶対 path を full で出す (= 驚きにはインクを払う)", () => {
+	it("repo の外に居る lane は絶対 path を full で出す (= 驚きにはインクを払う)", () => {
 		expect(laneCwdLabel("/Users/makoto/work/other-clone", proj)).toBe(
 			"~/work/other-clone",
 		);

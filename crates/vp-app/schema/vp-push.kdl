@@ -99,7 +99,7 @@ protocol "vp-push" version="1.0.0" {
             field "payload" type="json"
         }
 
-        // SP の EchoesAgentHost が吐く構造化イベント（Act II の会話 stream）。
+        // repo の EchoesAgentHost が吐く構造化イベント（Act II の会話 stream）。
         //
         // ⚠️ これは**制御面ではなく stream**。取りこぼしは受け側の replay 要求
         // （`echoes:demand_start`）が埋めるので、**この channel の保留箱に頼らない**。
@@ -149,8 +149,8 @@ protocol "vp-push" version="1.0.0" {
 
         // ===== 掲示板（board, doc 52 §1）の制御面 — 実装は webview/board-handler.ts =====
 
-        // SP の canvas channel から来た `ProcessMessage` をそのまま board へ渡す。
-        // **中身は VP が定義していない**（SP が持つ形の転送）ので `json` 1 枚が正直な型。
+        // repo の canvas channel から来た `RepoMessage` をそのまま board へ渡す。
+        // **中身は VP が定義していない**（repo が持つ形の転送）ので `json` 1 枚が正直な型。
         // 型が要るのは「どの窓口に届けるか」であって、ここでは payload の中身ではない。
         event "board:message" {
             field "message" type="json"

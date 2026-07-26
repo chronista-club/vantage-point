@@ -48,10 +48,10 @@ use super::host::InFlight;
 /// CodexAgentHost の起動設定。
 #[derive(Debug, Clone)]
 pub struct CodexRpcHostConfig {
-    /// 会話の作業ディレクトリ（lane の project dir）。thread の workspace 紐付けに効く。
+    /// 会話の作業ディレクトリ（lane の repo dir）。thread の workspace 紐付けに効く。
     pub cwd: String,
-    /// registry 書き込みキー（project 名）。
-    pub project: String,
+    /// registry 書き込みキー（repo 名）。
+    pub repo: String,
     /// registry 書き込みキー（session label: `conductor` / `conductor#2` …）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
@@ -114,7 +114,7 @@ impl RpcState {
 /// reader task と host が共有する不変部 + 状態。
 struct RpcInner {
     event_tx: broadcast::Sender<EchoesEvent>,
-    project: String,
+    repo: String,
     lane: String,
     cwd: String,
     /// stdin writer（tokio Mutex — submit と reader task の書き込みを直列化）。
@@ -179,15 +179,15 @@ impl RpcInner {
         // doc 40 §4: 新 host は registry 直結（codex_session store には書かない）。
         let (lane_label, key) = crate::lane::session_registry::parse_session_label(&self.lane);
         if let Err(e) = crate::lane::session_registry::set_conversation(
-            &self.project,
+            &self.repo,
             lane_label,
             "codex",
             key,
             Some(thread_id),
         ) {
             tracing::warn!(
-                "codex thread id の registry 記録失敗（project={}, lane={}）: {e}",
-                self.project,
+                "codex thread id の registry 記録失敗（repo={}, lane={}）: {e}",
+                self.repo,
                 self.lane
             );
         }
@@ -241,7 +241,7 @@ impl CodexAgentHost {
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
             // wire で自分を名乗る口。Act I の stand_spawner / claude host と同じ契約。
-            .env("VP_PROJECT", &config.project)
+            .env("VP_REPO", &config.repo)
             .env("VP_LANE", &config.lane_label)
             .env("VP_SESSION_KEY", config.session_key.to_string())
             .stdin(Stdio::piped())
@@ -262,7 +262,7 @@ impl CodexAgentHost {
         let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
         let inner = Arc::new(RpcInner {
             event_tx,
-            project: config.project,
+            repo: config.repo,
             lane: config.lane,
             cwd: config.cwd,
             stdin: tokio::sync::Mutex::new(stdin),
@@ -302,8 +302,8 @@ impl CodexAgentHost {
         }
         let resume_target = config.thread_id;
         tracing::info!(
-            "CodexAgentHost spawn（常駐 app-server、project={}, lane={}, resume={:?}, pid={:?}）",
-            inner.project,
+            "CodexAgentHost spawn（常駐 app-server、repo={}, lane={}, resume={:?}, pid={:?}）",
+            inner.repo,
             inner.lane,
             resume_target.as_deref().unwrap_or("new"),
             child_pid
@@ -425,8 +425,8 @@ impl CodexAgentHost {
             reader.abort();
         }
         tracing::info!(
-            "CodexAgentHost stop（project={}, lane={}）",
-            self.inner.project,
+            "CodexAgentHost stop（repo={}, lane={}）",
+            self.inner.repo,
             self.inner.lane
         );
     }
@@ -614,8 +614,8 @@ async fn run_reader(
     };
     if !stopping {
         tracing::warn!(
-            "codex app-server 途絶（project={}, lane={}）",
-            inner.project,
+            "codex app-server 途絶（repo={}, lane={}）",
+            inner.repo,
             inner.lane
         );
         let detail = if stderr_tail.is_empty() {
@@ -672,8 +672,8 @@ async fn handle_response(
                 // resume 空振り → fresh へ self-heal（doc 41 §2-2。新 thread id が registry を
                 // 上書きするので記録破棄の別手順は不要）。
                 tracing::warn!(
-                    "codex thread/resume 失敗 → thread/start へ self-heal（project={}, lane={}）: {}",
-                    inner.project,
+                    "codex thread/resume 失敗 → thread/start へ self-heal（repo={}, lane={}）: {}",
+                    inner.repo,
                     inner.lane,
                     error_message(err)
                 );
@@ -809,7 +809,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut host = CodexAgentHost::spawn(CodexRpcHostConfig {
             cwd: tmp.path().to_string_lossy().into_owned(),
-            project: "vptest-rpc".into(),
+            repo: "vptest-rpc".into(),
             lane: "root".into(),
             lane_label: "root".into(),
             session_key: 1,

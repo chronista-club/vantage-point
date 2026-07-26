@@ -28,7 +28,7 @@ stand を足すたびに同じ穴を踏まないよう、**能力表 + スモー
 | 層 | 何を守るか | 誰が回すか |
 |----|-----------|-----------|
 | **A. 名前 / 能力表** | `from_stand` / `stand_name` / chat_capable 等 | `cargo test`（`engine.rs` 既存） |
-| **B. spawn / resume** | create-chat / --resume / fail-open / SP 再起動で stand 保持 | 半自動 + 実機 |
+| **B. spawn / resume** | create-chat / --resume / fail-open / repo 再起動で stand 保持 | 半自動 + 実機 |
 | **C. Console 実機** | Act I 対話・Act II chat・入力・表示 | **手動 dogfood（本 doc の主戦場）** |
 | **D. Agent tool surface** | Shell / MCP / Read-Write / wire | **stand 内 agent が自己報告**（下記テンプレ） |
 
@@ -45,7 +45,7 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 | MCP `CallMcpTool` (vp) | ✅ 想定 | ✅ II=`--force`要 | ❓ | ❓ | ❓ | — |
 | Shell tool | ✅ 想定 | ✅ II=`--force`要 | ❓ | ❓ | ❓ | n/a |
 | wire_send/recv | ✅ | ❓ | ❓ | ❓ | ❓ | — |
-| SP restart 後 stand 保持 | ✅ | ✅ 要確認 | ✅ 要確認 | ✅ | ❓ | ✅ |
+| repo restart 後 stand 保持 | ✅ | ✅ 要確認 | ✅ 要確認 | ✅ | ❓ | ✅ |
 
 `❓` = 未計測。stand 追加時は必ず列を埋め、❌/制限は「仕様」か「バグ」かを注記する。
 
@@ -70,7 +70,7 @@ C/D は CI に載せにくい。代わりに **stand 追加 PR の必須チェ�
 
 - [ ] lane 切替 → 戻ってきても同一 session（指名 resume）
 - [ ] New Session / fresh で本当に新規になる
-- [ ] SP Restart 後も **stand が echoes に化けない**
+- [ ] repo Restart 後も **stand が echoes に化けない**
 
 ### Act II（chat_capable な stand のみ）
 

@@ -66,7 +66,7 @@ vp flow handoff feat-api --task-spec /tmp/task.md --mode auto
 
 ## 2. `flow_progress` — 並列追跡集約 view
 
-現 project の全 lane (conductor + performers) の **git status + 未読 wire 数 + 6-state FSM (= control surrender model)** を 1 view で。 read-only (= cursor 不触り)、 何度 call しても side-effect なし。
+現 repo の全 lane (conductor + performers) の **git status + 未読 wire 数 + 6-state FSM (= control surrender model)** を 1 view で。 read-only (= cursor 不触り)、 何度 call しても side-effect なし。
 
 ### MCP tool
 
@@ -74,7 +74,7 @@ vp flow handoff feat-api --task-spec /tmp/task.md --mode auto
 mcp__vantage-point__flow_progress {}
 // →
 {
-  "project": "vantage-point",
+  "repo": "vantage-point",
   "root": {
     "address": "agent@vantage-point",
     "unread_wire_count": 2,
@@ -83,7 +83,7 @@ mcp__vantage-point__flow_progress {}
   "performers": [{
     "name": "feat-api",
     "address": "agent@vantage-point/feat-api",
-    "state": "Running",                          // = SP の Lane state (生死)
+    "state": "Running",                          // = repo の Lane state (生死)
     "stand": "echoes",
     "cwd": "/.../.vp/lanes/feat-api",
     "performer_status": {
@@ -120,7 +120,7 @@ vp flow progress --format table
 `--format table` の出力例:
 
 ```
-Project: vantage-point
+Repo: vantage-point
   Conductor unread wire: 2
 
 PERFORMER                STATE      MODE                 AHEAD  BEHIND   DIRTY  UNREAD BRANCH
@@ -204,7 +204,7 @@ performer が「conductor では捌けない、 **ユーザ本人**の意見が�
 
 daemon が vp-app へ lane snapshot を送る直前に、 performer の `LaneInfo` へ `flow_state` を
 enrich する (= `vp flow progress` と同一判定、 送信時 derive で registry / db には保存しない)。
-wire send/ack の成功が関与 project の snapshot 再 push をトリガするため、 flow_state の変化は
+wire send/ack の成功が関与 repo の snapshot 再 push をトリガするため、 flow_state の変化は
 polling 無しで sidebar に届く。 vp-app 側は `flow_state` を state 言語 (working / idle /
 needs-you) の一次 source とし、 field 欠落時 (旧 daemon) は pid heuristic に fallback する。
 
@@ -222,7 +222,7 @@ flow_handoff:
    ↑ wire_send 失敗 → lane_delete (rollback)
 
 flow_progress:
-  project name (project_path から導出)          → 旧 GET /api/health は撤去
+  repo name (repo_path から導出)          → 旧 GET /api/health は撤去
   lanes_list                                    → 全 lane (performer_status 込み)
   wire/unread-count   (per lane × N)            → 未読 count (cursor 不触り)
   wire/latest-msg     (per performer × M)       → 最新 wmsg (FSM derive 入力)

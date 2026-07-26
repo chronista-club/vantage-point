@@ -4,7 +4,7 @@
 //! - **engine 軸**（どの頭脳か: claude / codex / grok / opencode …）= session に束縛される identity
 //! - **Act(surface) 軸**（どう視るか: Act I 端末 / Act II chat GUI）= 切替可能な view
 //!
-//! の直交 2 軸がある。本 module は Act II のバックエンド（SP 側）+ engine 軸の語彙を持つ。
+//! の直交 2 軸がある。本 module は Act II のバックエンド（repo 側）+ engine 軸の語彙を持つ。
 //! Act I は raw PTY（`process::stand_spawner` の slot + CLI 注入）で、本 module を通らない。
 //!
 //! 設計 SSOT: `docs/design/37-echoes-two-axes.md`（2 軸）/ `32-echoes-act2-gui.md`（Act II）。

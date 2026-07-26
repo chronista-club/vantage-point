@@ -26,7 +26,7 @@ const DIRECTIVE_TITLES: Record<string, string> = {
 	p: "選択を Canvas に送る",
 	r: "Restart（lane / process）",
 	n: "New Performer を開く",
-	s: "Lane / Project 切替",
+	s: "Lane / Repo 切替",
 	d: "Delete（2-click 確認）",
 	l: "Lane を番号で切替",
 };

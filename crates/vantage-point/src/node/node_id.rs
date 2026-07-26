@@ -6,7 +6,7 @@
 //! 「今の居場所」、 wld_id は「不変の番地」、 handle は表示名 = ADR-002/008 idiom)。
 //!
 //! ## [`crate::lane::lane_id::LaneId`] との違い
-//! - LaneId は (project, lane) ごとに **多数**、 address で引く。
+//! - LaneId は (repo, lane) ごとに **多数**、 address で引く。
 //! - NodeId は home-node に **1 つ (singleton)**。daemon に 1 個なので address key を持たない。
 //!   発行・永続は db/machine の単一 row ([`crate::db::VpDb::load_or_create_node_id`])。
 //!

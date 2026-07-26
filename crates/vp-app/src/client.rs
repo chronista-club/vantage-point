@@ -2,14 +2,14 @@
 //!
 //! ## doc 45 段 3 — 残っているのは health だけ
 //!
-//! 元は projects / processes / lanes を触る REST client (12 method) だったが、
+//! 元は repos / processes / lanes を触る REST client (12 method) だったが、
 //! control plane は Unison に寄せた ([`crate::daemon_control`])。ここに残るのは
 //! **`/api/health` 1 本**で、これは統一の取りこぼしではなく doc 45 §2 の設計判断:
 //! health は「他が壊れている時に動いてほしい」probe なので、Unison 層が wedge した時に
 //! 診断手段ごと失わないよう、意図的に鈍い外殻 (HTTP) として置く。
 //! `daemon_launcher` の起動待ちも同じ probe を叩く。
 //!
-//! wire 型 (`ProjectInfo` / `RunningProcess` / `LaneInfo` 等) は transport 非依存なので
+//! wire 型 (`RepoInfo` / `RunningRepo` / `LaneInfo` 等) は transport 非依存なので
 //! 本 module に置いたまま — 読み手は Unison client / QUIC 購読 / sidebar push の 3 者。
 //!
 //! ## URL 解決
@@ -59,7 +59,7 @@ pub struct DaemonRpcClient {
 
 /// Process kind (Architecture v4: mem_1CaSwJ?... Process Recursive)
 ///
-/// 全 VP entity (daemon / SP / Lane / Stand) は `ProcessKind` を持つ Process として
+/// 全 VP entity (daemon / repo / Lane / Stand) は `ProcessKind` を持つ Process として
 /// homogeneous に扱う。Display metaphor は UI / log の format string のみで使い、
 /// code 内 logic は kind 直値で switch する。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -67,9 +67,9 @@ pub struct DaemonRpcClient {
 pub enum ProcessKind {
     /// system 全体を supervise する root process (= daemon 👑)
     Supervisor,
-    /// Project に bind された runtime container (= 旧 SP / Project Core ⭐)
-    /// daemon の projects 応答に kind field が無いケースは
-    /// Runtime (= Project Process) 扱い (serde default)。
+    /// Repo に bind された runtime container (= 旧 SP / Repo Core ⭐)
+    /// daemon の repos 応答に kind field が無いケースは
+    /// Runtime (= Repo Process) 扱い (serde default)。
     #[default]
     Runtime,
     /// PTY session を持つ stream-based process (= Lane: Conductor / Performer)
@@ -83,7 +83,7 @@ impl ProcessKind {
     pub fn metaphor(&self) -> &'static str {
         match self {
             ProcessKind::Supervisor => "👑 daemon",
-            ProcessKind::Runtime => "⭐ Star Platinum",
+            ProcessKind::Runtime => "⭐ repo",
             ProcessKind::Session => "📍 Lane",
             ProcessKind::Stand => "🦾 Stand",
         }
@@ -92,20 +92,20 @@ impl ProcessKind {
 
 /// Process state (全 ProcessKind 共通 state machine、Architecture v4 Idea 2)
 ///
-/// daemon の projects 応答 (`daemon-control.projects/list`) の `process_status` の wire mirror。
+/// daemon の repos 応答 (`daemon-control.repos/list`) の `process_status` の wire mirror。
 ///
-/// daemon 側 `capability::process_manager_capability::ProcessStatus`
+/// daemon 側 `capability::repo_manager_capability::RepoStatus`
 /// (Stopped/Starting/Running/Stopping/Error) と 1:1 対応させる。
 /// **state の SSOT は daemon** ── vp-app は join で上書きせず、 この値をそのまま使う。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessStatus {
-    /// SP 未起動 (停止中、 まだ起動していない)。
+pub enum RepoStatus {
+    /// repo 未起動 (停止中、 まだ起動していない)。
     /// default を Stopped にしているのは「未確認 = 停止扱い」が安全側のため
     /// (= 起動済と誤表示して loading spinner が永久に回る事故を防ぐ)。
     #[default]
     Stopped,
-    /// 起動処理中 (SP spawn 中)
+    /// 起動処理中 (repo spawn 中)
     Starting,
     /// 稼働中 (HTTP server listen 中)
     Running,
@@ -115,59 +115,59 @@ pub enum ProcessStatus {
     Error,
 }
 
-impl ProcessStatus {
+impl RepoStatus {
     /// snake_case string representation (sidebar JS / log での state badge match 用)
     pub fn as_str(&self) -> &'static str {
         match self {
-            ProcessStatus::Stopped => "stopped",
-            ProcessStatus::Starting => "starting",
-            ProcessStatus::Running => "running",
-            ProcessStatus::Stopping => "stopping",
-            ProcessStatus::Error => "error",
+            RepoStatus::Stopped => "stopped",
+            RepoStatus::Starting => "starting",
+            RepoStatus::Running => "running",
+            RepoStatus::Stopping => "stopping",
+            RepoStatus::Error => "error",
         }
     }
 
-    /// SP が生きている (稼働 or 過渡) か。 sidebar の currents 振り分け用。
+    /// repo が生きている (稼働 or 過渡) か。 sidebar の currents 振り分け用。
     pub fn is_alive(&self) -> bool {
         matches!(
             self,
-            ProcessStatus::Starting | ProcessStatus::Running | ProcessStatus::Stopping
+            RepoStatus::Starting | RepoStatus::Running | RepoStatus::Stopping
         )
     }
 }
 
-/// Project info — `daemon-control.projects/list` レスポンス要素 (= 登録済 path identity)。
+/// Repo info — `daemon-control.repos/list` レスポンス要素 (= 登録済 path identity)。
 ///
-/// server 側 `ProjectInfo` (`capability::process_manager_capability::ProjectInfo`) と
-/// 命名統一。 「list / identity 系 = Project」 「runtime lifecycle 系 = Process」 の
+/// server 側 `RepoInfo` (`capability::repo_manager_capability::RepoInfo`) と
+/// 命名統一。 「list / identity 系 = Repo」 「runtime lifecycle 系 = Process」 の
 /// 階層 SSOT に従い、 vp-app の wire-deserialize 型は本 struct に集約する。
-/// runtime port は `registry.list` (= `RunningProcess`) との join で merge する。
+/// runtime port は `registry.list` (= `RunningRepo`) との join で merge する。
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
-pub struct ProjectInfo {
+pub struct RepoInfo {
     /// Process kind (default Runtime: daemon response 互換)
     #[serde(default)]
     pub kind: ProcessKind,
     pub name: String,
     /// Runtime kind の場合は git directory binding
     pub path: String,
-    /// running の場合の port。 config の静的 port (= projects.kdl) を表す。
-    /// runtime の実ポートは `fetch_projects_with_ports` で `RunningProcess` から merge される。
+    /// running の場合の port。 config の静的 port (= repos.kdl) を表す。
+    /// runtime の実ポートは `fetch_repos_with_ports` で `RunningRepo` から merge される。
     #[serde(default)]
     pub port: Option<u16>,
-    /// Process state ── daemon の projects 応答の `process_status` が SSOT。
+    /// Process state ── daemon の repos 応答の `process_status` が SSOT。
     /// daemon は `process_status` キーで送るため `alias` で受け、 WebView へは
     /// `state` キーで serialize する (sidebar JS が `p.state` を読む)。
     #[serde(default, alias = "process_status")]
-    pub state: ProcessStatus,
-    /// Model Q: daemon canonical の active lane (presence)。projects 応答の
-    /// per-project active_lane。 boot 時の復元に使う (session.json でなく daemon が源)。
+    pub state: RepoStatus,
+    /// Model Q: daemon canonical の active lane (presence)。repos 応答の
+    /// per-repo active_lane。 boot 時の復元に使う (session.json でなく daemon が源)。
     #[serde(default)]
     pub active_lane: Option<String>,
 }
 
-// 旧 HTTP `GET /api/daemon/projects` の包み (`{"projects": [...]}`) は撤去した。
-// Unison `daemon-control.projects/list` は裸配列を返すため (doc 45 段 3)。
-// 新旧が同じ `ProjectInfo` 一覧に落ちることは `daemon_control` の decode parity テストが固定する。
+// 旧 HTTP `GET /api/daemon/repos` の包み (`{"repos": [...]}`) は撤去した。
+// Unison `daemon-control.repos/list` は裸配列を返すため (doc 45 段 3)。
+// 新旧が同じ `RepoInfo` 一覧に落ちることは `daemon_control` の decode parity テストが固定する。
 
 /// `/api/health` の主要 field のみを取り出した軽量レスポンス
 ///
@@ -190,10 +190,10 @@ pub struct DaemonHealthInfo {
     /// daemon 側と同形なので `crate::pane::HubNode` をそのまま deserialize に使う。
     #[serde(default)]
     pub hub_nodes: Vec<crate::pane::HubNode>,
-    /// L1 lifecycle: Daemon 配下 SP の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
-    /// 旧 daemon は field 不在 → 空。`path` で project 行に join する。
+    /// L1 lifecycle: Daemon 配下 repo の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
+    /// 旧 daemon は field 不在 → 空。`path` で repo 行に join する。
     #[serde(default)]
-    pub processes: Vec<SpPresence>,
+    pub processes: Vec<RepoPresence>,
     /// in-app update: 新しい release が GitHub にあるか（daemon の定期チェック cache 由来）。
     /// 旧 daemon は field 不在 → false。sidebar「更新する」ボタンの表示 gate。
     #[serde(default)]
@@ -203,12 +203,12 @@ pub struct DaemonHealthInfo {
     pub latest_version: Option<String>,
 }
 
-/// SP の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。
+/// repo の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。
 ///
-/// server 側 `ProcessHealthInfo` の {path, presence} のみ deserialize（dot 描画に必要な分）。
-/// 残り field（project/port/pid/tmux_session）は serde が無視する。
+/// server 側 `RepoHealthInfo` の {path, presence} のみ deserialize（dot 描画に必要な分）。
+/// 残り field（repo/port/pid/tmux_session）は serde が無視する。
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct SpPresence {
+pub struct RepoPresence {
     #[serde(default)]
     pub path: String,
     /// `"unregistered"` | `"connected"`（2 値、doc 44 §5.5 PR3）。
@@ -217,18 +217,18 @@ pub struct SpPresence {
 }
 
 /// Runtime process 情報 — Unison `registry.list` の `processes[]` 要素
-/// (= 稼働中 project の lifecycle snapshot)。
+/// (= 稼働中 repo の lifecycle snapshot)。
 ///
-/// server 側 `RunningProcess` (= `capability::process_manager_capability::RunningProcess`) の
+/// server 側 `RunningRepo` (= `capability::repo_manager_capability::RunningRepo`) の
 /// subset で、 命名も揃える。 vp-app では Activity widget の count と
-/// `fetch_projects_with_ports` での port join に使う。
+/// `fetch_repos_with_ports` での port join に使う。
 ///
 /// doc 45 段 3 で transport は `GET /api/daemon/processes` から `registry.list` に移ったが、
-/// daemon は同じ `running_processes` map を両面で共有しているので中身は同一。
+/// daemon は同じ `running_repos` map を両面で共有しているので中身は同一。
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct RunningProcess {
+pub struct RunningRepo {
     #[serde(default)]
-    pub project_name: String,
+    pub repo_name: String,
     #[serde(default)]
     pub port: u16,
 }
@@ -236,7 +236,7 @@ pub struct RunningProcess {
 // `LaneAddressWire` の定義は `crate::lane::LaneAddressWire` に移管 (R-0、 G2 解消)。
 // 本 file 上部の `use crate::lane::LaneAddressWire;` で bring-into-scope 済。
 
-/// Lane info (SP `/api/lanes` レスポンス要素)
+/// Lane info (repo `/api/lanes` レスポンス要素)
 ///
 /// vantage-point 側 `lanes_state::LaneInfo` の wire shape。
 /// vp-app は `vantage-point` に依存しないので独立 lite struct で deserialize。
@@ -361,9 +361,9 @@ pub struct PerformerStatusWire {
     pub is_merged: bool,
 }
 
-/// doc 11 PR-C: daemon process-proxy ask `stands_list` 応答 (`{stands:[...]}`) の 1 entry。
+/// doc 11 PR-C: daemon repo-proxy ask `stands_list` 応答 (`{stands:[...]}`) の 1 entry。
 ///
-/// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。 F6④ で SP 直結
+/// repo 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。 F6④ で repo 直結
 /// HTTP は撤去したが、 本 struct は ask 応答の deserialize + JS push back の serialize 用に残置。
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct StandInfo {
@@ -414,30 +414,30 @@ impl Default for DaemonRpcClient {
 mod tests {
     use super::*;
 
-    /// daemon は projects 応答を `process_status` キーで送る。
-    /// `ProjectInfo.state` の `#[serde(alias = "process_status")]` で受けられること。
+    /// daemon は repos 応答を `process_status` キーで送る。
+    /// `RepoInfo.state` の `#[serde(alias = "process_status")]` で受けられること。
     #[test]
-    fn project_info_deserializes_process_status_alias() {
+    fn repo_info_deserializes_process_status_alias() {
         let json = r#"{"name":"vp","path":"/repos/vp","process_status":"running"}"#;
-        let info: ProjectInfo = serde_json::from_str(json).unwrap();
-        assert_eq!(info.state, ProcessStatus::Running);
+        let info: RepoInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.state, RepoStatus::Running);
     }
 
     /// `process_status` が無い JSON は default の Stopped になること (= 安全側)。
     #[test]
-    fn project_info_defaults_to_stopped_when_status_absent() {
+    fn repo_info_defaults_to_stopped_when_status_absent() {
         let json = r#"{"name":"vp","path":"/repos/vp"}"#;
-        let info: ProjectInfo = serde_json::from_str(json).unwrap();
-        assert_eq!(info.state, ProcessStatus::Stopped);
+        let info: RepoInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.state, RepoStatus::Stopped);
     }
 
     /// WebView の sidebar JS は `p.state` を読む。 serialize は primary キー
     /// `state` で出る (alias は deserialize 専用で serialize には影響しない)。
     #[test]
-    fn project_info_serializes_as_state_key() {
-        let info = ProjectInfo {
-            state: ProcessStatus::Running,
-            ..ProjectInfo::default()
+    fn repo_info_serializes_as_state_key() {
+        let info = RepoInfo {
+            state: RepoStatus::Running,
+            ..RepoInfo::default()
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""state":"running""#), "got: {json}");

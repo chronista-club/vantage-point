@@ -321,7 +321,7 @@ pub mod xtouch {
         }
 
         #[test]
-        fn project_track_emits_lcd_line_and_colors() {
+        fn repo_track_emits_lcd_line_and_colors() {
             let mut profile = XTouchProfile::default();
             let messages = profile.project_track(0, "Lane A", Rgb::new(255, 0, 0), false);
             assert_eq!(messages.len(), 2);
@@ -503,7 +503,7 @@ pub mod lpd8 {
         }
 
         #[test]
-        fn project_track_emits_full_rgb_led_sysex() {
+        fn repo_track_emits_full_rgb_led_sysex() {
             let mut profile = Lpd8Profile::default();
             let messages = profile.project_track(0, "Lane A", Rgb::new(255, 0, 128), false);
             assert_eq!(messages.len(), 1);
@@ -837,7 +837,7 @@ pub mod roto {
         }
 
         #[test]
-        fn project_track_emits_framed_batch() {
+        fn repo_track_emits_framed_batch() {
             let mut profile = RotoProfile::default();
             let messages = profile.project_track(1, "Lane A", Rgb::new(255, 0, 0), false);
             // track 数 + offset + track 0..=1 + end detail = 5（実機検証済みの枠付きバッチ）

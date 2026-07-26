@@ -5,9 +5,9 @@
 //! 適用に絞った utility を提供する。
 //!
 //! doc 44 P1 PR4 (DB 統合): DB は `db/machine/` の**単一**になった。旧構成の
-//! per-SP DB (`db/sp_{slug}/`) は VP-182 の LOCK 衝突回避で分かれていたが、
-//! fold-in で SP プロセスが消えて分離理由が失効したため、project 次元は
-//! table の `project_path` 列が持つ形に統合された。
+//! per-repo DB (`db/sp_{slug}/`) は VP-182 の LOCK 衝突回避で分かれていたが、
+//! fold-in で repo プロセスが消えて分離理由が失効したため、repo 次元は
+//! table の `repo_path` 列が持つ形に統合された。
 
 use anyhow::Result;
 use clap::Subcommand;

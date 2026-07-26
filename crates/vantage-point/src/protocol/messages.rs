@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agui::AgUiEvent;
-use crate::process::lanes_state::LaneInfo;
+use crate::repo::lanes_state::LaneInfo;
 
 /// Content types that can be displayed in the viewer
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +46,7 @@ pub struct HistoryMessage {
 
 /// board（board Canvas の scope 別永続リスト）の 1 item（board モデル 2026-07-15）。
 ///
-/// SP が id を一元発行し（webview は自前生成しない）、 [`ProcessMessage::BoardUpdated`] の
+/// repo が id を一元発行し（webview は自前生成しない）、 [`RepoMessage::BoardUpdated`] の
 /// snapshot で配信される。 JSON は webview の BoardItem と揃える（camelCase:
 /// id / content / contentType / title / createdAt / updatedAt）ので DB stack にもそのまま載る。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +69,7 @@ pub struct BoardItem {
 /// Process: AI Agent server that wields capabilities on behalf of the user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ProcessMessage {
+pub enum RepoMessage {
     /// doc 48 Phase 2: Editor Mode bridge — MCP から GUI (vp-app webview) への editor 操作。
     ///
     /// daemon の `editor_fields` / `editor_values` / `editor_set` handler が request_id を
@@ -110,16 +110,16 @@ pub enum ProcessMessage {
     /// Clear a pane
     Clear {
         pane_id: String,
-        /// 属する Lane（`None` = conductor）。[`ProcessMessage::Show`] の lane と同義。
+        /// 属する Lane（`None` = conductor）。[`RepoMessage::Show`] の lane と同義。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
-        /// clear 対象の board scope（`None` = lane）。[`ProcessMessage::Show`] の scope と同義。
+        /// clear 対象の board scope（`None` = lane）。[`RepoMessage::Show`] の scope と同義。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
     },
     /// board（board Canvas の scope 別永続リスト）の snapshot（board モデル 2026-07-15）。
     ///
-    /// SP が唯一の truth を持ち、 item 追加/削除/clear のたびに更新後 snapshot を broadcast する。
+    /// repo が唯一の truth を持ち、 item 追加/削除/clear のたびに更新後 snapshot を broadcast する。
     /// topic `process/board/state/board/{scope}/{lane}`（category=state で retained）に載り、
     /// 再接続 / board 切替時の初期配信を retained が兼ねる。 webview はこれを受けて board を置換する view。
     BoardUpdated {
@@ -199,7 +199,7 @@ pub enum ProcessMessage {
     TerminalReady,
     /// ターミナルPTYセッション終了通知（子プロセス EOF）
     TerminalExited,
-    /// Lane PTY 出力（base64、 per-lane）。 doc 27 §4.1 S1: SP Lane PtySlot の出力を
+    /// Lane PTY 出力（base64、 per-lane）。 doc 27 §4.1 S1: repo Lane PtySlot の出力を
     /// `process/terminal/{lane}/data/out` topic に乗せ、 daemon 経由で WebView に届ける
     /// (raw WebSocket `/ws/terminal` 退役の置換)。 session 系 `TerminalOutput` とは別系統
     /// (こちらは LanePool スコープ、 lane address を持つ)。
@@ -230,10 +230,10 @@ pub enum ProcessMessage {
     /// Canvas Lane 切り替え指示
     SwitchLane {
         /// active 化する lane token: "root"（lead）or performer 名（例: "feat-api"）。
-        /// 現 project 内の lane-within-project 切替（B1 で project 切替意味論から変更）。
+        /// 現 repo 内の lane-within-repo 切替（B1 で repo 切替意味論から変更）。
         lane: String,
     },
-    /// wiremsg: SP の Lane 一覧 snapshot（retained state topic）。
+    /// wiremsg: repo の Lane 一覧 snapshot（retained state topic）。
     ///
     /// LanePool 変化のたび全 list を publish し、`process/star-platinum/state/lanes`
     /// に retain される（category=state → RetainedStore が最新値を保持）。
@@ -241,9 +241,9 @@ pub enum ProcessMessage {
     /// 設計: creo-memories `mem_1CbA198fsHJsoKpu2jDUCv`（wiremsg restructure）。
     LanesSnapshot {
         lanes: Vec<LaneInfo>,
-        /// doc 44 D4: この project の**開発起点 lane 名**（Host の帳簿が解決した値）。
+        /// doc 44 D4: この repo の**開発起点 lane 名**（Host の帳簿が解決した値）。
         ///
-        /// lane の属性ではなく **project 側の指定**なので、`LaneInfo` には持たせず
+        /// lane の属性ではなく **repo 側の指定**なので、`LaneInfo` には持たせず
         /// snapshot に 1 本添える（descriptor に入れると `lane.descriptor` へ永続され、
         /// 帳簿と二重の真実源になる）。
         ///
@@ -254,7 +254,7 @@ pub enum ProcessMessage {
     },
 }
 
-/// [`ProcessMessage::EchoesEvent::session`] の serde default（doc 38 の N=1 特殊ケース =
+/// [`RepoMessage::EchoesEvent::session`] の serde default（doc 38 の N=1 特殊ケース =
 /// 唯一 session の key 1。session field を持たない旧 sender との後方互換）。
 fn default_session_key() -> u32 {
     1
@@ -341,7 +341,7 @@ pub enum ChatRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
     pub id: Option<String>,
-    pub payload: ProcessMessage,
+    pub payload: RepoMessage,
 }
 
 // =============================================================================
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_process_message_serialization() {
-        let msg = ProcessMessage::ChatChunk {
+        let msg = RepoMessage::ChatChunk {
             content: "Hello".to_string(),
             done: false,
         };
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_show_with_title_serialization() {
-        let msg = ProcessMessage::Show {
+        let msg = RepoMessage::Show {
             pane_id: "design".to_string(),
             content: Content::Markdown("# Hello".to_string()),
             append: false,
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_show_without_title_omits_field() {
-        let msg = ProcessMessage::Show {
+        let msg = RepoMessage::Show {
             pane_id: "main".to_string(),
             content: Content::Markdown("# Hello".to_string()),
             append: false,
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_split_message_serialization() {
-        let msg = ProcessMessage::Split {
+        let msg = RepoMessage::Split {
             pane_id: "main".to_string(),
             direction: SplitDirection::Horizontal,
             new_pane_id: "pane-1".to_string(),
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_close_message_serialization() {
-        let msg = ProcessMessage::Close {
+        let msg = RepoMessage::Close {
             pane_id: "pane-1".to_string(),
             lane: None,
         };

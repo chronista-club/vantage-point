@@ -22,7 +22,7 @@ LAN MVP (Phase 0-3) 完成までは、 一部 example は **Phase X 実装後に
             ↓
 agent  @  mako.chronista.club  /  vantage-point  /  performer  /  objrec
   ↑                                ↑                  ↑
-actor                            project           lane (multi-segment 可)
+actor                            repo           lane (multi-segment 可)
 (default: agent)
 ```
 
@@ -50,14 +50,14 @@ vp wire watch --agent agent@vantage-point/root
 # actor 明示 (= notification address)
 vp wire send --to notify@vantage-point/root --body "build done"
 
-# project broadcast (lane 全 actor)
+# repo broadcast (lane 全 actor)
 vp wire send --to '*@vantage-point/root' --body "全員へ通知"
 ```
 
-### 2.2 cross-process (= 同 machine 別 project)
+### 2.2 cross-process (= 同 machine 別 repo)
 
 ```bash
-# self daemon 内 cross-process (= 別 project process、 wire R3 の best-effort forward)
+# self daemon 内 cross-process (= 別 repo process、 wire R3 の best-effort forward)
 vp wire send --to creo-memories/root --body "hello from vantage-point"
 
 # v1 syntax (互換、 default lane = conductor)
@@ -122,7 +122,7 @@ Vp.send_to("agent@mako/vantage-point/root", { msg: "via hub" })
 ### 3.2 connection scope (= shorthand、 batch 用途)
 
 ```ruby
-# daemon / project context を fix して address 短縮
+# daemon / repo context を fix して address 短縮
 Vp.with_daemon("mako.chronista.club") do |w|
   w.send_to("agent/vantage-point/root", payload1)
   w.send_to("agent/vantage-point/performer/objrec", payload2)
@@ -379,7 +379,7 @@ end
 
 ### Q. v1 syntax は廃止される?
 
-A. **廃止しない**。 v1 `<actor>@<project>` は v3.1 で default lane = `root` に解釈、 forward-compat。 既存 dogfood / Ruby DSL / CLI を書き換える必要なし。
+A. **廃止しない**。 v1 `<actor><repo>` は v3.1 で default lane = `root` に解釈、 forward-compat。 既存 dogfood / Ruby DSL / CLI を書き換える必要なし。
 
 ### Q. actor 名を省略すると何になる?
 
@@ -387,7 +387,7 @@ A. **`agent`** (= reserved default)。 `vantage-point/root` = `agent@vantage-poi
 
 ### Q. lane 名と actor 名が衝突した場合は?
 
-A. 衝突しない設計。 actor は `@` の左、 lane は `/` の中。 構文上 disambiguous (`agent@vantage-point/root` の `root` は lane segment、 `agent` は actor)。 reserved actor 名 (`agent` / `notify` / `mcp` / `protocol` / `daemon` / `*`) は lane segment / project name でも reject (= validate error)。
+A. 衝突しない設計。 actor は `@` の左、 lane は `/` の中。 構文上 disambiguous (`agent@vantage-point/root` の `root` は lane segment、 `agent` は actor)。 reserved actor 名 (`agent` / `notify` / `mcp` / `protocol` / `daemon` / `*`) は lane segment / repo name でも reject (= validate error)。
 
 ### Q. hub.chronista.club が落ちたら何が起きる?
 

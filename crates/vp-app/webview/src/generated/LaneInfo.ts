@@ -4,7 +4,7 @@ import type { LaneSessionsWire } from "./LaneSessionsWire";
 import type { PerformerStatusWire } from "./PerformerStatusWire";
 
 /**
- * Lane info (SP `/api/lanes` レスポンス要素)
+ * Lane info (repo `/api/lanes` レスポンス要素)
  *
  * vantage-point 側 `lanes_state::LaneInfo` の wire shape。
  * vp-app は `vantage-point` に依存しないので独立 lite struct で deserialize。

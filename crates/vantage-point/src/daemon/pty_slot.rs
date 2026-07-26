@@ -13,14 +13,14 @@
 //! 出力まで沈黙する) ため、 PtySlot が直近出力の ring buffer を保持し、 attach 時に
 //! snapshot を先頭配送してから live に繋ぐ ([`PtySlot::attach_output`])。
 //!
-//! ## disk 永続 (SP 再起動をまたぐ復元)
+//! ## disk 永続 (repo 再起動をまたぐ復元)
 //!
-//! ring buffer は in-memory なので、 SP / daemon の再起動 (upgrade / crash / daemon 再起動) で
+//! ring buffer は in-memory なので、 repo / daemon の再起動 (upgrade / crash / daemon 再起動) で
 //! PtySlot が作り直されると消える → 新 PtySlot は空 buffer から始まり、 前画面が戻らない
-//! (in-memory replay だけでは「GUI のみ再起動・SP 生存」しかカバーできない)。 これを埋めるため
+//! (in-memory replay だけでは「GUI のみ再起動・repo 生存」しかカバーできない)。 これを埋めるため
 //! `replay_path` が Some のとき、 ring buffer を disk (`vp_state_dir()/terminal_replay/`) に
 //! **定期 flush** (crash 耐性) + **Drop 時 final flush** (graceful freshness) で落とし、 spawn 時に
-//! seed する。 これで app / SP / daemon いずれの再起動でも spawn 直後に前画面を replay できる
+//! seed する。 これで app / repo / daemon いずれの再起動でも spawn 直後に前画面を replay できる
 //! (その後 `claude --resume` の repaint が追随)。
 
 use std::collections::VecDeque;
@@ -61,27 +61,27 @@ fn sanitize_replay(part: &str) -> String {
 }
 
 /// state base dir 注入版の replay file path (純関数、 テスト / lane state GC 用)。
-pub fn replay_file_path_in(base: &Path, project: &str, lane: &str) -> PathBuf {
+pub fn replay_file_path_in(base: &Path, repo: &str, lane: &str) -> PathBuf {
     base.join("terminal_replay").join(format!(
         "{}__{}",
-        sanitize_replay(project),
+        sanitize_replay(repo),
         sanitize_replay(lane)
     ))
 }
 
-/// lane の replay 永続 file path。 `<project>__<lane>` (console_mode と同一命名規則)。
+/// lane の replay 永続 file path。 `<repo>__<lane>` (console_mode と同一命名規則)。
 ///
-/// `project` / `lane` は LaneAddress 由来 (`lane` は "root" / performer 名)。
-pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
-    replay_file_path_in(&crate::config::vp_state_dir(), project, lane)
+/// `repo` / `lane` は LaneAddress 由来 (`lane` は "root" / performer 名)。
+pub fn replay_file_path(repo: &str, lane: &str) -> PathBuf {
+    replay_file_path_in(&crate::config::vp_state_dir(), repo, lane)
 }
 
 /// session 別の replay 永続 file path（base 注入版、doc 50 §4.6 A6）。
 ///
-/// **file の身元は session に紐づく**（`<project>__<lane>__<session>`）。role（誰が root か）では
+/// **file の身元は session に紐づく**（`<repo>__<lane>__<session>`）。role（誰が root か）では
 /// なく identity で決めるのが要:
 ///
-/// - 初版は root だけ旧名 `<project>__<lane>` を継承していた（migration 不要という後方互換の
+/// - 初版は root だけ旧名 `<repo>__<lane>` を継承していた（migration 不要という後方互換の
 ///   都合）。しかしそれは file を **role** に縛る形で、root を付け替えると
 ///   ①新 root が spawn 時に `is_root=true` になり旧名 file を seed する = **旧 root の画面が
 ///   別 session の console に出る** ②旧 root の生存 slot は spawn 時に旧名を焼き込んでいるので、
@@ -90,13 +90,13 @@ pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
 ///   role ベースの命名は成立しない。旧名は [`migrate_legacy_replay_in`] で 1 回だけ移設する。
 pub fn replay_file_path_session_in(
     base: &Path,
-    project: &str,
+    repo: &str,
     lane: &str,
     session: crate::lane::session_registry::SessionKey,
 ) -> PathBuf {
     base.join("terminal_replay").join(format!(
         "{}__{}__{}",
-        sanitize_replay(project),
+        sanitize_replay(repo),
         sanitize_replay(lane),
         session
     ))
@@ -104,14 +104,14 @@ pub fn replay_file_path_session_in(
 
 /// [`replay_file_path_session_in`] の実 state dir 版（slot spawn 経路が使う）。
 pub fn replay_file_path_session(
-    project: &str,
+    repo: &str,
     lane: &str,
     session: crate::lane::session_registry::SessionKey,
 ) -> PathBuf {
-    replay_file_path_session_in(&crate::config::vp_state_dir(), project, lane, session)
+    replay_file_path_session_in(&crate::config::vp_state_dir(), repo, lane, session)
 }
 
-/// 旧名 `<project>__<lane>` の replay file を **現 root の session file** へ 1 回だけ移設する。
+/// 旧名 `<repo>__<lane>` の replay file を **現 root の session file** へ 1 回だけ移設する。
 ///
 /// A6 以前は root だけが replay を disk に持ち、file 名は lane 単位だった。identity ベースへ
 /// 移す際にこれを放置すると、upgrade 直後の root が「前回の画面」を失う（旧名を誰も読まなく
@@ -122,15 +122,15 @@ pub fn replay_file_path_session(
 /// そちらが新しい）。失敗は best-effort（replay は無くても console は live で動く）。
 pub fn migrate_legacy_replay_in(
     base: &Path,
-    project: &str,
+    repo: &str,
     lane: &str,
     root: crate::lane::session_registry::SessionKey,
 ) {
-    let legacy = replay_file_path_in(base, project, lane);
+    let legacy = replay_file_path_in(base, repo, lane);
     if !legacy.exists() {
         return;
     }
-    let target = replay_file_path_session_in(base, project, lane, root);
+    let target = replay_file_path_session_in(base, repo, lane, root);
     if target.exists() {
         let _ = std::fs::remove_file(&legacy);
         return;
@@ -145,11 +145,11 @@ pub fn migrate_legacy_replay_in(
 
 /// [`migrate_legacy_replay_in`] の実 state dir 版。
 pub fn migrate_legacy_replay(
-    project: &str,
+    repo: &str,
     lane: &str,
     root: crate::lane::session_registry::SessionKey,
 ) {
-    migrate_legacy_replay_in(&crate::config::vp_state_dir(), project, lane, root)
+    migrate_legacy_replay_in(&crate::config::vp_state_dir(), repo, lane, root)
 }
 
 /// **1 session** の replay file を消す（base 注入版、doc 50 §4.6 A6）。
@@ -162,11 +162,11 @@ pub fn migrate_legacy_replay(
 /// （team-b 10 回目 2026-07-25）。不在は no-op、失敗は best-effort。
 pub fn clear_replay_session_in(
     base: &Path,
-    project: &str,
+    repo: &str,
     lane: &str,
     session: crate::lane::session_registry::SessionKey,
 ) {
-    let path = replay_file_path_session_in(base, project, lane, session);
+    let path = replay_file_path_session_in(base, repo, lane, session);
     match std::fs::remove_file(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => tracing::debug!("session replay の削除に失敗（best-effort）: {path:?}: {e}"),
@@ -176,11 +176,11 @@ pub fn clear_replay_session_in(
 
 /// [`clear_replay_session_in`] の実 state dir 版。
 pub fn clear_replay_session(
-    project: &str,
+    repo: &str,
     lane: &str,
     session: crate::lane::session_registry::SessionKey,
 ) {
-    clear_replay_session_in(&crate::config::vp_state_dir(), project, lane, session)
+    clear_replay_session_in(&crate::config::vp_state_dir(), repo, lane, session)
 }
 
 /// lane 削除時に replay file を消す (不在は no-op、 best-effort)。base 注入版。
@@ -188,20 +188,20 @@ pub fn clear_replay_session(
 /// lane-scoped state の一元 GC ([`crate::lane::commands::clear_lane_state_in`]) が呼ぶ。
 /// 残すと同名 lane 再作成時に旧画面の scrollback が seed されて蘇る (ghost replay)。
 ///
-/// doc 50 §4.6 A6: root（`<project>__<lane>`）に加え、全 session file
-/// (`<project>__<lane>__<session>`) も消す。session file を残すと同名 lane 再作成時に
+/// doc 50 §4.6 A6: root（`<repo>__<lane>`）に加え、全 session file
+/// (`<repo>__<lane>__<session>`) も消す。session file を残すと同名 lane 再作成時に
 /// 非 root pane が ghost replay する。session suffix は数字のみなので、別 lane
-/// (`<project>__<lane>x`) を誤爆しない（prefix 一致 + 残りが全数字の 2 条件）。
-pub fn clear_replay_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
+/// (`<repo>__<lane>x`) を誤爆しない（prefix 一致 + 残りが全数字の 2 条件）。
+pub fn clear_replay_in(base: &Path, repo: &str, lane: &str) -> std::io::Result<()> {
     // root（旧名）file。
-    match std::fs::remove_file(replay_file_path_in(base, project, lane)) {
+    match std::fs::remove_file(replay_file_path_in(base, repo, lane)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
         Ok(()) => {}
     }
-    // session file 群（`<project>__<lane>__<digits>`）を read_dir で拾って消す（不在 dir = no-op）。
+    // session file 群（`<repo>__<lane>__<digits>`）を read_dir で拾って消す（不在 dir = no-op）。
     let dir = base.join("terminal_replay");
-    let session_prefix = format!("{}__{}__", sanitize_replay(project), sanitize_replay(lane));
+    let session_prefix = format!("{}__{}__", sanitize_replay(repo), sanitize_replay(lane));
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -314,7 +314,7 @@ impl PtySlot {
     /// 指定したシェルコマンドを PTY 上で起動し、
     /// 出力を broadcast channel に配信する reader task を開始する。
     /// `replay_path` が Some のとき、 spawn 時に disk seed を読み込み (前回画面) + 定期/Drop で
-    /// disk へ flush する (SP 再起動をまたぐ復元)。 None なら in-memory replay のみ (テスト等)。
+    /// disk へ flush する (repo 再起動をまたぐ復元)。 None なら in-memory replay のみ (テスト等)。
     pub fn spawn(
         cwd: &str,
         shell_cmd: &str,
@@ -340,7 +340,7 @@ impl PtySlot {
         for arg in args {
             cmd.arg(arg);
         }
-        // doc 11 (PR-B): 起動 command が要求する env（VP_PROJECT / VP_LANE 等）を子プロセスに渡す。
+        // doc 11 (PR-B): 起動 command が要求する env（VP_REPO / VP_LANE 等）を子プロセスに渡す。
         for (key, value) in env {
             cmd.env(key, value);
         }
@@ -350,7 +350,7 @@ impl PtySlot {
         // lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
         // 既知の user tool location を base PATH の先頭に前置して解決する。
         // base は caller env の PATH (あれば) → なければ親プロセスの PATH。
-        // 補正ロジックの SSOT は `crate::spawn_env`。 本来は daemon / SP の spawn 最上流で
+        // 補正ロジックの SSOT は `crate::spawn_env`。 本来は daemon / repo の spawn 最上流で
         // 補強済みのはずだが (#498 再発の根治)、 末端でも二重保険として補強する。
         {
             let base_path = env
@@ -529,7 +529,7 @@ impl Drop for PtySlot {
     ///
     /// kill() で終了シグナルを送り、wait() で回収することで
     /// ゾンビプロセスの発生を防ぐ。 加えて replay を disk へ final flush する
-    /// (graceful な lane restart / SP 停止で最新画面を残す。 crash 経路は定期 flush が担保)。
+    /// (graceful な lane restart / repo 停止で最新画面を残す。 crash 経路は定期 flush が担保)。
     fn drop(&mut self) {
         // flush task を止めてから final flush (定期 flush と競合させない)。
         if let Some(h) = self.flush_handle.take() {
@@ -794,7 +794,7 @@ mod tests {
     }
 
     /// disk 永続 round-trip: 出力 → flush task が disk へ書く → その file を seed に新 PtySlot を
-    /// spawn すると、 前回出力が attach_output の snapshot に replay される (SP 再起動をまたぐ復元)。
+    /// spawn すると、 前回出力が attach_output の snapshot に replay される (repo 再起動をまたぐ復元)。
     #[tokio::test]
     async fn test_replay_persists_and_seeds_across_respawn() {
         let shell = default_test_shell();
@@ -852,7 +852,7 @@ mod tests {
         let (snapshot, _live) = slot2.attach_output();
         assert!(
             String::from_utf8_lossy(&snapshot).contains(marker),
-            "seed した前回画面が attach snapshot に replay される (SP 再起動復元)"
+            "seed した前回画面が attach snapshot に replay される (repo 再起動復元)"
         );
     }
 

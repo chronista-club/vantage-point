@@ -32,12 +32,12 @@ const VP_DAEMON_KDL: &str = include_str!("../schema/vp-daemon.kdl");
 /// 現在は [`daemon_channels_const_matches_source`] が source と突き合わせるので、
 /// server.rs 側の増減はテスト失敗として現れる。
 const DAEMON_CHANNELS: &[&str] = &[
-    "daemon-process",
+    "daemon-repo",
     "lanes",
     // doc 52 §6: canvas 語彙退去 — "canvas-ingest" → "gui-ingest" / "canvas" → "gui"
     "gui-ingest",
     "gui",
-    "process-proxy",
+    "repo-proxy",
     "daemon-device",
     "device",
     "registry",
@@ -114,8 +114,8 @@ fn starter_channels_present() {
 #[test]
 fn request_names_match_daemon_methods() {
     // SSOT: server.rs registry handler の match method。
-    // doc 44 P1 (fold-in): SP 向けの register / unregister / heartbeat / lanes/* は撤去し、
-    // read-only の `list` だけ残した（自己登録しに来る SP が存在しない）。この const を
+    // doc 44 P1 (fold-in): repo 向けの register / unregister / heartbeat / lanes/* は撤去し、
+    // read-only の `list` だけ残した（自己登録しに来る repo が存在しない）。この const を
     // 実態に合わせないと、消えた method を KDL に書き足しても本テストが素通りして
     // dead tool が出荷される（= 撤去で const だけ取り残される drift、`"control"` と同じ轍）。
     const REGISTRY_METHODS: &[&str] = &["list"];
@@ -136,7 +136,7 @@ fn request_names_match_daemon_methods() {
 /// KDL に**意図的に記述しない** daemon-control method。
 ///
 /// 方針（vp-daemon.kdl の channel コメントと対）: daemon-control に描くのは read-safe な
-/// request だけ。mutation は手で叩くと projects.kdl / lane descriptor の状態を壊すので
+/// request だけ。mutation は手で叩くと repos.kdl / lane descriptor の状態を壊すので
 /// unison-mcp の合成 tool に露出させない。`ping` は liveness probe（意味のある観測面ではない）。
 ///
 /// この const の存在意義は「omission を明示的な決定にする」こと。テスト 4 は
@@ -144,20 +144,20 @@ fn request_names_match_daemon_methods() {
 /// 素通りする（= 露出させるか否かを誰も判断しないまま出荷される）。下の
 /// [`daemon_control_methods_are_described_or_explicitly_omitted`] が逆方向を塞ぐ。
 const DAEMON_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
-    // projects mutation（projects.kdl / db の状態を壊しうる）
-    "projects/list",
-    "projects/add",
-    "projects/remove",
-    "projects/rename",
-    "projects/set_enabled",
-    "projects/reorder",
-    "projects/start",
-    "projects/stop",
-    "projects/update",
-    "projects/sync",
-    "projects/reload",
-    "projects/restart",
-    "projects/pointview",
+    // repos mutation（repos.kdl / db の状態を壊しうる）
+    "repos/list",
+    "repos/add",
+    "repos/remove",
+    "repos/rename",
+    "repos/set_enabled",
+    "repos/reorder",
+    "repos/start",
+    "repos/stop",
+    "repos/update",
+    "repos/sync",
+    "repos/reload",
+    "repos/restart",
+    "repos/pointview",
     // lane mutation（descriptor は daemon-canonical truth なので手動注入させない）
     "lanes/create",
     "lanes/set_active",

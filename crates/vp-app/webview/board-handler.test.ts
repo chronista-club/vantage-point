@@ -1,7 +1,7 @@
 /**
  * board-handler.ts の unit tests（board モデル 2026-07-15）
  *
- * board = SP truth のミラー view。 SP からの BoardUpdated 受信で board を置換し、
+ * board = repo truth のミラー view。 repo からの BoardUpdated 受信で board を置換し、
  * scope 切替 / lane 別保持 / cursor(local) / delete・clear(IPC 依頼) を検証する。
  * DOM 依存 (board-render.ts renderBoard/clearBoard) は vi.mock でモック。 IPC (window.ipc) もモック。
  */
@@ -34,7 +34,7 @@ import {
   type BoardItem,
 } from './board-handler'
 
-// SP からの BoardUpdated message を組み立てるヘルパ。
+// repo からの BoardUpdated message を組み立てるヘルパ。
 function boardUpdated(
   scope: string,
   lane: string | null,
@@ -73,7 +73,7 @@ beforeEach(() => {
 })
 
 // ============================================================================
-// BoardUpdated 受信（SP truth のミラー）
+// BoardUpdated 受信（repo truth のミラー）
 // ============================================================================
 
 describe('BoardUpdated 受信', () => {
@@ -85,7 +85,7 @@ describe('BoardUpdated 受信', () => {
     expect(cursor).toBe('a')
   })
 
-  it('items は SP の順序（新→古）そのまま反映される', () => {
+  it('items は repo の順序（新→古）そのまま反映される', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'c' }, { id: 'b' }, { id: 'a' }], 'c'))
     expect(getCanvasState().items.map((i) => i.id)).toEqual(['c', 'b', 'a'])
   })
@@ -149,10 +149,10 @@ describe('setCursor（view local）', () => {
 })
 
 // ============================================================================
-// delete / clear は SP に IPC 依頼（webview は truth を持たない）
+// delete / clear は repo に IPC 依頼（webview は truth を持たない）
 // ============================================================================
 
-describe('delete / clear は SP に IPC 依頼', () => {
+describe('delete / clear は repo に IPC 依頼', () => {
   it('deleteItem は board:delete を active scope/lane で送る', () => {
     handleMessage(boardUpdated('lane', 'feat-api', [{ id: 'x' }]))
     setActiveLaneName('feat-api')
@@ -180,7 +180,7 @@ describe('delete / clear は SP に IPC 依頼', () => {
     expect(payload).toMatchObject({ t: 'board:clear', scope: 'lane', lane: null })
   })
 
-  it('deleteItem は local state を変えない（SP truth の反映を待つ）', () => {
+  it('deleteItem は local state を変えない（repo truth の反映を待つ）', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'x' }]))
     deleteItem('x')
     // BoardUpdated が来るまで items は残る
@@ -253,7 +253,7 @@ describe('hasFreshArrival（board pane focus の live/replay 区別）', () => {
     expect(hasFreshArrival([item('a', PAST_ISO), item('b', PAST_ISO)], new Set())).toBe(false)
   })
 
-  it('既知 item の再配信（SP re-seed 相当）は createdAt が新しくても新着でない', () => {
+  it('既知 item の再配信（repo re-seed 相当）は createdAt が新しくても新着でない', () => {
     expect(hasFreshArrival([item('x', FUTURE_ISO)], new Set(['x']))).toBe(false)
   })
 

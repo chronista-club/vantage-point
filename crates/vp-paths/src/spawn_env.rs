@@ -4,7 +4,7 @@
 //!
 //! vp-app (`.app`) を GUI / launchd / Dock 経由で起動すると、 プロセスの PATH が
 //! `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になる。 この痩せた PATH は spawn chain
-//! (vp-app → daemon → SP → PtySlot → login shell → claude) を伝播し、 user-installed tool
+//! (vp-app → daemon → repo → PtySlot → login shell → claude) を伝播し、 user-installed tool
 //! (claude、 Windows は `claude.exe`) を見つけられず spawn が失敗 → lane が即 Dead 化 →
 //! Echoes コンソールが出ない、 という症状の根因になる。
 //!
@@ -12,7 +12,7 @@
 //! **許容**であり、 vp が mise に依存するわけではない (tmux decoupling PR2 で vp runtime は
 //! mise-free — mise を exec する箇所は product に存在しない)。
 //!
-//! この補正は **vantage-point (daemon / SP / PtySlot) と vp-app (daemon_launcher) の双方**が
+//! この補正は **vantage-point (daemon / repo / PtySlot) と vp-app (daemon_launcher) の双方**が
 //! spawn 最上流で必要とする。 かつては `vantage_point::spawn_env` が SSOT で vp-app が手動同期
 //! レプリカを持っていたが (drift 源)、 path 解決の SSOT である本 crate (vantage-point + vp-app
 //! 共有、 循環なし) に一本化した。 `vantage_point::spawn_env` は本 module を re-export する。
@@ -111,7 +111,7 @@ pub fn augment_path_env(base_path: &str) -> String {
     augment_path(base_path, home_string().as_deref())
 }
 
-/// 子プロセス（特に launchd 起動 daemon → SP → tmux）に渡す UTF-8 ロケールを返す。
+/// 子プロセス（特に launchd 起動 daemon → repo → tmux）に渡す UTF-8 ロケールを返す。
 ///
 /// ## なぜ必要か
 ///

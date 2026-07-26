@@ -24,7 +24,7 @@ pub use acp::AcpMessage;
 
 pub use messages::{
     BoardItem, BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, Content,
-    HistoryMessage, ProcessMessage, SessionInfo, SplitDirection,
+    HistoryMessage, RepoMessage, SessionInfo, SplitDirection,
 };
 
 pub use vantage::{CapabilityStateInfo, MidiEventType, SynergyTypeInfo, VantageEvent};
@@ -64,7 +64,7 @@ pub enum ProtocolMessage {
     /// Process内部メッセージ（WebSocket用、既存互換）
     Process {
         #[serde(flatten)]
-        message: ProcessMessage,
+        message: RepoMessage,
     },
 }
 
@@ -85,7 +85,7 @@ impl ProtocolMessage {
     }
 
     /// Processメッセージを作成
-    pub fn process(message: ProcessMessage) -> Self {
+    pub fn process(message: RepoMessage) -> Self {
         Self::Process { message }
     }
 }
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_protocol_message_process() {
-        let process_msg = ProcessMessage::ChatChunk {
+        let process_msg = RepoMessage::ChatChunk {
             content: "Hello".to_string(),
             done: false,
         };

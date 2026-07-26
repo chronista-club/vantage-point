@@ -67,7 +67,7 @@ client 側まで含めると、「lane の session 一覧 × 各 act」は **10 
 | 1 | `session_registry`（disk） | **SSOT** |
 | 2 | `LaneInfo.console_mode` | 1 の投影（root の act だけ） |
 | 3 | `LaneInfo.sessions`（`LaneSessionsWire`） | 1 の wire 投影 |
-| 4 | `sidebar_state.lanes_by_project` | 3 の写し（vp-app Rust） |
+| 4 | `sidebar_state.lanes_by_repo` | 3 の写し（vp-app Rust） |
 | 5 | `console.ts` `laneSessions` | **別 RPC**（`echoes_session_list`） |
 | 6 | `lane-panes.ts` `sessionsByLane` | event bus |
 | 7 | `EchoesHeader.tsx` `sessions` signal | 同じ event bus |
@@ -458,10 +458,10 @@ boot 復元後（`lane_spawn_actor` の restore 末尾 + `server.rs` run() の c
 
 - JS は `sendResize` を**壊れた回も正常な回も同じく 2 回**撃っていた
 - vp-app も `send_ok=true`
-- **SP が `Lane has no PtySlot (session=N)` を返していた** — しかもそれは `Ok` の中の
+- **repo が `Lane has no PtySlot (session=N)` を返していた** — しかもそれは `Ok` の中の
   `{"error": ...}` で、`let _ =` が **3 層にわたって握り潰していた**
 
-根治は R1〜R3 とまったく同じ形 — **SP が resize の intent（`desired_size`）を預かり、
+根治は R1〜R3 とまったく同じ形 — **repo が resize の intent（`desired_size`）を預かり、
 slot ができた瞬間に適用する**。「slot がまだ無いから捨てる」を「slot ができたら合わせる」に
 変えただけ。**doc 53 の reconcile 原理が lane の外（client からの要求）にも当てはまった**。
 
@@ -579,7 +579,7 @@ reconcile が収束させる（eventually correct）か**は設計思想の選�
 語彙が実装を軽く見せていないか。→ Reborn 実装時に**両者の差**を明文化すべき。
 
 **④ 上位階層（艦隊 / atlas group）を視野に入れるか。** mako の構想
-（`project` → `repository`、その上に束ね層。creo `vp-fleet-map-sidebar-idea`）は階層を 1 段
+（`repo` → `repository`、その上に束ね層。creo `vp-fleet-map-sidebar-idea`）は階層を 1 段
 増やす。§2.5 の「lane が持つ / session が持つ」の線引きを決めるなら、**その上の層が何を持つか**
 も同じ基準（「複数で共有しても答えが 1 つに決まるか」）で決められる。**今決めないが、
 基準は共有できる**ことを記録しておく。
@@ -1092,5 +1092,5 @@ R3c-2 の作業中に `add_console_creates_a_session_and_reconcile_stands_it_up`
    （**Chat**）を書くので、①の隙に file を作って #1 を Chat にしてしまう
 
 → reconcile は「act=Chat の root に slot は要らない」と正しく判断して root の console を畳む =
-テストが落ちる。**guard 抜けは同時に開発機の実 state（`~/.local/state/vp/`）へ project "vp" の
+テストが落ちる。**guard 抜けは同時に開発機の実 state（`~/.local/state/vp/`）へ repo "vp" の
 registry を書いていた**（[[dev-machine-masks-ci-failure]] の一族）。guard を足して根治。

@@ -2,7 +2,7 @@
  * sidebar の右クリック context menu (generic singleton popup)。
  *
  * VP-204 PR-1。 柱2 sidebar rebuild で port 漏れした VP-128 の context menu を
- * SolidJS に復旧する。 Lane 行 / project ヘッダ 共通の popup — caller が `openContextMenu`
+ * SolidJS に復旧する。 Lane 行 / repo ヘッダ 共通の popup — caller が `openContextMenu`
  * に header + 項目配列 + 右クリック座標を渡す。 破壊的項目は `confirm` 指定で 2-click 確認。
  *
  * state は Rust mirror の `store` とは別 — pure client-side UI state なので

@@ -37,8 +37,8 @@ let pending: IpcEventEnvelope[] | null = []
 export interface SidebarPushHandlers {
   state(state: unknown): void
   error(message: string): void
-  performerCreateResult(projectPath: string, name: string, error: string | null): void
-  standsResult(projectPath: string, stands: unknown[], error: string | null): void
+  performerCreateResult(repoPath: string, name: string, error: string | null): void
+  standsResult(repoPath: string, stands: unknown[], error: string | null): void
   filesListResult(address: string, entries: unknown[], truncated: boolean): void
   wireResult(payload: unknown): void
   clonePathPicked(path: string): void
@@ -60,10 +60,10 @@ function apply(msg: IpcEventEnvelope): void {
       break
     case 'performer:create_result':
       // `error` は schema で optional — 「成功」が型に載る（旧: JS へ null 直書き）。
-      handlers.performerCreateResult(msg.project_path, msg.name, msg.error ?? null)
+      handlers.performerCreateResult(msg.repo_path, msg.name, msg.error ?? null)
       break
     case 'stands:result':
-      handlers.standsResult(msg.project_path, msg.stands, msg.error ?? null)
+      handlers.standsResult(msg.repo_path, msg.stands, msg.error ?? null)
       break
     case 'files:list_result':
       handlers.filesListResult(msg.address, msg.entries, msg.truncated)

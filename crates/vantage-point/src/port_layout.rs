@@ -1,8 +1,8 @@
 //! VP Port Layout — daemon の listen port を保持する。
 //!
-//! doc 44 P1 (fold-in): 旧構成は slot × lane × role で SP / lane / role の固定 port を
-//! 算術で払い出していた（`vp port` が表示）。fold-in で project が portless（port=0）に
-//! なり、その算術（`sp_port` / `lane_base` / `port` / `url` 等）は誰も使わなくなったため
+//! doc 44 P1 (fold-in): 旧構成は slot × lane × role で repo / lane / role の固定 port を
+//! 算術で払い出していた（`vp port` が表示）。fold-in で repo が portless（port=0）に
+//! なり、その算術（`repo_port` / `lane_base` / `port` / `url` 等）は誰も使わなくなったため
 //! 撤去した。残るのは `daemon_port`（`config.ports.daemon_port` で override 可）だけ。
 //! layout 定数フィールドは config schema（`[ports]`）の互換のため struct に温存する。
 
@@ -14,13 +14,13 @@ use std::collections::BTreeMap;
 pub struct PortLayout {
     /// daemon が listen する port
     pub daemon_port: u16,
-    /// Project slot 群の base port (slot 0 の始点)
-    pub project_slot_base: u16,
-    /// 1 project slot の占有 port 数
-    pub project_slot_size: u16,
-    /// project slot の最大数
-    pub max_projects: u16,
-    /// project slot 内で Lane 領域が始まる offset (SP/Unison 用を除いた位置)
+    /// Repo slot 群の base port (slot 0 の始点)
+    pub repo_slot_base: u16,
+    /// 1 repo slot の占有 port 数
+    pub repo_slot_size: u16,
+    /// repo slot の最大数
+    pub max_repos: u16,
+    /// repo slot 内で Lane 領域が始まる offset (repo/Unison 用を除いた位置)
     pub lane_base_offset: u16,
     /// 1 Lane の占有 port 数
     pub lane_size: u16,
@@ -41,9 +41,9 @@ impl Default for PortLayout {
             // ここを 32000 固定にすると Config::port_layout() 経由の解決 (daemon_wire 等) だけが
             // profile を無視して brew namespace に越境する (dev/brew 混在の再発)。
             daemon_port: vp_paths::default_daemon_port(),
-            project_slot_base: 33000,
-            project_slot_size: 100,
-            max_projects: 20,
+            repo_slot_base: 33000,
+            repo_slot_size: 100,
+            max_repos: 20,
             lane_base_offset: 10,
             lane_size: 10,
             roles,

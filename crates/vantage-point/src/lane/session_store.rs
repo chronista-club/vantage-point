@@ -11,7 +11,7 @@
 //!   + shell single-quote 埋め込みの injection 防壁）
 //! - **形式外は書かずに Ok**: 既存の正常な記録を壊れた値で上書きしない（silent 退化防止）
 //! - **未記録の clear は no-op**: 二重 fresh を Err にしない
-//! - 置き場: `vp_state_dir()/<dir>/<project>__<lane>`（1 lane 1 file 1 行 = id）
+//! - 置き場: `vp_state_dir()/<dir>/<repo>__<lane>`（1 lane 1 file 1 行 = id）
 
 use std::path::{Path, PathBuf};
 
@@ -29,23 +29,23 @@ impl SessionStore {
     }
 
     /// state base dir 配下の session file path（純関数、テスト用に base 注入）。
-    pub(crate) fn file_in(&self, base: &Path, project: &str, lane: &str) -> PathBuf {
+    pub(crate) fn file_in(&self, base: &Path, repo: &str, lane: &str) -> PathBuf {
         base.join(self.dir)
-            .join(format!("{}__{}", sanitize(project), sanitize(lane)))
+            .join(format!("{}__{}", sanitize(repo), sanitize(lane)))
     }
 
     /// id を記録する（上書き、1 行）。形式外は**書かずに** Ok。
     pub(crate) fn record_in(
         &self,
         base: &Path,
-        project: &str,
+        repo: &str,
         lane: &str,
         id: &str,
     ) -> std::io::Result<()> {
         if !(self.validate)(id) {
             return Ok(());
         }
-        let path = self.file_in(base, project, lane);
+        let path = self.file_in(base, repo, lane);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -53,8 +53,8 @@ impl SessionStore {
     }
 
     /// 最後に記録された id を返す。無い / 空 / 形式外は None。
-    pub(crate) fn last_in(&self, base: &Path, project: &str, lane: &str) -> Option<String> {
-        let raw = std::fs::read_to_string(self.file_in(base, project, lane)).ok()?;
+    pub(crate) fn last_in(&self, base: &Path, repo: &str, lane: &str) -> Option<String> {
+        let raw = std::fs::read_to_string(self.file_in(base, repo, lane)).ok()?;
         let trimmed = raw.trim();
         if !(self.validate)(trimmed) {
             return None;
@@ -63,8 +63,8 @@ impl SessionStore {
     }
 
     /// 記録を消す（未記録なら no-op）。「素の新規 session」（= fresh）の state 側表現。
-    pub(crate) fn clear_in(&self, base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
-        match std::fs::remove_file(self.file_in(base, project, lane)) {
+    pub(crate) fn clear_in(&self, base: &Path, repo: &str, lane: &str) -> std::io::Result<()> {
+        match std::fs::remove_file(self.file_in(base, repo, lane)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             r => r,
         }
@@ -123,7 +123,7 @@ mod tests {
     const STORE: SessionStore = SessionStore::new("test_sessions", valid);
 
     #[test]
-    fn file_name_sanitizes_project_and_lane() {
+    fn file_name_sanitizes_repo_and_lane() {
         let p = STORE.file_in(Path::new("/base"), "creo.memories", "root");
         assert_eq!(p, Path::new("/base/test_sessions/creo-memories__root"));
         let p = STORE.file_in(Path::new("/base"), "a/b", "../evil");

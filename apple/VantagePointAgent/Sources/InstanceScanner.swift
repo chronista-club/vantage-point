@@ -2,12 +2,12 @@ import Foundation
 
 /// 稼働中の VP 本体 (daemon) 1 件。 menu の表示・操作の単位。
 ///
-/// doc 44 P1 (fold-in) 以前は project ごとに SP プロセスが居たため複数件あり得たが、
-/// fold-in で project は daemon プロセス内の状態になったので **高々 1 件**になった。
+/// doc 44 P1 (fold-in) 以前は repo ごとに repo プロセスが居たため複数件あり得たが、
+/// fold-in で repo は daemon プロセス内の状態になったので **高々 1 件**になった。
 struct VpInstance: Identifiable, Sendable, Equatable {
     /// daemon の HTTP port (32000)
     let port: Int
-    /// 表示名 (daemon は project に属さないので `"daemon"` 固定)
+    /// 表示名 (daemon は repo に属さないので `"daemon"` 固定)
     let projectName: String
     let pid: Int
 
@@ -22,7 +22,7 @@ struct VpInstance: Identifiable, Sendable, Equatable {
 ///
 /// ## port scan の撤去 (doc 45 §5-5、 2026-07-22)
 ///
-/// 旧実装は SP の port range 33000...33015 を並行 probe していたが、 **SP-portless 化で
+/// 旧実装は repo の port range 33000...33015 を並行 probe していたが、 **SP-portless 化で
 /// 33000 番台は誰も listen しなくなった**ため、 この scan は常に空を返す no-op だった
 /// (「読み手のない書き込み」の逆 = 答えの返らない問い合わせ)。 daemon 単発 probe に置換。
 ///
@@ -54,15 +54,15 @@ enum InstanceControl {
         else { return nil }
 
         let pid = json["pid"] as? Int ?? 0
-        // fold-in 後の daemon は特定 project に属さないため `project_dir` は空。
-        // 旧 SP の health は project_dir を持っていたので、 表示名の導出はここで固定する。
+        // fold-in 後の daemon は特定 repo に属さないため `repo_dir` は空。
+        // 旧 SP の health は repo_dir を持っていたので、 表示名の導出はここで固定する。
         return VpInstance(port: port, projectName: "daemon", pid: pid)
     }
 
     /// instance を graceful shutdown する (POST `/api/shutdown` = shutdown_token cancel)。
     ///
-    /// ⚠️ fold-in 後は **daemon を止める = 全 project / 全 lane が落ちる** (CLAUDE.md)。
-    /// 旧 SP 時代の「1 project だけ止める」意味論はもう無い。
+    /// ⚠️ fold-in 後は **daemon を止める = 全 repo / 全 lane が落ちる** (CLAUDE.md)。
+    /// 旧 SP 時代の「1 repo だけ止める」意味論はもう無い。
     static func stop(port: Int) async {
         guard let url = URL(string: "http://[::1]:\(port)/api/shutdown") else { return }
         var request = URLRequest(url: url)

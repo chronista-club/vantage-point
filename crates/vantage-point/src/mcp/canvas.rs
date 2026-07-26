@@ -6,7 +6,7 @@
 use super::*;
 
 /// board scope の検証: **'lane' のみ**（mako 決定 2026-07-23 — board は注視中 lane に一本化）。
-/// 旧 'proj'（project 共有 board、2026-07-15〜）と 'vp'（全体 board）構想は撤去。
+/// 旧 'proj'（repo 共有 board、2026-07-15〜）と 'vp'（全体 board）構想は撤去。
 /// silent に lane 降格せず明示エラーで弾く（書けたつもりで表示されない board を作らない —
 /// GUI 側は scope != 'lane' の BoardUpdated を無視するため、通すと writer-without-reader になる）。
 fn validate_board_scope(scope: Option<&str>) -> Result<Option<String>, McpError> {
@@ -121,11 +121,11 @@ impl VantageMcp {
             _ => crate::protocol::Content::Markdown(params.content),
         };
 
-        // protocol layer の ProcessMessage::Show.pane_id / append は wire 互換のため keep。
+        // protocol layer の RepoMessage::Show.pane_id / append は wire 互換のため keep。
         // doc 52 §7: MCP 面から pane_id を撤去したので内部固定 "main"（board は per-lane 1 枚）。
         // board scope: "vp" は Phase 2 未実装なので fail-closed（silent lane 降格を避ける）。
         let scope = validate_board_scope(params.scope.as_deref())?;
-        let msg = ProcessMessage::Show {
+        let msg = RepoMessage::Show {
             pane_id: "main".to_string(),
             content,
             append: false,
@@ -150,7 +150,7 @@ impl VantageMcp {
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ClearParams>,
     ) -> Result<CallToolResult, McpError> {
         let scope = validate_board_scope(params.scope.as_deref())?;
-        let msg = ProcessMessage::Clear {
+        let msg = RepoMessage::Clear {
             pane_id: "main".to_string(),
             lane: Some(SelfLane::detect().lane_name),
             scope,

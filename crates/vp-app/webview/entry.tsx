@@ -215,8 +215,8 @@ let echoesHeader: EchoesHeaderApi | null = null;
  * `null` = conductor（lead）、`string` = performer 名。
  *
  * D2 統一: 語彙は root/performer。rename 途上のため legacy `lead`/`wing` も受理する:
- * - `<project>/root` / `<project>/lead` → `null`（root/lead）
- * - `<project>/performer/<name>` / `<project>/wing/<name>` → `<name>`（performer）
+ * - `<repo>/root` / `<repo>/lead` → `null`（root/lead）
+ * - `<repo>/performer/<name>` / `<repo>/wing/<name>` → `<name>`（performer）
  *
  * この値は (a) board-content-persist の SurrealDB record key、(b) per-lane board の
  * canvas filter token（`null`→`conductor` に正規化して producer の lane と突合）に使う。
@@ -284,7 +284,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 			stand: info.stand ?? null,
 		});
 		// wiremsg Stage 2: canvas (board body) の供給は Rust 側 spawn_canvas_subscription が
-		// per-SP で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
+		// per-repo で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
 		// 保存済配置を restore、 初訪問 Lane は lead-focus を default にする
 		if (laneChanged) restoreAppStateFor(newLane);
 		// doc 50 §4.6 A6: lane の表示を開く（roster 同期 + focus）。旧実装は
@@ -293,7 +293,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		if (laneChanged) applyLaneView(newLane);
 		// board モデル: lane 切替時に active lane を更新する。 lane board は canvas channel で既に
 		// retained 受信済みなので、 setActiveLaneName で表示 board を切り替えるだけでよい（別 load 不要）。
-		// LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
+		// LaneAddress::Display 形 (`<repo>/lead` or `<repo>/wing/<name>`) を flat lane_name に翻訳。
 		const laneName = laneNameFromAddress(newLane);
 		setActiveLaneName(laneName);
 		return;
@@ -463,7 +463,7 @@ console.info("[vp-bundle] vpAppLayout attached to window — bundle init complet
 // ===== Echoes Act II (doc 33): Console facade + ChatView =====
 // EchoesEvent の per-lane ring buffer + ChatView renderer 接続点。
 // Rust からの供給は push envelope（下方 `installDispatch` の console* handler）で、
-// `window.vpConsole` は **DevTools 検分用**に生えている: window.vpConsole.peek("<project>/root")
+// `window.vpConsole` は **DevTools 検分用**に生えている: window.vpConsole.peek("<repo>/root")
 const vpConsole = installConsole();
 
 // ink（対話面、doc 52 §3）を board pane に配線する。lane 文脈は closure で注入:
@@ -981,7 +981,7 @@ installDispatch({
 	renderDevices: renderDeviceList,
 	handleBoardMessage,
 	// Console 面（console.ts）。`window.vpConsole` は DevTools 検分用に残っている
-	// （`window.vpConsole.peek("<project>/root")`）が、Rust からはここ経由で届く。
+	// （`window.vpConsole.peek("<repo>/root")`）が、Rust からはここ経由で届く。
 	consoleSessionList: (lane, payload) =>
 		vpConsole.handleSessionList(lane, payload as EchoesSessionListPayload),
 	consoleEvent: (lane, event, session) =>

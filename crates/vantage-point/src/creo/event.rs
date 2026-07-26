@@ -13,21 +13,21 @@ use super::ui::CreoUI;
 /// Time-ordered UUID (v7) として発行される event の id。
 pub type EventId = Uuid;
 
-/// Actor reference — canonical address `{stand}@{project}/{lane}` の構成要素。
+/// Actor reference — canonical address `{stand}@{repo}/{lane}` の構成要素。
 ///
 /// Mailbox address (VP-24 / VP-146) と互換: `canonical()` で v3.1 syntax 文字列化できる。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ActorRef {
     pub stand: String,
     pub lane: String,
-    pub project: String,
+    pub repo: String,
 }
 
 impl ActorRef {
     /// `echoes@vantage-point/root` 形式の v3.1 federated address 文字列を返す。
     /// VP-146 で旧 sub-suffix 形式 (`echoes.conductor@vantage-point`) から移行。
     pub fn canonical(&self) -> String {
-        format!("{}@{}/{}", self.stand, self.project, self.lane)
+        format!("{}@{}/{}", self.stand, self.repo, self.lane)
     }
 }
 
@@ -86,7 +86,7 @@ mod tests {
         ActorRef {
             stand: "echoes".into(),
             lane: "root".into(),
-            project: "vantage-point".into(),
+            repo: "vantage-point".into(),
         }
     }
 
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn new_event_uses_uuid_v7() {
         let ev = Event::new(
-            "project/echoes/notify/message",
+            "repo/echoes/notify/message",
             sample_actor(),
             sample_content(),
         );
@@ -119,22 +119,14 @@ mod tests {
     #[test]
     fn with_causation_sets_parent() {
         let parent = Uuid::now_v7();
-        let ev = Event::new(
-            "project/sc/state/item-added",
-            sample_actor(),
-            sample_content(),
-        )
-        .with_causation(parent);
+        let ev = Event::new("repo/sc/state/item-added", sample_actor(), sample_content())
+            .with_causation(parent);
         assert_eq!(ev.causation, Some(parent));
     }
 
     #[test]
     fn event_serde_roundtrip() {
-        let ev = Event::new(
-            "project/sc/state/item-added",
-            sample_actor(),
-            sample_content(),
-        );
+        let ev = Event::new("repo/sc/state/item-added", sample_actor(), sample_content());
         let s = serde_json::to_string(&ev).unwrap();
         let back: Event = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, ev.id);

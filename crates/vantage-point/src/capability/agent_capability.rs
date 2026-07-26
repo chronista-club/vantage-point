@@ -383,7 +383,7 @@ impl Capability for AgentCapability {
     /// VP-83 Stand 自己診断 (2026-04-25) — Heaven's Door 📖 の実行時 snapshot
     ///
     /// Agent は Claude CLI の orchestrator、観測ポイント:
-    /// - working_dir (実行 project dir)
+    /// - working_dir (実行 repo dir)
     /// - event_bus 接続 flag (初期化完了の指標)
     /// - run_state の summary (running / idle / error)
     /// - current_task の active flag
@@ -480,8 +480,8 @@ impl Stand for AgentCapability {
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // SP-local (= 1 Process per project、 cross-machine forwarding は msgbox_remote 経由)
-        LayerScope::Project
+        // repo-local (= 1 Process per repo、 cross-machine forwarding は msgbox_remote 経由)
+        LayerScope::Repo
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -569,6 +569,6 @@ mod tests {
         let cap = AgentCapability::new();
         let stand: &dyn Stand = &cap;
         assert_eq!(stand.actor_name(), "agent");
-        assert_eq!(stand.layer_scope(), LayerScope::Project);
+        assert_eq!(stand.layer_scope(), LayerScope::Repo);
     }
 }

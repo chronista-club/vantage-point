@@ -1,8 +1,8 @@
 //! daemon control plane クライアント (Unison `daemon-control` / `registry`)
 //!
 //! doc 45 段 3: vp-app が抱えていた REST client (`client::DaemonRpcClient`) のうち、
-//! projects / processes / lanes を触る面をここへ移した。vp-app は既に Unison を
-//! 主要な transport として使っている (lanes / canvas / terminal / device / wire / process-proxy)
+//! repos / processes / lanes を触る面をここへ移した。vp-app は既に Unison を
+//! 主要な transport として使っている (lanes / canvas / terminal / device / wire / repo-proxy)
 //! ので、control plane だけ HTTP に残す理由が無い — Unison 側には KDL schema と drift
 //! 検出があり、HTTP 側には無い (doc 45 §1)。
 //!
@@ -13,14 +13,14 @@
 //! ## 1 RPC = 1 stream
 //!
 //! daemon 側の daemon-control handler は **1 stream につき逐次** (recv → handle → send を
-//! 直列に回す) なので、長い RPC (`projects/restart` は内部に grace sleep + 起動確認が入る) と
+//! 直列に回す) なので、長い RPC (`repos/restart` は内部に grace sleep + 起動確認が入る) と
 //! 5s 周期の poll を同じ stream に相乗りさせると、poll が restart の完了まで待たされる
 //! (head-of-line blocking)。call ごとに stream を開いて閉じることで、旧 HTTP の
 //! 「1 リクエスト = 1 独立した往復」という性質をそのまま持ち込む。
 //!
 //! 接続自体は `SharedDaemonConn` の 1 本 (F1b、doc 27 §3.4.4) を共有するので、
 //! 増えるのは QUIC stream だけ。stream open は同一 connection 上の 1 往復で、
-//! 毎回 connect し直していた旧 `daemon_process_request` より安い。
+//! 毎回 connect し直していた旧 `daemon_repo_request` より安い。
 //!
 //! ⚠️ stream は必ず `close()` する。drop 任せにすると recv task と QUIC stream が残り、
 //! MAX_STREAMS 枯渇に効いてくる (`run_lanes_session` が踏んだのと同じ罠)。
@@ -30,12 +30,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::client::{ProjectInfo, RunningProcess};
+use crate::client::{RepoInfo, RunningRepo};
 
 /// 1 RPC の上限。旧 reqwest client の 10s timeout をそのまま引き継ぐ。
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `projects/restart` だけの上限。daemon 側で stop → grace sleep → start → 起動確認と
+/// `repos/restart` だけの上限。daemon 側で stop → grace sleep → start → 起動確認と
 /// 繋ぐので他の RPC より桁が違う。旧 HTTP client では 10s を超えると reqwest が
 /// 先に諦めて「失敗したのに再起動は進む」という嘘のエラーになっていた。
 const RESTART_TIMEOUT: Duration = Duration::from_secs(60);
@@ -91,84 +91,81 @@ impl DaemonControl {
     }
 
     // =====================================================================
-    // projects — 旧 `/api/daemon/projects*` / `/api/daemon/processes/*`
+    // repos — 旧 `/api/daemon/repos*` / `/api/daemon/processes/*`
     // =====================================================================
 
-    /// 登録 project 一覧 (旧 `GET /api/daemon/projects`)。
-    pub async fn list_projects(&self) -> Result<Vec<ProjectInfo>> {
-        let resp = self.control("projects/list", serde_json::json!({})).await?;
-        decode_projects(resp)
+    /// 登録 repo 一覧 (旧 `GET /api/daemon/repos`)。
+    pub async fn list_repos(&self) -> Result<Vec<RepoInfo>> {
+        let resp = self.control("repos/list", serde_json::json!({})).await?;
+        decode_repos(resp)
     }
 
-    /// 稼働中 project の snapshot (旧 `GET /api/daemon/processes`)。
+    /// 稼働中 repo の snapshot (旧 `GET /api/daemon/processes`)。
     ///
-    /// 面は `registry` channel。daemon は `running_processes` map を HTTP route と
+    /// 面は `registry` channel。daemon は `running_repos` map を HTTP route と
     /// **同じ Arc** で共有しているので、どちらから読んでも同じ答えになる
     /// (parity テスト: `daemon/server.rs` の `registry_list_matches_http`)。
-    pub async fn list_processes(&self) -> Result<Vec<RunningProcess>> {
+    pub async fn list_processes(&self) -> Result<Vec<RunningRepo>> {
         let resp = self
             .call_on("registry", "list", serde_json::json!({}), RPC_TIMEOUT)
             .await?;
         decode_processes(resp)
     }
 
-    /// project を登録する (旧 `POST /api/daemon/projects`)。
-    pub async fn add_project(&self, name: &str, path: &str) -> Result<()> {
+    /// repo を登録する (旧 `POST /api/daemon/repos`)。
+    pub async fn add_repo(&self, name: &str, path: &str) -> Result<()> {
         self.control(
-            "projects/add",
+            "repos/add",
             serde_json::json!({ "name": name, "path": path }),
         )
         .await?;
         Ok(())
     }
 
-    /// project を起動する (旧 `POST /api/daemon/processes/{name}/start`)。
+    /// repo を起動する (旧 `POST /api/daemon/processes/{name}/start`)。
     ///
     /// doc 44 P1 (fold-in) 後は子プロセス spawn ではなく daemon の registry への登録。
     /// 既に居れば daemon 側で no-op になる。
-    pub async fn start_process(&self, project_name: &str) -> Result<()> {
-        self.control(
-            "projects/start",
-            serde_json::json!({ "name": project_name }),
-        )
-        .await?;
+    pub async fn start_process(&self, repo_name: &str) -> Result<()> {
+        self.control("repos/start", serde_json::json!({ "name": repo_name }))
+            .await?;
         Ok(())
     }
 
-    /// project を再起動する (旧 `POST /api/daemon/processes/{name}/restart`)。
-    pub async fn restart_process(&self, project_name: &str) -> Result<()> {
+    /// repo を再起動する (旧 `POST /api/daemon/processes/{name}/restart`)。
+    pub async fn restart_process(&self, repo_name: &str) -> Result<()> {
         self.call_on(
             "daemon-control",
-            "projects/restart",
-            serde_json::json!({ "name": project_name }),
+            "repos/restart",
+            serde_json::json!({ "name": repo_name }),
             RESTART_TIMEOUT,
         )
         .await?;
         Ok(())
     }
 
-    /// project を停止する (旧 `POST /api/daemon/processes/{name}/stop`)。
+    /// repo を停止する (旧 `POST /api/daemon/processes/{name}/stop`)。
     ///
-    /// project は registered のまま (`enabled` 不変) — 稼働だけ落とす。
-    pub async fn stop_process(&self, project_name: &str) -> Result<()> {
-        self.control("projects/stop", serde_json::json!({ "name": project_name }))
+    /// repo は registered のまま (`enabled` 不変) — 稼働だけ落とす。
+    pub async fn stop_process(&self, repo_name: &str) -> Result<()> {
+        self.control("repos/stop", serde_json::json!({ "name": repo_name }))
             .await?;
         Ok(())
     }
 
-    /// project を登録解除する (旧 `POST /api/daemon/projects/remove`)。
+    /// repo を登録解除する (旧 `POST /api/daemon/repos/remove`)。
     ///
-    /// daemon の `remove_project` は稼働中だとエラーを返すので、caller は先に
+    /// daemon の `remove_repo` は稼働中だとエラーを返すので、caller は先に
     /// `stop_process` を呼ぶこと (repo ディレクトリ自体は削除しない)。
-    pub async fn remove_project(&self, path: &str) -> Result<()> {
-        self.control("projects/remove", serde_json::json!({ "path": path }))
+    pub async fn remove_repo(&self, path: &str) -> Result<()> {
+        self.control("repos/remove", serde_json::json!({ "path": path }))
             .await?;
         Ok(())
     }
 
-    /// 並び順を daemon に永続化する (旧 `POST /api/daemon/projects/reorder`)。
-    pub async fn reorder_projects(&self, paths: Vec<String>) -> Result<()> {
-        self.control("projects/reorder", serde_json::json!({ "paths": paths }))
+    /// 並び順を daemon に永続化する (旧 `POST /api/daemon/repos/reorder`)。
+    pub async fn reorder_repos(&self, paths: Vec<String>) -> Result<()> {
+        self.control("repos/reorder", serde_json::json!({ "paths": paths }))
             .await?;
         Ok(())
     }
@@ -194,12 +191,12 @@ impl DaemonControl {
     /// (HTTP route と同じ `resolve_create_lane_args` を共有)。
     pub async fn create_performer_lane(
         &self,
-        project_path: &str,
+        repo_path: &str,
         name: &str,
         branch: Option<&str>,
         stand: Option<&str>,
     ) -> Result<()> {
-        let mut payload = serde_json::json!({ "path": project_path, "name": name });
+        let mut payload = serde_json::json!({ "path": repo_path, "name": name });
         for (key, value) in [("branch", branch), ("stand", stand)] {
             if let Some(value) = value {
                 payload[key] = serde_json::Value::String(value.to_string());
@@ -213,7 +210,7 @@ impl DaemonControl {
 /// Unison の error 慣習 (VP-163): 専用 error frame が無いので、daemon は失敗を
 /// **成功 frame の `{"error": ...}`** で返す。transport 成功 = 処理成功ではないため、
 /// ここで拾わないと未知 method や validation 失敗が silent success になる
-/// (`daemon_process_request` が同じ理由で同じ処理をしている)。
+/// (`daemon_repo_request` が同じ理由で同じ処理をしている)。
 pub fn rpc_error(resp: &serde_json::Value) -> Option<String> {
     resp.get("error").map(|e| match e.as_str() {
         Some(s) => s.to_string(),
@@ -222,20 +219,20 @@ pub fn rpc_error(resp: &serde_json::Value) -> Option<String> {
     })
 }
 
-/// `daemon-control.projects/list` の応答 → `ProjectInfo` 一覧。
+/// `daemon-control.repos/list` の応答 → `RepoInfo` 一覧。
 ///
-/// ⚠️ 旧 HTTP `GET /api/daemon/projects` は `{"projects": [...]}` で包んでいたが、
+/// ⚠️ 旧 HTTP `GET /api/daemon/repos` は `{"repos": [...]}` で包んでいたが、
 /// Unison 版は **裸の配列**を返す (`handle_daemon_control` が `to_value(&list)` する)。
-/// 中身の要素は同じ `ProjectInfo` なので、差はこの包み 1 枚だけ
-/// (テスト: `projects_list_decodes_same_as_http_shape`)。
-pub fn decode_projects(resp: serde_json::Value) -> Result<Vec<ProjectInfo>> {
-    serde_json::from_value(resp).context("projects/list レスポンスのパースに失敗")
+/// 中身の要素は同じ `RepoInfo` なので、差はこの包み 1 枚だけ
+/// (テスト: `repos_list_decodes_same_as_http_shape`)。
+pub fn decode_repos(resp: serde_json::Value) -> Result<Vec<RepoInfo>> {
+    serde_json::from_value(resp).context("repos/list レスポンスのパースに失敗")
 }
 
-/// `registry.list` の応答 (`{"processes": [...]}`) → `RunningProcess` 一覧。
+/// `registry.list` の応答 (`{"processes": [...]}`) → `RunningRepo` 一覧。
 ///
 /// 包みの形は旧 HTTP `GET /api/daemon/processes` と同じ。
-pub fn decode_processes(resp: serde_json::Value) -> Result<Vec<RunningProcess>> {
+pub fn decode_processes(resp: serde_json::Value) -> Result<Vec<RunningRepo>> {
     let processes = resp
         .get("processes")
         .cloned()
@@ -247,24 +244,24 @@ pub fn decode_processes(resp: serde_json::Value) -> Result<Vec<RunningProcess>> 
 mod tests {
     use super::*;
 
-    /// 旧 HTTP `GET /api/daemon/projects` の wire shape (`{"projects": [...]}`)。
+    /// 旧 HTTP `GET /api/daemon/repos` の wire shape (`{"repos": [...]}`)。
     ///
     /// 本 struct は client.rs から**消えた**ものを test に残したもの。段 3 の移行が
     /// 正しい (= 新面が旧面と同じ答えを出す) ことを、両方の shape を decode して
     /// 突き合わせることで固定する。
     #[derive(serde::Deserialize)]
-    struct LegacyProjectsResponse {
-        projects: Vec<ProjectInfo>,
+    struct LegacyReposResponse {
+        repos: Vec<RepoInfo>,
     }
 
     /// 旧 HTTP `GET /api/daemon/processes` の wire shape。
     #[derive(serde::Deserialize)]
     struct LegacyProcessesResponse {
         #[serde(default)]
-        processes: Vec<RunningProcess>,
+        processes: Vec<RunningRepo>,
     }
 
-    fn sample_projects() -> serde_json::Value {
+    fn sample_repos() -> serde_json::Value {
         serde_json::json!([
             {
                 "name": "vp",
@@ -276,20 +273,20 @@ mod tests {
         ])
     }
 
-    /// 新面 (裸配列) と旧面 (`{projects:[...]}`) が同じ `ProjectInfo` 一覧に落ちる。
+    /// 新面 (裸配列) と旧面 (`{repos:[...]}`) が同じ `RepoInfo` 一覧に落ちる。
     ///
     /// 差は包み 1 枚だけ、という主張をここで固定する。要素の形が片方だけ変われば
     /// (例: `process_status` alias の取りこぼし) このテストが落ちる。
     #[test]
-    fn projects_list_decodes_same_as_http_shape() {
-        let unison = sample_projects();
-        let http = serde_json::json!({ "projects": sample_projects() });
+    fn repos_list_decodes_same_as_http_shape() {
+        let unison = sample_repos();
+        let http = serde_json::json!({ "repos": sample_repos() });
 
-        let via_unison = decode_projects(unison).expect("unison decode");
-        let via_http: LegacyProjectsResponse = serde_json::from_value(http).expect("http decode");
+        let via_unison = decode_repos(unison).expect("unison decode");
+        let via_http: LegacyReposResponse = serde_json::from_value(http).expect("http decode");
 
-        assert_eq!(via_unison.len(), via_http.projects.len());
-        for (u, h) in via_unison.iter().zip(via_http.projects.iter()) {
+        assert_eq!(via_unison.len(), via_http.repos.len());
+        for (u, h) in via_unison.iter().zip(via_http.repos.iter()) {
             assert_eq!(u.name, h.name);
             assert_eq!(u.path, h.path);
             assert_eq!(u.state, h.state, "process_status alias が両面で効くこと");
@@ -299,7 +296,7 @@ mod tests {
         assert_eq!(via_unison[0].name, "vp");
         assert_eq!(
             via_unison[0].state,
-            crate::client::ProcessStatus::Running,
+            crate::client::RepoStatus::Running,
             "process_status が state に載ること"
         );
     }
@@ -309,7 +306,7 @@ mod tests {
     fn processes_list_decodes_same_as_http_shape() {
         let wire = serde_json::json!({
             "processes": [
-                { "project_name": "vp", "port": 33000, "pid": 1234, "project_path": "/repos/vp" },
+                { "repo_name": "vp", "port": 33000, "pid": 1234, "repo_path": "/repos/vp" },
             ]
         });
 
@@ -318,14 +315,11 @@ mod tests {
 
         assert_eq!(via_unison.len(), 1);
         assert_eq!(via_unison.len(), via_http.processes.len());
-        assert_eq!(
-            via_unison[0].project_name,
-            via_http.processes[0].project_name
-        );
+        assert_eq!(via_unison[0].repo_name, via_http.processes[0].repo_name);
         assert_eq!(via_unison[0].port, via_http.processes[0].port);
     }
 
-    /// daemon が空 map を返すケース (project 未起動) でも空 Vec に落ちる。
+    /// daemon が空 map を返すケース (repo 未起動) でも空 Vec に落ちる。
     #[test]
     fn processes_list_accepts_empty() {
         let wire = serde_json::json!({ "processes": [] });
@@ -341,7 +335,7 @@ mod tests {
             Some("path is required")
         );
         assert!(rpc_error(&serde_json::json!({ "status": "ok" })).is_none());
-        // projects/list は裸配列を返す — error field を持ち得ないので None。
+        // repos/list は裸配列を返す — error field を持ち得ないので None。
         assert!(rpc_error(&serde_json::json!([{ "name": "vp" }])).is_none());
     }
 }

@@ -85,10 +85,10 @@ export function installIpcBridge(): void {
     // 届けるか」だけを型にしているので、中身はここでその 1 つの定義に落とす。
     state: (state) => applySidebarState(state as SidebarState),
     error: (message) => window.renderError?.(message),
-    performerCreateResult: (project_path, name, error) =>
-      window.handleAddPerformerResult?.({ project_path, name, error }),
-    standsResult: (project_path, stands, error) =>
-      window.handleStandsResult?.({ project_path, stands, error }),
+    performerCreateResult: (repo_path, name, error) =>
+      window.handleAddPerformerResult?.({ repo_path, name, error }),
+    standsResult: (repo_path, stands, error) =>
+      window.handleStandsResult?.({ repo_path, stands, error }),
     filesListResult: (address, entries, truncated) =>
       window.vpFiles?.handleListResult({
         address,

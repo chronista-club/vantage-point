@@ -72,7 +72,7 @@ pub enum RotoCommands {
     },
     /// B2: ROTO の ← / → で vp-app の active Lane を prev/next 切替（Unison-native）
     ///
-    /// transport ◄ (CC36)=prev / ► (CC37)=next（or 右 button 0/1）。現 project の local SP に
+    /// transport ◄ (CC36)=prev / ► (CC37)=next（or 右 button 0/1）。現 repo の local repo に
     /// QUIC 接続し、「lanes」channel で lane list を購読、`switch_lane` QUIC method で発火する。
     ///
     /// ⚠️ daemon 稼働中は DeviceRegistry 🧲 が ROTO を持続所有する（接続 + 自動再接続）ため、
@@ -315,7 +315,7 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
             // 1.5 秒後に projection を送り、その後も keepalive を続ける（計 15 秒）
             let start = Instant::now();
             let mut first_hello: Option<Instant> = None;
-            let mut projected = false;
+            let mut repoed = false;
             while start.elapsed() < Duration::from_secs(15) {
                 if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
                     if roto_autorespond(&bytes, &mut conn_out)? {
@@ -329,8 +329,7 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                         println!("受信: {}", hex.join(" "));
                     }
                 }
-                if !projected
-                    && first_hello.is_some_and(|t| t.elapsed() > Duration::from_millis(1500))
+                if !repoed && first_hello.is_some_and(|t| t.elapsed() > Duration::from_millis(1500))
                 {
                     for msg in &projection {
                         conn_out.send(msg)?;
@@ -340,7 +339,7 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                         "projection 送信（{} messages）— track 表示と knob learn を確認してください",
                         projection.len()
                     );
-                    projected = true;
+                    repoed = true;
                 }
             }
             if first_hello.is_none() {
@@ -692,7 +691,7 @@ pub(crate) fn roto_open_async(
     Ok((conn_in, rx, conn_out, port_name))
 }
 
-/// local SP に Unison QUIC 接続（mcp.rs の connect_quic と同等、private 再実装）。
+/// local repo に Unison QUIC 接続（mcp.rs の connect_quic と同等、private 再実装）。
 /// ⚠️ mcp.rs::connect_quic と trust_anchors を揃えること（PR-3 で SkipVerification →
 /// InternalMeshKeypair に差し替え予定。mcp.rs を変えたらここも同期）。
 pub(crate) async fn connect_quic_local(port: u16) -> Result<unison::ProtocolClient> {
@@ -712,43 +711,43 @@ pub(crate) async fn connect_quic_local(port: u16) -> Result<unison::ProtocolClie
 /// cross-project view の 1 lane。daemon `list_all_lanes` の flat 化結果。
 #[derive(Clone, PartialEq)]
 pub(crate) struct RotoLane {
-    /// switch_lane 送信先 project path（daemon process-proxy handshake の stable identifier）。
-    /// L0 portless: SP port 直結は撤去、daemon が path_key に正規化して当該 SP へ forward する。
-    pub(crate) project_path: String,
+    /// switch_lane 送信先 repo path（daemon repo-proxy handshake の stable identifier）。
+    /// L0 portless: repo port 直結は撤去、daemon が path_key に正規化して当該 repo へ forward する。
+    pub(crate) repo_path: String,
     /// switch_lane payload の lane token（"root" or performer 名）
     pub(crate) token: String,
-    /// LCD 表示用の compact ラベル（≤13 文字、project + lane）
+    /// LCD 表示用の compact ラベル（≤13 文字、repo + lane）
     pub(crate) label: String,
-    /// 選択追跡の一意キー `"{project_path}:{token}"`（SP 再起動で port が変わっても安定）
+    /// 選択追跡の一意キー `"{repo_path}:{token}"`（repo 再起動で port が変わっても安定）
     pub(crate) key: String,
 }
 
 /// LCD 13 文字制約に収まる compact ラベルを作る。
-/// project を distinguish したいので project 優先（8 文字）+ ":" + lane（4 文字）。
-fn compact_lane_label(project: &str, token: &str) -> String {
-    let proj: String = project.chars().take(8).collect();
+/// repo を distinguish したいので repo 優先（8 文字）+ ":" + lane（4 文字）。
+fn compact_lane_label(repo: &str, token: &str) -> String {
+    let proj: String = repo.chars().take(8).collect();
     let lane: String = token.chars().take(4).collect();
     format!("{}:{}", proj, lane)
 }
 
-/// daemon `list_all_lanes` 応答（`{projects: [{project_name, port, lanes:[LaneInfo]}]}`）を
+/// daemon `list_all_lanes` 応答（`{repos: [{repo_name, port, lanes:[LaneInfo]}]}`）を
 /// flat な `Vec<RotoLane>` に変換。
 ///
-/// **順序は server が決める** — server は project_order (= sidebar 順) で projects を、
-/// 各 project 内は lane_registry 順 (= conductor 先頭 + performer 作成順) で lanes を送る。
+/// **順序は server が決める** — server は repo_order (= sidebar 順) で repos を、
+/// 各 repo 内は lane_registry 順 (= conductor 先頭 + performer 作成順) で lanes を送る。
 /// client は再ソートせず、その順序をそのまま保つ（物理 controller の位置 = sidebar の位置）。
 pub(crate) fn parse_node_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
-    let Some(projects) = v.get("projects").and_then(|p| p.as_array()) else {
+    let Some(repos) = v.get("repos").and_then(|p| p.as_array()) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for p in projects {
-        let Some(project) = p.get("project_name").and_then(|n| n.as_str()) else {
+    for p in repos {
+        let Some(repo) = p.get("repo_name").and_then(|n| n.as_str()) else {
             continue;
         };
-        // L0 portless: switch_lane は project_path で daemon process-proxy handshake する
-        // （build_node_lanes が project_path を emit、SP port には依存しない）。
-        let Some(project_path) = p.get("project_path").and_then(|n| n.as_str()) else {
+        // L0 portless: switch_lane は repo_path で daemon repo-proxy handshake する
+        // （build_node_lanes が repo_path を emit、repo port には依存しない）。
+        let Some(repo_path) = p.get("repo_path").and_then(|n| n.as_str()) else {
             continue;
         };
         let Some(lanes) = p.get("lanes").and_then(|l| l.as_array()) else {
@@ -772,9 +771,9 @@ pub(crate) fn parse_node_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
                 continue;
             };
             out.push(RotoLane {
-                label: compact_lane_label(project, &token),
-                key: format!("{}:{}", project_path, token),
-                project_path: project_path.to_string(),
+                label: compact_lane_label(repo, &token),
+                key: format!("{}:{}", repo_path, token),
+                repo_path: repo_path.to_string(),
                 token,
             });
         }
@@ -806,16 +805,16 @@ pub(crate) fn roto_lane_nav(index: u8) -> Option<LaneNav> {
     }
 }
 
-/// cross-project ROTO control: daemon (32000) から全 project の Lane を集約し、
+/// cross-project ROTO control: daemon (32000) から全 repo の Lane を集約し、
 /// 8 slot LCD + paging で選択する（Unison-native）。
 ///
 /// 設計: async control loop。`block_on` は最外 1 回のみ。midir(sync) → tokio mpsc bridge。
 /// `select!` で MIDI 入力 / `list_all_lanes` poll を同時に await。
-/// - track button 0-7 = 現ページ内の lane を選択 → 対象 SP に `switch_lane` を直接送る
+/// - track button 0-7 = 現ページ内の lane を選択 → 対象 repo に `switch_lane` を直接送る
 /// - transport ◄/► (CC36/37) = ページ送り（8 lane を超えるリストの切替、view のみ）
 ///
-/// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。ROTO は対象
-/// lane の SP port へ QUIC で直接届ける（per-port channel を lazy cache）。daemon に
+/// switch_lane は repo scope のまま（各 repo の active lane は各 repo が保持）。ROTO は対象
+/// lane の repo port へ QUIC で直接届ける（per-port channel を lazy cache）。daemon に
 /// relay を足さない最小設計。
 fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()> {
     use crate::commands::roto_control::{
@@ -837,16 +836,16 @@ fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()>
     );
 
     // CLI 版: self-heal は不要（secs 経過で終了）なので Bracket は被せず、
-    // QuicLaneSource(daemon-process QUIC) + QuicSwitchSink で shared loop を直接回す。
+    // QuicLaneSource(daemon-repo QUIC) + QuicSwitchSink で shared loop を直接回す。
     // daemon 常駐版（DeviceRegistry::start_roto_control）と loop body を 1 本共有する（重複ゼロ）。
     let rt = tokio::runtime::Runtime::new()?;
     let exit = rt.block_on(async move {
         // daemon(ProtocolClient) は daemon_ch を生かすため block 終端まで保持する。
         let daemon = connect_quic_local(daemon_port).await?;
         let daemon_ch = daemon
-            .open_channel("daemon-process")
+            .open_channel("daemon-repo")
             .await
-            .map_err(|e| anyhow::anyhow!("open daemon-process channel: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("open daemon-repo channel: {}", e))?;
 
         let mut lane_source = QuicLaneSource { daemon_ch };
         let mut switch = QuicSwitchSink::new();
@@ -905,7 +904,7 @@ pub(crate) fn page_slots(
 /// 最適化: `project_track` は 1 call ごとに全 track の枠付きバッチを返すため、
 /// shadow 更新は全 slot で行うが **送信は最後の 1 バッチのみ**（完全な state を含む）。
 /// `learn_parameter` は初回のみ必要（knob activation 用）。
-pub(crate) fn roto_project_slots(
+pub(crate) fn roto_repo_slots(
     profile: &mut crate::device_profile::roto::RotoProfile,
     slots: &[(String, bool)],
     color_active: crate::device_profile::Rgb,
@@ -933,7 +932,7 @@ pub(crate) fn roto_project_slots(
 
 /// 初回接続時の完全 projection（track 表示 + knob activation）。
 /// `learn_parameter` は knob を active にするために初回のみ必要。
-pub(crate) fn roto_project_slots_full(
+pub(crate) fn roto_repo_slots_full(
     profile: &mut crate::device_profile::roto::RotoProfile,
     slots: &[(String, bool)],
     color_active: crate::device_profile::Rgb,
@@ -941,7 +940,7 @@ pub(crate) fn roto_project_slots_full(
 ) -> Vec<Vec<u8>> {
     use crate::device_profile::{DeviceProfile, ParamSpec};
 
-    let mut msgs = roto_project_slots(profile, slots, color_active, color_inactive);
+    let mut msgs = roto_repo_slots(profile, slots, color_active, color_inactive);
     // learn_parameter で knob を active にする（入力が来るようになる）
     for i in 0..8u8 {
         let label = slots.get(i as usize).map(|(l, _)| l.as_str()).unwrap_or("");
@@ -1056,7 +1055,7 @@ fn execute_lpd8(cmd: Lpd8Commands) -> Result<()> {
                     println!("VP設定をLPD8 Program {} に書き込みました", program);
                     println!();
                     println!("PAD設定:");
-                    println!("  PAD 1-4 (Note 36-39): プロジェクト切り替え (緑LED)");
+                    println!("  PAD 1-4 (Note 36-39): repo切り替え (緑LED)");
                     println!("  PAD 5   (Note 40):    チャットキャンセル (赤LED)");
                     println!("  PAD 6   (Note 41):    セッションリセット (橙LED)");
                     println!("  PAD 7-8 (Note 42-43): 未割当");
@@ -1140,10 +1139,10 @@ fn execute_lpd8(cmd: Lpd8Commands) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// LCD ラベルは project 優先 + lane で 13 文字以内に収まる。
+    /// LCD ラベルは repo 優先 + lane で 13 文字以内に収まる。
     #[test]
     fn compact_label_fits_lcd() {
-        // 長い project 名 → 8 文字に truncate、token → 4 文字
+        // 長い repo 名 → 8 文字に truncate、token → 4 文字
         let label = compact_lane_label("vantage-point", "root");
         assert_eq!(label, "vantage-:root");
         assert!(label.chars().count() <= 13);
@@ -1152,33 +1151,33 @@ mod tests {
     }
 
     /// list_all_lanes 応答 → flat な RotoLane 列。順序は **server 順をそのまま保つ**
-    /// （client は再ソートしない = sidebar / project_order と一致させる契約）。
+    /// （client は再ソートしない = sidebar / repo_order と一致させる契約）。
     #[test]
     fn parse_daemon_lanes_preserves_server_order() {
         let v = serde_json::json!({
-            "projects": [
-                // server が project_order で並べた前提。client は触らず保つ。
+            "repos": [
+                // server が repo_order で並べた前提。client は触らず保つ。
                 {
-                    "project_name": "zeta-proj",
-                    "project_path": "/repos/zeta-proj",
+                    "repo_name": "zeta-proj",
+                    "repo_path": "/repos/zeta-proj",
                     "port": 33001,
                     "lanes": [
-                        { "address": { "project": "zeta-proj", "name": "root" } },
-                        { "address": { "project": "zeta-proj", "name": "beta" } },
-                        { "address": { "project": "zeta-proj", "name": "alpha" } },
+                        { "address": { "repo": "zeta-proj", "name": "root" } },
+                        { "address": { "repo": "zeta-proj", "name": "beta" } },
+                        { "address": { "repo": "zeta-proj", "name": "alpha" } },
                     ]
                 },
                 {
-                    "project_name": "aaa-proj",
-                    "project_path": "/repos/aaa-proj",
+                    "repo_name": "aaa-proj",
+                    "repo_path": "/repos/aaa-proj",
                     "port": 33000,
-                    "lanes": [ { "address": { "project": "aaa-proj", "name": "root" } } ]
+                    "lanes": [ { "address": { "repo": "aaa-proj", "name": "root" } } ]
                 },
             ]
         });
         let lanes = parse_node_lanes(&v);
         // server 順そのまま: zeta(cond, beta, alpha) → aaa(cond)。
-        // L0 portless: key は project_path:token（SP port 非依存）。
+        // L0 portless: key は repo_path:token（repo port 非依存）。
         let keys: Vec<&str> = lanes.iter().map(|l| l.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -1189,9 +1188,9 @@ mod tests {
                 "/repos/aaa-proj:root",
             ]
         );
-        // project_path が switch_lane の daemon process-proxy handshake 先として保持される
-        assert_eq!(lanes[0].project_path, "/repos/zeta-proj");
-        assert_eq!(lanes[3].project_path, "/repos/aaa-proj");
+        // repo_path が switch_lane の daemon repo-proxy handshake 先として保持される
+        assert_eq!(lanes[0].repo_path, "/repos/zeta-proj");
+        assert_eq!(lanes[3].repo_path, "/repos/aaa-proj");
         assert_eq!(lanes[1].token, "beta");
     }
 
@@ -1206,7 +1205,7 @@ mod tests {
     /// JSON 直読みはコンパイラが黙るので、この往復が唯一の検出口。
     #[test]
     fn parse_daemon_lanes_reads_the_real_lane_info_shape() {
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
         let make = |name: &str| LaneInfo {
             id: Default::default(),
@@ -1224,11 +1223,11 @@ mod tests {
             flow_state: None,
         };
         let v = serde_json::json!({
-            "projects": [{
-                "project_name": "vp",
-                "project_path": "/repos/vp",
+            "repos": [{
+                "repo_name": "vp",
+                "repo_path": "/repos/vp",
                 "port": 33000,
-                "lanes": [make(crate::process::lanes_state::ROOT_LANE_NAME), make("feat-x")],
+                "lanes": [make(crate::repo::lanes_state::ROOT_LANE_NAME), make("feat-x")],
             }]
         });
 
@@ -1241,10 +1240,10 @@ mod tests {
         assert_eq!(lanes[0].key, "/repos/vp:root");
     }
 
-    /// projects 不在 / 空でも panic せず空 Vec。
+    /// repos 不在 / 空でも panic せず空 Vec。
     #[test]
     fn parse_daemon_lanes_empty() {
         assert!(parse_node_lanes(&serde_json::json!({})).is_empty());
-        assert!(parse_node_lanes(&serde_json::json!({ "projects": [] })).is_empty());
+        assert!(parse_node_lanes(&serde_json::json!({ "repos": [] })).is_empty());
     }
 }

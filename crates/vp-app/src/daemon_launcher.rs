@@ -206,7 +206,7 @@ pub fn ensure_daemon_ready(node_url: &str) -> Result<()> {
 
     let mut cmd = Command::new(&vp_bin);
     cmd.arg("daemon")
-        // GUI/launchd 起動の最小 PATH (`/usr/bin:/bin:...`) が daemon → SP → mise → claude へ
+        // GUI/launchd 起動の最小 PATH (`/usr/bin:/bin:...`) が daemon → repo → mise → claude へ
         // 伝播するのを spawn 最上流で断つ (#498/#501 再発の根治、 補正の SSOT は下記 augment_path)。
         .env("PATH", vp_paths::spawn_env::augmented_spawn_path())
         .stdin(Stdio::null())
@@ -254,6 +254,6 @@ pub fn ensure_daemon_ready(node_url: &str) -> Result<()> {
 }
 
 // PATH 補強 (`augmented_spawn_path`) の SSOT は `vp_paths::spawn_env` に一本化した。
-// GUI/launchd 起動の最小 PATH (`/usr/bin:/bin:...`) が daemon → SP へ伝播し mise/claude が
+// GUI/launchd 起動の最小 PATH (`/usr/bin:/bin:...`) が daemon → repo へ伝播し mise/claude が
 // 見つからず Echoes が出ない症状 (#498/#501 再発) を、 この spawn 最上流で断つ。 vantage-point と
 // vp-app が同一実装を共有し、 かつて手動同期していたレプリカ (drift 源) を解消した。

@@ -20,7 +20,7 @@ VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/root と creo-
 |---|-----|------|
 | 1 | `mcp` actor の registry 非対称 | self-process 内では存在するが daemon registry 未登録 → cross-process `mcp@<other>` 送信は forward 失敗 (silent drop) |
 | 2 | MCP recv の inbox scope 固定 | self process の `mcp` actor inbox 限定、 他 actor (`agent` / `notify` / `protocol`) は MCP tool で観察不可 |
-| 3 | lane address (`<project>/<lane>`) と actor address (`<actor>@<project>`) の **2 namespace 混乱** | user が `vantage-point/echoes` を wire address と誤認 → parse error、 mental model split |
+| 3 | lane address (`<repo>/<lane>`) と actor address (`<actor><repo>`) の **2 namespace 混乱** | user が `vantage-point/echoes` を wire address と誤認 → parse error、 mental model split |
 | 4 | cross-process recv observation gap | `agent` inbox に msg deliver 完了しても receiver 側で即時検知不可、 sidebar UI / CLI watch 経路必要 |
 
 加えて user vision: **将来的にマシンだけじゃなく、 他の LAN の PC や、 hub.chronista.club 経由でアドレス解決して、 ネット経由で msg 交換したい**。
@@ -41,9 +41,9 @@ VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/root と creo-
 ```
 address  = (actor "@")? location
 actor    = [a-zA-Z0-9_-]+ | "*"  // 省略時 default = "agent"、 `*` は broadcast wildcard (reserved)
-location = (daemon "/")? project ("/" lane)?
+location = (daemon "/")? repo ("/" lane)?
 daemon    = daemon-segment ("." daemon-segment)*    // DNS-like
-project  = [a-zA-Z0-9_-]+                         // reserved: "world" = system project
+repo  = [a-zA-Z0-9_-]+                         // reserved: "world" = system repo
 lane     = lane-segment ("/" lane-segment)*
 daemon-segment = [a-zA-Z0-9_-]+
 lane-segment  = [a-zA-Z0-9_-]+
@@ -52,7 +52,7 @@ lane-segment  = [a-zA-Z0-9_-]+
 ### separator 役割直交
 
 - `@` = actor / location 境界 (1 個だけ)
-- `/` = internal hierarchy (daemon → project → lane)
+- `/` = internal hierarchy (daemon → repo → lane)
 - `.` = host DNS-qualifier (mDNS / Internet)
 
 3 separator が役割重複なく **完全直交**。
@@ -62,7 +62,7 @@ lane-segment  = [a-zA-Z0-9_-]+
 ```
 agent @ mako.chronista.club / vantage-point / performer / objrec
   ^         ^                      ^             ^
-  actor    daemon identity         project       lane (multi-segment 可)
+  actor    daemon identity         repo       lane (multi-segment 可)
         (host = machine / user / hub)
 ```
 
@@ -70,8 +70,8 @@ agent @ mako.chronista.club / vantage-point / performer / objrec
 |------|------|
 | **actor** | 受信 inbox の役割 (= "誰が読むか"、 default = `agent`) |
 | **daemon** | identity namespace (= machine / user / hub、 host segment) |
-| **project** | VP project (= self daemon に register された project name、 reserved: `daemon`) |
-| **lane** | lane within project (= multi-level、 `performer/objrec` 等) |
+| **repo** | VP repo (= self daemon に register された repo name、 reserved: `daemon`) |
+| **lane** | lane within repo (= multi-level、 `performer/objrec` 等) |
 
 ### 4 layer matrix
 
@@ -84,7 +84,7 @@ agent @ mako.chronista.club / vantage-point / performer / objrec
 | `mako.chronista.club/vantage-point/root` | Internet (explicit hub URL) | full FQDN | hub URL inline |
 | `macbook.local/vantage-point/root` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
 | `*@vantage-point/root` | broadcast | conductor lane 全 actor | local fanout |
-| `hermit_purple@machine` | self daemon (system) | daemon の actor | (reserved project `daemon`) |
+| `hermit_purple@machine` | self daemon (system) | daemon の actor | (reserved repo `daemon`) |
 | `hermit_purple@mako/daemon` | Internet | mako daemon's daemon | hub query |
 
 ### actor optional の効果
@@ -141,13 +141,13 @@ macbook.local              → mDNS local (LAN)
 | `lane-spawn` / `sp-bootstrap` | infra reserved |
 | `*` | broadcast (special、 actor wildcard) |
 
-> **daemon registry visibility (VP-147 PR-P2-2)**: 全 reserved actor (`agent` / `notify` / `mcp` / `protocol`) は SP 起動時に self-process register 後、 daemon 中央 registry にも一括 landed する。 これにより cross-process address (例 `mcp@<other-project>` / `notify@<other-project>`) の forward が registry lookup で解決され、 silent drop は発生しない。 旧実装 (PR-P2-2 以前) では mcp/notify が registry snapshot タイミングより後に register されており、 cross-process forward が registry miss で silent drop していた dogfood gap (= `mem_1CapRAtpCpahQGn8nW2fmT` 1)。 なお `lane-spawn` / `sp-bootstrap` は infra-local actor のため daemon registry には登録しない (cross-process forward は将来拡張、 現在未実装)。
+> **daemon registry visibility (VP-147 PR-P2-2)**: 全 reserved actor (`agent` / `notify` / `mcp` / `protocol`) は repo 起動時に self-process register 後、 daemon 中央 registry にも一括 landed する。 これにより cross-process address (例 `mcp@<other-repo>` / `notify@<other-repo>`) の forward が registry lookup で解決され、 silent drop は発生しない。 旧実装 (PR-P2-2 以前) では mcp/notify が registry snapshot タイミングより後に register されており、 cross-process forward が registry miss で silent drop していた dogfood gap (= `mem_1CapRAtpCpahQGn8nW2fmT` 1)。 なお `lane-spawn` / `sp-bootstrap` は infra-local actor のため daemon registry には登録しない (cross-process forward は将来拡張、 現在未実装)。
 
-### reserved project
+### reserved repo
 
-| project | 役割 |
+| repo | 役割 |
 |---------|-----|
-| `daemon` | system project、 daemon が holding (例: `hermit_purple@machine`、 `hermit_purple@mako/daemon`) |
+| `daemon` | system repo、 daemon が holding (例: `hermit_purple@machine`、 `hermit_purple@mako/daemon`) |
 
 ### reserved daemon-segment (将来予約)
 
@@ -166,15 +166,15 @@ macbook.local              → mDNS local (LAN)
 | v1 syntax | v3.1 解釈 | 備考 |
 |-----------|-----------|------|
 | `agent@vantage-point` | OK (= default lane = `root` で routing) | v1 user 何もしなくて良い |
-| `<actor>@<project>` (任意 actor) | OK (= default lane = `root`) | reserved 名衝突は v1 と同 rule |
+| `<actor><repo>` (任意 actor) | OK (= default lane = `root`) | reserved 名衝突は v1 と同 rule |
 
 ### v3.1 で新規対応
 
 | v3.1 syntax | 動作 |
 |-------------|------|
 | `<location>` のみ (= actor 省略) | default actor = `agent`、 v3.1 新文法 |
-| `<actor>@<project>/<lane>` | per-lane wire routing (Phase 2 で物理化) |
-| `<host>/<project>/<lane>` | cross-daemon routing (Phase 3 で LAN、 Phase 4+ で hub) |
+| `<actor><repo>/<lane>` | per-lane wire routing (Phase 2 で物理化) |
+| `<host>/<repo>/<lane>` | cross-daemon routing (Phase 3 で LAN、 Phase 4+ で hub) |
 
 ### migration phase
 
@@ -196,8 +196,8 @@ LAN MVP (Phase 0-3) 完成後に Phase 4+ の planning session で sub-issue 化
 
 | pattern | 意味 |
 |---------|------|
-| `*@vantage-point` | project broadcast (v1 既存) |
-| `*@vantage-point/root` | project + lane broadcast |
+| `*@vantage-point` | repo broadcast (v1 既存) |
+| `*@vantage-point/root` | repo + lane broadcast |
 | `*@macbook.local/vantage-point/root` | LAN machine 内 lane broadcast |
 | `*@mako/vantage-point/root` | user-wide lane broadcast (全 machine、 Phase 4+) |
 

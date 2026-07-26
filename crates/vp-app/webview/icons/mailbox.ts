@@ -5,7 +5,7 @@
 // state-driven: default = regular, active = fill (unread indicator 等)。
 //
 // 参考 memory: feedback_creo_ui_icon_dual_axis.md (2026-04-29)
-// 参考 spec: project_mailbox_address_spec.md、 vp_mailbox_monitor_agent_inbox.md
+// 参考 spec: repo_mailbox_address_spec.md、 vp_mailbox_monitor_agent_inbox.md
 
 import type { IconName } from '@chronista-club/creo-ui-icons-web'
 

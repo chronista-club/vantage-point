@@ -1,7 +1,7 @@
 //! EchoesEvent — Echoes Act II GUI が話す唯一の言葉（PR1 で凍結）
 //!
 //! vp-app（GUI）はこの語彙だけを描画する。engine（現状 claude）ごとの
-//! stream 形式は SP 側の翻訳層（[`super::translate`]）で吸収し、engine を
+//! stream 形式は repo 側の翻訳層（[`super::translate`]）で吸収し、engine を
 //! 足すときは翻訳層を 1 個追加するだけで GUI は無改修 — これが多 engine 方針の支え。
 //!
 //! 語彙は ACP `session/update` の実績あるサブセットを借用。
@@ -130,7 +130,7 @@ pub enum EchoesEvent {
     /// method が該当 session の topic に注入する）。GUI は名札直下の now-line に出し、
     /// `TurnCompleted` で消す —「今」は turn より長生きしない。
     /// replay log には記録しない（揮発の自己申告 — 過去の「今」を再生すると嘘になる。
-    /// [`crate::process::echoes_pump`] の記録対象リスト参照）。
+    /// [`crate::repo::echoes_pump`] の記録対象リスト参照）。
     /// 凍結語彙への additive variant（`EngineExited` / context gauge と同じ前例）。
     NowLine { text: String },
 
@@ -140,7 +140,7 @@ pub enum EchoesEvent {
 
     /// engine プロセスの終了（stdout close = 途絶）。**異常ではなく回復可能な休眠**。
     ///
-    /// Act II の engine は demand-driven（見ている間だけ常駐）なので、SP / daemon 再起動や
+    /// Act II の engine は demand-driven（見ている間だけ常駐）なので、repo / daemon 再起動や
     /// idle teardown で普通に終了する。次の submit / reconnect demand で自動復活するため、
     /// [`Self::Error`] とは別語彙にして GUI が「💤 休眠（送信で起動）」と穏当に出せるようにする
     /// （`⚠ engine` は turn crash 等の本物の異常だけに残す）。host.rs #692 の後続として分離。
