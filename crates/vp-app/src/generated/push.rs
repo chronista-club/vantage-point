@@ -35,6 +35,16 @@ pub struct TermPaste {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevicesRender {
+    pub devices: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardMessage {
+    pub message: serde_json::Value,
+}
+
 /// Envelope enum for channel "push" — a discriminated union over its
 /// events, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,4 +60,8 @@ pub enum PushEventEnvelope {
     TermRemoveSession(TermRemoveSession),
     #[serde(rename = "term:paste")]
     TermPaste(TermPaste),
+    #[serde(rename = "devices:render")]
+    DevicesRender(DevicesRender),
+    #[serde(rename = "board:message")]
+    BoardMessage(BoardMessage),
 }

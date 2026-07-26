@@ -107,22 +107,17 @@ pub enum AppEvent {
         stands: Vec<crate::client::StandInfo>,
         error: Option<String>,
     },
-    /// VP-140: main_area JS が DOMContentLoaded 後に送る lane catch-up 要求。
-    /// 起動初期の `evaluate_script` race (WebView HTML 未 load 時に Rust 側 ensureLane 発行が
-    /// silent drop される) の救済策として、 JS 側が ready になったタイミングで Rust に再発行を
-    /// 要求する。 Rust は `sidebar_state.lanes_by_project` 全 lane に対して ensureLane + 現在
-    /// active lane に showLane を再発行する (idempotent)。
-    LanesEnsureAll,
-    /// Bastet pane の device 一覧 catch-up 要求（`lanes:ensure-all` と同型の boot 窓救済）。
-    /// world-device の接続時 snapshot は bundle ロード前に届き、`renderDevices` の
-    /// `window.vpBastet &&` guard で黙って落ちる — 以後の再送は次の hot-plug まで無い。
-    /// JS 側が vpBastet を install した直後に送り、Rust は保持済み state から再 render する。
-    BastetDevicesFetch,
-    /// board pane の catch-up 要求（`bastet:devices_fetch` と同型の boot 窓救済、doc 52 §10 wave 0）。
-    /// board の retained BoardUpdated は bundle ロード前に届き、`window.vpBoard &&` guard で
-    /// 黙って落ちる — 以後の再送は次の live show まで無い（= reopen で board pane が出ない）。
-    /// JS 側が vpBoard を install した直後に送り、Rust は保持済み board snapshot から再配信する。
-    BoardDemand,
+    /// webview が受け口を全部生やした（`entry.tsx` の `t:"ready"`）。
+    ///
+    /// bundle 評価**前**に Rust が撃った押し込みは受け口が居ないので届かない。この合図を受けて
+    /// Rust は**現在の状態を丸ごと撃ち直す**（lane の xterm / roster / terminal replay demand /
+    /// active view / device 一覧 / board snapshot）。全部 idempotent か全量置き換えなので、
+    /// 二重に撃っても壊れない。
+    ///
+    /// ⚠️ 以前は同じことを feature ごとの pull 3 本（`lanes:ensure-all` / `bastet:devices_fetch`
+    /// / `board:demand`）でやっており、面を足すたびに tag が 1 本増えていた。「webview が
+    /// 生まれた」は 1 つの事実なので signal も 1 本。**新しい面の replay はここに足す**。
+    WebviewReady,
     /// ink（対話面、doc 52 §3）: webview から board pane（#ink-stage）の snapshot 要求。
     /// event loop が WKWebView.takeSnapshot で `rect` を撮って PNG を state_dir に書き、完了を
     /// `InkSnapshotReady` で受けて `window.vpInk.onSnapshot({path})` を webview に返す。
@@ -360,14 +355,15 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
     match parsed.get("t").and_then(|v| v.as_str()) {
         Some("ready") => {
             // webview の全 install が済んだ合図（`entry.tsx` が `openDispatch` →
-            // `installTerm` → `installSlotRect` の直後に 1 度だけ撃つ）。Rust 側で flush する
-            // ものは無い。
+            // `installTerm` → `installSlotRect` の直後に 1 度だけ撃つ）。Rust は現在の状態を
+            // 丸ごと撃ち直す（`AppEvent::WebviewReady` の handler が SSOT）。
             //
             // ⚠️ 外から「GUI が使える状態になった」を待つ信号は **webview 側の
             // `console.info("[vp-bundle] ready")`**（console bridge が `target="webview"` で
             // 必ずログに出す）。ここで `tracing::info!` を足しても出ない — default filter が
             // `vp_app::terminal=warn` で、PTY hot path の洪水を防ぐため意図的に絞ってある。
             tracing::debug!("webview ready");
+            let _ = proxy.send_event(AppEvent::WebviewReady);
         }
         // terminal S4 (doc 27 §4.1): xterm onData / resize → per-lane terminal session →
         // canvas channel 上り request で SP へ。 lane 必須、 data は base64 (write のみ)。
@@ -575,23 +571,6 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     req,
                 });
             }
-        }
-        Some("lanes:ensure-all") => {
-            // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
-            // 起動 race で silent drop された ensureLane を再発行させるための signal。
-            tracing::info!("[ipc] lanes:ensure-all (JS DOMContentLoaded catch-up)");
-            let _ = proxy.send_event(AppEvent::LanesEnsureAll);
-        }
-        Some("bastet:devices_fetch") => {
-            // Bastet pane の catch-up（boot 窓で snapshot の render が落ちた分の再要求）。
-            tracing::info!("[ipc] bastet:devices_fetch (JS bundle-ready catch-up)");
-            let _ = proxy.send_event(AppEvent::BastetDevicesFetch);
-        }
-        Some("board:demand") => {
-            // board pane の catch-up（boot 窓で retained BoardUpdated の render が落ちた分の再要求、
-            // doc 52 §10 wave 0）。Rust が保持済み board snapshot を再配信する。
-            tracing::info!("[ipc] board:demand (JS bundle-ready catch-up)");
-            let _ = proxy.send_event(AppEvent::BoardDemand);
         }
         Some("ink:snapshot") => {
             // ink（対話面、doc 52 §3）: board pane（#ink-stage）の rect を WKWebView.takeSnapshot で

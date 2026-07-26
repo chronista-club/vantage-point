@@ -317,9 +317,9 @@ window.addEventListener("DOMContentLoaded", () => {
 	}
 });
 
-// wiremsg Stage 2: Rust 注入口。Rust 側 spawn_canvas_subscription が active project の
-// canvas ProcessMessage ごとに `window.vpBoard.handleMessage(msg)` を evaluate_script で呼ぶ。
-// DevTools から手動 trigger も可: window.vpBoard.handleMessage({type:'show',content:{markdown:'# hi'}})
+// wiremsg Stage 2: board の受け口。Rust からの供給は **`board:message` push**（vpDispatch）で、
+// この window face は DevTools からの手動 trigger 用に残してある:
+//   window.vpBoard.handleMessage({type:'show',content:{markdown:'# hi'}})
 (
 	window as unknown as {
 		vpBoard: { handleMessage: typeof handleBoardMessage };
@@ -685,9 +685,9 @@ document.addEventListener("vp:act-switch-request", (e) => {
 	);
 });
 
-// ===== Bastet 🧲 device 一覧 render API =====
-// window.vpBastet.renderDevices(devices) で Bastet pane (pane-bastet) に接続中 device を render。
-// Rust が device event 時に main_view.evaluate_script で呼ぶ (= world-device bridge の出口)。
+// ===== 計器盤（device 一覧）render API =====
+// Rust からの供給は **`devices:render` push**（vpDispatch）。この window face は DevTools からの
+// 手動 trigger 用に残してある。
 (
 	window as unknown as {
 		vpBastet: {
@@ -697,21 +697,6 @@ document.addEventListener("vp:act-switch-request", (e) => {
 ).vpBastet = {
 	renderDevices: renderBastetDevices,
 };
-// boot 窓 catch-up: world-device の接続時 snapshot は bundle ロード前に届いて renderDevices
-// guard で落ちている可能性がある — view の誕生時に一覧を pull する（lanes:ensure-all の同型。
-// 逆順（bundle が先）でも fetch は空を返すだけで、後から届く snapshot の push が埋める）
-(window as unknown as { ipc?: { postMessage(m: string): void } }).ipc?.postMessage(
-	JSON.stringify({ t: "bastet:devices_fetch" }),
-);
-
-// board pane の boot 窓 catch-up（doc 52 §10 wave 0）: board の retained BoardUpdated は
-// bundle ロード前に届いて `window.vpBoard &&` guard で落ちる → reopen で board pane が出ない。
-// vpBoard install 済のこの時点で Rust に保持済み board snapshot の再配信を要求する
-// （bastet:devices_fetch と同型。activeLane 未設定でも boardByLane に presence が積まれ、
-//  lane 選択時に board pane が生える）。
-(window as unknown as { ipc?: { postMessage(m: string): void } }).ipc?.postMessage(
-	JSON.stringify({ t: "board:demand" }),
-);
 
 // ===== Pane action button delegation =====
 // 各 pane の `[data-action]` button を click delegation で hook。 S2 では Clear のみ実装、
@@ -960,14 +945,16 @@ if (root) {
 installGallery();
 
 // ===== 旧 World A（main_area.rs inline xterm JS）の install =====
-// doc 53 §6.5 の畳み込みで移設（term.ts / active-pane.ts）。**この順序は元の inline JS の
-// 実行順そのもの**で、意味がある:
-//   1. 全部の window API を先に生やす（Rust は `ready` を受けた瞬間に撃ち返してくる）
-//   2. `ready` で webview の準備完了を伝える
-//   3. `lanes:ensure-all` で起動 race に取りこぼされた `ensureLane` を再発行させる
-//      （Rust は AppEvent::LanesEnsureAll で全 project の lane を walk。ensureLane は
-//        idempotent なので既に ensured 済の lane には影響しない）
+// doc 53 §6.5 の畳み込みで移設（term.ts / active-pane.ts）。**この順序には意味がある**:
+//   1. 受け口と実処理を全部生やす
+//   2. `ready` で「生まれた」と名乗る — Rust はこれを受けて現在の状態を丸ごと撃ち直す
+//      （lane の xterm / roster / terminal replay / active view / device / board）
 // 置き場所が module body 末尾なのは、inline `<script>` が bundle の **後**に置かれていたため。
+//
+// ⚠️ かつては ② が feature ごとの pull 3 本（`lanes:ensure-all` / `bastet:devices_fetch` /
+// `board:demand`）に分かれ、しかも「その面を install した直後に撃つ」順序制約が JS 側に
+// 散っていた。「生まれた」は 1 つの事実なので `ready` 1 本に畳んである（Rust 側 SSOT =
+// `AppEvent::WebviewReady`）。**新しい面を足しても、ここに行を足す必要は無い**。
 //
 // ⚠️ `window.setActivePane` はここではなく **module 評価時**（上方）に載る。DOM 未 ready の間の
 // 呼びは自前で buffer するので、早く載せるほど取りこぼしが少ない。
@@ -975,7 +962,11 @@ installGallery();
 // 撃った分は保留箱が預かる（旧来は `window.X &&` guard で黙って捨てていた）。
 openDispatch();
 installBundleProbe();
-installDispatch(installTerm());
+installDispatch({
+	...installTerm(),
+	renderDevices: renderBastetDevices,
+	handleBoardMessage,
+});
 installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })
 	.ipc;
@@ -985,4 +976,3 @@ bootIpc?.postMessage(JSON.stringify({ t: "ready" }));
 // `open` も `vp app start` も「起動を要求して即返る」ので、待たないと直後に自動で何かを叩く
 // 経路（dogfood ループ / agent / script）が install 前の窓に撃ち込む。消すなら task も直すこと。
 console.info("[vp-bundle] ready");
-bootIpc?.postMessage(JSON.stringify({ t: "lanes:ensure-all" }));

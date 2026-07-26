@@ -3,7 +3,8 @@
  *
  * ここで守るのは **「押し込みが黙って落ちない」** という、この module の存在理由そのもの。
  * 旧来 `window.X && window.X.y(...)` は bundle 準備前なら no-op で「成功」し、VP はその穴を
- * feature ごとの pull（`lanes:ensure-all` 等）で埋めてきた。保留と順序が壊れると同じ穴が戻る。
+ * feature ごとの pull（旧 `lanes:ensure-all` 等、退役済）で埋めてきた。保留と順序が壊れると
+ * 同じ穴が戻る。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -23,6 +24,10 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 			removeLaneSession: (lane, session) =>
 				calls.push(`removeSession:${lane}#${session}`),
 			deliverPaste: (text) => calls.push(`paste:${text}`),
+			renderDevices: (devices) =>
+				calls.push(`devices:${devices.length}`),
+			handleBoardMessage: (message) =>
+				calls.push(`board:${(message as { type?: string }).type}`),
 		},
 	};
 }
@@ -98,6 +103,23 @@ describe("dispatch", () => {
 
 		dispatch({ t: "term:show_lane", is_chat: false });
 		expect(calls).toEqual(["show:null:false"]);
+	});
+
+	it("catch-up pull で埋めていた 2 面も保留される", async () => {
+		// 旧 `bastet:devices_fetch` / `board:demand` は「boot 窓で押し込みが落ちる」ことへの
+		// feature 別 pull だった（両方とも `ready` の replay に畳んで退役）。install 前の窓は
+		// **この保留が引き継ぐ**ので、ここが落ちると畳んだぶんの穴がそのまま開く。
+		const mod = await import("./dispatch");
+		mod.openDispatch();
+
+		dispatch({ t: "devices:render", devices: [{}, {}] });
+		dispatch({ t: "board:message", message: { type: "show" } });
+
+		const { calls, handlers } = recordingHandlers();
+		expect(calls).toEqual([]);
+
+		mod.installDispatch(handlers);
+		expect(calls).toEqual(["devices:2", "board:show"]);
 	});
 
 	it("install 前に届いた分は二重に流れない", async () => {

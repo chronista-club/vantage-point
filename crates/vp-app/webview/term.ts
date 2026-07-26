@@ -32,7 +32,7 @@ import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
-import type { PushHandlers } from "./dispatch";
+import type { TermPushHandlers } from "./dispatch";
 
 /** wry が注入する IPC。install 時ではなく **呼ぶ時に** 引く（注入が後の場合があるため）。 */
 const ipc = () =>
@@ -87,7 +87,7 @@ interface LaneInstance {
 	webglCleanup: (() => void) | null;
 }
 
-export function installTerm(): PushHandlers {
+export function installTerm(): TermPushHandlers {
 	// Creo tokens から xterm.js theme を構築 (全 Lane instance で共有)。
 	// OKLCH 値は xterm.js の内部 color parser が直接解釈できないので、
 	// hidden probe で `color: var(...)` を browser に解決させて

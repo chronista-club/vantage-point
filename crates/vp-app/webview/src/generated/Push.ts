@@ -43,6 +43,16 @@ export interface TermPaste {
   text: string;
 }
 
+/** Event "devices:render" */
+export interface DevicesRender {
+  devices: any[];
+}
+
+/** Event "board:message" */
+export interface BoardMessage {
+  message: any;
+}
+
 /** Event name → 生成 interface の map for "push" (= type-narrowing 用) */
 export type PushChannelEventTypes = {
   TermEnsureLane: TermEnsureLane;
@@ -50,6 +60,8 @@ export type PushChannelEventTypes = {
   TermRemoveLane: TermRemoveLane;
   TermRemoveSession: TermRemoveSession;
   TermPaste: TermPaste;
+  DevicesRender: DevicesRender;
+  BoardMessage: BoardMessage;
 };
 
 /** Request name → { request, response } 生成 interface の map for "push" */
@@ -61,7 +73,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "board:message"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -72,6 +84,8 @@ export type PushEventEnvelope =
   | ({ t: "term:show_lane" } & TermShowLane)
   | ({ t: "term:remove_lane" } & TermRemoveLane)
   | ({ t: "term:remove_session" } & TermRemoveSession)
-  | ({ t: "term:paste" } & TermPaste);
+  | ({ t: "term:paste" } & TermPaste)
+  | ({ t: "devices:render" } & DevicesRender)
+  | ({ t: "board:message" } & BoardMessage);
 
 

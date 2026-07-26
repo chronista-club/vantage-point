@@ -13,7 +13,7 @@
  * 1. **型が無い** — 引数の数や順序が食い違っても Rust も TS も黙る
  * 2. **押し込みが黙って落ちる** — `window.X && window.X.y(...)` は bundle 準備前なら
  *    **no-op で「成功」する**。VP はこの穴を feature ごとの pull で埋めてきた
- *    （`lanes:ensure-all` / `bastet:devices_fetch` / `board:demand`）
+ *    （旧 `lanes:ensure-all` / `bastet:devices_fetch` / `board:demand` — 3 本とも退役済）
  *
  * 窓口が 1 つになると、**そこに buffer を 1 個置くだけで全部の取りこぼしが消える**。
  * ~24 個の窓口それぞれに buffer は置けなかった。
@@ -26,8 +26,10 @@
  *
  * ⚠️ buffer が救えるのは「bundle は評価済みだが受け手がまだ install されていない」窓まで。
  * bundle 評価**前**に Rust が撃った分は `window.vpDispatch` 自体が居ないので届かない
- * （Rust 側も `window.vpDispatch &&` で guard している）。その最終救済は今のところ
- * `lanes:ensure-all` の catch-up のままで、移行が一巡したら合わせて畳む。
+ * （Rust 側も `window.vpDispatch &&` で guard している）。その窓の救済は **`ready` の
+ * replay**（`entry.tsx` の `t:"ready"` → Rust `AppEvent::WebviewReady`）— 受け口が揃った
+ * ことを Rust に伝え、現在の状態を丸ごと撃ち直させる。つまり
+ * **保留箱 = install 前の窓 / `ready` = bundle 評価前の窓** で役割が分かれている。
  */
 import type { PushEventEnvelope } from "./src/generated/Push";
 
@@ -41,7 +43,25 @@ export interface PushHandlers {
 	removeLane(lane: string): void;
 	removeLaneSession(lane: string, session: number): void;
 	deliverPaste(text: string): void;
+	renderDevices(devices: unknown[]): void;
+	handleBoardMessage(message: unknown): void;
 }
+
+/**
+ * `term.ts` が持ち分として返す arm。
+ *
+ * 面が増えるほど `PushHandlers` は太るが、**実処理の持ち主は module ごとに違う**ので、
+ * 各 module は自分の担当だけ返して entry.tsx が 1 つに束ねる。`Pick` にしてあるのは、
+ * 引数の形を二重に書かないため（schema → codegen → PushHandlers が唯一の出どころ）。
+ */
+export type TermPushHandlers = Pick<
+	PushHandlers,
+	| "ensureLane"
+	| "showLane"
+	| "removeLane"
+	| "removeLaneSession"
+	| "deliverPaste"
+>;
 
 let handlers: PushHandlers | null = null;
 
@@ -65,6 +85,12 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "term:paste":
 			handlers.deliverPaste(msg.text);
+			break;
+		case "devices:render":
+			handlers.renderDevices(msg.devices);
+			break;
+		case "board:message":
+			handlers.handleBoardMessage(msg.message);
 			break;
 		default: {
 			// 網羅していれば `never`。Rust 側が新しい event を撃ってきた（= 版ズレ）ときだけ来る。
