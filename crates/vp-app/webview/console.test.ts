@@ -22,8 +22,8 @@ import {
   normalizeSession,
   noteSessionList,
   noteFocus,
-  noteSessionAct,
-  sessionActOf,
+  noteSessionMode,
+  sessionModeOf,
   focusedOf,
   syncHeaderSessionId,
   nextRequestId,
@@ -100,37 +100,37 @@ describe('focusedOf / noteSessionList / noteFocus — per-lane focused registry'
   })
 })
 
-describe('sessionActOf / noteSessionAct — act の読み手 cache', () => {
+describe('sessionModeOf / noteSessionMode — mode の読み手 cache', () => {
   it('未知 lane / 未知 session は tui に倒す（旧 SP wire 互換の既定）', () => {
-    expect(sessionActOf('proj/unknown-act-lane', 1)).toBe('tui')
+    expect(sessionModeOf('proj/unknown-mode-lane', 1)).toBe('tui')
   })
 
-  it('**API の setSessionAct 経由で即座に読める**（full fetch を待たない）', () => {
-    // ⚠️ 検証は必ず **`setSessionAct`（実際の書き手）** を通す。helper（`noteSessionAct`）を
-    // 直接呼ぶ形だと、`setSessionAct` が helper を呼び忘れていても緑になる — 実際に最初は
+  it('**API の setSessionMode 経由で即座に読める**（full fetch を待たない）', () => {
+    // ⚠️ 検証は必ず **`setSessionMode`（実際の書き手）** を通す。helper（`noteSessionMode`）を
+    // 直接呼ぶ形だと、`setSessionMode` が helper を呼び忘れていても緑になる — 実際に最初は
     // そう書いてしまい、fix を外しても落ちなかった（罠を検出しないテスト、4 回目）。
     //
-    // 落ちるべき壊し方 = `setSessionAct` から cache 更新を外す。それを検出する。
-    // `laneSessions` は `echoes_session_list` の full fetch でしか埋まらないが、act 切替は
+    // 落ちるべき壊し方 = `setSessionMode` から cache 更新を外す。それを検出する。
+    // `laneSessions` は `echoes_session_list` の full fetch でしか埋まらないが、mode 切替は
     // その fetch を伴わない — 更新漏れは `ink.ts` の誤配送（畳まれた PtySlot へ term:write が
     // 飛んで黙って消える）になる（team-b 9 回目 2026-07-25 score 92）。
     const con = installConsole()
-    noteSessionList('proj/act-lane', 5, [
-      { key: 5, agent: 'claude', engine_session_id: null, live: false, focused: true, act: 'tui' },
+    noteSessionList('proj/mode-lane', 5, [
+      { key: 5, agent: 'claude', engine_session_id: null, live: false, focused: true, mode: 'tui' },
     ])
-    expect(sessionActOf('proj/act-lane', 5)).toBe('tui')
+    expect(sessionModeOf('proj/mode-lane', 5)).toBe('tui')
 
-    con.setSessionAct('proj/act-lane', 5, 'chat')
-    expect(sessionActOf('proj/act-lane', 5)).toBe('chat')
+    con.setSessionMode('proj/mode-lane', 5, 'gui')
+    expect(sessionModeOf('proj/mode-lane', 5)).toBe('gui')
 
     // 逆向きも（chat→tui の直後に ink を送ると echoes:submit が飛ぶ側）。
-    con.setSessionAct('proj/act-lane', 5, 'tui')
-    expect(sessionActOf('proj/act-lane', 5)).toBe('tui')
+    con.setSessionMode('proj/mode-lane', 5, 'tui')
+    expect(sessionModeOf('proj/mode-lane', 5)).toBe('tui')
   })
 
   it('一覧を知らない lane では no-op（次の full fetch が埋める）', () => {
-    noteSessionAct('proj/act-unknown', 9, 'chat')
-    expect(sessionActOf('proj/act-unknown', 9)).toBe('tui')
+    noteSessionMode('proj/mode-unknown', 9, 'gui')
+    expect(sessionModeOf('proj/mode-unknown', 9)).toBe('tui')
   })
 })
 

@@ -1,6 +1,6 @@
 //! resume 失敗の観測装置（F4、解剖 memory `cc-session-pointer-self-destruction`）
 //!
-//! Act I type-ahead の `claude --resume 'X' … || vp lane resume-failed 'X' || claude …` chain の
+//! tui type-ahead の `claude --resume 'X' … || vp lane resume-failed 'X' || claude …` chain の
 //! 中継として呼ばれ、「resume が失敗して fresh に fallback した」事象を disk に残す。
 //! 従来この fallback は無音で、復帰失敗の真因（session-in-use / transcript 消失 / …）を
 //! 後から辿る証拠が一切残らなかった。

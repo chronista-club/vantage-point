@@ -30,7 +30,7 @@ performer_status: PerformerStatusWire | null,
  */
 engine_session_id: string | null, 
 /**
- * doc 39 P4: root session の agent（= slot に載る engine 種別）。Act I の session chip prefix は
+ * doc 39 P4: root session の agent（= slot に載る engine 種別）。tui の session chip prefix は
  * これを優先し（cross-engine root で slot の engine を正しく映す）、無ければ `agent`（lane 固定）に
  * fallback。旧 SP からは欠落 = None。
  */
@@ -38,7 +38,7 @@ agent_name: string | null,
 /**
  * doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
  * server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
- * 「どの session が root か」「各 session の act」の SSOT。boot 経路が xterm を
+ * 「どの session が root か」「各 session の mode」の SSOT。boot 経路が xterm を
  * (lane, session) で ensure するのに使う。旧 SP からは欠落 = None。
  */
 sessions: LaneSessionsWire | null, 

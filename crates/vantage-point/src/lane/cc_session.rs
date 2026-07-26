@@ -45,7 +45,7 @@ pub fn transcript_path(session_id: &str) -> Option<PathBuf> {
 /// cc_session id（実体が消えた session）で resume すると headless claude が
 /// "No conversation found" で即エラーになる（TUI の `|| claude` fallback に相当する
 /// ものが headless には無い）ため、 存在しない id は resume に渡さず fresh spawn に倒す。
-/// Act I ⇄ II 切替の live session は transcript が disk にあるので resume が継続する。
+/// tui ⇄ gui 切替の live session は transcript が disk にあるので resume が継続する。
 pub fn transcript_exists(session_id: &str) -> bool {
     transcript_path(session_id).is_some()
 }

@@ -15,7 +15,7 @@ pub(crate) mod cc_activity;
 pub(crate) mod delegation;
 /// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 daemon 常駐)
 pub(crate) mod delivery_actor;
-/// Lane echoes pump — EchoesAgentHost の EchoesEvent を per-lane topic に route (doc 30、Act II)
+/// Lane echoes pump — EchoesAgentHost の EchoesEvent を per-lane topic に route (doc 30、gui)
 pub(crate) mod echoes_pump;
 pub(crate) mod hub;
 /// Lane 階層 Agent container (LSCM doc 12 §9 / doc 13 §3、 PR-β-1 受け皿、 VP-119)

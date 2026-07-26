@@ -1,4 +1,4 @@
-//! EchoesEvent — Echoes Act II GUI が話す唯一の言葉（PR1 で凍結）
+//! EchoesEvent — Echoes gui GUI が話す唯一の言葉（PR1 で凍結）
 //!
 //! vp-app（GUI）はこの語彙だけを描画する。engine（現状 claude）ごとの
 //! stream 形式は repo 側の翻訳層（[`super::translate`]）で吸収し、engine を
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EchoesEvent {
     /// セッション初期化。engine プロセス起動直後に 1 回。
-    /// session_id は cc_session への記録に使う（Act I ⇄ II の resume 共有）。
+    /// session_id は cc_session への記録に使う（tui ⇄ gui の resume 共有）。
     SessionInit {
         session_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,7 +108,7 @@ pub enum EchoesEvent {
 
     /// turn 終了。diff 集計トリガ + コスト表示 + context ゲージ更新。
     ///
-    /// context_* は Act I statusline（cc-status の `bar :context`）と同じ意味論:
+    /// context_* は tui statusline（cc-status の `bar :context`）と同じ意味論:
     /// tokens = turn 最後の assistant usage の合算（input + cache_read + cache_creation）、
     /// window = `result.modelUsage[*].contextWindow`。engine / 版が値を運ばなければ None
     /// （GUI はゲージを出さないだけ）。凍結語彙への additive optional なので後方互換。
@@ -140,7 +140,7 @@ pub enum EchoesEvent {
 
     /// engine プロセスの終了（stdout close = 途絶）。**異常ではなく回復可能な休眠**。
     ///
-    /// Act II の engine は demand-driven（見ている間だけ常駐）なので、repo / daemon 再起動や
+    /// gui の engine は demand-driven（見ている間だけ常駐）なので、repo / daemon 再起動や
     /// idle teardown で普通に終了する。次の submit / reconnect demand で自動復活するため、
     /// [`Self::Error`] とは別語彙にして GUI が「💤 休眠（送信で起動）」と穏当に出せるようにする
     /// （`⚠ engine` は turn crash 等の本物の異常だけに残す）。host.rs #692 の後続として分離。

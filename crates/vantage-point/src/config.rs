@@ -113,7 +113,7 @@ pub struct Config {
     /// **未設定なら記録しない = engine 側の user 既定に委ねる**（doc 54 §8-11、mako 2026-07-25
     /// 「Opus のところはユーザ設定に任せる」。旧: Opus を強制 record して claude の user 既定を
     /// 上書きしていた）。mcp / cli / sidebar(GUI) の全 performer 追加経路が共有し、
-    /// Act I(TUI console) / Act II(chat engine) 両方に効く（model は per-lane 1 file の
+    /// tui(TUI console) / gui(chat engine) 両方に効く（model は per-lane 1 file の
     /// 単一真実源、[`crate::lane::engine_model`]）。
     /// 例: config.kdl に `default-lane-model "claude-sonnet-5"` で VP 側の既定を固定可。
     #[serde(default)]

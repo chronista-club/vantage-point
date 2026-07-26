@@ -26,13 +26,13 @@ export interface ActivePaneInfo {
 	kind?: string | null;
 	pane_id?: string | null;
 	preview_url?: string | null;
-	/** doc 33: chat lane (Act II) フラグ。xterm を持たない lane の placeholder 抑止に使う。 */
+	/** doc 33: chat lane (gui) フラグ。xterm を持たない lane の placeholder 抑止に使う。 */
 	chat?: boolean;
 	// ↓ Echoes 共通ヘッダ用 lane 文脈（setActivePane 相乗り、creo memo `vp-pane-common-header`）
 	lane_name?: string | null;
 	cwd?: string | null;
 	branch?: string | null;
-	/** active engine の session id（Act I の session chip 供給路。Act II は event が上書き）。 */
+	/** active engine の session id（tui の session chip 供給路。gui は event が上書き）。 */
 	session_id?: string | null;
 	/** root session の agent（= slot に載る engine 種別、chip prefix 導出用: "claude" / "codex" /
 	 *  "grok" 等）。doc 39 P4-C: Rust push_active_view が agent_name（root の engine）優先で解決
@@ -114,7 +114,7 @@ export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 	}
 	if (kind === "terminal") {
 		// per-(lane, session) instance を切替 (= showLane(address))。 pane_id は Lane address。
-		// showLane が空なら lane-empty placeholder を出す。 chat (Act II) lane は xterm を
+		// showLane が空なら lane-empty placeholder を出す。 chat (gui) lane は xterm を
 		// 持たない (ChatView が内容) ので、 その旨を渡して placeholder 抑止させる。
 		//
 		// window 経由なのは、この API が Rust からも名前で呼ばれる契約だから（term.ts 参照）。

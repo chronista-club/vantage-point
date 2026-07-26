@@ -1,5 +1,5 @@
 /**
- * ResyncLoader — Act II 会話の「再同期・復帰中」を画面隅で知らせるコーナーローディング。
+ * ResyncLoader — gui 会話の「再同期・復帰中」を画面隅で知らせるコーナーローディング。
  *
  * trigger: active lane の transcript replay（attach / reconnect / demand 再発火で engine が
  * 過去会話を冪等再送する `replay_start`→`replay_end` の window、chatview.ts の `replaying`）。

@@ -54,10 +54,10 @@ pub struct ConsoleEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsoleActApplied {
+pub struct ConsoleModeApplied {
     pub lane: String,
     pub session: i64,
-    pub act: String,
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,8 +104,8 @@ pub enum PushEventEnvelope {
     ConsoleSessionList(ConsoleSessionList),
     #[serde(rename = "console:event")]
     ConsoleEvent(ConsoleEvent),
-    #[serde(rename = "console:act_applied")]
-    ConsoleActApplied(ConsoleActApplied),
+    #[serde(rename = "console:mode_applied")]
+    ConsoleModeApplied(ConsoleModeApplied),
     #[serde(rename = "console:agents")]
     ConsoleAgents(ConsoleAgents),
     #[serde(rename = "ink:snapshot")]

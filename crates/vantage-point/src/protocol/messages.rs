@@ -208,15 +208,15 @@ pub enum RepoMessage {
         /// doc 50 §4.6 A6: 発生元 session の VP 採番 key（1 Lane = N term session）。
         /// `EchoesEvent.session` と対称の additive field — topic key は lane のまま、session は
         /// 本 field で運び、World A の xterm が session 別に振り分ける（doc 38 落とし穴① =
-        /// 「session を lane 名に埋めない」を Act I 側でも踏襲）。旧 sender 由来は default の 1。
+        /// 「session を lane 名に埋めない」を tui 側でも踏襲）。旧 sender 由来は default の 1。
         #[serde(default = "default_session_key")]
         session: u32,
         data: String,
     },
-    /// Echoes Act II（構造化会話 GUI）の翻訳済みイベント（per-lane）。doc 32。
+    /// Echoes gui（構造化会話 GUI）の翻訳済みイベント（per-lane）。doc 32。
     /// `EchoesAgentHost` が headless claude の stream-json を [`crate::echoes::EchoesEvent`]
     /// へ翻訳し、`process/echoes/data/{lane}/event` topic に乗せて vp-app へ届ける。
-    /// LaneTerminalOutput（Act I の生 PTY）とは別系統の per-lane ephemeral stream。
+    /// LaneTerminalOutput（tui の生 PTY）とは別系統の per-lane ephemeral stream。
     EchoesEvent {
         lane: String,
         /// doc 38: 発生元 session の VP 採番 key（1 Lane = N session）。additive field —

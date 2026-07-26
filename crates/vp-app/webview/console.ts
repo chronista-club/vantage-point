@@ -1,5 +1,5 @@
 /**
- * Console facade (doc 33 §4) — Act I/II が同居する Console 面の World B 側 controller。
+ * Console facade (doc 33 §4) — tui/gui が同居する Console 面の World B 側 controller。
  *
  * Rust からの供給は **push envelope**（`window.vpDispatch` の単一受け口 → `dispatch.ts` が
  * ここの method へ配る）。`window.vpConsole` は **DevTools 検分用に残してある**だけで、
@@ -8,9 +8,9 @@
  * - data plane: `console:event` → [`VpConsole.handleEvent`] — repo の EchoesAgentHost が吐く
  *   EchoesEvent（engine 非依存語彙、doc 32 §4）を per-lane ring buffer に蓄積し、
  *   mount 済みの ChatView renderer に届ける（renderer は C2 で登録）。
- * - control plane: `console:act_applied` → [`VpConsole.setSessionAct`] — その session の
- *   Act（見え方）が変わったことの通知（doc 50 §4.6 A6。旧 lane 単位 `setMode` の後継）。
- *   ⚠️ 表示は強制しない（ビューとエンジンは別軸 — Lane 内で Act I/II pane は共存し得る）。
+ * - control plane: `console:mode_applied` → [`VpConsole.setSessionMode`] — その session の
+ *   Mode（見え方）が変わったことの通知（doc 50 §4.6 A6。旧 lane 単位 `setMode` の後継）。
+ *   ⚠️ 表示は強制しない（ビューとエンジンは別軸 — Lane 内で tui/gui pane は共存し得る）。
  * - roster: `console:session_list` → [`VpConsole.handleSessionList`]（供給はこの 1 本、doc 53 §11）
  * - 「+」menu: `console:agents` → [`VpConsole.handleAgents`]
  * - 検分: `window.vpConsole.peek(lane)` — devtools から buffer を覗く（throwaway debug pane を
@@ -25,7 +25,7 @@
 // する（変更時は event.rs と同時に更新すること）。
 // ---------------------------------------------------------------------------
 
-export type ConsoleMode = 'tui' | 'chat'
+export type SessionMode = 'tui' | 'gui'
 
 export type PlanEntry = {
   content: string
@@ -83,7 +83,7 @@ export type EchoesEvent =
       text: string
     }
   | { kind: 'plan'; entries: PlanEntry[] }
-  /** context_tokens/window = Act I statusline 相当の context ゲージ（省略時 GUI は前値を保つ）。 */
+  /** context_tokens/window = tui statusline 相当の context ゲージ（省略時 GUI は前値を保つ）。 */
   | {
       kind: 'turn_completed'
       session_id: string
@@ -129,14 +129,14 @@ export type EchoesSession = {
   /** chat host が現在生きているか（in-memory slot の有無）。 */
   live: boolean
   focused: boolean
-  /** doc 39: この session が lane の root（Act I slot に立ち mailbox を名乗る）か。
+  /** doc 39: この session が lane の root（tui slot に立ち mailbox を名乗る）か。
    *  root タブは × を隠す（backend の「root は remove 不可」の UI 反映）。
    *  旧 SP は送らない → undefined（後方互換は canCloseSession 側が吸収）。 */
   root?: boolean
-  /** doc 50 §4.6 A6: この session の Act（見え方）。roster（lane-panes）が Pane kind を
+  /** doc 50 §4.6 A6: この session の Mode（見え方）。roster（lane-panes）が Pane kind を
    *  決める **唯一の入力**で、名札 kind badge の表示もこれに従う。
    *  旧 SP は送らない → undefined（roster 側が "tui" に倒す = 従来の既定）。 */
-  act?: 'tui' | 'chat'
+  mode?: 'tui' | 'gui'
   /** doc 50 §4.6 A6 ②: この session を Chat にできるか（能力表は server が SSOT）。
    *  名札の kind badge は false なら Chat への切替を出さない（押しても server に弾かれる
    *  だけの行き止まりを作らない）。旧 SP は送らない → undefined = 不可に倒す。 */
@@ -218,29 +218,29 @@ export function noteFocus(lane: string, session: number): void {
 }
 
 /**
- * act 切替の楽観的な local 反映（[`sessionActOf`] の読み手 cache を即時更新する）。
+ * mode 切替の楽観的な local 反映（[`sessionModeOf`] の読み手 cache を即時更新する）。
  *
- * ⚠️ **これが無いと act を読む消費者が旧値で分岐する**。`laneSessions` は
- * `echoes_session_list` の full fetch でしか更新されないが、**act 切替はその fetch を伴わない**
- * （badge click の成功パスは `session_set_act` → `SessionActApplied` で完結する）。
+ * ⚠️ **これが無いと mode を読む消費者が旧値で分岐する**。`laneSessions` は
+ * `echoes_session_list` の full fetch でしか更新されないが、**mode 切替はその fetch を伴わない**
+ * （badge click の成功パスは `session_set_mode` → `SessionModeApplied` で完結する）。
  * 実害は `ink.ts` の送り先判定 — tui→chat の直後に board 注釈を送ると、畳まれた PtySlot へ
  * `term:write` が飛んで**黙って消える**（chat には届かない。エラーはゼロ）。
  *
  * 旧 lane 単位 `setMode` は `laneOf(lane).mode = mode` で自分の読み手を更新していた。A6 で
  * session 単位へ移す際にこの 1 行が落ちた（team-b 9 回目 2026-07-25）。Rust 側は
- * `SessionActApplied` で手元 snapshot を同じ理由で即時更新している — **同じ判断を 2 つの
+ * `SessionModeApplied` で手元 snapshot を同じ理由で即時更新している — **同じ判断を 2 つの
  * cache に要求されていて、片方だけ満たしていた**。
  *
  * session 一覧を知らない lane では no-op（次の full fetch が埋める）。badge は roster から
  * 描かれるので、実際には一覧が既にある状態でしか呼ばれない。
  */
-export function noteSessionAct(
+export function noteSessionMode(
   lane: string,
   session: number,
-  act: 'tui' | 'chat',
+  mode: 'tui' | 'gui',
 ): void {
   const entry = laneSessions.get(lane)?.sessions.find((s) => s.key === session)
-  if (entry) entry.act = act
+  if (entry) entry.mode = mode
 }
 
 /** lane の focused session key（未知 = 1）。chatview の event filter / tab 強調の基準。 */
@@ -258,11 +258,11 @@ export function sessionListOf(lane: string): EchoesSession[] {
   return laneSessions.get(lane)?.sessions ?? []
 }
 
-/** その session の act（見え方）。未知 / 旧 SP（act 欠落）は 'tui'（従来の既定）。
+/** その session の mode（見え方）。未知 / 旧 SP（mode 欠落）は 'tui'（従来の既定）。
  *  doc 50 §4.6 A6: 見え方は session の属性なので、lane 単位 `getMode` の代わりにこれを引く。 */
-export function sessionActOf(lane: string, session: number): 'tui' | 'chat' {
+export function sessionModeOf(lane: string, session: number): 'tui' | 'gui' {
   return (
-    laneSessions.get(lane)?.sessions.find((s) => s.key === session)?.act ?? 'tui'
+    laneSessions.get(lane)?.sessions.find((s) => s.key === session)?.mode ?? 'tui'
   )
 }
 
@@ -298,7 +298,7 @@ export function syncHeaderSessionId(lane: string): boolean {
  * `deriveStatus` が別経路で同じ event から導出しており、ここで畳む必要が無い。
  */
 export type EchoesHeaderState = {
-  /** cc session id（Act を跨いで同一 session が継続することの可視化）。 */
+  /** cc session id（Mode を跨いで同一 session が継続することの可視化）。 */
   sessionId?: string
 }
 
@@ -334,7 +334,7 @@ type BufferedEvent = { event: EchoesEvent; session: number }
 
 type LaneConsole = {
   buffer: BufferedEvent[]
-  mode: ConsoleMode
+  mode: SessionMode
   renderer: ConsoleRenderer | null
   /** Echoes 共通ヘッダ用 summary（session_init / turn_completed / error の畳み込み）。 */
   header: EchoesHeaderState
@@ -358,9 +358,9 @@ function laneOf(lane: string): LaneConsole {
 export type VpConsole = {
   /** doc 38 Phase 2: session = envelope 由来の VP 採番 key（未指定 = focused = 1、旧 SP 互換）。 */
   handleEvent(lane: string, event: EchoesEvent, session?: number): void
-  /** doc 50 §4.6 A6: session の Act（見え方）が変わったことを通知する（'vp:session-act'）。
-   *  Rust の `SessionActApplied` が呼ぶ口。roster と kind badge がこれで追従する。 */
-  setSessionAct(lane: string, session: number, act: ConsoleMode): void
+  /** doc 50 §4.6 A6: session の Mode（見え方）が変わったことを通知する（'vp:session-mode'）。
+   *  Rust の `SessionModeApplied` が呼ぶ口。roster と kind badge がこれで追従する。 */
+  setSessionMode(lane: string, session: number, mode: SessionMode): void
   /** ChatView (C2) が mount 時に登録。既存 buffer を replay してから live 配信に接続する。 */
   attachRenderer(lane: string, renderer: ConsoleRenderer): void
   detachRenderer(lane: string): void
@@ -418,17 +418,17 @@ export function installConsole(): VpConsole {
         }
       }
     },
-    setSessionAct(lane, session, act) {
+    setSessionMode(lane, session, mode) {
       // doc 50 §4.6 A6: 見え方は **session の属性**。roster（lane-panes）と名札の kind badge
       // （EchoesHeader）がこの bus を購読して、その session の Pane kind を入れ替える。
       // lane 単位の mode cache は触らない（root の追従は sidebar snapshot が持つ）。
       //
-      // ⚠️ **自分の読み手 cache を先に更新する**（`sessionActOf` の供給元）。bus の購読者は
-      // 各自の cache を更新するが、`laneSessions` は full fetch でしか埋まらず、act 切替は
-      // fetch を伴わない — 更新を忘れると `ink.ts` が旧 act で誤配送する（`noteSessionAct`）。
-      noteSessionAct(lane, session, act)
+      // ⚠️ **自分の読み手 cache を先に更新する**（`sessionModeOf` の供給元）。bus の購読者は
+      // 各自の cache を更新するが、`laneSessions` は full fetch でしか埋まらず、mode 切替は
+      // fetch を伴わない — 更新を忘れると `ink.ts` が旧 mode で誤配送する（`noteSessionMode`）。
+      noteSessionMode(lane, session, mode)
       document.dispatchEvent(
-        new CustomEvent('vp:session-act', { detail: { lane, session, act } }),
+        new CustomEvent('vp:session-mode', { detail: { lane, session, mode } }),
       )
     },
     attachRenderer(lane, renderer) {

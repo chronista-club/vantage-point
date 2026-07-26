@@ -983,7 +983,7 @@ async fn canvas_router_for(
     // repo 未起動時の placeholder。 起動後に上のブロックが実 router へ差し替える。
     let router = Arc::new(crate::repo::topic_router::TopicRouter::new());
     register_terminal_demand(&router, control_channels.clone(), path_key.to_string());
-    // Act II: chat lane の transcript replay-on-attach（terminal と対称）。
+    // gui: chat lane の transcript replay-on-attach（terminal と対称）。
     register_echoes_demand(&router, control_channels.clone(), path_key.to_string());
     routers.insert(path_key.to_string(), router.clone());
     router
@@ -992,7 +992,7 @@ async fn canvas_router_for(
 /// S2 (doc 27 §4.1 Cap2): repo canvas router に terminal demand hook を登録する。
 ///
 /// `repo/terminal/data/+/out` の購読者増減 0↔1 で `terminal_demand_start/stop {lane}` を
-/// 当該 repo に control reverse-route で撃つ（Act I: PtySlot の replay + live pump 起動）。
+/// 当該 repo に control reverse-route で撃つ（tui: PtySlot の replay + live pump 起動）。
 fn register_terminal_demand(
     router: &Arc<crate::repo::topic_router::TopicRouter>,
     control_channels: ControlChannels,
@@ -1008,7 +1008,7 @@ fn register_terminal_demand(
     );
 }
 
-/// Act II replay-on-attach: repo canvas router に echoes demand hook を登録する。
+/// gui replay-on-attach: repo canvas router に echoes demand hook を登録する。
 ///
 /// `repo/echoes/data/+/event` の購読者 0↔1 で `echoes_demand_start/stop {lane}` を撃つ。
 /// start を受けた repo は chat lane の transcript を `EchoesEvent` に起こして replay する
@@ -1070,7 +1070,7 @@ fn register_lane_demand(
         // doc 44 P1 (fold-in): 旧実装は repo の control channel を逆引きして request を
         // 撃っていた。 channel 不在（repo 起動前に surface が subscribe した等）は無言で
         // 捨てられ、 救済は `refire_active_demands` 頼み — この取りこぼしが #817 の
-        // 「Act II が復活しない」の根本原因 1 だった。
+        // 「gui が復活しない」の根本原因 1 だった。
         //
         // 同一プロセスになった今、 demand は当該 repo の dispatch を直接叩く。
         // 「購読が立った時点で repo が居るか」だけが条件になり、 channel 接続状態と
@@ -1333,11 +1333,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     if renamed > 0 {
         tracing::info!("予約 lane 名 migration: state file {renamed} 件を root へ改名");
     }
-
-    // doc 47 §4: 旧 `console_modes/` を root session の act へ畳む one-shot migration。
-    // lane を spawn する前に済ませる — 畳む前に boot すると chat lane が Tui として立ち上がり、
-    // その lane で 1 会話 2 エンジンになる（この移設が塞ごうとしている当のもの）。
-    crate::lane::session_registry::migrate_console_modes();
 
     // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
     let addr = format!("[::]:{}", port);

@@ -1,8 +1,8 @@
-//! Lane echoes pump — Act II 版の terminal_pump（doc 32 §3）。
+//! Lane echoes pump — gui 版の terminal_pump（doc 32 §3）。
 //!
 //! 1 つの Lane の [`EchoesAgentHost`] が broadcast する [`EchoesEvent`] を購読し、
 //! per-lane topic (`repo/echoes/data/{lane}/event`) に [`RepoMessage::EchoesEvent`]
-//! として route する。これにより Act II の構造化イベントが単一 topic 空間に乗り、
+//! として route する。これにより gui の構造化イベントが単一 topic 空間に乗り、
 //! daemon 経由で vp-app へ届く（terminal_pump と完全に同型）。
 //!
 //! data / calculations / actions:

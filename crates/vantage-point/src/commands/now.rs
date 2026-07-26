@@ -8,7 +8,7 @@
 //! vp now "panic 箇所を特定中 — pty_slot の lock 順を確認"
 //! ```
 //!
-//! 宛先の識別は **spawn 時注入の env**（Act I slot = agent_spawner / Act II host が注入）:
+//! 宛先の識別は **spawn 時注入の env**（tui slot = agent_spawner / gui host が注入）:
 //! `VP_REPO` + `VP_LANE`（lane address の導出）+ `VP_SESSION_KEY`（session の名乗り、
 //! doc 40 §4 の hook identity と同じ）。env の無い場所（lane の外の手動実行）は
 //! `--lane` / `--session` で明示する。

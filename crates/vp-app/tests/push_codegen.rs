@@ -106,7 +106,7 @@ fn regenerates_push_bindings() {
         "board:message",
         "console:session_list",
         "console:event",
-        "console:act_applied",
+        "console:mode_applied",
         "console:agents",
         "ink:snapshot",
         "ink:snapshot_error",

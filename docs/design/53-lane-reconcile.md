@@ -668,7 +668,7 @@ getter が `Option` を返すことを「lane 実在」の signal に流用し�
 
 ### 8.5 client 側をどうするか（R1 の scope 判断）
 
-client の読み手 3 系統（alive 判定 / Act II 判定 / respawn gate）は**すべて同じ問い**に還元できる
+client の読み手 3 系統（alive 判定 / gui 判定 / respawn gate）は**すべて同じ問い**に還元できる
 ——「この lane は PTY を持たなくても生きているか」。選択肢と判断:
 
 | 案 | 内容 | 判定 |

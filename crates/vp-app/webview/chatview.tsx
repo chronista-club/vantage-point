@@ -1,5 +1,5 @@
 /**
- * ChatView (doc 33 C2) — Echoes Act II の Console 面 GUI（SolidJS）。
+ * ChatView (doc 33 C2) — Echoes gui の Console 面 GUI（SolidJS）。
  *
  * World B。`window.vpConsole`（console.ts）が届ける [`EchoesEvent`] を per-lane store に
  * 畳み込み、active lane の会話を message stream として描画する。入力は IPC `echoes:submit`
@@ -148,7 +148,7 @@ type ChatState = {
   plan: PlanEntry[]
   streaming: boolean
   cost: number | null
-  /** context ゲージ（Act I statusline の bar :context 相当）。turn_completed で更新。 */
+  /** context ゲージ（tui statusline の bar :context 相当）。turn_completed で更新。 */
   contextTokens: number | null
   contextWindow: number | null
   /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
@@ -260,23 +260,23 @@ export function removeChatSession(lane: string, session: number): void {
   ipc?.postMessage(JSON.stringify({ t: 'echoes:session_remove', lane, session }))
 }
 
-/** doc 50 §4.6 A6 ②: 名札 kind badge → session の Act（見え方）切替を要求する。
+/** doc 50 §4.6 A6 ②: 名札 kind badge → session の Mode（見え方）切替を要求する。
  *
- * IPC を直接撃たず `vp:act-switch-request` に流すのは、handoff overlay と二重切替 lock を
+ * IPC を直接撃たず `vp:mode-switch-request` に流すのは、handoff overlay と二重切替 lock を
  * entry.tsx が一元管理しているため（名札の実装と overlay の DOM / timer を絡ませない —
  * doc 51 §2 で root picker から event 依頼にした規律をそのまま引き継ぐ）。
  * 宛先 session は **引数で運ぶ**（focus に依存しない — 「focus してから送る」型の分割は
  * 別 IPC なので順序保証が無く、別 session に届くレースを作る。doc 50 §4.3 の警告）。
- * 応答は Rust の `SessionActApplied` → `vpConsole.setSessionAct` → 'vp:session-act' で返り、
+ * 応答は Rust の `SessionModeApplied` → `vpConsole.setSessionMode` → 'vp:session-mode' で返り、
  * roster がその session の Pane kind を入れ替える。 */
-export function requestSessionAct(
+export function requestSessionMode(
   lane: string,
   session: number,
-  act: 'tui' | 'chat',
+  mode: 'tui' | 'gui',
 ): void {
   document.dispatchEvent(
-    new CustomEvent('vp:act-switch-request', {
-      detail: { lane, session, target: act },
+    new CustomEvent('vp:mode-switch-request', {
+      detail: { lane, session, target: mode },
     }),
   )
 }
@@ -285,9 +285,9 @@ export function requestSessionAct(
 // doc 38 §4.3 — 再同期ローダー（resync-loader）の固着防止
 //
 // `replaying` は replay_start→true / replay_end→false で駆動するが、replay_end が来ない経路
-// （Act I lane / error 中断 / engine 途絶）では立ちっぱなしになれる。表示を「focused session の
+// （tui lane / error 中断 / engine 途絶）では立ちっぱなしになれる。表示を「focused session の
 // attach 状態機械」に束縛する:
-//  ① lane/Act/tab 切替で必ず解除（clearReplaying を各遷移点で呼ぶ）
+//  ① lane/Mode/tab 切替で必ず解除（clearReplaying を各遷移点で呼ぶ）
 //  ② replay_start ごとに watchdog を張り、REPLAY_WATCHDOG_MS 無応答なら強制解除 + warn（安全網）
 //  ③ watchdog は **(lane, session) 単位**（doc 50 §4.3 #2 で store を session 別にしたのに合わせる）。
 //     旧実装は lane 単位で、fold 側が background session を捨てていたので衝突しなかった。
@@ -359,7 +359,7 @@ function clearReplaying(lane: string): void {
  *
  * solid の `produce` draft でも plain object でも同じに動く（＝ store 非依存 = 単体テスト可能）。
  * 会話モデリングの肝: message_chunk / thought_chunk は末尾同種 item に append（accumulate）、
- * tool_call_update は id 一致で done 化。ここが Act II の描画正しさの中核。
+ * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
 export function foldInto(s: ChatState, ev: EchoesEvent): void {
   s.lastEvent = ev.kind // 拾える全イベント種別を status に同期（時刻は foldEvent が Date.now で付す）
@@ -629,16 +629,16 @@ export function canCloseSession(sessionCount: number, isRoot?: boolean): boolean
  * 実装された日に client を触らず badge が生えるのが正しい形）。判定材料は server が
  * session ごとに送る `chat_capable` 一本で、能力表の SSOT は server（`EngineKind`）。
  *
- * - **→chat**: その session が Act II host を持つ engine か。未申告（旧 SP）は**不可**に倒す
+ * - **→chat**: その session が gui host を持つ engine か。未申告（旧 SP）は**不可**に倒す
  *   — 押しても server に弾かれるだけの行き止まりを出さない（`newPaneChoices` と同じ規律）。
- * - **→tui**: 常に可。Act I は login shell に engine を流し込むだけなのでどの engine でも
+ * - **→tui**: 常に可。tui は login shell に engine を流し込むだけなのでどの engine でも
  *   成立する（doc 50 §4.0 帰結 1「login shell は劣化ケースではなく正規の投げる先」）。
  */
-export function canSwitchTo(target: 'tui' | 'chat', chatCapable?: boolean): boolean {
+export function canSwitchTo(target: 'tui' | 'gui', chatCapable?: boolean): boolean {
   return target === 'tui' ? true : chatCapable === true
 }
 
-/** 進行中の act 切替（handoff）を (lane, session) で引くための key。
+/** 進行中の mode 切替（handoff）を (lane, session) で引くための key。
  *
  * doc 50 §4.6 A6: 切替は **pane 単位**になったので、lock も pane（= session）単位で持つ。
  * 「どれか 1 つでも進行中なら全部弾く」にすると、**無関係な pane の click を無言で落とす**
@@ -752,14 +752,14 @@ export function deriveNowLine(s: ChatState | null): string | null {
 
 function mdToHtml(text: string): string {
   // breaks: true で単一改行を <br> に変換する。marked 既定（CommonMark）は段落内の単一 \n を
-  // 空白に潰すため、engine が返す改行が Act II のチャット表示で消えていた。gfm は既定 true だが明示。
+  // 空白に潰すため、engine が返す改行が gui のチャット表示で消えていた。gfm は既定 true だが明示。
   return marked.parse(text, { breaks: true, gfm: true }) as string
 }
 
 /**
  * chat メッセージ内リンクを OS ブラウザで開くための `open-url` IPC ペイロード判定（純関数 = calc）。
  *
- * http(s) の href なら Act I の xterm と同じ `open-url` IPC の JSON 文字列を返し、それ以外
+ * http(s) の href なら tui の xterm と同じ `open-url` IPC の JSON 文字列を返し、それ以外
  * （相対 / `file:` / `javascript:` / 空）は null を返す。非 http(s) を絶対に通さない一次弾き —
  * webview に `file://` 等を開かせないための多層防御（scheme 検証の SSOT は Rust 側 terminal.rs、
  * ここは webview 内遷移を止めるための前段）。terminal.rs と揃えて小文字 scheme を前方一致で見る。
@@ -1204,7 +1204,7 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
  * 載せるもの（doc 50 §2「上段 = この pane が何であるか」）:
  *  - 灯（slot 注入。**chat 固有** — term は EchoesEvent stream を持たないので出さない）
  *  - session ラベル / root chip / 会話 id = 素性
- *  - kind badge = 見え方（click で `session_set_act` → in-place 変身）
+ *  - kind badge = 見え方（click で `session_set_mode` → in-place 変身）
  *  - ✕ = この session を閉じる（root は不可）
  *
  * 供給は `sessionsOf(lane)`（`echoes_session_list` の cache）— term / chat どちらの pane でも
@@ -1214,7 +1214,7 @@ export function SessionPlate(props: {
   lane: string
   session: number
   /** この pane の見え方。badge の表示と切替先を決める。 */
-  act: 'tui' | 'chat'
+  mode: 'tui' | 'gui'
   focused: boolean
   /** 活動の灯（chat のみ。term は供給が無いので省略 = 描かない）。 */
   lamp?: JSX.Element
@@ -1223,9 +1223,9 @@ export function SessionPlate(props: {
     sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
   const label = (): string => `${sessionChipPrefix(info()?.agent)}#${props.session}`
   /** badge を押した時の切替先（今の見え方の逆）。 */
-  const target = (): 'tui' | 'chat' => (props.act === 'chat' ? 'tui' : 'chat')
+  const target = (): 'tui' | 'gui' => (props.mode === 'gui' ? 'tui' : 'gui')
   /** badge を押せるか（= 切替先に行けるか）。 */
-  const canSwitchAct = (): boolean => canSwitchTo(target(), info()?.chat_capable)
+  const canSwitchMode = (): boolean => canSwitchTo(target(), info()?.chat_capable)
 
   return (
     <div class="echoes-session-plate" classList={{ focused: props.focused }}>
@@ -1248,26 +1248,26 @@ export function SessionPlate(props: {
       {/* focus は **chat の概念**（replay demand の宛先。送信はどの pane からも可）。
           term pane は focus を World B が持たない（keyboard focus は xterm 側）ので、
           この hint を出すと「押しても何も起きない」誤誘導になる — chat のときだけ出す。 */}
-      <Show when={props.act === 'chat' && !props.focused}>
+      <Show when={props.mode === 'gui' && !props.focused}>
         <span class="echoes-session-plate-hint">click で focus</span>
       </Show>
       <span class="echoes-session-plate-spacer" />
       {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
-          click で session_set_act → repo が resume handoff → **同じ往復路**が別の面として
+          click で session_set_mode → repo が resume handoff → **同じ往復路**が別の面として
           立ち上がる（位置と share は renamePane が保つ = in-place 変身）。
-          ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると Act II へ戻る入口が消える
+          ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると gui へ戻る入口が消える
           （2026-07-25 に実際に片道ドアを作った）。
 
-          切替できない session（shell 等、Act II host を持たない engine）は **押せる見た目を
+          切替できない session（shell 等、gui host を持たない engine）は **押せる見た目を
           出さない** — 押しても server に弾かれるだけの行き止まりになる（2026-07-25 実機で
           「押しても無言」を踏んだ）。可否の判定は server が送る `chat_capable` 一本で、
           engine 名の型分岐は client に持たせない（§4.6 ② の能力表引き）。 */}
       <Show
-        when={canSwitchAct()}
+        when={canSwitchMode()}
         fallback={
           <span
             class="echoes-session-plate-kind static"
-            title={`${info()?.agent ?? 'この engine'} は Chat（Act II）の受け口を持ちません`}
+            title={`${info()?.agent ?? 'この engine'} は Chat（gui）の受け口を持ちません`}
           >
             <CreoIcon name="ph:terminal-window" size={9} />
             Console
@@ -1279,19 +1279,19 @@ export function SessionPlate(props: {
           class="echoes-session-plate-kind"
           title={
             target() === 'tui'
-              ? 'Console（Act I）に切り替える — 会話はそのまま resume で続く'
-              : 'Chat（Act II）に切り替える — 会話はそのまま resume で続く'
+              ? 'Console（tui）に切り替える — 会話はそのまま resume で続く'
+              : 'Chat（gui）に切り替える — 会話はそのまま resume で続く'
           }
           onClick={(e) => {
             e.stopPropagation()
-            requestSessionAct(props.lane, props.session, target())
+            requestSessionMode(props.lane, props.session, target())
           }}
         >
           <CreoIcon
-            name={props.act === 'chat' ? 'ph:chat-circle' : 'ph:terminal-window'}
+            name={props.mode === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
             size={9}
           />
-          {props.act === 'chat' ? 'Chat' : 'Console'}
+          {props.mode === 'gui' ? 'Chat' : 'Console'}
         </button>
       </Show>
       <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
@@ -1324,7 +1324,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
   // （doc 50 §4.6 A6 — term pane と共有するため）。
 
-  // Act II モデル切替（spec: セッション進行中でも切替可能）。repo が engine を --resume +
+  // gui モデル切替（spec: セッション進行中でも切替可能）。repo が engine を --resume +
   // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
   // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
   // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
@@ -1361,7 +1361,7 @@ function SessionChatView(props: { lane: string; session: number }) {
     )
   }
 
-  // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
+  // context ゲージ（tui statusline の bar :context 相当）。分子分母が揃うまで非表示。
   // 閾値は cc-status の意味論を踏襲: >=60% warn / >=85% critical。
   const ctxPct = (): number | null => {
     const s = state()
@@ -1492,7 +1492,7 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   // marked 描画済み HTML 内の <a> クリックを echoes-stream の 1 listener で捌く（イベント委譲 =
   // メッセージ毎に listener を張らない）。default では webview 内遷移（SPA が localhost リンクで
-  // 飛ぶ事故）になるので preventDefault で止め、http(s) は Act I の xterm と同じ `open-url` IPC で
+  // 飛ぶ事故）になるので preventDefault で止め、http(s) は tui の xterm と同じ `open-url` IPC で
   // OS default browser を起動する（Rust: terminal::handle_ipc_message → webbrowser::open）。
   const onStreamLinkClick = (e: MouseEvent): void => {
     const anchor = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
@@ -1538,7 +1538,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   //   - PageUp/PageDown: 常に history へ（小さな textarea では page 移動は無意味なので奪う）
   //   - Home/End: textarea に focus がある間は行内キャレット移動を尊重して奪わない。
   //     それ以外（history/pane に focus）では history 先頭/末尾へ。
-  // chat 非表示時（Act I 表示中 = streamEl が display:none 配下 → offsetParent=null）は
+  // chat 非表示時（tui 表示中 = streamEl が display:none 配下 → offsetParent=null）は
   // 一切介入せず、xterm 等にキーを渡す。
   const onDocKey = (e: KeyboardEvent): void => {
     if (!streamEl || streamEl.offsetParent === null) return // chat 非表示 → 素通し
@@ -1603,7 +1603,7 @@ function SessionChatView(props: { lane: string; session: number }) {
       <SessionPlate
         lane={props.lane}
         session={props.session}
-        act="chat"
+        mode="gui"
         focused={isFocused()}
         lamp={
           /* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
@@ -1985,8 +1985,8 @@ export const CHATVIEW_CSS = `
   border-radius:7px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
 .echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
-/* Act 切替（見え方の乗り換え = 避難路）は EchoesHeader の root picker「見え方」行へ
-   （doc 51 §2 — 旧 lane-level Act toggle と下端の帯は doc 51 §1 A1 で退役）。 */
+/* Mode 切替（見え方の乗り換え = 避難路）は EchoesHeader の root picker「見え方」行へ
+   （doc 51 §2 — 旧 lane-level Mode toggle と下端の帯は doc 51 §1 A1 で退役）。 */
 /* session 名札（pane 上端）: この pane = この session の素性。tab strip（doc 38 仮置き）の
    後継 — session ↔ Pane 1:1（doc 46 §1.5 / doc 50 P1）で pane 自身が名乗る。
    Pane 共通の名札 token（--vp-nameplate-*）に乗せて、全 pane の上端と同じ見えにする。 */
@@ -2019,7 +2019,7 @@ export const CHATVIEW_CSS = `
   font-size:9.5px; font-family:inherit; color: var(--color-text-tertiary,#8b93a7); opacity:.8; }
 .echoes-session-plate-kind:hover { opacity:1; color: var(--color-text,#e6e9ef);
   border-color: var(--color-accent,#3b82f6); background: var(--color-bg,#0f1115); }
-/* 切替できない session（Act II host を持たない engine）の kind 表示。素性としては出すが
+/* 切替できない session（gui host を持たない engine）の kind 表示。素性としては出すが
    **押せる見た目を出さない**（cursor / hover を持たない = 行き止まりに誘わない、§4.6 ②）。 */
 .echoes-session-plate-kind.static { cursor:default; opacity:.55; }
 /* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
@@ -2064,7 +2064,7 @@ export const CHATVIEW_CSS = `
 .echoes-plan-body { font-size:13px; line-height:1.6; max-height:280px; overflow-y:auto; margin:6px 0;
   padding:8px 10px; background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); border-radius:6px; }
 .echoes-plan-body :first-child { margin-top:0; } .echoes-plan-body :last-child { margin-bottom:0; }
-/* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
+/* context ゲージ（tui statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
 /* status bar の右端へ寄せる（読み取り計器の並びの末尾）。 */
 .echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
@@ -2092,7 +2092,7 @@ export const CHATVIEW_CSS = `
 export type ChatViewApi = {
   /** lane を active にする（初出なら vpConsole renderer を attach + session 一覧を取得）。 */
   showLane(lane: string): void
-  /** doc 38 §4.3: 指定 lane の再同期ローダーを明示的に下ろす（Act I 切替時に entry.tsx が呼ぶ）。 */
+  /** doc 38 §4.3: 指定 lane の再同期ローダーを明示的に下ろす（tui 切替時に entry.tsx が呼ぶ）。 */
   clearReplaying(lane: string): void
   /** chat session pane を host に mount する（lane-panes の動的 host 生成から呼ばれる）。
    *  返り値 = dispose（lane 切替 / session close で host ごと破棄する時に呼ぶ）。 */
@@ -2159,7 +2159,7 @@ export function installChatView(vpConsole: VpConsole): ChatViewApi {
           <SessionPlate
             lane={lane}
             session={session}
-            act="tui"
+            mode="tui"
             // term pane は focus 状態を World B が持たない（keyboard focus は xterm 側）。
             // 名札の focus 強調は chat の「打つ宛先」を示すものなので、term では常に false。
             focused={false}

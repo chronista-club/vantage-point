@@ -297,7 +297,7 @@ enum LaneCommands {
     },
     /// resume 失敗の観測記録 (`||` chain 中継専用 — 記録して常に exit 1)
     ///
-    /// Act I type-ahead `claude --resume 'X' … || vp lane resume-failed 'X' || claude …` から
+    /// tui type-ahead `claude --resume 'X' … || vp lane resume-failed 'X' || claude …` から
     /// 呼ばれる。repo / lane は VP_REPO / VP_LANE env から導出。記録に失敗しても exit 1
     /// (chain の fresh fallback を止めない)。手動実行は想定しない。
     ResumeFailed {

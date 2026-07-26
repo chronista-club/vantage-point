@@ -21,7 +21,7 @@ pub(crate) fn is_valid_thread_id(id: &str) -> bool {
 
 /// codex の実行パスを解決する（launchd の細い PATH 対策、`session_store::resolve_cli` 委譲）。
 ///
-/// brew cask（`/opt/homebrew/bin/codex`）が主経路。Act II（[`crate::echoes::codex_host`]）の
+/// brew cask（`/opt/homebrew/bin/codex`）が主経路。gui（[`crate::echoes::codex_host`]）の
 /// turn spawn が使うため crate 内公開。
 pub(crate) fn codex_cli_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();

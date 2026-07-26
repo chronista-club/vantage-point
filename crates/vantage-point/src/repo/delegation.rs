@@ -418,17 +418,17 @@ async fn reconcile_pulse(
         let Some(nudge) = super::delivery_actor::pick_nudge_target(&lanes, &display) else {
             continue; // lane 不在 / 非 Running = まだ起こせない（次 tick で再試行、pending 保持）
         };
-        // 所有 repo の control channel へ forward。method は root の act で分岐（Tui = lane_nudge
+        // 所有 repo の control channel へ forward。method は root の mode で分岐（Tui = lane_nudge
         // → PtySlot 直書き / Chat = echoes_nudge → engine 注入、doc 34 §3 channel E）。Chat lane
         // に lane_nudge を送ると PtySlot 不在で必ず失敗し、delivered が立たず永久リトライになる。
-        // doc 53 R1: act は registry 直読（tick ごとに現在値 = 代表の act 変更に追随）。
-        let root_act = super::delivery_actor::lane_identity_from_agent(&target)
-            .map(|(p, l)| crate::lane::session_registry::root_act(&p, &l))
+        // doc 53 R1: mode は registry 直読（tick ごとに現在値 = 代表の mode 変更に追随）。
+        let root_mode = super::delivery_actor::lane_identity_from_agent(&target)
+            .map(|(p, l)| crate::lane::session_registry::root_mode(&p, &l))
             .unwrap_or_default();
         let resp = crate::daemon::server::forward_to_sp_control(
             control_channels,
             &nudge.path_key,
-            super::delivery_actor::nudge_method_for(root_act),
+            super::delivery_actor::nudge_method_for(root_mode),
             &serde_json::json!({ "lane": nudge.lane_display, "text": text }),
         )
         .await;

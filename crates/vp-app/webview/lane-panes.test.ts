@@ -20,7 +20,7 @@ import {
 	newPaneChoices,
 	renamePane,
 	sessionOfHostId,
-	hostIdForAct,
+	hostIdForMode,
 	syncPaneColumns,
 	termHostId,
 } from "./lane-panes";
@@ -41,12 +41,12 @@ describe("initialLaneLayout（A6: boot は空 — host の身元が session に�
 	});
 });
 
-describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）", () => {
-	it("act ごとに kind が決まる（root=tui は Console、非 root=chat は chat pane）", () => {
+describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6）", () => {
+	it("mode ごとに kind が決まる（root=tui は Console、非 root=chat は chat pane）", () => {
 		expect(
 			lanePaneRefs([
-				{ key: 1, agent: "claude", root: true, act: "tui" },
-				{ key: 3, agent: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, mode: "tui" },
+				{ key: 3, agent: "codex", mode: "gui" },
 			]),
 		).toEqual([
 			{ id: "term-session-1", label: "cc#1", session: 1, kind: "term" },
@@ -57,8 +57,8 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 	it("全 session が chat（root も chat = 旧 mode==chat 相当）", () => {
 		expect(
 			lanePaneRefs([
-				{ key: 1, agent: "claude", root: true, act: "chat" },
-				{ key: 3, agent: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, mode: "gui" },
+				{ key: 3, agent: "codex", mode: "gui" },
 			]),
 		).toEqual([
 			{ id: "chat-session-1", label: "cc#1", session: 1, kind: "chat" },
@@ -69,14 +69,14 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 	it("A6 の核心: 非 root も term になれる（term が 2 枚並ぶ = 旧実装では不可能だった形）", () => {
 		expect(
 			lanePaneRefs([
-				{ key: 1, agent: "claude", root: true, act: "tui" },
-				{ key: 2, agent: "claude", act: "tui" },
-				{ key: 3, agent: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, mode: "tui" },
+				{ key: 2, agent: "claude", mode: "tui" },
+				{ key: 3, agent: "codex", mode: "gui" },
 			]).map((p) => p.id),
 		).toEqual(["term-session-1", "term-session-2", "chat-session-3"]);
 	});
 
-	it("act 欠落（旧 SP）は tui に倒す（従来の既定 = Act I）", () => {
+	it("mode 欠落（旧 SP）は tui に倒す（従来の既定 = tui）", () => {
 		expect(
 			lanePaneRefs([{ key: 1, agent: "claude", root: true }]).map((p) => p.id),
 		).toEqual([TERM]);
@@ -86,21 +86,21 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 		expect(lanePaneRefs([]).map((p) => p.id)).toEqual([]);
 	});
 
-	it("board 非空: act を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
+	it("board 非空: mode を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
 		expect(
-			lanePaneRefs([{ key: 1, agent: "claude", root: true, act: "tui" }], true).map(
+			lanePaneRefs([{ key: 1, agent: "claude", root: true, mode: "tui" }], true).map(
 				(p) => p.id,
 			),
 		).toEqual([TERM, "lane-board"]);
 		expect(
-			lanePaneRefs([{ key: 1, agent: "claude", root: true, act: "chat" }], true).map(
+			lanePaneRefs([{ key: 1, agent: "claude", root: true, mode: "gui" }], true).map(
 				(p) => p.id,
 			),
 		).toEqual(["chat-session-1", "lane-board"]);
 	});
 
 	it("board 空（既定）は board pane を出さない", () => {
-		const s = [{ key: 1, agent: "claude", root: true, act: "tui" as const }];
+		const s = [{ key: 1, agent: "claude", root: true, mode: "tui" as const }];
 		expect(lanePaneRefs(s, false).map((p) => p.id)).toEqual([TERM]);
 		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);
 	});
@@ -111,8 +111,8 @@ describe("lanePaneRefs（roster = session 一覧 × 各 act、doc 50 §4.6 A6）
 		// SolidJS）を決める分岐なので、取り違えると xterm の host を消しかねない。
 		const refs = lanePaneRefs(
 			[
-				{ key: 1, agent: "claude", root: true, act: "tui" },
-				{ key: 3, agent: "codex", act: "chat" },
+				{ key: 1, agent: "claude", root: true, mode: "tui" },
+				{ key: 3, agent: "codex", mode: "gui" },
 			],
 			true,
 		);
@@ -191,20 +191,20 @@ describe("chatHostId / sessionOfHostId（往復）", () => {
 	});
 });
 
-describe("hostIdForAct（act → host id の唯一の写像）", () => {
+describe("hostIdForMode（mode → host id の唯一の写像）", () => {
 	it("chat は chat host、それ以外（tui / 不明）は term host", () => {
-		expect(hostIdForAct(5, "chat")).toBe(chatHostId(5));
-		expect(hostIdForAct(5, "tui")).toBe(termHostId(5));
-		// 旧 SP wire（act 欠落）は tui に倒す = 従来の既定。
-		expect(hostIdForAct(5, undefined)).toBe(termHostId(5));
+		expect(hostIdForMode(5, "gui")).toBe(chatHostId(5));
+		expect(hostIdForMode(5, "tui")).toBe(termHostId(5));
+		// 旧 SP wire（mode 欠落）は tui に倒す = 従来の既定。
+		expect(hostIdForMode(5, undefined)).toBe(termHostId(5));
 	});
 
 	it("**tui を chat に倒さない**（focus 側 2 箇所が chat 決め打ちだった退行の固定）", () => {
-		// team-b 8 回目: `applyLaneView` と pendingFocus の fallback が act を読まず常に
+		// team-b 8 回目: `applyLaneView` と pendingFocus の fallback が mode を読まず常に
 		// chat host を指していた → term が focused の lane で pane が見つからず、focus ring が
 		// 挿入順の先頭に誤爆した。写像を 1 本にしたので、ここが守れば全 call site が守れる。
-		for (const act of ["tui", undefined] as const) {
-			expect(hostIdForAct(9, act)).not.toBe(chatHostId(9));
+		for (const mode of ["tui", undefined] as const) {
+			expect(hostIdForMode(9, mode)).not.toBe(chatHostId(9));
 		}
 	});
 });
@@ -276,17 +276,17 @@ describe("lane scope（doc 47 §3: 構成は lane ごと）", () => {
 	});
 });
 
-describe("newPaneChoices（doc 46 P2 要件 4: Engine × Act）", () => {
-	it("chat 非対応 engine は Act II を出さない（行き止まりを作らない）", () => {
+describe("newPaneChoices（doc 46 P2 要件 4: Engine × Mode）", () => {
+	it("chat 非対応 engine は gui を出さない（行き止まりを作らない）", () => {
 		const choices = newPaneChoices([
 			{ name: "claude", label: "Claude", chat_capable: true },
 			{ name: "shell", label: "Shell", chat_capable: false },
 		]);
 		expect(choices).toEqual([
-			{ engine: "claude", engineLabel: "Claude", act: "tui" },
-			{ engine: "claude", engineLabel: "Claude", act: "chat" },
+			{ engine: "claude", engineLabel: "Claude", mode: "tui" },
+			{ engine: "claude", engineLabel: "Claude", mode: "gui" },
 			// shell は chat host を持たないので tui だけ
-			{ engine: "shell", engineLabel: "Shell", act: "tui" },
+			{ engine: "shell", engineLabel: "Shell", mode: "tui" },
 		]);
 	});
 
@@ -301,6 +301,6 @@ describe("newPaneChoices（doc 46 P2 要件 4: Engine × Act）", () => {
 
 	it("chat_capable 未指定は非対応扱い（不明なら行き止まりを作らない側に倒す）", () => {
 		const choices = newPaneChoices([{ name: "unknown" }]);
-		expect(choices.map((c) => c.act)).toEqual(["tui"]);
+		expect(choices.map((c) => c.mode)).toEqual(["tui"]);
 	});
 });

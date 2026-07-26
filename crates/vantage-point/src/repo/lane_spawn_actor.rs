@@ -292,11 +292,11 @@ async fn handle_cmd(
     // doc 53 §12: **actor は登録だけ**。実体（PtySlot / engine）は下の `reconcile_lane` が
     // registry に従って立てる。
     //
-    // 旧実装はここに 2 つの分岐を持っていた: ①root の act が Chat なら engine-less で登録して
+    // 旧実装はここに 2 つの分岐を持っていた: ①root の mode が Chat なら engine-less で登録して
     // 早期 return ②Tui なら root を spawn → insert → さらに `restore_term_slots` で非 root を
     // 復元。どちらも「registry を読んで実体を作る」仕事で、reconcile と同じことを別の場所で
-    // 書いていた（census §10.1 の boot 行）。act の分岐は desired の導出規則
-    // （act=Tui → slot / act=Chat → engine は lazy）に吸収される。
+    // 書いていた（census §10.1 の boot 行）。mode の分岐は desired の導出規則
+    // （mode=Tui → slot / mode=Chat → engine は lazy）に吸収される。
     let lane_id = crate::lane::lane_id::load_or_create(&addr.repo, &name);
     let info = LaneInfo {
         id: lane_id,
@@ -529,24 +529,24 @@ mod tests {
     /// **performer** の永続 console_mode=chat が boot spawn で honor され、 engine-less
     /// (pid=None + state=Running + PtySlot なし) で登録されること。
     ///
-    /// これが「Act II の performer lane を再起動しても chat のまま復活する」の中核。
+    /// これが「gui の performer lane を再起動しても chat のまま復活する」の中核。
     /// 壊れると chat performer が boot で PTY を立て、 echoes_submit が 2 本目 engine を
     /// 呼んで 1 会話 2 エンジンになる (conductor `with_root` と同じ規律を performer に適用)。
     #[tokio::test]
     async fn chat_mode_performer_boots_engine_less() {
-        use crate::lane::session_registry::SessionAct;
+        use crate::lane::session_registry::SessionMode;
         // session_registry / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
         // crate 唯一のロック下で tempdir に向け、 guard の drop で復元する。
         let state = crate::test_env::state_dir_async().await;
 
-        // performer "proj"/"chat-perf" の **root session の act** を Chat で永続化（doc 47 §4）
-        crate::lane::session_registry::set_root_act(
+        // performer "proj"/"chat-perf" の **root session の mode** を Chat で永続化（doc 47 §4）
+        crate::lane::session_registry::set_root_mode(
             "proj",
             "chat-perf",
             "claude",
-            SessionAct::Chat,
+            SessionMode::Gui,
         )
-        .expect("record chat act");
+        .expect("record chat mode");
 
         let pool = Arc::new(RwLock::new(LanePool::new()));
         let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
@@ -586,11 +586,11 @@ mod tests {
             .get(&addr)
             .expect("chat performer が登録されるはず");
         // doc 53 R1: 投影 field は退役 — honor の証明は挙動（下の pid/PtySlot assert）と
-        // 読み手経路（root_act 直読）で行う。
+        // 読み手経路（root_mode 直読）で行う。
         assert_eq!(
-            pool_read.root_act(&addr),
-            SessionAct::Chat,
-            "boot 後も読み手（root_act 直読）が永続 chat act を見る"
+            pool_read.root_mode(&addr),
+            SessionMode::Gui,
+            "boot 後も読み手（root_mode 直読）が永続 chat mode を見る"
         );
         assert_eq!(
             info.state,

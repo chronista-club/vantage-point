@@ -25,10 +25,10 @@ describe("inkSendLine", () => {
 	});
 });
 
-describe("inkRoute（送り先は focused session の act、doc 50 §4.6 A6）", () => {
+describe("inkRoute（送り先は focused session の mode、doc 50 §4.6 A6）", () => {
 	it("chat は focused chat session への echoes:submit 相当を返す", () => {
-		const r = inkRoute("chat", "vantage-point/root", 3, "L");
-		expect(r).toEqual({ kind: "chat", lane: "vantage-point/root", session: 3, prompt: "L" });
+		const r = inkRoute("gui", "vantage-point/root", 3, "L");
+		expect(r).toEqual({ kind: "gui", lane: "vantage-point/root", session: 3, prompt: "L" });
 	});
 
 	it("tui は PTY 直書き（行 + CR）を返す", () => {

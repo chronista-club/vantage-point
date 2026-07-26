@@ -47,7 +47,7 @@ export interface PushHandlers {
 	handleBoardMessage(message: unknown): void;
 	consoleSessionList(lane: string, payload: unknown): void;
 	consoleEvent(lane: string, event: unknown, session: number): void;
-	consoleActApplied(lane: string, session: number, act: string): void;
+	consoleModeApplied(lane: string, session: number, mode: string): void;
 	consoleStands(lane: string, payload: unknown, req: string | null): void;
 	inkSnapshot(path: string): void;
 	inkSnapshotError(message: string): void;
@@ -116,8 +116,8 @@ function apply(msg: PushEventEnvelope): void {
 		case "console:event":
 			handlers.consoleEvent(msg.lane, msg.event, msg.session);
 			break;
-		case "console:act_applied":
-			handlers.consoleActApplied(msg.lane, msg.session, msg.act);
+		case "console:mode_applied":
+			handlers.consoleModeApplied(msg.lane, msg.session, msg.mode);
 			break;
 		case "console:agents":
 			// `req` は schema で optional — 「応答を誰も拾わない」が型に載る。

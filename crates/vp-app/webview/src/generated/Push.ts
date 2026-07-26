@@ -61,11 +61,11 @@ export interface ConsoleEvent {
   session: number;
 }
 
-/** Event "console:act_applied" */
-export interface ConsoleActApplied {
+/** Event "console:mode_applied" */
+export interface ConsoleModeApplied {
   lane: string;
   session: number;
-  act: string;
+  mode: string;
 }
 
 /** Event "console:agents" */
@@ -100,7 +100,7 @@ export type PushChannelEventTypes = {
   DevicesRender: DevicesRender;
   ConsoleSessionList: ConsoleSessionList;
   ConsoleEvent: ConsoleEvent;
-  ConsoleActApplied: ConsoleActApplied;
+  ConsoleModeApplied: ConsoleModeApplied;
   ConsoleAgents: ConsoleAgents;
   InkSnapshot: InkSnapshot;
   InkSnapshotError: InkSnapshotError;
@@ -116,7 +116,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "console:session_list", "console:event", "console:act_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "board:message"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "board:message"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -131,7 +131,7 @@ export type PushEventEnvelope =
   | ({ t: "devices:render" } & DevicesRender)
   | ({ t: "console:session_list" } & ConsoleSessionList)
   | ({ t: "console:event" } & ConsoleEvent)
-  | ({ t: "console:act_applied" } & ConsoleActApplied)
+  | ({ t: "console:mode_applied" } & ConsoleModeApplied)
   | ({ t: "console:agents" } & ConsoleAgents)
   | ({ t: "ink:snapshot" } & InkSnapshot)
   | ({ t: "ink:snapshot_error" } & InkSnapshotError)

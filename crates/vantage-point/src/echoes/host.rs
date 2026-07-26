@@ -1,12 +1,12 @@
-//! EchoesAgentHost — headless claude を lane 単位で常駐駆動する（Act II engine host）
+//! EchoesAgentHost — headless claude を lane 単位で常駐駆動する（gui engine host）
 //!
 //! doc 32 §3。`claude -p --input-format stream-json --output-format stream-json` を
 //! piped stdio で spawn し、stdout を [`EchoesTranslator`] に通して [`EchoesEvent`] を
-//! `broadcast::Sender` に流す。Act I（PtySlot + TUI）とは別系統の「headless engine」。
+//! `broadcast::Sender` に流す。tui（PtySlot + TUI）とは別系統の「headless engine」。
 //!
 //! PtySlot ⇄ terminal_pump と同型: host が producer（broadcast tx を持つ）、
 //! `echoes_pump` が consumer（TopicRouter へ route）。engine プロセスは会話を保持するため
-//! lane が Act II の間は常駐する（demand-driven ではない）。
+//! lane が gui の間は常駐する（demand-driven ではない）。
 //!
 //! ## in-flight tail（replay の冪等性を「生成中」まで広げる）
 //!
@@ -121,13 +121,13 @@ pub struct EchoesHostConfig {
     /// cc_session 記録キー（**store label**: session #1 = 素の lane 名 / #2 以降は `<lane>#<n>`）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
-    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — Act I の
+    /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — tui の
     /// agent_spawner 注入と同じ契約。`vp now` / wire がこれを読んで宛先を名乗る）。
     pub lane_label: String,
     /// identity env（`VP_SESSION_KEY`）用の session key（doc 40 §4 の hook identity と同じ —
-    /// Act II の engine が「自分がどの session か」を名乗れるようにする）。
+    /// gui の engine が「自分がどの session か」を名乗れるようにする）。
     pub session_key: crate::lane::session_registry::SessionKey,
-    /// 再開する session id（`--resume`）。Act I ⇄ II 切替 / repo 再起動復帰に使う。
+    /// 再開する session id（`--resume`）。tui ⇄ gui 切替 / repo 再起動復帰に使う。
     pub resume_session_id: Option<String>,
     /// 使用モデル（`--model`）。None = claude default。
     pub model: Option<String>,
@@ -167,7 +167,7 @@ pub struct EchoesAgentHost {
 
 /// claude CLI が `--forward-subagent-text`（2.1.211+）を受理するか。
 ///
-/// 未対応の版に渡すと `error: unknown option` で **spawn 即死**し、Act II engine が
+/// 未対応の版に渡すと `error: unknown option` で **spawn 即死**し、gui engine が
 /// 一切起動しなくなる（respawn しても即死のループ = 「送信しても復活しない」。
 /// 2026-07-19 に claude 2.1.205 環境で実発生）。
 ///
@@ -186,7 +186,7 @@ fn supports_forward_subagent_text(claude_path: &str) -> bool {
         if !supported {
             tracing::warn!(
                 "claude CLI が --forward-subagent-text 未対応（2.1.211 未満）— \
-                 フラグ無しで起動します（Act II に subagent 発話は出ません。claude update で解消）"
+                 フラグ無しで起動します（gui に subagent 発話は出ません。claude update で解消）"
             );
         }
         supported
@@ -250,7 +250,7 @@ impl EchoesAgentHost {
         let mut cmd = Command::new(&claude_path);
         // 親（repo）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
         cmd.envs(std::env::vars());
-        // identity env（doc 51 §1 A3b）: Act I の agent_spawner と同じ契約を Act II にも。
+        // identity env（doc 51 §1 A3b）: tui の agent_spawner と同じ契約を gui にも。
         // engine（とその shell tool の子プロセス）が `vp now` / wire で自分を名乗るための口。
         cmd.env("VP_REPO", &config.repo);
         cmd.env("VP_LANE", &config.lane_label);
@@ -260,7 +260,7 @@ impl EchoesAgentHost {
             cmd.current_dir(&config.cwd);
         }
 
-        // 双方向 stream-json + partial（Step 0 で確定した Act II 駆動形、doc 32 §10）。
+        // 双方向 stream-json + partial（Step 0 で確定した gui 駆動形、doc 32 §10）。
         cmd.arg("-p")
             .arg("--input-format")
             .arg("stream-json")
@@ -270,7 +270,7 @@ impl EchoesAgentHost {
             .arg("--verbose");
 
         // subagent（Agent tool が回した子）の発話を stream に載せる（claude 2.1.211+）。
-        // 無いと Act II で Agent 行は「実行中…→✓」の黒箱になり、子が何を考え何をしたかが
+        // 無いと gui で Agent 行は「実行中…→✓」の黒箱になり、子が何を考え何をしたかが
         // 一切見えない（VP は subagent を多用する開発フローなので損失が大きい）。
         //
         // 出てくる形（実測 2026-07-17、claude 2.1.212）:
@@ -285,8 +285,8 @@ impl EchoesAgentHost {
             cmd.arg("--forward-subagent-text");
         }
 
-        // Act I（TUI）が bypassPermissions で全ツール素通しなのに Act II を揃える（doc 33 §9、
-        // user 要件 2026-07-09「act I レベルにここも合わせよう」）。bypassPermissions で TUI と
+        // tui（TUI）が bypassPermissions で全ツール素通しなのに gui を揃える（doc 33 §9、
+        // user 要件 2026-07-09「mode I レベルにここも合わせよう」）。bypassPermissions で TUI と
         // 同じ体験にする（通常 tool は素通し）。
         cmd.arg("--permission-mode").arg("bypassPermissions");
 
@@ -336,7 +336,7 @@ impl EchoesAgentHost {
             .take()
             .ok_or_else(|| anyhow::anyhow!("stderr のキャプチャに失敗"))?;
 
-        // broadcast: 複数 consumer（echoes_pump / 将来の Act I mirror）に配れる。
+        // broadcast: 複数 consumer（echoes_pump / 将来の tui mirror）に配れる。
         let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
 
         let in_flight = Arc::new(Mutex::new(InFlight::default()));
@@ -387,7 +387,7 @@ impl EchoesAgentHost {
             tracing::debug!("EchoesAgentHost stdout ポンプ終了（repo={repo}, lane={lane}）");
             // stream 途絶（engine crash / stop）を GUI に可視化する。stdout close =
             // engine プロセス終了だが、従来は debug log に落ちるだけで購読者（chatview）に
-            // 届かず「止まった?」が見えなかった（Act I は PTY 切断が xterm に即見える）。
+            // 届かず「止まった?」が見えなかった（tui は PTY 切断が xterm に即見える）。
             // 既存 Error 経路に相乗りして chatview に途絶を出す。
             // （stop/crash の区別・EngineExited 専用 variant・再起動ボタンは後続 PR）
             // engine が死んだ = tail の続きも pending 質問への応答先ももう無い。 掃除する。

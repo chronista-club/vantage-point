@@ -209,7 +209,7 @@ export function LaneRow(props: {
 			});
 			// doc 39 §1: Reset Lane (fresh=true) — 全 session store + registry 破棄の破壊的動詞。
 			// 旧 "New Conductor Session"。日常の「新しい会話を始める」はヘッダの ✨ New（非破壊 =
-			// Act I は root 張り替え / Act II は新 Draft タブ）に移り、こちらは「lane を素に戻す」
+			// tui は root 張り替え / gui は新 Draft タブ）に移り、こちらは「lane を素に戻す」
 			// 最終手段として sidebar の奥 + 2-click 確認に退避した。
 			items.push({
 				label: "Reset Lane",

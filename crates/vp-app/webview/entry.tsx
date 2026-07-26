@@ -103,18 +103,18 @@ import { layoutEngine } from "./layout-host";
 import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
 import { renderBoard, clearBoard, appendBoard } from "./board-render";
-import { installConsole, focusedOf, sessionActOf } from "./console";
+import { installConsole, focusedOf, sessionModeOf } from "./console";
 import type {
-	ConsoleMode,
+	SessionMode,
 	EchoesEvent,
 	EchoesSessionListPayload,
 	EchoesStandsPayload,
 } from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
-// + New（engine × Act で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
+// + New（engine × Mode で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
 	chatHostId,
-	hostIdForAct,
+	hostIdForMode,
 	installLanePanes,
 	TERM_HOST_CLASS,
 } from "./lane-panes";
@@ -352,7 +352,7 @@ const historyStripStyle = document.createElement("style");
 historyStripStyle.textContent = HISTORY_STRIP_CSS;
 document.head.appendChild(historyStripStyle);
 
-// Act II 再同期コーナーローダー: CSS を head 注入（mount は applyDefaultScene で）。
+// gui 再同期コーナーローダー: CSS を head 注入（mount は applyDefaultScene で）。
 const resyncLoaderStyle = document.createElement("style");
 resyncLoaderStyle.textContent = RESYNC_LOADER_CSS;
 document.head.appendChild(resyncLoaderStyle);
@@ -395,7 +395,7 @@ const applyDefaultScene = (): void => {
 	);
 	// doc 19: board body 下の history strip を SolidJS で mount。
 	mountHistoryStrip();
-	// Act II 再同期コーナーローダーを body 直下に mount（active lane の replaying に追従）。
+	// gui 再同期コーナーローダーを body 直下に mount（active lane の replaying に追従）。
 	mountResyncLoader();
 };
 if (document.readyState === "loading") {
@@ -460,7 +460,7 @@ console.info("[vp-bundle] vpAppLayout attached to window — bundle init complet
 	appendBoard,
 };
 
-// ===== Echoes Act II (doc 33): Console facade + ChatView =====
+// ===== Echoes gui (doc 33): Console facade + ChatView =====
 // EchoesEvent の per-lane ring buffer + ChatView renderer 接続点。
 // Rust からの供給は push envelope（下方 `installDispatch` の console* handler）で、
 // `window.vpConsole` は **DevTools 検分用**に生えている: window.vpConsole.peek("<repo>/root")
@@ -469,14 +469,14 @@ const vpConsole = installConsole();
 // ink（対話面、doc 52 §3）を board pane に配線する。lane 文脈は closure で注入:
 //   - getItemId    = 表示中 board item（board-handler の cursor）
 //   - getLaneAddress = 現 active lane の address（`applyActivePane` が更新する module 変数）
-//   - getFocusedSession / getSessionAct = console.ts の per-lane registry
+//   - getFocusedSession / getSessionMode = console.ts の per-lane registry
 // server は触らない（既存 IPC echoes:submit / term:write を撃つだけ、doc 52 §3 = 状態ゼロの往復）。
 const inkHandlers = installInk({
 	getItemId: () => getCanvasState().cursor,
 	getLaneAddress: () => activeLaneAddress,
 	getFocusedSession: (laneAddr) => focusedOf(laneAddr),
-	// doc 50 §4.6 A6: 送り先は focused session の act（旧 lane 単位 vpConsole.getMode）。
-	getSessionAct: (laneAddr, session) => sessionActOf(laneAddr, session),
+	// doc 50 §4.6 A6: 送り先は focused session の mode（旧 lane 単位 vpConsole.getMode）。
+	getSessionMode: (laneAddr, session) => sessionModeOf(laneAddr, session),
 });
 
 // ChatView (C2 → doc 50 P1): scoped CSS を注入し、mount 管理 API を得る。
@@ -489,7 +489,7 @@ const chatView = installChatView(vpConsole);
 
 // ===== Echoes 共通ヘッダ（creo memo `vp-pane-common-header`）=====
 // pane-host 上端の #echoes-header（main_area.rs が mount 点だけ提供）に strip を mount。
-// Act I/II のどちらを表示していても同一ヘッダが載り続ける（lane の Echoes に帰属）。
+// tui/gui のどちらを表示していても同一ヘッダが載り続ける（lane の Echoes に帰属）。
 const headerStyle = document.createElement("style");
 headerStyle.textContent = ECHOES_HEADER_CSS;
 document.head.appendChild(headerStyle);
@@ -503,7 +503,7 @@ if (echoesHeaderHost) {
 }
 
 // doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1 → doc 51 §1 A1: lane 内 tiling は creo-ui-layout の
-// lane scope が担い、pane の顔ぶれは session 一覧 ×（各 session の act）から動的に導く
+// lane scope が担い、pane の顔ぶれは session 一覧 ×（各 session の mode）から動的に導く
 // （lane-panes.ts の lanePaneRefs が SSOT）。下端の帯（#pane-tabs）は退役 — pane chip は
 // tiling 既定で存在理由が消え、+ New は EchoesHeader（lane の名札）右端へ移設した。
 // ⚠️ xterm（lane-host）の**中身**には触れず、host 要素の style / class だけを操る。
@@ -545,8 +545,8 @@ if (lanePanes && paneFrame) {
 //
 // lane の表示を開く（doc 50 §4.6 A6 — 旧 `applyConsoleMode` の後継）。
 //
-// pane の顔ぶれ（roster）は lane-panes.ts が session 一覧 × 各 session の act から導出する
-// （'vp:echoes-sessions' / 'vp:session-act' 購読）。ここは lane 切替と focus だけを担う。
+// pane の顔ぶれ（roster）は lane-panes.ts が session 一覧 × 各 session の mode から導出する
+// （'vp:echoes-sessions' / 'vp:session-mode' 購読）。ここは lane 切替と focus だけを担う。
 // 旧実装は lane 単位 mode を引数に取っていたが、見え方が session の属性になったので
 // 「lane を開く」操作から mode の概念が消えた。
 const applyLaneView = (lane: string): void => {
@@ -557,25 +557,25 @@ const applyLaneView = (lane: string): void => {
 	// なので、lane が変わったら新 lane の配置を DOM へ写し直す（これが無いと「どの lane に
 	// 移動しても前の構成のまま」= doc 46 P1 の実機で観測された症状）。
 	lanePanes?.setActiveLane(lane);
-	// focus 先 = focused session の pane（session ↔ Pane 1:1）。**その session の act** で
+	// focus 先 = focused session の pane（session ↔ Pane 1:1）。**その session の mode** で
 	// host が決まる（term なら xterm、chat なら ChatView）。focused は console.ts の
 	// registry が真値（echoes_session_list で同期済み。未知 lane は 1 = 旧 SP 互換）。
 	// pane がまだ生えていない boot 窓は lane-panes 側が pendingFocus で救済する。
 	//
-	// ⚠️ 旧実装は `chatHostId(...)` 決め打ちで、上のコメントが主張する act 分岐を**していな
+	// ⚠️ 旧実装は `chatHostId(...)` 決め打ちで、上のコメントが主張する mode 分岐を**していな
 	// かった**（pre-A6 の `applyConsoleMode` は lane 単位 mode で分岐していたが、A6 化で
 	// 分岐ごと落ちた）。term が focused の lane では存在しない chat host を指すので
 	// pendingFocus が永久に解決せず、focus ring が挿入順の先頭に誤爆する
 	// （team-b 8 回目 2026-07-25 score 85 — コメントだけ残った実装漏れ）。
 	const focused = focusedOf(lane);
-	lanePanes?.focusPane(hostIdForAct(focused, sessionActOf(lane, focused)));
+	lanePanes?.focusPane(hostIdForMode(focused, sessionModeOf(lane, focused)));
 	// doc 38 §4.3: 再同期ローダー（global fixed 要素）は lane 切替で必ず下ろす。
 	// resync-loader は activeLane の replaying を読むだけなので、stuck した replaying が
 	// 新しい表示の上に居座るのを防ぐ。
 	chatView.clearReplaying(lane);
 };
 
-// doc 33 §9: Act I⇄II 切替の progress overlay + switch lock。
+// doc 33 §9: tui⇄II 切替の progress overlay + switch lock。
 // 「resume 確定まで切替を見せる + 二重切替を防ぐ」= 安全なハンドオフ。
 const switchingOverlay = document.getElementById("console-switching");
 const switchingMsg = switchingOverlay?.querySelector(
@@ -589,7 +589,7 @@ const switchingMsg = switchingOverlay?.querySelector(
 // **無関係な pane の badge click を無言で落とす**（A6 で全 pane が badge を持つので実際に
 // 起こる。team-b review 2026-07-25 score 85 — 解除側は (lane, session) を照合していたのに
 // 入口だけ素の存在チェックで、入口と出口が非対称だった）。Map なら独立に始めて独立に終わる。
-const handoffPending = new Map<string, "tui" | "chat">();
+const handoffPending = new Map<string, "tui" | "gui">();
 // stuck 防止の網も **pane ごと**に持つ。
 //
 // ⚠️ 単一 timer を使い回すと、Map 化した意味が timer 経路だけ元に戻る:
@@ -602,19 +602,19 @@ const handoffTimers = new Map<string, number>();
 const beginHandoff = (
 	lane: string,
 	session: number,
-	target: "tui" | "chat",
+	target: "tui" | "gui",
 ): void => {
 	const key = handoffKey(lane, session);
 	handoffPending.set(key, target);
 	if (switchingMsg) {
 		switchingMsg.textContent =
-			target === "chat"
-				? "Act II にセッションを引き継ぎ中…"
-				: "Act I にセッションを引き継ぎ中…";
+			target === "gui"
+				? "gui にセッションを引き継ぎ中…"
+				: "tui にセッションを引き継ぎ中…";
 	}
 	switchingOverlay?.classList.add("active");
 	// safety: ready 信号が来なくても 30s で **この pane の** handoff を諦める
-	// （正常系は 'vp:session-act' で個別に解除される）。
+	// （正常系は 'vp:session-mode' で個別に解除される）。
 	const prev = handoffTimers.get(key);
 	if (prev) clearTimeout(prev);
 	handoffTimers.set(
@@ -642,22 +642,22 @@ const endHandoffIfIdle = (): void => {
 	switchingOverlay?.classList.remove("active");
 };
 
-// act 適用（tui=PTY respawn 済 / chat=engine スロット確定）で overlay を clear。
-// doc 33 §9 改訂（Act I レベルに合わせる）: chat 行きも session_init を待たず、
-// act 適用で即解除する。Act I の「切替は即・claude の load は非同期」と同じ哲学で、
+// mode 適用（tui=PTY respawn 済 / chat=engine スロット確定）で overlay を clear。
+// doc 33 §9 改訂（tui レベルに合わせる）: chat 行きも session_init を待たず、
+// mode 適用で即解除する。tui の「切替は即・claude の load は非同期」と同じ哲学で、
 // overlay が engine 起動（resume 確定）を gate して固まるのを防ぐ。切替を表示した
-// のと同じ 'vp:session-act' で overlay も畳むので、ハングが構造的に起きない。
-document.addEventListener("vp:session-act", (e) => {
+// のと同じ 'vp:session-mode' で overlay も畳むので、ハングが構造的に起きない。
+document.addEventListener("vp:session-mode", (e) => {
 	const d = (
-		e as CustomEvent<{ lane: string; session: number; act: "tui" | "chat" }>
+		e as CustomEvent<{ lane: string; session: number; mode: "tui" | "gui" }>
 	).detail;
 	if (!d?.lane || !d.session) return;
 	// 自分が始めた切替（同じ (lane, session) で同じ target）だけを終える。
-	if (handoffPending.get(handoffKey(d.lane, d.session)) === d.act) {
+	if (handoffPending.get(handoffKey(d.lane, d.session)) === d.mode) {
 		endHandoff(d.lane, d.session);
 	}
 });
-// chat: engine が resume を確定 (session_init) したら、act 適用より早ければ先に clear
+// chat: engine が resume を確定 (session_init) したら、mode 適用より早ければ先に clear
 // する belt-and-suspenders（overlay の完了条件ではなく「更に早い解除」の位置づけ）。
 // ⚠️ この event は lane しか運ばないので、当該 lane で **chat 行きの** handoff を畳む
 // （session を特定できないため、chat 待ちのものだけを対象にする）。
@@ -665,22 +665,22 @@ document.addEventListener("vp:console-ready", (e) => {
 	const detail = (e as CustomEvent<{ lane: string }>).detail;
 	if (!detail?.lane) return;
 	for (const [key, target] of [...handoffPending]) {
-		if (target === "chat" && key.startsWith(`${detail.lane}#`)) {
+		if (target === "gui" && key.startsWith(`${detail.lane}#`)) {
 			handoffPending.delete(key);
 		}
 	}
 	endHandoffIfIdle();
 });
 
-// Act 切替（見え方の乗り換え、doc 50 §4.6 A6 ②）: 入口は **各 pane の名札 kind badge**。
+// Mode 切替（見え方の乗り換え、doc 50 §4.6 A6 ②）: 入口は **各 pane の名札 kind badge**。
 // 「この pane が何であるか」の一部なので名札（上段）が住処 — §3.1 の「下段右端は消えるまでの
-// 置き場」の終着点がここ。旧 lane-level Act toggle（帯）は doc 51 §1 A1 で、root picker の
+// 置き場」の終着点がここ。旧 lane-level Mode toggle（帯）は doc 51 §1 A1 で、root picker の
 // 「見え方」行（pre-A6 の仮住まい）は本 A6 で退役した。
 // handoff overlay / 二重切替 lock はここ（entry.tsx）が持ち続け、名札からは event で依頼される
 // — overlay の DOM / timer と名札の実装を絡ませない。
-document.addEventListener("vp:act-switch-request", (e) => {
+document.addEventListener("vp:mode-switch-request", (e) => {
 	const d = (
-		e as CustomEvent<{ lane: string; session: number; target: "tui" | "chat" }>
+		e as CustomEvent<{ lane: string; session: number; target: "tui" | "gui" }>
 	).detail;
 	if (!d?.lane || !d.session || !d.target) return;
 	// resume 確定前の二重切替をロック（中間状態を作らない）。**同じ pane の**再クリックだけを
@@ -694,10 +694,10 @@ document.addEventListener("vp:act-switch-request", (e) => {
 	// 宛先 session は引数で運ぶ（doc 50 §4.3 — focus 依存の分割はレース）。
 	ipc?.postMessage(
 		JSON.stringify({
-			t: "session:set_act",
+			t: "session:set_mode",
 			lane: d.lane,
 			session: d.session,
-			act: d.target,
+			mode: d.target,
 		}),
 	);
 });
@@ -986,8 +986,8 @@ installDispatch({
 		vpConsole.handleSessionList(lane, payload as EchoesSessionListPayload),
 	consoleEvent: (lane, event, session) =>
 		vpConsole.handleEvent(lane, event as EchoesEvent, session),
-	consoleActApplied: (lane, session, act) =>
-		vpConsole.setSessionAct(lane, session, act as ConsoleMode),
+	consoleModeApplied: (lane, session, mode) =>
+		vpConsole.setSessionMode(lane, session, mode as SessionMode),
 	consoleStands: (lane, payload, req) =>
 		vpConsole.handleAgents(lane, payload as EchoesStandsPayload, req),
 	// 対話面（ink）。mount target 不在なら `installInk` が null を返すので no-op で埋める

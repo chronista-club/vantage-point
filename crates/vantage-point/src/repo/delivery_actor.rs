@@ -6,7 +6,7 @@
 //! ## policy (R3-a 精密化 + R3-c channel D + doc 34 channel E)
 //!
 //! CC activity poll (`agents --json`) を供給に、 受信者 lane の状態で配信経路を分ける:
-//! - **lane Running + root act=Chat → engine 直接注入 (チャネル E、 doc 34 §3)**。
+//! - **lane Running + root mode=Chat → engine 直接注入 (チャネル E、 doc 34 §3)**。
 //!   Chat lane は PtySlot を持たず (nudge 不能)、 engine は lazy spawn + turn 中 submit を
 //!   自前 queue するため、 R3-a readiness とチャネル D は適用しない (常時 deliverable)。
 //!   台帳・再掲示パラメータはチャネル C と共有。
@@ -42,8 +42,8 @@ use crate::capability::WiremsgStore;
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 // tmux decoupling PR1: nudge の forward 先解決に使う repo control channel registry（SSOT は daemon）。
 use crate::daemon::server::ControlChannels;
-// channel E (doc 34): root session の act (registry 直読) が forward method (lane_nudge / echoes_nudge) を分ける。
-use crate::lane::session_registry::SessionAct;
+// channel E (doc 34): root session の mode (registry 直読) が forward method (lane_nudge / echoes_nudge) を分ける。
+use crate::lane::session_registry::SessionMode;
 use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
 /// 配信 pulse の定期 tick (Notify wake の取りこぼし安全網)
@@ -140,7 +140,7 @@ pub(crate) struct NudgeTarget {
 
 /// forward する repo control method（channel 判別の純関数、doc 34 §3）。
 ///
-/// 入力は **root session の act**（doc 53 R1 — 旧 `LaneInfo.console_mode` 投影の廃止に伴い、
+/// 入力は **root session の mode**（doc 53 R1 — 旧 `LaneInfo.console_mode` 投影の廃止に伴い、
 /// 呼び手が registry を直読して渡す。「打てる先の種類」は intent で決める — 実体（slot の
 /// 有無）で決めると「tui だが slot が死んだ」を chat と誤判定して 1 会話 2 engine になる、
 /// doc 53 §8.3）。
@@ -148,10 +148,10 @@ pub(crate) struct NudgeTarget {
 /// Chat lane は PtySlot を持たないため `lane_nudge` は構造的に失敗する（`write_to_lane` が
 /// `Err("Lane has no PtySlot")`）— engine 直接注入の `echoes_nudge` へ route する。
 /// payload は両 method とも `{lane, text}` で共通。
-pub(crate) fn nudge_method_for(root_act: SessionAct) -> &'static str {
-    match root_act {
-        SessionAct::Chat => "echoes_nudge",
-        SessionAct::Tui => "lane_nudge",
+pub(crate) fn nudge_method_for(root_mode: SessionMode) -> &'static str {
+    match root_mode {
+        SessionMode::Gui => "echoes_nudge",
+        SessionMode::Tui => "lane_nudge",
     }
 }
 
@@ -421,10 +421,10 @@ async fn pulse(
             // 不変条件: target=Some が確定した後のみここに到達 = lane Running
             // = lane_nudgeable は常に真 (target=None は直前の continue で排除済み)
             //
-            // doc 53 R1: 配送 method の分水嶺は root session の act = intent（registry 直読）。
-            // pulse ごとに現在値を読む = 代表の act が変わっても次 pulse で正しい経路に乗る。
-            let root_act = lane_identity_from_agent(agent)
-                .map(|(p, l)| crate::lane::session_registry::root_act(&p, &l))
+            // doc 53 R1: 配送 method の分水嶺は root session の mode = intent（registry 直読）。
+            // pulse ごとに現在値を読む = 代表の mode が変わっても次 pulse で正しい経路に乗る。
+            let root_mode = lane_identity_from_agent(agent)
+                .map(|(p, l)| crate::lane::session_registry::root_mode(&p, &l))
                 .unwrap_or_default();
             let key = (msg.id.clone(), agent.clone());
             // channel E (doc 34 §3): chat lane は R3-a readiness と channel D を通らない。
@@ -432,7 +432,7 @@ async fn pulse(
             // （Busy が無い、doc 34 Step 0 spike ①実測）ため常時 deliverable — PTY / CC-activity
             // の意味論は Tui 専用。channel D を踏ませないこと自体が、同一 session 二重 --resume
             // （conductor）/ fresh headless 文脈喪失（performer）の構造的排除でもある（doc 34 §2-3）。
-            if root_act == SessionAct::Tui {
+            if root_mode == SessionMode::Tui {
                 match recipient_readiness(true, act_view) {
                     Readiness::Ready => {}
                     // busy: 待つ (台帳は進めない — idle 遷移を次 pulse で拾う)。
@@ -494,13 +494,13 @@ async fn pulse(
                 NudgeDecision::Send => {
                     let count = ledger.get(&key).map(|r| r.count).unwrap_or(0);
                     let text = nudge_text(&msg.id, count);
-                    // 所有 repo の control channel へ forward。method は root の act で分岐
+                    // 所有 repo の control channel へ forward。method は root の mode で分岐
                     // （Tui = lane_nudge → PtySlot 直書き / Chat = echoes_nudge → engine 注入、
                     // doc 34 §3。payload は共通 {lane, text}）。
                     let resp = crate::daemon::server::forward_to_sp_control(
                         control_channels,
                         &t.path_key,
-                        nudge_method_for(root_act),
+                        nudge_method_for(root_mode),
                         &serde_json::json!({ "lane": t.lane_display, "text": text }),
                     )
                     .await;
@@ -510,7 +510,7 @@ async fn pulse(
                             msg.id,
                             agent,
                             t.lane_display,
-                            nudge_method_for(root_act),
+                            nudge_method_for(root_mode),
                             count + 1,
                             // degraded か精密 (poll 成功) かを後から判別できるように
                             if activity.is_some() {
@@ -674,26 +674,26 @@ mod tests {
         assert_eq!(pick_nudge_target(&lanes, "other/root"), None);
     }
 
-    /// channel E (doc 34 §3): root session の act が forward method を分ける。
+    /// channel E (doc 34 §3): root session の mode が forward method を分ける。
     /// Chat lane は PtySlot を持たないため lane_nudge は構造的に失敗する — echoes_nudge へ。
     ///
-    /// doc 53 R1: 判断は純関数 `nudge_method_for`（act は呼び手が registry を直読して渡す）。
+    /// doc 53 R1: 判断は純関数 `nudge_method_for`（mode は呼び手が registry を直読して渡す）。
     /// 「打てる先の種類」は intent — 実体（slot の有無）で決めない（doc 53 §8.3: 実体だと
     /// 「tui だが slot が死んだ」を chat と誤判定して 1 会話 2 engine になる）。
     #[test]
-    fn nudge_method_follows_root_act() {
+    fn nudge_method_follows_root_mode() {
         assert_eq!(
-            nudge_method_for(SessionAct::Chat),
+            nudge_method_for(SessionMode::Gui),
             "echoes_nudge",
             "Chat は engine 直接注入"
         );
         assert_eq!(
-            nudge_method_for(SessionAct::Tui),
+            nudge_method_for(SessionMode::Tui),
             "lane_nudge",
             "Tui は従来の PtySlot 直書き"
         );
         assert_eq!(
-            nudge_method_for(SessionAct::default()),
+            nudge_method_for(SessionMode::default()),
             "lane_nudge",
             "registry 不在（既定 = Tui）は PTY 経路 — chat へ倒すと engine が勝手に立つ"
         );

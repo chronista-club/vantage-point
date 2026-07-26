@@ -40,7 +40,7 @@ pub enum Isolation {
 /// None なら従来通り performer-files.kdl の `base-ref` → origin/HEAD → "main"。
 ///
 /// `model`: lane の claude model alias (co-evolution #1)。 Some なら `engine_model` へ永続し、
-/// この lane が spawn される際に Act I claude の `--model` として読まれる。 None なら claude default。
+/// この lane が spawn される際に tui claude の `--model` として読まれる。 None なら claude default。
 /// worktree 作成のみ（spawn は repo が別途行う）なので、 ここでは state file を書くだけ。
 pub fn new_performer(
     name: &str,
@@ -612,7 +612,7 @@ pub(crate) fn clear_lane_state(repo: &str, lane: &str) {
 /// key derivation と一致する (既存 2 経路が既にこの前提で動いていた)。
 ///
 /// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 6 種):
-/// session_registry (会話 id と Act の SSOT) / engine_model / agent (engine 種別) /
+/// session_registry (会話 id と Mode の SSOT) / engine_model / agent (engine 種別) /
 /// echoes_replay (session label 単位) / terminal_replay (slot の scrollback) / lane_id (安定 id)。
 ///
 /// best-effort: 個々の失敗は warn して残置し、他の破棄は続行する (1 file の fs error で
@@ -633,12 +633,12 @@ fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
             );
         }
     }
-    // ② session_registry (会話 id と Act の SSOT — 残すと旧 session / 旧会話 id / 旧 Act が蘇る)。
+    // ② session_registry (会話 id と Mode の SSOT — 残すと旧 session / 旧会話 id / 旧 Mode が蘇る)。
     //    ①の列挙後に消す。
     if let Err(e) = super::session_registry::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: session registry の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ③ engine_model (Act II の model 選択)
+    // ③ engine_model (gui の model 選択)
     if let Err(e) = super::engine_model::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: engine_model の破棄に失敗 (残置): lane={lane} err={e}");
     }
@@ -1931,16 +1931,16 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let repo_root = tmp.path().join("parent").join("vp");
-        // doc 47 §4: Act も session registry（root の act）に入った。GC が registry file ごと
-        // 消すので、Act の記録も一緒に終端する。
-        crate::lane::session_registry::set_root_act_in(
+        // doc 47 §4: Mode も session registry（root の mode）に入った。GC が registry file ごと
+        // 消すので、Mode の記録も一緒に終端する。
+        crate::lane::session_registry::set_root_mode_in(
             base,
             "vp",
             "feat",
             "claude",
-            crate::lane::session_registry::SessionAct::Chat,
+            crate::lane::session_registry::SessionMode::Gui,
         )
-        .expect("record act");
+        .expect("record mode");
         // doc 40 PR-2: 会話 id は session registry が SSOT。GC が registry file を消すことを固定する。
         crate::lane::session_registry::set_conversation_in(
             base,
@@ -1955,9 +1955,9 @@ mod tests {
         clear_lane_state_files_in(base, &repo_root, "feat");
 
         assert_eq!(
-            crate::lane::session_registry::root_act_in(base, "vp", "feat"),
-            crate::lane::session_registry::SessionAct::Tui,
-            "registry file が消え、Act も既定（Tui）に戻る"
+            crate::lane::session_registry::root_mode_in(base, "vp", "feat"),
+            crate::lane::session_registry::SessionMode::Tui,
+            "registry file が消え、Mode も既定（Tui）に戻る"
         );
         assert_eq!(
             crate::lane::session_registry::load_in(base, "vp", "feat", "claude").sessions[0]
@@ -1973,7 +1973,7 @@ mod tests {
     /// replay_log は session label 単位 (#1 + #2) で消し、 他 lane の state は巻き添えにしない。
     /// 従来 repo 経路から漏れていた replay_log / terminal_replay / lane_id の欠落再発を防ぐ回帰。
     ///
-    /// doc 47 §4 で console_mode file は退役し、Act は registry の中（root の act）に入った —
+    /// doc 47 §4 で console_mode file は退役し、Mode は registry の中（root の mode）に入った —
     /// 破棄対象が 7 種から 6 種に減ったのは leak が増えたのではなく、state が 1 つ畳まれたため。
     #[test]
     fn clear_lane_state_removes_all_six_state_files_and_is_scoped() {
@@ -1986,15 +1986,15 @@ mod tests {
 
         // 対象 lane (vp/feat) と巻き添え確認用の別 lane (vp/other) に同じ state 群を積む helper。
         let seed = |lane: &str| {
-            // ① session_registry: Act(root) + 会話 id + #2 session (label 列挙の対象を作る)
-            session_registry::set_root_act_in(
+            // ① session_registry: Mode(root) + 会話 id + #2 session (label 列挙の対象を作る)
+            session_registry::set_root_mode_in(
                 base,
                 "vp",
                 lane,
                 "claude",
-                session_registry::SessionAct::Chat,
+                session_registry::SessionMode::Gui,
             )
-            .expect("registry act");
+            .expect("registry mode");
             session_registry::set_conversation_in(base, "vp", lane, "claude", 1, Some("sess-1"))
                 .expect("registry #1");
             session_registry::create_in(
@@ -2003,7 +2003,7 @@ mod tests {
                 lane,
                 "claude",
                 "codex",
-                session_registry::SessionAct::Chat,
+                session_registry::SessionMode::Gui,
                 true,
             )
             .expect("registry #2");
@@ -2038,8 +2038,8 @@ mod tests {
         assert_eq!(reg.sessions.len(), 1, "①registry が既定形 N=1 に戻る");
         assert_eq!(reg.sessions[0].conversation, None, "①会話 id も消える");
         assert_eq!(
-            session_registry::root_act_in(base, "vp", "feat"),
-            session_registry::SessionAct::Tui,
+            session_registry::root_mode_in(base, "vp", "feat"),
+            session_registry::SessionMode::Tui,
             "①Act も既定 (Tui) に戻る"
         );
         assert_eq!(
@@ -2071,9 +2071,9 @@ mod tests {
 
         // 別 lane (vp/other) は巻き添えにならない (scoped)。
         assert_eq!(
-            session_registry::root_act_in(base, "vp", "other"),
-            session_registry::SessionAct::Chat,
-            "別 lane の Act は残る"
+            session_registry::root_mode_in(base, "vp", "other"),
+            session_registry::SessionMode::Gui,
+            "別 lane の Mode は残る"
         );
         assert_eq!(
             agent_store::last_in(base, "vp", "other").as_deref(),

@@ -206,7 +206,7 @@ impl TopicRouter {
             RepoMessage::LaneTerminalOutput { lane, .. } => {
                 format!("repo/terminal/data/{}/out", Self::terminal_lane_key(lane))
             }
-            // === Echoes Act II（構造化会話 GUI）===
+            // === Echoes gui（構造化会話 GUI）===
             // doc 32: per-lane の構造化イベント stream。category(seg2)=data → 非 retained。
             // lane address ('/' 含む) は seg3 で 1 token 化（terminal と同じ規則）。
             RepoMessage::EchoesEvent { lane, .. } => {
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_message_to_topic_echoes_event() {
-        // doc 32: Echoes Act II の per-lane 構造化イベント。lane の '/' は '~' に encode、
+        // doc 32: Echoes gui の per-lane 構造化イベント。lane の '/' は '~' に encode、
         // category(seg2)=data なので 非 retained（ephemeral stream、terminal と同じ規則）。
         let msg = RepoMessage::EchoesEvent {
             lane: "vp/performer/foo".to_string(),
