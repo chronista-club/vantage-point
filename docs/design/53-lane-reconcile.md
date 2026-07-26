@@ -368,7 +368,25 @@ R3c 出荷直後（`VP_SWAP_RESTART_DAEMON=1 mise run app:swap`）に実機で�
 |---|---|---|---|
 | ① | **CLI から console を足すと pane は出るが中身が黒い**（GUI 再起動で描画される） | `lane reconcile (spawned=1)` → `terminal pump reconcile (attached=1)` → `terminal pump replay: N bytes 配送` = **全部正常** | `handleOutput` が `laneInstances` に無い session の出力を**黙って捨てる**（`if (!info) return`）。動的に増えた session の xterm 実体が作られていない |
 | ② | **lane を切り替えて戻ると term pane が GUI から消える** | `vp lane slots` は slot alive のまま | roster から pane を出す World B と、host を持つ World A の同期漏れ |
-| ③ | **root picker で chat session を選ぶと `focused` だけ動いて `root` が動かない** | `chat session focus: session=16`（`switch root session` が来ていない） | tui を選ぶと両方動く。backend は A6 で lane 単位 act の gate を撤去済なので、**分岐は client 側にだけ残っている** |
+| ③ | ~~root picker で chat session を選ぶと `focused` だけ動く~~ **← 誤観測（2026-07-26 訂正、下記）** | — | **再現せず** |
+
+#### ③ は誤観測だった（2026-07-26 訂正）
+
+根拠は `chat session focus: session=16` というログ **1 行**だったが、再検証で**再現しなかった**:
+
+```
+root=35（tui）の状態で picker から #16（chat・非 root）を選ぶ
+→ switch root session: session=16 が飛び、root も focused も 16 に移動（= 正しい）
+```
+
+コードにも act の分岐は無い（`rootPickerItems` の `disabled` は **engine 未知**のみ、click は
+`switchRoot(item.key)` を無条件に呼ぶ）。あのログは picker 由来ではなく、**座標クリックが
+別の UI に当たった**ものと考えられる。
+
+⚠️ **ログ 1 行を根拠に機構を推定して doc に書いた**のが誤り。実測で再現を取ってから記録する
+（[[measure-before-hypothesis]]）。①② は同じ日に実測で再現・根治しており、③ だけが
+「観測 1 回・再現なし」で混ざっていた。「バグを直した」ではなく「**バグでないものをリストから
+外した**」も measure の成果。
 
 **①は [[gate-hid-a-second-bug]] の実例**: #910（roster 供給 1 本化）で「CLI 由来の console が
 GUI に出ない」を直した結果 pane が出るようになり、**その向こうに隠れていた配線漏れ**が露出した。
