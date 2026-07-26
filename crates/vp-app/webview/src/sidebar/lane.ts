@@ -19,7 +19,7 @@ const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
 	tmux: { default: "ph:presentation", active: "ph:presentation-fill" },
 	paisley_park: { default: "ph:compass", active: "ph:compass-fill" },
 	gold_experience: { default: "ph:plant", active: "ph:plant-fill" },
-	bastet: { default: "ph:magnet", active: "ph:magnet-fill" },
+	devices: { default: "ph:magnet", active: "ph:magnet-fill" },
 };
 
 /** Stand kind から icon 名を解決。 active 時は fill weight。 未知 stand は `null`。 */
@@ -43,8 +43,8 @@ export function standDisplayName(stand: string): string {
 			return "Paisley Park";
 		case "gold_experience":
 			return "Gold Experience";
-		case "bastet":
-			return "Bastet";
+		case "devices":
+			return "Devices";
 		default:
 			return stand;
 	}

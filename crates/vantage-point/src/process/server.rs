@@ -212,7 +212,7 @@ pub(crate) async fn start_project(
 
     // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= lane-spawn)
     // を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
-    // MidiCapability metadata register は dynamic routing vision 確定後 (cf. design-spark
+    // device registry の metadata register は dynamic routing vision 確定後 (cf. design-spark
     // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
     let actor_registry = crate::capability::ActorRegistry::new();
 
@@ -681,14 +681,14 @@ pub async fn run_world(port: u16) -> Result<()> {
     // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
     // WorldCapabilities container の両方に share させる (二重生成は避ける)。
     //
-    // device 管理は Bastet 🧲 に一本化（feature = "midi" 時は `with_bastet` で host 化）。
+    // device 管理は DeviceRegistry 🧲 に一本化（feature = "midi" 時は `with_devices` で host 化）。
     // 旧 MidiCapability hosting（単一 port の無条件 grab）は退役 — 消費者不在のまま
-    // enumeration 先頭 device（実機で LPD8）を掴み、Bastet listener を沈黙させていた。
+    // enumeration 先頭 device（実機で LPD8）を掴み、DeviceRegistry listener を沈黙させていた。
     let world_capabilities = {
         #[cfg(feature = "midi")]
         {
             Arc::new(
-                crate::daemon::world_capabilities::WorldCapabilities::with_bastet(
+                crate::daemon::world_capabilities::WorldCapabilities::with_devices(
                     world_cap.clone(),
                     update_cap.clone(),
                 )
@@ -704,16 +704,16 @@ pub async fn run_world(port: u16) -> Result<()> {
         }
     };
 
-    // Bastet 🧲 — ROTO 持続セッションを World lifecycle に enclose して起動する。
+    // DeviceRegistry 🧲 — ROTO 持続セッションを World lifecycle に enclose して起動する。
     // 前景 `vp midi roto control` のフル接続（open + handshake + keepalive + LCD/routing）を
     // daemon 常駐 + 自動再接続に昇格。lane data は world_cap(ProcessManagerCapability) を
     // in-process 直読み、switch_lane は SP 越境なので QUIC。shutdown_token の子 token で
-    // graceful 停止する。bastet_for_shutdown は cleanup chain 用に Arc を clone しておく。
+    // graceful 停止する。devices_for_shutdown は cleanup chain 用に Arc を clone しておく。
     #[cfg(feature = "midi")]
-    let bastet_for_shutdown = world_capabilities.bastet.clone();
+    let devices_for_shutdown = world_capabilities.devices.clone();
     #[cfg(feature = "midi")]
-    if let Some(bastet) = world_capabilities.bastet.as_ref() {
-        bastet
+    if let Some(devices) = world_capabilities.devices.as_ref() {
+        devices
             .write()
             .await
             .start_roto_control(world_cap.clone(), shutdown_token.clone())
@@ -757,7 +757,7 @@ pub async fn run_world(port: u16) -> Result<()> {
             .await,
         ),
         // VP-159 PR-4b: World mode では空で構築 (= World scope actor の register は後続 PR、
-        // MidiCapability metadata register は dynamic routing vision 確定後)
+        // device registry の metadata register は dynamic routing vision 確定後)
         actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
         world: Some(world_cap.clone()),
         update: Some(update_cap.clone()),
@@ -952,14 +952,14 @@ pub async fn run_world(port: u16) -> Result<()> {
         state.delivery_notify.clone(),
         state.delegation_store.clone(),
     );
-    // Bastet 🧲 EventBus を共有 — world-device channel が device event を vp-app に bridge する。
-    // world_capabilities は L810 で move 済みなので、 move 前に clone した bastet_for_shutdown を使う。
+    // DeviceRegistry 🧲 EventBus を共有 — world-device channel が device event を vp-app に bridge する。
+    // world_capabilities は L810 で move 済みなので、 move 前に clone した devices_for_shutdown を使う。
     #[cfg(feature = "midi")]
-    if let Some(bastet) = bastet_for_shutdown.as_ref() {
-        let event_bus = bastet.read().await.event_bus().clone();
-        daemon_state_builder = daemon_state_builder.with_bastet_event_bus(event_bus);
+    if let Some(devices) = devices_for_shutdown.as_ref() {
+        let event_bus = devices.read().await.event_bus().clone();
+        daemon_state_builder = daemon_state_builder.with_devices_event_bus(event_bus);
         // M2 / doc 26 §2: device channel (agent → daemon) が registry を更新するため registry 本体も共有。
-        daemon_state_builder = daemon_state_builder.with_bastet(bastet.clone());
+        daemon_state_builder = daemon_state_builder.with_devices(devices.clone());
     }
     // doc 44 P1 (fold-in): capability の start_process / stop_process が lifecycle event を
     // 流せるよう、DaemonState と**同一の** broadcast Sender を共有する（clone しても同じ
@@ -1272,10 +1272,10 @@ pub async fn run_world(port: u16) -> Result<()> {
     if stopped_projects > 0 {
         tracing::info!("World shutdown: {} project を停止", stopped_projects);
     }
-    // Bastet ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
+    // DeviceRegistry ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
     #[cfg(feature = "midi")]
-    if let Some(bastet) = bastet_for_shutdown.as_ref() {
-        bastet.write().await.stop_roto_control().await;
+    if let Some(devices) = devices_for_shutdown.as_ref() {
+        devices.write().await.stop_roto_control().await;
     }
     if let Err(e) = world_for_shutdown.write().await.shutdown().await {
         tracing::warn!("Error during world shutdown: {}", e);

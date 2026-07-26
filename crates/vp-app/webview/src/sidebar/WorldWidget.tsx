@@ -64,10 +64,10 @@ export function WorldWidget() {
 	const timer = setInterval(() => setNow(Date.now()), 30_000);
 	onCleanup(() => clearInterval(timer));
 
-	// Bastet 🧲 — World scope の物理 device。 device 一覧は main area の Bastet pane が render、
+	// Devices 🧲 — World scope の物理 device。 device 一覧は main area の Devices pane が render、
 	// ここ (World レベルの Devices) は pane を開く入口 + 接続 device 数 badge。
-	const devices = () => sidebar.bastet_devices ?? [];
-	const bastetActive = () => sidebar.active_stand?.kind === "bastet";
+	const devices = () => sidebar.devices ?? [];
+	const devicesActive = () => sidebar.active_stand?.kind === "devices";
 
 	// in-app update: daemon の定期チェック (起動時 + 24h) が検知した新 release。
 	// update_available 時のみ World widget 直下に「更新する」CTA を出す。latest_version は
@@ -155,18 +155,18 @@ export function WorldWidget() {
 			<div class="vp-devices">
 				<div
 					class="vp-stand-row"
-					classList={{ active: bastetActive() }}
+					classList={{ active: devicesActive() }}
 					onClick={() =>
-						sendIpc({ t: "stand:select", path: "", kind: "bastet" })
+						sendIpc({ t: "stand:select", path: "", kind: "devices" })
 					}
 				>
 					<span class="vp-stand-icon">
 						<CreoIcon
-							name={standIcon("bastet", bastetActive()) ?? "ph:magnet"}
+							name={standIcon("devices", devicesActive()) ?? "ph:magnet"}
 							size={14}
 						/>
 					</span>
-					<span class="vp-stand-title">{standDisplayName("bastet")}</span>
+					<span class="vp-stand-title">{standDisplayName("devices")}</span>
 					<Show when={devices().length > 0}>
 						<span class="vp-stand-badge">{devices().length}</span>
 					</Show>

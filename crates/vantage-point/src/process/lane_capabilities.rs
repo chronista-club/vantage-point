@@ -40,7 +40,7 @@ use super::lane_stand::LaneStandRegistry;
 use super::lanes_state::LaneAddress;
 use super::project_stands_state::PaisleyParkStand;
 #[cfg(feature = "midi")]
-use crate::justice::JusticeStand;
+use crate::device_io::DeviceIoStand;
 
 /// Lane 階層 Stand container (Lane あたり 1 instance)。
 ///
@@ -77,9 +77,9 @@ impl LaneCapabilities {
         let mut registry = LaneStandRegistry::new();
         // PR-δ-2 (VP-136): PP を最初の住人として LaneStandRegistry に登録
         registry.insert(Arc::new(PaisleyParkStand::new()));
-        // E3-1: Justice 🌫️ を Lane に自動 host（midi feature 有効時）
+        // E3-1: Device I/O 🌫️ を Lane に自動 host（midi feature 有効時）
         #[cfg(feature = "midi")]
-        registry.insert(Arc::new(JusticeStand::new()));
+        registry.insert(Arc::new(DeviceIoStand::new()));
         Self {
             address,
             stand: stand.into(),
@@ -237,12 +237,12 @@ mod tests {
     #[test]
     fn lane_capabilities_registry_count_after_new() {
         let lc = LaneCapabilities::new(LaneAddress::root("vp"), "echoes");
-        // PP + Justice（midi feature 有効時）
+        // PP + Device I/O（midi feature 有効時）
         let expected = if cfg!(feature = "midi") { 2 } else { 1 };
         assert_eq!(
             lc.registry.count(),
             expected,
-            "new() 直後は PP + Justice(midi時) で count = {expected}"
+            "new() 直後は PP + Device I/O(midi時) で count = {expected}"
         );
     }
 

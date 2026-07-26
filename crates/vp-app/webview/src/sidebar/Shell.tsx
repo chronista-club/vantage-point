@@ -224,7 +224,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
-   header 下線 / World・Bastet 上線 / detail 破線は全削除、 区切りは spacing で。 */
+   header 下線 / World・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
   padding:12px 12px 8px;font-size:var(--sb-text-micro,10px);letter-spacing:.14em;
   text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
@@ -542,7 +542,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-world-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
   font-variant-numeric:tabular-nums;}
 
-/* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
+/* Devices 🧲 — World scope の Devices セクション (stand row + device count badge) */
 .vp-devices{flex:0 0 auto;padding-bottom:4px;}
 .vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
   padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);

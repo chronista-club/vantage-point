@@ -31,7 +31,7 @@ pub enum DaemonCommands {
         #[arg(short, long, default_value_t = crate::cli::world_port())]
         port: u16,
         // 旧 `--midi <arg>` flag は MidiCapability hosting 退役（fleet #877 系）で削除。
-        // device 管理は Bastet 🧲 が担い、単一 port の pick 指定は不要になった。
+        // device 管理は DeviceRegistry 🧲 が担い、単一 port の pick 指定は不要になった。
     },
     /// TheWorld を停止 (idempotent)
     Stop,

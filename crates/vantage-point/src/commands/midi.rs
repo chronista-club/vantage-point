@@ -75,7 +75,7 @@ pub enum RotoCommands {
     /// transport ◄ (CC36)=prev / ► (CC37)=next（or 右 button 0/1）。現 project の local SP に
     /// QUIC 接続し、「lanes」channel で lane list を購読、`switch_lane` QUIC method で発火する。
     ///
-    /// ⚠️ TheWorld daemon 稼働中は Bastet 🧲 が ROTO を持続所有する（接続 + 自動再接続）ため、
+    /// ⚠️ TheWorld daemon 稼働中は DeviceRegistry 🧲 が ROTO を持続所有する（接続 + 自動再接続）ため、
     /// CoreMIDI 物理 port の単一 owner 制約により本コマンドは port 取得に失敗する。daemon を
     /// 起動していない場合の前景デバッグ用途として残す（loop body は daemon 版と共有）。
     Control {
@@ -838,7 +838,7 @@ fn execute_roto_control(port: String, world_port: u16, secs: u64) -> Result<()> 
 
     // CLI 版: self-heal は不要（secs 経過で終了）なので Bracket は被せず、
     // QuicLaneSource(world-process QUIC) + QuicSwitchSink で shared loop を直接回す。
-    // daemon 常駐版（Bastet::start_roto_control）と loop body を 1 本共有する（重複ゼロ）。
+    // daemon 常駐版（DeviceRegistry::start_roto_control）と loop body を 1 本共有する（重複ゼロ）。
     let rt = tokio::runtime::Runtime::new()?;
     let exit = rt.block_on(async move {
         // world(ProtocolClient) は world_ch を生かすため block 終端まで保持する。

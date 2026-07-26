@@ -52,7 +52,7 @@ active_lane_address?: string | null,
 origin_by_project?: { [key in string]?: string }, 
 /**
  * Phase 5-A: 現在 active な Project-scope Stand kind
- * (`"paisley_park"` / `"gold_experience"` / `"bastet"`)。
+ * (`"paisley_park"` / `"gold_experience"` / `"devices"`)。
  * `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
  * `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
  * `stand:select` IPC で更新される。
@@ -110,10 +110,10 @@ session_titles?: { [key in string]?: string },
  */
 lane_inboxes?: { [key in string]?: MessageState }, 
 /**
- * Bastet 🧲 接続中 device 一覧 (`bastet.device_connected` / `disconnected` で更新)。
- * JS 側は Bastet pane に device list を render する。 disk persist 不要 (起動時 0)。
+ * DeviceRegistry 🧲 接続中 device 一覧 (`devices.device_connected` / `disconnected` で更新)。
+ * JS 側は DeviceRegistry pane に device list を render する。 disk persist 不要 (起動時 0)。
  */
-bastet_devices?: Array<DeviceSnapshot>, 
+devices?: Array<DeviceSnapshot>, 
 /**
  * doc 30 §5-3 / lanes 購読 self-heal: per-project の World "lanes" channel 購読フェーズ。
  * Key: project_path。 Value は 3 値モデル (entry 有無 + 2 文字列):

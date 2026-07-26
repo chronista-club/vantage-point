@@ -163,9 +163,9 @@ pub enum AppEvent {
         process_path: String,
         message: serde_json::Value,
     },
-    /// Bastet 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
+    /// DeviceRegistry 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
     /// daemon "world-device" Unison channel から受信した `DeviceEvent` の生 JSON。
-    /// Phase 1 handler は tracing で log。 Phase 2 で Bastet pane / sidebar に反映予定。
+    /// Phase 1 handler は tracing で log。 Phase 2 で DeviceRegistry pane / sidebar に反映予定。
     DeviceEvent { payload: serde_json::Value },
     /// board モデル (2026-07-15): WebView からの board mutate（thumbnail ✕ / Clear ボタン）。
     /// `method` = "board_delete_item" | "board_clear"、 `body` は IPC payload の生 JSON

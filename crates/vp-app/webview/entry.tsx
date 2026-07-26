@@ -124,7 +124,7 @@ import {
 	ECHOES_HEADER_CSS,
 	type EchoesHeaderApi,
 } from "./EchoesHeader";
-import { renderDevices as renderBastetDevices } from "./bastet";
+import { renderDevices as renderDeviceList } from "./devices";
 import {
 	handleMessage as handleBoardMessage,
 	setActiveLaneName,
@@ -170,7 +170,7 @@ openDispatch();
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
 //   echoes  → pane-terminal      (Echoes Stand = lane workbench。console/chat/board の tiling を内包)
 //   ge      → pane-gold-experience (Gold Experience 🌿)
-//   bs      → pane-bastet         (Bastet 🧲 / device 一覧)
+//   devices → pane-devices        (Devices 🧲 / device 一覧)
 //   preview → pane-preview        (iframe preview)
 //   empty   → pane-empty          (no selection)
 //   doc 52 §10 wave 0: pp（Paisley Park）は app pane を退役 → lane tiling の board pane (#lane-board)
@@ -195,12 +195,12 @@ attachKeybindings(window);
 const KIND_TO_PANE: Record<string, string> = {
 	terminal: "echoes",
 	gold_experience: "ge",
-	bastet: "bs",
+	devices: "devices",
 	preview: "preview",
 	empty: "empty",
 	// doc 52 §10 wave 0: paisley_park → pp は退役（board pane = lane tiling へ移設）。
-	// LE-P4 PR1: DOM 不在の幽霊 entry を落とし、DOM に居た bastet → bs を補充
-	// （旧体系では unknown kind → empty に落ちて Bastet pane が見えなかった）
+	// LE-P4 PR1: DOM 不在の幽霊 entry を落とし、DOM に居た devices → bs を補充
+	// （旧体系では unknown kind → empty に落ちて Devices pane が見えなかった）
 };
 
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
@@ -244,7 +244,7 @@ function laneNameFromAddress(addr: string | null): string | null {
  * - kind=terminal Lane 切替時に旧 Lane の配置 snapshot を save、新 Lane の保存済 snapshot
  *   (or default lead-focus) を restore する → user が Lane を跨いでも Side Review / PP Overlay 等の
  *   選択 + share 調整の形が記憶される（app-panes.ts 所有）
- * - kind != terminal (PP/GE/Bastet click 等) は Lane を跨がない fixed-Pane focus、記憶は更新しない
+ * - kind != terminal (PP/GE/Devices click 等) は Lane を跨がない fixed-Pane focus、記憶は更新しない
  */
 const applyActivePane = (info: ActivePaneInfo | null): void => {
 	// ① DOM の可視性（pane の active 切替 / preview iframe / showLane / slot rect）
@@ -298,7 +298,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		setActiveLaneName(laneName);
 		return;
 	}
-	// kind != terminal (PP/GE/Bastet/preview click 等): stand pane の**訪問**（一時 view）。
+	// kind != terminal (PP/GE/Devices/preview click 等): stand pane の**訪問**（一時 view）。
 	// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
 	const paneId = KIND_TO_PANE[info.kind];
 	if (!paneId) {
@@ -707,12 +707,12 @@ document.addEventListener("vp:act-switch-request", (e) => {
 // 手動 trigger 用に残してある。
 (
 	window as unknown as {
-		vpBastet: {
-			renderDevices: typeof renderBastetDevices;
+		vpDevices: {
+			renderDevices: typeof renderDeviceList;
 		};
 	}
-).vpBastet = {
-	renderDevices: renderBastetDevices,
+).vpDevices = {
+	renderDevices: renderDeviceList,
 };
 
 // ===== Pane action button delegation =====
@@ -729,7 +729,7 @@ document.addEventListener(
 		const dataTarget = btn.dataset.target;
 		if (action === "close-pane") {
 			// stand pane の ✕ — 訪問を閉じて出発点の配置へ（2026-07-23 dogfood:
-			// 「Bastet が出っ放しで close できない」の根治）
+			// 「Devices が出っ放しで close できない」の根治）
 			closeAppPaneVisit();
 			return;
 		}
@@ -978,7 +978,7 @@ installGallery();
 installBundleProbe();
 installDispatch({
 	...installTerm(),
-	renderDevices: renderBastetDevices,
+	renderDevices: renderDeviceList,
 	handleBoardMessage,
 	// Console 面（console.ts）。`window.vpConsole` は DevTools 検分用に残っている
 	// （`window.vpConsole.peek("<project>/root")`）が、Rust からはここ経由で届く。

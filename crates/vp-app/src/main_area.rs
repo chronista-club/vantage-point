@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// Rust から main area JS に渡す active pane の payload
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivePaneInfo<'a> {
-    /// Pane kind ("terminal" | "preview" | "paisley_park" | "gold_experience" | "bastet" | "empty" | null)
+    /// Pane kind ("terminal" | "preview" | "paisley_park" | "gold_experience" | "devices" | "empty" | null)
     /// null = 何も active でない (空状態を表示)。
     /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で PP body が Smart Canvas surface 物理化)
     pub kind: Option<&'a str>,
@@ -353,12 +353,12 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   color:var(--color-text-tertiary);font-size:11px;padding:1px 8px;border-radius:4px;cursor:pointer;
   font-family:inherit;transition:color .1s ease,border-color .1s ease,background .1s ease;}
 .board-clear-btn:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
-/* Bastet 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
+/* Devices 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
    見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
-.bastet-devices{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
-.bastet-device{display:flex;align-items:baseline;gap:10px;}
-.bastet-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
-.bastet-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
+.device-list{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
+.devices-device{display:flex;align-items:baseline;gap:10px;}
+.devices-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
+.devices-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
 /* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
 /* ink stage（doc 52 §3）: #pp-content を充填 + overlay / palette の位置決め基準。 */
@@ -587,7 +587,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
     </div>
   </div>
   <!-- doc 52 §10 wave 0: Paisley Park は app 層の pane を退役し、lane tiling の board pane
-       （#lane-board、上方 #lane-panes 内）へ引っ越した。GE / Bastet / Preview は app pane のまま。 -->
+       （#lane-board、上方 #lane-panes 内）へ引っ越した。GE / Devices / Preview は app pane のまま。 -->
   <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
     <div class="pane-header">
       <div class="pane-title">
@@ -606,11 +606,11 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
       </main>
     </div>
   </div>
-  <div class="pane stand" id="pane-bastet" data-kind="bastet" data-frame-id="bs">
+  <div class="pane stand" id="pane-devices" data-kind="devices" data-frame-id="devices">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon"><iconify-icon icon="ph:magnet"></iconify-icon></span>
-        <span class="pane-name">Bastet</span>
+        <span class="pane-name">Devices</span>
         <span class="pane-breadcrumb">Device Registry</span>
       </div>
       <div class="pane-actions">
@@ -618,8 +618,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
       </div>
     </div>
     <div class="pane-body">
-      <div class="bastet-devices" id="bastet-devices">
-        <p class="bastet-empty">No devices connected</p>
+      <div class="device-list" id="device-list">
+        <p class="devices-empty">No devices connected</p>
       </div>
     </div>
   </div>
@@ -716,7 +716,7 @@ mod tests {
         assert!(tui.contains("\"stand\":\"echoes\""), "script={tui}");
 
         let stand = build_set_active_pane_script(&ActivePaneInfo {
-            kind: Some("bastet"),
+            kind: Some("devices"),
             pane_id: None,
             preview_url: None,
             chat: false,

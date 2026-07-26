@@ -28,7 +28,7 @@
 //! - spike v0.1: `mem_1CavCepJdf8XyQ82AAiSpv`
 //! - PR-1 受け皿 pattern 先例: `LaneStandHost` (PR-δ-1、 #288/VP-135)、 Stand/Service trait (PR-1、 #326)
 //! - PR-2 同型: agent / protocol を Stand impl (= #327)
-//! - PR-3 同型: notify / lane-spawn / bastet を Service impl (= #329)
+//! - PR-3 同型: notify / lane-spawn / devices を Service impl (= #329)
 //! - PR-4b 想定: Service trait sig 拡張 (`spawn_loop`) + 既存 3 Service の migration + caller 集約
 
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ use super::stand_service::{LayerScope, Service, SpawnableService, Stand};
 pub enum ActorKind {
     /// ECS entity bound actor (= agent / protocol / paisley_park 等)。 PR-2 で formalized。
     Stand,
-    /// singleton infra actor (= notify / lane-spawn / bastet 等)。 PR-3 で formalized。
+    /// singleton infra actor (= notify / lane-spawn / devices 等)。 PR-3 で formalized。
     Service,
 }
 
@@ -141,7 +141,7 @@ impl ActorRegistry {
     /// (= caller の責務で重複 spawn を回避)。
     ///
     /// `service` は consume される (= `spawn_loop` の `self` 引数)。 instance を後で query
-    /// する必要がある actor (= `MidiCapability` 等の hold pattern) は本 method ではなく
+    /// する必要がある actor (= `DeviceRegistry` 等の hold pattern) は本 method ではなく
     /// `register_service(&service)` で metadata only register する。
     pub fn spawn_service<S: SpawnableService>(&mut self, service: S, shutdown: CancellationToken) {
         let name = service.actor_name().to_string();
@@ -304,7 +304,7 @@ mod tests {
             scope: LayerScope::Project,
         });
         r.register_service(&FixtureService {
-            name: "bastet",
+            name: "devices",
             scope: LayerScope::World,
         });
 
@@ -340,7 +340,7 @@ mod tests {
     fn coexist_5_actors_in_registry() {
         // VP-159 PR-4a invariant (= PR-2 / PR-3 invariant の延長): 5 actor (2 Stand + 3 Service)
         // が 1 registry に coexist できる事。 PR-4b で AgentCapability (Stand) + ProtocolCapability
-        // (Stand) + NotificationActor (Service) + LaneSpawnActor (Service) + MidiCapability
+        // (Stand) + NotificationActor (Service) + LaneSpawnActor (Service) + DeviceRegistry
         // (Service) を同 registry で host する path を fixture で代理検証。
         let mut r = ActorRegistry::new();
         r.register_stand(&FixtureStand {
@@ -360,7 +360,7 @@ mod tests {
             scope: LayerScope::Project,
         });
         r.register_service(&FixtureService {
-            name: "bastet",
+            name: "devices",
             scope: LayerScope::World,
         });
 

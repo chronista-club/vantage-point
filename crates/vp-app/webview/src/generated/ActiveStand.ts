@@ -5,6 +5,6 @@
  */
 export type ActiveStand = { project_path: string, 
 /**
- * `"paisley_park"` | `"gold_experience"` | `"bastet"`
+ * `"paisley_park"` | `"gold_experience"` | `"devices"`
  */
 kind: string, };

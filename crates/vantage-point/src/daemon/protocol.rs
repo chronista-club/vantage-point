@@ -97,9 +97,9 @@ pub enum ProcessLifecycleEvent {
     },
 }
 
-/// Bastet 🧲 — device 接続/切断/操作イベント (= "world-device" Unison channel の data plane)
+/// DeviceRegistry 🧲 — device 接続/切断/操作イベント (= "world-device" Unison channel の data plane)
 ///
-/// EventBus の `bastet.*` event を Unison wire に変換した公開型。 `ProcessLifecycleEvent` と
+/// EventBus の `devices.*` event を Unison wire に変換した公開型。 `ProcessLifecycleEvent` と
 /// 同じ `serde(tag = "kind")` 規約で serialize する。 daemon の world-device bridge が
 /// `from_capability_event` で変換し、 vp-app が QUIC subscribe して受ける。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -129,11 +129,11 @@ pub enum DeviceEvent {
 impl DeviceEvent {
     /// `CapabilityEvent` の event_type + payload から `DeviceEvent` を構築する。
     ///
-    /// bridge task が EventBus から受け取った `bastet.*` event を wire 型へ変換する。
+    /// bridge task が EventBus から受け取った `devices.*` event を wire 型へ変換する。
     /// 対象外の event_type / payload 不足 (= 必須 field 欠落) は `None` (= bridge が skip)。
     pub fn from_capability_event(event_type: &str, payload: &serde_json::Value) -> Option<Self> {
         match event_type {
-            "bastet.device_connected" => Some(DeviceEvent::DeviceConnected {
+            "devices.device_connected" => Some(DeviceEvent::DeviceConnected {
                 port_name: payload.get("port_name")?.as_str()?.to_string(),
                 has_input: payload
                     .get("has_input")
@@ -144,10 +144,10 @@ impl DeviceEvent {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
             }),
-            "bastet.device_disconnected" => Some(DeviceEvent::DeviceDisconnected {
+            "devices.device_disconnected" => Some(DeviceEvent::DeviceDisconnected {
                 port_name: payload.get("port_name")?.as_str()?.to_string(),
             }),
-            "bastet.control_event" => Some(DeviceEvent::ControlEvent {
+            "devices.control_event" => Some(DeviceEvent::ControlEvent {
                 port_name: payload.get("port_name")?.as_str()?.to_string(),
                 event: payload
                     .get("event")
@@ -162,7 +162,7 @@ impl DeviceEvent {
 /// M2 / doc 26 §2: `device` channel の `ReportDevice` request payload。
 ///
 /// macOS menu bar agent (Swift `CoreMIDIWatcher`) が CoreMIDI hot-plug を daemon に報告する。
-/// daemon の `handle_device_report` が `state` で接続/切断を分岐し Bastet registry に反映する。
+/// daemon の `handle_device_report` が `state` で接続/切断を分岐し DeviceRegistry registry に反映する。
 /// wire は既定 JSON codec のため、 Swift 側は CodingKeys で snake_case にマップする。
 #[cfg(feature = "midi")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -183,7 +183,7 @@ pub struct ReportDeviceRequest {
 /// (= "world-device" channel の上り `feedback` event payload)。
 ///
 /// 送り手 = gallery webview の mapping registry（fleet.ts `computeFeedback`、consumer 供給）。
-/// 受け手 = Bastet `apply_feedback` が各 device の出力 profile に写す:
+/// 受け手 = DeviceRegistry `apply_feedback` が各 device の出力 profile に写す:
 /// knobs → ROTO motor（14bit hi-res CC）/ fader → X-Touch fader 1（pitch bend）/
 /// pads → LPD8 RGB（Scene slot の filled 状態）。
 /// 値は正規化 0.0–1.0。頻度は webview 側 throttle + Rust 側 watch（latest-wins）で抑制。
@@ -303,7 +303,7 @@ mod tests {
         // device_connected: 全 field を拾う
         assert_eq!(
             DeviceEvent::from_capability_event(
-                "bastet.device_connected",
+                "devices.device_connected",
                 &json!({"port_name": "ROTO-CONTROL", "has_input": true, "has_output": true}),
             ),
             Some(DeviceEvent::DeviceConnected {
@@ -315,7 +315,7 @@ mod tests {
         // device_disconnected: port_name のみ
         assert_eq!(
             DeviceEvent::from_capability_event(
-                "bastet.device_disconnected",
+                "devices.device_disconnected",
                 &json!({"port_name": "ROTO-CONTROL"}),
             ),
             Some(DeviceEvent::DeviceDisconnected {
@@ -325,7 +325,7 @@ mod tests {
         // control_event: event を生 JSON で運ぶ
         assert_eq!(
             DeviceEvent::from_capability_event(
-                "bastet.control_event",
+                "devices.control_event",
                 &json!({"port_name": "ROTO-CONTROL", "event": {"Knob": {"index": 0, "value": 0.5}}}),
             ),
             Some(DeviceEvent::ControlEvent {
@@ -341,7 +341,7 @@ mod tests {
         // 必須 port_name 欠落 → None
         assert_eq!(
             DeviceEvent::from_capability_event(
-                "bastet.device_connected",
+                "devices.device_connected",
                 &json!({"has_input": true}),
             ),
             None

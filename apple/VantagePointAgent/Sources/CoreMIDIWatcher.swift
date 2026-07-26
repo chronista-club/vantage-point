@@ -3,7 +3,7 @@ import Foundation
 
 /// CoreMIDI device 1 件の着脱変化（agent → daemon 報告の最小単位）。
 struct MidiDeviceChange: Sendable {
-    /// CoreMIDI port の displayName（daemon Bastet registry の key と同値）
+    /// CoreMIDI port の displayName（daemon Devices registry の key と同値）
     let portName: String
     /// true = 接続 / false = 切断
     let isConnected: Bool
@@ -81,7 +81,7 @@ final class CoreMIDIWatcher: @unchecked Sendable {
 
     /// source(input) + destination(output) endpoint を displayName で merge して列挙する。
     /// 物理 device は同一 displayName で in/out 両 endpoint を持つため名前で畳む
-    /// （daemon の `enumerate_ports`（bastet.rs）と同じ正規化）。
+    /// （daemon の `enumerate_ports`（devices.rs）と同じ正規化）。
     private static func enumerate() -> [String: (Bool, Bool)] {
         var result: [String: (Bool, Bool)] = [:]
 
