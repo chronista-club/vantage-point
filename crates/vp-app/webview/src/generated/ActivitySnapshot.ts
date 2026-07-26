@@ -4,7 +4,7 @@ import type { HubNode } from "./HubNode";
 /**
  * Activity widget の payload
  *
- * 5-10 秒間隔で Rust 側が `/api/health` (HTTP) + `projects/list` +
+ * 5-10 秒間隔で Rust 側が `/api/health` (HTTP) + `repos/list` +
  * `registry.list` (Unison、doc 45 段 3) を fetch して更新、sidebar に push する。
  */
 export type ActivitySnapshot = { 
@@ -21,13 +21,13 @@ daemon_version?: string | null,
  */
 daemon_started_at?: string | null, 
 /**
- * 登録プロジェクト数
+ * 登録 repo数
  */
-project_count: number, 
+repo_count: number, 
 /**
  * 稼働中 process 数 (`registry.list`)
  */
-running_process_count: number, 
+running_repo_count: number, 
 /**
  * chronista-hub federation 接続状態（`/api/health` の `hub`、Daemon 横に表示）。
  * `"connected"` / `"connecting"` / `"disconnected"` / `"disabled"`、未取得 or 旧 daemon は空文字。
@@ -39,8 +39,8 @@ hub: string,
  */
 hub_nodes: Array<HubNode>, 
 /**
- * L1 lifecycle: SP presence map（project path → `"connected"`|`"unregistered"`
- * |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の project 行が `proc.path`
+ * L1 lifecycle: repo presence map（repo path → `"connected"`|`"unregistered"`
+ * |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の repo 行が `proc.path`
  * で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。
  */
 presence: { [key in string]?: string }, 

@@ -43,7 +43,7 @@ pub enum DaemonCommands {
     },
     /// daemon の状態確認
     Status,
-    /// VP-154 PR-2.5: daemon-process channel 経由で Process snapshot / lifecycle を観察
+    /// VP-154 PR-2.5: daemon-repo channel 経由で Process snapshot / lifecycle を観察
     ///
     /// `vp daemon processes` で list (= snapshot 1 回出力)、 `--watch` で subscribe stream
     /// に切り替えて register/unregister/disconnect を realtime に表示する。 dogfood debug 用。
@@ -93,7 +93,7 @@ fn start(port: u16) -> Result<()> {
         return Ok(());
     }
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(crate::process::run_daemon(port))
+    rt.block_on(crate::repo::run_daemon(port))
 }
 
 fn stop() -> Result<()> {
@@ -235,7 +235,7 @@ fn try_kickstart_launch_agent() -> bool {
 ///        その health を成功報告して終了（`vp daemon` binary は既に入れ替わり済み）
 ///      - health 応答なし = 後継未起動 → 手順3 で明示起動
 /// 3. macOS で LaunchAgent load 済みなら `launchctl kickstart`（-k なし）で即起こす / それ以外は
-///    detached spawn（`ensure_daemon_running` = SP auto-spawn と同じ既存経路）
+///    detached spawn（`ensure_daemon_running` = repo auto-spawn と同じ既存経路）
 /// 4. health ping で起動確認し、起動した daemon の version を表示
 pub(crate) fn restart(if_running: bool) -> Result<()> {
     let port = crate::cli::daemon_port();
@@ -377,7 +377,7 @@ fn uninstall() -> Result<()> {
 
 /// VP-154 PR-2.5: `vp daemon processes [--watch]` 実装。
 ///
-/// daemon-process Unison channel に接続して list (snapshot) を出力。 `--watch` 時は subscribe に
+/// daemon-repo Unison channel に接続して list (snapshot) を出力。 `--watch` 時は subscribe に
 /// 進んで `register/unregister/disconnect` の lifecycle event を Ctrl-C まで stream する。
 fn processes(watch: bool) -> Result<()> {
     use crate::daemon::client::DaemonClient;
@@ -398,12 +398,12 @@ fn processes(watch: bool) -> Result<()> {
             snapshot.len()
         );
         if snapshot.is_empty() {
-            println!("  (= まだ SP register なし)");
+            println!("  (= まだ repo register なし)");
         } else {
             for p in &snapshot {
                 println!(
                     "  • {} (port={}, pid={}, path={})",
-                    p.project_name, p.port, p.pid, p.project_path
+                    p.repo_name, p.port, p.pid, p.repo_path
                 );
             }
         }
@@ -417,18 +417,18 @@ fn processes(watch: bool) -> Result<()> {
         loop {
             match DaemonClient::daemon_processes_recv_event(ch).await {
                 Ok(ProcessLifecycleEvent::Add {
-                    project_path,
-                    project_name,
+                    repo_path,
+                    repo_name,
                     port,
                     pid,
                 }) => {
                     println!(
                         "➕ Add: {} (port={}, pid={}, path={})",
-                        project_name, port, pid, project_path
+                        repo_name, port, pid, repo_path
                     );
                 }
-                Ok(ProcessLifecycleEvent::Remove { project_path }) => {
-                    println!("➖ Remove: {}", project_path);
+                Ok(ProcessLifecycleEvent::Remove { repo_path }) => {
+                    println!("➖ Remove: {}", repo_path);
                 }
                 Err(e) => {
                     eprintln!("⚠️  stream 終了: {}", e);
@@ -515,14 +515,8 @@ fn status() -> Result<()> {
             if let Some(processes) = crate::daemon_client::list_processes_blocking() {
                 println!("  Processes: {}", processes.len());
                 for p in &processes {
-                    let name = p
-                        .get("project_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let path = p
-                        .get("project_path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
+                    let name = p.get("repo_name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let path = p.get("repo_path").and_then(|v| v.as_str()).unwrap_or("?");
                     println!("    - {} ({})", name, path);
                 }
             }

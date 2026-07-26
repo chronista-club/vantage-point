@@ -2,7 +2,7 @@
 //! 受け皿 (VP-159 / VP-156 epic H1 段、 PR-1)。
 //!
 //! VP-24 (Mailbox core) で「Stand に component bolt-on で msgbox 使える」 が original 設計
-//! 意図だったが、 後付けで infra actor (`mcp` / `notify` / `lane-spawn` / `sp-bootstrap`) が
+//! 意図だったが、 後付けで infra actor (`mcp` / `notify` / `lane-spawn` / `repo-bootstrap`) が
 //! 混入し ECS 純度が崩れた。 VP-157 (PR #325) で `mcp` box 廃止 + agent observer 化が
 //! 第一歩、 本 PR で残 actor を **Stand** (= ECS entity bound) と **Service** (= singleton
 //! infra) の 2 trait に分離する受け皿を新設する。
@@ -16,7 +16,7 @@
 //! |--------|-------|--------|
 //! | PR-1 | `Stand` / `Service` trait + `LayerScope` enum 受け皿 + `LaneStand` → `LaneStandHost` rename | 本 PR |
 //! | PR-2 | Stand migrate (`agent` + `protocol`、 observer/consumer pattern 形式化) | 未着手 |
-//! | PR-3 | Service migrate (`notify` + `lane-spawn` + `sp-bootstrap` + `devices`) | 未着手 |
+//! | PR-3 | Service migrate (`notify` + `lane-spawn` + `repo-bootstrap` + `devices`) | 未着手 |
 //! | PR-4 | supervisor 統一 (`ActorRegistry` / `SupervisorFactory` 集約) | 未着手 |
 //! | PR-5 | cleanup + guideline docs/spec + board / runner は将来 PR-γ | 未着手 |
 //!
@@ -46,12 +46,12 @@ use std::any::Any;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-/// actor の lifecycle / address 範囲を表現する layer enum (LSCM 公理: Daemon / Project / Lane)。
+/// actor の lifecycle / address 範囲を表現する layer enum (LSCM 公理: Daemon / Repo / Lane)。
 ///
 /// VP の 3 層 architecture (`docs/design/12-stand-architecture.md` LSCM):
 /// - **Daemon**: machine-wide singleton (daemon scope、 例: `devices@machine`)
-/// - **Project**: SP 起動単位 (= 1 Process per project、 例: `agent` / `protocol` / `notify`)
-/// - **Lane**: Project 内 Lane 単位 (= 1 Lane per Stand instance、 例: `board`)
+/// - **Repo**: repo 起動単位 (= 1 Process per repo、 例: `agent` / `protocol` / `notify`)
+/// - **Lane**: Repo 内 Lane 単位 (= 1 Lane per Stand instance、 例: `board`)
 ///
 /// 既存 code は dev discipline 任せで scope を表現していたが、 本 enum で trait 内に
 /// 明示的に持たせる事で supervisor (PR-4) が scope 検証可能になる。
@@ -59,9 +59,9 @@ use tokio_util::sync::CancellationToken;
 pub enum LayerScope {
     /// machine-wide singleton (daemon scope)。
     Machine,
-    /// SP 起動単位 (= 1 Process per project)。
-    Project,
-    /// Project 内 Lane 単位 (= 1 Lane per Stand instance)。
+    /// repo 起動単位 (= 1 Process per repo)。
+    Repo,
+    /// Repo 内 Lane 単位 (= 1 Lane per Stand instance)。
     Lane,
 }
 
@@ -84,7 +84,7 @@ pub enum LayerScope {
 ///
 /// impl Stand for AgentCapability {
 ///     fn name(&self) -> &str { "agent" }
-///     fn layer_scope(&self) -> LayerScope { LayerScope::Project }
+///     fn layer_scope(&self) -> LayerScope { LayerScope::Repo }
 ///     fn as_any(&self) -> &dyn std::any::Any { self }
 /// }
 /// ```
@@ -125,9 +125,9 @@ pub trait Stand: Any + Send + Sync + 'static {
 /// と区別する形式化。
 ///
 /// 分類対象 (PR-3 で migrate 予定):
-/// - `notify` (= DistributedNotification bridge、 Project scope)
-/// - `lane-spawn` (= Lane spawn lifecycle infra、 Project scope)
-/// - `sp-bootstrap` (= SP startup bootstrap、 Project scope)
+/// - `notify` (= DistributedNotification bridge、 Repo scope)
+/// - `lane-spawn` (= Lane spawn lifecycle infra、 Repo scope)
+/// - `repo-bootstrap` (= repo startup bootstrap、 Repo scope)
 /// - `devices@machine` (= MIDI / external control、 machine scope)
 ///
 /// `Stand` 同様 `Any` super-trait で downcast 支援、 lifecycle method は PR-3 で各 Service の
@@ -139,7 +139,7 @@ pub trait Service: Any + Send + Sync + 'static {
     /// rename された後)。
     fn actor_name(&self) -> &str;
 
-    /// service の lifecycle / address scope。 多くは `Project`、 `devices` のみ `Daemon`。
+    /// service の lifecycle / address scope。 多くは `Repo`、 `devices` のみ `Daemon`。
     fn layer_scope(&self) -> LayerScope;
 
     /// `&dyn Any` への型強制 (downcast 用)。
@@ -212,20 +212,20 @@ mod tests {
     fn stand_trait_can_be_implemented() {
         let s = FixtureStand {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         };
         assert_eq!(s.actor_name(), "agent");
-        assert_eq!(s.layer_scope(), LayerScope::Project);
+        assert_eq!(s.layer_scope(), LayerScope::Repo);
     }
 
     #[test]
     fn service_trait_can_be_implemented() {
         let s = FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         };
         assert_eq!(s.actor_name(), "notify");
-        assert_eq!(s.layer_scope(), LayerScope::Project);
+        assert_eq!(s.layer_scope(), LayerScope::Repo);
     }
 
     #[test]
@@ -233,7 +233,7 @@ mod tests {
         // Box<dyn Stand> から `as_any()` 経由で specific 型に downcast できる事を確認
         let boxed: Box<dyn Stand> = Box::new(FixtureStand {
             name: "protocol",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         let downcast = boxed.as_any().downcast_ref::<FixtureStand>();
         assert!(downcast.is_some(), "FixtureStand への downcast は成立");
@@ -254,29 +254,29 @@ mod tests {
     #[test]
     fn layer_scope_variants_are_distinct() {
         // 3 variant が PartialEq で区別される事 (supervisor PR-4 で scope 検証に使う)
-        assert_ne!(LayerScope::Machine, LayerScope::Project);
-        assert_ne!(LayerScope::Project, LayerScope::Lane);
+        assert_ne!(LayerScope::Machine, LayerScope::Repo);
+        assert_ne!(LayerScope::Repo, LayerScope::Lane);
         assert_ne!(LayerScope::Machine, LayerScope::Lane);
     }
 
     #[test]
     fn layer_scope_is_copy() {
         // Copy trait で値渡し可能な事 (= trait method の戻り値として軽量に扱える)
-        let scope = LayerScope::Project;
+        let scope = LayerScope::Repo;
         let copy = scope;
         assert_eq!(scope, copy);
     }
 
     #[test]
     fn stand_and_service_can_coexist_for_same_layer() {
-        // 同じ LayerScope::Project に Stand (agent) と Service (notify) が共存できる事
+        // 同じ LayerScope::Repo に Stand (agent) と Service (notify) が共存できる事
         let stand: Box<dyn Stand> = Box::new(FixtureStand {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         let service: Box<dyn Service> = Box::new(FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         assert_eq!(stand.layer_scope(), service.layer_scope());
         assert_ne!(stand.actor_name(), service.actor_name());
@@ -291,11 +291,11 @@ mod tests {
         let stands: Vec<Box<dyn Stand>> = vec![
             Box::new(FixtureStand {
                 name: "agent",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             }),
             Box::new(FixtureStand {
                 name: "protocol",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             }),
             Box::new(FixtureStand {
                 name: "devices",
@@ -309,15 +309,15 @@ mod tests {
         assert_eq!(names, vec!["agent", "protocol", "devices"]);
 
         // layer_scope で filter できる (= PR-4 supervisor が scope 別に dispatch する pattern)
-        let project_count = stands
+        let repo_count = stands
             .iter()
-            .filter(|s| s.layer_scope() == LayerScope::Project)
+            .filter(|s| s.layer_scope() == LayerScope::Repo)
             .count();
         let machine_count = stands
             .iter()
             .filter(|s| s.layer_scope() == LayerScope::Machine)
             .count();
-        assert_eq!(project_count, 2, "Project scope の Stand は 2 個");
+        assert_eq!(repo_count, 2, "Repo scope の Stand は 2 個");
         assert_eq!(machine_count, 1, "machine scope の Stand は 1 個");
     }
 
@@ -330,11 +330,11 @@ mod tests {
         let services: Vec<Box<dyn Service>> = vec![
             Box::new(FixtureService {
                 name: "notify",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             }),
             Box::new(FixtureService {
                 name: "lane-spawn",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             }),
             Box::new(FixtureService {
                 name: "devices",
@@ -343,22 +343,22 @@ mod tests {
         ];
         assert_eq!(services.len(), 3);
 
-        // actor_name が distinct で取り出せる (= sp-bootstrap は actor じゃないので含めない)
+        // actor_name が distinct で取り出せる (= repo-bootstrap は actor じゃないので含めない)
         let names: Vec<&str> = services.iter().map(|s| s.actor_name()).collect();
         assert_eq!(names, vec!["notify", "lane-spawn", "devices"]);
 
         // layer_scope で filter できる (= PR-4 supervisor が scope 別に dispatch する pattern)
-        let project_count = services
+        let repo_count = services
             .iter()
-            .filter(|s| s.layer_scope() == LayerScope::Project)
+            .filter(|s| s.layer_scope() == LayerScope::Repo)
             .count();
         let machine_count = services
             .iter()
             .filter(|s| s.layer_scope() == LayerScope::Machine)
             .count();
         assert_eq!(
-            project_count, 2,
-            "Project scope の Service は 2 個 (= notify + lane-spawn)"
+            repo_count, 2,
+            "Repo scope の Service は 2 個 (= notify + lane-spawn)"
         );
         assert_eq!(
             machine_count, 1,

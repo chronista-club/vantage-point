@@ -4,7 +4,7 @@ import type { ActivitySnapshot } from "./ActivitySnapshot";
 import type { DeviceSnapshot } from "./DeviceSnapshot";
 import type { LaneInfo } from "./LaneInfo";
 import type { MessageState } from "./MessageState";
-import type { ProjectPaneState } from "./ProjectPaneState";
+import type { RepoPaneState } from "./RepoPaneState";
 import type { WidgetKind } from "./WidgetKind";
 
 /**
@@ -12,10 +12,10 @@ import type { WidgetKind } from "./WidgetKind";
  */
 export type SidebarState = { 
 /**
- * Runtime Process (= 旧 "projects") の list
+ * Runtime Process (= 旧 "repos") の list
  * Architecture v4: mem_1CaTpCQH8iLJ2PasRcPjHv、JSON wire は serde alias で互換維持
  */
-processes: Array<ProjectPaneState>, 
+processes: Array<RepoPaneState>, 
 /**
  * 現在表示中の widget kind
  */
@@ -25,41 +25,41 @@ widget: WidgetKind,
  */
 activity: ActivitySnapshot, 
 /**
- * project_path → Lane list (SP `/api/lanes` から fetch)
+ * repo_path → Lane list (repo `/api/lanes` から fetch)
  * 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope architecture)
  * 起動時に再 fetch されるので disk persistence は実質意味薄いが、Serialize は維持
  */
-lanes_by_project: { [key in string]?: Array<LaneInfo> }, 
+lanes_by_repo: { [key in string]?: Array<LaneInfo> }, 
 /**
- * 現在 active な Lane の address (Display 形 `"<project>/root"` 等)
+ * 現在 active な Lane の address (Display 形 `"<repo>/root"` 等)
  * app 全体で 1 つだけ。 `lane:select` IPC で更新される。
  */
 active_lane_address?: string | null, 
 /**
- * doc 44 D4: project_path → **開発起点 lane 名**（Project Host の帳簿が解決した値）。
+ * doc 44 D4: repo_path → **開発起点 lane 名**（Repo Host の帳簿が解決した値）。
  *
  * `active_lane_address`（注視 = 今見ている lane）とは**別物**。D5 が明示的に分けており、
  * 注視は click ごとに動くが起点は明示指定した時だけ動く。sidebar は起点 lane 行に
  * star icon を出し、context menu から再指定できる。
  *
- * 値は lane **名**（address ではない）— 起点は project ごとに 1 本なので
- * `<project>` 部分は key 側の path と冗長になる。
+ * 値は lane **名**（address ではない）— 起点は repo ごとに 1 本なので
+ * `<repo>` 部分は key 側の path と冗長になる。
  *
  * ⚠️ `skip_serializing` にしてはいけない: この struct は webview への push payload
  * でもあるので、skip すると Rust 側だけ更新されて sidebar に永久に届かない。
  * 空の時だけ省く（`session_titles` 等と同じ扱い）。
  */
-origin_by_project?: { [key in string]?: string }, 
+origin_by_repo?: { [key in string]?: string }, 
 /**
- * Phase 5-A: 現在 active な Project-scope Stand kind
+ * Phase 5-A: 現在 active な Repo-scope Stand kind
  * (`"board"` / `"runner"` / `"devices"`)。
- * `(project_path, kind)` の tuple で project ごとに区別。 app 全体で 1 つだけ active。
+ * `(repo_path, kind)` の tuple で repo ごとに区別。 app 全体で 1 つだけ active。
  * `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
  * `stand:select` IPC で更新される。
  */
 active_stand?: ActiveStand | null, 
 /**
- * Currents セクションの project 表示順 (path の順)。
+ * Currents セクションの repo 表示順 (path の順)。
  *
  * `SessionState.currents_order` から push される。 sidebar JS は Currents
  * rendering 時に this list の順で並び替える (list に無い path は末尾、 daemon order 維持)。
@@ -68,7 +68,7 @@ active_stand?: ActiveStand | null,
 currents_order?: Array<string> | null, 
 /**
  * Phase 5-D Sprint C P2.1: per-Lane HD notification unread count。
- * Key: Lane address (Display 形 `"<project>/root"` 等)、 Value: 未読 OSC 99 focus event 数。
+ * Key: Lane address (Display 形 `"<repo>/root"` 等)、 Value: 未読 OSC 99 focus event 数。
  * `OscNotification` event で increment、 `lane:select` で対応 Lane を 0 reset。
  * disk persist 不要 (session 起動で 0 から)、 skip_serializing で軽量化。
  */
@@ -82,7 +82,7 @@ unread_notifications: { [key in string]?: number },
 awaiting_input: { [key in string]?: boolean }, 
 /**
  * Canvas (Board) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
- * Key: Lane address (`"<project>/root"` 等)、 Value: 現在 active でない lane に
+ * Key: Lane address (`"<repo>/root"` 等)、 Value: 現在 active でない lane に
  * show が着いた回数。 `CanvasMessage`(show) で increment、 `lane:select` (activate_lane) で
  * 対応 Lane を 0 reset。 `unread_notifications` (HITL/OSC = 黄 dot) とは**別 sink** =
  * sidebar で Canvas 専用 icon (Phosphor easel) を出し「用事」と「絵が届いた」の語彙を分ける。
@@ -92,7 +92,7 @@ canvas_unread: { [key in string]?: number },
 /**
  * VP-143: per-Lane の cc session display name (`/rename` で設定された custom-title)。
  * Key: Lane address、 Value: title 文字列。
- * `~/.claude/projects/<encoded-cwd>/<latest>.jsonl` の `custom-title` entry を polling
+ * `~/.claude/repos/<encoded-cwd>/<latest>.jsonl` の `custom-title` entry を polling
  * で抽出して populate (`session_title` module + `session_title_poller`)。
  * `/rename` 未実行 lane は entry なし → JS 側で branch 名 fallback。
  * disk persist 不要 (起動時に再 resolve)、 skip_serializing で軽量化。
@@ -100,7 +100,7 @@ canvas_unread: { [key in string]?: number },
 session_titles?: { [key in string]?: string }, 
 /**
  * VP-147 PR-P2-3: per-Lane の mailbox inbox 状況。
- * Key: Lane address (Display 形 `"<project>/root"`)、 Value: [`MessageState`]。
+ * Key: Lane address (Display 形 `"<repo>/root"`)、 Value: [`MessageState`]。
  * `spawn_lane_inbox_poller` (5s 間隔) が `AppEvent::ResolveLaneInboxes` を発火、
  * main thread が active Lane に対して MessageState を populate する。
  * JS 側は entry が存在する Lane に `.vp-message-icon` を render (Echoes icon の右隣)。
@@ -115,14 +115,14 @@ lane_inboxes?: { [key in string]?: MessageState },
  */
 devices?: Array<DeviceSnapshot>, 
 /**
- * doc 30 §5-3 / lanes 購読 self-heal: per-project の Daemon "lanes" channel 購読フェーズ。
- * Key: project_path。 Value は 3 値モデル (entry 有無 + 2 文字列):
+ * doc 30 §5-3 / lanes 購読 self-heal: per-repo の Daemon "lanes" channel 購読フェーズ。
+ * Key: repo_path。 Value は 3 値モデル (entry 有無 + 2 文字列):
  *
  * - entry なし (absent) = 初期 (購読開始〜初回 snapshot 未受信)。 `hintFor` は `📡 loading lanes…`
  * - `"stalled"` = open / subscribe / 初回 snapshot が timeout (Daemon lanes channel 無応答 or QUIC 未接続)。 `LanesError` で挿入。 `hintFor` は `⚠️ lane 接続が停滞 — daemon restart で復帰`
  * - `"ready"` = snapshot を 1 度でも受信 (`LanesLoaded` で挿入、 以後 entry は残る)。 lane 0 本なら `hintFor` は `📡 lane なし`
  *
- * stall→ready は復帰時の snapshot で上書きされ自動解消 (self-heal と連動)。 起動時は全 project entry
+ * stall→ready は復帰時の snapshot で上書きされ自動解消 (self-heal と連動)。 起動時は全 repo entry
  * なしなので `skip_serializing_if = is_empty` で初期は wire に出ない (disk 非永続なので実害なし)。
  */
 lane_sub_state?: { [key in string]?: string }, };

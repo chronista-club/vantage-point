@@ -5,7 +5,7 @@
  * ここの method へ配る）。`window.vpConsole` は **DevTools 検分用に残してある**だけで、
  * Rust は名前で呼ばない（SSOT = `crates/vp-app/schema/vp-push.kdl`）。
  *
- * - data plane: `console:event` → [`VpConsole.handleEvent`] — SP の EchoesAgentHost が吐く
+ * - data plane: `console:event` → [`VpConsole.handleEvent`] — repo の EchoesAgentHost が吐く
  *   EchoesEvent（engine 非依存語彙、doc 32 §4）を per-lane ring buffer に蓄積し、
  *   mount 済みの ChatView renderer に届ける（renderer は C2 で登録）。
  * - control plane: `console:act_applied` → [`VpConsole.setSessionAct`] — その session の
@@ -113,12 +113,12 @@ export type ConsoleRenderer = (event: EchoesEvent, session: number) => void
 // ---------------------------------------------------------------------------
 // doc 38 Phase 2 — per-lane session registry（1 Lane = N session）
 //
-// SP（echoes_session_list）が唯一の真実源。ここはそれを描くための薄い view cache で、
+// repo（echoes_session_list）が唯一の真実源。ここはそれを描くための薄い view cache で、
 // tab strip の描画基準（focused）と chatview の event filter が参照する。純関数群は document
 // 非依存 = vitest でそのままテストできる（session routing の要）。
 // ---------------------------------------------------------------------------
 
-/** echoes_session_list の 1 要素（SP `ChatSessionInfo` の手書き mirror）。 */
+/** echoes_session_list の 1 要素（repo `ChatSessionInfo` の手書き mirror）。 */
 export type EchoesSession = {
   /** VP 採番のローカル key（<lane>#<n> の n）。 */
   key: number
@@ -204,13 +204,13 @@ export function normalizeSession(session?: number): number {
   return session ?? 1
 }
 
-/** SP の echoes_session_list payload を per-lane cache に取り込む（純粋 = document 非依存 = テスト可能）。 */
+/** repo の echoes_session_list payload を per-lane cache に取り込む（純粋 = document 非依存 = テスト可能）。 */
 export function noteSessionList(lane: string, focused: number, sessions: EchoesSession[]): void {
   laneSessions.set(lane, { focused, sessions })
 }
 
 /** tab click の楽観的 focus 切替（chatview の filter を round-trip を待たず即切り替える）。
- *  SP の echoes_session_list が後で authoritative 値で上書きする。純粋 = テスト可能。 */
+ *  repo の echoes_session_list が後で authoritative 値で上書きする。純粋 = テスト可能。 */
 export function noteFocus(lane: string, session: number): void {
   const cur = laneSessions.get(lane)
   if (cur) cur.focused = session
@@ -325,7 +325,7 @@ export function foldHeaderState(h: EchoesHeaderState, event: EchoesEvent): boole
 // ---------------------------------------------------------------------------
 
 /** ring buffer 上限。ChatView mount 前の取りこぼし救済 + devtools 検分用（会話全体の SSOT は
- *  SP 側 cc_session なので、ここは直近ウィンドウで足りる）。 */
+ *  repo 側 cc_session なので、ここは直近ウィンドウで足りる）。 */
 const BUFFER_CAP = 1000
 
 /** ring buffer の 1 要素。doc 38 Phase 2: どの session の event かを envelope として保持し、
@@ -368,7 +368,7 @@ export type VpConsole = {
   peek(lane: string, n?: number): EchoesEvent[]
   /** Echoes 共通ヘッダ用 summary の snapshot（copy を返す — caller の signal 更新用）。 */
   headerState(lane: string): EchoesHeaderState
-  /** doc 38 Phase 2: SP の echoes_session_list を per-lane cache に取り込み、tab strip へ
+  /** doc 38 Phase 2: repo の echoes_session_list を per-lane cache に取り込み、tab strip へ
    *  'vp:echoes-sessions' CustomEvent を発火する（focused も併せて更新）。 */
   handleSessionList(lane: string, payload: EchoesSessionListPayload): void
   /** doc 38 Phase 2: stands_list を「+」menu へ 'vp:echoes-stands' CustomEvent で中継する。

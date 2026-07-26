@@ -48,11 +48,11 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
     semantic: 'focus-preserving',
   },
   n: {
-    description: 'active project の AddPerformer form を keyboard で open',
+    description: 'active repo の AddPerformer form を keyboard で open',
     semantic: 'focus-transferring',
   },
   s: {
-    description: 'Lane / project switcher picker overlay (fuzzy + list)',
+    description: 'Lane / repo switcher picker overlay (fuzzy + list)',
     semantic: 'focus-transferring',
   },
   d: {
@@ -63,7 +63,7 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   // v0.6 (PR 447) — lane number switcher mode (= v0.4 §C.3 で予約していた `l` (lane panel) を再定義)
   l: {
     description:
-      'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で lane:select',
+      'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded repo 内 lane を上から N 番目で lane:select',
     semantic: 'focus-transferring',
   },
   // v0.8 (curation) で撤去:

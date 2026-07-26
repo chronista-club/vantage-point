@@ -22,7 +22,7 @@
 
 ```
 daemon 👑
-└── Project（repo = 場所）
+└── Repo（repo = 場所）
     └── Lane（checkout = 作業台。cwd / branch / board / layout を持つ）
         │
         ├── 働き手（0..N 人）= 席を占めるプロセス（1 人 = 高々 1 プロセス、休眠あり）
@@ -78,7 +78,7 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
     resume の spawn 引数として「値」で流れるのは正、wire field / state file 名 / 配送判断の
     「鍵」になるのは誤
   - **shell** — 人間が駆る席。The Hand ✋（stands.rs が語彙を先取りしていた）。
-    **wire の市民権は席に付く**: 席の env（`VP_PROJECT` / `VP_LANE` / `VP_SESSION_KEY`）が
+    **wire の市民権は席に付く**: 席の env（`VP_REPO` / `VP_LANE` / `VP_SESSION_KEY`）が
     身分証で、`vp wire inbox` / `vp now` / board がフルに使える。
     **欠けているのは AI だけで、席の能力は 1 つも欠けない**
 - **1 働き手 = 高々 1 プロセス（休眠あり）**。旧「1 session = 高々 1 engine」の法
@@ -213,7 +213,7 @@ binding）だけが動的。A6 が replay を session（= 席）に鍵付けし�
 | **trigger** | 入力 tap（CR のみ検知。**内容は読まない** = keylog 性が構造的にゼロ） | 検査の合図（edge — 落としてよい） | 不要 |
 | **inspect** | 席のプロセス木 + argv（VP は shell の pid を持つ。同 uid で sysctl 可） | 誰が座ったか / `--resume` id | 不要 |
 | **watch** | kqueue NOTE_EXIT | 退席の event-driven 検知 | 不要 |
-| **enrich** | **fs 痕跡観測**（claude: `~/.claude/projects/<slug>/*.jsonl` / codex: rollout の filename — 中身の深 parse は不要） | fresh 起動の会話 id | **不要 — 規約知識のみ** |
+| **enrich** | **fs 痕跡観測**（claude: `~/.claude/repos/<slug>/*.jsonl` / codex: rollout の filename — 中身の深 parse は不要） | fresh 起動の会話 id | **不要 — 規約知識のみ** |
 
 - **生の入力 parse は採らない**: 補完（`cla<TAB>`）・履歴（`↑↑`）・Ctrl-R では、コマンド本文が
   入力 stream に**存在しない**。入力は合図（edge）、真実はプロセス木（level）— doc 53 §2.3 の

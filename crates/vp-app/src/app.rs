@@ -10,7 +10,7 @@
 //! │ ┌──────────┬───────────────────────────────────────┐ │
 //! │ │ sidebar  │   main area (単一 wry WebView)          │ │
 //! │ │ (Creo)   │   ┌─ pane-terminal (xterm.js)─────┐   │ │
-//! │ │ project  │   ├─ pane-canvas (placeholder)─────┤   │ │
+//! │ │ repo  │   ├─ pane-canvas (placeholder)─────┤   │ │
 //! │ │ + Activ. │   ├─ pane-preview (iframe)─────────┤   │ │
 //! │ │ widget   │   └─ pane-empty   (no selection)───┘   │ │
 //! │ │ (~280px) │   active pane を kind 別に切替表示       │ │
@@ -36,13 +36,12 @@ use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
-use crate::client::{DaemonRpcClient, ProjectInfo};
+use crate::client::{DaemonRpcClient, RepoInfo};
 use crate::daemon_control::DaemonControl;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
-use crate::pane::{ActiveStand, ActivitySnapshot, ProjectPaneState, SidebarState};
-use crate::project_dialog::{
-    resolve_default_project_root, spawn_add_project_picker, spawn_clone_path_picker,
-    spawn_clone_project,
+use crate::pane::{ActiveStand, ActivitySnapshot, RepoPaneState, SidebarState};
+use crate::repo_dialog::{
+    resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_path_picker, spawn_clone_repo,
 };
 use crate::session_state::SessionState;
 use crate::settings::Settings;
@@ -139,7 +138,7 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 }
 
 /// WebView 統合 (step 3a): 統合 ipc_handler の dispatch 判定。
-/// main (terminal / pane) IPC tag なら true、 sidebar IpcEnvelope tag (project: / lane: 系)
+/// main (terminal / pane) IPC tag なら true、 sidebar IpcEnvelope tag (repo: / lane: 系)
 /// なら false。 tag 集合は `terminal::handle_ipc_message` の match arm と一致 (disjoint)。
 /// terminal の fall-through に頼ると sidebar tag を silent drop するため、 ここで明示判定する。
 fn is_main_ipc_tag(body: &str) -> bool {
@@ -162,7 +161,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "slot:rect"
                 | "board:delete"
                 | "board:clear"
-                // cursor server 昇格（doc 52 §5）: thumbnail click / scrollback の注視 → SP。
+                // cursor server 昇格（doc 52 §5）: thumbnail click / scrollback の注視 → repo。
                 // allowlist 漏れは sidebar IPC へ silent drop = click しても注視が同期されない
                 | "board:cursor"
                 | "console"
@@ -261,7 +260,7 @@ mod session_derivation_tests {
     /// snapshot に 1 本化した今、変換はこの純関数 1 箇所 — 形がずれると tab strip / pane grid /
     /// 名札が同時に壊れるので、**client が読む field を名指しで**固定する。
     ///
-    /// （旧テスト `dropped_fetch_is_replayed_once_project_resolves` が守っていた性質
+    /// （旧テスト `dropped_fetch_is_replayed_once_repo_resolves` が守っていた性質
     /// 「boot 窓で roster を取りこぼさない」は、供給が retained snapshot になったことで
     /// 構造的に消滅した — 取りこぼす対象の要求が存在しない。§8.6 の規律に従い、
     /// 代わりに新しい供給の契約をここで固定する。）
@@ -361,7 +360,7 @@ mod session_derivation_tests {
     /// doc 53 R1: act は sessions（registry snapshot）だけが運ぶ — 旧 console_mode field は退役。
     fn lane_with(root: u32, sessions: serde_json::Value) -> LaneInfo {
         serde_json::from_value(serde_json::json!({
-            "address": {"kind": "root", "project": "vp"},
+            "address": {"kind": "root", "repo": "vp"},
             "sessions": {"root": root, "focused": root, "sessions": sessions},
         }))
         .expect("LaneInfo deserialize")
@@ -394,7 +393,7 @@ mod session_derivation_tests {
     fn term_sessions_falls_back_to_root_for_legacy_wire() {
         // registry snapshot が無い旧 SP からの wire は root 1 枚に畳む（従来挙動）。
         let lane: LaneInfo = serde_json::from_value(serde_json::json!({
-            "address": {"kind": "root", "project": "vp"},
+            "address": {"kind": "root", "repo": "vp"},
         }))
         .expect("LaneInfo deserialize");
         assert_eq!(term_sessions_of(&lane), vec![(1, true)]);
@@ -408,7 +407,7 @@ mod session_derivation_tests {
         let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "chat")]));
         let addr = lane.address.key();
         let mut state = SidebarState::default();
-        state.lanes_by_project.insert("p".to_string(), vec![lane]);
+        state.lanes_by_repo.insert("p".to_string(), vec![lane]);
         assert!(
             lane_has_chat_session(&state, &addr),
             "非 root だけ chat の構成でも購読を張る"
@@ -417,7 +416,7 @@ mod session_derivation_tests {
         // 全部 tui なら購読不要。
         let lane = lane_with(16, serde_json::json!([s(16, "tui")]));
         let mut state2 = SidebarState::default();
-        state2.lanes_by_project.insert("p".to_string(), vec![lane]);
+        state2.lanes_by_repo.insert("p".to_string(), vec![lane]);
         assert!(!lane_has_chat_session(&state2, &addr));
     }
 }
@@ -439,17 +438,17 @@ fn spawn_menu_event_pump(rt_handle: &tokio::runtime::Handle, proxy: EventLoopPro
     });
 }
 
-/// F6 (doc 27 §3.4): active_lane_address から対応する project_path を引く。
+/// F6 (doc 27 §3.4): active_lane_address から対応する repo_path を引く。
 ///
-/// active_lane_address (`<project>/root` or `<project>/performer/<name>`) から、 対応する
-/// project_path を引く。 daemon process-proxy は SP port 不問・project_path を path_key に正規化して
+/// active_lane_address (`<repo>/root` or `<repo>/performer/<name>`) から、 対応する
+/// repo_path を引く。 daemon repo-proxy は repo port 不問・repo_path を path_key に正規化して
 /// routing するので、 ask 系 (board mutate / lane ops) は port でなく path で引く。 解決失敗
-/// (lane 未選択 / SP 未起動) なら `None`。 caller: `BoardMutate`（board_delete_item / board_clear）の
-/// process-proxy ask。
-pub(crate) fn resolve_active_project_path(state: &crate::pane::SidebarState) -> Option<String> {
+/// (lane 未選択 / repo 未起動) なら `None`。 caller: `BoardMutate`（board_delete_item / board_clear）の
+/// repo-proxy ask。
+pub(crate) fn resolve_active_repo_path(state: &crate::pane::SidebarState) -> Option<String> {
     let active = state.active_lane_address.as_deref()?;
     for proc in &state.processes {
-        if let Some(lanes) = state.lanes_by_project.get(&proc.path)
+        if let Some(lanes) = state.lanes_by_repo.get(&proc.path)
             && lanes.iter().any(|l| l.address.key() == active)
         {
             return Some(proc.path.clone());
@@ -459,49 +458,49 @@ pub(crate) fn resolve_active_project_path(state: &crate::pane::SidebarState) -> 
 }
 
 pub(crate) fn merge_ports_from_running(
-    projects: &mut [crate::client::ProjectInfo],
-    running: &[crate::client::RunningProcess],
+    repos: &mut [crate::client::RepoInfo],
+    running: &[crate::client::RunningRepo],
 ) {
     let port_by_name: std::collections::HashMap<String, u16> = running
         .iter()
-        .map(|r| (r.project_name.clone(), r.port))
+        .map(|r| (r.repo_name.clone(), r.port))
         .collect();
-    for p in projects.iter_mut() {
+    for p in repos.iter_mut() {
         if let Some(&port) = port_by_name.get(&p.name) {
             p.port = Some(port);
         }
     }
 }
 
-/// 各 `ProjectInfo.port` に runtime port を merge した list を返す。
+/// 各 `RepoInfo.port` に runtime port を merge した list を返す。
 ///
-/// `list_projects()` を直接呼んでそのまま `ProjectsLoaded` に乗せると、 config に port を
-/// 書いていない project (= 大多数) の port が `None` で来てしまい、 sidebar_state.processes
+/// `list_repos()` を直接呼んでそのまま `ReposLoaded` に乗せると、 config に port を
+/// 書いていない repo (= 大多数) の port が `None` で来てしまい、 sidebar_state.processes
 /// の port を全潰しする。 これが起きると以降の `LanesLoaded` で `ensureLane` が skip され
 /// terminal が表示されなくなる (= restart / stop / delete 後の conductor console 消失 bug)。
 /// **全 fetch 経路はこのヘルパ 1 本に集約**して同じ join をかける。
 ///
 /// `list_processes` 側のみエラーなら空 map 扱い (= port は config 値のまま) で degrade、
-/// `list_projects` 側エラーは bubble up する。
-pub(crate) async fn fetch_projects_with_ports(
+/// `list_repos` 側エラーは bubble up する。
+pub(crate) async fn fetch_repos_with_ports(
     control: &DaemonControl,
-) -> anyhow::Result<Vec<ProjectInfo>> {
-    let (proj_res, run_res) = tokio::join!(control.list_projects(), control.list_processes());
-    let mut projects = proj_res?;
+) -> anyhow::Result<Vec<RepoInfo>> {
+    let (proj_res, run_res) = tokio::join!(control.list_repos(), control.list_processes());
+    let mut repos = proj_res?;
     match run_res {
-        Ok(runs) => merge_ports_from_running(&mut projects, &runs),
+        Ok(runs) => merge_ports_from_running(&mut repos, &runs),
         Err(e) => {
             tracing::warn!("list_processes 失敗 (port 不明、 config 値のみ): {}", e);
         }
     };
-    Ok(projects)
+    Ok(repos)
 }
 
 /// 起動時に daemon の Process list を別スレッドで fetch。
 ///
 /// **Phase A4-3b bug fix (mem_1CaTpCQH8iLJ2PasRcPjHv Architecture v4)**:
-/// `fetch_projects_with_ports` で registered + running を join して、各 Process に
-/// `port` と `state` を解決した状態で `ProjectsLoaded` event に乗せる。
+/// `fetch_repos_with_ports` で registered + running を join して、各 Process に
+/// `port` と `state` を解決した状態で `ReposLoaded` event に乗せる。
 ///
 /// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_subscription(...) }` が動く経路完成。
 ///
@@ -514,17 +513,17 @@ fn spawn_processes_fetch(
 ) {
     rt_handle.spawn(async move {
         let result = match conn.control_within(BOOT_CONTROL_WAIT).await {
-            Ok(control) => fetch_projects_with_ports(&control).await,
+            Ok(control) => fetch_repos_with_ports(&control).await,
             Err(e) => Err(e),
         };
         match result {
             Ok(processes) => {
                 // polling 毎回発火するため log omit (= loop noise)。
-                let _ = proxy.send_event(AppEvent::ProjectsLoaded(processes));
+                let _ = proxy.send_event(AppEvent::ReposLoaded(processes));
             }
             Err(e) => {
                 tracing::warn!("daemon fetch 失敗 (daemon 未起動?): {}", e);
-                let _ = proxy.send_event(AppEvent::ProjectsError(e.to_string()));
+                let _ = proxy.send_event(AppEvent::ReposError(e.to_string()));
             }
         }
     });
@@ -532,7 +531,7 @@ fn spawn_processes_fetch(
 
 /// 1 回の Unison channel 接続セッションの終わり方 ("lanes" / "canvas" 購読が共用)。
 enum SubscriptionOutcome {
-    /// セッション確立後に切断 (SP restart / channel close)。即再接続の対象。
+    /// セッション確立後に切断 (repo restart / channel close)。即再接続の対象。
     Disconnected,
     /// event loop が閉じた (= app 終了)。購読スレッドを畳む。
     AppClosing,
@@ -544,9 +543,9 @@ enum SubscriptionOutcome {
 /// `current` watch は現 epoch の `ProtocolClient` (= 1 connection) を全 session に配る
 /// (None = 未接続 / 再接続中)。 session は `wait_client()` で接続を待ち、 得た client で
 /// `open_channel` して自分の stream を張る (= 1 conn × N streams)。 reconnect は manager task が
-/// 一手に所有し、 epoch ごとに fresh client を connect → publish する (F1a SP uplink と同パターン)。
+/// 一手に所有し、 epoch ごとに fresh client を connect → publish する (F1a repo uplink と同パターン)。
 ///
-/// 旧構成は session ごと (lanes / canvas は project ごと、 terminal は lane ごと) に別 QUIC
+/// 旧構成は session ごと (lanes / canvas は repo ごと、 terminal は lane ごと) に別 QUIC
 /// connection を張り、 QUIC の多重化を使えていなかった (§3.4.4 負債)。 これを 1 connection に畳む。
 #[derive(Clone)]
 pub(crate) struct SharedDaemonConn {
@@ -629,7 +628,7 @@ fn spawn_daemon_conn_manager(
         let mut generation: u64 = 0;
 
         loop {
-            // epoch ごとに fresh client (F1a SP uplink と同じ「再接続 = 新 client」パターン)。
+            // epoch ごとに fresh client (F1a repo uplink と同じ「再接続 = 新 client」パターン)。
             let transport = match QuicClient::builder()
                 .trust_anchors(TrustAnchors::SkipVerification)
                 .build()
@@ -726,23 +725,23 @@ fn spawn_daemon_conn_manager(
     }
 }
 
-/// wiremsg Stage 1 consumer: SP の "lanes" Unison channel を購読し、retained Lane
+/// wiremsg Stage 1 consumer: repo の "lanes" Unison channel を購読し、retained Lane
 /// snapshot を受信して `AppEvent::LanesLoaded` を emit する。旧 `spawn_lanes_fetch`
 /// (one-shot HTTP poll) を置換する long-lived 購読。F1b: 共有 connection 上の stream で、
 /// reconnect は `SharedDaemonConn` の manager が所有するので give-up せず追従する。
 /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
 ///
-/// L0 SP-portless (lanes slice): 接続先は SP 直結ではなく **Daemon :32000 の集約 "lanes" channel**。
-/// daemon は registry channel 経由で各 SP の lane snapshot/diff を受けて lane_registry に集約済で、
-/// 本購読は project_path で scope して当該 project の snapshot を受ける (繋ぎ先が変わっただけで
+/// L0 SP-portless (lanes slice): 接続先は repo 直結ではなく **Daemon :32000 の集約 "lanes" channel**。
+/// daemon は registry channel 経由で各 repo の lane snapshot/diff を受けて lane_registry に集約済で、
+/// 本購読は repo_path で scope して当該 repo の snapshot を受ける (繋ぎ先が変わっただけで
 /// consumer ロジックは不変)。
 fn spawn_lanes_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
-    process_path: String,
+    repo_path: String,
     conn: SharedDaemonConn,
 ) {
-    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, conn));
+    rt_handle.spawn(lanes_subscription_loop(proxy, repo_path, conn));
 }
 
 /// lanes 購読の各フェーズ (wait_client / open / subscribe / 初回 snapshot) の stall 判定 timeout。
@@ -754,11 +753,11 @@ const LANES_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// "lanes" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
 ///
 /// reconnect は `SharedDaemonConn` の manager が一手に所有するので、 本ループは
-/// `wait_client` で接続を待ち、 得た client で session を回すだけ。 SP unreachable でも諦めず
+/// `wait_client` で接続を待ち、 得た client で session を回すだけ。 repo unreachable でも諦めず
 /// 共有 connection に追従する (旧 10 連続失敗 give-up + `LanesSubscriptionEnded` は廃止)。
 async fn lanes_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
-    process_path: String,
+    repo_path: String,
     mut conn: SharedDaemonConn,
 ) {
     loop {
@@ -771,21 +770,21 @@ async fn lanes_subscription_loop(
             Ok(None) => return, // app 終了
             Err(_) => {
                 let _ = proxy.send_event(AppEvent::LanesError {
-                    process_path: process_path.clone(),
+                    repo_path: repo_path.clone(),
                     message: "daemon QUIC 未接続 (wait_client timeout)".to_string(),
                 });
                 continue;
             }
         };
-        match run_lanes_session(&proxy, &process_path, &client).await {
+        match run_lanes_session(&proxy, &repo_path, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             // 切断は共有 manager が面倒を見るので、 次の client を待つだけ (per-session error 扱い無し)。
             Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
                 // open_channel / handshake 失敗。 surface に通知しつつ give-up せず次の接続機会を待つ。
-                tracing::warn!("lanes subscription error: project={}: {}", process_path, e);
+                tracing::warn!("lanes subscription error: repo={}: {}", repo_path, e);
                 let _ = proxy.send_event(AppEvent::LanesError {
-                    process_path: process_path.clone(),
+                    repo_path: repo_path.clone(),
                     message: e,
                 });
                 // connected だが open_channel が連続失敗するケースの busy loop を避ける小休止。
@@ -802,7 +801,7 @@ async fn lanes_subscription_loop(
 /// channel open に失敗 (失敗カウンタの対象)。
 async fn run_lanes_session(
     proxy: &EventLoopProxy<AppEvent>,
-    process_path: &str,
+    repo_path: &str,
     client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
     // F1b: 共有 connection 上に "lanes" stream を開く (旧: session ごと別 connect)。
@@ -817,7 +816,7 @@ async fn run_lanes_session(
     // 抜けに 1 度だけ `channel.close()` する (recv_task abort + stream close)。 close せず drop すると
     // recv_task と QUIC stream がリークし、 half-alive 障害の 12.5s retry ごとに積み上がって
     // MAX_STREAMS 枯渇 → この fix が直そうとした症状が再発する (Moody Blues #1)。
-    let outcome = lanes_session_after_open(proxy, process_path, &channel).await;
+    let outcome = lanes_session_after_open(proxy, repo_path, &channel).await;
     let _ = channel.close().await;
     outcome
 }
@@ -826,28 +825,28 @@ async fn run_lanes_session(
 /// 戻り後に必ず `channel.close()` するため、 本体は close を気にせず早期 return してよい。
 async fn lanes_session_after_open(
     proxy: &EventLoopProxy<AppEvent>,
-    process_path: &str,
+    repo_path: &str,
     channel: &unison::network::UnisonChannel,
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
-    // L0 SP-portless: Daemon "lanes" channel は project 単位なので、 接続後に subscribe
-    // handshake で project_path を渡す (daemon 側で path_key に正規化されて lane_registry と突合)。
-    // ack 後に当該 project の snapshot が `send_event("snapshot", ...)` で初期配信される。
+    // L0 SP-portless: Daemon "lanes" channel は repo 単位なので、 接続後に subscribe
+    // handshake で repo_path を渡す (daemon 側で path_key に正規化されて lane_registry と突合)。
+    // ack 後に当該 repo の snapshot が `send_event("snapshot", ...)` で初期配信される。
     // self-heal: subscribe を LANES_STALL_TIMEOUT で括る (half-alive で永久ブロックしない)。
     tokio::time::timeout(
         LANES_STALL_TIMEOUT,
         channel.request::<serde_json::Value, serde_json::Value>(
             "subscribe",
-            &serde_json::json!({ "project_path": process_path }),
+            &serde_json::json!({ "repo_path": repo_path }),
         ),
     )
     .await
     .map_err(|_| "lanes subscribe handshake: timeout".to_string())?
     .map_err(|e| format!("lanes subscribe handshake: {}", e))?;
     tracing::info!(
-        "lanes subscription connected (via Daemon): project={}",
-        process_path
+        "lanes subscription connected (via Daemon): repo={}",
+        repo_path
     );
 
     // 初回 snapshot deadline: retained topic なので即届くはず。 来なければ stall とみなし Err (retry)。
@@ -860,13 +859,13 @@ async fn lanes_session_after_open(
                 Ok(Err(_)) => return Ok(SubscriptionOutcome::Disconnected),
                 Err(_) => return Err("lanes first snapshot timeout".to_string()),
             },
-            // セッション確立後の切断 (SP 停止 / channel close)。再接続対象。
+            // セッション確立後の切断 (repo 停止 / channel close)。再接続対象。
             None => match channel.recv().await {
                 Ok(m) => m,
                 Err(_) => return Ok(SubscriptionOutcome::Disconnected),
             },
         };
-        // SP 側 "lanes" channel は `send_event("snapshot", ...)` で push する。
+        // repo 側 "lanes" channel は `send_event("snapshot", ...)` で push する。
         if msg.msg_type != MessageType::Event || msg.method != "snapshot" {
             continue;
         }
@@ -877,8 +876,8 @@ async fn lanes_session_after_open(
                 continue;
             }
         };
-        // payload = ProcessMessage::LanesSnapshot = {"type":"lanes_snapshot","lanes":[...]}。
-        // topic は `process/star-platinum/state/#` の wildcard 購読なので、将来別 message
+        // payload = RepoMessage::LanesSnapshot = {"type":"lanes_snapshot","lanes":[...]}。
+        // topic は `repo/star-platinum/state/#` の wildcard 購読なので、将来別 message
         // 種別が同 subtree に publish されても無視する。
         if payload.get("type").and_then(|t| t.as_str()) != Some("lanes_snapshot") {
             continue;
@@ -899,11 +898,11 @@ async fn lanes_session_after_open(
             .map(|s| s.to_string());
         // 初回 snapshot を受けたら deadline 解除 (以降は変化 push を無期限に待つ = steady-state)。
         first_snapshot_deadline = None;
-        // LanesLoaded push (= retained snapshot + delta) は project × frequency で
+        // LanesLoaded push (= retained snapshot + delta) は repo × frequency で
         // ループする systematic event なので log omit (= info / debug どちらでも noise)。
         if proxy
             .send_event(AppEvent::LanesLoaded {
-                process_path: process_path.to_string(),
+                repo_path: repo_path.to_string(),
                 lanes,
                 origin,
             })
@@ -915,20 +914,20 @@ async fn lanes_session_after_open(
     }
 }
 
-/// wiremsg Stage 2 consumer: SP の "canvas" Unison channel を購読し、Canvas (Board)
-/// ProcessMessage を受信して `AppEvent::CanvasMessage` を emit する。`spawn_lanes_subscription`
+/// wiremsg Stage 2 consumer: repo の "canvas" Unison channel を購読し、Canvas (Board)
+/// RepoMessage を受信して `AppEvent::CanvasMessage` を emit する。`spawn_lanes_subscription`
 /// と同型（QUIC 購読 + 指数バックオフ再接続）。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
 ///
-/// L0 SP-portless (canvas slice): 接続先は SP 直結ではなく **Daemon :32000 の集約 "canvas" channel**。
-/// 各 SP が board topic を daemon に push し、 daemon が project の TopicRouter に集約済なので、
-/// 本購読は project_path で scope して当該 project の canvas (retained + live) を受ける。
+/// L0 SP-portless (canvas slice): 接続先は repo 直結ではなく **Daemon :32000 の集約 "canvas" channel**。
+/// 各 repo が board topic を daemon に push し、 daemon が repo の TopicRouter に集約済なので、
+/// 本購読は repo_path で scope して当該 repo の canvas (retained + live) を受ける。
 fn spawn_canvas_subscription(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
-    process_path: String,
+    repo_path: String,
     conn: SharedDaemonConn,
 ) {
-    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, conn));
+    rt_handle.spawn(canvas_subscription_loop(proxy, repo_path, conn));
 }
 
 /// "canvas" channel の購読 → 再購読を司る long-lived ループ (F1b: 共有 connection 上の stream)。
@@ -937,7 +936,7 @@ fn spawn_canvas_subscription(
 /// session を回すだけで、 give-up + `CanvasSubscriptionEnded` は廃止 (共有 conn に追従)。
 async fn canvas_subscription_loop(
     proxy: EventLoopProxy<AppEvent>,
-    process_path: String,
+    repo_path: String,
     mut conn: SharedDaemonConn,
 ) {
     loop {
@@ -945,11 +944,11 @@ async fn canvas_subscription_loop(
             Some(c) => c,
             None => return, // app 終了
         };
-        match run_canvas_session(&proxy, &process_path, &client).await {
+        match run_canvas_session(&proxy, &repo_path, &client).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
-                tracing::warn!("canvas subscription error: project={}: {}", process_path, e);
+                tracing::warn!("canvas subscription error: repo={}: {}", repo_path, e);
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
@@ -958,12 +957,12 @@ async fn canvas_subscription_loop(
 
 /// 1 回の "canvas" channel 接続セッション: connect → `open_channel("canvas")` → recv ループ。
 ///
-/// "canvas" channel は `process/board/#` retained topic を購読しており、接続直後に
+/// "canvas" channel は `repo/board/#` retained topic を購読しており、接続直後に
 /// 現スナップショット（最新 Show 等）が届く。各メッセージは `send_event("pane", <JSON>)` で
-/// 来る（payload = ProcessMessage の生 JSON）。
+/// 来る（payload = RepoMessage の生 JSON）。
 async fn run_canvas_session(
     proxy: &EventLoopProxy<AppEvent>,
-    process_path: &str,
+    repo_path: &str,
     client: &unison::ProtocolClient,
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
@@ -974,19 +973,19 @@ async fn run_canvas_session(
         .open_channel("gui")
         .await
         .map_err(|e| format!("open gui channel: {}", e))?;
-    // L0 SP-portless: Daemon "gui" channel は project 単位なので、 接続後に subscribe handshake で
-    // project_path を渡す (daemon 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 project の
+    // L0 SP-portless: Daemon "gui" channel は repo 単位なので、 接続後に subscribe handshake で
+    // repo_path を渡す (daemon 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 repo の
     // retained board (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
     channel
         .request::<serde_json::Value, serde_json::Value>(
             "subscribe",
-            &serde_json::json!({ "project_path": process_path }),
+            &serde_json::json!({ "repo_path": repo_path }),
         )
         .await
         .map_err(|e| format!("canvas subscribe handshake: {}", e))?;
     tracing::info!(
-        "canvas subscription connected (via Daemon): project={}",
-        process_path
+        "canvas subscription connected (via Daemon): repo={}",
+        repo_path
     );
 
     loop {
@@ -994,7 +993,7 @@ async fn run_canvas_session(
             Ok(m) => m,
             Err(_) => return Ok(SubscriptionOutcome::Disconnected),
         };
-        // SP 側 "canvas" channel は `send_event("pane", <ProcessMessage JSON>)` で push する。
+        // repo 側 "canvas" channel は `send_event("pane", <RepoMessage JSON>)` で push する。
         if msg.msg_type != MessageType::Event || msg.method != "pane" {
             continue;
         }
@@ -1007,8 +1006,8 @@ async fn run_canvas_session(
         };
         // doc 48 Phase 2: editor bridge command は board-handler (webview) に流さず、
         // ここで JS 評価を event loop へ依頼し、結果を同一 channel の `editor_result` で
-        // 返す (request-response。channel は subscribe 済なので project 束縛も正しい)。
-        // この await 中は当該 project の canvas event が最大 ~2.5s 待たされるが、editor
+        // 返す (request-response。channel は subscribe 済なので repo 束縛も正しい)。
+        // この await 中は当該 repo の canvas event が最大 ~2.5s 待たされるが、editor
         // 操作は人間スケールの頻度なので許容 (別 task 化は順序/相関の複雑さに見合わない)。
         if payload.get("type").and_then(|v| v.as_str()) == Some("editor_command") {
             let request_id = payload
@@ -1057,7 +1056,7 @@ async fn run_canvas_session(
         }
         if proxy
             .send_event(AppEvent::CanvasMessage {
-                process_path: process_path.to_string(),
+                repo_path: repo_path.to_string(),
                 message: payload,
             })
             .is_err()
@@ -1286,11 +1285,11 @@ mod editor_bridge_js_tests {
     }
 }
 
-/// terminal S4 (doc 27 §4.1): per-lane terminal session への command (WebView → SP)。
+/// terminal S4 (doc 27 §4.1): per-lane terminal session への command (WebView → repo)。
 #[derive(Debug)]
 enum TermCmd {
-    /// keystroke (session, base64)。 canvas channel 上り request `terminal_write` で SP に送る。
-    /// doc 50 §4.6 A6: `session` は宛先 slot（0 = 未指定 → SP が root に解決）。
+    /// keystroke (session, base64)。 canvas channel 上り request `terminal_write` で repo に送る。
+    /// doc 50 §4.6 A6: `session` は宛先 slot（0 = 未指定 → repo が root に解決）。
     Write(u32, String),
     /// resize (session, cols, rows)。 `terminal_resize` で送る（0 = 未指定 → root）。
     Resize(u32, u16, u16),
@@ -1299,7 +1298,7 @@ enum TermCmd {
 /// terminal S4: 1 lane の terminal session handle (event loop が保持)。
 ///
 /// map から remove すると `cmd_tx` が drop され、 session loop の `cmd_rx.recv()` が None を返して
-/// 停止 → canvas channel drop → daemon 側 demand stop → SP pump stop
+/// 停止 → canvas channel drop → daemon 側 demand stop → repo pump stop
 /// (= 購読者が消えたら pump を畳む、 S2 demand-driven production の出口)。
 struct LaneTerminal {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<TermCmd>,
@@ -1307,24 +1306,20 @@ struct LaneTerminal {
 
 /// terminal S4: lane の terminal を Daemon "canvas" channel に乗せる per-lane session を spawn。
 ///
-/// `lane_key` = `<project>/root` 等 (`LaneAddressWire::key()`)。 Daemon :32000 の "canvas"
+/// `lane_key` = `<repo>/root` 等 (`LaneAddressWire::key()`)。 Daemon :32000 の "canvas"
 /// channel に `pattern: process/terminal/data/{lane_key}/out` で subscribe → Daemon demand 発火 →
-/// SP pump start。 受信した PTY 出力は `AppEvent::TerminalOutput` で event loop に流し、 cmd_rx
-/// 経由の write/resize は同 channel の上り request で SP に forward する (S3 bidirectional)。
+/// repo pump start。 受信した PTY 出力は `AppEvent::TerminalOutput` で event loop に流し、 cmd_rx
+/// 経由の write/resize は同 channel の上り request で repo に forward する (S3 bidirectional)。
 fn spawn_terminal_session(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     conn: SharedDaemonConn,
-    process_path: String,
+    repo_path: String,
     lane_key: String,
 ) -> LaneTerminal {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     rt_handle.spawn(terminal_session_loop(
-        proxy,
-        conn,
-        process_path,
-        lane_key,
-        cmd_rx,
+        proxy, conn, repo_path, lane_key, cmd_rx,
     ));
     LaneTerminal { cmd_tx }
 }
@@ -1336,7 +1331,7 @@ fn spawn_terminal_session(
 async fn terminal_session_loop(
     proxy: EventLoopProxy<AppEvent>,
     mut conn: SharedDaemonConn,
-    process_path: String,
+    repo_path: String,
     lane_key: String,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<TermCmd>,
 ) {
@@ -1345,7 +1340,7 @@ async fn terminal_session_loop(
             Some(c) => c,
             None => return, // app 終了
         };
-        match run_terminal_session(&proxy, &process_path, &lane_key, &client, &mut cmd_rx).await {
+        match run_terminal_session(&proxy, &repo_path, &lane_key, &client, &mut cmd_rx).await {
             // AppClosing = event loop 終了 or lane removed (cmd_tx drop) → session 終了。
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {}
@@ -1362,11 +1357,11 @@ async fn terminal_session_loop(
 ///
 /// 出力 `channel.recv()` と 上り `channel.request()` を同一 select! で扱う。 unison の `request` の
 /// response は pending map で解決され `recv()` には来ず、 また `recv()` は内部 buffer 由来で
-/// cancel-safe (= concurrent recv+request は control/process-proxy で実証済) なので、 cmd 分岐で
+/// cancel-safe (= concurrent recv+request は control/repo-proxy で実証済) なので、 cmd 分岐で
 /// recv future を drop しても出力欠落しない。
 async fn run_terminal_session(
     proxy: &EventLoopProxy<AppEvent>,
-    process_path: &str,
+    repo_path: &str,
     lane_key: &str,
     client: &unison::ProtocolClient,
     cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TermCmd>,
@@ -1378,12 +1373,12 @@ async fn run_terminal_session(
         .open_channel("gui")
         .await
         .map_err(|e| format!("open gui channel: {}", e))?;
-    // 当該 lane の terminal topic を pattern 指定で subscribe (= demand を立てて SP pump を起こす)。
-    let topic = format!("process/terminal/data/{}/out", lane_key.replace('/', "~"));
+    // 当該 lane の terminal topic を pattern 指定で subscribe (= demand を立てて repo pump を起こす)。
+    let topic = format!("repo/terminal/data/{}/out", lane_key.replace('/', "~"));
     channel
         .request::<serde_json::Value, serde_json::Value>(
             "subscribe",
-            &serde_json::json!({ "project_path": process_path, "pattern": topic }),
+            &serde_json::json!({ "repo_path": repo_path, "pattern": topic }),
         )
         .await
         .map_err(|e| format!("terminal subscribe handshake: {}", e))?;
@@ -1410,7 +1405,7 @@ async fn run_terminal_session(
                 // LaneTerminalOutput { lane, session, data(base64) }。 lane は subscription で
                 // 確定済なので、session（doc 50 §4.6 A6 — 同 topic に複数 session が流れる）と
                 // data を抜いて lane_key 付きで JS に渡す。session 欠落は 1（旧 sender 互換 =
-                // ProcessMessage 側の serde default と同値）。
+                // RepoMessage 側の serde default と同値）。
                 if let Some(data) = payload.get("data").and_then(|v| v.as_str())
                     && proxy
                         .send_event(AppEvent::TerminalOutput {
@@ -1430,7 +1425,7 @@ async fn run_terminal_session(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(TermCmd::Write(session, data)) => {
-                        // session=0 は「未指定」= SP が root に解決する（slot 系の規律）。
+                        // session=0 は「未指定」= repo が root に解決する（slot 系の規律）。
                         let mut payload = serde_json::json!({ "lane": lane_key, "data": data });
                         if session > 0 {
                             payload["session"] = serde_json::Value::from(session);
@@ -1448,7 +1443,7 @@ async fn run_terminal_session(
                         if session > 0 {
                             payload["session"] = serde_json::Value::from(session);
                         }
-                        // ⚠️ 応答は捨てる。SP 側は slot 未登録でも **intent を預かって登録時に
+                        // ⚠️ 応答は捨てる。repo 側は slot 未登録でも **intent を預かって登録時に
                         // 適用する**（`LanePool::desired_size`）ので、ここで retry する必要が無い。
                         // 2026-07-26 以前はそれが無く、この `let _` が「resize が落ちた」ことを
                         // 3 層にわたって不可視にしていた。
@@ -1472,19 +1467,19 @@ async fn run_terminal_session(
 // =============================================================================
 //
 // terminal session と同型だが **demand-driven**: lane reconcile には結合させず、
-// EchoesChatPane を開いた lane で初回 submit された時に lazy spawn する (SP 側 host の
+// EchoesChatPane を開いた lane で初回 submit された時に lazy spawn する (repo 側 host の
 // lazy モデルと一致)。subscribe → submit の順で走るため取りこぼしなし。
 
-/// Echoes session への command (WebView → SP)。
+/// Echoes session への command (WebView → repo)。
 #[derive(Debug)]
 enum EchoesCmd {
-    /// プロンプト投入。 canvas channel 上り request `echoes_submit` で SP に送る。
-    /// session（doc 50 P2）: None = focused（SP 側 payload_session_key の後方互換）。
+    /// プロンプト投入。 canvas channel 上り request `echoes_submit` で repo に送る。
+    /// session（doc 50 P2）: None = focused（repo 側 payload_session_key の後方互換）。
     Submit {
         prompt: String,
         session: Option<u32>,
     },
-    /// doc 35 PR1: PromptCard 回答。 canvas channel 上り request `echoes_respond` で SP に送る。
+    /// doc 35 PR1: PromptCard 回答。 canvas channel 上り request `echoes_respond` で repo に送る。
     Respond {
         request_id: String,
         answers: Option<serde_json::Value>,
@@ -1492,9 +1487,9 @@ enum EchoesCmd {
         message: Option<String>,
         session: Option<u32>,
     },
-    /// doc 35 §5 / PR2: 実行中 turn の中断。 canvas channel 上り request `echoes_interrupt` で SP へ。
+    /// doc 35 §5 / PR2: 実行中 turn の中断。 canvas channel 上り request `echoes_interrupt` で repo へ。
     Interrupt { session: Option<u32> },
-    /// doc 35 §2.5 / PR3: permission mode 切替。 canvas channel 上り request `echoes_set_permission_mode` で SP へ。
+    /// doc 35 §2.5 / PR3: permission mode 切替。 canvas channel 上り request `echoes_set_permission_mode` で repo へ。
     SetPermissionMode { mode: String, session: Option<u32> },
 }
 
@@ -1505,23 +1500,19 @@ struct LaneEchoes {
 
 /// lane の echoes を Daemon "canvas" channel に乗せる per-lane session を spawn。
 ///
-/// `process/echoes/data/{lane_key}/event` を subscribe → SP host が emit する EchoesEvent を
+/// `repo/echoes/data/{lane_key}/event` を subscribe → repo host が emit する EchoesEvent を
 /// `AppEvent::EchoesEvent` で event loop に流し、 cmd (submit) は同 channel の上り request
-/// `echoes_submit` で SP に forward する (terminal session の Act II 対応)。
+/// `echoes_submit` で repo に forward する (terminal session の Act II 対応)。
 fn spawn_echoes_session(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     conn: SharedDaemonConn,
-    process_path: String,
+    repo_path: String,
     lane_key: String,
 ) -> LaneEchoes {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     rt_handle.spawn(echoes_session_loop(
-        proxy,
-        conn,
-        process_path,
-        lane_key,
-        cmd_rx,
+        proxy, conn, repo_path, lane_key, cmd_rx,
     ));
     LaneEchoes { cmd_tx }
 }
@@ -1530,7 +1521,7 @@ fn spawn_echoes_session(
 async fn echoes_session_loop(
     proxy: EventLoopProxy<AppEvent>,
     mut conn: SharedDaemonConn,
-    process_path: String,
+    repo_path: String,
     lane_key: String,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
 ) {
@@ -1539,7 +1530,7 @@ async fn echoes_session_loop(
             Some(c) => c,
             None => return, // app 終了
         };
-        match run_echoes_session(&proxy, &process_path, &lane_key, &client, &mut cmd_rx).await {
+        match run_echoes_session(&proxy, &repo_path, &lane_key, &client, &mut cmd_rx).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
@@ -1554,7 +1545,7 @@ async fn echoes_session_loop(
 /// recv (EchoesEvent) / cmd (submit) の select ループ (run_terminal_session と同型)。
 async fn run_echoes_session(
     proxy: &EventLoopProxy<AppEvent>,
-    process_path: &str,
+    repo_path: &str,
     lane_key: &str,
     client: &unison::ProtocolClient,
     cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
@@ -1565,11 +1556,11 @@ async fn run_echoes_session(
         .open_channel("gui")
         .await
         .map_err(|e| format!("open gui channel (echoes): {}", e))?;
-    let topic = format!("process/echoes/data/{}/event", lane_key.replace('/', "~"));
+    let topic = format!("repo/echoes/data/{}/event", lane_key.replace('/', "~"));
     channel
         .request::<serde_json::Value, serde_json::Value>(
             "subscribe",
-            &serde_json::json!({ "project_path": process_path, "pattern": topic }),
+            &serde_json::json!({ "repo_path": repo_path, "pattern": topic }),
         )
         .await
         .map_err(|e| format!("echoes subscribe handshake: {}", e))?;
@@ -1582,14 +1573,14 @@ async fn run_echoes_session(
     // subscribe 直後に engine 復活 + replay の demand を**毎回**明示的に撃つ。
     //
     // 背景: Act II engine は demand-driven。本来は購読 0→1 を daemon の TopicRouter demand hook が
-    // 検知して SP に echoes_demand_start を reverse-route し ensure_chat_engine で復活させる経路が
+    // 検知して repo に echoes_demand_start を reverse-route し ensure_chat_engine で復活させる経路が
     // あるが、この edge は 2 つのレースで取りこぼされる:
-    // (a) full restart 直後の「Daemon 復帰 / SP 再登録 / surface 再購読 / router 生成」の多者間レース
+    // (a) full restart 直後の「Daemon 復帰 / repo 再登録 / surface 再購読 / router 生成」の多者間レース
     //     （refire_active_demands の救済も順序に脆い）→ submit まで engine 不在（⚠/💤 固着）
     // (b) **前任 GUI の残留購読**: pkill された旧 GUI の QUIC 購読が cleanup される前に新 GUI が
     //     subscribe すると 1→2 で edge が立たず、demand が発火しない = **chat が空で始まる**
     //     （transcript replay 不発、2026-07-24 実測 — swap 連打で毎回再現）。
-    // ここで forward request として明示的に撃つと forward_to_sp_control が **request 時に SP を
+    // ここで forward request として明示的に撃つと forward_to_sp_control が **request 時に repo を
     // lookup** するためレースに強い。冪等なので二重発火は無害: ensure_chat_engine は既起動なら
     // no-op / transcript replay は ReplayStart の clear-prefix で収束する（自動 hook と重なっても
     // 一瞬の再描画のみ）。旧実装は「初回は自動 hook に任せる」と reconnect 限定にしていたが、
@@ -1622,7 +1613,7 @@ async fn run_echoes_session(
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                // ProcessMessage::EchoesEvent { lane, session, event } の生 JSON。 event と
+                // RepoMessage::EchoesEvent { lane, session, event } の生 JSON。 event と
                 // session を抜いて lane_key 付きで JS に渡す (lane は subscription で確定済)。
                 // doc 38 Phase 2: session を落とさず通す（旧 sender / N=1 では default 1）。
                 if let Some(event) = payload.get("event") {
@@ -1645,7 +1636,7 @@ async fn run_echoes_session(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(EchoesCmd::Submit { prompt, session }) => {
-                        // session: None は JSON null になり、SP 側 payload_session_key が
+                        // session: None は JSON null になり、repo 側 payload_session_key が
                         // focused に解決する（旧 UI / 旧 SP との後方互換）。
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
@@ -1657,7 +1648,7 @@ async fn run_echoes_session(
                             .await;
                     }
                     Some(EchoesCmd::Respond { request_id, answers, behavior, message, session }) => {
-                        // allow/deny のどちらの形も同 request に載せる（SP 側が behavior で分岐）。
+                        // allow/deny のどちらの形も同 request に載せる（repo 側が behavior で分岐）。
                         let mut req = serde_json::json!({
                             "lane": lane_key, "request_id": request_id, "session": session,
                         });
@@ -1699,15 +1690,15 @@ async fn run_echoes_session(
     }
 }
 
-/// F6 (doc 27 §3.4): vp-app → daemon process-proxy → SP の one-shot ask。
+/// F6 (doc 27 §3.4): vp-app → daemon repo-proxy → repo の one-shot ask。
 ///
-/// 旧 SP HTTP 直結 (`reqwest http://127.0.0.1:{sp_port}/api/...`) の置換。 surface は Daemon :32000
+/// 旧 SP HTTP 直結 (`reqwest http://127.0.0.1:{repo_port}/api/...`) の置換。 surface は Daemon :32000
 /// だけに繋ぐ (§6)。 低頻度 ask 専用 (pp:state debounce save / lane ops) なので 1 回ごとに
-/// connect → `open_channel("process-proxy")` → handshake({project_path}) → request(method) → drop。
-/// (connection 共有は F1 で畳む。) method は SP `dispatch_process_method` に届き、 戻り値が返る。
-async fn daemon_process_request(
+/// connect → `open_channel("repo-proxy")` → handshake({repo_path}) → request(method) → drop。
+/// (connection 共有は F1 で畳む。) method は repo `dispatch_repo_method` に届き、 戻り値が返る。
+async fn daemon_repo_request(
     daemon_port: u16,
-    process_path: &str,
+    repo_path: &str,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -1726,34 +1717,34 @@ async fn daemon_process_request(
         .await
         .map_err(|e| format!("connect {}: {}", addr, e))?;
     let channel = client
-        .open_channel("process-proxy")
+        .open_channel("repo-proxy")
         .await
-        .map_err(|e| format!("open process-proxy: {}", e))?;
-    // handshake: project_path → daemon が path_key 正規化 → 当該 SP control へ routing。
+        .map_err(|e| format!("open repo-proxy: {}", e))?;
+    // handshake: repo_path → daemon が path_key 正規化 → 当該 repo control へ routing。
     channel
         .request::<serde_json::Value, serde_json::Value>(
             "subscribe",
-            &serde_json::json!({ "project_path": process_path }),
+            &serde_json::json!({ "repo_path": repo_path }),
         )
         .await
-        .map_err(|e| format!("process-proxy handshake: {}", e))?;
-    // ask: method を daemon が SP dispatch_process_method へ forward し応答を relay。
+        .map_err(|e| format!("repo-proxy handshake: {}", e))?;
+    // ask: method を daemon が repo dispatch_repo_method へ forward し応答を relay。
     let resp = channel
         .request::<serde_json::Value, serde_json::Value>(method, &payload)
         .await
-        .map_err(|e| format!("process-proxy {}: {}", method, e))?;
-    // SP は dispatch の Err を `{"error": ...}` の**正常応答**として返す（discovery.rs の
+        .map_err(|e| format!("repo-proxy {}: {}", method, e))?;
+    // repo は dispatch の Err を `{"error": ...}` の**正常応答**として返す（discovery.rs の
     // Daemon uplink/control）。transport 成功 = 処理成功ではないので、ここで Err に戻す。
-    // これが無いと呼び手は全員「ok」と読み、未実装 method を旧 binary の SP に投げた時などに
+    // これが無いと呼び手は全員「ok」と読み、未実装 method を旧 binary の repo に投げた時などに
     // 「成功ログが出るのに何も起きない」silent success になる。
     if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-        return Err(format!("process-proxy {}: {}", method, err));
+        return Err(format!("repo-proxy {}: {}", method, err));
     }
     Ok(resp)
 }
 
 /// DeviceRegistry 🧲 device event 購読: daemon (32000) の "daemon-device" channel を購読して
-/// `AppEvent::DeviceEvent` を emit する。 daemon に 1 本のみ (canvas/lanes は per-SP だが
+/// `AppEvent::DeviceEvent` を emit する。 daemon に 1 本のみ (canvas/lanes は per-repo だが
 /// device は machine scope = singleton)。 F1b で共有 connection 上の stream に集約。
 fn spawn_device_subscription(
     rt_handle: &tokio::runtime::Handle,
@@ -1966,7 +1957,7 @@ fn session_list_payload(
 /// lane 名しか手元に無い経路（act 切替の適用など）が root の xterm を ensure するのに使う。
 fn root_session_of(sidebar_state: &crate::pane::SidebarState, lane: &str) -> u32 {
     sidebar_state
-        .lanes_by_project
+        .lanes_by_repo
         .values()
         .flatten()
         .find(|l| l.address.key() == lane)
@@ -2017,7 +2008,7 @@ mod lane_js {
 
     /// (lane, session) の xterm instance を用意する — 既存ならば no-op (idempotent)。
     ///
-    /// terminal S4: SP port は不要になった (xterm の transport は Daemon "canvas" channel +
+    /// terminal S4: repo port は不要になった (xterm の transport は Daemon "canvas" channel +
     /// per-lane terminal session、 旧 `/ws/terminal?port=` 直結を撤去)。 JS は xterm instance を
     /// 作るだけで socket は持たない。 出力/入力は Rust の terminal session が IPC で橋渡しする。
     ///
@@ -2183,9 +2174,9 @@ mod lane_js {
         );
     }
 
-    /// 掲示板（board）へ SP の canvas message をそのまま渡す。
+    /// 掲示板（board）へ repo の canvas message をそのまま渡す。
     ///
-    /// 中身の形は SP が持つ（VP は転送するだけ）。型が要るのは「どの窓口へ届けるか」の方で、
+    /// 中身の形は repo が持つ（VP は転送するだけ）。型が要るのは「どの窓口へ届けるか」の方で、
     /// それは envelope の tag が担う。
     pub fn board_message(main_view: &WebView, message: serde_json::Value) {
         push(
@@ -2195,44 +2186,44 @@ mod lane_js {
     }
 }
 
-/// 「Current project が dead 状態」 のとき daemon に SP spawn を要求する fire-and-forget task。
+/// 「Current repo が dead 状態」 のとき daemon に repo spawn を要求する fire-and-forget task。
 ///
 /// State は daemon が持つ (mem_1CaTpCQH8iLJ2PasRcPjHv) ので、 vp-app は再起動しても
-/// 既存 SP がいれば自動で続行 (state == running なので spawn 不要)。 dead のときだけ trigger。
+/// 既存 repo がいれば自動で続行 (state == running なので spawn 不要)。 dead のときだけ trigger。
 ///
 /// 重複防止: 呼び出し側が `triggered: HashSet<String>` で path の dedup を担う。
 /// (daemon 側でも `Process already running` で弾かれるが、 余計な POST を避けるため。)
 fn spawn_sp_start(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
-    project_name: String,
-    project_path: String,
+    repo_name: String,
+    repo_path: String,
     conn: SharedDaemonConn,
 ) {
     rt_handle.spawn(async move {
         let started = match conn.control().await {
-            Ok(control) => control.start_process(&project_name).await,
+            Ok(control) => control.start_process(&repo_name).await,
             Err(e) => Err(e),
         };
         match started {
             Ok(()) => {
                 tracing::info!(
-                    "SP auto-spawn 要求成功: project={} path={}",
-                    project_name,
-                    project_path
+                    "repo auto-spawn 要求成功: repo={} path={}",
+                    repo_name,
+                    repo_path
                 );
-                // daemon の polling が新 SP を pick up すると、 既存の
-                // spawn_processes_fetch / spawn_activity_poller が ProjectsLoaded を再送、
+                // daemon の polling が新 repo を pick up すると、 既存の
+                // spawn_processes_fetch / spawn_activity_poller が ReposLoaded を再送、
                 // その流れで spawn_lanes_subscription が走って "lanes" channel を購読、
                 // retained snapshot を受信して sidebar に Lane が出る。
-                // ここで明示的に trigger する必要はない (polling が 5s で SP を拾う)。
+                // ここで明示的に trigger する必要はない (polling が 5s で repo を拾う)。
                 let _ = proxy; // 将来 spawn 完了通知 event を入れるなら使う
             }
             Err(e) => {
                 tracing::warn!(
-                    "SP auto-spawn 失敗: project={} path={}: {}",
-                    project_name,
-                    project_path,
+                    "repo auto-spawn 失敗: repo={} path={}: {}",
+                    repo_name,
+                    repo_path,
                     e
                 );
             }
@@ -2242,14 +2233,14 @@ fn spawn_sp_start(
 
 /// VP-95: Activity widget の定期更新。
 ///
-/// 5 秒間隔で `/api/health` (HTTP) + `projects/list` + `registry.list` (Unison) を
+/// 5 秒間隔で `/api/health` (HTTP) + `repos/list` + `registry.list` (Unison) を
 /// fetch し、`AppEvent::ActivityUpdate` として main thread に push する。
 /// daemon 未起動時は node_online=false で穏やかに通る。
 ///
 /// VP-100 follow-up (B1 / MB1 / PH#7): daemon が **後発で online 復帰** した時、
-/// `node_online: false → true` の遷移を検知して project 一覧を
-/// 再 fetch し `AppEvent::ProjectsLoaded` を再送する。これにより sidebar
-/// projects accordion が永遠に空のまま、という UX バグを防ぐ。
+/// `node_online: false → true` の遷移を検知して repo 一覧を
+/// 再 fetch し `AppEvent::ReposLoaded` を再送する。これにより sidebar
+/// repos accordion が永遠に空のまま、という UX バグを防ぐ。
 /// 起動初回 (`prev_online == None`) では `spawn_processes_fetch` 側が担当するので
 /// 二重 fetch を避けるため transition 検知をスキップする。
 fn spawn_activity_poller(
@@ -2269,16 +2260,16 @@ fn spawn_activity_poller(
             let control = conn.control().await.ok();
             let snap = collect_activity(&health, control.as_ref()).await;
             let became_online = matches!(prev_online, Some(false)) && snap.node_online;
-            let running_changed = prev_running.is_some_and(|p| p != snap.running_process_count);
+            let running_changed = prev_running.is_some_and(|p| p != snap.running_repo_count);
             // 登録数の変化（add / remove）。旧 trigger は running 数しか見ておらず、
-            // 「全 project を停止してから remove」の順で操作すると running が 0→0 のまま
-            // 再 fetch が一度も走らず、sidebar が消えた project を表示し続けた
+            // 「全 repo を停止してから remove」の順で操作すると running が 0→0 のまま
+            // 再 fetch が一度も走らず、sidebar が消えた repo を表示し続けた
             // （2026-07-24 実機）。⚠️ 数ベースなので rename / enable-flag だけの変化は
             // 拾えない — 一覧変化の push 配信は transport 統一（doc 45）に委ねる。
-            let registered_changed = prev_registered.is_some_and(|p| p != snap.project_count);
+            let registered_changed = prev_registered.is_some_and(|p| p != snap.repo_count);
             prev_online = Some(snap.node_online);
-            prev_running = Some(snap.running_process_count);
-            prev_registered = Some(snap.project_count);
+            prev_running = Some(snap.running_repo_count);
+            prev_registered = Some(snap.repo_count);
             if proxy
                 .send_event(AppEvent::ActivityUpdate(snap.clone()))
                 .is_err()
@@ -2288,19 +2279,16 @@ fn spawn_activity_poller(
             }
             // 再 fetch trigger (Architecture v4 fix、 mem_1CaTpCQH8iLJ2PasRcPjHv):
             // - daemon online 復帰 (false → true)
-            // - running 数変化 (SP 起動 / 停止)
-            // どちらも port join 経由で ProjectsLoaded 再送 → sidebar state badge 更新
+            // - running 数変化 (repo 起動 / 停止)
+            // どちらも port join 経由で ReposLoaded 再送 → sidebar state badge 更新
             if (became_online || running_changed || registered_changed)
                 && snap.node_online
                 && let Some(control) = control.as_ref()
-                && let Ok(projects) = fetch_projects_with_ports(control).await
+                && let Ok(repos) = fetch_repos_with_ports(control).await
             {
-                // polling tick で再 fetch → ProjectsLoaded を送るが、 log は omit
+                // polling tick で再 fetch → ReposLoaded を送るが、 log は omit
                 // (= loop で noise)。 失敗時のみ warn にして残す。
-                if proxy
-                    .send_event(AppEvent::ProjectsLoaded(projects))
-                    .is_err()
-                {
+                if proxy.send_event(AppEvent::ReposLoaded(repos)).is_err() {
                     break;
                 }
             }
@@ -2311,7 +2299,7 @@ fn spawn_activity_poller(
 /// VP-143: 5s 間隔で `AppEvent::ResolveSessionTitles` を fire する background poller。
 ///
 /// task 自体は state を持たず、 ただ tick を main thread に届ける役割。 main thread の
-/// handler が `sidebar_state.lanes_by_project` を walk して
+/// handler が `sidebar_state.lanes_by_repo` を walk して
 /// `session_title::resolve_title_for_cwd` を呼び、 結果を `session_titles` map に diff/update
 /// + sidebar に push する。
 ///
@@ -2337,7 +2325,7 @@ fn spawn_session_title_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLo
 /// VP-147 PR-P2-3: 5s 間隔で `AppEvent::ResolveLaneInboxes` を fire する background poller。
 ///
 /// `spawn_session_title_poller` と同 pattern (tokio current_thread runtime + interval tick)。
-/// main thread が `sidebar_state.lanes_by_project` を walk して各 lane の MessageState を
+/// main thread が `sidebar_state.lanes_by_repo` を walk して各 lane の MessageState を
 /// build し、 sidebar に push back する trigger となる。 Phase 2 PR-P2-3 では default 値の
 /// placeholder を populate し、 sidebar UI で `.vp-message-icon` 表示の signal として動く。
 /// 後続 PR で backend peek API + 永続 store query を実装して actual 値を populate する。
@@ -2355,7 +2343,7 @@ fn spawn_lane_inbox_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopP
     });
 }
 
-/// `/api/health` (HTTP) + `projects/list` + `registry.list` (Unison) を集約して
+/// `/api/health` (HTTP) + `repos/list` + `registry.list` (Unison) を集約して
 /// `ActivitySnapshot` を組み立てる。各面の失敗時は default で穏当に通す。
 ///
 /// doc 45 段 3 で control 面だけ Unison に移り、health は HTTP に残った (§2)。
@@ -2380,7 +2368,7 @@ async fn collect_activity(
         // in-app update: daemon の定期チェック結果（「更新する」ボタンの表示 gate + label）。
         snap.update_available = h.update_available;
         snap.latest_version = h.latest_version;
-        // L1 lifecycle: SP presence map（project 行の ●◐○ dot 用、path → presence）。
+        // L1 lifecycle: repo presence map（repo 行の ●◐○ dot 用、path → presence）。
         snap.presence = h
             .processes
             .into_iter()
@@ -2388,11 +2376,11 @@ async fn collect_activity(
             .collect();
     }
     if let Some(control) = control {
-        if let Ok(projects) = control.list_projects().await {
-            snap.project_count = projects.len();
+        if let Ok(repos) = control.list_repos().await {
+            snap.repo_count = repos.len();
         }
         if let Ok(procs) = control.list_processes().await {
-            snap.running_process_count = procs.len();
+            snap.running_repo_count = procs.len();
         }
     }
     snap
@@ -2421,14 +2409,14 @@ fn root_act_of(lane: &crate::client::LaneInfo) -> &str {
         .unwrap_or("tui")
 }
 
-/// 指定 lane address が Act II (root act="chat") かを `lanes_by_project` から引く。
+/// 指定 lane address が Act II (root act="chat") かを `lanes_by_repo` から引く。
 ///
 /// 未知 address (LanesLoaded 未着 等) は false (= Act I 扱い) に倒す。 chat lane は
 /// engine-less (pid=None) が正常形なので、 pid では判定できない — sessions（registry
 /// snapshot）由来の root act が真実源（doc 53 R1）。
 fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
     state
-        .lanes_by_project
+        .lanes_by_repo
         .values()
         .flatten()
         .find(|l| l.address.key() == address)
@@ -2446,7 +2434,7 @@ fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
 /// registry snapshot 欠落（boot 窓の placeholder 等）は root act 導出（= "tui"）に倒す。
 fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
     let Some(lane) = state
-        .lanes_by_project
+        .lanes_by_repo
         .values()
         .flatten()
         .find(|l| l.address.key() == address)
@@ -2488,7 +2476,7 @@ mod header_lane_fields_changed_tests {
     /// 最小 LaneInfo（全 field serde default）に engine_session_id だけ与える。
     fn lane(engine_session_id: Option<&str>) -> LaneInfo {
         serde_json::from_value(serde_json::json!({
-            "address": {"kind": "root", "project": "vp"},
+            "address": {"kind": "root", "repo": "vp"},
             "engine_session_id": engine_session_id,
         }))
         .expect("LaneInfo deserialize")
@@ -2520,7 +2508,7 @@ mod lane_key_wire_agent_tests {
     use super::lane_key_to_wire_agent;
     use crate::lane::{LaneAddress, LaneAddressWire};
 
-    /// doc 44 P2: lane key (`<project>/<name>`) → wire agent address。
+    /// doc 44 P2: lane key (`<repo>/<name>`) → wire agent address。
     ///
     /// この関数は `delivery_actor::wire_agent_to_lane_display` の**逆写像**で、両者は
     /// 文字列を直に組み立てる（型を経由しない）ため、片方だけ形が変わると非対称に壊れる。
@@ -2532,7 +2520,7 @@ mod lane_key_wire_agent_tests {
             lane_key_to_wire_agent("vp/root").as_deref(),
             Some("agent@vp")
         );
-        // それ以外は `<project>/<name>`
+        // それ以外は `<repo>/<name>`
         assert_eq!(
             lane_key_to_wire_agent("vp/feat-api").as_deref(),
             Some("agent@vp/feat-api")
@@ -2544,7 +2532,7 @@ mod lane_key_wire_agent_tests {
     fn accepts_key_produced_by_wire_type() {
         for (name, expected) in [("root", "agent@vp"), ("feat-api", "agent@vp/feat-api")] {
             let wire = LaneAddressWire {
-                project: "vp".into(),
+                repo: "vp".into(),
                 name: name.into(),
             };
             assert_eq!(
@@ -2561,7 +2549,7 @@ mod lane_key_wire_agent_tests {
     #[test]
     fn rejects_malformed_keys() {
         assert_eq!(lane_key_to_wire_agent("vp"), None); // 区切り無し
-        assert_eq!(lane_key_to_wire_agent("/root"), None); // project 空
+        assert_eq!(lane_key_to_wire_agent("/root"), None); // repo 空
         assert_eq!(lane_key_to_wire_agent("vp/"), None); // name 空
         assert_eq!(lane_key_to_wire_agent("vp/<unnamed>"), None); // spawning placeholder
         // 旧 3 分節形は新形では不正（正規化は server 側 parse_address の担当）
@@ -2621,7 +2609,7 @@ mod focused_session_stand_tests {
 
 /// Act II: active になった chat lane を echoes topic に attach する（`terminal_sessions` の対）。
 ///
-/// 購読 0→1 が daemon の demand hook を撃ち、SP が **transcript replay**（過去会話）を返す。
+/// 購読 0→1 が daemon の demand hook を撃ち、repo が **transcript replay**（過去会話）を返す。
 /// これが無いと echoes topic は非 retained なので「submit するまで ChatView が空」になる
 /// （app 再起動で会話が消えたように見える）。 idempotent — 既に session があれば no-op。
 ///
@@ -2640,15 +2628,15 @@ fn ensure_echoes_attach(
     if !lane_has_chat_session(sidebar_state, address) || echoes_sessions.contains_key(address) {
         return;
     }
-    let Some(process_path) = resolve_project_path_for_lane(sidebar_state, address) else {
-        return; // project 未解決 (LanesLoaded 未着) — 後続の LanesLoaded で再評価される
+    let Some(repo_path) = resolve_repo_path_for_lane(sidebar_state, address) else {
+        return; // repo 未解決 (LanesLoaded 未着) — 後続の LanesLoaded で再評価される
     };
     tracing::info!("echoes attach (chat lane): {}", address);
     let session = spawn_echoes_session(
         rt_handle,
         proxy.clone(),
         daemon_conn.clone(),
-        process_path,
+        repo_path,
         address.to_string(),
     );
     echoes_sessions.insert(address.to_string(), session);
@@ -2673,7 +2661,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
         // address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に相乗り
         // させて運ぶ (新しい配信チャネルは増やさない)。branch は performer のみ (安価に取れる時)。
         let lane = state
-            .lanes_by_project
+            .lanes_by_repo
             .values()
             .flatten()
             .find(|l| l.address.key() == addr);
@@ -2747,14 +2735,14 @@ fn header_lane_fields_changed(
                 .and_then(|p| p.branch.as_deref())
 }
 
-/// Lane address (Display 形 `"<project>/root"` 等) から所属 project path を逆引きする。
+/// Lane address (Display 形 `"<repo>/root"` 等) から所属 repo path を逆引きする。
 ///
-/// `lanes_by_project` (= project_path → LaneInfo list) を走査し、 `address.key()` が一致する
-/// lane を持つ project の path を返す。 `lane:select` 経路 (= JS から path を受け取る) の鏡像で、
+/// `lanes_by_repo` (= repo_path → LaneInfo list) を走査し、 `address.key()` が一致する
+/// lane を持つ repo の path を返す。 `lane:select` 経路 (= JS から path を受け取る) の鏡像で、
 /// focus 経路は address しか持たないためここで path を解決する。 一致なしは None。
-fn resolve_project_path_for_lane(state: &SidebarState, address: &str) -> Option<String> {
+fn resolve_repo_path_for_lane(state: &SidebarState, address: &str) -> Option<String> {
     state
-        .lanes_by_project
+        .lanes_by_repo
         .iter()
         .find(|(_path, lanes)| lanes.iter().any(|l| l.address.key() == address))
         .map(|(path, _)| path.clone())
@@ -2819,11 +2807,11 @@ fn activate_lane(
     );
 }
 
-/// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら SP に restart_lane を
-/// 発火して蘇らせる。 lane (conductor / performer) の Echoes プロセスが死ぬと SP の lifecycle monitor は
+/// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら repo に restart_lane を
+/// 発火して蘇らせる。 lane (conductor / performer) の Echoes プロセスが死ぬと repo の lifecycle monitor は
 /// Dead を検知するだけで auto-respawn しない (server.rs の設計判断) ため、 user が lane を
 /// 開いた時点でオンデマンドに復活させる。 これが無いと「一度死んだ lane は手動 restart するまで
-/// Echoes が出ない」状態になる (= 全 project で console 非表示の真因)。
+/// Echoes が出ない」状態になる (= 全 repo で console 非表示の真因)。
 ///
 /// dedup: `triggered` set で同一 lane の連打を防ぐ (LanesLoaded は loop event で頻発するため必須)。
 /// 解除タイミングは 2 つ: (a) lane が Running に戻った時 caller が `triggered.remove` する、
@@ -2836,14 +2824,14 @@ fn maybe_respawn_dead_lane(
     rt_handle: &tokio::runtime::Handle,
     proxy: &EventLoopProxy<AppEvent>,
 ) {
-    // addr の lane を lanes_by_project から探し、 所属 project path と pid を取得。
-    let entry = state.lanes_by_project.iter().find_map(|(path, lanes)| {
+    // addr の lane を lanes_by_repo から探し、 所属 repo path と pid を取得。
+    let entry = state.lanes_by_repo.iter().find_map(|(path, lanes)| {
         lanes
             .iter()
             .find(|l| l.address.key() == addr)
             .map(|l| (path.clone(), l.pid, root_act_of(l).to_string()))
     });
-    let Some((project_path, pid, root_act)) = entry else {
+    let Some((repo_path, pid, root_act)) = entry else {
         return; // lane 未知 (まだ LanesLoaded 来てない等) — 後続の LanesLoaded で再評価される
     };
     if pid.is_some() {
@@ -2859,8 +2847,8 @@ fn maybe_respawn_dead_lane(
     if !triggered.insert(addr.to_string()) {
         return;
     }
-    // F6③: 旧 DaemonRpcClient.restart_lane (SP 直結 reqwest) を daemon process-proxy ask
-    // (lane_restart) に移管。 SP port 解決は不要 (Daemon :32000 固定 + project_path handshake)、
+    // F6③: 旧 DaemonRpcClient.restart_lane (repo 直結 reqwest) を daemon repo-proxy ask
+    // (lane_restart) に移管。 repo port 解決は不要 (Daemon :32000 固定 + repo_path handshake)、
     // 旧「port 未解決 skip」分岐も消滅。 失敗時の trigger 解除は LaneRespawnFailed 経路に一本化。
     let addr_owned = addr.to_string();
     let proxy = proxy.clone();
@@ -2868,9 +2856,9 @@ fn maybe_respawn_dead_lane(
     rt_handle.spawn(async move {
         // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
         let payload = serde_json::json!({ "address": &addr_owned, "fresh": false });
-        match daemon_process_request(
+        match daemon_repo_request(
             crate::client::default_daemon_port(),
-            &project_path,
+            &repo_path,
             "lane_restart",
             payload,
         )
@@ -2883,7 +2871,7 @@ fn maybe_respawn_dead_lane(
             Err(e) => {
                 tracing::warn!("auto-respawn lane_restart failed: {}: {}", addr_owned, e);
                 // 失敗を event loop に通知して triggered を解除する (永続 suppression 回避)。
-                // これが無いと SP クラッシュ等で全 retry 失敗した lane は vp-app 再起動まで
+                // これが無いと repo クラッシュ等で全 retry 失敗した lane は vp-app 再起動まで
                 // auto-respawn 対象外になってしまう (Moody Blues Issue #1)。
                 let _ = proxy.send_event(AppEvent::LaneRespawnFailed {
                     address: addr_owned,
@@ -2994,7 +2982,7 @@ mod sidebar_js {
     /// + Add Performer の作成結果。`error` None = 成功（form を閉じる）。
     pub fn performer_create_result(
         sidebar: &WebView,
-        project_path: String,
+        repo_path: String,
         name: String,
         error: Option<String>,
     ) {
@@ -3002,7 +2990,7 @@ mod sidebar_js {
             sidebar,
             &IpcEventEnvelope::PerformerCreateResult(
                 crate::generated::sidebar_ipc::PerformerCreateResult {
-                    project_path,
+                    repo_path,
                     name,
                     error,
                 },
@@ -3013,7 +3001,7 @@ mod sidebar_js {
     /// + Add Performer の dropdown を populate する Stand 一覧。
     pub fn stands_result(
         sidebar: &WebView,
-        project_path: String,
+        repo_path: String,
         stands: &[crate::client::StandInfo],
         error: Option<String>,
     ) {
@@ -3030,7 +3018,7 @@ mod sidebar_js {
         push(
             sidebar,
             &IpcEventEnvelope::StandsResult(crate::generated::sidebar_ipc::StandsResult {
-                project_path,
+                repo_path,
                 stands,
                 error,
             }),
@@ -3159,58 +3147,58 @@ struct SidebarIpcOutcome {
     /// Lane activation 要求 — caller が `activate_lane()` を呼ぶ。
     /// `active_changed` とは排他（こちらが Some なら active_changed は不要）。
     activate_lane: Option<String>,
-    /// SP auto-spawn が必要な project (= 「Current」 になった dead な project)。
+    /// repo auto-spawn が必要な repo (= 「Current」 になった dead な repo)。
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
-    /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
-    sp_spawn_request: Option<(String, String)>,
-    /// Phase 3-A: Performer Lane 作成要求 `(project_path, name, branch, stand)`。
+    /// dedup は caller の `repo_spawn_triggered: HashSet<String>` (path key) で行う。
+    repo_spawn_request: Option<(String, String)>,
+    /// Phase 3-A: Performer Lane 作成要求 `(repo_path, name, branch, stand)`。
     /// doc 24 §10 B-create: caller が daemon (:32000) の `create_performer_lane`
-    /// (Unison `daemon-control.lanes/create`) を呼ぶ (SP port 解決は不要)。
+    /// (Unison `daemon-control.lanes/create`) を呼ぶ (repo port 解決は不要)。
     /// `stand` は doc 11 PR-C で追加 (None なら daemon-side default)。
     add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
-    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
-    /// caller が daemon process-proxy ask (`stands_list`) を呼ぶ → `AppEvent::StandsResult` で push back。
+    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 `(repo_path)`。
+    /// caller が daemon repo-proxy ask (`stands_list`) を呼ぶ → `AppEvent::StandsResult` で push back。
     list_stands_request: Option<String>,
-    /// Phase 4-A: Performer Lane 削除要求 `(project_path, address)`。
-    /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
+    /// Phase 4-A: Performer Lane 削除要求 `(repo_path, address)`。
+    /// caller が repo port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
-    /// Lane Conductor Stand restart 要求 `(project_path, address, fresh)`。
-    /// caller が SP port を解決して `client.restart_lane` を呼ぶ。
+    /// Lane Conductor Stand restart 要求 `(repo_path, address, fresh)`。
+    /// caller が repo port を解決して `client.restart_lane` を呼ぶ。
     /// fresh=true は "New Conductor Session" (resume/continue 回避の fresh 起動)。
     restart_lane_request: Option<(String, String, bool)>,
-    /// doc 44 D4: 開発起点の再指定要求 (project_path, lane address)。
+    /// doc 44 D4: 開発起点の再指定要求 (repo_path, lane address)。
     /// 実体は Host の帳簿のポインタ更新だけで、lane は何も動かない (D5)。
     set_origin_request: Option<(String, String)>,
-    /// doc 44 §12: lane の並び順の保存要求 (project_path, lane address の表示順)。
+    /// doc 44 §12: lane の並び順の保存要求 (repo_path, lane address の表示順)。
     reorder_lanes_request: Option<(String, Vec<String>)>,
-    /// Phase 5-C: Process restart 要求 `(project_name)`。
-    /// caller が daemon の Unison `daemon-control.projects/restart` を呼ぶ。
+    /// Phase 5-C: Process restart 要求 `(repo_name)`。
+    /// caller が daemon の Unison `daemon-control.repos/restart` を呼ぶ。
     restart_process_request: Option<String>,
-    /// Process stop 要求 `(project_name)`。
-    /// caller が daemon の Unison `daemon-control.projects/stop` を呼ぶ。
-    /// project は registered のまま (停止しても sidebar リストに残り ▶ 起動が出る)。
+    /// Process stop 要求 `(repo_name)`。
+    /// caller が daemon の Unison `daemon-control.repos/stop` を呼ぶ。
+    /// repo は registered のまま (停止しても sidebar リストに残り ▶ 起動が出る)。
     stop_process_request: Option<String>,
-    /// Project delete 要求 `(project_name, project_path)`。
-    /// caller が project を stop してから Unison `daemon-control.projects/remove` を呼ぶ。
-    /// `project_name` は stop 用、 `project_path` は remove 用 (registry key)。
-    delete_project_request: Option<(String, String)>,
-    /// Phase 1 (doc 24): project 並び替えを daemon に永続化する要求 (path の順序列)。
-    /// caller が `client.reorder_projects` を呼び、成功後に re-fetch → `ProjectsLoaded` で
-    /// canonical 順を反映する。これで sidebar の D&D が daemon `project_order` に一本化される。
+    /// Repo delete 要求 `(repo_name, repo_path)`。
+    /// caller が repo を stop してから Unison `daemon-control.repos/remove` を呼ぶ。
+    /// `repo_name` は stop 用、 `repo_path` は remove 用 (registry key)。
+    delete_repo_request: Option<(String, String)>,
+    /// Phase 1 (doc 24): repo 並び替えを daemon に永続化する要求 (path の順序列)。
+    /// caller が `client.reorder_repos` を呼び、成功後に re-fetch → `ReposLoaded` で
+    /// canonical 順を反映する。これで sidebar の D&D が daemon `repo_order` に一本化される。
     reorder_request: Option<Vec<String>>,
-    /// Phase 5-D fix: SP auto-spawn dedup HashSet から path を release する要求。
+    /// Phase 5-D fix: repo auto-spawn dedup HashSet から path を release する要求。
     /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
-    /// dedup deadlock を抜けられるようにする。 caller は `sp_spawn_triggered.remove(path)` を呼ぶ。
-    sp_spawn_release: Option<String>,
-    /// Sidebar File Explorer: `files:list` 要求 `(project_path, address)`。
+    /// dedup deadlock を抜けられるようにする。 caller は `repo_spawn_triggered.remove(path)` を呼ぶ。
+    repo_spawn_release: Option<String>,
+    /// Sidebar File Explorer: `files:list` 要求 `(repo_path, address)`。
     /// caller (event loop) で lane cwd を解決して `file_explorer::list_entries` を
     /// blocking thread で実行 → `AppEvent::FilesListResult` で push back。
     files_list_request: Option<(String, String)>,
-    /// Sidebar File Explorer: `files:open` 要求 `(project_path, address, rel_path)`。
+    /// Sidebar File Explorer: `files:open` 要求 `(repo_path, address, rel_path)`。
     /// caller (event loop) で lane cwd を解決して `file_explorer::open_file` を
     /// blocking thread で実行 → `AppEvent::FilesOpenResult` で push back。
     files_open_request: Option<(String, String, String)>,
-    /// Model Q: active lane を daemon canonical に永続する要求 `(project_path, lane_address)`。
+    /// Model Q: active lane を daemon canonical に永続する要求 `(repo_path, lane_address)`。
     /// caller が `client.set_active_lane` を fire-and-forget で呼ぶ (optimistic local は適用済)。
     set_active_lane_request: Option<(String, String)>,
     /// Wire inbox (doc 34 §4 V1): `wire:fetch` 要求 `(address)`。 caller が Daemon "wire" channel
@@ -3253,12 +3241,12 @@ fn handle_sidebar_ipc(
             // DOM は既に user click で toggle 済なので、Rust state を silently sync するだけ。
             // `out.changed` は立てない (rebuild すると flash する)。
             //
-            // auto-spawn: expand=true で state==stopped の project は
-            // 「user が current として designate した未起動 project」 として扱い、
-            // SP auto-spawn を request する (SP lifecycle は daemon 責務)。
+            // auto-spawn: expand=true で state==stopped の repo は
+            // 「user が current として designate した未起動 repo」 として扱い、
+            // repo auto-spawn を request する (repo lifecycle は daemon 責務)。
             //
-            // 条件の "stopped" は client::ProcessStatus::as_str() と一致させること。
-            // 旧 ProcessState の "dead" 語彙から ProcessStatus の "stopped" へ移行した
+            // 条件の "stopped" は client::RepoStatus::as_str() と一致させること。
+            // 旧 ProcessState の "dead" 語彙から RepoStatus の "stopped" へ移行した
             // (VP-189) 際にこの条件の追従が漏れ、 auto-spawn が発火しなくなっていた。
             if let Some(p) = state.processes.iter_mut().find(|p| p.path == m.path) {
                 let new_state = m.expanded;
@@ -3270,22 +3258,22 @@ fn handle_sidebar_ipc(
                         p.expanded
                     );
                     // session 永続化: vp-app 再起動時に accordion 状態を復元
-                    session.set_project_expanded(m.path.clone(), new_state);
+                    session.set_repo_expanded(m.path.clone(), new_state);
                     session.save();
                 }
                 if new_state && p.state.as_deref() == Some("stopped") {
-                    out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
+                    out.repo_spawn_request = Some((p.name.clone(), p.path.clone()));
                 }
                 // Phase 5-D fix: accordion を閉じた = 「retry したい」signal と解釈、
-                //  sp_spawn_triggered HashSet の entry を release。 これで spawn 失敗ループから
+                //  repo_spawn_triggered HashSet の entry を release。 これで spawn 失敗ループから
                 //  抜けられる (collapse → expand で確実に retry が走る)。
                 if !new_state {
-                    out.sp_spawn_release = Some(p.path.clone());
+                    out.repo_spawn_release = Some(p.path.clone());
                 }
             }
         }
         IpcEnvelope::LaneDelete(m) => {
-            // Phase 4-A: Performer Lane 削除要求。 caller (event loop) で SP port を解決して
+            // Phase 4-A: Performer Lane 削除要求。 caller (event loop) で repo port を解決して
             // client.delete_lane を呼ぶ。 active Lane を消した場合は active_lane_address を unset。
             if !m.path.is_empty() && !m.address.is_empty() {
                 // active だった Lane が消えるなら preemptively clear (UI 反映を待たず)
@@ -3298,7 +3286,7 @@ fn handle_sidebar_ipc(
             }
         }
         IpcEnvelope::LaneRestart(m) => {
-            // sidebar の restart icon → confirm dialog OK の連鎖。 caller が SP port を
+            // sidebar の restart icon → confirm dialog OK の連鎖。 caller が repo port を
             // 解決して `client.restart_lane` を呼ぶ。 active Lane を restart した場合は
             // WS が onclose → reconnect で新 PtySlot に attach し直す (PR #218)。
             if !m.path.is_empty() && !m.address.is_empty() {
@@ -3306,8 +3294,8 @@ fn handle_sidebar_ipc(
             }
         }
         IpcEnvelope::LaneSetOrigin(m) => {
-            // doc 44 D4: この lane を project の開発起点にする。caller (event loop) が
-            // daemon process-proxy ask (`lane_origin_set`) を撃つ。結果は次の lanes snapshot に
+            // doc 44 D4: この lane を repo の開発起点にする。caller (event loop) が
+            // daemon repo-proxy ask (`lane_origin_set`) を撃つ。結果は次の lanes snapshot に
             // `origin` として載って戻ってくるので、ここで sidebar_state を先読み更新しない
             // （帳簿が真実源 — 楽観更新すると失敗時に UI だけ嘘をつく）。
             if !m.path.is_empty() && !m.address.is_empty() {
@@ -3335,29 +3323,29 @@ fn handle_sidebar_ipc(
         }
         IpcEnvelope::StandsFetch(m) => {
             // doc 11 PR-C: sidebar の + Add Performer form 開閉時に利用可能 Stand 一覧を取得。
-            // caller (event loop) で daemon process-proxy ask (`stands_list`) → window.handleStandsResult で push back。
+            // caller (event loop) で daemon repo-proxy ask (`stands_list`) → window.handleStandsResult で push back。
             if !m.path.is_empty() {
                 out.list_stands_request = Some(m.path);
             }
         }
         IpcEnvelope::StandSelect(m) => {
-            // Phase 5-A: Project-scope Stand row click → main area に対応 pane を表示
+            // Phase 5-A: Repo-scope Stand row click → main area に対応 pane を表示
             // (Lane と mutually exclusive、 active_lane_address は preemptively clear)
             // DeviceRegistry 🧲 は machine-scope Stand (device = daemon 共通) なので path="" で来る。
-            // machine-scope stand は path 空を許可、 それ以外 (Project-scope) は path 必須。
+            // machine-scope stand は path 空を許可、 それ以外 (Repo-scope) は path 必須。
             if m.kind.is_empty() || (m.path.is_empty() && m.kind != "devices") {
                 tracing::warn!("stand:select with empty path/kind: {}", msg);
                 return out;
             }
             let new_stand = ActiveStand {
-                project_path: m.path.clone(),
+                repo_path: m.path.clone(),
                 kind: m.kind.clone(),
             };
             // 既に同じ Stand が active なら no-op
             if state.active_stand.as_ref() == Some(&new_stand) {
                 return out;
             }
-            tracing::info!("stand:select project={} kind={}", m.path, m.kind);
+            tracing::info!("stand:select repo={} kind={}", m.path, m.kind);
             state.active_stand = Some(new_stand);
             // Lane を排他で clear (= main area の active 軸を Stand に切替)
             if state.active_lane_address.is_some() {
@@ -3372,7 +3360,7 @@ fn handle_sidebar_ipc(
                 return out;
             }
             let lanes_exist = state
-                .lanes_by_project
+                .lanes_by_repo
                 .get(m.path.as_str())
                 .map(|lanes| lanes.iter().any(|l| l.address.key() == m.address))
                 .unwrap_or(false);
@@ -3398,59 +3386,59 @@ fn handle_sidebar_ipc(
             session.currents_order = Some(m.order.clone());
             session.save();
             state.currents_order = Some(m.order.clone());
-            // Phase 1 (doc 24): daemon の project_order にも永続化する。
-            // caller が client.reorder_projects → re-fetch → ProjectsLoaded で canonical を反映し、
-            // sidebar / ROTO / CLI vp projects を 1 つの順序源に揃える。
+            // Phase 1 (doc 24): daemon の repo_order にも永続化する。
+            // caller が client.reorder_repos → re-fetch → ReposLoaded で canonical を反映し、
+            // sidebar / ROTO / CLI vp repos を 1 つの順序源に揃える。
             out.reorder_request = Some(m.order);
         }
         IpcEnvelope::ProcessRestart(m) => {
-            // Phase 5-C: project name (from p.path → leaf name) を抽出して async restart に投げる。
-            // path は normalized full path、 SP の API は project name で識別する。
+            // Phase 5-C: repo name (from p.path → leaf name) を抽出して async restart に投げる。
+            // path は normalized full path、 repo の API は repo name で識別する。
             if m.path.is_empty() {
                 tracing::warn!("process:restart with empty path: {}", msg);
                 return out;
             }
-            let project_name = std::path::Path::new(&m.path)
+            let repo_name = std::path::Path::new(&m.path)
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or(m.path.as_str())
                 .to_string();
-            tracing::info!("process:restart {} (project_name={})", m.path, project_name);
-            out.restart_process_request = Some(project_name);
+            tracing::info!("process:restart {} (repo_name={})", m.path, repo_name);
+            out.restart_process_request = Some(repo_name);
         }
         IpcEnvelope::ProcessStop(m) => {
-            // SP を停止する (project は registered のまま sidebar リストに残る)。
-            // restart と同様 path の leaf name を project name として扱う。
+            // repo を停止する (repo は registered のまま sidebar リストに残る)。
+            // restart と同様 path の leaf name を repo name として扱う。
             if m.path.is_empty() {
                 tracing::warn!("process:stop with empty path: {}", msg);
                 return out;
             }
-            let project_name = std::path::Path::new(&m.path)
+            let repo_name = std::path::Path::new(&m.path)
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or(m.path.as_str())
                 .to_string();
-            tracing::info!("process:stop {} (project_name={})", m.path, project_name);
-            out.stop_process_request = Some(project_name);
+            tracing::info!("process:stop {} (repo_name={})", m.path, repo_name);
+            out.stop_process_request = Some(repo_name);
         }
-        IpcEnvelope::ProcessDelete(m) => {
-            // project を完全に削除 (SP 停止 + projects.kdl から unregister)。
-            // UI 側で 2-click 確認済。 stop 用に project_name、 remove 用に path を渡す。
+        IpcEnvelope::RepoDelete(m) => {
+            // repo を完全に削除 (repo 停止 + repos.kdl から unregister)。
+            // UI 側で 2-click 確認済。 stop 用に repo_name、 remove 用に path を渡す。
             if m.path.is_empty() {
-                tracing::warn!("process:delete with empty path: {}", msg);
+                tracing::warn!("repo:delete with empty path: {}", msg);
                 return out;
             }
-            let project_name = std::path::Path::new(&m.path)
+            let repo_name = std::path::Path::new(&m.path)
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or(m.path.as_str())
                 .to_string();
-            tracing::info!("process:delete {} (project_name={})", m.path, project_name);
-            out.delete_project_request = Some((project_name, m.path));
+            tracing::info!("repo:delete {} (repo_name={})", m.path, repo_name);
+            out.delete_repo_request = Some((repo_name, m.path));
         }
-        // process:add / project:clone:pickFolder は `AppEvent::SidebarIpc` の
+        // repo:add / repo:clone:pickFolder は `AppEvent::SidebarIpc` の
         // dispatch 段で picker ルートに分岐済 (handle_sidebar_ipc には到達しない)。
-        IpcEnvelope::ProcessAdd | IpcEnvelope::ProjectClonePickFolder => {
+        IpcEnvelope::RepoAdd | IpcEnvelope::RepoClonePickFolder => {
             tracing::debug!("sidebar IPC: picker 経路の message が handle_sidebar_ipc に到達");
         }
         IpcEnvelope::FilesList(m) => {
@@ -3491,30 +3479,30 @@ fn handle_sidebar_ipc(
     out
 }
 
-/// sidebar の lane address key (`<project>/<name>`) → wire agent address。
+/// sidebar の lane address key (`<repo>/<name>`) → wire agent address。
 ///
 /// `LaneAddressWire::key()` の逆写像 (delivery_actor の `wire_agent_to_lane_display` と対)。
 ///
-/// doc 44 P2: フラット化で key が 2 分節 (`<project>/<name>`) になった。旧実装は
-/// `<project>/performer/<name>` の 3 分節を前提に `split_once` していたため、新形では
+/// doc 44 P2: フラット化で key が 2 分節 (`<repo>/<name>`) になった。旧実装は
+/// `<repo>/performer/<name>` の 3 分節を前提に `split_once` していたため、新形では
 /// 常に `None` に落ちて **performer lane の wire inbox が GUI から開けなくなる**
 /// （§6.4 と同型の「型を経由しない文字列」の取り残し。しかも対になる
 /// `wire_agent_to_lane_display` の**逆方向**なので、片方だけ直すと非対称に壊れる）。
 fn lane_key_to_wire_agent(address: &str) -> Option<String> {
-    let (project, name) = address.split_once('/')?;
-    if project.is_empty() || name.is_empty() || name.contains('/') {
+    let (repo, name) = address.split_once('/')?;
+    if repo.is_empty() || name.is_empty() || name.contains('/') {
         return None;
     }
     if name == crate::lane::ROOT_LANE_NAME {
-        // 開発起点は lane 部分を省略した形が canonical（`agent@<project>`）。
-        return Some(format!("agent@{project}"));
+        // 開発起点は lane 部分を省略した形が canonical（`agent@<repo>`）。
+        return Some(format!("agent@{repo}"));
     }
     // "<unnamed>" は spawning 中(name 未確定)の placeholder で実在の wire agent ではない
     // — 偽 address で空 inbox を開かないよう除外する。
     if name == "<unnamed>" {
         return None;
     }
-    Some(format!("agent@{project}/{name}"))
+    Some(format!("agent@{repo}/{name}"))
 }
 
 /// Wire inbox (doc 34 §4 V1): Daemon "wire" channel に read-only request を投げて
@@ -3568,17 +3556,17 @@ async fn wire_fetch_payload(
     serde_json::json!({ "address": address, "agent": agent, "history": history, "unread": unread })
 }
 
-/// SidebarState の `lanes_by_project` から (project_path, address) の組に
+/// SidebarState の `lanes_by_repo` から (repo_path, address) の組に
 /// 対応する Lane の workdir 絶対パスを引く。 見つからなければ `None`。
 ///
 /// File Explorer の `files:list` / `files:open` で使う。 address は
 /// `LaneAddressWire::key()` 形式 (= `lane:select` 等で使われている wire 文字列)。
 fn lookup_lane_cwd(
     state: &SidebarState,
-    project_path: &str,
+    repo_path: &str,
     address: &str,
 ) -> Option<std::path::PathBuf> {
-    let lanes = state.lanes_by_project.get(project_path)?;
+    let lanes = state.lanes_by_repo.get(repo_path)?;
     lanes
         .iter()
         .find(|l| l.address.key() == address)
@@ -3669,7 +3657,7 @@ pub fn run() -> anyhow::Result<()> {
         tokio::sync::watch::channel(serde_json::Value::Null);
 
     // DeviceRegistry 🧲 device event を daemon (daemon-device channel) から購読する (daemon に 1 本)。
-    // canvas/lanes は per-SP だが device は machine scope (= daemon singleton) なので起動時 1 回。
+    // canvas/lanes は per-repo だが device は machine scope (= daemon singleton) なので起動時 1 回。
     spawn_device_subscription(
         &rt_handle,
         event_loop.create_proxy(),
@@ -3694,7 +3682,7 @@ pub fn run() -> anyhow::Result<()> {
     // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
     // position + size + monitor) を起動時に復元できるようにする。 per-instance 分離後は
     // **自分の instance file** (`session.json` / `session.<N>.json`) を読む。 `mut` で keep し、
-    // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
+    // 後段で active_lane_address / repos / currents_order 等の mutate + save にも使う。
     let mut session_state = SessionState::load(instance_index);
     // この instance window を「開いている」 と記録する (= 次回 primary 起動時の auto-spawn
     // signal)。 clean close (`CloseRequested`) で `open=false` に上書きするので、 明示的に
@@ -3798,7 +3786,7 @@ pub fn run() -> anyhow::Result<()> {
     // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
     // Lane が出現するまで main area は empty placeholder ("No Lane selected") のみ。
     // ただし daemon の auto-launch だけは継続 (sidebar の Activity widget や
-    // /api/daemon/projects 取得に必要)。
+    // /api/daemon/repos 取得に必要)。
     let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
     let node_url = std::env::var("VP_DAEMON_URL")
         .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::client::default_daemon_port()));
@@ -3809,7 +3797,7 @@ pub fn run() -> anyhow::Result<()> {
         );
     }
 
-    // daemon から project list を非同期 fetch (起動初回)
+    // daemon から repo list を非同期 fetch (起動初回)
     spawn_processes_fetch(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
     // VP-95: Activity widget の定期更新 (5s 間隔)
     spawn_activity_poller(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
@@ -3858,7 +3846,7 @@ pub fn run() -> anyhow::Result<()> {
         .with_ipc_handler(move |req| {
             // 統合 ipc dispatch: t 値で明示分岐 (sidebar tag と main tag は disjoint)。
             // main tag (terminal / pane 系) → terminal、 それ以外 (sidebar IpcEnvelope:
-            // project: / lane: 系) → SidebarIpc。 terminal の fall-through に頼らない。
+            // repo: / lane: 系) → SidebarIpc。 terminal の fall-through に頼らない。
             let body = req.body();
             // fleet feedback (LE-19) は event loop を経由せず watch へ直行 (高頻度 + 状態量)
             if let Some(fb) = fleet_feedback_payload(body) {
@@ -3887,22 +3875,22 @@ pub fn run() -> anyhow::Result<()> {
     // Phase 2.x-d: 旧 single-PTY 経路 (`xterm_ready` / `pending` / `PENDING_MAX`) は撤去。
     // per-Lane instance + browser-native WebSocket では各 Lane の xterm.js が独立に
     // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
-    // VP-95: sidebar 全体 state (projects + widget + activity)
+    // VP-95: sidebar 全体 state (repos + widget + activity)
     let mut sidebar_state = SidebarState::default();
     // session_state は WindowBuilder 上で既に load 済 (= window geometry を先に必要)。
     // 直前 active Lane を初回 LanesLoaded で復元するための pending 値。
     // 1 度復元したら None にして、 後続 LanesLoaded で再復元しないように。
     let mut pending_session_active_lane: Option<String> = session_state.active_lane_address.clone();
-    // SidebarState に currents_order を即反映 (renderProjects がこの順で並べる)
+    // SidebarState に currents_order を即反映 (renderRepos がこの順で並べる)
     sidebar_state.currents_order = session_state.currents_order.clone();
     // VP-100 γ-light: pane_id → slot rect。Phase 2 では蓄積するだけ、Phase 4+ で
     // native overlay の `set_position` 同期に使う。
     let mut slot_rects: std::collections::HashMap<String, SlotRect> =
         std::collections::HashMap::new();
-    // SP auto-spawn: 1 セッションで同じ project を二重 trigger しないための guard。
-    // path をキーにする (project_name は重複しうる、 path は正規化済 unique)。
+    // repo auto-spawn: 1 セッションで同じ repo を二重 trigger しないための guard。
+    // path をキーにする (repo_name は重複しうる、 path は正規化済 unique)。
     // daemon 側でも `Process already running` で弾かれるが、 無駄な POST を避ける。
-    let mut sp_spawn_triggered: std::collections::HashSet<String> =
+    let mut repo_spawn_triggered: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     // オンデマンド respawn: active にする lane が Dead (pid:null) の時に restart_lane を 1 回だけ
     // 発火するための guard。 lane address をキーにする。 lane が Running に戻ったら (LanesLoaded で
@@ -3912,14 +3900,14 @@ pub fn run() -> anyhow::Result<()> {
     // maybe_respawn_dead_lane の async restart_lane が失敗した時に event loop へ
     // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
     let respawn_proxy = event_loop.create_proxy();
-    // wiremsg Stage 1: per-SP の "lanes" Unison 購読を 1 本だけ張るための guard。
+    // wiremsg Stage 1: per-repo の "lanes" Unison 購読を 1 本だけ張るための guard。
     // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
     // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // wiremsg Stage 2: per-SP の "gui" Unison 購読 guard (lanes_sub_active と同型)。
+    // wiremsg Stage 2: per-repo の "gui" Unison 購読 guard (lanes_sub_active と同型)。
     let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
     // board pane の boot 窓救済（doc 52 §10 wave 0、device 一覧と同型）: gui channel で届いた
-    // BoardUpdated を project × lane で保持し、`AppEvent::WebviewReady` の replay で再配信する。
+    // BoardUpdated を repo × lane で保持し、`AppEvent::WebviewReady` の replay で再配信する。
     // retained BoardUpdated は bundle 評価前に届いて受け口不在で落ちるため、これが無いと
     // reopen 時に board pane が出ない（live show まで空）。
     let mut board_snapshots: std::collections::HashMap<
@@ -3939,7 +3927,7 @@ pub fn run() -> anyhow::Result<()> {
     // と同じ「変化時のみ push」の規律）。
     //
     // ⚠️ 旧実装にはここに **取りこぼした fetch の保留箱**（`pending_session_fetch`）が在った。
-    // 供給が fetch 1 本だった時代、boot 直後の要求が project 未解決で捨てられると
+    // 供給が fetch 1 本だった時代、boot 直後の要求が repo 未解決で捨てられると
     // 「pane も名札も出ない」になり、再試行の契機が無かったため箱で救っていた。
     // 供給が snapshot（retained + 変化時 push）に一本化された今、取りこぼしという状態自体が
     // 存在しない（doc 53 §6.5.2 が予言した「供給路を 1 本にすれば要らない」）。
@@ -3947,7 +3935,7 @@ pub fn run() -> anyhow::Result<()> {
         std::collections::HashMap::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
-    // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
+    // repo:add 等の async 操作で event loop に repo list 再 fetch を kick するための proxy
     let async_action_proxy = event_loop.create_proxy();
 
     // 起動時 size clamp 用 once-flag。 macOS state restoration の `restorableState` は
@@ -4096,7 +4084,7 @@ pub fn run() -> anyhow::Result<()> {
                 if focused
                     && let Some(address) = sidebar_state.active_lane_address.clone()
                     && last_focus_reported_lane.as_deref() != Some(address.as_str())
-                    && let Some(path) = resolve_project_path_for_lane(&sidebar_state, &address)
+                    && let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &address)
                 {
                     // 重複報告抑止: 報告する lane を記録してから spawn。 同 lane への
                     // 連続 focus event は上の guard で弾かれ、 RPC は lane 切替時のみ。
@@ -4138,7 +4126,7 @@ pub fn run() -> anyhow::Result<()> {
                 let mut changed = false;
                 let mut current_keys: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
-                for lanes in sidebar_state.lanes_by_project.values() {
+                for lanes in sidebar_state.lanes_by_repo.values() {
                     for lane in lanes {
                         let address = lane.address.key();
                         current_keys.insert(address.clone());
@@ -4184,7 +4172,7 @@ pub fn run() -> anyhow::Result<()> {
                 let mut changed = false;
                 let mut current_keys: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
-                for lanes in sidebar_state.lanes_by_project.values() {
+                for lanes in sidebar_state.lanes_by_repo.values() {
                     for lane in lanes {
                         let address = lane.address.key();
                         current_keys.insert(address.clone());
@@ -4217,39 +4205,39 @@ pub fn run() -> anyhow::Result<()> {
                     push_sidebar_state(&webview, &sidebar_state);
                 }
             }
-            Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
+            Event::UserEvent(AppEvent::ReposLoaded(repos)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
-                //  - 新規は ProjectPaneState::new (Conductor Agent 1 つ)
-                //  - サーバから消えた project は除外
+                //  - 新規は RepoPaneState::new (Conductor Agent 1 つ)
+                //  - サーバから消えた repo は除外
                 //
                 // VP-101 follow-up: register 後の auto-expand。
                 // auto-select は LanesLoaded 側で扱う (Architecture v4: 真の selection unit は Lane)。
-                // 「prev (旧 sidebar_state.processes) には port があった、 新 projects には port が無い」
+                // 「prev (旧 sidebar_state.processes) には port があった、 新 repos には port が無い」
                 // 形の merge は port を不用意に消すので、 sidebar_state の port は新側 (port_by_name 反映済)
                 // で上書きされる。 retroactive ensureLane (= 後段) で None→Some 遷移を補う。
-                let prev: std::collections::HashMap<String, ProjectPaneState> = sidebar_state
+                let prev: std::collections::HashMap<String, RepoPaneState> = sidebar_state
                     .processes
                     .drain(..)
                     .map(|p| (p.path.clone(), p))
                     .collect();
                 let is_initial_load = prev.is_empty();
                 // Phase A4-3b: drain 前に (path → port) を retain して fetch task に渡す
-                let project_ports: Vec<(String, Option<u16>)> = projects
+                let repo_ports: Vec<(String, Option<u16>)> = repos
                     .iter()
                     .map(|p| (p.path.clone(), p.port))
                     .collect();
                 // Model Q: daemon canonical の active lane (presence、 boot 復元用)。
                 // 注: app の active_lane_address は単一 global (pane.rs) なので、 daemon の
-                // per-project active のうち **order 先頭の 1 つ**を採用する (意図的な単純化、
-                // doc 24 §12-H)。 project ごとに最後の active を復元する per-project 化は
-                // Phase 3 (app 側を per-project active に拡張、 daemon は既に per-project 保持)。
+                // per-repo active のうち **order 先頭の 1 つ**を採用する (意図的な単純化、
+                // doc 24 §12-H)。 repo ごとに最後の active を復元する per-repo 化は
+                // Phase 3 (app 側を per-repo active に拡張、 daemon は既に per-repo 保持)。
                 let daemon_active_lane: Option<String> =
-                    projects.iter().find_map(|p| p.active_lane.clone());
-                sidebar_state.processes = projects
+                    repos.iter().find_map(|p| p.active_lane.clone());
+                sidebar_state.processes = repos
                     .into_iter()
                     .map(|p| {
-                        // ProjectInfo.state / .port を ProjectPaneState に merge
+                        // RepoInfo.state / .port を RepoPaneState に merge
                         // (sidebar JS が processStateMark で 🟢/🔴 badge 表示に使う、
                         //  port は Phase 2 で lane:select 時の WS 接続先決定に使う)
                         let state_str = p.state.as_str().to_string();
@@ -4257,13 +4245,13 @@ pub fn run() -> anyhow::Result<()> {
                         let mut pane_state = if let Some(existing) = prev.get(&p.path) {
                             existing.clone()
                         } else {
-                            // 新規 project の expanded 解決:
+                            // 新規 repo の expanded 解決:
                             //   1. session_state に saved 値があれば最優先 (vp-app 再起動の復元)
                             //   2. 上記 None かつ session 中の追加 (= 初回 fetch ではない) なら auto-expand
                             //   3. 初回 fetch の新規は閉じた状態
-                            let mut s = ProjectPaneState::new(p.path.clone(), p.name.clone());
+                            let mut s = RepoPaneState::new(p.path.clone(), p.name.clone());
                             s.expanded = session_state
-                                .project_expanded(&p.path)
+                                .repo_expanded(&p.path)
                                 .unwrap_or(!is_initial_load);
                             s
                         };
@@ -4272,11 +4260,11 @@ pub fn run() -> anyhow::Result<()> {
                         pane_state
                     })
                     .collect();
-                // Phase 1 (doc 24): currents_order を daemon の project_order (= fetch 順) の
+                // Phase 1 (doc 24): currents_order を daemon の repo_order (= fetch 順) の
                 // mirror にする。これで currents_order は独立 SSOT ではなく canonical の派生となり、
-                // JS resolveProjectOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
+                // JS resolveRepoOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
                 sidebar_state.currents_order =
-                    Some(project_ports.iter().map(|(path, _)| path.clone()).collect());
+                    Some(repo_ports.iter().map(|(path, _)| path.clone()).collect());
                 // Model Q: 初回 load で active lane を daemon canonical から復元 (session.json でなく daemon が源)。
                 if is_initial_load
                     && let Some(addr) = daemon_active_lane
@@ -4284,17 +4272,17 @@ pub fn run() -> anyhow::Result<()> {
                     sidebar_state.active_lane_address = Some(addr.clone());
                     session_state.active_lane_address = Some(addr);
                 }
-                // wiremsg: 各 project の SP の Unison channel を購読する (per-SP 1 本ずつ)。
+                // wiremsg: 各 repo の repo の Unison channel を購読する (per-repo 1 本ずつ)。
                 // - Stage 1: "lanes" channel → sidebar Lane ツリー
                 // - Stage 2: "canvas" channel → main area の Board body
                 // retained topic なので接続直後に現スナップショットが届き、以降変化のたび
                 // push される。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
-                for (path, _port) in &project_ports {
+                for (path, _port) in &repo_ports {
                     // L0 SP-portless: lanes / canvas とも Daemon :32000 の集約 channel から購読する
-                    // (SP 直結を剥がす)。 どちらも daemon 側で per-project に集約済
-                    // (lanes=lane_registry / canvas=TopicRouter) なので SP port 不問 = SP が down
+                    // (repo 直結を剥がす)。 どちらも daemon 側で per-repo に集約済
+                    // (lanes=lane_registry / canvas=TopicRouter) なので repo port 不問 = repo が down
                     // (port=None) でも「前回の続き」を表示でき、 port None→Some race で購読が始まらない
-                    // 旧 gating の穴も解消する。 SP 復帰時は register / canvas push で各 channel が更新。
+                    // 旧 gating の穴も解消する。 repo 復帰時は register / canvas push で各 channel が更新。
                     if lanes_sub_active.insert(path.clone()) {
                         spawn_lanes_subscription(
                             &rt_handle,
@@ -4312,18 +4300,18 @@ pub fn run() -> anyhow::Result<()> {
                         );
                     }
                 }
-                // terminal S4: ensureLane / terminal session は SP port に依存しなくなった
+                // terminal S4: ensureLane / terminal session は repo port に依存しなくなった
                 // (xterm transport は Daemon "canvas" channel)。 port None→Some race のための
                 // retroactive ensureLane block は撤去 — lane の出現/消滅は LanesLoaded reconcile
                 // が SSOT として扱う (= ensureLane + terminal session start/stop)。
-                // Phase 2.x-b: dead-respawn fix — SP が "running" になった時点で
-                // sp_spawn_triggered から path を外す。 これで次に dead に落ちた時、
+                // Phase 2.x-b: dead-respawn fix — repo が "running" になった時点で
+                // repo_spawn_triggered から path を外す。 これで次に dead に落ちた時、
                 // user が re-expand すれば再度 spawn が trigger される。
                 // 注意: spawn 進行中 (state=="spawning") は外さない、 一連の spawn cycle が完了
                 // (= "running") した時のみ。 こうすれば spawn 中の重複 POST も防げる。
                 for proc in &sidebar_state.processes {
                     if proc.state.as_deref() == Some("running")
-                        && sp_spawn_triggered.remove(&proc.path)
+                        && repo_spawn_triggered.remove(&proc.path)
                     {
                         tracing::debug!(
                             "sp_spawn_triggered cleared (running): {}",
@@ -4333,9 +4321,9 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 push_sidebar_state(&webview, &sidebar_state);
             }
-            // Phase A4-3b: SP の Lane fetch 結果を sidebar_state に反映
+            // Phase A4-3b: repo の Lane fetch 結果を sidebar_state に反映
             Event::UserEvent(AppEvent::LanesLoaded {
-                process_path,
+                repo_path,
                 lanes,
                 origin,
             }) => {
@@ -4344,8 +4332,8 @@ pub fn run() -> anyhow::Result<()> {
                 // （既定値に落とすと ⭐ が明滅する）。
                 if let Some(origin) = origin {
                     sidebar_state
-                        .origin_by_project
-                        .insert(process_path.clone(), origin);
+                        .origin_by_repo
+                        .insert(repo_path.clone(), origin);
                 }
                 // ループする event なので log omit (= LanesLoaded push と pair で noise 源)。
                 // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
@@ -4383,10 +4371,10 @@ pub fn run() -> anyhow::Result<()> {
                 } else {
                     None
                 };
-                let path_key = process_path.clone();
+                let path_key = repo_path.clone();
                 // Phase 2.5: prev lanes との diff で「消えた Lane」 を判定 → removeLane 発行
                 let removed_addrs: Vec<String> = sidebar_state
-                    .lanes_by_project
+                    .lanes_by_repo
                     .get(&path_key)
                     .map(|prev| {
                         let new_set: std::collections::HashSet<String> = lanes
@@ -4403,7 +4391,7 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::info!("Lane removed (LanesLoaded diff): {}", addr);
                     lane_js::remove_lane(&webview, addr);
                     // terminal S4: 消えた lane の terminal session を停止 (= map から remove で
-                    // cmd_tx drop → canvas channel close → Daemon demand stop → SP pump stop)。
+                    // cmd_tx drop → canvas channel close → Daemon demand stop → repo pump stop)。
                     terminal_sessions.remove(addr);
                     // echoes session も対で停止（terminal_sessions と同寿命）。remove が無いと
                     // 削除済 lane の購読 task が demand を立てたまま永久残留する。
@@ -4422,7 +4410,7 @@ pub fn run() -> anyhow::Result<()> {
                     .as_deref()
                     .and_then(|addr| {
                         let prev = sidebar_state
-                            .lanes_by_project
+                            .lanes_by_repo
                             .get(&path_key)?
                             .iter()
                             .find(|l| l.address.key() == addr)?;
@@ -4430,17 +4418,17 @@ pub fn run() -> anyhow::Result<()> {
                         Some(header_lane_fields_changed(prev, next))
                     })
                     .unwrap_or(false);
-                sidebar_state.lanes_by_project.insert(process_path, lanes);
+                sidebar_state.lanes_by_repo.insert(repo_path, lanes);
                 // 購読フェーズを "ready" に (= snapshot を 1 度でも受けた)。 stalled から復帰した場合も
                 // ここで解消。 absent(初期 loading) / stalled と区別して hintFor が lane 0本 を
                 // 「📡 lane なし」 と正しく出せる (doc 30 §5-3)。
                 sidebar_state
                     .lane_sub_state
                     .insert(path_key.clone(), "ready".to_string());
-                // terminal S4: per-lane instance — SP port には依存しない (xterm transport は
+                // terminal S4: per-lane instance — repo port には依存しない (xterm transport は
                 // Daemon "canvas" channel)。 live lane (pid あり) ごとに ensureLane (JS xterm 作成) +
-                // terminal session start (Daemon 購読 → demand → SP pump)。 どちらも idempotent。
-                if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
+                // terminal session start (Daemon 購読 → demand → repo pump)。 どちらも idempotent。
+                if let Some(lanes_for_proj) = sidebar_state.lanes_by_repo.get(&path_key) {
                     for lane in lanes_for_proj {
                         // doc 50 §4.6 A6: gate は **term session が 1 つでもあるか**。
                         //
@@ -4517,7 +4505,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 変化した lane だけ push する（LanesLoaded は定期 snapshot でも走る高頻度 event。
                 // 毎回撃つと webview が roster を作り直して pane が無用に再配置される）。
                 // 判定の規律は上の `active_header_refresh` と同型 = 「変化時のみ push」。
-                if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
+                if let Some(lanes_for_proj) = sidebar_state.lanes_by_repo.get(&path_key) {
                     for lane in lanes_for_proj {
                         let Some(sessions) = lane.sessions.as_ref() else {
                             continue;
@@ -4550,9 +4538,9 @@ pub fn run() -> anyhow::Result<()> {
             // 「webview が生まれた」という事実は 1 つなので、signal も 1 本に畳んである。
             // 新しい面を足したら **ここに replay を 1 行足す**（新しい IPC tag は要らない）。
             Event::UserEvent(AppEvent::WebviewReady) => {
-                // terminal S4: JS xterm instance の catch-up 再発行のみ (SP port 不要)。
+                // terminal S4: JS xterm instance の catch-up 再発行のみ (repo port 不要)。
                 // terminal session 自体は LanesLoaded reconcile が管理するのでここでは触らない。
-                for (_project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
+                for (_repo_path, lanes) in sidebar_state.lanes_by_repo.clone().iter() {
                     for lane in lanes {
                         // doc 50 §4.6 A6: gate は term session の有無（LanesLoaded と同じ規則 —
                         // lane 単位の pid / mode で切ると root=chat の lane の非 root term が
@@ -4594,12 +4582,12 @@ pub fn run() -> anyhow::Result<()> {
                         // 冪等 — 既に張られていれば pump は kept、replay だけが流れ直す）。
                         if !term_sessions_of(lane).is_empty()
                             && let Some(path) =
-                                resolve_project_path_for_lane(&sidebar_state, &addr_str)
+                                resolve_repo_path_for_lane(&sidebar_state, &addr_str)
                         {
                             let port = crate::client::default_daemon_port();
                             let lane_for_req = addr_str.clone();
                             rt_handle.spawn(async move {
-                                if let Err(e) = daemon_process_request(
+                                if let Err(e) = daemon_repo_request(
                                     port,
                                     &path,
                                     "terminal_demand_start",
@@ -4638,7 +4626,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 実機で確認）。保持済み state から全量で撃ち直す。
                 lane_js::render_devices(&webview, &sidebar_state.devices);
                 // 掲示板: retained BoardUpdated も同じ窓で落ちる（doc 52 §10 wave 0）。
-                // active project の保持分を全 lane 撃ち直す（落ちたままだと reopen で board pane
+                // active repo の保持分を全 lane 撃ち直す（落ちたままだと reopen で board pane
                 // が出ず、次の live show まで空のまま）。
                 if let Some(proj) = sidebar_state
                     .active_lane_address
@@ -4653,26 +4641,26 @@ pub fn run() -> anyhow::Result<()> {
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
             }
             Event::UserEvent(AppEvent::LanesError {
-                process_path,
+                repo_path,
                 message,
             }) => {
                 tracing::warn!(
-                    "AppEvent::LanesError: project={} message={}",
-                    process_path,
+                    "AppEvent::LanesError: repo={} message={}",
+                    repo_path,
                     message
                 );
-                // SP 接続失敗 / lanes channel stall — lanes_by_project は更新しない (前回値を保持) が、
+                // repo 接続失敗 / lanes channel stall — lanes_by_repo は更新しない (前回値を保持) が、
                 // 購読フェーズを "stalled" に倒して UI に surface する (doc 30 §5-3)。 hintFor が
                 // `📡 loading lanes…` ではなく「⚠️ lane 接続が停滞 — restart で復帰」を出す。 復帰時の
                 // snapshot 受信 (LanesLoaded) で "ready" に上書きされて自動解消する (self-heal と連動)。
                 sidebar_state
                     .lane_sub_state
-                    .insert(process_path, "stalled".to_string());
+                    .insert(repo_path, "stalled".to_string());
                 push_sidebar_state(&webview, &sidebar_state);
             }
             // オンデマンド respawn の restart_lane が失敗した lane を guard から解除する。
             // 解除しておくと、 次に同 lane を active にした (or LanesLoaded for Dead の) 時点で
-            // 再 respawn を試行できる (= SP クラッシュ後の復帰でも auto-respawn が効く)。
+            // 再 respawn を試行できる (= repo クラッシュ後の復帰でも auto-respawn が効く)。
             // 即ループにはならない: クリック起点は user 操作、 起動時 first_addr は active 設定後
             // None になるため LanesLoaded loop event での連続発火は起きない。
             Event::UserEvent(AppEvent::LaneRespawnFailed { address }) => {
@@ -4745,20 +4733,20 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(AppEvent::CanvasMessage {
-                process_path,
+                repo_path,
                 message,
             }) => {
-                // wiremsg Stage 2: SP の "canvas" channel から受信した ProcessMessage。
-                // active project の分のみ main area の Board body に転送する。
-                // active 判定: active_lane_address の project segment == process_path の basename。
-                let active_project = sidebar_state
+                // wiremsg Stage 2: repo の "canvas" channel から受信した RepoMessage。
+                // active repo の分のみ main area の Board body に転送する。
+                // active 判定: active_lane_address の repo segment == repo_path の basename。
+                let active_repo = sidebar_state
                     .active_lane_address
                     .as_deref()
                     .and_then(|addr| addr.split('/').next());
-                let msg_project = std::path::Path::new(&process_path)
+                let msg_repo = std::path::Path::new(&repo_path)
                     .file_name()
                     .and_then(|s| s.to_str());
-                // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を project × lane で
+                // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を repo × lane で
                 // 保持する。`AppEvent::WebviewReady` の replay で再配信し、retained が bundle 評価前に
                 // 落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
                 //
@@ -4770,7 +4758,7 @@ pub fn run() -> anyhow::Result<()> {
                 //   message」を配って boot 窓 regression が再発する（team-b review 2026-07-24）。
                 if message.get("type").and_then(|t| t.as_str()) == Some("board_updated")
                     && message.get("scope").and_then(|s| s.as_str()) == Some("lane")
-                    && let Some(proj) = msg_project
+                    && let Some(proj) = msg_repo
                 {
                     let lane_key = message
                         .get("lane")
@@ -4783,21 +4771,21 @@ pub fn run() -> anyhow::Result<()> {
                         .insert(lane_key, message.clone());
                 }
                 // B1 + cross-project: switch_lane は board content ではなく active Lane 切替コマンド。
-                // active を「変える」コマンドなので、active project guard の **外**で処理する
-                // （別 project の SP から来た switch_lane こそ通す）。送信元 SP の project
-                // (= msg_project) の lane を activate し、sidebar / main area を追随させる。
+                // active を「変える」コマンドなので、active repo guard の **外**で処理する
+                // （別 repo の repo から来た switch_lane こそ通す）。送信元 repo の repo
+                // (= msg_repo) の lane を activate し、sidebar / main area を追随させる。
                 if message.get("type").and_then(|t| t.as_str()) == Some("switch_lane") {
-                    if let (Some(project), Some(token)) = (
-                        msg_project,
+                    if let (Some(repo), Some(token)) = (
+                        msg_repo,
                         message.get("lane").and_then(|l| l.as_str()),
                     ) {
-                        // token → lane address (`<project>/<予約名>` or `<project>/performer/<name>`)
+                        // token → lane address (`<repo>/<予約名>` or `<repo>/performer/<name>`)
                         let address = if token.is_empty()
                             || token == crate::lane::ROOT_LANE_NAME
                         {
-                            format!("{}/{}", project, crate::lane::ROOT_LANE_NAME)
+                            format!("{}/{}", repo, crate::lane::ROOT_LANE_NAME)
                         } else {
-                            format!("{}/performer/{}", project, token)
+                            format!("{}/performer/{}", repo, token)
                         };
                         // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
                         // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
@@ -4828,8 +4816,8 @@ pub fn run() -> anyhow::Result<()> {
                             );
                         }
                     }
-                } else if active_project.is_some() && active_project == msg_project {
-                    // board content (非 switch_lane) は active project の分のみ main area に転送する。
+                } else if active_repo.is_some() && active_repo == msg_repo {
+                    // board content (非 switch_lane) は active repo の分のみ main area に転送する。
                     match serde_json::to_value(&message) {
                         Ok(json) => lane_js::board_message(&webview, json),
                         Err(e) => {
@@ -4839,11 +4827,11 @@ pub fn run() -> anyhow::Result<()> {
                 }
 
                 // board 着信 badge: show が現在 active でない lane に着いたら sidebar に
-                // canvas_unread を計上する。別 project / 別 lane（同 project だが別 lane）の両ケースを
+                // canvas_unread を計上する。別 repo / 別 lane（同 repo だが別 lane）の両ケースを
                 // 1 箇所で拾う（上の forward guard とは独立）。active lane 宛の show は board pane 側
                 // （board-handler.ts の presence → lane-panes、doc 52 §10 wave 0）で解決する。
                 if message.get("type").and_then(|t| t.as_str()) == Some("show")
-                    && let Some(project) = msg_project
+                    && let Some(repo) = msg_repo
                 {
                     let token = message
                         .get("lane")
@@ -4851,9 +4839,9 @@ pub fn run() -> anyhow::Result<()> {
                         .unwrap_or(crate::lane::ROOT_LANE_NAME);
                     // token → lane address（switch_lane と同じ変換）。
                     let address = if token.is_empty() || token == crate::lane::ROOT_LANE_NAME {
-                        format!("{}/{}", project, crate::lane::ROOT_LANE_NAME)
+                        format!("{}/{}", repo, crate::lane::ROOT_LANE_NAME)
                     } else {
-                        format!("{}/performer/{}", project, token)
+                        format!("{}/performer/{}", repo, token)
                     };
                     if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
                         mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
@@ -4901,7 +4889,7 @@ pub fn run() -> anyhow::Result<()> {
                     let _ = term.cmd_tx.send(TermCmd::Resize(session, cols, rows));
                 }
             }
-            // Echoes Act II (doc 32): SP から受信した構造化イベントを当該 lane の Console pane に渡す。
+            // Echoes Act II (doc 32): repo から受信した構造化イベントを当該 lane の Console pane に渡す。
             Event::UserEvent(AppEvent::EchoesEvent {
                 lane,
                 event,
@@ -4935,14 +4923,14 @@ pub fn run() -> anyhow::Result<()> {
             // demand-driven: 未起動なら lazy spawn (subscribe → submit の順で取りこぼしなし)。
             Event::UserEvent(AppEvent::EchoesSubmit { lane, prompt, session: chat_session }) => {
                 let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
-                    // process_path は active project から解決 (echoes pane = active lane 前提)。
-                    let process_path =
-                        resolve_active_project_path(&sidebar_state).unwrap_or_default();
+                    // repo_path は active repo から解決 (echoes pane = active lane 前提)。
+                    let repo_path =
+                        resolve_active_repo_path(&sidebar_state).unwrap_or_default();
                     spawn_echoes_session(
                         &rt_handle,
                         async_action_proxy.clone(),
                         daemon_conn.clone(),
-                        process_path,
+                        repo_path,
                         lane.clone(),
                     )
                 });
@@ -4961,13 +4949,13 @@ pub fn run() -> anyhow::Result<()> {
                 session: chat_session,
             }) => {
                 let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
-                    let process_path =
-                        resolve_active_project_path(&sidebar_state).unwrap_or_default();
+                    let repo_path =
+                        resolve_active_repo_path(&sidebar_state).unwrap_or_default();
                     spawn_echoes_session(
                         &rt_handle,
                         async_action_proxy.clone(),
                         daemon_conn.clone(),
-                        process_path,
+                        repo_path,
                         lane.clone(),
                     )
                 });
@@ -5004,19 +4992,19 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("echoes:set_permission_mode skip — session 未起動 (lane={lane})");
                 }
             }
-            // doc 50 §4.6 A6: 名札 kind badge からの Act 切替（session 明示）。SP の
+            // doc 50 §4.6 A6: 名札 kind badge からの Act 切替（session 明示）。repo の
             // `session_set_act` に forward し、成功したら SessionActApplied で表示を追従させる。
             Event::UserEvent(AppEvent::SessionSetAct { lane, session, act }) => {
-                // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
-                // active lane が変わり得るため resolve_active_project_path は使わない）。
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("session:set_act skip — lane の project 解決失敗 (lane={lane})");
+                // repo は対象 lane 自身から逆引き（#705 のレース教訓 — repo 応答待ちの間に
+                // active lane が変わり得るため resolve_active_repo_path は使わない）。
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("session:set_act skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let proxy = async_action_proxy.clone();
                 let (lane_for_js, act_for_js) = (lane.clone(), act.clone());
                 rt_handle.spawn(async move {
-                    match daemon_process_request(
+                    match daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         "session_set_act",
@@ -5054,7 +5042,7 @@ pub fn run() -> anyhow::Result<()> {
                 // doc 53 R1: 更新は sessions の 1 箇所だけ — 読み手（lane_is_chat / respawn
                 // gate / header 差分）は sessions から root act を導出するので、この 1 書きで
                 // 全読み手に届く（旧「root なら lane 単位 mode 投影も更新」は退役）。
-                for lanes in sidebar_state.lanes_by_project.values_mut() {
+                for lanes in sidebar_state.lanes_by_repo.values_mut() {
                     if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane)
                         && let Some(reg) = l.sessions.as_mut()
                         && let Some(e) = reg.sessions.iter_mut().find(|s| s.key == session)
@@ -5067,8 +5055,8 @@ pub fn run() -> anyhow::Result<()> {
                 if is_tui {
                     lane_js::ensure_lane(&webview, &lane, session, is_root);
                     // 購読が無いと新 PtySlot の出力が届かない（terminal topic は非 retained）。
-                    // demand 0→1 が SP の pump 張り直し + replay を撃つ。idempotent。
-                    match resolve_project_path_for_lane(&sidebar_state, &lane) {
+                    // demand 0→1 が repo の pump 張り直し + replay を撃つ。idempotent。
+                    match resolve_repo_path_for_lane(&sidebar_state, &lane) {
                         Some(path) => {
                             terminal_sessions.entry(lane.clone()).or_insert_with(|| {
                                 spawn_terminal_session(
@@ -5081,7 +5069,7 @@ pub fn run() -> anyhow::Result<()> {
                             });
                         }
                         None => tracing::warn!(
-                            "session:act_applied — lane の project 解決失敗、terminal session を張れず (lane={lane})"
+                            "session:act_applied — lane の repo 解決失敗、terminal session を張れず (lane={lane})"
                         ),
                     }
                     // ⚠️ **xterm の container を active 化しないと見えない**（`.lane-pane` は
@@ -5092,13 +5080,13 @@ pub fn run() -> anyhow::Result<()> {
                     // showLane は active 化に加えて rAF 2 段で fit / sendResize / focus まで行う。
                     // 順序: ensure_lane より後（instance が無いと active 化できない）。
                     //
-                    // SP 応答待ちの間に別 lane へ移っていたら表示は奪わない（act は手元 snapshot に
+                    // repo 応答待ちの間に別 lane へ移っていたら表示は奪わない（act は手元 snapshot に
                     // 反映済みなので、戻った時に正しい顔ぶれで開く）。
                     if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
                         lane_js::show_lane(&webview, Some(&lane), false);
                     }
                 } else {
-                    // →chat: その session の xterm を畳む（PtySlot は SP 側で drop 済）。
+                    // →chat: その session の xterm を畳む（PtySlot は repo 側で drop 済）。
                     lane_js::remove_lane_session(&webview, &lane, session);
                     // Act I→II の対称: echoes topic への購読を確保する（初回 chat 化で張られる）。
                     // 上の手元 snapshot 反映が先に要る（attach の gate が act を読む）。
@@ -5124,11 +5112,11 @@ pub fn run() -> anyhow::Result<()> {
                     // demand は session を明示する（replay は session 単位 — `echoes_demand_start`
                     // の None は focused に解決されるので、非 focused な pane を切り替えた時に
                     // 別会話を読んでしまう）。
-                    if let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) {
+                    if let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) {
                         let proxy = async_action_proxy.clone();
                         let lane_for_log = lane.clone();
                         rt_handle.spawn(async move {
-                            if let Err(e) = daemon_process_request(
+                            if let Err(e) = daemon_repo_request(
                                 crate::client::default_daemon_port(),
                                 &path,
                                 "echoes_demand_start",
@@ -5153,10 +5141,10 @@ pub fn run() -> anyhow::Result<()> {
             //    素の engine で張り替える（非破壊 — 旧 root の会話はタブに残存）。旧 fresh restart
             //    （全 session 破棄）は sidebar の Reset lane に退避した。
             Event::UserEvent(AppEvent::ConsoleNewSession { lane, engine, act }) => {
-                // project は対象 lane 自身から逆引き（#705 のレース教訓 — SP 応答待ちの間に
-                // active lane が変わり得るため resolve_active_project_path は使わない）。
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("console:new_session skip — lane の project 解決失敗 (lane={lane})");
+                // repo は対象 lane 自身から逆引き（#705 のレース教訓 — repo 応答待ちの間に
+                // active lane が変わり得るため resolve_active_repo_path は使わない）。
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("console:new_session skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let port = crate::client::default_daemon_port();
@@ -5176,7 +5164,7 @@ pub fn run() -> anyhow::Result<()> {
                         //    session_list の往復ごと省ける。
                         let stand = match engine {
                             Some(e) => Some(e),
-                            None => match daemon_process_request(
+                            None => match daemon_repo_request(
                                 port,
                                 &path,
                                 "echoes_session_list",
@@ -5199,7 +5187,7 @@ pub fn run() -> anyhow::Result<()> {
                             create["stand"] = serde_json::Value::String(s.clone());
                         }
                         if let Err(e) =
-                            daemon_process_request(port, &path, "echoes_session_create", create).await
+                            daemon_repo_request(port, &path, "echoes_session_create", create).await
                         {
                             tracing::warn!("console:new_session（chat）session_create 失敗 (lane={lane}): {e}");
                             return;
@@ -5216,7 +5204,7 @@ pub fn run() -> anyhow::Result<()> {
                         //    event は落ちない。
                         // 4. demand_start で新 focused（Draft）の replay を発火。no_session path でも
                         //    ReplayStart/End が届いて会話がクリアされる（doc 38 §4.2）。
-                        if let Err(e) = daemon_process_request(
+                        if let Err(e) = daemon_repo_request(
                             port,
                             &path,
                             "echoes_demand_start",
@@ -5242,7 +5230,7 @@ pub fn run() -> anyhow::Result<()> {
                         if let Some(e) = &engine {
                             payload["stand"] = serde_json::Value::String(e.clone());
                         }
-                        match daemon_process_request(port, &path, "lane_slot_new", payload).await {
+                        match daemon_repo_request(port, &path, "lane_slot_new", payload).await {
                             Ok(res) => {
                                 let session = res.get("session").and_then(serde_json::Value::as_u64);
                                 tracing::info!(
@@ -5261,16 +5249,16 @@ pub fn run() -> anyhow::Result<()> {
             // 対象 session には既存の会話があるため、clear でなく transcript replay で追従させる
             //（echoes_session_focus chain と同じ規律）。
             Event::UserEvent(AppEvent::ConsoleSwitchRoot { lane, session }) => {
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
                     tracing::warn!(
-                        "console:switch_root skip — lane の project 解決失敗 (lane={lane})"
+                        "console:switch_root skip — lane の repo 解決失敗 (lane={lane})"
                     );
                     return;
                 };
                 let port = crate::client::default_daemon_port();
                 rt_handle.spawn(async move {
                     let payload = serde_json::json!({ "lane": &lane, "session": session });
-                    match daemon_process_request(port, &path, "echoes_session_switch_root", payload)
+                    match daemon_repo_request(port, &path, "echoes_session_switch_root", payload)
                         .await
                     {
                         Ok(_) => {
@@ -5281,7 +5269,7 @@ pub fn run() -> anyhow::Result<()> {
                             // 旧実装が守っていた「replay より先に一覧」の順序は A6 で不要に
                             // なっている（event は session ごとの store に振り分けられる —
                             // `ConsoleNewSession` の chat 分岐のコメント参照）。
-                            if let Err(e) = daemon_process_request(
+                            if let Err(e) = daemon_repo_request(
                                 port,
                                 &path,
                                 "echoes_demand_start",
@@ -5300,16 +5288,16 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
             }
-            // Act II モデル切替: console_set_model で SP に forward（fire & forget）。
+            // Act II モデル切替: console_set_model で repo に forward（fire & forget）。
             // 適用の視覚確認は新 engine の session_init が header.model を更新することで得る。
             Event::UserEvent(AppEvent::ConsoleSetModel { lane, model }) => {
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("console:set_model skip — lane の project 解決失敗 (lane={lane})");
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("console:set_model skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
                     let payload = serde_json::json!({ "lane": &lane, "model": model });
-                    match daemon_process_request(
+                    match daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         "console_set_model",
@@ -5329,8 +5317,8 @@ pub fn run() -> anyhow::Result<()> {
             // doc 38 Phase 2: 「+」からの新 session 作成。focus は送らない = backend 既定 true。
             // 作成後に一覧を取り直して tab strip に新 session を即反映（1 task で直列）。
             Event::UserEvent(AppEvent::EchoesSessionCreate { lane, stand }) => {
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:session_create skip — lane の project 解決失敗 (lane={lane})");
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:session_create skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
@@ -5340,7 +5328,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                     // doc 53 §11: 動詞を撃つだけ。roster の更新は server の `emit_lane_update`
                     // → lanes snapshot → LanesLoaded で届く（旧: ここで一覧を取り直していた）。
-                    if let Err(e) = daemon_process_request(
+                    if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         "echoes_session_create",
@@ -5358,12 +5346,12 @@ pub fn run() -> anyhow::Result<()> {
                 // 消費者主導の replay demand（2026-07-24）: webview が renderer を張った直後に
                 // 届く。attach 時 demand（run_echoes_session）の boot 窓取りこぼしを埋める第 2 弾
                 //（冪等 — ensure_chat_engine は既起動 no-op / replay は clear-prefix で収束）。
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:demand_start skip — lane の project 解決失敗 (lane={lane})");
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:demand_start skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
-                    if let Err(e) = daemon_process_request(
+                    if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         "echoes_demand_start",
@@ -5376,12 +5364,12 @@ pub fn run() -> anyhow::Result<()> {
                 });
             }
             Event::UserEvent(AppEvent::EchoesSessionFocus { lane, session }) => {
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:session_focus skip — lane の project 解決失敗 (lane={lane})");
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:session_focus skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
-                    if let Err(e) = daemon_process_request(
+                    if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         "echoes_session_focus",
@@ -5398,7 +5386,7 @@ pub fn run() -> anyhow::Result<()> {
                     // `echoes_session_focus` が末尾で `emit_lane_update` を撃つ）。
                     // 新 focused の transcript replay を発火（session 省略 = focused に解決）。
                     // 応答は使わない（replay は topic 経由で ReplayStart として届く）。エラーは warn のみ。
-                    if let Err(e) = daemon_process_request(
+                    if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         "echoes_demand_start",
@@ -5414,13 +5402,13 @@ pub fn run() -> anyhow::Result<()> {
             // demand_start（除去後の新 focused の会話を replay）の順で直列に（focus 切替と同型）。
             // 最後の 1 本は backend が Err で拒否する（GUI も × は 2 本以上でしか出さない = 多重防御）。
             Event::UserEvent(AppEvent::EchoesSessionRemove { lane, session }) => {
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:session_remove skip — lane の project 解決失敗 (lane={lane})");
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:session_remove skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let port = crate::client::default_daemon_port();
                 rt_handle.spawn(async move {
-                    if let Err(e) = daemon_process_request(
+                    if let Err(e) = daemon_repo_request(
                         port,
                         &path,
                         "echoes_session_remove",
@@ -5436,7 +5424,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                     // 除去後の roster / focused は snapshot が運ぶ（doc 53 §11）。
                     // 除去後の新 focused の transcript replay を発火（session 省略 = focused に解決）。
-                    if let Err(e) = daemon_process_request(
+                    if let Err(e) = daemon_repo_request(
                         port,
                         &path,
                         "echoes_demand_start",
@@ -5451,13 +5439,13 @@ pub fn run() -> anyhow::Result<()> {
             // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
             // 既存 + Add Performer と同じ stands_list を再利用（doc 38 §3 の作成 UX）。
             Event::UserEvent(AppEvent::EchoesStandsFetch { lane, req }) => {
-                let Some(path) = resolve_project_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:stands_fetch skip — lane の project 解決失敗 (lane={lane})");
+                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                    tracing::warn!("echoes:stands_fetch skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let proxy = async_action_proxy.clone();
                 rt_handle.spawn(async move {
-                    match daemon_process_request(
+                    match daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         "stands_list",
@@ -5483,16 +5471,16 @@ pub fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
                 // board モデル (2026-07-15): WebView の board mutate（thumbnail ✕ / Clear ボタン）を
-                // daemon process-proxy ask で active project の SP に forward する。 SP が DB を更新して
+                // daemon repo-proxy ask で active repo の repo に forward する。 repo が DB を更新して
                 // BoardUpdated(retained) を broadcast し、 canvas channel 経由で webview の board が
-                // 更新される（webview は truth を持たず SP の反映を待つ view）。 active project 解決
+                // 更新される（webview は truth を持たず repo の反映を待つ view）。 active repo 解決
                 // 失敗は silent skip。
-                let Some(path) = resolve_active_project_path(&sidebar_state) else {
-                    tracing::debug!("board mutate skip — active project 解決失敗");
+                let Some(path) = resolve_active_repo_path(&sidebar_state) else {
+                    tracing::debug!("board mutate skip — active repo 解決失敗");
                     return;
                 };
                 rt_handle.spawn(async move {
-                    match daemon_process_request(
+                    match daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
                         &method,
@@ -5505,26 +5493,26 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
             }
-            Event::UserEvent(AppEvent::ProjectsError(msg)) => {
+            Event::UserEvent(AppEvent::ReposError(msg)) => {
                 sidebar_js::error(&webview, &msg);
             }
             // R5 Performer create flow: spawn_blocking thread からの結果を sidebar に push back。
             // success → form を閉じる + addPerformerOpen から削除。
             // error → form 下に inline error 表示 + form は開いたまま (再 submit 可能)。
             Event::UserEvent(AppEvent::PerformerCreateResult {
-                project_path,
+                repo_path,
                 name,
                 error,
             }) => {
-                sidebar_js::performer_create_result(&webview, project_path, name, error);
+                sidebar_js::performer_create_result(&webview, repo_path, name, error);
             }
             Event::UserEvent(AppEvent::StandsResult {
-                project_path,
+                repo_path,
                 stands,
                 error,
             }) => {
                 // doc 11 PR-C: + Add Performer form の dropdown を populate するための push back。
-                sidebar_js::stands_result(&webview, project_path, &stands, error);
+                sidebar_js::stands_result(&webview, repo_path, &stands, error);
             }
             // Sidebar File Explorer: walk 結果を sidebar bundle へ push back。
             // JS 側 (`FileExplorer.tsx`) が `vpFiles.handleListResult` で受け取る。
@@ -5542,7 +5530,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             // Sidebar File Explorer: file 読み込み結果を Canvas (board) に inject。
             // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
-            // 再現するため、 `ProcessMessage::Show` 相当の JSON を main_view にそのまま渡す。
+            // 再現するため、 `RepoMessage::Show` 相当の JSON を main_view にそのまま渡す。
             Event::UserEvent(AppEvent::FilesOpenResult { content }) => {
                 // doc 19 board Canvas Stack Model: append field は omit (= stack push に
                 // 統一)。 pane_id は dead field だが backward compat で keep。
@@ -5568,14 +5556,14 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
-                // VP-100 follow-up: project:add / project:clone は async picker → API → ProjectsLoaded ルート
+                // VP-100 follow-up: repo:add / repo:clone は async picker → API → ReposLoaded ルート
                 // (state 直接 mutate しないので handle_sidebar_ipc の前で分岐)
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg) {
                     match parsed.get("t").and_then(|v| v.as_str()) {
-                        Some("process:add") => {
+                        Some("repo:add") => {
                             let initial_dir =
-                                resolve_default_project_root(&settings, &sidebar_state);
-                            spawn_add_project_picker(
+                                resolve_default_repo_root(&settings, &sidebar_state);
+                            spawn_add_repo_picker(
                                 async_action_proxy.clone(),
                                 initial_dir,
                                 rt_handle.clone(),
@@ -5599,8 +5587,8 @@ pub fn run() -> anyhow::Result<()> {
                                 .filter(|s| !s.is_empty())
                                 .map(std::path::PathBuf::from);
                             let default_root =
-                                resolve_default_project_root(&settings, &sidebar_state);
-                            spawn_clone_project(
+                                resolve_default_repo_root(&settings, &sidebar_state);
+                            spawn_clone_repo(
                                 async_action_proxy.clone(),
                                 url,
                                 default_root,
@@ -5610,9 +5598,9 @@ pub fn run() -> anyhow::Result<()> {
                             );
                             return;
                         }
-                        Some("project:clone:pickFolder") => {
+                        Some("repo:clone:pickFolder") => {
                             let initial_dir =
-                                resolve_default_project_root(&settings, &sidebar_state);
+                                resolve_default_repo_root(&settings, &sidebar_state);
                             spawn_clone_path_picker(async_action_proxy.clone(), initial_dir);
                             return;
                         }
@@ -5648,13 +5636,13 @@ pub fn run() -> anyhow::Result<()> {
                         push_active_view(&webview, &sidebar_state);
                     }
                 }
-                // Architecture v4: dead な project が expand されたら SP を auto-spawn。
+                // Architecture v4: dead な repo が expand されたら repo を auto-spawn。
                 // dedup: 同 session で同じ path を 2 回呼ばない (daemon 側でも弾かれるが
                 // 余計な POST を避ける)。
-                if let Some((name, path)) = outcome.sp_spawn_request {
-                    if sp_spawn_triggered.insert(path.clone()) {
+                if let Some((name, path)) = outcome.repo_spawn_request {
+                    if repo_spawn_triggered.insert(path.clone()) {
                         tracing::info!(
-                            "SP auto-spawn 要求 (accordion expand trigger): name={} path={}",
+                            "repo auto-spawn 要求 (accordion expand trigger): name={} path={}",
                             name,
                             path
                         );
@@ -5666,16 +5654,16 @@ pub fn run() -> anyhow::Result<()> {
                             daemon_conn.clone(),
                         );
                     } else {
-                        tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
+                        tracing::debug!("repo auto-spawn skip (既 trigger): {}", path);
                     }
                 }
                 // Phase 5-D fix: accordion 閉じた → dedup HashSet から path を release。
                 //  spawn 失敗で entry が居残ったまま user が collapse → expand すれば確実に retry。
-                if let Some(path) = outcome.sp_spawn_release
-                    && sp_spawn_triggered.remove(&path)
+                if let Some(path) = outcome.repo_spawn_release
+                    && repo_spawn_triggered.remove(&path)
                 {
                     tracing::info!(
-                        "SP auto-spawn dedup released (accordion collapse): {}",
+                        "repo auto-spawn dedup released (accordion collapse): {}",
                         path
                     );
                 }
@@ -5683,12 +5671,12 @@ pub fn run() -> anyhow::Result<()> {
                 // 全 async work は shared runtime (rt_handle) 経由 — bare `tokio::spawn` は禁止
                 // (.clippy.toml で compile gate)、 tao event loop closure に runtime context が
                 // 無いので必ず `rt_handle.spawn` を使う。
-                if let Some(project_name) = outcome.restart_process_request {
+                if let Some(repo_name) = outcome.restart_process_request {
                     let proxy = async_action_proxy.clone();
                     let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         // doc 45 段 3: 旧 `POST /api/daemon/processes/{name}/restart` を
-                        // Unison `daemon-control.projects/restart` に差し替え。 接続先は共有
+                        // Unison `daemon-control.repos/restart` に差し替え。 接続先は共有
                         // QUIC connection (port 解決は conn manager が持つ)。
                         let control = match conn.control().await {
                             Ok(c) => c,
@@ -5697,31 +5685,31 @@ pub fn run() -> anyhow::Result<()> {
                                 return;
                             }
                         };
-                        match control.restart_process(&project_name).await {
+                        match control.restart_process(&repo_name).await {
                             Ok(()) => {
-                                tracing::info!("restart_process OK: {}", project_name);
-                                // 完了 → projects 再 fetch → sidebar state badge 更新。
-                                // 必ず `fetch_projects_with_ports` 経由 (= runtime port merge)
-                                // で送る。 list_projects() だけだと restart 直後に全 project の
+                                tracing::info!("restart_process OK: {}", repo_name);
+                                // 完了 → repos 再 fetch → sidebar state badge 更新。
+                                // 必ず `fetch_repos_with_ports` 経由 (= runtime port merge)
+                                // で送る。 list_repos() だけだと restart 直後に全 repo の
                                 // port が None で潰れ、 後続 LanesLoaded で ensureLane が
                                 // 全件 skip され conductor terminal が消失する。
-                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
+                                if let Ok(repos) = fetch_repos_with_ports(&control).await {
                                     let _ =
-                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                                        proxy.send_event(AppEvent::ReposLoaded(repos));
                                 }
                             }
                             Err(e) => {
                                 tracing::warn!(
                                     "restart_process failed for {}: {}",
-                                    project_name,
+                                    repo_name,
                                     e
                                 );
                             }
                         }
                     });
                 }
-                // Process stop 要求 (project context menu の Stop project から)。
-                if let Some(project_name) = outcome.stop_process_request {
+                // Process stop 要求 (repo context menu の Stop repo から)。
+                if let Some(repo_name) = outcome.stop_process_request {
                     let proxy = async_action_proxy.clone();
                     let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
@@ -5732,47 +5720,47 @@ pub fn run() -> anyhow::Result<()> {
                                 return;
                             }
                         };
-                        match control.stop_process(&project_name).await {
+                        match control.stop_process(&repo_name).await {
                             Ok(()) => {
-                                tracing::info!("stop_process OK: {}", project_name);
-                                // 完了 → projects 再 fetch → 停止 state を sidebar に反映。
-                                // restart と同じく `fetch_projects_with_ports` 経由で
-                                // 他 project の runtime port を保つ。
-                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
+                                tracing::info!("stop_process OK: {}", repo_name);
+                                // 完了 → repos 再 fetch → 停止 state を sidebar に反映。
+                                // restart と同じく `fetch_repos_with_ports` 経由で
+                                // 他 repo の runtime port を保つ。
+                                if let Ok(repos) = fetch_repos_with_ports(&control).await {
                                     let _ =
-                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                                        proxy.send_event(AppEvent::ReposLoaded(repos));
                                 }
                             }
                             Err(e) => {
                                 tracing::warn!(
                                     "stop_process failed for {}: {}",
-                                    project_name,
+                                    repo_name,
                                     e
                                 );
                             }
                         }
                     });
                 }
-                // Project delete 要求 (project context menu の Delete project から、
-                // UI で 2-click 確認済)。 daemon の remove_project は稼働中 SP があると
+                // Repo delete 要求 (repo context menu の Delete repo から、
+                // UI で 2-click 確認済)。 daemon の remove_repo は稼働中 repo があると
                 // エラーになるため、 先に stop → grace → remove と chain する
                 // (restart_process が capability 内でやっているのと同じ順序)。
-                if let Some((project_name, project_path)) = outcome.delete_project_request {
+                if let Some((repo_name, repo_path)) = outcome.delete_repo_request {
                     let proxy = async_action_proxy.clone();
                     let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         let control = match conn.control().await {
                             Ok(c) => c,
                             Err(e) => {
-                                tracing::warn!("delete_project: {}", e);
+                                tracing::warn!("delete_repo: {}", e);
                                 return;
                             }
                         };
-                        // stop は best-effort: SP が未起動 (= 停止中) なら
+                        // stop は best-effort: repo が未起動 (= 停止中) なら
                         // 「No running Process」 エラーが返るが、 続行して remove する。
-                        match control.stop_process(&project_name).await {
+                        match control.stop_process(&repo_name).await {
                             Ok(()) => {
-                                tracing::info!("delete: stop_process OK: {}", project_name);
+                                tracing::info!("delete: stop_process OK: {}", repo_name);
                                 // shutdown 伝播 + port release を待つ grace period
                                 tokio::time::sleep(std::time::Duration::from_millis(500))
                                     .await;
@@ -5780,35 +5768,35 @@ pub fn run() -> anyhow::Result<()> {
                             Err(e) => {
                                 tracing::info!(
                                     "delete: stop_process skipped for {} (continuing): {}",
-                                    project_name,
+                                    repo_name,
                                     e
                                 );
                             }
                         }
-                        match control.remove_project(&project_path).await {
+                        match control.remove_repo(&repo_path).await {
                             Ok(()) => {
-                                tracing::info!("remove_project OK: {}", project_path);
-                                // 完了 → projects 再 fetch → sidebar から除去。
-                                // 削除対象以外の project の runtime port を保つため
-                                // `fetch_projects_with_ports` 経由で送る。
-                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
+                                tracing::info!("remove_repo OK: {}", repo_path);
+                                // 完了 → repos 再 fetch → sidebar から除去。
+                                // 削除対象以外の repo の runtime port を保つため
+                                // `fetch_repos_with_ports` 経由で送る。
+                                if let Ok(repos) = fetch_repos_with_ports(&control).await {
                                     let _ =
-                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                                        proxy.send_event(AppEvent::ReposLoaded(repos));
                                 }
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "remove_project failed for {}: {}",
-                                    project_path,
+                                    "remove_repo failed for {}: {}",
+                                    repo_path,
                                     e
                                 );
                             }
                         }
                     });
                 }
-                // Phase 1 (doc 24): project 並び替えを daemon の project_order に永続化する。
-                // restart/stop と同じ「操作 → re-fetch → ProjectsLoaded」パターン。成功後の
-                // ProjectsLoaded で currents_order が canonical 順に reconcile される。
+                // Phase 1 (doc 24): repo 並び替えを daemon の repo_order に永続化する。
+                // restart/stop と同じ「操作 → re-fetch → ReposLoaded」パターン。成功後の
+                // ReposLoaded で currents_order が canonical 順に reconcile される。
                 if let Some(order) = outcome.reorder_request {
                     let proxy = async_action_proxy.clone();
                     let conn = daemon_conn.clone();
@@ -5816,31 +5804,31 @@ pub fn run() -> anyhow::Result<()> {
                         let control = match conn.control().await {
                             Ok(c) => c,
                             Err(e) => {
-                                tracing::warn!("reorder_projects: {}", e);
+                                tracing::warn!("reorder_repos: {}", e);
                                 return;
                             }
                         };
-                        match control.reorder_projects(order).await {
+                        match control.reorder_repos(order).await {
                             Ok(()) => {
-                                tracing::info!("reorder_projects OK");
-                                // 完了 → projects 再 fetch → canonical 順で sidebar reconcile。
-                                if let Ok(projects) = fetch_projects_with_ports(&control).await {
+                                tracing::info!("reorder_repos OK");
+                                // 完了 → repos 再 fetch → canonical 順で sidebar reconcile。
+                                if let Ok(repos) = fetch_repos_with_ports(&control).await {
                                     let _ =
-                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                                        proxy.send_event(AppEvent::ReposLoaded(repos));
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("reorder_projects failed: {}", e);
+                                tracing::warn!("reorder_repos failed: {}", e);
                             }
                         }
                     });
                 }
                 // Model Q: active lane を daemon canonical に永続 (fire-and-forget、 optimistic 適用済)。
-                if let Some((project_path, address)) = outcome.set_active_lane_request {
+                if let Some((repo_path, address)) = outcome.set_active_lane_request {
                     let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         let result = match conn.control().await {
-                            Ok(control) => control.set_active_lane(project_path, address).await,
+                            Ok(control) => control.set_active_lane(repo_path, address).await,
                             Err(e) => Err(e),
                         };
                         if let Err(e) = result {
@@ -5849,17 +5837,17 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
                 // Phase 4-A: Performer Lane 削除要求 (sidebar の × button から)
-                if let Some((project_path, address)) = outcome.delete_lane_request {
-                    // F6②: 旧 DaemonRpcClient.delete_lane (SP 直結 reqwest) を daemon process-proxy
-                    // ask (lane_delete) に移管。 SP port 解決は不要になり project_path を handshake で渡す。
+                if let Some((repo_path, address)) = outcome.delete_lane_request {
+                    // F6②: 旧 DaemonRpcClient.delete_lane (repo 直結 reqwest) を daemon repo-proxy
+                    // ask (lane_delete) に移管。 repo port 解決は不要になり repo_path を handshake で渡す。
                     // JS-side からも先 removeLane を呼ぶ (= xterm 即時 dispose、 server 反映は
-                    // SP の "lanes" topic snapshot 経由で sidebar に届く)。
+                    // repo の "lanes" topic snapshot 経由で sidebar に届く)。
                     lane_js::remove_lane(&webview, &address);
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address });
-                        match daemon_process_request(
+                        match daemon_repo_request(
                             crate::client::default_daemon_port(),
-                            &project_path,
+                            &repo_path,
                             "lane_delete",
                             payload,
                         )
@@ -5867,15 +5855,15 @@ pub fn run() -> anyhow::Result<()> {
                         {
                             Ok(_) => {
                                 tracing::info!(
-                                    "Lane deleted: project={} address={}",
-                                    project_path,
+                                    "Lane deleted: repo={} address={}",
+                                    repo_path,
                                     address
                                 );
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "lane_delete failed: project={} address={}: {}",
-                                    project_path,
+                                    "lane_delete failed: repo={} address={}: {}",
+                                    repo_path,
                                     address,
                                     e
                                 );
@@ -5884,32 +5872,32 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
                 // Lane Conductor Stand restart 要求 (sidebar の restart icon → confirm dialog から)
-                if let Some((project_path, address, fresh)) = outcome.restart_lane_request {
-                    // F6③: 旧 DaemonRpcClient.restart_lane (SP 直結 reqwest) を daemon process-proxy
-                    // ask (lane_restart) に移管。 SP port 解決は不要、 project_path を handshake で渡す。
+                if let Some((repo_path, address, fresh)) = outcome.restart_lane_request {
+                    // F6③: 旧 DaemonRpcClient.restart_lane (repo 直結 reqwest) を daemon repo-proxy
+                    // ask (lane_restart) に移管。 repo port 解決は不要、 repo_path を handshake で渡す。
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address, "fresh": fresh });
-                        match daemon_process_request(
+                        match daemon_repo_request(
                             crate::client::default_daemon_port(),
-                            &project_path,
+                            &repo_path,
                             "lane_restart",
                             payload,
                         )
                         .await
                         {
                             Ok(_) => {
-                                // 新 pid / state は SP の "lanes" topic snapshot で購読側に push され、
+                                // 新 pid / state は repo の "lanes" topic snapshot で購読側に push され、
                                 // 端末は canvas channel demand 経由で新 PtySlot に再 attach し直す。
                                 tracing::info!(
-                                    "Lane restarted: project={} address={}",
-                                    project_path,
+                                    "Lane restarted: repo={} address={}",
+                                    repo_path,
                                     address
                                 );
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "lane_restart failed: project={} address={}: {}",
-                                    project_path,
+                                    "lane_restart failed: repo={} address={}: {}",
+                                    repo_path,
                                     address,
                                     e
                                 );
@@ -5920,32 +5908,32 @@ pub fn run() -> anyhow::Result<()> {
                 // doc 44 D4/D5: 開発起点の再指定 (sidebar lane 行の context menu から)。
                 // Host の帳簿のポインタを書き換えるだけ — cwd も active lane も engine も動かない。
                 // 反映は次の lanes snapshot の `origin` で戻る（楽観更新しない = 帳簿が真実源）。
-                if let Some((project_path, address)) = outcome.set_origin_request {
+                if let Some((repo_path, address)) = outcome.set_origin_request {
                     rt_handle.spawn(async move {
-                        // 帳簿は lane **名**で受ける（起点は project ごとに 1 本なので
-                        // address の `<project>` 部分は冗長）。address からは末尾を取る。
+                        // 帳簿は lane **名**で受ける（起点は repo ごとに 1 本なので
+                        // address の `<repo>` 部分は冗長）。address からは末尾を取る。
                         let lane_name = address.rsplit('/').next().unwrap_or("").to_string();
                         if lane_name.is_empty() {
                             tracing::warn!("lane_origin_set: address から lane 名を取れない: {address}");
                             return;
                         }
                         let payload = serde_json::json!({ "lane": lane_name });
-                        match daemon_process_request(
+                        match daemon_repo_request(
                             crate::client::default_daemon_port(),
-                            &project_path,
+                            &repo_path,
                             "lane_origin_set",
                             payload,
                         )
                         .await
                         {
                             Ok(_) => tracing::info!(
-                                "開発起点を変更: project={} lane={}",
-                                project_path,
+                                "開発起点を変更: repo={} lane={}",
+                                repo_path,
                                 lane_name
                             ),
                             Err(e) => tracing::warn!(
-                                "lane_origin_set failed: project={} lane={}: {}",
-                                project_path,
+                                "lane_origin_set failed: repo={} lane={}: {}",
+                                repo_path,
                                 lane_name,
                                 e
                             ),
@@ -5955,7 +5943,7 @@ pub fn run() -> anyhow::Result<()> {
                 // doc 44 §12: lane の並び順を帳簿に保存する（sidebar の DnD）。
                 // address 列を lane 名の列に畳んでから投げる（帳簿は lane 名で受け、
                 // 境界で lane_id に解決する — 起点と同じ規律）。
-                if let Some((project_path, order)) = outcome.reorder_lanes_request {
+                if let Some((repo_path, order)) = outcome.reorder_lanes_request {
                     rt_handle.spawn(async move {
                         let names: Vec<String> = order
                             .iter()
@@ -5968,41 +5956,41 @@ pub fn run() -> anyhow::Result<()> {
                             return;
                         }
                         let payload = serde_json::json!({ "order": names });
-                        match daemon_process_request(
+                        match daemon_repo_request(
                             crate::client::default_daemon_port(),
-                            &project_path,
+                            &repo_path,
                             "lane_order_set",
                             payload,
                         )
                         .await
                         {
                             Ok(_) => tracing::info!(
-                                "lane の並び順を保存: project={} count={}",
-                                project_path,
+                                "lane の並び順を保存: repo={} count={}",
+                                repo_path,
                                 names.len()
                             ),
                             Err(e) => tracing::warn!(
-                                "lane_order_set failed: project={}: {}",
-                                project_path,
+                                "lane_order_set failed: repo={}: {}",
+                                repo_path,
                                 e
                             ),
                         }
                     });
                 }
                 // Phase 3-A: Performer Lane 作成要求 (sidebar の + Add Performer から)
-                // 投げ先は Daemon (:32000) の `daemon-control.lanes/create` 1 本 (SP port 解決は不要、
+                // 投げ先は Daemon (:32000) の `daemon-control.lanes/create` 1 本 (repo port 解決は不要、
                 // set_active_lane / reorder と同じ daemon-command パターン)。
-                // doc 44 §9.4: daemon 側はそこで自前の provision をせず project runtime の
+                // doc 44 §9.4: daemon 側はそこで自前の provision をせず repo runtime の
                 // lane 作成 core に委譲する — worktree も PtySlot も**この 1 往復で揃う**。
                 // 旧構成は descriptor だけ作って PtySlot を lane_watcher の到達に賭けており、
                 // 「+ で作った lane だけ engine 指定が別経路で伝わる」等の経路差が生じていた。
                 // doc 11 PR-C: stand 指定 を tuple 4 番目に保持 (None なら daemon-side default)。
-                if let Some((project_path, name, branch, stand)) = outcome.add_performer_request {
+                if let Some((repo_path, name, branch, stand)) = outcome.add_performer_request {
                     let proxy = async_action_proxy.clone();
                     let name_clone = name.clone();
                     let branch_clone = branch.clone();
                     let stand_clone = stand.clone();
-                    let path_clone = project_path.clone();
+                    let path_clone = repo_path.clone();
                     let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         let control = match conn.control().await {
@@ -6011,7 +5999,7 @@ pub fn run() -> anyhow::Result<()> {
                                 let msg = e.to_string();
                                 tracing::warn!("create_performer_lane: {}", msg);
                                 let _ = proxy.send_event(AppEvent::PerformerCreateResult {
-                                    project_path: path_clone,
+                                    repo_path: path_clone,
                                     name: name_clone,
                                     error: Some(msg),
                                 });
@@ -6029,7 +6017,7 @@ pub fn run() -> anyhow::Result<()> {
                         {
                             Ok(()) => {
                                 tracing::info!(
-                                    "Performer Lane created (daemon): project={} name={} branch={:?}",
+                                    "Performer Lane created (daemon): repo={} name={} branch={:?}",
                                     path_clone,
                                     name_clone,
                                     branch_clone
@@ -6039,7 +6027,7 @@ pub fn run() -> anyhow::Result<()> {
                                 // （楽観更新しない = 真実源は 1 つ、doc 44 §10.3 と同じ規律）。
                                 // R5: 成功通知を sidebar に push back (form を閉じる)
                                 let _ = proxy.send_event(AppEvent::PerformerCreateResult {
-                                    project_path: path_clone,
+                                    repo_path: path_clone,
                                     name: name_clone,
                                     error: None,
                                 });
@@ -6051,13 +6039,13 @@ pub fn run() -> anyhow::Result<()> {
                                 // (旧 HTTP の "... HTTP 500: {json}" より読める)。 そのまま流す。
                                 let msg = format!("{}", e);
                                 tracing::warn!(
-                                    "create_performer_lane failed: project={} name={}: {}",
+                                    "create_performer_lane failed: repo={} name={}: {}",
                                     path_clone,
                                     name_clone,
                                     msg
                                 );
                                 let _ = proxy.send_event(AppEvent::PerformerCreateResult {
-                                    project_path: path_clone,
+                                    repo_path: path_clone,
                                     name: name_clone,
                                     error: Some(msg),
                                 });
@@ -6067,20 +6055,20 @@ pub fn run() -> anyhow::Result<()> {
                 }
 
                 // doc 11 PR-C / F6④: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)。
-                // 旧 SP 直結 (client.list_stands) を撤去し daemon process-proxy ask (`stands_list`) に移管。
-                // SP port 解決が消滅し、 surface は Daemon :32000 だけを知れば済む (L1 portless 前進)。
-                if let Some(project_path) = outcome.list_stands_request {
+                // 旧 SP 直結 (client.list_stands) を撤去し daemon repo-proxy ask (`stands_list`) に移管。
+                // repo port 解決が消滅し、 surface は Daemon :32000 だけを知れば済む (L1 portless 前進)。
+                if let Some(repo_path) = outcome.list_stands_request {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
-                        let (stands, error) = match daemon_process_request(
+                        let (stands, error) = match daemon_repo_request(
                             crate::client::default_daemon_port(),
-                            &project_path,
+                            &repo_path,
                             "stands_list",
                             serde_json::json!({}),
                         )
                         .await
                         {
-                            // SP は {stands:[...]} を返す。 stands 配列だけ Vec<StandInfo> に deserialize。
+                            // repo は {stands:[...]} を返す。 stands 配列だけ Vec<StandInfo> に deserialize。
                             Ok(v) => {
                                 let stands = v
                                     .get("stands")
@@ -6092,23 +6080,23 @@ pub fn run() -> anyhow::Result<()> {
                                     })
                                     .unwrap_or_default();
                                 tracing::debug!(
-                                    "stands listed: project={} count={}",
-                                    project_path,
+                                    "stands listed: repo={} count={}",
+                                    repo_path,
                                     stands.len()
                                 );
                                 (stands, None)
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "stands_list failed: project={}: {}",
-                                    project_path,
+                                    "stands_list failed: repo={}: {}",
+                                    repo_path,
                                     e
                                 );
                                 (Vec::new(), Some(e))
                             }
                         };
                         let _ = proxy.send_event(AppEvent::StandsResult {
-                            project_path,
+                            repo_path,
                             stands,
                             error,
                         });
@@ -6138,8 +6126,8 @@ pub fn run() -> anyhow::Result<()> {
                 // Sidebar File Explorer: lane workdir 配下を walk して entries を返す要求。
                 // walk は I/O blocking のため main thread で実行せず、 dedicated thread に逃す。
                 // 結果は AppEvent::FilesListResult で event loop に戻して sidebar に push back。
-                if let Some((project_path, address)) = outcome.files_list_request {
-                    match lookup_lane_cwd(&sidebar_state, &project_path, &address) {
+                if let Some((repo_path, address)) = outcome.files_list_request {
+                    match lookup_lane_cwd(&sidebar_state, &repo_path, &address) {
                         Some(cwd) => {
                             let proxy = async_action_proxy.clone();
                             let addr_clone = address.clone();
@@ -6158,7 +6146,7 @@ pub fn run() -> anyhow::Result<()> {
                         None => {
                             tracing::warn!(
                                 "files:list: lane cwd unknown for path={} address={} (skip)",
-                                project_path,
+                                repo_path,
                                 address
                             );
                         }
@@ -6168,8 +6156,8 @@ pub fn run() -> anyhow::Result<()> {
                 // Sidebar File Explorer: 選択されたファイルを Canvas (board) に表示する要求。
                 // file 読み込み + base64 (画像) も blocking thread に逃す。 結果の Content JSON は
                 // AppEvent::FilesOpenResult で main thread に戻して main_view へ inject。
-                if let Some((project_path, address, rel_path)) = outcome.files_open_request {
-                    match lookup_lane_cwd(&sidebar_state, &project_path, &address) {
+                if let Some((repo_path, address, rel_path)) = outcome.files_open_request {
+                    match lookup_lane_cwd(&sidebar_state, &repo_path, &address) {
                         Some(cwd) => {
                             let proxy = async_action_proxy.clone();
                             let rel_clone = rel_path.clone();
@@ -6184,7 +6172,7 @@ pub fn run() -> anyhow::Result<()> {
                         None => {
                             tracing::warn!(
                                 "files:open: lane cwd unknown for path={} address={} rel_path={} (skip)",
-                                project_path,
+                                repo_path,
                                 address,
                                 rel_path
                             );
@@ -6222,7 +6210,7 @@ pub fn run() -> anyhow::Result<()> {
                     // Cmd+N: 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ。
                     // 同 EventLoop に重ねるのではなく fork-style で別 process 化することで、
                     // state 干渉ゼロ + crash isolation + multi-instance 並行開発が可能に。
-                    // daemon (port 32000) は process 横断 shared なので projects 一覧は同期。
+                    // daemon (port 32000) は process 横断 shared なので repos 一覧は同期。
                     //
                     // instance index を明示採番する (= 旧 bug 修正)。 採番しないと子は
                     // 全員 instance 0 相当に落ち、 `session.0.json` を共有して per-window state
@@ -6340,102 +6328,98 @@ pub fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod port_merge_tests {
-    //! `fetch_projects_with_ports` の core logic (= `merge_ports_from_running`) の unit test。
+    //! `fetch_repos_with_ports` の core logic (= `merge_ports_from_running`) の unit test。
     //!
-    //! HTTP 呼び出しを含む `fetch_projects_with_ports` 自体は integration test の領域だが、
+    //! HTTP 呼び出しを含む `fetch_repos_with_ports` 自体は integration test の領域だが、
     //! merge logic は pure calculation なので Small Test として検証する。
 
     use super::*;
-    use crate::client::{ProcessStatus, ProjectInfo, RunningProcess};
+    use crate::client::{RepoInfo, RepoStatus, RunningRepo};
 
-    fn make_project(name: &str, port: Option<u16>) -> ProjectInfo {
-        ProjectInfo {
+    fn make_repo(name: &str, port: Option<u16>) -> RepoInfo {
+        RepoInfo {
             name: name.to_string(),
             path: format!("/repos/{name}"),
             port,
-            state: ProcessStatus::Running,
-            ..ProjectInfo::default()
+            state: RepoStatus::Running,
+            ..RepoInfo::default()
         }
     }
 
-    fn make_running(name: &str, port: u16) -> RunningProcess {
-        RunningProcess {
-            project_name: name.to_string(),
+    fn make_running(name: &str, port: u16) -> RunningRepo {
+        RunningRepo {
+            repo_name: name.to_string(),
             port,
         }
     }
 
-    /// 正常系: running list の name と project name が一致した場合に port が inject される。
+    /// 正常系: running list の name と repo name が一致した場合に port が inject される。
     #[test]
-    fn merge_injects_port_for_matched_project() {
-        let mut projects = vec![make_project("vp", None), make_project("creo", None)];
+    fn merge_injects_port_for_matched_repo() {
+        let mut repos = vec![make_repo("vp", None), make_repo("creo", None)];
         let running = vec![make_running("vp", 33000), make_running("creo", 33001)];
-        merge_ports_from_running(&mut projects, &running);
-        assert_eq!(projects[0].port, Some(33000));
-        assert_eq!(projects[1].port, Some(33001));
+        merge_ports_from_running(&mut repos, &running);
+        assert_eq!(repos[0].port, Some(33000));
+        assert_eq!(repos[1].port, Some(33001));
     }
 
-    /// 正常系: running list に無い project は port を変更しない (= None のまま)。
+    /// 正常系: running list に無い repo は port を変更しない (= None のまま)。
     #[test]
-    fn merge_leaves_unmatched_project_port_unchanged() {
-        let mut projects = vec![make_project("vp", None), make_project("creo", None)];
+    fn merge_leaves_unmatched_repo_port_unchanged() {
+        let mut repos = vec![make_repo("vp", None), make_repo("creo", None)];
         let running = vec![make_running("vp", 33000)]; // creo は running にない
-        merge_ports_from_running(&mut projects, &running);
-        assert_eq!(projects[0].port, Some(33000), "vp は inject される");
-        assert_eq!(projects[1].port, None, "creo は変更されない");
+        merge_ports_from_running(&mut repos, &running);
+        assert_eq!(repos[0].port, Some(33000), "vp は inject される");
+        assert_eq!(repos[1].port, None, "creo は変更されない");
     }
 
-    /// 正常系: running list が空の場合、全 project の port は変更されない。
+    /// 正常系: running list が空の場合、全 repo の port は変更されない。
     /// (= list_processes がエラーの場合の degrade path と同等)
     #[test]
     fn merge_with_empty_running_leaves_all_ports_unchanged() {
-        let mut projects = vec![make_project("vp", None), make_project("creo", Some(33000))];
-        merge_ports_from_running(&mut projects, &[]);
-        assert_eq!(projects[0].port, None);
-        assert_eq!(
-            projects[1].port,
-            Some(33000),
-            "config の static port は維持"
-        );
+        let mut repos = vec![make_repo("vp", None), make_repo("creo", Some(33000))];
+        merge_ports_from_running(&mut repos, &[]);
+        assert_eq!(repos[0].port, None);
+        assert_eq!(repos[1].port, Some(33000), "config の static port は維持");
     }
 
-    /// 正常系: project list が空の場合、panic しない。
+    /// 正常系: repo list が空の場合、panic しない。
     #[test]
-    fn merge_with_empty_projects_is_noop() {
-        let mut projects: Vec<ProjectInfo> = vec![];
+    fn merge_with_empty_repos_is_noop() {
+        let mut repos: Vec<RepoInfo> = vec![];
         let running = vec![make_running("vp", 33000)];
-        merge_ports_from_running(&mut projects, &running);
-        assert!(projects.is_empty());
+        merge_ports_from_running(&mut repos, &running);
+        assert!(repos.is_empty());
     }
 
-    /// 正常系: running に同名 project が複数あっても最後 (HashMap 上書き) で一意に決まる。
+    /// 正常系: running に同名 repo が複数あっても最後 (HashMap 上書き) で一意に決まる。
     /// 実際の daemon は重複を持たないが、defensive に動作することを確認。
     #[test]
     fn merge_with_duplicate_running_entry_picks_one() {
-        let mut projects = vec![make_project("vp", None)];
+        let mut repos = vec![make_repo("vp", None)];
         // HashMap なので同名は上書きされる — どちらかが選ばれれば OK
         let running = vec![make_running("vp", 33000), make_running("vp", 33001)];
-        merge_ports_from_running(&mut projects, &running);
-        assert!(projects[0].port.is_some(), "どちらか一方の port が入る");
+        merge_ports_from_running(&mut repos, &running);
+        assert!(repos[0].port.is_some(), "どちらか一方の port が入る");
     }
 
-    /// 境界値: port が既に Some の project も running の port で上書きされる。
+    /// 境界値: port が既に Some の repo も running の port で上書きされる。
     /// (= daemon の config port より runtime port が正確)
     #[test]
     fn merge_overwrites_existing_config_port_with_runtime_port() {
-        let mut projects = vec![make_project("vp", Some(9999))]; // config に static port
+        let mut repos = vec![make_repo("vp", Some(9999))]; // config に static port
         let running = vec![make_running("vp", 33000)]; // runtime は別 port
-        merge_ports_from_running(&mut projects, &running);
-        assert_eq!(projects[0].port, Some(33000), "runtime port で上書きされる");
+        merge_ports_from_running(&mut repos, &running);
+        assert_eq!(repos[0].port, Some(33000), "runtime port で上書きされる");
     }
 
     /// 異常系: name が大文字小文字違いの場合は match しない (= case-sensitive)。
     #[test]
     fn merge_is_case_sensitive() {
-        let mut projects = vec![make_project("VP", None)];
+        let mut repos = vec![make_repo("VP", None)];
         let running = vec![make_running("vp", 33000)];
-        merge_ports_from_running(&mut projects, &running);
-        assert_eq!(projects[0].port, None, "大文字小文字違いは match しない");
+        merge_ports_from_running(&mut repos, &running);
+        assert_eq!(repos[0].port, None, "大文字小文字違いは match しない");
     }
 }
 

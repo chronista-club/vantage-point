@@ -412,8 +412,8 @@ export function installTerm(): TermPushHandlers {
 		// (app.rs `spawn_terminal_session`) に橋渡しする IPC 経路に直切替:
 		//   - 出力: Rust が daemon canvas channel から PTY bytes を受け、 `window.vpTerminal.handleOutput
 		//           (address, session, base64)` で inject (下記 coalescer で 1 frame 分まとめて term.write)。
-		//   - 入力: `term.onData` → IPC `{t:'term:write', lane, session, data:base64}` → Rust session → SP。
-		//   - resize: `sendResize` → IPC `{t:'term:resize', lane, session, cols, rows}` → Rust session → SP。
+		//   - 入力: `term.onData` → IPC `{t:'term:write', lane, session, data:base64}` → Rust session → repo。
+		//   - resize: `sendResize` → IPC `{t:'term:resize', lane, session, cols, rows}` → Rust session → repo。
 		// 再接続は Rust session が担うので JS 側 retry/backoff/scrollback-replay は不要 (= 撤去)。
 
 		// 出力 coalescer: 1 frame 内に届いた複数 chunk を結合して 1 回 term.write する
@@ -463,7 +463,7 @@ export function installTerm(): TermPushHandlers {
 		// 条件にした fit は**一度も走らない**（旧実装の `fit()` 単独呼び出しも到達不能だった）。
 		// サイズ合わせは `syncSize` が「可視になった契機」で行う。
 
-		// input → IPC (Rust session → SP)。 d は xterm の UTF-16 string、 UTF-8 bytes に直して base64 化。
+		// input → IPC (Rust session → repo)。 d は xterm の UTF-16 string、 UTF-8 bytes に直して base64 化。
 		term.onData((d) => {
 			try {
 				const bytes = new TextEncoder().encode(d);
@@ -1046,7 +1046,7 @@ function installOscHandlers(term: Terminal, address: string): void {
 	// xterm.js は OSC 0 (icon + title) と OSC 2 (title) を内部で parse して onTitleChange event を fire する。
 	// dogfood 仮説: cc が `/rename` 後に session name を window title として emit していれば、
 	//  この listener で renamed value が拾える。もし fire しなければ session JSONL file watch
-	//  (~/.claude/projects/<encoded-cwd>/...) の fallback path 検討。
+	//  (~/.claude/repos/<encoded-cwd>/...) の fallback path 検討。
 	try {
 		term.onTitleChange((title) => {
 			console.log(`[term-title] lane=${address} title=${JSON.stringify(title)}`);

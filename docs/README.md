@@ -45,7 +45,7 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 | [20-spike-report.md](./archive/20-spike-report.md) | spike 完了・self-superseded |
 | [dogfooding-v0.13.0.md](./archive/dogfooding-v0.13.0.md) | 旧バージョンの dogfooding 記録 |
 
-## プロジェクト情報
+## repo情報
 
 - **バージョン**: 0.19.0
 - **ライセンス**: MIT OR Apache-2.0（dual）

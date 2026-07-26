@@ -433,7 +433,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 /* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
    board body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
 .pane.preview iframe{width:100%;height:100%;border:0;background:#fff;}
-/* Phase 5-A: Project-scope Stand placeholder panes (board/runner ほか) */
+/* Phase 5-A: Repo-scope Stand placeholder panes (board/runner ほか) */
 .pane.stand{display:grid;place-items:center;}
 .pane.stand main{text-align:center;max-width:520px;padding:0 24px;}
 .pane.stand h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
@@ -519,7 +519,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
         <div class="board-plate">
           <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Board</span>
           <!-- 鮮度: cursor item の updatedAt を board-handler が「更新 HH:MM:SS」で書く（doc 52 §5 計器盤）。
-               出力元は SP の updatedAt 一箇所（content 手書きに依存しない）。 -->
+               出力元は repo の updatedAt 一箇所（content 手書きに依存しない）。 -->
           <span id="board-freshness" class="board-freshness"></span>
           <button class="board-clear-btn" data-action="clear" data-target="board" title="board を空にする">Clear</button>
         </div>

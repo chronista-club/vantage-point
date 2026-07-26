@@ -2,13 +2,13 @@
 //!
 //! ## VP-189: config.toml → config.kdl 統一
 //!
-//! VP の設定ファイルは元々 TOML だったが、 projects.kdl (VP-188) / lane の
+//! VP の設定ファイルは元々 TOML だったが、 repos.kdl (VP-188) / lane の
 //! performer-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
 //! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
 //!
 //! - config.kdl は **人間が編集する read-only な global 設定**。 VP 自身は
 //!   書き戻さない (= `KdlSerialize` 不要、 `KdlDeserialize` のみ)。
-//! - registered projects は projects.kdl が SSOT (VP-188)。 config.kdl には出さない。
+//! - registered repos は repos.kdl が SSOT (VP-188)。 config.kdl には出さない。
 //! - kebab-case のキー名 (`default-port` 等) を採用。
 //!
 //! ## persistence restructure: XDG Base Directory 準拠 (全 OS 統一)
@@ -21,7 +21,7 @@
 //!
 //! | zone   | 環境変数                  | default                  | 用途 |
 //! |--------|---------------------------|--------------------------|------|
-//! | config | `$XDG_CONFIG_HOME`        | `~/.config/vp/`          | 人が編集 (config.kdl / projects.kdl / addresses.toml) |
+//! | config | `$XDG_CONFIG_HOME`        | `~/.config/vp/`          | 人が編集 (config.kdl / repos.kdl / addresses.toml) |
 //! | data   | `$XDG_DATA_HOME`          | `~/.local/share/vp/`     | 永続 data store (db / discs) |
 //! | state  | `$XDG_STATE_HOME`         | `~/.local/state/vp/`     | runtime state + log (session.json / sessions/ / log/) |
 //!
@@ -77,10 +77,10 @@ fn config_file_path() -> PathBuf {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, KdlDeserialize)]
 #[kdl(document)]
 pub struct Config {
-    /// Default project directory for Claude agent
+    /// Default repo directory for Claude agent
     #[serde(default)]
-    #[kdl(child, name = "default-project-dir", unwrap_arg)]
-    pub default_project_dir: Option<String>,
+    #[kdl(child, name = "default-repo-dir", unwrap_arg)]
+    pub default_repo_dir: Option<String>,
 
     /// Default port for vp
     ///
@@ -130,14 +130,14 @@ pub struct Config {
     #[kdl(child, name = "hub-addr", unwrap_arg)]
     pub hub_addr: Option<String>,
 
-    /// Projects configuration
+    /// Repos configuration
     ///
-    /// VP-188: SSOT は `~/.config/vp/projects.kdl`。 `Config::load()` が projects.kdl を
+    /// VP-188: SSOT は `~/.config/vp/repos.kdl`。 `Config::load()` が repos.kdl を
     /// 読んで本 field を populate する。 config.kdl には一切出さない (`#[kdl(skip)]`、
-    /// = 二重 SSOT 防止)。 永続化は `persist_projects_kdl()`。
+    /// = 二重 SSOT 防止)。 永続化は `persist_repos_kdl()`。
     #[serde(default, skip_serializing)]
     #[kdl(skip)]
-    pub projects: Vec<ProjectConfig>,
+    pub repos: Vec<RepoConfig>,
 
     /// Port layout overrides (optional、default は PortLayout::default())
     ///
@@ -148,15 +148,15 @@ pub struct Config {
     #[kdl(skip)]
     pub ports: Option<PortLayoutOverrides>,
 
-    /// SP startup behavior — Performer spawn の concurrency 制限等 (I-b、 2026-04-30)
+    /// repo startup behavior — Performer spawn の concurrency 制限等 (I-b、 2026-04-30)
     #[serde(default)]
     #[kdl(child, default)]
     pub startup: StartupConfig,
 }
 
-/// SP startup behavior config (I-b、 2026-04-30)。
+/// repo startup behavior config (I-b、 2026-04-30)。
 ///
-/// [`LaneSpawnActor`](crate::process::lane_spawn_actor) が Performer spawn を Cmd 化
+/// [`LaneSpawnActor`](crate::repo::lane_spawn_actor) が Performer spawn を Cmd 化
 /// (in-process channel) した上で、 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
 /// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
 /// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を
@@ -190,9 +190,9 @@ fn default_max_concurrent_lane_spawn() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct PortLayoutOverrides {
     pub daemon_port: Option<u16>,
-    pub project_slot_base: Option<u16>,
-    pub project_slot_size: Option<u16>,
-    pub max_projects: Option<u16>,
+    pub repo_slot_base: Option<u16>,
+    pub repo_slot_size: Option<u16>,
+    pub max_repos: Option<u16>,
     pub lane_base_offset: Option<u16>,
     pub lane_size: Option<u16>,
     #[serde(default)]
@@ -203,20 +203,20 @@ fn default_port() -> u16 {
     33000
 }
 
-/// Project-specific configuration
+/// Repo-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectConfig {
-    /// Project name (for display)
+pub struct RepoConfig {
+    /// Repo name (for display)
     pub name: String,
-    /// Project directory path
+    /// Repo directory path
     pub path: String,
-    /// Preferred port for this project (optional)
+    /// Preferred port for this repo (optional)
     pub port: Option<u16>,
-    /// SP 自動起動の有効/無効（デフォルト: true）
+    /// repo 自動起動の有効/無効（デフォルト: true）
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// Port slot (VP Port Management Phase 1, deterministic layout 用)
-    /// 永続 assign: 一度割り当てたら project の port は常にこの slot から計算
+    /// 永続 assign: 一度割り当てたら repo の port は常にこの slot から計算
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u16>,
 }
@@ -230,10 +230,10 @@ impl Config {
     ///
     /// VP-189: config 形式を KDL に統一。 config.kdl が無い / 空なら `Config::default()`。
     ///
-    /// VP-188: registered projects の SSOT は `~/.config/vp/projects.kdl`。
-    /// config.kdl をパースした後、 projects.kdl が存在すれば `projects` field を
-    /// **projects.kdl の内容で populate** する。 これで `config.projects` を読む全
-    /// caller (resolve / TUI / lane / reload_config) が projects.kdl を SSOT として
+    /// VP-188: registered repos の SSOT は `~/.config/vp/repos.kdl`。
+    /// config.kdl をパースした後、 repos.kdl が存在すれば `repos` field を
+    /// **repos.kdl の内容で populate** する。 これで `config.repos` を読む全
+    /// caller (resolve / TUI / lane / reload_config) が repos.kdl を SSOT として
     /// 参照できる。
     pub fn load() -> Result<Self> {
         let path = config_file_path();
@@ -252,18 +252,18 @@ impl Config {
 
         config.apply_load_defaults();
 
-        // VP-188: projects.kdl が SSOT。 存在すれば config.projects を populate。
-        if crate::projects_file::projects_file_path().exists() {
-            let projects_file = crate::projects_file::ProjectsFile::load()
-                .map_err(|e| anyhow::anyhow!("projects.kdl 読み込み失敗: {}", e))?;
-            config.projects = projects_file
-                .projects
+        // VP-188: repos.kdl が SSOT。 存在すれば config.repos を populate。
+        if crate::repos_file::repos_file_path().exists() {
+            let repos_file = crate::repos_file::ReposFile::load()
+                .map_err(|e| anyhow::anyhow!("repos.kdl 読み込み失敗: {}", e))?;
+            config.repos = repos_file
+                .repos
                 .iter()
-                .map(|e| ProjectConfig {
+                .map(|e| RepoConfig {
                     name: e.name.clone(),
                     path: e.path.clone(),
                     // port は port_layout が slot から deterministic に計算する。
-                    // enabled / slot は projects.kdl の値 (= projects.kdl が SSOT)。
+                    // enabled / slot は repos.kdl の値 (= repos.kdl が SSOT)。
                     port: None,
                     enabled: e.is_enabled(),
                     slot: e.slot,
@@ -289,17 +289,17 @@ impl Config {
         }
     }
 
-    /// `config.projects` を projects.kdl に書き出す (VP-188)。
+    /// `config.repos` を repos.kdl に書き出す (VP-188)。
     ///
-    /// VP-165 の slot 永続化 (= `resolve::sp_port_for_project` の `ensure_slot`)
-    /// 等、 `config.projects` を mutate した後に呼ぶ。 projects の SSOT は
-    /// projects.kdl なので、 `Config::save()` (config.toml) ではなく本 helper を使う。
-    pub fn persist_projects_kdl(&self) -> Result<()> {
-        let pf = crate::projects_file::ProjectsFile {
-            projects: self
-                .projects
+    /// VP-165 の slot 永続化 (= `resolve::port_for_repo` の `ensure_slot`)
+    /// 等、 `config.repos` を mutate した後に呼ぶ。 repos の SSOT は
+    /// repos.kdl なので、 `Config::save()` (config.toml) ではなく本 helper を使う。
+    pub fn persist_repos_kdl(&self) -> Result<()> {
+        let pf = crate::repos_file::ReposFile {
+            repos: self
+                .repos
                 .iter()
-                .map(|p| crate::projects_file::ProjectEntry {
+                .map(|p| crate::repos_file::RepoEntry {
                     name: p.name.clone(),
                     path: p.path.clone(),
                     enabled: if p.enabled { None } else { Some(false) },
@@ -338,17 +338,17 @@ impl Config {
             .filter(|m| crate::lane::engine_model::is_valid_model(m))
     }
 
-    /// Resolve project directory from various sources
+    /// Resolve repo directory from various sources
     /// Priority: CLI flag > cwd > config default
     /// 相対パスは絶対パスに変換される
-    pub fn resolve_project_dir(cli_project_dir: Option<&str>, config: &Config) -> String {
-        let path = if let Some(dir) = cli_project_dir {
-            // 1. CLI flag (--project-dir)
+    pub fn resolve_repo_dir(cli_repo_dir: Option<&str>, config: &Config) -> String {
+        let path = if let Some(dir) = cli_repo_dir {
+            // 1. CLI flag (--repo-dir)
             std::path::PathBuf::from(dir)
         } else if let Ok(cwd) = std::env::current_dir() {
             // 2. Current working directory
             cwd
-        } else if let Some(ref dir) = config.default_project_dir {
+        } else if let Some(ref dir) = config.default_repo_dir {
             // 3. Config default（最終フォールバック）
             std::path::PathBuf::from(dir)
         } else {
@@ -360,12 +360,12 @@ impl Config {
         Self::normalize_path(&path)
     }
 
-    /// 指定パスに一致するプロジェクトの 0-based インデックスを返す
+    /// 指定パスに一致するrepoの 0-based インデックスを返す
     ///
-    /// CWD や --project-dir で解決されたパスが config 内のどのプロジェクトに
+    /// CWD や --repo-dir で解決されたパスが config 内のどのrepoに
     /// 対応するかを検索し、ポート割り当てに使用する。
-    pub fn find_project_index(&self, resolved_dir: &str) -> Option<usize> {
-        self.projects.iter().position(|p| {
+    pub fn find_repo_index(&self, resolved_dir: &str) -> Option<usize> {
+        self.repos.iter().position(|p| {
             let normalized = Self::normalize_path(std::path::Path::new(&p.path));
             normalized == resolved_dir
         })
@@ -382,14 +382,14 @@ impl Config {
             if let Some(v) = ov.daemon_port {
                 layout.daemon_port = v;
             }
-            if let Some(v) = ov.project_slot_base {
-                layout.project_slot_base = v;
+            if let Some(v) = ov.repo_slot_base {
+                layout.repo_slot_base = v;
             }
-            if let Some(v) = ov.project_slot_size {
-                layout.project_slot_size = v;
+            if let Some(v) = ov.repo_slot_size {
+                layout.repo_slot_size = v;
             }
-            if let Some(v) = ov.max_projects {
-                layout.max_projects = v;
+            if let Some(v) = ov.max_repos {
+                layout.max_repos = v;
             }
             if let Some(v) = ov.lane_base_offset {
                 layout.lane_base_offset = v;
@@ -428,8 +428,8 @@ impl Config {
 
 /// Windows の verbatim path prefix (`\\?\`) を落とす。 pure string 操作で、 全 OS で同じ結果。
 ///
-/// `std::fs::canonicalize` は Windows で `\\?\C:\...` を返す。 これを projects.kdl に保存したり
-/// SP の spawn 引数 (`-C`) に渡すと、 見た目が汚れるだけでなく「同じディレクトリなのに文字列が
+/// `std::fs::canonicalize` は Windows で `\\?\C:\...` を返す。 これを repos.kdl に保存したり
+/// repo の spawn 引数 (`-C`) に渡すと、 見た目が汚れるだけでなく「同じディレクトリなのに文字列が
 /// 違う」 重複 entry を生む。 新規の正規化は [`dunce::canonicalize`] が防ぐが、 既に保存済みの
 /// `\\?\` 付き path は読み込み時にここで落とす (移行)。
 ///
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn test_full_config_kdl_parses() {
         let kdl = r#"
-default-project-dir "/home/user/projects/main"
+default-repo-dir "/home/user/repos/main"
 default-port 33001
 claude-cli-path "/opt/claude/bin/claude"
 default-stand "echoes"
@@ -515,8 +515,8 @@ startup {
 "#;
         let config: Config = club_kdl::from_str(kdl).expect("config.kdl parse");
         assert_eq!(
-            config.default_project_dir.as_deref(),
-            Some("/home/user/projects/main")
+            config.default_repo_dir.as_deref(),
+            Some("/home/user/repos/main")
         );
         assert_eq!(config.default_port, 33001);
         assert_eq!(
@@ -526,8 +526,8 @@ startup {
         assert_eq!(config.default_stand.as_deref(), Some("echoes"));
         assert_eq!(config.hub_addr.as_deref(), Some("hub.chronista.club:12879"));
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
-        // projects は config.kdl に出さない (#[kdl(skip)]、 SSOT は projects.kdl)
-        assert!(config.projects.is_empty());
+        // repos は config.kdl に出さない (#[kdl(skip)]、 SSOT は repos.kdl)
+        assert!(config.repos.is_empty());
     }
 
     #[test]
@@ -575,7 +575,7 @@ startup {
 "#;
         let config: Config = club_kdl::from_str(kdl).expect("minimal config.kdl parse");
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
-        assert!(config.default_project_dir.is_none());
+        assert!(config.default_repo_dir.is_none());
         // hub-addr node 不在 → None (= federation off、 machine-local 動作)
         assert!(config.hub_addr.is_none());
         // default-port node 不在 → KDL field default は 0 (load の post-process で 33000)
@@ -602,8 +602,8 @@ default-lane-model "claude-sonnet-5"
     #[test]
     fn test_comment_only_config_kdl_parses() {
         let config: Config = club_kdl::from_str("// 空 config\n").expect("comment-only parse");
-        assert!(config.default_project_dir.is_none());
-        assert!(config.projects.is_empty());
+        assert!(config.default_repo_dir.is_none());
+        assert!(config.repos.is_empty());
     }
 
     /// VP-189: KDL field default (型 Default = 0) を意味のある値に補正する

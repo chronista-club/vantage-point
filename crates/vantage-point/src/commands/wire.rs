@@ -8,10 +8,10 @@
 //!
 //! ## L0 portless B-4 (wire-unison): transport は Daemon "wire" unison channel に直結
 //!
-//! 旧 SP HTTP proxy (`--url` で SP base を指定 → SP `/api/wire/*` → Daemon relay) は撤去。
-//! CLI は `crate::process::daemon_wire::call` で **daemon (QUIC, port 32000) の "wire" channel**
+//! 旧 SP HTTP proxy (`--url` で repo base を指定 → repo `/api/wire/*` → Daemon relay) は撤去。
+//! CLI は `crate::repo::daemon_wire::call` で **daemon (QUIC, port 32000) の "wire" channel**
 //! に直結する (doc 27 §62「全通信 unison channel」)。 Daemon 直結のため address は qualified 前提
-//! (bare `"agent"` は中央 store が reject、 正規化は MCP 経路の SP のみが行う)。
+//! (bare `"agent"` は中央 store が reject、 正規化は MCP 経路の repo のみが行う)。
 //!
 //! ## 使い方
 //!
@@ -196,7 +196,7 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
 /// 旧 SP HTTP proxy (`--url`) を撤去し、 wire/delegation を daemon 直結に統一 (doc 27 §62)。
 /// `daemon_wire::call` の Err(String) を anyhow に写す (error frame は call が既に Err 化済)。
 async fn call_daemon(path: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
-    crate::process::daemon_wire::call(path, payload)
+    crate::repo::daemon_wire::call(path, payload)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
@@ -376,18 +376,18 @@ async fn thread(message_id: &str) -> Result<()> {
     .await
 }
 
-/// VP_PROJECT / VP_LANE の値から自 wire address を導出する (純関数、 R2-c)
+/// VP_REPO / VP_LANE の値から自 wire address を導出する (純関数、 R2-c)
 ///
-/// conductor → `agent@<project>`、 performer → `agent@<project>/<name>`
+/// conductor → `agent@<repo>`、 performer → `agent@<repo>/<name>`
 /// (echoes task の lane_label と一致: conductor / performer 名 / unnamed)。
 /// env 不足/空 = VP 外で起動された claude → None (hook は何もしない)。
-fn wire_address_from_env(project: Option<&str>, lane: Option<&str>) -> Option<String> {
-    let project = project.filter(|s| !s.is_empty())?;
+fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<String> {
+    let repo = repo.filter(|s| !s.is_empty())?;
     let lane = lane.filter(|s| !s.is_empty())?;
-    if lane == crate::process::lanes_state::ROOT_LANE_NAME {
-        Some(format!("agent@{project}"))
+    if lane == crate::repo::lanes_state::ROOT_LANE_NAME {
+        Some(format!("agent@{repo}"))
     } else {
-        Some(format!("agent@{project}/{lane}"))
+        Some(format!("agent@{repo}/{lane}"))
     }
 }
 
@@ -396,7 +396,7 @@ fn wire_address_from_env(project: Option<&str>, lane: Option<&str>) -> Option<St
 ///
 /// **None = 不明**であって root ではない。ここで `unwrap_or(1)` に倒すと「名乗らなかった」と
 /// 「root を名乗った」が混ざり、実在しない session の報告を root に落とす事故（session 粒度化で
-/// 消したかったもの）を検知できなくなる。root への fallback は SP 側 policy
+/// 消したかったもの）を検知できなくなる。root への fallback は repo 側 policy
 /// （`ReportTarget::Unspecified`）が 1 箇所で引き受ける。
 ///
 /// - env 不在 / 空 = 旧 binary で spawn 済の slot / VP 外で起動された claude → None
@@ -585,13 +585,13 @@ fn delegation_thread_markdown(delegations: &[serde_json::Value]) -> String {
 ///
 /// 全エラー path で Ok(()) を返し何も出力しない (fail-open) — hook の失敗で
 /// 会話を邪魔しないことが最優先。 daemon "wire" channel 直叩き (qualified address を自前導出
-/// するので SP proxy 不要 = 自 SP が落ちていても未読通知は出る)。 hook は会話を block しない
+/// するので repo proxy 不要 = 自 repo が落ちていても未読通知は出る)。 hook は会話を block しない
 /// よう各 call を 2s で bound する (`daemon_wire::call` の 40s outer とは別の短い実効上限)。
 /// hook event → 会話報告の契機（doc 40 §6 の wire 表現。None = 報告対象外の event）。
 ///
 /// hook は**報告者**であり記録判断を持たない — 宛先 session の解決と F1/F2 guard（resume 失敗
 /// `|| claude` fallback の幻 session が健在な旧会話を上書きしない、解剖 memory
-/// `cc-session-pointer-self-destruction`）は SP 側 `record_conversation` の 1 箇所。
+/// `cc-session-pointer-self-destruction`）は repo 側 `record_conversation` の 1 箇所。
 /// 旧 `should_record_cc_session`（UserPromptSubmit のみ記録 = #795 の鈍器）の後継。
 fn conversation_report_kind(event_name: &str) -> Option<&'static str> {
     match event_name {
@@ -624,15 +624,15 @@ async fn hook_check() -> Result<()> {
         .unwrap_or("UserPromptSubmit")
         .to_string();
 
-    let project = std::env::var("VP_PROJECT").ok();
+    let repo = std::env::var("VP_REPO").ok();
     let lane = std::env::var("VP_LANE").ok();
     // doc 40 §4 / doc 46 P5: 自分がどの session の claude かを名乗る（None = 不明。root では
-    // ないので、ここで root に丸めない — 判断は SP 側 policy に 1 本化する）。
+    // ないので、ここで root に丸めない — 判断は repo 側 policy に 1 本化する）。
     let session_key = session_key_from_env(std::env::var("VP_SESSION_KEY").ok().as_deref());
 
-    // doc 40 §4: hook は会話 id の**報告者** — (project, lane, session, session_id, 契機) を
-    // daemon 経由で SP へ送るだけ。宛先 session の解決と記録判断（F1/F2 guard 込みの policy）は
-    // SP 側 `session_registry::record_conversation` の 1 箇所が持つ。旧実装の
+    // doc 40 §4: hook は会話 id の**報告者** — (repo, lane, session, session_id, 契機) を
+    // daemon 経由で repo へ送るだけ。宛先 session の解決と記録判断（F1/F2 guard 込みの policy）は
+    // repo 側 `session_registry::record_conversation` の 1 箇所が持つ。旧実装の
     // `cc_session::record(VP_LANE)` 直書きは root の session label に追従せず、root≥2 で
     // 書き手/読み手のラベル乖離バグを起こした（doc 40 §1-1 の根治でここから file 書きを撤去）。
     // 失敗は無視（fail-open — 毎 turn 再報告されるので次の発話で self-heal する、doc 40 §9）。
@@ -640,11 +640,11 @@ async fn hook_check() -> Result<()> {
         && let Some(sid) = parsed
             .as_ref()
             .and_then(|v| v.get("session_id").and_then(|s| s.as_str()))
-        && let (Some(p), Some(l)) = (project.as_deref(), lane.as_deref())
+        && let (Some(p), Some(l)) = (repo.as_deref(), lane.as_deref())
     {
         // 送信前の no-op 判定（read-only load）: **自分が名乗る session** の会話 id が既に
         // 同値なら送らない（毎ターンの無駄打ち回避 — 旧 `changed` 判定の後継。判定できない
-        // 時は送って SP 側の no-op に任せる）。名乗らない場合の比較先は root = SP 側
+        // 時は送って repo 側の no-op に任せる）。名乗らない場合の比較先は root = repo 側
         // `ReportTarget::Unspecified` の着地先と揃える（ここがズレると「送らないのに
         // 記録もされない」無音の穴になる）。
         let reg = crate::lane::session_registry::load(p, l, "echoes");
@@ -656,31 +656,31 @@ async fn hook_check() -> Result<()> {
             .and_then(|s| s.conversation.as_deref());
         if target_conv != Some(sid) {
             let mut payload = serde_json::json!({
-                "project": p,
+                "repo": p,
                 "lane": l,
                 "session_id": sid,
                 "event": report,
             });
-            // 名乗れる時だけ載せる（field 不在 = 不明 = SP 側で root 宛の後方互換扱い）。
+            // 名乗れる時だけ載せる（field 不在 = 不明 = repo 側で root 宛の後方互換扱い）。
             if let Some(key) = session_key {
                 payload["session"] = key.into();
             }
             let _ = tokio::time::timeout(
                 Duration::from_secs(2),
-                crate::process::daemon_wire::call("/api/lane/session-changed", payload),
+                crate::repo::daemon_wire::call("/api/lane/session-changed", payload),
             )
             .await;
         }
     }
 
-    let Some(agent) = wire_address_from_env(project.as_deref(), lane.as_deref()) else {
+    let Some(agent) = wire_address_from_env(repo.as_deref(), lane.as_deref()) else {
         return Ok(()); // VP 外で起動された claude — 何もしない
     };
 
     // 未読 wire count を 2s で bound して取得。 daemon 不在/wedge/transport 失敗は silent 成功。
     let total = match tokio::time::timeout(
         Duration::from_secs(2),
-        crate::process::daemon_wire::call(
+        crate::repo::daemon_wire::call(
             "/api/wire/unread-count",
             serde_json::json!({ "agent": agent }),
         ),
@@ -695,7 +695,7 @@ async fn hook_check() -> Result<()> {
     // 失敗は fail-open（委譲 pull が無くても wire 通知は出す）。
     let deleg_summary = match tokio::time::timeout(
         Duration::from_secs(2),
-        crate::process::daemon_wire::call(
+        crate::repo::daemon_wire::call(
             "/api/delegation/poll",
             serde_json::json!({ "agent": agent }),
         ),
@@ -765,7 +765,7 @@ async fn send(
     }
 
     // --node 指定時は federation 送信（flow ③）: daemon が hub relay 経由で遠方 node へ送る。
-    // `to` はその node 内部の logical address（agent@project/lane）。未指定はローカル中央 store。
+    // `to` はその node 内部の logical address（agent@repo/lane）。未指定はローカル中央 store。
     let path = if let Some(remote) = node {
         payload["node"] = serde_json::Value::String(remote.to_string());
         "/api/wire/federate"
@@ -808,7 +808,7 @@ mod tests {
 
     /// 会話報告の契機写像（doc 40 §6）: SessionStart = issued（eager 表示）/
     /// UserPromptSubmit = spoken（authoritative）/ その他は報告しない。
-    /// F1/F2 の記録判断は SP 側 policy に移った（hook 側は判断を持たない）が、
+    /// F1/F2 の記録判断は repo 側 policy に移った（hook 側は判断を持たない）が、
     /// 「Stop 等の無関係 event で報告しない」ことはここで塞ぐ。
     #[test]
     fn conversation_report_kind_maps_events_to_doc40_semantics() {
@@ -939,7 +939,7 @@ mod tests {
         );
     }
 
-    /// R2-c: VP_PROJECT / VP_LANE から自 wire address を導出
+    /// R2-c: VP_REPO / VP_LANE から自 wire address を導出
     #[test]
     fn hook_address_from_env_values() {
         assert_eq!(

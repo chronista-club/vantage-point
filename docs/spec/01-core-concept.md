@@ -29,7 +29,7 @@ Claude Code をエンジンとして、TUI・Canvas（WebView）・外部入力�
 ### VP が提供する価値
 
 - **統合**: TUI + Canvas + 外部入力が一体となった開発環境
-- **永続性**: プロジェクト起点でセッションを再開できる
+- **永続性**: repo 起点でセッションを再開できる
 - **拡張性**: MIDI・tmux・MCP を通じて、開発環境の境界を広げる
 - **可視化**: AI の出力をリッチに表示し、開発者と AI の双方に最適な情報を届ける
 
@@ -46,7 +46,7 @@ Claude Code をエンジンとして、TUI・Canvas（WebView）・外部入力�
 | セッション管理 | 永続化・再開・一覧 |
 | 外部入力統合 | MIDI コントローラー、tmux、MCP |
 | コード実行 | ProcessRunner による動的実行 |
-| プロセス管理 | 複数プロジェクトのライフサイクル管理 |
+| プロセス管理 | 複数repoのライフサイクル管理 |
 | Mac アプリ | notarized `.dmg` 直配布（GitHub Releases）/ Homebrew cask / `cargo install` の三本柱 |
 
 ### Out of Scope
@@ -61,15 +61,15 @@ Claude Code をエンジンとして、TUI・Canvas（WebView）・外部入力�
 
 ## Requirements
 
-### R1: プロジェクト起点の開発体験
+### R1: repo 起点の開発体験
 
-VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
+VP の 1st ビューは「repo 選択 → TUI → AI 対話」。
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
-| REQ1.1 | `vp sp start` でプロジェクトの Process を起動できる | Must |
+| REQ1.1 | `vp sp start` でrepoの Process を起動できる | Must |
 | REQ1.2 | TUI 起動時にセッション選択（前回続行 / 新規 / 過去一覧）ができる | Must |
-| REQ1.3 | 設定ファイル (`config.kdl` / `projects.kdl`) で複数プロジェクトを管理できる | Must |
+| REQ1.3 | 設定ファイル (`config.kdl` / `repos.kdl`) で複数repoを管理できる | Must |
 | REQ1.4 | `vp ps` で稼働中プロセスを一覧できる | Must |
 
 ### R2: AI との対話（💬 Echoes — Coding Assistant、 旧 Heaven's Door 📖）
@@ -113,7 +113,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 |----|------|--------|
 | REQ6.1 | 常駐デーモンとして全 Process のライフサイクルを管理する | Must |
 | REQ6.2 | Process の起動・停止・再起動を API 経由で操作できる | Must |
-| REQ6.3 | ポート自動割当（slot ベース、`33000 + slot`）で複数プロジェクトが共存できる | Must |
+| REQ6.3 | ポート自動割当（slot ベース、`33000 + slot`）で複数repoが共存できる | Must |
 | REQ6.4 | プロセス発見はインメモリ管理（ファイルキャッシュ不使用） | Must |
 
 ### R7: Mac ネイティブ体験
@@ -131,7 +131,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 1. **CLI-First** — GUI は CLI の上に構築する。CLI 単体で完結できること
 2. **AI が主、ツールは従** — VP は AI の能力を最大化する環境であり、AI の代替ではない
 3. **TUI で操る、Canvas で視る** — 操作と表示の関心を分離する
-4. **プロジェクト = コンテキスト** — 全ての体験はプロジェクトを起点とする
+4. **repo = コンテキスト** — 全ての体験はrepoを起点とする
 5. **dogfooding 駆動** — 自ら使い、体験から改善する。納得できる完成度でリリースする
 
 ---
@@ -140,14 +140,14 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 
 ```
 daemon ⚙️ (Process Manager / 常駐デーモン)
-  └── Star Platinum ⭐ (Project Core / TUI 統合ビュー)
+  └── repo 📦 (Repo Core / TUI 統合ビュー)
         ├── Echoes 💬 (Coding Assistant / Claude CLI、 旧 Heaven's Door 📖)
         ├── Paisley Park 🧭 (Information Navigator / Canvas)
         ├── Gold Experience 🌿 (Code Runner / 動的実行)
         └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
 ```
 
-- **Process**: プロジェクトの開発プロセス本体。Star Platinum が主人公として各 Stand を束ねる
+- **Process**: repoの開発プロセス本体。repo が主人公として各 Stand を束ねる
 - **Stand（能力）**: Process が保持する Capability の総称
 - **daemon**: 常駐デーモン。全 Process のライフサイクルを管理
 
@@ -182,7 +182,7 @@ Mac に向かう → MIDI パッド → TUI 起動 → AI と協働 → Canvas �
 
 - **ワンアクション起動**: LPD8 の Pad を叩く → TUI が前回セッションから再開
 - **AI + 可視化**: TUI で対話、Canvas に設計図・ログ・実行結果をリアルタイム表示
-- **マルチプロジェクト**: Pad 1〜4 で 4 プロジェクトを瞬時に切替、状態は独立保持
+- **マルチrepo**: Pad 1〜4 で 4 repoを瞬時に切替、状態は独立保持
 
 ---
 

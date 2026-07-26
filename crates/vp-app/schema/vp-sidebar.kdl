@@ -18,7 +18,7 @@ protocol "sidebar" version="1.0.0" {
     // channel "ipc": envelope="t" で全 request を束ねる discriminated union
     // (`IpcEnvelope`) を生成する。 transient = request ごとに完結 (response 無し)。
     channel "ipc" from="client" lifetime="transient" envelope="t" {
-        // Currents セクションの project accordion 開閉 (+ SP auto-spawn 連動)
+        // Currents セクションの repo accordion 開閉 (+ repo auto-spawn 連動)
         request "process:toggle" {
             field "path" type="string"
             field "expanded" type="bool"
@@ -31,18 +31,18 @@ protocol "sidebar" version="1.0.0" {
         request "process:restart" {
             field "path" type="string"
         }
-        // Process stop 要求 (SP を停止。 project は registered のまま →
-        // 一時停止中 tab へ移動。 enabled フラグは不変、 SP プロセスだけ落とす)
+        // Process stop 要求 (repo を停止。 repo は registered のまま →
+        // 一時停止中 tab へ移動。 enabled フラグは不変、 repo プロセスだけ落とす)
         request "process:stop" {
             field "path" type="string"
         }
-        // Project delete 要求 (SP 停止 + projects.kdl から unregister。
+        // Repo delete 要求 (repo 停止 + repos.kdl から unregister。
         // 破壊的なので UI 側で 2-click 確認済。 repo ディレクトリ自体は消さない)
-        request "process:delete" {
+        request "repo:delete" {
             field "path" type="string"
         }
-        // sidebar の project 追加ボタン (fieldless)
-        request "process:add" {}
+        // sidebar の repo 追加ボタン (fieldless)
+        request "repo:add" {}
         // Lane row click → main area に対応 pane を表示
         request "lane:select" {
             field "path" type="string"
@@ -61,7 +61,7 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
             field "fresh" type="bool" optional=#true
         }
-        // doc 44 D4: この lane を project の開発起点にする (Host の帳簿のポインタ更新)。
+        // doc 44 D4: この lane を repo の開発起点にする (Host の帳簿のポインタ更新)。
         // D5 の通り **何も動かさない** — cwd も active lane も engine も変わらない。
         request "lane:set_origin" {
             field "path" type="string"
@@ -84,13 +84,13 @@ protocol "sidebar" version="1.0.0" {
         request "stands:fetch" {
             field "path" type="string"
         }
-        // Project-scope Stand row click → main area に対応 pane を表示
+        // Repo-scope Stand row click → main area に対応 pane を表示
         request "stand:select" {
             field "path" type="string"
             field "kind" type="string"
         }
         // Clone 用フォルダ picker を開く要求 (fieldless)
-        request "project:clone:pickFolder" {}
+        request "repo:clone:pickFolder" {}
         // File picker: lane workdir 配下を walk して entries を返却。
         // 結果は server → client へ window.vpFiles.handleListResult(...) で push (transient channel のため返信枠なし)。
         request "files:list" {
@@ -158,7 +158,7 @@ protocol "sidebar" version="1.0.0" {
 
         // + Add Performer の作成結果。`error` 省略 = 成功（form を閉じる）。
         event "performer:create_result" {
-            field "project_path" type="string"
+            field "repo_path" type="string"
             field "name" type="string"
             field "error" type="string" optional=#true
         }
@@ -166,7 +166,7 @@ protocol "sidebar" version="1.0.0" {
         // + Add Performer の dropdown を populate する Stand 一覧（`stands:fetch` の戻り）。
         // 要素の形の持ち主は Rust `client::StandInfo`。
         event "stands:result" {
-            field "project_path" type="string"
+            field "repo_path" type="string"
             field "stands" type="array<json>"
             field "error" type="string" optional=#true
         }
@@ -183,7 +183,7 @@ protocol "sidebar" version="1.0.0" {
             field "payload" type="json"
         }
 
-        // Clone 用フォルダ picker の選択結果（`project:clone:pickFolder` の戻り）。
+        // Clone 用フォルダ picker の選択結果（`repo:clone:pickFolder` の戻り）。
         // ⚠️ **キャンセル時は撃たない**（既存の override を保持する = 既存挙動）。
         event "clone:path_picked" {
             field "path" type="string"

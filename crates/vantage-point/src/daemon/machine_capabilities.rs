@@ -6,7 +6,7 @@
 //!
 //! ## host する Stand
 //!
-//! - **daemon 👑** (`ProcessManagerCapability`): VP daemon process manager
+//! - **daemon 👑** (`RepoManagerCapability`): VP daemon process manager
 //! - **UpdateCapability**: VP self-update (LSCM Open Question Q-12 catalog 拡張候補)
 //! - **DeviceRegistry 🧲** (`DeviceRegistry`): multi-device registry + 艦隊 input listener（`with_devices`）
 //!
@@ -21,8 +21,8 @@
 //!   (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
 //!
 //! wiremsg R5-4: 旧 msgbox の registry サブシステム (旧 External Control stand の registry
-//! 登録を含む) は撤去済。 wire の cross-process delivery は daemon の project registry
-//! (project → SP port) を使う別経路で、 msgbox registry には依存しない。
+//! 登録を含む) は撤去済。 wire の cross-process delivery は daemon の repo registry
+//! (repo → repo port) を使う別経路で、 msgbox registry には依存しない。
 //!
 //! 関連: doc 12 (`docs/design/12-stand-architecture.md` §3 Layer + §9 Catalog)、
 //! Linear VP-109 (parent epic)、 VP-111/112/113/114 (sub-issue)。
@@ -30,7 +30,7 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::capability::{ProcessManagerCapability, UpdateCapability};
+use crate::capability::{RepoManagerCapability, UpdateCapability};
 #[cfg(feature = "midi")]
 use crate::devices::DeviceRegistry;
 
@@ -39,7 +39,7 @@ use crate::devices::DeviceRegistry;
 /// daemon で 1 instance、 machine 全体で共有。
 pub struct MachineCapabilities {
     /// Process Manager (daemon 👑、 LSCM machine 階層 SSOT)
-    pub process_manager: Arc<RwLock<ProcessManagerCapability>>,
+    pub repo_manager: Arc<RwLock<RepoManagerCapability>>,
 
     /// Self-update Capability (LSCM Open Question Q-12 catalog 拡張候補)
     pub update: Arc<RwLock<UpdateCapability>>,
@@ -59,11 +59,11 @@ impl MachineCapabilities {
     ///
     /// DeviceRegistry を host したい場合は `with_devices` を使う (feature = "midi")。
     pub fn new(
-        process_manager: Arc<RwLock<ProcessManagerCapability>>,
+        repo_manager: Arc<RwLock<RepoManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
     ) -> Self {
         Self {
-            process_manager,
+            repo_manager,
             update,
             #[cfg(feature = "midi")]
             devices: None,
@@ -80,10 +80,10 @@ impl MachineCapabilities {
     /// ROTO 持続制御は独立経路（`start_roto_control`、process/server.rs）。
     #[cfg(feature = "midi")]
     pub async fn with_devices(
-        process_manager: Arc<RwLock<ProcessManagerCapability>>,
+        repo_manager: Arc<RwLock<RepoManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
     ) -> Self {
-        let mut wc = Self::new(process_manager, update);
+        let mut wc = Self::new(repo_manager, update);
 
         let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());
         let devices = DeviceRegistry::new(event_bus);
@@ -101,12 +101,12 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_capabilities_new_smoke() {
-        let pmc = Arc::new(RwLock::new(ProcessManagerCapability::new()));
+        let pmc = Arc::new(RwLock::new(RepoManagerCapability::new()));
         let upd = Arc::new(RwLock::new(UpdateCapability::new()));
 
         let wc = MachineCapabilities::new(pmc, upd);
         // smoke test: construct succeeds without panic、 各 field が存在
-        let _ = wc.process_manager.read().await;
+        let _ = wc.repo_manager.read().await;
         let _ = wc.update.read().await;
 
         #[cfg(feature = "midi")]

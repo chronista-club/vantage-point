@@ -36,7 +36,7 @@ interface InkAnnotation {
 export interface InkDeps {
 	/** 表示中 board item の id（board-handler の cursor）。null = 空 board。 */
 	getItemId: () => string | null;
-	/** 現 active lane の address（`<project>/root` 等）。null = lane 未選択。 */
+	/** 現 active lane の address（`<repo>/root` 等）。null = lane 未選択。 */
 	getLaneAddress: () => string | null;
 	/** lane の focused session key（console.focusedOf）。 */
 	getFocusedSession: (laneAddr: string) => number;

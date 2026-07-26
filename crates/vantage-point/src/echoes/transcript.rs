@@ -9,7 +9,7 @@
 //!
 //! terminal（Act I）は PtySlot の raw PTY bytes を replay して画面を復元するが、chat lane は
 //! PtySlot を持たないため同じ手は使えない。 代わりに **claude が disk に持つ transcript
-//! (`~/.claude/projects/*/<session_id>.jsonl`)** を唯一の履歴 SSOT として読み、`EchoesEvent` に
+//! (`~/.claude/repos/*/<session_id>.jsonl`)** を唯一の履歴 SSOT として読み、`EchoesEvent` に
 //! 翻訳して attach 時に replay する（= Act II 版 replay-on-attach）。
 //!
 //! ## [`super::translate`] との違い

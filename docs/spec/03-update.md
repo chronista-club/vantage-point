@@ -93,7 +93,7 @@ Sparkle フレームワークまたはカスタム実装。
 VantagePoint.app ◄───► daemon ⚙️ (vp daemon)
        │                      │
        ▼                      ▼
-  GitHub Releases        Project Process
+  GitHub Releases        Repo Process
 ```
 
 ---

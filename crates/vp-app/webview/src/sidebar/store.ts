@@ -13,7 +13,7 @@ import type { SidebarState } from "../generated/SidebarState";
 /**
  * `SidebarState` の空 state。 Rust 側 `#[derive(Default)]` と等価。
  *
- * 必須 field (processes / widget / activity / lanes_by_project /
+ * 必須 field (processes / widget / activity / lanes_by_repo /
  * unread_notifications / awaiting_input) のみ埋め、 optional field は省略する。
  */
 export function emptyState(): SidebarState {
@@ -22,14 +22,14 @@ export function emptyState(): SidebarState {
 		widget: "activity",
 		activity: {
 			node_online: false,
-			project_count: 0,
-			running_process_count: 0,
+			repo_count: 0,
+			running_repo_count: 0,
 			hub: "",
 			hub_nodes: [],
 			presence: {},
 			update_available: false,
 		},
-		lanes_by_project: {},
+		lanes_by_repo: {},
 		unread_notifications: {},
 		awaiting_input: {},
 		canvas_unread: {},

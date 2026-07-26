@@ -26,11 +26,11 @@ use std::path::Path;
 /// 不明が空になる（今回のバグの発生機序そのもの）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
-    /// daemon が答えた = この project で今動いている lane 名。
+    /// daemon が答えた = この repo で今動いている lane 名。
     ///
-    /// **0 件も立派な答え**（project が daemon の registry に居ない = その project の lane は
+    /// **0 件も立派な答え**（repo が daemon の registry に居ない = その repo の lane は
     /// 1 本も動いていない）。fold-in 後、lane の engine は daemon プロセスの中で動くので、
-    /// registry に project が無い ⇒ その project の engine は生きていない、が成り立つ。
+    /// registry に repo が無い ⇒ その repo の engine は生きていない、が成り立つ。
     Known(Vec<String>),
     /// 稼働状況を**確認できなかった**（Daemon 不達 / 応答が読めない）。理由を添える。
     ///
@@ -75,31 +75,29 @@ fn state_is_alive(state: &str) -> bool {
     matches!(state, "running" | "exiting")
 }
 
-/// daemon の `list_all_lanes` 応答から、**この project の稼働中 lane 名**を取り出す（純関数）。
+/// daemon の `list_all_lanes` 応答から、**この repo の稼働中 lane 名**を取り出す（純関数）。
 ///
-/// 応答の形は `{"projects": [{"project_name":.., "project_path":.., "lanes":[LaneInfo]}]}`
-/// （`daemon::server::build_node_lanes`）。project の同定は `project_path` を
-/// [`crate::capability::process_manager_capability::normalize_path_key`] で正規化して比較する
-/// （symlink / 相対パスで別 project 扱いにならないよう、両辺を同じ関数に通す）。
+/// 応答の形は `{"repos": [{"repo_name":.., "repo_path":.., "lanes":[LaneInfo]}]}`
+/// （`daemon::server::build_node_lanes`）。repo の同定は `repo_path` を
+/// [`crate::capability::repo_manager_capability::normalize_path_key`] で正規化して比較する
+/// （symlink / 相対パスで別 repo 扱いにならないよう、両辺を同じ関数に通す）。
 ///
 /// lane 名は `address.name` から読む。**LaneInfo の `kind` は doc 44 P2 で消えた**ので、
 /// それを条件にすると全 lane が落ちる（既存 `parse_node_lanes` はこの形のまま残っている）。
-pub fn running_lanes_in(snapshot: &serde_json::Value, project_path: &Path) -> Vec<String> {
-    let want = crate::capability::process_manager_capability::normalize_path_key(project_path);
-    let Some(projects) = snapshot.get("projects").and_then(|p| p.as_array()) else {
+pub fn running_lanes_in(snapshot: &serde_json::Value, repo_path: &Path) -> Vec<String> {
+    let want = crate::capability::repo_manager_capability::normalize_path_key(repo_path);
+    let Some(repos) = snapshot.get("repos").and_then(|p| p.as_array()) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for project in projects {
-        let Some(path) = project.get("project_path").and_then(|p| p.as_str()) else {
+    for repo in repos {
+        let Some(path) = repo.get("repo_path").and_then(|p| p.as_str()) else {
             continue;
         };
-        if crate::capability::process_manager_capability::normalize_path_key(Path::new(path))
-            != want
-        {
+        if crate::capability::repo_manager_capability::normalize_path_key(Path::new(path)) != want {
             continue;
         }
-        let Some(lanes) = project.get("lanes").and_then(|l| l.as_array()) else {
+        let Some(lanes) = repo.get("lanes").and_then(|l| l.as_array()) else {
             continue;
         };
         for lane in lanes {
@@ -126,16 +124,16 @@ pub fn running_lanes_in(snapshot: &serde_json::Value, project_path: &Path) -> Ve
 mod tests {
     use super::*;
 
-    /// `{project_path, lanes:[{address:{name}, state, pid}]}` の応答を組む test helper。
+    /// `{repo_path, lanes:[{address:{name}, state, pid}]}` の応答を組む test helper。
     fn snapshot(entries: &[(&str, &[(&str, &str)])]) -> serde_json::Value {
-        let projects: Vec<serde_json::Value> = entries
+        let repos: Vec<serde_json::Value> = entries
             .iter()
             .map(|(path, lanes)| {
                 let lanes: Vec<serde_json::Value> = lanes
                     .iter()
                     .map(|(name, state)| {
                         serde_json::json!({
-                            "address": {"project": "p", "name": name},
+                            "address": {"repo": "p", "name": name},
                             "state": state,
                             // chat lane の正常形を混ぜる（pid は判定に使わない）
                             "pid": serde_json::Value::Null,
@@ -143,13 +141,13 @@ mod tests {
                     })
                     .collect();
                 serde_json::json!({
-                    "project_name": "p",
-                    "project_path": path,
+                    "repo_name": "p",
+                    "repo_path": path,
                     "lanes": lanes,
                 })
             })
             .collect();
-        serde_json::json!({ "projects": projects })
+        serde_json::json!({ "repos": repos })
     }
 
     /// 稼働中の判定は `state` で決まる（pid ではない）。
@@ -182,9 +180,9 @@ mod tests {
         assert!(running_lanes_in(&v, Path::new("/tmp/vp-liveness-b")).is_empty());
     }
 
-    /// 他 project の稼働 lane を巻き込まない（同名 lane は珍しくない）。
+    /// 他 repo の稼働 lane を巻き込まない（同名 lane は珍しくない）。
     #[test]
-    fn other_projects_are_filtered_out() {
+    fn other_repos_are_filtered_out() {
         let v = snapshot(&[
             ("/tmp/vp-liveness-mine", &[("shared-name", "running")]),
             ("/tmp/vp-liveness-other", &[("shared-name", "running")]),
@@ -195,24 +193,24 @@ mod tests {
         );
     }
 
-    /// project が registry に居なければ「稼働 lane 0 件」— これは推測ではなく答え。
+    /// repo が registry に居なければ「稼働 lane 0 件」— これは推測ではなく答え。
     ///
     /// fold-in 後、lane の engine は daemon プロセスの中で動くので、daemon が
-    /// 「この project は動いていない」と答えた = その project の lane は 1 本も生きていない。
+    /// 「この repo は動いていない」と答えた = その repo の lane は 1 本も生きていない。
     #[test]
-    fn absent_project_yields_no_running_lanes() {
+    fn absent_repo_yields_no_running_lanes() {
         let v = snapshot(&[("/tmp/vp-liveness-other", &[("w1", "running")])]);
         assert!(running_lanes_in(&v, Path::new("/tmp/vp-liveness-mine")).is_empty());
     }
 
-    /// 壊れた応答（projects 欠落 / 型違い）で panic しない。
+    /// 壊れた応答（repos 欠落 / 型違い）で panic しない。
     #[test]
     fn malformed_snapshot_is_empty_not_panic() {
         for v in [
             serde_json::json!({}),
-            serde_json::json!({"projects": "not-an-array"}),
-            serde_json::json!({"projects": [{"project_path": 1}]}),
-            serde_json::json!({"projects": [{"project_path": "/tmp/x", "lanes": [{}]}]}),
+            serde_json::json!({"repos": "not-an-array"}),
+            serde_json::json!({"repos": [{"repo_path": 1}]}),
+            serde_json::json!({"repos": [{"repo_path": "/tmp/x", "lanes": [{}]}]}),
         ] {
             assert!(running_lanes_in(&v, Path::new("/tmp/x")).is_empty());
         }

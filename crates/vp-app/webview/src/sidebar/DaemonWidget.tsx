@@ -29,7 +29,7 @@ export function DaemonWidget() {
 	const online = () => a().node_online;
 	const summary = () =>
 		online()
-			? `daemon v${a().daemon_version ?? "?"} — P${a().project_count} R${a().running_process_count}`
+			? `daemon v${a().daemon_version ?? "?"} — P${a().repo_count} R${a().running_repo_count}`
 			: "daemon offline";
 
 	// chronista-hub federation 接続状態（Daemon 行の下に常時表示）。`/api/health` の `hub`:
@@ -96,12 +96,12 @@ export function DaemonWidget() {
 						</span>
 					</div>
 					<div class="vp-daemon-stat">
-						<span class="k">projects</span>
-						<span class="v">{a().project_count}</span>
+						<span class="k">repos</span>
+						<span class="v">{a().repo_count}</span>
 					</div>
 					<div class="vp-daemon-stat">
 						<span class="k">running</span>
-						<span class="v">{a().running_process_count}</span>
+						<span class="v">{a().running_repo_count}</span>
 					</div>
 				</div>
 			</details>

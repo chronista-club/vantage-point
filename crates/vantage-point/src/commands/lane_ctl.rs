@@ -1,8 +1,8 @@
 //! `vp lane capture` / `vp lane nudge` — lane console の read/write CLI（tmux decoupling PR2）
 //!
 //! 旧 `vp tmux capture` / `vp tmux send-keys` / `vp directmsg` の native 後継。
-//! lane address（`<project>/root` / `<project>/performer/<name>`）を唯一の宛先語彙とし、
-//! daemon process-proxy ask（`lane_capture` / `lane_nudge`）経由で SP の PtySlot に到達する
+//! lane address（`<repo>/root` / `<repo>/performer/<name>`）を唯一の宛先語彙とし、
+//! daemon repo-proxy ask（`lane_capture` / `lane_nudge`）経由で repo の PtySlot に到達する
 //! （tmux session 名 / pane id の第 2 名前空間は廃止）。
 //!
 //! ```bash
@@ -23,30 +23,30 @@
 use anyhow::{Result, bail};
 
 use crate::commands::process_client::{
-    daemon_process_request_blocking, resolve_project_path_from_target,
+    daemon_repo_request_blocking, resolve_repo_path_from_target,
 };
 use crate::config::Config;
 
-/// lane address の project 部分を project path に解決する（Daemon ask の handshake identifier）。
+/// lane address の repo 部分を repo path に解決する（Daemon ask の handshake identifier）。
 /// `commands::now`（`vp now`）も同じ解決を使う。
-pub(crate) fn project_path_for_lane(lane: &str, config: &Config) -> Result<String> {
-    let project = lane
+pub(crate) fn repo_path_for_lane(lane: &str, config: &Config) -> Result<String> {
+    let repo = lane
         .split('/')
         .next()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "lane address が不正: '{}' — '<project>/root' か '<project>/performer/<name>' を指定",
+                "lane address が不正: '{}' — '<repo>/root' か '<repo>/performer/<name>' を指定",
                 lane
             )
         })?;
-    resolve_project_path_from_target(Some(project), config)
+    resolve_repo_path_from_target(Some(repo), config)
 }
 
 /// slot console の現在画面（Term grid render）を stdout に出す。`session=None` は root。
 pub fn capture(lane: &str, session: Option<u32>, config: &Config) -> Result<()> {
-    let path = project_path_for_lane(lane, config)?;
-    let resp = daemon_process_request_blocking(
+    let path = repo_path_for_lane(lane, config)?;
+    let resp = daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
         "lane_capture",
@@ -80,8 +80,8 @@ pub fn capture(lane: &str, session: Option<u32>, config: &Config) -> Result<()> 
 ///
 /// 表示（vp-app）を通さずに「今この lane に端末が何枚あるか」を読む口。
 pub fn slots(lane: &str, config: &Config) -> Result<()> {
-    let path = project_path_for_lane(lane, config)?;
-    let resp = daemon_process_request_blocking(
+    let path = repo_path_for_lane(lane, config)?;
+    let resp = daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
         "lane_slots",
@@ -121,8 +121,8 @@ pub fn slots(lane: &str, config: &Config) -> Result<()> {
 /// 立つのは **新しい session**（doc 46 §1.5「Pane は必ず新しい session id で始まる」）。
 /// root（= lane の代表 / mailbox の主）は動かないので、既存 console はそのまま。
 pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> {
-    let path = project_path_for_lane(lane, config)?;
-    let resp = daemon_process_request_blocking(
+    let path = repo_path_for_lane(lane, config)?;
+    let resp = daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
         "lane_slot_new",
@@ -152,8 +152,8 @@ pub fn slot_new(lane: &str, stand: Option<&str>, config: &Config) -> Result<()> 
 /// 取り除けば、実体（PtySlot / chat engine）は reconcile が畳む（doc 53 §12.4）。
 /// root は registry 側が拒否する（lane の代表を消す = 素に戻すのは `--fresh` restart の役目）。
 pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
-    let path = project_path_for_lane(lane, config)?;
-    let resp = daemon_process_request_blocking(
+    let path = repo_path_for_lane(lane, config)?;
+    let resp = daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
         "echoes_session_remove",
@@ -167,11 +167,11 @@ pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// slot の claude / shell に text + Enter を注入する（submit 意味論は SP 側 `deliver_nudge`）。
+/// slot の claude / shell に text + Enter を注入する（submit 意味論は repo 側 `deliver_nudge`）。
 /// `session=None` は root（wire mailbox `agent@<lane>` を名乗る住人、doc 39）。
 pub fn nudge(lane: &str, session: Option<u32>, text: &str, config: &Config) -> Result<()> {
-    let path = project_path_for_lane(lane, config)?;
-    daemon_process_request_blocking(
+    let path = repo_path_for_lane(lane, config)?;
+    daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
         "lane_nudge",

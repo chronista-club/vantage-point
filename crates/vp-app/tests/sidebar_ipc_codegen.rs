@@ -81,10 +81,10 @@ fn regenerates_sidebar_ipc_bindings() {
     assert!(rust_file.contains("#[serde(tag = \"t\")]"));
     assert!(rust_file.contains("pub enum IpcEnvelope {"));
     // fieldless request → unit variant。
-    assert!(rust_file.contains("    ProcessAdd,\n"));
-    assert!(rust_file.contains("    ProjectClonePickFolder,\n"));
+    assert!(rust_file.contains("    RepoAdd,\n"));
+    assert!(rust_file.contains("    RepoClonePickFolder,\n"));
     // wire 名は serde rename で保持 (`:` 2 個の最難ケース含む)。
-    assert!(rust_file.contains("#[serde(rename = \"project:clone:pickFolder\")]"));
+    assert!(rust_file.contains("#[serde(rename = \"repo:clone:pickFolder\")]"));
 
     // --- TypeScript ---------------------------------------------------------
     let ts_emitted = TypeScriptEmitter::new().emit(&schema);
@@ -97,7 +97,7 @@ fn regenerates_sidebar_ipc_bindings() {
     write_if_changed(&root.join("webview/src/generated/SidebarIpc.ts"), &ts_file);
 
     assert!(ts_file.contains("export type IpcEnvelope ="));
-    assert!(ts_file.contains("({ t: \"project:clone:pickFolder\" } & ProjectClonePickFolder)"));
+    assert!(ts_file.contains("({ t: \"repo:clone:pickFolder\" } & RepoClonePickFolder)"));
 
     // schema の全 13 request の wire 名が Rust / TS 双方に出ていること。
     for wire in [
@@ -105,15 +105,15 @@ fn regenerates_sidebar_ipc_bindings() {
         "process:reorder",
         "process:restart",
         "process:stop",
-        "process:delete",
-        "process:add",
+        "repo:delete",
+        "repo:add",
         "lane:select",
         "lane:delete",
         "lane:restart",
         "lane:add_performer",
         "stands:fetch",
         "stand:select",
-        "project:clone:pickFolder",
+        "repo:clone:pickFolder",
         // in-app update: sidebar footer の「更新する」ボタン。schema 編集で codegen から
         // 落ちると button → Rust dispatch が silently 壊れるので regression net を張る。
         "update:apply",

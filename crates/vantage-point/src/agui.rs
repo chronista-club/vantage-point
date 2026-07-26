@@ -662,7 +662,7 @@ use std::collections::HashMap;
 /// for agent_event in agent_events {
 ///     let agui_events = bridge.convert(agent_event);
 ///     for event in agui_events {
-///         hub.broadcast(ProcessMessage::AgUi { event });
+///         hub.broadcast(RepoMessage::AgUi { event });
 ///     }
 /// }
 /// ```

@@ -22,7 +22,7 @@ use std::any::Any;
 use tokio::sync::RwLock;
 
 use crate::device_profile::{DeviceProfile, ParamSpec, Rgb};
-use crate::process::lane_stand::LaneStandHost;
+use crate::repo::lane_stand::LaneStandHost;
 
 // ─── data ──────────────────────────────────────────────────
 
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_track_generates_batches() {
+    async fn repo_track_generates_batches() {
         let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_track_multi_profile() {
+    async fn repo_track_multi_profile() {
         let stand = DeviceIoStand::new();
         stand
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_parameter_generates_batches() {
+    async fn repo_parameter_generates_batches() {
         let stand = DeviceIoStand::new();
         stand.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_on_empty_returns_nothing() {
+    async fn repo_on_empty_returns_nothing() {
         let stand = DeviceIoStand::new();
         let batches = stand
             .project_track(0, "test", Rgb::new(0, 0, 0), false)
@@ -360,7 +360,7 @@ mod tests {
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
 
-        // 2 回 project → shadow state（track_calls）が累積するか
+        // 2 回 repo → shadow state（track_calls）が累積するか
         stand.project_track(0, "a", Rgb::new(0, 0, 0), false).await;
         stand.project_track(1, "b", Rgb::new(0, 0, 0), false).await;
 

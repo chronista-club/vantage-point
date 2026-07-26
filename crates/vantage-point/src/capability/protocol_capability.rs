@@ -324,8 +324,8 @@ impl Stand for ProtocolCapability {
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // SP-local (= 1 Process per project)
-        LayerScope::Project
+        // repo-local (= 1 Process per repo)
+        LayerScope::Repo
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -452,6 +452,6 @@ mod tests {
         let cap = ProtocolCapability::new();
         let stand: &dyn Stand = &cap;
         assert_eq!(stand.actor_name(), "protocol");
-        assert_eq!(stand.layer_scope(), LayerScope::Project);
+        assert_eq!(stand.layer_scope(), LayerScope::Repo);
     }
 }

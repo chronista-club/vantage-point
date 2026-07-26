@@ -4,12 +4,12 @@
 //! に統合された**。かつて本 module が持っていた per-lane state file の store 役
 //! （record / last / clear）は doc 40 PR-2 で退役した（one-shot migration で全 lane の会話 id を
 //! registry へ移設済み。旧書き手 = hook 直書きは「root の label に追従しない」ラベル乖離バグの
-//! 発生源だった — doc 40 §1-1。hook は SP への報告者に降格済み）。
+//! 発生源だった — doc 40 §1-1。hook は repo への報告者に降格済み）。
 //!
 //! 本 module に残るのは claude 固有部だけ:
 //! - [`is_valid_session_id`]: `--resume '<id>'` への injection 防壁（registry の write 側
 //!   dispatch [`super::session_registry`] も使う）
-//! - [`transcript_path`] / [`transcript_exists`]: `~/.claude/projects` 走査（resume の
+//! - [`transcript_path`] / [`transcript_exists`]: `~/.claude/repos` 走査（resume の
 //!   pre-flight / transcript replay 源の解決）
 
 use std::path::PathBuf;
@@ -21,18 +21,18 @@ pub fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// claude の session transcript file path を引く（`~/.claude/projects/*/<id>.jsonl`）。
+/// claude の session transcript file path を引く（`~/.claude/repos/*/<id>.jsonl`）。
 ///
-/// claude は cwd 由来の encoded dir 名で session を分けるため、 全 project dir を走査する
-/// （encoding 形式に依存しない = 堅牢）。 N は project 数（数百程度、 boot でなく切替 / attach 時のみ）。
+/// claude は cwd 由来の encoded dir 名で session を分けるため、 全 repo dir を走査する
+/// （encoding 形式に依存しない = 堅牢）。 N は repo 数（数百程度、 boot でなく切替 / attach 時のみ）。
 /// 不正 id / home 不明 / 実体なしは None。
 pub fn transcript_path(session_id: &str) -> Option<PathBuf> {
     if !is_valid_session_id(session_id) {
         return None;
     }
-    let projects = dirs::home_dir()?.join(".claude").join("projects");
+    let repos = dirs::home_dir()?.join(".claude").join("repos");
     let target = format!("{session_id}.jsonl");
-    std::fs::read_dir(&projects)
+    std::fs::read_dir(&repos)
         .ok()?
         .flatten()
         .map(|e| e.path().join(&target))

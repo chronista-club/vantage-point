@@ -71,7 +71,7 @@ export function middleEllipsis(s: string, maxLen = 42): string {
 
 /**
  * LaneAddress::Display 形から表示用短名を導く。
- * `<project>/root` → "root"、`<project>/performer/<name>` → name。
+ * `<repo>/root` → "root"、`<repo>/performer/<name>` → name。
  * legacy `lead` / `wing` も受理（entry.tsx laneNameFromAddress と同じ語彙）。
  */
 export function laneShortName(addr: string): string {
@@ -117,7 +117,7 @@ export type RootPickerItem = {
 
 /**
  * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 → P4 — Root 切替 picker）。
- * 並びは SP の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙する。
+ * 並びは repo の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙する。
  * doc 39 P4: slot の respawn が root session の stand で engine を決めるようになった（P4-A）ため、
  * cross-engine の Root 切替が解禁された。disabled にするのは **engine が未知**（chip prefix が
  * `sid` = 撤去済み cursor/agy や legacy stand — shell 層に落ちて resume が効かない）行のみ。
@@ -241,7 +241,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     setNewMenu(d?.stands ?? [])
   })
 
-  /** chip click（Act I）: picker を開き、一覧を SP から取り直す（開くたび authoritative）。 */
+  /** chip click（Act I）: picker を開き、一覧を repo から取り直す（開くたび authoritative）。 */
   const openPicker = (chip: HTMLElement): void => {
     const lane = ctx()?.addr
     if (!lane) return

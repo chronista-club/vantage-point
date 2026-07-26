@@ -123,7 +123,7 @@ export function sessionOfHostId(id: string): number | null {
 	return m ? Number(m[1]) : null;
 }
 
-/** lane address（`<project>/root` | `<project>/performer/<name>`）→ board の flat lane key
+/** lane address（`<repo>/root` | `<repo>/performer/<name>`）→ board の flat lane key
  *  （root/lead = `conductor` / performer = `<name>`）。board-handler は BoardUpdated.lane を
  *  flat name（None→'conductor'）で扱うが、lane-panes は address で lane を追う。'vp:board-presence'
  *  は board-handler の flat key で飛んでくるので、突合のためここで address → flat を写す。
@@ -457,7 +457,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (activeLane && scope === laneScope(activeLane)) render();
 	});
 
-	// session 一覧（SP truth の鏡、chatview.installChatView が dispatch）→ pane の顔ぶれを同期。
+	// session 一覧（repo truth の鏡、chatview.installChatView が dispatch）→ pane の顔ぶれを同期。
 	// doc 46 §1.5 の実装点: session が増減すると pane / layout 列が追従する。
 	document.addEventListener("vp:echoes-sessions", (e) => {
 		const d = (
@@ -493,7 +493,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	});
 
 	// session act（見え方）の変化 → roster を同期（doc 50 §4.6 A6、旧 'vp:console-mode' の後継）。
-	// 名札の kind badge → session_set_act → SP → SessionActApplied → vpConsole.setSessionAct が
+	// 名札の kind badge → session_set_act → repo → SessionActApplied → vpConsole.setSessionAct が
 	// この bus を撃つ。**当該 session の Pane kind が in-place で入れ替わる**（§4.6 ②）。
 	document.addEventListener("vp:session-act", (e) => {
 		const d = (

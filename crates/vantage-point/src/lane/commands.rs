@@ -41,7 +41,7 @@ pub enum Isolation {
 ///
 /// `model`: lane の claude model alias (co-evolution #1)。 Some なら `engine_model` へ永続し、
 /// この lane が spawn される際に Act I claude の `--model` として読まれる。 None なら claude default。
-/// worktree 作成のみ（spawn は SP が別途行う）なので、 ここでは state file を書くだけ。
+/// worktree 作成のみ（spawn は repo が別途行う）なので、 ここでは state file を書くだけ。
 pub fn new_performer(
     name: &str,
     branch: &str,
@@ -57,8 +57,8 @@ pub fn new_performer(
     Ok(())
 }
 
-/// Phase 4-X: SP-friendly wrapper. `repo_root` を明示的に受け取り、 performer dir の `PathBuf` を返す。
-/// stdout への print なし、 lib call として完結。 SP server (lanes.rs) から直接呼ぶ用。
+/// Phase 4-X: repo-friendly wrapper. `repo_root` を明示的に受け取り、 performer dir の `PathBuf` を返す。
+/// stdout への print なし、 lib call として完結。 repo server (lanes.rs) から直接呼ぶ用。
 pub fn new_performer_in(
     repo_root: &Path,
     name: &str,
@@ -70,12 +70,12 @@ pub fn new_performer_in(
     setup_performer(name, branch, repo_root, force, isolation, base)
 }
 
-/// Phase 4-X: SP-friendly remove。 repo_root を明示的に受け取り、 project-local 新 path で
+/// Phase 4-X: repo-friendly remove。 repo_root を明示的に受け取り、 repo-local 新 path で
 /// performer dir を解決して削除する。
 ///
-/// project-local lane refactor PR 1: `repo_name: &str` → `repo_root: &Path` に signature
-/// 変更。 caller (sidebar 経由 DELETE 等) は state.project_dir を直接渡せる。
-/// PR 4b: legacy global path dual-read 削除、 project-local 一本に。
+/// repo-local lane refactor PR 1: `repo_name: &str` → `repo_root: &Path` に signature
+/// 変更。 caller (sidebar 経由 DELETE 等) は state.repo_dir を直接渡せる。
+/// PR 4b: legacy global path dual-read 削除、 repo-local 一本に。
 pub fn remove_performer_in(repo_root: &Path, name: &str) -> Result<(), String> {
     config::validate_performer_name(name)?;
     let Some(performer_dir) = find_performer_dir(repo_root, name) else {
@@ -88,8 +88,8 @@ pub fn remove_performer_in(repo_root: &Path, name: &str) -> Result<(), String> {
         ));
     };
     remove_performer_workspace(repo_root, &performer_dir)?;
-    // state file GC: orchestrated 経路 (Phase 2a) と重複しても冪等。 project remove の
-    // B-destroy reclaim (process_manager_capability) はここしか通らないので必須。
+    // state file GC: orchestrated 経路 (Phase 2a) と重複しても冪等。 repo remove の
+    // B-destroy reclaim (repo_manager_capability) はここしか通らないので必須。
     clear_lane_state_files(repo_root, name);
     Ok(())
 }
@@ -126,7 +126,7 @@ pub fn fork_performer(
 /// Common performer setup: clone, symlink, branch, post-setup.
 /// Returns the performer directory path。
 ///
-/// project-local lane refactor: 新 lane の配置先は `<repo_root>/.vp/lanes/<name>`。
+/// repo-local lane refactor: 新 lane の配置先は `<repo_root>/.vp/lanes/<name>`。
 /// parent repo の `.gitignore` に `.vp/` を best-effort で追記して nested git clone を
 /// 隠蔽する。
 fn setup_performer(
@@ -141,7 +141,7 @@ fn setup_performer(
 
     let cfg = config::load_config(repo_root)?;
 
-    let performers_dir = config::project_lanes_dir(repo_root);
+    let performers_dir = config::repo_lanes_dir(repo_root);
     let performer_dir = performers_dir.join(name);
 
     if performer_dir.exists() {
@@ -179,7 +179,7 @@ fn setup_performer(
     // ⚠️ **provisioning の後に置く**こと。 これは repo を書き換える action なので、
     // 「lane の実体が実際に建った」= `repo_root` が本物の repo だと git 操作が実証した
     // 後にだけ走らせる。 入口 (検証前) に置くと、 **失敗する create でも .gitignore を
-    // 書いてしまう**: `project_dir` 未設定で repo_root が process cwd に落ちると、
+    // 書いてしまう**: `repo_dir` 未設定で repo_root が process cwd に落ちると、
     // 無関係な dir に `.vp/` 記載を撒く（VP repo で `cargo test` するたび
     // `crates/vantage-point/.gitignore` が湧いていた実害。 2026-07-23 に特定）。
     if let Err(e) = config::ensure_vp_gitignored(repo_root) {
@@ -251,7 +251,7 @@ fn setup_performer(
         }
     }
 
-    // project-local lane refactor PR 4a: PR #429 の `claude_trust::pre_grant_trust` 削除。
+    // repo-local lane refactor PR 4a: PR #429 の `claude_trust::pre_grant_trust` 削除。
     // performer dir は `<repo>/.vp/lanes/<name>` に置かれ、 parent repo (= `<repo>`) の
     // `hasTrustDialogAccepted: true` が claude 側で **hierarchical 継承** されるので
     // pre-grant は不要 (2026-05-24 実証、 nested `.git/` でも継承)。
@@ -511,8 +511,8 @@ fn remove_performer_workspace(repo_root: &Path, performer_dir: &Path) -> Result<
 /// ⚠️ `remove_performer_workspace` には置かない — `setup_performer` の `--force` 再作成も
 /// あれを通るため、そこで cc_session を消すと workspace 再作成後の `--resume` 継続性を壊す。
 ///
-/// キーは SP の書き手 (lanes_state::set_console_mode / stand_spawner の VP_PROJECT env、
-/// create_performer_orchestrated 等) と同じ derivation: project = repo_root の basename、
+/// キーは repo の書き手 (lanes_state::set_console_mode / stand_spawner の VP_REPO env、
+/// create_performer_orchestrated 等) と同じ derivation: repo = repo_root の basename、
 /// lane = performer 名。
 fn clear_lane_state_files(repo_root: &Path, lane: &str) {
     clear_lane_state_files_in(&crate::config::vp_state_dir(), repo_root, lane);
@@ -520,15 +520,15 @@ fn clear_lane_state_files(repo_root: &Path, lane: &str) {
 
 /// lane の claude model を `engine_model` へ永続する (co-evolution #1、CLI `vp lane new/fork --model`)。
 ///
-/// project key は `clear_lane_state_files` / SP `create_performer_orchestrated` と同一
-/// derivation (repo_root basename) — CLI で書いた model を SP spawn 経路が読めるようにする。
+/// repo key は `clear_lane_state_files` / repo `create_performer_orchestrated` と同一
+/// derivation (repo_root basename) — CLI で書いた model を repo spawn 経路が読めるようにする。
 /// 明示 `--model` が無ければ config の `default-lane-model`（未設定なら Opus）にフォールバックして
 /// record する（内部 helper `persist_lane_model_in` は従来通り None=no-op、既定解決はこの wrapper が担う）。
 /// 不正な model 名は Err で早期に弾く (worktree は作成済だが spawn 前に失敗を返す方が silent degrade より良い)。
 ///
 /// `repo_root` は [`config::find_repo_root`] 由来で **常に main worktree root** に正規化される
-/// (lane worktree の中から呼んでも SP 読み手の `addr.project` = main root basename と一致する。
-/// 旧: worktree 内実行で project key mismatch → model が silent 無視。project key 正規化で解消)。
+/// (lane worktree の中から呼んでも repo 読み手の `addr.repo` = main root basename と一致する。
+/// 旧: worktree 内実行で repo key mismatch → model が silent 無視。repo key 正規化で解消)。
 fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
     // doc 54 §8-11: 明示 `--model` > config `default-lane-model` > 無記録（engine 側の
     // user 既定に委ねる）。mcp / sidebar 経路（create_performer_orchestrated）と同じ既定規則。
@@ -555,35 +555,35 @@ fn persist_lane_model_in(
     if !super::engine_model::is_valid_model(model) {
         return Err(format!("model 名が不正です: {model:?}"));
     }
-    let project = repo_root
+    let repo = repo_root
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
-    super::engine_model::record_in(base, project, lane, model)
+    super::engine_model::record_in(base, repo, lane, model)
         .map_err(|e| format!("model 永続に失敗: {e}"))
 }
 
-/// lane-scoped state file の project key（= repo_root の basename）。
+/// lane-scoped state file の repo key（= repo_root の basename）。
 ///
-/// SP 書き手の derivation（`addr.project`）と一致する前提で 2 経路が動いている
+/// repo 書き手の derivation（`addr.repo`）と一致する前提で 2 経路が動いている
 /// （`clear_lane_state_in` の doc 参照）。**同じ derivation を要る場所が増えたので関数に畳んだ**
 /// — 各 call site が個別に basename を取ると 1 箇所ズレた時に無音で別 key を触る
 /// （lane_id は帳簿の key なので、ズレると履歴が別 lane のものになる）。
-fn lane_state_project_key(repo_root: &Path) -> &str {
+fn lane_state_repo_key(repo_root: &Path) -> &str {
     repo_root
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
 }
 
-/// state base dir 注入版 (テスト用)。project key を repo basename から導き、一元 GC に委譲。
+/// state base dir 注入版 (テスト用)。repo key を repo basename から導き、一元 GC に委譲。
 fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
-    clear_lane_state_in(base, lane_state_project_key(repo_root), lane);
+    clear_lane_state_in(base, lane_state_repo_key(repo_root), lane);
 }
 
-/// lane の安定 id を引く（Project Host の帳簿の key、doc 44 §8.2）。
+/// lane の安定 id を引く（Repo Host の帳簿の key、doc 44 §8.2）。
 ///
-/// SSOT は `lane_ids/<project>__<lane>` state file で、daemon 側の `LaneInfo.id` も
+/// SSOT は `lane_ids/<repo>__<lane>` state file で、daemon 側の `LaneInfo.id` も
 /// 同じ関数（[`super::lane_id::load_or_create`]）から来る = **同じ lane なら同じ id**。
 /// だから CLI 側で解決した id をそのまま帳簿に送れる。
 ///
@@ -591,24 +591,24 @@ fn clear_lane_state_files_in(base: &Path, repo_root: &Path, lane: &str) {
 /// 削除後に引くと別の id が生える（= 見送りの記録が「知らない lane」になる）。
 /// 逆に言うと、同名 lane を作り直すと必ず別 id になるので**前の履歴と混ざらない**。
 fn lane_stable_id(repo_root: &Path, lane: &str) -> String {
-    super::lane_id::load_or_create(lane_state_project_key(repo_root), lane).to_string()
+    super::lane_id::load_or_create(lane_state_repo_key(repo_root), lane).to_string()
 }
 
-/// 本番 base での lane-scoped state 一元 GC (SP `delete_lane_orchestrated` から呼ぶ)。
-pub(crate) fn clear_lane_state(project: &str, lane: &str) {
-    clear_lane_state_in(&crate::config::vp_state_dir(), project, lane);
+/// 本番 base での lane-scoped state 一元 GC (repo `delete_lane_orchestrated` から呼ぶ)。
+pub(crate) fn clear_lane_state(repo: &str, lane: &str) {
+    clear_lane_state_in(&crate::config::vp_state_dir(), repo, lane);
 }
 
 /// lane-scoped state file の**一元** GC (best-effort、 冪等)。
 ///
 /// 削除系 2 経路の**唯一の破棄リスト**: CLI 側 (`clear_lane_state_files_in` 経由 =
-/// `remove_performer` / `cleanup_performers`) と SP 側 (`delete_lane_orchestrated` Phase 2a)。
+/// `remove_performer` / `cleanup_performers`) と repo 側 (`delete_lane_orchestrated` Phase 2a)。
 /// 従来は両経路が別々のリストを持ち、片方に足した clear がもう片方から漏れていた
-/// (replay_log / terminal_replay が SP delete で残り、 同名 lane 再作成で旧 replay が蘇る
+/// (replay_log / terminal_replay が repo delete で残り、 同名 lane 再作成で旧 replay が蘇る
 /// ghost leak、 moody 観察 2026-07-19)。ここに集約して両経路が同じリストを共有する。
 ///
-/// `project` / `lane` (= lane label) は各呼び手が自分の derivation で解決して渡す
-/// (CLI = repo_root basename、 SP = `addr.project` + `lane_label(addr)`)。両者は SP 書き手の
+/// `repo` / `lane` (= lane label) は各呼び手が自分の derivation で解決して渡す
+/// (CLI = repo_root basename、 repo = `addr.repo` + `lane_label(addr)`)。両者は repo 書き手の
 /// key derivation と一致する (既存 2 経路が既にこの前提で動いていた)。
 ///
 /// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 6 種):
@@ -617,16 +617,16 @@ pub(crate) fn clear_lane_state(project: &str, lane: &str) {
 ///
 /// best-effort: 個々の失敗は warn して残置し、他の破棄は続行する (1 file の fs error で
 /// 残り 5 種の GC を落とさない)。冪等 = 未記録 / 二重呼び出しは全て no-op。
-fn clear_lane_state_in(base: &Path, project: &str, lane: &str) {
+fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
     // ① echoes_replay は **session label 単位** (`<lane>` + `<lane>#<n>`)。registry を消す前に
     //    全 session を列挙して各 label の replay log を消す (残すと transcript を持たない engine の
     //    replay 源が同名 lane に蘇る)。default_stand は registry file 不在時の N=1 既定形にしか
     //    効かず、 その唯一 session の label は素の lane 名 (下の console / terminal_replay と同鍵)
     //    なので列挙値は問わない。
-    let reg = super::session_registry::load_in(base, project, lane, "echoes");
+    let reg = super::session_registry::load_in(base, repo, lane, "echoes");
     for s in &reg.sessions {
         let label = super::session_registry::session_label(lane, s.key);
-        if let Err(e) = crate::echoes::replay_log::clear_in(base, project, &label) {
+        if let Err(e) = crate::echoes::replay_log::clear_in(base, repo, &label) {
             tracing::warn!(
                 "lane state GC: replay log の破棄に失敗 (残置): lane={lane} session={} err={e}",
                 s.key
@@ -635,23 +635,23 @@ fn clear_lane_state_in(base: &Path, project: &str, lane: &str) {
     }
     // ② session_registry (会話 id と Act の SSOT — 残すと旧 session / 旧会話 id / 旧 Act が蘇る)。
     //    ①の列挙後に消す。
-    if let Err(e) = super::session_registry::clear_in(base, project, lane) {
+    if let Err(e) = super::session_registry::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: session registry の破棄に失敗 (残置): lane={lane} err={e}");
     }
     // ③ engine_model (Act II の model 選択)
-    if let Err(e) = super::engine_model::clear_in(base, project, lane) {
+    if let Err(e) = super::engine_model::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: engine_model の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ④ stand (engine 種別 — SP 再起動またぎの spawn stand)
-    if let Err(e) = super::stand_store::clear_in(base, project, lane) {
+    // ④ stand (engine 種別 — repo 再起動またぎの spawn stand)
+    if let Err(e) = super::stand_store::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: stand の破棄に失敗 (残置): lane={lane} err={e}");
     }
     // ⑤ terminal_replay (slot の scrollback の replay seed)
-    if let Err(e) = crate::daemon::pty_slot::clear_replay_in(base, project, lane) {
+    if let Err(e) = crate::daemon::pty_slot::clear_replay_in(base, repo, lane) {
         tracing::warn!("lane state GC: terminal replay の破棄に失敗 (残置): lane={lane} err={e}");
     }
     // ⑥ lane_id (位置独立 安定 id)
-    if let Err(e) = super::lane_id::clear_in(base, project, lane) {
+    if let Err(e) = super::lane_id::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: lane_id の破棄に失敗 (残置): lane={lane} err={e}");
     }
 }
@@ -681,13 +681,13 @@ fn is_performer_entry(entry: &fs::DirEntry) -> bool {
 
 /// List all performer environments under cwd の `<repo>/.vp/lanes/`。
 ///
-/// project-local lane refactor PR 4b: legacy global path 列挙を削除、 cwd の repo
-/// の project-local のみ表示。 cwd が git repo でない場合は空出力 (= 既存挙動と同様)。
+/// repo-local lane refactor PR 4b: legacy global path 列挙を削除、 cwd の repo
+/// の repo-local のみ表示。 cwd が git repo でない場合は空出力 (= 既存挙動と同様)。
 pub fn list_performers() -> Result<(), String> {
     let Ok(repo_root) = config::find_repo_root() else {
         return Ok(());
     };
-    let pl_dir = config::project_lanes_dir(&repo_root);
+    let pl_dir = config::repo_lanes_dir(&repo_root);
     if !pl_dir.exists() {
         return Ok(());
     }
@@ -705,7 +705,7 @@ pub fn list_performers() -> Result<(), String> {
     Ok(())
 }
 
-/// disk 上で発見された Performer 環境 1 件 (lane Performer dir の structured view、 SP /api/lanes 用)。
+/// disk 上で発見された Performer 環境 1 件 (lane Performer dir の structured view、 repo /api/lanes 用)。
 ///
 /// PtySlot 起動の有無は問わない (= disk 存在のみ示す)。 lanes.rs:list_handler で
 /// in-memory LanePool に居ない Performer を `LaneState::Inactive` として merge する時の中間 type。
@@ -720,10 +720,10 @@ pub struct InactivePerformerEntry {
     pub branch: Option<String>,
 }
 
-/// repo に紐づく Performer dir を `<repo>/.vp/lanes/` から disk scan して返す (SP /api/lanes 用)。
+/// repo に紐づく Performer dir を `<repo>/.vp/lanes/` から disk scan して返す (repo /api/lanes 用)。
 ///
-/// project-local lane refactor PR 4b: legacy global path scan + dedup logic を削除、
-/// project-local のみ列挙に simplify。
+/// repo-local lane refactor PR 4b: legacy global path scan + dedup logic を削除、
+/// repo-local のみ列挙に simplify。
 ///
 /// 「基本は通らない防御パス」: 通常 lane clone は POST /api/lanes 経由で生成され、 同 session 内なら
 /// LanePool に登録されている。 ただし vp-app crash 後の残骸 / 別 session での `vp lane new` 等で
@@ -733,13 +733,13 @@ pub struct InactivePerformerEntry {
 /// fail-soft (= 防御パスのため read error は空 Vec 扱い)。
 pub fn list_performers_for_repo(repo_root: &Path) -> Vec<InactivePerformerEntry> {
     let mut out = Vec::new();
-    let pl_dir = config::project_lanes_dir(repo_root);
+    let pl_dir = config::repo_lanes_dir(repo_root);
     let Ok(entries) = fs::read_dir(&pl_dir) else {
         return out;
     };
     for entry in entries.flatten() {
         if !is_performer_entry(&entry) {
-            continue; // dep symlink を除外 (SP snapshot / sidebar / flow progress の choke point)
+            continue; // dep symlink を除外 (repo snapshot / sidebar / flow progress の choke point)
         }
         let path = entry.path();
         let dir_name = entry.file_name();
@@ -777,7 +777,7 @@ pub fn resolve_lane_index_by_performer_name(repo_root: &Path, performer_name: &s
 
 /// Print the path to a performer。
 ///
-/// project-local lane refactor PR 4b: legacy global path fallback 削除、 cwd の repo
+/// repo-local lane refactor PR 4b: legacy global path fallback 削除、 cwd の repo
 /// の `<repo>/.vp/lanes/<name>` のみ lookup。 cwd が git repo でない場合は error。
 pub fn performer_path(name: &str) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
@@ -792,11 +792,11 @@ pub fn performer_path(name: &str) -> Result<(), String> {
 
 /// Remove a performer environment。
 ///
-/// project-local lane refactor PR 4b: legacy global path fallback 削除、 cwd の repo
+/// repo-local lane refactor PR 4b: legacy global path fallback 削除、 cwd の repo
 /// の `<repo>/.vp/lanes/<name>` のみ対象。 cwd が git repo でない場合は error。
 pub fn remove_performer(name: Option<&str>, all: bool, force: bool) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
-    let pl_dir = config::project_lanes_dir(&repo_root);
+    let pl_dir = config::repo_lanes_dir(&repo_root);
 
     if all {
         if !force {
@@ -829,7 +829,7 @@ pub fn remove_performer(name: Option<&str>, all: bool, force: bool) -> Result<()
             }
             clear_lane_state_files(&repo_root, name);
         }
-        eprintln!("project-local パフォーマー全削除: {} 件", performers.len());
+        eprintln!("repo-local パフォーマー全削除: {} 件", performers.len());
         return Ok(());
     }
 
@@ -851,12 +851,12 @@ pub fn remove_performer(name: Option<&str>, all: bool, force: bool) -> Result<()
 
 /// Show status of all performer environments under cwd の `<repo>/.vp/lanes/`。
 ///
-/// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
+/// repo-local lane refactor PR 4b: legacy global block 削除、 repo-local 一本に。
 pub fn status_performers() -> Result<(), String> {
     let mut found = false;
 
     if let Ok(repo_root) = config::find_repo_root() {
-        let pl_dir = config::project_lanes_dir(&repo_root);
+        let pl_dir = config::repo_lanes_dir(&repo_root);
         if pl_dir.exists()
             && let Ok(entries) = fs::read_dir(&pl_dir)
         {
@@ -884,20 +884,20 @@ pub fn status_performers() -> Result<(), String> {
 /// 見送り判定に渡す開発起点 lane 名を決める（doc 44 D4）。
 ///
 /// 帳簿は daemon が持つ（DB は surrealkv の OS 排他ロックで Daemon 専有）ので、CLI からは
-/// process-proxy 越しに問い合わせる。Daemon 不在 / 応答不正なら **予約名にフォールバック**し、
+/// repo-proxy 越しに問い合わせる。Daemon 不在 / 応答不正なら **予約名にフォールバック**し、
 /// その旨を告げる。
 ///
 /// なぜ黙って落とさないか: 起点が確認できないまま見送ると、**移動済みの起点 lane を
 /// 消しうる**。実害の確率は低い（起点が merged かつ clean かつ停止中である必要がある）が、
 /// 「確認できなかった」という事実は人に見せる（Host は推測しない）。
 fn origin_for_cleanup(repo_root: &Path) -> String {
-    let reserved = crate::process::lanes_state::ROOT_LANE_NAME.to_string();
-    let Some(project_path) = repo_root.to_str() else {
+    let reserved = crate::repo::lanes_state::ROOT_LANE_NAME.to_string();
+    let Some(repo_path) = repo_root.to_str() else {
         return reserved;
     };
-    let resp = crate::commands::process_client::daemon_process_request_blocking(
+    let resp = crate::commands::process_client::daemon_repo_request_blocking(
         crate::cli::daemon_port(),
-        project_path,
+        repo_path,
         "lane_origin_get",
         serde_json::json!({}),
     );
@@ -915,11 +915,11 @@ fn origin_for_cleanup(repo_root: &Path) -> String {
 /// 見送り判定に渡す「今動いている lane」を daemon に問い合わせる（doc 44 §7.5）。
 ///
 /// lane の生死は git からは知れないので、[`crate::host::farewell`] は外からの供給に頼る。
-/// CLI は daemon の "daemon-process" channel に `list_all_lanes` を ask し、応答から
-/// **この project の分だけ**を [`crate::host::liveness::running_lanes_in`] で取り出す。
+/// CLI は daemon の "daemon-repo" channel に `list_all_lanes` を ask し、応答から
+/// **この repo の分だけ**を [`crate::host::liveness::running_lanes_in`] で取り出す。
 ///
-/// なぜ process-proxy (`lanes_list`) ではないか: あちらは対象 project の SP が daemon に
-/// 登録されていないと逆引きに失敗して error になり、「project が動いていない（= 稼働 lane 0）」と
+/// なぜ repo-proxy (`lanes_list`) ではないか: あちらは対象 repo の repo が daemon に
+/// 登録されていないと逆引きに失敗して error になり、「repo が動いていない（= 稼働 lane 0）」と
 /// 「daemon に訊けなかった（= 不明）」が区別できない。cross-project 一覧なら前者は**答え**として返る。
 ///
 /// 失敗は [`Liveness::Unknown`] で返し、**空リストには畳まない** — それが P3 第一スライスで
@@ -935,14 +935,14 @@ fn liveness_for_cleanup(repo_root: &Path) -> crate::host::liveness::Liveness {
     if skip_daemon_for_test() {
         return Liveness::Known(Vec::new());
     }
-    let Some(project_path) = repo_root.to_str() else {
+    let Some(repo_path) = repo_root.to_str() else {
         return Liveness::Unknown("repo path に invalid UTF-8".to_string());
     };
     match crate::commands::process_client::daemon_lanes_snapshot_blocking(crate::cli::daemon_port())
     {
         Ok(snapshot) => Liveness::Known(crate::host::liveness::running_lanes_in(
             &snapshot,
-            Path::new(project_path),
+            Path::new(repo_path),
         )),
         Err(e) => Liveness::Unknown(e.to_string()),
     }
@@ -1033,10 +1033,10 @@ pub(crate) enum CleanupOutcome {
 /// Remove performers whose branch is merged into the repo's default branch
 /// (cwd の `<repo>/.vp/lanes/` 対象)。
 ///
-/// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
+/// repo-local lane refactor PR 4b: legacy global block 削除、 repo-local 一本に。
 /// co-evolution #3: default branch を `resolve_default_branch` (origin/HEAD) で解決し、
 /// squash merge も検出する (旧: `origin/main` ハードコード + ancestry only)。
-/// doc 44 P3: 判定は **Project Host に移管**した（`host::farewell`）。
+/// doc 44 P3: 判定は **Repo Host に移管**した（`host::farewell`）。
 ///
 /// 本関数は Host の判定を人間に見せて実行する薄い surface になった。旧実装は
 /// 収集・判定・分類を 1 関数（`classify_performer_for_cleanup`）に混ぜており:
@@ -1049,7 +1049,7 @@ pub(crate) enum CleanupOutcome {
 ///
 /// doc 44 §7.5: 判定に要る事実（開発起点 / 稼働中 lane）は本関数が daemon から集めて渡す。
 /// **稼働状況が確認できない場合は判定に進まず保留する**（[`cleanup_performers_with`]）。
-/// 判定と実行は Project Host の帳簿に記録され、`AskHuman` の滞留として出力に戻ってくる。
+/// 判定と実行は Repo Host の帳簿に記録され、`AskHuman` の滞留として出力に戻ってくる。
 pub fn cleanup_performers(force: bool) -> Result<(), String> {
     let Ok(repo_root) = config::find_repo_root() else {
         eprintln!("クリーンアップ対象はありません。");
@@ -1114,7 +1114,7 @@ fn cleanup_performers_with(
     };
 
     let origin = resolve_origin(repo_root);
-    let reports = crate::host::farewell::survey_project(repo_root, running, &origin);
+    let reports = crate::host::farewell::survey_repo(repo_root, running, &origin);
     if reports.is_empty() {
         let _ = writeln!(out, "クリーンアップ対象はありません。");
         return Ok(CleanupOutcome::Nothing);
@@ -1192,7 +1192,7 @@ fn cleanup_performers_with(
 
     let mut reclaimed: Vec<crate::host::ledger::FarewellObservation> = Vec::new();
     for (r, obs) in &to_remove {
-        let path = config::project_lanes_dir(repo_root).join(&r.facts.name);
+        let path = config::repo_lanes_dir(repo_root).join(&r.facts.name);
         remove_performer_workspace(repo_root, &path)?;
         clear_lane_state_files(repo_root, &r.facts.name);
         // worktree: merged branch を共有 .git から `-d` で安全に掃除 (設計 E)。
@@ -1223,7 +1223,7 @@ fn cleanup_performers_with(
     })
 }
 
-/// `vp lane history` — Project Host の帳簿（見送りの記録）を読む（doc 44 §7.5）。
+/// `vp lane history` — Repo Host の帳簿（見送りの記録）を読む（doc 44 §7.5）。
 ///
 /// board UI を待たずに帳簿の**読み手**を用意するための面。書いた事実に読み手が無いと、
 /// `LaneId` が 2 年間そうだったように「誰も見ない書き込み」になる（doc 44 §8.2）。
@@ -1260,11 +1260,11 @@ fn print_performer_status_row(path: &Path, name: &str) {
     println!("{name}\t{branch}\t{changes_str}\t{ahead_behind}\t{last_commit}");
 }
 
-// doc 44 P3: `classify_performer_for_cleanup` は撤去（Project Host に移管）。
+// doc 44 P3: `classify_performer_for_cleanup` は撤去（Repo Host に移管）。
 //
 // 収集（git subprocess）・判定・分類が 1 関数に混ざっており、テスト不能かつ判定が 2 値だった。
 // 後継は `host::farewell` の 3 層構成:
-//   collect_facts（actions） → judge_farewell（純関数・全分岐テスト済） → survey_project（集約）
+//   collect_facts（actions） → judge_farewell（純関数・全分岐テスト済） → survey_repo（集約）
 //
 // 旧実装が抱えていた実質的な欠陥: **merged なら未コミット変更を見ずに削除候補**へ入れていた
 // （= 取り込み済み branch 上に残った作業を黙って捨てうる）。Host 版は dirty を merged より
@@ -1272,11 +1272,11 @@ fn print_performer_status_row(path: &Path, name: &str) {
 
 /// `<repo>/.vp/lanes/<name>` の performer dir を返す。 dir 不在なら None。
 ///
-/// project-local lane refactor PR 4b: PR 1 で導入した `find_performer_dir_dual` の legacy
-/// global path fallback (= step 2/3) を削除し、 project-local 一本に simplify。
+/// repo-local lane refactor PR 4b: PR 1 で導入した `find_performer_dir_dual` の legacy
+/// global path fallback (= step 2/3) を削除し、 repo-local 一本に simplify。
 /// performer_path / remove_performer / remove_performer_in が共有。
 fn find_performer_dir(repo_root: &Path, name: &str) -> Option<PathBuf> {
-    let dir = config::project_lanes_dir(repo_root).join(name);
+    let dir = config::repo_lanes_dir(repo_root).join(name);
     // dep symlink は performer ではない (delete が dep を対象に取るのを防ぐ、defense-in-depth の壁 1)。
     // `symlink_metadata` は symlink を辿らないので、symlink を弾いた上で実 dir のみ Some。
     match fs::symlink_metadata(&dir) {
@@ -1637,7 +1637,7 @@ pub(crate) fn get_branch(dir: &std::path::Path) -> Option<String> {
     }
 }
 
-// ── Phase 5-D D1: Performer status (struct 返却、 SP API exposure 用) ───────────
+// ── Phase 5-D D1: Performer status (struct 返却、 repo API exposure 用) ───────────
 
 /// Performer workspace の git 状態 snapshot。 `performer_status(path)` で取得、
 /// `/api/lanes` の LaneInfo に embed して sidebar に表示する。
@@ -1660,8 +1660,8 @@ pub struct PerformerStatus {
     pub is_merged: bool,
 }
 
-/// Performer workspace dir から status snapshot を取得 (SP API 用)。 git 関連 subprocess を
-/// 5-7 個並列に呼ぶので 1 回 ~50-100ms 程度。 多数 performer 時は SP 側で並列化検討。
+/// Performer workspace dir から status snapshot を取得 (repo API 用)。 git 関連 subprocess を
+/// 5-7 個並列に呼ぶので 1 回 ~50-100ms 程度。 多数 performer 時は repo 側で並列化検討。
 pub fn performer_status(dir: &Path) -> PerformerStatus {
     let branch = get_branch(dir);
     let dirty_count = count_changes(dir);
@@ -1729,7 +1729,7 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("vp-cleanup-hold-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let lane_dir = config::project_lanes_dir(&root).join("w1");
+        let lane_dir = config::repo_lanes_dir(&root).join("w1");
         std::fs::create_dir_all(&lane_dir).unwrap();
         let git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -1746,7 +1746,7 @@ mod tests {
         git(&["commit", "-qm", "init"]);
 
         // 起点照会は daemon を叩くので注入する（保留経路では呼ばれないこと自体も要件）。
-        let origin = |_: &Path| crate::process::lanes_state::ROOT_LANE_NAME.to_string();
+        let origin = |_: &Path| crate::repo::lanes_state::ROOT_LANE_NAME.to_string();
         let mut ledger = SpyLedger::default();
         let mut out = Vec::new();
 
@@ -1835,7 +1835,7 @@ mod tests {
 
         let root = std::env::temp_dir().join(format!("vp-cleanup-stag-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let lane_dir = config::project_lanes_dir(&root).join("w1");
+        let lane_dir = config::repo_lanes_dir(&root).join("w1");
         std::fs::create_dir_all(&lane_dir).unwrap();
         let git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -1875,7 +1875,7 @@ mod tests {
             &root,
             false,
             &Liveness::Known(Vec::new()),
-            |_| crate::process::lanes_state::ROOT_LANE_NAME.to_string(),
+            |_| crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
             &mut ledger,
         )
         .expect("判定は Err ではない");
@@ -1926,7 +1926,7 @@ mod tests {
 
     #[test]
     fn clear_lane_state_files_uses_repo_basename_key() {
-        // キー凍結: project = repo_root の basename (SP 書き手の derivation と一致、
+        // キー凍結: repo = repo_root の basename (repo 書き手の derivation と一致、
         // create_performer_orchestrated 等参照)。ズレると GC が空振りして leak が再発する。
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
@@ -1971,7 +1971,7 @@ mod tests {
 
     /// 一元 GC の凍結: lane 削除後、当該 lane の **全 6 種**の lane-scoped state file が消える。
     /// replay_log は session label 単位 (#1 + #2) で消し、 他 lane の state は巻き添えにしない。
-    /// 従来 SP 経路から漏れていた replay_log / terminal_replay / lane_id の欠落再発を防ぐ回帰。
+    /// 従来 repo 経路から漏れていた replay_log / terminal_replay / lane_id の欠落再発を防ぐ回帰。
     ///
     /// doc 47 §4 で console_mode file は退役し、Act は registry の中（root の act）に入った —
     /// 破棄対象が 7 種から 6 種に減ったのは leak が増えたのではなく、state が 1 つ畳まれたため。
@@ -2097,8 +2097,8 @@ mod tests {
 
     #[test]
     fn persist_lane_model_writes_engine_model_with_basename_key() {
-        // co-evolution #1: CLI `--model` は SP spawn 経路が読む engine_model へ、
-        // repo basename を project key として書く (key derivation は clear と同一)。
+        // co-evolution #1: CLI `--model` は repo spawn 経路が読む engine_model へ、
+        // repo basename を repo key として書く (key derivation は clear と同一)。
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let repo_root = tmp.path().join("parent").join("vp");
@@ -2116,7 +2116,7 @@ mod tests {
         assert_eq!(
             crate::lane::engine_model::last_in(base, "vp", "feat").as_deref(),
             Some("claude-fable-5"),
-            "SP spawn が読む project=basename('vp') key に書かれる"
+            "repo spawn が読む repo=basename('vp') key に書かれる"
         );
 
         // 不正 model は Err（worktree 作成後でも spawn 前に弾く）
@@ -2382,9 +2382,9 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    // --- find_performer_dir (project-local lane refactor PR 4b: legacy global path 撤去) ---
+    // --- find_performer_dir (repo-local lane refactor PR 4b: legacy global path 撤去) ---
 
-    /// 共通 fixture: temp 領域に偽 repo + project-local lane dir (.vp/lanes/) を作る。
+    /// 共通 fixture: temp 領域に偽 repo + repo-local lane dir (.vp/lanes/) を作る。
     fn setup_pl_fixture(slug: &str) -> (PathBuf, PathBuf) {
         let repo = test_dir(&format!("pl-{slug}"));
         let pl = repo.join(".vp").join("lanes");
@@ -2393,7 +2393,7 @@ mod tests {
     }
 
     #[test]
-    fn find_performer_dir_returns_project_local() {
+    fn find_performer_dir_returns_repo_local() {
         let (repo, pl) = setup_pl_fixture("found");
         let performer = pl.join("foo");
         fs::create_dir_all(&performer).unwrap();
@@ -2412,7 +2412,7 @@ mod tests {
         let _ = fs::remove_dir_all(&repo);
     }
 
-    // --- list_performers_for_repo (PR 4b: project-local 一本) ---
+    // --- list_performers_for_repo (PR 4b: repo-local 一本) ---
 
     // --- resolve_lane_index_by_performer_name (= 「目的ベース port 解決」 の核) ---
 
@@ -2456,10 +2456,10 @@ mod tests {
         let _ = fs::remove_dir_all(&repo);
     }
 
-    // --- list_performers_for_repo (PR 4b: project-local 一本) ---
+    // --- list_performers_for_repo (PR 4b: repo-local 一本) ---
 
     #[test]
-    fn list_performers_for_repo_lists_project_local_only() {
+    fn list_performers_for_repo_lists_repo_local_only() {
         let (repo, pl) = setup_pl_fixture("list");
         fs::create_dir_all(pl.join("foo").join(".git")).unwrap();
         fs::create_dir_all(pl.join("bar").join(".git")).unwrap();
@@ -2516,7 +2516,7 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 列挙 (SP snapshot / sidebar / flow progress の choke point) が dep symlink を除外する。
+    /// 列挙 (repo snapshot / sidebar / flow progress の choke point) が dep symlink を除外する。
     #[cfg(unix)]
     #[test]
     fn list_performers_for_repo_excludes_dep_symlink() {
@@ -3072,7 +3072,7 @@ mod tests {
     ///
     /// `ensure_vp_gitignored` は repo を書き換える action なので、 provisioning（= lane の
     /// 実体が建ち、 `repo_root` が本物の repo だと git 操作が実証する）より**後**に
-    /// 置かねばならない。 入口に置くと、 `project_dir` 未設定で `repo_root` が process cwd に
+    /// 置かねばならない。 入口に置くと、 `repo_dir` 未設定で `repo_root` が process cwd に
     /// 落ちた時に無関係な dir を汚す — VP repo で `cargo test` するたび
     /// `crates/vantage-point/.gitignore` が湧いていた（2026-07-23 に
     /// `reservation_removed_after_failed_create` 経由と特定）。

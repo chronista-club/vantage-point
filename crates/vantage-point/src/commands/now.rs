@@ -9,7 +9,7 @@
 //! ```
 //!
 //! 宛先の識別は **spawn 時注入の env**（Act I slot = stand_spawner / Act II host が注入）:
-//! `VP_PROJECT` + `VP_LANE`（lane address の導出）+ `VP_SESSION_KEY`（session の名乗り、
+//! `VP_REPO` + `VP_LANE`（lane address の導出）+ `VP_SESSION_KEY`（session の名乗り、
 //! doc 40 §4 の hook identity と同じ）。env の無い場所（lane の外の手動実行）は
 //! `--lane` / `--session` で明示する。
 //!
@@ -18,19 +18,19 @@
 
 use anyhow::{Result, bail};
 
-use crate::commands::lane_ctl::project_path_for_lane;
-use crate::commands::process_client::daemon_process_request_blocking;
+use crate::commands::lane_ctl::repo_path_for_lane;
+use crate::commands::process_client::daemon_repo_request_blocking;
 use crate::config::Config;
 
-/// env（VP_PROJECT / VP_LANE）から lane address（Display 形）を導く。
-/// stand_spawner の注入と対の読み手（値の形は `<project>/root` / `<project>/performer/<name>`）。
+/// env（VP_REPO / VP_LANE）から lane address（Display 形）を導く。
+/// stand_spawner の注入と対の読み手（値の形は `<repo>/root` / `<repo>/performer/<name>`）。
 fn lane_addr_from_env() -> Option<String> {
-    let project = std::env::var("VP_PROJECT").ok().filter(|s| !s.is_empty())?;
+    let repo = std::env::var("VP_REPO").ok().filter(|s| !s.is_empty())?;
     let label = std::env::var("VP_LANE").ok().filter(|s| !s.is_empty())?;
-    if label == crate::process::lanes_state::ROOT_LANE_NAME {
-        Some(format!("{project}/{label}"))
+    if label == crate::repo::lanes_state::ROOT_LANE_NAME {
+        Some(format!("{repo}/{label}"))
     } else {
-        Some(format!("{project}/performer/{label}"))
+        Some(format!("{repo}/performer/{label}"))
     }
 }
 
@@ -51,7 +51,7 @@ pub fn report(
         Some(l) => l.to_string(),
         None => lane_addr_from_env().ok_or_else(|| {
             anyhow::anyhow!(
-                "VP_PROJECT / VP_LANE が未設定です — lane の外からは `vp now --lane <project>/root \"...\"` で明示してください"
+                "VP_REPO / VP_LANE が未設定です — lane の外からは `vp now --lane <repo>/root \"...\"` で明示してください"
             )
         })?,
     };
@@ -60,8 +60,8 @@ pub fn report(
             .ok()
             .and_then(|s| s.parse().ok())
     });
-    let path = project_path_for_lane(&lane, config)?;
-    let resp = daemon_process_request_blocking(
+    let path = repo_path_for_lane(&lane, config)?;
+    let resp = daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
         "session_now",

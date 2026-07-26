@@ -48,7 +48,7 @@ impl StandAlias {
 
 // ─── システムレベル ──────────────────────────────────
 
-/// 全 project を統括管理する常駐デーモン
+/// 全 repo を統括管理する常駐デーモン
 pub const DAEMON: StandAlias = StandAlias {
     id: "daemon",
     functional_name: "Process Manager",
@@ -57,22 +57,22 @@ pub const DAEMON: StandAlias = StandAlias {
     emoji: "⚙️",
 };
 
-// ─── プロジェクトレベル ──────────────────────────────
+// ─── repoレベル ──────────────────────────────
 
-/// プロジェクトの主人公 — TUI 統合ビュー + 各 Stand が同居する場
-pub const STAR_PLATINUM: StandAlias = StandAlias {
-    id: "process",
-    functional_name: "Project Core",
-    stand_name: "Star Platinum",
-    short: "SP",
-    emoji: "⭐",
+/// repo（repository 単位）の runtime — 各 Stand が同居する場
+pub const REPO: StandAlias = StandAlias {
+    id: "repo",
+    functional_name: "Repo Runtime",
+    stand_name: "Repo",
+    short: "RP",
+    emoji: "📦",
 };
 
 // ─── Capability（Process にぶら下がるスタンド能力）───
 
 /// 情報ナビゲーション能力 — ユーザーと AI に最適な情報を届ける
 /// doc 52 §1/§6: id は `board`（貼る台）。旧 `canvas` は「描く」= 将来の canvas 著述機能に
-/// 予約するため退去した（address は `board@project/lane`）。
+/// 予約するため退去した（address は `board@repo/lane`）。
 pub const BOARD: StandAlias = StandAlias {
     id: "board",
     functional_name: "Information Navigator",
@@ -134,11 +134,5 @@ pub const DEVICE_IO: StandAlias = StandAlias {
 
 /// 全 Stand の一覧（イテレーション用）
 pub const ALL: &[&StandAlias] = &[
-    &DAEMON,
-    &STAR_PLATINUM,
-    &RUNNER,
-    &BOARD,
-    &ECHOES,
-    &DEVICES,
-    &DEVICE_IO,
+    &DAEMON, &REPO, &RUNNER, &BOARD, &ECHOES, &DEVICES, &DEVICE_IO,
 ];

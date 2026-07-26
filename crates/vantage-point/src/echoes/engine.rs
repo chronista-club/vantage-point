@@ -6,7 +6,7 @@
 //! stringly 比較の散在（旧 lanes_state / unison_server / stand_spawner の 4 箇所）を畳む。
 //!
 //! [`ChatHost`] / [`ChatEngineSlot`] は旧 `lanes_state.rs` から移設（doc 33 の chat engine 所有を
-//! echoes module に閉じ、chat スタック全体を他プロジェクト（GFP 等）へ切り出せる形にする）。
+//! echoes module に閉じ、chat スタック全体を他repo（GFP 等）へ切り出せる形にする）。
 
 use tokio::task::JoinHandle;
 

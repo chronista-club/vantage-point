@@ -9,12 +9,12 @@
 //! demand_start の no_session path で `ReplayStart` の冪等 clear だけが走り、**復元材料が無い**
 //! （lane 切替で会話が消える）。
 //!
-//! そこで **SP が配信した EchoesEvent を per-session に disk 記録**し、transcript を持たない
-//! engine の replay 源にする。最初から disk 永続（in-memory では SP 再起動 / lane 切替で失われる）。
+//! そこで **repo が配信した EchoesEvent を per-session に disk 記録**し、transcript を持たない
+//! engine の replay 源にする。最初から disk 永続（in-memory では repo 再起動 / lane 切替で失われる）。
 //!
 //! ## 設計原則（session_store / session_registry と同系統）
 //!
-//! - 置き場: `vp_state_dir()/echoes_replay/<sanitize(project)>__<sanitize(label)>.jsonl`。
+//! - 置き場: `vp_state_dir()/echoes_replay/<sanitize(repo)>__<sanitize(label)>.jsonl`。
 //!   `label` は [`crate::lane::session_registry::session_label`]（#1 = 素の lane 名、#2 以降
 //!   `<lane>#<n>`）で、他 store（cc_sessions / echoes_sessions）と file 名規約が揃う
 //! - **1 行 1 event の JSONL**（[`EchoesEvent`] を serde でそのまま）。壊れた行は読み時に skip
@@ -41,27 +41,22 @@ pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// （claude は None — module doc「claude は書かない」）。
 #[derive(Debug, Clone)]
 pub struct ReplayLogTap {
-    pub project: String,
+    pub repo: String,
     pub label: String,
 }
 
 /// state base dir 配下の replay log file path（純関数、テスト用に base 注入）。
-fn log_file_in(base: &Path, project: &str, label: &str) -> PathBuf {
+fn log_file_in(base: &Path, repo: &str, label: &str) -> PathBuf {
     base.join("echoes_replay")
-        .join(format!("{}__{}.jsonl", sanitize(project), sanitize(label)))
+        .join(format!("{}__{}.jsonl", sanitize(repo), sanitize(label)))
 }
 
 /// 1 event を JSONL 1 行として追記する（親 dir 自動作成）。
 ///
 /// serialize 失敗（想定外）は `io::Error::other` に畳んで返す。呼び手（pump tap）は失敗を
 /// warn するだけで配送は止めない（replay 記録は配送と独立）。
-pub fn append_in(
-    base: &Path,
-    project: &str,
-    label: &str,
-    event: &EchoesEvent,
-) -> std::io::Result<()> {
-    let path = log_file_in(base, project, label);
+pub fn append_in(base: &Path, repo: &str, label: &str, event: &EchoesEvent) -> std::io::Result<()> {
+    let path = log_file_in(base, repo, label);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -81,8 +76,8 @@ pub fn append_in(
 /// `read_to_string` + `str::lines()` は行 iterator の Err を挟まないので、1 行の破損で読みが
 /// 止まらず（`Lines<BufReader>` の flatten 罠を回避）、partial 末尾行も 1 セグメントとして
 /// filter_map で黙って落ちる。
-pub fn load_in(base: &Path, project: &str, label: &str) -> Vec<EchoesEvent> {
-    let Ok(content) = std::fs::read_to_string(log_file_in(base, project, label)) else {
+pub fn load_in(base: &Path, repo: &str, label: &str) -> Vec<EchoesEvent> {
+    let Ok(content) = std::fs::read_to_string(log_file_in(base, repo, label)) else {
         return Vec::new();
     };
     content
@@ -92,8 +87,8 @@ pub fn load_in(base: &Path, project: &str, label: &str) -> Vec<EchoesEvent> {
 }
 
 /// ログを消す（file 削除、不在は no-op）。fresh restart / session remove の破棄配線が呼ぶ。
-pub fn clear_in(base: &Path, project: &str, label: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(log_file_in(base, project, label)) {
+pub fn clear_in(base: &Path, repo: &str, label: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(log_file_in(base, repo, label)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         r => r,
     }
@@ -107,11 +102,11 @@ pub fn clear_in(base: &Path, project: &str, label: &str) -> std::io::Result<()> 
 /// - 単一行が `max_bytes` を超える極端ケースでも、最低 1 行（最新の完全な行）は残す
 pub fn truncate_if_needed_in(
     base: &Path,
-    project: &str,
+    repo: &str,
     label: &str,
     max_bytes: u64,
 ) -> std::io::Result<()> {
-    let path = log_file_in(base, project, label);
+    let path = log_file_in(base, repo, label);
     let len = match std::fs::metadata(&path) {
         Ok(m) => m.len(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -146,18 +141,18 @@ pub fn truncate_if_needed_in(
 // ---- 本番 base（vp_state_dir）での wrapper（session_store と同じ構え）----
 
 /// 本番 base での append（pump tap / user 発話記録から呼ぶ）。
-pub fn append(project: &str, label: &str, event: &EchoesEvent) -> std::io::Result<()> {
-    append_in(&crate::config::vp_state_dir(), project, label, event)
+pub fn append(repo: &str, label: &str, event: &EchoesEvent) -> std::io::Result<()> {
+    append_in(&crate::config::vp_state_dir(), repo, label, event)
 }
 
 /// 本番 base での load（demand_start の replay 源読みから呼ぶ）。
-pub fn load(project: &str, label: &str) -> Vec<EchoesEvent> {
-    load_in(&crate::config::vp_state_dir(), project, label)
+pub fn load(repo: &str, label: &str) -> Vec<EchoesEvent> {
+    load_in(&crate::config::vp_state_dir(), repo, label)
 }
 
 /// 本番 base での clear（fresh restart / session remove から呼ぶ）。
-pub fn clear(project: &str, label: &str) -> std::io::Result<()> {
-    clear_in(&crate::config::vp_state_dir(), project, label)
+pub fn clear(repo: &str, label: &str) -> std::io::Result<()> {
+    clear_in(&crate::config::vp_state_dir(), repo, label)
 }
 
 // truncate は pump tap が base 注入版（`truncate_if_needed_in` + [`MAX_BYTES`]）で呼ぶ。
@@ -278,7 +273,7 @@ mod tests {
         assert_eq!(after[0], chunk(&"z".repeat(500)));
     }
 
-    /// file 名は project / label を sanitize（`.` `/` → `-`、`#` は保持）した規約。
+    /// file 名は repo / label を sanitize（`.` `/` → `-`、`#` は保持）した規約。
     #[test]
     fn file_name_sanitizes_and_lives_under_echoes_replay() {
         let p = log_file_in(Path::new("/base"), "creo.memories", "root#2");

@@ -57,7 +57,7 @@ pub enum ActorKind {
 pub struct ActorRegistryEntry {
     /// actor 名 (= mailbox address の actor 部分と一致、 例: `"notify"` / `"agent"`)
     pub name: String,
-    /// actor の lifecycle / address scope (= LSCM Daemon / Project / Lane)
+    /// actor の lifecycle / address scope (= LSCM Daemon / Repo / Lane)
     pub scope: LayerScope,
     /// actor の種類 (= Stand or Service)
     pub kind: ActorKind,
@@ -87,7 +87,7 @@ impl std::fmt::Debug for ActorRegistryEntry {
 ///
 /// ## scope と kind の 2 軸 filter
 ///
-/// supervisor (PR-4b 想定) は scope (= Daemon / Project / Lane) と kind (= Stand / Service) の
+/// supervisor (PR-4b 想定) は scope (= Daemon / Repo / Lane) と kind (= Stand / Service) の
 /// 2 軸で actor を dispatch / filter する。 `list_by_scope` / `list_by_kind` で各 axis の
 /// subset を取得可能。
 #[derive(Default)]
@@ -247,13 +247,13 @@ mod tests {
         let mut r = ActorRegistry::new();
         let s = FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         };
         r.register_service(&s);
         assert_eq!(r.len(), 1);
         let entry = r.get("notify").expect("notify entry exists");
         assert_eq!(entry.name, "notify");
-        assert_eq!(entry.scope, LayerScope::Project);
+        assert_eq!(entry.scope, LayerScope::Repo);
         assert_eq!(entry.kind, ActorKind::Service);
         assert!(entry.task.is_none(), "PR-4a では task は常に None");
     }
@@ -263,7 +263,7 @@ mod tests {
         let mut r = ActorRegistry::new();
         let s = FixtureStand {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         };
         r.register_stand(&s);
         assert_eq!(r.len(), 1);
@@ -277,7 +277,7 @@ mod tests {
         let mut r = ActorRegistry::new();
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         // 同 name で異 scope を register
         r.register_service(&FixtureService {
@@ -297,21 +297,21 @@ mod tests {
         let mut r = ActorRegistry::new();
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "lane-spawn",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "devices",
             scope: LayerScope::Machine,
         });
 
-        let project_entries = r.list_by_scope(LayerScope::Project);
+        let repo_entries = r.list_by_scope(LayerScope::Repo);
         let daemon_entries = r.list_by_scope(LayerScope::Machine);
         let lane_entries = r.list_by_scope(LayerScope::Lane);
-        assert_eq!(project_entries.len(), 2, "Project scope は 2 個");
+        assert_eq!(repo_entries.len(), 2, "Repo scope は 2 個");
         assert_eq!(daemon_entries.len(), 1, "machine scope は 1 個");
         assert_eq!(lane_entries.len(), 0, "Lane scope は 0 個");
     }
@@ -321,11 +321,11 @@ mod tests {
         let mut r = ActorRegistry::new();
         r.register_stand(&FixtureStand {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
 
         let stands = r.list_by_kind(ActorKind::Stand);
@@ -345,19 +345,19 @@ mod tests {
         let mut r = ActorRegistry::new();
         r.register_stand(&FixtureStand {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_stand(&FixtureStand {
             name: "protocol",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "lane-spawn",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "devices",
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(r.len(), 5);
         assert_eq!(r.list_by_kind(ActorKind::Stand).len(), 2);
         assert_eq!(r.list_by_kind(ActorKind::Service).len(), 3);
-        assert_eq!(r.list_by_scope(LayerScope::Project).len(), 4);
+        assert_eq!(r.list_by_scope(LayerScope::Repo).len(), 4);
         assert_eq!(r.list_by_scope(LayerScope::Machine).len(), 1);
         assert_eq!(r.list_by_scope(LayerScope::Lane).len(), 0);
     }
@@ -383,11 +383,11 @@ mod tests {
         let mut r = ActorRegistry::new();
         r.register_stand(&FixtureStand {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
 
         let all: Vec<&ActorRegistryEntry> = r.entries().collect();
@@ -428,7 +428,7 @@ mod tests {
         r.spawn_service(
             FixtureSpawnableService {
                 name: "notify",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             },
             shutdown.clone(),
         );
@@ -452,12 +452,12 @@ mod tests {
         let shutdown = CancellationToken::new();
         r.register_stand(&FixtureStand {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.spawn_service(
             FixtureSpawnableService {
                 name: "notify",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             },
             shutdown.clone(),
         );

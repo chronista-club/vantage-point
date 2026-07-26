@@ -16,8 +16,8 @@ pub mod agent_capability;
 pub mod core;
 pub mod delegation_store;
 pub mod eventbus;
-pub mod process_manager_capability;
 pub mod protocol_capability;
+pub mod repo_manager_capability;
 pub mod stand_service;
 pub mod update_capability;
 pub mod wiremsg_store;
@@ -30,11 +30,11 @@ pub use core::{
 pub use eventbus::EventBus;
 // wiremsg R5-4: 旧 msgbox の registry サブシステム (`msgbox_registry` / `msgbox_remote`) を
 // 完全撤去。 msg messaging は wiremsg (`wiremsg_store`) に一本化済。
-pub use process_manager_capability::{
-    ProcessHealthInfo, ProcessManagerCapability, ProcessPresenceState, ProcessStatus, ProjectInfo,
-    RunningProcess, normalize_path_key,
-};
 pub use protocol_capability::ProtocolCapability;
+pub use repo_manager_capability::{
+    RepoHealthInfo, RepoInfo, RepoManagerCapability, RepoPresenceState, RepoStatus, RunningRepo,
+    normalize_path_key,
+};
 pub use stand_service::{LayerScope, Service, Stand};
 pub use update_capability::UpdateCapability;
 // Phase A ①: wiremsg threaded inbox store (設計 mem_1CbD9H1KGQykBaFG8XXVsn)。

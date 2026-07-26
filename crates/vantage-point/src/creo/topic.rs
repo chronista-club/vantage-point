@@ -1,7 +1,7 @@
 //! Topic namespace — canonical 4-part + alias table (R0 skeleton)
 //!
 //! Canonical: `{scope}/{capability}/{category}/{detail}`
-//! - scope: `project` / `user` / `system`
+//! - scope: `repo` / `user` / `system`
 //! - category: `state` / `command` / `lifecycle` / `error` / `notify`
 //!
 //! Alias は永久互換、canonical は拡張のため slot を増やす余地を残す。
@@ -23,18 +23,18 @@ pub struct TopicAlias {
 /// Seed alias set。`docs/design/06-creoui-draft.md` §6.3 を実体化。
 pub fn default_aliases() -> HashMap<String, String> {
     [
-        ("board.route", "project/board/command/route"),
-        ("sc.item.added", "project/sc/state/item-added"),
-        ("sc.item.updated", "project/sc/state/item-updated"),
+        ("board.route", "repo/board/command/route"),
+        ("sc.item.added", "repo/sc/state/item-added"),
+        ("sc.item.updated", "repo/sc/state/item-updated"),
         // PR-pre2 (VP-118): hd → echoes rename (Heaven's Door → Echoes)
-        ("echoes.message", "project/echoes/notify/message"),
+        ("echoes.message", "repo/echoes/notify/message"),
         (
             "echoes.session.started",
-            "project/echoes/lifecycle/session-started",
+            "repo/echoes/lifecycle/session-started",
         ),
         ("user.click", "user/user/command/click"),
         ("user.focus", "user/user/state/focus-changed"),
-        ("build.done", "project/runner/state/build-done"),
+        ("build.done", "repo/runner/state/build-done"),
     ]
     .iter()
     .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -56,24 +56,24 @@ mod tests {
         let a = default_aliases();
         assert_eq!(
             a.get("board.route").map(String::as_str),
-            Some("project/board/command/route")
+            Some("repo/board/command/route")
         );
         assert_eq!(
             a.get("sc.item.added").map(String::as_str),
-            Some("project/sc/state/item-added")
+            Some("repo/sc/state/item-added")
         );
         assert_eq!(
             a.get("echoes.session.started").map(String::as_str),
-            Some("project/echoes/lifecycle/session-started")
+            Some("repo/echoes/lifecycle/session-started")
         );
     }
 
     #[test]
     fn canonical_shape_check() {
-        assert!(looks_canonical("project/board/command/route"));
+        assert!(looks_canonical("repo/board/command/route"));
         assert!(looks_canonical("user/user/state/focus-changed"));
         assert!(!looks_canonical("board.route"));
-        assert!(!looks_canonical("project/board"));
+        assert!(!looks_canonical("repo/board"));
         assert!(!looks_canonical(""));
     }
 }

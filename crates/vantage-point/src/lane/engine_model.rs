@@ -4,7 +4,7 @@
 //! という単一の真実源として、両 Act の claude 起動が同じ file を読む:
 //! - **Act I（TUI console / echoes stand）**: `build_stand_command` が spawn 時に読み、
 //!   PtySlot にホストされる `claude … --model <alias>` の command line へ注入する
-//!   （SP 再起動後の respawn でも自動で維持される）。
+//!   （repo 再起動後の respawn でも自動で維持される）。
 //! - **Act II（GUI chat engine / EchoesAgentHost）**: `ensure_chat_engine` が読む。
 //!   切替は engine の drop → `--resume` 付き再 spawn で行うため、**会話コンテキストを
 //!   保ったままモデルだけ替わる**（セッション進行中の切替 = CC の `/model` の VP 版）。
@@ -14,7 +14,7 @@
 //!   `new_performer` / `fork_performer`、co-evolution #1）+ Act II の
 //!   `console_set_model` dispatch（切替時。default へ戻す = file 削除）
 //! - **読み手**: `build_stand_command`（Act I spawn）/ `ensure_chat_engine`（Act II spawn）
-//! - 置き場: `vp_state_dir()/engine_models/<project>__<lane>`
+//! - 置き場: `vp_state_dir()/engine_models/<repo>__<lane>`
 //! - **未記録 = None = claude default**（`--model` を渡さない）
 
 use std::path::{Path, PathBuf};
@@ -59,20 +59,20 @@ fn sanitize(part: &str) -> String {
 }
 
 /// state base dir 配下の model file path（純関数、テスト用に base 注入）。
-pub fn model_file_in(base: &Path, project: &str, lane: &str) -> PathBuf {
+pub fn model_file_in(base: &Path, repo: &str, lane: &str) -> PathBuf {
     base.join("engine_models")
-        .join(format!("{}__{}", sanitize(project), sanitize(lane)))
+        .join(format!("{}__{}", sanitize(repo), sanitize(lane)))
 }
 
 /// model を記録する（上書き、1 行）。形式外は Err（壊れた値を file に残さない）。
-pub fn record_in(base: &Path, project: &str, lane: &str, model: &str) -> std::io::Result<()> {
+pub fn record_in(base: &Path, repo: &str, lane: &str, model: &str) -> std::io::Result<()> {
     if !is_valid_model(model) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("model 名が不正: {model:?}"),
         ));
     }
-    let path = model_file_in(base, project, lane);
+    let path = model_file_in(base, repo, lane);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -80,33 +80,33 @@ pub fn record_in(base: &Path, project: &str, lane: &str, model: &str) -> std::io
 }
 
 /// 最後に記録された model を返す。無い / 形式外は None（= claude default で spawn）。
-pub fn last_in(base: &Path, project: &str, lane: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(model_file_in(base, project, lane)).ok()?;
+pub fn last_in(base: &Path, repo: &str, lane: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(model_file_in(base, repo, lane)).ok()?;
     let trimmed = raw.trim();
     is_valid_model(trimmed).then(|| trimmed.to_string())
 }
 
 /// 記録を消す（未記録なら no-op）。「default に戻す」と lane 削除 GC の両方で使う。
-pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(model_file_in(base, project, lane)) {
+pub fn clear_in(base: &Path, repo: &str, lane: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(model_file_in(base, repo, lane)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         r => r,
     }
 }
 
 /// 本番 base（vp_state_dir）での record。
-pub fn record(project: &str, lane: &str, model: &str) -> std::io::Result<()> {
-    record_in(&crate::config::vp_state_dir(), project, lane, model)
+pub fn record(repo: &str, lane: &str, model: &str) -> std::io::Result<()> {
+    record_in(&crate::config::vp_state_dir(), repo, lane, model)
 }
 
 /// 本番 base（vp_state_dir）での clear（default へ戻す / lane 削除経路から呼ぶ）。
-pub fn clear(project: &str, lane: &str) -> std::io::Result<()> {
-    clear_in(&crate::config::vp_state_dir(), project, lane)
+pub fn clear(repo: &str, lane: &str) -> std::io::Result<()> {
+    clear_in(&crate::config::vp_state_dir(), repo, lane)
 }
 
 /// 本番 base（vp_state_dir）での last。
-pub fn last(project: &str, lane: &str) -> Option<String> {
-    last_in(&crate::config::vp_state_dir(), project, lane)
+pub fn last(repo: &str, lane: &str) -> Option<String> {
+    last_in(&crate::config::vp_state_dir(), repo, lane)
 }
 
 #[cfg(test)]

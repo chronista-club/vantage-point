@@ -94,10 +94,10 @@ impl AcpEngine {
 pub struct AcpHostConfig {
     /// 駆動する ACP engine（spawn command + 名乗りの差分）。
     pub engine: AcpEngine,
-    /// 会話の作業ディレクトリ（lane の project dir）。
+    /// 会話の作業ディレクトリ（lane の repo dir）。
     pub cwd: String,
-    /// registry 書き込みキー（project 名）。
-    pub project: String,
+    /// registry 書き込みキー（repo 名）。
+    pub repo: String,
     /// registry 書き込みキー（session label: `conductor` / `conductor#2` …）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
@@ -153,7 +153,7 @@ impl AcpState {
 struct AcpInner {
     engine: AcpEngine,
     event_tx: broadcast::Sender<EchoesEvent>,
-    project: String,
+    repo: String,
     lane: String,
     cwd: String,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
@@ -217,16 +217,16 @@ impl AcpInner {
         // doc 40 §4: registry 直結（grok / opencode は registry-native — 旧 store が最初から無い）。
         let (lane_label, key) = crate::lane::session_registry::parse_session_label(&self.lane);
         if let Err(e) = crate::lane::session_registry::set_conversation(
-            &self.project,
+            &self.repo,
             lane_label,
             self.engine.name(),
             key,
             Some(session_id),
         ) {
             tracing::warn!(
-                "{} sessionId の registry 記録失敗（project={}, lane={}）: {e}",
+                "{} sessionId の registry 記録失敗（repo={}, lane={}）: {e}",
                 self.engine.name(),
-                self.project,
+                self.repo,
                 self.lane
             );
         }
@@ -281,7 +281,7 @@ impl AcpAgentHost {
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
             // wire で自分を名乗る口。Act I の stand_spawner / claude host と同じ契約。
-            .env("VP_PROJECT", &config.project)
+            .env("VP_REPO", &config.repo)
             .env("VP_LANE", &config.lane_label)
             .env("VP_SESSION_KEY", config.session_key.to_string())
             .stdin(Stdio::piped())
@@ -303,7 +303,7 @@ impl AcpAgentHost {
         let inner = Arc::new(AcpInner {
             engine,
             event_tx,
-            project: config.project,
+            repo: config.repo,
             lane: config.lane,
             cwd: config.cwd,
             stdin: tokio::sync::Mutex::new(stdin),
@@ -341,9 +341,9 @@ impl AcpAgentHost {
         }
         let resume_target = config.session_id;
         tracing::info!(
-            "AcpAgentHost spawn（常駐 {} ACP、project={}, lane={}, resume={:?}, pid={:?}）",
+            "AcpAgentHost spawn（常駐 {} ACP、repo={}, lane={}, resume={:?}, pid={:?}）",
             engine.name(),
-            inner.project,
+            inner.repo,
             inner.lane,
             resume_target.as_deref().unwrap_or("new"),
             child_pid
@@ -444,8 +444,8 @@ impl AcpAgentHost {
             reader.abort();
         }
         tracing::info!(
-            "AcpAgentHost stop（project={}, lane={}）",
-            self.inner.project,
+            "AcpAgentHost stop（repo={}, lane={}）",
+            self.inner.repo,
             self.inner.lane
         );
     }
@@ -624,9 +624,9 @@ async fn run_reader(
     };
     if !stopping {
         tracing::warn!(
-            "{} 途絶（project={}, lane={}）",
+            "{} 途絶（repo={}, lane={}）",
             inner.engine.name(),
-            inner.project,
+            inner.repo,
             inner.lane
         );
         let detail = if stderr_tail.is_empty() {
@@ -689,9 +689,9 @@ async fn handle_response(
             if let Some(err) = error {
                 // load 空振り → new へ self-heal（新 sessionId が registry を上書き）。
                 tracing::warn!(
-                    "{} session/load 失敗 → session/new へ self-heal（project={}, lane={}）: {}",
+                    "{} session/load 失敗 → session/new へ self-heal（repo={}, lane={}）: {}",
                     inner.engine.name(),
-                    inner.project,
+                    inner.repo,
                     inner.lane,
                     error_message(err)
                 );
@@ -868,7 +868,7 @@ mod tests {
         let mut host = AcpAgentHost::spawn(AcpHostConfig {
             engine: AcpEngine::Grok,
             cwd: tmp.path().to_string_lossy().into_owned(),
-            project: "vptest-acp".into(),
+            repo: "vptest-acp".into(),
             lane: "root".into(),
             lane_label: "root".into(),
             session_key: 1,

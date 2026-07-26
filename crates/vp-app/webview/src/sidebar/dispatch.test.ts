@@ -89,9 +89,9 @@ describe('sidebar dispatch', () => {
     const { calls, handlers } = recordingHandlers()
     mod.installSidebarDispatch(handlers)
 
-    dispatch({ t: 'performer:create_result', project_path: '/p', name: 'w1' })
-    dispatch({ t: 'performer:create_result', project_path: '/p', name: 'w2', error: 'ng' })
-    dispatch({ t: 'stands:result', project_path: '/p', stands: [{}, {}] })
+    dispatch({ t: 'performer:create_result', repo_path: '/p', name: 'w1' })
+    dispatch({ t: 'performer:create_result', repo_path: '/p', name: 'w2', error: 'ng' })
+    dispatch({ t: 'stands:result', repo_path: '/p', stands: [{}, {}] })
 
     expect(calls).toEqual(['performer:/p/w1:null', 'performer:/p/w2:ng', 'stands:/p:2:null'])
   })

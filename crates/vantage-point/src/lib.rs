@@ -26,7 +26,7 @@ pub mod discovery;
 pub mod echoes;
 pub mod file_watcher;
 pub mod flow;
-/// Project Host — project の面倒を見る決定的サービス（doc 44 D3 / §7）
+/// Repo Host — repo の面倒を見る決定的サービス（doc 44 D3 / §7）
 pub mod host;
 // lane lib 本体 (vp-cli の bin `vp lane` も `vantage_point::lane` を経由する)
 pub mod lane;
@@ -36,9 +36,9 @@ pub mod midi;
 pub mod panic_hook;
 pub mod platform;
 pub mod port_layout;
-pub mod process;
-pub mod projects_file;
 pub mod protocol;
+pub mod repo;
+pub mod repos_file;
 pub mod resolve;
 #[cfg(feature = "midi")]
 pub use midistage_profiles::roto_palette;

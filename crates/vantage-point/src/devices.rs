@@ -9,7 +9,7 @@
 //! - **hot-plug discovery**: midir enumeration polling (2〜3s) で接続/切断検出
 //! - **input parse**: device byte → `DeviceInput::parse` → `ControlEvent` 化
 //! - **routing policy**: `ControlEvent` を active Lane の Device I/O へ dispatch (E3)
-//! - **active Lane track**: SP の「lanes」QUIC channel を購読し cache 更新 (E3)
+//! - **active Lane track**: repo の「lanes」QUIC channel を購読し cache 更新 (E3)
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use nostos::{AsyncDriver, Outcome};
 
-use crate::capability::ProcessManagerCapability;
+use crate::capability::RepoManagerCapability;
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
 use crate::capability::stand_service::{LayerScope, Service};
@@ -32,7 +32,7 @@ use crate::commands::roto_control::{
     RotoView,
 };
 use crate::device_input::DeviceInput;
-use crate::process::lanes_state::LaneAddress;
+use crate::repo::lanes_state::LaneAddress;
 
 /// hot-plug polling 間隔（doc 23 Q-4: 2〜3s、体感重視）
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
@@ -254,7 +254,7 @@ fn spawn_input_listener(port_name: &str, event_bus: Arc<EventBus>) -> Option<Joi
 pub struct DeviceRegistry {
     /// 接続中 device を port displayName で引く（polling task と共有）
     devices: Arc<RwLock<HashMap<String, ConnectedDevice>>>,
-    /// active Lane の購読 cache（SSOT は SP の lanes_state、DeviceRegistry は購読側。doc 23 Q-1）
+    /// active Lane の購読 cache（SSOT は repo の lanes_state、DeviceRegistry は購読側。doc 23 Q-1）
     active_lane: Arc<RwLock<Option<LaneAddress>>>,
     /// Capability event bus（接続/切断イベント配信用）
     event_bus: Arc<EventBus>,
@@ -543,9 +543,9 @@ impl DeviceRegistry {
     /// 自動再接続（抜き差し heal）の持続サービスに昇格させる。nostos `AsyncBracket`/`AsyncDriver`
     /// で「接続 1 サイクル = enter→control loop→exit」を表し、disconnect は `Reborn` で再接続する。
     ///
-    /// lane data は `ProcessManagerCapability` の Arc を in-process 直読み（QUIC self-loop なし、
-    /// `build_node_lanes` 共有で CLI と並び一致）。switch_lane は L0 portless で SP が listen
-    /// しなくなったため Daemon :32000 の process-proxy ask 経由で forward する（daemon = daemon への
+    /// lane data は `RepoManagerCapability` の Arc を in-process 直読み（QUIC self-loop なし、
+    /// `build_node_lanes` 共有で CLI と並び一致）。switch_lane は L0 portless で repo が listen
+    /// しなくなったため Daemon :32000 の repo-proxy ask 経由で forward する（daemon = daemon への
     /// self-loop QUIC だが、ボタン押下時のみの低頻度なので lane poll と違い cache 不要）。
     /// `shutdown` の子 token で Daemon/daemon の shutdown chain に enclose する。
     ///
@@ -553,7 +553,7 @@ impl DeviceRegistry {
     /// 同 port を取得できない（想定挙動）。
     pub async fn start_roto_control(
         &mut self,
-        daemon_cap: Arc<RwLock<ProcessManagerCapability>>,
+        daemon_cap: Arc<RwLock<RepoManagerCapability>>,
         shutdown: CancellationToken,
     ) {
         // 二重起動防止（既に走っていれば no-op）
@@ -563,13 +563,13 @@ impl DeviceRegistry {
         let child = shutdown.child_token();
         self.roto_cancel = Some(child.clone());
 
-        // ProcessManagerCapability から lane data の Arc を取り出す（in-process 直読み）。
-        let (running_processes, lane_registry) = {
+        // RepoManagerCapability から lane data の Arc を取り出す（in-process 直読み）。
+        let (running_repos, lane_registry) = {
             let pmc = daemon_cap.read().await;
             (pmc.running_processes_ref(), pmc.lane_registry_ref())
         };
         let lane_source = InProcessLaneSource {
-            running_processes,
+            running_repos,
             lane_registry: Some(lane_registry),
             daemon_cap: Some(daemon_cap),
         };

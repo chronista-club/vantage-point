@@ -16,7 +16,7 @@ pub mod midi;
 pub mod now;
 pub mod pane;
 pub mod process_client;
-pub mod projects;
+pub mod repos;
 pub mod restart_all;
 #[cfg(feature = "midi")]
 pub mod roto_control;

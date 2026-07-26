@@ -3,7 +3,7 @@
  *
  * World B。`window.vpConsole`（console.ts）が届ける [`EchoesEvent`] を per-lane store に
  * 畳み込み、active lane の会話を message stream として描画する。入力は IPC `echoes:submit`
- * で SP へ送る。marked で markdown、motion は CSS（prefers-reduced-motion 尊重）。
+ * で repo へ送る。marked で markdown、motion は CSS（prefers-reduced-motion 尊重）。
  *
  * 設計: 単一 ChatView が active lane の store を表示。store は lane ごとに永続（lane 切替で
  * 再 replay しない）。renderer は lane 初出時に一度だけ attach（console.ts が buffer を replay）。
@@ -34,7 +34,7 @@ import type {
   VpConsole,
 } from './console'
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
-// （SP が真実源、ここは view）。session chip の prefix 規則は EchoesHeader を SSOT として再利用。
+// （repo が真実源、ここは view）。session chip の prefix 規則は EchoesHeader を SSOT として再利用。
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
 import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './EchoesHeader'
@@ -219,7 +219,7 @@ function focusedChat(lane: string): LaneChat {
 
 // ---------------------------------------------------------------------------
 // session view registry（module-level — 全 SessionChatView と installChatView が共有）
-// SP（echoes_session_list）が真実源。ここは 'vp:echoes-sessions' bus を映すだけの view cache で
+// repo（echoes_session_list）が真実源。ここは 'vp:echoes-sessions' bus を映すだけの view cache で
 // state を持たない。focused の真値は console.ts の registry（focusedOf）— ここは reactive 表示用の鏡。
 // ---------------------------------------------------------------------------
 
@@ -1253,7 +1253,7 @@ export function SessionPlate(props: {
       </Show>
       <span class="echoes-session-plate-spacer" />
       {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
-          click で session_set_act → SP が resume handoff → **同じ往復路**が別の面として
+          click で session_set_act → repo が resume handoff → **同じ往復路**が別の面として
           立ち上がる（位置と share は renamePane が保つ = in-place 変身）。
           ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると Act II へ戻る入口が消える
           （2026-07-25 に実際に片道ドアを作った）。
@@ -1314,7 +1314,7 @@ export function SessionPlate(props: {
 /** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
  *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
  *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt）は session を運ぶ = どの pane
- *  からも打てる。例外は model 切替のみ — SP 側 console_set_model が root slot 単位（engine の
+ *  からも打てる。例外は model 切替のみ — repo 側 console_set_model が root slot 単位（engine の
  *  --resume 込み respawn）のため、focused でだけ有効にしている。 */
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
@@ -1324,7 +1324,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
   // （doc 50 §4.6 A6 — term pane と共有するため）。
 
-  // Act II モデル切替（spec: セッション進行中でも切替可能）。SP が engine を --resume +
+  // Act II モデル切替（spec: セッション進行中でも切替可能）。repo が engine を --resume +
   // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
   // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
   // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
@@ -1426,7 +1426,7 @@ function SessionChatView(props: { lane: string; session: number }) {
     )
   }
 
-  // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で SP に戻す
+  // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で repo に戻す
   //（host が control_response を stdin に書いて turn が継続する）。
   const answerPrompt = (requestId: string, answers: Record<string, string>) => {
     const lane = props.lane

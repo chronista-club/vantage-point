@@ -1,6 +1,6 @@
 // VP daemon / Process glyph mapping (@chronista-club/creo-ui-icons-web の VP-domain alias)。
 //
-// daemon = 常駐 daemon (Process Manager)、 SP (Star Platinum) = 各 project 用 server。
+// daemon = 常駐 daemon (Process Manager)、 repo (repo) = 各 repo 用 server。
 // process state を icon で表現: running / spawning / stopped / error / restarting。
 //
 // 参考 memory: feedback_creo_ui_icon_dual_axis.md (2026-04-29)
@@ -18,8 +18,8 @@ export type ProcessState =
 
 export type DaemonEntity =
   | 'daemon'     // daemon (port 32000)
-  | 'sp'           // Star Platinum (port 33000+、 project SP)
-  | 'project'      // generic project entry
+  | 'sp'           // repo (port 33000+、 repo)
+  | 'repo'      // generic repo entry
 
 export interface ProcessIconSet {
   default: IconName
@@ -35,7 +35,7 @@ export const DAEMON_ICON: Record<DaemonEntity, ProcessIconSet> = {
     default: 'ph:star',
     active: 'ph:star-fill',
   },
-  project: {
+  repo: {
     default: 'mingcute:folder-line',
     active: 'mingcute:folder-fill',
   },

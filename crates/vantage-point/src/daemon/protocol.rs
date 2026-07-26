@@ -1,6 +1,6 @@
 //! Daemon IPC プロトコルのメッセージ型定義
 //!
-//! daemon の live channel（daemon-process / events / device 等）の
+//! daemon の live channel（daemon-repo / events / device 等）の
 //! リクエスト・レスポンス・イベント型を定義する。
 
 use serde::{Deserialize, Serialize};
@@ -61,39 +61,39 @@ impl ChannelMessage {
 }
 
 // =============================================================================
-// daemon-process Channel (VP-154 PR-2)
+// daemon-repo Channel (VP-154 PR-2)
 // =============================================================================
 
-/// VP-154 PR-2: Process lifecycle event (= daemon が SP の register/unregister を broadcast)
+/// VP-154 PR-2: Process lifecycle event (= daemon が repo の register/unregister を broadcast)
 ///
 /// Daemon 内側 hub の data plane を Unison Topic 経由で expose するための event 型。
-/// Daemon の registry channel handler が SP register/unregister を受信したタイミングで、
-/// `DaemonState.process_lifecycle_tx` に publish。 "daemon-process" channel の
+/// Daemon の registry channel handler が repo register/unregister を受信したタイミングで、
+/// `DaemonState.process_lifecycle_tx` に publish。 "daemon-repo" channel の
 /// subscribe handler が broadcast::Receiver から取り出して client に send_event で push。
 ///
 /// ## Topic semantics (= 将来 TopicRouter migration の予定)
 ///
-/// 現状は wire 上の serde tag (= `kind: "add" | "remove"`) と project_path で区別。
-/// 将来的には `daemon/process/state/<project>` (retained) + `daemon/process/event` (transient)
-/// の Topic 名で SP の TopicRouter と対称化予定 (= 別 PR scope)。
+/// 現状は wire 上の serde tag (= `kind: "add" | "remove"`) と repo_path で区別。
+/// 将来的には `daemon/process/state/<repo>` (retained) + `daemon/process/event` (transient)
+/// の Topic 名で repo の TopicRouter と対称化予定 (= 別 PR scope)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProcessLifecycleEvent {
-    /// SP が register された (= 新 Process が Daemon 配下に加わった)
+    /// repo が register された (= 新 Process が Daemon 配下に加わった)
     Add {
-        /// 正規化済 project path (= HashMap key と同じ form)
-        project_path: String,
-        /// 表示用 project name (例: `creo-memories`)
-        project_name: String,
-        /// SP の HTTP/QUIC port (例: 33000)
+        /// 正規化済 repo path (= HashMap key と同じ form)
+        repo_path: String,
+        /// 表示用 repo name (例: `creo-memories`)
+        repo_name: String,
+        /// repo の HTTP/QUIC port (例: 33000)
         port: u16,
-        /// SP プロセス PID
+        /// repo プロセス PID
         pid: u32,
     },
-    /// SP が unregister された (= QUIC 切断 or 明示 unregister)
+    /// repo が unregister された (= QUIC 切断 or 明示 unregister)
     Remove {
-        /// 正規化済 project path
-        project_path: String,
+        /// 正規化済 repo path
+        repo_path: String,
     },
 }
 
@@ -215,14 +215,14 @@ pub struct PadFeedback {
     pub filled: bool,
 }
 
-/// VP-154 PR-2: Process snapshot 1 entry (= "daemon-process" list method の応答 payload)
+/// VP-154 PR-2: Process snapshot 1 entry (= "daemon-repo" list method の応答 payload)
 ///
-/// 既存 `RunningProcess` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json
+/// 既存 `RunningRepo` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json
 /// で safe に network 越しに送れる形にする。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessSnapshot {
-    pub project_path: String,
-    pub project_name: String,
+    pub repo_path: String,
+    pub repo_name: String,
     pub port: u16,
     pub pid: u32,
 }
@@ -253,17 +253,17 @@ mod tests {
 
     #[test]
     fn test_process_lifecycle_event_add_serialize() {
-        // VP-154 PR-2: Add variant の wire 形 (= snake_case tag "add" + project_path/name/port/pid)
+        // VP-154 PR-2: Add variant の wire 形 (= snake_case tag "add" + repo_path/name/port/pid)
         let event = ProcessLifecycleEvent::Add {
-            project_path: "/Users/x/projects/creo".to_string(),
-            project_name: "creo-memories".to_string(),
+            repo_path: "/Users/x/repos/creo".to_string(),
+            repo_name: "creo-memories".to_string(),
             port: 33000,
             pid: 12345,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"kind\":\"add\""), "got: {}", json);
         assert!(
-            json.contains("\"project_name\":\"creo-memories\""),
+            json.contains("\"repo_name\":\"creo-memories\""),
             "got: {}",
             json
         );
@@ -275,25 +275,25 @@ mod tests {
 
     #[test]
     fn test_process_lifecycle_event_remove_serialize() {
-        // VP-154 PR-2: Remove variant は project_path のみ (= 切断検出経路でも publish される)
+        // VP-154 PR-2: Remove variant は repo_path のみ (= 切断検出経路でも publish される)
         let event = ProcessLifecycleEvent::Remove {
-            project_path: "/Users/x/projects/creo".to_string(),
+            repo_path: "/Users/x/repos/creo".to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"kind\":\"remove\""), "got: {}", json);
-        assert!(!json.contains("project_name"), "got: {}", json);
+        assert!(!json.contains("repo_name"), "got: {}", json);
 
         let restored: ProcessLifecycleEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, event);
     }
 
-    /// tmux decoupling PR2: 旧 wire payload (tmux_session 入り、旧 binary の SP/daemon) が
+    /// tmux decoupling PR2: 旧 wire payload (tmux_session 入り、旧 binary の repo/daemon) が
     /// 新 ProcessSnapshot に decode できる（unknown field は serde が無視 = 後方互換）。
     #[test]
     fn test_process_snapshot_decodes_legacy_payload_with_tmux_session() {
-        let legacy = r#"{"project_path":"/x","project_name":"vp","port":33002,"pid":99,"tmux_session":"vp-session"}"#;
+        let legacy = r#"{"repo_path":"/x","repo_name":"vp","port":33002,"pid":99,"tmux_session":"vp-session"}"#;
         let snap: ProcessSnapshot = serde_json::from_str(legacy).unwrap();
-        assert_eq!(snap.project_name, "vp");
+        assert_eq!(snap.repo_name, "vp");
         assert_eq!(snap.port, 33002);
     }
 

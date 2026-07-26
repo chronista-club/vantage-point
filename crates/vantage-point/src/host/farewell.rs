@@ -1,4 +1,4 @@
-//! 「見送り」— Project Host の第一の振る舞い（doc 44 D3 / §7）。
+//! 「見送り」— Repo Host の第一の振る舞い（doc 44 D3 / §7）。
 //!
 //! merge 済 lane の残骸（worktree / branch / lane state）を掃除する判断と実行。
 //!
@@ -59,7 +59,7 @@ pub struct LaneFacts {
     pub name: String,
     /// 開発起点 lane か（doc 44 D4 — Host の帳簿が持つポインタが指す lane）。
     ///
-    /// P3 初版は「予約名 `conductor` か」で判定していた。D4 で起点が **project の指定**に
+    /// P3 初版は「予約名 `conductor` か」で判定していた。D4 で起点が **repo の指定**に
     /// なり任意の lane へ移せるようになったため、判定材料は名前ではなく
     /// [`crate::host::ledger`] が解決した起点名との一致になる。
     pub is_origin: bool,
@@ -129,7 +129,7 @@ impl FarewellVerdict {
 ///
 /// # 判定順序と根拠
 ///
-/// 1. **開発起点**は消せない（project lifetime に紐づく。P2 の予約名がそのまま境界）
+/// 1. **開発起点**は消せない（repo lifetime に紐づく。P2 の予約名がそのまま境界）
 /// 2. **ground 不在**は掃除するものが無い（既に消えている / まだ作られていない）
 /// 3. **稼働中**は触らない（engine が生きている lane の足元を外さない）
 /// 4. **未コミットの変更**があれば人間へ — **merged かどうかより先に見る**。
@@ -142,7 +142,7 @@ impl FarewellVerdict {
 pub fn judge_farewell(facts: &LaneFacts) -> FarewellVerdict {
     if facts.is_origin {
         return FarewellVerdict::Keep {
-            reason: "開発起点 lane は project lifetime に紐づく".to_string(),
+            reason: "開発起点 lane は repo lifetime に紐づく".to_string(),
         };
     }
     if !facts.has_ground {
@@ -229,7 +229,7 @@ pub fn collect_facts(
     is_running: bool,
     default_branch: &str,
 ) -> LaneFacts {
-    let ground = crate::lane::config::project_lanes_dir(repo_root).join(lane_name);
+    let ground = crate::lane::config::repo_lanes_dir(repo_root).join(lane_name);
     // `.git` は clone なら dir / worktree なら file。どちらも `exists()` は true。
     let has_ground = ground.join(".git").exists();
 
@@ -282,20 +282,20 @@ pub fn collect_facts(
     }
 }
 
-/// project の全 lane を見て、見送り判定を並べる（Host の入口）。
+/// repo の全 lane を見て、見送り判定を並べる（Host の入口）。
 ///
 /// `running` は「今動いている lane 名」— 呼び出し側（LanePool を持つ層）が渡す。
 /// Host は lane の生死を git からは知れないため、ここだけ外から供給される。
 ///
 /// `origin` は帳簿が解決した**開発起点 lane 名**（[`crate::host::ledger::resolve_origin_name`]）。
-/// D4 で起点が予約名から project の指定になったため、外から供給される事実になった。
+/// D4 で起点が予約名から repo の指定になったため、外から供給される事実になった。
 /// **worktree を持つ lane も起点になりうる**ので、この供給を怠ると起点を見送りうる
 /// （P3 初版は予約名を直接見ており、起点が動かせない前提に依存していた）。
 ///
 /// **実行はしない。** 判定を並べて返すだけで、実際に消すかは呼び出し側（人間の承認 or
 /// 明示コマンド）が決める。D3 の「決定的判定 → 帳簿 → エスカレーション」のうち、
 /// 本関数は判定の集約にあたる。
-pub fn survey_project(
+pub fn survey_repo(
     repo_root: &std::path::Path,
     running: &[String],
     origin: &str,
@@ -587,7 +587,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("vp-farewell-dirty-{}-{}", std::process::id(), 1));
         let _ = std::fs::remove_dir_all(&root);
-        let lane_dir = crate::lane::config::project_lanes_dir(&root).join("w1");
+        let lane_dir = crate::lane::config::repo_lanes_dir(&root).join("w1");
         std::fs::create_dir_all(&lane_dir).unwrap();
 
         let git = |args: &[&str]| {
@@ -626,18 +626,18 @@ mod tests {
 
     /// 回帰固定: **起点が worktree lane に移っていたら見送らない**（doc 44 D4）。
     ///
-    /// P3 初版の `survey_project` は予約名 `conductor` を直接見ていた。起点が動かせない
+    /// P3 初版の `survey_repo` は予約名 `conductor` を直接見ていた。起点が動かせない
     /// 前提に依存しており、D4 でポインタが入ると **移動済みの起点を掃除対象に入れうる**。
     ///
     /// ここで固定するのは「`origin` 引数が判定まで届くこと」— 純関数側のテスト
-    /// （[`origin_lane_is_never_reclaimed`]）だけだと、`survey_project` が実際にその事実を
+    /// （[`origin_lane_is_never_reclaimed`]）だけだと、`survey_repo` が実際にその事実を
     /// 供給しているかは分からない（P3 の `branch -d` never-fire と同じ穴の作り方）。
     /// 同じ lane に対し `origin` だけを変えて、**判定理由が変わること**まで見る。
     #[test]
     fn survey_marks_pointed_lane_as_origin() {
         let root = std::env::temp_dir().join(format!("vp-farewell-origin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let lane_dir = crate::lane::config::project_lanes_dir(&root).join("w1");
+        let lane_dir = crate::lane::config::repo_lanes_dir(&root).join("w1");
         std::fs::create_dir_all(&lane_dir).unwrap();
 
         let git = |args: &[&str]| {
@@ -662,10 +662,10 @@ mod tests {
         };
 
         // 起点が別 lane（予約名）なら、w1 はただの performer として判定される
-        let as_normal = find(survey_project(
+        let as_normal = find(survey_repo(
             &root,
             &[],
-            crate::process::lanes_state::ROOT_LANE_NAME,
+            crate::repo::lanes_state::ROOT_LANE_NAME,
         ));
         assert!(!as_normal.facts.is_origin, "起点ではない");
         assert!(
@@ -675,7 +675,7 @@ mod tests {
         );
 
         // 帳簿が w1 を指していれば、同じ lane が起点として保持される
-        let as_origin = find(survey_project(&root, &[], "w1"));
+        let as_origin = find(survey_repo(&root, &[], "w1"));
         assert!(as_origin.facts.is_origin, "帳簿のポインタが事実として届く");
         assert!(
             matches!(as_origin.verdict, FarewellVerdict::Keep { .. }),
@@ -703,7 +703,7 @@ mod tests {
     fn survey_keeps_running_lane() {
         let root = std::env::temp_dir().join(format!("vp-farewell-running-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let lane_dir = crate::lane::config::project_lanes_dir(&root).join("w1");
+        let lane_dir = crate::lane::config::repo_lanes_dir(&root).join("w1");
         std::fs::create_dir_all(&lane_dir).unwrap();
 
         let git = |args: &[&str]| {
@@ -728,10 +728,10 @@ mod tests {
         };
 
         // 稼働中として供給されれば「稼働中」を理由に保持される
-        let running = find(survey_project(
+        let running = find(survey_repo(
             &root,
             &["w1".to_string()],
-            crate::process::lanes_state::ROOT_LANE_NAME,
+            crate::repo::lanes_state::ROOT_LANE_NAME,
         ));
         assert!(running.facts.is_running, "稼働の事実が facts まで届く");
         assert!(
@@ -746,10 +746,10 @@ mod tests {
         );
 
         // 供給されなければ同じ lane が稼働中扱いされない（= 引数が効いていることの裏取り）
-        let stopped = find(survey_project(
+        let stopped = find(survey_repo(
             &root,
             &[],
-            crate::process::lanes_state::ROOT_LANE_NAME,
+            crate::repo::lanes_state::ROOT_LANE_NAME,
         ));
         assert!(!stopped.facts.is_running);
         assert!(
@@ -759,10 +759,10 @@ mod tests {
         );
 
         // 別 lane の名前は効かない（部分一致や取り違えの防止）
-        let other = find(survey_project(
+        let other = find(survey_repo(
             &root,
             &["w2".to_string()],
-            crate::process::lanes_state::ROOT_LANE_NAME,
+            crate::repo::lanes_state::ROOT_LANE_NAME,
         ));
         assert!(!other.facts.is_running, "他 lane の稼働は w1 に波及しない");
 
@@ -782,7 +782,7 @@ mod tests {
     fn branch_cannot_be_read_after_ground_is_removed() {
         let root = std::env::temp_dir().join(format!("vp-farewell-gone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let lane_dir = crate::lane::config::project_lanes_dir(&root).join("w1");
+        let lane_dir = crate::lane::config::repo_lanes_dir(&root).join("w1");
         std::fs::create_dir_all(&lane_dir).unwrap();
 
         let git = |args: &[&str]| {

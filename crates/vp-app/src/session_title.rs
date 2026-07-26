@@ -1,4 +1,4 @@
-//! cc session display name (custom-title) を `~/.claude/projects/<encoded-cwd>/<latest>.jsonl`
+//! cc session display name (custom-title) を `~/.claude/repos/<encoded-cwd>/<latest>.jsonl`
 //! から読み出すための utility。
 //!
 //! ## VP-143 起点
@@ -8,7 +8,7 @@
 //! が必要。 main_area.rs:773 の comment で予見されていた path を物理化したのが本 module。
 //!
 //! ## Stage 1 (本 module、 cwd ベース推定)
-//! 1. lane の `cwd` を `~/.claude/projects/` 配下の encoded directory に変換
+//! 1. lane の `cwd` を `~/.claude/repos/` 配下の encoded directory に変換
 //! 2. 配下の `.jsonl` から **最新 modified** を選択 (= 1 lane / 1 cwd 仮定)
 //! 3. file 内の **最後** の `{"type":"custom-title","customTitle":"..."}` entry を抽出
 //!
@@ -16,12 +16,12 @@
 //! Stage 2 (`--session-id <uuid>` 強制 inject) で解消予定。
 //!
 //! ## 参考
-//! - `tui/session.rs` (vantage-point crate) も `~/.claude/projects/` を読むが、 そちらは
+//! - `tui/session.rs` (vantage-point crate) も `~/.claude/repos/` を読むが、 そちらは
 //!   session 一覧 picker 用途で本 module とは別軸。 cwd encoding 規約は共通。
 
 use std::path::{Path, PathBuf};
 
-/// `cwd` を `~/.claude/projects/` 配下の encoded directory 名に変換。
+/// `cwd` を `~/.claude/repos/` 配下の encoded directory 名に変換。
 ///
 /// claude CLI の慣例: path separator (`/`) と dot (`.`) を `-` に置換する。
 ///
@@ -38,11 +38,11 @@ pub fn encode_cwd(cwd: &Path) -> String {
         .collect()
 }
 
-/// `~/.claude/projects/<encoded(cwd)>/` の絶対 path を返す。 home 解決失敗時は `None`。
+/// `~/.claude/repos/<encoded(cwd)>/` の絶対 path を返す。 home 解決失敗時は `None`。
 pub fn jsonl_dir_for_cwd(cwd: &Path) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let encoded = encode_cwd(cwd);
-    Some(home.join(".claude").join("projects").join(encoded))
+    Some(home.join(".claude").join("repos").join(encoded))
 }
 
 /// directory 配下の `.jsonl` files から最新 modified を選択。 dir 不在 / 空時は `None`。

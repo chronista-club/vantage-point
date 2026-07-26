@@ -27,12 +27,12 @@ pub struct ProcessStop {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessDelete {
+pub struct RepoDelete {
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessAdd;
+pub struct RepoAdd;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneSelect {
@@ -88,7 +88,7 @@ pub struct StandSelect {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectClonePickFolder;
+pub struct RepoClonePickFolder;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilesList {
@@ -133,7 +133,7 @@ pub struct SidebarError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformerCreateResult {
-    pub project_path: String,
+    pub repo_path: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -141,7 +141,7 @@ pub struct PerformerCreateResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StandsResult {
-    pub project_path: String,
+    pub repo_path: String,
     pub stands: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -182,10 +182,10 @@ pub enum IpcEnvelope {
     ProcessRestart(ProcessRestart),
     #[serde(rename = "process:stop")]
     ProcessStop(ProcessStop),
-    #[serde(rename = "process:delete")]
-    ProcessDelete(ProcessDelete),
-    #[serde(rename = "process:add")]
-    ProcessAdd,
+    #[serde(rename = "repo:delete")]
+    RepoDelete(RepoDelete),
+    #[serde(rename = "repo:add")]
+    RepoAdd,
     #[serde(rename = "lane:select")]
     LaneSelect(LaneSelect),
     #[serde(rename = "lane:delete")]
@@ -202,8 +202,8 @@ pub enum IpcEnvelope {
     StandsFetch(StandsFetch),
     #[serde(rename = "stand:select")]
     StandSelect(StandSelect),
-    #[serde(rename = "project:clone:pickFolder")]
-    ProjectClonePickFolder,
+    #[serde(rename = "repo:clone:pickFolder")]
+    RepoClonePickFolder,
     #[serde(rename = "files:list")]
     FilesList(FilesList),
     #[serde(rename = "files:open")]

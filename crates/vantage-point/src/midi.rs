@@ -149,7 +149,7 @@ pub fn parse_midi_message(message: &[u8]) -> Option<MidiMessage> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum MidiAction {
-    /// Switch to a project by index (1-based, opens WebUI for that project)
+    /// Switch to a repo by index (1-based, opens WebUI for that repo)
     SwitchProject { index: usize },
     /// Open WebUI for current/specified instance
     OpenWebUI { port: Option<u16> },
@@ -289,7 +289,7 @@ impl MidiHandler {
                 }
             }
             MidiAction::SwitchProject { index } => {
-                tracing::info!("Switch to project {} (requires restart)", index);
+                tracing::info!("Switch to repo {} (requires restart)", index);
             }
             MidiAction::SendChat { message } => {
                 tracing::info!("Send chat: {} (not yet implemented)", message);
@@ -611,7 +611,7 @@ pub mod lpd8 {
                     toggle: PadToggle::Momentary,
                     pad_off_color: 0,
                     pad_on_color: match i {
-                        0..=3 => 1, // Projects: Green
+                        0..=3 => 1, // Repos: Green
                         4 => 3,     // Cancel: Red
                         5 => 2,     // Reset: Yellow/Orange
                         _ => 0,     // Unassigned: Off

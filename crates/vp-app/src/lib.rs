@@ -41,8 +41,8 @@ pub mod log_init;
 pub mod main_area;
 pub mod menu;
 pub mod pane;
-/// Project add / clone ダイアログ (folder picker + git clone + daemon API)。 VP-194 R-3。
-pub mod project_dialog;
+/// Repo add / clone ダイアログ (folder picker + git clone + daemon API)。 VP-194 R-3。
+pub mod repo_dialog;
 pub mod session_state;
 pub mod session_title;
 pub mod settings;

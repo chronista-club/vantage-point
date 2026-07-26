@@ -68,26 +68,26 @@ const [unread, setUnread] = createSignal(0);
 const [messages, setMessages] = createSignal<WireMsg[]>([]);
 const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
 
-/** address → project path の逆引き (FileExplorer の resolveProjectPath と同型)。 */
-function resolveProjectPath(address: string): string | undefined {
-	const map = sidebar.lanes_by_project ?? {};
-	for (const [projectPath, lanes] of Object.entries(map)) {
+/** address → repo path の逆引き (FileExplorer の resolveRepoPath と同型)。 */
+function resolveRepoPath(address: string): string | undefined {
+	const map = sidebar.lanes_by_repo ?? {};
+	for (const [repoPath, lanes] of Object.entries(map)) {
 		if (!Array.isArray(lanes)) continue;
 		if (lanes.some((l) => laneAddressKey(l) === address)) {
-			return projectPath;
+			return repoPath;
 		}
 	}
 	return undefined;
 }
 
 function fetchInbox(address: string): void {
-	const projectPath = resolveProjectPath(address);
-	if (!projectPath) {
-		console.warn("[WirePanel] address の project が見つかりません:", address);
+	const repoPath = resolveRepoPath(address);
+	if (!repoPath) {
+		console.warn("[WirePanel] address の repo が見つかりません:", address);
 		return;
 	}
 	setLoading(true);
-	sendIpc({ t: "wire:fetch", path: projectPath, address });
+	sendIpc({ t: "wire:fetch", path: repoPath, address });
 }
 
 function open(address: string): void {
@@ -128,11 +128,11 @@ function handleResult(result: WireResult): void {
 
 function ackMessage(id: string): void {
 	const address = targetAddress();
-	const projectPath = resolveProjectPath(address);
-	if (!projectPath) return;
+	const repoPath = resolveRepoPath(address);
+	if (!repoPath) return;
 	setLoading(true);
 	// Rust 側が「ack → 再 fetch」を 1 往復に畳むので、 結果は handleResult に戻ってくる。
-	sendIpc({ t: "wire:ack", path: projectPath, address, message_id: id });
+	sendIpc({ t: "wire:ack", path: repoPath, address, message_id: id });
 }
 
 function toggleExpand(id: string): void {
@@ -202,7 +202,7 @@ export function WirePanel() {
 	// wire 活動 → daemon が lanes snapshot を再 push (既存) → 表示中なら追従 fetch。
 	createEffect(
 		on(
-			() => sidebar.lanes_by_project,
+			() => sidebar.lanes_by_repo,
 			() => {
 				if (visible() && targetAddress()) fetchInbox(targetAddress());
 			},

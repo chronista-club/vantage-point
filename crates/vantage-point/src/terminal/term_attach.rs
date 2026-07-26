@@ -61,7 +61,7 @@ impl TermAttach {
 
     /// grid の現在画面を plain text で render する（tmux decoupling: `capture-pane` の native 代替）。
     ///
-    /// conductor が performer の console を読む dev-flow 用途（`vp lane capture` / process-proxy
+    /// conductor が performer の console を読む dev-flow 用途（`vp lane capture` / repo-proxy
     /// `lane_capture`）。各行の trailing whitespace と末尾の空行ブロックを落とした
     /// 「見えている内容」のみ返す（色/ANSI は持たない — agent 消費なので内容が要点）。
     /// mutex poisoned（feed task の panic 後）は空文字で graceful degrade。

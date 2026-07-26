@@ -394,7 +394,7 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
 })
 
 describe('transcript replay — Act II replay-on-attach', () => {
-  /** SP が attach 時に送る replay 列（ReplayStart + 過去会話）。 */
+  /** repo が attach 時に送る replay 列（ReplayStart + 過去会話）。 */
   const replay: EchoesEvent[] = [
     { kind: 'replay_start' },
     { kind: 'user_message', text: '直して' },

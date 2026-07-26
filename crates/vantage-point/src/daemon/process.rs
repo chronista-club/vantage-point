@@ -165,7 +165,7 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
     // 自分自身の実行ファイルを `vp daemon` として起動
     let child = std::process::Command::new(std::env::current_exe()?)
         .args(["daemon", "--port", &port.to_string()])
-        // GUI/launchd 起動の最小 PATH が daemon → SP へ伝播するのを spawn 最上流で断つ。
+        // GUI/launchd 起動の最小 PATH が daemon → repo へ伝播するのを spawn 最上流で断つ。
         .env("PATH", crate::spawn_env::augmented_spawn_path())
         // LANG も PATH と対称に補強。 launchd の C ロケール伝播を daemon spawn 最上流で断ち、
         // 子 PtySlot の utf8_locale() がこの LANG を継承して UTF-8 に解決できるようにする。

@@ -20,7 +20,7 @@ const PERFORMER_CONFIG_LEGACY_WING_CLAUDE: &str = ".claude/wing-files.kdl";
 /// repo root から symlink して performer dir で同じ実行環境を再現する。
 ///
 /// - `.mcp.json` — MCP server 接続定義 (= performer claude も同じ tool 群)
-/// - `CLAUDE.local.md` — per-user の atlas / project memory 設定
+/// - `CLAUDE.local.md` — per-user の atlas / repo memory 設定
 /// - `.env` — secrets (= API keys / DB password 等)
 ///
 /// `.mise.toml` / `.tool-versions` は通常 git tracked なので clone で来る、 不要。
@@ -120,11 +120,11 @@ impl From<RawConfig> for PerformerConfig {
 /// linked worktree (`.vp/lanes/*` 等)。
 ///
 /// `git rev-parse --show-toplevel` は呼び出し元の worktree 自身を返すため、 lane worktree の
-/// 中から `vp lane` を実行すると project 同一性がズレていた: lane が worktree 配下にネスト、
-/// state file (engine_model / cc_session / console_mode) の project key が SP 読み手
-/// (`addr.project` = main root basename) と mismatch、 Daemon handshake の project_path が SP
+/// 中から `vp lane` を実行すると repo 同一性がズレていた: lane が worktree 配下にネスト、
+/// state file (engine_model / cc_session / console_mode) の repo key が repo 読み手
+/// (`addr.repo` = main root basename) と mismatch、 Daemon handshake の repo_path が repo
 /// 登録値と不一致。 全 worktree が共有する git-common-dir (`<main>/.git`) の親を main worktree
-/// root として解決し、 どの worktree からでも同一 project に着地させる (project key 正規化)。
+/// root として解決し、 どの worktree からでも同一 repo に着地させる (repo key 正規化)。
 pub fn find_repo_root() -> io::Result<PathBuf> {
     find_repo_root_from(None)
 }
@@ -242,20 +242,20 @@ pub fn load_config(repo_root: &Path) -> Result<PerformerConfig, String> {
     Ok(raw.into())
 }
 
-/// Project-local lane root を返す: `<repo_root>/.vp/lanes/`。
+/// Repo-local lane root を返す: `<repo_root>/.vp/lanes/`。
 ///
-/// project-local lane refactor PR 1: lane の正規 path。
+/// repo-local lane refactor PR 1: lane の正規 path。
 /// - path に空白を含まない (= 旧 `~/Library/Application Support/vp/lanes/` の課題解消)
-/// - project 所属が path 階層で明示される (= repo prefix `<repo>-<name>` が不要)
+/// - repo 所属が path 階層で明示される (= repo prefix `<repo>-<name>` が不要)
 /// - 親 repo の `.claude.json` trust が hierarchical に継承される (= claude folder
 ///   trust dialog が pre-grant なしで自動 skip)
-pub fn project_lanes_dir(repo_root: &Path) -> PathBuf {
+pub fn repo_lanes_dir(repo_root: &Path) -> PathBuf {
     repo_root.join(".vp").join("lanes")
 }
 
 /// `<repo>/.gitignore` に `.vp/` ignore entry を idempotent に追記する。
 ///
-/// project-local lane refactor: lane workspace は nested git clone なので、 parent repo
+/// repo-local lane refactor: lane workspace は nested git clone なので、 parent repo
 /// から見ると untracked dir として `git status` に出てしまう。 これを抑制するため、
 /// `vp lane new` 起動時に best-effort で `.gitignore` に `.vp/` を追記する。
 ///
@@ -289,7 +289,7 @@ pub fn ensure_vp_gitignored(repo_root: &Path) -> Result<(), String> {
     if !new_content.is_empty() {
         new_content.push('\n');
     }
-    new_content.push_str("# Vantage Point lane workspaces (project-local lane refactor)\n");
+    new_content.push_str("# Vantage Point lane workspaces (repo-local lane refactor)\n");
     new_content.push_str(".vp/\n");
 
     fs::write(&gi_path, new_content).map_err(|e| format!(".gitignore 書込失敗: {e}"))
@@ -319,10 +319,10 @@ pub fn validate_performer_name(name: &str) -> Result<(), String> {
     //
     // doc 44 P2 以降、予約名の真実源は `ROOT_LANE_NAME` 定数。文字列直書きだと
     // 予約名を変えた時にここだけ古い値で残る (§6.4「型を経由しない文字列」の同型)。
-    if name == crate::process::lanes_state::ROOT_LANE_NAME {
+    if name == crate::repo::lanes_state::ROOT_LANE_NAME {
         return Err(format!(
-            "invalid performer name: '{}' is reserved for the origin lane (project ごとに自動生成されるため create 不可). Pick another name.",
-            crate::process::lanes_state::ROOT_LANE_NAME
+            "invalid performer name: '{}' is reserved for the origin lane (repo ごとに自動生成されるため create 不可). Pick another name.",
+            crate::repo::lanes_state::ROOT_LANE_NAME
         ));
     }
     Ok(())
@@ -438,7 +438,7 @@ mod tests {
             .output()
             .unwrap();
 
-        // linked worktree の中からでも main worktree root に着地する (project key 正規化)
+        // linked worktree の中からでも main worktree root に着地する (repo key 正規化)
         let from_linked = find_repo_root_from(Some(&linked)).unwrap();
         assert_eq!(
             dunce::canonicalize(&from_linked).unwrap(),
@@ -663,19 +663,19 @@ symlink-pattern "**/*.local.*"
         let _ = fs::remove_dir_all(&tmp);
     }
 
-    // --- project_lanes_dir ---
+    // --- repo_lanes_dir ---
 
     #[test]
-    fn project_lanes_dir_under_repo_root() {
+    fn repo_lanes_dir_under_repo_root() {
         let repo = PathBuf::from("/tmp/some-repo");
-        assert_eq!(project_lanes_dir(&repo), repo.join(".vp").join("lanes"));
+        assert_eq!(repo_lanes_dir(&repo), repo.join(".vp").join("lanes"));
     }
 
     #[test]
-    fn project_lanes_dir_handles_trailing_slash_in_input() {
+    fn repo_lanes_dir_handles_trailing_slash_in_input() {
         // PathBuf::join は trailing slash を自然に扱う
         let repo = PathBuf::from("/tmp/some-repo/");
-        assert_eq!(project_lanes_dir(&repo), repo.join(".vp").join("lanes"));
+        assert_eq!(repo_lanes_dir(&repo), repo.join(".vp").join("lanes"));
     }
 
     // --- ensure_vp_gitignored ---
