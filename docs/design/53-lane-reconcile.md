@@ -405,14 +405,69 @@ boot 復元後（`lane_spawn_actor` の restore 末尾 + `server.rs` run() の c
 - #921 は team-b の「旧 inline JS と新 module を**関数単位で全行突き合わせ → ロジック差分ゼロ**」で通った
 - #923 は独立の壊れ方（pane 切替が効かない）を持てた
 
-##### 残った境界と、残った症状
+##### 残った境界と、残った症状 → **どちらも同日に片付いた**（#925〜#928、下記 6.5.1.3）
 
-- **Rust → JS は今も名前で呼ぶ**（`evaluate_script("window.ensureLane(...)")`）。この 1 本は
-  **型が無いまま**で、bundle は minify で仮引数名が潰れるため文字列 assert でも守れない。
-  §6.5.1 が言う「境界に型が無い」は**縮んだが消えていない**。塞ぐなら codegen か IPC 契約の
-  型付け（`sidebar_ipc_codegen` と同型）で、別の仕事
-- **起動直後の cols ズレは間欠で未再現**。#922 の後に 1 回だけ「PTY が spawn 既定 120×48 に
-  取り残される」を観測したが、同条件 2 回で再現せず**原因は未特定**
+- ~~**Rust → JS は今も名前で呼ぶ**~~ → **型付き envelope に移行中**（#925 / #928）
+- ~~**起動直後の cols ズレは間欠で未再現**~~ → **根治**（#926 — 測り方の race を先に潰したら 8/8 で再現した）
+
+#### 6.5.1.3 境界に型を入れ、boot 窓救済を 1 本に畳んだ（2026-07-26、#925〜#928）
+
+§6.5.1 が「縮んだが消えていない」と書いた**最後の 1 本**（Rust → JS）に手を入れた回。
+
+| PR | 中身 |
+|---|---|
+| **#925** | Rust → JS の押し込みを **KDL schema（`vp-push.kdl`）→ codegen → 型付き envelope 1 本**に。制御面 5 動詞（term 系）を移設 + 受け側に保留箱 |
+| **#926** | 起動直後の cols ズレを**根治**（下記③） |
+| **#928** | 掲示板 `board:message` / 計器盤 `devices:render` も envelope へ。**boot 窓救済の pull 3 本を `ready` 1 本に畳む** |
+
+##### ① 「型が無い」の塞ぎ方 — 窓口を 1 つにするのが先だった
+
+旧来 Rust → JS は **~24 個の window 面を名前で呼ぶ**形で、負債が 2 つあった:
+
+1. **型が無い** — 引数の数や順序が食い違っても Rust も TS も黙る
+2. **押し込みが黙って落ちる** — `window.X && window.X.y(...)` は bundle 準備前なら **no-op で「成功」する**
+
+②の方が実害を出しており、VP は**面ごとに pull を 1 本足す**形で塞いできた。
+窓口を 1 本（`window.vpDispatch`）にすると、**そこに buffer を 1 個置くだけで全部消える** —
+~24 個の窓口それぞれには置けなかった。①は codegen が塞ぐ（schema に event を足すと、TS の
+`switch` に arm を書くまでコンパイルが通らない）。
+
+##### ② 3 本の pull は「1 つの事実」を指していた
+
+`lanes:ensure-all` / `bastet:devices_fetch` / `board:demand` は**別々の bug 修正として時期を
+ずらして生まれた**が、実体は全部「bundle 評価前に落ちた押し込みを撃ち直せ」で、
+**「webview が生まれた」という 1 つの事実**を指していた。しかも 3 本には**隠れた順序制約**が
+あり（各 pull は「その面を install した直後」に撃つ必要がある）、その約束が JS 側に散っていた。
+
+全 install の後に 1 度だけ撃つ `ready`（既存）に畳むと、制約ごと消える:
+
+| | before | after |
+|---|---|---|
+| IPC tag | 3（+ `ready`） | `ready` のみ |
+| `AppEvent` | `LanesEnsureAll` / `BastetDevicesFetch` / `BoardDemand` | `WebviewReady` |
+
+**新しい面を足しても JS 側に行は増えない** — Rust の handler に replay を 1 行足すだけ。
+
+> **buffer と `ready` は守る窓が違う**: 保留箱 = 「bundle は評価済みだが受け手が未 install」、
+> `ready` の replay = 「bundle 評価**前**」（受け口自体が居ないので queue にも積めない）。
+
+##### ③ cols ズレの根治 — 「intent を預かる」が client 側にも要った
+
+#922 の後に残っていた間欠バグ（起動直後の console が PTY spawn 既定に取り残される）。
+3 層に計器を降ろして原因が確定した:
+
+- JS は `sendResize` を**壊れた回も正常な回も同じく 2 回**撃っていた
+- vp-app も `send_ok=true`
+- **SP が `Lane has no PtySlot (session=N)` を返していた** — しかもそれは `Ok` の中の
+  `{"error": ...}` で、`let _ =` が **3 層にわたって握り潰していた**
+
+根治は R1〜R3 とまったく同じ形 — **SP が resize の intent（`desired_size`）を預かり、
+slot ができた瞬間に適用する**。「slot がまだ無いから捨てる」を「slot ができたら合わせる」に
+変えただけ。**doc 53 の reconcile 原理が lane の外（client からの要求）にも当てはまった**。
+
+> ⚠️ **再現率 50% の半分は測り方の race だった**。`mise run app:swap` が GUI の準備完了を
+> 待たずに返っており、こちらは `sleep 10` に賭けていた。readiness 待ちを入れたら **8/8 で
+> 安定**（swap も 51s → 23s）。間欠バグは**まず測り方を疑う**（[[measurement-harness-first]]）。
 
 > ⚠️ その 1 回の観測から `app.rs` の `if let Some(term) = terminal_sessions.get(&lane)`（else 無し）
 > を原因と**断定して PR に書き、後で取り下げた**。§6.5.0 ③ とまったく同じ形の誤り
