@@ -4289,6 +4289,42 @@ pub fn run() -> anyhow::Result<()> {
                                 &session_list_payload(&addr_str, sessions),
                             );
                         }
+                        // **terminal の replay も同じ窓で落ちる**（2026-07-26 実測）。
+                        //
+                        // 上のコメントが列挙する「同じ boot race を持つもの」に terminal が
+                        // 並んでいなかった。実測した時刻:
+                        //   02:11:42.886  replay が client に到着（= evaluate_script が撃たれる）
+                        //   02:11:43.284  bundle init complete（**0.4 秒後**）
+                        // `window.vpTerminal` が未定義の間の `evaluate_script` は silent no-op で、
+                        // terminal の replay は**一度きり**なので二度と来ない → console が黒いまま。
+                        //
+                        // ここは JS が ready を名乗った後なので、demand を撃ち直して replay を
+                        // 取り直す（server 側は `terminal_demand_start` → `reconcile_lane` で
+                        // 冪等 — 既に張られていれば pump は kept、replay だけが流れ直す）。
+                        if !term_sessions_of(lane).is_empty()
+                            && let Some(path) =
+                                resolve_project_path_for_lane(&sidebar_state, &addr_str)
+                        {
+                            let port = crate::client::default_world_port();
+                            let lane_for_req = addr_str.clone();
+                            rt_handle.spawn(async move {
+                                if let Err(e) = world_process_request(
+                                    port,
+                                    &path,
+                                    "terminal_demand_start",
+                                    // `replay: true` = 「画面を持っていないので流し直して」。
+                                    // 準備前に届いた replay を捨てているので、server 側の
+                                    // 「変化なし」判定を明示要求で越える（doc 53 §6.5.0）。
+                                    serde_json::json!({ "lane": lane_for_req, "replay": true }),
+                                )
+                                .await
+                                {
+                                    tracing::debug!(
+                                        "LanesEnsureAll: terminal demand 再要求に失敗（次の契機で再試行）: {e}"
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)

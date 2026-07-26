@@ -327,6 +327,28 @@ impl TopicRouter {
             .is_some_and(|c| *c > 0)
     }
 
+    /// 指定 concrete topic を購読している **subscriber id の最大値**（購読の世代）。
+    ///
+    /// `demand_active` が「今 誰か居るか」を答えるのに対し、これは「**誰が居るか変わったか**」を
+    /// 比較できる値を返す。id は単調増加なので、購読者が入れ替われば必ず増える。
+    /// 購読ゼロなら `None`。
+    ///
+    /// 用途: pump の replay 判断（doc 53 §6.5.0）。pump を張り直すべきか（= slot pid が
+    /// 差し替わったか）と、replay を流すべきか（= **client が画面を持っているか**）は
+    /// 別の問いで、後者は購読者の世代でしか答えられない。GUI が再起動すると slot は同じまま
+    /// 購読者だけが入れ替わるため、pid 照合では「変化なし」と誤答する
+    /// （[[one-predicate-three-properties]] の同型 — 答えが一致する間は静的に判別できない）。
+    pub async fn subscriber_epoch(&self, topic: &str) -> Option<u64> {
+        let path = TopicPath::parse(topic);
+        self.subscribers
+            .read()
+            .await
+            .iter()
+            .filter(|s| path.matches(&s.pattern))
+            .map(|s| s.id)
+            .max()
+    }
+
     /// subscriber の増減を demand hook に反映する。
     ///
     /// 計上（demand_counts）は **hook の有無に依らず常に**行う — `demand_active` の level 読みが
