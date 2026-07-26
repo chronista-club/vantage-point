@@ -336,8 +336,13 @@ R1（console_mode 廃止）✅ PR #907
 → R2（pump reconcile 化）✅ PR #909（実装決定は doc 53 §5.1）
 → [設計ゲート 2026-07-25 — 決定①: R3 は機構先行（mako）]
 → R3（reconcile_lane — **現行 schema のまま**機構のみ。5 つの手書き遷移を畳む）
-→ schema 束（本 doc の VP 発行 id + act rename（§8.1）+ forward-only migration — 単独 PR）
+→ schema 束（本 doc の VP 発行 id + forward-only migration — 単独 PR）
 → R4（pane 一覧配信 — wire 契約は**新 id** で鋳る。2 回鋳直さない）
+
+  ※ **act rename（§8.1）は別立て**（mako 2026-07-26「固めて一箇所で、それだけやる」）。
+    順序の制約は無い（`parse` の旧名 alias で migration が中で完結するため）が、
+    **他の作業と混ぜない** — コストの本体が doc 520 箇所の再読で、混ぜると
+    「どちらが原因で壊れたか」を追えなくなる。
 ```
 
 **決定①の理由**（2026-07-25、R2 出荷後）: R2 が「機構と鍵は分離できる」を実証した
@@ -354,11 +359,32 @@ World A/B 再検証（doc 53 §6.5）は R3 と並行の**調査**として残�
    （コードは機能名・Stand 名は表示層）に従う。
    **act の rename 候補（mako 2026-07-25）: `shell → act-i / tui → act-ii / chat → act-iii`**
    — 3 幕の梯子は #661 の物理層（Act1 = login shell が土台）と一致し物理モデルに忠実。
-   ⚠️ rename 時に処理する 3 点: ①act は registry / wire に**永続される値** = 純 rename でなく
-   format 変更 → **本 doc の schema 変更（id 形式）と同じ migration に束ねる** ②既存の
-   「Act I/II」（doc 33 系 = tui/chat）と採番がシフトする（今の Act I が新 act-ii）ため
-   doc / memory / コメントの旧参照を一括訂正 ③§3.6 により shell/tui の現在形は stored enum
-   でなく観測 derive → rename は「仕込み intent + 観測」への再編とセットで行う
+
+   **決定（mako 2026-07-26）: 「固めて一箇所で、それだけやる」= schema 束とは別の単独 PR。**
+
+   > ⚠️ **この決定は、下の①「schema 変更と同じ migration に束ねる」を撤回する。**
+   > 束ねる理由は「migration を 2 回書かない」だったが、**その前提が成り立たない**ことが
+   > 実測で分かった（2026-07-26）:
+   >
+   > `SessionAct::parse` は 4 行の match 1 箇所（`session_registry.rs:74`）。**旧名を alias
+   > として受け続け、`as_str` は新名を書く**だけで「読みは両方・書きは新」の forward-only
+   > migration が rename の中で完結する。id 形式の変更と共有すべき migration 機構は無い。
+   > 束ねると逆に「どちらが原因で壊れたか」が分からなくなる（#921 で移設と挙動変更を
+   > 分けた判断と同じ理由）。
+
+   ⚠️ rename 時に処理する 3 点:
+
+   ① act は registry / wire に**永続される値**。~~schema 変更と同じ migration に束ねる~~
+   → **単独 PR 内で完結**（`parse` に旧名 alias / `as_str` は新名。alias の撤去はさらに後）
+
+   ② 既存の「Act I/II」（doc 33 系 = tui/chat）と**採番がシフトする**（今の Act I が新 act-ii）
+   ため doc / memory / コメントの旧参照を訂正する。**実測 = 520 箇所 / 25+ file**（design doc が
+   大半、2026-07-26）。⚠️ **単純置換ができない** — 「当時の記述として正しい歴史」と「現在形と
+   して誤りになるもの」が混在するので、1 箇所ずつ読んで判定が要る。**rename の本当のコストは
+   実装ではなく doc の再読**で、そこが「固めて一箇所で」の理由でもある
+
+   ③ §3.6 により shell/tui の現在形は stored enum でなく観測 derive → rename は「仕込み
+   intent + 観測」への再編とセットで行う
 2. **id の形式**: ULID 等。CLI の指し方（短縮 prefix / 表示序数）とセットで決める
 3. **代表継承の決定的規則の具体**: 最古参か。要件は「決定的で、user に説明可能」
 4. **Reborn との整合**: 「同じ働き手で会話を作り直す」= engine_ref を捨てる（id 不変）か、
