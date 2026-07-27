@@ -528,17 +528,18 @@ pub fn get_session_id_for_repo(repo_path: impl AsRef<Path>) -> Option<String> {
     let content = std::fs::read_to_string(&claude_config_path).ok()?;
     let config: serde_json::Value = serde_json::from_str(&content).ok()?;
 
-    // projects配列からrepoパスに一致するエントリを検索
-    let repos = config.get("repos")?.as_array()?;
+    // projects 配列（⚠️ Claude CLI 側の固有キー = 外部 contract、VP の repo 語彙に rename
+    // しない）から repo パスに一致するエントリを検索
+    let projects = config.get("projects")?.as_array()?;
 
-    for repo in repos {
-        let path = repo.get("path")?.as_str()?;
+    for project in projects {
+        let path = project.get("path")?.as_str()?;
 
         // パスが一致するか確認（正規化して比較）
         let config_path = PathBuf::from(path);
         if paths_match(&config_path, repo_path) {
             // セッションIDを取得
-            if let Some(session_id) = repo.get("sessionId").and_then(|s| s.as_str())
+            if let Some(session_id) = project.get("sessionId").and_then(|s| s.as_str())
                 && !session_id.is_empty()
             {
                 tracing::debug!("repo {:?} のセッションID発見: {}", repo_path, session_id);

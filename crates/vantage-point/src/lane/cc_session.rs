@@ -9,10 +9,10 @@
 //! 本 module に残るのは claude 固有部だけ:
 //! - [`is_valid_session_id`]: `--resume '<id>'` への injection 防壁（registry の write 側
 //!   dispatch [`super::session_registry`] も使う）
-//! - [`transcript_path`] / [`transcript_exists`]: `~/.claude/repos` 走査（resume の
+//! - [`transcript_path`] / [`transcript_exists`]: `~/.claude/projects` 走査（resume の
 //!   pre-flight / transcript replay 源の解決）
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// session id の正規形 (英数+ハイフン、 非空)。 `--resume '<id>'` の single-quote 埋め込みが
 /// shell injection にならないための防壁（registry の write 側検証
@@ -21,18 +21,27 @@ pub fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// claude の session transcript file path を引く（`~/.claude/repos/*/<id>.jsonl`）。
+/// claude の session transcript file path を引く（`~/.claude/projects/*/<id>.jsonl`）。
 ///
-/// claude は cwd 由来の encoded dir 名で session を分けるため、 全 repo dir を走査する
-/// （encoding 形式に依存しない = 堅牢）。 N は repo 数（数百程度、 boot でなく切替 / attach 時のみ）。
+/// ⚠️ `projects` は **Claude Code 側の固有名**（外部 contract）— VP の project→repo rename の
+/// 対象ではない。v0.56.0 の #940 が機械 rename で `repos` に巻き込み、resume pre-flight が
+/// 全滅（transcript_exists 常 false → 全 spawn が fresh に倒れる）した実績がある。
+///
+/// claude は cwd 由来の encoded dir 名で session を分けるため、 全 project dir を走査する
+/// （encoding 形式に依存しない = 堅牢）。 N は project 数（数百程度、 boot でなく切替 / attach 時のみ）。
 /// 不正 id / home 不明 / 実体なしは None。
 pub fn transcript_path(session_id: &str) -> Option<PathBuf> {
+    transcript_path_in(&dirs::home_dir()?, session_id)
+}
+
+/// [`transcript_path`] の home 注入版（テストが実 `~/.claude` に依存しないため）。
+fn transcript_path_in(home: &Path, session_id: &str) -> Option<PathBuf> {
     if !is_valid_session_id(session_id) {
         return None;
     }
-    let repos = dirs::home_dir()?.join(".claude").join("repos");
+    let projects = home.join(".claude").join("projects");
     let target = format!("{session_id}.jsonl");
-    std::fs::read_dir(&repos)
+    std::fs::read_dir(&projects)
         .ok()?
         .flatten()
         .map(|e| e.path().join(&target))
@@ -63,5 +72,24 @@ mod tests {
         assert!(!is_valid_session_id(""), "空は不可");
         assert!(!is_valid_session_id("has_underscore"), "_ は不可");
         assert!(!is_valid_session_id("bad id'; rm"), "quote 破りは reject");
+    }
+
+    /// transcript 置き場は **Claude Code の `~/.claude/projects/`**（外部 contract）。
+    /// #940 の project→repo 機械 rename がここを `repos` に巻き込み、resume pre-flight が
+    /// 全滅した回帰の再発防止 — この `projects` は VP の語彙変更に追従させないこと。
+    #[test]
+    fn transcript_path_scans_claude_projects_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".claude/projects/-Users-x-repos-y");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "94427c81-aaaa-4abc-bbbb-000000000000";
+        std::fs::write(dir.join(format!("{id}.jsonl")), "{}").unwrap();
+
+        let found =
+            transcript_path_in(tmp.path(), id).expect("projects 配下の transcript が引ける");
+        assert!(found.ends_with(format!("-Users-x-repos-y/{id}.jsonl")));
+        // 実体なし / 不正 id は None（resume に渡さず fresh に倒す既存規約）
+        assert!(transcript_path_in(tmp.path(), "no-such-id").is_none());
+        assert!(transcript_path_in(tmp.path(), "bad_id").is_none());
     }
 }
