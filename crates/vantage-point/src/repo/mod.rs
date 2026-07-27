@@ -22,22 +22,22 @@ pub(crate) mod hub;
 pub(crate) mod lane_capabilities;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
 pub(crate) mod lane_cmd;
+/// Lane に host される component の minimal marker trait + Registry (PR-δ-1、 VP-135)
+pub(crate) mod lane_component;
 /// lane の実体（PtySlot / chat engine / 代表値）を intent（registry）に合わせる reconcile 本体（doc 53 §12）
 pub(crate) mod lane_reconcile;
 /// Lane spawn actor — `LaneCmd` を recv して Semaphore で gate しつつ Lane を spawn (I-b、 2026-04-30)
 pub(crate) mod lane_spawn_actor;
-/// Lane に host される Stand の minimal marker trait + Registry (PR-δ-1、 VP-135)
-pub(crate) mod lane_stand;
 /// Lane state types (LaneAddress / LanePool 等) — Lane scope の data model
 pub(crate) mod lanes_state;
 pub mod process_runner;
+pub(crate) mod repo_components_state;
 /// Repo scope の Agent pool (board / runner ほか — 現在は縮退済)
 pub(crate) mod repo_registry;
-pub(crate) mod repo_stands_state;
 pub(crate) mod retained;
 // L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
 // `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
-/// StandSpawner — Stand 名 → slot (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
+/// AgentSpawner — agent 名 → slot (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
 pub(crate) mod agent_spawner;
 pub(crate) mod daemon_wire;
 pub(crate) mod routes;

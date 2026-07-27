@@ -155,7 +155,7 @@ export function applyAppScene(id: string): boolean {
 	return true;
 }
 
-// ---------- stand pane の「訪問」（sidebar click の一時 view、2026-07-23 dogfood） ----------
+// ---------- agent pane の「訪問」（sidebar click の一時 view、2026-07-23 dogfood） ----------
 // sidebar から board/runner/Devices を開くのは「ちょっと見る」訪問であって workspace の形の
 // 選択ではない — 訪問を lane の配置記憶に焼き込むと、lane を行き来しても agent 画面が
 // 出っ放しになり console に戻る口が hotkey しかなくなる（Devices 可視化で表面化した
@@ -165,7 +165,7 @@ let transientVisit = false;
 let beforeVisit: { layout: Layout; sceneId: string | null } | null = null;
 
 /**
- * stand pane を訪問する（bridge の kind≠terminal 経路用）。
+ * agent pane を訪問する（bridge の kind≠terminal 経路用）。
  * 訪問の入れ子（Devices → runner）は最初の出発点を保つ。
  */
 export function visitAppPane(paneId: string): boolean {

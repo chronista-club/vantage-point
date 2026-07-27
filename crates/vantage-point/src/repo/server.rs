@@ -677,7 +677,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // TopicRouter（Daemon モードでは Hub ブリッジ不要だが、AppState の必須フィールド）
     let topic_router = Arc::new(TopicRouter::new());
 
-    // PR-α-1 (VP-111): machine 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
+    // PR-α-1 (VP-111): machine 階層の機能 を 1 instance ずつ生成して、 AppState 既存 field と
     // MachineCapabilities container の両方に share させる (二重生成は避ける)。
     //
     // device 管理は DeviceRegistry 🧲 に一本化（feature = "midi" 時は `with_devices` で host 化）。
@@ -778,7 +778,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         wire_notifier: crate::capability::WireNotifier::new(),
         // R2-b: wire delivery loop の即時 wake (daemon_wire_send_handler が command 着信で notify)
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // Phase A4-2b: Daemon モードでは Lane / Repo Stand を持たない (空 Pool で AppState を満たす)
+        // Phase A4-2b: Daemon モードでは Lane / Repo の機能を持たない (空 Pool で AppState を満たす)
         // 多 scope architecture: daemon は App scope の component、Lane/RepoStand は Repo scope
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
         // Phase 2 (Step E): system event central bus
@@ -901,11 +901,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
     //  repo からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
     let listener = bind_dual_stack(port).await?;
-    tracing::info!(
-        "{} 起動 http://[::]:{} (dual-stack)",
-        crate::stands::DAEMON.display(),
-        port
-    );
+    tracing::info!("⚙️ daemon 起動 http://[::]:{port} (dual-stack)");
 
     // ポートバインド成功後に PID ファイルを書き出す
     // （バインド前に書くと、失敗時に既存デーモンの PID が上書きされ制御不能になる）

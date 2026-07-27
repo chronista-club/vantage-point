@@ -1,15 +1,15 @@
 //! Lane 階層 Agent container (LSCM、 doc 12 §3 / §9 / doc 13 §3 参照)
 //!
 //! Lane (Conductor/Performer) あたり 1 instance、 repo per Repo で host。 LSCM (Layer-Agent
-//! Composition Model) の **Lane Layer 実体** = "Lane が必要な Stand を抱える" の物理表現。
+//! Composition Model) の **Lane Layer 実体** = "Lane が必要な 機能を抱える" の物理表現。
 //!
 //! ## host する Agent (target、 doc 12 §9 catalog)
 //!
 //! - **Conversation 💬** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない、
 //!   `LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)
-//! - **Board 🧭** (`BoardStand`): PR-δ-2 (VP-136) で **`LaneStandRegistry` 経由 host** へ進化、
+//! - **Board 🧭** (`BoardComponent`): PR-δ-2 (VP-136) で **`LaneComponentRegistry` 経由 host** へ進化、
 //!   Lane あたり独立 instance (= 1 → N cardinality)
-//! - **Runner 🌿** (planned): PR-γ で同様に Lane instance 化、 LaneStandHost impl 追加予定
+//! - **Runner 🌿** (planned): PR-γ で同様に Lane instance 化、 LaneComponentHost impl 追加予定
 //! - **shell** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない)
 //!
 //! ## 実装状態
@@ -18,15 +18,15 @@
 //!   `board: None` placeholder。
 //! - PR-β-2 (VP-120 ✅、 #275): board 物理移管、 `board: Some(Arc::new(RwLock::new(default)))` で
 //!   Lane あたり独立 instance host (cardinality 1 → N)。
-//! - PR-δ-1 (VP-135 ✅、 #288): `LaneStandHost` trait + `LaneStandRegistry` 受け皿新設、
+//! - PR-δ-1 (VP-135 ✅、 #288): `LaneComponentHost` trait + `LaneComponentRegistry` 受け皿新設、
 //!   既存挙動への影響ゼロ。
-//! - PR-δ-2 (VP-136 ✅、 #289): **board を `BoardStand` (LaneStandHost impl) に rewire** +
-//!   `board` hardcoded field を削除、 `registry: LaneStandRegistry` で N Agent host に統一。
+//! - PR-δ-2 (VP-136 ✅、 #289): **board を `BoardComponent` (LaneComponentHost impl) に rewire** +
+//!   `board` hardcoded field を削除、 `registry: LaneComponentRegistry` で N Agent host に統一。
 //!   production caller ゼロを着手前 grep で確認 (PR-β-2 と同じ argument)、 b 路線 aggressive replace。
 //! - PR-δ-3 (VP-137 ✅、 #290): mock Agent B + 「N Agent host」 invariant test 4 件追加
 //!   (`lane_capabilities.rs` tests module 内、 production binary 影響ゼロ)。
 //! - PR-δ-4 (VP-138 ✅、 本 PR): cleanup — module-level doc roadmap update +
-//!   lane_stand.rs 命名規約 doc fix + doc 13 §9 catalog 更新。
+//!   lane_component.rs 命名規約 doc fix + doc 13 §9 catalog 更新。
 //!
 //! 関連: doc 12 (`docs/design/12-stand-architecture.md` §9 Catalog)、
 //! doc 13 (`docs/design/13-paisley-park-revival.md` §3 / §9)、
@@ -36,15 +36,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::lane_stand::LaneStandRegistry;
+use super::lane_component::LaneComponentRegistry;
 use super::lanes_state::LaneAddress;
-use super::repo_stands_state::BoardStand;
+use super::repo_components_state::BoardComponent;
 #[cfg(feature = "midi")]
-use crate::device_io::DeviceIoStand;
+use crate::device_io::DeviceIoComponent;
 
 /// Lane 階層 Agent container (Lane あたり 1 instance)。
 ///
-/// PR-δ-2 (VP-136) で **`registry: LaneStandRegistry` 経由 N Agent host** に統一。
+/// PR-δ-2 (VP-136) で **`registry: LaneComponentRegistry` 経由 N Agent host** に統一。
 /// Conversation / shell は mise task PtySlot 経由なので本 struct には host しない
 /// (`LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)。
 // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Agent-host skeleton。現状 field は未 read。
@@ -57,29 +57,29 @@ pub struct LaneCapabilities {
     /// `LanePool` の Lane entry と同期、 spawn 経路で参照される。
     pub agent: String,
 
-    /// Lane に host される Stand の **registry** (PR-δ-2 / VP-136)。
+    /// Lane に host される component の **registry** (PR-δ-2 / VP-136)。
     ///
-    /// `new()` で `BoardStand` (= `service_kind = "board"`) が default 登録される。
-    /// PR-γ で `RunnerStand` 等が同 registry に追加される予定。 caller は
-    /// `lc.registry.get_typed::<BoardStand>("board")` で typed access する。
-    pub registry: LaneStandRegistry,
+    /// `new()` で `BoardComponent` (= `service_kind = "board"`) が default 登録される。
+    /// PR-γ で `RunnerComponent` 等が同 registry に追加される予定。 caller は
+    /// `lc.registry.get_typed::<BoardComponent>("board")` で typed access する。
+    pub registry: LaneComponentRegistry,
 }
 
 impl LaneCapabilities {
     /// 新規構築 (PR-δ-2 / VP-136 で `registry` に board を default 登録)。
     ///
     /// PR-α-1 の `MachineCapabilities::new` (= midi None で構築) とは異なり、 本 struct は
-    /// **PR-β-2 で board を常時 host 化**、 PR-δ-2 でその host path を `LaneStandRegistry` 経由に
+    /// **PR-β-2 で board を常時 host 化**、 PR-δ-2 でその host path を `LaneComponentRegistry` 経由に
     /// 統一。 doc 13 §6 自動 spawn rule (Lane 起動時に board 同時 spawn が default) との整合のため、
     /// factory を分けず `new()` で populate する設計を維持。
     /// 将来 board なし Lane (opt-out) が必要になったら `without_board()` factory 追加で対応。
     pub fn new(address: LaneAddress, agent: impl Into<String>) -> Self {
-        let mut registry = LaneStandRegistry::new();
-        // PR-δ-2 (VP-136): board を最初の住人として LaneStandRegistry に登録
-        registry.insert(Arc::new(BoardStand::new()));
+        let mut registry = LaneComponentRegistry::new();
+        // PR-δ-2 (VP-136): board を最初の住人として LaneComponentRegistry に登録
+        registry.insert(Arc::new(BoardComponent::new()));
         // E3-1: Device I/O 🌫️ を Lane に自動 host（midi feature 有効時）
         #[cfg(feature = "midi")]
-        registry.insert(Arc::new(DeviceIoStand::new()));
+        registry.insert(Arc::new(DeviceIoComponent::new()));
         Self {
             address,
             agent: agent.into(),
@@ -133,22 +133,22 @@ mod tests {
     use std::any::Any;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::super::lane_stand::LaneStandHost;
+    use super::super::lane_component::LaneComponentHost;
     use super::*;
 
-    /// PR-δ-3 (VP-137): test-only mock Stand。 「LaneCapabilities が board 含めて N Stand を host
+    /// PR-δ-3 (VP-137): test-only mock component。 「LaneCapabilities が board 含めて N component を host
     /// できる generic interface」 invariant (doc 13 §9 boundary) を真の test に格上げするための
     /// 2 つ目の Agent impl。 production binary には登場しない (`#[cfg(test)]` 限定)。
     ///
-    /// minimal counter state (`AtomicU32`) を持つだけの passive Stand、 caller が
-    /// `increment()` を呼ぶごとに value が +1 される。 BoardStand とは state shape
+    /// minimal counter state (`AtomicU32`) を持つだけの passive component、 caller が
+    /// `increment()` を呼ぶごとに value が +1 される。 BoardComponent とは state shape
     /// (RwLock<BoardState> vs AtomicU32) が異なるので「型が違う 2 Agent 共存」 の
     /// invariant test 素材として最適。
-    struct MockStandB {
+    struct MockComponentB {
         counter: AtomicU32,
     }
 
-    impl MockStandB {
+    impl MockComponentB {
         fn new() -> Self {
             Self {
                 counter: AtomicU32::new(0),
@@ -164,7 +164,7 @@ mod tests {
         }
     }
 
-    impl LaneStandHost for MockStandB {
+    impl LaneComponentHost for MockComponentB {
         fn service_kind(&self) -> &'static str {
             "mock_b"
         }
@@ -183,22 +183,22 @@ mod tests {
         assert_eq!(lc.address, addr);
         assert_eq!(lc.agent, "claude");
         assert!(
-            lc.registry.get_typed::<BoardStand>("board").is_some(),
-            "PR-δ-2 物理移管後は registry に BoardStand が host される"
+            lc.registry.get_typed::<BoardComponent>("board").is_some(),
+            "PR-δ-2 物理移管後は registry に BoardComponent が host される"
         );
     }
 
     #[test]
     fn lane_capabilities_with_performer_address() {
-        // Performer Lane でも独立 BoardStand で構築
+        // Performer Lane でも独立 BoardComponent で構築
         let addr = LaneAddress::performer("vp", "feat-test");
         let lc = LaneCapabilities::new(addr.clone(), "shell");
 
         assert_eq!(lc.address, addr);
         assert_eq!(lc.agent, "shell");
         assert!(
-            lc.registry.get_typed::<BoardStand>("board").is_some(),
-            "Performer Lane も独立 BoardStand を持つ"
+            lc.registry.get_typed::<BoardComponent>("board").is_some(),
+            "Performer Lane も独立 BoardComponent を持つ"
         );
     }
 
@@ -210,11 +210,11 @@ mod tests {
 
         let conductor_board = conductor
             .registry
-            .get_typed::<BoardStand>("board")
+            .get_typed::<BoardComponent>("board")
             .expect("Conductor board");
         let performer_board = performer
             .registry
-            .get_typed::<BoardStand>("board")
+            .get_typed::<BoardComponent>("board")
             .expect("Performer board");
 
         // Conductor に content set しても Performer に伝播しないこと
@@ -261,7 +261,7 @@ mod tests {
         let lc = pool.entries.get(&addr).expect("Conductor entry 不在");
         assert_eq!(lc.agent, "claude");
         assert!(
-            lc.registry.get_typed::<BoardStand>("board").is_some(),
+            lc.registry.get_typed::<BoardComponent>("board").is_some(),
             "populate 後は registry に board host 済"
         );
     }
@@ -297,66 +297,70 @@ mod tests {
     // ========================================================================
     // PR-δ-3 (VP-137) — 「N Agent host」 invariant tests
     //
-    // doc 13 §9 boundary invariant 「LaneCapabilities が board 含めて N Stand を
+    // doc 13 §9 boundary invariant 「LaneCapabilities が board 含めて N component を
     // host できる generic interface」 を、 LaneCapabilities lifecycle context での
     // 2 Agent 共存 + 状態独立性 + per-Lane 独立性 + remove 独立性で test 化。
     // ========================================================================
 
-    /// PR-δ-3 (VP-137): LaneCapabilities が board + MockStandB を **同時に host できる**
-    /// invariant。 new() 直後の registry は board 1 件、 MockStandB を insert すると count = 2、
-    /// 両 Stand が typed access 可能。
+    /// PR-δ-3 (VP-137): LaneCapabilities が board + MockComponentB を **同時に host できる**
+    /// invariant。 new() 直後の registry は board 1 件、 MockComponentB を insert すると count = 2、
+    /// 両 component が typed access 可能。
     #[test]
     fn lane_capabilities_hosts_board_and_mock_b_simultaneously() {
         let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
         let base_count = lc.registry.count();
 
-        // MockStandB を insert
-        lc.registry.insert(Arc::new(MockStandB::new()));
+        // MockComponentB を insert
+        lc.registry.insert(Arc::new(MockComponentB::new()));
 
         assert_eq!(
             lc.registry.count(),
             base_count + 1,
-            "MockStandB insert 後は base + 1 Agent 共存"
+            "MockComponentB insert 後は base + 1 Agent 共存"
         );
         assert!(
-            lc.registry.get_typed::<BoardStand>("board").is_some(),
+            lc.registry.get_typed::<BoardComponent>("board").is_some(),
             "board は依然として typed access 可能"
         );
         assert!(
-            lc.registry.get_typed::<MockStandB>("mock_b").is_some(),
-            "MockStandB も typed access 可能"
+            lc.registry.get_typed::<MockComponentB>("mock_b").is_some(),
+            "MockComponentB も typed access 可能"
         );
     }
 
-    /// PR-δ-3 (VP-137): board と MockStandB の **state が完全に独立** している invariant。
-    /// MockStandB.increment() が board state を変化させない、 board content set が
-    /// MockStandB.value() を変化させない、 cross-Agent state share なし (doc 12 A6 整合)。
+    /// PR-δ-3 (VP-137): board と MockComponentB の **state が完全に独立** している invariant。
+    /// MockComponentB.increment() が board state を変化させない、 board content set が
+    /// MockComponentB.value() を変化させない、 cross-Agent state share なし (doc 12 A6 整合)。
     #[tokio::test]
     async fn lane_capabilities_board_and_mock_b_states_are_independent() {
         let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
-        lc.registry.insert(Arc::new(MockStandB::new()));
+        lc.registry.insert(Arc::new(MockComponentB::new()));
 
         let board = lc
             .registry
-            .get_typed::<BoardStand>("board")
+            .get_typed::<BoardComponent>("board")
             .expect("board host 不在");
         let mock_b = lc
             .registry
-            .get_typed::<MockStandB>("mock_b")
-            .expect("MockStandB host 不在");
+            .get_typed::<MockComponentB>("mock_b")
+            .expect("MockComponentB host 不在");
 
-        // MockStandB を 3 回 increment、 board には触らない
+        // MockComponentB を 3 回 increment、 board には触らない
         mock_b.increment();
         mock_b.increment();
         mock_b.increment();
 
-        assert_eq!(mock_b.value(), 3, "MockStandB の counter は increment 反映");
+        assert_eq!(
+            mock_b.value(),
+            3,
+            "MockComponentB の counter は increment 反映"
+        );
         assert!(
             board.state().read().await.content.is_none(),
-            "MockStandB.increment() は board content に影響しない (state 独立)"
+            "MockComponentB.increment() は board content に影響しない (state 独立)"
         );
 
-        // board に content set、 MockStandB には触らない
+        // board に content set、 MockComponentB には触らない
         board.state().write().await.content = Some("board-canvas".to_string());
 
         assert_eq!(
@@ -367,29 +371,29 @@ mod tests {
         assert_eq!(
             mock_b.value(),
             3,
-            "board content set は MockStandB.counter に影響しない (state 独立)"
+            "board content set は MockComponentB.counter に影響しない (state 独立)"
         );
     }
 
-    /// PR-δ-3 (VP-137): 異なる Lane の MockStandB が **独立 instance** である invariant。
+    /// PR-δ-3 (VP-137): 異なる Lane の MockComponentB が **独立 instance** である invariant。
     /// Lane A の counter increment が Lane B に影響しない (cardinality 1 → N が
-    /// MockStandB でも成立)、 PR-β-2 board 独立性 invariant の generic 拡張。
+    /// MockComponentB でも成立)、 PR-β-2 board 独立性 invariant の generic 拡張。
     #[test]
     fn lane_capabilities_mock_b_independent_per_lane() {
         let mut lane_a = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
         let mut lane_b = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "claude");
 
-        lane_a.registry.insert(Arc::new(MockStandB::new()));
-        lane_b.registry.insert(Arc::new(MockStandB::new()));
+        lane_a.registry.insert(Arc::new(MockComponentB::new()));
+        lane_b.registry.insert(Arc::new(MockComponentB::new()));
 
         let mock_a = lane_a
             .registry
-            .get_typed::<MockStandB>("mock_b")
-            .expect("Lane A MockStandB");
+            .get_typed::<MockComponentB>("mock_b")
+            .expect("Lane A MockComponentB");
         let mock_b = lane_b
             .registry
-            .get_typed::<MockStandB>("mock_b")
-            .expect("Lane B MockStandB");
+            .get_typed::<MockComponentB>("mock_b")
+            .expect("Lane B MockComponentB");
 
         // Lane A だけ 5 回 increment
         for _ in 0..5 {
@@ -404,20 +408,20 @@ mod tests {
         );
     }
 
-    /// PR-δ-3 (VP-137): MockStandB を `registry.remove("mock_b")` で削除しても **board は残存**
+    /// PR-δ-3 (VP-137): MockComponentB を `registry.remove("mock_b")` で削除しても **board は残存**
     /// する invariant。 cardinality は 2 → 1 に戻り、 board typed access は依然成立。
     /// PR-δ-1 `registry_remove_does_not_affect_other_stands` の Lane lifecycle 版。
     #[test]
     fn lane_capabilities_remove_mock_b_keeps_pp() {
         let mut lc = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
         let base_count = lc.registry.count();
-        lc.registry.insert(Arc::new(MockStandB::new()));
+        lc.registry.insert(Arc::new(MockComponentB::new()));
         assert_eq!(lc.registry.count(), base_count + 1, "insert 後は base + 1");
 
         let removed = lc.registry.remove("mock_b");
         assert!(
             removed.is_some(),
-            "MockStandB は registry に存在したので Some"
+            "MockComponentB は registry に存在したので Some"
         );
 
         assert_eq!(
@@ -426,12 +430,12 @@ mod tests {
             "remove 後は base count に戻る"
         );
         assert!(
-            lc.registry.get_typed::<BoardStand>("board").is_some(),
-            "board は MockStandB remove の影響を受けず残存"
+            lc.registry.get_typed::<BoardComponent>("board").is_some(),
+            "board は MockComponentB remove の影響を受けず残存"
         );
         assert!(
-            lc.registry.get_typed::<MockStandB>("mock_b").is_none(),
-            "MockStandB は削除済"
+            lc.registry.get_typed::<MockComponentB>("mock_b").is_none(),
+            "MockComponentB は削除済"
         );
     }
 }

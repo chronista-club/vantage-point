@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 45 — control plane transport の Unison 統一（HTTP route の棚卸し）
 
 > **status**: 段 1〜段 5 すべて着地（2026-07-22、§5.5）。残るは `/api/update/*` 7 本（優先度低）のみ。doc 44 P1（fold-in）の dogfood 中に

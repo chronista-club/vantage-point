@@ -24,9 +24,9 @@ use tokio_util::sync::CancellationToken;
 use nostos::{AsyncDriver, Outcome};
 
 use crate::capability::RepoManagerCapability;
+use crate::capability::component_service::{LayerScope, Service};
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
-use crate::capability::stand_service::{LayerScope, Service};
 use crate::commands::roto_control::{
     InProcessLaneSource, QuicSwitchSink, RotoDescriptor, RotoHealDriver, RotoSessionBracket,
     RotoView,

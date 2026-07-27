@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 17. Port 安定化 + Msgbox の project 跨ぎ汚染遮断
 
 > **改訂 (2026-05-21)**: 本 doc の **Msgbox 跨ぎ汚染遮断** 部分 (= Whitesnake msgbox の project-keyed 化 / `restore_pending` の project guard / `normalize_from` 汚染) は、 旧 msgbox を全廃した **wiremsg 再設計 (R1〜R6、 PR #406〜#420)** で構造的に置き換わった (wiremsg は per-agent cursor accumulation で msgbox table を持たない)。 一方、 **port 安定化** 部分 (slug-keyed DB ディレクトリ / port reshuffle 対策) は wiremsg と直交しており現行有効。 本 doc は VP-165 時点の設計の historical + 一部現行 reference。

@@ -39,7 +39,7 @@ use wry::{
 use crate::client::{DaemonRpcClient, RepoInfo};
 use crate::daemon_control::DaemonControl;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
-use crate::pane::{ActiveStand, ActivitySnapshot, RepoPaneState, SidebarState};
+use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
 use crate::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_path_picker, spawn_clone_repo,
 };
@@ -179,7 +179,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // doc 38 Phase 3: session tab の × による close（allowlist 漏れは sidebar IPC へ
                 // 流れて silent drop = 「×無反応」regression。tests でも固定）。
                 | "conversation:session_remove"
-                | "conversation:stands_fetch"
+                | "conversation:agents_fetch"
                 // replay demand（2026-07-24）: 消費者主導 demand。allowlist 漏れは sidebar IPC へ
                 // 流れて silent drop = 「chat が空のまま」regression（terminal.rs の arm と対）
                 | "conversation:demand_start"
@@ -213,7 +213,7 @@ mod ipc_tag_tests {
             "conversation:session_create",
             "conversation:session_focus",
             "conversation:session_remove",
-            "conversation:stands_fetch",
+            "conversation:agents_fetch",
             // 消費者主導 replay demand（2026-07-24 — 漏れは「chat が空のまま」）
             "conversation:demand_start",
             // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
@@ -2391,9 +2391,9 @@ async fn collect_activity(
 
 /// Architecture v4: sidebar の active selection に応じて main area の表示 kind を切替。
 ///
-/// Phase 5-A 拡張: Lane と Stand が **mutually exclusive** な active 軸として扱われる。
+/// Phase 5-A 拡張: Lane と component が **mutually exclusive** な active 軸として扱われる。
 /// 優先順位:
-///   1. `active_stand` Some → kind = "board" / "runner" / "devices"
+///   1. `active_component` Some → kind = "board" / "runner" / "devices"
 ///   2. `active_lane_address` Some → kind = "lane"、 pane_id = Lane address
 ///   3. 両方 None → kind=None で empty placeholder
 ///
@@ -2454,7 +2454,7 @@ fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
 /// から focused session の agent を引く。New Session の chat 分岐で「現 focused と同じ engine の
 /// 新 Draft を作る」ために使う。`focused` フラグ優先 → `focused` key 一致 → 先頭 の順で解決し、
 /// 取れなければ None（backend が lane 既定 agent を使うため送らなくてよい）。純粋 = テスト可能。
-fn focused_session_stand(payload: &serde_json::Value) -> Option<String> {
+fn focused_session_agent(payload: &serde_json::Value) -> Option<String> {
     let sessions = payload.get("sessions").and_then(|v| v.as_array())?;
     let focused_key = payload.get("focused").and_then(|v| v.as_u64());
     sessions
@@ -2562,7 +2562,7 @@ mod lane_key_wire_agent_tests {
 
 #[cfg(test)]
 mod focused_session_stand_tests {
-    use super::focused_session_stand;
+    use super::focused_session_agent;
 
     /// focused フラグ付き session の agent を引く（doc 38 §4.2 New Session の chat 分岐）。
     #[test]
@@ -2574,7 +2574,7 @@ mod focused_session_stand_tests {
                 {"key": 2, "agent": "codex", "focused": true},
             ]
         });
-        assert_eq!(focused_session_stand(&payload).as_deref(), Some("codex"));
+        assert_eq!(focused_session_agent(&payload).as_deref(), Some("codex"));
     }
 
     /// focused フラグが無ければ `focused` key と一致する session に落ちる。
@@ -2587,7 +2587,7 @@ mod focused_session_stand_tests {
                 {"key": 3, "agent": "grok"},
             ]
         });
-        assert_eq!(focused_session_stand(&payload).as_deref(), Some("grok"));
+        assert_eq!(focused_session_agent(&payload).as_deref(), Some("grok"));
     }
 
     /// どちらも決まらなければ先頭 session の agent（安全側 = とにかく作れる）。
@@ -2596,15 +2596,15 @@ mod focused_session_stand_tests {
         let payload = serde_json::json!({
             "sessions": [{"key": 1, "agent": "claude"}, {"key": 2, "agent": "codex"}]
         });
-        assert_eq!(focused_session_stand(&payload).as_deref(), Some("claude"));
+        assert_eq!(focused_session_agent(&payload).as_deref(), Some("claude"));
     }
 
     /// sessions が空 / 欠落なら None（backend の lane 既定 agent に委ねる）。
     #[test]
     fn returns_none_when_no_sessions() {
-        assert_eq!(focused_session_stand(&serde_json::json!({})), None);
+        assert_eq!(focused_session_agent(&serde_json::json!({})), None);
         assert_eq!(
-            focused_session_stand(&serde_json::json!({"sessions": []})),
+            focused_session_agent(&serde_json::json!({"sessions": []})),
             None
         );
     }
@@ -2647,7 +2647,7 @@ fn ensure_conversation_attach(
 }
 
 fn push_active_view(main_view: &WebView, state: &SidebarState) {
-    let info = if let Some(agent) = state.active_stand.as_ref() {
+    let info = if let Some(agent) = state.active_component.as_ref() {
         ActivePaneInfo {
             kind: Some(agent.kind.as_str()),
             pane_id: None,
@@ -2756,7 +2756,7 @@ fn resolve_repo_path_for_lane(state: &SidebarState, address: &str) -> Option<Str
 ///
 /// sidebar click / switch_lane (QUIC) / auto-select の 3 入口すべてがこの関数を呼ぶ。
 /// 副作用:
-///   1. `sidebar_state.active_lane_address` + `active_stand` (排他 clear)
+///   1. `sidebar_state.active_lane_address` + `active_component` (排他 clear)
 ///   2. `session_state` 永続化
 ///   3. notification / awaiting_input reset
 ///   4. sidebar UI push (`sidebar:state`)
@@ -2774,8 +2774,8 @@ fn activate_lane(
 ) {
     // 1. State
     sidebar_state.active_lane_address = Some(address.to_string());
-    if sidebar_state.active_stand.is_some() {
-        sidebar_state.active_stand = None;
+    if sidebar_state.active_component.is_some() {
+        sidebar_state.active_component = None;
     }
 
     // 2. Session persistence
@@ -3145,7 +3145,7 @@ fn mark_lane_canvas_unread(lane: &str, sidebar_state: &mut SidebarState, webview
 struct SidebarIpcOutcome {
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     changed: bool,
-    /// active Lane/Stand が変わったか (true なら push_active_view を呼ぶ)。
+    /// active Lane/Component が変わったか (true なら push_active_view を呼ぶ)。
     /// Lane 選択の場合は `activate_lane` を使うこと（こちらは Agent 選択・Lane 削除用）。
     active_changed: bool,
     /// Lane activation 要求 — caller が `activate_lane()` を呼ぶ。
@@ -3341,16 +3341,16 @@ fn handle_sidebar_ipc(
                 tracing::warn!("stand:select with empty path/kind: {}", msg);
                 return out;
             }
-            let new_stand = ActiveStand {
+            let new_stand = ActiveComponent {
                 repo_path: m.path.clone(),
                 kind: m.kind.clone(),
             };
-            // 既に同じ Stand が active なら no-op
-            if state.active_stand.as_ref() == Some(&new_stand) {
+            // 既に同じ component が active なら no-op
+            if state.active_component.as_ref() == Some(&new_stand) {
                 return out;
             }
             tracing::info!("stand:select repo={} kind={}", m.path, m.kind);
-            state.active_stand = Some(new_stand);
+            state.active_component = Some(new_stand);
             // Lane を排他で clear (= main area の active 軸を Agent に切替)
             if state.active_lane_address.is_some() {
                 state.active_lane_address = None;
@@ -5176,7 +5176,7 @@ pub fn run() -> anyhow::Result<()> {
                             )
                             .await
                             {
-                                Ok(payload) => focused_session_stand(&payload),
+                                Ok(payload) => focused_session_agent(&payload),
                                 Err(e) => {
                                     tracing::warn!(
                                         "conversation_session_list（new_session 前）失敗 (lane={lane}): {e}"
@@ -5444,7 +5444,7 @@ pub fn run() -> anyhow::Result<()> {
             // 既存 + Add Performer と同じ agents_list を再利用（doc 38 §3 の作成 UX）。
             Event::UserEvent(AppEvent::AgentsFetch { lane, req }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("conversation:stands_fetch skip — lane の repo 解決失敗 (lane={lane})");
+                    tracing::warn!("conversation:agents_fetch skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let proxy = async_action_proxy.clone();
@@ -5463,7 +5463,7 @@ pub fn run() -> anyhow::Result<()> {
                                 proxy.send_event(AppEvent::Agents { lane, payload, req });
                         }
                         Err(e) => {
-                            tracing::warn!("conversation:stands_fetch の agents_list 失敗 (lane={lane}): {e}")
+                            tracing::warn!("conversation:agents_fetch の agents_list 失敗 (lane={lane}): {e}")
                         }
                     }
                 });

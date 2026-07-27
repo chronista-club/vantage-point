@@ -48,7 +48,7 @@ export interface PushHandlers {
 	consoleSessionList(lane: string, payload: unknown): void;
 	consoleEvent(lane: string, event: unknown, session: number): void;
 	consoleModeApplied(lane: string, session: number, mode: string): void;
-	consoleStands(lane: string, payload: unknown, req: string | null): void;
+	consoleAgents(lane: string, payload: unknown, req: string | null): void;
 	inkSnapshot(path: string): void;
 	inkSnapshotError(message: string): void;
 }
@@ -121,7 +121,7 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "console:agents":
 			// `req` は schema で optional — 「応答を誰も拾わない」が型に載る。
-			handlers.consoleStands(msg.lane, msg.payload, msg.req ?? null);
+			handlers.consoleAgents(msg.lane, msg.payload, msg.req ?? null);
 			break;
 		default: {
 			// 網羅していれば `never`。Rust 側が新しい event を撃ってきた（= 版ズレ）ときだけ来る。

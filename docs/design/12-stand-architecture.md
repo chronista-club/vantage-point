@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 12. Stand architecture — Layer-Stand Composition Model (LSCM)
 
 > **改訂 note (2026-05-21)**: 本 doc 中の「msgbox」「`msgbox_registry.rs`」「`MsgboxRouter`」 はいずれも 2026-05 の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された旧 messaging 実装。 現行の agent 間 messaging は wiremsg (`wire_send` / `wire_recv` / `wire_thread`、 `vp wire` CLI、 `wiremsg_store.rs` / `wire_remote.rs`)。 wire address は `<actor>@<project>[/<performer>]` (slash 区切り、 [doc 14](14-wire-address-v3.md) 参照)。 §9 catalog 等の「actor」「channel で copy 渡し」 という Stand 間通信の **概念モデル自体は有効** — substrate が msgbox → wiremsg に置き換わっただけ。

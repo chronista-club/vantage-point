@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 16. worker-lane msgbox: recv 経路 + box 構造（per-stand）+ whoami
 
 > **対象 Issue**: [VP-166](https://linear.app/chronista/issue/VP-166) — worker-lane msgbox の recv 経路を実装

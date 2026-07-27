@@ -97,7 +97,7 @@ pub struct Config {
     #[kdl(child, name = "claude-cli-path", unwrap_arg)]
     pub claude_cli_path: Option<String>,
 
-    /// Lane 作成時の default Stand 名 (例: "claude" / "shell" / "tmux")。
+    /// Lane 作成時の default agent 名 (例: "claude" / "shell" / "tmux")。
     ///
     /// `mise run vp:agent:{name}` の `name` 部分を指定。 None なら "claude" fallback
     /// (`Config::default_agent_or_claude()` 経由)。
@@ -315,7 +315,7 @@ impl Config {
         config_file_path()
     }
 
-    /// Default Stand 名 (config 未指定なら "claude" fallback)。
+    /// Default agent 名 (config 未指定なら "claude" fallback)。
     ///
     /// `mise run vp:agent:{name}` の `name` 部分。 lane 作成時 (sidebar UI / HTTP API /
     /// LanePool::with_root 等) で agent 指定が無い場合の選択値。

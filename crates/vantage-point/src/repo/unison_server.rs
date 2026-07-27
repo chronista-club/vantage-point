@@ -1725,7 +1725,7 @@ async fn handle_console_set_model(
         // root-agent 解決に揃える（root entry 不在 = registry 破損は N=1 既定形で info.agent へ fallback）。
         let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
         let reg = crate::lane::session_registry::load(&addr.repo, &lane_label, &info.agent);
-        let effective_stand = reg
+        let effective_agent = reg
             .sessions
             .iter()
             .find(|s| s.key == reg.root)
@@ -1733,16 +1733,16 @@ async fn handle_console_set_model(
             .unwrap_or_else(|| info.agent.clone());
         // model 切替の可否は EngineKind の能力表明に一元化（engine_model は claude alias 前提の
         // state。他 engine は engine 側 UI（TUI `/model` 等）で選ぶ — doc 37 §7）。
-        match crate::conversation::EngineKind::from_agent(&effective_stand) {
+        match crate::conversation::EngineKind::from_agent(&effective_agent) {
             Some(k) if k.model_switchable() => {}
             Some(_) => {
                 return Err(format!(
-                    "{effective_stand} エンジンの model は engine 側で選択します（lane={lane}）"
+                    "{effective_agent} エンジンの model は engine 側で選択します（lane={lane}）"
                 ));
             }
             None => {
                 return Err(format!(
-                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, agent={effective_stand}）"
+                    "console_set_model は model 切替対応 engine の lane のみ（lane={lane}, agent={effective_agent}）"
                 ));
             }
         }

@@ -14,7 +14,7 @@
 //!
 //! | sub-PR | scope | status |
 //! |--------|-------|--------|
-//! | E3-1 | DeviceIoStand (LaneStandHost impl) 型 + LaneStandRegistry insert | ✅ Done (#556) |
+//! | E3-1 | DeviceIoComponent (LaneComponentHost impl) 型 + LaneComponentRegistry insert | ✅ Done (#556) |
 //! | E3-2 | output projection: DeviceProfile hold + projection batch 生成 | ← 本 PR |
 
 use std::any::Any;
@@ -22,7 +22,7 @@ use std::any::Any;
 use tokio::sync::RwLock;
 
 use crate::device_profile::{DeviceProfile, ParamSpec, Rgb};
-use crate::repo::lane_stand::LaneStandHost;
+use crate::repo::lane_component::LaneComponentHost;
 
 // ─── data ──────────────────────────────────────────────────
 
@@ -42,20 +42,20 @@ pub struct DeviceIoState {
     profiles: Vec<Box<dyn DeviceProfile + Send + Sync>>,
 }
 
-// ─── DeviceIoStand ──────────────────────────────────────────
+// ─── DeviceIoComponent ──────────────────────────────────────────
 
 /// Lane に host される device I/O endpoint（Device I/O 🌫️）。
 ///
-/// `BoardStand` と同型の **passive marker**（`LaneStandHost` impl）。
+/// `BoardComponent` と同型の **passive marker**（`LaneComponentHost` impl）。
 /// `LaneCapabilities::new()` で各 Lane に自動登録される（midi feature 有効時）。
 ///
 /// E3-2 で DeviceProfile の hold + projection batch 生成を追加。
 /// Device I/O は **計算に徹し**、I/O（`send_batch`）は caller/DeviceRegistry に委譲する。
-pub struct DeviceIoStand {
+pub struct DeviceIoComponent {
     state: RwLock<DeviceIoState>,
 }
 
-impl DeviceIoStand {
+impl DeviceIoComponent {
     pub fn new() -> Self {
         Self {
             state: RwLock::new(DeviceIoState::default()),
@@ -147,13 +147,13 @@ impl DeviceIoStand {
     }
 }
 
-impl Default for DeviceIoStand {
+impl Default for DeviceIoComponent {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LaneStandHost for DeviceIoStand {
+impl LaneComponentHost for DeviceIoComponent {
     fn service_kind(&self) -> &'static str {
         "device_io"
     }
@@ -227,19 +227,19 @@ mod tests {
         }
     }
 
-    // ─── LaneStandHost ─────────────────────────────────
+    // ─── LaneComponentHost ─────────────────────────────────
 
     #[test]
     fn stand_kind_is_device_io() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         assert_eq!(agent.service_kind(), "device_io");
     }
 
     #[test]
     fn supports_downcast() {
-        let agent = DeviceIoStand::new();
-        let host: &dyn LaneStandHost = &agent;
-        let downcast = host.as_any().downcast_ref::<DeviceIoStand>();
+        let agent = DeviceIoComponent::new();
+        let host: &dyn LaneComponentHost = &agent;
+        let downcast = host.as_any().downcast_ref::<DeviceIoComponent>();
         assert!(downcast.is_some());
     }
 
@@ -247,7 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_profile_increments_count() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         assert_eq!(agent.profile_count().await, 0);
 
         agent
@@ -261,7 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn unbind_all_clears_profiles() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -276,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_all_returns_batches_per_profile() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -290,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_filters_empty() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         agent
             .bind_profile(Box::new(MockProfile::without_handshake("silent")))
             .await;
@@ -301,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_track_generates_batches() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -317,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_track_multi_profile() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;
@@ -333,7 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_parameter_generates_batches() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         agent.bind_profile(Box::new(MockProfile::new("Roto"))).await;
 
         let spec = ParamSpec::continuous("volume", 0.5);
@@ -346,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_on_empty_returns_nothing() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         let batches = agent
             .project_track(0, "test", Rgb::new(0, 0, 0), false)
             .await;
@@ -355,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn projection_updates_shadow_state() {
-        let agent = DeviceIoStand::new();
+        let agent = DeviceIoComponent::new();
         agent
             .bind_profile(Box::new(MockProfile::new("X-Touch")))
             .await;

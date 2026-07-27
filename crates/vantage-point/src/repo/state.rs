@@ -115,12 +115,12 @@ pub(crate) struct AppState {
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
     /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub machine_capabilities: Option<Arc<crate::daemon::machine_capabilities::MachineCapabilities>>,
-    /// Lane 階層 Agent container pool (LSCM、 PR-δ-2 / VP-136 で board を `LaneStandRegistry` 経由 host に統一)。
+    /// Lane 階層 Agent container pool (LSCM、 PR-δ-2 / VP-136 で board を `LaneComponentRegistry` 経由 host に統一)。
     ///
     /// repo mode (`run`) でのみ Some、 daemon mode (`run_daemon`) では None。
     /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で board を
     /// `repo_stands.board` から本 pool の各 Lane entry に物理移管。 PR-δ-2 (VP-136) で
-    /// `LaneStand` trait + `LaneStandRegistry` 経由 host に進化、 hardcoded field を
+    /// `LaneComponent` trait + `LaneComponentRegistry` 経由 host に進化、 hardcoded field を
     /// trait-based generic interface に置換。 cardinality 1 → N invariant は保持。
     /// 既存 `lane_pool` / `repo_stands` とは並立 (gradual migration、 PR-γ で runner も移管予定)。
     /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 / VP-120 / VP-135 / VP-136

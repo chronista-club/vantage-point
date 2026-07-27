@@ -72,9 +72,9 @@ impl LaneReconcile {
 ///
 /// ①（spawn すべきものを決める）と ③（今の intent に合わせる）が**同じ規則**を共有するため
 /// 関数にしてある — 2 箇所に書くと片方だけ古くなる（doc 53 §3.3 の同型）。
-fn want_slot_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
+fn want_slot_sessions(addr: &LaneAddress, lane_component: &str) -> Vec<SessionKey> {
     let lane_label = crate::repo::agent_spawner::lane_label(addr);
-    session_registry::load(&addr.repo, lane_label, lane_stand)
+    session_registry::load(&addr.repo, lane_label, lane_component)
         .sessions
         .iter()
         .filter(|s| s.mode == SessionMode::Tui)
@@ -86,9 +86,9 @@ fn want_slot_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
 ///
 /// 立てるのは lazy（submit / focus / 購読が起こす）なので reconcile は**畳む側だけ**に使う —
 /// 「Chat でない session に engine が残っている」= 1 session 2 エンジンの法の破れ。
-fn want_chat_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
+fn want_chat_sessions(addr: &LaneAddress, lane_component: &str) -> Vec<SessionKey> {
     let lane_label = crate::repo::agent_spawner::lane_label(addr);
-    session_registry::load(&addr.repo, lane_label, lane_stand)
+    session_registry::load(&addr.repo, lane_label, lane_component)
         .sessions
         .iter()
         .filter(|s| s.mode == SessionMode::Gui)
@@ -100,7 +100,7 @@ fn want_chat_sessions(addr: &LaneAddress, lane_stand: &str) -> Vec<SessionKey> {
 struct SpawnPlan {
     session: SessionKey,
     /// この session の engine（agent）。lane 固定の agent ではない（cross-engine root）。
-    lane_stand: String,
+    lane_component: String,
     cwd: String,
 }
 
@@ -131,15 +131,15 @@ pub async fn reconcile_lane(
         let Some(info) = pool.get(addr) else {
             return result; // lane 不在 = 合わせる相手が居ない
         };
-        let lane_stand = info.agent.clone();
+        let lane_component = info.agent.clone();
         let cwd = info.cwd.clone();
         let live_slots = pool.slot_sessions(addr);
-        want_slot_sessions(addr, &lane_stand)
+        want_slot_sessions(addr, &lane_component)
             .into_iter()
             .filter(|k| !live_slots.contains(k))
             .map(|session| SpawnPlan {
                 session,
-                lane_stand: lane_stand.clone(),
+                lane_component: lane_component.clone(),
                 cwd: cwd.clone(),
             })
             .collect()
@@ -151,7 +151,7 @@ pub async fn reconcile_lane(
         let addr_for_spawn = addr.clone();
         let built = tokio::task::spawn_blocking(move || {
             let cmd = crate::repo::agent_spawner::build_agent_command_for_session(
-                &plan.lane_stand,
+                &plan.lane_component,
                 &addr_for_spawn,
                 std::path::Path::new(&plan.cwd),
                 Some(plan.session),
@@ -184,9 +184,9 @@ pub async fn reconcile_lane(
         let Some(info) = pool.get(addr) else {
             return result; // spawn 中に lane が消えた（slot は Drop で child kill される）
         };
-        let lane_stand = info.agent.clone();
-        let want_slot = want_slot_sessions(addr, &lane_stand);
-        let want_chat = want_chat_sessions(addr, &lane_stand);
+        let lane_component = info.agent.clone();
+        let want_slot = want_slot_sessions(addr, &lane_component);
+        let want_chat = want_chat_sessions(addr, &lane_component);
 
         for (session, slot, term_rx) in spawned {
             // 立てている間に intent が変わった（mode が Chat になった / session が消えた）なら

@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 09: OSC notification capture pipeline (vp-app)
 
 > **Status**: 部分実装 — S1 done + 簡易版 S2/S3 実装 (2026-05-16、VP-191 棚卸し)

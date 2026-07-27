@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 36 — Echoes engine 軸: surface × engine の直交格子と lane サブコンソール
 
 > 前提: [`cursor-engine.md`](../archive/cursor-engine.md)（#773 Act I / #776 Act II、cursor-agent を 2 つ目の

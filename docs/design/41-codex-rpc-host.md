@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 41 — CodexRpcHost: codex app-server 常駐統合（dev path step 3）
 
 > 2026-07-18、mako + Fable 5 conductor session。doc 39 §7「対応 engine は常駐型のみ

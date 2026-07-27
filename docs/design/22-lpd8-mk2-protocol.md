@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 22. LPD8 mk2 SysEx protocol — DeviceProfile 第二号実装の byte 仕様 SSOT
 
 > **Status**: pad LED は実装済 + 実機検証済（2026-06-13、虹 8 色の表示確認）。program 構造は未実装（flag bit 未確定）

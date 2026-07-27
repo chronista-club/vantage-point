@@ -183,7 +183,7 @@ pub struct CreateLaneReq {
     // 旧 client が `kind: "performer"` を送っても unknown field として無視される。
     /// lane 名 (人間可読、 `LaneAddress.name` に入る)
     pub name: String,
-    /// LaneStand: "claude" (default) or "shell"
+    /// LaneComponent: "claude" (default) or "shell"
     #[serde(default)]
     pub agent: Option<String>,
     /// 既存 worktree path。 Some なら直接 cwd として使う、 None なら branch 指定で lane clone を実行する。
@@ -337,7 +337,7 @@ async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddres
 ///    - `req.cwd` Some → そのまま使う
 ///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で performer dir 作成
 ///    - 両方 None → `<git-user>/<sanitized-name>` を auto-derive して lane clone
-/// 4. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
+/// 4. PtySlot::spawn で実 PTY 起動 (LaneComponent 別 command builder 経由)
 /// 5. LanePool に insert (state=Running、 pid 付き) + descriptor 確定 / `lifecycle=Ready`
 ///
 /// 戻り値: 成功 `LaneInfo` / 失敗 `String`（旧 HTTP の CONFLICT="already exists" 等 error message

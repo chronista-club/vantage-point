@@ -298,7 +298,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		setActiveLaneName(laneName);
 		return;
 	}
-	// kind != terminal (board/runner/Devices/preview click 等): stand pane の**訪問**（一時 view）。
+	// kind != terminal (board/runner/Devices/preview click 等): agent pane の**訪問**（一時 view）。
 	// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
 	const paneId = KIND_TO_PANE[info.kind];
 	if (!paneId) {
@@ -728,7 +728,7 @@ document.addEventListener(
 		const action = btn.dataset.action;
 		const dataTarget = btn.dataset.target;
 		if (action === "close-pane") {
-			// stand pane の ✕ — 訪問を閉じて出発点の配置へ（2026-07-23 dogfood:
+			// agent pane の ✕ — 訪問を閉じて出発点の配置へ（2026-07-23 dogfood:
 			// 「Devices が出っ放しで close できない」の根治）
 			closeAppPaneVisit();
 			return;
@@ -988,7 +988,7 @@ installDispatch({
 		vpConsole.handleEvent(lane, event as ConversationEvent, session),
 	consoleModeApplied: (lane, session, mode) =>
 		vpConsole.setSessionMode(lane, session, mode as SessionMode),
-	consoleStands: (lane, payload, req) =>
+	consoleAgents: (lane, payload, req) =>
 		vpConsole.handleAgents(lane, payload as AgentsPayload, req),
 	// 対話面（ink）。mount target 不在なら `installInk` が null を返すので no-op で埋める
 	// （dispatch の表は常に全 arm 揃っている = 網羅性検査が効く形を崩さない）。

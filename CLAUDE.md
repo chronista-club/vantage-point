@@ -51,18 +51,20 @@ dogfooding を通じて体験を磨き、納得できる完成度でリリース
 
 ### アーキテクチャ命名体系
 
-**JoJo 由来命名は 2026-07-27 の命名エピックで機能名へ全面移行**（台帳 = creo
-`mem_1CdQxvayZBB3E768g1mDbQ`）。残るは Echoes 系 cluster のみ（再訪で確定予定）。
-命名定義は `crates/vantage-point/src/stands.rs` に集約（エピック仕上げで撤去予定）。
+**JoJo 由来命名は 2026-07-27 の命名エピック（PR #936〜#945）で機能名へ全面移行・完結**
+（台帳 = creo `mem_1CdQxvayZBB3E768g1mDbQ`）。旧 doc / memory は当時の名前のまま（凍結）。
 
 ```
 daemon ⚙️ (Process Manager / 常駐デーモン)
-  ├── repo 📦 (Repo Runtime / 各 Stand が同居する場)
-  │     ├── Echoes 💬 (Coding Assistant — 命名は cluster 再訪で確定)
+  ├── repo 📦 (Repo Runtime / 各機能が同居する場)
+  │     ├── conversation 💬 (AI との会話層 — host / 翻訳 / transcript)
   │     ├── board 🧭 (Information Navigator / 貼る台)
   │     └── runner 🌿 (Code Runner)
   ├── devices 🧲 (machine scope / device registry)
   └── device_io 🌫️ (lane scope / device I/O)
+
+軸: agent（claude/codex/grok/opencode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+部品 = component（lane に host）/ 常駐 = service。総称「Stand」は廃止（義ごとに分解）。
 ```
 
 ## 技術スタック
@@ -75,7 +77,7 @@ daemon ⚙️ (Process Manager / 常駐デーモン)
 | Agent | Claude CLI + MCP |
 | MIDI | midir |
 
-> **repo runtime**: repo の開発プロセスを表す本体。各種能力（Stand / Capability）を保持し、ユーザーの開発を支援する。
+> **repo runtime**: repo の開発プロセスを表す本体。各機能（conversation / board / runner）を保持し、ユーザーの開発を支援する。
 
 ### 依存境界（runtime dependency 方針、2026-07-04 確定）
 
@@ -101,7 +103,7 @@ vp-app (GUI: wry+tao)   vp (CLI)
                  │ spawn ↓ ／ repo→daemon QUIC registry 自己登録 ↑（reconcile = Push 一本）
      ┌───────────┼───────────┐
    repo[33000] repo[33001] ...     ← repo 📦 (repo ごと、portless = outbound-only)
-     └ Stands: Echoes 💬 / board 🧭 / runner 🌿（machine scope に devices 🧲 / lane scope に device_io 🌫️）
+     └ 機能: conversation 💬 / board 🧭 / runner 🌿（machine scope に devices 🧲 / lane scope に device_io 🌫️）
 ```
 
 ## repo 構造
@@ -256,7 +258,7 @@ daemon が **QUIC registry（Push）** でプロセスを管理する。SP-portl
 | **Push (QUIC Registry)** | repo が daemon に QUIC 永続接続で自己登録（outbound）。heartbeat 15s + 再接続時の snapshot replace で reconcile。切断 = 即時除去 | リアルタイム検出 + 自律復帰 |
 
 - `running_processes` / `repos` の HashMap キーは正規化パス（`normalize_path_key()`）。`repo_name` は表示用ラベル
-- `/api/health` レスポンスに `stands` フィールドを含む（各 Stand の状態をリアルタイムで返す）
+- `/api/health` レスポンスに `services` フィールドを含む（各機能の状態をリアルタイムで返す）
 
 ## Agent モジュール
 

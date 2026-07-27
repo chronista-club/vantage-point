@@ -1,8 +1,8 @@
 -- Vantage Point DB Schema v1
--- stand_events, settings, kv_store の3テーブル
+-- component_events, settings, kv_store の3テーブル
 
--- stand_events: 起動/停止イベント、セッションログ、ヘルスチェック結果
-CREATE TABLE IF NOT EXISTS stand_events (
+-- component_events: 起動/停止イベント、セッションログ、ヘルスチェック結果
+CREATE TABLE IF NOT EXISTS component_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     port       INTEGER NOT NULL,
     event_type TEXT    NOT NULL,
@@ -10,9 +10,9 @@ CREATE TABLE IF NOT EXISTS stand_events (
     details    TEXT,
     created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-CREATE INDEX IF NOT EXISTS idx_stand_events_port ON stand_events(port);
-CREATE INDEX IF NOT EXISTS idx_stand_events_type ON stand_events(event_type);
-CREATE INDEX IF NOT EXISTS idx_stand_events_time ON stand_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_stand_events_port ON component_events(port);
+CREATE INDEX IF NOT EXISTS idx_stand_events_type ON component_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_stand_events_time ON component_events(created_at);
 
 -- settings: ユーザー設定・repo固有設定
 -- repo='' はグローバル設定（NULLだとUNIQUEが効かない）

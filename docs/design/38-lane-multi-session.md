@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 38 — Lane 複数 Echoes session（1 Lane = N session）
 
 > **status**: 設計確定（2026-07-16 hearing、mako + Opus 4.8）。実装は fresh session から（入口 todo = `mem_1Cd3bo6Y4YepXnRqQyeWf8`）

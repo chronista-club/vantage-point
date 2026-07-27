@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 43 — OpenCode AcpHost（local LLM 正式化 = dev path step 7）
 
 > **status**: 設計確定（2026-07-19、実測 de-risk 全 PASS → 本 doc → 実装）

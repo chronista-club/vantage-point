@@ -78,7 +78,7 @@ protocol "vp-push" version="1.0.0" {
         // ===== 計器盤（device 一覧, doc 52 §4）の制御面 — 実装は webview/devices.ts =====
         //
         // wire 名は **機能名**（`devices:`）— 表示層の語をコード識別子に出さない規約
-        // （memory `naming-stand-vs-code`）。旧 `vpBastet` / `bastet.ts` / `pane-bastet` は
+        // （memory `naming-agent-vs-code`）。旧 `vpBastet` / `bastet.ts` / `pane-bastet` は
         // この規約への歴史的な違反だったが、rename(devices)（2026-07-27）で解消済み。
 
         // MIDI device 一覧を pane に render する（差分でなく**全量の置き換え** = level 駆動）。

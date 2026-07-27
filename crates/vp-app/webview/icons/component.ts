@@ -9,19 +9,19 @@ import type { IconName } from '@chronista-club/creo-ui-icons-web'
 
 // PR-pre2 (VP-118): heavens_door → echoes rename。
 // emoji 📖 → 💬、 icon 'ph:book-open' → 'ph:chat-circle' (prompt/response 対話型)。
-export type StandKind =
+export type ComponentKind =
   | 'claude'
   | 'board'
   | 'runner'
   | 'daemon'
 
-export interface StandIconSet {
+export interface ComponentIconSet {
   default: IconName  // idle/regular state (Phosphor Regular weight)
   active: IconName   // active/lit state (Phosphor Fill weight)
   disabled?: IconName // disabled state (Phosphor Thin weight、 optional)
 }
 
-export const STAND_ICON: Record<StandKind, StandIconSet> = {
+export const COMPONENT_ICON: Record<ComponentKind, ComponentIconSet> = {
   claude: {
     default: 'ph:chat-circle',
     active: 'ph:chat-circle-fill',
@@ -46,9 +46,9 @@ export const STAND_ICON: Record<StandKind, StandIconSet> = {
 
 // Helper: Agent kind + state から icon name を解決
 export function iconForStand(
-  agent: StandKind,
+  agent: ComponentKind,
   state: 'default' | 'active' | 'disabled' = 'default',
 ): IconName {
-  const set = STAND_ICON[agent]
+  const set = COMPONENT_ICON[agent]
   return set[state] ?? set.default
 }

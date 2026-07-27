@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # Lane-as-Process 規約 — Lane の StandActor 化 + Conductor Autonomy Level (VP-77 draft)
 
 > **改訂 note (2026-05-21)**: 本 doc 中の「msgbox」 はいずれも agent 間 messaging の概念呼称。 messaging 基盤は 2026-05 の wiremsg 再設計 (R1〜R6) で実装が全面置換された (`wire_send` / `wire_recv` / `wire_thread`、 `vp wire` CLI)。 per-actor inbox という概念は wiremsg の per-agent cursor で継承されている。 address 形式 (`{actor}@{project}`) も継承。 構造体 field 名 (`msgbox_topic` 等) は draft 段階の sketch。

@@ -13,12 +13,12 @@
 
 pub mod actor_registry;
 pub mod agent_capability;
+pub mod component_service;
 pub mod core;
 pub mod delegation_store;
 pub mod eventbus;
 pub mod protocol_capability;
 pub mod repo_manager_capability;
-pub mod stand_service;
 pub mod update_capability;
 pub mod wiremsg_store;
 
@@ -30,12 +30,12 @@ pub use core::{
 pub use eventbus::EventBus;
 // wiremsg R5-4: 旧 msgbox の registry サブシステム (`msgbox_registry` / `msgbox_remote`) を
 // 完全撤去。 msg messaging は wiremsg (`wiremsg_store`) に一本化済。
+pub use component_service::{Component, LayerScope, Service};
 pub use protocol_capability::ProtocolCapability;
 pub use repo_manager_capability::{
     RepoHealthInfo, RepoInfo, RepoManagerCapability, RepoPresenceState, RepoStatus, RunningRepo,
     normalize_path_key,
 };
-pub use stand_service::{LayerScope, Service, Stand};
 pub use update_capability::UpdateCapability;
 // Phase A ①: wiremsg threaded inbox store (設計 mem_1CbD9H1KGQykBaFG8XXVsn)。
 // R2-a: store は daemon に中央化 (cross-process forward = wire_remote は撤去、
