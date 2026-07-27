@@ -358,8 +358,8 @@ pub(crate) async fn create_performer_orchestrated(
     // reserve より前に置いているのと同じ理由 — bad input で副作用を残さない）。
     crate::lane::config::validate_performer_name(req.name.trim())?;
     // model 名の検証は reserve / clone より**前**に置く (bad input で reservation も disk dir も
-    // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続 (engine_model::record)
-    // は addr が要るので clone 後まで遅らせる。
+    // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続
+    // (session_registry::set_model) は addr が要るので clone 後まで遅らせる。
     if let Some(model) = req.model.as_ref().filter(|m| !m.trim().is_empty())
         && !crate::lane::engine_model::is_valid_model(model.trim())
     {
@@ -551,7 +551,16 @@ pub(crate) async fn create_performer_orchestrated(
         config.default_lane_model(),
     ) {
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
-        if let Err(e) = crate::lane::engine_model::record(&addr.repo, lane_label, &model) {
+        // 記録先は registry の初期 session（key=1）の `SessionEntry.model`（session 紐づけ、
+        // 2026-07-27）。default_agent = この lane の agent — 早期に registry file が生えても
+        // session 1 の agent が spawn 実体と一致する。
+        if let Err(e) = crate::lane::session_registry::set_model(
+            &addr.repo,
+            lane_label,
+            &agent,
+            1,
+            Some(&model),
+        ) {
             tracing::warn!(
                 "engine_model 永続失敗（claude default で spawn）: addr={} model={} err={}",
                 addr,

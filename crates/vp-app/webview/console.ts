@@ -141,7 +141,18 @@ export type ConversationSession = {
    *  名札の kind badge は false なら Chat への切替を出さない（押しても server に弾かれる
    *  だけの行き止まりを作らない）。旧 SP は送らない → undefined = 不可に倒す。 */
   chat_capable?: boolean
+  /** この session の model 指定（registry の intent。null/undefined = engine 既定）。 */
+  model?: string | null
+  /** model picker の選択肢（server 導出 catalog — client は並べるだけ、2026-07-27）。
+   *  空/undefined = VP からの model 切替なし（picker は read-only 表示 or 非表示に落とす —
+   *  chat_capable と同じ「行き止まりを作らない」規律）。 */
+  model_choices?: PickerChoice[]
+  /** permission picker の選択肢（同上。空/undefined = 対話承認の概念なし）。 */
+  permission_choices?: PickerChoice[]
 }
+
+/** picker の選択肢 1 件（Rust `ChoiceWire` の手書き mirror）。 */
+export type PickerChoice = { value: string; label: string }
 
 /** conversation_session_list の生 payload（Rust `handle_conversation_session_list` の返り値 mirror）。 */
 export type ConversationSessionListPayload = {

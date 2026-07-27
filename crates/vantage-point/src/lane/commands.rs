@@ -543,6 +543,12 @@ fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Resu
 }
 
 /// state base dir 注入版 (テスト用)。
+///
+/// 記録先は registry の初期 session（key=1）の `SessionEntry.model`（2026-07-27 に per-lane
+/// `engine_model` file から session 紐づけへ移行）。CLI 作成 lane は既定 agent = claude
+/// （`--agent` を持つのは orchestrated 経路のみ — `agent_store` の書き手が routes 側だけ
+/// であることに対応）。model 未指定なら registry file を作らない（set_model_in が
+/// 変化なし = no-save に倒す）。
 fn persist_lane_model_in(
     base: &Path,
     repo_root: &Path,
@@ -559,7 +565,8 @@ fn persist_lane_model_in(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
-    super::engine_model::record_in(base, repo, lane, model)
+    super::session_registry::set_model_in(base, repo, lane, "claude", 1, Some(model))
+        .map(|_| ())
         .map_err(|e| format!("model 永続に失敗: {e}"))
 }
 
@@ -638,10 +645,7 @@ fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
     if let Err(e) = super::session_registry::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: session registry の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ③ engine_model (gui の model 選択)
-    if let Err(e) = super::engine_model::clear_in(base, repo, lane) {
-        tracing::warn!("lane state GC: engine_model の破棄に失敗 (残置): lane={lane} err={e}");
-    }
+    // ③ (退役) engine_model — model は registry（SessionEntry.model）に移行済みで ② が併せ消す。
     // ④ agent (engine 種別 — repo 再起動またぎの spawn agent)
     if let Err(e) = super::agent_store::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: agent の破棄に失敗 (残置): lane={lane} err={e}");
@@ -1979,7 +1983,7 @@ mod tests {
     fn clear_lane_state_removes_all_six_state_files_and_is_scoped() {
         use crate::conversation::{ConversationEvent, replay_log};
         use crate::daemon::pty_slot;
-        use crate::lane::{agent_store, engine_model, lane_id, session_registry};
+        use crate::lane::{agent_store, lane_id, session_registry};
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
@@ -2007,8 +2011,9 @@ mod tests {
                 true,
             )
             .expect("registry #2");
-            // ② engine_model
-            engine_model::record_in(base, "vp", lane, "sonnet").expect("engine_model");
+            // ② model は registry（SessionEntry.model）に同居（engine_model file は退役済）
+            session_registry::set_model_in(base, "vp", lane, "claude", 1, Some("sonnet"))
+                .expect("session model");
             // ③ agent
             agent_store::record_in(base, "vp", lane, "codex").expect("agent");
             // ④ conversation_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
@@ -2038,14 +2043,13 @@ mod tests {
         assert_eq!(reg.sessions.len(), 1, "①registry が既定形 N=1 に戻る");
         assert_eq!(reg.sessions[0].conversation, None, "①会話 id も消える");
         assert_eq!(
+            reg.sessions[0].model, None,
+            "②model も消える（registry 同居）"
+        );
+        assert_eq!(
             session_registry::root_mode_in(base, "vp", "feat"),
             session_registry::SessionMode::Tui,
             "①Act も既定 (Tui) に戻る"
-        );
-        assert_eq!(
-            engine_model::last_in(base, "vp", "feat"),
-            None,
-            "②engine_model"
         );
         assert_eq!(agent_store::last_in(base, "vp", "feat"), None, "③agent");
         assert!(
@@ -2096,27 +2100,35 @@ mod tests {
     }
 
     #[test]
-    fn persist_lane_model_writes_engine_model_with_basename_key() {
-        // co-evolution #1: CLI `--model` は repo spawn 経路が読む engine_model へ、
-        // repo basename を repo key として書く (key derivation は clear と同一)。
+    fn persist_lane_model_writes_initial_session_model_with_basename_key() {
+        // co-evolution #1 → session 紐づけ（2026-07-27）: CLI `--model` は registry の初期
+        // session（key=1）の model へ、repo basename を repo key として書く（key derivation は
+        // clear と同一）。
+        use crate::lane::session_registry;
+
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let repo_root = tmp.path().join("parent").join("vp");
+        let model_of = |lane: &str| {
+            session_registry::load_in(base, "vp", lane, "claude").sessions[0]
+                .model
+                .clone()
+        };
 
-        // None は no-op（未記録のまま = claude default）
+        // None は no-op（未記録のまま = engine 既定）
         persist_lane_model_in(base, &repo_root, "feat", None).expect("None は Ok");
-        assert_eq!(crate::lane::engine_model::last_in(base, "vp", "feat"), None);
+        assert_eq!(model_of("feat"), None);
 
         // 空白のみも no-op
         persist_lane_model_in(base, &repo_root, "feat", Some("  ")).expect("空白は Ok");
-        assert_eq!(crate::lane::engine_model::last_in(base, "vp", "feat"), None);
+        assert_eq!(model_of("feat"), None);
 
-        // 有効な model は engine_model に basename key で書かれる
+        // 有効な model は初期 session（key=1）に basename key で書かれる
         persist_lane_model_in(base, &repo_root, "feat", Some("claude-fable-5")).expect("record");
         assert_eq!(
-            crate::lane::engine_model::last_in(base, "vp", "feat").as_deref(),
+            model_of("feat").as_deref(),
             Some("claude-fable-5"),
-            "repo spawn が読む repo=basename('vp') key に書かれる"
+            "repo spawn が読む repo=basename('vp') key の session 1 に書かれる"
         );
 
         // 不正 model は Err（worktree 作成後でも spawn 前に弾く）

@@ -287,8 +287,14 @@ pub enum AppEvent {
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
     ConsoleSwitchRoot { lane: String, session: u64 },
     /// gui モデル切替要求（ChatView の model picker）。 event loop が
-    /// `console_set_model` で repo に forward。 `model` None = claude default に戻す。
-    ConsoleSetModel { lane: String, model: Option<String> },
+    /// `conversation_set_model` で repo に forward（**session 単位** — doc 50 session=Pane、
+    /// 2026-07-27 に旧 root/lane 単位 `console_set_model` から移行）。
+    /// `model` None = engine 既定に戻す。
+    ConversationSetModel {
+        lane: String,
+        session: u64,
+        model: Option<String>,
+    },
     // doc 53 §11: 旧 `ConversationSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
     // lanes snapshot 1 本になった（fetch は GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の
     // session 変化が pane grid に出なかった）。
@@ -494,16 +500,22 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // gui モデル切替（ChatView の model picker）。 lane 必須、 model 省略/null = default。
-        Some("console:set_model") => {
-            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+        // gui モデル切替（ChatView の model picker）。 lane / session 必須、 model 省略/null =
+        // engine 既定。session を運ばない要求は捨てる（root 決め打ちに丸めない — server 側
+        // `conversation_set_model` と同じ規律）。
+        Some("conversation:set_model") => {
+            if let (Some(lane), Some(session)) = (
+                parsed.get("lane").and_then(|v| v.as_str()),
+                parsed.get("session").and_then(|v| v.as_u64()),
+            ) {
                 let model = parsed
                     .get("model")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::ConsoleSetModel {
+                let _ = proxy.send_event(AppEvent::ConversationSetModel {
                     lane: lane.to_string(),
+                    session,
                     model,
                 });
             }

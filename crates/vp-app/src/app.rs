@@ -191,7 +191,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
                 // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
                 | "console:switch_root"
-                | "console:set_model"
+                | "conversation:set_model"
                 // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
                 // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
                 | "ink:snapshot"
@@ -1949,6 +1949,9 @@ fn session_list_payload(
                 "root": s.key == sessions.root,
                 "mode": s.mode,
                 "chat_capable": s.chat_capable,
+                "model": s.model,
+                "model_choices": s.model_choices,
+                "permission_choices": s.permission_choices,
             })
         })
         .collect();
@@ -5292,25 +5295,37 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
             }
-            // gui モデル切替: console_set_model で repo に forward（fire & forget）。
-            // 適用の視覚確認は新 engine の session_init が header.model を更新することで得る。
-            Event::UserEvent(AppEvent::ConsoleSetModel { lane, model }) => {
+            // gui モデル切替: conversation_set_model で repo に forward（fire & forget、
+            // session 単位）。適用の視覚確認は新 engine の session_init が header.model を
+            // 更新することで得る。
+            Event::UserEvent(AppEvent::ConversationSetModel {
+                lane,
+                session,
+                model,
+            }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("console:set_model skip — lane の repo 解決失敗 (lane={lane})");
+                    tracing::warn!(
+                        "conversation:set_model skip — lane の repo 解決失敗 (lane={lane})"
+                    );
                     return;
                 };
                 rt_handle.spawn(async move {
-                    let payload = serde_json::json!({ "lane": &lane, "model": model });
+                    let payload =
+                        serde_json::json!({ "lane": &lane, "session": session, "model": model });
                     match daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
-                        "console_set_model",
+                        "conversation_set_model",
                         payload,
                     )
                     .await
                     {
-                        Ok(_) => tracing::info!("console:set_model ok: lane={lane}"),
-                        Err(e) => tracing::warn!("console:set_model 失敗 (lane={lane}): {e}"),
+                        Ok(_) => tracing::info!(
+                            "conversation:set_model ok: lane={lane} session={session}"
+                        ),
+                        Err(e) => tracing::warn!(
+                            "conversation:set_model 失敗 (lane={lane} session={session}): {e}"
+                        ),
                     }
                 });
             }
