@@ -136,7 +136,7 @@ export function DaemonWidget() {
 							{(w) => (
 								<div
 									class="vp-hub-daemon"
-									title={`${w.wld_id ? `${w.handle} (${w.wld_id})` : w.handle} — ${w.connected ? "connected" : "offline (stale registry entry)"}`}
+									title={`${w.node_id ? `${w.handle} (${w.node_id})` : w.handle} — ${w.connected ? "connected" : "offline (stale registry entry)"}`}
 								>
 									<span
 											class="vp-hub-daemon-dot"
