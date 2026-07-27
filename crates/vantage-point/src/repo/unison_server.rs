@@ -879,7 +879,53 @@ async fn handle_conversation_demand_start(
         );
     }
 
-    let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
+    // single-flight 化（2026-07-27）: 起動時の 3 重 demand（daemon の購読 0→1 hook /
+    // vp-app の subscribe 直後 / webview showLane）が並行に replay を route すると、
+    // 「二重 replay は ReplayStart の clear-prefix で収束（無害）」の前提が破れて event が
+    // 混線する（詳細は [`crate::repo::state::ReplayFlights`] の doc — 2026-07-27 fleetstage で
+    // 実測）。進行中なら合流して rerun 予約のみ残す。ensure_chat_engine は guard の**外**
+    //（demand ごとに冪等実行 = engine 復活の即時性は従来どおり）。
+    if !state.replay_flights.begin(&lane, resolved.key) {
+        tracing::info!(
+            "conversation replay coalesced: 進行中 replay に合流 (lane={lane}, session={})",
+            resolved.key
+        );
+        return Ok(serde_json::json!({
+            "status": "coalesced", "lane": lane, "session": resolved.key
+        }));
+    }
+    loop {
+        let result = replay_once(state, &addr, &lane, &resolved).await;
+        if result.is_err() {
+            // エラー中断は予約ごと破棄（次の demand が新規 flight で素直に走れるように）。
+            state.replay_flights.abort(&lane, resolved.key);
+            return result;
+        }
+        if !state.replay_flights.finish(&lane, resolved.key) {
+            return result;
+        }
+        // 合流分の rerun: 直列にもう 1 周だけ全量を配送し直す（連続配送なら clear-prefix で
+        // 収束する = 元の設計前提に戻る）。進行中 replay の途中から購読した consumer の
+        // prefix 取りこぼしもこの 1 周で回復する。`resolved` は初回 resolve の snapshot
+        //（rerun 窓は ms 単位なので再 resolve しない）。
+        tracing::info!(
+            "conversation replay rerun: 合流した demand を直列に消化 (lane={lane}, session={})",
+            resolved.key
+        );
+    }
+}
+
+/// replay 1 本分の配送（[`handle_conversation_demand_start`] の single-flight loop の中身）。
+///
+/// claude × 会話 id ありは transcript replay、それ以外は replay_log（codex 系）or 空を、
+/// ReplayStart → 本文 → ReplayEnd の**連続 1 本**で route する。
+async fn replay_once(
+    state: &AppState,
+    addr: &crate::repo::lanes_state::LaneAddress,
+    lane: &str,
+    resolved: &crate::repo::lanes_state::ResolvedSession,
+) -> Result<serde_json::Value, String> {
+    let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
     // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。会話 id は
     // registry が SSOT（doc 40 §5 reader #6 — resolve 時の registry load から持ち回った
@@ -915,7 +961,7 @@ async fn handle_conversation_demand_start(
         events.push(crate::conversation::ConversationEvent::ReplayStart);
         events.extend(buffered);
         events.push(crate::conversation::ConversationEvent::ReplayEnd { in_flight: false });
-        route_conversation(state, &lane, resolved.key, events).await;
+        route_conversation(state, lane, resolved.key, events).await;
         tracing::info!(
             "conversation replay-log: {count} events を配送 (lane={lane}, session={})",
             resolved.key
@@ -926,7 +972,7 @@ async fn handle_conversation_demand_start(
     };
 
     let (mut events, tail_len) =
-        replay_with_in_flight(state, &addr, resolved.key, &session_id).await?;
+        replay_with_in_flight(state, addr, resolved.key, &session_id).await?;
     // replay 終端で streaming の真値を宣言する。 replay は過去の assistant 発話も MessageChunk で
     // 送るため GUI 側で streaming が立つが、 replay 列は TurnCompleted を運ばない。 生成中 turn が
     // 無ければ（tail_len == 0）ここで下ろさないと、 engine が idle でも「応答中」が永久に残り、
@@ -936,7 +982,7 @@ async fn handle_conversation_demand_start(
     });
 
     let count = events.len();
-    route_conversation(state, &lane, resolved.key, events).await;
+    route_conversation(state, lane, resolved.key, events).await;
     tracing::info!(
         "conversation transcript replay: {count} events を配送 (lane={lane}, session={}, in-flight tail={tail_len})",
         resolved.key
@@ -5035,6 +5081,78 @@ mod tests {
         );
         assert!(matches!(got[2], ConversationEvent::TurnCompleted { .. }));
         assert_eq!(got[3], ConversationEvent::ReplayEnd { in_flight: false });
+    }
+
+    /// 起動時 3 重 demand の single-flight 化（2026-07-27 fleetstage 実測の根治）: 進行中
+    /// flight がある間の demand は**配送せず**合流し（status=coalesced）、rerun 予約だけ残す。
+    /// 予約は flight 完了側が直列に消化する — 並行 route による event 混線（clear-prefix
+    /// 収束論の破れ = 孤児 ToolCallUpdate / ReplayEnd 欠落）を構造的に排除する。
+    #[tokio::test]
+    async fn conversation_demand_start_coalesces_while_replay_in_flight() {
+        use super::dispatch_repo_method;
+        use crate::lane::session_registry::SessionMode;
+        use crate::repo::state::build_test_app_state;
+        use std::time::Duration;
+
+        let _state_guard = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state(None).await;
+        let addr = insert_test_lane(&state, "vptest-coalesce", SessionMode::Gui).await;
+
+        // focused な codex session #2（session 省略の demand がこれに解決される）。
+        let k2 = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("codex"), true)
+            .expect("create codex session");
+        assert_eq!(k2, 2);
+
+        // 進行中 flight を模擬（handler と同じ key = lane display 形 + session key）。
+        assert!(state.replay_flights.begin("vptest-coalesce/root", 2));
+
+        let topic = "repo/conversation/data/vptest-coalesce~root/event";
+        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+
+        let res = dispatch_repo_method(
+            &state,
+            "conversation_demand_start",
+            serde_json::json!({ "lane": "vptest-coalesce/root" }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(res["status"], "coalesced", "進行中は合流して配送しない");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), srx.recv())
+                .await
+                .is_err(),
+            "coalesced の demand は event を 1 つも route しない"
+        );
+        assert!(
+            state.replay_flights.finish("vptest-coalesce/root", 2),
+            "合流は rerun 予約として残る（flight 完了側が直列に消化する契約）"
+        );
+        assert!(!state.replay_flights.finish("vptest-coalesce/root", 2));
+
+        // flight 終了後の demand は通常配送に戻る（begin → replay → finish で entry が残らない）。
+        let res = dispatch_repo_method(
+            &state,
+            "conversation_demand_start",
+            serde_json::json!({ "lane": "vptest-coalesce/root" }),
+        )
+        .await
+        .expect("demand_start after flight");
+        assert_eq!(res["status"], "no_session", "codex は replay_log path");
+        let res = dispatch_repo_method(
+            &state,
+            "conversation_demand_start",
+            serde_json::json!({ "lane": "vptest-coalesce/root" }),
+        )
+        .await
+        .expect("demand_start twice");
+        assert_eq!(
+            res["status"], "no_session",
+            "連続 demand も通る = flight entry が leak していない"
+        );
     }
 
     /// doc 50 §4.6 A6: **root=tui のまま非 root だけ chat** の構成で replay が届く。

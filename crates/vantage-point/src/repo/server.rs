@@ -217,6 +217,7 @@ pub(crate) async fn start_repo(
     let actor_registry = crate::capability::ActorRegistry::new();
 
     let state = Arc::new(AppState {
+        replay_flights: crate::repo::state::ReplayFlights::default(),
         hub,
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
@@ -744,6 +745,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // Create minimal state for daemon mode
     let state = Arc::new(AppState {
+        replay_flights: crate::repo::state::ReplayFlights::default(),
         hub,
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),

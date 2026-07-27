@@ -27,8 +27,101 @@ pub(crate) const CANVAS_LAYOUT_PANE_ID: &str = "__canvas_layout__";
 /// 照合キー `slot_pid` を持つ）。`pty_slots` と対称の入れ子。
 type TerminalPumps = super::terminal_pump::TerminalPumps;
 
+/// conversation replay の single-flight 台帳（replay 直列化、2026-07-27）。
+///
+/// 起動時の replay demand は意図的に 3 重で着火する（daemon の購読 0→1 hook / vp-app の
+/// subscribe 直後 / webview showLane — いずれも実在レースの傷跡で、冗長性そのものに意味が
+/// ある）。旧実装は 3 本の replay を**並行に** route し、「二重 replay は ReplayStart の
+/// clear-prefix で収束（無害）」の前提を破っていた — 収束論は**連続配送**の場合にのみ
+/// 成立し、並行 route は event 混線（孤児 ToolCallUpdate / ReplayEnd 欠落）と subscriber
+/// channel 溢れ（try_send の無音 drop）を生む（2026-07-27 fleetstage で実測 — chat が
+/// 会話の前半だけで復元された）。
+///
+/// per-(lane, session) で直列化する: 進行中に来た demand は「合流」して rerun 予約だけ残し、
+/// replay 完了時に予約があれば **1 回だけ**やり直す。進行中 replay の途中から購読した
+/// consumer が prefix を取りこぼしていても、直後の rerun 全量で回復する（= 3 重 demand の
+/// レース耐性は保ったまま、配送は常に連続 1 本）。
+#[derive(Default)]
+pub(crate) struct ReplayFlights {
+    /// key = (lane display 形, session key)。値 = rerun 予約 + 開始時刻（stale 奪取用）。
+    flights: std::sync::Mutex<std::collections::HashMap<(String, u32), ReplayFlight>>,
+}
+
+struct ReplayFlight {
+    /// 進行中に合流した demand があるか（完了時に 1 回だけやり直す）。
+    rerun: bool,
+    started: std::time::Instant,
+}
+
+/// 進行中 entry を残骸と見なして奪い直す閾値。replay は数十 ms で終わる処理なので、これを
+/// 超えて残る entry は panic / cancel の leak — 放置すると当該 session の demand が永久に
+/// 合流扱いされ、chat が二度と復元されなくなる。fail-open で新しい flight に譲る。
+const REPLAY_FLIGHT_STALE: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl ReplayFlights {
+    /// replay を開始してよいか。`true` = 開始（entry 登録済）/ `false` = 進行中に合流
+    /// （rerun 予約のみ残した — 呼び手は配送せず即返してよい）。
+    pub fn begin(&self, lane: &str, session: u32) -> bool {
+        self.begin_at(lane, session, std::time::Instant::now())
+    }
+
+    fn begin_at(&self, lane: &str, session: u32, now: std::time::Instant) -> bool {
+        let mut flights = self.flights.lock().expect("replay_flights poisoned");
+        match flights.entry((lane.to_string(), session)) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if now.duration_since(e.get().started) > REPLAY_FLIGHT_STALE {
+                    // 残骸（panic / cancel の leak）— 奪い直して新しい flight として走る。
+                    e.insert(ReplayFlight {
+                        rerun: false,
+                        started: now,
+                    });
+                    true
+                } else {
+                    e.get_mut().rerun = true;
+                    false
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(ReplayFlight {
+                    rerun: false,
+                    started: now,
+                });
+                true
+            }
+        }
+    }
+
+    /// replay 1 本の配送完了。`true` = 合流分の rerun 予約あり（entry は Running のまま —
+    /// 呼び手はもう 1 周配送する）/ `false` = 終了（entry 除去）。
+    pub fn finish(&self, lane: &str, session: u32) -> bool {
+        let mut flights = self.flights.lock().expect("replay_flights poisoned");
+        let key = (lane.to_string(), session);
+        match flights.get_mut(&key) {
+            Some(f) if f.rerun => {
+                f.rerun = false;
+                f.started = std::time::Instant::now();
+                true
+            }
+            _ => {
+                flights.remove(&key);
+                false
+            }
+        }
+    }
+
+    /// エラー中断。rerun 予約ごと破棄する（次の demand が素直に新規 flight で走れるように）。
+    pub fn abort(&self, lane: &str, session: u32) {
+        self.flights
+            .lock()
+            .expect("replay_flights poisoned")
+            .remove(&(lane.to_string(), session));
+    }
+}
+
 /// Application state
 pub(crate) struct AppState {
+    /// conversation replay の single-flight 台帳（[`ReplayFlights`] — 3 重 demand の直列化）。
+    pub replay_flights: ReplayFlights,
     pub hub: Hub,
     /// Shutdown signal token
     pub shutdown_token: CancellationToken,
@@ -342,6 +435,7 @@ pub(crate) async fn build_test_app_state_with(
     );
 
     Arc::new(AppState {
+        replay_flights: ReplayFlights::default(),
         hub: Hub::new(),
         shutdown_token: CancellationToken::new(),
         repo_dir: repo_dir.to_string(),
@@ -444,5 +538,54 @@ mod lane_resolve_tests {
             pool.insert(info);
         }
         assert_eq!(state.resolve_lane_address("vp/root").await, None);
+    }
+}
+
+#[cfg(test)]
+mod replay_flight_tests {
+    use super::{REPLAY_FLIGHT_STALE, ReplayFlights};
+
+    /// single-flight の状態遷移: 開始 → 進行中は合流（rerun 予約は 1 bit）→ 完了時に
+    /// 1 周だけ rerun → 予約が無ければ終了（entry 除去 = 次は新規 flight）。
+    #[test]
+    fn serializes_and_coalesces_per_session() {
+        let f = ReplayFlights::default();
+        assert!(f.begin("vp/root", 1), "初回は開始");
+        assert!(!f.begin("vp/root", 1), "進行中は合流");
+        assert!(!f.begin("vp/root", 1), "何度合流しても予約は 1 bit");
+        assert!(f.begin("vp/root", 2), "別 session は独立の flight");
+
+        assert!(f.finish("vp/root", 1), "合流分があるので rerun");
+        assert!(!f.finish("vp/root", 1), "予約は 1 回で消化 → 終了");
+        assert!(
+            f.begin("vp/root", 1),
+            "終了後は新規 flight として開始できる"
+        );
+        assert!(!f.finish("vp/root", 1), "合流なしなら即終了");
+        assert!(!f.finish("vp/root", 2), "session 2 も合流なしで終了");
+    }
+
+    /// エラー中断（abort）は rerun 予約ごと破棄する — 次の demand が新規 flight で走れる。
+    #[test]
+    fn abort_discards_reservation() {
+        let f = ReplayFlights::default();
+        assert!(f.begin("vp/root", 1));
+        assert!(!f.begin("vp/root", 1), "予約発生");
+        f.abort("vp/root", 1);
+        assert!(
+            f.begin("vp/root", 1),
+            "abort 後は予約を持ち越さず新規 flight"
+        );
+    }
+
+    /// 残骸 entry（panic / cancel の leak）は STALE 閾値超過で奪い直す。放置すると当該 session
+    /// の demand が永久に合流扱いされ chat が二度と復元されないため、fail-open で新規に譲る。
+    #[test]
+    fn steals_stale_entry() {
+        let f = ReplayFlights::default();
+        let past =
+            std::time::Instant::now() - (REPLAY_FLIGHT_STALE + std::time::Duration::from_secs(1));
+        assert!(f.begin_at("vp/root", 1, past), "（過去時刻で開始した体）");
+        assert!(f.begin("vp/root", 1), "stale entry は合流でなく奪い直し");
     }
 }
