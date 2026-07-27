@@ -269,7 +269,7 @@ $ vp wire send --to vantage-point/root --body "hello"
 
 **before (旧 msgbox)**: 別 lane から `agent@<self>` に送信 → receiver は MCP recv で見えない、 CLI watch で観察必要。
 
-**after (v3.1)**: vp-app sidebar の Echoes icon 右隣に **未読 message icon** が出現、 click で tooltip 表示。
+**after (v3.1)**: vp-app sidebar の lane icon 右隣に **未読 message icon** が出現、 click で tooltip 表示。
 
 ```
 ┌─────────────────────────┐
@@ -334,7 +334,7 @@ vantage-point
 
 ---
 
-## 8. example walkthrough — Echoes 同士の inter-agent comm
+## 8. example walkthrough — agent 同士の inter-agent comm
 
 ### scenario
 

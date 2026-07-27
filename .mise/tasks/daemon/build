@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="vp binary (vp-cli: TheWorld daemon + CLI commands) を release build + ~/.cargo/bin に install"
+#MISE description="vp binary (vp-cli: daemon + CLI commands) を release build + ~/.cargo/bin に install"
 #
 # 2026-05-30 Occam 対称化: cli: namespace を統合 (app:/daemon: を鏡像に)。
 # 2026-06-09 task namespace を world: → daemon: にリネーム (`vp daemon` CLI 名に揃える)。

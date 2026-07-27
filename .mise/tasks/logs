@@ -13,7 +13,7 @@ dir = VP.log_dir
 FileUtils.mkdir_p(dir)
 
 FILES = {
-  "daemon.kdl.log"    => "TheWorld + SP tracing、 KDL structured",
+  "daemon.kdl.log"    => "daemon + repo tracing、 KDL structured",
   "daemon.stdout.log" => "daemon stdout/stderr、 panic 等の chaotic 出力",
   "app.kdl.log"       => "vp-app tracing、 KDL structured",
   "app.stdout.log"    => "vp-app stdout/panic",
